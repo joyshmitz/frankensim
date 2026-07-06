@@ -1,0 +1,20 @@
+[package]
+name = "fs-eproc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Anytime-valid inference: betting e-processes, mixture confidence sequences, e-BH."
+
+[package.metadata.frankensim]
+layer = "L4"
+
+[dependencies]
+fs-math = { path = "../fs-math" }
+
+[dev-dependencies]
+fs-rand = { path = "../fs-rand" }
+
+[lints]
+workspace = true

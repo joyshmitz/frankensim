@@ -762,6 +762,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs-eproc"
+version = "0.0.1"
+dependencies = [
+ "fs-math",
+ "fs-rand",
+]
+
+[[package]]
 name = "fs-exec"
 version = "0.0.1"
 dependencies = [
