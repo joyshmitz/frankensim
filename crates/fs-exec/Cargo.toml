@@ -12,6 +12,9 @@ layer = "L0"
 
 [dependencies]
 asupersync = { path = "../../../asupersync" }
+fs-alloc = { path = "../fs-alloc" }
+fs-obs = { path = "../fs-obs" }
+fs-substrate = { path = "../fs-substrate" }
 
 [dev-dependencies]
 

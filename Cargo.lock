@@ -766,6 +766,9 @@ name = "fs-exec"
 version = "0.0.1"
 dependencies = [
  "asupersync 0.3.5",
+ "fs-alloc",
+ "fs-obs",
+ "fs-substrate",
 ]
 
 [[package]]
