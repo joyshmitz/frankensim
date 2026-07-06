@@ -59,14 +59,22 @@ impl fs_geom::CostOracle for PlanCostOracle {
     }
 
     fn record(&mut self, edge: &str, cost_s: f64, error_abs: f64) {
-        let entry =
-            self.models.entry(edge.to_string()).or_insert_with(|| (1.0, CostModel::new()));
+        let entry = self
+            .models
+            .entry(edge.to_string())
+            .or_insert_with(|| (1.0, CostModel::new()));
         let size = entry.0;
         // Nonpositive actuals cannot enter the log-log model; drop them
         // (the router still ran — a zero-cost record carries no signal).
-        let _ = entry.1.observe(CostObservation { size, cost_s: cost_s.max(1e-12) });
+        let _ = entry.1.observe(CostObservation {
+            size,
+            cost_s: cost_s.max(1e-12),
+        });
         if error_abs.is_finite() && error_abs >= 0.0 {
-            self.errors.entry(edge.to_string()).or_default().push(error_abs);
+            self.errors
+                .entry(edge.to_string())
+                .or_default()
+                .push(error_abs);
         }
     }
 }
@@ -106,7 +114,10 @@ pub fn cost_model_from_tune(
             && rate > 0.0
         {
             let size = json_f64_field(&row.measured, "elements").unwrap_or(reference_size);
-            let _ = model.observe(CostObservation { size, cost_s: size / rate });
+            let _ = model.observe(CostObservation {
+                size,
+                cost_s: size / rate,
+            });
         }
     }
     Ok(model)

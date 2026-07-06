@@ -37,7 +37,9 @@ fn verdict(case: &str, detail: &str) {
 }
 
 fn lcg(seed: &mut u64) -> f64 {
-    *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    *seed = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     ((*seed >> 11) as f64) / (1u64 << 53) as f64
 }
 
@@ -71,13 +73,18 @@ fn pl_001_error_ledger_bounds_fixture_pipeline() {
     let mut seed = 0x5EED_9147_0000_0011u64;
     let mut worst_ratio = 0.0f64;
     for _ in 0..2000 {
-        let measured =
-            2e-3 * lcg(&mut seed) + 5e-3 * lcg(&mut seed) + 1e-4 * lcg(&mut seed);
-        assert!(total >= measured, "ledger total {total} under measured {measured}");
+        let measured = 2e-3 * lcg(&mut seed) + 5e-3 * lcg(&mut seed) + 1e-4 * lcg(&mut seed);
+        assert!(
+            total >= measured,
+            "ledger total {total} under measured {measured}"
+        );
         worst_ratio = worst_ratio.max(measured / total);
     }
     // Tightness tracked: the bound is conservative but useful.
-    assert!(worst_ratio > 0.5, "bound uselessly loose: worst ratio {worst_ratio}");
+    assert!(
+        worst_ratio > 0.5,
+        "bound uselessly loose: worst ratio {worst_ratio}"
+    );
     assert_eq!(
         ledger.dominant().map(|(s, _)| s),
         Some(ErrorSource::Discretization),
@@ -104,7 +111,10 @@ fn pl_002_ledger_lint_refuses_silent_error_mass() {
     let mut neg = ErrorLedger::new();
     neg.declared_residual = -1.0;
     assert!(neg.lint().is_err(), "negative residual must refuse");
-    verdict("pl-002", "completeness lint refuses NaN contributions and negative residuals");
+    verdict(
+        "pl-002",
+        "completeness lint refuses NaN contributions and negative residuals",
+    );
 }
 
 #[test]
@@ -113,10 +123,13 @@ fn pl_003_cost_calibration_within_stated_bands() {
     // 40 observations, audit on 200 held-out draws: the [p10, p90] band
     // must cover roughly 80% (loose gate: > 60% — calibration, not luck).
     let mut seed = 0x5EED_CA11_0000_0021u64;
-    let mut draw = |seed: &mut u64| {
+    let draw = |seed: &mut u64| {
         let size = 1e3 * (1.0 + 999.0 * lcg(seed));
         let noise = 0.75 + 0.5 * lcg(seed);
-        CostObservation { size, cost_s: 5e-9 * size.powf(1.4) * noise }
+        CostObservation {
+            size,
+            cost_s: 5e-9 * size.powf(1.4) * noise,
+        }
     };
     let train: Vec<CostObservation> = (0..40).map(|_| draw(&mut seed)).collect();
     let test: Vec<CostObservation> = (0..200).map(|_| draw(&mut seed)).collect();
@@ -130,7 +143,10 @@ fn pl_003_cost_calibration_within_stated_bands() {
         "{{\"suite\":\"fs-plan/conformance\",\"metric\":\"cost_band_coverage\",\
          \"value\":{coverage:.3},\"n_train\":40,\"n_test\":200}}"
     );
-    verdict("pl-003", &format!("held-out band coverage {coverage:.3} (target ~0.8)"));
+    verdict(
+        "pl-003",
+        &format!("held-out band coverage {coverage:.3} (target ~0.8)"),
+    );
 }
 
 #[test]
@@ -138,12 +154,14 @@ fn pl_004_online_updates_improve_predictions() {
     // The machine drifts: costs double mid-campaign. A model refit with
     // the new observations must beat the stale model on new traffic.
     let mut seed = 0x5EED_04D1_0000_0031u64;
-    let regime =
-        |seed: &mut u64, scale: f64| -> CostObservation {
-            let size = 1e4 * (1.0 + 9.0 * lcg(seed));
-            let noise = 0.9 + 0.2 * lcg(seed);
-            CostObservation { size, cost_s: scale * 1e-8 * size.powf(1.2) * noise }
-        };
+    let regime = |seed: &mut u64, scale: f64| -> CostObservation {
+        let size = 1e4 * (1.0 + 9.0 * lcg(seed));
+        let noise = 0.9 + 0.2 * lcg(seed);
+        CostObservation {
+            size,
+            cost_s: scale * 1e-8 * size.powf(1.2) * noise,
+        }
+    };
     let old: Vec<CostObservation> = (0..30).map(|_| regime(&mut seed, 1.0)).collect();
     let new_obs: Vec<CostObservation> = (0..30).map(|_| regime(&mut seed, 2.0)).collect();
     let probes: Vec<CostObservation> = (0..50).map(|_| regime(&mut seed, 2.0)).collect();
@@ -186,11 +204,15 @@ fn pl_005_models_rebuild_deterministically_from_ledger_tune() {
     assert_eq!(m2.n_obs(), m1.n_obs(), "snapshot determinism");
     drop(ledger);
     cleanup_db(&db);
-    verdict("pl-005", "tune-table rows rebuild into identical models across reads");
+    verdict(
+        "pl-005",
+        "tune-table rows rebuild into identical models across reads",
+    );
 }
 
 #[test]
 fn pl_006_router_plans_with_live_cost_models() {
+    use fs_geom::CostOracle as _;
     use fs_geom::{ConverterSpec, ErrorModel, RouteRequest, Router};
     let mut router = Router::new();
     for (name, cost) in [("frep->sdf/coarse", 1.0), ("frep->sdf/fine", 4.0)] {
@@ -219,7 +241,6 @@ fn pl_006_router_plans_with_live_cost_models() {
     let before = router.plan(&req, &oracle).unwrap();
     assert_eq!(before.edges, vec!["frep->sdf/coarse"]);
     // Measured history says coarse is actually slow on THIS machine.
-    use fs_geom::CostOracle as _;
     for _ in 0..5 {
         oracle.record("frep->sdf/coarse", 9.0, 0.005);
         oracle.record("frep->sdf/fine", 2.0, 0.004);
@@ -230,7 +251,10 @@ fn pl_006_router_plans_with_live_cost_models() {
         vec!["frep->sdf/fine"],
         "quantile cost models must reroute the router: {after:?}"
     );
-    verdict("pl-006", "Rep Router replanned from quantile models after measured drift");
+    verdict(
+        "pl-006",
+        "Rep Router replanned from quantile models after measured drift",
+    );
 }
 
 #[test]
@@ -246,11 +270,22 @@ fn pl_007_time_ledger_attributes_and_calibrates() {
         predicted: Some((1.0, 2.0, 3.0)),
         measured_s: Some(5.0), // blew its band
     });
-    tl.record(TimeStage { op: "report".to_string(), predicted: None, measured_s: Some(0.5) });
+    tl.record(TimeStage {
+        op: "report".to_string(),
+        predicted: None,
+        measured_s: Some(0.5),
+    });
     assert!((tl.total_measured_s() - 18.5).abs() < 1e-12);
     assert!((tl.total_p50_s() - 14.0).abs() < 1e-12);
-    assert_eq!(tl.calibration(), Some(0.5), "one of two comparable stages in band");
+    assert_eq!(
+        tl.calibration(),
+        Some(0.5),
+        "one of two comparable stages in band"
+    );
     let json = tl.explain();
     assert!(json.contains("flux.lbm") && json.contains("calibration"));
-    verdict("pl-007", "time attribution totals, band calibration, and explain() payload");
+    verdict(
+        "pl-007",
+        "time attribution totals, band calibration, and explain() payload",
+    );
 }

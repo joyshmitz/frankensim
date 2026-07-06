@@ -60,7 +60,10 @@ impl core::fmt::Display for CostRefusal {
                  run the operator or seed the tune table first"
             ),
             CostRefusal::BadInput => {
-                write!(f, "sizes and costs must be positive finite (log-log model domain)")
+                write!(
+                    f,
+                    "sizes and costs must be positive finite (log-log model domain)"
+                )
             }
         }
     }
@@ -104,13 +107,17 @@ impl CostModel {
     /// # Errors
     /// [`CostRefusal::BadInput`] on nonpositive/nonfinite entries.
     pub fn observe(&mut self, o: CostObservation) -> Result<(), CostRefusal> {
-        if !(o.size > 0.0) || !(o.cost_s > 0.0) || !o.size.is_finite() || !o.cost_s.is_finite() {
+        let ok = |v: f64| v.is_finite() && v > 0.0;
+        if !ok(o.size) || !ok(o.cost_s) {
             return Err(CostRefusal::BadInput);
         }
         self.obs.push(o);
         // Deterministic order regardless of arrival: sort by (size, cost).
-        self.obs
-            .sort_by(|x, y| x.size.total_cmp(&y.size).then(x.cost_s.total_cmp(&y.cost_s)));
+        self.obs.sort_by(|x, y| {
+            x.size
+                .total_cmp(&y.size)
+                .then(x.cost_s.total_cmp(&y.cost_s))
+        });
         self.refit();
         Ok(())
     }
@@ -164,11 +171,15 @@ impl CostModel {
     /// [`CostRefusal::InsufficientData`] below [`MIN_OBS`];
     /// [`CostRefusal::BadInput`] for a nonpositive size.
     pub fn predict(&self, size: f64) -> Result<CostPrediction, CostRefusal> {
-        if !(size > 0.0) || !size.is_finite() {
+        let ok = |v: f64| v.is_finite() && v > 0.0;
+        if !ok(size) {
             return Err(CostRefusal::BadInput);
         }
         let Some((a, b)) = self.loglog else {
-            return Err(CostRefusal::InsufficientData { have: self.obs.len(), need: MIN_OBS });
+            return Err(CostRefusal::InsufficientData {
+                have: self.obs.len(),
+                need: MIN_OBS,
+            });
         };
         let mu = a + b * size.ln();
         let q = |p: f64| (mu + self.residual_quantile(p)).exp();
@@ -225,14 +236,19 @@ mod tests {
     use super::*;
 
     fn lcg(seed: &mut u64) -> f64 {
-        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         ((*seed >> 11) as f64) / (1u64 << 53) as f64
     }
 
     /// Synthetic truth: cost = 3e-9 · size^1.5 · noise.
     fn synth(seed: &mut u64, size: f64) -> CostObservation {
         let noise = 0.8 + 0.4 * lcg(seed);
-        CostObservation { size, cost_s: 3e-9 * size.powf(1.5) * noise }
+        CostObservation {
+            size,
+            cost_s: 3e-9 * size.powf(1.5) * noise,
+        }
     }
 
     #[test]
@@ -240,24 +256,32 @@ mod tests {
         let mut m = CostModel::new();
         assert!(matches!(
             m.predict(1e6),
-            Err(CostRefusal::InsufficientData { have: 0, need: MIN_OBS })
+            Err(CostRefusal::InsufficientData {
+                have: 0,
+                need: MIN_OBS
+            })
         ));
         let mut seed = 0x5EED_C057_0000_0001u64;
         for i in 0..12 {
-            m.observe(synth(&mut seed, 1e4 * f64::from(1 << (i % 6)))).unwrap();
+            m.observe(synth(&mut seed, 1e4 * f64::from(1 << (i % 6))))
+                .unwrap();
         }
         let p = m.predict(3e4).unwrap();
         assert!(p.p10 <= p.p50 && p.p50 <= p.p90);
         assert!(!p.extrapolated);
-        assert!(m.predict(1e9).unwrap().extrapolated, "outside observed sizes");
+        assert!(
+            m.predict(1e9).unwrap().extrapolated,
+            "outside observed sizes"
+        );
         assert!(matches!(m.predict(-1.0), Err(CostRefusal::BadInput)));
     }
 
     #[test]
     fn fits_are_deterministic_regardless_of_arrival_order() {
         let mut seed = 0x5EED_C057_0000_0002u64;
-        let obs: Vec<CostObservation> =
-            (0..20).map(|i| synth(&mut seed, 1e3 * f64::from(i + 1))).collect();
+        let obs: Vec<CostObservation> = (0..20)
+            .map(|i| synth(&mut seed, 1e3 * f64::from(i + 1)))
+            .collect();
         let m1 = CostModel::fit(&obs).unwrap();
         let mut rev = obs.clone();
         rev.reverse();

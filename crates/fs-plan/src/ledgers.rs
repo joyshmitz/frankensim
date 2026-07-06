@@ -122,7 +122,8 @@ impl ErrorLedger {
     /// Merge another ledger (pipeline concatenation; first-order additive
     /// composition — conservative for independent worst cases).
     pub fn compose(&mut self, other: &ErrorLedger) {
-        self.contributions.extend(other.contributions.iter().cloned());
+        self.contributions
+            .extend(other.contributions.iter().cloned());
         self.declared_residual += other.declared_residual;
     }
 
@@ -132,12 +133,15 @@ impl ErrorLedger {
     /// # Errors
     /// The first [`LedgerDefect`] found.
     pub fn lint(&self) -> Result<(), LedgerDefect> {
+        let valid = |v: f64| v.is_finite() && v >= 0.0;
         for c in &self.contributions {
-            if !(c.abs >= 0.0) || !c.abs.is_finite() {
-                return Err(LedgerDefect::BadContribution { label: c.label.clone() });
+            if !valid(c.abs) {
+                return Err(LedgerDefect::BadContribution {
+                    label: c.label.clone(),
+                });
             }
         }
-        if !(self.declared_residual >= 0.0) || !self.declared_residual.is_finite() {
+        if !valid(self.declared_residual) {
             return Err(LedgerDefect::BadResidual);
         }
         Ok(())
@@ -174,7 +178,9 @@ impl ErrorLedger {
     /// The dominant source and its mass (what escalation should attack).
     #[must_use]
     pub fn dominant(&self) -> Option<(ErrorSource, f64)> {
-        self.by_source().into_iter().max_by(|a, b| a.1.total_cmp(&b.1))
+        self.by_source()
+            .into_iter()
+            .max_by(|a, b| a.1.total_cmp(&b.1))
     }
 
     /// The `explain_error` payload: one JSON object with per-source
@@ -253,15 +259,21 @@ impl TimeLedger {
     /// Total predicted median seconds (only stages with models).
     #[must_use]
     pub fn total_p50_s(&self) -> f64 {
-        self.stages.iter().filter_map(|s| s.predicted.map(|p| p.1)).sum()
+        self.stages
+            .iter()
+            .filter_map(|s| s.predicted.map(|p| p.1))
+            .sum()
     }
 
     /// Fraction of measured stages whose actual landed inside [p10, p90]
     /// (the calibration audit; `None` when nothing is comparable).
     #[must_use]
     pub fn calibration(&self) -> Option<f64> {
-        let comparable: Vec<&TimeStage> =
-            self.stages.iter().filter(|s| s.predicted.is_some() && s.measured_s.is_some()).collect();
+        let comparable: Vec<&TimeStage> = self
+            .stages
+            .iter()
+            .filter(|s| s.predicted.is_some() && s.measured_s.is_some())
+            .collect();
         if comparable.is_empty() {
             return None;
         }
