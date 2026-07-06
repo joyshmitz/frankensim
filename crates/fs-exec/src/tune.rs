@@ -15,7 +15,7 @@
 //! rewrite. Rows keyed to a DIFFERENT fingerprint are stale by definition
 //! and ignored on load.
 
-use crate::cx::{CancelGate, Cx, ExecMode, StreamKey};
+use crate::cx::{CancelGate, Cx};
 use crate::kernel::{TileKernel, TilePlan};
 use crate::pool::{PoolConfig, TilePool};
 use core::fmt;
@@ -526,8 +526,7 @@ fn parse_row(line: &str) -> Option<TuneRow> {
         let start = line.find(&pat)? + pat.len();
         let end = line[start..]
             .find([',', '}'])
-            .map(|e| e + start)
-            .unwrap_or(line.len());
+            .map_or(line.len(), |e| e + start);
         line[start..end].trim().parse().ok()
     };
     let mut measured_ns = Vec::new();
