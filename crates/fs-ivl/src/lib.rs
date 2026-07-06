@@ -20,10 +20,16 @@
 //! ISAs).
 
 pub mod affine;
+pub mod expansion;
 pub mod interval;
+pub mod predicates;
 
 pub use affine::{Affine, AffineCtx};
 pub use interval::Interval;
+pub use predicates::{
+    Sign, Stage, incircle, incircle_with_stage, insphere, insphere_with_stage, orient2d,
+    orient2d_sos, orient2d_with_stage, orient3d, orient3d_sos, orient3d_with_stage,
+};
 
 /// Crate version, re-exported for provenance stamping (the Five Explicits'
 /// "versions" pillar reaches down to individual crates).
