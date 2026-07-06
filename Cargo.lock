@@ -788,6 +788,9 @@ version = "0.0.1"
 [[package]]
 name = "fs-rand"
 version = "0.0.1"
+dependencies = [
+ "fs-math",
+]
 
 [[package]]
 name = "fs-simd"

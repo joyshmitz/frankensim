@@ -11,6 +11,7 @@ description = "Counter-based Philox streams keyed by logical identity; Sobol/Owe
 layer = "L1"
 
 [dependencies]
+fs-math = { path = "../fs-math" }
 
 [dev-dependencies]
 
