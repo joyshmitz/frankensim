@@ -5,7 +5,8 @@
 //! The safe facade (`crate::arena`) contains zero `unsafe` tokens; xtask
 //! `check-unsafe` enforces that this module stays registered, under 300
 //! lines, with the SAFETY.md beside it.
-#![allow(unsafe_code)] // registered capsule — see SAFETY.md beside this file
+#![allow(unsafe_code)]
+// registered capsule — see SAFETY.md beside this file
 // `&self -> &mut` is the load-bearing arena shape (as in bumpalo): every
 // call returns a DISTINCT region by the monotone-bump invariant, so the
 // returned exclusive borrows never alias (SAFETY.md, Aliasing assumptions).

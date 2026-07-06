@@ -186,7 +186,12 @@ struct PoolShared {
 impl PoolShared {
     /// Get a chunk of at least `min_bytes` (free list first, then the OS),
     /// enforcing the pool budget.
-    fn acquire_chunk(&self, min_bytes: usize, want: usize, site: Site) -> Result<Chunk, AllocError> {
+    fn acquire_chunk(
+        &self,
+        min_bytes: usize,
+        want: usize,
+        site: Site,
+    ) -> Result<Chunk, AllocError> {
         {
             let mut free = self.free.lock().expect("fs-alloc free list poisoned");
             if let Some(i) = free.chunks.iter().position(|c| c.len() >= min_bytes) {
@@ -345,7 +350,11 @@ impl ArenaPool {
     /// between runs).
     #[must_use]
     pub fn site_report(&self) -> SiteReport {
-        let sites = self.shared.sites.lock().expect("fs-alloc site table poisoned");
+        let sites = self
+            .shared
+            .sites
+            .lock()
+            .expect("fs-alloc site table poisoned");
         SiteReport {
             sites: sites.iter().map(|(k, v)| (*k, *v)).collect(),
         }
@@ -583,7 +592,11 @@ impl Drop for Arena {
         self.shared.release_chunks(chunks);
         let local = core::mem::take(self.sites.get_mut());
         if !local.is_empty() {
-            let mut sites = self.shared.sites.lock().expect("fs-alloc site table poisoned");
+            let mut sites = self
+                .shared
+                .sites
+                .lock()
+                .expect("fs-alloc site table poisoned");
             for (name, stats) in local {
                 let entry = sites.entry(name).or_default();
                 entry.bytes += stats.bytes;
@@ -797,10 +810,14 @@ mod tests {
             other => panic!("wrong error variant: {other:?}"),
         }
         let msg = err.to_string();
-        assert!(msg.contains("limit_bytes") || msg.contains("limit"), "{msg}");
+        assert!(
+            msg.contains("limit_bytes") || msg.contains("limit"),
+            "{msg}"
+        );
         // The pool remains fully usable after refusal.
         pool.scope(|a| {
-            a.alloc(Site::named("t/after"), 1u8).expect("small alloc still fine");
+            a.alloc(Site::named("t/after"), 1u8)
+                .expect("small alloc still fine");
         });
         assert!(pool.stats().quiescent());
     }
@@ -839,7 +856,9 @@ mod tests {
         struct Big([u8; 512]);
         let pool = small_pool(None);
         pool.scope(|a| {
-            let b = a.alloc(Site::named("t/align512"), Big([7; 512])).expect("alloc");
+            let b = a
+                .alloc(Site::named("t/align512"), Big([7; 512]))
+                .expect("alloc");
             assert_eq!(core::ptr::from_mut(b) as usize % 512, 0);
             assert_eq!(b.0[511], 7);
         });

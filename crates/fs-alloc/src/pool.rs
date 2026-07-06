@@ -146,13 +146,17 @@ impl<T> Deref for PoolItem<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        self.value.as_ref().expect("value present until drop/detach")
+        self.value
+            .as_ref()
+            .expect("value present until drop/detach")
     }
 }
 
 impl<T> DerefMut for PoolItem<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
-        self.value.as_mut().expect("value present until drop/detach")
+        self.value
+            .as_mut()
+            .expect("value present until drop/detach")
     }
 }
 
