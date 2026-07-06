@@ -25,9 +25,18 @@ fs-substrate, fs-obs.
 - `TileKernel` (`type Out: Reduce; tiles() -> TilePlan; run(tile, &Cx) ->
   ControlFlow<Cancelled, Out>`) and `TilePlan { tiles, kernel }` with the
   FNV-stable `kernel_id()`.
-- `Reduce` — fold identity + `merge`, ALWAYS applied in ascending tile
-  order over per-tile slots (the fixed-shape reduction tree); `merge` need
-  not be commutative. Implemented for `()`, `u64`, `f64`, `Vec<T>`.
+- `Reduce` — fold identity + `merge`, applied over per-tile slots on the
+  FIXED-SHAPE pairwise tree: split at the largest power of two below `n`,
+  recurse — shape a pure function of the tile count, items visited in
+  ascending index order, so `merge` need not be commutative. Implemented
+  for `()`, `u64`, `f64`, `Vec<T>`, `reduce::Compensated`.
+- `reduce` module (plan §5.4, the P2 machinery): `pairwise_fold`,
+  Neumaier `Compensated` partials (Reduce-composable), `det_sum`/`det_dot`
+  /`det_norm2` (256-element blocked, unfused products), `det_min`/`det_max`
+  (IEEE total order), `det_argmin`/`det_argmax` (ties -> LOWEST index),
+  `det_prefix_sum` (compensated sequential scan), and `audit_accumulator`
+  — the G5 order-sensitivity audit that catches arrival-order bugs and
+  localizes them to the smallest exposing prefix.
 - `TilePool` / `PoolConfig { workers, topo, quantum_weights, seed, mode,
   arena }` — `run(&kernel)` / `run_with_gate(&kernel, &gate) -> (Result<Out,
   RunError>, RunReport)`. Workers are scoped per run; per-worker deques are
@@ -46,9 +55,11 @@ fs-substrate, fs-obs.
 ## Invariants
 1. Completeness: a non-cancelled, non-panicked run executes every tile in
    `0..plan.tiles` exactly once (exec-001).
-2. Fixed-shape reduction: results are bit-identical across worker counts,
-   steal schedules, and repeats — proven with non-associative floats and a
-   non-commutative concatenation (exec-002/008, G5).
+2. Fixed-shape reduction: the pairwise tree's shape depends only on the
+   tile count, so results are bit-identical across worker counts, steal
+   schedules, and repeats — proven with non-associative floats, a
+   non-commutative concatenation, and compensated artifact hashes across
+   {1,2,P,2P} workers (exec-002/008/009, G5).
 3. Stream keys are pure functions of `(seed, kernel_id, tile, iteration)`;
    shuffling worker counts changes nothing (exec-003).
 4. Cancellation is request → drain → finalize: after `CancelGate::request`,
@@ -74,9 +85,13 @@ kernel-authored asserts, which are contained per invariant 5.
 ## Determinism class
 Deterministic (P2): results and stream keys are bit-stable across runs,
 worker counts, and steal schedules on the same ISA, by construction
-(slot-per-tile + ascending fold + logical keys). `ExecMode::Fast` currently
-shares the same reduction shape and exists as recorded provenance for the
-future relaxation. Timing values (steal counts, latencies) are measurements
+(slot-per-tile + length-keyed pairwise tree + logical keys). Tie-breaking
+law: argmin/argmax ties resolve to the lowest logical index; float
+comparisons use IEEE total order. Cross-ISA: identical shapes reduce
+divergence to scalar-arithmetic classes (FMA contraction, libm ULP) owned
+by fs-math and reported by the G5 cross-ISA report once the second-ISA
+runner lands. `ExecMode::Fast` currently shares the same reduction shape
+and exists as recorded provenance for the future relaxation. Timing values (steal counts, latencies) are measurements
 quarantined in `RunReport`/events, never in results.
 
 ## Cancellation behavior
@@ -101,7 +116,9 @@ cases carry seeds): completeness/arena hygiene, G5 bit-identity across
 worker counts, stream-key worker-independence, external-cancel drain with
 ledgered latency histogram, the 300-run G4 storm with panic injection,
 steal-order/quanta fixtures, latency-lane responsiveness under saturation,
-and reduction-shape invariance. tests/constellation_smoke.rs pins the
+reduction-shape invariance, and the exec-009 G5 audit (compensated
+artifact hashes bit-stable across {1,2,P,2P} workers; seeded arrival-order
+bug caught with prefix localization). tests/constellation_smoke.rs pins the
 asupersync Budget vocabulary. In-module unit suites cover the gate, keys,
 Reduce laws, partitioning, victim orders, self-cancellation, and pool
 survival after panics.
@@ -128,3 +145,9 @@ survival after panics.
   exec-007 measures and ledgers turnaround without claiming it.
 - Speculative races and resumable-solver checkpointing (plan §5.2 items
   1–2) are the NEXT fs-exec beads (wf9.8), not this one.
+- `ExecMode::Fast`'s 5–15% relaxed-reduction throughput claim is NOT made:
+  Fast currently shares the deterministic tree; the relaxation (and its
+  measured delta) waits for the roofline harness.
+- Deterministic hash-map wrappers are not shipped: the contract's rule is
+  "no HashMap iteration order in results" (BTreeMap or index-keyed slots
+  in hot paths); an enforcement lint belongs to CI tooling.

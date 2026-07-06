@@ -463,11 +463,12 @@ impl TilePool {
                 report,
             );
         }
-        // Fixed-shape fold: ascending tile order, always.
-        let mut acc = K::Out::identity();
+        // Fixed-shape fold: the pairwise tree over ascending tile order
+        // (shape a pure function of the tile count — plan §5.4).
+        let mut outs: Vec<K::Out> = Vec::with_capacity(slots.len());
         for (i, slot) in slots.into_iter().enumerate() {
             match slot.into_inner().expect("slot") {
-                Some(out) => acc = acc.merge(out),
+                Some(out) => outs.push(out),
                 None => {
                     return (
                         Err(RunError::Incomplete {
@@ -479,7 +480,7 @@ impl TilePool {
                 }
             }
         }
-        (Ok(acc), report)
+        (Ok(crate::reduce::pairwise_fold(outs)), report)
     }
 }
 

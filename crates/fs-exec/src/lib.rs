@@ -33,6 +33,7 @@ mod cx;
 mod kernel;
 mod latency;
 mod pool;
+pub mod reduce;
 
 pub use cx::{CancelGate, Cancelled, Cx, ExecMode, StreamKey};
 pub use kernel::{Reduce, TileKernel, TilePlan};
