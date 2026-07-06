@@ -65,6 +65,18 @@ fs-substrate, fs-obs.
   `ResumableSolver::step` (bounded pause granularity), `drive` (pause IS
   the cancellation path), `fork` (round-trips through bytes, proving
   serializability at fork time), `StepVerdict`, `SolverProgress`.
+- `Tuner` / `TuneRow` / `TuningDecision` / `TuneSource` / `ScheduleKind` /
+  `TuneError` — the autotuner (plan §5.5). `calibrate(&probe)` measures a
+  real stencil-edge sweep through the real pool (argmin with
+  lowest-index tie law), reduction cost, steal cost, and selects the
+  schedule kind from measured per-core bandwidth; rows are keyed kernel ×
+  shape-class × MACHINE FINGERPRINT with repeat-agreement confidence and a
+  refresh counter (recalibration idempotent). Persistence is a JSON-lines
+  file store shaped like the ledger `tune` table (migration = rename);
+  foreign-fingerprint rows are stale and ignored on load. Decisions
+  (`tile_edge_for`, `schedule`) are RECORDED; studies pin them and replay
+  uses recorded plans, never re-tuned ones (replay fidelity). Cold-start
+  defaults: 8-cube tiles, bandwidth-rich schedule.
 - `KillRegistry` (behavior 3, Bet 8): candidate id -> `Arc<CancelGate>`;
   `kill` (idempotent; unknown id is a non-event), `kill_where` (batch
   elimination, ascending order), `release`. Everything a candidate
@@ -100,6 +112,10 @@ fs-substrate, fs-obs.
    serialization-proven at fork time.
 10. A registry kill drains the candidate's whole tree at its next poll
     points with arenas quiescent (exec-012, latency ledgered).
+11. Tune rows always carry the machine fingerprint; loads drop foreign
+    rows; recalibration replaces same-key rows with refresh incremented;
+    pinned decisions reproduce identically on ANY machine, calibrated or
+    not (exec-013).
 
 ## Error model
 All fallible APIs return structured values (`RunError`, `LaneError`) with
@@ -147,8 +163,10 @@ reduction-shape invariance, the exec-009 G5 audit (compensated
 artifact hashes bit-stable across {1,2,P,2P} workers; seeded arrival-order
 bug caught with prefix localization), exec-010 (deterministic race victory
 under jitter + loser drain), exec-011 (bit-exact checkpoint/resume/fork on
-a chaotic trajectory), and exec-012 (kill-handle drains a deep tree,
-latency ledgered). tests/constellation_smoke.rs pins the
+a chaotic trajectory), exec-012 (kill-handle drains a deep tree,
+latency ledgered), and exec-013 (calibrate -> persist -> consume round
+trip; fingerprint keying; idempotent recalibration; pinned replay).
+tests/constellation_smoke.rs pins the
 asupersync Budget vocabulary. In-module unit suites cover the gate, keys,
 Reduce laws, partitioning, victim orders, self-cancellation, and pool
 survival after panics.
@@ -182,6 +200,16 @@ survival after panics.
 - Ledger SPILL of solver checkpoints (revolve-style schedules, artifact
   rows) is fs-ad/fs-ledger territory; this crate owns the snapshot bytes
   and their bit-exactness only.
+- NO "calibrated is faster" assertion in CI: debug-profile timing is
+  noise; the improvement is DOCUMENTED via the ledgered calibration
+  report, and the perf harness owns throughput verdicts (same doctrine as
+  every other latency/perf claim here).
+- GEMM/prefetch-distance calibration rows arrive when fs-la and the
+  stencil-prefetch kernels register their microbenches; the table schema
+  and TilePlan service are ready for them. Tropical tune-next analytics
+  (Bet 12) is fs-plan's.
+- Per-core-class (P/E) bandwidth calibration inherits fs-substrate's
+  pinning no-claim; the schedule decision uses aggregate per-core numbers.
 - Deterministic hash-map wrappers are not shipped: the contract's rule is
   "no HashMap iteration order in results" (BTreeMap or index-keyed slots
   in hot paths); an enforcement lint belongs to CI tooling.
