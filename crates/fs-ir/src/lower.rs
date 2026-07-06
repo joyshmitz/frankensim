@@ -43,7 +43,10 @@ fn lower_inner(node: &Node, trace: &mut Vec<LowerStep>) -> Result<Node, IrError>
         NodeKind::List(items) => {
             let children: Result<Vec<Node>, IrError> =
                 items.iter().map(|n| lower_inner(n, trace)).collect();
-            Node { kind: NodeKind::List(children?), span: node.span }
+            Node {
+                kind: NodeKind::List(children?),
+                span: node.span,
+            }
         }
         _ => node.clone(),
     };
@@ -82,19 +85,25 @@ fn lower_optimize_shape(node: &Node, trace: &mut Vec<LowerStep>) -> Result<Node,
         span: node.span,
         kind: IrErrorKind::MalformedClause,
         detail: format!("optimize-shape needs {what}"),
-        hint: "(optimize-shape :min <objective> :over <levers> [:method M] [:until U])"
-            .to_string(),
+        hint: "(optimize-shape :min <objective> :over <levers> [:method M] [:until U])".to_string(),
     };
     let objective = kw_get(items, "min").ok_or_else(|| missing(":min <objective>"))?;
     let over = kw_get(items, "over").ok_or_else(|| missing(":over <levers>"))?;
     let mut injected = Vec::new();
     let method = kw_get(items, "method").cloned().unwrap_or_else(|| {
         injected.push(":method (lbfgs :m 17)".to_string());
-        list(vec![sym("lbfgs"), kw("m"), Node::synthetic(NodeKind::Int(17))])
+        list(vec![
+            sym("lbfgs"),
+            kw("m"),
+            Node::synthetic(NodeKind::Int(17)),
+        ])
     });
     let until = kw_get(items, "until").cloned().unwrap_or_else(|| {
         injected.push(":until (grad-norm 1e-5)".to_string());
-        list(vec![sym("grad-norm"), Node::synthetic(NodeKind::Float(1e-5))])
+        list(vec![
+            sym("grad-norm"),
+            Node::synthetic(NodeKind::Float(1e-5)),
+        ])
     });
     injected.push(":emit (ledger report)".to_string());
     let explicit = list(vec![

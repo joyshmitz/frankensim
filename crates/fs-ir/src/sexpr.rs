@@ -21,7 +21,11 @@ pub const MAX_DEPTH: usize = 256;
 /// # Errors
 /// Structured [`IrError`] with the offending span and a fix hint.
 pub fn parse(src: &str) -> Result<Node, IrError> {
-    let mut p = Parser { src, bytes: src.as_bytes(), pos: 0 };
+    let mut p = Parser {
+        src,
+        bytes: src.as_bytes(),
+        pos: 0,
+    };
     p.skip_trivia();
     let node = p.parse_node(0)?;
     p.skip_trivia();
@@ -192,11 +196,17 @@ pub(crate) fn classify_atom(text: &str, span: Span) -> Result<Node, IrError> {
                 hint: "keywords are :name".to_string(),
             });
         }
-        return Ok(Node { kind: NodeKind::Keyword(name.to_string()), span });
+        return Ok(Node {
+            kind: NodeKind::Keyword(name.to_string()),
+            span,
+        });
     }
     if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
         return match u64::from_str_radix(hex, 16) {
-            Ok(v) => Ok(Node { kind: NodeKind::Seed(v), span }),
+            Ok(v) => Ok(Node {
+                kind: NodeKind::Seed(v),
+                span,
+            }),
             Err(_) => Err(IrError {
                 span,
                 kind: IrErrorKind::BadSeed,
@@ -205,20 +215,28 @@ pub(crate) fn classify_atom(text: &str, span: Span) -> Result<Node, IrError> {
             }),
         };
     }
-    let first = text.as_bytes()[0];
-    let second_is_digit =
-        text.len() > 1 && (text.as_bytes()[1].is_ascii_digit() || text.as_bytes()[1] == b'.');
-    let numeric_lead =
-        first.is_ascii_digit() || ((first == b'-' || first == b'+' || first == b'.') && second_is_digit);
+    let b = text.as_bytes();
+    let digit_at = |i: usize| b.get(i).is_some_and(u8::is_ascii_digit);
+    // Numeric lead: 5, .5, -5, +5, -.5, +.5 — but NOT "..", "-", "+", ".".
+    let numeric_lead = digit_at(0)
+        || ((b[0] == b'-' || b[0] == b'+')
+            && (digit_at(1) || (b.get(1) == Some(&b'.') && digit_at(2))))
+        || (b[0] == b'.' && digit_at(1));
     if numeric_lead {
         return classify_numeric(text, span);
     }
-    Ok(Node { kind: NodeKind::Symbol(text.to_string()), span })
+    Ok(Node {
+        kind: NodeKind::Symbol(text.to_string()),
+        span,
+    })
 }
 
 fn classify_numeric(text: &str, span: Span) -> Result<Node, IrError> {
     if let Ok(i) = text.parse::<i64>() {
-        return Ok(Node { kind: NodeKind::Int(i), span });
+        return Ok(Node {
+            kind: NodeKind::Int(i),
+            span,
+        });
     }
     if let Ok(f) = text.parse::<f64>() {
         if !f.is_finite() {
@@ -229,7 +247,10 @@ fn classify_numeric(text: &str, span: Span) -> Result<Node, IrError> {
                 hint: "IR literals must be finite".to_string(),
             });
         }
-        return Ok(Node { kind: NodeKind::Float(f), span });
+        return Ok(Node {
+            kind: NodeKind::Float(f),
+            span,
+        });
     }
     // Count units (information/core grants) before SI quantities: fs-qty
     // refuses information units by design.
@@ -242,19 +263,25 @@ fn classify_numeric(text: &str, span: Span) -> Result<Node, IrError> {
         && let Ok(v) = text[..i].parse::<f64>()
         && v.is_finite()
     {
-        return Ok(Node { kind: NodeKind::Count { value: v, unit }, span });
+        return Ok(Node {
+            kind: NodeKind::Count { value: v, unit },
+            span,
+        });
     }
-    match fs_qty::parse_qty(text) {
+    match fs_qty::parse::parse_qty(text) {
         Ok(q) => Ok(Node {
-            kind: NodeKind::Qty { value: q.value, dims: q.dims, text: text.to_string() },
+            kind: NodeKind::Qty {
+                value: q.value,
+                dims: q.dims,
+                text: text.to_string(),
+            },
             span,
         }),
         Err(e) => Err(IrError {
             span,
             kind: IrErrorKind::BadQuantity,
             detail: format!("{text:?} is not an int, float, quantity, or count: {e}"),
-            hint: "numeric tokens must fully parse; e.g. 0.12Pa*s, 65deg, 384GiB, 2e-2"
-                .to_string(),
+            hint: "numeric tokens must fully parse; e.g. 0.12Pa*s, 65deg, 384GiB, 2e-2".to_string(),
         }),
     }
 }

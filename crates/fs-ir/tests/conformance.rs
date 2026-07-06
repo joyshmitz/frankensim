@@ -7,6 +7,14 @@
 
 use fs_ir::{IR_VERSION, Node, NodeKind, Study, json, lower, sexpr};
 
+fn count_qty(n: &Node, hits: &mut usize) {
+    match &n.kind {
+        NodeKind::Qty { .. } => *hits += 1,
+        NodeKind::List(items) => items.iter().for_each(|i| count_qty(i, hits)),
+        _ => {}
+    }
+}
+
 fn verdict(case: &str, detail: &str) {
     println!(
         "{{\"suite\":\"fs-ir/conformance\",\"case\":\"{case}\",\"verdict\":\"pass\",\
@@ -66,17 +74,16 @@ fn ir_001_appendix_c_studies_parse_as_fixtures() {
     assert!(f.capability.is_some());
     assert_eq!(f.lets.len(), 6);
     // The typed nouns landed as typed nouns: find 0.12Pa*s in the spout.
-    fn count_qty(n: &Node, hits: &mut usize) {
-        match &n.kind {
-            NodeKind::Qty { .. } => *hits += 1,
-            NodeKind::List(items) => items.iter().for_each(|i| count_qty(i, hits)),
-            _ => {}
-        }
-    }
     let mut hits = 0;
     count_qty(&spout, &mut hits);
-    assert!(hits >= 7, "spout carries at least 7 dimensioned quantities, found {hits}");
-    verdict("ir-001", "Appendix C spout + frame parse; seeds/locks/lets/nouns extracted");
+    assert!(
+        hits >= 7,
+        "spout carries at least 7 dimensioned quantities, found {hits}"
+    );
+    verdict(
+        "ir-001",
+        "Appendix C spout + frame parse; seeds/locks/lets/nouns extracted",
+    );
 }
 
 #[test]
@@ -88,12 +95,18 @@ fn ir_002_sexpr_json_ast_isomorphism_property() {
         let s = sexpr::print(&node);
         let back = sexpr::parse(&s)
             .unwrap_or_else(|e| panic!("round {round}: sexpr reparse failed: {e}\nsrc: {s}"));
-        assert!(back.same_shape(&node), "round {round}: sexpr shape drift\nsrc: {s}");
+        assert!(
+            back.same_shape(&node),
+            "round {round}: sexpr shape drift\nsrc: {s}"
+        );
         // JSON round trip.
         let j = json::print(&node);
         let back = json::parse(&j)
             .unwrap_or_else(|e| panic!("round {round}: json reparse failed: {e}\nsrc: {j}"));
-        assert!(back.same_shape(&node), "round {round}: json shape drift\nsrc: {j}");
+        assert!(
+            back.same_shape(&node),
+            "round {round}: json shape drift\nsrc: {j}"
+        );
         // Cross-syntax: sexpr → AST → json → AST → sexpr → AST.
         let cross = sexpr::parse(&sexpr::print(&json::parse(&json::print(&node)).unwrap()))
             .expect("cross-syntax reparse");
@@ -105,23 +118,30 @@ fn ir_002_sexpr_json_ast_isomorphism_property() {
         let cycled = json::parse(&json::print(&ast)).unwrap();
         assert!(cycled.same_shape(&ast), "fixture cross-syntax drift");
     }
-    verdict("ir-002", "200 generated programs + fixtures: sexpr/json/AST round-trips shape-stable");
+    verdict(
+        "ir-002",
+        "200 generated programs + fixtures: sexpr/json/AST round-trips shape-stable",
+    );
 }
 
 #[test]
 fn ir_003_parsers_are_total_with_in_bounds_spans() {
     let mut seed = 0x5EED_F022_0000_0003u64;
     let mut lcg = move || {
-        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         seed
     };
-    let alphabet: Vec<char> =
-        "()\"\\:;.0123456789abcxyzPa*s/-+eE h∞é{}[],#".chars().collect();
+    let alphabet: Vec<char> = "()\"\\:;.0123456789abcxyzPa*s/-+eE h∞é{}[],#"
+        .chars()
+        .collect();
     let mut rejects = 0usize;
     for _ in 0..4000 {
         let len = (lcg() % 40) as usize;
-        let s: String =
-            (0..len).map(|_| alphabet[(lcg() % alphabet.len() as u64) as usize]).collect();
+        let s: String = (0..len)
+            .map(|_| alphabet[(lcg() % alphabet.len() as u64) as usize])
+            .collect();
         for result in [sexpr::parse(&s), json::parse(&s)] {
             match result {
                 Ok(_) => {}
@@ -138,7 +158,10 @@ fn ir_003_parsers_are_total_with_in_bounds_spans() {
             }
         }
     }
-    assert!(rejects > 1000, "garbage battery too easy: only {rejects} rejections");
+    assert!(
+        rejects > 1000,
+        "garbage battery too easy: only {rejects} rejections"
+    );
     // Adversarial nesting: structured rejection, not a stack overflow.
     let deep = "(".repeat(100_000);
     let e = sexpr::parse(&deep).unwrap_err();
@@ -146,20 +169,30 @@ fn ir_003_parsers_are_total_with_in_bounds_spans() {
     let deep_json = "[".repeat(100_000);
     let e = json::parse(&deep_json).unwrap_err();
     assert_eq!(e.kind.code(), "IrTooDeep");
-    verdict("ir-003", "8000 garbage parses total; structured rejections; depth cap enforced");
+    verdict(
+        "ir-003",
+        "8000 garbage parses total; structured rejections; depth cap enforced",
+    );
 }
 
 #[test]
 fn ir_004_error_spans_point_at_the_offense() {
     let src = "(study \"x\" (seed 0xZZZ))";
     let e = sexpr::parse(src).unwrap_err();
-    assert_eq!(&src[e.span.start..e.span.end], "0xZZZ", "span must isolate the bad seed");
+    assert_eq!(
+        &src[e.span.start..e.span.end],
+        "0xZZZ",
+        "span must isolate the bad seed"
+    );
     assert_eq!(e.kind.code(), "IrBadSeed");
     let src = "(budget (wall 2hh))";
     let e = sexpr::parse(src).unwrap_err();
     assert_eq!(&src[e.span.start..e.span.end], "2hh");
     assert_eq!(e.kind.code(), "IrBadQuantity");
-    verdict("ir-004", "error spans isolate offending tokens; kinds are stable codes");
+    verdict(
+        "ir-004",
+        "error spans isolate offending tokens; kinds are stable codes",
+    );
 }
 
 #[test]
@@ -173,8 +206,14 @@ fn ir_005_verb_lowering_is_explicit_and_inspectable() {
     // The shorthand is gone; the explicit ops and injected defaults are in.
     assert!(!printed.contains("optimize-shape"));
     assert!(printed.contains("ascent.optimize"));
-    assert!(printed.contains("(lbfgs :m 17)"), "default method must be explicit: {printed}");
-    assert!(printed.contains("grad-norm"), "default stop must be explicit");
+    assert!(
+        printed.contains("(lbfgs :m 17)"),
+        "default method must be explicit: {printed}"
+    );
+    assert!(
+        printed.contains("grad-norm"),
+        "default stop must be explicit"
+    );
     assert!(printed.contains("flux.free-surface-lbm"));
     // The trace names every injection (nothing hidden).
     assert_eq!(lowered.trace.len(), 2);
@@ -185,13 +224,19 @@ fn ir_005_verb_lowering_is_explicit_and_inspectable() {
     // Lowered IR reparses and re-lowers to a fixed point.
     let reparsed = sexpr::parse(&printed).unwrap();
     let again = lower(&reparsed).unwrap();
-    assert!(again.node.same_shape(&lowered.node), "lowering must be idempotent");
+    assert!(
+        again.node.same_shape(&lowered.node),
+        "lowering must be idempotent"
+    );
     assert!(again.trace.is_empty(), "no verbs remain after lowering");
     // Malformed verb usage refuses with a span.
     let bad = sexpr::parse("(optimize-shape :over x)").unwrap();
     let e = lower(&bad).unwrap_err();
     assert_eq!(e.kind.code(), "IrMalformedClause");
-    verdict("ir-005", "verbs lower to explicit IR; defaults named in trace; idempotent");
+    verdict(
+        "ir-005",
+        "verbs lower to explicit IR; defaults named in trace; idempotent",
+    );
 }
 
 #[test]
@@ -204,7 +249,10 @@ fn ir_006_version_pinning_round_trips() {
     let via_sexpr = sexpr::parse(&sexpr::print(&via_json)).unwrap();
     let study = Study::from_node(&via_sexpr).unwrap();
     assert_eq!(study.constellation_lock(), Some("2026-07"));
-    verdict("ir-006", "constellation lock pin survives sexpr->json->sexpr verbatim");
+    verdict(
+        "ir-006",
+        "constellation lock pin survives sexpr->json->sexpr verbatim",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -213,20 +261,32 @@ fn ir_006_version_pinning_round_trips() {
 
 fn gen_node(seed: &mut u64, depth: usize) -> Node {
     let mut next = |m: u64| {
-        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         *seed % m
     };
     let leaf = depth >= 4 || next(3) > 0;
     if leaf {
         let kind = match next(8) {
-            0 => NodeKind::Int(next(2_000_000) as i64 - 1_000_000),
+            0 => NodeKind::Int(next(2_000_000).cast_signed() - 1_000_000),
             1 => {
                 let v = (next(1_000_000) as f64 / 997.0) - 500.0;
                 NodeKind::Float(v)
             }
             2 => {
-                let qty = ["0.12Pa*s", "65deg", "3s", "0.061N/m", "15rad/s", "0.03m2/s3",
-                    "2e-2m", "5mm", "0.5L/s", "36h"][next(10) as usize];
+                let qty = [
+                    "0.12Pa*s",
+                    "65deg",
+                    "3s",
+                    "0.061N/m",
+                    "15rad/s",
+                    "0.03m2/s3",
+                    "2e-2m",
+                    "5mm",
+                    "0.5L/s",
+                    "36h",
+                ][next(10) as usize];
                 match sexpr::parse(qty).map(|n| n.kind) {
                     Ok(k @ NodeKind::Qty { .. }) => k,
                     _ => unreachable!("qty pool entries always parse"),
@@ -252,14 +312,32 @@ fn gen_node(seed: &mut u64, depth: usize) -> Node {
 }
 
 fn gen_ident(next: &mut dyn FnMut(u64) -> u64) -> String {
-    let pool = ["ascent.optimize", "frep", "vessel", "grad-norm", "e-value", "mlmc",
-        "flux.fiber-frame", "budget-exhausted", "x", "wall"];
+    let pool = [
+        "ascent.optimize",
+        "frep",
+        "vessel",
+        "grad-norm",
+        "e-value",
+        "mlmc",
+        "flux.fiber-frame",
+        "budget-exhausted",
+        "x",
+        "wall",
+    ];
     pool[next(pool.len() as u64) as usize].to_string()
 }
 
 fn gen_text(next: &mut dyn FnMut(u64) -> u64, escapes: bool) -> String {
     let pool: &[&str] = if escapes {
-        &["body.chb", "PEER-set-A", "with \"quotes\"", "tab\there", "line\nbreak", "π≈3", ""]
+        &[
+            "body.chb",
+            "PEER-set-A",
+            "with \"quotes\"",
+            "tab\there",
+            "line\nbreak",
+            "π≈3",
+            "",
+        ]
     } else {
         &["plain"]
     };

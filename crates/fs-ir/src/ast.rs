@@ -122,7 +122,10 @@ impl Node {
     /// A node with an empty span (synthesized nodes, e.g. verb lowering).
     #[must_use]
     pub fn synthetic(kind: NodeKind) -> Node {
-        Node { kind, span: Span::default() }
+        Node {
+            kind,
+            span: Span::default(),
+        }
     }
 
     /// Semantic equality: identical trees ignoring spans and Qty unit
@@ -134,12 +137,26 @@ impl Node {
             (NodeKind::Int(a), NodeKind::Int(b)) => a == b,
             (NodeKind::Float(a), NodeKind::Float(b)) => a.to_bits() == b.to_bits(),
             (
-                NodeKind::Qty { value: va, dims: da, .. },
-                NodeKind::Qty { value: vb, dims: db, .. },
+                NodeKind::Qty {
+                    value: va,
+                    dims: da,
+                    ..
+                },
+                NodeKind::Qty {
+                    value: vb,
+                    dims: db,
+                    ..
+                },
             ) => va.to_bits() == vb.to_bits() && da == db,
             (
-                NodeKind::Count { value: va, unit: ua },
-                NodeKind::Count { value: vb, unit: ub },
+                NodeKind::Count {
+                    value: va,
+                    unit: ua,
+                },
+                NodeKind::Count {
+                    value: vb,
+                    unit: ub,
+                },
             ) => va.to_bits() == vb.to_bits() && ua == ub,
             (NodeKind::Seed(a), NodeKind::Seed(b)) => a == b,
             (NodeKind::Str(a), NodeKind::Str(b))

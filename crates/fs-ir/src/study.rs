@@ -105,8 +105,7 @@ impl<'a> Study<'a> {
                 && let Some(items) = clause.items()
             {
                 for pair in items.windows(2) {
-                    if let (NodeKind::Keyword(k), NodeKind::Str(v)) =
-                        (&pair[0].kind, &pair[1].kind)
+                    if let (NodeKind::Keyword(k), NodeKind::Str(v)) = (&pair[0].kind, &pair[1].kind)
                         && k == "lock"
                     {
                         return Some(v);

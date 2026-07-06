@@ -26,17 +26,30 @@ use crate::ast::{Node, NodeKind, Span};
 use crate::sexpr::{MAX_DEPTH, classify_atom};
 use crate::{IrError, IrErrorKind};
 
+fn err(span: Span, kind: IrErrorKind, detail: &str, hint: &str) -> IrError {
+    IrError {
+        span,
+        kind,
+        detail: detail.to_string(),
+        hint: hint.to_string(),
+    }
+}
+
 /// Parse one JSON-mapped program.
 ///
 /// # Errors
 /// Structured [`IrError`] with the offending span and a fix hint.
 pub fn parse(src: &str) -> Result<Node, IrError> {
-    let mut p = Parser { src, bytes: src.as_bytes(), pos: 0 };
+    let mut p = Parser {
+        src,
+        bytes: src.as_bytes(),
+        pos: 0,
+    };
     p.skip_ws();
     let node = p.parse_value(0)?;
     p.skip_ws();
     if p.pos != p.bytes.len() {
-        return Err(p.err(
+        return Err(err(
             Span::new(p.pos, p.bytes.len()),
             IrErrorKind::TrailingInput,
             "input continues after the top-level value",
@@ -53,10 +66,6 @@ struct Parser<'a> {
 }
 
 impl Parser<'_> {
-    fn err(&self, span: Span, kind: IrErrorKind, detail: &str, hint: &str) -> IrError {
-        IrError { span, kind, detail: detail.to_string(), hint: hint.to_string() }
-    }
-
     fn skip_ws(&mut self) {
         while let Some(&c) = self.bytes.get(self.pos) {
             if c == b' ' || c == b'\t' || c == b'\r' || c == b'\n' {
@@ -72,7 +81,7 @@ impl Parser<'_> {
             self.pos += 1;
             Ok(())
         } else {
-            Err(self.err(
+            Err(err(
                 Span::new(self.pos, (self.pos + 1).min(self.bytes.len())),
                 IrErrorKind::JsonSyntax,
                 &format!("expected {what}"),
@@ -83,7 +92,7 @@ impl Parser<'_> {
 
     fn parse_value(&mut self, depth: usize) -> Result<Node, IrError> {
         if depth > MAX_DEPTH {
-            return Err(self.err(
+            return Err(err(
                 Span::new(self.pos, self.pos + 1),
                 IrErrorKind::TooDeep,
                 &format!("nesting exceeds the {MAX_DEPTH}-level cap"),
@@ -94,14 +103,14 @@ impl Parser<'_> {
         match self.bytes.get(self.pos) {
             Some(b'[') => self.parse_array(depth),
             Some(b'{') => self.parse_tagged(depth),
-            Some(_) => Err(self.err(
+            Some(_) => Err(err(
                 Span::new(self.pos, (self.pos + 1).min(self.bytes.len())),
                 IrErrorKind::JsonSyntax,
                 "expected an array (list) or a single-key tagged object (atom)",
                 "atoms are {\"i\":..}/{\"f\":..}/{\"q\":..}/{\"c\":..}/{\"seed\":..}/\
                  {\"s\":..}/{\"sym\":..}/{\"kw\":..}",
             )),
-            None => Err(self.err(
+            None => Err(err(
                 Span::new(self.pos, self.pos),
                 IrErrorKind::UnexpectedEnd,
                 "expected a value, found end of input",
@@ -117,7 +126,10 @@ impl Parser<'_> {
         self.skip_ws();
         if self.bytes.get(self.pos) == Some(&b']') {
             self.pos += 1;
-            return Ok(Node { kind: NodeKind::List(items), span: Span::new(start, self.pos) });
+            return Ok(Node {
+                kind: NodeKind::List(items),
+                span: Span::new(start, self.pos),
+            });
         }
         loop {
             items.push(self.parse_value(depth + 1)?);
@@ -134,7 +146,7 @@ impl Parser<'_> {
                     });
                 }
                 _ => {
-                    return Err(self.err(
+                    return Err(err(
                         Span::new(self.pos, (self.pos + 1).min(self.bytes.len())),
                         IrErrorKind::JsonSyntax,
                         "expected ',' or ']' in array",
@@ -159,7 +171,7 @@ impl Parser<'_> {
                 match text.parse::<i64>() {
                     Ok(v) => NodeKind::Int(v),
                     Err(_) => {
-                        return Err(self.err(
+                        return Err(err(
                             span,
                             IrErrorKind::BadNumber,
                             &format!("{text:?} is not an i64"),
@@ -173,7 +185,7 @@ impl Parser<'_> {
                 match text.parse::<f64>() {
                     Ok(v) if v.is_finite() => NodeKind::Float(v),
                     _ => {
-                        return Err(self.err(
+                        return Err(err(
                             span,
                             IrErrorKind::BadNumber,
                             &format!("{text:?} is not a finite f64"),
@@ -190,7 +202,7 @@ impl Parser<'_> {
                     | ("c", NodeKind::Count { .. })
                     | ("seed", NodeKind::Seed(_)) => node.kind,
                     _ => {
-                        return Err(self.err(
+                        return Err(err(
                             span,
                             IrErrorKind::JsonTagMismatch,
                             &format!("literal {text:?} does not match tag {tag:?}"),
@@ -204,7 +216,7 @@ impl Parser<'_> {
             "sym" => NodeKind::Symbol(self.parse_string_token()?.0),
             "kw" => NodeKind::Keyword(self.parse_string_token()?.0),
             other => {
-                return Err(self.err(
+                return Err(err(
                     Span::new(start, self.pos),
                     IrErrorKind::JsonUnknownTag,
                     &format!("unknown atom tag {other:?}"),
@@ -214,7 +226,10 @@ impl Parser<'_> {
         };
         self.skip_ws();
         self.expect(b'}', "'}' closing the atom object")?;
-        Ok(Node { kind, span: Span::new(start, self.pos) })
+        Ok(Node {
+            kind,
+            span: Span::new(start, self.pos),
+        })
     }
 
     fn parse_string_token(&mut self) -> Result<(String, Span), IrError> {
@@ -253,7 +268,7 @@ impl Parser<'_> {
                             self.pos += 4; // beyond the standard 2 below
                         }
                         _ => {
-                            return Err(self.err(
+                            return Err(err(
                                 Span::new(self.pos, (self.pos + 2).min(self.bytes.len())),
                                 IrErrorKind::BadEscape,
                                 "unknown escape sequence",
@@ -264,13 +279,16 @@ impl Parser<'_> {
                     self.pos += 2;
                 }
                 _ => {
-                    let ch_len = self.src[self.pos..].chars().next().map_or(1, char::len_utf8);
+                    let ch_len = self.src[self.pos..]
+                        .chars()
+                        .next()
+                        .map_or(1, char::len_utf8);
                     out.push_str(&self.src[self.pos..self.pos + ch_len]);
                     self.pos += ch_len;
                 }
             }
         }
-        Err(self.err(
+        Err(err(
             Span::new(start, self.pos),
             IrErrorKind::UnclosedString,
             "string is never closed",
@@ -279,7 +297,8 @@ impl Parser<'_> {
     }
 
     fn u_escape_err(&self, span: Span) -> IrError {
-        self.err(
+        let _ = self;
+        err(
             span,
             IrErrorKind::BadEscape,
             "malformed \\uXXXX escape (surrogate halves are rejected)",
@@ -300,14 +319,17 @@ impl Parser<'_> {
             }
         }
         if self.pos == start {
-            return Err(self.err(
+            return Err(err(
                 Span::new(start, (start + 1).min(self.bytes.len())),
                 IrErrorKind::JsonSyntax,
                 "expected a number",
                 "\"i\" and \"f\" tags carry JSON numbers",
             ));
         }
-        Ok((self.src[start..self.pos].to_string(), Span::new(start, self.pos)))
+        Ok((
+            self.src[start..self.pos].to_string(),
+            Span::new(start, self.pos),
+        ))
     }
 }
 
