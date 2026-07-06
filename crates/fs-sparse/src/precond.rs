@@ -87,7 +87,12 @@ impl Chebyshev {
         assert!(degree >= 1, "Chebyshev degree must be >= 1");
         assert!(alpha > 1.0, "band divisor must exceed 1");
         let hi = lambda_max_estimate(a, 30, 1.1);
-        Chebyshev { a: a.clone(), degree, lo: hi / alpha, hi }
+        Chebyshev {
+            a: a.clone(),
+            degree,
+            lo: hi / alpha,
+            hi,
+        }
     }
 
     /// The band this smoother targets (evidence for ledgering).
@@ -206,7 +211,10 @@ pub fn ilu0(a: &Csr) -> Result<Ilu0, IluBreakdown> {
         v_all.extend_from_slice(&vals[i]);
         row_ptr[i + 1] = col_idx.len();
     }
-    Ok(Ilu0 { n, factored: Csr::from_parts(n, n, row_ptr, col_idx, v_all) })
+    Ok(Ilu0 {
+        n,
+        factored: Csr::from_parts(n, n, row_ptr, col_idx, v_all),
+    })
 }
 
 impl Precond for Ilu0 {
@@ -272,7 +280,12 @@ pub fn pcg<P: Precond>(
     max_iters: usize,
 ) -> PcgReport {
     let n = b.len();
-    let bnorm = b.iter().map(|v| v * v).sum::<f64>().sqrt().max(f64::MIN_POSITIVE);
+    let bnorm = b
+        .iter()
+        .map(|v| v * v)
+        .sum::<f64>()
+        .sqrt()
+        .max(f64::MIN_POSITIVE);
     let mut r = vec![0.0f64; n];
     a.spmv(x, &mut r);
     for i in 0..n {
@@ -286,7 +299,11 @@ pub fn pcg<P: Precond>(
     for it in 0..max_iters {
         let rel = r.iter().map(|v| v * v).sum::<f64>().sqrt() / bnorm;
         if rel <= tol {
-            return PcgReport { iters: it, rel_residual: rel, converged: true };
+            return PcgReport {
+                iters: it,
+                rel_residual: rel,
+                converged: true,
+            };
         }
         a.spmv(&p, &mut ap);
         let pap: f64 = p.iter().zip(&ap).map(|(a, b)| a * b).sum();
@@ -304,7 +321,11 @@ pub fn pcg<P: Precond>(
         }
     }
     let rel = r.iter().map(|v| v * v).sum::<f64>().sqrt() / bnorm;
-    PcgReport { iters: max_iters, rel_residual: rel, converged: rel <= tol }
+    PcgReport {
+        iters: max_iters,
+        rel_residual: rel,
+        converged: rel <= tol,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -332,8 +353,8 @@ pub struct SaAmg {
 /// roots, lowest-index attachment (P2 on setup). Returns (aggregate id
 /// per node, aggregate count).
 fn aggregate(a: &Csr, theta: f64) -> (Vec<usize>, usize) {
-    let n = a.nrows();
     const UNASSIGNED: usize = usize::MAX;
+    let n = a.nrows();
     let mut agg = vec![UNASSIGNED; n];
     let strong = |i: usize, j: usize, aij: f64| -> bool {
         let aii = a.get(i, i).abs();
@@ -417,7 +438,7 @@ fn scale_rows_by_dinv(a: &Csr) -> Csr {
     let mut vals = Vec::new();
     for i in 0..n {
         let d = a.get(i, i);
-        let inv = if d != 0.0 { 1.0 / d } else { 0.0 };
+        let inv = if d == 0.0 { 0.0 } else { 1.0 / d };
         let (cols, vs) = a.row(i);
         for (&c, &v) in cols.iter().zip(vs) {
             col_idx.push(c);
@@ -474,10 +495,18 @@ impl SaAmg {
             level_sizes.push(n);
             let smoother = Chebyshev::new(&current, smoother_degree, 30.0);
             let done = n <= 64;
-            let (agg, n_agg) = if done { (Vec::new(), 0) } else { aggregate(&current, theta) };
+            let (agg, n_agg) = if done {
+                (Vec::new(), 0)
+            } else {
+                aggregate(&current, theta)
+            };
             // Stagnation guard: coarsening must actually shrink.
             let stagnated = !done && n_agg * 10 >= n * 9;
-            levels.push(AmgLevel { a: current.clone(), smoother, p_from_coarse: p_down.take() });
+            levels.push(AmgLevel {
+                a: current.clone(),
+                smoother,
+                p_from_coarse: p_down.take(),
+            });
             if done || stagnated {
                 break;
             }
@@ -491,7 +520,11 @@ impl SaAmg {
         // breakdown: SPD Galerkin products rarely need it, but be safe).
         let coarse = &levels.last().unwrap().a;
         let coarse_ilu = ilu0(coarse).ok();
-        SaAmg { levels, coarse_ilu, level_sizes }
+        SaAmg {
+            levels,
+            coarse_ilu,
+            level_sizes,
+        }
     }
 
     /// Operator complexity: Σ nnz(A_ℓ)/nnz(A₀) — the memory-honesty metric.

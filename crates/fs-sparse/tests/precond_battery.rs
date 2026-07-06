@@ -4,7 +4,7 @@
 //! and the cross-ISA golden hash.
 
 use fs_sparse::precond::{
-    Chebyshev, IdentityPrecond, SaAmg, ilu0, lambda_max_estimate, pcg,
+    Chebyshev, IdentityPrecond, Precond, SaAmg, ilu0, lambda_max_estimate, pcg,
 };
 use fs_sparse::{Coo, Csr};
 
@@ -61,7 +61,9 @@ fn anisotropic_2d(g: usize, eps: f64) -> Csr {
 
 fn rhs(n: usize) -> Vec<f64> {
     // Deterministic, libm-free right-hand side.
-    (0..n).map(|i| 1.0 + (((i * 40_503) % 101) as f64) / 101.0 - 0.5).collect()
+    (0..n)
+        .map(|i| 1.0 + (((i * 40_503) % 101) as f64) / 101.0 - 0.5)
+        .collect()
 }
 
 #[test]
@@ -70,12 +72,18 @@ fn lambda_max_bound_encloses_analytic_spectrum() {
     // with safety 1.1 must sit at-or-above the true max and below 1.3×.
     let g = 24;
     let a = laplacian_2d(g);
-    let true_max =
-        4.0 - 2.0 * (std::f64::consts::PI * (g as f64) / ((g + 1) as f64)).cos()
-            - 2.0 * (std::f64::consts::PI * (g as f64) / ((g + 1) as f64)).cos();
+    let true_max = 4.0
+        - 2.0 * (std::f64::consts::PI * (g as f64) / ((g + 1) as f64)).cos()
+        - 2.0 * (std::f64::consts::PI * (g as f64) / ((g + 1) as f64)).cos();
     let est = lambda_max_estimate(&a, 30, 1.1);
-    assert!(est >= true_max * 0.999, "bound must enclose: est {est} vs true {true_max}");
-    assert!(est <= true_max * 1.3, "bound sloppy: est {est} vs true {true_max}");
+    assert!(
+        est >= true_max * 0.999,
+        "bound must enclose: est {est} vs true {true_max}"
+    );
+    assert!(
+        est <= true_max * 1.3,
+        "bound sloppy: est {est} vs true {true_max}"
+    );
     println!(
         "{{\"suite\":\"fs-sparse\",\"case\":\"lambda-max\",\"verdict\":\"pass\",\"detail\":\"est {est:.4} encloses analytic {true_max:.4}\"}}"
     );
@@ -116,7 +124,10 @@ fn chebyshev_and_ilu_accelerate_cg() {
     );
     // All three agree on the solution.
     for k in 0..n {
-        assert!((x1[k] - x0[k]).abs() < 1e-7, "chebyshev solution drift at {k}");
+        assert!(
+            (x1[k] - x0[k]).abs() < 1e-7,
+            "chebyshev solution drift at {k}"
+        );
         assert!((x2[k] - x0[k]).abs() < 1e-7, "ilu solution drift at {k}");
     }
     println!(
@@ -152,7 +163,11 @@ fn amg_grid_independence_and_complexity() {
             "operator complexity {} too high at g={g}",
             amg.operator_complexity()
         );
-        assert!(amg.level_sizes.len() >= 2, "hierarchy must coarsen: {:?}", amg.level_sizes);
+        assert!(
+            amg.level_sizes.len() >= 2,
+            "hierarchy must coarsen: {:?}",
+            amg.level_sizes
+        );
         let b = rhs(n);
         let mut x = vec![0.0; n];
         let rep = pcg(&a, &b, &mut x, &amg, tol, 200);
@@ -191,7 +206,10 @@ fn amg_survives_anisotropy() {
     let b = rhs(n);
     let mut x = vec![0.0; n];
     let rep = pcg(&a, &b, &mut x, &amg, 1e-9, 300);
-    assert!(rep.converged, "anisotropic fixture must still converge: {rep:?}");
+    assert!(
+        rep.converged,
+        "anisotropic fixture must still converge: {rep:?}"
+    );
     println!(
         "{{\"suite\":\"fs-sparse\",\"case\":\"amg-anisotropy\",\"verdict\":\"pass\",\"detail\":\"eps=1e-3 iters={} levels={:?}\"}}",
         rep.iters, amg.level_sizes
@@ -221,7 +239,7 @@ fn setup_and_solve_are_deterministic() {
 }
 
 /// Recorded on aarch64-apple (M4 Pro); must match on x86-64 (trj).
-const GOLDEN_HASH: u64 = 0x0; // placeholder: set from first run
+const GOLDEN_HASH: u64 = 0x752f_215a_26e3_2fea;
 
 #[test]
 fn precond_golden_hash() {

@@ -27,6 +27,19 @@ gated on fs-tilelang and the autotuner — see No-claim boundaries.
   windows, lane-fastest layout. Stores TRUE per-row lengths; pad slots exist
   physically but are never read. `to_csr` is bitwise lossless.
 - `ops::{transpose, symmetrize, spgemm}` — pattern algebra on canonical CSR.
+- `precond::{Precond, IdentityPrecond, Chebyshev, Ilu0/ilu0/IluBreakdown,
+  SaAmg, pcg/PcgReport, lambda_max_estimate}` — the solver-stack toolkit.
+  `Precond::apply(r, z)` is the operator interface. Chebyshev: degree-k
+  three-term recurrence on the band [λmax/α, λmax], λmax by deterministic
+  power iteration (fixed libm-free start, 1.1 safety — enclosure tested
+  vs analytic spectra). ILU(0): zero-fill on the CSR pattern, sequential
+  v1, typed `IluBreakdown{row}` (shift-retry is caller policy). SaAmg:
+  symmetric strength graph, GREEDY INDEX-ORDER aggregation with
+  lowest-index tie-breaks (P2 on setup), Jacobi-smoothed prolongator
+  (ω = 4/3·λmax(D⁻¹A)), Galerkin triple product via in-crate SpGEMM,
+  V-cycle with Chebyshev smoothing and ILU-PCG coarsest solve;
+  `operator_complexity()` and `level_sizes` are the memory-honesty
+  evidence. `pcg` is a REFERENCE driver (solver stack supersedes it).
 
 ## Invariants
 1. **Cross-format bitwise SpMV equality**: CSR, BSR, and SELL SpMV produce
@@ -48,6 +61,13 @@ gated on fs-tilelang and the autotuner — see No-claim boundaries.
    `midpoint` commutes) and fixes symmetric inputs.
 6. `spgemm(A, I) = A` and `spgemm(I, A) = A` bitwise; contributions to each
    C[i][j] accumulate in ascending-k order (deterministic).
+7. Preconditioner setup and solves are rerun-deterministic BITWISE
+   (hierarchy shapes, iteration counts, and solutions — tested), and the
+   spectral-bound estimate ENCLOSES the true λmax on tested fixtures
+   (over-estimation safe by construction, safety factor 1.1).
+8. AMG on 2D Poisson: near-grid-independent PCG iterations (32² vs 64²
+   within a tested band), operator complexity < 2, and the anisotropic
+   ε = 1e-3 fixture converges (tested).
 
 ## Error model
 Structural violations panic with structured messages: out-of-range COO
@@ -61,8 +81,12 @@ other fallible paths; no allocation-failure handling beyond std's.
 +, ×, mul_add; no libm, no data-dependent reassociation, no threading in v1.
 Evidence: the conformance battery (three-matrix zoo × three formats ×
 transpose/symmetrize/SpGEMM) folds all output bits into FNV-64 golden hash
-`0xbcf5_52b6_c5bf_aed6`, recorded on aarch64-apple (M4 Pro) and required to
-match on x86-64 (Threadripper). Golden-evidence policy applies.
+`0xbcf5_52b6_c5bf_aed6`; the preconditioner battery (Chebyshev apply +
+ILU-PCG + AMG-PCG solutions + hierarchy shapes) hashes to
+`0x752f_215a_26e3_2fea`. Both recorded on aarch64-apple (M4 Pro) and
+verified identical on x86-64 (Threadripper). Golden-evidence policy
+applies. NO platform libm feeds any solver state (workspace contract
+rule).
 
 ## Cancellation behavior
 v1 kernels are single-tile and uninterruptible; the executor-tiled parallel
@@ -93,6 +117,10 @@ must pass the conformance battery bit-for-bit.
   always bitwise faithful.
 - SpGEMM uses a dense SPA per row (O(ncols) scratch); hash-SPA for very wide
   matrices is unclaimed.
-- No AMG components yet (SpGEMM is the substrate; AMG has its own bead).
+- ILU(0) is sequential (level scheduling recorded); IC(0)-specific
+  symmetric storage is unclaimed (ILU covers SPD use). Supernodal
+  Cholesky deferred per its own scope cap. AMG coarsest solve is
+  ILU-PCG (dense direct coarse solve joins solver-stack integration).
+  No 1e8-DOF scaling claims yet (release-mode scaling lane).
 - No FrankenNumpy/FrankenNetworkx interop views yet (follow-up).
 - Indices are `usize` (compact u32 indices are a recorded perf-bead item).
