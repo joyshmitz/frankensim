@@ -15,7 +15,7 @@ use fs_geom::{Aabb, Chart, ChartSample, Differentiability, Point3, Vec3};
 
 /// A dense signed-distance grid over a box, built from any source chart
 /// with a certified Lipschitz bound.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct TiledSdf {
     field: fs_substrate::field::TiledField<f32>,
     box_: Aabb,
@@ -229,9 +229,9 @@ impl TiledSdf {
             for (dj, wyj) in wy.iter().enumerate() {
                 for (di, wxi) in wx.iter().enumerate() {
                     let s = self.sample_raw(
-                        base[0] + di as i64 - 1,
-                        base[1] + dj as i64 - 1,
-                        base[2] + dk as i64 - 1,
+                        base[0] + i64::try_from(di).expect("di<3") - 1,
+                        base[1] + i64::try_from(dj).expect("dj<3") - 1,
+                        base[2] + i64::try_from(dk).expect("dk<3") - 1,
                     );
                     v += s * wxi * wyj * wzk;
                     g[0] += s * dwx[di] * wyj * wzk;
@@ -283,7 +283,8 @@ impl TiledSdf {
     pub fn mean_curvature_estimate(&self, x: Point3) -> f64 {
         let h = self.h[0].min(self.h[1]).min(self.h[2]);
         let f = |p: Point3| self.spline_eval(p).0;
-        let lap = (f(x.offset(Vec3::new(h, 0.0, 0.0))) + f(x.offset(Vec3::new(-h, 0.0, 0.0)))
+        let lap = (f(x.offset(Vec3::new(h, 0.0, 0.0)))
+            + f(x.offset(Vec3::new(-h, 0.0, 0.0)))
             + f(x.offset(Vec3::new(0.0, h, 0.0)))
             + f(x.offset(Vec3::new(0.0, -h, 0.0)))
             + f(x.offset(Vec3::new(0.0, 0.0, h)))

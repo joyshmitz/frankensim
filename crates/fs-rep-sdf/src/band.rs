@@ -106,6 +106,13 @@ impl NarrowBand {
         &self.grid
     }
 
+    /// Mutable grid access (test fixtures and the level-set evolution bead
+    /// distort/edit φ directly; band invariants are re-established by
+    /// `reinitialize`/`rebuild`).
+    pub fn grid_mut(&mut self) -> &mut VdbGrid<f32> {
+        &mut self.grid
+    }
+
     fn world(&self, c: [i32; 3]) -> Point3 {
         Point3::new(
             self.origin.x + f64::from(c[0]) * self.h,
@@ -126,9 +133,9 @@ impl NarrowBand {
         let mut c = [0.0f64; 8];
         for (idx, slot) in c.iter_mut().enumerate() {
             let d = [
-                i0 + (idx & 1) as i32,
-                j0 + ((idx >> 1) & 1) as i32,
-                k0 + ((idx >> 2) & 1) as i32,
+                i0 + i32::from(idx & 1 == 1),
+                j0 + i32::from((idx >> 1) & 1 == 1),
+                k0 + i32::from((idx >> 2) & 1 == 1),
             ];
             if !self.grid.is_active(d) {
                 return None;

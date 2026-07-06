@@ -93,9 +93,8 @@ fn rsdf_001_fixtures_reproduced_within_declared_bounds() {
                     support.min.y + (support.max.y - support.min.y) * rng.unit(),
                     support.min.z + (support.max.z - support.min.z) * rng.unit(),
                 );
-                let err = (grid.eval(p, cx).signed_distance
-                    - source.eval(p, cx).signed_distance)
-                    .abs();
+                let err =
+                    (grid.eval(p, cx).signed_distance - source.eval(p, cx).signed_distance).abs();
                 worst_ratio = worst_ratio.max(err / grid.bound());
             }
         }
@@ -231,7 +230,7 @@ fn rsdf_004_vdb_matches_the_oracle_and_reports_footprint() {
     // Exact agreement: actives, values, iteration set, misses.
     let mut agree = vdb.active_count() == oracle.len() as u64;
     for (&c, &v) in &oracle {
-        agree &= vdb.is_active(c) && (vdb.get(c) - v).abs() == 0.0;
+        agree &= vdb.is_active(c) && vdb.get(c).to_bits() == v.to_bits();
     }
     let iterated: BTreeMap<[i32; 3], f32> = vdb.iter_active().collect();
     agree &= iterated == oracle;
@@ -242,7 +241,7 @@ fn rsdf_004_vdb_matches_the_oracle_and_reports_footprint() {
             (rng.below(8_000) as i32) - 4_000,
         ];
         if !oracle.contains_key(&c) {
-            agree &= !vdb.is_active(c) && vdb.get(c) == -1.0;
+            agree &= !vdb.is_active(c) && vdb.get(c).to_bits() == (-1.0f32).to_bits();
         }
     }
     // Dilate grows, erode shrinks back below the dilated count.
@@ -305,8 +304,16 @@ fn rsdf_005_narrow_band_advects_with_bounded_drift_and_reinit_helps() {
                 worst = worst.max(phi.abs());
             }
         }
+        // Reinit quality must be tested on a field that NEEDS it: a
+        // translated SDF is already |∇φ| ≈ 1, where band-edge effects
+        // dominate. Distort φ (|∇φ| ≈ 2.5), then require substantial
+        // recovery toward the eikonal state.
+        let distorted: Vec<([i32; 3], f32)> = band.grid().iter_active().collect();
+        for (c, v) in distorted {
+            band.grid_mut().set(c, v * 2.5);
+        }
         let dev_before = band.stats().mean_eikonal_dev;
-        band.reinitialize(20);
+        band.reinitialize(40);
         let s = band.stats();
         (worst, dev_before, s.mean_eikonal_dev, s.to_json())
     });

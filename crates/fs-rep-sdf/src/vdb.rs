@@ -140,15 +140,18 @@ fn split(coord: [i32; 3]) -> ([i32; 3], u32, usize) {
 
 /// Inverse of [`split`]'s leaf-local part: rebuild the global coordinate.
 fn unsplit(root: [i32; 3], internal_idx: u32, leaf_idx: usize) -> [i32; 3] {
+    // Masked values are < 32 / < 8: the casts cannot wrap, stated via
+    // try_from to keep the wrap lint honest.
     let li = [
-        (internal_idx & (INTERNAL_DIM as u32 - 1)) as i32,
-        ((internal_idx >> INTERNAL_LOG2) & (INTERNAL_DIM as u32 - 1)) as i32,
-        (internal_idx >> (2 * INTERNAL_LOG2)) as i32,
+        i32::try_from(internal_idx & (INTERNAL_DIM as u32 - 1)).expect("masked < 32"),
+        i32::try_from((internal_idx >> INTERNAL_LOG2) & (INTERNAL_DIM as u32 - 1))
+            .expect("masked < 32"),
+        i32::try_from(internal_idx >> (2 * INTERNAL_LOG2)).expect("masked < 32"),
     ];
     let vi = [
-        (leaf_idx & (LEAF_DIM as usize - 1)) as i32,
-        ((leaf_idx >> LEAF_LOG2) & (LEAF_DIM as usize - 1)) as i32,
-        (leaf_idx >> (2 * LEAF_LOG2)) as i32,
+        i32::try_from(leaf_idx & (LEAF_DIM as usize - 1)).expect("masked < 8"),
+        i32::try_from((leaf_idx >> LEAF_LOG2) & (LEAF_DIM as usize - 1)).expect("masked < 8"),
+        i32::try_from(leaf_idx >> (2 * LEAF_LOG2)).expect("masked < 8"),
     ];
     [
         ((root[0] << INTERNAL_LOG2) + li[0]) * LEAF_DIM + vi[0],
@@ -233,10 +236,9 @@ impl<T: Copy> VdbGrid<T> {
     pub fn iter_active(&self) -> impl Iterator<Item = ([i32; 3], T)> + '_ {
         self.root.iter().flat_map(|(rk, node)| {
             node.children.iter().flat_map(move |(ii, leaf)| {
-                (0..LEAF_VOLUME).filter_map(move |li| {
-                    leaf.is_active(li)
-                        .then(|| (unsplit(*rk, *ii, li), leaf.values[li]))
-                })
+                (0..LEAF_VOLUME)
+                    .filter(|&li| leaf.is_active(li))
+                    .map(move |li| (unsplit(*rk, *ii, li), leaf.values[li]))
             })
         })
     }
@@ -279,9 +281,8 @@ impl<T: Copy> VdbGrid<T> {
         let doomed: Vec<[i32; 3]> = self
             .iter_active()
             .filter(|&(c, _)| {
-                DIRS.iter().any(|d| {
-                    !self.is_active([c[0] + d[0], c[1] + d[1], c[2] + d[2]])
-                })
+                DIRS.iter()
+                    .any(|d| !self.is_active([c[0] + d[0], c[1] + d[1], c[2] + d[2]]))
             })
             .map(|(c, _)| c)
             .collect();

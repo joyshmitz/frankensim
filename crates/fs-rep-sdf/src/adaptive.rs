@@ -74,8 +74,16 @@ fn trilinear(corners: &[f64; 8], t: [f64; 3]) -> f64 {
 fn corner_point(b: &Aabb, idx: usize) -> Point3 {
     Point3::new(
         if idx & 1 == 0 { b.min.x } else { b.max.x },
-        if (idx >> 1) & 1 == 0 { b.min.y } else { b.max.y },
-        if (idx >> 2) & 1 == 0 { b.min.z } else { b.max.z },
+        if (idx >> 1) & 1 == 0 {
+            b.min.y
+        } else {
+            b.max.y
+        },
+        if (idx >> 2) & 1 == 0 {
+            b.min.z
+        } else {
+            b.max.z
+        },
     )
 }
 
