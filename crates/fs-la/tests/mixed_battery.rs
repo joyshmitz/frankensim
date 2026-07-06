@@ -40,7 +40,12 @@ fn conditioned(n: usize, kappa: f64, seed: u64) -> Vec<f64> {
         for j in 0..n {
             let mut acc = 0.0f64;
             for k in 0..n {
-                let sigma = kappa.powf(-(k as f64) / ((n - 1) as f64));
+                // Strict exp/ln, not std powf: the golden hash flows through
+                // this fixture, and platform libm agreement is luck, not a
+                // guarantee (the eigen battery's std-sin divergence proved
+                // it) — golden bump justified by this hardening.
+                let sigma =
+                    fs_math::det::exp(-(k as f64) / ((n - 1) as f64) * fs_math::det::ln(kappa));
                 acc = (q1[i * n + k] * sigma).mul_add(q2[j * n + k], acc);
             }
             a[i * n + j] = acc;
@@ -297,7 +302,7 @@ fn policy_and_solution_are_deterministic() {
 }
 
 /// Recorded on aarch64-apple (M4 Pro); must match on x86-64 (trj).
-const GOLDEN_HASH: u64 = 0xfeaa_02d5_a8b3_5aa9;
+const GOLDEN_HASH: u64 = 0x8e09_2d4a_ff1b_5028;
 
 #[test]
 fn mixed_golden_hash() {

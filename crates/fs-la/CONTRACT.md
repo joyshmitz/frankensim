@@ -1,8 +1,8 @@
 # CONTRACT: fs-la
 
-> Status: PARTIAL — the GEMM, FACTORIZATION, and MIXED-PRECISION
-> sections below are in force; batched small-dense and eigensolvers are
-> still skeleton scope.
+> Status: PARTIAL — the GEMM, FACTORIZATION, MIXED-PRECISION, and
+> EIGENSOLVER sections below are in force; batched small-dense remains
+> skeleton scope.
 
 ## Purpose and layer
 Dense linear algebra: GEMM, batched small dense, factorizations, eigensolvers. Layer: L1.
@@ -38,6 +38,20 @@ Dense linear algebra: GEMM, batched small dense, factorizations, eigensolvers. L
   full residual trajectory) — a precision decision is EVIDENCE, never a
   silent downgrade. Run-dry is reported honestly (converged = false,
   best-achieved recorded), never panicked.
+- `eigen::{jacobi_eigh, lanczos_run/LanczosState,
+  lobpcg_run/LobpcgState, EigenPair}` — symmetric eigensolvers.
+  `jacobi_eigh`: dense cyclic Jacobi (ascending eigenvalues, orthonormal
+  columns, lowest-index tie-break). Lanczos (full reorthogonalization)
+  and LOBPCG (X−X_prev conjugate direction, optional preconditioner) are
+  MATRIX-FREE (operator = `Fn(&[f64], &mut [f64])` closure — fs-sparse
+  SpMV or stencils plug in without format coupling) and RESUMABLE
+  (checkpoint = state clone; split runs are BITWISE equal to straight
+  runs, tested). Every `EigenPair` carries the TRUE operator residual
+  ‖A·v − λ·v‖₂ (recomputed, not the internal estimate). Start vectors
+  use fs-math STRICT sin — platform libm here caused a real cross-ISA
+  golden-hash divergence, caught by the trj pipeline and fixed; this is
+  now a contract rule: NO platform libm in any path that feeds solver
+  state.
 - `VERSION` for provenance stamping.
 
 ## Invariants
@@ -86,8 +100,13 @@ aarch64-apple, required to match on x86-64 in the test suite.
 Factorizations: same class; golden hash over Cholesky L + LU solve +
 TSQR R + SVD σ = `0x181f_8f95_82d6_87ed`, verified identical on both
 reference ISAs. Mixed precision: ladder decisions + solutions + reports
-hashed over a κ ∈ {1e3, 1e7, 1e11} battery = `0xfeaa_02d5_a8b3_5aa9`,
-same cross-ISA discipline.
+hashed over a κ ∈ {1e3, 1e7, 1e11} battery = `0x8e09_2d4a_ff1b_5028`
+(bumped once: test fixture hardened from platform `powf` to strict
+exp/ln). Eigensolvers: Lanczos + LOBPCG outputs on the 1D Laplacian =
+`0x87da_0cb3_2344_b097` (bumped once: start vectors moved from platform
+sin to strict sin after an ACTUAL cross-ISA divergence — the golden
+discipline catching its first real bug). All verified identical on both
+reference ISAs.
 
 ## Cancellation behavior
 All future hot paths poll cancellation at tile boundaries (Decalogue P7).
@@ -124,6 +143,10 @@ placeholder remains for the shared-harness migration.
   bound in theory) — not a certified bound (fs-ivl owns certified claims).
 - Jacobi SVD targets small/medium n (O(n²·m) per sweep); no blocked
   driver yet. Batched small-dense and eigensolvers: skeleton scope.
+- Lanczos v1 uses FULL reorthogonalization (selective ω-recurrence is a
+  recorded refinement); LOBPCG has no deflation/soft-locking yet and
+  identity preconditioning by default. Eigenvector adjoints are recorded
+  follow-up (dλ/dp = vᵀ(∂A/∂p)v composes caller-side with fs-ad).
 - `condition_estimate` in `RefineReport` is a Hager-style ESTIMATE (not
   a certified bound); the ladder thresholds are engineering headroom,
   not proofs. Componentwise (per-entry) backward targets, Krylov

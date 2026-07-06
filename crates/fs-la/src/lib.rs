@@ -5,6 +5,7 @@
 //! of the FrankenSim workspace; the layer dependency direction is enforced by
 //! `cargo run -p xtask -- check-all`.
 
+pub mod eigen;
 pub mod factor;
 pub mod gemm;
 pub mod mixed;
