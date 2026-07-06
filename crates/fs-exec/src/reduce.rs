@@ -314,7 +314,7 @@ mod tests {
         let mut xs = Vec::new();
         for i in 0..10_000 {
             xs.push(1e16);
-            xs.push(0.318_309 + f64::from(i % 7));
+            xs.push(0.371 + f64::from(i % 7));
             xs.push(-1e16);
         }
         let naive: f64 = xs.iter().sum();

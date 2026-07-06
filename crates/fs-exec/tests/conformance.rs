@@ -453,7 +453,7 @@ fn exec_009_g5_audit_compensated_reductions_bit_stable_across_thread_counts() {
             }
             let mut acc = Compensated::zero();
             for i in 0..97u64 {
-                let sgn = if (tile + i) % 2 == 0 { 1.0 } else { -1.0 };
+                let sgn = if (tile + i).is_multiple_of(2) { 1.0 } else { -1.0 };
                 acc = acc.accumulate(sgn * 1e15);
                 acc = acc.accumulate(1.0 / ((tile * 97 + i + 1) as f64));
             }
