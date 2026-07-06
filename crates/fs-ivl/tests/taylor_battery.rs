@@ -39,42 +39,50 @@ fn functional_containment() {
 }
 
 #[test]
-fn subdivision_convergence_beats_intervals()
-{
-    // On shrinking boxes around 0.4, the TM enclosure width must shrink
-    // FAR faster than plain interval evaluation — the O(wⁿ⁺¹) vs O(w)
-    // separation that justifies Taylor models.
+fn subdivision_convergence_beats_intervals() {
+    // The right metric is the REMAINDER (the model's overestimation):
+    // total bound width is dominated by the function's genuine O(w)
+    // variation over the box, for TMs and intervals alike. The TM claim
+    // is that the EXCESS shrinks like O(wⁿ⁺¹) where interval
+    // arithmetic's excess shrinks like O(w).
     let widths = [0.4f64, 0.2, 0.1, 0.05];
-    let mut tm_w = Vec::new();
-    let mut ia_w = Vec::new();
+    let mut rem_w = Vec::new();
+    let mut ia_excess = Vec::new();
     for &w in &widths {
         let box_ = Interval::new(0.4 - w / 2.0, 0.4 + w / 2.0);
         let tm = model_f(box_);
-        tm_w.push(tm.bound().width());
-        // Plain interval arithmetic on the same expression.
+        rem_w.push(tm.remainder().width());
+        // Interval-arithmetic excess: enclosure width minus the true
+        // range width (sampled densely — adequate for a smooth function).
         let x = box_;
         let ia = x * x.sin() + (x * Interval::point(0.3)).exp();
-        ia_w.push(ia.width());
+        let mut lo = f64::INFINITY;
+        let mut hi = f64::NEG_INFINITY;
+        for k in 0..=100 {
+            let v = point_f(box_.lo() + w * f64::from(k) / 100.0);
+            lo = lo.min(v);
+            hi = hi.max(v);
+        }
+        ia_excess.push(ia.width() - (hi - lo));
     }
-    // Interval widths shrink ~linearly; TM widths must shrink much
-    // faster: demand better than quadratic gain per halving (order 5
-    // theoretical gain is 2⁶ per halving; grant slack for the poly part).
+    // Remainder must shrink SUPERLINEARLY: theoretical gain per halving
+    // at order 5 is 2⁶ = 64; demand > 20 (slack for low-order cross
+    // terms), and the final remainder is far below the IA excess.
     for i in 1..widths.len() {
-        let tm_gain = tm_w[i - 1] / tm_w[i].max(1e-300);
+        let gain = rem_w[i - 1] / rem_w[i].max(1e-300);
         assert!(
-            tm_gain > 6.0,
-            "TM gain per halving only {tm_gain:.2} (widths {tm_w:?})"
+            gain > 20.0,
+            "remainder gain per halving only {gain:.2} (rem widths {rem_w:?})"
         );
     }
-    // And TMs are absolutely tighter on the smallest box by a wide margin.
     assert!(
-        tm_w[3] < ia_w[3] / 50.0,
-        "TM {} not decisively tighter than IA {}",
-        tm_w[3],
-        ia_w[3]
+        rem_w[3] < ia_excess[3] / 100.0,
+        "TM excess {} not decisively below IA excess {}",
+        rem_w[3],
+        ia_excess[3]
     );
     println!(
-        "{{\"suite\":\"fs-ivl\",\"case\":\"tm-convergence\",\"verdict\":\"pass\",\"detail\":\"tm widths {tm_w:?} vs ia {ia_w:?}\"}}"
+        "{{\"suite\":\"fs-ivl\",\"case\":\"tm-convergence\",\"verdict\":\"pass\",\"detail\":\"remainders {rem_w:?} vs ia excess {ia_excess:?}\"}}"
     );
 }
 

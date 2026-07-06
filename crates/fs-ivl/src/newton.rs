@@ -126,12 +126,11 @@ where
     for r in out {
         if let (Some(RootBox::Possible(prev)), RootBox::Possible(cur)) =
             (merged.last().copied(), r)
+            && prev.hi() >= cur.lo()
         {
-            if prev.hi() >= cur.lo() {
-                let joined = prev.hull(cur);
-                *merged.last_mut().unwrap() = RootBox::Possible(joined);
-                continue;
-            }
+            let joined = prev.hull(cur);
+            *merged.last_mut().unwrap() = RootBox::Possible(joined);
+            continue;
         }
         merged.push(r);
     }
