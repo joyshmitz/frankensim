@@ -1,0 +1,19 @@
+[package]
+name = "fs-ad"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Forward-mode duals (generic, nestable), the Real scalar contract; adjoint infra later."
+
+[package.metadata.frankensim]
+layer = "L1"
+
+[dependencies]
+fs-math = { path = "../fs-math" }
+
+[dev-dependencies]
+
+[lints]
+workspace = true
