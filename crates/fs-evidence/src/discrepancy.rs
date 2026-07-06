@@ -259,7 +259,7 @@ impl ModelBracket {
             .iter()
             .map(|&(_, q)| q)
             .fold(f64::NEG_INFINITY, f64::max);
-        let mid = 0.5 * (lo + hi);
+        let mid = f64::midpoint(lo, hi);
         let spread_rel = (hi - lo) / mid.abs().max(f64::MIN_POSITIVE);
         let mut names: Vec<String> = self.members.iter().map(|(n, _)| n.clone()).collect();
         names.sort_unstable();
