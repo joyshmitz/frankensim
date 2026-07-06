@@ -127,6 +127,244 @@ conformance tests, clear invariants, an error model, and no-claim boundaries.
 | L4 | `fs-eproc`, `fs-opt`, `fs-topo`, `fs-sos`, `fs-surrogate` |
 | L5/L6 | `fs-render`, `fs-viz`, `fs-img`, `fs-ir`, `fs-session`, `fs-ledger`, `fs-plan`, `fs-report` |
 
+## What Exists Now
+
+This repo currently publishes the design, operating rules, and public project
+shell. That matters because FrankenSim is large enough that the contracts have
+to come before the crates.
+
+| Asset | Purpose |
+| --- | --- |
+| `COMPREHENSIVE_PLAN_FOR_FRANKENSIM.md` | Full technical plan: principles, architecture, crate atlas, Gauntlet, roadmap, risks, and flagship studies. |
+| `AGENTS.md` | Rules for coding agents: no destructive actions, no branches or worktrees, P0-first scope, Rust dependency policy, contracts, and verification expectations. |
+| `README.md` | Public project overview and onboarding path. |
+| `frankensim_illustration.webp` | Compressed overview image for the public README. |
+| `.gitignore` | Rust-oriented ignore rules, with the large source PNG excluded from git. |
+
+The next meaningful milestone is P0: creating the initial Rust workspace and
+landing the substrate, execution, allocator, numerical, interval, random, and
+ledger foundations.
+
+## Why This Is Useful
+
+FrankenSim is aimed at design loops where a shape must be optimized against
+physics rather than merely simulated once. Those loops are expensive today
+because each tool boundary loses information.
+
+| User question | Conventional workflow | FrankenSim target |
+| --- | --- | --- |
+| "If I move this control point, how does drag change?" | CAD changes, mesher changes, solver runs, optimizer estimates with finite differences. | Geometry parameters expose Jacobian actions, solvers expose adjoints, and the optimizer gets a gradient with provenance. |
+| "How much should I trust this result?" | Tolerances are scattered across CAD, mesh, solver, and scripts. | The Error Ledger attributes uncertainty to geometry, discretization, algebraic residual, surrogate error, and statistical noise. |
+| "Can we stop evaluating this bad candidate?" | The job usually runs to completion or gets killed from outside. | Candidate evaluations live in cancellation scopes, and statistical tests can stop losing branches mid-solve. |
+| "Where did this Pareto point come from?" | Reconstructing the answer means reading old scripts and filenames. | `explain(artifact)` walks the content-addressed lineage graph. |
+| "Can a mesh-free design loop still get FEM-grade evidence?" | Often no; meshing becomes the bottleneck. | CutFEM-on-SDF is a first-class physics path, with body-fitted meshes reserved for final verification or export. |
+
+## How the Pipeline Works
+
+A study is intended to move through the system as typed data rather than as a
+pile of side effects:
+
+```text
+FrankenScript study
+    |
+    v
+Static admission
+    units, budgets, versions, capabilities, chart support
+    |
+    v
+HELM task DAG
+    budgeted nodes, idempotency keys, ledger scope
+    |
+    v
+SUBSTRATE execution
+    asupersync scopes, tile kernels, arenas, deterministic reductions
+    |
+    v
+MORPH geometry
+    Region charts, representation routing, validity certificates
+    |
+    v
+FLUX physics
+    complexes, cochains, solvers, residuals, adjoints, error estimates
+    |
+    v
+ASCENT optimization
+    gradients, CMA-ES, BO, topology updates, e-process stopping
+    |
+    v
+LUMEN and reports
+    renders, scientific visualization, Pareto tables, lab notebooks
+    |
+    v
+Design Ledger
+    artifacts, ops, edges, metrics, tune rows, events
+```
+
+The central rule is simple: values carry the information needed by downstream
+layers. A field should know its units, budget slice, provenance, derivative
+support, error bound, and cancellation context. A chart conversion should return
+a receipt, not merely a mesh. A solver result should carry enough state to
+resume, audit, and differentiate.
+
+## Core Data Model
+
+The plan organizes geometry and physics around a small set of recurring nouns.
+
+| Concept | Role |
+| --- | --- |
+| `Region` | Abstract shape or domain. It can be presented by multiple concrete charts. |
+| `Chart` | Concrete representation of a `Region`: SDF, F-rep, NURBS, mesh, voxel, point cloud, lattice, or neural implicit. |
+| `Certified<T>` | Value plus error bound, provenance hash, and the hooks needed by downstream layers. |
+| `Complex` | Cell complex used as the common substrate for geometry and physics. |
+| `Cochain` | Field value living on cells, edges, faces, or volumes. |
+| `Budget` | Accuracy, time, memory, and capability allocation for an operation. |
+| `Cx` | Execution context carrying cancellation, arena, RNG identity, budget slice, and ledger handle. |
+| `LedgerHandle` | Append path for artifacts, ops, metrics, tune rows, and events. |
+
+Two sketches from the plan capture the intended style:
+
+```rust
+pub trait Chart: Send + Sync {
+    type Param;
+
+    fn eval(&self, x: Point3, cx: &Cx) -> ChartSample;
+    fn support(&self) -> Aabb;
+    fn topology_hint(&self) -> BettiBounds;
+}
+```
+
+```rust
+pub trait TileKernel: Sync {
+    type Out: Reduce;
+
+    fn tiles(&self) -> TilePlan;
+    fn run(&self, tile: TileId, cx: &Cx) -> ControlFlow<Cancelled, Self::Out>;
+}
+```
+
+These are not final APIs. They describe the pressure the final APIs must bear:
+parallel execution, cancellation, determinism, error accounting, and provenance.
+
+## Algorithmic Spine
+
+FrankenSim is intentionally not a wrapper over one solver family. It is a set of
+compatible algorithmic choices that share data layouts, cancellation semantics,
+and ledgered evidence.
+
+| Area | Algorithms and design choices |
+| --- | --- |
+| Representation routing | Directed chart graph, Pareto shortest paths, composed error bounds, cost models, certificate-preferred conversions. |
+| Geometry robustness | Exact predicates, generalized winding numbers, interval broad/narrow phases, dual contouring, NURBS distance by Bezier bounds plus interval Newton where feasible. |
+| Certified arithmetic | Interval arithmetic, affine arithmetic, Taylor models, adaptive floating-point expansions, double-double and quad-double escalation paths. |
+| Execution | Two-lane asupersync runtime, work-stealing tile pool, scope arenas, deterministic reductions, logical RNG streams, checkpointable solver states. |
+| Dense math | BLIS-style GEMM, batched small dense kernels, TSQR, LOBPCG, Lanczos, mixed precision with refinement. |
+| Sparse math | CSR, BSR, SELL-C-sigma, matrix-free operators, Chebyshev smoothers, smoothed aggregation AMG, p-multigrid. |
+| Geometry to physics | FEEC on cell complexes, CutFEM directly on SDFs, IGA on spline charts, DWR adaptivity driven by the objective. |
+| Fluids | Sparse tiled LBM, free-surface LBM, BEM plus FMM, vortex particles, pressure-robust incompressible formulations. |
+| Structures | Hyperelasticity, rods, shells, fiber beam-columns, buckling eigenproblems, arclength continuation, IPC-style contact. |
+| Optimization | L-BFGS, trust-region Newton-Krylov, augmented Lagrangian, CMA-ES, differential evolution, Bayesian optimization, PDHG layout optimization. |
+| Stochastic decisions | QMC, MLMC, e-process confidence sequences, e-BH, conformal e-prediction, certify-or-escalate surrogate policy. |
+| Rendering | Spectral path tracing, direct SDF/F-rep sphere tracing, NURBS tracing, volume rendering, line integral convolution, differentiable rendering. |
+
+## Representation Router
+
+The Representation Router is the planned mechanism that decides how to satisfy a
+request such as "give FLUX a chart that can evaluate signed distance, curvature,
+and boundary traces within this error budget."
+
+```text
+SDF grid ---- dual contouring ----> mesh
+   |                                ^
+   |                                |
+   v                                |
+F-rep CSG ---- sampling ----------> sparse voxel chart
+   |
+   v
+NURBS refit ---- certificate -----> spline chart
+```
+
+Each edge in the graph has:
+
+- a cost model
+- an error model
+- a certificate status
+- a provenance record
+- a deterministic replay path
+
+The Router solves a multi-objective path problem over cost and composed error.
+If no path satisfies the caller's budget, admission fails early with a structured
+diagnosis instead of running a doomed simulation.
+
+## Physics Model
+
+The physics layer is built around complexes and cochains because that makes
+structure preservation a default constraint rather than an afterthought.
+
+| Physics concern | Planned treatment |
+| --- | --- |
+| Conservation laws | Discrete exterior derivative is combinatorial, so identities such as curl-grad and div-curl are exact on supported complexes. |
+| Embedded geometry | CutFEM runs on SDF and sparse grid charts, avoiding body-fitted remeshing inside topology loops. |
+| Thin structures | IGA and Kirchhoff-Love shells preserve spline geometry where that matters. |
+| Fluids | LBM handles many-core tiled free-surface and non-Newtonian flows; BEM/FMM and vortex methods cover screening and exterior aerodynamics. |
+| Coupling | Port-Hamiltonian interfaces exchange power-conjugate effort/flow pairs to avoid energy-creating coupling artifacts. |
+| Adaptivity | Dual-weighted residual estimators spend resolution where the objective is sensitive. |
+
+The system should be able to say not only "the answer is 12.4" but "the answer
+is 12.4 with this geometric tolerance, this discretization contribution, this
+solver residual, this surrogate band, and this statistical half-width."
+
+## Optimization Model
+
+ASCENT treats optimization problems as data:
+
+```text
+variables:
+  shape parameters, density fields, section choices, manifold coordinates
+
+constraints:
+  physics equations, volume, stress, stability, manufacturability, topology
+
+objectives:
+  drag, compliance, fragility, mass, robustness, render-derived losses
+
+evidence:
+  gradients, KKT residuals, confidence sequences, certificates, lineage
+```
+
+Gradient-based optimization uses discrete adjoints and Sobolev/Riesz smoothing.
+Derivative-free optimization uses CMA-ES, differential evolution, DIRECT, and
+trust-region interpolation models where gradients are unavailable or dishonest.
+Bayesian and multi-fidelity paths decide whether to trust a surrogate, escalate
+to a higher-fidelity solve, or stop early with an anytime-valid decision.
+
+## What Counts as a Valid Result
+
+FrankenSim should make result quality visible. A successful run should be able to
+answer these questions without manual archaeology:
+
+| Question | Expected evidence |
+| --- | --- |
+| What exact input produced this artifact? | FrankenScript IR, seed, versions, capability grant, and ledger op row. |
+| Which representation path was used? | Router path and conversion receipts. |
+| What did the error budget buy? | Error Ledger attribution by geometry, discretization, solver, surrogate, and statistics. |
+| Was the run deterministic? | Execution mode, reduction shape, RNG stream identity, and replay metadata. |
+| Were candidates cancelled safely? | Scope tree events, drain/finalize records, arena accounting. |
+| Why should a gradient be trusted? | Adjoint identity tests, finite-difference or dual checks, and residual tolerances. |
+| Why should a stochastic decision be trusted? | e-process or confidence-sequence record with stopping rule. |
+
+## Flagship Studies
+
+The plan uses three end-to-end studies to keep the architecture honest.
+
+| Study | What it exercises |
+| --- | --- |
+| Ornithoid multi-inlet aircraft | F-rep and spline geometry, BEM/FMM screening, vortex wakes, LBM refinement, Koopman surrogates, SOS stability certificates, multi-objective Pareto search. |
+| Seismic-minimal building frame | FrankenNetworkx ground structures, PDHG layout optimization, nonlinear sizing, fiber-section dynamics, MLMC ground motion ensembles, anytime-valid fragility estimates. |
+| Laminar-pour vessel | F-rep vessel geometry, level-set lip optimization, Chebyshev stability models, free-surface LBM validation, viscosity-band robustness, LUMEN render output. |
+
+These are forcing functions, not demos. A feature that cannot help one of these
+studies needs a strong reason to enter the roadmap.
+
 ## Comparison
 
 | Question | FrankenSim target | Conventional CAD + FEM/CFD stack | Optimizer around black-box solver |
@@ -219,6 +457,43 @@ be measured and failed, not treated as marketing copy.
 
 Every real target should eventually live beside a machine fingerprint,
 benchmark command, acceptance band, and ledger record.
+
+## Development Discipline
+
+FrankenSim is meant to be built by multiple coding agents without letting the
+repository turn into a pile of incompatible experiments. The operating discipline
+is part of the design:
+
+- one branch: `main`
+- one crate, one contract
+- no production FFI shortcuts
+- no unledgered performance claims
+- no unbounded `unsafe`
+- no solver or conversion claim without a conformance path
+- no `[M]` feature in the default path without certifier evidence
+
+Every crate should eventually answer four questions in its `CONTRACT.md`:
+
+1. What invariants does this crate own?
+2. What errors can it bound, estimate, or refuse to claim?
+3. What determinism and cancellation behavior does it guarantee?
+4. Which Gauntlet tiers prove those claims?
+
+## Near-Term Build Order
+
+The first useful code should make later claims cheap to prove.
+
+| Step | Deliverable | Why it comes early |
+| --- | --- | --- |
+| 1 | Workspace skeleton and contracts | Agents need stable crate boundaries before parallel implementation. |
+| 2 | `fs-substrate` | Hardware fingerprints, cache geometry, SIMD tier selection, and topology map feed every hot path. |
+| 3 | `fs-exec` and `fs-alloc` | Tile execution, cancellation scopes, deterministic reductions, and scoped arenas are cross-cutting. |
+| 4 | `fs-ivl` and `fs-rand` | Certified arithmetic and deterministic random streams underpin tests, geometry, UQ, and rendering. |
+| 5 | `fs-la`, `fs-sparse`, `fs-fft` | These kernels are used by almost every higher layer and give early roofline evidence. |
+| 6 | ledger v0 | Provenance, metrics, and replay evidence should exist before complex studies begin. |
+
+The planned P0 exit is deliberately concrete: G0 and G4 green, core numerical
+kernels inside target bands, and deterministic mode bit-stable.
 
 ## Command Reference
 
