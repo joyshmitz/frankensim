@@ -90,9 +90,8 @@ pub fn ray_triangle_watertight(
         1 => v.y,
         _ => v.z,
     };
-    let mut dz = comp(dir, kz);
+    let dz = comp(dir, kz);
     let (kx, ky) = if dz < 0.0 { (ky, kx) } else { (kx, ky) };
-    dz = comp(dir, kz);
     // Shear constants.
     let sx = comp(dir, kx) / dz;
     let sy = comp(dir, ky) / dz;
@@ -107,9 +106,9 @@ pub fn ray_triangle_watertight(
     let cx = comp(vc, kx) - sx * comp(vc, kz);
     let cy = comp(vc, ky) - sy * comp(vc, kz);
     // Signed edge functions.
-    let mut u = cx * by - cy * bx;
-    let mut v = ax * cy - ay * cx;
-    let mut w = bx * ay - by * ax;
+    let u = cx * by - cy * bx;
+    let v = ax * cy - ay * cx;
+    let w = bx * ay - by * ax;
     // Fall back to f64-widened re-evaluation on exact-zero edges (we are
     // already in f64; the paper's double-fallback becomes an exact-tie
     // rule here).
@@ -182,8 +181,8 @@ impl Bvh {
         nodes: &mut Vec<BvhNode>,
     ) -> u32 {
         let mut bounds = Self::tri_bounds(soup, order[start]);
-        for i in start..start + count {
-            bounds = bounds.union(&Self::tri_bounds(soup, order[i]));
+        for &t in &order[start..start + count] {
+            bounds = bounds.union(&Self::tri_bounds(soup, t));
         }
         let idx = nodes.len() as u32;
         if count <= 4 {
@@ -279,10 +278,10 @@ impl Bvh {
                 for i in node.a..node.a + node.leaf_count {
                     let t = self.order[i as usize];
                     let [a, b, c] = soup.tri(t as usize);
-                    if let Some(hit) = ray_triangle_watertight(origin, dir, a, b, c) {
-                        if hit <= best.unwrap_or(t_max) {
-                            best = Some(hit);
-                        }
+                    if let Some(hit) = ray_triangle_watertight(origin, dir, a, b, c)
+                        && hit <= best.unwrap_or(t_max)
+                    {
+                        best = Some(hit);
                     }
                 }
             } else {
@@ -343,8 +342,8 @@ impl MeshChart {
             support = support.union(&Aabb::new(p, p));
         }
         MeshChart {
-            bvh,
             soup,
+            bvh,
             winding,
             support,
         }

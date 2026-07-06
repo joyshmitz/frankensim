@@ -120,7 +120,11 @@ impl WindingOctree {
             moment = Vec3::new(moment.x + n.x, moment.y + n.y, moment.z + n.z);
             let w = area.max(1e-300);
             wsum += w;
-            csum = Vec3::new(c.x.mul_add(w, csum.x), c.y.mul_add(w, csum.y), c.z.mul_add(w, csum.z));
+            csum = Vec3::new(
+                c.x.mul_add(w, csum.x),
+                c.y.mul_add(w, csum.y),
+                c.z.mul_add(w, csum.z),
+            );
         }
         let centroid = Point3::new(csum.x / wsum, csum.y / wsum, csum.z / wsum);
         let mut radius = 0.0f64;

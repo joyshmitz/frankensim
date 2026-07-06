@@ -64,7 +64,10 @@ impl core::fmt::Display for MeshBuildError {
                 edge.0, edge.1
             ),
             MeshBuildError::VertexOutOfRange { face } => {
-                write!(f, "half-edge build refused: face {face} references a missing vertex")
+                write!(
+                    f,
+                    "half-edge build refused: face {face} references a missing vertex"
+                )
             }
             MeshBuildError::NonManifoldVertex { vertex } => write!(
                 f,
@@ -221,7 +224,9 @@ impl HalfEdgeMesh {
     /// callers with genus/boundary knowledge interpret it).
     #[must_use]
     pub fn euler_characteristic(&self) -> i64 {
-        self.positions.len() as i64 - self.edge_count() as i64 + self.face_count() as i64
+        i64::try_from(self.positions.len()).expect("mesh sizes fit i64")
+            - i64::try_from(self.edge_count()).expect("mesh sizes fit i64")
+            + i64::try_from(self.face_count()).expect("mesh sizes fit i64")
     }
 
     /// Flip an interior edge (the Euler-operator editing core's first

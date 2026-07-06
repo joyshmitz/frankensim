@@ -223,7 +223,7 @@ fn fill_holes(soup: &mut Soup, max_hole_edges: usize, receipts: &mut Vec<RepairR
     // Directed boundary edges dest->... build loop maps (b -> a means the
     // hole is traversed a -> b on the missing side).
     let mut next_of: BTreeMap<u32, u32> = BTreeMap::new();
-    for (_, &(count, (a, b))) in &edge_count {
+    for &(count, (a, b)) in edge_count.values() {
         if count == 1 {
             // The face traverses a->b; the hole's loop runs b->a.
             next_of.insert(b, a);

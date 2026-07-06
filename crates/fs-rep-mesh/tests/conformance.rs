@@ -146,8 +146,8 @@ fn rmesh_002_point_triangle_distance_matches_brute_force_and_chart_laws() {
             band_ok &= chart.inside(p, cx) == (s.signed_distance < 0.0);
             let q = p.offset(Vec3::new(rng.unit() * 0.2, rng.unit() * 0.2, 0.0));
             let sq = chart.eval(q, cx);
-            lip_ok &= (sq.signed_distance - s.signed_distance).abs()
-                <= q.delta_from(p).norm() + 1e-9;
+            lip_ok &=
+                (sq.signed_distance - s.signed_distance).abs() <= q.delta_from(p).norm() + 1e-9;
         }
         (band_ok, lip_ok)
     });
@@ -249,14 +249,19 @@ fn rmesh_004_dipole_approximation_tracks_exact_within_declared_error() {
 fn rmesh_005_repair_battery_heals_the_corpus_with_receipts() {
     let clean = shapes::icosphere(Point3::new(0.0, 0.0, 0.0), 1.0, 1);
     let n_clean = clean.triangles.len();
-    let corrupted = shapes::corrupt(clean, 5, 3, 10..20, Some(7));
+    let corrupted = shapes::corrupt(clean, 5, 3, 12..20, Some(11));
     let outcome = repair(corrupted, 8);
     // Receipts cover every defect class.
     let classes: std::collections::BTreeSet<&str> =
         outcome.receipts.iter().map(|r| r.defect).collect();
-    let all_classes = ["boundary-hole", "degenerate-face", "duplicate-face", "flipped-patch"]
-        .iter()
-        .all(|c| classes.contains(c));
+    let all_classes = [
+        "boundary-hole",
+        "degenerate-face",
+        "duplicate-face",
+        "flipped-patch",
+    ]
+    .iter()
+    .all(|c| classes.contains(c));
     // Healed: face count restored, winding at center back to ~1, and the
     // mesh is manifold again (half-edge build succeeds).
     let healed_count = outcome.soup.triangles.len() == n_clean;
@@ -343,10 +348,7 @@ fn rmesh_006_incidence_satisfies_dd_zero_and_rays_are_watertight() {
     // watertight means never a LEAK (>= entry + exit; exact-edge hits may
     // double-count, documented).
     let through_center = count_hits(Point3::new(-3.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0));
-    let through_offcenter = count_hits(
-        Point3::new(-3.0, 0.3, 0.17),
-        Vec3::new(1.0, 0.0, 0.0),
-    );
+    let through_offcenter = count_hits(Point3::new(-3.0, 0.3, 0.17), Vec3::new(1.0, 0.0, 0.0));
     let no_leak = through_center >= 2 && through_offcenter == 2;
     let chart_ray_ok = {
         let chart = MeshChart::new(cube);

@@ -50,7 +50,7 @@ pub fn cube(center: Point3, half: f64) -> Soup {
 /// projected to radius `radius` around `center`. Outward-oriented, closed.
 #[must_use]
 pub fn icosphere(center: Point3, radius: f64, subdivisions: u32) -> Soup {
-    let phi = (1.0 + 5.0f64.sqrt()) / 2.0;
+    let phi = f64::midpoint(1.0, 5.0f64.sqrt());
     let base = [
         (-1.0, phi, 0.0),
         (1.0, phi, 0.0),
@@ -152,7 +152,8 @@ pub fn corrupt(
     }
     for i in 0..degens {
         let v = (i % soup.positions.len()) as u32;
-        soup.triangles.push([v, v, (v + 1) % soup.positions.len() as u32]);
+        soup.triangles
+            .push([v, v, (v + 1) % soup.positions.len() as u32]);
     }
     for f in flip_range {
         if f < soup.triangles.len() {
