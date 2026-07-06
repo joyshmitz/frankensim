@@ -36,6 +36,17 @@ fs-exec, fs-evidence, fs-alloc, fs-obs.
   (defect/location/action, the fs-io quarantine format).
 - `shapes` (PUBLIC fixture vocabulary): `cube`, `icosphere`,
   deterministic `corrupt` (dups/degens/flips/hole).
+- `dual_contour` / `DcOptions` / `bracket_certificate` — the SDF→mesh
+  converter (plan §7.3 edge 2): uniform-grid dual contouring with
+  Hermite data (secant crossings + chart gradients), regularized 3×3 QEF
+  vertex placement (Schaefer mass-point regularization; `MassPoint` is
+  the feature-blurring baseline), axis-uniform quad winding (cyclic
+  (u,v) rings, circulation normal +d, flipped by crossing sign), and THE
+  certificate: `|φ(centroid)| + L·r ≤ tol` with recursive 4-way
+  subdivision PROVES the surface brackets the zero set everywhere (a
+  rigorous claim leaning on the chart's CERTIFIED Lipschitz bound);
+  failures localize to triangles with margins; uncertified charts are
+  refused (`NoLipschitz`).
 - `mesh_to_sdf` / `assess_quality` / `IncrementalMeshSdf` — the certified
   mesh→SDF converter (plan §7.3 edge 1): exact-sample distance + winding
   sign onto fs-rep-sdf dense grids. Certificate honesty: closed 2-manifold
@@ -65,6 +76,12 @@ fs-exec, fs-evidence, fs-alloc, fs-obs.
 7. The converter matches analytic SDFs within its declared envelope, is
    translation-equivariant (G3), refreshes incrementally bit-identically
    (G5), and downgrades honestly on open input (rmesh-007).
+8. Dual-contoured fixtures are manifold, closed, outward-oriented
+   (winding +1 at the center — the ring-orientation law), vertex-accurate,
+   translation-equivariant, bracket-certified, and the certificate DETECTS
+   a seeded bad triangle with localized margins; QEF resolves the box
+   corner at least twice as sharply as the mass-point baseline
+   (rmesh-008).
 
 ## Error model
 Structured teaching errors (`MeshBuildError`); total functions elsewhere
@@ -88,7 +105,7 @@ None. `unsafe_code` denied workspace-wide.
 None. `[S]` solid-tier.
 
 ## Conformance tests
-tests/conformance.rs, cases rmesh-001..rmesh-007 (JSON-line verdicts;
+tests/conformance.rs, cases rmesh-001..rmesh-008 (JSON-line verdicts;
 seeded cases carry seeds) covering invariants 1–6 with fs-obs-validated
 evidence events (dipole error, repair receipts).
 
@@ -112,3 +129,10 @@ evidence events (dipole error, repair receipts).
 - Sparse VDB output and per-tile interval audit certificates for the
   converter join with the fs-ivl integration pass (the dense path's
   fp-envelope analysis is documented in fs-rep-sdf).
+- Dual contouring is UNIFORM-GRID v1: adaptive octree contouring with
+  crack-free stitching, the guaranteed-manifold MDC variant for
+  ambiguous topologies, and quality post-passes (min-angle smoothing
+  with certificate re-verification) are follow-ups; the fixture zoo's
+  manifoldness is verified, not guaranteed for adversarial topology.
+- The Lipschitz-cone bracket is conservative; fs-ivl interval evaluation
+  will tighten it (same certificate surface).

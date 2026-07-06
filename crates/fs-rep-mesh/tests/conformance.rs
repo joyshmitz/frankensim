@@ -500,3 +500,127 @@ fn rmesh_007_mesh_to_sdf_converter_is_certified_equivariant_and_incremental() {
         ),
     );
 }
+
+#[test]
+// One end-to-end scenario over shared reconstructions.
+#[allow(clippy::too_many_lines)]
+fn rmesh_008_dual_contouring_reconstructs_certifies_and_detects_bad_triangles() {
+    use fs_geom::fixtures::{BoxChart, SphereChart};
+    use fs_rep_mesh::{DcOptions, bracket_certificate, dual_contour};
+    let (sphere_err, cert_ok, cert_margin, manifold_closed, winding_one, equivariant) =
+        with_cx(|cx| {
+            let sphere = SphereChart {
+                center: Point3::new(0.05, -0.1, 0.02),
+                radius: 1.0,
+            };
+            let (soup, stats) = dual_contour(&sphere, DcOptions::sharp(0.11), cx).expect("dc");
+            assert!(stats.triangles > 100, "{}", stats.to_json());
+            // Reconstruction accuracy: every DC vertex near the zero set.
+            let mut worst = 0.0f64;
+            for &v in &soup.positions {
+                worst = worst.max((v.delta_from(sphere.center).norm() - 1.0).abs());
+            }
+            // Bracket certificate: proven within tolerance everywhere.
+            let cert = bracket_certificate(&sphere, &soup, 0.2, cx).expect("lipschitz chart");
+            let (cert_ok, margin) = match cert {
+                Ok(report) => (true, report.worst_margin),
+                Err(fails) => {
+                    println!("bracket failures: {fails:?}");
+                    (false, f64::NAN)
+                }
+            };
+            // Manifold + closed + correctly oriented (winding at center = 1).
+            let manifold =
+                fs_rep_mesh::HalfEdgeMesh::from_triangles(soup.positions.clone(), &soup.triangles)
+                    .is_ok();
+            let closed = fs_rep_mesh::assess_quality(&soup).sign_certified();
+            let w = fs_rep_mesh::winding_exact(&soup, sphere.center);
+            // G3 rigid motion: translate the chart; vertices translate.
+            let shift = fs_geom::Vec3::new(0.5, 0.25, -0.375); // dyadic: exact fp
+            let moved = SphereChart {
+                center: sphere.center.offset(shift),
+                radius: 1.0,
+            };
+            let (soup2, _) = dual_contour(&moved, DcOptions::sharp(0.11), cx).expect("dc moved");
+            let mut equi = soup2.positions.len() == soup.positions.len();
+            if equi {
+                for (a, b) in soup.positions.iter().zip(&soup2.positions) {
+                    let back = b.offset(shift.scale(-1.0));
+                    equi &= back.delta_from(*a).norm() < 1e-9;
+                }
+            }
+            (
+                worst,
+                cert_ok,
+                margin,
+                manifold && closed,
+                (w - 1.0).abs() < 1e-9,
+                equi,
+            )
+        });
+    // Sharp features: box corners resolved by QEF, blurred by mass point.
+    let (qef_corner_err, mass_corner_err, detects_bad) = with_cx(|cx| {
+        use fs_rep_mesh::{DcOptions, Placement, bracket_certificate, dual_contour};
+        let bx = BoxChart {
+            aabb: fs_geom::Aabb::new(Point3::new(-0.8, -0.6, -0.7), Point3::new(0.7, 0.9, 0.6)),
+        };
+        let corner = Point3::new(0.7, 0.9, 0.6);
+        let corner_dist = |soup: &fs_rep_mesh::Soup| {
+            soup.positions
+                .iter()
+                .map(|v| v.delta_from(corner).norm())
+                .fold(f64::INFINITY, f64::min)
+        };
+        let (qef, _) = dual_contour(&bx, DcOptions::sharp(0.1), cx).expect("qef");
+        let (mass, _) = dual_contour(
+            &bx,
+            DcOptions {
+                placement: Placement::MassPoint,
+                ..DcOptions::sharp(0.1)
+            },
+            cx,
+        )
+        .expect("mass");
+        // Seeded bad triangle: yank one vertex far off the surface; the
+        // certificate must fail and LOCALIZE.
+        let mut broken = qef.clone();
+        broken.positions[7] = Point3::new(3.0, 3.0, 3.0);
+        let verdict = bracket_certificate(&bx, &broken, 0.2, cx).expect("lipschitz chart");
+        let detects = matches!(&verdict, Err(fails) if !fails.is_empty()
+            && fails.iter().all(|f| f.proven_bound > f.tolerance));
+        (corner_dist(&qef), corner_dist(&mass), detects)
+    });
+    let mut em = fs_obs::Emitter::new("fs-rep-mesh/conformance", "rmesh-008/dc");
+    let line = em
+        .emit(
+            fs_obs::Severity::Info,
+            fs_obs::EventKind::Custom {
+                name: "rep-mesh-dc-stats".to_string(),
+                json: format!(
+                    "{{\"sphere_worst_vertex_err\":{sphere_err:.5},\"cert_margin\":{cert_margin:.5},\
+                     \"qef_corner_err\":{qef_corner_err:.5},\"mass_corner_err\":{mass_corner_err:.5}}}"
+                ),
+            },
+            None,
+        )
+        .to_jsonl();
+    fs_obs::validate_line(&line).expect("dc stats validate");
+    println!("{line}");
+    verdict(
+        "rmesh-008",
+        sphere_err < 0.06
+            && cert_ok
+            && manifold_closed
+            && winding_one
+            && equivariant
+            && qef_corner_err < 0.5 * mass_corner_err
+            && detects_bad,
+        &format!(
+            "DC sphere vertices within {sphere_err:.4} of the zero set with the bracket \
+             certificate proven (margin {cert_margin:.4}); output manifold, closed, and \
+             outward-oriented; translation-equivariant (G3); QEF resolves the box corner \
+             {qef_corner_err:.4} vs mass-point {mass_corner_err:.4}; a seeded bad triangle is \
+             caught and localized"
+        ),
+    );
+}

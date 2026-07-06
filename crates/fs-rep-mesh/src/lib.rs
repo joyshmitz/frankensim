@@ -19,6 +19,7 @@
 
 mod chart;
 mod complex;
+mod contour;
 mod convert;
 mod halfedge;
 mod repair;
@@ -27,6 +28,10 @@ mod winding;
 
 pub use chart::{Bvh, MeshChart, point_triangle_distance, ray_triangle_watertight};
 pub use complex::{HexComplex, Incidence, TetComplex};
+pub use contour::{
+    BracketFailure, BracketReport, ContourError, DC_MAX_CELLS_PER_AXIS, DcOptions, DcStats,
+    NoLipschitz, Placement, bracket_certificate, dual_contour,
+};
 pub use convert::{IncrementalMeshSdf, MeshQuality, MeshSdfError, assess_quality, mesh_to_sdf};
 pub use halfedge::{HalfEdge, HalfEdgeMesh, MeshBuildError, NO_FACE};
 pub use repair::{RepairOutcome, RepairReceipt, repair};
