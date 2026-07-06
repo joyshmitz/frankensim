@@ -164,12 +164,7 @@ impl IncrementalMeshSdf {
     ///
     /// # Errors
     /// [`Cancelled`] mid-refresh (samples written so far are complete).
-    pub fn update(
-        &mut self,
-        edited: MeshChart,
-        dirty: Aabb,
-        cx: &Cx<'_>,
-    ) -> Result<(), Cancelled> {
+    pub fn update(&mut self, edited: MeshChart, dirty: Aabb, cx: &Cx<'_>) -> Result<(), Cancelled> {
         self.chart = edited;
         self.last_update_samples = self.sdf.resample_box(&self.chart, dirty, cx)?;
         Ok(())

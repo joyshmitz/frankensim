@@ -36,6 +36,13 @@ fs-exec, fs-evidence, fs-alloc, fs-obs.
   (defect/location/action, the fs-io quarantine format).
 - `shapes` (PUBLIC fixture vocabulary): `cube`, `icosphere`,
   deterministic `corrupt` (dups/degens/flips/hole).
+- `mesh_to_sdf` / `assess_quality` / `IncrementalMeshSdf` — the certified
+  mesh→SDF converter (plan §7.3 edge 1): exact-sample distance + winding
+  sign onto fs-rep-sdf dense grids. Certificate honesty: closed 2-manifold
+  input → enclosure-grade `Certified` receipt; boundary/non-manifold edges
+  → Estimate receipt whose model evidence NAMES the winding-sign heuristic
+  and the defect counts. The incremental path re-samples only a dirty box
+  at exactly the original positions (bit-identical to full rebuild — G5).
 
 ## Invariants
 1. Half-edge invariants survive 2k random flips with the Euler
@@ -55,6 +62,9 @@ fs-exec, fs-evidence, fs-alloc, fs-obs.
 6. d1∘d0 = 0 and d2∘d1 = 0 EXACTLY (integer cochains) on fixture
    complexes; axis rays through shared cube edges never leak; chart
    raycasts hit at analytic parameters (rmesh-006).
+7. The converter matches analytic SDFs within its declared envelope, is
+   translation-equivariant (G3), refreshes incrementally bit-identically
+   (G5), and downgrades honestly on open input (rmesh-007).
 
 ## Error model
 Structured teaching errors (`MeshBuildError`); total functions elsewhere
@@ -78,7 +88,7 @@ None. `unsafe_code` denied workspace-wide.
 None. `[S]` solid-tier.
 
 ## Conformance tests
-tests/conformance.rs, cases rmesh-001..rmesh-006 (JSON-line verdicts;
+tests/conformance.rs, cases rmesh-001..rmesh-007 (JSON-line verdicts;
 seeded cases carry seeds) covering invariants 1–6 with fs-obs-validated
 evidence events (dipole error, repair receipts).
 
@@ -96,3 +106,9 @@ evidence events (dipole error, repair receipts).
   form; exact-edge raycast double-counting is documented.
 - Attribute channels (normals/UVs/per-face data) beyond positions are
   deferred until a consumer (LUMEN materials) defines their semantics.
+- The converter's incremental mode trusts the CALLER's dirty box (it
+  records refreshed-sample counts for audits); automatic change-support
+  inference joins with the edit-tracking half-edge attributes.
+- Sparse VDB output and per-tile interval audit certificates for the
+  converter join with the fs-ivl integration pass (the dense path's
+  fp-envelope analysis is documented in fs-rep-sdf).

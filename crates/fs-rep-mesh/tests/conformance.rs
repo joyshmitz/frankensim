@@ -367,6 +367,9 @@ fn rmesh_006_incidence_satisfies_dd_zero_and_rays_are_watertight() {
 }
 
 #[test]
+// One end-to-end scenario (build -> equivariance -> incremental -> downgrade);
+// splitting would duplicate the expensive fixture builds.
+#[allow(clippy::too_many_lines)]
 fn rmesh_007_mesh_to_sdf_converter_is_certified_equivariant_and_incremental() {
     const SEED: u64 = 0x1007_2026_0706_C0DE;
     let (analytic_ok, equivariant, incremental_identical, downgrade_ok, samples) = with_cx(|cx| {
@@ -411,7 +414,10 @@ fn rmesh_007_mesh_to_sdf_converter_is_certified_equivariant_and_incremental() {
                 (rng.unit() - 0.5) * 2.0,
             );
             let a = receipt.value.eval(p, cx).signed_distance;
-            let b = moved_receipt.value.eval(p.offset(shift), cx).signed_distance;
+            let b = moved_receipt
+                .value
+                .eval(p.offset(shift), cx)
+                .signed_distance;
             // Grids are anchored to supports which translate with the mesh,
             // so samples align and values match to fp noise.
             equivariant &= (a - b).abs() < 1e-6;
@@ -423,9 +429,8 @@ fn rmesh_007_mesh_to_sdf_converter_is_certified_equivariant_and_incremental() {
             *p = Point3::new(p.x * 1.05, p.y * 1.05, p.z * 1.05);
         }
         let edited_chart = || MeshChart::new(edited.clone());
-        let mut inc =
-            fs_rep_mesh::IncrementalMeshSdf::build(MeshChart::new(ico.clone()), 0.08, cx)
-                .expect("initial");
+        let mut inc = fs_rep_mesh::IncrementalMeshSdf::build(MeshChart::new(ico.clone()), 0.08, cx)
+            .expect("initial");
         // The dirty box: everything within reach of the moved vertices.
         // Distance fields have GLOBAL support in principle; for a 5% bump
         // the change is confined to the bump's distance cone — cover it

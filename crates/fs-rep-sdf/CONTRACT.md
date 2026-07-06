@@ -18,6 +18,9 @@ fs-alloc, fs-obs.
   conservative by construction. Chart Lipschitz claim =
   `L + 2·bound/h_min` (sample-slope bound, derivation in code).
   `measure_eikonal` (seeded |∇φ|−1 statistics: EVIDENCE, labeled),
+  `resample_box` (incremental re-sampling at EXACTLY the original
+  positions — bit-identical to a full rebuild over the same source; the
+  converter beads' G5 law),
   `mean_curvature_estimate` (Estimate-grade stencil), `raycast` —
   sphere tracing with steps `(sd − bound)/lipschitz`, cancellable.
 - `VdbGrid<T: Copy>` — FrankenVDB: BTreeMap root → 32³ internal nodes

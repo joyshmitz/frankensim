@@ -26,8 +26,8 @@ pub mod shapes;
 mod winding;
 
 pub use chart::{Bvh, MeshChart, point_triangle_distance, ray_triangle_watertight};
-pub use convert::{IncrementalMeshSdf, MeshQuality, MeshSdfError, assess_quality, mesh_to_sdf};
 pub use complex::{HexComplex, Incidence, TetComplex};
+pub use convert::{IncrementalMeshSdf, MeshQuality, MeshSdfError, assess_quality, mesh_to_sdf};
 pub use halfedge::{HalfEdge, HalfEdgeMesh, MeshBuildError, NO_FACE};
 pub use repair::{RepairOutcome, RepairReceipt, repair};
 pub use winding::{Soup, WindingOctree, triangle_winding, winding_exact};
