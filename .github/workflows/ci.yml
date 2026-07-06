@@ -15,11 +15,14 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# Pushes to main each run to completion (agents push every few minutes;
-# cancel-in-progress was killing the slower macOS lane before it could ever
-# report). Only PR branches cancel their own stale runs.
+# Agents push to main every few minutes. Per-ref grouping WITHOUT
+# cancel-in-progress serializes push runs: GitHub keeps one running + one
+# pending and supersedes stale pending runs, so the in-flight run (and its
+# slow macOS lane) always completes, the newest commit always eventually
+# runs, and the queue never grows past two. PR branches still cancel their
+# own stale runs.
 concurrency:
-  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.ref) || github.sha }}
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.ref) || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
