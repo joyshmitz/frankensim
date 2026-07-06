@@ -67,10 +67,12 @@ thread affinity — sending it transfers ownership, exactly like `Box<[u8]>`.
 
 ## Miri coverage
 The whole capsule is plain Rust (no intrinsics, no FFI, no syscalls), so
-Miri interprets every path. `cargo miri test -p fs-alloc` exercises the
-in-module tests plus the facade unit tests and doctests that route through
-this capsule (placement, growth, ZSTs, full-window handback, reclaim).
-Known limitation: none specific to this capsule.
+Miri interprets every path. `cargo miri test -p fs-alloc --lib` runs the
+full in-module suite — the capsule's own tests plus the facade/pool/
+hugepage unit tests that route through this capsule (placement, growth,
+ZSTs, full-window handback, scope reclaim, panic-mid-fill) — and is green
+as of this capsule's landing. Known limitation: none specific to this
+capsule; the 10^6-iteration storm runs natively only (Miri throughput).
 
 ## Model-checking coverage
 N/A (single-threaded capsule; the concurrent structures in fs-alloc —
