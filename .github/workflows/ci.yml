@@ -1,6 +1,7 @@
-# PR/push gates on both target ISA families (plan §13.3: "done" is
-# conformance green on both ISAs). See docs/CI_GATES.md for the Decalogue →
-# gate mapping and which specialty gates are wired vs deferred.
+# Manual-only compatibility gates on both target ISA families. DSR is the
+# primary CI/release runner for this repository because GitHub Actions is
+# unavailable/throttled for the account. See docs/CI_GATES.md for the
+# Decalogue gate mapping and the DSR-first operating rule.
 #
 # Layout note: the workspace path-depends on Franken constellation siblings
 # at ../<repo>; scripts/ci/checkout_constellation.sh materializes them at the
@@ -9,18 +10,9 @@
 name: ci
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
-# Agents push to main every few minutes. Per-ref grouping WITHOUT
-# cancel-in-progress serializes push runs: GitHub keeps one running + one
-# pending and supersedes stale pending runs, so the in-flight run (and its
-# slow macOS lane) always completes, the newest commit always eventually
-# runs, and the queue never grows past two. PR branches still cancel their
-# own stale runs.
+# Retained for any manual dispatches. Normal repo verification goes through DSR.
 concurrency:
   group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.ref) || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

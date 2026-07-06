@@ -456,18 +456,47 @@ Core library code should not print casually to stdout/stderr.
 ## Compiler Checks
 
 After substantive Rust code changes, verify that the relevant checks pass.
-Prefer RCH for compute-heavy Cargo work in shared-agent environments.
+DSR is the first choice for repo-level gates and release builds. Prefer RCH
+only for narrow ad hoc Cargo probes or when DSR itself is unavailable.
 
 Typical lanes once the workspace exists:
 
 ```bash
-rch exec -- env CARGO_TARGET_DIR="${TMPDIR:-/tmp}/rch_target_frankensim_check" cargo check --all-targets
-rch exec -- env CARGO_TARGET_DIR="${TMPDIR:-/tmp}/rch_target_frankensim_clippy" cargo clippy --all-targets -- -D warnings
-rch exec -- env CARGO_TARGET_DIR="${TMPDIR:-/tmp}/rch_target_frankensim_fmt" cargo fmt --check
+dsr quality --tool frankensim
+dsr build frankensim --target darwin/arm64
 ```
 
 If the workspace is still plan-only, do not invent checks. State that no Cargo
 workspace exists yet and validate markdown or file presence only.
+
+---
+
+## DSR - Required CI and Release Runner
+
+GitHub Actions is not the CI source of truth for this repository. The account is
+throttled/cut off, so agents must always use DSR in preference to GitHub
+Actions for repo-level verification, release builds, and fallback release work.
+
+- Use `dsr` if it is on `PATH`; otherwise use
+  `/Users/jemanuel/projects/doodlestein_self_releaser/dsr`.
+- Run `dsr repos info frankensim` when checking the registry wiring.
+- Run `dsr quality --tool frankensim` for the configured quality gate.
+- Run `dsr quality --tool frankensim --dry-run` when you need to inspect the
+  gate without executing the Cargo workload.
+- Run `dsr build frankensim --target darwin/arm64` for the configured native
+  release artifact lane. Use `--allow-dirty` only when the user explicitly
+  wants a build from the current dirty tree.
+- Run `dsr fallback frankensim --version <version>` only for intentional
+  release fallback work.
+- Use `dsr doctor` and `dsr health all` for DSR/host diagnostics.
+
+Do not wait on, poll, or cite GitHub Actions as required proof unless the user
+explicitly asks for that. The workflow files are retained as manual specs and
+historical gate documentation, not as automatic merge/release criteria.
+
+When reporting verification, include the exact DSR command, pass/fail status,
+and any run log or artifact path DSR prints. If DSR is unavailable, report the
+exact blocker and then use RCH or local Cargo only as a clearly labeled fallback.
 
 ---
 
@@ -646,7 +675,9 @@ Fix true positives at the root cause and rerun on the affected files.
 
 ## RCH - Remote Compilation Helper
 
-Use RCH for CPU-heavy Cargo work when available:
+Use DSR first for repo-level gates. Use RCH for CPU-heavy Cargo probes when DSR
+does not cover the needed check or when you are intentionally running a narrow
+diagnostic:
 
 ```bash
 rch exec -- env CARGO_TARGET_DIR="${TMPDIR:-/tmp}/rch_target_frankensim_check" cargo check --all-targets

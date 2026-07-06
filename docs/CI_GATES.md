@@ -6,12 +6,30 @@ Gauntlet states, not dates (plan §16.1); a gate listed as **deferred** below
 is wired the moment its owning crate lands, and this file is updated in the
 same change.
 
+## DSR is the CI source of truth
+
+GitHub Actions is unavailable/throttled for this account, so FrankenSim uses
+DSR as the primary CI and release runner. Agents should use DSR instead of
+waiting on or citing GitHub Actions:
+
+```bash
+dsr repos info frankensim
+dsr quality --tool frankensim
+dsr build frankensim --target darwin/arm64
+```
+
+The GitHub workflow files remain in the repo as manual executable specs for the
+gate shape and as historical documentation. They are not automatic push/PR
+criteria.
+
 ## Workflows
 
 | Workflow | Trigger | What it proves |
 | --- | --- | --- |
-| `ci.yml` | PR + push to `main` | fmt, clippy `-D warnings`, workspace unit + conformance tests, xtask policy gates, constellation drift — on BOTH ISA families (plan §13.3: done = green on both) |
-| `nightly.yml` | daily 09:17 UTC + manual | full suites in dev AND release profiles, policy gates, and a run record written into an fs-ledger database retained as an artifact (golden-ledger convention, §16.2) |
+| `dsr quality --tool frankensim` | manual DSR command | fmt, clippy `-D warnings`, workspace unit + conformance tests, xtask policy gates, constellation drift |
+| `dsr build frankensim --target darwin/arm64` | manual DSR command | native release artifact build for the configured Apple Silicon lane |
+| `ci.yml` | manual GitHub dispatch only | archived/manual version of the fmt, clippy, test, policy, and constellation gate shape |
+| `nightly.yml` | manual GitHub dispatch only | archived/manual version of the full dev/release suites and retained fs-ledger run record |
 | `ci-self-test.yml` | manual | meta-tests: injected failures demonstrably turn the gates red |
 
 ## Runner honesty
@@ -28,7 +46,8 @@ same change.
 
 ## Constellation
 
-The workspace path-depends on sibling repos. CI materializes them with
+The workspace path-depends on sibling repos. DSR quality gates and the manual
+workflow specs materialize them with
 `scripts/ci/checkout_constellation.sh` at the exact `constellation.lock`
 pins (shallow fetch by SHA), then `xtask check-constellation` verifies zero
 drift. Bumping a sibling is a deliberate act: re-run

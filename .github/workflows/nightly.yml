@@ -1,14 +1,10 @@
-# Nightly Gauntlet lanes on both ISA families (plan §13, §14.4). Runs the
-# full workspace suites in dev and release, then records the run into an
-# fs-ledger database retained as an artifact — the golden-ledger convention
-# (plan §16.2) applied to CI itself. Tier gates beyond G0/unit (G1 slope, G4
-# storms at scale, G5 determinism audits, roofline bands) are wired here as
-# the owning crates land; docs/CI_GATES.md tracks which are live.
+# Manual-only Gauntlet lane spec on both ISA families (plan §13, §14.4). DSR is
+# the primary CI/release runner for this repository because GitHub Actions is
+# unavailable/throttled for the account. This workflow remains as an executable
+# manual spec for the full dev/release suites and retained fs-ledger run record.
 name: nightly
 
 on:
-  schedule:
-    - cron: "17 9 * * *" # 09:17 UTC daily
   workflow_dispatch:
 
 env:
