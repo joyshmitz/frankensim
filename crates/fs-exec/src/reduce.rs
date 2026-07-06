@@ -16,6 +16,10 @@
 
 use crate::kernel::Reduce;
 
+/// Fixed accumulation block size for `det_sum`/`det_dot`: part of the
+/// reduction-shape contract (changing it changes bits).
+const BLOCK: usize = 256;
+
 /// Fold ordered items up the fixed-shape pairwise tree. The tree depends
 /// only on `items.len()` (see module docs), so the result is bit-identical
 /// for a given input sequence regardless of how the inputs were produced.
@@ -66,7 +70,7 @@ impl Compensated {
     /// Accumulate one term (Neumaier's variant: compensation also captures
     /// the case where the term dominates the running sum).
     #[must_use]
-    pub fn add(self, x: f64) -> Self {
+    pub fn accumulate(self, x: f64) -> Self {
         let t = self.sum + x;
         let comp = if self.sum.abs() >= x.abs() {
             self.comp + ((self.sum - t) + x)
@@ -106,10 +110,9 @@ impl Reduce for Compensated {
 /// pure function of `xs.len()`.
 #[must_use]
 pub fn det_sum(xs: &[f64]) -> f64 {
-    const BLOCK: usize = 256;
     let partials: Vec<Compensated> = xs
         .chunks(BLOCK)
-        .map(|c| c.iter().fold(Compensated::zero(), |a, &x| a.add(x)))
+        .map(|c| c.iter().fold(Compensated::zero(), |a, &x| a.accumulate(x)))
         .collect();
     pairwise_fold(partials).value()
 }
@@ -123,14 +126,13 @@ pub fn det_sum(xs: &[f64]) -> f64 {
 #[must_use]
 pub fn det_dot(a: &[f64], b: &[f64]) -> f64 {
     assert_eq!(a.len(), b.len(), "dot operands must match");
-    const BLOCK: usize = 256;
     let partials: Vec<Compensated> = a
         .chunks(BLOCK)
         .zip(b.chunks(BLOCK))
         .map(|(ca, cb)| {
             ca.iter()
                 .zip(cb)
-                .fold(Compensated::zero(), |acc, (&x, &y)| acc.add(x * y))
+                .fold(Compensated::zero(), |acc, (&x, &y)| acc.accumulate(x * y))
         })
         .collect();
     pairwise_fold(partials).value()
@@ -146,13 +148,13 @@ pub fn det_norm2(xs: &[f64]) -> f64 {
 /// data NaNs cannot poison comparisons nondeterministically).
 #[must_use]
 pub fn det_min(xs: &[f64]) -> Option<f64> {
-    xs.iter().copied().min_by(|a, b| a.total_cmp(b))
+    xs.iter().copied().min_by(f64::total_cmp)
 }
 
 /// Deterministic maximum under IEEE total order.
 #[must_use]
 pub fn det_max(xs: &[f64]) -> Option<f64> {
-    xs.iter().copied().max_by(|a, b| a.total_cmp(b))
+    xs.iter().copied().max_by(f64::total_cmp)
 }
 
 /// Deterministic argmin: ties break to the LOWEST index (the tie-breaking
@@ -192,7 +194,7 @@ pub fn det_prefix_sum(xs: &[f64]) -> Vec<f64> {
     let mut acc = Compensated::zero();
     xs.iter()
         .map(|&x| {
-            acc = acc.add(x);
+            acc = acc.accumulate(x);
             acc.value()
         })
         .collect()
@@ -333,8 +335,8 @@ mod tests {
         let whole = det_sum(&xs);
         // Same values, different BLOCK boundary simulation: accumulate as
         // one compensated stream, then as merged halves via Reduce.
-        let a = xs[..500].iter().fold(Compensated::zero(), |c, &x| c.add(x));
-        let b = xs[500..].iter().fold(Compensated::zero(), |c, &x| c.add(x));
+        let a = xs[..500].iter().fold(Compensated::zero(), |c, &x| c.accumulate(x));
+        let b = xs[500..].iter().fold(Compensated::zero(), |c, &x| c.accumulate(x));
         let merged = a.merge(b).value();
         assert!((whole - merged).abs() <= 1e-12 * whole.abs());
     }

@@ -15,7 +15,7 @@
 //! logical identity only.
 
 use crate::cx::{CancelGate, Cx, ExecMode, StreamKey};
-use crate::kernel::{Reduce, TileKernel};
+use crate::kernel::TileKernel;
 use core::fmt;
 use core::ops::ControlFlow;
 use fs_alloc::CachePadded;
