@@ -137,100 +137,18 @@ impl Interval {
         (lo <= hi).then_some(Interval { lo, hi })
     }
 
-    /// Negation (exact: IEEE negation is sign-bit flip).
-    #[must_use]
-    pub fn neg(self) -> Interval {
-        Interval {
-            lo: -self.hi,
-            hi: -self.lo,
-        }
-    }
-
     /// Absolute value (exact endpoint selection).
     #[must_use]
     pub fn abs(self) -> Interval {
         if self.lo >= 0.0 {
             self
         } else if self.hi <= 0.0 {
-            self.neg()
+            -self
         } else {
             Interval {
                 lo: 0.0,
                 hi: self.hi.max(-self.lo),
             }
-        }
-    }
-
-    /// Addition, outward-rounded.
-    #[must_use]
-    pub fn add(self, o: Interval) -> Interval {
-        Interval {
-            lo: down_k(self.lo + o.lo, 1),
-            hi: up_k(self.hi + o.hi, 1),
-        }
-    }
-
-    /// Subtraction, outward-rounded.
-    #[must_use]
-    pub fn sub(self, o: Interval) -> Interval {
-        Interval {
-            lo: down_k(self.lo - o.hi, 1),
-            hi: up_k(self.hi - o.lo, 1),
-        }
-    }
-
-    /// Multiplication, outward-rounded (min/max over endpoint products).
-    /// 0·∞ ambiguities (NaN products) fall back to [`Interval::WHOLE`] —
-    /// conservative, never wrong.
-    #[must_use]
-    pub fn mul(self, o: Interval) -> Interval {
-        let ps = [
-            self.lo * o.lo,
-            self.lo * o.hi,
-            self.hi * o.lo,
-            self.hi * o.hi,
-        ];
-        if ps.iter().any(|p| p.is_nan()) {
-            return Interval::WHOLE;
-        }
-        let mut lo = ps[0];
-        let mut hi = ps[0];
-        for &p in &ps[1..] {
-            lo = lo.min(p);
-            hi = hi.max(p);
-        }
-        Interval {
-            lo: down_k(lo, 1),
-            hi: up_k(hi, 1),
-        }
-    }
-
-    /// Division, outward-rounded. A zero-containing divisor yields
-    /// [`Interval::WHOLE`] (documented: "no useful enclosure" is an answer,
-    /// not a panic — certified callers branch on it).
-    #[must_use]
-    pub fn div(self, o: Interval) -> Interval {
-        if o.contains_zero() {
-            return Interval::WHOLE;
-        }
-        let qs = [
-            self.lo / o.lo,
-            self.lo / o.hi,
-            self.hi / o.lo,
-            self.hi / o.hi,
-        ];
-        if qs.iter().any(|q| q.is_nan()) {
-            return Interval::WHOLE;
-        }
-        let mut lo = qs[0];
-        let mut hi = qs[0];
-        for &q in &qs[1..] {
-            lo = lo.min(q);
-            hi = hi.max(q);
-        }
-        Interval {
-            lo: down_k(lo, 1),
-            hi: up_k(hi, 1),
         }
     }
 
@@ -308,6 +226,98 @@ impl Interval {
     #[must_use]
     pub fn cos(self) -> Interval {
         trig_enclosure(self, det::cos, ULP_COS, 0.0)
+    }
+}
+
+impl core::ops::Neg for Interval {
+    type Output = Interval;
+    /// Negation (exact: IEEE negation is sign-bit flip).
+    fn neg(self) -> Interval {
+        Interval {
+            lo: -self.hi,
+            hi: -self.lo,
+        }
+    }
+}
+
+impl core::ops::Add for Interval {
+    type Output = Interval;
+    /// Addition, outward-rounded.
+    fn add(self, o: Interval) -> Interval {
+        Interval {
+            lo: down_k(self.lo + o.lo, 1),
+            hi: up_k(self.hi + o.hi, 1),
+        }
+    }
+}
+
+impl core::ops::Sub for Interval {
+    type Output = Interval;
+    /// Subtraction, outward-rounded.
+    fn sub(self, o: Interval) -> Interval {
+        Interval {
+            lo: down_k(self.lo - o.hi, 1),
+            hi: up_k(self.hi - o.lo, 1),
+        }
+    }
+}
+
+impl core::ops::Mul for Interval {
+    type Output = Interval;
+    /// Multiplication, outward-rounded (min/max over endpoint products).
+    /// 0·∞ ambiguities (NaN products) fall back to [`Interval::WHOLE`] —
+    /// conservative, never wrong.
+    fn mul(self, o: Interval) -> Interval {
+        let ps = [
+            self.lo * o.lo,
+            self.lo * o.hi,
+            self.hi * o.lo,
+            self.hi * o.hi,
+        ];
+        if ps.iter().any(|p| p.is_nan()) {
+            return Interval::WHOLE;
+        }
+        let mut lo = ps[0];
+        let mut hi = ps[0];
+        for &p in &ps[1..] {
+            lo = lo.min(p);
+            hi = hi.max(p);
+        }
+        Interval {
+            lo: down_k(lo, 1),
+            hi: up_k(hi, 1),
+        }
+    }
+}
+
+impl core::ops::Div for Interval {
+    type Output = Interval;
+    /// Division, outward-rounded. A zero-containing divisor yields
+    /// [`Interval::WHOLE`] (documented: "no useful enclosure" is an answer,
+    /// not a panic — certified callers branch on it).
+    fn div(self, o: Interval) -> Interval {
+        if o.contains_zero() {
+            return Interval::WHOLE;
+        }
+        let qs = [
+            self.lo / o.lo,
+            self.lo / o.hi,
+            self.hi / o.lo,
+            self.hi / o.hi,
+        ];
+        if qs.iter().any(|q| q.is_nan()) {
+            return Interval::WHOLE;
+        }
+        let mut lo = qs[0];
+        let mut hi = qs[0];
+        for &q in &qs[1..] {
+            lo = lo.min(q);
+            hi = hi.max(q);
+        }
+        Interval {
+            lo: down_k(lo, 1),
+            hi: up_k(hi, 1),
+        }
     }
 }
 
@@ -392,11 +402,7 @@ mod tests {
                 let px = (x.lo() + t * (x.hi() - x.lo())).clamp(x.lo(), x.hi());
                 let py = (y.lo() + (1.0 - t) * (y.hi() - y.lo())).clamp(y.lo(), y.hi());
                 let (dx, dy) = (Dd::from_f64(px), Dd::from_f64(py));
-                for (iv, dd) in [
-                    (x.add(y), dx.add(dy)),
-                    (x.sub(y), dx.sub(dy)),
-                    (x.mul(y), dx.mul(dy)),
-                ] {
+                for (iv, dd) in [(x + y, dx + dy), (x - y, dx - dy), (x * y, dx * dy)] {
                     // dd result is within 2^-104 relative of truth; the
                     // interval must contain the dd value nudged either way.
                     assert!(
@@ -406,7 +412,7 @@ mod tests {
                     cases += 1;
                 }
                 if !y.contains_zero() {
-                    let (iv, dd) = (x.div(y), dx.div(dy));
+                    let (iv, dd) = (x / y, dx / dy);
                     assert!(iv.contains(dd.hi), "div containment: {iv:?} vs {dd:?}");
                     cases += 1;
                 }
@@ -427,10 +433,10 @@ mod tests {
             let x = Interval::new(-2.0 + lcg(&mut seed), -1.0 + lcg(&mut seed) + 3.0);
             let y = Interval::new(lcg(&mut seed) * 4.0 - 2.5, lcg(&mut seed).abs() * 3.0 + 2.0);
             let z = Interval::new(lcg(&mut seed) - 1.5, lcg(&mut seed) + 1.5);
-            let form_a = x.mul(y.add(z));
-            let form_b = x.mul(y).add(x.mul(z));
+            let form_a = x * (y + z);
+            let form_b = x * y + x * z;
             let (px, py, pz) = (x.midpoint(), y.midpoint(), z.midpoint());
-            let truth = Dd::from_f64(px).mul(Dd::from_f64(py).add(Dd::from_f64(pz)));
+            let truth = Dd::from_f64(px) * (Dd::from_f64(py) + Dd::from_f64(pz));
             assert!(form_a.contains(truth.hi), "factored form lost truth");
             assert!(form_b.contains(truth.hi), "distributed form lost truth");
             // Sub-distributivity: the factored form is never wider than the
@@ -498,10 +504,10 @@ mod tests {
     fn division_by_zero_straddling_interval_is_whole_line() {
         let x = Interval::new(1.0, 2.0);
         let y = Interval::new(-0.5, 0.5);
-        assert_eq!(x.div(y), Interval::WHOLE);
+        assert_eq!(x / y, Interval::WHOLE);
         // But a signed non-zero divisor works.
         let z = Interval::new(0.25, 0.5);
-        let q = x.div(z);
+        let q = x / z;
         assert!(q.contains(4.0) && q.contains(8.0) && q.lo() >= 1.9);
     }
 
@@ -516,22 +522,20 @@ mod tests {
         // beats narrow-and-wrong.
         let x = Interval::point(77617.0);
         let y = Interval::point(33096.0);
-        let y2 = y.mul(y);
-        let y4 = y2.mul(y2);
-        let y6 = y4.mul(y2);
-        let y8 = y4.mul(y4);
-        let x2 = x.mul(x);
-        let t1 = Interval::point(333.75).mul(y6);
-        let inner = Interval::point(11.0)
-            .mul(x2)
-            .mul(y2)
-            .sub(y6)
-            .sub(Interval::point(121.0).mul(y4))
-            .sub(Interval::point(2.0));
-        let t2 = x2.mul(inner);
-        let t3 = Interval::point(5.5).mul(y8);
-        let t4 = x.div(Interval::point(2.0).mul(y));
-        let f = t1.add(t2).add(t3).add(t4);
+        let y2 = y * y;
+        let y4 = y2 * y2;
+        let y6 = y4 * y2;
+        let y8 = y4 * y4;
+        let x2 = x * x;
+        let t1 = Interval::point(333.75) * y6;
+        let inner = Interval::point(11.0) * x2 * y2
+            - y6
+            - Interval::point(121.0) * y4
+            - Interval::point(2.0);
+        let t2 = x2 * inner;
+        let t3 = Interval::point(5.5) * y8;
+        let t4 = x / (Interval::point(2.0) * y);
+        let f = t1 + t2 + t3 + t4;
         let truth = -54767.0 / 66192.0;
         assert!(
             f.contains(truth),
@@ -559,7 +563,7 @@ mod tests {
         assert_eq!(a.intersect(Interval::new(4.0, 5.0)), None);
         assert!(Interval::new(0.0, 4.0).encloses(a));
         assert!(!a.encloses(b));
-        assert_eq!(a.neg(), Interval::new(-3.0, -1.0));
+        assert_eq!(-a, Interval::new(-3.0, -1.0));
         assert_eq!(Interval::new(-2.0, 1.0).abs(), Interval::new(0.0, 2.0));
         for bad in [(f64::NAN, 1.0), (2.0, 1.0)] {
             let r = std::panic::catch_unwind(|| Interval::new(bad.0, bad.1));

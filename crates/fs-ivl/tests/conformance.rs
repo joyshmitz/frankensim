@@ -8,7 +8,9 @@ use fs_ivl::{AffineCtx, Interval};
 use fs_math::dd::Dd;
 
 fn lcg(seed: &mut u64) -> f64 {
-    *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    *seed = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     ((*seed >> 11) as f64) / (1u64 << 53) as f64 - 0.5
 }
 
@@ -29,7 +31,9 @@ fn random_dag(seed: &mut u64, depth: usize) -> Vec<Op> {
     for level in 0..depth {
         let avail = 3 + level; // leaves 0..3, then one node per level
         let pick = |s: &mut u64, n: usize| -> usize {
-            *s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            *s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             (*s >> 33) as usize % n
         };
         let a = pick(seed, avail);
@@ -51,9 +55,9 @@ fn eval_interval(leaves: [Interval; 3], ops: &[Op]) -> Interval {
     let mut vals: Vec<Interval> = leaves.to_vec();
     for op in ops {
         let v = match *op {
-            Op::Add(a, b) => vals[a].add(vals[b]),
-            Op::Sub(a, b) => vals[a].sub(vals[b]),
-            Op::Mul(a, b) => vals[a].mul(vals[b]),
+            Op::Add(a, b) => vals[a] + vals[b],
+            Op::Sub(a, b) => vals[a] - vals[b],
+            Op::Mul(a, b) => vals[a] * vals[b],
             Op::Exp(a) => clamp_domain(vals[a]).exp(),
             Op::Tanh(a) => vals[a].tanh(),
             Op::Sin(a) => vals[a].sin(),
@@ -77,9 +81,9 @@ fn eval_point(leaves: [f64; 3], ops: &[Op]) -> f64 {
     let mut vals: Vec<Dd> = leaves.iter().map(|&x| Dd::from_f64(x)).collect();
     for op in ops {
         let v = match *op {
-            Op::Add(a, b) => vals[a].add(vals[b]),
-            Op::Sub(a, b) => vals[a].sub(vals[b]),
-            Op::Mul(a, b) => vals[a].mul(vals[b]),
+            Op::Add(a, b) => vals[a] + vals[b],
+            Op::Sub(a, b) => vals[a] - vals[b],
+            Op::Mul(a, b) => vals[a] * vals[b],
             Op::Exp(a) => Dd::from_f64(fs_math::det::exp(vals[a].to_f64().clamp(-30.0, 30.0))),
             Op::Tanh(a) => Dd::from_f64(fs_math::det::tanh(vals[a].to_f64())),
             Op::Sin(a) => Dd::from_f64(fs_math::det::sin(vals[a].to_f64())),
@@ -95,7 +99,7 @@ fn expression_tree_containment() {
     // point evaluation at interior samples. Elementary point values are
     // f64-accurate; interval enclosures are ≥ budget wide, so direct
     // containment with a small ULP grace on the comparison.
-    let mut seed = 0x600D_DA6_u64;
+    let mut seed = 0x0600_DDA6_u64;
     let mut checked = 0u64;
     for _ in 0..4_000 {
         let ops = random_dag(&mut seed, 6);
@@ -138,7 +142,7 @@ fn expression_tree_containment() {
 /// Recorded on aarch64-apple (M4 Pro); must match on x86-64 (trj) — the
 /// cross-ISA determinism evidence for interval endpoints and affine
 /// collapse.
-const GOLDEN_HASH: u64 = 0x0; // placeholder: set from first run
+const GOLDEN_HASH: u64 = 0x3712_a4c1_2d5e_5864;
 
 #[test]
 fn golden_hash_of_interval_endpoints() {
@@ -149,7 +153,7 @@ fn golden_hash_of_interval_endpoints() {
             acc = acc.wrapping_mul(0x0000_0100_0000_01b3);
         }
     };
-    let mut seed = 0x1D_BEEF_u64;
+    let mut seed = 0x001D_BEEF_u64;
     for _ in 0..500 {
         let ops = random_dag(&mut seed, 8);
         let mut leaves = [Interval::point(0.0); 3];
@@ -166,7 +170,7 @@ fn golden_hash_of_interval_endpoints() {
         let mut ctx = AffineCtx::new();
         let x = ctx.from_interval(leaves[0]);
         let y = ctx.from_interval(leaves[1]);
-        let aff = x.add(&y).mul(&x.sub(&y)).to_interval();
+        let aff = (&(&x + &y) * &(&x - &y)).to_interval();
         feed(aff.lo());
         feed(aff.hi());
     }

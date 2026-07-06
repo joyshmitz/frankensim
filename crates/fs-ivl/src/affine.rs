@@ -99,20 +99,54 @@ impl Affine {
         Interval::new((self.center - r).next_down(), (self.center + r).next_up())
     }
 
-    /// Negation (exact).
+    /// Scale by a constant.
     #[must_use]
-    pub fn neg(&self) -> Affine {
+    pub fn scale(&self, k: f64) -> Affine {
+        let center = self.center * k;
+        let mut err = (self.err * k.abs()).next_up();
+        err = (err + round_err(center)).next_up();
+        let terms = self
+            .terms
+            .iter()
+            .map(|&(s, c)| {
+                let ck = c * k;
+                err = (err + round_err(ck)).next_up();
+                (s, ck)
+            })
+            .collect();
+        Affine { center, terms, err }
+    }
+
+    /// Helper: terms scaled by k (center untouched), rounding absorbed.
+    fn scale_terms_only(&self, k: f64, err: &mut f64) -> Vec<(u32, f64)> {
+        self.terms
+            .iter()
+            .map(|&(s, c)| {
+                let ck = c * k;
+                *err = (*err + round_err(ck)).next_up();
+                (s, ck)
+            })
+            .collect()
+    }
+}
+
+impl core::ops::Neg for &Affine {
+    type Output = Affine;
+    /// Negation (exact).
+    fn neg(self) -> Affine {
         Affine {
             center: -self.center,
             terms: self.terms.iter().map(|&(s, c)| (s, -c)).collect(),
             err: self.err,
         }
     }
+}
 
+impl core::ops::Add<&Affine> for &Affine {
+    type Output = Affine;
     /// Addition: symbol-wise coefficient merge; every computed coefficient
     /// absorbs its rounding error into `err`.
-    #[must_use]
-    pub fn add(&self, o: &Affine) -> Affine {
+    fn add(self, o: &Affine) -> Affine {
         let center = self.center + o.center;
         let mut err = (self.err + o.err).next_up();
         err = (err + round_err(center)).next_up();
@@ -139,36 +173,22 @@ impl Affine {
         }
         Affine { center, terms, err }
     }
+}
 
+impl core::ops::Sub<&Affine> for &Affine {
+    type Output = Affine;
     /// Subtraction. THE point of affine arithmetic: `x.sub(&x)` cancels
     /// symbol-wise to (nearly) exactly zero.
-    #[must_use]
-    pub fn sub(&self, o: &Affine) -> Affine {
-        self.add(&o.neg())
+    fn sub(self, o: &Affine) -> Affine {
+        self + &(-o)
     }
+}
 
-    /// Scale by a constant.
-    #[must_use]
-    pub fn scale(&self, k: f64) -> Affine {
-        let center = self.center * k;
-        let mut err = (self.err * k.abs()).next_up();
-        err = (err + round_err(center)).next_up();
-        let terms = self
-            .terms
-            .iter()
-            .map(|&(s, c)| {
-                let ck = c * k;
-                err = (err + round_err(ck)).next_up();
-                (s, ck)
-            })
-            .collect();
-        Affine { center, terms, err }
-    }
-
+impl core::ops::Mul<&Affine> for &Affine {
+    type Output = Affine;
     /// Multiplication (standard first-order AA): the bilinear noise·noise
     /// residue is bounded by rad(x)·rad(y) and absorbed into `err`.
-    #[must_use]
-    pub fn mul(&self, o: &Affine) -> Affine {
+    fn mul(self, o: &Affine) -> Affine {
         let center = self.center * o.center;
         let rx = self.radius();
         let ry = o.radius();
@@ -188,18 +208,6 @@ impl Affine {
             terms: merged,
             err,
         }
-    }
-
-    /// Helper: terms scaled by k (center untouched), rounding absorbed.
-    fn scale_terms_only(&self, k: f64, err: &mut f64) -> Vec<(u32, f64)> {
-        self.terms
-            .iter()
-            .map(|&(s, c)| {
-                let ck = c * k;
-                *err = (*err + round_err(ck)).next_up();
-                (s, ck)
-            })
-            .collect()
     }
 }
 
@@ -244,11 +252,11 @@ mod tests {
     fn x_minus_x_collapses() {
         let mut ctx = AffineCtx::new();
         let x = ctx.from_interval(Interval::new(1.0, 2.0));
-        let diff = x.sub(&x).to_interval();
+        let diff = (&x - &x).to_interval();
         // Plain intervals give width 1; affine must be ~machine-epsilon.
         assert!(diff.contains(0.0), "must contain the true value 0");
         assert!(diff.width() < 1e-13, "affine x - x too wide: {diff:?}");
-        let plain = Interval::new(1.0, 2.0).sub(Interval::new(1.0, 2.0));
+        let plain = Interval::new(1.0, 2.0) - Interval::new(1.0, 2.0);
         let ratio = plain.width() / diff.width().max(f64::MIN_POSITIVE);
         assert!(ratio > 1e10, "tightness ratio only {ratio}");
         println!(
@@ -264,11 +272,9 @@ mod tests {
         let mut ctx = AffineCtx::new();
         let x = ctx.from_interval(Interval::new(-0.5, 0.5));
         let one = Affine::constant(1.0);
-        let aa = one.add(&x).mul(&one.sub(&x)).to_interval();
+        let aa = (&(&one + &x) * &(&one - &x)).to_interval();
         let xi = Interval::new(-0.5, 0.5);
-        let ia = Interval::point(1.0)
-            .add(xi)
-            .mul(Interval::point(1.0).sub(xi));
+        let ia = (Interval::point(1.0) + xi) * (Interval::point(1.0) - xi);
         // Containment first (both must hold), tightness second.
         for t in 0..=10 {
             let p = -0.5 + f64::from(t) / 10.0;
@@ -305,7 +311,7 @@ mod tests {
             let x = ctx.from_interval(ix);
             let y = ctx.from_interval(iy);
             // f = (x+y)·(x−y) − x·x + y·y  ≡ 0 identically!
-            let f = x.add(&y).mul(&x.sub(&y)).sub(&x.mul(&x)).add(&y.mul(&y));
+            let f = &(&(&x + &y) * &(&x - &y)) - &(&(&x * &x) - &(&y * &y));
             let enc = f.to_interval();
             assert!(enc.contains(0.0), "identity-zero not contained: {enc:?}");
             // AA is FIRST-order: linear (ε) terms cancel exactly, so the
@@ -326,7 +332,7 @@ mod tests {
         let mut ctx = AffineCtx::new();
         let x1 = ctx.from_interval(Interval::new(1.0, 2.0));
         let x2 = ctx.from_interval(Interval::new(1.0, 2.0));
-        let diff = x1.sub(&x2).to_interval();
+        let diff = (&x1 - &x2).to_interval();
         assert!(
             diff.width() > 0.9,
             "independent symbols must not cancel: {diff:?}"
@@ -342,7 +348,7 @@ mod tests {
         assert!(s.contains(-6.0) && s.contains(2.0));
         assert!(s.lo() <= -6.0 && s.hi() >= 2.0 && s.width() < 8.1);
         let c = Affine::constant(2.5);
-        assert_eq!(c.to_interval().midpoint(), 2.5);
+        assert_eq!(c.to_interval().midpoint().to_bits(), 2.5f64.to_bits());
         assert!(c.to_interval().width() < 1e-15);
     }
 }
