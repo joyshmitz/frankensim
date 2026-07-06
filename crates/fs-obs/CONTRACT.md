@@ -1,39 +1,59 @@
 # CONTRACT: fs-obs
 
-> Status: SKELETON. This contract gains force as the crate's beads land; a crate
-> must have a complete contract before it becomes a dependency target of other
-> crates' real code (AGENTS.md).
-
 ## Purpose and layer
-Structured observability: the one event schema for kernels, tests, and the ledger. Layer: UTIL.
+Structured observability: the ONE event schema for kernels, solvers, test
+suites, and (once fs-ledger lands) the ledger `events` table. Layer: UTIL.
 
 ## Public types and semantics
-Skeleton only: `VERSION`. Populated by this crate's implementation beads.
+- `Event { session, scope, seq, severity, kind, wall_ns }` — envelope + typed
+  payload; `to_jsonl()` canonical single-line serialization; `content_hash()`
+  (FNV-1a 64) over content EXCLUDING wall-clock.
+- `EventKind` v1 registry: solver_residual, tile_complete, cancellation,
+  budget_delta, gradient_check, conformance_case, benchmark_result,
+  storm_assertion, custom (pre-serialized JSON escape hatch).
+- `Severity` (trace/info/warn/error), `Emitter` (per-scope monotone seq),
+  `validate_line` (strict structural validator), `lint_failure_record`
+  (failure-records-must-reproduce lint v1), `fnv1a64`, `SCHEMA_VERSION`.
 
 ## Invariants
-None claimed yet. No-claim until stated.
+- One event = one line; strings escaped so no literal newlines appear.
+- Canonical field order: v, session, scope, seq, severity, kind, payload,
+  [wall_ns last]. The golden-line test freezes this shape; changing it
+  requires a SCHEMA_VERSION bump with semantic justification.
+- `content_hash` is independent of `wall_ns` (deterministic-mode logs from
+  two runs of the same seed hash identically).
+- Additive schema evolution only: kinds may be added, fields never repurposed.
+- Non-finite floats serialize as tagged strings ("non-finite:NaN"), never
+  invalid JSON.
 
 ## Error model
-No fallible APIs yet. Errors will be structured values with machine-readable
-diagnoses (Decalogue P10), never panics across the crate boundary.
+`SchemaError { at, message }` with fix guidance. No panics across the
+boundary; the validator rejects rather than repairs.
 
 ## Determinism class
-Target: Deterministic (bit-stable across runs and thread counts per ISA) unless
-a section here documents a narrower class. Not yet verified — see G5.
+Deterministic: pure functions; no clocks (callers supply `wall_ns`), no I/O,
+no RNG.
 
 ## Cancellation behavior
-All future hot paths poll cancellation at tile boundaries (Decalogue P7).
-No compute paths exist yet.
+All operations O(event size). No Cx required.
 
 ## Unsafe boundary
-None. `unsafe_code` is denied workspace-wide; any future capsule must be
-registered per docs/CONVENTIONS.md and ship a SAFETY.md.
+None.
 
 ## Feature flags
-None. Frontier features use `frontier-*`, moonshots `moonshot-*`, default off.
+None.
 
 ## Conformance tests
-tests/conformance.rs (placeholder). Any reimplementation must pass this suite.
+Unit suite (11 cases): every-kind serialize+validate round-trip, golden line,
+envelope/content hash split, monotone sequences, corruption rejection,
+failure-record lint, hostile-string escaping, non-finite tagging, FNV known
+answers.
 
 ## No-claim boundaries
-Everything: this is a skeleton. No numerical, performance, or safety claims.
+- FNV-1a is NOT cryptographic; ledger-grade content addressing (BLAKE3-class)
+  arrives with fs-ledger.
+- Tracing-on-scope-trees integration (needs fs-exec), ledger `events` sink
+  (needs fs-ledger), and overhead budgeting (needs roofline harness) are this
+  crate's REMAINING bead scope — not yet claimed.
+- The validator is structural, not a full JSON parser (the writer is ours;
+  external JSON is out of scope).
