@@ -8,10 +8,10 @@
 //!
 //! The Five Explicits come from the CI environment (deterministic-friendly:
 //! all inputs are explicit argv/env, no hidden state):
-//!   seed        — not applicable to a gate run; the fixed literal b"nightly"
-//!   versions    — {"frankensim": $GITHUB_SHA or "local", "constellation": lock hash}
-//!   budget      — {"wall_s": 5400} (the job timeout)
-//!   capability  — {"ops": ["ci.nightly"], "runner": $RUNNER_OS or "local"}
+//! - seed: not applicable to a gate run; the fixed literal `b"nightly"`
+//! - versions: `{"frankensim": $GITHUB_SHA or "local"}`
+//! - budget: `{"wall_s": 5400}` (the job timeout)
+//! - capability: `{"ops": ["ci.nightly"], "runner": $RUNNER_OS or "local"}`
 //!
 //! Exit code 0 on success; 1 with a structured JSON error line on failure.
 
