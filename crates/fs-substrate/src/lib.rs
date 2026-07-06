@@ -20,7 +20,11 @@
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+pub mod affinity;
 pub mod bandwidth;
+pub mod field;
+pub mod morton;
+pub mod tile;
 
 /// Crate version, re-exported for provenance stamping.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
