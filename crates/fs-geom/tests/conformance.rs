@@ -117,14 +117,26 @@ fn geo_001_g0_trait_laws_on_the_fixture_zoo() {
                     assert!((g.norm() - 1.0).abs() < 1e-6, "{}", chart.name());
                     let h = 1e-6;
                     let fd = Vec3::new(
-                        (chart.eval(p.offset(Vec3::new(h, 0.0, 0.0)), cx).signed_distance
-                            - chart.eval(p.offset(Vec3::new(-h, 0.0, 0.0)), cx).signed_distance)
+                        (chart
+                            .eval(p.offset(Vec3::new(h, 0.0, 0.0)), cx)
+                            .signed_distance
+                            - chart
+                                .eval(p.offset(Vec3::new(-h, 0.0, 0.0)), cx)
+                                .signed_distance)
                             / (2.0 * h),
-                        (chart.eval(p.offset(Vec3::new(0.0, h, 0.0)), cx).signed_distance
-                            - chart.eval(p.offset(Vec3::new(0.0, -h, 0.0)), cx).signed_distance)
+                        (chart
+                            .eval(p.offset(Vec3::new(0.0, h, 0.0)), cx)
+                            .signed_distance
+                            - chart
+                                .eval(p.offset(Vec3::new(0.0, -h, 0.0)), cx)
+                                .signed_distance)
                             / (2.0 * h),
-                        (chart.eval(p.offset(Vec3::new(0.0, 0.0, h)), cx).signed_distance
-                            - chart.eval(p.offset(Vec3::new(0.0, 0.0, -h)), cx).signed_distance)
+                        (chart
+                            .eval(p.offset(Vec3::new(0.0, 0.0, h)), cx)
+                            .signed_distance
+                            - chart
+                                .eval(p.offset(Vec3::new(0.0, 0.0, -h)), cx)
+                                .signed_distance)
                             / (2.0 * h),
                     );
                     assert!(
@@ -140,7 +152,9 @@ fn geo_001_g0_trait_laws_on_the_fixture_zoo() {
     verdict(
         "geo-001",
         checked == 12_000,
-        &format!("trait laws hold over {checked} seeded queries on sphere/box/torus (seed {SEED:#x})"),
+        &format!(
+            "trait laws hold over {checked} seeded queries on sphere/box/torus (seed {SEED:#x})"
+        ),
     );
 }
 
@@ -164,12 +178,7 @@ fn geo_002_multi_chart_region_agrees_within_composed_bounds() {
     let gate = CancelGate::new();
     let (agreed, json_stable) = with_cx(&gate, |cx| {
         let sampled = sphere
-            .convert(
-                ErrBudget {
-                    abs_sd_error: 0.08,
-                },
-                cx,
-            )
+            .convert(ErrBudget { abs_sd_error: 0.08 }, cx)
             .expect("feasible budget");
         let region = Region::from_chart(Arc::new(sphere), ProvenanceHash::of_bytes(b"exact"))
             .with_chart(Arc::new(sampled.value), sampled.provenance);
@@ -196,10 +205,7 @@ fn geo_003_disagreement_is_detected_with_localized_diagnostics() {
     let report = with_cx(&gate, |cx| {
         let region = Region::from_chart(Arc::new(sphere), ProvenanceHash::of_bytes(b"honest"))
             .with_chart(
-                Arc::new(LyingSphereChart {
-                    sphere,
-                    bias: 0.03,
-                }),
+                Arc::new(LyingSphereChart { sphere, bias: 0.03 }),
                 ProvenanceHash::of_bytes(b"liar"),
             );
         region
@@ -235,12 +241,7 @@ fn geo_004_conversion_receipts_are_rigorous_and_refusals_teach() {
     let gate = CancelGate::new();
     let (contained, receipt_bound, refusal) = with_cx(&gate, |cx| {
         let certified = sphere
-            .convert(
-                ErrBudget {
-                    abs_sd_error: 0.05,
-                },
-                cx,
-            )
+            .convert(ErrBudget { abs_sd_error: 0.05 }, cx)
             .expect("feasible");
         // Empirical containment: |sampled - exact| ≤ receipt bound over
         // seeded points inside the sampled box (G0 law of the receipt).
@@ -260,12 +261,7 @@ fn geo_004_conversion_receipts_are_rigorous_and_refusals_teach() {
         }
         let contained = worst <= certified.qoi;
         // Infeasible budget refuses BEFORE running, with ranked fixes.
-        let refusal = sphere.convert(
-            ErrBudget {
-                abs_sd_error: 1e-6,
-            },
-            cx,
-        );
+        let refusal = sphere.convert(ErrBudget { abs_sd_error: 1e-6 }, cx);
         (contained, certified.qoi, refusal)
     });
     let teaches = matches!(&refusal, Err(ConvertDiag::BudgetInfeasible { .. }))

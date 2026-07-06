@@ -98,9 +98,8 @@ impl Region {
                     let a = self.charts[i].chart.eval(p, cx);
                     let b = self.charts[j].chart.eval(p, cx);
                     let gap = (a.signed_distance - b.signed_distance).abs();
-                    let allowed = half_width(&a.error)
-                        + half_width(&b.error)
-                        + config.tolerance_abs;
+                    let allowed =
+                        half_width(&a.error) + half_width(&b.error) + config.tolerance_abs;
                     report.worst_gap = report.worst_gap.max(gap - allowed);
                     report.checked += 1;
                     if gap > allowed {
@@ -251,11 +250,8 @@ mod tests {
 
     #[test]
     fn identical_charts_agree_and_reports_are_deterministic() {
-        let region = Region::from_chart(
-            Arc::new(sphere()),
-            ProvenanceHash::of_bytes(b"a"),
-        )
-        .with_chart(Arc::new(sphere()), ProvenanceHash::of_bytes(b"b"));
+        let region = Region::from_chart(Arc::new(sphere()), ProvenanceHash::of_bytes(b"a"))
+            .with_chart(Arc::new(sphere()), ProvenanceHash::of_bytes(b"b"));
         let gate = CancelGate::new();
         let (r1, r2) = with_cx(&gate, |cx| {
             let cfg = AgreementConfig::default();
@@ -270,17 +266,14 @@ mod tests {
 
     #[test]
     fn lying_chart_is_detected_with_localized_diagnostics() {
-        let region = Region::from_chart(
-            Arc::new(sphere()),
-            ProvenanceHash::of_bytes(b"honest"),
-        )
-        .with_chart(
-            Arc::new(LyingSphereChart {
-                sphere: sphere(),
-                bias: 0.05,
-            }),
-            ProvenanceHash::of_bytes(b"liar"),
-        );
+        let region = Region::from_chart(Arc::new(sphere()), ProvenanceHash::of_bytes(b"honest"))
+            .with_chart(
+                Arc::new(LyingSphereChart {
+                    sphere: sphere(),
+                    bias: 0.05,
+                }),
+                ProvenanceHash::of_bytes(b"liar"),
+            );
         let gate = CancelGate::new();
         let report = with_cx(&gate, |cx| {
             region
@@ -299,11 +292,8 @@ mod tests {
 
     #[test]
     fn agreement_check_is_cancellable() {
-        let region = Region::from_chart(
-            Arc::new(sphere()),
-            ProvenanceHash::of_bytes(b"a"),
-        )
-        .with_chart(Arc::new(sphere()), ProvenanceHash::of_bytes(b"b"));
+        let region = Region::from_chart(Arc::new(sphere()), ProvenanceHash::of_bytes(b"a"))
+            .with_chart(Arc::new(sphere()), ProvenanceHash::of_bytes(b"b"));
         let gate = CancelGate::new();
         gate.request();
         let outcome = with_cx(&gate, |cx| {

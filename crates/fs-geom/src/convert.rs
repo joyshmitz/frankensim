@@ -5,9 +5,9 @@
 //! (admission fails early instead of running a doomed conversion).
 
 use crate::{Aabb, Chart, ChartSample, Differentiability, Point3};
+use core::fmt;
 use fs_evidence::{Certified, Evidence, NumericalCertificate, ProvenanceHash};
 use fs_exec::Cx;
-use core::fmt;
 
 /// The conversion error budget (v1: absolute signed-distance error; the
 /// full cost×error Pareto machinery is the Rep Router bead's).
@@ -107,12 +107,9 @@ impl SampledSdf {
 
     fn interp(&self, p: Point3) -> f64 {
         let n = f64::from(self.n - 1);
-        let fx = ((p.x - self.box_.min.x) / (self.box_.max.x - self.box_.min.x) * n)
-            .clamp(0.0, n);
-        let fy = ((p.y - self.box_.min.y) / (self.box_.max.y - self.box_.min.y) * n)
-            .clamp(0.0, n);
-        let fz = ((p.z - self.box_.min.z) / (self.box_.max.z - self.box_.min.z) * n)
-            .clamp(0.0, n);
+        let fx = ((p.x - self.box_.min.x) / (self.box_.max.x - self.box_.min.x) * n).clamp(0.0, n);
+        let fy = ((p.y - self.box_.min.y) / (self.box_.max.y - self.box_.min.y) * n).clamp(0.0, n);
+        let fz = ((p.z - self.box_.min.z) / (self.box_.max.z - self.box_.min.z) * n).clamp(0.0, n);
         let (i0, j0, k0) = (fx as u32, fy as u32, fz as u32);
         let (i1, j1, k1) = (
             (i0 + 1).min(self.n - 1),
@@ -121,10 +118,26 @@ impl SampledSdf {
         );
         let (tx, ty, tz) = (fx - f64::from(i0), fy - f64::from(j0), fz - f64::from(k0));
         let lerp = |a: f64, b: f64, t: f64| a + (b - a) * t;
-        let c00 = lerp(self.values[self.idx(i0, j0, k0)], self.values[self.idx(i1, j0, k0)], tx);
-        let c10 = lerp(self.values[self.idx(i0, j1, k0)], self.values[self.idx(i1, j1, k0)], tx);
-        let c01 = lerp(self.values[self.idx(i0, j0, k1)], self.values[self.idx(i1, j0, k1)], tx);
-        let c11 = lerp(self.values[self.idx(i0, j1, k1)], self.values[self.idx(i1, j1, k1)], tx);
+        let c00 = lerp(
+            self.values[self.idx(i0, j0, k0)],
+            self.values[self.idx(i1, j0, k0)],
+            tx,
+        );
+        let c10 = lerp(
+            self.values[self.idx(i0, j1, k0)],
+            self.values[self.idx(i1, j1, k0)],
+            tx,
+        );
+        let c01 = lerp(
+            self.values[self.idx(i0, j0, k1)],
+            self.values[self.idx(i1, j0, k1)],
+            tx,
+        );
+        let c11 = lerp(
+            self.values[self.idx(i0, j1, k1)],
+            self.values[self.idx(i1, j1, k1)],
+            tx,
+        );
         lerp(lerp(c00, c10, ty), lerp(c01, c11, ty), tz)
     }
 }
@@ -184,7 +197,11 @@ pub const SAMPLED_SDF_MAX_RESOLUTION: u32 = 96;
 /// a rigorous receipt. (The plan's mesh→SDF / F-rep→SDF edges specialize
 /// this; the sphere fixture exercises it today.)
 impl<C: Chart> Convert<SampledSdf> for C {
-    fn convert(&self, budget: ErrBudget, cx: &Cx<'_>) -> Result<Certified<SampledSdf>, ConvertDiag> {
+    fn convert(
+        &self,
+        budget: ErrBudget,
+        cx: &Cx<'_>,
+    ) -> Result<Certified<SampledSdf>, ConvertDiag> {
         let box_ = self.support().inflate(budget.abs_sd_error.max(1e-9));
         // Probe the source's Lipschitz claim at the box center.
         let center = Point3::new(
