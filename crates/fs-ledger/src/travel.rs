@@ -234,18 +234,21 @@ impl ExplainNode {
     }
 
     fn render_into(&self, out: &mut String, depth: usize) {
+        use std::fmt::Write as _;
         let pad = "  ".repeat(depth);
         let mark = if self.truncated { " …" } else { "" };
-        out.push_str(&format!(
-            "{pad}{} [{}]{mark}\n",
+        let _ = writeln!(
+            out,
+            "{pad}{} [{}]{mark}",
             &self.hash_hex[..16.min(self.hash_hex.len())],
             self.kind
-        ));
+        );
         for op in &self.produced_by {
-            out.push_str(&format!(
-                "{pad}  <- op {} ({}, branch {}, seed {})\n",
+            let _ = writeln!(
+                out,
+                "{pad}  <- op {} ({}, branch {}, seed {})",
                 op.id, op.exec_mode, op.branch, op.seed_hex
-            ));
+            );
             for input in &op.inputs {
                 input.render_into(out, depth + 2);
             }
@@ -278,7 +281,9 @@ impl Ledger {
             });
         }
         if self.branch(parent)?.is_none() {
-            return Err(LedgerError::NotFound { what: format!("branch {parent}") });
+            return Err(LedgerError::NotFound {
+                what: format!("branch {parent}"),
+            });
         }
         let fork_op = self.visible_frontier(parent)?;
         let insert = self
@@ -381,7 +386,9 @@ impl Ledger {
         self.require_json("budget", explicits.budget, true)?;
         self.require_json("capability", explicits.capability, true)?;
         if self.branch(branch)?.is_none() {
-            return Err(LedgerError::NotFound { what: format!("branch {branch}") });
+            return Err(LedgerError::NotFound {
+                what: format!("branch {branch}"),
+            });
         }
         self.conn
             .prepare(
@@ -414,9 +421,14 @@ impl Ledger {
         let mut cap: Option<i64> = None;
         for _ in 0..MAX_BRANCH_DEPTH {
             let Some(info) = self.branch(current)? else {
-                return Err(LedgerError::NotFound { what: format!("branch {current}") });
+                return Err(LedgerError::NotFound {
+                    what: format!("branch {current}"),
+                });
             };
-            segments.push(ChainSegment { branch: info.id, cap });
+            segments.push(ChainSegment {
+                branch: info.id,
+                cap,
+            });
             match info.parent {
                 None => return Ok(segments),
                 Some(parent) => {
@@ -463,7 +475,10 @@ impl Ledger {
                 .conn
                 .query_with_params(
                     "SELECT id FROM ops WHERE branch = ?1 AND id <= ?2 ORDER BY id",
-                    &[SqliteValue::Integer(segment.branch), SqliteValue::Integer(cap)],
+                    &[
+                        SqliteValue::Integer(segment.branch),
+                        SqliteValue::Integer(cap),
+                    ],
                 )
                 .map_err(|e| sql_err("visible ops", &e))?;
             for row in &rows {
@@ -507,7 +522,13 @@ impl Ledger {
             }
             ops.push(op);
         }
-        Ok(ViewSnapshot { branch, cutoff_ns: t_ns, ops, in_flight, artifacts })
+        Ok(ViewSnapshot {
+            branch,
+            cutoff_ns: t_ns,
+            ops,
+            in_flight,
+            artifacts,
+        })
     }
 
     /// Output artifact hashes of one op (edges with role `out`).
@@ -671,20 +692,25 @@ impl Ledger {
             .map_err(|e| sql_err("op exec_mode", &e))?;
         match rows.first().and_then(|r| r.get(0)) {
             Some(SqliteValue::Text(t)) => Ok(t.as_str().to_string()),
-            _ => Err(LedgerError::NotFound { what: format!("op {op}") }),
+            _ => Err(LedgerError::NotFound {
+                what: format!("op {op}"),
+            }),
         }
     }
 
     fn op_branch(&self, op: i64) -> Result<i64, LedgerError> {
         let row = self
             .conn
-            .query_with_params("SELECT branch FROM ops WHERE id = ?1", &[SqliteValue::Integer(
-                op,
-            )])
+            .query_with_params(
+                "SELECT branch FROM ops WHERE id = ?1",
+                &[SqliteValue::Integer(op)],
+            )
             .map_err(|e| sql_err("op branch", &e))?;
         match row.first() {
             Some(r) => row_i64(r, 0, "op branch"),
-            None => Err(LedgerError::NotFound { what: format!("op {op}") }),
+            None => Err(LedgerError::NotFound {
+                what: format!("op {op}"),
+            }),
         }
     }
 
@@ -716,8 +742,7 @@ impl Ledger {
         }
         for (position, (&ia, &ib)) in ids_a.iter().zip(ids_b.iter()).enumerate() {
             let (Some(op_a), Some(op_b)) = (self.op(ia)?, other.op(ib)?) else {
-                verdict.structure_mismatch =
-                    Some(format!("missing op row at position {position}"));
+                verdict.structure_mismatch = Some(format!("missing op row at position {position}"));
                 return Ok(verdict);
             };
             let mode_a = self.op_exec_mode(ia)?;
@@ -728,10 +753,16 @@ impl Ledger {
                 ));
                 return Ok(verdict);
             }
-            let out_a: BTreeSet<String> =
-                self.op_output_hashes(ia)?.iter().map(ContentHash::to_hex).collect();
-            let out_b: BTreeSet<String> =
-                other.op_output_hashes(ib)?.iter().map(ContentHash::to_hex).collect();
+            let out_a: BTreeSet<String> = self
+                .op_output_hashes(ia)?
+                .iter()
+                .map(ContentHash::to_hex)
+                .collect();
+            let out_b: BTreeSet<String> = other
+                .op_output_hashes(ib)?
+                .iter()
+                .map(ContentHash::to_hex)
+                .collect();
             verdict.compared += 1;
             if out_a != out_b {
                 let mismatch = ReplayMismatch {
@@ -776,7 +807,10 @@ impl Ledger {
             }
         }
         if dry_run || candidates.is_empty() {
-            return Ok(GcReport { candidates, deleted: 0 });
+            return Ok(GcReport {
+                candidates,
+                deleted: 0,
+            });
         }
         let owns_txn = !self.in_transaction();
         if owns_txn {
@@ -785,7 +819,9 @@ impl Ledger {
         let result = (|| -> Result<usize, LedgerError> {
             let mut deleted = 0usize;
             for hex in &candidates {
-                let Some(h) = ContentHash::from_hex(hex) else { continue };
+                let Some(h) = ContentHash::from_hex(hex) else {
+                    continue;
+                };
                 self.conn
                     .prepare("DELETE FROM artifact_chunks WHERE hash = ?1")
                     .map_err(|e| sql_err("gc chunks", &e))?
@@ -803,9 +839,15 @@ impl Ledger {
         match (result, owns_txn) {
             (Ok(deleted), true) => {
                 self.commit()?;
-                Ok(GcReport { candidates, deleted })
+                Ok(GcReport {
+                    candidates,
+                    deleted,
+                })
             }
-            (Ok(deleted), false) => Ok(GcReport { candidates, deleted }),
+            (Ok(deleted), false) => Ok(GcReport {
+                candidates,
+                deleted,
+            }),
             (Err(e), owns) => {
                 if owns {
                     let _ = self.rollback();
@@ -906,9 +948,14 @@ mod tests {
         assert_eq!(l.fork("x", 999).unwrap_err().code(), "LedgerNotFound");
         assert_eq!(l.fork("", MAIN_BRANCH).unwrap_err().code(), "LedgerInvalid");
         l.fork("dup", MAIN_BRANCH).unwrap();
-        assert_eq!(l.fork("dup", MAIN_BRANCH).unwrap_err().code(), "LedgerInvalid");
         assert_eq!(
-            l.begin_op_on(999, ExecMode::Fast, None, "{}", &FX, 1).unwrap_err().code(),
+            l.fork("dup", MAIN_BRANCH).unwrap_err().code(),
+            "LedgerInvalid"
+        );
+        assert_eq!(
+            l.begin_op_on(999, ExecMode::Fast, None, "{}", &FX, 1)
+                .unwrap_err()
+                .code(),
             "LedgerNotFound"
         );
     }
@@ -918,18 +965,24 @@ mod tests {
         let l = mem();
         // op1: t 10..15; op2: t 20..35; op3 starts at 40.
         unit(&l, MAIN_BRANCH, ExecMode::Deterministic, 1, 10);
-        let op2 = l.begin_op_on(MAIN_BRANCH, ExecMode::Deterministic, None, "{}", &FX, 20).unwrap();
+        let op2 = l
+            .begin_op_on(MAIN_BRANCH, ExecMode::Deterministic, None, "{}", &FX, 20)
+            .unwrap();
         let r2 = l.put_artifact("fixture", b"op2 output", None).unwrap();
         l.link(op2, &r2.hash, EdgeRole::Out).unwrap();
         l.finish_op(op2, OpOutcome::Ok, None, 35).unwrap();
-        let _op3 =
-            l.begin_op_on(MAIN_BRANCH, ExecMode::Deterministic, None, "{}", &FX, 40).unwrap();
+        let _op3 = l
+            .begin_op_on(MAIN_BRANCH, ExecMode::Deterministic, None, "{}", &FX, 40)
+            .unwrap();
 
         let view = l.at_time(MAIN_BRANCH, 25).unwrap();
         assert_eq!(view.ops.len(), 2, "op3 has not begun at t=25");
         assert_eq!(view.in_flight, 1, "op2 is mid-flight at t=25");
         let masked = view.ops.iter().find(|o| o.id == op2).unwrap();
-        assert_eq!(masked.outcome, None, "outcome written at t=35 is the future");
+        assert_eq!(
+            masked.outcome, None,
+            "outcome written at t=35 is the future"
+        );
         // op2's output does not exist yet at t=25; only op1's artifact shows.
         assert_eq!(view.artifacts.len(), 1);
         let full = l.at_time(MAIN_BRANCH, 100).unwrap();
@@ -945,11 +998,17 @@ mod tests {
         let dry = l.gc_unreferenced_artifacts(true).unwrap();
         assert_eq!(dry.candidates, vec![loose.hash.to_hex()]);
         assert_eq!(dry.deleted, 0);
-        assert!(l.artifact_info(&loose.hash).unwrap().is_some(), "dry run deletes nothing");
+        assert!(
+            l.artifact_info(&loose.hash).unwrap().is_some(),
+            "dry run deletes nothing"
+        );
         let real = l.gc_unreferenced_artifacts(false).unwrap();
         assert_eq!(real.deleted, 1);
         assert!(l.artifact_info(&loose.hash).unwrap().is_none());
-        assert!(l.artifact_info(&kept).unwrap().is_some(), "referenced artifacts are immortal");
+        assert!(
+            l.artifact_info(&kept).unwrap().is_some(),
+            "referenced artifacts are immortal"
+        );
         assert!(l.lint().unwrap().is_clean());
     }
 }

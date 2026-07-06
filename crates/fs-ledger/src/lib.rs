@@ -1052,7 +1052,14 @@ impl Ledger {
         explicits: &FiveExplicits<'_>,
         t_start_ns: i64,
     ) -> Result<i64, LedgerError> {
-        self.begin_op_on(MAIN_BRANCH, ExecMode::Deterministic, session, ir, explicits, t_start_ns)
+        self.begin_op_on(
+            MAIN_BRANCH,
+            ExecMode::Deterministic,
+            session,
+            ir,
+            explicits,
+            t_start_ns,
+        )
     }
 
     /// Record an op's outcome. Each op finishes exactly once.
@@ -1726,7 +1733,11 @@ mod tests {
         for table in ALL_TABLES {
             // A fresh ledger is empty except the seeded main branch row.
             let expected = u64::from(*table == "branches");
-            assert_eq!(l.table_count(table).unwrap(), expected, "{table} fresh count");
+            assert_eq!(
+                l.table_count(table).unwrap(),
+                expected,
+                "{table} fresh count"
+            );
         }
     }
 

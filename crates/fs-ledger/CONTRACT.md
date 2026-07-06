@@ -1,9 +1,10 @@
 # CONTRACT: fs-ledger
 
-> Status: ACTIVE (Design Ledger v0). Owns schema v0 + Rev S extension tables,
-> BLAKE3 content addressing, and the WAL/snapshot concurrency contract.
-> Time travel, forkable worlds, and `explain()` belong to the follow-on
-> fs-ledger time-travel bead and are NOT provided here.
+> Status: ACTIVE (Design Ledger, schema v2). Owns the core schema + Rev S
+> extension tables, BLAKE3 content addressing, the WAL/snapshot concurrency
+> contract, and — since schema v2 — forkable worlds, `at(t)` views,
+> `explain()`, the replay audit, and unreferenced-artifact GC (`travel`
+> module).
 
 ## Purpose and layer
 
@@ -37,8 +38,18 @@ fine-grained event stream. Layer: L6 (HELM). Runtime deps: `std` + `fsqlite`.
   `evidence`, `scenarios`, `constraints`, `capability_probes`, `imports`,
   `unsafe_capsules`.
 - Hygiene: `lint()` (orphan edges/metrics/chunks, storage-shape and length
-  invariants, half-finished ops) — all-zero on any healthy or crash-recovered
-  ledger.
+  invariants, half-finished ops, dangling branch references) — all-zero on
+  any healthy or crash-recovered ledger.
+- Time travel (`travel` module, schema v2): `fork`/`branches`/`branch_diff`
+  (a fork is a new op-log branch sharing every artifact by hash; visibility
+  = own ops + ancestors' up to each fork point), `begin_op_on` (branch +
+  recorded `ExecMode`), `at_time` (consistent views at arbitrary instants:
+  outcomes not yet written are masked, unfinished ops' outputs invisible),
+  `explain` (full causal trees, depth-limited, DAG-deduped, loud on orphan
+  inputs), `replay_verdict` (deterministic ops must reproduce output hashes
+  exactly; fast divergences reported without failing),
+  `gc_unreferenced_artifacts` (edge-less artifacts only; referenced
+  artifacts are immortal).
 
 Schema divergences from plan Appendix D, both deliberate: `JSON` columns are
 STRICT-legal `TEXT` with `json_valid()` CHECKs (Appendix D as written is not
@@ -99,8 +110,14 @@ migration + future-version refusal, dual-path chunked dedupe + round trip,
 corruption-fails-loudly (inline + chunked), concurrent snapshot readers
 during a write sweep (monotone + internally consistent), kill -9 crash
 battery (6 seeded rounds → lint-clean + integrity-clean), and an events/sec
-throughput smoke ledgered as a metric. Unit tests in `src/lib.rs` and
-`src/hash.rs` cover the API surface and edge cases.
+throughput smoke ledgered as a metric. `tests/travel.rs`: genuine-v1 →
+v2 migration with history intact, fork storage audit (N forks = 1× artifacts
++ deltas) + branch independence, replay audit battery (clean /
+deterministic-failure / fast-divergence), explain() full-lineage
+reconstruction with loud orphan-input failure, at(t) monotone mid-sweep
+consistency, and a kill -9 battery during fork traffic. Unit tests in
+`src/lib.rs`, `src/hash.rs`, and `src/travel.rs` cover the API surface and
+edge cases.
 
 ## No-claim boundaries
 
@@ -112,7 +129,11 @@ throughput smoke ledgered as a metric. Unit tests in `src/lib.rs` and
   but has no side-channel or performance hardening (scalar, unoptimized).
 - Throughput numbers are smoke floors, not roofline claims (§14 discipline:
   real claims need machine fingerprints and acceptance bands).
-- Time travel, forks, `explain()`: follow-on bead.
+- Branch DELETION and cross-branch merge (as opposed to merge-view
+  queries): not provided; branches are append-only history.
+- `at_time` trusts caller-supplied op timestamps; callers that write
+  non-monotone `t_start`/`t_end` get views consistent with what they
+  recorded, not with wall-clock truth.
 - Multi-GiB single artifacts: chunk storage bounds row sizes, but the
   streaming path is verified at the tens-of-MiB scale only so far; fsqlite
   transaction memory behavior at multi-GiB scale is unmeasured.
