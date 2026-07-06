@@ -257,7 +257,7 @@ impl Parser<'_> {
                                 Span::new(self.pos, (self.pos + 2).min(self.bytes.len())),
                                 IrErrorKind::BadEscape,
                                 "unknown escape sequence",
-                                r"supported: \\ \" \/ \n \t \r \b \f \uXXXX (no surrogate pairs)",
+                                r#"supported: \ " / \n \t \r \b \f \uXXXX (no surrogate pairs)"#,
                             ));
                         }
                     }
