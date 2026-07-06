@@ -1,0 +1,57 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/fs-qty",
+    "crates/fs-obs",
+    "crates/fs-substrate",
+    "crates/fs-simd",
+    "crates/fs-alloc",
+    "crates/fs-exec",
+    "crates/fs-math",
+    "crates/fs-la",
+    "crates/fs-sparse",
+    "crates/fs-fft",
+    "crates/fs-ivl",
+    "crates/fs-rand",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Dicklesworthstone/frankensim"
+authors = ["FrankenSim contributors"]
+
+# Decalogue P1 as policy: the default for every crate is `deny(unsafe_code)`.
+# Registered unsafe capsules (see docs/CONVENTIONS.md and the unsafe-capsule
+# registry) opt out at the MODULE level with #[allow(unsafe_code)] plus a
+# SAFETY.md; the xtask policy checker audits that every such module is listed.
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Pedantic exceptions that fight numerical-kernel idioms; each is deliberate.
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+similar_names = "allow"
+many_single_char_names = "allow"
+unreadable_literal = "allow"
+doc_markdown = "allow"
+missing_panics_doc = "allow"
+missing_errors_doc = "allow"
+module_name_repetitions = "allow"
+
+[profile.release]
+# Deterministic-friendly, performance-honest defaults; changes to this profile
+# must justify performance/determinism/cancellation tradeoffs (AGENTS.md).
+lto = "thin"
+codegen-units = 1
+debug = "line-tables-only"
+
+[profile.bench]
+inherits = "release"

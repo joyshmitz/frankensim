@@ -1,0 +1,18 @@
+[package]
+name = "fs-fft"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Stockham FFTs, real transforms and DCT, cache-blocked 3D pencils."
+
+[package.metadata.frankensim]
+layer = "L1"
+
+[dependencies]
+
+[dev-dependencies]
+
+[lints]
+workspace = true

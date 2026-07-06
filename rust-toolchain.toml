@@ -1,0 +1,8 @@
+# FrankenSim tracks nightly: edition 2024 plus nightly features used in narrow,
+# documented places (const-generic dimension arithmetic in fs-qty; portable-SIMD
+# experiments behind `experimental-portable-simd` in fs-simd). Everything else is
+# written to compile on stable so a future de-nightlying is a small diff, not a
+# rewrite. See docs/CONVENTIONS.md "Toolchain".
+[toolchain]
+channel = "nightly"
+components = ["rustfmt", "clippy"]

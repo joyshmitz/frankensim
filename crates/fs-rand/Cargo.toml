@@ -1,0 +1,18 @@
+[package]
+name = "fs-rand"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Counter-based Philox streams keyed by logical identity; Sobol/Owen QMC."
+
+[package.metadata.frankensim]
+layer = "L1"
+
+[dependencies]
+
+[dev-dependencies]
+
+[lints]
+workspace = true

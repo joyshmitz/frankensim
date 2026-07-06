@@ -1,0 +1,18 @@
+[package]
+name = "fs-simd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "SIMD tiers: scalar baseline, NEON/AVX-512 capsules behind safe facades."
+
+[package.metadata.frankensim]
+layer = "L0"
+
+[dependencies]
+
+[dev-dependencies]
+
+[lints]
+workspace = true
