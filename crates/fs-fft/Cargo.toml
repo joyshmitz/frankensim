@@ -11,6 +11,7 @@ description = "Stockham FFTs, real transforms and DCT, cache-blocked 3D pencils.
 layer = "L1"
 
 [dependencies]
+fs-math = { path = "../fs-math" }
 
 [dev-dependencies]
 

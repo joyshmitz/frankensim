@@ -782,6 +782,9 @@ dependencies = [
 [[package]]
 name = "fs-fft"
 version = "0.0.1"
+dependencies = [
+ "fs-math",
+]
 
 [[package]]
 name = "fs-ivl"
