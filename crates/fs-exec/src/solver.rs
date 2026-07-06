@@ -325,11 +325,11 @@ mod tests {
             let n = state.x.len();
             let mut next = vec![0.0f64; n];
             let mut residual = 0.0f64;
-            for i in 0..n {
+            for (i, slot) in next.iter_mut().enumerate() {
                 let left = if i > 0 { state.x[i - 1] } else { 0.0 };
                 let right = if i + 1 < n { state.x[i + 1] } else { 0.0 };
-                next[i] = state.x[i] + 0.6 * ((self.rhs[i] - left - right) / 4.0 - state.x[i]);
-                residual = residual.max((next[i] - state.x[i]).abs());
+                *slot = state.x[i] + 0.6 * ((self.rhs[i] - left - right) / 4.0 - state.x[i]);
+                residual = residual.max((*slot - state.x[i]).abs());
             }
             state.x = next;
             state.iter += 1;
@@ -486,10 +486,10 @@ mod tests {
         let fork_b = fork(&warm).expect("second fork");
         assert_eq!(fork_a.content_hash(), fork_b.content_hash());
         // Diverge: different subsequent inputs (different rhs) per fork.
-        let (solver_b, _) = {
+        let solver_b = {
             let mut j = jacobi().0;
             j.rhs.iter_mut().for_each(|r| *r += 0.5);
-            (j, ())
+            j
         };
         let SolverProgress::Done((xa, _)) = with_cx(&gate, |cx| drive(&solver, fork_a, cx)) else {
             panic!("fork A finishes");

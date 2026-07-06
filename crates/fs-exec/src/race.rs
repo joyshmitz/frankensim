@@ -46,13 +46,18 @@ impl RacerConfig {
     }
 }
 
+/// A boxed strategy body (named for clippy's sake; the shape is the
+/// contract: consume a per-branch `Cx`, return the candidate or observe
+/// the kill).
+type BranchFn<'a, T> = Box<dyn FnOnce(&Cx<'_>) -> Result<T, Cancelled> + Send + 'a>;
+
 /// One competing strategy. The closure runs under its own [`Cx`] (own
 /// cancel gate, own scope arena, own stream key) and must poll
 /// `cx.checkpoint()` at bounded strides, returning `Err(Cancelled)`
 /// promptly when killed.
 pub struct RaceBranch<'a, T> {
     name: &'static str,
-    run: Box<dyn FnOnce(&Cx<'_>) -> Result<T, Cancelled> + Send + 'a>,
+    run: BranchFn<'a, T>,
 }
 
 impl<'a, T> RaceBranch<'a, T> {
@@ -226,6 +231,9 @@ impl Racer {
     /// # Errors
     /// [`NoWinner`] as in [`Racer::race`] — including when the parent gate
     /// cancels everything.
+    // One coherent protocol (watcher -> branches -> outcome-keyed decision);
+    // splitting would scatter the drain/decision invariants exec-010 audits.
+    #[allow(clippy::too_many_lines)]
     pub fn race_with_gate<T: Send>(
         &self,
         branches: Vec<RaceBranch<'_, T>>,
@@ -263,6 +271,7 @@ impl Racer {
                 let slots = &slots;
                 let decision = &decision;
                 let accept = &accept;
+                let names = &names;
                 let arenas = &self.arenas;
                 let seed = self.config.seed;
                 let race_done_ref = &race_done;
