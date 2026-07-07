@@ -21,5 +21,10 @@ fs-sparse = { path = "../fs-sparse" }
 [dev-dependencies]
 asupersync = { path = "../../../asupersync" }
 
+[features]
+# [F]-gated per the Ambition-Tag rule: semantic diff ships disabled until
+# its Gauntlet tier + kill metric (R3 fallback fraction) are green.
+semantic-diff = []
+
 [lints]
 workspace = true

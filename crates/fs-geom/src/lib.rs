@@ -32,13 +32,17 @@ use fs_evidence::NumericalCertificate;
 use fs_exec::Cx;
 
 mod convert;
+#[cfg(feature = "semantic-diff")]
+pub mod diff;
 pub mod fixtures;
+pub mod ident;
 mod region;
 pub mod router;
 pub mod sheaf;
 
 pub use convert::{Convert, ConvertDiag, ErrBudget, SampledSdf};
 pub use region::{AgreementConfig, AgreementReport, Disagreement, Region, RegionChart};
+pub use ident::{EntityId, IdTransform, IdentityMap};
 pub use sheaf::{
     Interface, InterfaceBound, InterfaceSample, SheafComplex, SheafVerdict, TripleCell,
     ray_parity_falsifier,
