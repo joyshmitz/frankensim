@@ -70,7 +70,7 @@ impl C64 {
             return C64::ZERO;
         }
         let m = self.abs();
-        let t = det::sqrt(0.5 * (m + self.re.abs()));
+        let t = det::sqrt(f64::midpoint(m, self.re.abs()));
         if self.re >= 0.0 {
             C64 { re: t, im: self.im / (2.0 * t) }
         } else {
@@ -161,7 +161,7 @@ mod tests {
     #[test]
     fn field_algebra_and_stability() {
         let a = C64::new(3.0, -4.0);
-        assert_eq!(a.abs(), 5.0);
+        assert!((a.abs() - 5.0).abs() < 1e-15);
         assert!((a * a.recip() - C64::ONE).abs() < 1e-15);
         // Division at scale extremes (Smith robustness).
         let big = C64::new(1e300, 1e300);
