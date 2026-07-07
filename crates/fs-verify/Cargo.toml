@@ -23,5 +23,9 @@ fs-obs = { path = "../fs-obs" }
 name = "conformance"
 required-features = ["certified-speculation"]
 
+[[test]]
+name = "zoo"
+required-features = ["certified-speculation"]
+
 [lints]
 workspace = true

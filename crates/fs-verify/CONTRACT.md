@@ -41,6 +41,23 @@ quadrature.
   are WARM STARTS with measured iteration savings and an ESTIMATED
   color, never certificates (the R1 boundary).
 
+- `zoo` (bead lmp4.2) — the PROPOSER ZOO behind one `propose()`
+  trait: hot-swap `Registry` (register/deregister without touching
+  consumers), `speculate()` ordering candidates by ADVISORY confidence
+  (descending, NaN last, deterministic name tie-break — confidence
+  never enters any accept decision or certificate), and the
+  TYPE-LEVEL safety invariant: `CertifiedAnswer` has no public
+  constructor — it exists only when the verifier says yes. v0
+  proposers: NEIGHBOR EXTRAPOLATION (nearest certified run, Taylor
+  correction with a cached sensitivity, zeroth-order degradation,
+  smaller-θ equidistant tie-break) and COARSE-RUNG PROLONGATION
+  (halved-mesh solve, linear prolongation, honest decline on tiny
+  meshes). `quantize_f16` demonstrates the precision discipline:
+  speculate LOW, verify HIGH — the certificate inherits the
+  VERIFIER's precision. `ZooTelemetry` tracks per-proposer per-regime
+  accept rates with the AUTO-DEMOTION hook (collapse ⇒ disabled in
+  that regime) and ledger rows.
+
 ## Invariants
 
 1. THE UPPER-BOUND PROPERTY (G1 MMS): the bound dominates the oracle
@@ -64,6 +81,18 @@ quadrature.
    stays within its stated band (ver-005).
 6. The warm start saves ≥ 1.5× Newton iterations with an ESTIMATED
    color and complete ledger rows (ver-006).
+7. Zoo: answers exist only through the verifier; confidence is
+   advisory in BOTH directions (a NaN-confidence good proposer still
+   wins; a confidence-1.0 adversary never does) (zoo-001).
+8. Warm adjoints beat zeroth-order >2×; both degrade into verified
+   accepts; equidistant ties are deterministic (zoo-002).
+9. Coarse-rung candidates accept at honest tolerances, reject at
+   tight ones, and fp16-quantized candidates still verify (zoo-003).
+10. THE FALSIFIER: an adversarial surrogate lands ZERO incorrect
+    accepts, its rate collapse auto-demotes it, and demoted proposers
+    stop being consulted (zoo-004).
+11. The economics loop stays sound end-to-end with per-proposer
+    per-regime rows shipped to the ledger (zoo-005).
 
 ## Error model
 
@@ -118,3 +147,9 @@ ledger rows. Any reimplementation must pass the suite unchanged.
   workspace-wide interval consolidation.
 - Accept-rate telemetry at customer-realistic tolerances (the kill
   measurement) accumulates once the first physics vertical is live.
+- The NEURAL surrogate proposer (FrankenTorch fp16/fp8 over
+  FrankenNetworkx graphs) is fs-surrogate's (bead 7tv.8); the zoo's
+  trait and adversarial gating are ready for it.
+- The asupersync speculative RACE (proposer vs target, loser drained
+  request→drain→finalize at a tile boundary, zero leaks) is the
+  concurrent form — v0 speculates sequentially before the solve.
