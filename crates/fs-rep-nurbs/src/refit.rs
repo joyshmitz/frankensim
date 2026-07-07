@@ -108,10 +108,14 @@ pub struct Refit {
     pub report: RefitReport,
 }
 
-/// Direction of the (u, v) spherical parameterization.
+/// Direction of the (u, v) spherical parameterization. `v` runs
+/// SOUTH → NORTH (φ = π(1 − v)) so the fitted surface's du × dv
+/// normals point OUTWARD — the orientation the signed chart
+/// presentation (and the sheaf comparison against source fields)
+/// relies on.
 fn direction(u: f64, v: f64) -> [f64; 3] {
     let theta = 2.0 * std::f64::consts::PI * u;
-    let phi = std::f64::consts::PI * v;
+    let phi = std::f64::consts::PI * (1.0 - v);
     [
         phi.sin() * theta.cos(),
         phi.sin() * theta.sin(),
