@@ -35,9 +35,15 @@ mod convert;
 pub mod fixtures;
 mod region;
 pub mod router;
+pub mod sheaf;
 
 pub use convert::{Convert, ConvertDiag, ErrBudget, SampledSdf};
 pub use region::{AgreementConfig, AgreementReport, Disagreement, Region, RegionChart};
+pub use sheaf::{
+    Interface, InterfaceBound, InterfaceSample, SheafComplex, SheafVerdict, TripleCell,
+    ray_parity_falsifier,
+};
+
 pub use router::{
     Binding, ChainOutcome, ConverterSpec, CostOracle, EdgeOutcome, EdgeRunner, ErrorModel,
     ExecuteError, MemoryCostOracle, RouteCandidate, RouteExplanation, RoutePlan, RouteRefusal,
