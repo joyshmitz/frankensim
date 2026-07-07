@@ -60,6 +60,8 @@ members = [
     "crates/fs-govern",
     "crates/fs-spececo",
     "crates/fs-contract",
+    "crates/fs-bisect",
+    "crates/fs-cutfem",
     "xtask",
 ]
 
