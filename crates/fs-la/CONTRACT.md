@@ -62,6 +62,19 @@ Dense linear algebra: GEMM, batched small dense, factorizations, eigensolvers. L
   embedded symmetric matrices (1e-10), trace/determinant identities
   against an independent Gaussian-elimination `det_complex` oracle,
   Hermitian spectral reality, T6 colleague-matrix roots.
+- `rand_nla::{range_finder, rsvd, nystrom_psd, sketch_ls, hutchinson,
+  hutch_pp, RangeReport, TraceReport}` — randomized NLA [F].
+  REPLAYABILITY BY CONSTRUCTION: all randomness flows from keyed Philox
+  streams (stable kernel-id registry in-module), so every "stochastic"
+  estimate is a pure function of its seed — bitwise reproducible and
+  cross-ISA (fs-rand's distributions are themselves bit-deterministic).
+  Results carry evidence (probe counts, posterior error estimates,
+  variance estimates — the Evidence<T> integration point). Tested:
+  rank-r errors within budgeted tails on fast/slow/gap spectra with
+  estimate coverage; RSVD leading singular values to 1e-6; Nyström PSD
+  reconstruction to 1e-6; sketch-and-precondition LS matches direct QR
+  to 1e-8 with fast CG convergence; Hutch++ MSE decisively below
+  Hutchinson at matched probe budgets (measured, not cited).
 - `VERSION` for provenance stamping.
 
 ## Invariants
@@ -163,6 +176,10 @@ placeholder remains for the shared-harness migration.
   recorded refinement); LOBPCG has no deflation/soft-locking yet and
   identity preconditioning by default. Eigenvector adjoints are recorded
   follow-up (dλ/dp = vᵀ(∂A/∂p)v composes caller-side with fs-ad).
+- Randomized-NLA error estimates are PROBABILISTIC indicators with
+  empirically validated coverage, not certified bounds (fs-ivl owns
+  certificates); SRTT sketches (via fs-fft), an LSQR driver, and
+  e-process stopping integration are recorded follow-up scope.
 - `condition_estimate` in `RefineReport` is a Hager-style ESTIMATE (not
   a certified bound); the ladder thresholds are engineering headroom,
   not proofs. Componentwise (per-entry) backward targets, Krylov
