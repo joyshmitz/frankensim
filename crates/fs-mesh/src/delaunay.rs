@@ -212,7 +212,7 @@ impl Mesh {
     /// Visibility walk from the hint to a tet in conflict with `p`.
     /// Returns the conflict seed. Falls back to an exhaustive scan if
     /// the walk exceeds its budget (logged, deterministic).
-    fn locate(&mut self, p: [f64; 3], p_idx: u32) -> u32 {
+    pub(crate) fn locate(&mut self, p: [f64; 3], p_idx: u32) -> u32 {
         let mut t = self.hint;
         if !self.alive[t as usize] || self.is_ghost(t) {
             t = (0..self.tets.len() as u32)
@@ -251,7 +251,7 @@ impl Mesh {
 
     /// Insert point `p_idx` (already appended to `points`). Returns
     /// false when it bitwise-duplicates an existing vertex.
-    fn insert(&mut self, p_idx: u32) -> bool {
+    pub(crate) fn insert(&mut self, p_idx: u32) -> bool {
         let p = self.coords(p_idx);
         let seed = self.locate(p, p_idx);
         // Duplicate guard: identical bits to a vertex of the seed tet
@@ -492,7 +492,7 @@ pub fn delaunay(points: &[Point3], cx: &Cx<'_>) -> Result<Tetrahedralization, Me
         },
     };
     let quad = bootstrap_quad(&mesh.points, &order).ok_or(MeshError::DegenerateInput)?;
-    let first = init_first_tet(&mut mesh, quad);
+    init_first_tet(&mut mesh, quad);
     let mut inserted = 0u64;
     for &i in &order {
         if quad.contains(&i) {
@@ -504,7 +504,6 @@ pub fn delaunay(points: &[Point3], cx: &Cx<'_>) -> Result<Tetrahedralization, Me
             cx.checkpoint()?;
         }
     }
-    let _ = first;
     mesh.stats.tets_final = (0..mesh.tets.len() as u32)
         .filter(|&t| mesh.alive[t as usize] && !mesh.is_ghost(t))
         .count() as u64;
@@ -550,7 +549,7 @@ fn bootstrap_quad(pts: &[[f64; 3]], order: &[u32]) -> Option<[u32; 4]> {
 }
 
 /// Create the first real tet (swapped Positive) and its 4 ghosts.
-fn init_first_tet(mesh: &mut Mesh, quad: [u32; 4]) -> u32 {
+fn init_first_tet(mesh: &mut Mesh, quad: [u32; 4]) {
     let [a, b, c, d] = quad;
     let verts = if orient3d(
         mesh.points[a as usize],
@@ -588,7 +587,6 @@ fn init_first_tet(mesh: &mut Mesh, quad: [u32; 4]) -> u32 {
     }
     debug_assert!(map.is_empty(), "initial hull must close");
     mesh.hint = t;
-    t
 }
 
 impl Mesh {
