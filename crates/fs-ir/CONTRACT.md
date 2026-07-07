@@ -43,6 +43,24 @@ typed AST. Layer: L6 (HELM). Runtime deps: `std` + fs-qty.
   malformed verb usage refuses with the verb's span.
 - `IrError` — span + stable kind code + detail + fix hint (refusals
   teach). `IR_VERSION` — the language version this build reads/writes.
+- `query` (addendum Proposal 8 — declarative query language v0): a query is
+  `(QoI, Target, budget_usd, deadline_s)` where `Qoi` is a fixed MENU —
+  `MaxOverRegion`, `Integral` (linear), `Exceedance` (probabilistic, needs a
+  named environment) — each advertising `QoiMeta { linear, adjoint_available,
+  ladder_applicable }` for the planner and a `value_dims(field_dims)`
+  (max→field dims; integral→field·m³; exceedance→dimensionless). `Target` is
+  `Tolerance{value,dims}`, `Confidence(f64)`, or `ToleranceAndConfidence`.
+  `Query::admit(&FieldRegistry) -> QueryAdmission` type-checks a query in
+  constant time (no solves) over six fixed-order checks — `query.field`
+  (the QoI's field must exist), `query.budget` (finite positive $),
+  `query.deadline` (finite positive s), `query.confidence` (strictly in
+  `(0,1)` — 100% is uncertifiable), `query.target` (finite positive
+  tolerance), `query.dimensions` (tolerance dims == QoI value dims; exceedance
+  threshold dims == field dims) — emitting the admission bead's `Finding`s
+  with ranked teaching `RankedFix`es. `Query::from_node`/`to_node` give the
+  `(query …)` IR surface, round-tripping under `same_shape`. This is the
+  addendum's declarative surface; imperative solver access is the
+  internal/expert path.
 
 - `admission` (the gp3.5 bead): `admit(node, &AdmissionContext) ->
   AdmissionReport` runs six timed dimensions — Five Explicits structure,
@@ -112,6 +130,16 @@ span-accuracy cases (bad seed, bad quantity); verb lowering explicitness,
 trace content, idempotence, and structured refusal; version-pin
 round-trip through both syntaxes.
 
+`tests/query.rs` (suite `fs-ir/query`, addendum Proposal 8): the wedge QoI
+menu is expressible with correct metadata; `value_dims` follows the
+functional; well-posed queries admit; the FIVE ill-posed classes each reject
+on a distinct check with a teaching fix (zero budget, past deadline, 100%
+confidence, field-absent-from-design, self-contradictory dimensions), plus
+off-dimension exceedance thresholds and integral-tolerance-needs-volume-dims;
+multiple faults are reported together; admission is deterministic (identical
+verdict on replay); and the `(query …)` IR form round-trips (tolerance,
+exceedance+confidence) with a teaching error on a non-query form.
+
 `tests/admission.rs` (suite `fs-ir/admission`): ad-001 Appendix C admits
 cleanly + ms-class latency + determinism; ad-002 five-study violation zoo
 (all rejected on the right dimension, fixes attached); ad-003 dimensional
@@ -139,3 +167,13 @@ structured refusal).
   yet derive them from raw study text.
 - `SessionCapability` is admission's view of a token; issuance,
   revocation, and idempotency keys are fs-session's bead (gp3.7).
+- The query language is v0: a FIXED QoI menu (max/integral/exceedance), not
+  a general program surface. `Query::admit` type-checks well-posedness and
+  dimensions ONLY — it does NOT plan, cost, or execute a query (the greedy
+  fidelity-ladder planner and the anytime/refusal result semantics are
+  separate addendum beads). Field dimensions come from a caller-supplied
+  `FieldRegistry` (the design's typed fields, Proposal 13); this module does
+  not itself derive fields from geometry. `budget_usd` is a priced dollar
+  budget distinct from the wall/memory/core grants of the `(budget …)` study
+  clause. The returned answer's COLOR (verified/validated/estimated) is
+  attached by the query result, not here.
