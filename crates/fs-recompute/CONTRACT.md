@@ -58,6 +58,32 @@ CONTRACT (risk R2 owned here).
 6. Ledger rows carry all seven fields + slack; rows and snapshots are
    bitwise-deterministic across builds (rcs-006).
 
+## Tolerance-aware invalidation (bead lmp4.7, feature-gated)
+
+`invalidate::plan` computes the recompute frontier for a perturbation:
+deltas flow `Σ L_e · δ(parent)` through EVERY frontier node (skipped
+nodes are STALE by their bound — staleness reaches consumers scaled by
+their sensitivities), each node absorbs against its OWN effective
+slack, and the recompute set is closed UPWARD along delta-carrying
+edges (`PulledByDescendant`: fresh bytes need fresh inputs). Skip
+verdicts carry VERIFIED-color interval claims in their rows;
+`apply_plan` BURNS absorbed bounds into runtime state (`burned`,
+SEPARATE from the immutable record identity — the suite caught an
+early design where burning mutated the hashed record and broke
+identity), so repeat perturbations see the spent slack. Fail-closed
+hardening: exact ties recompute; non-finite sensitivities force
+recompute; negative slack never skips; δ = 0 is an empty frontier.
+Skip YIELD is the R4 health metric; loose bounds degrade gracefully
+to hash-memoization behavior, still correct.
+
+Invariants: flow-through absorption + upward closure (inv-001);
+fail-closed zoo (inv-002); the G3 SOUNDNESS battery — over seeded
+traces on an executable DAG, EVERY node's final value (cached or
+fresh) lies within its tolerance of full-recompute truth, and the
+falsifier's forced recomputes agree within their certified bounds;
+any violation is Sev-0 (inv-003); graceful degradation with yield
+measured (inv-004); verified-color claims + slack burning (inv-005).
+
 ## Error model
 
 `StoreError::DeterminismViolation` (stop-the-line, with likely-cause
@@ -82,7 +108,10 @@ None. `#![forbid(unsafe_code)]` via workspace lints; no capsules.
 
 ## Feature flags
 
-None.
+`tolerance-invalidation` — the lmp4.7 invalidation algorithm, OFF by
+default per the Ambition-Tag gating rule until its Gauntlet tier and
+kill-metric (skip yield on realistic edit traces) stay green. Adds
+fs-evidence (the verified-color skip claims).
 
 ## Conformance tests
 
@@ -102,3 +131,7 @@ reimplementation must pass the suite unchanged.
   deferred; `snapshot()` is the interim durable form.
 - Slack SPENDING policies (which skips to take under a budget) are
   the recompute-api bead's.
+- Sensitivity bounds are SUPPLIED (interval-derived by callers);
+  adjoint-sharpened bounds (Proposal 1) tighten the loose ones.
+- Path-sum accumulation is conservative for shared subpaths (no
+  common-subexpression tightening yet).

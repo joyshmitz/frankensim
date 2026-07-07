@@ -47,56 +47,130 @@ fn simple_record(op: &str, achieved: f64, required: f64) -> NodeRecord {
 }
 
 fn put(store: &mut Store, op: &str, achieved: f64, required: f64, artifact: &[u8]) -> ContentHash {
-    match store.put(simple_record(op, achieved, required), artifact).expect("put") {
+    match store
+        .put(simple_record(op, achieved, required), artifact)
+        .expect("put")
+    {
         PutOutcome::Inserted(h) | PutOutcome::Deduped(h) => h,
     }
 }
 
-/// inv-001 — propagation and absorption: on a decaying chain the
-/// perturbation is absorbed exactly where the accumulated bound first
-/// fits the slack, and propagation STOPS there; δ = 0 is an empty
-/// frontier.
+/// inv-001 — flow-through absorption and the UPWARD CLOSURE:
+/// staleness flows through skipped nodes (scaled by sensitivities),
+/// every frontier node absorbs against its OWN slack, and a failing
+/// descendant pulls its stale ancestors into the recompute set (fresh
+/// bytes need fresh inputs); δ = 0 is an empty frontier.
 #[test]
+#[allow(clippy::too_many_lines)] // absorption and closure are one narrative
 fn inv_001_absorption() {
     let mut store = Store::new();
-    // Chain a → b → c → d with L = 0.5 on each edge.
-    // Slacks: a: 0 (source), b: 1e-3, c: 1e-1, d: 1e-6.
+    // Chain a → b → c → d, L = 0.5 each. Slacks: b tight (recompute),
+    // c and d roomy (both absorb the through-flowing staleness).
     let a = put(&mut store, "a", 1e-9, 1e-9, b"a");
     let b = put(&mut store, "b", 1e-6, 1.001e-3, b"b");
     let c = put(&mut store, "c", 1e-6, 1.001e-1, b"c");
-    let d = put(&mut store, "d", 1e-9, 1.001e-6, b"d");
+    let d = put(&mut store, "d", 1e-9, 1.001e-2, b"d");
     let edges = vec![
-        Edge { from: a, to: b, sensitivity: 0.5 },
-        Edge { from: b, to: c, sensitivity: 0.5 },
-        Edge { from: c, to: d, sensitivity: 0.5 },
+        Edge {
+            from: a,
+            to: b,
+            sensitivity: 0.5,
+        },
+        Edge {
+            from: b,
+            to: c,
+            sensitivity: 0.5,
+        },
+        Edge {
+            from: c,
+            to: d,
+            sensitivity: 0.5,
+        },
     ];
-    // δ = 0.02 at a: a recomputes (source); b sees 0.01 > slack 1e-3
-    // → recompute, passes 0.01·0.5... b's bound = 0.01, b recomputes,
-    // c sees 0.5·0.01 = 5e-3 < 1e-1 → SKIP, absorbed; d untouched.
     let p = plan(&store, &edges, &[(a, 0.02)]).expect("plan");
-    let touched: Vec<_> = p.verdicts.iter().map(|(h, v)| (*h, v.clone())).collect();
+    let find = |h: ContentHash| {
+        p.verdicts
+            .iter()
+            .find(|(x, _)| *x == h)
+            .map(|(_, v)| v.clone())
+    };
     let a_recomputes = matches!(
-        touched.iter().find(|(h, _)| *h == a),
-        Some((_, Verdict::Recompute { reason: RecomputeReason::SourcePerturbed, .. }))
+        find(a),
+        Some(Verdict::Recompute {
+            reason: RecomputeReason::SourcePerturbed,
+            ..
+        })
     );
     let b_recomputes = matches!(
-        touched.iter().find(|(h, _)| *h == b),
-        Some((_, Verdict::Recompute { reason: RecomputeReason::BoundExceedsSlack, .. }))
+        find(b),
+        Some(Verdict::Recompute {
+            reason: RecomputeReason::BoundExceedsSlack,
+            ..
+        })
     );
-    let c_skips = matches!(
-        touched.iter().find(|(h, _)| *h == c),
-        Some((_, Verdict::Skip { bound, .. })) if (bound - 5e-3).abs() < 1e-15
+    let c_skips = matches!(find(c),
+        Some(Verdict::Skip { bound, .. }) if (bound - 5e-3).abs() < 1e-15);
+    let d_absorbs_through = matches!(find(d),
+        Some(Verdict::Skip { bound, .. }) if (bound - 2.5e-3).abs() < 1e-15);
+    // The closure: shrink d's slack so it fails — it must pull the
+    // stale c in with it.
+    let mut store2 = Store::new();
+    let a2 = put(&mut store2, "a", 1e-9, 1e-9, b"a");
+    let b2 = put(&mut store2, "b", 1e-6, 1.001e-3, b"b");
+    let c2 = put(&mut store2, "c", 1e-6, 1.001e-1, b"c");
+    let d2 = put(&mut store2, "d", 1e-9, 1.001e-6, b"d");
+    let edges2 = vec![
+        Edge {
+            from: a2,
+            to: b2,
+            sensitivity: 0.5,
+        },
+        Edge {
+            from: b2,
+            to: c2,
+            sensitivity: 0.5,
+        },
+        Edge {
+            from: c2,
+            to: d2,
+            sensitivity: 0.5,
+        },
+    ];
+    let p2 = plan(&store2, &edges2, &[(a2, 0.02)]).expect("plan 2");
+    let find2 = |h: ContentHash| {
+        p2.verdicts
+            .iter()
+            .find(|(x, _)| *x == h)
+            .map(|(_, v)| v.clone())
+    };
+    let d_fails = matches!(
+        find2(d2),
+        Some(Verdict::Recompute {
+            reason: RecomputeReason::BoundExceedsSlack,
+            ..
+        })
     );
-    let d_untouched = !touched.iter().any(|(h, _)| *h == d);
-    // δ = 0: empty frontier.
+    let c_pulled = matches!(
+        find2(c2),
+        Some(Verdict::Recompute {
+            reason: RecomputeReason::PulledByDescendant,
+            ..
+        })
+    );
     let empty = plan(&store, &edges, &[(a, 0.0)]).expect("plan");
     let empty_ok = empty.verdicts.is_empty() && (empty.skip_yield - 1.0).abs() < 1e-15;
     verdict(
         "inv-001",
-        a_recomputes && b_recomputes && c_skips && d_untouched && empty_ok,
-        "the edit recomputes, the tight node recomputes, the slack-rich node ABSORBS \
-         (bound 5e-3, propagation stops), the downstream node is untouched, and a \
-         zero perturbation is an empty frontier",
+        a_recomputes
+            && b_recomputes
+            && c_skips
+            && d_absorbs_through
+            && d_fails
+            && c_pulled
+            && empty_ok,
+        "staleness flows THROUGH the skipped node (c absorbs 5e-3, d absorbs the \
+         through-flowing 2.5e-3); when d cannot absorb it recomputes AND pulls the \
+         stale c in as PulledByDescendant; zero perturbation is an empty frontier",
     );
 }
 
@@ -114,22 +188,58 @@ fn inv_002_fail_closed() {
     // Downstream of a non-finite edge.
     let d = put(&mut store, "d2", 0.0, 1e9, b"d2");
     let edges = vec![
-        Edge { from: a, to: b, sensitivity: 0.5 },
-        Edge { from: a, to: c, sensitivity: 1e-9 },
-        Edge { from: a, to: d, sensitivity: f64::INFINITY },
+        Edge {
+            from: a,
+            to: b,
+            sensitivity: 0.5,
+        },
+        Edge {
+            from: a,
+            to: c,
+            sensitivity: 1e-9,
+        },
+        Edge {
+            from: a,
+            to: d,
+            sensitivity: f64::INFINITY,
+        },
     ];
     let p = plan(&store, &edges, &[(a, 0.01)]).expect("plan");
-    let find = |h: ContentHash| p.verdicts.iter().find(|(x, _)| *x == h).map(|(_, v)| v.clone());
-    let tie = matches!(find(b),
-        Some(Verdict::Recompute { reason: RecomputeReason::TieOnBoundary, .. }));
-    let negative = matches!(find(c),
-        Some(Verdict::Recompute { reason: RecomputeReason::NegativeSlack, .. }));
-    let nonfinite = matches!(find(d),
-        Some(Verdict::Recompute { reason: RecomputeReason::NonFiniteSensitivity, .. }));
+    let find = |h: ContentHash| {
+        p.verdicts
+            .iter()
+            .find(|(x, _)| *x == h)
+            .map(|(_, v)| v.clone())
+    };
+    let tie = matches!(
+        find(b),
+        Some(Verdict::Recompute {
+            reason: RecomputeReason::TieOnBoundary,
+            ..
+        })
+    );
+    let negative = matches!(
+        find(c),
+        Some(Verdict::Recompute {
+            reason: RecomputeReason::NegativeSlack,
+            ..
+        })
+    );
+    let nonfinite = matches!(
+        find(d),
+        Some(Verdict::Recompute {
+            reason: RecomputeReason::NonFiniteSensitivity,
+            ..
+        })
+    );
     // Non-topological edge refuses.
     let bad = plan(
         &store,
-        &[Edge { from: b, to: a, sensitivity: 1.0 }],
+        &[Edge {
+            from: b,
+            to: a,
+            sensitivity: 1.0,
+        }],
         &[(a, 0.01)],
     );
     let refuses = bad.is_err();
@@ -177,13 +287,41 @@ fn build_fixture(x0: f64, x1: f64, tolerances: &[f64; 7]) -> Fixture {
     }
     // True Lipschitz bounds: linear coefficients exact; tanh' ≤ 1.
     let edges = vec![
-        Edge { from: hashes[0], to: hashes[2], sensitivity: 0.5 },
-        Edge { from: hashes[1], to: hashes[2], sensitivity: 0.5 },
-        Edge { from: hashes[2], to: hashes[3], sensitivity: 1.0 },
-        Edge { from: hashes[3], to: hashes[4], sensitivity: 0.3 },
-        Edge { from: hashes[3], to: hashes[5], sensitivity: 1.0 },
-        Edge { from: hashes[4], to: hashes[5], sensitivity: 1.0 },
-        Edge { from: hashes[5], to: hashes[6], sensitivity: 0.25 },
+        Edge {
+            from: hashes[0],
+            to: hashes[2],
+            sensitivity: 0.5,
+        },
+        Edge {
+            from: hashes[1],
+            to: hashes[2],
+            sensitivity: 0.5,
+        },
+        Edge {
+            from: hashes[2],
+            to: hashes[3],
+            sensitivity: 1.0,
+        },
+        Edge {
+            from: hashes[3],
+            to: hashes[4],
+            sensitivity: 0.3,
+        },
+        Edge {
+            from: hashes[3],
+            to: hashes[5],
+            sensitivity: 1.0,
+        },
+        Edge {
+            from: hashes[4],
+            to: hashes[5],
+            sensitivity: 1.0,
+        },
+        Edge {
+            from: hashes[5],
+            to: hashes[6],
+            sensitivity: 0.25,
+        },
     ];
     Fixture {
         store,
@@ -228,18 +366,29 @@ fn inv_003_soundness_battery() {
             (x0, x1 + delta)
         };
         let truth = eval_fixture(nx0, nx1);
-        let p = plan(&fx.store, &fx.edges, &[(fx.hashes[which], delta.abs())])
-            .expect("plan");
+        let p = plan(&fx.store, &fx.edges, &[(fx.hashes[which], delta.abs())]).expect("plan");
+        // Simulate: recomputed nodes take TRUTH values (the closure
+        // guarantees their inputs are fresh); skipped keep cached.
+        let mut final_vals = baseline;
+        for (h, v) in &p.verdicts {
+            let idx = fx.hashes.iter().position(|x| x == h).expect("fixture node");
+            if matches!(v, Verdict::Recompute { .. }) {
+                final_vals[idx] = truth[idx];
+            }
+        }
+        // SOUNDNESS over EVERY node: the final value (cached or fresh)
+        // lies within the node's required tolerance of ground truth.
+        for (idx, h) in fx.hashes.iter().enumerate() {
+            let err = (final_vals[idx] - truth[idx]).abs();
+            if err > fx.store.get(h).expect("node").record.required_tolerance {
+                violations += 1;
+            }
+        }
         for (h, v) in &p.verdicts {
             let idx = fx.hashes.iter().position(|x| x == h).expect("fixture node");
             if let Verdict::Skip { bound, .. } = v {
                 skipped_total += 1;
-                // SOUNDNESS: cached (baseline) value within required
-                // tolerance of the true new value.
                 let err = (baseline[idx] - truth[idx]).abs();
-                if err > fx.store.get(h).expect("node").record.required_tolerance {
-                    violations += 1;
-                }
                 // Falsifier: force-recompute ~30% of skips; agreement
                 // must be within the certified bound.
                 if rng.unit() < 0.3 {
@@ -255,8 +404,8 @@ fn inv_003_soundness_battery() {
         "inv-003",
         violations == 0 && falsifier_failures == 0 && skipped_total > 30 && falsifier_checks > 5,
         &format!(
-            "0 unsound skips over 40 seeded traces ({skipped_total} skips, every \
-             cached value within tolerance of full-recompute truth — the Sev-0 \
+            "{violations} unsound outcomes over 40 seeded traces ({skipped_total} skips, every \
+             final value within tolerance of full-recompute truth — the Sev-0 \
              gate) and the falsifier's {falsifier_checks} forced recomputes all \
              agreed within their certified bounds; seed 0x1001_2026_0707_0063"
         ),
@@ -278,7 +427,8 @@ fn inv_004_graceful_degradation() {
     let degraded = plan(&fx.store, &loose_edges, &[(fx.hashes[0], 1e-4)]).expect("plan");
     let healthy_skips = healthy.skip_yield;
     let degraded_skips = degraded.skip_yield;
-    // Degraded: everything downstream of t recomputes (bounds blown).
+    // Degraded: everything downstream of the loose edge recomputes,
+    // and the closure pulls the stale m in too.
     let all_downstream_recompute = degraded
         .verdicts
         .iter()
@@ -287,6 +437,16 @@ fn inv_004_graceful_degradation() {
             idx >= 3
         })
         .all(|(_, v)| matches!(v, Verdict::Recompute { .. }));
+    let m_pulled = degraded.verdicts.iter().any(|(h, v)| {
+        *h == fx.hashes[2]
+            && matches!(
+                v,
+                Verdict::Recompute {
+                    reason: RecomputeReason::PulledByDescendant,
+                    ..
+                }
+            )
+    });
     println!(
         "{{\"suite\":\"fs-recompute/invalidation\",\"case\":\"inv-004-yield\",\
          \"verdict\":\"info\",\"detail\":\"healthy={healthy_skips:.2} \
@@ -294,7 +454,7 @@ fn inv_004_graceful_degradation() {
     );
     verdict(
         "inv-004",
-        healthy_skips > degraded_skips && all_downstream_recompute,
+        healthy_skips > degraded_skips && all_downstream_recompute && m_pulled,
         &format!(
             "loose bounds collapse the frontier to hash-memoization behavior \
              (skip yield {healthy_skips:.2} -> {degraded_skips:.2}, everything \
@@ -313,7 +473,11 @@ fn inv_005_claims_and_burning() {
     let mut store = Store::new();
     let a = put(&mut store, "a5", 1e-9, 1e-9, b"a5");
     let b = put(&mut store, "b5", 0.0, 0.012, b"b5");
-    let edges = vec![Edge { from: a, to: b, sensitivity: 1.0 }];
+    let edges = vec![Edge {
+        from: a,
+        to: b,
+        sensitivity: 1.0,
+    }];
     let p1 = plan(&store, &edges, &[(a, 0.01)]).expect("plan 1");
     let skip_row = p1
         .rows
@@ -328,7 +492,14 @@ fn inv_005_claims_and_burning() {
     // again cannot be absorbed.
     let p2 = plan(&store, &edges, &[(a, 0.01)]).expect("plan 2");
     let now_recomputes = p2.verdicts.iter().any(|(h, v)| {
-        *h == b && matches!(v, Verdict::Recompute { reason: RecomputeReason::BoundExceedsSlack, .. })
+        *h == b
+            && matches!(
+                v,
+                Verdict::Recompute {
+                    reason: RecomputeReason::BoundExceedsSlack,
+                    ..
+                }
+            )
     });
     // A smaller perturbation still fits the remainder.
     let p3 = plan(&store, &edges, &[(a, 0.001)]).expect("plan 3");

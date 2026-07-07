@@ -6,11 +6,17 @@
 //!
 //! The semantics: each edge carries a CERTIFIED local sensitivity
 //! bound `L` (interval-derived by the supplier). A perturbation `δ`
-//! propagates as `Σ L_e · δ(parent)` at each node. A node whose
-//! accumulated bound fits STRICTLY inside its recorded slack is
-//! SKIPPED — its cached artifact is reused, the bound burns into its
-//! slack, and because its artifact BYTES are unchanged, propagation
-//! STOPS there. A recomputed node passes its bound downstream.
+//! propagates as `Σ L_e · δ(parent)` at each node, flowing through
+//! skipped AND recomputed nodes alike (a skipped node's cached bytes
+//! are STALE by its bound, and that staleness reaches its consumers
+//! scaled by their sensitivities). A node whose accumulated bound fits
+//! STRICTLY inside its slack ABSORBS it (skip). The recompute set is
+//! then closed UPWARD along delta-carrying edges: recomputing a node
+//! is only meaningful with FRESH input bytes, so a recomputing node
+//! pulls its stale ancestors in (`PulledByDescendant`). After the
+//! closure, recomputed nodes reproduce ground truth exactly and every
+//! skip's staleness is bounded by its own slack — the soundness
+//! invariant the battery checks against full recomputation.
 //!
 //! Fail-closed hardening (review round 3): a tie (bound == slack)
 //! recomputes, never skips; non-finite sensitivities force recompute;
@@ -53,6 +59,9 @@ pub enum RecomputeReason {
     /// The node's recorded slack is negative (over budget): never
     /// skippable.
     NegativeSlack,
+    /// A descendant recomputes and needs FRESH bytes from here
+    /// (upward closure along delta-carrying edges).
+    PulledByDescendant,
 }
 
 /// The per-node verdict.
@@ -125,11 +134,23 @@ impl core::fmt::Display for InvalidateError {
 
 impl std::error::Error for InvalidateError {}
 
+/// A frontier node's pass-1 state.
+struct Touch {
+    key: [u8; 32],
+    hash: ContentHash,
+    bound: f64,
+    slack: f64,
+    source: bool,
+    nonfinite: bool,
+}
+
 /// Plan the recompute frontier for `perturbations` (node, |δ| bound).
 /// Pure: the store is not mutated (see [`apply_plan`]).
 ///
 /// # Errors
 /// [`InvalidateError`] teaching errors.
+#[allow(clippy::too_many_lines)] // four passes, one algorithm — splitting hides the closure
+#[allow(clippy::float_cmp)] // the tie (bound == slack) is DELIBERATELY exact: fail closed
 pub fn plan(
     store: &Store,
     edges: &[Edge],
@@ -153,8 +174,6 @@ pub fn plan(
         }
         incoming.entry(*e.to.as_bytes()).or_default().push(*e);
     }
-    // Seed deltas; process nodes in store sequence order (topological
-    // by validation above).
     let mut delta: BTreeMap<[u8; 32], f64> = BTreeMap::new();
     let mut sources: BTreeMap<[u8; 32], f64> = BTreeMap::new();
     for &(h, d) in perturbations {
@@ -168,12 +187,12 @@ pub fn plan(
         order.push((node.seq, h, node.record.content_hash()));
     }
     order.sort_unstable_by_key(|&(seq, _, _)| seq);
-    let mut verdicts = Vec::new();
-    let mut rows = Vec::new();
-    let mut skips = 0usize;
+    // Pass 1: deltas flow through EVERY frontier node (skipped nodes
+    // are STALE by their bound; recomputed nodes change bytes by at
+    // most their bound — either way the staleness reaches consumers).
+    let mut touched_nodes: Vec<Touch> = Vec::new();
     for (_, key, hash) in order {
         let source_delta = sources.get(&key).copied();
-        // Accumulate incoming bound from RECOMPUTED/perturbed parents.
         let mut bound = source_delta.unwrap_or(0.0);
         let mut nonfinite = false;
         if let Some(es) = incoming.get(&key) {
@@ -189,42 +208,90 @@ pub fn plan(
         if bound == 0.0 && !nonfinite {
             continue; // untouched: not on the frontier at all
         }
+        delta.insert(
+            key,
+            if bound.is_finite() {
+                bound
+            } else {
+                f64::INFINITY
+            },
+        );
         let node = store.get(&hash).expect("iterated from store");
-        let slack = node.effective_slack();
-        let verdict = if source_delta.is_some() {
-            Verdict::Recompute {
-                bound,
-                reason: RecomputeReason::SourcePerturbed,
+        touched_nodes.push(Touch {
+            key,
+            hash,
+            bound,
+            slack: node.effective_slack(),
+            source: source_delta.is_some(),
+            nonfinite,
+        });
+    }
+    // Pass 2: initial verdict per node (fail-closed hardening).
+    let mut reasons: Vec<Option<RecomputeReason>> = touched_nodes
+        .iter()
+        .map(|t| {
+            if t.source {
+                Some(RecomputeReason::SourcePerturbed)
+            } else if t.nonfinite || !t.bound.is_finite() {
+                Some(RecomputeReason::NonFiniteSensitivity)
+            } else if t.slack < 0.0 {
+                Some(RecomputeReason::NegativeSlack)
+            } else if t.bound == t.slack {
+                Some(RecomputeReason::TieOnBoundary)
+            } else if t.bound < t.slack {
+                None // absorbable
+            } else {
+                Some(RecomputeReason::BoundExceedsSlack)
             }
-        } else if nonfinite || !bound.is_finite() {
-            Verdict::Recompute {
-                bound: f64::INFINITY,
-                reason: RecomputeReason::NonFiniteSensitivity,
+        })
+        .collect();
+    // Pass 3: UPWARD CLOSURE — recomputing a node needs FRESH input
+    // bytes, so every frontier ancestor along delta-carrying edges
+    // joins the recompute set. One reverse-topological sweep reaches
+    // the transitive closure (parents have smaller indices).
+    let index_of: BTreeMap<[u8; 32], usize> = touched_nodes
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.key, i))
+        .collect();
+    for i in (0..touched_nodes.len()).rev() {
+        if reasons[i].is_none() {
+            continue;
+        }
+        if let Some(es) = incoming.get(&touched_nodes[i].key) {
+            for e in es {
+                if let Some(&pi) = index_of.get(e.from.as_bytes())
+                    && reasons[pi].is_none()
+                {
+                    reasons[pi] = Some(RecomputeReason::PulledByDescendant);
+                }
             }
-        } else if slack < 0.0 {
-            Verdict::Recompute {
-                bound,
-                reason: RecomputeReason::NegativeSlack,
+        }
+    }
+    // Pass 4: emit verdicts and rows.
+    let mut verdicts = Vec::new();
+    let mut rows = Vec::new();
+    let mut skips = 0usize;
+    for (t, reason) in touched_nodes.iter().zip(&reasons) {
+        let verdict = match reason {
+            None => {
+                skips += 1;
+                Verdict::Skip {
+                    bound: t.bound,
+                    slack_left: t.slack - t.bound,
+                }
             }
-        } else if bound == slack {
-            Verdict::Recompute {
-                bound,
-                reason: RecomputeReason::TieOnBoundary,
-            }
-        } else if bound < slack {
-            Verdict::Skip {
-                bound,
-                slack_left: slack - bound,
-            }
-        } else {
-            Verdict::Recompute {
-                bound,
-                reason: RecomputeReason::BoundExceedsSlack,
-            }
+            Some(r) => Verdict::Recompute {
+                bound: if matches!(r, RecomputeReason::NonFiniteSensitivity) {
+                    f64::INFINITY
+                } else {
+                    t.bound
+                },
+                reason: *r,
+            },
         };
         match &verdict {
             Verdict::Skip { bound, slack_left } => {
-                skips += 1;
                 // The skip claim is VERIFIED-color: the bound is an
                 // interval certificate over the perturbation.
                 let claim = Color::Verified {
@@ -238,26 +305,23 @@ pub fn plan(
                      \"claim\":\"skipped: perturbation absorbed, bound {bound:.3e} <= \
                      slack {:.3e}\",\"color\":\"{}\",\"payload\":{},\
                      \"slack_left\":{slack_left:.3e}}}",
-                    hash.to_hex(),
-                    slack,
+                    t.hash.to_hex(),
+                    t.slack,
                     claim.name(),
                     claim.payload_json()
                 );
                 rows.push(row);
-                // Absorbed: downstream sees UNCHANGED bytes.
             }
             Verdict::Recompute { bound, reason } => {
                 rows.push(format!(
                     "{{\"event\":\"invalidation\",\"node\":\"{}\",\
                      \"verdict\":\"recompute\",\"bound\":{bound:.3e},\
                      \"reason\":\"{reason:?}\"}}",
-                    hash.to_hex()
+                    t.hash.to_hex()
                 ));
-                // A recomputed node passes its output delta downstream.
-                delta.insert(key, *bound);
             }
         }
-        verdicts.push((hash, verdict));
+        verdicts.push((t.hash, verdict));
     }
     let touched = verdicts.len();
     Ok(InvalidationPlan {
