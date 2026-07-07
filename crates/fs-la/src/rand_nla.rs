@@ -49,7 +49,12 @@ pub fn range_finder(
     assert_eq!(a.len(), m * n, "a must be m*n");
     let k = (rank + oversample).min(n).min(m);
     // Gaussian test matrix from the keyed stream.
-    let mut s = StreamKey { seed, kernel: K_RANGE, tile: 0 }.stream();
+    let mut s = StreamKey {
+        seed,
+        kernel: K_RANGE,
+        tile: 0,
+    }
+    .stream();
     let mut y = vec![0.0f64; m * k]; // Y = A·Ω
     let mut omega_col = vec![0.0f64; n];
     let mut ycol = vec![0.0f64; m];
@@ -102,12 +107,22 @@ pub fn range_finder(
         matvec(a, m, n, &probe, &mut aw);
         project_out(&basis, m, k, &mut aw);
         let nrm = fs_math::det::sqrt(aw.iter().map(|t| t * t).sum::<f64>())
-            / fs_math::det::sqrt(probe.iter().map(|t| t * t).sum::<f64>().max(f64::MIN_POSITIVE));
+            / fs_math::det::sqrt(
+                probe
+                    .iter()
+                    .map(|t| t * t)
+                    .sum::<f64>()
+                    .max(f64::MIN_POSITIVE),
+            );
         est = est.max(nrm);
     }
     // Scale by the standard Gaussian max factor (10·sqrt(2/π) covers the
     // declared 1e-3-ish failure probability band for 8 probes).
-    let report = RangeReport { rank: k, est_error: est * 10.0, probes: PROBES };
+    let report = RangeReport {
+        rank: k,
+        est_error: est * 10.0,
+        probes: PROBES,
+    };
     (basis, report)
 }
 
@@ -165,7 +180,12 @@ pub fn rsvd(
 pub fn nystrom_psd(a: &[f64], n: usize, rank: usize, oversample: usize, seed: u64) -> Vec<f64> {
     assert_eq!(a.len(), n * n, "a must be n*n");
     let k = (rank + oversample).min(n);
-    let mut s = StreamKey { seed, kernel: K_RANGE, tile: 1 }.stream();
+    let mut s = StreamKey {
+        seed,
+        kernel: K_RANGE,
+        tile: 1,
+    }
+    .stream();
     // Y = A·Ω (n×k), C = Ωᵀ·Y (k×k, PSD).
     let mut omega = vec![0.0f64; n * k];
     for w in &mut omega {
@@ -231,7 +251,12 @@ pub fn sketch_ls(a: &[f64], m: usize, n: usize, b: &[f64], seed: u64) -> (Vec<f6
     let ms = 4 * n; // sketch rows
     // Sparse sign sketch: 8 nonzeros per COLUMN of S (ms×m), ±1/√8,
     // positions/signs from the keyed stream (deterministic).
-    let mut s = StreamKey { seed, kernel: K_SKETCH, tile: 0 }.stream();
+    let mut s = StreamKey {
+        seed,
+        kernel: K_SKETCH,
+        tile: 0,
+    }
+    .stream();
     let mut sa = vec![0.0f64; ms * n];
     let mut sb = vec![0.0f64; ms];
     let scale = 1.0 / fs_math::det::sqrt(8.0);
@@ -331,7 +356,12 @@ pub struct TraceReport {
 #[must_use]
 pub fn hutchinson(a: &[f64], n: usize, probes: usize, seed: u64) -> TraceReport {
     assert_eq!(a.len(), n * n, "a must be n*n");
-    let mut s = StreamKey { seed, kernel: K_TRACE, tile: 0 }.stream();
+    let mut s = StreamKey {
+        seed,
+        kernel: K_TRACE,
+        tile: 0,
+    }
+    .stream();
     let mut z = vec![0.0f64; n];
     let mut az = vec![0.0f64; n];
     let (mut m1, mut m2) = (0.0f64, 0.0f64);
@@ -347,7 +377,11 @@ pub fn hutchinson(a: &[f64], n: usize, probes: usize, seed: u64) -> TraceReport 
     let p = probes as f64;
     let mean = m1 / p;
     let var = (m2 / p - mean * mean).max(0.0) / p;
-    TraceReport { estimate: mean, probes, variance_est: var }
+    TraceReport {
+        estimate: mean,
+        probes,
+        variance_est: var,
+    }
 }
 
 /// Hutch++: exact trace on a rangefinder subspace plus Hutchinson on the
@@ -373,7 +407,12 @@ pub fn hutch_pp(a: &[f64], n: usize, probes: usize, seed: u64) -> TraceReport {
     }
     // Deflated Hutchinson on (I−QQᵀ)A(I−QQᵀ) with the remaining budget.
     let rem = probes.saturating_sub(kq).max(1);
-    let mut s = StreamKey { seed, kernel: K_TRACE, tile: 1 }.stream();
+    let mut s = StreamKey {
+        seed,
+        kernel: K_TRACE,
+        tile: 1,
+    }
+    .stream();
     let mut z = vec![0.0f64; n];
     let mut az = vec![0.0f64; n];
     let (mut m1, mut m2) = (0.0f64, 0.0f64);
@@ -391,7 +430,11 @@ pub fn hutch_pp(a: &[f64], n: usize, probes: usize, seed: u64) -> TraceReport {
     let p = rem as f64;
     let mean = m1 / p;
     let var = (m2 / p - mean * mean).max(0.0) / p;
-    TraceReport { estimate: exact + mean, probes: kq + rem, variance_est: var }
+    TraceReport {
+        estimate: exact + mean,
+        probes: kq + rem,
+        variance_est: var,
+    }
 }
 
 // --- helpers ---

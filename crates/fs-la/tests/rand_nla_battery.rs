@@ -8,7 +8,9 @@ use fs_la::factor::qr;
 use fs_la::rand_nla::{hutch_pp, hutchinson, nystrom_psd, range_finder, rsvd, sketch_ls};
 
 fn lcg(seed: &mut u64) -> f64 {
-    *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    *seed = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     ((*seed >> 11) as f64) / (1u64 << 53) as f64 - 0.5
 }
 
@@ -77,8 +79,12 @@ fn spectral_residual(a: &[f64], m: usize, n: usize, q: &[f64], k: usize) -> f64 
 fn rangefinder_meets_bounds_on_three_spectra() {
     let (m, n) = (120usize, 60usize);
     // Fast exponential decay, slow algebraic decay, and a spectral gap.
-    let fast: Vec<f64> = (0..n).map(|k| 0.5f64.powi(i32::try_from(k).unwrap())).collect();
-    let slow: Vec<f64> = (0..n).map(|k| 1.0 / f64::from(u32::try_from(k + 1).unwrap())).collect();
+    let fast: Vec<f64> = (0..n)
+        .map(|k| 0.5f64.powi(i32::try_from(k).unwrap()))
+        .collect();
+    let slow: Vec<f64> = (0..n)
+        .map(|k| 1.0 / f64::from(u32::try_from(k + 1).unwrap()))
+        .collect();
     let gap: Vec<f64> = (0..n).map(|k| if k < 10 { 1.0 } else { 1e-6 }).collect();
     for (name, sigma, rank, q_pow, budget) in [
         ("fast", &fast, 12usize, 0usize, 3.0f64),
@@ -112,7 +118,9 @@ fn rangefinder_meets_bounds_on_three_spectra() {
 #[test]
 fn rsvd_recovers_singular_values() {
     let (m, n) = (100usize, 50usize);
-    let sigma: Vec<f64> = (0..n).map(|k| 2.0 * 0.6f64.powi(i32::try_from(k).unwrap())).collect();
+    let sigma: Vec<f64> = (0..n)
+        .map(|k| 2.0 * 0.6f64.powi(i32::try_from(k).unwrap()))
+        .collect();
     let a = spectrum_matrix(m, n, &sigma, 0xB0B);
     let (_, sv, _, _) = rsvd(&a, m, n, 10, 8, 1, 7);
     for k in 0..8 {
@@ -132,7 +140,15 @@ fn rsvd_recovers_singular_values() {
 fn nystrom_reconstructs_low_rank_psd() {
     let n = 60usize;
     // PSD with rank ~8 + tiny tail.
-    let sigma: Vec<f64> = (0..n).map(|k| if k < 8 { 4.0 * 0.7f64.powi(i32::try_from(k).unwrap()) } else { 1e-9 }).collect();
+    let sigma: Vec<f64> = (0..n)
+        .map(|k| {
+            if k < 8 {
+                4.0 * 0.7f64.powi(i32::try_from(k).unwrap())
+            } else {
+                1e-9
+            }
+        })
+        .collect();
     // Build PSD as Q·diag(σ)·Qᵀ.
     let mut s = 0xC0DE_u64;
     let g: Vec<f64> = (0..n * n).map(|_| lcg(&mut s)).collect();
@@ -194,7 +210,10 @@ fn sketch_ls_matches_direct_qr() {
             direct[k]
         );
     }
-    assert!(iters <= 60, "preconditioned CG should converge fast: {iters} iters");
+    assert!(
+        iters <= 60,
+        "preconditioned CG should converge fast: {iters} iters"
+    );
     println!(
         "{{\"suite\":\"fs-la\",\"case\":\"sketch-ls\",\"verdict\":\"pass\",\"detail\":\"matches QR to 1e-8 in {iters} CG iters\"}}"
     );
@@ -204,7 +223,9 @@ fn sketch_ls_matches_direct_qr() {
 fn hutch_pp_beats_hutchinson_variance() {
     let n = 80usize;
     // Decaying-spectrum SPD (where Hutch++ shines).
-    let sigma: Vec<f64> = (0..n).map(|k| 8.0 * 0.8f64.powi(i32::try_from(k).unwrap())).collect();
+    let sigma: Vec<f64> = (0..n)
+        .map(|k| 8.0 * 0.8f64.powi(i32::try_from(k).unwrap()))
+        .collect();
     let true_trace: f64 = sigma.iter().sum();
     let mut s = 0x7ACE_u64;
     let g: Vec<f64> = (0..n * n).map(|_| lcg(&mut s)).collect();
@@ -264,7 +285,9 @@ fn rand_nla_golden_hash() {
         }
     };
     let (m, n) = (60usize, 30usize);
-    let sigma: Vec<f64> = (0..n).map(|k| 0.7f64.powi(i32::try_from(k).unwrap())).collect();
+    let sigma: Vec<f64> = (0..n)
+        .map(|k| 0.7f64.powi(i32::try_from(k).unwrap()))
+        .collect();
     let a = spectrum_matrix(m, n, &sigma, 0xFEED);
     let (_, sv, _, rep) = rsvd(&a, m, n, 6, 4, 1, 11);
     for &v in &sv {
