@@ -240,9 +240,7 @@ impl<'g> Space<'g> {
         if params.strong_outer {
             let ext = grid.node_extent();
             for &n in &nodes {
-                if (n.0 == 0 || n.0 == ext || n.1 == 0 || n.1 == ext)
-                    && !cons.contains_key(&n)
-                {
+                if (n.0 == 0 || n.0 == ext || n.1 == 0 || n.1 == ext) && !cons.contains_key(&n) {
                     cons.insert(n, Con::Strong);
                 }
             }
@@ -409,8 +407,7 @@ impl<'g> Space<'g> {
                     ];
                     for a in 0..4 {
                         for b in 0..4 {
-                            k[a][b] +=
-                                w * (-(dn[a] * nv[b]) - nv[a] * dn[b] + pen * nv[a] * nv[b]);
+                            k[a][b] += w * (-(dn[a] * nv[b]) - nv[a] * dn[b] + pen * nv[a] * nv[b]);
                         }
                         fl[a] += w * (-dn[a] * gval + pen * nv[a] * gval);
                     }
@@ -539,7 +536,12 @@ impl<'g> Space<'g> {
         let m = JacobiPrecond::new(&a);
         let op = CsrOp::symmetric(a);
         let mut st = CgState::new(&op, &m, &b);
-        let _ = st.run(&op, &m, self.params.solver_tol, self.params.solver_max_iters);
+        let _ = st.run(
+            &op,
+            &m,
+            self.params.solver_tol,
+            self.params.solver_max_iters,
+        );
         let rr = st.rel_residual();
         if !rr.is_finite() || rr > 1e-8 {
             return Err(CutFemError::SolveNotConverged {

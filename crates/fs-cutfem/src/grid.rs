@@ -227,9 +227,10 @@ impl Quadtree {
                 }
                 for dir in 0..4u8 {
                     if let Some(nb) = self.covering_neighbor(c, dir)
-                        && nb.0 + 1 < c.0 {
-                            due.insert(nb);
-                        }
+                        && nb.0 + 1 < c.0
+                    {
+                        due.insert(nb);
+                    }
                 }
             }
             if due.is_empty() {

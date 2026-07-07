@@ -72,6 +72,7 @@ fn sin_grad(x: f64, y: f64) -> [f64; 2] {
 // ------------------------------------------------------------------- cut-001
 
 #[test]
+#[allow(clippy::too_many_lines)] // six fixtures declared inline: the adversarial list IS the test
 fn cut_001_certified_classification() {
     let h16 = 1.0 / 16.0;
     let fixtures: Vec<(&str, Box<dyn CutSdf>)> = vec![
@@ -92,7 +93,10 @@ fn cut_001_certified_classification() {
         (
             "halfplane-through-nodes",
             Box::new(HalfPlane {
-                normal: [std::f64::consts::FRAC_1_SQRT_2, std::f64::consts::FRAC_1_SQRT_2],
+                normal: [
+                    std::f64::consts::FRAC_1_SQRT_2,
+                    std::f64::consts::FRAC_1_SQRT_2,
+                ],
                 offset: std::f64::consts::FRAC_1_SQRT_2,
             }),
         ),
@@ -161,7 +165,10 @@ fn cut_001_certified_classification() {
                 _ => {}
             }
         }
-        let _ = write!(rows, "\"{name}\":{{\"violations\":{violations},\"conservative_cuts\":{conservative}}},");
+        let _ = write!(
+            rows,
+            "\"{name}\":{{\"violations\":{violations},\"conservative_cuts\":{conservative}}},"
+        );
         total_violations += violations;
         total_conservative += conservative;
     }
@@ -181,17 +188,16 @@ fn cut_001_certified_classification() {
 /// Exact ∫ over a polygon of quadratic monomials via the degree-2
 /// midpoint triangle rule on an ANALYTICALLY constructed polygon.
 fn polygon_moments_exact(poly: &[[f64; 2]]) -> [f64; 6] {
-    let mono = |p: [f64; 2]| -> [f64; 6] {
-        [1.0, p[0], p[1], p[0] * p[0], p[0] * p[1], p[1] * p[1]]
-    };
+    let mono =
+        |p: [f64; 2]| -> [f64; 6] { [1.0, p[0], p[1], p[0] * p[0], p[0] * p[1], p[1] * p[1]] };
     let mut acc = [0.0f64; 6];
     for k in 1..poly.len() - 1 {
         let (p, q, r) = (poly[0], poly[k], poly[k + 1]);
         let area = 0.5 * ((q[0] - p[0]) * (r[1] - p[1]) - (r[0] - p[0]) * (q[1] - p[1]));
         for m in [
-            [(p[0] + q[0]) / 2.0, (p[1] + q[1]) / 2.0],
-            [(q[0] + r[0]) / 2.0, (q[1] + r[1]) / 2.0],
-            [(r[0] + p[0]) / 2.0, (r[1] + p[1]) / 2.0],
+            [f64::midpoint(p[0], q[0]), f64::midpoint(p[1], q[1])],
+            [f64::midpoint(q[0], r[0]), f64::midpoint(q[1], r[1])],
+            [f64::midpoint(r[0], p[0]), f64::midpoint(r[1], p[1])],
         ] {
             let vals = mono(m);
             for (a, v) in acc.iter_mut().zip(vals) {
@@ -229,9 +235,8 @@ fn cut_002_quadrature_exactness_and_depth_control() {
     let mut max_rel = 0.0f64;
     for depth in [0u32, 3u32] {
         let rules = cut_cell_rules(&hp, [0.0, 0.0], [1.0, 1.0], depth);
-        let mono = |p: [f64; 2]| -> [f64; 6] {
-            [1.0, p[0], p[1], p[0] * p[0], p[0] * p[1], p[1] * p[1]]
-        };
+        let mono =
+            |p: [f64; 2]| -> [f64; 6] { [1.0, p[0], p[1], p[0] * p[0], p[0] * p[1], p[1] * p[1]] };
         let mut got = [0.0f64; 6];
         for &(p, w) in &rules.bulk {
             let vals = mono(p);
@@ -350,7 +355,10 @@ fn cut_004_mms_orders_across_randomized_cuts() {
     let mut lcg = Lcg(0x1001_2026_0707_0051);
     let mut configs: Vec<Circle> = (0..6)
         .map(|_| Circle {
-            center: [0.5 + 0.12 * (lcg.unit() - 0.5), 0.5 + 0.12 * (lcg.unit() - 0.5)],
+            center: [
+                0.5 + 0.12 * (lcg.unit() - 0.5),
+                0.5 + 0.12 * (lcg.unit() - 0.5),
+            ],
             radius: 0.26 + 0.07 * lcg.unit(),
         })
         .collect();
@@ -405,7 +413,12 @@ fn cut_004_mms_orders_across_randomized_cuts() {
 /// Dirichlet data (the shared fixture's exact solution vanishes on
 /// every side): returns the L2 error at n×n cells.
 #[allow(clippy::too_many_lines)]
-fn body_fitted_l2(a_len: f64, n: usize, u: &dyn Fn(f64, f64) -> f64, f: &dyn Fn(f64, f64) -> f64) -> f64 {
+fn body_fitted_l2(
+    a_len: f64,
+    n: usize,
+    u: &dyn Fn(f64, f64) -> f64,
+    f: &dyn Fn(f64, f64) -> f64,
+) -> f64 {
     #[allow(clippy::cast_precision_loss)]
     let hx = a_len / n as f64;
     #[allow(clippy::cast_precision_loss)]
@@ -450,12 +463,7 @@ fn body_fitted_l2(a_len: f64, n: usize, u: &dyn Fn(f64, f64) -> f64, f: &dyn Fn(
             #[allow(clippy::cast_precision_loss)]
             let lo = [ci as f64 * hx, cj as f64 * hy];
             let hi = [lo[0] + hx, lo[1] + hy];
-            let local = [
-                (ci, cj),
-                (ci + 1, cj),
-                (ci + 1, cj + 1),
-                (ci, cj + 1),
-            ];
+            let local = [(ci, cj), (ci + 1, cj), (ci + 1, cj + 1), (ci, cj + 1)];
             let mut k = [[0.0f64; 4]; 4];
             let mut fl = [0.0f64; 4];
             for &(gx, wx) in &g3 {
@@ -499,12 +507,7 @@ fn body_fitted_l2(a_len: f64, n: usize, u: &dyn Fn(f64, f64) -> f64, f: &dyn Fn(
             #[allow(clippy::cast_precision_loss)]
             let lo = [ci as f64 * hx, cj as f64 * hy];
             let hi = [lo[0] + hx, lo[1] + hy];
-            let local = [
-                (ci, cj),
-                (ci + 1, cj),
-                (ci + 1, cj + 1),
-                (ci, cj + 1),
-            ];
+            let local = [(ci, cj), (ci + 1, cj), (ci + 1, cj + 1), (ci, cj + 1)];
             let vals: Vec<f64> = local
                 .iter()
                 .map(|&(i, j)| idx(i, j).map_or(0.0, |id| st.x[id]))
@@ -653,9 +656,7 @@ fn cut_007_aggregation_fallback() {
     };
     let (l2_ghost, _, _) = solve_with(0.5, None);
     let (l2_agg, aggregated, log) = solve_with(0.0, Some(AggPolicy::default()));
-    let pass = aggregated > 0
-        && cond_agg < cond_bare / 1e2
-        && l2_agg < 2.0 * l2_ghost;
+    let pass = aggregated > 0 && cond_agg < cond_bare / 1e2 && l2_agg < 2.0 * l2_ghost;
     verdict(
         "cut-007",
         pass,

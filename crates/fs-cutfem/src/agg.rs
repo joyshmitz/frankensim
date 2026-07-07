@@ -118,9 +118,11 @@ fn find_anchor(
         for &c in &ring {
             for dir in 0..4u8 {
                 if let Some(nb) = grid.covering_neighbor(c, dir)
-                    && active.contains(&nb) && !visited.contains(&nb) {
-                        next.insert(nb);
-                    }
+                    && active.contains(&nb)
+                    && !visited.contains(&nb)
+                {
+                    next.insert(nb);
+                }
             }
         }
         for &c in &next {

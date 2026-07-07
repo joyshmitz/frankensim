@@ -67,7 +67,14 @@ pub fn cut_cell_rules(sdf: &dyn CutSdf, lo: [f64; 2], hi: [f64; 2], depth: u32) 
     rules
 }
 
-fn worker(sdf: &dyn CutSdf, lo: [f64; 2], hi: [f64; 2], depth: u32, extra: u32, out: &mut CutRules) {
+fn worker(
+    sdf: &dyn CutSdf,
+    lo: [f64; 2],
+    hi: [f64; 2],
+    depth: u32,
+    extra: u32,
+    out: &mut CutRules,
+) {
     let iv = sdf.enclose(lo, hi);
     if iv.hi() < 0.0 {
         tensor_gauss(lo, hi, &mut out.bulk);
@@ -134,7 +141,14 @@ fn worker(sdf: &dyn CutSdf, lo: [f64; 2], hi: [f64; 2], depth: u32, extra: u32, 
     chord_rule(sdf, xs[0], xs[1], &mut out.iface);
 }
 
-fn recurse(sdf: &dyn CutSdf, lo: [f64; 2], hi: [f64; 2], depth: u32, extra: u32, out: &mut CutRules) {
+fn recurse(
+    sdf: &dyn CutSdf,
+    lo: [f64; 2],
+    hi: [f64; 2],
+    depth: u32,
+    extra: u32,
+    out: &mut CutRules,
+) {
     let mx = f64::midpoint(lo[0], hi[0]);
     let my = f64::midpoint(lo[1], hi[1]);
     worker(sdf, lo, [mx, my], depth, extra, out);
@@ -217,8 +231,7 @@ fn polygon_rule(poly: &[[f64; 2]], out: &mut Vec<([f64; 2], f64)>) {
     }
     for k in 1..poly.len() - 1 {
         let (p, q, r) = (poly[0], poly[k], poly[k + 1]);
-        let signed_area =
-            0.5 * ((q[0] - p[0]) * (r[1] - p[1]) - (r[0] - p[0]) * (q[1] - p[1]));
+        let signed_area = 0.5 * ((q[0] - p[0]) * (r[1] - p[1]) - (r[0] - p[0]) * (q[1] - p[1]));
         if signed_area == 0.0 {
             continue;
         }
@@ -232,7 +245,12 @@ fn polygon_rule(poly: &[[f64; 2]], out: &mut Vec<([f64; 2], f64)>) {
 /// 2-point Gauss along an interface chord; weights carry the chord
 /// length, normals come from the (normalized) SDF gradient — outward
 /// of Ω by the negative-inside convention.
-fn chord_rule(sdf: &dyn CutSdf, a: [f64; 2], b: [f64; 2], out: &mut Vec<([f64; 2], f64, [f64; 2])>) {
+fn chord_rule(
+    sdf: &dyn CutSdf,
+    a: [f64; 2],
+    b: [f64; 2],
+    out: &mut Vec<([f64; 2], f64, [f64; 2])>,
+) {
     let dx = b[0] - a[0];
     let dy = b[1] - a[1];
     let len = (dx * dx + dy * dy).sqrt();
