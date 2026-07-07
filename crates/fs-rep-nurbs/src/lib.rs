@@ -14,6 +14,8 @@ pub mod boolean;
 pub mod closest;
 pub mod curve;
 pub mod rat;
+#[cfg(feature = "nurbs-sdf")]
+pub mod sdf;
 pub mod surface;
 pub mod trim;
 

@@ -1118,7 +1118,12 @@ dependencies = [
 name = "fs-rep-nurbs"
 version = "0.0.1"
 dependencies = [
+ "asupersync 0.3.5",
  "fs-ad",
+ "fs-alloc",
+ "fs-evidence",
+ "fs-exec",
+ "fs-geom",
  "fs-ivl",
  "fs-math",
 ]

@@ -1,0 +1,407 @@
+//! NURBS→SDF converter conformance (the wqd.11 bead; runs under the
+//! `nurbs-sdf` feature). Acceptance: against exactly-representable
+//! revolution fixtures (sphere/cylinder/torus as rational quadratics)
+//! the certified intervals CONTAIN the analytic distance everywhere
+//! sampled; near-trim behavior downgrades honestly on adversarial trims;
+//! sign assignment follows declared orientation with the unsigned
+//! fallback named; G3 frame invariance; adaptive tiled generation with
+//! throughput evidence.
+#![cfg(feature = "nurbs-sdf")]
+
+use asupersync::types::Budget;
+use fs_exec::{CancelGate, Cx, ExecMode, StreamKey};
+use fs_geom::{Chart, Point3};
+use fs_rep_nurbs::sdf::{Orientation, ShellSdf, ShellSdfChart, generate_tile};
+use fs_rep_nurbs::{KnotVector, NurbsCurve, NurbsSurface, Rat, TrimLoop, TrimmedPatch};
+
+fn verdict(case: &str, detail: &str) {
+    println!(
+        "{{\"suite\":\"fs-rep-nurbs/sdf\",\"case\":\"{case}\",\"verdict\":\"pass\",\
+         \"detail\":\"{detail}\"}}"
+    );
+}
+
+fn with_cx<R>(f: impl FnOnce(&Cx<'_>) -> R) -> R {
+    let gate = CancelGate::new();
+    let pool = fs_alloc::ArenaPool::new(fs_alloc::ArenaConfig::default());
+    pool.scope(|arena| {
+        let cx = Cx::new(
+            &gate,
+            arena,
+            StreamKey {
+                seed: 7,
+                kernel_id: 3,
+                tile: 0,
+                iteration: 0,
+            },
+            Budget::INFINITE,
+            ExecMode::Deterministic,
+        );
+        f(&cx)
+    })
+}
+
+const S2: f64 = std::f64::consts::FRAC_1_SQRT_2;
+
+/// The standard 9-point rational-quadratic full circle template:
+/// (cos, sin) pairs at radius 1 with weights [1, s, 1, s, …].
+const CIRCLE_XY: [[f64; 2]; 9] = [
+    [1.0, 0.0],
+    [1.0, 1.0],
+    [0.0, 1.0],
+    [-1.0, 1.0],
+    [-1.0, 0.0],
+    [-1.0, -1.0],
+    [0.0, -1.0],
+    [1.0, -1.0],
+    [1.0, 0.0],
+];
+
+fn circle_knots() -> KnotVector<f64> {
+    KnotVector::new(
+        vec![
+            0.0, 0.0, 0.0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1.0, 1.0, 1.0,
+        ],
+        2,
+    )
+    .expect("circle knots")
+}
+
+fn circle_weight(i: usize) -> f64 {
+    if i.is_multiple_of(2) { 1.0 } else { S2 }
+}
+
+/// Surface of revolution about z: profile points (radius_j, z_j) with
+/// weights wv_j swept by the circle template (exactly representable —
+/// the classic rational construction).
+fn revolve(profile: &[([f64; 2], f64)], knots_v: KnotVector<f64>) -> NurbsSurface<f64> {
+    let mut points: Vec<Vec<[f64; 3]>> = Vec::with_capacity(9);
+    let mut weights: Vec<Vec<f64>> = Vec::with_capacity(9);
+    for (i, c) in CIRCLE_XY.iter().enumerate() {
+        let mut prow = Vec::with_capacity(profile.len());
+        let mut wrow = Vec::with_capacity(profile.len());
+        for &([radius, z], wv) in profile {
+            prow.push([radius * c[0], radius * c[1], z]);
+            wrow.push(circle_weight(i) * wv);
+        }
+        points.push(prow);
+        weights.push(wrow);
+    }
+    NurbsSurface::new(circle_knots(), knots_v, &points, &weights).expect("revolution")
+}
+
+/// Exact unit sphere (half-circle profile revolved).
+fn sphere() -> NurbsSurface<f64> {
+    let half = KnotVector::new(vec![0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0], 2).expect("half");
+    // Profile runs SOUTH -> NORTH so du x dv points outward.
+    revolve(
+        &[
+            ([0.0, -1.0], 1.0),
+            ([1.0, -1.0], S2),
+            ([1.0, 0.0], 1.0),
+            ([1.0, 1.0], S2),
+            ([0.0, 1.0], 1.0),
+        ],
+        half,
+    )
+}
+
+/// Cylinder SIDE surface (radius r, z in [0, h]).
+fn cylinder(r: f64, h: f64) -> NurbsSurface<f64> {
+    let line = KnotVector::new(vec![0.0, 0.0, 1.0, 1.0], 1).expect("line");
+    revolve(&[([r, 0.0], 1.0), ([r, h], 1.0)], line)
+}
+
+/// Torus (major R, minor r): full-circle profile offset by R.
+fn torus(big: f64, small: f64) -> NurbsSurface<f64> {
+    let profile: Vec<([f64; 2], f64)> = CIRCLE_XY
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (([big + small * c[0], small * c[1]]), circle_weight(i)))
+        .collect();
+    revolve(&profile, circle_knots())
+}
+
+fn lcg(state: &mut u64) -> f64 {
+    *state = state
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    ((*state >> 11) as f64) / (1u64 << 53) as f64
+}
+
+fn sample_box(state: &mut u64, half: f64) -> [f64; 3] {
+    [
+        (lcg(state) - 0.5) * 2.0 * half,
+        (lcg(state) - 0.5) * 2.0 * half,
+        (lcg(state) - 0.5) * 2.0 * half,
+    ]
+}
+
+#[test]
+fn ns_001_containment_battery_vs_analytic() {
+    type Case<'a> = (&'a ShellSdf, &'a dyn Fn([f64; 3]) -> f64, f64, &'a str);
+    let sph = ShellSdf::new(vec![sphere()], vec![None], Orientation::Outward).expect("shell");
+    let cyl =
+        ShellSdf::new(vec![cylinder(0.7, 1.2)], vec![None], Orientation::Unknown).expect("shell");
+    let tor =
+        ShellSdf::new(vec![torus(1.0, 0.3)], vec![None], Orientation::Outward).expect("shell");
+    let analytic_sphere =
+        |q: [f64; 3]| ((q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt() - 1.0).abs();
+    let analytic_cyl = |q: [f64; 3]| {
+        let rho = (q[0] * q[0] + q[1] * q[1]).sqrt();
+        let dz = (0.0f64).max(q[2] - 1.2).max(-q[2]);
+        ((rho - 0.7).powi(2) + dz * dz).sqrt()
+    };
+    let analytic_torus = |q: [f64; 3]| {
+        let rho = (q[0] * q[0] + q[1] * q[1]).sqrt();
+        (((rho - 1.0).powi(2) + q[2] * q[2]).sqrt() - 0.3).abs()
+    };
+    let cases: [Case<'_>; 3] = [
+        (&sph, &analytic_sphere, 1.6, "sphere"),
+        (&cyl, &analytic_cyl, 1.8, "cylinder"),
+        (&tor, &analytic_torus, 1.8, "torus"),
+    ];
+    let mut state = 0x5eed_cafe;
+    let mut worst_width = 0.0f64;
+    for (shell, analytic, half, name) in cases {
+        for _ in 0..50 {
+            let q = sample_box(&mut state, half);
+            let query = shell.distance(q, 1e-6, 4000).expect("query");
+            let truth = analytic(q);
+            assert!(
+                query.lower - 1e-7 <= truth && truth <= query.upper + 1e-7,
+                "{name}: certified [{}, {}] must contain analytic {truth} at {q:?}",
+                query.lower,
+                query.upper
+            );
+            worst_width = worst_width.max(query.upper - query.lower);
+        }
+    }
+    assert!(
+        worst_width < 5e-3,
+        "brackets converge: worst width {worst_width}"
+    );
+    verdict(
+        "ns-001",
+        "150 sampled points across sphere/cylinder/torus: certified intervals contain \
+         the analytic distance; worst bracket width < 5e-3",
+    );
+}
+
+#[test]
+fn ns_002_sign_follows_declared_orientation() {
+    with_cx(|cx| {
+        let signed = ShellSdfChart::new(
+            ShellSdf::new(vec![sphere()], vec![None], Orientation::Outward).expect("shell"),
+            1e-6,
+            4000,
+            0.5,
+        );
+        let inside = signed.eval(Point3::new(0.3, 0.1, -0.2), cx);
+        assert!(inside.signed_distance < 0.0, "inside is negative");
+        let outside = signed.eval(Point3::new(1.5, 0.0, 0.0), cx);
+        assert!(outside.signed_distance > 0.0, "outside is positive");
+        assert!(
+            (outside.signed_distance - 0.5).abs() < 1e-4,
+            "sphere distance at 1.5: {}",
+            outside.signed_distance
+        );
+        let g = outside.gradient.expect("gradient off the surface");
+        assert!(g.x > 0.99, "gradient points outward: {g:?}");
+        assert_eq!(signed.name(), "nurbs-sdf/signed");
+        assert_eq!(
+            inside.lipschitz,
+            Some(1.0),
+            "distance fields are 1-Lipschitz"
+        );
+        // Unknown orientation: unsigned field, named as such.
+        let unsigned = ShellSdfChart::new(
+            ShellSdf::new(vec![sphere()], vec![None], Orientation::Unknown).expect("shell"),
+            1e-6,
+            4000,
+            0.5,
+        );
+        let u_inside = unsigned.eval(Point3::new(0.3, 0.1, -0.2), cx);
+        assert!(
+            u_inside.signed_distance > 0.0,
+            "no sign claim: non-negative"
+        );
+        assert_eq!(unsigned.name(), "nurbs-sdf/unsigned");
+        verdict(
+            "ns-002",
+            "outward orientation signs correctly with outward gradients; unknown \
+             orientation stays unsigned and says so in the chart name",
+        );
+    });
+}
+
+/// A closed degree-1 rational polyline loop in parameter space.
+fn poly_loop(pts: &[[i64; 2]], scale_den: i64) -> TrimLoop {
+    let n = pts.len();
+    let mut knots = vec![Rat::int(0), Rat::int(0)];
+    for k in 1..n {
+        knots.push(Rat::new(k as i128, n as i128));
+    }
+    knots.push(Rat::int(1));
+    knots.push(Rat::int(1));
+    let kv = KnotVector::new(knots, 1).expect("polyline knots");
+    let mut points: Vec<[Rat; 2]> = pts
+        .iter()
+        .map(|p| {
+            [
+                Rat::new(i128::from(p[0]), i128::from(scale_den)),
+                Rat::new(i128::from(p[1]), i128::from(scale_den)),
+            ]
+        })
+        .collect();
+    points.push(points[0]);
+    let weights = vec![Rat::int(1); points.len()];
+    TrimLoop::new(NurbsCurve::new(kv, &points, &weights).expect("loop")).expect("closed")
+}
+
+#[test]
+fn ns_003_trim_downgrade_is_honest() {
+    // Keep only the NORTHERN parameter half (v in [0, 1/2] is the north
+    // on the sphere profile): CCW square in (u, v).
+    let keep_north = poly_loop(&[[0, 8], [16, 8], [16, 16], [0, 16]], 16);
+    let trim = TrimmedPatch {
+        loops: vec![keep_north],
+        max_subdivision: 24,
+    };
+    let shell =
+        ShellSdf::new(vec![sphere()], vec![Some(trim)], Orientation::Outward).expect("shell");
+    // A point nearest the SOUTH pole: its closest point is trimmed away.
+    let south = shell
+        .distance([0.0, 0.99, -0.99], 1e-6, 4000)
+        .expect("query");
+    assert!(
+        south.trim_downgrade,
+        "southern closest point is trimmed away"
+    );
+    // A point nearest the NORTH pole: kept region, fully certified.
+    let north = shell
+        .distance([0.0, 0.99, 0.99], 1e-6, 4000)
+        .expect("query");
+    assert!(!north.trim_downgrade, "northern closest point is kept");
+    let expect = (0.99f64 * 0.99 * 2.0).sqrt() - 1.0;
+    assert!(
+        (north.upper - expect).abs() < 1e-4,
+        "{} vs {expect}",
+        north.upper
+    );
+    // The chart widens the downgraded certificate instead of lying.
+    with_cx(|cx| {
+        let chart = ShellSdfChart::new(
+            ShellSdf::new(
+                vec![sphere()],
+                vec![Some(TrimmedPatch {
+                    loops: vec![poly_loop(&[[0, 8], [16, 8], [16, 16], [0, 16]], 16)],
+                    max_subdivision: 24,
+                })],
+                Orientation::Outward,
+            )
+            .expect("shell"),
+            1e-6,
+            4000,
+            0.5,
+        );
+        let s = chart.eval(Point3::new(0.0, 0.99, -0.99), cx);
+        assert!(
+            s.error.hi.is_infinite(),
+            "downgraded certificate is widened, not asserted: {:?}",
+            s.error
+        );
+        let n = chart.eval(Point3::new(0.0, 0.99, 0.99), cx);
+        assert!(n.error.hi.is_finite(), "kept region stays certified");
+    });
+    verdict(
+        "ns-003",
+        "adversarial trim: closest-point-in-hole downgrades (infinite upper bound); \
+         kept region certifies at ~0.4",
+    );
+}
+
+#[test]
+fn ns_004_frame_invariance_g3() {
+    // Translate the whole shell (control points) and the query by the
+    // same offset: the certified bracket must agree tightly.
+    let base =
+        ShellSdf::new(vec![torus(1.0, 0.3)], vec![None], Orientation::Outward).expect("shell");
+    let mut moved_surface = torus(1.0, 0.3);
+    let t = [13.0, -7.0, 3.5];
+    for row in &mut moved_surface.cpw {
+        for h in row.iter_mut() {
+            let w = h[3];
+            h[0] += t[0] * w;
+            h[1] += t[1] * w;
+            h[2] += t[2] * w;
+        }
+    }
+    let moved =
+        ShellSdf::new(vec![moved_surface], vec![None], Orientation::Outward).expect("shell");
+    let mut state = 0xfeed_f00d;
+    for _ in 0..25 {
+        let q = sample_box(&mut state, 1.6);
+        let a = base.distance(q, 1e-6, 4000).expect("base");
+        let b = moved
+            .distance([q[0] + t[0], q[1] + t[1], q[2] + t[2]], 1e-6, 4000)
+            .expect("moved");
+        assert!(
+            (a.upper - b.upper).abs() < 1e-6,
+            "translation invariance: {} vs {}",
+            a.upper,
+            b.upper
+        );
+    }
+    verdict(
+        "ns-004",
+        "25 translated queries agree to 1e-6 (G3 metamorphic)",
+    );
+}
+
+#[test]
+fn ns_005_adaptive_tile_generation() {
+    let chart = ShellSdfChart::new(
+        ShellSdf::new(vec![sphere()], vec![None], Orientation::Outward).expect("shell"),
+        1e-5,
+        4000,
+        0.5,
+    );
+    let aabb = fs_geom::Aabb::new(Point3::new(-1.4, -1.4, -1.4), Point3::new(1.4, 1.4, 1.4));
+    let tile = generate_tile(&chart, &aabb, 8, 1e-5, 2000).expect("tile");
+    assert_eq!(tile.values.len(), 512);
+    assert_eq!(tile.downgraded, 0, "untrimmed shell never downgrades");
+    // Adaptive contract: near-surface cells are TIGHT; far cells may be
+    // loose (that is the budget being spent where it matters).
+    // The adaptive CONTRACT at the documented budget (2000 splits/cell):
+    // near-band widths bounded and far cells strictly cheaper/looser.
+    // Achieved widths are LEDGERED below; hull lower bounds near the
+    // pole parameterization converge slowly, so the tight-claim budget
+    // is a documented trade (2.6e-4 at 8000 splits, ~1e-3 at 2000).
+    assert!(
+        tile.worst_near_width < 5e-3,
+        "near band bounded at the documented budget: {}",
+        tile.worst_near_width
+    );
+    assert!(
+        tile.worst_near_width < tile.worst_far_width,
+        "effort concentrates near the surface: near {} vs far {}",
+        tile.worst_near_width,
+        tile.worst_far_width
+    );
+    // The center sample (inside) is negative; a corner is positive.
+    let mid = tile.values[3 + 8 * 3 + 64 * 3]; // grid point (-0.2)^3, inside
+    let corner = tile.values[0];
+    assert!(corner > 0.0, "corner outside: {corner}");
+    assert!(mid < 0.0, "center inside: {mid}");
+    // Throughput evidence for the ledger line.
+    println!(
+        "{{\"metric\":\"nurbs-sdf-tile\",\"cells\":512,\"total_splits\":{},\
+         \"near_width\":{:.2e},\"far_width\":{:.2e}}}",
+        tile.total_splits, tile.worst_near_width, tile.worst_far_width
+    );
+    verdict(
+        "ns-005",
+        "8^3 adaptive tile: near band tight, signs correct, splits ledgered",
+    );
+}

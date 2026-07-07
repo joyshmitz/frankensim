@@ -51,6 +51,24 @@ fs-iga (geometry basis = analysis basis), fs-render NURBS tracing
   implicit CSG → re-fit); `DirectCertificateGated` refuses pending the
   sheaf watertightness certificate (wqd.13). An attempt, never a promise.
 
+- `sdf` module (plan §7.3 edge 3, bead wqd.11; [F], behind the
+  `nurbs-sdf` feature until its Gauntlet tier is green): the CERTIFIED
+  NURBS → SDF converter. `ShellSdf::distance` brackets the unsigned
+  distance by convex-hull branch-and-bound (hull distance is a rigorous
+  lower bound because the patch lies inside its control hull; any
+  evaluated point is a rigorous upper bound) with a damped Gauss–Newton
+  polish that can only TIGHTEN the upper bound — certification never
+  depends on Newton converging. Trim classification of the winning
+  parameter DOWNGRADES the certificate (infinite upper bound) when the
+  closest point is trimmed away or in the boundary band — the edge
+  label (certified vs measured-only) is decided per input.
+  `ShellSdfChart` presents the field as a Chart: sign from DECLARED
+  orientation (du × dv outward), `nurbs-sdf/unsigned` without one;
+  1-Lipschitz; enclosure certificates. `generate_tile` is budget-aware
+  (P4): refinement fires within two cell diagonals of the surface,
+  tight claims apply to genuinely adjacent cells, and achieved widths
+  plus branch-and-bound splits are ledgered per tile.
+
 ## Invariants
 
 1. **Refinement exactness (the definitive test)**: knot insertion,
@@ -119,3 +137,18 @@ refinement + partials vs central differences.
   exactness domain; the failure is loud and named.
 - Ray intersection shares this machinery but ships with the LUMEN
   chart-backend bead (qfx.2).
+
+## No-claim boundaries (sdf converter)
+
+- Lower bounds come from control-hull boxes; near MEDIAL AXES (many
+  equidistant patches) and pole-degenerate parameterizations, bracket
+  widths converge slowly with splits — the documented budget trade
+  (~1e-3 at 2000 splits/cell, 2.6e-4 at 8000 on the unit-sphere tile).
+  Interval-Newton (Krawczyk) contraction of the projection equations is
+  the upgrade path when fs-ivl grows 2-D machinery.
+- Sign is TRUSTED from the declared B-rep orientation; the winding-style
+  fallback for imperfect shells lands with the quarantine/census beads
+  (fs-io owns mesh-side honesty).
+- Trim downgrades widen the certificate; distance-to-kept-region
+  (excluding trimmed area from the B&B itself) is future work — the
+  current lower bound remains rigorous for the UNTRIMMED surface.
