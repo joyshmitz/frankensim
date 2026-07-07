@@ -153,6 +153,15 @@ consistency, and a kill -9 battery during fork traffic. Unit tests in
 `src/lib.rs`, `src/hash.rs`, and `src/travel.rs` cover the API surface and
 edge cases.
 
+## Speculation telemetry (bead lmp4.3, schema v3)
+
+Schema v3 adds the `speculation` extension table (uniform Rev S
+shape) carrying the four solve-node fields `(proposer_id, accepted,
+bound, iterations_saved)` keyed by solve-op identity — ADDITIVE: the
+migration regression test proves every pre-existing table still
+answers queries. The economics control loop lives in fs-verify
+(HELM-side); this ledger stores telemetry, it does not drive solves.
+
 ## Three-color write gate (bead qmao.1)
 
 `colors::ColorGraph` is the WRITE-TIME gatekeeper over fs-evidence's

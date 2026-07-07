@@ -58,6 +58,22 @@ quadrature.
   accept rates with the AUTO-DEMOTION hook (collapse ⇒ disabled in
   that regime) and ledger rows.
 
+- `economics` (bead lmp4.3) — the accept/reject CONTROL LOOP:
+  `run_speculative` accepts OUTRIGHT on a certified pass (no solve at
+  all); otherwise the best rejected candidate (smallest certified
+  bound) WARM-STARTS the true solve with savings MEASURED and recorded
+  CLAMPED at ≥ 0 (a worse-than-cold start is never a win; the raw
+  negative delta stays in the ledger). `DriftGuard` is the drift
+  detector that falls out of the telemetry: an accept-rate collapse in
+  a regime demotes the proposer THERE (localized), only after a
+  minimum sample count, with probation hysteresis whose evidence bar
+  DOUBLES per failed probation (no flapping). Zero-telemetry regimes
+  report the conservative 0.0 prior. `solve_node_record` emits the
+  four-field schema amendment `(proposer_id, accepted, bound,
+  iterations_saved)` stored in fs-ledger's v3 `speculation` extension
+  table. Dashboards are kernel × regime × proposer with median
+  savings.
+
 ## Invariants
 
 1. THE UPPER-BOUND PROPERTY (G1 MMS): the bound dominates the oracle
@@ -93,6 +109,14 @@ quadrature.
     stop being consulted (zoo-004).
 11. The economics loop stays sound end-to-end with per-proposer
     per-regime rows shipped to the ledger (zoo-005).
+12. Outright accepts ship without a solve; warm starts measure real
+    savings on the strongly nonlinear class (econ-001); antithetical
+    warm starts clamp to zero recorded savings with the raw delta
+    preserved (econ-002).
+13. Drift demotion is LOCALIZED to the collapsed regime (econ-003);
+    hysteresis prevents flapping and genuine recovery re-promotes
+    (econ-004); priors are conservative, decisions deterministic, and
+    the dashboard ships via fs-obs (econ-005).
 
 ## Error model
 
