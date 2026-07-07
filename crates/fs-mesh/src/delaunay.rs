@@ -48,10 +48,9 @@ pub enum MeshError {
 impl core::fmt::Display for MeshError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            MeshError::TooFewPoints { got } => write!(
-                f,
-                "tetrahedralization needs at least 4 points, got {got}"
-            ),
+            MeshError::TooFewPoints { got } => {
+                write!(f, "tetrahedralization needs at least 4 points, got {got}")
+            }
             MeshError::DegenerateInput => write!(
                 f,
                 "all input points are coplanar (exact orient3d test): a 3D \
@@ -193,12 +192,49 @@ impl Mesh {
         [tv[FACET[i][0]], tv[FACET[i][1]], tv[FACET[i][2]]]
     }
 
-    /// Is `p` in conflict with tet `t` (inside its circumsphere; for
-    /// ghosts: strictly outside the hull facet, SoS-resolved)?
-    fn in_conflict(&self, t: u32, p: [f64; 3], p_idx: u32) -> bool {
+    /// Is `p` strictly outside the hull facet of ghost `t` — or, when
+    /// exactly coplanar, strictly inside the facet's circumcircle IN the
+    /// plane (the standard rule: the ghost's "circumsphere" is the
+    /// halfspace closed by that disk)? Fully geometric and exact — no
+    /// SoS here, so the conflict region is canonical and the cavity
+    /// argument (real boundary facets strictly visible) holds.
+    fn ghost_conflict(&self, f: [u32; 3], p: [f64; 3]) -> bool {
+        let (a, b, c) = (self.coords(f[0]), self.coords(f[1]), self.coords(f[2]));
+        match orient3d(a, b, c, p) {
+            Sign::Positive => true,
+            Sign::Negative => false,
+            Sign::Zero => {
+                // Project along a fixed axis order; the first
+                // non-degenerate projection decides (exact 2D ladder).
+                for drop in [2usize, 0, 1] {
+                    let q = |v: [f64; 3]| -> [f64; 2] {
+                        match drop {
+                            2 => [v[0], v[1]],
+                            0 => [v[1], v[2]],
+                            _ => [v[2], v[0]],
+                        }
+                    };
+                    return match fs_ivl::orient2d(q(a), q(b), q(c)) {
+                        Sign::Zero => continue,
+                        Sign::Positive => {
+                            fs_ivl::incircle(q(a), q(b), q(c), q(p)) == Sign::Positive
+                        }
+                        Sign::Negative => {
+                            fs_ivl::incircle(q(a), q(c), q(b), q(p)) == Sign::Positive
+                        }
+                    };
+                }
+                false // degenerate hull facet cannot exist
+            }
+        }
+    }
+
+    /// Is `p` in conflict with tet `t` (strictly inside its
+    /// circumsphere; ghosts per [`Mesh::ghost_conflict`])?
+    fn in_conflict(&self, t: u32, p: [f64; 3], _p_idx: u32) -> bool {
         let tv = self.tets[t as usize];
         if tv[3] == GHOST {
-            self.facet_sees_sos([tv[0], tv[1], tv[2]], p, p_idx) == Sign::Positive
+            self.ghost_conflict([tv[0], tv[1], tv[2]], p)
         } else {
             insphere(
                 self.coords(tv[0]),
@@ -254,14 +290,25 @@ impl Mesh {
     /// false when it bitwise-duplicates an existing vertex.
     pub(crate) fn insert(&mut self, p_idx: u32) -> bool {
         let p = self.coords(p_idx);
-        let seed = self.locate(p, p_idx);
+        let mut seed = self.locate(p, p_idx);
         // Duplicate guard: identical bits to a vertex of the seed tet
-        // (a distinct point can tie in SoS only through the index term).
+        // (the SoS walk parks a coincident point next to its twin).
         for &v in &self.tets[seed as usize] {
             if v != GHOST && self.coords(v) == p {
                 self.stats.duplicates_skipped += 1;
                 return false;
             }
+        }
+        // The SoS walk can exit through a facet p is merely COPLANAR
+        // with; the geometric conflict rule may disown that ghost. A
+        // strictly-conflicting tet exists for any distinct point (a
+        // violated halfspace for outside points, the containing tet
+        // otherwise) — find it exhaustively in that rare case.
+        if !self.in_conflict(seed, p, p_idx) {
+            self.stats.exhaustive_locates += 1;
+            seed = (0..self.tets.len() as u32)
+                .find(|&c| self.alive[c as usize] && self.in_conflict(c, p, p_idx))
+                .expect("a distinct point conflicts with some tet");
         }
         // Conflict flood.
         self.epoch += 1;
@@ -296,12 +343,7 @@ impl Mesh {
                     if f.contains(&GHOST) {
                         continue; // ghost side facets are at infinity
                     }
-                    let vis = orient3d(
-                        self.coords(f[0]),
-                        self.coords(f[1]),
-                        self.coords(f[2]),
-                        p,
-                    );
+                    let vis = orient3d(self.coords(f[0]), self.coords(f[1]), self.coords(f[2]), p);
                     if vis != Sign::Positive {
                         self.mark[n as usize] = epoch;
                         cavity.push(n);
@@ -429,7 +471,11 @@ fn brio_order(points: &[[f64; 3]]) -> Vec<u32> {
     }
     let scale: [f64; 3] = core::array::from_fn(|k| {
         let w = hi[k] - lo[k];
-        if w > 0.0 { f64::from((1u32 << 21) - 1) / w } else { 0.0 }
+        if w > 0.0 {
+            f64::from((1u32 << 21) - 1) / w
+        } else {
+            0.0
+        }
     });
     let code = |i: u32| {
         let p = points[i as usize];
@@ -519,7 +565,9 @@ pub fn delaunay(points: &[Point3], cx: &Cx<'_>) -> Result<Tetrahedralization, Me
 fn bootstrap_quad(pts: &[[f64; 3]], order: &[u32]) -> Option<[u32; 4]> {
     let a = order[0];
     // First point not equal to a.
-    let b = *order.iter().find(|&&i| pts[i as usize] != pts[a as usize])?;
+    let b = *order
+        .iter()
+        .find(|&&i| pts[i as usize] != pts[a as usize])?;
     // First point not collinear with (a, b): some axis-projection pair
     // of orient2d... use orient3d against a probe: simpler exact route —
     // scan for c making a nonzero triangle normal via orient3d with a
@@ -702,9 +750,7 @@ impl Tetrahedralization {
                     continue;
                 }
                 let f = sorted3(m.facet_verts(t, i));
-                if !(0..4).any(|j| {
-                    m.adj[n as usize][j] == t && sorted3(m.facet_verts(n, j)) == f
-                }) {
+                if !(0..4).any(|j| m.adj[n as usize][j] == t && sorted3(m.facet_verts(n, j)) == f) {
                     violations.push(format!("tets {t}/{n} adjacency not mutual on facet"));
                 }
             }
@@ -791,8 +837,7 @@ impl Tetrahedralization {
                     faces.insert(sorted3(m.facet_verts(t, i)));
                 }
             }
-            let chi =
-                verts.len() as i64 - edges.len() as i64 + faces.len() as i64 - ntet;
+            let chi = verts.len() as i64 - edges.len() as i64 + faces.len() as i64 - ntet;
             if chi != 1 {
                 violations.push(format!("Euler characteristic {chi} != 1"));
             }

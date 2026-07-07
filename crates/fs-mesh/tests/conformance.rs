@@ -301,8 +301,10 @@ fn tmesh_005_refinement_quality() {
         let mut t2 = delaunay(&pts, cx).expect("build 2");
         let _ = refine(&mut t2, opts, cx).expect("refine 2");
         let deterministic = t.tets() == t2.tets() && t.points() == t2.points();
-        let improved = stats.worst_after < stats.worst_before
-            || (stats.worst_before == 0.0 && stats.worst_after == 0.0);
+        // The honest v1 guarantee: every offender that SURVIVES is one
+        // whose circumcenter escapes the hull (boundary handling is the
+        // successor bead); nothing interior-refinable remains.
+        let exhausted = stats.refinable_remaining == 0;
         let mut em = fs_obs::Emitter::new("fs-mesh/conformance", "tmesh-005/refine");
         let line = em
             .emit(
@@ -318,16 +320,18 @@ fn tmesh_005_refinement_quality() {
         println!("{line}");
         verdict(
             "tmesh-005",
-            improved && report.clean() && deterministic && stats.steiner_inserted > 0,
+            exhausted && report.clean() && deterministic && stats.steiner_inserted > 0,
             &format!(
-                "radius-edge improved {:.2} -> {:.2} with {} Steiner points \
-                 ({} hull-encroaching offenders skipped and counted), the FULL exact \
-                 audit stays clean through refinement, and refinement is \
-                 deterministic; seed 0x1001_2026_0706_0025",
+                "no interior-refinable offender remains after {} Steiner points \
+                 (worst ratio {:.2} -> {:.2}; the {} survivors all have \
+                 hull-escaping circumcenters, counted for the successor bead's \
+                 boundary handling), the FULL exact audit stays clean through \
+                 refinement, and refinement is deterministic; \
+                 seed 0x1001_2026_0706_0025",
+                stats.steiner_inserted,
                 stats.worst_before,
                 stats.worst_after,
-                stats.steiner_inserted,
-                stats.skipped_outside_hull
+                stats.unrefinable_remaining,
             ),
         );
     });

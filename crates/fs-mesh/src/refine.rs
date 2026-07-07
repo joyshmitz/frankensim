@@ -39,6 +39,11 @@ pub struct RefineStats {
     pub worst_before: f64,
     /// Worst radius-edge ratio after.
     pub worst_after: f64,
+    /// Offenders left whose circumcenters escape the hull (boundary
+    /// handling is the successor bead — these are COUNTED, not hidden).
+    pub unrefinable_remaining: u32,
+    /// Offenders left that were still refinable when budgets ran out.
+    pub refinable_remaining: u32,
 }
 
 impl RefineStats {
@@ -47,11 +52,14 @@ impl RefineStats {
     pub fn to_json(&self) -> String {
         format!(
             "{{\"steiner_inserted\":{},\"skipped_outside_hull\":{},\
-             \"worst_before\":{:.4},\"worst_after\":{:.4}}}",
+             \"worst_before\":{:.4},\"worst_after\":{:.4},\
+             \"unrefinable_remaining\":{},\"refinable_remaining\":{}}}",
             self.steiner_inserted,
             self.skipped_outside_hull,
             self.worst_before,
-            self.worst_after
+            self.worst_after,
+            self.unrefinable_remaining,
+            self.refinable_remaining
         )
     }
 }
@@ -132,44 +140,70 @@ pub fn refine(
         offenders.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap().then(b.1.cmp(&a.1)));
         offenders
     };
+    let canon = |t: [u32; 4]| {
+        let mut s = t;
+        s.sort_unstable();
+        s
+    };
+    let live_set = |t: &Tetrahedralization| -> std::collections::BTreeSet<[u32; 4]> {
+        t.tets().into_iter().map(canon).collect()
+    };
     let initial = worst_ratio(tetra);
     stats.worst_before = initial.first().map_or(0.0, |o| o.0);
+    // A skipped tet's identity never recurs after it dies (points only
+    // accumulate), so the skip set is PERMANENT — each unrefinable tet
+    // is counted once.
     let mut skipped: std::collections::BTreeSet<[u32; 4]> = std::collections::BTreeSet::new();
-    while stats.steiner_inserted < opts.max_steiner {
+    'rounds: while stats.steiner_inserted < opts.max_steiner {
         cx.checkpoint()?;
         let offenders = worst_ratio(tetra);
-        let Some(&(_, tet)) = offenders.iter().find(|(_, t)| !skipped.contains(t)) else {
-            break;
-        };
-        let pts = &tetra.mesh.points;
-        let q: [[f64; 3]; 4] = core::array::from_fn(|k| pts[tet[k] as usize]);
-        let Some(cc) = circumcenter(q[0], q[1], q[2], q[3]) else {
-            skipped.insert(tet);
-            continue;
-        };
-        if !cc.iter().all(|x| x.is_finite()) {
-            skipped.insert(tet);
-            continue;
+        let mut live = live_set(tetra);
+        let mut progressed = false;
+        for &(_, tet) in &offenders {
+            if stats.steiner_inserted >= opts.max_steiner {
+                break;
+            }
+            let key = canon(tet);
+            if skipped.contains(&key) || !live.contains(&key) {
+                continue; // unrefinable, or killed earlier this round
+            }
+            let pts = &tetra.mesh.points;
+            let q: [[f64; 3]; 4] = core::array::from_fn(|k| pts[tet[k] as usize]);
+            let insertable =
+                circumcenter(q[0], q[1], q[2], q[3]).filter(|cc| cc.iter().all(|x| x.is_finite()));
+            let Some(cc) = insertable else {
+                skipped.insert(key);
+                continue;
+            };
+            // Insertable only if the circumcenter lands strictly inside
+            // the hull (the conflict seed is a real tet).
+            let new_idx = tetra.mesh.points.len() as u32;
+            let seed = tetra.mesh.locate(cc, new_idx);
+            if tetra.mesh.tets[seed as usize][3] == GHOST {
+                stats.skipped_outside_hull += 1;
+                skipped.insert(key);
+                continue;
+            }
+            tetra.mesh.points.push(cc);
+            if tetra.mesh.insert(new_idx) {
+                stats.steiner_inserted += 1;
+                progressed = true;
+                live = live_set(tetra);
+            } else {
+                skipped.insert(key);
+            }
         }
-        // Insertable only if the circumcenter lands strictly inside the
-        // hull (the conflict seed is a real tet).
-        let new_idx = tetra.mesh.points.len() as u32;
-        let seed = tetra.mesh.locate(cc, new_idx);
-        if tetra.mesh.tets[seed as usize][3] == GHOST {
-            stats.skipped_outside_hull += 1;
-            skipped.insert(tet);
-            continue;
-        }
-        tetra.mesh.points.push(cc);
-        if tetra.mesh.insert(new_idx) {
-            stats.steiner_inserted += 1;
-            // Geometry changed: previously skipped tets may be gone.
-            skipped.clear();
-        } else {
-            skipped.insert(tet);
+        if !progressed {
+            break 'rounds;
         }
     }
-    stats.worst_after = worst_ratio(tetra).first().map_or(0.0, |o| o.0);
+    let remaining = worst_ratio(tetra);
+    stats.worst_after = remaining.first().map_or(0.0, |o| o.0);
+    stats.unrefinable_remaining = remaining
+        .iter()
+        .filter(|(_, t)| skipped.contains(&canon(*t)))
+        .count() as u32;
+    stats.refinable_remaining = remaining.len() as u32 - stats.unrefinable_remaining;
     tetra.mesh.stats.tets_final = tetra.tets().len() as u64;
     Ok(stats)
 }
