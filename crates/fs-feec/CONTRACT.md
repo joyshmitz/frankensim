@@ -55,6 +55,18 @@ checkerboarding structurally instead of by stabilization folklore.
   (Bareiss) rank of the incidence operators; rank–nullity Betti
   bookkeeping. Fixture-scale certifier: overflow is a checked panic,
   never a wrong answer.
+- `highorder::quad1d` — Gauss–Legendre nodes/weights (Newton on the
+  Legendre recurrence, FIXED iteration count for bit-stability),
+  Lobatto hierarchical shapes (vertex pair + integrated-Legendre
+  bubbles), 1D element mass/stiffness by exact-degree quadrature.
+- `highorder::hex::TensorSpace` — Q_r tensor-product H¹ on structured
+  m³ hex grids (tfz.6 slice 1): 1D dof lattice n₁ = m·r + 1 per axis
+  (bubbles have zero endpoint trace — the Dirichlet logic),
+  SUM-FACTORIZED matrix-free Poisson apply (per-element axis
+  contractions, O(r⁴) vs naive O(r⁶); fixed element order), assembled
+  1D reference operators, exact Kronecker Jacobi diagonal,
+  tensor-quadrature load and L2 error, and `pcg_matfree` (P6: never
+  assemble what we can apply).
 
 ## Invariants
 
@@ -122,6 +134,16 @@ orders ≈ 2.0 on the n = 4/8/16 Kuhn ladder; Hodge star positivity +
 dual-volume partition (Σ = |Ω|); Cochain container semantics (dims
 tag through d, container dd = 0, 128-byte alignment); cross-ISA
 golden hash.
+`tests/highorder_battery.rs` (slice 1): Gauss–Legendre exactness to
+degree 2n−1 (n = 1..10) + node symmetry; Lobatto endpoint structure;
+sum-factorized apply vs the dense assembled Kronecker reference to
+1e−12 relative on four (m, r) fixtures — the acceptance roundoff
+gate; Jacobi diagonal vs operator columns; G1 MMS Poisson through the
+matrix-free Jacobi-PCG path with slope gates ≥ r + 0.6 for r = 1..6
+(measured ≈ r + 1); its own golden hash.
+`tests/ho_probe.rs`: per-mode convergence regression — the diagnosis
+that single-cell symmetric fixtures superconverge at even r (a metric
+trap, so MMS ladders start at m ≥ 2).
 
 ## No-claim boundaries
 
@@ -130,9 +152,12 @@ golden hash.
   negative dual measures, so shipping it without well-centeredness
   machinery would be a certificate without evidence. Follow-up scope
   together with mesh quality certificates.
-- Tets only: `HexComplex` incidence and tensor-product families are
-  tfz.6 (fs-feec high-order) territory, as is everything above
-  lowest order (P_r Λᵏ, r > 1) and sum-factorized apply.
+- Simplicial families remain LOWEST order (P_r Λᵏ on tets for r > 1
+  is tfz.6's remaining scope). The tensor-product side now covers H¹
+  (slice 1); H(curl)/H(div)/L² tensor families, the commuting diagram
+  at high order, unstructured-hex orientation, and the ≥30%-peak perf
+  gate are tfz.6's later slices. `HexComplex` incidence is still not
+  consumed (structured grids build their own lattice).
 - MMS covers the PRIMAL Poisson form; the mixed-form MMS (flux
   variable through M₂/d₂) joins the solver-stack lane (tfz.10) where
   saddle-point solvers live.
