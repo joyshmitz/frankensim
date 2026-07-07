@@ -1,0 +1,20 @@
+[package]
+name = "fs-probe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Discrepancy probes + budget pie (addendum Proposal 3): runs adjacent-rung model-form probes over the fidelity-ladder registry, produces estimated-color discrepancy fields, and reports where the error budget is actually spent by color (closure vs mesh)."
+
+[package.metadata.frankensim]
+layer = "L3"
+
+[dependencies]
+fs-evidence = { path = "../fs-evidence" }
+fs-ladder = { path = "../fs-ladder" }
+
+[dev-dependencies]
+
+[lints]
+workspace = true
