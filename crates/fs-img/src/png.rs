@@ -161,12 +161,12 @@ fn unzlib_stored(z: &[u8]) -> Result<Vec<u8>, ImgError> {
     Ok(out)
 }
 
-fn push_chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+fn push_chunk(out: &mut Vec<u8>, kind: [u8; 4], data: &[u8]) {
     out.extend_from_slice(&(data.len() as u32).to_be_bytes());
-    out.extend_from_slice(kind);
+    out.extend_from_slice(&kind);
     out.extend_from_slice(data);
     let mut crc_input = Vec::with_capacity(4 + data.len());
-    crc_input.extend_from_slice(kind);
+    crc_input.extend_from_slice(&kind);
     crc_input.extend_from_slice(data);
     out.extend_from_slice(&crc32(&crc_input).to_be_bytes());
 }
@@ -240,10 +240,10 @@ fn assemble(width: u32, height: u32, depth: u8, color: PngColor, raw: &[u8]) -> 
     ihdr.push(depth);
     ihdr.push(color.type_byte());
     ihdr.extend_from_slice(&[0, 0, 0]); // deflate, adaptive filters, no interlace
-    push_chunk(&mut out, b"IHDR", &ihdr);
-    push_chunk(&mut out, b"sRGB", &[0]); // perceptual intent
-    push_chunk(&mut out, b"IDAT", &zlib_stored(raw));
-    push_chunk(&mut out, b"IEND", &[]);
+    push_chunk(&mut out, *b"IHDR", &ihdr);
+    push_chunk(&mut out, *b"sRGB", &[0]); // perceptual intent
+    push_chunk(&mut out, *b"IDAT", &zlib_stored(raw));
+    push_chunk(&mut out, *b"IEND", &[]);
     out
 }
 
@@ -306,7 +306,7 @@ pub fn read_png(bytes: &[u8]) -> Result<DecodedPng, ImgError> {
                 what: "truncated chunk crc".to_string(),
             })?;
         let mut crc_input = Vec::with_capacity(4 + len);
-        crc_input.extend_from_slice(kind);
+        crc_input.extend_from_slice(&kind);
         crc_input.extend_from_slice(data);
         if u32::from_be_bytes([crc[0], crc[1], crc[2], crc[3]]) != crc32(&crc_input) {
             return Err(ImgError::Malformed {
