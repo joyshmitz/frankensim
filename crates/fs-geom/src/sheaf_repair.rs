@@ -263,7 +263,11 @@ pub fn plan_repair(
             .all(|(off, budget)| off.abs() <= *budget);
     let mut proposals = Vec::new();
     if split.fractions.0 > COMPONENT_FLOOR {
-        proposals.push(gauge_proposal(&split, auto_repairable, expected_after_gauge));
+        proposals.push(gauge_proposal(
+            &split,
+            auto_repairable,
+            expected_after_gauge,
+        ));
     }
     if split.fractions.1 > COMPONENT_FLOOR {
         proposals.push(coexact_proposal(skeleton, mismatch, &split));
