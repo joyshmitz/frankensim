@@ -15,6 +15,7 @@ members = [
     "crates/fs-feec",
     "crates/fs-tilelang",
     "crates/fs-opdsl",
+    "crates/fs-solver",
     "crates/fs-tilelang-macros",
     "crates/fs-soa-derive",
     "crates/fs-time",
@@ -52,6 +53,7 @@ members = [
     "crates/fs-mesh",
     "crates/fs-vskeleton",
     "crates/fs-iface",
+    "crates/fs-ladder",
     "xtask",
 ]
 

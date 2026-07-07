@@ -1,0 +1,25 @@
+[package]
+name = "fs-solver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Solver stack: matrix-free Krylov (CG/MINRES/GMRES) with resumable state, deterministic reductions, transposed solves, and p-multigrid over the high-order FEEC hierarchy."
+
+[package.metadata.frankensim]
+layer = "L3"
+
+[dependencies]
+fs-feec = { path = "../fs-feec" }
+fs-la = { path = "../fs-la" }
+fs-math = { path = "../fs-math" }
+fs-sparse = { path = "../fs-sparse" }
+fs-tilelang = { path = "../fs-tilelang" }
+
+[dev-dependencies]
+fs-opdsl = { path = "../fs-opdsl" }
+fs-rand = { path = "../fs-rand" }
+
+[lints]
+workspace = true
