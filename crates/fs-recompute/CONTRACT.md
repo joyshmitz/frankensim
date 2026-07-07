@@ -84,6 +84,33 @@ falsifier's forced recomputes agree within their certified bounds;
 any violation is Sev-0 (inv-003); graceful degradation with yield
 measured (inv-004); verified-color claims + slack burning (inv-005).
 
+## perturb() API + cache policy (bead lmp4.8, same feature gate)
+
+`api::RecomputeApi` is the operator-facing surface: `perturb(node, δ)`
+returns a FIRST-CLASS `PerturbPlan` — the minimal frontier, its
+estimated cost from MEASURED per-node costs (Proposal 8's planner
+input), the hash-memoization baseline cost, and the verified-color
+certificates for everything skipped — pure until `commit` (which burns
+slack and updates telemetry). Cache policy: `ensure_capacity` evicts
+by COST-WEIGHTED score (recompute-cost × measured hit-probability,
+lowest first, deterministic seq tie-break), pins untouchable, and a
+pinned population exceeding the capacity is the STRUCTURED
+`CacheFullOfPins` refusal — never an OOM. `SkipYield` is the per-op R4
+dashboard with worst-first ordering (where bound-tightening effort
+goes).
+
+Invariants: diamond plans recompute exactly the un-absorbable
+{source, tight} set with certificates for the rest, leaf/root
+boundaries behave, plans are pure until commit (api-001); slack is
+spendable through the API — repeated absorptions exhaust it (api-002);
+cost-weighted eviction preserves hot expensive nodes that insertion-
+order LRU would destroy, pins survive, saturation is structured
+(api-003); per-op yields separate never-absorbing ops from absorbers,
+dashboard live via fs-obs (api-004); the kill-criterion replay
+machinery measures certified-vs-memo cost on a 100-variant trace
+(fixture-scale; the production decision runs on recorded agent
+traces) (api-005).
+
 ## Error model
 
 `StoreError::DeterminismViolation` (stop-the-line, with likely-cause
@@ -108,10 +135,11 @@ None. `#![forbid(unsafe_code)]` via workspace lints; no capsules.
 
 ## Feature flags
 
-`tolerance-invalidation` — the lmp4.7 invalidation algorithm, OFF by
-default per the Ambition-Tag gating rule until its Gauntlet tier and
-kill-metric (skip yield on realistic edit traces) stay green. Adds
-fs-evidence (the verified-color skip claims).
+`tolerance-invalidation` — the lmp4.7 invalidation algorithm AND the
+lmp4.8 perturb()/cache-policy API, OFF by default per the Ambition-Tag
+gating rule until the Gauntlet tier and kill-metric (≥2× median
+wall-clock speedup vs plain memoization on recorded agent traces)
+stay green. Adds fs-evidence (the verified-color skip claims).
 
 ## Conformance tests
 

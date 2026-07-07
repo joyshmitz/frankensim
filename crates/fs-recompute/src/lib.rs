@@ -22,6 +22,8 @@
 //! NEVER evicted — the eviction pass can only touch unpinned nodes.
 
 #[cfg(feature = "tolerance-invalidation")]
+pub mod api;
+#[cfg(feature = "tolerance-invalidation")]
 pub mod invalidate;
 
 use fs_ledger::{ContentHash, hash_bytes};
@@ -211,6 +213,14 @@ pub enum StoreError {
         /// The hash asked for.
         node: ContentHash,
     },
+    /// The cache's PINNED population alone exceeds the requested
+    /// capacity — a structured refusal, never an OOM or a deadlock.
+    CacheFullOfPins {
+        /// How many nodes are pinned.
+        pinned: usize,
+        /// The capacity requested.
+        capacity: usize,
+    },
 }
 
 impl core::fmt::Display for StoreError {
@@ -232,6 +242,10 @@ impl core::fmt::Display for StoreError {
             StoreError::UnknownNode { node } => {
                 write!(f, "node {} is not in the store", node.to_hex())
             }
+            StoreError::CacheFullOfPins { pinned, capacity } => write!(
+                f,
+                "{pinned} pinned nodes exceed the requested capacity {capacity};                  pins are re-verifiability PROMISES (evidence packages, contracts)                  and cannot be evicted — raise the capacity or retire the promises"
+            ),
         }
     }
 }
@@ -411,6 +425,11 @@ impl Store {
             .ok_or(StoreError::UnknownNode { node: *node })?;
         entry.burned += amount;
         Ok(())
+    }
+
+    /// Remove a node by raw key (the eviction path).
+    pub(crate) fn remove_by_key(&mut self, k: [u8; 32]) {
+        self.nodes.remove(&k);
     }
 
     /// Serialize the store to its canonical text form (round-trips;

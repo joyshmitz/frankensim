@@ -27,5 +27,9 @@ fs-obs = { path = "../fs-obs" }
 name = "invalidation"
 required-features = ["tolerance-invalidation"]
 
+[[test]]
+name = "api"
+required-features = ["tolerance-invalidation"]
+
 [lints]
 workspace = true
