@@ -288,6 +288,8 @@ impl Mesh {
 
     /// Insert point `p_idx` (already appended to `points`). Returns
     /// false when it bitwise-duplicates an existing vertex.
+    #[allow(clippy::too_many_lines)] // flood, repair, and rewire are one transaction
+    #[allow(clippy::float_cmp)] // duplicate detection is DELIBERATELY bitwise
     pub(crate) fn insert(&mut self, p_idx: u32) -> bool {
         let p = self.coords(p_idx);
         let mut seed = self.locate(p, p_idx);
@@ -548,7 +550,7 @@ pub fn delaunay(points: &[Point3], cx: &Cx<'_>) -> Result<Tetrahedralization, Me
         }
         mesh.insert(i);
         inserted += 1;
-        if inserted % 256 == 0 {
+        if inserted.is_multiple_of(256) {
             cx.checkpoint()?;
         }
     }
@@ -562,6 +564,7 @@ pub fn delaunay(points: &[Point3], cx: &Cx<'_>) -> Result<Tetrahedralization, Me
 }
 
 /// First 4 points (in BRIO order) that span 3D, by exact tests.
+#[allow(clippy::float_cmp)] // distinctness is DELIBERATELY bitwise
 fn bootstrap_quad(pts: &[[f64; 3]], order: &[u32]) -> Option<[u32; 4]> {
     let a = order[0];
     // First point not equal to a.
@@ -578,7 +581,7 @@ fn bootstrap_quad(pts: &[[f64; 3]], order: &[u32]) -> Option<[u32; 4]> {
     // (c, d) with orient3d(a,b,c,d) != Zero.
     let mut c_candidates = order.iter().filter(|&&i| i != a && i != b);
     for &c in c_candidates.by_ref() {
-        for &d in order.iter() {
+        for &d in order {
             if d == a || d == b || d == c {
                 continue;
             }
@@ -614,14 +617,13 @@ fn init_first_tet(mesh: &mut Mesh, quad: [u32; 4]) {
     };
     let t = mesh.alloc(verts);
     // Ghost per facet: the facet REVERSED (outside strictly Positive).
-    let mut ghosts = [0u32; 4];
-    for i in 0..4 {
+    let ghosts: [u32; 4] = core::array::from_fn(|i| {
         let f = mesh.facet_verts(t, i);
         let g = mesh.alloc_ghost([f[0], f[2], f[1]]);
-        ghosts[i] = g;
         mesh.adj[t as usize][i] = g;
         mesh.adj[g as usize][3] = t;
-    }
+        g
+    });
     // Wire ghost side facets to each other via the shared-edge map.
     let mut map: BTreeMap<[u32; 3], (u32, usize)> = BTreeMap::new();
     for &g in &ghosts {
@@ -837,7 +839,8 @@ impl Tetrahedralization {
                     faces.insert(sorted3(m.facet_verts(t, i)));
                 }
             }
-            let chi = verts.len() as i64 - edges.len() as i64 + faces.len() as i64 - ntet;
+            let count = |n: usize| i64::try_from(n).expect("mesh far below i64::MAX");
+            let chi = count(verts.len()) - count(edges.len()) + count(faces.len()) - ntet;
             if chi != 1 {
                 violations.push(format!("Euler characteristic {chi} != 1"));
             }
