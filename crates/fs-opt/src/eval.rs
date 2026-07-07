@@ -51,7 +51,7 @@ fn eval_at(
     if let Some(v) = &memo[node.0 as usize] {
         return Ok(v.clone());
     }
-    let mut ev = |n: NodeId, memo: &mut Vec<Option<Value>>| eval_at(problem, n, bindings, memo);
+    let ev = |n: NodeId, memo: &mut Vec<Option<Value>>| eval_at(problem, n, bindings, memo);
     let scalar = |v: Value| -> f64 {
         match v {
             Value::S(x) => x,
@@ -75,16 +75,12 @@ fn eval_at(
         Expr::Const { value, .. } => Value::S(*value),
         Expr::Add(a, b) => match (ev(*a, memo)?, ev(*b, memo)?) {
             (Value::S(x), Value::S(y)) => Value::S(x + y),
-            (Value::V(x), Value::V(y)) => {
-                Value::V(x.iter().zip(&y).map(|(p, q)| p + q).collect())
-            }
+            (Value::V(x), Value::V(y)) => Value::V(x.iter().zip(&y).map(|(p, q)| p + q).collect()),
             _ => unreachable!("builder enforced matching shapes"),
         },
         Expr::Sub(a, b) => match (ev(*a, memo)?, ev(*b, memo)?) {
             (Value::S(x), Value::S(y)) => Value::S(x - y),
-            (Value::V(x), Value::V(y)) => {
-                Value::V(x.iter().zip(&y).map(|(p, q)| p - q).collect())
-            }
+            (Value::V(x), Value::V(y)) => Value::V(x.iter().zip(&y).map(|(p, q)| p - q).collect()),
             _ => unreachable!("builder enforced matching shapes"),
         },
         Expr::Mul(a, b) => match (ev(*a, memo)?, ev(*b, memo)?) {
@@ -108,9 +104,7 @@ fn eval_at(
         Expr::Ln(a) => Value::S(scalar(ev(*a, memo)?).ln()),
         Expr::Tanh(a) => Value::S(scalar(ev(*a, memo)?).tanh()),
         Expr::Dot(a, b) => match (ev(*a, memo)?, ev(*b, memo)?) {
-            (Value::V(x), Value::V(y)) => {
-                Value::S(x.iter().zip(&y).map(|(p, q)| p * q).sum())
-            }
+            (Value::V(x), Value::V(y)) => Value::S(x.iter().zip(&y).map(|(p, q)| p * q).sum()),
             _ => unreachable!("builder enforced vectors"),
         },
         Expr::NormSq(a) => match ev(*a, memo)? {
@@ -131,9 +125,7 @@ fn eval_at(
         | Expr::Quantile { uq_config, .. } => {
             return Err(OptError::Unevaluable {
                 node: node.0,
-                kind: format!(
-                    "stochastic node over `{uq_config}` (UQ runners execute these)"
-                ),
+                kind: format!("stochastic node over `{uq_config}` (UQ runners execute these)"),
             });
         }
     };
@@ -201,11 +193,17 @@ impl Manifold {
                 for j in 0..p {
                     for k in 0..j {
                         let d: f64 = (0..n).map(|i| cols[j][i] * cols[k][i]).sum();
-                        for i in 0..n {
-                            cols[j][i] -= d * cols[k][i];
+                        let prior = cols[k].clone();
+                        for (cj, ck) in cols[j].iter_mut().zip(&prior) {
+                            *cj -= d * ck;
                         }
                     }
-                    let nn = cols[j].iter().map(|v| v * v).sum::<f64>().sqrt().max(1e-300);
+                    let nn = cols[j]
+                        .iter()
+                        .map(|v| v * v)
+                        .sum::<f64>()
+                        .sqrt()
+                        .max(1e-300);
                     for v in &mut cols[j] {
                         *v /= nn;
                     }
@@ -334,12 +332,5 @@ pub fn descend_ir(
         let v = eval(problem, obj.node, &[x.to_vec()]).expect("checked evaluable above");
         sign * v.scalar().expect("objective roots are scalar")
     };
-    descend_fn(
-        manifold,
-        &f,
-        x0,
-        opts,
-        problem.budget.max_evals,
-        cx,
-    )
+    descend_fn(manifold, &f, x0, opts, problem.budget.max_evals, cx)
 }

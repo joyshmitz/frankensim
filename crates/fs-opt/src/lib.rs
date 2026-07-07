@@ -29,9 +29,8 @@ mod serial;
 
 pub use eval::{DescentOptions, DescentReport, Value, descend_fn, descend_ir, eval};
 pub use ir::{
-    Class, Constraint, ConstraintKind, EvalBudget, Expr, Manifold, NodeId, Objective,
-    OptError, OptimizerFamily, Problem, ProblemBuilder, ProblemTag, Sense, Shape, VarId,
-    Variable,
+    Class, Constraint, ConstraintKind, EvalBudget, Expr, Manifold, NodeId, Objective, OptError,
+    OptimizerFamily, Problem, ProblemBuilder, ProblemTag, Sense, Shape, VarId, Variable,
 };
 pub use serial::{parse, problem_hash, serialize};
 

@@ -11,5 +11,9 @@
 //!   rejected at parse time — a property worth keeping),
 //! - graph.rs: hash-consed builder (CSE by construction) + exact
 //!   reverse-mode gradient on the DAG with deterministic accumulation.
-//! See the bead comment trail for the full coordination note. Delete
-//! these parked files only with explicit user permission (RULE 1).
+//!   See the bead comment trail for the full coordination note. Delete
+//!   these parked files only with explicit user permission (RULE 1).
+
+// Mechanically parked per the header above (CloudyFinch, bead 7tv.1):
+// compiled only when the harvest reconciliation re-enables it.
+#![cfg(feature = "parked-ir-battery")]

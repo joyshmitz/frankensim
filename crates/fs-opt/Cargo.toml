@@ -10,6 +10,10 @@ description = "Optimization problem IR: typed objective/constraint graphs over m
 [package.metadata.frankensim]
 layer = "L4"
 
+[features]
+# The parked numerics-spine IR battery (harvest reconciliation).
+parked-ir-battery = []
+
 [dependencies]
 fs-exec = { path = "../fs-exec" }
 fs-obs = { path = "../fs-obs" }

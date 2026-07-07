@@ -29,7 +29,6 @@ members = [
     "crates/fs-rep-mesh",
     "crates/fs-rep-frep",
     "crates/fs-mesh",
-    "crates/fs-opt",
     "crates/fs-vskeleton",
     "xtask",
 ]

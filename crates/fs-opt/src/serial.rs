@@ -6,8 +6,8 @@
 //! free.
 
 use crate::ir::{
-    ConstraintKind, Expr, Manifold, NodeId, OptError, Problem, ProblemBuilder, ProblemTag,
-    Sense, VarId,
+    ConstraintKind, Expr, Manifold, NodeId, OptError, Problem, ProblemBuilder, ProblemTag, Sense,
+    VarId,
 };
 use fs_qty::Dims;
 use std::fmt::Write as _;
@@ -46,10 +46,7 @@ fn unesc(s: &str) -> String {
 }
 
 fn dims_str(d: Dims) -> String {
-    format!(
-        "({},{},{},{},{})",
-        d.0[0], d.0[1], d.0[2], d.0[3], d.0[4]
-    )
+    format!("({},{},{},{},{})", d.0[0], d.0[1], d.0[2], d.0[3], d.0[4])
 }
 
 fn parse_dims(s: &str) -> Option<Dims> {
@@ -383,9 +380,11 @@ fn parse_expr(b: &mut ProblemBuilder, toks: &[&str], ln: usize) -> Result<NodeId
             .ok_or_else(|| perr(ln, "expr: missing operand"))
     };
     let node = |i: usize| -> Result<NodeId, OptError> {
-        Ok(NodeId(get(i)?.parse().map_err(|_| {
-            perr(ln, "expr: bad node operand")
-        })?))
+        Ok(NodeId(
+            get(i)?
+                .parse()
+                .map_err(|_| perr(ln, "expr: bad node operand"))?,
+        ))
     };
     match get(0)? {
         "var" => {
@@ -394,7 +393,9 @@ fn parse_expr(b: &mut ProblemBuilder, toks: &[&str], ln: usize) -> Result<NodeId
         }
         "component" => {
             let of = node(1)?;
-            let index = get(2)?.parse().map_err(|_| perr(ln, "component: bad index"))?;
+            let index = get(2)?
+                .parse()
+                .map_err(|_| perr(ln, "component: bad index"))?;
             b.component(of, index)
         }
         "const" => {
@@ -409,7 +410,9 @@ fn parse_expr(b: &mut ProblemBuilder, toks: &[&str], ln: usize) -> Result<NodeId
         "neg" => b.neg(node(1)?),
         "powi" => {
             let base = node(1)?;
-            let exp = get(2)?.parse().map_err(|_| perr(ln, "powi: bad exponent"))?;
+            let exp = get(2)?
+                .parse()
+                .map_err(|_| perr(ln, "powi: bad exponent"))?;
             b.powi(base, exp)
         }
         "sqrt" => b.sqrt(node(1)?),

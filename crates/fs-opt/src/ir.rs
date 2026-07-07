@@ -395,7 +395,10 @@ impl core::fmt::Display for OptError {
                 write!(f, "`{what}` = {value} is outside its valid range")
             }
             OptError::IndexOut { index, len } => {
-                write!(f, "component {index} of a length-{len} vector does not exist")
+                write!(
+                    f,
+                    "component {index} of a length-{len} vector does not exist"
+                )
             }
             OptError::NotScalar { node } => write!(
                 f,
@@ -494,13 +497,7 @@ impl Problem {
         self.exprs
             .iter()
             .enumerate()
-            .map(|(i, e)| {
-                format!(
-                    "node {i}: {} -> {:?}",
-                    expr_kind_name(e),
-                    self.classes[i]
-                )
-            })
+            .map(|(i, e)| format!("node {i}: {} -> {:?}", expr_kind_name(e), self.classes[i]))
             .collect()
     }
 
@@ -514,14 +511,9 @@ impl Problem {
         let min_class = match family {
             OptimizerFamily::Lbfgs => Class::C1,
             OptimizerFamily::Newton => Class::Smooth,
-            OptimizerFamily::SubgradientBundle | OptimizerFamily::GradientFree => {
-                Class::C0
-            }
+            OptimizerFamily::SubgradientBundle | OptimizerFamily::GradientFree => Class::C0,
         };
-        let needs_adjoint = matches!(
-            family,
-            OptimizerFamily::Lbfgs | OptimizerFamily::Newton
-        );
+        let needs_adjoint = matches!(family, OptimizerFamily::Lbfgs | OptimizerFamily::Newton);
         let family_name = match family {
             OptimizerFamily::Lbfgs => "L-BFGS",
             OptimizerFamily::Newton => "Newton",
@@ -706,7 +698,7 @@ impl ProblemBuilder {
     fn scalar(&self, op: &'static str, n: NodeId) -> Result<(), OptError> {
         match self.shapes[n.0 as usize] {
             Shape::Scalar => Ok(()),
-            v => Err(OptError::ShapeMismatch {
+            v @ Shape::Vector(_) => Err(OptError::ShapeMismatch {
                 op,
                 left: v,
                 right: Shape::Scalar,
@@ -983,7 +975,7 @@ impl ProblemBuilder {
                 let d = self.dims[a.0 as usize];
                 Ok(self.push(Expr::NormSq(a), Shape::Scalar, d.plus(d)))
             }
-            s => Err(OptError::ShapeMismatch {
+            s @ Shape::Scalar => Err(OptError::ShapeMismatch {
                 op: "norm_sq",
                 left: s,
                 right: Shape::Vector(1),
