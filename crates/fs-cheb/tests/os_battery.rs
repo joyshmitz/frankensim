@@ -47,7 +47,7 @@ fn growth_rate_query_shape() {
 }
 
 /// Recorded on aarch64-apple (M4 Pro); must match on x86-64 (trj).
-const GOLDEN_HASH: u64 = 0x0; // placeholder: set from first run
+const GOLDEN_HASH: u64 = 0x7b3b_e74e_d5a6_faad;
 
 #[test]
 fn os_golden_hash() {
