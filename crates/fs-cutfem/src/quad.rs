@@ -38,7 +38,7 @@ pub struct CutRules {
 /// 3-point Gauss–Legendre on [-1, 1].
 const G3: [(f64, f64); 3] = [
     (-0.774_596_669_241_483_4, 0.555_555_555_555_555_6),
-    (0.0, 0.888_888_888_888_888_9),
+    (0.0, 0.888_888_888_888_889),
     (0.774_596_669_241_483_4, 0.555_555_555_555_555_6),
 ];
 
@@ -48,8 +48,8 @@ const EXTRA: u32 = 2;
 /// Push a 3×3 tensor Gauss rule for the full box (degree-5 exact per
 /// axis — exact for every integrand this crate assembles).
 pub fn tensor_gauss(lo: [f64; 2], hi: [f64; 2], out: &mut Vec<([f64; 2], f64)>) {
-    let mx = 0.5 * (lo[0] + hi[0]);
-    let my = 0.5 * (lo[1] + hi[1]);
+    let mx = f64::midpoint(lo[0], hi[0]);
+    let my = f64::midpoint(lo[1], hi[1]);
     let sx = 0.5 * (hi[0] - lo[0]);
     let sy = 0.5 * (hi[1] - lo[1]);
     for &(gx, wx) in &G3 {
@@ -135,8 +135,8 @@ fn worker(sdf: &dyn CutSdf, lo: [f64; 2], hi: [f64; 2], depth: u32, extra: u32, 
 }
 
 fn recurse(sdf: &dyn CutSdf, lo: [f64; 2], hi: [f64; 2], depth: u32, extra: u32, out: &mut CutRules) {
-    let mx = 0.5 * (lo[0] + hi[0]);
-    let my = 0.5 * (lo[1] + hi[1]);
+    let mx = f64::midpoint(lo[0], hi[0]);
+    let my = f64::midpoint(lo[1], hi[1]);
     worker(sdf, lo, [mx, my], depth, extra, out);
     worker(sdf, [mx, lo[1]], [hi[0], my], depth, extra, out);
     worker(sdf, [lo[0], my], [mx, hi[1]], depth, extra, out);
@@ -155,8 +155,8 @@ fn saddle_rules(
     out: &mut CutRules,
 ) {
     let center = [
-        0.5 * (corners[0][0] + corners[2][0]),
-        0.5 * (corners[0][1] + corners[2][1]),
+        f64::midpoint(corners[0][0], corners[2][0]),
+        f64::midpoint(corners[0][1], corners[2][1]),
     ];
     let center_in = sdf.value(center) <= 0.0;
     if center_in {
@@ -196,7 +196,7 @@ fn bisect_crossing(sdf: &dyn CutSdf, a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
     let sa = sdf.value(a) > 0.0;
     let (mut t0, mut t1) = (0.0f64, 1.0f64);
     for _ in 0..50 {
-        let tm = 0.5 * (t0 + t1);
+        let tm = f64::midpoint(t0, t1);
         let p = [a[0] + tm * (b[0] - a[0]), a[1] + tm * (b[1] - a[1])];
         if (sdf.value(p) > 0.0) == sa {
             t0 = tm;
@@ -204,7 +204,7 @@ fn bisect_crossing(sdf: &dyn CutSdf, a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
             t1 = tm;
         }
     }
-    let t = 0.5 * (t0 + t1);
+    let t = f64::midpoint(t0, t1);
     [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]
 }
 
@@ -223,9 +223,9 @@ fn polygon_rule(poly: &[[f64; 2]], out: &mut Vec<([f64; 2], f64)>) {
             continue;
         }
         let w = signed_area / 3.0;
-        out.push(([0.5 * (p[0] + q[0]), 0.5 * (p[1] + q[1])], w));
-        out.push(([0.5 * (q[0] + r[0]), 0.5 * (q[1] + r[1])], w));
-        out.push(([0.5 * (r[0] + p[0]), 0.5 * (r[1] + p[1])], w));
+        out.push(([f64::midpoint(p[0], q[0]), f64::midpoint(p[1], q[1])], w));
+        out.push(([f64::midpoint(q[0], r[0]), f64::midpoint(q[1], r[1])], w));
+        out.push(([f64::midpoint(r[0], p[0]), f64::midpoint(r[1], p[1])], w));
     }
 }
 

@@ -1,7 +1,7 @@
-//! The CutFEM discretization: Q1 elements on the ACTIVE cells (inside
-//! + cut) of a quadtree background grid, embedded Dirichlet conditions
-//! by symmetric Nitsche, and ghost-penalty stabilization on the faces
-//! of cut cells.
+//! The CutFEM discretization: Q1 elements on the ACTIVE cells (the
+//! inside and cut cells) of a quadtree background grid, embedded
+//! Dirichlet conditions by symmetric Nitsche, and ghost-penalty
+//! stabilization on the faces of cut cells.
 //!
 //! - Nitsche: a(u,v) += −∫_Γ ∂ₙu v − ∫_Γ u ∂ₙv + (β/h)∫_Γ u v, with
 //!   the data terms mirrored into the load. The penalty scaling β/h is

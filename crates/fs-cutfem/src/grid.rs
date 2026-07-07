@@ -226,11 +226,10 @@ impl Quadtree {
                     continue;
                 }
                 for dir in 0..4u8 {
-                    if let Some(nb) = self.covering_neighbor(c, dir) {
-                        if nb.0 + 1 < c.0 {
+                    if let Some(nb) = self.covering_neighbor(c, dir)
+                        && nb.0 + 1 < c.0 {
                             due.insert(nb);
                         }
-                    }
                 }
             }
             if due.is_empty() {
@@ -266,7 +265,7 @@ impl Quadtree {
             for e in 0..4 {
                 let a = corners[e];
                 let b = corners[(e + 1) % 4];
-                let m = ((a.0 + b.0) / 2, (a.1 + b.1) / 2);
+                let m = (u32::midpoint(a.0, b.0), u32::midpoint(a.1, b.1));
                 if nodes.contains(&m) {
                     out.push((m, [(a, 0.5), (b, 0.5)]));
                 }
