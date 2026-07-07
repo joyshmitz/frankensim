@@ -76,7 +76,9 @@ pub enum Qoi {
     },
 }
 
-/// Planner-facing metadata every QoI advertises.
+/// Planner-facing metadata every QoI advertises. (Whether the QoI is
+/// inherently probabilistic is determined by the variant, not stored here —
+/// see [`Qoi::is_probabilistic`].)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QoiMeta {
     /// Is the functional linear in the field? (linear QoIs admit cheap
@@ -87,9 +89,6 @@ pub struct QoiMeta {
     /// Does the fidelity ladder apply (can this QoI be evaluated on a
     /// coarser rung and prolongated)?
     pub ladder_applicable: bool,
-    /// Is the QoI inherently probabilistic (needs an environment
-    /// distribution), rather than a deterministic field functional?
-    pub probabilistic: bool,
 }
 
 impl Qoi {
@@ -133,23 +132,27 @@ impl Qoi {
                 linear: false,
                 adjoint_available: true,
                 ladder_applicable: true,
-                probabilistic: false,
             },
             // a spatial integral is linear in the field — the DWR sweet spot.
             Qoi::Integral { .. } => QoiMeta {
                 linear: true,
                 adjoint_available: true,
                 ladder_applicable: true,
-                probabilistic: false,
             },
             // exceedance is a probability under an environment ensemble.
             Qoi::Exceedance { .. } => QoiMeta {
                 linear: false,
                 adjoint_available: false,
                 ladder_applicable: true,
-                probabilistic: true,
             },
         }
+    }
+
+    /// Is the QoI inherently probabilistic (needs an environment
+    /// distribution), rather than a deterministic field functional?
+    #[must_use]
+    pub fn is_probabilistic(&self) -> bool {
+        matches!(self, Qoi::Exceedance { .. })
     }
 
     /// The dimensions of the QoI's VALUE, given the interrogated field's
