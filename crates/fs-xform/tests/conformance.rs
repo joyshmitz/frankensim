@@ -142,9 +142,11 @@ fn xf_003_rbf_frame_equivariance_and_foldover_refusal() {
         assert!((a - b).abs() < 1e-14, "equivariance broke: {a} vs {b}");
     }
     // Fold-over: a violent handle collapse must refuse with location+det.
+    // The fold forms on the COMPRESSION side of the handle, so probe a
+    // line through the center covering both sides.
     let violent = [-3.0, 0.0, 0.0, 0.0, 0.0, 0.0];
     let samples: Vec<Point3> =
-        (0..20).map(|i| Point3::new(0.2 + 0.01 * f64::from(i), 0.1, 0.0)).collect();
+        (0..40).map(|i| Point3::new(-0.3 + 0.025 * f64::from(i), 0.1, 0.0)).collect();
     match detect_foldover(&morph, &violent, &samples) {
         Err(XformError::FoldOver { det, .. }) => assert!(det <= 0.0),
         other => panic!("violent collapse must fold: {other:?}"),
