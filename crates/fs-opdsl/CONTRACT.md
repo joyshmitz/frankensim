@@ -1,0 +1,144 @@
+# fs-opdsl CONTRACT
+
+## Purpose and layer
+
+Layer: **L3 FLUX** (deps: fs-feec L3, fs-material L3, fs-la/fs-sparse
+L1, fs-tilelang/fs-qty/fs-math L0/UTIL, fs-rep-mesh L2). The typed
+operator IR (plan patch Rev C — "the single most important
+implementation addition"): physics operators represented symbolically
+over FEEC building blocks and lowered so that PRIMAL apply, JVP,
+VJP/discrete adjoint, DWR indicators, preconditioner hints, and MMS
+studies come from ONE SOURCE OF TRUTH. Generalizes fs-vskeleton's
+`EdgeLaw` seed. "The primal changed but the adjoint didn't" is
+structurally impossible: both are derivations of the same tree.
+
+## Public types and semantics
+
+- `Space { degree, n, dims }` — cochain degree (255 = raw vector
+  dofs), dof count, `fs_qty::Dims`. Composition requires equality.
+- `OperatorDef` — atom/law registry + the unknown's space. Checked
+  builders: `apply` (degree AND dims checked → `TypeError`
+  `ApplyMismatch`), `add` (`AddMismatch`), `scale` (folds nested
+  scales), `pointwise`. An ill-typed operator cannot be represented.
+- `Atom` — materialized linear building blocks: `Atom::d` /
+  `Atom::d_transposed` (exact ±1 incidence CSR from fs-feec),
+  `Atom::mass` (Whitney Galerkin star, symmetric), `Atom::external`
+  (the ESCAPE HATCH: hand matrices with `Transpose::Symmetric` /
+  `Derived` / `Explicit` — hand atoms pass the same gates and are
+  marked `"provenance":"hand"` in every report).
+- `PointwiseLaw` — opaque-but-differentiable constitutive nodes
+  (value + exact derivative + dims map from one definition);
+  `CubicReaction` is the reference law.
+- `LoweredOperator` (from `OperatorDef::lower`): `apply` (primal),
+  `linearize(u0)` (caches pointwise inputs; slots computed
+  STRUCTURALLY in post-order so nested laws index correctly in both
+  walks), `jvp` (forward chain rule), `vjp` (reverse chain rule —
+  every factor transposed: the discrete adjoint), `materialize()`
+  (folds constant linear chains through deterministic
+  transpose/spgemm; `None` when nonlinear), `report()` (provenance,
+  block hints, tile-kernel metadata, structural fingerprint —
+  deterministic).
+- `dwr_indicators(r, z)` — algebraic DWR η_i = |r_i·z_i|.
+- `mms_poisson_study` — the G1 hook: load from analytic forcing via
+  de-Rham + M0, Dirichlet pinning, PCG solve, L2 errors and observed
+  orders across a Kuhn ladder, THROUGH the generated operator.
+- `fixtures::{poisson, convection_diffusion, reaction_diffusion,
+  elasticity, advection_matrix, elasticity_stiffness}` — the
+  acceptance operators, defined in the IR. Elasticity's stiffness is
+  constitutive-assembled from fs-material's `IsotropicElastic`
+  tangent (B-matrix P1, Voigt engineering-shear convention matching
+  fs-material).
+
+## Invariants
+
+- d∘d = 0 is honored AT THE IR LEVEL: applying dₖ₊₁ to the image of
+  dₖ (also through scale nodes) folds to `Expr::Zero` before any
+  float exists.
+- Materializing the Poisson chain uses the same spgemm association
+  as fs-feec's `stiffness`, so generated == hand BITWISE.
+- JVP and VJP are two walks of the same tree with the same
+  linearization state: ⟨Jv, w⟩ = ⟨v, Jᵀw⟩ holds mechanically (gated
+  per fixture, including the nonsymmetric advection where the gate is
+  not vacuous).
+- Every scale/add/axpy the executor runs is an fs-tilelang kernel
+  with intensity metadata and tier-equivalence twin tests.
+
+## Error model
+
+Construction returns structured `TypeError`s (`ApplyMismatch`,
+`AddMismatch`, `UnknownId`) with both sides' spaces. `lower` panics on
+ill-typed trees (unreachable through the checked builders). Derivative
+calls on nonlinear operators without `linearize` panic with an
+actionable message. Shape mismatches in fixture assembly are
+structured panics.
+
+## Determinism class
+
+Bit-deterministic cross-ISA: atoms materialize through fs-feec/
+fs-sparse deterministic paths; the executor's combinators are
+fs-tilelang kernels (bitwise across tiers); plan reports are pure
+functions of the registry and tree. Golden FNV-64 over Poisson apply,
+convection–diffusion JVP+VJP, linearized reaction–diffusion JVP, and
+elasticity apply on kuhn(2): `0x8b28_77cc_cb43_7cbc`, recorded on
+Apple M4 Pro (aarch64), verified identical on Threadripper (x86_64).
+
+## Cancellation behavior
+
+Bounded synchronous evaluation; drivers own chunking and Cx poll
+points (the workspace L0–L3 discipline). No internal threading.
+
+## Feature flags
+
+None.
+
+## Unsafe boundary
+
+None. `unsafe_code = "deny"`.
+
+## Conformance tests
+
+`tests/opdsl_battery.rs` (11 cases, JSON logging): materialized
+Poisson vs hand FEEC bitwise + matrix-free to 1e−13; adjoint identity
+⟨Av,w⟩ = ⟨v,Aᵀw⟩ over random vectors for Poisson/convection–diffusion/
+elasticity; nonlinear JVP-vs-VJP transpose consistency + generated
+chain rule vs fs-ad `Dual64` through the cubic law (both the law's
+derivative and the full directional derivative); dd = 0 folded
+symbolically (including through scale nodes) and applying as exact
+zero; structural rejection of degree, dims, and add mismatches;
+generation determinism (regenerated reports byte-identical) with
+provenance and kernel-metadata assertions; DWR indicator
+localization; MMS Poisson orders ≈ 2 on the n = 4/8/16 ladder THROUGH
+the generated operator; elasticity rigid modes (translation +
+infinitesimal rotation ≤ 1e−9) and uniform-strain patch (interior
+residual ≤ 1e−12); perf comparison hand vs materialized vs matrix-free
+MEASURED and logged (sanity bounds asserted; debug-build numbers
+documented in the bead close); cross-ISA golden hash.
+
+## No-claim boundaries
+
+- v1 is single-field: multi-field block systems (and therefore real
+  block-preconditioner hints beyond the per-atom symmetry/coupling
+  table) join the solver-stack bead (tfz.10). The report's atoms
+  table IS the single-field hint.
+- Pointwise laws are scalar diagonal (dof-local). Tensor-valued
+  constitutive nodes (hyperelastic energy through `fs_ad::Real`
+  generics) and state-dependent laws (plasticity history) are the
+  fs-material integration lane.
+- MMS hook covers the symmetric-PCG Poisson family; nonsymmetric MMS
+  solves and mixed-form studies join tfz.10 (needs nonsymmetric
+  Krylov). Convection–diffusion is gated by residual/adjoint checks
+  here, not a full MMS solve.
+- DWR indicators are the ALGEBRAIC dof form |r_i z_i|;
+  element-integrated dual-weighted forms join the higher-order bead
+  (tfz.6).
+- No common-subexpression elimination beyond scale folding, zero
+  elimination, and chain materialization; no symbolic wedge/trace
+  nodes yet (they enter with the forms they serve — CutFEM traces
+  with fs-cutfem, wedges with the nonlinear FEEC bead).
+- Generated kernels: combinators (scale/add/axpy) lower into
+  fs-tilelang; SpMV stays in fs-sparse (scatter is a tilelang
+  no-claim). Fused matrix-free apply (allocation-free plans) is the
+  tilelang-fusion perf lane.
+- Perf numbers are debug-build fixture measurements, documented not
+  contractual; the ≥80%-of-hand release-build target is the perf-CI
+  lane's gate (fz2.4).
