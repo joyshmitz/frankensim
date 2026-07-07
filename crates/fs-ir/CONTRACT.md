@@ -36,13 +36,27 @@ typed AST. Layer: L6 (HELM). Runtime deps: `std` + fs-qty.
 - `Study::from_node` — recognizes Appendix C study forms: name, seed,
   versions/budget/capability clauses, `(let …)` bindings, body;
   `constellation_lock()` extracts the versions pin. Extraction only —
-  validity POLICY belongs to admission (gp3.5).
+  validity POLICY lives in `admission` (below).
 - `lower::lower` — high-level verbs (`optimize-shape`, `simulate-pour`)
   expand to explicit IR with an inspectable trace naming every injected
   default (progressive disclosure with nothing hidden); idempotent;
   malformed verb usage refuses with the verb's span.
 - `IrError` — span + stable kind code + detail + fix hint (refusals
   teach). `IR_VERSION` — the language version this build reads/writes.
+
+- `admission` (the gp3.5 bead): `admit(node, &AdmissionContext) ->
+  AdmissionReport` runs six timed dimensions — Five Explicits structure,
+  dimensional analysis (fs-qty dims inferred bottom-up through `+ - * /
+  min max` and comparisons; unknown verbs never false-reject), budget
+  feasibility (fs-plan cost models over `:dof`/`:size` features, p90
+  totals vs the `(budget (wall …))` bound, with RANKED cost-model-derived
+  fixes: coarsen / surrogate-screen / relax), capability sufficiency
+  (session token globs vs namespaced verbs + declared asks), chart
+  routability (fs-geom Router as an admission predicate with the
+  RouteRefusal's own fixes attached), and regime gating (explicit
+  `(assert (regime.allows …))` plus `flux.*` verbs checked against an
+  fs-regime report; policy-graded Reject/Warn). Findings carry spans,
+  diagnoses, and `RankedFix { action, predicted_wall_s, qoi_impact }`.
 
 ## Invariants
 
@@ -55,6 +69,14 @@ typed AST. Layer: L6 (HELM). Runtime deps: `std` + fs-qty.
    as int/float/quantity/count or refuse; non-finite literals refuse.
 4. Lowering is explicit, inspectable, and idempotent; the trace names
    every injected default.
+
+- Admission determinism: same study + context → byte-identical
+  `diagnosis()`; findings sorted (check, span).
+- Admission latency is milliseconds-class on Appendix C studies (six
+  checks timed individually; conformance logs and bounds the total).
+- Zero false admits on the violation zoo; missing verifiers (no Router,
+  no RegimeReport) degrade to WARN verification-gap findings, never to
+  silent admits of violations they could not check.
 
 ## Error model
 
@@ -90,9 +112,18 @@ span-accuracy cases (bad seed, bad quantity); verb lowering explicitness,
 trace content, idempotence, and structured refusal; version-pin
 round-trip through both syntaxes.
 
+`tests/admission.rs` (suite `fs-ir/admission`): ad-001 Appendix C admits
+cleanly + ms-class latency + determinism; ad-002 five-study violation zoo
+(all rejected on the right dimension, fixes attached); ad-003 dimensional
+spans pinpoint the offending operand, products stay legal; ad-004
+BudgetInfeasible with ranked cost-derived fixes + fix-quality harness
+(applying fixes admits); ad-005 Router-backed feasibility; ad-006 regime
+gating with alternatives + policy grading; ad-007 2000 mutants + all
+truncation prefixes never panic (a fuzz-found scanner panic became a
+structured refusal).
+
 ## No-claim boundaries
 
-- No admission checks (dimensions/charts/budgets/capabilities) — gp3.5.
 - No operator catalog or per-operator semantic versions — gp3.6; the
   `IR_VERSION` constant covers the language only.
 - JSON `\uXXXX` escapes cover Unicode scalar values only (surrogate
@@ -101,3 +132,10 @@ round-trip through both syntaxes.
   data to extend, not a framework.
 - Qty literals must be written in units fs-qty accepts; information
   units are Counts, not quantities, by design.
+- Admission's dimensional pass covers arithmetic/comparison heads;
+  verb-signature dimension contracts (per-operator expected dims) land
+  with the operator registry.
+- Chart requirements are supplied by lowering/callers; admission does not
+  yet derive them from raw study text.
+- `SessionCapability` is admission's view of a token; issuance,
+  revocation, and idempotency keys are fs-session's bead (gp3.7).

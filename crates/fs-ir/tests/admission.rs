@@ -7,8 +7,8 @@
 //! panics.
 
 use fs_ir::admission::{
-    AdmissionContext, AdmissionReport, ChartRequirement, RegimePolicy, SessionCapability,
-    Severity, admit,
+    AdmissionContext, AdmissionReport, ChartRequirement, RegimePolicy, SessionCapability, Severity,
+    admit,
 };
 use fs_ir::sexpr;
 use fs_plan::{CostModel, CostObservation};
@@ -175,8 +175,10 @@ fn ad_002_violation_zoo_zero_false_admits() {
         ),
         (
             "dimensional-mixing",
-            SPOUT.replace("(min (perturbation-growth pour :at lip :modes (1 .. 8)))",
-                          "(+ 3MPa 2m)"),
+            SPOUT.replace(
+                "(min (perturbation-growth pour :at lip :modes (1 .. 8)))",
+                "(+ 3MPa 2m)",
+            ),
             "dimensional",
         ),
         (
@@ -201,7 +203,10 @@ fn ad_002_violation_zoo_zero_false_admits() {
         assert!(!f.fixes.is_empty(), "{name}: rejection must carry fixes");
         assert!(!f.fixes[0].action.is_empty());
     }
-    verdict("ad-002", "5-study violation zoo: all rejected on the right dimension with fixes");
+    verdict(
+        "ad-002",
+        "5-study violation zoo: all rejected on the right dimension with fixes",
+    );
 }
 
 #[test]
@@ -236,7 +241,10 @@ fn ad_003_dimensional_diagnosis_points_at_the_span() {
         ok_report.findings.iter().all(|f| f.check != "dimensional"),
         "products of different dims are legal"
     );
-    verdict("ad-003", "dimension mismatch pinpoints the operand span; products stay legal");
+    verdict(
+        "ad-003",
+        "dimension mismatch pinpoints the operand span; products stay legal",
+    );
 }
 
 #[test]
@@ -257,7 +265,10 @@ fn ad_004_budget_infeasible_with_ranked_cost_derived_fixes() {
     // Fixes are ranked by predicted wall ascending, and estimates come
     // from the cost model.
     let walls: Vec<f64> = f.fixes.iter().filter_map(|x| x.predicted_wall_s).collect();
-    assert!(walls.windows(2).all(|w| w[0] <= w[1]), "fixes must be ranked");
+    assert!(
+        walls.windows(2).all(|w| w[0] <= w[1]),
+        "fixes must be ranked"
+    );
     // FIX-QUALITY HARNESS: applying the top-ranked fix admits.
     let top = &f.fixes[0];
     let fixed_src = if top.action.starts_with("coarsen") {
@@ -310,7 +321,10 @@ fn ad_005_chart_feasibility_via_the_router() {
         max_abs_error: 1e-3,
         max_cost_s: 10.0,
     }];
-    assert!(admit_src(SPOUT, &cx).admitted, "routable requirement admits");
+    assert!(
+        admit_src(SPOUT, &cx).admitted,
+        "routable requirement admits"
+    );
     // No route to mesh: rejected with the router's explanation attached.
     cx.chart_requirements = vec![ChartRequirement {
         from: "frep".to_string(),
@@ -327,7 +341,10 @@ fn ad_005_chart_feasibility_via_the_router() {
         .find(|f| f.check == "charts")
         .expect("charts finding");
     assert!(f.what.contains("frep -> mesh"), "{}", f.what);
-    verdict("ad-005", "router-backed feasibility: routable admits, unreachable rejects");
+    verdict(
+        "ad-005",
+        "router-backed feasibility: routable admits, unreachable rejects",
+    );
 }
 
 #[test]
@@ -357,7 +374,11 @@ fn ad_006_regime_gating_enforced_and_policy_graded() {
         .find(|f| f.check == "regime")
         .expect("regime finding");
     assert!(f.what.contains("flux.free-surface-lbm"), "{}", f.what);
-    assert!(f.what.contains("viscous"), "dominant balance attached: {}", f.what);
+    assert!(
+        f.what.contains("viscous"),
+        "dominant balance attached: {}",
+        f.what
+    );
     assert!(
         f.fixes.iter().any(|x| x.action.contains("stokes-creeping")),
         "alternatives must include the valid creeping solver"
@@ -405,7 +426,7 @@ fn ad_007_fuzz_mutations_never_crash_admission() {
     let mut parsed = 0usize;
     for _ in 0..2000 {
         let mut mutated = bytes.to_vec();
-        for _ in 0..1 + (lcg() % 4) {
+        for _ in 0..=(lcg() % 4) {
             let pos = (lcg() as usize) % mutated.len();
             mutated[pos] = (lcg() % 128) as u8;
         }
@@ -423,7 +444,10 @@ fn ad_007_fuzz_mutations_never_crash_admission() {
             let _ = admit(&node, &cx);
         }
     }
-    assert!(parsed > 0, "some mutants must still parse for the fuzz to bite");
+    assert!(
+        parsed > 0,
+        "some mutants must still parse for the fuzz to bite"
+    );
     verdict(
         "ad-007",
         "2000 mutants + all truncation prefixes: admission never panicked",

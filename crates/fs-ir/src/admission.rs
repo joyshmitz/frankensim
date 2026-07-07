@@ -160,7 +160,11 @@ impl AdmissionReport {
                 let wall = fix
                     .predicted_wall_s
                     .map_or(String::new(), |w| format!(" (predicted wall {w:.1}s)"));
-                let _ = writeln!(out, "  fix#{rank}: {}{wall} — {}", fix.action, fix.qoi_impact);
+                let _ = writeln!(
+                    out,
+                    "  fix#{rank}: {}{wall} — {}",
+                    fix.action, fix.qoi_impact
+                );
             }
         }
         out
@@ -193,22 +197,41 @@ pub fn admit(node: &Node, cx: &AdmissionContext<'_>) -> AdmissionReport {
             };
         }
     };
-    let mut run = |name: &'static str,
-                   f: &mut dyn FnMut(&mut Vec<Finding>),
-                   findings: &mut Vec<Finding>| {
-        let t0 = Instant::now();
-        f(findings);
-        timings.push(CheckTiming {
-            check: name,
-            micros: t0.elapsed().as_micros(),
-        });
-    };
-    run("explicits", &mut |f| check_explicits(node, &study, cx, f), &mut findings);
-    run("dimensional", &mut |f| check_dimensional(&study, f), &mut findings);
-    run("budget", &mut |f| check_budget(&study, cx, f), &mut findings);
-    run("capability", &mut |f| check_capability(&study, cx, f), &mut findings);
+    let mut run =
+        |name: &'static str, f: &mut dyn FnMut(&mut Vec<Finding>), findings: &mut Vec<Finding>| {
+            let t0 = Instant::now();
+            f(findings);
+            timings.push(CheckTiming {
+                check: name,
+                micros: t0.elapsed().as_micros(),
+            });
+        };
+    run(
+        "explicits",
+        &mut |f| check_explicits(node, &study, cx, f),
+        &mut findings,
+    );
+    run(
+        "dimensional",
+        &mut |f| check_dimensional(&study, f),
+        &mut findings,
+    );
+    run(
+        "budget",
+        &mut |f| check_budget(&study, cx, f),
+        &mut findings,
+    );
+    run(
+        "capability",
+        &mut |f| check_capability(&study, cx, f),
+        &mut findings,
+    );
     run("charts", &mut |f| check_charts(cx, f), &mut findings);
-    run("regime", &mut |f| check_regime(&study, cx, f), &mut findings);
+    run(
+        "regime",
+        &mut |f| check_regime(&study, cx, f),
+        &mut findings,
+    );
     findings.sort_by(|a, b| a.check.cmp(b.check).then(a.span.start.cmp(&b.span.start)));
     AdmissionReport {
         study: study.name.to_string(),
@@ -276,8 +299,7 @@ fn check_explicits(
         out.push(reject(
             "explicits",
             node.span,
-            "no capability grant: neither a session token nor a (capability …) clause"
-                .to_string(),
+            "no capability grant: neither a session token nor a (capability …) clause".to_string(),
             "attach the session's capability token to admission, or declare \
              (capability :cores … :mem … :wall … :ops (…))"
                 .to_string(),
@@ -299,10 +321,9 @@ fn infer_dims(
         NodeKind::Int(_) | NodeKind::Float(_) => Some(Dims::NONE),
         NodeKind::Qty { dims, .. } => Some(*dims),
         NodeKind::Symbol(s) => env.get(s.as_str()).copied().flatten(),
-        NodeKind::Count { .. }
-        | NodeKind::Seed(_)
-        | NodeKind::Str(_)
-        | NodeKind::Keyword(_) => None,
+        NodeKind::Count { .. } | NodeKind::Seed(_) | NodeKind::Str(_) | NodeKind::Keyword(_) => {
+            None
+        }
         NodeKind::List(items) => {
             let head = node.head();
             let args = &items[1..];
@@ -509,7 +530,10 @@ fn check_budget(study: &Study<'_>, cx: &AdmissionContext<'_>, out: &mut Vec<Find
     if let Some((verb, size, p90, _)) = costed.first() {
         if let Some(halved) = predict(verb, size / 2.0) {
             fixes.push(RankedFix {
-                action: format!("coarsen {verb}: halve its size feature ({size} -> {})", size / 2.0),
+                action: format!(
+                    "coarsen {verb}: halve its size feature ({size} -> {})",
+                    size / 2.0
+                ),
                 predicted_wall_s: Some(total - p90 + halved),
                 qoi_impact: "resolution halves; the verb's error model governs the \
                              QoI degradation"
@@ -517,8 +541,10 @@ fn check_budget(study: &Study<'_>, cx: &AdmissionContext<'_>, out: &mut Vec<Find
             });
         }
         fixes.push(RankedFix {
-            action: format!("surrogate-screen {verb} (evaluate candidates on the surrogate, \
-                             verify winners at full fidelity)"),
+            action: format!(
+                "surrogate-screen {verb} (evaluate candidates on the surrogate, \
+                             verify winners at full fidelity)"
+            ),
             predicted_wall_s: Some(total - p90 + 0.2 * p90),
             qoi_impact: "screening decisions carry surrogate error; final verdicts are \
                          re-verified"
@@ -552,7 +578,9 @@ fn check_budget(study: &Study<'_>, cx: &AdmissionContext<'_>, out: &mut Vec<Find
 // ----------------------------------------------------------- capability
 
 fn glob_matches(pattern: &str, verb: &str) -> bool {
-    pattern.strip_suffix('*').map_or(pattern == verb, |prefix| verb.starts_with(prefix))
+    pattern
+        .strip_suffix('*')
+        .map_or(pattern == verb, |prefix| verb.starts_with(prefix))
 }
 
 fn namespaced_verbs<'a>(node: &'a Node, out: &mut Vec<(&'a str, Span)>) {
@@ -618,7 +646,11 @@ fn check_capability(study: &Study<'_>, cx: &AdmissionContext<'_>, out: &mut Vec<
                 },
                 "mem" => count_bytes(&pair[1]).and_then(|b| {
                     (b > token.mem_bytes).then(|| {
-                        format!("{:.0} MiB asked, {:.0} MiB granted", b / 1048576.0, token.mem_bytes / 1048576.0)
+                        format!(
+                            "{:.0} MiB asked, {:.0} MiB granted",
+                            b / 1048576.0,
+                            token.mem_bytes / 1048576.0
+                        )
                     })
                 }),
                 "wall" => qty_seconds(&pair[1]).and_then(|w| {
