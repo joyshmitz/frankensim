@@ -234,90 +234,80 @@ pub struct DecodedExr {
     pub channels: Vec<Channel>,
 }
 
-/// Decode an EXR produced by [`write_exr`]. Structured rejection outside
-/// that subset.
-///
-/// # Errors
-/// [`ImgError::Malformed`] / [`ImgError::Unsupported`].
-pub fn read_exr(bytes: &[u8]) -> Result<DecodedExr, ImgError> {
-    let take = |pos: usize, n: usize| -> Result<&[u8], ImgError> {
-        bytes.get(pos..pos + n).ok_or_else(|| ImgError::Malformed {
-            what: format!("truncated at byte {pos}"),
-        })
-    };
-    if take(0, 4)? != MAGIC {
-        return Err(ImgError::Malformed {
-            what: "missing EXR magic".to_string(),
-        });
-    }
-    let version = u32::from_le_bytes(take(4, 4)?.try_into().expect("4 bytes"));
-    if version != 2 {
-        return Err(ImgError::Unsupported {
-            what: format!("EXR version/flags {version:#x} (single-part v2 only)"),
-        });
-    }
-    let mut pos = 8usize;
-    let read_cstr = |pos: &mut usize| -> Result<String, ImgError> {
-        let start = *pos;
-        while *pos < bytes.len() && bytes[*pos] != 0 {
-            *pos += 1;
-        }
-        if *pos >= bytes.len() {
-            return Err(ImgError::Malformed {
-                what: "unterminated string".to_string(),
-            });
-        }
-        let s = String::from_utf8_lossy(&bytes[start..*pos]).into_owned();
-        *pos += 1;
-        Ok(s)
-    };
+fn take(bytes: &[u8], pos: usize, n: usize) -> Result<&[u8], ImgError> {
+    bytes.get(pos..pos + n).ok_or_else(|| ImgError::Malformed {
+        what: format!("truncated at byte {pos}"),
+    })
+}
 
+fn read_cstr(bytes: &[u8], pos: &mut usize) -> Result<String, ImgError> {
+    let start = *pos;
+    while *pos < bytes.len() && bytes[*pos] != 0 {
+        *pos += 1;
+    }
+    if *pos >= bytes.len() {
+        return Err(ImgError::Malformed {
+            what: "unterminated string".to_string(),
+        });
+    }
+    let s = String::from_utf8_lossy(&bytes[start..*pos]).into_owned();
+    *pos += 1;
+    Ok(s)
+}
+
+fn parse_chlist(value: &[u8]) -> Result<Vec<(String, PixelType)>, ImgError> {
+    let mut specs = Vec::new();
+    let mut cp = 0usize;
+    while cp < value.len() && value[cp] != 0 {
+        let start = cp;
+        while cp < value.len() && value[cp] != 0 {
+            cp += 1;
+        }
+        let cname = String::from_utf8_lossy(&value[start..cp]).into_owned();
+        cp += 1;
+        let code = u32::from_le_bytes(
+            value
+                .get(cp..cp + 4)
+                .ok_or_else(|| ImgError::Malformed {
+                    what: "chlist truncated".to_string(),
+                })?
+                .try_into()
+                .expect("4 bytes"),
+        );
+        let ty = match code {
+            1 => PixelType::Half,
+            2 => PixelType::Float,
+            other => {
+                return Err(ImgError::Unsupported {
+                    what: format!("pixel type {other}"),
+                });
+            }
+        };
+        cp += 16; // type + pLinear/reserved + samplings
+        specs.push((cname, ty));
+    }
+    Ok(specs)
+}
+
+/// Parse the header attributes; returns (channel specs, width, height) and
+/// leaves `pos` just past the header terminator.
+fn parse_header(bytes: &[u8], pos: &mut usize) -> Result<(Vec<(String, PixelType)>, u32, u32), ImgError> {
     let mut specs: Vec<(String, PixelType)> = Vec::new();
     let mut window = (0u32, 0u32);
     let mut compression_seen = false;
     loop {
-        if bytes.get(pos) == Some(&0) {
-            pos += 1;
+        if bytes.get(*pos) == Some(&0) {
+            *pos += 1;
             break; // end of header
         }
-        let name = read_cstr(&mut pos)?;
-        let _ty = read_cstr(&mut pos)?;
-        let size = u32::from_le_bytes(take(pos, 4)?.try_into().expect("4 bytes")) as usize;
-        pos += 4;
-        let value = take(pos, size)?.to_vec();
-        pos += size;
+        let name = read_cstr(bytes, pos)?;
+        let _ty = read_cstr(bytes, pos)?;
+        let size = u32::from_le_bytes(take(bytes, *pos, 4)?.try_into().expect("4 bytes")) as usize;
+        *pos += 4;
+        let value = take(bytes, *pos, size)?.to_vec();
+        *pos += size;
         match name.as_str() {
-            "channels" => {
-                let mut cp = 0usize;
-                while cp < value.len() && value[cp] != 0 {
-                    let start = cp;
-                    while cp < value.len() && value[cp] != 0 {
-                        cp += 1;
-                    }
-                    let cname = String::from_utf8_lossy(&value[start..cp]).into_owned();
-                    cp += 1;
-                    let code = u32::from_le_bytes(
-                        value
-                            .get(cp..cp + 4)
-                            .ok_or_else(|| ImgError::Malformed {
-                                what: "chlist truncated".to_string(),
-                            })?
-                            .try_into()
-                            .expect("4 bytes"),
-                    );
-                    let ty = match code {
-                        1 => PixelType::Half,
-                        2 => PixelType::Float,
-                        other => {
-                            return Err(ImgError::Unsupported {
-                                what: format!("pixel type {other}"),
-                            });
-                        }
-                    };
-                    cp += 16; // type + pLinear/reserved + samplings
-                    specs.push((cname, ty));
-                }
-            }
+            "channels" => specs = parse_chlist(&value)?,
             "compression" => {
                 compression_seen = true;
                 if value != [0] {
@@ -334,7 +324,12 @@ pub fn read_exr(bytes: &[u8]) -> Result<DecodedExr, ImgError> {
                 }
                 let x2 = i32::from_le_bytes(value[8..12].try_into().expect("4"));
                 let y2 = i32::from_le_bytes(value[12..16].try_into().expect("4"));
-                window = ((x2 + 1) as u32, (y2 + 1) as u32);
+                if x2 < 0 || y2 < 0 || x2 == i32::MAX || y2 == i32::MAX {
+                    return Err(ImgError::Malformed {
+                        what: "negative dataWindow extent".to_string(),
+                    });
+                }
+                window = ((x2 + 1).cast_unsigned(), (y2 + 1).cast_unsigned());
             }
             _ => {}
         }
@@ -344,7 +339,28 @@ pub fn read_exr(bytes: &[u8]) -> Result<DecodedExr, ImgError> {
             what: "missing required header attributes".to_string(),
         });
     }
-    let (width, height) = window;
+    Ok((specs, window.0, window.1))
+}
+
+/// Decode an EXR produced by [`write_exr`]. Structured rejection outside
+/// that subset.
+///
+/// # Errors
+/// [`ImgError::Malformed`] / [`ImgError::Unsupported`].
+pub fn read_exr(bytes: &[u8]) -> Result<DecodedExr, ImgError> {
+    if take(bytes, 0, 4)? != MAGIC {
+        return Err(ImgError::Malformed {
+            what: "missing EXR magic".to_string(),
+        });
+    }
+    let version = u32::from_le_bytes(take(bytes, 4, 4)?.try_into().expect("4 bytes"));
+    if version != 2 {
+        return Err(ImgError::Unsupported {
+            what: format!("EXR version/flags {version:#x} (single-part v2 only)"),
+        });
+    }
+    let mut pos = 8usize;
+    let (specs, width, height) = parse_header(bytes, &mut pos)?;
     // Skip the offset table; read blocks sequentially (our writer's order).
     pos += 8 * height as usize;
     let n = width as usize * height as usize;
@@ -357,7 +373,12 @@ pub fn read_exr(bytes: &[u8]) -> Result<DecodedExr, ImgError> {
         })
         .collect();
     for y in 0..height as usize {
-        let block_y = i32::from_le_bytes(take(pos, 4)?.try_into().expect("4 bytes")) as usize;
+        let block_y = usize::try_from(i32::from_le_bytes(
+            take(bytes, pos, 4)?.try_into().expect("4 bytes"),
+        ))
+        .map_err(|_| ImgError::Malformed {
+            what: "negative scanline y".to_string(),
+        })?;
         pos += 8; // y + declared size
         if block_y != y {
             return Err(ImgError::Malformed {
@@ -368,12 +389,12 @@ pub fn read_exr(bytes: &[u8]) -> Result<DecodedExr, ImgError> {
             for x in 0..width as usize {
                 let v = match c.ty {
                     PixelType::Half => {
-                        let b = take(pos, 2)?;
+                        let b = take(bytes, pos, 2)?;
                         pos += 2;
                         f16_bits_to_f32(u16::from_le_bytes([b[0], b[1]]))
                     }
                     PixelType::Float => {
-                        let b = take(pos, 4)?;
+                        let b = take(bytes, pos, 4)?;
                         pos += 4;
                         f32::from_le_bytes(b.try_into().expect("4 bytes"))
                     }
