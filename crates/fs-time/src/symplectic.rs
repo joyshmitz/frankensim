@@ -34,11 +34,12 @@ pub fn verlet_step<F: Fn(&[f64], &mut [f64])>(
 }
 
 /// Discrete adjoint of an n-step Verlet trajectory for a terminal cost:
-/// given ∂J/∂(q_N, p_N), returns ∂J/∂(q_0, p_0) — the adjoint OF THE
-/// STEPPER, propagated backwards with fs-ad's checkpointed revolve
-/// (memory O(log N) instead of O(N)). `force_jvp` computes the action
-/// of ∂F/∂q at `q` on a direction `v` (exact user-supplied linearization
-/// — gradcheck'd in the battery).
+/// given the terminal cotangent `bar_n` = (∂J/∂q_N, ∂J/∂p_N), returns
+/// (∂J/∂q_0, ∂J/∂p_0) — the adjoint OF THE STEPPER, propagated
+/// backwards with fs-ad's checkpointed revolve (memory O(log N) instead
+/// of O(N)). `force_jvp` computes the action of ∂F/∂q at `q` on a
+/// direction `v` (exact user-supplied linearization — gradcheck'd in
+/// the battery).
 #[must_use]
 pub fn verlet_adjoint<F, J>(
     q0: &[f64],
@@ -47,8 +48,7 @@ pub fn verlet_adjoint<F, J>(
     steps: usize,
     force: &F,
     force_jvp: &J,
-    bar_q_n: &[f64],
-    bar_p_n: &[f64],
+    bar_n: (&[f64], &[f64]),
 ) -> (Vec<f64>, Vec<f64>)
 where
     F: Fn(&[f64], &mut [f64]),
@@ -70,7 +70,7 @@ where
     //   p'     = p_half + h/2·F(q')
     // Adjoint (bar quantities pulled back in reverse order):
     let rev = |_i: usize, s: &Vec<f64>, bar: (Vec<f64>, Vec<f64>)| -> (Vec<f64>, Vec<f64>) {
-        let (mut bar_q, mut bar_p) = bar;
+        let (mut bar_q, bar_p) = bar;
         let q = &s[..n];
         let p = &s[n..];
         let mut scratch = vec![0.0f64; n];
@@ -81,7 +81,11 @@ where
             .zip(&scratch)
             .map(|(pi, fi)| (0.5 * h).mul_add(*fi, *pi))
             .collect();
-        let q_new: Vec<f64> = q.iter().zip(&p_half).map(|(qi, ph)| h.mul_add(*ph, *qi)).collect();
+        let q_new: Vec<f64> = q
+            .iter()
+            .zip(&p_half)
+            .map(|(qi, ph)| h.mul_add(*ph, *qi))
+            .collect();
         // Step 3 adjoint: p' = p_half + h/2·F(q') ⇒
         //   bar_p_half += bar_p';  bar_q_new += h/2·(∂F/∂q')ᵀ·bar_p'.
         let mut jt = vec![0.0f64; n];
@@ -109,7 +113,7 @@ where
         budget,
         &fwd,
         &rev,
-        (bar_q_n.to_vec(), bar_p_n.to_vec()),
+        (bar_n.0.to_vec(), bar_n.1.to_vec()),
     );
     bar
 }

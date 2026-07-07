@@ -20,7 +20,13 @@ pub struct PiController {
 
 impl Default for PiController {
     fn default() -> PiController {
-        PiController { k_p: 0.14, k_i: 0.08, safety: 0.9, max_growth: 5.0, max_shrink: 0.2 }
+        PiController {
+            k_p: 0.14,
+            k_i: 0.08,
+            safety: 0.9,
+            max_growth: 5.0,
+            max_shrink: 0.2,
+        }
     }
 }
 
@@ -45,7 +51,14 @@ impl AdaptiveState {
     /// Fresh state.
     #[must_use]
     pub fn new(t0: f64, u0: &[f64], h0: f64) -> AdaptiveState {
-        AdaptiveState { t: t0, u: u0.to_vec(), h: h0, err_prev: 1.0, accepted: 0, rejected: 0 }
+        AdaptiveState {
+            t: t0,
+            u: u0.to_vec(),
+            h: h0,
+            err_prev: 1.0,
+            accepted: 0,
+            rejected: 0,
+        }
     }
 }
 

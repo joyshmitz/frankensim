@@ -35,7 +35,13 @@ impl Imex2 {
             }
         }
         let solve_gamma = lu(&m, n).expect("(I - gamma h L) must be nonsingular");
-        Imex2 { n, h, l_mat: l_mat.to_vec(), solve_gamma, gamma }
+        Imex2 {
+            n,
+            h,
+            l_mat: l_mat.to_vec(),
+            solve_gamma,
+            gamma,
+        }
     }
 }
 
@@ -107,10 +113,20 @@ impl ExpEuler {
             .iter()
             .map(|&l| {
                 let x = h * l;
-                if x.abs() < 1e-300 { h } else { h * (det::expm1(x) / x) }
+                if x.abs() < 1e-300 {
+                    h
+                } else {
+                    h * (det::expm1(x) / x)
+                }
             })
             .collect();
-        ExpEuler { n, h, vecs, exp_h, hphi1 }
+        ExpEuler {
+            n,
+            h,
+            vecs,
+            exp_h,
+            hphi1,
+        }
     }
 
     /// The step size.
@@ -137,15 +153,15 @@ impl ExpEuler {
             nh[i] = an;
         }
         // Apply the scalar filters and transform back.
-        for i in 0..n {
-            uh[i] = self.exp_h[i].mul_add(uh[i], self.hphi1[i] * nh[i]);
+        for (i, uhi) in uh.iter_mut().enumerate() {
+            *uhi = self.exp_h[i].mul_add(*uhi, self.hphi1[i] * nh[i]);
         }
-        for j in 0..n {
+        for (j, uj) in u.iter_mut().enumerate() {
             let mut acc = 0.0f64;
-            for i in 0..n {
-                acc = self.vecs[j * n + i].mul_add(uh[i], acc);
+            for (i, &uhi) in uh.iter().enumerate() {
+                acc = self.vecs[j * n + i].mul_add(uhi, acc);
             }
-            u[j] = acc;
+            *uj = acc;
         }
     }
 }

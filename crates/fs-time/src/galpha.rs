@@ -92,8 +92,7 @@ pub fn galpha_step(
     f_next: &[f64],
 ) {
     let n = ga.n;
-    let (h, am, af, beta, gamma) =
-        (ga.h, ga.alpha_m, ga.alpha_f, ga.beta, ga.gamma);
+    let (h, am, af, beta, gamma) = (ga.h, ga.alpha_m, ga.alpha_f, ga.beta, ga.gamma);
     // Predictors (Newmark form).
     let cm = (1.0 - am) / (beta * h * h);
     let cc = (1.0 - af) * gamma / (beta * h);
