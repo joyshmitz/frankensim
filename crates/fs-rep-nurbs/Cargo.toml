@@ -26,6 +26,10 @@ fs-alloc = { path = "../fs-alloc" }
 # [F]-gated per the Ambition-Tag rule: the NURBS->SDF converter ships
 # disabled until its Gauntlet tier is green.
 nurbs-sdf = []
+# [F]-gated: the SDF->NURBS refit ships disabled until its Gauntlet tier
+# is green. Depends on nurbs-sdf (the CSG acceptance closes the loop
+# through the forward converter + sheaf certificates).
+nurbs-refit = ["nurbs-sdf"]
 
 [lints]
 workspace = true
