@@ -76,8 +76,7 @@ fn os_matrices(re: f64, alpha: f64, n: usize) -> (Vec<C64>, Vec<C64>, usize) {
         for j in 0..ni {
             let idelta = if i == j { 1.0 } else { 0.0 };
             // (D4c − 2α²·D2 + α⁴)/Re — the viscous block (real).
-            let visc =
-                (d4c[i * ni + j] - 2.0 * a2 * d2i[i * ni + j] + a2 * a2 * idelta) / re;
+            let visc = (d4c[i * ni + j] - 2.0 * a2 * d2i[i * ni + j] + a2 * a2 * idelta) / re;
             // −2iα − iα·U·(D2 − α²): the inertial block (imaginary).
             let inert = -alpha * (2.0 * idelta + u * (d2i[i * ni + j] - a2 * idelta));
             a[i * ni + j] = C64::new(visc, inert);
@@ -110,9 +109,7 @@ pub fn growth_rates(re: f64, alpha: f64, n: usize, k: usize) -> Result<Vec<C64>,
         }
     }
     let mut eigs = eig(&m_mat, ni)?;
-    eigs.sort_by(|p, q| {
-        q.re.total_cmp(&p.re).then_with(|| q.im.total_cmp(&p.im))
-    });
+    eigs.sort_by(|p, q| q.re.total_cmp(&p.re).then_with(|| q.im.total_cmp(&p.im)));
     eigs.truncate(k);
     Ok(eigs)
 }
