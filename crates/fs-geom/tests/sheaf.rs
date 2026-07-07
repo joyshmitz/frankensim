@@ -206,11 +206,10 @@ fn sh_002_delta_delta_is_zero_bitwise() {
         let charts: Vec<&dyn Chart> = boxes.iter().map(|b| b as &dyn Chart).collect();
         let complex = SheafComplex::from_charts(&charts, cx);
         assert!(!complex.interfaces.is_empty());
-        if complex.triples.is_empty() {
-            // Boxes 0 and 2 may not overlap — widen: assert via a direct
-            // 3-clique fixture instead.
-            panic!("fixture must produce a triple junction; adjust geometry");
-        }
+        assert!(
+            !complex.triples.is_empty(),
+            "fixture must produce a triple junction; adjust geometry"
+        );
         let d0 = complex.delta0_edges();
         let d1 = complex.delta1();
         // δ¹ · δ⁰ computed densely (test scale): every entry EXACTLY 0.0.
