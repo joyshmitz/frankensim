@@ -128,8 +128,7 @@ pub fn rk45_adaptive<F: Fn(f64, &[f64], &mut [f64])>(
                     }
                 }
             }
-            let (head, tail) = k.split_at_mut(stage + 1);
-            let _ = head;
+            let (_, tail) = k.split_at_mut(stage + 1);
             rhs(state.t + C[stage] * h, &u_stage, &mut tail[0]);
         }
         // 5th-order solution + embedded error estimate.
@@ -156,7 +155,12 @@ pub fn rk45_adaptive<F: Fn(f64, &[f64], &mut [f64])>(
             let factor = pi.safety
                 * fs_math::det::pow(err, -pi.k_p)
                 * fs_math::det::pow(state.err_prev, pi.k_i);
-            state.h = h * factor.clamp(pi.max_shrink, pi.max_growth);
+            // Only an UNCLAMPED step feeds the controller: a step that
+            // was shortened to hit t_end must not poison the h carried
+            // into a later resumed segment.
+            if h >= state.h {
+                state.h = h * factor.clamp(pi.max_shrink, pi.max_growth);
+            }
             state.err_prev = err;
         } else {
             // Reject; shrink.

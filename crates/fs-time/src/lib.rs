@@ -21,8 +21,8 @@ pub mod symplectic;
 
 pub use adaptive::{AdaptiveState, PiController, rk45_adaptive};
 pub use galpha::{GeneralizedAlpha, galpha_step};
-pub use lie::{quat_exp_step, rigid_body_step};
-pub use stiff::{ExpEuler, imex2_step};
+pub use lie::{quat_exp, quat_exp_step, quat_mul, quat_rotate, rigid_body_step};
+pub use stiff::{ExpEuler, Imex2, imex2_step};
 pub use symplectic::{verlet_adjoint, verlet_step};
 
 /// Crate version, re-exported for provenance stamping.

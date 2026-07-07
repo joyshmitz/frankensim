@@ -100,7 +100,6 @@ where
         for i in 0..n {
             bar_q[i] = (0.5 * h).mul_add(jt[i], bar_q[i]);
         }
-        let _ = p_half;
         (bar_q, bar_p_half)
     };
     let budget = fs_ad::revolve::min_budget(steps);
