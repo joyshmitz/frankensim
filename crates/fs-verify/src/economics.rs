@@ -79,7 +79,10 @@ impl DriftGuard {
     pub fn accept_rate_or_prior(&self, proposer: &str, regime: &str) -> f64 {
         self.counts
             .get(&(proposer.to_string(), regime.to_string()))
-            .map_or(0.0, |&(a, t)| if t == 0 { 0.0 } else { a as f64 / t as f64 })
+            .map_or(
+                0.0,
+                |&(a, t)| if t == 0 { 0.0 } else { a as f64 / t as f64 },
+            )
     }
 
     /// Drift check: demote proposers in regimes where the accept rate
@@ -146,14 +149,11 @@ impl DriftGuard {
         self.counts
             .iter()
             .map(|((p, r), &(a, t))| {
-                let med = self
-                    .savings
-                    .get(&(p.clone(), r.clone()))
-                    .map_or(0, |v| {
-                        let mut s = v.clone();
-                        s.sort_unstable();
-                        s.get(s.len() / 2).copied().unwrap_or(0)
-                    });
+                let med = self.savings.get(&(p.clone(), r.clone())).map_or(0, |v| {
+                    let mut s = v.clone();
+                    s.sort_unstable();
+                    s.get(s.len() / 2).copied().unwrap_or(0)
+                });
                 let mut row = String::new();
                 let _ = write!(
                     row,
@@ -212,11 +212,10 @@ pub fn run_speculative(
                     continue;
                 }
                 if let Some(prop) = p.propose(query) {
-                    let rep = crate::estimator::verify(&query.problem, &prop.candidate, query.tolerance);
+                    let rep =
+                        crate::estimator::verify(&query.problem, &prop.candidate, query.tolerance);
                     guard.record(p.name(), &query.regime, false);
-                    let better = best
-                        .as_ref()
-                        .is_none_or(|(_, _, b)| rep.bound.hi < *b);
+                    let better = best.as_ref().is_none_or(|(_, _, b)| rep.bound.hi < *b);
                     if rep.bound.hi.is_finite() && better {
                         best = Some((p.name(), prop.candidate, rep.bound.hi));
                     }
@@ -248,6 +247,6 @@ pub fn run_speculative(
     }
 }
 
-fn registry_iter(registry: &Registry) -> impl Iterator<Item = &(dyn crate::zoo::Proposer)> {
+fn registry_iter(registry: &Registry) -> impl Iterator<Item = &dyn crate::zoo::Proposer> {
     registry.proposers_dyn()
 }

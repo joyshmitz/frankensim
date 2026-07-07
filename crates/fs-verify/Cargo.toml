@@ -27,5 +27,9 @@ required-features = ["certified-speculation"]
 name = "zoo"
 required-features = ["certified-speculation"]
 
+[[test]]
+name = "economics"
+required-features = ["certified-speculation"]
+
 [lints]
 workspace = true

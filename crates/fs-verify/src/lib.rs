@@ -19,13 +19,13 @@
 //! measured iteration savings, never certificates.
 
 #[cfg(feature = "certified-speculation")]
+pub mod economics;
+#[cfg(feature = "certified-speculation")]
 pub mod estimator;
 #[cfg(feature = "certified-speculation")]
 pub mod fem1d;
 #[cfg(feature = "certified-speculation")]
 pub mod interval;
-#[cfg(feature = "certified-speculation")]
-pub mod economics;
 #[cfg(feature = "certified-speculation")]
 pub mod zoo;
 
