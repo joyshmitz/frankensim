@@ -17,6 +17,7 @@
 //! 32 bits, kernel id 32 bits (together counter words 2–3), draw index 64
 //! bits (counter words 0–1). 2⁶⁴ draws per (seed, kernel, tile) stream.
 
+pub mod dist;
 pub mod philox;
 pub mod qmc;
 
