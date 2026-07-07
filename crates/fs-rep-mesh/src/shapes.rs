@@ -4,7 +4,7 @@
 //! nightmare corpus.
 
 use crate::winding::Soup;
-use fs_geom::Point3;
+use fs_geom::{Point3, Vec3};
 
 /// Axis-aligned cube soup: 8 vertices, 12 outward-oriented triangles.
 #[must_use]
@@ -67,7 +67,7 @@ pub fn icosphere(center: Point3, radius: f64, subdivisions: u32) -> Soup {
     ];
     let mut positions: Vec<Point3> = base
         .iter()
-        .map(|&(x, y, z)| project(Point3::new(x, y, z), center, radius))
+        .map(|&(x, y, z)| project(center.offset(Vec3::new(x, y, z)), center, radius))
         .collect();
     let mut triangles: Vec<[u32; 3]> = vec![
         [0, 11, 5],
@@ -130,7 +130,11 @@ pub fn icosphere(center: Point3, radius: f64, subdivisions: u32) -> Soup {
 }
 
 fn project(p: Point3, center: Point3, radius: f64) -> Point3 {
-    let d = p.delta_from(Point3::new(0.0, 0.0, 0.0));
+    // Direction from the CENTER (a latent off-origin bug — projecting
+    // the absolute vector — was caught by fs-topo's exact
+    // self-intersection certificate: off-center subdivided icospheres
+    // came out spiky and genuinely self-intersecting).
+    let d = p.delta_from(center);
     let n = d.norm().max(1e-300);
     center.offset(d.scale(radius / n))
 }
