@@ -8,7 +8,9 @@ use fs_la::eigen_complex::{det_complex, eig};
 use fs_math::c64::C64;
 
 fn lcg(seed: &mut u64) -> f64 {
-    *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    *seed = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     ((*seed >> 11) as f64) / (1u64 << 53) as f64 - 0.5
 }
 
@@ -27,13 +29,10 @@ fn companion_matrix_gives_roots_of_unity() {
     // Companion of z⁴ − 1: eigenvalues are the 4th roots of unity.
     let n = 4;
     let m = cmat(n, |i, j| {
-        if i == 0 && j == n - 1 {
-            C64::ONE // −(−1) constant coefficient
-        } else if i > 0 && j == i - 1 {
-            C64::ONE
-        } else {
-            C64::ZERO
-        }
+        // Subdiagonal ones plus the top-right constant-coefficient entry
+        // (−(−1) = 1 for z⁴ − 1) — the two cases share the value 1.
+        let is_one = (i == 0 && j == n - 1) || (i > 0 && j == i - 1);
+        if is_one { C64::ONE } else { C64::ZERO }
     });
     let eigs = eig(&m, n).expect("companion converges");
     // SET comparison (canonical ordering is roundoff-fragile when real
@@ -113,7 +112,10 @@ fn trace_and_determinant_identities() {
         tr = tr + m[i * n + i];
     }
     let sum = eigs.iter().fold(C64::ZERO, |acc, &z| acc + z);
-    assert!((sum - tr).abs() < 1e-10 * tr.abs().max(1.0), "trace: {sum:?} vs {tr:?}");
+    assert!(
+        (sum - tr).abs() < 1e-10 * tr.abs().max(1.0),
+        "trace: {sum:?} vs {tr:?}"
+    );
     // Πλ = det(A) (independent Gaussian-elimination oracle).
     let prod = eigs.iter().fold(C64::ONE, |acc, &z| acc * z);
     let d = det_complex(&m, n);
@@ -153,7 +155,11 @@ fn chebyshev_companion_roots() {
     let n = 6;
     let mut m = vec![C64::ZERO; n * n];
     for i in 0..n - 1 {
-        let half = if i == 0 { std::f64::consts::FRAC_1_SQRT_2 } else { 0.5 };
+        let half = if i == 0 {
+            std::f64::consts::FRAC_1_SQRT_2
+        } else {
+            0.5
+        };
         // Standard colleague structure for pure T6: off-diagonals ½ with
         // the √2 correction on the first row/col pair.
         m[i * n + i + 1] = C64::from_re(half);
@@ -174,7 +180,7 @@ fn chebyshev_companion_roots() {
 }
 
 /// Recorded on aarch64-apple (M4 Pro); must match on x86-64 (trj).
-const GOLDEN_HASH: u64 = 0x0; // placeholder: set from first run
+const GOLDEN_HASH: u64 = 0xf78c_fbae_5f12_b4d4;
 
 #[test]
 fn eigc_golden_hash() {
