@@ -20,7 +20,10 @@ impl Stream {
     /// α ≤ 0.
     #[must_use]
     pub fn next_gamma(&mut self, alpha: f64) -> f64 {
-        assert!(alpha > 0.0 && alpha.is_finite(), "gamma shape must be positive: {alpha}");
+        assert!(
+            alpha > 0.0 && alpha.is_finite(),
+            "gamma shape must be positive: {alpha}"
+        );
         if alpha < 1.0 {
             // Boost: one extra uniform, then the α+1 sampler.
             let u = self.next_f64();
@@ -119,12 +122,16 @@ impl Stream {
     /// no rejection). κ = 0 callers should use a uniform-sphere sampler.
     #[must_use]
     pub fn next_vmf3(&mut self, mu: [f64; 3], kappa: f64) -> [f64; 3] {
-        assert!(kappa > 0.0 && kappa.is_finite(), "vMF needs kappa > 0: {kappa}");
+        assert!(
+            kappa > 0.0 && kappa.is_finite(),
+            "vMF needs kappa > 0: {kappa}"
+        );
         let u = self.next_f64();
         let phi_u = self.next_f64();
         // Polar component by inversion (Ulrich 1984, S² closed form):
         // w = 1 + ln(u + (1−u)·e^(−2κ))/κ.
-        let w = 1.0 + det::ln(u.max(f64::MIN_POSITIVE) + (1.0 - u) * det::exp(-2.0 * kappa)) / kappa;
+        let w =
+            1.0 + det::ln(u.max(f64::MIN_POSITIVE) + (1.0 - u) * det::exp(-2.0 * kappa)) / kappa;
         let w = w.clamp(-1.0, 1.0);
         let r = det::sqrt((1.0 - w * w).max(0.0));
         let phi = 2.0 * std::f64::consts::PI * phi_u;
@@ -229,7 +236,11 @@ impl AliasTable {
         let scaled = u * n as f64;
         let bucket = (scaled as usize).min(n - 1);
         let coin = scaled - bucket as f64;
-        if coin < self.prob[bucket] { bucket } else { self.alias[bucket] }
+        if coin < self.prob[bucket] {
+            bucket
+        } else {
+            self.alias[bucket]
+        }
     }
 
     /// Number of categories.

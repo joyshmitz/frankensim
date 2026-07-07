@@ -6,7 +6,11 @@
 use fs_rand::dist::AliasTable;
 use fs_rand::{Stream, StreamKey};
 
-const KEY: StreamKey = StreamKey { seed: 0xD157_0001, kernel: 11, tile: 3 };
+const KEY: StreamKey = StreamKey {
+    seed: 0xD157_0001,
+    kernel: 11,
+    tile: 3,
+};
 
 #[test]
 fn gamma_moments_and_replay() {
@@ -62,7 +66,11 @@ fn beta_and_dirichlet_moments() {
         m1 += x;
     }
     let want = a / (a + b);
-    assert!((m1 / N as f64 - want).abs() < 0.003, "beta mean {} vs {want}", m1 / N as f64);
+    assert!(
+        (m1 / N as f64 - want).abs() < 0.003,
+        "beta mean {} vs {want}",
+        m1 / N as f64
+    );
     // Dirichlet: components sum to 1; means proportional to alphas.
     let alphas = [1.0f64, 2.0, 4.0];
     let total: f64 = alphas.iter().sum();
@@ -99,13 +107,21 @@ fn alias_table_bitwise_construction_and_chi_square() {
     for i in 0..weights.len() {
         let mut s1 = Stream::resume(KEY, 40_000 + i as u64);
         let mut s2 = Stream::resume(KEY, 40_000 + i as u64);
-        assert_eq!(t1.sample(&mut s1), t2.sample(&mut s2), "tables must behave identically");
+        assert_eq!(
+            t1.sample(&mut s1),
+            t2.sample(&mut s2),
+            "tables must behave identically"
+        );
     }
     // Single-draw consumption contract.
     let mut s = KEY.stream();
     let before = s.index();
     let _ = t1.sample(&mut s);
-    assert_eq!(s.index() - before, 1, "alias sampling must consume exactly 1 draw");
+    assert_eq!(
+        s.index() - before,
+        1,
+        "alias sampling must consume exactly 1 draw"
+    );
     // Chi-square against the pmf.
     let total: f64 = weights.iter().sum();
     let mut counts = [0u32; 5];
@@ -119,7 +135,10 @@ fn alias_table_bitwise_construction_and_chi_square() {
         chi2 += (f64::from(*c) - expect).powi(2) / expect;
     }
     // 4 dof: mean 4, sd ~2.8; accept generously (deterministic seed).
-    assert!(chi2 < 25.0, "alias chi-square {chi2} out of band; counts {counts:?}");
+    assert!(
+        chi2 < 25.0,
+        "alias chi-square {chi2} out of band; counts {counts:?}"
+    );
     println!(
         "{{\"suite\":\"fs-rand\",\"case\":\"alias\",\"verdict\":\"pass\",\"detail\":\"bitwise construction, 1-draw contract, chi2 {chi2:.2}\"}}"
     );
@@ -127,13 +146,13 @@ fn alias_table_bitwise_construction_and_chi_square() {
 
 #[test]
 fn vmf_geometry_and_fixed_consumption() {
+    const N: usize = 50_000;
     let mu = {
         // A deliberately non-axis mean direction, normalized.
         let raw = [0.3f64, -0.5, 0.81];
         let n = (raw[0] * raw[0] + raw[1] * raw[1] + raw[2] * raw[2]).sqrt();
         [raw[0] / n, raw[1] / n, raw[2] / n]
     };
-    const N: usize = 50_000;
     for &kappa in &[1.0f64, 10.0, 100.0] {
         let mut s = KEY.stream();
         let mut resultant = [0.0f64; 3];
@@ -142,13 +161,15 @@ fn vmf_geometry_and_fixed_consumption() {
             let v = s.next_vmf3(mu, kappa);
             assert_eq!(s.index() - before, 2, "vMF must consume exactly 2 draws");
             let norm = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-            assert!((norm - 1.0).abs() < 1e-12, "vMF output must be unit: {norm}");
+            assert!(
+                (norm - 1.0).abs() < 1e-12,
+                "vMF output must be unit: {norm}"
+            );
             for (r, &c) in resultant.iter_mut().zip(&v) {
                 *r += c;
             }
         }
-        let rlen =
-            (resultant[0].powi(2) + resultant[1].powi(2) + resultant[2].powi(2)).sqrt();
+        let rlen = (resultant[0].powi(2) + resultant[1].powi(2) + resultant[2].powi(2)).sqrt();
         let dot = (resultant[0] * mu[0] + resultant[1] * mu[1] + resultant[2] * mu[2]) / rlen;
         assert!(
             dot > 0.999,
