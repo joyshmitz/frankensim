@@ -37,12 +37,17 @@ use std::fmt::Write as _;
 
 mod cards;
 pub mod color;
+pub mod falsify;
 mod discrepancy;
 
 pub use cards::{Ambition, ModelCard, ModelRegistry, RegistryError};
 pub use color::{
     Color, ColorError, ColorRank, Demotion, IntervalOp, check_regime, color_of, compose,
     intersect_domains, verified_from,
+};
+pub use falsify::{
+    ClaimContext, EstimatorBug, FalsifierHistory, FalsifierHit, FalsifierRegistry, FalsifierSpec,
+    FalsifyError, Tombstone, allocate_budget,
 };
 pub use discrepancy::{
     DiscrepancyBand, DiscrepancyModel, FidelityPair, FitError, ModelBracket, OutOfDomain,

@@ -66,6 +66,21 @@ on fs-obs only.
   honest bridge from existing Evidence receipts). Write-time
   enforcement lives HELM-side in fs-ledger over these types.
 
+- `falsify` module (bead qmao.4): FALSIFIER PAIRING — `FalsifierRegistry`
+  (a certificate class CANNOT register without ≥1 independent falsifier;
+  `standard()` ships the six proposal pairings: watertightness→ray-parity,
+  conservation→independent-quadrature flux audit, adjoint→FD spot checks,
+  surrogate→held-out points, symmetry-block→occasional full solves,
+  validated-color→held-out anchors), `ship_gate` (the no-falsifier-no-ship
+  Gauntlet gate), `FalsifierHistory` (per-class-per-regime pass/hit/compute
+  rows; `doubt` = 1 − pass rate with COLD-START = max doubt and a
+  never-zero floor), `record_hit` → mandatory `(Tombstone, EstimatorBug)`
+  canonical-JSON pair, `allocate_budget` (consequence × doubt ×
+  rent-share, normalized; consequence floors for dependent-free claims;
+  zero claims spend zero), and `rent_review` (zero-yield classes at
+  meaningful volume decay toward a floor — every falsifier pays rent, but
+  the pairing rule itself is not killable).
+
 ## Invariants
 1. Conservativeness (G0, evd-001): composed enclosures contain every
    propagation of operand-enclosed true values (300k seeded samples);
@@ -118,6 +133,14 @@ spread reporting with deterministic schema-valid rows, and certification
 poisoning. In-module suites cover the certificate algebra, validity laws,
 tie-breaking, provenance chaining, and card rendering.
 
+- Falsifier registration is total: empty falsifier lists refuse at the
+  source; the ship gate names every unpaired class.
+- Budget allocation is monotone in consequence AND doubt, with honest
+  boundaries (cold-start max, perfect-record floor, dependent-free floor,
+  empty-job zero) — property-tested.
+- Every falsifier hit produces BOTH a tombstone and an estimator bug
+  report; neither is optional.
+
 ## No-claim boundaries (colors)
 
 - Verified-interval composition here covers Add/Mul/Hull; the full
@@ -148,3 +171,17 @@ tie-breaking, provenance chaining, and card rendering.
   migration).
 - `ProvenanceHash` is FNV-1a until the BLAKE3-class ledger hash supersedes
   it (same upgrade path as fs-obs).
+
+## No-claim boundaries (falsifiers)
+
+- The registry stores falsifier IDENTITIES and stated methods; executing
+  a falsifier (running rays, FD probes, full solves) is each consumer
+  kernel's code — this module is the schema, gate, and allocator.
+- `consequence` is supplied by the caller (ledger-DAG dependent-weight
+  traversal is HELM-side); the allocator's contract is what it does with
+  the number, floors included.
+- Tombstone/bug payloads are canonical JSON for the ledger; the tombstone
+  REGISTRY (Proposal E) and falsifier-log mining (Proposal 9) consume
+  them downstream.
+- Rent decay is per-class and floor-bounded; per-regime decay and
+  quarterly cadence enforcement are governance-bead policy (xpck.6).
