@@ -1,0 +1,18 @@
+[package]
+name = "fs-govern"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Addendum governance: the machine-readable risk register (R1–R10) with early-warning metrics, thresholds, owning beads, and a CI-gateable completeness audit — so no risk survives unmeasured (Governance Rule 2 / design principle P8)."
+
+[package.metadata.frankensim]
+layer = "UTIL"
+
+[dependencies]
+
+[dev-dependencies]
+
+[lints]
+workspace = true
