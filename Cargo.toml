@@ -35,6 +35,7 @@ members = [
     "crates/fs-plan",
     "crates/fs-xform",
     "crates/fs-img",
+    "crates/fs-io",
     "crates/fs-roofline",
     "crates/fs-geom",
     "crates/fs-ga",

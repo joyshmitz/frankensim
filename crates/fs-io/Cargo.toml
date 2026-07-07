@@ -1,0 +1,23 @@
+[package]
+name = "fs-io"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "The world boundary: hardened STL/OBJ/PLY import with quarantine + certification receipts, 3MF/glTF(GLB)/VTK export, CSV/JSON catalog ingestion with schema validation."
+
+[package.metadata.frankensim]
+layer = "L2"
+
+[dependencies]
+fs-evidence = { path = "../fs-evidence" }
+fs-geom = { path = "../fs-geom" }
+fs-math = { path = "../fs-math" }
+fs-obs = { path = "../fs-obs" }
+fs-rep-mesh = { path = "../fs-rep-mesh" }
+
+[dev-dependencies]
+
+[lints]
+workspace = true

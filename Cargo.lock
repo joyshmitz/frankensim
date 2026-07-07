@@ -897,6 +897,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs-io"
+version = "0.0.1"
+dependencies = [
+ "fs-evidence",
+ "fs-geom",
+ "fs-math",
+ "fs-obs",
+ "fs-rep-mesh",
+]
+
+[[package]]
 name = "fs-ir"
 version = "0.0.1"
 dependencies = [
@@ -926,6 +937,7 @@ dependencies = [
 name = "fs-ledger"
 version = "0.0.1"
 dependencies = [
+ "fs-evidence",
  "fsqlite",
 ]
 
