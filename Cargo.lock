@@ -803,6 +803,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs-contract"
+version = "0.0.1"
+dependencies = [
+ "fs-evidence",
+ "fs-iface",
+]
+
+[[package]]
 name = "fs-dfo"
 version = "0.0.1"
 dependencies = [
