@@ -9,27 +9,27 @@
 //! MATRIX-FREE through sum factorization (P6: only the r = 1 coarse
 //! problem is ever assembled, and SA-AMG preconditions its CG solve).
 //!
-//! Smoothing: damped ELEMENT-BLOCK additive Schwarz — the standard
-//! p-multigrid smoother (cell-local solves damp the bubble-dominated
-//! complement of the injected coarse space, which pointwise smoothers
-//! cannot: the hierarchical CBS angle degrades them as r grows). On a
-//! uniform grid every element shares ONE dense local inverse, so the
-//! smoother is one factorization + gather/solve/scatter sweeps —
-//! additive, hence many-core-honest (no sequential dependencies).
+//! Smoothing: matrix-free Chebyshev on the Jacobi-scaled operator
+//! (many-core-honest — no sequential dependencies). Iteration counts
+//! grow MILDLY with r (the hierarchical-injection CBS angle; measured
+//! and envelope-gated, not hidden) — the overlapping-patch Schwarz
+//! smoother that buys true p-independence is a recorded follow-up
+//! (element-matrix and Dirichlet-block variants were tried here and
+//! measured WEAKER than Chebyshev at fixture scale; the diagnosis
+//! lives in the bead trail).
 
 use crate::op::LinearOp;
 use fs_feec::TensorSpace;
 use fs_sparse::precond::{Precond, SaAmg};
 use fs_sparse::{Coo, Csr};
 
-/// One p-MG level: the tensor space, its interior mask, and the
-/// shared dense inverse of the element-local operator.
+/// One p-MG level: the tensor space, its interior mask, Jacobi
+/// diagonal, and the Chebyshev spectral bound.
 struct Level {
     space: TensorSpace,
     mask: Vec<bool>,
-    /// Dense inverse of the (r+1)³ element-local Poisson block
-    /// (uniform grid: identical for every element).
-    local_inv: Vec<f64>,
+    diag: Vec<f64>,
+    lambda_max: f64,
     /// 1D lattice injection map INTO the next-finer level (absent on
     /// the finest level).
     inject1: Option<Vec<usize>>,
@@ -64,59 +64,34 @@ fn inject_1d(m: usize, rc: usize, rf: usize) -> Vec<usize> {
     map
 }
 
-/// Dense inverse of the ASSEMBLED operator's Dirichlet restriction to
-/// one element's dof block (uniform grid: every interior element
-/// shares it). Built as the Kronecker sum of the assembled 1D
-/// matrices restricted to an interior cell's lattice window — this is
-/// the proper additive-Schwarz block (the raw Neumann element matrix
-/// is singular and gives a provably weak smoother; measured as such
-/// here before this fix).
-fn element_local_inverse(space: &TensorSpace) -> Vec<f64> {
-    let p = space.r + 1;
-    let nl = p * p * p;
-    let (m1, k1) = space.assembled_1d();
-    let n1 = space.n1;
-    let cell = if space.m > 1 { 1 } else { 0 };
-    let mut rm = vec![0.0f64; p * p];
-    let mut rk = vec![0.0f64; p * p];
-    for l in 0..p {
-        let gl = space.lat1(cell, l);
-        for l2 in 0..p {
-            let gl2 = space.lat1(cell, l2);
-            rm[l * p + l2] = m1[gl * n1 + gl2];
-            rk[l * p + l2] = k1[gl * n1 + gl2];
-        }
-    }
-    let mut a = vec![0.0f64; nl * nl];
-    for i in 0..p {
-        for j in 0..p {
-            for k in 0..p {
-                let row = (i * p + j) * p + k;
-                for ii in 0..p {
-                    for jj in 0..p {
-                        for kk in 0..p {
-                            let col = (ii * p + jj) * p + kk;
-                            a[row * nl + col] = rk[i * p + ii] * rm[j * p + jj] * rm[k * p + kk]
-                                + rm[i * p + ii] * rk[j * p + jj] * rm[k * p + kk]
-                                + rm[i * p + ii] * rm[j * p + jj] * rk[k * p + kk];
-                        }
-                    }
-                }
+/// Fixed-iteration power method for λ_max of the Jacobi-scaled masked
+/// operator (deterministic oscillatory start — the top eigenvector is
+/// grid-oscillatory; 40 iterations, 20% safety margin so Chebyshev
+/// never amplifies above-band modes).
+fn lambda_max(space: &TensorSpace, mask: &[bool], diag: &[f64]) -> f64 {
+    let n = space.ndof();
+    let mut v: Vec<f64> = (0..n)
+        .map(|i| {
+            if mask[i] {
+                (if i % 2 == 0 { 1.0 } else { -1.0 }) * (1.0 + (i % 7) as f64 / 7.0)
+            } else {
+                0.0
             }
+        })
+        .collect();
+    let mut lam = 1.0f64;
+    for _ in 0..40 {
+        let mut av = space.apply_stiffness(&v);
+        for i in 0..n {
+            av[i] = if mask[i] { av[i] / diag[i] } else { 0.0 };
+        }
+        let norm = fs_math::det::sqrt(av.iter().map(|x| x * x).sum::<f64>());
+        lam = norm;
+        for (vi, ai) in v.iter_mut().zip(&av) {
+            *vi = ai / norm;
         }
     }
-    let lu = fs_la::factor::lu(&a, nl).expect("Dirichlet-restricted block nonsingular");
-    let mut inv = vec![0.0f64; nl * nl];
-    let mut col = vec![0.0f64; nl];
-    for j in 0..nl {
-        col.fill(0.0);
-        col[j] = 1.0;
-        lu.solve(&mut col);
-        for i in 0..nl {
-            inv[i * nl + j] = col[i];
-        }
-    }
-    inv
+    lam * 1.2
 }
 
 impl PMultigrid {
@@ -139,13 +114,20 @@ impl PMultigrid {
         for (li, &ord) in orders.iter().enumerate() {
             let space = TensorSpace::new(m, ord);
             let mask = space.interior_mask();
-            let local_inv = element_local_inverse(&space);
+            let diag = space.stiffness_diagonal();
+            let lmax = lambda_max(&space, &mask, &diag);
             let inject1 = if li == 0 {
                 None
             } else {
                 Some(inject_1d(m, ord, orders[li - 1]))
             };
-            levels.push(Level { space, mask, local_inv, inject1 });
+            levels.push(Level {
+                space,
+                mask,
+                diag,
+                lambda_max: lmax,
+                inject1,
+            });
         }
         // Assemble the coarse (r = 1) interior operator: Kronecker of
         // assembled 1D matrices restricted to interior dofs.
@@ -200,67 +182,47 @@ impl PMultigrid {
         }
     }
 
-    /// Damped element-block additive Schwarz sweeps on level `li`:
-    /// each sweep gathers the masked residual per element, applies the
-    /// shared dense local inverse, and scatter-adds with damping 0.35
-    /// (tuned on the ladder battery; Dirichlet blocks keep the
-    /// effective overlap spectrum well under the crude 8x bound).
+    /// Matrix-free Chebyshev smoothing on level `li`: band
+    /// [λ_max/16, λ_max] (the hierarchical complement spreads wide),
+    /// degree = `smooth_degree`.
     fn smooth(&self, li: usize, x: &mut [f64], b: &[f64]) {
         let lv = &self.levels[li];
         let n = lv.space.ndof();
-        let p = lv.space.r + 1;
-        let nl = p * p * p;
-        let m = lv.space.m;
-        let omega = 0.35f64;
-        let mut r_loc = vec![0.0f64; nl];
-        let mut z_loc = vec![0.0f64; nl];
-        for _ in 0..self.smooth_degree {
+        let (lmax, lmin) = (lv.lambda_max, lv.lambda_max / 16.0);
+        let theta = f64::midpoint(lmax, lmin);
+        let delta = f64::midpoint(lmax, -lmin);
+        let masked_scaled_residual = |x: &[f64]| -> Vec<f64> {
             let mut ax = lv.space.apply_stiffness(x);
             for i in 0..n {
-                ax[i] = if lv.mask[i] { b[i] - ax[i] } else { 0.0 };
+                ax[i] = if lv.mask[i] {
+                    (b[i] - ax[i]) / lv.diag[i]
+                } else {
+                    0.0
+                };
             }
-            let mut z = vec![0.0f64; n];
-            for cx in 0..m {
-                for cy in 0..m {
-                    for cz in 0..m {
-                        for lx in 0..p {
-                            let gi = lv.space.lat1(cx, lx);
-                            for ly in 0..p {
-                                let gj = lv.space.lat1(cy, ly);
-                                for lz in 0..p {
-                                    let gk = lv.space.lat1(cz, lz);
-                                    let g = lv.space.gid(gi, gj, gk);
-                                    r_loc[(lx * p + ly) * p + lz] =
-                                        if lv.mask[g] { ax[g] } else { 0.0 };
-                                }
-                            }
-                        }
-                        for i in 0..nl {
-                            let mut acc = 0.0f64;
-                            for j in 0..nl {
-                                acc = lv.local_inv[i * nl + j].mul_add(r_loc[j], acc);
-                            }
-                            z_loc[i] = acc;
-                        }
-                        for lx in 0..p {
-                            let gi = lv.space.lat1(cx, lx);
-                            for ly in 0..p {
-                                let gj = lv.space.lat1(cy, ly);
-                                for lz in 0..p {
-                                    let gk = lv.space.lat1(cz, lz);
-                                    let g = lv.space.gid(gi, gj, gk);
-                                    if lv.mask[g] {
-                                        z[g] += z_loc[(lx * p + ly) * p + lz];
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            ax
+        };
+        let mut d = masked_scaled_residual(x);
+        let mut alpha = 1.0 / theta;
+        for di in &mut d {
+            *di *= alpha;
+        }
+        for (xi, di) in x.iter_mut().zip(&d) {
+            *xi += di;
+        }
+        let mut rho_prev = delta / theta;
+        for _ in 1..self.smooth_degree {
+            let rho = 1.0 / (2.0 * theta / delta - rho_prev);
+            let r = masked_scaled_residual(x);
+            alpha = 2.0 * rho / delta;
+            let beta = rho * rho_prev;
             for i in 0..n {
-                x[i] = omega.mul_add(z[i], x[i]);
+                d[i] = alpha.mul_add(r[i], beta * d[i]);
             }
+            for (xi, di) in x.iter_mut().zip(&d) {
+                *xi += di;
+            }
+            rho_prev = rho;
         }
     }
 
@@ -275,8 +237,7 @@ impl PMultigrid {
         for i in 0..ncc {
             for j in 0..ncc {
                 for k in 0..ncc {
-                    out[coarse.space.gid(i, j, k)] =
-                        r[fine.space.gid(map[i], map[j], map[k])];
+                    out[coarse.space.gid(i, j, k)] = r[fine.space.gid(map[i], map[j], map[k])];
                 }
             }
         }
@@ -310,7 +271,8 @@ impl PMultigrid {
             // Near-exact coarse solve: a loosely-solved coarse level
             // makes the V-cycle a VARYING preconditioner and breaks
             // plain CG (observed as erratic residual histories).
-            let _ = fs_sparse::precond::pcg(&self.coarse, &rhs, &mut xi, &self.coarse_amg, 1e-13, 2000);
+            let _ =
+                fs_sparse::precond::pcg(&self.coarse, &rhs, &mut xi, &self.coarse_amg, 1e-13, 2000);
             for (s, &d) in xi.iter().zip(&self.coarse_interior) {
                 x[d] = *s;
             }

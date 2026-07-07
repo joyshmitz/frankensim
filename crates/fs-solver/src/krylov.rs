@@ -48,10 +48,12 @@ fn diagnose(history: &[f64], tol: f64) -> Option<StallDiagnosis> {
     if last < tol {
         return None;
     }
-    let window = 10.min(history.len());
-    if window >= 2 {
+    // Plateau = no MATERIAL progress (< 5% relative) over the last
+    // 50-iteration window; anything shorter-lived reads as budget.
+    let window = 50.min(history.len());
+    if history.len() >= 20 {
         let prev = history[history.len() - window];
-        if prev.is_finite() && last > prev * (1.0 - 1e-3) {
+        if prev.is_finite() && last > prev * 0.95 {
             return Some(StallDiagnosis::Plateau);
         }
     }
@@ -64,7 +66,11 @@ fn report(iters: usize, history: &[f64], bnorm_rel: f64, tol: f64) -> SolveRepor
         rel_residual: bnorm_rel,
         converged: bnorm_rel < tol,
         history: history.to_vec(),
-        diagnosis: if bnorm_rel < tol { None } else { diagnose(history, tol) },
+        diagnosis: if bnorm_rel < tol {
+            None
+        } else {
+            diagnose(history, tol)
+        },
     }
 }
 
@@ -131,16 +137,16 @@ impl CgState {
             a.apply(&self.p, &mut ap);
             let pap = dot(&self.p, &ap);
             let alpha = self.rz / pap;
-            for i in 0..n {
+            for (i, api) in ap.iter().enumerate().take(n) {
                 self.x[i] = alpha.mul_add(self.p[i], self.x[i]);
-                self.r[i] = alpha.mul_add(-ap[i], self.r[i]);
+                self.r[i] = alpha.mul_add(-api, self.r[i]);
             }
             m.apply(&self.r, &mut z);
             let rz_new = dot(&self.r, &z);
             let beta = rz_new / self.rz;
             self.rz = rz_new;
-            for i in 0..n {
-                self.p[i] = beta.mul_add(self.p[i], z[i]);
+            for (pi, zi) in self.p.iter_mut().zip(&z) {
+                *pi = beta.mul_add(*pi, *zi);
             }
             self.iters += 1;
             self.history.push(self.rel_residual());
@@ -222,14 +228,18 @@ impl MinresState {
             // Lanczos step.
             a.apply(&self.v, &mut p);
             let alpha = dot(&self.v, &p);
-            for i in 0..n {
-                p[i] = alpha.mul_add(-self.v[i], self.beta.mul_add(-self.v_prev[i], p[i]));
+            for (i, pi) in p.iter_mut().enumerate().take(n) {
+                *pi = alpha.mul_add(-self.v[i], self.beta.mul_add(-self.v_prev[i], *pi));
             }
             let beta_next = norm2(&p);
             // Givens: eliminate the subdiagonal of the tridiagonal.
-            let delta = self.c_km1.mul_add(alpha, -(self.c_km2 * self.s_km1 * self.beta));
+            let delta = self
+                .c_km1
+                .mul_add(alpha, -(self.c_km2 * self.s_km1 * self.beta));
             let rho1 = fs_math::det::sqrt(delta.mul_add(delta, beta_next * beta_next));
-            let rho2 = self.s_km1.mul_add(alpha, self.c_km2 * self.c_km1 * self.beta);
+            let rho2 = self
+                .s_km1
+                .mul_add(alpha, self.c_km2 * self.c_km1 * self.beta);
             let rho3 = self.s_km2 * self.beta;
             let c_k = delta / rho1;
             let s_k = beta_next / rho1;
@@ -240,10 +250,10 @@ impl MinresState {
                 self.w_prev2[i] = self.w_prev1[i];
                 self.w_prev1[i] = w_k;
             }
-            self.eta = -s_k * self.eta;
+            self.eta *= -s_k;
             // Roll the Lanczos pair and Givens memory.
-            for i in 0..n {
-                let v_next = p[i] / beta_next;
+            for (i, pi) in p.iter().enumerate().take(n) {
+                let v_next = pi / beta_next;
                 self.v_prev[i] = self.v[i];
                 self.v[i] = v_next;
             }
@@ -358,14 +368,11 @@ impl GmresState {
                 // Apply accumulated Givens rotations to column j.
                 for i in 0..j {
                     let t = cs[i].mul_add(h[i * m + j], sn[i] * h[(i + 1) * m + j]);
-                    h[(i + 1) * m + j] =
-                        (-sn[i]).mul_add(h[i * m + j], cs[i] * h[(i + 1) * m + j]);
+                    h[(i + 1) * m + j] = (-sn[i]).mul_add(h[i * m + j], cs[i] * h[(i + 1) * m + j]);
                     h[i * m + j] = t;
                 }
                 // New rotation killing h[j+1][j].
-                let denom = fs_math::det::sqrt(
-                    h[j * m + j].mul_add(h[j * m + j], hj1 * hj1),
-                );
+                let denom = fs_math::det::sqrt(h[j * m + j].mul_add(h[j * m + j], hj1 * hj1));
                 cs[j] = h[j * m + j] / denom;
                 sn[j] = hj1 / denom;
                 h[j * m + j] = denom;
@@ -391,9 +398,9 @@ impl GmresState {
                 }
                 y[i] = acc / h[i * m + i];
             }
-            for (j, yj) in y.iter().enumerate() {
-                for i in 0..n {
-                    self.x[i] = yj.mul_add(basis[j][i], self.x[i]);
+            for (yj, bj) in y.iter().zip(&basis) {
+                for (xi, bji) in self.x.iter_mut().zip(bj) {
+                    *xi = yj.mul_add(*bji, *xi);
                 }
             }
             // True residual for the cycle-end history entry.
