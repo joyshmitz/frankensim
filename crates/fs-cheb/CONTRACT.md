@@ -1,9 +1,8 @@
 # CONTRACT: fs-cheb
 
-> Status: PARTIAL — the 1D core and collocation sections are in force;
-> 2D/3D low-rank, Fourier-periodic, colleague-matrix roots, Qty
-> integration, and the Orr–Sommerfeld eigenproblem stack are recorded
-> follow-up scope.
+> Status: PARTIAL — the 1D core, collocation, and ORR–SOMMERFELD
+> sections are in force; 2D/3D low-rank, Fourier-periodic,
+> colleague-matrix roots, and Qty integration remain follow-up scope.
 
 ## Purpose and layer
 Chebfun-style function objects (plan §6.5): smooth 1D functions as
@@ -24,6 +23,16 @@ fs-la (LU for the collocation eigen demo), fs-math (strict cos/sin).
 - `lobatto_points`, `diff_matrix` — Chebyshev–Lobatto collocation:
   Trefethen construction with the negative-sum-trick diagonal (rows sum
   to EXACT zero, tested bitwise).
+- `orr_sommerfeld::{growth_rates, max_growth, critical_reynolds}` —
+  plane-Poiseuille temporal stability via clamped Chebyshev collocation
+  (Trefethen D4c construction from the φ = (1−y²)u substitution),
+  generalized problem reduced through fs-la's complex LU, spectrum via
+  the complex QR eigensolver. `growth_rates` is the "modal growth rates
+  σ₁..σ_k" first-class query (descending real part, deterministic
+  tie-breaks). ACCEPTANCE EVIDENCE: the neutral crossing at α = 1.02056
+  reproduces the published Re_c = 5772.22 (displayed digits exact at
+  N = 48); stability verdicts correct on both sides; golden hash
+  `0x7b3b_e74e_d5a6_faad` cross-ISA.
 - `dirichlet_laplace_eigs` — deflated inverse-power-iteration demo of
   the collocation eigen path (validates against analytic (kπ/2)²).
 
@@ -67,9 +76,6 @@ collocation accuracy, eigen demo, golden hash).
 - Roots of even multiplicity (no sign change) are NOT found by the v1
   subdivision rootfinder; colleague-matrix roots with fs-ivl
   certification are the follow-up (needs a nonsymmetric eigensolver).
-- No Orr–Sommerfeld yet: requires complex nonsymmetric eigenproblems
-  (QZ/complex QR) — the follow-up bead's first deliverable; the
-  Re_c ≈ 5772.22 acceptance stays THERE.
 - No 2D/3D low-rank, no Fourier-periodic variant, no Qty-dimensioned
   functions, no FrankenScipy cross-checks yet.
 - `mul` may overshoot the minimal degree (resample-based); fine for
