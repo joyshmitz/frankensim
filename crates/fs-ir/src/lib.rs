@@ -20,11 +20,13 @@ pub mod admission;
 pub mod ast;
 pub mod json;
 pub mod lower;
+pub mod query;
 pub mod sexpr;
 pub mod study;
 
 pub use ast::{CountUnit, Node, NodeKind, Span};
 pub use lower::{LowerStep, Lowered, lower};
+pub use query::{FieldRegistry, Qoi, QoiMeta, Query, QueryAdmission, Target};
 pub use study::Study;
 
 use core::fmt;
