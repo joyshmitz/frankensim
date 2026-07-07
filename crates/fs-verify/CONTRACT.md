@@ -58,7 +58,12 @@ quadrature.
   accept rates with the AUTO-DEMOTION hook (collapse ⇒ disabled in
   that regime) and ledger rows.
 
-- `economics` (bead lmp4.3) — the accept/reject CONTROL LOOP:
+- `economics` (bead lmp4.3; COMPLEMENTARY to the standalone
+  fs-spececo policy crate, which owns the abstract decide/telemetry/
+  drift logic — this module is the INTEGRATED loop driving real
+  solves through the zoo, and fs-ledger v3 supplies the persistence
+  fs-spececo's no-claim defers; drift-logic consolidation between the
+  two is a follow-up) — the accept/reject CONTROL LOOP:
   `run_speculative` accepts OUTRIGHT on a certified pass (no solve at
   all); otherwise the best rejected candidate (smallest certified
   bound) WARM-STARTS the true solve with savings MEASURED and recorded
