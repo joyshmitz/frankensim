@@ -57,7 +57,7 @@ fn sphere_nurbs() -> NurbsSurface<f64> {
         [1.0, -1.0],
         [1.0, 0.0],
     ];
-    let cw = |i: usize| if i % 2 == 0 { 1.0 } else { S2 };
+    let cw = |i: usize| if i.is_multiple_of(2) { 1.0 } else { S2 };
     let profile: [([f64; 2], f64); 5] = [
         ([0.0, -1.0], 1.0),
         ([1.0, -1.0], S2),
@@ -78,7 +78,9 @@ fn sphere_nurbs() -> NurbsSurface<f64> {
         weights.push(wrow);
     }
     let ku = KnotVector::new(
-        vec![0.0, 0.0, 0.0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1.0, 1.0, 1.0],
+        vec![
+            0.0, 0.0, 0.0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1.0, 1.0, 1.0,
+        ],
         2,
     )
     .expect("ku");
@@ -89,8 +91,8 @@ fn sphere_nurbs() -> NurbsSurface<f64> {
 #[test]
 fn rf_001_round_trip_through_the_real_converter() {
     // NURBS → SDF via the wqd.11 converter → NURBS via this bead.
-    let shell = ShellSdf::new(vec![sphere_nurbs()], vec![None], Orientation::Outward)
-        .expect("shell");
+    let shell =
+        ShellSdf::new(vec![sphere_nurbs()], vec![None], Orientation::Outward).expect("shell");
     let sdf = |q: [f64; 3]| {
         let query = shell.distance(q, 5e-4, 300).expect("query");
         let sign = if (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt() < 1.0 {
@@ -127,7 +129,10 @@ fn rf_001_round_trip_through_the_real_converter() {
         refit.report.spline_to_sdf_sampled <= refit.report.spline_to_sdf_certified,
         "the certificate dominates its sample"
     );
-    assert!(refit.report.warnings.is_empty(), "no thin features on a sphere");
+    assert!(
+        refit.report.warnings.is_empty(),
+        "no thin features on a sphere"
+    );
     verdict(
         "rf-001",
         "NURBS->SDF->NURBS on the unit sphere: radius recovered to 5e-3, promoted \
@@ -198,8 +203,7 @@ fn rf_002_boolean_then_refit_watertight_certified() {
             .max(refit.report.sdf_to_spline_estimate);
         // Present BOTH as charts and run the watertightness certificate.
         let refit_chart = ShellSdfChart::new(
-            ShellSdf::new(vec![refit.surface], vec![None], Orientation::Outward)
-                .expect("shell"),
+            ShellSdf::new(vec![refit.surface], vec![None], Orientation::Outward).expect("shell"),
             1e-4,
             800,
             0.3,
@@ -230,16 +234,14 @@ fn rf_002_boolean_then_refit_watertight_certified() {
 #[test]
 fn rf_003_seam_g0_exact_g1_measured() {
     let sdf = |q: [f64; 3]| (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt() - 1.0;
-    let refit = refit_radial(&sdf, [0.0, 0.0, 0.0], 2.0, &RefitConfig::default())
-        .expect("refit");
+    let refit = refit_radial(&sdf, [0.0, 0.0, 0.0], 2.0, &RefitConfig::default()).expect("refit");
     // G0: the tied control columns make the seam positions IDENTICAL.
     for b in 0..12 {
         let v = (f64::from(b) + 0.5) / 12.0;
         let p0 = refit.surface.eval(0.0, v).expect("eval");
         let p1 = refit.surface.eval(1.0 - 1e-13, v).expect("eval");
-        let gap = ((p0[0] - p1[0]).powi(2) + (p0[1] - p1[1]).powi(2)
-            + (p0[2] - p1[2]).powi(2))
-        .sqrt();
+        let gap =
+            ((p0[0] - p1[0]).powi(2) + (p0[1] - p1[1]).powi(2) + (p0[2] - p1[2]).powi(2)).sqrt();
         assert!(gap < 1e-9, "G0 seam gap at v={v}: {gap}");
     }
     // G1: measured and small on a smooth field.
@@ -264,21 +266,25 @@ fn rf_004_thin_features_warn_not_smooth() {
         // azimuthal feature ~0.18 rad wide against a control spacing of
         // ~0.7 rad — below PATCH resolution, visible to the samples.
         let t = (q[0] - 1.0).clamp(0.0, 0.6);
-        let spike =
-            ((q[0] - 1.0 - t).powi(2) + q[1] * q[1] + q[2] * q[2]).sqrt() - 0.12;
+        let spike = ((q[0] - 1.0 - t).powi(2) + q[1] * q[1] + q[2] * q[2]).sqrt() - 0.12;
         sphere.min(spike)
     };
-    let refit = refit_radial(&spiky, [0.0, 0.0, 0.0], 2.2, &RefitConfig::default())
-        .expect("refit");
+    let refit = refit_radial(&spiky, [0.0, 0.0, 0.0], 2.2, &RefitConfig::default()).expect("refit");
     assert!(
         !refit.report.warnings.is_empty(),
         "a sub-resolution spike must WARN, not silently smooth"
     );
     // The warnings localize to the spike (azimuth ~ 0, equator v ~ 0.5).
-    let near_spike = refit.report.warnings.iter().all(|w| {
-        (w.uv[0] < 0.1 || w.uv[0] > 0.9) && (w.uv[1] - 0.5).abs() < 0.15
-    });
-    assert!(near_spike, "warnings localized: {:?}", refit.report.warnings);
+    let near_spike = refit
+        .report
+        .warnings
+        .iter()
+        .all(|w| (w.uv[0] < 0.1 || w.uv[0] > 0.9) && (w.uv[1] - 0.5).abs() < 0.15);
+    assert!(
+        near_spike,
+        "warnings localized: {:?}",
+        refit.report.warnings
+    );
     // And the report says the fit did NOT follow the spike.
     assert!(
         refit.report.max_residual > 0.1,

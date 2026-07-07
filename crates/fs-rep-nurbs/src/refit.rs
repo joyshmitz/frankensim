@@ -116,11 +116,7 @@ pub struct Refit {
 fn direction(u: f64, v: f64) -> [f64; 3] {
     let theta = 2.0 * std::f64::consts::PI * u;
     let phi = std::f64::consts::PI * (1.0 - v);
-    [
-        phi.sin() * theta.cos(),
-        phi.sin() * theta.sin(),
-        phi.cos(),
-    ]
+    [phi.sin() * theta.cos(), phi.sin() * theta.sin(), phi.cos()]
 }
 
 /// Bisect the SDF along `center + r·dir` for the zero crossing.
@@ -164,14 +160,14 @@ fn cholesky_solve(a: &mut [Vec<f64>], b: &mut [f64]) -> Result<(), NurbsError> {
     for i in 0..n {
         for j in 0..=i {
             let mut sum = a[i][j];
-            for k in 0..j {
-                sum -= a[i][k] * a[j][k];
+            let (ri, rj) = (&a[i], &a[j]);
+            for (x, y) in ri[..j].iter().zip(&rj[..j]) {
+                sum -= x * y;
             }
             if i == j {
                 if sum <= 0.0 {
                     return Err(NurbsError::Structure {
-                        what: "normal equations not SPD (raise lambda or sample count)"
-                            .to_string(),
+                        what: "normal equations not SPD (raise lambda or sample count)".to_string(),
                     });
                 }
                 a[i][i] = det::sqrt(sum);
@@ -260,12 +256,7 @@ fn lipschitz_bound(surface: &NurbsSurface<f64>) -> (f64, f64) {
 /// Fit one scalar/vector LSQ system: `(BᵀB + λ LᵀL) c = Bᵀy` where `L`
 /// is the discrete control-lattice Laplacian (thin-plate proxy).
 #[allow(clippy::needless_range_loop)]
-fn assemble_normal(
-    rows_b: &[Vec<f64>],
-    nu: usize,
-    nv: usize,
-    lambda: f64,
-) -> Vec<Vec<f64>> {
+fn assemble_normal(rows_b: &[Vec<f64>], nu: usize, nv: usize, lambda: f64) -> Vec<Vec<f64>> {
     let n = nu * nv;
     let mut a = vec![vec![0.0f64; n]; n];
     for row in rows_b {
@@ -382,14 +373,16 @@ pub fn refit_radial(
         }
     }
     // EXACT G0 seam closure: tie the u-boundary control columns.
-    for j in 0..nv {
+    let (first_row, rest) = net.split_first_mut().expect("nu >= 2");
+    let last_row = rest.last_mut().expect("nu >= 2");
+    for (c0, c1) in first_row.iter_mut().zip(last_row.iter_mut()) {
         let avg = [
-            f64::midpoint(net[0][j][0], net[nu - 1][j][0]),
-            f64::midpoint(net[0][j][1], net[nu - 1][j][1]),
-            f64::midpoint(net[0][j][2], net[nu - 1][j][2]),
+            f64::midpoint(c0[0], c1[0]),
+            f64::midpoint(c0[1], c1[1]),
+            f64::midpoint(c0[2], c1[2]),
         ];
-        net[0][j] = avg;
-        net[nu - 1][j] = avg;
+        *c0 = avg;
+        *c1 = avg;
     }
     let weights = vec![vec![1.0f64; nv]; nu];
     let surface = NurbsSurface::new(ku, kv, &net, &weights)?;
@@ -407,9 +400,7 @@ pub fn refit_radial(
                 }
             }
         }
-        let r = det::sqrt(
-            (p[0] - t[0]).powi(2) + (p[1] - t[1]).powi(2) + (p[2] - t[2]).powi(2),
-        );
+        let r = det::sqrt((p[0] - t[0]).powi(2) + (p[1] - t[1]).powi(2) + (p[2] - t[2]).powi(2));
         rms += r * r;
         max_res = max_res.max(r);
         if r > config.warn_residual {

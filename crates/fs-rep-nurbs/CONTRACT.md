@@ -69,6 +69,24 @@ fs-iga (geometry basis = analysis basis), fs-render NURBS tracing
   tight claims apply to genuinely adjacent cells, and achieved widths
   plus branch-and-bound splits are ledgered per tile.
 
+- `refit` module (plan §7.3 edge 4, bead wqd.12; [F], behind the
+  `nurbs-refit` feature — which enables `nurbs-sdf`, since the CSG
+  acceptance closes the loop through the forward converter and the
+  sheaf certificate): the SDF → NURBS RE-FIT, the edge that makes the
+  honest Boolean policy work (§7.2: Booleans route through F-rep, then
+  re-fit when a spline chart is required). v1 pipeline for star-shaped
+  domains: radial-bisection sampling ON THE FIELD ITSELF, tensor-product
+  B-spline least squares with discrete thin-plate (control-lattice
+  Laplacian) regularization, exact G⁰ seam closure by control-column
+  tying (G¹ measured). ERROR HONESTY: the spline→SDF direction is
+  PROMOTED to a certificate — `sup |sdf(S)| ≤ max sampled + (L_u+L_v)·h/2`
+  with per-direction hodograph Lipschitz bounds `L ≤ max‖ΔC‖·(n−p)` and
+  the SDF's 1-Lipschitz assumption — while coverage (SDF→spline) stays a
+  measured estimate; the report records which is which. Thin features
+  below patch resolution produce STRUCTURED WARNINGS with parameter and
+  world locations, never silent smoothing. The patch-density knobs are
+  the ErrBudget trade, ledgered.
+
 ## Invariants
 
 1. **Refinement exactness (the definitive test)**: knot insertion,
@@ -152,3 +170,19 @@ refinement + partials vs central differences.
 - Trim downgrades widen the certificate; distance-to-kept-region
   (excluding trimmed area from the B&B itself) is future work — the
   current lower bound remains rigorous for the UNTRIMMED surface.
+
+## No-claim boundaries (refit)
+
+- v1 parameterization is RADIAL (star-shaped domains around the given
+  center; the bracket failure is a structured teaching error).
+  General-topology segmentation over the dual-contoured mesh (wqd.10)
+  is the upgrade path.
+- The promotion assumes the input field is 1-Lipschitz with an exact
+  zero set within its own certificate (true SDFs; min/max CSG of true
+  SDFs is 1-Lipschitz but only a distance LOWER bound away from the
+  surface — the promoted bound remains valid one-sidedly).
+- Coverage (surface → spline) is sampled at the projection grid: a
+  feature no ray hits is invisible — density is the caller's knob, and
+  the warning channel reports what the samples DID see.
+- G¹ cross-seam continuity is measured, not enforced; pole rows are
+  least-squares-collapsed, not pinned.
