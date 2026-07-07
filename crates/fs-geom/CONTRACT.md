@@ -77,6 +77,26 @@ Depends on fs-exec (Cx), fs-evidence, fs-alloc, fs-obs.
   semantics reuses. `ray_parity_falsifier` is the independent
   cross-examination (registry pairing: watertightness → ray-parity).
 
+- `ident` module (the R3 AMENDMENT, bead lmp4.10): STABLE PERSISTENT
+  ENTITY IDENTITY is a hard core requirement — `EntityId`s are assigned
+  at creation and transformed EXPLICITLY by ledgered edits
+  (`IdTransform`: Preserved/Replaced/Split/Merged/Created/Deleted;
+  `IdentityMap::ops_touching` walks the full replace/split/merge
+  ancestry). Identity is a kernel invariant, never a heuristic
+  reconstruction. UNGATED: every new chart-producing operation must
+  record its transforms.
+- `diff` module ([F], behind the `semantic-diff` feature until its
+  Gauntlet tier + kill metric are green): the PHYSICS diff.
+  `semantic_diff` aligns worlds by `EntityId`, measures field
+  differences on shared support (the sheaf band-sampling machinery),
+  and attributes each finding to a RANKED list of contributing causal
+  edits with per-edit contributions MEASURED across generation
+  snapshots when supplied (unpartitioned-but-flagged otherwise).
+  Unidentified entities degrade to a geometric fallback FLAGGED
+  `attributed: false`, and the fallback fraction is the R3
+  early-warning metric. `DiffReport::filter` triages by
+  region/quantity/magnitude.
+
 ## Invariants
 1. Trait laws (G0, geo-001, 12k seeded queries): `inside(x)` ⇔ `sd(x) <
    0`; `support()` bounds the region (no negative sd outside, to
@@ -163,3 +183,17 @@ values, agreement determinism, and cancellation.
   conformance.
 - Charts with NoClaim error certificates poison their interfaces to
   infinite enclosures — such models can only ever be Unknown (honest).
+
+## No-claim boundaries (identity + diff)
+
+- The diff compares CHART FIELDS (signed distance); solver-field diffs
+  (stress, velocity) join when field charts land — the quantity tag is
+  already plural-ready.
+- Contribution measurement requires generation snapshots (one world per
+  divergent op); without them, causes carry the total on the first
+  touching op — explicitly unpartitioned, never silently split.
+- fs-ledger `explain()` integration (walking real provenance trees
+  instead of caller-supplied divergent-op lists) lands with the bisect
+  bead, which owns deterministic replay.
+- The R3 kill-metric wiring (quarterly fallback-fraction review) is
+  governance (xpck.6); this module measures and reports the number.
