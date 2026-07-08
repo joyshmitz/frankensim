@@ -22,6 +22,10 @@ fn log(case: &str, verdict: &str, detail: &str) {
 
 const PI: f64 = std::f64::consts::PI;
 
+/// Frozen on this platform (bead dcng); the cross-ISA confirmation is
+/// LEDGERED PENDING, same policy as the simplex golden.
+const GOLDEN_HASH: u64 = 0x2737_401f_72b4_99f2;
+
 fn smooth_field(p: [f64; 3]) -> [f64; 3] {
     [
         (PI * p[1]).sin() * (PI * p[2]).cos(),
@@ -57,7 +61,8 @@ fn vec_001_dimensions() {
             let ned = VecSpace::new(&complex, &positions, r, Family::Nedelec);
             let rt = VecSpace::new(&complex, &positions, r, Family::Rt);
             let dg = DgSpace::new(&complex, r);
-            let euler = h1.ndof as i64 - ned.ndof as i64 + rt.ndof as i64 - dg.ndof as i64;
+            let d = |n: usize| i64::try_from(n).expect("small");
+            let euler = d(h1.ndof) - d(ned.ndof) + d(rt.ndof) - d(dg.ndof);
             assert_eq!(
                 euler, 1,
                 "{name} r={r}: Euler sum {euler} (H1 {} N {} RT {} DG {})",
@@ -237,7 +242,7 @@ fn vec_004_dd_zero() {
         let mut y = vec![0.0f64; ned.ndof];
         let mut z = vec![0.0f64; rt.ndof];
         for j in 0..h1.ndof {
-            x.iter_mut().for_each(|v| *v = 0.0);
+            x.fill(0.0);
             x[j] = 1.0;
             d0.spmv(&x, &mut y);
             d1.spmv(&y, &mut z);
@@ -250,7 +255,7 @@ fn vec_004_dd_zero() {
         let mut w = vec![0.0f64; dg.ndof];
         let mut yn = vec![0.0f64; ned.ndof];
         for j in 0..ned.ndof {
-            yn.iter_mut().for_each(|v| *v = 0.0);
+            yn.fill(0.0);
             yn[j] = 1.0;
             d1.spmv(&yn, &mut z);
             d2.spmv(&z, &mut w);
@@ -463,9 +468,6 @@ fn vec_007_whitney_and_golden() {
         "pass",
         &format!("whitney edge {worst:.2e} face {worst_rt:.2e}; golden {acc:#018x}"),
     );
-    // Frozen on this platform (bead dcng); the cross-ISA confirmation
-    // is LEDGERED PENDING, same policy as the simplex golden.
-    const GOLDEN_HASH: u64 = 0x2737_401f_72b4_99f2;
     assert_eq!(
         acc, GOLDEN_HASH,
         "vecfam bits changed: {acc:#018x} vs {GOLDEN_HASH:#018x} — bump only with semantic \
