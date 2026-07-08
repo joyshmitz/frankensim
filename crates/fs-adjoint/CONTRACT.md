@@ -59,6 +59,22 @@ solver without a passing gradient check cannot merge.
   round-trips are exact), verified against the real fs-ledger CAS via
   dev-deps.
 
+- `mitigate` module (addendum Proposal 1, bead bk0o.2; [F], behind
+  `diff-mitigations` → `ledger-transpose`): the three meshing
+  mitigations IN ORDER. (1) DIFFERENTIABILITY AS ROUTING: the Rep
+  Router's fitness gains a differentiability term at the cost-oracle
+  seam (`DiffAwareOracle` penalizes non-differentiable edges under a
+  gradient request — no fs-geom changes; the oracle IS the fitness),
+  so SDF/spline paths win when gradients are requested while plain
+  queries keep the cheap mesh path. (2) HADAMARD boundary forms as the
+  mesh-free path (base `hadamard` module, verified against
+  perturbation-resolve). (3) UNAVOIDABLE remesh in the path →
+  `GradientGrade::EstimatedWithDiscontinuity`: Proposal-3 Estimated
+  color with INFINITE dispersion plus the crossing edges named — never
+  a silently-verified gradient across a topology event. `grade_ops` is
+  the tape-level twin. Deterministic tie-breaks inherited from the
+  router.
+
 ## Invariants
 
 - No differentiation through Krylov iterations anywhere: adjoints are
@@ -150,3 +166,18 @@ gradient and REJECTING a corrupted one; cross-ISA golden hash.
 - Tape recording is caller-driven (the forward code applies ops and
   records); automatic capture from live ledger op rows lands with the
   Proposal-2 integration.
+
+## No-claim boundaries (mitigations)
+
+- The discontinuity FLAG declares the event; at the event itself the
+  conditioning-aware FD falsifier deliberately widens (Richardson
+  self-error) rather than false-firing — the exploded self-error IS the
+  measurable discontinuity signature, and sub-gradient/smoothing
+  treatments of topology events are out of scope.
+- The non-differentiable edge set is declared by converter owners (the
+  registry of record is the VJP registry's declarations); automatic
+  detection of topology events inside meshing kernels is fs-mesh's
+  future contract.
+- Hadamard applicability (volume, boundary compliance) follows the base
+  module's fixtures; general goal functionals need their own boundary
+  forms.
