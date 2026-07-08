@@ -22,6 +22,10 @@ fs-sparse = { path = "../fs-sparse" }
 fs-cheb = { path = "../fs-cheb" }
 fs-rand = { path = "../fs-rand" }
 fs-math = { path = "../fs-math" }
+fs-ivl = { path = "../fs-ivl" }
+fs-ad = { path = "../fs-ad" }
+fs-fft = { path = "../fs-fft" }
+fs-la = { path = "../fs-la" }
 
 # wasm-bindgen only enters the wasm32 build — native builds stay dependency-clean.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
