@@ -22,6 +22,8 @@
 
 #[cfg(feature = "gradient-certs")]
 pub mod certs;
+#[cfg(feature = "dwr-accept")]
+pub mod dwr_accept;
 pub mod hadamard;
 pub mod ift;
 #[cfg(feature = "diff-mitigations")]

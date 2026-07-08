@@ -20,6 +20,7 @@ fs-la = { path = "../fs-la" }
 fs-math = { path = "../fs-math" }
 fs-rep-mesh = { path = "../fs-rep-mesh" }
 fs-solver = { path = "../fs-solver" }
+fs-verify = { path = "../fs-verify", features = ["certified-speculation"], optional = true }
 fs-sparse = { path = "../fs-sparse" }
 
 [features]
@@ -32,6 +33,9 @@ diff-mitigations = ["ledger-transpose"]
 # [S]: gradient certificates (colors + interval residual bounds + the
 # FD-falsifier merge gate).
 gradient-certs = ["diff-mitigations"]
+# [F]: the DWR goal-oriented accept test (estimated unless
+# equilibrated-bracketed).
+dwr-accept = ["dep:fs-verify"]
 
 [dev-dependencies]
 fs-ledger = { path = "../fs-ledger" }
