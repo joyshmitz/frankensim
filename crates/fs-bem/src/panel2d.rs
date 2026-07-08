@@ -33,7 +33,7 @@ pub struct PanelSolution2d {
 #[must_use]
 #[allow(clippy::cast_precision_loss)]
 pub fn naca4_symmetric(t: f64, n: usize) -> Airfoil2d {
-    assert!(n >= 8 && n % 2 == 0, "even panel count >= 8");
+    assert!(n >= 8 && n.is_multiple_of(2), "even panel count >= 8");
     let half = n / 2;
     let thick = |x: f64| {
         5.0 * t
@@ -43,7 +43,7 @@ pub fn naca4_symmetric(t: f64, n: usize) -> Airfoil2d {
     let mut nodes = Vec::with_capacity(n);
     // Cosine-clustered x from TE (1) along the LOWER surface to LE (0).
     for k in 0..half {
-        let x = 0.5 * (1.0 + (std::f64::consts::PI * k as f64 / half as f64).cos());
+        let x = f64::midpoint(1.0, (std::f64::consts::PI * k as f64 / half as f64).cos());
         nodes.push([x, -thick(x)]);
     }
     // LE to TE along the UPPER surface.
@@ -75,7 +75,7 @@ fn geometry(foil: &Airfoil2d) -> Geometry {
         let dx = b[0] - a[0];
         let dy = b[1] - a[1];
         let l = dx.hypot(dy);
-        g.mid.push([0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])]);
+        g.mid.push([f64::midpoint(a[0], b[0]), f64::midpoint(a[1], b[1])]);
         g.tangent.push([dx / l, dy / l]);
         g.normal.push([-dy / l, dx / l]);
         g.len.push(l);
@@ -184,7 +184,7 @@ pub fn solve(foil: &Airfoil2d, alpha: f64) -> PanelSolution2d {
     for i in 0..n {
         let (mid, tan) = (g.mid[i], g.tangent[i]);
         let mut v = [u_inf[0], u_inf[1]];
-        for j in 0..n {
+        for (j, &xj) in x.iter().take(n).enumerate() {
             if i == j {
                 v[0] += 0.5 * gamma * tan[0];
                 v[1] += 0.5 * gamma * tan[1];
@@ -192,8 +192,8 @@ pub fn solve(foil: &Airfoil2d, alpha: f64) -> PanelSolution2d {
             }
             let sv = source_velocity(foil, &g, j, mid);
             let vv = vortex_velocity(foil, &g, j, mid);
-            v[0] += sv[0] * x[j] + vv[0] * gamma;
-            v[1] += sv[1] * x[j] + vv[1] * gamma;
+            v[0] += sv[0] * xj + vv[0] * gamma;
+            v[1] += sv[1] * xj + vv[1] * gamma;
         }
         vt.push(v[0] * tan[0] + v[1] * tan[1]);
     }
