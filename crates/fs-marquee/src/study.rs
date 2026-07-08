@@ -46,6 +46,45 @@ impl PlateWithHoles {
     }
 }
 
+fn validate_study_input(design: &PlateWithHoles, config: &StudyConfig) {
+    assert!(
+        !design.radii.is_empty(),
+        "marquee study needs at least one hole"
+    );
+    assert_eq!(
+        design.centers.len(),
+        design.radii.len(),
+        "hole centers and radii must have matching lengths"
+    );
+    assert!(
+        design
+            .centers
+            .iter()
+            .flatten()
+            .all(|v| v.is_finite() && *v >= 0.0 && *v <= 1.0),
+        "hole centers must be finite coordinates in the unit plate"
+    );
+    assert!(
+        design.radii.iter().all(|r| r.is_finite() && *r > 0.0),
+        "hole radii must be positive and finite"
+    );
+    assert!(
+        config.step_size.is_finite() && config.step_size >= 0.0,
+        "step size must be finite and nonnegative"
+    );
+    assert!(
+        config.area_target.is_finite() && config.area_target > 0.0 && config.area_target < 1.0,
+        "area target must be finite and inside (0, 1)"
+    );
+    assert!(
+        config.r_min.is_finite()
+            && config.r_max.is_finite()
+            && config.r_min > 0.0
+            && config.r_min <= config.r_max,
+        "radius bounds must be finite and satisfy 0 < r_min <= r_max"
+    );
+}
+
 impl CutSdf for PlateWithHoles {
     fn value(&self, p: [f64; 2]) -> f64 {
         // Inside the material: negative. φ = max_i (r_i − |p − c_i|).
@@ -194,9 +233,11 @@ fn solve_and_grade(
     // DWR discretization estimate for THIS goal (estimated color: DWR
     // constants are not guaranteed — the lmp4.4 rule).
     let dwr = estimate(&grid, design, params, &f, &g, &goal)?;
-    // Self-adjoint shape gradient: dJ/dr_k = ∮_{Γ_k} (∂u/∂n)² dΓ
-    // (growing a Dirichlet hole raises compliance; sign verified by the
-    // FD falsifier in conformance). Midpoint quadrature on each circle.
+    // Self-adjoint shape gradient: dJ/dr_k = −∮_{Γ_k} (∂u/∂n)² dΓ —
+    // growing a Dirichlet cooling hole LOWERS compliance (more cold
+    // boundary), so the flux integral enters NEGATED. The sign was
+    // originally implemented positive and the FD falsifier caught it
+    // (mq-004) — the drill earning its keep. Midpoint quadrature.
     let mut grads = Vec::with_capacity(design.radii.len());
     let samples = 64usize;
     for (c, r) in design.centers.iter().zip(&design.radii) {
@@ -216,7 +257,7 @@ fn solve_and_grade(
         }
         #[allow(clippy::cast_precision_loss)]
         let circ = std::f64::consts::TAU * r / samples as f64;
-        grads.push(acc * circ);
+        grads.push(-(acc * circ));
     }
     let cert = [0.0, dwr.eta_abs, sol.rel_residual * j.abs().max(1.0)];
     Ok((j, grads, cert, sol.iters, nodal))
@@ -250,6 +291,7 @@ pub fn run_study(
     mut design: PlateWithHoles,
     config: &StudyConfig,
 ) -> Result<StudyReport, fs_cutfem::CutFemError> {
+    validate_study_input(&design, config);
     let mut iterations = Vec::with_capacity(config.steps);
     for iter in 0..config.steps {
         let (j, grads, cert, iters, _) = solve_and_grade(&design, config.level)?;
@@ -282,10 +324,10 @@ pub fn run_study(
             color,
             solver_iters: iters,
         });
-        // Descent: minimizing J means SHRINKING holes (dJ/dr > 0), but
-        // the area budget forces total hole area — project the step
-        // back onto the budget (uniform radius rescale), so material
-        // redistributes toward the holes that matter least.
+        // Descent: dJ/dr < 0 — every hole wants to grow; the area
+        // budget's rescale projection turns that into REDISTRIBUTION:
+        // holes with the larger per-radius payoff grow at the expense
+        // of the rest (flux equalization, the optimality condition).
         for (r, g) in design.radii.iter_mut().zip(&grads) {
             *r = (*r - config.step_size * g).clamp(config.r_min, config.r_max);
         }
