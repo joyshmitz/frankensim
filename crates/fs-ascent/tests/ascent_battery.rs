@@ -416,3 +416,70 @@ fn ascent_golden_hash() {
          justification (golden-evidence policy)"
     );
 }
+
+#[test]
+fn tr_newton_exact_hv_vs_fd_hv() {
+    // Second-order adjoints (frankensim-6jtb): TR-Newton on the PDE
+    // density misfit with the EXACT IFT Hessian-vector product vs the
+    // O(√ε) FD-of-gradients interim — outer iterations measured.
+    let (complex, positions) = fs_feec::kuhn_cube(3);
+    let nt = complex.tets.len();
+    let rho0: Vec<f64> = rand_vec(nt, 90).iter().map(|v| 1.2f64 + 0.3 * v).collect();
+    let problem = fs_adjoint::DensityPoisson::new(&complex, &positions, rho0.clone());
+    let n = problem.n();
+    let b = rand_vec(n, 91);
+    let u_star = rand_vec(n, 92);
+    let fg_factory = || {
+        let complex = &complex;
+        let positions = &positions;
+        let b = b.clone();
+        let u_star = u_star.clone();
+        move |rho: &[f64]| -> (f64, Vec<f64>) {
+            let pr = fs_adjoint::DensityPoisson::new(complex, positions, rho.to_vec());
+            let op = fs_adjoint::DensityOp::new(&pr);
+            let u = solve_cg(&op, &b);
+            let djdu: Vec<f64> = u.iter().zip(&u_star).map(|(a, c)| a - c).collect();
+            let f = 0.5 * djdu.iter().map(|x| x * x).sum::<f64>();
+            let lambda = solve_cg(&op, &djdu);
+            let mut g = pr.density_pullback(&lambda, &u);
+            for x in &mut g {
+                *x = -*x;
+            }
+            (f, g)
+        }
+    };
+    let mut fg_exact = fg_factory();
+    let mut hv_exact = |rho: &[f64], dir: &[f64]| -> Vec<f64> {
+        let pr = fs_adjoint::DensityPoisson::new(&complex, &positions, rho.to_vec());
+        fs_adjoint::density_misfit_hvp(&pr, &b, &u_star, dir, 1e-13)
+    };
+    let rep_exact = trust_region_newton(&rho0, &mut fg_exact, &mut hv_exact, 1e-9, 60);
+    let mut fg_fd = fg_factory();
+    let mut fg_fd2 = fg_factory();
+    let mut hv_fd = |rho: &[f64], dir: &[f64]| -> Vec<f64> {
+        hv_fd_of_gradients(&mut fg_fd2, rho, dir, 1e-6)
+    };
+    let rep_fd = trust_region_newton(&rho0, &mut fg_fd, &mut hv_fd, 1e-9, 60);
+    assert!(
+        rep_exact.grad_norm < 1e-9,
+        "exact-Hv TR failed to certify: {rep_exact:?}"
+    );
+    assert!(
+        rep_exact.iters <= rep_fd.iters,
+        "exact Hv should not need MORE outer iterations: {} vs {}",
+        rep_exact.iters,
+        rep_fd.iters
+    );
+    log(
+        "tr-exact-hv",
+        "pass",
+        &format!(
+            "iters exact {} vs FD {} (FD certified: {}), hv counts {} vs {}",
+            rep_exact.iters,
+            rep_fd.iters,
+            rep_fd.grad_norm < 1e-9,
+            rep_exact.hv_evals,
+            rep_fd.hv_evals
+        ),
+    );
+}
