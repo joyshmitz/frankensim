@@ -18,15 +18,15 @@
 //!   clustered-eigenvalue trap: min() kinks across a crossing while
 //!   the KS aggregate stays smooth and its derivative matches FD.
 
+use fs_material::hyper::{Hyperelastic, HyperelasticModel};
+use fs_solid::SolidError;
 use fs_solid::continuation::{ArcSettings, PathEvent, PathResidual, PathState, advance};
 use fs_solid::linear::{Formulation, LinearProblem, PlaneKind};
 use fs_solid::{
-    HyperProblem, Mesh2, NewtonSettings, Patch, buckling_loads, eigenvalue_derivative,
-    expand_mode, group_stiffness, ks_aggregate, ks_aggregate_derivative, lambda_indicator,
-    reduced_pencil, switch_branch,
+    HyperProblem, Mesh2, NewtonSettings, Patch, buckling_loads, eigenvalue_derivative, expand_mode,
+    group_stiffness, ks_aggregate, ks_aggregate_derivative, lambda_indicator, reduced_pencil,
+    switch_branch,
 };
-use fs_material::hyper::{Hyperelastic, HyperelasticModel};
-use fs_solid::SolidError;
 use fs_sparse::{Coo, Csr};
 use std::fmt::Write as _;
 
@@ -153,22 +153,22 @@ impl VonMises {
         let mut roots = Vec::new();
         let mut prev = dldw(0.0);
         let mut wprev = 0.0;
-        let steps = 4000;
+        let steps = 4000i32;
         for i in 1..=steps {
             #[allow(clippy::cast_precision_loss)]
-            let w = 2.0 * self.h * (i as f64) / (steps as f64);
+            let w = 2.0 * self.h * f64::from(i) / f64::from(steps);
             let d = dldw(w);
             if prev * d < 0.0 {
                 let (mut a, mut c) = (wprev, w);
                 for _ in 0..60 {
-                    let m = 0.5 * (a + c);
+                    let m = f64::midpoint(a, c);
                     if dldw(a) * dldw(m) <= 0.0 {
                         c = m;
                     } else {
                         a = m;
                     }
                 }
-                roots.push(0.5 * (a + c));
+                roots.push(f64::midpoint(a, c));
             }
             prev = d;
             wprev = w;
@@ -262,9 +262,13 @@ fn stab_002_von_mises_truss_closed_form() {
     advance(&truss, &mut a, &settings, 200).expect("first half");
     let mut b = a.clone();
     advance(&truss, &mut b, &settings, 200).expect("second half");
-    let resumed_identical = b.u[0].to_bits() == path.u[0].to_bits()
-        && b.lambda.to_bits() == path.lambda.to_bits();
-    let pass = hit1 && hit2 && w_end > 2.0 * truss.h && manifold_dev < 1e-7 && newton_failed
+    let resumed_identical =
+        b.u[0].to_bits() == path.u[0].to_bits() && b.lambda.to_bits() == path.lambda.to_bits();
+    let pass = hit1
+        && hit2
+        && w_end > 2.0 * truss.h
+        && manifold_dev < 1e-7
+        && newton_failed
         && resumed_identical;
     verdict(
         "stab-002",
@@ -283,6 +287,7 @@ fn stab_002_von_mises_truss_closed_form() {
 // ------------------------------------------------------------------ stab-003
 
 #[test]
+#[allow(clippy::too_many_lines)] // probe + trace + assertions are one narrative
 fn stab_003_continuum_arch_snap_through() {
     // A shallow clamped-clamped hyperelastic arch under a crown load.
     // A continuum von Mises TENT: two inclined strips meeting at a
@@ -315,7 +320,11 @@ fn stab_003_continuum_arch_snap_through() {
         ],
         traction: vec![(Patch::Top, &|x: f64, _y: f64| {
             // Crown-concentrated downward load band.
-            if x.abs() < 0.15 { [0.0, -0.002] } else { [0.0, 0.0] }
+            if x.abs() < 0.15 {
+                [0.0, -0.002]
+            } else {
+                [0.0, 0.0]
+            }
         })],
         settings: NewtonSettings::default(),
     };
@@ -349,19 +358,30 @@ fn stab_003_continuum_arch_snap_through() {
     let mut lam = 0.0f64;
     for _ in 0..60 {
         lam += 1.0;
-        match fixed_newton(&u_warm, lam) {
-            Some(u) => u_warm = u,
-            None => {
+        if let Some(u) = fixed_newton(&u_warm, lam) {
+            // Above the limit load, fixed-load Newton JUMPS
+            // discontinuously to the far branch (the snap it
+            // cannot trace) — that jump IS the failure evidence.
+            let jump = u
+                .iter()
+                .zip(&u_warm)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0f64, f64::max);
+            u_warm = u;
+            if jump > 0.5 * rise {
                 lambda_fail = Some(lam);
                 break;
             }
+        } else {
+            lambda_fail = Some(lam);
+            break;
         }
     }
     let Some(lam_fail) = lambda_fail else {
         verdict(
             "stab-003",
             false,
-            "\"detail\":\"fixture never lost load control - no snap present\"",
+            "\"detail\":\"load control neither jumped nor failed - no snap present\"",
         );
         return;
     };
@@ -398,7 +418,7 @@ fn stab_003_continuum_arch_snap_through() {
         }
     }
     let max_defl = path.trace.iter().map(|&(_, d)| d).fold(0.0f64, f64::max);
-        let lam_end = path.lambda;
+    let lam_end = path.lambda;
     let pass = !limits.is_empty() && flips >= 2 && max_defl > 0.8 * rise && lam_end > lam_fail;
     verdict(
         "stab-003",
@@ -471,7 +491,9 @@ fn stab_004_branch_point_and_switching() {
                 .step_by(2)
                 .fold(0.0f64, |m, &v| m.max(v.abs()));
             let rel = (lam_bp - lambda_cr).abs() / lambda_cr;
-            pass = rel < 0.15 && pre_transverse < 1e-4 && post_transverse > 20.0 * pre_transverse.max(1e-9);
+            pass = rel < 0.15
+                && pre_transverse < 1e-4
+                && post_transverse > 20.0 * pre_transverse.max(1e-9);
         }
     }
     verdict(
@@ -528,15 +550,20 @@ fn stab_005_eigenvalue_derivatives_and_cluster_trap() {
     let rho = 200.0;
     let s0 = 0.5; // the crossing
     let eps = 1e-5;
-    let ks_fd = (ks_aggregate(&branches(s0 + eps), rho)
-        - ks_aggregate(&branches(s0 - eps), rho))
+    let ks_fd = (ks_aggregate(&branches(s0 + eps), rho) - ks_aggregate(&branches(s0 - eps), rho))
         / (2.0 * eps);
     let ks_an = ks_aggregate_derivative(&branches(s0), &dbranches, rho);
     let ks_rel = (ks_fd - ks_an).abs() / ks_an.abs().max(1e-30);
     let min_fd_left = (branches(s0).iter().copied().fold(f64::INFINITY, f64::min)
-        - branches(s0 - eps).iter().copied().fold(f64::INFINITY, f64::min))
+        - branches(s0 - eps)
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min))
         / eps;
-    let min_fd_right = (branches(s0 + eps).iter().copied().fold(f64::INFINITY, f64::min)
+    let min_fd_right = (branches(s0 + eps)
+        .iter()
+        .copied()
+        .fold(f64::INFINITY, f64::min)
         - branches(s0).iter().copied().fold(f64::INFINITY, f64::min))
         / eps;
     let kink = (min_fd_left - min_fd_right).abs(); // ≈ 2: the trap

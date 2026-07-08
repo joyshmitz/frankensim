@@ -6,13 +6,13 @@
 //! imperfect column shows no limit point below the critical load —
 //! the imperfection-tolerant signature.
 
+use fs_material::hyper::{Hyperelastic, HyperelasticModel};
 use fs_solid::continuation::{ArcSettings, PathEvent, PathResidual, PathState, advance};
 use fs_solid::koiter::{Bifurcation, koiter_coefficients};
 use fs_solid::linear::{Formulation, LinearProblem, PlaneKind};
 use fs_solid::{
     HyperProblem, Mesh2, NewtonSettings, Patch, buckling_loads, expand_mode, reduced_pencil,
 };
-use fs_material::hyper::{Hyperelastic, HyperelasticModel};
 
 fn verdict(name: &str, pass: bool, details: &str) {
     println!(
@@ -24,10 +24,10 @@ fn verdict(name: &str, pass: bool, details: &str) {
 
 #[test]
 fn stab_006_koiter_column_symmetric_stable() {
-    let l = 8.0;
-    let t = 0.4;
-    let p = 1e-4;
-    let mesh = Mesh2::quads(l, t, 30, 3);
+    const L: f64 = 8.0;
+    const T: f64 = 0.4;
+    const P: f64 = 1e-4;
+    let mesh = Mesh2::quads(L, T, 30, 3);
     let linear = LinearProblem {
         mesh: &mesh,
         youngs: 1.0,
@@ -36,7 +36,7 @@ fn stab_006_koiter_column_symmetric_stable() {
         formulation: Formulation::Standard,
         body_force: None,
         dirichlet: vec![(Patch::Left, &|_, _| [0.0, 0.0])],
-        traction: vec![(Patch::Right, &|_, _| [-p, 0.0])],
+        traction: vec![(Patch::Right, &|_, _| [-P, 0.0])],
     };
     let (k, kg, dof_map, _) = reduced_pencil(&linear).expect("pencil builds");
     let pencil = buckling_loads(&k, &kg, &dof_map, 1, 400).expect("pencil solves");
@@ -54,7 +54,7 @@ fn stab_006_koiter_column_symmetric_stable() {
         mesh: &mesh,
         material: &card,
         dirichlet: vec![(Patch::Left, &|_, _| [0.0, 0.0])],
-        traction: vec![(Patch::Right, &|_, _| [-p, 0.0])],
+        traction: vec![(Patch::Right, &|_, _| [-P, 0.0])],
         settings: NewtonSettings {
             load_steps: 4,
             ..NewtonSettings::default()
@@ -67,7 +67,7 @@ fn stab_006_koiter_column_symmetric_stable() {
             mesh: &mesh,
             material: &card,
             dirichlet: problem.dirichlet.clone(),
-            traction: vec![(Patch::Right, &|_, _| [-p, 0.0])],
+            traction: vec![(Patch::Right, &|_, _| [-P, 0.0])],
             settings: NewtonSettings {
                 load_steps: 4,
                 ..NewtonSettings::default()
@@ -93,13 +93,13 @@ fn stab_006_koiter_column_symmetric_stable() {
     let mut bowed = mesh.clone();
     for node in &mut bowed.nodes {
         let x = node[0];
-        node[1] += 0.05 * t * (1.0 - (std::f64::consts::PI * x / (2.0 * l)).cos());
+        node[1] += 0.05 * T * (1.0 - (std::f64::consts::PI * x / (2.0 * L)).cos());
     }
     let imperfect = HyperProblem {
         mesh: &bowed,
         material: &card,
         dirichlet: vec![(Patch::Left, &|_, _| [0.0, 0.0])],
-        traction: vec![(Patch::Right, &|_, _| [-p, 0.0])],
+        traction: vec![(Patch::Right, &|_, _| [-P, 0.0])],
         settings: NewtonSettings::default(),
     };
     let settings = ArcSettings {
@@ -114,10 +114,8 @@ fn stab_006_koiter_column_symmetric_stable() {
         PathEvent::BranchPoint { .. } => false,
     });
     let reached = path.lambda > 0.9 * lambda_cr;
-    let pass = coeff.class == Bifurcation::SymmetricStable
-        && coeff.b > 0.0
-        && !early_limit
-        && reached;
+    let pass =
+        coeff.class == Bifurcation::SymmetricStable && coeff.b > 0.0 && !early_limit && reached;
     verdict(
         "stab-006",
         pass,

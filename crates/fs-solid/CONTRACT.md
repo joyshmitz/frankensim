@@ -40,6 +40,38 @@ globalized Newton loop.
   element-selection policy — B-bar when ν ≥ 0.45 or slenderness ≥ 5
   (fs-regime's indicators feed this; the locking battery measures the
   boundary).
+- `stability` (bead tfz.15): `reduced_pencil` (free-DOF K and
+  geometric stiffness K_G(σ₀) from the linear prebuckling state),
+  `buckling_loads` — the pencil `(K + λK_G)φ = 0` solved MATRIX-FREE
+  by fs-la LOBPCG on the Cholesky-reduced operator L⁻¹(−K_G)L⁻ᵀ
+  (dense reduction fixture-gated at n ≤ 4096), modes −K_G-normalized;
+  `lambda_indicator` (Richardson) + `evidence_row`;
+  `eigenvalue_derivative` (direct pencil derivative at frozen
+  prebuckling stress), `group_stiffness` (per-group Young's-scale
+  lever), and the clustered-eigenvalue policy: `ks_aggregate` /
+  `ks_aggregate_derivative` — the conservative smooth KS lower
+  envelope with softmax-weighted derivatives, because individual
+  eigenvalues are not differentiable where branches cross (measured
+  in the battery).
+- `continuation` (bead tfz.15): `PathResidual` (generic equilibrium
+  residual R(u,λ) = R_int − λF_ext; `HyperProblem` implements it for
+  homogeneous clamps + ramped dead tractions), `advance` — Keller
+  bordered pseudo-arclength with MINRES/dense-LU tangent solves
+  (indefinite-safe through limit points), step halving/growth,
+  limit-point events (λ̇ sign flips) and branch-point candidates
+  (Cholesky definiteness flips without a λ̇ flip, gated n ≤ 1024);
+  `PathState` — the checkpointable trajectory (clone to checkpoint,
+  hand back to resume; split runs are BITWISE identical to straight
+  runs); `switch_branch` — null-direction predictor pinning
+  (`pending_switch`): the arc constraint forces the first step along
+  the buckling mode so the corrector lands on the bifurcated branch
+  (a state-only perturbation relaxes back to the fundamental branch;
+  a basin-scale jump inverts elements — both measured failure modes).
+- `koiter` [F], feature `koiter-asymptotics` (off by default): FD
+  energy expansion along the buckling mode at the critical state →
+  a/b coefficients and `Bifurcation` classification, with the
+  SAMPLED-CONTINUATION fallback oracle (the imperfect-geometry path)
+  cross-checking imperfection tolerance.
 - `accept_scenario_bc`: fs-scenario integration — `Dirichlet` and
   `Traction` under `Physics::Elasticity` accepted; dimensioned-value
   resolution stays with the scenario consumer.
@@ -69,7 +101,24 @@ globalized Newton loop.
    fast terminal contraction; histories and backtracks are evidence
    (sol-007).
 8. Determinism: BTree/insertion-ordered assembly, deterministic
-   Krylov solvers; bit-identical across runs on a platform.
+   Krylov solvers; bit-identical across runs on a platform —
+   including continuation trajectories (checkpoint/resume proven
+   bitwise-equal in stab-002).
+9. Buckling: the Euler strut's EXTRAPOLATED critical load lands
+   within 3% of the analytic value with the Richardson indicator
+   covering the raw fine-mesh gap (Q1 parasitic-shear inflation,
+   reported, stab-001); pencil symmetry to 1e-10 and mode
+   K-orthogonality to 1e-6.
+10. Continuation: validated against the CLOSED-FORM von Mises truss
+    (limit points within 5–10% of analytic, manifold deviation
+    ≤ 1e-7, load control jumps where arclength traces, stab-002);
+    the continuum tent traces the full snap-through Z-curve on one
+    path — snap and snap-back limit points, load recovery beyond the
+    load-control failure point (stab-003).
+11. Branch handling: bifurcation detected within 15% of the pencil
+    prediction on the compressed column; null-direction switching
+    lands on the bent branch (transverse growth ≥ 20× measured,
+    stab-004).
 
 ## Error model
 
@@ -97,7 +146,9 @@ fs-exec driver (the L3 discipline; fs-feec/fs-cutfem precedent).
 
 ## Feature flags
 
-None.
+`koiter-asymptotics` (off by default): the plan-flagged [F] Koiter
+post-buckling module and its battery, per the Ambition-Tag gating
+rule. No other flags.
 
 ## Conformance tests
 
@@ -110,6 +161,17 @@ battery (standard degrades ≥10×, B-bar ≤2×); sol-006 Cook's envelope;
 sol-007 Newton robustness (5-step large bending, 8-step compression,
 terminal contraction ≥ 100×); the selection-policy probe. Unit tests:
 mapped-mesh areas, selection thresholds.
+
+`tests/stability.rs` (bead tfz.15): stab-001 Euler pencil (analytic
+G2 + Richardson indicator); stab-002 von Mises truss closed-form
+continuation oracle (+ bitwise resume); stab-003 continuum tent
+snap-through with the self-calibrating load-control-failure probe;
+stab-004 branch detection + null-direction switching; stab-005
+eigenvalue-derivative gradient gate (rel ≤ 1e-3 vs frozen-K_G FD) and
+the clustered-eigenvalue trap (min() kink ≈ 2 measured, KS aggregate
+smooth with derivative matching FD to 1e-6, conservative).
+`tests/koiter.rs` (feature-gated): stab-006 symmetric-stable
+classification + imperfect-geometry sampled oracle.
 
 ## No-claim boundaries
 
@@ -129,3 +191,12 @@ mapped-mesh areas, selection thresholds.
 - Ogden energies (fs-material's recorded no-claim propagates).
 - fs-scenario dimensioned-value resolution (units plumbing stays with
   the scenario consumer; kind/physics validation ships here).
+- Production-scale pencil solves (shift-invert/sparse factorizations
+  beyond the fixture-gated dense reduction) and the
+  prebuckling-adjoint chain dλ/ds through σ₀(s) (fs-ad/ASCENT
+  integration successor); LOBPCG preconditioning hooks.
+- Plate/shell buckling references (needs bending elements — the
+  shells bead); the 2D canonical here is the strut.
+- Koiter coefficients versus LITERATURE tables (v1 validates
+  classification + the sampled oracle; quantitative a/b benchmarking
+  awaits the shell fixtures where the classic tables live).

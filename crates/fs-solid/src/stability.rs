@@ -40,14 +40,16 @@ pub struct BucklingResult {
     pub iters: usize,
 }
 
+/// The reduced pencil: (stiffness, geometric stiffness, DOF map,
+/// prebuckling displacement).
+pub type ReducedPencil = (Csr, Csr, Vec<Option<usize>>, Vec<[f64; 2]>);
+
 /// The reduced (free-DOF) stiffness, geometric stiffness, and DOF map
 /// for a linear problem at its reference load.
 ///
 /// # Errors
 /// Propagates the prebuckling solve's [`SolidError`].
-pub fn reduced_pencil(
-    problem: &LinearProblem<'_>,
-) -> Result<(Csr, Csr, Vec<Option<usize>>, Vec<[f64; 2]>), SolidError> {
+pub fn reduced_pencil(problem: &LinearProblem<'_>) -> Result<ReducedPencil, SolidError> {
     let u0 = problem.solve()?;
     let (lambda, mu) = crate::linear::lame(problem.youngs, problem.poisson, problem.plane);
     let mesh = problem.mesh;
@@ -146,7 +148,10 @@ pub fn buckling_loads(
     steps: usize,
 ) -> Result<BucklingResult, SolidError> {
     let n = k.nrows();
-    assert!(n <= 4096, "dense pencil reduction is fixture-gated (n = {n})");
+    assert!(
+        n <= 4096,
+        "dense pencil reduction is fixture-gated (n = {n})"
+    );
     let chol = cholesky(&k.to_dense(), n).map_err(|_| SolidError::SolveFailed {
         iters: 0,
         rel_residual: f64::INFINITY,
@@ -254,11 +259,7 @@ pub fn ks_aggregate_derivative(loads: &[f64], dloads: &[f64], rho: f64) -> f64 {
     let lmin = loads.iter().copied().fold(f64::INFINITY, f64::min);
     let weights: Vec<f64> = loads.iter().map(|&l| (-rho * (l - lmin)).exp()).collect();
     let total: f64 = weights.iter().sum();
-    weights
-        .iter()
-        .zip(dloads)
-        .map(|(w, d)| w / total * d)
-        .sum()
+    weights.iter().zip(dloads).map(|(w, d)| w / total * d).sum()
 }
 
 /// Restrict the derivative-carrying stiffness to an element group: the

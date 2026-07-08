@@ -210,7 +210,6 @@ pub fn advance<P: PathResidual>(
     settings: &ArcSettings,
     steps: usize,
 ) -> Result<(), SolidError> {
-    let n = problem.ndof();
     let fext = problem.load_vector();
     for _ in 0..steps {
         let k = problem.tangent(&state.u, state.lambda)?;
@@ -274,10 +273,7 @@ pub fn advance<P: PathResidual>(
                     state.u = u1;
                     state.lambda = l1;
                     state.step += 1;
-                    let defl = state
-                        .u
-                        .iter()
-                        .fold(0.0f64, |m, &x| m.max(x.abs()));
+                    let defl = state.u.iter().fold(0.0f64, |m, &x| m.max(x.abs()));
                     state.trace.push((l1, defl));
                     state.tangent = (u_dot, lam_dot);
                     // Grow on fast success, up to the cap.
