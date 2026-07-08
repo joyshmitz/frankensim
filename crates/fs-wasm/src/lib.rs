@@ -27,17 +27,33 @@ use fs_math::{det, eft::two_sum};
 use fs_rand::{qmc::Sobol, StreamKey};
 use fs_sparse::{Coo, Csr};
 
+// ---------------------------------------------------------------------------
+// Tier-2 demos: bespoke 3D/WebGL-oriented computations, each still running the
+// real compiled kernel math. Split into topical modules for readability; every
+// public entry point is re-exported at the crate root and re-surfaced through
+// the `#[wasm_bindgen]` layer at the bottom of this file.
+// ---------------------------------------------------------------------------
+pub mod certified;
+pub mod dynamics;
+pub mod geom;
+pub mod pde;
+
+pub use certified::mandelbrot_certified;
+pub use dynamics::{ga_motor_orbit, lorenz_points, symplectic_vs_euler};
+pub use geom::{marching_cubes, sdf_volume};
+pub use pde::{fluid_frames, gray_scott_frames, topopt_frames, wave2d_frames};
+
 /* ----------------------------------------------------------------------- */
 /*  L1 · BEDROCK — sparse linear algebra: a real 2D Poisson solve           */
 /* ----------------------------------------------------------------------- */
 
-fn dot(a: &[f64], b: &[f64]) -> f64 {
+pub(crate) fn dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
 /// Assemble the 5-point Laplacian (SPD, `-Δ` up to the `1/h²` scale) on an
 /// `n×n` interior grid of the unit square with zero Dirichlet boundaries.
-fn laplacian_5pt(n: usize) -> Csr {
+pub(crate) fn laplacian_5pt(n: usize) -> Csr {
     let m = n * n;
     let mut coo = Coo::new(m, m);
     let idx = |i: usize, j: usize| i * n + j;
@@ -63,7 +79,7 @@ fn laplacian_5pt(n: usize) -> Csr {
 }
 
 /// Conjugate gradients against a `Csr` operator (matrix-free via `spmv`).
-fn cg(a: &Csr, b: &[f64], maxit: usize, tol: f64) -> Vec<f64> {
+pub(crate) fn cg(a: &Csr, b: &[f64], maxit: usize, tol: f64) -> Vec<f64> {
     let m = b.len();
     let mut x = vec![0.0f64; m];
     let mut r = b.to_vec();
