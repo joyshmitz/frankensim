@@ -245,6 +245,12 @@ fn pow_budget_and_specials() {
     assert_eq!(det::pow(2.0, f64::INFINITY), f64::INFINITY);
     assert_eq!(det::pow(0.5, f64::INFINITY), 0.0);
     assert_eq!(det::pow(2.0, 0.5).to_bits(), det::sqrt(2.0).to_bits());
+    // pow(±1, ±∞) = 1 and pow(1, NaN) = 1 (IEEE-754 §9.2.1) — the |x|=1 cases.
+    assert_eq!(det::pow(-1.0, f64::INFINITY), 1.0);
+    assert_eq!(det::pow(-1.0, f64::NEG_INFINITY), 1.0);
+    assert_eq!(det::pow(1.0, f64::INFINITY), 1.0);
+    assert_eq!(det::pow(1.0, f64::NAN), 1.0);
+    assert!(det::pow(-1.0, f64::NAN).is_nan()); // x ≠ 1 → NaN propagates
     println!(
         "{{\"suite\":\"fs-math\",\"case\":\"pow\",\"verdict\":\"pass\",\"detail\":\"100k samples within honest budget + specials\"}}"
     );

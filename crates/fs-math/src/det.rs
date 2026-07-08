@@ -595,11 +595,11 @@ pub fn pow(x: f64, y: f64) -> f64 {
     if y == 0.0 {
         return 1.0;
     }
+    if x == 1.0 {
+        return 1.0; // pow(1, y) = 1 for every y, including NaN (IEEE-754 §9.2.1)
+    }
     if x.is_nan() || y.is_nan() {
         return f64::NAN;
-    }
-    if x == 1.0 {
-        return 1.0;
     }
     let y_int = y.fract() == 0.0 && y.abs() < 9.0e15;
     let y_odd = y_int && (y / 2.0).fract() != 0.0;
@@ -614,6 +614,9 @@ pub fn pow(x: f64, y: f64) -> f64 {
     if x.is_infinite() || y.is_infinite() {
         // Delegate the (finite) magnitude comparison logic.
         let ax = x.abs();
+        if y.is_infinite() && ax == 1.0 {
+            return 1.0; // pow(±1, ±∞) = 1 (IEEE-754); x = +1 handled above, this is x = -1
+        }
         let big = if y.is_infinite() {
             if (ax > 1.0) == (y > 0.0) {
                 f64::INFINITY
