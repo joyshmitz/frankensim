@@ -92,6 +92,7 @@ members = [
     "crates/fs-surrogate",
     "crates/fs-rep-neural",
     "crates/fs-render",
+    "crates/fs-sos",
     "crates/fs-cutfem",
     "crates/fs-solid",
     "crates/fs-dwr",

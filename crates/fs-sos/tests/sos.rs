@@ -1,0 +1,111 @@
+//! Battery for proof-carrying optimization (fs-sos). The load-bearing property
+//! is ZERO FALSE CERTIFICATES: a sum-of-squares certificate is verified by a
+//! polynomial identity, so a claimed bound above the true minimum fails, while a
+//! verified bound is sound (holds for every sampled point).
+
+use fs_sos::{
+    Poly, SosCertificate, certify_quadratic, is_psd, lyapunov_certifies_stability, square,
+};
+
+#[test]
+fn polynomial_arithmetic_is_correct() {
+    // (1+x)(1-x) = 1 - x².
+    let prod = Poly::new(vec![1.0, 1.0]).mul(&Poly::new(vec![1.0, -1.0]));
+    assert_eq!(prod.coeffs(), &[1.0, 0.0, -1.0]);
+    assert!((prod.eval(2.0) - (-3.0)).abs() < 1e-12);
+    assert_eq!(prod.degree(), 2);
+    // (x-2)² = x² - 4x + 4.
+    assert_eq!(
+        square(&Poly::new(vec![-2.0, 1.0])).coeffs(),
+        &[4.0, -4.0, 1.0]
+    );
+}
+
+#[test]
+fn a_quadratic_certificate_is_exact_and_sound() {
+    // p(x) = x² - 4x + 7, global min 3 at x = 2.
+    let p = Poly::new(vec![7.0, -4.0, 1.0]);
+    let cert = certify_quadratic(1.0, -4.0, 7.0).unwrap();
+    assert!(cert.verify(&p, 1e-9));
+    assert_eq!(cert.certified_bound(&p, 1e-9), Some(3.0));
+    // the certified bound is a true lower bound everywhere.
+    for k in -50..=50 {
+        let x = f64::from(k) * 0.2;
+        assert!(p.eval(x) >= 3.0 - 1e-9, "p({x}) = {} < 3", p.eval(x));
+    }
+}
+
+#[test]
+fn a_multi_square_certificate_proves_a_tight_bound() {
+    // p(x) = x⁴ + 2x² + 1, min 1 at x = 0; p - 1 = (x²)² + (√2 x)².
+    let p = Poly::new(vec![1.0, 0.0, 2.0, 0.0, 1.0]);
+    let cert = SosCertificate {
+        squares: vec![
+            Poly::new(vec![0.0, 0.0, 1.0]),
+            Poly::new(vec![0.0, 2.0_f64.sqrt()]),
+        ],
+        lower_bound: 1.0,
+    };
+    assert!(cert.verify(&p, 1e-9));
+    assert_eq!(cert.certified_bound(&p, 1e-9), Some(1.0));
+    for k in -50..=50 {
+        let x = f64::from(k) * 0.2;
+        assert!(p.eval(x) >= 1.0 - 1e-9);
+    }
+}
+
+#[test]
+fn there_are_zero_false_certificates() {
+    let p = Poly::new(vec![7.0, -4.0, 1.0]); // min 3
+    // a certificate claiming a bound ABOVE the true minimum does not verify.
+    let liar = SosCertificate {
+        squares: vec![Poly::new(vec![-2.0, 1.0])], // the correct square (x-2)
+        lower_bound: 5.0,                          // but a false, too-high bound
+    };
+    assert!(!liar.verify(&p, 1e-9));
+    assert_eq!(liar.certified_bound(&p, 1e-9), None);
+    // a bogus square set does not verify either.
+    let bogus = SosCertificate {
+        squares: vec![Poly::new(vec![0.0, 1.0])], // x², missing the +1
+        lower_bound: 0.0,
+    };
+    assert!(!bogus.verify(&Poly::new(vec![1.0, 0.0, 1.0]), 1e-9)); // p = x² + 1
+}
+
+#[test]
+fn certify_quadratic_rejects_unbounded_forms() {
+    assert!(certify_quadratic(-1.0, 0.0, 0.0).is_none()); // opens downward
+    assert!(certify_quadratic(0.0, 1.0, 0.0).is_none()); // linear
+}
+
+#[test]
+fn psd_feasibility_is_decided_correctly() {
+    assert!(is_psd(&[vec![2.0, 0.0], vec![0.0, 3.0]], 1e-9));
+    assert!(is_psd(&[vec![2.0, 1.0], vec![1.0, 2.0]], 1e-9)); // eigenvalues 1, 3
+    assert!(is_psd(&[vec![0.0, 0.0], vec![0.0, 0.0]], 1e-9)); // boundary
+    assert!(!is_psd(&[vec![1.0, 2.0], vec![2.0, 1.0]], 1e-9)); // eigenvalues 3, -1
+    assert!(!is_psd(&[vec![1.0, 0.0], vec![0.0, -0.5]], 1e-9));
+}
+
+#[test]
+fn a_lyapunov_certificate_decides_linear_stability() {
+    let identity = [[1.0, 0.0], [0.0, 1.0]];
+    // stable: ẋ = diag(-1,-2) x, V = xᵀx certifies stability.
+    assert!(lyapunov_certifies_stability(
+        [[-1.0, 0.0], [0.0, -2.0]],
+        identity
+    ));
+    // unstable: an eigenvalue at +1 -> no quadratic certificate with P = I.
+    assert!(!lyapunov_certifies_stability(
+        [[1.0, 0.0], [0.0, -1.0]],
+        identity
+    ));
+}
+
+#[test]
+fn certification_is_deterministic() {
+    let p = Poly::new(vec![7.0, -4.0, 1.0]);
+    let a = certify_quadratic(1.0, -4.0, 7.0).unwrap();
+    let b = certify_quadratic(1.0, -4.0, 7.0).unwrap();
+    assert_eq!(a.residual(&p).to_bits(), b.residual(&p).to_bits());
+}
