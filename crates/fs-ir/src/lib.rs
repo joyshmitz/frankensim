@@ -20,6 +20,8 @@ pub mod admission;
 pub mod ast;
 pub mod json;
 pub mod lower;
+#[cfg(feature = "ladder-planner")]
+pub mod planner;
 pub mod query;
 pub mod sexpr;
 pub mod study;

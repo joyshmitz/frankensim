@@ -15,8 +15,14 @@ fs-geom = { path = "../fs-geom" }
 fs-plan = { path = "../fs-plan" }
 fs-qty = { path = "../fs-qty" }
 fs-regime = { path = "../fs-regime" }
+fs-verify = { path = "../fs-verify", features = ["certified-speculation"], optional = true }
 
 [dev-dependencies]
+
+[features]
+# [F]-gated per the Ambition-Tag rule: the greedy ladder-walk planner
+# ships disabled until its Gauntlet tier + kill metric are green.
+ladder-planner = ["dep:fs-verify"]
 
 [lints]
 workspace = true
