@@ -12,9 +12,7 @@
 //! Determinism (G5): the planner underneath is deterministic, so a
 //! replayed query reproduces the same interval trajectory.
 
-use crate::planner::{
-    AnswerCache, CostTable, PlanOp, PlanOutcome, ProblemFamily, plan,
-};
+use crate::planner::{AnswerCache, CostTable, PlanOp, PlanOutcome, ProblemFamily, plan};
 use fs_evidence::Color;
 
 /// One point on the anytime trajectory.
@@ -117,7 +115,9 @@ pub fn run_anytime(
         let outcome = plan(family, theta, tol, budget, rung_cells, cache, costs);
         let last = i + 1 == budget_ladder.len();
         match outcome {
-            PlanOutcome::Discharged { bound, cost, mesh, .. } => {
+            PlanOutcome::Discharged {
+                bound, cost, mesh, ..
+            } => {
                 let hot = hot_region_of(&mesh);
                 trajectory.push(IntervalStep {
                     budget,
@@ -158,7 +158,10 @@ pub fn run_anytime(
             }
         }
     }
-    AnytimeReport { trajectory, refusal }
+    AnytimeReport {
+        trajectory,
+        refusal,
+    }
 }
 
 /// The densest-mesh window (where refinement concentrated): the hint's

@@ -93,6 +93,19 @@ typed AST. Layer: L6 (HELM). Runtime deps: `std` + fs-qty.
   `baseline_uniform` is the fixed control the kill criterion measures
   against.
 
+- `anytime` module (addendum Proposal 8, bead lmp4.17; ships behind
+  `ladder-planner` but its CONTRACT survives even a frozen planner —
+  the product win): `run_anytime` drives the planner over an
+  increasing budget ladder — the first rung is the IMMEDIATE wide
+  certified interval, tightening is MONOTONE, every step carries its
+  Proposal-3 color and a PRICED "what would tighten this" hint
+  (`tighten_hint`: gap extrapolation naming the next menu move and the
+  hot region where refinement concentrated; cold telemetry degrades to
+  the generic priced form). REFUSAL semantics: an undischargeable
+  query returns the achieved certified interval, the price of the gap,
+  and the explicit no-point-estimate clause — never a silent
+  best-effort number. Replays reproduce trajectories bit-for-bit (G5).
+
 ## Invariants
 
 1. Isomorphism: `parse(print(x))` has the same shape as `x`, per syntax
@@ -207,3 +220,13 @@ structured refusal).
 - The kill measurement (>=2x vs mid-rung+uniform; measured 4.31x on the
   steep-feature fixture) is per-fixture evidence, not a universal claim
   — the wedge query set re-measures it as kernels land.
+
+## No-claim boundaries (anytime)
+
+- The hint's price is an O(h) extrapolation from the achieved bound —
+  an estimate for teaching, not a certified cost bound; Proposal C's
+  full value-of-information ranking replaces it when C lands (the soft
+  dependency the bead names).
+- Tile-boundary interruptibility rides the planner's operator
+  granularity (each budget rung is a clean cut); sub-operator
+  cancellation lands with the fs-exec tile integration.
