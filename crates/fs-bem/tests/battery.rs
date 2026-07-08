@@ -5,8 +5,8 @@
 //!   (sign conventions and self-terms cannot silently drift).
 //! - bem-002 G2: sphere exterior flow — surface speed vs the analytic
 //!   1.5·U·sinθ at two refinements (order ledgered), Cp curve.
-//! - bem-003: the FMM path — matvec matches dense to interpolation
-//!   tolerance; GMRES(FMM) reproduces the dense-LU solution;
+//! - bem-003: the FMM path — matvec and transpose match dense to
+//!   interpolation tolerance; GMRES(FMM) reproduces the dense-LU solution;
 //!   iterations ledgered.
 //! - bem-004: 2D Hess–Smith — thin-airfoil lift slope band, Cp sanity
 //!   (stagnation near LE, smooth TE), and the ADJOINT dCl/dα against
@@ -68,12 +68,13 @@ fn sphere_speed_error(subdivisions: u32) -> (f64, usize) {
     f.solve(&mut rhs);
     let vel = surface_velocity(&panels, &rhs, u_inf, 6);
     let mut err_sum = 0.0;
-    for i in 0..n {
+    for (i, got_vel) in vel.iter().enumerate() {
         let c = panels.centroids[i];
         let r = (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt();
         let sin_theta = (1.0 - (c[0] / r) * (c[0] / r)).max(0.0).sqrt();
         let want = 1.5 * sin_theta;
-        let got = (vel[i][0] * vel[i][0] + vel[i][1] * vel[i][1] + vel[i][2] * vel[i][2]).sqrt();
+        let got =
+            (got_vel[0] * got_vel[0] + got_vel[1] * got_vel[1] + got_vel[2] * got_vel[2]).sqrt();
         err_sum += (got - want).abs();
     }
     #[allow(clippy::cast_precision_loss)]
@@ -122,6 +123,21 @@ fn bem_003_fmm_path_matches_dense() {
         .sum::<f64>()
         .sqrt()
         / scale;
+    let mut dense_t = vec![0.0f64; n];
+    for i in 0..n {
+        for j in 0..n {
+            dense_t[j] += a[i * n + j] * x[i];
+        }
+    }
+    let fast_t = panels.fmm_transpose_matvec(&x, 6);
+    let scale_t = dense_t.iter().map(|v| v * v).sum::<f64>().sqrt();
+    let dev_t = dense_t
+        .iter()
+        .zip(&fast_t)
+        .map(|(d, f)| (d - f) * (d - f))
+        .sum::<f64>()
+        .sqrt()
+        / scale_t;
     // GMRES(FMM) vs dense LU.
     let u_inf = [1.0, 0.0, 0.0];
     let (sigma_fmm, iters, rr) = solve_exterior(&panels, u_inf, 6, 1e-8);
@@ -136,13 +152,13 @@ fn bem_003_fmm_path_matches_dense() {
         .sum::<f64>()
         .sqrt()
         / sscale;
-    let pass = dev < 1e-4 && sdev < 1e-3 && rr < 1e-6;
+    let pass = dev < 1e-4 && dev_t < 1e-4 && sdev < 1e-3 && rr < 1e-6;
     verdict(
         "bem-003",
         pass,
         &format!(
-            "\"detail\":\"FMM matvec + GMRES(FMM) vs dense oracle, 1280 panels\",\
-             \"matvec_rel\":{dev:.3e},\"solution_rel\":{sdev:.3e},\
+            "\"detail\":\"FMM matvec/transpose + GMRES(FMM) vs dense oracle, 1280 panels\",\
+             \"matvec_rel\":{dev:.3e},\"transpose_rel\":{dev_t:.3e},\"solution_rel\":{sdev:.3e},\
              \"gmres_iters\":{iters},\"gmres_residual\":{rr:.3e}"
         ),
     );

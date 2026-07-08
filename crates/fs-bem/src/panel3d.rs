@@ -1,8 +1,8 @@
 //! 3D exterior potential flow: constant SOURCE panels with collocation
 //! Neumann conditions. The influence matrix row is
 //! `A_ij = n_i · ∇_x G(x_i, y_j) · area_j` with the flat-panel
-//! centroid approximation for well-separated pairs and the exact
-//! self-term σ/2 on the diagonal — a documented screening-grade
+//! centroid approximation for well-separated pairs and the outside-limit
+//! jump `-σ/2` on the diagonal — a documented screening-grade
 //! discretization whose measured convergence on the sphere IS the
 //! gate. The GMRES matvec runs three fs-fmm passes (the gradient's
 //! components are each a smooth kernel) dotted with target normals;
@@ -121,6 +121,7 @@ impl SpherePanels {
     #[must_use]
     pub fn fmm_matvec(&self, sigma: &[f64], order: usize) -> Vec<f64> {
         let n = self.centroids.len();
+        assert_eq!(sigma.len(), n, "one source density per panel");
         let weighted: Vec<f64> = sigma.iter().zip(&self.areas).map(|(s, a)| s * a).collect();
         let mut out = vec![0.0f64; n];
         for c in 0..3 {
@@ -133,6 +134,34 @@ impl SpherePanels {
         }
         for i in 0..n {
             out[i] += -0.5 * sigma[i];
+        }
+        out
+    }
+
+    /// FMM-accelerated transpose matvec for the same nonsymmetric
+    /// collocation operator. The panel area belongs to the column
+    /// index, so the transpose uses normal-weighted source charges and
+    /// applies the area at the target after swapping kernel arguments.
+    #[must_use]
+    pub fn fmm_transpose_matvec(&self, x: &[f64], order: usize) -> Vec<f64> {
+        let n = self.centroids.len();
+        assert_eq!(x.len(), n, "one transpose input value per panel");
+        let mut out = vec![0.0f64; n];
+        for c in 0..3 {
+            let charges: Vec<f64> = x
+                .iter()
+                .zip(&self.normals)
+                .map(|(xi, normal)| xi * normal[c])
+                .collect();
+            let k = GradKernel { c };
+            let fmm = Fmm::new(&k, self.centroids.clone(), order, 40);
+            let comp = fmm.potentials(&charges);
+            for (oi, (ci, area)) in out.iter_mut().zip(comp.iter().zip(&self.areas)) {
+                *oi -= area * ci;
+            }
+        }
+        for (oi, xi) in out.iter_mut().zip(x) {
+            *oi += -0.5 * xi;
         }
         out
     }
@@ -152,8 +181,9 @@ impl LinearOp for FmmOp<'_> {
         let v = self.panels.fmm_matvec(x, self.order);
         y.copy_from_slice(&v);
     }
-    fn apply_transpose(&self, _x: &[f64], _y: &mut [f64]) {
-        unimplemented!("transpose path unused by GMRES here")
+    fn apply_transpose(&self, x: &[f64], y: &mut [f64]) {
+        let v = self.panels.fmm_transpose_matvec(x, self.order);
+        y.copy_from_slice(&v);
     }
 }
 
@@ -192,6 +222,7 @@ pub fn surface_velocity(
     order: usize,
 ) -> Vec<[f64; 3]> {
     let n = panels.centroids.len();
+    assert_eq!(sigma.len(), n, "one source density per panel");
     let weighted: Vec<f64> = sigma
         .iter()
         .zip(&panels.areas)
@@ -214,4 +245,44 @@ pub fn surface_velocity(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FmmOp, SpherePanels};
+    use fs_solver::op::LinearOp;
+
+    #[test]
+    fn fmm_operator_transpose_path_matches_dense_oracle() {
+        let panels = SpherePanels::icosphere(1.0, 2);
+        let n = panels.centroids.len();
+        let op = FmmOp {
+            panels: &panels,
+            order: 6,
+        };
+        #[allow(clippy::cast_precision_loss)]
+        let x: Vec<f64> = (0..n).map(|i| ((i as f64) * 0.19).cos()).collect();
+        let mut got = vec![0.0; n];
+        op.apply_transpose(&x, &mut got);
+
+        let dense = panels.dense_matrix();
+        let mut want = vec![0.0; n];
+        for i in 0..n {
+            for j in 0..n {
+                want[j] += dense[i * n + j] * x[i];
+            }
+        }
+        let scale = want.iter().map(|v| v * v).sum::<f64>().sqrt();
+        let rel = want
+            .iter()
+            .zip(&got)
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum::<f64>()
+            .sqrt()
+            / scale;
+        assert!(
+            rel < 1e-4,
+            "LinearOp::apply_transpose must match dense transpose; rel={rel:.3e}"
+        );
+    }
 }

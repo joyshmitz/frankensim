@@ -15,6 +15,9 @@ everywhere: this is screening, not a viscous truth source.
   centroid-monopole off-diagonal rows (screening-grade; measured
   convergence is the gate); `fmm_matvec` — the SAME operator through
   three fs-fmm gradient-kernel passes dotted with target normals;
+  `fmm_transpose_matvec` — the adjoint operator through the same FMM
+  kernels, with panel-area placement and gradient antisymmetry tested
+  against the dense transpose;
   `solve_exterior` — GMRES over the FMM matvec; `surface_velocity`.
 - `panel2d`: `Airfoil2d` + `naca4_symmetric`; Hess–Smith `solve` —
   constant sources per panel plus one shared vortex density, the KUTTA
@@ -40,9 +43,9 @@ everywhere: this is screening, not a viscous truth source.
    (bem-001) — sign conventions cannot drift silently.
 2. Sphere analytic (G2): mean surface-speed error vs 1.5·U·sinθ
    < 0.03 at 1280 panels and decreasing under refinement (bem-002).
-3. The FMM path IS the dense operator: matvec relative deviation
-   < 1e-4 at order 6; GMRES(FMM) reproduces the dense-LU solution to
-   < 1e-3 with iterations ledgered (bem-003).
+3. The FMM path IS the dense operator: matvec and transpose relative
+   deviations are < 1e-4 at order 6; GMRES(FMM) reproduces the
+   dense-LU solution to < 1e-3 with iterations ledgered (bem-003).
 4. Hess–Smith: lift slope within 5% of the thickness-corrected
    2π(1+0.77t) and above thin-airfoil 2π; stagnation Cp = 1 within 5%;
    Kutta row satisfied to roundoff; adjoint dCl/dα matches central FD
@@ -80,9 +83,11 @@ None.
 
 ## Conformance tests
 
-`tests/battery.rs`: bem-001 Gauss identity; bem-002 sphere analytic;
-bem-003 FMM-vs-dense + GMRES; bem-004 Hess–Smith slope band, Cp
-sanity, Kutta, adjoint gate; bem-005 impulsive-start free wake.
+`src/panel3d.rs` unit test: the private `LinearOp::apply_transpose`
+wrapper matches the dense transpose. `tests/battery.rs`: bem-001 Gauss
+identity; bem-002 sphere analytic; bem-003 FMM-vs-dense matvec,
+transpose + GMRES; bem-004 Hess–Smith slope band, Cp sanity, Kutta,
+adjoint gate; bem-005 impulsive-start free wake.
 
 ## No-claim boundaries
 
