@@ -15,9 +15,14 @@
 //! golden-hashed).
 
 pub mod cma;
+pub mod moo;
 pub mod neldermead;
 
 pub use cma::{BipopReport, CmaParams, CmaReport, bipop_cmaes, cmaes};
+pub use moo::{
+    Individual, NsgaParams, crowding_distance, cvar_rockafellar_uryasev, dominates, hypervolume,
+    knee_point, non_dominated_sort, nsga2,
+};
 pub use neldermead::nelder_mead;
 
 /// Crate version, re-exported for provenance stamping.
