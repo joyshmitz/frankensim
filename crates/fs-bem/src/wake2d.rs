@@ -114,7 +114,15 @@ impl WakeSim {
         }
         // Effective incidence: α + downwash/U (small-angle).
         let bound_prev = self.history.last().map_or(0.0, |s| s.bound);
-        let bound_target = self.steady_gamma * (self.alpha + wake_wash).sin() / self.alpha.sin();
+        // Guard the degenerate zero-incidence case: sin α = 0 makes the ratio
+        // 0/0 = NaN, which would poison the whole screening simulation. At zero
+        // incidence this model carries no bound circulation to scale.
+        let sin_alpha = self.alpha.sin();
+        let bound_target = if sin_alpha.abs() < 1e-12 {
+            0.0
+        } else {
+            self.steady_gamma * (self.alpha + wake_wash).sin() / sin_alpha
+        };
         // First-order relaxation with the shed vortex carrying the
         // difference (Kelvin: dΓ_bound = −Γ_shed).
         let bound = bound_prev + 0.5 * (bound_target - bound_prev);
