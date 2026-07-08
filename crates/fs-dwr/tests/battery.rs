@@ -337,17 +337,22 @@ fn dwr_004_anisotropic_metric_synthesis() {
         density.push(avg / 32.0);
     }
     let total_density: f64 = density.iter().sum();
-    // Graded knots: cumulative density inverted at n1d+1 levels.
+    // Graded knots: CONTINUOUS inversion of the piecewise-constant
+    // density (snapping to row boundaries would cap the dense-region
+    // spacing at the recovery lattice and forfeit the win).
     let mut knots = vec![0.0f64];
     let mut acc = 0.0;
-    let mut next_target = total_density / n1d as f64;
+    #[allow(clippy::cast_precision_loss)]
+    let quantum = total_density / n1d as f64;
+    let mut next_target = quantum;
     for (row, d) in density.iter().enumerate() {
-        acc += d;
         #[allow(clippy::cast_precision_loss)]
-        while acc >= next_target - 1e-12 && knots.len() < n1d {
-            knots.push((row as f64 + 1.0) / 32.0);
-            next_target += total_density / n1d as f64;
+        while acc + d >= next_target - 1e-12 && knots.len() < n1d {
+            let frac = ((next_target - acc) / d).clamp(0.0, 1.0);
+            knots.push((row as f64 + frac) / 32.0);
+            next_target += quantum;
         }
+        acc += d;
     }
     knots.push(1.0);
     let interp_err = |ys: &[f64]| -> f64 {
