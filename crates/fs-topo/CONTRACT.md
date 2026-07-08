@@ -40,6 +40,19 @@ constraints will consume.
     framed — exact for the voxel solid, Estimate-grade for the chart
     (sub-cell features can be missed).
 
+- `penalty` module (plan §9.5/§7.8, bead 7tv.15; [M], behind
+  `moonshot-topo-persistence`): Betti targets as diagram penalties.
+  `TopoSpec` (components/tunnels/enclosed-voids targets + τ, the
+  feature-size floor), `evaluate` → `TopoPenalty` (graded total, zero
+  iff the diagram matches the target up to τ; per-violation
+  `Attribution` with voxel sets and fill/carve directions; the H₀ bars
+  and Betti evidence ride along), `enclosed_voids` (the DUALITY route:
+  an enclosed void is an empty-phase component that never reaches the
+  domain boundary — localizes H₂ with union-find, cross-checked
+  against `betti`'s b₂), `apply_attribution_step` (the descent
+  primitive), `heuristic_cc_penalty` (the fallback the [M] gate
+  compares against).
+
 ## Invariants
 
 1. Clean fixtures certify; punched holes localize exactly their
@@ -109,3 +122,16 @@ reimplementation must pass the suite unchanged.
   full local-injectivity proofs join the interval machinery.
 - Voxel connectivity is the 6/6 pair (solid/complement); alternative
   connectivity conventions (26/6) are not exposed.
+
+## No-claim boundaries (penalty)
+
+- TUNNELS (H₁) are counted at the level, not localized: the excess/
+  deficit penalty is count-graded with no attribution map — the full
+  cubical boundary-matrix PH is the growth path.
+- Component-DEFICIT violations carry no localization either (there is
+  nowhere to point when material must appear ex nihilo).
+- The void "persistence" is its depth (min margin over the component) —
+  a sublevel-filtration quantity on the dual phase, inheriting PH
+  stability empirically (tested), not by the classical theorem verbatim.
+- Resolution caveats inherit from `cubical`: features thinner than a
+  voxel are invisible; τ must be chosen above the voxel scale.
