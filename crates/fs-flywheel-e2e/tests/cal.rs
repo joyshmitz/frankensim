@@ -52,7 +52,10 @@ fn calibration_monotone_in_tolerance() {
         "{{\"metric\":\"checkpoint-calibration\",\"tols\":[0.02,0.05,0.08],\
          \"accepts\":{curve:?}}}"
     );
-    assert!(curve[0] <= curve[1] && curve[1] <= curve[2], "monotone: {curve:?}");
+    assert!(
+        curve[0] <= curve[1] && curve[1] <= curve[2],
+        "monotone: {curve:?}"
+    );
     assert_eq!(curve[0], 0, "hostile tolerance rejects everything");
     assert!(curve[1] >= 6, "the realistic tolerance opens the economy");
 }

@@ -207,7 +207,10 @@ fn p1_003_merge_swarm_kill_check() {
         triangles: vec![],
     };
     let live = harmonic_conflict_rate(&ring, 60, 0.1, 0x9a7e);
-    assert!(live < 0.25, "live swarm-trial rate under the kill line: {live}");
+    assert!(
+        live < 0.25,
+        "live swarm-trial rate under the kill line: {live}"
+    );
     println!("{{\"metric\":\"merge-kill-check\",\"live_rate\":{live:.3},\"line\":0.25}}");
     verdict(
         "p1-003",

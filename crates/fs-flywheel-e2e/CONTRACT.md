@@ -55,7 +55,14 @@ Gauntlet tier + kill metric are green.
 tests/e2e.rs — fw-001 compounding (margin + CV over 5 replays), fw-002
 laundering-across-the-loop, fw-003 G5 whole-loop determinism, fw-004
 G4 cancellation storm, fw-005 telemetry completeness; tests/dbg.rs —
-config-sweep smoke. Battery ~40 s.
+config-sweep smoke; tests/phase1_gate.rs — THE PHASE-1 MILESTONE GATE
+(xpck.3): skip-yield dashboard live, accept-rate telemetry stratified
+by proposer × regime, the merge swarm kill check (<25% harmonic), and
+Proposal 9's six-month checkpoint (accept rate > 30% AND median
+warm-start savings ≥ 1.5× at the calibrated realistic tolerance, with
+a hostile control proving the measurement can fail);
+tests/cal.rs — the tolerance-calibration probe behind the gate's
+0.05/0.02 choices. Battery ~50 s.
 
 ## No-claim boundaries
 - COSTS ARE MODELED UNITS from the corpus's op counts: the loop
