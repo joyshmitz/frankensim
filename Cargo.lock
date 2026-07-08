@@ -1374,6 +1374,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs-shapeprog"
+version = "0.0.1"
+
+[[package]]
 name = "fs-simd"
 version = "0.0.1"
 dependencies = [
