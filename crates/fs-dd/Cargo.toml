@@ -1,0 +1,24 @@
+[package]
+name = "fs-dd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Domain decomposition: BDDC substructuring with corners-primal coarse spaces, sheaf-harmonic edge enrichment (Bet 11's second consumer), coefficient-jump robustness, and CCD-aligned partitioning metrics."
+
+[package.metadata.frankensim]
+layer = "L3"
+
+[dependencies]
+fs-geom = { path = "../fs-geom", features = ["sheaf-repair"], optional = true }
+fs-math = { path = "../fs-math" }
+
+[features]
+# [M]-gated per the Ambition-Tag rule: BDDC + the sheaf-harmonic coarse
+# space ship disabled until Gauntlet evidence promotes them.
+bddc = []
+sheaf-coarse = ["bddc", "dep:fs-geom"]
+
+[lints]
+workspace = true

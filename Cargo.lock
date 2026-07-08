@@ -925,6 +925,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs-dd"
+version = "0.0.1"
+dependencies = [
+ "fs-geom",
+ "fs-math",
+]
+
+[[package]]
 name = "fs-dfo"
 version = "0.0.1"
 dependencies = [
@@ -1284,6 +1292,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs-render"
+version = "0.0.1"
+
+[[package]]
 name = "fs-rep-frep"
 version = "0.0.1"
 dependencies = [
@@ -1307,6 +1319,10 @@ dependencies = [
  "fs-obs",
  "fs-rep-sdf",
 ]
+
+[[package]]
+name = "fs-rep-neural"
+version = "0.0.1"
 
 [[package]]
 name = "fs-rep-nurbs"
