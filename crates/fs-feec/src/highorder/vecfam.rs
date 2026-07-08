@@ -884,7 +884,13 @@ impl<'c> VecSpace<'c> {
     ) -> Vec<f64> {
         let mut out = vec![0.0f64; self.ndof];
         let mut done = vec![false; self.ndof];
-        let nq = self.r + 3;
+        // Analytic fields need quadrature well past the basis-exactness
+        // level: at r+3 the frame-dependent collapse direction leaves
+        // O(1e-5) dof error on trig fields, which the G3 physics tier
+        // measured as spurious label-dependence. r+7 puts it at
+        // roundoff; polynomial inputs (all internal uses) are exact
+        // either way.
+        let nq = self.r + 7;
         for t in 0..self.complex.tets.len() {
             let el = &self.elements[t];
             let fns = element_dof_functionals(
