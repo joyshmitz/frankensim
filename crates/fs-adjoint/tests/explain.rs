@@ -10,9 +10,11 @@
 #![cfg(feature = "explanation-objects")]
 
 use fs_adjoint::explain::{
-    Elliptic1d, Explanation, LiftingLine, adjoint_attribution, drag_decomposition, finalize,
-    provenance_attribution,
+    Elliptic1d, Explanation, ExplanationNode, LiftingLine, adjoint_attribution, drag_decomposition,
+    finalize, provenance_attribution,
 };
+use fs_evidence::Color;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 fn verdict(case: &str, detail: &str) {
     println!(
@@ -81,13 +83,17 @@ fn xp_002_honesty_gate_refuses_hidden_channels() {
     let declared_only = [("left-half", (0..60).collect::<Vec<_>>())];
     let nodes = adjoint_attribution(&fixture, &a0, &a1, &declared_only);
     let explanation = finalize(nodes, observed, 1e-6);
+    assert!(
+        matches!(explanation, Explanation::Refused { .. }),
+        "the gate must refuse: {explanation:?}"
+    );
     let Explanation::Refused {
         residual,
         threshold,
         ref partial,
     } = explanation
     else {
-        panic!("the gate must refuse: {explanation:?}")
+        return;
     };
     assert!(residual.abs() > threshold);
     assert_eq!(
@@ -172,13 +178,17 @@ fn xp_004_flagship_farfield_drag_decomposition() {
     let (cf, wetted) = (0.006, 2.05);
     let cd_total = cdi_analytic + cf * wetted;
     let explanation = drag_decomposition(&wing, cf, wetted, cd_total, 2e-3);
+    assert!(
+        matches!(explanation, Explanation::Explained { .. }),
+        "the flagship reconciles: {explanation:?}"
+    );
     let Explanation::Explained {
         ref nodes,
         residual,
         ..
     } = explanation
     else {
-        panic!("the flagship reconciles: {explanation:?}")
+        return;
     };
     assert!(explanation.reconciles(), "the permanent invariant holds");
     assert_eq!(nodes.len(), 3, "induced + viscous + declared-zero wave");
@@ -213,5 +223,96 @@ fn xp_005_narrative_is_non_authoritative() {
         "xp-005",
         "the natural-language rendering opens by declaring itself non-authoritative — \
          the tree is the artifact",
+    );
+}
+
+#[test]
+fn xp_006_edge_contracts_fail_fast_and_one_node_solves() {
+    // The one-interior-node fixture is the smallest real SPD problem;
+    // the tridiagonal solve must handle its empty off-diagonal.
+    let fixture = Elliptic1d { n: 1 };
+    let a0 = vec![1.0, 1.0];
+    let a1 = vec![1.2, 0.9];
+    let observed =
+        fixture.compliance(&fixture.solve(&a1)) - fixture.compliance(&fixture.solve(&a0));
+    let explanation = finalize(
+        adjoint_attribution(&fixture, &a0, &a1, &[("all", vec![0, 1])]),
+        observed,
+        1e-12,
+    );
+    assert!(
+        matches!(explanation, Explanation::Explained { .. }) && explanation.reconciles(),
+        "one-node elliptic fixture must reconcile"
+    );
+
+    let short_conductivity = catch_unwind(AssertUnwindSafe(|| fixture.solve(&[1.0])));
+    assert!(
+        short_conductivity.is_err(),
+        "conductivity length mismatches must fail fast"
+    );
+    let bad_channel = catch_unwind(AssertUnwindSafe(|| {
+        adjoint_attribution(&fixture, &a0, &a1, &[("bad", vec![2])])
+    }));
+    assert!(
+        bad_channel.is_err(),
+        "out-of-range channel masks must fail fast"
+    );
+    let bad_node = catch_unwind(AssertUnwindSafe(|| {
+        ExplanationNode::new(
+            "bad",
+            1.0,
+            -1.0,
+            Color::Estimated {
+                estimator: "fixture".to_string(),
+                dispersion: 0.1,
+            },
+            vec!["evidence".to_string()],
+        )
+    }));
+    assert!(
+        bad_node.is_err(),
+        "negative contribution bounds must fail fast"
+    );
+    let bad_finalize = catch_unwind(AssertUnwindSafe(|| {
+        finalize(provenance_attribution(&[]), f64::NAN, 1e-9)
+    }));
+    assert!(
+        bad_finalize.is_err(),
+        "non-finite observations must not produce explanation objects"
+    );
+    let bad_wing = catch_unwind(AssertUnwindSafe(|| {
+        let _ = LiftingLine::elliptic(1.0, 1.0, 1.0, 1.0, 0);
+    }));
+    assert!(
+        bad_wing.is_err(),
+        "zero-station lifting-line fixtures must fail fast"
+    );
+
+    // Color is part of the re-derivation payload. Same numeric term
+    // with different epistemic color must not collide.
+    let verified = ExplanationNode::new(
+        "same",
+        1.0,
+        0.1,
+        Color::Verified { lo: 0.9, hi: 1.1 },
+        vec!["evidence".to_string()],
+    );
+    let estimated = ExplanationNode::new(
+        "same",
+        1.0,
+        0.1,
+        Color::Estimated {
+            estimator: "surrogate".to_string(),
+            dispersion: 0.1,
+        },
+        vec!["evidence".to_string()],
+    );
+    assert_ne!(
+        verified.fingerprint, estimated.fingerprint,
+        "fingerprints must include evidence color"
+    );
+    verdict(
+        "xp-006",
+        "edge contracts fail fast; the one-node elliptic fixture reconciles; fingerprints include color",
     );
 }

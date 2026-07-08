@@ -38,6 +38,43 @@ fn fingerprint_hex(bytes: &[u8]) -> String {
     format!("{h:016x}")
 }
 
+fn assert_node_payload(
+    channel: &str,
+    contribution: f64,
+    bound: f64,
+    color: &Color,
+    evidence: &[String],
+) {
+    assert!(!channel.is_empty(), "explanation channel must not be empty");
+    assert!(
+        contribution.is_finite(),
+        "explanation contribution must be finite"
+    );
+    assert!(
+        bound.is_finite() && bound >= 0.0,
+        "explanation bound must be finite and non-negative"
+    );
+    assert!(
+        !evidence.is_empty(),
+        "explanation nodes must carry evidence links"
+    );
+    match color {
+        Color::Verified { lo, hi } => {
+            assert!(
+                lo.is_finite() && hi.is_finite() && lo <= hi,
+                "verified explanation color must carry finite ordered bounds"
+            );
+        }
+        Color::Estimated { dispersion, .. } => {
+            assert!(
+                dispersion.is_finite() && *dispersion >= 0.0,
+                "estimated explanation color must carry finite non-negative dispersion"
+            );
+        }
+        Color::Validated { .. } => {}
+    }
+}
+
 /// One attribution node: a named channel's contribution with its
 /// bound, evidence links, and a re-derivation fingerprint.
 #[derive(Debug, Clone, PartialEq)]
@@ -68,12 +105,23 @@ impl ExplanationNode {
         color: Color,
         evidence: Vec<String>,
     ) -> ExplanationNode {
-        let canon = format!(
-            "{channel}:{:x}:{:x}:{}",
+        use std::fmt::Write as _;
+
+        assert_node_payload(channel, contribution, bound, &color, &evidence);
+        let mut canon = String::new();
+        let _ = write!(
+            canon,
+            "channel:{}:{channel};contrib:{:x};bound:{:x};color:{}:{};evidence:{}",
+            channel.len(),
             contribution.to_bits(),
             bound.to_bits(),
-            evidence.join(",")
+            color.name(),
+            color.payload_json(),
+            evidence.len()
         );
+        for item in &evidence {
+            let _ = write!(canon, ";{}:{item}", item.len());
+        }
         ExplanationNode {
             channel: channel.to_string(),
             contribution,
@@ -173,6 +221,20 @@ impl Explanation {
 /// and REFUSE when it exceeds `threshold`.
 #[must_use]
 pub fn finalize(nodes: Vec<ExplanationNode>, observed: f64, threshold: f64) -> Explanation {
+    assert!(observed.is_finite(), "observed change must be finite");
+    assert!(
+        threshold.is_finite() && threshold >= 0.0,
+        "explanation threshold must be finite and non-negative"
+    );
+    for node in &nodes {
+        assert_node_payload(
+            &node.channel,
+            node.contribution,
+            node.bound,
+            &node.color,
+            &node.evidence,
+        );
+    }
     let attributed: f64 = nodes.iter().map(|n| n.contribution).sum();
     let residual = observed - attributed;
     if residual.abs() > threshold {
@@ -207,6 +269,16 @@ impl Elliptic1d {
     #[must_use]
     pub fn solve(&self, a: &[f64]) -> Vec<f64> {
         let n = self.n;
+        assert!(n > 0, "Elliptic1d requires at least one interior node");
+        assert_eq!(
+            a.len(),
+            n + 1,
+            "conductivity length must equal n + 1 elements"
+        );
+        assert!(
+            a.iter().all(|v| v.is_finite() && *v > 0.0),
+            "conductivity values must be finite and positive"
+        );
         #[allow(clippy::cast_precision_loss)]
         let h = 1.0 / (n as f64 + 1.0);
         let mut diag = vec![0.0f64; n];
@@ -225,7 +297,9 @@ impl Elliptic1d {
         }
         let mut c = off.clone();
         let mut d = vec![h; n];
-        c[0] /= diag[0];
+        if n > 1 {
+            c[0] /= diag[0];
+        }
         d[0] /= diag[0];
         for i in 1..n {
             let m = diag[i] - off[i - 1] * c[i - 1];
@@ -244,6 +318,11 @@ impl Elliptic1d {
     /// Compliance `J = h Σ u`.
     #[must_use]
     pub fn compliance(&self, u: &[f64]) -> f64 {
+        assert_eq!(
+            u.len(),
+            self.n,
+            "state length must equal the number of interior nodes"
+        );
         #[allow(clippy::cast_precision_loss)]
         let h = 1.0 / (self.n as f64 + 1.0);
         h * u.iter().sum::<f64>()
@@ -273,6 +352,7 @@ pub fn adjoint_attribution(
     a1: &[f64],
     channels: &[(&str, Vec<usize>)],
 ) -> Vec<ExplanationNode> {
+    assert_eq!(a0.len(), a1.len(), "conductivity edits must align");
     let u0 = fixture.solve(a0);
     let u1 = fixture.solve(a1);
     #[allow(clippy::cast_precision_loss)]
@@ -282,6 +362,10 @@ pub fn adjoint_attribution(
         .map(|(name, elems)| {
             let mut acc = 0.0f64;
             for &e in elems {
+                assert!(
+                    e <= fixture.n,
+                    "channel element index {e} exceeds the fixture element count"
+                );
                 let da = a1[e] - a0[e];
                 acc -= da * fixture.slope(&u0, e) * fixture.slope(&u1, e) * h;
             }
@@ -352,6 +436,17 @@ impl LiftingLine {
     /// Elliptic distribution `Γ = Γ0 √(1 − (2y/b)²)` at `n` stations.
     #[must_use]
     pub fn elliptic(gamma0: f64, b: f64, v_inf: f64, s_ref: f64, n: usize) -> LiftingLine {
+        assert!(n > 0, "lifting-line station count must be positive");
+        assert!(
+            gamma0.is_finite()
+                && b.is_finite()
+                && b > 0.0
+                && v_inf.is_finite()
+                && v_inf > 0.0
+                && s_ref.is_finite()
+                && s_ref > 0.0,
+            "lifting-line parameters must be finite with positive span, speed, and reference area"
+        );
         let gamma = (0..n)
             .map(|i| {
                 #[allow(clippy::cast_precision_loss)]
@@ -367,9 +462,27 @@ impl LiftingLine {
         }
     }
 
+    fn assert_valid(&self) {
+        assert!(
+            !self.gamma.is_empty(),
+            "lifting-line circulation stations must not be empty"
+        );
+        assert!(
+            self.gamma.iter().all(|g| g.is_finite())
+                && self.b.is_finite()
+                && self.b > 0.0
+                && self.v_inf.is_finite()
+                && self.v_inf > 0.0
+                && self.s_ref.is_finite()
+                && self.s_ref > 0.0,
+            "lifting-line state must be finite with positive span, speed, and reference area"
+        );
+    }
+
     /// Lift coefficient from the circulation integral (KJ theorem).
     #[must_use]
     pub fn cl(&self) -> f64 {
+        self.assert_valid();
         #[allow(clippy::cast_precision_loss)]
         let dy = self.b / self.gamma.len() as f64;
         let lift_per_rho = self.v_inf * self.gamma.iter().sum::<f64>() * dy;
@@ -383,6 +496,7 @@ impl LiftingLine {
     /// `D_i/ρ = Σ_i Γ_i w_i dy`. Deterministic midpoint discretization.
     #[must_use]
     pub fn induced_drag_coefficient(&self) -> f64 {
+        self.assert_valid();
         let n = self.gamma.len();
         #[allow(clippy::cast_precision_loss)]
         let dy = self.b / n as f64;
@@ -420,6 +534,7 @@ impl LiftingLine {
     /// Aspect ratio.
     #[must_use]
     pub fn aspect_ratio(&self) -> f64 {
+        self.assert_valid();
         self.b * self.b / self.s_ref
     }
 }
@@ -436,6 +551,13 @@ pub fn drag_decomposition(
     cd_total_observed: f64,
     threshold: f64,
 ) -> Explanation {
+    assert!(
+        cf_strip.is_finite()
+            && cf_strip >= 0.0
+            && wetted_over_sref.is_finite()
+            && wetted_over_sref >= 0.0,
+        "drag decomposition inputs must be finite and non-negative"
+    );
     let n_stations = wing.gamma.len();
     let cdi = wing.induced_drag_coefficient();
     // Discretization bound for the wake integral: the midpoint panel

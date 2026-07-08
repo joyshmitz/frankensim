@@ -118,7 +118,11 @@ solver without a passing gradient check cannot merge.
   claim). `Explanation::reconciles` is the PERMANENT invariant
   (channels + residual = observed within summed bounds — the
   Proposal-B kill criterion). `render_narrative` opens by declaring
-  itself NON-AUTHORITATIVE — the tree is the artifact.
+  itself NON-AUTHORITATIVE — the tree is the artifact. The node
+  builder and finalizer fail fast on non-finite observations,
+  negative bounds/thresholds, missing evidence, and malformed fixture
+  dimensions; fingerprints include the epistemic color as well as the
+  numeric term and evidence links.
 
 ## Invariants
 
