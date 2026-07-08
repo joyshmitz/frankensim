@@ -1363,6 +1363,7 @@ dependencies = [
  "fs-scenario",
  "fs-solver",
  "fs-sparse",
+ "fs-time",
 ]
 
 [[package]]
@@ -1424,6 +1425,13 @@ dependencies = [
  "fs-ad",
  "fs-la",
  "fs-math",
+]
+
+[[package]]
+name = "fs-toleralloc"
+version = "0.0.1"
+dependencies = [
+ "fs-evidence",
 ]
 
 [[package]]
