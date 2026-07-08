@@ -21,8 +21,7 @@
 use fs_cutfem::quad::{cut_cell_rules, tensor_gauss};
 use fs_cutfem::{Circle, CutSdf, FemParams, HalfPlane, Quadtree};
 use fs_dwr::{
-    Decision, GoalContext, adapt_loop, dorfler, estimate, h_vs_p, haar_threshold,
-    synthesize_metric,
+    Decision, GoalContext, adapt_loop, dorfler, estimate, h_vs_p, haar_threshold, synthesize_metric,
 };
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
@@ -171,10 +170,7 @@ fn dwr_002_marking_determinism_and_prefix() {
     // Prefix property: marked mass ≥ θ·total, and dropping the last
     // marked cell falls below θ.
     let total: f64 = a.indicators.values().map(|v| v.abs()).sum();
-    let mass: f64 = marked_a
-        .iter()
-        .map(|c| a.indicators[c].abs())
-        .sum();
+    let mass: f64 = marked_a.iter().map(|c| a.indicators[c].abs()).sum();
     let last = marked_a.last().expect("nonempty marking");
     let minimal = mass - a.indicators[last].abs() < 0.5 * total;
     let pass = bitwise && marks_equal && mass >= 0.5 * total && minimal;
@@ -271,6 +267,7 @@ fn dwr_003_goal_oriented_beats_uniform() {
 // ------------------------------------------------------------------ dwr-004
 
 #[test]
+#[allow(clippy::too_many_lines)] // synthesis + three property checks are one narrative
 fn dwr_004_anisotropic_metric_synthesis() {
     // Layer field on a uniform grid.
     let grid = Quadtree::uniform(5);
@@ -286,8 +283,7 @@ fn dwr_004_anisotropic_metric_synthesis() {
             nodal.insert((gi, gj), layer(p[0], p[1]));
         }
     }
-    let weight: BTreeMap<(u32, u32, u32), f64> =
-        grid.leaves().map(|c| (c, 1.0)).collect();
+    let weight: BTreeMap<(u32, u32, u32), f64> = grid.leaves().map(|c| (c, 1.0)).collect();
     let target = 800.0;
     let metric = synthesize_metric(&grid, &nodal, &weight, target);
     // (a) Complexity normalization.
@@ -434,9 +430,8 @@ fn dwr_005_weighted_tile_thresholding() {
         }
     }
     let dj_flat = (goal_of(&flat.field) - j0).abs();
-    let pass = weighted.ratio() >= 5.0
-        && dj_weighted <= eps
-        && dj_flat > 2.0 * dj_weighted.max(1e-12);
+    let pass =
+        weighted.ratio() >= 5.0 && dj_weighted <= eps && dj_flat > 2.0 * dj_weighted.max(1e-12);
     verdict(
         "dwr-005",
         pass,

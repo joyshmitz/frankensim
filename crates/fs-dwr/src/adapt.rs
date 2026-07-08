@@ -44,6 +44,7 @@ impl AdaptStep {
 ///
 /// # Errors
 /// fs-cutfem build/solve teaching errors.
+#[allow(clippy::too_many_arguments)] // the PDE problem statement is the argument list
 pub fn adapt_loop(
     grid: &mut Quadtree,
     sdf: &dyn CutSdf,

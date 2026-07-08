@@ -42,7 +42,6 @@ pub fn synthesize_metric(
     };
     let mut raw: BTreeMap<(u32, u32, u32), [[f64; 2]; 2]> = BTreeMap::new();
     let mut mass;
-    let mut _pre = 0.0f64;
     for c in grid.leaves() {
         let corners = grid.corner_nodes(c);
         // Cell-centered second differences from the corner stencil.
@@ -53,30 +52,32 @@ pub fn synthesize_metric(
         // inflection point vanishes by antisymmetry and would zero the
         // metric exactly where the layer is (measured pathology).
         let maxabs = |a: f64, b: f64| if a.abs() >= b.abs() { a } else { b };
-        let hxx_f = (val(gi + 2 * st, gj) - 2.0 * val(gi + st, gj) + val(gi, gj)
+        let hxx_f = (val(gi + 2 * st, gj) - 2.0 * val(gi + st, gj)
+            + val(gi, gj)
             + val(gi + 2 * st, gj + st)
             - 2.0 * val(gi + st, gj + st)
             + val(gi, gj + st))
             / (2.0 * h * h);
-        let hxx_b = (val(gi + st, gj) - 2.0 * val(gi, gj) + val(gi - st, gj)
-            + val(gi + st, gj + st)
-            - 2.0 * val(gi, gj + st)
-            + val(gi - st, gj + st))
-            / (2.0 * h * h);
+        let hxx_b =
+            (val(gi + st, gj) - 2.0 * val(gi, gj) + val(gi - st, gj) + val(gi + st, gj + st)
+                - 2.0 * val(gi, gj + st)
+                + val(gi - st, gj + st))
+                / (2.0 * h * h);
         let hxx = maxabs(hxx_f, hxx_b);
-        let hyy_f = (val(gi, gj + 2 * st) - 2.0 * val(gi, gj + st) + val(gi, gj)
+        let hyy_f = (val(gi, gj + 2 * st) - 2.0 * val(gi, gj + st)
+            + val(gi, gj)
             + val(gi + st, gj + 2 * st)
             - 2.0 * val(gi + st, gj + st)
             + val(gi + st, gj))
             / (2.0 * h * h);
-        let hyy_b = (val(gi, gj + st) - 2.0 * val(gi, gj) + val(gi, gj - st)
-            + val(gi + st, gj + st)
-            - 2.0 * val(gi + st, gj)
-            + val(gi + st, gj - st))
-            / (2.0 * h * h);
+        let hyy_b =
+            (val(gi, gj + st) - 2.0 * val(gi, gj) + val(gi, gj - st) + val(gi + st, gj + st)
+                - 2.0 * val(gi + st, gj)
+                + val(gi + st, gj - st))
+                / (2.0 * h * h);
         let hyy = maxabs(hyy_f, hyy_b);
-        let hxy = (val(gi + st, gj + st) - val(gi + st, gj) - val(gi, gj + st) + val(gi, gj))
-            / (h * h);
+        let hxy =
+            (val(gi + st, gj + st) - val(gi + st, gj) - val(gi, gj + st) + val(gi, gj)) / (h * h);
         // Absolute Hessian: |H| via closed-form 2×2 spectral abs.
         let tr = hxx + hyy;
         let det = hxx * hyy - hxy * hxy;
@@ -106,14 +107,8 @@ pub fn synthesize_metric(
         let w = weight.get(&c).copied().unwrap_or(0.0).abs().max(1e-12);
         // M = w·(a1 e⊗e + a2 e⊥⊗e⊥).
         let m = [
-            [
-                w * (a1 * ex * ex + a2 * ey * ey),
-                w * (a1 - a2) * ex * ey,
-            ],
-            [
-                w * (a1 - a2) * ex * ey,
-                w * (a1 * ey * ey + a2 * ex * ex),
-            ],
+            [w * (a1 * ex * ex + a2 * ey * ey), w * (a1 - a2) * ex * ey],
+            [w * (a1 - a2) * ex * ey, w * (a1 * ey * ey + a2 * ex * ex)],
         ];
         raw.insert(c, m);
     }

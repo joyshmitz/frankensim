@@ -7,10 +7,7 @@ use std::collections::BTreeMap;
 
 /// Mark the smallest prefix carrying `theta` of the indicator mass.
 #[must_use]
-pub fn dorfler(
-    indicators: &BTreeMap<(u32, u32, u32), f64>,
-    theta: f64,
-) -> Vec<(u32, u32, u32)> {
+pub fn dorfler(indicators: &BTreeMap<(u32, u32, u32), f64>, theta: f64) -> Vec<(u32, u32, u32)> {
     let total: f64 = indicators.values().map(|v| v.abs()).sum();
     if total <= 0.0 {
         return Vec::new();
