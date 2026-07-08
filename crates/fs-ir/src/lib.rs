@@ -21,6 +21,8 @@ pub mod ast;
 pub mod json;
 pub mod lower;
 #[cfg(feature = "ladder-planner")]
+pub mod anytime;
+#[cfg(feature = "ladder-planner")]
 pub mod planner;
 pub mod query;
 pub mod sexpr;

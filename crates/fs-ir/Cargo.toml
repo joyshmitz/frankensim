@@ -11,6 +11,7 @@ description = "FrankenScript IR: typed AST with spans, isomorphic s-expr/JSON sy
 layer = "L6"
 
 [dependencies]
+fs-evidence = { path = "../fs-evidence" }
 fs-geom = { path = "../fs-geom" }
 fs-plan = { path = "../fs-plan" }
 fs-qty = { path = "../fs-qty" }

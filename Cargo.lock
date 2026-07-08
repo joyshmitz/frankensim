@@ -1107,6 +1107,7 @@ dependencies = [
 name = "fs-ir"
 version = "0.0.1"
 dependencies = [
+ "fs-evidence",
  "fs-geom",
  "fs-plan",
  "fs-qty",
