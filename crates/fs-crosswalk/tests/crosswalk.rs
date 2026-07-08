@@ -1,0 +1,90 @@
+//! Battery for the regulatory crosswalk (addendum Proposal 12). Verifies the
+//! table is complete (every concept × standard covered, no silent gaps), that
+//! it is HONEST (explicit no-counterpart rows exist, not forced maps), the
+//! per-concept / per-standard slices, specific lookups, and deterministic JSON.
+
+use fs_crosswalk::{
+    CROSSWALK_VERSION, Counterpart, PackageConcept, Standard, audit, crosswalk, for_concept,
+    for_standard, lookup, to_json,
+};
+
+#[test]
+fn the_table_covers_every_concept_by_every_standard() {
+    assert_eq!(crosswalk().len(), 10 * 4);
+    let a = audit();
+    assert_eq!(a.expected, 40);
+    assert!(a.ok(), "no silent gaps: {:?}", a.gaps);
+    assert_eq!(a.mapped + a.no_counterpart, 40);
+}
+
+#[test]
+fn the_crosswalk_is_honest_about_missing_counterparts() {
+    let a = audit();
+    // it does not force a false mapping: some fields have no named counterpart.
+    assert!(a.no_counterpart > 0);
+    // specifically, content-addressed integrity has no V&V-10 counterpart...
+    assert!(matches!(
+        lookup(PackageConcept::MerkleRoot, Standard::AsmeVvV10)
+            .unwrap()
+            .counterpart,
+        Counterpart::NoCounterpart { .. }
+    ));
+    // ...while a certified bound DOES map to solution verification.
+    assert!(matches!(
+        lookup(PackageConcept::VerifiedColor, Standard::AsmeVvV10)
+            .unwrap()
+            .counterpart,
+        Counterpart::Mapped { .. }
+    ));
+}
+
+#[test]
+fn every_concept_maps_across_all_four_standards() {
+    for c in PackageConcept::ALL {
+        assert_eq!(for_concept(c).len(), 4, "{:?}", c.label());
+    }
+}
+
+#[test]
+fn every_standard_covers_all_ten_concepts() {
+    for s in Standard::ALL {
+        assert_eq!(for_standard(s).len(), 10, "{:?}", s.label());
+        assert!(!s.full_name().is_empty());
+    }
+}
+
+#[test]
+fn a_validated_claim_maps_to_the_validation_metric() {
+    let e = lookup(PackageConcept::ValidatedColor, Standard::AsmeVvV20).unwrap();
+    match e.counterpart {
+        Counterpart::Mapped { clause, .. } => assert!(clause.contains("Validation")),
+        Counterpart::NoCounterpart { .. } => panic!("validated color should map in V&V 20"),
+    }
+}
+
+#[test]
+fn labels_are_unique() {
+    let concept_labels: Vec<&str> = PackageConcept::ALL.iter().map(|c| c.label()).collect();
+    let mut sorted = concept_labels.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(sorted.len(), concept_labels.len());
+
+    let std_labels: Vec<&str> = Standard::ALL.iter().map(|s| s.label()).collect();
+    let mut ss = std_labels.clone();
+    ss.sort_unstable();
+    ss.dedup();
+    assert_eq!(ss.len(), std_labels.len());
+}
+
+#[test]
+fn json_is_well_formed_and_deterministic() {
+    let j = to_json();
+    assert_eq!(j, to_json());
+    assert!(j.starts_with('{') && j.ends_with('}'));
+    assert!(j.contains(&format!("\"version\":{CROSSWALK_VERSION}")));
+    assert_eq!(j.matches("\"concept\":").count(), 40);
+    assert!(j.contains("verified-color") && j.contains("asme-vv-40"));
+    assert!(j.contains("no_counterpart"));
+    assert!(!j.contains(",,"));
+}
