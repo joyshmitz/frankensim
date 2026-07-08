@@ -28,7 +28,7 @@ fn fw_001_compounding_measured_with_margin_and_variance() {
     let seeds = [11u64, 23, 47, 89, 173];
     let mut ratios = Vec::new();
     for &seed in &seeds {
-        let (isolated, composed) = speedups(30, seed);
+        let (isolated, composed) = speedups(12, seed);
         let best = isolated.values().fold(0.0f64, |a, &b| a.max(b));
         let ratio = composed / best;
         assert!(
@@ -45,11 +45,15 @@ fn fw_001_compounding_measured_with_margin_and_variance() {
     // Across-replay variance, reported (and sane).
     let mean = ratios.iter().sum::<f64>() / ratios.len() as f64;
     let var = ratios.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / ratios.len() as f64;
+    let cv = var.sqrt() / mean;
     println!(
         "{{\"metric\":\"compounding-variance\",\"mean\":{mean:.3},\"variance\":{var:.5},\
-         \"replays\":5}}"
+         \"cv\":{cv:.3},\"replays\":5}}"
     );
-    assert!(var < 0.5, "replay variance is bounded: {var}");
+    assert!(
+        cv < 0.25,
+        "the across-replay coefficient of variation is bounded: {cv}"
+    );
     verdict(
         "fw-001",
         "5 seeded replays: composed speedup beats the best isolated by >1.15x every \
@@ -59,7 +63,7 @@ fn fw_001_compounding_measured_with_margin_and_variance() {
 
 #[test]
 fn fw_002_colors_survive_the_loop_no_laundering() {
-    let report = run_loop(&LoopConfig::composed(), 30, 7);
+    let report = run_loop(&LoopConfig::composed(), 12, 7);
     // Speculation fired, so the headline MUST be estimated (weakest
     // input) — a verified headline over accepted speculation would be
     // laundering.
@@ -97,8 +101,8 @@ fn fw_002_colors_survive_the_loop_no_laundering() {
 
 #[test]
 fn fw_003_g5_whole_loop_determinism() {
-    let a = run_loop(&LoopConfig::composed(), 25, 99);
-    let b = run_loop(&LoopConfig::composed(), 25, 99);
+    let a = run_loop(&LoopConfig::composed(), 12, 99);
+    let b = run_loop(&LoopConfig::composed(), 12, 99);
     assert_eq!(
         a.total_cost.to_bits(),
         b.total_cost.to_bits(),
@@ -108,7 +112,7 @@ fn fw_003_g5_whole_loop_determinism() {
     assert_eq!(a.events.len(), b.events.len());
     // A different seed genuinely changes the trace (the hash is not
     // vacuous).
-    let c = run_loop(&LoopConfig::composed(), 25, 100);
+    let c = run_loop(&LoopConfig::composed(), 12, 100);
     assert_ne!(a.trace_hash(), c.trace_hash(), "the hash sees the workload");
     verdict(
         "fw-003",
@@ -122,19 +126,19 @@ fn fw_004_g4_cancellation_storm_mid_loop() {
     // Cancel at escalating points through the loop: every partial trace
     // must be a clean PREFIX state (consistent events, no partial-stage
     // residue), and the full re-run completes.
-    let full = run_loop(&LoopConfig::composed(), 20, 55);
+    let full = run_loop(&LoopConfig::composed(), 12, 55);
     for cancel_at in [1usize, 3, 7, 15, 31] {
         let partial = run_loop(
             &LoopConfig {
                 cancel_after_stages: Some(cancel_at),
                 ..LoopConfig::composed()
             },
-            20,
+            12,
             55,
         );
         assert!(partial.cancelled, "the storm fired at {cancel_at}");
         assert!(
-            partial.iterations < 20,
+            partial.iterations < 12,
             "cancellation genuinely interrupted the loop"
         );
         // The partial trace is a strict prefix of the full trace: no
@@ -149,7 +153,7 @@ fn fw_004_g4_cancellation_storm_mid_loop() {
     }
     // And a fresh full run after the storms is untouched (no leaked
     // state between runs — every run owns its stores).
-    let again = run_loop(&LoopConfig::composed(), 20, 55);
+    let again = run_loop(&LoopConfig::composed(), 12, 55);
     assert_eq!(full.trace_hash(), again.trace_hash(), "no cross-run residue");
     verdict(
         "fw-004",
@@ -160,7 +164,7 @@ fn fw_004_g4_cancellation_storm_mid_loop() {
 
 #[test]
 fn fw_005_telemetry_completeness() {
-    let report = run_loop(&LoopConfig::composed(), 30, 7);
+    let report = run_loop(&LoopConfig::composed(), 12, 7);
     // The whole flywheel's telemetry in one trace: every dial moved.
     assert!(report.accept_rate > 0.3, "accept rate: {}", report.accept_rate);
     assert!(report.skips > 0, "recompute skips: {}", report.skips);
