@@ -1,0 +1,28 @@
+[package]
+name = "fs-topopt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Density-based topology optimization: SIMP with Helmholtz filtering, Heaviside projection, exact chain-rule sensitivities, and optimality-criteria/AL drivers."
+
+[package.metadata.frankensim]
+layer = "L4"
+
+[dependencies]
+fs-adjoint = { path = "../fs-adjoint" }
+fs-ascent = { path = "../fs-ascent" }
+fs-feec = { path = "../fs-feec" }
+fs-la = { path = "../fs-la" }
+fs-material = { path = "../fs-material" }
+fs-math = { path = "../fs-math" }
+fs-rep-mesh = { path = "../fs-rep-mesh" }
+fs-solver = { path = "../fs-solver" }
+fs-sparse = { path = "../fs-sparse" }
+
+[dev-dependencies]
+fs-rand = { path = "../fs-rand" }
+
+[lints]
+workspace = true

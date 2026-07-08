@@ -1,0 +1,288 @@
+//! fs-topopt battery (7tv.11 slice 1): G0 filter laws (linearity,
+//! transpose adjointness, constant preservation), projection
+//! monotonicity + endpoints + slope, FULL-CHAIN sensitivity
+//! verification vs FD at multiple continuation stages (the acceptance
+//! requirement — SIMP ∘ projection ∘ filter ∘ elasticity-solve), an
+//! OC cantilever run with volume control and deterministic bitwise
+//! replay (G5: a whole topo run replayable), and the golden hash.
+
+use fs_adjoint::verify_gradient;
+use fs_feec::kuhn_cube;
+use fs_rand::StreamKey;
+use fs_topopt::{
+    DensityElasticity, DensityFilter, DesignPipeline, SimpParams, heaviside, heaviside_derivative,
+    optimality_criteria,
+};
+
+fn log(case: &str, verdict: &str, detail: &str) {
+    println!(
+        "{{\"suite\":\"fs-topopt\",\"case\":\"{case}\",\"verdict\":\"{verdict}\",\"detail\":\"{detail}\"}}"
+    );
+}
+
+fn rand_vec(n: usize, tile: u32) -> Vec<f64> {
+    let mut s = StreamKey {
+        seed: 51,
+        kernel: 0x0770,
+        tile,
+    }
+    .stream();
+    (0..n).map(|_| s.next_f64()).collect()
+}
+
+/// Cantilever fixture: unit-cube kuhn mesh, x = 0 face fully fixed,
+/// downward tip load along the x = 1, z = 0 edge.
+fn cantilever(m: usize) -> (fs_rep_mesh::TetComplex, Vec<[f64; 3]>, Vec<f64>, Vec<f64>) {
+    let (complex, positions) = kuhn_cube(m);
+    // Exact grid coordinates are intentional (kuhn positions are
+    // rational multiples of 1/m).
+    let fixed = |p: [f64; 3]| p[0].to_bits() == 0.0f64.to_bits();
+    let el = DensityElasticity::new(&complex, &positions, 1.0, 0.3, &fixed);
+    let mut force = vec![0.0f64; el.n()];
+    for (v, &p) in positions.iter().enumerate() {
+        if p[0].to_bits() == 1.0f64.to_bits() && p[2].to_bits() == 0.0f64.to_bits() {
+            force[3 * v + 2] = -1.0;
+        }
+    }
+    let geo = fs_feec::element_geometry(&complex, &positions);
+    let vol: Vec<f64> = geo.vol_signed.iter().map(|v| v.abs()).collect();
+    (complex, positions, force, vol)
+}
+
+#[test]
+fn filter_g0_laws() {
+    let (complex, positions) = kuhn_cube(2);
+    let nc = complex.tets.len();
+    let filter = DensityFilter::new(&complex, &positions, 0.15);
+    // Linearity: F(a·x + y) = a·F(x) + F(y) to solver tolerance.
+    let x = rand_vec(nc, 1);
+    let y = rand_vec(nc, 2);
+    let a = 1.7f64;
+    let combo: Vec<f64> = x.iter().zip(&y).map(|(xi, yi)| a * xi + yi).collect();
+    let f_combo = filter.apply(&combo);
+    let fx = filter.apply(&x);
+    let fy = filter.apply(&y);
+    let worst = f_combo
+        .iter()
+        .zip(fx.iter().zip(&fy))
+        .map(|(fc, (fxi, fyi))| (fc - (a * fxi + fyi)).abs())
+        .fold(0.0f64, f64::max);
+    assert!(worst < 1e-9, "filter not linear: {worst:.3e}");
+    // Transpose adjointness: ⟨F·x, w⟩ = ⟨x, Fᵀ·w⟩.
+    let w = rand_vec(nc, 3);
+    let lhs: f64 = fx.iter().zip(&w).map(|(p, q)| p * q).sum();
+    let ft_w = filter.apply_transpose(&w);
+    let rhs: f64 = x.iter().zip(&ft_w).map(|(p, q)| p * q).sum();
+    let rel = (lhs - rhs).abs() / lhs.abs().max(1e-30);
+    assert!(
+        rel < 1e-9,
+        "filter transpose broken: {lhs:.12e} vs {rhs:.12e}"
+    );
+    // Constants preserved (natural BCs — no boundary droop).
+    let ones = vec![0.7f64; nc];
+    let f_ones = filter.apply(&ones);
+    let dev = f_ones
+        .iter()
+        .map(|v| (v - 0.7).abs())
+        .fold(0.0f64, f64::max);
+    assert!(dev < 1e-9, "filter must preserve constants: dev {dev:.3e}");
+    log(
+        "filter-g0",
+        "pass",
+        &format!("linearity {worst:.1e}, adjoint {rel:.1e}, const {dev:.1e}"),
+    );
+}
+
+#[test]
+fn projection_g0_laws() {
+    let (beta, eta) = (4.0f64, 0.5f64);
+    // Endpoints exact.
+    assert!((heaviside(0.0, beta, eta)).abs() < 1e-15);
+    assert!((heaviside(1.0, beta, eta) - 1.0).abs() < 1e-15);
+    // Monotonicity on a fine sweep.
+    let mut prev = heaviside(0.0, beta, eta);
+    for k in 1..=100 {
+        let r = f64::from(k) / 100.0;
+        let cur = heaviside(r, beta, eta);
+        assert!(cur >= prev, "projection not monotone at {r}");
+        prev = cur;
+    }
+    // Slope vs FD.
+    for &r in &[0.2f64, 0.5, 0.8] {
+        let eps = 1e-6;
+        let fd = (heaviside(r + eps, beta, eta) - heaviside(r - eps, beta, eta)) / (2.0 * eps);
+        let an = heaviside_derivative(r, beta, eta);
+        assert!(
+            (fd - an).abs() < 1e-8,
+            "slope mismatch at {r}: {fd} vs {an}"
+        );
+    }
+    log("projection-g0", "pass", "endpoints, monotone, slope");
+}
+
+#[test]
+fn full_chain_sensitivity_at_continuation_stages() {
+    // The acceptance gate: dc/dρ through SIMP ∘ projection ∘ filter ∘
+    // solve, FD-verified at MULTIPLE continuation stages (early,
+    // mid, sharp).
+    let (complex, positions, force, _vol) = cantilever(2);
+    let nc = complex.tets.len();
+    let rho0: Vec<f64> = rand_vec(nc, 10).iter().map(|v| 0.3 + 0.5 * v).collect();
+    for (stage, (penal, beta)) in [(1.0f64, 1.0f64), (3.0, 2.0), (3.0, 8.0)]
+        .iter()
+        .enumerate()
+    {
+        let pipeline = DesignPipeline {
+            filter: DensityFilter::new(&complex, &positions, 0.12),
+            params: SimpParams {
+                e_min: 1e-6,
+                penal: *penal,
+                beta: *beta,
+                eta: 0.5,
+            },
+        };
+        let mut el = DensityElasticity::new(&complex, &positions, 1.0, 0.3, &|p: [f64; 3]| {
+            p[0].to_bits() == 0.0f64.to_bits()
+        });
+        let (_, _, grad) = pipeline.compliance_and_gradient(&mut el, &rho0, &force);
+        let j = |rho: &[f64]| -> f64 {
+            let mut el2 = DensityElasticity::new(&complex, &positions, 1.0, 0.3, &|p: [f64; 3]| {
+                p[0].to_bits() == 0.0f64.to_bits()
+            });
+            pipeline.compliance_and_gradient(&mut el2, rho, &force).0
+        };
+        let dirs: Vec<Vec<f64>> = (0..2)
+            .map(|k| rand_vec(nc, 20 + u32::try_from(stage).expect("small") * 10 + k))
+            .collect();
+        let verdict = verify_gradient(&j, &rho0, &grad, &dirs, 1e-6, 2e-4);
+        assert!(
+            verdict.pass,
+            "stage {stage} (p={penal}, beta={beta}): sensitivity failed FD: {:.3e}",
+            verdict.max_rel_err
+        );
+        log(
+            "chain-sensitivity",
+            "pass",
+            &format!("p={penal} beta={beta} rel={:.2e}", verdict.max_rel_err),
+        );
+    }
+}
+
+#[test]
+fn oc_cantilever_descends_and_replays() {
+    let (complex, positions, force, vol) = cantilever(3);
+    let nc = complex.tets.len();
+    let pipeline = DesignPipeline {
+        filter: DensityFilter::new(&complex, &positions, 0.15),
+        params: SimpParams {
+            e_min: 1e-6,
+            penal: 3.0,
+            beta: 2.0,
+            eta: 0.5,
+        },
+    };
+    let mut el = DensityElasticity::new(&complex, &positions, 1.0, 0.3, &|p: [f64; 3]| {
+        p[0].to_bits() == 0.0f64.to_bits()
+    });
+    let vol_frac = 0.4;
+    let rho0 = vec![vol_frac; nc];
+    let rep = optimality_criteria(&pipeline, &mut el, &force, &rho0, &vol, vol_frac, 0.2, 12);
+    let c0 = rep.compliance[0];
+    let c_final = *rep.compliance.last().expect("trace");
+    assert!(
+        c_final < 0.8 * c0,
+        "OC failed to improve compliance: {c0} -> {c_final}"
+    );
+    let v_final = *rep.volume.last().expect("trace");
+    assert!(
+        (v_final - vol_frac).abs() < 0.03,
+        "volume constraint missed: {v_final} vs {vol_frac}"
+    );
+    // Design is differentiated (not uniform gray): spread must grow.
+    let spread = rep
+        .rho
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &r| {
+            (lo.min(r), hi.max(r))
+        });
+    assert!(
+        spread.1 - spread.0 > 0.5,
+        "design stayed gray: range {spread:?}"
+    );
+    // G5: a whole run replays bitwise.
+    let mut el2 = DensityElasticity::new(&complex, &positions, 1.0, 0.3, &|p: [f64; 3]| {
+        p[0].to_bits() == 0.0f64.to_bits()
+    });
+    let rep2 = optimality_criteria(&pipeline, &mut el2, &force, &rho0, &vol, vol_frac, 0.2, 12);
+    assert!(
+        rep.rho
+            .iter()
+            .zip(&rep2.rho)
+            .all(|(a, b)| a.to_bits() == b.to_bits()),
+        "topo run not replayable"
+    );
+    log(
+        "oc-cantilever",
+        "pass",
+        &format!(
+            "c: {c0:.4e} -> {c_final:.4e}, vol {v_final:.3}, range [{:.2},{:.2}], change {:.3}",
+            spread.0, spread.1, rep.final_change
+        ),
+    );
+}
+
+const GOLDEN_HASH: u64 = 0x772a_2f8c_a720_dd64; // recorded at 7tv.11 slice 1, frozen
+
+#[test]
+fn topopt_golden_hash() {
+    let mut acc: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |v: f64| {
+        for byte in v.to_bits().to_le_bytes() {
+            acc ^= u64::from(byte);
+            acc = acc.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    let (complex, positions, force, vol) = cantilever(2);
+    let nc = complex.tets.len();
+    let pipeline = DesignPipeline {
+        filter: DensityFilter::new(&complex, &positions, 0.15),
+        params: SimpParams::default(),
+    };
+    let mut el = DensityElasticity::new(&complex, &positions, 1.0, 0.3, &|p: [f64; 3]| {
+        p[0].to_bits() == 0.0f64.to_bits()
+    });
+    // Pipeline forward + gradient fingerprints.
+    let rho = rand_vec(nc, 40);
+    let (rho_tilde, rho_bar, moduli) = pipeline.forward(&rho);
+    for v in rho_tilde.iter().step_by(5).chain(rho_bar.iter().step_by(7)) {
+        feed(*v);
+    }
+    for v in moduli.iter().step_by(3) {
+        feed(*v);
+    }
+    let (c, _, grad) = pipeline.compliance_and_gradient(&mut el, &rho, &force);
+    feed(c);
+    for v in grad.iter().step_by(3) {
+        feed(*v);
+    }
+    // Short OC fingerprint.
+    let rep = optimality_criteria(
+        &pipeline,
+        &mut el,
+        &force,
+        &vec![0.4; nc],
+        &vol,
+        0.4,
+        0.2,
+        3,
+    );
+    for v in rep.rho.iter().step_by(5) {
+        feed(*v);
+    }
+    log("topopt-golden", "info", &format!("{acc:#018x}"));
+    assert_eq!(
+        acc, GOLDEN_HASH,
+        "topopt bits changed: {acc:#018x} vs {GOLDEN_HASH:#018x} — bump only with semantic \
+         justification (golden-evidence policy)"
+    );
+}
