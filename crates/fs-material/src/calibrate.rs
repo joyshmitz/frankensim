@@ -51,14 +51,24 @@ fn fit_line(pts: &[(f64, f64)], through_origin: bool) -> (f64, f64, f64) {
     (slope, intercept, sse)
 }
 
-fn slope_se(pts: &[(f64, f64)], sse: f64) -> f64 {
+fn slope_se(pts: &[(f64, f64)], sse: f64, through_origin: bool) -> f64 {
     let n = pts.len() as f64;
-    if n <= 2.0 {
-        return f64::INFINITY;
+    if through_origin {
+        // y = β·x: Var(β̂) = σ²/Σx² with n−1 degrees of freedom (one parameter).
+        if n <= 1.0 {
+            return f64::INFINITY;
+        }
+        let sxx_raw: f64 = pts.iter().map(|(x, _)| x * x).sum();
+        det::sqrt(sse / (n - 1.0) / sxx_raw.max(f64::MIN_POSITIVE))
+    } else {
+        // y = β·x + α: Var(β̂) = σ²/Σ(x−x̄)² with n−2 degrees of freedom.
+        if n <= 2.0 {
+            return f64::INFINITY;
+        }
+        let mean_x: f64 = pts.iter().map(|(x, _)| x).sum::<f64>() / n;
+        let sxx: f64 = pts.iter().map(|(x, _)| (x - mean_x).powi(2)).sum();
+        det::sqrt(sse / (n - 2.0) / sxx.max(f64::MIN_POSITIVE))
     }
-    let mean_x: f64 = pts.iter().map(|(x, _)| x).sum::<f64>() / n;
-    let sxx: f64 = pts.iter().map(|(x, _)| (x - mean_x).powi(2)).sum();
-    det::sqrt(sse / (n - 2.0) / sxx.max(f64::MIN_POSITIVE))
 }
 
 /// Fit a bilinear (elastic/hardening) law to monotonic uniaxial data by
@@ -99,9 +109,9 @@ pub fn calibrate_bilinear(data: &[(f64, f64)]) -> Result<CalibrationFit, Materia
     let rms = det::sqrt((sse1 + sse2) / n);
     Ok(CalibrationFit {
         youngs: e,
-        youngs_se: slope_se(seg1, sse1),
+        youngs_se: slope_se(seg1, sse1, true),
         post_yield: h,
-        post_yield_se: slope_se(seg2, sse2),
+        post_yield_se: slope_se(seg2, sse2, false),
         yield_stress: sigma_y,
         rms_residual: rms,
         break_index: k,
