@@ -48,6 +48,10 @@ impl SpherePanels {
     /// Panelize an icosphere (fs-rep-mesh) of given radius/subdivisions.
     #[must_use]
     pub fn icosphere(radius: f64, subdivisions: u32) -> SpherePanels {
+        assert!(
+            radius.is_finite() && radius > 0.0,
+            "sphere panel radius must be positive and finite"
+        );
         let soup = icosphere(Point3::new(0.0, 0.0, 0.0), radius, subdivisions);
         let mut centroids = Vec::new();
         let mut normals = Vec::new();
@@ -88,10 +92,54 @@ impl SpherePanels {
         }
     }
 
+    fn assert_valid(&self) {
+        let n = self.centroids.len();
+        assert!(n > 0, "at least one panel is required");
+        assert_eq!(
+            self.normals.len(),
+            n,
+            "panel centroids and normals must have matching lengths"
+        );
+        assert_eq!(
+            self.areas.len(),
+            n,
+            "panel centroids and areas must have matching lengths"
+        );
+        for (i, ((centroid, normal), area)) in self
+            .centroids
+            .iter()
+            .zip(&self.normals)
+            .zip(&self.areas)
+            .enumerate()
+        {
+            assert!(
+                centroid.iter().all(|x| x.is_finite()),
+                "panel {i} centroid must be finite"
+            );
+            assert!(
+                normal.iter().all(|x| x.is_finite()),
+                "panel {i} normal must be finite"
+            );
+            let norm2 = normal[0].mul_add(
+                normal[0],
+                normal[1].mul_add(normal[1], normal[2] * normal[2]),
+            );
+            assert!(
+                (norm2 - 1.0).abs() <= 1e-8,
+                "panel {i} normal must be unit length"
+            );
+            assert!(
+                area.is_finite() && *area > 0.0,
+                "panel {i} area must be positive and finite"
+            );
+        }
+    }
+
     /// Dense influence matrix (row-major n×n): normal velocity at
     /// centroid i induced by unit source density on panel j.
     #[must_use]
     pub fn dense_matrix(&self) -> Vec<f64> {
+        self.assert_valid();
         let n = self.centroids.len();
         let gk = [
             GradKernel { c: 0 },
@@ -120,6 +168,7 @@ impl SpherePanels {
     /// fs-fmm keeps close pairs exact at centroid resolution).
     #[must_use]
     pub fn fmm_matvec(&self, sigma: &[f64], order: usize) -> Vec<f64> {
+        self.assert_valid();
         let n = self.centroids.len();
         assert_eq!(sigma.len(), n, "one source density per panel");
         let weighted: Vec<f64> = sigma.iter().zip(&self.areas).map(|(s, a)| s * a).collect();
@@ -144,6 +193,7 @@ impl SpherePanels {
     /// applies the area at the target after swapping kernel arguments.
     #[must_use]
     pub fn fmm_transpose_matvec(&self, x: &[f64], order: usize) -> Vec<f64> {
+        self.assert_valid();
         let n = self.centroids.len();
         assert_eq!(x.len(), n, "one transpose input value per panel");
         let mut out = vec![0.0f64; n];
@@ -197,6 +247,7 @@ pub fn solve_exterior(
     order: usize,
     tol: f64,
 ) -> (Vec<f64>, usize, f64) {
+    panels.assert_valid();
     let n = panels.centroids.len();
     let rhs: Vec<f64> = (0..n)
         .map(|i| {
@@ -221,6 +272,7 @@ pub fn surface_velocity(
     u_inf: [f64; 3],
     order: usize,
 ) -> Vec<[f64; 3]> {
+    panels.assert_valid();
     let n = panels.centroids.len();
     assert_eq!(sigma.len(), n, "one source density per panel");
     let weighted: Vec<f64> = sigma
@@ -284,5 +336,14 @@ mod tests {
             rel < 1e-4,
             "LinearOp::apply_transpose must match dense transpose; rel={rel:.3e}"
         );
+    }
+
+    #[test]
+    fn public_panel_vectors_are_validated_before_fmm_math() {
+        let mut panels = SpherePanels::icosphere(1.0, 1);
+        panels.areas.pop();
+        let input = vec![1.0; panels.centroids.len()];
+
+        assert!(std::panic::catch_unwind(|| panels.fmm_transpose_matvec(&input, 6)).is_err());
     }
 }

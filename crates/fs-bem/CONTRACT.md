@@ -58,10 +58,11 @@ everywhere: this is screening, not a viscous truth source.
 
 ## Error model
 
-Structured panics on programmer contracts (degenerate panels,
-singular systems name themselves via the LU refusal). Physical
-honesty: inviscid screening labels in every battery row; no viscous
-claims anywhere.
+Structured panics on programmer contracts (mismatched public panel
+vectors, empty/degenerate panels, non-finite geometry, singular
+systems name themselves via the LU refusal). Physical honesty:
+inviscid screening labels in every battery row; no viscous claims
+anywhere.
 
 ## Determinism class
 
@@ -83,11 +84,12 @@ None.
 
 ## Conformance tests
 
-`src/panel3d.rs` unit test: the private `LinearOp::apply_transpose`
-wrapper matches the dense transpose. `tests/battery.rs`: bem-001 Gauss
-identity; bem-002 sphere analytic; bem-003 FMM-vs-dense matvec,
-transpose + GMRES; bem-004 Hess–Smith slope band, Cp sanity, Kutta,
-adjoint gate; bem-005 impulsive-start free wake.
+`src/panel3d.rs` unit tests: the private `LinearOp::apply_transpose`
+wrapper matches the dense transpose, and public `SpherePanels` vector
+shape corruption is rejected before FMM math. `tests/battery.rs`:
+bem-001 Gauss identity; bem-002 sphere analytic; bem-003 FMM-vs-dense
+matvec, transpose + GMRES; bem-004 Hess–Smith slope band, Cp sanity,
+Kutta, adjoint gate; bem-005 impulsive-start free wake.
 
 ## No-claim boundaries
 
