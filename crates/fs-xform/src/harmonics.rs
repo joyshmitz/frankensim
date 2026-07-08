@@ -47,8 +47,8 @@ impl Surface {
         }
         for v in &mut n {
             let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-300);
-            for k in 0..3 {
-                v[k] /= l;
+            for vk in v.iter_mut() {
+                *vk /= l;
             }
         }
         n
@@ -60,14 +60,8 @@ impl Surface {
         self.triangles
             .iter()
             .map(|t| {
-                let e1 = sub(
-                    self.positions[t[1] as usize],
-                    self.positions[t[0] as usize],
-                );
-                let e2 = sub(
-                    self.positions[t[2] as usize],
-                    self.positions[t[0] as usize],
-                );
+                let e1 = sub(self.positions[t[1] as usize], self.positions[t[0] as usize]);
+                let e2 = sub(self.positions[t[2] as usize], self.positions[t[0] as usize]);
                 0.5 * norm(cross(e1, e2))
             })
             .sum()

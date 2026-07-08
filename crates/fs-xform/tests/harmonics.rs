@@ -38,7 +38,8 @@ fn icosphere(subdiv: usize) -> Surface {
         [0, 3, 5],
     ];
     for _ in 0..subdiv {
-        let mut cache: std::collections::BTreeMap<(u32, u32), u32> = std::collections::BTreeMap::new();
+        let mut cache: std::collections::BTreeMap<(u32, u32), u32> =
+            std::collections::BTreeMap::new();
         let mut next = Vec::with_capacity(tris.len() * 4);
         for t in &tris {
             let mut mid = |a: u32, b: u32, verts: &mut Vec<[f64; 3]>| -> u32 {
@@ -210,7 +211,10 @@ fn mh_002_smoothness_ordering() {
     // Dirichlet energy of an M-orthonormal mode IS its eigenvalue
     // (mode 0 is the constant: energy exactly 0, skipped for the
     // relative check).
-    assert!(basis.dirichlet_energy(0).abs() < 1e-10, "constant: zero energy");
+    assert!(
+        basis.dirichlet_energy(0).abs() < 1e-10,
+        "constant: zero energy"
+    );
     for j in 1..basis.dof() {
         let e = basis.dirichlet_energy(j);
         let lam = basis.eigenvalues[j];
@@ -261,7 +265,10 @@ fn mh_004_refresh_transfer_preserves_shape() {
     let displaced = basis.displace(&theta);
     // Drift criterion: small deformation does NOT trigger, the real
     // one (scaled up) does.
-    assert!(!needs_refresh(&sphere, &sphere, 1e-3), "identity: no refresh");
+    assert!(
+        !needs_refresh(&sphere, &sphere, 1e-3),
+        "identity: no refresh"
+    );
     let big_theta: Vec<f64> = theta.iter().map(|t| t * 8.0).collect();
     let big = basis.displace(&big_theta);
     assert!(needs_refresh(&sphere, &big, 0.02), "large drift refreshes");
@@ -274,7 +281,10 @@ fn mh_004_refresh_transfer_preserves_shape() {
     let refreshed = ManifoldBasis::compute(&displaced, 6, 900);
     let theta_new = transfer(&basis, &refreshed, &[0.0; 6]);
     let z: f64 = theta_new.iter().map(|t| t * t).sum::<f64>().sqrt();
-    assert!(z < 1e-9, "zero field transfers to zero coefficients: {z:.2e}");
+    assert!(
+        z < 1e-9,
+        "zero field transfers to zero coefficients: {z:.2e}"
+    );
     // And a small residual field survives the transfer within tolerance:
     // express theta's field in the refreshed basis and compare surfaces.
     let theta_resid = transfer(&basis, &basis, &theta);
@@ -321,9 +331,7 @@ fn mh_005_spectral_beats_raw_vertex_es() {
     let misfit = |pos: &[[f64; 3]]| -> f64 {
         pos.iter()
             .zip(&target)
-            .map(|(a, b)| {
-                (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)
-            })
+            .map(|(a, b)| (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2))
             .sum::<f64>()
     };
     let mut lcg = 0x5eed_1234u64;

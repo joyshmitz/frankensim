@@ -37,6 +37,19 @@ rule). Layer: L2 (MORPH). Runtime deps: `std`, fs-geom.
 - `detect_foldover` — det(∂T/∂x) ≤ 0 at any probe → structured
   `FoldOver { at, det }` refusal with a suggested fix.
 
+- `harmonics` module (plan §7.6, bead wqd.20; [F], behind
+  `manifold-harmonics`): the Laplace–Beltrami shape spectrum.
+  `cotan_laplacian` (robust clamp: cotangents floored at 0 on obtuse
+  triangles), `ManifoldBasis::compute` (lumped-mass symmetrization
+  `M^{-1/2} L M^{-1/2}`, smallest-k via fs-la LOBPCG shift-and-negate,
+  numeric kernel deflated, the CONSTANT re-admitted analytically as
+  mode 0 — uniform inflation is a design direction), deterministic
+  sign/ordering (P2: coordinate j means the same thing every run),
+  `displace` (normal displacement Σ θⱼψⱼn̂), `project`/`transfer`
+  (M-weighted coefficient transfer across basis refreshes),
+  `needs_refresh` (bbox-relative drift criterion),
+  `dirichlet_energy` (== λⱼ for M-orthonormal modes).
+
 ## Invariants
 
 1. Every lever's `jacobian_action` is linear in δθ and consistent with
@@ -98,3 +111,18 @@ lattices, and validity refusals.
   (certified invertibility would need fs-ivl interval Jacobians —
   a natural follow-up).
 - SIMP chain rule to physics (filtering, projection) is downstream.
+
+## No-claim boundaries (harmonics)
+
+- The robust cotan clamp trades a little consistency for unconditional
+  stability on obtuse triangles: isometry invariance holds to ~1e-4
+  relative on bent developables, not to machine precision.
+- Meshes only in this tier: the SDF narrow-band (implicit-surface)
+  Laplacian variant the plan sketches is follow-up scope — the input is
+  deliberately a plain (positions, triangles) surface so no VOLUMETRIC
+  body-fitted mesh is ever required, which is the doctrine the bead
+  encodes.
+- Eigenvalues are LOBPCG estimates with reported true residuals, not
+  certified enclosures.
+- `transfer` assumes refresh-in-place (shared vertex set); remeshing
+  transfers need a resampling front end.
