@@ -159,7 +159,12 @@ fn flux_001_bdm_basis_exactness() {
 /// no penalty constant can buy.
 #[test]
 fn flux_002_stokes_mms_convergence() {
-    let nu = 1.0;
+    // ν small so the pressure error is dominated by its own O(h)
+    // projection term rather than ν·(velocity energy error) — this
+    // MMS has |u|_H2 ≈ 4π², and the velocity solution is exactly
+    // ν-invariant for a ν-scaled force (pressure-robustness), so the
+    // velocity evidence is unchanged by this choice.
+    let nu = 0.05;
     let params = FluxParams {
         nu,
         ..FluxParams::default()
