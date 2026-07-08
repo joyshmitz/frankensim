@@ -1170,6 +1170,17 @@ name = "fs-ladder"
 version = "0.0.1"
 
 [[package]]
+name = "fs-lattice"
+version = "0.0.1"
+dependencies = [
+ "fs-cutfem",
+ "fs-la",
+ "fs-material",
+ "fs-solid",
+ "fs-sparse",
+]
+
+[[package]]
 name = "fs-lbm"
 version = "0.0.1"
 dependencies = [
