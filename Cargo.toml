@@ -64,6 +64,7 @@ members = [
     "crates/fs-bisect",
     "crates/fs-dimine",
     "crates/fs-package",
+    "crates/fs-checker",
     "crates/fs-cutfem",
     "crates/fs-solid",
     "xtask",
