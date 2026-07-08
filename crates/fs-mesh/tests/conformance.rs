@@ -9,7 +9,10 @@
 use asupersync::types::Budget;
 use fs_exec::{CancelGate, Cx, ExecMode, StreamKey};
 use fs_geom::Point3;
-use fs_mesh::{ExudeOptions, MeshError, RefineOptions, Tetrahedralization, delaunay, refine};
+use fs_mesh::{
+    ExudeOptions, MeshError, RefineOptions, Tetrahedralization, delaunay, delaunay_colored,
+    delaunay_colored_reversed, refine,
+};
 use fs_rep_mesh::{assess_quality, winding_exact};
 
 fn verdict(case: &str, pass: bool, detail: &str) {
@@ -937,5 +940,103 @@ fn tmesh_012_sliver_exudation() {
             audit.clean()
         );
         assert!(pass, "tmesh-012: {}", stats.to_json());
+    });
+}
+
+/// Canonical (index-free) form of a tetrahedralization: the sorted
+/// list of sorted vertex quadruples of live real tets. Two builds are
+/// "the same mesh" iff these match bitwise (points share input order).
+fn canonical_tets(t: &Tetrahedralization) -> Vec<[u32; 4]> {
+    let mut out: Vec<[u32; 4]> = t
+        .tets()
+        .into_iter()
+        .map(|mut q| {
+            q.sort_unstable();
+            q
+        })
+        .collect();
+    out.sort_unstable();
+    out
+}
+
+/// tmesh-013: deterministic parallel domain coloring — the colored
+/// (read-parallel, apply-canonical) construction is bitwise identical
+/// at EVERY thread count, merges bitwise against the sequential
+/// kernel's canonical output, keeps the exact audit clean, and its
+/// coloring is genuinely commutative (adversarial reversed-order
+/// application inside each color produces the identical mesh).
+#[test]
+fn tmesh_013_parallel_coloring() {
+    with_cx(|cx| {
+        let pts = cloud(0x1001_2026_0708_0013, 900);
+        let seq = delaunay(&pts, cx).expect("sequential kernel");
+        // Prefix batching preserves the EXACT insertion order, so the
+        // gate is RAW bitwise equality of the live-tet sequence, not
+        // just canonical-set equality.
+        let seq_raw = seq.tets();
+        let mut stats1 = None;
+        for threads in [1usize, 2, 4, 8] {
+            let (colored, stats) =
+                delaunay_colored(&pts, threads, 64, cx).expect("colored build");
+            verdict(
+                &format!("tmesh-013-threads-{threads}"),
+                colored.tets() == seq_raw,
+                &format!(
+                    "RAW bitwise merge vs sequential kernel: {} tets ({})",
+                    seq_raw.len(),
+                    stats.to_json()
+                ),
+            );
+            let audit = colored.audit(true);
+            verdict(
+                &format!("tmesh-013-audit-{threads}"),
+                audit.clean(),
+                "exact audit clean on the colored build",
+            );
+            if threads == 1 {
+                stats1 = Some(stats);
+            }
+        }
+        // The batching is real parallelism on general-position input,
+        // not a serial crawl.
+        let s1 = stats1.expect("stats recorded");
+        verdict(
+            "tmesh-013-batch-width",
+            s1.largest_batch >= 8 && s1.batches < s1.points,
+            &format!("parallel batch evidence: {}", s1.to_json()),
+        );
+        // Adversarial commutativity: reversed within-batch application
+        // (allocation order legitimately differs — compare canonically).
+        let rev = delaunay_colored_reversed(&pts, 64, cx).expect("reversed build");
+        verdict(
+            "tmesh-013-commutativity",
+            canonical_tets(&rev) == canonical_tets(&seq),
+            "reversed within-batch insertion order yields the identical canonical mesh",
+        );
+        // Degenerate adversary: a structured grid (massively cospherical)
+        // through the colored path.
+        let mut grid_pts = Vec::new();
+        for i in 0..6i32 {
+            for j in 0..6i32 {
+                for k in 0..6i32 {
+                    grid_pts.push(Point3::new(
+                        f64::from(i) / 5.0,
+                        f64::from(j) / 5.0,
+                        f64::from(k) / 5.0,
+                    ));
+                }
+            }
+        }
+        let gseq = delaunay(&grid_pts, cx).expect("grid kernel");
+        let (gcol, gstats) = delaunay_colored(&grid_pts, 4, 32, cx).expect("grid colored");
+        verdict(
+            "tmesh-013-degenerate-grid",
+            gcol.tets() == gseq.tets() && gcol.audit(true).clean(),
+            &format!(
+                "6x6x6 cospherical grid: RAW bitwise == kernel ({} tets), audit clean ({})",
+                gcol.tets().len(),
+                gstats.to_json()
+            ),
+        );
     });
 }

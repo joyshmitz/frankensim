@@ -144,7 +144,7 @@ impl Mesh {
         self.points[v as usize]
     }
 
-    fn is_ghost(&self, t: u32) -> bool {
+    pub(crate) fn is_ghost(&self, t: u32) -> bool {
         self.tets[t as usize][3] == GHOST
     }
 
@@ -172,7 +172,7 @@ impl Mesh {
 
     /// SoS orientation of the plane through the facet's three REAL
     /// vertices against query `p` (facet order as given).
-    fn facet_sees_sos(&self, f: [u32; 3], p: [f64; 3], p_idx: u32) -> Sign {
+    pub(crate) fn facet_sees_sos(&self, f: [u32; 3], p: [f64; 3], p_idx: u32) -> Sign {
         orient3d_sos(
             self.coords(f[0]),
             self.coords(f[1]),
@@ -187,7 +187,7 @@ impl Mesh {
         )
     }
 
-    fn facet_verts(&self, t: u32, i: usize) -> [u32; 3] {
+    pub(crate) fn facet_verts(&self, t: u32, i: usize) -> [u32; 3] {
         let tv = self.tets[t as usize];
         [tv[FACET[i][0]], tv[FACET[i][1]], tv[FACET[i][2]]]
     }
@@ -231,7 +231,7 @@ impl Mesh {
 
     /// Is `p` in conflict with tet `t` (strictly inside its
     /// circumsphere; ghosts per [`Mesh::ghost_conflict`])?
-    fn in_conflict(&self, t: u32, p: [f64; 3], _p_idx: u32) -> bool {
+    pub(crate) fn in_conflict(&self, t: u32, p: [f64; 3], _p_idx: u32) -> bool {
         let tv = self.tets[t as usize];
         if tv[3] == GHOST {
             self.ghost_conflict([tv[0], tv[1], tv[2]], p)
@@ -450,7 +450,7 @@ fn morton(q: [u32; 3]) -> u64 {
 /// BRIO insertion order: deterministic LCG shuffle, then doubling
 /// rounds, each round Morton-sorted (spatial locality for the walk
 /// without the pathological structure of a single global sweep).
-fn brio_order(points: &[[f64; 3]]) -> Vec<u32> {
+pub(crate) fn brio_order(points: &[[f64; 3]]) -> Vec<u32> {
     let n = points.len();
     let mut order: Vec<u32> = (0..n as u32).collect();
     let mut state = 0x1001_2026_0706_00AAu64;
@@ -512,14 +512,12 @@ pub struct Tetrahedralization {
     pub steiner_from: u32,
 }
 
-/// Build the Delaunay tetrahedralization of `points` (BRIO order,
-/// exact predicates, deterministic). Duplicate points are skipped with
-/// a receipt in the stats.
-///
-/// # Errors
-/// [`MeshError::TooFewPoints`], [`MeshError::DegenerateInput`] (exact
-/// all-coplanar detection), [`MeshError::Cancelled`].
-pub fn delaunay(points: &[Point3], cx: &Cx<'_>) -> Result<Tetrahedralization, MeshError> {
+/// Shared construction prologue: BRIO order, bootstrap quad, first
+/// tet + ghosts — used by both the sequential kernel and the colored
+/// (parallel) driver so their meshes start bitwise identical.
+pub(crate) fn bootstrap_mesh(
+    points: &[Point3],
+) -> Result<(Mesh, [u32; 4], Vec<u32>), MeshError> {
     if points.len() < 4 {
         return Err(MeshError::TooFewPoints { got: points.len() });
     }
@@ -543,6 +541,18 @@ pub fn delaunay(points: &[Point3], cx: &Cx<'_>) -> Result<Tetrahedralization, Me
     };
     let quad = bootstrap_quad(&mesh.points, &order).ok_or(MeshError::DegenerateInput)?;
     init_first_tet(&mut mesh, quad);
+    Ok((mesh, quad, order))
+}
+
+/// Build the Delaunay tetrahedralization of `points` (BRIO order,
+/// exact predicates, deterministic). Duplicate points are skipped with
+/// a receipt in the stats.
+///
+/// # Errors
+/// [`MeshError::TooFewPoints`], [`MeshError::DegenerateInput`] (exact
+/// all-coplanar detection), [`MeshError::Cancelled`].
+pub fn delaunay(points: &[Point3], cx: &Cx<'_>) -> Result<Tetrahedralization, MeshError> {
+    let (mut mesh, quad, order) = bootstrap_mesh(points)?;
     let mut inserted = 0u64;
     for &i in &order {
         if quad.contains(&i) {
@@ -565,7 +575,7 @@ pub fn delaunay(points: &[Point3], cx: &Cx<'_>) -> Result<Tetrahedralization, Me
 
 /// First 4 points (in BRIO order) that span 3D, by exact tests.
 #[allow(clippy::float_cmp)] // distinctness is DELIBERATELY bitwise
-fn bootstrap_quad(pts: &[[f64; 3]], order: &[u32]) -> Option<[u32; 4]> {
+pub(crate) fn bootstrap_quad(pts: &[[f64; 3]], order: &[u32]) -> Option<[u32; 4]> {
     let a = order[0];
     // First point not equal to a.
     let b = *order
@@ -602,7 +612,7 @@ fn bootstrap_quad(pts: &[[f64; 3]], order: &[u32]) -> Option<[u32; 4]> {
 }
 
 /// Create the first real tet (swapped Positive) and its 4 ghosts.
-fn init_first_tet(mesh: &mut Mesh, quad: [u32; 4]) {
+pub(crate) fn init_first_tet(mesh: &mut Mesh, quad: [u32; 4]) {
     let [a, b, c, d] = quad;
     let verts = if orient3d(
         mesh.points[a as usize],
