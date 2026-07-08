@@ -1,0 +1,19 @@
+[package]
+name = "fs-assimilate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Data assimilation: validation as a living belief (addendum Proposal 11). Sensor readings (observation operators expressed as restriction maps) update the per-regime model-form posterior by a linear-Gaussian (Kalman) fusion that provably reduces the model-data misfit; point sensors are the registration-free R8 fallback; the update is colored validated and anchored to the calibrated instrument."
+
+[package.metadata.frankensim]
+layer = "L4"
+
+[dependencies]
+fs-evidence = { path = "../fs-evidence" }
+
+[dev-dependencies]
+
+[lints]
+workspace = true

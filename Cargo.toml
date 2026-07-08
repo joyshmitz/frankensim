@@ -78,6 +78,7 @@ members = [
     "crates/fs-epi-e2e",
     "crates/fs-asbuilt",
     "crates/fs-toleralloc",
+    "crates/fs-assimilate",
     "crates/fs-cutfem",
     "crates/fs-solid",
     "crates/fs-dwr",
