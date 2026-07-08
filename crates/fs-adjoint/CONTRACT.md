@@ -104,6 +104,22 @@ solver without a passing gradient check cannot merge.
   reported never hidden). Refinement indicators concentrate where the
   QoI error lives.
 
+- `explain` module (addendum Proposal B, bead knh1.5; [F], behind
+  `explanation-objects`): explanation OBJECTS — a tree of
+  `(channel, contribution, bound, color, evidence, fingerprint)` nodes,
+  each re-derivable from the ledger. Three engines:
+  `adjoint_attribution` (the EXACT bilinear identity
+  `J₁−J₀ = −∫Δa·u₀′·u₁′` over channel masks — no linearization error),
+  `provenance_attribution` (exact telescoping over replayed edits),
+  and the far-field drag flagship (`LiftingLine` Trefftz wake integral
+  + viscous strip + the wave channel DECLARED zero-subsonic).
+  `finalize` is THE HONESTY GATE: an unattributed residual above its
+  threshold produces `Refused` (the partial tree is forensics, not a
+  claim). `Explanation::reconciles` is the PERMANENT invariant
+  (channels + residual = observed within summed bounds — the
+  Proposal-B kill criterion). `render_narrative` opens by declaring
+  itself NON-AUTHORITATIVE — the tree is the artifact.
+
 ## Invariants
 
 - No differentiation through Krylov iterations anywhere: adjoints are
@@ -233,3 +249,17 @@ gradient and REJECTING a corrupted one; cross-ISA golden hash.
 - Falsifier cadence (how often the high-fidelity spot check runs) is
   the budget allocator's decision (Proposal 6); this module ships the
   check and the pairing.
+
+## No-claim boundaries (explain)
+
+- The adjoint engine's exactness is the compliance/self-adjoint case;
+  general QoIs get first-order attribution with remainder bounds — the
+  growth path.
+- The lifting-line flagship is the incompressible far-field fixture
+  (wake integral vs the analytic elliptic envelope); full-CFD far-field
+  decomposition rides fs-bem/fs-vpm when their wake machinery lands.
+- The viscous strip channel is ESTIMATED color by construction; the
+  wave channel is declared zero only in the declared subsonic regime.
+- Downwash sign convention (Katz & Plotkin) is load-bearing and was
+  caught by the analytic envelope during development — the conformance
+  test is the regression guard.

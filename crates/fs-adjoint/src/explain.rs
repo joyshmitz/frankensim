@@ -26,7 +26,17 @@
 //! complete story with a hidden one.
 
 use fs_evidence::Color;
-use fs_ledger::hash_bytes;
+
+/// Local deterministic FNV-1a fingerprint (keeps this L3 module free
+/// of ledger-layer (L6) dependencies; the ledger stores the same hex).
+fn fingerprint_hex(bytes: &[u8]) -> String {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for &b in bytes {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
 
 /// One attribution node: a named channel's contribution with its
 /// bound, evidence links, and a re-derivation fingerprint.
@@ -70,7 +80,7 @@ impl ExplanationNode {
             bound,
             color,
             evidence,
-            fingerprint: hash_bytes(canon.as_bytes()).to_hex(),
+            fingerprint: fingerprint_hex(canon.as_bytes()),
         }
     }
 }
@@ -124,6 +134,7 @@ impl Explanation {
     /// artifact; this string is for humans skimming and says so.
     #[must_use]
     pub fn render_narrative(&self) -> String {
+        use std::fmt::Write as _;
         let mut out =
             String::from("NON-AUTHORITATIVE RENDERING (the explanation tree is the artifact):\n");
         match self {
@@ -283,8 +294,8 @@ pub fn adjoint_attribution(
                     hi: acc + 1e-12,
                 },
                 vec![
-                    format!("solve(a0)"),
-                    format!("solve(a1)"),
+                    "solve(a0)".to_string(),
+                    "solve(a1)".to_string(),
                     format!("mask:{name}"),
                 ],
             )

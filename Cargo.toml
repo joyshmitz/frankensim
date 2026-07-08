@@ -6,6 +6,7 @@ members = [
     "crates/fs-frame",
     "crates/fs-marquee",
     "crates/fs-qty",
+    "crates/fs-race",
     "crates/fs-obs",
     "crates/fs-opt",
     "crates/fs-constraint",

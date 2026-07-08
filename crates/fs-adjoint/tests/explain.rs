@@ -73,8 +73,8 @@ fn xp_002_honesty_gate_refuses_hidden_channels() {
     let fixture = Elliptic1d { n: 120 };
     let a0 = vec![1.0f64; 121];
     let mut a1 = a0.clone();
-    for e in 0..121 {
-        a1[e] = if e < 60 { 1.2 } else { 0.7 }; // both halves edited
+    for (e, ae) in a1.iter_mut().enumerate() {
+        *ae = if e < 60 { 1.2 } else { 0.7 }; // both halves edited
     }
     let observed =
         fixture.compliance(&fixture.solve(&a1)) - fixture.compliance(&fixture.solve(&a0));

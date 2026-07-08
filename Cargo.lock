@@ -1322,6 +1322,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs-race"
+version = "0.0.1"
+dependencies = [
+ "fs-eproc",
+ "fs-exec",
+]
+
+[[package]]
 name = "fs-rand"
 version = "0.0.1"
 dependencies = [
