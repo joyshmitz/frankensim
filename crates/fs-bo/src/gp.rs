@@ -172,14 +172,43 @@ impl Gp {
                 sigma[a * q + b] = val;
                 sigma[b * q + a] = val;
             }
-            // Jitter for the reparameterization factor.
-            sigma[a * q + a] = (sigma[a * q + a]).max(0.0) + 1e-10;
+            sigma[a * q + a] = (sigma[a * q + a]).max(0.0);
         }
-        let lp = cholesky(&sigma, q).expect("posterior covariance must be SPD (jittered)");
+        // ADAPTIVE jitter: near-duplicate candidate sets (tiny trust
+        // regions) make the posterior covariance severely rank-
+        // deficient — a fixed 1e-10 measurably failed there. Scale by
+        // the largest diagonal and escalate deterministically.
+        let max_diag = (0..q)
+            .map(|a| sigma[a * q + a])
+            .fold(0.0f64, f64::max)
+            .max(1e-30);
+        let mut lp = None;
+        for &rel in &[1e-10f64, 1e-8, 1e-6, 1e-4] {
+            let mut trial = sigma.clone();
+            for a in 0..q {
+                trial[a * q + a] += rel * max_diag + 1e-14;
+            }
+            if let Ok(c) = cholesky(&trial, q) {
+                lp = Some(c);
+                break;
+            }
+        }
         let mut lflat = vec![0.0f64; q * q];
-        for i in 0..q {
-            for j in 0..=i {
-                lflat[i * q + j] = lp.l(i, j);
+        if let Some(lp) = lp {
+            for i in 0..q {
+                for j in 0..=i {
+                    lflat[i * q + j] = lp.l(i, j);
+                }
+            }
+        } else {
+            // Fully degenerate joint (e.g. a GP fit on CONSTANT data
+            // inside a collapsed trust region — measured in the TuRBO
+            // flat-objective battery): fall back to the DIAGONAL
+            // factor. Marginals stay right; cross-correlations are
+            // dropped only where the joint is numerically void.
+            for i in 0..q {
+                lflat[i * q + i] =
+                    fs_math::det::sqrt(sigma[i * q + i].max(0.0) + 1e-14);
             }
         }
         (mu, lflat)
@@ -214,7 +243,11 @@ pub fn fit_hyperparams(
 ) -> Gp {
     let d = x[0].len();
     let np = d + 2;
-    let sobol = fs_rand::qmc::Sobol::scrambled(np, seed);
+    // Hybrid starts beyond the Sobol table cap (high-d ARD): QMC on
+    // the leading coordinates, Philox uniforms for the rest — same
+    // pattern as fs-uq's KL germs.
+    let kq = np.min(fs_rand::qmc::MAX_SOBOL_DIM);
+    let sobol = fs_rand::qmc::Sobol::scrambled(kq, seed);
     let nll = |p: &[f64]| -> f64 {
         let kernel = Kernel {
             family,
@@ -229,10 +262,21 @@ pub fn fit_hyperparams(
     };
     let (lo, hi) = log_box;
     let mut best: Option<(f64, Vec<f64>)> = None;
-    let mut pt = vec![0.0f64; np];
+    let mut pt = vec![0.0f64; kq];
     for s in 0..starts {
         sobol.point(u32::try_from(s).expect("few starts"), &mut pt);
-        let p0: Vec<f64> = pt.iter().map(|u| (hi - lo).mul_add(*u, lo)).collect();
+        let mut tail = fs_rand::StreamKey {
+            seed,
+            kernel: 0x60F1,
+            tile: u32::try_from(s).expect("few starts"),
+        }
+        .stream();
+        let p0: Vec<f64> = (0..np)
+            .map(|i| {
+                let u = if i < kq { pt[i] } else { tail.next_f64() };
+                (hi - lo).mul_add(u, lo)
+            })
+            .collect();
         let mut fg = |p: &[f64]| -> (f64, Vec<f64>) {
             let f0 = nll(p);
             let mut g = vec![0.0f64; np];

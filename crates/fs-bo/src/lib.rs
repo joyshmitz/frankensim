@@ -15,10 +15,12 @@
 pub mod acq;
 pub mod bo;
 pub mod gp;
+pub mod turbo;
 
 pub use acq::{expected_improvement, normal_bank, phi_cdf, phi_inv, q_expected_improvement};
 pub use bo::{BoConfig, BoReport, minimize};
 pub use gp::{Gp, Kernel, Matern, fit_hyperparams};
+pub use turbo::{TurboConfig, TurboReport, turbo_minimize};
 
 /// Crate version, re-exported for provenance stamping.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
