@@ -1131,6 +1131,13 @@ name = "fs-ladder"
 version = "0.0.1"
 
 [[package]]
+name = "fs-lbm"
+version = "0.0.1"
+dependencies = [
+ "fs-evidence",
+]
+
+[[package]]
 name = "fs-ledger"
 version = "0.0.1"
 dependencies = [

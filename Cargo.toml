@@ -86,6 +86,7 @@ members = [
     "crates/fs-tropical",
     "crates/fs-shapeprog",
     "crates/fs-couple",
+    "crates/fs-lbm",
     "crates/fs-cutfem",
     "crates/fs-solid",
     "crates/fs-dwr",
