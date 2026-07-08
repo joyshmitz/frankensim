@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/fs-dd",
     "crates/fs-flywheel-e2e",
     "crates/fs-qty",
     "crates/fs-obs",
@@ -89,6 +90,7 @@ members = [
     "crates/fs-lbm",
     "crates/fs-iga",
     "crates/fs-surrogate",
+    "crates/fs-rep-neural",
     "crates/fs-cutfem",
     "crates/fs-solid",
     "crates/fs-dwr",
