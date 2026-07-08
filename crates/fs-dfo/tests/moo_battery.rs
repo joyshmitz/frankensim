@@ -25,6 +25,17 @@ fn zdt1(x: &[f64]) -> Vec<f64> {
     vec![f1, f2]
 }
 
+type Objective = fn(&[f64]) -> Vec<f64>;
+type TrueFront = fn(f64) -> f64;
+
+fn true_zdt1(f1: f64) -> f64 {
+    1.0 - fs_math::det::sqrt(f1)
+}
+
+fn true_zdt2(f1: f64) -> f64 {
+    1.0 - f1 * f1
+}
+
 fn zdt2(x: &[f64]) -> Vec<f64> {
     let f1 = x[0];
     let g = 1.0 + 9.0 * x[1..].iter().sum::<f64>() / (x.len() - 1) as f64;
@@ -102,13 +113,7 @@ fn nsga2_zdt_convergence_and_beats_random() {
         seed: 21,
     };
     let reference = [1.1f64, 1.1];
-    fn true_zdt1(f1: f64) -> f64 {
-        1.0 - fs_math::det::sqrt(f1)
-    }
-    fn true_zdt2(f1: f64) -> f64 {
-        1.0 - f1 * f1
-    }
-    let cases: [(&str, fn(&[f64]) -> Vec<f64>, fn(f64) -> f64); 2] =
+    let cases: [(&str, Objective, TrueFront); 2] =
         [("zdt1", zdt1, true_zdt1), ("zdt2", zdt2, true_zdt2)];
     for (name, obj, true_f2) in cases {
         let mut f = |x: &[f64]| obj(x);
