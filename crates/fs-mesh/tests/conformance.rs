@@ -968,7 +968,7 @@ fn canonical_tets(t: &Tetrahedralization) -> Vec<[u32; 4]> {
 #[test]
 fn tmesh_013_parallel_coloring() {
     with_cx(|cx| {
-        let pts = cloud(0x1001_2026_0708_0013, 900);
+        let pts = cloud(0x1001_2026_0708_0013, 2000);
         let seq = delaunay(&pts, cx).expect("sequential kernel");
         // Colors reorder only across provably disjoint pairs, so the
         // kernel merge is CANONICAL (allocation order legitimately
@@ -979,7 +979,7 @@ fn tmesh_013_parallel_coloring() {
         let mut raw1: Option<Vec<[u32; 4]>> = None;
         for threads in [1usize, 2, 4, 8] {
             let (colored, stats) =
-                delaunay_colored(&pts, threads, 64, cx).expect("colored build");
+                delaunay_colored(&pts, threads, 256, cx).expect("colored build");
             let raw = colored.tets();
             match &raw1 {
                 None => raw1 = Some(raw.clone()),
@@ -1014,7 +1014,7 @@ fn tmesh_013_parallel_coloring() {
         );
         // Adversarial commutativity: reversed within-batch application
         // (allocation order legitimately differs — compare canonically).
-        let rev = delaunay_colored_reversed(&pts, 64, cx).expect("reversed build");
+        let rev = delaunay_colored_reversed(&pts, 256, cx).expect("reversed build");
         verdict(
             "tmesh-013-commutativity",
             canonical_tets(&rev) == seq_canon,
