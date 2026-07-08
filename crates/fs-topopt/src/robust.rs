@@ -121,9 +121,14 @@ fn volume_fraction(field: &[f64], cell_vol: &[f64]) -> f64 {
     field.iter().zip(cell_vol).map(|(r, v)| r * v).sum::<f64>() / total
 }
 
-/// Robust OC: minimize eroded compliance s.t. the DILATED volume at
-/// `vol_frac` (deterministic bisection, move limits — the slice-1
-/// driver with the robust objective and constraint swapped in).
+/// Robust OC: minimize eroded compliance with the volume constraint
+/// on the DILATED field, whose target is ADAPTED each iteration so
+/// the NOMINAL design meets `vol_frac` (the standard
+/// Wang–Lazarov–Sigmund practice — without adaptation the nominal
+/// budget drifts far below target and the robust design is starved
+/// relative to a non-robust baseline; the first draft measured
+/// exactly that: retention 0.545 vs 0.622 AGAINST the robust run
+/// purely from the budget mismatch).
 #[allow(clippy::too_many_arguments)]
 pub fn robust_optimality_criteria(
     pipeline: &RobustPipeline,
@@ -138,7 +143,15 @@ pub fn robust_optimality_criteria(
     let nc = rho0.len();
     let mut rho = rho0.to_vec();
     let mut trace = Vec::with_capacity(iters);
+    let mut dilated_target = vol_frac;
     for _ in 0..iters {
+        // Adapt the dilated target so the NOMINAL field hits vol_frac.
+        let tf_now = pipeline.three_fields(&rho);
+        let vn_now = volume_fraction(&tf_now.nominal, cell_vol);
+        let vd_now = volume_fraction(&tf_now.dilated, cell_vol);
+        if vn_now > 1e-12 {
+            dilated_target = (vol_frac * vd_now / vn_now).clamp(vol_frac, 1.0);
+        }
         let (c, grad) = pipeline.eroded_compliance_and_gradient(elasticity, &rho, force);
         trace.push(c);
         let sensitivity: Vec<f64> = grad.iter().map(|g| (-g).max(1e-30)).collect();
@@ -154,7 +167,7 @@ pub fn robust_optimality_criteria(
                     .clamp(1e-3, 1.0);
             }
             let dilated = pipeline.three_fields(&candidate).dilated;
-            if volume_fraction(&dilated, cell_vol) > vol_frac {
+            if volume_fraction(&dilated, cell_vol) > dilated_target {
                 lo = lambda;
             } else {
                 hi = lambda;

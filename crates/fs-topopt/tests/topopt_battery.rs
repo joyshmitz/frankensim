@@ -286,3 +286,194 @@ fn topopt_golden_hash() {
          justification (golden-evidence policy)"
     );
 }
+
+#[test]
+fn robust_three_field_ordering_and_sensitivity() {
+    use fs_topopt::RobustPipeline;
+    let (complex, positions, force, _vol) = cantilever(2);
+    let nc = complex.tets.len();
+    let pipeline = RobustPipeline {
+        filter: DensityFilter::new(&complex, &positions, 0.12),
+        params: SimpParams {
+            e_min: 1e-6,
+            penal: 3.0,
+            beta: 4.0,
+            eta: 0.5,
+        },
+        eta_offset: 0.15,
+    };
+    // Pointwise ordering: eroded ≤ nominal ≤ dilated for random designs.
+    for tile in 60..63u32 {
+        let rho = rand_vec(nc, tile);
+        let tf = pipeline.three_fields(&rho);
+        for i in 0..nc {
+            assert!(
+                tf.eroded[i] <= tf.nominal[i] + 1e-14 && tf.nominal[i] <= tf.dilated[i] + 1e-14,
+                "three-field ordering violated at cell {i}: {} / {} / {}",
+                tf.eroded[i],
+                tf.nominal[i],
+                tf.dilated[i]
+            );
+        }
+    }
+    // Eroded-compliance sensitivity FD gate (the robust objective's
+    // gradient through the eroded projection chain).
+    let rho0: Vec<f64> = rand_vec(nc, 63).iter().map(|v| 0.3 + 0.5 * v).collect();
+    let mut el = DensityElasticity::new(&complex, &positions, 1.0, 0.3, &|p: [f64; 3]| {
+        p[0].to_bits() == 0.0f64.to_bits()
+    });
+    let (_, grad) = pipeline.eroded_compliance_and_gradient(&mut el, &rho0, &force);
+    let j = |rho: &[f64]| -> f64 {
+        let mut el2 = DensityElasticity::new(&complex, &positions, 1.0, 0.3, &|p: [f64; 3]| {
+            p[0].to_bits() == 0.0f64.to_bits()
+        });
+        pipeline.eroded_compliance_and_gradient(&mut el2, rho, &force).0
+    };
+    let dirs: Vec<Vec<f64>> = (0..2).map(|k| rand_vec(nc, 70 + k)).collect();
+    let verdict = verify_gradient(&j, &rho0, &grad, &dirs, 1e-6, 2e-4);
+    assert!(
+        verdict.pass,
+        "robust sensitivity failed FD: {:.3e}",
+        verdict.max_rel_err
+    );
+    log(
+        "robust-fields",
+        "pass",
+        &format!("ordering ok, eroded-grad rel={:.2e}", verdict.max_rel_err),
+    );
+}
+
+#[test]
+fn robust_oc_improves_erosion_retention() {
+    use fs_topopt::{RobustPipeline, robust_optimality_criteria};
+    // THE minimum-length-scale claim, measured: the robust design must
+    // survive erosion better than the slice-1 (non-robust) design —
+    // features thinner than the erode band cannot carry the robust
+    // load path, so vol(eroded)/vol(nominal) stays high.
+    let (complex, positions, force, vol) = cantilever(3);
+    let nc = complex.tets.len();
+    let params = SimpParams {
+        e_min: 1e-6,
+        penal: 3.0,
+        beta: 6.0,
+        eta: 0.5,
+    };
+    let vol_frac = 0.4;
+    let rho0 = vec![vol_frac; nc];
+    // Non-robust baseline (slice-1 OC), audited with the SAME
+    // three-field probe.
+    let nominal_pipeline = DesignPipeline {
+        filter: DensityFilter::new(&complex, &positions, 0.15),
+        params,
+    };
+    let mut el = DensityElasticity::new(&complex, &positions, 1.0, 0.3, &|p: [f64; 3]| {
+        p[0].to_bits() == 0.0f64.to_bits()
+    });
+    let base = optimality_criteria(&nominal_pipeline, &mut el, &force, &rho0, &vol, vol_frac, 0.2, 10);
+    let probe = RobustPipeline {
+        filter: DensityFilter::new(&complex, &positions, 0.15),
+        params,
+        eta_offset: 0.15,
+    };
+    let base_tf = probe.three_fields(&base.rho);
+    let vf = |field: &[f64]| -> f64 {
+        let total: f64 = vol.iter().sum();
+        field.iter().zip(&vol).map(|(r, v)| r * v).sum::<f64>() / total
+    };
+    let base_retention = vf(&base_tf.eroded) / vf(&base_tf.nominal).max(1e-30);
+    // Robust run.
+    let mut el2 = DensityElasticity::new(&complex, &positions, 1.0, 0.3, &|p: [f64; 3]| {
+        p[0].to_bits() == 0.0f64.to_bits()
+    });
+    let rep = robust_optimality_criteria(&probe, &mut el2, &force, &rho0, &vol, vol_frac, 0.2, 10);
+    // Eroded compliance descends.
+    let c0 = rep.compliance_eroded[0];
+    let c_final = *rep.compliance_eroded.last().expect("trace");
+    assert!(
+        c_final < 0.8 * c0,
+        "robust OC failed to improve eroded compliance: {c0} -> {c_final}"
+    );
+    // Volumes ordered.
+    let (ve, vn, vd) = rep.volumes;
+    assert!(
+        ve <= vn + 1e-12 && vn <= vd + 1e-12,
+        "volumes disordered: {ve} {vn} {vd}"
+    );
+    // NOMINAL volume at target (the adapted-dilated-constraint
+    // contract: the nominal design carries the budget).
+    assert!((vn - vol_frac).abs() < 0.05, "nominal volume missed: {vn}");
+    // The length-scale signal: robust retention ≥ baseline retention
+    // (strictly better in practice; ≥ −1e-9 guards roundoff ties).
+    assert!(
+        rep.erosion_retention >= base_retention - 1e-9,
+        "robust design must survive erosion at least as well: robust {:.3} vs base {:.3}",
+        rep.erosion_retention,
+        base_retention
+    );
+    log(
+        "robust-oc",
+        "pass",
+        &format!(
+            "eroded c {c0:.3e}->{c_final:.3e}, vols ({ve:.3},{vn:.3},{vd:.3}), retention {:.3} vs base {:.3}",
+            rep.erosion_retention, base_retention
+        ),
+    );
+}
+
+const ROBUST_GOLDEN_HASH: u64 = 0; // recorded on first run, then frozen
+
+#[test]
+fn robust_golden_hash() {
+    use fs_topopt::{RobustPipeline, robust_optimality_criteria};
+    let mut acc: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |v: f64| {
+        for byte in v.to_bits().to_le_bytes() {
+            acc ^= u64::from(byte);
+            acc = acc.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    let (complex, positions, force, vol) = cantilever(2);
+    let nc = complex.tets.len();
+    let pipeline = RobustPipeline {
+        filter: DensityFilter::new(&complex, &positions, 0.15),
+        params: SimpParams::default(),
+        eta_offset: 0.12,
+    };
+    let rho = rand_vec(nc, 80);
+    let tf = pipeline.three_fields(&rho);
+    for v in tf
+        .eroded
+        .iter()
+        .step_by(5)
+        .chain(tf.dilated.iter().step_by(7))
+    {
+        feed(*v);
+    }
+    let mut el = DensityElasticity::new(&complex, &positions, 1.0, 0.3, &|p: [f64; 3]| {
+        p[0].to_bits() == 0.0f64.to_bits()
+    });
+    let (c, grad) = pipeline.eroded_compliance_and_gradient(&mut el, &rho, &force);
+    feed(c);
+    for v in grad.iter().step_by(4) {
+        feed(*v);
+    }
+    let rep = robust_optimality_criteria(
+        &pipeline,
+        &mut el,
+        &force,
+        &vec![0.4; nc],
+        &vol,
+        0.4,
+        0.2,
+        2,
+    );
+    for v in rep.rho.iter().step_by(5) {
+        feed(*v);
+    }
+    log("robust-golden", "info", &format!("{acc:#018x}"));
+    assert_eq!(
+        acc, ROBUST_GOLDEN_HASH,
+        "robust bits changed: {acc:#018x} vs {ROBUST_GOLDEN_HASH:#018x} — bump only with semantic \
+         justification (golden-evidence policy)"
+    );
+}
