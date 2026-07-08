@@ -1458,6 +1458,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs-sos"
+version = "0.0.1"
+
+[[package]]
 name = "fs-sparse"
 version = "0.0.1"
 
