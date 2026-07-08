@@ -907,6 +907,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs-couple"
+version = "0.0.1"
+
+[[package]]
 name = "fs-crosswalk"
 version = "0.0.1"
 
@@ -1103,6 +1107,7 @@ dependencies = [
  "fs-plan",
  "fs-qty",
  "fs-regime",
+ "fs-verify",
 ]
 
 [[package]]

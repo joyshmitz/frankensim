@@ -66,7 +66,11 @@ fn fmm_001_accuracy_vs_order() {
             .sum::<f64>()
             .sqrt()
             / scale;
-        let _ = write!(rows, "{{\"order\":{p},\"rel_l2\":{err:.3e},\"tree\":{}}},", fmm.stats());
+        let _ = write!(
+            rows,
+            "{{\"order\":{p},\"rel_l2\":{err:.3e},\"tree\":{}}},",
+            fmm.stats()
+        );
         errs.push(err);
     }
     let monotone = errs[1] < errs[0] && errs[2] < errs[1];

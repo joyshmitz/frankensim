@@ -125,9 +125,7 @@ fn bem_003_fmm_path_matches_dense() {
     // GMRES(FMM) vs dense LU.
     let u_inf = [1.0, 0.0, 0.0];
     let (sigma_fmm, iters, rr) = solve_exterior(&panels, u_inf, 6, 1e-8);
-    let mut sigma_dense: Vec<f64> = (0..n)
-        .map(|i| -(u_inf[0] * panels.normals[i][0]))
-        .collect();
+    let mut sigma_dense: Vec<f64> = (0..n).map(|i| -(u_inf[0] * panels.normals[i][0])).collect();
     let f = lu(&a, n).expect("dense solve");
     f.solve(&mut sigma_dense);
     let sscale = sigma_dense.iter().map(|v| v * v).sum::<f64>().sqrt();
@@ -179,8 +177,8 @@ fn bem_004_hess_smith_kutta_and_adjoint() {
     let alpha0 = 3.0f64.to_radians();
     let adj = panel2d::dcl_dalpha_adjoint(&foil, alpha0);
     let h = 1e-5;
-    let fd = (panel2d::solve(&foil, alpha0 + h).cl - panel2d::solve(&foil, alpha0 - h).cl)
-        / (2.0 * h);
+    let fd =
+        (panel2d::solve(&foil, alpha0 + h).cl - panel2d::solve(&foil, alpha0 - h).cl) / (2.0 * h);
     let adj_rel = (adj - fd).abs() / fd.abs().max(1e-30);
     let pass = slope_rel < 0.05
         && slope > thin
@@ -207,7 +205,7 @@ fn bem_004_hess_smith_kutta_and_adjoint() {
 fn bem_005_impulsive_start_free_wake() {
     let run = || {
         let foil = naca4_symmetric(0.08, 80);
-        let mut sim = WakeSim::new(foil, 5.0f64.to_radians(), 0.05, 0.05);
+        let mut sim = WakeSim::new(&foil, 5.0f64.to_radians(), 0.05, 0.05);
         for _ in 0..200 {
             sim.step();
         }
@@ -225,11 +223,12 @@ fn bem_005_impulsive_start_free_wake() {
     let last = sim.history.last().expect("steps").bound / steady;
     // Stability: all wake positions finite and bounded; peak speeds
     // bounded; growth monotone-ish (no oscillatory blowup).
-    let bounded = sim
-        .wake
-        .iter()
-        .all(|w| w.pos[0].is_finite() && w.pos[1].is_finite() && w.pos[0].abs() < 50.0
-            && w.pos[1].abs() < 50.0);
+    let bounded = sim.wake.iter().all(|w| {
+        w.pos[0].is_finite()
+            && w.pos[1].is_finite()
+            && w.pos[0].abs() < 50.0
+            && w.pos[1].abs() < 50.0
+    });
     let peak = sim
         .history
         .iter()
@@ -246,17 +245,11 @@ fn bem_005_impulsive_start_free_wake() {
             backslide += w[0].bound - w[1].bound;
         }
     }
-    let coarse: Vec<f64> = sim
-        .history
-        .iter()
-        .step_by(40)
-        .map(|s| s.bound)
-        .collect();
+    let coarse: Vec<f64> = sim.history.iter().step_by(40).map(|s| s.bound).collect();
     let coarse_monotone = coarse.windows(2).all(|w| w[1] >= w[0]);
     let wagner = (0.3..=0.7).contains(&first);
     let asymptote = last > 0.9 && last < 1.05;
-    let pass = wagner && asymptote && bounded && peak < 5.0 && coarse_monotone
-        && deterministic;
+    let pass = wagner && asymptote && bounded && peak < 5.0 && coarse_monotone && deterministic;
     let mut tail = String::new();
     let _ = write!(tail, "{}", sim.trace_json(40));
     verdict(
@@ -271,4 +264,3 @@ fn bem_005_impulsive_start_free_wake() {
         ),
     );
 }
-
