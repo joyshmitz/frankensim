@@ -9,6 +9,10 @@ fn grid() -> MapElites {
     MapElites::new(vec![0.0, 0.0], vec![1.0, 1.0], vec![4, 4])
 }
 
+fn panics(f: impl FnOnce() + std::panic::UnwindSafe) -> bool {
+    std::panic::catch_unwind(f).is_err()
+}
+
 #[test]
 fn descriptors_map_to_the_right_cells() {
     let a = grid();
@@ -81,6 +85,27 @@ fn novelty_rewards_distance_from_the_archive() {
     assert!(far > near, "far {far} should exceed near {near}");
     // an empty archive is maximally novel.
     assert!(novelty(&[0.0], &[], 3).is_infinite());
+}
+
+#[test]
+fn malformed_dimensions_and_fitness_are_rejected() {
+    assert!(panics(|| {
+        let _ = grid().cell_of(&[0.2]);
+    }));
+    assert!(panics(|| {
+        let mut a = grid();
+        let _ = a.add(vec![1.0], vec![0.2, 0.2], -1.0);
+    }));
+    assert!(panics(|| {
+        let _ = CvtArchive::new(vec![vec![0.0, 0.0], vec![1.0]]);
+    }));
+    assert!(panics(|| {
+        let c = CvtArchive::new(vec![vec![0.0, 0.0]]);
+        let _ = c.nearest_centroid(&[0.0]);
+    }));
+    assert!(panics(|| {
+        let _ = novelty(&[0.0, 0.0], &[vec![0.0]], 1);
+    }));
 }
 
 #[test]

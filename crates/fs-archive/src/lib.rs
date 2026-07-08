@@ -42,7 +42,8 @@ impl MapElites {
     /// `bins` cells per dimension.
     ///
     /// # Panics
-    /// If the dimensions disagree or any bin count is zero.
+    /// If dimensions disagree, any bin count is zero, bounds are non-finite,
+    /// or any upper bound is not greater than its lower bound.
     #[must_use]
     pub fn new(lo: Vec<f64>, hi: Vec<f64>, bins: Vec<usize>) -> MapElites {
         assert!(
@@ -57,6 +58,10 @@ impl MapElites {
             lo.iter().zip(&hi).all(|(l, h)| h > l),
             "each hi must exceed lo"
         );
+        assert!(
+            lo.iter().chain(&hi).all(|v| v.is_finite()),
+            "bounds must be finite"
+        );
         MapElites {
             lo,
             hi,
@@ -66,8 +71,13 @@ impl MapElites {
     }
 
     /// The discrete cell index of a descriptor (clamped into the grid).
+    ///
+    /// # Panics
+    /// If the descriptor dimension disagrees with the archive or contains a
+    /// non-finite value.
     #[must_use]
     pub fn cell_of(&self, descriptor: &[f64]) -> Vec<usize> {
+        assert_descriptor("descriptor", descriptor, self.lo.len());
         descriptor
             .iter()
             .zip(&self.lo)
@@ -90,7 +100,12 @@ impl MapElites {
 
     /// Try to add a solution. Returns `true` if it became an elite (a new niche
     /// or a strict improvement over the incumbent).
+    ///
+    /// # Panics
+    /// If the descriptor dimension disagrees with the archive or fitness is
+    /// negative / non-finite.
     pub fn add(&mut self, solution: Vec<f64>, descriptor: Vec<f64>, fitness: f64) -> bool {
+        assert_non_negative_fitness(fitness);
         let cell = self.cell_of(&descriptor);
         let improve = self.cells.get(&cell).is_none_or(|e| fitness > e.fitness);
         if improve {
@@ -131,6 +146,10 @@ impl MapElites {
     }
 
     /// The elite in the cell of a descriptor, if any.
+    ///
+    /// # Panics
+    /// If the descriptor dimension disagrees with the archive or contains a
+    /// non-finite value.
     #[must_use]
     pub fn elite_at(&self, descriptor: &[f64]) -> Option<&Elite> {
         self.cells.get(&self.cell_of(descriptor))
@@ -157,6 +176,7 @@ impl MapElites {
 #[derive(Debug, Clone)]
 pub struct CvtArchive {
     centroids: Vec<Vec<f64>>,
+    dim: usize,
     cells: BTreeMap<usize, Elite>,
 }
 
@@ -164,19 +184,31 @@ impl CvtArchive {
     /// A new archive over the given centroids.
     ///
     /// # Panics
-    /// If `centroids` is empty.
+    /// If `centroids` is empty, zero-dimensional, non-finite, or not all the
+    /// same dimension.
     #[must_use]
     pub fn new(centroids: Vec<Vec<f64>>) -> CvtArchive {
         assert!(!centroids.is_empty(), "need at least one centroid");
+        let dim = centroids.first().map_or(0, Vec::len);
+        assert!(dim > 0, "centroids need at least one dimension");
+        for centroid in &centroids {
+            assert_descriptor("centroid", centroid, dim);
+        }
         CvtArchive {
             centroids,
+            dim,
             cells: BTreeMap::new(),
         }
     }
 
     /// The index of the nearest centroid to a descriptor.
+    ///
+    /// # Panics
+    /// If the descriptor dimension disagrees with the centroids or contains a
+    /// non-finite value.
     #[must_use]
     pub fn nearest_centroid(&self, descriptor: &[f64]) -> usize {
+        assert_descriptor("descriptor", descriptor, self.dim);
         self.centroids
             .iter()
             .enumerate()
@@ -190,7 +222,12 @@ impl CvtArchive {
 
     /// Try to add a solution (nearest-centroid niche). Returns `true` if it
     /// became an elite.
+    ///
+    /// # Panics
+    /// If the descriptor dimension disagrees with the centroids or fitness is
+    /// negative / non-finite.
     pub fn add(&mut self, solution: Vec<f64>, descriptor: Vec<f64>, fitness: f64) -> bool {
+        assert_non_negative_fitness(fitness);
         let cell = self.nearest_centroid(&descriptor);
         let improve = self.cells.get(&cell).is_none_or(|e| fitness > e.fitness);
         if improve {
@@ -244,17 +281,46 @@ impl CvtArchive {
 /// The NOVELTY of a descriptor relative to a set of others: the mean Euclidean
 /// distance to its `k` nearest neighbours (exploration pressure). An empty
 /// neighbour set is maximally novel (`+∞`).
+///
+/// # Panics
+/// If `others` is non-empty and descriptor dimensions disagree, are zero, or
+/// contain non-finite values.
 #[must_use]
 pub fn novelty(descriptor: &[f64], others: &[Vec<f64>], k: usize) -> f64 {
     if others.is_empty() || k == 0 {
         return f64::INFINITY;
     }
+    assert_descriptor("descriptor", descriptor, descriptor.len());
+    for other in others {
+        assert_descriptor("neighbour descriptor", other, descriptor.len());
+    }
     let mut dists: Vec<f64> = others.iter().map(|o| dist2(o, descriptor).sqrt()).collect();
     dists.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let kk = k.min(dists.len());
-    dists[..kk].iter().sum::<f64>() / kk as f64
+    dists.iter().take(kk).sum::<f64>() / kk as f64
+}
+
+fn assert_descriptor(label: &str, values: &[f64], expected_dim: usize) {
+    assert!(expected_dim > 0, "{label} needs at least one dimension");
+    assert!(
+        values.len() == expected_dim,
+        "{label} dimension {} does not match expected dimension {expected_dim}",
+        values.len()
+    );
+    assert!(
+        values.iter().all(|v| v.is_finite()),
+        "{label} must be finite"
+    );
+}
+
+fn assert_non_negative_fitness(fitness: f64) {
+    assert!(
+        fitness.is_finite() && fitness >= 0.0,
+        "fitness must be finite and non-negative"
+    );
 }
 
 fn dist2(a: &[f64], b: &[f64]) -> f64 {
+    debug_assert_eq!(a.len(), b.len());
     a.iter().zip(b).map(|(x, y)| (x - y) * (x - y)).sum()
 }
