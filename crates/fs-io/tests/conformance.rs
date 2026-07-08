@@ -276,6 +276,11 @@ fn io_004_catalog_schema_validation_teaches() {
     let json = r#"[{"section": "W14x90", "area_in2": 26.5, "ix_in4": 999}]"#;
     let jcat = schema.parse_json(json).expect("json catalog");
     assert!((jcat.numbers[0]["area_in2"] - 26.5).abs() < 1e-12);
+    // regression: a JSON string with multi-byte UTF-8 must round-trip, not be
+    // split into Latin-1 chars ("café–90" was becoming "cafÃ©â\u{80}\u{93}90").
+    let utf8 = r#"[{"section": "café–90", "area_in2": 26.5, "ix_in4": 999}]"#;
+    let ucat = schema.parse_json(utf8).expect("utf-8 json catalog");
+    assert_eq!(ucat.rows[0]["section"], "café–90");
     assert!(
         schema.parse_json("[{\"section\": []}]").is_err(),
         "nested JSON refused"

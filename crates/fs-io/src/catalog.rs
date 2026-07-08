@@ -290,7 +290,9 @@ fn mini_json_array_of_objects(text: &str) -> Result<Vec<BTreeMap<String, String>
 
 fn read_string(bytes: &[u8], pos: &mut usize) -> Result<String, IoError> {
     *pos += 1; // opening quote
-    let mut s = String::new();
+    // Accumulate raw bytes and decode as UTF-8 at the close, so multi-byte
+    // scalars (e.g. "café") survive instead of being split into Latin-1 chars.
+    let mut buf: Vec<u8> = Vec::new();
     loop {
         match bytes.get(*pos) {
             None => {
@@ -301,22 +303,25 @@ fn read_string(bytes: &[u8], pos: &mut usize) -> Result<String, IoError> {
             }
             Some(&b'"') => {
                 *pos += 1;
-                return Ok(s);
+                return String::from_utf8(buf).map_err(|_| IoError::Malformed {
+                    at: *pos,
+                    what: "invalid UTF-8 in string".to_string(),
+                });
             }
             Some(&b'\\') => {
                 let escaped = bytes.get(*pos + 1).ok_or(IoError::Malformed {
                     at: *pos,
                     what: "dangling escape".to_string(),
                 })?;
-                s.push(match escaped {
-                    b'n' => '\n',
-                    b't' => '\t',
-                    other => *other as char,
+                buf.push(match escaped {
+                    b'n' => b'\n',
+                    b't' => b'\t',
+                    other => *other,
                 });
                 *pos += 2;
             }
             Some(&c) => {
-                s.push(c as char);
+                buf.push(c);
                 *pos += 1;
             }
         }

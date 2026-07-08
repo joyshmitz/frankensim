@@ -25,7 +25,8 @@ fn weld(corners: &[[f32; 3]]) -> Soup {
     let mut index: BTreeMap<[u32; 3], u32> = BTreeMap::new();
     let mut positions = Vec::new();
     let mut triangles = Vec::new();
-    for tri in corners.chunks_exact(3) {
+    let (tris, _rest) = corners.as_chunks::<3>();
+    for tri in tris {
         let mut ids = [0u32; 3];
         for (slot, c) in ids.iter_mut().zip(tri) {
             let key = [c[0].to_bits(), c[1].to_bits(), c[2].to_bits()];
