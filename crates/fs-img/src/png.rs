@@ -113,6 +113,17 @@ fn unzlib_stored(z: &[u8]) -> Result<Vec<u8>, ImgError> {
             what: "not a deflate zlib stream".to_string(),
         });
     }
+    let header = u16::from_be_bytes([z[0], z[1]]);
+    if header % 31 != 0 {
+        return Err(ImgError::Malformed {
+            what: "zlib header check bits mismatch".to_string(),
+        });
+    }
+    if z[1] & 0x20 != 0 {
+        return Err(ImgError::Unsupported {
+            what: "zlib preset dictionaries".to_string(),
+        });
+    }
     let mut pos = 2usize;
     let mut out = Vec::new();
     loop {
@@ -158,10 +169,19 @@ fn unzlib_stored(z: &[u8]) -> Result<Vec<u8>, ImgError> {
             what: "adler32 mismatch (corrupt data)".to_string(),
         });
     }
+    if pos + 4 != z.len() {
+        return Err(ImgError::Malformed {
+            what: "trailing bytes after zlib adler32".to_string(),
+        });
+    }
     Ok(out)
 }
 
 fn push_chunk(out: &mut Vec<u8>, kind: [u8; 4], data: &[u8]) {
+    assert!(
+        u32::try_from(data.len()).is_ok(),
+        "PNG chunk exceeds u32 length field"
+    );
     out.extend_from_slice(&(data.len() as u32).to_be_bytes());
     out.extend_from_slice(&kind);
     out.extend_from_slice(data);
@@ -172,6 +192,45 @@ fn push_chunk(out: &mut Vec<u8>, kind: [u8; 4], data: &[u8]) {
 }
 
 const SIGNATURE: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+
+fn checked_sample_count(
+    width: u32,
+    height: u32,
+    channels: usize,
+    got: usize,
+    context: &'static str,
+) -> Result<usize, ImgError> {
+    if width == 0 || height == 0 {
+        return Err(ImgError::Shape {
+            expected: 0,
+            got,
+            context,
+        });
+    }
+    (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|px| px.checked_mul(channels))
+        .ok_or(ImgError::Shape {
+            expected: usize::MAX,
+            got,
+            context,
+        })
+}
+
+fn checked_scanline_capacity(
+    row_bytes: usize,
+    height: u32,
+    context: &'static str,
+) -> Result<usize, ImgError> {
+    row_bytes
+        .checked_add(1)
+        .and_then(|row| row.checked_mul(height as usize))
+        .ok_or(ImgError::Shape {
+            expected: usize::MAX,
+            got: 0,
+            context,
+        })
+}
 
 /// Encode 8-bit samples (row-major, interleaved channels) as a PNG with
 /// an sRGB chunk. Byte-exact deterministic.
@@ -185,16 +244,21 @@ pub fn write_png8(
     color: PngColor,
     samples: &[u8],
 ) -> Result<Vec<u8>, ImgError> {
-    let expected = width as usize * height as usize * color.channels();
-    if samples.len() != expected || width == 0 || height == 0 {
+    let channels = color.channels();
+    let expected = checked_sample_count(width, height, channels, samples.len(), "write_png8 samples")?;
+    if samples.len() != expected {
         return Err(ImgError::Shape {
             expected,
             got: samples.len(),
             context: "write_png8 samples",
         });
     }
-    let row = width as usize * color.channels();
-    let mut raw = Vec::with_capacity((row + 1) * height as usize);
+    let row = width as usize * channels;
+    let mut raw = Vec::with_capacity(checked_scanline_capacity(
+        row,
+        height,
+        "write_png8 scanlines",
+    )?);
     for y in 0..height as usize {
         raw.push(0); // filter: None
         raw.extend_from_slice(&samples[y * row..(y + 1) * row]);
@@ -212,16 +276,26 @@ pub fn write_png16(
     color: PngColor,
     samples: &[u16],
 ) -> Result<Vec<u8>, ImgError> {
-    let expected = width as usize * height as usize * color.channels();
-    if samples.len() != expected || width == 0 || height == 0 {
+    let channels = color.channels();
+    let expected = checked_sample_count(width, height, channels, samples.len(), "write_png16 samples")?;
+    if samples.len() != expected {
         return Err(ImgError::Shape {
             expected,
             got: samples.len(),
             context: "write_png16 samples",
         });
     }
-    let row = width as usize * color.channels();
-    let mut raw = Vec::with_capacity((row * 2 + 1) * height as usize);
+    let row = width as usize * channels;
+    let row_bytes = row.checked_mul(2).ok_or(ImgError::Shape {
+        expected: usize::MAX,
+        got: samples.len(),
+        context: "write_png16 scanlines",
+    })?;
+    let mut raw = Vec::with_capacity(checked_scanline_capacity(
+        row_bytes,
+        height,
+        "write_png16 scanlines",
+    )?);
     for y in 0..height as usize {
         raw.push(0);
         for &s in &samples[y * row..(y + 1) * row] {
@@ -267,10 +341,10 @@ impl DecodedPng {
     /// 16-bit samples (only valid when `depth == 16`).
     #[must_use]
     pub fn samples16(&self) -> Vec<u16> {
-        self.bytes
-            .chunks_exact(2)
-            .map(|p| u16::from_be_bytes([p[0], p[1]]))
-            .collect()
+        assert_eq!(self.depth, 16, "samples16 requires a 16-bit PNG");
+        let (samples, remainder) = self.bytes.as_chunks::<2>();
+        assert!(remainder.is_empty(), "16-bit PNG payload must be even");
+        samples.iter().map(|&p| u16::from_be_bytes(p)).collect()
     }
 }
 
@@ -288,6 +362,7 @@ pub fn read_png(bytes: &[u8]) -> Result<DecodedPng, ImgError> {
     let mut pos = 8usize;
     let mut header: Option<(u32, u32, u8, PngColor)> = None;
     let mut idat = Vec::new();
+    let mut saw_idat = false;
     loop {
         let len_bytes = bytes.get(pos..pos + 8).ok_or_else(|| ImgError::Malformed {
             what: "truncated chunk header".to_string(),
@@ -315,6 +390,11 @@ pub fn read_png(bytes: &[u8]) -> Result<DecodedPng, ImgError> {
         }
         match kind {
             b"IHDR" => {
+                if pos != 8 || header.is_some() {
+                    return Err(ImgError::Malformed {
+                        what: "IHDR must be the first and only header chunk".to_string(),
+                    });
+                }
                 if data.len() != 13 {
                     return Err(ImgError::Malformed {
                         what: "IHDR length".to_string(),
@@ -322,6 +402,11 @@ pub fn read_png(bytes: &[u8]) -> Result<DecodedPng, ImgError> {
                 }
                 let w = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
                 let h = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
+                if w == 0 || h == 0 {
+                    return Err(ImgError::Malformed {
+                        what: "PNG dimensions must be nonzero".to_string(),
+                    });
+                }
                 let depth = data[8];
                 let color =
                     PngColor::from_type_byte(data[9]).ok_or_else(|| ImgError::Unsupported {
@@ -332,6 +417,16 @@ pub fn read_png(bytes: &[u8]) -> Result<DecodedPng, ImgError> {
                         what: format!("bit depth {depth}"),
                     });
                 }
+                if data[10] != 0 {
+                    return Err(ImgError::Unsupported {
+                        what: format!("compression method {}", data[10]),
+                    });
+                }
+                if data[11] != 0 {
+                    return Err(ImgError::Unsupported {
+                        what: format!("filter method {}", data[11]),
+                    });
+                }
                 if data[12] != 0 {
                     return Err(ImgError::Unsupported {
                         what: "interlacing".to_string(),
@@ -339,11 +434,43 @@ pub fn read_png(bytes: &[u8]) -> Result<DecodedPng, ImgError> {
                 }
                 header = Some((w, h, depth, color));
             }
-            b"IDAT" => idat.extend_from_slice(data),
-            b"IEND" => break,
-            _ => {} // ancillary chunks (sRGB…) pass through
+            b"IDAT" => {
+                if header.is_none() {
+                    return Err(ImgError::Malformed {
+                        what: "IDAT before IHDR".to_string(),
+                    });
+                }
+                saw_idat = true;
+                idat.extend_from_slice(data);
+            }
+            b"IEND" => {
+                if data.is_empty() {
+                    pos += 12 + len;
+                    break;
+                }
+                return Err(ImgError::Malformed {
+                    what: "IEND length must be zero".to_string(),
+                });
+            }
+            _ => {
+                if header.is_none() {
+                    return Err(ImgError::Malformed {
+                        what: "ancillary chunk before IHDR".to_string(),
+                    });
+                }
+            }
         }
         pos += 12 + len;
+    }
+    if pos != bytes.len() {
+        return Err(ImgError::Malformed {
+            what: "trailing bytes after IEND".to_string(),
+        });
+    }
+    if !saw_idat {
+        return Err(ImgError::Malformed {
+            what: "missing IDAT".to_string(),
+        });
     }
     let Some((width, height, depth, color)) = header else {
         return Err(ImgError::Malformed {
@@ -352,8 +479,12 @@ pub fn read_png(bytes: &[u8]) -> Result<DecodedPng, ImgError> {
     };
     let raw = unzlib_stored(&idat)?;
     let bpp = color.channels() * (depth as usize / 8);
-    let row = width as usize * bpp;
-    let expected = (row + 1) * height as usize;
+    let row = (width as usize).checked_mul(bpp).ok_or(ImgError::Shape {
+        expected: usize::MAX,
+        got: raw.len(),
+        context: "decoded scanline width",
+    })?;
+    let expected = checked_scanline_capacity(row, height, "decoded scanlines")?;
     if raw.len() != expected {
         return Err(ImgError::Shape {
             expected,
