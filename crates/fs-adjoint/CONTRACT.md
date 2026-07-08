@@ -90,6 +90,20 @@ solver without a passing gradient check cannot merge.
   gradient-gate discipline extended across seams: missing or failing FD
   checks refuse with teaching text.
 
+- `dwr_accept` module (addendum Proposal 9, bead lmp4.4; [F], behind
+  `dwr-accept` → optional fs-verify dep): the GOAL-ORIENTED accept
+  test. `dwr_integral_qoi` is the 1-D reference DWR (enriched dual on
+  the once-refined mesh, per-element indicators); `accept` encodes the
+  color logic MECHANICALLY: DWR-only accepts carry ESTIMATED (DWR
+  constants are not guaranteed); promotion to VERIFIED requires a
+  GUARANTEED bracket with bound ≤ tolerance — `Bracket::cauchy_schwarz`
+  builds the constant-free QoI bracket from two equilibrated
+  energy-norm enclosures (|a(e_u,e_z)| ≤ ‖e_u‖·‖e_z‖, outward-rounded,
+  fail-closed on unbounded factors). A DWR estimate exceeding a
+  guaranteed bracket flags `estimator_inconsistent` (falsifier-grade,
+  reported never hidden). Refinement indicators concentrate where the
+  QoI error lives.
+
 ## Invariants
 
 - No differentiation through Krylov iterations anywhere: adjoints are
@@ -207,3 +221,15 @@ gradient and REJECTING a corrupted one; cross-ISA golden hash.
 - The CI wiring of merge_gate into the Gauntlet runner is the
   ci-gauntlet bead's contract; this module ships the gate function and
   its refusals.
+
+## No-claim boundaries (dwr-accept)
+
+- The reference estimator is the 1-D elliptic class (fs-verify's v0
+  scope); the 2-D cutfem DWR lives in fs-dwr (tfz.23) and plugs into
+  the same accept/color logic.
+- The Cauchy–Schwarz bracket is sharp only up to the product's
+  pessimism; sharper goal-oriented equilibrated bounds are the
+  verifier's growth path, not this module's claim.
+- Falsifier cadence (how often the high-fidelity spot check runs) is
+  the budget allocator's decision (Proposal 6); this module ships the
+  check and the pairing.

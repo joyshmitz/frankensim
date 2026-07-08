@@ -394,9 +394,9 @@ fn state_to_bytes(u: &[f64]) -> Vec<u8> {
 }
 
 fn state_from_bytes(b: &[u8]) -> Vec<f64> {
-    b.chunks_exact(8)
-        .map(|c| f64::from_le_bytes(c.try_into().expect("8 bytes")))
-        .collect()
+    let (chunks, rest) = b.as_chunks::<8>();
+    assert!(rest.is_empty(), "checkpoint bytes are whole f64s");
+    chunks.iter().map(|c| f64::from_le_bytes(*c)).collect()
 }
 
 /// A uniform-checkpoint adjoint sweep with checkpoints SPILLED through

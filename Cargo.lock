@@ -789,6 +789,7 @@ dependencies = [
  "fs-rep-mesh",
  "fs-solver",
  "fs-sparse",
+ "fs-verify",
 ]
 
 [[package]]
@@ -825,6 +826,17 @@ name = "fs-assimilate"
 version = "0.0.1"
 dependencies = [
  "fs-evidence",
+]
+
+[[package]]
+name = "fs-bem"
+version = "0.0.1"
+dependencies = [
+ "fs-fmm",
+ "fs-geom",
+ "fs-la",
+ "fs-rep-mesh",
+ "fs-solver",
 ]
 
 [[package]]
@@ -978,6 +990,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs-fab"
+version = "0.0.1"
+dependencies = [
+ "fs-evidence",
+]
+
+[[package]]
 name = "fs-feec"
 version = "0.0.1"
 dependencies = [
@@ -1009,6 +1028,10 @@ dependencies = [
  "fs-recompute",
  "fs-spececo",
 ]
+
+[[package]]
+name = "fs-fmm"
+version = "0.0.1"
 
 [[package]]
 name = "fs-ga"
@@ -1491,6 +1514,10 @@ dependencies = [
  "fs-solver",
  "fs-sparse",
 ]
+
+[[package]]
+name = "fs-tropical"
+version = "0.0.1"
 
 [[package]]
 name = "fs-uq"
