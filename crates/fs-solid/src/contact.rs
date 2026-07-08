@@ -64,7 +64,7 @@ impl Barrier {
         if d >= self.dhat {
             return 0.0;
         }
-        if !(d > 0.0) {
+        if !d.is_finite() || d <= 0.0 {
             return f64::INFINITY;
         }
         let g = d - self.dhat;
@@ -77,7 +77,7 @@ impl Barrier {
         if d >= self.dhat {
             return 0.0;
         }
-        if !(d > 0.0) {
+        if !d.is_finite() || d <= 0.0 {
             return f64::NAN;
         }
         let g = d - self.dhat;
@@ -91,7 +91,7 @@ impl Barrier {
         if d >= self.dhat {
             return 0.0;
         }
-        if !(d > 0.0) {
+        if !d.is_finite() || d <= 0.0 {
             return f64::NAN;
         }
         let g = d - self.dhat;
@@ -212,17 +212,15 @@ impl ContactProblem<'_> {
             friction.validate()?;
         }
         let ndof = self.ndof();
-        for &(dof, target) in &self.pins {
-            if dof >= ndof {
-                return Err(SolidError::InvalidInput {
-                    what: format!("contact pin dof {dof} is outside 0..{ndof}"),
-                });
-            }
-            if !target.is_finite() {
-                return Err(SolidError::InvalidInput {
-                    what: format!("contact pin target for dof {dof} is not finite"),
-                });
-            }
+        if let Some(&(dof, _)) = self.pins.iter().find(|(dof, _)| *dof >= ndof) {
+            return Err(SolidError::InvalidInput {
+                what: format!("contact pin dof {dof} is outside 0..{ndof}"),
+            });
+        }
+        if let Some(&(dof, _)) = self.pins.iter().find(|(_, target)| !target.is_finite()) {
+            return Err(SolidError::InvalidInput {
+                what: format!("contact pin target for dof {dof} is not finite"),
+            });
         }
         Ok(())
     }
@@ -322,6 +320,51 @@ impl ContactProblem<'_> {
         }
     }
 
+    fn residual_norm_at(
+        &self,
+        u: &[f64],
+        load: f64,
+        lag: Option<&FrictionLag>,
+    ) -> Result<f64, SolidError> {
+        self.validate_state_len(u)?;
+        let n = self.node_count();
+        let ndof = self.ndof();
+        let (mut r, _) = self.hyper.residual_and_tangent(u, load)?;
+        for i in 0..n {
+            let x = self.deformed(u, i);
+            let d = self.sdf_value(u, i)?;
+            if d < self.barrier.dhat {
+                let gphi = self.sdf_gradient(x)?;
+                let b1 = self.barrier.d1(d);
+                for a in 0..2 {
+                    r[2 * i + a] += b1 * gphi[a];
+                }
+            }
+        }
+        if let Some(lag) = lag {
+            lag.add_residual(self, u, &mut r)?;
+        }
+        for &(d, target) in &self.pins {
+            r[d] = u[d] - load * target;
+        }
+        debug_assert_eq!(r.len(), ndof);
+        Self::finite_max_norm(&r, "contact trial residual")
+    }
+
+    fn finite_max_norm(values: &[f64], label: &str) -> Result<f64, SolidError> {
+        if let Some(i) = values.iter().position(|value| !value.is_finite()) {
+            let value = values[i];
+            return Err(SolidError::InvalidInput {
+                what: format!("{label} entry {i} is not finite ({value})"),
+            });
+        }
+        let mut norm = 0.0f64;
+        for &value in values {
+            norm = norm.max(value.abs());
+        }
+        Ok(norm)
+    }
+
     /// Solve the barrier-augmented equilibrium at `load`.
     ///
     /// # Errors
@@ -329,6 +372,7 @@ impl ContactProblem<'_> {
     /// reach tolerance; [`SolidError::SolveFailed`] on a singular
     /// system; [`SolidError::InvalidInput`] for infeasible or
     /// non-finite contact data; material refusals propagate.
+    #[allow(clippy::too_many_lines)] // contact Newton + audited line search is one proof path
     pub fn solve(&self, load: f64) -> Result<ContactSolution, SolidError> {
         self.validate_inputs(load)?;
         let n = self.node_count();
@@ -387,7 +431,7 @@ impl ContactProblem<'_> {
                         h[d * ndof + c] = if c == d { 1.0 } else { 0.0 };
                     }
                 }
-                residual = r.iter().fold(0.0f64, |m, &v| m.max(v.abs()));
+                residual = Self::finite_max_norm(&r, "contact residual")?;
                 history.push(residual);
                 if residual < self.tol {
                     stalled = false;
@@ -427,16 +471,73 @@ impl ContactProblem<'_> {
                         .collect();
                     let gap = self.min_gap(&trial)?;
                     if gap > 0.0 {
-                        if let Ok(e1) = self.total_energy(&trial, load, lag.as_ref()) {
-                            if e1 <= (1e-4 * alpha).mul_add(slope, e0) {
+                        if let Ok(e1) = self.total_energy(&trial, load, lag.as_ref())
+                            && e1 <= (1e-4 * alpha).mul_add(slope, e0)
+                        {
+                            u = trial;
+                            min_gap_ever = min_gap_ever.min(gap);
+                            accepted = true;
+                            break;
+                        }
+                        if self
+                            .residual_norm_at(&trial, load, lag.as_ref())
+                            .is_ok_and(|trial_residual| trial_residual <= 0.9 * residual)
+                        {
+                            u = trial;
+                            min_gap_ever = min_gap_ever.min(gap);
+                            accepted = true;
+                            break;
+                        }
+                    }
+                    alpha *= 0.5;
+                }
+                if !accepted {
+                    // The contact Hessian is intentionally a PSD
+                    // approximation (curvature terms and friction
+                    // nonsmoothness are lagged/dropped). If that
+                    // Newton direction is not an energy descent, fall
+                    // back to the true residual-gradient direction.
+                    let du_sd: Vec<f64> = r.iter().map(|v| -v).collect();
+                    let slope_sd: f64 = -r.iter().map(|v| v * v).sum::<f64>();
+                    let mut alpha_sd = 1.0f64;
+                    for i in 0..n {
+                        let x = self.deformed(&u, i);
+                        let d = self.sdf_value(&u, i)?;
+                        let gphi = self.sdf_gradient(x)?;
+                        let closing = -(gphi[0] * du_sd[2 * i] + gphi[1] * du_sd[2 * i + 1]);
+                        if closing > 0.0 {
+                            alpha_sd = alpha_sd.min(0.9 * d / closing);
+                        }
+                    }
+                    alpha_sd = alpha_sd.min(1.0);
+                    for _ in 0..40 {
+                        let trial: Vec<f64> = u
+                            .iter()
+                            .zip(&du_sd)
+                            .map(|(a, b)| alpha_sd.mul_add(*b, *a))
+                            .collect();
+                        let gap = self.min_gap(&trial)?;
+                        if gap > 0.0 {
+                            if let Ok(e1) = self.total_energy(&trial, load, lag.as_ref())
+                                && e1 <= (1e-4 * alpha_sd).mul_add(slope_sd, e0)
+                            {
+                                u = trial;
+                                min_gap_ever = min_gap_ever.min(gap);
+                                accepted = true;
+                                break;
+                            }
+                            if self
+                                .residual_norm_at(&trial, load, lag.as_ref())
+                                .is_ok_and(|trial_residual| trial_residual <= 0.9 * residual)
+                            {
                                 u = trial;
                                 min_gap_ever = min_gap_ever.min(gap);
                                 accepted = true;
                                 break;
                             }
                         }
+                        alpha_sd *= 0.5;
                     }
-                    alpha *= 0.5;
                 }
                 if !accepted {
                     return Err(SolidError::NewtonStalled { history });
@@ -642,6 +743,31 @@ impl FrictionLag {
             total += self.settings.mu * self.anchors[i].1 * self.huber(s);
         }
         Ok(total)
+    }
+
+    fn add_residual(
+        &self,
+        cp: &ContactProblem<'_>,
+        u: &[f64],
+        r: &mut [f64],
+    ) -> Result<(), SolidError> {
+        for i in 0..cp.node_count() {
+            let lam = self.anchors[i].1;
+            if lam <= 0.0 {
+                continue;
+            }
+            let (t, s) = self.slip(cp, u, i)?;
+            if s < 1e-30 {
+                continue;
+            }
+            let coef = self.settings.mu * lam;
+            let dir = [t[0] / s, t[1] / s];
+            let g1 = coef * self.huber_d1(s);
+            for a in 0..2 {
+                r[2 * i + a] += g1 * dir[a];
+            }
+        }
+        Ok(())
     }
 
     /// Add friction gradient and a convex (Gauss–Newton) Hessian.
