@@ -197,7 +197,7 @@ fn ei_laws_and_qei_dominance() {
     let bank1: Vec<f64> = (0..4096).map(|s| bank2[s * 2]).collect();
     let xa = vec![0.25f64, 0.6];
     let xb = vec![0.7f64, 0.2];
-    let q1 = q_expected_improvement(&gp, &[xa.clone()], f_best, &bank1);
+    let q1 = q_expected_improvement(&gp, core::slice::from_ref(&xa), f_best, &bank1);
     let q2 = q_expected_improvement(&gp, &[xa.clone(), xb], f_best, &bank2);
     assert!(
         q2 >= q1 - 1e-9,
