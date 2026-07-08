@@ -8,16 +8,16 @@
 
 [![Status](https://img.shields.io/badge/status-active%20Rust%20workspace-2ea44f)](#implemented-workspace)
 [![Rust](https://img.shields.io/badge/rust-nightly%202024-b7410e)](rust-toolchain.toml)
-[![Crates](https://img.shields.io/badge/workspace-29%20library%20crates-0969da)](#implemented-workspace)
-[![Contracts](https://img.shields.io/badge/contracts-28%20of%2029%20crates-8250df)](#contracts-and-verification)
-[![Tests](https://img.shields.io/badge/tests-42%20crate%20test%20files-1f883d)](#contracts-and-verification)
+[![Crates](https://img.shields.io/badge/workspace-71%20fs--%2A%20crates-0969da)](#implemented-workspace)
+[![Contracts](https://img.shields.io/badge/contracts-71%20of%2071%20crates-8250df)](#contracts-and-verification)
+[![Tests](https://img.shields.io/badge/tests-116%20crate%20test%20files-1f883d)](#contracts-and-verification)
 [![License](https://img.shields.io/badge/license-MIT%20%2B%20AI%20rider-yellow)](LICENSE)
 
 </div>
 
 FrankenSim is a working Rust workspace for deterministic geometry, certified numerics, meshing, execution, evidence, and design-ledger infrastructure for simulation and design optimization.
 
-The tree contains a real Cargo workspace with 29 library crates, repository policy tooling, conformance contracts, integration tests, and working implementations across substrate/runtime, numerical kernels, geometry representations, meshing, transformation, imaging, evidence, and ledger layers.
+The tree contains a real Cargo workspace with 71 `fs-*` crates, repository policy tooling, conformance contracts, integration tests, and working implementations across substrate/runtime, numerical kernels, geometry representations, meshing, physics, solvers, adjoints, optimization, imaging, evidence, packaging, and ledger layers.
 
 There is not yet a packaged end-user simulation application or crates.io release. Today, FrankenSim is usable as a source workspace and library substrate.
 
@@ -31,14 +31,14 @@ There is not yet a packaged end-user simulation application or crates.io release
 
 | Area | Current implementation |
 |------|------------------------|
-| Workspace | Rust 2024 nightly Cargo workspace with 29 `fs-*` library crates plus `xtask` |
-| Contracts | 28 of 29 library crates have `CONTRACT.md`; `fs-img` is the current contract gap |
+| Workspace | Rust 2024 nightly Cargo workspace with 71 `fs-*` crates plus `xtask` |
+| Contracts | 71 of 71 `fs-*` crates have `CONTRACT.md` files |
 | Runtime substrate | Capability probing, SIMD facades, aligned arenas, two-lane execution, cancellation contexts, tile pools, tuner and race scaffolding |
 | Numerics | Deterministic elementary math, dense/sparse linear algebra, FFT/DCT, interval/affine/Taylor arithmetic, Chebyshev collocation, random/QMC streams, AD/adjoint infrastructure, e-process inference |
 | Geometry | Region/chart abstraction, SDF, mesh and F-rep charts, representation conversion hooks, transformations, tet meshing, remeshing, quality audits |
 | Evidence and ledger | Composable `Evidence<T>`/`Certified<T>`, model cards, bracketing, FrankenSQLite-backed design ledger, artifact hashes, event streams, tune cache, roofline recording |
 | Policy tooling | `xtask` checks for layer direction, Franken-only runtime dependencies, contracts, unsafe capsules, and constellation lock verification |
-| Tests | 42 crate-level conformance and integration test files exercising the implemented contracts |
+| Tests | 116 crate-level conformance and integration test files exercising the implemented contracts |
 
 ### What You Can Use Today
 
@@ -51,9 +51,19 @@ There is not yet a packaged end-user simulation application or crates.io release
 | Attach numerical/model/statistical evidence to values | `fs_evidence::{Evidence, Certified}` |
 | Use physical quantities with dimensional checks | `fs_qty` compile-time quantities and runtime `QtyAny` |
 | Work with SDF, mesh, and F-rep geometry charts | `fs_geom`, `fs_rep_sdf`, `fs_rep_mesh`, `fs_rep_frep` |
+| Work with NURBS, voxel, point-cloud, and lattice representations | `fs_rep_nurbs` and `fs_rep_voxel` |
+| Assemble exterior-calculus operators and cohomology probes | `fs_feec` cochains, incidence, Hodge stars, Betti checks, and Hodge decomposition |
+| Run matrix-free/resumable linear solves | `fs_solver` CG, MINRES, GMRES, transposed solves, and p-multigrid support |
+| Build CutFEM and elasticity fixtures | `fs_cutfem`, `fs_solid`, `fs_material`, and `fs_scenario` |
+| Verify gradients and build adjoint pipelines | `fs_ad`, `fs_adjoint`, and the gradient verification gate |
+| Track spectral health signals | `fs_spectral` sheaf-Laplacian gap monitoring and low-confidence propagation |
+| Harvest cyclic symmetry in solves | `fs_symmetry` cyclic residuals, DFT block-diagonalized circulant solves, and perturbation bounds |
+| Run gradient-based, derivative-free, or density-based optimizers | `fs_ascent`, `fs_dfo`, `fs_constraint`, `fs_topopt`, and `fs_opt` |
 | Apply design parameterizations and detect foldover | `fs_xform` FFD, RBF, velocity band, density, and composition types |
 | Encode image artifacts and apply deterministic film/denoising transforms | `fs_img` PNG/OpenEXR subset plumbing, film transforms, and bias-labeled denoising |
 | Record artifacts, operations, metrics, events, and tune rows | `fs_ledger` on FrankenSQLite |
+| Package solver evidence for independent review | `fs_package`, `fs_checker`, and `fs_crosswalk` |
+| Check plugin conformance and restriction-map behavior | `fs_conform` restriction-map compatibility checks and diagnostics |
 | Probe machine axes and record roofline measurements | `fs_roofline` plus `fs_substrate` |
 
 ## Quick Start
@@ -99,7 +109,7 @@ FrankenSim does not yet ship an end-user simulator CLI. The commands below are t
 | `cargo clippy --workspace --all-targets -- -D warnings` | Run the strict local lint lane |
 | `cargo run -p xtask -- check-layers` | Enforce the layer dependency direction |
 | `cargo run -p xtask -- check-deps` | Enforce the Franken-only runtime dependency policy |
-| `cargo run -p xtask -- check-contracts` | Verify `fs-*` crate contracts; currently expected to flag `fs-img` until its contract lands |
+| `cargo run -p xtask -- check-contracts` | Verify `fs-*` crate contracts and required sections |
 | `cargo run -p xtask -- check-unsafe` | Check unsafe code against registered capsules |
 | `cargo run -p xtask -- check-constellation` | Verify sibling Franken repository pins |
 | `cargo run -p xtask -- check-all` | Run the implemented `xtask` policy checks together |
@@ -164,6 +174,25 @@ FrankenSim is organized as layered Rust crates. The names below are crates prese
 | `fs-vskeleton` | Photovoltaic vertical skeleton tying SDF/PDE/objective/adjoint/optimization/ledger concepts into a narrow demonstrator path |
 | `fs-opt` | ASCENT optimization problem IR crate with typed objective/constraint graphs, dimensional validation, differentiability-class routing, canonical serialization, manifold metadata, and a conformance contract |
 
+### Expanded Crate Map
+
+The workspace has grown beyond the first substrate and geometry layer. These crates are also implemented today and fill in the physics, optimization, audit, and orchestration layers.
+
+| Crate family | Implemented role |
+|--------------|------------------|
+| `fs-query`, `fs-topo`, `fs-geocon` | Geometry query and certificate layer: closest-point, raycast, offset, clearance, thickness, curvature, topology validity, and geometric constraints |
+| `fs-rep-nurbs`, `fs-rep-voxel` | Additional MORPH representations: rational B-spline charts with exact spline algebra and certified closest-point brackets; voxel, point-cloud, and lattice/strut representations |
+| `fs-feec` | Exterior-calculus core: cochains, Whitney forms, exact incidence operators, Hodge stars, Betti checks, high-order tensor/simplex spaces, and cohomology/Hodge-decomposition utilities |
+| `fs-opdsl`, `fs-tilelang`, `fs-tilelang-macros`, `fs-soa`, `fs-soa-derive` | Operator and layout tooling: DSL scaffolding for operators, deterministic tile-language lowering, and structured data layouts for stable kernel memory behavior |
+| `fs-solver` | Resumable Krylov and multigrid stack: CG, MINRES, GMRES, matrix-free operators, transposed solves, mixed-precision refinement, and p-multigrid over the FEEC hierarchy |
+| `fs-cutfem`, `fs-solid`, `fs-material`, `fs-scenario`, `fs-time` | FLUX physics layer: CutFEM on certified SDF cuts, elasticity/hyperelasticity, constitutive laws, typed boundary/load scenarios, and time-support primitives |
+| `fs-adjoint` | Gradient truth layer: IFT adjoints, density/SIMP pullbacks, Sobolev smoothing, Hadamard shape gradients, revolve-style time adjoints, gradient verification, and feature-gated ledger transposition |
+| `fs-spectral`, `fs-symmetry` | Spectral and symmetry health tools: sheaf-Laplacian gap tracking, hysteresis, confidence propagation, cyclic residuals, DFT block-diagonalized circulant solves, and perturbation bounds |
+| `fs-constraint`, `fs-ascent`, `fs-dfo`, `fs-dimine`, `fs-regime`, `fs-topopt` | ASCENT layer: typed constraints with unsat cores and repairs, L-BFGS/TR-Newton/augmented-Lagrangian/Riemannian optimizers, derivative-free CMA-ES/BIPOP/Nelder-Mead, dimensional law mining, regime/validity-domain machinery, and density-based topology optimization |
+| `fs-contract`, `fs-verify`, `fs-bisect`, `fs-conform` | Verification layer: assume-guarantee component contracts, certified speculation verification, bisect-style proof/debug infrastructure, and restriction-map plugin conformance |
+| `fs-package`, `fs-checker`, `fs-crosswalk` | Evidence distribution layer: content-addressed evidence packages, a solver-free standalone checker, and a standards-language crosswalk for ASME V&V and FAA/EASA certification-by-analysis concepts |
+| `fs-recompute`, `fs-session`, `fs-govern`, `fs-probe`, `fs-iface`, `fs-ladder`, `fs-spececo`, `fs-io` | HELM and utility layer: incremental recomputation, sessions/resource governance, machine-readable proposal governance, probes, interfaces, degradation ladders, specialization ecology, and I/O boundaries |
+
 ## Examples
 
 These examples are library-level examples. FrankenSim does not yet expose a stable end-user CLI.
@@ -211,6 +240,35 @@ let value = Evidence::exact(42.0, provenance)
     .expect("exact pure-math evidence is certifiable");
 
 assert_eq!(value.value, 42.0);
+```
+
+### Evidence Packages and Standalone Checking
+
+```rust
+use fs_checker::check_against_root;
+use fs_evidence::{Color, ValidityDomain};
+use fs_package::{Claim, EvidencePackage, Provenance};
+
+let regime = ValidityDomain::unconstrained().with("Re", 100_000.0, 300_000.0);
+let claim = Claim::new(
+    "lift-window",
+    "lift coefficient was validated against the wind-tunnel fixture",
+    Color::Validated {
+        regime,
+        dataset: "wt-2026-a".to_string(),
+    },
+);
+
+let pkg = EvidencePackage::new(Provenance::new("commit-abc", "lock-def"))
+    .with_claim(claim)
+    .signed("ed25519:detached-signature-placeholder");
+
+let root = pkg.merkle_root();
+let report = check_against_root(&pkg, root);
+
+assert!(report.passed());
+assert_eq!(report.merkle_root, root);
+assert!(report.render_pie().contains("validated"));
 ```
 
 ### Repository Policy Checks
@@ -317,9 +375,123 @@ The important point is not just that the crate names exist. The workspace alread
 | Ledger | `fs-ledger` records content-addressed artifacts, operations, events, metrics, tune rows, extension rows, integrity checks, lineage, and time-travel queries on FrankenSQLite. |
 | Roofline | `fs-roofline` probes machine axes, registers measurable kernels, records runs to the ledger, and checks staleness against machine fingerprints. |
 
+## Why This Is Useful
+
+FrankenSim is not trying to be another wrapper around an external solver. The useful part is that the same workspace owns the path from representation to evidence. A result can carry dimensional meaning, numerical method, solver status, derivative provenance, validity regime, machine fingerprint, and package-level audit data without crossing an untyped boundary.
+
+| Common failure mode | FrankenSim's implemented answer |
+|---------------------|----------------------------------|
+| A quantity loses units once it enters a kernel | `fs-qty`, `fs-scenario`, and `fs-opt` keep dimensional information explicit at API boundaries |
+| A geometry conversion silently changes validity | `fs-geom`, representation crates, `fs-query`, and `fs-topo` expose chart contracts, conversion records, and validity/topology checks |
+| A solve returns a number but not a reason to trust it | `fs-solver`, `fs-adjoint`, `fs-verify`, and `fs-evidence` return residuals, certificates, brackets, validation domains, and evidence colors |
+| An optimizer stalls and nobody knows why | `fs-ascent`, `fs-dfo`, and `fs-constraint` report stop reasons, KKT residuals, unsat cores, repair suggestions, and restart schedules |
+| A benchmark only works on one machine | `fs-substrate`, `fs-roofline`, `fs-ledger`, and DSR make machine axes, kernels, measurements, and validation lanes explicit |
+| An auditor wants the evidence, not the solver | `fs-package`, `fs-checker`, and `fs-crosswalk` package claims, re-check them without the solver stack, and describe them in existing certification vocabulary |
+
+The design target is a workflow where "what did we compute?" and "why should anyone believe it?" are not separate artifacts.
+
+## End-to-End Flow
+
+The crates are deliberately small, but the intended flow is continuous. A design study can move from typed intent to geometry, physics, derivatives, optimization, and audit without dropping provenance.
+
+```text
+typed intent / study IR
+        |
+        v
+fs-ir, fs-opt, fs-scenario
+        |
+        v
+geometry and representation layer
+fs-geom -> fs-rep-sdf / fs-rep-mesh / fs-rep-nurbs / fs-rep-voxel / fs-rep-frep
+        |
+        v
+validity, queries, topology, and meshing
+fs-query -> fs-topo -> fs-mesh -> fs-feec / fs-cutfem / fs-solid
+        |
+        v
+operators and solves
+fs-opdsl / fs-tilelang -> fs-sparse / fs-la -> fs-solver
+        |
+        v
+derivatives and optimization
+fs-ad / fs-adjoint -> fs-ascent / fs-dfo / fs-constraint
+        |
+        v
+evidence, replay, and audit
+fs-evidence -> fs-ledger -> fs-package -> fs-checker -> fs-crosswalk
+```
+
+That flow is still library-level rather than an end-user app, but the important seams already exist in code: geometry knows its chart, physics has typed scenarios and solver reports, adjoints are checked against finite differences, optimizers return certificates, and evidence packages can be verified without running the solver.
+
+## Algorithmic Spine
+
+### Geometry and Topology
+
+FrankenSim uses representation-specific charts instead of flattening all geometry into one mesh too early. SDF grids, triangle/tet meshes, rational NURBS patches, voxel fields, point clouds, lattices, and F-reps each keep their own query and validity contracts. Conversion is treated as an operation with a record, not as a silent cast.
+
+Important mechanics already implemented include exact rational spline refinement in `fs-rep-nurbs`, sparse VDB-style fields and exact Euclidean distance transforms in `fs-rep-voxel`, mesh repair and winding support in `fs-rep-mesh`, CSG/F-rep evaluation in `fs-rep-frep`, and topology/validity checks in `fs-topo`.
+
+### Discretization and Physics
+
+The FLUX layer is built around discrete exterior calculus and explicit weak forms. `fs-feec` owns cochains, incidence, Hodge stars, high-order FEEC spaces, Betti checks, and Hodge decomposition. `fs-cutfem` works directly on certified SDF cuts with ghost penalty, Nitsche embedded boundary conditions, and cut quadrature. `fs-solid` provides small-strain and finite-strain elasticity, B-bar locking relief, CutFEM/body-fitted frontends, and Newton globalization against constitutive laws from `fs-material`.
+
+The principle is that numerical stabilization should either follow from the complex/operator structure or be recorded as a named method with tests. Spurious modes, checkerboarding, cut-cell conditioning, locking, and buckling-adjacent tangents are treated as design constraints rather than after-the-fact patches.
+
+### Solvers, Adjoints, and Optimization
+
+The solver stack is resumable and transposition-aware. `fs-solver` implements CG, MINRES, GMRES, matrix-free operators, mixed-precision refinement, and p-multigrid with deterministic reductions. `fs-adjoint` builds gradients by transposed solves and IFT machinery rather than differentiating through Krylov iterations. The feature-gated ledger-transposition module records a DAG and pulls cotangents backward through registered VJPs, refusing missing or declared non-differentiable seams loudly instead of returning a silent zero.
+
+On top of that, `fs-ascent` provides L-BFGS with strong-Wolfe search, trust-region Newton-Krylov with Steihaug negative-curvature handling, augmented-Lagrangian constraints with KKT certificates, Riemannian L-BFGS over manifold metadata, and a stop-rule algebra that attributes why a run ended. `fs-dfo` adds deterministic CMA-ES, BIPOP restarts, and Nelder-Mead for cases where gradients are unavailable or untrusted.
+
+### Evidence, Packages, and Standards
+
+`fs-evidence` gives values a claim type. `fs-package` groups color-typed claims and provenance into a content-addressed Merkle bundle. `fs-checker` re-verifies package completeness, content address, signature presence, and budget breakdown without depending on solvers, geometry, or license gates. `fs-crosswalk` maps the same package concepts onto ASME V&V 10/20/40 and FAA/EASA certification-by-analysis vocabulary.
+
+That division matters: the expensive solver can produce evidence once, while a reviewer can later check the package structure and provenance without re-running the solver stack.
+
+## Design Rules Encoded In The Code
+
+The README-level principles are backed by concrete implementation patterns:
+
+| Rule | Where it shows up |
+|------|-------------------|
+| Make invalid states loud | Typed `Error`/refusal enums in geometry, packages, constraints, solvers, and scenarios; missing VJPs and non-differentiable seams block gradients |
+| Keep replay independent of arrival order | Philox stream keys, deterministic reductions, sorted assembly, fixed traversal order, and content-addressed artifacts |
+| Put budgets in data | Stop rules, solver iteration reports, cut quadrature depth, roofline runs, package color breakdowns, and session resource estimates |
+| Separate production code from oracle code | Franken-only runtime dependency policy plus isolated test/oracle paths checked by `xtask` |
+| Prefer certificates to comments | `CONTRACT.md` files, `fs-evidence`, gradient verification gates, package checks, topology checks, and ledger receipts |
+| Treat performance as a measured claim | `fs-roofline`, substrate machine fingerprints, tune rows, and DSR validation lanes |
+| Avoid hidden global state | Explicit contexts, stream keys, scenarios, manifests, packages, and ledger records |
+
+## Evidence Package Lifecycle
+
+The evidence-package crates are small, but they define an important workflow:
+
+1. A solver, verifier, optimizer, or study runner creates claims with evidence colors: verified, validated, or estimated.
+2. `fs-package` bundles those claims with provenance and a deterministic content address.
+3. `fs-checker` re-verifies the bundle's structural completeness, expected root, signature presence, and budget pie without pulling in the solver stack.
+4. `fs-crosswalk` gives the package a standards-facing vocabulary so the same artifact can be discussed as validation metrics, domain of validation, provenance, certified bounds, and content integrity.
+5. `fs-ledger` can retain artifacts, operations, events, tune rows, roofline measurements, and lineage so a later report can connect package claims back to the actual run history.
+
+This is why the package/checker/crosswalk layer is useful even before FrankenSim has a polished application: it turns internal numerical claims into an inspectable artifact boundary.
+
+## Reading Paths
+
+Different readers should start in different places.
+
+| Goal | Start here |
+|------|------------|
+| Understand the architecture | `COMPREHENSIVE_PLAN_FOR_FRANKENSIM.md`, then this README's architecture and crate-map sections |
+| Check repository policy | `AGENTS.md`, `docs/CI_GATES.md`, `xtask`, and `constellation.lock` |
+| Study numerical kernels | `crates/fs-math`, `crates/fs-la`, `crates/fs-sparse`, `crates/fs-fft`, `crates/fs-ivl`, `crates/fs-cheb` |
+| Study geometry | `crates/fs-geom`, `crates/fs-rep-*`, `crates/fs-query`, `crates/fs-topo`, `crates/fs-mesh` |
+| Study physics and solvers | `crates/fs-feec`, `crates/fs-cutfem`, `crates/fs-solid`, `crates/fs-material`, `crates/fs-solver` |
+| Study gradients and optimization | `crates/fs-ad`, `crates/fs-adjoint`, `crates/fs-ascent`, `crates/fs-dfo`, `crates/fs-constraint` |
+| Study audit and packaging | `crates/fs-evidence`, `crates/fs-ledger`, `crates/fs-package`, `crates/fs-checker`, `crates/fs-crosswalk` |
+
 ## Contracts and Verification
 
-The workspace currently has 28 `CONTRACT.md` files for 29 `fs-*` crates. The known exception is `fs-img`, which is present in the workspace but still needs a crate contract.
+The workspace currently has 71 `CONTRACT.md` files for 71 `fs-*` crates.
 
 Existing contracts use these required sections:
 
@@ -360,7 +532,7 @@ The current DSR setup is preferred over GitHub Actions for this repository. If a
 |-- Cargo.toml                         # Workspace manifest
 |-- Cargo.lock                         # Committed lockfile
 |-- rust-toolchain.toml                # Nightly toolchain and components
-|-- crates/
+|-- crates/                            # 71 fs-* crates; selected entries shown below
 |   |-- fs-qty/                        # Dimensional quantities
 |   |-- fs-obs/                        # Structured observability
 |   |-- fs-evidence/                   # Evidence and certification wrappers
@@ -399,6 +571,8 @@ The current DSR setup is preferred over GitHub Actions for this repository. If a
 `-- constellation.lock                 # Franken sibling repository pin file
 ```
 
+The complete crate list is the `members` array in [Cargo.toml](Cargo.toml). Use `find crates -mindepth 2 -maxdepth 2 -name Cargo.toml` for a filesystem inventory.
+
 ## How FrankenSim Compares
 
 | Capability | FrankenSim today | Mature solver stacks | General scientific Python |
@@ -407,7 +581,7 @@ The current DSR setup is preferred over GitHub Actions for this repository. If a
 | Library substrate | Yes, source workspace | Yes | Yes |
 | Determinism and cancellation contracts | Explicit crate contracts | Varies by project | Varies by package |
 | Evidence-carrying values | Implemented core wrappers | Usually external/ad hoc | Usually external/ad hoc |
-| Geometry representation contracts | Implemented SDF/mesh/F-rep chart layer | Often specialized | Usually library-specific |
+| Geometry representation contracts | Implemented SDF/mesh/NURBS/voxel/F-rep chart layer | Often specialized | Usually library-specific |
 | Design ledger | Implemented FrankenSQLite-backed crate | Often separate tooling | Usually separate notebooks/files |
 | Roofline measurement | Implemented harness crate | Varies | Usually external tooling |
 | Packaged distribution | Not yet | Often yes | Yes |
@@ -452,7 +626,7 @@ cargo run -p xtask -- check-deps
 
 ### `xtask check-contracts` fails
 
-Every completed `fs-*` crate must ship a `CONTRACT.md` with the required sections. The current tree has one known gap, `fs-img`, because that crate is still an in-progress scaffold. Use an existing crate contract as the local template and keep the no-claim boundaries honest.
+Every `fs-*` crate must ship a `CONTRACT.md` with the required sections. If this check fails, either a new crate was added without a contract or an existing contract lost one of the required sections. Use an existing crate contract as the local template and keep the no-claim boundaries honest.
 
 ```bash
 cargo run -p xtask -- check-contracts
@@ -478,8 +652,10 @@ FrankenSim has substantial working code, but it is still early infrastructure.
 | crates.io distribution | Not published |
 | GitHub Actions | Not authoritative for this repo; use DSR |
 | Full multiphysics solver suite | Not complete in the current workspace |
-| NURBS, voxel, and neural representations | Not implemented as first-class crates in the current workspace |
+| Neural representations | Not implemented as a first-class representation crate in the current workspace |
 | Randomized NLA golden sentinel | `fs-la::rand_nla` is implemented and mostly covered, but `rand_nla_golden_hash` still carries a placeholder hash until the observed value is deliberately recorded and cross-ISA proof is completed |
+| Ascent golden sentinel | `fs-ascent` implements the optimizer stack, but its trajectory golden hash lane still needs the recorded hash to be frozen in the test source |
+| Long-running stability fixtures | Some structural stability and snap-through tests are active proof lanes and may need targeted runtime/threshold work rather than being treated as cheap smoke tests |
 | Production validation corpus | In progress through contracts, tests, ledger records, and roofline harnesses |
 | Performance claims | Must be backed by `fs-roofline`/ledger evidence; do not infer claims from architecture text alone |
 
@@ -517,7 +693,7 @@ The workspace intentionally depends on other Franken projects by path for runtim
 
 ### Are the crate contracts normative?
 
-Yes. Existing `CONTRACT.md` files are part of how the workspace communicates implemented behavior. If code and contract disagree, that is a bug to resolve, not a documentation detail to ignore. The current exception is `fs-img`, which still needs its first contract.
+Yes. Existing `CONTRACT.md` files are part of how the workspace communicates implemented behavior. If code and contract disagree, that is a bug to resolve, not a documentation detail to ignore.
 
 ### Should I use GitHub Actions?
 
