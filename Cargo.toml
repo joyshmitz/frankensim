@@ -81,6 +81,7 @@ members = [
     "crates/fs-toleralloc",
     "crates/fs-assimilate",
     "crates/fs-diffreal-e2e",
+    "crates/fs-voi",
     "crates/fs-cutfem",
     "crates/fs-solid",
     "crates/fs-dwr",
