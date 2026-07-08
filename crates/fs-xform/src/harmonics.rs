@@ -40,8 +40,8 @@ impl Surface {
             let e2 = sub(c, a);
             let fx = cross(e1, e2); // area-weighted
             for &vi in t {
-                for k in 0..3 {
-                    n[vi as usize][k] += fx[k];
+                for (nk, fk) in n[vi as usize].iter_mut().zip(&fx) {
+                    *nk += fk;
                 }
             }
         }
@@ -276,8 +276,8 @@ impl ManifoldBasis {
             for (t, mode) in theta.iter().zip(&self.modes) {
                 amp += t * mode[i];
             }
-            for k in 0..3 {
-                p[k] += amp * self.normals[i][k];
+            for (pk, nk) in p.iter_mut().zip(&self.normals[i]) {
+                *pk += amp * nk;
             }
         }
         out
