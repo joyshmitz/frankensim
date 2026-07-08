@@ -781,6 +781,7 @@ dependencies = [
  "fs-evidence",
  "fs-feec",
  "fs-geom",
+ "fs-ivl",
  "fs-la",
  "fs-ledger",
  "fs-math",

@@ -20,6 +20,8 @@
 //! `Dual64`) — the gate ci-gauntlet wires so that a solver without a
 //! passing gradient check cannot merge.
 
+#[cfg(feature = "gradient-certs")]
+pub mod certs;
 pub mod hadamard;
 pub mod ift;
 #[cfg(feature = "diff-mitigations")]
