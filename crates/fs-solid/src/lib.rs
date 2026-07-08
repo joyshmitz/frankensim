@@ -28,6 +28,8 @@
 //! simplicial H(div)-family bead and is a recorded no-claim.
 
 pub mod beamcol;
+#[cfg(feature = "contact")]
+pub mod contact;
 pub mod continuation;
 pub mod cutfront;
 pub mod fiber;

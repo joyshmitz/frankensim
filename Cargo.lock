@@ -1494,6 +1494,7 @@ name = "fs-solid"
 version = "0.0.1"
 dependencies = [
  "fs-cutfem",
+ "fs-ivl",
  "fs-la",
  "fs-material",
  "fs-scenario",

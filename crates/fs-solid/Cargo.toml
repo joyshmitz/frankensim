@@ -14,6 +14,9 @@ layer = "L3"
 # Koiter post-buckling asymptotics: plan-flagged [F]; off by default
 # per the Ambition-Tag gating rule.
 koiter-asymptotics = []
+# SDF-native IPC barrier contact: plan-flagged [F]; off by default per
+# the Ambition-Tag gating rule.
+contact = []
 
 [dependencies]
 fs-cutfem = { path = "../fs-cutfem" }
@@ -24,9 +27,16 @@ fs-solver = { path = "../fs-solver" }
 fs-sparse = { path = "../fs-sparse" }
 fs-time = { path = "../fs-time" }
 
+[dev-dependencies]
+fs-ivl = { path = "../fs-ivl" }
+
 [[test]]
 name = "koiter"
 required-features = ["koiter-asymptotics"]
+
+[[test]]
+name = "contact"
+required-features = ["contact"]
 
 [lints]
 workspace = true
