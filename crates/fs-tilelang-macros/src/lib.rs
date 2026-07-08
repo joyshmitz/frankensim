@@ -242,7 +242,10 @@ fn analyze_body(tokens: &[TokenTree], flops: &mut u32, uses_acc: &mut bool) -> R
     const FORBIDDEN: &[(&str, &str)] = &[
         // Escape splits the token so the naive capsule scanner does
         // not flag this REJECTION literal as unsafe code.
-        ("uns\u{61}fe", "uns\u{61}fe blocks are not allowed in kernel bodies"),
+        (
+            "uns\u{61}fe",
+            "uns\u{61}fe blocks are not allowed in kernel bodies",
+        ),
         (
             "while",
             "unbounded loops are not allowed in kernel bodies (the tile loop is implicit)",

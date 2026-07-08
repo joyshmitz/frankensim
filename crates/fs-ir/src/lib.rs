@@ -17,11 +17,11 @@
 //! Layer: L6 (HELM). Runtime deps: `std` + fs-qty.
 
 pub mod admission;
+#[cfg(feature = "ladder-planner")]
+pub mod anytime;
 pub mod ast;
 pub mod json;
 pub mod lower;
-#[cfg(feature = "ladder-planner")]
-pub mod anytime;
 #[cfg(feature = "ladder-planner")]
 pub mod planner;
 pub mod query;

@@ -45,8 +45,8 @@ pub mod sheaf_merge;
 pub mod sheaf_repair;
 
 pub use convert::{Convert, ConvertDiag, ErrBudget, SampledSdf};
-pub use region::{AgreementConfig, AgreementReport, Disagreement, Region, RegionChart};
 pub use ident::{EntityId, IdTransform, IdentityMap};
+pub use region::{AgreementConfig, AgreementReport, Disagreement, Region, RegionChart};
 pub use sheaf::{
     Interface, InterfaceBound, InterfaceSample, SheafComplex, SheafVerdict, TripleCell,
     ray_parity_falsifier,
