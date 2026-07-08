@@ -53,9 +53,30 @@ fn evpi_is_zero_for_a_robust_decision_and_positive_when_close() {
     ];
     assert!(evpi(&close) > 0.0);
     // the posture names the two closest designs.
-    let posture = decision_posture(&close).unwrap();
-    assert_eq!(posture.best, "a");
-    assert_eq!(posture.runner_up, "c");
+    assert_eq!(
+        decision_posture(&close).map(|p| (p.best, p.runner_up)),
+        Some(("a".to_string(), "c".to_string()))
+    );
+}
+
+#[test]
+fn non_finite_means_do_not_win_the_decision_boundary() {
+    let designs = [
+        design("nan", f64::NAN, unc(100.0, 0.0, 0.0)),
+        design("a", 0.0, unc(0.1, 0.1, 0.1)),
+        design("c", 0.15, unc(0.1, 0.1, 0.1)),
+    ];
+    assert_eq!(
+        decision_posture(&designs).map(|p| (p.best, p.runner_up)),
+        Some(("a".to_string(), "c".to_string()))
+    );
+    assert!(evpi(&designs).is_finite());
+    let insufficient = [
+        design("nan", f64::NAN, unc(100.0, 0.0, 0.0)),
+        design("a", 0.0, unc(0.1, 0.1, 0.1)),
+    ];
+    assert_eq!(decision_posture(&insufficient), None);
+    assert!(evpi(&insufficient).abs() <= f64::EPSILON);
 }
 
 #[test]
@@ -104,10 +125,49 @@ fn voi_beats_the_uncertainty_proportional_baseline() {
         "refine-b"
     );
     // VOI spends on the DECISION boundary (a or c) instead.
-    match recommend(&designs, &actions, 1e-4) {
-        Recommendation::Act { action, .. } => assert!(action == "refine-a" || action == "refine-c"),
-        other @ Recommendation::Stop { .. } => panic!("expected an action, got {other:?}"),
-    }
+    let rec = recommend(&designs, &actions, 1e-4);
+    assert!(
+        matches!(&rec, Recommendation::Act { action, .. } if action == "refine-a" || action == "refine-c"),
+        "{rec:?}"
+    );
+}
+
+#[test]
+fn zero_cost_decision_changing_action_wins_per_cost_ranking() {
+    let designs = [
+        design("a", 0.0, unc(0.1, 0.1, 0.1)),
+        design("c", 0.15, unc(0.1, 0.1, 0.1)),
+    ];
+    let free_action = act("free-refine-c", ActionKind::Refine, "c", 0.0);
+    let free = action_value(&designs, &free_action);
+    let actions = [
+        act("paid-refine-a", ActionKind::Refine, "a", 1.0),
+        free_action,
+    ];
+    assert!(free.value > 0.0);
+    assert!(free.value_per_cost.is_infinite());
+    assert!(matches!(
+        recommend(&designs, &actions, 1e-4),
+        Recommendation::Act { action, .. } if action == "free-refine-c"
+    ));
+}
+
+#[test]
+fn invalid_cost_actions_are_not_recommended() {
+    let designs = [
+        design("a", 0.0, unc(0.1, 0.1, 0.1)),
+        design("c", 0.15, unc(0.1, 0.1, 0.1)),
+    ];
+    let negative = act("negative-cost", ActionKind::Refine, "c", -1.0);
+    let nan_cost = act("nan-cost", ActionKind::Refine, "c", f64::NAN);
+    assert!(action_value(&designs, &negative).value > 0.0);
+    assert!(action_value(&designs, &negative).value_per_cost <= f64::EPSILON);
+    assert!(action_value(&designs, &nan_cost).value > 0.0);
+    assert!(action_value(&designs, &nan_cost).value_per_cost <= f64::EPSILON);
+    assert!(matches!(
+        recommend(&designs, &[negative, nan_cost], 1e-4),
+        Recommendation::Stop { .. }
+    ));
 }
 
 #[test]
@@ -124,10 +184,11 @@ fn voi_escalates_model_fidelity_when_model_uncertainty_dominates() {
     ];
     // sampling barely helps; a physical test resolves the decision -> VOI escalates to Test.
     assert!(action_value(&designs, &actions[1]).value > action_value(&designs, &actions[0]).value);
-    match recommend(&designs, &actions, 1e-4) {
-        Recommendation::Act { action, .. } => assert_eq!(action, "test-c"),
-        other @ Recommendation::Stop { .. } => panic!("expected test-c, got {other:?}"),
-    }
+    let rec = recommend(&designs, &actions, 1e-4);
+    assert!(
+        matches!(&rec, Recommendation::Act { action, .. } if action == "test-c"),
+        "{rec:?}"
+    );
 }
 
 #[test]

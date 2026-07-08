@@ -138,14 +138,41 @@ fn top_two(designs: &[DesignEstimate]) -> Option<(&DesignEstimate, &DesignEstima
     if designs.len() < 2 {
         return None;
     }
-    let mut idx: Vec<usize> = (0..designs.len()).collect();
-    idx.sort_by(|&a, &b| {
-        designs[a]
-            .mean
-            .partial_cmp(&designs[b].mean)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    Some((&designs[idx[0]], &designs[idx[1]]))
+    let mut best: Option<(usize, &DesignEstimate)> = None;
+    let mut runner: Option<(usize, &DesignEstimate)> = None;
+    for (idx, design) in designs.iter().enumerate() {
+        if !design.mean.is_finite() {
+            continue;
+        }
+        match best {
+            None => best = Some((idx, design)),
+            Some(current_best) if estimate_precedes((idx, design), current_best) => {
+                runner = best;
+                best = Some((idx, design));
+            }
+            Some(_) => match runner {
+                None => runner = Some((idx, design)),
+                Some(current_runner) if estimate_precedes((idx, design), current_runner) => {
+                    runner = Some((idx, design));
+                }
+                Some(_) => {}
+            },
+        }
+    }
+    let (_, best) = best?;
+    let (_, runner) = runner?;
+    Some((best, runner))
+}
+
+fn estimate_precedes(
+    (a_idx, a): (usize, &DesignEstimate),
+    (b_idx, b): (usize, &DesignEstimate),
+) -> bool {
+    match a.mean.total_cmp(&b.mean) {
+        std::cmp::Ordering::Less => true,
+        std::cmp::Ordering::Equal => a_idx < b_idx,
+        std::cmp::Ordering::Greater => false,
+    }
 }
 
 /// The decision posture over a set of designs.
@@ -262,8 +289,14 @@ pub fn action_value(designs: &[DesignEstimate], action: &Action) -> ActionValue 
         .collect();
     let after = evpi(&after_designs);
     let value = (before - after).max(0.0);
-    let value_per_cost = if action.cost > 0.0 {
+    let value_per_cost = if action.cost.is_finite() && action.cost > 0.0 {
         value / action.cost
+    } else if action.cost.is_finite()
+        && action.cost >= 0.0
+        && action.cost <= f64::EPSILON
+        && value > 0.0
+    {
+        f64::INFINITY
     } else {
         0.0
     };
@@ -309,7 +342,7 @@ pub fn recommend(
     let best = actions
         .iter()
         .map(|a| action_value(designs, a))
-        .filter(|v| v.value > 0.0)
+        .filter(|v| v.value > 0.0 && v.value_per_cost > 0.0)
         .max_by(|a, b| {
             a.value_per_cost
                 .partial_cmp(&b.value_per_cost)

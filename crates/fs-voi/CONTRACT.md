@@ -21,7 +21,9 @@ with an in-house normal CDF (`erf`). Pure, deterministic.
 - `ActionKind` (Surrogate / Simulate / Refine → numerical; Sample → statistical;
   Test → model) + `Action { name, kind, target_design, reduction, cost }`.
 - `action_value(&[DesignEstimate], &Action) -> ActionValue` — the EVPI reduction
-  per cost; ~0 for a decision-irrelevant target.
+  per cost; ~0 for a decision-irrelevant target. A zero-cost action with
+  positive decision value has infinite value-per-cost; negative or non-finite
+  costs are not recommended.
 - `recommend(&[…], &[Action], stop_threshold) -> Recommendation` — the best
   decision-value-per-cost action, or STOP when EVPI ≤ threshold.
 - `heuristic_choice(&[…], &[Action])` — the uncertainty-proportional baseline
@@ -36,6 +38,9 @@ with an in-house normal CDF (`erf`). Pure, deterministic.
 - When the decision-boundary uncertainty is MODEL-dominated, a model-reducing
   action (Test) beats a statistical one (Sample) — decision-aware escalation.
 - Ranking-flip probability is the Gaussian `Φ` of the standardized mean gap.
+- Non-finite means are excluded from top-two boundary selection so malformed
+  estimates cannot displace finite decisions; if fewer than two finite means
+  remain, no decision boundary is reported.
 
 ## Error model
 
@@ -60,12 +65,14 @@ None.
 
 ## Conformance tests
 
-`tests/voi.rs` (7 cases): ranking-flip probability vs separation; EVPI zero
+`tests/voi.rs` (10 cases): ranking-flip probability vs separation; EVPI zero
 when robust / positive when close + posture; information on a decision-
 irrelevant design is worthless; STOP for a robust decision; VOI beats the
 uncertainty-proportional baseline (spends on the boundary, not the most
 uncertain); VOI escalates model fidelity when model uncertainty dominates;
-determinism.
+zero-cost decision-changing actions win the per-cost ranking; negative and
+non-finite cost actions are not recommended; non-finite means are excluded from
+the decision boundary; determinism.
 
 ## No-claim boundaries
 
