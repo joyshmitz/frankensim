@@ -13,11 +13,5 @@ layer = "L3"
 [dependencies]
 fs-cutfem = { path = "../fs-cutfem" }
 
-[dev-dependencies]
-fs-alloc = { path = "../fs-alloc" }
-fs-exec = { path = "../fs-exec" }
-fs-mesh = { path = "../fs-mesh" }
-fs-rep-mesh = { path = "../fs-rep-mesh" }
-
 [lints]
 workspace = true

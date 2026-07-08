@@ -900,11 +900,7 @@ dependencies = [
 name = "fs-dwr"
 version = "0.0.1"
 dependencies = [
- "fs-alloc",
  "fs-cutfem",
- "fs-exec",
- "fs-mesh",
- "fs-rep-mesh",
 ]
 
 [[package]]
