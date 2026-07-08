@@ -85,8 +85,8 @@ pub fn lowest_eigenpairs(
         // Solve Lᵀφ = y (back substitution).
         for i in (0..f).rev() {
             let mut acc = y[i];
-            for j in i + 1..f {
-                acc = (-chol.l(j, i)).mul_add(y[j], acc);
+            for (j, yj) in y.iter().enumerate().skip(i + 1) {
+                acc = (-chol.l(j, i)).mul_add(*yj, acc);
             }
             y[i] = acc / chol.l(i, i);
         }

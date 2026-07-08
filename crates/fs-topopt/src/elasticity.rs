@@ -151,9 +151,9 @@ impl DensityElasticity {
                     if slot[da] == usize::MAX {
                         continue;
                     }
-                    for bb in 0..4 {
+                    for (bb, &vb) in tet.iter().enumerate() {
                         for comp_b in 0..3 {
-                            let db = 3 * tet[bb] as usize + comp_b;
+                            let db = 3 * vb as usize + comp_b;
                             if slot[db] == usize::MAX {
                                 continue;
                             }
