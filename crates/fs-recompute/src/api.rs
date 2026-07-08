@@ -246,9 +246,10 @@ impl RecomputeApi {
             .collect();
         // Lowest value first; deterministic tie-break by seq (oldest).
         scored.sort_by(|a, b| {
-            a.1.partial_cmp(&b.1)
-                .expect("finite scores")
-                .then(a.2.cmp(&b.2))
+            // total_cmp is a total order: a non-finite recorded cost can make a
+            // score NaN (inf * 0 hits), which would panic partial_cmp().expect().
+            // For finite scores this matches the previous ordering exactly.
+            a.1.total_cmp(&b.1).then(a.2.cmp(&b.2))
         });
         let excess = scored.len().saturating_sub(keep_unpinned);
         let mut evicted = 0;
