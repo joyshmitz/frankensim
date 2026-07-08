@@ -1308,6 +1308,14 @@ dependencies = [
 [[package]]
 name = "fs-render"
 version = "0.0.1"
+dependencies = [
+ "asupersync 0.3.5",
+ "fs-alloc",
+ "fs-exec",
+ "fs-geom",
+ "fs-rep-frep",
+ "fs-rep-nurbs",
+]
 
 [[package]]
 name = "fs-rep-frep"
@@ -1379,6 +1387,10 @@ dependencies = [
  "fs-math",
  "fs-rep-sdf",
 ]
+
+[[package]]
+name = "fs-report"
+version = "0.0.1"
 
 [[package]]
 name = "fs-robust"
