@@ -110,3 +110,78 @@ pub fn on_unit_cube_boundary(p: [f64; 3]) -> bool {
     p.iter()
         .any(|&c| c.to_bits() == 0.0f64.to_bits() || c.to_bits() == 1.0f64.to_bits())
 }
+/// A masked cube grid: `nx × ny × nz` cells, keeping only cells where
+/// `keep(i, j, k)` — the MULTIPLY-CONNECTED fixture builder (rings,
+/// slabs with holes, exterior-like domains). Unused vertices are
+/// compacted away so Betti numbers reflect the kept region only.
+/// Positions are in cell units (vertex (i,j,k) at (i, j, k)).
+///
+/// # Panics
+/// If no cell is kept.
+#[must_use]
+pub fn masked_cube_grid(
+    nx: usize,
+    ny: usize,
+    nz: usize,
+    keep: &dyn Fn(usize, usize, usize) -> bool,
+) -> (TetComplex, Vec<[f64; 3]>) {
+    let (npx, npy, npz) = (nx + 1, ny + 1, nz + 1);
+    let raw = |i: usize, j: usize, k: usize| i * npy * npz + j * npz + k;
+    let mut used = vec![false; npx * npy * npz];
+    let mut cells = Vec::new();
+    for i in 0..nx {
+        for j in 0..ny {
+            for k in 0..nz {
+                if keep(i, j, k) {
+                    cells.push([i, j, k]);
+                    for di in 0..2 {
+                        for dj in 0..2 {
+                            for dk in 0..2 {
+                                used[raw(i + di, j + dj, k + dk)] = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(!cells.is_empty(), "masked_cube_grid kept no cells");
+    let mut remap = vec![u32::MAX; used.len()];
+    let mut positions = Vec::new();
+    let mut next = 0u32;
+    for i in 0..npx {
+        for j in 0..npy {
+            for k in 0..npz {
+                let r = raw(i, j, k);
+                if used[r] {
+                    remap[r] = next;
+                    next += 1;
+                    positions.push([i as f64, j as f64, k as f64]);
+                }
+            }
+        }
+    }
+    let mut tets = Vec::with_capacity(6 * cells.len());
+    for base in cells {
+        for perm in &PERMS {
+            let mut corners = [[0usize; 3]; 4];
+            corners[0] = base;
+            for (step, &axis) in perm.iter().enumerate() {
+                corners[step + 1] = corners[step];
+                corners[step + 1][axis] += 1;
+            }
+            let v: Vec<u32> = corners
+                .iter()
+                .map(|c| remap[raw(c[0], c[1], c[2])])
+                .collect();
+            let odd = matches!(perm, [0, 2, 1] | [1, 0, 2] | [2, 1, 0]);
+            let tet = if odd {
+                [v[0], v[2], v[1], v[3]]
+            } else {
+                [v[0], v[1], v[2], v[3]]
+            };
+            tets.push(tet);
+        }
+    }
+    (TetComplex::from_tets(positions.len(), tets), positions)
+}

@@ -17,6 +17,7 @@
 pub mod assembly;
 pub mod betti;
 pub mod cochain;
+pub mod cohomology;
 pub mod fixtures;
 pub mod highorder;
 pub mod hodge;
@@ -25,7 +26,10 @@ pub mod whitney;
 pub use assembly::{incidence_to_csr, stiffness};
 pub use betti::{betti_numbers, integer_rank};
 pub use cochain::{Cochain, cell_count};
-pub use fixtures::{kuhn_cube, on_unit_cube_boundary, single_tet, two_tets};
+pub use cohomology::{
+    HodgeParts, circulation, deflate_harmonics, harmonic_basis, hodge_decompose,
+};
+pub use fixtures::{kuhn_cube, masked_cube_grid, on_unit_cube_boundary, single_tet, two_tets};
 pub use highorder::derham::TensorDeRham;
 pub use highorder::hex::{TensorSpace, pcg_matfree};
 pub use highorder::quad1d::{element_matrices, gauss_legendre, legendre, lobatto_shapes};
