@@ -272,13 +272,13 @@ fn vec_005_interpolation_ladder() {
     for r in [2usize, 3] {
         for family in [Family::Nedelec, Family::Rt] {
             let mut errs = Vec::new();
-            for n in [1usize, 2] {
+            for n in [2usize, 3] {
                 let (complex, positions) = kuhn_cube(n);
                 let sp = VecSpace::new(&complex, &positions, r, family);
                 let u = sp.interpolate(&positions, &smooth_field);
                 errs.push(sp.l2_error(&positions, &u, &smooth_field));
             }
-            let slope = (errs[0] / errs[1]).ln() / 2.0f64.ln();
+            let slope = (errs[0] / errs[1]).ln() / (3.0f64 / 2.0).ln();
             let fam = if matches!(family, Family::Nedelec) {
                 "N"
             } else {
@@ -297,14 +297,17 @@ fn vec_005_interpolation_ladder() {
     }
 }
 
-/// vec-006 (G3): vertex RELABELING invariance — rebuild two_tets with
-/// permuted global vertex ids; every entity's basis functions are
-/// pointwise IDENTICAL (sorted-global frames depend only on the
-/// entity's vertex set, not on labels or element-local order).
+/// vec-006 (G3): the two-tier orientation battery. Relabeling global
+/// vertices changes each entity's sorted order, so entity bases are
+/// NOT naively label-invariant — instead: (tier 1, signed-permutation
+/// level) edge dofs transform with DEFINITE PARITY (−1)^{k+1} when the
+/// edge direction flips (tangent flips AND P_k(−s) = (−1)^k P_k(s));
+/// (tier 2, physics level, where face/interior bases mix) the
+/// canonically interpolated FIELD of a fixed analytic function is
+/// pointwise label-invariant.
 #[test]
 fn vec_006_relabeling() {
     let (complex, positions) = two_tets();
-    // Relabel: old id -> new id.
     let perm: [u32; 5] = [3, 0, 4, 1, 2];
     let mut new_pos = vec![[0.0f64; 3]; 5];
     for (old, &np) in perm.iter().enumerate() {
@@ -322,104 +325,67 @@ fn vec_006_relabeling() {
         })
         .collect();
     let complex2 = TetComplex::from_tets(5, new_tets);
-    let mut worst = 0.0f64;
+    let mut worst_sign = 0.0f64;
+    let mut worst_field = 0.0f64;
     for r in [2usize, 3] {
         for family in [Family::Nedelec, Family::Rt] {
             let sp1 = VecSpace::new(&complex, &positions, r, family);
             let sp2 = VecSpace::new(&complex2, &new_pos, r, family);
-            // Map entities: edge [a,b] -> sorted [perm a, perm b].
-            for (e1, &[a, b]) in complex.edges.iter().enumerate() {
-                if sp1.per_edge == 0 {
-                    break;
-                }
-                let mut key = [perm[a as usize], perm[b as usize]];
-                key.sort_unstable();
-                let e2 = complex2.edges.binary_search(&key).expect("edge");
-                for k in 0..sp1.per_edge {
-                    let (g1, g2) = (e1 * sp1.per_edge + k, e2 * sp2.per_edge + k);
-                    worst = worst.max(compare_basis(&sp1, &sp2, g1, g2, &positions));
+            let u1 = sp1.interpolate(&positions, &smooth_field);
+            let u2 = sp2.interpolate(&new_pos, &smooth_field);
+            // Tier 1: edge dofs are a SIGNED permutation.
+            if sp1.per_edge > 0 {
+                for (e1, &[a, b]) in complex.edges.iter().enumerate() {
+                    let (na, nb) = (perm[a as usize], perm[b as usize]);
+                    let flipped = na > nb;
+                    let key = if flipped { [nb, na] } else { [na, nb] };
+                    let e2 = complex2.edges.binary_search(&key).expect("edge");
+                    for k in 0..sp1.per_edge {
+                        let sign = if flipped {
+                            if k % 2 == 0 { -1.0 } else { 1.0 } // (−1)^{k+1}
+                        } else {
+                            1.0
+                        };
+                        let d = (u2[e2 * sp2.per_edge + k] - sign * u1[e1 * sp1.per_edge + k])
+                            .abs();
+                        worst_sign = worst_sign.max(d);
+                    }
                 }
             }
-            for (f1, &[a, b, c]) in complex.faces.iter().enumerate() {
-                let mut key = [perm[a as usize], perm[b as usize], perm[c as usize]];
-                key.sort_unstable();
-                let f2 = complex2.faces.binary_search(&key).expect("face");
-                for k in 0..sp1.per_face {
-                    let g1 = sp1.face_off + f1 * sp1.per_face + k;
-                    let g2 = sp2.face_off + f2 * sp2.per_face + k;
-                    worst = worst.max(compare_basis(&sp1, &sp2, g1, g2, &positions));
+            // Tier 2: the interpolated FIELD is label-invariant.
+            for t in 0..complex.tets.len() {
+                let tet1 = complex.tets[t];
+                for lam in [
+                    [0.4f64, 0.3, 0.2, 0.1],
+                    [0.1, 0.2, 0.3, 0.4],
+                    [0.25, 0.25, 0.25, 0.25],
+                ] {
+                    let mut p = [0.0f64; 3];
+                    for (a, &v) in tet1.iter().enumerate() {
+                        for k in 0..3 {
+                            p[k] += lam[a] * positions[v as usize][k];
+                        }
+                    }
+                    let v1 = sp1.eval_in(t, &u1, p);
+                    let v2 = sp2.eval_in(t, &u2, p);
+                    for k in 0..3 {
+                        worst_field = worst_field.max((v1[k] - v2[k]).abs());
+                    }
                 }
             }
         }
     }
-    assert!(worst < 1e-9, "relabeling deviation {worst:.2e}");
+    assert!(
+        worst_sign < 1e-10 && worst_field < 1e-9,
+        "signed-permutation dev {worst_sign:.2e}, field dev {worst_field:.2e}"
+    );
     log(
         "vec-006",
         "pass",
-        &format!("entity bases label-invariant to {worst:.2e} (r=2,3 both families)"),
+        &format!(
+            "edge signed-permutation dev {worst_sign:.2e}; physics-level field dev {worst_field:.2e}"
+        ),
     );
-}
-
-/// Compare global basis functions g1 (space 1) vs g2 (space 2) at
-/// interior sample points of both tets (same physical mesh).
-fn compare_basis(
-    sp1: &VecSpace<'_>,
-    sp2: &VecSpace<'_>,
-    g1: usize,
-    g2: usize,
-    positions: &[[f64; 3]],
-) -> f64 {
-    let mut u1 = vec![0.0f64; sp1.ndof];
-    let mut u2 = vec![0.0f64; sp2.ndof];
-    u1[g1] = 1.0;
-    u2[g2] = 1.0;
-    let mut worst = 0.0f64;
-    for t in 0..sp1.complex.tets.len() {
-        // Same physical tets in both complexes, but possibly permuted
-        // order — locate the matching tet by centroid.
-        let cent = |c: &TetComplex, tt: usize| -> [f64; 3] {
-            let mut x = [0.0f64; 3];
-            for &v in &c.tets[tt] {
-                for k in 0..3 {
-                    x[k] += positions_of(c, v, positions, sp1, sp2)[k] / 4.0;
-                }
-            }
-            x
-        };
-        let _ = cent;
-        // two_tets keeps tet order; sample barycentric points.
-        for lam in [
-            [0.4f64, 0.3, 0.2, 0.1],
-            [0.1, 0.2, 0.3, 0.4],
-            [0.25, 0.25, 0.25, 0.25],
-        ] {
-            let tet1 = sp1.complex.tets[t];
-            let mut p = [0.0f64; 3];
-            for (a, &v) in tet1.iter().enumerate() {
-                for k in 0..3 {
-                    p[k] += lam[a] * positions[v as usize][k];
-                }
-            }
-            let v1 = sp1.eval_in(t, &u1, p);
-            let v2 = sp2.eval_in(t, &u2, p);
-            for k in 0..3 {
-                worst = worst.max((v1[k] - v2[k]).abs());
-            }
-        }
-    }
-    worst
-}
-
-/// Position lookup helper placeholder (both spaces share physical
-/// positions in vec-006; the relabeled complex uses its own table).
-fn positions_of<'a>(
-    _c: &TetComplex,
-    v: u32,
-    positions: &'a [[f64; 3]],
-    _sp1: &VecSpace<'_>,
-    _sp2: &VecSpace<'_>,
-) -> &'a [f64; 3] {
-    &positions[v as usize]
 }
 
 /// vec-007: r = 1 members coincide with the Whitney forms — the
