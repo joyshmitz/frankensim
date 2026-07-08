@@ -778,7 +778,9 @@ name = "fs-adjoint"
 version = "0.0.1"
 dependencies = [
  "fs-ad",
+ "fs-evidence",
  "fs-feec",
+ "fs-geom",
  "fs-la",
  "fs-ledger",
  "fs-math",
@@ -830,6 +832,10 @@ dependencies = [
  "fs-evidence",
  "fs-package",
 ]
+
+[[package]]
+name = "fs-conform"
+version = "0.0.1"
 
 [[package]]
 name = "fs-constraint"
