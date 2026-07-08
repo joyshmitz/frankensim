@@ -64,7 +64,12 @@ None.
 tests/dfo_battery.rs (benchmarks incl. condition-1e6 ellipsoid,
 determinism, invariance, BIPOP schedule, NM polish, golden hash);
 tests/probe_tmp.rs (success-rate + stagnation-stop regression; filename
-is bring-up history); tests/moo_battery.rs (7 cases): hypervolume vs
+is bring-up history); tests/ot_battery.rs (4 cases): Sinkhorn
+marginal feasibility ≤ 1e−8 and cost symmetry ≤ 1e−8; the ε-ladder
+approaching the 1D monotone-coupling CLOSED FORM monotonically
+(0.11 → 0.005 at ε = 0.05 → 0.002); translation covariance
+(W₂² of equal translates = t² within 0.2%); OT golden
+`0x58eb_8443_224c_a689`; tests/moo_battery.rs (7 cases): hypervolume vs
 hand-computed 2D/3D values including dominated/out-of-reference
 degenerate cases; non-dominated-sort front assignment exact;
 NSGA-II on ZDT1/ZDT2 at standard budgets (pop 80 × 200 generations —
@@ -80,6 +85,9 @@ on 2·10⁵ Gaussian samples vs the closed form μ + σφ(z_β)/(1−β) within
 ## No-claim boundaries
 - No published-ERT-table parity claims yet (in-repo BBOB-class fixtures
   only; the external COCO battery is follow-up).
+- Module `ot`: BALANCED entropic OT only (equal masses asserted);
+  unbalanced/partial transport, Sinkhorn divergences (debiasing), and
+  the Wasserstein-DRO inner sup are the bead's remaining lanes.
 - MOO slice-1 scope (module `moo`): NSGA-II, exact hypervolume m ≤ 4,
   knee, sample-CVaR. NSGA-III reference directions / MOEA/D
   (many-objective), MC hypervolume beyond m = 4,

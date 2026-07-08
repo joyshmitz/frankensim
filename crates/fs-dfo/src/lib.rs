@@ -17,6 +17,7 @@
 pub mod cma;
 pub mod moo;
 pub mod neldermead;
+pub mod ot;
 
 pub use cma::{BipopReport, CmaParams, CmaReport, bipop_cmaes, cmaes};
 pub use moo::{
@@ -24,6 +25,7 @@ pub use moo::{
     knee_point, non_dominated_sort, nsga2,
 };
 pub use neldermead::nelder_mead;
+pub use ot::{OtReport, cost_sq_1d, monotone_cost_1d, sinkhorn};
 
 /// Crate version, re-exported for provenance stamping.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
