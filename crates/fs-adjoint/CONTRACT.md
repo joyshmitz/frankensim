@@ -1,0 +1,119 @@
+# fs-adjoint CONTRACT
+
+## Purpose and layer
+
+Layer: **L3 FLUX** (deps: fs-solver/fs-feec L3, fs-ad/fs-la/fs-sparse
+L1, fs-math L0, fs-rep-mesh L2). GRADIENT TRUTH (plan §8.7, Bet 4's
+FLUX realization): discrete adjoints through solvers via the implicit
+function theorem — ONE transposed solve sharing the primal's
+infrastructure, never a differentiated Krylov iteration; time-dependent
+adjoints under revolve checkpointing; Hadamard boundary AND
+density/SIMP volumetric shape derivatives; Sobolev (H¹) gradient
+smoothing; and the gradient-verification gate ci-gauntlet wires so a
+solver without a passing gradient check cannot merge.
+
+## Public types and semantics
+
+- `ift_gradient_matfree(jacobian, ∂J/∂u, ∂J/∂p, (∂R/∂p)ᵀ·, tol, …)` —
+  dJ/dp = ∂J/∂p − (∂R/∂p)ᵀλ with Jᵀλ = ∂J/∂u solved by fs-solver
+  transposed GMRES; returns (gradient, `AdjointReport` with the
+  adjoint residual — the honesty check).
+- `DensityPoisson`/`DensityOp` — the density-parameterized Poisson
+  family K(ρ) = Σ_t ρ_t·|V_t|·G_t (matrix-free per-cell apply) with
+  `density_pullback(λ, u)[t] = λᵀK_t u` — the EXACT volumetric (SIMP)
+  chain rule.
+- `sobolev_smooth(M, K, α, g_raw, tol)` — the H¹ Riesz step
+  (M + αK)·g = M·g_raw through fs-solver CG. The metric α is a real
+  tradeoff (measured: α = h² beats stronger smoothing, which clamps
+  the signal toward the interior-reduced operator's zero boundary).
+- `hadamard::{volume_shape_gradient, compliance_shape_gradient,
+  boundary_faces}` — boundary-integral shape derivatives on the
+  complex's boundary faces (outward normals derived from the owning
+  tet). Compliance sign is PLUS: dJ[V] = +∫(∂u/∂n)²(V·n) dA, pinned
+  by the 1D closed form and by the FD-consistency gate that CAUGHT
+  the minus-sign first draft.
+- `HeatAdjoint`/`heat_initial_gradient` — backward-Euler heat with
+  terminal-misfit gradient w.r.t. the initial condition by a
+  revolve-checkpointed reverse sweep (O(log N) memory; every reverse
+  step is a transposed solve; the forward-recompute count is returned,
+  not hidden).
+- `verify::verify_gradient(j, p, gradient, directions, eps, tol)` —
+  central-FD directional checks returning a `GradientVerdict` (worst
+  relative error + per-direction pairs). The gate itself is tested to
+  REJECT a corrupted gradient — a gate that cannot fail is not a gate.
+
+## Invariants
+
+- No differentiation through Krylov iterations anywhere: adjoints are
+  IFT transposed solves at converged primals.
+- Every gradient this crate produces is FD-verified in its battery
+  (the adjoint-vs-FD legs of the acceptance triangle; the dual-number
+  leg lives where duals can reach — fs-opdsl/fs-ad).
+- Reverse time sweeps share the forward sweep's operators and
+  tolerances.
+
+## Error model
+
+Structured panics on dimension mismatches and failed inner solves
+(fixture-scale SPD systems — a failure is a modeling bug). Adjoint
+solve quality is REPORTED (`AdjointReport.adjoint_residual`), never
+assumed.
+
+## Determinism class
+
+Bit-deterministic through the fs-solver/fs-tilelang reduction
+discipline; golden FNV-64 over IFT, Sobolev, and heat-adjoint
+gradients: `0x0896_7e37_81b3_c044`, recorded on Apple M4 Pro,
+verified on Threadripper (x86_64).
+
+## Cancellation behavior
+
+Bounded synchronous computation over fs-solver's iteration-granular
+solvers; revolve sweeps checkpoint by construction (pause = keep the
+snapshot set). Cx wiring is driver scope (workspace discipline).
+
+## Unsafe boundary
+
+None. `unsafe_code = "deny"`.
+
+## Feature flags
+
+None.
+
+## Conformance tests
+
+`tests/adjoint_battery.rs` (8 cases): IFT source-parameter gradient
+vs central FD along random directions (rel ≤ 1e−6, adjoint iterations
+reported); the SIMP density chain rule FD-verified (rel ~1e−6);
+Sobolev smoothing DEMONSTRABLY rescuing a grid-noise-corrupted
+gradient (cosine alignment 0.49 → 0.93, numbers logged; the α
+tradeoff measured); Hadamard volume gradient vs perturb-and-resolve
+FD to 1e−7 relative (nonzero-divergence velocity ON PURPOSE — a
+divergence-free first draft produced two zeros and a meaningless
+comparison, kept as a comment); Hadamard compliance CONSISTENCY gate
+(gap to FD shrinks under refinement, 0.84 → 0.66 — the P1 one-sided
+normal trace is low-order, so the volumetric form is the production
+path at lowest order); revolve-checkpointed heat adjoint vs FD
+(recompute counts logged); the verification gate accepting a correct
+gradient and REJECTING a corrupted one; cross-ISA golden hash.
+
+## No-claim boundaries
+
+- Ledger-backed checkpoint SPILL (degrade-to-storage for
+  long-horizon adjoints) is recorded follow-up — revolve's O(log N)
+  recomputation tier is what ships here.
+- The Hadamard boundary form at P1 is consistency-verified, not
+  tight: production shape gradients at lowest order should use the
+  volumetric/density form (exactly verified); the boundary form
+  earns tight tolerances with high-order traces (fs-feec tfz.6
+  spaces — follow-up integration).
+- Free-surface LBM adjoints deferred [M] (the bead's honesty note);
+  gradient-based fluid shape steps use continuous-adjoint NS when
+  that lane lands.
+- No second-order adjoints (Hessian-vector products via
+  adjoint-of-adjoint — 7tv.3's TR-Newton-Krylov consumes them; the
+  fs-ad `second_directional` dual path covers small parameter
+  counts).
+- The ci-gauntlet WIRING of `verify_gradient` (merge-blocking) is
+  that pipeline bead's scope; the gate helper and its self-test live
+  here.

@@ -397,3 +397,110 @@ fn adjoint_golden_hash() {
          justification (golden-evidence policy)"
     );
 }
+
+#[test]
+fn hadamard_compliance_agreement_improves_under_refinement() {
+    // Compliance J = ∫ f·u (Dirichlet Poisson): the Hadamard boundary
+    // form −∫(∂u/∂n)²·(V·n) dA on P1 solutions carries discretization
+    // error, so the honest gate is not a tight tolerance but
+    // CONSISTENCY: the relative gap to perturb-and-resolve FD must
+    // SHRINK under mesh refinement, and be modest on the fine mesh.
+    let velocity = |p: [f64; 3]| -> [f64; 3] {
+        [
+            0.2f64.mul_add(p[0], 0.1),
+            0.15f64.mul_add(p[1], -0.05),
+            0.1f64.mul_add(p[2], 0.05),
+        ]
+    };
+    let f_src = |p: [f64; 3]| -> f64 { 1.0 + p[0] + 0.5 * p[1] };
+    let gap_at = |m: usize| -> f64 {
+        let (complex, positions) = kuhn_cube(m);
+        let compliance = |pos: &[[f64; 3]]| -> (f64, Vec<f64>) {
+            let geo = element_geometry(&complex, pos);
+            let k0 = fs_feec::stiffness(
+                &fs_feec::incidence_to_csr(&complex.d0()),
+                &fs_feec::mass_matrix(&complex, &geo, 1),
+            );
+            let m0 = fs_feec::mass_matrix(&complex, &geo, 0);
+            let interior: Vec<usize> = (0..pos.len())
+                .filter(|&v| !fs_feec::on_unit_cube_boundary(positions[v]))
+                .collect();
+            let mut slot = vec![usize::MAX; pos.len()];
+            for (i, &v) in interior.iter().enumerate() {
+                slot[v] = i;
+            }
+            let mut red = fs_sparse::Coo::new(interior.len(), interior.len());
+            for (i, &v) in interior.iter().enumerate() {
+                let (cols, vals) = k0.row(v);
+                for (&c, &val) in cols.iter().zip(vals) {
+                    if slot[c] != usize::MAX {
+                        red.push(i, slot[c], val);
+                    }
+                }
+            }
+            let a = CsrOp::symmetric(red.assemble());
+            let fvals: Vec<f64> = pos.iter().map(|&p| f_src(p)).collect();
+            let mut bfull = vec![0.0f64; pos.len()];
+            m0.spmv(&fvals, &mut bfull);
+            let b: Vec<f64> = interior.iter().map(|&v| bfull[v]).collect();
+            let x = solve_spd(&a, &b);
+            // J = Σ interior b_i x_i (boundary u = 0).
+            let j: f64 = b.iter().zip(&x).map(|(bi, xi)| bi * xi).sum();
+            let mut ufull = vec![0.0f64; pos.len()];
+            for (i, &v) in interior.iter().enumerate() {
+                ufull[v] = x[i];
+            }
+            (j, ufull)
+        };
+        let (_, u_full) = compliance(&positions);
+        let geo = element_geometry(&complex, &positions);
+        let analytic =
+            fs_adjoint::compliance_shape_gradient(&complex, &positions, &geo, &u_full, &velocity);
+        let eps = 1e-4;
+        let perturb = |sign: f64| -> Vec<[f64; 3]> {
+            positions
+                .iter()
+                .map(|&p| {
+                    if fs_feec::on_unit_cube_boundary(p) {
+                        let v = velocity(p);
+                        [
+                            (sign * eps).mul_add(v[0], p[0]),
+                            (sign * eps).mul_add(v[1], p[1]),
+                            (sign * eps).mul_add(v[2], p[2]),
+                        ]
+                    } else {
+                        p
+                    }
+                })
+                .collect()
+        };
+        let (jp, _) = compliance(&perturb(1.0));
+        let (jm, _) = compliance(&perturb(-1.0));
+        let fd = (jp - jm) / (2.0 * eps);
+        (analytic - fd).abs() / fd.abs().max(1e-30)
+    };
+    let gap_coarse = gap_at(2);
+    let gap_fine = gap_at(4);
+    log(
+        "hadamard-compliance",
+        "info",
+        &format!("rel gap: kuhn(2)={gap_coarse:.3} kuhn(4)={gap_fine:.3}"),
+    );
+    assert!(
+        gap_fine < gap_coarse,
+        "Hadamard/FD agreement must improve under refinement: {gap_coarse:.3} -> {gap_fine:.3}"
+    );
+    // The P1 one-sided normal trace squared is LOW-ORDER accurate, so
+    // the boundary form converges slowly (measured 0.84 → 0.66 across
+    // one refinement; the sign and trend are the verified claims). At
+    // lowest order the exactly-FD-verified VOLUMETRIC form (the SIMP
+    // density pullback above, rel err ~1e-6) is the production path;
+    // the boundary form earns tight tolerances with high-order traces
+    // (recorded in the CONTRACT).
+    assert!(gap_fine < 0.75, "fine-mesh gap too large: {gap_fine:.3}");
+    log(
+        "hadamard-compliance",
+        "pass",
+        &format!("consistent, fine gap {gap_fine:.3}"),
+    );
+}

@@ -8,8 +8,11 @@
 //!   this is EXACT for the discrete volume (both sides are polynomial
 //!   in the perturbation parameter).
 //! - COMPLIANCE (Dirichlet Poisson, J = ∫ f·u): the boundary form is
-//!   dJ[V] = −∫_∂Ω (∂u/∂n)²·(V·n) dA (self-adjoint case λ = u). On P1
-//!   discrete solutions this carries discretization error — the
+//!   dJ[V] = +∫_∂Ω (∂u/∂n)²·(V·n) dA (self-adjoint case; the sign is
+//!   PLUS — pinned by the 1D closed form −u″ = 1 on (0, a), where
+//!   J = a³/12 gives dJ/da = a²/4 = (∂u/∂n)² at the moving end. The
+//!   first draft had minus and the FD-consistency gate caught it).
+//!   On P1 discrete solutions this carries discretization error — the
 //!   battery gates RELATIVE agreement with FD and reports the number
 //!   instead of pretending exactness.
 
@@ -112,7 +115,7 @@ pub fn volume_shape_gradient(
 }
 
 /// Hadamard COMPLIANCE shape gradient for the Dirichlet Poisson
-/// problem: dJ[V] = −∫_∂Ω (∂u_h/∂n)²·(V·n) dA, with ∂u_h/∂n taken
+/// problem: dJ[V] = +∫_∂Ω (∂u_h/∂n)²·(V·n) dA, with ∂u_h/∂n taken
 /// from the owning tet's constant P1 gradient (u_h given at ALL
 /// vertices, boundary values included).
 #[must_use]
@@ -130,8 +133,8 @@ pub fn compliance_shape_gradient(
         let tet = complex.tets[t];
         let mut grad = [0.0f64; 3];
         for (a, &v) in tet.iter().enumerate() {
-            for c in 0..3 {
-                grad[c] = geo.grads[t][a][c].mul_add(u[v as usize], grad[c]);
+            for (c, gc) in grad.iter_mut().enumerate() {
+                *gc = geo.grads[t][a][c].mul_add(u[v as usize], *gc);
             }
         }
         let dudn = n[0].mul_add(grad[0], n[1].mul_add(grad[1], n[2] * grad[2]));
@@ -141,7 +144,7 @@ pub fn compliance_shape_gradient(
             let vel = velocity(positions[v as usize]);
             vn += n[0].mul_add(vel[0], n[1].mul_add(vel[1], n[2] * vel[2])) / 3.0;
         }
-        total = (-dudn * dudn * vn).mul_add(area, total);
+        total = (dudn * dudn * vn).mul_add(area, total);
     }
     total
 }
