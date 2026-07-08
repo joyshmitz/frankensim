@@ -33,14 +33,20 @@ pub mod hyper2d;
 #[cfg(feature = "koiter-asymptotics")]
 pub mod koiter;
 pub mod linear;
+pub mod beamcol;
+pub mod fiber;
 pub mod mesh2;
+pub mod rod;
 pub mod stability;
 
 pub use continuation::{ArcSettings, PathEvent, PathResidual, PathState, advance, switch_branch};
 pub use cutfront::{CutElasticity, CutSolution};
 pub use hyper2d::{HyperProblem, NewtonReport, NewtonSettings};
 pub use linear::{Formulation, LinearProblem, PlaneKind};
+pub use beamcol::{ForceBasedElement, PushoverStep};
+pub use fiber::{Fiber, FiberLaw, Section, SectionState, update_sections_batched};
 pub use mesh2::{Mesh2, Patch};
+pub use rod::{Rod, RodSection, TipLoad};
 pub use stability::{
     BucklingResult, buckling_loads, eigenvalue_derivative, expand_mode, group_stiffness,
     ks_aggregate, ks_aggregate_derivative, lambda_indicator, reduced_pencil,

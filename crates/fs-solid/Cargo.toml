@@ -22,6 +22,7 @@ fs-material = { path = "../fs-material" }
 fs-scenario = { path = "../fs-scenario" }
 fs-solver = { path = "../fs-solver" }
 fs-sparse = { path = "../fs-sparse" }
+fs-time = { path = "../fs-time" }
 
 [[test]]
 name = "koiter"
