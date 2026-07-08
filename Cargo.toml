@@ -93,6 +93,7 @@ members = [
     "crates/fs-rep-neural",
     "crates/fs-render",
     "crates/fs-sos",
+    "crates/fs-archive",
     "crates/fs-cutfem",
     "crates/fs-solid",
     "crates/fs-dwr",
@@ -100,6 +101,7 @@ members = [
     "crates/fs-fmm",
     "crates/fs-bem",
     "crates/fs-truss",
+    "crates/fs-flux",
     "xtask",
 ]
 

@@ -1,0 +1,18 @@
+[package]
+name = "fs-archive"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Quality-diversity archives (fs-archive): MAP-Elites and CVT illumination archives that ILLUMINATE a behavior space — keeping the best solution per behavioral niche rather than a single global optimum — plus novelty scoring. Deterministic; coverage and QD-score are the load-bearing metrics."
+
+[package.metadata.frankensim]
+layer = "L4"
+
+[dependencies]
+
+[dev-dependencies]
+
+[lints]
+workspace = true
