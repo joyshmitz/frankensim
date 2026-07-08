@@ -61,6 +61,7 @@ members = [
     "crates/fs-spececo",
     "crates/fs-contract",
     "crates/fs-bisect",
+    "crates/fs-dimine",
     "crates/fs-cutfem",
     "crates/fs-solid",
     "xtask",
