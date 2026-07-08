@@ -1,0 +1,21 @@
+[package]
+name = "fs-bo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Bayesian optimization: Matern-family Gaussian processes with QMC-multistart hyperparameter fitting, EI/q-EI acquisitions, and deterministic BO loops."
+
+[package.metadata.frankensim]
+layer = "L4"
+
+[dependencies]
+fs-ascent = { path = "../fs-ascent" }
+fs-dfo = { path = "../fs-dfo" }
+fs-la = { path = "../fs-la" }
+fs-math = { path = "../fs-math" }
+fs-rand = { path = "../fs-rand" }
+
+[lints]
+workspace = true

@@ -1,0 +1,24 @@
+//! fs-bo — Bayesian optimization (plan §9.4 [F]). Layer: L4 ASCENT.
+//!
+//! In-house Gaussian processes (Matérn ½/3⁄2/5⁄2 with ARD, exact
+//! Cholesky inference, QMC-multistart marginal-likelihood fitting),
+//! deterministic acquisitions (closed-form EI; q-EI through the
+//! Cholesky reparameterization over a FIXED scrambled-Sobol normal
+//! bank), and BO loops whose every run replays bitwise. Inner
+//! optimizers come from the landed stack: fs-ascent L-BFGS for
+//! hyperparameters, fs-dfo CMA-ES for acquisition surfaces.
+//!
+//! TuRBO trust-region BO, multi-fidelity cost-aware acquisition,
+//! inducing-point sparse GPs, and tape-differentiated acquisition
+//! gradients are recorded follow-up lanes on the bead.
+
+pub mod acq;
+pub mod bo;
+pub mod gp;
+
+pub use acq::{expected_improvement, normal_bank, phi_cdf, phi_inv, q_expected_improvement};
+pub use bo::{BoConfig, BoReport, minimize};
+pub use gp::{Gp, Kernel, Matern, fit_hyperparams};
+
+/// Crate version, re-exported for provenance stamping.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
