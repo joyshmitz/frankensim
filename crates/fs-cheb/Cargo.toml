@@ -12,6 +12,7 @@ layer = "L1"
 
 [dependencies]
 fs-fft = { path = "../fs-fft" }
+fs-ivl = { path = "../fs-ivl" }
 fs-la = { path = "../fs-la" }
 fs-math = { path = "../fs-math" }
 

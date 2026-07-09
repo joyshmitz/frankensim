@@ -1,14 +1,15 @@
 # CONTRACT: fs-cheb
 
-> Status: PARTIAL — the 1D core, collocation, and ORR–SOMMERFELD
-> sections are in force; 2D/3D low-rank, Fourier-periodic,
-> colleague-matrix roots, and Qty integration remain follow-up scope.
+> Status: PARTIAL — the 1D core, collocation, ORR–SOMMERFELD,
+> 2D low-rank, Fourier-periodic, and colleague-root sections are in
+> force; 3D low-rank and Qty integration remain follow-up scope.
 
 ## Purpose and layer
 Chebfun-style function objects (plan §6.5): smooth 1D functions as
 adaptively truncated Chebyshev expansions, plus spectral collocation
-differentiation matrices. Layer: **L1**. Deps: fs-fft (DCT pair),
-fs-la (LU for the collocation eigen demo), fs-math (strict cos/sin).
+differentiation matrices. Layer: **L1**. Deps: fs-fft (DCT/FFT pair),
+fs-la (LU/eigen paths), fs-math (strict elementary functions), and
+fs-ivl (interval root certification).
 
 ## Public types and semantics
 - `Cheb1` — coefficients over FIRST-KIND Chebyshev points (roots grid):
@@ -48,10 +49,21 @@ fs-la (LU for the collocation eigen demo), fs-math (strict cos/sin).
    constants bitwise).
 5. Deterministic cross-ISA: all state built on strict fs-math cos/sin
    and fixed-order arithmetic (golden hash, trj-verified).
+6. Colleague roots agree with the subdivision scanner on simple roots,
+   recover even-multiplicity roots the scanner cannot see, and
+   certification boxes are reported in physical-domain coordinates.
+7. `Cheb2` captures separable rank exactly on fixture functions, keeps
+   deterministic pivot tie-breaking, and converges spectrally on the
+   smooth non-separable fixture.
+8. `FourierSeries` exactly recovers trigonometric fixture modes,
+   differentiates `sin` to `cos`, and uses c₀ for the periodic integral.
 
 ## Error model
-Structured panics for programmer/modeling errors: inverted domains,
-unresolved functions at `max_degree`, domain mismatches in algebra.
+Structured panics for programmer/modeling errors: non-finite or
+inverted domains, non-finite samples/coefficients, unresolved functions
+at `max_degree`, domain mismatches in algebra, invalid colleague
+policies, non-positive certification widths, malformed public `Cheb2`
+or `FourierSeries` fields, and non-power-of-two Fourier sample counts.
 
 ## Determinism class
 Bit-deterministic cross-ISA by construction. Golden hash over
@@ -72,11 +84,51 @@ None.
 tests/cheb_battery.rs (recovery, calculus, plateau robustness, roots,
 collocation accuracy, eigen demo, golden hash).
 
+## Variants (bead kw89)
+
+- `colleague::colleague_roots` — the Chebyshev companion matrix
+  (three-term-recurrence rows, coefficient-loaded last row scaled by
+  −1/(2aₙ)), eigenvalues via the fs-la complex nonsymmetric stack,
+  filtered by a DOCUMENTED [`ColleaguePolicy`] (trailing-coefficient
+  trim, imaginary tolerance, domain slack, √ε-scale cluster dedupe —
+  a double root's eigenvalue pair splits at ~5e-9, measured). This
+  RESOLVES the v1 even-multiplicity no-claim: (x−r)²(x−s) fixtures
+  the sign scanner provably misses are found (cheb-102). Cheb1 stores
+  the Σ′ convention (c₀ un-halved) — the colleague and interval
+  paths halve it on entry (a measured 2.2e-1 root error before).
+- `colleague::certified_roots` — fs-ivl interval Newton on Clenshaw
+  evaluated in interval arithmetic: simple roots come back CERTIFIED
+  (unique-root proofs, widths ~6e-15 measured); multiple roots come
+  back honestly `Possible` (their derivative encloses zero, as it
+  must). Returned boxes are mapped back to the physical Cheb1 domain.
+- `cheb2::Cheb2` — Chebfun2-style adaptive cross approximation:
+  deterministic max-residual pivots, rank-1 slice updates at FIXED
+  resolution (ACA residual slices carry absolute cancellation noise,
+  so the adaptive builder's machine-plateau test cannot pass on them
+  — measured panic, documented in-module), exact rank on separable
+  fixtures, spectral rank convergence on smooth ones, separable
+  integration.
+- `fourier::FourierSeries` — trigonometric interpolants on [0, 2π)
+  via fs-fft's real transform (power-of-two samples): eval,
+  ik-multiply differentiation (Nyquist zeroed, the real-signal
+  convention), integral off c₀, tail-magnitude spectral-decay probe.
+
+`tests/variants.rs`: cheb-101 colleague vs subdivision vs analytic;
+cheb-102 even-multiplicity recovery; cheb-103 1e-3 clustered roots;
+cheb-104 physical-domain interval certification (+ honest
+non-certification of the double root); cheb-105 ACA
+ranks/accuracy/integral; cheb-106 Fourier recovery/derivative/decay/
+Bessel integral; cheb-107 bitwise replays; cheb-108 fail-fast guards
+for invalid policies, domains, samples, widths, and public spectral
+structs.
+
 ## No-claim boundaries
-- Roots of even multiplicity (no sign change) are NOT found by the v1
-  subdivision rootfinder; colleague-matrix roots with fs-ivl
-  certification are the follow-up (needs a nonsymmetric eigensolver).
-- No 2D/3D low-rank, no Fourier-periodic variant, no Qty-dimensioned
-  functions, no FrankenScipy cross-checks yet.
+- Even-multiplicity roots: RESOLVED for the colleague path (above);
+  the v1 subdivision `roots` keeps its documented limitation and
+  remains the zero-dependency fallback.
+- No 3D low-rank (2D ships; tensor-train is the successor), no
+  complex-root REPORTING policy (real-only surfaced, documented), no
+  Fourier rootfinding-on-the-circle, no Qty-dimensioned functions,
+  no FrankenScipy cross-checks yet.
 - `mul` may overshoot the minimal degree (resample-based); fine for
   correctness, recorded for the perf lane.

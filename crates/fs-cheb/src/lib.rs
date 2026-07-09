@@ -6,16 +6,19 @@
 //! Representation: coefficients over FIRST-KIND Chebyshev points (the
 //! roots grid) — chosen deliberately so values ↔ coefficients is exactly
 //! fs-fft's DCT-II/III pair (cross-ISA bit-deterministic by construction).
-//! The Lobatto/DCT-I flavor, 2D low-rank, Fourier-periodic, colleague-
-//! matrix roots, and the Orr–Sommerfeld complex eigenproblem stack are
-//! recorded follow-up scope (the last needs a nonsymmetric/complex
-//! eigensolver that does not exist in-workspace yet).
+//! The 2D low-rank, Fourier-periodic, colleague-matrix root, and
+//! Orr–Sommerfeld complex eigenproblem paths are implemented at v1
+//! fixture scale. The Lobatto/DCT-I flavor and 3D low-rank functions are
+//! recorded follow-up scope.
 //!
 //! Determinism: sampling grids, plateau detection, Clenshaw evaluation,
 //! and rootfinding subdivision are all fixed-order arithmetic on strict
 //! kernels — NO platform libm in any path that feeds function state
 //! (workspace contract rule).
 
+pub mod cheb2;
+pub mod colleague;
+pub mod fourier;
 pub mod orr_sommerfeld;
 
 use fs_fft::{dct2, dct3};
@@ -49,7 +52,11 @@ impl Cheb1 {
     /// the function (non-smooth input is a modeling error here).
     #[must_use]
     pub fn build<F: Fn(f64) -> f64>(f: &F, a: f64, b: f64, max_degree: usize) -> Cheb1 {
-        assert!(a < b, "domain must satisfy a < b (got [{a}, {b}])");
+        assert!(
+            a.is_finite() && b.is_finite() && a < b,
+            "domain must be finite and satisfy a < b (got [{a}, {b}])"
+        );
+        let degree_cap = max_degree.max(16);
         let mut n = 16usize;
         loop {
             let coeffs = Self::coeffs_at(f, a, b, n);
@@ -72,7 +79,7 @@ impl Cheb1 {
             }
             n *= 2;
             assert!(
-                n <= max_degree,
+                n <= degree_cap,
                 "function not resolved at degree {max_degree} on [{a}, {b}] \
                  (non-smooth or too oscillatory; raise max_degree or split the domain)"
             );
@@ -94,8 +101,15 @@ impl Cheb1 {
     /// Construct directly from coefficients (c[0] un-halved convention).
     #[must_use]
     pub fn from_coeffs(a: f64, b: f64, coeffs: Vec<f64>) -> Cheb1 {
-        assert!(a < b, "domain must satisfy a < b");
+        assert!(
+            a.is_finite() && b.is_finite() && a < b,
+            "domain must be finite and satisfy a < b"
+        );
         assert!(!coeffs.is_empty(), "need at least one coefficient");
+        assert!(
+            coeffs.iter().all(|c| c.is_finite()),
+            "Cheb1 coefficients must be finite"
+        );
         Cheb1 { a, b, coeffs }
     }
 
@@ -289,7 +303,9 @@ fn sample_first_kind<F: Fn(f64) -> f64>(f: &F, a: f64, b: f64, n: usize) -> Vec<
             let theta = std::f64::consts::PI * (k as f64 + 0.5) / (n as f64);
             let t = fs_math::det::cos(theta);
             let x = f64::midpoint(a, b) + t * (b - a) / 2.0;
-            f(x)
+            let y = f(x);
+            assert!(y.is_finite(), "Cheb1 samples must be finite");
+            y
         })
         .collect()
 }
@@ -395,12 +411,13 @@ pub fn dirichlet_laplace_eigs(n: usize, k: usize) -> Vec<f64> {
     }
     let (fd_eigs, _) = fs_la::eigen::jacobi_eigh(&fd, nf);
     let mut eigs = Vec::with_capacity(k);
+    let mut shifted = vec![0.0f64; a.len()];
     for &fd_est in fd_eigs.iter().take(k) {
         // Shift slightly BELOW the surrogate estimate (FD underestimates
         // continuum eigenvalues; the offset keeps the shifted matrix
         // definite and the iteration locked to the intended eigenvalue).
         let mu = fd_est * 0.95;
-        let mut shifted = a.clone();
+        shifted.copy_from_slice(&a);
         for i in 0..ni {
             shifted[i * ni + i] -= mu;
         }

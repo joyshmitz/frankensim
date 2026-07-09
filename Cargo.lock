@@ -1047,12 +1047,16 @@ dependencies = [
 name = "fs-flywheel-e2e"
 version = "0.0.1"
 dependencies = [
+ "fs-adjoint",
  "fs-benchmark",
  "fs-evidence",
  "fs-geom",
+ "fs-ir",
  "fs-ledger",
+ "fs-package",
  "fs-qty",
  "fs-recompute",
+ "fs-robust",
  "fs-spececo",
  "fs-verify",
 ]
