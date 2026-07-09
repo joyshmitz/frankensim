@@ -15,7 +15,10 @@ distributions (plan §6.7; P2's seed pillar). Layer: L1.
   fs-math strict fns — cross-ISA deterministic SAMPLES), `next_normal_ziggurat`
   (bead 1za9: the ZIGGURAT perf path — deterministic `det`-generated table +
   deterministic rejection consumption; FAST-MODE-ONLY until a cross-ISA bitwise
-  proof admits it to strict mode), `next_exponential` (inversion), `fill_f64`.
+  proof admits it to strict mode), `next_exponential` (inversion). BULK
+  generation (bead 1za9): `fill_f64` / `fill_u64` fill via 8-lane batched
+  `philox4x32_10_batch` (structure-of-arrays, auto-vectorizable) and are
+  BITWISE-IDENTICAL to the sequential draws (index advances by `len`).
 
 ### Extended distributions (bead 6ys.19, module `dist`)
 - `Stream::{next_gamma, next_beta, next_dirichlet, next_truncated_normal,
@@ -92,8 +95,12 @@ monobit balance, inter-stream correlation matrix).
   accuracy-gated (moments + two-sample KS vs Box–Muller), but not admitted to
   strict mode until a cross-ISA bitwise-equal run on both reference machines
   lands (the `trj` pipeline); Box–Muller stays the strict default.
-- SIMD bulk generation lanes (bead 1za9, remaining item — 4×/8× Philox via
-  fs-simd Ops, bitwise-equivalent to the scalar stream).
+- SIMD bulk generation (bead 1za9): the batched SoA primitive
+  `philox4x32_10_batch` + `fill_f64`/`fill_u64` ship and are gated
+  bitwise-equivalent to the scalar stream (`tests/bulk.rs`); a HAND-WRITTEN
+  NEON/AVX u32 kernel and its throughput gate remain a follow-up — `fs-simd`
+  exposes only float ops and the workspace is stable-Rust (no `portable_simd`),
+  so the vectorized capsule is a separate hardware-gated effort.
 - A FULL PractRand/TestU01 port: `tests/stream_battery.rs` ships a
   representative dev-only subset (χ²/serial/monobit/inter-stream); the complete
   suite + CI wiring remain a follow-up.
