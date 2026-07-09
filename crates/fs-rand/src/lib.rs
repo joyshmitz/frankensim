@@ -7,11 +7,10 @@
 //! support RANDOM ACCESS by index ([`Stream::at`]), so replay, forking, and
 //! out-of-order tile execution cannot perturb randomness.
 //!
-//! Distributions are built on fs-math's STRICT functions (Box–Muller normals
-//! via `det::{ln, sin, cos}`, exponentials via `det::ln`), so even sampled
-//! values are cross-ISA bit-deterministic — a deliberate deviation from the
-//! plan's ziggurat suggestion (recorded on the bead): ziggurat's table +
-//! rejection layout is a PERF follow-up; determinism-first wins v1.
+//! Strict distributions are built on fs-math's deterministic functions:
+//! Box–Muller normals via `det::{ln, cos}` and exponentials via `det::ln`.
+//! A ziggurat normal is available as an explicit fast-mode path; strict
+//! callers stay on Box–Muller until the cross-ISA admission proof lands.
 //!
 //! Field widths (documented contract): seed 64 bits (Philox key), tile id
 //! 32 bits, kernel id 32 bits (together counter words 2–3), draw index 64

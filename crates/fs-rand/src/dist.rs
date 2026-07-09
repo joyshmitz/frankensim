@@ -6,8 +6,10 @@
 //! content (replay-safe, the `next_below` doctrine extended to
 //! continuous distributions). Fixed-draw samplers are documented as such.
 //!
-//! Ziggurat (perf lane) and SIMD bulk generation are recorded follow-up
-//! scope; Box–Muller stays the strict default.
+//! The ziggurat normal and batched bulk Philox fills live in their own
+//! explicit fast paths; these extended strict samplers continue to use
+//! Box–Muller and scalar draws where that preserves their documented
+//! consumption contracts.
 
 use crate::Stream;
 use fs_math::det;
