@@ -3,7 +3,7 @@
 This is a synthesized, agent-facing changelog for FrankenSim.
 
 Scope window: project inception on 2026-07-05 through
-[`main@438128d`](https://github.com/Dicklesworthstone/frankensim/commit/438128d988082f2183f406d75883b766fd6b7324)
+[`main@e08e302`](https://github.com/Dicklesworthstone/frankensim/commit/e08e30280bcd7af05ae55e990b129d6f75192ead)
 on 2026-07-09.
 
 This document was rebuilt from git history, tag/release metadata, the checked-in
@@ -13,10 +13,11 @@ landed capabilities rather than raw diff order.
 ## Version Timeline
 
 There are no git tags and no GitHub Releases as of
-[`main@438128d`](https://github.com/Dicklesworthstone/frankensim/commit/438128d988082f2183f406d75883b766fd6b7324).
+[`main@e08e302`](https://github.com/Dicklesworthstone/frankensim/commit/e08e30280bcd7af05ae55e990b129d6f75192ead).
 
 | Version | Kind | Date | Summary |
 |---------|------|------|---------|
+| [`main@e08e302`](https://github.com/Dicklesworthstone/frankensim/commit/e08e30280bcd7af05ae55e990b129d6f75192ead) | Public mainline snapshot | 2026-07-09 | 696 commits, adding the gated SME2 exploratory capsule, SME2 battery, mesh hull-regression guard, and topopt proof-hygiene cleanups. |
 | [`main@438128d`](https://github.com/Dicklesworthstone/frankensim/commit/438128d988082f2183f406d75883b766fd6b7324) | Public mainline snapshot | 2026-07-09 | 688 commits, adding hull-facet encroachment protection to mesh refinement and tightening the topology-optimization marquee evidence fixtures. |
 | [`main@1fe4ef5`](https://github.com/Dicklesworthstone/frankensim/commit/1fe4ef5c21737a92aa58dd02f901052de5b0a88b) | Public mainline snapshot | 2026-07-09 | 686 commits, adding the flagship replay-suite scaffold, topopt marquee evidence hardening, exact certificate payload refinements, and tracker state for the fs-mesh v2 follow-up. |
 | [`main@9dc7417`](https://github.com/Dicklesworthstone/frankensim/commit/9dc7417090e62e7ab2756719034e2ab0d3b32875) | Mainline checkpoint | 2026-07-09 | 684 commits, registering the staged flagship replay suite and its contract. |
@@ -621,9 +622,9 @@ multigrid smoothing.
 The window from
 [`319cb64`](https://github.com/Dicklesworthstone/frankensim/commit/319cb64f052d76e15882ee53ace41092881c7fa8)
 through
-[`438128d`](https://github.com/Dicklesworthstone/frankensim/commit/438128d988082f2183f406d75883b766fd6b7324)
+[`e08e302`](https://github.com/Dicklesworthstone/frankensim/commit/e08e30280bcd7af05ae55e990b129d6f75192ead)
 is another implementation-heavy mainline slice, not a formal release. It adds
-55 commits across 108 files, with 15,482 insertions and 323 deletions. The work
+63 commits across 116 files, with 16,163 insertions and 369 deletions. The work
 broadens flagship coverage, strengthens decision-making loops for optimization
 and uncertainty, and fixes campaign checks that had been too correlated or too
 underspecified to support the claims around them.
@@ -655,14 +656,18 @@ underspecified to support the claims around them.
 - `fs-gen` lands as a proposal-only generation crate with compiler-enforced
   epistemic boundaries, making generated candidates explicit about what they
   are not allowed to certify.
-- `fs-flagship-e2e` lands as an in-progress L6 replay-suite scaffold for the
-  flagship family: smoke/mid/full stage wiring, metric-only content hashes,
+- `fs-flagship-e2e` lands as an L6 replay suite for the flagship family:
+  smoke/mid/full stage wiring, frozen smoke-stage content hashes,
   cross-flagship LBM and e-race audits, structured failure drills, forensic
-  JSON rows, and a contract that keeps unfrozen smoke goldens explicit.
+  JSON rows, and ignored mid/full fidelity lanes for later perf cadence.
 - `fs-mesh` hardens full-Ruppert refinement by checking candidate Steiner
   points against hull-facet diametral balls before insertion, while `fs-topopt`
   tightens the marquee tests around faster deterministic topology, benchmark,
   and thickness witnesses.
+- `fs-simd` adds a `frontier-sme2` exploratory capsule for a runtime-gated
+  streaming-mode 16x16 f32 GEMM tile, registers the unsafe boundary, documents
+  the SME2 safety invariants, and adds a hardware-optional battery that keeps
+  unsupported machines inert.
 - End-to-end proof hygiene improves across `fs-flutter-e2e`,
   `fs-neuroshape-e2e`, `fs-flowcert-e2e`, `fs-truss-e2e`, and
   `fs-metamat-e2e`, including independent flutter stability checks, closed
@@ -681,7 +686,7 @@ underspecified to support the claims around them.
 - [`frankensim-ijil`](https://github.com/Dicklesworthstone/frankensim/blob/d5873bfd82a3c2dbe359c11aef4947a5def8cdba/.beads/issues.jsonl) - constrained polish engines, FrankenScipy oracle, and Problem-IR runner.
 - [`frankensim-epic-helm-gp3.9`](https://github.com/Dicklesworthstone/frankensim/blob/d5873bfd82a3c2dbe359c11aef4947a5def8cdba/.beads/issues.jsonl) - `fs-plan` allocation and replanning machinery.
 - [`frankensim-epic-lumen-qfx.5`](https://github.com/Dicklesworthstone/frankensim/blob/d5873bfd82a3c2dbe359c11aef4947a5def8cdba/.beads/issues.jsonl) - differentiable rendering objective lane.
-- [`frankensim-epic-flagships-mye.5`](https://github.com/Dicklesworthstone/frankensim/blob/9dc7417090e62e7ab2756719034e2ab0d3b32875/.beads/issues.jsonl) - active flagship e2e suite scaffold.
+- [`frankensim-epic-flagships-mye.5`](https://github.com/Dicklesworthstone/frankensim/blob/20e9825018aeb30b5b2b12c122c7c95c84b3a646/.beads/issues.jsonl) - flagship e2e suite with frozen smoke-stage goldens.
 - [`frankensim-uee3`](https://github.com/Dicklesworthstone/frankensim/blob/1fe4ef5c21737a92aa58dd02f901052de5b0a88b/.beads/issues.jsonl) - active fs-mesh v2 follow-up.
 
 ### Representative commits
@@ -706,13 +711,17 @@ underspecified to support the claims around them.
 - [`1337058`](https://github.com/Dicklesworthstone/frankensim/commit/1337058ac6bc4b8f1dd9b7cdeb85db2fd0713bfd) - tighten the flagship replay-suite battery lint posture.
 - [`1fe4ef5`](https://github.com/Dicklesworthstone/frankensim/commit/1fe4ef5c21737a92aa58dd02f901052de5b0a88b) - mark the fs-mesh v2 follow-up in progress.
 - [`438128d`](https://github.com/Dicklesworthstone/frankensim/commit/438128d988082f2183f406d75883b766fd6b7324) - protect hull refinement and tighten marquee witnesses.
+- [`70e1d24`](https://github.com/Dicklesworthstone/frankensim/commit/70e1d246103fab3a26f30c4a0aee8d71f76ff6ed) - refine boundary splitting and grid traversal.
+- [`a8e98b2`](https://github.com/Dicklesworthstone/frankensim/commit/a8e98b21b8eb793069be9153d366618af172b801) - ledger the hull encroachment regression bound.
+- [`d93ca59`](https://github.com/Dicklesworthstone/frankensim/commit/d93ca592bb6f408095eb1d72ecb25e2a09dd7674) - add the gated SME2 exploratory capsule.
+- [`e08e302`](https://github.com/Dicklesworthstone/frankensim/commit/e08e30280bcd7af05ae55e990b129d6f75192ead) - add the SME2 exploratory battery.
 
 ## Current Non-Release Status
 
 - No package or crate release has been tagged yet.
 - The canonical project state is `main`, not a versioned artifact; the latest
   implementation and tracker snapshot covered here is
-  [`438128d`](https://github.com/Dicklesworthstone/frankensim/commit/438128d988082f2183f406d75883b766fd6b7324).
+  [`e08e302`](https://github.com/Dicklesworthstone/frankensim/commit/e08e30280bcd7af05ae55e990b129d6f75192ead).
 - The repository is actively changing; use crate `CONTRACT.md` files and Beads
   close reasons for detailed no-claim boundaries.
 - The README describes the implemented workspace; the long-form plan remains

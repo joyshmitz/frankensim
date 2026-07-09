@@ -592,7 +592,7 @@ real answer to carry evidence instead of just a number.
 | `fs-vessel` | Chebyshev stability objective, free-surface LBM, e-racing, robust CVaR, volume rendering | A laminar-pour vessel study with stability, mass-ledger, robust-family, and render evidence |
 | `fs-ornith` | BEM/VPM screening, e-racing, LBM refinement, SOS stability certificates, conformal surrogate bands, NSGA-II atlas construction | A smoke-tier ornithoid aircraft study that carries lineage, certificates, model-form honesty, and replay evidence through a full design campaign |
 | `fs-topopt` `cutfem-marquee` | Density fields as CutFEM SDFs, DWR-guided octree refinement, zero-remesh logs, topology/thickness witnesses | A feature-gated topology-optimization lane that keeps the background grid stable while recording exactly where the proof work still lives |
-| `fs-flagship-e2e` | Smoke/mid/full stage wiring, metric-only golden hashes, cross-flagship audits, failure drills, forensic JSON rows, notebook replay | An in-progress suite scaffold that makes flagship replay and shared-core drift visible while keeping unfrozen goldens explicit |
+| `fs-flagship-e2e` | Smoke/mid/full stage wiring, metric-only golden hashes, cross-flagship audits, failure drills, forensic JSON rows, notebook replay | A replay suite with frozen smoke-stage goldens, shared-core drift checks, and ignored mid/full fidelity lanes for later perf cadence |
 
 The common pattern is: generate candidates, evaluate them with a physics or
 numerical kernel, attach evidence to the result, and stop only when the decision
