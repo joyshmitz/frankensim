@@ -5,36 +5,42 @@
 - Repo: `Dicklesworthstone/frankensim`
 - Requested task: update the changelog using `changelog-md-workmanship`.
 - Scope window: project inception on 2026-07-05 through
-  `main@e08e30280bcd7af05ae55e990b129d6f75192ead` on 2026-07-09.
+  `main@6725739f42b878b310e7e7e318fb8c980cef71f3` on 2026-07-09.
 - Public remote state when researched: local `HEAD` resolved to
-  `e08e30280bcd7af05ae55e990b129d6f75192ead`; `origin/main` resolved to
-  `7763bd7eb7a9f0a9c07dc32561df37594a606a99`.
+  `6725739f42b878b310e7e7e318fb8c980cef71f3`; `origin/main` resolved to
+  `6725739f42b878b310e7e7e318fb8c980cef71f3`.
 - Working-tree policy: the changelog covers committed history only. Local
-  uncommitted documentation refinements and scratch files were not used as
-  changelog evidence, including recovery cache, Wrangler cache, and the
-  untracked FlowCert probe.
+  uncommitted edits and scratch files were not used as changelog evidence,
+  including `.beads/issues.jsonl`, `crates/fs-wasm/src/flagships.rs`, Wrangler
+  cache files, and the untracked FlowCert/Rand probe files.
 
 ## Evidence Sources
 
 - Git history:
-  - `git rev-list --count HEAD` -> 696 commits.
-  - `git rev-list --count origin/main` -> 689 commits.
-  - `git rev-list --count 43d52f2..HEAD` -> 363 commits since the prior
+  - `git rev-list --count HEAD` -> 738 commits.
+  - `git rev-list --count origin/main` -> 738 commits.
+  - `git rev-list --count 43d52f2..HEAD` -> 405 commits since the prior
     changelog baseline.
-  - `git rev-list --count fb08842..HEAD` -> 74 commits since the previous
+  - `git rev-list --count fb08842..HEAD` -> 116 commits since the previous
     changelog pass endpoint.
-  - `git rev-list --count 319cb64..HEAD` -> 63 commits since the previous
+  - `git rev-list --count 319cb64..HEAD` -> 105 commits since the previous
+    changelog endpoint.
+  - `git rev-list --count d5873bf..HEAD` -> 57 commits since the 2026-07-09
+    flagship expansion checkpoint.
+  - `git rev-list --count e08e302..HEAD` -> 42 commits since the previous
     changelog endpoint.
   - `git log --reverse --no-merges --pretty=format:'%h %ad %s' --date=short`.
   - `git log --all --no-merges --pretty=format:'%H %h %ad %s' --date=short`.
-  - `git diff --stat --compact-summary 43d52f2..HEAD` -> 554 files changed,
-    101,563 insertions, 519 deletions.
-  - `git diff --stat --compact-summary fb08842..HEAD` -> 152 files changed,
-    21,481 insertions, 353 deletions.
-  - `git diff --stat --compact-summary 319cb64..HEAD` -> 116 files changed,
-    16,163 insertions, 369 deletions.
-  - `git diff --stat --compact-summary d5873bf..HEAD` -> 23 files changed,
-    1,827 insertions, 148 deletions.
+  - `git diff --stat --compact-summary 43d52f2..HEAD` -> 597 files changed,
+    107,641 insertions, 621 deletions.
+  - `git diff --stat --compact-summary fb08842..HEAD` -> 210 files changed,
+    27,629 insertions, 525 deletions.
+  - `git diff --stat --compact-summary 319cb64..HEAD` -> 177 files changed,
+    22,313 insertions, 543 deletions.
+  - `git diff --stat --compact-summary d5873bf..HEAD` -> 91 files changed,
+    7,988 insertions, 333 deletions.
+  - `git diff --stat --compact-summary e08e302..HEAD` -> 77 files changed,
+    6,195 insertions, 219 deletions.
 - Version metadata:
   - `git for-each-ref refs/tags ...` -> no tags.
   - `gh release list --limit 100` -> no GitHub Releases.
@@ -69,6 +75,7 @@
 | `70e1d24` | Public mainline snapshot | 2026-07-09 | Boundary-splitting semantics and topopt move-application cleanup; 692 commits. |
 | `d93ca59` | Public mainline snapshot | 2026-07-09 | Gated SME2 exploratory capsule and unsafe registration; 695 commits. |
 | `e08e302` | Public mainline snapshot | 2026-07-09 | SME2 exploratory battery; 696 commits. |
+| `6725739` | Public mainline snapshot | 2026-07-09 | Live browser flagship pipelines, mesh v2/v3 closure, sparse roofline/NUMA lanes, rand/FFT perf work, fail-closed IO/risk/probe hardening; 738 commits. |
 
 No tags or GitHub Releases existed when researched.
 
@@ -89,6 +96,7 @@ No tags or GitHub Releases existed when researched.
 | 11 | 7049ca3..fb08842 | distilled | Vortex-thruster QD campaign, DRO oracle, value-of-information queries, and three certified e2e capstones. |
 | 12 | fb08842..319cb64 | distilled | Neural-shape and grammar campaigns, SensorForge, vessel flagship, metamaterial/truss/AnytimeBO/FlowCert e2e crates, inverse-trig AD, `fs-ad` bridge/Revolve/IFT integrations, vertex-patch Schwarz p-MG smoothing. |
 | 13 | 319cb64..e08e302 | distilled | Self-knowledge and flywheel gates, Stokes block preconditioners, NSGA-III/MOEA/D/steering, sparse GP, adaptive MLMC/chance constraints, constrained polish engines, proposal-only generation, browser campaign tiers, differentiable rendering, ornithoid and CutFEM-octree flagships, exact e2e certificate payloads, topopt evidence hardening, frozen-golden flagship replay suite, mesh refinement protection, SME2 exploratory capsule, tracker state, proof-hygiene fixes. |
+| 14 | e08e302..6725739 | distilled | Live `fs-wasm` flagship browser pipelines, `fs-mesh` v2/v3 closure, hex-dominant meshing scaffold, compact sparse roofline/NUMA work, deterministic rand/FFT perf lanes, PLY integer validation, non-finite risk/probe hardening, and packaging panic-surface cleanup. |
 
 ## Representative Commit Clusters
 
@@ -189,6 +197,29 @@ No tags or GitHub Releases existed when researched.
   - `a8e98b2` hull encroachment regression bound.
   - `d93ca59` gated SME2 exploratory capsule.
   - `e08e302` SME2 exploratory battery.
+- Post-SME2 follow-up:
+  - `e8c496e` CutFEM-octree topology marquee zero-remeshing contract.
+  - `29fb1ea` SME2 streaming-mode GEMM prototype contract.
+  - `f759916` deterministic ziggurat normal fast path.
+  - `cb6dbde` Philox statistical stream battery.
+  - `8254164` bitwise bulk Philox fills.
+  - `648a891` c2r inverse FFT and 2D/3D pencil transforms.
+  - `9a6d303` conforming interior facet recovery.
+  - `6510b02` non-convex recovery facet triangulation.
+  - `fa3d93d` 10-million-point `fs-mesh` perf lane closeout.
+  - `151a643` hex-dominant meshing module.
+  - `0cd9de2` compact/sharded SpMV and sparse roofline lane.
+  - `dccc078` NUMA first-touch and real shared STREAM slices.
+  - `b4f849f` invalid topology-optimization density-shape rejection.
+  - `220d28c` fractional PLY face-list rejection.
+  - `3842369` non-convex recovery and boundary-layer gates.
+  - `4b77149` measured `fs-mesh` v3 boundary-layer decision.
+  - `ff9ef32` CVaR/objective non-finite rejection.
+  - `38f871f` non-finite probe budget rejection.
+  - `fdffa73` provenance in evidence package roots.
+  - `91478e2` package string-write panic cleanup.
+  - `462f0f6` panic-arm removal from `fs-io` conformance checks.
+  - `6725739` live browser flagship pipelines in `fs-wasm`.
 - Addendum:
   - `e43e3b1` three-color schema.
   - `39fd1a5` falsifier pairing.

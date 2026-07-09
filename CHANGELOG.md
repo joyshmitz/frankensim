@@ -3,7 +3,7 @@
 This is a synthesized, agent-facing changelog for FrankenSim.
 
 Scope window: project inception on 2026-07-05 through
-[`main@e08e302`](https://github.com/Dicklesworthstone/frankensim/commit/e08e30280bcd7af05ae55e990b129d6f75192ead)
+[`main@6725739`](https://github.com/Dicklesworthstone/frankensim/commit/6725739f42b878b310e7e7e318fb8c980cef71f3)
 on 2026-07-09.
 
 This document was rebuilt from git history, tag/release metadata, the checked-in
@@ -13,10 +13,11 @@ landed capabilities rather than raw diff order.
 ## Version Timeline
 
 There are no git tags and no GitHub Releases as of
-[`main@e08e302`](https://github.com/Dicklesworthstone/frankensim/commit/e08e30280bcd7af05ae55e990b129d6f75192ead).
+[`main@6725739`](https://github.com/Dicklesworthstone/frankensim/commit/6725739f42b878b310e7e7e318fb8c980cef71f3).
 
 | Version | Kind | Date | Summary |
 |---------|------|------|---------|
+| [`main@6725739`](https://github.com/Dicklesworthstone/frankensim/commit/6725739f42b878b310e7e7e318fb8c980cef71f3) | Public mainline snapshot | 2026-07-09 | 738 commits, adding live browser flagship pipelines, mesh v2/v3 closure, sparse roofline and NUMA lanes, rand/FFT perf work, and fail-closed IO/risk/probe hardening. |
 | [`main@e08e302`](https://github.com/Dicklesworthstone/frankensim/commit/e08e30280bcd7af05ae55e990b129d6f75192ead) | Public mainline snapshot | 2026-07-09 | 696 commits, adding the gated SME2 exploratory capsule, SME2 battery, mesh hull-regression guard, and topopt proof-hygiene cleanups. |
 | [`main@438128d`](https://github.com/Dicklesworthstone/frankensim/commit/438128d988082f2183f406d75883b766fd6b7324) | Public mainline snapshot | 2026-07-09 | 688 commits, adding hull-facet encroachment protection to mesh refinement and tightening the topology-optimization marquee evidence fixtures. |
 | [`main@1fe4ef5`](https://github.com/Dicklesworthstone/frankensim/commit/1fe4ef5c21737a92aa58dd02f901052de5b0a88b) | Public mainline snapshot | 2026-07-09 | 686 commits, adding the flagship replay-suite scaffold, topopt marquee evidence hardening, exact certificate payload refinements, and tracker state for the fs-mesh v2 follow-up. |
@@ -716,12 +717,97 @@ underspecified to support the claims around them.
 - [`d93ca59`](https://github.com/Dicklesworthstone/frankensim/commit/d93ca592bb6f408095eb1d72ecb25e2a09dd7674) - add the gated SME2 exploratory capsule.
 - [`e08e302`](https://github.com/Dicklesworthstone/frankensim/commit/e08e30280bcd7af05ae55e990b129d6f75192ead) - add the SME2 exploratory battery.
 
+## 16. Post-SME2 Follow-Up: Browser Flagships, Mesh Decisions, And Perf Lanes
+
+The window from
+[`e08e302`](https://github.com/Dicklesworthstone/frankensim/commit/e08e30280bcd7af05ae55e990b129d6f75192ead)
+through
+[`6725739`](https://github.com/Dicklesworthstone/frankensim/commit/6725739f42b878b310e7e7e318fb8c980cef71f3)
+adds another 42 committed changes across 77 files, with 6,195 insertions and
+219 deletions. This is still a moving `main` snapshot rather than a package
+release, but it closes several proof lanes that were active in the prior
+changelog endpoint and opens clearer continuation surfaces for performance
+work.
+
+### Delivered capability
+
+- `fs-wasm` now exposes live flagship browser pipelines rather than only
+  lower-level browser kernels. The new `flagships` module exports reduced but
+  real `run_ornithoid`, `run_vessel`, and `run_frame` paths that compose the
+  corresponding aircraft, laminar-pour vessel, and seismic-frame stacks into
+  browser-facing headline reports.
+- `fs-mesh` closes the v2 constrained-recovery lane and the v3 interior-facet
+  recovery decision. The stack now includes conforming PLC segment recovery,
+  exact-predicate ear clipping for simple non-convex planar facets, a
+  measured 10-million-point performance lane, and a recorded boundary-layer
+  decision: hull-edge protection was measured counterproductive, while
+  weighted exudation remains the honest continuation for residual near-coplanar
+  slivers.
+- `fs-mesh` also adds a feature-gated hex-dominant meshing surface with SH9
+  frame fields, MBO smoothing, and a polycube fallback, keeping the frontier
+  capability behind `frontier-hexmesh` while preserving the default test lane.
+- `fs-sparse` and `fs-substrate` gain a compact CSR performance path, sharded
+  deterministic SpMV, tiled deterministic parallel assembly, real shared STREAM
+  bandwidth slices, and NUMA first-touch helpers. The work records all-core
+  roofline progress while keeping the broader `fs-sparse-perf` lane open.
+- `fs-rand` adds fast-path deterministic normal generation through a ziggurat
+  sampler, bitwise-equivalent bulk Philox fills, and a dev-only statistical
+  stream battery. The strict distribution contract remains explicit about which
+  pieces are performance paths and which pieces are certification gates.
+- `fs-fft` adds complex-to-real inverse support plus 2D/3D N-D pencil
+  transforms, expanding the transform surface that downstream physics and
+  visualization crates can use without leaving the deterministic math layer.
+- IO, risk, and packaging code paths were made more fail-closed: `fs-io`
+  rejects fractional and negative PLY face-list values, conformance tests stop
+  using direct panic arms, CVaR/objective/probe inputs reject non-finite values,
+  `fs-robust` removes unwrap/tail-slice panic surfaces, and `fs-package`
+  includes provenance in package roots while removing unreachable string-write
+  panics.
+- `fs-topopt` records the CutFEM-octree marquee as a zero-remeshing topology
+  evolution contract and adds invalid-density-shape rejection, while the SME2
+  prototype remains documented as an exploratory, runtime-gated capsule rather
+  than a portable default lane.
+
+### Closed and active workstreams
+
+- [`frankensim-uee3`](https://github.com/Dicklesworthstone/frankensim/blob/6725739f42b878b310e7e7e318fb8c980cef71f3/.beads/issues.jsonl) - closed `fs-mesh` v2: constrained recovery, protected Ruppert refinement, sliver exudation, deterministic parallel coloring, and the measured 10-million-point perf lane.
+- [`frankensim-iw3l`](https://github.com/Dicklesworthstone/frankensim/blob/6725739f42b878b310e7e7e318fb8c980cef71f3/.beads/issues.jsonl) - closed `fs-mesh` v3: non-convex interior facet recovery plus a measurement-backed boundary-layer quality decision.
+- [`frankensim-b7d0`](https://github.com/Dicklesworthstone/frankensim/blob/6725739f42b878b310e7e7e318fb8c980cef71f3/.beads/issues.jsonl) - closed `fs-topopt` CutFEM-octree marquee lane, including the zero-remesh contract and thickness/boundary evidence.
+- [`frankensim-wsbf`](https://github.com/Dicklesworthstone/frankensim/blob/6725739f42b878b310e7e7e318fb8c980cef71f3/.beads/issues.jsonl) - in progress `fs-sparse-perf` lane for STREAM-relative SpMV, parallel assembly, SIMD kernels, CCD sharding, and Franken interop.
+- [`frankensim-1za9`](https://github.com/Dicklesworthstone/frankensim/blob/6725739f42b878b310e7e7e318fb8c980cef71f3/.beads/issues.jsonl) - open `fs-rand` performance lane for ziggurat normals, bulk generation, and statistical batteries.
+- [`frankensim-27d3`](https://github.com/Dicklesworthstone/frankensim/blob/6725739f42b878b310e7e7e318fb8c980cef71f3/.beads/issues.jsonl) - open `fs-fft` performance lane for radix kernels, SIMD lanes, N-D pencils, and roofline gates.
+
+### Representative commits
+
+- [`e8c496e`](https://github.com/Dicklesworthstone/frankensim/commit/e8c496e4ddf2486a6bdcf3cba9c605adc8e4e5ef) - record the CutFEM-octree topology marquee as zero-remeshing topology evolution.
+- [`29fb1ea`](https://github.com/Dicklesworthstone/frankensim/commit/29fb1ea4f4fbe84d9181e804edead61f8925e4dc) - add the SME2 streaming-mode GEMM prototype contract surface.
+- [`f759916`](https://github.com/Dicklesworthstone/frankensim/commit/f7599163ddc5a7309e3095a651c7b18454541e75) - add deterministic ziggurat normal generation for the fast-mode rand path.
+- [`cb6dbde`](https://github.com/Dicklesworthstone/frankensim/commit/cb6dbdec9a8892a1c09a57ad939bf184801aa0a4) - add the dev-only Philox statistical stream battery.
+- [`8254164`](https://github.com/Dicklesworthstone/frankensim/commit/8254164a7dea53dc02343de01c9543a23d99dcf5) - add bitwise bulk Philox fills.
+- [`648a891`](https://github.com/Dicklesworthstone/frankensim/commit/648a891c0f7554121bc281ff291ca3045f42a9f1) - add complex-to-real inverse FFT and 2D/3D pencil transforms.
+- [`9a6d303`](https://github.com/Dicklesworthstone/frankensim/commit/9a6d303960d638e1f91e5b243bb29f679cc6eb53) - add conforming interior facet recovery to `fs-mesh`.
+- [`6510b02`](https://github.com/Dicklesworthstone/frankensim/commit/6510b0266933ae410926b2d572fc7b32efa47fb0) - triangulate simple non-convex recovery facets.
+- [`fa3d93d`](https://github.com/Dicklesworthstone/frankensim/commit/fa3d93d2e75acd6aa91216802da489bda3faf50c) - record the 10-million-point `fs-mesh` perf lane closeout.
+- [`151a643`](https://github.com/Dicklesworthstone/frankensim/commit/151a6431f338b8e045f1ea7dd17b6f2664bf766e) - add the hex-dominant meshing module.
+- [`0cd9de2`](https://github.com/Dicklesworthstone/frankensim/commit/0cd9de26e383f8a804e32287994d8f4b22fbcd97) - add compact/sharded SpMV, deterministic parallel assembly, and the sparse roofline lane.
+- [`dccc078`](https://github.com/Dicklesworthstone/frankensim/commit/dccc0784e9250557328671c584e17df8b5d7e6a1) - add NUMA first-touch to the STREAM triad baseline and compact CSR path.
+- [`b4f849f`](https://github.com/Dicklesworthstone/frankensim/commit/b4f849fdfb9ef12373a4720b84274eaf7a46ac75) - reject invalid density lattice shapes in `fs-topopt`.
+- [`220d28c`](https://github.com/Dicklesworthstone/frankensim/commit/220d28c0d64f61a7607ad17d751a46a85039c0a9) - reject fractional PLY face-list indices.
+- [`3842369`](https://github.com/Dicklesworthstone/frankensim/commit/3842369190ee421d6d707037f72258c6d0e9513f) - lock non-convex recovery and boundary-layer gates.
+- [`4b77149`](https://github.com/Dicklesworthstone/frankensim/commit/4b771496e1b68bedddb6d5ecd292aca34f332cbf) - resolve the `fs-mesh` v3 boundary-layer decision by measurement.
+- [`ff9ef32`](https://github.com/Dicklesworthstone/frankensim/commit/ff9ef327a049e5acc22b404dc7653d370dcd77a5) - reject invalid CVaR and objective samples across risk consumers.
+- [`38f871f`](https://github.com/Dicklesworthstone/frankensim/commit/38f871ff568f9e84700c7c08606466a4d911e8e3) - fail closed on non-finite probe budget inputs.
+- [`fdffa73`](https://github.com/Dicklesworthstone/frankensim/commit/fdffa73531ab7b00e72e1e5535ca4a8a5bdf194b) - include provenance in evidence package roots.
+- [`91478e2`](https://github.com/Dicklesworthstone/frankensim/commit/91478e28d420746aca0f835aff109096daa60fd5) - remove unreachable string-write panics from `fs-package`.
+- [`462f0f6`](https://github.com/Dicklesworthstone/frankensim/commit/462f0f638dbb348b23e9edb39b87a4a60eba7787) - remove panic arms from `fs-io` conformance checks.
+- [`6725739`](https://github.com/Dicklesworthstone/frankensim/commit/6725739f42b878b310e7e7e318fb8c980cef71f3) - expose live flagship browser pipelines in `fs-wasm`.
+
 ## Current Non-Release Status
 
 - No package or crate release has been tagged yet.
 - The canonical project state is `main`, not a versioned artifact; the latest
   implementation and tracker snapshot covered here is
-  [`e08e302`](https://github.com/Dicklesworthstone/frankensim/commit/e08e30280bcd7af05ae55e990b129d6f75192ead).
+  [`6725739`](https://github.com/Dicklesworthstone/frankensim/commit/6725739f42b878b310e7e7e318fb8c980cef71f3).
 - The repository is actively changing; use crate `CONTRACT.md` files and Beads
   close reasons for detailed no-claim boundaries.
 - The README describes the implemented workspace; the long-form plan remains

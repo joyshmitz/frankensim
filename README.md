@@ -10,7 +10,7 @@
 [![Rust](https://img.shields.io/badge/rust-nightly%202024-b7410e)](rust-toolchain.toml)
 [![Crates](https://img.shields.io/badge/workspace-125%20fs--%2A%20crates-0969da)](#implemented-workspace)
 [![Contracts](https://img.shields.io/badge/contracts-125%20of%20125%20crates-8250df)](#contracts-and-verification)
-[![Tests](https://img.shields.io/badge/tests-222%20crate%20test%20files-1f883d)](#contracts-and-verification)
+[![Tests](https://img.shields.io/badge/tests-228%20crate%20test%20files-1f883d)](#contracts-and-verification)
 [![License](https://img.shields.io/badge/license-MIT%20%2B%20AI%20rider-yellow)](LICENSE)
 
 </div>
@@ -38,7 +38,7 @@ There is not yet a packaged end-user simulation application or crates.io release
 | Geometry | Region/chart abstraction, SDF, mesh and F-rep charts, representation conversion hooks, transformations, tet meshing, remeshing, quality audits |
 | Evidence and ledger | Composable `Evidence<T>`/`Certified<T>`, model cards, bracketing, FrankenSQLite-backed design ledger, artifact hashes, event streams, tune cache, roofline recording |
 | Policy tooling | `xtask` checks for layer direction, Franken-only runtime dependencies, contracts, unsafe capsules, and constellation lock verification |
-| Tests | 222 crate-level conformance and integration test files exercising the implemented contracts |
+| Tests | 228 crate-level conformance and integration test files exercising the implemented contracts |
 
 ### What You Can Use Today
 
@@ -623,6 +623,160 @@ sufficient Lyapunov condition, the actual eigenvalue criterion, and the
 implementation cross-check. The ornith surface does not claim high-fidelity
 aerodynamics; it labels panel-vs-LBM agreement as model-form evidence and keeps
 surrogate fallbacks inside conformal bands.
+
+## Current Snapshot: What Is Newly Concrete
+
+The current `main` snapshot is no longer just a crate atlas with isolated
+building blocks. Several formerly aspirational paths now have concrete, tested
+surfaces that show how the layers are meant to compose.
+
+| Surface | What exists now | Why it matters |
+|---------|-----------------|----------------|
+| `fs-wasm::flagships` | Tier V browser-facing `run_ornithoid`, `run_vessel`, and `run_frame` pipelines | The browser surface now exercises real reduced flagship workflows instead of only leaf numerical kernels |
+| `fs-mesh` v2/v3 | Conforming PLC recovery, non-convex facet triangulation, exact audits, measured 10-million-point perf lane, and a measured boundary-layer decision | Meshing claims now include recovery quality, determinism, and honest continuation notes for residual near-coplanar slivers |
+| `fs-sparse::CsrCompact` | Compact u32 column-index CSR, sharded deterministic SpMV, tiled deterministic parallel assembly, and NUMA first-touch helpers | Sparse performance work is framed as a bandwidth and page-placement problem without sacrificing bitwise equality |
+| `fs-rand` fast paths | Ziggurat normal fast path, bulk Philox fills, and dev-only stream statistics | Random performance can improve while the strict deterministic Box-Muller path remains the certification default |
+| `fs-fft` N-D transforms | c2r inverse plus 2D/3D separable pencil transforms | Downstream physics and visualization crates get a broader deterministic transform surface before SIMD/roofline optimization lands |
+| IO/risk/probe hardening | PLY face-list integer validation, non-finite CVaR/objective/probe rejection, and package provenance checks | Failure modes that used to look like ordinary inputs now fail closed before they contaminate evidence |
+
+That pattern is important: a new feature is not considered mature simply
+because the algorithm appears in code. It becomes useful when the contract names
+its determinism class, tests pin representative behavior, the no-claim boundary
+is explicit, and any performance claim is tied to a measured lane.
+
+## Internal Data Model
+
+FrankenSim repeatedly moves the same kinds of records across crate boundaries.
+The implementation is easier to understand if you track those records rather
+than memorizing every crate name.
+
+| Record | Carried by | Used for |
+|--------|------------|----------|
+| Dimensions and units | `fs-qty`, `fs-scenario`, material cards, objectives, constraints | Rejecting unit drift before geometry or physics consumes an invalid scalar |
+| Geometry representation | `fs-geom`, `fs-rep-*`, `fs-query`, `fs-topo`, `fs-mesh` | Preserving chart identity, conversion cost, validity, topology, and no-claim boundaries |
+| Execution context | `fs-exec::Cx`, stream keys, cancellation gates, tile identities | Making cancellation, deterministic reduction, RNG replay, and scheduling explicit |
+| Operator semantics | `fs-opdsl`, `fs-feec`, `fs-cutfem`, `fs-sparse`, `fs-solver` | Naming the algebraic object, residual norm, transpose action, and matrix-free/materialized boundary |
+| Sensitivity path | `fs-ad`, `fs-adjoint`, VJP registries, gradient checks | Preventing a design update from using a gradient whose transpose or differentiability claim is missing |
+| Evidence color | `fs-evidence`, `fs-package`, campaign crates | Distinguishing verified, validated, and estimated claims without laundering weaker evidence into stronger language |
+| Provenance root | `fs-ledger`, `fs-package`, `fs-checker`, `fs-report` | Letting a later reader inspect the commit, lock state, artifacts, package root, and budget pie |
+
+In practice, a run should not produce just `f64`. It should produce a value plus
+the surrounding records that explain its units, representation, operator,
+budget, solver status, evidence color, and provenance. The project is useful
+because those records are normal Rust types instead of comments in a notebook.
+
+## Execution Model
+
+The runtime model is deliberately plain: work is split into tiles, tiles run
+under an explicit context, and every stochastic or parallel decision is keyed by
+logical identity rather than by worker timing.
+
+```text
+study / scenario / seed
+        |
+        v
+Cx + stream keys + budgets
+        |
+        v
+tile programs
+        |
+        +--> deterministic assembly / operator application
+        +--> cancellable solver or simulator step
+        +--> stochastic draw keyed by logical identity
+        |
+        v
+reports, evidence colors, tune rows, ledger artifacts
+```
+
+This is why the code spends so much effort on things that look mundane:
+canonical sort order, row-range sharding, fixed reduction trees, Philox stream
+keys, idempotency keys, and content hashes. They make it possible to run a
+parallel or stochastic computation and still answer: which logical tile did
+this work, which seed did it use, what budget did it consume, and can the same
+claim be replayed?
+
+## Validation Strategy
+
+FrankenSim uses the Gauntlet tiers from the project plan as a shared vocabulary
+for proof strength. Not every crate is at every tier, but the README and
+contracts should make the intended tier visible.
+
+| Tier | What it proves | Examples in the workspace |
+|------|----------------|---------------------------|
+| G0 | Algebraic laws and local invariants | FFT round trips, sparse format equality, package root checks, quantity/unit laws |
+| G1 | Manufactured solutions or convergence order | PDE and operator fixtures where closed-form or manufactured references exist |
+| G2 | Canonical benchmarks | Chebyshev/Orr-Sommerfeld probes, Poiseuille-style flow checks, topology/optimization benchmark envelopes |
+| G3 | Metamorphic behavior | Translation, scaling, relabeling, refinement, cross-format, and representation round-trip checks |
+| G4 | Chaos and cancellation | Cancellation storms, budget exhaustion drills, ledger crash recovery, losing-branch drain tests |
+| G5 | Determinism audits | Bitwise replay, fixed golden hashes, cross-thread sparse assembly, Philox stream identity, flagship smoke-stage hashes |
+
+The strongest tests are usually paired. A deterministic golden catches drift,
+but a golden alone can freeze a bug. A closed-form oracle catches meaning, but
+an oracle alone may not exercise parallel replay. The codebase therefore tends
+to pair fixtures: oracle plus determinism, dense reference plus sparse path,
+feature gate plus no-claim boundary, or smoke campaign plus failure drill.
+
+## Performance Model
+
+Performance work in FrankenSim is framed as an evidence problem, not as a style
+preference. A kernel is not "fast" because it uses the right algorithmic buzzword;
+it is fast only when the repo records the machine, denominator, workload, and
+acceptance band.
+
+| Concern | Implementation direction |
+|---------|--------------------------|
+| Memory bandwidth | `fs-roofline` and `fs-substrate` measure machine axes and STREAM-like baselines before interpreting kernel throughput |
+| Sparse SpMV | `CsrCompact` reduces index traffic, `spmv_sharded` balances contiguous row ranges by nnz, and NUMA first-touch places pages with the shard that will read them |
+| Assembly | `Coo::assemble_parallel` tiles by row range and preserves duplicate accumulation order so thread count cannot change the numerical result |
+| SIMD | Unsafe or architecture-specific code is kept behind registered capsules and safe facades; exploratory SME2 stays gated rather than becoming a default path |
+| FFTs | The current N-D implementation is correctness-first and separable; higher-radix, SIMD, cache-blocked transposes, and executor-tiled pencils remain explicit follow-up work |
+| Random generation | Bulk Philox and ziggurat normals are performance paths, while the strict path stays cross-ISA deterministic until the faster path earns the same proof |
+
+The recurring tradeoff is intentional: first make the semantics deterministic
+and testable, then optimize the hot path while proving it is still the same
+computation. When the optimized path is not yet equally proven, it stays behind
+a feature flag, fast-mode API, or no-claim boundary.
+
+## How To Read A Crate Contract
+
+Every `fs-*` crate has a `CONTRACT.md`. These files are not decorative. They are
+the quickest way to tell whether a crate's README-level description is backed by
+code and what the code refuses to claim.
+
+| Section | Question to ask |
+|---------|-----------------|
+| Purpose and layer | Which architectural layer owns this behavior, and which layers may depend on it? |
+| Public types and semantics | What values does this crate expose, and what does each value mean? |
+| Invariants | What should remain true across refactors, thread counts, seeds, or representations? |
+| Error model | Which failures are recoverable results, which are programmer errors, and which are explicit refusals? |
+| Determinism class | Is replay bitwise, same-ISA, cross-ISA, statistical, or intentionally fast-mode-only? |
+| Cancellation behavior | Where can long-running work stop, drain, and report structured cancellation? |
+| Unsafe boundary | Is there unsafe code, and if so what invariant makes it valid? |
+| Feature flags | Which parts are default, frontier, moonshot, or intentionally off the critical path? |
+| Conformance tests | Which tests define the reimplementation contract? |
+| No-claim boundaries | What would be dishonest to infer from the current implementation? |
+
+If you only have time to read one file inside a crate, read the contract first.
+Then read the tests named by the contract. The implementation usually makes much
+more sense after those two files explain the claim surface.
+
+## Concrete First Dives
+
+These are good first code paths for understanding how the architecture works in
+practice.
+
+| If you want to understand... | Read these files first | What to look for |
+|------------------------------|------------------------|------------------|
+| Evidence packages | `crates/fs-package/src/lib.rs`, `crates/fs-checker/src/lib.rs`, their tests | How claims, provenance, Merkle roots, signatures, and budget pies become independently checkable |
+| Deterministic sparse work | `crates/fs-sparse/src/lib.rs`, `crates/fs-sparse/src/perf.rs`, `crates/fs-sparse/tests/conformance.rs` | Sorted assembly, duplicate accumulation order, compact CSR, sharded SpMV, and cross-thread equality |
+| Mesh honesty | `crates/fs-mesh/CONTRACT.md`, `crates/fs-mesh/src/recovery.rs`, `crates/fs-mesh/tests/conformance.rs` | Exact audits, recovery counters, non-convex facet handling, and measured boundary-layer decisions |
+| Browser flagships | `crates/fs-wasm/src/flagships.rs`, `crates/fs-wasm/src/lib.rs` | How reduced aircraft/vessel/frame campaigns compose existing crates into trap-free browser exports |
+| Deterministic transforms | `crates/fs-fft/src/lib.rs`, `crates/fs-fft/CONTRACT.md` | Fixed twiddle generation, oracle tests, c2r inverse, N-D pencil decomposition, and no performance overclaiming |
+| Random replay | `crates/fs-rand/src/lib.rs`, `crates/fs-rand/CONTRACT.md`, `crates/fs-rand/tests/ziggurat.rs` | Logical stream identity, random access, bulk fills, fast-mode ziggurat, and strict-mode boundaries |
+
+These paths are intentionally small enough to read in one sitting. Together
+they show the project style: data structures first, contracts second, tests that
+define the claim, and implementation details that avoid hidden global state.
 
 ## How The Algorithms Compose
 
