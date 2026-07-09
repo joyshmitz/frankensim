@@ -4,7 +4,7 @@
 //! rendering, the combined appearance+physics fixture, and bitwise
 //! replay.
 
-use fs_render::diff::{loss_and_grad, render, render_grad, NPARAMS, RenderCfg};
+use fs_render::diff::{NPARAMS, RenderCfg, loss_and_grad, render, render_grad};
 
 fn verdict(name: &str, pass: bool, details: &str) {
     println!("{{\"test\":\"{name}\",\"pass\":{pass},\"details\":\"{details}\"}}");
@@ -149,7 +149,9 @@ fn dr_003_quadrature_bias_shrinks() {
     verdict(
         "dr-003-bias-shrinks",
         e2 < e1 && e4 < e2 && e8 < e4 && e8 < 0.02,
-        &format!("max-pixel bias vs fine reference: subrows 1/2/4/8 -> {e1:.2e}/{e2:.2e}/{e4:.2e}/{e8:.2e} (monotone shrink)"),
+        &format!(
+            "max-pixel bias vs fine reference: subrows 1/2/4/8 -> {e1:.2e}/{e2:.2e}/{e4:.2e}/{e8:.2e} (monotone shrink)"
+        ),
     );
 }
 

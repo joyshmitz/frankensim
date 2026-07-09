@@ -26,8 +26,8 @@
 //! estimators for path-traced integration (and FrankenTorch-bridged
 //! learned BSDFs) are the recorded successors, not claimed.
 
-use fs_ad::dual::Dual;
 use fs_ad::Real;
+use fs_ad::dual::Dual;
 
 /// Gradient width: two blended spheres (2 × (center, radius)) + blend.
 pub const NPARAMS: usize = 9;
@@ -79,7 +79,11 @@ impl<T: Real> BlendScene<T> {
         let b = Self::sphere(self.c2, self.r2, p);
         let quarter = T::from_f64(0.25);
         let diff = (a - b).abs();
-        let h = if self.k > diff { self.k - diff } else { T::zero() };
+        let h = if self.k > diff {
+            self.k - diff
+        } else {
+            T::zero()
+        };
         let m = if a < b { a } else { b };
         m - h * h * quarter / self.k
     }
@@ -89,7 +93,11 @@ impl<T: Real> BlendScene<T> {
 /// looking down −z from z = +2; directional light; Lambertian shade.
 const Z_TOP: f64 = 2.0;
 const Z_BOT: f64 = -2.0;
-const LIGHT: [f64; 3] = [0.455_842_305_838_552_3, 0.569_802_882_298_190_4, 0.683_763_458_757_828_5];
+const LIGHT: [f64; 3] = [
+    0.455_842_305_838_552_3,
+    0.569_802_882_298_190_4,
+    0.683_763_458_757_828_5,
+];
 const BACKGROUND: f64 = 0.05;
 const AMBIENT: f64 = 0.1;
 
@@ -372,11 +380,7 @@ fn closest_approach_dx(scene: &BlendScene<f64>, x: f64, y: f64) -> f64 {
 /// the inverse-rendering objective TERM (combinable with physics
 /// objectives; the combined fixture in the battery does exactly that).
 #[must_use]
-pub fn loss_and_grad(
-    params: &[f64],
-    target: &[f64],
-    cfg: RenderCfg,
-) -> (f64, [f64; NPARAMS]) {
+pub fn loss_and_grad(params: &[f64], target: &[f64], cfg: RenderCfg) -> (f64, [f64; NPARAMS]) {
     let img = render_grad(params, cfg, true);
     assert_eq!(img.len(), target.len(), "target size mismatch");
     let mut loss = 0.0f64;
