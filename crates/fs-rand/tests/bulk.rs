@@ -53,3 +53,21 @@ fn bulk_is_deterministic() {
     stream().fill_f64(&mut b);
     assert!(a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()));
 }
+
+#[test]
+fn counter_wraps_match_sequential_draws() {
+    let key = StreamKey {
+        seed: 0xDEAD_BEEF_1234,
+        kernel: 9,
+        tile: 5,
+    };
+    let mut scalar = Stream::resume(key, u64::MAX - 3);
+    let want: Vec<u64> = (0..10).map(|_| scalar.next_u64()).collect();
+    assert_eq!(scalar.index(), 6);
+
+    let mut bulk = Stream::resume(key, u64::MAX - 3);
+    let mut got = vec![0u64; 10];
+    bulk.fill_u64(&mut got);
+    assert_eq!(got, want);
+    assert_eq!(bulk.index(), scalar.index());
+}

@@ -86,7 +86,7 @@ impl Stream {
     #[must_use]
     pub fn next_u64(&mut self) -> u64 {
         let block = Self::at(self.key, self.index);
-        self.index += 1;
+        self.index = self.index.wrapping_add(1);
         (u64::from(block[1]) << 32) | u64::from(block[0])
     }
 
@@ -144,7 +144,7 @@ impl Stream {
     /// words) — the bulk-generation primitive.
     fn blocks_from<const L: usize>(&self, base: u64) -> [[u32; 4]; L] {
         let ctr: [[u32; 4]; L] = core::array::from_fn(|l| {
-            let idx = base + l as u64;
+            let idx = base.wrapping_add(l as u64);
             [
                 idx as u32,
                 (idx >> 32) as u32,
@@ -168,7 +168,7 @@ impl Stream {
                 let u = (u64::from(b[1]) << 32) | u64::from(b[0]);
                 *o = (u >> 11) as f64 * (1.0 / 9_007_199_254_740_992.0); // 2⁻⁵³
             }
-            self.index += L as u64;
+            self.index = self.index.wrapping_add(L as u64);
         }
         for o in tail {
             *o = self.next_f64();
@@ -185,7 +185,7 @@ impl Stream {
             for (o, b) in chunk.iter_mut().zip(&blocks) {
                 *o = (u64::from(b[1]) << 32) | u64::from(b[0]);
             }
-            self.index += L as u64;
+            self.index = self.index.wrapping_add(L as u64);
         }
         for o in tail {
             *o = self.next_u64();

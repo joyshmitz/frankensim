@@ -42,6 +42,10 @@ distributions (plan §6.7; P2's seed pillar). Layer: L1.
 ## Invariants
 - A draw is a pure function of (seed, kernel, tile, index) — never of
   thread/worker/order (shuffle-invariance is a test).
+- Stream counters advance modulo 2⁶⁴, matching the Philox counter width, so
+  debug and release builds agree even at the end of the counter space. Callers
+  needing more than 2⁶⁴ draws must change `StreamKey` identity rather than
+  relying on a longer single stream.
 - Random access ≡ sequential access (tested bitwise).
 - Rejection sampling advances the index deterministically (replay-safe;
   consumed-count is content-determined — tested).
