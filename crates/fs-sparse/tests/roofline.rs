@@ -35,7 +35,12 @@ fn banded_matrix(nrows: usize, band: usize) -> fs_sparse::Csr {
 #[test]
 #[ignore = "perf lane: run in release on demand (mac + ts1); nightly cadence is fz2.4"]
 fn wsbf_roofline() {
-    let threads = std::thread::available_parallelism().map_or(8, std::num::NonZero::get);
+    // FS_SPARSE_THREADS overrides (heterogeneous-core machines: equal
+    // nnz shards let E-cores drag the tail — pin to P-core count).
+    let threads = std::env::var("FS_SPARSE_THREADS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(8, std::num::NonZero::get));
     let nrows = 4_000_000usize;
     let band = 8usize;
     let a = banded_matrix(nrows, band);
