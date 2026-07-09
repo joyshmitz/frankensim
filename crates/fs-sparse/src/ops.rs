@@ -230,3 +230,34 @@ mod tests {
         assert!(r.is_err(), "3x4 times 5x2 must be refused");
     }
 }
+
+impl crate::Csr {
+    /// Blocked SpMM (bead wsbf segment 2): Y = A · B for row-major
+    /// dense B (ncols × nrhs) into row-major Y (nrows × nrhs). The
+    /// rhs columns are processed in blocks so each A traversal feeds
+    /// `NB` accumulators (block-Krylov/POD shapes reuse the matrix
+    /// stream instead of re-reading it per vector). DETERMINISM:
+    /// column j of Y accumulates in exactly [`crate::Csr::spmv`]'s
+    /// k-ascending order — bitwise equality with per-column SpMV is
+    /// GATED in conformance.
+    pub fn spmm_blocked(&self, b: &[f64], nrhs: usize, y: &mut [f64]) {
+        assert_eq!(b.len(), self.ncols() * nrhs, "spmm: B is ncols x nrhs");
+        assert_eq!(y.len(), self.nrows() * nrhs, "spmm: Y is nrows x nrhs");
+        const NB: usize = 8;
+        let mut acc = [0.0f64; NB];
+        for j0 in (0..nrhs).step_by(NB) {
+            let jw = NB.min(nrhs - j0);
+            for r in 0..self.nrows() {
+                let (cols, vals) = self.row(r);
+                acc[..jw].fill(0.0);
+                for (&c, &v) in cols.iter().zip(vals) {
+                    let brow = &b[c * nrhs + j0..c * nrhs + j0 + jw];
+                    for (a, &bv) in acc[..jw].iter_mut().zip(brow) {
+                        *a = v.mul_add(bv, *a);
+                    }
+                }
+                y[r * nrhs + j0..r * nrhs + j0 + jw].copy_from_slice(&acc[..jw]);
+            }
+        }
+    }
+}

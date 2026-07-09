@@ -199,3 +199,85 @@ fn wsbf_bitwise_twins() {
         "{{\"suite\":\"fs-sparse\",\"case\":\"wsbf-bitwise-twins\",\"verdict\":\"pass\",\"detail\":\"parallel assembly (t in 1..8) and compact+sharded spmv (t in 1..16) all bitwise == serial wide kernels\"}}"
     );
 }
+
+/// wsbf segment 2: the chunk-major SELL kernels and the blocked SpMM
+/// are bitwise-equal to their reference twins (pads read, signed-zero
+/// argument inherited; every thread count; every rhs block width).
+#[test]
+fn wsbf_segment2_bitwise_twins() {
+    let (nrows, ncols) = (203usize, 157usize);
+    let mut coo = fs_sparse::Coo::new(nrows, ncols);
+    let mut seed = 0x5E11_2026_u64;
+    let mut lcg = move || {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        seed
+    };
+    for _ in 0..4000 {
+        let r = (lcg() % nrows as u64) as usize;
+        let c = (lcg() % ncols as u64) as usize;
+        let v = ((lcg() >> 11) as f64) / (1u64 << 53) as f64 - 0.5;
+        coo.push(r, c, v);
+    }
+    // A few very long rows + empty rows (ragged pads exercised).
+    for k in 0..120 {
+        coo.push(7, k % ncols, 0.125 + k as f64 * 0.001);
+    }
+    let a = coo.assemble();
+    let x: Vec<f64> = (0..ncols).map(|i| -0.75 + (i % 23) as f64 * 0.1).collect();
+    let mut y_ref = vec![0.0f64; nrows];
+    a.spmv(&x, &mut y_ref);
+    for (c, sigma) in [(4usize, 32usize), (8, 64), (2, 16)] {
+        let sell = fs_sparse::Sell::from_csr(&a, c, sigma);
+        let mut y_row = vec![0.0f64; nrows];
+        sell.spmv(&x, &mut y_row);
+        let mut y_ch = vec![0.0f64; nrows];
+        sell.spmv_chunked(&x, &mut y_ch);
+        assert!(
+            y_ref
+                .iter()
+                .zip(&y_ch)
+                .all(|(u, v)| u.to_bits() == v.to_bits()),
+            "chunked SELL (C={c}) != CSR bitwise"
+        );
+        for t in [1usize, 3, 8] {
+            let mut y_sh = vec![0.0f64; nrows];
+            sell.spmv_chunked_sharded(&x, &mut y_sh, t);
+            assert!(
+                y_ref
+                    .iter()
+                    .zip(&y_sh)
+                    .all(|(u, v)| u.to_bits() == v.to_bits()),
+                "sharded chunked SELL (C={c}, t={t}) != CSR bitwise"
+            );
+        }
+        assert!(
+            y_ref
+                .iter()
+                .zip(&y_row)
+                .all(|(u, v)| u.to_bits() == v.to_bits()),
+            "row-major SELL != CSR (regression)"
+        );
+    }
+    // Blocked SpMM == per-column SpMV, widths that exercise partial blocks.
+    for nrhs in [1usize, 3, 8, 11] {
+        let b: Vec<f64> = (0..ncols * nrhs)
+            .map(|i| 0.5 - (i % 19) as f64 * 0.05)
+            .collect();
+        let mut y_mm = vec![0.0f64; nrows * nrhs];
+        a.spmm_blocked(&b, nrhs, &mut y_mm);
+        for j in 0..nrhs {
+            let xj: Vec<f64> = (0..ncols).map(|i| b[i * nrhs + j]).collect();
+            let mut yj = vec![0.0f64; nrows];
+            a.spmv(&xj, &mut yj);
+            assert!(
+                (0..nrows).all(|r| y_mm[r * nrhs + j].to_bits() == yj[r].to_bits()),
+                "spmm_blocked col {j} (nrhs={nrhs}) != spmv bitwise"
+            );
+        }
+    }
+    println!(
+        "{{\"suite\":\"fs-sparse\",\"case\":\"wsbf-segment2-twins\",\"verdict\":\"pass\",\"detail\":\"chunked SELL (C in 2/4/8, t in 1/3/8) and blocked SpMM (nrhs in 1/3/8/11) bitwise == references\"}}"
+    );
+}

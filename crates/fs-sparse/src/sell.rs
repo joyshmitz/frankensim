@@ -250,3 +250,102 @@ mod tests {
         );
     }
 }
+
+impl Sell {
+    /// CHUNK-MAJOR SpMV (bead wsbf segment 2): processes each chunk's
+    /// C lanes together — per k, the C (col, val) entries are
+    /// CONTIGUOUS (lane-fastest storage), so the inner loop is the
+    /// SIMD shape fs-tilelang's lane width names, and the C
+    /// independent accumulator chains break the per-row FMA latency
+    /// bound the roofline lane measured on the CSR kernels.
+    ///
+    /// DETERMINISM: per-lane accumulation is k-ascending `mul_add`
+    /// from +0.0 — the same order as [`Sell::spmv`] — and lanes
+    /// shorter than the chunk read their PAD slots (col 0, val +0.0):
+    /// `mul_add(+0.0, x[0], acc)` is exactly `acc` when `acc` is not
+    /// −0.0, and acc starts +0.0 and can only stay +0.0 under
+    /// (+0.0) + (±0.0) — the sell.rs signed-zero argument, inherited
+    /// here because the kernel reads pads. Bitwise equality with the
+    /// row-major kernel is GATED in conformance.
+    pub fn spmv_chunked(&self, x: &[f64], y: &mut [f64]) {
+        assert_eq!(x.len(), self.ncols, "spmv: x length");
+        assert_eq!(y.len(), self.nrows, "spmv: y length");
+        let c = self.c;
+        let nchunks = self.chunk_ptr.len() - 1;
+        let mut acc = vec![0.0f64; c];
+        for ch in 0..nchunks {
+            let base = self.chunk_ptr[ch];
+            let kmax = (self.chunk_ptr[ch + 1] - base) / c;
+            acc.fill(0.0);
+            for k in 0..kmax {
+                let off = base + k * c;
+                let cols = &self.col_idx[off..off + c];
+                let vals = &self.vals[off..off + c];
+                for l in 0..c {
+                    acc[l] = vals[l].mul_add(x[cols[l]], acc[l]);
+                }
+            }
+            let row0 = ch * c;
+            for (l, &a) in acc.iter().enumerate().take(self.nrows.saturating_sub(row0).min(c)) {
+                y[self.perm[row0 + l]] = a;
+            }
+        }
+    }
+
+    /// Sharded chunk-major SpMV: disjoint chunk ranges on scoped
+    /// threads; each thread writes only its own rows (perm within a
+    /// chunk is thread-exclusive). Bitwise equal to [`Self::spmv_chunked`]
+    /// at every thread count.
+    pub fn spmv_chunked_sharded(&self, x: &[f64], y: &mut [f64], threads: usize) {
+        assert_eq!(x.len(), self.ncols, "spmv: x length");
+        assert_eq!(y.len(), self.nrows, "spmv: y length");
+        let t = threads.max(1);
+        let nchunks = self.chunk_ptr.len() - 1;
+        let per = nchunks.div_ceil(t);
+        // Each thread owns disjoint ROWS (chunks partition sorted rows;
+        // perm is a bijection), so unsynchronized writes through a raw
+        // pointer wrapper would be needed... instead: write into a
+        // per-thread staging of (orig_row, value) pairs and apply
+        // serially — the apply order is chunk-ascending, deterministic.
+        let mut stages: Vec<Vec<(usize, f64)>> = Vec::new();
+        std::thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for w in 0..t {
+                let lo = (w * per).min(nchunks);
+                let hi = ((w + 1) * per).min(nchunks);
+                handles.push(scope.spawn(move || {
+                    let c = self.c;
+                    let mut out = Vec::with_capacity((hi - lo) * c);
+                    let mut acc = vec![0.0f64; c];
+                    for ch in lo..hi {
+                        let base = self.chunk_ptr[ch];
+                        let kmax = (self.chunk_ptr[ch + 1] - base) / c;
+                        acc.fill(0.0);
+                        for k in 0..kmax {
+                            let off = base + k * c;
+                            let cols = &self.col_idx[off..off + c];
+                            let vals = &self.vals[off..off + c];
+                            for l in 0..c {
+                                acc[l] = vals[l].mul_add(x[cols[l]], acc[l]);
+                            }
+                        }
+                        let row0 = ch * c;
+                        let live = self.nrows.saturating_sub(row0).min(c);
+                        for (l, &a) in acc.iter().enumerate().take(live) {
+                            out.push((self.perm[row0 + l], a));
+                        }
+                    }
+                    out
+                }));
+            }
+            for h in handles {
+                stages.push(h.join().expect("chunk worker"));
+            }
+        });
+        for stage in stages {
+            for (r, v) in stage {
+                y[r] = v;
+            }
+        }
+    }
+}

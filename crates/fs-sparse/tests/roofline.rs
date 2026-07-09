@@ -8,7 +8,7 @@
 
 use std::time::Instant;
 
-use fs_sparse::{Coo, CsrCompact};
+use fs_sparse::{Coo, CsrCompact, Sell};
 
 fn banded_matrix(nrows: usize, band: usize) -> fs_sparse::Csr {
     let mut coo = Coo::new(nrows, nrows);
@@ -68,20 +68,28 @@ fn wsbf_roofline() {
         }
         best
     };
-    // Serial wide (usize idx), serial compact, sharded compact.
+    // Serial wide (usize idx), serial compact, sharded compact,
+    // chunk-major SELL (serial + sharded).
+    let sell = Sell::from_csr(&a, 8, 64);
     let t_wide = time_best(&mut || a.spmv(&x, &mut y));
     let t_cmp = time_best(&mut || compact.spmv(&x, &mut y));
     let t_shard = time_best(&mut || compact.spmv_sharded(&x, &mut y, threads));
+    let t_sell = time_best(&mut || sell.spmv_chunked(&x, &mut y));
+    let t_sell_sh = time_best(&mut || sell.spmv_chunked_sharded(&x, &mut y, threads));
     std::hint::black_box(y[nrows / 2]);
     let g_wide = bytes(8) / t_wide / 1e9;
     let g_cmp = bytes(4) / t_cmp / 1e9;
     let g_shard = bytes(4) / t_shard / 1e9;
+    // SELL moves usize indices today (u32 SELL is follow-up): count 8.
+    let g_sell = bytes(8) / t_sell / 1e9;
+    let g_sell_sh = bytes(8) / t_sell_sh / 1e9;
     let att_serial = g_cmp / stream.single_thread_gbs;
-    let att_shard = g_shard / stream.all_core_gbs;
+    let att_shard = (g_shard.max(g_sell_sh)) / stream.all_core_gbs;
     println!(
         "{{\"metric\":\"wsbf-roofline\",\"nrows\":{nrows},\"nnz\":{nnz},\"threads\":{threads},\
          \"stream_single_gbs\":{:.1},\"stream_allcore_gbs\":{:.1},\
          \"spmv_wide_gbs\":{g_wide:.1},\"spmv_compact_gbs\":{g_cmp:.1},\"spmv_sharded_gbs\":{g_shard:.1},\
+         \"sell_chunked_gbs\":{g_sell:.1},\"sell_sharded_gbs\":{g_sell_sh:.1},\
          \"attainment_serial\":{att_serial:.3},\"attainment_sharded\":{att_shard:.3}}}",
         stream.single_thread_gbs, stream.all_core_gbs
     );
