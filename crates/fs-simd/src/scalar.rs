@@ -65,6 +65,49 @@ pub fn sum(x: &[f64]) -> f64 {
     s
 }
 
+/// Batched-GEMM 4×4 entry-tile microkernel (scalar twin, bead 9ekv)
+/// over plane-SoA batches: for tile rows i ∈ i0..i0+4 and columns
+/// j ∈ j0..j0+4, `dst[(ti·4+tj)·mb + m] = Σ_l a[(i·k+l)·stride + m0 + m]
+/// · b[(l·k+j)·stride + m0 + m]`, l ascending from a zero start, fused —
+/// SIMD lanes run across the batch (independent matrices), so capsules
+/// must match this BITWISE. α/β write-back stays with the caller.
+///
+/// # Panics
+/// If the plane buffers or `dst` are too short for the tile.
+#[allow(clippy::too_many_arguments)] // plane-SoA layout bundle (see fs-la::batched)
+pub fn btile4x4_f64(
+    a: &[f64],
+    b: &[f64],
+    i0: usize,
+    j0: usize,
+    stride: usize,
+    k: usize,
+    m0: usize,
+    mb: usize,
+    dst: &mut [f64],
+) {
+    assert!(
+        k >= 1
+            && ((i0 + 3) * k + (k - 1)) * stride + m0 + mb <= a.len()
+            && ((k - 1) * k + j0 + 3) * stride + m0 + mb <= b.len()
+            && dst.len() >= 16 * mb,
+        "btile4x4 plane bounds (programmer error)"
+    );
+    for ti in 0..4 {
+        for tj in 0..4 {
+            let drow = &mut dst[(ti * 4 + tj) * mb..(ti * 4 + tj + 1) * mb];
+            drow.fill(0.0);
+            for l in 0..k {
+                let ap = &a[((i0 + ti) * k + l) * stride + m0..][..mb];
+                let bp = &b[(l * k + j0 + tj) * stride + m0..][..mb];
+                for ((s, &am), &bm) in drow.iter_mut().zip(ap).zip(bp) {
+                    *s = am.mul_add(bm, *s);
+                }
+            }
+        }
+    }
+}
+
 /// The 8×4 f64 GEMM register microkernel (scalar twin): accumulate
 /// `acc[r][s] += Σ_kk a_panel[kk·8 + r] · b_panel[kk·4 + s]` with k
 /// ascending and fused `mul_add` per element — the bit-contract shape

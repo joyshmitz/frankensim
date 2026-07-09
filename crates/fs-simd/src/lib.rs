@@ -39,6 +39,10 @@ pub type TernaryOp = fn(&[f64], &[f64], &[f64], &mut [f64]);
 /// (a_panel, b_panel, kc, accumulators).
 pub type Mk8x4 = fn(&[f64], &[f64], usize, &mut [[f64; 4]; 8]);
 
+/// Batched-GEMM 4×4 entry-tile microkernel signature
+/// (a, b, i0, j0, stride, k, m0, mb, dst) — plane-SoA layout.
+pub type Btile4x4 = fn(&[f64], &[f64], usize, usize, usize, usize, usize, usize, &mut [f64]);
+
 /// The resolved-once function table (plan §5.1 consequence 5).
 pub struct Ops {
     /// Tier the table was built for (ledger/tune-table key material).
@@ -60,6 +64,10 @@ pub struct Ops {
     /// ascending, fused — BITWISE across tiers (fs-la's GEMM bit
     /// contract).
     pub mk8x4_f64: Mk8x4,
+    /// Batched-GEMM 4×4 entry-tile microkernel over plane-SoA batches
+    /// (lanes = independent matrices): BITWISE across tiers (zero
+    /// start, l-ascending fused accumulate per element).
+    pub btile4x4_f64: Btile4x4,
 }
 
 static OPS: OnceLock<Ops> = OnceLock::new();
@@ -78,6 +86,7 @@ const SCALAR_OPS: Ops = Ops {
     dot: scalar::dot,
     sum: scalar::sum,
     mk8x4_f64: scalar::mk8x4_f64,
+    btile4x4_f64: scalar::btile4x4_f64,
 };
 
 fn build_table() -> Ops {
@@ -98,6 +107,7 @@ fn build_table() -> Ops {
                 dot: neon::dot,
                 sum: neon::sum,
                 mk8x4_f64: neon::mk8x4_f64,
+                btile4x4_f64: neon::btile4x4_f64,
             },
             // x86 capsule v1 covers axpy/dot/sum (the <300-line capsule cap
             // is a feature: scale/mul_elem/fma3 arrive with their consumer,
@@ -111,9 +121,10 @@ fn build_table() -> Ops {
                 fma3: scalar::fma3,
                 dot: x86::dot,
                 sum: x86::sum,
-                // The AVX GEMM microkernel arrives with x86 perf-lane
-                // hardware (xdgf successor scope); the twin is correct.
+                // The AVX GEMM microkernels arrive with x86 perf-lane
+                // hardware (xdgf successor scope); the twins are correct.
                 mk8x4_f64: scalar::mk8x4_f64,
+                btile4x4_f64: scalar::btile4x4_f64,
             },
             _ => SCALAR_OPS,
         }
@@ -154,6 +165,7 @@ mod tests {
     /// special values, elementwise-bitwise + reduction-envelope equivalence
     /// between the ACTIVE tier and the scalar twin.
     #[test]
+    #[allow(clippy::too_many_lines)] // one battery = one auditable list of every primitive
     fn tier_equivalence_battery() {
         let t = ops();
         for len in 0..67 {
@@ -256,6 +268,29 @@ mod tests {
                         );
                     }
                 }
+            }
+        }
+        // btile4x4: bitwise vs twin over plane-SoA fixtures — k spans
+        // the size classes' shapes, mb covers even/odd lanes, nonzero
+        // i0/j0/m0 exercise the offset arithmetic.
+        for &(k, i0, j0) in &[(4usize, 0usize, 0usize), (6, 2, 0), (8, 4, 4), (12, 8, 4)] {
+            for mb in [1usize, 2, 5, 16] {
+                let stride = mb + 7; // strided planes (padded batch)
+                let a = gen_vals(k * k * stride + mb + 3, 0xA5EED ^ (k as u64));
+                let b = gen_vals(k * k * stride + mb + 3, 0xB5EED ^ (mb as u64));
+                let m0 = 3;
+                let mut d_tier = vec![0.0f64; 16 * mb];
+                let mut d_ref = vec![0.0f64; 16 * mb];
+                (t.btile4x4_f64)(&a, &b, i0, j0, stride, k, m0, mb, &mut d_tier);
+                scalar::btile4x4_f64(&a, &b, i0, j0, stride, k, m0, mb, &mut d_ref);
+                assert!(
+                    d_tier
+                        .iter()
+                        .zip(&d_ref)
+                        .all(|(x, y)| x.to_bits() == y.to_bits()),
+                    "btile4x4 diverged from twin at k {k} mb {mb} (tier {:?})",
+                    t.tier
+                );
             }
         }
         println!(

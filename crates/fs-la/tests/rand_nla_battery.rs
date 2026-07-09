@@ -273,7 +273,12 @@ fn hutch_pp_beats_hutchinson_variance() {
 }
 
 /// Recorded on aarch64-apple (M4 Pro); must match on x86-64 (trj).
-const GOLDEN_HASH: u64 = 0x3e92_8bac_8cf9_fd48; // pinned from first run (arm64), cross-checked on x86_64
+// JUSTIFIED BUMP (2026-07-09): commit d9ba0b6 made fs-rand stream
+// counter advancement wrap deterministically (the old bits depended on
+// build-mode-dependent overflow), which moves every StreamKey consumer.
+// Re-pinned on arm64 (stable across runs); the x86_64 cross-check row
+// re-arms with that fix.
+const GOLDEN_HASH: u64 = 0xf3dc_b63b_e63f_8ab9;
 
 #[test]
 fn rand_nla_golden_hash() {

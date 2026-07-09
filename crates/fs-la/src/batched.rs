@@ -26,7 +26,19 @@ use fs_soa::FieldBuf;
 const STRIDE_QUANTUM: usize = 16;
 
 const fn stride_for(n: usize) -> usize {
-    n.div_ceil(STRIDE_QUANTUM) * STRIDE_QUANTUM
+    let s = n.div_ceil(STRIDE_QUANTUM) * STRIDE_QUANTUM;
+    // Break power-of-two plane spacing (bead 9ekv): 2ᵖ strides put
+    // every plane in the same L1/L2 cache sets and the multi-stream
+    // tile kernels thrash — measured 2× slower at k ∈ {8, 16, 32}
+    // batch sizes than at non-power-of-two neighbours. One extra
+    // quantum of padding is pure LAYOUT: entry values and operation
+    // order are untouched (bit-neutral, covered by the membership-
+    // invariance and golden tests).
+    if s >= 4096 && s.is_power_of_two() {
+        s + STRIDE_QUANTUM
+    } else {
+        s
+    }
 }
 
 fn make_buf(planes: usize, stride: usize) -> FieldBuf<f64> {
@@ -282,29 +294,83 @@ fn gemm_sized<const K: usize>(alpha: f64, a: &BatchMat, b: &BatchMat, beta: f64,
     gemm_generic(alpha, a, b, beta, c, K);
 }
 
+/// Lanes per batch chunk (bead 9ekv): the accumulator chunk stays
+/// L1-resident and the active plane slices L2-resident instead of
+/// streaming the whole batch from memory k² times. PURE lane
+/// partitioning — per-element operation order is untouched, so this is
+/// bit-neutral (the membership-invariance contract, tested).
+const MBLK: usize = 256;
+
 fn gemm_generic(alpha: f64, a: &BatchMat, b: &BatchMat, beta: f64, c: &mut BatchMat, k: usize) {
     let n = a.n;
-    let mut acc = vec![0.0f64; n];
-    for i in 0..k {
-        for j in 0..k {
-            acc.fill(0.0);
-            for l in 0..k {
-                let ap = a.plane(i, l);
-                let bp = b.plane(l, j);
-                for m in 0..n {
-                    acc[m] = ap[m].mul_add(bp[m], acc[m]);
+    let stride = a.stride;
+    debug_assert_eq!(stride, b.stride, "equal batch => equal stride");
+    let btile = fs_simd::ops().btile4x4_f64;
+    let mut tile = vec![0.0f64; 16 * MBLK];
+    let mut acc = [0.0f64; MBLK];
+    let kt = k - k % 4; // tile-covered leading square
+    let mut m0 = 0;
+    while m0 < n {
+        let mb = MBLK.min(n - m0);
+        // 4×4 entry tiles through the fs-simd microkernel: 16 register-
+        // resident accumulator lanes per tile, FMA-bound instead of
+        // accumulator-round-trip-bound. Bitwise path (capsule == twin
+        // == the tail loop below, per element).
+        for i0 in (0..kt).step_by(4) {
+            for j0 in (0..kt).step_by(4) {
+                let td = &mut tile[..16 * mb];
+                btile(
+                    a.data.as_slice(),
+                    b.data.as_slice(),
+                    i0,
+                    j0,
+                    stride,
+                    k,
+                    m0,
+                    mb,
+                    td,
+                );
+                for ti in 0..4 {
+                    for tj in 0..4 {
+                        let trow = &td[(ti * 4 + tj) * mb..(ti * 4 + tj + 1) * mb];
+                        let cp = &mut c.plane_mut(i0 + ti, j0 + tj)[m0..m0 + mb];
+                        write_back(alpha, beta, trow, cp);
+                    }
                 }
             }
-            let cp = c.plane_mut(i, j);
-            if beta == 0.0 {
-                for m in 0..n {
-                    cp[m] = alpha * acc[m];
+        }
+        // Tails (k % 4 rows and columns): the plane-at-a-time loop.
+        for i in 0..k {
+            let j_start = if i < kt { kt } else { 0 };
+            for j in j_start..k {
+                let acc = &mut acc[..mb];
+                acc.fill(0.0);
+                for l in 0..k {
+                    let ap = &a.plane(i, l)[m0..m0 + mb];
+                    let bp = &b.plane(l, j)[m0..m0 + mb];
+                    for ((s, &am), &bm) in acc.iter_mut().zip(ap).zip(bp) {
+                        *s = am.mul_add(bm, *s);
+                    }
                 }
-            } else {
-                for m in 0..n {
-                    cp[m] = alpha.mul_add(acc[m], beta * cp[m]);
-                }
+                let cp = &mut c.plane_mut(i, j)[m0..m0 + mb];
+                write_back(alpha, beta, acc, cp);
             }
+        }
+        m0 += MBLK;
+    }
+}
+
+/// α/β application per output plane chunk (β = 0 overwrites — the BLAS
+/// convention; identical op per element on both the tile and tail
+/// paths, so the two paths are bitwise-consistent).
+fn write_back(alpha: f64, beta: f64, acc: &[f64], cp: &mut [f64]) {
+    if beta == 0.0 {
+        for (cm, &s) in cp.iter_mut().zip(acc) {
+            *cm = alpha * s;
+        }
+    } else {
+        for (cm, &s) in cp.iter_mut().zip(acc) {
+            *cm = alpha.mul_add(s, beta * *cm);
         }
     }
 }
@@ -589,6 +655,13 @@ pub struct BatchLu {
 }
 
 /// Factor every matrix in the batch: PA = LU.
+///
+/// Loop shape (bead 9ekv): step-OUTER. Pivot selection and the row
+/// swap stay per-matrix scalar (data-dependent choices), but the
+/// trailing update runs plane-wise with SIMD lanes across the batch.
+/// Lanes are independent matrices and every per-element operation and
+/// its order are unchanged from the matrix-at-a-time formulation, so
+/// outputs are BIT-IDENTICAL (membership invariance + golden, tested).
 #[must_use]
 pub fn batch_lu(a: &BatchMat) -> BatchLu {
     let (k, n) = (a.k, a.n);
@@ -596,10 +669,16 @@ pub fn batch_lu(a: &BatchMat) -> BatchLu {
     let mut perm = vec![0u32; k * n];
     let mut flags = Vec::new();
     let mut flagged = vec![false; n];
-    for m in 0..n {
-        let mut p: Vec<u32> = (0..u32::try_from(k).expect("k fits u32")).collect();
-        for step in 0..k {
-            // Pivot: lowest row index among maximal |value| (strict >).
+    // pstate[m·k + row]: matrix m's permutation, swapped as steps pivot.
+    let kk = u32::try_from(k).expect("k fits u32");
+    let mut pstate: Vec<u32> = (0..n).flat_map(|_| 0..kk).collect();
+    let mut fvec = vec![0.0f64; n];
+    for step in 0..k {
+        // Pivot: lowest row index among maximal |value| (strict >),
+        // then swap + exactly-zero flagging — per matrix. (`m` indexes
+        // three parallel per-matrix structures, not one slice.)
+        #[allow(clippy::needless_range_loop)]
+        for m in 0..n {
             let mut best = step;
             let mut best_abs = lu.get(m, step, step).abs();
             for r in (step + 1)..k {
@@ -616,28 +695,36 @@ pub fn batch_lu(a: &BatchMat) -> BatchLu {
                     lu.set(m, best, c, lo);
                     lu.set(m, step, c, hi);
                 }
-                p.swap(step, best);
+                pstate.swap(m * k + step, m * k + best);
             }
-            let mut piv = lu.get(m, step, step);
-            if piv == 0.0 {
+            if lu.get(m, step, step) == 0.0 {
                 if !flagged[m] {
                     flagged[m] = true;
                     flags.push((m, FactorError::Singular { index: step }));
                 }
-                piv = 1.0;
-                lu.set(m, step, step, piv);
+                lu.set(m, step, step, 1.0);
             }
-            for r in (step + 1)..k {
-                let factor = lu.get(m, r, step) / piv;
-                lu.set(m, r, step, factor);
-                for c in (step + 1)..k {
-                    let v = factor.mul_add(-lu.get(m, step, c), lu.get(m, r, c));
-                    lu.set(m, r, c, v);
+        }
+        // Trailing update, lane-vectorized across the batch.
+        for r in (step + 1)..k {
+            {
+                let (fr, piv) = lu.planes_mut2((r, step), (step, step));
+                for ((fv, f), &p) in fvec.iter_mut().zip(fr.iter_mut()).zip(&*piv) {
+                    *f /= p;
+                    *fv = *f;
+                }
+            }
+            for c in (step + 1)..k {
+                let (rc, sc) = lu.planes_mut2((r, c), (step, c));
+                for ((v, &sv), &f) in rc.iter_mut().zip(&*sc).zip(&fvec) {
+                    *v = f.mul_add(-sv, *v);
                 }
             }
         }
-        for (step, &pi) in p.iter().enumerate() {
-            perm[step * n + m] = pi;
+    }
+    for m in 0..n {
+        for step in 0..k {
+            perm[step * n + m] = pstate[m * k + step];
         }
     }
     BatchLu { lu, perm, flags }

@@ -215,7 +215,24 @@ diagonal) fixtures; 128-byte plane alignment; cross-ISA golden hash.
   PENDING x86 hardware (fleet ARM-only by census; scalar twin
   dispatches there meanwhile, correct but ungated).
 
+## Perf-lane evidence (bead 9ekv, measured, TARGET NOT MET)
+- Batched small-dense (tests/batched_perf_lane.rs, M4 Pro, roofline
+  intensity model 24k² B/elem, 2k³ flops/elem, ~50 MB working sets):
+  after the 9ekv slice-1 optimizations (m-chunking, fs-simd 4×4-tile
+  capsule, power-of-two stride padding, plane-vectorized LU updates —
+  all bitwise-neutral, golden 0x0377_a8c9_5992_aee9 unchanged),
+  batch_gemm reaches 5.5–15.3 GFLOP/s = 10–29% of the per-class
+  roofline; batch_lu 22–32%. The ≥60% target is NOT met on this
+  machine: the plane-SoA lane walk is TLB/load-latency bound (raw tile
+  walk microbenches at 9.6–26 GFLOP/s). Rows are ledgered with honest
+  below_band verdicts; the asserted lane gate is an anti-collapse
+  floor (0.08), not the target. Successor design notes in bead 9ekv.
+
 ## No-claim boundaries
+- Batched small-dense throughput is NOT claimed roofline-competitive
+  yet (see 9ekv evidence above): in-kernel AoS repacking or per-matrix
+  packed-GEMM routing for large k, the autotuned interleave, and the
+  f32/mixed batched variants remain open 9ekv scope.
 - Perf scope still open after xdgf slice 1 (recorded successors):
   autotuned MC/NC/microkernel-shape sweep (KC retune = golden bump),
   CCD-aware fs-exec parallel tiling (fz2.2 lane), f32/mixed packed
