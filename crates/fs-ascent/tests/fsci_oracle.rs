@@ -22,10 +22,17 @@ fn verdict(name: &str, pass: bool, details: &str) {
 #[test]
 fn unconstrained_parity_on_rosenbrock() {
     // fs-ascent L-BFGS vs fsci minimize on fsci's OWN rosen fixture.
-    let x0 = [-1.2f64, 1.0, 0.8, -0.5];
+    // MEASURED FINDING kept on record: Rosenbrock is BIMODAL for
+    // n >= 4 — from the classic start (-1.2, 1, 0.8, -0.5) fs-ascent
+    // L-BFGS converged to the genuine LOCAL minimum near
+    // (-0.776, 0.613, 0.382, 0.146) (gradient-norm < 1e-9: a real
+    // stationary point) while fsci's BFGS escaped to the global one.
+    // Basin choice is NOT a parity criterion; the oracle contract
+    // compares optima from a start INSIDE the shared global basin.
+    let x0 = [1.3f64, 0.7, 0.8, 1.9];
     let mut fg = |x: &[f64]| -> (f64, Vec<f64>) { (rosen(x), rosen_der(x)) };
     let mut st = LbfgsState::new(&x0, 10, &mut fg);
-    let rep = st.run(&mut fg, &StopRule::GradNorm(1e-9), 2000);
+    let rep = st.run(&mut fg, &StopRule::GradNorm(1e-9), 4000);
     let ours = st.x.clone();
     let _ = rep;
     for method in [OptimizeMethod::Bfgs, OptimizeMethod::LBfgsB] {
@@ -51,12 +58,21 @@ fn unconstrained_parity_on_rosenbrock() {
             res.x
         );
     }
+    // And the bimodality record: the classic start's local optimum is
+    // genuinely stationary (the disagreement was BASINS, not bugs).
+    let xl = [-1.2f64, 1.0, 0.8, -0.5];
+    let mut fg2 = |x: &[f64]| -> (f64, Vec<f64>) { (rosen(x), rosen_der(x)) };
+    let mut st2 = LbfgsState::new(&xl, 10, &mut fg2);
+    st2.run(&mut fg2, &StopRule::GradNorm(1e-9), 4000);
+    let gl = rosen_der(&st2.x);
+    let gnorm = gl.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
     let f_ours = rosen(&ours);
     verdict(
         "ijil-fsci-unconstrained",
-        f_ours < 1e-12,
+        f_ours < 1e-12 && gnorm < 1e-8,
         &format!(
-            "Rosenbrock n=4: fs-ascent L-BFGS f*={f_ours:.2e}, optimum matches fsci Bfgs AND LBfgsB within 1e-4"
+            "Rosenbrock n=4 (global basin): fs-ascent L-BFGS f*={f_ours:.2e} matches fsci Bfgs AND LBfgsB within 1e-4; bimodality record: classic-start local optimum at ({:.4},{:.4},{:.4},{:.4}) is stationary (|g| = {gnorm:.1e})",
+            st2.x[0], st2.x[1], st2.x[2], st2.x[3]
         ),
     );
 }
