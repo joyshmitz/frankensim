@@ -1579,6 +1579,17 @@ name = "fs-symmetry"
 version = "0.0.1"
 
 [[package]]
+name = "fs-thrust-e2e"
+version = "0.0.1"
+dependencies = [
+ "fs-archive",
+ "fs-evidence",
+ "fs-report",
+ "fs-surrogate",
+ "fs-vpm",
+]
+
+[[package]]
 name = "fs-tilelang"
 version = "0.0.1"
 dependencies = [

@@ -109,6 +109,7 @@ members = [
     "crates/fs-bem",
     "crates/fs-truss",
     "crates/fs-flux",
+    "crates/fs-thrust-e2e",
     "xtask",
 ]
 
