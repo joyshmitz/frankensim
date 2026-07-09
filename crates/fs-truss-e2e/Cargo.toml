@@ -1,0 +1,21 @@
+[package]
+name = "fs-truss-e2e"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "TrussPath: minimum-weight truss topology optimization (Michell ground structure, solved by PDHG with a certified primal-dual optimality gap) PLUS a tropical (max-plus) critical LOAD PATH that names the dominant load-transmission chain from load to support and its bottleneck member. Composes fs-truss (ground-structure LP + PDHG certificate) x fs-tropical (critical path) x fs-evidence (Verified optimality + Verified load path). Groundbreaking: an optimal structure that comes with BOTH a certificate it is near-optimal AND a proof-carrying account of how the load actually flows through it."
+
+[package.metadata.frankensim]
+layer = "L4"
+
+[dependencies]
+fs-truss = { path = "../fs-truss" }
+fs-tropical = { path = "../fs-tropical" }
+fs-evidence = { path = "../fs-evidence" }
+
+[dev-dependencies]
+
+[lints]
+workspace = true
