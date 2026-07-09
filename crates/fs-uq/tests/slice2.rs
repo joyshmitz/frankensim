@@ -234,3 +234,20 @@ fn uq_005_cvar_and_adaptive_mlmc_rate_recovery() {
          bias fits the tolerance",
     );
 }
+
+#[test]
+fn adaptive_mlmc_rejects_invalid_admission_inputs() {
+    let sampler = |level: usize, i: usize| (level + i) as f64;
+    assert!(
+        std::panic::catch_unwind(|| adaptive_mlmc(sampler, |_| 1.0, 0.0, 4, 2)).is_err(),
+        "non-positive tolerance must fail before producing NaN evidence"
+    );
+    assert!(
+        std::panic::catch_unwind(|| adaptive_mlmc(sampler, |_| 1.0, 1e-3, 0, 2)).is_err(),
+        "zero pilot samples must fail before dividing by zero"
+    );
+    assert!(
+        std::panic::catch_unwind(|| adaptive_mlmc(sampler, |_| 1.0, 1e-3, 4, 0)).is_err(),
+        "max_level below 1 cannot host the required level-0/1 pilot ladder"
+    );
+}

@@ -49,10 +49,19 @@ pub fn adaptive_mlmc(
     n_pilot: usize,
     max_level: usize,
 ) -> AdaptiveReport {
+    assert!(
+        tol.is_finite() && tol > 0.0,
+        "tol must be positive and finite"
+    );
+    assert!(n_pilot > 0, "n_pilot must be nonzero");
+    assert!(
+        max_level >= 1,
+        "adaptive MLMC needs at least levels 0 and 1"
+    );
     let mut levels: Vec<AdaptiveLevel> = Vec::new();
-    let mut add_level = |l: usize,
-                         levels: &mut Vec<AdaptiveLevel>,
-                         sampler: &mut dyn FnMut(usize, usize) -> f64| {
+    let add_level = |l: usize,
+                     levels: &mut Vec<AdaptiveLevel>,
+                     sampler: &mut dyn FnMut(usize, usize) -> f64| {
         let samples: Vec<f64> = (0..n_pilot).map(|i| sampler(l, i)).collect();
         #[allow(clippy::cast_precision_loss)]
         let mean = samples.iter().sum::<f64>() / n_pilot as f64;
