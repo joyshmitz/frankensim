@@ -109,6 +109,8 @@ pub struct Study {
     pub evals: usize,
     /// Steps taken.
     pub steps: usize,
+    current_f: Option<f64>,
+    current_grad_norm: Option<f64>,
     fd_h: f64,
     lr: f64,
 }
@@ -169,6 +171,8 @@ impl Study {
             history: Vec::new(),
             evals: 0,
             steps: 0,
+            current_f: None,
+            current_grad_norm: None,
             fd_h,
             lr,
         }
@@ -204,11 +208,32 @@ impl Study {
         }
         let combined = StopRule::Any(rules);
         let mut reason = StopReason::IterationCap;
-        let mut f = objective(problem, &self.packing, &self.x, &mut self.evals);
-        let mut gnorm = f64::INFINITY;
+        let mut f = if let Some(f) = self.current_f {
+            f
+        } else {
+            let f = objective(problem, &self.packing, &self.x, &mut self.evals);
+            self.current_f = Some(f);
+            f
+        };
+        let mut gnorm = self.current_grad_norm.unwrap_or(f64::INFINITY);
+        let obs = StopObservation {
+            grad_norm: gnorm,
+            objective: f,
+            evals: self.evals,
+            history: &self.history,
+        };
+        if let Some(r) = combined.check(&obs) {
+            return StudyReport {
+                f,
+                grad_norm: gnorm,
+                reason: r,
+                evals: self.evals,
+            };
+        }
         for _ in 0..max_steps {
             let g = self.tangent_gradient(problem);
             gnorm = g.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+            self.current_grad_norm = Some(gnorm);
             self.history.push(f);
             let obs = StopObservation {
                 grad_norm: gnorm,
@@ -224,6 +249,8 @@ impl Study {
             self.x = self.packing.retract(&self.x, &step);
             self.steps += 1;
             f = objective(problem, &self.packing, &self.x, &mut self.evals);
+            self.current_f = Some(f);
+            self.current_grad_norm = None;
         }
         StudyReport {
             f,
@@ -238,7 +265,6 @@ impl Study {
     /// [`crate::interior_point`] or [`crate::sqp`] — with FD
     /// Jacobian-transpose actions in the packed coordinates. Returns
     /// (ce, ce_jt, ci, ci_jt) closures over the problem.
-    #[must_use]
     #[allow(clippy::type_complexity)]
     pub fn constraint_adapters<'p>(
         problem: &'p Problem,

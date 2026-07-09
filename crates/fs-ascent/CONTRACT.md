@@ -45,6 +45,32 @@ so converged and stalled are distinguishable outcomes.
 - `stop::{StopRule, StopReason}` — the stopping-condition algebra:
   grad-norm / objective / budget / stall leaves under Any/All
   combinators, with REASON attribution in every report.
+- `interior::interior_point` (bead ijil) — the LOG-BARRIER
+  interior-point option: barrier subproblems minimized by the
+  resumable L-BFGS, equalities on the AL term, softmax phase-1 for
+  infeasible starts, barrier multiplier estimates ν = μ/(−cᵢ) feeding
+  the SAME KktResidual certificate. Fixture parity with AL gated
+  (same optimum, same active multiplier on the landed KKT fixture;
+  circle fixture to the analytic ν = 0.5).
+- `sqp::sqp` (bead ijil) — active-set SQP for tightly-constrained
+  small-dimension POLISH: damped-BFGS Lagrangian Hessian, QP
+  subproblems via the dense fs-la KKT factorization, ℓ1-merit
+  backtracking; parity with AL to 5e-8 on x AND multipliers; measured
+  warm-start polish envelope 10 iterations to 5e-11 KKT
+  (identity-seeded BFGS needs curvature pairs — the gate is the
+  measurement, not a wish). Large-scale SQP (sparse KKT, TR
+  globalization) is recorded follow-up.
+- `runner::{Study, Packing, StudyReport}` (bead ijil) — the
+  Problem-IR study runner: ALL variables pack across the manifold
+  product (per-block riemann ops keep the sphere spherical to 1e-12
+  along the whole path), central-difference tangent gradients through
+  `fs_opt::eval` (the live IR is evaluation-only — documented),
+  `Problem.budget.max_evals` threads into the stop algebra with
+  CORRECT attribution (`StopReason::Budget`, not a composite shrug),
+  constraints route to AL/IP/SQP through packed FD adapters, and
+  studies are RESUMABLE (clone = checkpoint; split runs bitwise equal
+  INCLUDING eval accounting — the cached current-objective is what
+  makes segment boundaries invisible).
 
 ## Invariants
 
@@ -121,14 +147,25 @@ dimensions.
   `hv_fd_of_gradients` is the documented O(√ε) interim, and exact
   duals cover small parameter counts.
 - No Adam-family stochastic optimizer yet (surrogate-training-
-  adjacent; lands with its consumer). No interior-point or SQP
-  (augmented Lagrangian is the constrained default; IP/SQP join with
-  a consumer needing tightly-constrained polish). No FrankenScipy
-  cross-validation battery yet (the §12 oracle contract lane).
+  adjacent; lands with its consumer). Interior-point + SQP: RESOLVED
+  (bead ijil; AL remains the constrained default). FrankenScipy
+  cross-validation: RESOLVED (bead ijil) with the API-check outcome on
+  record — fsci-opt 0.1.0's `minimize`/`slsqp` accept NO general
+  constraint callbacks (bounds/penalty only), so the oracle pairing is
+  unconstrained parity vs `minimize(Bfgs/LBfgsB)` (agree within 1e-4
+  on fsci's own Rosenbrock from a shared global-basin start) and
+  constrained parity vs `differential_evolution_constrained` (seeded;
+  AL/IP/SQP all within 1e-6 of the DE oracle). MEASURED FINDING kept:
+  Rosenbrock n ≥ 4 is BIMODAL — from the classic start our L-BFGS and
+  fsci's BFGS landed in DIFFERENT basins (both genuinely stationary;
+  basin choice is not a parity criterion), and from another start the
+  roles flipped.
 - Riemannian line search is Armijo (strong Wolfe on manifolds needs
   transported-derivative bookkeeping — follow-up); Stiefel and
   fixed-volume level sets are metadata-only until their consumer
   beads supply retractions.
-- Multi-variable manifold products and the fs-opt Problem-IR driver
-  (optimize a `fs_opt::Problem` end-to-end) land with the study
-  runner; engines here consume callbacks.
+- Multi-variable manifold products + the Problem-IR driver: RESOLVED
+  (bead ijil, `runner` module). Remaining runner scope: reverse-mode
+  IR gradients (the live IR is evaluation-only), L-BFGS/TR engines
+  behind the runner (projected gradient is the v1 driver), and
+  ledgered study artifacts (fs-ledger wiring) — recorded follow-ups.

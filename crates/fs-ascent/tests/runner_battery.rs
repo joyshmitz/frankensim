@@ -78,7 +78,7 @@ fn runner_budget_threads_into_stop_algebra() {
     let rep = study.run(&problem, &StopRule::GradNorm(1e-12), 4000);
     verdict(
         "ijil-runner-budget",
-        rep.reason == StopReason::Composite && rep.evals >= 50 && rep.evals < 80,
+        rep.reason == StopReason::Budget && rep.evals >= 50 && rep.evals < 80,
         &format!(
             "budget 50 evals: stopped with {:?} at {} evals (the problem's own P4 budget, not the caller's rule)",
             rep.reason, rep.evals
@@ -96,11 +96,10 @@ fn runner_resume_is_bitwise() {
         a.run(&problem, &StopRule::GradNorm(1e-9), cut);
         let mut b = a.clone(); // clone = checkpoint
         b.run(&problem, &StopRule::GradNorm(1e-9), 300 - cut);
-        let bitwise = b
-            .x
-            .iter()
-            .zip(&straight.x)
-            .all(|(u, v)| u.to_bits() == v.to_bits());
+        let bitwise =
+            b.x.iter()
+                .zip(&straight.x)
+                .all(|(u, v)| u.to_bits() == v.to_bits());
         assert!(bitwise, "resume not bitwise at cut {cut}");
         assert_eq!(
             b.evals, straight.evals,
@@ -160,11 +159,7 @@ fn runner_constraints_route_to_al() {
         rep.converged && (rep.x[0] - 1.2).abs() < 1e-4 && (rep.x[1] - 0.8).abs() < 1e-4,
         &format!(
             "IR-declared constraints through packed adapters: x = ({:.5}, {:.5}), kkt = ({:.1e},{:.1e},{:.1e})",
-            rep.x[0],
-            rep.x[1],
-            rep.kkt.stationarity,
-            rep.kkt.feasibility,
-            rep.kkt.complementarity
+            rep.x[0], rep.x[1], rep.kkt.stationarity, rep.kkt.feasibility, rep.kkt.complementarity
         ),
     );
 }

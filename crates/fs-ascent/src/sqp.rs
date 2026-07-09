@@ -15,6 +15,8 @@
 use crate::auglag::{ConstrainedProblem, KktResidual, kkt_residual};
 use fs_la::factor::lu;
 
+type JtAction<'a> = dyn Fn(&[f64], &[f64]) -> Vec<f64> + 'a;
+
 /// Outcome of an SQP solve.
 #[derive(Debug, Clone)]
 pub struct SqpReport {
@@ -38,12 +40,7 @@ pub struct SqpReport {
 
 /// Reconstruct a constraint Jacobian (rows = constraints) by probing
 /// the Jᵀ·w action with unit vectors — fixture-scale by design.
-fn jacobian(
-    jt: &dyn Fn(&[f64], &[f64]) -> Vec<f64>,
-    x: &[f64],
-    m: usize,
-    n: usize,
-) -> Vec<f64> {
+fn jacobian(jt: &JtAction<'_>, x: &[f64], m: usize, n: usize) -> Vec<f64> {
     let mut j = vec![0.0f64; m * n];
     for k in 0..m {
         let mut w = vec![0.0f64; m];
@@ -93,7 +90,14 @@ fn bfgs_update(b: &mut [f64], n: usize, s: &[f64], y: &[f64]) {
 /// Solve the working-set QP: min ½dᵀBd + gᵀd s.t. A d = −c (rows =
 /// equalities + active inequalities) through the dense KKT system.
 /// Returns (d, multipliers) or None on a singular KKT (degenerate set).
-fn solve_qp(b: &[f64], g: &[f64], a: &[f64], c: &[f64], n: usize, m: usize) -> Option<(Vec<f64>, Vec<f64>)> {
+fn solve_qp(
+    b: &[f64],
+    g: &[f64],
+    a: &[f64],
+    c: &[f64],
+    n: usize,
+    m: usize,
+) -> Option<(Vec<f64>, Vec<f64>)> {
     let dim = n + m;
     let mut kkt = vec![0.0f64; dim * dim];
     for i in 0..n {
@@ -127,9 +131,118 @@ fn merit_of(problem: &mut ConstrainedProblem<'_>, xx: &[f64], w: f64, ev: &mut u
     *ev += 1;
     let ce_v = (problem.ce)(xx);
     let ci_v = (problem.ci)(xx);
-    let viol: f64 = ce_v.iter().map(|c| c.abs()).sum::<f64>()
-        + ci_v.iter().map(|c| c.max(0.0)).sum::<f64>();
+    let viol: f64 =
+        ce_v.iter().map(|c| c.abs()).sum::<f64>() + ci_v.iter().map(|c| c.max(0.0)).sum::<f64>();
     w.mul_add(viol, fv)
+}
+
+fn active_constraints(problem: &ConstrainedProblem<'_>, x: &[f64], ni: usize) -> Vec<usize> {
+    let civ = (problem.ci)(x);
+    (0..ni).filter(|&j| civ[j] > -1e-8).collect()
+}
+
+fn working_set_block(
+    problem: &ConstrainedProblem<'_>,
+    x: &[f64],
+    active: &[usize],
+    cev: &[f64],
+    civ: &[f64],
+    dims: (usize, usize, usize),
+) -> (Vec<f64>, Vec<f64>) {
+    let (ne, ni, n) = dims;
+    let je = jacobian(problem.ce_jt, x, ne, n);
+    let ji = jacobian(problem.ci_jt, x, ni, n);
+    let m = ne + active.len();
+    let mut a = vec![0.0f64; m * n];
+    let mut c = vec![0.0f64; m];
+    a[..ne * n].copy_from_slice(&je);
+    c[..ne].copy_from_slice(cev);
+    for (r, &j) in active.iter().enumerate() {
+        a[(ne + r) * n..(ne + r + 1) * n].copy_from_slice(&ji[j * n..(j + 1) * n]);
+        c[ne + r] = civ[j];
+    }
+    (a, c)
+}
+
+fn update_multipliers(
+    active: &mut Vec<usize>,
+    lambda: &mut [f64],
+    nu: &mut [f64],
+    mult: &[f64],
+    ne: usize,
+) -> bool {
+    lambda.copy_from_slice(&mult[..ne]);
+    nu.fill(0.0);
+    for (r, &j) in active.iter().enumerate() {
+        nu[j] = mult[ne + r];
+    }
+    let mut drop_idx = None;
+    let mut worst = -1e-10f64;
+    for r in 0..active.len() {
+        if mult[ne + r] < worst {
+            worst = mult[ne + r];
+            drop_idx = Some(r);
+        }
+    }
+    if let Some(r) = drop_idx {
+        let j = active.remove(r);
+        nu[j] = 0.0;
+        true
+    } else {
+        false
+    }
+}
+
+struct MeritStep<'a> {
+    x: &'a [f64],
+    d: &'a [f64],
+    g: &'a [f64],
+    lambda: &'a [f64],
+    nu: &'a [f64],
+}
+
+fn accept_merit_step(
+    problem: &mut ConstrainedProblem<'_>,
+    step: &MeritStep<'_>,
+    b: &mut [f64],
+    evals: &mut usize,
+) -> Option<Vec<f64>> {
+    let n = step.x.len();
+    let m0 = merit_of(problem, step.x, 10.0, evals);
+    let mut alpha = 1.0f64;
+    for _ in 0..40 {
+        let xt: Vec<f64> = step
+            .x
+            .iter()
+            .zip(step.d)
+            .map(|(xi, di)| alpha.mul_add(*di, *xi))
+            .collect();
+        if merit_of(problem, &xt, 10.0, evals) < m0 - 1e-12 {
+            let (_, gt) = (problem.fg)(&xt);
+            *evals += 1;
+            let pull_e = (problem.ce_jt)(&xt, step.lambda);
+            let pull_i = (problem.ci_jt)(&xt, step.nu);
+            let pull_e0 = (problem.ce_jt)(step.x, step.lambda);
+            let pull_i0 = (problem.ci_jt)(step.x, step.nu);
+            let s: Vec<f64> = xt.iter().zip(step.x).map(|(a2, b2)| a2 - b2).collect();
+            let y: Vec<f64> = (0..n)
+                .map(|i| (gt[i] + pull_e[i] + pull_i[i]) - (step.g[i] + pull_e0[i] + pull_i0[i]))
+                .collect();
+            bfgs_update(b, n, &s, &y);
+            return Some(xt);
+        }
+        alpha *= 0.5;
+    }
+    None
+}
+
+fn activate_violated(active: &mut Vec<usize>, civ: &[f64]) {
+    for (j, &cj) in civ.iter().enumerate() {
+        if cj > -1e-10 && !active.contains(&j) {
+            active.push(j);
+        }
+    }
+    active.sort_unstable();
 }
 
 /// Run active-set SQP from `x0`.
@@ -150,55 +263,21 @@ pub fn sqp(
     let mut evals = 0usize;
     let mut iters = 0usize;
     // Working set: active inequality indices (violated-or-near ones).
-    let mut active: Vec<usize> = {
-        let civ = (problem.ci)(&x);
-        (0..ni).filter(|&j| civ[j] > -1e-8).collect()
-    };
+    let mut active = active_constraints(problem, &x, ni);
     let mut lambda = vec![0.0f64; ne];
     let mut nu = vec![0.0f64; ni];
-    let merit_w = 10.0f64;
     for _ in 0..max_iters {
         iters += 1;
         let (f, g) = (problem.fg)(&x);
         let cev = (problem.ce)(&x);
         let civ = (problem.ci)(&x);
         evals += 1;
-        // Assemble the working-set constraint block.
-        let je = jacobian(problem.ce_jt, &x, ne, n);
-        let ji = jacobian(problem.ci_jt, &x, ni, n);
         let m = ne + active.len();
-        let mut a = vec![0.0f64; m * n];
-        let mut c = vec![0.0f64; m];
-        a[..ne * n].copy_from_slice(&je);
-        c[..ne].copy_from_slice(&cev);
-        for (r, &j) in active.iter().enumerate() {
-            a[(ne + r) * n..(ne + r + 1) * n].copy_from_slice(&ji[j * n..(j + 1) * n]);
-            c[ne + r] = civ[j];
-        }
+        let (a, c) = working_set_block(problem, &x, &active, &cev, &civ, (ne, ni, n));
         let Some((d, mult)) = solve_qp(&b, &g, &a, &c, n, m) else {
             break; // degenerate working set — report honestly below
         };
-        lambda.copy_from_slice(&mult[..ne]);
-        nu.fill(0.0);
-        for (r, &j) in active.iter().enumerate() {
-            nu[j] = mult[ne + r];
-        }
-        // Working-set update: drop the most negative multiplier, add
-        // violated inactive constraints.
-        let mut drop_idx: Option<usize> = None;
-        let mut worst = -1e-10f64;
-        for r in 0..active.len() {
-            if mult[ne + r] < worst {
-                worst = mult[ne + r];
-                drop_idx = Some(r);
-            }
-        }
-        let mut dropped = false;
-        if let Some(r) = drop_idx {
-            let j = active.remove(r);
-            nu[j] = 0.0;
-            dropped = true;
-        }
+        let dropped = update_multipliers(&mut active, &mut lambda, &mut nu, &mult, ne);
         // Convergence: small step + certificate.
         let dnorm = d.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
         let kkt = kkt_residual(problem, &x, &lambda, &nu);
@@ -223,42 +302,20 @@ pub fn sqp(
         if dropped {
             continue; // re-solve with the reduced set before stepping
         }
-        // ℓ1-merit backtracking line search.
-        let m0 = merit_of(problem, &x, merit_w, &mut evals);
-        let mut alpha = 1.0f64;
-        let mut accepted = false;
-        for _ in 0..40 {
-            let xt: Vec<f64> = x.iter().zip(&d).map(|(xi, di)| alpha.mul_add(*di, *xi)).collect();
-            if merit_of(problem, &xt, merit_w, &mut evals) < m0 - 1e-12 {
-                // BFGS curvature pair on the Lagrangian gradient.
-                let (_, gt) = (problem.fg)(&xt);
-                evals += 1;
-                let pull_e = (problem.ce_jt)(&xt, &lambda);
-                let pull_i = (problem.ci_jt)(&xt, &nu);
-                let pull_e0 = (problem.ce_jt)(&x, &lambda);
-                let pull_i0 = (problem.ci_jt)(&x, &nu);
-                let s: Vec<f64> = xt.iter().zip(&x).map(|(a2, b2)| a2 - b2).collect();
-                let y: Vec<f64> = (0..n)
-                    .map(|i| (gt[i] + pull_e[i] + pull_i[i]) - (g[i] + pull_e0[i] + pull_i0[i]))
-                    .collect();
-                bfgs_update(&mut b, n, &s, &y);
-                x = xt;
-                accepted = true;
-                break;
-            }
-            alpha *= 0.5;
-        }
-        if !accepted {
+        let step = MeritStep {
+            x: &x,
+            d: &d,
+            g: &g,
+            lambda: &lambda,
+            nu: &nu,
+        };
+        let Some(accepted_x) = accept_merit_step(problem, &step, &mut b, &mut evals) else {
             break; // merit stall — certificate below tells the truth
-        }
+        };
+        x = accepted_x;
         // Activate violated inequalities at the new point.
         let civ_new = (problem.ci)(&x);
-        for (j, &cj) in civ_new.iter().enumerate() {
-            if cj > -1e-10 && !active.contains(&j) {
-                active.push(j);
-            }
-        }
-        active.sort_unstable();
+        activate_violated(&mut active, &civ_new);
     }
     let (f, _) = (problem.fg)(&x);
     let kkt = kkt_residual(problem, &x, &lambda, &nu);

@@ -5,6 +5,9 @@
 use fs_ascent::auglag::ConstrainedProblem;
 use fs_ascent::{augmented_lagrangian, interior_point, sqp};
 
+type ConstraintEval<'a> = &'a dyn Fn(&[f64]) -> Vec<f64>;
+type ConstraintJt<'a> = &'a dyn Fn(&[f64], &[f64]) -> Vec<f64>;
+
 fn verdict(name: &str, pass: bool, details: &str) {
     println!("{{\"test\":\"{name}\",\"pass\":{pass},\"details\":\"{details}\"}}");
     assert!(pass, "{name}: {details}");
@@ -13,11 +16,11 @@ fn verdict(name: &str, pass: bool, details: &str) {
 /// The landed fixture: minimize (x−2)² + (y−1)² s.t. x + y = 2,
 /// x ≤ 1.2. Optimum (1.2, 0.8), both constraints active.
 fn fixture_a<'a>(
-    fg: &'a mut dyn FnMut(&[f64]) -> (f64, Vec<f64>),
-    ce: &'a dyn Fn(&[f64]) -> Vec<f64>,
-    ce_jt: &'a dyn Fn(&[f64], &[f64]) -> Vec<f64>,
-    ci: &'a dyn Fn(&[f64]) -> Vec<f64>,
-    ci_jt: &'a dyn Fn(&[f64], &[f64]) -> Vec<f64>,
+    fg: fs_ascent::FnGrad<'a>,
+    ce: ConstraintEval<'a>,
+    ce_jt: ConstraintJt<'a>,
+    ci: ConstraintEval<'a>,
+    ci_jt: ConstraintJt<'a>,
 ) -> ConstrainedProblem<'a> {
     ConstrainedProblem {
         fg,
@@ -75,12 +78,11 @@ fn sqp_parity_and_multiplier_agreement() {
     let mut fg2 = fg_a;
     let mut p2 = fixture_a(&mut fg2, &ce, &ce_jt, &ci, &ci_jt);
     let sq = sqp(&mut p2, &[0.0, 0.0], 1e-7, 60);
-    let xdev = sq
-        .x
-        .iter()
-        .zip(&al.x)
-        .map(|(a, b)| (a - b).abs())
-        .fold(0.0f64, f64::max);
+    let xdev =
+        sq.x.iter()
+            .zip(&al.x)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f64, f64::max);
     let mult_dev = (sq.lambda[0] - al.lambda[0])
         .abs()
         .max((sq.nu[0] - al.nu[0]).abs());
@@ -122,9 +124,7 @@ fn sqp_warm_start_polish_is_fast() {
 #[test]
 fn ip_and_sqp_on_inequality_only_circle() {
     // minimize x + y s.t. x² + y² ≤ 2: optimum (−1, −1), ν = 0.5.
-    let mk_fg = || {
-        |x: &[f64]| -> (f64, Vec<f64>) { (x[0] + x[1], vec![1.0, 1.0]) }
-    };
+    let mk_fg = || |x: &[f64]| -> (f64, Vec<f64>) { (x[0] + x[1], vec![1.0, 1.0]) };
     let ce = |_: &[f64]| Vec::new();
     let ce_jt = |_: &[f64], _: &[f64]| vec![0.0, 0.0];
     let ci = |x: &[f64]| vec![x[0] * x[0] + x[1] * x[1] - 2.0];

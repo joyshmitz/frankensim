@@ -56,7 +56,10 @@ fn phase1(problem: &mut ConstrainedProblem<'_>, x0: &[f64], margin: f64) -> (Vec
         evals += 1;
         let c = ci(x);
         let m = c.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
-        let ws: Vec<f64> = c.iter().map(|&v| fs_math::det::exp(beta * (v - m))).collect();
+        let ws: Vec<f64> = c
+            .iter()
+            .map(|&v| fs_math::det::exp(beta * (v - m)))
+            .collect();
         let sum: f64 = ws.iter().sum();
         let val = m + fs_math::det::ln(sum) / beta;
         let w: Vec<f64> = ws.iter().map(|v| v / sum).collect();
@@ -108,7 +111,11 @@ pub fn interior_point(
             let mut val = f;
             let cev = ce(xv);
             if !cev.is_empty() {
-                let w: Vec<f64> = cev.iter().zip(&lam).map(|(c, l)| r.mul_add(*c, *l)).collect();
+                let w: Vec<f64> = cev
+                    .iter()
+                    .zip(&lam)
+                    .map(|(c, l)| r.mul_add(*c, *l))
+                    .collect();
                 for (c, l) in cev.iter().zip(&lam) {
                     val += l * c + 0.5 * r * c * c;
                 }
@@ -139,7 +146,7 @@ pub fn interior_point(
         let mut st = LbfgsState::new(&x, 10, &mut inner);
         let rule = StopRule::GradNorm((mu * 0.1).max(tol * 0.1));
         st.run(&mut inner, &rule, 400);
-        x = st.x.clone();
+        x.clone_from(&st.x);
         evals += inner_evals;
         // Multiplier updates.
         let cev = (problem.ce)(&x);
