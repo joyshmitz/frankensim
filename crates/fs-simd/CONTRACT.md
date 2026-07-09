@@ -13,6 +13,22 @@ Layer: L0.
 - `neon::*` / `x86::*` — registered unsafe capsules (SAFETY.md beside each);
   all public capsule functions are SAFE (NEON is architecturally guaranteed;
   x86 façades re-verify CPU features and fall back to scalar).
+- `sme2::*` (bead wf9.3, feature `frontier-sme2`, [F]) — the EXPLORATORY
+  streaming-mode GEMM prototype: `sme2_available()` (runtime probe —
+  sysctl subprocess on macOS / cpuinfo on Linux, NEVER compile-time
+  assumed; also requires SVL = 512 bits, the fixed prototype shape),
+  `streaming_vl_bytes()`, `gemm_tile_f32` (16×16 fmopa outer-product
+  microkernel on za0.s, one self-contained smstart…smstop asm region),
+  and the scalar mul_add twin. NEVER in the `ops()` table — NEON stays
+  the committed path; promotion requires beating NEON across the
+  autotuner shape sweep (the xdgf perf lanes' call, unclaimed here).
+  MEASURED on Apple M4 Pro (ledgered): G0 equivalence vs the scalar
+  twin is BITWISE (worst 0 ULP over k ∈ {1,3,17,64,257}); 263 GFLOP/s
+  vs the release-build scalar twin's 8.9 (29.7×) at 16×16×1024 —
+  evidence, not a perf gate; the honest NEON comparison belongs to the
+  autotuner sweep. NO cross-ISA determinism-mode claim (the bead's
+  explicit non-goal) until the G5 report characterizes streaming-mode
+  accumulation across SVL classes.
 - `is_cache_line_aligned`, `TernaryOp`.
 
 ## Invariants
@@ -38,9 +54,11 @@ Bounded allocation-free loops, no poll points; callers chunk work at tile
 granularity (fs-exec discipline).
 
 ## Unsafe boundary
-Two registered capsules: src/neon/mod.rs (THE exemplar — obligation from the
-unsafe-safety-cases bead) and src/x86/mod.rs; both <300 lines with full
-SAFETY.md files; enforced by `xtask check-unsafe`. Under Miri, dispatch
+Three registered capsules: src/neon/mod.rs (THE exemplar — obligation from
+the unsafe-safety-cases bead), src/x86/mod.rs, and src/sme2/mod.rs
+(feature-gated [F]; streaming-mode containment + full register discipline
+documented in its SAFETY.md); all <300 lines with full SAFETY.md files;
+enforced by `xtask check-unsafe`. Under Miri, dispatch
 routes to scalar (intrinsics outside Miri's model; compensating equivalence
 battery documented in the SAFETY files).
 
