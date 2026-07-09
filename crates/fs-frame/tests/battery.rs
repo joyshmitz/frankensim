@@ -3,6 +3,7 @@
 //! fragility with verified coverage and ledgered savings, CVaR mass
 //! minimization, and the replay/drill gates.
 
+use fs_frame::cvar::empirical_cvar;
 use fs_frame::history::{StoryFrame, StoryParams, peak_drift};
 use fs_frame::{cvar_mass_min, e_stopped_fragility, ensemble_cvar, layout_and_size};
 use fs_qty::{Dims, QtyAny};
@@ -231,5 +232,29 @@ fn frame_006_replay_and_drills() {
         "frame-006-infeasible-drill",
         infeasible.is_err(),
         "infeasible CVaR limit fires the diagnostic instead of returning a fake design",
+    );
+    let empty_cvar = std::panic::catch_unwind(|| empirical_cvar(&[], 0.9));
+    verdict(
+        "frame-006-empty-cvar-drill",
+        empty_cvar.is_err(),
+        "empty CVaR samples fire the diagnostic instead of returning fake zero risk",
+    );
+    let bad_beta = std::panic::catch_unwind(|| empirical_cvar(&[1.0, 2.0], 1.0));
+    verdict(
+        "frame-006-bad-beta-drill",
+        bad_beta.is_err(),
+        "invalid CVaR beta fires the diagnostic before quantile indexing",
+    );
+    let nan_beta = std::panic::catch_unwind(|| empirical_cvar(&[1.0, 2.0], f64::NAN));
+    verdict(
+        "frame-006-nan-beta-drill",
+        nan_beta.is_err(),
+        "non-finite CVaR beta fires the diagnostic before quantile indexing",
+    );
+    let bad_loss = std::panic::catch_unwind(|| empirical_cvar(&[1.0, f64::NAN], 0.9));
+    verdict(
+        "frame-006-nonfinite-cvar-drill",
+        bad_loss.is_err(),
+        "non-finite CVaR losses fire the diagnostic before tail aggregation",
     );
 }

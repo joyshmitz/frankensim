@@ -236,6 +236,26 @@ fn uq_005_cvar_and_adaptive_mlmc_rate_recovery() {
 }
 
 #[test]
+fn cvar_rejects_invalid_risk_inputs() {
+    assert!(
+        std::panic::catch_unwind(|| cvar(&[], 0.9)).is_err(),
+        "empty loss samples must not report zero risk"
+    );
+    assert!(
+        std::panic::catch_unwind(|| cvar(&[1.0], 0.0)).is_err(),
+        "beta must define a strict upper tail"
+    );
+    assert!(
+        std::panic::catch_unwind(|| cvar(&[1.0], 1.0)).is_err(),
+        "beta=1 would leave an empty tail"
+    );
+    assert!(
+        std::panic::catch_unwind(|| cvar(&[1.0, f64::NAN], 0.9)).is_err(),
+        "non-finite samples must not sort into a risk estimate"
+    );
+}
+
+#[test]
 fn adaptive_mlmc_rejects_invalid_admission_inputs() {
     let sampler = |level: usize, i: usize| (level + i) as f64;
     assert!(

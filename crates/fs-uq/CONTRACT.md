@@ -135,6 +135,9 @@ at MATCHED estimator variance; cross-ISA golden hash.
   rides fs-scenario.
 - The CS applies to BOUNDED [0,1] outcomes via Hoeffding
   sub-Gaussianity; unbounded losses need a declared sigma.
+- `cvar` is a finite-sample empirical upper-tail mean. It panics on empty
+  samples, non-finite samples, or a tail level outside `(0,1)`; returning zero
+  risk for an empty loss set would be a false certificate.
 - Adaptive-MLMC rate fits assume geometric level decay; oscillatory
   correction means defeat the extrapolation (documented, as in the
   classical literature).

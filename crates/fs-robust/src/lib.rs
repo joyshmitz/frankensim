@@ -36,6 +36,11 @@ pub enum RobustError {
         /// The offending value.
         alpha: f64,
     },
+    /// A supplied risk or fragility value was not finite.
+    BadSample {
+        /// The offending value.
+        value: f64,
+    },
     /// An objective declares no input colors — the optimization contract
     /// forbids optimizing it (it would optimize a fiction).
     UncoloredObjective {
@@ -51,7 +56,8 @@ pub enum RobustError {
 /// robust than the mean because it weights the tail.
 ///
 /// # Errors
-/// [`RobustError::EmptySamples`] / [`RobustError::BadAlpha`].
+/// [`RobustError::EmptySamples`] / [`RobustError::BadAlpha`] /
+/// [`RobustError::BadSample`].
 pub fn cvar(samples: &[f64], alpha: f64) -> Result<f64, RobustError> {
     if samples.is_empty() {
         return Err(RobustError::EmptySamples);
@@ -59,6 +65,7 @@ pub fn cvar(samples: &[f64], alpha: f64) -> Result<f64, RobustError> {
     if !(alpha > 0.0 && alpha < 1.0) {
         return Err(RobustError::BadAlpha { alpha });
     }
+    reject_non_finite(samples)?;
     let mut sorted: Vec<f64> = samples.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     // number of worst-tail samples: at least the (1 - alpha) fraction, >= 1.
@@ -115,11 +122,13 @@ impl ColoredObjective {
     /// The nominal value: the mean cost (what naive optimization targets).
     ///
     /// # Errors
-    /// [`RobustError::EmptySamples`] if there are no samples.
+    /// [`RobustError::EmptySamples`] if there are no samples;
+    /// [`RobustError::BadSample`] if any sample is non-finite.
     pub fn nominal_value(&self) -> Result<f64, RobustError> {
         if self.cost_samples.is_empty() {
             return Err(RobustError::EmptySamples);
         }
+        reject_non_finite(&self.cost_samples)?;
         Ok(self.cost_samples.iter().sum::<f64>() / self.cost_samples.len() as f64)
     }
 
@@ -222,7 +231,8 @@ pub struct ColoredFragility {
 /// exceeds capacity). The `color` is the honest confidence band.
 ///
 /// # Errors
-/// [`RobustError::EmptySamples`] if there are no capacity samples.
+/// [`RobustError::EmptySamples`] if there are no capacity samples;
+/// [`RobustError::BadSample`] if any capacity sample or intensity is non-finite.
 pub fn fragility_curve(
     capacity_samples: &[f64],
     intensities: &[f64],
@@ -231,6 +241,8 @@ pub fn fragility_curve(
     if capacity_samples.is_empty() {
         return Err(RobustError::EmptySamples);
     }
+    reject_non_finite(capacity_samples)?;
+    reject_non_finite(intensities)?;
     let n = capacity_samples.len() as f64;
     let curve = intensities
         .iter()
@@ -243,4 +255,11 @@ pub fn fragility_curve(
         })
         .collect();
     Ok(ColoredFragility { curve, color })
+}
+
+fn reject_non_finite(values: &[f64]) -> Result<(), RobustError> {
+    if let Some(&value) = values.iter().find(|value| !value.is_finite()) {
+        return Err(RobustError::BadSample { value });
+    }
+    Ok(())
 }

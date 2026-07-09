@@ -70,8 +70,21 @@ pub fn estimate_probability_anytime(
 /// CVaR (expected shortfall) of loss samples at level `beta` — the
 /// risk functional ASCENT's robust formulations consume (kept here as
 /// the UQ-side entry point; fs-robust hosts the ASCENT-side twin).
+///
+/// # Panics
+/// If `samples` is empty, any sample is non-finite, or `beta` is not finite
+/// and strictly between 0 and 1.
 #[must_use]
 pub fn cvar(samples: &[f64], beta: f64) -> f64 {
+    assert!(!samples.is_empty(), "cvar needs at least one sample");
+    assert!(
+        beta.is_finite() && 0.0 < beta && beta < 1.0,
+        "cvar beta must be finite and in (0, 1)"
+    );
+    assert!(
+        samples.iter().all(|s| s.is_finite()),
+        "cvar samples must be finite"
+    );
     let mut sorted = samples.to_vec();
     sorted.sort_by(f64::total_cmp);
     #[allow(

@@ -28,8 +28,21 @@ pub struct RobustReport {
 
 /// Empirical CVaR_β (Rockafellar–Uryasev; exact for empirical
 /// measures: the tail mean past the β-quantile).
+///
+/// # Panics
+/// If `losses` is empty, any loss is non-finite, or `beta` is not finite
+/// and strictly between 0 and 1.
 #[must_use]
 pub fn empirical_cvar(losses: &[f64], beta: f64) -> f64 {
+    assert!(!losses.is_empty(), "empirical_cvar needs at least one loss");
+    assert!(
+        beta.is_finite() && 0.0 < beta && beta < 1.0,
+        "empirical_cvar beta must be finite and in (0, 1)"
+    );
+    assert!(
+        losses.iter().all(|loss| loss.is_finite()),
+        "empirical_cvar losses must be finite"
+    );
     let mut sorted = losses.to_vec();
     sorted.sort_by(f64::total_cmp);
     let n = sorted.len();

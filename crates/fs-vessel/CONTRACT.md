@@ -45,7 +45,8 @@ crate's claim is the COMPOSITION with certificates at every joint.
   vs CVaR_β lip optimization over the fluid band (rates ×
   viscosities), both evaluated on the OFF-NOMINAL corners.
   `robust::empirical_cvar` is the exact Rockafellar–Uryasev empirical
-  tail mean.
+  tail mean; empty/non-finite losses and beta outside `(0,1)` panic
+  as programmer-contract defects instead of returning fake risk.
 
 ## Invariants
 

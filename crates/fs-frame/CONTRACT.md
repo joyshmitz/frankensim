@@ -34,8 +34,9 @@ their own battery: fs-truss (layout LP + sizing), fs-solid/fs-material
 - `cvar::cvar_mass_min` → `CvarDesign`: Rockafellar–Uryasev empirical
   CVaR (exact for empirical measures: t* = β-quantile), bisection on
   the section scale (monotone at smoke scale), catalog UP-snap with
-  an independent CVaR re-check. `ensemble_cvar` exposes the
-  monotonicity probe.
+  an independent CVaR re-check. Empty/non-finite losses and beta
+  outside `(0,1)` panic as programmer-contract defects instead of
+  returning fake risk. `ensemble_cvar` exposes the monotonicity probe.
 
 ## Invariants
 
