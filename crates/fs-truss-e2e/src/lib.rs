@@ -148,9 +148,12 @@ pub fn run_campaign(nx: usize, ny: usize, w: f64, h: f64, gap_tol: f64) -> Truss
 
     let certified_optimal = report.gap < gap_tol * 10.0 && report.eq_residual < 1e-3;
     let optimality_color = if certified_optimal {
+        // The rigorous enclosure of the true optimum: the feasible primal
+        // `volume` is an UPPER bound and the dual `volume·(1−gap)` a LOWER bound
+        // (fs-truss's gap is |primal−dual|/|primal|).
         Color::Verified {
-            lo: report.volume,
-            hi: report.volume * (1.0 + report.gap),
+            lo: report.volume * (1.0 - report.gap),
+            hi: report.volume,
         }
     } else {
         Color::Estimated {

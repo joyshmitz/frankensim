@@ -150,7 +150,12 @@ pub fn certify_point(
 /// # Panics
 /// If `reynolds` or `resolutions` is empty.
 #[must_use]
-pub fn run_campaign(reynolds: &[f64], resolutions: &[usize], steps: usize, tol: f64) -> FlowReport {
+pub fn run_campaign(
+    reynolds: &[f64],
+    resolutions: &[usize],
+    max_steps: usize,
+    tol: f64,
+) -> FlowReport {
     assert!(
         !reynolds.is_empty() && !resolutions.is_empty(),
         "empty sweep"
@@ -170,7 +175,7 @@ pub fn run_campaign(reynolds: &[f64], resolutions: &[usize], steps: usize, tol: 
         for &ny in resolutions {
             // A low lattice velocity keeps the Mach number inside the strict
             // low-Mach band the scaling planner certifies.
-            let p = certify_point(re, ny, 0.05, steps, tol);
+            let p = certify_point(re, ny, 0.05, max_steps, tol);
             // Fitness = accuracy in (0, 1]; the archive requires ≥ 0.
             let fitness = 1.0 / (1.0 + p.profile_error);
             archive.add(vec![re, ny as f64], vec![re, ny as f64], fitness);

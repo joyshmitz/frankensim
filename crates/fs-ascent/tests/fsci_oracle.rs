@@ -134,7 +134,7 @@ fn constrained_parity_vs_de_oracle() {
             .zip(&de.x)
             .map(|(a, b)| (a - b).abs())
             .fold(0.0f64, f64::max);
-        let fdev = (f - de.fun).abs();
+        let fdev = (f - de.fun.expect("DE reports an objective")).abs();
         worst_x = worst_x.max(xdev);
         worst_f = worst_f.max(fdev);
         assert!(

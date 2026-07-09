@@ -17,7 +17,21 @@ fn the_optimal_truss_has_a_certified_load_path() {
         "gap {} eq_res {}",
         report.gap, report.eq_residual
     );
-    assert!(matches!(report.optimality_color, Color::Verified { .. }));
+    // the certified band is a valid enclosure: the feasible volume is the UPPER
+    // bound (primal), the dual sits below it, and the interval is non-empty.
+    let Color::Verified { lo, hi } = report.optimality_color else {
+        panic!("optimum not certified");
+    };
+    assert!(lo <= hi, "empty band [{lo}, {hi}]");
+    assert!(
+        (hi - report.total_volume).abs() < 1e-12,
+        "primal (volume) must be the upper bound"
+    );
+    assert!(lo <= report.total_volume + 1e-12, "dual must be <= volume");
+    assert!(
+        lo >= report.total_volume * (1.0 - report.gap) - 1e-9,
+        "dual too low"
+    );
     // LOAD PATH, CERTIFIED: a non-trivial critical chain carrying real volume,
     // with a named bottleneck bar.
     assert!(
