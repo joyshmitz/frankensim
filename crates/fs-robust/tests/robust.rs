@@ -44,6 +44,18 @@ fn cvar_rejects_bad_inputs() {
         cvar(&[1.0], 1.5),
         Err(RobustError::BadAlpha { .. })
     ));
+    assert!(matches!(
+        cvar(&[1.0], f64::NAN),
+        Err(RobustError::BadAlpha { .. })
+    ));
+    assert!(matches!(
+        cvar(&[1.0, f64::INFINITY], 0.9),
+        Err(RobustError::BadSample { value }) if value.is_infinite()
+    ));
+    assert!(matches!(
+        cvar(&[1.0, f64::NAN], 0.9),
+        Err(RobustError::BadSample { value }) if value.is_nan()
+    ));
 }
 
 #[test]
@@ -86,6 +98,15 @@ fn optimization_refuses_an_un_colored_objective() {
     ));
     // no candidates at all is also refused.
     assert_eq!(robust_optimum(&[], 0.9), Err(RobustError::NoCandidates));
+    let bad_samples = ColoredObjective::new("bad", vec![1.0, f64::NAN], vec![verified()]);
+    assert!(matches!(
+        bad_samples.nominal_value(),
+        Err(RobustError::BadSample { value }) if value.is_nan()
+    ));
+    assert!(matches!(
+        robust_optimum(&[bad_samples], 0.9),
+        Err(RobustError::BadSample { value }) if value.is_nan()
+    ));
 }
 
 #[test]
@@ -114,6 +135,14 @@ fn fragility_curves_are_monotone_and_colored() {
         fragility_curve(&[], &intensities, verified()),
         Err(RobustError::EmptySamples)
     );
+    assert!(matches!(
+        fragility_curve(&[3.0, f64::NAN], &intensities, verified()),
+        Err(RobustError::BadSample { value }) if value.is_nan()
+    ));
+    assert!(matches!(
+        fragility_curve(&capacities, &[1.0, f64::INFINITY], verified()),
+        Err(RobustError::BadSample { value }) if value.is_infinite()
+    ));
 }
 
 #[test]

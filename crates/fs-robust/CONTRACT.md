@@ -24,8 +24,8 @@ random numbers) are supplied by the caller (fs-scenario).
   Proposal-F kill-criterion test.
 - `fragility_curve(capacity_samples, intensities, color) -> ColoredFragility` —
   `P(failure)` = fraction of capacities below each intensity, with a color band.
-- `RobustError` — `EmptySamples` / `BadAlpha` / `UncoloredObjective` /
-  `NoCandidates`.
+- `RobustError` — `EmptySamples` / `BadAlpha` / `BadSample` /
+  `UncoloredObjective` / `NoCandidates`.
 
 ## Invariants
 
@@ -33,7 +33,8 @@ random numbers) are supplied by the caller (fs-scenario).
   objective (no optimizing a fiction with certified precision).
 - WEAKEST-INPUT RULE: a headline's color is the minimum-rank input color — a
   verified solve under an estimated hazard is an estimated answer.
-- CVaR of the tail is `>=` the mean; `alpha ∈ (0, 1)` enforced.
+- CVaR of the tail is `>=` the mean; `alpha ∈ (0, 1)` enforced; non-finite
+  samples are refused instead of sorted into risk or headline values.
 - A fragility curve is nondecreasing in intensity (`P(failure)` = CDF of demand
   exceeding capacity).
 
