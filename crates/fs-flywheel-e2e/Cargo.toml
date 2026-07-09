@@ -21,6 +21,11 @@ fs-spececo = { path = "../fs-spececo" }
 fs-verify = { path = "../fs-verify", features = ["certified-speculation"] }
 
 [dev-dependencies]
+fs-adjoint = { path = "../fs-adjoint", features = ["explanation-objects"] }
+fs-ir = { path = "../fs-ir", features = ["ladder-planner"] }
+fs-package = { path = "../fs-package" }
+fs-robust = { path = "../fs-robust" }
+fs-verify = { path = "../fs-verify", features = ["certified-speculation"] }
 fs-ledger = { path = "../fs-ledger" }
 
 [features]
