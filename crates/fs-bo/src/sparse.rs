@@ -107,8 +107,7 @@ impl SparseGp {
         let logdet = |c: &Cholesky, k: usize| -> f64 {
             (0..k).map(|i| 2.0 * fs_math::det::ln(c.l(i, i))).sum()
         };
-        let log_q = logdet(&a_chol, m) - logdet(&kzz_chol, m)
-            + n as f64 * fs_math::det::ln(noise);
+        let log_q = logdet(&a_chol, m) - logdet(&kzz_chol, m) + n as f64 * fs_math::det::ln(noise);
         // yᵀ(Q+σ²I)⁻¹y = σ⁻²·(yᵀy − σ⁻²·(K_ZX y)ᵀ A⁻¹ (K_ZX y)).
         let yty: f64 = y.iter().map(|v| v * v).sum();
         let mut a_inv_kzxy = kzx_y.clone();
@@ -148,7 +147,6 @@ impl SparseGp {
     /// DTC predictive mean and variance at a point.
     #[must_use]
     pub fn predict(&self, xs: &[f64]) -> (f64, f64) {
-        let m = self.z.len();
         let kstar: Vec<f64> = self.z.iter().map(|zi| self.kernel.eval(zi, xs)).collect();
         let mean: f64 = kstar.iter().zip(&self.beta).map(|(a, b)| a * b).sum();
         // Q_** = ‖L_zz⁻¹·k_*‖²; explained = ‖L_A⁻¹·k_*‖².
@@ -160,7 +158,6 @@ impl SparseGp {
         let expl: f64 = v2.iter().map(|t| t * t).sum();
         let kss = self.kernel.eval(xs, xs);
         let var = (kss - q_ss + expl).max(0.0);
-        let _ = m;
         (mean, var)
     }
 }
@@ -173,18 +170,20 @@ pub fn farthest_point_inducing(x: &[Vec<f64>], m: usize) -> Vec<Vec<f64>> {
     let n = x.len();
     assert!(m >= 1 && m <= n);
     let mut chosen = vec![0usize];
-    let d2 = |a: &[f64], b: &[f64]| -> f64 {
-        a.iter().zip(b).map(|(p, q)| (p - q) * (p - q)).sum()
-    };
+    let mut is_chosen = vec![false; n];
+    is_chosen[0] = true;
+    let d2 =
+        |a: &[f64], b: &[f64]| -> f64 { a.iter().zip(b).map(|(p, q)| (p - q) * (p - q)).sum() };
     let mut min_d: Vec<f64> = x.iter().map(|xi| d2(xi, &x[0])).collect();
     while chosen.len() < m {
         let mut best = (0usize, f64::NEG_INFINITY);
         for (i, &d) in min_d.iter().enumerate() {
-            if d > best.1 {
+            if !is_chosen[i] && d > best.1 {
                 best = (i, d);
             }
         }
         chosen.push(best.0);
+        is_chosen[best.0] = true;
         for (i, md) in min_d.iter_mut().enumerate() {
             *md = md.min(d2(&x[i], &x[best.0]));
         }

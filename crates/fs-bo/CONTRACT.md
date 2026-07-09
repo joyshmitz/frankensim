@@ -51,6 +51,11 @@ acquisition surfaces.
   HIGH-fidelity posterior with the MFEI-class fidelity rule
   (evaluate cheap when corr²·cost-ratio > 1, corr from the joint
   posterior at [(x,lo),(x,hi)]); cost-indexed traces ledgered.
+- `sparse::{SparseGp, farthest_point_inducing}` — inducing-point
+  DTC/SoR GPs with the TITSIAS ELBO as the honesty instrument (the
+  trace slack (1/2σ²)·tr(K_XX − Q_XX) reports what the approximation
+  discards); inversion-lemma identities through fs-la Cholesky,
+  O(n·m²); deterministic farthest-point selection.
 - `bo::minimize` — Sobol initialization, per-iteration y
   STANDARDIZATION (EI is affine-invariant when applied consistently;
   without it the signal box cannot span arbitrary objective scales —
@@ -126,15 +131,27 @@ dominate (78% share) and MF-BO reaches 0.3995 median vs
 single-fidelity EI-BO's 1.7179 at MATCHED total cost (optimum
 0.3979 — the documented win) with bitwise replay; MF golden
 `0x6411_f077_1d5e_9f88`.
+`tests/sparse_battery.rs` (5 cases): EXACTNESS RECOVERY at Z = X —
+predictions match the exact GP to 2.8e−10 (mean) / 1.5e−9 (variance)
+and the ELBO is tight to the exact LML at relative 1e−6 (the two
+sides come from DIFFERENT factorization paths, so absolute 1e−6 is
+not an honest expectation — measured and documented); the ELBO
+LOWER-BOUNDS the exact LML at every m (instance-checked, monotone
+under nested farthest-point selection); the accuracy ladder —
+RMSE-vs-exact 0.114 → 0.019 → 0.003 at m = 10/30/80 on n = 300;
+duplicate-row farthest-point ties never reselect an already chosen
+row; sparse golden `0x0138_e24a_db84_4bec`.
 `tests/mf_battery.rs`: multi-fidelity correlation recovery and
 variance reduction, dimension/fidelity mismatch fail-fast behavior,
 cost-aware allocation and replay, and MF golden.
 
 ## No-claim boundaries
 
-- Inducing-point sparse GPs beyond ~10⁴ points, heteroscedastic
-  likelihoods, and e-process stopping are the bead's remaining lanes
-  (TuRBO and two-fidelity ICM landed). The MF module is
+- Heteroscedastic likelihoods and e-process stopping are the bead's
+  remaining lanes (TuRBO, two-fidelity ICM, and DTC/Titsias sparse
+  GPs landed). Sparse inducing LOCATIONS are fixed
+  (farthest-point); variational location optimization joins with a
+  consumer at genuine 10⁴-point scale. The MF module is
   TWO-fidelity; deeper ladders and per-evidence-model-ledger
   discrepancy models join with their consumers.
 - TuRBO's joint fallback drops cross-correlations only where the

@@ -8,9 +8,9 @@
 //! optimizers come from the landed stack: fs-ascent L-BFGS for
 //! hyperparameters, fs-dfo CMA-ES for acquisition surfaces.
 //!
-//! TuRBO trust-region BO and multi-fidelity cost-aware acquisition
-//! are included; inducing-point sparse GPs and tape-differentiated
-//! acquisition gradients remain recorded follow-up lanes.
+//! TuRBO trust-region BO, multi-fidelity cost-aware acquisition, and
+//! inducing-point sparse GPs are included; tape-differentiated
+//! acquisition gradients remain a recorded follow-up lane.
 
 pub mod acq;
 pub mod bo;

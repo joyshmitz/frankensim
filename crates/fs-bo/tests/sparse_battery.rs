@@ -6,14 +6,24 @@
 
 use fs_bo::{Gp, Kernel, Matern, SparseGp, farthest_point_inducing};
 use fs_rand::StreamKey;
+use std::fmt::Write as _;
 
 fn log(case: &str, verdict: &str, detail: &str) {
-    println!("{{\"suite\":\"fs-bo-sparse\",\"case\":\"{case}\",\"verdict\":\"{verdict}\",\"detail\":\"{detail}\"}}");
+    println!(
+        "{{\"suite\":\"fs-bo-sparse\",\"case\":\"{case}\",\"verdict\":\"{verdict}\",\"detail\":\"{detail}\"}}"
+    );
 }
 
 fn rand_pts(n: usize, d: usize, tile: u32) -> Vec<Vec<f64>> {
-    let mut s = StreamKey { seed: 141, kernel: 0x0561, tile }.stream();
-    (0..n).map(|_| (0..d).map(|_| s.next_f64()).collect()).collect()
+    let mut s = StreamKey {
+        seed: 141,
+        kernel: 0x0561,
+        tile,
+    }
+    .stream();
+    (0..n)
+        .map(|_| (0..d).map(|_| s.next_f64()).collect())
+        .collect()
 }
 
 fn target(x: &[f64]) -> f64 {
@@ -50,7 +60,10 @@ fn exactness_recovery_at_z_equals_x() {
         worst_var = worst_var.max((ve - vs).abs());
     }
     assert!(worst_mean < 1e-5, "mean mismatch at Z=X: {worst_mean:.2e}");
-    assert!(worst_var < 1e-5, "variance mismatch at Z=X: {worst_var:.2e}");
+    assert!(
+        worst_var < 1e-5,
+        "variance mismatch at Z=X: {worst_var:.2e}"
+    );
     // ELBO tight: equals the exact LML. RELATIVE tolerance — the two
     // sides come from DIFFERENT factorization paths (K_XX+σ²I direct
     // vs the inversion-lemma identities through jittered K_ZZ), so
@@ -58,7 +71,10 @@ fn exactness_recovery_at_z_equals_x() {
     // 1e-6 absolute (measured: 2e-5 absolute on |LML| ~ 60).
     let tol = 1e-6 * (1.0 + exact.lml.abs());
     let gap = (sparse.elbo - exact.lml).abs();
-    assert!(gap < tol, "ELBO not tight at Z=X: gap {gap:.2e} vs tol {tol:.2e}");
+    assert!(
+        gap < tol,
+        "ELBO not tight at Z=X: gap {gap:.2e} vs tol {tol:.2e}"
+    );
     log(
         "exactness",
         "pass",
@@ -94,7 +110,7 @@ fn elbo_lower_bounds_exact_lml() {
             "ELBO should improve with more inducing points (farthest-point nesting)"
         );
         prev_elbo = sparse.elbo;
-        line.push_str(&format!("m={m}: {:.2} ", sparse.elbo));
+        let _ = write!(line, "m={m}: {:.2} ", sparse.elbo);
     }
     log(
         "elbo-bound",
@@ -133,7 +149,7 @@ fn accuracy_ladder_vs_exact() {
             "RMSE-vs-exact should not increase with m: {line} then m={m}: {rmse:.4}"
         );
         prev_rmse = rmse;
-        line.push_str(&format!("m={m}: {rmse:.4} "));
+        let _ = write!(line, "m={m}: {rmse:.4} ");
     }
     assert!(
         prev_rmse < 0.02,
@@ -142,7 +158,27 @@ fn accuracy_ladder_vs_exact() {
     log("accuracy-ladder", "pass", line.trim());
 }
 
-const GOLDEN_HASH: u64 = 0; // recorded on first run, then frozen
+#[test]
+fn inducing_selection_uses_distinct_rows_under_zero_distance_ties() {
+    let x = vec![vec![0.0], vec![10.0], vec![10.0], vec![5.0]];
+    let z = farthest_point_inducing(&x, x.len());
+    assert_eq!(z.len(), x.len());
+    let tens = z
+        .iter()
+        .filter(|p| p[0].to_bits() == 10.0f64.to_bits())
+        .count();
+    assert_eq!(
+        tens, 2,
+        "m=n must select each row once even when duplicate rows tie at zero distance: {z:?}"
+    );
+    log(
+        "inducing-distinct",
+        "pass",
+        "farthest-point selection does not reselect an already-chosen row under zero-distance ties",
+    );
+}
+
+const GOLDEN_HASH: u64 = 0x0138_e24a_db84_4bec; // recorded at tzeh lane c, frozen
 
 #[test]
 fn sparse_golden_hash() {
