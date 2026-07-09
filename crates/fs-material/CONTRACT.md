@@ -99,9 +99,10 @@ Evidence domain flagging.
 ## No-claim boundaries
 
 - **Ogden is staged, not shipped**: its principal-stretch energy needs
-  eigenvalue derivatives, which need `acos`/`atan` on the fs-ad `Real`
-  trait (upstream extension). Tracked for the fs-ad owner; until then
-  NH/MR are the hyperelastic set.
+  eigenvalue derivatives through fs-ad duals. The upstream blocker is
+  now RESOLVED (bead t88x: asin/acos/atan/atan2 on `Real` + Dual chain
+  rules); the staged Ogden law itself remains follow-up work here.
+  Until then NH/MR are the hyperelastic set.
 - **Mander cyclic rules are the simplified elastic-unload variant**
   (declared on the card): no cyclic stiffness degradation beyond the
   residual-strain rule, no tension stiffening. Full Mander cyclic rules

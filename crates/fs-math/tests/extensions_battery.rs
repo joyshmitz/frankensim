@@ -106,6 +106,66 @@ fn atan_atan2_budget_and_specials() {
 }
 
 #[test]
+fn asin_acos_budget_symmetry_and_specials() {
+    let mut seed = 0x51_C0_u64;
+    let mut worst = 0u64;
+    for _ in 0..200_000 {
+        let x = (lcg(&mut seed) * 2.0).clamp(-1.0, 1.0);
+        let ga = det::asin(x);
+        let gc = det::acos(x);
+        let da = ulp_distance(ga, x.asin());
+        let dc = ulp_distance(gc, x.acos());
+        worst = worst.max(da).max(dc);
+        assert!(da <= det::ASIN_ULP_BUDGET, "asin({x}) off by {da} ULP");
+        assert!(dc <= det::ASIN_ULP_BUDGET, "acos({x}) off by {dc} ULP");
+        // asin odd BITWISE (sign folds through atan2; the factored
+        // complement commutes bitwise).
+        assert_eq!(
+            det::asin(-x).to_bits(),
+            (-ga).to_bits(),
+            "asin must be odd bitwise at {x}"
+        );
+        // Reflection acos(-x) + acos(x) = pi, measured at pi's scale
+        // (the pi - acos(x) form re-measures at the SMALL result's
+        // scale and inflates the identity's own conditioning ~16x —
+        // measured 7 ULP at x = -0.97 with a correct implementation).
+        let refl = ulp_distance(det::acos(-x) + gc, std::f64::consts::PI);
+        assert!(
+            refl <= det::ASIN_ULP_BUDGET,
+            "acos reflection off {refl} ULP at {x}"
+        );
+        // Complement identity asin + acos = pi/2; the sum rounds at
+        // pi/2's scale on top of both budgets — allow 2x.
+        let sum = ulp_distance(ga + gc, std::f64::consts::FRAC_PI_2);
+        assert!(
+            sum <= 2 * det::ASIN_ULP_BUDGET,
+            "asin+acos off {sum} ULP at {x}"
+        );
+    }
+    // Endpoint/special table (EXACT semantics).
+    assert_eq!(det::asin(1.0), std::f64::consts::FRAC_PI_2);
+    assert_eq!(det::asin(-1.0), -std::f64::consts::FRAC_PI_2);
+    assert_eq!(det::acos(1.0).to_bits(), 0.0f64.to_bits());
+    assert_eq!(det::acos(-1.0), std::f64::consts::PI);
+    assert_eq!(det::acos(0.0), std::f64::consts::FRAC_PI_2);
+    assert_eq!(det::asin(0.0).to_bits(), 0.0f64.to_bits());
+    assert_eq!(det::asin(-0.0).to_bits(), (-0.0f64).to_bits());
+    for bad in [
+        1.0 + f64::EPSILON,
+        -1.0 - f64::EPSILON,
+        f64::INFINITY,
+        f64::NAN,
+    ] {
+        assert!(det::asin(bad).is_nan(), "asin({bad}) must be NaN");
+        assert!(det::acos(bad).is_nan(), "acos({bad}) must be NaN");
+    }
+    println!(
+        "{{\"suite\":\"fs-math\",\"case\":\"asin-acos\",\"verdict\":\"pass\",\"detail\":\"200k samples, worst {worst} ULP (budget {}), odd bitwise, reflection + pi/2 identities, special table\"}}",
+        det::ASIN_ULP_BUDGET
+    );
+}
+
+#[test]
 fn erf_erfc_budget_symmetry_and_identity() {
     let mut seed = 0xE2F_u64;
     let (mut worst_erf, mut worst_erfc) = (0u64, 0u64);

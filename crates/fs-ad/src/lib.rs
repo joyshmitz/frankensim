@@ -87,6 +87,22 @@ pub trait Real:
     /// tanh (strict-mode on f64).
     #[must_use]
     fn tanh(self) -> Self;
+    /// asin (strict-mode on f64). Derivative 1/√(1−x²) is UNBOUNDED at
+    /// |x| = 1 — the ±∞/NaN that results is the honest answer (same
+    /// documented convention as `sqrt` at 0; never clamped).
+    #[must_use]
+    fn asin(self) -> Self;
+    /// acos (strict-mode on f64). Derivative −1/√(1−x²); endpoint
+    /// convention as [`Real::asin`].
+    #[must_use]
+    fn acos(self) -> Self;
+    /// atan (strict-mode on f64).
+    #[must_use]
+    fn atan(self) -> Self;
+    /// atan2: `self` is the y argument, `x` the abscissa (strict-mode
+    /// on f64, IEEE special-case table per fs-math).
+    #[must_use]
+    fn atan2(self, x: Self) -> Self;
     /// Integer power.
     #[must_use]
     fn powi(self, n: i32) -> Self;
@@ -143,6 +159,22 @@ impl Real for f64 {
 
     fn tanh(self) -> Self {
         fs_math::det::tanh(self)
+    }
+
+    fn asin(self) -> Self {
+        fs_math::det::asin(self)
+    }
+
+    fn acos(self) -> Self {
+        fs_math::det::acos(self)
+    }
+
+    fn atan(self) -> Self {
+        fs_math::det::atan(self)
+    }
+
+    fn atan2(self, x: Self) -> Self {
+        fs_math::det::atan2(self, x)
     }
 
     fn powi(self, n: i32) -> Self {
@@ -304,6 +336,111 @@ mod tests {
                 g4[i]
             );
         }
+    }
+
+    /// Inverse-trig composite (bead t88x): every new Real op (asin/
+    /// acos/atan/atan2) stacked with the existing ones; tanh squashing
+    /// keeps the inverse-trig arguments comfortably inside (−1, 1).
+    fn inverse_gauntlet<T: Real>(x: T, y: T) -> T {
+        let u = (x - y).tanh() * T::from_f64(0.8);
+        let v = (x * y).tanh() * T::from_f64(0.7);
+        let a = u.asin() + v.acos() * (x * x + T::one()).recip();
+        let b = (y.atan() - u.acos() * T::from_f64(0.25)).exp();
+        let c = x.atan2(y) + (a * b).sin();
+        c.mul_add(a, b.sqrt()) + v.atan()
+    }
+
+    #[test]
+    fn inverse_trig_gradients_match_central_differences() {
+        let mut seed = 0x1_7788_u64;
+        let h = 1e-6;
+        for _ in 0..500 {
+            let x = lcg(&mut seed) * 2.0 + 0.2;
+            let y = lcg(&mut seed) * 2.0 + 0.2;
+            let (_, grad) = gradient([x, y], |[dx, dy]| inverse_gauntlet(dx, dy));
+            let gx = (inverse_gauntlet(x + h, y) - inverse_gauntlet(x - h, y)) / (2.0 * h);
+            let gy = (inverse_gauntlet(x, y + h) - inverse_gauntlet(x, y - h)) / (2.0 * h);
+            for (ad, fd) in [(grad[0], gx), (grad[1], gy)] {
+                let scale = ad.abs().max(fd.abs()).max(1.0);
+                assert!(
+                    (ad - fd).abs() / scale < 5e-9,
+                    "dual {ad} vs FD {fd} at ({x},{y})"
+                );
+            }
+        }
+        println!(
+            "{{\"suite\":\"fs-ad\",\"case\":\"inverse-trig-grad-vs-fd\",\"verdict\":\"pass\",\"detail\":\"500 random points, rel<5e-9\"}}"
+        );
+    }
+
+    #[test]
+    fn inverse_trig_primal_is_bitwise_identical_to_scalar() {
+        let mut seed = 0xA51_u64;
+        for _ in 0..2_000 {
+            let x = lcg(&mut seed) * 3.0 + 0.1;
+            let y = lcg(&mut seed) * 3.0 + 0.1;
+            let scalar = inverse_gauntlet(x, y);
+            let (dual_val, _) = gradient([x, y], |[dx, dy]| inverse_gauntlet(dx, dy));
+            assert_eq!(
+                scalar.to_bits(),
+                dual_val.to_bits(),
+                "dual perturbed the primal at ({x},{y})"
+            );
+        }
+    }
+
+    #[test]
+    fn inverse_trig_known_analytic_derivatives() {
+        for x in [-0.7, -0.3, 0.0, 0.4, 0.85] {
+            let comp = fs_math::det::sqrt((1.0 - x) * (1.0 + x));
+            let (_, ga) = gradient([x], |[d]| d.asin());
+            assert!((ga[0] - 1.0 / comp).abs() / (1.0 / comp) < 1e-15);
+            let (_, gc) = gradient([x], |[d]| d.acos());
+            assert!((gc[0] + 1.0 / comp).abs() / (1.0 / comp) < 1e-15);
+            let (_, gt) = gradient([x], |[d]| d.atan());
+            let want = 1.0 / (1.0 + x * x);
+            assert!((gt[0] - want).abs() / want < 1e-15);
+        }
+        // atan2 partials in an x < 0 quadrant (exercises the π branch):
+        // ∂/∂y = x/(x²+y²), ∂/∂x = −y/(x²+y²).
+        for (y, x) in [(0.7, -1.3), (-0.4, 0.9), (1.1, 0.6), (-0.8, -0.5)] {
+            let (_, g) = gradient([y, x], |[a, b]| a.atan2(b));
+            let r2 = x * x + y * y;
+            assert!((g[0] - x / r2).abs() < 1e-15, "atan2 dy at ({y},{x})");
+            assert!((g[1] + y / r2).abs() < 1e-15, "atan2 dx at ({y},{x})");
+        }
+        // Second derivative through nested duals: asin″ = x/(1−x²)^{3/2}.
+        for x in [0.35, -0.6] {
+            let f = |v: [Dual<Dual64<1>, 1>; 1]| v[0].asin();
+            let (_, _, d2) = second_directional([x], [1.0], f);
+            let want = x / (1.0 - x * x).powf(1.5);
+            assert!(
+                (d2 - want).abs() / want.abs().max(1.0) < 1e-13,
+                "asin'' {d2} vs {want} at {x}"
+            );
+        }
+    }
+
+    #[test]
+    fn inverse_trig_endpoints_are_honest() {
+        // Derivative at |x| = 1 is unbounded — ±∞ reported, never
+        // clamped (the sqrt-at-0 convention).
+        let (_, g) = gradient([1.0], |[d]| d.asin());
+        assert!(
+            g[0].is_infinite() && g[0] > 0.0,
+            "asin'(1) must be +inf, got {}",
+            g[0]
+        );
+        // acos is DECREASING: its unbounded endpoint slope is −∞.
+        let (_, g) = gradient([-1.0], |[d]| d.acos());
+        assert!(
+            g[0].is_infinite() && g[0] < 0.0,
+            "acos'(-1) must be -inf, got {}",
+            g[0]
+        );
+        // Outside the domain the primal is NaN (libm convention).
+        let (v, _) = gradient([1.5], |[d]| d.acos());
+        assert!(v.is_nan(), "acos(1.5) must be NaN, got {v}");
     }
 
     #[test]

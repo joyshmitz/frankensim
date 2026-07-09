@@ -344,6 +344,10 @@ fn scale_by_2k(v: f64, k: i64) -> f64 {
 pub const TAN_ULP_BUDGET: u64 = 8;
 /// Declared ULP budget for [`atan`]/[`atan2`].
 pub const ATAN_ULP_BUDGET: u64 = 4;
+/// Declared ULP budget for [`asin`]/[`acos`]: atan2's budget plus the
+/// rounding of the factored complement √((1−x)(1+x)) (≤ 1.5 ULP into
+/// the atan argument).
+pub const ASIN_ULP_BUDGET: u64 = 6;
 /// Declared ULP budget for [`erf`].
 pub const ERF_ULP_BUDGET: u64 = 6;
 /// Declared ULP budget for [`erfc`].
@@ -481,6 +485,33 @@ pub fn atan2(y: f64, x: f64) -> f64 {
     } else {
         sign * ((PI_HI - base) + PI_LO)
     }
+}
+
+/// asin(x), deterministic strict mode, via `atan2(x, √((1−x)(1+x)))`.
+/// The FACTORED product keeps the complement conditioned at the
+/// endpoints (1 − x² cancels catastrophically for |x| → 1; the factors
+/// do not). Odd BITWISE (inherited from atan2's sign fold). Domain:
+/// |x| ≤ 1; outside → NaN (libm convention). asin(±1) = ±π/2 exactly
+/// (nearest f64), through atan2's x = 0 special case.
+#[must_use]
+pub fn asin(x: f64) -> f64 {
+    if x.is_nan() || x.abs() > 1.0 {
+        return f64::NAN;
+    }
+    atan2(x, ((1.0 - x) * (1.0 + x)).sqrt())
+}
+
+/// acos(x), deterministic strict mode, via `atan2(√((1−x)(1+x)), x)`.
+/// Same factored complement as [`asin`]. Domain: |x| ≤ 1; outside →
+/// NaN. acos(1) = +0 and acos(−1) = π exactly (nearest f64), through
+/// atan2's y = 0 special case; the reflection acos(−x) = π − acos(x)
+/// holds within the declared budget (not bitwise — π rounds).
+#[must_use]
+pub fn acos(x: f64) -> f64 {
+    if x.is_nan() || x.abs() > 1.0 {
+        return f64::NAN;
+    }
+    atan2(((1.0 - x) * (1.0 + x)).sqrt(), x)
 }
 
 /// 2/√π and π as double-double values, derived at runtime from exact

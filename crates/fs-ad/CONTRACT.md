@@ -69,7 +69,12 @@ Gradient-vs-central-FD on 500 random points of a 3-deep composite (rel
 < 5e-9); primal bitwise fidelity battery; analytic first+second derivatives
 (sin x²); JVP ≡ grad·v; GENERIC NEWTON differentiated through convergence
 (d c^(1/3)/dc to 1e-10); kink/singularity conventions; lane-packing
-equivalence.
+equivalence. INVERSE TRIG (bead t88x): asin/acos/atan/atan2 on `Real`
+(f64 → det::*, Dual chain rules incl. binary atan2 partials
+(x·dy − y·dx)/(x²+y²)); gradcheck lanes — inverse gauntlet vs central
+FD (500 pts, rel < 5e-9), primal BITWISE vs scalar, analytic first +
+second derivatives through nested duals, honest endpoints (asin′(1) =
++∞, acos′(−1) = −∞ since acos decreases; never clamped).
 
 ## No-claim boundaries
 - Qty-typed duals: requires fs-qty generalization to Qty<S: Real> (recorded

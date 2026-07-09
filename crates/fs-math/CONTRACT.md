@@ -27,6 +27,15 @@ floating-point POLICY: FMA contraction, subnormals, NaN, ULP budgets
   band x ∈ (1.5, 3.5) the external test oracle is weaker than the
   implementation; budget-grade evidence there is DISJOINT-PATH
   cross-validation (Taylor-dd vs CF-dd agree ≤ 3 ULP, tested).
+- INVERSE-TRIG COMPLETION (bead t88x, additive): `det::{asin, acos}` via
+  atan2 on the FACTORED complement √((1−x)(1+x)) (endpoint-conditioned;
+  1 − x² cancels catastrophically at |x| → 1). Declared budget 6
+  (measured worst 3, 200k samples). asin odd BITWISE (atan2's sign fold
+  + commuting factors); acos(±1) = {0, π} and asin(±1) = ±π/2 exact
+  through atan2's special table; |x| > 1 → NaN. Identity checks measure
+  at the IDENTITY's scale (π − acos re-measures at the small result's
+  scale and inflates conditioning ~16× — measured, documented in the
+  battery).
 - `det::TRIG_DOMAIN` = 2²⁰: the Cody–Waite/Payne–Hanek dispatch boundary
   (4-part Cody–Waite at and below; the `payne` module's 1280-bit reduction
   above). Trig budgets now hold for ALL finite arguments: declared

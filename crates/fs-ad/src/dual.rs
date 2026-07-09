@@ -222,6 +222,38 @@ impl<T: Real, const N: usize> Real for Dual<T, N> {
         self.chain(t, T::one() - t * t)
     }
 
+    fn asin(self) -> Self {
+        // d asin = 1/√(1−x²) with the complement FACTORED (endpoint
+        // conditioning, matching det::asin); unbounded at |x| = 1 —
+        // the ±∞/NaN is the honest answer (sqrt-at-0 convention).
+        let df = ((T::one() - self.re) * (T::one() + self.re)).sqrt().recip();
+        self.chain(self.re.asin(), df)
+    }
+
+    fn acos(self) -> Self {
+        let df = ((T::one() - self.re) * (T::one() + self.re)).sqrt().recip();
+        self.chain(self.re.acos(), -df)
+    }
+
+    fn atan(self) -> Self {
+        let df = (T::one() + self.re * self.re).recip();
+        self.chain(self.re.atan(), df)
+    }
+
+    fn atan2(self, x: Self) -> Self {
+        // Binary partials: ∂/∂y = x/(x²+y²), ∂/∂x = −y/(x²+y²), fed
+        // per-lane as (x·dy − y·dx)/(x²+y²). At the origin the primal
+        // follows atan2's IEEE table and the derivative is NaN —
+        // honest, never patched.
+        let re = self.re.atan2(x.re);
+        let denom = (x.re * x.re + self.re * self.re).recip();
+        let mut eps = [T::zero(); N];
+        for (i, e) in eps.iter_mut().enumerate() {
+            *e = (x.re * self.eps[i] - self.re * x.eps[i]) * denom;
+        }
+        Dual { re, eps }
+    }
+
     fn powi(self, n: i32) -> Self {
         if n == 0 {
             return Self::one();
