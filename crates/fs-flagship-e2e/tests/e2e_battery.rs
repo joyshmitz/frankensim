@@ -107,7 +107,7 @@ fn frame_smoke() -> StageArtifact {
         ("lp_residual", layout.residual),
         ("volume", layout.volume),
         ("p_hat", frag.p_hat),
-        ("members_used", frag.members_used as f64),
+        ("members_used", f64::from(frag.members_used)),
     ];
     artifact("frame", Tier::Smoke, metrics, t0.elapsed().as_secs_f64())
 }
@@ -286,7 +286,11 @@ fn fe2e_006_erace_consistency_audit() {
 }
 
 /// fe2e-007: FAILURE DRILLS — each with an expected structured outcome.
+/// (One test = one drill SUITE: the four scenarios share fixtures and
+/// their outcomes gate together — the length is the drill inventory,
+/// not incidental complexity.)
 #[test]
+#[allow(clippy::too_many_lines)]
 fn fe2e_007_failure_drills() {
     // (a) CANCELLATION STORM: kill half the candidates mid-race; the
     // race completes, the winner is a survivor, kills are recorded.
