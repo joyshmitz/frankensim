@@ -215,12 +215,12 @@ fn ac_003_package_recheck_solver_free_and_voi_hint() {
     let pkg = EvidencePackage::new(Provenance::new("acceptance-e2e", "Cargo.lock"))
         .with_claim(Claim::new(
             "wedge-qoi-interval",
-            &format!("certified half-width {bound:.3e} at tol 6e-3"),
+            format!("certified half-width {bound:.3e} at tol 6e-3"),
             last.color.clone(),
         ))
         .with_claim(Claim::new(
             "voi-hint",
-            &hint,
+            hint.clone(),
             Color::Estimated {
                 estimator: "voi-myopic".to_string(),
                 dispersion: 1.0,
