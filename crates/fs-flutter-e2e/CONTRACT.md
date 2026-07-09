@@ -21,8 +21,12 @@ Deps point downward.
 
 - The system is asymptotically stable iff `μ < 2`; `lyapunov_certifies_stability
   (A(μ), I)` recovers exactly that boundary → the certificate is `Verified`.
-- CERTIFYING THE CERTIFIER: the independent spectral abscissa `−1 + μ/2 < 0`
-  gives the SAME boundary (`boundaries_agree`).
+- INDEPENDENT CROSS-CHECK: the Lyapunov `P=I` proof is only SUFFICIENT (it equals
+  `−1+μ/2 < 0`). The necessary-and-sufficient eigenvalue criterion `−1+√(μ−1) < 0`
+  is a genuinely different function of `μ` that reaches the same boundary, so the
+  certificate is TIGHT (`boundaries_agree`). Separately, `fs-spectral`'s
+  numerical abscissa recomputes the Lyapunov condition, so its per-sample
+  agreement with `fs-sos` (`impl_consistent`) is an implementation cross-check.
 - The naive partitioned solver quits early; Aitken relaxation converges strictly
   past it (`aitken_beats_naive`), giving a witness `μ` that is certified stable,
   beyond the naive solver, and Aitken-computable.

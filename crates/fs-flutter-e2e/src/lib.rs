@@ -16,10 +16,14 @@
 //!   `P ≻ 0` and `−(AᵀP + PA) ≻ 0`. With `P = I` this reduces to the eigenvalues
 //!   of `[[2, −μ], [−μ, 2]]` being positive, i.e. `μ < 2` — the certificate
 //!   recovers the EXACT boundary and is `Verified`.
-//! - **The cross-check** ([`fs_spectral`]): independently, the symmetric part
-//!   `(Aᵀ+A)/2 = [[−1, μ/2], [μ/2, −1]]` has largest eigenvalue `−1 + μ/2 < 0`
-//!   iff `μ < 2`. Two different methods agree on the boundary — certifying the
-//!   certifier.
+//! - **The independent cross-check.** The Lyapunov `P=I` proof is only a
+//!   SUFFICIENT condition (it equals `max eig((Aᵀ+A)/2) < 0`, i.e. `−1+μ/2 < 0`).
+//!   The necessary-AND-sufficient criterion is `A`'s ACTUAL eigenvalues
+//!   `−1 ± √(μ−1)`, whose largest real part crosses zero at `μ = 2` too — a
+//!   DIFFERENT curve of `μ` reaching the same boundary, so the certificate is
+//!   TIGHT here. Separately, [`fs_spectral`] recomputes the symmetric-part
+//!   abscissa (the Lyapunov condition) so its agreement with `fs-sos` is an
+//!   implementation cross-check of the two crates.
 //! - **The solver** ([`fs_couple`]): to actually COMPUTE the coupled response by
 //!   a partitioned scheme, naive staggering diverges early (`μ ≥ 1`), but Aitken
 //!   relaxation converges across the whole physically-stable range up to `μ*`.
@@ -38,14 +42,27 @@ pub fn operator(mu: f64) -> [[f64; 2]; 2] {
     [[-1.0, 1.0], [mu - 1.0, -1.0]]
 }
 
-/// The largest eigenvalue of the symmetric part `(Aᵀ+A)/2` — the numerical
-/// abscissa (an independent decay-rate witness).
+/// The NUMERICAL abscissa: largest eigenvalue of the symmetric part `(Aᵀ+A)/2`,
+/// via [`fs_spectral`]. This is EXACTLY the Lyapunov-`P=I` condition
+/// (`−(Aᵀ+A) ≻ 0 ⇔ this < 0`), so its agreement with the `fs-sos` certificate is
+/// an IMPLEMENTATION cross-check between the two crates — not a new method.
 #[must_use]
-pub fn spectral_abscissa(mu: f64) -> f64 {
+pub fn numerical_abscissa(mu: f64) -> f64 {
     let sym = vec![vec![-1.0, mu / 2.0], vec![mu / 2.0, -1.0]];
     symmetric_eigenvalues(&sym).map_or(f64::INFINITY, |e| {
         e.into_iter().fold(f64::NEG_INFINITY, f64::max)
     })
+}
+
+/// The SPECTRAL abscissa: largest real part of `A(μ)`'s ACTUAL eigenvalues
+/// `−1 ± √(μ−1)` (trace `−2`, det `2−μ`). This is the necessary-AND-sufficient
+/// asymptotic-stability criterion — genuinely independent of the (merely
+/// sufficient) quadratic-Lyapunov certificate, so its boundary agreeing with the
+/// Lyapunov boundary shows the `P=I` certificate is TIGHT for this operator.
+#[must_use]
+pub fn spectral_abscissa(mu: f64) -> f64 {
+    // μ < 1 → complex pair with real part −1; μ ≥ 1 → real, max = −1 + √(μ−1).
+    -1.0 + (mu - 1.0).max(0.0).sqrt()
 }
 
 /// One sampled operating point.
@@ -53,10 +70,14 @@ pub fn spectral_abscissa(mu: f64) -> f64 {
 pub struct Sample {
     /// Added-mass ratio.
     pub mu: f64,
-    /// Lyapunov certificate: is the system provably stable at this `μ`?
+    /// Lyapunov certificate (fs-sos, `P=I`): is the system provably stable?
     pub lyapunov_stable: bool,
-    /// Independent spectral abscissa (`< 0` ⇔ stable).
-    pub abscissa: f64,
+    /// Numerical abscissa (fs-spectral, symmetric part) — the Lyapunov condition,
+    /// for the implementation cross-check.
+    pub numerical_abscissa: f64,
+    /// Spectral abscissa (A's actual eigenvalues) — the independent criterion
+    /// (`< 0` ⇔ asymptotically stable).
+    pub spectral_abscissa: f64,
     /// Did a naive staggered partitioned solve converge?
     pub naive_converged: bool,
     /// Did the Aitken-relaxed partitioned solve converge?
@@ -70,10 +91,14 @@ pub struct FlutterReport {
     pub samples: Vec<Sample>,
     /// The largest `μ` the Lyapunov proof certifies stable (the proven boundary).
     pub lyapunov_boundary: f64,
-    /// The largest `μ` the independent spectral test calls stable.
-    pub spectral_boundary: f64,
-    /// Do the two independent boundaries agree (certifying the certifier)?
+    /// The largest `μ` the INDEPENDENT eigenvalue criterion calls stable.
+    pub eigen_boundary: f64,
+    /// Do the Lyapunov (sufficient) and eigenvalue (necessary+sufficient)
+    /// boundaries agree — the P=I certificate is tight (a genuine cross-check)?
     pub boundaries_agree: bool,
+    /// Do the fs-sos Lyapunov flag and fs-spectral numerical abscissa agree at
+    /// every sample (an implementation cross-check of the SAME condition)?
+    pub impl_consistent: bool,
     /// The largest `μ` a naive partitioned solve converged at.
     pub naive_boundary: f64,
     /// The largest `μ` the Aitken partitioned solve converged at.
@@ -101,7 +126,6 @@ pub fn run_campaign(lo: f64, hi: f64, steps: usize) -> FlutterReport {
             lo * (1.0 - k as f64 / (steps - 1) as f64),
         );
         let lyapunov_stable = lyapunov_certifies_stability(operator(mu), [[1.0, 0.0], [0.0, 1.0]]);
-        let abscissa = spectral_abscissa(mu);
         // Partitioned interface solves (fixed-point of H(x) = −μx + c). The
         // naive iteration gets a GENEROUS cap so its non-convergence reflects the
         // FUNDAMENTAL divergence for μ ≥ 1 (contraction factor μ), not a
@@ -111,7 +135,8 @@ pub fn run_campaign(lo: f64, hi: f64, steps: usize) -> FlutterReport {
         samples.push(Sample {
             mu,
             lyapunov_stable,
-            abscissa,
+            numerical_abscissa: numerical_abscissa(mu),
+            spectral_abscissa: spectral_abscissa(mu),
             naive_converged: naive.converged,
             aitken_converged: aitken.converged,
         });
@@ -125,7 +150,10 @@ pub fn run_campaign(lo: f64, hi: f64, steps: usize) -> FlutterReport {
             .fold(f64::NEG_INFINITY, f64::max)
     };
     let lyapunov_boundary = last_true(&|s| s.lyapunov_stable);
-    let spectral_boundary = last_true(&|s| s.abscissa < 0.0);
+    let eigen_boundary = last_true(&|s| s.spectral_abscissa < 0.0);
+    let impl_consistent = samples
+        .iter()
+        .all(|s| s.lyapunov_stable == (s.numerical_abscissa < 0.0));
     let naive_boundary = last_true(&|s| s.naive_converged);
     let aitken_boundary = last_true(&|s| s.aitken_converged);
 
@@ -137,10 +165,11 @@ pub fn run_campaign(lo: f64, hi: f64, steps: usize) -> FlutterReport {
     let witness_color = witness.map(|_| Color::Verified { lo: 0.0, hi: 0.0 });
 
     FlutterReport {
-        boundaries_agree: (lyapunov_boundary - spectral_boundary).abs() < 1e-9,
+        boundaries_agree: (lyapunov_boundary - eigen_boundary).abs() < 1e-9,
+        impl_consistent,
         aitken_beats_naive: aitken_boundary > naive_boundary + 1e-9,
         lyapunov_boundary,
-        spectral_boundary,
+        eigen_boundary,
         naive_boundary,
         aitken_boundary,
         witness_mu: witness,

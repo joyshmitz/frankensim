@@ -14,12 +14,15 @@ fn the_flutter_boundary_is_proven_and_cross_checked() {
         "lyapunov boundary {}",
         report.lyapunov_boundary
     );
-    // an INDEPENDENT spectral test agrees — certifying the certifier.
+    // the INDEPENDENT eigenvalue criterion (necessary+sufficient) reaches the
+    // same boundary — the P=I certificate is tight; and the fs-sos / fs-spectral
+    // implementations of the sufficient condition agree at every sample.
     assert!(
         report.boundaries_agree,
-        "lyapunov {} vs spectral {}",
-        report.lyapunov_boundary, report.spectral_boundary
+        "lyapunov {} vs eigen {}",
+        report.lyapunov_boundary, report.eigen_boundary
     );
+    assert!(report.impl_consistent, "fs-sos and fs-spectral disagree");
     // the naive partitioned solver quits early; only Aitken reaches the boundary.
     assert!(
         report.naive_boundary < 1.05,
@@ -45,10 +48,10 @@ fn the_flutter_boundary_is_proven_and_cross_checked() {
     );
     assert!(matches!(report.witness_color, Some(Color::Verified { .. })));
     println!(
-        "{{\"campaign\":\"fluttercert\",\"lyapunov_boundary\":{:.3},\"spectral_boundary\":{:.3},\
+        "{{\"campaign\":\"fluttercert\",\"lyapunov_boundary\":{:.3},\"eigen_boundary\":{:.3},\
          \"naive_boundary\":{:.3},\"aitken_boundary\":{:.3},\"witness_mu\":{:.3}}}",
         report.lyapunov_boundary,
-        report.spectral_boundary,
+        report.eigen_boundary,
         report.naive_boundary,
         report.aitken_boundary,
         mu,
@@ -58,9 +61,11 @@ fn the_flutter_boundary_is_proven_and_cross_checked() {
 #[test]
 fn beyond_the_boundary_is_not_certified() {
     let report = run_campaign(2.1, 3.0, 10);
-    // every sample is past μ* = 2 → no Lyapunov certificate anywhere.
+    // every sample is past μ* = 2 → no Lyapunov certificate anywhere, and BOTH
+    // abscissae (symmetric-part and actual-eigenvalue) are non-negative.
     assert!(report.samples.iter().all(|s| !s.lyapunov_stable));
-    assert!(report.samples.iter().all(|s| s.abscissa >= 0.0));
+    assert!(report.samples.iter().all(|s| s.numerical_abscissa >= 0.0));
+    assert!(report.samples.iter().all(|s| s.spectral_abscissa >= 0.0));
 }
 
 #[test]
