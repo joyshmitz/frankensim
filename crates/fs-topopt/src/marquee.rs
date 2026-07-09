@@ -271,6 +271,12 @@ pub struct MarqueeReport {
     pub design: DensityDesign,
     /// Total octree splits across the run.
     pub total_splits: usize,
+    /// Final refined leaves whose one-cell halo intersects the design
+    /// boundary; this is the executable footprint evidence for
+    /// DWR-driven boundary-band concentration.
+    pub refined_boundary_leaves: usize,
+    /// Final refined leaves away from the design-boundary halo.
+    pub refined_off_boundary_leaves: usize,
     /// Total mesh rebuilds (MUST be zero — asserted by the caller).
     pub total_rebuilds: usize,
 }
@@ -373,11 +379,19 @@ pub fn run_marquee(
                 + (1.0 - tx) * ty * v(3)
         };
         let flux_at = |x: f64, y: f64| -> f64 {
-            // One-sided probe of u along the inward normal.
+            // Probe u a fixed depth INSIDE the solid measured from the
+            // INTERFACE, from either side: first-order signed distance
+            // s = phi/|grad phi| (positive in the void), then step
+            // (s + h) against the gradient. Probing from the raw node
+            // position left void-side nodes reading zero flux and
+            // biased the run toward shrinking the cooled boundary (the
+            // J-rises bug of an earlier draft).
             let gph = design.gradient([x, y]);
             let norm = (gph[0] * gph[0] + gph[1] * gph[1]).sqrt().max(1e-9);
-            let h = 0.02;
-            let u = u_at(x - h * gph[0] / norm, y - h * gph[1] / norm);
+            let sdist = design.value([x, y]) / norm;
+            let h = 0.05;
+            let depth = sdist + h;
+            let u = u_at(x - depth * gph[0] / norm, y - depth * gph[1] / norm);
             (u / h).powi(2)
         };
         let mut moves = vec![0.0f64; n * n];
@@ -387,12 +401,29 @@ pub fn run_marquee(
         let lattice_scale = (n - 1) as f64;
         for k in 0..n * n {
             let (i, jj) = (k % n, k / n);
-            #[allow(clippy::cast_precision_loss)]
-            let (x, y) = (i as f64 / lattice_scale, jj as f64 / lattice_scale);
-            let phi = design.value([x, y]);
-            if phi.abs() < 0.12 {
+            // Interface-adjacent = a 4-neighbor on the other side of
+            // the 0.5 level (phi is a density gap, NOT a distance —
+            // testing |phi| < eps found zero band nodes and froze the
+            // whole update in an earlier draft).
+            let solid = design.rho[k] > 0.5;
+            let mut near = false;
+            if i > 0 {
+                near |= (design.rho[k - 1] > 0.5) != solid;
+            }
+            if i + 1 < n {
+                near |= (design.rho[k + 1] > 0.5) != solid;
+            }
+            if jj > 0 {
+                near |= (design.rho[k - n] > 0.5) != solid;
+            }
+            if jj + 1 < n {
+                near |= (design.rho[k + n] > 0.5) != solid;
+            }
+            if near {
+                #[allow(clippy::cast_precision_loss)]
+                let (x, y) = (i as f64 / lattice_scale, jj as f64 / lattice_scale);
                 let fl = flux_at(x, y);
-                moves[k] = fl;
+                moves[k] = fl.max(1e-12);
                 flux_sum += fl;
                 flux_cnt += 1;
             }
@@ -407,25 +438,39 @@ pub fn run_marquee(
                 design.rho[k] = (design.rho[k] - step * rel.clamp(-1.0, 1.0)).clamp(0.02, 0.98);
             }
         }
-        // Volume projection: uniform shift, bisected.
-        let (mut lo, mut hi) = (-0.5f64, 0.5f64);
-        for _ in 0..40 {
-            let mid = f64::midpoint(lo, hi);
-            let vol: f64 = design
-                .rho
-                .iter()
-                .map(|r| (r + mid).clamp(0.02, 0.98))
-                .sum::<f64>()
-                / design.rho.len() as f64;
-            if vol > target_volume {
-                hi = mid;
-            } else {
-                lo = mid;
+        // Volume projection ON THE BAND ONLY: a uniform shift over all
+        // nodes silently fills the voids from the inside (interior
+        // void nodes creep past 0.5 over iterations — the J-rising
+        // bias of an earlier draft). The correction lives where the
+        // moves happened.
+        let band: Vec<usize> = (0..n * n).filter(|&k| moves[k] > 0.0).collect();
+        if !band.is_empty() {
+            let (mut lo, mut hi) = (-0.5f64, 0.5f64);
+            for _ in 0..40 {
+                let mid = f64::midpoint(lo, hi);
+                let vol: f64 = design
+                    .rho
+                    .iter()
+                    .enumerate()
+                    .map(|(k, r)| {
+                        if moves[k] > 0.0 {
+                            (r + mid).clamp(0.02, 0.98)
+                        } else {
+                            *r
+                        }
+                    })
+                    .sum::<f64>()
+                    / design.rho.len() as f64;
+                if vol > target_volume {
+                    hi = mid;
+                } else {
+                    lo = mid;
+                }
             }
-        }
-        let shift = f64::midpoint(lo, hi);
-        for r in &mut design.rho {
-            *r = (*r + shift).clamp(0.02, 0.98);
+            let shift = f64::midpoint(lo, hi);
+            for &k in &band {
+                design.rho[k] = (design.rho[k] + shift).clamp(0.02, 0.98);
+            }
         }
         // --- DWR-gated refinement: splits ONLY, band-uniform. --------
         // fs-cutfem requires the CUT BAND at a uniform level (its
@@ -468,10 +513,23 @@ pub fn run_marquee(
             wall_ms,
         });
     }
+    let mut refined_boundary_leaves = 0usize;
+    let mut refined_off_boundary_leaves = 0usize;
+    for leaf in grid.leaves().filter(|leaf| leaf.0 > base_level) {
+        let (lo, hi) = grid.rect(leaf);
+        if halo_cut(&design, lo, hi) {
+            refined_boundary_leaves += 1;
+        } else {
+            refined_off_boundary_leaves += 1;
+        }
+    }
+
     Ok(MarqueeReport {
         iterations,
         design,
         total_splits,
+        refined_boundary_leaves,
+        refined_off_boundary_leaves,
         total_rebuilds: 0,
     })
 }
