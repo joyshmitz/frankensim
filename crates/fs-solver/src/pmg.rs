@@ -9,30 +9,338 @@
 //! MATRIX-FREE through sum factorization (P6: only the r = 1 coarse
 //! problem is ever assembled, and SA-AMG preconditions its CG solve).
 //!
-//! Smoothing: matrix-free Chebyshev on the Jacobi-scaled operator
-//! (many-core-honest — no sequential dependencies). Iteration counts
-//! grow MILDLY with r (the hierarchical-injection CBS angle; measured
-//! and envelope-gated, not hidden) — the overlapping-patch Schwarz
-//! smoother that buys true p-independence is a recorded follow-up
-//! (element-matrix and Dirichlet-block variants were tried here and
-//! measured WEAKER than Chebyshev at fixture scale; the diagnosis
-//! lives in the bead trail).
+//! Smoothing (bead x08j): Chebyshev accelerating VERTEX-CENTERED
+//! overlapping-patch additive Schwarz. Each patch is the tensor window
+//! of all dofs on the (up to) 8 elements around an interior vertex;
+//! because the global operator is the Kronecker sum of assembled 1D
+//! matrices, the patch operator is EXACTLY the Kronecker sum of 1D
+//! windows, and local solves use FAST DIAGONALIZATION (per-axis
+//! generalized eigenproblems K·v = λ·M·v, sizes ≤ 2r+1, shared across
+//! the ≤ 3 distinct 1D trim signatures on the uniform grid) — exact
+//! patch inverses, no (2r+1)³ dense factorization. This replaces the
+//! Jacobi scaling inside the Chebyshev smoother and kills the
+//! CBS-angle p-growth the pointwise smoother had (MEASURED history:
+//! element-matrix EBE Schwarz 50 iters and Dirichlet-block ω-Schwarz
+//! 41 iters where Jacobi-Chebyshev needed 8 — both in the tfz.10 bead
+//! trail; Jacobi-Chebyshev itself grew mildly with r — the x08j
+//! ladder gates the flat counts).
 
 use crate::op::LinearOp;
 use fs_feec::TensorSpace;
+use fs_la::eigen::jacobi_eigh;
 use fs_sparse::precond::{Precond, SaAmg};
 use fs_sparse::{Coo, Csr};
 
-/// One p-MG level: the tensor space, its interior mask, Jacobi
-/// diagonal, and the Chebyshev spectral bound.
+/// One p-MG level: the tensor space, its interior mask, the vertex
+/// Schwarz smoother data, and the Chebyshev spectral bound (of the
+/// Schwarz-preconditioned operator).
 struct Level {
     space: TensorSpace,
     mask: Vec<bool>,
-    diag: Vec<f64>,
+    schwarz: VertexSchwarz,
     lambda_max: f64,
     /// 1D lattice injection map INTO the next-finer level (absent on
     /// the finest level).
     inject1: Option<Vec<usize>>,
+}
+
+// ---------------------------------------------------------------------------
+// Vertex-patch Schwarz via fast diagonalization.
+// ---------------------------------------------------------------------------
+
+/// One distinct 1D patch factor: the window indices, the generalized
+/// eigenpairs (K·v = λ·M·v on the window) with V M-orthonormal
+/// (VᵀMV = I, VᵀKV = Λ) — the axis ingredient of fast diagonalization.
+struct AxisPatch {
+    /// Window LENGTH (indices are per-vertex offsets; the eigendata is
+    /// translation-invariant on the uniform grid, the window is not —
+    /// sharing the representative's indices misdirected every second
+    /// interior vertex at m ≥ 5 and the preconditioner went singular
+    /// on the uncovered cells: MEASURED as 29 iters at m=5 and outright
+    /// failure at m=6 before the fix).
+    nloc: usize,
+    /// Row-major nloc×nloc; COLUMNS are the eigenvectors.
+    v: Vec<f64>,
+    lam: Vec<f64>,
+}
+
+/// In-place lower-Cholesky of a small SPD row-major matrix.
+fn cholesky(a: &mut [f64], n: usize) {
+    for i in 0..n {
+        for j in 0..=i {
+            let mut s = a[i * n + j];
+            for k in 0..j {
+                s -= a[i * n + k] * a[j * n + k];
+            }
+            if i == j {
+                assert!(s > 0.0, "patch mass matrix must be SPD");
+                a[i * n + i] = fs_math::det::sqrt(s);
+            } else {
+                a[i * n + j] = s / a[j * n + j];
+            }
+        }
+    }
+    // Zero the strict upper triangle (storage hygiene).
+    for i in 0..n {
+        for j in i + 1..n {
+            a[i * n + j] = 0.0;
+        }
+    }
+}
+
+fn build_axis_patch(mass: &[f64], stiff: &[f64], n1: usize, idx: &[usize]) -> AxisPatch {
+    let nl = idx.len();
+    let mut ml = vec![0.0f64; nl * nl];
+    let mut kl = vec![0.0f64; nl * nl];
+    for (a, &i) in idx.iter().enumerate() {
+        for (b, &j) in idx.iter().enumerate() {
+            ml[a * nl + b] = mass[i * n1 + j];
+            kl[a * nl + b] = stiff[i * n1 + j];
+        }
+    }
+    // Generalized K v = λ M v via M = LLᵀ: C = L⁻¹ K L⁻ᵀ, eig(C) = (Λ, W),
+    // V = L⁻ᵀ W (then VᵀMV = I, VᵀKV = Λ).
+    let mut l = ml;
+    cholesky(&mut l, nl);
+    // C = L⁻¹ K L⁻ᵀ: forward-solve L·X = K (column-wise), then
+    // C = X L⁻ᵀ i.e. solve L·Cᵀ = Xᵀ (C symmetric).
+    let mut x = kl;
+    // Forward substitution on each column of X (L X = K).
+    for c in 0..nl {
+        for i in 0..nl {
+            let mut s = x[i * nl + c];
+            for k in 0..i {
+                s -= l[i * nl + k] * x[k * nl + c];
+            }
+            x[i * nl + c] = s / l[i * nl + i];
+        }
+    }
+    // Now rows: C Lᵀ = X  ⇒  for each row of C: L (C row)ᵀ = (X row)ᵀ.
+    let mut cmat = vec![0.0f64; nl * nl];
+    for rrow in 0..nl {
+        for i in 0..nl {
+            let mut s = x[rrow * nl + i];
+            for k in 0..i {
+                s -= l[i * nl + k] * cmat[rrow * nl + k];
+            }
+            cmat[rrow * nl + i] = s / l[i * nl + i];
+        }
+    }
+    let (lam, w) = jacobi_eigh(&cmat, nl);
+    // V = L⁻ᵀ W: back-substitute Lᵀ V = W per column.
+    let mut v = w;
+    for c in 0..nl {
+        for i in (0..nl).rev() {
+            let mut s = v[i * nl + c];
+            for k in i + 1..nl {
+                s -= l[k * nl + i] * v[k * nl + c];
+            }
+            v[i * nl + c] = s / l[i * nl + i];
+        }
+    }
+    AxisPatch { nloc: nl, v, lam }
+}
+
+/// Additive vertex-patch Schwarz over the (m−1)³ interior vertices,
+/// exact per-patch inverses by fast diagonalization. SPD by
+/// construction (Σ RᵀA_patch⁻¹R); used as the inner preconditioner of
+/// the Chebyshev smoother, which normalizes its spectrum.
+struct VertexSchwarz {
+    /// Distinct 1D windows (interior / left-trimmed / right-trimmed).
+    types: Vec<AxisPatch>,
+    /// Per interior vertex (indexed v − 1, v ∈ 1..m): window start
+    /// and eigendata type.
+    windows: Vec<(usize, usize)>,
+    /// Symmetrized partition-of-unity weights 1/√(patch multiplicity)
+    /// per dof (0 on the boundary): S = D^½ Σ RᵀAᵢ⁻¹R D^½ stays SPD
+    /// while normalizing the overlap counting — without it λ_max(S·A)
+    /// JUMPS when the per-axis window multiplicity first reaches 3
+    /// (m ≥ 4) and the m-ladder counts grew 8 → 13 (measured).
+    dw: Vec<f64>,
+}
+
+impl VertexSchwarz {
+    fn new(space: &TensorSpace) -> VertexSchwarz {
+        let (m, r, n1) = (space.m, space.r, space.n1);
+        assert!(m >= 2, "vertex-patch Schwarz needs m >= 2");
+        let (mass, stiff) = space.assembled_1d();
+        let mut types = Vec::new();
+        let mut sig_of = std::collections::HashMap::new();
+        let mut windows = Vec::with_capacity(m - 1);
+        for v in 1..m {
+            let lo = ((v - 1) * r).max(1);
+            let hi = ((v + 1) * r).min(n1 - 2);
+            let sig = (v == 1, v == m - 1);
+            let t = *sig_of.entry(sig).or_insert_with(|| {
+                let idx: Vec<usize> = (lo..=hi).collect();
+                types.push(build_axis_patch(&mass, &stiff, n1, &idx));
+                types.len() - 1
+            });
+            windows.push((lo, t));
+        }
+        // Per-dof multiplicity = product of per-axis 1D window counts.
+        let mut c1 = vec![0u32; n1];
+        for v in 1..m {
+            let lo = ((v - 1) * r).max(1);
+            let hi = ((v + 1) * r).min(n1 - 2);
+            for c in c1.iter_mut().take(hi + 1).skip(lo) {
+                *c += 1;
+            }
+        }
+        let mut dw = vec![0.0f64; n1 * n1 * n1];
+        for i in 0..n1 {
+            for j in 0..n1 {
+                for k in 0..n1 {
+                    let mult = c1[i] * c1[j] * c1[k];
+                    if mult > 0 {
+                        dw[(i * n1 + j) * n1 + k] = 1.0 / fs_math::det::sqrt(f64::from(mult));
+                    }
+                }
+            }
+        }
+        VertexSchwarz { types, windows, dw }
+    }
+
+    /// out = D^½ Σ_patches Rᵀ A_patch⁻¹ R D^½ · rhs (additive,
+    /// PU-symmetrized; out overwritten).
+    fn apply(&self, space: &TensorSpace, rhs: &[f64], out: &mut [f64]) {
+        out.fill(0.0);
+        let rhs: Vec<f64> = rhs.iter().zip(&self.dw).map(|(v, w)| v * w).collect();
+        let rhs = rhs.as_slice();
+        let m = space.m;
+        for vx in 1..m {
+            let (lox, tx) = self.windows[vx - 1];
+            let ax = &self.types[tx];
+            for vy in 1..m {
+                let (loy, ty) = self.windows[vy - 1];
+                let ay = &self.types[ty];
+                for vz in 1..m {
+                    let (loz, tz) = self.windows[vz - 1];
+                    let az = &self.types[tz];
+                    let (nx, ny, nz) = (ax.nloc, ay.nloc, az.nloc);
+                    // Gather the local cube.
+                    let mut loc = vec![0.0f64; nx * ny * nz];
+                    for a in 0..nx {
+                        for b in 0..ny {
+                            for c in 0..nz {
+                                loc[(a * ny + b) * nz + c] =
+                                    rhs[space.gid(lox + a, loy + b, loz + c)];
+                            }
+                        }
+                    }
+                    // Fast diagonalization: U = (Vᵀ⊗Vᵀ⊗Vᵀ)·loc,
+                    // U /= λ-sum, E = (V⊗V⊗V)·U.
+                    let u = tensor3(&ax.v, nx, &loc, ny, nz, true);
+                    let u = tensor3_mid(&ay.v, ny, &u, nx, nz, true);
+                    let mut u = tensor3_last(&az.v, nz, &u, nx, ny, true);
+                    for a in 0..nx {
+                        for b in 0..ny {
+                            for c in 0..nz {
+                                u[(a * ny + b) * nz + c] /= ax.lam[a] + ay.lam[b] + az.lam[c];
+                            }
+                        }
+                    }
+                    let e = tensor3(&ax.v, nx, &u, ny, nz, false);
+                    let e = tensor3_mid(&ay.v, ny, &e, nx, nz, false);
+                    let e = tensor3_last(&az.v, nz, &e, nx, ny, false);
+                    // Scatter-add.
+                    for a in 0..nx {
+                        for b in 0..ny {
+                            for c in 0..nz {
+                                out[space.gid(lox + a, loy + b, loz + c)] +=
+                                    e[(a * ny + b) * nz + c];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (o, w) in out.iter_mut().zip(&self.dw) {
+            *o *= w;
+        }
+    }
+}
+
+/// Contract the square matrix `v` (row-major, columns = eigenvectors)
+/// along the FIRST axis of an nx×ny×nz cube; `transpose` applies Vᵀ.
+fn tensor3(v: &[f64], nx: usize, src: &[f64], ny: usize, nz: usize, transpose: bool) -> Vec<f64> {
+    let mut out = vec![0.0f64; nx * ny * nz];
+    for a in 0..nx {
+        for i in 0..nx {
+            let w = if transpose {
+                v[i * nx + a]
+            } else {
+                v[a * nx + i]
+            };
+            if w == 0.0 {
+                continue;
+            }
+            let (dst, srcp) = (a * ny * nz, i * ny * nz);
+            for t in 0..ny * nz {
+                out[dst + t] = w.mul_add(src[srcp + t], out[dst + t]);
+            }
+        }
+    }
+    out
+}
+
+/// Contract along the MIDDLE axis of an nx×ny×nz cube.
+fn tensor3_mid(
+    v: &[f64],
+    ny: usize,
+    src: &[f64],
+    nx: usize,
+    nz: usize,
+    transpose: bool,
+) -> Vec<f64> {
+    let mut out = vec![0.0f64; nx * ny * nz];
+    for x in 0..nx {
+        for b in 0..ny {
+            for j in 0..ny {
+                let w = if transpose {
+                    v[j * ny + b]
+                } else {
+                    v[b * ny + j]
+                };
+                if w == 0.0 {
+                    continue;
+                }
+                let (dst, srcp) = ((x * ny + b) * nz, (x * ny + j) * nz);
+                for t in 0..nz {
+                    out[dst + t] = w.mul_add(src[srcp + t], out[dst + t]);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Contract along the LAST axis of an nx×ny×nz cube.
+fn tensor3_last(
+    v: &[f64],
+    nz: usize,
+    src: &[f64],
+    nx: usize,
+    ny: usize,
+    transpose: bool,
+) -> Vec<f64> {
+    let mut out = vec![0.0f64; nx * ny * nz];
+    for xy in 0..nx * ny {
+        let base = xy * nz;
+        for c in 0..nz {
+            let mut s = 0.0f64;
+            for k in 0..nz {
+                let w = if transpose {
+                    v[k * nz + c]
+                } else {
+                    v[c * nz + k]
+                };
+                s = w.mul_add(src[base + k], s);
+            }
+            out[base + c] = s;
+        }
+    }
+    out
 }
 
 /// Matrix-free p-multigrid V-cycle preconditioner for the Poisson
@@ -64,36 +372,6 @@ fn inject_1d(m: usize, rc: usize, rf: usize) -> Vec<usize> {
     map
 }
 
-/// Fixed-iteration power method for λ_max of the Jacobi-scaled masked
-/// operator (deterministic oscillatory start — the top eigenvector is
-/// grid-oscillatory; 40 iterations, 20% safety margin so Chebyshev
-/// never amplifies above-band modes).
-fn lambda_max(space: &TensorSpace, mask: &[bool], diag: &[f64]) -> f64 {
-    let n = space.ndof();
-    let mut v: Vec<f64> = (0..n)
-        .map(|i| {
-            if mask[i] {
-                (if i % 2 == 0 { 1.0 } else { -1.0 }) * (1.0 + (i % 7) as f64 / 7.0)
-            } else {
-                0.0
-            }
-        })
-        .collect();
-    let mut lam = 1.0f64;
-    for _ in 0..40 {
-        let mut av = space.apply_stiffness(&v);
-        for i in 0..n {
-            av[i] = if mask[i] { av[i] / diag[i] } else { 0.0 };
-        }
-        let norm = fs_math::det::sqrt(av.iter().map(|x| x * x).sum::<f64>());
-        lam = norm;
-        for (vi, ai) in v.iter_mut().zip(&av) {
-            *vi = ai / norm;
-        }
-    }
-    lam * 1.2
-}
-
 impl PMultigrid {
     /// Build the hierarchy for order `r` on an m³ grid: orders halve
     /// down to 1 (e.g. 4 → 2 → 1); the r = 1 level is assembled
@@ -110,12 +388,12 @@ impl PMultigrid {
             cur = (cur / 2).max(1);
             orders.push(cur);
         }
+        assert!(m >= 2, "vertex-patch Schwarz smoothing needs m >= 2");
         let mut levels = Vec::new();
         for (li, &ord) in orders.iter().enumerate() {
             let space = TensorSpace::new(m, ord);
             let mask = space.interior_mask();
-            let diag = space.stiffness_diagonal();
-            let lmax = lambda_max(&space, &mask, &diag);
+            let schwarz = VertexSchwarz::new(&space);
             let inject1 = if li == 0 {
                 None
             } else {
@@ -124,8 +402,8 @@ impl PMultigrid {
             levels.push(Level {
                 space,
                 mask,
-                diag,
-                lambda_max: lmax,
+                schwarz,
+                lambda_max: 0.0, // measured below, once the coarse term exists
                 inject1,
             });
         }
@@ -172,19 +450,92 @@ impl PMultigrid {
         }
         let coarse = coo.assemble();
         let coarse_amg = SaAmg::new(&coarse, 0.08, 2);
-        PMultigrid {
+        let mut pm = PMultigrid {
             levels,
             coarse,
             coarse_amg,
             coarse_interior: interior,
             coarse_slot: slot,
             smooth_degree,
+        };
+        // Measure the Chebyshev bound of the FULL smoother preconditioner
+        // (Schwarz + coarse term) per smoothing level.
+        for li in 0..pm.levels.len() - 1 {
+            pm.levels[li].lambda_max = pm.measure_lambda(li);
+        }
+        pm
+    }
+
+    /// The smoother's preconditioner: additive vertex-patch Schwarz PLUS
+    /// the exact r = 1 coarse correction (Pavarino's combination — the
+    /// coarse term is what makes the two-level bound independent of the
+    /// MESH as well as the order; without it, counts were MEASURED to
+    /// double from m = 3 to m = 4 at fixed r).
+    fn precond_apply(&self, li: usize, r: &[f64], s: &mut [f64]) {
+        let lv = &self.levels[li];
+        lv.schwarz.apply(&lv.space, r, s);
+        let ord = lv.space.r;
+        let n1c = self.levels.last().expect("nonempty").space.n1;
+        let nred = self.coarse_interior.len();
+        let mut rc = vec![0.0f64; nred];
+        for (sl, &dof) in self.coarse_interior.iter().enumerate() {
+            let k = dof % n1c;
+            let j = (dof / n1c) % n1c;
+            let i = dof / (n1c * n1c);
+            rc[sl] = r[lv.space.gid(i * ord, j * ord, k * ord)];
+        }
+        let mut xi = vec![0.0f64; nred];
+        let _ = fs_sparse::precond::pcg(&self.coarse, &rc, &mut xi, &self.coarse_amg, 1e-13, 2000);
+        for (sl, &dof) in self.coarse_interior.iter().enumerate() {
+            let k = dof % n1c;
+            let j = (dof / n1c) % n1c;
+            let i = dof / (n1c * n1c);
+            s[lv.space.gid(i * ord, j * ord, k * ord)] += xi[sl];
+        }
+        for (si, &mk) in s.iter_mut().zip(&lv.mask) {
+            if !mk {
+                *si = 0.0;
+            }
         }
     }
 
-    /// Matrix-free Chebyshev smoothing on level `li`: band
-    /// [λ_max/16, λ_max] (the hierarchical complement spreads wide),
-    /// degree = `smooth_degree`.
+    /// Power method for λ_max of the smoother-preconditioned operator
+    /// on level `li` (deterministic start, 40 iterations, 20% margin).
+    fn measure_lambda(&self, li: usize) -> f64 {
+        let lv = &self.levels[li];
+        let n = lv.space.ndof();
+        let mut v: Vec<f64> = (0..n)
+            .map(|i| {
+                if lv.mask[i] {
+                    (if i % 2 == 0 { 1.0 } else { -1.0 }) * (1.0 + (i % 7) as f64 / 7.0)
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let mut sav = vec![0.0f64; n];
+        let mut lam = 1.0f64;
+        for _ in 0..40 {
+            let mut av = lv.space.apply_stiffness(&v);
+            for (ai, &mk) in av.iter_mut().zip(&lv.mask) {
+                if !mk {
+                    *ai = 0.0;
+                }
+            }
+            self.precond_apply(li, &av, &mut sav);
+            let norm = fs_math::det::sqrt(sav.iter().map(|x| x * x).sum::<f64>());
+            lam = norm;
+            for (vi, ai) in v.iter_mut().zip(&sav) {
+                *vi = ai / norm;
+            }
+        }
+        lam * 1.2
+    }
+
+    /// Chebyshev smoothing on level `li` over the Schwarz-preconditioned
+    /// operator S·A: band [λ_max/4, λ_max] — the exact patch solves
+    /// keep the S·A spectrum TIGHT (vs /16 for Jacobi scaling), which
+    /// is exactly the p-independence mechanism.
     fn smooth(&self, li: usize, x: &mut [f64], b: &[f64]) {
         let lv = &self.levels[li];
         let n = lv.space.ndof();
@@ -194,13 +545,11 @@ impl PMultigrid {
         let masked_scaled_residual = |x: &[f64]| -> Vec<f64> {
             let mut ax = lv.space.apply_stiffness(x);
             for i in 0..n {
-                ax[i] = if lv.mask[i] {
-                    (b[i] - ax[i]) / lv.diag[i]
-                } else {
-                    0.0
-                };
+                ax[i] = if lv.mask[i] { b[i] - ax[i] } else { 0.0 };
             }
-            ax
+            let mut s = vec![0.0f64; n];
+            self.precond_apply(li, &ax, &mut s);
+            s
         };
         let mut d = masked_scaled_residual(x);
         let mut alpha = 1.0 / theta;

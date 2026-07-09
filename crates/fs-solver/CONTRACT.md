@@ -34,12 +34,25 @@ structured stall diagnoses, never timeout mysteries).
   hierarchy r → r/2 → … → 1 over fs-feec `TensorSpace`s; prolongation
   is EXACT INJECTION (the hierarchical Lobatto basis nests, so the
   Galerkin coarse operator IS the coarse-order operator — nothing
-  assembled except r = 1); matrix-free Chebyshev smoothing on the
-  Jacobi-scaled operator (band [λmax/16, λmax], hardened
-  fixed-iteration power method for λmax); the r = 1 coarse level is
-  assembled (interior Kronecker CSR) and solved near-exactly by
+  assembled except r = 1); the r = 1 coarse level is assembled
+  (interior Kronecker CSR) and solved near-exactly by
   SA-AMG-preconditioned CG (a loosely-solved coarse level makes the
   V-cycle a VARYING preconditioner and demonstrably breaks plain CG).
+  SMOOTHING (bead x08j): Chebyshev (band [λmax/16, λmax], power-method
+  λmax of the PRECONDITIONED operator) accelerating PU-symmetrized
+  vertex-patch additive Schwarz (all dofs of the ≤ 8 elements around
+  each interior vertex; exact patch inverses by FAST DIAGONALIZATION —
+  the patch operator is exactly the Kronecker sum of 1D windows, so
+  per-axis generalized eigenproblems of size ≤ 2r+1 replace any
+  (2r+1)³ dense factorization, eigendata shared across the ≤ 3 trim
+  signatures) PLUS the exact r = 1 coarse term (Pavarino combination).
+  Requires m ≥ 2 (asserted). MEASURED design ledger: PU weighting is
+  load-bearing (without it counts jump 8 → 13 when the per-axis window
+  multiplicity first hits 3 at m = 4); eigendata may be shared across
+  same-signature vertices but window OFFSETS may not (sharing the
+  representative's indices left cells uncovered at m ≥ 5: 29 iters at
+  m = 5, outright failure at m = 6 — caught by the beyond-acceptance
+  spot-checks, fixed, gated).
 - `MaskedTensorOp` — the homogeneous-Dirichlet high-order Poisson
   apply as a `LinearOp`.
 - `mixed::{CsrF32, mixed_cg_refine, MixedReport}` — f32 INNER CG
@@ -108,20 +121,30 @@ mixed precision: f32-inner refinement reaching 5e−15 true relative
 residual, matching plain f64 CG to 1e−9 and bitwise-repeatable;
 p-MG ladder gates: converges everywhere with iteration counts inside
 a fixed envelope (≤ 80) while identity-preconditioned counts blow up
-(≥ 10× advantage at the hard corner: measured 1192 vs ≈70 at
-m = 4, r = 4), solutions matching identity-CG to 1e−7; deterministic
-dot; golden hash. `tests/diag_probe.rs`: the diagnosis-calibration
+(hard corner m = 4, r = 4: 9 vs 1192 — a 132× advantage), solutions
+matching identity-CG to 1e−7; deterministic dot; golden hash (bumped
+at x08j with justification: the smoother change is semantic).
+`tests/ladder_probe.rs` (bead x08j acceptance): FIXED smoothing degree
+3 across both ladders — order ladder m = 3, r = 2..6 iters
+[8, 8, 8, 9, 11] (max/min ≤ 1.5), mesh ladder r = 3, m = 2..5 iters
+[2, 8, 8, 9] (max/min ≤ 1.5 over the nontrivial m ≥ 3; the m = 2
+single-patch case is an EXACT solve and is gated as not-slower rather
+than rewarding the trivial minimum), plus the m = 6 window-sharing
+spot-check. `tests/diag_probe.rs`: the diagnosis-calibration
 regression (singular-system CG diverges — must never read Plateau).
 
 ## No-claim boundaries
 
-- p-MG iteration counts grow MILDLY with r (hierarchical-injection
-  CBS angle; measured, envelope-gated, not hidden). True
-  p-independence needs an overlapping-patch Schwarz smoother —
-  recorded follow-up; element-matrix (EBE) and single-element
-  Dirichlet-block variants were implemented and measured WEAKER than
-  Chebyshev here, so the naive versions are a dead end on this
-  evidence.
+- p-growth of iteration counts: RESOLVED (bead x08j) — the
+  vertex-patch Schwarz smoother holds counts flat across r = 2..6 and
+  m = 3..6 (gated in `ladder_probe.rs`). Historical dead ends stay on
+  record: element-matrix (EBE) and single-element Dirichlet-block
+  Schwarz were measured WEAKER than Jacobi-Chebyshev (50 and 41 iters
+  vs 8); the working design needed vertex-centered tensor windows +
+  fast diagonalization + PU symmetrization + the Pavarino coarse term.
+  Anisotropic/stretched meshes and non-tensor patches remain
+  out-of-scope (the fast-diagonalization patch inverse requires the
+  Kronecker structure).
 - Preconditioned MINRES (needs an SPD split preconditioner) and
   flexible-GMRES (varying preconditioners) are follow-up scope; plain
   CG with a varying preconditioner is known-broken (observed) — use

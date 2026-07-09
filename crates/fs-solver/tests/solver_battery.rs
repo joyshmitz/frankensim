@@ -349,8 +349,9 @@ fn pmg_iteration_counts_flat_across_ladders() {
                 *bi = 0.0;
             }
         }
-        // Chebyshev degree grows with r (keeps the growth mild).
-        let pmg = PMultigrid::new(m, r, r + 2);
+        // FIXED Chebyshev degree: the vertex-patch Schwarz smoother
+        // (bead x08j) needs no r-dependent crutch — that is the point.
+        let pmg = PMultigrid::new(m, r, 3);
         let mut st = CgState::new(&op, &pmg, &b);
         let rep = st.run(&op, &pmg, 1e-10, 100);
         assert!(rep.converged, "pMG-CG failed at m={m} r={r}: {rep:?}");
@@ -418,7 +419,11 @@ fn deterministic_dot_is_length_shaped() {
     log("det-dot", "pass", "fixed-shape reduction");
 }
 
-const GOLDEN_HASH: u64 = 0xbc00_5985_1f9c_4a8a; // recorded at tfz.10 slices 1-2, frozen
+// Bumped at bead x08j: the pMG smoother changed SEMANTICALLY (Jacobi-
+// Chebyshev -> PU-weighted vertex-patch Schwarz + r=1 coarse term inside
+// Chebyshev), so every pMG-preconditioned solve takes a different exact
+// iterate path. Prior value 0xbc00_5985_1f9c_4a8a (tfz.10 slices 1-2).
+const GOLDEN_HASH: u64 = 0x13cc_db65_6d5f_c6d4; // recorded at x08j, frozen
 
 #[test]
 fn solver_golden_hash() {
