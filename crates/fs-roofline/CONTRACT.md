@@ -39,6 +39,17 @@ fs-ledger). Runtime deps: `std` + those three workspace crates.
 - `roofline` CLI bin — axes line, per-kernel JSONL, §14.1 coverage table,
   optional `--ledger` recording + staleness report.
 
+- `regress` module (plan §14.4, bead fz2.4): the regression layer.
+  `gate` — DISPERSION-AWARE bands (k·σ against the rolling baseline,
+  never a naive threshold), and a red arrives WITH its diagnosis: the
+  phase-share flame-graph diff ranked by growth. `Cusum` — the
+  complementary slow-drift detector (slack k, threshold h) over
+  expanding-baseline standardized scores. `slower_this_month` — the
+  canonical dashboard question as ONE call: (kernel, drop %, guilty
+  phase). Calibration is meta-tested: zero false alarms across 20
+  kernels × 60 stable nights at the default settings; a 0.3σ/night
+  drift invisible to the single-night band trips the CUSUM mid-month.
+
 ## Invariants
 
 1. Axes are measured on the machine that runs the kernels, in the same
@@ -104,3 +115,13 @@ attainment hand-calculations, order statistics, and axes sanity.
   and thermal controls are future scope (v0 measures whole-machine axes).
 - Verdict gating in CI is deliberately absent on shared runners; bands
   bind only on ledgered reference machines (nightly lane, later).
+
+## No-claim boundaries (regress)
+
+- This module is the STATISTICS + attribution + gate arithmetic; the
+  nightly both-machine CI wiring rides the ci-gauntlet pipeline
+  (huq.4's lane), memory-regression tracking rides fs-alloc's
+  allocation-site diffs, and FrankenPandas trend dashboards ride
+  fs-report — the named seams, each consuming these verdicts.
+- Suspect-commit bisection hooks are diff-vs-last-green consumers of
+  the same attribution output, not re-implemented here.

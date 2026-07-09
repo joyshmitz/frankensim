@@ -18,6 +18,8 @@ pub use axes::MachineAxes;
 
 use fs_ledger::{EventRow, FiveExplicits, Ledger, LedgerError, OpOutcome, now_wall_ns};
 
+pub mod regress;
+
 /// Crate version (compile-time stamp).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
