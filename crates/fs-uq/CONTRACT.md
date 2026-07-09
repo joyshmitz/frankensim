@@ -49,6 +49,14 @@ for QMC Gaussian germs instead of duplicating the polynomial.
   the extrapolated bias `|mean_L|/(2^α − 1)` exceeds tol/2, with weak/
   strong rates FITTED from level statistics.
 
+- `chance` module (bead qlvf, lane b): `chance_constrained_min` —
+  `P(g(x,ξ) ≤ 0) ≥ 1−α` enforced through an augmented penalty whose
+  probability estimates are ANYTIME-STOPPED (each query ends the
+  moment the CS is decision-grade) and whose feasibility test uses the
+  CS LOWER bound: the solution can sit conservatively above the
+  analytic boundary but never below it — validity feeding feasibility
+  (verified on the Gaussian toy with the closed-form quantile).
+
 ## Invariants
 
 - The KL truncation reports its captured-variance fraction; the

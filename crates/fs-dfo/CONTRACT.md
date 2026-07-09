@@ -36,6 +36,16 @@ the fs-opt problem IR is a wiring bead once that crate stabilizes
   active supports instead of pretending a single argmax distribution
   realizes the dual value.
 
+- `steer` module (bead qlvf, lane a): WORLD-FORKING steering (P9).
+  `SteeredStudy` = the deterministic (population, stream-index,
+  weights) triple + a base seed + the steering LINEAGE; `fork` never
+  mutates the parent and records a ledger-ready `SteerEvent`;
+  `advance` is a pure function of (seed, stream-index, weights) so
+  every branch replays bitwise from its lineage (`fingerprint` is the
+  witness). Chance constraints live in `fs_uq::chance` — fs-uq sits
+  above fs-dfo through fs-bo, so the integration points that way (the
+  dependency cycle the first draft hit is the layer diagram talking).
+
 ## Invariants
 1. DETERMINISM: the full evolution is a pure function of the seed
    (keyed Philox sampling, `total_cmp` ranking, lowest-index
