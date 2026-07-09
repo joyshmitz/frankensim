@@ -12,8 +12,8 @@
 //! stopping are the bead's split lanes.
 
 pub mod adaptive;
-pub mod chance;
 pub mod anytime;
+pub mod chance;
 pub mod kl;
 pub mod mlmc;
 pub mod pce;

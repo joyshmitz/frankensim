@@ -128,9 +128,8 @@ impl SteeredStudy {
         for _ in 0..generations {
             let g = self.state.stream_index;
             let w = self.state.weights.clone();
-            let score = |ind: &Individual| -> f64 {
-                ind.f.iter().zip(&w).map(|(f, wi)| f * wi).sum()
-            };
+            let score =
+                |ind: &Individual| -> f64 { ind.f.iter().zip(&w).map(|(f, wi)| f * wi).sum() };
             let n = self.state.population.len();
             let mut next = Vec::with_capacity(n);
             for i in 0..n {
@@ -140,8 +139,7 @@ impl SteeredStudy {
                 let a = (unit(k, 0) * n as f64) as usize % n;
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 let b = (unit(k, 1) * n as f64) as usize % n;
-                let parent = if score(&self.state.population[a])
-                    <= score(&self.state.population[b])
+                let parent = if score(&self.state.population[a]) <= score(&self.state.population[b])
                 {
                     &self.state.population[a]
                 } else {
@@ -153,10 +151,8 @@ impl SteeredStudy {
                     .iter()
                     .enumerate()
                     .map(|(j, v)| {
-                        let z: f64 = (0..6)
-                            .map(|q| unit(k, 2 + j as u64 * 6 + q))
-                            .sum::<f64>()
-                            - 3.0;
+                        let z: f64 =
+                            (0..6).map(|q| unit(k, 2 + j as u64 * 6 + q)).sum::<f64>() - 3.0;
                         (v + sigma * z / 3.0).clamp(lo, hi)
                     })
                     .collect();
