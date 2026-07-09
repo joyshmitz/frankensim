@@ -119,6 +119,7 @@ members = [
     "crates/fs-oed-e2e",
     "crates/fs-metamat-e2e",
     "crates/fs-truss-e2e",
+    "crates/fs-adaptbo-e2e",
     "xtask",
 ]
 
