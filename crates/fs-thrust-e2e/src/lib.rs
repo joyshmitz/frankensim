@@ -220,9 +220,24 @@ fn is_calibration(d: &Design) -> bool {
         && ((d.ratio - 0.4).abs() < 1e-9 || (d.ratio - 1.0).abs() < 1e-9)
 }
 
+/// One filled niche of the illuminated archive (the QD atlas).
+#[derive(Debug, Clone, Copy)]
+pub struct AtlasEntry {
+    /// Circulation budget descriptor of the niche's elite.
+    pub budget: f64,
+    /// Device-length descriptor of the niche's elite.
+    pub length: f64,
+    /// The elite's drift (fitness).
+    pub drift: f64,
+    /// Whether the elite's drift is impulse-conservation `Verified`.
+    pub verified: bool,
+}
+
 /// The full campaign report.
 #[derive(Debug, Clone)]
 pub struct CampaignReport {
+    /// The illuminated archive as a flat atlas (one entry per filled niche).
+    pub atlas: Vec<AtlasEntry>,
     /// Fraction of behavior niches filled.
     pub coverage: f64,
     /// Quality-diversity score (Σ elite drift over the archive).
@@ -419,7 +434,24 @@ pub fn run_campaign(budget: &CampaignBudget) -> CampaignReport {
         ],
     );
 
+    let atlas: Vec<AtlasEntry> = archive
+        .elites()
+        .map(|e| {
+            let cell = archive.cell_of(&e.descriptor);
+            let verified = cell_color
+                .get(&cell)
+                .is_some_and(|c| c.rank() == ColorRank::Verified);
+            AtlasEntry {
+                budget: e.descriptor[0],
+                length: e.descriptor[1],
+                drift: e.fitness,
+                verified,
+            }
+        })
+        .collect();
+
     CampaignReport {
+        atlas,
         coverage: archive.coverage(),
         qd_score: archive.qd_score(),
         num_elites: archive.num_elites(),

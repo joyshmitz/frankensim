@@ -52,6 +52,12 @@ fn the_campaign_illuminates_a_certified_diverse_family() {
         report.band_half_width,
         report.certified_envelope,
     );
+    for e in &report.atlas {
+        println!(
+            "ATLAS {:.4} {:.4} {:.5} {}",
+            e.budget, e.length, e.drift, e.verified
+        );
+    }
     // ILLUMINATION: a diverse archive of niches, not a single optimum.
     assert!(
         report.num_elites >= 5,
