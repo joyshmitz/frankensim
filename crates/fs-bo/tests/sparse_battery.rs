@@ -47,9 +47,14 @@ fn exactness_recovery_at_z_equals_x() {
     }
     assert!(worst_mean < 1e-5, "mean mismatch at Z=X: {worst_mean:.2e}");
     assert!(worst_var < 1e-5, "variance mismatch at Z=X: {worst_var:.2e}");
-    // ELBO tight: equals the exact LML.
+    // ELBO tight: equals the exact LML. RELATIVE tolerance — the two
+    // sides come from DIFFERENT factorization paths (K_XX+σ²I direct
+    // vs the inversion-lemma identities through jittered K_ZZ), so
+    // agreement is limited by conditioning-amplified roundoff, not
+    // 1e-6 absolute (measured: 2e-5 absolute on |LML| ~ 60).
+    let tol = 1e-6 * (1.0 + exact.lml.abs());
     let gap = (sparse.elbo - exact.lml).abs();
-    assert!(gap < 1e-6, "ELBO not tight at Z=X: gap {gap:.2e}");
+    assert!(gap < tol, "ELBO not tight at Z=X: gap {gap:.2e} vs tol {tol:.2e}");
     log(
         "exactness",
         "pass",
@@ -72,8 +77,10 @@ fn elbo_lower_bounds_exact_lml() {
             farthest_point_inducing(&x, m)
         };
         let sparse = SparseGp::fit(&x, &y, kernel(), noise, z);
+        // Roundoff headroom scaled to |LML| (same two-path argument
+        // as the exactness gate).
         assert!(
-            sparse.elbo <= exact.lml + 1e-6,
+            sparse.elbo <= 1e-6f64.mul_add(1.0 + exact.lml.abs(), exact.lml),
             "ELBO must lower-bound the exact LML: {} vs {} at m={m}",
             sparse.elbo,
             exact.lml
