@@ -286,7 +286,11 @@ impl Sell {
                 }
             }
             let row0 = ch * c;
-            for (l, &a) in acc.iter().enumerate().take(self.nrows.saturating_sub(row0).min(c)) {
+            for (l, &a) in acc
+                .iter()
+                .enumerate()
+                .take(self.nrows.saturating_sub(row0).min(c))
+            {
                 y[self.perm[row0 + l]] = a;
             }
         }
