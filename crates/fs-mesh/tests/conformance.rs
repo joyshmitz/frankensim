@@ -842,10 +842,11 @@ fn tmesh_011_policy_floor_and_hull_split_evidence() {
         let default_ok = audit.clean()
             && stats.worst_after <= stats.worst_before
             && stats.refinable_remaining == 0;
-        // (ii) Experimental hull splitting: exact-audit-clean and
-        // deterministic — and the MEASURED quality regression is the
-        // ledgered evidence that full-Ruppert quality is coupled to
-        // PLC boundary protection (the successor's machinery).
+        // (ii) Hull splitting with DIAMETRAL ENCROACHMENT PROTECTION (bead
+        // uee3): exact-audit-clean and deterministic; the diametral-ball rule
+        // MEASURABLY cut the ledgered convex-hull regression (~2.8e18 -> ~3.5e17,
+        // ~8x) — but the residual blowup remains, ledgered evidence that full
+        // Ruppert quality stays coupled to boundary-layer refinement.
         let run_split = |cx: &Cx<'_>| {
             let mut t = delaunay(&points, cx).expect("builds");
             let st = refine(
@@ -863,8 +864,12 @@ fn tmesh_011_policy_floor_and_hull_split_evidence() {
         };
         let (clean_a, st_a) = run_split(cx);
         let (clean_b, st_b) = run_split(cx);
-        let split_infra_ok =
-            clean_a && clean_b && st_a.to_json() == st_b.to_json() && st_a.hull_facets_split > 0;
+        let split_infra_ok = clean_a
+            && clean_b
+            && st_a.to_json() == st_b.to_json()
+            && st_a.hull_facets_split > 0
+            // encroachment protection kept the blowup below the old ~2.8e18 ledger
+            && st_a.worst_after < 1.0e18;
         let pass = default_ok && split_infra_ok;
         println!(
             "{{\"test\":\"tmesh-011\",\"verdict\":\"{}\",\"default\":{},\

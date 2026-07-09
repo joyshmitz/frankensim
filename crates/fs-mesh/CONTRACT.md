@@ -160,15 +160,18 @@ reimplementation must pass the suite unchanged.
 - `RefineOptions` gains `min_edge_factor` (the SMALL-INPUT-ANGLE
   POLICY: a minimum-new-edge floor from the input's closest-pair
   spacing; insertions below it YIELD and are counted as
-  `protected_by_policy`) and `split_hull_facets` (default OFF): the
-  hull-facet split infrastructure — in-plane split point blended
-  strictly into the facet interior (a point exactly on a hull edge is
-  collinear-degenerate: the audit went red before the blend) — is
-  exact-audit-clean and deterministic, but MEASURED to degrade
-  radius-edge quality on convex-hull boundaries without PLC
-  protection machinery (tmesh-011 ledgers the regression). True
-  full-Ruppert quality is coupled to constrained boundary recovery,
-  exactly as the classical termination theory requires.
+  `protected_by_policy`) and `split_hull_facets` (default OFF): hull-facet
+  splitting now runs under DIAMETRAL ENCROACHMENT PROTECTION
+  (`facet_diametral_ball`) — the classical Ruppert rule, split a facet IFF a
+  circumcenter lands in its minimum-enclosing sphere; an escaping circumcenter
+  encroaching nothing is skipped (an unfixable boundary sliver). The in-plane
+  split point is blended strictly into the facet interior (a point exactly on a
+  hull edge is collinear-degenerate: the audit went red before the blend). It is
+  exact-audit-clean and deterministic and MEASURABLY shrinks the convex-hull
+  regression (~2.8e18 → ~3.5e17, ~8×, gated in tmesh-011 at `worst_after < 1e18`),
+  but does NOT eliminate it: residual slivers come from near-boundary INTERIOR
+  vertices, so true full-Ruppert quality stays coupled to constrained boundary
+  recovery, exactly as the classical termination theory requires.
 - `exude` / `ExudeOptions` / `ExudeStats`: sliver removal by
   deterministic Steiner PERTURBATION — offending Steiner vertices
   nudged by seeded deterministic offsets, full rebuild through the
@@ -181,9 +184,10 @@ reimplementation must pass the suite unchanged.
 
 - Weighted exact insphere predicate (the Edelsbrunner weight-pump
   exudation variant; the perturbation flavor ships).
-- CONSTRAINED-Delaunay facet recovery (interior/non-convex facets),
-  full-Ruppert QUALITY (needs PLC protection machinery — the measured
-  hull-split regression is ledgered in tmesh-011), and the 1e7-point
+- CONSTRAINED-Delaunay facet recovery (interior/non-convex facets), and
+  full-Ruppert QUALITY: the diametral encroachment machinery now ships and cut
+  the hull-split regression ~8× (tmesh-011), but the residual is coupled to
+  boundary-layer / constrained recovery — not yet eliminated. Plus the 1e7-point
   perf lane (bead uee3's remaining items — tracked there).
 
 - SEGMENT recovery now ships in CONFORMING form (`recover_segments`,
