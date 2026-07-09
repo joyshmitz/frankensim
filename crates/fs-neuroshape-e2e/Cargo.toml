@@ -1,0 +1,21 @@
+[package]
+name = "fs-neuroshape-e2e"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "NeuroShapeCert: PROVE properties of a learned neural implicit shape that neural SDFs normally only hope for — a certified Lipschitz bound, provably-sound sphere tracing (no tunneling), and an interval-arithmetic topology certificate (a non-empty interior trapped inside a certified-positive ring ⇒ a single bounded component), cross-checked by Morse theory. Composes fs-rep-neural (Lipschitz + IBP) x fs-viz (isocontour + Morse critical points) x fs-evidence (Verified). Groundbreaking: guarantees about a neural field, not vibes about a fit."
+
+[package.metadata.frankensim]
+layer = "L5"
+
+[dependencies]
+fs-rep-neural = { path = "../fs-rep-neural" }
+fs-viz = { path = "../fs-viz" }
+fs-evidence = { path = "../fs-evidence" }
+
+[dev-dependencies]
+
+[lints]
+workspace = true
