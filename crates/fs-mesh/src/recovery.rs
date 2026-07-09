@@ -622,3 +622,112 @@ pub fn recover_facets(
     }
     Ok((stats, table))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{ear_clip, is_convex, project_facet};
+
+    fn poly_area(p: &[[f64; 2]]) -> f64 {
+        let m = p.len();
+        let mut a = 0.0;
+        for i in 0..m {
+            let u = p[i];
+            let v = p[(i + 1) % m];
+            a += u[0].mul_add(v[1], -(v[0] * u[1]));
+        }
+        a.abs() * 0.5
+    }
+
+    fn tri_area(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
+        ((b[0] - a[0]).mul_add(c[1] - a[1], -((c[0] - a[0]) * (b[1] - a[1])))).abs() * 0.5
+    }
+
+    /// Ear-clipping tiles simple polygons EXACTLY: `m − 2` triangles built only
+    /// from original vertices whose areas sum to the polygon area (no overlap,
+    /// no gap, nothing outside the boundary). Covers a non-convex, NON-star
+    /// U-shape (the fan triangulation is wrong here — ear-clipping is required),
+    /// a non-convex star-shaped L, and a convex pentagon.
+    #[test]
+    fn ear_clip_tiles_simple_polygons() {
+        let u_shape = vec![
+            [0.0, 0.0],
+            [3.0, 0.0],
+            [3.0, 3.0],
+            [2.0, 3.0],
+            [2.0, 1.0],
+            [1.0, 1.0],
+            [1.0, 3.0],
+            [0.0, 3.0],
+        ];
+        let l_shape = vec![
+            [0.0, 0.0],
+            [2.0, 0.0],
+            [2.0, 1.0],
+            [1.0, 1.0],
+            [1.0, 2.0],
+            [0.0, 2.0],
+        ];
+        let convex = vec![
+            [0.0, 0.0],
+            [2.0, 0.0],
+            [3.0, 1.0],
+            [1.5, 2.5],
+            [0.0, 1.5],
+        ];
+        assert!(!is_convex(&u_shape), "U-shape is non-convex");
+        assert!(!is_convex(&l_shape), "L-shape is non-convex");
+        assert!(is_convex(&convex), "pentagon is convex");
+        for poly in [&u_shape, &l_shape, &convex] {
+            let m = poly.len();
+            let loop_verts: Vec<u32> = (0..m as u32).collect();
+            let tris = ear_clip(poly, &loop_verts).expect("simple polygon triangulates");
+            assert_eq!(tris.len(), m - 2, "a simple m-gon yields m − 2 triangles");
+            let want = poly_area(poly);
+            let got: f64 = tris
+                .iter()
+                .map(|t| {
+                    tri_area(
+                        poly[t[0] as usize],
+                        poly[t[1] as usize],
+                        poly[t[2] as usize],
+                    )
+                })
+                .sum();
+            assert!(
+                (got - want).abs() < 1e-12,
+                "triangulation area {got} != polygon area {want}"
+            );
+            // Only original loop vertices — ear-clipping adds no Steiner points.
+            assert!(tris.iter().flatten().all(|&v| (v as usize) < m));
+        }
+        // A degenerate all-collinear loop is refused, not faked.
+        let line = vec![[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0]];
+        let lv: Vec<u32> = (0..4).collect();
+        assert!(ear_clip(&line, &lv).is_none(), "collinear loop is not a polygon");
+    }
+
+    /// The 3D projection keeps the dominant-normal axis dropped so the loop
+    /// stays a non-degenerate 2D polygon, and convexity survives projection.
+    #[test]
+    fn project_facet_drops_dominant_axis() {
+        // A convex quad in the z = 0.5 plane → projects to the (x, y) plane.
+        let points = vec![
+            [0.0, 0.0, 0.5],
+            [1.0, 0.0, 0.5],
+            [1.0, 1.0, 0.5],
+            [0.0, 1.0, 0.5],
+        ];
+        let proj = project_facet(&points, &[0, 1, 2, 3]);
+        assert_eq!(proj, vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+        assert!(is_convex(&proj));
+        // A quad in the x = 2 plane → dominant axis is x, projects to (y, z).
+        let yz = vec![
+            [2.0, 0.0, 0.0],
+            [2.0, 2.0, 0.0],
+            [2.0, 2.0, 2.0],
+            [2.0, 0.0, 2.0],
+        ];
+        let projx = project_facet(&yz, &[0, 1, 2, 3]);
+        assert_eq!(projx, vec![[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]]);
+    }
+}
