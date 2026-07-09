@@ -857,9 +857,11 @@ dependencies = [
  "fs-la",
  "fs-math",
  "fs-opt",
+ "fs-qty",
  "fs-rand",
  "fs-solver",
  "fs-sparse",
+ "fsci-opt",
 ]
 
 [[package]]
@@ -1880,6 +1882,25 @@ dependencies = [
  "fs-ad",
  "fs-geom",
  "fs-la",
+]
+
+[[package]]
+name = "fsci-opt"
+version = "0.1.0"
+dependencies = [
+ "fsci-runtime",
+ "rand 0.10.2",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "fsci-runtime"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
