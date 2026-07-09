@@ -220,35 +220,38 @@ impl Coo {
             let mut handles = Vec::new();
             for (tile, idxs) in buckets.iter().enumerate() {
                 let (row_lo, row_hi) = ranges[tile];
-                handles.push((tile, scope.spawn(move || {
-                    let mut order: Vec<usize> = idxs.clone();
-                    order.sort_by_key(|&i| (self.rows[i], self.cols[i]));
-                    let mut row_counts = vec![0usize; row_hi.saturating_sub(row_lo)];
-                    let mut col_idx = Vec::new();
-                    let mut vals = Vec::new();
-                    let mut i = 0usize;
-                    while i < order.len() {
-                        let (r, c) = (self.rows[order[i]], self.cols[order[i]]);
-                        let mut acc = self.vals[order[i]];
-                        i += 1;
-                        while i < order.len()
-                            && self.rows[order[i]] == r
-                            && self.cols[order[i]] == c
-                        {
-                            acc += self.vals[order[i]];
+                handles.push((
+                    tile,
+                    scope.spawn(move || {
+                        let mut order: Vec<usize> = idxs.clone();
+                        order.sort_by_key(|&i| (self.rows[i], self.cols[i]));
+                        let mut row_counts = vec![0usize; row_hi.saturating_sub(row_lo)];
+                        let mut col_idx = Vec::new();
+                        let mut vals = Vec::new();
+                        let mut i = 0usize;
+                        while i < order.len() {
+                            let (r, c) = (self.rows[order[i]], self.cols[order[i]]);
+                            let mut acc = self.vals[order[i]];
                             i += 1;
+                            while i < order.len()
+                                && self.rows[order[i]] == r
+                                && self.cols[order[i]] == c
+                            {
+                                acc += self.vals[order[i]];
+                                i += 1;
+                            }
+                            row_counts[r - row_lo] += 1;
+                            col_idx.push(c);
+                            vals.push(acc);
                         }
-                        row_counts[r - row_lo] += 1;
-                        col_idx.push(c);
-                        vals.push(acc);
-                    }
-                    TileOut {
-                        row_counts,
-                        col_idx,
-                        vals,
-                        row_lo,
-                    }
-                })));
+                        TileOut {
+                            row_counts,
+                            col_idx,
+                            vals,
+                            row_lo,
+                        }
+                    }),
+                ));
             }
             for (tile, h) in handles {
                 outs[tile] = Some(h.join().expect("tile worker"));

@@ -17,9 +17,9 @@
 
 pub mod bsr;
 pub mod ops;
+pub mod perf;
 pub mod precond;
 pub mod sell;
-pub mod perf;
 
 pub use bsr::Bsr;
 pub use perf::CsrCompact;
