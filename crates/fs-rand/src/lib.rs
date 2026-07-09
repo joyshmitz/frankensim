@@ -140,10 +140,56 @@ impl Stream {
         -det::ln(1.0 - self.next_f64())
     }
 
-    /// Fill a slice with uniform [0,1) values (sequential draws).
+    /// The `L` counter blocks for indices `[base, base+L)` under this stream's
+    /// key (all blocks share the key; consecutive counters differ in the low
+    /// words) — the bulk-generation primitive.
+    fn blocks_from<const L: usize>(&self, base: u64) -> [[u32; 4]; L] {
+        let ctr: [[u32; 4]; L] = core::array::from_fn(|l| {
+            let idx = base + l as u64;
+            [
+                idx as u32,
+                (idx >> 32) as u32,
+                self.key.tile,
+                self.key.kernel,
+            ]
+        });
+        philox::philox4x32_10_batch::<L>(&ctr, [self.key.seed as u32, (self.key.seed >> 32) as u32])
+    }
+
+    /// BULK-fill a slice with uniform `[0,1)` values via 8-lane batched
+    /// generation (auto-vectorizable), then a scalar tail. BITWISE-IDENTICAL to
+    /// `out.len()` sequential [`Stream::next_f64`] calls, and the index advances
+    /// by exactly `out.len()` (replay-safe).
     pub fn fill_f64(&mut self, out: &mut [f64]) {
-        for v in out {
-            *v = self.next_f64();
+        const L: usize = 8;
+        let (chunks, tail) = out.as_chunks_mut::<L>();
+        for chunk in chunks {
+            let blocks = self.blocks_from::<L>(self.index);
+            for (o, b) in chunk.iter_mut().zip(&blocks) {
+                let u = (u64::from(b[1]) << 32) | u64::from(b[0]);
+                *o = (u >> 11) as f64 * (1.0 / 9_007_199_254_740_992.0); // 2⁻⁵³
+            }
+            self.index += L as u64;
+        }
+        for o in tail {
+            *o = self.next_f64();
+        }
+    }
+
+    /// BULK-fill a slice with uniform 64-bit words (same batching + bitwise
+    /// equivalence to sequential [`Stream::next_u64`]).
+    pub fn fill_u64(&mut self, out: &mut [u64]) {
+        const L: usize = 8;
+        let (chunks, tail) = out.as_chunks_mut::<L>();
+        for chunk in chunks {
+            let blocks = self.blocks_from::<L>(self.index);
+            for (o, b) in chunk.iter_mut().zip(&blocks) {
+                *o = (u64::from(b[1]) << 32) | u64::from(b[0]);
+            }
+            self.index += L as u64;
+        }
+        for o in tail {
+            *o = self.next_u64();
         }
     }
 }

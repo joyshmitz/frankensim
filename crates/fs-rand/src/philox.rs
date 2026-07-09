@@ -39,9 +39,73 @@ pub fn philox4x32_10(mut ctr: [u32; 4], mut key: [u32; 2]) -> [u32; 4] {
     ctr
 }
 
+/// BATCHED Philox4x32-10: `L` counter blocks under ONE shared key, computed
+/// LANE-WISE (structure-of-arrays: `c[word][lane]`) so the integer rounds
+/// auto-vectorize (SLP over the `L` lanes) for fill-heavy consumers (bead 1za9).
+/// Each lane is BITWISE-IDENTICAL to the scalar [`philox4x32_10`] on the same
+/// input — the fs-simd twin doctrine, verified in `tests/bulk.rs`. Pure integer
+/// arithmetic, so the identity holds on every ISA regardless of whether the
+/// compiler vectorized the lane loop.
+///
+/// A true hand-written NEON/AVX kernel (and its throughput gate) is a follow-up:
+/// `fs-simd` exposes only float ops today and the workspace is on stable Rust
+/// (no `portable_simd`); this SoA form is the correct, ISA-independent substrate
+/// for that capsule.
+#[must_use]
+// The lane loops index four SoA arrays `c[word][lane]` by a shared `lane` — the
+// vectorizable kernel form, not iterable as a single sequence.
+#[allow(clippy::needless_range_loop)]
+pub fn philox4x32_10_batch<const L: usize>(ctr: &[[u32; 4]; L], key: [u32; 2]) -> [[u32; 4]; L] {
+    // Structure-of-arrays: c[word][lane].
+    let mut c: [[u32; L]; 4] = [[0; L]; 4];
+    for (lane, blk) in ctr.iter().enumerate() {
+        for w in 0..4 {
+            c[w][lane] = blk[w];
+        }
+    }
+    // One shared running key (the fill case keys every block identically).
+    let (mut k0, mut k1) = (key[0], key[1]);
+    for r in 0..10 {
+        if r > 0 {
+            k0 = k0.wrapping_add(W0);
+            k1 = k1.wrapping_add(W1);
+        }
+        for lane in 0..L {
+            // All reads use the OLD lane state (computed before any write).
+            let (hi0, lo0) = mulhilo(M0, c[0][lane]);
+            let (hi1, lo1) = mulhilo(M1, c[2][lane]);
+            let n0 = hi1 ^ c[1][lane] ^ k0;
+            let n2 = hi0 ^ c[3][lane] ^ k1;
+            c[0][lane] = n0;
+            c[1][lane] = lo1;
+            c[2][lane] = n2;
+            c[3][lane] = lo0;
+        }
+    }
+    let mut out = [[0u32; 4]; L];
+    for (lane, o) in out.iter_mut().enumerate() {
+        for w in 0..4 {
+            o[w] = c[w][lane];
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The batched block function is bitwise-identical to the scalar per lane.
+    #[test]
+    fn batch_matches_scalar() {
+        let key = [0xA409_3822, 0x299F_31D0];
+        let ctr: [[u32; 4]; 8] =
+            core::array::from_fn(|l| [0x243F_6A88 ^ l as u32, 0x85A3_08D3, l as u32, 7]);
+        let batched = philox4x32_10_batch::<8>(&ctr, key);
+        for (l, blk) in ctr.iter().enumerate() {
+            assert_eq!(batched[l], philox4x32_10(*blk, key), "lane {l}");
+        }
+    }
 
     /// Known-answer tests from the Random123 distribution's kat_vectors
     /// (philox4x32, 10 rounds). These pin the EXACT semantics: any deviation
