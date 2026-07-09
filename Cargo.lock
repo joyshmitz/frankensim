@@ -1590,6 +1590,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs-selfknow-e2e"
+version = "0.0.1"
+dependencies = [
+ "fs-adjoint",
+ "fs-evidence",
+ "fs-iface",
+ "fs-ledger",
+ "fs-plan",
+ "fs-spectral",
+ "fs-surrogate",
+ "fs-symmetry",
+]
+
+[[package]]
 name = "fs-session"
 version = "0.0.1"
 dependencies = [
