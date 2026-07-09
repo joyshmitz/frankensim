@@ -27,6 +27,7 @@ members = [
     "crates/fs-topopt",
     "crates/fs-bo",
     "crates/fs-uq",
+    "crates/fs-vessel",
     "crates/fs-tilelang-macros",
     "crates/fs-soa-derive",
     "crates/fs-time",
@@ -110,6 +111,9 @@ members = [
     "crates/fs-truss",
     "crates/fs-flux",
     "crates/fs-thrust-e2e",
+    "crates/fs-robustopt-e2e",
+    "crates/fs-schedule-e2e",
+    "crates/fs-flutter-e2e",
     "xtask",
 ]
 

@@ -37,6 +37,20 @@ Runtime deps: `std`, fs-geom, fs-ledger.
 - `cost_model_from_tune` — rebuilds a kernel's model deterministically
   from fs-ledger `tune` rows (fs-roofline's recorded rates).
 
+- `voi` module (addendum Proposal C, bead knh1.6; [F], behind
+  `voi-queries`): the ignorance market, v0 as a RANKED LIST.
+  `UncertaintyNode` (interval + nominal), `LiveDecision` (a cached
+  surrogate threshold verdict; `flip_probability` sweeps one node's
+  interval at grid cost — near-free by construction),
+  `Probe`/`ProbeKind` (the priced menu UNIFYING computational and
+  physical evidence), `rank_purchases` (MYOPIC one-step VoI:
+  flip-probability-per-dollar, deterministic tie-breaks),
+  `hint_for_query` (the Proposal-8 anytime hint, now decision-priced),
+  `schedule_probes` (greedy affordable top-k — the discrepancy-probe
+  scheduler), `audit_verdict` (the kill criterion as code: VoI keeps
+  scheduling authority only while recommended purchases measurably
+  outperform agent-chosen alternatives; no evidence → no authority).
+
 ## Invariants
 
 1. Fits are pure functions of the observation multiset — identical ledger
@@ -97,3 +111,15 @@ flags, and arrival-order determinism.
   owning crates land (the enum slots exist).
 - The §11.4 self-optimizing allocator (greedy v1, co-optimizing [M] v2)
   is gp3.9's, not provided here.
+
+## No-claim boundaries (voi)
+
+- MYOPIC one-step VoI only — sequential VoI is intractable and
+  deliberately not offered (there is no tree API to misuse).
+- The flip probability uses the UNIFORM measure over the node's
+  interval (v0's declared prior); posterior-weighted sweeps arrive
+  with the Proposal-3 inventory integration.
+- One-node-at-a-time sweeps ignore uncertainty INTERACTIONS; joint
+  flips are underestimated — documented, not hidden.
+- Probe `shrink` factors are menu declarations, not measured
+  posteriors; the prospective audit is what keeps the menu honest.

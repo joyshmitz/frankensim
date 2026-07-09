@@ -19,6 +19,8 @@
 pub mod cost;
 pub mod ledgers;
 pub mod oracle;
+#[cfg(feature = "voi-queries")]
+pub mod voi;
 
 pub use cost::{CostModel, CostObservation, CostPrediction, CostRefusal, MIN_OBS};
 pub use ledgers::{

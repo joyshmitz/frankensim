@@ -1034,6 +1034,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs-flutter-e2e"
+version = "0.0.1"
+dependencies = [
+ "fs-couple",
+ "fs-evidence",
+ "fs-sos",
+ "fs-spectral",
+]
+
+[[package]]
 name = "fs-flux"
 version = "0.0.1"
 dependencies = [
@@ -1457,6 +1467,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs-robustopt-e2e"
+version = "0.0.1"
+dependencies = [
+ "fs-evidence",
+ "fs-robust",
+ "fs-sos",
+]
+
+[[package]]
 name = "fs-roofline"
 version = "0.0.1"
 dependencies = [
@@ -1475,6 +1494,15 @@ dependencies = [
  "fs-math",
  "fs-qty",
  "fs-rand",
+]
+
+[[package]]
+name = "fs-schedule-e2e"
+version = "0.0.1"
+dependencies = [
+ "fs-evidence",
+ "fs-tropical",
+ "fs-voi",
 ]
 
 [[package]]
@@ -1690,6 +1718,17 @@ version = "0.0.1"
 dependencies = [
  "fs-evidence",
  "fs-obs",
+]
+
+[[package]]
+name = "fs-vessel"
+version = "0.0.1"
+dependencies = [
+ "fs-cheb",
+ "fs-exec",
+ "fs-lbm",
+ "fs-race",
+ "fs-render",
 ]
 
 [[package]]

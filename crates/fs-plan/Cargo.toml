@@ -16,5 +16,9 @@ fs-ledger = { path = "../fs-ledger" }
 
 [dev-dependencies]
 
+[features]
+# [F]-gated per the Ambition-Tag rule (bead knh1.6, Proposal C).
+voi-queries = []
+
 [lints]
 workspace = true
