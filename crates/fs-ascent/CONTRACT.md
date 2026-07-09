@@ -35,6 +35,13 @@ so converged and stalled are distinguishable outcomes.
   Stiefel is metadata-only and panics loudly), plus Riemannian L-BFGS
   with projection-based vector transport and Armijo curve search;
   reports carry the worst manifold violation along the path.
+- `pareto::{weighted_sum_sweep, epsilon_constraint_sweep}` —
+  gradient-based Pareto TRACING: warm-started L-BFGS continuation
+  along a weight schedule (exact on convex fronts) and warm-started
+  augmented-Lagrangian ε-constraint continuation (covers CONCAVE
+  fronts, where weighted sums provably collapse to extremes —
+  exhibited in the battery); every ε-constraint point carries its
+  KKT certificate.
 - `stop::{StopRule, StopReason}` — the stopping-condition algebra:
   grad-norm / objective / budget / stall leaves under Any/All
   combinators, with REASON attribution in every report.
@@ -55,8 +62,11 @@ so converged and stalled are distinguishable outcomes.
 
 Structured panics on dimension mismatches, non-descent directions
 handed to the line search, and metadata-only manifolds used in
-descent (modeling errors surfaced loudly). Optimizer non-convergence
-is a REPORTED outcome (reason + certificate), never a panic.
+descent (modeling errors surfaced loudly). Pareto sweeps reject
+non-finite decisions/objective values/gradients, invalid weights or
+epsilons, non-positive tolerances, and gradient dimension mismatches at
+the API boundary. Optimizer non-convergence is a REPORTED outcome
+(reason + certificate), never a panic.
 
 ## Determinism class
 
@@ -93,7 +103,17 @@ with all three KKT residuals ≤ 1e−6 and a positive active multiplier;
 Riemannian L-BFGS minimizing a Rayleigh quotient on S¹¹ to the
 Jacobi-verified smallest eigenvalue with manifold violation ≤ 1e−14
 along the whole path; stop-rule attribution (Budget and Stall
-distinguished); cross-ISA golden hash.
+distinguished); TR-Newton exact-Hv vs FD-Hv head-to-head (3 iters /
+43 solves vs 5 iters / 1625 evaluations); cross-ISA golden hash.
+`tests/pareto_battery.rs` (4 cases): the convex quadratic pair's
+closed-form front matched to 2.2e−16 (machine precision — the
+weighted-sum optimum is analytic); Fonseca–Fleming CONCAVE front —
+weighted sums collapse to exactly 2 clusters while ε-constraint
+covers f₁ ∈ [0.15, 0.85] on the true Pareto set (x₁ = x₂ to 1e−4)
+with all KKT residuals ≤ 1e−7; bitwise replay; Pareto golden
+`0x301b_04df_db91_3965`; fail-fast guards for invalid weights,
+epsilons, tolerances, decision vectors, objective values, and gradient
+dimensions.
 
 ## No-claim boundaries
 
