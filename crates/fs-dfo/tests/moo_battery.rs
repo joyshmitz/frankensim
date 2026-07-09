@@ -164,8 +164,9 @@ fn nsga2_zdt_convergence_and_beats_random() {
         let sobol = fs_rand::qmc::Sobol::scrambled(8, 777);
         let mut pt = vec![0.0f64; 8];
         let mut rand_pts = Vec::new();
+        assert!(u32::try_from(total_evals).is_ok());
         for s in 0..total_evals {
-            sobol.point(u32::try_from(s + 1).expect("small"), &mut pt);
+            sobol.point((s + 1) as u32, &mut pt);
             rand_pts.push(obj(&pt));
         }
         let hv_rand = hypervolume(&rand_pts, &reference);

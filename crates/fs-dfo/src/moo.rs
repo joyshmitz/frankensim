@@ -36,8 +36,9 @@ fn check_variation_inputs(dim: usize, bounds: (f64, f64), eta_c: f64, eta_m: f64
     );
 }
 
-fn objective_dimension(pop: &[Individual]) -> Option<usize> {
-    let first = pop.first()?;
+fn objective_dimension(pop: &[Individual], label: &str) -> usize {
+    assert!(!pop.is_empty(), "{label} needs a non-empty population");
+    let first = &pop[0];
     let m = first.f.len();
     assert!(m > 0, "objective vectors must not be empty");
     for ind in pop {
@@ -47,7 +48,7 @@ fn objective_dimension(pop: &[Individual]) -> Option<usize> {
             "all objective vectors in a population must have the same dimension"
         );
     }
-    Some(m)
+    m
 }
 
 fn direction_dimension(directions: &[Vec<f64>], label: &str) -> usize {
@@ -97,7 +98,10 @@ pub fn dominates(a: &[f64], b: &[f64]) -> bool {
 #[must_use]
 pub fn non_dominated_sort(pop: &[Individual]) -> Vec<usize> {
     let n = pop.len();
-    let _ = objective_dimension(pop);
+    if n == 0 {
+        return Vec::new();
+    }
+    objective_dimension(pop, "non-dominated sort");
     let mut dominated_by = vec![0usize; n]; // count of dominators
     let mut dominates_list: Vec<Vec<usize>> = vec![Vec::new(); n];
     for i in 0..n {
@@ -484,6 +488,10 @@ pub fn mc_hypervolume(
         return (0.0, 0);
     }
     assert!(samples > 0, "MC hypervolume needs at least one sample");
+    assert!(
+        u32::try_from(samples).is_ok(),
+        "MC hypervolume sample count must fit the Sobol index range"
+    );
     let pts: Vec<&Vec<f64>> = front
         .iter()
         .filter(|p| p.len() == m && p.iter().zip(reference).all(|(a, r)| a < r))
@@ -519,10 +527,7 @@ pub fn mc_hypervolume(
     let mut hits = 0usize;
     let mut y = vec![0.0f64; m];
     for s in 0..samples {
-        sobol.point(
-            u32::try_from(s + 1).expect("sample count fits u32"),
-            &mut pt,
-        );
+        sobol.point((s + 1) as u32, &mut pt);
         for d in 0..m {
             let u = if d < kq { pt[d] } else { tail.next_f64() };
             y[d] = (reference[d] - lo[d]).mul_add(u, lo[d]);
@@ -677,7 +682,7 @@ pub fn nsga3(
             Individual { x, f }
         })
         .collect();
-    let objective_m = objective_dimension(&pop).expect("NSGA-III population is non-empty");
+    let objective_m = objective_dimension(&pop, "NSGA-III");
     assert_eq!(
         direction_m, objective_m,
         "NSGA-III reference-direction dimension must match objective dimension"
@@ -720,9 +725,8 @@ pub fn nsga3(
 }
 
 /// NSGA-III environmental selection to `target` members.
-#[allow(clippy::too_many_lines)] // one coherent selection pass
 fn nsga3_select(pop: &[Individual], directions: &[Vec<f64>], target: usize) -> Vec<Individual> {
-    let m = objective_dimension(pop).expect("NSGA-III selection needs a non-empty population");
+    let m = objective_dimension(pop, "NSGA-III selection");
     assert_eq!(
         direction_dimension(directions, "NSGA-III reference directions"),
         m,
@@ -934,7 +938,7 @@ pub fn moead(
             Individual { x, f }
         })
         .collect();
-    let m = objective_dimension(&pop).expect("MOEA/D population is non-empty");
+    let m = objective_dimension(&pop, "MOEA/D");
     assert_eq!(
         weight_m, m,
         "MOEA/D weight-vector dimension must match objective dimension"
