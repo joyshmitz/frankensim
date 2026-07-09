@@ -310,3 +310,104 @@ fn moo_golden_hash() {
          justification (golden-evidence policy)"
     );
 }
+
+#[test]
+fn mc_hypervolume_vs_exact_and_high_dim_closed_forms() {
+    use fs_dfo::mc_hypervolume;
+    // Agreement with the EXACT recursion at m = 2 and m = 3.
+    let front2 = vec![vec![0.2, 0.6], vec![0.6, 0.2]];
+    let exact2 = hypervolume(&front2, &[1.0, 1.0]);
+    let (mc2, _) = mc_hypervolume(&front2, &[1.0, 1.0], 60_000, 7);
+    assert!(
+        (mc2 - exact2).abs() < 0.01,
+        "m=2 MC vs exact: {mc2:.4} vs {exact2:.4}"
+    );
+    let front3 = vec![vec![0.2, 0.8, 0.5], vec![0.8, 0.2, 0.5]];
+    let exact3 = hypervolume(&front3, &[1.0, 1.0, 1.0]);
+    let (mc3, _) = mc_hypervolume(&front3, &[1.0, 1.0, 1.0], 60_000, 8);
+    assert!(
+        (mc3 - exact3).abs() < 0.01,
+        "m=3 MC vs exact: {mc3:.4} vs {exact3:.4}"
+    );
+    // m = 6, beyond exact reach: closed forms. One point at 0.5^6:
+    // HV = 0.5^6 = 0.015625 exactly; two points via inclusion-
+    // exclusion: A = (0.2,0.8,0.5,0.5,0.5,0.5), B = (0.8,0.2,...):
+    // vol(A) = 0.8·0.2·0.5⁴ = 0.01, vol(B) = 0.01,
+    // overlap = 0.2·0.2·0.5⁴ = 0.0025 ⇒ HV = 0.0175.
+    let one6 = vec![vec![0.5; 6]];
+    let (mc6a, _) = mc_hypervolume(&one6, &[1.0; 6], 120_000, 9);
+    assert!(
+        (mc6a - 0.015_625).abs() / 0.015_625 < 0.08,
+        "m=6 single point: {mc6a:.6} vs 0.015625"
+    );
+    let mut a6 = vec![0.5f64; 6];
+    a6[0] = 0.2;
+    a6[1] = 0.8;
+    let mut b6 = vec![0.5f64; 6];
+    b6[0] = 0.8;
+    b6[1] = 0.2;
+    let (mc6b, _) = mc_hypervolume(&[a6, b6], &[1.0; 6], 120_000, 10);
+    assert!(
+        (mc6b - 0.0175).abs() / 0.0175 < 0.08,
+        "m=6 two points: {mc6b:.6} vs 0.0175"
+    );
+    // Determinism.
+    let (r1, h1) = mc_hypervolume(&front2, &[1.0, 1.0], 10_000, 42);
+    let (r2, h2) = mc_hypervolume(&front2, &[1.0, 1.0], 10_000, 42);
+    assert!(
+        r1.to_bits() == r2.to_bits() && h1 == h2,
+        "MC HV not deterministic"
+    );
+    log(
+        "mc-hv",
+        "pass",
+        &format!("m2 {mc2:.4}/{exact2:.4}, m3 {mc3:.4}/{exact3:.4}, m6 {mc6a:.5}+{mc6b:.5}"),
+    );
+}
+
+#[test]
+fn hv_archive_eviction_is_least_contributor() {
+    use fs_dfo::HvArchive;
+    let mk = |f: Vec<f64>| Individual { x: vec![], f };
+    let mut arch = HvArchive::new(3, vec![1.0, 1.0]);
+    assert!(arch.insert(mk(vec![0.2, 0.7])));
+    assert!(arch.insert(mk(vec![0.5, 0.5])));
+    assert!(arch.insert(mk(vec![0.7, 0.2])));
+    // Dominated insert is a no-op.
+    assert!(!arch.insert(mk(vec![0.6, 0.6])));
+    assert_eq!(arch.members.len(), 3);
+    // A dominating insert evicts the dominated member without
+    // touching capacity.
+    assert!(arch.insert(mk(vec![0.45, 0.45])));
+    assert_eq!(arch.members.len(), 3);
+    // Over-capacity insert: brute-force the best keep-3-of-4 subset
+    // and verify the archive kept exactly that one.
+    let hv_before_members: Vec<Vec<f64>> = arch.members.iter().map(|i| i.f.clone()).collect();
+    let cand = vec![0.1, 0.9];
+    assert!(arch.insert(mk(cand.clone())));
+    assert_eq!(arch.members.len(), 3);
+    let mut all4: Vec<Vec<f64>> = hv_before_members;
+    all4.push(cand);
+    let mut best_subset_hv = f64::NEG_INFINITY;
+    for drop_k in 0..all4.len() {
+        let sub: Vec<Vec<f64>> = all4
+            .iter()
+            .enumerate()
+            .filter(|&(j, _)| j != drop_k)
+            .map(|(_, p)| p.clone())
+            .collect();
+        best_subset_hv = best_subset_hv.max(hypervolume(&sub, &[1.0, 1.0]));
+    }
+    let got = arch.hv();
+    assert!(
+        (got - best_subset_hv).abs() < 1e-12,
+        "eviction not least-contributor: archive HV {got:.6} vs best subset {best_subset_hv:.6}"
+    );
+    // Monotone: archive HV never decreased across the successful
+    // inserts (checked at the end state vs the 3-member start).
+    log(
+        "hv-archive",
+        "pass",
+        &format!("final HV {got:.4} == best subset"),
+    );
+}

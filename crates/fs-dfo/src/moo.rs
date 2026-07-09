@@ -401,3 +401,134 @@ pub fn cvar_rockafellar_uryasev(losses: &[f64], beta: f64) -> (f64, f64) {
     }
     best
 }
+
+/// Monte Carlo hypervolume estimate for m > 4 (where exact recursion
+/// is exponential): scrambled-Sobol points in the reference box,
+/// counting the dominated fraction. Deterministic per seed; the
+/// standard error scales as √(p(1−p)/n) and the SAMPLE COUNT is the
+/// caller's accuracy knob (reported honestly by returning the hit
+/// count alongside).
+#[must_use]
+pub fn mc_hypervolume(
+    front: &[Vec<f64>],
+    reference: &[f64],
+    samples: usize,
+    seed: u64,
+) -> (f64, usize) {
+    let m = reference.len();
+    let pts: Vec<&Vec<f64>> = front
+        .iter()
+        .filter(|p| p.iter().zip(reference).all(|(a, r)| a < r))
+        .collect();
+    if pts.is_empty() {
+        return (0.0, 0);
+    }
+    // Box lower corner: componentwise min of the front (nothing below
+    // it is dominated-relevant beyond the points themselves).
+    let mut lo = vec![f64::INFINITY; m];
+    for p in &pts {
+        for (l, v) in lo.iter_mut().zip(p.iter()) {
+            *l = l.min(*v);
+        }
+    }
+    let vol_box: f64 = lo
+        .iter()
+        .zip(reference)
+        .map(|(l, r)| (r - l).max(0.0))
+        .product();
+    if vol_box <= 0.0 {
+        return (0.0, 0);
+    }
+    let kq = m.min(fs_rand::qmc::MAX_SOBOL_DIM);
+    let sobol = fs_rand::qmc::Sobol::scrambled(kq, seed);
+    let mut tail = StreamKey {
+        seed,
+        kernel: 0x0871,
+        tile: 0,
+    }
+    .stream();
+    let mut pt = vec![0.0f64; kq];
+    let mut hits = 0usize;
+    let mut y = vec![0.0f64; m];
+    for s in 0..samples {
+        sobol.point(
+            u32::try_from(s + 1).expect("sample count fits u32"),
+            &mut pt,
+        );
+        for d in 0..m {
+            let u = if d < kq { pt[d] } else { tail.next_f64() };
+            y[d] = (reference[d] - lo[d]).mul_add(u, lo[d]);
+        }
+        if pts.iter().any(|p| p.iter().zip(&y).all(|(a, b)| a <= b)) {
+            hits += 1;
+        }
+    }
+    (vol_box * hits as f64 / samples as f64, hits)
+}
+
+/// Bounded Pareto archive with least-hypervolume-contributor
+/// eviction (exact contributions via [`hypervolume`] — the m ≤ 4
+/// regime; MC-contribution eviction joins with its consumer).
+pub struct HvArchive {
+    /// Archive members (mutually non-dominated).
+    pub members: Vec<Individual>,
+    /// Capacity.
+    pub capacity: usize,
+    /// Reference point.
+    pub reference: Vec<f64>,
+}
+
+impl HvArchive {
+    /// Empty archive.
+    #[must_use]
+    pub fn new(capacity: usize, reference: Vec<f64>) -> HvArchive {
+        assert!(capacity >= 2, "an archive below 2 keeps no front");
+        HvArchive {
+            members: Vec::new(),
+            capacity,
+            reference,
+        }
+    }
+
+    /// Current archive hypervolume.
+    #[must_use]
+    pub fn hv(&self) -> f64 {
+        let pts: Vec<Vec<f64>> = self.members.iter().map(|i| i.f.clone()).collect();
+        hypervolume(&pts, &self.reference)
+    }
+
+    /// Insert: dominated candidates are a NO-OP (returns false);
+    /// otherwise dominated members are evicted, the candidate joins,
+    /// and if over capacity the LEAST exclusive contributor leaves
+    /// (deterministic index tie-break).
+    pub fn insert(&mut self, cand: Individual) -> bool {
+        if self
+            .members
+            .iter()
+            .any(|mem| dominates(&mem.f, &cand.f) || mem.f == cand.f)
+        {
+            return false;
+        }
+        self.members.retain(|mem| !dominates(&cand.f, &mem.f));
+        self.members.push(cand);
+        if self.members.len() > self.capacity {
+            let pts: Vec<Vec<f64>> = self.members.iter().map(|i| i.f.clone()).collect();
+            let full = hypervolume(&pts, &self.reference);
+            let mut worst = (f64::INFINITY, 0usize);
+            for k in 0..pts.len() {
+                let rest: Vec<Vec<f64>> = pts
+                    .iter()
+                    .enumerate()
+                    .filter(|&(j, _)| j != k)
+                    .map(|(_, p)| p.clone())
+                    .collect();
+                let contribution = full - hypervolume(&rest, &self.reference);
+                if contribution < worst.0 {
+                    worst = (contribution, k);
+                }
+            }
+            self.members.remove(worst.1);
+        }
+        true
+    }
+}

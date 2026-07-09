@@ -88,7 +88,14 @@ evaluations (0.87 vs 0.19 / 0.54 vs 0.00), and bitwise replay; knee
 detection hitting a synthetic elbow exactly; CVaR Rockafellar–Uryasev
 on 2·10⁵ Gaussian samples vs the closed form μ + σφ(z_β)/(1−β) within
 0.02 (and the RU minimizer matching the VaR); MOO golden hash
-`0xaf70_6167_593f_51cc`.
+`0xaf70_6167_593f_51cc`; MC hypervolume vs exact at m = 2/3 within
+0.01 absolute and m = 6 CLOSED FORMS beyond exact reach (single point
+∏(ref − p) and two-point inclusion-exclusion, within 8% at 1.2·10⁵
+Sobol samples, deterministic per seed with the hit count returned as
+the honesty knob); bounded archive — dominated inserts are no-ops,
+dominating inserts evict, over-capacity eviction removes the TRUE
+least contributor (verified against brute-force keep-(k−1) subset
+enumeration).
 tests/dro_battery.rs (4 cases): the one-sample kink LP recovers the
 fractional q = [0.5, 0.5] and worst-case value 0.5; tiny-scale kinks
 use scale-relative recovery rather than an absolute lambda cutoff;
@@ -102,6 +109,10 @@ DRO golden hash `0xd21c_d092_b4a5_ba98`.
 ## No-claim boundaries
 - No published-ERT-table parity claims yet (in-repo BBOB-class fixtures
   only; the external COCO battery is follow-up).
+- `mc_hypervolume` is the m > 4 path; its accuracy knob is the
+  sample count (standard error √(p(1−p)/n)) — no silent precision
+  claim. `HvArchive` eviction uses EXACT contributions (m ≤ 4);
+  MC-contribution eviction joins with its many-objective consumer.
 - Module `ot`: BALANCED entropic OT only (equal masses asserted);
   unbalanced/partial transport and Sinkhorn divergences (debiasing)
   are follow-up lanes.
