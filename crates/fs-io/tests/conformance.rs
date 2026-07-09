@@ -237,11 +237,13 @@ fn io_004_ply_face_lists_reject_non_integer_values() {
         ("3 0 -1 2\n", "list item"),
         ("3 0 1.25 2\n", "list item"),
     ] {
-        match fs_io::ply::read_ply(format!("{base}{tail}").as_bytes()) {
-            Err(fs_io::IoError::Malformed { what, .. }) => {
-                assert!(what.contains(needle), "{tail:?} error was {what:?}");
-            }
-            other => panic!("expected malformed PLY list value for {tail:?}, got {other:?}"),
+        let got = fs_io::ply::read_ply(format!("{base}{tail}").as_bytes());
+        assert!(
+            matches!(&got, Err(fs_io::IoError::Malformed { .. })),
+            "expected malformed PLY list value for {tail:?}, got {got:?}"
+        );
+        if let Err(fs_io::IoError::Malformed { what, .. }) = &got {
+            assert!(what.contains(needle), "{tail:?} error was {what:?}");
         }
     }
     verdict(
@@ -279,22 +281,24 @@ fn io_005_catalog_schema_validation_teaches() {
     assert_eq!(catalog.rows[0]["section"], "W14x90");
     // Violations teach: row, column, offending text, expectation.
     let bad_number = schema.parse_csv("section,area_in2,ix_in4\nW1,abc,3\n");
-    match bad_number {
-        Err(fs_io::IoError::Schema { row, column, what }) => {
-            assert_eq!((row, column.as_str()), (1, "area_in2"));
-            assert!(what.contains("abc"), "must name the offender: {what}");
-        }
-        other => panic!("expected a schema error, got {other:?}"),
+    assert!(
+        matches!(&bad_number, Err(fs_io::IoError::Schema { .. })),
+        "expected a schema error, got {bad_number:?}"
+    );
+    if let Err(fs_io::IoError::Schema { row, column, what }) = &bad_number {
+        assert_eq!((*row, column.as_str()), (1, "area_in2"));
+        assert!(what.contains("abc"), "must name the offender: {what}");
     }
     let out_of_range = schema.parse_csv("section,area_in2,ix_in4\nW1,-3,3\n");
     assert!(matches!(out_of_range, Err(fs_io::IoError::Schema { .. })));
     let missing_col = schema.parse_csv("section,area_in2\nW1,3\n");
-    match missing_col {
-        Err(fs_io::IoError::Schema { column, what, .. }) => {
-            assert_eq!(column, "ix_in4");
-            assert!(what.contains("found:"), "lists what WAS found: {what}");
-        }
-        other => panic!("expected a schema error, got {other:?}"),
+    assert!(
+        matches!(&missing_col, Err(fs_io::IoError::Schema { .. })),
+        "expected a schema error, got {missing_col:?}"
+    );
+    if let Err(fs_io::IoError::Schema { column, what, .. }) = &missing_col {
+        assert_eq!(column, "ix_in4");
+        assert!(what.contains("found:"), "lists what WAS found: {what}");
     }
     // JSON path, same schema.
     let json = r#"[{"section": "W14x90", "area_in2": 26.5, "ix_in4": 999}]"#;
