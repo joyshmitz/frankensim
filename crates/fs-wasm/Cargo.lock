@@ -601,6 +601,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs-bem"
+version = "0.0.1"
+dependencies = [
+ "fs-fmm",
+ "fs-geom",
+ "fs-la",
+ "fs-rep-mesh",
+ "fs-solver",
+]
+
+[[package]]
 name = "fs-bo"
 version = "0.0.1"
 dependencies = [
@@ -735,6 +746,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs-fmm"
+version = "0.0.1"
+
+[[package]]
+name = "fs-frame"
+version = "0.0.1"
+dependencies = [
+ "fs-eproc",
+ "fs-scenario",
+ "fs-solid",
+ "fs-truss",
+ "fs-uq",
+]
+
+[[package]]
 name = "fs-ga"
 version = "0.0.1"
 dependencies = [
@@ -854,14 +880,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs-ornith"
+version = "0.0.1"
+dependencies = [
+ "fs-bem",
+ "fs-dfo",
+ "fs-exec",
+ "fs-lbm",
+ "fs-math",
+ "fs-race",
+ "fs-sos",
+ "fs-surrogate",
+ "fs-vpm",
+]
+
+[[package]]
 name = "fs-qty"
 version = "0.0.1"
+
+[[package]]
+name = "fs-race"
+version = "0.0.1"
+dependencies = [
+ "fs-eproc",
+ "fs-exec",
+]
 
 [[package]]
 name = "fs-rand"
 version = "0.0.1"
 dependencies = [
  "fs-math",
+]
+
+[[package]]
+name = "fs-render"
+version = "0.0.1"
+dependencies = [
+ "fs-rand",
 ]
 
 [[package]]
@@ -990,6 +1046,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs-surrogate"
+version = "0.0.1"
+
+[[package]]
 name = "fs-symmetry"
 version = "0.0.1"
 
@@ -1046,11 +1106,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs-uq"
+version = "0.0.1"
+dependencies = [
+ "fs-bo",
+ "fs-eproc",
+ "fs-la",
+ "fs-math",
+ "fs-rand",
+]
+
+[[package]]
+name = "fs-vessel"
+version = "0.0.1"
+dependencies = [
+ "fs-cheb",
+ "fs-exec",
+ "fs-lbm",
+ "fs-race",
+ "fs-render",
+]
+
+[[package]]
 name = "fs-viz"
 version = "0.0.1"
 
 [[package]]
 name = "fs-voi"
+version = "0.0.1"
+
+[[package]]
+name = "fs-vpm"
 version = "0.0.1"
 
 [[package]]
@@ -1062,6 +1148,7 @@ dependencies = [
  "fs-adaptbo-e2e",
  "fs-archive",
  "fs-assimilate",
+ "fs-bem",
  "fs-bo",
  "fs-cheb",
  "fs-couple",
@@ -1069,12 +1156,14 @@ dependencies = [
  "fs-dfo",
  "fs-eproc",
  "fs-evidence",
+ "fs-exec",
  "fs-fab",
  "fs-feec",
  "fs-fft",
  "fs-flowcert-e2e",
  "fs-flutter-e2e",
  "fs-flux",
+ "fs-frame",
  "fs-ga",
  "fs-geom",
  "fs-grammar-e2e",
@@ -1082,15 +1171,21 @@ dependencies = [
  "fs-la",
  "fs-lattice",
  "fs-lbm",
+ "fs-material",
  "fs-math",
  "fs-metamat-e2e",
  "fs-neuroshape-e2e",
  "fs-oed-e2e",
+ "fs-ornith",
+ "fs-qty",
+ "fs-race",
  "fs-rand",
+ "fs-render",
  "fs-rep-mesh",
  "fs-rep-neural",
  "fs-robust",
  "fs-robustopt-e2e",
+ "fs-scenario",
  "fs-schedule-e2e",
  "fs-shapeprog",
  "fs-solid",
@@ -1103,8 +1198,11 @@ dependencies = [
  "fs-tropical",
  "fs-truss",
  "fs-truss-e2e",
+ "fs-uq",
+ "fs-vessel",
  "fs-viz",
  "fs-voi",
+ "fs-vpm",
  "fs-xform",
  "getrandom 0.4.3",
  "wasm-bindgen",

@@ -62,6 +62,21 @@ fs-lattice = { path = "../fs-lattice" }
 fs-truss = { path = "../fs-truss" }
 fs-eproc = { path = "../fs-eproc" }
 fs-lbm = { path = "../fs-lbm" }
+# ── FLAGSHIP crates (Tier V): the three live end-to-end campaign pipelines
+# (ornithoid / vessel / frame) and the leaf crates their stages compose. Each
+# compiles to wasm32 so the flagships run live in the browser. ──
+fs-ornith = { path = "../fs-ornith" }
+fs-vessel = { path = "../fs-vessel" }
+fs-frame = { path = "../fs-frame" }
+fs-bem = { path = "../fs-bem" }
+fs-vpm = { path = "../fs-vpm" }
+fs-race = { path = "../fs-race" }
+fs-render = { path = "../fs-render" }
+fs-scenario = { path = "../fs-scenario" }
+fs-uq = { path = "../fs-uq" }
+fs-material = { path = "../fs-material" }
+fs-exec = { path = "../fs-exec" }
+fs-qty = { path = "../fs-qty" }
 # ── The end-to-end CAMPAIGN crates themselves (Tier IV): each composes the
 # leaf crates above into a certified pipeline, and each compiles to wasm32. ──
 fs-robustopt-e2e = { path = "../fs-robustopt-e2e" }
