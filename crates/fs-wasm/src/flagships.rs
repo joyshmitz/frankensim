@@ -231,6 +231,9 @@ pub fn run_ornithoid(seed: u32) -> Vec<f64> {
     let spread = base.iter().copied().fold(f64::NEG_INFINITY, f64::max) - minb;
     let scale = 1.5 / spread.max(1e-9);
     let kills = KillRegistry::new();
+    for candidate in 0..ns {
+        let _ = kills.register(candidate as u64);
+    }
     let mut loss = |i: usize, t: u64| {
         let mut h = ((i as u64) << 32) ^ t ^ u64::from(seed);
         h ^= h << 13;

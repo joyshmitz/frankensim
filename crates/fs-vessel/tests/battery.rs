@@ -156,6 +156,9 @@ fn vsl_005_cvar_and_race() {
     let base_span = base.iter().copied().fold(f64::NEG_INFINITY, f64::max)
         - base.iter().copied().fold(f64::INFINITY, f64::min);
     let kills = fs_exec::KillRegistry::new();
+    for candidate in 0..lips.len() {
+        let _ = kills.register(candidate as u64);
+    }
     let mut loss = |i: usize, t: u64| {
         let mut h = (i as u64) << 32 ^ t ^ 0x7E55;
         h ^= h << 13;

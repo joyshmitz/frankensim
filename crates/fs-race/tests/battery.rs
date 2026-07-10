@@ -61,13 +61,21 @@ fn settings_for(means: &[f64]) -> RaceSettings {
     RaceSettings::new(span_for(means))
 }
 
+fn registered_kills(n_candidates: usize) -> KillRegistry {
+    let kills = KillRegistry::new();
+    for candidate in 0..n_candidates {
+        let _ = kills.register(candidate as u64);
+    }
+    kills
+}
+
 /// race-001: bitwise replay — identical seeds give identical
 /// elimination sequences, winners, and counters.
 #[test]
 fn race_001_replay() {
     let mus = [0.0f64, 0.5, 0.8, 1.2, 0.4, 0.9];
     let run = || {
-        let kills = KillRegistry::new();
+        let kills = registered_kills(mus.len());
         let mut loss = |i: usize, t: u64| mus[i] + noise(0xACE, i, t);
         race_field(&mut loss, mus.len(), settings_for(&mus), &kills)
             .expect("fixture respects its analytical span")
@@ -96,7 +104,7 @@ fn race_001_replay() {
 #[test]
 fn race_002_domination() {
     let mus = [0.0f64, 1.0, 1.5, 2.0, 1.2, 0.9, 1.7, 1.3];
-    let kills = KillRegistry::new();
+    let kills = registered_kills(mus.len());
     let mut loss = |i: usize, t: u64| mus[i] + noise(0xD0D0, i, t);
     let out = race_field(&mut loss, mus.len(), settings_for(&mus), &kills)
         .expect("fixture respects its analytical span");
@@ -121,7 +129,7 @@ fn race_003_calibration() {
     let replays = 200u64;
     let mut false_elims = 0u32;
     for seed in 0..replays {
-        let kills = KillRegistry::new();
+        let kills = registered_kills(mus.len());
         let mut loss = |i: usize, t: u64| mus[i] + noise(seed.wrapping_mul(0x5DEECE66D), i, t);
         let settings = RaceSettings {
             alpha,
@@ -154,7 +162,7 @@ fn race_003_calibration() {
 #[test]
 fn race_004_savings() {
     let mus = [0.0f64, 1.0, 1.5, 2.0, 1.2, 0.9, 1.7, 1.3];
-    let kills = KillRegistry::new();
+    let kills = registered_kills(mus.len());
     let mut loss = |i: usize, t: u64| mus[i] + noise(0x5A7E, i, t);
     let out = race_field(&mut loss, mus.len(), settings_for(&mus), &kills)
         .expect("fixture respects its analytical span");
@@ -169,7 +177,7 @@ fn race_004_savings() {
         ),
     );
     // Inseparable field: all equal means.
-    let kills2 = KillRegistry::new();
+    let kills2 = registered_kills(6);
     let mut loss2 = |i: usize, t: u64| noise(0xE0_01, i, t);
     let out2 = race_field(
         &mut loss2,
@@ -196,7 +204,14 @@ fn race_005_kill_wiring() {
     let mus = [0.0f64, 1.5, 2.0, 1.8];
     let kills = KillRegistry::new();
     let gates: Vec<_> = (0..mus.len()).map(|i| kills.register(i as u64)).collect();
-    let mut loss = |i: usize, t: u64| mus[i] + noise(0x1 << 20, i, t);
+    let mut released = false;
+    let mut loss = |i: usize, t: u64| {
+        if !released && i == 0 && t == 0 {
+            assert!(kills.release(1), "seeded concurrent release lands");
+            released = true;
+        }
+        mus[i] + noise(0x1 << 20, i, t)
+    };
     let out = race_field(&mut loss, mus.len(), settings_for(&mus), &kills)
         .expect("fixture respects its analytical span");
     let mut wiring_ok = true;
@@ -210,7 +225,7 @@ fn race_005_kill_wiring() {
         "race-005-kill-wiring",
         wiring_ok && !out.eliminated.is_empty(),
         &format!(
-            "gates fired exactly for the {} eliminated candidates; survivors clean",
+            "held gates fired exactly for the {} eliminated candidates even after a registry release; survivors clean",
             out.eliminated.len()
         ),
     );
@@ -223,9 +238,10 @@ fn race_005_kill_wiring() {
 #[test]
 fn race_006_successive_halving() {
     let mus = [0.0f64, 0.6, 0.9, 1.2, 0.7, 1.1, 0.8, 1.4];
-    let kills = KillRegistry::new();
+    let kills = registered_kills(mus.len());
     let mut loss = |i: usize, t: u64| mus[i] + noise(0x5_60, i, t);
-    let ledger = successive_halving(&mut loss, mus.len(), 16, 2, &kills);
+    let ledger =
+        successive_halving(&mut loss, mus.len(), 16, 2, &kills).expect("registered finite bracket");
     let halves: Vec<usize> = ledger.brackets.iter().map(|&(_, _, after)| after).collect();
     verdict(
         "race-006-successive-halving",
@@ -251,7 +267,7 @@ fn race_007_global_null() {
     let replays = 200u64;
     let mut any_elims = 0u32;
     for seed in 0..replays {
-        let kills = KillRegistry::new();
+        let kills = registered_kills(6);
         let mut loss = |i: usize, t: u64| noise(seed.wrapping_mul(0xA5A5_1234), i, t);
         let settings = RaceSettings {
             alpha,
@@ -368,7 +384,7 @@ fn race_009_nonfinite_structural() {
     };
     let error = race_field(&mut loss, 4, settings_for(&mus), &kills)
         .expect_err("non-finite e-race input carries no verdict");
-    let sh_kills = KillRegistry::new();
+    let sh_kills = registered_kills(4);
     let mut loss2 = |i: usize, t: u64| {
         if i == 1 && t == 2 {
             f64::INFINITY
@@ -376,7 +392,8 @@ fn race_009_nonfinite_structural() {
             mus[i] + noise(0xF1A6, i, t)
         }
     };
-    let ledger = successive_halving(&mut loss2, 4, 8, 2, &sh_kills);
+    let ledger = successive_halving(&mut loss2, 4, 8, 2, &sh_kills)
+        .expect("registered bracket retains structural-invalid semantics");
     verdict(
         "race-009-nonfinite",
         matches!(
@@ -401,7 +418,7 @@ fn race_009_nonfinite_structural() {
 /// converted this equal-mean skew family into positive betting drift.
 #[test]
 fn race_010_checked_span_catches_the_clipping_counterexample() {
-    let kills = KillRegistry::new();
+    let kills = registered_kills(2);
     let mut invalid = |i: usize, t: u64| {
         if i == 0 {
             3.0
@@ -436,6 +453,7 @@ fn race_010_checked_span_catches_the_clipping_counterexample() {
                 4.0
             }
         };
+        let replay_kills = registered_kills(2);
         let out = race_field(
             &mut loss,
             2,
@@ -445,7 +463,7 @@ fn race_010_checked_span_catches_the_clipping_counterexample() {
                 min_rounds: 8,
                 loss_span: LossSpan::new(3.0).expect("positive"),
             },
-            &KillRegistry::new(),
+            &replay_kills,
         )
         .expect("the exact raw support is declared");
         any_elims += u32::from(!out.eliminated.is_empty());
@@ -476,11 +494,12 @@ fn race_011_scale_covariance_and_settings_refusal() {
             };
             scale * (base[i] + jitter)
         };
+        let kills = registered_kills(base.len());
         race_field(
             &mut loss,
             base.len(),
             RaceSettings::new(LossSpan::new(scale * 0.52).expect("positive")),
-            &KillRegistry::new(),
+            &kills,
         )
         .expect("analytical span covers the fixture")
     };
@@ -519,6 +538,15 @@ fn race_011_scale_covariance_and_settings_refusal() {
         ),
         Err(RaceError::InvalidRoundBudget { .. })
     ));
+    assert!(matches!(
+        race_field(
+            &mut loss,
+            2,
+            RaceSettings::new(LossSpan::ONE),
+            &KillRegistry::new()
+        ),
+        Err(RaceError::UnregisteredCandidate { candidate: 0 })
+    ));
     verdict(
         "race-011-scale-covariance",
         same,
@@ -533,6 +561,7 @@ fn race_012_running_means_do_not_overflow() {
     let high = f64::MAX / 2.0;
     let low = f64::MAX * 0.4;
     let mut loss = |i: usize, _: u64| if i == 0 { high } else { low };
+    let kills = registered_kills(2);
     let out = race_field(
         &mut loss,
         2,
@@ -542,7 +571,7 @@ fn race_012_running_means_do_not_overflow() {
             min_rounds: 3,
             loss_span: LossSpan::new(f64::MAX / 4.0).expect("finite"),
         },
-        &KillRegistry::new(),
+        &kills,
     )
     .expect("finite extreme fixture has a declared span");
     verdict(

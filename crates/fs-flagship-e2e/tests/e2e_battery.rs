@@ -252,6 +252,9 @@ fn fe2e_006_erace_consistency_audit() {
     let base = [0.0f64, 0.4, 0.9, 1.3, 0.2, 1.1];
     let run = |seed: u64| {
         let kills = fs_exec::KillRegistry::new();
+        for candidate in 0..base.len() {
+            let _ = kills.register(candidate as u64);
+        }
         let mut loss = |i: usize, t: u64| {
             let mut h = (i as u64) << 32 ^ t ^ seed;
             h ^= h << 13;
@@ -310,6 +313,9 @@ fn fe2e_007_failure_drills() {
     // race completes, the winner is a survivor, kills are recorded.
     let base = [0.0f64, 0.3, 0.6, 0.9, 1.2, 1.5];
     let kills = fs_exec::KillRegistry::new();
+    for candidate in 0..base.len() {
+        let _ = kills.register(candidate as u64);
+    }
     let mut calls = 0u64;
     let mut loss = |i: usize, t: u64| {
         calls += 1;

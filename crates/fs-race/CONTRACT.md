@@ -34,11 +34,15 @@ payoff claim is measured, never assumed.
 - `successive_halving(...)` → `BracketLedger`: rank-based kills at
   budget milestones (standard SH semantics — does NOT carry the
   e-guarantee; documented), bracket schedule ledgered.
-- Kill wiring: callers register candidate ids `0..n` in a
-  `KillRegistry` to hold gates; eliminated candidates' whole
-  evaluation trees drain at their next poll point.
-- `RaceError` is a no-verdict outcome for malformed settings, non-finite
-  losses, arithmetic overflow, or a paired difference outside `LossSpan`.
+- Kill wiring is an admission contract: callers must register candidate ids
+  `0..n` in a `KillRegistry` and run each evaluation tree under the returned
+  gate. The tournament fetches those gates without creating substitutes,
+  holds the `Arc`s for its full lifetime, and refuses the first missing id.
+  Eliminated candidates' whole evaluation trees drain at their next poll
+  point. A concurrent registry `release` cannot disconnect the held gate.
+- `RaceError` is a no-verdict outcome for malformed settings, missing
+  cancellation wiring, non-finite losses, arithmetic overflow, or a paired
+  difference outside `LossSpan`.
   Earlier-round kill requests cannot be rolled back if a later observation
   breaches support; callers must treat the whole returned race as no-claim.
 
@@ -55,8 +59,9 @@ payoff claim is measured, never assumed.
    separated fixture (the stated 2–5× claim, exceeded and gated at
    ≥ 2×); the INSEPARABLE field reports 1.03× — no fake payoff — with
    elimination α-controlled (race-004).
-5. Kill gates fire exactly for eliminated candidates; survivors'
-   gates stay clean (race-005).
+5. Caller-wired kill gates fire exactly for eliminated candidates; survivors'
+   gates stay clean. Releasing a registry entry after admission cannot make
+   the held gate miss or panic (race-005).
 6. Successive halving follows its declared bracket schedule and beats
    fixed-N while the true best survives (race-006).
 7. The statistical scale is structural: support boundaries map to exactly
@@ -115,12 +120,13 @@ and no `RaceOutcome`. The current round cannot emit elimination evidence.
 ## Error model
 
 `race_field` returns structured `RaceError` values and no verdict for fewer
-than two candidates, invalid alpha/round settings, non-finite losses,
-subtraction overflow, and support breaches. A late failure can follow valid
+than two candidates, invalid alpha/round settings, missing candidate gates,
+non-finite losses, subtraction overflow, and support breaches. A late failure can follow valid
 earlier eliminations whose kill requests have already fired; returning an
 error revokes the aggregate race claim but cannot undo external cancellation.
-`successive_halving` retains explicit panics for invalid field size/eta and
-for an all-invalid field because it is a separate rank-based primitive.
+`successive_halving` returns the same structured admission errors, plus
+invalid bracket settings and an all-invalid-field error; it remains a separate
+rank-based primitive without the e-process guarantee.
 
 ## Determinism class
 

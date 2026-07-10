@@ -20,10 +20,11 @@
 //! that is the point of carrying `fixed_n_equivalent` in the outcome.
 
 use core::fmt;
+use std::sync::Arc;
 
 pub use fs_eproc::LossSpan;
 use fs_eproc::{PairwiseInputError, PairwiseRace, combine_average, e_benjamini_hochberg};
-use fs_exec::KillRegistry;
+use fs_exec::{CancelGate, KillRegistry};
 
 /// Racing controls.
 #[derive(Debug, Clone, Copy)]
@@ -76,6 +77,20 @@ pub enum RaceError {
         /// Requested total round budget.
         max_rounds: u32,
     },
+    /// A successive-halving bracket has an invalid initial budget or factor.
+    InvalidHalvingSettings {
+        /// Observations per candidate before the first bracket.
+        base_rounds: u32,
+        /// Requested reduction factor.
+        eta: u32,
+    },
+    /// A caller did not wire a candidate evaluation tree before admission.
+    UnregisteredCandidate {
+        /// Candidate whose gate is absent.
+        candidate: usize,
+    },
+    /// Every candidate in a rank-based bracket emitted invalid losses.
+    NoValidCandidate,
     /// One pair violated the declared support, so no race evidence is valid.
     PairwiseInput {
         /// One-based round where the invalid pair appeared.
@@ -116,6 +131,20 @@ impl fmt::Display for RaceError {
                 f,
                 "race round budget must satisfy 1 <= min_rounds <= max_rounds; got {min_rounds} and {max_rounds}"
             ),
+            RaceError::InvalidHalvingSettings { base_rounds, eta } => write!(
+                f,
+                "successive halving requires base_rounds >= 1 and eta >= 2; got {base_rounds} and {eta}"
+            ),
+            RaceError::UnregisteredCandidate { candidate } => write!(
+                f,
+                "candidate {candidate} has no registered cancellation gate; register and wire every evaluation tree before tournament admission"
+            ),
+            RaceError::NoValidCandidate => {
+                write!(
+                    f,
+                    "no candidate produced a finite loss, so there is no verdict"
+                )
+            }
             RaceError::PairwiseInput {
                 round,
                 candidate_a,
@@ -203,6 +232,19 @@ fn validate_race_settings(n_candidates: usize, settings: RaceSettings) -> Result
     Ok(())
 }
 
+fn registered_candidate_gates(
+    kills: &KillRegistry,
+    n_candidates: usize,
+) -> Result<Vec<Arc<CancelGate>>, RaceError> {
+    (0..n_candidates)
+        .map(|candidate| {
+            kills
+                .registered_gate(candidate as u64)
+                .map_err(|_| RaceError::UnregisteredCandidate { candidate })
+        })
+        .collect()
+}
+
 fn update_mean(mean: &mut f64, count: &mut u64, value: f64) {
     if *count == 0 {
         *mean = value;
@@ -245,8 +287,9 @@ fn update_mean(mean: &mut f64, count: &mut u64, value: f64) {
 /// which is not a valid stopped-supermartingale construction.
 ///
 /// # Errors
-/// Invalid settings, paired-loss support violations, or a field with no
-/// valid candidate. These errors carry no race verdict.
+/// Invalid settings, an unregistered candidate gate, paired-loss support
+/// violations, or a field with no valid candidate. These errors carry no
+/// race verdict.
 pub fn race_field(
     loss: &mut dyn FnMut(usize, u64) -> f64,
     n_candidates: usize,
@@ -254,17 +297,12 @@ pub fn race_field(
     kills: &KillRegistry,
 ) -> Result<RaceOutcome, RaceError> {
     validate_race_settings(n_candidates, settings)?;
+    let candidate_gates = registered_candidate_gates(kills, n_candidates)?;
     let prototype = PairwiseRace::new(settings.loss_span);
     let n = n_candidates;
     // Pairwise race matrix (i, j), i < j: PairwiseRace observing
     // (loss_i, loss_j); a_beats_b == "i dominates j".
     let mut races = vec![prototype; n * n];
-    // The race OWNS its candidates' gates (wf9.8.1): register every id
-    // up front so an elimination can never be a silent no-op against an
-    // unwired registry.
-    for i in 0..n {
-        let _gate = kills.register(i as u64);
-    }
     let mut alive: Vec<bool> = vec![true; n];
     let mut means = vec![0.0f64; n];
     let mut counts = vec![0u64; n];
@@ -343,9 +381,7 @@ pub fn race_field(
             for &i in &ids {
                 alive[i] = false;
                 eliminated.push((round, i));
-                kills
-                    .kill_registered(i as u64)
-                    .expect("registered at race start (wf9.8.1)");
+                candidate_gates[i].request();
             }
         }
     }
@@ -391,25 +427,27 @@ pub struct BracketLedger {
 /// Non-finite losses condemn their candidate structurally (fail
 /// closed), exactly as in [`race_field`].
 ///
-/// # Panics
-/// If `n_candidates < 2`, `eta < 2`, or every candidate is
-/// structurally invalid.
-#[must_use]
+/// # Errors
+/// Invalid bracket settings, an unregistered candidate gate, or a field in
+/// which every candidate produces a non-finite loss.
 pub fn successive_halving(
     loss: &mut dyn FnMut(usize, u64) -> f64,
     n_candidates: usize,
     base_rounds: u32,
     eta: u32,
     kills: &KillRegistry,
-) -> BracketLedger {
-    assert!(n_candidates >= 2, "a bracket needs at least two candidates");
-    assert!(eta >= 2, "eta must halve at least");
-    let n = n_candidates;
-    let mut alive: Vec<bool> = vec![true; n];
-    // The bracket OWNS its candidates' gates (wf9.8.1).
-    for i in 0..n {
-        let _gate = kills.register(i as u64);
+) -> Result<BracketLedger, RaceError> {
+    if n_candidates < 2 {
+        return Err(RaceError::TooFewCandidates {
+            count: n_candidates,
+        });
     }
+    if base_rounds == 0 || eta < 2 {
+        return Err(RaceError::InvalidHalvingSettings { base_rounds, eta });
+    }
+    let n = n_candidates;
+    let candidate_gates = registered_candidate_gates(kills, n_candidates)?;
+    let mut alive: Vec<bool> = vec![true; n];
     let mut means = vec![0.0f64; n];
     let mut counts = vec![0u64; n];
     let mut invalid: Vec<(u32, usize)> = Vec::new();
@@ -429,9 +467,7 @@ pub fn successive_halving(
                     } else {
                         alive[i] = false;
                         invalid.push((round + 1, i));
-                        kills
-                            .kill_registered(i as u64)
-                            .expect("registered at bracket start (wf9.8.1)");
+                        candidate_gates[i].request();
                     }
                 }
             }
@@ -444,25 +480,23 @@ pub fn successive_halving(
         let keep = (before as u32).div_ceil(eta).max(1) as usize;
         for &i in &live[keep.min(live.len())..] {
             alive[i] = false;
-            kills
-                .kill_registered(i as u64)
-                .expect("registered at bracket start (wf9.8.1)");
+            candidate_gates[i].request();
         }
         brackets.push((round, before, keep.min(live.len())));
         total_budget = total_budget.max(u64::from(round));
-        milestone *= eta;
+        milestone = milestone.saturating_mul(eta);
     }
     let winner = (0..n)
         .filter(|&i| alive[i])
         .min_by(|&a, &b| means[a].total_cmp(&means[b]).then(a.cmp(&b)))
-        .expect("no valid candidate survived: every loss stream produced non-finite values");
-    BracketLedger {
+        .ok_or(RaceError::NoValidCandidate)?;
+    Ok(BracketLedger {
         brackets,
         invalid,
         winner,
         evaluations_used,
         fixed_n_equivalent: n as u64 * u64::from(round),
-    }
+    })
 }
 
 /// Crate version, re-exported for provenance stamping.

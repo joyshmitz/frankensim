@@ -112,6 +112,9 @@ pub fn screen_generation(
         - base.iter().fold(f64::INFINITY, |m, &v| m.min(v));
     let scale = 1.5 / spread.max(1e-9);
     let kills = fs_exec::KillRegistry::new();
+    for candidate in 0..candidates.len() {
+        let _ = kills.register(candidate as u64);
+    }
     let mut loss = |i: usize, t: u64| {
         let mut h = (i as u64) << 32 ^ t ^ seed;
         h ^= h << 13;
