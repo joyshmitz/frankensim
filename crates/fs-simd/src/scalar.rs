@@ -129,3 +129,61 @@ pub fn mk8x4_f64(a_panel: &[f64], b_panel: &[f64], kc: usize, acc: &mut [[f64; 4
         }
     }
 }
+
+/// Radix-4 Stockham q-run butterfly (scalar twin, bead 27d3) over
+/// INTERLEAVED complex rows (re, im pairs): `a..d` are the four source
+/// runs of one (stage, p) butterfly group, `out` the contiguous block
+/// of the four destination runs (X0|X1|X2|X3). Twiddles arrive as
+/// [w1re, w1im, w2re, w2im, w3re, w3im] (already conjugated for the
+/// inverse); `inverse` flips the ∓i rotation of (b − d). Per element
+/// this is EXACTLY fs-fft's C64 add/sub/mul composition (fused re part,
+/// same operand order), so capsules must match it bitwise.
+///
+/// # Panics
+/// If run lengths mismatch or are odd.
+pub fn r4qrun_f64(
+    a: &[f64],
+    b: &[f64],
+    c: &[f64],
+    d: &[f64],
+    out: &mut [f64],
+    w: &[f64; 6],
+    inverse: bool,
+) {
+    let s2 = a.len();
+    assert!(
+        s2 % 2 == 0
+            && b.len() == s2
+            && c.len() == s2
+            && d.len() == s2
+            && out.len() == 4 * s2,
+        "r4qrun run-length mismatch (programmer error)"
+    );
+    let (o01, o23) = out.split_at_mut(2 * s2);
+    let (o0, o1) = o01.split_at_mut(s2);
+    let (o2, o3) = o23.split_at_mut(s2);
+    for q in 0..s2 / 2 {
+        let (i0, i1) = (2 * q, 2 * q + 1);
+        let (t0re, t0im) = (a[i0] + c[i0], a[i1] + c[i1]);
+        let (t1re, t1im) = (a[i0] - c[i0], a[i1] - c[i1]);
+        let (t2re, t2im) = (b[i0] + d[i0], b[i1] + d[i1]);
+        let (t3re, t3im) = (b[i0] - d[i0], b[i1] - d[i1]);
+        // ∓i·t3: forward (t3im, −t3re), inverse (−t3im, t3re).
+        let (t3ire, t3iim) = if inverse {
+            (-t3im, t3re)
+        } else {
+            (t3im, -t3re)
+        };
+        o0[i0] = t0re + t2re;
+        o0[i1] = t0im + t2im;
+        let (u1re, u1im) = (t1re + t3ire, t1im + t3iim);
+        o1[i0] = u1re.mul_add(w[0], -(u1im * w[1]));
+        o1[i1] = u1re.mul_add(w[1], u1im * w[0]);
+        let (u2re, u2im) = (t0re - t2re, t0im - t2im);
+        o2[i0] = u2re.mul_add(w[2], -(u2im * w[3]));
+        o2[i1] = u2re.mul_add(w[3], u2im * w[2]);
+        let (u3re, u3im) = (t1re - t3ire, t1im - t3iim);
+        o3[i0] = u3re.mul_add(w[4], -(u3im * w[5]));
+        o3[i1] = u3re.mul_add(w[5], u3im * w[4]);
+    }
+}

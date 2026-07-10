@@ -43,6 +43,11 @@ pub type Mk8x4 = fn(&[f64], &[f64], usize, &mut [[f64; 4]; 8]);
 /// (a, b, i0, j0, stride, k, m0, mb, dst) — plane-SoA layout.
 pub type Btile4x4 = fn(&[f64], &[f64], usize, usize, usize, usize, usize, usize, &mut [f64]);
 
+/// Radix-4 Stockham q-run butterfly signature
+/// (a, b, c, d, out, twiddles [w1re,w1im,w2re,w2im,w3re,w3im], inverse)
+/// over interleaved complex rows.
+pub type R4Qrun = fn(&[f64], &[f64], &[f64], &[f64], &mut [f64], &[f64; 6], bool);
+
 /// The resolved-once function table (plan §5.1 consequence 5).
 pub struct Ops {
     /// Tier the table was built for (ledger/tune-table key material).
@@ -68,6 +73,10 @@ pub struct Ops {
     /// (lanes = independent matrices): BITWISE across tiers (zero
     /// start, l-ascending fused accumulate per element).
     pub btile4x4_f64: Btile4x4,
+    /// Radix-4 Stockham q-run butterfly over interleaved complex rows
+    /// (fs-fft's stage kernel): BITWISE across tiers — every lane op is
+    /// the scalar twin's exact per-element composition.
+    pub r4qrun_f64: R4Qrun,
 }
 
 static OPS: OnceLock<Ops> = OnceLock::new();
@@ -87,6 +96,7 @@ const SCALAR_OPS: Ops = Ops {
     sum: scalar::sum,
     mk8x4_f64: scalar::mk8x4_f64,
     btile4x4_f64: scalar::btile4x4_f64,
+    r4qrun_f64: scalar::r4qrun_f64,
 };
 
 fn build_table() -> Ops {
@@ -108,6 +118,7 @@ fn build_table() -> Ops {
                 sum: neon::sum,
                 mk8x4_f64: neon::mk8x4_f64,
                 btile4x4_f64: neon::btile4x4_f64,
+                r4qrun_f64: neon::r4qrun_f64,
             },
             // x86 capsule v1 covers axpy/dot/sum (the <300-line capsule cap
             // is a feature: scale/mul_elem/fma3 arrive with their consumer,
@@ -125,6 +136,7 @@ fn build_table() -> Ops {
                 // hardware; btile stays the twin until 9ekv's consumer.
                 mk8x4_f64: x86::mk8x4_f64,
                 btile4x4_f64: scalar::btile4x4_f64,
+                r4qrun_f64: scalar::r4qrun_f64,
             },
             _ => SCALAR_OPS,
         }
@@ -289,6 +301,30 @@ mod tests {
                         .zip(&d_ref)
                         .all(|(x, y)| x.to_bits() == y.to_bits()),
                     "btile4x4 diverged from twin at k {k} mb {mb} (tier {:?})",
+                    t.tier
+                );
+            }
+        }
+        // r4qrun: bitwise vs twin over interleaved complex runs — run
+        // lengths cover the twin-delegation path (s2 % 4 != 0), both
+        // directions, special values.
+        for s2 in [2usize, 6, 8, 32, 34] {
+            for inverse in [false, true] {
+                let a = gen_vals(s2, 0xF0 ^ s2 as u64);
+                let b = gen_vals(s2, 0xF1);
+                let c = gen_vals(s2, 0xF2);
+                let d = gen_vals(s2, 0xF3 ^ (inverse as u64));
+                let w = [0.912, -0.409, 0.664, -0.747, 0.298, -0.954];
+                let mut o_tier = vec![0.0f64; 4 * s2];
+                let mut o_ref = vec![0.0f64; 4 * s2];
+                (t.r4qrun_f64)(&a, &b, &c, &d, &mut o_tier, &w, inverse);
+                scalar::r4qrun_f64(&a, &b, &c, &d, &mut o_ref, &w, inverse);
+                assert!(
+                    o_tier
+                        .iter()
+                        .zip(&o_ref)
+                        .all(|(x, y)| x.to_bits() == y.to_bits()),
+                    "r4qrun diverged from twin at s2 {s2} inverse {inverse} (tier {:?})",
                     t.tier
                 );
             }
