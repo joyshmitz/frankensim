@@ -129,6 +129,18 @@ pub fn measured_l3_groups() -> Vec<Vec<u32>> {
     groups
 }
 
+/// The kernel's transparent-hugepage mode ("always" / "madvise" /
+/// "never"), read from sysfs — `None` where the tree does not exist
+/// (macOS). Ledger this beside any hugepage measurement: advice only
+/// does anything under `madvise` (or is redundant under `always`).
+#[must_use]
+pub fn thp_mode() -> Option<String> {
+    let s = std::fs::read_to_string("/sys/kernel/mm/transparent_hugepage/enabled").ok()?;
+    let start = s.find('[')?;
+    let end = s[start + 1..].find(']')? + start + 1;
+    Some(s[start + 1..end].to_string())
+}
+
 /// Parse a sysfs cpu list ("0-7,64-71") into sorted ids. Malformed
 /// pieces are SKIPPED, not guessed at.
 fn parse_cpu_list(s: &str) -> Vec<u32> {

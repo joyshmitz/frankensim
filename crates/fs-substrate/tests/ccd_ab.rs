@@ -154,3 +154,65 @@ fn ccd_locality_ab() {
          (spread {spread:.1} vs packed {packed:.1} GB/s)"
     );
 }
+
+/// Hugepage A/B (fz2.2): TLB-stressing strided walk over 1 GiB with
+/// and without MADV_HUGEPAGE. Only meaningful where the THP mode is
+/// `madvise` (ts2's configuration); under `always` the baseline is
+/// already huge-backed and the row documents that instead. Advice is
+/// applied to the freshly zero-mapped allocation BEFORE first write,
+/// so the dirtying faults populate huge pages.
+#[test]
+#[ignore = "perf harness: run explicitly in release with --ignored"]
+fn hugepage_ab() {
+    use fs_substrate::affinity::thp_mode;
+    use fs_substrate::os_affinity::advise_hugepages_words;
+
+    let mode = thp_mode();
+    println!("{{\"metric\":\"thp-mode\",\"mode\":{mode:?}}}");
+    let words = (1usize << 30) / 8;
+    let walk = |buf: &[u64]| -> f64 {
+        // One touch per >4 KiB stride, wrapping: TLB misses dominate
+        // on 4 KiB pages, shrink under 2 MiB pages.
+        let n = buf.len();
+        let mut best = f64::INFINITY;
+        for _ in 0..3 {
+            let t0 = Instant::now();
+            let mut acc = 0u64;
+            let mut i = 0usize;
+            for _ in 0..n / 8 {
+                acc = acc.wrapping_add(buf[i]);
+                i = (i + 4099) % n;
+            }
+            std::hint::black_box(acc);
+            best = best.min(t0.elapsed().as_secs_f64());
+        }
+        (n / 8 * 8) as f64 / best / 1e9
+    };
+    let fill = |buf: &mut [u64]| {
+        for (i, v) in buf.iter_mut().enumerate() {
+            *v = i as u64;
+        }
+    };
+    // Baseline: zero-mapped, dirtied without advice, walked.
+    let mut base = vec![0u64; words];
+    fill(&mut base);
+    let base_gbs = walk(&base);
+    drop(base);
+    // Advised: same shape, MADV_HUGEPAGE between map and dirty.
+    let mut adv = vec![0u64; words];
+    match advise_hugepages_words(&adv, 4096) {
+        Ok(bytes) => {
+            fill(&mut adv);
+            let adv_gbs = walk(&adv);
+            println!(
+                "{{\"metric\":\"hugepage-ab\",\"advised_bytes\":{bytes},\"plain_gbs\":{base_gbs:.2},\"advised_gbs\":{adv_gbs:.2},\"speedup\":{:.3}}}",
+                adv_gbs / base_gbs.max(1e-9)
+            );
+        }
+        Err(e) => {
+            println!(
+                "{{\"metric\":\"hugepage-ab\",\"verdict\":\"skip\",\"why\":\"{e}\",\"plain_gbs\":{base_gbs:.2}}}"
+            );
+        }
+    }
+}

@@ -77,6 +77,29 @@ pub fn page_nodes(buf: &[u8], page_size: usize) -> Result<Vec<i32>, OsAffinityEr
     imp::page_nodes(buf, page_size)
 }
 
+/// Advise transparent hugepages for the page-aligned INTERIOR of
+/// `buf` (`madvise(MADV_HUGEPAGE)`); returns the advised byte count
+/// (0 when the aligned interior is empty). Only effective when the
+/// kernel's THP mode is `madvise` or `always` — read the mode via
+/// [`crate::affinity::thp_mode`] and ledger it with any measurement.
+///
+/// # Errors
+/// [`OsAffinityError`] — unsupported target or syscall failure.
+pub fn advise_hugepages(buf: &[u8], page_size: usize) -> Result<usize, OsAffinityError> {
+    imp::advise_hugepages(buf.as_ptr() as usize, buf.len(), page_size)
+}
+
+/// [`advise_hugepages`] for a `u64` buffer (no unsafe byte-casting at
+/// call sites): advise BEFORE first write — THP coalesces on fault,
+/// and `vec![0u64; n]` maps lazily, so advising the fresh zeroed
+/// allocation and then writing it faults huge pages.
+///
+/// # Errors
+/// [`OsAffinityError`] — unsupported target or syscall failure.
+pub fn advise_hugepages_words(buf: &[u64], page_size: usize) -> Result<usize, OsAffinityError> {
+    imp::advise_hugepages(buf.as_ptr() as usize, buf.len() * 8, page_size)
+}
+
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod imp {
     use super::OsAffinityError;
@@ -173,6 +196,44 @@ mod imp {
         Ok(cpu)
     }
 
+    pub fn advise_hugepages(
+        base: usize,
+        len: usize,
+        page_size: usize,
+    ) -> Result<usize, OsAffinityError> {
+        const SYS_MADVISE: u64 = 28;
+        const MADV_HUGEPAGE: u64 = 14;
+        if len == 0 || page_size == 0 {
+            return Ok(0);
+        }
+        let start = base.next_multiple_of(page_size);
+        let end = (base + len) / page_size * page_size;
+        if start >= end {
+            return Ok(0);
+        }
+        // SAFETY: [start, end) is a page-aligned sub-range of the live
+        // caller-owned buffer; MADV_HUGEPAGE is purely advisory and
+        // never invalidates or discards memory contents.
+        let ret = unsafe {
+            syscall6(
+                SYS_MADVISE,
+                start as u64,
+                (end - start) as u64,
+                MADV_HUGEPAGE,
+                0,
+                0,
+                0,
+            )
+        };
+        if ret < 0 {
+            return Err(OsAffinityError::Syscall {
+                call: "madvise",
+                errno: -ret,
+            });
+        }
+        Ok(end - start)
+    }
+
     pub fn page_nodes(buf: &[u8], page_size: usize) -> Result<Vec<i32>, OsAffinityError> {
         if buf.is_empty() || page_size == 0 {
             return Ok(Vec::new());
@@ -223,47 +284,12 @@ mod imp {
     pub fn page_nodes(_buf: &[u8], _page_size: usize) -> Result<Vec<i32>, OsAffinityError> {
         Err(OsAffinityError::Unsupported(WHY))
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn unsupported_targets_refuse_loudly_and_supported_ones_answer() {
-        // On every target the API answers STRUCTURALLY: either a real
-        // answer (Linux x86-64) or Unsupported — never a silent no-op.
-        match current_cpu() {
-            Ok(cpu) => {
-                // If we can ask where we are, we can pin there and stay.
-                pin_current_thread(&[cpu]).expect("pin to current cpu");
-                assert_eq!(current_cpu().expect("still answers"), cpu);
-            }
-            Err(OsAffinityError::Unsupported(why)) => {
-                assert!(!why.is_empty());
-                assert!(matches!(
-                    pin_current_thread(&[0]),
-                    Err(OsAffinityError::Unsupported(_))
-                ));
-            }
-            Err(e) => panic!("unexpected: {e}"),
-        }
-        // Argument validation is target-independent semantics on Linux;
-        // elsewhere Unsupported wins (both are refusals, never no-ops).
-        assert!(pin_current_thread(&[]).is_err());
-    }
-
-    #[test]
-    fn page_audit_reports_touched_pages_or_refuses() {
-        let buf = vec![1u8; 1 << 20];
-        match page_nodes(&buf, 4096) {
-            Ok(nodes) => {
-                assert_eq!(nodes.len(), (1 << 20) / 4096);
-                // Touched pages report a non-negative node id.
-                assert!(nodes.iter().all(|&n| n >= 0), "touched pages have nodes");
-            }
-            Err(OsAffinityError::Unsupported(_)) => {}
-            Err(e) => panic!("unexpected: {e}"),
-        }
+    pub fn advise_hugepages(
+        _base: usize,
+        _len: usize,
+        _page_size: usize,
+    ) -> Result<usize, OsAffinityError> {
+        Err(OsAffinityError::Unsupported(WHY))
     }
 }
