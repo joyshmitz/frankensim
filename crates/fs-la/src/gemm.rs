@@ -333,21 +333,115 @@ pub fn gemm_f32(
     if m == 0 || n == 0 || k == 0 || alpha == 0.0 {
         return;
     }
-    // v1 f32 path: same loop order, unpacked (packing joins the perf bead;
-    // correctness and determinism contracts are identical).
-    let mut pc = 0;
-    while pc < k {
-        let kc = KC.min(k - pc);
-        for i in 0..m {
-            for j in 0..n {
-                let mut acc = 0.0f32;
-                for kk in 0..kc {
-                    acc = a[i * k + pc + kk].mul_add(b[(pc + kk) * n + j], acc);
-                }
-                c[i * n + j] = alpha.mul_add(acc, c[i * n + j]);
+    // PACKED path (xlvx s6): same BLIS nest as f64. Bitwise identical
+    // to the former naive-chunked loop — per-element accumulation is
+    // still k-ascending within each KC chunk with chunk partials folded
+    // into C in chunk order; packing changes layout, never arithmetic
+    // (gated vs the naive-chunked oracle in-module).
+    let mut a_pack = vec![0.0f32; MC * KC];
+    let mut b_pack = vec![0.0f32; KC * NC];
+    let mut jc = 0;
+    while jc < n {
+        let nc = NC.min(n - jc);
+        let mut pc = 0;
+        while pc < k {
+            let kc = KC.min(k - pc);
+            pack_b_f32(&mut b_pack, b, n, pc, jc, kc, nc);
+            let mut ic = 0;
+            while ic < m {
+                let mc = MC.min(m - ic);
+                pack_a_f32(&mut a_pack, a, k, ic, pc, mc, kc);
+                macro_kernel_f32(&a_pack, &b_pack, c, n, ic, jc, mc, nc, kc, alpha);
+                ic += MC;
+            }
+            pc += KC;
+        }
+        jc += NC;
+    }
+}
+
+/// f32 twin of [`pack_a`]: MR-row micro-panels, zero-padded tails.
+fn pack_a_f32(dst: &mut [f32], a: &[f32], lda: usize, ic: usize, pc: usize, mc: usize, kc: usize) {
+    let mut w = 0;
+    let mut p = 0;
+    while p < mc {
+        let rows = MR.min(mc - p);
+        for kk in 0..kc {
+            for r in 0..MR {
+                dst[w] = if r < rows {
+                    a[(ic + p + r) * lda + pc + kk]
+                } else {
+                    0.0
+                };
+                w += 1;
             }
         }
-        pc += KC;
+        p += MR;
+    }
+}
+
+/// f32 twin of [`pack_b`]: NR-column micro-panels, zero-padded tails.
+fn pack_b_f32(dst: &mut [f32], b: &[f32], ldb: usize, pc: usize, jc: usize, kc: usize, nc: usize) {
+    let mut w = 0;
+    let mut q = 0;
+    while q < nc {
+        let cols = NR.min(nc - q);
+        for kk in 0..kc {
+            for s in 0..NR {
+                dst[w] = if s < cols {
+                    b[(pc + kk) * ldb + jc + q + s]
+                } else {
+                    0.0
+                };
+                w += 1;
+            }
+        }
+        q += NR;
+    }
+}
+
+/// f32 macro kernel: scalar MR×NR register tile, k ascending — the
+/// fs-simd f32 capsule microkernel is a recorded follow-up; this scalar
+/// twin fixes the bit contract it will have to match.
+#[allow(clippy::too_many_arguments)]
+fn macro_kernel_f32(
+    a_pack: &[f32],
+    b_pack: &[f32],
+    c: &mut [f32],
+    n: usize,
+    ic: usize,
+    jc: usize,
+    mc: usize,
+    nc: usize,
+    kc: usize,
+    alpha: f32,
+) {
+    let mut p = 0;
+    while p < mc {
+        let rows = MR.min(mc - p);
+        let a_panel = &a_pack[(p / MR) * MR * kc..][..MR * kc];
+        let mut q = 0;
+        while q < nc {
+            let cols = NR.min(nc - q);
+            let b_panel = &b_pack[(q / NR) * NR * kc..][..NR * kc];
+            let mut acc = [[0.0f32; NR]; MR];
+            for kk in 0..kc {
+                for (r, accr) in acc.iter_mut().enumerate() {
+                    let av = a_panel[kk * MR + r];
+                    for (s, slot) in accr.iter_mut().enumerate() {
+                        *slot = av.mul_add(b_panel[kk * NR + s], *slot);
+                    }
+                }
+            }
+            for (r, accr) in acc.iter().enumerate().take(rows) {
+                let crow = (ic + p + r) * n + jc + q;
+                for (s, &av) in accr.iter().enumerate().take(cols) {
+                    c[crow + s] = alpha.mul_add(av, c[crow + s]);
+                }
+            }
+            q += NR;
+        }
+        p += MR;
     }
 }
 
@@ -373,21 +467,73 @@ pub fn gemm_mixed(
     if m == 0 || n == 0 || k == 0 || alpha == 0.0 {
         return;
     }
-    let mut pc = 0;
-    while pc < k {
-        let kc = KC.min(k - pc);
-        for i in 0..m {
-            for j in 0..n {
-                let mut acc = 0.0f64;
-                for kk in 0..kc {
-                    let av = f64::from(a[i * k + pc + kk]);
-                    let bv = f64::from(b[(pc + kk) * n + j]);
-                    acc = av.mul_add(bv, acc);
-                }
-                c[i * n + j] = alpha.mul_add(acc, c[i * n + j]);
+    // PACKED path (xlvx s6): panels stay f32 in memory (the bandwidth
+    // saving is the point of mixed) and widen exactly at the multiply.
+    // Bitwise identical to the former naive-chunked loop — same
+    // per-element f64 k-ascending order (gated in-module).
+    let mut a_pack = vec![0.0f32; MC * KC];
+    let mut b_pack = vec![0.0f32; KC * NC];
+    let mut jc = 0;
+    while jc < n {
+        let nc = NC.min(n - jc);
+        let mut pc = 0;
+        while pc < k {
+            let kc = KC.min(k - pc);
+            pack_b_f32(&mut b_pack, b, n, pc, jc, kc, nc);
+            let mut ic = 0;
+            while ic < m {
+                let mc = MC.min(m - ic);
+                pack_a_f32(&mut a_pack, a, k, ic, pc, mc, kc);
+                macro_kernel_mixed(&a_pack, &b_pack, c, n, ic, jc, mc, nc, kc, alpha);
+                ic += MC;
             }
+            pc += KC;
         }
-        pc += KC;
+        jc += NC;
+    }
+}
+
+/// Mixed macro kernel: f32 panels, f64 MR×NR accumulators; each lane
+/// widens exactly (f32→f64) at the multiply, k ascending.
+#[allow(clippy::too_many_arguments)]
+fn macro_kernel_mixed(
+    a_pack: &[f32],
+    b_pack: &[f32],
+    c: &mut [f64],
+    n: usize,
+    ic: usize,
+    jc: usize,
+    mc: usize,
+    nc: usize,
+    kc: usize,
+    alpha: f64,
+) {
+    let mut p = 0;
+    while p < mc {
+        let rows = MR.min(mc - p);
+        let a_panel = &a_pack[(p / MR) * MR * kc..][..MR * kc];
+        let mut q = 0;
+        while q < nc {
+            let cols = NR.min(nc - q);
+            let b_panel = &b_pack[(q / NR) * NR * kc..][..NR * kc];
+            let mut acc = [[0.0f64; NR]; MR];
+            for kk in 0..kc {
+                for (r, accr) in acc.iter_mut().enumerate() {
+                    let av = f64::from(a_panel[kk * MR + r]);
+                    for (s, slot) in accr.iter_mut().enumerate() {
+                        *slot = av.mul_add(f64::from(b_panel[kk * NR + s]), *slot);
+                    }
+                }
+            }
+            for (r, accr) in acc.iter().enumerate().take(rows) {
+                let crow = (ic + p + r) * n + jc + q;
+                for (s, &av) in accr.iter().enumerate().take(cols) {
+                    c[crow + s] = alpha.mul_add(av, c[crow + s]);
+                }
+            }
+            q += NR;
+        }
+        p += MR;
     }
 }
 
@@ -548,38 +694,83 @@ mod tests {
         }
     }
 
+    /// f32 twin of `naive_chunked` — the pre-s6 unpacked implementation,
+    /// kept as the bit oracle for the packed f32 path.
+    fn naive_chunked_f32(
+        m: usize,
+        n: usize,
+        k: usize,
+        alpha: f32,
+        a: &[f32],
+        b: &[f32],
+        c: &mut [f32],
+    ) {
+        let mut pc = 0;
+        while pc < k {
+            let kc = KC.min(k - pc);
+            for i in 0..m {
+                for j in 0..n {
+                    let mut acc = 0.0f32;
+                    for kk in 0..kc {
+                        acc = a[i * k + pc + kk].mul_add(b[(pc + kk) * n + j], acc);
+                    }
+                    c[i * n + j] = alpha.mul_add(acc, c[i * n + j]);
+                }
+            }
+            pc += KC;
+        }
+    }
+
     #[test]
     fn f32_and_mixed_paths() {
-        let (m, n, k) = (17usize, 13usize, 129usize);
-        let mut s = 0x32_u64;
-        let af: Vec<f32> = (0..m * k).map(|_| lcg(&mut s) as f32).collect();
-        let bf: Vec<f32> = (0..k * n).map(|_| lcg(&mut s) as f32).collect();
-        // Mixed vs full-f64 reference on the widened inputs: mixed IS the
-        // f64 computation on exactly-widened values — bitwise equal.
-        let ad: Vec<f64> = af.iter().map(|&v| f64::from(v)).collect();
-        let bd: Vec<f64> = bf.iter().map(|&v| f64::from(v)).collect();
-        let mut c_mixed = vec![0.0f64; m * n];
-        gemm_mixed(m, n, k, 1.0, &af, &bf, 0.0, &mut c_mixed);
-        let c_ref = naive_chunked(m, n, k, 1.0, &ad, &bd, 0.0, &vec![0.0; m * n]);
-        for i in 0..m * n {
-            assert_eq!(
-                c_mixed[i].to_bits(),
-                c_ref[i].to_bits(),
-                "mixed != widened f64 at {i}"
-            );
-        }
-        // f32 path: tolerance vs f64 reference (f32 accumulates in f32).
-        let mut c32 = vec![0.0f32; m * n];
-        gemm_f32(m, n, k, 1.0, &af, &bf, 0.0, &mut c32);
-        for i in 0..m * n {
-            let err = (f64::from(c32[i]) - c_ref[i]).abs();
-            assert!(
-                err <= 1e-4 * c_ref[i].abs().max(1.0),
-                "f32 path error {err} at {i}"
-            );
+        // Shape sweep: tails in every dimension, multi-tile, KC chunking.
+        for (idx, &(m, n, k)) in [(17usize, 13usize, 129usize), (9, 5, 257), (33, 17, 300)]
+            .iter()
+            .enumerate()
+        {
+            let mut s = 0x32_u64 + idx as u64;
+            let af: Vec<f32> = (0..m * k).map(|_| lcg(&mut s) as f32).collect();
+            let bf: Vec<f32> = (0..k * n).map(|_| lcg(&mut s) as f32).collect();
+            // Mixed vs full-f64 reference on the widened inputs: mixed IS the
+            // f64 computation on exactly-widened values — bitwise equal.
+            let ad: Vec<f64> = af.iter().map(|&v| f64::from(v)).collect();
+            let bd: Vec<f64> = bf.iter().map(|&v| f64::from(v)).collect();
+            let mut c_mixed = vec![0.0f64; m * n];
+            gemm_mixed(m, n, k, 1.0, &af, &bf, 0.0, &mut c_mixed);
+            let c_ref = naive_chunked(m, n, k, 1.0, &ad, &bd, 0.0, &vec![0.0; m * n]);
+            for i in 0..m * n {
+                assert_eq!(
+                    c_mixed[i].to_bits(),
+                    c_ref[i].to_bits(),
+                    "mixed != widened f64 at {i} ({m}x{n}x{k})"
+                );
+            }
+            // Packed f32 vs the naive-chunked f32 oracle: BITWISE (packing
+            // is layout, not arithmetic — s6 contract).
+            let mut c32 = vec![0.0f32; m * n];
+            gemm_f32(m, n, k, 1.25, &af, &bf, 0.0, &mut c32);
+            let mut c32_ref = vec![0.0f32; m * n];
+            naive_chunked_f32(m, n, k, 1.25, &af, &bf, &mut c32_ref);
+            for i in 0..m * n {
+                assert_eq!(
+                    c32[i].to_bits(),
+                    c32_ref[i].to_bits(),
+                    "packed f32 != naive-chunked oracle at {i} ({m}x{n}x{k})"
+                );
+            }
+            // And the accuracy envelope vs f64 still holds.
+            let mut c32a = vec![0.0f32; m * n];
+            gemm_f32(m, n, k, 1.0, &af, &bf, 0.0, &mut c32a);
+            for i in 0..m * n {
+                let err = (f64::from(c32a[i]) - c_ref[i]).abs();
+                assert!(
+                    err <= 1e-4 * c_ref[i].abs().max(1.0),
+                    "f32 path error {err} at {i} ({m}x{n}x{k})"
+                );
+            }
         }
         println!(
-            "{{\"suite\":\"fs-la\",\"case\":\"gemm-precisions\",\"verdict\":\"pass\",\"detail\":\"mixed == widened-f64 bitwise; f32 within 1e-4\"}}"
+            "{{\"suite\":\"fs-la\",\"case\":\"gemm-precisions\",\"verdict\":\"pass\",\"detail\":\"3 shapes: mixed == widened-f64 bitwise; packed f32 == naive-chunked oracle bitwise; f32 within 1e-4 of f64\"}}"
         );
     }
 
