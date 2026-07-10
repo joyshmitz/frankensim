@@ -97,7 +97,7 @@ validity/topology certificates (wqd.23), lattice/infill homogenization
 `VoxelError`: `Parameters`, `FrameMismatch` (both frames and operation),
 `CoordinateRange` (axis/range/halo), `VoxelBudgetExceeded` (required and
 authorized voxels), `DenseVolumeOverflow` (dimensions), `EmptyOccupancy`,
-`ExactnessRangeExceeded` (squared coordinate diameter), `Lattice`
+`ExactnessRangeExceeded` (squared coordinate diameter),
 `WorldCoordinateOutOfRange` (axis/world/normalized coordinate),
 `Lattice` (offending element named), `Cloud`, `Graph`. Nothing silently
 clamps, wraps, mutates after failed admission, or skips.
