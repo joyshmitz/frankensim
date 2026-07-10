@@ -48,7 +48,7 @@ fn matern52<R: Real>(signal: f64, ell: &[f64], a: &[R], b: &[R]) -> R {
 /// Fixed-bank q-EI over a generic `Real`: candidates are the
 /// variables; the trained GP (data, α, training Cholesky) and the
 /// z-bank are constants. Mirrors `q_expected_improvement` exactly.
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)] // one taped chain, all-constant context
 fn qei_generic<R: Real>(
     gp: &Gp,
     train_x: &[Vec<f64>],
