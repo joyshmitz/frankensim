@@ -99,10 +99,53 @@ pub fn gemm_f64_parallel(
     c: &mut [f64],
     threads: usize,
 ) {
+    let t = threads.max(1);
+    gemm_f64_parallel_with(m, n, k, alpha, a, b, beta, c, t, mc_for(m, t), NC);
+}
+
+/// Adaptive M-blocking for the parallel path (bit-neutral, see module
+/// docs). A fixed MC = 128 caps parallelism at m/128 bands — measured
+/// on an idle 128-thread 5995WX at n = 2048: 16 bands left 7/8 of the
+/// machine idle (FS_LA_THREADS=16 matched 128 threads, 192 vs 177
+/// GFLOP/s). Target ~3 bands per worker so the dispenser has slack to
+/// steal, keep MR alignment, and never exceed the serial L2-sized A
+/// tile. Extra B-panel re-reads from smaller bands stay L3-resident
+/// (the KC×NC panel is ~1 MB), so DRAM traffic is unchanged.
+fn mc_for(m: usize, threads: usize) -> usize {
+    if threads <= 1 {
+        return MC;
+    }
+    let target = m.div_ceil(3 * threads);
+    (target.div_ceil(MR) * MR).clamp(MR, MC)
+}
+
+/// The tunable parallel engine behind [`gemm_f64_parallel`]: explicit
+/// `mc_q` (band height) and `nc_q` (B-panel width) blocking. Both are
+/// BIT-NEUTRAL (module docs): per-element accumulation stays jc/pc
+/// chunk order with k ascending regardless of the m/n tiling — gated
+/// in gemm_suite across an (mc, nc) grid. Public for the autotune
+/// sweep lane; library callers want [`gemm_f64_parallel`].
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn gemm_f64_parallel_with(
+    m: usize,
+    n: usize,
+    k: usize,
+    alpha: f64,
+    a: &[f64],
+    b: &[f64],
+    beta: f64,
+    c: &mut [f64],
+    threads: usize,
+    mc_q: usize,
+    nc_q: usize,
+) {
     assert_eq!(a.len(), m * k, "a must be m*k = {}", m * k);
     assert_eq!(b.len(), k * n, "b must be k*n = {}", k * n);
     assert_eq!(c.len(), m * n, "c must be m*n = {}", m * n);
     let t = threads.max(1);
+    let mc_q = mc_q.max(MR);
+    let nc_q = nc_q.max(NR);
     if t == 1 || m < 2 * MC {
         gemm_f64(m, n, k, alpha, a, b, beta, c);
         return;
@@ -111,38 +154,38 @@ pub fn gemm_f64_parallel(
     if m == 0 || n == 0 || alpha == 0.0 || k == 0 {
         return;
     }
-    let mut b_pack = vec![0.0f64; KC * NC];
+    let mut b_pack = vec![0.0f64; KC * nc_q];
     let mut jc = 0;
     while jc < n {
-        let nc = NC.min(n - jc);
+        let nc = nc_q.min(n - jc);
         let mut pc = 0;
         while pc < k {
             let kc = KC.min(k - pc);
             pack_b(&mut b_pack, b, n, pc, jc, kc, nc);
             let bp: &[f64] = &b_pack;
             // WORK-STEALING band dispenser (safe Rust, no capsule):
-            // MC-row C bands behind a Mutex-guarded iterator; threads
+            // mc_q-row C bands behind a Mutex-guarded iterator; threads
             // pull the next band as they finish, so slow cores take
             // fewer (equal static shares let heterogeneous E-cores
             // drag the whole chunk — measured on M4 Pro). Bitwise
             // invariant: a band's content is a pure function of the
             // band, never of which thread computed it or in what
             // order; the lock guards ASSIGNMENT only.
-            let dispenser = std::sync::Mutex::new(c.chunks_mut(MC * n).enumerate());
+            let dispenser = std::sync::Mutex::new(c.chunks_mut(mc_q * n).enumerate());
             // Never spawn more workers than bands: excess threads only
             // lock, see None, and exit — 64 spawns for 4-16 bands
             // measured 2-9x slower than v2 on the 64-thread ts1.
-            let workers = t.min(m.div_ceil(MC));
+            let workers = t.min(m.div_ceil(mc_q));
             std::thread::scope(|scope| {
                 for _ in 0..workers {
                     let disp = &dispenser;
                     scope.spawn(move || {
-                        let mut a_pack = vec![0.0f64; MC * KC];
+                        let mut a_pack = vec![0.0f64; mc_q * KC];
                         loop {
                             let next = disp.lock().expect("dispenser lock").next();
                             let Some((bi, band)) = next else { break };
-                            let ic = bi * MC;
-                            let mc = MC.min(m - ic);
+                            let ic = bi * mc_q;
+                            let mc = mc_q.min(m - ic);
                             pack_a(&mut a_pack, a, k, ic, pc, mc, kc);
                             // Band-local rows (offset 0); ld stays n.
                             macro_kernel(&a_pack, bp, band, m, n, 0, jc, mc, nc, kc, alpha);
@@ -152,7 +195,7 @@ pub fn gemm_f64_parallel(
             });
             pc += KC;
         }
-        jc += NC;
+        jc += nc_q;
     }
 }
 

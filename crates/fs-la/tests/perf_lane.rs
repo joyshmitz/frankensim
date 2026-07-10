@@ -136,3 +136,53 @@ fn gemm_attainment_all_core() {
         }
     }
 }
+
+/// The MC/NC AUTOTUNE SWEEP (xlvx segment 5): report-only rows over the
+/// bit-neutral blocking grid at n = 2048, all cores. "adaptive" is what
+/// gemm_f64_parallel actually ships (mc_for); fixed rows bracket it.
+/// Feeds the tuned-defaults decision — KC is NOT swept here (bit
+/// contract; retuning it is a golden bump with justification).
+#[test]
+#[ignore = "perf lane: run explicitly in release with --ignored"]
+fn gemm_tune_sweep() {
+    let threads = std::env::var("FS_LA_THREADS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(8, std::num::NonZero::get));
+    let n = 2048usize;
+    let a: Vec<f64> = (0..n * n).map(|i| ((i as f64) * 0.13).sin()).collect();
+    let b: Vec<f64> = (0..n * n).map(|i| ((i as f64) * 0.31).cos()).collect();
+    let mut c = vec![0.0f64; n * n];
+    let mut measure_with = |mc: usize, nc: usize| -> f64 {
+        fs_la::gemm_f64_parallel_with(n, n, n, 1.0, &a, &b, 0.0, &mut c, threads, mc, nc); // warm
+        let mut best = f64::INFINITY;
+        for _ in 0..3 {
+            let t0 = std::time::Instant::now();
+            fs_la::gemm_f64_parallel_with(n, n, n, 1.0, &a, &b, 0.0, &mut c, threads, mc, nc);
+            best = best.min(t0.elapsed().as_secs_f64());
+        }
+        2.0 * (n * n * n) as f64 / best / 1e9
+    };
+    for mc in [16usize, 32, 64, 128] {
+        for nc in [256usize, 512, 1024, 2048] {
+            let g = measure_with(mc, nc);
+            println!(
+                "{{\"metric\":\"gemm-tune\",\"threads\":{threads},\"mc\":{mc},\"nc\":{nc},\"gflops\":{g:.2}}}"
+            );
+        }
+    }
+    // The shipping adaptive row, for comparison against the grid.
+    let g = {
+        gemm_f64_parallel(n, n, n, 1.0, &a, &b, 0.0, &mut c, threads);
+        let mut best = f64::INFINITY;
+        for _ in 0..3 {
+            let t0 = std::time::Instant::now();
+            gemm_f64_parallel(n, n, n, 1.0, &a, &b, 0.0, &mut c, threads);
+            best = best.min(t0.elapsed().as_secs_f64());
+        }
+        2.0 * (n * n * n) as f64 / best / 1e9
+    };
+    println!(
+        "{{\"metric\":\"gemm-tune\",\"threads\":{threads},\"mc\":\"adaptive\",\"nc\":512,\"gflops\":{g:.2}}}"
+    );
+}
