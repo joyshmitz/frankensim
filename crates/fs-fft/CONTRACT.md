@@ -83,7 +83,18 @@ points inside a single transform. Executor-tiled multi-dimensional transforms
 None. `unsafe_code` denied; no capsules.
 
 ## Feature flags
-None.
+- `frontier-sixstep` [F] (default OFF, bead 27d3): the cache-blocked
+  six-step path for n ≥ 2¹⁶ with even log₂ (square out-of-place tiled
+  transposes + cache-resident √n row sweeps with fused twiddle, six
+  full-array passes). CORRECT (cross-path agreement, transform laws, own
+  golden 0x79aa_108f_a517_012f — new bit territory, the small-n stage
+  golden is untouched by the pure-function-of-n dispatch, asserted both
+  ways) but MEASURED SLOWER than the radix-8/4/2 stage walk on M4
+  (2026-07-10: ~2.4e7 vs ~4.8e7 elems/s round-trip at n = 2²⁰ — scalar
+  transposes lose to the stage walk's prefetch-friendly streams; the
+  out-of-place rewrite recovered only part of it). Ships OFF until the
+  SIMD-tiled transpose capsule makes it win; gates the `sixstep`
+  integration target. Enabling changes large-n output bits by design.
 
 ## Conformance tests
 In-crate suite (`cargo test -p fs-fft`): naive-DFT oracle sweep (n = 1..512),
@@ -100,9 +111,10 @@ suite bit-for-bit on the golden-hash case.
   (raw throughput +11–18% over the radix-4/2 formulation — elems/s is the
   truth; the tighter model raised the roof), x86-64 ts2 0.165–0.184 (AVX2
   capsule only serves the residual radix-4 stage now). Remaining levers per
-  the bead: cache-blocked/four-step pass ordering, fusing the ping-pong
-  copy-back into the final pass, executor-tiled pencils with cancellation
-  polls. Higher-radix golden bumps are pre-authorized with justification —
+  the bead: make the gated six-step WIN (its transposes need the SIMD-tile
+  capsule treatment — the scalar version measured slower and ships off,
+  see Feature flags), fusing the ping-pong copy-back into the final stage
+  pass, executor-tiled pencils with cancellation polls. Higher-radix golden bumps are pre-authorized with justification —
   bumped twice so far (radix-2→4/2→8/4/2), each recorded at the golden and
   the current value four-quadrant verified (M4 + ts2 × debug + release).
 - The N-D transform is CORRECT and separable but not yet cache/execution

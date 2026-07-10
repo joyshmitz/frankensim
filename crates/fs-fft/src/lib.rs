@@ -32,6 +32,14 @@ mod simd_view;
 /// Crate version, re-exported for provenance stamping.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Semantic version of the transform bit contract (golden-couplings
+/// surface `fs-fft:transform-bits`): the stage decomposition (currently
+/// mixed radix-8/4/2), the six-step dispatch predicate and its pass
+/// structure, and the twiddle-application orders. Any change that moves
+/// output bits bumps this and deliberately re-freezes the dependents in
+/// golden-couplings.json (docs/GOLDEN_POLICY.md).
+pub const TRANSFORM_BIT_SEMANTICS_VERSION: u32 = 1;
+
 /// A complex number (f64 re/im). Local, minimal: fs-la's future complex
 /// types can absorb this when a shared home exists. `repr(C)` pins the
 /// (re, im) interleaved layout the fs-simd stage kernels view as f64.
@@ -103,9 +111,53 @@ pub struct Fft {
     n: usize,
     /// w[k] = exp(−2πik/n) for k in 0..n/2.
     table: Vec<C64>,
+    /// Square sub-plan (size √n) for the six-step path; built exactly when
+    /// [`Fft::takes_sixstep`] holds for `n` (recursion terminates: √n < n
+    /// for every n ≥ 2).
+    sub: Option<Box<Fft>>,
 }
 
+/// Six-step engagement threshold (bead 27d3): below this the whole working
+/// set is cache-resident and the direct stage walk wins; at and above it
+/// the stage walk streams the full array from DRAM every pass, and the
+/// six-step's cache-resident sub-transforms cut full-array passes to five.
+/// Part of the bit contract via dispatch (a pure function of n).
+const SIXSTEP_MIN: usize = 1 << 16;
+
 impl Fft {
+    /// Does size `n` take the six-step path? A pure function of `n` for a
+    /// given build: large enough, an even power of two (n₁ = n₂ = √n,
+    /// square transposes), AND the `frontier-sixstep` feature — the path
+    /// is correct and golden-frozen but measured SLOWER than the stage
+    /// walk on M4 (2026-07-10: 2.4e7 vs 4.8e7 elems/s at n = 2²⁰; the
+    /// scalar transposes lose to the stage walk's prefetch-friendly
+    /// streams), so it ships off pending the SIMD-tiled transpose
+    /// capsule. Enabling the feature changes large-n output bits — that
+    /// is why the six-step golden lives in the gated battery.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn takes_sixstep(n: usize) -> bool {
+        cfg!(feature = "frontier-sixstep") && n >= SIXSTEP_MIN && n.trailing_zeros() % 2 == 0
+    }
+
+    /// Stage-walk entry for the gated conformance battery's cross-path
+    /// check (the fs-math `erf_both_paths` pattern): same values as the
+    /// dispatched path, different summation order.
+    #[doc(hidden)]
+    pub fn forward_via_stages(&self, data: &mut [C64], scratch: &mut [C64]) {
+        assert_eq!(
+            data.len(),
+            self.n,
+            "data length must equal the planned size"
+        );
+        assert_eq!(
+            scratch.len(),
+            self.n,
+            "scratch length must equal the planned size"
+        );
+        self.transform_stages(data, scratch, false);
+    }
+
     /// Plan a transform of size `n` (power of two, ≥ 1).
     ///
     /// # Panics
@@ -126,7 +178,12 @@ impl Fft {
             let theta = -2.0 * std::f64::consts::PI * (k as f64) / (n as f64);
             table.push(C64::new(det::cos(theta), det::sin(theta)));
         }
-        Fft { n, table }
+        let sub = if Fft::takes_sixstep(n) {
+            Some(Box::new(Fft::new(1 << (n.trailing_zeros() / 2))))
+        } else {
+            None
+        };
+        Fft { n, table, sub }
     }
 
     /// Transform size.
@@ -247,16 +304,9 @@ impl Fft {
         }
     }
 
-    /// Mixed radix-4/2 Stockham autosort (bead 27d3): ping-pongs between
-    /// `data` and `scratch` with no bit-reversal pass; butterfly order is
-    /// a pure function of the stage structure (deterministic by
-    /// construction). Radix-4 stages do HALF the full-array passes of the
-    /// former radix-2 formulation — the memory-bound roofline lever — and
-    /// one radix-2 stage absorbs an odd log₂ residue. The radix change
-    /// legitimately changed twiddle-application order and hence output
-    /// bits: the golden hash was bumped ONCE with that justification
-    /// (see the golden test).
-    #[allow(clippy::too_many_lines)] // the stage driver IS the decomposition
+    /// Transform dispatch — a PURE FUNCTION of the planned size (part of
+    /// the bit contract): sizes passing [`Fft::takes_sixstep`] run the
+    /// cache-blocked six-step; everything else runs the direct stage walk.
     fn transform(&self, data: &mut [C64], scratch: &mut [C64], inverse: bool) {
         let n = self.n;
         assert_eq!(data.len(), n, "data length must equal the planned size {n}");
@@ -265,6 +315,66 @@ impl Fft {
             n,
             "scratch length must equal the planned size {n}"
         );
+        if self.sub.is_some() {
+            self.transform_sixstep(data, scratch, inverse);
+        } else {
+            self.transform_stages(data, scratch, inverse);
+        }
+    }
+
+    /// Cache-blocked six-step FFT (bead 27d3): for n = n₁² view the array
+    /// as an n₁×n₁ row-major matrix, then
+    ///   transpose → row-FFT sweep (+ fused w_nᵏʲ twiddle) → transpose →
+    ///   row-FFT sweep → transpose
+    /// — five in-place full-array passes, where each row transform runs the
+    /// whole sub-plan CACHE-RESIDENT (the stage walk streams the full array
+    /// from DRAM once per stage instead). Transposes are exact element
+    /// swaps (no arithmetic — bit-neutral); twiddles come from the same
+    /// strict table via `tw` (k·j < n, in range by construction); the row
+    /// sweeps reuse the mixed radix-8/4/2 kernels. Deterministic by
+    /// construction: decomposition, sweep order, and twiddle indices are
+    /// pure functions of n.
+    fn transform_sixstep(&self, data: &mut [C64], scratch: &mut [C64], inverse: bool) {
+        let sub = self.sub.as_deref().expect("dispatch guaranteed a sub-plan");
+        let n1 = sub.n;
+        transpose_into(data, scratch, n1);
+        let mut row_scratch = vec![C64::default(); n1];
+        for j in 0..n1 {
+            let row = &mut scratch[j * n1..(j + 1) * n1];
+            // Full dispatch (not transform_stages): a sub-plan large
+            // enough to qualify recurses into its own six-step.
+            sub.transform(row, &mut row_scratch, inverse);
+            // Fused inter-stage twiddle: element k of row j picks up
+            // w_n^(k·j) (conjugated for the inverse). tw(0) = 1 exactly,
+            // and C64::mul by (1, 0) is exact — no special case needed.
+            for (k, v) in row.iter_mut().enumerate() {
+                let mut w = self.tw(k * j);
+                if inverse {
+                    w = w.conj();
+                }
+                *v = v.mul(w);
+            }
+        }
+        transpose_into(scratch, data, n1);
+        for j in 0..n1 {
+            let row = &mut data[j * n1..(j + 1) * n1];
+            sub.transform(row, &mut row_scratch, inverse);
+        }
+        transpose_into(data, scratch, n1);
+        data.copy_from_slice(scratch);
+    }
+
+    /// Mixed radix-8/4/2 Stockham autosort (bead 27d3): ping-pongs between
+    /// `data` and `scratch` with no bit-reversal pass; butterfly order is
+    /// a pure function of the stage structure (deterministic by
+    /// construction). Radix-8 stages consume three log₂ bits per
+    /// full-array pass, radix-4 two, and one radix-4-or-2 residue absorbs
+    /// the modulus. Radix changes legitimately changed twiddle-application
+    /// order and hence output bits: the golden hash was bumped with that
+    /// justification each time (see the golden test).
+    #[allow(clippy::too_many_lines)] // the stage driver IS the decomposition
+    fn transform_stages(&self, data: &mut [C64], scratch: &mut [C64], inverse: bool) {
+        let n = self.n;
         if n == 1 {
             return;
         }
@@ -383,6 +493,34 @@ impl Fft {
         if !src_is_data {
             data.copy_from_slice(scratch);
         }
+    }
+}
+
+/// Out-of-place cache-blocked transpose of an n₁×n₁ row-major complex
+/// matrix: `dst[i·n1 + j] = src[j·n1 + i]`. Pure element moves — NO
+/// floating-point arithmetic, so the pass is bit-neutral by construction.
+/// 8×8-element tiles (8 C64 = 128 B = one Apple cache line) with
+/// SEQUENTIAL writes per destination row chunk (the strided side is the
+/// read, which prefetches better than strided read-modify-write swaps).
+fn transpose_into(src: &[C64], dst: &mut [C64], n1: usize) {
+    const TILE: usize = 8;
+    debug_assert_eq!(src.len(), n1 * n1, "transpose needs a square matrix");
+    debug_assert_eq!(dst.len(), n1 * n1, "transpose needs a square dst");
+    let mut bi = 0;
+    while bi < n1 {
+        let i_end = (bi + TILE).min(n1);
+        let mut bj = 0;
+        while bj < n1 {
+            let j_end = (bj + TILE).min(n1);
+            for i in bi..i_end {
+                let drow = &mut dst[i * n1 + bj..i * n1 + j_end];
+                for (dj, slot) in drow.iter_mut().enumerate() {
+                    *slot = src[(bj + dj) * n1 + i];
+                }
+            }
+            bj += TILE;
+        }
+        bi += TILE;
     }
 }
 
@@ -968,6 +1106,46 @@ mod tests {
             let r = std::panic::catch_unwind(|| Fft::new(bad));
             assert!(r.is_err(), "size {bad} must be refused");
         }
+    }
+
+    // ---- Six-step path (bead 27d3): the dispatched battery lives in
+    // tests/sixstep.rs behind `frontier-sixstep`; here we pin the
+    // DEFAULT bit contract and the always-compiled transpose helper. ----
+
+    #[test]
+    fn sixstep_stays_off_by_default() {
+        if cfg!(feature = "frontier-sixstep") {
+            return; // the gated battery pins the enabled side
+        }
+        for n in [1usize << 16, 1 << 20, 1 << 22] {
+            assert!(
+                !Fft::takes_sixstep(n),
+                "default build must keep n=2^{} on the stage walk",
+                n.ilog2()
+            );
+            assert!(
+                Fft::new(n).sub.is_none(),
+                "default build must not carry a sub-plan"
+            );
+        }
+    }
+
+    #[test]
+    fn transpose_into_matches_naive_and_round_trips() {
+        let n1 = 24usize; // exercises the tile tails too
+        let a0: Vec<C64> = (0..n1 * n1)
+            .map(|i| C64::new(i as f64, -(i as f64) - 0.5))
+            .collect();
+        let mut t = vec![C64::default(); n1 * n1];
+        transpose_into(&a0, &mut t, n1);
+        for i in 0..n1 {
+            for j in 0..n1 {
+                assert_eq!(t[i * n1 + j], a0[j * n1 + i], "({i},{j})");
+            }
+        }
+        let mut back = vec![C64::default(); n1 * n1];
+        transpose_into(&t, &mut back, n1);
+        assert_eq!(back, a0, "transpose twice must be the identity");
     }
 
     #[test]

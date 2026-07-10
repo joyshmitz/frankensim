@@ -10,12 +10,27 @@ description = "Stockham FFTs, real transforms and DCT, cache-blocked 3D pencils.
 [package.metadata.frankensim]
 layer = "L1"
 
+[features]
+# [F]-gated per the Ambition-Tag rule (bead 27d3): the cache-blocked
+# six-step path for large even-log2 sizes. Correct and golden-frozen,
+# but MEASURED SLOWER than the radix-8/4/2 stage walk on M4 (scalar
+# transposes lose to the prefetch-friendly stage streams); ships OFF
+# until the SIMD-tiled transpose capsule makes it win.
+frontier-sixstep = []
+
 [dependencies]
 fs-math = { path = "../fs-math" }
 fs-simd = { path = "../fs-simd" }
 
 [dev-dependencies]
+fs-math = { path = "../fs-math" }
 fs-roofline = { path = "../fs-roofline" }
 
 [lints]
 workspace = true
+
+# Feature-gated integration target (huq.18): skipped-with-reason when the
+# feature is off, never a zero-test pass.
+[[test]]
+name = "sixstep"
+required-features = ["frontier-sixstep"]

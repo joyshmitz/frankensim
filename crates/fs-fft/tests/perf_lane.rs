@@ -30,6 +30,38 @@ fn stages(n: usize) -> usize {
     c
 }
 
+/// Does `n` take the six-step path? MUST mirror `Fft::takes_sixstep`
+/// (feature-gated; n ≥ 2^16 with even log₂). The default lane models
+/// and measures the stage walk; enabling `frontier-sixstep` flips both
+/// the kernel and this model together.
+fn takes_sixstep(n: usize) -> bool {
+    cfg!(feature = "frontier-sixstep") && n >= (1 << 16) && n.trailing_zeros() % 2 == 0
+}
+
+/// Full-array DRAM passes per single transform: the six-step does six
+/// (three out-of-place transposes + two row sweeps whose sub-transforms
+/// are cache-resident + the final copy-back); the stage walk does one
+/// per stage plus the odd-parity copy-back.
+fn dram_passes(n: usize) -> f64 {
+    if takes_sixstep(n) {
+        6.0
+    } else {
+        let st = stages(n);
+        st as f64 + f64::from(u8::from(st % 2 == 1))
+    }
+}
+
+/// Butterfly element-stages actually executed (for the flop model):
+/// the six-step runs the sub-plan (√n) twice per transform.
+fn butterfly_stages(n: usize) -> f64 {
+    if takes_sixstep(n) {
+        let n1 = 1usize << (n.trailing_zeros() / 2);
+        2.0 * butterfly_stages(n1)
+    } else {
+        stages(n) as f64
+    }
+}
+
 struct FftRoundTrip {
     n: usize,
     plan: Fft,
@@ -57,19 +89,26 @@ impl FftRoundTrip {
 
 impl RooflineKernel for FftRoundTrip {
     fn spec(&self) -> KernelSpec {
-        let st = stages(self.n) as f64;
-        let copy = if stages(self.n) % 2 == 1 { 32.0 } else { 0.0 };
+        let passes = dram_passes(self.n);
+        let bf = butterfly_stages(self.n);
+        // Six-step adds one fused complex twiddle multiply per element
+        // per transform (6 flops).
+        let twiddle = if takes_sixstep(self.n) { 6.0 } else { 0.0 };
         KernelSpec {
             name: "fft-roundtrip",
-            version: "27d3-r8",
-            // Two transforms of `st` passes (32 B/elem each: read one
-            // C64, write one C64) + copy-back per transform when the
-            // stage count is odd + the inverse's scale pass.
-            bytes_per_elem: 2.0 * (32.0 * st + copy) + 32.0,
+            version: if takes_sixstep(self.n) {
+                "27d3-6s"
+            } else {
+                "27d3-r8"
+            },
+            // Two transforms of `passes` full-array DRAM passes
+            // (32 B/elem each: read one C64, write one C64) + the
+            // inverse's scale pass.
+            bytes_per_elem: 2.0 * 32.0 * passes + 32.0,
             // Radix-8 butterfly ≈ 100 flops / 8 outputs = 12.5 per
             // element-stage; + 2 for the scale. Approximate — the roof
             // is bandwidth at this intensity either way.
-            flops_per_elem: 2.0 * 12.5 * st + 2.0,
+            flops_per_elem: 2.0 * (12.5 * bf + twiddle) + 2.0,
             threading: Threading::SingleThread,
             target_fraction: Some(0.40),
         }
