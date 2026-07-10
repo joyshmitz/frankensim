@@ -77,6 +77,77 @@ impl CcdTopology {
         let s = u32::from(shard).min(self.ccds - 1);
         s * self.cores_per_ccd..(s + 1) * self.cores_per_ccd
     }
+
+    /// Topology from MEASURED L3 groups (fz2.2): ground truth where
+    /// [`measured_l3_groups`] finds it, `None` otherwise (caller falls
+    /// back to [`CcdTopology::from_probe`] and records which it used).
+    #[must_use]
+    pub fn from_l3_groups(groups: &[Vec<u32>]) -> Option<CcdTopology> {
+        if groups.is_empty() {
+            return None;
+        }
+        let per = groups.iter().map(Vec::len).min().unwrap_or(1).max(1);
+        Some(CcdTopology {
+            ccds: groups.len() as u32,
+            cores_per_ccd: per as u32,
+        })
+    }
+}
+
+/// MEASURED L3 cache groups (fz2.2): the logical CPUs sharing each L3
+/// instance — the CCD islands on Zen, cluster caches elsewhere. Ground
+/// truth from Linux sysfs (`cache/index3/shared_cpu_list`); empty when
+/// the target exposes no such tree (macOS), so callers can distinguish
+/// "measured" from "heuristic" and ledger which one they scheduled by.
+/// Groups are deduplicated and sorted; SMT siblings are INCLUDED (the
+/// caller decides whether to use one or both per physical core).
+#[must_use]
+pub fn measured_l3_groups() -> Vec<Vec<u32>> {
+    let mut groups: Vec<Vec<u32>> = Vec::new();
+    let Ok(cpus) = std::fs::read_dir("/sys/devices/system/cpu") else {
+        return groups;
+    };
+    for entry in cpus.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Some(idx) = name.strip_prefix("cpu") else {
+            continue;
+        };
+        if idx.parse::<u32>().is_err() {
+            continue;
+        }
+        let path = entry.path().join("cache/index3/shared_cpu_list");
+        let Ok(list) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let cpus = parse_cpu_list(list.trim());
+        if !cpus.is_empty() && !groups.contains(&cpus) {
+            groups.push(cpus);
+        }
+    }
+    groups.sort();
+    groups
+}
+
+/// Parse a sysfs cpu list ("0-7,64-71") into sorted ids. Malformed
+/// pieces are SKIPPED, not guessed at.
+fn parse_cpu_list(s: &str) -> Vec<u32> {
+    let mut out = Vec::new();
+    for piece in s.split(',') {
+        let piece = piece.trim();
+        if let Some((a, b)) = piece.split_once('-') {
+            if let (Ok(a), Ok(b)) = (a.parse::<u32>(), b.parse::<u32>())
+                && a <= b
+            {
+                out.extend(a..=b);
+            }
+        } else if let Ok(v) = piece.parse::<u32>() {
+            out.push(v);
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 /// Tile→shard assignment: contiguous, balanced z-order slot ranges (the
@@ -207,6 +278,35 @@ mod tests {
         let topo = CcdTopology::from_probe(&CapabilityProbe::topology_only());
         assert!(topo.ccds >= 1);
         assert!(topo.cores_per_ccd >= 1);
+    }
+
+    #[test]
+    fn cpu_list_parsing_and_measured_topology_agree() {
+        assert_eq!(parse_cpu_list("0-7,64-71"), {
+            let mut v: Vec<u32> = (0..8).collect();
+            v.extend(64..72);
+            v
+        });
+        assert_eq!(parse_cpu_list("3"), vec![3]);
+        assert_eq!(parse_cpu_list(""), Vec::<u32>::new());
+        assert_eq!(
+            parse_cpu_list("7-3,junk,5"),
+            vec![5],
+            "malformed pieces skipped"
+        );
+        // Measured groups (empty on targets without the sysfs tree) are
+        // disjoint, sorted, and convert to a sane topology.
+        let groups = measured_l3_groups();
+        for w in groups.windows(2) {
+            assert!(w[0] < w[1], "groups sorted and deduplicated");
+        }
+        match CcdTopology::from_l3_groups(&groups) {
+            Some(t) => {
+                assert_eq!(t.ccds as usize, groups.len());
+                assert!(t.cores_per_ccd >= 1);
+            }
+            None => assert!(groups.is_empty(), "None only when nothing was measured"),
+        }
     }
 
     #[test]
