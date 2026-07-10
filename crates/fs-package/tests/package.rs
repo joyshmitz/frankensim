@@ -7,9 +7,12 @@
 
 use fs_evidence::{Color, ValidityDomain};
 use fs_package::{
-    Claim, EvidencePackage, FalsifierRecord, MAX_JSON_CONTAINER_ITEMS, MAX_JSON_DEPTH,
-    MAX_JSON_NUMBER_BYTES, MAX_JSON_STRING_BYTES, PackageError, Provenance,
+    AnchorRecord, Claim, EvidencePackage, FalsifierRecord, MAX_JSON_CONTAINER_ITEMS,
+    MAX_JSON_DEPTH, MAX_JSON_NUMBER_BYTES, MAX_JSON_STRING_BYTES, PackageError, Provenance,
 };
+
+const CANONICAL_DATASET_HASH: &str =
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 fn prov() -> Provenance {
     Provenance::new("commit-abc123", "lock-deadbeef")
@@ -262,6 +265,30 @@ fn in_memory_and_serialized_semantic_gates_are_identical() {
     ));
     assert_serialized_refuses(&dispersion_overflow);
 
+    let large = f64::MAX * 0.75;
+    let cross_component_overflow = EvidencePackage::new(prov())
+        .with_claim(Claim::new(
+            "wide-finite",
+            "large but finite interval width",
+            Color::Verified { lo: 0.0, hi: large },
+        ))
+        .with_claim(Claim::new(
+            "spread-finite",
+            "large but finite estimated spread",
+            Color::Estimated {
+                estimator: "probe".to_string(),
+                dispersion: large,
+            },
+        ));
+    assert!(matches!(
+        cross_component_overflow.verify(),
+        Err(PackageError::MagnitudeOverflow {
+            component: "quantified_total",
+            ..
+        })
+    ));
+    assert_serialized_refuses(&cross_component_overflow);
+
     for regime in [
         ValidityDomain::unconstrained().with(" ", 1.0, 2.0),
         ValidityDomain::unconstrained().with("Re", 1.0, f64::INFINITY),
@@ -326,6 +353,85 @@ fn falsifier_attempt_counts_round_trip_without_f64_precision_loss() {
     let overflow = json.replace("18446744073709551615", "18446744073709551616");
     let err = EvidencePackage::from_json(&overflow).expect_err("u64 overflow must refuse");
     assert!(err.why.contains("out of range"), "{err}");
+}
+
+#[test]
+fn falsifier_records_require_identity_work_and_outcome() {
+    let assert_invalid = |record: FalsifierRecord, expected_field: &'static str| {
+        let pkg = EvidencePackage::new(prov()).with_claim(verified("f").with_falsifier(record));
+        assert!(matches!(
+            pkg.verify(),
+            Err(PackageError::InvalidFalsifierRecord {
+                falsifier: 0,
+                field,
+                ..
+            }) if field == expected_field
+        ));
+        assert_serialized_refuses(&pkg);
+    };
+
+    assert_invalid(
+        FalsifierRecord {
+            name: " \t".to_string(),
+            attempts: 1,
+            refuted: false,
+            detail: "no violation".to_string(),
+        },
+        "name",
+    );
+    assert_invalid(
+        FalsifierRecord {
+            name: "interval-probe".to_string(),
+            attempts: 0,
+            refuted: false,
+            detail: "no work ran".to_string(),
+        },
+        "attempts",
+    );
+    assert_invalid(
+        FalsifierRecord {
+            name: "interval-probe".to_string(),
+            attempts: 1,
+            refuted: false,
+            detail: "  ".to_string(),
+        },
+        "detail",
+    );
+}
+
+#[test]
+fn anchor_records_require_identity_and_canonical_content_hash() {
+    let cases = [
+        (" ", CANONICAL_DATASET_HASH, "dataset_id"),
+        ("dataset", "deadbeef", "content_hash"),
+        (
+            "dataset",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeg",
+            "content_hash",
+        ),
+        (
+            "dataset",
+            "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF",
+            "content_hash",
+        ),
+    ];
+    for (dataset_id, content_hash, expected_field) in cases {
+        let mut claim = verified("a");
+        claim.anchors.push(AnchorRecord {
+            dataset_id: dataset_id.to_string(),
+            content_hash: content_hash.to_string(),
+        });
+        let pkg = EvidencePackage::new(prov()).with_claim(claim);
+        assert!(matches!(
+            pkg.verify(),
+            Err(PackageError::InvalidAnchorRecord {
+                anchor: 0,
+                field,
+                ..
+            }) if field == expected_field
+        ));
+        assert_serialized_refuses(&pkg);
+    }
 }
 
 #[test]
@@ -439,16 +545,16 @@ fn json_is_deterministic_and_carries_the_root() {
     assert!(j.starts_with('{') && j.ends_with('}'));
     assert!(j.contains(&format!("{:016x}", pkg.merkle_root())));
     assert!(j.contains("\"format_version\":3"), "schema v3 (xfxq)");
-    // v2 carries COMPLETE payloads, not just rank labels.
+    // v3 carries COMPLETE payloads, not just rank labels.
     assert!(j.contains("\"lo_bits\":") && j.contains("\"dataset\":"));
 }
 
-/// qmao.6.1 — the schema-v2 round trip and its fail-closed walls: a
+/// qmao.6.1 — the schema-v3 round trip and its fail-closed walls: a
 /// package decode-encodes stably (golden), floats travel bit-exactly,
 /// and hostile/missing/unknown/non-finite/forged/tampered inputs each
 /// refuse with a structured parse error.
 #[test]
-fn v2_round_trip_and_fail_closed_walls() {
+fn v3_round_trip_and_fail_closed_walls() {
     let pkg = EvidencePackage::new(Provenance::new("frankensim@abc123", "lock:deadbeef"))
         .with_claim(Claim::new(
             "c-verified",
@@ -481,6 +587,11 @@ fn v2_round_trip_and_fail_closed_walls() {
     let back = EvidencePackage::from_json(&json).expect("canonical JSON parses");
     assert_eq!(back, pkg, "semantic round trip");
     assert_eq!(back.to_json(), json, "textual round trip");
+    let leading_zero = json.replacen("\"format_version\":3", "\"format_version\":03", 1);
+    assert!(
+        EvidencePackage::from_json(&leading_zero).is_err(),
+        "non-JSON leading-zero integer refuses"
+    );
     // Forged Verified claim: structurally shaped, but the embedded root
     // no longer recomputes from the tampered content — refused at parse.
     let forged = json.replace("tip deflection within bound", "tip deflection PROVEN SAFE");
@@ -580,8 +691,8 @@ fn magnitude_budget_reconciles() {
 
 /// qmao.6.1 — crosswalk coverage derives from fields ACTUALLY PRESENT
 /// in a parsed package: a mapped concept with absent evidence is
-/// "mapped but absent", never covered; unrepresentable concepts
-/// (falsifier logs in schema v2) can never report covered.
+/// "mapped but absent", never covered; no static mapping can report
+/// evidence that the package does not carry.
 #[test]
 fn coverage_cannot_claim_absent_evidence() {
     use fs_crosswalk::{PackageConcept, Standard};
@@ -625,10 +736,83 @@ fn coverage_cannot_claim_absent_evidence() {
     }
 }
 
+#[test]
+fn coverage_requires_a_valid_package_and_authenticated_evidence() {
+    use fs_crosswalk::{PackageConcept, Standard};
+    use fs_package::{CoverageStatus, package_coverage, package_presence};
+
+    let refuted = EvidencePackage::new(prov())
+        .with_claim(verified("refuted").with_falsifier(FalsifierRecord {
+            name: "interval-probe".to_string(),
+            attempts: 1,
+            refuted: true,
+            detail: "counterexample found".to_string(),
+        }))
+        .signed("raw-detached-signature");
+    assert!(package_presence(&refuted).iter().all(|row| !row.present));
+    for standard in Standard::ALL {
+        assert!(
+            package_coverage(&refuted, standard)
+                .iter()
+                .all(|(_, status, _)| !matches!(status, CoverageStatus::Covered)),
+            "invalid package covered a concept for {standard:?}"
+        );
+    }
+
+    let merely_signed = EvidencePackage::new(prov())
+        .with_claim(verified("signed"))
+        .signed("unauthenticated-bytes");
+    let signature = package_presence(&merely_signed)
+        .into_iter()
+        .find(|row| row.concept == PackageConcept::Signature)
+        .expect("signature concept judged");
+    assert!(!signature.present, "{}", signature.why);
+    for standard in Standard::ALL {
+        let status = package_coverage(&merely_signed, standard)
+            .into_iter()
+            .find(|(concept, _, _)| *concept == PackageConcept::Signature)
+            .expect("signature is mapped for every standard")
+            .1;
+        assert!(!matches!(status, CoverageStatus::Covered));
+    }
+}
+
+#[test]
+fn dataset_coverage_requires_a_matching_valid_anchor() {
+    use fs_crosswalk::PackageConcept;
+    use fs_package::package_presence;
+
+    let unrelated = EvidencePackage::new(prov()).with_claim(
+        validated("v", good_regime(), "wind-tunnel-2026")
+            .with_anchor("different-dataset", CANONICAL_DATASET_HASH),
+    );
+    unrelated
+        .verify()
+        .expect("unrelated anchor is structurally valid");
+    let unrelated_presence = package_presence(&unrelated);
+    let anchor = unrelated_presence
+        .iter()
+        .find(|row| row.concept == PackageConcept::AnchoringDataset)
+        .expect("anchor concept judged");
+    assert!(!anchor.present, "{}", anchor.why);
+
+    let matching = EvidencePackage::new(prov()).with_claim(
+        validated("v", good_regime(), "wind-tunnel-2026")
+            .with_anchor("wind-tunnel-2026", CANONICAL_DATASET_HASH),
+    );
+    matching.verify().expect("matching anchor verifies");
+    let matching_presence = package_presence(&matching);
+    let anchor = matching_presence
+        .iter()
+        .find(|row| row.concept == PackageConcept::AnchoringDataset)
+        .expect("anchor concept judged");
+    assert!(anchor.present, "{}", anchor.why);
+}
+
 /// xfxq (schema v3) — composition receipts re-run solver-free, refuted
-/// falsifiers fail, anchors and falsifier logs travel and flip the
-/// crosswalk, and every new field round-trips through the strict
-/// parser bound into the content address.
+/// falsifiers fail, anchors and falsifier logs travel with claims, and
+/// every new field round-trips through the strict parser bound into the
+/// content address.
 #[test]
 fn v3_receipts_falsifiers_anchors() {
     use fs_evidence::IntervalOp;
@@ -651,7 +835,7 @@ fn v3_receipts_falsifiers_anchors() {
                 refuted: false,
                 detail: "no violation found".to_string(),
             })
-            .with_anchor("wt-2026-run9", "deadbeefcafef00d"),
+            .with_anchor("wt-2026-run9", CANONICAL_DATASET_HASH),
         );
     good.verify().expect("receipt re-derives");
     // Round trip: the v3 fields survive the strict parser bit-for-bit.

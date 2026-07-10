@@ -28,7 +28,7 @@ Layer L6. Depends only on `fs-evidence` (UTIL — `Color`, `ColorRank`,
 - `PackageReport { merkle_root, breakdown, claims }`.
 - `PackageError` — structured refusals for incomplete provenance, invalid or
   duplicate claim ids, malformed color payloads, unsupported formats, receipt
-  mismatches/parents, and refuted claims.
+  mismatches/parents, malformed falsifier/anchor records, and refuted claims.
 
 ## Invariants
 
@@ -42,6 +42,13 @@ Layer L6. Depends only on `fs-evidence` (UTIL — `Color`, `ColorRank`,
   no-quantitative-spread-claim sentinel; it is distinct from finite subtotal
   overflow, which verification rejects. An honest all-estimated package
   remains valid.
+- FALSIFIER EVIDENCE: a record has a non-blank stable falsifier identity, at
+  least one executed attempt, and a non-blank outcome detail. A refuted record
+  still rejects its claim and package.
+- DATASET ANCHORS: every attached anchor has a non-blank stable dataset id and
+  an exactly 64-character, lowercase hexadecimal content hash. Crosswalk
+  anchoring coverage requires a valid anchor whose dataset id exactly matches
+  the `Validated` claim's named dataset; unrelated anchors do not count.
 - CONTENT-ADDRESSING: `merkle_root` is deterministic and tamper-evident across
   format version, provenance, and claims; a detached signature does not change it.
 - `verify` runs no solver — pure structural re-verification (the checker's
@@ -99,12 +106,13 @@ RECORDS (name, attempts, refuted, detail) travel with the claim; any
 RECORDS give validated claims content-hashed dataset identities. All
 three field families bind into the content address and round-trip
 through the strict parser (booleans added to the closed grammar);
-crosswalk coverage now reads falsifier logs and anchors from the
-actual fields (present only when records exist). The checker stays
-solver-free: `compose` lives in fs-evidence, already in its dependency
-cone. Migration: v2 readers refuse v3 by version (the one-version
-contract); in-tree constructors gained fields with builders, no
-call-site changes.
+crosswalk coverage now reads validated falsifier logs and matching anchors from
+the actual fields. Coverage fails closed for an invalid package, and raw
+detached-signature presence never counts as authenticated sign-off. The
+checker stays solver-free: `compose` lives in fs-evidence, already in its
+dependency cone. Migration: v2 readers refuse v3 by version (the one-version
+contract); in-tree constructors gained fields with builders, no call-site
+changes.
 
 ## Schema v2: round trip and fail-closed parsing (bead qmao.6.1)
 

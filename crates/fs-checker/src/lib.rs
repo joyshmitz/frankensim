@@ -313,5 +313,27 @@ fn describe(e: &PackageError) -> Finding {
             kind: "refuted-claim",
             detail: format!("claim '{claim}' was REFUTED by falsifier '{falsifier}'"),
         },
+        PackageError::InvalidFalsifierRecord {
+            claim,
+            falsifier,
+            field,
+        } => Finding {
+            kind: "invalid-falsifier-record",
+            detail: format!(
+                "claim '{claim}' has invalid falsifier record {falsifier}: {field} is missing or \
+                 invalid"
+            ),
+        },
+        PackageError::InvalidAnchorRecord {
+            claim,
+            anchor,
+            field,
+        } => Finding {
+            kind: "invalid-anchor-record",
+            detail: format!(
+                "claim '{claim}' has invalid anchor record {anchor}: {field} is missing or \
+                 non-canonical"
+            ),
+        },
     }
 }

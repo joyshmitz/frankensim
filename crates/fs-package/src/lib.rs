@@ -44,13 +44,13 @@ pub struct CompositionReceipt {
 /// verification outright.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FalsifierRecord {
-    /// Which falsifier ran.
+    /// Stable registered identity of the falsifier that ran (non-blank).
     pub name: String,
-    /// Adversarial attempts executed.
+    /// Adversarial attempts executed (strictly positive).
     pub attempts: u64,
     /// Did it refute the claim?
     pub refuted: bool,
-    /// Outcome summary.
+    /// Non-blank outcome summary.
     pub detail: String,
 }
 
@@ -58,9 +58,9 @@ pub struct FalsifierRecord {
 /// a validated claim, by stable id and content hash — not just a name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnchorRecord {
-    /// Stable dataset identity.
+    /// Stable, non-blank dataset identity.
     pub dataset_id: String,
-    /// Content hash (hex) of the dataset artifact.
+    /// Canonical 64-character lowercase hex hash of the dataset artifact.
     pub content_hash: String,
 }
 
@@ -346,6 +346,27 @@ pub enum PackageError {
         /// The refuting falsifier.
         falsifier: String,
     },
+    /// A falsifier record is not meaningful evidence: identities and outcome
+    /// details must be non-blank, and at least one adversarial attempt must
+    /// have run.
+    InvalidFalsifierRecord {
+        /// The claim id.
+        claim: String,
+        /// Position of the malformed record within the claim.
+        falsifier: usize,
+        /// The invalid field (`"name"`, `"attempts"`, or `"detail"`).
+        field: &'static str,
+    },
+    /// An anchoring-dataset record lacks a stable identity or a canonical
+    /// content hash.
+    InvalidAnchorRecord {
+        /// The claim id.
+        claim: String,
+        /// Position of the malformed record within the claim.
+        anchor: usize,
+        /// The invalid field (`"dataset_id"` or `"content_hash"`).
+        field: &'static str,
+    },
 }
 
 /// The one format version this build understands. v2 (bead qmao.6.1)
@@ -354,6 +375,44 @@ pub enum PackageError {
 /// re-runs the derivation), falsifier records (refuted claims fail),
 /// and dataset anchors — all bound into the content address.
 pub const FORMAT_VERSION: u32 = 3;
+
+fn verify_attached_records(claim: &Claim) -> Result<(), PackageError> {
+    for (falsifier, record) in claim.falsifiers.iter().enumerate() {
+        let field = if record.name.trim().is_empty() {
+            Some("name")
+        } else if record.attempts == 0 {
+            Some("attempts")
+        } else if record.detail.trim().is_empty() {
+            Some("detail")
+        } else {
+            None
+        };
+        if let Some(field) = field {
+            return Err(PackageError::InvalidFalsifierRecord {
+                claim: claim.id.clone(),
+                falsifier,
+                field,
+            });
+        }
+    }
+    for (anchor, record) in claim.anchors.iter().enumerate() {
+        let field = if record.dataset_id.trim().is_empty() {
+            Some("dataset_id")
+        } else if !is_canonical_content_hash(&record.content_hash) {
+            Some("content_hash")
+        } else {
+            None
+        };
+        if let Some(field) = field {
+            return Err(PackageError::InvalidAnchorRecord {
+                claim: claim.id.clone(),
+                anchor,
+                field,
+            });
+        }
+    }
+    Ok(())
+}
 
 impl EvidencePackage {
     /// An empty package at the current format version.
@@ -438,6 +497,7 @@ impl EvidencePackage {
     fn verify_claim(&self, index: usize, claim: &Claim) -> Result<(), PackageError> {
         // Schema-v3 semantic re-verification (solver-free): refuted falsifiers
         // fail and composition receipts are independently re-derived.
+        verify_attached_records(claim)?;
         if let Some(fr) = claim.falsifiers.iter().find(|f| f.refuted) {
             return Err(PackageError::RefutedClaim {
                 claim: claim.id.clone(),
@@ -710,6 +770,12 @@ impl EvidencePackage {
                 Color::Estimated { .. } | Color::Validated { .. } => {}
             }
         }
+        if !(verified_width + estimated_finite).is_finite() {
+            return Err(PackageError::MagnitudeOverflow {
+                claim: "<aggregate>".to_string(),
+                component: "quantified_total",
+            });
+        }
         Ok(())
     }
 
@@ -734,7 +800,7 @@ impl EvidencePackage {
     }
 
     /// Emit the package as deterministic, self-describing JSON —
-    /// schema v2: COMPLETE color payloads (floats as bit-exact hex),
+    /// schema v3: COMPLETE color payloads (floats as bit-exact hex),
     /// provenance, signature, the content root, and the magnitude
     /// budget. [`EvidencePackage::from_json`] round-trips this
     /// semantically and refuses anything else.
@@ -774,6 +840,14 @@ impl EvidencePackage {
         out.push_str("]}");
         out
     }
+}
+
+pub(crate) fn is_canonical_content_hash(hash: &str) -> bool {
+    hash.len() == 64
+        && hash
+            .as_bytes()
+            .iter()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
 }
 
 fn push_claim_json(out: &mut String, claim: &Claim) {
@@ -1303,7 +1377,11 @@ fn bits_f64(v: Jv, what: &str, must_be_finite: bool) -> Result<f64, ParseError> 
 
 fn decimal_u64(v: Jv, what: &str) -> Result<u64, ParseError> {
     match v {
-        Jv::Num(text) if !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()) => {
+        Jv::Num(text)
+            if !text.is_empty()
+                && text.bytes().all(|b| b.is_ascii_digit())
+                && (text == "0" || !text.starts_with('0')) =>
+        {
             text.parse::<u64>().map_err(|_| ParseError {
                 what: what.to_string(),
                 why: format!("unsigned integer out of range: {text:?}"),

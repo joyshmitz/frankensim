@@ -11,7 +11,7 @@
 // concept with no evidence in hand is "mapped but absent", not covered.
 // ---------------------------------------------------------------------------
 
-use crate::EvidencePackage;
+use crate::{EvidencePackage, is_canonical_content_hash};
 use fs_crosswalk::{PackageConcept, Standard, crosswalk};
 use fs_evidence::{Color, ColorRank};
 
@@ -27,9 +27,64 @@ pub struct ConceptPresence {
     pub why: String,
 }
 
+fn anchoring_dataset_presence(pkg: &EvidencePackage) -> (bool, String) {
+    let named = pkg
+        .claims
+        .iter()
+        .filter(|claim| {
+            matches!(&claim.color, Color::Validated { dataset, .. } if !dataset.trim().is_empty())
+        })
+        .count();
+    let anchored: usize = pkg.claims.iter().map(|claim| claim.anchors.len()).sum();
+    let matched = pkg
+        .claims
+        .iter()
+        .filter(|claim| {
+            let Color::Validated { dataset, .. } = &claim.color else {
+                return false;
+            };
+            claim.anchors.iter().any(|anchor| {
+                anchor.dataset_id == *dataset && is_canonical_content_hash(&anchor.content_hash)
+            })
+        })
+        .count();
+    (
+        matched > 0,
+        format!(
+            "{matched} validated claim(s) have matching content-hashed anchors; {named} named \
+             dataset(s), {anchored} total anchor record(s) (schema v3)"
+        ),
+    )
+}
+
+fn signature_presence(pkg: &EvidencePackage) -> (bool, String) {
+    match &pkg.signature {
+        Some(_) => (
+            false,
+            "detached signature present but not authenticated; raw presence cannot establish \
+             sign-off"
+                .to_string(),
+        ),
+        None => (false, "no authenticated detached signature".to_string()),
+    }
+}
+
 /// Judge every concept against the fields actually present in `pkg`.
 #[must_use]
 pub fn package_presence(pkg: &EvidencePackage) -> Vec<ConceptPresence> {
+    if pkg.verify().is_err() {
+        let why = "package verification failed; fail-closed coverage suppresses every concept"
+            .to_string();
+        return PackageConcept::ALL
+            .iter()
+            .map(|&concept| ConceptPresence {
+                concept,
+                present: false,
+                why: why.clone(),
+            })
+            .collect();
+    }
+
     let count = |rank: ColorRank| pkg.claims.iter().filter(|c| c.color.rank() == rank).count();
     let validated_with = |f: &dyn Fn(&Color) -> bool| {
         pkg.claims
@@ -54,14 +109,14 @@ pub fn package_presence(pkg: &EvidencePackage) -> Vec<ConceptPresence> {
                     (n > 0, format!("{n} estimated claim(s)"))
                 }
                 PackageConcept::Certificate => {
-                    let ok = !pkg.claims.is_empty() && pkg.verify().is_ok();
+                    let ok = !pkg.claims.is_empty();
                     (
                         ok,
                         if ok {
-                            "every claim carries its complete color payload (schema v2)"
+                            "every claim carries a complete, re-verified color payload (schema v3)"
                                 .to_string()
                         } else {
-                            "no claims, or a claim failed completeness verification".to_string()
+                            "no claims to certify".to_string()
                         },
                     )
                 }
@@ -85,17 +140,7 @@ pub fn package_presence(pkg: &EvidencePackage) -> Vec<ConceptPresence> {
                     (n > 0, format!("{n} validated claim(s) with regime bounds"))
                 }
                 PackageConcept::AnchoringDataset => {
-                    let named = validated_with(&|c| {
-                        matches!(c, Color::Validated { dataset, .. } if !dataset.trim().is_empty())
-                    });
-                    let anchored: usize = pkg.claims.iter().map(|c| c.anchors.len()).sum();
-                    (
-                        named > 0 || anchored > 0,
-                        format!(
-                            "{named} validated claim(s) with named datasets; {anchored} \
-                             content-hashed anchor record(s) (schema v3)"
-                        ),
-                    )
+                    anchoring_dataset_presence(pkg)
                 }
                 PackageConcept::Provenance => {
                     let ok = !pkg.provenance.code_version.trim().is_empty()
@@ -112,10 +157,7 @@ pub fn package_presence(pkg: &EvidencePackage) -> Vec<ConceptPresence> {
                 PackageConcept::MerkleRoot => {
                     (true, format!("content root {:016x} recomputable", pkg.merkle_root()))
                 }
-                PackageConcept::Signature => match &pkg.signature {
-                    Some(_) => (true, "detached signature present".to_string()),
-                    None => (false, "no detached signature attached".to_string()),
-                },
+                PackageConcept::Signature => signature_presence(pkg),
             };
             ConceptPresence {
                 concept,

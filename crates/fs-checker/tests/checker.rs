@@ -6,7 +6,7 @@
 
 use fs_checker::{CHECKER_PROTOCOL_VERSION, SignatureStatus, Verdict, check, check_against_root};
 use fs_evidence::{Color, ValidityDomain};
-use fs_package::{Claim, EvidencePackage, Provenance};
+use fs_package::{Claim, EvidencePackage, FalsifierRecord, Provenance};
 
 fn prov() -> Provenance {
     Provenance::new("commit-abc", "lock-def")
@@ -64,6 +64,20 @@ fn an_incomplete_validated_claim_fails_the_check() {
     assert_eq!(report.verdict, Verdict::Fail);
     assert_eq!(report.findings.len(), 1);
     assert_eq!(report.findings[0].kind, "incomplete-validated-claim");
+}
+
+#[test]
+fn a_semantically_empty_falsifier_record_fails_the_check() {
+    let pkg =
+        EvidencePackage::new(prov()).with_claim(verified("v").with_falsifier(FalsifierRecord {
+            name: " ".to_string(),
+            attempts: 0,
+            refuted: false,
+            detail: " ".to_string(),
+        }));
+    let report = check(&pkg);
+    assert!(!report.passed());
+    assert_eq!(report.findings[0].kind, "invalid-falsifier-record");
 }
 
 #[test]
