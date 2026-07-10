@@ -278,7 +278,7 @@ impl ColorGraph {
         grant: Option<&WaiverGrant>,
     ) -> ContentHash {
         let mut buf = vec![2u8]; // encoding version
-        let mut field = |b: &mut Vec<u8>, s: &str| {
+        let field = |b: &mut Vec<u8>, s: &str| {
             b.extend_from_slice(&(s.len() as u32).to_le_bytes());
             b.extend_from_slice(s.as_bytes());
         };
