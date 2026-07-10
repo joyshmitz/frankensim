@@ -55,7 +55,7 @@ fn signed_grant(
         key_id: key_id.to_string(),
         scope: WAIVER_SCOPE_COLOR_UPGRADE.to_string(),
         node_name: name.to_string(),
-        claimed_color: color.name().to_string(),
+        claimed_color: color.canonical_bytes(),
         parent_hashes,
         expires_day,
         signature: Vec::new(),
@@ -508,9 +508,35 @@ fn col_004_waiver_in_provenance() {
         refusal(wrong_lineage, &verifier, 200),
         WaiverRejection::LineageMismatch
     );
+    // A signature for one exact interval cannot authorize another interval of
+    // the same rank, even when both have the same human-readable color name.
+    let different_interval = Color::Verified {
+        lo: 0.0,
+        hi: 1.0f64.next_up(),
+    };
+    let (mut exact_graph, exact_parent) = fresh();
+    assert!(matches!(
+        exact_graph.derive_waived(
+            "release-metric",
+            &[exact_parent],
+            IntervalOp::Hull,
+            different_interval,
+            &state,
+            grant.clone(),
+            &verifier,
+            200,
+        ),
+        Err(ColorWriteError::WaiverRefused {
+            rejection: WaiverRejection::ColorMismatch
+        })
+    ));
     // Wrong color, wrong scope, expiry.
     let mut wrong_color = grant.clone();
-    wrong_color.claimed_color = "validated".to_string();
+    wrong_color.claimed_color = Color::Validated {
+        regime: ValidityDomain::unconstrained(),
+        dataset: "wrong".to_string(),
+    }
+    .canonical_bytes();
     assert_eq!(
         refusal(wrong_color, &verifier, 200),
         WaiverRejection::ColorMismatch
@@ -629,6 +655,33 @@ fn col_006_determinism() {
         r1 == r2 && !r1.is_empty(),
         "identical write sequences produce bitwise-identical rows and provenance \
          hashes",
+    );
+}
+
+/// col-006b — provenance identity uses the exact Color payload, not its rounded
+/// JSON rendering. Sub-render-resolution interval changes must change the hash.
+#[test]
+fn col_006b_bit_exact_color_identity() {
+    let first = Color::Verified { lo: 1.0, hi: 2.0 };
+    let second = Color::Verified {
+        lo: 1.0f64.next_up(),
+        hi: 2.0,
+    };
+    assert_eq!(
+        first.payload_json(),
+        second.payload_json(),
+        "the regression needs two values hidden by the display precision"
+    );
+    assert_ne!(first.canonical_bytes(), second.canonical_bytes());
+
+    let mut first_graph = ColorGraph::new();
+    let first_id = first_graph.source("same-name", first);
+    let mut second_graph = ColorGraph::new();
+    let second_id = second_graph.source("same-name", second);
+    assert_ne!(
+        first_graph.node(first_id).hash,
+        second_graph.node(second_id).hash,
+        "ledger identity must include the bit-exact color payload"
     );
 }
 

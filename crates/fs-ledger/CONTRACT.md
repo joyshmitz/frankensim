@@ -100,13 +100,17 @@ The only path past a laundering refusal is `derive_waived` with a
 the node name, exact parent provenance hashes (replay to another node
 or lineage fails), the claimed color, the color-upgrade scope, a
 signer key id, and an expiry day — verified through the caller-
-supplied `WaiverVerifier` capability before any write. The in-tree
+supplied `WaiverVerifier` capability before any write. A grant carries and
+signs the full `Color::canonical_bytes` payload (signing encoding v2), not only
+the color rank name, so authorization for one interval, validity regime, or
+estimator payload cannot authorize another. The in-tree
 default is `NoWaiverVerifier` (refuses everything): no cryptographic
 capability ships in this crate, so promotion is impossible until a
 Franken-compliant signature verifier is wired in (the no-crypto
-no-claim). Node provenance hashes use a versioned length-prefixed
-encoding (v2) — the former newline/colon-delimited encoding allowed
-structural collisions from adversarial text. Refusals are structured
+no-claim). Node provenance hashes use a versioned length-prefixed encoding
+(v3), including the bit-exact canonical color bytes — the former v2 encoding
+used display-rounded color JSON and could alias distinct floating-point
+payloads. Refusals are structured
 (`WaiverRejection`: scope/node/color/lineage mismatch, expiry, bad
 signature) and grants re-verify from the stored ledger node.
 

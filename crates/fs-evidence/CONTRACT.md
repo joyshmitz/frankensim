@@ -68,8 +68,11 @@ on fs-obs only.
   refuse with the laundering teaching error), and `color_of` (the
   honest bridge from existing Evidence receipts). `Color::payload_json`
   escapes caller-controlled strings and represents non-finite floats as
-  tagged JSON strings, never invalid bare numeric tokens. Write-time
-  enforcement lives HELM-side in fs-ledger over these types.
+  tagged JSON strings, never invalid bare numeric tokens. The distinct
+  `Color::canonical_bytes` identity encoding is versioned (v1), structurally
+  length-prefixed, deterministically ordered, and preserves every IEEE-754 bit;
+  display rounding therefore never aliases color identity or authorization.
+  Write-time enforcement lives HELM-side in fs-ledger over these types.
 
 - `falsify` module (bead qmao.4): FALSIFIER PAIRING — `FalsifierRegistry`
   (a certificate class CANNOT register without ≥1 independent falsifier;

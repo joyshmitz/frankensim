@@ -629,3 +629,49 @@ fn evd_010_verified_gate_refuses_nan_and_inverted_bounds() {
         "verified_from / color_of refuse NaN and inverted bounds (fail closed)",
     );
 }
+
+#[test]
+fn evd_011_color_canonical_identity_is_versioned_and_bit_exact() {
+    use core::fmt::Write as _;
+    use fs_evidence::Color;
+
+    let signed_zero = Color::Verified { lo: 0.0, hi: -0.0 };
+    let encoded = signed_zero.canonical_bytes();
+    let mut encoded_hex = String::with_capacity(encoded.len() * 2);
+    for byte in encoded {
+        write!(&mut encoded_hex, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    assert_eq!(
+        encoded_hex, "01000800000000000000000000000000000008000000000000000000000000000080",
+        "this vector freezes Color canonical encoding v1"
+    );
+
+    let first = Color::Verified { lo: 1.0, hi: 2.0 };
+    let next = Color::Verified {
+        lo: 1.0f64.next_up(),
+        hi: 2.0,
+    };
+    assert_eq!(first.payload_json(), next.payload_json());
+    assert_ne!(first.canonical_bytes(), next.canonical_bytes());
+
+    let forward = Color::Validated {
+        regime: ValidityDomain::unconstrained()
+            .with("alpha", -0.0, 1.0)
+            .with("beta", 2.0, 3.0),
+        dataset: "anchors".to_string(),
+    };
+    let reverse = Color::Validated {
+        regime: ValidityDomain::unconstrained()
+            .with("beta", 2.0, 3.0)
+            .with("alpha", -0.0, 1.0),
+        dataset: "anchors".to_string(),
+    };
+    assert_eq!(forward.canonical_bytes(), reverse.canonical_bytes());
+
+    verdict(
+        "evd-011",
+        true,
+        "Color canonical encoding v1 is frozen, bit-exact for f64 payloads, and \
+         deterministic across validity-domain insertion order",
+    );
+}

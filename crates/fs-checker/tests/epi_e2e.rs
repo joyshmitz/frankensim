@@ -162,7 +162,7 @@ fn epi_e2e_battery() {
         key_id: "epi-key".to_string(),
         scope: fs_ledger::WAIVER_SCOPE_COLOR_UPGRADE.to_string(),
         node_name: "waived-upgrade".to_string(),
-        claimed_color: claimed_color.name().to_string(),
+        claimed_color: claimed_color.canonical_bytes(),
         parent_hashes: vec![graph.node(surrogate).hash],
         expires_day: 400,
         signature: Vec::new(),

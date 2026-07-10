@@ -49,8 +49,8 @@ pub struct WaiverGrant {
     pub scope: String,
     /// The node name this grant is bound to.
     pub node_name: String,
-    /// The color name (`Color::name`) being authorized.
-    pub claimed_color: String,
+    /// The exact versioned [`Color::canonical_bytes`] being authorized.
+    pub claimed_color: Vec<u8>,
     /// The exact parent provenance hashes, in write order — binds the
     /// grant to one evidence lineage (replay to another node fails).
     pub parent_hashes: Vec<ContentHash>,
@@ -63,31 +63,45 @@ pub struct WaiverGrant {
 impl WaiverGrant {
     /// Canonical signing payload, VERSIONED and LENGTH-PREFIXED (no
     /// delimiters, so adversarial text cannot collide structurally):
-    /// version byte 1, then each field as u32-LE length + bytes, then
-    /// parent count + 32-byte hashes, then expiry as u32 LE. The
-    /// signature is NOT part of its own payload.
+    /// version byte 2, then each field as u64-LE length + bytes, then
+    /// parent count + raw 32-byte hashes, then expiry as u32 LE. Version
+    /// 2 binds the full bit-exact color payload rather than only its rank
+    /// name. The signature is NOT part of its own payload.
     #[must_use]
     pub fn signing_payload(&self) -> Vec<u8> {
-        let mut out = vec![1u8];
+        let mut out = vec![2u8];
         for field in [
             self.key_id.as_str(),
             self.scope.as_str(),
             self.node_name.as_str(),
-            self.claimed_color.as_str(),
+        ] {
+            push_field(&mut out, field.as_bytes());
+        }
+        push_field(&mut out, &self.claimed_color);
+        for field in [
             self.annotation.id.as_str(),
             self.annotation.signer.as_str(),
             self.annotation.reason.as_str(),
         ] {
-            out.extend_from_slice(&(field.len() as u32).to_le_bytes());
-            out.extend_from_slice(field.as_bytes());
+            push_field(&mut out, field.as_bytes());
         }
-        out.extend_from_slice(&(self.parent_hashes.len() as u32).to_le_bytes());
+        push_len(&mut out, self.parent_hashes.len());
         for h in &self.parent_hashes {
-            out.extend_from_slice(h.to_hex().as_bytes());
+            out.extend_from_slice(h.as_bytes());
         }
         out.extend_from_slice(&self.expires_day.to_le_bytes());
         out
     }
+}
+
+fn push_len(out: &mut Vec<u8>, len: usize) {
+    let len = u64::try_from(len).expect("a Rust allocation length always fits in u64");
+    out.extend_from_slice(&len.to_le_bytes());
+}
+
+fn push_field(out: &mut Vec<u8>, bytes: &[u8]) {
+    push_len(out, bytes.len());
+    out.extend_from_slice(bytes);
 }
 
 /// The signature-verification CAPABILITY (injected; this crate ships
@@ -265,10 +279,11 @@ impl ColorGraph {
         &self.rows
     }
 
-    /// Provenance hash over a VERSIONED, LENGTH-PREFIXED encoding
-    /// (bead qmao.1.1): the former newline/colon-delimited encoding let
-    /// adversarial text collide structurally (a name containing a
-    /// newline could impersonate a parent hash line).
+    /// Provenance hash over VERSIONED v3, LENGTH-PREFIXED encoding. V3
+    /// includes [`Color::canonical_bytes`]; the former v2 representation
+    /// used rounded display JSON, so distinct floating-point payloads could
+    /// alias. The original delimiter-free framing continues to prevent
+    /// adversarial text from colliding structurally.
     fn node_hash(
         &self,
         name: &str,
@@ -277,25 +292,19 @@ impl ColorGraph {
         waiver: Option<&Waiver>,
         grant: Option<&WaiverGrant>,
     ) -> ContentHash {
-        let mut buf = vec![2u8]; // encoding version
-        let field = |b: &mut Vec<u8>, s: &str| {
-            b.extend_from_slice(&(s.len() as u32).to_le_bytes());
-            b.extend_from_slice(s.as_bytes());
-        };
-        field(&mut buf, name);
-        field(&mut buf, color.name());
-        field(&mut buf, &color.payload_json());
-        buf.extend_from_slice(&(parents.len() as u32).to_le_bytes());
+        let mut buf = vec![3u8]; // encoding version
+        push_field(&mut buf, name.as_bytes());
+        push_field(&mut buf, &color.canonical_bytes());
+        push_len(&mut buf, parents.len());
         for &p in parents {
-            let hex = self.nodes[p as usize].hash.to_hex();
-            field(&mut buf, &hex);
+            push_field(&mut buf, self.nodes[p as usize].hash.as_bytes());
         }
         match waiver {
             Some(w) => {
                 buf.push(1);
-                field(&mut buf, &w.id);
-                field(&mut buf, &w.signer);
-                field(&mut buf, &w.reason);
+                push_field(&mut buf, w.id.as_bytes());
+                push_field(&mut buf, w.signer.as_bytes());
+                push_field(&mut buf, w.reason.as_bytes());
             }
             None => buf.push(0),
         }
@@ -303,10 +312,8 @@ impl ColorGraph {
             Some(g) => {
                 buf.push(1);
                 let payload = g.signing_payload();
-                buf.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-                buf.extend_from_slice(&payload);
-                buf.extend_from_slice(&(g.signature.len() as u32).to_le_bytes());
-                buf.extend_from_slice(&g.signature);
+                push_field(&mut buf, &payload);
+                push_field(&mut buf, &g.signature);
             }
             None => buf.push(0),
         }
@@ -511,7 +518,7 @@ impl ColorGraph {
         if grant.node_name != name {
             return refuse(WaiverRejection::NodeMismatch);
         }
-        if grant.claimed_color != claimed.name() {
+        if grant.claimed_color != claimed.canonical_bytes() {
             return refuse(WaiverRejection::ColorMismatch);
         }
         let lineage: Vec<ContentHash> = parents

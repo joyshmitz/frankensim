@@ -116,6 +116,61 @@ impl Color {
             ),
         }
     }
+
+    /// Versioned canonical identity bytes for hashing and authorization.
+    ///
+    /// Encoding v1 starts with a version byte and a variant byte, then uses
+    /// u64-LE length prefixes for every variable-width field. Floating-point
+    /// values are encoded as their exact IEEE-754 bit patterns in little-endian
+    /// order, so values that render identically in [`Self::payload_json`] (and
+    /// `0.0` versus `-0.0`) remain distinct. Validated-regime axes follow the
+    /// deterministic [`BTreeMap`] order exposed by [`ValidityDomain::bounds`].
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        const VERSION: u8 = 1;
+        const VERIFIED: u8 = 0;
+        const VALIDATED: u8 = 1;
+        const ESTIMATED: u8 = 2;
+
+        let mut out = Vec::new();
+        out.push(VERSION);
+        match self {
+            Color::Verified { lo, hi } => {
+                out.push(VERIFIED);
+                push_canonical_field(&mut out, &lo.to_bits().to_le_bytes());
+                push_canonical_field(&mut out, &hi.to_bits().to_le_bytes());
+            }
+            Color::Validated { regime, dataset } => {
+                out.push(VALIDATED);
+                push_canonical_field(&mut out, dataset.as_bytes());
+                push_canonical_len(&mut out, regime.bounds().len());
+                for (axis, (lo, hi)) in regime.bounds() {
+                    push_canonical_field(&mut out, axis.as_bytes());
+                    push_canonical_field(&mut out, &lo.to_bits().to_le_bytes());
+                    push_canonical_field(&mut out, &hi.to_bits().to_le_bytes());
+                }
+            }
+            Color::Estimated {
+                estimator,
+                dispersion,
+            } => {
+                out.push(ESTIMATED);
+                push_canonical_field(&mut out, estimator.as_bytes());
+                push_canonical_field(&mut out, &dispersion.to_bits().to_le_bytes());
+            }
+        }
+        out
+    }
+}
+
+fn push_canonical_len(out: &mut Vec<u8>, len: usize) {
+    let len = u64::try_from(len).expect("a Rust allocation length always fits in u64");
+    out.extend_from_slice(&len.to_le_bytes());
+}
+
+fn push_canonical_field(out: &mut Vec<u8>, bytes: &[u8]) {
+    push_canonical_len(out, bytes.len());
+    out.extend_from_slice(bytes);
 }
 
 fn json_f64(value: f64) -> String {
