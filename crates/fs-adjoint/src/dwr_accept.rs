@@ -166,6 +166,12 @@ fn thomas_solve(sub: &[f64], diag: &[f64], sup: &[f64], rhs: &mut [f64]) {
 /// `w = 1` on `[w_lo, w_hi]` — deterministic Thomas solve.
 fn dual_solve(mesh: &[f64], w_lo: f64, w_hi: f64) -> Vec<f64> {
     let n = mesh.len();
+    // A mesh with < 2 nodes has NO interior (free) DOFs; `n - 2` would underflow
+    // usize (panic in debug, huge allocation in release) — the dual is trivially
+    // the zero function on the boundary nodes (bead 9sf6 F5).
+    if n < 2 {
+        return vec![0.0; n];
+    }
     let free = n - 2;
     let mut sub = vec![0.0f64; free];
     let mut diag = vec![0.0f64; free];
