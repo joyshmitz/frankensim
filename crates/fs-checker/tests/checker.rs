@@ -78,6 +78,8 @@ fn a_semantically_empty_falsifier_record_fails_the_check() {
     let report = check(&pkg);
     assert!(!report.passed());
     assert_eq!(report.findings[0].kind, "invalid-falsifier-record");
+    assert_eq!(report.breakdown, Default::default());
+    assert_eq!(report.render_pie(), "budget pie: no claims");
 }
 
 #[test]

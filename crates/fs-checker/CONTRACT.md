@@ -5,11 +5,11 @@ independently distributable verifier — "don't trust us; here is the checker."
 
 ## Purpose and layer
 
-Layer L6. Its ENTIRE dependency graph is `fs-package` → `fs-evidence`. A HARD
-distribution constraint (Proposal 12): NO solver stack, NO geometry kernel, NO
-license gate anywhere in the graph — by construction the checker cannot run a
-solve. It carries its own `CHECKER_PROTOCOL_VERSION` (distributed
-independently).
+Layer L6. Its sole direct dependency is `fs-package`; that package's production
+cone contains `fs-evidence` and the static `fs-crosswalk` vocabulary. A HARD
+distribution constraint (Proposal 12): NO solver stack, geometry kernel, or
+license gate anywhere in the graph. By construction the checker cannot run a
+solve. It carries its own `CHECKER_PROTOCOL_VERSION` (distributed independently).
 
 ## Public types and semantics
 
@@ -18,8 +18,10 @@ independently).
   confirm the content address matches (tamper / substitution detection).
 - `CheckReport { verdict, merkle_root, breakdown, signature, findings }` —
   `passed()` and `render_pie()` (a deterministic text budget pie).
-- `Verdict { Pass, Fail }`; `SignatureStatus { Unsigned, Present(sig) }`;
+- `Verdict { Pass, Fail }`; `SignatureStatus { Unsigned, Unverified, Valid }`;
   `Finding { kind, detail }`.
+- Invalid packages carry a zeroed breakdown, so a refused claim cannot retain a
+  normal-looking positive evidence pie alongside the failure finding.
 - Re-exports `EvidencePackage`, `ColorBreakdown`, `PackageError`.
 
 ## What it re-verifies
@@ -28,8 +30,8 @@ independently).
    `EvidencePackage::verify` — no solver).
 2. The content address: the Merkle root, recomputed independently and
    (optionally) checked against an expected value.
-3. Signature PRESENCE (recorded; cryptographic assertion awaits a Franken
-   signature primitive — a present signature is not silently treated as valid).
+3. Signature validity only through an injected `SignatureVerifier` over the
+   recomputed root. Presence without a verifier remains `Unverified`.
 
 ## Invariants
 
@@ -63,10 +65,11 @@ None.
 
 ## Conformance tests
 
-`tests/checker.rs` (Proposal 12, 9 cases): clean pass with no findings;
+`tests/checker.rs` (Proposal 12, 11 cases): clean pass with no findings;
 incomplete-validated-claim failure; content-address (Merkle) tamper detection;
-including provenance tamper; signature-presence reporting; deterministic
-budget-pie rendering; empty-package pie; protocol version; determinism.
+including provenance tamper; malformed falsifier refusal with fail-closed pie;
+signature-presence and verifier-capability reporting; deterministic budget-pie
+rendering; empty-package pie; protocol version; determinism.
 
 ## Independent re-verification (bead qmao.6.1)
 
@@ -84,12 +87,12 @@ by construction.
 
 ## No-claim boundaries
 
-- Cryptographic SIGNATURE verification is not performed (no Franken-compliant
-  primitive yet); the bundle is trusted by CONTENT ADDRESS and a present
-  signature is recorded, not asserted valid. Wiring a primitive is later work.
-- v1 re-verifies flat claims: completeness + content address. Re-running
-  CONTRACT COMPOSITION (when packages carry composition DAGs, cf. fs-contract)
-  and per-interval arithmetic re-derivation are follow-ons.
-- The certificates are CARRIED in the package; the checker re-checks their
-  structural validity, it does not re-derive them (that is the whole point —
-  no solver).
+- This crate ships no cryptographic primitive. It can assert signature validity
+  only when a caller injects a `SignatureVerifier`; the default authenticates
+  nothing.
+- Composition receipts are re-run, but source-certificate production is not.
+  The certificates are CARRIED in the package; the checker validates their
+  structure and derivation receipts without running a solver.
+- Schema v3 does not yet encode a non-forgeable source origin for a raw
+  `Verified` claim. Content addressing proves package integrity, not scientific
+  truth; schema-v4 ClaimOrigin work is tracked separately.

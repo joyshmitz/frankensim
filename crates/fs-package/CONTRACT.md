@@ -6,8 +6,9 @@ re-verify without solvers.
 
 ## Purpose and layer
 
-Layer L6. Depends only on `fs-evidence` (UTIL — `Color`, `ColorRank`,
-`ValidityDomain`). Pure, deterministic; no I/O.
+Layer L6. Depends on `fs-evidence` (UTIL — `Color`, `ColorRank`,
+`ValidityDomain`) and `fs-crosswalk` (the static standards vocabulary used by
+coverage reports). Pure, deterministic; no I/O and no solver dependency.
 
 ## Public types and semantics
 
@@ -124,8 +125,8 @@ intervals, negative dispersions, and unknown color kinds each refuse
 with a structured `ParseError`. The parser re-derives the magnitude
 budget from the parsed claims and RECOMPUTES the content root from the
 parsed fields: a package whose embedded root does not recompute is
-tampered or forged and never loads — which is what makes a
-structurally-shaped forged Verified claim fail. Decode-encode is both
+tampered in transit and never loads. This is an integrity check, not the
+schema-v4 source-origin proof named below. Decode-encode is both
 semantically and textually stable (tested). The magnitude budget
 attributes ERROR MAGNITUDES (verified interval widths, estimated
 dispersions) and counts validated claims as unquantified regional
@@ -146,3 +147,8 @@ rounding through `f64`.
   bead) wraps this crate.
 - The certificate payloads live in `fs-evidence::Color`; this crate bundles
   and content-addresses them, it does not produce them.
+- Schema v3's public `Claim` and `Color` fields do not prove how a source claim
+  was obtained. A party can construct a fresh package around a structurally
+  valid raw `Verified` interval and recompute its root. The root establishes
+  integrity, not epistemic origin; sealed ClaimOrigin transport is tracked for
+  schema v4.

@@ -8,16 +8,17 @@
 //! and needs neither the solver stack nor a license.
 //!
 //! # Hard distribution constraint
-//! This crate's entire dependency graph is `fs-package` → `fs-evidence`. There
-//! is NO solver, NO geometry kernel, NO license gate anywhere in it — by
-//! construction the checker CANNOT run a solve, which is exactly the point. It
-//! carries its own protocol version ([`CHECKER_PROTOCOL_VERSION`]) because it
-//! is distributed independently of the rest of FrankenSim.
+//! This crate depends only on `fs-package`; that package's production cone is
+//! `fs-evidence` plus the static `fs-crosswalk` vocabulary. There is NO solver,
+//! geometry kernel, or license gate anywhere in the cone, so by construction
+//! the checker CANNOT run a solve. It carries its own protocol version
+//! ([`CHECKER_PROTOCOL_VERSION`]) because it is distributed independently.
 //!
 //! What it re-verifies: format support + per-claim completeness (delegated to
 //! [`EvidencePackage::verify`]), the content address (Merkle root, optionally
-//! against an expected value — tamper detection), and signature presence. It
-//! renders the by-color budget pie. Everything is deterministic.
+//! against an expected value — tamper detection), and signature validity when
+//! an external capability is supplied. It renders a by-color budget pie only
+//! after package verification succeeds. Everything is deterministic.
 
 pub use fs_package::{ColorBreakdown, EvidencePackage, MagnitudeBudget, PackageError, ParseError};
 
@@ -189,7 +190,10 @@ fn build_report(
         Ok(report) => report.breakdown,
         Err(e) => {
             findings.push(describe(&e));
-            pkg.color_breakdown()
+            // Invalid claims must not retain a normal-looking positive
+            // evidence summary. The finding still identifies the exact
+            // refusal; the pie fails closed to no admitted claims.
+            ColorBreakdown::default()
         }
     };
 
