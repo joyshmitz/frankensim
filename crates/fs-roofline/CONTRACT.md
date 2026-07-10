@@ -27,15 +27,22 @@ fs-ledger). Runtime deps: `std` + those three workspace crates.
   `Verdict` (`WithinBand`/`BelowBand`/`NoTarget`/`EnvironmentInvalid`).
   The invalid verdict carries a reason and is never a performance pass or
   failure.
+- `run_admission_error` / `run_is_citable` — the publication boundary:
+  require exact pre/post axis agreement, private timed provenance, positive
+  work count and sample durations, raw-sample re-derivation, unmodified
+  spec/derived fields, and unique kernel identities. Analytic helper rows are
+  deliberately non-citable.
 - `SECTION_14_1_TARGETS` — the plan's target table as data; `landed`
   flips only when the owning kernel registers here (no silent coverage
   gaps).
-- `record_run` — one ledger op (frozen Five Explicits) + per-kernel
-  metrics and `benchmark_result` events. Valid runs publish `tune` rows
-  keyed (kernel × `roofline-v1` × fingerprint LE bytes); invalid runs
-  finish with an error diagnostic and publish no fresh tuning evidence.
-- `staleness` — `Fresh` / `FingerprintDrift` / `NeverMeasured` per kernel
-  against the current fingerprint.
+- `record_run` — one atomic ledger transaction. Admitted runs publish
+  metrics, `benchmark_result` events, and `tune` rows keyed (kernel ×
+  `roofline-v2:<kernel-version>` × fingerprint LE bytes). Rejected input
+  publishes one rejection event and an Error op, never normal-looking metrics
+  or tuning evidence; storage failures roll back the entire write set.
+- `staleness` — `MatchingIdentityAgeUnknown` / `FingerprintDrift` /
+  `NeverMeasured` per kernel version and fingerprint. The name deliberately
+  does not claim freshness because the tune schema has no timestamp.
 - `kernels::default_registry` — fs-simd axpy/dot/sum (report-only bands in
   v0) and `SeededSlowKernel` (meta-test kernel claiming a band it cannot
   meet).
@@ -67,19 +74,25 @@ fs-ledger). Runtime deps: `std` + those three workspace crates.
 2. `attainment = measured_rate / min(bandwidth_limit, compute_limit)` with
    limits derived from the spec's intensity model (meta-tested against
    hand calculations).
-3. Every attainment row carries dispersion and repetition count; verdicts
-   are reporting-only in v0 — no CI gate consumes them on shared runners.
-4. Ledger rows are keyed by fingerprint; a drifted fingerprint makes every
-   prior number stale, and `staleness` says so.
+3. Receipt schema v1 carries bit-exact pre-run axes, intensity spec, target,
+   every raw timed sample, median/p25/p75/dispersion, and exact derived-result
+   bits. Rounded decimal fields are display-only. A standalone reader can
+   rederive the reported rate, roof, and variance bar.
+4. Ledger rows are keyed by kernel version and fingerprint. A drifted
+   fingerprint or version refuses reuse; matching identity has unknown age.
 5. Axes must be finite and positive, have a nonzero logical-CPU count, meet
    the 5 GB/s and 5 GFLOP/s single-thread reference-family floors, and have
    aggregate axes at least half their single-thread counterparts. These
-   absolute guards prevent a crushed axis and crushed kernel from
-   self-normalizing to a vacuous pass (bead 1n61).
+   absolute guards catch the extreme bead-1n61 collapse. A second axis probe
+   after the registry must also agree within 25% on every axis; changing
+   contention poisons the run.
 6. Specs, rates, targets, and dispersion are screened before verdict
    arithmetic. Any non-finite/negative input or attainment above 1.5 makes
    the run invalid. One invalid row poisons every verdict in that registry
    run because the shared axes can no longer certify any sibling result.
+7. Citable rows are created only by `measure`: `elements > 0`, every elapsed
+   sample finite and positive, stored sample count equal to `reps`, and all
+   public outputs bit-exactly rederive from the private receipt and exact axes.
 
 ## Error model
 
@@ -114,8 +127,9 @@ None. All v0 behavior is `[S]` default-path.
 
 `tests/conformance.rs`: registry run + reporting shape (rf-001);
 seeded-slow kernel demonstrably below band on real axes (rf-002);
-ledgered run with fingerprint-keyed tune rows, lint-clean (rf-003);
-staleness fresh/drift/never-measured (rf-004); re-run reproducibility
+ledgered run with versioned fingerprint-keyed tune rows, lint-clean (rf-003);
+identity-match-age-unknown/drift/never-measured plus rejection-without-publication
+(rf-004/004b); re-run reproducibility
 within stated dispersion allowance (rf-005); CLI smoke incl. §14.1
 coverage table and structured refusals (rf-006). Unit tests cover
 attainment hand-calculations, order statistics, and axes sanity.
@@ -133,6 +147,15 @@ attainment hand-calculations, order statistics, and axes sanity.
   `landed: false` until their kernels register.
 - Per-CCD bandwidth axes, P/E-core-class split, frequency-state capture,
   and thermal controls are future scope (v0 measures whole-machine axes).
+- Static floors plus pre/post agreement cannot detect a host that is already
+  degraded before the first probe and remains equally degraded through the
+  second. Fingerprint-specific trusted historical baselines are still required
+  before promoting this harness from reporting to a binding nightly gate.
+- `RooflineKernel::elements()` and intensity are asserted by the registered
+  implementation. Receipt v1 proves what was timed and how the arithmetic was
+  derived; it does not prove a custom trait implementation performed the work
+  it claimed. Default-registry review is the v1 trust root; implementation
+  hashes remain follow-up scope.
 - Verdict gating in CI is deliberately absent on shared runners; bands
   bind only on ledgered reference machines (nightly lane, later).
 

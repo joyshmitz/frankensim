@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use fs_roofline::kernels::{SeededSlowKernel, default_registry};
 use fs_roofline::{
-    MachineAxes, TUNE_SHAPE_CLASS, Verdict, measure, record_run, run_registry, staleness,
+    MachineAxes, Verdict, measure, record_run, run_registry, staleness, tune_shape_class,
 };
 
 static NEXT_DB: AtomicU32 = AtomicU32::new(0);
@@ -120,7 +120,7 @@ fn rf_003_ledgered_run_with_fingerprint_keying() {
     let axes = synthetic_axes(0xFEED_FACE);
     let mut registry = default_registry(1 << 10);
     let results = run_registry(&mut registry, 0, 2, &axes);
-    let op = record_run(&ledger, &axes, &results).expect("record run");
+    let op = record_run(&ledger, &axes, &axes, &results).expect("record run");
     // The op is complete, metrics/events/tune rows exist per kernel.
     let row = ledger.op(op).unwrap().expect("op row");
     assert_eq!(row.outcome.as_deref(), Some("ok"));
@@ -134,7 +134,7 @@ fn rf_003_ledgered_run_with_fingerprint_keying() {
     let fp = 0xFEED_FACEu64.to_le_bytes();
     for r in &results {
         let tune = ledger
-            .tune_get(&r.kernel, TUNE_SHAPE_CLASS, &fp)
+            .tune_get(&r.kernel, &tune_shape_class(&r.version), &fp)
             .unwrap()
             .expect("tune row under current fingerprint");
         assert!(tune.measured.contains("attainment"));
@@ -155,22 +155,26 @@ fn rf_004_staleness_alerts_on_fingerprint_drift() {
     let old_axes = synthetic_axes(0xAAAA);
     let mut registry = default_registry(1 << 10);
     let results = run_registry(&mut registry, 0, 1, &old_axes);
-    record_run(&ledger, &old_axes, &results).expect("record under old fingerprint");
+    record_run(&ledger, &old_axes, &old_axes, &results).expect("record under old fingerprint");
 
     let kernel = &results[0].kernel;
     // Same machine → fresh.
     assert_eq!(
-        staleness(&ledger, kernel, 0xAAAA).unwrap(),
-        fs_roofline::Staleness::Fresh
+        staleness(&ledger, kernel, &results[0].version, 0xAAAA).unwrap(),
+        fs_roofline::Staleness::MatchingIdentityAgeUnknown
+    );
+    assert_eq!(
+        staleness(&ledger, kernel, "different-version", 0xAAAA).unwrap(),
+        fs_roofline::Staleness::NeverMeasured
     );
     // Drifted machine → alert.
     assert_eq!(
-        staleness(&ledger, kernel, 0xBBBB).unwrap(),
+        staleness(&ledger, kernel, &results[0].version, 0xBBBB).unwrap(),
         fs_roofline::Staleness::FingerprintDrift
     );
     // Unknown kernel → never measured.
     assert_eq!(
-        staleness(&ledger, "gemm-f64", 0xAAAA).unwrap(),
+        staleness(&ledger, "gemm-f64", "1", 0xAAAA).unwrap(),
         fs_roofline::Staleness::NeverMeasured
     );
     drop(ledger);
@@ -201,18 +205,22 @@ fn rf_004b_invalid_environment_never_becomes_fresh_evidence() {
             .iter()
             .all(|row| row.verdict == Verdict::EnvironmentInvalid)
     );
-    let op = record_run(&ledger, &crushed, &results).expect("record invalid run");
+    let op = record_run(&ledger, &crushed, &crushed, &results).expect("record invalid run");
     let row = ledger.op(op).unwrap().expect("op row");
     assert_eq!(row.outcome.as_deref(), Some("error"));
     assert_eq!(ledger.table_count("tune").unwrap(), 0);
     assert_eq!(
-        staleness(&ledger, &results[0].kernel, crushed.fingerprint).unwrap(),
+        staleness(
+            &ledger,
+            &results[0].kernel,
+            &results[0].version,
+            crushed.fingerprint,
+        )
+        .unwrap(),
         fs_roofline::Staleness::NeverMeasured
     );
-    assert_eq!(
-        ledger.table_count("events").unwrap(),
-        results.len() as u64 + 1
-    );
+    assert_eq!(ledger.table_count("metrics").unwrap(), 0);
+    assert_eq!(ledger.table_count("events").unwrap(), 1);
     drop(ledger);
     cleanup_db(&db);
     verdict(
@@ -292,7 +300,10 @@ fn rf_006_cli_smoke_prints_report_and_ledgers() {
         );
     } else {
         assert!(stdout.contains("\"citable\":true"));
-        assert!(stdout.contains("Fresh"), "valid run is fresh");
+        assert!(
+            stdout.contains("MatchingIdentityAgeUnknown"),
+            "matching identity is reported without an unearned age claim"
+        );
     }
     // Bad args refuse structurally.
     let bad = std::process::Command::new(exe)
