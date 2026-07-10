@@ -66,6 +66,10 @@ fn iv_dot(a: &[Interval], b: &[Interval]) -> Interval {
 /// registered transpose pair lies INSIDE the returned bound.
 #[must_use]
 pub fn adjoint_residual_bound(op: &SparseLinear, probes: usize) -> f64 {
+    assert!(
+        probes >= 1,
+        "a residual bound from ZERO probes is not evidence (bead 9sf6 F5)"
+    );
     let n_out = op.rows.len();
     let mut state = 0x0dd5_eed5_u64;
     let mut lcg = move || {
@@ -174,7 +178,10 @@ pub fn certify(
                     },
                     None,
                 )
-            } else if let Some(bound) = residual_bound {
+            } else if let Some(bound) = residual_bound.filter(|b| b.is_finite() && *b >= 0.0) {
+                // A non-finite or negative "bound" certifies nothing —
+                // minting Verified{0, inf} would be a vacuous certificate
+                // wearing the strongest color (bead 9sf6 F5).
                 (Color::Verified { lo: 0.0, hi: bound }, None)
             } else {
                 (

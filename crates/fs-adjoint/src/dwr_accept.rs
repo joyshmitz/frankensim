@@ -78,6 +78,27 @@ pub struct AcceptOutcome {
 ///   the bracket flags the estimator as inconsistent).
 #[must_use]
 pub fn accept(query: &DwrQuery, dwr_abs: f64, bracket: Option<&Bracket>) -> AcceptOutcome {
+    // FAIL CLOSED on rigorous inconclusiveness (bead 9sf6 F4): a
+    // GUARANTEED bracket whose bound exceeds tolerance means the
+    // rigorous evidence cannot confirm the solution is within
+    // tolerance — accepting on the bare estimate would silently
+    // override certified evidence with an uncertified one. The
+    // under-resolved verdict is returned with the bracket in the
+    // audit trail (refine or raise tolerance).
+    if let Some(b) = bracket.filter(|b| b.guaranteed && b.bound > query.tolerance) {
+        return AcceptOutcome {
+            accepted: false,
+            color: Color::Estimated {
+                estimator: format!("dwr({}) — under-resolved", query.qoi),
+                dispersion: dwr_abs,
+            },
+            estimator_inconsistent: dwr_abs > b.bound,
+            audit: format!(
+                "REFUSED: guaranteed bracket {:.3e} ({}) exceeds tol {:.3e}; the rigorous                  evidence cannot confirm acceptance (dwr estimate {:.3e}) — refine the mesh                  or raise the tolerance",
+                b.bound, b.source, query.tolerance, dwr_abs
+            ),
+        };
+    }
     let valid_bracket = bracket.filter(|b| b.guaranteed && b.bound <= query.tolerance);
     if let Some(b) = valid_bracket {
         let inconsistent = dwr_abs > b.bound;

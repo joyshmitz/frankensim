@@ -158,10 +158,16 @@ pub enum Explanation {
 }
 
 impl Explanation {
-    /// THE PERMANENT INVARIANT (the Proposal-B kill criterion):
-    /// channels + residual must equal the observed ΔQoI within the sum
-    /// of certified bounds. An engine failing this on any case is
-    /// lying and ships nothing.
+    /// THE PERMANENT INVARIANT (the Proposal-B kill criterion): the
+    /// certified channel bounds must COVER the unattributed residual.
+    /// An engine failing this on any case is lying and ships nothing.
+    ///
+    /// The earlier form checked `attributed + residual == observed`,
+    /// which `finalize` makes true BY CONSTRUCTION (residual is
+    /// defined as observed − attributed) — a kill criterion that can
+    /// never fire is not a kill criterion (bead 9sf6 F3). Coverage is
+    /// the non-vacuous claim: bad channel math leaves a residual the
+    /// bounds cannot absorb, and THIS fires.
     #[must_use]
     pub fn reconciles(&self) -> bool {
         match self {
@@ -172,7 +178,11 @@ impl Explanation {
             } => {
                 let attributed: f64 = nodes.iter().map(|n| n.contribution).sum();
                 let bounds: f64 = nodes.iter().map(|n| n.bound).sum();
-                (attributed + residual - observed).abs() <= bounds.max(1e-14)
+                // Construction sanity (cheap, and guards hand-built trees).
+                let identity_ok =
+                    (attributed + residual - observed).abs() <= bounds.max(1e-14);
+                let covered = residual.abs() <= bounds.max(1e-14);
+                identity_ok && covered
             }
             Explanation::Refused { .. } => true, // a refusal claims nothing
         }
