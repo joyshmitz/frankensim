@@ -960,10 +960,6 @@ version = "0.0.1"
 [[package]]
 name = "fs-crosswalk"
 version = "0.0.1"
-dependencies = [
- "fs-evidence",
- "fs-package",
-]
 
 [[package]]
 name = "fs-cutfem"
@@ -1298,6 +1294,7 @@ name = "fs-lbm"
 version = "0.0.1"
 dependencies = [
  "fs-evidence",
+ "fs-math",
 ]
 
 [[package]]
@@ -1435,6 +1432,7 @@ dependencies = [
 name = "fs-package"
 version = "0.0.1"
 dependencies = [
+ "fs-crosswalk",
  "fs-evidence",
 ]
 
@@ -1910,6 +1908,7 @@ dependencies = [
  "fs-cheb",
  "fs-exec",
  "fs-lbm",
+ "fs-math",
  "fs-race",
  "fs-render",
 ]
