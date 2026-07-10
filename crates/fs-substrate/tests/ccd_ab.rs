@@ -82,6 +82,11 @@ fn ccd_locality_ab() {
     for (i, b) in audit_buf.iter_mut().enumerate().step_by(4096) {
         *b = (i % 251) as u8; // fault every page in
     }
+    // An unaligned base can leave the FINAL partial OS page untouched
+    // by the strided loop (measured on ts2: one -ENOENT page) — fault
+    // it explicitly.
+    let len = audit_buf.len();
+    audit_buf[len - 1] = 1;
     match page_nodes(&audit_buf, 4096) {
         Ok(nodes) => {
             let mut per_node = std::collections::BTreeMap::<i32, usize>::new();
