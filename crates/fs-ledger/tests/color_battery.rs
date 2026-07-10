@@ -91,7 +91,17 @@ fn col_001_composition_totality() {
     let v = |lo: f64, hi: f64| Color::Verified { lo, hi };
     let add = compose(&v(1.0, 2.0), &v(10.0, 20.0), IntervalOp::Add);
     let mul = compose(&v(-1.0, 2.0), &v(3.0, 4.0), IntervalOp::Mul);
-    let verified_math = add == v(11.0, 22.0) && mul == v(-4.0, 8.0);
+    let verified_math = matches!(
+        add,
+        Color::Verified { lo, hi }
+            if lo.to_bits() == 11.0_f64.next_down().to_bits()
+                && hi.to_bits() == 22.0_f64.next_up().to_bits()
+    ) && matches!(
+        mul,
+        Color::Verified { lo, hi }
+            if lo.to_bits() == (-4.0_f64).next_down().to_bits()
+                && hi.to_bits() == 8.0_f64.next_up().to_bits()
+    );
     // Regime intersection: both anchors must hold.
     let val = |lo: f64, hi: f64| Color::Validated {
         regime: ValidityDomain::unconstrained().with("re", lo, hi),
@@ -114,7 +124,8 @@ fn col_001_composition_totality() {
         "col-001",
         total_ok && conservative_ok && verified_math && intersected && absorbed,
         "all 600 random pairs compose totally with rank = min (never higher), \
-         verified interval add/mul are exact, validated regimes INTERSECT, and \
+         verified interval add/mul outward-round to true enclosures, validated \
+         regimes INTERSECT, and \
          estimated absorbs everything with conservative dispersion; \
          seed 0x1001_2026_0707_0041",
     );
@@ -521,9 +532,9 @@ fn col_007_color_rows_are_strict_json_under_hostile_metadata() {
     let sentinels_and_escapes_present = rows.iter().any(|row| row.contains("non-finite:NaN"))
         && rows.iter().any(|row| row.contains("non-finite:inf"))
         && rows.iter().any(|row| row.contains(r#"\""#))
-        && rows.iter().any(|row| row.contains(r#"\\"#))
-        && rows.iter().any(|row| row.contains(r#"\n"#))
-        && rows.iter().any(|row| row.contains(r#"\u0007"#));
+        && rows.iter().any(|row| row.contains(r"\\"))
+        && rows.iter().any(|row| row.contains(r"\n"))
+        && rows.iter().any(|row| row.contains(r"\u0007"));
 
     verdict(
         "col-007",
