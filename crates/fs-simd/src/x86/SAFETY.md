@@ -48,3 +48,15 @@ every `#[target_feature]` call and fall back to the scalar twin otherwise —
 the dispatch table's tier choice is optimization, not precondition. The
 inner `#[target_feature]` functions are reachable ONLY through these
 façades (module privacy enforces it).
+
+## mk8x4_f64 (bead xlvx)
+
+The 8×4 GEMM microkernel façade asserts panel bounds BEFORE the unsafe
+body (`a_panel ≥ kc·8`, `b_panel ≥ kc·4`); the AVX2+FMA body reads
+exactly 4 f64 per `loadu` at offsets `kk·4 ≤ kc·4 − 4` (B) and
+broadcasts single elements at `kk·8 + r ≤ kc·8 − 1` (A); every
+`storeu` writes 4 f64 into a row of the caller's `[[f64; 4]; 8]`.
+Feature availability (avx2+fma) is runtime-verified in the façade
+immediately before the call. Compensating check: the tier-equivalence
+battery gates bitwise equality with the scalar twin over kc ∈ 0..17 ∪
+{256} including special values and nonzero starting accumulators.

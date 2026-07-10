@@ -121,9 +121,9 @@ fn build_table() -> Ops {
                 fma3: scalar::fma3,
                 dot: x86::dot,
                 sum: x86::sum,
-                // The AVX GEMM microkernels arrive with x86 perf-lane
-                // hardware (xdgf successor scope); the twins are correct.
-                mk8x4_f64: scalar::mk8x4_f64,
+                // AVX2 mk8x4 landed (bead xlvx) on user-granted x86
+                // hardware; btile stays the twin until 9ekv's consumer.
+                mk8x4_f64: x86::mk8x4_f64,
                 btile4x4_f64: scalar::btile4x4_f64,
             },
             _ => SCALAR_OPS,
