@@ -1,0 +1,18 @@
+[package]
+name = "fs-blake3"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Pure safe-Rust BLAKE3 (plain hash mode): the 32-byte content-hash owner for the whole workspace."
+
+[package.metadata.frankensim]
+layer = "UTIL"
+
+[dependencies]
+
+[dev-dependencies]
+
+[lints]
+workspace = true

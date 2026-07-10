@@ -931,6 +931,10 @@ name = "fs-bisect"
 version = "0.0.1"
 
 [[package]]
+name = "fs-blake3"
+version = "0.0.1"
+
+[[package]]
 name = "fs-bo"
 version = "0.0.1"
 dependencies = [
@@ -1342,6 +1346,7 @@ dependencies = [
 name = "fs-ledger"
 version = "0.0.1"
 dependencies = [
+ "fs-blake3",
  "fs-evidence",
  "fs-qty",
  "fs-regime",

@@ -35,6 +35,7 @@ members = [
     "crates/fs-soa-derive",
     "crates/fs-time",
     "crates/fs-simd",
+    "crates/fs-blake3",
     "crates/fs-alloc",
     "crates/fs-dfo",
     "crates/fs-exec",
