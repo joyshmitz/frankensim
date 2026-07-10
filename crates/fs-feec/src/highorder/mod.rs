@@ -4,6 +4,7 @@
 //! the simplicial vector families (Nedelec/RT/L2, bead dcng).
 
 pub mod derham;
+pub(crate) mod fma;
 pub mod hex;
 pub mod quad1d;
 pub mod simplex;

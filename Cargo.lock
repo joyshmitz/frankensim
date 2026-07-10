@@ -1107,6 +1107,7 @@ dependencies = [
  "fs-rand",
  "fs-rep-mesh",
  "fs-roofline",
+ "fs-simd",
  "fs-soa",
  "fs-sparse",
 ]
