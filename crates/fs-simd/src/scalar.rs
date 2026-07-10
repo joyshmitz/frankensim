@@ -152,7 +152,7 @@ pub fn r4qrun_f64(
 ) {
     let s2 = a.len();
     assert!(
-        s2 % 2 == 0
+        s2.is_multiple_of(2)
             && b.len() == s2
             && c.len() == s2
             && d.len() == s2
