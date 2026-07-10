@@ -10,7 +10,7 @@
 [![Rust](https://img.shields.io/badge/rust-nightly%202024-b7410e)](rust-toolchain.toml)
 [![Crates](https://img.shields.io/badge/workspace-125%20fs--%2A%20crates-0969da)](#implemented-workspace)
 [![Contracts](https://img.shields.io/badge/contracts-125%20of%20125%20crates-8250df)](#contracts-and-verification)
-[![Tests](https://img.shields.io/badge/tests-228%20crate%20test%20files-1f883d)](#contracts-and-verification)
+[![Tests](https://img.shields.io/badge/tests-240%20crate%20test%20files-1f883d)](#contracts-and-verification)
 [![License](https://img.shields.io/badge/license-MIT%20%2B%20AI%20rider-yellow)](LICENSE)
 
 </div>
@@ -38,7 +38,7 @@ There is not yet a packaged end-user simulation application or crates.io release
 | Geometry | Region/chart abstraction, SDF, mesh and F-rep charts, representation conversion hooks, transformations, tet meshing, remeshing, quality audits |
 | Evidence and ledger | Composable `Evidence<T>`/`Certified<T>`, model cards, bracketing, FrankenSQLite-backed design ledger, artifact hashes, event streams, tune cache, roofline recording |
 | Policy tooling | `xtask` checks for layer direction, Franken-only runtime dependencies, contracts, unsafe capsules, and constellation lock verification |
-| Tests | 228 crate-level conformance and integration test files exercising the implemented contracts |
+| Tests | 240 crate-level conformance and integration test files exercising the implemented contracts |
 
 ### What You Can Use Today
 
@@ -643,6 +643,46 @@ That pattern is important: a new feature is not considered mature simply
 because the algorithm appears in code. It becomes useful when the contract names
 its determinism class, tests pin representative behavior, the no-claim boundary
 is explicit, and any performance claim is tied to a measured lane.
+
+## Latest Implementation Deep Dives
+
+Several recent implementation slices are useful to read because they show the
+project's design rules becoming ordinary code rather than project vocabulary.
+
+| Slice | What landed | Why it matters |
+|-------|-------------|----------------|
+| Deterministic integer powers | `fs-math` now owns pinned integer-power semantics and `xtask` checks for drifting `.powi` usage across dependent crates | Golden values no longer depend on libm or build-mode accidents for a common scalar operation |
+| Declared run identity | `fs-exec` and `fs-rand` bind random streams to a declared run identity instead of pool history | Stochastic replay follows the logical study, not whichever worker happened to execute first |
+| Caller-owned cancellation gates | `fs-race` and session pressure handling now require gates supplied by the caller/session owner | A race, pause, or memory-pressure response cannot manufacture private cancellation state that the owner cannot observe |
+| Versioned solver snapshots | `fs-exec` solver state is wrapped in a versioned, self-authenticating envelope | Pause/resume/fork support gets a concrete artifact boundary instead of a raw struct dump |
+| GEMM performance evidence | `fs-la` added packed f32 and mixed-precision paths, transposed/strided op-form GEMM, batched perf lanes, and roofline regression hooks | Dense-kernel speedups are tied to workload shape, denominator, and regression checks instead of prose claims |
+| Risk and certificate hardening | CVaR uses fractional boundary weighting, adjoint certificates fail closed on vacuous evidence, and explain/DWR regressions stay executable | Evidence objects stop accepting plausible-but-empty proofs or biased tail estimates |
+| Import-order correctness | `fs-io` accepts legal face-before-vertex PLY element order while still validating face payloads | The importer distinguishes format legality from malformed data, which is the right failure boundary for quarantined IO |
+
+Together, these slices describe the current engineering center of gravity:
+determinism is being pushed down into reusable primitives, cancellation is
+treated as an ownership contract, evidence is allowed to weaken or refuse, and
+performance work is expected to leave behind a measurable lane.
+
+## Algorithms And Design Patterns Now Visible
+
+The implemented workspace has enough surface area that recurring algorithms and
+design patterns are visible across crates.
+
+| Pattern | Where it appears | Design rule |
+|---------|------------------|-------------|
+| Fixed logical identity | Philox stream keys, tile IDs, solver snapshot envelopes, package roots | The identity of work must come from the problem and run record, not scheduler timing |
+| Deterministic accumulation | COO/CSR assembly, sharded SpMV, GEMM tests, FFT goldens, evidence composition | Parallelism may change when work runs, but not the semantic order of the claim being checked |
+| Fail-closed certification | Evidence colors, adjoint/DWR certificates, CVaR admission, PLY quarantine, package checking | Missing, non-finite, vacuous, or malformed evidence should refuse or downgrade, not pass as a stronger claim |
+| Measurement-backed performance | Roofline axes, tune rows, perf lanes, CUSUM/regression gates, machine fingerprints | A performance statement needs a denominator, workload, hardware context, and acceptance band |
+| Representation-preserving conversion | Region/chart records, SDF/mesh/NURBS/voxel/F-rep contracts, sheaf and topology witnesses | Geometry conversion is not just data translation; it must carry validity, topology, error, and no-claim context |
+| Agent-readable governance | Beads, `CONTRACT.md`, DSR policy, `xtask` gates, changelog research notes | Automated work needs durable intent, exact acceptance criteria, and replayable evidence rather than conversational memory |
+
+This is the useful part of FrankenSim as a source workspace today. The crates
+are not merely a collection of numerical routines; they are converging on a
+shared protocol for scientific software: state the claim, encode the assumptions,
+run under explicit budgets, produce evidence with a color, and retain enough
+lineage for another process to check the result later.
 
 ## Internal Data Model
 

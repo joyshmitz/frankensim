@@ -5,42 +5,46 @@
 - Repo: `Dicklesworthstone/frankensim`
 - Requested task: update the changelog using `changelog-md-workmanship`.
 - Scope window: project inception on 2026-07-05 through
-  `main@6725739f42b878b310e7e7e318fb8c980cef71f3` on 2026-07-09.
+  `main@e993e7640a547ca9b11ded6d580a3ce6846a4c82` on 2026-07-10.
 - Public remote state when researched: local `HEAD` resolved to
-  `6725739f42b878b310e7e7e318fb8c980cef71f3`; `origin/main` resolved to
-  `6725739f42b878b310e7e7e318fb8c980cef71f3`.
+  `e993e7640a547ca9b11ded6d580a3ce6846a4c82`; `origin/main` resolved to
+  `e993e7640a547ca9b11ded6d580a3ce6846a4c82`.
 - Working-tree policy: the changelog covers committed history only. Local
   uncommitted edits and scratch files were not used as changelog evidence,
-  including `.beads/issues.jsonl`, `crates/fs-wasm/src/flagships.rs`, Wrangler
-  cache files, and the untracked FlowCert/Rand probe files.
+  including `.beads/issues.jsonl`, source edits under `crates/`, `xtask`, the
+  Wrangler cache files, and the untracked FlowCert probe file.
 
 ## Evidence Sources
 
 - Git history:
-  - `git rev-list --count HEAD` -> 738 commits.
-  - `git rev-list --count origin/main` -> 738 commits.
-  - `git rev-list --count 43d52f2..HEAD` -> 405 commits since the prior
+  - `git rev-list --count HEAD` -> 857 commits.
+  - `git rev-list --count origin/main` -> 857 commits.
+  - `git rev-list --count 43d52f2..HEAD` -> 524 commits since the prior
     changelog baseline.
-  - `git rev-list --count fb08842..HEAD` -> 116 commits since the previous
+  - `git rev-list --count fb08842..HEAD` -> 235 commits since the previous
     changelog pass endpoint.
-  - `git rev-list --count 319cb64..HEAD` -> 105 commits since the previous
+  - `git rev-list --count 319cb64..HEAD` -> 224 commits since the previous
     changelog endpoint.
-  - `git rev-list --count d5873bf..HEAD` -> 57 commits since the 2026-07-09
+  - `git rev-list --count d5873bf..HEAD` -> 176 commits since the 2026-07-09
     flagship expansion checkpoint.
-  - `git rev-list --count e08e302..HEAD` -> 42 commits since the previous
+  - `git rev-list --count e08e302..HEAD` -> 161 commits since the previous
+    changelog endpoint.
+  - `git rev-list --count 6725739..HEAD` -> 119 commits since the previous
     changelog endpoint.
   - `git log --reverse --no-merges --pretty=format:'%h %ad %s' --date=short`.
   - `git log --all --no-merges --pretty=format:'%H %h %ad %s' --date=short`.
-  - `git diff --stat --compact-summary 43d52f2..HEAD` -> 597 files changed,
-    107,641 insertions, 621 deletions.
-  - `git diff --stat --compact-summary fb08842..HEAD` -> 210 files changed,
-    27,629 insertions, 525 deletions.
-  - `git diff --stat --compact-summary 319cb64..HEAD` -> 177 files changed,
-    22,313 insertions, 543 deletions.
-  - `git diff --stat --compact-summary d5873bf..HEAD` -> 91 files changed,
-    7,988 insertions, 333 deletions.
-  - `git diff --stat --compact-summary e08e302..HEAD` -> 77 files changed,
-    6,195 insertions, 219 deletions.
+  - `git diff --stat --compact-summary 43d52f2..HEAD` -> 686 files changed,
+    119,151 insertions, 1,481 deletions.
+  - `git diff --stat --compact-summary fb08842..HEAD` -> 329 files changed,
+    39,336 insertions, 1,582 deletions.
+  - `git diff --stat --compact-summary 319cb64..HEAD` -> 301 files changed,
+    34,024 insertions, 1,604 deletions.
+  - `git diff --stat --compact-summary d5873bf..HEAD` -> 224 files changed,
+    19,795 insertions, 1,490 deletions.
+  - `git diff --stat --compact-summary e08e302..HEAD` -> 215 files changed,
+    18,032 insertions, 1,406 deletions.
+  - `git diff --stat --compact-summary 6725739..HEAD` -> 169 files changed,
+    11,967 insertions, 1,317 deletions.
 - Version metadata:
   - `git for-each-ref refs/tags ...` -> no tags.
   - `gh release list --limit 100` -> no GitHub Releases.
@@ -51,12 +55,12 @@
   - `README.md`.
   - `AGENTS.md`.
   - crate-level `CONTRACT.md` files referenced through README/workstream scope.
-  - Workspace count checks on 2026-07-09:
+  - Workspace count checks on 2026-07-10:
     - `find crates -mindepth 1 -maxdepth 1 -type d -name 'fs-*' | wc -l`
       -> 125 crates.
     - `find crates -mindepth 2 -maxdepth 2 -name CONTRACT.md | wc -l`
       -> 125 contracts.
-    - `git ls-files 'crates/fs-*/tests/*.rs' | wc -l` -> 222 tracked test files.
+    - `git ls-files 'crates/fs-*/tests/*.rs' | wc -l` -> 240 tracked test files.
 
 ## Version Spine
 
@@ -76,6 +80,7 @@
 | `d93ca59` | Public mainline snapshot | 2026-07-09 | Gated SME2 exploratory capsule and unsafe registration; 695 commits. |
 | `e08e302` | Public mainline snapshot | 2026-07-09 | SME2 exploratory battery; 696 commits. |
 | `6725739` | Public mainline snapshot | 2026-07-09 | Live browser flagship pipelines, mesh v2/v3 closure, sparse roofline/NUMA lanes, rand/FFT perf work, fail-closed IO/risk/probe hardening; 738 commits. |
+| `e993e76` | Public mainline snapshot | 2026-07-10 | Deterministic `.powi` policy, declared RNG run identity, caller-owned cancellation gates, solver snapshot envelopes, GEMM perf evidence lanes, legal PLY face-first imports, standard empirical CVaR, and adjoint fail-closed regressions; 857 commits. |
 
 No tags or GitHub Releases existed when researched.
 
@@ -97,6 +102,7 @@ No tags or GitHub Releases existed when researched.
 | 12 | fb08842..319cb64 | distilled | Neural-shape and grammar campaigns, SensorForge, vessel flagship, metamaterial/truss/AnytimeBO/FlowCert e2e crates, inverse-trig AD, `fs-ad` bridge/Revolve/IFT integrations, vertex-patch Schwarz p-MG smoothing. |
 | 13 | 319cb64..e08e302 | distilled | Self-knowledge and flywheel gates, Stokes block preconditioners, NSGA-III/MOEA/D/steering, sparse GP, adaptive MLMC/chance constraints, constrained polish engines, proposal-only generation, browser campaign tiers, differentiable rendering, ornithoid and CutFEM-octree flagships, exact e2e certificate payloads, topopt evidence hardening, frozen-golden flagship replay suite, mesh refinement protection, SME2 exploratory capsule, tracker state, proof-hygiene fixes. |
 | 14 | e08e302..6725739 | distilled | Live `fs-wasm` flagship browser pipelines, `fs-mesh` v2/v3 closure, hex-dominant meshing scaffold, compact sparse roofline/NUMA work, deterministic rand/FFT perf lanes, PLY integer validation, non-finite risk/probe hardening, and packaging panic-surface cleanup. |
+| 15 | 6725739..e993e76 | distilled | Deterministic integer-power policy, run-identity RNG replay, race/session cancellation ownership, versioned solver snapshots, f32/mixed/transposed/strided GEMM evidence lanes, standard empirical CVaR boundary weighting, legal PLY face-first import, and adjoint certificate fail-closed regressions. |
 
 ## Representative Commit Clusters
 
@@ -220,6 +226,19 @@ No tags or GitHub Releases existed when researched.
   - `91478e2` package string-write panic cleanup.
   - `462f0f6` panic-arm removal from `fs-io` conformance checks.
   - `6725739` live browser flagship pipelines in `fs-wasm`.
+- 2026-07-10 hardening and perf evidence:
+  - `8c6db27` deterministic integer powers and policy checks.
+  - `921c486` RNG streams bound to declared run identity.
+  - `d31573b` race panic-total and cancellation wiring requirements.
+  - `98ea5db` caller-owned race cancellation gates.
+  - `361bb36` session pressure pauses bound to owned gates.
+  - `b2cb2c2` versioned self-authenticating solver snapshot envelope.
+  - `af0339e` packed f32 and mixed-precision GEMM paths.
+  - `dbbffa8` transposed/strided op-form GEMM.
+  - `5b8aeb7` GEMM and batched perf evidence lanes.
+  - `7f6420f` standard empirical CVaR boundary weighting.
+  - `4fbdefc` legal face-before-vertex PLY element order.
+  - `e993e76` adjoint certificate fail-closed regressions.
 - Addendum:
   - `e43e3b1` three-color schema.
   - `39fd1a5` falsifier pairing.

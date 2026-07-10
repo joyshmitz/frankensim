@@ -3,8 +3,8 @@
 This is a synthesized, agent-facing changelog for FrankenSim.
 
 Scope window: project inception on 2026-07-05 through
-[`main@6725739`](https://github.com/Dicklesworthstone/frankensim/commit/6725739f42b878b310e7e7e318fb8c980cef71f3)
-on 2026-07-09.
+[`main@e993e76`](https://github.com/Dicklesworthstone/frankensim/commit/e993e7640a547ca9b11ded6d580a3ce6846a4c82)
+on 2026-07-10.
 
 This document was rebuilt from git history, tag/release metadata, the checked-in
 Beads tracker, and the current README/contract surface. It is organized by
@@ -13,10 +13,11 @@ landed capabilities rather than raw diff order.
 ## Version Timeline
 
 There are no git tags and no GitHub Releases as of
-[`main@6725739`](https://github.com/Dicklesworthstone/frankensim/commit/6725739f42b878b310e7e7e318fb8c980cef71f3).
+[`main@e993e76`](https://github.com/Dicklesworthstone/frankensim/commit/e993e7640a547ca9b11ded6d580a3ce6846a4c82).
 
 | Version | Kind | Date | Summary |
 |---------|------|------|---------|
+| [`main@e993e76`](https://github.com/Dicklesworthstone/frankensim/commit/e993e7640a547ca9b11ded6d580a3ce6846a4c82) | Public mainline snapshot | 2026-07-10 | 857 commits, adding deterministic `.powi` policy, run-identity RNG binding, caller-owned race/session cancellation gates, solver snapshot envelopes, GEMM perf evidence lanes, legal face-first PLY import, standard empirical CVaR weighting, and adjoint certificate fail-closed regressions. |
 | [`main@6725739`](https://github.com/Dicklesworthstone/frankensim/commit/6725739f42b878b310e7e7e318fb8c980cef71f3) | Public mainline snapshot | 2026-07-09 | 738 commits, adding live browser flagship pipelines, mesh v2/v3 closure, sparse roofline and NUMA lanes, rand/FFT perf work, and fail-closed IO/risk/probe hardening. |
 | [`main@e08e302`](https://github.com/Dicklesworthstone/frankensim/commit/e08e30280bcd7af05ae55e990b129d6f75192ead) | Public mainline snapshot | 2026-07-09 | 696 commits, adding the gated SME2 exploratory capsule, SME2 battery, mesh hull-regression guard, and topopt proof-hygiene cleanups. |
 | [`main@438128d`](https://github.com/Dicklesworthstone/frankensim/commit/438128d988082f2183f406d75883b766fd6b7324) | Public mainline snapshot | 2026-07-09 | 688 commits, adding hull-facet encroachment protection to mesh refinement and tightening the topology-optimization marquee evidence fixtures. |
@@ -802,12 +803,78 @@ work.
 - [`462f0f6`](https://github.com/Dicklesworthstone/frankensim/commit/462f0f638dbb348b23e9edb39b87a4a60eba7787) - remove panic arms from `fs-io` conformance checks.
 - [`6725739`](https://github.com/Dicklesworthstone/frankensim/commit/6725739f42b878b310e7e7e318fb8c980cef71f3) - expose live flagship browser pipelines in `fs-wasm`.
 
+## 17. Determinism, Cancellation Ownership, GEMM Evidence, And Fail-Closed Fixes
+
+The window from
+[`6725739`](https://github.com/Dicklesworthstone/frankensim/commit/6725739f42b878b310e7e7e318fb8c980cef71f3)
+through
+[`e993e76`](https://github.com/Dicklesworthstone/frankensim/commit/e993e7640a547ca9b11ded6d580a3ce6846a4c82)
+adds 119 committed changes across 169 files, with 11,967 insertions and 1,317
+deletions. This update is still a moving `main` snapshot, not a tagged release,
+but it materially hardens the lower-level semantics that later simulation
+claims rely on.
+
+### Delivered capability
+
+- `fs-math` now pins deterministic integer-power behavior and extends `xtask`
+  policy checks so dependent crates do not drift back to platform-sensitive
+  `.powi` calls without an explicit review point.
+- `fs-exec` and `fs-rand` bind stream replay to declared run identity rather
+  than execution-pool history, preserving stochastic replay when scheduling or
+  worker counts change.
+- `fs-race` and `fs-session` now require caller-owned cancellation gates for
+  race losers and memory-pressure pauses. Cancellation and pause/resume
+  authority is visible to the owner instead of hidden inside convenience
+  registrations.
+- `fs-exec` wraps solver snapshots in a versioned, self-authenticating envelope,
+  giving resumable solver state an artifact boundary suitable for pause,
+  migration, fork, and replay checks.
+- `fs-la` extends the GEMM performance program with packed f32 and
+  mixed-precision BLIS-style paths, transposed/strided op-form GEMM, measured
+  blocking defaults, batched small-dense perf tests, and roofline regression
+  evidence lanes.
+- `fs-uq` now computes empirical CVaR with fractional boundary weighting, which
+  avoids under-reporting risk at quantile boundaries and locks the behavior with
+  regression tests.
+- `fs-adjoint` fails closed on vacuous certificate evidence and retains
+  executable regressions for explain and DWR acceptance paths.
+- `fs-io` accepts legal face-before-vertex PLY element order while keeping
+  payload validation in place, separating valid file ordering from malformed
+  face data.
+- `fs-render`, `fs-geom`, and small lint/test cleanups remove dependency,
+  Lipschitz-bound, and boundary underflow traps that could otherwise surface as
+  confusing downstream evidence failures.
+
+### Closed and active workstreams
+
+- [`frankensim-xlvx`](https://github.com/Dicklesworthstone/frankensim/blob/e993e7640a547ca9b11ded6d580a3ce6846a4c82/.beads/issues.jsonl) - closed GEMM perf slice covering AVX/NEON capsules, autotuned blocking, f32/mixed packing, strided forms, and parallel tiling.
+- [`frankensim-zsvk`](https://github.com/Dicklesworthstone/frankensim/blob/e993e7640a547ca9b11ded6d580a3ce6846a4c82/.beads/issues.jsonl) - closed CVaR risk under-reporting bug by switching to standard empirical CVaR with fractional boundary weight.
+- [`frankensim-epic-morph-wqd.25.1`](https://github.com/Dicklesworthstone/frankensim/blob/e993e7640a547ca9b11ded6d580a3ce6846a4c82/.beads/issues.jsonl) - closed legal PLY element-order import bug.
+- [`frankensim-9sf6`](https://github.com/Dicklesworthstone/frankensim/blob/e993e7640a547ca9b11ded6d580a3ce6846a4c82/.beads/issues.jsonl) - closed adjoint certification soundness work so verified color honors finite-difference falsifiers.
+- [`frankensim-epic-helm-gp3.13`](https://github.com/Dicklesworthstone/frankensim/blob/e993e7640a547ca9b11ded6d580a3ce6846a4c82/.beads/issues.jsonl) - in progress session memory-pressure gate ownership.
+- [`frankensim-1hhx`](https://github.com/Dicklesworthstone/frankensim/blob/e993e7640a547ca9b11ded6d580a3ce6846a4c82/.beads/issues.jsonl) - in progress race cancellation-gate ownership.
+
+### Representative commits
+
+- [`8c6db27`](https://github.com/Dicklesworthstone/frankensim/commit/8c6db276f28d7238ebba9f30bf330011c5f9cf34) - pin deterministic integer powers and extend the policy surface that catches drift.
+- [`921c486`](https://github.com/Dicklesworthstone/frankensim/commit/921c4866b55a9d377eac41585afb49b1722d83a7) - bind RNG streams to declared run identity rather than pool history.
+- [`d31573b`](https://github.com/Dicklesworthstone/frankensim/commit/d31573b40fd75233d8b283797986fdfda97245a0) - make races panic-total and require cancellation wiring.
+- [`98ea5db`](https://github.com/Dicklesworthstone/frankensim/commit/98ea5dbdb0b3023a169c93dddecd0ba03e86e8b1) - require caller-owned cancellation gates in `fs-race`.
+- [`361bb36`](https://github.com/Dicklesworthstone/frankensim/commit/361bb368b871d23827024938c619b10452226ce9) - bind session pressure pauses to owned gates.
+- [`b2cb2c2`](https://github.com/Dicklesworthstone/frankensim/commit/b2cb2c2fa66a8c867ec4c723a32afb44607dc1d9) - wrap solver snapshots in a versioned self-authenticating envelope.
+- [`af0339e`](https://github.com/Dicklesworthstone/frankensim/commit/af0339e90f2a81833879ab87d0219e804ba9d14e) - add packed f32 and mixed-precision GEMM paths.
+- [`dbbffa8`](https://github.com/Dicklesworthstone/frankensim/commit/dbbffa877b6806b170751a1bad503fba9cc1c926) - add transposed and strided op-form GEMM.
+- [`5b8aeb7`](https://github.com/Dicklesworthstone/frankensim/commit/5b8aeb7d3c9510c3af164683bb8cfbb5e0588901) - wire GEMM and batched perf evidence lanes.
+- [`7f6420f`](https://github.com/Dicklesworthstone/frankensim/commit/7f6420f1a1d8e447a8673db4c2ce2e578d2b4081) - weight CVaR boundary samples fractionally.
+- [`4fbdefc`](https://github.com/Dicklesworthstone/frankensim/commit/4fbdefcadc8b7ac126c5723950f2c486e690b4e1) - accept legal face-before-vertex PLY element order.
+- [`e993e76`](https://github.com/Dicklesworthstone/frankensim/commit/e993e7640a547ca9b11ded6d580a3ce6846a4c82) - cover adjoint certificate fail-closed regressions.
+
 ## Current Non-Release Status
 
 - No package or crate release has been tagged yet.
 - The canonical project state is `main`, not a versioned artifact; the latest
   implementation and tracker snapshot covered here is
-  [`6725739`](https://github.com/Dicklesworthstone/frankensim/commit/6725739f42b878b310e7e7e318fb8c980cef71f3).
+  [`e993e76`](https://github.com/Dicklesworthstone/frankensim/commit/e993e7640a547ca9b11ded6d580a3ce6846a4c82).
 - The repository is actively changing; use crate `CONTRACT.md` files and Beads
   close reasons for detailed no-claim boundaries.
 - The README describes the implemented workspace; the long-form plan remains
