@@ -32,6 +32,50 @@ const MC: usize = 128;
 /// N blocking (bit-neutral).
 const NC: usize = 512;
 
+#[track_caller]
+fn checked_product(label: &str, lhs: usize, rhs: usize) -> usize {
+    lhs.checked_mul(rhs)
+        .unwrap_or_else(|| panic!("{label} extent overflow: {lhs} * {rhs}"))
+}
+
+#[track_caller]
+fn assert_contiguous_shapes<T, U>(m: usize, n: usize, k: usize, a: &[T], b: &[T], c: &[U]) {
+    let a_len = checked_product("a", m, k);
+    let b_len = checked_product("b", k, n);
+    let c_len = checked_product("c", m, n);
+    assert_eq!(a.len(), a_len, "a must be m*k = {a_len}");
+    assert_eq!(b.len(), b_len, "b must be k*n = {b_len}");
+    assert_eq!(c.len(), c_len, "c must be m*n = {c_len}");
+}
+
+#[track_caller]
+fn assert_view_shape(name: &str, len: usize, rows: usize, cols: usize, ld: usize) {
+    assert!(ld >= cols.max(1), "{name}: ld {ld} < view cols {cols}");
+    if rows == 0 {
+        return;
+    }
+    let row_offset = (rows - 1)
+        .checked_mul(ld)
+        .unwrap_or_else(|| panic!("{name}: row-stride extent overflow"));
+    let need = row_offset
+        .checked_add(cols)
+        .unwrap_or_else(|| panic!("{name}: view extent overflow"));
+    assert!(len >= need, "{name}: slice len {len} < view need {need}");
+}
+
+#[track_caller]
+fn checked_round_up(label: &str, value: usize, quantum: usize) -> usize {
+    debug_assert!(quantum > 0);
+    let remainder = value % quantum;
+    if remainder == 0 {
+        value
+    } else {
+        value
+            .checked_add(quantum - remainder)
+            .unwrap_or_else(|| panic!("{label} extent overflow"))
+    }
+}
+
 /// f64 GEMM: `c[m×n] = alpha · a[m×k] · b[k×n] + beta · c`, row-major
 /// contiguous slices. β = 0 OVERWRITES c (existing NaN/garbage in c is
 /// ignored — the BLAS convention callers expect for uninitialized output).
@@ -49,9 +93,7 @@ pub fn gemm_f64(
     beta: f64,
     c: &mut [f64],
 ) {
-    assert_eq!(a.len(), m * k, "a must be m*k = {}", m * k);
-    assert_eq!(b.len(), k * n, "b must be k*n = {}", k * n);
-    assert_eq!(c.len(), m * n, "c must be m*n = {}", m * n);
+    assert_contiguous_shapes(m, n, k, a, b, c);
     // β pass first (once, before any KC chunk): scale or overwrite.
     scale_c(c, beta);
     if m == 0 || n == 0 || alpha == 0.0 {
@@ -158,21 +200,28 @@ pub fn gemm_f64_parallel_with(
     mc_q: usize,
     nc_q: usize,
 ) {
-    assert_eq!(a.len(), m * k, "a must be m*k = {}", m * k);
-    assert_eq!(b.len(), k * n, "b must be k*n = {}", k * n);
-    assert_eq!(c.len(), m * n, "c must be m*n = {}", m * n);
+    assert_contiguous_shapes(m, n, k, a, b, c);
     let t = threads.max(1);
-    let mc_q = mc_q.max(MR);
-    let nc_q = nc_q.max(NR);
+    // Values wider than the problem are equivalent to one logical block;
+    // clamp them before sizing packs so an untrusted tune row cannot turn a
+    // small multiplication into an unbounded allocation request.
+    let mc_q = mc_q.max(MR).min(m.max(MR));
+    let nc_q = nc_q.max(NR).min(n.max(NR));
     if t == 1 || m < 2 * MC {
         gemm_f64(m, n, k, alpha, a, b, beta, c);
         return;
     }
-    scale_c(c, beta);
     if m == 0 || n == 0 || alpha == 0.0 || k == 0 {
+        scale_c(c, beta);
         return;
     }
-    let mut b_pack = vec![0.0f64; KC * nc_q];
+    let a_pack_rows = checked_round_up("parallel A pack rows", mc_q, MR);
+    let b_pack_cols = checked_round_up("parallel B pack columns", nc_q, NR);
+    let a_pack_len = checked_product("parallel A pack", a_pack_rows, KC);
+    let b_pack_len = checked_product("parallel B pack", KC, b_pack_cols);
+    let band_len = checked_product("parallel C band", mc_q, n);
+    scale_c(c, beta);
+    let mut b_pack = vec![0.0f64; b_pack_len];
     let mut jc = 0;
     while jc < n {
         let nc = nc_q.min(n - jc);
@@ -189,7 +238,7 @@ pub fn gemm_f64_parallel_with(
             // invariant: a band's content is a pure function of the
             // band, never of which thread computed it or in what
             // order; the lock guards ASSIGNMENT only.
-            let dispenser = std::sync::Mutex::new(c.chunks_mut(mc_q * n).enumerate());
+            let dispenser = std::sync::Mutex::new(c.chunks_mut(band_len).enumerate());
             // Never spawn more workers than bands: excess threads only
             // lock, see None, and exit — 64 spawns for 4-16 bands
             // measured 2-9x slower than v2 on the 64-thread ts1.
@@ -198,7 +247,7 @@ pub fn gemm_f64_parallel_with(
                 for _ in 0..workers {
                     let disp = &dispenser;
                     scope.spawn(move || {
-                        let mut a_pack = vec![0.0f64; mc_q * KC];
+                        let mut a_pack = vec![0.0f64; a_pack_len];
                         loop {
                             let next = disp.lock().expect("dispenser lock").next();
                             let Some((bi, band)) = next else { break };
@@ -256,22 +305,15 @@ pub fn gemm_f64_op(
     c: &mut [f64],
     ldc: usize,
 ) {
-    let check = |name: &str, len: usize, rows: usize, cols: usize, ld: usize| {
-        assert!(ld >= cols.max(1), "{name}: ld {ld} < view cols {cols}");
-        if rows > 0 {
-            let need = (rows - 1) * ld + cols;
-            assert!(len >= need, "{name}: slice len {len} < view need {need}");
-        }
-    };
     match ta {
-        Trans::N => check("a", a.len(), m, k, lda),
-        Trans::T => check("a", a.len(), k, m, lda),
+        Trans::N => assert_view_shape("a", a.len(), m, k, lda),
+        Trans::T => assert_view_shape("a", a.len(), k, m, lda),
     }
     match tb {
-        Trans::N => check("b", b.len(), k, n, ldb),
-        Trans::T => check("b", b.len(), n, k, ldb),
+        Trans::N => assert_view_shape("b", b.len(), k, n, ldb),
+        Trans::T => assert_view_shape("b", b.len(), n, k, ldb),
     }
-    check("c", c.len(), m, n, ldc);
+    assert_view_shape("c", c.len(), m, n, ldc);
     // β pass over the VIEW only (op-form C may be a submatrix).
     if beta == 0.0 {
         for row in c.chunks_mut(ldc).take(m) {
@@ -489,9 +531,7 @@ pub fn gemm_f32(
     beta: f32,
     c: &mut [f32],
 ) {
-    assert_eq!(a.len(), m * k, "a must be m*k = {}", m * k);
-    assert_eq!(b.len(), k * n, "b must be k*n = {}", k * n);
-    assert_eq!(c.len(), m * n, "c must be m*n = {}", m * n);
+    assert_contiguous_shapes(m, n, k, a, b, c);
     if beta == 0.0 {
         c.fill(0.0);
     } else if beta.to_bits() != 1.0f32.to_bits() {
@@ -629,9 +669,7 @@ pub fn gemm_mixed(
     beta: f64,
     c: &mut [f64],
 ) {
-    assert_eq!(a.len(), m * k, "a must be m*k = {}", m * k);
-    assert_eq!(b.len(), k * n, "b must be k*n = {}", k * n);
-    assert_eq!(c.len(), m * n, "c must be m*n = {}", m * n);
+    assert_contiguous_shapes(m, n, k, a, b, c);
     scale_c(c, beta);
     if m == 0 || n == 0 || k == 0 || alpha == 0.0 {
         return;

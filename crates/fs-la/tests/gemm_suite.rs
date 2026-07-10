@@ -1,6 +1,110 @@
 //! GEMM integration gates (bead xlvx): row-band parallel GEMM bitwise
 //! equality with the serial kernel across thread counts.
 
+use std::any::Any;
+
+fn panic_text(payload: Box<dyn Any + Send>) -> String {
+    if let Some(text) = payload.downcast_ref::<String>() {
+        text.clone()
+    } else if let Some(text) = payload.downcast_ref::<&str>() {
+        (*text).to_string()
+    } else {
+        "non-string panic".to_string()
+    }
+}
+
+fn assert_extent_overflow(f: impl FnOnce() + std::panic::UnwindSafe, label: &str) {
+    let panic = std::panic::catch_unwind(f).expect_err("overflow must panic");
+    let text = panic_text(panic);
+    assert!(
+        text.contains("extent overflow"),
+        "{label}: unexpected panic: {text}"
+    );
+}
+
+/// G0: safe GEMM facades reject impossible extents identically in debug and
+/// release. In particular, validation happens before beta can mutate C.
+#[test]
+fn public_facades_reject_extent_overflow_before_mutation() {
+    let mut c64 = [7.0f64];
+    assert_extent_overflow(
+        std::panic::AssertUnwindSafe(|| {
+            fs_la::gemm_f64(usize::MAX, 0, 2, 1.0, &[], &[], 0.0, &mut c64)
+        }),
+        "gemm_f64",
+    );
+    assert_eq!(c64, [7.0]);
+
+    let mut c32 = [7.0f32];
+    assert_extent_overflow(
+        std::panic::AssertUnwindSafe(|| {
+            fs_la::gemm_f32(usize::MAX, 0, 2, 1.0, &[], &[], 0.0, &mut c32)
+        }),
+        "gemm_f32",
+    );
+    assert_eq!(c32, [7.0]);
+
+    let mut mixed = [7.0f64];
+    assert_extent_overflow(
+        std::panic::AssertUnwindSafe(|| {
+            fs_la::gemm_mixed(usize::MAX, 0, 2, 1.0, &[], &[], 0.0, &mut mixed)
+        }),
+        "gemm_mixed",
+    );
+    assert_eq!(mixed, [7.0]);
+
+    let mut parallel = [7.0f64];
+    assert_extent_overflow(
+        std::panic::AssertUnwindSafe(|| {
+            fs_la::gemm_f64_parallel(usize::MAX, 0, 2, 1.0, &[], &[], 0.0, &mut parallel, 4)
+        }),
+        "gemm_f64_parallel",
+    );
+    assert_eq!(parallel, [7.0]);
+
+    let mut op = [7.0f64];
+    assert_extent_overflow(
+        std::panic::AssertUnwindSafe(|| {
+            fs_la::gemm_f64_op(
+                2,
+                0,
+                1,
+                1.0,
+                &[],
+                usize::MAX,
+                fs_la::Trans::N,
+                &[],
+                1,
+                fs_la::Trans::N,
+                0.0,
+                &mut op,
+                1,
+            )
+        }),
+        "gemm_f64_op",
+    );
+    assert_eq!(op, [7.0]);
+}
+
+/// G0: tuner quanta need not align to the microkernel. Packed storage must
+/// account for the padded MR/NR tails even when a full KC panel is active.
+#[test]
+fn parallel_unaligned_tune_quanta_size_padded_packs() {
+    let (m, n, k) = (257usize, 5usize, 256usize);
+    let a: Vec<f64> = (0..m * k).map(|i| (i % 31) as f64 - 15.0).collect();
+    let b: Vec<f64> = (0..k * n).map(|i| (i % 17) as f64 - 8.0).collect();
+    let mut serial = vec![0.25; m * n];
+    let mut parallel = serial.clone();
+    fs_la::gemm_f64(m, n, k, 0.75, &a, &b, 0.5, &mut serial);
+    fs_la::gemm_f64_parallel_with(m, n, k, 0.75, &a, &b, 0.5, &mut parallel, 2, 60, 5);
+    assert!(
+        serial
+            .iter()
+            .zip(&parallel)
+            .all(|(lhs, rhs)| lhs.to_bits() == rhs.to_bits())
+    );
+}
+
 /// xlvx item 3: row-band parallel GEMM is BITWISE equal to serial at
 /// every thread count (per-element accumulation order is independent
 /// of m — xdgf's recorded fact (b), now gated).
