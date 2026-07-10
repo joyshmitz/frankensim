@@ -103,6 +103,29 @@ fn a_lyapunov_certificate_decides_linear_stability() {
 }
 
 #[test]
+fn non_symmetric_input_cannot_forge_a_certificate() {
+    // A = [[0,-1],[-1,0]] has eigenvalues ±1 → UNSTABLE. A quadratic form
+    // xᵀPx depends only on the SYMMETRIC part (P+Pᵀ)/2, so a non-symmetric P
+    // must never forge a certificate the symmetric part cannot support. Here
+    // (P+Pᵀ)/2 = [[1, 1.5],[1.5, 1]] is INDEFINITE (eigenvalues 2.5, −0.5).
+    let a = [[0.0, -1.0], [-1.0, 0.0]];
+    let p = [[1.0, 0.0], [3.0, 1.0]];
+    assert!(
+        !lyapunov_certifies_stability(a, p),
+        "forged a stability certificate for an UNSTABLE system via non-symmetric P"
+    );
+    // is_psd must judge the quadratic form (its symmetric part), which is
+    // indefinite → NOT PSD.
+    assert!(
+        !is_psd(&[vec![1.0, 0.0], vec![3.0, 1.0]], 1e-9),
+        "non-symmetric matrix falsely judged PSD (symmetric part is indefinite)"
+    );
+    // A genuinely PSD form given non-symmetrically must still read PSD
+    // (symmetric part [[2,1],[1,2]], eigenvalues 1,3).
+    assert!(is_psd(&[vec![2.0, 0.0], vec![2.0, 2.0]], 1e-9));
+}
+
+#[test]
 fn certification_is_deterministic() {
     let p = Poly::new(vec![7.0, -4.0, 1.0]);
     let a = certify_quadratic(1.0, -4.0, 7.0).unwrap();

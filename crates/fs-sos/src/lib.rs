@@ -219,7 +219,17 @@ fn min_eigenvalue(a: &[Vec<f64>]) -> f64 {
     if n == 0 {
         return 0.0;
     }
-    let mut m: Vec<Vec<f64>> = a.to_vec();
+    // Operate on the SYMMETRIC part (M+Mᵀ)/2. A quadratic form xᵀMx equals
+    // xᵀ((M+Mᵀ)/2)x, and the cyclic-Jacobi kernel below is only valid for a
+    // symmetric matrix — it reads the upper triangle (`m[p][q]`) and never
+    // consults `m[q][p]`. Without this projection a NON-symmetric input yields
+    // meaningless "eigenvalues" (e.g. it returns the raw diagonal when the
+    // upper triangle is zero) and could FORGE a PSD / Lyapunov-stability
+    // certificate — see `non_symmetric_input_cannot_forge_a_certificate`.
+    // `midpoint(x, x) == x` exactly, so a symmetric input is unchanged bitwise.
+    let mut m: Vec<Vec<f64>> = (0..n)
+        .map(|i| (0..n).map(|j| f64::midpoint(a[i][j], a[j][i])).collect())
+        .collect();
     for _ in 0..100 {
         let mut off = 0.0;
         for i in 0..n {
