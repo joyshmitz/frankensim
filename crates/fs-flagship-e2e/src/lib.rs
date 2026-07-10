@@ -28,6 +28,26 @@
 
 use std::fmt::Write as _;
 
+fn push_json_string(out: &mut String, value: &str) {
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\u{0008}' => out.push_str("\\b"),
+            '\u{000c}' => out.push_str("\\f"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            ch if ch <= '\u{001f}' => {
+                let _ = write!(out, "\\u{:04x}", u32::from(ch));
+            }
+            ch => out.push(ch),
+        }
+    }
+    out.push('"');
+}
+
 /// Stage fidelity tiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tier {
@@ -90,10 +110,18 @@ pub fn artifact(
 }
 
 /// One forensic log row: structured JSON with the suite's required
-/// keys (`stage`, `kind`, `payload`).
+/// keys (`stage`, `kind`, `payload`). `stage` and `kind` are escaped;
+/// `payload` must already be one complete JSON value.
 #[must_use]
 pub fn log_row(stage: &str, kind: &str, payload: &str) -> String {
-    format!("{{\"stage\":\"{stage}\",\"kind\":\"{kind}\",\"payload\":{payload}}}")
+    let mut row = String::from("{\"stage\":");
+    push_json_string(&mut row, stage);
+    row.push_str(",\"kind\":");
+    push_json_string(&mut row, kind);
+    row.push_str(",\"payload\":");
+    row.push_str(payload);
+    row.push('}');
+    row
 }
 
 /// The LAB NOTEBOOK artifact: deterministic JSON over the stages'
@@ -106,16 +134,19 @@ pub fn notebook(artifacts: &[StageArtifact]) -> String {
         if i > 0 {
             body.push(',');
         }
+        body.push_str("{\"flagship\":");
+        push_json_string(&mut body, a.flagship);
         let _ = write!(
             body,
-            "{{\"flagship\":\"{}\",\"tier\":\"{:?}\",\"hash\":\"0x{:016x}\",\"metrics\":{{",
-            a.flagship, a.tier, a.hash
+            ",\"tier\":\"{:?}\",\"hash\":\"0x{:016x}\",\"metrics\":{{",
+            a.tier, a.hash
         );
         for (j, (name, v)) in a.metrics.iter().enumerate() {
             if j > 0 {
                 body.push(',');
             }
-            let _ = write!(body, "\"{name}\":\"0x{:016x}\"", v.to_bits());
+            push_json_string(&mut body, name);
+            let _ = write!(body, ":\"0x{:016x}\"", v.to_bits());
         }
         body.push_str("}}");
     }

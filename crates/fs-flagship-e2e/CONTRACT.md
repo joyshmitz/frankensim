@@ -4,10 +4,21 @@ Flagship e2e suite (bead `frankensim-epic-flagships-mye.5`): staged
 smoke/mid/full replay lanes for the flagship crates, cross-flagship
 audits, failure drills, forensic logs, and a deterministic lab
 notebook artifact. Golden constants are FROZEN (bead mye.5): vessel
-0xe621_48d4_490c_a887, ornith 0xa6fa_6460_e7c7_972f, frame
+0xd70b_9ac9_0828_ae86, ornith 0xa6fa_6460_e7c7_972f, frame
 0x05e1_d182_48d2_949f, shared LBM core 0x6841_e3c0_508e_eba5 —
 replay-equality verified before freezing; bump only with a semantic
 justification in the owning flagship or shared core.
+
+The vessel smoke hash was formerly `0xe621_48d4_490c_a887` under the
+radix-2 FFT schedule. The mixed radix-4/2 schedule intentionally
+changes the floating-point operation order in `fs-cheb`'s DCT path,
+which feeds the vessel stability objective. Its independent DCT,
+Orr-Sommerfeld, vessel-property, and replay checks remain green; the
+new bit identity is recorded here rather than silently accepted. The
+metric-level audit found that only `robust_offband` moved, from
+`-0.0004364607241673659` to `-0.00043646072421213883` (about
+`4.48e-14` absolute); the other five metrics retained their exact bits,
+and restoring only the old final-field bits reconstructs the old hash.
 
 ## Purpose and layer
 
@@ -32,7 +43,8 @@ and structured failure evidence.
 - `artifact(flagship, tier, metrics, wall_s)` constructs a
   `StageArtifact` with its content hash already computed.
 - `log_row(stage, kind, payload)` emits the suite's structured JSON
-  row shape: `stage`, `kind`, and `payload`.
+  row shape: `stage`, `kind`, and `payload`. The first two fields are
+  JSON-escaped; `payload` is a caller-supplied complete JSON value.
 - `notebook(artifacts)` emits the deterministic lab-notebook body
   over stage hashes and metric bit patterns.
 - `lbm_core_roll_hash()` runs a canonical D2Q9 roll fixture so vessel

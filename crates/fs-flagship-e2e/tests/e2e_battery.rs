@@ -28,7 +28,13 @@ const RATE: Dims = Dims([0, 0, -1, 0, 0]);
 // Golden hashes: frozen at bead mye.5. Bump ONLY with justification
 // (a semantic change in the owning flagship or a shared core).
 // ------------------------------------------------------------------
-const GOLDEN_VESSEL_SMOKE: u64 = 0xe621_48d4_490c_a887;
+// The former radix-2 fs-fft schedule produced 0xe621_48d4_490c_a887.
+// The mixed radix-4/2 schedule intentionally changes DCT operation
+// order in fs-cheb, which feeds the vessel's stability objective. Only
+// robust_offband moved (by 4.48e-14); the other five metrics kept their
+// exact bits, and substituting the old final field reconstructs the old
+// hash exactly.
+const GOLDEN_VESSEL_SMOKE: u64 = 0xd70b_9ac9_0828_ae86;
 const GOLDEN_ORNITH_SMOKE: u64 = 0xa6fa_6460_e7c7_972f;
 const GOLDEN_FRAME_SMOKE: u64 = 0x05e1_d182_48d2_949f;
 const GOLDEN_LBM_CORE: u64 = 0x6841_e3c0_508e_eba5;
@@ -118,14 +124,15 @@ fn frame_smoke() -> StageArtifact {
 fn fe2e_001_vessel_smoke_golden() {
     let a = vessel_smoke();
     let b = vessel_smoke();
+    let evidence = notebook(std::slice::from_ref(&a));
     println!(
         "{}",
         log_row(
             "vessel-smoke",
             "artifact",
             &format!(
-                "{{\"hash\":\"0x{:016x}\",\"wall_s\":{:.2}}}",
-                a.hash, a.wall_s
+                "{{\"hash\":\"0x{:016x}\",\"wall_s\":{:.2},\"evidence\":{evidence}}}",
+                a.hash, a.wall_s,
             )
         )
     );
@@ -133,8 +140,8 @@ fn fe2e_001_vessel_smoke_golden() {
         "fe2e-001-vessel-smoke",
         a.hash == b.hash && a.hash == GOLDEN_VESSEL_SMOKE && a.metrics[0].1 < 1e-10,
         &format!(
-            "vessel smoke: hash 0x{:016x} (golden 0x{GOLDEN_VESSEL_SMOKE:016x}), replay equal, mass drift {:.2e}, wall {:.1}s",
-            a.hash, a.metrics[0].1, a.wall_s
+            "vessel smoke: hash 0x{:016x} (golden 0x{GOLDEN_VESSEL_SMOKE:016x}), replay equal, mass drift {:.2e}, wall {:.1}s; evidence {evidence}",
+            a.hash, a.metrics[0].1, a.wall_s,
         ),
     );
 }
@@ -452,6 +459,9 @@ fn fe2e_008_forensics_and_notebook() {
             && r.contains("\"kind\":")
             && r.contains("\"payload\":")
     });
+    let escaped = log_row("vessel\"\n", "artifact\\kind", "{\"ok\":true}");
+    let hostile = artifact("vessel\"\n", Tier::Smoke, vec![("metric\tname", 1.0)], 0.0);
+    let escaped_notebook = notebook(&[hostile]);
     let arts = vec![vessel_smoke(), ornith_smoke(), frame_smoke()];
     let n1 = notebook(&arts);
     // Replay: rebuild everything and regenerate.
@@ -467,9 +477,16 @@ fn fe2e_008_forensics_and_notebook() {
     );
     verdict(
         "fe2e-008-forensics-notebook",
-        parseable && n1 == n2 && n1.contains("\"stages\":[") && arts.len() == 3,
+        parseable
+            && escaped
+                == "{\"stage\":\"vessel\\\"\\n\",\"kind\":\"artifact\\\\kind\",\"payload\":{\"ok\":true}}"
+            && escaped_notebook.contains("\"flagship\":\"vessel\\\"\\n\"")
+            && escaped_notebook.contains("\"metric\\tname\":\"0x3ff0000000000000\"")
+            && n1 == n2
+            && n1.contains("\"stages\":[")
+            && arts.len() == 3,
         &format!(
-            "forensic rows parse with required keys; lab notebook ({} bytes) regenerates BITWISE on full replay",
+            "forensic rows escape string fields and carry required keys; lab notebook ({} bytes) regenerates BITWISE on full replay",
             n1.len()
         ),
     );
