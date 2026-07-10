@@ -215,10 +215,22 @@ impl std::error::Error for ColorError {}
 /// [`ColorError::LaunderingRefused`] for estimate/no-claim kinds.
 pub fn verified_from(cert: &NumericalCertificate) -> Result<Color, ColorError> {
     match cert.kind {
-        NumericalKind::Exact | NumericalKind::Enclosure => Ok(Color::Verified {
-            lo: cert.lo,
-            hi: cert.hi,
-        }),
+        NumericalKind::Exact | NumericalKind::Enclosure => {
+            // A `Verified` color asserts `[lo, hi]` is a valid enclosure; a NaN
+            // or inverted (`lo > hi`) interval encloses NOTHING, so fail closed
+            // rather than mint a false certificate from garbage bounds — e.g.
+            // `exact(NaN)` or a hand-built inverted cert (bead wa8i E4).
+            // Infinite bounds are a valid (if loose) enclosure and pass.
+            if cert.lo.is_nan() || cert.hi.is_nan() || cert.lo > cert.hi {
+                return Err(ColorError::LaunderingRefused {
+                    actual: "non-enclosure (NaN or inverted bounds)",
+                });
+            }
+            Ok(Color::Verified {
+                lo: cert.lo,
+                hi: cert.hi,
+            })
+        }
         NumericalKind::Estimate => Err(ColorError::LaunderingRefused { actual: "estimate" }),
         NumericalKind::NoClaim => Err(ColorError::LaunderingRefused { actual: "no-claim" }),
     }
@@ -230,16 +242,13 @@ pub fn verified_from(cert: &NumericalCertificate) -> Result<Color, ColorError> {
 /// estimated with the model/card identity.
 #[must_use]
 pub fn color_of(numerical: &NumericalCertificate, model: &ModelEvidence) -> Color {
-    if model.cards.is_empty()
-        && matches!(
-            cert_kind(numerical),
-            NumericalKind::Exact | NumericalKind::Enclosure
-        )
-    {
-        return Color::Verified {
-            lo: numerical.lo,
-            hi: numerical.hi,
-        };
+    if model.cards.is_empty() {
+        // Route through the guarded door so uncarded numerics with NaN/inverted
+        // bounds fall through to Estimated instead of minting a false Verified
+        // (bead wa8i E4). Valid Exact/Enclosure bounds are unchanged.
+        if let Ok(verified) = verified_from(numerical) {
+            return verified;
+        }
     }
     if !model.cards.is_empty() && !model.validity.bounds().is_empty() {
         return Color::Validated {
@@ -255,10 +264,6 @@ pub fn color_of(numerical: &NumericalCertificate, model: &ModelEvidence) -> Colo
         },
         dispersion: model.discrepancy_rel.abs(),
     }
-}
-
-fn cert_kind(c: &NumericalCertificate) -> NumericalKind {
-    c.kind
 }
 
 /// Outward-round an arithmetic interval endpoint pair (one ulp each way) so a

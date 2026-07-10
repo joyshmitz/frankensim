@@ -108,6 +108,20 @@ impl NumericalKind {
     }
 }
 
+/// Canonical `(lo ≤ hi)` ordering that PROPAGATES NaN. `f64::min`/`max`
+/// silently DISCARD a NaN operand — normalizing `(NaN, 1.0)` to `(1.0, 1.0)`
+/// would mint razor-thin false precision from a garbage bound (bead wa8i E4);
+/// a NaN input yields a NaN interval that fails closed at the color gate.
+fn ordered_bounds(lo: f64, hi: f64) -> (f64, f64) {
+    if lo.is_nan() || hi.is_nan() {
+        (f64::NAN, f64::NAN)
+    } else if lo <= hi {
+        (lo, hi)
+    } else {
+        (hi, lo)
+    }
+}
+
 /// The numerical slice: `[lo, hi]` encloses (or estimates) the scalar QoI.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NumericalCertificate {
@@ -130,24 +144,27 @@ impl NumericalCertificate {
         }
     }
 
-    /// A rigorous enclosure (callers guarantee `lo <= hi`; violations are
-    /// normalized by swapping — a teaching-free total function).
+    /// A rigorous enclosure (callers guarantee `lo <= hi`; out-of-order bounds
+    /// are normalized by swapping — a teaching-free total function). A NaN bound
+    /// is PROPAGATED, not silently dropped, so it fails closed at the color gate.
     #[must_use]
     pub fn enclosure(lo: f64, hi: f64) -> Self {
+        let (lo, hi) = ordered_bounds(lo, hi);
         NumericalCertificate {
             kind: NumericalKind::Enclosure,
-            lo: lo.min(hi),
-            hi: lo.max(hi),
+            lo,
+            hi,
         }
     }
 
     /// A non-rigorous band.
     #[must_use]
     pub fn estimate(lo: f64, hi: f64) -> Self {
+        let (lo, hi) = ordered_bounds(lo, hi);
         NumericalCertificate {
             kind: NumericalKind::Estimate,
-            lo: lo.min(hi),
-            hi: lo.max(hi),
+            lo,
+            hi,
         }
     }
 

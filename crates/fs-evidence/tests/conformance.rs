@@ -463,3 +463,53 @@ fn evd_009_non_finite_regimes_fail_closed_and_payloads_escape() {
          and non-finite floats are tagged strings",
     );
 }
+
+#[test]
+fn evd_010_verified_gate_refuses_nan_and_inverted_bounds() {
+    use fs_evidence::{Color, color_of, verified_from};
+    // exact(NaN) is not an enclosure — the color gate must refuse, not mint
+    // Verified{NaN,NaN} (bead wa8i E4).
+    assert!(verified_from(&NumericalCertificate::exact(f64::NAN)).is_err());
+    // enclosure(NaN, hi) now PROPAGATES the NaN (min/max used to drop it into a
+    // razor-thin false interval), so the gate refuses it too.
+    assert!(verified_from(&NumericalCertificate::enclosure(f64::NAN, 1.0)).is_err());
+    // A valid finite enclosure passes; an out-of-order INPUT is normalized.
+    assert!(matches!(
+        verified_from(&NumericalCertificate::enclosure(1.0, 5.0)),
+        Ok(Color::Verified { lo, hi }) if lo <= 1.0 && hi >= 5.0
+    ));
+    assert!(matches!(
+        verified_from(&NumericalCertificate::enclosure(5.0, 1.0)), // normalized to [1,5]
+        Ok(Color::Verified { .. })
+    ));
+    // Infinite bounds are a valid (loose) enclosure and pass.
+    assert!(matches!(
+        verified_from(&NumericalCertificate::enclosure(
+            f64::NEG_INFINITY,
+            f64::INFINITY
+        )),
+        Ok(Color::Verified { .. })
+    ));
+    // color_of routes uncarded numerics through the same gate: valid → Verified,
+    // NaN → falls through to Estimated (never a false Verified).
+    let uncarded = ModelEvidence {
+        cards: vec![],
+        assumptions: vec![],
+        validity: ValidityDomain::unconstrained(),
+        discrepancy_rel: 0.0,
+        in_domain: true,
+    };
+    assert_eq!(
+        color_of(&NumericalCertificate::enclosure(1.0, 2.0), &uncarded).rank(),
+        fs_evidence::ColorRank::Verified
+    );
+    assert_ne!(
+        color_of(&NumericalCertificate::exact(f64::NAN), &uncarded).rank(),
+        fs_evidence::ColorRank::Verified
+    );
+    verdict(
+        "evd-010",
+        true,
+        "verified_from / color_of refuse NaN and inverted bounds (fail closed)",
+    );
+}
