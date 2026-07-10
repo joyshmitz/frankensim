@@ -84,6 +84,15 @@ pub enum VoxelError {
         /// Largest squared distance admitted by the exact f64 path.
         maximum: u128,
     },
+    /// A world point cannot be represented by the integer voxel lattice.
+    WorldCoordinateOutOfRange {
+        /// Axis that could not be converted.
+        axis: usize,
+        /// Original world coordinate on that axis.
+        world: f64,
+        /// Coordinate normalized by the field frame before flooring.
+        normalized: f64,
+    },
     /// An operation requires at least one active occupancy voxel.
     EmptyOccupancy {
         /// Operation that refused the empty field.
@@ -152,6 +161,15 @@ impl fmt::Display for VoxelError {
                 f,
                 "{operation} squared coordinate diameter {max_squared_distance} exceeds exact \
                  f64 limit {maximum}"
+            ),
+            VoxelError::WorldCoordinateOutOfRange {
+                axis,
+                world,
+                normalized,
+            } => write!(
+                f,
+                "world coordinate {world} on axis {axis} maps to unrepresentable voxel \
+                 coordinate {normalized}"
             ),
             VoxelError::EmptyOccupancy { operation } => {
                 write!(f, "{operation} requires at least one active voxel")

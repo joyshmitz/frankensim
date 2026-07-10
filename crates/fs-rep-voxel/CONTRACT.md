@@ -25,8 +25,10 @@ validity/topology certificates (wqd.23), lattice/infill homogenization
   REFUSED not clamped). `OccupancyField::new` rejects non-finite frame
   origins; frame metadata is private and exposed read-only. Boolean
   operations reject frame mismatches before touching the receiver.
-  Manual `Clone` rebuilds through the active set (the substrate carries
-  no derives).
+  `voxel_of` is fallible: non-finite or out-of-`i32` world coordinates
+  never alias a boundary cell through float-cast saturation. Manual
+  `Clone` rebuilds through the active set (the substrate carries no
+  derives).
 - `dt`: `euclidean_dt(field, max_voxels)` — fallible EXACT Euclidean
   distance transform
   (Felzenszwalb–Huttenlocher separable lower envelopes) over the active
@@ -36,8 +38,8 @@ validity/topology certificates (wqd.23), lattice/infill homogenization
   parabolas only. Coordinate spans are computed in `i64`, dense volume
   in checked `u128`, and no allocation occurs unless the caller's
   explicit voxel budget admits it. The maximum squared coordinate
-  diameter is limited to `2^52` voxel units so integer costs and envelope
-  decisions remain exact in `f64`. `DistanceField` layout is private and
+  diameter is limited to `< 2^52` voxel units so integer costs and
+  envelope decisions remain exact in `f64`. `DistanceField` layout is private and
   read-only so inconsistent dimensions/storage cannot be forged.
 - `cloud`: `PointCloud` with grid-hash radius/kNN queries (brute-force
   verified, deterministic tie order), PCA normal estimation (smallest
@@ -57,7 +59,9 @@ validity/topology certificates (wqd.23), lattice/infill homogenization
   from occupancy, distance magnitude from the exact DT on both
   polarities (complement DT inside), an exact active-center scan
   fallback outside the DT box, and an HONEST error certificate — an
-  Enclosure of ± half a voxel diagonal, never "exact".
+  Enclosure of ± half a voxel diagonal, never "exact". An invalid world
+  query returns a NaN signed distance with an explicit `NoClaim`
+  certificate and no Lipschitz claim.
 
 ## Invariants
 
@@ -67,7 +71,7 @@ validity/topology certificates (wqd.23), lattice/infill homogenization
 2. **The DT is exact within its admitted numeric domain**, not
    approximate: equality with the O(n²) reference on scattered+slab
    fixtures; 1-Lipschitz in the voxel metric. Boxes whose maximum squared
-   coordinate diameter exceeds `2^52` are structurally refused.
+   coordinate diameter is at least `2^52` are structurally refused.
 3. **Cloud queries match brute force** (radius and kNN); sphere normals
    are >97% outward-aligned after propagation — including on ring-sampled
    (kNN-disconnected) clouds.
@@ -83,6 +87,9 @@ validity/topology certificates (wqd.23), lattice/infill homogenization
 8. **Dense work is admitted before execution**: DT and complement boxes
    use checked spans/volumes, respect an explicit maximum voxel count,
    and reject an unrepresentable `i32` halo before iteration or allocation.
+9. **World-to-voxel conversion fails closed**: finite admissible values
+   retain floor-based cell semantics; NaN, infinity, and out-of-range
+   finite values cannot saturate to an apparently valid boundary voxel.
 
 ## Error model
 
@@ -90,8 +97,9 @@ validity/topology certificates (wqd.23), lattice/infill homogenization
 `CoordinateRange` (axis/range/halo), `VoxelBudgetExceeded` (required and
 authorized voxels), `DenseVolumeOverflow` (dimensions), `EmptyOccupancy`,
 `ExactnessRangeExceeded` (squared coordinate diameter), `Lattice`
-(offending element named), `Cloud`, `Graph`. Nothing silently clamps,
-wraps, mutates after failed admission, or skips.
+`WorldCoordinateOutOfRange` (axis/world/normalized coordinate),
+`Lattice` (offending element named), `Cloud`, `Graph`. Nothing silently
+clamps, wraps, mutates after failed admission, or skips.
 
 ## Determinism class
 
@@ -127,7 +135,8 @@ near analytic, declared resolution error, out-of-box fallback); rv-006
 non-finite-origin refusal, frame-mismatch/no-mutation, empty-chart
 refusal, full-`i32` span and dense-volume budget refusal, and complement
 halo refusal at both coordinate extrema, numeric-exactness refusal, and
-exact voxel-cube support bounds.
+exact voxel-cube support bounds, plus no-claim chart samples for NaN,
+infinite, and huge finite world coordinates.
 
 ## No-claim boundaries
 
@@ -137,8 +146,8 @@ exact voxel-cube support bounds.
   not promise that the host allocator can satisfy an imprudently large
   authorization. Tiled narrow-band DT is follow-up work with
   fs-rep-sdf's band machinery.
-- **No DT exactness claim exists beyond the admitted `2^52` maximum
-  squared coordinate diameter**: those boxes return
+- **No DT exactness claim exists at or beyond a `2^52` maximum squared
+  coordinate diameter**: those boxes return
   `ExactnessRangeExceeded` even if their voxel count budget is large
   enough. The limit protects integer representation and the separation
   margin of rational lower-envelope breakpoints.

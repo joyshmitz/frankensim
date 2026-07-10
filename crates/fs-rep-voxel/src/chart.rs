@@ -83,7 +83,14 @@ fn complement_dt(
 
 impl Chart for OccupancyChart {
     fn eval(&self, x: Point3, _cx: &Cx<'_>) -> ChartSample {
-        let coord = self.field.voxel_of([x.x, x.y, x.z]);
+        let Ok(coord) = self.field.voxel_of([x.x, x.y, x.z]) else {
+            return ChartSample {
+                signed_distance: f64::NAN,
+                gradient: None,
+                lipschitz: None,
+                error: NumericalCertificate::no_claim(),
+            };
+        };
         let inside = self.field.is_solid(coord);
         let magnitude = if inside {
             self.to_void

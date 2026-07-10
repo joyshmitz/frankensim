@@ -477,6 +477,17 @@ fn rv_005_occupancy_chart_contract() {
         let support = chart.support();
         assert!(chart.inside(Point3::new(0.05, 0.05, 0.05), &cx));
         let _ = support;
+        for invalid in [
+            Point3::new(f64::NAN, 0.0, 0.0),
+            Point3::new(0.0, f64::INFINITY, 0.0),
+            Point3::new(0.0, 0.0, f64::MAX),
+        ] {
+            let sample = chart.eval(invalid, &cx);
+            assert!(sample.signed_distance.is_nan());
+            assert!(sample.gradient.is_none());
+            assert!(sample.lipschitz.is_none());
+            assert_eq!(sample.error.kind, fs_evidence::NumericalKind::NoClaim);
+        }
     });
     verdict(
         "rv-005",
@@ -492,6 +503,22 @@ fn rv_006_frames_and_dense_work_fail_closed() {
     base.set([4, 5, 6]);
     assert_eq!(base.voxel_size(), 1.0);
     assert_eq!(base.origin(), [0.0; 3]);
+    let conversion = OccupancyField::new(2.0, [10.0, 20.0, 30.0]).expect("conversion frame");
+    assert_eq!(
+        conversion.voxel_of([9.999, 20.0, 34.0]),
+        Ok([-1, 0, 2]),
+        "finite coordinate conversion keeps floor boundary semantics"
+    );
+    for point in [
+        [f64::NAN, 0.0, 0.0],
+        [0.0, f64::NEG_INFINITY, 0.0],
+        [0.0, 0.0, f64::MAX],
+    ] {
+        assert!(matches!(
+            conversion.voxel_of(point),
+            Err(VoxelError::WorldCoordinateOutOfRange { .. })
+        ));
+    }
 
     for (name, other) in [
         (
@@ -584,10 +611,14 @@ fn rv_006_frames_and_dense_work_fail_closed() {
     // numerical range where integer squared distances are exact in f64.
     let mut too_wide = OccupancyField::new(1.0, [0.0; 3]).expect("wide frame");
     too_wide.set([0, 0, 0]);
-    too_wide.set([100_000_000, 0, 0]);
+    too_wide.set([1 << 26, 0, 0]);
     assert!(matches!(
-        fs_rep_voxel::euclidean_dt(&too_wide, 100_000_001),
-        Err(VoxelError::ExactnessRangeExceeded { .. })
+        fs_rep_voxel::euclidean_dt(&too_wide, (1 << 26) + 1),
+        Err(VoxelError::ExactnessRangeExceeded {
+            max_squared_distance: 4_503_599_627_370_496,
+            maximum: 4_503_599_627_370_495,
+            ..
+        })
     ));
 
     // A single active cell needs a 3^3 complement scan. The constructor

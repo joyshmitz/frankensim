@@ -10,7 +10,7 @@ use crate::{VoxelError, field::OccupancyField};
 // also keeps a rounded non-integer envelope intersection from crossing an
 // integer query location: for separation D, the rounding scale is below
 // D/2^53 while the nearest rational breakpoint gap is at least 1/(2D).
-const MAX_EXACT_SQUARED_DISTANCE: u128 = 1 << 52;
+const MAX_EXACT_SQUARED_DISTANCE: u128 = (1 << 52) - 1;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CheckedBox {

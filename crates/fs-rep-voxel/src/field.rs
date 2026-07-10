@@ -112,15 +112,33 @@ impl OccupancyField {
         core::array::from_fn(|k| self.origin[k] + (f64::from(coord[k]) + 0.5) * self.voxel_size)
     }
 
-    /// The voxel containing a world point.
-    #[must_use]
-    pub fn voxel_of(&self, p: [f64; 3]) -> [i32; 3] {
-        core::array::from_fn(|k| {
+    /// The voxel containing a world point, using floor semantics at cell
+    /// boundaries.
+    ///
+    /// # Errors
+    /// [`VoxelError::WorldCoordinateOutOfRange`] when an input is
+    /// non-finite or its frame-normalized floor is outside `i32`.
+    pub fn voxel_of(&self, p: [f64; 3]) -> Result<[i32; 3], VoxelError> {
+        let mut coord = [0i32; 3];
+        for axis in 0..3 {
+            let normalized = (p[axis] - self.origin[axis]) / self.voxel_size;
+            let floored = normalized.floor();
+            if !normalized.is_finite()
+                || floored < f64::from(i32::MIN)
+                || floored > f64::from(i32::MAX)
+            {
+                return Err(VoxelError::WorldCoordinateOutOfRange {
+                    axis,
+                    world: p[axis],
+                    normalized,
+                });
+            }
             #[allow(clippy::cast_possible_truncation)]
             {
-                ((p[k] - self.origin[k]) / self.voxel_size).floor() as i32
+                coord[axis] = floored as i32;
             }
-        })
+        }
+        Ok(coord)
     }
 
     fn require_same_frame(
