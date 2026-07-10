@@ -95,8 +95,9 @@ None.
   rel; inlet mass-flow responds to the inlet lever (1.35 fore vs 1.10
   aft).
 - **orn-002** screen: race winner == deterministic argmax L/D; 23/24
-  dominated candidates eliminated early; 578 evals vs fixed-N 9600
-  (16× saved — the P7 payoff measured); the flap metric responds to
+  dominated candidates eliminated early; 1414 evals vs fixed-N 9600
+  (6× saved — the P7 payoff measured after checked-span normalization);
+  the flap metric responds to
   the gait.
 - **orn-003** refine: LBM control-volume lift agrees with the panel
   sign; steadiness 5.5e-6 after two flow-throughs; honesty label
