@@ -82,7 +82,9 @@ impl Rheology {
                 // Guard γ̇ = 0 (unbounded for n < 1): the floor below
                 // bounds τ anyway; use a tiny reference rate.
                 let g = gdot.max(1e-12);
-                k * g.powf(n - 1.0)
+                // det::pow: platform powf is a build-mode/cross-ISA
+                // determinism hazard in solver paths (xo2k, cf. 4xnt).
+                k * fs_math::det::pow(g, n - 1.0)
             }
             Rheology::Carreau {
                 nu0,
@@ -95,7 +97,7 @@ impl Rheology {
                 require_nonnegative_finite("Carreau relaxation time", lambda);
                 require_positive_finite("Carreau flow index", n);
                 let x = lambda * gdot;
-                nu_inf + (nu0 - nu_inf) * x.mul_add(x, 1.0).powf((n - 1.0) / 2.0)
+                nu_inf + (nu0 - nu_inf) * fs_math::det::pow(x.mul_add(x, 1.0), (n - 1.0) / 2.0)
             }
         }
     }
@@ -170,8 +172,8 @@ pub fn powerlaw_poiseuille_analytic(gx: f64, k: f64, n: f64, ny: usize, y: usize
     let d = (y as f64 - yc).abs();
     let e = 1.0 + 1.0 / n;
     let forcing = gx / k;
-    let signed_scale = forcing.signum() * forcing.abs().powf(1.0 / n);
-    (n / (n + 1.0)) * signed_scale * (h.powf(e) - d.powf(e))
+    let signed_scale = forcing.signum() * fs_math::det::pow(forcing.abs(), 1.0 / n);
+    (n / (n + 1.0)) * signed_scale * (fs_math::det::pow(h, e) - fs_math::det::pow(d, e))
 }
 
 /// Convenience: run a force-driven periodic channel (walls top and
