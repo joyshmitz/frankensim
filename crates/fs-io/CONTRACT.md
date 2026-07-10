@@ -102,6 +102,16 @@ CSV + JSON catalogs, quoting, and the teaching-error battery; io-006 3MF ZIP
 structure (EOCD, entry count, model XML), GLB chunk accounting, VTK section
 counts.
 
+## PLY element order (bead wqd.25.1)
+
+Element order is the header's to define: faces may legally precede
+vertices. Parsing collects triangulated faces as pending records
+(structural checks and the 1024-item list cap and triangle cap apply
+immediately); index RANGE validation runs once, after every element is
+consumed, against the final vertex count — with the exact offending
+triangle ordinal in the diagnostic. Vertex-first and face-first files
+import identically in both ASCII and binary (conformance-tested).
+
 ## No-claim boundaries
 
 - **STEP/IGES and IFC are STAGED, not promised** (per the bead text):

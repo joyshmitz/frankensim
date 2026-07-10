@@ -412,7 +412,10 @@ fn ply_face_first_element_order_is_legal() {
     match fs_io::ply::read_ply(bad.as_bytes()) {
         Err(fs_io::IoError::Malformed { at, what }) => {
             assert_eq!(at, 0, "first triangle is the offender");
-            assert!(what.contains("index 9") && what.contains("3 vertices"), "{what}");
+            assert!(
+                what.contains("index 9") && what.contains("3 vertices"),
+                "{what}"
+            );
         }
         other => panic!("expected out-of-range refusal, got {other:?}"),
     }

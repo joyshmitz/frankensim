@@ -242,9 +242,7 @@ pub fn read_ply(bytes: &[u8]) -> Result<Soup, IoError> {
             if !in_range {
                 return Err(IoError::Malformed {
                     at: ordinal,
-                    what: format!(
-                        "face index {i} out of range (mesh has {n_vertices} vertices)"
-                    ),
+                    what: format!("face index {i} out of range (mesh has {n_vertices} vertices)"),
                 });
             }
         }
