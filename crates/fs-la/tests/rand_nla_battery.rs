@@ -276,8 +276,9 @@ fn hutch_pp_beats_hutchinson_variance() {
     );
 }
 
-/// Recorded on aarch64-apple (M4 Pro), identical in debug and release;
-/// must match on x86-64 (trj).
+/// Recorded on aarch64-apple (M4 Pro); verified identical on x86-64
+/// (trj), in BOTH debug and release on both ISAs (four quadrants,
+/// 2026-07-09, trj:/data/tmp/rn_verify2/run_{release,debug}.log).
 // JUSTIFIED BUMP (2026-07-09, second): the previous bump to
 // 0xf3dc_b63b_e63f_8ab9 attributed the break to fs-rand d9ba0b6, but that
 // commit only changed counter wrapping at the u64::MAX boundary (never

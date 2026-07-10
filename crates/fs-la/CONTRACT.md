@@ -167,9 +167,10 @@ mul_add; tested per op family). Golden hash over GEMM + Cholesky solve
 both reference ISAs.
 Randomized NLA: keyed-Philox replayable (every estimate is a pure
 function of its seed); FNV-64 golden over RSVD σ + posterior estimate +
-Hutchinson trace = `0xeef1_0550_7daf_c0d5`, identical in debug and
-release by construction (recorded on aarch64-apple; x86-64 confirmation
-on trj pending re-run). Bumped once with cause: the original fixture
+Hutchinson trace = `0xeef1_0550_7daf_c0d5`, verified identical on both
+reference ISAs (aarch64-apple M4, x86-64 trj) and in BOTH debug and
+release on each (trj:/data/tmp/rn_verify2/run_{release,debug}.log,
+2026-07-09). Bumped once with cause: the original fixture
 built its spectrum with `f64::powi`, whose rounding is
 optimization-level-dependent (1-ulp debug/release divergence from
 exponent 4 up), so the sentinel bits depended on build mode
