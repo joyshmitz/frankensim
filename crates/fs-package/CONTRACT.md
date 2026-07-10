@@ -12,7 +12,8 @@ Layer L6. Depends only on `fs-evidence` (UTIL — `Color`, `ColorRank`,
 ## Public types and semantics
 
 - `Claim { id, statement, color }` — a claim plus its epistemic color (which
-  carries the certificate payload).
+  carries the certificate payload). Claim ids are non-blank and unique within
+  a package.
 - `Provenance { code_version, constellation_lock }`.
 - `EvidencePackage { format_version, claims, provenance, signature }` —
   builder: `new(prov).with_claim(..).signed(..)`.
@@ -25,15 +26,22 @@ Layer L6. Depends only on `fs-evidence` (UTIL — `Color`, `ColorRank`,
   - `color_breakdown() -> ColorBreakdown` — the by-color budget pie.
   - `to_json()` — deterministic self-describing JSON (carries the root hex).
 - `PackageReport { merkle_root, breakdown, claims }`.
-- `PackageError` — `IncompleteValidatedClaim { claim, missing }` /
-  `IncompleteVerifiedClaim { claim }` / `UnsupportedFormat { found }`.
+- `PackageError` — structured refusals for incomplete provenance, invalid or
+  duplicate claim ids, malformed color payloads, unsupported formats, receipt
+  mismatches/parents, and refuted claims.
 
 ## Invariants
 
-- COMPLETENESS: a `Validated` claim must have a non-empty regime (`regime.
-  bounds()` non-empty) AND a non-blank anchoring `dataset`; a `Verified` claim
-  must carry a finite `[lo <= hi]` interval. An `Estimated` claim needs no
-  certificate — an all-estimated package is valid and round-trips.
+- COMPLETENESS: reproducibility provenance fields and claim ids are non-blank;
+  claim ids are unique. A `Validated` claim must have a non-empty regime
+  (`regime.bounds()` non-empty) whose axis names are non-blank and whose bounds
+  are finite and ordered, plus a non-blank anchoring `dataset`. A `Verified`
+  claim must carry a finite `[lo <= hi]` interval. An `Estimated` claim needs a
+  non-blank estimator identity and a non-negative, non-NaN dispersion.
+  Positive infinity is preserved as the lower-layer algebra's explicit
+  no-quantitative-spread-claim sentinel; it is distinct from finite subtotal
+  overflow, which verification rejects. An honest all-estimated package
+  remains valid.
 - CONTENT-ADDRESSING: `merkle_root` is deterministic and tamper-evident across
   format version, provenance, and claims; a detached signature does not change it.
 - `verify` runs no solver — pure structural re-verification (the checker's
@@ -41,7 +49,14 @@ Layer L6. Depends only on `fs-evidence` (UTIL — `Color`, `ColorRank`,
 
 ## Error model
 
-Structured `PackageError` values (refusals that teach), never panics.
+Structured `PackageError` values (refusals that teach), never panics. The JSON
+parser maps the same package-level semantic refusals into `ParseError`, so a
+package cannot pass one entry point and fail the other. The untrusted JSON
+boundary is bounded before schema mapping: 64 MiB input, depth 64, one million
+values, 100,000 members per container, 1 MiB decoded strings, and 128-byte
+number tokens. In-memory verification enforces the corresponding transport
+envelope before a package can pass, so a verified object remains serializable
+and checkable under those bounds. Limit violations are structured refusals.
 
 ## Determinism class
 
@@ -62,12 +77,13 @@ None.
 
 ## Conformance tests
 
-`tests/package.rs` (Proposal 12, 10 cases): complete mixed-color package;
+`tests/package.rs` (Proposal 12): complete mixed-color package;
 all-estimated boundary (valid + round-trips); validated-missing-regime and
 validated-missing-dataset completeness failures; verified bad-interval
 failure; Merkle determinism + claim/provenance tamper detection;
 unsupported-format rejection; optional detached signature; deterministic JSON
-carrying the root.
+carrying the root; in-memory/serialized semantic parity; and exact full-width
+falsifier attempt-count round trips with overflow refusal.
 
 ## Schema v3: receipts, falsifiers, anchors (bead xfxq)
 
@@ -105,7 +121,10 @@ structurally-shaped forged Verified claim fail. Decode-encode is both
 semantically and textually stable (tested). The magnitude budget
 attributes ERROR MAGNITUDES (verified interval widths, estimated
 dispersions) and counts validated claims as unquantified regional
-trust — never numerified.
+trust — never numerified. JSON number tokens are retained as decimal text until
+they are converted into their target integer type; full-width `u64` falsifier
+attempt counts therefore round-trip exactly, and overflow refuses instead of
+rounding through `f64`.
 
 ## No-claim boundaries
 

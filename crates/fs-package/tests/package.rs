@@ -6,7 +6,10 @@
 //! breakdown, and deterministic JSON.
 
 use fs_evidence::{Color, ValidityDomain};
-use fs_package::{Claim, EvidencePackage, PackageError, Provenance};
+use fs_package::{
+    Claim, EvidencePackage, FalsifierRecord, MAX_JSON_CONTAINER_ITEMS, MAX_JSON_DEPTH,
+    MAX_JSON_NUMBER_BYTES, MAX_JSON_STRING_BYTES, PackageError, Provenance,
+};
 
 fn prov() -> Provenance {
     Provenance::new("commit-abc123", "lock-deadbeef")
@@ -40,6 +43,13 @@ fn validated(id: &str, regime: ValidityDomain, dataset: &str) -> Claim {
 }
 fn good_regime() -> ValidityDomain {
     ValidityDomain::unconstrained().with("Re", 1e5, 3e5)
+}
+
+fn assert_serialized_refuses(pkg: &EvidencePackage) {
+    assert!(
+        EvidencePackage::from_json(&pkg.to_json()).is_err(),
+        "serialized package must refuse the same semantics as verify(): {pkg:?}"
+    );
 }
 
 #[test]
@@ -110,6 +120,257 @@ fn a_verified_claim_with_a_bad_interval_fails() {
         pkg.verify(),
         Err(PackageError::IncompleteVerifiedClaim { .. })
     ));
+}
+
+#[test]
+fn in_memory_and_serialized_semantic_gates_are_identical() {
+    let bad_code = EvidencePackage::new(Provenance::new(" ", "lock")).with_claim(verified("c"));
+    assert!(matches!(
+        bad_code.verify(),
+        Err(PackageError::IncompleteProvenance {
+            missing: "code_version"
+        })
+    ));
+    assert_serialized_refuses(&bad_code);
+
+    let bad_lock = EvidencePackage::new(Provenance::new("commit", "\t")).with_claim(verified("c"));
+    assert!(matches!(
+        bad_lock.verify(),
+        Err(PackageError::IncompleteProvenance {
+            missing: "constellation_lock"
+        })
+    ));
+    assert_serialized_refuses(&bad_lock);
+
+    let blank_id = EvidencePackage::new(prov()).with_claim(verified("  "));
+    assert!(matches!(
+        blank_id.verify(),
+        Err(PackageError::InvalidClaimId {
+            index: 0,
+            reason: "blank",
+            ..
+        })
+    ));
+    assert_serialized_refuses(&blank_id);
+
+    let duplicate_id = EvidencePackage::new(prov())
+        .with_claim(verified("same"))
+        .with_claim(estimated("same"));
+    assert!(matches!(
+        duplicate_id.verify(),
+        Err(PackageError::InvalidClaimId {
+            index: 1,
+            reason: "duplicate",
+            ..
+        })
+    ));
+    assert_serialized_refuses(&duplicate_id);
+
+    let blank_estimator = EvidencePackage::new(prov()).with_claim(Claim::new(
+        "e",
+        "missing estimator identity",
+        Color::Estimated {
+            estimator: " ".to_string(),
+            dispersion: 1.0,
+        },
+    ));
+    assert!(matches!(
+        blank_estimator.verify(),
+        Err(PackageError::IncompleteEstimatedClaim {
+            missing: "estimator",
+            ..
+        })
+    ));
+    assert_serialized_refuses(&blank_estimator);
+
+    for dispersion in [-1.0, f64::NEG_INFINITY, f64::NAN] {
+        let pkg = EvidencePackage::new(prov()).with_claim(Claim::new(
+            "e",
+            "invalid dispersion",
+            Color::Estimated {
+                estimator: "probe".to_string(),
+                dispersion,
+            },
+        ));
+        assert!(matches!(
+            pkg.verify(),
+            Err(PackageError::InvalidEstimatedDispersion { .. })
+        ));
+        assert_serialized_refuses(&pkg);
+    }
+
+    let explicitly_unbounded = EvidencePackage::new(prov()).with_claim(Claim::new(
+        "unbounded",
+        "honest no-spread-claim sentinel",
+        Color::Estimated {
+            estimator: "regime-exit".to_string(),
+            dispersion: f64::INFINITY,
+        },
+    ));
+    assert!(explicitly_unbounded.verify().is_ok());
+    assert!(
+        explicitly_unbounded
+            .magnitude_budget()
+            .estimated_dispersion
+            .is_infinite()
+    );
+    assert_eq!(
+        EvidencePackage::from_json(&explicitly_unbounded.to_json()).unwrap(),
+        explicitly_unbounded
+    );
+
+    let width_overflow = EvidencePackage::new(prov()).with_claim(Claim::new(
+        "wide",
+        "finite endpoints whose width overflows",
+        Color::Verified {
+            lo: -f64::MAX,
+            hi: f64::MAX,
+        },
+    ));
+    assert!(matches!(
+        width_overflow.verify(),
+        Err(PackageError::MagnitudeOverflow {
+            component: "verified_width",
+            ..
+        })
+    ));
+    assert_serialized_refuses(&width_overflow);
+
+    let dispersion_overflow = EvidencePackage::new(prov())
+        .with_claim(Claim::new(
+            "d1",
+            "large finite dispersion",
+            Color::Estimated {
+                estimator: "probe-1".to_string(),
+                dispersion: f64::MAX,
+            },
+        ))
+        .with_claim(Claim::new(
+            "d2",
+            "second large finite dispersion",
+            Color::Estimated {
+                estimator: "probe-2".to_string(),
+                dispersion: f64::MAX,
+            },
+        ));
+    assert!(matches!(
+        dispersion_overflow.verify(),
+        Err(PackageError::MagnitudeOverflow {
+            component: "estimated_dispersion",
+            ..
+        })
+    ));
+    assert_serialized_refuses(&dispersion_overflow);
+
+    for regime in [
+        ValidityDomain::unconstrained().with(" ", 1.0, 2.0),
+        ValidityDomain::unconstrained().with("Re", 1.0, f64::INFINITY),
+    ] {
+        let pkg = EvidencePackage::new(prov()).with_claim(validated("v", regime, "dataset"));
+        assert!(matches!(
+            pkg.verify(),
+            Err(PackageError::InvalidValidatedRegime { .. })
+        ));
+        assert_serialized_refuses(&pkg);
+    }
+
+    let ordered = EvidencePackage::new(prov()).with_claim(validated(
+        "ordered",
+        ValidityDomain::unconstrained().with("Re", 1.0, 2.0),
+        "dataset",
+    ));
+    let ordered_pair = format!(
+        "[\"{:016x}\",\"{:016x}\"]",
+        1.0_f64.to_bits(),
+        2.0_f64.to_bits()
+    );
+    let inverted_pair = format!(
+        "[\"{:016x}\",\"{:016x}\"]",
+        2.0_f64.to_bits(),
+        1.0_f64.to_bits()
+    );
+    let inverted_json = ordered.to_json().replace(&ordered_pair, &inverted_pair);
+    let err = EvidencePackage::from_json(&inverted_json).expect_err("inverted regime refuses");
+    assert!(err.why.contains("inverted bounds"), "{err}");
+}
+
+#[test]
+fn falsifier_attempt_counts_round_trip_without_f64_precision_loss() {
+    let first_unrepresentable_integer = (1_u64 << 53) + 1;
+    let pkg = EvidencePackage::new(prov()).with_claim(
+        verified("count")
+            .with_falsifier(FalsifierRecord {
+                name: "precision-probe".to_string(),
+                attempts: first_unrepresentable_integer,
+                refuted: false,
+                detail: "one above f64's exact-integer range".to_string(),
+            })
+            .with_falsifier(FalsifierRecord {
+                name: "exhaustive-probe".to_string(),
+                attempts: u64::MAX,
+                refuted: false,
+                detail: "full-width counter".to_string(),
+            }),
+    );
+    let json = pkg.to_json();
+    assert!(json.contains("\"attempts\":9007199254740993"));
+    assert!(json.contains("\"attempts\":18446744073709551615"));
+    let back = EvidencePackage::from_json(&json).expect("full-width u64 values parse exactly");
+    assert_eq!(back, pkg);
+    assert_eq!(
+        back.claims[0].falsifiers[0].attempts,
+        first_unrepresentable_integer
+    );
+    assert_eq!(back.claims[0].falsifiers[1].attempts, u64::MAX);
+
+    let overflow = json.replace("18446744073709551615", "18446744073709551616");
+    let err = EvidencePackage::from_json(&overflow).expect_err("u64 overflow must refuse");
+    assert!(err.why.contains("out of range"), "{err}");
+}
+
+#[test]
+fn untrusted_json_resource_limits_fail_before_schema_mapping() {
+    let nested = format!(
+        "{}null{}",
+        "[".repeat(MAX_JSON_DEPTH + 1),
+        "]".repeat(MAX_JSON_DEPTH + 1)
+    );
+    let err = EvidencePackage::from_json(&nested).expect_err("deep nesting must refuse");
+    assert!(err.why.contains("nesting depth"), "{err}");
+
+    let oversized_string = format!("\"{}\"", "x".repeat(MAX_JSON_STRING_BYTES + 1));
+    let err =
+        EvidencePackage::from_json(&oversized_string).expect_err("oversized string must refuse");
+    assert!(err.why.contains("decoded string"), "{err}");
+
+    let oversized_number = "9".repeat(MAX_JSON_NUMBER_BYTES + 1);
+    let err =
+        EvidencePackage::from_json(&oversized_number).expect_err("long number token must refuse");
+    assert!(err.why.contains("number token"), "{err}");
+
+    let oversized_array = format!(
+        "[{}]",
+        std::iter::repeat_n("null", MAX_JSON_CONTAINER_ITEMS + 1)
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let err =
+        EvidencePackage::from_json(&oversized_array).expect_err("oversized array must refuse");
+    assert!(err.why.contains("array element count"), "{err}");
+
+    let oversized_in_memory = EvidencePackage::new(prov()).with_claim(Claim::new(
+        "large",
+        "x".repeat(MAX_JSON_STRING_BYTES + 1),
+        Color::Estimated {
+            estimator: "probe".to_string(),
+            dispersion: 1.0,
+        },
+    ));
+    assert!(matches!(
+        oversized_in_memory.verify(),
+        Err(PackageError::TransportLimit { .. })
+    ));
+    assert_serialized_refuses(&oversized_in_memory);
 }
 
 #[test]
@@ -371,7 +632,7 @@ fn coverage_cannot_claim_absent_evidence() {
 #[test]
 fn v3_receipts_falsifiers_anchors() {
     use fs_evidence::IntervalOp;
-    use fs_package::{CompositionReceipt, FalsifierRecord, PackageError};
+    use fs_package::PackageError;
     let ve = |lo: f64, hi: f64| Color::Verified { lo, hi };
     // A well-formed derived package: c = a + b with a valid receipt.
     let good = EvidencePackage::new(Provenance::new("v", "l"))

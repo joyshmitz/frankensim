@@ -141,7 +141,7 @@ pub fn check_against_root(pkg: &EvidencePackage, expected_root: u64) -> CheckRep
 }
 
 /// The full third-party entry point (bead qmao.6.1): parse the
-/// serialized package STRICTLY (schema v2 — the parser itself
+/// serialized package STRICTLY (schema v3 — the parser itself
 /// recomputes the content root and re-derives the magnitude budget
 /// from the parsed claims), then re-verify semantics, optionally
 /// against an expected root and a signature capability. A package that
@@ -252,6 +252,14 @@ fn build_report(
 /// Translate a package error into a checker finding.
 fn describe(e: &PackageError) -> Finding {
     match e {
+        PackageError::IncompleteProvenance { missing } => Finding {
+            kind: "incomplete-provenance",
+            detail: format!("package provenance is missing {missing}"),
+        },
+        PackageError::InvalidClaimId { index, id, reason } => Finding {
+            kind: "invalid-claim-id",
+            detail: format!("claim at index {index} has {reason} id {id:?}"),
+        },
         PackageError::IncompleteValidatedClaim { claim, missing } => Finding {
             kind: "incomplete-validated-claim",
             detail: format!("claim '{claim}' is missing its {missing}"),
@@ -259,6 +267,29 @@ fn describe(e: &PackageError) -> Finding {
         PackageError::IncompleteVerifiedClaim { claim } => Finding {
             kind: "incomplete-verified-claim",
             detail: format!("claim '{claim}' has no valid certificate interval"),
+        },
+        PackageError::InvalidValidatedRegime { claim, axis } => Finding {
+            kind: "invalid-validated-regime",
+            detail: format!("claim '{claim}' has an invalid validity axis {axis:?}"),
+        },
+        PackageError::IncompleteEstimatedClaim { claim, missing } => Finding {
+            kind: "incomplete-estimated-claim",
+            detail: format!("claim '{claim}' is missing its {missing}"),
+        },
+        PackageError::InvalidEstimatedDispersion { claim } => Finding {
+            kind: "invalid-estimated-dispersion",
+            detail: format!("claim '{claim}' has a NaN or negative dispersion"),
+        },
+        PackageError::MagnitudeOverflow { claim, component } => Finding {
+            kind: "magnitude-overflow",
+            detail: format!(
+                "claim '{claim}' made finite {component} evidence overflow; explicit +infinity \
+                 estimated dispersion is the only unbounded sentinel"
+            ),
+        },
+        PackageError::TransportLimit { what, limit } => Finding {
+            kind: "transport-limit",
+            detail: format!("{what} exceeds the standalone checker limit {limit}"),
         },
         PackageError::UnsupportedFormat { found } => Finding {
             kind: "unsupported-format",
