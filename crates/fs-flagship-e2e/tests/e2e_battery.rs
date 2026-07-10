@@ -85,7 +85,7 @@ fn vessel_smoke() -> (StageArtifact, f64) {
     )
 }
 
-fn ornith_smoke() -> StageArtifact {
+fn ornith_smoke() -> (StageArtifact, f64) {
     let t0 = Instant::now();
     let mut seed = 0xE2E_u64;
     let mut lcg = move || {
@@ -103,15 +103,22 @@ fn ornith_smoke() -> StageArtifact {
     let rep = screen_generation(&generation, 0xE2E).expect("normalized screen losses");
     let winner = generation[rep.winner];
     let cert = fs_ornith::certify(&winner);
+    // roa is OUT of the hashed stream: cross-ISA bit-divergent (~1e-9,
+    // macOS libm vs glibc in the ROA proxy chain — bead 6ure) while the
+    // other five metrics are bit-identical across ISAs and build modes.
+    // Envelope-gated in fe2e-002. Restore + re-freeze when 6ure routes
+    // the chain through fs-math det::.
     let metrics = vec![
         ("winner", rep.winner as f64),
         ("eliminated", rep.eliminated as f64),
         ("evals", rep.evaluations_used as f64),
         ("winner_ld", lift_to_drag(&winner)),
         ("certified", f64::from(u8::from(cert.certified))),
-        ("roa", cert.roa_volume),
     ];
-    artifact("ornith", Tier::Smoke, metrics, t0.elapsed().as_secs_f64())
+    (
+        artifact("ornith", Tier::Smoke, metrics, t0.elapsed().as_secs_f64()),
+        cert.roa_volume,
+    )
 }
 
 fn frame_smoke() -> StageArtifact {
@@ -177,8 +184,11 @@ fn fe2e_001_vessel_smoke_golden() {
 
 #[test]
 fn fe2e_002_ornith_smoke_golden() {
-    let a = ornith_smoke();
-    let b = ornith_smoke();
+    let (a, roa_a) = ornith_smoke();
+    let (b, roa_b) = ornith_smoke();
+    // Envelope gate for the ISA-divergent metric (bead 6ure): P-area
+    // proxy stable to 1e-6 within a platform and physically plausible.
+    let roa_ok = (0.1..2.0).contains(&roa_a) && (roa_a - roa_b).abs() < 1e-6;
     let evidence = notebook(std::slice::from_ref(&a));
     println!(
         "{}",
@@ -193,9 +203,9 @@ fn fe2e_002_ornith_smoke_golden() {
     );
     verdict(
         "fe2e-002-ornith-smoke",
-        a.hash == b.hash && a.hash == GOLDEN_ORNITH_SMOKE,
+        a.hash == b.hash && a.hash == GOLDEN_ORNITH_SMOKE && roa_ok,
         &format!(
-            "ornith smoke: hash 0x{:016x} (golden 0x{GOLDEN_ORNITH_SMOKE:016x}), replay equal, wall {:.1}s; evidence {evidence}",
+            "ornith smoke: hash 0x{:016x} (golden 0x{GOLDEN_ORNITH_SMOKE:016x}), replay equal, roa {roa_a:.4} (envelope 0.1..2.0, bead 6ure), wall {:.1}s; evidence {evidence}",
             a.hash, a.wall_s,
         ),
     );
@@ -500,10 +510,10 @@ fn fe2e_008_forensics_and_notebook() {
     let escaped = log_row("vessel\"\n", "artifact\\kind", "{\"ok\":true}");
     let hostile = artifact("vessel\"\n", Tier::Smoke, vec![("metric\tname", 1.0)], 0.0);
     let escaped_notebook = notebook(&[hostile]);
-    let arts = vec![vessel_smoke().0, ornith_smoke(), frame_smoke()];
+    let arts = vec![vessel_smoke().0, ornith_smoke().0, frame_smoke()];
     let n1 = notebook(&arts);
     // Replay: rebuild everything and regenerate.
-    let arts2 = vec![vessel_smoke().0, ornith_smoke(), frame_smoke()];
+    let arts2 = vec![vessel_smoke().0, ornith_smoke().0, frame_smoke()];
     let n2 = notebook(&arts2);
     println!(
         "{}",
