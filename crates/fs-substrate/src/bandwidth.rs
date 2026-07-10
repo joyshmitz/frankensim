@@ -26,6 +26,10 @@ const LEN: usize = 8 << 20;
 /// Repetitions; best (max) is reported, standard STREAM practice.
 const REPS: usize = 3;
 
+/// Single-thread timed samples (best-of; more than the all-core REPS
+/// because this axis divides single-thread attainments directly).
+const SINGLE_SAMPLES: usize = 5;
+
 fn triad(a: &mut [f64], b: &[f64], c: &[f64], s: f64) {
     for i in 0..a.len() {
         a[i] = b[i] + s * c[i];
@@ -36,12 +40,32 @@ fn triad_gbs_once(len: usize) -> f64 {
     let mut a = vec![0.0f64; len];
     let b = vec![1.0f64; len];
     let c = vec![2.0f64; len];
-    let mut best = 0.0f64;
-    for rep in 0..REPS {
+    // Touch `a` before timing: a fresh zeroed vec is lazily mapped, so
+    // the first sweep would pay every page fault. Then CALIBRATE the
+    // sweeps-per-sample to span ≥ 5 ms of wall clock: single ~2 ms
+    // sweeps sat inside the scheduler-placement noise floor (one
+    // E-core window halved the axis run-to-run — measured 55 vs 89
+    // GB/s on the same M4 Pro, flipping downstream roofline verdicts).
+    triad(&mut a, &b, &c, 0.5);
+    let mut sweeps = 1usize;
+    loop {
         let start = std::time::Instant::now();
-        triad(&mut a, &b, &c, 1.0 + rep as f64);
+        for k in 0..sweeps {
+            triad(&mut a, &b, &c, 1.0 + k as f64);
+        }
+        if start.elapsed().as_secs_f64() >= 5e-3 || sweeps >= 1 << 12 {
+            break;
+        }
+        sweeps *= 2;
+    }
+    let mut best = 0.0f64;
+    for rep in 0..SINGLE_SAMPLES {
+        let start = std::time::Instant::now();
+        for k in 0..sweeps {
+            triad(&mut a, &b, &c, 1.0 + (rep * sweeps + k) as f64);
+        }
         let dt = start.elapsed().as_secs_f64();
-        let gbs = (len as f64 * BYTES_PER_ELEM) / dt / 1e9;
+        let gbs = (len as f64 * BYTES_PER_ELEM) * sweeps as f64 / dt / 1e9;
         best = best.max(gbs);
     }
     // Defeat dead-store elimination.
