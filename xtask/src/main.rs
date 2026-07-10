@@ -827,7 +827,19 @@ fn emit(
 /// from the registry — or a golden pinned against a stale surface
 /// version — fails with a pointer to every row that must be
 /// deliberately re-frozen (per docs/GOLDEN_POLICY.md).
+#[allow(clippy::too_many_lines)] // registry parse + two rule passes: the check IS the semantics
 fn check_goldens(root: &Path) -> Vec<Violation> {
+    // One-line-per-entry registry; extract string/number fields by key.
+    fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+        let tag = format!("\"{key}\": ");
+        let start = line.find(&tag)? + tag.len();
+        let rest = &line[start..];
+        if let Some(stripped) = rest.strip_prefix('"') {
+            stripped.split('"').next()
+        } else {
+            rest.split([',', '}']).next().map(str::trim)
+        }
+    }
     let mut violations = Vec::new();
     let bail = |detail: String| Violation {
         check: "golden-couplings",
@@ -840,17 +852,6 @@ fn check_goldens(root: &Path) -> Vec<Violation> {
         ));
         return violations;
     };
-    // One-line-per-entry registry; extract string/number fields by key.
-    fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
-        let tag = format!("\"{key}\": ");
-        let start = line.find(&tag)? + tag.len();
-        let rest = &line[start..];
-        if let Some(stripped) = rest.strip_prefix('"') {
-            stripped.split('"').next()
-        } else {
-            rest.split([',', '}']).next().map(str::trim)
-        }
-    }
     // Surfaces: id -> (registry version, dependents filled later).
     let mut surface_versions: Vec<(String, u32)> = Vec::new();
     let mut in_surfaces = false;

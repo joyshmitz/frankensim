@@ -345,6 +345,7 @@ mod tests {
 
     #[test]
     fn powi_accepts_the_full_i32_exponent_domain() {
+        // det-ok: Real::powi trait dispatch on Dual (4xnt)
         let x = Dual64::<1>::variable(1.0, 0).powi(i32::MIN);
         // Exact semantics — bitwise compares (clippy::float_cmp lane).
         assert_eq!(x.re.to_bits(), 1.0f64.to_bits());

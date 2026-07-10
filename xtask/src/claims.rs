@@ -92,16 +92,13 @@ fn rust_files(root: &Path) -> Vec<PathBuf> {
 /// README claim-state lint: see module docs for the three rules.
 pub fn check_claims(root: &Path) -> Vec<Violation> {
     let mut violations = Vec::new();
-    let readme = match std::fs::read_to_string(root.join("README.md")) {
-        Ok(t) => t,
-        Err(_) => {
-            violations.push(Violation {
-                check: "claim-state",
-                crate_name: "<repo>".to_string(),
-                detail: "README.md missing at workspace root".to_string(),
-            });
-            return violations;
-        }
+    let Ok(readme) = std::fs::read_to_string(root.join("README.md")) else {
+        violations.push(Violation {
+            check: "claim-state",
+            crate_name: "<repo>".to_string(),
+            detail: "README.md missing at workspace root".to_string(),
+        });
+        return violations;
     };
 
     // Corpus: all code text (sources + tests) for hash and fn lookups.
