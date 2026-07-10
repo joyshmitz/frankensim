@@ -192,12 +192,13 @@ impl Fft {
         let mut n_cur = n;
         let mut s = 1usize;
         let mut src_is_data = true;
-        // The stage q-runs go through the fs-simd dispatch table once
-        // s ≥ 4 (bead 27d3 scope 2): the NEON kernel deinterleaves two
-        // complex elements per iteration and is BITWISE-identical to
-        // the scalar twin, which is itself the inline loop below — one
-        // semantic definition, tier-tested in fs-simd's battery, and
-        // this golden did NOT move when the capsule path landed.
+        // The stage q-runs go through the fs-simd dispatch table for the
+        // large-stride stages (bead 27d3 scope 2): the NEON kernel
+        // deinterleaves two complex elements per iteration, the x86 AVX2
+        // kernel four, and BOTH are BITWISE-identical to the scalar twin,
+        // which is itself the inline loop below — one semantic definition,
+        // tier-tested in fs-simd's battery, and this golden did NOT move
+        // when either capsule path landed.
         let r4 = fs_simd::ops().r4qrun_f64;
         while n_cur >= 4 {
             let m = n_cur / 4;

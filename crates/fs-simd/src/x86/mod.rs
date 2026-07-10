@@ -8,6 +8,11 @@
 //! table's tier choice is an optimization, not a soundness precondition.
 #![allow(unsafe_code)] // registered capsule — see SAFETY.md beside this file
 
+// Radix-4 Stockham FFT butterfly capsule (bead 27d3), split out under the
+// 300-line cap like NEON's fft submodule; re-exported below.
+pub mod fft;
+pub use fft::r4qrun_f64;
+
 // Only the intrinsics the WIRED ops (axpy/dot/sum) use; mul intrinsics
 // return here when scale/mul_elem get vector paths (caught by the CI
 // both-ISA clippy gate — unused imports never compile on local aarch64).

@@ -60,3 +60,26 @@ Feature availability (avx2+fma) is runtime-verified in the façade
 immediately before the call. Compensating check: the tier-equivalence
 battery gates bitwise equality with the scalar twin over kc ∈ 0..17 ∪
 {256} including special values and nonzero starting accumulators.
+
+## r4qrun_f64 (bead 27d3, file x86/fft.rs)
+
+Radix-4 Stockham q-run butterfly, AVX2+FMA twin of `scalar::r4qrun_f64`.
+The façade `r4qrun_f64` re-verifies avx2+fma before entering the
+`#[target_feature]` body and delegates to the scalar twin otherwise, so
+it is unconditionally safe to call. Bounds: the body processes four
+complex elements (8 f64) per iteration at offset `o = 8·q8` with
+`o + 8 ≤ s2` (loop bound `q8 < s2/8`, and `s2 % 8 == 0` is checked — runs
+that are not a multiple of 8 f64 delegate WHOLE to the twin in safe
+code); each `loadu` reads exactly 4 f64 at `o` (resp. `o + 4`), each
+`storeu` writes exactly 4 f64 at a disjoint output-row offset
+`j·s2 + o` (resp. `+ 4`) within `out` (len `4·s2`, asserted). Only
+unaligned `loadu`/`storeu` are used (no alignment precondition).
+Deinterleave/interleave use `unpacklo/hi_pd` + `permute4x64_pd` (pure
+data movement); the arithmetic is the twin's exact per-element
+composition — fused real part via `_mm256_fmadd_pd`, the separate
+`im·w` product via `_mm256_mul_pd`, `-(…)` via a sign-bit `xor` (bit-
+identical to Rust unary `-`). Compensating check: `tier_equivalence_
+battery` gates bitwise equality with the scalar twin over run lengths
+{2,6,8,32,34} (covering both the vector path and the whole-delegation
+tail), both directions, special values — verified GREEN natively on
+x86-64 (Threadripper 5995WX). fs-fft's golden hash is tier-invariant.
