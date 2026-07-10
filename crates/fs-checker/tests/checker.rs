@@ -180,7 +180,12 @@ fn checker_json_path_and_signature_capability() {
     // signature stays Unverified and a finding is raised).
     let report = check_with(&pkg, Some(root), &NoSignatureVerifier);
     assert!(!report.passed());
-    assert!(report.findings.iter().any(|f| f.kind == "signature-invalid"));
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|f| f.kind == "signature-invalid")
+    );
     // Full JSON path: round trip passes; tampered JSON is parse-refused
     // (never a Pass with quietly wrong content).
     let json = pkg.to_json();

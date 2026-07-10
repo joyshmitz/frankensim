@@ -606,11 +606,9 @@ impl<'a> Jp<'a> {
             }
             Some(c) if c.is_ascii_digit() || *c == b'-' => {
                 let start = self.at;
-                while self
-                    .b
-                    .get(self.at)
-                    .is_some_and(|c| c.is_ascii_digit() || matches!(c, b'-' | b'+' | b'.' | b'e' | b'E'))
-                {
+                while self.b.get(self.at).is_some_and(|c| {
+                    c.is_ascii_digit() || matches!(c, b'-' | b'+' | b'.' | b'e' | b'E')
+                }) {
                     self.at += 1;
                 }
                 let text = core::str::from_utf8(&self.b[start..self.at]).unwrap_or("");
@@ -696,10 +694,13 @@ fn obj_fields(v: Jv, what: &str) -> Result<Vec<(String, Jv)>, ParseError> {
 /// Take field `key` from `fields`; strict mappers call this for every
 /// expected key and then refuse leftovers.
 fn take_field(fields: &mut Vec<(String, Jv)>, key: &str, what: &str) -> Result<Jv, ParseError> {
-    let idx = fields.iter().position(|(k, _)| k == key).ok_or(ParseError {
-        what: what.to_string(),
-        why: format!("missing required field {key:?}"),
-    })?;
+    let idx = fields
+        .iter()
+        .position(|(k, _)| k == key)
+        .ok_or(ParseError {
+            what: what.to_string(),
+            why: format!("missing required field {key:?}"),
+        })?;
     Ok(fields.remove(idx).1)
 }
 
@@ -777,19 +778,30 @@ impl EvidencePackage {
         if format_version != FORMAT_VERSION {
             return Err(ParseError {
                 what: "format_version".to_string(),
-                why: format!("unsupported version {format_version} (this build reads {FORMAT_VERSION})"),
+                why: format!(
+                    "unsupported version {format_version} (this build reads {FORMAT_VERSION})"
+                ),
             });
         }
         let declared_root = {
-            let hex = as_str(take_field(&mut fields, "merkle_root", "package")?, "merkle_root")?;
+            let hex = as_str(
+                take_field(&mut fields, "merkle_root", "package")?,
+                "merkle_root",
+            )?;
             u64::from_str_radix(&hex, 16).map_err(|_| ParseError {
                 what: "merkle_root".to_string(),
                 why: format!("expected 16 hex digits, got {hex:?}"),
             })?
         };
-        let mut prov = obj_fields(take_field(&mut fields, "provenance", "package")?, "provenance")?;
+        let mut prov = obj_fields(
+            take_field(&mut fields, "provenance", "package")?,
+            "provenance",
+        )?;
         let provenance = Provenance {
-            code_version: as_str(take_field(&mut prov, "code_version", "provenance")?, "code_version")?,
+            code_version: as_str(
+                take_field(&mut prov, "code_version", "provenance")?,
+                "code_version",
+            )?,
             constellation_lock: as_str(
                 take_field(&mut prov, "constellation_lock", "provenance")?,
                 "constellation_lock",
@@ -820,7 +832,8 @@ impl EvidencePackage {
             "estimated_dispersion_bits",
             false,
         )?;
-        let declared_unq = match take_field(&mut mb, "validated_unquantified", "magnitude_budget")? {
+        let declared_unq = match take_field(&mut mb, "validated_unquantified", "magnitude_budget")?
+        {
             Jv::Num(n) if n.fract() == 0.0 && n >= 0.0 => n as usize,
             other => {
                 return Err(ParseError {

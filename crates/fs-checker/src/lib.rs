@@ -208,9 +208,7 @@ fn build_report(
     // is over error magnitudes, not claim counts — and it must not be
     // able to drift from the claims it summarizes).
     let mb = pkg.magnitude_budget();
-    if mb.quantified_total.to_bits()
-        != (mb.verified_width + mb.estimated_dispersion).to_bits()
-    {
+    if mb.quantified_total.to_bits() != (mb.verified_width + mb.estimated_dispersion).to_bits() {
         findings.push(Finding {
             kind: "magnitude-budget-drift",
             detail: "quantified total does not reconcile with its parts".to_string(),

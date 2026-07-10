@@ -95,7 +95,9 @@ fn json_is_well_formed_and_deterministic() {
 /// (falsifier logs in schema v2) can never report covered.
 #[test]
 fn coverage_cannot_claim_absent_evidence() {
-    use fs_crosswalk::{CoverageStatus, PackageConcept, Standard, package_coverage, package_presence};
+    use fs_crosswalk::{
+        CoverageStatus, PackageConcept, Standard, package_coverage, package_presence,
+    };
     use fs_evidence::Color;
     use fs_package::{Claim, EvidencePackage, Provenance};
     // Unsigned, verified-only package: no validated claims, no regime
@@ -120,7 +122,10 @@ fn coverage_cannot_claim_absent_evidence() {
         for (concept, status, _why) in package_coverage(&pkg, standard) {
             if matches!(status, CoverageStatus::Covered) {
                 let p = presence.iter().find(|p| p.concept == concept).unwrap();
-                assert!(p.present, "{concept:?} covered without evidence for {standard:?}");
+                assert!(
+                    p.present,
+                    "{concept:?} covered without evidence for {standard:?}"
+                );
             }
             if concept == PackageConcept::FalsifierLog {
                 assert!(
