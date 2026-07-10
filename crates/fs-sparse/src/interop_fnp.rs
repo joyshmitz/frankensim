@@ -147,8 +147,8 @@ mod tests {
         let m = fixture();
         let dense = csr_to_dense_array(&m).expect("densify");
         assert_eq!(dense.shape(), &[3, 4]);
-        assert_eq!(dense.values()[0 * 4 + 1].to_bits(), 2.5f64.to_bits());
-        assert_eq!(dense.values()[2 * 4 + 0].to_bits(), 4.0f64.to_bits());
+        assert_eq!(dense.values()[1].to_bits(), 2.5f64.to_bits()); // (0,1)
+        assert_eq!(dense.values()[2 * 4].to_bits(), 4.0f64.to_bits()); // (2,0)
         let back = dense_array_to_csr(&dense).expect("sparsify");
         assert_eq!(back.nrows(), 3);
         assert_eq!(back.nnz(), 3);
