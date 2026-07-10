@@ -38,13 +38,23 @@ pub fn axpy(a: f64, x: &[f64], y: &mut [f64]) {
 
 /// x[i] *= a.
 pub fn scale(a: f64, x: &mut [f64]) {
-    let (xc, xt) = x.as_chunks_mut::<LANES>();
-    // SAFETY: as in `axpy` — chunk-array pointers, exact LANES extents.
+    // 4x-unrolled (8 elements/iter): the 2-lane loop was MEASURED 1.9x
+    // slower than autovectorized scalar on M4 Pro (fz2.2 tier audit) —
+    // issue-limited, not data-limited. Element-wise multiply, so the
+    // unroll shape cannot change any element's bits.
+    let (xc, xt) = x.as_chunks_mut::<8>();
+    // SAFETY: as in `axpy` — chunk-array pointers with exact 8-element
+    // extents; the four 2-lane loads/stores are disjoint sub-chunks.
     unsafe {
         let va = vdupq_n_f64(a);
         for xk in xc {
-            let vx = vld1q_f64(xk.as_ptr());
-            vst1q_f64(xk.as_mut_ptr(), vmulq_f64(vx, va));
+            let p = xk.as_mut_ptr();
+            let (v0, v1) = (vld1q_f64(p), vld1q_f64(p.add(2)));
+            let (v2, v3) = (vld1q_f64(p.add(4)), vld1q_f64(p.add(6)));
+            vst1q_f64(p, vmulq_f64(v0, va));
+            vst1q_f64(p.add(2), vmulq_f64(v1, va));
+            vst1q_f64(p.add(4), vmulq_f64(v2, va));
+            vst1q_f64(p.add(6), vmulq_f64(v3, va));
         }
     }
     crate::scalar::scale(a, xt);
