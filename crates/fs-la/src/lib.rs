@@ -13,7 +13,9 @@ pub mod gemm;
 pub mod mixed;
 pub mod rand_nla;
 
-pub use gemm::{gemm_f32, gemm_f64, gemm_f64_parallel, gemm_f64_parallel_with, gemm_mixed};
+pub use gemm::{
+    Trans, gemm_f32, gemm_f64, gemm_f64_op, gemm_f64_parallel, gemm_f64_parallel_with, gemm_mixed,
+};
 
 /// Crate version, re-exported for provenance stamping (the Five Explicits'
 /// "versions" pillar reaches down to individual crates).

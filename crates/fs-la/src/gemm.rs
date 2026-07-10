@@ -209,6 +209,167 @@ pub fn gemm_f64_parallel_with(
     }
 }
 
+/// Operand orientation for the op-form GEMM entry points.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trans {
+    /// Use the operand as stored.
+    N,
+    /// Use the operand transposed.
+    T,
+}
+
+/// f64 GEMM over TRANSPOSED/STRIDED operand views (xlvx s7):
+/// `C = α·op(A)·op(B) + β·C` where `op(X)` is `X` or `Xᵀ`, each operand
+/// carrying its own leading dimension (row stride of the STORED
+/// matrix), so submatrix views compute without copies.
+///
+/// BIT CONTRACT: op() and the leading dimensions are absorbed entirely
+/// by pack addressing — the packed panels are byte-identical to the
+/// contiguous non-transposed equivalent, hence the OUTPUT IS BITWISE
+/// [`gemm_f64`] on materialized operands (gated in-module). Rows of C
+/// outside the m×n view are never touched.
+///
+/// # Panics
+/// Structured panics when a leading dimension is too small or a slice
+/// cannot hold its view.
+#[allow(clippy::too_many_arguments)] // BLAS-shape signature
+pub fn gemm_f64_op(
+    m: usize,
+    n: usize,
+    k: usize,
+    alpha: f64,
+    a: &[f64],
+    lda: usize,
+    ta: Trans,
+    b: &[f64],
+    ldb: usize,
+    tb: Trans,
+    beta: f64,
+    c: &mut [f64],
+    ldc: usize,
+) {
+    let check = |name: &str, len: usize, rows: usize, cols: usize, ld: usize| {
+        assert!(ld >= cols.max(1), "{name}: ld {ld} < view cols {cols}");
+        if rows > 0 {
+            let need = (rows - 1) * ld + cols;
+            assert!(len >= need, "{name}: slice len {len} < view need {need}");
+        }
+    };
+    match ta {
+        Trans::N => check("a", a.len(), m, k, lda),
+        Trans::T => check("a", a.len(), k, m, lda),
+    }
+    match tb {
+        Trans::N => check("b", b.len(), k, n, ldb),
+        Trans::T => check("b", b.len(), n, k, ldb),
+    }
+    check("c", c.len(), m, n, ldc);
+    // β pass over the VIEW only (op-form C may be a submatrix).
+    if beta == 0.0 {
+        for row in c.chunks_mut(ldc).take(m) {
+            row[..n].fill(0.0);
+        }
+    } else if beta.to_bits() != 1.0f64.to_bits() {
+        for row in c.chunks_mut(ldc).take(m) {
+            for v in &mut row[..n] {
+                *v *= beta;
+            }
+        }
+    }
+    if m == 0 || n == 0 || alpha == 0.0 || k == 0 {
+        return;
+    }
+    let mut a_pack = vec![0.0f64; MC * KC];
+    let mut b_pack = vec![0.0f64; KC * NC];
+    let mut jc = 0;
+    while jc < n {
+        let nc = NC.min(n - jc);
+        let mut pc = 0;
+        while pc < k {
+            let kc = KC.min(k - pc);
+            pack_b_op(&mut b_pack, b, ldb, tb, pc, jc, kc, nc);
+            let mut ic = 0;
+            while ic < m {
+                let mc = MC.min(m - ic);
+                pack_a_op(&mut a_pack, a, lda, ta, ic, pc, mc, kc);
+                macro_kernel(&a_pack, &b_pack, c, m, ldc, ic, jc, mc, nc, kc, alpha);
+                ic += MC;
+            }
+            pc += KC;
+        }
+        jc += NC;
+    }
+}
+
+/// Op-form A packer: element op(A)[ic+p+r, pc+kk] addressed through
+/// (lda, ta) — N reads a[row·lda + col], T reads a[col·lda + row]. The
+/// packed layout (and bytes) are exactly [`pack_a`]'s.
+#[allow(clippy::too_many_arguments)]
+fn pack_a_op(
+    dst: &mut [f64],
+    a: &[f64],
+    lda: usize,
+    ta: Trans,
+    ic: usize,
+    pc: usize,
+    mc: usize,
+    kc: usize,
+) {
+    let mut w = 0;
+    let mut p = 0;
+    while p < mc {
+        let rows = MR.min(mc - p);
+        for kk in 0..kc {
+            for r in 0..MR {
+                dst[w] = if r < rows {
+                    match ta {
+                        Trans::N => a[(ic + p + r) * lda + pc + kk],
+                        Trans::T => a[(pc + kk) * lda + ic + p + r],
+                    }
+                } else {
+                    0.0
+                };
+                w += 1;
+            }
+        }
+        p += MR;
+    }
+}
+
+/// Op-form B packer: element op(B)[pc+kk, jc+q+s] addressed through
+/// (ldb, tb); packed bytes are exactly [`pack_b`]'s.
+#[allow(clippy::too_many_arguments)]
+fn pack_b_op(
+    dst: &mut [f64],
+    b: &[f64],
+    ldb: usize,
+    tb: Trans,
+    pc: usize,
+    jc: usize,
+    kc: usize,
+    nc: usize,
+) {
+    let mut w = 0;
+    let mut q = 0;
+    while q < nc {
+        let cols = NR.min(nc - q);
+        for kk in 0..kc {
+            for s in 0..NR {
+                dst[w] = if s < cols {
+                    match tb {
+                        Trans::N => b[(pc + kk) * ldb + jc + q + s],
+                        Trans::T => b[(jc + q + s) * ldb + pc + kk],
+                    }
+                } else {
+                    0.0
+                };
+                w += 1;
+            }
+        }
+        q += NR;
+    }
+}
+
 /// β application with BLAS overwrite semantics for β = 0.
 fn scale_c(c: &mut [f64], beta: f64) {
     if beta == 0.0 {
@@ -771,6 +932,104 @@ mod tests {
         }
         println!(
             "{{\"suite\":\"fs-la\",\"case\":\"gemm-precisions\",\"verdict\":\"pass\",\"detail\":\"3 shapes: mixed == widened-f64 bitwise; packed f32 == naive-chunked oracle bitwise; f32 within 1e-4 of f64\"}}"
+        );
+    }
+
+    #[test]
+    fn op_forms_bitwise_vs_materialized() {
+        // The op-form contract: packing absorbs op()/ld, so every
+        // combination is BITWISE the plain gemm_f64 on materialized
+        // operands. Shapes with tails in all dims + multi-tile.
+        for &(m, n, k) in &[(9usize, 5usize, 257usize), (33, 17, 300), (24, 18, 40)] {
+            let a = rand_mat(m, k, 0x70);
+            let b = rand_mat(k, n, 0x71);
+            let c0 = rand_mat(m, n, 0x72);
+            let mut want = c0.clone();
+            gemm_f64(m, n, k, 1.25, &a, &b, 0.5, &mut want);
+            let at: Vec<f64> = (0..k * m).map(|i| a[(i % m) * k + i / m]).collect();
+            let bt: Vec<f64> = (0..n * k).map(|i| b[(i % k) * n + i / k]).collect();
+            for (ta, tb) in [
+                (Trans::N, Trans::N),
+                (Trans::T, Trans::N),
+                (Trans::N, Trans::T),
+                (Trans::T, Trans::T),
+            ] {
+                let (av, lda) = match ta {
+                    Trans::N => (&a, k),
+                    Trans::T => (&at, m),
+                };
+                let (bv, ldb) = match tb {
+                    Trans::N => (&b, n),
+                    Trans::T => (&bt, k),
+                };
+                let mut c = c0.clone();
+                gemm_f64_op(m, n, k, 1.25, av, lda, ta, bv, ldb, tb, 0.5, &mut c, n);
+                for i in 0..m * n {
+                    assert_eq!(
+                        c[i].to_bits(),
+                        want[i].to_bits(),
+                        "op({ta:?},{tb:?}) != gemm_f64 at {i} ({m}x{n}x{k})"
+                    );
+                }
+            }
+        }
+        println!(
+            "{{\"suite\":\"fs-la\",\"case\":\"gemm-op-forms\",\"verdict\":\"pass\",\"detail\":\"NN/TN/NT/TT bitwise == materialized gemm_f64 over 3 shapes\"}}"
+        );
+    }
+
+    #[test]
+    fn strided_views_bitwise_and_untouched_outside() {
+        // Submatrix views (ld > view cols) compute bitwise-identically
+        // to contiguous copies, and C outside the view is UNTOUCHED.
+        let (m, n, k) = (13usize, 11usize, 70usize);
+        let (lda, ldb, ldc) = (k + 5, n + 3, n + 7);
+        let mut s = 0x77_u64;
+        let a_buf: Vec<f64> = (0..m * lda).map(|_| lcg(&mut s)).collect();
+        let b_buf: Vec<f64> = (0..k * ldb).map(|_| lcg(&mut s)).collect();
+        let c_buf0: Vec<f64> = (0..m * ldc).map(|_| lcg(&mut s)).collect();
+        // Contiguous copies of the views.
+        let a: Vec<f64> = (0..m * k).map(|i| a_buf[(i / k) * lda + i % k]).collect();
+        let b: Vec<f64> = (0..k * n).map(|i| b_buf[(i / n) * ldb + i % n]).collect();
+        let c0: Vec<f64> = (0..m * n).map(|i| c_buf0[(i / n) * ldc + i % n]).collect();
+        let mut want = c0.clone();
+        gemm_f64(m, n, k, -0.75, &a, &b, 0.5, &mut want);
+        let mut c_buf = c_buf0.clone();
+        gemm_f64_op(
+            m,
+            n,
+            k,
+            -0.75,
+            &a_buf,
+            lda,
+            Trans::N,
+            &b_buf,
+            ldb,
+            Trans::N,
+            0.5,
+            &mut c_buf,
+            ldc,
+        );
+        for i in 0..m {
+            for j in 0..ldc {
+                let got = c_buf[i * ldc + j];
+                if j < n {
+                    assert_eq!(
+                        got.to_bits(),
+                        want[i * n + j].to_bits(),
+                        "strided view != contiguous at ({i},{j})"
+                    );
+                } else {
+                    assert_eq!(
+                        got.to_bits(),
+                        c_buf0[i * ldc + j].to_bits(),
+                        "C outside the view was touched at ({i},{j})"
+                    );
+                }
+            }
+        }
+        println!(
+            "{{\"suite\":\"fs-la\",\"case\":\"gemm-strided\",\"verdict\":\"pass\",\"detail\":\"lda/ldb/ldc views bitwise == contiguous; outside-view C untouched\"}}"
         );
     }
 
