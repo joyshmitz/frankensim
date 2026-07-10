@@ -4,7 +4,7 @@ Flagship e2e suite (bead `frankensim-epic-flagships-mye.5`): staged
 smoke/mid/full replay lanes for the flagship crates, cross-flagship
 audits, failure drills, forensic logs, and a deterministic lab
 notebook artifact. Golden constants are FROZEN (bead mye.5): vessel
-0xd70b_9ac9_0828_ae86, ornith 0xa6fa_6460_e7c7_972f, frame
+0xd70b_9ac9_0828_ae86, ornith 0xf513_eaf8_22d2_7813, frame
 0x05e1_d182_48d2_949f, shared LBM core 0x6841_e3c0_508e_eba5 —
 replay-equality verified before freezing; bump only with a semantic
 justification in the owning flagship or shared core.
@@ -19,6 +19,15 @@ metric-level audit found that only `robust_offband` moved, from
 `-0.0004364607241673659` to `-0.00043646072421213883` (about
 `4.48e-14` absolute); the other five metrics retained their exact bits,
 and restoring only the old final-field bits reconstructs the old hash.
+
+The ornith smoke hash was formerly `0xa6fa_6460_e7c7_972f` while
+`PairwiseRace` silently clipped differences against an implicit unit span.
+The checked-span repair declares the fixture's analytical 1.52 support and
+normalizes without clipping. The winner (11), elimination count (11), winner
+L/D, certificate, and ROA retain exact bits; only the race evaluation count
+moved from 394 to 925. Replacing that one metric with 394 reconstructs the
+former hash exactly. The new hash records the intended, statistically valid
+power/cost tradeoff rather than accepting an unattributed golden delta.
 
 ## Purpose and layer
 
@@ -57,6 +66,8 @@ and structured failure evidence.
    not identity.
 2. Re-running the same deterministic smoke stage must reproduce the
    same metric hash before that hash is eligible to become a golden.
+   Vessel and ornith smoke log rows include the complete metric-bit notebook
+   evidence so a future golden delta can be attributed field by field.
 3. Shared machinery changes should surface once in the shared audit,
    not as silent drift across individual flagships.
 4. Mid and full stages are wired with `#[ignore]` until their

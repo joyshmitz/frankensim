@@ -35,7 +35,12 @@ const RATE: Dims = Dims([0, 0, -1, 0, 0]);
 // exact bits, and substituting the old final field reconstructs the old
 // hash exactly.
 const GOLDEN_VESSEL_SMOKE: u64 = 0xd70b_9ac9_0828_ae86;
-const GOLDEN_ORNITH_SMOKE: u64 = 0xa6fa_6460_e7c7_972f;
+// The former unit-span/clipping e-race produced 0xa6fa_6460_e7c7_972f.
+// Declaring the analytical span 1.52 and refusing clipping intentionally
+// reduces betting power: only evals moved, from 394 to 925. Winner 11,
+// 11 eliminations, winner_ld, certified, and roa retain their exact bits;
+// substituting the old eval count reconstructs the former hash exactly.
+const GOLDEN_ORNITH_SMOKE: u64 = 0xf513_eaf8_22d2_7813;
 const GOLDEN_FRAME_SMOKE: u64 = 0x05e1_d182_48d2_949f;
 const GOLDEN_LBM_CORE: u64 = 0x6841_e3c0_508e_eba5;
 
@@ -150,14 +155,15 @@ fn fe2e_001_vessel_smoke_golden() {
 fn fe2e_002_ornith_smoke_golden() {
     let a = ornith_smoke();
     let b = ornith_smoke();
+    let evidence = notebook(std::slice::from_ref(&a));
     println!(
         "{}",
         log_row(
             "ornith-smoke",
             "artifact",
             &format!(
-                "{{\"hash\":\"0x{:016x}\",\"wall_s\":{:.2}}}",
-                a.hash, a.wall_s
+                "{{\"hash\":\"0x{:016x}\",\"wall_s\":{:.2},\"evidence\":{evidence}}}",
+                a.hash, a.wall_s,
             )
         )
     );
@@ -165,8 +171,8 @@ fn fe2e_002_ornith_smoke_golden() {
         "fe2e-002-ornith-smoke",
         a.hash == b.hash && a.hash == GOLDEN_ORNITH_SMOKE,
         &format!(
-            "ornith smoke: hash 0x{:016x} (golden 0x{GOLDEN_ORNITH_SMOKE:016x}), replay equal, wall {:.1}s",
-            a.hash, a.wall_s
+            "ornith smoke: hash 0x{:016x} (golden 0x{GOLDEN_ORNITH_SMOKE:016x}), replay equal, wall {:.1}s; evidence {evidence}",
+            a.hash, a.wall_s,
         ),
     );
 }
