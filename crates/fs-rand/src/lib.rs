@@ -26,6 +26,15 @@ use fs_math::det;
 /// Crate version, re-exported for provenance stamping.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// STREAM-SEMANTICS VERSION (bead y4pt): bump on ANY change that can
+/// move the bits a downstream consumer draws from a given
+/// (seed, kernel, tile, index) — counter advancement, key mapping,
+/// Philox rounds, or distribution transforms. Downstream goldens
+/// declare the version they were frozen against in
+/// golden-couplings.json; `cargo run -p xtask -- check-goldens` fails
+/// on drift until every dependent golden is deliberately re-frozen.
+pub const STREAM_SEMANTICS_VERSION: u32 = 1;
+
 /// The logical identity of a stream: the Cx-carried key (plan §5.2 —
 /// "keyed by (seed, kernel_id, tile_id, iteration)", with the iteration as
 /// the draw index).

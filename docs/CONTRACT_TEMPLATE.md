@@ -37,3 +37,10 @@ tests/conformance.rs (placeholder). Any reimplementation must pass this suite.
 
 ## No-claim boundaries
 Everything: this is a skeleton. No numerical, performance, or safety claims.
+
+## Golden couplings (bead y4pt)
+
+Every golden/replay hash this crate pins must have a row in
+`golden-couplings.json` declaring its upstream semantic surfaces; bumps
+follow docs/GOLDEN_POLICY.md (committed tree, both build modes,
+plausible root cause, registry updated in the same commit).

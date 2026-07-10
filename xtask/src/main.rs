@@ -651,7 +651,11 @@ fn powi_single_arg(after_open: &str) -> Option<&str> {
             '(' | '[' | '{' => depth += 1,
             ')' | ']' | '}' => {
                 if depth == 0 {
-                    return if c == ')' { Some(&after_open[..i]) } else { None };
+                    return if c == ')' {
+                        Some(&after_open[..i])
+                    } else {
+                        None
+                    };
                 }
                 depth -= 1;
             }
@@ -723,8 +727,7 @@ fn check_powi(root: &Path) -> Vec<Violation> {
                             .trim()
                             .parse::<i64>()
                             .is_ok_and(|v| (-3..=3).contains(&v));
-                        let annotated =
-                            raw.contains("det-ok:") || prev_raw.contains("det-ok:");
+                        let annotated = raw.contains("det-ok:") || prev_raw.contains("det-ok:");
                         if !literal_ok && !annotated && !flagged {
                             violations.push(Violation {
                                 check: "powi-determinism",
@@ -814,6 +817,149 @@ fn emit(
     }
 }
 
+/// Golden-coupling discipline (bead y4pt): every golden hash declares
+/// the upstream semantic surfaces it was frozen against in
+/// golden-couplings.json; a surface whose source version const drifts
+/// from the registry — or a golden pinned against a stale surface
+/// version — fails with a pointer to every row that must be
+/// deliberately re-frozen (per docs/GOLDEN_POLICY.md).
+fn check_goldens(root: &Path) -> Vec<Violation> {
+    let mut violations = Vec::new();
+    let bail = |detail: String| Violation {
+        check: "golden-couplings",
+        crate_name: "<repo>".to_string(),
+        detail,
+    };
+    let Ok(registry) = std::fs::read_to_string(root.join("golden-couplings.json")) else {
+        violations.push(bail(
+            "golden-couplings.json missing at workspace root".to_string(),
+        ));
+        return violations;
+    };
+    // One-line-per-entry registry; extract string/number fields by key.
+    fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+        let tag = format!("\"{key}\": ");
+        let start = line.find(&tag)? + tag.len();
+        let rest = &line[start..];
+        if let Some(stripped) = rest.strip_prefix('"') {
+            stripped.split('"').next()
+        } else {
+            rest.split([',', '}']).next().map(str::trim)
+        }
+    }
+    // Surfaces: id -> (registry version, dependents filled later).
+    let mut surface_versions: Vec<(String, u32)> = Vec::new();
+    let mut in_surfaces = false;
+    let mut in_goldens = false;
+    let mut goldens: Vec<(String, String, String, String)> = Vec::new();
+    for line in registry.lines() {
+        if line.starts_with("\"surfaces\"") {
+            in_surfaces = true;
+            in_goldens = false;
+            continue;
+        }
+        if line.starts_with("\"goldens\"") {
+            in_goldens = true;
+            in_surfaces = false;
+            continue;
+        }
+        if in_surfaces && line.trim_start().starts_with('{') {
+            let (Some(id), Some(file), Some(name), Some(ver)) = (
+                field(line, "id"),
+                field(line, "file"),
+                field(line, "const"),
+                field(line, "version"),
+            ) else {
+                violations.push(bail(format!("malformed surface row: {line}")));
+                continue;
+            };
+            let Ok(reg_ver) = ver.parse::<u32>() else {
+                violations.push(bail(format!("surface {id}: bad version {ver:?}")));
+                continue;
+            };
+            let needle = format!("pub const {name}: u32 = ");
+            let src = std::fs::read_to_string(root.join(file)).unwrap_or_default();
+            let Some(actual) = src
+                .find(&needle)
+                .and_then(|at| src[at + needle.len()..].split(';').next())
+                .and_then(|v| v.trim().parse::<u32>().ok())
+            else {
+                violations.push(bail(format!(
+                    "surface {id}: {file} does not declare `{needle}<version>;`"
+                )));
+                continue;
+            };
+            if actual != reg_ver {
+                let dependents: Vec<&str> = registry
+                    .lines()
+                    .filter(|l| l.contains("\"golden\"") && l.contains(id))
+                    .filter_map(|l| field(l, "golden"))
+                    .collect();
+                violations.push(bail(format!(
+                    "surface {id} version drifted: source declares {actual}, registry pins \
+                     {reg_ver} — an upstream semantic change must deliberately re-freeze its \
+                     dependents {dependents:?} (docs/GOLDEN_POLICY.md), then update both pins"
+                )));
+            }
+            surface_versions.push((id.to_string(), reg_ver));
+        }
+        if in_goldens && line.trim_start().starts_with('{') {
+            let (Some(g), Some(file), Some(name), Some(deps)) = (
+                field(line, "golden"),
+                field(line, "file"),
+                field(line, "const"),
+                field(line, "depends_on"),
+            ) else {
+                violations.push(bail(format!("malformed golden row: {line}")));
+                continue;
+            };
+            if field(line, "justification").is_none_or(|j| j.len() < 20) {
+                violations.push(bail(format!(
+                    "golden {g}: missing/thin justification (the protocol requires the \
+                     committed-tree, two-mode evidence trail)"
+                )));
+            }
+            goldens.push((
+                g.to_string(),
+                file.to_string(),
+                name.to_string(),
+                deps.to_string(),
+            ));
+        }
+    }
+    for (g, file, name, deps) in &goldens {
+        let src = std::fs::read_to_string(root.join(file)).unwrap_or_default();
+        if !src.contains(&format!("const {name}")) {
+            violations.push(bail(format!(
+                "golden {g}: {file} no longer declares `const {name}` — update or retire \
+                 the registry row"
+            )));
+        }
+        for pair in deps.split(',') {
+            let Some((sid, pinned)) = pair.split_once('=') else {
+                violations.push(bail(format!("golden {g}: malformed dependency {pair:?}")));
+                continue;
+            };
+            let Ok(pinned) = pinned.trim().parse::<u32>() else {
+                violations.push(bail(format!("golden {g}: bad pinned version {pair:?}")));
+                continue;
+            };
+            match surface_versions.iter().find(|(id, _)| id == sid.trim()) {
+                None => violations.push(bail(format!(
+                    "golden {g} depends on unknown surface {sid:?} — declare the surface row"
+                ))),
+                Some((_, current)) if *current != pinned => violations.push(bail(format!(
+                    "golden {g} was frozen against {sid}={pinned} but the surface is now \
+                     {current} — re-freeze deliberately per docs/GOLDEN_POLICY.md, then \
+                     update the pin"
+                ))),
+                Some(_) => {}
+            }
+        }
+    }
+    violations
+}
+
 fn main() -> ExitCode {
     let cmd = std::env::args()
         .nth(1)
@@ -849,12 +995,14 @@ fn main() -> ExitCode {
         "check-contracts" => (check_contracts(&manifests), vec!["contracts"]),
         "check-unsafe" => (check_unsafe(&root), vec!["unsafe-capsules"]),
         "check-powi" => (check_powi(&root), vec!["powi-determinism"]),
+        "check-goldens" => (check_goldens(&root), vec!["golden-couplings"]),
         "check-all" => {
             let mut v = check_layers(&manifests);
             v.extend(check_deps(&manifests));
             v.extend(check_contracts(&manifests));
             v.extend(check_unsafe(&root));
             v.extend(check_powi(&root));
+            v.extend(check_goldens(&root));
             (
                 v,
                 vec![
@@ -863,13 +1011,14 @@ fn main() -> ExitCode {
                     "contracts",
                     "unsafe-capsules",
                     "powi-determinism",
+                    "golden-couplings",
                 ],
             )
         }
         other => {
             eprintln!(
                 "unknown command {other:?}; use check-layers|check-deps|check-contracts|\
-                 check-unsafe|check-powi|check-all|lock-constellation|check-constellation"
+                 check-unsafe|check-powi|check-goldens|check-all|lock-constellation|check-constellation"
             );
             return ExitCode::FAILURE;
         }
@@ -884,6 +1033,58 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn goldens_seeded_upstream_drift_points_at_the_coupling_row() {
+        let root = std::env::temp_dir().join(format!("xtask-goldens-{}", std::process::id()));
+        let src_dir = root.join("crates/mini/src");
+        std::fs::create_dir_all(&src_dir).expect("fixture dirs");
+        let write = |rel: &str, text: &str| {
+            std::fs::write(root.join(rel), text).expect("fixture write");
+        };
+        write(
+            "crates/mini/src/lib.rs",
+            "pub const MINI_SEMANTICS_VERSION: u32 = 1;\nconst GOLDEN_HASH: u64 = 7;\n",
+        );
+        write(
+            "golden-couplings.json",
+            "{\n\"surfaces\": [\n{\"id\": \"mini:semantics\", \"file\": \"crates/mini/src/lib.rs\", \"const\": \"MINI_SEMANTICS_VERSION\", \"version\": 1}\n],\n\"goldens\": [\n{\"golden\": \"mini:golden\", \"file\": \"crates/mini/src/lib.rs\", \"const\": \"GOLDEN_HASH\", \"depends_on\": \"mini:semantics=1\", \"justification\": \"recorded at fixture landing, both modes, committed tree\"}\n]\n}\n",
+        );
+        assert!(
+            check_goldens(&root).is_empty(),
+            "clean fixture must pass: {:?}",
+            check_goldens(&root)
+        );
+        // The SEEDED UPSTREAM CHANGE: bump the source semantics const
+        // without re-freezing — the checker must fail and point at the
+        // dependent golden row.
+        write(
+            "crates/mini/src/lib.rs",
+            "pub const MINI_SEMANTICS_VERSION: u32 = 2;\nconst GOLDEN_HASH: u64 = 7;\n",
+        );
+        let v = check_goldens(&root);
+        assert_eq!(v.len(), 1, "{v:?}");
+        assert!(
+            v[0].detail.contains("mini:semantics")
+                && v[0].detail.contains("mini:golden")
+                && v[0].detail.contains("re-freeze"),
+            "drift names the surface AND the dependent golden: {}",
+            v[0].detail
+        );
+        // A stale golden pin (registry surface moved on without the
+        // golden) also refuses with the protocol pointer.
+        write(
+            "crates/mini/src/lib.rs",
+            "pub const MINI_SEMANTICS_VERSION: u32 = 1;\nconst GOLDEN_HASH: u64 = 7;\n",
+        );
+        write(
+            "golden-couplings.json",
+            "{\n\"surfaces\": [\n{\"id\": \"mini:semantics\", \"file\": \"crates/mini/src/lib.rs\", \"const\": \"MINI_SEMANTICS_VERSION\", \"version\": 1}\n],\n\"goldens\": [\n{\"golden\": \"mini:golden\", \"file\": \"crates/mini/src/lib.rs\", \"const\": \"GOLDEN_HASH\", \"depends_on\": \"mini:semantics=0\", \"justification\": \"recorded at fixture landing, both modes, committed tree\"}\n]\n}\n",
+        );
+        let v = check_goldens(&root);
+        assert_eq!(v.len(), 1, "{v:?}");
+        assert!(v[0].detail.contains("GOLDEN_POLICY"), "{}", v[0].detail);
+    }
+
     use super::*;
 
     fn manifest(name: &str, layer: &str, deps: &[&str]) -> Manifest {
@@ -1076,7 +1277,10 @@ mod tests {
     fn powi_single_arg_distinguishes_float_from_builder_calls() {
         // Single-argument calls (candidate float powi) return the arg.
         assert_eq!(powi_single_arg("n)"), Some("n"));
-        assert_eq!(powi_single_arg("i32::from(*k) - 1)"), Some("i32::from(*k) - 1"));
+        assert_eq!(
+            powi_single_arg("i32::from(*k) - 1)"),
+            Some("i32::from(*k) - 1")
+        );
         assert_eq!(powi_single_arg("-3)"), Some("-3"));
         // Two-argument calls (typed builders) are skipped.
         assert_eq!(powi_single_arg("a, n)"), None);
@@ -1087,7 +1291,10 @@ mod tests {
             Some("i32::try_from(k).unwrap_or(0)")
         );
         // Unbalanced (multi-line) stays suspect — conservative Some.
-        assert_eq!(powi_single_arg("2 * i32::try_from("), Some("2 * i32::try_from("));
+        assert_eq!(
+            powi_single_arg("2 * i32::try_from("),
+            Some("2 * i32::try_from(")
+        );
     }
 
     #[test]

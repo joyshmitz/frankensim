@@ -13,6 +13,14 @@
 //! is fixed-order +/×/mul_add: cross-ISA bit-deterministic by
 //! construction, golden-hashed in tests.
 
+/// GEMM BIT-SEMANTICS VERSION (bead y4pt): bump on ANY change to the
+/// accumulation order contract — KC retuning, k-order changes, or a
+/// microkernel that stops being bitwise-equal to the scalar twin.
+/// Downstream goldens pin this in golden-couplings.json;
+/// `cargo run -p xtask -- check-goldens` fails on drift until they are
+/// deliberately re-frozen.
+pub const GEMM_BIT_SEMANTICS_VERSION: u32 = 1;
+
 /// Micro-tile rows (A panel height). Pre-autotuner default.
 const MR: usize = 8;
 /// Micro-tile cols (B panel width). Pre-autotuner default.

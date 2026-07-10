@@ -16,6 +16,12 @@
 //! panel/update drivers, arena packing, and the FrankenScipy cross-check
 //! battery are recorded follow-up scope (bead comments).
 
+/// FACTORIZATION BIT-SEMANTICS VERSION (bead y4pt): bump on ANY change
+/// to qr/cholesky/lu/svd operation order or rounding that can move
+/// downstream bits. Pinned by golden-couplings.json;
+/// `cargo run -p xtask -- check-goldens` fails on drift until every
+/// dependent golden is deliberately re-frozen.
+pub const FACTOR_BIT_SEMANTICS_VERSION: u32 = 1;
 use crate::gemm::gemm_f64;
 
 /// Blocking width for panel factorizations (pre-autotuner default; bit-
