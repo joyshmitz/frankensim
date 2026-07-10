@@ -24,7 +24,10 @@ pub mod tombstone;
 pub mod travel;
 pub mod vcs;
 
-pub use colors::{ColorGraph, ColorNode, ColorWriteError, Waiver};
+pub use colors::{
+    ColorGraph, ColorNode, ColorWriteError, NoWaiverVerifier, WAIVER_SCOPE_COLOR_UPGRADE, Waiver,
+    WaiverGrant, WaiverRejection, WaiverVerifier,
+};
 pub use hash::{Blake3, ContentHash, hash_bytes};
 pub use schema::{ALL_TABLES, SCHEMA_VERSION, STORAGE_CHUNK_LEN, V1_TABLES};
 pub use travel::{

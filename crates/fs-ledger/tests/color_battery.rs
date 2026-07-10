@@ -8,7 +8,61 @@ use fs_evidence::{
     Color, ColorError, ColorRank, IntervalOp, ModelEvidence, NumericalCertificate, ValidityDomain,
     check_regime, color_of, compose, verified_from,
 };
-use fs_ledger::{ColorGraph, ColorWriteError, Waiver};
+use fs_ledger::{
+    ColorGraph, ColorWriteError, NoWaiverVerifier, WAIVER_SCOPE_COLOR_UPGRADE, Waiver, WaiverGrant,
+    WaiverRejection, WaiverVerifier,
+};
+use std::collections::BTreeMap as KeyMap;
+
+/// TEST-ONLY keyed MAC over FNV — NOT cryptography; it stands in for a
+/// Franken-compliant signature capability so the authorization
+/// plumbing (binding, expiry, rotation, tamper) can be exercised.
+struct TestVerifier {
+    keys: KeyMap<String, u64>,
+}
+
+fn test_mac(secret: u64, payload: &[u8]) -> Vec<u8> {
+    let mut acc = 0xcbf2_9ce4_8422_2325u64 ^ secret;
+    for &b in payload {
+        acc ^= u64::from(b);
+        acc = acc.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    acc.to_le_bytes().to_vec()
+}
+
+impl WaiverVerifier for TestVerifier {
+    fn verify(&self, key_id: &str, payload: &[u8], signature: &[u8]) -> bool {
+        self.keys
+            .get(key_id)
+            .is_some_and(|&secret| test_mac(secret, payload) == signature)
+    }
+}
+
+fn signed_grant(
+    secret: u64,
+    key_id: &str,
+    name: &str,
+    color: &Color,
+    parent_hashes: Vec<fs_ledger::ContentHash>,
+    expires_day: u32,
+) -> WaiverGrant {
+    let mut grant = WaiverGrant {
+        annotation: Waiver {
+            id: "WVR-2026-041".to_string(),
+            signer: "chief-engineer".to_string(),
+            reason: "surrogate validated offline against holdout campaign 7".to_string(),
+        },
+        key_id: key_id.to_string(),
+        scope: WAIVER_SCOPE_COLOR_UPGRADE.to_string(),
+        node_name: name.to_string(),
+        claimed_color: color.name().to_string(),
+        parent_hashes,
+        expires_day,
+        signature: Vec::new(),
+    };
+    grant.signature = test_mac(secret, &grant.signing_payload());
+    grant
+}
 use std::collections::BTreeMap;
 
 fn verdict(case: &str, pass: bool, detail: &str) {
@@ -326,69 +380,186 @@ fn col_003_laundering_gauntlet() {
     );
 }
 
-/// col-004 — the waiver path: a signed waiver authorizes the upgrade,
-/// appears in the ledger row, AND participates in the provenance hash
-/// (dropping it changes the hash — it cannot vanish quietly).
+/// col-004 — the AUTHENTICATED waiver path (qmao.1.1): only a grant
+/// bound to this node, lineage, color, and scope, unexpired, with a
+/// signature the verifier accepts, authorizes an upgrade; the grant
+/// travels in the provenance hash; annotations alone authorize
+/// nothing; tamper/replay/expiry/rotation/no-crypto all fail closed.
 #[test]
 fn col_004_waiver_in_provenance() {
     let state = BTreeMap::new();
-    let mut g = ColorGraph::new();
-    let dirty = g.source(
-        "surrogate",
-        Color::Estimated {
-            estimator: "pod-deim".to_string(),
-            dispersion: 0.02,
-        },
-    );
-    let waiver = Waiver {
-        id: "WVR-2026-041".to_string(),
-        signer: "chief-engineer".to_string(),
-        reason: "surrogate validated offline against holdout campaign 7".to_string(),
+    let verifier = TestVerifier {
+        keys: KeyMap::from([("release-key-1".to_string(), 0x5EC2E7u64)]),
     };
-    let waived = g.derive(
+    let claimed = Color::Verified { lo: 0.0, hi: 1.0 };
+    let fresh = || {
+        let mut g = ColorGraph::new();
+        let dirty = g.source(
+            "surrogate",
+            Color::Estimated {
+                estimator: "pod-deim".to_string(),
+                dispersion: 0.02,
+            },
+        );
+        (g, dirty)
+    };
+    // An annotation via derive() authorizes NOTHING.
+    let (mut g0, d0) = fresh();
+    let annotated = g0.derive(
         "release-metric",
-        &[dirty],
+        &[d0],
         IntervalOp::Hull,
-        Some(Color::Verified { lo: 0.0, hi: 1.0 }),
+        Some(claimed.clone()),
         &state,
-        Some(waiver.clone()),
+        Some(Waiver {
+            id: "WVR-2026-041".to_string(),
+            signer: "chief-engineer".to_string(),
+            reason: "trust me".to_string(),
+        }),
     );
-    let succeeded = waived.is_ok();
-    let id = waived.expect("waived write");
-    let node = g.node(id);
-    let in_row = g
-        .rows()
-        .iter()
-        .any(|r| r.contains("WVR-2026-041") && r.contains("chief-engineer"));
-    // Provenance: an identical write WITHOUT the waiver (in a fresh
-    // graph, forced through by claiming only what parents support)
-    // hashes DIFFERENTLY.
-    let mut g2 = ColorGraph::new();
-    let dirty2 = g2.source(
-        "surrogate",
-        Color::Estimated {
-            estimator: "pod-deim".to_string(),
-            dispersion: 0.02,
-        },
+    assert!(
+        matches!(annotated, Err(ColorWriteError::LaunderingRefused { .. })),
+        "caller-created strings cannot authorize promotion"
     );
-    let _ = dirty2;
+    // The authenticated grant DOES authorize, deterministically.
+    let (mut g, dirty) = fresh();
+    let lineage = vec![g.node(dirty).hash];
+    let grant = signed_grant(
+        0x5EC2E7,
+        "release-key-1",
+        "release-metric",
+        &claimed,
+        lineage.clone(),
+        400,
+    );
+    let id = g
+        .derive_waived(
+            "release-metric",
+            &[dirty],
+            IntervalOp::Hull,
+            claimed.clone(),
+            &state,
+            grant.clone(),
+            &verifier,
+            200,
+        )
+        .expect("authenticated grant authorizes");
+    let node = g.node(id).clone();
+    assert!(node.grant.is_some() && node.waiver.is_some());
+    assert!(
+        g.rows()
+            .iter()
+            .any(|r| r.contains("release-key-1") && r.contains("\"authorized\":true"))
+    );
+    // Re-verifiable FROM the ledger: the stored grant's payload still
+    // authenticates under the same verifier.
+    let stored = node.grant.as_ref().unwrap();
+    assert!(verifier.verify(&stored.key_id, &stored.signing_payload(), &stored.signature));
+    // Provenance: the same write without the grant hashes differently.
+    let (mut g2, d2) = fresh();
     let plain = g2
         .derive(
             "release-metric",
-            &[dirty2],
+            &[d2],
             IntervalOp::Hull,
             None,
             &state,
             None,
         )
         .expect("plain");
-    let hash_differs = g2.node(plain).hash.to_hex() != node.hash.to_hex();
+    assert_ne!(g2.node(plain).hash.to_hex(), node.hash.to_hex());
+    // REFUSALS, each with its structured reason:
+    let refusal = |grant: WaiverGrant, verifier: &dyn WaiverVerifier, day: u32| {
+        let (mut gx, dx) = fresh();
+        match gx.derive_waived(
+            "release-metric",
+            &[dx],
+            IntervalOp::Hull,
+            claimed.clone(),
+            &state,
+            grant,
+            verifier,
+            day,
+        ) {
+            Err(ColorWriteError::WaiverRefused { rejection }) => rejection,
+            other => panic!("expected refusal, got {other:?}"),
+        }
+    };
+    // Tampered payload (signature no longer matches).
+    let mut tampered = grant.clone();
+    tampered.annotation.reason = "edited after signing".to_string();
+    assert_eq!(
+        refusal(tampered, &verifier, 200),
+        WaiverRejection::BadSignature
+    );
+    // Replay to another node name.
+    let mut wrong_node = grant.clone();
+    wrong_node.node_name = "other-metric".to_string();
+    assert_eq!(
+        refusal(wrong_node, &verifier, 200),
+        WaiverRejection::NodeMismatch
+    );
+    // Replay to a different lineage.
+    let mut wrong_lineage = grant.clone();
+    wrong_lineage.parent_hashes = vec![];
+    wrong_lineage.signature = test_mac(0x5EC2E7, &wrong_lineage.signing_payload());
+    assert_eq!(
+        refusal(wrong_lineage, &verifier, 200),
+        WaiverRejection::LineageMismatch
+    );
+    // Wrong color, wrong scope, expiry.
+    let mut wrong_color = grant.clone();
+    wrong_color.claimed_color = "validated".to_string();
+    assert_eq!(
+        refusal(wrong_color, &verifier, 200),
+        WaiverRejection::ColorMismatch
+    );
+    let mut wrong_scope = grant.clone();
+    wrong_scope.scope = "deploy".to_string();
+    assert_eq!(
+        refusal(wrong_scope, &verifier, 200),
+        WaiverRejection::ScopeMismatch
+    );
+    assert_eq!(
+        refusal(grant.clone(), &verifier, 401),
+        WaiverRejection::Expired
+    );
+    // Wrong key + KEY ROTATION (old key removed from the verifier).
+    let mut wrong_key = grant.clone();
+    wrong_key.key_id = "release-key-2".to_string();
+    assert_eq!(
+        refusal(wrong_key, &verifier, 200),
+        WaiverRejection::BadSignature
+    );
+    let rotated = TestVerifier {
+        keys: KeyMap::from([("release-key-2".to_string(), 0x0FF1CEu64)]),
+    };
+    assert_eq!(
+        refusal(grant.clone(), &rotated, 200),
+        WaiverRejection::BadSignature
+    );
+    // Delimiter injection: adversarial names cannot collide the
+    // length-prefixed payload of a DIFFERENT legitimate grant.
+    let evil = signed_grant(
+        0x5EC2E7,
+        "release-key-1",
+        "release-metric\ninjected",
+        &claimed,
+        lineage,
+        400,
+    );
+    assert_ne!(evil.signing_payload(), grant.signing_payload());
+    // No-crypto no-claim: the in-tree default verifier refuses all.
+    assert_eq!(
+        refusal(grant, &NoWaiverVerifier, 200),
+        WaiverRejection::BadSignature
+    );
     verdict(
         "col-004",
-        succeeded && node.waiver.is_some() && in_row && hash_differs,
-        "the signed waiver authorizes the upgrade, appears verbatim in the ledger \
-         row, and participates in the provenance hash (the same write without it \
-         hashes differently — waivers cannot vanish quietly)",
+        true,
+        "annotations never authorize; the authenticated grant does (and re-verifies \
+         from the ledger); tamper, node/lineage replay, color/scope mismatch, expiry, \
+         wrong key, rotation, injection, and no-crypto all fail closed",
     );
 }
 
@@ -497,12 +668,15 @@ fn col_007_color_rows_are_strict_json_under_hostile_metadata() {
                 dispersion: f64::INFINITY,
             },
         );
+        // Hostile ANNOTATION strings must render as strict JSON; the
+        // claim stays within the derivation cap (annotations no longer
+        // authorize upgrades — qmao.1.1).
         graph
             .derive(
                 &format!("waived-{hostile}"),
                 &[estimated],
                 IntervalOp::Hull,
-                Some(Color::Verified { lo: 0.0, hi: 1.0 }),
+                None,
                 &BTreeMap::new(),
                 Some(Waiver {
                     id: format!("id-{hostile}"),
@@ -510,7 +684,7 @@ fn col_007_color_rows_are_strict_json_under_hostile_metadata() {
                     reason: format!("reason-{hostile}"),
                 }),
             )
-            .expect("waived write");
+            .expect("annotated write");
         graph.rows().to_vec()
     };
 

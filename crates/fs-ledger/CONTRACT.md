@@ -90,6 +90,26 @@ valid STRICT SQL), and `artifacts` gains `len`/`chunk_count` +
   `gc_unreferenced_artifacts` walks lineage reachability, and the VCS
   suite proves no live-branch artifact is ever collected.
 
+## Waiver trust boundary (bead qmao.1.1)
+
+Annotation and authorization are DISTINCT: `Waiver` (id/signer/reason
+strings) is a human memo that travels in provenance but authorizes
+nothing — `derive` refuses any upgrade claim regardless of annotation.
+The only path past a laundering refusal is `derive_waived` with a
+`WaiverGrant`: a versioned, length-prefixed canonical payload bound to
+the node name, exact parent provenance hashes (replay to another node
+or lineage fails), the claimed color, the color-upgrade scope, a
+signer key id, and an expiry day — verified through the caller-
+supplied `WaiverVerifier` capability before any write. The in-tree
+default is `NoWaiverVerifier` (refuses everything): no cryptographic
+capability ships in this crate, so promotion is impossible until a
+Franken-compliant signature verifier is wired in (the no-crypto
+no-claim). Node provenance hashes use a versioned length-prefixed
+encoding (v2) — the former newline/colon-delimited encoding allowed
+structural collisions from adversarial text. Refusals are structured
+(`WaiverRejection`: scope/node/color/lineage mismatch, expiry, bad
+signature) and grants re-verify from the stored ledger node.
+
 ## Invariants
 
 1. Artifact identity = BLAKE3 of content; identical bytes dedupe to one row

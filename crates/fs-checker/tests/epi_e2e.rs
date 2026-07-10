@@ -129,24 +129,54 @@ fn epi_e2e_battery() {
         "\"event\":\"auto-demotion\",\"input\":\"validated\",\"state\":\"Re=5e5\",\
          \"output\":\"estimated\"",
     );
-    // The waiver path: upgrade allowed WITH a signer, travelling in provenance.
+    // The waiver path (qmao.1.1): an AUTHENTICATED grant — bound to
+    // node, lineage, color, and scope, unexpired, verifier-accepted —
+    // authorizes the upgrade; a bare annotation would be refused.
+    struct MacVerifier;
+    fn mac(payload: &[u8]) -> Vec<u8> {
+        let mut acc = 0xcbf2_9ce4_8422_2325u64 ^ 0xE2E;
+        for &b in payload {
+            acc ^= u64::from(b);
+            acc = acc.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        acc.to_le_bytes().to_vec()
+    }
+    impl fs_ledger::WaiverVerifier for MacVerifier {
+        fn verify(&self, key_id: &str, payload: &[u8], signature: &[u8]) -> bool {
+            key_id == "epi-key" && mac(payload) == signature
+        }
+    }
+    let claimed_color = Color::Validated {
+        regime: ValidityDomain::unconstrained(),
+        dataset: "engineer-judgment".to_string(),
+    };
+    let mut grant = fs_ledger::WaiverGrant {
+        annotation: Waiver {
+            id: "MEMO-42".to_string(),
+            signer: "chief-engineer".to_string(),
+            reason: "surrogate validated offline against tunnel run 9".to_string(),
+        },
+        key_id: "epi-key".to_string(),
+        scope: fs_ledger::WAIVER_SCOPE_COLOR_UPGRADE.to_string(),
+        node_name: "waived-upgrade".to_string(),
+        claimed_color: claimed_color.name().to_string(),
+        parent_hashes: vec![graph.node(surrogate).hash],
+        expires_day: 400,
+        signature: Vec::new(),
+    };
+    grant.signature = mac(&grant.signing_payload());
     let waived = graph
-        .derive(
+        .derive_waived(
             "waived-upgrade",
             &[surrogate],
             IntervalOp::Hull,
-            Some(Color::Validated {
-                regime: ValidityDomain::unconstrained(),
-                dataset: "engineer-judgment".to_string(),
-            }),
+            claimed_color,
             &state_in,
-            Some(Waiver {
-                id: "MEMO-42".to_string(),
-                signer: "chief-engineer".to_string(),
-                reason: "surrogate validated offline against tunnel run 9".to_string(),
-            }),
+            grant,
+            &MacVerifier,
+            200,
         )
-        .expect("a signed waiver authorizes the upgrade");
+        .expect("an authenticated grant authorizes the upgrade");
     let wnode = graph.node(waived);
     assert_eq!(
         wnode.waiver.as_ref().map(|w| w.signer.as_str()),
