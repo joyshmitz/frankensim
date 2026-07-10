@@ -276,3 +276,32 @@ fn all_constrained_engines_require_positive_finite_tolerances() {
         assert!(result.is_err(), "{engine} accepted tolerance {tolerance}");
     }
 }
+
+#[test]
+fn interior_exhaustion_keeps_last_solved_barrier_multiplier() {
+    // With one outer iteration the solved barrier parameter is mu=1.
+    // Recomputing nu after reducing the unsolved next mu to 0.2 shrinks
+    // complementarity from 1 to 0.2 and used to false-report convergence.
+    let mut fg = |x: &[f64]| {
+        let delta = x[0] - 1.0;
+        (0.05 * delta * delta, vec![0.1 * delta])
+    };
+    let ce = |_: &[f64]| Vec::new();
+    let ce_jt = |x: &[f64], _: &[f64]| vec![0.0; x.len()];
+    let ci = |x: &[f64]| vec![x[0]];
+    let ci_jt = |_: &[f64], w: &[f64]| vec![w[0]];
+    let mut problem = ConstrainedProblem {
+        fg: &mut fg,
+        ce: &ce,
+        ce_jt: &ce_jt,
+        ci: &ci,
+        ci_jt: &ci_jt,
+    };
+
+    let report = interior_point(&mut problem, &[-1.0], 0.9, 1);
+    assert!(!report.converged, "unsolved next-mu state certified: {report:?}");
+    assert!(
+        report.kkt.complementarity > 0.9,
+        "expected the mu=1 complementarity residual, got {report:?}"
+    );
+}

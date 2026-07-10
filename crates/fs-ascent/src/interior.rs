@@ -104,6 +104,7 @@ pub fn interior_point(
     let mut mu = 1.0f64;
     let mut rho = 10.0f64;
     let mut lambda = vec![0.0f64; ne];
+    let mut nu = vec![0.0f64; ni];
     let mut outer = 0usize;
     for _ in 0..max_outer {
         outer += 1;
@@ -167,7 +168,7 @@ pub fn interior_point(
         }
         assert_finite("equality multiplier", &lambda);
         let civ = checked_constraints("inequality", problem.ci, &x, Some(ni));
-        let nu: Vec<f64> = civ.iter().map(|&c| mu / (-c).max(1e-300)).collect();
+        nu = civ.iter().map(|&c| mu / (-c).max(1e-300)).collect();
         assert_finite("inequality multiplier", &nu);
         // Certificate check at the CURRENT multipliers.
         let kkt = kkt_residual(problem, &x, &lambda, &nu);
@@ -188,8 +189,9 @@ pub fn interior_point(
         mu *= 0.2;
         rho *= 2.0;
     }
-    let civ = checked_constraints("inequality", problem.ci, &x, Some(ni));
-    let nu: Vec<f64> = civ.iter().map(|&c| mu / (-c).max(1e-300)).collect();
+    // `nu` belongs to the last barrier subproblem actually solved. The
+    // loop reduces `mu` only in preparation for a possible next solve;
+    // recomputing here with that unsolved parameter can false-certify.
     assert_finite("inequality multiplier", &nu);
     let kkt = kkt_residual(problem, &x, &lambda, &nu);
     let (f, _) = checked_fg(&mut *problem.fg, &x);

@@ -169,8 +169,12 @@ pub(crate) fn validate_problem_at_start(
     let _ = checked_fg(&mut *problem.fg, x);
     let ce = checked_constraints("equality", problem.ce, x, None);
     let ci = checked_constraints("inequality", problem.ci, x, None);
-    let _ = checked_jt("equality", problem.ce_jt, x, &vec![0.0; ce.len()]);
-    let _ = checked_jt("inequality", problem.ci_jt, x, &vec![0.0; ci.len()]);
+    if !ce.is_empty() {
+        let _ = checked_jt("equality", problem.ce_jt, x, &vec![0.0; ce.len()]);
+    }
+    if !ci.is_empty() {
+        let _ = checked_jt("inequality", problem.ci_jt, x, &vec![0.0; ci.len()]);
+    }
     (ce.len(), ci.len())
 }
 
@@ -310,14 +314,14 @@ pub fn kkt_residual(
     );
     assert_finite("equality multiplier", lambda);
     assert_finite("inequality multiplier", nu);
-    let equality_pull = checked_jt("equality", problem.ce_jt, x, lambda);
     if !cev.is_empty() {
+        let equality_pull = checked_jt("equality", problem.ce_jt, x, lambda);
         for i in 0..g.len() {
             g[i] += equality_pull[i];
         }
     }
-    let inequality_pull = checked_jt("inequality", problem.ci_jt, x, nu);
     if !civ.is_empty() {
+        let inequality_pull = checked_jt("inequality", problem.ci_jt, x, nu);
         for i in 0..g.len() {
             g[i] += inequality_pull[i];
         }
