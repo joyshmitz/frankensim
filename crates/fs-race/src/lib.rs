@@ -19,7 +19,10 @@
 //! were not to materialize on some field, the ledger would say so —
 //! that is the point of carrying `fixed_n_equivalent` in the outcome.
 
-use fs_eproc::{PairwiseRace, combine_average, e_benjamini_hochberg};
+use core::fmt;
+
+pub use fs_eproc::LossSpan;
+use fs_eproc::{PairwiseInputError, PairwiseRace, combine_average, e_benjamini_hochberg};
 use fs_exec::KillRegistry;
 
 /// Racing controls.
@@ -34,6 +37,10 @@ pub struct RaceSettings {
     /// few observations before crossings mean anything; checks before
     /// this are skipped, never peeked).
     pub min_rounds: u32,
+    /// Finite positive bound on `abs(loss_a - loss_b)` for every pair
+    /// in every round. This is part of the validity and replay identity,
+    /// not an observed-data tuning parameter.
+    pub loss_span: LossSpan,
 }
 
 impl Default for RaceSettings {
@@ -42,6 +49,70 @@ impl Default for RaceSettings {
             alpha: 0.05,
             max_rounds: 400,
             min_rounds: 8,
+            loss_span: LossSpan::ONE,
+        }
+    }
+}
+
+/// A tournament that cannot issue a statistically valid outcome.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RaceError {
+    /// A race needs at least two candidates.
+    TooFewCandidates { count: usize },
+    /// Alpha must be finite and strictly between zero and one.
+    InvalidAlpha { alpha_bits: u64 },
+    /// The round budget must be nonzero and include `min_rounds`.
+    InvalidRoundBudget { min_rounds: u32, max_rounds: u32 },
+    /// One pair violated the declared support, so no race evidence is valid.
+    PairwiseInput {
+        round: u32,
+        candidate_a: usize,
+        candidate_b: usize,
+        source: PairwiseInputError,
+    },
+    /// Every candidate produced a non-finite loss before a winner existed.
+    NoValidCandidate { invalid: Vec<(u32, usize)> },
+}
+
+impl fmt::Display for RaceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RaceError::TooFewCandidates { count } => {
+                write!(f, "a race needs at least two candidates; got {count}")
+            }
+            RaceError::InvalidAlpha { alpha_bits } => write!(
+                f,
+                "race alpha must be finite and in (0, 1); got {}",
+                f64::from_bits(*alpha_bits)
+            ),
+            RaceError::InvalidRoundBudget {
+                min_rounds,
+                max_rounds,
+            } => write!(
+                f,
+                "race round budget must satisfy 1 <= min_rounds <= max_rounds; got {min_rounds} and {max_rounds}"
+            ),
+            RaceError::PairwiseInput {
+                round,
+                candidate_a,
+                candidate_b,
+                source,
+            } => write!(
+                f,
+                "race lost its validity claim at round {round}, pair ({candidate_a}, {candidate_b}): {source}"
+            ),
+            RaceError::NoValidCandidate { invalid } => {
+                write!(f, "every race candidate was structurally invalid: {invalid:?}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RaceError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            RaceError::PairwiseInput { source, .. } => Some(source),
+            _ => None,
         }
     }
 }
@@ -69,6 +140,8 @@ pub struct RaceOutcome {
     pub fixed_n_equivalent: u64,
     /// Rounds executed.
     pub rounds: u32,
+    /// Declared paired-loss support used by every e-process.
+    pub loss_span: LossSpan,
 }
 
 impl RaceOutcome {
@@ -85,8 +158,10 @@ impl RaceOutcome {
 /// Race a field of candidates with e-BH family-wise elimination.
 /// `loss(candidate, observation)` must be a PURE function of its
 /// arguments (deterministic streams — the caller keys them by seed and
-/// candidate id); eliminated candidates' gates fire through `kills`
-/// (register ids `0..n` before racing to hold handles).
+/// candidate id). Every paired difference must lie inside
+/// [`RaceSettings::loss_span`]; violations return [`RaceError`] before
+/// an invalid outcome can escape. Eliminated candidates' gates fire
+/// through `kills` (register ids `0..n` before racing to hold handles).
 ///
 /// VALIDITY (bead 7tv.7.1 — derivation in CONTRACT.md): candidate i's
 /// elimination evidence is the MIXTURE (average) of its pairwise
@@ -106,21 +181,39 @@ impl RaceOutcome {
 /// `eliminated`, kill-handle fired), its poisoned observation never
 /// reaches the e-processes or the running means.
 ///
-/// # Panics
-/// If `n_candidates < 2`, or if EVERY candidate is structurally
-/// invalid (a race with no valid candidate has no winner to report).
-#[must_use]
+/// # Errors
+/// Invalid settings, paired-loss support violations, or a field with no
+/// valid candidate. These errors carry no race verdict.
 pub fn race_field(
     loss: &mut dyn FnMut(usize, u64) -> f64,
     n_candidates: usize,
     settings: RaceSettings,
     kills: &KillRegistry,
-) -> RaceOutcome {
-    assert!(n_candidates >= 2, "a race needs at least two candidates");
+) -> Result<RaceOutcome, RaceError> {
+    if n_candidates < 2 {
+        return Err(RaceError::TooFewCandidates {
+            count: n_candidates,
+        });
+    }
+    if !settings.alpha.is_finite() || settings.alpha <= 0.0 || settings.alpha >= 1.0 {
+        return Err(RaceError::InvalidAlpha {
+            alpha_bits: settings.alpha.to_bits(),
+        });
+    }
+    if settings.min_rounds == 0
+        || settings.max_rounds == 0
+        || settings.min_rounds > settings.max_rounds
+    {
+        return Err(RaceError::InvalidRoundBudget {
+            min_rounds: settings.min_rounds,
+            max_rounds: settings.max_rounds,
+        });
+    }
+    let prototype = PairwiseRace::with_loss_span(settings.loss_span);
     let n = n_candidates;
     // Pairwise race matrix (i, j), i < j: PairwiseRace observing
     // (loss_i, loss_j); a_beats_b == "i dominates j".
-    let mut races: Vec<PairwiseRace> = (0..n * n).map(|_| PairwiseRace::new()).collect();
+    let mut races = vec![prototype; n * n];
     let mut alive: Vec<bool> = vec![true; n];
     let mut sums = vec![0.0f64; n];
     let mut counts = vec![0u64; n];
@@ -155,8 +248,22 @@ pub fn race_field(
         for i in 0..n {
             for j in (i + 1)..n {
                 if let (Some(a), Some(b)) = (obs[i], obs[j]) {
-                    races[i * n + j].observe(a, b);
-                    races[j * n + i].observe(b, a);
+                    races[i * n + j].observe(a, b).map_err(|source| {
+                        RaceError::PairwiseInput {
+                            round: round + 1,
+                            candidate_a: i,
+                            candidate_b: j,
+                            source,
+                        }
+                    })?;
+                    races[j * n + i].observe(b, a).map_err(|source| {
+                        RaceError::PairwiseInput {
+                            round: round + 1,
+                            candidate_a: j,
+                            candidate_b: i,
+                            source,
+                        }
+                    })?;
                 }
             }
         }
@@ -201,8 +308,10 @@ pub fn race_field(
             let mb = sums[b] / counts[b].max(1) as f64;
             ma.total_cmp(&mb).then(a.cmp(&b))
         })
-        .expect("no valid candidate survived: every loss stream produced non-finite values");
-    RaceOutcome {
+        .ok_or_else(|| RaceError::NoValidCandidate {
+            invalid: invalid.clone(),
+        })?;
+    Ok(RaceOutcome {
         survivors,
         eliminated,
         winner,
@@ -210,7 +319,8 @@ pub fn race_field(
         evaluations_used,
         fixed_n_equivalent: n as u64 * u64::from(settings.max_rounds),
         rounds: round,
-    }
+        loss_span: settings.loss_span,
+    })
 }
 
 /// Successive-halving bracket: at each budget milestone, the bottom

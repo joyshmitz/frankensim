@@ -24,6 +24,8 @@
 #[cfg(feature = "conformal-hardening")]
 pub mod hardening;
 
+use core::fmt;
+
 use fs_math::det;
 
 /// Crate version, re-exported for provenance stamping.
@@ -142,13 +144,119 @@ impl BettingEProcess {
 // ---------------------------------------------------------------------------
 
 /// Race candidate A against candidate B on paired noisy scores where LOWER
-/// is better (losses). Feeds d = (b − a + 1)/2 ∈ [0,1] (after clipping the
-/// paired difference to [−1, 1]; the caller normalizes scales) to a betting
-/// e-process with null mean 1/2: evidence accumulates that A beats B.
+/// is better (losses). A declared support `s` maps the raw difference to
+/// `d = ((b - a) / s + 1) / 2` in `[0, 1]`, feeding a betting e-process
+/// with null mean 1/2: evidence accumulates that A beats B. Out-of-support
+/// observations are refused because clipping would change the estimand.
 #[derive(Debug, Clone)]
 pub struct PairwiseRace {
     proc: BettingEProcess,
+    loss_span: LossSpan,
 }
+
+/// Finite positive support bound for an absolute paired-loss difference.
+/// Construction is checked so a race cannot carry a malformed scale.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LossSpan(f64);
+
+impl Eq for LossSpan {}
+
+impl LossSpan {
+    /// Unit span for already-normalized losses.
+    pub const ONE: Self = Self(1.0);
+
+    /// Validate a raw span.
+    ///
+    /// # Errors
+    /// [`PairwiseInputError::InvalidLossSpan`] unless `span` is finite
+    /// and strictly positive.
+    pub fn new(span: f64) -> Result<Self, PairwiseInputError> {
+        if !span.is_finite() || span <= 0.0 {
+            return Err(PairwiseInputError::InvalidLossSpan {
+                span_bits: span.to_bits(),
+            });
+        }
+        Ok(Self(span))
+    }
+
+    /// The checked raw span.
+    #[must_use]
+    pub const fn get(self) -> f64 {
+        self.0
+    }
+}
+
+/// A paired-loss observation that cannot support the claimed e-process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PairwiseInputError {
+    /// The declared maximum absolute paired-loss difference is invalid.
+    InvalidLossSpan {
+        /// IEEE-754 bits of the rejected span.
+        span_bits: u64,
+    },
+    /// At least one loss is non-finite.
+    NonFiniteLoss {
+        /// IEEE-754 bits of candidate A's loss.
+        loss_a_bits: u64,
+        /// IEEE-754 bits of candidate B's loss.
+        loss_b_bits: u64,
+    },
+    /// Subtracting two finite losses overflowed.
+    NonFiniteDifference {
+        /// IEEE-754 bits of candidate A's loss.
+        loss_a_bits: u64,
+        /// IEEE-754 bits of candidate B's loss.
+        loss_b_bits: u64,
+    },
+    /// The observed paired difference exceeds its declared support.
+    DifferenceOutOfRange {
+        /// IEEE-754 bits of `loss_b - loss_a`.
+        difference_bits: u64,
+        /// IEEE-754 bits of the checked declared span.
+        span_bits: u64,
+    },
+}
+
+impl fmt::Display for PairwiseInputError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            PairwiseInputError::InvalidLossSpan { span_bits } => write!(
+                f,
+                "pairwise loss span must be finite and positive; got {}",
+                f64::from_bits(span_bits)
+            ),
+            PairwiseInputError::NonFiniteLoss {
+                loss_a_bits,
+                loss_b_bits,
+            } => write!(
+                f,
+                "pairwise losses must be finite; got ({}, {})",
+                f64::from_bits(loss_a_bits),
+                f64::from_bits(loss_b_bits)
+            ),
+            PairwiseInputError::NonFiniteDifference {
+                loss_a_bits,
+                loss_b_bits,
+            } => write!(
+                f,
+                "finite pairwise losses overflowed during subtraction: ({}, {})",
+                f64::from_bits(loss_a_bits),
+                f64::from_bits(loss_b_bits)
+            ),
+            PairwiseInputError::DifferenceOutOfRange {
+                difference_bits,
+                span_bits,
+            } => write!(
+                f,
+                "paired-loss difference {} exceeds declared span {}",
+                f64::from_bits(difference_bits),
+                f64::from_bits(span_bits)
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PairwiseInputError {}
 
 impl PairwiseRace {
     /// Fresh race.
@@ -156,14 +264,61 @@ impl PairwiseRace {
     pub fn new() -> Self {
         PairwiseRace {
             proc: BettingEProcess::new(0.5),
+            loss_span: LossSpan::ONE,
         }
     }
 
-    /// Observe one paired (loss_a, loss_b) evaluation, pre-normalized so the
-    /// difference is meaningful on [−1, 1] (clipped defensively).
-    pub fn observe(&mut self, loss_a: f64, loss_b: f64) {
-        let d = f64::midpoint((loss_b - loss_a).clamp(-1.0, 1.0), 1.0);
+    /// Create a race whose paired losses satisfy
+    /// `abs(loss_b - loss_a) <= loss_span` almost surely.
+    #[must_use]
+    pub fn with_loss_span(loss_span: LossSpan) -> Self {
+        PairwiseRace {
+            proc: BettingEProcess::new(0.5),
+            loss_span,
+        }
+    }
+
+    /// Observe one paired `(loss_a, loss_b)` evaluation. The declared
+    /// span maps the raw difference linearly to `[0, 1]`; values outside
+    /// that support are refused rather than clipped into a different
+    /// estimand.
+    ///
+    /// # Errors
+    /// Non-finite losses, subtraction overflow, or a paired difference
+    /// outside the declared span. On error, wealth is unchanged.
+    pub fn observe(
+        &mut self,
+        loss_a: f64,
+        loss_b: f64,
+    ) -> Result<(), PairwiseInputError> {
+        if !loss_a.is_finite() || !loss_b.is_finite() {
+            return Err(PairwiseInputError::NonFiniteLoss {
+                loss_a_bits: loss_a.to_bits(),
+                loss_b_bits: loss_b.to_bits(),
+            });
+        }
+        let difference = loss_b - loss_a;
+        if !difference.is_finite() {
+            return Err(PairwiseInputError::NonFiniteDifference {
+                loss_a_bits: loss_a.to_bits(),
+                loss_b_bits: loss_b.to_bits(),
+            });
+        }
+        if difference.abs() > self.loss_span.get() {
+            return Err(PairwiseInputError::DifferenceOutOfRange {
+                difference_bits: difference.to_bits(),
+                span_bits: self.loss_span.get().to_bits(),
+            });
+        }
+        let d = f64::midpoint(difference / self.loss_span.get(), 1.0);
         let _ = self.proc.observe(d);
+        Ok(())
+    }
+
+    /// Declared maximum absolute paired-loss difference.
+    #[must_use]
+    pub fn loss_span(&self) -> LossSpan {
+        self.loss_span
     }
 
     /// Does the race declare "A beats B" at level α?
@@ -499,7 +654,7 @@ mod tests {
             while !race.a_beats_b(0.05) && t < 50_000 {
                 let a = 0.4 + 0.1 * s.next_f64(); // better (lower loss)
                 let b = 0.5 + 0.1 * s.next_f64();
-                race.observe(a, b);
+                race.observe(a, b).expect("difference lies in [-1, 1]");
                 t += 1;
             }
             (race.a_beats_b(0.05), t, race.log_e_value().to_bits())
@@ -515,6 +670,39 @@ mod tests {
         println!(
             "{{\"suite\":\"fs-eproc\",\"case\":\"race-replay\",\"verdict\":\"pass\",\"detail\":\"decided at t={t1}, bitwise replayable\"}}"
         );
+    }
+
+    #[test]
+    fn pairwise_scale_is_checked_before_wealth_changes() {
+        let mut race = PairwiseRace::with_loss_span(LossSpan::ONE);
+        let initial = race.log_e_value().to_bits();
+        let outside = f64::from_bits(1.0f64.to_bits() + 1);
+        assert!(matches!(
+            race.observe(0.0, outside),
+            Err(PairwiseInputError::DifferenceOutOfRange { .. })
+        ));
+        assert_eq!(race.log_e_value().to_bits(), initial);
+        race.observe(0.0, 1.0).expect("inclusive boundary");
+        assert!(LossSpan::new(f64::NAN).is_err());
+        assert!(LossSpan::new(0.0).is_err());
+    }
+
+    #[test]
+    fn skew_equal_mean_losses_cannot_be_clipped_into_evidence() {
+        // Candidate B is 4 with probability 3/4 and 0 with probability
+        // 1/4; candidate A is always 3. Both means are exactly 3. The
+        // old silent clamp changed B-A from {+1,-3} to {+1,-1}, whose
+        // positive mean manufactured evidence that A beats equal-mean B.
+        let mut race = PairwiseRace::new();
+        for loss_b in [4.0, 4.0, 4.0] {
+            race.observe(3.0, loss_b).expect("upper boundary");
+        }
+        let before = race.log_e_value().to_bits();
+        assert!(matches!(
+            race.observe(3.0, 0.0),
+            Err(PairwiseInputError::DifferenceOutOfRange { .. })
+        ));
+        assert_eq!(race.log_e_value().to_bits(), before);
     }
 
     #[test]
