@@ -190,26 +190,30 @@ impl SteeredStudy {
     }
 
     /// A deterministic fingerprint of the state (replay witness).
+    /// Canonical replay identity encoding (gp3.14): the former bare
+    /// concatenation of variable-length x/f/weight streams was
+    /// non-injective — a value could migrate across a section boundary
+    /// (ind.x tail vs ind.f head) without moving the hash. Sections
+    /// now carry typed length prefixes.
     #[must_use]
     pub fn fingerprint(&self) -> u64 {
-        let mut h = 0xcbf2_9ce4_8422_2325u64;
-        let mut eat = |v: f64| {
-            for b in v.to_bits().to_le_bytes() {
-                h ^= u64::from(b);
-                h = h.wrapping_mul(0x0000_0100_0000_01b3);
-            }
-        };
+        let mut b = fs_obs::ident::IdentityBuilder::new("dfo-steered-study")
+            .u64("stream_index", self.state.stream_index)
+            .u64("population", self.state.population.len() as u64);
         for ind in &self.state.population {
+            b = b.u64("x_len", ind.x.len() as u64);
             for &v in &ind.x {
-                eat(v);
+                b = b.f64_bits("x", v);
             }
+            b = b.u64("f_len", ind.f.len() as u64);
             for &v in &ind.f {
-                eat(v);
+                b = b.f64_bits("f", v);
             }
         }
+        b = b.u64("weights_len", self.state.weights.len() as u64);
         for &v in &self.state.weights {
-            eat(v);
+            b = b.f64_bits("w", v);
         }
-        h ^ self.state.stream_index
+        b.finish().root()
     }
 }
