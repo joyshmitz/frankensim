@@ -47,7 +47,7 @@ mod tune;
 
 pub use cx::{CancelGate, Cancelled, Cx, ExecMode, StreamKey};
 pub use kernel::{Reduce, TileKernel, TilePlan};
-pub use kill::{CandidateId, KillRegistry};
+pub use kill::{CandidateId, KillRegistry, UnregisteredKill};
 pub use latency::{LaneError, LatencyLane};
 pub use pool::{PoolConfig, RunError, RunReport, TilePool, victim_order, weighted_ranges};
 pub use race::{BranchOutcome, BranchReport, NoWinner, RaceBranch, RaceRun, Racer, RacerConfig};

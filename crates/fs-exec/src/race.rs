@@ -148,6 +148,13 @@ pub struct NoWinner {
 
 impl fmt::Display for NoWinner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.reports.is_empty() {
+            return write!(
+                f,
+                "race refused: no branches were supplied (an empty race can never \
+                 produce a winner; the former behavior hung the parent watcher — wf9.8.1)"
+            );
+        }
         write!(
             f,
             "race produced no winner: every branch was rejected, cancelled, or panicked — \
@@ -158,6 +165,12 @@ impl fmt::Display for NoWinner {
 }
 
 impl core::error::Error for NoWinner {}
+
+/// Panic-total lock: a poisoned mutex degrades to its data, never to a
+/// second panic that could re-hang the drain protocol (wf9.8.1).
+fn relock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 fn race_json(mode: &str, winner: Option<usize>, reports: &[BranchReport]) -> String {
     use std::fmt::Write as _;
@@ -242,6 +255,14 @@ impl Racer {
     ) -> Result<RaceRun<T>, NoWinner> {
         let n = branches.len();
         let mode = self.config.mode;
+        // Structured refusal, never a hung watcher (wf9.8.1): with zero
+        // branches nothing would ever set the completion flag.
+        if n == 0 {
+            return Err(NoWinner {
+                reports: Vec::new(),
+                mode: mode.name(),
+            });
+        }
         let gates: Vec<CancelGate> = (0..n).map(|_| CancelGate::new()).collect();
         let slots: Vec<Mutex<Option<Result<T, BranchOutcome>>>> =
             (0..n).map(|_| Mutex::new(None)).collect();
@@ -288,16 +309,26 @@ impl Racer {
                         iteration: 0,
                     };
                     let run = branch.run;
+                    // The WHOLE fallible path — branch body AND the
+                    // acceptance predicate — runs inside one unwind
+                    // guard (wf9.8.1): an accept panic used to unwind
+                    // the worker before its slot was filled, hanging
+                    // the parent watcher forever.
                     let outcome = arenas.scope(|arena| {
                         let cx =
                             Cx::new(gate, arena, key, asupersync::types::Budget::INFINITE, mode);
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&cx)))
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            run(&cx).map(|value| {
+                                let accepted = accept(&value);
+                                (value, accepted)
+                            })
+                        }))
                     });
                     let entry = match outcome {
-                        Ok(Ok(value)) if accept(&value) => {
+                        Ok(Ok((value, true))) => {
                             // Accepted: contend for leadership and kill the
                             // branches that can no longer win.
-                            let mut d = decision.lock().expect("race decision");
+                            let mut d = relock(decision);
                             let leads = match (mode, d.leader) {
                                 (_, None) => true,
                                 (ExecMode::Deterministic, Some(l)) => index < l,
@@ -322,7 +353,7 @@ impl Racer {
                             }
                             Ok(value)
                         }
-                        Ok(Ok(_)) => Err(BranchOutcome::Rejected),
+                        Ok(Ok((_, false))) => Err(BranchOutcome::Rejected),
                         Ok(Err(Cancelled)) => Err(BranchOutcome::Cancelled),
                         Err(payload) => {
                             let message = payload
@@ -333,9 +364,11 @@ impl Racer {
                             Err(BranchOutcome::Panicked { message })
                         }
                     };
-                    *slots[index].lock().expect("race slot") = Some(entry);
-                    // Last branch out releases the parent watcher.
-                    if slots.iter().all(|s| s.lock().expect("race slot").is_some()) {
+                    // Terminal-slot guarantee: this epilogue is panic-
+                    // free (poison-tolerant locks, atomic store), so the
+                    // watcher ALWAYS gets released.
+                    *relock(&slots[index]) = Some(entry);
+                    if slots.iter().all(|s| relock(s).is_some()) {
                         race_done_ref.store(true, std::sync::atomic::Ordering::Release);
                     }
                 });
@@ -345,14 +378,17 @@ impl Racer {
         // Decide from OUTCOMES, not timing: the winner is the lowest-index
         // accepted result (Deterministic) or the recorded first arrival
         // (Fast). Scope join above guarantees every loser fully drained.
-        let recorded_leader = decision.into_inner().expect("race decision").leader;
+        let recorded_leader = decision
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .leader;
         let mut winner: Option<(usize, T)> = None;
         let mut reports: Vec<BranchReport> = Vec::with_capacity(n);
         for (index, slot) in slots.into_iter().enumerate() {
             let entry = slot
                 .into_inner()
-                .expect("race slot")
-                .expect("every branch reports");
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .expect("terminal-slot guarantee: the guarded epilogue always records");
             match entry {
                 Ok(value) => {
                     let take = match mode {
@@ -466,6 +502,155 @@ mod tests {
         ));
         assert!(err.to_string().contains("fallback"), "{err}");
         assert!(racer.arena_pool().stats().quiescent());
+    }
+
+    /// Run a race on a helper thread with a hard time bound: the
+    /// wf9.8.1 failure mode is a HANG, so every regression here must
+    /// stay bounded even when it fails.
+    fn bounded<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(20))
+            .expect("race returned within the bound (wf9.8.1: no hangs)")
+    }
+
+    #[test]
+    fn empty_race_is_refused_not_hung() {
+        let err = bounded(|| {
+            let racer = Racer::new(RacerConfig::new(0xACE));
+            racer
+                .race(Vec::<RaceBranch<'_, u64>>::new(), |_| true)
+                .map(|r| r.winner)
+                .expect_err("empty race refuses")
+        });
+        assert!(err.reports.is_empty());
+        assert!(err.to_string().contains("no branches"), "{err}");
+    }
+
+    #[test]
+    fn accept_panic_is_contained_and_the_race_terminates() {
+        let (winner, reports) = bounded(|| {
+            let racer = Racer::new(RacerConfig::new(0xACE));
+            let run = racer
+                .race(
+                    vec![
+                        RaceBranch::new("poison", |_cx| Ok(7u64)),
+                        RaceBranch::new("clean", |_cx| Ok(8u64)),
+                    ],
+                    |v| {
+                        assert!(*v != 7, "acceptance predicate bomb");
+                        true
+                    },
+                )
+                .expect("clean branch wins");
+            assert!(racer.arena_pool().stats().quiescent());
+            (run.winner, run.reports)
+        });
+        assert_eq!(winner, 1);
+        assert!(matches!(
+            &reports[0].outcome,
+            BranchOutcome::Panicked { message } if message.contains("predicate bomb")
+        ));
+        assert_eq!(reports[1].outcome, BranchOutcome::Won);
+    }
+
+    #[test]
+    fn simultaneous_instant_completions_pick_the_lowest_index() {
+        for _ in 0..32 {
+            let winner = bounded(|| {
+                let racer = Racer::new(RacerConfig::new(0xACE));
+                racer
+                    .race(
+                        vec![
+                            RaceBranch::new("a", |_cx| Ok(1u64)),
+                            RaceBranch::new("b", |_cx| Ok(2u64)),
+                            RaceBranch::new("c", |_cx| Ok(3u64)),
+                        ],
+                        |_| true,
+                    )
+                    .expect("winner")
+                    .winner
+            });
+            assert_eq!(winner, 0, "deterministic under simultaneous completion");
+        }
+    }
+
+    #[test]
+    fn mid_flight_parent_cancellation_drains_everything() {
+        let reports = bounded(|| {
+            let racer = Racer::new(RacerConfig::new(0xACE));
+            let parent = std::sync::Arc::new(CancelGate::new());
+            let killer = std::sync::Arc::clone(&parent);
+            let killer_thread = std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                killer.request();
+            });
+            let err = racer
+                .race_with_gate(
+                    vec![
+                        RaceBranch::new("a", spin_until_cancelled),
+                        RaceBranch::new("b", spin_until_cancelled),
+                    ],
+                    |_| true,
+                    &parent,
+                )
+                .expect_err("cancelled tree has no winner");
+            killer_thread.join().expect("killer joins");
+            assert!(racer.arena_pool().stats().quiescent(), "losers drained");
+            err.reports
+        });
+        assert!(
+            reports
+                .iter()
+                .all(|r| r.outcome == BranchOutcome::Cancelled)
+        );
+    }
+
+    /// G4 STORM (wf9.8.1 acceptance): races run under registry-owned
+    /// candidate gates while eliminations storm in from outside; every
+    /// kill lands on a REGISTERED handle (nonzero, structured), every
+    /// race returns, and the arenas end quiescent.
+    #[test]
+    fn g4_kill_storm_hits_registered_gates_and_drains() {
+        let out = bounded(|| {
+            let registry = std::sync::Arc::new(crate::kill::KillRegistry::new());
+            let racer = Racer::new(RacerConfig::new(0xACE));
+            let mut landed = 0u32;
+            for candidate in 0..12u64 {
+                let gate = registry.register(candidate);
+                let storm_reg = std::sync::Arc::clone(&registry);
+                let storm = std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    storm_reg
+                        .kill_registered(candidate)
+                        .expect("storm kills only registered candidates");
+                });
+                let err = racer
+                    .race_with_gate(
+                        vec![
+                            RaceBranch::new("x", spin_until_cancelled),
+                            RaceBranch::new("y", spin_until_cancelled),
+                        ],
+                        |_| true,
+                        &gate,
+                    )
+                    .expect_err("stormed candidate has no winner");
+                assert!(
+                    err.reports
+                        .iter()
+                        .all(|r| r.outcome == BranchOutcome::Cancelled)
+                );
+                storm.join().expect("storm joins");
+                landed += 1;
+                assert!(registry.release(candidate));
+            }
+            assert!(racer.arena_pool().stats().quiescent(), "arenas quiescent");
+            (landed, registry.live())
+        });
+        assert_eq!(out.0, 12, "nonzero registered kills, all landed");
+        assert_eq!(out.1, 0, "registry drained");
     }
 
     #[test]

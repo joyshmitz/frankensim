@@ -117,6 +117,23 @@ fs-substrate, fs-obs.
     pinned decisions reproduce identically on ANY machine, calibrated or
     not (exec-013).
 
+## Race drain totality (bead wf9.8.1)
+
+`race_with_gate` is PANIC-TOTAL and hang-free: empty races are refused
+with a structured `NoWinner` (empty reports + teaching message) before
+any thread spawns; the branch body AND the acceptance predicate run
+inside one unwind guard, and the terminal-slot epilogue (slot write +
+watcher release) is panic-free by construction (poison-tolerant locks
+throughout), so the parent watcher is always released — an accept
+panic is a `Panicked` outcome, never a hung scope. `KillRegistry`
+locks are poison-tolerant, and `kill_registered` returns a structured
+`UnregisteredKill` instead of an ignorable `false` for candidates that
+must be wired; flagship consumers (fs-race tournaments) register their
+candidates' gates at scope start so eliminations always reach a live
+evaluation tree. The G4 storm test drives races under registry-owned
+gates with external kills: every kill lands registered, every race
+returns, arenas end quiescent.
+
 ## Error model
 All fallible APIs return structured values (`RunError`, `LaneError`) with
 teaching `Display` text. Kernel panics become `RunError::TilePanicked`;

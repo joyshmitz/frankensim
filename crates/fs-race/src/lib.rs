@@ -259,6 +259,12 @@ pub fn race_field(
     // Pairwise race matrix (i, j), i < j: PairwiseRace observing
     // (loss_i, loss_j); a_beats_b == "i dominates j".
     let mut races = vec![prototype; n * n];
+    // The race OWNS its candidates' gates (wf9.8.1): register every id
+    // up front so an elimination can never be a silent no-op against an
+    // unwired registry.
+    for i in 0..n {
+        let _gate = kills.register(i as u64);
+    }
     let mut alive: Vec<bool> = vec![true; n];
     let mut means = vec![0.0f64; n];
     let mut counts = vec![0u64; n];
@@ -337,7 +343,9 @@ pub fn race_field(
             for &i in &ids {
                 alive[i] = false;
                 eliminated.push((round, i));
-                let _ = kills.kill(i as u64);
+                kills
+                    .kill_registered(i as u64)
+                    .expect("registered at race start (wf9.8.1)");
             }
         }
     }
@@ -398,6 +406,10 @@ pub fn successive_halving(
     assert!(eta >= 2, "eta must halve at least");
     let n = n_candidates;
     let mut alive: Vec<bool> = vec![true; n];
+    // The bracket OWNS its candidates' gates (wf9.8.1).
+    for i in 0..n {
+        let _gate = kills.register(i as u64);
+    }
     let mut means = vec![0.0f64; n];
     let mut counts = vec![0u64; n];
     let mut invalid: Vec<(u32, usize)> = Vec::new();
@@ -417,7 +429,9 @@ pub fn successive_halving(
                     } else {
                         alive[i] = false;
                         invalid.push((round + 1, i));
-                        let _ = kills.kill(i as u64);
+                        kills
+                            .kill_registered(i as u64)
+                            .expect("registered at bracket start (wf9.8.1)");
                     }
                 }
             }
@@ -430,7 +444,9 @@ pub fn successive_halving(
         let keep = (before as u32).div_ceil(eta).max(1) as usize;
         for &i in &live[keep.min(live.len())..] {
             alive[i] = false;
-            let _ = kills.kill(i as u64);
+            kills
+                .kill_registered(i as u64)
+                .expect("registered at bracket start (wf9.8.1)");
         }
         brackets.push((round, before, keep.min(live.len())));
         total_budget = total_budget.max(u64::from(round));

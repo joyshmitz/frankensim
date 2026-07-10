@@ -8,8 +8,9 @@
 //! histogram is measured per kill and ledgered (never assumed).
 
 use crate::cx::CancelGate;
+use core::fmt;
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 /// A candidate's logical identity (the e-racing layer's key: generation ×
 /// member, hashed however the optimizer likes).
@@ -23,11 +24,56 @@ pub struct KillRegistry {
     entries: Mutex<BTreeMap<CandidateId, Arc<CancelGate>>>,
 }
 
+/// A kill aimed at a candidate the registry does not know (wf9.8.1):
+/// the structured missing-handle error — a claimed elimination that
+/// exercised NO live evaluation tree must be visible, not an ignorable
+/// `false`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnregisteredKill {
+    /// The unknown candidate.
+    pub id: CandidateId,
+}
+
+impl fmt::Display for UnregisteredKill {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "kill({}) found no registered handle: the candidate's evaluation tree was \
+             never wired to this registry (or was already released) — register ids \
+             before racing so eliminations reach live work",
+            self.id
+        )
+    }
+}
+
+impl core::error::Error for UnregisteredKill {}
+
 impl KillRegistry {
     /// Empty registry.
     #[must_use]
     pub fn new() -> Self {
         KillRegistry::default()
+    }
+
+    /// Panic-total lock: a poisoned registry degrades to its data
+    /// (poisoning can only come from a `kill_where` predicate panic;
+    /// gate state is atomic and never torn).
+    fn lock(&self) -> MutexGuard<'_, BTreeMap<CandidateId, Arc<CancelGate>>> {
+        self.entries.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// [`KillRegistry::kill`] for candidates that MUST be wired: the
+    /// missing-handle case is a structured error, not a droppable
+    /// boolean.
+    ///
+    /// # Errors
+    /// [`UnregisteredKill`] when no handle is registered for `id`.
+    pub fn kill_registered(&self, id: CandidateId) -> Result<(), UnregisteredKill> {
+        if self.kill(id) {
+            Ok(())
+        } else {
+            Err(UnregisteredKill { id })
+        }
     }
 
     /// Register (or fetch) the kill-handle gate for a candidate. The
@@ -36,9 +82,7 @@ impl KillRegistry {
     #[must_use]
     pub fn register(&self, id: CandidateId) -> Arc<CancelGate> {
         Arc::clone(
-            self.entries
-                .lock()
-                .expect("kill registry")
+            self.lock()
                 .entry(id)
                 .or_insert_with(|| Arc::new(CancelGate::new())),
         )
@@ -48,7 +92,7 @@ impl KillRegistry {
     /// Returns false for unknown ids (a structured non-event, not an
     /// error — the candidate may already be finished and released).
     pub fn kill(&self, id: CandidateId) -> bool {
-        match self.entries.lock().expect("kill registry").get(&id) {
+        match self.lock().get(&id) {
             Some(gate) => {
                 gate.request();
                 true
@@ -60,7 +104,7 @@ impl KillRegistry {
     /// Kill every candidate the predicate condemns (e-BH style batch
     /// elimination). Returns the killed ids, ascending (deterministic).
     pub fn kill_where(&self, mut condemn: impl FnMut(CandidateId) -> bool) -> Vec<CandidateId> {
-        let entries = self.entries.lock().expect("kill registry");
+        let entries = self.lock();
         let mut killed = Vec::new();
         for (&id, gate) in entries.iter() {
             if condemn(id) {
@@ -75,17 +119,13 @@ impl KillRegistry {
     /// `Arc` still held by in-flight work; the registry just forgets it).
     /// Returns false for unknown ids.
     pub fn release(&self, id: CandidateId) -> bool {
-        self.entries
-            .lock()
-            .expect("kill registry")
-            .remove(&id)
-            .is_some()
+        self.lock().remove(&id).is_some()
     }
 
     /// Live (registered, unreleased) candidate count.
     #[must_use]
     pub fn live(&self) -> usize {
-        self.entries.lock().expect("kill registry").len()
+        self.lock().len()
     }
 }
 
@@ -110,6 +150,16 @@ mod tests {
         assert!(!reg.kill(7), "released candidates are unknown");
         // The Arc'd gate outlives the registry entry (in-flight holders).
         assert!(gate.is_requested());
+    }
+
+    #[test]
+    fn unregistered_kill_is_a_structured_error() {
+        let reg = KillRegistry::new();
+        let err = reg.kill_registered(42).expect_err("nothing wired");
+        assert_eq!(err, UnregisteredKill { id: 42 });
+        assert!(err.to_string().contains("no registered handle"));
+        let _ = reg.register(42);
+        reg.kill_registered(42).expect("wired candidates kill");
     }
 
     #[test]
