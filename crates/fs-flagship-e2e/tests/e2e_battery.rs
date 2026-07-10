@@ -41,10 +41,15 @@ const RATE: Dims = Dims([0, 0, -1, 0, 0]);
 //   unit-span/clipping e-race; only evals moved, 394 -> 925).
 // - frame: 0x05e1_d182_48d2_949f; lbm-core: 0x6841_e3c0_508e_eba5.
 // 2026-07-10 again (xo2k): poured_mass proved build-mode bit-divergent
-// (~31 ulp release vs debug) and moved to an envelope gate; this hash
-// binds the five mode-invariant metrics only. The 6-metric v2 hash was
-// 0xdabd_6fd3_6315_31fe (debug bits).
-const GOLDEN_VESSEL_SMOKE: u64 = 0xfb33_2a50_af26_1116;
+// (~31 ulp release vs debug) and briefly moved to an envelope gate
+// (5-metric hash 0xfb33_2a50_af26_1116; the divergent 6-metric v2 hash
+// was 0xdabd_6fd3_6315_31fe, debug bits). ROOT CAUSE FIXED at xo2k
+// close: the pour tilt schedule's platform sin/cos (release const-folds
+// libm with inlined literal rig params) now routes through
+// fs_math::det::sin/cos, and poured_mass (0x3fd3b2951fb7df34 in BOTH
+// modes) is restored to the hashed stream. fs-lbm rheology powf paths
+// migrated to det::pow in the same change (latent, same hazard class).
+const GOLDEN_VESSEL_SMOKE: u64 = 0x4e42_4a53_6a63_ce8b;
 const GOLDEN_ORNITH_SMOKE: u64 = 0xd750_e1bb_a8d7_e76a;
 const GOLDEN_FRAME_SMOKE: u64 = 0x9c09_b06a_7883_57fc;
 const GOLDEN_LBM_CORE: u64 = 0x1539_430c_dae4_7762;
@@ -61,18 +66,18 @@ fn vessel_smoke() -> (StageArtifact, f64) {
         fs_lbm::Rheology::Newtonian { nu: 0.0167 },
     );
     let rep = robustify(0.7);
-    // poured_mass is OUT of the hashed stream: it is build-mode
-    // bit-divergent (~31 ulp, release vs debug — bead xo2k) while the
-    // other five metrics are mode-invariant. Envelope-gated in
-    // fe2e-001 instead, per the crate's stated discipline
-    // (non-deterministic values gate on envelopes, not hashes).
-    // Restore to the hash + re-freeze when xo2k closes.
+    // poured_mass is BACK in the hashed stream (xo2k closed): the
+    // divergence was platform trig in the pour tilt schedule — release
+    // const-folded sin/cos with the inlined literal rig parameters while
+    // debug called libm at runtime. Routed through fs_math::det::sin/cos,
+    // the metric is mode-invariant again (0x3fd3b2951fb7df34 both modes).
     let metrics = vec![
         ("mass_drift", out.mass_drift),
         ("fragments", out.fragments as f64),
         ("robust_lip", rep.robust_lip),
         ("nominal_lip", rep.nominal_lip),
         ("robust_offband", rep.robust_offband_growth),
+        ("poured_mass", out.poured_mass),
     ];
     (
         artifact("vessel", Tier::Smoke, metrics, t0.elapsed().as_secs_f64()),
