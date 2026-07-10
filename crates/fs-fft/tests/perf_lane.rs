@@ -132,6 +132,7 @@ fn fft_attainment() {
     // working sets against the DRAM STREAM axis).
     let mut gate_ok = true;
     let mut floor_ok = true;
+    let mut env_ok = true;
     for &(n, gated) in &[(1usize << 16, false), (1 << 20, true), (1 << 22, true)] {
         let mut kern = FftRoundTrip::new(n);
         let att = measure(&mut kern, 1, 5, &axes);
@@ -139,10 +140,26 @@ fn fft_attainment() {
             "{{\"metric\":\"fft-roundtrip\",\"n\":{n},\"gated\":{gated},{}}}",
             att.to_jsonl().trim_start_matches('{')
         );
+        // An environment_invalid row gates NOTHING — neither pass nor
+        // fail (bead 1n61: the first guarded storm-window run refused
+        // every row, yet this harness still printed target_met:true
+        // from the raw ratios — the consumer must honor the verdict).
+        if att.verdict == fs_roofline::Verdict::EnvironmentInvalid {
+            env_ok = false;
+            continue;
+        }
         if gated {
             gate_ok &= att.attainment >= 0.40;
             floor_ok &= att.attainment >= 0.15;
         }
+    }
+    if !env_ok {
+        println!(
+            "{{\"metric\":\"fft-gate\",\"verdict\":\"environment_invalid\",             \"machine\":\"{}-{}\"}}",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        );
+        return; // no claim either way from a contaminated environment
     }
     // The 0.40 target is REPORTED per row; measured 0.26–0.43 across
     // runs on this machine, dominated by axis and load noise from
