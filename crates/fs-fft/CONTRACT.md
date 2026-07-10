@@ -6,11 +6,13 @@ real-input transform (r2c), and DCT-II/III via FFT folding (the Chebyshev
 transform path fs-cheb builds on). Layer: **L1 BEDROCK**. Depends only on
 fs-math (strict-mode twiddles). Plan §6.3.
 
-v1 is correctness-first radix-2, now extended (bead fs-fft-perf-multidim) with
-the r2c **inverse** (c2r) and **N-dimensional** (2D/3D) transforms via separable
-pencil decomposition. The remaining perf scope — radix-4/8 kernels, SIMD lanes,
-cache-blocked transposes, executor-tiled pencils, and the roofline gate — stays
-recorded follow-up; see No-claim boundaries.
+v1 was correctness-first radix-2; the 27d3 perf lane has since extended it
+with the r2c **inverse** (c2r), **N-dimensional** (2D/3D) separable pencil
+transforms, **mixed radix-8/4/2 Stockham** stages (three log₂ bits per
+full-array pass; one radix-4-or-2 residue), and NEON/AVX2 q-run capsules for
+the large-stride radix-4 stage. Remaining perf scope — cache-blocked pass
+ordering, copy-back fusion, executor-tiled pencils, the still-unmet roofline
+gate — see No-claim boundaries.
 
 ## Public types and semantics
 - `C64 { re: f64, im: f64 }` — minimal complex scalar. `norm_sq` uses a fused
@@ -93,13 +95,16 @@ hash, structured rejection of bad sizes. Any reimplementation must pass this
 suite bit-for-bit on the golden-hash case.
 
 ## No-claim boundaries
-- **No performance claims yet**: the kernels are scalar radix-2 (1D and the N-D
-  pencils). Radix-4/8 higher-radix stages, SIMD lanes (fs-simd Ops), cache-
-  blocked transposes, executor-tiled pencils with cancellation polls at pencil
-  boundaries, and the roofline gate (≥40% of memory-bound peak on both reference
-  ISAs, denominator = fs-substrate STREAM triad) all remain the perf follow-up.
-  A higher-radix kernel that changes twiddle-application order may legitimately
-  bump the golden hash — bump once, justify here, re-verify cross-ISA on trj.
+- **The ≥40% roofline gate is NOT met** (measured 2026-07-10, radix-8/4/2,
+  corrected traffic model): aarch64 M4 gated sizes 0.225–0.248 attainment
+  (raw throughput +11–18% over the radix-4/2 formulation — elems/s is the
+  truth; the tighter model raised the roof), x86-64 ts2 0.165–0.184 (AVX2
+  capsule only serves the residual radix-4 stage now). Remaining levers per
+  the bead: cache-blocked/four-step pass ordering, fusing the ping-pong
+  copy-back into the final pass, executor-tiled pencils with cancellation
+  polls. Higher-radix golden bumps are pre-authorized with justification —
+  bumped twice so far (radix-2→4/2→8/4/2), each recorded at the golden and
+  the current value four-quadrant verified (M4 + ts2 × debug + release).
 - The N-D transform is CORRECT and separable but not yet cache/execution
   optimized: it gathers each pencil into a temporary line (allocated per axis,
   reused across pencils) rather than blocking transposes or tiling on fs-exec.

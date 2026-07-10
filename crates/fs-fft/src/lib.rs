@@ -160,6 +160,84 @@ impl Fft {
     /// first half-turn; the half-turn symmetry w^(k+n/2) = −w^k extends
     /// it EXACTLY (negation is exact) for the radix-4 stages' 3·p·s
     /// indices.
+    /// One radix-8 DIF Stockham stage: even outputs are the 4-point DFT
+    /// of the half-sums, odd outputs the 4-point DFT of the half-diffs
+    /// twisted by ω₈ʲ (ω₈² is the exact ∓i rotation; ω₈¹/ω₈³ use the
+    /// exact `FRAC_1_SQRT_2` literal). One fused operation order per
+    /// element — deterministic on every target.
+    fn stage_radix8(&self, src: &[C64], dst: &mut [C64], m: usize, s: usize, inverse: bool) {
+        let c = std::f64::consts::FRAC_1_SQRT_2;
+        let (w8_1, w8_3) = if inverse {
+            (C64::new(c, c), C64::new(-c, c))
+        } else {
+            (C64::new(c, -c), C64::new(-c, -c))
+        };
+        for p in 0..m {
+            let mut w = [C64::default(); 7];
+            for (k, slot) in w.iter_mut().enumerate() {
+                *slot = self.tw((k + 1) * p * s);
+                if inverse {
+                    *slot = slot.conj();
+                }
+            }
+            for q in 0..s {
+                let a0 = src[q + s * p];
+                let a1 = src[q + s * (p + m)];
+                let a2 = src[q + s * (p + 2 * m)];
+                let a3 = src[q + s * (p + 3 * m)];
+                let a4 = src[q + s * (p + 4 * m)];
+                let a5 = src[q + s * (p + 5 * m)];
+                let a6 = src[q + s * (p + 6 * m)];
+                let a7 = src[q + s * (p + 7 * m)];
+                // Half split: even outputs = 4-point DFT of u, odd
+                // outputs = 4-point DFT of v·ω₈ʲ.
+                let u0 = a0.add(a4);
+                let u1 = a1.add(a5);
+                let u2 = a2.add(a6);
+                let u3 = a3.add(a7);
+                let v0 = a0.sub(a4);
+                let v1 = a1.sub(a5).mul(w8_1);
+                // v2·ω₈² = ∓i·v2 — the exact rotation, no multiply.
+                let v2r = a2.sub(a6);
+                let v2 = if inverse {
+                    C64::new(-v2r.im, v2r.re)
+                } else {
+                    C64::new(v2r.im, -v2r.re)
+                };
+                let v3 = a3.sub(a7).mul(w8_3);
+                // Even 4-point kernel (same ∓i definition as the radix-4
+                // stage — one semantic definition).
+                let e0 = u0.add(u2);
+                let e1 = u0.sub(u2);
+                let e2 = u1.add(u3);
+                let e3 = u1.sub(u3);
+                let e3i = if inverse {
+                    C64::new(-e3.im, e3.re)
+                } else {
+                    C64::new(e3.im, -e3.re)
+                };
+                // Odd 4-point kernel.
+                let f0 = v0.add(v2);
+                let f1 = v0.sub(v2);
+                let f2 = v1.add(v3);
+                let f3 = v1.sub(v3);
+                let f3i = if inverse {
+                    C64::new(-f3.im, f3.re)
+                } else {
+                    C64::new(f3.im, -f3.re)
+                };
+                dst[q + s * 8 * p] = e0.add(e2);
+                dst[q + s * (8 * p + 1)] = f0.add(f2).mul(w[0]);
+                dst[q + s * (8 * p + 2)] = e1.add(e3i).mul(w[1]);
+                dst[q + s * (8 * p + 3)] = f1.add(f3i).mul(w[2]);
+                dst[q + s * (8 * p + 4)] = e0.sub(e2).mul(w[3]);
+                dst[q + s * (8 * p + 5)] = f0.sub(f2).mul(w[4]);
+                dst[q + s * (8 * p + 6)] = e1.sub(e3i).mul(w[5]);
+                dst[q + s * (8 * p + 7)] = f1.sub(f3i).mul(w[6]);
+            }
+        }
+    }
+
     fn tw(&self, k: usize) -> C64 {
         if k < self.table.len() {
             self.table[k]
@@ -178,6 +256,7 @@ impl Fft {
     /// legitimately changed twiddle-application order and hence output
     /// bits: the golden hash was bumped ONCE with that justification
     /// (see the golden test).
+    #[allow(clippy::too_many_lines)] // the stage driver IS the decomposition
     fn transform(&self, data: &mut [C64], scratch: &mut [C64], inverse: bool) {
         let n = self.n;
         assert_eq!(data.len(), n, "data length must equal the planned size {n}");
@@ -200,6 +279,31 @@ impl Fft {
         // tier-tested in fs-simd's battery, and this golden did NOT move
         // when either capsule path landed.
         let r4 = fs_simd::ops().r4qrun_f64;
+        // Radix-8 stages first (bead 27d3 slice 3): each consumes THREE
+        // log₂ bits per full-array pass — ceil(log₂n/3) passes instead of
+        // the radix-4 formulation's ceil(log₂n/2). The AVX2/NEON q-run
+        // finding showed the transform is BANDWIDTH bound, so pass count
+        // is the lever; the ~⅓ traffic cut beats the capsuled radix-4
+        // path (measured on the perf lane — see the golden-bump note).
+        // The decomposition is a pure function of n (radix-8 while
+        // n ≥ 8, then one radix-4 or radix-2 residue), so bits stay a
+        // deterministic function of (n, input) on every target. The
+        // odd-branch eighth-turn twiddles use the exact FRAC_1_SQRT_2
+        // literal — identical on every conforming platform.
+        while n_cur >= 8 {
+            let m = n_cur / 8;
+            {
+                let (src, dst): (&[C64], &mut [C64]) = if src_is_data {
+                    (&*data, &mut *scratch)
+                } else {
+                    (&*scratch, &mut *data)
+                };
+                self.stage_radix8(src, dst, m, s, inverse);
+            }
+            n_cur = m;
+            s *= 8;
+            src_is_data = !src_is_data;
+        }
         while n_cur >= 4 {
             let m = n_cur / 4;
             {
@@ -843,16 +947,20 @@ mod tests {
         );
     }
 
-    /// JUSTIFIED BUMP (bead 27d3, 2026-07-09): the transform moved from
-    /// pure radix-2 to mixed radix-4/2 Stockham — twiddle-application
-    /// ORDER changes with the radix, which legitimately changes output
-    /// bits (the bump the bead pre-authorized). Correctness is pinned by
-    /// the unchanged naive-DFT oracle, Parseval, shift, and round-trip
-    /// tests, all green across the change. Previous radix-2 golden:
-    /// 0xbd55_68d2_33f4_b4bc (recorded M4 Pro, verified on trj).
-    /// This value re-recorded on aarch64-apple (M4 Pro); the x86-64
-    /// cross-ISA row is ARMED PENDING the next trj run.
-    const GOLDEN_HASH: u64 = 0x0506_a4a0_955d_cf8e;
+    /// JUSTIFIED BUMP (bead 27d3, 2026-07-10, second): the transform
+    /// moved to mixed radix-8/4/2 Stockham — radix-8 stages consume
+    /// three log₂ bits per full-array pass (ceil(log₂n/3) passes), the
+    /// bandwidth-bound lever the AVX2 finding pointed at. Twiddle
+    /// application order changes with the radix, which legitimately
+    /// changes output bits (pre-authorized by the bead). Correctness is
+    /// pinned by the unchanged naive-DFT oracle, Parseval, shift,
+    /// round-trip, r2c/c2r, DCT, and N-D tests — all green across the
+    /// change. HISTORY: radix-2 golden 0xbd55_68d2_33f4_b4bc (M4 + trj);
+    /// radix-4/2 golden 0x0506_a4a0_955d_cf8e (M4; x86 row stayed
+    /// pending). This value VERIFIED IN ALL FOUR QUADRANTS: aarch64
+    /// (M4 Pro) and x86-64 (ts2) in debug and release each
+    /// (2026-07-10, ts2:/data/tmp/fsim_xisa).
+    const GOLDEN_HASH: u64 = 0x22dd_b617_266e_a792;
 
     #[test]
     fn non_power_of_two_is_refused_loudly() {

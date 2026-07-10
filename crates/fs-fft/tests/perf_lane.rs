@@ -14,16 +14,18 @@
 use fs_fft::{C64, Fft};
 use fs_roofline::{KernelSpec, MachineAxes, RooflineKernel, Threading, measure};
 
-/// Stockham stage count for the mixed radix-4/2 formulation.
+/// Stockham stage count for the mixed radix-8/4/2 formulation — MUST
+/// mirror the transform's decomposition exactly or the traffic model
+/// (and hence attainment) lies.
 fn stages(n: usize) -> usize {
     let mut c = 0;
     let mut m = n;
-    while m >= 4 {
-        m /= 4;
+    while m >= 8 {
+        m /= 8;
         c += 1;
     }
-    if m == 2 {
-        c += 1;
+    if m >= 2 {
+        c += 1; // one radix-4 or radix-2 residue stage
     }
     c
 }
@@ -59,15 +61,15 @@ impl RooflineKernel for FftRoundTrip {
         let copy = if stages(self.n) % 2 == 1 { 32.0 } else { 0.0 };
         KernelSpec {
             name: "fft-roundtrip",
-            version: "27d3-r4",
+            version: "27d3-r8",
             // Two transforms of `st` passes (32 B/elem each: read one
             // C64, write one C64) + copy-back per transform when the
             // stage count is odd + the inverse's scale pass.
             bytes_per_elem: 2.0 * (32.0 * st + copy) + 32.0,
-            // Radix-4 butterfly ≈ 34 flops / 4 outputs = 8.5 per
+            // Radix-8 butterfly ≈ 100 flops / 8 outputs = 12.5 per
             // element-stage; + 2 for the scale. Approximate — the roof
             // is bandwidth at this intensity either way.
-            flops_per_elem: 2.0 * 8.5 * st + 2.0,
+            flops_per_elem: 2.0 * 12.5 * st + 2.0,
             threading: Threading::SingleThread,
             target_fraction: Some(0.40),
         }
