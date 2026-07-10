@@ -229,6 +229,26 @@ pub fn read_ply(bytes: &[u8]) -> Result<Soup, IoError> {
             what: "PLY has no vertex/face payload in the supported subset".to_string(),
         });
     }
+    // DEFERRED index validation (bead wqd.25.1): PLY headers define
+    // element order, and a legal file may place faces BEFORE vertices —
+    // validating during the parse rejected such files against a vertex
+    // count of zero. Indices are checked here, against the FINAL count,
+    // once every element has been consumed; `at` is the exact ordinal
+    // of the offending triangle.
+    let n_vertices = positions.len();
+    for (ordinal, tri) in triangles.iter().enumerate() {
+        for &i in tri {
+            let in_range = usize::try_from(i).is_ok_and(|v| v < n_vertices);
+            if !in_range {
+                return Err(IoError::Malformed {
+                    at: ordinal,
+                    what: format!(
+                        "face index {i} out of range (mesh has {n_vertices} vertices)"
+                    ),
+                });
+            }
+        }
+    }
     Ok(Soup {
         positions,
         triangles,
@@ -280,7 +300,7 @@ fn read_ascii_body(
                                 if el.name == "face"
                                     && (name == "vertex_indices" || name == "vertex_index")
                                 {
-                                    push_face(triangles, &idx, positions.len())?;
+                                    push_face(triangles, &idx)?;
                                 }
                             }
                         }
@@ -335,7 +355,7 @@ fn read_binary_body(
                                 if el.name == "face"
                                     && (name == "vertex_indices" || name == "vertex_index")
                                 {
-                                    push_face(triangles, &idx, positions.len())?;
+                                    push_face(triangles, &idx)?;
                                 }
                             }
                         }
@@ -411,24 +431,16 @@ fn push_vertex(positions: &mut Vec<Point3>, xyz: [f64; 3]) -> Result<(), IoError
     Ok(())
 }
 
-fn push_face(triangles: &mut Vec<[u32; 3]>, idx: &[u32], n_vertices: usize) -> Result<(), IoError> {
+/// Triangulate one face fan into pending triangles. Index RANGE checks
+/// are deferred to [`read_ply`]'s post-parse pass (legal PLY may put
+/// faces before vertices); structural checks and the resource cap stay
+/// here.
+fn push_face(triangles: &mut Vec<[u32; 3]>, idx: &[u32]) -> Result<(), IoError> {
     if idx.len() < 3 {
         return Err(IoError::Malformed {
             at: triangles.len(),
             what: "face with fewer than three indices".to_string(),
         });
-    }
-    for &i in idx {
-        let vertex_index = usize::try_from(i).map_err(|_| IoError::Malformed {
-            at: triangles.len(),
-            what: format!("face index {i} cannot be represented on this host"),
-        })?;
-        if vertex_index >= n_vertices {
-            return Err(IoError::Malformed {
-                at: triangles.len(),
-                what: format!("face index {i} out of range"),
-            });
-        }
     }
     for k in 1..idx.len() - 1 {
         triangles.push([idx[0], idx[k], idx[k + 1]]);

@@ -367,3 +367,59 @@ fn io_006_container_exports_are_structurally_valid() {
         "3MF zip structure, GLB chunk accounting, VTK sections all check out",
     );
 }
+
+/// wqd.25.1 — PLY element order is the HEADER's to define: face-first
+/// files import identically to vertex-first files (ASCII and binary),
+/// out-of-range indices still refuse after the full parse with the
+/// exact triangle ordinal, and the list/triangle resource bounds hold
+/// regardless of order.
+#[test]
+fn ply_face_first_element_order_is_legal() {
+    let vertex_first = "ply\nformat ascii 1.0\nelement vertex 3\n\
+        property double x\nproperty double y\nproperty double z\n\
+        element face 1\nproperty list uchar uint vertex_indices\nend_header\n\
+        0 0 0\n1 0 0\n0 1 0\n3 0 1 2\n";
+    let face_first = "ply\nformat ascii 1.0\n\
+        element face 1\nproperty list uchar uint vertex_indices\n\
+        element vertex 3\nproperty double x\nproperty double y\nproperty double z\n\
+        end_header\n3 0 1 2\n0 0 0\n1 0 0\n0 1 0\n";
+    let a = fs_io::ply::read_ply(vertex_first.as_bytes()).expect("vertex-first parses");
+    let b = fs_io::ply::read_ply(face_first.as_bytes()).expect("face-first parses");
+    assert_eq!(a.positions, b.positions);
+    assert_eq!(a.triangles, b.triangles);
+    // Binary face-first: same header discipline, little-endian body.
+    let mut bin = Vec::new();
+    bin.extend_from_slice(
+        b"ply\nformat binary_little_endian 1.0\n\
+          element face 1\nproperty list uchar uint vertex_indices\n\
+          element vertex 3\nproperty float x\nproperty float y\nproperty float z\n\
+          end_header\n",
+    );
+    bin.push(3u8);
+    for i in [0u32, 1, 2] {
+        bin.extend_from_slice(&i.to_le_bytes());
+    }
+    for v in [[0f32, 0., 0.], [1., 0., 0.], [0., 1., 0.]] {
+        for c in v {
+            bin.extend_from_slice(&c.to_le_bytes());
+        }
+    }
+    let c = fs_io::ply::read_ply(&bin).expect("binary face-first parses");
+    assert_eq!(c.triangles, a.triangles);
+    // Out-of-range indices still refuse AFTER the full parse, naming
+    // the offending triangle ordinal.
+    let bad = face_first.replace("3 0 1 2", "3 0 1 9");
+    match fs_io::ply::read_ply(bad.as_bytes()) {
+        Err(fs_io::IoError::Malformed { at, what }) => {
+            assert_eq!(at, 0, "first triangle is the offender");
+            assert!(what.contains("index 9") && what.contains("3 vertices"), "{what}");
+        }
+        other => panic!("expected out-of-range refusal, got {other:?}"),
+    }
+    // Resource bounds hold in face-first order too.
+    let oversized = face_first.replace("3 0 1 2", "1025 0 1 2");
+    assert!(matches!(
+        fs_io::ply::read_ply(oversized.as_bytes()),
+        Err(fs_io::IoError::ResourceBound { .. })
+    ));
+}
