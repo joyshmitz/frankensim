@@ -39,6 +39,58 @@ pub struct StreamKey {
     pub tile: u32,
 }
 
+/// Version of the fs-exec → fs-rand key bridge contract (field widths
+/// and refusal rules below). Bump ONLY with a recorded justification —
+/// replayability of ledgered keys depends on it.
+pub const EXEC_KEY_BRIDGE_VERSION: u32 = 1;
+
+/// Why an fs-exec logical key cannot become an fs-rand [`StreamKey`]
+/// (bead wf9.7.1): the bridge REFUSES rather than truncates, because a
+/// silent truncation would let two distinct logical streams collide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecKeyBridgeError {
+    /// `kernel_id` exceeds this key's u32 kernel slot.
+    KernelOverflow {
+        /// The offending value.
+        kernel_id: u64,
+    },
+    /// `tile` exceeds this key's u32 tile slot.
+    TileOverflow {
+        /// The offending value.
+        tile: u64,
+    },
+    /// fs-exec's iteration/generation axis has NO slot here: fs-rand's
+    /// draw index is the WITHIN-stream counter, not an identity axis.
+    /// Callers with generation-diverging streams must ledger the
+    /// generation into the seed (e.g. fs-exec's `key128` path) rather
+    /// than silently folding it.
+    IterationUnrepresentable {
+        /// The offending value.
+        iteration: u64,
+    },
+}
+
+impl core::fmt::Display for ExecKeyBridgeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            ExecKeyBridgeError::KernelOverflow { kernel_id } => write!(
+                f,
+                "exec kernel_id {kernel_id} exceeds the u32 kernel slot (bridge v{EXEC_KEY_BRIDGE_VERSION}); refused rather than truncated"
+            ),
+            ExecKeyBridgeError::TileOverflow { tile } => write!(
+                f,
+                "exec tile {tile} exceeds the u32 tile slot (bridge v{EXEC_KEY_BRIDGE_VERSION}); refused rather than truncated"
+            ),
+            ExecKeyBridgeError::IterationUnrepresentable { iteration } => write!(
+                f,
+                "exec iteration {iteration} has no slot in fs-rand's key (bridge v{EXEC_KEY_BRIDGE_VERSION}): the draw index is a counter, not identity — ledger the generation into the seed instead"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for ExecKeyBridgeError {}
+
 impl StreamKey {
     /// Open the stream at index 0.
     #[must_use]
@@ -47,6 +99,37 @@ impl StreamKey {
             key: self,
             index: 0,
         }
+    }
+
+    /// CHECKED bridge from fs-exec's four-u64 logical key fields
+    /// (`seed`, `kernel_id`, `tile`, `iteration` — bead wf9.7.1,
+    /// bridge v[`EXEC_KEY_BRIDGE_VERSION`]). Field-width contract:
+    /// seed is lossless (u64 → u64); kernel and tile must fit their
+    /// u32 slots; iteration must be 0 (no identity slot exists —
+    /// see [`ExecKeyBridgeError::IterationUnrepresentable`]).
+    /// Refusal, never truncation: replay must reconstruct the SAME
+    /// stream from ledgered fields, so a lossy mapping is a collision
+    /// generator, not a bridge.
+    ///
+    /// # Errors
+    /// [`ExecKeyBridgeError`] naming the unrepresentable field.
+    pub fn from_exec_parts(
+        seed: u64,
+        kernel_id: u64,
+        tile: u64,
+        iteration: u64,
+    ) -> Result<StreamKey, ExecKeyBridgeError> {
+        let kernel = u32::try_from(kernel_id)
+            .map_err(|_| ExecKeyBridgeError::KernelOverflow { kernel_id })?;
+        let tile32 = u32::try_from(tile).map_err(|_| ExecKeyBridgeError::TileOverflow { tile })?;
+        if iteration != 0 {
+            return Err(ExecKeyBridgeError::IterationUnrepresentable { iteration });
+        }
+        Ok(StreamKey {
+            seed,
+            kernel,
+            tile: tile32,
+        })
     }
 }
 

@@ -14,7 +14,7 @@
 //! counts and steal schedules by construction. RNG stream keys derive from
 //! logical identity only.
 
-use crate::cx::{CancelGate, Cx, ExecMode, StreamKey};
+use crate::cx::{CancelGate, Cx, ExecMode, RunId, StreamKey};
 use crate::kernel::TileKernel;
 use core::fmt;
 use core::ops::ControlFlow;
@@ -247,7 +247,6 @@ pub fn weighted_ranges(tiles: u64, weights: &[u32]) -> Vec<core::ops::Range<u64>
 pub struct TilePool {
     config: PoolConfig,
     arenas: fs_alloc::ArenaPool,
-    iteration: AtomicU64,
 }
 
 impl TilePool {
@@ -261,11 +260,7 @@ impl TilePool {
             *w = (*w).max(1);
         }
         let arenas = fs_alloc::ArenaPool::new(config.arena.clone());
-        TilePool {
-            config,
-            arenas,
-            iteration: AtomicU64::new(0),
-        }
+        TilePool { config, arenas }
     }
 
     /// The arena pool backing per-tile scopes (leak oracle for G4 tests).
@@ -284,6 +279,21 @@ impl TilePool {
         self.run_with_gate(kernel, &CancelGate::new()).0
     }
 
+    /// Run a kernel under an explicit, caller-ledgered [`RunId`] (bead
+    /// wf9.7.1): re-running the SAME kernel with a DIFFERENT logical
+    /// run (a new generation, trial, or restart) diverges its streams
+    /// by declared identity. `run`/`run_with_gate` are the fixed
+    /// `RunId(0)` convenience — bit-identical no matter how much
+    /// unrelated or concurrent work the pool has executed.
+    pub fn run_declared<K: TileKernel>(
+        &self,
+        kernel: &K,
+        gate: &CancelGate,
+        run: RunId,
+    ) -> (Result<K::Out, RunError>, RunReport) {
+        self.run_inner(kernel, gate, run)
+    }
+
     /// Run a kernel under an external cancel gate; returns the outcome and
     /// the measured [`RunReport`].
     // One coherent protocol (seed deques -> worker loops -> fold + report);
@@ -295,10 +305,26 @@ impl TilePool {
         kernel: &K,
         gate: &CancelGate,
     ) -> (Result<K::Out, RunError>, RunReport) {
+        self.run_inner(kernel, gate, RunId::default())
+    }
+
+    // One coherent protocol (seed deques -> worker loops -> fold + report);
+    // splitting it would scatter the drain/containment invariants the
+    // storm suite audits as a unit.
+    #[allow(clippy::too_many_lines)]
+    fn run_inner<K: TileKernel>(
+        &self,
+        kernel: &K,
+        gate: &CancelGate,
+        run: RunId,
+    ) -> (Result<K::Out, RunError>, RunReport) {
         let plan = kernel.tiles();
         let kernel_id = plan.kernel_id();
         let n = plan.tiles;
-        let iteration = self.iteration.fetch_add(1, Ordering::Relaxed);
+        // Stream identity is DECLARED, never scheduled (wf9.7.1): the
+        // former pool-global counter made keys depend on unrelated
+        // prior runs and on concurrent invocation order.
+        let iteration = run.0;
         let workers = self.config.workers.min(n.max(1) as usize).max(1);
 
         // Fixed-slot reduction storage: one slot per tile, written once.

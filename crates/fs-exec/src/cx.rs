@@ -34,6 +34,15 @@ impl ExecMode {
     }
 }
 
+/// An explicit, caller-ledgered logical run identity (bead wf9.7.1):
+/// the generation/iteration axis of [`StreamKey`]. Execution order is
+/// NOT identity — a reused or concurrently shared pool must never
+/// perturb streams, so the run id comes from the caller's ledger
+/// (trial index, generation number, restart ordinal), never from a
+/// pool-global counter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct RunId(pub u64);
+
 /// Logical RNG stream identity (plan §5.2): results must be independent of
 /// which worker ran which tile, so streams are keyed by WHAT the work is,
 /// not WHERE it ran. fs-rand's Philox generator consumes [`StreamKey::key128`].

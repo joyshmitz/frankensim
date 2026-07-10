@@ -69,11 +69,18 @@ impl KillRegistry {
     /// # Errors
     /// [`UnregisteredKill`] when no handle is registered for `id`.
     pub fn kill_registered(&self, id: CandidateId) -> Result<(), UnregisteredKill> {
-        if self.kill(id) {
-            Ok(())
-        } else {
-            Err(UnregisteredKill { id })
-        }
+        self.registered_gate(id)?.request();
+        Ok(())
+    }
+
+    /// Fetch a candidate gate without creating one. Admission paths use this
+    /// to distinguish a caller-wired evaluation tree from a dummy gate that a
+    /// tournament could otherwise create for itself.
+    ///
+    /// # Errors
+    /// [`UnregisteredKill`] when no handle is registered for `id`.
+    pub fn registered_gate(&self, id: CandidateId) -> Result<Arc<CancelGate>, UnregisteredKill> {
+        self.lock().get(&id).cloned().ok_or(UnregisteredKill { id })
     }
 
     /// Register (or fetch) the kill-handle gate for a candidate. The
@@ -159,6 +166,7 @@ mod tests {
         assert_eq!(err, UnregisteredKill { id: 42 });
         assert!(err.to_string().contains("no registered handle"));
         let _ = reg.register(42);
+        assert!(reg.registered_gate(42).is_ok());
         reg.kill_registered(42).expect("wired candidates kill");
     }
 

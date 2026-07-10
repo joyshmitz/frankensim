@@ -79,8 +79,10 @@ fs-substrate, fs-obs.
   defaults: 8-cube tiles, bandwidth-rich schedule.
 - `KillRegistry` (behavior 3, Bet 8): candidate id -> `Arc<CancelGate>`;
   `kill` (idempotent; unknown id is a non-event), `kill_where` (batch
-  elimination, ascending order), `release`. Everything a candidate
-  evaluates — pool runs, races, drives — shares its registered gate.
+  elimination, ascending order), `registered_gate` (fetch without silently
+  creating), `kill_registered` (structured missing-gate error), `release`.
+  Everything a candidate evaluates — pool runs, races, drives — shares its
+  explicitly registered gate.
 
 ## Invariants
 1. Completeness: a non-cancelled, non-panicked run executes every tile in
@@ -117,6 +119,22 @@ fs-substrate, fs-obs.
     pinned decisions reproduce identically on ANY machine, calibrated or
     not (exec-013).
 
+## Stream identity is declared, never scheduled (bead wf9.7.1)
+
+`TilePool` holds NO stream-identity state: the former pool-global
+iteration counter made a kernel's RNG keys depend on how many
+unrelated runs the pool had executed and on concurrent invocation
+order. `run`/`run_with_gate` use the fixed implicit `RunId(0)`;
+re-running a kernel under a NEW logical identity (generation, trial,
+restart) goes through `run_declared(kernel, gate, RunId(g))`, where
+the id comes from the caller's ledger. Keys derive solely from
+(study seed, kernel id, tile, declared run) — bit-identical across
+pool reuse, concurrency, arrival order, and worker count, and
+reconstructible from ledger fields alone (conformance-tested). The
+checked width-refusing bridge into fs-rand's key type lives in
+fs-rand (`StreamKey::from_exec_parts`, bridge v1) — layering forbids
+the reverse dependency.
+
 ## Race drain totality (bead wf9.8.1)
 
 `race_with_gate` is PANIC-TOTAL and hang-free: empty races are refused
@@ -128,9 +146,10 @@ throughout), so the parent watcher is always released — an accept
 panic is a `Panicked` outcome, never a hung scope. `KillRegistry`
 locks are poison-tolerant, and `kill_registered` returns a structured
 `UnregisteredKill` instead of an ignorable `false` for candidates that
-must be wired; flagship consumers (fs-race tournaments) register their
-candidates' gates at scope start so eliminations always reach a live
-evaluation tree. The G4 storm test drives races under registry-owned
+must be wired. `registered_gate` lets tournament admission refuse an absent
+caller-owned gate without manufacturing a dummy registration; the tournament
+holds the fetched `Arc`, so a concurrent registry release cannot disconnect
+an admitted evaluation tree. The G4 storm test drives races under registry-owned
 gates with external kills: every kill lands registered, every race
 returns, arenas end quiescent.
 

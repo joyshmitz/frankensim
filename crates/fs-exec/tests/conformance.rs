@@ -8,8 +8,8 @@
 
 use core::ops::ControlFlow;
 use fs_exec::{
-    CancelGate, Cancelled, Cx, PoolConfig, RunError, TileKernel, TilePlan, TilePool, victim_order,
-    weighted_ranges,
+    CancelGate, Cancelled, Cx, PoolConfig, RunError, RunId, StreamKey, TileKernel, TilePlan,
+    TilePool, victim_order, weighted_ranges,
 };
 use fs_substrate::affinity::CcdTopology;
 
@@ -784,4 +784,67 @@ fn exec_013_autotuner_calibrates_persists_and_pins_reproducibly() {
             edge_reloaded.cells()
         ),
     );
+}
+
+/// wf9.7.1 — stream identity is DECLARED, never scheduled: reusing a
+/// pool, running unrelated work, and racing concurrent runs must not
+/// perturb a logical run's keys; distinct declared runs must diverge;
+/// and keys reconstruct from ledger fields alone.
+#[test]
+fn stream_keys_are_immune_to_pool_history_and_concurrency() {
+    let baseline = pool_with(4, 0x5EED)
+        .run(&KeyKernel { tiles: 64 })
+        .expect("baseline");
+    // A polluted pool: unrelated runs, then two CONCURRENT probes.
+    let pool = pool_with(4, 0x5EED);
+    for _ in 0..3 {
+        let _ = pool.run(&KeyKernel { tiles: 7 }).expect("unrelated");
+    }
+    let (a, b) = std::thread::scope(|s| {
+        let pa = &pool;
+        let ha = s.spawn(move || pa.run(&KeyKernel { tiles: 64 }).expect("concurrent a"));
+        let hb = s.spawn(move || pa.run(&KeyKernel { tiles: 64 }).expect("concurrent b"));
+        (ha.join().expect("join a"), hb.join().expect("join b"))
+    });
+    assert_eq!(
+        a, baseline,
+        "pool history + concurrency must not perturb streams"
+    );
+    assert_eq!(b, baseline, "arrival order must not perturb streams");
+    // Worker count is not identity either.
+    let wide = pool_with(9, 0x5EED)
+        .run(&KeyKernel { tiles: 64 })
+        .expect("wide");
+    assert_eq!(wide, baseline, "worker count must not perturb streams");
+    // Distinct DECLARED runs diverge; the same declared run replays.
+    let g = CancelGate::new();
+    let r1 = pool
+        .run_declared(&KeyKernel { tiles: 64 }, &g, RunId(1))
+        .0
+        .expect("run 1");
+    let r1b = pool
+        .run_declared(&KeyKernel { tiles: 64 }, &g, RunId(1))
+        .0
+        .expect("run 1 replay");
+    let r2 = pool
+        .run_declared(&KeyKernel { tiles: 64 }, &g, RunId(2))
+        .0
+        .expect("run 2");
+    assert_eq!(r1, r1b, "same declared run is bit-identical");
+    assert_ne!(r1, r2, "distinct declared runs diverge");
+    assert_ne!(r1, baseline, "RunId(1) diverges from the implicit RunId(0)");
+    // Replay from ledger fields alone (no pool, no hidden state).
+    for &(tile, key) in &r1 {
+        let reconstructed = StreamKey {
+            seed: 0x5EED,
+            kernel_id: fs_obs::fnv1a64(b"conf/keys"),
+            tile,
+            iteration: 1,
+        };
+        assert_eq!(
+            reconstructed.key128(),
+            key,
+            "ledger fields reconstruct the key"
+        );
+    }
 }

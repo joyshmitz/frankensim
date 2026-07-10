@@ -120,6 +120,18 @@ monobit balance, inter-stream correlation matrix).
   representative dev-only subset (χ²/serial/monobit/inter-stream); the complete
   suite + CI wiring remain a follow-up.
 
+## Exec key bridge (bead wf9.7.1, v1)
+
+`StreamKey::from_exec_parts(seed, kernel_id, tile, iteration)` is the
+CHECKED bridge from fs-exec's four-u64 logical key: seed is lossless,
+kernel and tile must fit their u32 slots, and iteration must be 0 (the
+draw index is a within-stream counter, not an identity axis — callers
+with generation-diverging streams ledger the generation upstream).
+REFUSAL, never truncation: a lossy mapping would alias distinct
+logical streams (collision-tested at every boundary). Field widths and
+rules are versioned (`EXEC_KEY_BRIDGE_VERSION`); bump only with
+recorded justification, since ledgered replay depends on them.
+
 ## Perf-lane evidence (bead 1za9, measured)
 
 - Release, macos-aarch64 (Mac16,11): ziggurat 84.2M normals/s vs
