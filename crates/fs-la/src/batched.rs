@@ -312,7 +312,7 @@ fn scale_batch(beta: f64, c: &mut BatchMat) {
             let cp = c.plane_mut(i, j);
             if beta == 0.0 {
                 cp.fill(0.0);
-            } else if beta != 1.0 {
+            } else if beta.to_bits() != 1.0f64.to_bits() {
                 for value in cp {
                     *value *= beta;
                 }

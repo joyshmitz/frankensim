@@ -305,7 +305,7 @@ fn scale_batch_f32(beta: f32, c: &mut BatchMatF32) {
             let cp = c.plane_mut(i, j);
             if beta == 0.0 {
                 cp.fill(0.0);
-            } else if beta != 1.0 {
+            } else if beta.to_bits() != 1.0f32.to_bits() {
                 for value in cp {
                     *value *= beta;
                 }
@@ -321,7 +321,7 @@ fn scale_batch_mixed(beta: f64, c: &mut BatchMatF32) {
             let cp = c.plane_mut(i, j);
             if beta == 0.0 {
                 cp.fill(0.0);
-            } else if beta != 1.0 {
+            } else if beta.to_bits() != 1.0f64.to_bits() {
                 for value in cp {
                     *value = (beta * f64::from(*value)) as f32;
                 }
