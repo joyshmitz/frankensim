@@ -20,12 +20,14 @@
 //! normal f64 range. Inputs violating that are outside the certificate
 //! (CONTRACT.md no-claim).
 //!
-//! Symbolic perturbation: [`orient2d_sos`] implements the Edelsbrunner–
-//! Mücke Simulation-of-Simplicity ladder (derived term-by-term in the
-//! code); [`orient3d_sos`] is a documented deterministic projection
-//! cascade. Both are total (never Zero for index-distinct points),
-//! antisymmetric, and deterministic — what BRIO Delaunay needs for
-//! reproducible tie-breaking (P2).
+//! Symbolic perturbation: [`orient2d_sos`] and [`orient3d_sos`] implement the
+//! Edelsbrunner–Mücke Simulation-of-Simplicity ladder — 2D derived term-by-term
+//! in the code; 3D as the sign of the leading κ-coefficient of a moment-curve
+//! perturbation `pᵢ + κ·(sᵢ, sᵢ², sᵢ³)` (consistent because moment-curve points
+//! are always in general position), with antisymmetry supplied structurally by
+//! sorting the points by index and applying the permutation parity. Both are
+//! total (never Zero for index-distinct points), antisymmetric, and
+//! deterministic — what BRIO Delaunay needs for reproducible tie-breaking (P2).
 //!
 //! Determinism: straight-line IEEE arithmetic — cross-ISA bit-deterministic
 //! by construction.
@@ -523,14 +525,25 @@ pub fn orient2d_sos(pa: [f64; 2], pb: [f64; 2], pc: [f64; 2], ia: u64, ib: u64, 
     apply(Sign::Positive) // the +1·ε(1,1)ε(2,2) constant term
 }
 
-/// `orient3d` with deterministic tie-breaking: on an exactly coplanar
-/// input, falls back to [`orient2d_sos`] on the axis projections in the
-/// fixed order (y,z) → (z,x) → (x,y). Total (a collinear/coincident
-/// configuration still resolves through the 2D SoS ladder, which is
-/// total), antisymmetric, deterministic. NOT the full 3D Edelsbrunner–
-/// Mücke ladder — a documented no-claim; sufficient for consistent
-/// tie-breaking, revisit when fs-mesh's Delaunay lands flips that need
-/// E-M-exact semantics.
+/// `orient3d` with Edelsbrunner–Mücke Simulation-of-Simplicity tie-breaking:
+/// NEVER returns [`Sign::Zero`] for points with distinct indices, and is
+/// ANTISYMMETRIC under argument swaps — reproducible Delaunay tie-breaking (P2).
+///
+/// On an exactly coplanar input the sign is the limit, as `κ → 0⁺`, of
+/// `orient3d` of the points moved along a MOMENT CURVE:
+/// `pᵢ ↦ pᵢ + κ·(sᵢ, sᵢ², sᵢ³)` with distinct `sᵢ`. Moment-curve points are
+/// always in general position, so this perturbation is CONSISTENT (realizable)
+/// — the SoS answer is a genuine orientation, not an ad-hoc tie. Antisymmetry
+/// is STRUCTURAL: the four points are sorted by index (parity tracked), the
+/// perturbation is keyed to sorted RANK so the coefficient ladder is a pure
+/// function of the point SET, and the permutation parity supplies the swap
+/// sign. (The previous projection heuristic ignored the 4th point's position
+/// in its exact branch and so was NOT antisymmetric — bead wa8i V1.)
+///
+/// `D(κ) = det(pᵢ + κ·vᵢ, 1) = Σₘ κᵐ Cₘ` with `C₀ = 0` (coplanar) and `C₄ = 0`
+/// (the perturbation rows' constant column is 0); the sign of the first nonzero
+/// `Cₘ` (`m = 1, 2, 3`) decides. Expanding each `det` along the constant column
+/// reduces every `Cₘ` to a signed sum of EXACT 3×3 determinants.
 #[must_use]
 pub fn orient3d_sos(pa: [f64; 3], pb: [f64; 3], pc: [f64; 3], pd: [f64; 3], idx: [u64; 4]) -> Sign {
     let [ia, ib, ic, id] = idx;
@@ -542,59 +555,94 @@ pub fn orient3d_sos(pa: [f64; 3], pb: [f64; 3], pc: [f64; 3], pd: [f64; 3], idx:
     if base != Sign::Zero {
         return base;
     }
-    // Coplanar: resolve via 2D SoS on fixed-order projections, expanding
-    // the 4-point determinant as a signed sum of 3-point orientations.
-    // Using the projection of (a,b,c) against d, with d folded in through
-    // index-aware 2D calls, keeps antisymmetry: swap any two arguments and
-    // every 2D call flips.
-    for proj in [[1usize, 2], [2, 0], [0, 1]] {
-        let q = |p: [f64; 3]| [p[proj[0]], p[proj[1]]];
-        // The 3D determinant's projection: orient2d over three of the four
-        // translated points; use (a−d, b−d, c−d) i.e. orient2d(qa,qb,qc)
-        // with qd as the origin-shift — equivalently the 2D orientation of
-        // (a,b,c) around d in this plane.
-        let s = orient2d_sos_about(q(pa), q(pb), q(pc), q(pd), idx);
-        if s != Sign::Zero {
-            return s;
+    // Coplanar: sort by index (parity) so the tie-break is order-independent;
+    // parity then supplies antisymmetry under any argument swap.
+    let (rows, parity) = sort4_by_index([(ia, pa), (ib, pb), (ic, pc), (id, pd)]);
+    let q = [rows[0].1, rows[1].1, rows[2].1, rows[3].1];
+    // Moment-curve directions keyed to SORTED rank (distinct sᵢ ⇒ general
+    // position ⇒ consistent). sᵢ = i+1 keeps every direction nonzero.
+    let v: [[f64; 3]; 4] = core::array::from_fn(|j| {
+        let s = (j + 1) as f64;
+        [s, s * s, s * s * s]
+    });
+    let apply = |s: i32| {
+        let sign = Sign::of_i32(s);
+        if parity > 0 { sign } else { sign.flip() }
+    };
+    for m in 1..=3 {
+        let s = moment_coeff_sign(&q, &v, m);
+        if s != 0 {
+            return apply(s);
         }
     }
-    // Unreachable for distinct indices: the last projection's SoS is total.
-    Sign::Positive
+    // Distinct indices ⇒ some Cₘ is nonzero (moment-curve genericity); this
+    // only guards an impossible all-degenerate residue.
+    apply(1)
 }
 
-/// 2D orientation of `a, b, c` with all coordinates taken relative to `d`
-/// (exact), SoS-resolved with the four indices mixed into the tie ladder
-/// so swaps involving `d` also flip the answer.
-fn orient2d_sos_about(
-    pa: [f64; 2],
-    pb: [f64; 2],
-    pc: [f64; 2],
-    pd: [f64; 2],
-    idx: [u64; 4],
-) -> Sign {
-    let [ia, ib, ic, id] = idx;
-    // Exact translated orientation: det over exact differences (a−d, b−d,
-    // c−d) — same sign as untranslated orient2d(a,b,c) exactly.
-    let ax = diff_expansion(pa[0], pd[0]);
-    let ay = diff_expansion(pa[1], pd[1]);
-    let bx = diff_expansion(pb[0], pd[0]);
-    let by = diff_expansion(pb[1], pd[1]);
-    let cx = diff_expansion(pc[0], pd[0]);
-    let cy = diff_expansion(pc[1], pd[1]);
-    let m1 = expansion_diff(&expansion_product(&bx, &cy), &expansion_product(&cx, &by));
-    let m2 = expansion_diff(&expansion_product(&cx, &ay), &expansion_product(&ax, &cy));
-    let m3 = expansion_diff(&expansion_product(&ax, &by), &expansion_product(&bx, &ay));
-    let det = fast_expansion_sum_zeroelim(&fast_expansion_sum_zeroelim(&m1, &m2), &m3);
-    let s = expansion_sign(&det);
-    if s != 0 {
-        return Sign::of_i32(s);
+/// Sort four `(index, row)` pairs by index ascending; returns the sorted rows
+/// and the permutation parity (+1 even, −1 odd).
+fn sort4_by_index<T: Copy>(mut rows: [(u64, T); 4]) -> ([(u64, T); 4], i32) {
+    let mut parity = 1i32;
+    for i in 0..4 {
+        for j in 0..3 - i {
+            if rows[j].0 > rows[j + 1].0 {
+                rows.swap(j, j + 1);
+                parity = -parity;
+            }
+        }
     }
-    // Exact zero: 2D SoS ladder on the translated points, with d's
-    // inversion parity folded in so swapping d with any other argument
-    // flips the verdict too.
-    let inversions = u32::from(id < ia) + u32::from(id < ib) + u32::from(id < ic);
-    let s2 = orient2d_sos(pa, pb, pc, ia, ib, ic);
-    if inversions % 2 == 1 { s2.flip() } else { s2 }
+    (rows, parity)
+}
+
+/// The sign of the `κᵐ` coefficient of `det(qᵢ + κ·vᵢ, 1)`, computed EXACTLY.
+/// Expanding `det(M_S)` — the rows in a size-`m` subset `S` replaced by their
+/// perturbation rows `vᵢ` (constant column 0), the rest kept as `(qᵢ, 1)` —
+/// along the constant column leaves only the `(qᵢ, 1)` rows, so
+/// `det(M_S) = Σ_{r∉S} (−1)^{r+1} · det3(rows ≠ r)` (row `j` is `v[j]` if
+/// `j ∈ S` else `q[j]`). `Cₘ` sums that over every size-`m` subset.
+fn moment_coeff_sign(q: &[[f64; 3]; 4], v: &[[f64; 3]; 4], m: usize) -> i32 {
+    let mut acc: Vec<f64> = Vec::new();
+    for mask in 0u32..16 {
+        if mask.count_ones() as usize != m {
+            continue;
+        }
+        for r in 0..4 {
+            if mask & (1 << r) != 0 {
+                continue; // r must be OUTSIDE S (its (q, 1) row survives the expansion)
+            }
+            let mut three = [[0.0f64; 3]; 3];
+            let mut t = 0;
+            for j in 0..4 {
+                if j == r {
+                    continue;
+                }
+                three[t] = if mask & (1 << j) != 0 { v[j] } else { q[j] };
+                t += 1;
+            }
+            let mut d3 = exact_det3(three[0], three[1], three[2]);
+            if r % 2 == 0 {
+                // (−1)^{r+1} = −1 for even r.
+                for x in &mut d3 {
+                    *x = -*x;
+                }
+            }
+            acc = fast_expansion_sum_zeroelim(&acc, &d3);
+        }
+    }
+    expansion_sign(&acc)
+}
+
+/// The exact 3×3 determinant of three row vectors, as an expansion:
+/// `a0(b1c2 − b2c1) − a1(b0c2 − b2c0) + a2(b0c1 − b1c0)`.
+fn exact_det3(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> Vec<f64> {
+    let m0 = prod_diff(b[1], c[2], b[2], c[1]);
+    let m1 = prod_diff(b[0], c[2], b[2], c[0]);
+    let m2 = prod_diff(b[0], c[1], b[1], c[0]);
+    let t0 = expansion_product(&[a[0]], &m0);
+    let t1 = expansion_product(&[a[1]], &m1);
+    let t2 = expansion_product(&[a[2]], &m2);
+    fast_expansion_sum_zeroelim(&expansion_diff(&t0, &t1), &t2)
 }
 
 #[cfg(test)]
@@ -865,6 +913,104 @@ mod tests {
             orient3d_sos(q[1], q[0], q[2], q[3], [1, 0, 2, 3]),
             s3.flip()
         );
+    }
+
+    #[test]
+    fn orient3d_sos_full_em_ladder_antisymmetric_total_consistent() {
+        // Coplanar quadruples spanning generic, tilted, collinear, and
+        // coincident degeneracies (indices always distinct).
+        let configs: [[[f64; 3]; 4]; 5] = [
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 1.0, 0.0],
+            ], // z = 0
+            [
+                [0.0, 0.0, 0.0],
+                [4.0, 4.0, 0.0],
+                [4.0, 0.0, 4.0],
+                [2.0, 1.0, 1.0],
+            ], // x = y+z (V1)
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 1.0],
+                [0.0, 1.0, 2.0],
+                [1.0, 1.0, 3.0],
+            ], // z = x+2y
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 1.0, 1.0],
+                [2.0, 2.0, 2.0],
+                [3.0, 3.0, 3.0],
+            ], // collinear
+            [
+                [1.0, 1.0, 1.0],
+                [1.0, 1.0, 1.0],
+                [2.0, 3.0, 4.0],
+                [5.0, 6.0, 7.0],
+            ], // coincident
+        ];
+        let parity = |p: [usize; 4]| -> i32 {
+            let mut inv = 0;
+            for i in 0..4 {
+                for j in (i + 1)..4 {
+                    if p[i] > p[j] {
+                        inv += 1;
+                    }
+                }
+            }
+            if inv % 2 == 0 { 1 } else { -1 }
+        };
+        for cfg in &configs {
+            // Must actually exercise SoS: the base predicate is exactly Zero.
+            assert_eq!(
+                orient3d(cfg[0], cfg[1], cfg[2], cfg[3]),
+                Sign::Zero,
+                "config is not coplanar"
+            );
+            let s0 = orient3d_sos(cfg[0], cfg[1], cfg[2], cfg[3], [0, 1, 2, 3]);
+            assert_ne!(s0, Sign::Zero, "SoS must be total");
+            // Antisymmetry + totality + determinism over ALL 24 permutations.
+            for a in 0..4 {
+                for b in 0..4 {
+                    for c in 0..4 {
+                        for d in 0..4 {
+                            let p = [a, b, c, d];
+                            if a == b || a == c || a == d || b == c || b == d || c == d {
+                                continue;
+                            }
+                            let idx = [a as u64, b as u64, c as u64, d as u64];
+                            let s = orient3d_sos(cfg[a], cfg[b], cfg[c], cfg[d], idx);
+                            assert_ne!(s, Sign::Zero, "SoS total under perm {p:?}");
+                            let want = if parity(p) > 0 { s0 } else { s0.flip() };
+                            assert_eq!(s, want, "antisymmetry under perm {p:?}");
+                            // Determinism.
+                            assert_eq!(orient3d_sos(cfg[a], cfg[b], cfg[c], cfg[d], idx), s);
+                        }
+                    }
+                }
+            }
+            // CONSISTENCY: the SoS sign must equal orient3d of the points moved
+            // along the SAME moment curve for a small concrete κ — proof the
+            // exact ladder computes the true perturbation limit, not an ad-hoc
+            // tie. (Canonical order ⇒ sorted rank = position, parity = +1.)
+            for &kappa in &[1e-3_f64, 1e-4, 1e-5] {
+                let pert: [[f64; 3]; 4] = core::array::from_fn(|i| {
+                    let s = (i + 1) as f64;
+                    [
+                        kappa.mul_add(s, cfg[i][0]),
+                        kappa.mul_add(s * s, cfg[i][1]),
+                        kappa.mul_add(s * s * s, cfg[i][2]),
+                    ]
+                });
+                assert_eq!(
+                    orient3d(pert[0], pert[1], pert[2], pert[3]),
+                    s0,
+                    "SoS inconsistent with concrete moment perturbation (κ={kappa})"
+                );
+            }
+        }
     }
 
     #[test]

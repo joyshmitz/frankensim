@@ -65,9 +65,12 @@ implementation shared with fs-la — recorded relocation, beads
   guarded by Shewchuk's proven stage-A error bounds (arrangement-specific
   constants with ε = 2⁻⁵³), escalating to exact expansion evaluation of
   the standard difference determinants (orient2d runs the full faithful
-  B/C/D adaptive ladder). `orient2d_sos` implements the Edelsbrunner–Mücke
-  tie-breaking ladder (total, antisymmetric, deterministic);
-  `orient3d_sos` is a deterministic projection cascade.
+  B/C/D adaptive ladder). `orient2d_sos` and `orient3d_sos` implement the
+  Edelsbrunner–Mücke tie-breaking ladder (total, antisymmetric, deterministic):
+  2D term-by-term; 3D as the exact sign of the leading κ-coefficient of a
+  moment-curve perturbation `pᵢ + κ·(sᵢ, sᵢ², sᵢ³)` (consistent — moment-curve
+  points are always in general position), antisymmetry supplied by sort-by-index
+  parity.
 
 ## Invariants
 1. **Containment law (G0)**: for every op and every point tuple inside the
@@ -138,9 +141,10 @@ golden-hash case bit-for-bit.
   underflow (Shewchuk's standard caveat, inherited; out-of-range inputs
   are outside the certificate).
 - `incircle`/`insphere` symbolic perturbation is NOT provided (hooks and
-  2D/3D orientation SoS only); the full 3D Edelsbrunner–Mücke ladder for
-  `orient3d_sos` is replaced by a documented deterministic projection
-  cascade — revisit when fs-mesh's Delaunay needs E-M-exact semantics.
+  2D/3D orientation SoS only). `orient3d_sos` now IS a full Edelsbrunner–Mücke
+  ladder (moment-curve perturbation, exact leading-coefficient sign) — the
+  earlier projection cascade was NOT antisymmetric under swaps involving the
+  4th point (bead wa8i V1) and has been replaced.
 - Predicate throughput: only stage-A filter rates are measured; the exact
   tail is Vec-based and deliberately unoptimized (cold path).
 - No quad-double (dd suffices for current oracles; recorded on 6ys.12).
