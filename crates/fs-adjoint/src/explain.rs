@@ -369,13 +369,20 @@ pub fn adjoint_attribution(
                 let da = a1[e] - a0[e];
                 acc -= da * fixture.slope(&u0, e) * fixture.slope(&u1, e) * h;
             }
+            // The Verified interval must use the SAME (relative) bound as the
+            // node's `bound` field — a fixed absolute ±1e-12 half-width is NOT a
+            // rigorous enclosure once |acc| is large (the fp summation error of
+            // the discrete bilinear form is ~n·eps·|acc| ≫ 1e-12), so it would
+            // EXCLUDE the exact discrete value it claims to enclose (bead 9sf6
+            // F2). The relative bound covers the fp error for reasonable n.
+            let bound = 1e-12 * acc.abs().max(1.0);
             ExplanationNode::new(
                 name,
                 acc,
-                1e-12 * acc.abs().max(1.0),
+                bound,
                 Color::Verified {
-                    lo: acc - 1e-12,
-                    hi: acc + 1e-12,
+                    lo: acc - bound,
+                    hi: acc + bound,
                 },
                 vec![
                     "solve(a0)".to_string(),
