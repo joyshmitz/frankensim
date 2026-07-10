@@ -112,8 +112,15 @@ pub fn run_pour(rig: &PourRig, contact: ContactModel, law: Rheology) -> PourOutc
     let mut mass_drift = 0.0f64;
     for step in 0..rig.steps {
         // Tilt schedule: rotate gravity linearly to tilt_final.
+        // det::sin/cos: platform trig here was the xo2k build-mode
+        // divergence — release const-folds libm calls once the literal
+        // rig parameters inline, debug calls libm at runtime, and the
+        // ~1-ulp gravity difference compounds into poured_mass drift.
         let theta = rig.tilt_final * f64::from(step) / f64::from(rig.steps);
-        sim.grid.g = [rig.g0 * theta.sin(), -rig.g0 * theta.cos()];
+        sim.grid.g = [
+            rig.g0 * fs_math::det::sin(theta),
+            -rig.g0 * fs_math::det::cos(theta),
+        ];
         // Carreau/power-law local viscosity adaptation (stage-3 band).
         let _ = update_tau(&mut sim.grid, law);
         sim.step();

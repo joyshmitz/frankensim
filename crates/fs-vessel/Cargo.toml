@@ -14,6 +14,7 @@ layer = "L6"
 fs-cheb = { path = "../fs-cheb" }
 fs-exec = { path = "../fs-exec" }
 fs-lbm = { path = "../fs-lbm" }
+fs-math = { path = "../fs-math" }
 fs-race = { path = "../fs-race" }
 fs-render = { path = "../fs-render", features = ["volumes"] }
 
