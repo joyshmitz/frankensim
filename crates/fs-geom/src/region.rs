@@ -116,7 +116,13 @@ impl Region {
         if report.unknown_count > 0 {
             return Ok(report);
         }
-        let support = support.expect("two validated charts have support");
+        let Some(support) = support else {
+            report.record_unknown(
+                AgreementUnknown::global(AgreementUnknownReason::InvalidSupport),
+                config.max_diagnostics,
+            );
+            return Ok(report);
+        };
         let span = (support.max.x - support.min.x)
             .max(support.max.y - support.min.y)
             .max(support.max.z - support.min.z);
@@ -383,31 +389,56 @@ impl AgreementStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgreementUnknownReason {
     /// Agreement requires at least two independent presentations.
-    InsufficientCharts { found: usize },
+    InsufficientCharts {
+        /// Number of presentations available.
+        found: usize,
+    },
     /// An empty sample set provides no evidence.
     ZeroSamples,
     /// Slack must be finite and non-negative; the exact input bits are kept.
-    InvalidTolerance { bits: u64 },
+    InvalidTolerance {
+        /// Exact IEEE-754 bits supplied by the caller.
+        bits: u64,
+    },
     /// A chart's support was non-finite, inverted, or too wide for finite
     /// sampling arithmetic.
     InvalidSupport,
     /// Support interpolation produced a non-finite query point.
     NonFiniteSamplePoint,
     /// A chart returned a non-finite signed distance.
-    NonFiniteSignedDistance { bits: u64 },
+    NonFiniteSignedDistance {
+        /// Exact IEEE-754 bits returned by the chart.
+        bits: u64,
+    },
     /// A chart returned a non-finite gradient component.
-    NonFiniteGradient { component: &'static str, bits: u64 },
+    NonFiniteGradient {
+        /// Component name (`x`, `y`, or `z`).
+        component: &'static str,
+        /// Exact IEEE-754 bits returned by the chart.
+        bits: u64,
+    },
     /// A claimed Lipschitz bound was negative or non-finite.
-    InvalidLipschitz { bits: u64 },
+    InvalidLipschitz {
+        /// Exact IEEE-754 bits returned by the chart.
+        bits: u64,
+    },
     /// A chart explicitly made no numerical claim.
     NoClaim,
     /// Certificate bounds were non-finite, inverted, impossibly wide, or an
     /// `Exact` certificate had nonzero width.
-    MalformedCertificate { lo_bits: u64, hi_bits: u64 },
+    MalformedCertificate {
+        /// Exact IEEE-754 bits of the lower bound.
+        lo_bits: u64,
+        /// Exact IEEE-754 bits of the upper bound.
+        hi_bits: u64,
+    },
     /// The reported signed distance was outside its own declared interval.
     ValueOutsideCertificate {
+        /// Exact IEEE-754 bits of the reported value.
         value_bits: u64,
+        /// Exact IEEE-754 bits of the lower bound.
         lo_bits: u64,
+        /// Exact IEEE-754 bits of the upper bound.
         hi_bits: u64,
     },
     /// Otherwise-valid finite values overflowed the comparison arithmetic.
@@ -571,11 +602,13 @@ impl AgreementReport {
             if i > 0 {
                 s.push(',');
             }
-            let _ = write!(
-                s,
-                "{{\"at\":[{},{},{}],\"charts\":[",
-                d.at.x, d.at.y, d.at.z
-            );
+            s.push_str("{\"at\":[");
+            write_json_f64(&mut s, d.at.x);
+            s.push(',');
+            write_json_f64(&mut s, d.at.y);
+            s.push(',');
+            write_json_f64(&mut s, d.at.z);
+            s.push_str("],\"charts\":[");
             write_json_string(&mut s, d.chart_a);
             s.push(',');
             write_json_string(&mut s, d.chart_b);
@@ -627,6 +660,14 @@ fn write_optional_f64(out: &mut String, value: Option<f64>) {
     }
 }
 
+fn write_json_f64(out: &mut String, value: f64) {
+    if value.is_finite() {
+        let _ = write!(out, "{value}");
+    } else {
+        let _ = write!(out, "\"bits:{:016x}\"", value.to_bits());
+    }
+}
+
 fn write_json_string(out: &mut String, value: &str) {
     out.push('"');
     for ch in value.chars() {
@@ -651,7 +692,13 @@ fn write_unknown(out: &mut String, unknown: &AgreementUnknown) {
     out.push_str("{\"reason\":");
     write_json_string(out, unknown.reason.code());
     if let Some(at) = unknown.at {
-        let _ = write!(out, ",\"at\":[{},{},{}]", at.x, at.y, at.z);
+        out.push_str(",\"at\":[");
+        write_json_f64(out, at.x);
+        out.push(',');
+        write_json_f64(out, at.y);
+        out.push(',');
+        write_json_f64(out, at.z);
+        out.push(']');
     }
     if let Some(chart) = unknown.chart_a {
         out.push_str(",\"chart_a\":");
@@ -897,37 +944,54 @@ mod tests {
     #[test]
     fn non_finite_output_and_no_claim_are_unknown() {
         let gate = CancelGate::new();
-        let bad_samples = [
-            crate::ChartSample {
+        let nan_report = with_cx(&gate, |cx| {
+            region_with_probe(probe(crate::ChartSample {
                 signed_distance: f64::NAN,
                 gradient: None,
                 lipschitz: Some(1.0),
                 error: NumericalCertificate::exact(f64::NAN),
-            },
-            crate::ChartSample {
+            }))
+            .check_agreement(
+                &AgreementConfig {
+                    samples: 1,
+                    ..AgreementConfig::default()
+                },
+                cx,
+            )
+            .expect("not cancelled")
+        });
+        assert_eq!(nan_report.status, AgreementStatus::Unknown);
+        assert_eq!(nan_report.checked, 0);
+        assert_eq!(nan_report.unknown_count, 1);
+        assert!(matches!(
+            nan_report.unknowns[0].reason,
+            AgreementUnknownReason::NonFiniteSignedDistance { .. }
+        ));
+        assert!(!nan_report.to_json().contains(":NaN"));
+
+        let no_claim_report = with_cx(&gate, |cx| {
+            region_with_probe(probe(crate::ChartSample {
                 signed_distance: 0.0,
                 gradient: None,
                 lipschitz: Some(1.0),
                 error: NumericalCertificate::no_claim(),
-            },
-        ];
-        for sample in bad_samples {
-            let report = with_cx(&gate, |cx| {
-                region_with_probe(probe(sample))
-                    .check_agreement(
-                        &AgreementConfig {
-                            samples: 1,
-                            ..AgreementConfig::default()
-                        },
-                        cx,
-                    )
-                    .expect("not cancelled")
-            });
-            assert_eq!(report.status, AgreementStatus::Unknown);
-            assert_eq!(report.checked, 0);
-            assert_eq!(report.unknown_count, 1);
-            assert!(!report.to_json().contains(":NaN"));
-        }
+            }))
+            .check_agreement(
+                &AgreementConfig {
+                    samples: 1,
+                    ..AgreementConfig::default()
+                },
+                cx,
+            )
+            .expect("not cancelled")
+        });
+        assert_eq!(no_claim_report.status, AgreementStatus::Unknown);
+        assert_eq!(no_claim_report.checked, 0);
+        assert_eq!(no_claim_report.unknown_count, 1);
+        assert!(matches!(
+            no_claim_report.unknowns[0].reason,
+            AgreementUnknownReason::NoClaim
+        ));
     }
 
     #[test]
@@ -1009,5 +1073,40 @@ mod tests {
             report.strongest_counterexample_evidence,
             Some(NumericalKind::Exact)
         );
+    }
+
+    #[test]
+    fn agreement_report_preserves_the_weakest_certificate_class() {
+        let exact = probe(crate::ChartSample {
+            signed_distance: 0.0,
+            gradient: None,
+            lipschitz: Some(1.0),
+            error: NumericalCertificate::exact(0.0),
+        });
+        let estimated = ProbeChart {
+            name: "estimated-probe",
+            sample: crate::ChartSample {
+                error: NumericalCertificate::estimate(-0.1, 0.1),
+                ..exact.sample
+            },
+            ..exact
+        };
+        let region = Region::from_chart(Arc::new(exact), ProvenanceHash::of_bytes(b"exact"))
+            .with_chart(Arc::new(estimated), ProvenanceHash::of_bytes(b"estimated"));
+        let gate = CancelGate::new();
+        let report = with_cx(&gate, |cx| {
+            region
+                .check_agreement(
+                    &AgreementConfig {
+                        samples: 1,
+                        ..AgreementConfig::default()
+                    },
+                    cx,
+                )
+                .expect("not cancelled")
+        });
+        assert_eq!(report.status, AgreementStatus::Agreed);
+        assert_eq!(report.weakest_evidence, Some(NumericalKind::Estimate));
+        assert_eq!(report.strongest_counterexample_evidence, None);
     }
 }
