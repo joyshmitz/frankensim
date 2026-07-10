@@ -176,8 +176,7 @@ fn legendre_value_derivative(order: usize, x: f64) -> (f64, f64) {
     let mut previous = 0.0;
     let mut current = 1.0;
     for degree in 1..=order {
-        let next = ((2.0 * degree as f64 - 1.0) * x * current
-            - (degree - 1) as f64 * previous)
+        let next = ((2.0 * degree as f64 - 1.0) * x * current - (degree - 1) as f64 * previous)
             / degree as f64;
         previous = current;
         current = next;
