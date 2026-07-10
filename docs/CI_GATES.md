@@ -44,14 +44,38 @@ criteria.
   explicitly NOT claimed by CI; they belong to the reference machines with
   ledgered fingerprints.
 
+## xtask policy gates (the `check-all` set)
+
+`cargo run -p xtask -- check-all` runs, and CI treats as one gate:
+
+| Check | What it refuses |
+| --- | --- |
+| `check-layers` | a crate depending upward/sideways against the L0–L6 map |
+| `check-deps` | non-Franken runtime dependencies |
+| `check-contracts` | crates missing CONTRACT.md canonical sections |
+| `check-unsafe` | unsafe outside registered <300-line capsules with SAFETY.md |
+| `check-powi` | optimization-level-dependent `f64::powi` on determinism paths |
+| `check-goldens` | golden hashes whose upstream semantic surfaces drifted without a deliberate re-freeze (`golden-couplings.json`, docs/GOLDEN_POLICY.md) |
+| `check-claims` | claim-state drift in the tracker mirror |
+
+Each is also runnable alone (same names). Golden re-pins follow
+docs/GOLDEN_POLICY.md: committed tree, BOTH build modes, plausible root
+cause, coupling row updated in the same commit.
+
 ## Constellation
 
-The workspace path-depends on sibling repos. DSR quality gates and the manual
-workflow specs materialize them with
-`scripts/ci/checkout_constellation.sh` at the exact `constellation.lock`
-pins (shallow fetch by SHA), then `xtask check-constellation` verifies zero
-drift. Bumping a sibling is a deliberate act: re-run
-`cargo run -p xtask -- lock-constellation` locally and commit the new lock.
+The workspace path-depends on sibling repos. The canonical clean-host
+path is `cargo run -p xtask -- bootstrap-constellation` (bead huq.17;
+docs/BOOTSTRAP.md): it fetches every repo from `constellation.lock`'s
+recorded remotes at the pinned revisions, verifies content identity,
+refuses wrong-head or dirty trees (case-collision checkout artifacts
+are classified distinctly), supports `--offline` cache verification and
+`--from` mirrors, and writes fetch provenance.
+`scripts/ci/checkout_constellation.sh` remains the shell-only
+equivalent used by the manual workflow specs; `xtask
+check-constellation` then verifies zero drift. Bumping a sibling is a
+deliberate act: re-run `cargo run -p xtask -- lock-constellation`
+locally and commit the new lock (schema v2 records remotes).
 
 ## Decalogue mapping (plan patch Rev 25)
 
@@ -62,10 +86,10 @@ drift. Bumping a sibling is a deliberate act: re-run
 | P3 differentiable-or-certifiable | gradient-check merge gate (adjoint vs dual/FD; a solver without a passing check cannot merge, §8.7) | **deferred** — wired when fs-ad adjoint infra + first solver land; fs-vskeleton already self-gates its adjoint in-run |
 | P4 budgets first | Five-Explicits lint on ledger ops | **live in fs-ledger API** (structured rejection); IR-level admission lint deferred to fs-ir |
 | P5 structure preservation | exact-sequence / conservation G0 law suites | **partial** — review-checklist status; suites land with fs-feec |
-| P6 roofline-honest | perf-regression bands vs ledgered baselines (§14.4) | **deferred** — needs reference-machine runners + roofline harness; explicitly not faked on shared CI |
+| P6 roofline-honest | perf-regression bands vs ledgered baselines (§14.4) | **partial** — fs-roofline harness + regress statistics live (fz2.4/fz2.4.1); per-crate `#[ignore]`d perf lanes ledger attainment with anti-collapse floors; TARGET certification requires a quiet reference machine (shared-workbench noise swings axes ±15%+, measured), so gates report targets and assert floors until then |
 | P7 cancellation-correct | G4 storm gate (kill/cancel batteries, leak accounting) | **partial** — fs-ledger kill -9 battery runs in `ci.yml` today; executor-wide storms land with fs-exec |
 | P8 one data model | conformance suites over shared complex/cochain types | **deferred** — with fs-geom/fs-feec |
-| P9 provenance-complete | golden-ledger replay + integrity re-hash; constellation drift gate | **partial** — integrity + drift live; replay gate lands with fs-ledger time travel |
+| P9 provenance-complete | golden-ledger replay + integrity re-hash; constellation drift + golden-coupling gates | **partial** — integrity, drift, `check-goldens` coupling discipline, and bootstrap fetch-provenance live; replay gate lands with fs-ledger time travel |
 | P10 agent-first | JSONL verdicts from every suite retained as artifacts; structured-error schema validation | **partial** — verdict retention live; catalog no-drift gate lands with fs-ir |
 
 ## Gate meta-tests (are the gates real?)
