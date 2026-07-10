@@ -161,6 +161,22 @@ pub(crate) fn checked_jt(
     pullback
 }
 
+fn validate_jt_zero(
+    label: &str,
+    callback: &dyn Fn(&[f64], &[f64]) -> Vec<f64>,
+    x: &[f64],
+    constraint_count: usize,
+) {
+    if constraint_count == 0 {
+        return;
+    }
+    let zero_pullback = checked_jt(label, callback, x, &vec![0.0; constraint_count]);
+    assert!(
+        zero_pullback.iter().all(|value| *value == 0.0),
+        "{label} Jacobian-transpose action must map zero weights to zero"
+    );
+}
+
 pub(crate) fn validate_problem_at_start(
     problem: &mut ConstrainedProblem<'_>,
     x: &[f64],
@@ -169,12 +185,8 @@ pub(crate) fn validate_problem_at_start(
     let _ = checked_fg(&mut *problem.fg, x);
     let ce = checked_constraints("equality", problem.ce, x, None);
     let ci = checked_constraints("inequality", problem.ci, x, None);
-    if !ce.is_empty() {
-        let _ = checked_jt("equality", problem.ce_jt, x, &vec![0.0; ce.len()]);
-    }
-    if !ci.is_empty() {
-        let _ = checked_jt("inequality", problem.ci_jt, x, &vec![0.0; ci.len()]);
-    }
+    validate_jt_zero("equality", problem.ce_jt, x, ce.len());
+    validate_jt_zero("inequality", problem.ci_jt, x, ci.len());
     (ce.len(), ci.len())
 }
 
@@ -314,6 +326,8 @@ pub fn kkt_residual(
     );
     assert_finite("equality multiplier", lambda);
     assert_finite("inequality multiplier", nu);
+    validate_jt_zero("equality", problem.ce_jt, x, cev.len());
+    validate_jt_zero("inequality", problem.ci_jt, x, civ.len());
     if !cev.is_empty() {
         let equality_pull = checked_jt("equality", problem.ce_jt, x, lambda);
         for i in 0..g.len() {

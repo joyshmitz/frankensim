@@ -247,33 +247,54 @@ fn kkt_rejects_jacobian_transpose_dimension_mismatch() {
 }
 
 #[test]
+#[should_panic(expected = "Jacobian-transpose action must map zero weights to zero")]
+fn kkt_rejects_affine_jacobian_transpose_callback() {
+    let mut fg = |_: &[f64]| (0.0, vec![0.0]);
+    let ce = |_: &[f64]| Vec::new();
+    let ce_jt = |x: &[f64], _: &[f64]| vec![0.0; x.len()];
+    let ci = |_: &[f64]| vec![0.0];
+    let biased_ci_jt = |_: &[f64], w: &[f64]| vec![w[0] + 1.0];
+    let mut problem = ConstrainedProblem {
+        fg: &mut fg,
+        ce: &ce,
+        ce_jt: &ce_jt,
+        ci: &ci,
+        ci_jt: &biased_ci_jt,
+    };
+
+    let _ = kkt_residual(&mut problem, &[0.0], &[], &[0.0]);
+}
+
+#[test]
 fn all_constrained_engines_require_positive_finite_tolerances() {
-    for (engine, tolerance) in [("AL", 0.0), ("IP", f64::NAN), ("SQP", f64::INFINITY)] {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut fg = |x: &[f64]| (x[0] * x[0], vec![2.0 * x[0]]);
-            let none = |_: &[f64]| Vec::new();
-            let zero_jt = |x: &[f64], _: &[f64]| vec![0.0; x.len()];
-            let mut problem = ConstrainedProblem {
-                fg: &mut fg,
-                ce: &none,
-                ce_jt: &zero_jt,
-                ci: &none,
-                ci_jt: &zero_jt,
-            };
-            match engine {
-                "AL" => {
-                    let _ = augmented_lagrangian(&mut problem, &[1.0], tolerance, 1);
+    for engine in ["AL", "IP", "SQP"] {
+        for tolerance in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut fg = |x: &[f64]| (x[0] * x[0], vec![2.0 * x[0]]);
+                let none = |_: &[f64]| Vec::new();
+                let zero_jt = |x: &[f64], _: &[f64]| vec![0.0; x.len()];
+                let mut problem = ConstrainedProblem {
+                    fg: &mut fg,
+                    ce: &none,
+                    ce_jt: &zero_jt,
+                    ci: &none,
+                    ci_jt: &zero_jt,
+                };
+                match engine {
+                    "AL" => {
+                        let _ = augmented_lagrangian(&mut problem, &[1.0], tolerance, 1);
+                    }
+                    "IP" => {
+                        let _ = interior_point(&mut problem, &[1.0], tolerance, 1);
+                    }
+                    "SQP" => {
+                        let _ = sqp(&mut problem, &[1.0], tolerance, 1);
+                    }
+                    _ => unreachable!(),
                 }
-                "IP" => {
-                    let _ = interior_point(&mut problem, &[1.0], tolerance, 1);
-                }
-                "SQP" => {
-                    let _ = sqp(&mut problem, &[1.0], tolerance, 1);
-                }
-                _ => unreachable!(),
-            }
-        }));
-        assert!(result.is_err(), "{engine} accepted tolerance {tolerance}");
+            }));
+            assert!(result.is_err(), "{engine} accepted tolerance {tolerance}");
+        }
     }
 }
 
@@ -299,7 +320,10 @@ fn interior_exhaustion_keeps_last_solved_barrier_multiplier() {
     };
 
     let report = interior_point(&mut problem, &[-1.0], 0.9, 1);
-    assert!(!report.converged, "unsolved next-mu state certified: {report:?}");
+    assert!(
+        !report.converged,
+        "unsolved next-mu state certified: {report:?}"
+    );
     assert!(
         report.kkt.complementarity > 0.9,
         "expected the mu=1 complementarity residual, got {report:?}"

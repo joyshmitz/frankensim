@@ -175,3 +175,7 @@ dimensions.
   IR gradients (the live IR is evaluation-only), L-BFGS/TR engines
   behind the runner (projected gradient is the v1 driver), and
   ledgered study artifacts (fs-ledger wiring) — recorded follow-ups.
+- Constraint Jacobian-transpose callbacks remain a mathematical trust
+  boundary: fs-ascent checks exact dimensions, finite values, and the
+  mandatory `J^T 0 = 0` linearity identity, but independent derivative
+  verification is required before stronger correctness claims.
