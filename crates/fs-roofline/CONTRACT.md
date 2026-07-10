@@ -121,6 +121,22 @@ attainment hand-calculations, order statistics, and axes sanity.
 - Verdict gating in CI is deliberately absent on shared runners; bands
   bind only on ledgered reference machines (nightly lane, later).
 
+## Fail-closed evidence screening (bead fz2.4.1)
+
+Every public regress entry point screens its floating inputs before
+any verdict arithmetic: `gate` returns `GateVerdict::Invalid { reason }`
+— never Green — for non-finite or negative attainment or phase
+durations anywhere in the history and for unusable specs (non-finite
+or non-positive k_sigma, min_baseline < 2); `Cusum::first_alarm`
+alarms AT the first non-finite residual (NaN previously reset the
+shortfall via `max`, silently suppressing detection) and an invalid
+detector spec cannot certify quiet; `standardize` maps history to −∞
+from the first non-finite entry so poison never enters the expanding
+baseline; `slower_this_month` reports poisoned kernels FIRST with an
+infinite drop and the flaw as the "why", never skipping them.
+Metamorphic property (tested): rescaling phase durations by a constant
+(time-unit change) preserves verdicts and attribution ranking.
+
 ## No-claim boundaries (regress)
 
 - This module is the STATISTICS + attribution + gate arithmetic; the

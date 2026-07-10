@@ -66,27 +66,54 @@ pub enum GateVerdict {
         /// first), as (phase, baseline share, regressed share).
         attribution: Vec<(String, f64, f64)>,
     },
+    /// MALFORMED EVIDENCE (bead fz2.4.1): non-finite or negative
+    /// inputs, or an unusable spec. A proof-bearing gate never
+    /// represents bad data as Green — it says so, with a diagnosis.
+    Invalid {
+        /// What was malformed (structured, human-readable).
+        reason: String,
+    },
 }
 
-/// Gate the newest night against the preceding baseline, attributing
-/// any red to the phases whose SHARE of the total grew most — the
-/// event stream reconstructing the flame-graph diff post hoc.
-#[must_use]
-pub fn gate(history: &[Night], spec: GateSpec) -> GateVerdict {
-    let n = history.len();
-    if n < spec.min_baseline + 1 {
-        return GateVerdict::Green { z: 0.0 };
+/// First flaw in a night's fields, if any (the fail-closed screen).
+fn night_flaw(idx: usize, night: &Night) -> Option<String> {
+    if !night.attainment.is_finite() || night.attainment < 0.0 {
+        return Some(format!(
+            "night {idx} (index in history): attainment {} is not finite and non-negative",
+            night.attainment
+        ));
     }
-    let (baseline, newest) = history.split_at(n - 1);
-    let newest = &newest[0];
-    let xs: Vec<f64> = baseline.iter().map(|b| b.attainment).collect();
-    let (mu, sigma) = mean_std(&xs);
-    let z = (newest.attainment - mu) / sigma.max(1e-12);
-    if z >= -spec.k_sigma {
-        return GateVerdict::Green { z };
+    for (phase, &secs) in &night.phases {
+        if !secs.is_finite() || secs < 0.0 {
+            return Some(format!(
+                "night {idx}: phase '{phase}' duration {secs} is not finite and non-negative"
+            ));
+        }
     }
-    // Attribution: per-phase SHARE of total time, baseline median vs
-    // the regressed night; rank by share growth.
+    None
+}
+
+/// First flaw in a spec, if any.
+fn spec_flaw(spec: GateSpec) -> Option<String> {
+    if !(spec.k_sigma.is_finite() && spec.k_sigma > 0.0) {
+        return Some(format!(
+            "spec.k_sigma {} is not finite and positive",
+            spec.k_sigma
+        ));
+    }
+    if spec.min_baseline < 2 {
+        return Some(format!(
+            "spec.min_baseline {} cannot support a dispersion estimate (need >= 2)",
+            spec.min_baseline
+        ));
+    }
+    None
+}
+
+/// Phase-share attribution of `newest` against `baseline` (the
+/// flame-graph diff reconstructed post hoc): phases ranked by share
+/// growth vs the baseline median share, top offender first.
+fn attribution_vs_baseline(baseline: &[Night], newest: &Night) -> Vec<(String, f64, f64)> {
     let mut base_shares: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
     for night in baseline {
         let total: f64 = night.phases.values().sum();
@@ -112,7 +139,44 @@ pub fn gate(history: &[Night], spec: GateSpec) -> GateVerdict {
         })
         .collect();
     attribution.sort_by(|a, b| (b.2 - b.1).total_cmp(&(a.2 - a.1)).then(a.0.cmp(&b.0)));
-    GateVerdict::Red { z, attribution }
+    attribution
+}
+
+/// Gate the newest night against the preceding baseline, attributing
+/// any red to the phases whose SHARE of the total grew most — the
+/// event stream reconstructing the flame-graph diff post hoc.
+///
+/// FAIL-CLOSED (bead fz2.4.1): non-finite or negative attainment or
+/// phase durations anywhere in the history, and unusable specs
+/// (non-finite/non-positive k_sigma, baseline too short to estimate
+/// dispersion), return [`GateVerdict::Invalid`] — never Green. NaN can
+/// otherwise flip the red predicate false silently.
+#[must_use]
+pub fn gate(history: &[Night], spec: GateSpec) -> GateVerdict {
+    if let Some(reason) = spec_flaw(spec) {
+        return GateVerdict::Invalid { reason };
+    }
+    for (idx, night) in history.iter().enumerate() {
+        if let Some(reason) = night_flaw(idx, night) {
+            return GateVerdict::Invalid { reason };
+        }
+    }
+    let n = history.len();
+    if n < spec.min_baseline + 1 {
+        return GateVerdict::Green { z: 0.0 };
+    }
+    let (baseline, newest) = history.split_at(n - 1);
+    let newest = &newest[0];
+    let xs: Vec<f64> = baseline.iter().map(|b| b.attainment).collect();
+    let (mu, sigma) = mean_std(&xs);
+    let z = (newest.attainment - mu) / sigma.max(1e-12);
+    if z >= -spec.k_sigma {
+        return GateVerdict::Green { z };
+    }
+    GateVerdict::Red {
+        z,
+        attribution: attribution_vs_baseline(baseline, newest),
+    }
 }
 
 /// A one-sided CUSUM change-point detector for slow drifts the
@@ -136,10 +200,23 @@ impl Default for Cusum {
 impl Cusum {
     /// Run over standardized residuals (baseline-calibrated z-scores);
     /// returns the first alarm index, if any.
+    ///
+    /// FAIL-CLOSED (bead fz2.4.1): a detector with a non-finite or
+    /// non-positive threshold cannot certify quiet — it alarms at
+    /// index 0; a non-finite residual alarms at ITS index (NaN would
+    /// otherwise silently reset the shortfall via `max`, suppressing
+    /// detection). Malformed data can force an alarm; it can never
+    /// suppress one.
     #[must_use]
     pub fn first_alarm(&self, z_scores: &[f64]) -> Option<usize> {
+        if !(self.k.is_finite() && self.k >= 0.0 && self.h.is_finite() && self.h > 0.0) {
+            return if z_scores.is_empty() { None } else { Some(0) };
+        }
         let mut s = 0.0f64;
         for (i, &z) in z_scores.iter().enumerate() {
+            if !z.is_finite() {
+                return Some(i);
+            }
             s = (s - z - self.k).max(0.0); // accumulate SHORTFALL
             if s > self.h {
                 return Some(i);
@@ -152,13 +229,24 @@ impl Cusum {
 /// Standardize a history against its own expanding baseline (each
 /// night scored against the nights before it; the first `warmup`
 /// nights score 0).
+///
+/// FAIL-CLOSED (bead fz2.4.1): from the first non-finite input onward
+/// every output is −∞ (the worst possible shortfall), so poisoned
+/// history can never enter the expanding baseline as ordinary data or
+/// read as good performance — downstream CUSUM alarms instead.
 #[must_use]
 pub fn standardize(history: &[f64], warmup: usize) -> Vec<f64> {
+    let poisoned_from = history
+        .iter()
+        .position(|x| !x.is_finite())
+        .unwrap_or(history.len());
     history
         .iter()
         .enumerate()
         .map(|(i, &x)| {
-            if i < warmup {
+            if i >= poisoned_from {
+                f64::NEG_INFINITY
+            } else if i < warmup {
                 0.0
             } else {
                 let (mu, sigma) = mean_std(&history[..i]);
@@ -172,6 +260,11 @@ pub fn standardize(history: &[f64], warmup: usize) -> Vec<f64> {
 /// kernels whose trailing-week mean attainment dropped more than
 /// `pct_floor` percent below their opening-week mean, each with its
 /// top-offender phase from the flame-graph diff.
+/// FAIL-CLOSED (bead fz2.4.1): a kernel whose history contains
+/// non-finite or negative fields is reported FIRST with an infinite
+/// drop and the flaw as its "why" — malformed evidence is flagged
+/// loudest, never silently skipped and never allowed to poison the
+/// trend arithmetic of valid kernels.
 #[must_use]
 pub fn slower_this_month(
     kernels: &BTreeMap<String, Vec<Night>>,
@@ -179,6 +272,14 @@ pub fn slower_this_month(
 ) -> Vec<(String, f64, String)> {
     let mut out = Vec::new();
     for (kernel, history) in kernels {
+        if let Some(flaw) = history
+            .iter()
+            .enumerate()
+            .find_map(|(idx, n)| night_flaw(idx, n))
+        {
+            out.push((kernel.clone(), f64::INFINITY, format!("INVALID: {flaw}")));
+            continue;
+        }
         if history.len() < 14 {
             continue;
         }
@@ -191,20 +292,13 @@ pub fn slower_this_month(
         let (mu_tail, _) = mean_std(&tail);
         let drop_pct = (mu_head - mu_tail) / mu_head.max(1e-12) * 100.0;
         if drop_pct > pct_floor {
-            // Top offender via the gate's attribution machinery.
-            let verdict = gate(
-                history,
-                GateSpec {
-                    k_sigma: 0.0,
-                    min_baseline: 7,
-                },
-            );
-            let why = match verdict {
-                GateVerdict::Red { attribution, .. } => attribution
-                    .first()
-                    .map_or_else(|| "unattributed".to_string(), |(p, _, _)| p.clone()),
-                GateVerdict::Green { .. } => "trend-only (no single-night red)".to_string(),
-            };
+            // Top offender straight from the attribution machinery
+            // (formerly routed through gate() with a degenerate
+            // k_sigma = 0 spec, which validation now refuses).
+            let (baseline, newest) = history.split_at(history.len() - 1);
+            let why = attribution_vs_baseline(baseline, &newest[0])
+                .first()
+                .map_or_else(|| "unattributed".to_string(), |(p, _, _)| p.clone());
             out.push((kernel.clone(), drop_pct, why));
         }
     }

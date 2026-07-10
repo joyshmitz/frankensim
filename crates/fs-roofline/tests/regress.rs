@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use fs_roofline::regress::{Cusum, GateSpec, GateVerdict, gate, slower_this_month, standardize};
+use fs_roofline::regress::{Cusum, GateSpec, GateVerdict, Night, gate, slower_this_month, standardize};
 
 fn verdict(case: &str, detail: &str) {
     println!(
@@ -179,5 +179,162 @@ fn rg_004_dashboard_one_liner() {
         "rg-004",
         "'what got slower this month, and why' answers in one call: fft, ~13%, reduce — \
          stable kernels stay unnamed",
+    );
+}
+
+/// rg-005 (bead fz2.4.1): malformed evidence FAILS CLOSED — NaN or
+/// infinite attainment, negative attainment, non-finite or negative
+/// phase durations, and unusable specs all yield Invalid, never Green,
+/// each with a diagnosis.
+#[test]
+fn rg_005_malformed_evidence_fails_closed() {
+    let good = |night: u64| Night {
+        night,
+        attainment: 0.8,
+        phases: BTreeMap::from([("solve".to_string(), 1.0), ("io".to_string(), 0.5)]),
+    };
+    let mut history: Vec<Night> = (0..12).map(good).collect();
+    let spec = GateSpec::default();
+    // Baseline sanity: the clean history gates Green.
+    assert!(matches!(gate(&history, spec), GateVerdict::Green { .. }));
+    for (label, poison) in [
+        ("nan-attainment", f64::NAN),
+        ("inf-attainment", f64::INFINITY),
+        ("neg-inf-attainment", f64::NEG_INFINITY),
+        ("negative-attainment", -0.25),
+    ] {
+        let mut h = history.clone();
+        h[11].attainment = poison;
+        let v = gate(&h, spec);
+        assert!(
+            matches!(v, GateVerdict::Invalid { .. }),
+            "{label}: expected Invalid, got {v:?}"
+        );
+    }
+    // Poison BURIED in the baseline (not the newest night) also refuses.
+    history[3].phases.insert("solve".to_string(), f64::NAN);
+    assert!(matches!(gate(&history, spec), GateVerdict::Invalid { .. }));
+    history[3].phases.insert("solve".to_string(), -2.0);
+    assert!(matches!(gate(&history, spec), GateVerdict::Invalid { .. }));
+    // Unusable specs.
+    let clean: Vec<Night> = (0..12).map(good).collect();
+    for bad_spec in [
+        GateSpec {
+            k_sigma: f64::NAN,
+            min_baseline: 8,
+        },
+        GateSpec {
+            k_sigma: 0.0,
+            min_baseline: 8,
+        },
+        GateSpec {
+            k_sigma: -1.0,
+            min_baseline: 8,
+        },
+        GateSpec {
+            k_sigma: f64::INFINITY,
+            min_baseline: 8,
+        },
+        GateSpec {
+            k_sigma: 4.0,
+            min_baseline: 1,
+        },
+    ] {
+        assert!(
+            matches!(gate(&clean, bad_spec), GateVerdict::Invalid { .. }),
+            "spec {bad_spec:?} must be refused"
+        );
+    }
+    println!(
+        "{{\"suite\":\"fs-roofline/regress\",\"case\":\"rg-005\",\"verdict\":\"pass\",\
+         \"detail\":\"NaN/inf/negative fields and unusable specs all Invalid, never Green\"}}"
+    );
+}
+
+/// rg-006 (bead fz2.4.1): METAMORPHIC — phase durations are shares, so
+/// rescaling every phase by a constant (a time-unit change, seconds to
+/// milliseconds) preserves the verdict AND the attribution ranking.
+#[test]
+fn rg_006_time_unit_invariance() {
+    let mk = |night: u64, att: f64, solve: f64, reduce: f64, scale: f64| Night {
+        night,
+        attainment: att,
+        phases: BTreeMap::from([
+            ("solve".to_string(), solve * scale),
+            ("reduce".to_string(), reduce * scale),
+        ]),
+    };
+    for scale in [1.0f64, 1000.0] {
+        let mut history: Vec<Night> = (0..14)
+            .map(|t| mk(t, 0.80 + 0.001 * (t % 3) as f64, 2.0, 1.0, scale))
+            .collect();
+        // The regressed night: attainment collapses, reduce blows up.
+        history.push(mk(14, 0.40, 2.0, 4.0, scale));
+        let v = gate(&history, GateSpec::default());
+        let GateVerdict::Red { attribution, .. } = &v else {
+            panic!("expected Red at scale {scale}, got {v:?}");
+        };
+        assert_eq!(
+            attribution[0].0, "reduce",
+            "top offender is scale-invariant (scale {scale})"
+        );
+    }
+    println!(
+        "{{\"suite\":\"fs-roofline/regress\",\"case\":\"rg-006\",\"verdict\":\"pass\",\
+         \"detail\":\"verdict and attribution ranking invariant under time-unit rescaling\"}}"
+    );
+}
+
+/// rg-007 (bead fz2.4.1): poisoned trend/CUSUM state fails closed —
+/// non-finite residuals alarm at their index instead of resetting the
+/// shortfall; standardize maps poisoned history to −∞ from the first
+/// bad index; an invalid detector spec cannot certify quiet; and
+/// slower_this_month flags the poisoned kernel loudest instead of
+/// skipping it.
+#[test]
+fn rg_007_poison_never_enters_state() {
+    // NaN in the residual stream: alarm AT the poison, not suppression.
+    let mut z = vec![0.1f64; 30];
+    z[17] = f64::NAN;
+    assert_eq!(Cusum::default().first_alarm(&z), Some(17));
+    // Clean quiet stream stays quiet.
+    assert_eq!(Cusum::default().first_alarm(&vec![0.1f64; 30]), None);
+    // Invalid detector: cannot certify quiet.
+    let bad = Cusum {
+        k: f64::NAN,
+        h: 8.0,
+    };
+    assert_eq!(bad.first_alarm(&[0.0, 0.0]), Some(0));
+    // standardize: poison propagates as -inf from the first bad index.
+    let zs = standardize(&[1.0, 1.0, 1.0, f64::INFINITY, 1.0], 2);
+    assert!(zs[..3].iter().all(|v| v.is_finite()));
+    assert!(zs[3] == f64::NEG_INFINITY && zs[4] == f64::NEG_INFINITY);
+    // ...and the -inf stream alarms downstream.
+    assert_eq!(Cusum::default().first_alarm(&zs), Some(3));
+    // slower_this_month: poisoned kernel flagged first with INVALID why.
+    let good_hist: Vec<Night> = (0..14)
+        .map(|t| Night {
+            night: t,
+            attainment: 0.8,
+            phases: BTreeMap::from([("solve".to_string(), 1.0)]),
+        })
+        .collect();
+    let mut poisoned = good_hist.clone();
+    poisoned[9].attainment = f64::NAN;
+    let kernels = BTreeMap::from([
+        ("clean".to_string(), good_hist),
+        ("poisoned".to_string(), poisoned),
+    ]);
+    let report = slower_this_month(&kernels, 5.0);
+    assert_eq!(
+        report.len(),
+        1,
+        "clean kernel has no drop; poisoned is flagged"
+    );
+    assert_eq!(report[0].0, "poisoned");
+    assert!(report[0].1.is_infinite() && report[0].2.starts_with("INVALID"));
+    println!(
+        "{{\"suite\":\"fs-roofline/regress\",\"case\":\"rg-007\",\"verdict\":\"pass\",\
+         \"detail\":\"poison alarms instead of suppressing; invalid kernels flagged loudest\"}}"
     );
 }
