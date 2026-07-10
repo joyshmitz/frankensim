@@ -26,23 +26,24 @@ const RATE: Dims = Dims([0, 0, -1, 0, 0]);
 
 // ------------------------------------------------------------------
 // Golden hashes: frozen at bead mye.5. Bump ONLY with justification
-// (a semantic change in the owning flagship or a shared core).
+// (a semantic change in the owning flagship or a shared core) — the
+// couplings are registered in golden-couplings.json.
 // ------------------------------------------------------------------
-// The former radix-2 fs-fft schedule produced 0xe621_48d4_490c_a887.
-// The mixed radix-4/2 schedule intentionally changes DCT operation
-// order in fs-cheb, which feeds the vessel's stability objective. Only
-// robust_offband moved (by 4.48e-14); the other five metrics kept their
-// exact bits, and substituting the old final field reconstructs the old
-// hash exactly.
-const GOLDEN_VESSEL_SMOKE: u64 = 0xd70b_9ac9_0828_ae86;
-// The former unit-span/clipping e-race produced 0xa6fa_6460_e7c7_972f.
-// Declaring the analytical span 1.52 and refusing clipping intentionally
-// reduces betting power: only evals moved, from 394 to 925. Winner 11,
-// 11 eliminations, winner_ld, certified, and roa retain their exact bits;
-// substituting the old eval count reconstructs the former hash exactly.
-const GOLDEN_ORNITH_SMOKE: u64 = 0xf513_eaf8_22d2_7813;
-const GOLDEN_FRAME_SMOKE: u64 = 0x05e1_d182_48d2_949f;
-const GOLDEN_LBM_CORE: u64 = 0x6841_e3c0_508e_eba5;
+// 2026-07-10 (gp3.14): ALL FOUR re-frozen for the metric-stream
+// ENCODING migration v1 -> v2 (bare name/bits concatenation ->
+// canonical typed length-prefixed replay identity, fs_obs::ident).
+// Every metric BIT PATTERN in every stage's evidence payload is
+// unchanged from the v1 freeze — only the identity encoding moved.
+// Prior v1 history, preserved:
+// - vessel: 0xd70b_9ac9_0828_ae86 (before that 0xe621_48d4_490c_a887,
+//   radix-2 fs-fft schedule; only robust_offband moved by 4.48e-14).
+// - ornith: 0xf513_eaf8_22d2_7813 (before that 0xa6fa_6460_e7c7_972f,
+//   unit-span/clipping e-race; only evals moved, 394 -> 925).
+// - frame: 0x05e1_d182_48d2_949f; lbm-core: 0x6841_e3c0_508e_eba5.
+const GOLDEN_VESSEL_SMOKE: u64 = 0xdabd_6fd3_6315_31fe;
+const GOLDEN_ORNITH_SMOKE: u64 = 0xd750_e1bb_a8d7_e76a;
+const GOLDEN_FRAME_SMOKE: u64 = 0x9c09_b06a_7883_57fc;
+const GOLDEN_LBM_CORE: u64 = 0x1539_430c_dae4_7762;
 
 fn vessel_smoke() -> StageArtifact {
     let t0 = Instant::now();
