@@ -1063,6 +1063,7 @@ dependencies = [
  "fs-qty",
  "fs-rand",
  "fs-rep-mesh",
+ "fs-roofline",
  "fs-soa",
  "fs-sparse",
 ]
@@ -1265,6 +1266,8 @@ version = "0.0.1"
 dependencies = [
  "fs-math",
  "fs-rand",
+ "fs-roofline",
+ "fs-simd",
  "fs-soa",
 ]
 
