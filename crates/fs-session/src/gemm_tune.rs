@@ -47,9 +47,9 @@ const SWEEP_NC_CAP: [usize; 2] = [512, 2048];
 /// not minutes) even when the caller's problem is huge.
 const PROBE_DIM_CAP: usize = 512;
 
-/// Wall-time samples per candidate (min-of ranking, both survive in the
+/// Wall-time samples per candidate (min-of ranking, all survive in the
 /// evidence row).
-const SWEEP_SAMPLES: usize = 2;
+const SWEEP_SAMPLES: usize = 3;
 
 /// A structured autotune-loop failure. Every variant fails closed: no
 /// tune row is recorded and nothing is dispatched with unvalidated
@@ -167,9 +167,15 @@ fn run_sweep(
     n: usize,
     k: usize,
 ) -> Result<GemmBlockPlan, GemmTuneError> {
-    let pm = bucket(m).min(PROBE_DIM_CAP);
-    let pn = bucket(n).min(PROBE_DIM_CAP);
-    let pk = bucket(k).min(PROBE_DIM_CAP);
+    // Probe at the CALLER's dims (capped): the oracle lane showed that
+    // probing at the class's power-of-two bucket flips winners — at
+    // m = 320 the band count under each mc differs from m = 512, and
+    // band balance decides the ranking. The row is still keyed by the
+    // shared shape class; its evidence records the probe that measured
+    // it (first-measurer-wins within a class, honestly labeled).
+    let pm = m.clamp(1, PROBE_DIM_CAP);
+    let pn = n.clamp(1, PROBE_DIM_CAP);
+    let pk = k.clamp(1, PROBE_DIM_CAP);
     let mut a = vec![0.0f64; pm * pk];
     let mut b = vec![0.0f64; pk * pn];
     probe_fill(&mut a, 0xA);
