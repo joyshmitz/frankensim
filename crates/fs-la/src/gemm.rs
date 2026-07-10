@@ -112,9 +112,6 @@ pub fn gemm_f64_parallel(
         return;
     }
     let mut b_pack = vec![0.0f64; KC * NC];
-    // MC-quantum row ranges per worker (disjoint contiguous C bands).
-    let blocks = m.div_ceil(MC);
-    let per = blocks.div_ceil(t);
     let mut jc = 0;
     while jc < n {
         let nc = NC.min(n - jc);
@@ -123,27 +120,28 @@ pub fn gemm_f64_parallel(
             let kc = KC.min(k - pc);
             pack_b(&mut b_pack, b, n, pc, jc, kc, nc);
             let bp: &[f64] = &b_pack;
+            // WORK-STEALING band dispenser (safe Rust, no capsule):
+            // MC-row C bands behind a Mutex-guarded iterator; threads
+            // pull the next band as they finish, so slow cores take
+            // fewer (equal static shares let heterogeneous E-cores
+            // drag the whole chunk — measured on M4 Pro). Bitwise
+            // invariant: a band's content is a pure function of the
+            // band, never of which thread computed it or in what
+            // order; the lock guards ASSIGNMENT only.
+            let dispenser = std::sync::Mutex::new(c.chunks_mut(MC * n).enumerate());
             std::thread::scope(|scope| {
-                let mut rest = &mut *c;
-                let mut row = 0usize;
-                for w in 0..t {
-                    let lo = (w * per * MC).min(m);
-                    let hi = ((w + 1) * per * MC).min(m);
-                    if lo >= hi {
-                        break;
-                    }
-                    let (band, tail) = rest.split_at_mut((hi - row) * n);
-                    rest = tail;
-                    row = hi;
+                for _ in 0..t {
+                    let disp = &dispenser;
                     scope.spawn(move || {
                         let mut a_pack = vec![0.0f64; MC * KC];
-                        let mut ic = lo;
-                        while ic < hi {
-                            let mc = MC.min(hi - ic);
+                        loop {
+                            let next = disp.lock().expect("dispenser lock").next();
+                            let Some((bi, band)) = next else { break };
+                            let ic = bi * MC;
+                            let mc = MC.min(m - ic);
                             pack_a(&mut a_pack, a, k, ic, pc, mc, kc);
-                            // Band-local row offset; ld stays n.
-                            macro_kernel(&a_pack, bp, band, m, n, ic - lo, jc, mc, nc, kc, alpha);
-                            ic += MC;
+                            // Band-local rows (offset 0); ld stays n.
+                            macro_kernel(&a_pack, bp, band, m, n, 0, jc, mc, nc, kc, alpha);
                         }
                     });
                 }

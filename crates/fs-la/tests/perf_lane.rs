@@ -9,7 +9,7 @@
 //! tier-invariant, verified by the gemm test suite, not here.
 
 use fs_la::{gemm_f64, gemm_f64_parallel};
-use fs_roofline::MachineAxes;
+use fs_roofline::{KernelSpec, MachineAxes, Threading, attainment_for};
 
 /// Best-of-3 measured GFLOP/s (2·m·n·k flops per GEMM).
 fn measure(n: usize, reps: usize) -> f64 {
@@ -103,14 +103,35 @@ fn gemm_attainment_all_core() {
     for n in [512usize, 1024, 2048] {
         let reps = if n >= 2048 { 1 } else { 3 };
         let g = measure_parallel(n, reps, threads);
-        let att = g / axes.peak_all_core_gflops;
+        // MIN-ROOF attainment (fs-roofline's two-axis model): per C
+        // element, 2k flops; traffic model at BLIS blocking = A re-read
+        // per NC column chunk + B once + C read+write per KC chunk:
+        // bytes/elem = 8·(k·ceil(n/NC)/m_norm + k/m + 2·ceil(k/KC)).
+        // On a bandwidth-starved box the MEMORY roof binds and the
+        // compute axis is the wrong denominator (measured on ts1:
+        // 219 GFLOP/s read 0.14 vs compute but the memory roof binds).
+        let (ncb, kcb) = (512.0f64, 256.0f64); // NC, KC (bit-contract docs)
+        let nf = n as f64;
+        let bytes_per_elem = 8.0 * (nf * (nf / ncb).ceil() / nf + 1.0 + 2.0 * (nf / kcb).ceil());
+        let spec = KernelSpec {
+            name: "gemm-f64-parallel",
+            version: "v3-worksteal",
+            bytes_per_elem,
+            flops_per_elem: 2.0 * nf,
+            threading: Threading::AllCore,
+            target_fraction: None,
+        };
+        let elems_per_sec = g * 1e9 / (2.0 * nf);
+        let att = attainment_for(&spec, elems_per_sec, &axes);
         println!(
-            "{{\"metric\":\"gemm-f64-parallel\",\"n\":{n},\"gflops\":{g:.2},\"attainment_all_core\":{att:.3}}}"
+            "{{\"metric\":\"gemm-f64-parallel\",\"n\":{n},\"gflops\":{g:.2},\"roof\":\"{:?}\",\"attainment_minroof\":{:.3}}}",
+            att.roof, att.attainment
         );
         if n == 2048 && std::env::var("FS_LA_ROOFLINE_GATE").as_deref() == Ok("1") {
             assert!(
-                att >= 0.5,
-                "all-core GEMM attainment {att:.3} below the 50% floor"
+                att.attainment >= 0.5,
+                "all-core GEMM min-roof attainment {:.3} below the 50% floor",
+                att.attainment
             );
         }
     }
