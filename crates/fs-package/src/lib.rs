@@ -764,38 +764,6 @@ impl EvidencePackage {
                 });
             }
         }
-        // Schema-v5 origin discipline: shape, color-class consistency,
-        // and receipt<->Derived agreement. Waiver AUTHENTICATION is the
-        // package-level pass (it needs the injected capability + date).
-        validate_origin_shape(&claim.id, &claim.origin, &|h| is_canonical_content_hash(h))
-            .map_err(|e| PackageError::InvalidOrigin {
-                claim: e.claim,
-                why: e.why,
-            })?;
-        let consistent = match (&claim.origin, &claim.color) {
-            (ClaimOrigin::SourceCertificate { .. }, Color::Verified { .. }) => true,
-            (ClaimOrigin::AnchoredSource { dataset_id, .. }, Color::Validated { dataset, .. }) => {
-                dataset_id == dataset
-            }
-            (
-                ClaimOrigin::EstimatedSource { estimator: from },
-                Color::Estimated { estimator, .. },
-            ) => from == estimator,
-            (ClaimOrigin::Derived | ClaimOrigin::AuthenticatedWaiver(_), _) => true,
-            _ => false,
-        };
-        if !consistent {
-            return Err(PackageError::OriginMismatch {
-                claim: claim.id.clone(),
-                origin: claim.origin.kind(),
-            });
-        }
-        if matches!(claim.origin, ClaimOrigin::Derived) != claim.receipt.is_some() {
-            return Err(PackageError::OriginMismatch {
-                claim: claim.id.clone(),
-                origin: claim.origin.kind(),
-            });
-        }
         match &claim.color {
             Color::Verified { lo, hi } => {
                 if !(lo.is_finite() && hi.is_finite() && lo <= hi) {
@@ -842,6 +810,38 @@ impl EvidencePackage {
                     });
                 }
             }
+        }
+        // Schema-v5 origin discipline: shape, color-class consistency,
+        // and receipt<->Derived agreement. Waiver AUTHENTICATION is the
+        // package-level pass (it needs the injected capability + date).
+        validate_origin_shape(&claim.id, &claim.origin, &|h| is_canonical_content_hash(h))
+            .map_err(|e| PackageError::InvalidOrigin {
+                claim: e.claim,
+                why: e.why,
+            })?;
+        let consistent = match (&claim.origin, &claim.color) {
+            (ClaimOrigin::SourceCertificate { .. }, Color::Verified { .. }) => true,
+            (ClaimOrigin::AnchoredSource { dataset_id, .. }, Color::Validated { dataset, .. }) => {
+                dataset_id == dataset
+            }
+            (
+                ClaimOrigin::EstimatedSource { estimator: from },
+                Color::Estimated { estimator, .. },
+            ) => from == estimator,
+            (ClaimOrigin::Derived | ClaimOrigin::AuthenticatedWaiver(_), _) => true,
+            _ => false,
+        };
+        if !consistent {
+            return Err(PackageError::OriginMismatch {
+                claim: claim.id.clone(),
+                origin: claim.origin.kind(),
+            });
+        }
+        if matches!(claim.origin, ClaimOrigin::Derived) != claim.receipt.is_some() {
+            return Err(PackageError::OriginMismatch {
+                claim: claim.id.clone(),
+                origin: claim.origin.kind(),
+            });
         }
         Ok(())
     }
