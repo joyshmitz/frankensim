@@ -695,11 +695,26 @@ impl Ledger {
                 .map_err(|e| sql_err("explain inputs", &e))?;
             let mut inputs = Vec::new();
             for input_row in &input_rows {
-                let Some(SqliteValue::Blob(b)) = input_row.get(0) else {
-                    continue;
+                let b = match input_row.get(0) {
+                    Some(SqliteValue::Blob(bytes)) => bytes,
+                    other => {
+                        return Err(LedgerError::Corrupt {
+                            hash_hex: artifact.to_hex(),
+                            detail: format!(
+                                "op {op_id} has a non-blob input-artifact identity {other:?}"
+                            ),
+                        });
+                    }
                 };
                 let Some(h) = ContentHash::from_slice(b) else {
-                    continue;
+                    return Err(LedgerError::Corrupt {
+                        hash_hex: artifact.to_hex(),
+                        detail: format!(
+                            "op {op_id} has a malformed input-artifact identity: expected 32 \
+                             bytes, got {}",
+                            b.len()
+                        ),
+                    });
                 };
                 match self.explain_inner(&h, depth_left - 1, expanded)? {
                     Some(node) => inputs.push(node),
@@ -1326,6 +1341,57 @@ mod tests {
                 payload: Some(&json),
             })
             .expect("SQLite accepts strict explain JSON");
+    }
+
+    #[test]
+    fn explain_refuses_malformed_input_edge_identity() {
+        let ledger = mem();
+        let input = ledger
+            .put_artifact("input", b"input", None)
+            .expect("input artifact");
+        let op = ledger
+            .begin_op_on(
+                MAIN_BRANCH,
+                ExecMode::Deterministic,
+                None,
+                "{\"op\":\"corrupt-lineage\"}",
+                &FX,
+                1,
+            )
+            .expect("begin");
+        ledger
+            .link(op, &input.hash, EdgeRole::In)
+            .expect("input link");
+        let output = ledger
+            .put_artifact("output", b"output", None)
+            .expect("output artifact");
+        ledger
+            .link(op, &output.hash, EdgeRole::Out)
+            .expect("output link");
+        ledger
+            .finish_op(op, OpOutcome::Ok, None, 2)
+            .expect("finish");
+
+        ledger
+            .conn
+            .query("PRAGMA foreign_keys=OFF")
+            .expect("disable foreign keys for corruption fixture");
+        ledger
+            .conn
+            .execute_with_params(
+                "UPDATE edges SET artifact = ?1 WHERE op = ?2 AND role = 'in'",
+                &[
+                    SqliteValue::Blob(vec![0_u8].into()),
+                    SqliteValue::Integer(op),
+                ],
+            )
+            .expect("inject malformed input identity");
+
+        let error = ledger
+            .explain(&output.hash, 4)
+            .expect_err("must fail closed");
+        assert_eq!(error.code(), "LedgerCorruption", "{error}");
+        assert!(error.to_string().contains("expected 32 bytes"), "{error}");
     }
 
     #[test]

@@ -53,7 +53,7 @@ fine-grained event stream. Layer: L6 (HELM). Runtime deps: `std` + `fsqlite`.
   outcomes not yet written are masked, unfinished ops' outputs invisible),
   `explain` (strict-JSON causal trees even for hostile artifact-kind text,
   retaining producer outcome and diagnostic, depth-limited, DAG-deduped, loud
-  on orphan inputs), `replay_verdict` (IR,
+  on orphan or malformed input identities), `replay_verdict` (IR,
   all frozen explicits, execution mode, input lineage, outcome, and diagnostic
   must agree; both studies must be drained and finalized before a clean
   verdict is possible; deterministic ops must then
