@@ -13,9 +13,10 @@
 //! The five origins and their re-derivation obligations:
 //! - [`ClaimOrigin::SourceCertificate`] — a named producer plus the
 //!   64-hex content hash of its certificate artifact (solver
-//!   certificate, proof object). The checker verifies shape and the
-//!   color class (Verified); the artifact hash makes the certificate
-//!   subpoenable without shipping it.
+//!   certificate, proof object). Shape is checked locally; a positive
+//!   verdict requires an injected [`SourceCertificateVerifier`] to
+//!   establish the exact typed claim request. The artifact hash makes
+//!   the certificate subpoenable without shipping it.
 //! - [`ClaimOrigin::AnchoredSource`] — a validated claim's reference
 //!   dataset by id + content hash; must MATCH the color's named
 //!   dataset exactly (an unrelated anchor is refused).
@@ -34,6 +35,8 @@
 
 use core::fmt;
 
+use crate::{ContentHash, Provenance};
+
 /// An explicit waiver grant that travels WITH its claim (schema v5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WaiverGrant {
@@ -51,9 +54,11 @@ pub struct WaiverGrant {
 /// cryptography — the same fail-closed pattern as the checker's
 /// [`SignatureVerifier`] and fs-ledger's waivers).
 pub trait WaiverVerifier {
-    /// True iff `grant.mac` authenticates `message` (the claim's
-    /// canonical bytes plus the grant's own id/expiry) for this grant.
-    fn verify(&self, grant: &WaiverGrant, message: &[u8]) -> bool;
+    /// True iff `mac` authenticates the package-owned, domain-separated
+    /// `message`. The message already binds the waiver id and expiry;
+    /// passing them separately would let an implementation accidentally
+    /// authenticate only a subset of the authorization context.
+    fn verify(&self, mac: &str, message: &[u8]) -> bool;
 }
 
 /// The in-tree default: nothing authenticates. A package whose claims
@@ -63,8 +68,140 @@ pub trait WaiverVerifier {
 pub struct NoWaiverVerifier;
 
 impl WaiverVerifier for NoWaiverVerifier {
-    fn verify(&self, _grant: &WaiverGrant, _message: &[u8]) -> bool {
+    fn verify(&self, _mac: &str, _message: &[u8]) -> bool {
         false
+    }
+}
+
+/// Typed input to an injected source-certificate verifier.
+///
+/// The certificate hash is only an artifact address. Acceptance requires a
+/// capability that obtains or otherwise recognizes that artifact and checks
+/// that it establishes THIS exact claim under THIS package provenance.
+#[derive(Debug, Clone, Copy)]
+pub struct SourceCertificateRequest<'a> {
+    /// Package provenance under which the certificate is being admitted.
+    pub package_provenance: &'a Provenance,
+    /// Stable position of the claim in the package.
+    pub claim_index: usize,
+    /// Claim identity.
+    pub claim_id: &'a str,
+    /// Human-readable assertion bound to the certificate.
+    pub statement: &'a str,
+    /// Certified interval lower bound.
+    pub lo: f64,
+    /// Certified interval upper bound.
+    pub hi: f64,
+    /// Declared certificate producer.
+    pub producer: &'a str,
+    /// Parsed content address of the certificate artifact.
+    pub certificate_hash: ContentHash,
+}
+
+/// Capability that re-verifies a source certificate artifact against the
+/// exact typed claim request. `fs-package` deliberately has no permissive
+/// built-in implementation.
+pub trait SourceCertificateVerifier {
+    /// True only when the addressed artifact establishes the supplied claim.
+    fn verify(&self, request: &SourceCertificateRequest<'_>) -> bool;
+}
+
+/// The in-tree source-certificate default: no artifact is trusted.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoSourceCertificateVerifier;
+
+impl SourceCertificateVerifier for NoSourceCertificateVerifier {
+    fn verify(&self, _request: &SourceCertificateRequest<'_>) -> bool {
+        false
+    }
+}
+
+/// Waiver authentication capability plus its explicit clock context.
+#[derive(Clone, Copy)]
+pub struct WaiverVerification<'a> {
+    /// Authenticator implementation.
+    pub verifier: &'a dyn WaiverVerifier,
+    /// Current day, as days since the Unix epoch.
+    pub today_day: u64,
+}
+
+/// External capabilities available for one package-verification decision.
+/// Missing capabilities fail closed only for origin kinds that require them.
+#[derive(Clone, Copy)]
+pub struct VerificationCapabilities<'a> {
+    /// Source-certificate artifact verifier.
+    pub source_certificates: Option<&'a dyn SourceCertificateVerifier>,
+    /// Waiver authenticator and clock context.
+    pub waivers: Option<WaiverVerification<'a>>,
+}
+
+impl<'a> VerificationCapabilities<'a> {
+    /// No source certificates and no waivers are trusted.
+    #[must_use]
+    pub const fn deny_all() -> Self {
+        Self {
+            source_certificates: None,
+            waivers: None,
+        }
+    }
+
+    /// Install a source-certificate verification capability.
+    #[must_use]
+    pub const fn with_source_certificates(
+        mut self,
+        verifier: &'a dyn SourceCertificateVerifier,
+    ) -> Self {
+        self.source_certificates = Some(verifier);
+        self
+    }
+
+    /// Install a waiver verifier together with the decision's clock context.
+    #[must_use]
+    pub const fn with_waivers(mut self, verifier: &'a dyn WaiverVerifier, today_day: u64) -> Self {
+        self.waivers = Some(WaiverVerification {
+            verifier,
+            today_day,
+        });
+        self
+    }
+}
+
+impl Default for VerificationCapabilities<'_> {
+    fn default() -> Self {
+        Self::deny_all()
+    }
+}
+
+pub(crate) fn is_placeholder_token(text: &str) -> bool {
+    [
+        "-",
+        "?",
+        "n/a",
+        "na",
+        "none",
+        "not run",
+        "pending",
+        "placeholder",
+        "tbd",
+        "todo",
+        "unknown",
+    ]
+    .iter()
+    .any(|placeholder| text.eq_ignore_ascii_case(placeholder))
+}
+
+/// Reject identities whose canonical spelling would be ambiguous or
+/// meaningless. Human-readable descriptions use a separate, looser policy.
+pub(crate) fn identity_reason(text: &str) -> Option<&'static str> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        Some("blank")
+    } else if trimmed != text {
+        Some("surrounding-whitespace")
+    } else if is_placeholder_token(text) {
+        Some("placeholder")
+    } else {
+        None
     }
 }
 
@@ -187,8 +324,10 @@ pub fn validate_origin_shape(
             producer,
             certificate_hash,
         } => {
-            if producer.trim().is_empty() {
-                return refuse("source-certificate origin has a blank producer".to_string());
+            if let Some(reason) = identity_reason(producer) {
+                return refuse(format!(
+                    "source-certificate origin has an invalid producer ({reason})"
+                ));
             }
             if !is_canonical_hash(certificate_hash) {
                 return refuse(
@@ -202,8 +341,10 @@ pub fn validate_origin_shape(
             dataset_id,
             content_hash,
         } => {
-            if dataset_id.trim().is_empty() {
-                return refuse("anchored-source origin has a blank dataset id".to_string());
+            if let Some(reason) = identity_reason(dataset_id) {
+                return refuse(format!(
+                    "anchored-source origin has an invalid dataset id ({reason})"
+                ));
             }
             if !is_canonical_hash(content_hash) {
                 return refuse(
@@ -213,15 +354,17 @@ pub fn validate_origin_shape(
             Ok(())
         }
         ClaimOrigin::EstimatedSource { estimator } => {
-            if estimator.trim().is_empty() {
-                return refuse("estimated-source origin has a blank estimator".to_string());
+            if let Some(reason) = identity_reason(estimator) {
+                return refuse(format!(
+                    "estimated-source origin has an invalid estimator ({reason})"
+                ));
             }
             Ok(())
         }
         ClaimOrigin::Derived => Ok(()),
         ClaimOrigin::AuthenticatedWaiver(grant) => {
-            if grant.waiver_id.trim().is_empty() {
-                return refuse("waiver origin has a blank waiver id".to_string());
+            if let Some(reason) = identity_reason(&grant.waiver_id) {
+                return refuse(format!("waiver origin has an invalid waiver id ({reason})"));
             }
             if grant.mac.trim().is_empty() {
                 return refuse("waiver origin has a blank authenticator".to_string());
@@ -307,6 +450,29 @@ mod tests {
             expiry_day: u64::MAX,
             mac: "anything".to_string(),
         };
-        assert!(!NoWaiverVerifier.verify(&grant, b"message"));
+        assert!(!NoWaiverVerifier.verify(&grant.mac, b"message"));
+    }
+
+    #[test]
+    fn the_default_source_verifier_refuses_everything() {
+        let provenance = Provenance::new("v", "lock");
+        let request = SourceCertificateRequest {
+            package_provenance: &provenance,
+            claim_index: 0,
+            claim_id: "c",
+            statement: "bounded",
+            lo: 0.0,
+            hi: 1.0,
+            producer: "solver/cert",
+            certificate_hash: ContentHash([0; 32]),
+        };
+        assert!(!NoSourceCertificateVerifier.verify(&request));
+    }
+
+    #[test]
+    fn machine_identities_reject_placeholders_and_padding() {
+        assert_eq!(identity_reason("todo"), Some("placeholder"));
+        assert_eq!(identity_reason(" producer"), Some("surrounding-whitespace"));
+        assert_eq!(identity_reason("producer"), None);
     }
 }

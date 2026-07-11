@@ -22,7 +22,7 @@
 //! for engineering use; they are not an official ASME/FAA/EASA determination.
 
 /// The crosswalk vocabulary version.
-pub const CROSSWALK_VERSION: u32 = 2;
+pub const CROSSWALK_VERSION: u32 = 3;
 
 /// Evidence-package schema whose concepts this crosswalk describes.
 ///
@@ -53,11 +53,15 @@ pub enum PackageConcept {
     MerkleRoot,
     /// A detached attestation signature.
     Signature,
+    /// The typed, re-verified origin of every claim.
+    ClaimOrigin,
+    /// An authenticated, unexpired waiver authorization.
+    WaiverAuthorization,
 }
 
 impl PackageConcept {
     /// Every concept, in order.
-    pub const ALL: [PackageConcept; 10] = [
+    pub const ALL: [PackageConcept; 12] = [
         PackageConcept::VerifiedColor,
         PackageConcept::ValidatedColor,
         PackageConcept::EstimatedColor,
@@ -68,6 +72,8 @@ impl PackageConcept {
         PackageConcept::Provenance,
         PackageConcept::MerkleRoot,
         PackageConcept::Signature,
+        PackageConcept::ClaimOrigin,
+        PackageConcept::WaiverAuthorization,
     ];
 
     /// A stable slug.
@@ -84,6 +90,8 @@ impl PackageConcept {
             PackageConcept::Provenance => "provenance",
             PackageConcept::MerkleRoot => "merkle-root",
             PackageConcept::Signature => "signature",
+            PackageConcept::ClaimOrigin => "claim-origin",
+            PackageConcept::WaiverAuthorization => "waiver-authorization",
         }
     }
 }
@@ -197,13 +205,13 @@ const fn nc(concept: PackageConcept, standard: Standard, reason: &'static str) -
 }
 
 use PackageConcept::{
-    AnchoringDataset, Certificate, EstimatedColor, FalsifierLog, MerkleRoot, Provenance, RegimeTag,
-    Signature, ValidatedColor, VerifiedColor,
+    AnchoringDataset, Certificate, ClaimOrigin, EstimatedColor, FalsifierLog, MerkleRoot,
+    Provenance, RegimeTag, Signature, ValidatedColor, VerifiedColor, WaiverAuthorization,
 };
 use Standard::{AsmeVvV10, AsmeVvV20, AsmeVvV40, FaaEasaCbA};
 
-/// The canonical crosswalk: every `(concept, standard)` pair (10 × 4).
-const CROSSWALK: [CrosswalkEntry; 40] = [
+/// The canonical crosswalk: every `(concept, standard)` pair (12 × 4).
+const CROSSWALK: [CrosswalkEntry; 48] = [
     // Verified color — certified numerical error bounds = SOLUTION VERIFICATION.
     m(
         VerifiedColor,
@@ -447,6 +455,51 @@ const CROSSWALK: [CrosswalkEntry; 40] = [
         FaaEasaCbA,
         "Authorized sign-off / statement of compliance",
         "signature attests the means-of-compliance record",
+    ),
+    // Claim origin — typed, re-verified traceability to an evidence source.
+    nc(
+        ClaimOrigin,
+        AsmeVvV10,
+        "V&V 10 requires documented evidence but names no typed, re-verified claim-origin artifact",
+    ),
+    nc(
+        ClaimOrigin,
+        AsmeVvV20,
+        "V&V 20 documents simulation and validation inputs but has no named claim-origin verification object",
+    ),
+    m(
+        ClaimOrigin,
+        AsmeVvV40,
+        "Traceability of credibility evidence to its source",
+        "the re-verified origin records which source artifact, dataset, estimator, derivation, or authorization supports the claim",
+    ),
+    m(
+        ClaimOrigin,
+        FaaEasaCbA,
+        "Analysis-data traceability and configuration control",
+        "the re-verified origin ties each analysis assertion to its controlled evidence source",
+    ),
+    // Waiver authorization — explicit exception authority, not scientific proof.
+    nc(
+        WaiverAuthorization,
+        AsmeVvV10,
+        "V&V 10 has no named authenticated-waiver artifact; review approval must not be conflated with waiving evidence",
+    ),
+    nc(
+        WaiverAuthorization,
+        AsmeVvV20,
+        "V&V 20 has no named authenticated-waiver artifact in its uncertainty or validation framework",
+    ),
+    nc(
+        WaiverAuthorization,
+        AsmeVvV40,
+        "risk-informed credibility decisions are named, but an authenticated waiver of claim evidence is not",
+    ),
+    m(
+        WaiverAuthorization,
+        FaaEasaCbA,
+        "Approved deviations, limitations, and conditions of use",
+        "an authenticated, unexpired waiver records the responsible authority's bounded exception; it does not prove the waived claim",
     ),
 ];
 

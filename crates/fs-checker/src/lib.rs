@@ -16,14 +16,17 @@
 //! ([`CHECKER_PROTOCOL_VERSION`]) because it is distributed independently.
 //!
 //! What it re-verifies: format support + per-claim completeness (delegated to
-//! [`EvidencePackage::verify`]), the content address (Merkle root, optionally
-//! against an expected value — tamper detection), and signature validity when
-//! an external capability is supplied. It renders a by-color budget pie only
-//! after package verification succeeds. Everything is deterministic.
+//! [`EvidencePackage::verify_with`]), the content address (Merkle root,
+//! optionally against an expected value — tamper detection), and signature
+//! validity when an external capability is supplied. It renders a by-color
+//! budget pie only after package verification succeeds. Everything is
+//! deterministic for deterministic injected capabilities.
 
 pub use fs_package::{
-    ColorBreakdown, ContentHash, EvidencePackage, MagnitudeBudget, NoWaiverVerifier, PackageError,
-    ParseError, WaiverGrant, WaiverVerifier,
+    ColorBreakdown, ContentHash, EvidencePackage, MagnitudeBudget, NoSourceCertificateVerifier,
+    NoWaiverVerifier, PackageError, ParseError, SourceCertificateRequest,
+    SourceCertificateVerifier, VerificationCapabilities, WaiverGrant, WaiverVerification,
+    WaiverVerifier,
 };
 
 /// The checker's own protocol version (it is distributed independently).
@@ -143,57 +146,89 @@ impl CheckReport {
 /// capability — presence recorded, never asserted).
 #[must_use]
 pub fn check(pkg: &EvidencePackage) -> CheckReport {
-    build_report(pkg, None, None)
+    check_with_capabilities(pkg, None, None, &VerificationCapabilities::deny_all())
 }
 
 /// Re-verify a package AND confirm its content address matches `expected_root`
 /// — a mismatch (tamper, or the wrong package) fails the check.
 #[must_use]
 pub fn check_against_root(pkg: &EvidencePackage, expected_root: ContentHash) -> CheckReport {
-    build_report(pkg, Some(expected_root), None)
+    check_with_capabilities(
+        pkg,
+        Some(expected_root),
+        None,
+        &VerificationCapabilities::deny_all(),
+    )
 }
 
 /// The full third-party entry point (bead qmao.6.1): parse the
-/// serialized package STRICTLY (schema v4 — the parser itself
+/// serialized package STRICTLY (schema v5 — the parser itself
 /// recomputes the content root and re-derives the magnitude budget
 /// from the parsed claims), then re-verify semantics, optionally
 /// against an expected root and a signature capability. A package that
-/// fails parsing never produces a Pass.
+/// fails parsing never produces a Pass. Source certificates and waivers
+/// are denied by default; use [`check_json_with_capabilities`] to admit
+/// them through explicit verification capabilities.
 #[must_use]
 pub fn check_json(
     text: &str,
     expected_root: Option<ContentHash>,
     verifier: Option<&dyn SignatureVerifier>,
 ) -> CheckReport {
+    check_json_with_capabilities(
+        text,
+        expected_root,
+        verifier,
+        &VerificationCapabilities::deny_all(),
+    )
+}
+
+/// Strict JSON checking with explicit source-certificate and waiver
+/// capabilities. Signature verification remains independent and optional:
+/// pass `None` when the transport is unsigned or authorship is not part of
+/// this decision.
+#[must_use]
+pub fn check_json_with_capabilities(
+    text: &str,
+    expected_root: Option<ContentHash>,
+    signature_verifier: Option<&dyn SignatureVerifier>,
+    capabilities: &VerificationCapabilities<'_>,
+) -> CheckReport {
     match EvidencePackage::from_json(text) {
-        Ok(pkg) => build_report(&pkg, expected_root, verifier),
+        Ok(pkg) => build_report(&pkg, expected_root, signature_verifier, capabilities),
         Err(e) => parse_refusal(e),
     }
 }
 
-/// [`check_with`] plus an injected WAIVER capability and date context
-/// (schema v5): the only way a package carrying waiver-origin claims
-/// can pass — grants are authenticated over each claim's canonical
-/// bytes and refused when expired, tampered, or replayed.
-#[must_use]
-pub fn check_with_waivers(
-    pkg: &EvidencePackage,
-    expected_root: Option<ContentHash>,
-    verifier: &dyn SignatureVerifier,
-    waivers: &dyn WaiverVerifier,
-    today_day: u64,
-) -> CheckReport {
-    build_report_with_waivers(pkg, expected_root, Some(verifier), Some((waivers, today_day)))
-}
-
-/// [`check`] with a signature-verification capability.
+/// [`check`] with an independent signature-verification capability. Package
+/// origins remain deny-all; use [`check_with_capabilities`] when source
+/// certificates or waivers are part of the decision.
 #[must_use]
 pub fn check_with(
     pkg: &EvidencePackage,
     expected_root: Option<ContentHash>,
     verifier: &dyn SignatureVerifier,
 ) -> CheckReport {
-    build_report(pkg, expected_root, Some(verifier))
+    check_with_capabilities(
+        pkg,
+        expected_root,
+        Some(verifier),
+        &VerificationCapabilities::deny_all(),
+    )
+}
+
+/// Re-verify an in-memory package with explicit origin-verification
+/// capabilities. Detached-signature verification is a separate, optional
+/// capability and does not become required merely because an origin verifier
+/// was supplied.
+#[must_use]
+pub fn check_with_capabilities(
+    pkg: &EvidencePackage,
+    expected_root: Option<ContentHash>,
+    signature_verifier: Option<&dyn SignatureVerifier>,
+    capabilities: &VerificationCapabilities<'_>,
+) -> CheckReport {
+    build_report(pkg, expected_root, signature_verifier, capabilities)
 }
 
 /// Re-verify a package under the stronger RELEASE-ADMISSION policy.
@@ -210,7 +245,25 @@ pub fn check_for_release(
     expected_root: ContentHash,
     verifier: &dyn SignatureVerifier,
 ) -> CheckReport {
-    let mut report = build_report(pkg, Some(expected_root), Some(verifier));
+    check_for_release_with_capabilities(
+        pkg,
+        expected_root,
+        verifier,
+        &VerificationCapabilities::deny_all(),
+    )
+}
+
+/// [`check_for_release`] with explicit source-certificate and waiver
+/// capabilities. Release signature authentication remains mandatory and
+/// independent from those scientific-origin capabilities.
+#[must_use]
+pub fn check_for_release_with_capabilities(
+    pkg: &EvidencePackage,
+    expected_root: ContentHash,
+    verifier: &dyn SignatureVerifier,
+    capabilities: &VerificationCapabilities<'_>,
+) -> CheckReport {
+    let mut report = build_report(pkg, Some(expected_root), Some(verifier), capabilities);
     append_release_findings(pkg, &mut report);
     report
 }
@@ -223,8 +276,25 @@ pub fn check_json_for_release(
     expected_root: ContentHash,
     verifier: &dyn SignatureVerifier,
 ) -> CheckReport {
+    check_json_for_release_with_capabilities(
+        text,
+        expected_root,
+        verifier,
+        &VerificationCapabilities::deny_all(),
+    )
+}
+
+/// Strict JSON counterpart of [`check_for_release_with_capabilities`].
+/// Structural parse refusal and capability refusal both fail closed.
+#[must_use]
+pub fn check_json_for_release_with_capabilities(
+    text: &str,
+    expected_root: ContentHash,
+    verifier: &dyn SignatureVerifier,
+    capabilities: &VerificationCapabilities<'_>,
+) -> CheckReport {
     match EvidencePackage::from_json(text) {
-        Ok(pkg) => check_for_release(&pkg, expected_root, verifier),
+        Ok(pkg) => check_for_release_with_capabilities(&pkg, expected_root, verifier, capabilities),
         Err(e) => parse_refusal(e),
     }
 }
@@ -287,42 +357,20 @@ fn append_release_findings(pkg: &EvidencePackage, report: &mut CheckReport) {
     }
 }
 
+/// The full report builder. Missing origin capabilities fail closed only for
+/// the origin kinds that require them. Any package-verification refusal yields
+/// a zeroed breakdown, so unauthenticated bytes never retain a positive pie.
 fn build_report(
     pkg: &EvidencePackage,
     expected_root: Option<ContentHash>,
-    verifier: Option<&dyn SignatureVerifier>,
-) -> CheckReport {
-    build_report_with_waivers(pkg, expected_root, verifier, None)
-}
-
-/// The full report builder. `waivers = None` FAILS CLOSED on any
-/// waiver-origin claim: authentication requires an explicitly injected
-/// capability plus a date context, never a default.
-fn build_report_with_waivers(
-    pkg: &EvidencePackage,
-    expected_root: Option<ContentHash>,
-    verifier: Option<&dyn SignatureVerifier>,
-    waivers: Option<(&dyn WaiverVerifier, u64)>,
+    signature_verifier: Option<&dyn SignatureVerifier>,
+    capabilities: &VerificationCapabilities<'_>,
 ) -> CheckReport {
     let mut findings = Vec::new();
 
-    // 1. delegate format + per-claim completeness to the package format;
-    // with an injected waiver capability the grants are AUTHENTICATED,
-    // without one a package carrying waivers can never pass.
-    let verified = match waivers {
-        Some((capability, today_day)) => pkg.verify_with(capability, today_day),
-        None => pkg.verify(),
-    };
-    if waivers.is_none() && pkg.waiver_claims() > 0 {
-        findings.push(Finding {
-            kind: "unverified-waiver",
-            detail: format!(
-                "{} waiver-origin claim(s) present and no waiver capability was injected — \
-                 waivers are never self-authorizing",
-                pkg.waiver_claims()
-            ),
-        });
-    }
+    // 1. Delegate format, claim semantics, and capability-gated origin
+    // authentication to the package format. There is no permissive fallback.
+    let verified = pkg.verify_with(capabilities);
     let breakdown = match verified {
         Ok(report) => report.breakdown,
         Err(e) => {
@@ -358,7 +406,7 @@ fn build_report_with_waivers(
 
     // 4. signature: presence recorded; VALIDITY only through the
     // supplied capability, over the recomputed root (fail closed).
-    let signature = match (&pkg.signature, verifier) {
+    let signature = match (&pkg.signature, signature_verifier) {
         (None, _) => SignatureStatus::Unsigned,
         (Some(s), None) => SignatureStatus::Unverified(s.clone()),
         (Some(s), Some(v)) => {
@@ -396,6 +444,17 @@ fn describe(e: &PackageError) -> Finding {
         PackageError::IncompleteProvenance { missing } => Finding {
             kind: "incomplete-provenance",
             detail: format!("package provenance is missing {missing}"),
+        },
+        PackageError::InvalidIdentity {
+            claim,
+            field,
+            reason,
+        } => Finding {
+            kind: "invalid-identity",
+            detail: match claim {
+                Some(claim) => format!("claim '{claim}' has {reason} identity field {field}"),
+                None => format!("package has {reason} identity field {field}"),
+            },
         },
         PackageError::InvalidClaimId { index, id, reason } => Finding {
             kind: "invalid-claim-id",
@@ -465,9 +524,33 @@ fn describe(e: &PackageError) -> Finding {
                  color without a consistent origin is not evidence"
             ),
         },
+        PackageError::SourceCertificateRefused {
+            claim,
+            producer,
+            why,
+        } => Finding {
+            kind: "source-certificate-refused",
+            detail: format!(
+                "claim '{claim}': source certificate from '{producer}' refused — {why}"
+            ),
+        },
         PackageError::WaiverRefused { claim, waiver, why } => Finding {
             kind: "waiver-refused",
             detail: format!("claim '{claim}': waiver '{waiver}' refused — {why}"),
+        },
+        PackageError::DuplicateWaiverId {
+            waiver,
+            first_claim,
+            duplicate_claim,
+        } => Finding {
+            kind: "duplicate-waiver-id",
+            detail: format!(
+                "waiver '{waiver}' is reused by claims '{first_claim}' and '{duplicate_claim}'"
+            ),
+        },
+        PackageError::InvalidWaiverTarget { index } => Finding {
+            kind: "invalid-waiver-target",
+            detail: format!("claim index {index} is absent or does not carry a waiver origin"),
         },
         PackageError::RefutedClaim { claim, falsifier } => Finding {
             kind: "refuted-claim",

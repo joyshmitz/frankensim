@@ -10,17 +10,17 @@ use fs_crosswalk::{
 
 #[test]
 fn compatibility_versions_are_explicit() {
-    assert_eq!(CROSSWALK_VERSION, 2);
+    assert_eq!(CROSSWALK_VERSION, 3);
     assert_eq!(SUPPORTED_PACKAGE_FORMAT, 5);
 }
 
 #[test]
 fn the_table_covers_every_concept_by_every_standard() {
-    assert_eq!(crosswalk().len(), 10 * 4);
+    assert_eq!(crosswalk().len(), 12 * 4);
     let a = audit();
-    assert_eq!(a.expected, 40);
+    assert_eq!(a.expected, 48);
     assert!(a.ok(), "no silent gaps: {:?}", a.gaps);
-    assert_eq!(a.mapped + a.no_counterpart, 40);
+    assert_eq!(a.mapped + a.no_counterpart, 48);
 }
 
 #[test]
@@ -42,6 +42,32 @@ fn the_crosswalk_is_honest_about_missing_counterparts() {
             .counterpart,
         Counterpart::Mapped { .. }
     ));
+    // Schema-v5 origin traceability maps only where the vocabulary supports
+    // it; an authenticated waiver is not laundered into scientific evidence.
+    assert!(matches!(
+        lookup(PackageConcept::ClaimOrigin, Standard::AsmeVvV10)
+            .unwrap()
+            .counterpart,
+        Counterpart::NoCounterpart { .. }
+    ));
+    assert!(matches!(
+        lookup(PackageConcept::ClaimOrigin, Standard::AsmeVvV40)
+            .unwrap()
+            .counterpart,
+        Counterpart::Mapped { .. }
+    ));
+    assert!(matches!(
+        lookup(PackageConcept::WaiverAuthorization, Standard::AsmeVvV40)
+            .unwrap()
+            .counterpart,
+        Counterpart::NoCounterpart { .. }
+    ));
+    assert!(matches!(
+        lookup(PackageConcept::WaiverAuthorization, Standard::FaaEasaCbA)
+            .unwrap()
+            .counterpart,
+        Counterpart::Mapped { .. }
+    ));
 }
 
 #[test]
@@ -52,9 +78,9 @@ fn every_concept_maps_across_all_four_standards() {
 }
 
 #[test]
-fn every_standard_covers_all_ten_concepts() {
+fn every_standard_covers_all_twelve_concepts() {
     for s in Standard::ALL {
-        assert_eq!(for_standard(s).len(), 10, "{:?}", s.label());
+        assert_eq!(for_standard(s).len(), 12, "{:?}", s.label());
         assert!(!s.full_name().is_empty());
     }
 }
@@ -62,10 +88,10 @@ fn every_standard_covers_all_ten_concepts() {
 #[test]
 fn a_validated_claim_maps_to_the_validation_metric() {
     let e = lookup(PackageConcept::ValidatedColor, Standard::AsmeVvV20).unwrap();
-    match e.counterpart {
-        Counterpart::Mapped { clause, .. } => assert!(clause.contains("Validation")),
-        Counterpart::NoCounterpart { .. } => panic!("validated color should map in V&V 20"),
-    }
+    assert!(matches!(
+        e.counterpart,
+        Counterpart::Mapped { clause, .. } if clause.contains("Validation")
+    ));
 }
 
 #[test]
@@ -92,8 +118,9 @@ fn json_is_well_formed_and_deterministic() {
     assert!(j.contains(&format!(
         "\"supported_package_format\":{SUPPORTED_PACKAGE_FORMAT}"
     )));
-    assert_eq!(j.matches("\"concept\":").count(), 40);
+    assert_eq!(j.matches("\"concept\":").count(), 48);
     assert!(j.contains("verified-color") && j.contains("asme-vv-40"));
+    assert!(j.contains("claim-origin") && j.contains("waiver-authorization"));
     assert!(j.contains("no_counterpart"));
     assert!(!j.contains(",,"));
 }
