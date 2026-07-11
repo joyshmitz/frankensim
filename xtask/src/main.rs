@@ -1084,6 +1084,9 @@ fn check_pinned_clean_observation(
 fn verify_pinned_clean(row: &LockRow, target: &Path) -> Result<(), String> {
     let head = git_out(target, &["rev-parse", "HEAD"])
         .map_err(|e| format!("{}: {e}", target.display()))?;
+    if head != row.git_head {
+        return check_pinned_clean_observation(row, target, &head, "");
+    }
     let status = git_out(target, &["status", "--porcelain"])?;
     check_pinned_clean_observation(row, target, &head, &status)
 }
@@ -1102,10 +1105,7 @@ struct BootstrapOptions {
     from: Option<String>,
 }
 
-fn required_bootstrap_value<'a>(
-    flag: &str,
-    value: Option<&'a String>,
-) -> Result<&'a str, String> {
+fn required_bootstrap_value<'a>(flag: &str, value: Option<&'a str>) -> Result<&'a str, String> {
     match value {
         Some(value) if !value.is_empty() && !value.starts_with('-') => Ok(value),
         _ => Err(format!("{flag} requires a non-empty value")),
@@ -1125,11 +1125,16 @@ fn parse_bootstrap_options(
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--dest" => {
-                options.dest = Some(PathBuf::from(required_bootstrap_value("--dest", it.next())?));
+                options.dest = Some(PathBuf::from(required_bootstrap_value(
+                    "--dest",
+                    it.next().map(String::as_str),
+                )?));
             }
             "--offline" => options.offline = true,
             "--from" => {
-                options.from = Some(required_bootstrap_value("--from", it.next())?.to_string());
+                options.from = Some(
+                    required_bootstrap_value("--from", it.next().map(String::as_str))?.to_string(),
+                );
             }
             other => return Err(format!("unknown flag {other:?}")),
         }
@@ -1199,7 +1204,8 @@ fn cmd_bootstrap(root: &Path) -> ExitCode {
             ))
         } else {
             // FETCH: clone the declared transport, check out the pinned
-            // revision detached, verify the resulting identity.
+            // revision detached, then apply the same identity and cleanliness
+            // verifier as the existing-tree path.
             let url = options
                 .from
                 .as_ref()
@@ -1709,13 +1715,34 @@ mod tests {
     #[test]
     fn bootstrap_value_flags_refuse_missing_empty_and_option_operands() {
         for flag in ["--dest", "--from"] {
-            for args in [vec![flag], vec![flag, ""], vec![flag, "--offline"]] {
+            for operand in [
+                None,
+                Some(""),
+                Some("--offline"),
+                Some("--dest"),
+                Some("--from"),
+            ] {
+                let mut args = vec![flag];
+                args.extend(operand);
                 let args: Vec<String> = args.into_iter().map(str::to_string).collect();
                 let error = parse_bootstrap_options(Some(PathBuf::from("/default")), &args)
                     .expect_err("malformed value-taking flag must refuse");
                 assert_eq!(error, format!("{flag} requires a non-empty value"));
             }
         }
+
+        let valid: Vec<String> = ["--dest", "/constellation", "--from", "/mirror", "--offline"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            parse_bootstrap_options(Some(PathBuf::from("/default")), &valid),
+            Ok(BootstrapOptions {
+                dest: Some(PathBuf::from("/constellation")),
+                offline: true,
+                from: Some("/mirror".to_string()),
+            })
+        );
     }
 
     #[test]
