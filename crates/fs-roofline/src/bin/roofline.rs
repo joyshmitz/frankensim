@@ -185,7 +185,7 @@ fn run_promote(args: &PromoteArgs) -> Result<(), String> {
     println!("{}", baseline.to_jsonl());
     println!(
         "{{\"promote\":\"ok\",\"fingerprint\":\"{:016x}\",\"store\":\"{}\",\"probes\":{},\"operator\":\"{}\"}}",
-        baseline.identity.fingerprint,
+        baseline.identity().fingerprint(),
         json_escape(&args.store),
         args.probes,
         json_escape(&args.operator)
