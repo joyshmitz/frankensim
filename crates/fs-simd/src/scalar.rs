@@ -254,11 +254,13 @@ pub fn btile4x4pf32(
     mb: usize,
     dst: &mut [f32],
 ) {
+    let bounds = crate::checked_btile4x4p_lengths(i0, j0, k, mb);
     assert!(
-        k >= 1
-            && (i0 + 3) * k * mb + k * mb <= a.len()
-            && (j0 + 3) * k * mb + k * mb <= b.len()
-            && dst.len() >= 16 * mb,
+        matches!(
+            bounds,
+            Some((a_len, b_len, dst_len))
+                if a_len <= a.len() && b_len <= b.len() && dst_len <= dst.len()
+        ),
         "btile4x4pf32 packed bounds (programmer error)"
     );
     for ti in 0..4 {
@@ -285,7 +287,8 @@ pub fn btile4x4pf32(
 /// Structured panics when either slice length is not `2·n1²`.
 pub fn trn1c64(src: &[f64], dst: &mut [f64], n1: usize) {
     const TILE: usize = 8;
-    let need = 2 * n1 * n1;
+    let need = crate::checked_trn1c64_len(n1)
+        .unwrap_or_else(|| panic!("trn1c64 extent overflow (programmer error)"));
     assert_eq!(src.len(), need, "trn1c64 src length (programmer error)");
     assert_eq!(dst.len(), need, "trn1c64 dst length (programmer error)");
     let mut bi = 0;

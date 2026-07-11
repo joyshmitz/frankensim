@@ -6,8 +6,9 @@ feature gate is needed for `vld1q_f64`/`vst1q_f64`.
 
 ## Invariants the `unsafe` block relies on
 
-1. **Bounds.** Both slice lengths are asserted equal to `2·n1²` before
-   any pointer math. Loop structure guarantees `i < n1` and `j < n1`,
+1. **Bounds.** `checked_trn1c64_len` constructs `2·n1²` without wrapping,
+   and both slice lengths are asserted equal to it before any pointer math.
+   Loop structure guarantees `i < n1` and `j < n1`,
    so every element index `j·n1 + i` and `i·n1 + j` is `< n1²`, and the
    dereferenced f64 offsets `2·idx` and `2·idx + 1` (one q-register =
    two f64) are strictly inside both slices.

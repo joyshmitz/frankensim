@@ -24,7 +24,8 @@ const TILE: usize = 8;
 /// # Panics
 /// Structured panics when either slice length is not `2·n1²`.
 pub fn trn1c64(src: &[f64], dst: &mut [f64], n1: usize) {
-    let need = 2 * n1 * n1;
+    let need = crate::checked_trn1c64_len(n1)
+        .unwrap_or_else(|| panic!("trn1c64 extent overflow (programmer error)"));
     assert_eq!(src.len(), need, "trn1c64 src length (programmer error)");
     assert_eq!(dst.len(), need, "trn1c64 dst length (programmer error)");
     let sp = src.as_ptr();

@@ -43,11 +43,13 @@ values, every tail length 0..67; elementwise bitwise vs twin, reductions
 within the documented envelope.
 
 ## Proof obligations discharged by callers
-None. Façades re-verify CPU features via `is_x86_feature_detected!` before
-every `#[target_feature]` call and fall back to the scalar twin otherwise —
-the dispatch table's tier choice is optimization, not precondition. The
-inner `#[target_feature]` functions are reachable ONLY through these
-façades (module privacy enforces it).
+None. Public façades re-verify CPU features via
+`is_x86_feature_detected!` before every `#[target_feature]` call and fall back
+to the scalar twin otherwise. Dense GEMM's process-wide table is the sole
+one-shot exception: `x86::gemm::select_mk8x4_f64` verifies AVX2+FMA and only
+then returns the private unchecked thunk. That thunk cannot be named outside
+the `x86::gemm` module, so module privacy carries the feature proof from
+selection to the installed safe function pointer.
 
 ## mk8x4_f64 (bead xlvx)
 
@@ -56,9 +58,10 @@ overflow and asserts panel bounds BEFORE the unsafe body; the AVX2+FMA body read
 exactly 4 f64 per `loadu` at offsets `kk·4 ≤ kc·4 − 4` (B) and
 broadcasts single elements at `kk·8 + r ≤ kc·8 − 1` (A); every
 `storeu` writes 4 f64 into a row of the caller's `[[f64; 4]; 8]`.
-Feature availability (avx2+fma) is runtime-verified in the façade
-immediately before the call. Compensating check: the tier-equivalence
-battery gates bitwise equality with the scalar twin over kc ∈ 0..17 ∪
+Feature availability (AVX2+FMA) is runtime-verified either immediately by the
+public façade or once by the table-owned selector. The unchecked thunk remains
+private to `x86::gemm`; safe crate code cannot call it directly. Compensating
+check: the tier-equivalence battery gates bitwise equality with the scalar twin over kc ∈ 0..17 ∪
 {256} including special values and nonzero starting accumulators.
 
 ## r4qrun_f64 (bead 27d3, file x86/fft.rs)

@@ -94,6 +94,11 @@ pub(crate) fn checked_btile4x4p_lengths(
     Some((a_len, b_len, dst_len))
 }
 
+#[inline]
+pub(crate) fn checked_trn1c64_len(n1: usize) -> Option<usize> {
+    n1.checked_mul(n1)?.checked_mul(2)
+}
+
 /// Packed f32 batched-GEMM 4×4 tile signature
 /// (a_pack, b_pack, i0, j0, k, mb, dst) — l-contiguous packed layout.
 pub type Btile4x4Pf32 = fn(&[f32], &[f32], usize, usize, usize, usize, &mut [f32]);
@@ -415,6 +420,36 @@ mod tests {
                 }
             }
         }
+        // Exceptional mk8x4 inputs are explicit rather than mixed into the
+        // reduction-envelope generator above: NaN makes an error envelope
+        // unordered, while the microkernel contract itself is exact bits.
+        // Cover quiet/signaling payloads, infinities, signed zero, and invalid
+        // 0*inf / inf+(-inf) combinations through the active dispatched tier.
+        let special_a = [
+            f64::from_bits(0x7ff8_0000_0000_0042),
+            f64::from_bits(0xfff8_0000_0000_0081),
+            f64::from_bits(0x7ff0_0000_0000_0001),
+            0.0,
+            -0.0,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            1.0,
+        ];
+        let special_b = [1.0, f64::INFINITY, 0.0, f64::NEG_INFINITY];
+        let mut special_tier = [[f64::NEG_INFINITY; 4]; 8];
+        let mut special_ref = special_tier;
+        (t.mk8x4_f64)(&special_a, &special_b, 1, &mut special_tier);
+        scalar::mk8x4_f64(&special_a, &special_b, 1, &mut special_ref);
+        for r in 0..8 {
+            for s in 0..4 {
+                assert_eq!(
+                    special_tier[r][s].to_bits(),
+                    special_ref[r][s].to_bits(),
+                    "mk8x4 exceptional-value divergence at r {r} s {s} (tier {:?})",
+                    t.mk8x4_f64_tier
+                );
+            }
+        }
         // btile4x4: bitwise vs twin over plane-SoA fixtures — k spans
         // the size classes' shapes, mb covers even/odd lanes, nonzero
         // i0/j0/m0 exercise the offset arithmetic.
@@ -640,6 +675,14 @@ mod tests {
             let mut dst = [];
             (ops().btile4x4p_f64)(&[], &[], usize::MAX, 0, 4, 1, &mut dst);
         });
+        assert_panics_with("btile4x4pf32 packed bounds", || {
+            let mut dst = [];
+            (ops().btile4x4pf32)(&[], &[], usize::MAX, 0, 4, 1, &mut dst);
+        });
+        assert_panics_with("trn1c64 extent overflow", || {
+            let mut dst = [];
+            (ops().trn1c64)(&[], &mut dst, usize::MAX);
+        });
 
         assert_eq!(checked_mk8x4_lengths(usize::MAX), None);
         assert_eq!(
@@ -647,5 +690,6 @@ mod tests {
             None
         );
         assert_eq!(checked_btile4x4p_lengths(0, 0, 4, usize::MAX), None);
+        assert_eq!(checked_trn1c64_len(usize::MAX), None);
     }
 }

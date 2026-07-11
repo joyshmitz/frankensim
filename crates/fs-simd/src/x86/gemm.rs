@@ -1,11 +1,10 @@
-//! x86-64 batched-GEMM tile capsule (bead 9ekv): the PACKED 4×4 batched-GEMM
-//! tile microkernel, AVX2+FMA variant, twin of [`crate::scalar::btile4x4p_f64`].
+//! x86-64 GEMM capsules: the dense 8×4 register microkernel and the packed
+//! 4×4 batched-GEMM tile, both AVX2+FMA twins of their scalar definitions.
 //! Registered in unsafe-capsules.json; SAFETY.md beside this file.
 //!
-//! Feature-gating contract (identical to the sibling `x86/mod.rs` capsule):
-//! the `#[target_feature]` inner function is reached ONLY through the safe
-//! façade below, which re-checks avx2+fma at runtime and falls back to the
-//! scalar twin otherwise — so the façade is unconditionally safe to call.
+//! Feature-gating contract: public safe façades re-check AVX2+FMA on every
+//! call. The process-wide function table instead calls [`select_mk8x4_f64`]
+//! once; only that selector can name and return the private unchecked thunk.
 //!
 //! Bitwise contract: over the lane (`mb`) dimension the AVX2 body accumulates
 //! each of the 16 output tile elements in a 4-lane `__m256d` starting from
@@ -18,7 +17,75 @@
 #![allow(unsafe_code)] // registered capsule — see SAFETY.md beside this file
 
 #[cfg(target_arch = "x86_64")]
-use core::arch::x86_64::{_mm256_fmadd_pd, _mm256_loadu_pd, _mm256_setzero_pd, _mm256_storeu_pd};
+use core::arch::x86_64::{
+    __m256d, _mm256_fmadd_pd, _mm256_loadu_pd, _mm256_set1_pd, _mm256_setzero_pd, _mm256_storeu_pd,
+};
+use fs_substrate::SimdTier;
+
+/// Resolve the dense GEMM microkernel and its truthful operation tier once.
+///
+/// The returned function pointer is safe because the only unchecked thunk is
+/// private to this module and is returned only after the required CPU features
+/// are observed. The scalar pointer is returned for every other combination.
+pub(crate) fn select_mk8x4_f64(global_tier: SimdTier) -> (crate::Mk8x4, SimdTier) {
+    let avx2_available = std::arch::is_x86_feature_detected!("avx2");
+    let fma_available = std::arch::is_x86_feature_detected!("fma");
+    let tier = crate::mk8x4_f64_tier_for(global_tier, avx2_available, fma_available);
+    if tier == SimdTier::Avx2 {
+        (mk8x4_f64_selected, tier)
+    } else {
+        (crate::scalar::mk8x4_f64, SimdTier::Scalar)
+    }
+}
+
+/// Safe façade for the 8×4 microkernel: AVX2+FMA body, scalar twin fallback.
+pub fn mk8x4_f64(a_panel: &[f64], b_panel: &[f64], kc: usize, acc: &mut [[f64; 4]; 8]) {
+    assert_mk8x4_bounds(a_panel, b_panel, kc);
+    if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma") {
+        return mk8x4_f64_selected(a_panel, b_panel, kc, acc);
+    }
+    crate::scalar::mk8x4_f64(a_panel, b_panel, kc, acc);
+}
+
+fn mk8x4_f64_selected(a_panel: &[f64], b_panel: &[f64], kc: usize, acc: &mut [[f64; 4]; 8]) {
+    assert_mk8x4_bounds(a_panel, b_panel, kc);
+    // SAFETY: only `select_mk8x4_f64`, after one-shot AVX2+FMA detection, can
+    // export this private thunk; the public façade checks on every call.
+    unsafe { mk8x4_f64_256(a_panel, b_panel, kc, acc) }
+}
+
+fn assert_mk8x4_bounds(a_panel: &[f64], b_panel: &[f64], kc: usize) {
+    let lengths = crate::checked_mk8x4_lengths(kc);
+    assert!(
+        matches!(lengths, Some((a_len, b_len)) if a_len <= a_panel.len() && b_len <= b_panel.len()),
+        "mk8x4 panel length mismatch (programmer error)"
+    );
+}
+
+/// 8×4 f64 GEMM register microkernel, AVX2+FMA body with k-ascending fused
+/// accumulation exactly matching the scalar twin.
+///
+/// # Safety
+/// Requires AVX2+FMA and panel bounds established by `assert_mk8x4_bounds`.
+#[target_feature(enable = "avx2,fma")]
+unsafe fn mk8x4_f64_256(a_panel: &[f64], b_panel: &[f64], kc: usize, acc: &mut [[f64; 4]; 8]) {
+    // SAFETY: load/store extents are discharged by the checked panel bounds.
+    unsafe {
+        let ap = a_panel.as_ptr();
+        let bp = b_panel.as_ptr();
+        let mut va: [__m256d; 8] = std::array::from_fn(|r| _mm256_loadu_pd(acc[r].as_ptr()));
+        for kk in 0..kc {
+            let b = _mm256_loadu_pd(bp.add(kk * 4));
+            for (r, v) in va.iter_mut().enumerate() {
+                let ar = _mm256_set1_pd(*ap.add(kk * 8 + r));
+                *v = _mm256_fmadd_pd(ar, b, *v);
+            }
+        }
+        for (r, v) in va.iter().enumerate() {
+            _mm256_storeu_pd(acc[r].as_mut_ptr(), *v);
+        }
+    }
+}
 
 /// Safe façade: AVX2+FMA packed 4×4 batched-GEMM tile, else the scalar twin.
 /// Unconditionally safe — the feature is re-checked here at runtime.
@@ -141,14 +208,14 @@ unsafe fn btile4x4p_256(
         }
         // Scalar tail for the mb % 4 lanes past the last full group — the
         // scalar twin's exact per-lane l-ascending fused accumulation.
-        for ti in 0..4 {
-            for tj in 0..4 {
+        for (ti, &a_ptr) in a_base.iter().enumerate() {
+            for (tj, &b_ptr) in b_base.iter().enumerate() {
                 let out_base = (ti * 4 + tj) * mb;
                 for lane in full..mb {
                     let mut s = 0.0f64;
                     for l in 0..k {
-                        let am = *a_base[ti].add(l * mb + lane);
-                        let bm = *b_base[tj].add(l * mb + lane);
+                        let am = *a_ptr.add(l * mb + lane);
+                        let bm = *b_ptr.add(l * mb + lane);
                         s = am.mul_add(bm, s);
                     }
                     *op.add(out_base + lane) = s;

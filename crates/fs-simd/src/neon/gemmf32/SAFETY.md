@@ -6,7 +6,9 @@ check-unsafe` (registration, <300 lines, this file).
 ## Invariants
 `btile4x4pf32` walks eight stream pointers of the form base(t) + l·mb
 + 4·q over PACKED l-contiguous operands (A i-major at ((i0+t)·k)·mb, B
-j-major at ((j0+t)·k)·mb): the leading assert bounds the maximal
+j-major at ((j0+t)·k)·mb): the shared
+`checked_btile4x4p_lengths` helper rejects every overflowing geometry,
+and the leading assert bounds the maximal
 dereferenced offset (t ≤ 3, l ≤ k−1, 4q ≤ mb−4) inside both packed
 buffers, every access is exactly 4 f32, and the per-quad rewind
 (−k·mb + 4) never leaves the borrowed allocations (provenance
@@ -24,7 +26,7 @@ None (`vld1q_f32`/`vst1q_f32` tolerate unaligned addresses).
 No pointer escapes; lifetimes are the borrowed slices'.
 
 ## Panic behavior
-The bounds assert fires BEFORE any unsafe block.
+Checked extent construction and the bounds assert fire BEFORE any unsafe block.
 
 ## Cancellation behavior
 No poll points: one bounded pass per lane quad.

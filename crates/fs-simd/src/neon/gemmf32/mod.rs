@@ -24,11 +24,13 @@ pub fn btile4x4pf32(
     mb: usize,
     dst: &mut [f32],
 ) {
+    let bounds = crate::checked_btile4x4p_lengths(i0, j0, k, mb);
     assert!(
-        k >= 1
-            && (i0 + 3) * k * mb + k * mb <= a.len()
-            && (j0 + 3) * k * mb + k * mb <= b.len()
-            && dst.len() >= 16 * mb,
+        matches!(
+            bounds,
+            Some((a_len, b_len, dst_len))
+                if a_len <= a.len() && b_len <= b.len() && dst_len <= dst.len()
+        ),
         "btile4x4pf32 packed bounds (programmer error)"
     );
     if !mb.is_multiple_of(4) {

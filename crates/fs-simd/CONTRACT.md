@@ -86,8 +86,9 @@ when a consumer wants it — never load-bearing. `frontier-sme2` is the
 separate fs-simd-sme2 bead.
 
 ## Conformance tests
-tier_equivalence_battery (lens 0..67 × seeds, subnormal/NaN/±0/1e18 values,
-bitwise + envelope), dispatch singleton + tier match, known answers
+tier_equivalence_battery (lens 0..67 × finite seeded values for reduction
+envelopes, plus explicit subnormal/qNaN/sNaN/infinity/invalid-product/±0
+microkernel cases, bitwise + envelope), dispatch singleton + tier match, known answers
 (bit-exact), alignment helper, loud length mismatch. VERIFIED EXECUTION:
 aarch64-apple NEON (M4 Pro, local) and x86-64 AVX2 (Threadripper PRO 5995WX,
 trj) — both green. Miri lane green (scalar dispatch).
