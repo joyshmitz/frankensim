@@ -68,7 +68,9 @@ typed AST. Layer: L6 (HELM). Runtime deps: `std` + fs-qty.
   AdmissionReport` runs six timed dimensions — Five Explicits structure,
   dimensional analysis (fs-qty dims inferred bottom-up through `+ - * /
   min max` and comparisons; unknown verbs never false-reject), budget
-  feasibility (fs-plan cost models over `:dof`/`:size` features, p90
+  feasibility (fs-plan cost models over exact numeric `:dof`/`:size`/`:modes`
+  features, with malformed or duplicate explicit features refused rather than
+  priced as unit size; p90
   totals vs the `(budget (wall …))` bound, with RANKED cost-model-derived
   fixes: coarsen / surrogate-screen / relax), capability sufficiency
   (finite non-negative session grants, session-token and self-contained

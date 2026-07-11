@@ -591,20 +591,43 @@ fn wall_budget_s(study: &Study<'_>, cx: &AdmissionContext<'_>) -> Option<f64> {
     cx.capability.as_ref().map(|c| c.wall_s)
 }
 
-/// Size feature for a verb call: `:dof`/`:size`/`:modes` argument, else 1.
-fn size_of_call(items: &[Node]) -> f64 {
-    for pair in items.windows(2) {
-        if let NodeKind::Keyword(k) = &pair[0].kind
-            && (k == "dof" || k == "size" || k == "modes")
-        {
-            match &pair[1].kind {
-                NodeKind::Int(i) => return *i as f64,
-                NodeKind::Float(f) => return *f,
-                _ => {}
-            }
+/// Size feature for a verb call: exactly one numeric
+/// `:dof`/`:size`/`:modes` argument, else the unit-size default.
+fn size_of_call(items: &[Node], verb: &str) -> Result<f64, String> {
+    let mut size = None;
+    for (index, item) in items.iter().enumerate() {
+        let NodeKind::Keyword(keyword) = &item.kind else {
+            continue;
+        };
+        if !matches!(keyword.as_str(), "dof" | "size" | "modes") {
+            continue;
         }
+        if size.is_some() {
+            return Err(format!(
+                "operation {verb:?} declares more than one :dof/:size/:modes feature"
+            ));
+        }
+        let value = items
+            .get(index + 1)
+            .ok_or_else(|| format!("operation {verb:?} has no value after :{keyword}"))?;
+        let value = match &value.kind {
+            #[allow(clippy::cast_precision_loss)]
+            NodeKind::Int(value) => *value as f64,
+            NodeKind::Float(value) => *value,
+            _ => {
+                return Err(format!(
+                    "operation {verb:?} requires a numeric value after :{keyword}"
+                ));
+            }
+        };
+        if !value.is_finite() || value < 0.0 {
+            return Err(format!(
+                "operation {verb:?} requires a finite non-negative value after :{keyword}"
+            ));
+        }
+        size = Some(value);
     }
-    1.0
+    Ok(size.unwrap_or(1.0))
 }
 
 /// Collect (verb, size, span) for every modeled call in the tree.
@@ -612,31 +635,41 @@ fn modeled_calls<'a>(
     node: &'a Node,
     models: &BTreeMap<String, CostModel>,
     out: &mut Vec<(&'a str, f64, Span)>,
+    findings: &mut Vec<Finding>,
 ) {
     if let NodeKind::List(items) = &node.kind {
         if let Some(h) = node.head()
-            && models.contains_key(h)
+            && (h.contains('.') || models.contains_key(h))
         {
-            out.push((h, size_of_call(items), node.span));
+            match size_of_call(items, h) {
+                Ok(size) if models.contains_key(h) => out.push((h, size, node.span)),
+                Ok(_) => {}
+                Err(what) => findings.push(reject(
+                    "budget",
+                    node.span,
+                    what,
+                    "supply at most one numeric :dof, :size, or :modes value".to_string(),
+                )),
+            }
         }
         for child in items {
-            modeled_calls(child, models, out);
+            modeled_calls(child, models, out, findings);
         }
     }
 }
 
 fn check_budget(study: &Study<'_>, cx: &AdmissionContext<'_>, out: &mut Vec<Finding>) {
     check_budget_resource_domains(study, out);
+    let mut calls = Vec::new();
+    for (_, expr) in &study.lets {
+        modeled_calls(expr, &cx.cost_models, &mut calls, out);
+    }
+    for clause in &study.body {
+        modeled_calls(clause, &cx.cost_models, &mut calls, out);
+    }
     let Some(wall) = wall_budget_s(study, cx) else {
         return; // qoi-precision-only budgets carry no wall bound to screen
     };
-    let mut calls = Vec::new();
-    for (_, expr) in &study.lets {
-        modeled_calls(expr, &cx.cost_models, &mut calls);
-    }
-    for clause in &study.body {
-        modeled_calls(clause, &cx.cost_models, &mut calls);
-    }
     if calls.is_empty() {
         return;
     }

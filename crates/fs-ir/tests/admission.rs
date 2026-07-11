@@ -515,6 +515,43 @@ fn ad_004_budget_infeasible_with_ranked_cost_derived_fixes() {
         "coarsened study inside a 500s bound must admit:\n{}",
         coarse_report.diagnosis()
     );
+    for malformed_size in [
+        src.replace(":dof 4096", ":dof"),
+        src.replace(":dof 4096", ":dof \"many\""),
+        src.replace(":dof 4096", ":dof 4096 :size 8"),
+    ] {
+        let malformed = admit_src(&malformed_size, &cx);
+        assert!(
+            !malformed.admitted
+                && malformed
+                    .findings
+                    .iter()
+                    .any(|finding| finding.check == "budget"),
+            "malformed explicit size feature admitted:\n{}",
+            malformed.diagnosis()
+        );
+    }
+    let implicit_unit_size = admit_src(&src.replace(" :dof 4096", ""), &cx);
+    assert!(
+        implicit_unit_size.admitted,
+        "the unit-size default applies only when no size feature is declared:\n{}",
+        implicit_unit_size.diagnosis()
+    );
+    let mut legacy_cx = full_context(&regime);
+    legacy_cx.cost_models.clear();
+    legacy_cx
+        .cost_models
+        .insert("legacy-solve".to_string(), lbm_cost_model());
+    let legacy_src = src.replace("xform.level-set-velocity", "legacy-solve");
+    let legacy = admit_src(&legacy_src, &legacy_cx);
+    assert!(
+        !legacy.admitted
+            && legacy.findings.iter().any(|finding| {
+                finding.check == "budget" && finding.what.contains("BudgetInfeasible")
+            }),
+        "registered non-namespaced cost model was ignored:\n{}",
+        legacy.diagnosis()
+    );
     // Removing the cost models removes the screen (no false rejects).
     cx.cost_models.clear();
     assert!(admit_src(&src, &cx).admitted, "no models -> no wall screen");
