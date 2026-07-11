@@ -707,6 +707,7 @@ dependencies = [
  "fs-math",
  "fs-qty",
  "fs-rep-mesh",
+ "fs-simd",
  "fs-soa",
  "fs-sparse",
 ]
@@ -803,6 +804,7 @@ dependencies = [
 name = "fs-la"
 version = "0.0.1"
 dependencies = [
+ "fs-exec",
  "fs-math",
  "fs-rand",
  "fs-simd",
