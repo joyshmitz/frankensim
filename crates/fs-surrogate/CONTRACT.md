@@ -5,8 +5,9 @@ validity bands — ML proposes, certified numerics disposes.
 
 ## Purpose and layer
 
-Layer L4 (surrogate / ROM). No dependencies — pure Rust (an in-house symmetric
-eigensolver for the method of snapshots).
+Layer L4 (surrogate / ROM). The default core is dependency-free and pure Rust
+(an in-house symmetric eigensolver for the method of snapshots); the optional
+ladder feature depends on `fs-evidence` for color payloads.
 
 ## Public types and semantics
 
@@ -22,23 +23,23 @@ eigensolver for the method of snapshots).
 - `certify_or_escalate(&ConformalBand, in_validity_domain, decision_tolerance)
   -> Decision` — `UseSurrogate` iff inside the domain AND the band is at least as
   tight as the decision tolerance, else `Escalate`.
-- `SurrogateError` — `NoSnapshots` / `DimMismatch` / `BadThreshold`.
+- Root `SurrogateError` — `NoSnapshots` / `DimMismatch` / `BadThreshold`.
 
 - `ladder` module (addendum Proposal A, bead knh1.4; [F], behind
-  `abstraction-ladder`): the certified abstraction ladder.
-  `TruthModel` (the P1 full-order elliptic family — level 0's DECLARED
-  semantics: "truth" means the FE model, discretization honesty stated
-  here rather than hidden in a bound), `RbLevel` (offline snapshots +
-  energy-orthonormal basis; online k×k Galerkin with the textbook
-  a-posteriori bound ‖u−u_rb‖_a ≤ ‖r‖_{V′}/√α_LB via the exact Riesz
-  representer and the exact affine coercivity floor; compliance QoI
-  bound = energy bound SQUARED by Galerkin symmetry), `ConceptLevel`
-  (interpolation lookup, ESTIMATED color, dispersion calibrated by
-  cross-rung discrepancy probes), `Ladder`/`at_level(k).query(μ, tol)`
-  (AUTOMATIC CERTIFIED DESCENT: a rung answers only when its
-  certificate meets the tolerance; leaks are recorded and descended
-  past — invisible until it leaks), `rb_coverage` (the kill
-  measurement).
+  `abstraction-ladder`): a bounded abstraction ladder whose present
+  authority is ESTIMATED, not certified. `TruthModel` defines the P1
+  full-order elliptic family's DECLARED level-0 semantics; its f64 solve
+  is not an enclosure. `RbLevel` uses offline snapshots, an
+  energy-orthonormal basis, and online Galerkin evaluation of the
+  textbook residual/coercivity a-posteriori estimator. `ConceptLevel`
+  uses interpolation with total dispersion calibrated at finite probes
+  as `|concept − lower RB| + lower RB QoI estimator`; admission also
+  evaluates that quantity at the actual query and takes the larger value.
+  `Ladder::at_level(k)?.query(μ, tol)` performs AUTOMATIC BOUNDED
+  DESCENT: an RB/concept rung answers only when its estimator is within
+  tolerance; otherwise the leak is recorded and the query descends.
+  `ladder::SurrogateError` names all ladder refusals. `rb_coverage` is
+  the bounded, fallible kill measurement.
 
 ## Invariants
 
@@ -49,11 +50,38 @@ eigensolver for the method of snapshots).
 - `certify_or_escalate` uses the surrogate ONLY when trustworthy (in-domain +
   band tight enough), so a fleet of queries costs strictly less than
   all-high-fidelity whenever any query is served by the surrogate.
+- Every ladder-emitted color is `Estimated` and passes the shared
+  `fs-evidence` payload validator. RB answers carry the f64-evaluated
+  QoI estimator as dispersion; concept answers carry the larger of the probe
+  maximum and query-local cross-rung discrepancy PLUS lower-rung QoI
+  dispersion, so agreement with an inaccurate RB cannot erase its
+  uncertainty. Level 0 carries
+  infinite dispersion because an unproved floating-point solve makes no
+  spread claim.
+- Ladder state is sealed. Truth dimension, training range, basis,
+  calibrated dispersion, rung collection, family identity, and answer
+  evidence cannot be mutated or forged through public fields. Every rung
+  is bound to one identity containing the truth dimension and exact
+  floating-point range endpoints.
+- Public ladder arithmetic and lookup operations are fallible. Queries
+  reject non-finite/non-coercive/out-of-range inputs before lookup, and
+  generated training/probe grids must be strictly increasing in f64.
+- Ladder construction preflights nonempty, capped, strictly decreasing
+  requested RB dimensions plus checked aggregate memory/work budgets
+  before the first snapshot. After orthogonalization, actual retained
+  dimensions must also strictly decrease before a rung is stored.
+  Coverage batteries are nonempty and capped on both axes, their Cartesian
+  product, and conservative aggregate work. Each parameter performs at most
+  one descent (including at most one truth fallback), and the resulting RB
+  estimators classify every requested tolerance without repeating solves.
 
 ## Error model
 
-Structured `SurrogateError`; the only panics are nonsensical conformal inputs
-(empty residuals, `α ∉ (0,1)`).
+Structured `SurrogateError`. Ladder construction, energy, compliance,
+training, lookup, level selection, querying, and coverage return named
+errors for invalid shapes/values/ranges/grids, singular or non-finite
+derived arithmetic, and resource excess. The non-ladder conformal helper
+still panics on nonsensical inputs (empty residuals, `α ∉ (0,1)`).
 
 ## Determinism class
 
@@ -62,7 +90,9 @@ of their inputs.
 
 ## Cancellation behavior
 
-None (synchronous pure functions).
+None (synchronous pure functions). In particular, the feature-gated coverage
+battery has checked admission but no `Cx` or bounded cancellation latency; it
+is not yet a production hot-kernel execution surface.
 
 ## Unsafe boundary
 
@@ -70,9 +100,9 @@ None. `#![deny(unsafe_code)]` via the workspace lint.
 
 ## Feature flags
 
-- `abstraction-ladder` [F] (default OFF) — the certified abstraction
-  ladder (knh1.4, Proposal A; `dep:fs-evidence`); gates the `ladder`
-  integration target.
+- `abstraction-ladder` [F] (default OFF) — the estimated, leak-alarmed
+  abstraction ladder (knh1.4/y6yv, Proposal A; `dep:fs-evidence`); gates
+  the `ladder` integration target.
 
 ## Conformance tests
 
@@ -81,6 +111,13 @@ orthonormal modes; energy-based rank + reduced error; bad-input rejection; the
 conformal band achieves nominal coverage; certify-or-escalate uses the surrogate
 only when trustworthy; the policy reduces cost vs all-high-fidelity;
 determinism.
+
+`tests/ladder.rs` (feature-gated): f64 RB estimator containment on the
+elliptic fixture, bounded descent, Estimated-only payload authority,
+deterministic replay, structured hostile-input refusals, representable
+grid and family binding, requested/retained fidelity descent,
+lower-rung uncertainty inheritance, pre-training memory/work limits,
+and bounded coverage batteries.
 
 ## No-claim boundaries
 
@@ -102,10 +139,29 @@ determinism.
 - The beachhead covers the AFFINE-PARAMETRIC ELLIPTIC regime (1-D
   fixture family here); nonlinear/transient coarse levels are the
   research frontier and enter only as estimated-color concept rungs.
-- Level 0's bound is zero BY DECLARATION (the FE model is the truth
-  semantics); the FE discretization error is a separate ledger entry,
-  not this module's claim.
-- The concept rung's dispersion is a probe MAXIMUM, not a bound — the
-  Estimated color is load-bearing.
+- Level 0 is the declared FE semantics, but neither floating-point solve
+  error nor FE discretization error is enclosed here. Its Estimated
+  color therefore has infinite dispersion; there is no zero-error claim.
+- The RB residual/Riesz/solve path is evaluated in round-to-nearest f64
+  without outward rounding or independent linear-solve certificates.
+  Its textbook estimator is useful and tested for containment on this
+  fixture, but it does not authorize `Color::Verified` and descent is not
+  called certified.
+- Compliance dispersion includes both the squared energy estimator and the
+  floating reduced solve's computable Galerkin defect
+  `|f(u_rb) - a(u_rb,u_rb)|`; exact orthogonality is never assumed.
+- The concept rung's dispersion is a finite-probe MAXIMUM of
+  `|concept − lower RB| + lower RB QoI estimator`, augmented by the same
+  query-local quantity. Neither is an enclosure over the continuous range.
+  The Estimated color is load-bearing.
+- Coverage is currently a synchronous feature-gated measurement helper. Its
+  checked work cap bounds admission, but it has no `Cx`, tile polling, or
+  cancellation/drain contract. Production-scale batteries remain out of claim
+  until that execution surface is added; the current implementation is for
+  bounded Gauntlet/activation fixtures.
+- The eventual certificate destination is an outward-rounded residual,
+  Riesz solve, reduced solve, coercivity floor, and QoI enclosure whose
+  complete arithmetic path is independently checkable. Only that path,
+  once admitted by the Gauntlet, may upgrade a rung to `Verified`.
 - Per-REGION (spatial) RB decomposition and the fs-ir at_level query
   integration are the named growth seams.

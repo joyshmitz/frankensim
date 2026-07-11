@@ -218,36 +218,63 @@ fn stage_3_spectral_health() {
 fn stage_4_abstraction_ladder() {
     use fs_surrogate::ladder::Ladder;
     let h = Harness::new("ladder");
-    let ladder = Ladder::build(150, (0.0, 4.0), &[5, 2], true);
+    let ladder = Ladder::build(150, (0.0, 4.0), &[5, 2], true).expect("bounded ladder plan");
     // The leak alarm fires and auto-drills; termination at full order
     // is guaranteed (no infinite descent — the fail-safe).
-    let ans = ladder.at_level(ladder.top()).query(1.7, 1e-32);
+    let ans = ladder
+        .at_level(ladder.top())
+        .expect("declared top level")
+        .query(1.7, 1e-32)
+        .expect("in-range ladder query");
     h.log(
         "ladder.drill",
         &format!(
             "{{\"level_used\":{},\"leaks\":{:?}}}",
-            ans.level_used, ans.leaks
+            ans.level_used(),
+            ans.leaks()
         ),
     );
     assert_eq!(
-        ans.level_used, 0,
+        ans.level_used(),
+        0,
         "a query that leaks everywhere ends at truth"
     );
-    assert_eq!(ans.leaks.len(), 3, "every rung above it is a recorded leak");
+    assert_eq!(
+        ans.leaks().len(),
+        3,
+        "every rung above it is a recorded leak"
+    );
     // A satisfiable query stays high; an estimate-tolerant query gets
     // the concept rung with ESTIMATED color (never Verified).
-    let quiet = ladder.at_level(1).query(1.7, 1e-2);
-    assert_eq!(quiet.level_used, 1);
-    assert!(quiet.leaks.is_empty());
-    let concept = ladder.at_level(ladder.top()).query(1.7, 0.5);
+    let quiet = ladder
+        .at_level(1)
+        .expect("declared RB level")
+        .query(1.7, 1e-2)
+        .expect("in-range ladder query");
+    assert_eq!(quiet.level_used(), 1);
+    assert!(quiet.leaks().is_empty());
+    let concept = ladder
+        .at_level(ladder.top())
+        .expect("declared top level")
+        .query(1.7, 0.5)
+        .expect("in-range ladder query");
+    assert_eq!(
+        concept.level_used(),
+        ladder.top(),
+        "the estimate-tolerant control must actually remain at the concept rung"
+    );
     h.log(
         "ladder.concept",
         &format!(
             "{{\"color_estimated\":{}}}",
-            matches!(concept.color, Color::Estimated { .. })
+            matches!(concept.color(), Color::Estimated { .. })
         ),
     );
-    assert!(matches!(concept.color, Color::Estimated { .. }));
+    assert!(matches!(
+        concept.color(),
+        Color::Estimated { estimator, .. }
+            if estimator == "fs-surrogate.concept-cross-rung-v1"
+    ));
     verdict(
         "stage-4",
         "the leak alarm drills to full order with a complete trail (no infinite \
@@ -260,14 +287,18 @@ fn stage_4_abstraction_ladder() {
 fn stage_5_explanation_objects() {
     use fs_adjoint::explain::{Elliptic1d, Explanation, adjoint_attribution, finalize};
     let h = Harness::new("explain");
-    let fixture = Elliptic1d { n: 100 };
+    let fixture = Elliptic1d::new(100).expect("bounded explanation fixture");
     let a0 = vec![1.0f64; 101];
     let mut a1 = a0.clone();
     for (e, ae) in a1.iter_mut().enumerate() {
         *ae = if e < 50 { 1.3 } else { 0.8 };
     }
-    let observed =
-        fixture.compliance(&fixture.solve(&a1)) - fixture.compliance(&fixture.solve(&a0));
+    let observed = fixture
+        .compliance(&fixture.solve(&a1).expect("positive conductivity solves"))
+        .expect("finite compliance")
+        - fixture
+            .compliance(&fixture.solve(&a0).expect("positive conductivity solves"))
+            .expect("finite compliance");
     // Full channel set: reconciles within bounds (G3 — the permanent
     // invariant).
     let full = [
@@ -275,10 +306,11 @@ fn stage_5_explanation_objects() {
         ("right-half", (50..=100).collect::<Vec<_>>()),
     ];
     let ok = finalize(
-        adjoint_attribution(&fixture, &a0, &a1, &full),
+        adjoint_attribution(&fixture, &a0, &a1, &full).expect("valid full attribution"),
         observed,
         1e-8,
-    );
+    )
+    .expect("valid explanation finalization");
     h.log(
         "explain.reconcile",
         &format!("{{\"ok\":{}}}", ok.reconciles()),
@@ -288,10 +320,11 @@ fn stage_5_explanation_objects() {
     // refuses too (no confabulated explanation).
     let partial = [("left-half", (0..50).collect::<Vec<_>>())];
     let refused = finalize(
-        adjoint_attribution(&fixture, &a0, &a1, &partial),
+        adjoint_attribution(&fixture, &a0, &a1, &partial).expect("valid partial attribution"),
         observed,
         1e-8,
-    );
+    )
+    .expect("valid explanation finalization");
     let narrative = refused.render_narrative();
     h.log(
         "explain.refuse",
