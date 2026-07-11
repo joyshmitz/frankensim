@@ -55,7 +55,10 @@ recorded, sharded object pools, and diffable allocation-site accounting
    free-listed); on pressure the free list is drained back to the OS before
    refusing. New-chunk bytes are claimed atomically before allocation, so
    concurrent arenas cannot cross the limit through a check-then-increment
-   race; refusal is structured and leaves the pool fully usable (alloc-003).
+   race; counters are released only after the corresponding chunk is
+   deallocated, so claimants can observe conservative over-accounting but
+   never stale free capacity. Refusal is structured and leaves the pool fully
+   usable (alloc-003).
 
 ## Error model
 All fallible APIs return `Result<_, AllocError>`; `AllocError` is a

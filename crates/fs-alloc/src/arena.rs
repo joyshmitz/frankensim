@@ -219,9 +219,12 @@ impl PoolShared {
                 let mut free = self.free.lock().expect("fs-alloc free list poisoned");
                 let drained = core::mem::take(&mut free.chunks);
                 let free_bytes = core::mem::replace(&mut free.bytes, 0);
-                self.reserved_bytes.fetch_sub(free_bytes, Ordering::AcqRel);
                 drop(free);
+                // Keep the counter conservative until deallocation completes:
+                // another claimant must never observe capacity that is still
+                // physically owned by these chunks.
                 drop(drained);
+                self.reserved_bytes.fetch_sub(free_bytes, Ordering::AcqRel);
 
                 let reserved = self.reserved_bytes.load(Ordering::Acquire);
                 let Some(next) = reserved.checked_add(want) else {
@@ -297,8 +300,12 @@ impl PoolShared {
                 free.bytes = retained;
                 free.chunks.push(chunk);
             } else {
-                self.reserved_bytes.fetch_sub(chunk.len(), Ordering::AcqRel);
-                // chunk drops here: returned to the OS.
+                let chunk_bytes = chunk.len();
+                // Deallocate before advertising the capacity to concurrent
+                // claimants. Temporary over-accounting is safe; temporary
+                // under-accounting would violate the hard pool limit.
+                drop(chunk);
+                self.reserved_bytes.fetch_sub(chunk_bytes, Ordering::AcqRel);
             }
         }
     }

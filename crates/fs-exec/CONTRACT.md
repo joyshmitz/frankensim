@@ -58,10 +58,12 @@ fs-blake3, fs-substrate, fs-obs.
   outcomes with tile provenance. `RunReport` — the caller-declared `RunId`
   that keyed every tile stream, steal counts, cross-CCD steal counts,
   cancel-latency samples, `cancel_latency_p99_ns()`, canonical `to_json()`.
-  If several in-flight tiles panic or explicitly refuse, deterministic mode
-  reports the lowest observed logical tile (and its message/failure), never
-  mutex-arrival order. `TileFailure::Allocation` retains the original
-  `fs_alloc::AllocError` as its error source.
+  Outcome-class precedence is `WorkerSpawn` > `TilePanicked` > `TileFailed` >
+  `Cancelled`, preserving panic containment when a sibling also refuses.
+  Within the selected tile-failure class, deterministic mode reports the
+  lowest observed logical tile (and its message/failure), never mutex-arrival
+  order. `TileFailure::Allocation` retains the original `fs_alloc::AllocError`
+  as its error source.
 - `LatencyLane` — thin configured handle on the asupersync runtime
   (`block_on`, `runtime()`); no fs-exec scheduling policy of its own.
 - `victim_order(worker, workers, topo)` / `weighted_ranges(tiles, weights)`
@@ -330,8 +332,8 @@ idempotent recalibration; canonical pinned replay).
 tests/constellation_smoke.rs pins the
 asupersync Budget vocabulary. In-module unit suites cover the gate, keys,
 Reduce laws, partitioning, victim orders, self-cancellation, and pool
-survival after panics, exact finite-budget propagation, and simultaneous typed
-allocation refusals. GEMM tuner unit drills cover hostile embedded cache
+survival after panics, exact finite-budget propagation, simultaneous typed
+allocation refusals, and mixed panic/refusal precedence. GEMM tuner unit drills cover hostile embedded cache
 keys, invalid params, unranked evidence, selection/argmin disagreement,
 identity-dimension isolation, exact-key replay, parameter-family collisions,
 and explicit row/decision commit semantics.

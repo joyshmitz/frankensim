@@ -957,6 +957,32 @@ mod tests {
         }
     }
 
+    struct MixedPanicAndRefusal {
+        barrier: std::sync::Barrier,
+    }
+
+    impl TileKernel for MixedPanicAndRefusal {
+        type Out = ();
+
+        fn tiles(&self) -> TilePlan {
+            TilePlan::new("test/mixed-panic-refusal", 2)
+        }
+
+        fn run(&self, tile: u64, cx: &Cx<'_>) -> ControlFlow<crate::Cancelled, ()> {
+            self.barrier.wait();
+            if tile == 1 {
+                panic!("mixed failure panic");
+            }
+            match cx
+                .arena()
+                .alloc_slice_fill(fs_alloc::Site::named("test/mixed-refusal"), 1, 0_u8)
+            {
+                Ok(_) => ControlFlow::Continue(()),
+                Err(error) => ControlFlow::Break(cx.refuse(TileFailure::Allocation(error))),
+            }
+        }
+    }
+
     struct NoAllocation;
 
     impl TileKernel for NoAllocation {
@@ -1053,6 +1079,35 @@ mod tests {
             assert!(pool.arena_pool().stats().quiescent());
             assert_eq!(pool.run(&NoAllocation).expect("pool remains reusable"), 1);
         }
+    }
+
+    #[test]
+    fn panic_precedence_over_typed_refusal_is_explicit_and_drained() {
+        let mut config = PoolConfig::new(2, CcdTopology::APPLE_M_CLASS, 0xFA12);
+        config.arena.limit_bytes = Some(0);
+        let pool = TilePool::new(config);
+        let gate = CancelGate::new();
+        let kernel = MixedPanicAndRefusal {
+            barrier: std::sync::Barrier::new(2),
+        };
+        let (result, report) = pool.run_declared_budgeted(
+            &kernel,
+            &gate,
+            RunId(24),
+            Budget::new().with_cost_quota(1 << 20),
+        );
+        match result {
+            Err(RunError::TilePanicked {
+                tile: 1,
+                message,
+                completed: 0,
+                ..
+            }) => assert!(message.contains("mixed failure panic"), "{message}"),
+            other => panic!("panic class must precede typed refusal, got {other:?}"),
+        }
+        assert!(gate.is_requested());
+        assert_eq!(report.completed, 0);
+        assert!(pool.arena_pool().stats().quiescent());
     }
 
     #[test]
