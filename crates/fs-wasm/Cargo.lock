@@ -560,6 +560,7 @@ name = "fs-adjoint"
 version = "0.0.1"
 dependencies = [
  "fs-ad",
+ "fs-blake3",
  "fs-evidence",
  "fs-feec",
  "fs-geom",
@@ -597,6 +598,7 @@ dependencies = [
 name = "fs-assimilate"
 version = "0.0.1"
 dependencies = [
+ "fs-blake3",
  "fs-evidence",
 ]
 
@@ -683,6 +685,7 @@ dependencies = [
 name = "fs-evidence"
 version = "0.0.1"
 dependencies = [
+ "fs-blake3",
  "fs-obs",
 ]
 
@@ -720,6 +723,7 @@ dependencies = [
 name = "fs-fft"
 version = "0.0.1"
 dependencies = [
+ "fs-exec",
  "fs-math",
  "fs-simd",
 ]
@@ -878,6 +882,7 @@ name = "fs-oed-e2e"
 version = "0.0.1"
 dependencies = [
  "fs-assimilate",
+ "fs-blake3",
  "fs-evidence",
  "fs-toleralloc",
  "fs-voi",
