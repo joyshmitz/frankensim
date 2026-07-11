@@ -162,8 +162,10 @@ crates plus `std`.
    allowing later reuse to replace a newer cache row.
    Registry finalization additionally compares each kernel's current execution
    binding and pending-row identity with the last repetition sealed in its
-   `Attainment`; results from an older run cannot clear, preserve, or publish a
-   newer unfinalized kernel state.
+   `Attainment`; results from an older run cannot preserve or publish a newer
+   unfinalized kernel state. A mismatch forces rejected finalization, which
+   drains that newer pending marker and invalidates its process-local decision
+   rather than allowing unbound state to survive the refusal.
 9. Every citable GEMM repetition binds the same exact scoped tune key, shape,
    canonical MC/NC plan, tuned source, operation-specific SIMD tier, build
    identity, derive-key-domain tune-row hash, and deterministic execution-path
