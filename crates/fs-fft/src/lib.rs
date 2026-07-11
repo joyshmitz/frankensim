@@ -1,25 +1,26 @@
 //! fs-fft — Stockham autosort FFTs, real transforms, and DCT (plan §6.3).
 //!
-//! v1 is CORRECTNESS-FIRST: radix-2 Stockham (no bit-reversal pass), the
-//! packed real transform (r2c/c2r at half the complex work), and DCT-II/III
-//! via FFT folding — the fs-cheb dependency. The correctness oracle is the
-//! naive O(n²) DFT, run exhaustively over sizes and random inputs: the
-//! ORACLE decides, not derivation confidence.
+//! The correctness-first core is Stockham autosort (no bit-reversal pass),
+//! packed real transforms (r2c/c2r at half the complex work), and DCT-II/III
+//! via FFT folding, which is the fs-cheb dependency. The production stage
+//! walk is now mixed radix-8/4/2. The correctness oracle remains the naive
+//! O(n²) DFT, run exhaustively over sizes and random inputs: the ORACLE
+//! decides, not derivation confidence.
 //!
 //! Determinism: twiddles come from fs-math's STRICT sin/cos and every
-//! butterfly runs in a fixed order — the transform is cross-ISA
-//! bit-deterministic by construction (golden-hash tested, verified on both
-//! reference ISAs like the rest of the numerics spine).
+//! butterfly runs in a fixed order. The complex stage path has a cross-ISA
+//! golden. DCT-II/III have numerical oracles and same-build bit replay here;
+//! downstream DCT bit changes are additionally tracked by registered fs-cheb
+//! and vessel goldens. The current fs-cheb row is both-ISA verified; the
+//! vessel row's post-radix-8 x86 reproduction remains pending.
 //!
-//! Bead fs-fft-perf-multidim extends the correctness core with the r2c INVERSE
-//! (c2r, [`RealFft::inverse`]) and N-DIMENSIONAL (2D/3D) transforms via
-//! separable pencil decomposition ([`FftNd`]) — both oracle-tested;
-//! that bead also landed the mixed RADIX-4/2 Stockham core (half the
-//! full-array passes) and fs-simd NEON stage kernels (bitwise vs the
-//! scalar twin), with the roofline lane in tests/perf_lane.rs. Still
-//! open there: radix-8, cache-blocked transposes, executor-tiled
-//! pencils, and quiet-machine certification of the 40% target (the
-//! lane asserts an anti-collapse floor and reports the target).
+//! Bead fs-fft-perf-multidim extended the core with the r2c inverse
+//! ([`RealFft::inverse`]), N-dimensional separable pencils ([`FftNd`]),
+//! mixed radix-8/4/2 stages, and fs-simd capsules. The optional `[F]`
+//! six-step path fuses its transpose/copy structure into two full-array
+//! gather/scatter passes. It remains default-off after losing to the stage
+//! walk on M4; its current x86 verdict, executor-tiled pencils, and
+//! quiet-machine certification of the 40% target remain open.
 //!
 //! Conventions: forward is unnormalized; `inverse` scales by 1/n so
 //! inverse(forward(x)) = x. Sizes must be powers of two (structured
@@ -35,10 +36,27 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Semantic version of the transform bit contract (golden-couplings
 /// surface `fs-fft:transform-bits`): the stage decomposition (currently
 /// mixed radix-8/4/2), the six-step dispatch predicate and its pass
-/// structure, and the twiddle-application orders. Any change that moves
-/// output bits bumps this and deliberately re-freezes the dependents in
-/// golden-couplings.json (docs/GOLDEN_POLICY.md).
+/// structure, twiddle-application orders, and DCT folding/post-rotation.
+/// Any change that moves output bits bumps this and deliberately re-freezes
+/// the dependents in golden-couplings.json (docs/GOLDEN_POLICY.md).
 pub const TRANSFORM_BIT_SEMANTICS_VERSION: u32 = 1;
+
+/// Full-array memory passes performed by one fused six-step transform.
+///
+/// Stage A gathers `data` columns and scatters completed first sweeps into
+/// `scratch`; stage B scatters completed second-sweep rows back to `data`.
+/// Sub-transforms are cache-resident and therefore do not add full-array
+/// traffic at the parent size. The roofline lane consumes this constant so
+/// its byte model cannot silently retain the pre-fusion six-pass count.
+#[doc(hidden)]
+pub const SIXSTEP_FULL_ARRAY_PASSES: usize = 2;
+
+/// Evidence identity for the fused two-pass six-step performance model.
+///
+/// Bump this whenever the six-step implementation or its traffic accounting
+/// changes, even when exact-move rewrites leave transform output bits intact.
+#[doc(hidden)]
+pub const SIXSTEP_PERFORMANCE_MODEL_VERSION: &str = "27d3-6s-fused2";
 
 /// A complex number (f64 re/im). Local, minimal: fs-la's future complex
 /// types can absorb this when a shared home exists. `repr(C)` pins the
@@ -119,8 +137,9 @@ pub struct Fft {
 
 /// Six-step engagement threshold (bead 27d3): below this the whole working
 /// set is cache-resident and the direct stage walk wins; at and above it
-/// the stage walk streams the full array from DRAM every pass, and the
-/// six-step's cache-resident sub-transforms cut full-array passes to five.
+/// the stage walk streams the full array from DRAM every pass, while the
+/// fused six-step keeps its sub-transforms cache-resident and makes two
+/// full-array gather/scatter passes.
 /// Part of the bit contract via dispatch (a pure function of n).
 const SIXSTEP_MIN: usize = 1 << 16;
 
@@ -128,16 +147,17 @@ impl Fft {
     /// Does size `n` take the six-step path? A pure function of `n` for a
     /// given build: large enough, an even power of two (n₁ = n₂ = √n,
     /// square transposes), AND the `frontier-sixstep` feature — the path
-    /// is correct and golden-frozen but measured SLOWER than the stage
-    /// walk on M4 (2026-07-10: 2.4e7 vs 4.8e7 elems/s at n = 2²⁰; the
-    /// scalar transposes lose to the stage walk's prefetch-friendly
-    /// streams), so it ships off pending the SIMD-tiled transpose
-    /// capsule. Enabling the feature changes large-n output bits — that
-    /// is why the six-step golden lives in the gated battery.
+    /// is correct and golden-frozen but remains SLOWER than the stage walk
+    /// on M4 after two-pass fusion and vectorized strip moves (2026-07-11,
+    /// n = 2²²: six-step 0.0822-0.0852 s vs stage walk 0.053-0.055 s).
+    /// It therefore stays frontier/default-off on that ISA; the current x86
+    /// verdict remains pending. Enabling the feature changes large-n output
+    /// bits, which is why the six-step golden lives in the gated battery.
     #[doc(hidden)]
     #[must_use]
     pub fn takes_sixstep(n: usize) -> bool {
         cfg!(feature = "frontier-sixstep")
+            && n.is_power_of_two()
             && n >= SIXSTEP_MIN
             && n.trailing_zeros().is_multiple_of(2)
     }
@@ -324,19 +344,18 @@ impl Fft {
         }
     }
 
-    /// Cache-blocked six-step FFT (bead 27d3): for n = n₁² view the array
-    /// as an n₁×n₁ row-major matrix, then
-    ///   transpose → row-FFT sweep (+ fused w_nᵏʲ twiddle) → transpose →
-    ///   row-FFT sweep → transpose
-    /// — five in-place full-array passes, where each row transform runs the
-    /// whole sub-plan CACHE-RESIDENT (the stage walk streams the full array
-    /// from DRAM once per stage instead). Transposes are exact element
-    /// swaps (no arithmetic — bit-neutral); twiddles come from the same
-    /// strict table via `tw` (k·j < n, in range by construction); the row
-    /// sweeps reuse the mixed radix-8/4/2 kernels. Deterministic by
-    /// construction: decomposition, sweep order, and twiddle indices are
-    /// pure functions of n.
+    /// Cache-blocked six-step FFT (bead 27d3): for n = n₁², view the array
+    /// as an n₁×n₁ row-major matrix. Its logical three-transpose/two-sweep
+    /// decomposition is fused into two full-array storage passes around
+    /// cache-resident row transforms: `data` columns → first sweep + twiddle
+    /// → `scratch` columns, then `scratch` rows → second sweep → `data`
+    /// columns. Gather/scatter operations are exact element moves; twiddles
+    /// come from the same strict table via `tw` (`k·j < n` by construction),
+    /// and row sweeps reuse the mixed radix-8/4/2 kernels. Decomposition,
+    /// sweep order, and twiddle indices are pure functions of n.
     fn transform_sixstep(&self, data: &mut [C64], scratch: &mut [C64], inverse: bool) {
+        const GCOLS: usize = 8;
+
         let sub = self.sub.as_deref().expect("dispatch guaranteed a sub-plan");
         let n1 = sub.n;
         // FUSED six-step (bead 27d3 copy-back fusion): the three
@@ -352,7 +371,6 @@ impl Fft {
         // complex = 128 bytes = one cache line, so the strided side of
         // each pass still reads/writes every line exactly once (a
         // column-at-a-time walk would touch each line 8x).
-        const GCOLS: usize = 8;
         debug_assert_eq!(n1 % GCOLS, 0, "sixstep sizes have n1 = 2^e >= 256");
         let mut row_scratch = vec![C64::default(); n1];
         let mut bufs = vec![C64::default(); GCOLS * n1];
@@ -1048,6 +1066,13 @@ mod tests {
         for n in [2usize, 8, 32, 128] {
             let x: Vec<f64> = (0..n).map(|_| lcg(&mut seed)).collect();
             let got = dct2(&x);
+            let got_replay = dct2(&x);
+            assert!(
+                got.iter()
+                    .zip(&got_replay)
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "DCT-II same-build replay changed bits at n={n}"
+            );
             // Naive DCT-II.
             for (k, &g) in got.iter().enumerate() {
                 let want: f64 = x
@@ -1066,6 +1091,13 @@ mod tests {
             }
             // DCT-III naive check.
             let y = dct3(&got);
+            let y_replay = dct3(&got);
+            assert!(
+                y.iter()
+                    .zip(&y_replay)
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "DCT-III same-build replay changed bits at n={n}"
+            );
             for (j, &v) in y.iter().enumerate() {
                 let want: f64 = 0.5 * got[0]
                     + (1..n)
@@ -1088,7 +1120,7 @@ mod tests {
             }
         }
         println!(
-            "{{\"suite\":\"fs-fft\",\"case\":\"dct\",\"verdict\":\"pass\",\"detail\":\"DCT-II/III vs naive + round-trip, n in 2..128\"}}"
+            "{{\"suite\":\"fs-fft\",\"case\":\"dct\",\"verdict\":\"pass\",\"detail\":\"DCT-II/III vs naive + round-trip + same-build bit replay, n in 2..128\"}}"
         );
     }
 

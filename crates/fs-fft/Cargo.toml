@@ -12,10 +12,10 @@ layer = "L1"
 
 [features]
 # [F]-gated per the Ambition-Tag rule (bead 27d3): the cache-blocked
-# six-step path for large even-log2 sizes. Correct and golden-frozen,
-# but MEASURED SLOWER than the radix-8/4/2 stage walk on M4 (scalar
-# transposes lose to the prefetch-friendly stage streams); ships OFF
-# until the SIMD-tiled transpose capsule makes it win.
+# fused two-pass six-step path for large even-log2 powers of two. Correct
+# and golden-frozen, but still MEASURED SLOWER than the radix-8/4/2 stage
+# walk on M4 after vectorized gather/scatter; it remains default-OFF on
+# that ISA, with the current x86 verdict still pending.
 frontier-sixstep = []
 
 [dependencies]

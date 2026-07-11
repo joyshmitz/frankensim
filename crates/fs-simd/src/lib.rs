@@ -757,6 +757,30 @@ mod tests {
     }
 
     #[test]
+    fn strip_geometry_overflow_is_refused_before_dispatch() {
+        const N1: usize = 8;
+        let src = [0.0; 2 * N1 * N1];
+        let mut bufs = [0.0; 16 * N1];
+        let mut dst = [0.0; 2 * N1 * N1];
+
+        // `usize::MAX + 8` used to wrap in optimized builds. On AArch64
+        // the resolved functions exercise the NEON pointer path; on every
+        // target the explicit scalar calls pin identical refusal semantics.
+        assert_panics_with("gath8c64 column group out of range", || {
+            (ops().gath8c64)(&src, &mut bufs, N1, usize::MAX);
+        });
+        assert_panics_with("gath8c64 column group out of range", || {
+            scalar::gath8c64(&src, &mut bufs, N1, usize::MAX);
+        });
+        assert_panics_with("scat8c64 column group out of range", || {
+            (ops().scat8c64)(&bufs, &mut dst, N1, usize::MAX);
+        });
+        assert_panics_with("scat8c64 column group out of range", || {
+            scalar::scat8c64(&bufs, &mut dst, N1, usize::MAX);
+        });
+    }
+
+    #[test]
     fn packed_f32_smallest_last_tile_second_quad_matches_scalar() {
         // k=4 makes i0=j0=0 the final 4x4 tile; mb=8 forces q=1. On the old
         // rewind cursor scheme, the final l step for row 3 formed end+4 before

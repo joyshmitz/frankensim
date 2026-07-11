@@ -18,7 +18,7 @@
 //! the pre/post axes must be admitted against the promoted baseline
 //! for this machine fingerprint or the lane FAILS with the receipt.
 
-use fs_fft::{C64, Fft};
+use fs_fft::{C64, Fft, SIXSTEP_FULL_ARRAY_PASSES, SIXSTEP_PERFORMANCE_MODEL_VERSION};
 use fs_roofline::{
     AxisBaselinePolicy, BaselineIdentity, BaselineStore, KernelSpec, MachineAxes, RooflineKernel,
     TargetAxis, Threading, days_since_epoch_now, measure,
@@ -40,21 +40,18 @@ fn stages(n: usize) -> usize {
     c
 }
 
-/// Does `n` take the six-step path? MUST mirror `Fft::takes_sixstep`
-/// (feature-gated; n ≥ 2^16 with even log₂). The default lane models
-/// and measures the stage walk; enabling `frontier-sixstep` flips both
-/// the kernel and this model together.
+/// Use the production dispatch predicate directly so feature, shape, and
+/// power-of-two admission cannot drift from the measured implementation.
 fn takes_sixstep(n: usize) -> bool {
-    cfg!(feature = "frontier-sixstep") && n >= (1 << 16) && n.trailing_zeros().is_multiple_of(2)
+    Fft::takes_sixstep(n)
 }
 
-/// Full-array DRAM passes per single transform: the six-step does six
-/// (three out-of-place transposes + two row sweeps whose sub-transforms
-/// are cache-resident + the final copy-back); the stage walk does one
+/// Full-array DRAM passes per single transform. The fused six-step does
+/// exactly the implementation-declared two passes; the stage walk does one
 /// per stage plus the odd-parity copy-back.
 fn dram_passes(n: usize) -> f64 {
     if takes_sixstep(n) {
-        6.0
+        SIXSTEP_FULL_ARRAY_PASSES as f64
     } else {
         let st = stages(n);
         st as f64 + f64::from(u8::from(st % 2 == 1))
@@ -123,7 +120,7 @@ impl RooflineKernel for FftRoundTrip {
         KernelSpec {
             name: "fft-roundtrip",
             version: if takes_sixstep(self.n) {
-                "27d3-6s"
+                SIXSTEP_PERFORMANCE_MODEL_VERSION
             } else {
                 "27d3-r8"
             },
@@ -146,6 +143,24 @@ impl RooflineKernel for FftRoundTrip {
     fn run_once(&mut self) {
         self.plan.forward(&mut self.data, &mut self.scratch);
         self.plan.inverse(&mut self.data, &mut self.scratch);
+    }
+}
+
+#[test]
+fn fused_sixstep_traffic_and_evidence_version_are_bound() {
+    assert_eq!(SIXSTEP_FULL_ARRAY_PASSES, 2);
+    assert_eq!(SIXSTEP_PERFORMANCE_MODEL_VERSION, "27d3-6s-fused2");
+
+    if cfg!(feature = "frontier-sixstep") {
+        let n = 1usize << 16;
+        assert!(takes_sixstep(n));
+        assert_eq!(
+            dram_passes(n).to_bits(),
+            (SIXSTEP_FULL_ARRAY_PASSES as f64).to_bits()
+        );
+        let spec = FftRoundTrip::new(n).spec();
+        assert_eq!(spec.version, SIXSTEP_PERFORMANCE_MODEL_VERSION);
+        assert_eq!(spec.bytes_per_elem.to_bits(), 160.0f64.to_bits());
     }
 }
 

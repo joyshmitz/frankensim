@@ -74,8 +74,11 @@ pub fn gath8c64(src: &[f64], bufs: &mut [f64], n1: usize, g: usize) {
         16 * n1,
         "gath8c64 bufs length (programmer error)"
     );
+    let group_end = g
+        .checked_add(TILE)
+        .unwrap_or_else(|| panic!("gath8c64 column group out of range (programmer error)"));
     assert!(
-        g + 8 <= n1,
+        group_end <= n1,
         "gath8c64 column group out of range (programmer error)"
     );
     let sp = src.as_ptr();
@@ -113,8 +116,11 @@ pub fn scat8c64(bufs: &[f64], dst: &mut [f64], n1: usize, g: usize) {
         16 * n1,
         "scat8c64 bufs length (programmer error)"
     );
+    let group_end = g
+        .checked_add(TILE)
+        .unwrap_or_else(|| panic!("scat8c64 column group out of range (programmer error)"));
     assert!(
-        g + 8 <= n1,
+        group_end <= n1,
         "scat8c64 column group out of range (programmer error)"
     );
     let bp = bufs.as_ptr();

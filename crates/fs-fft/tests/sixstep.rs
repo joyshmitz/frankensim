@@ -1,11 +1,10 @@
 //! Six-step conformance battery (bead 27d3; runs under
-//! `frontier-sixstep`). The cache-blocked six-step path is correct and
-//! golden-frozen but MEASURED SLOWER than the stage walk on M4 (scalar
-//! transposes vs prefetch-friendly stage streams), so it ships
-//! feature-gated per the Ambition-Tag rule until the SIMD-tiled
-//! transpose capsule makes it win. This battery pins: the enabled
-//! dispatch predicate, cross-path value agreement, transform laws at a
-//! six-step size, and the six-step golden (registered in
+//! `frontier-sixstep`). The fused two-pass path is correct and
+//! golden-frozen but remains MEASURED SLOWER than the stage walk on M4
+//! after vectorized gather/scatter, so it stays feature-gated per the
+//! Ambition-Tag rule. Its current x86 verdict remains pending. This battery
+//! pins the enabled dispatch predicate, cross-path value agreement,
+//! transform laws at a six-step size, and the six-step golden (registered in
 //! golden-couplings.json against `fs-fft:transform-bits`).
 
 use fs_fft::{C64, Fft};
@@ -20,8 +19,8 @@ fn lcg(seed: &mut u64) -> f64 {
 
 #[test]
 fn sixstep_dispatch_is_a_pure_function_of_n() {
-    // The enabled bit contract, pinned: large even-log₂ sizes take
-    // six-step; everything else stays on the stage walk.
+    // The enabled bit contract, pinned: large even-log₂ powers of two take
+    // six-step; every other integer stays on the stage walk.
     for n in [1usize << 16, 1 << 18, 1 << 20, 1 << 22] {
         assert!(
             Fft::takes_sixstep(n),
@@ -34,6 +33,12 @@ fn sixstep_dispatch_is_a_pure_function_of_n() {
             !Fft::takes_sixstep(n),
             "n=2^{} must stay on stages",
             n.ilog2()
+        );
+    }
+    for n in [(1usize << 16) + 1, (1 << 18) + 4, usize::MAX] {
+        assert!(
+            !Fft::takes_sixstep(n),
+            "non-power-of-two n={n} must stay on stages"
         );
     }
 }
@@ -124,7 +129,9 @@ fn sixstep_impulse_shift_and_parseval() {
 /// n=128 stage golden is untouched by construction (default dispatch is
 /// pinned in-lib; the enabled dispatch is pinned above). Recorded on
 /// aarch64-apple (M4 Pro), identical in debug and release; registered
-/// against fs-fft:transform-bits=1 in golden-couplings.json.
+/// against fs-fft:transform-bits=1 in golden-couplings.json. The later
+/// fused/vectorized storage rewrite preserved this hash because it changed
+/// exact moves, not arithmetic order.
 const SIXSTEP_GOLDEN_HASH: u64 = 0x79aa_108f_a517_012f;
 
 #[test]
