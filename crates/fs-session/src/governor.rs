@@ -355,6 +355,14 @@ fn json_escape(value: &str) -> String {
     out
 }
 
+fn scoped_payload(schema: &str, ledger_scope: &str, body: &str) -> String {
+    format!(
+        "{{\"schema\":\"{}\",\"ledger_scope\":\"{}\",{body}}}",
+        json_escape(schema),
+        json_escape(ledger_scope),
+    )
+}
+
 fn enforcement_json(enforcement: &Enforcement) -> String {
     match enforcement {
         Enforcement::Ok => "{\"kind\":\"ok\"}".to_string(),
@@ -402,14 +410,30 @@ struct Inner {
     /// session/key. Binding both fields prevents a future replacement from
     /// being mistaken for an already-flushed generation.
     flushed_idempotency: BTreeMap<(u64, String), (u64, SubmissionReceipt)>,
-    /// Prefix length of `events` durably appended to the owning ledger.
-    flushed_events: usize,
-    /// Exact owning ledger sink. File ledgers bind by their opened path;
-    /// independent `:memory:` handles additionally bind by handle identity.
-    flushed_ledger: Option<String>,
+    /// Per-scope prefix length of `events` already inspected and durably
+    /// appended where applicable. Each cursor indexes the global event vector
+    /// but advances independently after exact-scope filtering.
+    flushed_events: BTreeMap<String, usize>,
+    /// Exact owning ledger sink per scope. File ledgers bind by their opened
+    /// path; independent `:memory:` handles additionally bind by handle
+    /// identity.
+    flushed_ledgers: BTreeMap<String, String>,
+    /// Successful non-empty flush generation per exact ledger scope.
+    flush_generations: BTreeMap<String, i64>,
     next_submission_ordinal: u64,
     next_ordinal: i64,
-    next_flush_generation: i64,
+}
+
+fn session_scope(inner: &Inner, session: u64) -> Result<&str, SessionError> {
+    inner
+        .tokens
+        .get(&session)
+        .map(|token| token.ledger_scope.as_str())
+        .ok_or_else(|| SessionError::Persistence {
+            what: format!(
+                "internal session flush invariant failed: session {session} has state but no capability token"
+            ),
+        })
 }
 
 /// The governor. `Send + Sync`: hot paths are mutex-guarded in-memory
@@ -440,6 +464,7 @@ impl Governor {
         token: CapabilityToken,
         gate: Option<Arc<CancelGate>>,
     ) -> Result<(), SessionError> {
+        CapabilityToken::validate_ledger_scope(&token.ledger_scope)?;
         validate_resource("core-seconds grant", token.core_s)?;
         validate_resource("wall-seconds grant", token.wall_s)?;
         let session = token.session.0;
@@ -459,11 +484,15 @@ impl Governor {
     /// the lifetime of this governor; duplicate registration fails closed.
     ///
     /// # Errors
-    /// [`SessionError::InvalidResource`] when a floating-point time grant is
-    /// not finite and non-negative, or [`SessionError::SessionAlreadyOpen`]
-    /// when the id is already registered. Integer memory/core grants are
-    /// structurally bounded. Rejection happens before any session state is
-    /// mutated.
+    /// - [`SessionError::InvalidLedgerScope`] when the token's namespace is not
+    ///   canonical and bounded.
+    /// - [`SessionError::InvalidResource`] when a floating-point time grant is
+    ///   not finite and non-negative.
+    /// - [`SessionError::SessionAlreadyOpen`] when the id is already
+    ///   registered.
+    ///
+    /// Integer memory/core grants are structurally bounded. Rejection happens
+    /// before any session state is mutated.
     pub fn open_session(&self, token: CapabilityToken) -> Result<(), SessionError> {
         self.register_session(token, None)
     }
@@ -475,8 +504,10 @@ impl Governor {
     /// Sessions opened without a gate refuse level-3 pressure.
     ///
     /// # Errors
-    /// [`SessionError::InvalidResource`] or
-    /// [`SessionError::SessionAlreadyOpen`] as [`Governor::open_session`].
+    /// The same [`SessionError::InvalidLedgerScope`],
+    /// [`SessionError::InvalidResource`], and
+    /// [`SessionError::SessionAlreadyOpen`] refusals as
+    /// [`Governor::open_session`].
     pub fn open_session_gated(
         &self,
         token: CapabilityToken,
@@ -867,11 +898,12 @@ impl Governor {
         self.inner.lock().expect("governor lock").events.clone()
     }
 
-    /// Incrementally persist changed consumption snapshots plus new terminal
-    /// idempotency and degradation events to the Design Ledger. A successful
-    /// flush advances in-memory cursors, so repeating it without new governor
-    /// state is a no-op. The batch is atomic and this governor has one owning
-    /// ledger sink; cross-ledger replication belongs above this API.
+    /// Incrementally persist one exact ledger scope's changed consumption
+    /// snapshots plus new terminal idempotency and degradation events. A
+    /// successful flush advances only that scope's in-memory cursors, so
+    /// repeating it without new scoped state is a no-op. Each scope binds to
+    /// one owning sink independently; cross-ledger replication belongs above
+    /// this API.
     ///
     /// The method refuses to join an already-open ledger transaction: it could
     /// not know whether the caller later committed or rolled back, and marking
@@ -879,39 +911,67 @@ impl Governor {
     /// (Single-threaded by design: fsqlite connections are `!Send`.)
     ///
     /// # Errors
-    /// [`SessionError::Persistence`] wrapping the ledger error.
+    /// - [`SessionError::InvalidLedgerScope`] for a non-canonical scope.
+    /// - [`SessionError::UnknownLedgerScope`] when no open token owns the scope.
+    /// - [`SessionError::LedgerScopeSinkMismatch`] when the scope is already
+    ///   bound to a different sink.
+    /// - [`SessionError::Persistence`] wrapping a ledger or internal-cursor
+    ///   error.
     #[allow(clippy::too_many_lines)] // One atomic prepare/append/commit-cursors transaction.
-    pub fn flush_to_ledger(&self, ledger: &fs_ledger::Ledger) -> Result<(), SessionError> {
+    pub fn flush_scope_to_ledger(
+        &self,
+        ledger_scope: &str,
+        ledger: &fs_ledger::Ledger,
+    ) -> Result<(), SessionError> {
+        CapabilityToken::validate_ledger_scope(ledger_scope)?;
         let mut g = self.inner.lock().expect("governor lock");
-        let sink_identity = ledger_sink_identity(ledger);
-        if let Some(bound) = &g.flushed_ledger
-            && bound != &sink_identity
+        if !g
+            .tokens
+            .values()
+            .any(|token| token.ledger_scope == ledger_scope)
         {
-            return Err(SessionError::Persistence {
-                what: format!(
-                    "this governor is already bound to ledger sink {bound:?}; refusing split \
-                     history into {sink_identity:?} and leaving every flush cursor unchanged"
-                ),
+            return Err(SessionError::UnknownLedgerScope {
+                scope: ledger_scope.to_string(),
             });
         }
+        let sink_identity = ledger_sink_identity(ledger);
+        if let Some(bound) = g.flushed_ledgers.get(ledger_scope)
+            && bound != &sink_identity
+        {
+            return Err(SessionError::LedgerScopeSinkMismatch {
+                scope: ledger_scope.to_string(),
+                bound_sink: bound.clone(),
+                attempted_sink: sink_identity,
+            });
+        }
+        let previous_generation = g.flush_generations.get(ledger_scope).copied().unwrap_or(0);
         let flush_generation =
-            g.next_flush_generation
+            previous_generation
                 .checked_add(1)
                 .ok_or_else(|| SessionError::Persistence {
-                    what: "session flush generation space exhausted".to_string(),
+                    what: format!(
+                        "session flush generation space exhausted for scope {ledger_scope:?}"
+                    ),
                 })?;
         let mut buffered = Vec::new();
         let mut meter_marks = Vec::new();
         for (id, m) in &g.meters {
+            if session_scope(&g, *id)? != ledger_scope {
+                continue;
+            }
             if g.flushed_meters
                 .get(id)
                 .is_some_and(|flushed| same_meter_snapshot(flushed, m))
             {
                 continue;
             }
-            let payload = format!(
-                "{{\"schema\":\"fs-session-consumption-v2\",\"flush_generation\":{flush_generation},\"core_s\":{},\"mem_peak\":{},\"wall_s\":{},\"throttled\":{},\"paused\":{}}}",
-                m.core_s, m.mem_peak_bytes, m.wall_s, m.throttled, m.paused,
+            let payload = scoped_payload(
+                "fs-session-consumption-v3",
+                ledger_scope,
+                &format!(
+                    "\"flush_generation\":{flush_generation},\"core_s\":{},\"mem_peak\":{},\"wall_s\":{},\"throttled\":{},\"paused\":{}",
+                    m.core_s, m.mem_peak_bytes, m.wall_s, m.throttled, m.paused,
+                ),
             );
             buffered.push(BufferedLedgerEvent {
                 session: id.to_be_bytes(),
@@ -923,7 +983,10 @@ impl Governor {
         }
         let mut idempotency_marks = Vec::new();
         for ((session, key), state) in &g.idempotency {
-            let (ordinal, receipt, kind, payload) = match state {
+            if session_scope(&g, *session)? != ledger_scope {
+                continue;
+            }
+            let (ordinal, receipt, kind, body) = match state {
                 IdemState::Pending => continue,
                 IdemState::Done {
                     ordinal,
@@ -935,7 +998,7 @@ impl Governor {
                     *receipt,
                     "session.idempotent-execution",
                     format!(
-                        "{{\"schema\":\"fs-session-idempotency-v2\",\"session\":{session},\"key\":\"{}\",\"receipt\":\"{receipt}\",\"core_s_bits\":\"{:016x}\",\"mem_peak_bytes\":{},\"wall_s_bits\":\"{:016x}\",\"enforcement\":{}}}",
+                        "\"session\":{session},\"key\":\"{}\",\"receipt\":\"{receipt}\",\"core_s_bits\":\"{:016x}\",\"mem_peak_bytes\":{},\"wall_s_bits\":\"{:016x}\",\"enforcement\":{}",
                         json_escape(key),
                         charge.core_s.to_bits(),
                         charge.mem_peak_bytes,
@@ -952,15 +1015,16 @@ impl Governor {
                     *receipt,
                     "session.idempotent-failure",
                     format!(
-                        "{{\"schema\":\"fs-session-idempotency-v2\",\"session\":{session},\"key\":\"{}\",\"receipt\":\"{receipt}\",\"error\":\"{}\"}}",
+                        "\"session\":{session},\"key\":\"{}\",\"receipt\":\"{receipt}\",\"error\":\"{}\"",
                         json_escape(key),
                         json_escape(what),
                     ),
                 ),
             };
+            let payload = scoped_payload("fs-session-idempotency-v3", ledger_scope, &body);
             let generation = (ordinal, receipt);
-            let scope = (*session, key.clone());
-            if g.flushed_idempotency.get(&scope) == Some(&generation) {
+            let idempotency_scope = (*session, key.clone());
+            if g.flushed_idempotency.get(&idempotency_scope) == Some(&generation) {
                 continue;
             }
             buffered.push(BufferedLedgerEvent {
@@ -971,9 +1035,9 @@ impl Governor {
                 kind,
                 payload,
             });
-            idempotency_marks.push((scope, generation));
+            idempotency_marks.push((idempotency_scope, generation));
         }
-        let flushed_events = g.flushed_events;
+        let flushed_events = g.flushed_events.get(ledger_scope).copied().unwrap_or(0);
         let event_target = g.events.len();
         let new_events = g.events.get(flushed_events..).ok_or_else(|| {
             SessionError::Persistence {
@@ -983,12 +1047,19 @@ impl Governor {
             }
         })?;
         for ev in new_events {
-            let payload = format!(
-                "{{\"step\":\"{:?}\",\"level\":{},\"phase\":\"{:?}\",\"attribution\":\"{}\"}}",
-                ev.step,
-                ev.pressure_level,
-                ev.phase,
-                json_escape(&ev.attribution),
+            if session_scope(&g, ev.session.0)? != ledger_scope {
+                continue;
+            }
+            let payload = scoped_payload(
+                "fs-session-degradation-v2",
+                ledger_scope,
+                &format!(
+                    "\"step\":\"{:?}\",\"level\":{},\"phase\":\"{:?}\",\"attribution\":\"{}\"",
+                    ev.step,
+                    ev.pressure_level,
+                    ev.phase,
+                    json_escape(&ev.attribution),
+                ),
             );
             buffered.push(BufferedLedgerEvent {
                 session: ev.session.0.to_be_bytes(),
@@ -998,6 +1069,11 @@ impl Governor {
             });
         }
         if buffered.is_empty() {
+            // No scoped writes were needed, but this scope has now inspected
+            // the global event prefix. Advancing only its cursor prevents
+            // repeated rescans of events owned by other scopes.
+            g.flushed_events
+                .insert(ledger_scope.to_string(), event_target);
             return Ok(());
         }
         if ledger.in_transaction() {
@@ -1016,15 +1092,36 @@ impl Governor {
                 ),
             })?;
 
-        g.next_flush_generation = flush_generation;
-        g.flushed_ledger = Some(sink_identity);
+        g.flush_generations
+            .insert(ledger_scope.to_string(), flush_generation);
+        g.flushed_ledgers
+            .insert(ledger_scope.to_string(), sink_identity);
         for (id, meters) in meter_marks {
             g.flushed_meters.insert(id, meters);
         }
         for (scope, generation) in idempotency_marks {
             g.flushed_idempotency.insert(scope, generation);
         }
-        g.flushed_events = event_target;
+        g.flushed_events
+            .insert(ledger_scope.to_string(), event_target);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scoped_payload;
+
+    #[test]
+    fn scoped_payload_preserves_and_escapes_the_exact_authority() {
+        let payload = scoped_payload(
+            "fs-session-test-v1",
+            r#"alpha/"quoted"\branch"#,
+            "\"value\":1",
+        );
+        assert_eq!(
+            payload,
+            r#"{"schema":"fs-session-test-v1","ledger_scope":"alpha/\"quoted\"\\branch","value":1}"#
+        );
     }
 }

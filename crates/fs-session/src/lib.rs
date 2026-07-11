@@ -7,7 +7,7 @@
 //! Layer: L6 (HELM). Threading contract: the governor's hot paths are
 //! `Send + Sync` (in-memory, mutex-guarded) so enforcement and idempotency
 //! survive concurrent submission storms; ledger persistence is an explicit
-//! single-threaded `flush_to_ledger` step because fsqlite connections are
+//! single-threaded `flush_scope_to_ledger` step because fsqlite connections are
 //! `!Send` by design.
 
 pub mod estimate;
@@ -35,7 +35,7 @@ pub use governor::{
     SubmitOutcome,
 };
 pub use guidance::Guidance;
-pub use token::{CapabilityToken, SessionId};
+pub use token::{CapabilityToken, MAX_LEDGER_SCOPE_BYTES, SessionId};
 
 use core::fmt;
 
@@ -56,6 +56,27 @@ pub enum SessionError {
     SessionAlreadyOpen {
         /// The duplicate id.
         id: u64,
+    },
+    /// A ledger scope was not a canonical bounded authority string.
+    InvalidLedgerScope {
+        /// The rejected exact string.
+        scope: String,
+        /// Canonical scope grammar.
+        requirement: &'static str,
+    },
+    /// No open session carries the requested ledger scope.
+    UnknownLedgerScope {
+        /// Requested exact scope.
+        scope: String,
+    },
+    /// A scope already persisted to a different ledger sink.
+    LedgerScopeSinkMismatch {
+        /// Scope whose history would be split.
+        scope: String,
+        /// Sink bound by the first successful non-empty flush.
+        bound_sink: String,
+        /// Rejected sink.
+        attempted_sink: String,
     },
     /// A resource grant, charge, or accumulated meter is outside its valid
     /// finite, non-negative domain.
@@ -106,6 +127,22 @@ impl fmt::Display for SessionError {
                 f,
                 "session {id} is already open; capability tokens are immutable and the existing \
                  session state was left unchanged"
+            ),
+            SessionError::InvalidLedgerScope { scope, requirement } => write!(
+                f,
+                "invalid ledger scope {scope:?}: {requirement}; session and flush state were not mutated"
+            ),
+            SessionError::UnknownLedgerScope { scope } => write!(
+                f,
+                "unknown ledger scope {scope:?}; no open session grants that exact namespace and no flush cursor was advanced"
+            ),
+            SessionError::LedgerScopeSinkMismatch {
+                scope,
+                bound_sink,
+                attempted_sink,
+            } => write!(
+                f,
+                "ledger scope {scope:?} is already bound to sink {bound_sink:?}; refusing sink {attempted_sink:?} and leaving every scope cursor unchanged"
             ),
             SessionError::InvalidResource {
                 resource,

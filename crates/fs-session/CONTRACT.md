@@ -23,13 +23,15 @@ Consumers: the P2 marquee demo, the HELM e2e suite (gp3.11).
   checked statically at admission AND continuously by the governor). Memory
   bytes and concurrent cores remain exact `u64` values through the bridge;
   source count scaling, token comparison, and governor enforcement never
-  project those authorities through `f64`.
+  project those authorities through `f64`. `ledger_scope` is exact authority,
+  admitted only as 1..=128 ASCII graphic bytes: whitespace, controls, Unicode
+  normalization aliases, and oversized namespaces fail before registration.
 - `Governor` — `Send + Sync`; hot paths are mutex-guarded in-memory
-  state. `open_session` rejects non-finite or negative floating grants
-  before registration and rejects an already-open `SessionId` without
-  replacing its immutable token or inheriting its meters, gate, pause state,
-  or idempotency receipts. Token and optional gate registration are one atomic
-  critical section. `charge(session, Charge)` rejects non-finite,
+  state. `open_session` rejects invalid ledger scope, non-finite, or negative
+  floating grants before registration and rejects an already-open `SessionId`
+  without replacing its immutable token or inheriting its meters, gate, pause
+  state, or idempotency receipts. Token and optional gate registration are one
+  atomic critical section. `charge(session, Charge)` rejects non-finite,
   negative, or overflowing deltas before mutating meters, then meters
   core-seconds / peak memory / wall and returns `Enforcement`: `Ok` →
   `Throttled` (at the grant) → `Paused` (past 1.2× the grant, with a
@@ -50,10 +52,11 @@ Consumers: the P2 marquee demo, the HELM e2e suite (gp3.11).
   behind a generic success.
   `idempotency_key(agent_key, program)` length-frames both inputs under a
   separate BLAKE3 domain; blank or oversized supplied keys are refused.
-- `apply_memory_pressure(session, level, gate)` — the DECLARED
+- `apply_memory_pressure(session, level)` — the DECLARED
   degradation ladder (`LADDER`: spill coldest arenas → coarsen
   adaptively → pause-serialize-resume) fires steps `1..=level` in order;
-  the pause step requests the session's `CancelGate` so the solver
+  the pause step resolves the session-owned `CancelGate` bound by
+  `open_session_gated` and requests it so the solver
   checkpoints at its next tile boundary (P7). Every event carries
   attribution and a deterministic ordinal.
 - `estimate(study, cost_models, cores)` — the dry run: p10/p50/p90 wall
@@ -91,15 +94,20 @@ Consumers: the P2 marquee demo, the HELM e2e suite (gp3.11).
 - `Guidance { code, diagnosis, fixes }` — errors as teaching:
   `from_finding` lifts fs-ir admission findings (the canonical §11.3
   `BudgetInfeasible` fixture) with their cost-model-ranked fixes intact.
-- `flush_to_ledger(&Ledger)` — changed consumption snapshots plus new
-  degradation and terminal idempotency receipts persisted exactly once as an
-  atomic `session.*` event batch. An unchanged repeated call is a no-op;
-  failed persistence leaves every generation-aware cursor dirty for retry.
+- `flush_scope_to_ledger(scope, &Ledger)` — changed consumption snapshots plus
+  new degradation and terminal idempotency receipts for sessions whose
+  immutable token grants that exact scope, persisted exactly once as an atomic
+  `session.*` event batch. Invalid and unknown scopes fail closed. Every payload
+  carries the exact JSON-escaped `ledger_scope`; consumption/idempotency schemas
+  are v3 and degradation is v2. An unchanged repeated call is a no-op; failed
+  persistence leaves every selected generation-aware cursor dirty for retry.
   The call refuses an already-open ledger transaction because it cannot know
   whether the owner will commit or roll back. Explicitly single-threaded:
-  fsqlite connections are `!Send` by design. The first successful non-empty
-  flush binds one governor to one owning ledger path (and exact handle for
-  independent `:memory:` ledgers); a different sink is refused before writes.
+  fsqlite connections are `!Send` by design. Each scope owns an independent
+  degradation cursor and flush generation. Its first successful non-empty flush
+  binds that scope to one owning ledger path (and exact handle for independent
+  `:memory:` ledgers); a different sink is refused before writes without
+  advancing any scope cursor.
 - `gemm_f64_session_with_pool(tuner, cache_policy, pool, gate, m, n, k, α,
   a, b, β, c)`
   — the production GEMM autotune loop (bead yqug): measure → cache →
@@ -202,15 +210,19 @@ Consumers: the P2 marquee demo, the HELM e2e suite (gp3.11).
    structured `SessionAlreadyOpen` refusal. The original capability, meter,
    cancellation gate, pause state, and terminal idempotency generations remain
    unchanged.
-10. **Flush is append-once and retryable**: one terminal submission generation,
-    degradation event, or distinct meter snapshot is appended at most once by
-    a governor. The whole dirty set commits atomically; refusal or failure
-    advances no cursor, while successful unchanged repeats append zero rows.
+10. **Scoped flush is append-once and retryable**: one terminal submission
+    generation, degradation event, or distinct meter snapshot is appended at
+    most once to the sink bound by its token's exact ledger scope. Interleaved
+    scopes have independent sink, generation, and degradation cursors. One
+    scope's atomic success advances only its cursors; invalid/unknown scope,
+    wrong-sink refusal, or persistence failure advances none, while successful
+    unchanged repeats append zero rows.
 
 ## Error model
 
-`SessionError`: `UnknownSession`, `SessionAlreadyOpen`, `InvalidResource`,
-`Submission`, `Persistence`. `GemmTuneError`: cancellation with
+`SessionError`: `UnknownSession`, `SessionAlreadyOpen`, `InvalidLedgerScope`,
+`UnknownLedgerScope`, `LedgerScopeSinkMismatch`, `InvalidResource`, `Submission`,
+`Persistence`. `GemmTuneError`: cancellation with
 the drained numerical report when dispatch began, structured TilePool failure
 with tile provenance and its full report, typed tuner refusal, ledger refusal,
 exact-bit drift with candidate and repeat, `MemoryRefused` with the outer
@@ -272,7 +284,9 @@ ss-010 the exact-grant throttle boundary and atomic accumulated-overflow
 refusal; ss-002b duplicate session registration preserving the original token,
 meters, gate, and terminal idempotency state; ss-003d atomic incremental ledger
 flush, unchanged-call no-op behavior, and dirty-cursor retry after transaction
-refusal.
+refusal; ss-003e canonical scope validation plus invalid/unknown no-mutation
+refusals; ss-003f two-scope interleaving, independent sink binding, exact scoped
+payload escaping, cross-scope wrong-sink refusal, and per-scope cursor retry.
 
 `tests/gemm_tune.rs` (bead yqug drills): cold start sweeps once and
 matches serial bits; ledger warm start seeds a fresh session without
@@ -314,10 +328,11 @@ armed and runs when an x86 host picks it up.
 - **Idempotency persistence is flush-based**: in-process registry +
   session-bound ledgered success/failure receipts; cross-process replay reconstruction
   belongs to the HELM e2e/crash-recovery bead (gp3.11).
-- **A governor flushes to one owning ledger sink**: the in-memory cursors prevent
-  duplicate appends to that sink, and a later different sink is refused before
-  writes rather than receiving a partial history. Cross-ledger replication is
-  an event-log concern above this API.
+- **Each exact ledger scope flushes to one owning sink**: per-scope in-memory
+  cursors prevent duplicate appends, while a later different sink for that
+  scope is refused before writes rather than receiving a partial history.
+  Different scopes can bind independent sinks. Cross-ledger replication of one
+  scope remains an event-log concern above this API.
 - **Two-lane executor integration** (interactive vs batch lanes with
   core quotas) is deferred to gp3.11's study-scale batteries; the
   enforcement/idempotency/estimate surfaces here are what it composes.

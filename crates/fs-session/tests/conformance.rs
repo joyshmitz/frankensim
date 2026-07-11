@@ -11,7 +11,7 @@ use fs_exec::solver::{SolverState, codec};
 use fs_plan::{CostModel, CostObservation};
 use fs_session::{
     CalibrationReport, CapabilityToken, Charge, DegradationStep, Enforcement, Estimate, Governor,
-    Guidance, SessionError, SessionId, StepPhase, SubmitOutcome, estimate,
+    Guidance, MAX_LEDGER_SCOPE_BYTES, SessionError, SessionId, StepPhase, SubmitOutcome, estimate,
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -38,6 +38,12 @@ fn token(id: u64, core_s: f64, wall_s: f64) -> CapabilityToken {
         cores: 16,
         ledger_scope: "main".to_string(),
     }
+}
+
+fn token_in_scope(id: u64, ledger_scope: &str) -> CapabilityToken {
+    let mut token = token(id, 1.0e9, 1.0e9);
+    token.ledger_scope = ledger_scope.to_string();
+    token
 }
 
 const SPOUT: &str = r#"(study "spout-laminar-v3"
@@ -553,7 +559,7 @@ fn ss_003c_receipts_bind_charge_failure_and_enforcement() {
 
     let ledger = fs_ledger::Ledger::open(":memory:").expect("receipt ledger");
     throttled
-        .flush_to_ledger(&ledger)
+        .flush_scope_to_ledger("main", &ledger)
         .expect("strict JSON receipt event");
     assert_eq!(ledger.table_count("events").unwrap(), 2);
     assert!(ledger.lint().unwrap().is_clean());
@@ -578,20 +584,21 @@ fn ss_003d_ledger_flush_is_atomic_incremental_and_retryable() {
 
     ledger.begin().expect("caller transaction");
     let refused = gov
-        .flush_to_ledger(&ledger)
+        .flush_scope_to_ledger("main", &ledger)
         .expect_err("flush cannot promise durability inside a caller transaction");
     assert!(matches!(refused, SessionError::Persistence { .. }));
     assert_eq!(ledger.table_count("events").unwrap(), 0);
     ledger.rollback().expect("caller rollback");
 
-    gov.flush_to_ledger(&ledger)
+    gov.flush_scope_to_ledger("main", &ledger)
         .expect("the refused batch remains fully dirty for retry");
     assert_eq!(
         ledger.table_count("events").unwrap(),
         2,
         "one consumption snapshot and one terminal idempotency event"
     );
-    gov.flush_to_ledger(&ledger).expect("unchanged no-op flush");
+    gov.flush_scope_to_ledger("main", &ledger)
+        .expect("unchanged no-op flush");
     assert_eq!(
         ledger.table_count("events").unwrap(),
         2,
@@ -602,7 +609,7 @@ fn ss_003d_ledger_flush_is_atomic_incremental_and_retryable() {
             .expect("terminal duplicate"),
         SubmitOutcome::Duplicate { .. }
     ));
-    gov.flush_to_ledger(&ledger)
+    gov.flush_scope_to_ledger("main", &ledger)
         .expect("duplicate observation is not a new event");
     assert_eq!(ledger.table_count("events").unwrap(), 2);
 
@@ -616,25 +623,187 @@ fn ss_003d_ledger_flush_is_atomic_incremental_and_retryable() {
     .expect("new consumption");
     let foreign_ledger = fs_ledger::Ledger::open(":memory:").expect("foreign ledger");
     assert!(matches!(
-        gov.flush_to_ledger(&foreign_ledger),
-        Err(SessionError::Persistence { .. })
+        gov.flush_scope_to_ledger("main", &foreign_ledger),
+        Err(SessionError::LedgerScopeSinkMismatch { .. })
     ));
     assert_eq!(
         foreign_ledger.table_count("events").unwrap(),
         0,
         "a governor must not split its event history across ledger sinks"
     );
-    gov.flush_to_ledger(&ledger)
+    gov.flush_scope_to_ledger("main", &ledger)
         .expect("sink refusal leaves the changed meter dirty for its owning ledger");
     assert_eq!(ledger.table_count("events").unwrap(), 3);
     gov.apply_memory_pressure(SessionId(34), 1)
         .expect("one degradation event");
-    gov.flush_to_ledger(&ledger)
+    gov.flush_scope_to_ledger("main", &ledger)
         .expect("new degradation event appends once");
     assert_eq!(ledger.table_count("events").unwrap(), 4);
-    gov.flush_to_ledger(&ledger).expect("second no-op flush");
+    gov.flush_scope_to_ledger("main", &ledger)
+        .expect("second no-op flush");
     assert_eq!(ledger.table_count("events").unwrap(), 4);
     assert!(ledger.lint().unwrap().is_clean());
+}
+
+#[test]
+fn ss_003e_ledger_scope_authority_is_canonical_and_fail_closed() {
+    let gov = Governor::new();
+    for (id, invalid_scope) in [
+        (40, ""),
+        (41, "main scope"),
+        (42, "main\nscope"),
+        (43, "máin"),
+    ] {
+        assert!(matches!(
+            gov.open_session(token_in_scope(id, invalid_scope)),
+            Err(SessionError::InvalidLedgerScope { .. })
+        ));
+        assert!(matches!(
+            gov.token(SessionId(id)),
+            Err(SessionError::UnknownSession { id: unknown }) if unknown == id
+        ));
+    }
+    let oversized = "a".repeat(MAX_LEDGER_SCOPE_BYTES + 1);
+    assert!(matches!(
+        gov.open_session(token_in_scope(44, &oversized)),
+        Err(SessionError::InvalidLedgerScope { .. })
+    ));
+    let boundary = "a".repeat(MAX_LEDGER_SCOPE_BYTES);
+    gov.open_session(token_in_scope(44, &boundary))
+        .expect("the exact scope-length boundary is admitted after refusal");
+
+    // Reuse an id rejected above: invalid scope admission must not reserve or
+    // partially initialize the session.
+    gov.open_session(token_in_scope(40, "main"))
+        .expect("valid scope after atomic refusal");
+    gov.charge(
+        SessionId(40),
+        Charge {
+            core_s: 3.0,
+            ..Charge::default()
+        },
+    )
+    .expect("dirty main meter");
+    let ledger = fs_ledger::Ledger::open(":memory:").expect("scope ledger");
+    assert!(matches!(
+        gov.flush_scope_to_ledger("bad scope", &ledger),
+        Err(SessionError::InvalidLedgerScope { .. })
+    ));
+    assert!(matches!(
+        gov.flush_scope_to_ledger("missing", &ledger),
+        Err(SessionError::UnknownLedgerScope { .. })
+    ));
+    assert_eq!(ledger.table_count("events").unwrap(), 0);
+    gov.flush_scope_to_ledger("main", &ledger)
+        .expect("invalid and unknown attempts leave the main cursor dirty");
+    assert_eq!(ledger.table_count("events").unwrap(), 1);
+    let boundary_ledger = fs_ledger::Ledger::open(":memory:").expect("boundary scope ledger");
+    gov.flush_scope_to_ledger(&boundary, &boundary_ledger)
+        .expect("main flush did not consume the other scope's meter");
+    assert_eq!(boundary_ledger.table_count("events").unwrap(), 1);
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // Two-scope cursor/sink/transaction state machine.
+fn ss_003f_scoped_flush_isolated_interleaved_retryable_and_sink_bound() {
+    const ALPHA: &str = r#"alpha/"quoted"\branch"#;
+    const BETA: &str = "beta";
+    let gov = Governor::new();
+    gov.open_session(token_in_scope(45, ALPHA))
+        .expect("canonical JSON-hostile alpha scope");
+    gov.open_session(token_in_scope(46, BETA))
+        .expect("canonical beta scope");
+    assert!(matches!(
+        gov.submit_once(SessionId(45), "alpha-once", || Charge {
+            core_s: 2.0,
+            mem_peak_bytes: 5,
+            wall_s: 1.0,
+        })
+        .expect("alpha submission"),
+        SubmitOutcome::Executed { .. }
+    ));
+    assert!(matches!(
+        gov.submit_once(SessionId(46), "beta-once", || Charge {
+            core_s: 7.0,
+            mem_peak_bytes: 11,
+            wall_s: 4.0,
+        })
+        .expect("beta submission"),
+        SubmitOutcome::Executed { .. }
+    ));
+    gov.apply_memory_pressure(SessionId(45), 1)
+        .expect("alpha event one");
+    gov.apply_memory_pressure(SessionId(46), 1)
+        .expect("interleaved beta event one");
+    gov.apply_memory_pressure(SessionId(45), 1)
+        .expect("alpha event two");
+
+    let alpha_ledger = fs_ledger::Ledger::open(":memory:").expect("alpha ledger");
+    let beta_ledger = fs_ledger::Ledger::open(":memory:").expect("beta ledger");
+    alpha_ledger.begin().expect("caller transaction");
+    assert!(matches!(
+        gov.flush_scope_to_ledger(ALPHA, &alpha_ledger),
+        Err(SessionError::Persistence { .. })
+    ));
+    assert_eq!(alpha_ledger.table_count("events").unwrap(), 0);
+    alpha_ledger.rollback().expect("caller rollback");
+
+    gov.flush_scope_to_ledger(ALPHA, &alpha_ledger)
+        .expect("alpha retry writes only alpha state");
+    assert_eq!(
+        alpha_ledger.table_count("events").unwrap(),
+        4,
+        "alpha meter + terminal receipt + two alpha degradation events"
+    );
+    assert_eq!(beta_ledger.table_count("events").unwrap(), 0);
+    gov.flush_scope_to_ledger(BETA, &beta_ledger)
+        .expect("beta independently binds its own sink");
+    assert_eq!(
+        beta_ledger.table_count("events").unwrap(),
+        3,
+        "beta meter + terminal receipt + one beta degradation event"
+    );
+    assert!(
+        alpha_ledger.lint().unwrap().is_clean(),
+        "the exact quote/backslash-bearing scope must be JSON escaped"
+    );
+    assert!(beta_ledger.lint().unwrap().is_clean());
+
+    gov.charge(
+        SessionId(45),
+        Charge {
+            core_s: 1.0,
+            ..Charge::default()
+        },
+    )
+    .expect("new alpha meter");
+    gov.apply_memory_pressure(SessionId(46), 1)
+        .expect("beta event two");
+    gov.apply_memory_pressure(SessionId(45), 1)
+        .expect("alpha event three");
+
+    assert!(matches!(
+        gov.flush_scope_to_ledger(ALPHA, &beta_ledger),
+        Err(SessionError::LedgerScopeSinkMismatch { scope, .. }) if scope == ALPHA
+    ));
+    assert_eq!(
+        beta_ledger.table_count("events").unwrap(),
+        3,
+        "cross-scope sink attempt must append nothing"
+    );
+    gov.flush_scope_to_ledger(ALPHA, &alpha_ledger)
+        .expect("wrong-sink attempt leaves both alpha cursors dirty");
+    assert_eq!(alpha_ledger.table_count("events").unwrap(), 6);
+    gov.flush_scope_to_ledger(BETA, &beta_ledger)
+        .expect("alpha activity did not consume beta's degradation cursor");
+    assert_eq!(beta_ledger.table_count("events").unwrap(), 4);
+
+    gov.flush_scope_to_ledger(ALPHA, &alpha_ledger)
+        .expect("alpha unchanged no-op");
+    gov.flush_scope_to_ledger(BETA, &beta_ledger)
+        .expect("beta unchanged no-op");
+    assert_eq!(alpha_ledger.table_count("events").unwrap(), 6);
+    assert_eq!(beta_ledger.table_count("events").unwrap(), 4);
 }
 
 #[test]
