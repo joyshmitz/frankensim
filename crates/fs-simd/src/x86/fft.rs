@@ -36,6 +36,7 @@ pub fn r4qrun_f64(
     w: &[f64; 6],
     inverse: bool,
 ) {
+    assert_r4qrun_bounds(a, b, c, d, out);
     #[cfg(target_arch = "x86_64")]
     {
         if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
@@ -48,10 +49,24 @@ pub fn r4qrun_f64(
     crate::scalar::r4qrun_f64(a, b, c, d, out, w, inverse);
 }
 
+fn assert_r4qrun_bounds(a: &[f64], b: &[f64], c: &[f64], d: &[f64], out: &[f64]) {
+    let s2 = a.len();
+    let out_len = crate::checked_r4qrun_output_len(s2);
+    assert!(
+        s2.is_multiple_of(2)
+            && b.len() == s2
+            && c.len() == s2
+            && d.len() == s2
+            && out_len == Some(out.len()),
+        "r4qrun run-length mismatch (programmer error)"
+    );
+}
+
 /// AVX2+FMA body: four complex elements (8 f64) per iteration.
 ///
 /// # Safety
-/// Requires avx2+fma (façade-verified). Every `loadu`/`storeu` touches
+/// Requires avx2+fma and slice geometry established by the safe façade. Every
+/// `loadu`/`storeu` touches
 /// exactly 4 f64 at an offset `o` (resp. `o + 4`) with `o + 8 ≤ s2`
 /// (loop bound `q8 < s2/8`, `s2 % 8 == 0`); the four output rows live at
 /// disjoint offsets `j·s2` within `out` (len `4·s2`). f64 has no invalid
@@ -68,14 +83,6 @@ unsafe fn r4qrun_256(
     inverse: bool,
 ) {
     let s2 = a.len();
-    assert!(
-        s2.is_multiple_of(2)
-            && b.len() == s2
-            && c.len() == s2
-            && d.len() == s2
-            && out.len() == 4 * s2,
-        "r4qrun run-length mismatch (programmer error)"
-    );
     if !s2.is_multiple_of(8) {
         crate::scalar::r4qrun_f64(a, b, c, d, out, w, inverse);
         return;

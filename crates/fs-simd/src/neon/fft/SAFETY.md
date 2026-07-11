@@ -5,11 +5,12 @@ under the 300-line cap, bead 8nfp); enforced by `cargo run -p xtask --
 check-unsafe`.
 
 ## Invariants
-`r4qrun_f64`'s `vld2q`/`vst2q` accesses touch exactly 4 f64 at offset
-4·q2 with 4·q2 + 4 ≤ s2 (asserted, with s2 % 4 == 0 on the vector
-path); the four output rows live at disjoint offsets j·s2 within `out`
-(len 4·s2, asserted). Runs whose length is not a multiple of 4 f64
-delegate WHOLE to the scalar twin in safe code.
+The safe façade constructs `4·s2` with checked arithmetic and validates every
+slice before the unsafe block. `r4qrun_f64`'s `vld2q`/`vst2q` accesses then
+touch exactly 4 f64 at offset 4·q2 with 4·q2 + 4 ≤ s2 (asserted, with s2 % 4
+== 0 on the vector path); the four output rows live at disjoint offsets j·s2
+within `out` (len 4·s2, asserted). Runs whose length is not a multiple of 4
+f64 delegate WHOLE to the scalar twin in safe code.
 
 ## Aliasing assumptions
 Four shared input runs and one exclusive output block; the borrow

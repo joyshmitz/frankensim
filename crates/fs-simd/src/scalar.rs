@@ -154,12 +154,13 @@ pub fn r4qrun_f64(
     inverse: bool,
 ) {
     let s2 = a.len();
+    let out_len = crate::checked_r4qrun_output_len(s2);
     assert!(
         s2.is_multiple_of(2)
             && b.len() == s2
             && c.len() == s2
             && d.len() == s2
-            && out.len() == 4 * s2,
+            && out_len == Some(out.len()),
         "r4qrun run-length mismatch (programmer error)"
     );
     let (o01, o23) = out.split_at_mut(2 * s2);

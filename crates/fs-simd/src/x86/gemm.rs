@@ -99,6 +99,7 @@ pub fn btile4x4p_f64(
     mb: usize,
     dst: &mut [f64],
 ) {
+    assert_btile4x4p_bounds(a, b, i0, j0, k, mb, dst);
     #[cfg(target_arch = "x86_64")]
     {
         if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
@@ -111,16 +112,40 @@ pub fn btile4x4p_f64(
     crate::scalar::btile4x4p_f64(a, b, i0, j0, k, mb, dst);
 }
 
+#[allow(clippy::too_many_arguments)]
+fn assert_btile4x4p_bounds(
+    a: &[f64],
+    b: &[f64],
+    i0: usize,
+    j0: usize,
+    k: usize,
+    mb: usize,
+    dst: &[f64],
+) {
+    let bounds = crate::checked_btile4x4p_lengths(i0, j0, k, mb);
+    assert!(
+        matches!(
+            bounds,
+            Some((a_len, b_len, dst_len))
+                if a_len <= a.len() && b_len <= b.len() && dst_len <= dst.len()
+        ),
+        "btile4x4p packed bounds (programmer error)"
+    );
+}
+
 /// AVX2+FMA body: 4 lanes (`__m256d`) of the packed batched tile per block.
 ///
 /// # Safety
-/// Requires avx2+fma (façade-verified). Every pointer is `base(t) + l·mb + m`
+/// Requires avx2+fma and slice geometry established by the safe façade. Every
+/// pointer is `base(t) + l·mb + m`
 /// with `base(t)` = `((i0+t)·k)·mb` (a) or `((j0+t)·k)·mb` (b); the maximal
 /// dereferenced offset over `t ≤ 3`, `l ≤ k−1`, `m ≤ mb−4` (vector) or
 /// `≤ mb−1` (scalar tail) is inside the extents asserted by
 /// `checked_btile4x4p_lengths`. Each vector access is 4 f64; f64 has no
 /// invalid bit patterns and unaligned access is permitted; the 16 output rows
-/// live at disjoint offsets `(ti·4+tj)·mb` within `dst`.
+/// live at disjoint offsets `(ti·4+tj)·mb` within `dst`. Each lane block
+/// starts from validated bases and advances its cursors only when another
+/// reduction load remains, so it never forms one-past plus `m`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
 #[allow(clippy::too_many_arguments)]
@@ -133,15 +158,6 @@ unsafe fn btile4x4p_256(
     mb: usize,
     dst: &mut [f64],
 ) {
-    let bounds = crate::checked_btile4x4p_lengths(i0, j0, k, mb);
-    assert!(
-        matches!(
-            bounds,
-            Some((a_len, b_len, dst_len))
-                if a_len <= a.len() && b_len <= b.len() && dst_len <= dst.len()
-        ),
-        "btile4x4p packed bounds (programmer error)"
-    );
     let full = (mb / 4) * 4;
     // SAFETY: all pointer arithmetic and vector ops below run under the
     // verified avx2+fma feature; offsets are bounded as argued on the fn.
@@ -176,7 +192,7 @@ unsafe fn btile4x4p_256(
                 b_base[2].add(m),
                 b_base[3].add(m),
             ];
-            for _l in 0..k {
+            for l in 0..k {
                 let av = [
                     _mm256_loadu_pd(ap[0]),
                     _mm256_loadu_pd(ap[1]),
@@ -194,9 +210,11 @@ unsafe fn btile4x4p_256(
                         acc[ti * 4 + tj] = _mm256_fmadd_pd(av[ti], bv[tj], acc[ti * 4 + tj]);
                     }
                 }
-                for t in 0..4 {
-                    ap[t] = ap[t].add(mb);
-                    bp[t] = bp[t].add(mb);
+                if l + 1 < k {
+                    for t in 0..4 {
+                        ap[t] = ap[t].add(mb);
+                        bp[t] = bp[t].add(mb);
+                    }
                 }
             }
             for ti in 0..4 {

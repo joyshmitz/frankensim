@@ -99,6 +99,11 @@ pub(crate) fn checked_trn1c64_len(n1: usize) -> Option<usize> {
     n1.checked_mul(n1)?.checked_mul(2)
 }
 
+#[inline]
+pub(crate) fn checked_r4qrun_output_len(run_len: usize) -> Option<usize> {
+    run_len.checked_mul(4)
+}
+
 /// Packed f32 batched-GEMM 4×4 tile signature
 /// (a_pack, b_pack, i0, j0, k, mb, dst) — l-contiguous packed layout.
 pub type Btile4x4Pf32 = fn(&[f32], &[f32], usize, usize, usize, usize, &mut [f32]);
@@ -679,17 +684,67 @@ mod tests {
             let mut dst = [];
             (ops().btile4x4pf32)(&[], &[], usize::MAX, 0, 4, 1, &mut dst);
         });
+        assert_panics_with("r4qrun run-length mismatch", || {
+            let a = [0.0, 0.0];
+            let mut out = [];
+            (ops().r4qrun_f64)(&a, &[], &a, &a, &mut out, &[0.0; 6], false);
+        });
         assert_panics_with("trn1c64 extent overflow", || {
             let mut dst = [];
             (ops().trn1c64)(&[], &mut dst, usize::MAX);
         });
 
         assert_eq!(checked_mk8x4_lengths(usize::MAX), None);
+        assert_eq!(checked_r4qrun_output_len(usize::MAX), None);
         assert_eq!(
             checked_btile4x4_lengths(0, 0, usize::MAX, 4, usize::MAX, 1),
             None
         );
         assert_eq!(checked_btile4x4p_lengths(0, 0, 4, usize::MAX), None);
         assert_eq!(checked_trn1c64_len(usize::MAX), None);
+    }
+
+    #[test]
+    fn packed_f32_smallest_last_tile_second_quad_matches_scalar() {
+        // k=4 makes i0=j0=0 the final 4x4 tile; mb=8 forces q=1. On the old
+        // rewind cursor scheme, the final l step for row 3 formed end+4 before
+        // rewinding. This fixture keeps that exact boundary hot while the
+        // scalar twin locks arithmetic and lane order.
+        let (k, mb) = (4usize, 8usize);
+        let len = k * k * mb;
+        let a: Vec<f32> = (0..len).map(|i| (i % 17) as f32 * 0.25 - 2.0).collect();
+        let b: Vec<f32> = (0..len).map(|i| (i % 13) as f32 * -0.5 + 1.0).collect();
+        let mut actual = vec![0.0f32; 16 * mb];
+        let mut expected = vec![0.0f32; 16 * mb];
+        (ops().btile4x4pf32)(&a, &b, 0, 0, k, mb, &mut actual);
+        scalar::btile4x4pf32(&a, &b, 0, 0, k, mb, &mut expected);
+        assert!(
+            actual
+                .iter()
+                .zip(&expected)
+                .all(|(left, right)| left.to_bits() == right.to_bits())
+        );
+    }
+
+    #[test]
+    fn packed_f64_smallest_last_tile_second_vector_matches_scalar() {
+        // k=4 makes i0=j0=0 the final 4x4 tile; mb=8 forces m=4. Advancing
+        // every row cursor after the final l step used to form end+4 for row
+        // 3. This fixture keeps that boundary hot while the scalar twin locks
+        // arithmetic and lane order.
+        let (k, mb) = (4usize, 8usize);
+        let len = k * k * mb;
+        let a: Vec<f64> = (0..len).map(|i| (i % 17) as f64 * 0.25 - 2.0).collect();
+        let b: Vec<f64> = (0..len).map(|i| (i % 13) as f64 * -0.5 + 1.0).collect();
+        let mut actual = vec![0.0f64; 16 * mb];
+        let mut expected = vec![0.0f64; 16 * mb];
+        (ops().btile4x4p_f64)(&a, &b, 0, 0, k, mb, &mut actual);
+        scalar::btile4x4p_f64(&a, &b, 0, 0, k, mb, &mut expected);
+        assert!(
+            actual
+                .iter()
+                .zip(&expected)
+                .all(|(left, right)| left.to_bits() == right.to_bits())
+        );
     }
 }

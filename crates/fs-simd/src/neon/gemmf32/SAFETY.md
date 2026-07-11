@@ -10,10 +10,11 @@ j-major at ((j0+t)·k)·mb): the shared
 `checked_btile4x4p_lengths` helper rejects every overflowing geometry,
 and the leading assert bounds the maximal
 dereferenced offset (t ≤ 3, l ≤ k−1, 4q ≤ mb−4) inside both packed
-buffers, every access is exactly 4 f32, and the per-quad rewind
-(−k·mb + 4) never leaves the borrowed allocations (provenance
-preserved). Lane counts not divisible by 4 take the scalar twin whole
-in safe code.
+buffers and every access is exactly 4 f32. Each quad derives fresh cursors at
+`base(t) + 4·q`; a cursor advances by `mb` only when another k iteration will
+dereference it. Thus the maximal formed cursor is the last dereferenced vector
+start, never one-past plus a lane offset. Lane counts not divisible by 4 take
+the scalar twin whole in safe code.
 
 ## Aliasing assumptions
 Two shared input slices, one exclusive output; the borrow checker

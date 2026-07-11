@@ -58,7 +58,8 @@ Layer: L0.
   identity, G5's domain — never run-to-run jitter).
 - Tails handled by the scalar twin inside each function; no partial-lane
   intrinsic access exists.
-- Length mismatches panic BEFORE any unsafe code (programmer-error contract).
+- Length and checked-extent mismatches panic BEFORE any unsafe code
+  (programmer-error contract), including `4·run_len` for radix-4 FFT output.
 
 ## Error model
 No fallible APIs; length mismatch = loud assert (documented programmer error).

@@ -42,33 +42,36 @@ pub fn btile4x4pf32(
     // ((i0+t)·k)·mb (a) or ((j0+t)·k)·mb (b); the maximal dereferenced
     // offset over t ≤ 3, l ≤ k−1, 4q ≤ mb−4 is inside the extents
     // asserted above. Every access is exactly 4 f32; f32 has no invalid
-    // bit patterns; unaligned access is permitted. The per-quad rewind
-    // (−k·mb + 4) never leaves the borrowed allocations.
+    // bit patterns; unaligned access is permitted. Each quad derives fresh
+    // cursors from validated bases and advances only when another k load
+    // remains, so no transient out-of-allocation pointer is formed.
     unsafe {
-        let (mut a0p, mut a1p, mut a2p, mut a3p) = (
+        let a_base = [
             a.as_ptr().add(i0 * k * mb),
             a.as_ptr().add((i0 + 1) * k * mb),
             a.as_ptr().add((i0 + 2) * k * mb),
             a.as_ptr().add((i0 + 3) * k * mb),
-        );
-        let (mut b0p, mut b1p, mut b2p, mut b3p) = (
+        ];
+        let b_base = [
             b.as_ptr().add(j0 * k * mb),
             b.as_ptr().add((j0 + 1) * k * mb),
             b.as_ptr().add((j0 + 2) * k * mb),
             b.as_ptr().add((j0 + 3) * k * mb),
-        );
+        ];
         let op = dst.as_mut_ptr();
         for q in 0..quads {
             let mut acc = [vdupq_n_f32(0.0); 16];
-            for _l in 0..k {
-                let a0 = vld1q_f32(a0p);
-                let a1 = vld1q_f32(a1p);
-                let a2 = vld1q_f32(a2p);
-                let a3 = vld1q_f32(a3p);
-                let b0 = vld1q_f32(b0p);
-                let b1 = vld1q_f32(b1p);
-                let b2 = vld1q_f32(b2p);
-                let b3 = vld1q_f32(b3p);
+            let mut ap = a_base.map(|ptr| ptr.add(4 * q));
+            let mut bp = b_base.map(|ptr| ptr.add(4 * q));
+            for l in 0..k {
+                let a0 = vld1q_f32(ap[0]);
+                let a1 = vld1q_f32(ap[1]);
+                let a2 = vld1q_f32(ap[2]);
+                let a3 = vld1q_f32(ap[3]);
+                let b0 = vld1q_f32(bp[0]);
+                let b1 = vld1q_f32(bp[1]);
+                let b2 = vld1q_f32(bp[2]);
+                let b3 = vld1q_f32(bp[3]);
                 acc[0] = vfmaq_f32(acc[0], a0, b0);
                 acc[1] = vfmaq_f32(acc[1], a0, b1);
                 acc[2] = vfmaq_f32(acc[2], a0, b2);
@@ -85,28 +88,17 @@ pub fn btile4x4pf32(
                 acc[13] = vfmaq_f32(acc[13], a3, b1);
                 acc[14] = vfmaq_f32(acc[14], a3, b2);
                 acc[15] = vfmaq_f32(acc[15], a3, b3);
-                a0p = a0p.add(mb);
-                a1p = a1p.add(mb);
-                a2p = a2p.add(mb);
-                a3p = a3p.add(mb);
-                b0p = b0p.add(mb);
-                b1p = b1p.add(mb);
-                b2p = b2p.add(mb);
-                b3p = b3p.add(mb);
+                if l + 1 < k {
+                    for t in 0..4 {
+                        ap[t] = ap[t].add(mb);
+                        bp[t] = bp[t].add(mb);
+                    }
+                }
             }
             let dp = op.add(4 * q);
             for (t, &v) in acc.iter().enumerate() {
                 vst1q_f32(dp.add(t * mb), v);
             }
-            let rewind = k * mb - 4;
-            a0p = a0p.sub(rewind);
-            a1p = a1p.sub(rewind);
-            a2p = a2p.sub(rewind);
-            a3p = a3p.sub(rewind);
-            b0p = b0p.sub(rewind);
-            b1p = b1p.sub(rewind);
-            b2p = b2p.sub(rewind);
-            b3p = b3p.sub(rewind);
         }
     }
 }
