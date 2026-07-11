@@ -57,6 +57,10 @@ SNAPSHOT_BEFORE="<unavailable>"
 SNAPSHOT_AFTER="<unavailable>"
 CONSTELLATION_LOCK_HASH="<unavailable>"
 PROVENANCE_STATE="unsealed"
+PROOF_STATE="incomplete"
+OVERALL_STATUS="fail"
+SEAL_WRITTEN=false
+: >"$VERDICTS"
 
 FAILURES=0
 row() { # lane status detail log
@@ -86,6 +90,58 @@ print(json.dumps({
 PY
     tee -a "$VERDICTS"
 }
+
+emit_proof_seal() { # provenance status
+  local provenance="$1" status="$2" prefix_hash seal_row
+  if ! prefix_hash=$(shasum -a 256 "$VERDICTS" | awk '{print $1}'); then
+    prefix_hash="<unavailable>"
+    provenance="incomplete"
+    status="fail"
+  fi
+  if ! seal_row=$(python3 - "$HEAD_SHA" "$DIRTY" "$SNAPSHOT_BEFORE" \
+      "$SNAPSHOT_AFTER" "$CONSTELLATION_LOCK_HASH" "$prefix_hash" \
+      "$provenance" "$status" "$LOG_DIR" <<'PY'
+import json
+import sys
+
+head, dirty, before, after, lock_hash, prefix_hash, provenance, status, log_dir = sys.argv[1:]
+optional = lambda value: None if value == "<unavailable>" else value
+print(json.dumps({
+    "check": "quality-proof-seal",
+    "provenance_state": provenance,
+    "status": status,
+    "head": head,
+    "dirty": dirty == "true",
+    "snapshot_before": optional(before),
+    "snapshot_after": optional(after),
+    "constellation_lock_sha256": optional(lock_hash),
+    "verdicts_prefix_sha256": optional(prefix_hash),
+    "log_dir": log_dir,
+}, separators=(",", ":")))
+PY
+  ); then
+    return 1
+  fi
+  if ! printf '%s\n' "$seal_row" | tee -a "$VERDICTS"; then
+    return 1
+  fi
+  SEAL_WRITTEN=true
+}
+
+seal_on_exit() { # original-status
+  local status="$1"
+  trap - EXIT
+  if [[ "$SEAL_WRITTEN" != true ]]; then
+    # A zero status without the normal terminal seal is itself a failed proof.
+    if [[ "$status" -eq 0 ]]; then
+      status=1
+    fi
+    set +e
+    emit_proof_seal "incomplete" "fail"
+  fi
+  exit "$status"
+}
+trap 'seal_on_exit "$?"' EXIT
 
 if [[ ! -f constellation.lock ]]; then
   printf '%s\n' 'required constellation.lock is missing' >"$SNAPSHOT_LOG"
@@ -340,7 +396,6 @@ elif [[ "$SNAPSHOT_AFTER" != "$SNAPSHOT_BEFORE" ]]; then
   FAILURES=$((FAILURES + 1))
 fi
 
-PROOF_STATE="incomplete"
 if [[ "$SNAPSHOT_AFTER" == "$SNAPSHOT_BEFORE" \
     && "$LOCK_HASH_AFTER" == "$CONSTELLATION_LOCK_HASH" ]]; then
   PROOF_STATE="sealed"
@@ -368,32 +423,10 @@ print(json.dumps({
 }, separators=(",", ":")))
 PY
 
-OVERALL_STATUS="fail"
 if [[ "$FAILURES" -eq 0 && "$PROOF_STATE" == "sealed" ]]; then
   OVERALL_STATUS="pass"
 fi
-VERDICTS_PREFIX_HASH=$(shasum -a 256 "$VERDICTS" | awk '{print $1}')
-python3 - "$HEAD_SHA" "$DIRTY" "$SNAPSHOT_BEFORE" "$SNAPSHOT_AFTER" \
-  "$CONSTELLATION_LOCK_HASH" "$VERDICTS_PREFIX_HASH" "$PROOF_STATE" \
-  "$OVERALL_STATUS" "$LOG_DIR" <<'PY' | tee -a "$VERDICTS"
-import json
-import sys
-
-head, dirty, before, after, lock_hash, prefix_hash, provenance, status, log_dir = sys.argv[1:]
-optional = lambda value: None if value == "<unavailable>" else value
-print(json.dumps({
-    "check": "quality-proof-seal",
-    "provenance_state": provenance,
-    "status": status,
-    "head": head,
-    "dirty": dirty == "true",
-    "snapshot_before": optional(before),
-    "snapshot_after": optional(after),
-    "constellation_lock_sha256": optional(lock_hash),
-    "verdicts_prefix_sha256": prefix_hash,
-    "log_dir": log_dir,
-}, separators=(",", ":")))
-PY
+emit_proof_seal "$PROOF_STATE" "$OVERALL_STATUS"
 
 if [[ "$OVERALL_STATUS" != "pass" ]]; then
   exit 1

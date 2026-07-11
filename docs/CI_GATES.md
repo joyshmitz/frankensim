@@ -133,7 +133,12 @@ Per-lane rows and the summary are explicitly `provisional` and carry JSON `null`
 for the not-yet-known closing snapshot. The literal final JSONL row is
 `quality-proof-seal`; it binds the SHA-256 of every preceding row to the final
 snapshot and reports `sealed` or `incomplete`. Consumers MUST verify that seal
-rather than treating an earlier row as an independent receipt.
+rather than treating an earlier row as an independent receipt. Once the run
+directory exists, an EXIT finalizer also writes an `incomplete`/`fail` seal for
+initial-admission errors and later implicit shell failures; a provisional row
+cannot become the terminal record merely because `set -e` fired. SIGKILL,
+host/process loss, or a storage failure can still prevent the finalizer from
+writing, so a missing or malformed seal is always a failed proof, never a skip.
 
 ## Constellation
 
