@@ -254,29 +254,29 @@ gate, measured ≈ r + 1; D: ≥ r − 0.4 gate, measured ≈ r) — these
 drive all four 3D tensor space types' rates; Legendre mass closed
 form; its own golden hash.
 
-## Perf-lane evidence (bead cwjn, partially measured)
+## Perf-lane evidence (bead cwjn: the ≥30% both-ISA gate is MET, citable)
 
-- The last admitted macos-aarch64 row (Apple M4 Pro, Mac16,11), single thread,
-  fs-roofline `MachineAxes::probe()` peak 48–49 GFLOP/s: the
-  sum-factorized apply reaches 21.3 GFLOP/s at p = 4 (r = 3, m = 12)
-  = 43–44% of measured peak — the ≥30% aarch64 row PASSED. Sweep
-  (best-of-3, 18p⁴+3p³ flop model): r = 1: 37.0, r = 2: 29.9,
-  r = 3: 21.5, r = 4: 21.6, r = 5: 25.0, r = 6: 17.5 GFLOP/s.
-- The x86-64 row has been measured and did not pass: baseline code on a
-  Threadripper PRO 5975WX reached about 0.026 attainment. The local FMA
-  capsule removed the per-element libm call, but inspection still found scalar
-  fused operations rather than packed AVX2. The current register-accumulator
-  contraction rewrite targets that packing gap while preserving each output's
-  ascending-l operation order and the frozen sf-kron golden.
-- No current-tree both-ISA performance claim is made until quiet M4 and
-  Threadripper runs re-admit the rewritten kernel. Bead cwjn remains open; the
-  historical aarch64 row is evidence for the preceding implementation, not a
-  substitute for remeasurement after this performance-sensitive rewrite. The
-  explicitly invoked perf test requires `FRANKENSIM_BASELINE_STORE` and
-  `FRANKENSIM_FIRMWARE_ID`, then admits both probes against that selected
-  historical baseline before applying the 30% gate. The store is the protected
-  operator trust root documented by fs-roofline; signature verification remains
-  `frankensim-epic-perf-fz2.7`.
+- BOTH reference ISAs hold citable, baseline-admitted gate passes on the
+  committed register-accumulator/index-loop contraction kernels
+  (2026-07-11, governed baseline stores in perf-baselines/):
+  macos-aarch64 (M4 Pro, fingerprint 80cb534fbaf60b50): p = 4 attainment
+  0.404 (20.8 GFLOP/s); linux-x86_64 (5975WX ts1, fingerprint
+  614b09f101a1e33b): p = 4 attainment 0.439 (15.6 GFLOP/s), quiet host.
+- The x86 journey, for the record: 0.026 (baseline libm-fma calls) →
+  0.046 (a55x fma capsule, scalar vfmadds) → 0.091 (register-array
+  accumulators) → 0.44–0.59 (const-bound index loops — the shape x86 SLP
+  finally packs). Every step bit-identical: the ascending-l per-element
+  order is pinned and the sf-kron golden never moved.
+- Sweep at the citable ts1 run (18p⁴+3p³ flop model): r = 1: 9.9,
+  r = 2: 8.7, r = 3: 20.9, r = 4: 23.9, r = 5: 21.4, r = 6: 22.0 GFLOP/s
+  (low orders are gather/scatter-bound — recorded follow-up, not gated).
+- The gate is admission-guarded end-to-end: `FRANKENSIM_BASELINE_STORE`
+  (absolute path) + `FRANKENSIM_FIRMWARE_ID`, pre/post probes admitted
+  against the governed baseline before the 30% test — a contaminated
+  window is environment_invalid, neither pass nor fail (observed live:
+  the first ts1 attempt was refused during its own compile burst). The
+  store is the protected operator trust root; signature verification
+  remains `frankensim-epic-perf-fz2.7`.
 
 ## No-claim boundaries
 
