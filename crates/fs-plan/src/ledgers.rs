@@ -113,6 +113,8 @@ pub struct ErrorLedger {
 /// A structured attribution defect.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LedgerDefect {
+    /// A contribution has no operator/stage identity.
+    BlankLabel,
     /// A contribution is negative or non-finite.
     BadContribution {
         /// The offending label.
@@ -127,6 +129,9 @@ pub enum LedgerDefect {
 impl fmt::Display for LedgerDefect {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            LedgerDefect::BlankLabel => {
+                write!(f, "error contribution label must be non-blank")
+            }
             LedgerDefect::BadContribution { label } => write!(
                 f,
                 "contribution {label:?} is negative or non-finite — error mass must be \
@@ -173,6 +178,9 @@ impl ErrorLedger {
     pub fn lint(&self) -> Result<(), LedgerDefect> {
         let valid = |v: f64| v.is_finite() && v >= 0.0;
         for c in &self.contributions {
+            if c.label.trim().is_empty() {
+                return Err(LedgerDefect::BlankLabel);
+            }
             if !valid(c.abs) {
                 return Err(LedgerDefect::BadContribution {
                     label: c.label.clone(),

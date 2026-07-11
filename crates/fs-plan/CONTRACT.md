@@ -23,7 +23,8 @@ Runtime deps: `std`, fs-geom, fs-ledger.
   band coverage; `median_rel_error()` is the improvement metric.
 - `ErrorLedger` — attribution tree over the plan's canonical sources
   (geometry, discretization, algebraic, surrogate, statistical,
-  model-form), each entry carrying its `Rigor` class (certified /
+  model-form), each entry carrying a non-blank operator identity and its
+  `Rigor` class (certified /
   estimated / rate-model). First-order ADDITIVE composition; `total()`
   = Σ contributions + declared residual; `lint()` refuses NaN/negative
   mass and aggregate overflow (no silent error, ever); `dominant()` names

@@ -113,9 +113,17 @@ fn pl_002_ledger_lint_refuses_silent_error_mass() {
     let mut neg = ErrorLedger::new();
     neg.declared_residual = -1.0;
     assert!(neg.lint().is_err(), "negative residual must refuse");
+    let mut anonymous = ErrorLedger::new();
+    anonymous.attribute(Contribution {
+        source: ErrorSource::Geometry,
+        label: " \t".to_string(),
+        abs: 0.1,
+        rigor: Rigor::Certified,
+    });
+    assert_eq!(anonymous.lint(), Err(LedgerDefect::BlankLabel));
     verdict(
         "pl-002",
-        "completeness lint refuses NaN contributions and negative residuals",
+        "completeness lint refuses NaN contributions, negative residuals, and anonymous sources",
     );
 }
 
