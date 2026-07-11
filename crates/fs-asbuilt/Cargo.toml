@@ -5,12 +5,13 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "As-built ingestion: reality as another chart (addendum Proposal 11). Registers scan data (point clouds) to the design by a closed-form rigid fit made well-posed by fiducials/datums, carries the registration error forward, checks it against the certified deviation (R8 signal-vs-noise), and emits a validated-color as-built delta anchored to the metrology calibration certificate."
+description = "As-built ingestion: reality as another chart (addendum Proposal 11). Registers finite scan data to the design by a closed-form rigid fit, carries registration error forward, applies the R8 signal-vs-noise gate, and emits an estimated as-built candidate pending authenticated calibration authority."
 
 [package.metadata.frankensim]
 layer = "L2"
 
 [dependencies]
+fs-blake3 = { path = "../fs-blake3" }
 fs-evidence = { path = "../fs-evidence" }
 
 [dev-dependencies]

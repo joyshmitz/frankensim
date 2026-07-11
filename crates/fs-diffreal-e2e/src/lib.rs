@@ -12,7 +12,7 @@
 //!    (a forced remesh) raises a structured error that BLOCKS the gradient —
 //!    never a silent zero.
 //! 2. **As-built loop** — register a scanned fixture (error carried forward),
-//!    compute a validated-color as-built δ anchored to a calibration cert,
+//!    compute an estimated as-built δ carrying calibration provenance,
 //!    LOCALIZE a seeded defect, and run registration-free point-sensor
 //!    assimilation that reduces the model-data misfit ([`fs_asbuilt`],
 //!    [`fs_assimilate`]).
@@ -153,7 +153,7 @@ pub fn stage_differentiation() -> StageLog {
 
 // -- Stage 2: as-built loop -------------------------------------------------
 
-/// Stage 2: register a scan, validated as-built δ, localize a defect, assimilate.
+/// Stage 2: register a scan, estimate as-built δ, localize a defect, assimilate.
 #[must_use]
 pub fn stage_as_built_loop() -> StageLog {
     let mut events = Vec::new();
@@ -161,57 +161,72 @@ pub fn stage_as_built_loop() -> StageLog {
 
     // a scanned fixture: design datums transformed by a known rigid motion.
     let design = [
-        Point2::new(0.0, 0.0),
-        Point2::new(2.0, 0.0),
-        Point2::new(0.0, 2.0),
+        Point2::new(0.0, 0.0).expect("design datum is finite"),
+        Point2::new(2.0, 0.0).expect("design datum is finite"),
+        Point2::new(0.0, 2.0).expect("design datum is finite"),
     ];
     let (theta, tx, ty) = (0.3_f64, 4.0, 1.0);
     let xf = |p: Point2| {
         let (s, c) = theta.sin_cos();
-        Point2::new(c * p.x - s * p.y + tx, s * p.x + c * p.y + ty)
+        Point2::new(c * p.x() - s * p.y() + tx, s * p.x() + c * p.y() + ty)
+            .expect("fixture transform remains finite")
     };
     let fids: Vec<Fiducial> = design.iter().map(|&d| Fiducial::new(d, xf(d))).collect();
     let reg = register(&fids).expect("well-posed fiducials");
-    let reg_ok = reg.residual_rms < 1e-9;
+    let reg_ok = reg.residual_rms() < 1e-9;
     events.push(format!(
         "registration residual {:.2e} (error carried forward)",
-        reg.residual_rms
+        reg.residual_rms()
     ));
     passed &= reg_ok;
 
     // as-built δ with a SEEDED DEFECT on the middle point.
     let design_pts = vec![design[0], design[1], design[2]];
-    let mut scanned: Vec<Point2> = design_pts.iter().map(|&p| reg.apply(p)).collect();
-    scanned[1] = Point2::new(scanned[1].x + 0.3, scanned[1].y); // 0.3 defect
+    let mut scanned: Vec<Point2> = design_pts
+        .iter()
+        .map(|&point| reg.apply(point))
+        .collect::<Result<_, _>>()
+        .expect("registered fixture points remain finite");
+    scanned[1] =
+        Point2::new(scanned[1].x() + 0.3, scanned[1].y()).expect("seeded defect remains finite");
     let diff = as_built_diff(&reg, &design_pts, &scanned, 0.5, 0.02, "cmm-cal-2026").unwrap();
     // localize the defect: the argmax deviation is the seeded point (index 1).
     let defect_idx = diff
-        .deviations
+        .deviations()
         .iter()
         .enumerate()
-        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .max_by(|a, b| a.1.total_cmp(b.1))
         .map(|(i, _)| i);
-    let localized = defect_idx == Some(1) && (diff.max_deviation - 0.3).abs() < 1e-9;
-    let validated = matches!(diff.color, Color::Validated { .. });
+    let localized = defect_idx == Some(1) && (diff.max_deviation() - 0.3).abs() < 1e-9;
+    let estimated = matches!(diff.color(), Color::Estimated { .. });
     events.push(format!(
-        "as-built δ max {:.3} @ idx {:?}, validated={validated}",
-        diff.max_deviation, defect_idx
+        "as-built δ max {:.3} @ idx {:?}, estimated={estimated}",
+        diff.max_deviation(),
+        defect_idx
     ));
-    passed &= localized && validated;
+    passed &= localized && estimated;
 
     // registration-free point-sensor 4D-Var: misfit reduction.
-    let prior = Belief::diagonal(vec![20.0, 20.0], &[9.0, 9.0]);
+    let prior = Belief::diagonal(vec![20.0, 20.0], &[9.0, 9.0])
+        .expect("the two-state thermal prior is valid");
     let obs = vec![
-        point_sensor(0, 2, 24.0, 0.25, "thermocouple-1"),
-        point_sensor(1, 2, 18.5, 0.25, "thermocouple-2"),
+        point_sensor(0, 2, 24.0, 0.25, "thermocouple-1")
+            .expect("first thermocouple declaration is valid"),
+        point_sensor(1, 2, 18.5, 0.25, "thermocouple-2")
+            .expect("second thermocouple declaration is valid"),
     ];
     let assimilated = assimilate_colored(&prior, &obs, "Re", 1e5, 3e5).unwrap();
-    let misfit_reduced = assimilated.misfit_after < assimilated.misfit_before;
+    let misfit_reduced = assimilated.misfit_after() < assimilated.misfit_before();
     events.push(format!(
         "assimilation misfit {:.2} -> {:.2}",
-        assimilated.misfit_before, assimilated.misfit_after
+        assimilated.misfit_before(),
+        assimilated.misfit_after()
     ));
-    passed &= misfit_reduced && misfit(&assimilated.belief, &obs) <= misfit(&prior, &obs);
+    passed &= misfit_reduced
+        && matches!(
+            (misfit(assimilated.belief(), &obs), misfit(&prior, &obs)),
+            (Ok(after), Ok(before)) if after <= before
+        );
 
     StageLog {
         stage: "as-built-loop",

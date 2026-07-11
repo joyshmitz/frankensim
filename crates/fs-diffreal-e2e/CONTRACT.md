@@ -26,9 +26,10 @@ Layer L6. An integration crate: depends on `fs-evidence`, `fs-asbuilt`,
    differences within tolerance; a full-VJP-coverage path differentiates; a
    forced-remesh path with a missing VJP is BLOCKED (structured error).
 2. **As-built loop** — a scanned fixture registers (residual carried forward),
-   the as-built δ is validated-color + anchored to a calibration cert, a seeded
-   defect is LOCALIZED (argmax deviation), and registration-free point-sensor
-   assimilation reduces the model-data misfit.
+   the as-built delta is an Estimated candidate carrying calibration provenance,
+   a seeded defect is LOCALIZED (argmax deviation), and registration-free
+   point-sensor assimilation reduces the model-data misfit. No calibration
+   authority is inferred from a caller-supplied string.
 3. **Tolerance allocation** — the high-sensitivity feature is tightened, the low
    one loosened, every loosened tolerance is justified by a certified
    sensitivity, and the band-extremes check confirms `P(in-spec)`.

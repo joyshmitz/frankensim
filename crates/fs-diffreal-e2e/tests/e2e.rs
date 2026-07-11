@@ -39,11 +39,12 @@ fn differentiation_agrees_with_fd_and_blocks_a_missing_vjp() {
 fn the_as_built_loop_localizes_a_defect_and_reduces_misfit() {
     let s = stage_as_built_loop();
     assert!(s.passed, "{:#?}", s.events);
-    // the seeded defect (0.3 at idx 1) is localized and the δ is validated.
+    // The seeded defect (0.3 at idx 1) is localized without upgrading the
+    // calibration candidate beyond Estimated.
     assert!(
         s.events
             .iter()
-            .any(|e| e.contains("idx Some(1)") && e.contains("validated=true"))
+            .any(|e| e.contains("idx Some(1)") && e.contains("estimated=true"))
     );
     // assimilation reduced the misfit.
     assert!(s.events.iter().any(|e| e.contains("assimilation misfit")));
