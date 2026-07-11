@@ -407,7 +407,11 @@ fn gemm_generic(alpha: f64, a: &BatchMat, b: &BatchMat, beta: f64, c: &mut Batch
                         fma3(ap, bp, &acc2[..mb], &mut acc[..mb]);
                     }
                 }
-                let done = if k % 2 == 0 { &acc[..mb] } else { &acc2[..mb] };
+                let done = if k.is_multiple_of(2) {
+                    &acc[..mb]
+                } else {
+                    &acc2[..mb]
+                };
                 let cp = &mut c.plane_mut(i, j)[m0..m0 + mb];
                 write_back(alpha, beta, done, cp);
             }

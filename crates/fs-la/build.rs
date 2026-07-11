@@ -313,7 +313,6 @@ fn add_asupersync_identity(
     append_external_identity(payload, constellation_lock, head_text, source_fields);
 }
 
-
 struct DepgraphEvidence {
     class_identity: String,
     kind: &'static str,
