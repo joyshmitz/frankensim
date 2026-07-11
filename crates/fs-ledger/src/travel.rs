@@ -809,6 +809,13 @@ impl Ledger {
         let ids_a = self.visible_op_ids(branch_self, None)?;
         let ids_b = other.visible_op_ids(branch_other, None)?;
         let mut verdict = ReplayVerdict::default();
+        if ids_a.is_empty() && ids_b.is_empty() {
+            verdict.structure_mismatch = Some(
+                "both branches contain no operations — no executed study exists to replay"
+                    .to_string(),
+            );
+            return Ok(verdict);
+        }
         if ids_a.len() != ids_b.len() {
             verdict.structure_mismatch = Some(format!(
                 "op count differs: {} here vs {} in the replay — not the same study",
@@ -1292,6 +1299,25 @@ mod tests {
             "unexpected refusal: {verdict:?}"
         );
         assert_eq!(verdict.compared, 0);
+    }
+
+    #[test]
+    fn replay_never_admits_two_empty_branches() {
+        let original = mem();
+        let replay = mem();
+
+        let verdict = original
+            .replay_verdict(MAIN_BRANCH, &replay, MAIN_BRANCH)
+            .expect("replay verdict");
+        assert!(!verdict.is_replay_clean(), "empty replay was admitted");
+        assert_eq!(verdict.compared, 0);
+        assert!(
+            verdict
+                .structure_mismatch
+                .as_deref()
+                .is_some_and(|message| message.contains("no executed study")),
+            "unexpected refusal: {verdict:?}"
+        );
     }
 
     #[test]

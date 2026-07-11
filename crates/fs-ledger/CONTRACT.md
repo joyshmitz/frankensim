@@ -56,7 +56,8 @@ fine-grained event stream. Layer: L6 (HELM). Runtime deps: `std` + `fsqlite`.
   on orphan or malformed input identities), `replay_verdict` (IR,
   all frozen explicits, execution mode, input lineage, outcome, and diagnostic
   must agree; both studies must be drained and finalized before a clean
-  verdict is possible; deterministic ops must then
+  verdict is possible, and empty branches refuse because no executed study was
+  compared; deterministic ops must then
   reproduce output hashes exactly; fast hash divergences are reported without
   failing; row/branch/session/time envelopes are excluded),
   `gc_unreferenced_artifacts` (edge-less artifacts only; referenced
