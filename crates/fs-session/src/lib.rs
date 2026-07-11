@@ -106,8 +106,7 @@ impl fmt::Display for SessionError {
                 requirement,
             } => write!(
                 f,
-                "invalid {resource} value {value}: {requirement}; the governor did not mutate \
-                 session state"
+                "invalid {resource} value {value}: {requirement}; session state was not mutated"
             ),
             SessionError::Submission { what } => write!(f, "submission failed: {what}"),
             SessionError::Persistence { what } => write!(f, "persistence failed: {what}"),

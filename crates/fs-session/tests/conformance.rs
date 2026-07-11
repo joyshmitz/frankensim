@@ -626,7 +626,7 @@ fn ss_004_estimate_dry_run_and_ledgered_calibration() {
     let node = fs_ir::sexpr::parse(SPOUT).expect("parses");
     let mut models = BTreeMap::new();
     models.insert("xform.level-set-velocity".to_string(), lbm_cost_model());
-    let est = estimate(&node, &models, 16.0);
+    let est = estimate(&node, &models, 16.0).expect("valid dry-run inputs");
     assert!(
         (est.wall_p50_s - 409.6).abs() / 409.6 < 0.05,
         "p50 tracks the model: {}",
@@ -648,7 +648,9 @@ fn ss_004_estimate_dry_run_and_ledgered_calibration() {
     for k in 0..20 {
         let mut e = est.clone();
         e.wall_p50_s *= 1.0 + f64::from(k) * 0.01;
-        calib.record(&e, e.wall_p50_s * 1.1);
+        calib
+            .record(&e, e.wall_p50_s * 1.1)
+            .expect("finite calibration row");
     }
     let (q10, q50, q90) = calib.ratio_quantiles().expect("rows");
     assert!((q50 - 1.1).abs() < 1e-9, "median ratio is the true bias");
@@ -666,6 +668,98 @@ fn ss_004_estimate_dry_run_and_ledgered_calibration() {
     verdict(
         "ss-004",
         "dry-run p10/p50/p90 + energy + honest coverage; calibration ledgered",
+    );
+}
+
+#[test]
+fn ss_004b_estimate_refuses_invalid_resource_domains() {
+    let valid = fs_ir::sexpr::parse(SPOUT).expect("valid fixture");
+    let models = BTreeMap::new();
+    for cores in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+        assert!(matches!(
+            estimate(&valid, &models, cores),
+            Err(SessionError::InvalidResource {
+                resource: "estimate cores",
+                ..
+            })
+        ));
+    }
+
+    for memory in ["-1GiB", "0B", "0.1B", "100000000000000000000GiB", "3cores"] {
+        let study = fs_ir::sexpr::parse(&format!(
+            "(study \"invalid-estimate\" (budget (mem {memory})))"
+        ))
+        .expect("the IR can represent the hostile Count fixture");
+        assert!(matches!(
+            estimate(&study, &models, 1.0),
+            Err(SessionError::InvalidResource {
+                resource: "declared memory ask",
+                ..
+            })
+        ));
+    }
+    for malformed in [
+        "(study \"missing-memory\" (budget (mem)))",
+        "(study \"bare-memory\" (budget mem))",
+        "(study \"wrong-memory-kind\" (budget (mem 3kg)))",
+        "(study \"extra-memory-operand\" (budget (mem 1GiB 2GiB)))",
+        "(study \"duplicate-memory\" (budget (mem 1GiB) (mem 2GiB)))",
+    ] {
+        let study = fs_ir::sexpr::parse(malformed).expect("malformed budget shape remains an AST");
+        assert!(matches!(
+            estimate(&study, &models, 1.0),
+            Err(SessionError::Submission { .. })
+        ));
+    }
+    let body_decoy = fs_ir::sexpr::parse("(study \"body-decoy\" (budget (wall 1s)) (mem 7GiB))")
+        .expect("body decoy parses");
+    assert_eq!(
+        estimate(&body_decoy, &models, 1.0)
+            .expect("a body call named mem is not a budget declaration")
+            .mem_ask_bytes,
+        None
+    );
+    let budget_before_decoy =
+        fs_ir::sexpr::parse("(study \"budget-before-decoy\" (budget (mem 1GiB)) (mem 7GiB))")
+            .expect("budget and body decoy parse");
+    assert_eq!(
+        estimate(&budget_before_decoy, &models, 1.0)
+            .expect("only the recognized budget supplies memory")
+            .mem_ask_bytes,
+        Some(1024 * 1024 * 1024)
+    );
+    let negative_size =
+        fs_ir::sexpr::parse("(study \"invalid-size\" (xform.level-set-velocity field :dof -1))")
+            .expect("negative operation sizes are representable before admission");
+    assert!(matches!(
+        estimate(&negative_size, &models, 1.0),
+        Err(SessionError::InvalidResource {
+            resource: "estimate operation size",
+            ..
+        })
+    ));
+
+    let calibration = CalibrationReport::new();
+    let finite = Estimate {
+        wall_p10_s: 1.0,
+        wall_p50_s: 1.0,
+        wall_p90_s: 1.0,
+        mem_ask_bytes: None,
+        energy_j: 45.0,
+        unmodeled_ops: Vec::new(),
+    };
+    for actual in [f64::NAN, f64::INFINITY, -1.0] {
+        assert!(calibration.record(&finite, actual).is_err());
+    }
+    let ratio_overflow = Estimate {
+        wall_p50_s: f64::MIN_POSITIVE,
+        ..finite.clone()
+    };
+    assert!(calibration.record(&ratio_overflow, f64::MAX).is_err());
+    assert!(calibration.ratio_quantiles().is_none());
+    assert_eq!(
+        calibration.to_json(),
+        "{\"kind\":\"estimate-calibration\",\"rows\":[],\"ratio_quantiles\":null}"
     );
 }
 

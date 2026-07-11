@@ -58,10 +58,21 @@ Consumers: the P2 marquee demo, the HELM e2e suite (gp3.11).
 - `estimate(study, cost_models, cores)` — the dry run: p10/p50/p90 wall
   from fs-plan quantile models over `:dof`/`:size` features, declared
   memory ask, energy (p50 × cores × 45 W/core), and an HONEST
-  `unmodeled_ops` coverage list (never silent gaps).
+  `unmodeled_ops` coverage list (never silent gaps). The result is fallible:
+  cores and derived wall/energy values must stay finite and non-negative, and a
+  memory Count must scale to an exact positive whole-byte `u64`; zero, negative,
+  fractional-byte, wrong-unit, and overflowed asks are structured refusals.
+  Memory is read only from the recognized study's direct `(budget (mem ...))`
+  clause: duplicate or malformed memory clauses fail closed, and a body call
+  named `mem` has no authority to grant a budget.
+  `unmodeled_ops` means no model exists; a present model that refuses its input,
+  emits invalid numbers, or reverses its quantiles is an error, not silently
+  relabeled as a coverage gap.
 - `CalibrationReport` — estimate-vs-actual rows, ratio quantiles, and a
   content-addressed ledger artifact (`estimate-calibration`): the cost
-  models' own report card.
+  models' own report card. Row ingestion rejects negative/non-finite values and
+  non-finite ratios before mutation, so its canonical JSON cannot be poisoned
+  by `NaN`/infinity spellings.
 - `Guidance { code, diagnosis, fixes }` — errors as teaching:
   `from_finding` lifts fs-ir admission findings (the canonical §11.3
   `BudgetInfeasible` fixture) with their cost-model-ranked fixes intact.
@@ -213,7 +224,8 @@ with exact meters and structured unknown-session errors; ss-003
 16-thread idempotency race (one execution, one charge, shared receipt,
 independent keys); ss-004 estimate p10/p50/p90 + energy + declared mem +
 honest coverage, calibration ratio quantiles, ledgered artifact
-round-trip; ss-005 ladder order + gate request + toy-SolverState
+round-trip; ss-004b invalid estimator/calibration numeric domains fail closed
+without poisoning JSON; ss-005 ladder order + gate request + toy-SolverState
 snapshot equality + attributed ordinal-ordered events; ss-006 the
 canonical BudgetInfeasible finding surfacing as ranked `Guidance`;
 ss-007 32-way adversarial-grant storm with exact meters and structured
