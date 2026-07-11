@@ -49,7 +49,14 @@ const RATE: Dims = Dims([0, 0, -1, 0, 0]);
 // fs_math::det::sin/cos, and poured_mass (0x3fd3b2951fb7df34 in BOTH
 // modes) is restored to the hashed stream. fs-lbm rheology powf paths
 // migrated to det::pow in the same change (latent, same hazard class).
-const GOLDEN_VESSEL_SMOKE: u64 = 0x4e42_4a53_6a63_ce8b;
+// 2026-07-11 (27d3 downstream audit): mixed radix-8/4/2 changed the
+// DCT evaluation order feeding the vessel stability objective. Only
+// robust_offband moved, from 0xbf3c9a988956ba53 to
+// 0xbf3c9a98894a2018; substituting either field reconstructs the old
+// or new aggregate exactly. The latter value reproduces in debug and
+// release on aarch64; the downstream x86-64 row remains pending even
+// though the upstream FFT stage-path golden is verified four ways.
+const GOLDEN_VESSEL_SMOKE: u64 = 0x4541_d7f3_2926_1082;
 // JUSTIFIED BUMP (2026-07-10, 6ure CLOSED): the ROA chain's libm
 // divergence (macOS vs glibc in fs-bem panel2d: sin/cos/atan2/ln/
 // sqrt/hypot) is fixed by routing the WHOLE panel kernel through

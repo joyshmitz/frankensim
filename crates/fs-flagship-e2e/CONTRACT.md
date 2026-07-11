@@ -3,11 +3,12 @@
 Flagship e2e suite (bead `frankensim-epic-flagships-mye.5`): staged
 smoke/mid/full replay lanes for the flagship crates, cross-flagship
 audits, failure drills, forensic logs, and a deterministic lab
-notebook artifact. Golden constants are FROZEN (bead mye.5): vessel
-0xd70b_9ac9_0828_ae86, ornith 0xf513_eaf8_22d2_7813, frame
-0x05e1_d182_48d2_949f, shared LBM core 0x6841_e3c0_508e_eba5 —
-replay-equality verified before freezing; bump only with a semantic
-justification in the owning flagship or shared core.
+notebook artifact. Current v2 golden constants are FROZEN: vessel
+`0x4541_d7f3_2926_1082`, ornith `0xae56_945a_312e_0378`, frame
+`0x9c09_b06a_7883_57fc`, and shared LBM core
+`0x1539_430c_dae4_7762`. Replay equality is verified before freezing;
+bump only with a semantic justification in the owning flagship or a
+registered shared core.
 
 The vessel smoke hash was formerly `0xe621_48d4_490c_a887` under the
 radix-2 FFT schedule. The mixed radix-4/2 schedule intentionally
@@ -19,6 +20,16 @@ metric-level audit found that only `robust_offband` moved, from
 `-0.0004364607241673659` to `-0.00043646072421213883` (about
 `4.48e-14` absolute); the other five metrics retained their exact bits,
 and restoring only the old final-field bits reconstructs the old hash.
+
+The subsequent mixed radix-8/4/2 schedule moved that same downstream
+`robust_offband` field from bits `0xbf3c_9a98_8956_ba53` back to
+`0xbf3c_9a98_894a_2018`; the other five metric bit patterns remained
+unchanged. Substitution reconstructs the radix-4/2 aggregate
+`0x4e42_4a53_6a63_ce8b` and the radix-8/4/2 aggregate
+`0x4541_d7f3_2926_1082` exactly. The current value reproduces in debug
+and release on aarch64. The upstream FFT stage path has four-quadrant
+evidence; this downstream vessel aggregate still has an explicit
+x86-64 no-claim until that lane is rerun.
 
 The ornith smoke hash was formerly `0xa6fa_6460_e7c7_972f` while
 `PairwiseRace` silently clipped differences against an implicit unit span.
@@ -47,8 +58,9 @@ and structured failure evidence.
   content hash, and wall-clock duration. The hash is computed only
   from deterministic metrics; wall time is logged but excluded from
   identity.
-- `content_hash(metrics)` folds metric names and IEEE-754 bit
-  patterns through a fixed FNV-64 stream.
+- `content_hash(metrics)` encodes metric names and IEEE-754 bit
+  patterns through the versioned, typed `fs_obs::ident` replay format;
+  its current root digest is FNV-1a-64 over those canonical bytes.
 - `artifact(flagship, tier, metrics, wall_s)` constructs a
   `StageArtifact` with its content hash already computed.
 - `log_row(stage, kind, payload)` emits the suite's structured JSON
