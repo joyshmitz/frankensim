@@ -13,16 +13,27 @@ the Ambition-Tag rule.
   and `composed()` are the measurement anchors.
 - `run_loop(config, iterations, seed) -> LoopReport`: the modeled
   two-agent design-iteration workload on the corpus's CHT-wedge edit
-  trace — total modeled cost, per-stage event trace, accept rate,
-  skips, merge verdicts, tombstone blocks, the end-to-end headline
-  color, and `trace_hash()` for G5.
+  trace — the exact replay config/requested iterations/seed, total modeled
+  cost, completed design iterations (including terminal tombstone/dead
+  outcomes), per-stage event trace, accept rate, skips, merge verdicts,
+  tombstone blocks, the end-to-end headline node, its retained
+  `ColorGraph`, and `trace_hash()` for G5.
 - `speedups(iterations, seed)`: isolated per-proposal speedups + the
-  composed loop (baseline cost ratios).
+  composed loop (baseline cost ratios); a zero-work comparison is the neutral,
+  finite ratio `1.0`.
 
 ## Invariants
-- Colors: accepted speculation is Estimated; the headline composes by
-  the weakest-input rule; downstream upgrades are refused by the
-  ColorGraph write gate (laundering-across-the-loop).
+- Colors: the modeled baseline is a Verified source minted from a typed
+  enclosure origin and admitted by an exact-request fixture capability.
+  Every accepted speculation retains distinct agent-specific proposer and
+  modeled holdout-dataset Estimated source leaves in the SAME append-only
+  `ColorGraph`; those heterogeneous leaves first form an accepted-evidence
+  derived node, and the headline advances only from that node. Derived
+  identities occupy the reserved `derived:v2:` namespace and cannot be
+  re-rooted as sources. Downstream upgrades are refused by the graph write
+  gate (laundering-across-the-loop). `LoopReport::headline()` resolves only
+  `ColorNode::scientific_color()`: a waived or unresolved node fails closed
+  instead of exposing its unverified declaration as the scientific headline.
 - The compounding measurement follows the review-round-3 protocol:
   isolated AND composed over 5 seeded replays, composed >
   max(isolated) by the stated 1.15x margin, coefficient of variation
@@ -31,18 +42,36 @@ the Ambition-Tag rule.
   misses) are OUTCOMES the report records, not errors.
 
 ## Error model
-The harness is total over its config space; member-crate errors would
-be bugs (panics), not runtime conditions.
+The harness has no recoverable error channel for its admitted fixture-scale
+campaigns; a fixed corpus/source invariant or member-crate refusal contract
+being violated is a bug (panic), not a runtime outcome. Arbitrarily large
+public iteration counts are not resource-admitted and can exhaust memory;
+this feature-gated measurement harness makes no totality claim under resource
+exhaustion.
 
 ## Determinism class
-Deterministic in `seed`: one LCG stream, fixed stage order,
-fixed-order accumulation — bit-equal costs and trace hashes on replay
-(G5, tested). Member crates are deterministic per their contracts.
+Deterministic in `seed`: domain-separated counter-addressed draws are keyed by
+logical iteration/agent/operation identity, so toggling one proposal cannot
+shift the candidate, speculation, or merge draws owned by another stage. Stage
+order and accumulation order are fixed — reports, retained color graphs, and
+trace hashes replay bit-for-bit (G5, tested). `trace_hash()` is a versioned,
+domain-separated, length-prefixed commitment to every public semantic
+report field, every event, every canonical graph row, and every field of
+every color node (including origins, admission-policy fingerprints,
+demotions, waivers, transitive waiver dependencies, and node hashes).
+The replay input config, requested iteration count, and logical seed are
+part of that commitment even when cancellation or a zero-work request
+would otherwise produce identical outputs.
+Member crates are deterministic per their contracts.
 
 ## Cancellation behavior
 `cancel_after_stages` models the G4 storm at every stage boundary; the
 loop unwinds BEFORE any state mutation for the interrupted stage, so a
-partial trace is a clean prefix (tested at five cancel points).
+partial event trace and retained evidence graph are replayable clean
+prefixes (tested at five cancel points). Work completed by one or both branches
+before the cancellation boundary remains charged to `total_cost`: parallel
+merge runs settle the maximum completed branch cost, while serialized runs
+settle their sum.
 
 ## Unsafe boundary
 No `unsafe` anywhere in this crate.
@@ -53,8 +82,12 @@ Gauntlet tier + kill metric are green.
 
 ## Conformance tests
 tests/e2e.rs — fw-001 compounding (margin + CV over 5 replays), fw-002
-laundering-across-the-loop, fw-003 G5 whole-loop determinism, fw-004
-G4 cancellation storm, fw-005 telemetry completeness; tests/dbg.rs —
+retained-lineage laundering/re-rooting refusals, fw-003 G5 whole-report
+and graph determinism plus field-by-field hash sensitivity, fw-004
+G4 cancellation storm, fw-005 telemetry completeness, fw-006 toggle-invariant
+logical workload draws, and fw-007 cancellation-prefix cost settlement;
+fw-008 defines finite neutral speedups for a zero-work request;
+tests/dbg.rs —
 config-sweep smoke; tests/phase1_gate.rs — THE PHASE-1 MILESTONE GATE
 (xpck.3): skip-yield dashboard live, accept-rate telemetry stratified
 by proposer × regime, the merge swarm kill check (<25% harmonic), and
@@ -62,12 +95,28 @@ Proposal 9's six-month checkpoint (accept rate > 30% AND median
 warm-start savings ≥ 1.5× at the calibrated realistic tolerance, with
 a hostile control proving the measurement can fail);
 tests/cal.rs — the tolerance-calibration probe behind the gate's
-0.05/0.02 choices. Battery ~50 s.
+0.05/0.02 choices. `tests/phase3_gate.rs` retains the horizon activation
+ledger: Proposal A's single typed coverage battery is recomputed and stored as
+`Estimated` with exact value bits. Its domain-separated identity binds the
+schema and algorithm versions, model, truth dimension, exact range bits, RB
+dimensions, concept flag, and exact parameter/tolerance bits. The numeric
+kill-floor is observed, but the certification/activation trigger remains
+unmet; no disconnected fixture certificate promotes it. The package-root
+fixture signature authenticates the five-claim holding-pen record, not their
+scientific authority. No wall-time claim is attached to this feature-gated
+battery; retained lineage work and shared-host load are part of the observed
+test cost.
 
 ## No-claim boundaries
 - COSTS ARE MODELED UNITS from the corpus's op counts: the loop
   MECHANICS are measured; wall-clock physics compounding lands when
   the wedge's real solvers (CHT vertical) replace the cost model.
+- The baseline source capability authenticates one exact, compiled-in
+  modeled enclosure request. It proves that the loop exercises typed source
+  admission, retained origin/policy provenance, and replay; it is not a
+  cryptographic signature, an external trust root, or retained physical
+  experiment evidence. Production claims require a real injected origin
+  verifier and retained certificate artifact resolution.
 - The Proposal-8 query stage is a soft edge (Phase 2 per the polish
   note); the headline-color tail models its admission check.
 - The two-agent concurrency model is synchronous round-based; a live
@@ -75,8 +124,9 @@ tests/cal.rs — the tolerance-calibration probe behind the gate's
 - The G4 storm is a deterministic stage-boundary cancel model, not the
   base plan's thread-storm harness (fs-exec owns that).
 - Acceptance/phase-gate certificate verifiers match exact in-memory fixture
-  declarations, and their signature verifiers accept deterministic,
+  declarations, and their signature/waiver verifiers accept deterministic,
   publicly-derivable test strings. They prove typed capability plumbing,
-  policy/request binding, color separation, and root-tamper refusal. They do
-  not resolve retained scientific artifacts, provide cryptographic
-  authentication, or establish vendor-independent third-party review.
+  policy/request binding, waiver taint, color separation, and root-tamper
+  refusal. They do not resolve retained scientific artifacts, provide
+  cryptographic authentication, or establish vendor-independent third-party
+  review.

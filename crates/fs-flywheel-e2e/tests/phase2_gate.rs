@@ -50,10 +50,12 @@ impl Lcg {
 /// candidate. Returns (adjoint misfit, DFO misfit) at equal budgets.
 #[allow(clippy::too_many_lines)] // one linear benchmark harness: adjoint route + ES baseline
 fn run_task(seed: u64, budget: usize) -> (f64, f64) {
-    let fixture = Elliptic1d { n: 80 };
+    let fixture = Elliptic1d::new(80).expect("bounded phase-2 elliptic fixture");
     let mut rng = Lcg(seed);
     let a_target: Vec<f64> = (0..=80).map(|_| 0.7 + 0.9 * rng.next()).collect();
-    let u_target = fixture.solve(&a_target);
+    let u_target = fixture
+        .solve(&a_target)
+        .expect("positive target conductivity solves");
     let h = 1.0 / 81.0;
     let misfit = |u: &[f64]| -> f64 {
         u.iter()
@@ -91,7 +93,7 @@ fn run_task(seed: u64, budget: usize) -> (f64, f64) {
             .map(|e| -slope(u, e) * slope(&lambda, e) * h)
             .collect()
     };
-    let u0 = fixture.solve(&a);
+    let u0 = fixture.solve(&a).expect("positive conductivity solves");
     spent += 1;
     let mut j0 = misfit(&u0);
     let mut best_adj = j0;
@@ -138,7 +140,9 @@ fn run_task(seed: u64, budget: usize) -> (f64, f64) {
                 .zip(&q)
                 .map(|(v, d)| (v - step * d).clamp(0.3, 2.5))
                 .collect();
-            let uc = fixture.solve(&cand);
+            let uc = fixture
+                .solve(&cand)
+                .expect("bounded positive candidate solves");
             spent += 1;
             let jc = misfit(&uc);
             if jc < j0 {
@@ -173,14 +177,18 @@ fn run_task(seed: u64, budget: usize) -> (f64, f64) {
     // DERIVATIVE-FREE baseline: (1+1)-ES, dimension-normalized
     // mutation, 1/5th-style adaptation, 1 solve per candidate.
     let mut a_es = vec![1.0f64; 81];
-    let mut best_es = misfit(&fixture.solve(&a_es));
+    let mut best_es = misfit(&fixture.solve(&a_es).expect("positive ES baseline solves"));
     let mut sigma = 0.15 / (81.0f64).sqrt();
     for _ in 0..budget.saturating_sub(1) {
         let cand: Vec<f64> = a_es
             .iter()
             .map(|v| (v + sigma * (rng.next() * 2.0 - 1.0)).clamp(0.3, 2.5))
             .collect();
-        let m = misfit(&fixture.solve(&cand));
+        let m = misfit(
+            &fixture
+                .solve(&cand)
+                .expect("bounded positive ES candidate solves"),
+        );
         if m < best_es {
             a_es = cand;
             best_es = m;
@@ -262,7 +270,7 @@ fn p2_001_adjoint_beats_derivative_free() {
 }
 
 #[test]
-fn p2_002_planner_beats_baseline_two_x() {
+fn p2_002_planner_beats_baseline_two_x() -> Result<(), fs_ir::planner::PlanError> {
     // Proposal 8's exit benchmark, re-run at gate level: the learned
     // greedy planner vs the fixed mid-rung + uniform-refinement
     // baseline, >= 2x cost at equal certified accuracy.
@@ -271,24 +279,26 @@ fn p2_002_planner_beats_baseline_two_x() {
     const RUNGS: [usize; 4] = [12, 24, 48, 96];
     // The wedge steep family and rung ladder, exactly as the planner's
     // own kill test defines them.
-    let mut c = vec![0.0; 11];
+    let mut c = vec![0.0; 6];
     c[1] = 0.2;
     c[2] = -0.2;
-    c[9] = 1.0;
-    c[10] = -1.0;
-    let family = ProblemFamily {
-        base: Poly(c),
-        kernel: "cht-wedge-steep".to_string(),
-    };
+    c[4] = 1.0;
+    c[5] = -1.0;
+    let family = ProblemFamily::new(Poly(c), "cht-wedge-steep")?;
     let tol = 6e-3;
-    let mut costs = CostTable::new(200.0);
+    let mut costs = CostTable::new(200.0)?;
     let mut cache = MemCache::default();
-    let out = plan(&family, 1.0, tol, 100_000.0, &RUNGS, &mut cache, &mut costs);
-    let PlanOutcome::Discharged { cost, .. } = out else {
-        panic!("the planner discharges at the calibrated tolerance")
+    let out = plan(&family, 1.0, tol, 100_000.0, &RUNGS, &mut cache, &mut costs)?;
+    let planner_cells = match out {
+        PlanOutcome::Discharged { cost, .. } => cost,
+        PlanOutcome::RefusedWithBest { reason, .. } => {
+            panic!("planner retained a certified interval but missed the kill target: {reason}")
+        }
+        PlanOutcome::RefusedWithoutAnswer { reason, .. } => {
+            panic!("planner produced no certified interval at the calibrated budget: {reason}")
+        }
     };
-    let planner_cells = cost;
-    let (baseline_cells, _base_bound) = baseline_uniform(&family, 1.0, tol, 48, 6);
+    let (baseline_cells, _base_bound) = baseline_uniform(&family, 1.0, tol, 48, 6)?;
     let ratio = baseline_cells / planner_cells.max(1.0);
     println!(
         "{{\"metric\":\"planner-vs-baseline\",\"tol\":{tol},\"planner_cells\":{planner_cells:.0},\
@@ -303,9 +313,11 @@ fn p2_002_planner_beats_baseline_two_x() {
         "the greedy ladder planner beats the mid-rung + uniform-refinement baseline by \
          >=2x cells at equal certified accuracy — Proposal 8's exit benchmark recorded",
     );
+    Ok(())
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // one auditable package/objective fixture
 fn p2_003_evidence_package_and_colored_objective_contract() {
     struct Phase2CertificateVerifier;
     struct Phase2SignatureVerifier;

@@ -110,7 +110,10 @@ fn family(theta: f64, cells: usize) -> MmsProblem {
 
 fn certified_run(theta: f64, cells: usize) -> (f64, Vec<f64>) {
     let problem = family(theta, cells);
-    (theta, fs_verify::fem1d::solve_p1(&problem))
+    (
+        theta,
+        fs_verify::fem1d::solve_p1(&problem).expect("checkpoint fixture must solve"),
+    )
 }
 
 #[allow(clippy::too_many_lines)]
@@ -124,8 +127,12 @@ fn run_checkpoint(cells: usize, tolerance: f64) -> (f64, f64, ZooTelemetry, Drif
         })
         .collect();
     let mut registry = Registry::new();
-    registry.register(Box::new(NeighborExtrapolation { cache }));
-    registry.register(Box::new(CoarseRungProlongation));
+    registry
+        .register(Box::new(NeighborExtrapolation { cache }))
+        .expect("neighbor proposer registers");
+    registry
+        .register(Box::new(CoarseRungProlongation))
+        .expect("coarse proposer registers");
     let mut telemetry = ZooTelemetry::default();
     let mut guard = DriftGuard::default();
     let mut accepts = 0usize;
@@ -139,7 +146,9 @@ fn run_checkpoint(cells: usize, tolerance: f64) -> (f64, f64, ZooTelemetry, Drif
             tolerance,
             regime: regime.to_string(),
         };
-        match run_speculative(&query, &registry, &mut telemetry, &mut guard, 200) {
+        match run_speculative(&query, &registry, &mut telemetry, &mut guard, 200)
+            .expect("checkpoint speculation must complete")
+        {
             EconDecision::AcceptedOutright { .. } => accepts += 1,
             EconDecision::WarmStarted { cold, warm, .. } => {
                 if warm > 0 {

@@ -8,6 +8,12 @@
 
 use fs_package::{Claim, EvidencePackage, Provenance};
 
+const HORIZON_COVERAGE_SCHEMA_VERSION: u64 = 1;
+const HORIZON_COVERAGE_ALGORITHM: &str = "fs-surrogate.rb-coverage/one-solve-per-mu-v2";
+const HORIZON_COVERAGE_MODEL: &str = "fs-surrogate.truth-model/p1-piecewise-affine-elliptic-v1";
+const HORIZON_RB_DIMENSIONS: [usize; 2] = [5, 2];
+const HORIZON_TOLERANCES: [f64; 3] = [1e-2, 1e-5, 1e-8];
+
 fn verdict(case: &str, detail: &str) {
     println!(
         "{{\"suite\":\"fs-flywheel-e2e/phase3\",\"case\":\"{case}\",\"verdict\":\"pass\",\
@@ -15,24 +21,221 @@ fn verdict(case: &str, detail: &str) {
     );
 }
 
+#[derive(Debug, Clone)]
+struct HorizonCoverageSpec {
+    schema_version: u64,
+    algorithm: &'static str,
+    model: &'static str,
+    truth_nodes: usize,
+    mu_range: (f64, f64),
+    rb_dimensions: Vec<usize>,
+    concept: bool,
+    mus: Vec<f64>,
+    tolerances: Vec<f64>,
+}
+
+impl HorizonCoverageSpec {
+    fn canonical_bytes(&self) -> Vec<u8> {
+        fn push_atom(out: &mut Vec<u8>, value: &[u8]) {
+            let len = u64::try_from(value.len()).expect("fixture atom length fits u64");
+            out.extend_from_slice(&len.to_le_bytes());
+            out.extend_from_slice(value);
+        }
+
+        let mut out = Vec::new();
+        push_atom(
+            &mut out,
+            b"frankensim/fs-flywheel-e2e/horizon-coverage-spec/v1",
+        );
+        push_atom(&mut out, &self.schema_version.to_le_bytes());
+        push_atom(&mut out, self.algorithm.as_bytes());
+        push_atom(&mut out, self.model.as_bytes());
+        push_atom(
+            &mut out,
+            &u64::try_from(self.truth_nodes)
+                .expect("fixture truth dimension fits u64")
+                .to_le_bytes(),
+        );
+        push_atom(&mut out, &self.mu_range.0.to_bits().to_le_bytes());
+        push_atom(&mut out, &self.mu_range.1.to_bits().to_le_bytes());
+        push_atom(
+            &mut out,
+            &u64::try_from(self.rb_dimensions.len())
+                .expect("fixture rung count fits u64")
+                .to_le_bytes(),
+        );
+        for &dimension in &self.rb_dimensions {
+            push_atom(
+                &mut out,
+                &u64::try_from(dimension)
+                    .expect("fixture rung dimension fits u64")
+                    .to_le_bytes(),
+            );
+        }
+        push_atom(&mut out, &[u8::from(self.concept)]);
+        push_atom(
+            &mut out,
+            &u64::try_from(self.mus.len())
+                .expect("fixture parameter count fits u64")
+                .to_le_bytes(),
+        );
+        for &mu in &self.mus {
+            push_atom(&mut out, &mu.to_bits().to_le_bytes());
+        }
+        push_atom(
+            &mut out,
+            &u64::try_from(self.tolerances.len())
+                .expect("fixture tolerance count fits u64")
+                .to_le_bytes(),
+        );
+        for &tolerance in &self.tolerances {
+            push_atom(&mut out, &tolerance.to_bits().to_le_bytes());
+        }
+        out
+    }
+
+    fn canonical_text(&self) -> String {
+        let dimensions = self
+            .rb_dimensions
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let mus = self
+            .mus
+            .iter()
+            .map(|value| format!("{:016x}", value.to_bits()))
+            .collect::<Vec<_>>()
+            .join(",");
+        let tolerances = self
+            .tolerances
+            .iter()
+            .map(|value| format!("{:016x}", value.to_bits()))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "schema={};algorithm={};model={};truth_nodes={};mu_range_bits=[{:016x},{:016x}];\
+             rb_dimensions=[{dimensions}];concept={};mus_bits=[{mus}];\
+             tolerance_bits=[{tolerances}]",
+            self.schema_version,
+            self.algorithm,
+            self.model,
+            self.truth_nodes,
+            self.mu_range.0.to_bits(),
+            self.mu_range.1.to_bits(),
+            self.concept,
+        )
+    }
+
+    fn hash_hex(&self) -> String {
+        fs_ledger::hash_bytes(&self.canonical_bytes()).to_hex()
+    }
+}
+
+fn horizon_coverage_spec() -> HorizonCoverageSpec {
+    HorizonCoverageSpec {
+        schema_version: HORIZON_COVERAGE_SCHEMA_VERSION,
+        algorithm: HORIZON_COVERAGE_ALGORITHM,
+        model: HORIZON_COVERAGE_MODEL,
+        truth_nodes: 150,
+        mu_range: (0.0, 4.0),
+        rb_dimensions: HORIZON_RB_DIMENSIONS.to_vec(),
+        concept: false,
+        mus: (0..10).map(|i| 4.0 * f64::from(i) / 9.0).collect(),
+        tolerances: HORIZON_TOLERANCES.to_vec(),
+    }
+}
+
+#[derive(Debug)]
+struct HorizonCoverageMeasurement {
+    spec: HorizonCoverageSpec,
+    coverage: f64,
+}
+
+fn measure_horizon_coverage() -> HorizonCoverageMeasurement {
+    let spec = horizon_coverage_spec();
+    let ladder = fs_surrogate::ladder::Ladder::build(
+        spec.truth_nodes,
+        spec.mu_range,
+        &spec.rb_dimensions,
+        spec.concept,
+    )
+    .expect("bounded horizon ladder");
+    let coverage = fs_surrogate::ladder::rb_coverage(&ladder, &spec.mus, &spec.tolerances)
+        .expect("bounded horizon coverage battery");
+    HorizonCoverageMeasurement { spec, coverage }
+}
+
 #[test]
-fn p3_001_proposal_a_trigger_fired() {
-    use fs_surrogate::ladder::{Ladder, rb_coverage};
-    // Proposal A's activation measurement: RB coverage of the wedge
-    // query volume, kill floor 0.2. INSTRUMENTED and — on the elliptic
-    // beachhead — FIRED.
-    let ladder = Ladder::build(150, (0.0, 4.0), &[5, 2], false);
-    let mus: Vec<f64> = (0..10).map(|i| 4.0 * f64::from(i) / 9.0).collect();
-    let coverage = rb_coverage(&ladder, &mus, &[1e-2, 1e-5, 1e-8]);
+fn p3_000_coverage_spec_identity_binds_every_semantic_input() {
+    let base = horizon_coverage_spec();
+    let base_hash = base.hash_hex();
+    let mut variants = Vec::new();
+
+    let mut changed = base.clone();
+    changed.schema_version += 1;
+    variants.push(("schema", changed));
+    let mut changed = base.clone();
+    changed.algorithm = "fs-surrogate.rb-coverage/alternate";
+    variants.push(("algorithm", changed));
+    let mut changed = base.clone();
+    changed.model = "fs-surrogate.truth-model/alternate";
+    variants.push(("model", changed));
+    let mut changed = base.clone();
+    changed.truth_nodes += 1;
+    variants.push(("truth dimension", changed));
+    let mut changed = base.clone();
+    changed.mu_range.1 = f64::from_bits(changed.mu_range.1.to_bits() + 1);
+    variants.push(("parameter range", changed));
+    let mut changed = base.clone();
+    changed.rb_dimensions[0] += 1;
+    variants.push(("RB dimensions", changed));
+    let mut changed = base.clone();
+    changed.concept = !changed.concept;
+    variants.push(("concept flag", changed));
+    let mut changed = base.clone();
+    changed.mus[1] = f64::from_bits(changed.mus[1].to_bits() + 1);
+    variants.push(("parameter battery", changed));
+    let mut changed = base.clone();
+    changed.tolerances[0] = f64::from_bits(changed.tolerances[0].to_bits() + 1);
+    variants.push(("tolerance battery", changed));
+
+    for (field, variant) in variants {
+        assert_ne!(
+            base_hash,
+            variant.hash_hex(),
+            "canonical coverage identity omitted {field}"
+        );
+    }
+    assert!(base.canonical_text().contains("mus_bits=["));
+    assert!(base.canonical_text().contains("tolerance_bits=["));
+    verdict(
+        "p3-000",
+        "the domain-separated coverage-spec digest changes with every semantic model, ladder, \
+         battery, algorithm, and schema input",
+    );
+}
+
+#[test]
+fn p3_001_proposal_a_numeric_floor_observed_but_activation_unmet() {
+    // Proposal A's numeric kill-floor instrument is live, but the activation
+    // gate requires certified RB coverage. This Estimated-only ladder can
+    // observe the floor; it cannot satisfy that authority requirement.
+    let measurement = measure_horizon_coverage();
+    let coverage = measurement.coverage;
     println!(
         "{{\"metric\":\"horizon-A\",\"rb_coverage\":{coverage:.3},\"floor\":0.2,\
-         \"status\":\"TRIGGER FIRED — active behind abstraction-ladder\"}}"
+         \"numeric_floor_observed\":true,\"certification_activation_trigger_met\":false,\
+         \"status\":\"NUMERIC KILL-FLOOR OBSERVED; CERTIFICATION/ACTIVATION TRIGGER UNMET\"}}"
     );
-    assert!(coverage >= 0.2, "the beachhead trigger holds: {coverage}");
+    assert!(
+        coverage >= 0.2,
+        "the numeric kill-floor is observed: {coverage}"
+    );
     verdict(
         "p3-001",
-        "Proposal A: rb_coverage instrumented and above the 0.2 kill floor — the one \
-         horizon member whose trigger has fired (active, feature-gated)",
+        "Proposal A: the Estimated rb_coverage instrument observes the numeric 0.2 floor, \
+         while certification and activation remain explicitly unmet",
     );
 }
 
@@ -135,36 +338,11 @@ fn p3_004_proposal_13b_prevalence_measurement() {
 }
 
 #[test]
-fn p3_005_proposal_11_r8_gate_and_the_holding_pen() {
+#[allow(clippy::too_many_lines)] // one auditable end-to-end holding-pen fixture
+fn p3_005_proposal_11_r8_gate_and_the_holding_pen() -> Result<(), fs_asbuilt::RegError> {
     use fs_asbuilt::{Fiducial, Point2, register, well_posed};
 
-    struct Phase3CertificateVerifier;
     struct Phase3SignatureVerifier;
-
-    impl fs_checker::SourceCertificateVerifier for Phase3CertificateVerifier {
-        fn verify(
-            &self,
-            request: &fs_checker::SourceCertificateRequest<'_>,
-        ) -> fs_checker::VerificationDecision {
-            let accepted = request.package_provenance.code_version == "phase3-horizon"
-                && request.package_provenance.constellation_lock == "Cargo.lock"
-                && request.claim_index == 0
-                && request.claim_id == "A-abstraction-ladder"
-                && request.statement == "trigger FIRED: rb_coverage 1.0 >= 0.2 on the beachhead"
-                && request.lo.to_bits() == 0.2f64.to_bits()
-                && request.hi.to_bits() == 1.0f64.to_bits()
-                && request.producer == "test-solver/cert"
-                && request.certificate_hash.to_hex()
-                    == "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-            let fingerprint =
-                fs_ledger::hash_bytes(b"fs-flywheel-e2e:phase3-certificate-policy:v1");
-            if accepted {
-                fs_checker::VerificationDecision::accept(fingerprint)
-            } else {
-                fs_checker::VerificationDecision::reject(fingerprint)
-            }
-        }
-    }
 
     impl fs_checker::SignatureVerifier for Phase3SignatureVerifier {
         fn verify(
@@ -185,49 +363,63 @@ fn p3_005_proposal_11_r8_gate_and_the_holding_pen() {
 
     // Proposal 11's R8 instrument: registration must be tighter than
     // the deviations being certified. GOOD fiducials pass...
-    let good: Vec<Fiducial> = [(0.0, 0.0), (10.0, 0.0), (10.0, 8.0), (0.0, 8.0)]
+    let good = [(0.0, 0.0), (10.0, 0.0), (10.0, 8.0), (0.0, 8.0)]
         .iter()
-        .map(|&(x, y)| {
-            Fiducial::new(
-                Point2::new(x, y),
-                Point2::new(x + 0.30001, y + 0.19999), // clean rigid shift
-            )
+        .map(|&(x, y)| -> Result<Fiducial, fs_asbuilt::RegError> {
+            Ok(Fiducial::new(
+                Point2::new(x, y)?,
+                Point2::new(x + 0.30001, y + 0.19999)?, // clean rigid shift
+            ))
         })
-        .collect();
-    let reg = register(&good).expect("registers");
+        .collect::<Result<Vec<_>, _>>()?;
+    let reg = register(&good)?;
     assert!(
         well_posed(&reg, 0.05),
         "clean registration certifies 0.05 deviations"
     );
     // ...and sloppy fiducials FAIL the same certification (the R8 kill
     // visible in the instrument).
-    let sloppy: Vec<Fiducial> = [(0.0, 0.0), (10.0, 0.0), (10.0, 8.0), (0.0, 8.0)]
+    let sloppy = [(0.0, 0.0), (10.0, 0.0), (10.0, 8.0), (0.0, 8.0)]
         .iter()
         .enumerate()
-        .map(|(k, &(x, y))| {
-            let wobble = 0.2 * f64::from(u32::try_from(k).expect("small"));
-            Fiducial::new(
-                Point2::new(x, y),
-                Point2::new(x + 0.3 + wobble, y + 0.2 - wobble),
-            )
+        .map(|(k, &(x, y))| -> Result<Fiducial, fs_asbuilt::RegError> {
+            let wobble =
+                0.2 * f64::from(u32::try_from(k).expect("four-point fixture index fits u32"));
+            Ok(Fiducial::new(
+                Point2::new(x, y)?,
+                Point2::new(x + 0.3 + wobble, y + 0.2 - wobble)?,
+            ))
         })
-        .collect();
-    let reg = register(&sloppy).expect("registers");
+        .collect::<Result<Vec<_>, _>>()?;
+    let reg = register(&sloppy)?;
     assert!(
         !well_posed(&reg, 0.05),
         "sloppy registration cannot certify what it cannot resolve"
     );
+    // Recompute Proposal A's one canonical numeric kill-floor measurement for
+    // the retained package. The ladder is Estimated-only, so certification and
+    // activation remain unmet even though the numeric floor is observed.
+    let measurement = measure_horizon_coverage();
+    let coverage = measurement.coverage;
+    assert!(coverage >= 0.2, "the measured numeric kill-floor holds");
+    let estimator_id = measurement.spec.algorithm;
+    let spec_canonical = measurement.spec.canonical_text();
+    let spec_hash = measurement.spec.hash_hex();
+    let coverage_statement = format!(
+        "numeric kill-floor observed: rb_coverage={coverage:.17} (bits={:016x}) >= 0.2; \
+         certification/activation trigger UNMET; spec_hash={spec_hash};spec={spec_canonical}",
+        coverage.to_bits(),
+    );
+
     // THE HOLDING PEN, IN WRITING: the five statuses enter a
     // fixture-authenticated package. This proves checker integration and honest
-    // color separation, not an external review or cryptographic signature.
+    // color separation, not external scientific certification.
     let unsigned = EvidencePackage::new(Provenance::new("phase3-horizon", "Cargo.lock"))
-        .with_claim(Claim::from_certificate(
+        .with_claim(Claim::estimated(
             "A-abstraction-ladder",
-            "trigger FIRED: rb_coverage 1.0 >= 0.2 on the beachhead",
-            0.2,
-            1.0,
-            "test-solver/cert",
-            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            coverage_statement,
+            estimator_id,
+            f64::INFINITY,
         ))
         .with_claim(Claim::estimated(
             "C-value-of-information",
@@ -266,11 +458,9 @@ fn p3_005_proposal_11_r8_gate_and_the_holding_pen() {
         "phase3-horizon-gate:{}",
         signature_subject.to_hex()
     ));
-    let source_verifier = Phase3CertificateVerifier;
     let signature_verifier = Phase3SignatureVerifier;
-    let capabilities = fs_checker::VerificationCapabilities::deny_all()
-        .with_source_certificates(&source_verifier)
-        .with_signatures(&signature_verifier);
+    let capabilities =
+        fs_checker::VerificationCapabilities::deny_all().with_signatures(&signature_verifier);
     let check = fs_checker::check_with_capabilities(&pkg, None, None, &capabilities);
     assert!(check.passed(), "the holding-pen record re-verifies");
     assert!(matches!(
@@ -279,17 +469,22 @@ fn p3_005_proposal_11_r8_gate_and_the_holding_pen() {
     ));
     let breakdown = *check.breakdown();
     assert!(
-        breakdown.verified == 1 && breakdown.estimated == 4,
-        "exactly one trigger has fired; four wait honestly: {breakdown:?}"
+        breakdown.verified == 0 && breakdown.estimated == 5,
+        "all five horizon programs, including Proposal A's unmet certification trigger, remain \
+         honestly Estimated: {breakdown:?}"
     );
     println!(
-        "{{\"metric\":\"horizon-ledger\",\"root\":\"{}\",\"fired\":1,\"waiting\":4}}",
+        "{{\"metric\":\"horizon-ledger\",\"root\":\"{}\",\"numeric_floor_observed\":1,\
+         \"activation_trigger_met\":0,\"verified\":0,\"waiting\":5,\
+         \"coverage_spec_hash\":\"{spec_hash}\"}}",
         pkg.try_merkle_root().expect("bounded fixture root")
     );
     verdict(
         "p3-005",
         "Proposal 11's R8 instrument passes clean registration and fails sloppy; the \
-         five-proposal holding pen crosses the fixture checker policy with one trigger \
-         fired and four waiting, in writing",
+         five-proposal holding pen retains Proposal A's numeric floor with its certification \
+         trigger unmet, alongside four other waiting programs, as Estimated claims under an \
+         authenticated package-root signature",
     );
+    Ok(())
 }

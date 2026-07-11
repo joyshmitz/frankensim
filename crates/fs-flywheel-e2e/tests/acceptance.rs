@@ -12,7 +12,7 @@
 #![cfg(feature = "flywheel-e2e")]
 
 use fs_evidence::{Color, IntervalOp, compose};
-use fs_ir::planner::{CostTable, MemCache, ProblemFamily};
+use fs_ir::planner::{CostTable, MemCache, PlanError, ProblemFamily};
 use fs_ir::{admission, sexpr};
 use fs_package::{Claim, EvidencePackage, Provenance};
 
@@ -219,16 +219,13 @@ fn admission_cx() -> admission::AdmissionContext<'static> {
     }
 }
 
-fn steep_family() -> ProblemFamily {
-    let mut c = vec![0.0; 11];
+fn steep_family() -> Result<ProblemFamily, PlanError> {
+    let mut c = vec![0.0; 6];
     c[1] = 0.2;
     c[2] = -0.2;
-    c[9] = 1.0;
-    c[10] = -1.0;
-    ProblemFamily {
-        base: Poly(c),
-        kernel: "cht-wedge-acceptance".to_string(),
-    }
+    c[4] = 1.0;
+    c[5] = -1.0;
+    ProblemFamily::new(Poly(c), "cht-wedge-acceptance")
 }
 
 const RUNGS: [usize; 4] = [12, 24, 48, 96];
@@ -263,14 +260,14 @@ fn ac_001_admission_teaches_in_milliseconds() {
 }
 
 #[test]
-fn ac_002_flywheel_discharge_and_anytime_answer() {
+fn ac_002_flywheel_discharge_and_anytime_answer() -> Result<(), PlanError> {
     use fs_ir::anytime::run_anytime;
-    let family = steep_family();
+    let family = steep_family()?;
     let tol = 6e-3;
     let ladder = [30.0, 90.0, 400.0];
     let mut cache = MemCache::default();
-    let mut costs = CostTable::new(200.0);
-    let report = run_anytime(&family, 1.0, tol, &ladder, &RUNGS, &mut cache, &mut costs);
+    let mut costs = CostTable::new(200.0)?;
+    let report = run_anytime(&family, 1.0, tol, &ladder, &RUNGS, &mut cache, &mut costs)?;
     // ANYTIME: an immediate colored interval that tightens.
     assert!(!report.trajectory.is_empty(), "an immediate answer exists");
     for step in &report.trajectory {
@@ -284,7 +281,7 @@ fn ac_002_flywheel_discharge_and_anytime_answer() {
     }
     // The flywheel reuse: the repeat query discharges from cache at the
     // smallest budget (the cheap-query loop).
-    let again = run_anytime(&family, 1.0, tol, &[5.0], &RUNGS, &mut cache, &mut costs);
+    let again = run_anytime(&family, 1.0, tol, &[5.0], &RUNGS, &mut cache, &mut costs)?;
     assert!(
         again.refusal.is_none() && again.trajectory.last().expect("step").discharged,
         "the repeat query is a cache hit within a 5-cell budget"
@@ -292,7 +289,7 @@ fn ac_002_flywheel_discharge_and_anytime_answer() {
     // TEACHING REFUSAL: an impossible tolerance returns the achieved
     // interval, the priced gap, and the no-point-estimate clause.
     let mut cache2 = MemCache::default();
-    let mut costs2 = CostTable::new(200.0);
+    let mut costs2 = CostTable::new(200.0)?;
     let refused = run_anytime(
         &family,
         1.0,
@@ -301,11 +298,25 @@ fn ac_002_flywheel_discharge_and_anytime_answer() {
         &RUNGS,
         &mut cache2,
         &mut costs2,
-    );
+    )?;
     let note = refused.refusal.expect("the refusal note");
     assert!(
         note.contains("achieved a certified") && note.contains("No best-effort point estimate"),
         "the refusal teaches: {note}"
+    );
+    // A budget below the first solve produces the distinct no-answer
+    // refusal. It must not fabricate a trajectory interval or evidence color.
+    let mut cache3 = MemCache::default();
+    let mut costs3 = CostTable::new(200.0)?;
+    let no_answer = run_anytime(&family, 1.0, tol, &[1.0], &RUNGS, &mut cache3, &mut costs3)?;
+    let no_answer_note = no_answer
+        .refusal
+        .expect("an unfunded valid query carries a teaching refusal");
+    assert!(
+        no_answer.trajectory.is_empty()
+            && no_answer_note.contains("without a certified interval")
+            && no_answer_note.contains("No best-effort point estimate"),
+        "no budget means no fabricated answer: {no_answer_note}"
     );
     println!(
         "{{\"metric\":\"anytime\",\"steps\":{},\"final_bound\":{:.3e},\
@@ -316,21 +327,23 @@ fn ac_002_flywheel_discharge_and_anytime_answer() {
     verdict(
         "ac-002",
         "immediate certified interval, monotone tightening, cache-hit repeat at a 5-cell \
-         budget, and the teaching refusal with the no-point-estimate clause",
+         budget, plus distinct best-certified and no-certified-answer teaching refusals",
     );
+    Ok(())
 }
 
 #[test]
-fn ac_003_package_recheck_solver_free_and_voi_hint() {
+#[allow(clippy::too_many_lines)] // one auditable query-to-package fixture
+fn ac_003_package_recheck_solver_free_and_voi_hint() -> Result<(), PlanError> {
     use fs_ir::anytime::run_anytime;
     use fs_plan::voi::{LiveDecision, Probe, ProbeKind, UncertaintyNode, rank_purchases};
     // Discharge the query, wrap the answer, and exercise the STANDALONE
     // checker's certificate-policy, composition, and content-address paths
     // with zero solver dependency.
-    let family = steep_family();
+    let family = steep_family()?;
     let mut cache = MemCache::default();
-    let mut costs = CostTable::new(200.0);
-    let report = run_anytime(&family, 1.0, 6e-3, &[400.0], &RUNGS, &mut cache, &mut costs);
+    let mut costs = CostTable::new(200.0)?;
+    let report = run_anytime(&family, 1.0, 6e-3, &[400.0], &RUNGS, &mut cache, &mut costs)?;
     let last = report.trajectory.last().expect("answer");
     let bound = last.bound;
     // The VoI-priced hint (Proposal C riding the answer).
@@ -430,15 +443,16 @@ fn ac_003_package_recheck_solver_free_and_voi_hint() {
          its VoI-priced hint; the standalone checker exercises solver-free capability \
          binding and catches a tampered root",
     );
+    Ok(())
 }
 
 #[test]
-fn ac_004_g5_whole_path_replay() {
+fn ac_004_g5_whole_path_replay() -> Result<(), PlanError> {
     use fs_ir::anytime::run_anytime;
-    let run = || -> (Vec<u64>, fs_package::ContentHash) {
-        let family = steep_family();
+    let run = || -> Result<(Vec<u64>, fs_package::ContentHash), PlanError> {
+        let family = steep_family()?;
         let mut cache = MemCache::default();
-        let mut costs = CostTable::new(200.0);
+        let mut costs = CostTable::new(200.0)?;
         let report = run_anytime(
             &family,
             1.0,
@@ -447,7 +461,7 @@ fn ac_004_g5_whole_path_replay() {
             &RUNGS,
             &mut cache,
             &mut costs,
-        );
+        )?;
         let bits: Vec<u64> = report
             .trajectory
             .iter()
@@ -471,16 +485,17 @@ fn ac_004_g5_whole_path_replay() {
             }),
             "acceptance-gate/ac-004",
         );
-        (bits, pkg.try_merkle_root().expect("bounded fixture root"))
+        Ok((bits, pkg.try_merkle_root().expect("bounded fixture root")))
     };
-    let (bits_a, root_a) = run();
-    let (bits_b, root_b) = run();
+    let (bits_a, root_a) = run()?;
+    let (bits_b, root_b) = run()?;
     assert_eq!(bits_a, bits_b, "the trajectory replays bit-exact");
     assert_eq!(root_a, root_b, "the artifact hash replays exactly");
     verdict(
         "ac-004",
         "the whole path — discharge, trajectory, package root — replays bit-exact (G5)",
     );
+    Ok(())
 }
 
 #[test]

@@ -19,11 +19,22 @@ fn family(theta: f64, cells: usize) -> MmsProblem {
 fn accepts_at(tol: f64) -> usize {
     let cache: Vec<(f64, Vec<f64>, Option<Vec<f64>>)> = [0.8, 1.0, 1.2, 1.4]
         .iter()
-        .map(|&t| (t, fs_verify::fem1d::solve_p1(&family(t, 24)), None))
+        .map(|&t| {
+            (
+                t,
+                fs_verify::fem1d::solve_p1(&family(t, 24))
+                    .expect("calibration cache fixture must solve"),
+                None,
+            )
+        })
         .collect();
     let mut registry = Registry::new();
-    registry.register(Box::new(NeighborExtrapolation { cache }));
-    registry.register(Box::new(CoarseRungProlongation));
+    registry
+        .register(Box::new(NeighborExtrapolation { cache }))
+        .expect("neighbor proposer registers");
+    registry
+        .register(Box::new(CoarseRungProlongation))
+        .expect("coarse proposer registers");
     let mut tele = ZooTelemetry::default();
     let mut guard = DriftGuard::default();
     let mut acc = 0;
@@ -36,7 +47,8 @@ fn accepts_at(tol: f64) -> usize {
             regime: "r".to_string(),
         };
         if matches!(
-            run_speculative(&q, &registry, &mut tele, &mut guard, 200),
+            run_speculative(&q, &registry, &mut tele, &mut guard, 200)
+                .expect("calibration speculation must complete"),
             EconDecision::AcceptedOutright { .. }
         ) {
             acc += 1;
