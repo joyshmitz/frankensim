@@ -36,6 +36,10 @@ pub use ledgers::{
     TimeStage,
 };
 pub use oracle::{PlanCostOracle, cost_model_from_tune, json_f64_field};
+#[cfg(feature = "voi-queries")]
+pub use voi::{
+    MAX_VOI_EVALUATIONS, MAX_VOI_GRID, MAX_VOI_NAME_BYTES, MAX_VOI_NODES, MAX_VOI_PROBES, VoiError,
+};
 
 /// Crate version (compile-time stamp).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

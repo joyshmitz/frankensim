@@ -54,19 +54,34 @@ Runtime deps: `std`, fs-geom, fs-ledger.
   scheduler), `audit_verdict` (the kill criterion as code: VoI keeps
   scheduling authority only while recommended purchases measurably
   outperform agent-chosen alternatives; no evidence → no authority).
+  Decision, sweep, ranking, and scheduling entry points are fallible:
+  arity, nonempty bounded collections/names, unique identities, finite
+  ordered intervals, nominal containment, callback margins, target
+  resolution, grid and aggregate evaluation work, probe economics,
+  ranked values, and budgets are validated before evaluation or spend.
+  Duplicate ranked identities refuse rather than buying twice, and a
+  positive cost must strictly decrease a finite remaining budget.
 
 - `alloc::{Knob, KnobSetting, AllocProblem, Plan, allocate, Allocator,
-  BudgetInfeasible, oracle_min_error}` (bead gp3.9 V1): the
+  AllocationError, PlanInputError, BudgetInfeasible, oracle_min_error}`
+  (bead gp3.9 V1): the
   GREEDY-PLUS-LOOKUP budget allocator — Pareto-ladder upgrades by
   marginal utility Δerror/Δwall under a TROPICAL wall-clock (max over
   parallel tracks of within-track sums, §14.3: slack upgrades are free
   and taken first); online re-planning via `Allocator::observe_error`
-  (a-posteriori estimates override model values); always a plan or a
-  STRUCTURED `BudgetInfeasible` with ranked, VERIFIED relaxations
-  (re-planning at the suggested budget succeeds — gated). Measured on
-  the fixture matrix: worst greedy/oracle error ratio 1.134 over 60
-  random problems; the §11.4 "drag to 2% in 2h" scenario plans to
-  1.68% at 3600 s with an 8-line rationale, deterministically.
+  (a-posteriori estimates override model values transactionally and
+  re-prune dominance). Constructors, observations, public evaluators,
+  and the fixture oracle are fallible. Finite nonnegative scalars,
+  Pareto ordering, choice vectors, tracks, knob/setting counts, aggregate
+  arithmetic, and oracle Cartesian work are bounded before allocation or
+  enumeration. An empty problem is the explicit zero-error/zero-wall
+  identity. `allocate` returns only an in-budget plan, otherwise a typed
+  malformed-input refusal, `MinimumPlanExceedsBudget`, or a structured
+  `BudgetInfeasible` with ranked, VERIFIED relaxations (re-planning at the
+  suggested budget succeeds — gated). Measured on the fixture matrix:
+  worst greedy/oracle error ratio 1.134 over 60 random problems; the §11.4
+  "drag to 2% in 2h" scenario plans to 1.68% at 3600 s with an 8-line
+  rationale, deterministically.
 - `moonshot::{optimize_exact, waterfill, cma_continuous, RateKnob,
   ScoreRow}` (bead gp3.9 V2, feature `moonshot-planner`, [M], ships
   OFF): the co-optimizer — exact per-track multiple-choice-knapsack DP
@@ -99,19 +114,23 @@ Runtime deps: `std`, fs-geom, fs-ledger.
 ## Error model
 
 `CostRefusal` (insufficient data, bad input), `LedgerDefect` (bad
-contribution/residual/aggregate), and `TimeLedgerDefect` (bad stage or
-aggregate) are structured and teaching; none panic across the boundary. Ledger
-I/O errors propagate as `fs_ledger::LedgerError`.
+contribution/residual/aggregate), `TimeLedgerDefect` (bad stage or aggregate),
+`PlanInputError`/`AllocationError`, and feature-gated `VoiError` are structured
+and teaching; none panic across the boundary. Ledger I/O errors propagate as
+`fs_ledger::LedgerError`.
 
 ## Determinism class
 
 Deterministic: sorted observations, nearest-rank quantiles with
-deterministic tie-breaking, BTreeMap iteration. No RNG anywhere.
+deterministic tie-breaking, BTreeMap iteration. No RNG anywhere. VoI uses a
+fixed sweep and ranking order; its result is deterministic when the supplied
+cached surrogate callback is itself deterministic.
 
 ## Cancellation behavior
 
-All calls are short pure computations or single ledger reads; no long
-loops beyond O(n log n) fits. No `Cx` integration needed at this layer.
+All calls are short pure computations or single ledger reads. VoI sweeps are
+bounded by `MAX_VOI_EVALUATIONS`; the fixture oracle has its own Cartesian-work
+cap. No `Cx` integration is needed at this layer.
 
 ## Unsafe boundary
 
@@ -136,6 +155,12 @@ Router replanning from fitted models, Time Ledger attribution +
 calibration. Unit tests cover refusals, band ordering, extrapolation
 flags, and arrival-order determinism.
 
+`tests/alloc_battery.rs` covers budget-safe allocation, typed input/work
+refusals, online re-planning, oracle bounds, evaluator safety, and tropical
+composition. Feature-gated `tests/voi.rs` covers exact boundaries and limit+1,
+callback/domain refusals before evaluation, exact target resolution, probe
+economics, duplicate scheduling identities, and monotone budget arithmetic.
+
 ## No-claim boundaries
 
 - Error contributions are attribution bookkeeping over estimates or
@@ -147,8 +172,9 @@ flags, and arrival-order determinism.
   JSON parser (fs-ir owns real JSON).
 - No DWR / conformal / MLMC estimator inputs yet — they wire in as their
   owning crates land (the enum slots exist).
-- The §11.4 self-optimizing allocator (greedy v1, co-optimizing [M] v2)
-  is gp3.9's, not provided here.
+- Greedy V1 is not an exact optimizer; the fixture oracle is bounded and is
+  evidence, not a production planner. Co-optimizing V2 remains `[M]`, default
+  OFF, and makes no flagship superiority claim before the huq.15 gate.
 
 ## No-claim boundaries (voi)
 
@@ -161,3 +187,6 @@ flags, and arrival-order determinism.
   flips are underestimated — documented, not hidden.
 - Probe `shrink` factors are menu declarations, not measured
   posteriors; the prospective audit is what keeps the menu honest.
+- The library bounds and validates surrogate calls but cannot prove an
+  arbitrary callback pure; VoI determinism and replay require the caller to
+  supply the declared cached deterministic margin.

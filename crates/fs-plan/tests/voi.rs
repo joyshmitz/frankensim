@@ -10,8 +10,9 @@
 use std::cell::Cell;
 
 use fs_plan::voi::{
-    AuditRecord, AuditVerdict, LiveDecision, Probe, ProbeKind, UncertaintyNode, audit_verdict,
-    hint_for_query, rank_purchases, schedule_probes,
+    AuditRecord, AuditVerdict, LiveDecision, MAX_VOI_EVALUATIONS, MAX_VOI_GRID, MAX_VOI_NAME_BYTES,
+    MAX_VOI_NODES, MAX_VOI_PROBES, Probe, ProbeKind, RankedPurchase, UncertaintyNode, VoiError,
+    audit_verdict, hint_for_query, rank_purchases, schedule_probes,
 };
 
 fn verdict(case: &str, detail: &str) {
@@ -53,6 +54,25 @@ fn nodes() -> Vec<UncertaintyNode> {
     ]
 }
 
+fn probe(name: &str, target: &str, cost: f64, shrink: f64) -> Probe {
+    Probe {
+        name: name.to_string(),
+        target: target.to_string(),
+        cost,
+        shrink,
+        kind: ProbeKind::Computational,
+    }
+}
+
+fn ranked_probe(name: &str, cost: f64, score: f64) -> RankedPurchase {
+    RankedPurchase {
+        probe: probe(name, "target", cost, 0.5),
+        flip_before: 0.75,
+        flip_after: 0.25,
+        score,
+    }
+}
+
 #[test]
 fn voi_001_sensitivity_from_cached_sweeps() {
     let calls = Cell::new(0usize);
@@ -66,9 +86,15 @@ fn voi_001_sensitivity_from_cached_sweeps() {
     };
     let ns = nodes();
     let grid = 32;
-    let p_pivotal = decision.flip_probability(&ns, 0, grid);
-    let p_irrelevant = decision.flip_probability(&ns, 1, grid);
-    let p_mild = decision.flip_probability(&ns, 2, grid);
+    let p_pivotal = decision
+        .flip_probability(&ns, 0, grid)
+        .expect("valid pivotal sweep");
+    let p_irrelevant = decision
+        .flip_probability(&ns, 1, grid)
+        .expect("valid irrelevant sweep");
+    let p_mild = decision
+        .flip_probability(&ns, 2, grid)
+        .expect("valid mild sweep");
     println!(
         "{{\"metric\":\"sensitivity\",\"drag_gap\":{p_pivotal:.3},\
          \"mass_penalty\":{p_irrelevant:.3},\"hazard\":{p_mild:.3},\"surrogate_calls\":{}}}",
@@ -78,7 +104,11 @@ fn voi_001_sensitivity_from_cached_sweeps() {
         p_pivotal > 0.3,
         "the straddling node is pivotal: {p_pivotal}"
     );
-    assert!(p_irrelevant == 0.0, "the one-sided node cannot flip");
+    assert_eq!(
+        p_irrelevant.to_bits(),
+        0.0f64.to_bits(),
+        "the one-sided node cannot flip"
+    );
     assert!(
         p_mild > 0.0 && p_mild < p_pivotal,
         "mildly pivotal: {p_mild}"
@@ -130,7 +160,7 @@ fn voi_002_ranking_is_flip_prob_per_dollar() {
             kind: ProbeKind::Computational,
         },
     ];
-    let ranked = rank_purchases(&decision, &ns, &menu, 64);
+    let ranked = rank_purchases(&decision, &ns, &menu, 64).expect("valid probe menu");
     let names: Vec<&str> = ranked.iter().map(|r| r.probe.name.as_str()).collect();
     println!(
         "{{\"metric\":\"ranking\",\"order\":{names:?},\"scores\":{:?}}}",
@@ -143,7 +173,11 @@ fn voi_002_ranking_is_flip_prob_per_dollar() {
     assert_eq!(names[1], "wind-tunnel-drag", "decisive-but-pricey second");
     assert_eq!(names[2], "refine-mass-model", "irrelevant last");
     assert!(ranked[0].score > ranked[1].score && ranked[1].score > 0.0);
-    assert!(ranked[2].score == 0.0, "an irrelevant probe buys nothing");
+    assert_eq!(
+        ranked[2].score.to_bits(),
+        0.0f64.to_bits(),
+        "an irrelevant probe buys nothing"
+    );
     verdict(
         "voi-002",
         "the ranking is flip-probability-per-dollar: cheap+decisive > decisive+pricey > \
@@ -177,7 +211,7 @@ fn voi_003_menu_unifies_compute_and_physical() {
             kind: ProbeKind::Physical,
         },
     ];
-    let ranked = rank_purchases(&decision, &ns, &menu, 64);
+    let ranked = rank_purchases(&decision, &ns, &menu, 64).expect("valid mixed menu");
     assert_eq!(ranked[0].probe.kind, ProbeKind::Physical);
     assert!(
         ranked[0].score > ranked[1].score,
@@ -222,7 +256,7 @@ fn voi_004_surfacing_hint_and_scheduler() {
             kind: ProbeKind::Physical,
         },
     ];
-    let ranked = rank_purchases(&decision, &ns, &menu, 64);
+    let ranked = rank_purchases(&decision, &ns, &menu, 64).expect("valid scheduling menu");
     // (i) The query-result hint (the Proposal-8 anytime shape, now
     // decision-priced).
     let hint = hint_for_query(&ranked);
@@ -230,7 +264,7 @@ fn voi_004_surfacing_hint_and_scheduler() {
     assert!(hint.contains("climb-rung-drag") && hint.contains("$10"));
     assert!(hint.contains("flip-probability"));
     // (ii) The probe scheduler under a budget: greedy top-k affordable.
-    let scheduled = schedule_probes(&ranked, 40.0);
+    let scheduled = schedule_probes(&ranked, 40.0).expect("valid finite schedule");
     let names: Vec<&str> = scheduled.iter().map(|r| r.probe.name.as_str()).collect();
     assert_eq!(
         names,
@@ -272,5 +306,375 @@ fn voi_005_prospective_audit_kill_criterion() {
         "the prospective audit keeps VoI's scheduling authority only while recommended \
          purchases measurably outperform agent-chosen alternatives — and with no audit \
          evidence there is no authority",
+    );
+}
+
+#[test]
+fn voi_006_node_name_and_grid_boundaries() {
+    let boundary_nodes: Vec<UncertaintyNode> = (0..MAX_VOI_NODES)
+        .map(|index| UncertaintyNode {
+            name: format!("node-{index}"),
+            lo: 0.0,
+            hi: 1.0,
+            nominal: 0.5,
+        })
+        .collect();
+    let wide_margin = |values: &[f64]| values[0] - 0.5;
+    let boundary_decision = LiveDecision {
+        margin: &wide_margin,
+        arity: MAX_VOI_NODES,
+    };
+    assert!(
+        boundary_decision.nominal_verdict(&boundary_nodes).is_ok(),
+        "the exact node-count boundary is admitted"
+    );
+    let mut too_many = boundary_nodes.clone();
+    too_many.push(UncertaintyNode {
+        name: "one-too-many".to_string(),
+        lo: 0.0,
+        hi: 1.0,
+        nominal: 0.5,
+    });
+    let oversized_decision = LiveDecision {
+        margin: &wide_margin,
+        arity: too_many.len(),
+    };
+    assert!(matches!(
+        oversized_decision.nominal_verdict(&too_many),
+        Err(VoiError::SizeLimit { .. })
+    ));
+
+    let exact_name = vec![UncertaintyNode {
+        name: "n".repeat(MAX_VOI_NAME_BYTES),
+        lo: 0.0,
+        hi: 1.0,
+        nominal: 0.5,
+    }];
+    let one = LiveDecision {
+        margin: &wide_margin,
+        arity: 1,
+    };
+    assert!(one.nominal_verdict(&exact_name).is_ok());
+    let mut long_name = exact_name;
+    long_name[0].name.push('n');
+    assert!(matches!(
+        one.nominal_verdict(&long_name),
+        Err(VoiError::InvalidName { .. })
+    ));
+
+    let single = vec![UncertaintyNode {
+        name: "x".to_string(),
+        lo: -1.0,
+        hi: 1.0,
+        nominal: 0.0,
+    }];
+    assert!(
+        one.flip_probability(&single, 0, MAX_VOI_GRID).is_ok(),
+        "the exact grid boundary is admitted"
+    );
+    for grid in [0, MAX_VOI_GRID + 1] {
+        assert!(matches!(
+            one.flip_probability(&single, 0, grid),
+            Err(VoiError::InvalidGrid { .. })
+        ));
+    }
+    verdict(
+        "voi-006",
+        "node count, UTF-8 name bytes, and sweep grid admit exact boundaries and refuse limit+1",
+    );
+}
+
+#[test]
+fn voi_007_menu_and_aggregate_evaluation_boundaries() {
+    let calls = Cell::new(0usize);
+    let counting = |values: &[f64]| {
+        calls.set(calls.get() + 1);
+        values[0]
+    };
+    let decision = LiveDecision {
+        margin: &counting,
+        arity: 1,
+    };
+    let ns = vec![UncertaintyNode {
+        name: "x".to_string(),
+        lo: -1.0,
+        hi: 1.0,
+        nominal: 0.0,
+    }];
+    let menu: Vec<Probe> = (0..MAX_VOI_PROBES)
+        .map(|index| probe(&format!("probe-{index}"), "x", index as f64 + 1.0, 0.5))
+        .collect();
+    assert_eq!(MAX_VOI_PROBES * 2 * (1 + 1), MAX_VOI_EVALUATIONS);
+    let ranked = rank_purchases(&decision, &ns, &menu, 1)
+        .expect("exact menu/evaluation boundary is admitted");
+    assert_eq!(ranked.len(), MAX_VOI_PROBES);
+    assert_eq!(calls.get(), MAX_VOI_EVALUATIONS);
+
+    calls.set(0);
+    assert!(matches!(
+        rank_purchases(&decision, &ns, &menu, 2),
+        Err(VoiError::EvaluationLimitExceeded { .. })
+    ));
+    assert_eq!(calls.get(), 0, "aggregate refusal precedes callbacks");
+
+    let mut oversized = menu;
+    oversized.push(probe("one-too-many", "x", 1.0, 0.5));
+    assert!(matches!(
+        rank_purchases(&decision, &ns, &oversized, 1),
+        Err(VoiError::SizeLimit { .. })
+    ));
+    assert_eq!(calls.get(), 0, "menu-size refusal precedes callbacks");
+    verdict(
+        "voi-007",
+        "menu and aggregate evaluation caps admit exact limits and refuse before callback at limit+1",
+    );
+}
+
+#[test]
+fn voi_008_decision_interval_and_callback_refusals() {
+    let calls = Cell::new(0usize);
+    let counting = |values: &[f64]| {
+        calls.set(calls.get() + 1);
+        values.first().copied().unwrap_or(0.0)
+    };
+    let decision = LiveDecision {
+        margin: &counting,
+        arity: 1,
+    };
+    assert!(matches!(
+        decision.nominal_verdict(&[]),
+        Err(VoiError::SizeLimit { .. })
+    ));
+    assert_eq!(calls.get(), 0);
+    let ns = vec![UncertaintyNode {
+        name: "x".to_string(),
+        lo: 0.0,
+        hi: 1.0,
+        nominal: 0.5,
+    }];
+    let wrong_arity = LiveDecision {
+        margin: &counting,
+        arity: 2,
+    };
+    assert!(matches!(
+        wrong_arity.nominal_verdict(&ns),
+        Err(VoiError::ArityMismatch { .. })
+    ));
+    assert!(matches!(
+        decision.flip_probability(&ns, 1, 4),
+        Err(VoiError::NodeIndexOutOfRange { .. })
+    ));
+
+    let mut duplicate = ns.clone();
+    duplicate.push(ns[0].clone());
+    let duplicate_decision = LiveDecision {
+        margin: &counting,
+        arity: 2,
+    };
+    assert!(matches!(
+        duplicate_decision.nominal_verdict(&duplicate),
+        Err(VoiError::DuplicateName { .. })
+    ));
+    for (lo, nominal, hi) in [
+        (f64::NAN, 0.5, 1.0),
+        (1.0, 0.5, 0.0),
+        (0.0, 2.0, 1.0),
+        (-f64::MAX, 0.0, f64::MAX),
+    ] {
+        let invalid = vec![UncertaintyNode {
+            name: "x".to_string(),
+            lo,
+            hi,
+            nominal,
+        }];
+        assert!(matches!(
+            decision.nominal_verdict(&invalid),
+            Err(VoiError::InvalidInterval { .. })
+        ));
+    }
+
+    let nan_margin = |_: &[f64]| f64::NAN;
+    let malformed = LiveDecision {
+        margin: &nan_margin,
+        arity: 1,
+    };
+    assert!(matches!(
+        malformed.nominal_verdict(&ns),
+        Err(VoiError::NonFiniteMargin { .. })
+    ));
+    let interior_nan = |values: &[f64]| {
+        if values[0] > 0.5 { f64::INFINITY } else { 0.0 }
+    };
+    let malformed = LiveDecision {
+        margin: &interior_nan,
+        arity: 1,
+    };
+    assert!(matches!(
+        malformed.flip_probability(&ns, 0, 2),
+        Err(VoiError::NonFiniteMargin { .. })
+    ));
+    verdict(
+        "voi-008",
+        "arity, identity, intervals, indices, duplicate nodes, and nonfinite callbacks refuse structurally",
+    );
+}
+
+#[test]
+fn voi_009_menu_targets_and_probe_economics_refuse_before_sweep() {
+    let calls = Cell::new(0usize);
+    let counting = |values: &[f64]| {
+        calls.set(calls.get() + 1);
+        values[0]
+    };
+    let decision = LiveDecision {
+        margin: &counting,
+        arity: 1,
+    };
+    let ns = vec![UncertaintyNode {
+        name: "x".to_string(),
+        lo: -1.0,
+        hi: 1.0,
+        nominal: 0.0,
+    }];
+    assert!(matches!(
+        rank_purchases(&decision, &ns, &[], 4),
+        Err(VoiError::SizeLimit { .. })
+    ));
+    let unknown = vec![probe("unknown", "missing", 1.0, 0.5)];
+    let unknown_before = unknown.clone();
+    assert!(matches!(
+        rank_purchases(&decision, &ns, &unknown, 4),
+        Err(VoiError::TargetResolution { matches: 0, .. })
+    ));
+    assert_eq!(unknown, unknown_before, "refusal does not mutate the menu");
+    assert_eq!(calls.get(), 0, "unknown target refuses before sweep");
+
+    let duplicated = vec![probe("same", "x", 1.0, 0.5), probe("same", "x", 2.0, 0.5)];
+    assert!(matches!(
+        rank_purchases(&decision, &ns, &duplicated, 4),
+        Err(VoiError::DuplicateName { .. })
+    ));
+    for cost in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        assert!(matches!(
+            rank_purchases(&decision, &ns, &[probe("bad-cost", "x", cost, 0.5)], 4),
+            Err(VoiError::InvalidProbeValue { field: "cost", .. })
+        ));
+    }
+    for shrink in [0.0, 1.0, -0.1, f64::NAN, f64::INFINITY] {
+        assert!(matches!(
+            rank_purchases(&decision, &ns, &[probe("bad-shrink", "x", 1.0, shrink)], 4),
+            Err(VoiError::InvalidProbeValue {
+                field: "shrink",
+                ..
+            })
+        ));
+    }
+    for bad_name in ["", " padded", "trailing "] {
+        assert!(matches!(
+            rank_purchases(&decision, &ns, &[probe(bad_name, "x", 1.0, 0.5)], 4),
+            Err(VoiError::InvalidName { .. })
+        ));
+    }
+    assert_eq!(calls.get(), 0, "all malformed menus refuse before sweep");
+
+    let exact = "p".repeat(MAX_VOI_NAME_BYTES);
+    assert!(
+        rank_purchases(&decision, &ns, &[probe(&exact, "x", 1.0, 0.5)], 4).is_ok(),
+        "the exact probe-name byte boundary is admitted"
+    );
+    let before_long_name = calls.get();
+    let too_long = "p".repeat(MAX_VOI_NAME_BYTES + 1);
+    assert!(matches!(
+        rank_purchases(&decision, &ns, &[probe(&too_long, "x", 1.0, 0.5)], 4),
+        Err(VoiError::InvalidName { .. })
+    ));
+    assert_eq!(calls.get(), before_long_name);
+    let too_long_target = "t".repeat(MAX_VOI_NAME_BYTES + 1);
+    assert!(matches!(
+        rank_purchases(
+            &decision,
+            &ns,
+            &[probe("long-target", &too_long_target, 1.0, 0.5)],
+            4,
+        ),
+        Err(VoiError::InvalidName { .. })
+    ));
+
+    let decision = LiveDecision {
+        margin: &margin,
+        arity: 3,
+    };
+    assert!(matches!(
+        rank_purchases(
+            &decision,
+            &nodes(),
+            &[probe("underflow-cost", "drag-gap", f64::from_bits(1), 0.01,)],
+            64,
+        ),
+        Err(VoiError::ArithmeticRefusal { .. })
+    ));
+    verdict(
+        "voi-009",
+        "targets, identities, bounds, economics, and derived score arithmetic refuse before partial results",
+    );
+}
+
+#[test]
+fn voi_010_scheduler_is_transactional_and_budget_monotone() {
+    let valid = vec![ranked_probe("a", 10.0, 0.1), ranked_probe("b", 5.0, 0.05)];
+    assert!(
+        schedule_probes(&valid, 0.0)
+            .expect("zero budget is valid")
+            .is_empty()
+    );
+    for budget in [-1.0, f64::NAN, f64::INFINITY] {
+        assert!(matches!(
+            schedule_probes(&valid, budget),
+            Err(VoiError::InvalidBudget { .. })
+        ));
+    }
+    assert!(matches!(
+        schedule_probes(&[], 1.0),
+        Err(VoiError::SizeLimit { .. })
+    ));
+
+    let duplicated = vec![
+        ranked_probe("same", 10.0, 0.1),
+        ranked_probe("same", 10.0, 0.1),
+    ];
+    let before = duplicated.clone();
+    assert!(matches!(
+        schedule_probes(&duplicated, 100.0),
+        Err(VoiError::DuplicateRankedProbe { .. })
+    ));
+    assert_eq!(
+        duplicated, before,
+        "duplicate refusal does not mutate input"
+    );
+
+    let mut invalid_derived = valid.clone();
+    invalid_derived[1].score = f64::NAN;
+    assert!(matches!(
+        schedule_probes(&invalid_derived, 100.0),
+        Err(VoiError::InvalidRankedValue { field: "score", .. })
+    ));
+    let no_progress = vec![ranked_probe("tiny", 1.0, 1.0)];
+    assert!(matches!(
+        schedule_probes(&no_progress, f64::MAX),
+        Err(VoiError::ArithmeticRefusal { .. })
+    ));
+
+    let scheduled = schedule_probes(&valid, 15.0).expect("exact finite budget");
+    assert_eq!(scheduled.len(), 2);
+    assert_eq!(
+        scheduled
+            .iter()
+            .map(|purchase| purchase.probe.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["a", "b"]
+    );
+    verdict(
+        "voi-010",
+        "invalid budgets/derived rows and duplicate identities refuse transactionally; remaining budget strictly decreases",
     );
 }

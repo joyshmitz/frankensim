@@ -370,7 +370,7 @@ fn stage_6_value_of_information() {
         shrink: 0.1,
         kind: ProbeKind::Physical,
     }];
-    let ranked = rank_purchases(&decision, &live, &menu, 64);
+    let ranked = rank_purchases(&decision, &live, &menu, 64).expect("valid live VoI request");
     h.log(
         "voi.live",
         &format!("{{\"top_score\":{:.5}}}", ranked[0].score),
@@ -388,13 +388,14 @@ fn stage_6_value_of_information() {
         hi: 1.0,
         nominal: 0.95,
     }];
-    let ranked = rank_purchases(&decision, &settled, &menu, 64);
+    let ranked = rank_purchases(&decision, &settled, &menu, 64).expect("valid settled VoI request");
     h.log(
         "voi.settled",
         &format!("{{\"top_score\":{:.5}}}", ranked[0].score),
     );
-    assert!(
-        ranked[0].score == 0.0,
+    assert_eq!(
+        ranked[0].score.to_bits(),
+        0.0f64.to_bits(),
         "an unflippable decision buys nothing"
     );
     assert!(

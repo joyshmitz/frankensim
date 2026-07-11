@@ -365,7 +365,7 @@ fn ac_003_package_recheck_solver_free_and_voi_hint() -> Result<(), PlanError> {
         shrink: 0.25,
         kind: ProbeKind::Computational,
     }];
-    let ranked = rank_purchases(&decision, &nodes, &menu, 32);
+    let ranked = rank_purchases(&decision, &nodes, &menu, 32).expect("valid bounded VoI request");
     let hint = fs_plan::voi::hint_for_query(&ranked);
     // The package: colored claims, fixture-authenticated, Merkle-rooted.
     let Color::Verified { lo, hi } = last.color else {
