@@ -344,6 +344,7 @@ fn gemm_generic(alpha: f64, a: &BatchMat, b: &BatchMat, beta: f64, c: &mut Batch
     let btile = fs_simd::ops().btile4x4p_f64;
     let mut tile = vec![0.0f64; 16 * MBLK];
     let mut acc = [0.0f64; MBLK];
+    let mut acc2 = [0.0f64; MBLK];
     // PACKED operands (bead 9ekv slice 2): per chunk, copy the lane
     // block of every plane into l-CONTIGUOUS scratch — A i-major
     // (a_pack[(i·k + l)·mb]), B j-major (b_pack[(j·k + l)·mb]) — so the
@@ -383,22 +384,32 @@ fn gemm_generic(alpha: f64, a: &BatchMat, b: &BatchMat, beta: f64, c: &mut Batch
                 }
             }
         }
-        // Tails (k % 4 rows and columns): the plane-at-a-time loop on
-        // the ORIGINAL planes (identical ops — bitwise-consistent).
+        // Tails (k % 4 rows and columns): plane-at-a-time on the
+        // ORIGINAL planes through the fma3 capsule, ping-ponging two
+        // accumulator rows (fma3's output may not alias its addend).
+        // Each element's chain is the same l-ascending fused
+        // `a·b + acc`, so the tails stay bitwise-consistent with the
+        // tile path — but vectorized: the previous per-lane `mul_add`
+        // loop was a per-element libm CALL on baseline x86, and at
+        // k = 6 these tails are 20 of 36 output planes (measured
+        // ~1.0 GFLOP/s while every k % 4 == 0 class ran 5-11).
+        let fma3 = fs_simd::ops().fma3;
         for i in 0..k {
             let j_start = if i < kt { kt } else { 0 };
             for j in j_start..k {
-                let acc = &mut acc[..mb];
-                acc.fill(0.0);
+                acc[..mb].fill(0.0);
                 for l in 0..k {
                     let ap = &a.plane(i, l)[m0..m0 + mb];
                     let bp = &b.plane(l, j)[m0..m0 + mb];
-                    for ((s, &am), &bm) in acc.iter_mut().zip(ap).zip(bp) {
-                        *s = am.mul_add(bm, *s);
+                    if l % 2 == 0 {
+                        fma3(ap, bp, &acc[..mb], &mut acc2[..mb]);
+                    } else {
+                        fma3(ap, bp, &acc2[..mb], &mut acc[..mb]);
                     }
                 }
+                let done = if k % 2 == 0 { &acc[..mb] } else { &acc2[..mb] };
                 let cp = &mut c.plane_mut(i, j)[m0..m0 + mb];
-                write_back(alpha, beta, acc, cp);
+                write_back(alpha, beta, done, cp);
             }
         }
         m0 += MBLK;
