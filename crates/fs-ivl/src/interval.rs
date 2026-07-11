@@ -404,10 +404,40 @@ mod tests {
         ((*seed >> 11) as f64) / (1u64 << 53) as f64 - 0.5
     }
 
+    /// RIGOROUS containment of the EXACT real truth `T = hi + resid` by `iv`,
+    /// used to gate the ±1 ulp outward nudge that makes every enclosure sound.
+    ///
+    /// For `+`, `−`, `×` of f64-exact operands the dd oracle is exact
+    /// (two-sum / two-prod), so `resid`'s SIGN pins which side of `hi` the truth
+    /// lies on: if `resid > 0` the truth exceeds `hi` and the enclosure must
+    /// reach `next_up(hi)` (symmetrically below). A plain `iv.contains(hi)` — or
+    /// the old `|| iv.contains(hi + 2·resid)` grace — only demands the endpoint
+    /// reach `hi`, so it PASSES an enclosure that is one ulp too narrow: exactly
+    /// the enclosure a DROPPED nudge produces, which excludes the true value and
+    /// is unsound. That blind spot fires on 18,959 of this battery's 300k checks
+    /// (measured), so the grace form gated nothing. dd division carries only a
+    /// ~2⁻¹⁰⁴ error, far below a ulp, so the same directed bound applies.
+    fn contains_truth(iv: Interval, hi: f64, resid: f64) -> bool {
+        let hi_ok = if resid > 0.0 {
+            iv.hi() >= fs_math::next_up(hi)
+        } else {
+            iv.hi() >= hi
+        };
+        let lo_ok = if resid < 0.0 {
+            iv.lo() <= fs_math::next_down(hi)
+        } else {
+            iv.lo() <= hi
+        };
+        lo_ok && hi_ok
+    }
+
     #[test]
     fn arithmetic_containment_vs_dd_oracle() {
-        // The G0 law: for random interval pairs and random interior points,
-        // the interval result must contain the dd-oracle point result.
+        // The G0 law, gated RIGOROUSLY (see `contains_truth`): for random
+        // interval pairs and random interior points, the interval result must
+        // contain the EXACT point truth — reaching past the nearest float when
+        // the true value falls between machine numbers, which is what actually
+        // exercises the outward nudge.
         let mut seed = 0x1712_u64;
         let mut cases = 0u64;
         for _ in 0..20_000 {
@@ -425,17 +455,20 @@ mod tests {
                 let py = (y.lo() + (1.0 - t) * (y.hi() - y.lo())).clamp(y.lo(), y.hi());
                 let (dx, dy) = (Dd::from_f64(px), Dd::from_f64(py));
                 for (iv, dd) in [(x + y, dx + dy), (x - y, dx - dy), (x * y, dx * dy)] {
-                    // dd result is within 2^-104 relative of truth; the
-                    // interval must contain the dd value nudged either way.
                     assert!(
-                        iv.contains(dd.hi) || iv.contains(dd.hi + dd.lo * 2.0),
-                        "containment violated: {iv:?} vs oracle {dd:?}"
+                        contains_truth(iv, dd.hi, dd.lo),
+                        "containment violated: {iv:?} excludes truth {}+{} (oracle {dd:?})",
+                        dd.hi,
+                        dd.lo
                     );
                     cases += 1;
                 }
                 if !y.contains_zero() {
                     let (iv, dd) = (x / y, dx / dy);
-                    assert!(iv.contains(dd.hi), "div containment: {iv:?} vs {dd:?}");
+                    assert!(
+                        contains_truth(iv, dd.hi, dd.lo),
+                        "div containment: {iv:?} excludes truth (oracle {dd:?})"
+                    );
                     cases += 1;
                 }
             }
