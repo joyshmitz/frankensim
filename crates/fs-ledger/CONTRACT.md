@@ -17,10 +17,22 @@ fine-grained event stream. Layer: L6 (HELM). Runtime deps: `std` + `fsqlite`.
 
 - `Ledger` — one connection + the pragma contract (WAL, `synchronous=FULL`,
   `busy_timeout`, enforced foreign keys) + versioned migrations. Each
-  `PRAGMA user_version` marker commits atomically with its DDL batch. Exact
-  column metadata heals the historical v2 crash window where both `ops`
-  columns were committed while the marker still named v1; incompatible
-  same-name columns fail closed.
+  `PRAGMA user_version` marker commits atomically with its DDL batch, and a
+  fresh (v0) file initializes the ENTIRE ladder plus its final marker in one
+  transaction — a crash mid-init leaves an empty v0 file, never a partial
+  schema. SCHEMA ATTESTATION BEFORE ADVANCEMENT (bead gp3.18): a v0 file
+  must contain NO user objects (pre-existing tables refuse initialization);
+  a file claiming v>0 is attested object-for-object against a reference
+  built from the shipped DDL — sqlite_master SQL text (covers STRICT,
+  CHECKs, and foreign keys) plus per-table `PRAGMA table_info` (name,
+  declared type, not-null, default, primary key) and index presence.
+  Divergence refuses with structured `LedgerSchemaMismatch { claimed_version,
+  violations }` BEFORE any migration runs, so `CREATE TABLE IF NOT EXISTS`
+  can never launder an alien or mangled schema into a labeled one. RECOVERY
+  TOLERANCE: objects or columns from a LATER version are accepted iff they
+  match the current shipped definition exactly — this generalizes the
+  historical v2 crash window (committed DDL, stale marker), which still
+  heals; incompatible same-name early objects still fail closed.
 - `ContentHash`, `Blake3`, `hash_bytes` — in-house BLAKE3 (plain hash mode,
   32-byte output), pure safe Rust; artifact identity everywhere. The
   implementation is OWNED by the UTIL crate `fs-blake3` (bead 7uq9) and
@@ -188,7 +200,10 @@ None. All v0 behavior is `[S]` default-path.
 
 `tests/conformance.rs`: official-vector BLAKE3 battery (0 B → 2 MiB+1,
 covering multi-level trees), seeded streaming-split property, versioned
-migration + future-version refusal, dual-path chunked dedupe + round trip,
+migration + future-version refusal, the schema-attestation gauntlet
+(valid-empty atomic init, conflicting-object-at-v0, partial-schema,
+wrong-column, wrong-affinity, and missing-index all refused fail-closed
+with the file untouched), dual-path chunked dedupe + round trip,
 corruption-fails-loudly (inline + chunked), concurrent snapshot readers
 during a write sweep (monotone + internally consistent), kill -9 crash
 battery (6 seeded rounds → lint-clean + integrity-clean), and an events/sec

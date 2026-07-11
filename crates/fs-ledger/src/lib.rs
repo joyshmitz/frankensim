@@ -115,6 +115,18 @@ pub enum LedgerError {
     /// An [`ArtifactWriter`] cannot be opened inside an explicit transaction
     /// (it owns its own transaction for crash atomicity).
     WriterInTransaction,
+    /// The on-disk objects do not match the schema its `user_version`
+    /// claims (bead gp3.18): pre-existing incompatible tables, a
+    /// partially initialized file, wrong columns/affinities, missing
+    /// indexes, or foreign objects. Refused BEFORE any migration
+    /// advances the version — `CREATE TABLE IF NOT EXISTS` must never
+    /// launder an alien schema into a labeled one.
+    SchemaMismatch {
+        /// The `PRAGMA user_version` the file claims.
+        claimed_version: i64,
+        /// Every attestation violation found (object-level diffs).
+        violations: Vec<String>,
+    },
 }
 
 impl LedgerError {
@@ -132,6 +144,7 @@ impl LedgerError {
             LedgerError::NotFound { .. } => "LedgerNotFound",
             LedgerError::DoubleFinish { .. } => "LedgerDoubleFinish",
             LedgerError::WriterInTransaction => "LedgerWriterInTransaction",
+            LedgerError::SchemaMismatch { .. } => "LedgerSchemaMismatch",
         }
     }
 }
@@ -178,6 +191,18 @@ impl std::fmt::Display for LedgerError {
                 f,
                 "LedgerWriterInTransaction: ArtifactWriter owns its own transaction; commit \
                  or roll back the explicit transaction first"
+            ),
+            LedgerError::SchemaMismatch {
+                claimed_version,
+                violations,
+            } => write!(
+                f,
+                "LedgerSchemaMismatch: the file claims schema v{claimed_version} but its \
+                 objects do not attest ({} violation(s)): {} — refusing to advance \
+                 user_version over an alien or partially initialized schema; migrate the \
+                 data out manually or delete the file if it is disposable",
+                violations.len(),
+                violations.join("; ")
             ),
         }
     }
@@ -479,6 +504,84 @@ fn int_from_u64(n: u64) -> i64 {
     i64::try_from(n).unwrap_or(i64::MAX)
 }
 
+/// Every user object in `sqlite_master` as `(type, name) -> normalized
+/// SQL` (whitespace-collapsed; internal `sqlite_*` entries and DDL-less
+/// auto-indexes excluded). The stored SQL text carries STRICT, CHECKs,
+/// and FOREIGN KEY clauses verbatim, so equality attests them all.
+fn schema_objects(
+    conn: &Connection,
+) -> Result<std::collections::BTreeMap<(String, String), String>, LedgerError> {
+    let rows = conn
+        .query("SELECT type, name, COALESCE(sql, '') FROM sqlite_master ORDER BY type, name")
+        .map_err(|e| sql_err("attest: read sqlite_master", &e))?;
+    let mut objects = std::collections::BTreeMap::new();
+    for row in &rows {
+        let kind = row_text(row, 0, "attest: sqlite_master type")?;
+        let name = row_text(row, 1, "attest: sqlite_master name")?;
+        // SQL LIKE treats `_` as a wildcard, so filtering with
+        // `NOT LIKE 'sqlite_%'` would also hide legal user objects such as
+        // `sqlitex_hidden`. Only the literal reserved prefix is internal.
+        if name.starts_with("sqlite_") {
+            continue;
+        }
+        let sql = row_text(row, 2, "attest: sqlite_master sql")?;
+        let normalized = sql.split_whitespace().collect::<Vec<_>>().join(" ");
+        objects.insert((kind, name), normalized);
+    }
+    Ok(objects)
+}
+
+/// One table's columns as stable signature strings
+/// (`name:type:notnull:default:pk`) from `PRAGMA table_info`.
+fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>, LedgerError> {
+    let rows = conn
+        .query(&format!("PRAGMA table_info({table})"))
+        .map_err(|e| sql_err("attest: table_info", &e))?;
+    let mut columns = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let name = row_text(row, 1, "attest: column name")?;
+        let declared = row_text(row, 2, "attest: column type")?;
+        let not_null = row_i64(row, 3, "attest: column not-null")? != 0;
+        let default_sql = match row.get(4) {
+            Some(SqliteValue::Text(value)) => value.as_str().to_string(),
+            Some(SqliteValue::Null) | None => "<none>".to_string(),
+            Some(other) => format!("{other:?}"),
+        };
+        let pk = row_i64(row, 5, "attest: column pk")? != 0;
+        columns.push(format!("{name}:{declared}:{not_null}:{default_sql}:{pk}"));
+    }
+    columns.sort();
+    Ok(columns)
+}
+
+/// A fresh in-memory database with the first `steps` shipped migration
+/// batches applied — the attestation reference.
+fn reference_connection(steps: usize) -> Result<Connection, LedgerError> {
+    let reference = Connection::open(":memory:").map_err(|e| LedgerError::Sql {
+        context: "attest: open reference".to_string(),
+        detail: e.to_string(),
+    })?;
+    for batch in schema::MIGRATIONS.iter().take(steps) {
+        for ddl in *batch {
+            reference.execute(ddl).map_err(|e| LedgerError::Sql {
+                context: "attest: build reference".to_string(),
+                detail: format!("{e} while executing: {}", ddl.get(..60).unwrap_or(ddl)),
+            })?;
+        }
+    }
+    Ok(reference)
+}
+
+fn row_text(row: &fsqlite::Row, idx: usize, context: &str) -> Result<String, LedgerError> {
+    match row.get(idx) {
+        Some(SqliteValue::Text(value)) => Ok(value.as_str().to_string()),
+        other => Err(LedgerError::Sql {
+            context: context.to_string(),
+            detail: format!("expected TEXT at column {idx}, got {other:?}"),
+        }),
+    }
+}
+
 fn text_param(s: &str) -> SqliteValue {
     SqliteValue::Text(s.into())
 }
@@ -577,6 +680,59 @@ impl Ledger {
                 supported: SCHEMA_VERSION,
             });
         }
+        // ATTESTATION BEFORE ADVANCEMENT (bead gp3.18): `CREATE TABLE IF
+        // NOT EXISTS` silently tolerates pre-existing objects, so without
+        // this check an alien or partially initialized file would be
+        // stamped as the current schema. A v0 file must be EMPTY; a file
+        // claiming v>0 must attest object-for-object against a reference
+        // built from the shipped DDL for that version.
+        if found == 0 {
+            // ATOMIC INITIALIZATION: the whole ladder plus the final
+            // version stamp in ONE transaction. The emptiness attestation is
+            // inside that same transaction so another connection cannot add
+            // an object between the check and the first CREATE statement.
+            self.conn
+                .begin_transaction()
+                .map_err(|e| sql_err("init: begin", &e))?;
+            let init = (|| {
+                let objects = schema_objects(&self.conn)?;
+                if !objects.is_empty() {
+                    let violations = objects
+                        .keys()
+                        .map(|(kind, name)| {
+                            format!("pre-existing {kind} `{name}` in an unversioned file")
+                        })
+                        .collect();
+                    return Err(LedgerError::SchemaMismatch {
+                        claimed_version: 0,
+                        violations,
+                    });
+                }
+                for batch in schema::MIGRATIONS {
+                    for ddl in *batch {
+                        self.conn.execute(ddl).map_err(|error| LedgerError::Sql {
+                            context: "initialize schema".to_string(),
+                            detail: format!(
+                                "{error} while executing: {}",
+                                ddl.get(..60).unwrap_or(ddl)
+                            ),
+                        })?;
+                    }
+                }
+                self.conn
+                    .execute(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
+                    .map_err(|error| sql_err("init: set user_version", &error))?;
+                self.conn
+                    .commit_transaction()
+                    .map_err(|error| sql_err("init: commit", &error))
+            })();
+            if let Err(error) = init {
+                let _ = self.conn.rollback_transaction();
+                return Err(error);
+            }
+            return Ok(());
+        }
+        self.attest_schema(found)?;
         let start = usize::try_from(found).unwrap_or(usize::MAX);
         for (step, batch) in schema::MIGRATIONS.iter().enumerate().skip(start) {
             let target = step + 1;
@@ -687,6 +843,75 @@ impl Ledger {
             });
         }
         Ok(false)
+    }
+
+    /// ATTEST the on-disk objects against a REFERENCE database built by
+    /// replaying the shipped DDL up to `claimed` (bead gp3.18). Compares
+    /// sqlite_master object-for-object (tables, indexes, triggers, views —
+    /// the stored SQL text covers foreign keys, CHECKs, and STRICT) and
+    /// every table column-for-column via PRAGMA table_info (name, declared
+    /// type/affinity, not-null, default, primary key). RECOVERY TOLERANCE
+    /// (the tt_001b crash-window contract, generalizing
+    /// RECOVERABLE_ADDED_COLUMNS): objects or columns beyond `claimed` are
+    /// tolerated IFF they match the CURRENT shipped schema exactly — a
+    /// committed-DDL-but-stale-marker file heals, while any divergent
+    /// early object fails closed.
+    fn attest_schema(&self, claimed: i64) -> Result<(), LedgerError> {
+        let steps = usize::try_from(claimed).unwrap_or(usize::MAX);
+        let at_claimed = reference_connection(steps)?;
+        let at_current = reference_connection(schema::MIGRATIONS.len())?;
+        let mut violations = Vec::new();
+        let expected = schema_objects(&at_claimed)?;
+        let current = schema_objects(&at_current)?;
+        let actual = schema_objects(&self.conn)?;
+        for (key, sql) in &expected {
+            match actual.get(key) {
+                None => violations.push(format!("missing {} `{}`", key.0, key.1)),
+                Some(found) if found != sql && Some(found) != current.get(key) => violations.push(
+                    format!("{} `{}` differs from the shipped definition", key.0, key.1),
+                ),
+                Some(_) => {}
+            }
+        }
+        for (key, sql) in &actual {
+            if !expected.contains_key(key) && current.get(key) != Some(sql) {
+                violations.push(format!(
+                    "unexpected {} `{}` (conflicting or foreign object)",
+                    key.0, key.1
+                ));
+            }
+        }
+        // Column-level attestation for every expected table: COLUMN-level
+        // diagnostics, with the same future-form tolerance (a column from a
+        // committed-but-unmarked later batch must match its shipped
+        // definition exactly).
+        for (kind, table) in expected.keys() {
+            if kind != "table" || !actual.contains_key(&(kind.clone(), table.clone())) {
+                continue;
+            }
+            let want = table_columns(&at_claimed, table)?;
+            let full = table_columns(&at_current, table)?;
+            let have = table_columns(&self.conn, table)?;
+            for col in &want {
+                if !have.contains(col) {
+                    violations.push(format!("table `{table}`: missing or altered column {col}"));
+                }
+            }
+            for col in &have {
+                if !want.contains(col) && !full.contains(col) {
+                    violations.push(format!("table `{table}`: unexpected column {col}"));
+                }
+            }
+        }
+        if violations.is_empty() {
+            Ok(())
+        } else {
+            violations.sort();
+            Err(LedgerError::SchemaMismatch {
+                claimed_version: claimed,
+                violations,
+            })
+        }
     }
 
     /// `json_valid` check through the same engine that enforces the schema

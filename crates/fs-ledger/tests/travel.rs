@@ -161,9 +161,12 @@ fn tt_001c_v1_marker_with_incompatible_v2_column_fails_closed() {
     let Err(error) = Ledger::open(&db) else {
         panic!("incompatible same-name migration column must be refused");
     };
-    assert_eq!(error.code(), "LedgerSql");
+    // gp3.18: the schema attestation refuses this STRUCTURALLY, before
+    // any migration transaction begins (formerly the ladder's
+    // recoverable-column check caught it later as LedgerSql).
+    assert_eq!(error.code(), "LedgerSchemaMismatch");
     assert!(
-        error.to_string().contains("existing column ops.branch"),
+        error.to_string().contains("unexpected column branch"),
         "unexpected migration error: {error}"
     );
 

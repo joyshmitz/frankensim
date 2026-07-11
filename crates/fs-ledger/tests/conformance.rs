@@ -599,6 +599,153 @@ fn ledger_008_event_throughput_ledgered() {
 }
 
 #[test]
+fn ledger_011_schema_attestation_gauntlet() {
+    // gp3.18: `CREATE TABLE IF NOT EXISTS` must never launder an alien,
+    // partial, or mangled schema into a version-stamped one. Six probes.
+
+    // (1) valid-empty-database: a fresh file initializes ATOMICALLY to the
+    // current version and re-attests clean on reopen.
+    let db = temp_db("attest-empty");
+    {
+        let l = Ledger::open(&db).expect("fresh empty file initializes");
+        assert_eq!(l.schema_version().unwrap(), SCHEMA_VERSION);
+    }
+    Ledger::open(&db).expect("reopen attests the schema it just wrote");
+    cleanup_db(&db);
+
+    // (2) conflicting-object at v0: ANY pre-existing user object in an
+    // unversioned file refuses initialization (fail closed, file intact).
+    let db = temp_db("attest-conflict");
+    {
+        let raw = fsqlite::Connection::open(&db).expect("raw");
+        raw.execute("CREATE TABLE ops(x TEXT)").expect("alien ops");
+    }
+    let Err(err) = Ledger::open(&db) else {
+        panic!("alien object at v0 must refuse")
+    };
+    assert_eq!(err.code(), "LedgerSchemaMismatch");
+    assert!(
+        err.to_string().contains("pre-existing table `ops`"),
+        "{err}"
+    );
+    {
+        // Fail closed means UNTOUCHED: still v0, alien table intact.
+        let raw = fsqlite::Connection::open(&db).expect("raw reopen");
+        assert_eq!(
+            raw.query_row("PRAGMA user_version").expect("v").get(0),
+            Some(&fsqlite::SqliteValue::Integer(0))
+        );
+    }
+    cleanup_db(&db);
+
+    // (2b) an internal-looking but legal user name is still inventoried.
+    // SQL LIKE treats `_` as a wildcard, so `NOT LIKE 'sqlite_%'` would hide
+    // this table even though only the literal `sqlite_` prefix is reserved.
+    let db = temp_db("attest-internal-lookalike");
+    {
+        let raw = fsqlite::Connection::open(&db).expect("raw");
+        raw.execute("CREATE TABLE sqlitex_hidden(x TEXT)")
+            .expect("legal user table");
+    }
+    let Err(err) = Ledger::open(&db) else {
+        panic!("an internal-looking user object at v0 must refuse")
+    };
+    assert_eq!(err.code(), "LedgerSchemaMismatch");
+    assert!(
+        err.to_string()
+            .contains("pre-existing table `sqlitex_hidden`"),
+        "{err}"
+    );
+    cleanup_db(&db);
+
+    // (3) partial-schema: half of v1 committed with the marker forced to 1
+    // refuses with the missing objects named.
+    let db = temp_db("attest-partial");
+    {
+        let raw = fsqlite::Connection::open(&db).expect("raw");
+        for ddl in fs_ledger::schema::V1.iter().take(4) {
+            raw.execute(ddl).expect("partial v1");
+        }
+        raw.execute("PRAGMA user_version = 1").expect("marker");
+    }
+    let Err(err) = Ledger::open(&db) else {
+        panic!("partial schema must refuse")
+    };
+    assert_eq!(err.code(), "LedgerSchemaMismatch");
+    assert!(err.to_string().contains("missing table"), "{err}");
+    cleanup_db(&db);
+
+    // (4) wrong-column: a v1 table rebuilt with a different column set
+    // (same name) is not the shipped definition.
+    let db = temp_db("attest-wrongcol");
+    {
+        let raw = fsqlite::Connection::open(&db).expect("raw");
+        for ddl in fs_ledger::schema::V1 {
+            if !ddl.contains("EXISTS metrics") {
+                raw.execute(ddl).expect("v1 ddl");
+            }
+        }
+        raw.execute("CREATE TABLE metrics(id INTEGER PRIMARY KEY) STRICT")
+            .expect("wrong metrics");
+        raw.execute("PRAGMA user_version = 1").expect("marker");
+    }
+    let Err(err) = Ledger::open(&db) else {
+        panic!("wrong column set must refuse")
+    };
+    assert_eq!(err.code(), "LedgerSchemaMismatch");
+    assert!(
+        err.to_string().contains("table `metrics` differs") || err.to_string().contains("column"),
+        "{err}"
+    );
+    cleanup_db(&db);
+
+    // (5) wrong-affinity: same column names, one declared type changed.
+    let db = temp_db("attest-affinity");
+    {
+        let raw = fsqlite::Connection::open(&db).expect("raw");
+        for ddl in fs_ledger::schema::V1 {
+            if ddl.contains("EXISTS edges") {
+                raw.execute(&ddl.replace("op INTEGER NOT NULL", "op TEXT NOT NULL"))
+                    .expect("mangled edges");
+            } else {
+                raw.execute(ddl).expect("v1 ddl");
+            }
+        }
+        raw.execute("PRAGMA user_version = 1").expect("marker");
+    }
+    let Err(err) = Ledger::open(&db) else {
+        panic!("wrong affinity must refuse")
+    };
+    assert_eq!(err.code(), "LedgerSchemaMismatch");
+    cleanup_db(&db);
+
+    // (6) missing-index: a fully migrated file whose index was dropped is
+    // not the schema its version claims.
+    let db = temp_db("attest-noindex");
+    {
+        let l = Ledger::open(&db).expect("initialize");
+        drop(l);
+        let raw = fsqlite::Connection::open(&db).expect("raw");
+        raw.execute("DROP INDEX idx_ops_session")
+            .expect("drop index");
+    }
+    let Err(err) = Ledger::open(&db) else {
+        panic!("missing index must refuse")
+    };
+    assert_eq!(err.code(), "LedgerSchemaMismatch");
+    assert!(
+        err.to_string().contains("missing index `idx_ops_session`"),
+        "{err}"
+    );
+    cleanup_db(&db);
+
+    verdict(
+        "ledger-011",
+        "schema attestation: empty-init atomic + 6 corruption classes refused fail-closed",
+    );
+}
+
+#[test]
 fn ledger_009_version_is_stamped() {
     assert!(!fs_ledger::VERSION.is_empty());
     verdict("ledger-009", "crate version stamped");
