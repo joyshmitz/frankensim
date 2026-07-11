@@ -25,8 +25,9 @@ pub mod travel;
 pub mod vcs;
 
 pub use colors::{
-    ColorDemotion, ColorGraph, ColorNode, ColorReplayError, ColorStructureRejection,
-    ColorWriteError, MAX_COLOR_PARENTS, MAX_WAIVER_DEPENDENCIES, NoSourceOriginVerifier,
+    COLOR_DEMOTION_ROW_SCHEMA_VERSION, COLOR_WRITE_ROW_SCHEMA_VERSION, ColorDemotion, ColorGraph,
+    ColorNode, ColorReplayError, ColorStructureRejection, ColorWriteError, MAX_COLOR_PARENTS,
+    MAX_VALIDITY_AXES, MAX_WAIVER_CLOSURE_BYTES, MAX_WAIVER_DEPENDENCIES, NoSourceOriginVerifier,
     NoWaiverVerifier, PolicyDecision, SourceOrigin, SourceOriginRejection, SourceOriginRequest,
     SourceOriginVerifier, WAIVER_SCOPE_COLOR_UPGRADE, WAIVER_SCOPE_SOURCE_COLOR, Waiver,
     WaiverDependency, WaiverGrant, WaiverRejection, WaiverVerifier,

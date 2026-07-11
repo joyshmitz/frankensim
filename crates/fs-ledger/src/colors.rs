@@ -19,8 +19,10 @@
 
 use crate::hash::{ContentHash, hash_bytes};
 use fs_evidence::{
-    Color, ColorRank, Demotion, IntervalOp, NumericalCertificate, ValidityDomain, check_regime,
-    compose, verified_from,
+    COLOR_ALGEBRA_VERSION, Color, ColorPayloadError, ColorRank, Demotion, IntervalOp,
+    MAX_COLOR_IDENTITY_BYTES, NumericalCertificate, ValidityDomain,
+    color_identity_reason as identity_reason, color_leaf_identity_reason, compose,
+    demotion_estimator_identity, regime_demotion, validate_color_payload, verified_from,
 };
 use std::collections::BTreeMap;
 
@@ -29,15 +31,57 @@ use std::collections::BTreeMap;
 pub const MAX_COLOR_PARENTS: usize = 1_024;
 
 /// Maximum number of distinct historical waiver authorities copied into one
-/// node. The current inspectable closure representation is therefore bounded
-/// even before it is replaced by a compact authority registry.
+/// node. [`MAX_WAIVER_CLOSURE_BYTES`] independently bounds their aggregate
+/// retained payload before cloning and row serialization.
 pub const MAX_WAIVER_DEPENDENCIES: usize = 1_024;
 
-const MAX_MACHINE_IDENTITY_BYTES: usize = 256;
+/// Maximum aggregate retained bytes for the complete waiver-authority closure
+/// copied into one node. The count limit alone is insufficient because each
+/// dependency carries a signed color payload and artifact lineage.
+pub const MAX_WAIVER_CLOSURE_BYTES: usize = 8 * 1024 * 1024;
+
+/// Maximum UTF-8 byte length of a canonical color-graph node identity.
+/// Node names use the shared fs-evidence identity grammar.
+pub const MAX_COLOR_NODE_NAME_BYTES: usize = MAX_COLOR_IDENTITY_BYTES;
+const _: () = assert!(MAX_COLOR_NODE_NAME_BYTES == MAX_COLOR_IDENTITY_BYTES);
+
 const MAX_WAIVER_REASON_BYTES: usize = 4_096;
 const MAX_WAIVER_SIGNATURE_BYTES: usize = 4_096;
 const MAX_CLAIMED_COLOR_BYTES: usize = 1_048_576;
-const MAX_VALIDITY_AXES: usize = 1_024;
+/// Maximum number of distinct axes in any admitted Validated color, including
+/// the aggregate intersection schema of a multi-parent derivation.
+pub const MAX_VALIDITY_AXES: usize = 1_024;
+/// Current schema of `color-write` event rows.
+pub const COLOR_WRITE_ROW_SCHEMA_VERSION: u32 = 7;
+/// Current schema of exact regime-demotion event rows.
+pub const COLOR_DEMOTION_ROW_SCHEMA_VERSION: u32 = 1;
+const COLOR_NODE_HASH_ENCODING_VERSION: u8 = 9;
+
+fn is_placeholder_token(value: &str) -> bool {
+    [
+        "-",
+        "?",
+        "n/a",
+        "na",
+        "none",
+        "not run",
+        "pending",
+        "placeholder",
+        "tbd",
+        "todo",
+        "unknown",
+    ]
+    .iter()
+    .any(|placeholder| value.eq_ignore_ascii_case(placeholder))
+}
+
+fn validate_node_name(name: &str) -> Result<(), ColorWriteError> {
+    if let Some(reason) = identity_reason(name) {
+        Err(ColorWriteError::InvalidNodeName { reason })
+    } else {
+        Ok(())
+    }
+}
 
 /// A human ANNOTATION (ticket, memo, name, rationale). It travels in
 /// provenance but AUTHORIZES NOTHING (bead qmao.1.1): presence of
@@ -64,7 +108,7 @@ pub const WAIVER_SCOPE_COLOR_UPGRADE: &str = "color-upgrade";
 pub const WAIVER_SCOPE_SOURCE_COLOR: &str = "source-color";
 
 /// TYPED origin evidence for a positive-colored SOURCE leaf (bead
-/// gp3.16). Mirrors the schema-v6 claim-origin vocabulary
+/// gp3.16). Mirrors the package schema-v7 claim-origin vocabulary
 /// (fs-package `ClaimOrigin::SourceCertificate` / `AnchoredSource`)
 /// without coupling this layer upward: the semantics agree, the types
 /// live here. The origin is an INPUT that re-derives the color, not a
@@ -341,7 +385,7 @@ impl SourceOrigin {
             SourceOrigin::Anchoring {
                 dataset_id, regime, ..
             } => {
-                if identity_reason(dataset_id).is_some() {
+                if color_leaf_identity_reason(dataset_id).is_some() {
                     return Err(SourceOriginRejection::BlankDataset);
                 }
                 if regime.bounds().is_empty() {
@@ -377,7 +421,8 @@ pub enum ColorStructureRejection {
         /// Stable reason (`blank`, `placeholder`, or `surrounding whitespace`).
         reason: &'static str,
     },
-    /// A Verified interval is non-finite or inverted.
+    /// A Verified interval contains NaN or is inverted. Ordered infinite
+    /// endpoints remain sound, possibly vacuous enclosures.
     InvalidVerifiedInterval {
         /// Stable field-level reason.
         reason: &'static str,
@@ -423,7 +468,7 @@ impl core::fmt::Display for ColorStructureRejection {
 impl std::error::Error for ColorStructureRejection {}
 
 const WAIVER_PAYLOAD_DOMAIN: &[u8] = b"frankensim/fs-ledger/color-waiver";
-const COLOR_NODE_HASH_DOMAIN: &[u8] = b"frankensim/fs-ledger/color-node";
+const COLOR_NODE_HASH_DOMAIN: &[u8] = b"frankensim/fs-ledger/color-node/v2";
 const SOURCE_ORIGIN_REQUEST_DOMAIN: &[u8] = b"frankensim/fs-ledger/source-origin-request";
 
 fn interval_op_tag(op: IntervalOp) -> u8 {
@@ -460,54 +505,15 @@ fn numerical_kind_name(kind: fs_evidence::NumericalKind) -> &'static str {
     }
 }
 
-fn is_placeholder_token(value: &str) -> bool {
-    [
-        "-",
-        "?",
-        "n/a",
-        "na",
-        "none",
-        "not run",
-        "pending",
-        "placeholder",
-        "tbd",
-        "todo",
-        "unknown",
-    ]
-    .iter()
-    .any(|placeholder| value.eq_ignore_ascii_case(placeholder))
-}
-
-fn identity_reason(value: &str) -> Option<&'static str> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        Some("blank")
-    } else if trimmed != value {
-        Some("surrounding-whitespace")
-    } else if value.len() > MAX_MACHINE_IDENTITY_BYTES {
-        Some("too-long")
-    } else if value.chars().any(char::is_control) {
-        Some("control-character")
-    } else if !value.bytes().all(|byte| {
-        byte.is_ascii_alphanumeric()
-            || matches!(byte, b'-' | b'_' | b'.' | b'/' | b':' | b'@' | b'+' | b'=')
-    }) {
-        Some("invalid-character")
-    } else if is_placeholder_token(value) {
-        Some("placeholder")
-    } else {
-        None
-    }
-}
-
 fn human_text_reason(value: &str) -> Option<&'static str> {
+    if value.len() > MAX_WAIVER_REASON_BYTES {
+        return Some("too-long");
+    }
     let trimmed = value.trim();
     if trimmed.is_empty() {
         Some("blank")
     } else if trimmed != value {
         Some("surrounding-whitespace")
-    } else if value.len() > MAX_WAIVER_REASON_BYTES {
-        Some("too-long")
     } else if value.chars().any(|ch| {
         ch.is_control()
             || matches!(
@@ -526,84 +532,61 @@ fn human_text_reason(value: &str) -> Option<&'static str> {
     }
 }
 
-fn validate_color_structure(color: &Color) -> Result<(), ColorStructureRejection> {
-    match color {
-        Color::Verified { lo, hi } => {
-            if !lo.is_finite() || !hi.is_finite() {
-                Err(ColorStructureRejection::InvalidVerifiedInterval {
-                    reason: "bounds must be finite",
-                })
-            } else if lo > hi {
-                Err(ColorStructureRejection::InvalidVerifiedInterval {
-                    reason: "lower bound exceeds upper bound",
-                })
-            } else {
-                Ok(())
-            }
-        }
-        Color::Validated { regime, dataset } => {
-            if let Some(reason) = identity_reason(dataset) {
-                return Err(ColorStructureRejection::InvalidIdentity {
-                    field: "dataset",
-                    value: dataset.clone(),
-                    reason,
-                });
-            }
-            if regime.bounds().is_empty() {
-                return Err(ColorStructureRejection::InvalidValidatedRegime {
-                    axis: String::new(),
-                    reason: "at least one bounded axis is required",
-                });
-            }
-            if regime.bounds().len() > MAX_VALIDITY_AXES {
-                return Err(ColorStructureRejection::InvalidValidatedRegime {
-                    axis: String::new(),
-                    reason: "validity regime exceeds the axis limit",
-                });
-            }
-            for (axis, (lo, hi)) in regime.bounds() {
-                if let Some(reason) = identity_reason(axis) {
-                    return Err(ColorStructureRejection::InvalidIdentity {
-                        field: "axis",
-                        value: axis.clone(),
-                        reason,
-                    });
-                }
-                if !lo.is_finite() || !hi.is_finite() {
-                    return Err(ColorStructureRejection::InvalidValidatedRegime {
-                        axis: axis.clone(),
-                        reason: "bounds must be finite",
-                    });
-                }
-                if lo > hi {
-                    return Err(ColorStructureRejection::InvalidValidatedRegime {
-                        axis: axis.clone(),
-                        reason: "lower bound exceeds upper bound",
-                    });
-                }
-            }
-            Ok(())
-        }
-        Color::Estimated {
-            estimator,
-            dispersion,
-        } => {
-            if let Some(reason) = identity_reason(estimator) {
-                return Err(ColorStructureRejection::InvalidIdentity {
-                    field: "estimator",
-                    value: estimator.clone(),
-                    reason,
-                });
-            }
-            if dispersion.is_nan() || *dispersion < 0.0 {
-                Err(ColorStructureRejection::InvalidEstimatedDispersion {
-                    reason: "value is NaN or negative",
-                })
-            } else {
-                Ok(())
-            }
+fn waiver_annotation_reason(waiver: &Waiver) -> Option<(&'static str, &'static str)> {
+    for (field, value) in [
+        ("waiver_id", waiver.id.as_str()),
+        ("signer", waiver.signer.as_str()),
+    ] {
+        if let Some(reason) = identity_reason(value) {
+            return Some((field, reason));
         }
     }
+    human_text_reason(&waiver.reason).map(|reason| ("reason", reason))
+}
+
+fn validate_color_structure(color: &Color) -> Result<(), ColorStructureRejection> {
+    if let Color::Validated { regime, .. } = color
+        && regime.bounds().len() > MAX_VALIDITY_AXES
+    {
+        return Err(ColorStructureRejection::InvalidValidatedRegime {
+            axis: String::new(),
+            reason: "validity regime exceeds the axis limit",
+        });
+    }
+    validate_color_payload(color).map_err(|error| match error {
+        ColorPayloadError::InvalidIdentity {
+            field,
+            value,
+            reason,
+        } => ColorStructureRejection::InvalidIdentity {
+            field,
+            value,
+            reason,
+        },
+        ColorPayloadError::InvalidVerifiedInterval { reason } => {
+            ColorStructureRejection::InvalidVerifiedInterval { reason }
+        }
+        ColorPayloadError::InvalidValidatedRegime { axis, reason } => {
+            ColorStructureRejection::InvalidValidatedRegime { axis, reason }
+        }
+        ColorPayloadError::InvalidEstimatedDispersion { reason } => {
+            ColorStructureRejection::InvalidEstimatedDispersion { reason }
+        }
+    })
+}
+
+fn validate_source_origin_resource_limits(origin: &SourceOrigin) -> Result<(), ColorWriteError> {
+    if let SourceOrigin::Anchoring { regime, .. } = origin
+        && regime.bounds().len() > MAX_VALIDITY_AXES
+    {
+        return Err(ColorWriteError::InvalidColor {
+            rejection: ColorStructureRejection::InvalidValidatedRegime {
+                axis: String::new(),
+                reason: "validity regime exceeds the axis limit",
+            },
+        });
+    }
+    Ok(())
 }
 
 fn estimated_payload_error(color: &Color) -> Option<(&'static str, &'static str)> {
@@ -618,6 +601,15 @@ fn estimated_payload_error(color: &Color) -> Option<(&'static str, &'static str)
         }
         Ok(()) | Err(_) => None,
     }
+}
+
+fn estimated_source_payload_error(color: &Color) -> Option<(&'static str, &'static str)> {
+    if let Color::Estimated { estimator, .. } = color
+        && let Some(why) = color_leaf_identity_reason(estimator)
+    {
+        return Some(("estimator", why));
+    }
+    estimated_payload_error(color)
 }
 
 fn push_source_origin(out: &mut Vec<u8>, origin: &SourceOrigin) {
@@ -649,6 +641,12 @@ fn push_source_origin(out: &mut Vec<u8>, origin: &SourceOrigin) {
             push_field(out, &color.canonical_bytes());
         }
     }
+}
+
+fn source_origin_canonical_bytes(origin: &SourceOrigin) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    push_source_origin(&mut bytes, origin);
+    bytes
 }
 
 /// An AUTHENTICATED waiver: a versioned, length-prefixed payload bound
@@ -870,9 +868,10 @@ impl core::fmt::Display for WaiverRejection {
 impl std::error::Error for WaiverRejection {}
 
 fn validate_waiver_grant(grant: &WaiverGrant) -> Result<(), WaiverRejection> {
+    if let Some((field, reason)) = waiver_annotation_reason(&grant.annotation) {
+        return Err(WaiverRejection::InvalidField { field, reason });
+    }
     for (field, value) in [
-        ("waiver_id", grant.annotation.id.as_str()),
-        ("signer", grant.annotation.signer.as_str()),
         ("key_id", grant.key_id.as_str()),
         ("scope", grant.scope.as_str()),
         ("node_name", grant.node_name.as_str()),
@@ -880,12 +879,6 @@ fn validate_waiver_grant(grant: &WaiverGrant) -> Result<(), WaiverRejection> {
         if let Some(reason) = identity_reason(value) {
             return Err(WaiverRejection::InvalidField { field, reason });
         }
-    }
-    if let Some(reason) = human_text_reason(&grant.annotation.reason) {
-        return Err(WaiverRejection::InvalidField {
-            field: "reason",
-            reason,
-        });
     }
     if grant.claimed_color.is_empty() {
         return Err(WaiverRejection::InvalidField {
@@ -959,6 +952,12 @@ fn hex_bytes(bytes: &[u8]) -> String {
         let _ = write!(out, "{byte:02x}");
     }
     out
+}
+
+fn optional_hex_bytes_json(bytes: Option<&[u8]>) -> String {
+    bytes.map_or("null".to_string(), |bytes| {
+        format!("\"{}\"", hex_bytes(bytes))
+    })
 }
 
 fn parent_hashes_json(parent_hashes: &[ContentHash]) -> String {
@@ -1277,13 +1276,19 @@ impl ColorNode {
 /// Teaching errors at the write gate.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ColorWriteError {
+    /// The durable node identity is blank, padded, a placeholder, contains
+    /// disallowed characters, or exceeds [`MAX_COLOR_NODE_NAME_BYTES`].
+    InvalidNodeName {
+        /// Stable shared-grammar refusal reason.
+        reason: &'static str,
+    },
     /// A bounded graph resource exceeded its declared limit before append.
     ResourceLimitExceeded {
         /// Stable resource name.
         resource: &'static str,
-        /// Maximum accepted entries.
+        /// Maximum accepted units (entries or bytes, as named by `resource`).
         limit: usize,
-        /// Offered entries.
+        /// Offered units.
         actual: usize,
     },
     /// The claimed color outranks what the parents support.
@@ -1316,6 +1321,14 @@ pub enum ColorWriteError {
     },
     /// Derivations need at least one parent.
     NoParents,
+    /// A non-authorizing human waiver annotation is malformed or exceeds its
+    /// audit-metadata bounds.
+    InvalidWaiverAnnotation {
+        /// Stable annotation field.
+        field: &'static str,
+        /// Shared structural refusal reason.
+        reason: &'static str,
+    },
     /// A waiver grant failed authentication or binding checks; the
     /// promotion is refused (fail closed).
     WaiverRefused {
@@ -1352,6 +1365,11 @@ pub enum ColorWriteError {
 impl core::fmt::Display for ColorWriteError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            ColorWriteError::InvalidNodeName { reason } => write!(
+                f,
+                "color graph node name is invalid ({reason}); use a canonical non-placeholder \
+                 machine identity of at most {MAX_COLOR_NODE_NAME_BYTES} bytes"
+            ),
             ColorWriteError::ResourceLimitExceeded {
                 resource,
                 limit,
@@ -1359,7 +1377,7 @@ impl core::fmt::Display for ColorWriteError {
             } => write!(
                 f,
                 "color graph resource `{resource}` exceeds limit {limit} (offered {actual}); \
-                 split the derivation or compact its authority lineage before admission"
+                 split the derivation or reduce the named retained resource before admission"
             ),
             ColorWriteError::LaunderingRefused {
                 claimed,
@@ -1395,6 +1413,11 @@ impl core::fmt::Display for ColorWriteError {
             ColorWriteError::NoParents => {
                 write!(f, "derived nodes need parents; use `source` for leaves")
             }
+            ColorWriteError::InvalidWaiverAnnotation { field, reason } => write!(
+                f,
+                "waiver annotation field `{field}` is invalid ({reason}); annotations authorize \
+                 nothing but still must be bounded, canonical, and safe to display in an audit"
+            ),
             ColorWriteError::WaiverRefused { rejection } => write!(
                 f,
                 "waiver refused ({rejection}): promotion requires an authenticated \
@@ -1434,6 +1457,124 @@ impl core::fmt::Display for ColorWriteError {
 }
 
 impl std::error::Error for ColorWriteError {}
+
+fn waiver_grant_retained_bytes(grant: &WaiverGrant) -> Option<usize> {
+    // Fixed framing, hashes, integer fields, and JSON punctuation. Variable
+    // fields are counted once here; row rendering is a bounded constant-factor
+    // expansion (hex plus the canonical signing payload).
+    let mut bytes = 256usize;
+    for len in [
+        grant.annotation.id.len(),
+        grant.annotation.signer.len(),
+        grant.annotation.reason.len(),
+        grant.key_id.len(),
+        grant.scope.len(),
+        grant.node_name.len(),
+        grant.claimed_color.len(),
+        grant.signature.len(),
+    ] {
+        bytes = bytes.checked_add(len)?;
+    }
+    bytes.checked_add(grant.parent_hashes.len().checked_mul(32)?)
+}
+
+fn add_waiver_closure_bytes(total: &mut usize, grant: &WaiverGrant) -> Result<(), ColorWriteError> {
+    let actual = waiver_grant_retained_bytes(grant)
+        .and_then(|bytes| total.checked_add(bytes))
+        .unwrap_or(usize::MAX);
+    if actual > MAX_WAIVER_CLOSURE_BYTES {
+        return Err(ColorWriteError::ResourceLimitExceeded {
+            resource: "waiver_closure_bytes",
+            limit: MAX_WAIVER_CLOSURE_BYTES,
+            actual,
+        });
+    }
+    *total = actual;
+    Ok(())
+}
+
+fn validate_waiver_closure_bytes(
+    dependencies: &[WaiverDependency],
+    direct_grant: Option<&WaiverGrant>,
+) -> Result<(), ColorWriteError> {
+    let mut total = 0usize;
+    for dependency in dependencies {
+        add_waiver_closure_bytes(&mut total, &dependency.grant)?;
+    }
+    if let Some(grant) = direct_grant {
+        add_waiver_closure_bytes(&mut total, grant)?;
+    }
+    Ok(())
+}
+
+fn merge_fold_validity_axes(
+    aggregate: &mut BTreeMap<String, (f64, f64)>,
+    regime: &ValidityDomain,
+) -> Result<bool, ColorWriteError> {
+    // Detect an empty intersection before enforcing the union-width budget.
+    // Otherwise lexical key order could falsely reject on a new axis that
+    // happens to precede a shared, disjoint axis; a disjoint Validated pair
+    // honestly becomes Estimated and retains no aggregate regime.
+    for (axis, &(lo, hi)) in regime.bounds() {
+        if let Some(&(aggregate_lo, aggregate_hi)) = aggregate.get(axis) {
+            let intersection_lo = aggregate_lo.max(lo);
+            let intersection_hi = aggregate_hi.min(hi);
+            if !intersection_lo.is_finite()
+                || !intersection_hi.is_finite()
+                || intersection_lo > intersection_hi
+            {
+                return Ok(false);
+            }
+        }
+    }
+    let missing = regime
+        .bounds()
+        .keys()
+        .filter(|axis| !aggregate.contains_key(axis.as_str()))
+        .count();
+    let actual = aggregate.len().saturating_add(missing);
+    if actual > MAX_VALIDITY_AXES {
+        return Err(ColorWriteError::ResourceLimitExceeded {
+            resource: "derived_validity_axes",
+            limit: MAX_VALIDITY_AXES,
+            actual,
+        });
+    }
+    for (axis, &(lo, hi)) in regime.bounds() {
+        aggregate
+            .entry(axis.clone())
+            .and_modify(|(aggregate_lo, aggregate_hi)| {
+                *aggregate_lo = (*aggregate_lo).max(lo);
+                *aggregate_hi = (*aggregate_hi).min(hi);
+            })
+            .or_insert((lo, hi));
+    }
+    Ok(true)
+}
+
+fn preflight_fold_color(
+    aggregate: &mut BTreeMap<String, (f64, f64)>,
+    estimated_absorbed: &mut bool,
+    color: &Color,
+) -> Result<(), ColorWriteError> {
+    if *estimated_absorbed {
+        return Ok(());
+    }
+    match color {
+        Color::Verified { .. } => {}
+        Color::Validated { regime, .. } => {
+            if !merge_fold_validity_axes(aggregate, regime)? {
+                *estimated_absorbed = true;
+                aggregate.clear();
+            }
+        }
+        Color::Estimated { .. } => {
+            *estimated_absorbed = true;
+            aggregate.clear();
+        }
+    }
+    Ok(())
+}
 
 struct NodeWriteMetadata {
     operation: Option<IntervalOp>,
@@ -1504,6 +1645,7 @@ impl ColorGraph {
     fn inherited_waiver_dependencies(
         &self,
         parents: &[u64],
+        direct_grant: Option<&WaiverGrant>,
     ) -> Result<Vec<WaiverDependency>, ColorWriteError> {
         if parents.len() > MAX_COLOR_PARENTS {
             return Err(ColorWriteError::ResourceLimitExceeded {
@@ -1513,6 +1655,10 @@ impl ColorGraph {
             });
         }
         let mut dependencies = BTreeMap::<u64, WaiverDependency>::new();
+        let mut retained_bytes = 0usize;
+        if let Some(grant) = direct_grant {
+            add_waiver_closure_bytes(&mut retained_bytes, grant)?;
+        }
         for parent_id in parents {
             let parent = self
                 .node(*parent_id)
@@ -1526,6 +1672,7 @@ impl ColorGraph {
                             actual: dependencies.len() + 1,
                         });
                     }
+                    add_waiver_closure_bytes(&mut retained_bytes, &dependency.grant)?;
                     dependencies.insert(dependency.authorizing_node, dependency.clone());
                 }
             }
@@ -1544,6 +1691,7 @@ impl ColorGraph {
                             actual: dependencies.len() + 1,
                         });
                     }
+                    add_waiver_closure_bytes(&mut retained_bytes, grant)?;
                     dependencies.insert(
                         parent.id,
                         WaiverDependency {
@@ -1560,8 +1708,9 @@ impl ColorGraph {
         Ok(dependencies.into_values().collect())
     }
 
-    /// Provenance hash over DOMAIN-SEPARATED, VERSIONED v8,
-    /// LENGTH-PREFIXED encoding. V8 binds certificate artifact identity,
+    /// Provenance hash over DOMAIN-SEPARATED, VERSIONED v9,
+    /// LENGTH-PREFIXED encoding. V9 binds color-algebra v2 in both the hash
+    /// domain and [`Color::canonical_bytes`]. V8 binds certificate artifact identity,
     /// direct source/waiver policy fingerprints, waiver admission days, and
     /// those fields in the canonical transitive waiver dependency closure.
     /// V7 first bound that dependency closure. V6 bound every regime demotion and the
@@ -1570,8 +1719,10 @@ impl ColorGraph {
     /// identity and every downstream hash. V4 bound source/derived
     /// status and the exact [`IntervalOp`]; v3 added
     /// [`Color::canonical_bytes`]; the former v2 representation used
-    /// rounded display JSON. Length-prefixing prevents adversarial text
-    /// from colliding structurally.
+    /// rounded display JSON. Length-prefixing prevents adversarial text from
+    /// colliding structurally. Color-write row schema v7 persists the exact
+    /// color and origin bytes consumed here, so the hash input is reconstructible
+    /// without treating display JSON as canonical.
     fn node_hash(
         &self,
         name: &str,
@@ -1579,7 +1730,26 @@ impl ColorGraph {
         parents: &[u64],
         metadata: &NodeHashMetadata<'_>,
     ) -> ContentHash {
-        let mut buf = vec![8u8]; // encoding version
+        let color_bytes = color.canonical_bytes();
+        let origin_bytes = metadata.origin.map(source_origin_canonical_bytes);
+        self.node_hash_from_canonical_payloads(
+            name,
+            &color_bytes,
+            parents,
+            metadata,
+            origin_bytes.as_deref(),
+        )
+    }
+
+    fn node_hash_from_canonical_payloads(
+        &self,
+        name: &str,
+        color_bytes: &[u8],
+        parents: &[u64],
+        metadata: &NodeHashMetadata<'_>,
+        origin_bytes: Option<&[u8]>,
+    ) -> ContentHash {
+        let mut buf = vec![COLOR_NODE_HASH_ENCODING_VERSION];
         push_field(&mut buf, COLOR_NODE_HASH_DOMAIN);
         match metadata.operation {
             Some(op) => {
@@ -1589,7 +1759,7 @@ impl ColorGraph {
             None => buf.push(0),
         }
         push_field(&mut buf, name.as_bytes());
-        push_field(&mut buf, &color.canonical_bytes());
+        push_field(&mut buf, color_bytes);
         push_len(&mut buf, parents.len());
         for &p in parents {
             let parent = self
@@ -1605,10 +1775,10 @@ impl ColorGraph {
             push_field(&mut buf, demotion.reason.axis.as_bytes());
             buf.extend_from_slice(&demotion.reason.value.to_bits().to_le_bytes());
         }
-        match metadata.origin {
-            Some(origin) => {
+        match origin_bytes {
+            Some(origin_bytes) => {
                 buf.push(1);
-                push_source_origin(&mut buf, origin);
+                buf.extend_from_slice(origin_bytes);
             }
             None => buf.push(0),
         }
@@ -1699,22 +1869,29 @@ impl ColorGraph {
         for demotion in &demotions {
             let d = &demotion.reason;
             self.rows.push(format!(
-                "{{\"event\":\"demotion\",\"node\":{id},\"parent_index\":{},\
+                "{{\"event\":\"demotion\",\"schema_version\":{COLOR_DEMOTION_ROW_SCHEMA_VERSION},\"node\":{id},\"parent_index\":{},\
                  \"parent\":{},\
-                 \"dataset\":{},\"axis\":{},\"value\":{}}}",
+                 \"dataset\":{},\"axis\":{},\"value\":{},\"value_bits\":\"{:016x}\"}}",
                 demotion.parent_index,
                 demotion.parent_id,
                 json_string(&d.dataset),
                 json_string(&d.axis),
-                json_f64(d.value)
+                json_f64(d.value),
+                d.value.to_bits(),
             ));
         }
         let operation_json =
             operation.map_or("null".to_string(), |op| json_string(interval_op_name(op)));
+        let color_canonical_hex = hex_bytes(&color.canonical_bytes());
+        let origin_canonical_bytes = origin.as_ref().map(source_origin_canonical_bytes);
+        let origin_canonical_hex = optional_hex_bytes_json(origin_canonical_bytes.as_deref());
         self.rows.push(format!(
-            "{{\"event\":\"color-write\",\"schema_version\":5,\"node\":{id},\
+            "{{\"event\":\"color-write\",\"schema_version\":{COLOR_WRITE_ROW_SCHEMA_VERSION},\
+             \"node_hash_version\":{COLOR_NODE_HASH_ENCODING_VERSION},\
+             \"color_algebra_version\":{COLOR_ALGEBRA_VERSION},\"node\":{id},\
              \"name\":{},\"operation\":{},\"color\":\"{}\",\"payload\":{},\
-             \"parents\":{:?},\"origin\":{},\"origin_policy_fingerprint\":{},\
+             \"color_canonical_hex\":\"{}\",\"parents\":{:?},\"origin\":{},\
+             \"origin_canonical_hex\":{},\"origin_policy_fingerprint\":{},\
              \"waiver_dependencies\":[{}],\"waiver\":{},\"grant\":{},\
              \"waiver_policy_fingerprint\":{},\"waiver_admission_day\":{},\
              \"hash\":\"{}\"}}",
@@ -1722,8 +1899,10 @@ impl ColorGraph {
             operation_json,
             color.name(),
             color.payload_json(),
+            color_canonical_hex,
             parents,
             origin_json(origin.as_ref()),
+            origin_canonical_hex,
             optional_hash_json(origin_policy_fingerprint),
             waiver_dependencies_json(&waiver_dependencies),
             waiver_json(waiver.as_ref()),
@@ -1765,10 +1944,11 @@ impl ColorGraph {
     /// [`ColorWriteError::SourceOriginRequired`] for positive colors;
     /// [`ColorWriteError::InvalidEstimatedSource`] for malformed estimates.
     pub fn source(&mut self, name: &str, color: Color) -> Result<u64, ColorWriteError> {
+        validate_node_name(name)?;
         if !matches!(color, Color::Estimated { .. }) {
             return Err(ColorWriteError::SourceOriginRequired { rank: color.rank() });
         }
-        if let Some((field, why)) = estimated_payload_error(&color) {
+        if let Some((field, why)) = estimated_source_payload_error(&color) {
             return Err(ColorWriteError::InvalidEstimatedSource { field, why });
         }
         Ok(self.push_node(
@@ -1801,7 +1981,8 @@ impl ColorGraph {
     ///
     /// # Errors
     /// [`ColorWriteError::SourceOriginRefused`] with the structured
-    /// forged-source reason.
+    /// forged-source reason, or [`ColorWriteError::InvalidColor`] when the
+    /// rederived claim exceeds structural/resource limits.
     pub fn source_with_origin(
         &mut self,
         name: &str,
@@ -1809,10 +1990,14 @@ impl ColorGraph {
         origin: SourceOrigin,
         verifier: &dyn SourceOriginVerifier,
     ) -> Result<u64, ColorWriteError> {
+        validate_node_name(name)?;
         let refuse = |rejection| Err(ColorWriteError::SourceOriginRefused { rejection });
         if matches!(color, Color::Estimated { .. }) {
             return refuse(SourceOriginRejection::EstimatedNeedsNoOrigin);
         }
+        validate_color_structure(color)
+            .map_err(|rejection| ColorWriteError::InvalidColor { rejection })?;
+        validate_source_origin_resource_limits(&origin)?;
         let derived = origin
             .derive_color()
             .map_err(|rejection| ColorWriteError::SourceOriginRefused { rejection })?;
@@ -1896,6 +2081,7 @@ impl ColorGraph {
         verifier: &dyn WaiverVerifier,
         today_day: u32,
     ) -> Result<u64, ColorWriteError> {
+        validate_node_name(name)?;
         validate_color_structure(&color)
             .map_err(|rejection| ColorWriteError::InvalidColor { rejection })?;
         if color.rank() < ColorRank::Validated {
@@ -1906,6 +2092,7 @@ impl ColorGraph {
         let refuse = |rejection| Err(ColorWriteError::WaiverRefused { rejection });
         validate_waiver_grant(&grant)
             .map_err(|rejection| ColorWriteError::WaiverRefused { rejection })?;
+        validate_waiver_closure_bytes(&[], Some(&grant))?;
         if grant.scope != WAIVER_SCOPE_SOURCE_COLOR {
             return refuse(WaiverRejection::ScopeMismatch);
         }
@@ -1958,7 +2145,8 @@ impl ColorGraph {
     /// EVERY demotion is collected (bead gp3.16), with both parent id
     /// and position in canonical ascending-position order. Retaining only the first demotion loses
     /// decision-relevant diagnostics when several parents exit their
-    /// regimes at once.
+    /// regimes at once. Effective Validated axes are preflighted into one
+    /// bounded map before any parent color is cloned or composed.
     fn fold_parents(
         &self,
         parents: &[u64],
@@ -1975,27 +2163,59 @@ impl ColorGraph {
                 actual: parents.len(),
             });
         }
+        let parent_nodes = parents
+            .iter()
+            .map(|&id| self.node(id).ok_or(ColorWriteError::UnknownParent { id }))
+            .collect::<Result<Vec<_>, _>>()?;
         let mut demotions = Vec::new();
-        let mut effective: Vec<Color> = Vec::with_capacity(parents.len());
-        for (parent_index, &p) in parents.iter().enumerate() {
-            let parent = self
-                .node(p)
-                .ok_or(ColorWriteError::UnknownParent { id: p })?;
-            let (c, d) = check_regime(&parent.color, state);
-            if let Some(reason) = d {
+        let mut aggregate_validity = BTreeMap::new();
+        let mut estimated_absorbed = false;
+        for (parent_index, (parent_id, parent)) in parents
+            .iter()
+            .copied()
+            .zip(parent_nodes.iter().copied())
+            .enumerate()
+        {
+            if let Some(reason) = regime_demotion(&parent.color, state) {
                 demotions.push(ColorDemotion {
                     parent_index,
-                    parent_id: p,
+                    parent_id,
                     reason,
                 });
+                estimated_absorbed = true;
+                aggregate_validity.clear();
+            } else {
+                preflight_fold_color(
+                    &mut aggregate_validity,
+                    &mut estimated_absorbed,
+                    &parent.color,
+                )?;
             }
-            effective.push(c);
         }
-        let mut derived = effective[0].clone();
-        for c in &effective[1..] {
-            derived = compose(&derived, c, op);
+        let mut next_demotion = 0usize;
+        let mut derived = None;
+        for (parent_index, parent) in parent_nodes.into_iter().enumerate() {
+            let effective = if demotions
+                .get(next_demotion)
+                .is_some_and(|demotion| demotion.parent_index == parent_index)
+            {
+                let reason = &demotions[next_demotion].reason;
+                next_demotion += 1;
+                Color::Estimated {
+                    estimator: demotion_estimator_identity(&reason.dataset, &reason.axis),
+                    dispersion: f64::INFINITY,
+                }
+            } else {
+                parent.color.clone()
+            };
+            derived = Some(match derived {
+                None => effective,
+                Some(current) => compose(&current, &effective, op),
+            });
         }
-        Ok((derived, demotions))
+        derived
+            .map(|color| (color, demotions))
+            .ok_or(ColorWriteError::NoParents)
     }
 
     fn laundering_error(
@@ -2012,8 +2232,12 @@ impl ColorGraph {
                 let parent = self
                     .node(p)
                     .expect("laundering parents were validated by fold_parents");
-                let (eff, _) = check_regime(&parent.color, state);
-                eff.rank() <= cap
+                let effective_rank = if regime_demotion(&parent.color, state).is_some() {
+                    ColorRank::Estimated
+                } else {
+                    parent.color.rank()
+                };
+                effective_rank <= cap
             })
             .collect();
         ColorWriteError::LaunderingRefused {
@@ -2045,8 +2269,18 @@ impl ColorGraph {
         state: &BTreeMap<String, f64>,
         waiver: Option<Waiver>,
     ) -> Result<u64, ColorWriteError> {
+        validate_node_name(name)?;
+        if let Some(claimed) = &claimed {
+            validate_color_structure(claimed)
+                .map_err(|rejection| ColorWriteError::InvalidColor { rejection })?;
+        }
+        if let Some(waiver) = &waiver
+            && let Some((field, reason)) = waiver_annotation_reason(waiver)
+        {
+            return Err(ColorWriteError::InvalidWaiverAnnotation { field, reason });
+        }
         let (derived, demotions) = self.fold_parents(parents, op, state)?;
-        let waiver_dependencies = self.inherited_waiver_dependencies(parents)?;
+        let waiver_dependencies = self.inherited_waiver_dependencies(parents, None)?;
         let written = match claimed {
             None => derived,
             Some(c) if c.canonical_bytes() == derived.canonical_bytes() => c,
@@ -2108,13 +2342,14 @@ impl ColorGraph {
         verifier: &dyn WaiverVerifier,
         today_day: u32,
     ) -> Result<u64, ColorWriteError> {
+        validate_node_name(name)?;
         validate_color_structure(&claimed)
             .map_err(|rejection| ColorWriteError::InvalidColor { rejection })?;
-        let (_derived, demotions) = self.fold_parents(parents, op, state)?;
-        let waiver_dependencies = self.inherited_waiver_dependencies(parents)?;
-        let refuse = |rejection| Err(ColorWriteError::WaiverRefused { rejection });
         validate_waiver_grant(&grant)
             .map_err(|rejection| ColorWriteError::WaiverRefused { rejection })?;
+        let (_derived, demotions) = self.fold_parents(parents, op, state)?;
+        let waiver_dependencies = self.inherited_waiver_dependencies(parents, Some(&grant))?;
+        let refuse = |rejection| Err(ColorWriteError::WaiverRefused { rejection });
         if grant.scope != WAIVER_SCOPE_COLOR_UPGRADE {
             return refuse(WaiverRejection::ScopeMismatch);
         }
@@ -2191,6 +2426,9 @@ impl ColorGraph {
                 "waiver dependency closure exceeds the replay limit",
             ));
         }
+        validate_waiver_closure_bytes(&node.waiver_dependencies, node.grant.as_ref()).map_err(
+            |error| Self::replay_error(node, format!("waiver closure is oversized: {error}")),
+        )?;
         let mut previous = None;
         for dependency in &node.waiver_dependencies {
             if dependency.authorizing_node >= node.id {
@@ -2233,7 +2471,7 @@ impl ColorGraph {
         let expected = if node.parents.is_empty() {
             Ok(Vec::new())
         } else {
-            self.inherited_waiver_dependencies(&node.parents)
+            self.inherited_waiver_dependencies(&node.parents, node.grant.as_ref())
         }
         .map_err(|error| Self::replay_error(node, format!("invalid parent authority: {error}")))?;
         if node.waiver_dependencies != expected {
@@ -2317,15 +2555,16 @@ impl ColorGraph {
         match (&node.color, &node.origin, &node.grant) {
             (Color::Estimated { .. }, None, None) => {
                 if node.origin_policy_fingerprint.is_some()
+                    || node.waiver.is_some()
                     || node.waiver_policy_fingerprint.is_some()
                     || node.waiver_admission_day.is_some()
                 {
                     return Err(Self::replay_error(
                         node,
-                        "Estimated source carries orphan admission context",
+                        "Estimated source carries orphan authority or human-waiver metadata",
                     ));
                 }
-                if let Some((field, why)) = estimated_payload_error(&node.color) {
+                if let Some((field, why)) = estimated_source_payload_error(&node.color) {
                     Err(Self::replay_error(
                         node,
                         format!("Estimated source field `{field}` is invalid: {why}"),
@@ -2424,34 +2663,40 @@ impl ColorGraph {
                 "derived node carries source admission policy context",
             ));
         }
-        let mut effective = Vec::with_capacity(node.parents.len());
+        let mut aggregate_validity = BTreeMap::new();
+        let mut estimated_absorbed = false;
+        let mut derived = None;
+        let mut next_demotion = 0usize;
         for (index, parent) in node.parents.iter().enumerate() {
             let Some(parent_node) = self.node(*parent) else {
                 return Err(Self::replay_error(node, "derived parent is missing"));
             };
-            effective.push(
-                node.demotions
-                    .iter()
-                    .find(|demotion| demotion.parent_index == index)
-                    .map_or_else(
-                        || parent_node.color.clone(),
-                        |demotion| Color::Estimated {
-                            estimator: format!(
-                                "regime-exit:{}@{}",
-                                demotion.reason.dataset, demotion.reason.axis
-                            ),
-                            dispersion: f64::INFINITY,
-                        },
-                    ),
-            );
+            let effective = if node
+                .demotions
+                .get(next_demotion)
+                .is_some_and(|demotion| demotion.parent_index == index)
+            {
+                let reason = &node.demotions[next_demotion].reason;
+                next_demotion += 1;
+                Color::Estimated {
+                    estimator: demotion_estimator_identity(&reason.dataset, &reason.axis),
+                    dispersion: f64::INFINITY,
+                }
+            } else {
+                parent_node.color.clone()
+            };
+            preflight_fold_color(&mut aggregate_validity, &mut estimated_absorbed, &effective)
+                .map_err(|error| {
+                    Self::replay_error(node, format!("derived validity preflight failed: {error}"))
+                })?;
+            derived = Some(match derived {
+                None => effective,
+                Some(current) => compose(&current, &effective, op),
+            });
         }
-        let Some((first, remaining)) = effective.split_first() else {
+        let Some(derived) = derived else {
             return Err(Self::replay_error(node, "derived node has no parents"));
         };
-        let mut derived = first.clone();
-        for color in remaining {
-            derived = compose(&derived, color, op);
-        }
         if let Some(grant) = &node.grant {
             validate_waiver_grant(grant).map_err(|rejection| {
                 Self::replay_error(
@@ -2510,10 +2755,24 @@ impl ColorGraph {
                 "stored id differs from append position",
             ));
         }
+        if let Some(reason) = identity_reason(&node.name) {
+            return Err(Self::replay_error(
+                node,
+                format!("stored node name is invalid: {reason}"),
+            ));
+        }
         if let Err(rejection) = validate_color_structure(&node.color) {
             return Err(Self::replay_error(
                 node,
                 format!("stored color is structurally invalid: {rejection}"),
+            ));
+        }
+        if let Some(waiver) = &node.waiver
+            && let Some((field, reason)) = waiver_annotation_reason(waiver)
+        {
+            return Err(Self::replay_error(
+                node,
+                format!("stored waiver annotation field `{field}` is invalid ({reason})"),
             ));
         }
         if node.parents.iter().any(|parent| {
@@ -2561,8 +2820,8 @@ impl ColorGraph {
     /// IN-MEMORY STRUCTURAL REPLAY AUDIT (bead gp3.16): rederive every node from its stored
     /// inputs and refuse on any divergence. For each derived node the
     /// recorded demotions reconstruct the effective parent colors
-    /// (a demotion determines the demoted form exactly:
-    /// `estimated{regime-exit:dataset@axis, ∞}`), the composition
+    /// (a demotion determines the bounded, length-framed estimator identity
+    /// exactly), the composition
     /// algebra re-folds them, and — for unwaived writes — the written
     /// color must match bit-exactly. Every node's provenance hash is
     /// recomputed and compared, so the graph's whole hash chain is
@@ -2613,15 +2872,246 @@ mod tests {
     impl SourceOriginVerifier for AllowFixtureSource {
         fn verify(&self, request: &SourceOriginRequest<'_>) -> PolicyDecision {
             let policy = hash_bytes(b"fs-ledger/internal-fixture/source-policy/v1");
-            if request.node_name() == "anchored"
-                && matches!(request.claimed_color(), Color::Validated { .. })
-                && matches!(request.origin(), SourceOrigin::Anchoring { .. })
-            {
+            let accepted = matches!(
+                (
+                    request.node_name(),
+                    request.claimed_color(),
+                    request.origin()
+                ),
+                (
+                    "anchored",
+                    Color::Validated { .. },
+                    SourceOrigin::Anchoring { .. }
+                ) | (
+                    "certified",
+                    Color::Verified { .. },
+                    SourceOrigin::Certificate { .. }
+                )
+            );
+            if accepted {
                 PolicyDecision::accept(policy)
             } else {
                 PolicyDecision::reject(policy)
             }
         }
+    }
+
+    fn strict_row_string<'a>(row: &'a str, key: &str) -> Option<&'a str> {
+        let marker = format!("\"{key}\":\"");
+        let value = row.get(row.find(&marker)? + marker.len()..)?;
+        value.get(..value.find('"')?)
+    }
+
+    fn strict_lower_hex(value: &str) -> Option<Vec<u8>> {
+        if value.len() % 2 != 0
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return None;
+        }
+        value
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                core::str::from_utf8(pair)
+                    .ok()
+                    .and_then(|digits| u8::from_str_radix(digits, 16).ok())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn schema_v7_rows_reconstruct_exact_node_hash_payloads() {
+        let mut graph = ColorGraph::new();
+        let estimated_base = graph
+            .source(
+                "estimated-base",
+                Color::Estimated {
+                    estimator: "rom-v1".to_string(),
+                    dispersion: 0.1,
+                },
+            )
+            .expect("base estimated source");
+        let estimated = graph
+            .source(
+                "estimated",
+                Color::Estimated {
+                    estimator: "rom-v1".to_string(),
+                    dispersion: 0.1_f64.next_up(),
+                },
+            )
+            .expect("estimated source");
+        let certified_color = Color::Verified {
+            lo: 1.0_f64.next_up(),
+            hi: 2.0_f64.next_down(),
+        };
+        graph
+            .source_with_origin(
+                "certified",
+                &certified_color,
+                SourceOrigin::Certificate {
+                    producer: "fixture-certifier".to_string(),
+                    certificate_hash: hash_bytes(b"certificate artifact"),
+                    certificate: NumericalCertificate::enclosure(
+                        1.0_f64.next_up(),
+                        2.0_f64.next_down(),
+                    ),
+                },
+                &AllowFixtureSource,
+            )
+            .expect("certified source");
+        let regime = ValidityDomain::unconstrained().with(
+            "re",
+            1_000.0_f64.next_up(),
+            100_000.0_f64.next_down(),
+        );
+        let anchored_color = Color::Validated {
+            regime: regime.clone(),
+            dataset: "campaign-a".to_string(),
+        };
+        graph
+            .source_with_origin(
+                "anchored",
+                &anchored_color,
+                SourceOrigin::Anchoring {
+                    dataset_id: "campaign-a".to_string(),
+                    content_hash: hash_bytes(b"anchoring artifact"),
+                    regime,
+                },
+                &AllowFixtureSource,
+            )
+            .expect("anchored source");
+        graph
+            .derive(
+                "derived",
+                &[estimated],
+                IntervalOp::Hull,
+                None,
+                &BTreeMap::new(),
+                None,
+            )
+            .expect("ordinary derivation");
+
+        let base_node = graph.node(estimated_base).expect("base node");
+        let adjacent_node = graph.node(estimated).expect("adjacent node");
+        assert_eq!(
+            base_node.color.payload_json(),
+            adjacent_node.color.payload_json(),
+            "display JSON deliberately rounds adjacent floats"
+        );
+        assert_ne!(
+            base_node.color.canonical_bytes(),
+            adjacent_node.color.canonical_bytes(),
+        );
+        assert_ne!(base_node.hash, adjacent_node.hash);
+        let base_row = graph
+            .rows()
+            .iter()
+            .find(|row| row.contains("\"name\":\"estimated-base\""))
+            .expect("base color-write row");
+        let adjacent_row = graph
+            .rows()
+            .iter()
+            .find(|row| row.contains("\"name\":\"estimated\""))
+            .expect("adjacent color-write row");
+        assert_ne!(
+            strict_row_string(base_row, "color_canonical_hex"),
+            strict_row_string(adjacent_row, "color_canonical_hex"),
+        );
+
+        assert!(strict_lower_hex("AA").is_none());
+        assert!(strict_lower_hex("0").is_none());
+        for node in graph.nodes() {
+            let row = graph
+                .rows()
+                .iter()
+                .find(|row| {
+                    row.contains("\"event\":\"color-write\"")
+                        && row.contains(&format!("\"name\":\"{}\"", node.name))
+                })
+                .expect("one color-write row per node");
+            assert!(row.contains("\"schema_version\":7"));
+            assert!(row.contains("\"node_hash_version\":9"));
+            let color_bytes = strict_lower_hex(
+                strict_row_string(row, "color_canonical_hex").expect("exact color bytes"),
+            )
+            .expect("strict lowercase color hex");
+            assert_eq!(color_bytes, node.color.canonical_bytes());
+            let origin_bytes = strict_row_string(row, "origin_canonical_hex")
+                .map(|encoded| strict_lower_hex(encoded).expect("strict lowercase origin hex"));
+            assert_eq!(
+                origin_bytes,
+                node.origin.as_ref().map(source_origin_canonical_bytes)
+            );
+            let metadata = NodeHashMetadata {
+                operation: node.operation,
+                demotions: &node.demotions,
+                origin: node.origin.as_ref(),
+                origin_policy_fingerprint: node.origin_policy_fingerprint,
+                waiver: node.waiver.as_ref(),
+                grant: node.grant.as_ref(),
+                waiver_policy_fingerprint: node.waiver_policy_fingerprint,
+                waiver_admission_day: node.waiver_admission_day,
+                waiver_dependencies: &node.waiver_dependencies,
+            };
+            assert_eq!(
+                graph.node_hash_from_canonical_payloads(
+                    &node.name,
+                    &color_bytes,
+                    &node.parents,
+                    &metadata,
+                    origin_bytes.as_deref(),
+                ),
+                node.hash,
+            );
+            let mut tampered = color_bytes.clone();
+            tampered[0] ^= 1;
+            assert_ne!(
+                graph.node_hash_from_canonical_payloads(
+                    &node.name,
+                    &tampered,
+                    &node.parents,
+                    &metadata,
+                    origin_bytes.as_deref(),
+                ),
+                node.hash,
+            );
+            if let Some(mut tampered_origin) = origin_bytes.clone() {
+                tampered_origin[0] ^= 1;
+                assert_ne!(
+                    graph.node_hash_from_canonical_payloads(
+                        &node.name,
+                        &color_bytes,
+                        &node.parents,
+                        &metadata,
+                        Some(&tampered_origin),
+                    ),
+                    node.hash,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn estimated_source_cannot_reroot_a_reserved_derived_identity() {
+        let mut graph = ColorGraph::new();
+        let error = graph
+            .source(
+                "rerooted",
+                Color::Estimated {
+                    estimator: "derived:composed:deadbeef".to_string(),
+                    dispersion: f64::INFINITY,
+                },
+            )
+            .expect_err("derived identities require retained parent lineage");
+        assert!(matches!(
+            error,
+            ColorWriteError::InvalidEstimatedSource {
+                field: "estimator",
+                why: "derived-identity-requires-lineage",
+            }
+        ));
     }
 
     #[test]
@@ -2657,6 +3147,180 @@ mod tests {
         let error = graph.verify_replay().expect_err("tamper must diverge");
         assert_eq!(error.node, id);
         assert!(error.why.contains("provenance hash"));
+    }
+
+    #[test]
+    fn replay_rejects_hash_consistent_estimated_leaf_tampering_only_at_sources() {
+        let clean_source = || {
+            let mut graph = ColorGraph::new();
+            graph
+                .source(
+                    "estimate",
+                    Color::Estimated {
+                        estimator: "rom-v1".to_string(),
+                        dispersion: 0.1,
+                    },
+                )
+                .expect("valid Estimated source");
+            graph
+        };
+
+        let mut rerooted = clean_source();
+        rerooted.nodes[0].color = Color::Estimated {
+            estimator: "derived:v2:composed:6:rom-v1".to_string(),
+            dispersion: 0.1,
+        };
+        rehash_node(&mut rerooted, 0);
+        let error = rerooted
+            .verify_replay()
+            .expect_err("a hash-consistent derived identity still needs its lineage");
+        assert!(error.why.contains("derived-identity-requires-lineage"));
+
+        let mut annotated_source = clean_source();
+        annotated_source.nodes[0].waiver = Some(Waiver {
+            id: "human-note".to_string(),
+            signer: "reviewer".to_string(),
+            reason: "an annotation is not source authority".to_string(),
+        });
+        rehash_node(&mut annotated_source, 0);
+        let error = annotated_source
+            .verify_replay()
+            .expect_err("a hash-consistent orphan source annotation must refuse");
+        assert!(
+            error
+                .why
+                .contains("orphan authority or human-waiver metadata")
+        );
+
+        let mut derived = clean_source();
+        derived
+            .derive(
+                "annotated-derived",
+                &[0],
+                IntervalOp::Hull,
+                None,
+                &BTreeMap::new(),
+                Some(Waiver {
+                    id: "review-note".to_string(),
+                    signer: "reviewer".to_string(),
+                    reason: "human context on a real operation".to_string(),
+                }),
+            )
+            .expect("ordinary derived annotations remain legal");
+        derived
+            .verify_replay()
+            .expect("source-only metadata rules must not reject derived operation nodes");
+
+        derived.nodes[1]
+            .waiver
+            .as_mut()
+            .expect("ordinary annotation")
+            .reason
+            .push('\u{202e}');
+        rehash_node(&mut derived, 1);
+        let error = derived
+            .verify_replay()
+            .expect_err("hash-consistent hostile annotations must fail replay");
+        assert!(error.why.contains("waiver annotation"));
+        assert!(error.why.contains("control-character"));
+    }
+
+    #[test]
+    fn waiver_closure_byte_budget_refuses_before_clone_amplification() {
+        let grant = WaiverGrant {
+            annotation: Waiver {
+                id: "large-authority".to_string(),
+                signer: "fixture-authority".to_string(),
+                reason: "aggregate closure accounting fixture".to_string(),
+            },
+            key_id: "fixture-key".to_string(),
+            scope: WAIVER_SCOPE_COLOR_UPGRADE.to_string(),
+            node_name: "large-node".to_string(),
+            claimed_color: vec![0; MAX_CLAIMED_COLOR_BYTES],
+            parent_hashes: Vec::new(),
+            expires_day: u32::MAX,
+            signature: vec![1],
+        };
+        let mut retained = 0usize;
+        let mut admitted = 0usize;
+        loop {
+            match add_waiver_closure_bytes(&mut retained, &grant) {
+                Ok(()) => admitted += 1,
+                Err(ColorWriteError::ResourceLimitExceeded {
+                    resource: "waiver_closure_bytes",
+                    limit,
+                    actual,
+                }) => {
+                    assert_eq!(limit, MAX_WAIVER_CLOSURE_BYTES);
+                    assert!(actual > limit);
+                    break;
+                }
+                other => panic!("unexpected closure accounting result: {other:?}"),
+            }
+        }
+        assert!(admitted > 0 && admitted < MAX_WAIVER_DEPENDENCIES);
+        assert!(retained <= MAX_WAIVER_CLOSURE_BYTES);
+    }
+
+    #[test]
+    fn disjoint_axis_preflight_precedes_union_cap_in_any_key_order() {
+        let mut aggregate = BTreeMap::new();
+        aggregate.insert("z-shared".to_string(), (0.0, 1.0));
+        for index in 0..(MAX_VALIDITY_AXES - 1) {
+            aggregate.insert(format!("bounded-axis-{index:04}"), (0.0, 1.0));
+        }
+        assert_eq!(aggregate.len(), MAX_VALIDITY_AXES);
+        let regime = ValidityDomain::unconstrained()
+            .with("a-new-axis", 0.0, 1.0)
+            .with("z-shared", 2.0, 3.0);
+        assert!(matches!(
+            merge_fold_validity_axes(&mut aggregate, &regime),
+            Ok(false)
+        ));
+        assert_eq!(aggregate.len(), MAX_VALIDITY_AXES);
+        assert!(!aggregate.contains_key("a-new-axis"));
+    }
+
+    #[test]
+    fn replay_rederives_the_owner_defined_bounded_demotion_identity() {
+        let regime = ValidityDomain::unconstrained().with("re", 1e3, 1e5);
+        let color = Color::Validated {
+            regime: regime.clone(),
+            dataset: "campaign-a".to_string(),
+        };
+        let mut graph = ColorGraph::new();
+        let source = graph
+            .source_with_origin(
+                "anchored",
+                &color,
+                SourceOrigin::Anchoring {
+                    dataset_id: "campaign-a".to_string(),
+                    content_hash: hash_bytes(b"anchoring dataset"),
+                    regime,
+                },
+                &AllowFixtureSource,
+            )
+            .expect("valid anchor");
+        let state = BTreeMap::from([("re".to_string(), 5e2)]);
+        let derived = graph
+            .derive(
+                "outside-regime",
+                &[source],
+                IntervalOp::Hull,
+                None,
+                &state,
+                None,
+            )
+            .expect("derive with automatic demotion");
+        assert!(matches!(
+            graph.node(derived).map(|node| &node.color),
+            Some(Color::Estimated { estimator, dispersion })
+                if estimator == &demotion_estimator_identity("campaign-a", "re")
+                    && dispersion.is_infinite()
+        ));
+        graph
+            .verify_replay()
+            .expect("replay must share fs-evidence's demotion identity grammar");
     }
 
     #[test]
@@ -2703,7 +3367,7 @@ mod tests {
             .expect_err("replay must reject a hash-consistent malformed color");
         assert_eq!(error.node, id);
         assert!(error.why.contains("structurally invalid"));
-        assert!(error.why.contains("bounds must be finite"));
+        assert!(error.why.contains("bounds contain NaN"));
     }
 
     fn historical_waiver_dependency_graph() -> (ColorGraph, u64) {
@@ -2741,7 +3405,7 @@ mod tests {
             },
         );
         let dependencies = graph
-            .inherited_waiver_dependencies(&[source])
+            .inherited_waiver_dependencies(&[source], None)
             .expect("complete historical authority");
         let child = graph.push_node(
             "ordinary-child",

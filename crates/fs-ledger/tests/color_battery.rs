@@ -8,13 +8,15 @@ use fs_evidence::{
     Color, ColorError, ColorRank, IntervalOp, ModelEvidence, NumericalCertificate, ValidityDomain,
     check_regime, color_of, compose, verified_from,
 };
+use fs_ledger::colors::MAX_COLOR_NODE_NAME_BYTES;
 use fs_ledger::{
-    ColorGraph, ColorStructureRejection, ColorWriteError, MAX_COLOR_PARENTS,
+    ColorGraph, ColorStructureRejection, ColorWriteError, MAX_COLOR_PARENTS, MAX_VALIDITY_AXES,
     NoSourceOriginVerifier, NoWaiverVerifier, PolicyDecision, SourceOrigin, SourceOriginRejection,
     SourceOriginRequest, SourceOriginVerifier, WAIVER_SCOPE_COLOR_UPGRADE,
     WAIVER_SCOPE_SOURCE_COLOR, Waiver, WaiverDependency, WaiverGrant, WaiverRejection,
     WaiverVerifier, hash_bytes,
 };
+use std::cell::Cell;
 use std::collections::BTreeMap as KeyMap;
 
 /// TEST-ONLY keyed MAC over FNV — NOT cryptography; it stands in for a
@@ -91,12 +93,194 @@ impl SourceOriginVerifier for PanickingSourceVerifier {
     }
 }
 
+struct CountingSourceVerifier<'a>(&'a Cell<usize>);
+
+impl SourceOriginVerifier for CountingSourceVerifier<'_> {
+    fn verify(&self, _request: &SourceOriginRequest<'_>) -> PolicyDecision {
+        self.0.set(self.0.get() + 1);
+        PolicyDecision::accept(hash_bytes(b"counting source policy"))
+    }
+}
+
 struct PanickingWaiverVerifier;
 
 impl WaiverVerifier for PanickingWaiverVerifier {
     fn verify(&self, _key_id: &str, _payload: &[u8], _signature: &[u8]) -> PolicyDecision {
         panic!("hostile waiver verifier")
     }
+}
+
+#[test]
+fn node_names_fail_before_callbacks_hashing_or_allocation() {
+    let color = Color::Verified { lo: 0.0, hi: 1.0 };
+    let origin = SourceOrigin::Certificate {
+        producer: "fixture-producer".to_string(),
+        certificate_hash: hash_bytes(b"fixture certificate"),
+        certificate: NumericalCertificate::enclosure(0.0, 1.0),
+    };
+    let calls = Cell::new(0);
+    let verifier = CountingSourceVerifier(&calls);
+    let invalid_names = [
+        String::new(),
+        "control\nname".to_string(),
+        "todo".to_string(),
+        "x".repeat(MAX_COLOR_NODE_NAME_BYTES + 1),
+    ];
+    for name in &invalid_names {
+        let mut graph = ColorGraph::new();
+        let error = graph
+            .source_with_origin(name, &color, origin.clone(), &verifier)
+            .expect_err("malformed durable identities must fail closed");
+        assert!(matches!(error, ColorWriteError::InvalidNodeName { .. }));
+        assert!(graph.nodes().is_empty());
+        assert!(graph.rows().is_empty());
+    }
+    assert_eq!(
+        calls.get(),
+        0,
+        "authority callback must not observe invalid names"
+    );
+
+    let mut graph = ColorGraph::new();
+    assert!(matches!(
+        graph.source(
+            "?",
+            Color::Estimated {
+                estimator: "fixture-estimator".to_string(),
+                dispersion: 1.0,
+            },
+        ),
+        Err(ColorWriteError::InvalidNodeName { .. })
+    ));
+    assert!(matches!(
+        graph.derive(
+            "bad name",
+            &[u64::MAX],
+            IntervalOp::Hull,
+            None,
+            &std::collections::BTreeMap::new(),
+            None,
+        ),
+        Err(ColorWriteError::InvalidNodeName { .. })
+    ));
+
+    let dummy_grant = WaiverGrant {
+        annotation: Waiver {
+            id: "fixture-waiver".to_string(),
+            signer: "fixture-signer".to_string(),
+            reason: "fixture authorization is never reached".to_string(),
+        },
+        key_id: "fixture-key".to_string(),
+        scope: WAIVER_SCOPE_SOURCE_COLOR.to_string(),
+        node_name: "valid-node".to_string(),
+        claimed_color: color.canonical_bytes(),
+        parent_hashes: Vec::new(),
+        expires_day: 10,
+        signature: vec![1],
+    };
+    assert!(matches!(
+        graph.source_waived(
+            "placeholder",
+            color.clone(),
+            dummy_grant.clone(),
+            &PanickingWaiverVerifier,
+            0,
+        ),
+        Err(ColorWriteError::InvalidNodeName { .. })
+    ));
+    assert!(matches!(
+        graph.derive_waived(
+            "unknown",
+            &[u64::MAX],
+            IntervalOp::Hull,
+            color,
+            &std::collections::BTreeMap::new(),
+            dummy_grant,
+            &PanickingWaiverVerifier,
+            0,
+        ),
+        Err(ColorWriteError::InvalidNodeName { .. })
+    ));
+}
+
+#[test]
+fn ordinary_waiver_annotations_are_bounded_and_audit_safe() {
+    let invalid = [
+        Waiver {
+            id: "todo".to_string(),
+            signer: "reviewer".to_string(),
+            reason: "valid rationale".to_string(),
+        },
+        Waiver {
+            id: "review-note".to_string(),
+            signer: "reviewer\nsubstitute".to_string(),
+            reason: "valid rationale".to_string(),
+        },
+        Waiver {
+            id: "review-note".to_string(),
+            signer: "reviewer".to_string(),
+            reason: "x".repeat(4_097),
+        },
+        Waiver {
+            id: "review-note".to_string(),
+            signer: "reviewer".to_string(),
+            reason: "visually reordered \u{202e}audit text".to_string(),
+        },
+    ];
+    for annotation in invalid {
+        let mut graph = ColorGraph::new();
+        let parent = graph
+            .source(
+                "estimate",
+                Color::Estimated {
+                    estimator: "rom-v1".to_string(),
+                    dispersion: 0.1,
+                },
+            )
+            .expect("source");
+        let node_count = graph.nodes().len();
+        let row_count = graph.rows().len();
+        assert!(matches!(
+            graph.derive(
+                "annotated",
+                &[parent],
+                IntervalOp::Hull,
+                None,
+                &BTreeMap::new(),
+                Some(annotation),
+            ),
+            Err(ColorWriteError::InvalidWaiverAnnotation { .. })
+        ));
+        assert_eq!(graph.nodes().len(), node_count);
+        assert_eq!(graph.rows().len(), row_count);
+        graph.verify_replay().expect("accepted prefix replays");
+    }
+
+    let mut graph = ColorGraph::new();
+    let parent = graph
+        .source(
+            "estimate",
+            Color::Estimated {
+                estimator: "rom-v1".to_string(),
+                dispersion: 0.1,
+            },
+        )
+        .expect("source");
+    graph
+        .derive(
+            "annotated",
+            &[parent],
+            IntervalOp::Hull,
+            None,
+            &BTreeMap::new(),
+            Some(Waiver {
+                id: "review-note".to_string(),
+                signer: "reviewer".to_string(),
+                reason: "quoted \"context\" and a \\path remain escaped".to_string(),
+            }),
+        )
+        .expect("bounded annotation");
+    graph.verify_replay().expect("bounded annotation replays");
 }
 
 fn admitted_source(
@@ -777,8 +961,8 @@ fn col_004_waiver_in_provenance() {
 }
 
 /// col-005 — the fs-evidence bridge: existing receipts color honestly
-/// (enclosure -> verified; carded model with bounded validity ->
-/// validated with THAT regime; estimates -> estimated).
+/// (model-free enclosure -> verified; plain model evidence -> estimated;
+/// estimates -> estimated).
 #[test]
 fn col_005_evidence_bridge() {
     let verified = color_of(
@@ -788,7 +972,7 @@ fn col_005_evidence_bridge() {
     // Bounds pass through by BITS (no arithmetic on this path).
     let v_ok = matches!(verified, Color::Verified { lo, hi }
         if lo.to_bits() == 0.9f64.to_bits() && hi.to_bits() == 1.1f64.to_bits());
-    let validated = color_of(
+    let modeled = color_of(
         &NumericalCertificate::estimate(0.0, 1.0),
         &ModelEvidence {
             cards: vec!["k-epsilon".to_string()],
@@ -798,8 +982,8 @@ fn col_005_evidence_bridge() {
             in_domain: true,
         },
     );
-    let val_ok = matches!(&validated, Color::Validated { regime, dataset }
-        if dataset == "k-epsilon" && regime.bounds().contains_key("reynolds"));
+    let model_ok = matches!(&modeled, Color::Estimated { estimator, dispersion }
+        if estimator == "k-epsilon" && (*dispersion - 1.03).abs() < 1e-12);
     let estimated = color_of(
         &NumericalCertificate::estimate(0.0, 1.0),
         &ModelEvidence::none(),
@@ -807,10 +991,10 @@ fn col_005_evidence_bridge() {
     let est_ok = matches!(estimated, Color::Estimated { .. });
     verdict(
         "col-005",
-        v_ok && val_ok && est_ok,
+        v_ok && model_ok && est_ok,
         "existing fs-evidence receipts color honestly: enclosures become verified \
-         with their bounds, carded models with bounded validity become validated \
-         with THAT regime, uncarded estimates stay estimated",
+         with their bounds, plain carded model evidence remains estimated until an \
+         authenticated anchor exists, and uncarded estimates stay estimated",
     );
 }
 
@@ -1148,7 +1332,10 @@ fn col_011_serialized_grant_reverifies_and_tamper_refuses() {
             .verify(serialized_key, &serialized_payload, &serialized_signature)
             .accepted()
     );
-    assert!(row.contains("\"schema_version\":5"));
+    assert!(row.contains("\"schema_version\":7"));
+    assert!(row.contains("\"color_algebra_version\":2"));
+    assert!(row.contains("\"color_canonical_hex\":"));
+    assert!(row.contains("\"origin_canonical_hex\":"));
     assert!(row.contains("\"payload_version\":3"));
     assert!(row.contains("\"operation\":\"add\""));
     assert_eq!(
@@ -1189,7 +1376,7 @@ fn col_011_serialized_grant_reverifies_and_tamper_refuses() {
     verdict(
         "col-011",
         true,
-        "schema-v2 rows persist the v3 payload, signature, node, canonical color, \
+        "schema-v7 rows persist the v3 payload, signature, node, canonical color, \
          operation, and parent hashes; replay verifies and tampering refuses",
     );
 }
@@ -1582,7 +1769,9 @@ fn col_013_source_waiver_is_separate_and_replayable() {
             .expect("source signature hex");
     assert_eq!(payload, grant.signing_payload_source());
     assert!(row.contains("\"payload_version\":4"));
-    assert!(row.contains("\"schema_version\":5"));
+    assert!(row.contains("\"schema_version\":7"));
+    assert!(row.contains("\"color_algebra_version\":2"));
+    assert!(row.contains("\"color_canonical_hex\":"));
     assert!(
         verifier
             .verify("source-key", &payload, &signature)
@@ -1904,9 +2093,8 @@ fn col_015_waivers_cannot_authorize_malformed_colors() {
     );
 }
 
-/// col-015b — ordinary composition cannot append a color that its own replay
-/// validator rejects, and public 64-bit parent ids never truncate into a
-/// platform-sized index.
+/// col-015b — arithmetic overflow remains a sound (possibly vacuous) enclosure,
+/// and public 64-bit parent ids never truncate into a platform-sized index.
 #[test]
 fn col_015b_overflow_and_wide_parent_ids_fail_before_append() {
     let mut graph = ColorGraph::new();
@@ -1926,23 +2114,24 @@ fn col_015b_overflow_and_wide_parent_ids_fail_before_append() {
             hi: f64::MAX,
         },
     );
-    let node_count = graph.nodes().len();
-    let row_count = graph.rows().len();
-    assert!(matches!(
-        graph.derive(
+    let overflowed = graph
+        .derive(
             "overflowed-sum",
             &[left, right],
             IntervalOp::Add,
             None,
             &BTreeMap::new(),
             None,
-        ),
-        Err(ColorWriteError::InvalidColor {
-            rejection: ColorStructureRejection::InvalidVerifiedInterval { .. }
-        })
+        )
+        .expect("overflow widens to an ordered, replayable enclosure");
+    assert!(matches!(
+        graph
+            .node(overflowed)
+            .expect("derived node exists")
+            .declared_color_unverified(),
+        Color::Verified { lo, hi }
+            if lo.is_finite() && hi.is_infinite() && hi.is_sign_positive()
     ));
-    assert_eq!(graph.nodes().len(), node_count);
-    assert_eq!(graph.rows().len(), row_count);
     graph.verify_replay().expect("valid prefix still replays");
 
     assert!(matches!(
@@ -2052,6 +2241,233 @@ fn col_015c_source_artifact_and_policy_are_hash_bound() {
         })
     ));
     assert!(panicked.nodes().is_empty() && panicked.rows().is_empty());
+}
+
+/// col-015d - a typed source cannot spend authority work on a payload that the
+/// graph cannot later replay. The validity-axis bound is checked before the
+/// injected verifier, and the accepted prefix still passes replay.
+#[test]
+fn col_015d_typed_source_structure_precedes_authority() {
+    let mut oversized_regime = ValidityDomain::unconstrained();
+    for axis in 0..=MAX_VALIDITY_AXES {
+        oversized_regime = oversized_regime.with(format!("axis-{axis}"), 0.0, 1.0);
+    }
+    let oversized = Color::Validated {
+        regime: oversized_regime.clone(),
+        dataset: "oversized-campaign".to_string(),
+    };
+    let calls = Cell::new(0);
+    let verifier = CountingSourceVerifier(&calls);
+    let mut graph = ColorGraph::new();
+    let refused = graph.source_with_origin(
+        "oversized-source",
+        &oversized,
+        SourceOrigin::Anchoring {
+            dataset_id: "oversized-campaign".to_string(),
+            content_hash: hash_bytes(b"oversized campaign artifact"),
+            regime: oversized_regime.clone(),
+        },
+        &verifier,
+    );
+    assert!(matches!(
+        refused,
+        Err(ColorWriteError::InvalidColor {
+            rejection: ColorStructureRejection::InvalidValidatedRegime {
+                reason: "validity regime exceeds the axis limit",
+                ..
+            }
+        })
+    ));
+    assert_eq!(
+        calls.get(),
+        0,
+        "malformed sources must not invoke authority"
+    );
+    assert!(graph.nodes().is_empty() && graph.rows().is_empty());
+
+    let small_regime = ValidityDomain::unconstrained().with("re", 1e3, 1e5);
+    let small_color = Color::Validated {
+        regime: small_regime,
+        dataset: "oversized-campaign".to_string(),
+    };
+    assert!(matches!(
+        graph.source_with_origin(
+            "oversized-origin",
+            &small_color,
+            SourceOrigin::Anchoring {
+                dataset_id: "oversized-campaign".to_string(),
+                content_hash: hash_bytes(b"oversized origin artifact"),
+                regime: oversized_regime.clone(),
+            },
+            &verifier,
+        ),
+        Err(ColorWriteError::InvalidColor {
+            rejection: ColorStructureRejection::InvalidValidatedRegime {
+                reason: "validity regime exceeds the axis limit",
+                ..
+            }
+        })
+    ));
+    assert_eq!(calls.get(), 0);
+    assert!(matches!(
+        graph.derive(
+            "oversized-claim",
+            &[u64::MAX],
+            IntervalOp::Hull,
+            Some(oversized),
+            &BTreeMap::new(),
+            None,
+        ),
+        Err(ColorWriteError::InvalidColor {
+            rejection: ColorStructureRejection::InvalidValidatedRegime {
+                reason: "validity regime exceeds the axis limit",
+                ..
+            }
+        })
+    ));
+    assert!(graph.nodes().is_empty() && graph.rows().is_empty());
+
+    graph
+        .source(
+            "accepted-estimate",
+            Color::Estimated {
+                estimator: "rom-v1".to_string(),
+                dispersion: 0.1,
+            },
+        )
+        .expect("valid Estimated source");
+    let valid_regime = ValidityDomain::unconstrained().with("re", 1e3, 1e5);
+    let valid_color = Color::Validated {
+        regime: valid_regime.clone(),
+        dataset: "campaign-a".to_string(),
+    };
+    admitted_source(
+        &mut graph,
+        "accepted-anchor",
+        &valid_color,
+        SourceOrigin::Anchoring {
+            dataset_id: "campaign-a".to_string(),
+            content_hash: hash_bytes(b"campaign-a artifact"),
+            regime: valid_regime,
+        },
+    )
+    .expect("valid typed source");
+    graph
+        .verify_replay()
+        .expect("every accepted source in the prefix replays");
+}
+
+#[test]
+fn aggregate_validity_axes_refuse_before_oversized_fold() {
+    let mut graph = ColorGraph::new();
+    let mut parents = Vec::with_capacity(MAX_COLOR_PARENTS);
+    let mut state = BTreeMap::from([("shared-axis".to_string(), 0.5)]);
+    for index in 0..MAX_COLOR_PARENTS {
+        let axis = format!("independent-axis-{index}");
+        let dataset = format!("axis-campaign-{index}");
+        state.insert(axis.clone(), 0.5);
+        parents.push(write_source(
+            &mut graph,
+            &format!("axis-source-{index}"),
+            Color::Validated {
+                regime: ValidityDomain::unconstrained()
+                    .with("shared-axis", 0.0, 1.0)
+                    .with(axis, 0.0, 1.0),
+                dataset,
+            },
+        ));
+    }
+    let node_count = graph.nodes().len();
+    let row_count = graph.rows().len();
+    let error = graph
+        .derive(
+            "oversized-derived-regime",
+            &parents,
+            IntervalOp::Hull,
+            None,
+            &state,
+            None,
+        )
+        .expect_err("the 1,025th distinct effective axis must refuse before composition");
+    assert!(matches!(
+        error,
+        ColorWriteError::ResourceLimitExceeded {
+            resource: "derived_validity_axes",
+            limit: MAX_VALIDITY_AXES,
+            actual,
+        } if actual == MAX_VALIDITY_AXES + 1
+    ));
+    assert_eq!(graph.nodes().len(), node_count);
+    assert_eq!(graph.rows().len(), row_count);
+    graph
+        .verify_replay()
+        .expect("the accepted 1,024-source prefix remains replayable");
+
+    state.remove("independent-axis-0");
+    let demoted = graph
+        .derive(
+            "demotion-absorbs-wide-regime",
+            &parents,
+            IntervalOp::Hull,
+            None,
+            &state,
+            None,
+        )
+        .expect("one regime exit makes the aggregate Estimated before an axis union is needed");
+    assert!(matches!(
+        graph
+            .node(demoted)
+            .expect("demoted aggregate")
+            .declared_color_unverified(),
+        Color::Estimated { dispersion, .. } if dispersion.is_infinite()
+    ));
+    graph
+        .verify_replay()
+        .expect("the admitted demoted aggregate remains replayable");
+}
+
+/// col-015e - fail-closed diagnostics emitted by the fs-evidence bridge use a
+/// reserved derived identity. Neither source door may detach that diagnostic
+/// from the model-card lineage that produced it.
+#[test]
+fn col_015e_malformed_model_bridge_output_cannot_be_rerooted() {
+    let malformed_model = ModelEvidence {
+        cards: vec!["derived:v2:forged-model-card".to_string()],
+        ..ModelEvidence::none()
+    };
+    let bridged = color_of(&NumericalCertificate::enclosure(0.0, 1.0), &malformed_model);
+    let Color::Estimated { estimator, .. } = &bridged else {
+        panic!("malformed model-card evidence must fail closed as Estimated")
+    };
+    assert!(estimator.starts_with("derived:v2:invalid-card-"));
+
+    let mut graph = ColorGraph::new();
+    assert!(matches!(
+        graph.source("detached-diagnostic", bridged.clone()),
+        Err(ColorWriteError::InvalidEstimatedSource {
+            field: "estimator",
+            why: "derived-identity-requires-lineage"
+        })
+    ));
+    assert!(matches!(
+        graph.source_with_origin(
+            "detached-diagnostic",
+            &bridged,
+            SourceOrigin::Certificate {
+                producer: "fs-evidence/bridge".to_string(),
+                certificate_hash: hash_bytes(b"irrelevant certificate"),
+                certificate: NumericalCertificate::enclosure(0.0, 1.0),
+            },
+            &PanickingSourceVerifier,
+        ),
+        Err(ColorWriteError::SourceOriginRefused {
+            rejection: SourceOriginRejection::EstimatedNeedsNoOrigin
+        })
+    ));
+    assert!(graph.nodes().is_empty() && graph.rows().is_empty());
+    graph
+        .verify_replay()
+        .expect("the refused prefix remains replayable");
 }
 
 /// col-016 — a waiver stays visible through ordinary and waived descendants.
@@ -2241,7 +2657,9 @@ fn col_016_waiver_dependencies_propagate_transitively() {
         .iter()
         .find(|row| row.contains("\"name\":\"ordinary-grandchild\""))
         .expect("final color row");
-    assert!(row.contains("\"schema_version\":5"));
+    assert!(row.contains("\"schema_version\":7"));
+    assert!(row.contains("\"color_algebra_version\":2"));
+    assert!(row.contains("\"color_canonical_hex\":"));
     assert!(row.contains("\"waiver_dependencies\":["));
     assert!(row.contains("\"admission_day\":200"));
     assert!(row.contains(&policy.to_hex()));
@@ -2398,23 +2816,22 @@ fn col_017_waiver_shape_taint_and_resource_limits_fail_closed() {
 /// path, the same parser that enforces persisted payloads.
 #[test]
 fn col_007_color_rows_are_strict_json_under_hostile_metadata() {
-    let build = || -> Vec<String> {
-        let hostile = "meta\"\\\n\r\t\u{0007}";
+    let build = |state_value: f64| -> Vec<String> {
         let axis = "re-json".to_string();
         let dataset = "anchors-json".to_string();
         let mut graph = ColorGraph::new();
         let validated = write_source(
             &mut graph,
-            &format!("validated-{hostile}"),
+            "validated-hostile-metadata-fixture",
             Color::Validated {
                 regime: ValidityDomain::unconstrained().with(&axis, 1.0, 10.0),
                 dataset,
             },
         );
-        let state: BTreeMap<String, f64> = [(axis, f64::NAN)].into();
+        let state: BTreeMap<String, f64> = [(axis, state_value)].into();
         graph
             .derive(
-                &format!("demoted-{hostile}"),
+                "demoted-hostile-metadata-fixture",
                 &[validated],
                 IntervalOp::Hull,
                 None,
@@ -2425,34 +2842,34 @@ fn col_007_color_rows_are_strict_json_under_hostile_metadata() {
 
         let estimated = write_source(
             &mut graph,
-            &format!("estimated-{hostile}"),
+            "estimated-hostile-metadata-fixture",
             Color::Estimated {
                 estimator: "surrogate-json".to_string(),
                 dispersion: f64::INFINITY,
             },
         );
-        // Hostile ANNOTATION strings must render as strict JSON; the
-        // claim stays within the derivation cap (annotations no longer
-        // authorize upgrades — qmao.1.1).
+        // Audit annotations reject control/bidi text at admission, while legal
+        // quotes and backslashes still exercise deterministic JSON escaping.
         graph
             .derive(
-                &format!("waived-{hostile}"),
+                "annotated-hostile-metadata-fixture",
                 &[estimated],
                 IntervalOp::Hull,
                 None,
                 &BTreeMap::new(),
                 Some(Waiver {
-                    id: format!("id-{hostile}"),
-                    signer: format!("signer-{hostile}"),
-                    reason: format!("reason-{hostile}"),
+                    id: "json-review".to_string(),
+                    signer: "reviewer".to_string(),
+                    reason: "quoted \"context\" and a \\path".to_string(),
                 }),
             )
             .expect("annotated write");
         graph.rows().to_vec()
     };
 
-    let rows = build();
-    let deterministic = rows == build();
+    let rows = build(f64::NAN);
+    let deterministic = rows == build(f64::NAN);
+    let alternate_nan_rows = build(f64::from_bits(0x7ff8_0000_0000_0001));
     let ledger = fs_ledger::Ledger::open(":memory:").expect("open validation ledger");
     let mut parser_accepts_every_row = true;
     for (index, row) in rows.iter().enumerate() {
@@ -2468,19 +2885,28 @@ fn col_007_color_rows_are_strict_json_under_hostile_metadata() {
     let no_raw_controls = rows.iter().all(|row| !row.chars().any(char::is_control));
     let sentinels_and_escapes_present = rows.iter().any(|row| row.contains("non-finite:NaN"))
         && rows.iter().any(|row| row.contains("non-finite:inf"))
+        && rows.iter().any(|row| {
+            row.contains("\"event\":\"demotion\",\"schema_version\":1")
+                && row.contains("\"value_bits\":\"7ff8000000000000\"")
+        })
         && rows.iter().any(|row| row.contains(r#"\""#))
-        && rows.iter().any(|row| row.contains(r"\\"))
-        && rows.iter().any(|row| row.contains(r"\n"))
-        && rows.iter().any(|row| row.contains(r"\u0007"));
+        && rows.iter().any(|row| row.contains(r"\\"));
+    let nan_payloads_remain_distinct = alternate_nan_rows.iter().any(|row| {
+        row.contains("\"event\":\"demotion\",\"schema_version\":1")
+            && row.contains("\"value\":\"non-finite:NaN\"")
+            && row.contains("\"value_bits\":\"7ff8000000000001\"")
+    }) && rows != alternate_nan_rows;
 
     verdict(
         "col-007",
         deterministic
             && parser_accepts_every_row
             && no_raw_controls
-            && sentinels_and_escapes_present,
+            && sentinels_and_escapes_present
+            && nan_payloads_remain_distinct,
         "SQLite json_valid accepts every deterministic color/demotion/waiver row; \
-         NaN and infinity are tagged strings and hostile metadata is escaped",
+         non-finite displays are tagged, distinct NaN payload bits remain exact, and admitted \
+         audit metadata is escaped",
     );
 }
 
