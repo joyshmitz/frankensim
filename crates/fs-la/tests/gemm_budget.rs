@@ -6,7 +6,6 @@
 use fs_exec::{CancelGate, PoolConfig, TilePool};
 use fs_la::gemm_f64_parallel_with_pool_budgeted;
 use fs_la::{GemmMemoryEnvelope, GemmRunError, gemm_f64_parallel_with_pool};
-use fs_substrate::affinity::CcdTopology;
 
 fn fixtures(m: usize, n: usize, k: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     let a: Vec<f64> = (0..m * k).map(|i| ((i as f64) * 0.7).sin()).collect();
