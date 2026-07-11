@@ -11,6 +11,7 @@ description = "Physics-VCS bisect (addendum Proposal 10): git-bisect for a wrong
 layer = "L6"
 
 [dependencies]
+fs-blake3 = { path = "../fs-blake3" }
 
 [dev-dependencies]
 

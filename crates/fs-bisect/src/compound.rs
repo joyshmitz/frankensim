@@ -9,14 +9,15 @@
 //! 2. **Minimize** it ([`minimize`]): deterministic greedy descent through
 //!    [`Shrink`] candidates, keeping the invariant violated at every step.
 //!    A non-failing input is a typed refusal, never a silent no-op.
-//! 3. **Probe the neighborhood** ([`probe_neighborhood`]): bounded, labeled
-//!    perturbations around the minimum expose whether the failure is a
-//!    point or a region.
+//! 3. **Probe the neighborhood** ([`probe_neighborhood`]): bounded, uniquely
+//!    labeled perturbations around the minimum expose whether the failure is
+//!    a point or a region.
 //! 4. **Land a family** ([`RegressionFamily`]): the minimum plus its failing
 //!    neighbors, with tracking-issue references and a recommended admission
 //!    rule when the class is general.
 //! 5. **Replay** ([`RegressionFamily::replay`]): the family is
-//!    content-addressed ([`Canon`] bytes → FNV-64) and re-executable — a
+//!    content-addressed ([`Canon`] bytes → domain-separated BLAKE3) and
+//!    re-executable — a
 //!    member that stops failing is REPORTED, because a regression family
 //!    whose members silently pass is stale evidence.
 //!
@@ -33,11 +34,47 @@
 
 /// Semantic version of the canon encoding + content-hash assembly
 /// (golden-couplings surface `fs-bisect:compound-canon`). Changing the
-/// [`Canon`] byte layout, the tag values, the FNV constants, or the
+/// [`Canon`] byte layout, the tag values, the hash domain, or the
 /// field order in [`RegressionFamily::content_hash`] changes every
 /// family hash — bump this and deliberately re-freeze the dependents
 /// listed in golden-couplings.json (docs/GOLDEN_POLICY.md).
-pub const COMPOUND_CANON_VERSION: u32 = 1;
+pub const COMPOUND_CANON_VERSION: u32 = 2;
+
+/// Domain separating regression-family identities from every other BLAKE3 use.
+pub const COMPOUND_FAMILY_HASH_DOMAIN: &str = "org.frankensim.fs-bisect.compound-family.v2";
+
+/// Maximum accepted minimizer descent steps.
+pub const MAX_MINIMIZE_STEPS: usize = 65_536;
+/// Maximum shrink candidates returned for one descent step.
+pub const MAX_SHRINK_CANDIDATES_PER_STEP: usize = 4_096;
+/// Maximum predicate evaluations across one minimization.
+pub const MAX_MINIMIZE_EVALUATIONS: usize = 1_000_000;
+/// Maximum neighboring inputs evaluated and retained for one family.
+pub const MAX_NEIGHBOR_PROBES: usize = 4_096;
+/// Maximum tracking references attached to one regression family.
+pub const MAX_TRACKING_REFS: usize = 64;
+/// Maximum bytes in a case/family/member/tracking identifier.
+pub const MAX_IDENTIFIER_BYTES: usize = 256;
+/// Maximum bytes in a contract or admission-rule description.
+pub const MAX_DESCRIPTION_BYTES: usize = 16 * 1024;
+/// Maximum canonical payload bytes retained for one regression member.
+pub const MAX_CANONICAL_MEMBER_BYTES: usize = 1024 * 1024;
+/// Maximum canonical payload bytes retained across one family.
+pub const MAX_CANONICAL_FAMILY_BYTES: usize = 16 * 1024 * 1024;
+
+const RESERVED_INVARIANT_NAMES: [&str; 7] = [
+    "build-mode-determinism",
+    "cross-isa-determinism",
+    "golden-drift",
+    "enclosure-violation",
+    "certificate-forgery",
+    "conservation-violation",
+    "adjoint-inconsistency",
+];
+
+fn visible_identifier(value: &str) -> bool {
+    value.bytes().all(|byte| (b'!'..=b'~').contains(&byte))
+}
 
 /// The invariant a failure violated — the classification axis that decides
 /// which sibling surfaces the lesson propagates to.
@@ -77,6 +114,22 @@ impl InvariantClass {
             InvariantClass::Other(s) => s,
         }
     }
+
+    fn validate(&self) -> Result<(), CompoundError> {
+        let Self::Other(name) = self else {
+            return Ok(());
+        };
+        validate_identifier("invariant", name)?;
+        if RESERVED_INVARIANT_NAMES.contains(&name.as_str()) {
+            return Err(CompoundError::InvalidField {
+                field: "invariant",
+                problem: format!(
+                    "custom invariant name {name:?} is reserved by a built-in variant"
+                ),
+            });
+        }
+        Ok(())
+    }
 }
 
 /// A captured failure: everything needed to reproduce it deterministically.
@@ -96,6 +149,48 @@ pub struct FailureCase<I> {
     pub detail: String,
 }
 
+/// Immutable provenance bound into a regression family's identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FamilyProvenance {
+    seed: u64,
+    contract: String,
+    detail: String,
+}
+
+impl FamilyProvenance {
+    /// Construct bounded provenance for one captured failure.
+    ///
+    /// # Errors
+    /// Empty or oversized contract/detail descriptions are refused.
+    pub fn new(seed: u64, contract: String, detail: String) -> Result<Self, CompoundError> {
+        validate_description("contract", &contract)?;
+        validate_description("detail", &detail)?;
+        Ok(Self {
+            seed,
+            contract,
+            detail,
+        })
+    }
+
+    /// Reproduction seed (`0` when the member was explicit).
+    #[must_use]
+    pub const fn seed(&self) -> u64 {
+        self.seed
+    }
+
+    /// Contract surface that was violated.
+    #[must_use]
+    pub fn contract(&self) -> &str {
+        &self.contract
+    }
+
+    /// Captured expected/observed diagnosis.
+    #[must_use]
+    pub fn detail(&self) -> &str {
+        &self.detail
+    }
+}
+
 /// Typed refusals — the workflow never silently does nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompoundError {
@@ -105,6 +200,148 @@ pub enum CompoundError {
         /// The case id that was expected to fail.
         id: String,
     },
+    /// A caller-controlled field violates the canonical family envelope.
+    InvalidField {
+        /// Stable field name.
+        field: &'static str,
+        /// Actionable diagnosis.
+        problem: String,
+    },
+    /// A deterministic work or collection bound was exceeded.
+    LimitExceeded {
+        /// Bounded resource.
+        resource: &'static str,
+        /// Requested or observed value.
+        requested: usize,
+        /// Admitted maximum.
+        max: usize,
+    },
+    /// Two labels or tracking references would make the manifest ambiguous.
+    DuplicateIdentity {
+        /// Collection containing the duplicate.
+        field: &'static str,
+        /// Repeated value.
+        value: String,
+    },
+}
+
+impl core::fmt::Display for CompoundError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NotFailing { id } => {
+                write!(f, "captured case {id:?} does not fail its predicate")
+            }
+            Self::InvalidField { field, problem } => {
+                write!(f, "invalid failure-family field {field}: {problem}")
+            }
+            Self::LimitExceeded {
+                resource,
+                requested,
+                max,
+            } => write!(
+                f,
+                "failure compounding {resource} request {requested} exceeds limit {max}"
+            ),
+            Self::DuplicateIdentity { field, value } => {
+                write!(f, "duplicate {field} identity {value:?}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for CompoundError {}
+
+fn validate_identifier(field: &'static str, value: &str) -> Result<(), CompoundError> {
+    if value.is_empty() {
+        return Err(CompoundError::InvalidField {
+            field,
+            problem: "must not be empty".to_string(),
+        });
+    }
+    if value.len() > MAX_IDENTIFIER_BYTES {
+        return Err(CompoundError::LimitExceeded {
+            resource: field,
+            requested: value.len(),
+            max: MAX_IDENTIFIER_BYTES,
+        });
+    }
+    if !visible_identifier(value) {
+        return Err(CompoundError::InvalidField {
+            field,
+            problem: "must contain visible ASCII bytes only".to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_family_name(value: &str) -> Result<(), CompoundError> {
+    validate_identifier("case_id", value)?;
+    let mut bytes = value.bytes();
+    let first = bytes.next().expect("validated non-empty");
+    let last = value.as_bytes()[value.len() - 1];
+    let alphanumeric = |byte: u8| byte.is_ascii_lowercase() || byte.is_ascii_digit();
+    if !alphanumeric(first)
+        || !alphanumeric(last)
+        || !value.bytes().all(|byte| alphanumeric(byte) || byte == b'-')
+    {
+        return Err(CompoundError::InvalidField {
+            field: "case_id",
+            problem: "must be lowercase kebab-case (ASCII letters/digits separated by '-')"
+                .to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_description(field: &'static str, value: &str) -> Result<(), CompoundError> {
+    if value.trim().is_empty() {
+        return Err(CompoundError::InvalidField {
+            field,
+            problem: "must not be empty or whitespace-only".to_string(),
+        });
+    }
+    if value.len() > MAX_DESCRIPTION_BYTES {
+        return Err(CompoundError::LimitExceeded {
+            resource: field,
+            requested: value.len(),
+            max: MAX_DESCRIPTION_BYTES,
+        });
+    }
+    Ok(())
+}
+
+fn validate_tracking_refs(tracking: &[String]) -> Result<(), CompoundError> {
+    if tracking.is_empty() {
+        return Err(CompoundError::InvalidField {
+            field: "tracking",
+            problem: "at least one Beads or issue reference is required".to_string(),
+        });
+    }
+    if tracking.len() > MAX_TRACKING_REFS {
+        return Err(CompoundError::LimitExceeded {
+            resource: "tracking_refs",
+            requested: tracking.len(),
+            max: MAX_TRACKING_REFS,
+        });
+    }
+    let mut tracking_refs = std::collections::BTreeSet::new();
+    for reference in tracking {
+        validate_identifier("tracking_ref", reference)?;
+        if !tracking_refs.insert(reference.as_str()) {
+            return Err(CompoundError::DuplicateIdentity {
+                field: "tracking_ref",
+                value: reference.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_admission_rule(rule: Option<&str>) -> Result<(), CompoundError> {
+    if let Some(rule) = rule {
+        validate_description("recommended_admission", rule)?;
+    }
+    Ok(())
 }
 
 /// Deterministic shrinking: candidates strictly "smaller" than `self`, in a
@@ -140,6 +377,14 @@ pub fn minimize<I: Shrink>(
     fails: &dyn Fn(&I) -> bool,
     max_steps: usize,
 ) -> Result<MinimizeReport<I>, CompoundError> {
+    validate_family_name(id)?;
+    if max_steps > MAX_MINIMIZE_STEPS {
+        return Err(CompoundError::LimitExceeded {
+            resource: "minimize_steps",
+            requested: max_steps,
+            max: MAX_MINIMIZE_STEPS,
+        });
+    }
     if !fails(input) {
         return Err(CompoundError::NotFailing { id: id.to_string() });
     }
@@ -151,8 +396,27 @@ pub fn minimize<I: Shrink>(
         if steps == max_steps {
             break;
         }
-        for cand in current.shrink_candidates() {
-            tried += 1;
+        let candidates = current.shrink_candidates();
+        if candidates.len() > MAX_SHRINK_CANDIDATES_PER_STEP {
+            return Err(CompoundError::LimitExceeded {
+                resource: "shrink_candidates_per_step",
+                requested: candidates.len(),
+                max: MAX_SHRINK_CANDIDATES_PER_STEP,
+            });
+        }
+        for cand in candidates {
+            if tried == MAX_MINIMIZE_EVALUATIONS {
+                return Err(CompoundError::LimitExceeded {
+                    resource: "minimize_evaluations",
+                    requested: tried.saturating_add(1),
+                    max: MAX_MINIMIZE_EVALUATIONS,
+                });
+            }
+            tried = tried.checked_add(1).ok_or(CompoundError::LimitExceeded {
+                resource: "minimize_evaluations",
+                requested: usize::MAX,
+                max: MAX_MINIMIZE_EVALUATIONS,
+            })?;
             if fails(&cand) {
                 current = cand;
                 steps += 1;
@@ -189,12 +453,30 @@ pub struct NeighborhoodReport {
 }
 
 /// Evaluate a bounded, labeled set of neighbors of a minimized failure.
-/// The caller supplies the neighbors, so the probe is bounded by
-/// construction and its order is the caller's order.
+/// The caller supplies the neighbors; this function validates the hard count
+/// cap and unique canonical labels before making any predicate call. Its order
+/// is the caller's order.
 pub fn probe_neighborhood<I>(
     neighbors: &[(String, I)],
     fails: &dyn Fn(&I) -> bool,
-) -> NeighborhoodReport {
+) -> Result<NeighborhoodReport, CompoundError> {
+    if neighbors.len() > MAX_NEIGHBOR_PROBES {
+        return Err(CompoundError::LimitExceeded {
+            resource: "neighbor_probes",
+            requested: neighbors.len(),
+            max: MAX_NEIGHBOR_PROBES,
+        });
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for (label, _) in neighbors {
+        validate_identifier("neighbor_label", label)?;
+        if !seen.insert(label.as_str()) {
+            return Err(CompoundError::DuplicateIdentity {
+                field: "neighbor_label",
+                value: label.clone(),
+            });
+        }
+    }
     let probes: Vec<NeighborProbe> = neighbors
         .iter()
         .map(|(label, input)| NeighborProbe {
@@ -203,7 +485,7 @@ pub fn probe_neighborhood<I>(
         })
         .collect();
     let failing = probes.iter().filter(|p| p.fails).count();
-    NeighborhoodReport { probes, failing }
+    Ok(NeighborhoodReport { probes, failing })
 }
 
 /// Canonical bytes for content addressing. Tagged and length-prefixed so
@@ -217,6 +499,12 @@ pub trait Canon {
 impl Canon for u64 {
     fn canon(&self, out: &mut Vec<u8>) {
         out.push(1);
+        out.extend_from_slice(&self.to_le_bytes());
+    }
+}
+impl Canon for u32 {
+    fn canon(&self, out: &mut Vec<u8>) {
+        out.push(11);
         out.extend_from_slice(&self.to_le_bytes());
     }
 }
@@ -273,15 +561,22 @@ impl<A: Canon, B: Canon> Canon for (A, B) {
     }
 }
 
-/// FNV-1a 64 over canonical bytes — the house content-hash idiom.
-#[must_use]
-pub fn fnv64(bytes: &[u8]) -> u64 {
-    let mut acc: u64 = 0xcbf2_9ce4_8422_2325;
-    for &b in bytes {
-        acc ^= u64::from(b);
-        acc = acc.wrapping_mul(0x0000_0100_0000_01b3);
+impl Canon for InvariantClass {
+    fn canon(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::BuildModeDeterminism => out.push(0),
+            Self::CrossIsaDeterminism => out.push(1),
+            Self::GoldenDrift => out.push(2),
+            Self::EnclosureViolation => out.push(3),
+            Self::CertificateForgery => out.push(4),
+            Self::ConservationViolation => out.push(5),
+            Self::AdjointInconsistency => out.push(6),
+            Self::Other(name) => {
+                out.push(7);
+                name.canon(out);
+            }
+        }
     }
-    acc
 }
 
 /// A permanent regression family: the minimized case plus its failing
@@ -291,17 +586,22 @@ pub fn fnv64(bytes: &[u8]) -> u64 {
 #[derive(Debug, Clone)]
 pub struct RegressionFamily<I> {
     /// Family name (stable, kebab-case).
-    pub name: String,
+    name: String,
     /// The invariant every member violates.
-    pub invariant: InvariantClass,
+    invariant: InvariantClass,
+    /// Reproduction seed and violated contract context.
+    provenance: FamilyProvenance,
     /// Labeled members; `members[0]` is the minimized case by convention.
-    pub members: Vec<(String, I)>,
+    members: Vec<(String, I)>,
+    /// Construction-time canonical snapshots paired one-for-one with members.
+    /// Hashes and manifests never re-run a stateful caller implementation.
+    member_canon: Vec<Vec<u8>>,
     /// Tracking references (bead ids / issue ids) — never empty for a
     /// landed family; a failure without a paper trail cannot compound.
-    pub tracking: Vec<String>,
+    tracking: Vec<String>,
     /// The generalized lesson, when there is one (e.g. "lint variable-
     /// exponent powi out of deterministic paths").
-    pub recommended_admission: Option<String>,
+    recommended_admission: Option<String>,
 }
 
 /// A replayed family: which members still fail (live) and which now pass
@@ -314,20 +614,178 @@ pub struct ReplayReport {
     pub now_passing: Vec<String>,
 }
 
+fn write_json_string(out: &mut String, value: &str) {
+    use std::fmt::Write as _;
+
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0c}' => out.push_str("\\f"),
+            control if control <= '\u{1f}' => {
+                let _ = write!(out, "\\u{:04x}", u32::from(control));
+            }
+            ordinary => out.push(ordinary),
+        }
+    }
+    out.push('"');
+}
+
 impl<I: Canon> RegressionFamily<I> {
+    /// Build a canonical, bounded regression family.
+    ///
+    /// # Errors
+    /// Refuses empty/duplicate/oversized identifiers, an empty tracking set,
+    /// an empty member set, or a malformed custom invariant.
+    pub fn new(
+        name: String,
+        invariant: InvariantClass,
+        members: Vec<(String, I)>,
+        tracking: Vec<String>,
+        recommended_admission: Option<String>,
+        provenance: FamilyProvenance,
+    ) -> Result<Self, CompoundError> {
+        validate_family_name(&name)?;
+        invariant.validate()?;
+        validate_tracking_refs(&tracking)?;
+        validate_admission_rule(recommended_admission.as_deref())?;
+        if members.is_empty() {
+            return Err(CompoundError::InvalidField {
+                field: "members",
+                problem: "a regression family must retain at least its minimized case".to_string(),
+            });
+        }
+        let max_members = MAX_NEIGHBOR_PROBES + 1;
+        if members.len() > max_members {
+            return Err(CompoundError::LimitExceeded {
+                resource: "family_members",
+                requested: members.len(),
+                max: max_members,
+            });
+        }
+        if members[0].0 != "minimized" {
+            return Err(CompoundError::InvalidField {
+                field: "members",
+                problem: "the first member must be labeled \"minimized\"".to_string(),
+            });
+        }
+        let mut member_labels = std::collections::BTreeSet::new();
+        let mut member_canon = Vec::with_capacity(members.len());
+        let mut canonical_family_bytes = 0usize;
+        for (label, input) in &members {
+            validate_identifier("member_label", label)?;
+            if !member_labels.insert(label.as_str()) {
+                return Err(CompoundError::DuplicateIdentity {
+                    field: "member_label",
+                    value: label.clone(),
+                });
+            }
+            let mut canonical = Vec::new();
+            input.canon(&mut canonical);
+            if canonical.is_empty() {
+                return Err(CompoundError::InvalidField {
+                    field: "member_canon",
+                    problem: "Canon implementations must emit a non-empty tagged value".to_string(),
+                });
+            }
+            if canonical.len() > MAX_CANONICAL_MEMBER_BYTES {
+                return Err(CompoundError::LimitExceeded {
+                    resource: "canonical_member_bytes",
+                    requested: canonical.len(),
+                    max: MAX_CANONICAL_MEMBER_BYTES,
+                });
+            }
+            canonical_family_bytes = canonical_family_bytes.checked_add(canonical.len()).ok_or(
+                CompoundError::LimitExceeded {
+                    resource: "canonical_family_bytes",
+                    requested: usize::MAX,
+                    max: MAX_CANONICAL_FAMILY_BYTES,
+                },
+            )?;
+            if canonical_family_bytes > MAX_CANONICAL_FAMILY_BYTES {
+                return Err(CompoundError::LimitExceeded {
+                    resource: "canonical_family_bytes",
+                    requested: canonical_family_bytes,
+                    max: MAX_CANONICAL_FAMILY_BYTES,
+                });
+            }
+            member_canon.push(canonical);
+        }
+        Ok(Self {
+            name,
+            invariant,
+            provenance,
+            members,
+            member_canon,
+            tracking,
+            recommended_admission,
+        })
+    }
+
+    /// Stable family name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Classified invariant.
+    #[must_use]
+    pub fn invariant(&self) -> &InvariantClass {
+        &self.invariant
+    }
+
+    /// Captured seed and violated contract context.
+    #[must_use]
+    pub fn provenance(&self) -> &FamilyProvenance {
+        &self.provenance
+    }
+
+    /// Minimized case followed by failing neighbors.
+    #[must_use]
+    pub fn members(&self) -> &[(String, I)] {
+        &self.members
+    }
+
+    /// Beads or issue references that own the family.
+    #[must_use]
+    pub fn tracking(&self) -> &[String] {
+        &self.tracking
+    }
+
+    /// Generalized admission recommendation, if one was justified.
+    #[must_use]
+    pub fn recommended_admission(&self) -> Option<&str> {
+        self.recommended_admission.as_deref()
+    }
+
     /// Content hash over the full canonical encoding: name, invariant,
     /// members (labels + inputs), tracking, admission. Deterministic across
     /// runs, build modes, and ISAs.
     #[must_use]
-    pub fn content_hash(&self) -> u64 {
+    pub fn content_hash(&self) -> fs_blake3::ContentHash {
         let mut bytes = Vec::new();
+        COMPOUND_CANON_VERSION.canon(&mut bytes);
         self.name.canon(&mut bytes);
-        self.invariant.name().canon(&mut bytes);
+        self.invariant.canon(&mut bytes);
+        self.provenance.seed.canon(&mut bytes);
+        self.provenance.contract.canon(&mut bytes);
+        self.provenance.detail.canon(&mut bytes);
         bytes.push(7);
         bytes.extend_from_slice(&(self.members.len() as u64).to_le_bytes());
-        for (label, input) in &self.members {
+        for ((label, _), canonical) in self.members.iter().zip(&self.member_canon) {
             label.canon(&mut bytes);
-            input.canon(&mut bytes);
+            bytes.push(12);
+            bytes.extend_from_slice(
+                &u64::try_from(canonical.len())
+                    .expect("bounded canonical member length fits u64")
+                    .to_le_bytes(),
+            );
+            bytes.extend_from_slice(canonical);
         }
         self.tracking.canon(&mut bytes);
         match &self.recommended_admission {
@@ -337,37 +795,52 @@ impl<I: Canon> RegressionFamily<I> {
             }
             None => bytes.push(10),
         }
-        fnv64(&bytes)
+        fs_blake3::hash_domain(COMPOUND_FAMILY_HASH_DOMAIN, &bytes)
     }
 
-    /// The replayable manifest: JSON-lines, one header, one line per member
-    /// (canonical bytes hex-encoded), one trailer with the content hash.
+    /// The canonical capture manifest: JSON-lines, one header, one line per
+    /// member (canonical bytes hex-encoded), one trailer with the content hash.
+    /// Decoding arbitrary caller-defined member types remains the family
+    /// owner's responsibility.
     #[must_use]
     pub fn manifest(&self) -> String {
         use std::fmt::Write as _;
         let mut out = String::new();
-        let _ = writeln!(
+        let _ = write!(
             out,
-            "{{\"family\":\"{}\",\"invariant\":\"{}\",\"members\":{},\"tracking\":\"{}\"}}",
-            self.name,
-            self.invariant.name(),
-            self.members.len(),
-            self.tracking.join(",")
+            "{{\"canon_version\":{COMPOUND_CANON_VERSION},\"family\":"
         );
-        for (label, input) in &self.members {
-            let mut bytes = Vec::new();
-            input.canon(&mut bytes);
-            let hex: String = bytes.iter().fold(String::new(), |mut s, b| {
+        write_json_string(&mut out, &self.name);
+        let _ = write!(out, ",\"invariant\":");
+        write_json_string(&mut out, self.invariant.name());
+        let _ = write!(out, ",\"seed\":{},\"contract\":", self.provenance.seed);
+        write_json_string(&mut out, &self.provenance.contract);
+        let _ = write!(out, ",\"detail\":");
+        write_json_string(&mut out, &self.provenance.detail);
+        let _ = write!(out, ",\"members\":{},\"tracking\":[", self.members.len());
+        for (index, reference) in self.tracking.iter().enumerate() {
+            if index != 0 {
+                out.push(',');
+            }
+            write_json_string(&mut out, reference);
+        }
+        let _ = write!(out, "],\"recommended_admission\":");
+        if let Some(rule) = &self.recommended_admission {
+            write_json_string(&mut out, rule);
+        } else {
+            out.push_str("null");
+        }
+        out.push_str("}\n");
+        for ((label, _), canonical) in self.members.iter().zip(&self.member_canon) {
+            let hex: String = canonical.iter().fold(String::new(), |mut s, b| {
                 let _ = write!(s, "{b:02x}");
                 s
             });
-            let _ = writeln!(out, "{{\"member\":\"{label}\",\"canon\":\"{hex}\"}}");
+            out.push_str("{\"member\":");
+            write_json_string(&mut out, label);
+            let _ = writeln!(out, ",\"canon\":\"{hex}\"}}");
         }
-        let _ = writeln!(
-            out,
-            "{{\"content_hash\":\"{:#018x}\"}}",
-            self.content_hash()
-        );
+        let _ = writeln!(out, "{{\"content_hash\":\"{}\"}}", self.content_hash());
         out
     }
 
@@ -405,17 +878,19 @@ pub struct CompoundReport<I> {
     /// The landed family (minimum first, then failing neighbors).
     pub family: RegressionFamily<I>,
     /// The family's content hash (also in the manifest trailer).
-    pub content_hash: u64,
+    pub content_hash: fs_blake3::ContentHash,
 }
 
-/// The v1 workflow driver: minimize → probe → land the family.
+/// The v2 workflow driver: validate → minimize → probe → seal the family.
 ///
-/// `neighbors_of` receives the MINIMIZED input and must return a bounded,
-/// deterministically ordered, labeled neighbor set. Failing neighbors join
-/// the family behind the minimum.
+/// `neighbors_of` receives the MINIMIZED input and returns a deterministically
+/// ordered, labeled neighbor set. Its callback work is caller-owned; the
+/// returned set is count/identity-validated before any neighbor predicate is
+/// evaluated. Failing neighbors join the family behind the minimum.
 ///
 /// # Errors
-/// [`CompoundError::NotFailing`] when the captured input does not fail.
+/// [`CompoundError::NotFailing`] when the captured input does not fail, plus
+/// structured field, identity, and deterministic work-limit refusals.
 pub fn compound<I: Shrink + Canon>(
     case: FailureCase<I>,
     fails: &dyn Fn(&I) -> bool,
@@ -424,22 +899,28 @@ pub fn compound<I: Shrink + Canon>(
     recommended_admission: Option<String>,
     max_steps: usize,
 ) -> Result<CompoundReport<I>, CompoundError> {
+    validate_family_name(&case.id)?;
+    case.invariant.validate()?;
+    let provenance = FamilyProvenance::new(case.seed, case.contract.clone(), case.detail.clone())?;
+    validate_tracking_refs(&tracking)?;
+    validate_admission_rule(recommended_admission.as_deref())?;
     let report = minimize(&case.id, &case.input, fails, max_steps)?;
     let neighbors = neighbors_of(&report.minimized);
-    let neighborhood = probe_neighborhood(&neighbors, fails);
+    let neighborhood = probe_neighborhood(&neighbors, fails)?;
     let mut members: Vec<(String, I)> = vec![("minimized".to_string(), report.minimized.clone())];
     for ((label, input), probe) in neighbors.into_iter().zip(&neighborhood.probes) {
         if probe.fails {
             members.push((label, input));
         }
     }
-    let family = RegressionFamily {
-        name: case.id.clone(),
-        invariant: case.invariant.clone(),
+    let family = RegressionFamily::new(
+        case.id.clone(),
+        case.invariant.clone(),
         members,
         tracking,
         recommended_admission,
-    };
+        provenance,
+    )?;
     let content_hash = family.content_hash();
     Ok(CompoundReport {
         case: FailureCase {

@@ -8,9 +8,58 @@
 //! integer/`to_bits` arithmetic only).
 
 use fs_bisect::compound::{
-    Canon, CompoundError, FailureCase, InvariantClass, RegressionFamily, Shrink, compound, fnv64,
-    minimize,
+    Canon, CompoundError, FailureCase, FamilyProvenance, InvariantClass,
+    MAX_CANONICAL_MEMBER_BYTES, MAX_IDENTIFIER_BYTES, MAX_MINIMIZE_STEPS, MAX_NEIGHBOR_PROBES,
+    MAX_SHRINK_CANDIDATES_PER_STEP, RegressionFamily, Shrink, compound, minimize,
+    probe_neighborhood,
 };
+
+fn modeled_golden_hash(bytes: &[u8]) -> u64 {
+    let mut acc: u64 = 0xcbf2_9ce4_8422_2325;
+    for &byte in bytes {
+        acc ^= u64::from(byte);
+        acc = acc.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    acc
+}
+
+fn provenance(seed: u64) -> FamilyProvenance {
+    FamilyProvenance::new(
+        seed,
+        "fs-bisect::compound".to_string(),
+        "seeded regression".to_string(),
+    )
+    .expect("valid provenance")
+}
+
+fn test_family_with_provenance(
+    name: &str,
+    invariant: InvariantClass,
+    member: u64,
+    tracking: Vec<String>,
+    admission: Option<String>,
+    provenance: FamilyProvenance,
+) -> RegressionFamily<u64> {
+    RegressionFamily::new(
+        name.to_string(),
+        invariant,
+        vec![("minimized".to_string(), member)],
+        tracking,
+        admission,
+        provenance,
+    )
+    .expect("valid family")
+}
+
+fn test_family(
+    name: &str,
+    invariant: InvariantClass,
+    member: u64,
+    tracking: Vec<String>,
+    admission: Option<String>,
+) -> RegressionFamily<u64> {
+    test_family_with_provenance(name, invariant, member, tracking, admission, provenance(7))
+}
 
 // ---- Scenario (a): the powi golden break, faithfully modeled ----
 //
@@ -95,7 +144,7 @@ fn golden_breaks(s: &Sweep) -> bool {
         for &k in &s.exponents {
             f(s.base, k).canon(&mut bytes);
         }
-        fnv64(&bytes)
+        modeled_golden_hash(&bytes)
     };
     feed(&pow_sequential) != feed(&pow_squaring)
 }
@@ -173,10 +222,10 @@ fn powi_model_minimizes_to_the_exact_boundary() {
         .collect();
     assert_eq!(failing, ["k=7", "k=8", "k=9", "k=10"]);
     // The family: minimum first, then every failing neighbor; tracked.
-    assert_eq!(report.family.members.len(), 5);
-    assert_eq!(report.family.members[0].0, "minimized");
+    assert_eq!(report.family.members().len(), 5);
+    assert_eq!(report.family.members()[0].0, "minimized");
     assert!(
-        !report.family.tracking.is_empty(),
+        !report.family.tracking().is_empty(),
         "no paper trail, no family"
     );
     // Replay: every member still fails under the suspect implementation...
@@ -192,7 +241,8 @@ fn powi_model_minimizes_to_the_exact_boundary() {
 
 /// Recorded on aarch64-apple (M4 Pro); must be identical in debug and
 /// release and on x86-64 (integer/to_bits arithmetic only).
-const POWI_FAMILY_MANIFEST_HASH: u64 = 0x9b2d_3f23_3704_8523;
+const POWI_FAMILY_MANIFEST_HASH: &str =
+    "ff9c945e8f3ecbaee37e82b5d57e7da7f710644ce9d8d0095c4974815aa132b7";
 
 #[test]
 fn powi_family_manifest_is_content_addressed_and_frozen() {
@@ -220,14 +270,15 @@ fn powi_family_manifest_is_content_addressed_and_frozen() {
     let manifest = report.family.manifest();
     // The manifest carries the hash in its trailer and is replay-complete.
     assert!(manifest.contains("\"family\":\"powi-order-divergence\""));
-    assert_eq!(manifest.lines().count(), 2 + report.family.members.len());
+    assert_eq!(manifest.lines().count(), 2 + report.family.members().len());
     println!(
-        "{{\"suite\":\"fs-bisect\",\"case\":\"compound-manifest\",\"verdict\":\"info\",\"detail\":\"{:#018x}\"}}",
+        "{{\"suite\":\"fs-bisect\",\"case\":\"compound-manifest\",\"verdict\":\"info\",\"detail\":\"{}\"}}",
         report.content_hash
     );
     assert_eq!(
-        report.content_hash, POWI_FAMILY_MANIFEST_HASH,
-        "family bits changed: {:#018x} vs {POWI_FAMILY_MANIFEST_HASH:#018x} — bump only with \
+        report.content_hash.to_hex(),
+        POWI_FAMILY_MANIFEST_HASH,
+        "family bits changed: {} vs {POWI_FAMILY_MANIFEST_HASH} — bump only with \
          semantic justification (golden-evidence policy)",
         report.content_hash
     );
@@ -305,7 +356,7 @@ fn falsifier_hit_compounds_into_a_family() {
         report.neighborhood.probes.len(),
         "systematic constant error: every probe must fail"
     );
-    assert!(report.family.recommended_admission.is_some());
+    assert!(report.family.recommended_admission().is_some());
     let live = report.family.replay(&falsifier_refutes);
     assert!(live.now_passing.is_empty());
 }
@@ -349,7 +400,7 @@ fn canon_encoding_resists_concatenation_collisions() {
         for p in parts {
             p.canon(&mut v);
         }
-        fnv64(&v)
+        fs_blake3::hash_bytes(&v)
     };
     assert_ne!(h(&["ab", "c"]), h(&["a", "bc"]));
     let mut v1 = Vec::new();
@@ -357,32 +408,379 @@ fn canon_encoding_resists_concatenation_collisions() {
     let mut v2 = Vec::new();
     vec![1u64].canon(&mut v2);
     2u64.canon(&mut v2);
-    assert_ne!(fnv64(&v1), fnv64(&v2), "length prefixes must separate");
+    assert_ne!(
+        fs_blake3::hash_bytes(&v1),
+        fs_blake3::hash_bytes(&v2),
+        "length prefixes must separate"
+    );
 }
 
 #[test]
 fn content_hash_is_sensitive_to_every_field() {
-    let base = RegressionFamily {
-        name: "f".to_string(),
-        invariant: InvariantClass::GoldenDrift,
-        members: vec![("m".to_string(), 1u64)],
-        tracking: vec!["t".to_string()],
-        recommended_admission: None,
-    };
+    let base = test_family(
+        "f",
+        InvariantClass::GoldenDrift,
+        1,
+        vec!["t".to_string()],
+        None,
+    );
     let h0 = base.content_hash();
-    let mut renamed = base.clone();
-    renamed.name = "g".to_string();
-    assert_ne!(h0, renamed.content_hash());
-    let mut reclassed = base.clone();
-    reclassed.invariant = InvariantClass::EnclosureViolation;
-    assert_ne!(h0, reclassed.content_hash());
-    let mut remembered = base.clone();
-    remembered.members[0].1 = 2u64;
-    assert_ne!(h0, remembered.content_hash());
-    let mut retracked = base.clone();
-    retracked.tracking.push("u".to_string());
-    assert_ne!(h0, retracked.content_hash());
-    let mut readmitted = base;
-    readmitted.recommended_admission = Some("rule".to_string());
-    assert_ne!(h0, readmitted.content_hash());
+    assert_ne!(
+        h0,
+        test_family(
+            "g",
+            InvariantClass::GoldenDrift,
+            1,
+            vec!["t".to_string()],
+            None,
+        )
+        .content_hash()
+    );
+    assert_ne!(
+        h0,
+        test_family(
+            "f",
+            InvariantClass::EnclosureViolation,
+            1,
+            vec!["t".to_string()],
+            None,
+        )
+        .content_hash()
+    );
+    assert_ne!(
+        h0,
+        test_family(
+            "f",
+            InvariantClass::GoldenDrift,
+            2,
+            vec!["t".to_string()],
+            None,
+        )
+        .content_hash()
+    );
+    assert_ne!(
+        h0,
+        test_family(
+            "f",
+            InvariantClass::GoldenDrift,
+            1,
+            vec!["t".to_string(), "u".to_string()],
+            None,
+        )
+        .content_hash()
+    );
+    assert_ne!(
+        h0,
+        test_family(
+            "f",
+            InvariantClass::GoldenDrift,
+            1,
+            vec!["t".to_string()],
+            Some("rule".to_string()),
+        )
+        .content_hash()
+    );
+}
+
+#[test]
+fn content_hash_is_sensitive_to_provenance_fields() {
+    let hash = |provenance| {
+        test_family_with_provenance(
+            "f",
+            InvariantClass::GoldenDrift,
+            1,
+            vec!["t".to_string()],
+            None,
+            provenance,
+        )
+        .content_hash()
+    };
+    let h0 = hash(provenance(7));
+    assert_ne!(h0, hash(provenance(8)), "seed is semantic");
+    assert_ne!(
+        h0,
+        hash(
+            FamilyProvenance::new(
+                7,
+                "fs-bisect::other-contract".to_string(),
+                "seeded regression".to_string(),
+            )
+            .unwrap()
+        ),
+        "contract is semantic"
+    );
+    assert_ne!(
+        h0,
+        hash(
+            FamilyProvenance::new(
+                7,
+                "fs-bisect::compound".to_string(),
+                "different diagnosis".to_string(),
+            )
+            .unwrap()
+        ),
+        "detail is semantic"
+    );
+}
+
+#[derive(Clone)]
+struct WideShrink;
+
+impl Shrink for WideShrink {
+    fn shrink_candidates(&self) -> Vec<Self> {
+        vec![Self; MAX_SHRINK_CANDIDATES_PER_STEP + 1]
+    }
+}
+
+impl Canon for WideShrink {
+    fn canon(&self, out: &mut Vec<u8>) {
+        1u64.canon(out);
+    }
+}
+
+struct HugeCanon;
+
+impl Canon for HugeCanon {
+    fn canon(&self, out: &mut Vec<u8>) {
+        out.resize(MAX_CANONICAL_MEMBER_BYTES + 1, 0);
+    }
+}
+
+struct EmptyCanon;
+
+impl Canon for EmptyCanon {
+    fn canon(&self, _out: &mut Vec<u8>) {}
+}
+
+#[test]
+fn work_envelopes_refuse_at_limit_plus_one() {
+    assert!(matches!(
+        minimize("wide", &WideShrink, &|_| true, 1),
+        Err(CompoundError::LimitExceeded {
+            resource: "shrink_candidates_per_step",
+            requested,
+            max: MAX_SHRINK_CANDIDATES_PER_STEP,
+        }) if requested == MAX_SHRINK_CANDIDATES_PER_STEP + 1
+    ));
+    assert!(matches!(
+        minimize(
+            "steps",
+            &WideShrink,
+            &|_| true,
+            MAX_MINIMIZE_STEPS + 1,
+        ),
+        Err(CompoundError::LimitExceeded {
+            resource: "minimize_steps",
+            requested,
+            max: MAX_MINIMIZE_STEPS,
+        }) if requested == MAX_MINIMIZE_STEPS + 1
+    ));
+    let oversized_id = "x".repeat(MAX_IDENTIFIER_BYTES + 1);
+    assert!(matches!(
+        minimize(&oversized_id, &WideShrink, &|_| true, 0),
+        Err(CompoundError::LimitExceeded {
+            resource: "case_id",
+            requested,
+            max: MAX_IDENTIFIER_BYTES,
+        }) if requested == MAX_IDENTIFIER_BYTES + 1
+    ));
+}
+
+#[test]
+fn neighborhood_count_and_labels_are_bounded_and_unambiguous() {
+    let at_limit: Vec<(String, u64)> = (0..MAX_NEIGHBOR_PROBES)
+        .map(|index| (format!("n-{index}"), index as u64))
+        .collect();
+    assert_eq!(
+        probe_neighborhood(&at_limit, &|_| false)
+            .expect("exact neighborhood cap")
+            .probes
+            .len(),
+        MAX_NEIGHBOR_PROBES
+    );
+    let mut over_limit = at_limit;
+    over_limit.push(("over".to_string(), 0));
+    assert!(matches!(
+        probe_neighborhood(&over_limit, &|_| false),
+        Err(CompoundError::LimitExceeded {
+            resource: "neighbor_probes",
+            requested,
+            max: MAX_NEIGHBOR_PROBES,
+        }) if requested == MAX_NEIGHBOR_PROBES + 1
+    ));
+    let duplicate = vec![("same".to_string(), 1), ("same".to_string(), 2)];
+    assert!(matches!(
+        probe_neighborhood(&duplicate, &|_| true),
+        Err(CompoundError::DuplicateIdentity {
+            field: "neighbor_label",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn family_construction_seals_tracking_invariants_and_canonical_size() {
+    assert!(matches!(
+        RegressionFamily::new(
+            "Not_Kebab".to_string(),
+            InvariantClass::GoldenDrift,
+            vec![("minimized".to_string(), 1u64)],
+            vec!["frankensim-j3q2".to_string()],
+            None,
+            provenance(0),
+        ),
+        Err(CompoundError::InvalidField {
+            field: "case_id",
+            ..
+        })
+    ));
+    assert!(matches!(
+        RegressionFamily::new(
+            "untracked".to_string(),
+            InvariantClass::GoldenDrift,
+            vec![("minimized".to_string(), 1u64)],
+            Vec::new(),
+            None,
+            provenance(0),
+        ),
+        Err(CompoundError::InvalidField {
+            field: "tracking",
+            ..
+        })
+    ));
+    assert!(matches!(
+        RegressionFamily::new(
+            "wrong-first".to_string(),
+            InvariantClass::GoldenDrift,
+            vec![("neighbor".to_string(), 1u64)],
+            vec!["frankensim-j3q2".to_string()],
+            None,
+            provenance(0),
+        ),
+        Err(CompoundError::InvalidField {
+            field: "members",
+            ..
+        })
+    ));
+    assert!(matches!(
+        RegressionFamily::new(
+            "reserved".to_string(),
+            InvariantClass::Other("golden-drift".to_string()),
+            vec![("minimized".to_string(), 1u64)],
+            vec!["t".to_string()],
+            None,
+            provenance(0),
+        ),
+        Err(CompoundError::InvalidField {
+            field: "invariant",
+            ..
+        })
+    ));
+
+    assert!(matches!(
+        RegressionFamily::new(
+            "huge".to_string(),
+            InvariantClass::Other("custom-bound".to_string()),
+            vec![("minimized".to_string(), HugeCanon)],
+            vec!["frankensim-j3q2".to_string()],
+            None,
+            provenance(0),
+        ),
+        Err(CompoundError::LimitExceeded {
+            resource: "canonical_member_bytes",
+            requested,
+            max: MAX_CANONICAL_MEMBER_BYTES,
+        }) if requested == MAX_CANONICAL_MEMBER_BYTES + 1
+    ));
+    assert!(matches!(
+        RegressionFamily::new(
+            "empty-canon".to_string(),
+            InvariantClass::Other("custom-bound".to_string()),
+            vec![("minimized".to_string(), EmptyCanon)],
+            vec!["frankensim-j3q2".to_string()],
+            None,
+            provenance(0),
+        ),
+        Err(CompoundError::InvalidField {
+            field: "member_canon",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn invalid_family_authority_refuses_before_predicate_work() {
+    use std::cell::Cell;
+
+    let calls = Cell::new(0usize);
+    let result = compound(
+        FailureCase {
+            id: "preflight".to_string(),
+            seed: 0,
+            input: WideShrink,
+            invariant: InvariantClass::GoldenDrift,
+            contract: "fs-bisect::compound".to_string(),
+            detail: "seeded failure".to_string(),
+        },
+        &|_| {
+            calls.set(calls.get() + 1);
+            true
+        },
+        &|_| panic!("neighbors must not run for an untracked family"),
+        Vec::new(),
+        None,
+        0,
+    );
+    assert!(matches!(
+        result,
+        Err(CompoundError::InvalidField {
+            field: "tracking",
+            ..
+        })
+    ));
+    assert_eq!(calls.get(), 0, "authority preflight must precede work");
+}
+
+#[test]
+fn manifest_escapes_fields_and_hashes_the_canonical_snapshot() {
+    use std::cell::Cell;
+
+    struct MutableCanon(Cell<u64>);
+    impl Canon for MutableCanon {
+        fn canon(&self, out: &mut Vec<u8>) {
+            self.0.get().canon(out);
+        }
+    }
+
+    let family = RegressionFamily::new(
+        "family-escape".to_string(),
+        InvariantClass::Other("custom-\"\\".to_string()),
+        vec![
+            ("minimized".to_string(), MutableCanon(Cell::new(7))),
+            ("member-\"\\".to_string(), MutableCanon(Cell::new(9))),
+        ],
+        vec!["bead-\"\\".to_string()],
+        Some("line one\n\"line two\" \\".to_string()),
+        FamilyProvenance::new(
+            11,
+            "contract \"quoted\"".to_string(),
+            "detail line one\nline two".to_string(),
+        )
+        .expect("valid escaped provenance"),
+    )
+    .expect("escapable visible identifiers");
+    let before = family.content_hash();
+    family.members()[0].1.0.set(8);
+    assert_eq!(
+        family.content_hash(),
+        before,
+        "content identity must use the sealed construction-time canonical bytes"
+    );
+    let manifest = family.manifest();
+    let header = manifest.lines().next().expect("header");
+    assert!(header.contains("\\\""), "quotes escaped: {header}");
+    assert!(header.contains("\\\\"), "backslashes escaped: {header}");
+    assert!(header.contains("\\n"), "newlines escaped: {header}");
+    assert!(!header.contains('\n'), "one JSON object per line");
+    assert!(manifest.ends_with('\n'));
 }

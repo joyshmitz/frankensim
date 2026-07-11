@@ -850,6 +850,9 @@ dependencies = [
 [[package]]
 name = "fs-bisect"
 version = "0.0.1"
+dependencies = [
+ "fs-blake3",
+]
 
 [[package]]
 name = "fs-blake3"
