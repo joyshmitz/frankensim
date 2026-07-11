@@ -31,6 +31,20 @@ use fs_math::det;
 /// Crate version, re-exported for provenance stamping.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+fn assert_valid_alpha(alpha: f64) {
+    assert!(
+        alpha.is_finite() && alpha > 0.0 && alpha < 1.0,
+        "alpha must be finite and lie strictly inside (0,1); got {alpha}"
+    );
+}
+
+fn assert_log_e_values(log_e: &[f64]) {
+    assert!(
+        log_e.iter().all(|value| !value.is_nan()),
+        "log e-values must not contain NaN"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Betting e-process for bounded outcomes.
 // ---------------------------------------------------------------------------
@@ -61,7 +75,7 @@ impl BettingEProcess {
     #[must_use]
     pub fn new(null_mean: f64) -> Self {
         assert!(
-            null_mean > 0.0 && null_mean < 1.0,
+            null_mean.is_finite() && null_mean > 0.0 && null_mean < 1.0,
             "null mean must lie strictly inside (0,1); got {null_mean}"
         );
         BettingEProcess {
@@ -124,6 +138,7 @@ impl BettingEProcess {
     /// Has evidence crossed `1/alpha` (the Ville threshold for level α)?
     #[must_use]
     pub fn rejects_at(&self, alpha: f64) -> bool {
+        assert_valid_alpha(alpha);
         self.log_wealth >= -det::ln(alpha)
     }
 
@@ -346,8 +361,11 @@ impl GaussianMixtureCs {
     /// On non-positive `sigma`/`rho` or `alpha` outside (0,1).
     #[must_use]
     pub fn new(sigma: f64, rho: f64, alpha: f64) -> Self {
-        assert!(sigma > 0.0 && rho > 0.0, "sigma/rho must be positive");
-        assert!(alpha > 0.0 && alpha < 1.0, "alpha in (0,1)");
+        assert!(
+            sigma.is_finite() && sigma > 0.0 && rho.is_finite() && rho > 0.0,
+            "sigma/rho must be finite and positive"
+        );
+        assert_valid_alpha(alpha);
         GaussianMixtureCs {
             sigma,
             rho,
@@ -359,8 +377,18 @@ impl GaussianMixtureCs {
 
     /// Observe a value.
     pub fn observe(&mut self, x: f64) {
-        self.n += 1;
-        self.sum += x;
+        assert!(
+            x.is_finite(),
+            "confidence-sequence observation must be finite"
+        );
+        let next_n = self.n.checked_add(1).expect("observation count overflow");
+        let next_sum = self.sum + x;
+        assert!(
+            next_sum.is_finite(),
+            "confidence-sequence running sum overflowed"
+        );
+        self.n = next_n;
+        self.sum = next_sum;
     }
 
     /// Current interval (center, radius); `None` before any data.
@@ -379,6 +407,7 @@ impl GaussianMixtureCs {
     /// itself — usable in e-value arithmetic).
     #[must_use]
     pub fn e_value_for(&self, m: f64) -> f64 {
+        assert!(m.is_finite(), "null mean must be finite");
         if self.n == 0 {
             return 1.0;
         }
@@ -408,6 +437,11 @@ impl GaussianMixtureCs {
 /// Combine INDEPENDENT e-values by product (evidence multiplies).
 #[must_use]
 pub fn combine_product(log_e: &[f64]) -> f64 {
+    assert_log_e_values(log_e);
+    assert!(
+        !(log_e.contains(&f64::INFINITY) && log_e.contains(&f64::NEG_INFINITY)),
+        "a product containing both zero and infinite e-values is indeterminate"
+    );
     log_e.iter().sum()
 }
 
@@ -419,6 +453,13 @@ pub fn combine_average(log_e: &[f64]) -> f64 {
     if log_e.is_empty() {
         return 0.0;
     }
+    assert_log_e_values(log_e);
+    if log_e.contains(&f64::INFINITY) {
+        return f64::INFINITY;
+    }
+    if log_e.iter().all(|value| *value == f64::NEG_INFINITY) {
+        return f64::NEG_INFINITY;
+    }
     let m = log_e.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let sum_exp: f64 = log_e.iter().map(|&l| det::exp(l - m)).sum();
     m + det::ln(sum_exp / log_e.len() as f64)
@@ -427,6 +468,7 @@ pub fn combine_average(log_e: &[f64]) -> f64 {
 /// An e-value's implied p-value bound: p ≤ 1/e (Markov).
 #[must_use]
 pub fn e_to_p(log_e: f64) -> f64 {
+    assert!(!log_e.is_nan(), "log e-value must not be NaN");
     det::exp(-log_e).min(1.0)
 }
 
@@ -436,18 +478,15 @@ pub fn e_to_p(log_e: f64) -> f64 {
 /// ARBITRARY dependence between the e-values. Returns rejected indices.
 #[must_use]
 pub fn e_benjamini_hochberg(log_e: &[f64], alpha: f64) -> Vec<usize> {
+    assert_valid_alpha(alpha);
+    assert_log_e_values(log_e);
     let m = log_e.len();
     if m == 0 {
         return Vec::new();
     }
     let mut order: Vec<usize> = (0..m).collect();
     // Deterministic tie-breaking: by (descending e, ascending index).
-    order.sort_by(|&a, &b| {
-        log_e[b]
-            .partial_cmp(&log_e[a])
-            .unwrap_or(core::cmp::Ordering::Equal)
-            .then(a.cmp(&b))
-    });
+    order.sort_by(|&a, &b| log_e[b].total_cmp(&log_e[a]).then(a.cmp(&b)));
     let mut k_hat = 0;
     for (rank0, &idx) in order.iter().enumerate() {
         let k = rank0 + 1;
@@ -701,6 +740,39 @@ mod tests {
         assert_eq!((combine_product(&[]) + 0.0).to_bits(), 0.0f64.to_bits()); // +0 normalizes -0
         assert_eq!((combine_average(&[]) + 0.0).to_bits(), 0.0f64.to_bits());
         assert!(e_benjamini_hochberg(&[], 0.1).is_empty());
+        assert_eq!(combine_average(&[f64::NEG_INFINITY]), f64::NEG_INFINITY);
+        assert_eq!(
+            combine_average(&[f64::NEG_INFINITY, f64::INFINITY]),
+            f64::INFINITY
+        );
+    }
+
+    #[test]
+    fn malformed_statistical_inputs_fail_before_minting_evidence() {
+        let e = BettingEProcess::new(0.5);
+        for alpha in [0.0, 1.0, f64::NAN, f64::INFINITY] {
+            assert!(
+                std::panic::catch_unwind(|| e.rejects_at(alpha)).is_err(),
+                "malformed rejection alpha must fail: {alpha}"
+            );
+        }
+        assert!(
+            std::panic::catch_unwind(|| GaussianMixtureCs::new(f64::INFINITY, 1.0, 0.05)).is_err()
+        );
+        assert!(
+            std::panic::catch_unwind(|| GaussianMixtureCs::new(1.0, f64::INFINITY, 0.05)).is_err()
+        );
+
+        let mut cs = GaussianMixtureCs::new(1.0, 1.0, 0.05);
+        assert!(
+            std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| cs.observe(f64::NAN)))
+                .is_err()
+        );
+        assert!(cs.is_empty(), "a refused observation must not mutate state");
+        assert!(std::panic::catch_unwind(|| cs.e_value_for(f64::NAN)).is_err());
+        assert!(std::panic::catch_unwind(|| e_benjamini_hochberg(&[0.0], 0.0)).is_err());
+        assert!(std::panic::catch_unwind(|| e_benjamini_hochberg(&[f64::NAN], 0.05)).is_err());
+        assert!(std::panic::catch_unwind(|| combine_average(&[f64::NAN])).is_err());
     }
 
     #[test]

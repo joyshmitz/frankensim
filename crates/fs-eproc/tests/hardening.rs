@@ -306,7 +306,48 @@ fn ch_006_undercalibrated_conformal_band_is_infinite_not_undercovering() {
         big.band("b", 0.05),
         BucketBand::Calibrated { half_width, .. } if half_width.is_finite()
     ));
-    // The degenerate default (min_calibration = 0, empty bucket) must NOT panic
-    // (the old k.min(n) - 1 underflowed usize for n = 0).
-    let _ = MondrianConformal::default().band("empty", 0.1);
+    // Default construction is non-degenerate and refuses an empty bucket.
+    assert!(matches!(
+        MondrianConformal::default().band("empty", 0.1),
+        BucketBand::Refused { have: 0, need: 1 }
+    ));
+}
+
+#[test]
+fn ch_007_malformed_validity_inputs_fail_closed() {
+    assert!(std::panic::catch_unwind(|| MondrianConformal::new(0)).is_err());
+    let mut cal = MondrianConformal::new(1);
+    assert!(
+        std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
+            cal.add("bad", f64::NAN);
+        }))
+        .is_err()
+    );
+    assert!(cal.bucket_names().is_empty());
+    assert!(std::panic::catch_unwind(|| cal.band("missing", 1.0)).is_err());
+    assert!(std::panic::catch_unwind(|| DriftMonitor::new(Vec::new(), 0.05)).is_err());
+    assert!(std::panic::catch_unwind(|| DriftMonitor::new(vec![f64::INFINITY], 0.05)).is_err());
+    let mut monitor = DriftMonitor::new(vec![0.0, 1.0], 0.05);
+    assert!(
+        std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
+            let _ = monitor.observe(f64::NAN);
+        }))
+        .is_err()
+    );
+    assert!(std::panic::catch_unwind(|| admission_alpha(0.1, 0)).is_err());
+    assert!(std::panic::catch_unwind(|| admission_alpha(f64::NAN, 1)).is_err());
+}
+
+#[test]
+fn ch_008_exchangeability_card_serializes_canonical_json_strings() {
+    let card = ExchangeabilityCard {
+        bucketing: "region-\"A\"\\cold".to_string(),
+        drift_alpha: 0.0,
+        fcr_budget: 0.05,
+        refresh_policy: "line1\nline2".to_string(),
+    };
+    assert_eq!(
+        card.to_json(),
+        "{\"bucketing\":\"region-\\\"A\\\"\\\\cold\",\"drift_alpha\":0,\"fcr_budget\":0.05,\"refresh_policy\":\"line1\\nline2\"}"
+    );
 }

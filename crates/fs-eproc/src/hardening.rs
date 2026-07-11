@@ -20,17 +20,24 @@
 //!   to coverage), and admission math reserves the per-claim share up
 //!   front.
 
-use crate::{BettingEProcess, e_benjamini_hochberg};
+use crate::{BettingEProcess, assert_valid_alpha, combine_average, e_benjamini_hochberg};
+use core::fmt::Write as _;
 use std::collections::BTreeMap;
 
 /// A per-bucket split-conformal calibrator. Buckets are opaque keys
 /// composed by the caller (regime class, fidelity, family, ...).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct MondrianConformal {
     buckets: BTreeMap<String, Vec<f64>>,
     /// Minimum calibration count before a bucket may claim coverage
     /// (below it, `band` refuses — the honest failure).
     pub min_calibration: usize,
+}
+
+impl Default for MondrianConformal {
+    fn default() -> Self {
+        Self::new(1)
+    }
 }
 
 /// A per-bucket band, or the refusal that keeps the guarantee honest.
@@ -57,6 +64,10 @@ impl MondrianConformal {
     /// New calibrator; `min_calibration` gates per-bucket claims.
     #[must_use]
     pub fn new(min_calibration: usize) -> MondrianConformal {
+        assert!(
+            min_calibration > 0,
+            "minimum calibration count must be positive"
+        );
         MondrianConformal {
             buckets: BTreeMap::new(),
             min_calibration,
@@ -65,6 +76,10 @@ impl MondrianConformal {
 
     /// Record one calibration residual (absolute) in a bucket.
     pub fn add(&mut self, bucket: &str, abs_residual: f64) {
+        assert!(
+            abs_residual.is_finite() && abs_residual >= 0.0,
+            "calibration residual must be finite and non-negative"
+        );
         self.buckets
             .entry(bucket.to_string())
             .or_default()
@@ -75,6 +90,7 @@ impl MondrianConformal {
     /// Quantile index follows the split-conformal `⌈(n+1)(1−α)⌉` rule.
     #[must_use]
     pub fn band(&self, bucket: &str, alpha: f64) -> BucketBand {
+        assert_valid_alpha(alpha);
         let res = self
             .buckets
             .get(bucket)
@@ -105,6 +121,7 @@ impl MondrianConformal {
     /// demands).
     #[must_use]
     pub fn marginal_band(&self, alpha: f64) -> BucketBand {
+        assert_valid_alpha(alpha);
         let mut all: Vec<f64> = self.buckets.values().flatten().copied().collect();
         if all.len() < self.min_calibration {
             return BucketBand::Refused {
@@ -166,6 +183,12 @@ impl DriftMonitor {
     /// Freeze the training distribution and start monitoring at `alpha`.
     #[must_use]
     pub fn new(mut train: Vec<f64>, alpha: f64) -> DriftMonitor {
+        assert!(!train.is_empty(), "drift monitor needs training samples");
+        assert!(
+            train.iter().all(|value| value.is_finite()),
+            "drift-monitor training samples must be finite"
+        );
+        assert_valid_alpha(alpha);
         train.sort_by(f64::total_cmp);
         #[allow(clippy::cast_precision_loss)]
         let delta = (1.0 / (train.len() as f64).sqrt()).max(0.02);
@@ -181,15 +204,21 @@ impl DriftMonitor {
 
     /// Observe one candidate value; returns the current verdict.
     pub fn observe(&mut self, x: f64) -> DriftVerdict {
-        self.seen += 1;
+        assert!(x.is_finite(), "drift-monitor observation must be finite");
+        self.seen = self
+            .seen
+            .checked_add(1)
+            .expect("drift sample count overflow");
         // PIT: rank of x in the frozen training sample.
         let below = self.train.partition_point(|&t| t < x);
         #[allow(clippy::cast_precision_loss)]
         let u = (below as f64 + 0.5) / (self.train.len() as f64 + 1.0);
         let _ = self.up.observe(u);
         let _ = self.down.observe(1.0 - u);
-        let log_e = self.up.log_e_value().max(self.down.log_e_value());
-        let drifted = self.up.rejects_at(self.alpha) || self.down.rejects_at(self.alpha);
+        // Averaging the two e-processes preserves validity under arbitrary
+        // dependence and spends alpha ONCE for this two-sided decision.
+        let log_e = combine_average(&[self.up.log_e_value(), self.down.log_e_value()]);
+        let drifted = log_e >= -fs_math::det::ln(self.alpha);
         if drifted && self.fired_at == 0 {
             self.fired_at = self.seen;
         }
@@ -204,10 +233,10 @@ impl DriftMonitor {
         }
     }
 
-    /// Current max log e-value across the two one-sided monitors.
+    /// Current log of the equally weighted two-sided mixture e-value.
     #[must_use]
     pub fn log_e_value(&self) -> f64 {
-        self.up.log_e_value().max(self.down.log_e_value())
+        combine_average(&[self.up.log_e_value(), self.down.log_e_value()])
     }
 }
 
@@ -237,9 +266,15 @@ impl CoverageClaim {
     /// Record one prediction outcome (true = the band covered).
     pub fn observe(&mut self, covered: bool) {
         if covered {
-            self.hits += 1;
+            self.hits = self
+                .hits
+                .checked_add(1)
+                .expect("coverage hit count overflow");
         } else {
-            self.misses += 1;
+            self.misses = self
+                .misses
+                .checked_add(1)
+                .expect("coverage miss count overflow");
         }
         let _ = self.eproc.observe(if covered { 0.0 } else { 1.0 });
     }
@@ -275,7 +310,9 @@ pub fn fcr_flag(claims: &[CoverageClaim], budget_alpha: f64) -> Vec<usize> {
 #[must_use]
 #[allow(clippy::cast_precision_loss)]
 pub fn admission_alpha(total_budget: f64, k: usize) -> f64 {
-    total_budget / k.max(1) as f64
+    assert_valid_alpha(total_budget);
+    assert!(k > 0, "at least one simultaneous claim is required");
+    total_budget / k as f64
 }
 
 /// The exchangeability MODEL CARD: which conformal claims assume what,
@@ -296,10 +333,49 @@ impl ExchangeabilityCard {
     /// Structured declaration for the ledger.
     #[must_use]
     pub fn to_json(&self) -> String {
+        assert!(
+            self.drift_alpha.is_finite() && self.drift_alpha >= 0.0 && self.drift_alpha < 1.0,
+            "drift alpha must be finite and lie in [0,1)"
+        );
+        assert_valid_alpha(self.fcr_budget);
+        assert!(
+            !self.bucketing.is_empty(),
+            "bucketing declaration is required"
+        );
+        assert!(
+            !self.refresh_policy.is_empty(),
+            "refresh-policy declaration is required"
+        );
         format!(
-            "{{\"bucketing\":\"{}\",\"drift_alpha\":{},\"fcr_budget\":{},\
-             \"refresh_policy\":\"{}\"}}",
-            self.bucketing, self.drift_alpha, self.fcr_budget, self.refresh_policy
+            "{{\"bucketing\":{},\"drift_alpha\":{},\"fcr_budget\":{},\
+             \"refresh_policy\":{}}}",
+            json_string(&self.bucketing),
+            self.drift_alpha,
+            self.fcr_budget,
+            json_string(&self.refresh_policy)
         )
     }
+}
+
+fn json_string(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len() + 2);
+    escaped.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\u{0008}' => escaped.push_str("\\b"),
+            '\u{000c}' => escaped.push_str("\\f"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            control if control <= '\u{001f}' => {
+                write!(&mut escaped, "\\u{:04x}", u32::from(control))
+                    .expect("writing to String cannot fail");
+            }
+            other => escaped.push(other),
+        }
+    }
+    escaped.push('"');
+    escaped
 }

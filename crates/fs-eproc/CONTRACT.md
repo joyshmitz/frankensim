@@ -26,7 +26,9 @@ makes optional stopping VALID. Layer: L4.
   √((tσ²+ρ)(ln((tσ²+ρ)/ρ) + 2ln(1/α)))/t; also `e_value_for(m)` (the
   mixture martingale as a two-sided e-value).
 - Arithmetic: `combine_product` (independent), `combine_average` (valid
-  under ARBITRARY dependence; max-shifted log-sum-exp), `e_to_p` (Markov).
+  under ARBITRARY dependence; extended-real-safe max-shifted log-sum-exp),
+  `e_to_p` (Markov). NaN and indeterminate zero-times-infinity products are
+  refused before they can become evidence.
 - `e_benjamini_hochberg(log_e, alpha)` — Wang–Ramdas e-BH: reject k̂ largest
   where e_(k) ≥ m/(αk); FDR ≤ α under arbitrary dependence; deterministic
   tie-breaking (descending e, ascending index).
@@ -37,7 +39,8 @@ makes optional stopping VALID. Layer: L4.
   conformal at the ⌈(n+1)(1−α)⌉ rule; buckets below the calibration
   floor REFUSE with a teaching count instead of extrapolating;
   `marginal_band` kept for the comparison), `DriftMonitor` (sequential
-  two-sample PIT betting pair against the COMPOSITE null
+  two-sample PIT betting pair, combined as one equal-weight mixture e-process
+  so the two-sided decision spends alpha once, against the COMPOSITE null
   mean ∈ 1/2 ± δ, δ = max(1/√n_train, 0.02) — the finite-calibration
   tolerance, added after an unslacked monitor false-fired on the
   training sample's own noise; detection shrinks `validity_scale`),
@@ -51,6 +54,9 @@ makes optional stopping VALID. Layer: L4.
   a supermartingale under H₀ — strategy affects power only.
 - Boundedness contract enforced: observations outside [0,1] are REFUSED
   (feeding unbounded data would silently void the guarantee).
+- Confidence-sequence observations, nulls, calibration residuals, and drift
+  samples are finite; malformed alpha/budget values are refused. A rejected
+  observation cannot mutate running state.
 - Pairwise support is enforced before wealth changes: non-finite losses,
   subtraction overflow, and differences outside the declared `LossSpan`
   return `PairwiseInputError`. Clipping is forbidden because it changes the
@@ -61,8 +67,9 @@ makes optional stopping VALID. Layer: L4.
 
 ## Error model
 Malformed scalar process parameters (null mean outside (0,1), out-of-range
-bounded-process outcomes, non-positive sigma/rho, alpha outside (0,1)) panic
-with teaching messages. Pairwise loss data and span violations are fallible
+bounded-process outcomes, non-finite confidence-sequence observations,
+non-finite/non-positive sigma/rho, alpha outside (0,1), malformed calibration
+data) panic with teaching messages. Pairwise loss data and span violations are fallible
 `PairwiseInputError` values and leave pairwise wealth unchanged, because a
 production race must be able to surface a no-claim result rather than panic.
 
