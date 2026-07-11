@@ -14,7 +14,9 @@ fs-blake3, fs-substrate, fs-obs.
   tile-boundary poll), `arena()` is the tile-scoped fs-alloc arena
   (lifetime-bound; escapes are compile errors), `stream_key()` is the
   logical RNG identity, `budget()` carries asupersync's `Budget`
-  vocabulary, `mode()` the `ExecMode` provenance.
+  vocabulary, `mode()` the `ExecMode` provenance. `refuse(TileFailure)` records
+  a typed tile failure, requests sibling drain, and returns the existing
+  `Cancelled` break marker without converting the refusal into a panic.
 - `StreamKey { seed, kernel_id, tile, iteration }` + `key128()` — RNG
   stream identity derived from LOGICAL work identity only, never from the
   worker (Decalogue P2). fs-rand's Philox consumes the 128-bit key.
@@ -39,7 +41,9 @@ fs-blake3, fs-substrate, fs-obs.
   localizes them to the smallest exposing prefix.
 - `TilePool` / `PoolConfig { workers, topo, quantum_weights, seed, mode,
   arena }` — `run(&kernel)` / `run_with_gate(&kernel, &gate) -> (Result<Out,
-  RunError>, RunReport)`. Workers are scoped per run; per-worker deques are
+  RunError>, RunReport)`. `run_declared_budgeted` additionally carries an exact
+  caller-supplied asupersync `Budget` into every tile `Cx`; legacy run wrappers
+  deliberately retain `Budget::INFINITE`. Workers are scoped per run; per-worker deques are
   seeded with contiguous, weight-proportional tile runs (`weighted_ranges`)
   and steal HALF a victim's deque in `victim_order` (same-CCD ring first).
   `PoolConfig::for_host` / `TilePool::for_host` select the recorded host-probe
@@ -49,13 +53,15 @@ fs-blake3, fs-substrate, fs-obs.
   normalized workers, weights, arena policy, the `ArenaPool`'s recorded
   hugepage decision/outcome, and exact requested pin groups. Pin success is not
   claimed by this identity.
-- `RunError { Cancelled, TilePanicked, WorkerSpawn, ReductionPanicked,
+- `RunError { Cancelled, TilePanicked, TileFailed, WorkerSpawn, ReductionPanicked,
   Incomplete }` — structured, teaching
   outcomes with tile provenance. `RunReport` — the caller-declared `RunId`
   that keyed every tile stream, steal counts, cross-CCD steal counts,
   cancel-latency samples, `cancel_latency_p99_ns()`, canonical `to_json()`.
-  If several in-flight tiles panic, deterministic mode reports the lowest
-  logical tile (and its message), never mutex-arrival order.
+  If several in-flight tiles panic or explicitly refuse, deterministic mode
+  reports the lowest observed logical tile (and its message/failure), never
+  mutex-arrival order. `TileFailure::Allocation` retains the original
+  `fs_alloc::AllocError` as its error source.
 - `LatencyLane` — thin configured handle on the asupersync runtime
   (`block_on`, `runtime()`); no fs-exec scheduling policy of its own.
 - `victim_order(worker, workers, topo)` / `weighted_ranges(tiles, weights)`
@@ -276,6 +282,8 @@ executor-internal invariant violations become `RunError::Incomplete`
 (reported, not panicked). The only intentional panics are lock-poisoning
 `expect`s (reachable only after a panic already contained elsewhere) and
 kernel-authored asserts, which are contained per invariant 5.
+Typed kernel refusals become `RunError::TileFailed` after every sibling and
+scope arena has drained; they remain distinct from cancellation and panic.
 
 ## Determinism class
 Deterministic (P2): results and stream keys are bit-stable across runs,
@@ -322,7 +330,8 @@ idempotent recalibration; canonical pinned replay).
 tests/constellation_smoke.rs pins the
 asupersync Budget vocabulary. In-module unit suites cover the gate, keys,
 Reduce laws, partitioning, victim orders, self-cancellation, and pool
-survival after panics. GEMM tuner unit drills cover hostile embedded cache
+survival after panics, exact finite-budget propagation, and simultaneous typed
+allocation refusals. GEMM tuner unit drills cover hostile embedded cache
 keys, invalid params, unranked evidence, selection/argmin disagreement,
 identity-dimension isolation, exact-key replay, parameter-family collisions,
 and explicit row/decision commit semantics.
@@ -351,11 +360,13 @@ and explicit row/decision commit semantics.
   placement; typed requested-versus-observed receipts remain
   `frankensim-3iq7`. P/E quantum WEIGHTS are plumbed but their values await
   the autotuner.
-- Budget enforcement beyond cancellation (poll quotas, deadlines, and root
-  orchestration memory) is not claimed. TilePool currently supplies
-  `Budget::INFINITE`; the session governor and the explicit GEMM memory
-  envelope tracked by `frankensim-epic-substrate-wf9.15` must close this
-  before budget provenance becomes enforcement.
+- `run_declared_budgeted` propagates a finite asupersync budget unchanged, but
+  generic enforcement of its poll/deadline/cost dimensions is NOT claimed:
+  kernels must consume the dimensions they understand. Legacy run wrappers
+  still supply `Budget::INFINITE`. A shared executor-memory lease covering
+  slots, deques, reports, thread stacks, and aggregate arena reservations is
+  broader follow-up work; wf9.15 only uses the typed propagation/refusal
+  substrate for GEMM's explicitly preflighted memory envelope.
 - The latency lane's ≤100 ms conversational guarantee is HELM's gate;
   exec-007 measures and ledgers turnaround without claiming it.
 - `ExecMode::Fast`'s 5–15% relaxed-reduction throughput claim is NOT made:

@@ -14,7 +14,7 @@
 //! counts and steal schedules by construction. RNG stream keys derive from
 //! logical identity only.
 
-use crate::cx::{CancelGate, Cx, ExecMode, RunId, StreamKey};
+use crate::cx::{Budget, CancelGate, Cx, ExecMode, RefusalSink, RunId, StreamKey, TileFailure};
 use crate::kernel::TileKernel;
 use core::fmt;
 use core::ops::ControlFlow;
@@ -120,6 +120,17 @@ pub enum RunError {
         /// Tiles that completed despite the failure.
         completed: u64,
     },
+    /// A tile returned a typed refusal; siblings were cancelled and drained.
+    TileFailed {
+        /// Kernel name.
+        kernel: &'static str,
+        /// Lowest logical tile that reported a refusal before drain completed.
+        tile: u64,
+        /// Typed refusal suitable for upstream policy and ledger handling.
+        failure: TileFailure,
+        /// Tiles that completed despite the refusal.
+        completed: u64,
+    },
     /// The operating system refused to create a scoped worker. Already-started
     /// workers were cancelled and drained before this outcome was returned.
     WorkerSpawn {
@@ -170,6 +181,16 @@ impl fmt::Display for RunError {
                 "kernel `{kernel}` tile {tile} panicked: {message} ({completed} sibling tiles \
                  completed; siblings were cancelled, the pool remains usable)"
             ),
+            RunError::TileFailed {
+                kernel,
+                tile,
+                failure,
+                completed,
+            } => write!(
+                f,
+                "kernel `{kernel}` tile {tile} refused: {failure} ({completed} sibling tiles \
+                 completed; siblings were cancelled and drained, the pool remains usable)"
+            ),
             RunError::WorkerSpawn {
                 kernel,
                 worker,
@@ -191,7 +212,14 @@ impl fmt::Display for RunError {
     }
 }
 
-impl core::error::Error for RunError {}
+impl core::error::Error for RunError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::TileFailed { failure, .. } => Some(failure),
+            _ => None,
+        }
+    }
+}
 
 fn push_json_string(out: &mut String, value: &str) {
     use core::fmt::Write as _;
@@ -455,7 +483,20 @@ impl TilePool {
         gate: &CancelGate,
         run: RunId,
     ) -> (Result<K::Out, RunError>, RunReport) {
-        self.run_inner(kernel, gate, run)
+        self.run_inner(kernel, gate, run, Budget::INFINITE)
+    }
+
+    /// Run a kernel under explicit logical identity and asupersync budget.
+    /// Every tile receives the exact same budget slice in its [`Cx`]; kernels
+    /// remain responsible for consuming or interpreting its quota dimensions.
+    pub fn run_declared_budgeted<K: TileKernel>(
+        &self,
+        kernel: &K,
+        gate: &CancelGate,
+        run: RunId,
+        budget: Budget,
+    ) -> (Result<K::Out, RunError>, RunReport) {
+        self.run_inner(kernel, gate, run, budget)
     }
 
     /// Run a kernel under an external cancel gate; returns the outcome and
@@ -469,7 +510,7 @@ impl TilePool {
         kernel: &K,
         gate: &CancelGate,
     ) -> (Result<K::Out, RunError>, RunReport) {
-        self.run_inner(kernel, gate, RunId::default())
+        self.run_inner(kernel, gate, RunId::default(), Budget::INFINITE)
     }
 
     // One coherent protocol (seed deques -> worker loops -> fold + report);
@@ -481,6 +522,7 @@ impl TilePool {
         kernel: &K,
         gate: &CancelGate,
         run: RunId,
+        budget: Budget,
     ) -> (Result<K::Out, RunError>, RunReport) {
         let plan = kernel.tiles();
         let kernel_id = plan.kernel_id();
@@ -506,6 +548,7 @@ impl TilePool {
         let steals = AtomicU64::new(0);
         let cross_steals = AtomicU64::new(0);
         let panic_box: Mutex<Option<(u64, String)>> = Mutex::new(None);
+        let refusal_sink = RefusalSink::default();
         let observed: Vec<CachePadded<AtomicU64>> = (0..workers)
             .map(|_| CachePadded::new(AtomicU64::new(0)))
             .collect();
@@ -522,6 +565,7 @@ impl TilePool {
                 let steals = &steals;
                 let cross_steals = &cross_steals;
                 let panic_box = &panic_box;
+                let refusal_sink = &refusal_sink;
                 let observed = &observed[w];
                 let done_by = &done_by[w];
                 let arenas = &self.arenas;
@@ -581,12 +625,13 @@ impl TilePool {
                             iteration,
                         };
                         let outcome = arenas.scope(|arena| {
-                            let cx = Cx::new(
+                            let cx = Cx::new_with_refusal_sink(
                                 gate,
                                 arena,
                                 key,
-                                asupersync::types::Budget::INFINITE,
+                                budget,
                                 config.mode,
+                                refusal_sink,
                             );
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                 kernel.run(tile, &cx)
@@ -673,6 +718,17 @@ impl TilePool {
                     kernel: plan.kernel,
                     tile,
                     message,
+                    completed,
+                }),
+                report,
+            );
+        }
+        if let Some((tile, failure)) = refusal_sink.take() {
+            return (
+                Err(RunError::TileFailed {
+                    kernel: plan.kernel,
+                    tile,
+                    failure,
                     completed,
                 }),
                 report,
@@ -861,6 +917,64 @@ mod tests {
         }
     }
 
+    struct BudgetProbe {
+        tiles: u64,
+    }
+
+    impl TileKernel for BudgetProbe {
+        type Out = u64;
+
+        fn tiles(&self) -> TilePlan {
+            TilePlan::new("test/budget-probe", self.tiles)
+        }
+
+        fn run(&self, _tile: u64, cx: &Cx<'_>) -> ControlFlow<crate::Cancelled, u64> {
+            ControlFlow::Continue(cx.budget().remaining_cost().unwrap_or(u64::MAX))
+        }
+    }
+
+    struct SimultaneousAllocationRefusal {
+        tiles: u64,
+        barrier: std::sync::Barrier,
+    }
+
+    impl TileKernel for SimultaneousAllocationRefusal {
+        type Out = ();
+
+        fn tiles(&self) -> TilePlan {
+            TilePlan::new("test/allocation-refusal", self.tiles)
+        }
+
+        fn run(&self, _tile: u64, cx: &Cx<'_>) -> ControlFlow<crate::Cancelled, ()> {
+            self.barrier.wait();
+            match cx
+                .arena()
+                .alloc_slice_fill(fs_alloc::Site::named("test/refusal"), 1, 0_u8)
+            {
+                Ok(_) => ControlFlow::Continue(()),
+                Err(error) => ControlFlow::Break(cx.refuse(TileFailure::Allocation(error))),
+            }
+        }
+    }
+
+    struct NoAllocation;
+
+    impl TileKernel for NoAllocation {
+        type Out = u64;
+
+        fn tiles(&self) -> TilePlan {
+            TilePlan::new("test/no-allocation", 1)
+        }
+
+        fn run(&self, _tile: u64, cx: &Cx<'_>) -> ControlFlow<crate::Cancelled, u64> {
+            if cx.checkpoint().is_err() {
+                ControlFlow::Break(crate::Cancelled)
+            } else {
+                ControlFlow::Continue(1)
+            }
+        }
+    }
+
     fn pool(workers: usize) -> TilePool {
         TilePool::new(PoolConfig::new(workers, CcdTopology::APPLE_M_CLASS, 0x5EED))
     }
@@ -883,6 +997,62 @@ mod tests {
             report.to_json(),
             "{\"kernel\":\"test/\\\"kernel\\\\line\\n\",\"mode\":\"deterministic\",\"declared_run\":7,\"completed\":3,\"total\":4,\"steals\":2,\"cross_ccd_steals\":1,\"cancel_latencies_ns\":[11,13],\"tiles_by_worker\":[2,1]}"
         );
+    }
+
+    #[test]
+    fn declared_budget_reaches_every_tile_without_changing_legacy_wrappers() {
+        for workers in [1, 4] {
+            let pool = pool(workers);
+            let gate = CancelGate::new();
+            let budget = Budget::new().with_cost_quota(65_536);
+            let probe = BudgetProbe {
+                tiles: workers as u64,
+            };
+            let (result, report) = pool.run_declared_budgeted(&probe, &gate, RunId(17), budget);
+            assert_eq!(result.expect("budgeted probe"), 65_536 * workers as u64);
+            assert_eq!(report.declared_run, RunId(17));
+            assert_eq!(
+                pool.run(&probe).expect("legacy probe"),
+                u64::MAX.wrapping_mul(workers as u64)
+            );
+        }
+    }
+
+    #[test]
+    fn simultaneous_typed_refusals_report_lowest_tile_and_drain() {
+        for workers in [2, 4] {
+            let mut config = PoolConfig::new(workers, CcdTopology::APPLE_M_CLASS, 0xFA11);
+            config.arena.limit_bytes = Some(0);
+            let pool = TilePool::new(config);
+            let gate = CancelGate::new();
+            let kernel = SimultaneousAllocationRefusal {
+                tiles: workers as u64,
+                barrier: std::sync::Barrier::new(workers),
+            };
+            let (result, report) = pool.run_declared_budgeted(
+                &kernel,
+                &gate,
+                RunId(23),
+                Budget::new().with_cost_quota(1 << 20),
+            );
+            match result {
+                Err(RunError::TileFailed {
+                    tile: 0,
+                    failure:
+                        TileFailure::Allocation(fs_alloc::AllocError::Exhausted {
+                            limit_bytes: 0, ..
+                        }),
+                    completed: 0,
+                    ..
+                }) => {}
+                other => panic!("expected deterministic allocation refusal, got {other:?}"),
+            }
+            assert!(gate.is_requested());
+            assert_eq!(report.completed, 0);
+            assert_eq!(report.total, workers as u64);
+            assert!(pool.arena_pool().stats().quiescent());
+            assert_eq!(pool.run(&NoAllocation).expect("pool remains reusable"), 1);
+        }
     }
 
     #[test]

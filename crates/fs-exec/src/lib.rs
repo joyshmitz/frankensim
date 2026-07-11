@@ -45,7 +45,7 @@ pub mod reduce;
 pub mod solver;
 mod tune;
 
-pub use cx::{CancelGate, Cancelled, Cx, ExecMode, RunId, StreamKey};
+pub use cx::{Budget, CancelGate, Cancelled, Cx, ExecMode, RunId, StreamKey, TileFailure};
 pub use kernel::{Reduce, TileKernel, TilePlan};
 pub use kill::{CandidateId, KillRegistry, UnregisteredKill};
 pub use latency::{LaneError, LatencyLane};

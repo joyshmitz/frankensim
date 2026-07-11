@@ -7,7 +7,8 @@
 //! and the execution mode. The ledger handle joins when fs-ledger lands;
 //! until then accounting flows through fs-obs events.
 
-use asupersync::types::Budget;
+pub use asupersync::types::Budget;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Execution mode, part of every run's provenance (plan §5.4). Both modes
@@ -164,6 +165,57 @@ impl CancelGate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cancelled;
 
+/// A typed tile-local refusal that requests sibling drain without pretending
+/// the condition was either ordinary cancellation or a panic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TileFailure {
+    /// The tile's scoped arena refused an allocation.
+    Allocation(fs_alloc::AllocError),
+}
+
+impl core::fmt::Display for TileFailure {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Allocation(error) => write!(f, "tile arena allocation refused: {error}"),
+        }
+    }
+}
+
+impl core::error::Error for TileFailure {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Allocation(error) => Some(error),
+        }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct RefusalSink {
+    lowest: Mutex<Option<(u64, TileFailure)>>,
+}
+
+impl RefusalSink {
+    fn record(&self, tile: u64, failure: TileFailure) {
+        let mut lowest = self
+            .lowest
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if lowest
+            .as_ref()
+            .is_none_or(|(recorded_tile, _)| tile < *recorded_tile)
+        {
+            *lowest = Some((tile, failure));
+        }
+    }
+
+    pub(crate) fn take(&self) -> Option<(u64, TileFailure)> {
+        self.lowest
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+    }
+}
+
 /// The per-tile execution context handed to [`crate::TileKernel::run`].
 /// Lifetime-scoped: the arena (and everything allocated from it) cannot
 /// outlive the tile's scope — fs-alloc's lifetime discipline does the
@@ -174,6 +226,7 @@ pub struct Cx<'s> {
     key: StreamKey,
     budget: Budget,
     mode: ExecMode,
+    refusals: Option<&'s RefusalSink>,
 }
 
 impl<'s> Cx<'s> {
@@ -192,6 +245,25 @@ impl<'s> Cx<'s> {
             key,
             budget,
             mode,
+            refusals: None,
+        }
+    }
+
+    pub(crate) fn new_with_refusal_sink(
+        gate: &'s CancelGate,
+        arena: &'s fs_alloc::Arena,
+        key: StreamKey,
+        budget: Budget,
+        mode: ExecMode,
+        refusals: &'s RefusalSink,
+    ) -> Self {
+        Cx {
+            gate,
+            arena,
+            key,
+            budget,
+            mode,
+            refusals: Some(refusals),
         }
     }
 
@@ -215,6 +287,22 @@ impl<'s> Cx<'s> {
     #[must_use]
     pub fn is_cancel_requested(&self) -> bool {
         self.gate.is_requested()
+    }
+
+    /// Record a typed tile refusal, request sibling drain, and return the
+    /// marker expected by [`crate::TileKernel::run`]'s `ControlFlow::Break`.
+    ///
+    /// Pool-created contexts surface the lowest observed logical tile as
+    /// [`crate::RunError::TileFailed`]. Manually constructed contexts have no
+    /// pool refusal sink, but still request their gate so the failure cannot be
+    /// ignored accidentally.
+    #[must_use]
+    pub fn refuse(&self, failure: TileFailure) -> Cancelled {
+        if let Some(refusals) = self.refusals {
+            refusals.record(self.key.tile, failure);
+        }
+        self.gate.request();
+        Cancelled
     }
 
     /// The tile-scoped bump arena (O(chunks) reclaim at scope end; escapes

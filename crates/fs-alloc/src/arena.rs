@@ -120,6 +120,15 @@ pub enum AllocError {
         /// Element size in bytes.
         elem_bytes: usize,
     },
+    /// Arithmetic needed to size or account for a chunk exceeds `usize`.
+    ReservationOverflow {
+        /// Site requesting the reservation.
+        site: &'static str,
+        /// Existing bytes participating in the failed sum.
+        base_bytes: usize,
+        /// Additional bytes participating in the failed sum.
+        additional_bytes: usize,
+    },
 }
 
 impl fmt::Display for AllocError {
@@ -157,6 +166,16 @@ impl fmt::Display for AllocError {
                 "slice layout overflows at site `{site}`: {len} elements x {elem_bytes} B \
                  exceeds the address space; validate the length upstream"
             ),
+            AllocError::ReservationOverflow {
+                site,
+                base_bytes,
+                additional_bytes,
+            } => write!(
+                f,
+                "arena reservation arithmetic overflows at site `{site}`: {base_bytes} base B + \
+                 {additional_bytes} additional B exceeds the address space; reduce the allocation \
+                 or arena chunk size"
+            ),
         }
     }
 }
@@ -184,6 +203,56 @@ struct PoolShared {
 }
 
 impl PoolShared {
+    fn claim_new_chunk_bytes(&self, want: usize, site: Site) -> Result<(), AllocError> {
+        loop {
+            let reserved = self.reserved_bytes.load(Ordering::Acquire);
+            let next = reserved
+                .checked_add(want)
+                .ok_or(AllocError::ReservationOverflow {
+                    site: site.name(),
+                    base_bytes: reserved,
+                    additional_bytes: want,
+                })?;
+            if self.config.limit_bytes.is_some_and(|limit| next > limit) {
+                // Cached chunks count against the hard pool limit. Return them
+                // to the OS once before deciding that this request cannot fit.
+                let mut free = self.free.lock().expect("fs-alloc free list poisoned");
+                let drained = core::mem::take(&mut free.chunks);
+                let free_bytes = core::mem::replace(&mut free.bytes, 0);
+                self.reserved_bytes.fetch_sub(free_bytes, Ordering::AcqRel);
+                drop(free);
+                drop(drained);
+
+                let reserved = self.reserved_bytes.load(Ordering::Acquire);
+                let Some(next) = reserved.checked_add(want) else {
+                    return Err(AllocError::ReservationOverflow {
+                        site: site.name(),
+                        base_bytes: reserved,
+                        additional_bytes: want,
+                    });
+                };
+                if let Some(limit) = self.config.limit_bytes
+                    && next > limit
+                {
+                    return Err(AllocError::Exhausted {
+                        site: site.name(),
+                        requested_bytes: want,
+                        reserved_bytes: reserved,
+                        limit_bytes: limit,
+                    });
+                }
+                continue;
+            }
+            if self
+                .reserved_bytes
+                .compare_exchange_weak(reserved, next, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return Ok(());
+            }
+        }
+    }
+
     /// Get a chunk of at least `min_bytes` (free list first, then the OS),
     /// enforcing the pool budget.
     fn acquire_chunk(
@@ -202,32 +271,16 @@ impl PoolShared {
             }
         }
         let want = want.max(min_bytes);
-        if let Some(limit) = self.config.limit_bytes
-            && self.reserved_bytes.load(Ordering::Acquire) + want > limit
-        {
-            // Budget pressure: return cached chunks to the OS, then retry.
-            let mut free = self.free.lock().expect("fs-alloc free list poisoned");
-            let drained = core::mem::take(&mut free.chunks);
-            self.reserved_bytes.fetch_sub(free.bytes, Ordering::AcqRel);
-            free.bytes = 0;
-            drop(free);
-            drop(drained);
-            let reserved = self.reserved_bytes.load(Ordering::Acquire);
-            if reserved + want > limit {
-                return Err(AllocError::Exhausted {
-                    site: site.name(),
-                    requested_bytes: want,
-                    reserved_bytes: reserved,
-                    limit_bytes: limit,
-                });
-            }
-        }
+        self.claim_new_chunk_bytes(want, site)?;
         let align = self.hugepage.chunk_align(want);
-        let chunk = Chunk::allocate(want, align).ok_or(AllocError::OutOfMemory {
-            site: site.name(),
-            requested_bytes: want,
-        })?;
-        self.reserved_bytes.fetch_add(chunk.len(), Ordering::AcqRel);
+        let Some(chunk) = Chunk::allocate(want, align) else {
+            self.reserved_bytes.fetch_sub(want, Ordering::AcqRel);
+            return Err(AllocError::OutOfMemory {
+                site: site.name(),
+                requested_bytes: want,
+            });
+        };
+        debug_assert_eq!(chunk.len(), want);
         self.chunks_created.fetch_add(1, Ordering::Relaxed);
         Ok(chunk)
     }
@@ -236,8 +289,12 @@ impl PoolShared {
     fn release_chunks(&self, chunks: Vec<Chunk>) {
         let mut free = self.free.lock().expect("fs-alloc free list poisoned");
         for chunk in chunks {
-            if free.bytes + chunk.len() <= self.config.free_list_max_bytes {
-                free.bytes += chunk.len();
+            if let Some(retained) = free
+                .bytes
+                .checked_add(chunk.len())
+                .filter(|&bytes| bytes <= self.config.free_list_max_bytes)
+            {
+                free.bytes = retained;
                 free.chunks.push(chunk);
             } else {
                 self.reserved_bytes.fetch_sub(chunk.len(), Ordering::AcqRel);
@@ -293,6 +350,33 @@ impl ArenaPool {
             allocation_count: Cell::new(0),
             sites: RefCell::new(Vec::new()),
         }
+    }
+
+    /// Bytes a fresh arena must reserve for its first slice allocation.
+    ///
+    /// This is an allocation-free preflight using the pool's normalized first
+    /// chunk size and the exact alignment slack used by [`Arena::grow`]. Empty
+    /// and zero-sized slices require no chunk. A free-list hit may hand the
+    /// arena a larger already-reserved chunk, but cannot increase the pool's
+    /// OS reservation.
+    ///
+    /// # Errors
+    /// [`AllocError::LayoutOverflow`] or [`AllocError::ReservationOverflow`]
+    /// when the request cannot be represented.
+    pub fn reservation_bytes_for_slice<T>(
+        &self,
+        site: Site,
+        len: usize,
+    ) -> Result<usize, AllocError> {
+        let bytes = slice_bytes::<T>(site, len)?;
+        if bytes == 0 {
+            return Ok(0);
+        }
+        Ok(self
+            .shared
+            .config
+            .chunk_bytes
+            .max(reservation_min_bytes(bytes, align_of::<T>(), site)?))
     }
 
     /// Run `f` with a scope arena; the arena and every allocation in it are
@@ -526,17 +610,15 @@ impl Arena {
 
     /// Install a fresh chunk sized for a `bytes`/`align` request.
     fn grow(&self, bytes: usize, align: usize, site: Site) -> Result<(), AllocError> {
-        // Slack covers worst-case in-window padding when T's alignment
-        // exceeds the chunk's base alignment.
-        let slack = if align > ALLOC_ALIGN { align } else { 0 };
-        let min_bytes = bytes.saturating_add(slack).max(1);
+        let min_bytes = reservation_min_bytes(bytes, align, site)?;
         let chunk = self
             .shared
             .acquire_chunk(min_bytes, self.next_chunk_bytes.get(), site)?;
         self.next_chunk_bytes.set(
             chunk
                 .len()
-                .saturating_mul(2)
+                .checked_mul(2)
+                .unwrap_or(self.shared.config.max_chunk_bytes)
                 .min(self.shared.config.max_chunk_bytes),
         );
         self.raw.install_chunk(chunk);
@@ -615,6 +697,22 @@ fn slice_bytes<T>(site: Site, len: usize) -> Result<usize, AllocError> {
             site: site.name(),
             len,
             elem_bytes: size_of::<T>(),
+        })
+}
+
+fn reservation_min_bytes(bytes: usize, align: usize, site: Site) -> Result<usize, AllocError> {
+    if bytes == 0 {
+        return Ok(0);
+    }
+    // Slack covers worst-case in-window padding when T's alignment exceeds
+    // the chunk's unconditional 128-byte base alignment.
+    let slack = if align > ALLOC_ALIGN { align } else { 0 };
+    bytes
+        .checked_add(slack)
+        .ok_or(AllocError::ReservationOverflow {
+            site: site.name(),
+            base_bytes: bytes,
+            additional_bytes: slack,
         })
 }
 
@@ -750,6 +848,85 @@ mod tests {
             free_list_max_bytes: 1 << 20,
             hugepage: HugepagePolicy::Never,
         })
+    }
+
+    #[test]
+    fn first_slice_reservation_uses_normalized_chunk_and_checked_layout() {
+        let default_pool = ArenaPool::new(ArenaConfig::default());
+        assert_eq!(
+            default_pool
+                .reservation_bytes_for_slice::<f64>(Site::named("t/plan-default"), 8 * 256)
+                .expect("A micro-panel plan"),
+            1 << 20,
+            "a fresh default arena reserves its 1 MiB first chunk"
+        );
+
+        let pool = small_pool(None);
+        assert_eq!(
+            pool.reservation_bytes_for_slice::<u8>(Site::named("t/plan-small"), 1024)
+                .expect("small plan"),
+            4096
+        );
+        assert_eq!(
+            pool.reservation_bytes_for_slice::<u8>(Site::named("t/plan-large"), 8192)
+                .expect("large plan"),
+            8192
+        );
+        assert_eq!(
+            pool.reservation_bytes_for_slice::<u64>(Site::named("t/plan-empty"), 0)
+                .expect("empty plan"),
+            0
+        );
+
+        #[derive(Clone, Copy)]
+        #[repr(align(256))]
+        struct Wide(u8);
+
+        let error = pool
+            .reservation_bytes_for_slice::<Wide>(
+                Site::named("t/plan-overflow"),
+                usize::MAX / core::mem::size_of::<Wide>(),
+            )
+            .expect_err("alignment slack must overflow structurally");
+        assert!(
+            matches!(error, AllocError::ReservationOverflow { .. }),
+            "{error:?}"
+        );
+        let _ = Wide(0).0;
+    }
+
+    #[test]
+    fn concurrent_chunk_claims_cannot_cross_the_pool_limit() {
+        const THREADS: usize = 8;
+        let pool = std::sync::Arc::new(small_pool(Some(4096)));
+        let start = std::sync::Arc::new(std::sync::Barrier::new(THREADS));
+        let hold = std::sync::Arc::new(std::sync::Barrier::new(THREADS));
+        let successes = std::sync::atomic::AtomicUsize::new(0);
+
+        std::thread::scope(|scope| {
+            for _ in 0..THREADS {
+                let pool = std::sync::Arc::clone(&pool);
+                let start = std::sync::Arc::clone(&start);
+                let hold = std::sync::Arc::clone(&hold);
+                let successes = &successes;
+                scope.spawn(move || {
+                    start.wait();
+                    pool.scope(|arena| {
+                        if arena.alloc(Site::named("t/concurrent-limit"), 1_u8).is_ok() {
+                            successes.fetch_add(1, Ordering::AcqRel);
+                        }
+                        // Keep the successful arena live until every competing
+                        // reservation has reached the hard-limit check.
+                        hold.wait();
+                    });
+                });
+            }
+        });
+
+        assert_eq!(successes.load(Ordering::Acquire), 1);
+        let stats = pool.stats();
+        assert!(stats.reserved_bytes <= 4096, "{}", stats.to_json());
+        assert!(stats.quiescent(), "{}", stats.to_json());
     }
 
     #[test]

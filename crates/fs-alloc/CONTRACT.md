@@ -15,6 +15,8 @@ recorded, sharded object pools, and diffable allocation-site accounting
 - `ArenaPool` (`Clone + Send + Sync`) — configuration (`ArenaConfig`),
   chunk free list, budget enforcement, accounting (`PoolStats`), hugepage
   decision (`HugepageDecision`), and site aggregation (`SiteReport`).
+  `reservation_bytes_for_slice` computes the fresh-arena first-chunk
+  requirement without allocating, using normalized chunk and alignment rules.
 - `Arena` (`Send`, deliberately `!Sync`) — one bump arena per unit of scoped
   work. `alloc`, `alloc_slice_fill`, `alloc_slice_with` return references
   borrowing the arena; `scope`/`ArenaPool::scope` run a closure against a
@@ -51,15 +53,17 @@ recorded, sharded object pools, and diffable allocation-site accounting
    `compile_fail` battery on `ArenaPool::scope`, `Arena::alloc`, `Arena`).
 5. The pool budget (`limit_bytes`) bounds OS-reserved bytes (in-use +
    free-listed); on pressure the free list is drained back to the OS before
-   refusing, and refusal is a structured error that leaves the pool fully
-   usable (alloc-003).
+   refusing. New-chunk bytes are claimed atomically before allocation, so
+   concurrent arenas cannot cross the limit through a check-then-increment
+   race; refusal is structured and leaves the pool fully usable (alloc-003).
 
 ## Error model
 All fallible APIs return `Result<_, AllocError>`; `AllocError` is a
-structured enum (`Exhausted`, `OutOfMemory`, `LayoutOverflow`) carrying the
-allocation site, sizes, and budget context, with teaching `Display` text
-including ranked fixes (Decalogue P10). Out-of-memory is a refusal, never an
-abort (`handle_alloc_error` is not reachable from this crate). Panics do not
+structured enum (`Exhausted`, `OutOfMemory`, `LayoutOverflow`,
+`ReservationOverflow`) carrying the allocation site, sizes, and budget
+context, with teaching `Display` text including ranked fixes (Decalogue P10).
+Out-of-memory is a refusal, never an abort (`handle_alloc_error` is not
+reachable from this crate). Panics do not
 cross the API boundary except caller-supplied closures' own panics
 (`alloc_slice_with`), which unwind cleanly: the arena stays usable and the
 reserved bytes reclaim with the scope. Lock poisoning from such a panic is
@@ -103,6 +107,8 @@ structured budget refusal, the 10^6-cancellation G4 storm (emits a
 disjointness, concurrent leak-freedom, G5 deterministic reports, recorded
 hugepage decisions, and chunk-recycling bounds. Any reimplementation must
 pass this suite.
+In-module tests additionally verify first-chunk preflight sizing, structured
+reservation overflow, and concurrent hard-limit claims.
 
 ## No-claim boundaries
 - NO claim that hugepages actually back any allocation: without `madvise`
