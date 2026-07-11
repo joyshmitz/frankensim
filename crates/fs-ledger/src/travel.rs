@@ -25,6 +25,28 @@ use crate::{
     sql_err, text_param,
 };
 
+fn json_string(value: &str) -> String {
+    use core::fmt::Write as _;
+
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if u32::from(c) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", u32::from(c));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
 /// The root branch every ledger is born with (created by the v2 migration).
 pub const MAIN_BRANCH: i64 = 1;
 
@@ -172,6 +194,10 @@ pub struct ExplainOp {
     pub capability: String,
     /// Recorded execution mode.
     pub exec_mode: String,
+    /// Final operation outcome, or `None` while the producer is in flight.
+    pub outcome: Option<String>,
+    /// Structured diagnostic JSON, when the operation recorded one.
+    pub diag: Option<String>,
     /// Branch the op ran on.
     pub branch: i64,
     /// The artifacts this op consumed, recursively explained.
@@ -202,25 +228,33 @@ impl ExplainNode {
             .iter()
             .map(|op| {
                 let inputs: Vec<String> = op.inputs.iter().map(ExplainNode::to_json).collect();
+                let outcome = op
+                    .outcome
+                    .as_deref()
+                    .map_or_else(|| "null".to_string(), json_string);
+                let diag = op.diag.as_deref().unwrap_or("null");
                 format!(
-                    "{{\"op\":{},\"ir\":{},\"seed\":\"{}\",\"versions\":{},\"budget\":{},\
-                     \"capability\":{},\"exec_mode\":\"{}\",\"branch\":{},\"inputs\":[{}]}}",
+                    "{{\"op\":{},\"ir\":{},\"seed\":{},\"versions\":{},\"budget\":{},\
+                     \"capability\":{},\"exec_mode\":{},\"outcome\":{},\"diag\":{},\
+                     \"branch\":{},\"inputs\":[{}]}}",
                     op.id,
                     op.ir,
-                    op.seed_hex,
+                    json_string(&op.seed_hex),
                     op.versions,
                     op.budget,
                     op.capability,
-                    op.exec_mode,
+                    json_string(&op.exec_mode),
+                    outcome,
+                    diag,
                     op.branch,
                     inputs.join(",")
                 )
             })
             .collect();
         format!(
-            "{{\"artifact\":\"{}\",\"kind\":\"{}\",\"truncated\":{},\"produced_by\":[{}]}}",
-            self.hash_hex,
-            self.kind,
+            "{{\"artifact\":{},\"kind\":{},\"truncated\":{},\"produced_by\":[{}]}}",
+            json_string(&self.hash_hex),
+            json_string(&self.kind),
             self.truncated,
             ops.join(",")
         )
@@ -693,6 +727,8 @@ impl Ledger {
                 budget: op.budget,
                 capability: op.capability,
                 exec_mode: self.op_exec_mode(op_id)?,
+                outcome: op.outcome,
+                diag: op.diag,
                 branch: self.op_branch(op_id)?,
                 inputs,
             });
@@ -771,6 +807,17 @@ impl Ledger {
                 verdict.structure_mismatch = Some(format!("missing op row at position {position}"));
                 return Ok(verdict);
             };
+            if op_a.outcome.is_none()
+                || op_a.t_end.is_none()
+                || op_b.outcome.is_none()
+                || op_b.t_end.is_none()
+            {
+                verdict.structure_mismatch = Some(format!(
+                    "op at position {position} is still in flight in at least one ledger — \
+                     drain and finalize both studies before replay admission"
+                ));
+                return Ok(verdict);
+            }
             let mode_a_raw = self.op_exec_mode(ia)?;
             let mode_b_raw = other.op_exec_mode(ib)?;
             let mode_a = ExecMode::parse(&mode_a_raw).ok_or_else(|| LedgerError::Corrupt {
@@ -1191,6 +1238,94 @@ mod tests {
             .expect("replay verdict");
         assert!(verdict.is_replay_clean(), "envelope drift: {verdict:?}");
         assert_eq!(verdict.compared, 1);
+    }
+
+    #[test]
+    fn replay_never_admits_two_unfinished_studies() {
+        let original = mem();
+        let replay = mem();
+        original
+            .begin_op_on(
+                MAIN_BRANCH,
+                ExecMode::Deterministic,
+                None,
+                "{\"op\":\"unfinished\"}",
+                &FX,
+                1,
+            )
+            .expect("begin original");
+        replay
+            .begin_op_on(
+                MAIN_BRANCH,
+                ExecMode::Deterministic,
+                None,
+                "{\"op\":\"unfinished\"}",
+                &FX,
+                2,
+            )
+            .expect("begin replay");
+
+        let verdict = original
+            .replay_verdict(MAIN_BRANCH, &replay, MAIN_BRANCH)
+            .expect("replay verdict");
+        assert!(!verdict.is_replay_clean(), "unfinished replay was admitted");
+        assert!(
+            verdict
+                .structure_mismatch
+                .as_deref()
+                .is_some_and(|message| message.contains("still in flight")),
+            "unexpected refusal: {verdict:?}"
+        );
+        assert_eq!(verdict.compared, 0);
+    }
+
+    #[test]
+    fn explain_json_escapes_hostile_artifact_kinds() {
+        let ledger = mem();
+        let op = ledger
+            .begin_op_on(
+                MAIN_BRANCH,
+                ExecMode::Deterministic,
+                None,
+                "{\"op\":\"explain\"}",
+                &FX,
+                1,
+            )
+            .expect("begin");
+        let artifact = ledger
+            .put_artifact("kind\"\\\n\u{0001}", b"payload", None)
+            .expect("artifact");
+        ledger
+            .link(op, &artifact.hash, EdgeRole::Out)
+            .expect("link");
+        ledger
+            .finish_op(
+                op,
+                OpOutcome::Ok,
+                Some("{\"message\":\"quoted \\\"diagnostic\\\"\"}"),
+                2,
+            )
+            .expect("finish");
+
+        let json = ledger
+            .explain(&artifact.hash, 4)
+            .expect("explain")
+            .expect("node")
+            .to_json();
+        assert!(json.starts_with('{') && json.ends_with('}'), "{json}");
+        assert!(json.contains("\\u0001"), "{json}");
+        assert!(json.contains("\"outcome\":\"ok\""), "{json}");
+        assert!(json.contains("\"diag\":{\"message\":"), "{json}");
+        assert!(!json.contains('\u{0001}'), "{json:?}");
+        assert!(!json.chars().any(|ch| u32::from(ch) < 0x20), "{json:?}");
+        ledger
+            .append_event(&crate::EventRow {
+                session: None,
+                t: 3,
+                kind: "explain-json",
+                payload: Some(&json),
+            })
+            .expect("SQLite accepts strict explain JSON");
     }
 
     #[test]

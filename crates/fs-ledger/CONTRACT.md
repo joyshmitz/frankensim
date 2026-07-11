@@ -1,6 +1,6 @@
 # CONTRACT: fs-ledger
 
-> Status: ACTIVE (Design Ledger, schema v2). Owns the core schema + Rev S
+> Status: ACTIVE (Design Ledger, schema v3). Owns the core schema + Rev S
 > extension tables, BLAKE3 content addressing, the WAL/snapshot concurrency
 > contract, and — since schema v2 — forkable worlds, `at(t)` views,
 > `explain()`, the replay audit, and unreferenced-artifact GC (`travel`
@@ -51,9 +51,12 @@ fine-grained event stream. Layer: L6 (HELM). Runtime deps: `std` + `fsqlite`.
   = own ops + ancestors' up to each fork point), `begin_op_on` (branch +
   recorded `ExecMode`), `at_time` (consistent views at arbitrary instants:
   outcomes not yet written are masked, unfinished ops' outputs invisible),
-  `explain` (full causal trees, depth-limited, DAG-deduped, loud on orphan
-  inputs), `replay_verdict` (IR, all frozen explicits, execution mode, input
-  lineage, outcome, and diagnostic must agree; deterministic ops must then
+  `explain` (strict-JSON causal trees even for hostile artifact-kind text,
+  retaining producer outcome and diagnostic, depth-limited, DAG-deduped, loud
+  on orphan inputs), `replay_verdict` (IR,
+  all frozen explicits, execution mode, input lineage, outcome, and diagnostic
+  must agree; both studies must be drained and finalized before a clean
+  verdict is possible; deterministic ops must then
   reproduce output hashes exactly; fast hash divergences are reported without
   failing; row/branch/session/time envelopes are excluded),
   `gc_unreferenced_artifacts` (edge-less artifacts only; referenced
@@ -88,8 +91,9 @@ valid STRICT SQL), and `artifacts` gains `len`/`chunk_count` +
   sorted role-qualified linked-artifact hashes; node/root domains and leaf
   count are distinct; wall times, rowids, branch ids, and session envelopes
   are EXCLUDED, so logically identical histories produce identical roots
-  across ledgers and runs); commits chain to their branch predecessor and
-  persist as `vcs-commit` events. CHECKOUT returns the exact in-session frozen
+  across ledgers and runs); unchanged recommits are idempotent (never a
+  self-parent cycle), while changed commits chain to their branch predecessor
+  and persist as `vcs-commit` events. CHECKOUT returns the exact in-session frozen
   op/artifact view captured by that commit, so later ops and later links to an
   old op cannot leak future artifacts; `checkout_delta` returns the
   symmetric-difference op frontier (the `perturb()`-style delta a

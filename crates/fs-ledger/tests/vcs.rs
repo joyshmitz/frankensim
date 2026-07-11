@@ -70,10 +70,16 @@ fn vc_001_commits_are_reproducible_merkle_roots() {
         ca.root, cb.root,
         "identical logical histories yield identical roots (wall times excluded)"
     );
-    // Recommit without changes: same root, chained parent.
+    // Recommit without changes: the state identity is idempotent and must not
+    // create a self-parent cycle or duplicate event.
     let ca2 = vcs_a.commit(&ledger_a, 1).expect("recommit");
     assert_eq!(ca2.root, ca.root, "same state, same root");
-    assert_eq!(ca2.parent, Some(ca.root), "commits chain");
+    assert_eq!(ca2, ca, "unchanged recommit is the same commit");
+    assert_eq!(
+        ledger_a.table_count("events").expect("event count"),
+        1,
+        "idempotent recommit cannot append a duplicate commit event"
+    );
     // A new op changes the root.
     run_op(
         &ledger_a,
@@ -84,6 +90,7 @@ fn vc_001_commits_are_reproducible_merkle_roots() {
     );
     let ca3 = vcs_a.commit(&ledger_a, 1).expect("commit 3");
     assert_ne!(ca3.root, ca.root, "state change changes the root");
+    assert_eq!(ca3.parent, Some(ca.root), "changed states chain");
     // Different artifact content changes the root even with the same IR.
     let (ledger_c, dir_c) = open_ledger("repro-c");
     run_op(
@@ -108,8 +115,8 @@ fn vc_001_commits_are_reproducible_merkle_roots() {
     }
     verdict(
         "vc-001",
-        "roots reproduce across ledgers and runs; chain; move on any state or artifact \
-         change",
+        "roots reproduce across ledgers and runs; unchanged commits are idempotent; changed \
+         states chain and move on any state or artifact change",
     );
 }
 

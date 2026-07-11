@@ -112,7 +112,7 @@ pub struct StorageAudit {
 #[derive(Debug, Default)]
 pub struct Vcs {
     commits: BTreeMap<[u8; 32], CommitInfo>,
-    heads: BTreeMap<i64, ContentHash>,
+    heads: BTreeMap<i64, CommitInfo>,
     snapshots: BTreeMap<[u8; 32], ViewSnapshot>,
 }
 
@@ -357,11 +357,19 @@ impl Vcs {
             in_flight: 0,
             artifacts,
         };
+        if let Some(head) = self.heads.get(&branch)
+            && head.root == root
+        {
+            // Commits identify state, not button presses. Recommitting an
+            // unchanged branch is idempotent; recording `root` as its own
+            // parent would create a cycle in the commit graph.
+            return Ok(head.clone());
+        }
         let info = CommitInfo {
             root,
             branch,
             frontier_op: ops.last().copied(),
-            parent: self.heads.get(&branch).copied(),
+            parent: self.heads.get(&branch).map(|head| head.root),
         };
         let payload = format!(
             "{{\"kind\":\"vcs-commit\",\"root\":\"{}\",\"branch\":{},\"frontier\":{},\
@@ -380,7 +388,7 @@ impl Vcs {
             payload: Some(&payload),
         })?;
         self.commits.insert(root.0, info.clone());
-        self.heads.insert(branch, root);
+        self.heads.insert(branch, info.clone());
         self.snapshots.insert(root.0, snapshot);
         Ok(info)
     }
@@ -394,7 +402,7 @@ impl Vcs {
     /// The current head of a branch.
     #[must_use]
     pub fn head(&self, branch: i64) -> Option<ContentHash> {
-        self.heads.get(&branch).copied()
+        self.heads.get(&branch).map(|head| head.root)
     }
 
     /// CHECKOUT: return the exact frozen commit view (ops + finished output
