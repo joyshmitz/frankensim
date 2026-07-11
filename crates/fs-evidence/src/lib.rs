@@ -950,6 +950,11 @@ impl<T> Evidence<T> {
     /// or inverted bounds — everything here validates the ACTUAL
     /// numbers, not the constructor that claimed them.
     ///
+    /// Certified payloads must be `'static`: scalar evidence is identified
+    /// at this boundary so its carried `f64` can be bound bit-exactly to the
+    /// certified QoI. Borrow-scoped payloads remain plain `Evidence<T>` until
+    /// the caller promotes an owned value.
+    ///
     /// # Errors
     /// [`CertifyError`] naming what is missing and how to fix it.
     pub fn certified(self) -> Result<Certified<T>, CertifyError>

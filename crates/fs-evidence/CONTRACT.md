@@ -138,7 +138,10 @@ on fs-obs only.
    `Certified::into_evidence()` is the explicit downgrade — the mark is
    lost and any reconstruction must re-enter `certified()`
    (re-validated round trip). Escape hatches are plain `Evidence<T>` or
-   `NumericalCertificate::no_claim()`, never a `Certified<T>`.
+   `NumericalCertificate::no_claim()`, never a `Certified<T>`. Certification
+   requires an owned/`'static` payload so the boundary can detect scalar `f64`
+   values and bind them bit-exactly to their QoI; borrowed payloads remain
+   plain evidence until promoted to owned values.
    MIGRATION: `Certified<T>` was a type alias for `Evidence<T>`;
    callers that mutated or moved fields of a certified value now call
    `.into_evidence()` first (one workspace site: fs-geom conformance),

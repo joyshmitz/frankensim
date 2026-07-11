@@ -365,7 +365,7 @@ fn impossible_model_validity_refuses(p: ProvenanceHash) -> bool {
 fn certification_round_trip_revalidates(p: ProvenanceHash) -> (bool, bool, bool) {
     let a = Evidence::exact(2.0, p);
     let b = Evidence::enclosed(3.0, 2.9, 3.1, p);
-    let certified = Evidence::combine(Op::Mul, &a, &b, ())
+    let certified = Evidence::combine(Op::Mul, &a, &b, 6.0)
         .certified()
         .expect("rigorous chain certifies");
     let readable =
@@ -377,6 +377,7 @@ fn certification_round_trip_revalidates(p: ProvenanceHash) -> (bool, bool, bool)
         Err(fs_evidence::CertifyError::NotRigorous { .. })
     );
     reopened.numerical = NumericalCertificate::enclosure(5.9, 6.1);
+    reopened.value = 7.0;
     reopened.qoi = 7.0;
     let drifted_refused = matches!(
         reopened.certified(),
