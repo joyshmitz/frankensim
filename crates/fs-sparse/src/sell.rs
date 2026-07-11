@@ -154,6 +154,13 @@ impl Sell {
             "spmv: y length must equal nrows {}",
             self.nrows
         );
+        crate::fma::sell_spmv_dispatch(self, x, y);
+    }
+
+    /// The spmv loop body — recompiled by the x86 FMA-codegen capsule
+    /// (bead nabk); MUST stay `inline(always)`.
+    #[inline(always)]
+    pub(crate) fn spmv_body(&self, x: &[f64], y: &mut [f64]) {
         for (pos, &orig) in self.perm.iter().enumerate() {
             let (ch, lane) = (pos / self.c, pos % self.c);
             let mut acc = 0.0f64;
@@ -185,6 +192,13 @@ impl Sell {
     pub fn spmv_chunked(&self, x: &[f64], y: &mut [f64]) {
         assert_eq!(x.len(), self.ncols, "spmv: x length");
         assert_eq!(y.len(), self.nrows, "spmv: y length");
+        crate::fma::sell_spmv_chunked_dispatch(self, x, y);
+    }
+
+    /// The chunk-major loop body — recompiled by the x86 FMA-codegen
+    /// capsule (bead nabk); MUST stay `inline(always)`.
+    #[inline(always)]
+    pub(crate) fn spmv_chunked_body(&self, x: &[f64], y: &mut [f64]) {
         let c = self.c;
         let nchunks = self.chunk_ptr.len() - 1;
         let mut acc = vec![0.0f64; c];
@@ -211,6 +225,35 @@ impl Sell {
         }
     }
 
+    /// The per-shard chunk-range body (staging pairs) — recompiled by
+    /// the x86 FMA-codegen capsule (bead nabk); MUST stay
+    /// `inline(always)`.
+    #[inline(always)]
+    pub(crate) fn shard_body(&self, x: &[f64], lo: usize, hi: usize) -> Vec<(usize, f64)> {
+        let c = self.c;
+        let mut out = Vec::with_capacity((hi - lo) * c);
+        let mut acc = vec![0.0f64; c];
+        for ch in lo..hi {
+            let base = self.chunk_ptr[ch];
+            let kmax = (self.chunk_ptr[ch + 1] - base) / c;
+            acc.fill(0.0);
+            for k in 0..kmax {
+                let off = base + k * c;
+                let cols = &self.col_idx[off..off + c];
+                let vals = &self.vals[off..off + c];
+                for l in 0..c {
+                    acc[l] = vals[l].mul_add(x[cols[l]], acc[l]);
+                }
+            }
+            let row0 = ch * c;
+            let live = self.nrows.saturating_sub(row0).min(c);
+            for (l, &a) in acc.iter().enumerate().take(live) {
+                out.push((self.perm[row0 + l], a));
+            }
+        }
+        out
+    }
+
     /// Sharded chunk-major SpMV: disjoint chunk ranges on scoped
     /// threads; each thread writes only its own rows (perm within a
     /// chunk is thread-exclusive). Bitwise equal to [`Self::spmv_chunked`]
@@ -233,28 +276,10 @@ impl Sell {
                 let lo = (w * per).min(nchunks);
                 let hi = ((w + 1) * per).min(nchunks);
                 handles.push(scope.spawn(move || {
-                    let c = self.c;
-                    let mut out = Vec::with_capacity((hi - lo) * c);
-                    let mut acc = vec![0.0f64; c];
-                    for ch in lo..hi {
-                        let base = self.chunk_ptr[ch];
-                        let kmax = (self.chunk_ptr[ch + 1] - base) / c;
-                        acc.fill(0.0);
-                        for k in 0..kmax {
-                            let off = base + k * c;
-                            let cols = &self.col_idx[off..off + c];
-                            let vals = &self.vals[off..off + c];
-                            for l in 0..c {
-                                acc[l] = vals[l].mul_add(x[cols[l]], acc[l]);
-                            }
-                        }
-                        let row0 = ch * c;
-                        let live = self.nrows.saturating_sub(row0).min(c);
-                        for (l, &a) in acc.iter().enumerate().take(live) {
-                            out.push((self.perm[row0 + l], a));
-                        }
-                    }
-                    out
+                    // Closures are separate codegen units: target_feature
+                    // does NOT propagate in, so the shard body dispatches
+                    // HERE (one detection per shard — bead nabk).
+                    crate::fma::sell_shard_dispatch(self, x, lo, hi)
                 }));
             }
             for h in handles {

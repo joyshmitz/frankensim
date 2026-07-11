@@ -142,6 +142,15 @@ impl Bsr {
             "spmv: y length must equal nrows {}",
             self.nrows
         );
+        crate::fma::bsr_spmv_dispatch(self, x, y);
+    }
+
+    /// The spmv loop body, extracted so the x86 FMA-codegen capsule can
+    /// recompile it under `target_feature` (bead nabk). MUST stay
+    /// `inline(always)`: a non-inlined call keeps baseline codegen and
+    /// the per-element libm `fma()` call.
+    #[inline(always)]
+    pub(crate) fn spmv_body(&self, x: &[f64], y: &mut [f64]) {
         for rb in 0..self.brow_ptr.len() - 1 {
             for i in 0..self.br {
                 let mut acc = 0.0f64;

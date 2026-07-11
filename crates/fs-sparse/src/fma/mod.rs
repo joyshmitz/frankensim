@@ -61,3 +61,61 @@ unsafe fn spmv_x86(csr: &Csr, x: &[f64], y: &mut [f64]) {
 unsafe fn spmm_x86(csr: &Csr, x: &[f64], k: usize, y: &mut [f64]) {
     csr.spmm_body(x, k, y);
 }
+
+use crate::bsr::Bsr;
+use crate::perf::CsrCompact;
+use crate::sell::Sell;
+
+macro_rules! fma_dispatch {
+    ($name:ident, $ty:ty, $body:ident, ($($arg:ident: $t:ty),*) $(-> $ret:ty)?) => {
+        /// FMA-codegen dispatch (bead nabk): native fused instruction
+        /// when the CPU has avx2+fma, the identical portable body
+        /// otherwise. Safe to call; bit-identical either way.
+        #[inline]
+        pub(crate) fn $name(this: &$ty $(, $arg: $t)*) $(-> $ret)? {
+            #[cfg(target_arch = "x86_64")]
+            {
+                if std::arch::is_x86_feature_detected!("avx2")
+                    && std::arch::is_x86_feature_detected!("fma")
+                {
+                    // SAFETY: avx2+fma verified immediately above; the
+                    // inlined body is pure safe slice arithmetic.
+                    return unsafe { paste_x86::$name(this $(, $arg)*) };
+                }
+            }
+            this.$body($($arg),*)
+        }
+    };
+}
+
+fma_dispatch!(bsr_spmv_dispatch, Bsr, spmv_body, (x: &[f64], y: &mut [f64]));
+fma_dispatch!(sell_spmv_dispatch, Sell, spmv_body, (x: &[f64], y: &mut [f64]));
+fma_dispatch!(sell_spmv_chunked_dispatch, Sell, spmv_chunked_body, (x: &[f64], y: &mut [f64]));
+fma_dispatch!(sell_shard_dispatch, Sell, shard_body, (x: &[f64], lo: usize, hi: usize) -> Vec<(usize, f64)>);
+fma_dispatch!(compact_spmv_dispatch, CsrCompact, spmv_body, (x: &[f64], y: &mut [f64]));
+fma_dispatch!(compact_shard_dispatch, CsrCompact, shard_body, (x: &[f64], lo: usize, hi: usize, mine: &mut [f64]));
+
+/// The `target_feature`-recompiled bodies (one per dispatcher above).
+#[cfg(target_arch = "x86_64")]
+mod paste_x86 {
+    use super::{Bsr, CsrCompact, Sell};
+
+    macro_rules! fma_body {
+        ($name:ident, $ty:ty, $body:ident, ($($arg:ident: $t:ty),*) $(-> $ret:ty)?) => {
+            /// # Safety
+            /// Requires avx2+fma, verified by the dispatcher immediately
+            /// before the call. The body itself is safe code.
+            #[target_feature(enable = "avx2,fma")]
+            pub(super) unsafe fn $name(this: &$ty $(, $arg: $t)*) $(-> $ret)? {
+                this.$body($($arg),*)
+            }
+        };
+    }
+
+    fma_body!(bsr_spmv_dispatch, Bsr, spmv_body, (x: &[f64], y: &mut [f64]));
+    fma_body!(sell_spmv_dispatch, Sell, spmv_body, (x: &[f64], y: &mut [f64]));
+    fma_body!(sell_spmv_chunked_dispatch, Sell, spmv_chunked_body, (x: &[f64], y: &mut [f64]));
+    fma_body!(sell_shard_dispatch, Sell, shard_body, (x: &[f64], lo: usize, hi: usize) -> Vec<(usize, f64)>);
+    fma_body!(compact_spmv_dispatch, CsrCompact, spmv_body, (x: &[f64], y: &mut [f64]));
+    fma_body!(compact_shard_dispatch, CsrCompact, shard_body, (x: &[f64], lo: usize, hi: usize, mine: &mut [f64]));
+}

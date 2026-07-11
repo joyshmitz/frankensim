@@ -97,6 +97,13 @@ impl CsrCompact {
     pub fn spmv(&self, x: &[f64], y: &mut [f64]) {
         assert_eq!(x.len(), self.ncols, "spmv: x length");
         assert_eq!(y.len(), self.nrows, "spmv: y length");
+        crate::fma::compact_spmv_dispatch(self, x, y);
+    }
+
+    /// The serial loop body — recompiled by the x86 FMA-codegen capsule
+    /// (bead nabk); MUST stay `inline(always)`.
+    #[inline(always)]
+    pub(crate) fn spmv_body(&self, x: &[f64], y: &mut [f64]) {
         for (r, out) in y.iter_mut().enumerate() {
             let lo = self.row_ptr[r];
             let hi = self.row_ptr[r + 1];
@@ -107,6 +114,21 @@ impl CsrCompact {
                 acc = v.mul_add(x[c as usize], acc);
             }
             *out = acc;
+        }
+    }
+
+    /// The per-shard row-range body — recompiled by the x86 FMA-codegen
+    /// capsule (bead nabk); MUST stay `inline(always)`.
+    #[inline(always)]
+    pub(crate) fn shard_body(&self, x: &[f64], lo: usize, hi: usize, mine: &mut [f64]) {
+        for r in lo..hi {
+            let a = self.row_ptr[r];
+            let b = self.row_ptr[r + 1];
+            let mut acc = 0.0f64;
+            for (&c, &v) in self.col_idx[a..b].iter().zip(&self.vals[a..b]) {
+                acc = v.mul_add(x[c as usize], acc);
+            }
+            mine[r - lo] = acc;
         }
     }
 
@@ -190,15 +212,9 @@ impl CsrCompact {
                     continue;
                 }
                 scope.spawn(move || {
-                    for r in lo..hi {
-                        let a = self.row_ptr[r];
-                        let b = self.row_ptr[r + 1];
-                        let mut acc = 0.0f64;
-                        for (&c, &v) in self.col_idx[a..b].iter().zip(&self.vals[a..b]) {
-                            acc = v.mul_add(x[c as usize], acc);
-                        }
-                        mine[r - lo] = acc;
-                    }
+                    // Closures are separate codegen units: target_feature
+                    // does NOT propagate in — dispatch per shard (nabk).
+                    crate::fma::compact_shard_dispatch(self, x, lo, hi, mine);
                 });
             }
         });
