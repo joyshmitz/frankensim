@@ -936,6 +936,69 @@ impl fs_exec::TileKernel for PencilBlockKernel<'_> {
     }
 }
 
+/// Axis-0 parallelism (single outer block): the (n x stride) matrix is
+/// chunked into n contiguous ROW slices behind mutexes; each tile owns a
+/// COLUMN GROUP, gathering its pencils row by row, transforming them in
+/// cache, and scattering back. Every element is read and written by
+/// exactly one tile, so lock order affects timing only — per-pencil
+/// arithmetic and order match the serial path bit for bit.
+struct PencilColumnKernel<'a> {
+    rows: &'a [std::sync::Mutex<&'a mut [C64]>],
+    plan: &'a Fft,
+    n: usize,
+    stride: usize,
+    group: usize,
+    inverse: bool,
+}
+
+impl fs_exec::TileKernel for PencilColumnKernel<'_> {
+    type Out = ();
+
+    fn tiles(&self) -> fs_exec::TilePlan {
+        fs_exec::TilePlan::new(
+            "fs-fft/ndim-pencil-column-v1",
+            u64::try_from(self.stride.div_ceil(self.group)).expect("tile count fits u64"),
+        )
+    }
+
+    fn run(
+        &self,
+        tile: u64,
+        cx: &fs_exec::Cx<'_>,
+    ) -> core::ops::ControlFlow<fs_exec::Cancelled, ()> {
+        let tile = usize::try_from(tile).expect("tile index fits usize");
+        let lo = tile * self.group;
+        let g = self.group.min(self.stride - lo);
+        // Column-major workspace: line c occupies [c*n, (c+1)*n).
+        let mut lines = vec![C64::default(); g * self.n];
+        let mut scratch = vec![C64::default(); self.n];
+        for (t, row) in self.rows.iter().enumerate() {
+            let row = row.lock().expect("pencil row lock");
+            for c in 0..g {
+                lines[c * self.n + t] = row[lo + c];
+            }
+        }
+        for c in 0..g {
+            if cx.checkpoint().is_err() {
+                return core::ops::ControlFlow::Break(fs_exec::Cancelled);
+            }
+            let line = &mut lines[c * self.n..(c + 1) * self.n];
+            if self.inverse {
+                self.plan.inverse(line, &mut scratch);
+            } else {
+                self.plan.forward(line, &mut scratch);
+            }
+        }
+        for (t, row) in self.rows.iter().enumerate() {
+            let mut row = row.lock().expect("pencil row lock");
+            for c in 0..g {
+                row[lo + c] = lines[c * self.n + t];
+            }
+        }
+        core::ops::ControlFlow::Continue(())
+    }
+}
+
 impl FftNd {
     /// Executor-tiled forward N-D DFT: bitwise identical to
     /// [`FftNd::forward`] at every worker count (gated). See
@@ -999,31 +1062,43 @@ impl FftNd {
             }
             let stride: usize = self.dims[ax + 1..].iter().product();
             let outer: usize = self.dims[..ax].iter().product();
-            if outer == 1 {
-                // v1 serial axis (single outer block), gate-checked per
-                // pencil so cancellation stays bounded.
+            if outer == 1 && stride == 1 {
+                // Degenerate single pencil (1-D or all-leading-1 shapes):
+                // serial, gate-checked.
+                if gate.is_requested() {
+                    return Err(fs_exec::RunError::Cancelled {
+                        kernel: "fs-fft/ndim-axis-serial-v1",
+                        completed: 0,
+                        total: 1,
+                    });
+                }
                 let mut line = vec![C64::default(); n];
                 let mut scratch = vec![C64::default(); n];
-                for i in 0..stride {
-                    if gate.is_requested() {
-                        return Err(fs_exec::RunError::Cancelled {
-                            kernel: "fs-fft/ndim-axis-serial-v1",
-                            completed: u64::try_from(i).expect("pencil index fits u64"),
-                            total: u64::try_from(stride).expect("pencil count fits u64"),
-                        });
-                    }
-                    for (t, slot) in line.iter_mut().enumerate() {
-                        *slot = data[i + t * stride];
-                    }
-                    if inverse {
-                        plan.inverse(&mut line, &mut scratch);
-                    } else {
-                        plan.forward(&mut line, &mut scratch);
-                    }
-                    for (t, &v) in line.iter().enumerate() {
-                        data[i + t * stride] = v;
-                    }
+                line.copy_from_slice(data);
+                if inverse {
+                    plan.inverse(&mut line, &mut scratch);
+                } else {
+                    plan.forward(&mut line, &mut scratch);
                 }
+                data.copy_from_slice(&line);
+                continue;
+            }
+            if outer == 1 {
+                // Axis-0 column groups (row-locked): full parallelism on
+                // the first axis without changing any element's bits.
+                let rows: Vec<std::sync::Mutex<&mut [C64]>> =
+                    data.chunks_mut(stride).map(std::sync::Mutex::new).collect();
+                let group = stride.div_ceil(pool.workers().max(1)).clamp(1, 64);
+                let kernel = PencilColumnKernel {
+                    rows: &rows,
+                    plan,
+                    n,
+                    stride,
+                    group,
+                    inverse,
+                };
+                let (outcome, _report) = pool.run_with_gate(&kernel, gate);
+                outcome?;
                 continue;
             }
             let blocks: Vec<std::sync::Mutex<&mut [C64]>> = data
