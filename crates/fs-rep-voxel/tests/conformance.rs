@@ -146,8 +146,17 @@ fn rv_002_euclidean_dt_is_exact_vs_reference() {
         .expect("nonempty");
     let dt_min = dt.min();
     let dt_dims = dt.dims();
-    // O(n²) reference over the whole box: EXACT equality of squared
-    // distances (both sides are integer-valued in voxel units).
+    // O(n²) reference over the whole box, gated at the "EXACT" the case name
+    // promises — BIT-FOR-BIT, not a tolerance. `brute` is an exact-integer
+    // squared distance (i32 products); the DT stores the SAME exact-integer
+    // squared distance (guarded <= 2^53) and returns `det::sqrt(sq) *
+    // voxel_size`, where `det::sqrt` IS the correctly-rounded IEEE sqrt. So an
+    // exact DT reproduces `sqrt(brute) * voxel_size` bit-for-bit; a wrong
+    // nearest seed, a lower-envelope off-by-one, or a voxel-scaling slip flips
+    // at least one bit. (The old `< 1e-9` bound was ~7 orders looser than the
+    // integer sqrt-gap of ~0.02 here, so it "verified EXACT" while gating
+    // nothing near a real, discrete DT error.)
+    let voxel = dt.voxel_size();
     for x in dt_min[0]..dt_min[0] + i32::try_from(dt_dims[0]).expect("fits") {
         for y in dt_min[1]..dt_min[1] + i32::try_from(dt_dims[1]).expect("fits") {
             for z in dt_min[2]..dt_min[2] + i32::try_from(dt_dims[2]).expect("fits") {
@@ -159,10 +168,11 @@ fn rv_002_euclidean_dt_is_exact_vs_reference() {
                     })
                     .fold(f64::INFINITY, f64::min);
                 let got = dt.distance([x, y, z]).expect("in box");
-                let brute_dist = brute.sqrt();
-                assert!(
-                    (got - brute_dist).abs() < 1e-9,
-                    "DT not exact at ({x},{y},{z}): {got} vs {brute_dist}"
+                let brute_dist = brute.sqrt() * voxel;
+                assert_eq!(
+                    got.to_bits(),
+                    brute_dist.to_bits(),
+                    "DT not bit-exact at ({x},{y},{z}): {got} vs {brute_dist} (sq={brute})"
                 );
             }
         }
