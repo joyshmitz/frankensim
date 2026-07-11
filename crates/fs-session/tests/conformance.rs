@@ -664,10 +664,29 @@ fn ss_003e_ledger_scope_authority_is_canonical_and_fail_closed() {
         ));
     }
     let oversized = "a".repeat(MAX_LEDGER_SCOPE_BYTES + 1);
-    assert!(matches!(
-        gov.open_session(token_in_scope(44, &oversized)),
-        Err(SessionError::InvalidLedgerScope { .. })
-    ));
+    match gov.open_session(token_in_scope(44, &oversized)) {
+        Err(SessionError::InvalidLedgerScope {
+            scope_preview,
+            scope_bytes,
+            ..
+        }) => {
+            assert_eq!(scope_preview.len(), MAX_LEDGER_SCOPE_BYTES);
+            assert_eq!(scope_bytes, MAX_LEDGER_SCOPE_BYTES + 1);
+        }
+        other => panic!("expected bounded oversized-scope refusal, got {other:?}"),
+    }
+    let split_boundary = format!("{}é", "a".repeat(MAX_LEDGER_SCOPE_BYTES - 1));
+    match gov.open_session(token_in_scope(47, &split_boundary)) {
+        Err(SessionError::InvalidLedgerScope {
+            scope_preview,
+            scope_bytes,
+            ..
+        }) => {
+            assert_eq!(scope_preview.len(), MAX_LEDGER_SCOPE_BYTES - 1);
+            assert_eq!(scope_bytes, MAX_LEDGER_SCOPE_BYTES + 1);
+        }
+        other => panic!("expected UTF-8-safe scope preview, got {other:?}"),
+    }
     let boundary = "a".repeat(MAX_LEDGER_SCOPE_BYTES);
     gov.open_session(token_in_scope(44, &boundary))
         .expect("the exact scope-length boundary is admitted after refusal");
@@ -731,6 +750,14 @@ fn ss_003f_scoped_flush_isolated_interleaved_retryable_and_sink_bound() {
         .expect("beta submission"),
         SubmitOutcome::Executed { .. }
     ));
+    assert!(matches!(
+        gov.submit_once(SessionId(46), r#"beta-"failed"\key"#, || Charge {
+            core_s: f64::NAN,
+            ..Charge::default()
+        })
+        .expect("invalid charge becomes one terminal failure receipt"),
+        SubmitOutcome::Failed { .. }
+    ));
     gov.apply_memory_pressure(SessionId(45), 1)
         .expect("alpha event one");
     gov.apply_memory_pressure(SessionId(46), 1)
@@ -760,8 +787,8 @@ fn ss_003f_scoped_flush_isolated_interleaved_retryable_and_sink_bound() {
         .expect("beta independently binds its own sink");
     assert_eq!(
         beta_ledger.table_count("events").unwrap(),
-        3,
-        "beta meter + terminal receipt + one beta degradation event"
+        4,
+        "beta meter + success/failure receipts + one beta degradation event"
     );
     assert!(
         alpha_ledger.lint().unwrap().is_clean(),
@@ -788,7 +815,7 @@ fn ss_003f_scoped_flush_isolated_interleaved_retryable_and_sink_bound() {
     ));
     assert_eq!(
         beta_ledger.table_count("events").unwrap(),
-        3,
+        4,
         "cross-scope sink attempt must append nothing"
     );
     gov.flush_scope_to_ledger(ALPHA, &alpha_ledger)
@@ -796,14 +823,14 @@ fn ss_003f_scoped_flush_isolated_interleaved_retryable_and_sink_bound() {
     assert_eq!(alpha_ledger.table_count("events").unwrap(), 6);
     gov.flush_scope_to_ledger(BETA, &beta_ledger)
         .expect("alpha activity did not consume beta's degradation cursor");
-    assert_eq!(beta_ledger.table_count("events").unwrap(), 4);
+    assert_eq!(beta_ledger.table_count("events").unwrap(), 5);
 
     gov.flush_scope_to_ledger(ALPHA, &alpha_ledger)
         .expect("alpha unchanged no-op");
     gov.flush_scope_to_ledger(BETA, &beta_ledger)
         .expect("beta unchanged no-op");
     assert_eq!(alpha_ledger.table_count("events").unwrap(), 6);
-    assert_eq!(beta_ledger.table_count("events").unwrap(), 4);
+    assert_eq!(beta_ledger.table_count("events").unwrap(), 5);
 }
 
 #[test]

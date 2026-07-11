@@ -12,6 +12,18 @@ pub const MAX_LEDGER_SCOPE_BYTES: usize = 128;
 const LEDGER_SCOPE_REQUIREMENT: &str =
     "must contain 1..=128 ASCII graphic bytes (0x21..=0x7e), with no whitespace or controls";
 
+fn scope_error_preview(scope: &str) -> String {
+    let mut end = 0;
+    for (index, ch) in scope.char_indices() {
+        let next = index + ch.len_utf8();
+        if next > MAX_LEDGER_SCOPE_BYTES {
+            break;
+        }
+        end = next;
+    }
+    scope[..end].to_string()
+}
+
 /// A session identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SessionId(pub u64);
@@ -48,7 +60,8 @@ impl CapabilityToken {
             || !scope.bytes().all(|byte| byte.is_ascii_graphic())
         {
             return Err(SessionError::InvalidLedgerScope {
-                scope: scope.to_string(),
+                scope_preview: scope_error_preview(scope),
+                scope_bytes: scope.len(),
                 requirement: LEDGER_SCOPE_REQUIREMENT,
             });
         }

@@ -26,6 +26,9 @@ Consumers: the P2 marquee demo, the HELM e2e suite (gp3.11).
   project those authorities through `f64`. `ledger_scope` is exact authority,
   admitted only as 1..=128 ASCII graphic bytes: whitespace, controls, Unicode
   normalization aliases, and oversized namespaces fail before registration.
+  Invalid-scope diagnostics retain only a UTF-8-safe 128-byte preview plus the
+  exact input length, so refusing an oversized authority string is itself
+  memory-bounded.
 - `Governor` — `Send + Sync`; hot paths are mutex-guarded in-memory
   state. `open_session` rejects invalid ledger scope, non-finite, or negative
   floating grants before registration and rejects an already-open `SessionId`

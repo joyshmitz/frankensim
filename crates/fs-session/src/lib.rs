@@ -59,8 +59,11 @@ pub enum SessionError {
     },
     /// A ledger scope was not a canonical bounded authority string.
     InvalidLedgerScope {
-        /// The rejected exact string.
-        scope: String,
+        /// UTF-8-safe prefix of the rejected string, bounded to the maximum
+        /// admitted scope length.
+        scope_preview: String,
+        /// Exact byte length of the rejected string.
+        scope_bytes: usize,
         /// Canonical scope grammar.
         requirement: &'static str,
     },
@@ -128,9 +131,13 @@ impl fmt::Display for SessionError {
                 "session {id} is already open; capability tokens are immutable and the existing \
                  session state was left unchanged"
             ),
-            SessionError::InvalidLedgerScope { scope, requirement } => write!(
+            SessionError::InvalidLedgerScope {
+                scope_preview,
+                scope_bytes,
+                requirement,
+            } => write!(
                 f,
-                "invalid ledger scope {scope:?}: {requirement}; session and flush state were not mutated"
+                "invalid ledger scope {scope_preview:?} (input bytes: {scope_bytes}): {requirement}; session and flush state were not mutated"
             ),
             SessionError::UnknownLedgerScope { scope } => write!(
                 f,
