@@ -6,14 +6,14 @@
 
 use fs_checker::{
     AnchoredSourceRequest, AnchoredSourceVerifier, CHECKER_PROTOCOL_VERSION, ColorBreakdown,
-    ContentHash, FalsifierRequest, FalsifierVerifier, SignaturePurpose, SignatureRequest,
-    SignatureStatus, SourceCertificateRequest, SourceCertificateVerifier, Verdict,
-    VerificationCapabilities, VerificationDecision, WaiverGrant, WaiverVerifier, check,
-    check_against_root, check_for_release_with_capabilities, check_json,
-    check_json_for_release_with_capabilities, check_json_release_preflight,
+    ContentHash, DerivationRequest, DerivationVerifier, FalsifierRequest, FalsifierVerifier,
+    SignaturePurpose, SignatureRequest, SignatureStatus, SourceCertificateRequest,
+    SourceCertificateVerifier, Verdict, VerificationCapabilities, VerificationDecision,
+    WaiverGrant, WaiverVerifier, check, check_against_root, check_for_release_with_capabilities,
+    check_json, check_json_for_release_with_capabilities, check_json_release_preflight,
     check_json_with_capabilities, check_release_preflight, check_with_capabilities,
 };
-use fs_evidence::{Color, ValidityDomain};
+use fs_evidence::{Color, IntervalOp, ValidityDomain};
 use fs_package::{Claim, EvidencePackage, FalsifierRecord, Provenance};
 
 const ARTIFACT_HASH: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -89,9 +89,11 @@ impl SourceCertificateVerifier for ExactSourceVerifier<'_> {
             && request.hi.to_bits() == 1.0f64.to_bits()
             && request.producer == "test-solver/cert"
             && request.certificate_hash.to_hex() == ARTIFACT_HASH;
-        VerificationDecision {
-            accepted,
-            policy_fingerprint: policy_fingerprint("exact-source-verifier"),
+        let policy = policy_fingerprint("exact-source-verifier");
+        if accepted {
+            VerificationDecision::accept(policy)
+        } else {
+            VerificationDecision::reject(policy)
         }
     }
 }
@@ -102,10 +104,12 @@ impl SourceCertificateVerifier for AlternatePolicySourceVerifier<'_> {
             claim_id: self.claim_id,
         }
         .verify(request)
-        .accepted;
-        VerificationDecision {
-            accepted,
-            policy_fingerprint: ContentHash([0x77; 32]),
+        .accepted();
+        let policy = ContentHash([0x77; 32]);
+        if accepted {
+            VerificationDecision::accept(policy)
+        } else {
+            VerificationDecision::reject(policy)
         }
     }
 }
@@ -121,18 +125,22 @@ impl AnchoredSourceVerifier for ExactAnchorVerifier {
                 (request.claim_index, request.claim_id),
                 (1, "c2" | "validated") | (0, "v")
             );
-        VerificationDecision {
-            accepted,
-            policy_fingerprint: policy_fingerprint("exact-anchor-verifier"),
+        let policy = policy_fingerprint("exact-anchor-verifier");
+        if accepted {
+            VerificationDecision::accept(policy)
+        } else {
+            VerificationDecision::reject(policy)
         }
     }
 }
 
 impl FalsifierVerifier for ExactFalsifierVerifier {
     fn verify(&self, request: &FalsifierRequest<'_>) -> VerificationDecision {
-        VerificationDecision {
-            accepted: request.artifact_hash.to_hex() == ARTIFACT_HASH,
-            policy_fingerprint: policy_fingerprint("exact-falsifier-verifier"),
+        let policy = policy_fingerprint("exact-falsifier-verifier");
+        if request.artifact_hash.to_hex() == ARTIFACT_HASH {
+            VerificationDecision::accept(policy)
+        } else {
+            VerificationDecision::reject(policy)
         }
     }
 }
@@ -311,18 +319,21 @@ struct ReleaseVerifier;
 
 impl fs_checker::SignatureVerifier for ReleaseVerifier {
     fn verify(&self, request: &SignatureRequest<'_>) -> VerificationDecision {
-        VerificationDecision {
-            accepted: request.signature == format!("release-test:{}", request.subject_hash())
-                && matches!(
-                    request.purpose,
-                    SignaturePurpose::ReleaseApproval {
-                        checker_protocol: 4,
-                        expected_root,
-                        admission_context,
-                    } if expected_root == request.package_root
-                        && admission_context != ContentHash([0; 32])
-                ),
-            policy_fingerprint: policy_fingerprint("release-verifier"),
+        let accepted = request.signature == format!("release-test:{}", request.subject_hash())
+            && matches!(
+                request.purpose,
+                SignaturePurpose::ReleaseApproval {
+                    checker_protocol: 4,
+                    expected_root,
+                    admission_context,
+                } if expected_root == request.package_root
+                    && admission_context != ContentHash([0; 32])
+            );
+        let policy = policy_fingerprint("release-verifier");
+        if accepted {
+            VerificationDecision::accept(policy)
+        } else {
+            VerificationDecision::reject(policy)
         }
     }
 }
@@ -387,9 +398,11 @@ struct ExactWaiverVerifier;
 
 impl WaiverVerifier for ExactWaiverVerifier {
     fn verify(&self, mac: &str, message: &[u8]) -> VerificationDecision {
-        VerificationDecision {
-            accepted: mac == fixture_waiver_mac(message),
-            policy_fingerprint: policy_fingerprint("exact-waiver-verifier"),
+        let policy = policy_fingerprint("exact-waiver-verifier");
+        if mac == fixture_waiver_mac(message) {
+            VerificationDecision::accept(policy)
+        } else {
+            VerificationDecision::reject(policy)
         }
     }
 }
@@ -616,10 +629,13 @@ fn release_gate_refuses_package_root_attestation_substitution() {
 
     impl fs_checker::SignatureVerifier for RootAttestationVerifier {
         fn verify(&self, request: &SignatureRequest<'_>) -> VerificationDecision {
-            VerificationDecision {
-                accepted: request.signature == format!("integrity-test:{}", request.subject_hash())
-                    && request.purpose == SignaturePurpose::PackageRootAttestation,
-                policy_fingerprint: ContentHash([0x88; 32]),
+            let accepted = request.signature
+                == format!("integrity-test:{}", request.subject_hash())
+                && request.purpose == SignaturePurpose::PackageRootAttestation;
+            if accepted {
+                VerificationDecision::accept(ContentHash([0x88; 32]))
+            } else {
+                VerificationDecision::reject(ContentHash([0x88; 32]))
             }
         }
     }
@@ -841,6 +857,81 @@ fn release_gate_requires_matching_anchor_signature_and_root() {
 }
 
 #[test]
+fn release_gate_rejects_derived_validated_anchor_substitution() {
+    struct DerivedAnchorVerifier;
+    struct ExactDerivationVerifier;
+
+    impl AnchoredSourceVerifier for DerivedAnchorVerifier {
+        fn verify(&self, request: &AnchoredSourceRequest<'_>) -> VerificationDecision {
+            let accepted = request.package_provenance == &prov()
+                && request.statement == "matches"
+                && request.dataset_id == "wt-2026"
+                && request.content_hash.to_hex() == ARTIFACT_HASH
+                && request.regime == &good_regime()
+                && matches!(
+                    (request.claim_index, request.claim_id),
+                    (0, "parent") | (1, "derived")
+                );
+            let policy = policy_fingerprint("exact-anchor-verifier");
+            if accepted {
+                VerificationDecision::accept(policy)
+            } else {
+                VerificationDecision::reject(policy)
+            }
+        }
+    }
+
+    impl DerivationVerifier for ExactDerivationVerifier {
+        fn verify(&self, request: &DerivationRequest<'_>) -> VerificationDecision {
+            if request.artifact_hash.to_hex() == ARTIFACT_HASH {
+                VerificationDecision::accept(ContentHash([0x99; 32]))
+            } else {
+                VerificationDecision::reject(ContentHash([0x99; 32]))
+            }
+        }
+    }
+
+    let substituted_hash = "1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let package = EvidencePackage::new(prov())
+        .with_claim(validated("parent", good_regime()).with_falsifier(passed_falsifier()))
+        .with_claim(
+            Claim::derived(
+                "derived",
+                "matches",
+                Color::Validated {
+                    regime: good_regime(),
+                    dataset: "wt-2026".to_string(),
+                },
+                vec![0],
+                IntervalOp::Hull,
+                ARTIFACT_HASH,
+            )
+            .with_anchor("wt-2026", ARTIFACT_HASH)
+            .with_anchor("wt-2026", substituted_hash)
+            .with_falsifier(passed_falsifier()),
+        )
+        .signed("release-test:forged");
+    let capabilities = VerificationCapabilities::deny_all()
+        .with_anchored_sources(&DerivedAnchorVerifier)
+        .with_derivations(&ExactDerivationVerifier)
+        .with_falsifiers(&EXACT_FALSIFIER_VERIFIER);
+    let report = check_for_release_with_capabilities(
+        &package,
+        package_root(&package),
+        &ReleaseVerifier,
+        &capabilities,
+    );
+    assert_capability_refusal(&report, "anchored-source-refused");
+    assert!(
+        report.findings().iter().any(|finding| {
+            finding.kind == "anchored-source-refused" && finding.detail.contains("claim 'derived'")
+        }),
+        "release must reject the substituted derived anchor specifically: {:?}",
+        report.findings()
+    );
+}
+
+#[test]
 fn the_checker_advertises_its_protocol_version() {
     assert_eq!(CHECKER_PROTOCOL_VERSION, 4);
     assert_eq!(fs_checker::CHECKER_SUPPORTED_PACKAGE_FORMAT, 6);
@@ -870,10 +961,13 @@ fn checker_json_path_and_signature_capability() {
     }
     impl SignatureVerifier for MacVerifier {
         fn verify(&self, request: &SignatureRequest<'_>) -> VerificationDecision {
-            VerificationDecision {
-                accepted: request.signature == mac(request.subject_hash())
-                    && request.purpose == SignaturePurpose::PackageRootAttestation,
-                policy_fingerprint: policy_fingerprint("mac-verifier"),
+            let accepted = request.signature == mac(request.subject_hash())
+                && request.purpose == SignaturePurpose::PackageRootAttestation;
+            let policy = policy_fingerprint("mac-verifier");
+            if accepted {
+                VerificationDecision::accept(policy)
+            } else {
+                VerificationDecision::reject(policy)
             }
         }
     }

@@ -77,9 +77,11 @@ impl SourceCertificateVerifier for FixtureSourceVerifier {
                 request.hi,
                 request.producer,
             );
-        VerificationDecision {
-            accepted,
-            policy_fingerprint: fixture_policy("fixture-source-verifier"),
+        let policy = fixture_policy("fixture-source-verifier");
+        if accepted {
+            VerificationDecision::accept(policy)
+        } else {
+            VerificationDecision::reject(policy)
         }
     }
 }
@@ -89,27 +91,33 @@ impl AnchoredSourceVerifier for FixtureAnchorVerifier {
         let accepted = request.content_hash.to_hex() == CANONICAL_DATASET_HASH
             && !request.dataset_id.is_empty()
             && !request.regime.bounds().is_empty();
-        VerificationDecision {
-            accepted,
-            policy_fingerprint: fixture_policy("fixture-anchor-verifier"),
+        let policy = fixture_policy("fixture-anchor-verifier");
+        if accepted {
+            VerificationDecision::accept(policy)
+        } else {
+            VerificationDecision::reject(policy)
         }
     }
 }
 
 impl FalsifierVerifier for FixtureFalsifierVerifier {
     fn verify(&self, request: &FalsifierRequest<'_>) -> VerificationDecision {
-        VerificationDecision {
-            accepted: request.artifact_hash.to_hex() == CANONICAL_DATASET_HASH,
-            policy_fingerprint: fixture_policy("fixture-falsifier-verifier"),
+        let policy = fixture_policy("fixture-falsifier-verifier");
+        if request.artifact_hash.to_hex() == CANONICAL_DATASET_HASH {
+            VerificationDecision::accept(policy)
+        } else {
+            VerificationDecision::reject(policy)
         }
     }
 }
 
 impl DerivationVerifier for FixtureDerivationVerifier {
     fn verify(&self, request: &DerivationRequest<'_>) -> VerificationDecision {
-        VerificationDecision {
-            accepted: request.artifact_hash.to_hex() == CANONICAL_DATASET_HASH,
-            policy_fingerprint: fixture_policy("fixture-derivation-verifier"),
+        let policy = fixture_policy("fixture-derivation-verifier");
+        if request.artifact_hash.to_hex() == CANONICAL_DATASET_HASH {
+            VerificationDecision::accept(policy)
+        } else {
+            VerificationDecision::reject(policy)
         }
     }
 }
@@ -242,7 +250,7 @@ fn fixture_source_authority_binds_every_typed_request_field() {
         producer: "test-solver/cert",
         certificate_hash: fs_package::ContentHash::from_hex(&hash).expect("fixture hash"),
     };
-    assert!(FIXTURE_SOURCE_VERIFIER.verify(&request).accepted);
+    assert!(FIXTURE_SOURCE_VERIFIER.verify(&request).accepted());
     for altered in [
         SourceCertificateRequest {
             package_provenance: &other_provenance,
@@ -268,7 +276,7 @@ fn fixture_source_authority_binds_every_typed_request_field() {
         },
     ] {
         assert!(
-            !FIXTURE_SOURCE_VERIFIER.verify(&altered).accepted,
+            !FIXTURE_SOURCE_VERIFIER.verify(&altered).accepted(),
             "fixture authority accepted a modified typed request: {altered:?}"
         );
     }
@@ -859,21 +867,24 @@ struct PermissiveSignatureVerifier;
 
 impl SignatureVerifier for ExactSignatureVerifier {
     fn verify(&self, request: &SignatureRequest<'_>) -> VerificationDecision {
-        VerificationDecision {
-            accepted: request.signature == format!("test-signature:{}", request.subject_hash())
-                && match request.purpose {
-                    SignaturePurpose::PackageRootAttestation => true,
-                    SignaturePurpose::ReleaseApproval {
-                        checker_protocol: 4,
-                        expected_root,
-                        admission_context,
-                    } => {
-                        expected_root == request.package_root
-                            && admission_context != ContentHash([0; 32])
-                    }
-                    SignaturePurpose::ReleaseApproval { .. } => false,
-                },
-            policy_fingerprint: fixture_policy("exact-signature-verifier"),
+        let accepted = request.signature == format!("test-signature:{}", request.subject_hash())
+            && match request.purpose {
+                SignaturePurpose::PackageRootAttestation => true,
+                SignaturePurpose::ReleaseApproval {
+                    checker_protocol: 4,
+                    expected_root,
+                    admission_context,
+                } => {
+                    expected_root == request.package_root
+                        && admission_context != ContentHash([0; 32])
+                }
+                SignaturePurpose::ReleaseApproval { .. } => false,
+            };
+        let policy = fixture_policy("exact-signature-verifier");
+        if accepted {
+            VerificationDecision::accept(policy)
+        } else {
+            VerificationDecision::reject(policy)
         }
     }
 }
@@ -1089,9 +1100,11 @@ impl FalsifierVerifier for ExactFalsifierArtifactVerifier {
             && !request.refuted
             && request.detail == "no counterexample"
             && request.artifact_hash.to_hex() == CANONICAL_DATASET_HASH;
-        VerificationDecision {
-            accepted,
-            policy_fingerprint: fixture_policy("exact-falsifier-artifact-verifier"),
+        let policy = fixture_policy("exact-falsifier-artifact-verifier");
+        if accepted {
+            VerificationDecision::accept(policy)
+        } else {
+            VerificationDecision::reject(policy)
         }
     }
 }
@@ -1592,9 +1605,11 @@ impl DerivationVerifier for ExactDerivationArtifactVerifier {
             && request.parent_indices == [0]
             && request.parent_claim_hashes == [self.parent_claim_hash]
             && request.artifact_hash.to_hex() == CANONICAL_DATASET_HASH;
-        VerificationDecision {
-            accepted,
-            policy_fingerprint: fixture_policy("exact-derivation-artifact-verifier"),
+        let policy = fixture_policy("exact-derivation-artifact-verifier");
+        if accepted {
+            VerificationDecision::accept(policy)
+        } else {
+            VerificationDecision::reject(policy)
         }
     }
 }
@@ -1749,6 +1764,65 @@ fn one_capability_cannot_rotate_policy_fingerprints_mid_package() {
 }
 
 #[test]
+fn derived_validated_anchor_substitution_requires_exact_anchor_authority() {
+    let validated = Color::Validated {
+        regime: good_regime(),
+        dataset: "wind-tunnel-2026".to_string(),
+    };
+    let parent = Claim::anchored(
+        "parent",
+        "matches reference data",
+        good_regime(),
+        "wind-tunnel-2026",
+        CANONICAL_DATASET_HASH,
+    );
+    let substituted_hash = "1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let forged = EvidencePackage::new(prov())
+        .with_claim(parent.clone())
+        .with_claim(
+            Claim::derived(
+                "derived",
+                "matches reference data",
+                validated.clone(),
+                vec![0],
+                IntervalOp::Hull,
+                CANONICAL_DATASET_HASH,
+            )
+            .with_anchor("wind-tunnel-2026", CANONICAL_DATASET_HASH)
+            .with_anchor("wind-tunnel-2026", substituted_hash),
+        );
+    assert!(matches!(
+        forged.verify_with(&source_capabilities()),
+        Err(PackageError::AnchoredSourceRefused {
+            claim,
+            dataset,
+            why: "rejected by the injected verifier",
+            policy_fingerprint: Some(_),
+        }) if claim == "derived" && dataset == "wind-tunnel-2026"
+    ));
+
+    let exact = EvidencePackage::new(prov()).with_claim(parent).with_claim(
+        Claim::derived(
+            "derived",
+            "matches reference data",
+            validated,
+            vec![0],
+            IntervalOp::Hull,
+            CANONICAL_DATASET_HASH,
+        )
+        .with_anchor("wind-tunnel-2026", CANONICAL_DATASET_HASH),
+    );
+    let report = exact
+        .verify_with(&source_capabilities())
+        .expect("the exact derived anchor is independently authenticated");
+    assert_eq!(
+        report.receipt().policy_fingerprints().anchored_sources(),
+        Some(fixture_policy("fixture-anchor-verifier"))
+    );
+    assert!(report.receipt().validate_hash());
+}
+
+#[test]
 fn v3_falsifier_coverage_and_content_binding() {
     let good = derived_package();
     let capabilities = source_capabilities();
@@ -1850,9 +1924,11 @@ impl SourceCertificateVerifier for ExactSourceVerifier {
             && request.hi.to_bits() == 2.0f64.to_bits()
             && request.producer == "test-solver/cert"
             && request.certificate_hash.to_hex() == CANONICAL_DATASET_HASH;
-        VerificationDecision {
-            accepted,
-            policy_fingerprint: fixture_policy("exact-source-verifier"),
+        let policy = fixture_policy("exact-source-verifier");
+        if accepted {
+            VerificationDecision::accept(policy)
+        } else {
+            VerificationDecision::reject(policy)
         }
     }
 }
@@ -1870,9 +1946,11 @@ impl AnchoredSourceVerifier for ExactAnchorSubjectVerifier {
             && request.regime == &good_regime()
             && request.dataset_id == "wind-tunnel-2026"
             && request.content_hash.to_hex() == CANONICAL_DATASET_HASH;
-        VerificationDecision {
-            accepted,
-            policy_fingerprint: fixture_policy("exact-anchor-subject-verifier"),
+        let policy = fixture_policy("exact-anchor-subject-verifier");
+        if accepted {
+            VerificationDecision::accept(policy)
+        } else {
+            VerificationDecision::reject(policy)
         }
     }
 }
@@ -2093,9 +2171,11 @@ fn waiver_mac(message: &[u8]) -> String {
 
 impl WaiverVerifier for HashWaiverVerifier {
     fn verify(&self, mac: &str, message: &[u8]) -> VerificationDecision {
-        VerificationDecision {
-            accepted: mac == waiver_mac(message),
-            policy_fingerprint: fixture_policy("hash-waiver-verifier"),
+        let policy = fixture_policy("hash-waiver-verifier");
+        if mac == waiver_mac(message) {
+            VerificationDecision::accept(policy)
+        } else {
+            VerificationDecision::reject(policy)
         }
     }
 }

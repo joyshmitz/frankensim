@@ -273,11 +273,11 @@ let claim = Claim::estimated(
 let pkg = EvidencePackage::new(Provenance::new("commit-abc", "lock-def"))
     .with_claim(claim);
 
-let root = pkg.merkle_root();
+let root = pkg.try_merkle_root().expect("bounded example package");
 let report = check_against_root(&pkg, root);
 
 assert!(report.passed());
-assert_eq!(report.merkle_root, root);
+assert_eq!(report.merkle_root(), root);
 assert!(report.render_pie().contains("estimated"));
 ```
 

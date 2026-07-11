@@ -137,8 +137,9 @@ fn anchoring_dataset_presence(pkg: &EvidencePackage, report: &PackageReport) -> 
     (
         matched > 0,
         format!(
-            "{matched} admitted validated claim(s) have an exact origin-matching anchor; {named} \
-             scientific dataset declaration(s); unrelated extra anchors are excluded"
+            "{matched} admitted validated claim(s) have an exact dataset-matching authenticated \
+             anchor; {named} scientific dataset declaration(s); unrelated extra anchors are \
+             excluded"
         ),
     )
 }

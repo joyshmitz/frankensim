@@ -1953,17 +1953,23 @@ impl EvidencePackage {
                 })?;
                 bind_policy_fingerprint(
                     &mut policy_fingerprints.derivations,
-                    decision.policy_fingerprint,
+                    decision.policy_fingerprint(),
                     "derivations",
                 )?;
-                if !decision.accepted {
+                if !decision.accepted() {
                     return Err(PackageError::DerivationRefused {
                         claim: claim.id.clone(),
                         why: "rejected by the injected verifier",
-                        policy_fingerprint: Some(decision.policy_fingerprint),
+                        policy_fingerprint: Some(decision.policy_fingerprint()),
                     });
                 }
             }
+            self.verify_validated_anchors(
+                claim_index,
+                claim,
+                capabilities,
+                &mut policy_fingerprints,
+            )?;
             match (&claim.origin, &claim.color) {
                 (
                     ClaimOrigin::SourceCertificate {
@@ -2007,68 +2013,15 @@ impl EvidencePackage {
                     })?;
                     bind_policy_fingerprint(
                         &mut policy_fingerprints.source_certificates,
-                        decision.policy_fingerprint,
+                        decision.policy_fingerprint(),
                         "source-certificates",
                     )?;
-                    if !decision.accepted {
+                    if !decision.accepted() {
                         return Err(PackageError::SourceCertificateRefused {
                             claim: claim.id.clone(),
                             producer: producer.clone(),
                             why: "rejected by the injected verifier",
-                            policy_fingerprint: Some(decision.policy_fingerprint),
-                        });
-                    }
-                }
-                (
-                    ClaimOrigin::AnchoredSource {
-                        dataset_id,
-                        content_hash,
-                    },
-                    Color::Validated { regime, .. },
-                ) => {
-                    let Some(verifier) = capabilities.anchored_sources else {
-                        return Err(PackageError::AnchoredSourceRefused {
-                            claim: claim.id.clone(),
-                            dataset: dataset_id.clone(),
-                            why: "anchored-source capability missing",
-                            policy_fingerprint: None,
-                        });
-                    };
-                    let Some(content_hash) = ContentHash::from_hex(content_hash) else {
-                        return Err(PackageError::InvalidOrigin {
-                            claim: claim.id.clone(),
-                            why: "anchored-source hash is not canonical".to_string(),
-                        });
-                    };
-                    let request = AnchoredSourceRequest {
-                        package_provenance: &self.provenance,
-                        claim_index,
-                        claim_id: &claim.id,
-                        statement: &claim.statement,
-                        regime,
-                        dataset_id,
-                        content_hash,
-                    };
-                    let decision = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        verifier.verify(&request)
-                    }))
-                    .map_err(|_| PackageError::AnchoredSourceRefused {
-                        claim: claim.id.clone(),
-                        dataset: dataset_id.clone(),
-                        why: "verifier callback panicked",
-                        policy_fingerprint: None,
-                    })?;
-                    bind_policy_fingerprint(
-                        &mut policy_fingerprints.anchored_sources,
-                        decision.policy_fingerprint,
-                        "anchored-sources",
-                    )?;
-                    if !decision.accepted {
-                        return Err(PackageError::AnchoredSourceRefused {
-                            claim: claim.id.clone(),
-                            dataset: dataset_id.clone(),
-                            why: "rejected by the injected verifier",
-                            policy_fingerprint: Some(decision.policy_fingerprint),
+                            policy_fingerprint: Some(decision.policy_fingerprint()),
                         });
                     }
                 }
@@ -2110,15 +2063,15 @@ impl EvidencePackage {
                     })?;
                     bind_policy_fingerprint(
                         &mut policy_fingerprints.waivers,
-                        decision.policy_fingerprint,
+                        decision.policy_fingerprint(),
                         "waivers",
                     )?;
-                    if !decision.accepted {
+                    if !decision.accepted() {
                         return Err(PackageError::WaiverRefused {
                             claim: claim.id.clone(),
                             waiver: grant.waiver_id.clone(),
                             why: "rejected by the injected verifier",
-                            policy_fingerprint: Some(decision.policy_fingerprint),
+                            policy_fingerprint: Some(decision.policy_fingerprint()),
                         });
                     }
                 }
@@ -2174,6 +2127,123 @@ impl EvidencePackage {
         })
     }
 
+    fn verify_validated_anchors(
+        &self,
+        claim_index: usize,
+        claim: &Claim,
+        capabilities: &VerificationCapabilities<'_>,
+        policies: &mut VerificationPolicyFingerprints,
+    ) -> Result<(), PackageError> {
+        let Color::Validated { regime, dataset } = &claim.color else {
+            return Ok(());
+        };
+        match &claim.origin {
+            ClaimOrigin::AnchoredSource {
+                dataset_id,
+                content_hash,
+            } => self.verify_validated_anchor(
+                claim_index,
+                claim,
+                regime,
+                dataset_id,
+                content_hash,
+                capabilities,
+                policies,
+            ),
+            ClaimOrigin::Derived => {
+                let mut matching = claim
+                    .anchors
+                    .iter()
+                    .filter(|anchor| anchor.dataset_id == *dataset)
+                    .peekable();
+                if matching.peek().is_none() {
+                    return Err(PackageError::AnchoredSourceRefused {
+                        claim: claim.id.clone(),
+                        dataset: dataset.clone(),
+                        why: "matching validated anchor missing",
+                        policy_fingerprint: None,
+                    });
+                }
+                for anchor in matching {
+                    self.verify_validated_anchor(
+                        claim_index,
+                        claim,
+                        regime,
+                        &anchor.dataset_id,
+                        &anchor.content_hash,
+                        capabilities,
+                        policies,
+                    )?;
+                }
+                Ok(())
+            }
+            // An administrative waiver never turns its declared color into
+            // scientific validation authority. The other alternatives are
+            // rejected as color/origin mismatches by structural verification.
+            ClaimOrigin::AuthenticatedWaiver(_)
+            | ClaimOrigin::SourceCertificate { .. }
+            | ClaimOrigin::EstimatedSource { .. } => Ok(()),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)] // exact typed anchor subject; no ambient authority inputs
+    fn verify_validated_anchor(
+        &self,
+        claim_index: usize,
+        claim: &Claim,
+        regime: &fs_evidence::ValidityDomain,
+        dataset_id: &str,
+        content_hash: &str,
+        capabilities: &VerificationCapabilities<'_>,
+        policies: &mut VerificationPolicyFingerprints,
+    ) -> Result<(), PackageError> {
+        let Some(verifier) = capabilities.anchored_sources else {
+            return Err(PackageError::AnchoredSourceRefused {
+                claim: claim.id.clone(),
+                dataset: dataset_id.to_string(),
+                why: "anchored-source capability missing",
+                policy_fingerprint: None,
+            });
+        };
+        let Some(content_hash) = ContentHash::from_hex(content_hash) else {
+            return Err(PackageError::InvalidOrigin {
+                claim: claim.id.clone(),
+                why: "validated anchor hash is not canonical".to_string(),
+            });
+        };
+        let request = AnchoredSourceRequest {
+            package_provenance: &self.provenance,
+            claim_index,
+            claim_id: &claim.id,
+            statement: &claim.statement,
+            regime,
+            dataset_id,
+            content_hash,
+        };
+        let decision =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| verifier.verify(&request)))
+                .map_err(|_| PackageError::AnchoredSourceRefused {
+                    claim: claim.id.clone(),
+                    dataset: dataset_id.to_string(),
+                    why: "verifier callback panicked",
+                    policy_fingerprint: None,
+                })?;
+        bind_policy_fingerprint(
+            &mut policies.anchored_sources,
+            decision.policy_fingerprint(),
+            "anchored-sources",
+        )?;
+        if !decision.accepted() {
+            return Err(PackageError::AnchoredSourceRefused {
+                claim: claim.id.clone(),
+                dataset: dataset_id.to_string(),
+                why: "rejected by the injected verifier",
+                policy_fingerprint: Some(decision.policy_fingerprint()),
+            });
+        }
+        Ok(())
+    }
+
     fn verify_falsifiers(
         &self,
         claim_index: usize,
@@ -2226,15 +2296,15 @@ impl EvidencePackage {
             })?;
             bind_policy_fingerprint(
                 &mut policies.falsifiers,
-                decision.policy_fingerprint,
+                decision.policy_fingerprint(),
                 "falsifiers",
             )?;
-            if !decision.accepted {
+            if !decision.accepted() {
                 return Err(PackageError::FalsifierRefused {
                     claim: claim.id.clone(),
                     falsifier: falsifier.name.clone(),
                     why: "rejected by the injected verifier",
-                    policy_fingerprint: Some(decision.policy_fingerprint),
+                    policy_fingerprint: Some(decision.policy_fingerprint()),
                 });
             }
         }
@@ -2284,10 +2354,10 @@ impl EvidencePackage {
             why: "verifier callback panicked",
             policy_fingerprint: None,
         })?;
-        if !decision.accepted {
+        if !decision.accepted() {
             return Err(PackageError::SignatureRefused {
                 why: "rejected by the injected verifier",
-                policy_fingerprint: Some(decision.policy_fingerprint),
+                policy_fingerprint: Some(decision.policy_fingerprint()),
             });
         }
         Ok((
@@ -2295,7 +2365,7 @@ impl EvidencePackage {
                 signature: signature.clone(),
                 purpose,
             }),
-            Some(decision.policy_fingerprint),
+            Some(decision.policy_fingerprint()),
         ))
     }
 

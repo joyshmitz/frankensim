@@ -28,7 +28,9 @@
 //! - [`ClaimOrigin::Derived`] — a composition receipt; the checker
 //!   re-runs `compose` over the parents and the result must equal the
 //!   claimed color bit-exactly (the v3 receipt machinery, now the
-//!   origin itself).
+//!   origin itself). A derived `Validated` claim must also carry a matching
+//!   dataset anchor, and every matching anchor is independently admitted by
+//!   [`AnchoredSourceVerifier`]; the derivation verifier cannot authorize it.
 //! - [`ClaimOrigin::AuthenticatedWaiver`] — an explicit, expiring,
 //!   MAC'd grant. NEVER self-authorizing: verification requires an
 //!   INJECTED [`WaiverVerifier`] capability plus a date context; the
@@ -52,12 +54,22 @@ pub type PolicyFingerprint = ContentHash;
 /// policy identity are returned by the same callback, preventing a mutable
 /// verifier from making a decision under one policy while separately reporting
 /// another fingerprint.
+///
+/// ```compile_fail
+/// use fs_package::{ContentHash, VerificationDecision};
+///
+/// // Decisions must be constructed atomically through `accept` or `reject`.
+/// let forged = VerificationDecision {
+///     accepted: true,
+///     policy_fingerprint: ContentHash([0; 32]),
+/// };
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VerificationDecision {
     /// Whether this exact request was accepted.
-    pub accepted: bool,
+    accepted: bool,
     /// Stable identity of the policy that made this decision.
-    pub policy_fingerprint: PolicyFingerprint,
+    policy_fingerprint: PolicyFingerprint,
 }
 
 impl VerificationDecision {
@@ -77,6 +89,18 @@ impl VerificationDecision {
             accepted: false,
             policy_fingerprint,
         }
+    }
+
+    /// Whether the policy accepted this exact request.
+    #[must_use]
+    pub const fn accepted(self) -> bool {
+        self.accepted
+    }
+
+    /// Stable identity of the policy that made this decision.
+    #[must_use]
+    pub const fn policy_fingerprint(self) -> PolicyFingerprint {
+        self.policy_fingerprint
     }
 }
 
@@ -826,7 +850,7 @@ mod tests {
             expiry_day: u64::MAX,
             mac: "anything".to_string(),
         };
-        assert!(!NoWaiverVerifier.verify(&grant.mac, b"message").accepted);
+        assert!(!NoWaiverVerifier.verify(&grant.mac, b"message").accepted());
     }
 
     #[test]
@@ -842,7 +866,7 @@ mod tests {
             producer: "solver/cert",
             certificate_hash: ContentHash([0; 32]),
         };
-        assert!(!NoSourceCertificateVerifier.verify(&request).accepted);
+        assert!(!NoSourceCertificateVerifier.verify(&request).accepted());
     }
 
     #[test]
@@ -858,13 +882,13 @@ mod tests {
             dataset_id: "dataset",
             content_hash: ContentHash([0; 32]),
         };
-        assert!(!NoAnchoredSourceVerifier.verify(&request).accepted);
+        assert!(!NoAnchoredSourceVerifier.verify(&request).accepted());
         let signature = SignatureRequest {
             package_root: ContentHash([0; 32]),
             signature: "signature",
             purpose: SignaturePurpose::PackageRootAttestation,
         };
-        assert!(!NoSignatureVerifier.verify(&signature).accepted);
+        assert!(!NoSignatureVerifier.verify(&signature).accepted());
     }
 
     #[test]

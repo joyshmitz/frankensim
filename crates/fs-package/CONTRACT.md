@@ -34,8 +34,8 @@ Injected verifier implementations are caller-owned synchronous capabilities.
   claim subject, ordered records/parents, and parsed proof-artifact hash. A
   `WaiverVerification` pairs a `WaiverVerifier` with an explicit Unix-day clock
   context. Every callback atomically returns acceptance plus a stable
-  `PolicyFingerprint`; rejecting and conflicting fingerprints survive in
-  structured refusals.
+  `PolicyFingerprint` through a sealed `VerificationDecision`; rejecting and
+  conflicting fingerprints survive in structured refusals.
 - `EvidencePackage { format_version, claims, provenance, signature }` —
   builder: `new(prov).with_claim(..).signed(..)`.
   - `try_merkle_root() -> Result<ContentHash, PackageError>` — a bounded 32-byte
@@ -114,7 +114,12 @@ Injected verifier implementations are caller-owned synchronous capabilities.
   dataset id AND content hash exactly equal the origin tuple, and whose dataset
   id equals the `Validated` color. An unrelated canonical hash does not count.
   Positive admission additionally requires an injected anchor verifier to
-  accept the complete typed subject; a matching hash is only an address.
+  accept the complete typed subject; a matching hash is only an address. A
+  derived `Validated` claim must carry at least one exact dataset-id match, and
+  every such matching anchor is authenticated independently. Derivation
+  authority cannot substitute a new dataset hash. The invoked anchor-policy
+  fingerprint and root-bound anchor list participate in the receipt hash and
+  release-admission context.
 - SOURCE CERTIFICATES: a canonical certificate hash is only an artifact
   address. Positive verification requires an injected verifier to establish
   the exact typed claim request. Merely naming a producer and 64-hex hash never
