@@ -814,6 +814,13 @@ pub enum CertifyError {
         /// The certificate's upper bound.
         hi: f64,
     },
+    /// Scalar evidence whose carried value differs from the certified QoI.
+    ScalarValueMismatch {
+        /// The carried scalar value.
+        value: f64,
+        /// The scalar QoI described by the certificate.
+        qoi: f64,
+    },
     /// A statistical certificate contains an invalid uncertainty value.
     InvalidStatistical {
         /// The invalid field.
@@ -870,6 +877,11 @@ impl fmt::Display for CertifyError {
                 f,
                 "Certified<T> refused: qoi {qoi} lies outside its own claimed enclosure \
                  [{lo}, {hi}] — the certificate contradicts the value it travels with"
+            ),
+            CertifyError::ScalarValueMismatch { value, qoi } => write!(
+                f,
+                "Certified<f64> refused: carried value {value} differs from certificate QoI \
+                 {qoi} — scalar evidence must describe the number it carries"
             ),
             CertifyError::InvalidStatistical {
                 field,
@@ -940,8 +952,16 @@ impl<T> Evidence<T> {
     ///
     /// # Errors
     /// [`CertifyError`] naming what is missing and how to fix it.
-    pub fn certified(self) -> Result<Certified<T>, CertifyError> {
+    pub fn certified(self) -> Result<Certified<T>, CertifyError>
+    where
+        T: 'static,
+    {
         let (qoi, lo, hi) = (self.qoi, self.numerical.lo, self.numerical.hi);
+        if let Some(value) = (&self.value as &dyn core::any::Any).downcast_ref::<f64>()
+            && value.to_bits() != qoi.to_bits()
+        {
+            return Err(CertifyError::ScalarValueMismatch { value: *value, qoi });
+        }
         match self.numerical.kind {
             NumericalKind::Estimate | NumericalKind::NoClaim => {
                 return Err(CertifyError::NotRigorous {

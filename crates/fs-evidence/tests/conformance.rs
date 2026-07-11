@@ -399,7 +399,17 @@ fn evd_012_certified_is_unforgeable_and_validated() {
         forge(NumericalCertificate::enclosure(0.0, 1.0), 2.0),
         Err(CertifyError::QoiOutsideEnclosure { .. })
     );
-    // (e) A public ModelEvidence literal cannot override an impossible
+    // (e) Scalar evidence cannot carry one value while certifying another.
+    let mut mismatched_scalar = Evidence::exact(1.0, p);
+    mismatched_scalar.value = 2.0;
+    let scalar_mismatch = matches!(
+        mismatched_scalar.certified(),
+        Err(CertifyError::ScalarValueMismatch {
+            value: 2.0,
+            qoi: 1.0
+        })
+    );
+    // (f) A public ModelEvidence literal cannot override an impossible
     // validity box by merely asserting `in_domain: true`.
     let invalid_model_validity = [
         ValidityDomain::unconstrained()
@@ -426,7 +436,7 @@ fn evd_012_certified_is_unforgeable_and_validated() {
                 DecisionStatus::NotDecisionGrade { .. }
             )
     });
-    // (f) Legitimate exact/enclosure composition remains usable, and
+    // (g) Legitimate exact/enclosure composition remains usable, and
     // reads flow through the immutable Deref view.
     let a = Evidence::exact(2.0, p);
     let b = Evidence::enclosed(3.0, 2.9, 3.1, p);
@@ -434,7 +444,7 @@ fn evd_012_certified_is_unforgeable_and_validated() {
         .certified()
         .expect("rigorous chain certifies");
     let readable = cert.qoi.to_bits() == 6.0f64.to_bits() && cert.evidence().numerical.lo <= 6.0;
-    // (g) Downgrade-mutate-recertify: the ONLY mutation path loses the
+    // (h) Downgrade-mutate-recertify: the ONLY mutation path loses the
     // mark, and reconstruction re-validates (round-trip invariance).
     let mut reopened = cert.into_evidence();
     reopened.numerical = NumericalCertificate::estimate(5.9, 6.1);
@@ -457,12 +467,13 @@ fn evd_012_certified_is_unforgeable_and_validated() {
             && nan_bound
             && inf_bound
             && escaped
+            && scalar_mismatch
             && invalid_model_validity
             && readable
             && weakened_refused
             && drifted_refused,
-        "Certified<T> is opaque: every numerical and model-validity forge route refused with \
-         its structured reason; rigorous composition still certifies; \
+        "Certified<T> is opaque: numerical, scalar-value, and model-validity forge routes are \
+         refused with structured reasons; rigorous composition still certifies; \
          downgrade-mutate-recertify re-validates",
     );
 }

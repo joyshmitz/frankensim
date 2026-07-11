@@ -124,7 +124,8 @@ on fs-obs only.
    OPAQUE newtype over `Evidence<T>` — private inner, no `DerefMut`, no
    field access for writing. The ONLY constructor is
    `Evidence::certified()`, which validates the ACTUAL numbers, not the
-   constructor that claimed them: Exact requires a finite QoI with
+  constructor that claimed them: scalar evidence requires bit-identical carried
+  value and QoI; Exact requires a finite QoI with
    bit-identical bounds; Enclosure requires finite ordered bounds that
    CONTAIN the QoI; statistical e-values, levels, widths, and confidence
    parameters must satisfy their finite domains; model discrepancy must be
