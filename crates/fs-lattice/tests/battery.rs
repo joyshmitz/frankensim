@@ -48,13 +48,21 @@ fn lat_001_solid_cell_exact() {
             worst = worst.max((eff.c[i][j] - probe.c[i][j]).abs());
         }
     }
+    // A homogeneous (fully solid) cell needs NO periodic corrector (u_per ≡ 0),
+    // so the homogenized moduli reproduce the base material to ROUNDOFF, not to a
+    // solver floor: worst |8x8 − 1-elem| measured 8.9e-15 on x86 (ts1), and
+    // C11/C12/C33 hit the exact λ+2μ / λ / μ = 3.5 / 1.5 / 1.0. Gate at 1e-11
+    // (~1000× the roundoff floor), ~5 orders tighter than the old 1e-9 — which
+    // sat far above any real homogenization defect. The ordering bug this gate
+    // once caught relaxed C11 by 2.0; a subtler ~1e-10 assembly slip would have
+    // slipped through 1e-9 while still claiming the solid cell is "exact".
     verdict(
         "lat-001-solid-exact",
-        worst < 1e-9
-            && (eff.c[0][0] - 3.5).abs() < 1e-9
-            && (eff.c[0][1] - 1.5).abs() < 1e-9
-            && (eff.c[2][2] - 1.0).abs() < 1e-9
-            && (eff.c[0][0] - eff.c[1][1]).abs() < 1e-10
+        worst < 1e-11
+            && (eff.c[0][0] - 3.5).abs() < 1e-11
+            && (eff.c[0][1] - 1.5).abs() < 1e-11
+            && (eff.c[2][2] - 1.0).abs() < 1e-11
+            && (eff.c[0][0] - eff.c[1][1]).abs() < 1e-11
             && spd3(&eff.c)
             && (eff.density - 1.0).abs() < 1e-15,
         &format!(
