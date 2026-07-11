@@ -311,3 +311,60 @@ pub fn trn1c64(src: &[f64], dst: &mut [f64], n1: usize) {
         bi += TILE;
     }
 }
+
+/// Scalar twin for [`crate::neon::transpose::gath8c64`]-class column
+/// gathers (bead 27d3): `bufs[c·n1 + i] = src[i·n1 + g + c]` over
+/// interleaved-complex elements. Pure exact moves, identical iteration
+/// order — bitwise by construction.
+///
+/// # Panics
+/// Structured panics on length/geometry mismatches.
+pub fn gath8c64(src: &[f64], bufs: &mut [f64], n1: usize, g: usize) {
+    let need = crate::checked_trn1c64_len(n1)
+        .unwrap_or_else(|| panic!("gath8c64 extent overflow (programmer error)"));
+    assert_eq!(src.len(), need, "gath8c64 src length (programmer error)");
+    assert_eq!(
+        bufs.len(),
+        16 * n1,
+        "gath8c64 bufs length (programmer error)"
+    );
+    assert!(
+        g + 8 <= n1,
+        "gath8c64 column group out of range (programmer error)"
+    );
+    for i in 0..n1 {
+        for c in 0..8 {
+            let s = 2 * (i * n1 + g + c);
+            let d = 2 * (c * n1 + i);
+            bufs[d] = src[s];
+            bufs[d + 1] = src[s + 1];
+        }
+    }
+}
+
+/// Scalar twin for the matching column scatter (the inverse move).
+///
+/// # Panics
+/// Structured panics on length/geometry mismatches.
+pub fn scat8c64(bufs: &[f64], dst: &mut [f64], n1: usize, g: usize) {
+    let need = crate::checked_trn1c64_len(n1)
+        .unwrap_or_else(|| panic!("scat8c64 extent overflow (programmer error)"));
+    assert_eq!(dst.len(), need, "scat8c64 dst length (programmer error)");
+    assert_eq!(
+        bufs.len(),
+        16 * n1,
+        "scat8c64 bufs length (programmer error)"
+    );
+    assert!(
+        g + 8 <= n1,
+        "scat8c64 column group out of range (programmer error)"
+    );
+    for k in 0..n1 {
+        for c in 0..8 {
+            let s = 2 * (c * n1 + k);
+            let d = 2 * (k * n1 + g + c);
+            dst[d] = bufs[s];
+            dst[d + 1] = bufs[s + 1];
+        }
+    }
+}

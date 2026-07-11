@@ -54,3 +54,81 @@ pub fn trn1c64(src: &[f64], dst: &mut [f64], n1: usize) {
         bi += TILE;
     }
 }
+
+/// Gather columns `g..g+8` of an n₁×n₁ interleaved-complex matrix into
+/// a dense 8×n₁ buffer: `bufs[c·n1 + i] = src[i·n1 + g + c]` (complex
+/// indices; slices are f64 with lengths `2·n1²` and `2·8·n1`). One
+/// 128-byte line of the source feeds all eight buffer streams, so the
+/// strided side still touches every line exactly once. Pure exact
+/// moves — BITWISE across tiers by construction (bead 27d3, the fused
+/// six-step's inner loop).
+///
+/// # Panics
+/// Structured panics on length/geometry mismatches.
+pub fn gath8c64(src: &[f64], bufs: &mut [f64], n1: usize, g: usize) {
+    let need = crate::checked_trn1c64_len(n1)
+        .unwrap_or_else(|| panic!("gath8c64 extent overflow (programmer error)"));
+    assert_eq!(src.len(), need, "gath8c64 src length (programmer error)");
+    assert_eq!(
+        bufs.len(),
+        16 * n1,
+        "gath8c64 bufs length (programmer error)"
+    );
+    assert!(
+        g + 8 <= n1,
+        "gath8c64 column group out of range (programmer error)"
+    );
+    let sp = src.as_ptr();
+    let bp = bufs.as_mut_ptr();
+    for i in 0..n1 {
+        // SAFETY: i < n1 and g + c < n1 (asserted), so the source
+        // element index i·n1 + g + c is < n1² and its two f64s are
+        // inside the asserted 2·n1² slice; the buffer index c·n1 + i is
+        // < 8·n1 inside the asserted 16·n1 f64 slice. src and bufs are
+        // distinct slices (shared + exclusive borrows) — no aliasing.
+        unsafe {
+            let line = sp.add(2 * (i * n1 + g));
+            for c in 0..8 {
+                let v = vld1q_f64(line.add(2 * c));
+                vst1q_f64(bp.add(2 * (c * n1 + i)), v);
+            }
+        }
+    }
+}
+
+/// Scatter a dense 8×n₁ buffer into columns `g..g+8` of an n₁×n₁
+/// interleaved-complex matrix: `dst[k·n1 + g + c] = bufs[c·n1 + k]` —
+/// the exact inverse of [`gath8c64`], and also the fused six-step's
+/// row→column output move (eight contiguous rows ARE a dense buffer).
+/// Pure exact moves — BITWISE across tiers by construction.
+///
+/// # Panics
+/// Structured panics on length/geometry mismatches.
+pub fn scat8c64(bufs: &[f64], dst: &mut [f64], n1: usize, g: usize) {
+    let need = crate::checked_trn1c64_len(n1)
+        .unwrap_or_else(|| panic!("scat8c64 extent overflow (programmer error)"));
+    assert_eq!(dst.len(), need, "scat8c64 dst length (programmer error)");
+    assert_eq!(
+        bufs.len(),
+        16 * n1,
+        "scat8c64 bufs length (programmer error)"
+    );
+    assert!(
+        g + 8 <= n1,
+        "scat8c64 column group out of range (programmer error)"
+    );
+    let bp = bufs.as_ptr();
+    let dp = dst.as_mut_ptr();
+    for k in 0..n1 {
+        // SAFETY: mirror of gath8c64 — every index is bounded by the
+        // asserts above; bufs and dst cannot alias (shared + exclusive
+        // borrows).
+        unsafe {
+            let line = dp.add(2 * (k * n1 + g));
+            for c in 0..8 {
+                let v = vld1q_f64(bp.add(2 * (c * n1 + k)));
+                vst1q_f64(line.add(2 * c), v);
+            }
+        }
+    }
+}

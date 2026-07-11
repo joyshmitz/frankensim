@@ -117,6 +117,11 @@ pub type R4Qrun = fn(&[f64], &[f64], &[f64], &[f64], &mut [f64], &[f64; 6], bool
 /// (`dst[i·n1+j] = src[j·n1+i]`, slice length 2·n1²): (src, dst, n1).
 pub type Trn1C64 = fn(&[f64], &mut [f64], usize);
 
+/// Column-group gather/scatter between an n₁×n₁ interleaved-complex
+/// matrix and a dense 8×n₁ buffer: (matrix_or_bufs, bufs_or_matrix,
+/// n1, g) — the fused six-step's inner move (bead 27d3).
+pub type Strip8C64 = fn(&[f64], &mut [f64], usize, usize);
+
 /// The resolved-once function table (plan §5.1 consequence 5).
 pub struct Ops {
     /// Tier the table was built for (ledger/tune-table key material).
@@ -160,6 +165,11 @@ pub struct Ops {
     /// 8×8-tiled complex transpose (fs-fft's six-step tile pass): pure
     /// exact moves, BITWISE across tiers by construction.
     pub trn1c64: Trn1C64,
+    /// Column-group gather into a dense 8×n₁ buffer: pure exact moves,
+    /// BITWISE across tiers by construction (bead 27d3).
+    pub gath8c64: Strip8C64,
+    /// Column-group scatter from a dense 8×n₁ buffer (the inverse).
+    pub scat8c64: Strip8C64,
 }
 
 static OPS: OnceLock<Ops> = OnceLock::new();
@@ -184,6 +194,8 @@ const SCALAR_OPS: Ops = Ops {
     btile4x4pf32: scalar::btile4x4pf32,
     r4qrun_f64: scalar::r4qrun_f64,
     trn1c64: scalar::trn1c64,
+    gath8c64: scalar::gath8c64,
+    scat8c64: scalar::scat8c64,
 };
 
 fn build_table() -> Ops {
@@ -210,6 +222,8 @@ fn build_table() -> Ops {
                 btile4x4pf32: neon::gemmf32::btile4x4pf32,
                 r4qrun_f64: neon::r4qrun_f64,
                 trn1c64: neon::transpose::trn1c64,
+                gath8c64: neon::transpose::gath8c64,
+                scat8c64: neon::transpose::scat8c64,
             },
             // x86 capsule v1 covers axpy/dot/sum (the <300-line capsule cap
             // is a feature: scale/mul_elem/fma3 arrive with their consumer,
@@ -237,6 +251,8 @@ fn build_table() -> Ops {
                     btile4x4pf32: scalar::btile4x4pf32,
                     r4qrun_f64: x86::r4qrun_f64,
                     trn1c64: scalar::trn1c64,
+                    gath8c64: scalar::gath8c64,
+                    scat8c64: scalar::scat8c64,
                 }
             }
             _ => SCALAR_OPS,
@@ -568,6 +584,42 @@ mod tests {
                 "trn1c64 diverged from twin at n1 {n1} (tier {:?})",
                 t.tier
             );
+        }
+        // gath8c64/scat8c64: bitwise vs twin, and scatter inverts gather.
+        for (n1, g) in [(8usize, 0usize), (16, 0), (16, 8), (32, 16)] {
+            let src = gen_vals(2 * n1 * n1, 0x6A ^ (n1 + g) as u64);
+            let mut b_tier = vec![0.0f64; 16 * n1];
+            let mut b_ref = vec![0.0f64; 16 * n1];
+            (t.gath8c64)(&src, &mut b_tier, n1, g);
+            scalar::gath8c64(&src, &mut b_ref, n1, g);
+            assert!(
+                b_tier
+                    .iter()
+                    .zip(&b_ref)
+                    .all(|(x, y)| x.to_bits() == y.to_bits()),
+                "gath8c64 diverged from twin at n1 {n1} g {g} (tier {:?})",
+                t.tier
+            );
+            let mut m_tier = vec![0.0f64; 2 * n1 * n1];
+            let mut m_ref = vec![0.0f64; 2 * n1 * n1];
+            (t.scat8c64)(&b_tier, &mut m_tier, n1, g);
+            scalar::scat8c64(&b_ref, &mut m_ref, n1, g);
+            assert!(
+                m_tier
+                    .iter()
+                    .zip(&m_ref)
+                    .all(|(x, y)| x.to_bits() == y.to_bits()),
+                "scat8c64 diverged from twin at n1 {n1} g {g} (tier {:?})",
+                t.tier
+            );
+            // Scatter inverts gather on the touched columns.
+            for i in 0..n1 {
+                for c in 0..8 {
+                    let idx = 2 * (i * n1 + g + c);
+                    assert_eq!(m_tier[idx].to_bits(), src[idx].to_bits());
+                    assert_eq!(m_tier[idx + 1].to_bits(), src[idx + 1].to_bits());
+                }
+            }
         }
         println!(
             "{{\"suite\":\"fs-simd/equivalence\",\"case\":\"battery\",\"verdict\":\"pass\",\"detail\":\"tier={} lens=0..67\"}}",

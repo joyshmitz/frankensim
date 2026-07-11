@@ -362,14 +362,19 @@ impl Fft {
         // by (1, 0) is exact, so no special case — then scatter into
         // the same 8 columns of `scratch`. A column is dead after its
         // own gather, so writing it back cannot alias live input.
+        let gather = fs_simd::ops().gath8c64;
+        let scatter = fs_simd::ops().scat8c64;
         let mut g = 0;
         while g < n1 {
-            for i1 in 0..n1 {
-                let line = &data[i1 * n1 + g..i1 * n1 + g + GCOLS];
-                for (c, v) in line.iter().enumerate() {
-                    bufs[c * n1 + i1] = *v;
-                }
-            }
+            // Vectorized column-group gather (bead 27d3 final lever):
+            // one q-register move per complex, bitwise vs the scalar
+            // twin in fs-simd's tier battery.
+            gather(
+                simd_view::as_f64(data),
+                simd_view::as_f64_mut(&mut bufs),
+                n1,
+                g,
+            );
             for c in 0..GCOLS {
                 let j = g + c;
                 let buf = &mut bufs[c * n1..(c + 1) * n1];
@@ -384,12 +389,12 @@ impl Fft {
                     *v = v.mul(w);
                 }
             }
-            for k1 in 0..n1 {
-                let line = &mut scratch[k1 * n1 + g..k1 * n1 + g + GCOLS];
-                for (c, v) in line.iter_mut().enumerate() {
-                    *v = bufs[c * n1 + k1];
-                }
-            }
+            scatter(
+                simd_view::as_f64(&bufs),
+                simd_view::as_f64_mut(scratch),
+                n1,
+                g,
+            );
             g += GCOLS;
         }
         // STAGE B (was sweep2 + T3 + copy): rows of `scratch` are the
@@ -405,12 +410,14 @@ impl Fft {
                 let row = &mut scratch[(r + c) * n1..(r + c + 1) * n1];
                 sub.transform(row, &mut row_scratch, inverse);
             }
-            for k2 in 0..n1 {
-                let line = &mut data[k2 * n1 + r..k2 * n1 + r + GCOLS];
-                for (c, v) in line.iter_mut().enumerate() {
-                    *v = scratch[(r + c) * n1 + k2];
-                }
-            }
+            // Eight finished contiguous rows ARE a dense 8×n₁ buffer:
+            // the same scatter primitive lands them as output columns.
+            scatter(
+                simd_view::as_f64(&scratch[r * n1..(r + GCOLS) * n1]),
+                simd_view::as_f64_mut(data),
+                n1,
+                r,
+            );
             r += GCOLS;
         }
     }
