@@ -374,3 +374,21 @@ pub fn scat8c64(bufs: &[f64], dst: &mut [f64], n1: usize, g: usize) {
         }
     }
 }
+
+/// Elementwise fused multiply-ACCUMULATE: `acc[i] = a[i]·b[i] + acc[i]`
+/// (bead 9ekv x86 row): the batched-LU elimination shape. On aarch64
+/// this twin IS the production path (scalar `mul_add` lowers to native
+/// `fmla`); on baseline x86-64 it would be a per-element libm call, so
+/// the AVX2+FMA capsule facade routes around it.
+///
+/// # Panics
+/// Structured panics on length mismatches.
+pub fn fmacc(a: &[f64], b: &[f64], acc: &mut [f64]) {
+    assert!(
+        a.len() == acc.len() && b.len() == acc.len(),
+        "fmacc length mismatch (programmer error)"
+    );
+    for ((&av, &bv), c) in a.iter().zip(b).zip(acc.iter_mut()) {
+        *c = av.mul_add(bv, *c);
+    }
+}

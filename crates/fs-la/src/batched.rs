@@ -765,16 +765,22 @@ pub fn batch_lu(a: &BatchMat) -> BatchLu {
         for r in (step + 1)..k {
             {
                 let (fr, piv) = lu.planes_mut2((r, step), (step, step));
+                // fvec holds the NEGATED factor: v = f·(−sv) + v and
+                // v = (−f)·sv + v produce the identical fused result
+                // (IEEE sign flip commutes through the product), and
+                // the negated form is the fmacc capsule's shape — on
+                // baseline x86-64 the per-element `mul_add` here was a
+                // libm CALL (bead 9ekv: batch-lu measured 4.6% of roof
+                // on the 5975WX while the GEMM rows ran capsuled).
                 for ((fv, f), &p) in fvec.iter_mut().zip(fr.iter_mut()).zip(&*piv) {
                     *f /= p;
-                    *fv = *f;
+                    *fv = -*f;
                 }
             }
+            let fmacc = fs_simd::ops().fmacc;
             for c in (step + 1)..k {
                 let (rc, sc) = lu.planes_mut2((r, c), (step, c));
-                for ((v, &sv), &f) in rc.iter_mut().zip(&*sc).zip(&fvec) {
-                    *v = f.mul_add(-sv, *v);
-                }
+                fmacc(&fvec, sc, rc);
             }
         }
     }

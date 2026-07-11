@@ -138,6 +138,9 @@ pub struct Ops {
     pub mul_elem: fn(&[f64], &[f64], &mut [f64]),
     /// out[i] = a[i]·b[i] + c[i] (fused).
     pub fma3: TernaryOp,
+    /// acc[i] = a[i]·b[i] + acc[i] (fused, in place): the batched-LU
+    /// elimination shape (bead 9ekv). BITWISE across tiers.
+    pub fmacc: fn(&[f64], &[f64], &mut [f64]),
     /// Σ x[i]·y[i] (fixed per-tier shape).
     pub dot: fn(&[f64], &[f64]) -> f64,
     /// Σ x[i] (fixed per-tier shape).
@@ -186,6 +189,7 @@ const SCALAR_OPS: Ops = Ops {
     scale: scalar::scale,
     mul_elem: scalar::mul_elem,
     fma3: scalar::fma3,
+    fmacc: scalar::fmacc,
     dot: scalar::dot,
     sum: scalar::sum,
     mk8x4_f64: scalar::mk8x4_f64,
@@ -214,6 +218,7 @@ fn build_table() -> Ops {
                 scale: neon::scale,
                 mul_elem: neon::mul_elem,
                 fma3: neon::fma3,
+                fmacc: scalar::fmacc,
                 dot: neon::dot,
                 sum: neon::sum,
                 mk8x4_f64: neon::mk8x4_f64,
@@ -241,6 +246,7 @@ fn build_table() -> Ops {
                     // fma3 vector path (fz2.2 tier audit): baseline-x86
                     // scalar mul_add is a per-element libm CALL.
                     fma3: x86::fma3,
+                    fmacc: x86::elem::fmacc,
                     dot: x86::dot,
                     sum: x86::sum,
                     // Resolve the microkernel once: hot tiles call a direct
@@ -253,7 +259,10 @@ fn build_table() -> Ops {
                     // baseline-x86 mul_add is a per-element libm CALL and
                     // batch_gemm collapses to ~0.7 GFLOP/s (measured, ts1).
                     btile4x4p_f64: x86::gemm::btile4x4p_f64,
-                    btile4x4pf32: scalar::btile4x4pf32,
+                    // f32 sibling of the f64 capsule above (bead 9ekv
+                    // x86 row): facade re-verifies avx2+fma, twin
+                    // fallback otherwise.
+                    btile4x4pf32: x86::btile::btile4x4pf32,
                     r4qrun_f64: x86::r4qrun_f64,
                     trn1c64: scalar::trn1c64,
                     gath8c64: scalar::gath8c64,
@@ -587,6 +596,24 @@ mod tests {
                     .zip(&d_ref)
                     .all(|(x, y)| x.to_bits() == y.to_bits()),
                 "trn1c64 diverged from twin at n1 {n1} (tier {:?})",
+                t.tier
+            );
+        }
+        // fmacc: bitwise vs twin, incl. the non-multiple-of-4 tail.
+        for n in [1usize, 4, 7, 64, 65] {
+            let a = gen_vals(n, 0xFA ^ n as u64);
+            let b = gen_vals(n, 0xFB);
+            let seed = gen_vals(n, 0xFC);
+            let mut c_tier = seed.clone();
+            let mut c_ref = seed;
+            (t.fmacc)(&a, &b, &mut c_tier);
+            scalar::fmacc(&a, &b, &mut c_ref);
+            assert!(
+                c_tier
+                    .iter()
+                    .zip(&c_ref)
+                    .all(|(x, y)| x.to_bits() == y.to_bits()),
+                "fmacc diverged from twin at n {n} (tier {:?})",
                 t.tier
             );
         }

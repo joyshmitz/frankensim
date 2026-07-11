@@ -57,3 +57,55 @@ unsafe fn fma3_256(a: &[f64], b: &[f64], c: &[f64], out: &mut [f64]) {
     }
     crate::scalar::fma3(at, bt, ct, ot);
 }
+
+/// Elementwise fused multiply-accumulate façade (bead 9ekv):
+/// `acc[i] = a[i]·b[i] + acc[i]` — AVX2+FMA when available, the scalar
+/// twin otherwise. BITWISE across paths (independent per-element fused
+/// chains; the vector tail runs under `target_feature(fma)`, so even
+/// its scalar `mul_add` is a single fused instruction, never libm).
+///
+/// # Panics
+/// Structured panics on length mismatches.
+pub fn fmacc(a: &[f64], b: &[f64], acc: &mut [f64]) {
+    assert!(
+        a.len() == acc.len() && b.len() == acc.len(),
+        "fmacc length mismatch (programmer error)"
+    );
+    if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma") {
+        // SAFETY: feature availability re-verified immediately above.
+        unsafe { fmacc_256(a, b, acc) };
+        return;
+    }
+    crate::scalar::fmacc(a, b, acc);
+}
+
+/// # Safety
+/// Requires avx2+fma; lengths equal (asserted by the façade); 4-f64
+/// unaligned loads/stores; the scalar tail stays fused under the
+/// enabled feature.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn fmacc_256(a: &[f64], b: &[f64], acc: &mut [f64]) {
+    use core::arch::x86_64::{_mm256_fmadd_pd, _mm256_loadu_pd, _mm256_storeu_pd};
+    let n = acc.len();
+    let full = (n / 4) * 4;
+    // SAFETY: offsets bounded by the equal asserted lengths.
+    unsafe {
+        let ap = a.as_ptr();
+        let bp = b.as_ptr();
+        let cp = acc.as_mut_ptr();
+        let mut i = 0;
+        while i < full {
+            let v = _mm256_fmadd_pd(
+                _mm256_loadu_pd(ap.add(i)),
+                _mm256_loadu_pd(bp.add(i)),
+                _mm256_loadu_pd(cp.add(i)),
+            );
+            _mm256_storeu_pd(cp.add(i), v);
+            i += 4;
+        }
+        for i in full..n {
+            *cp.add(i) = (*ap.add(i)).mul_add(*bp.add(i), *cp.add(i));
+        }
+    }
+}

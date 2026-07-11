@@ -62,24 +62,46 @@ Dense linear algebra: GEMM, batched small dense, factorizations, eigensolvers. L
   to hash arbitrary external tools or other path-dependency sources outside
   the named closure.
 - Dependency-graph evidence (bead fz2.6, codegen schema v2): source bytes do
-  not pin dependency CODEGEN — Cargo feature unification can compile the
-  normal-dependency closure (asupersync and its registry closure) under a
-  different unified feature set without moving any other fingerprint input.
-  Every build therefore binds exactly one evidence class into the
-  fingerprint, exposed as `GEMM_GRAPH_EVIDENCE`: `receipt:<blake3>` when
-  tooling exported `FRANKENSIM_DEPGRAPH_RECEIPT` (canonical resolved
-  package+feature receipt from `cargo run -p xtask -- depgraph-receipt --
-  <same selection as the build>`, verifiable post-build with `--verify`;
-  ambiguous resolutions refuse a receipt), or `salt:<value>` from the
-  workspace `.cargo/config.toml` `FRANKENSIM_DEPGRAPH_SALT` — an explicit,
-  operator-visible declaration that all such builds form ONE equivalence
-  class. Neither present → the build fails closed. Citable perf lanes must
-  use receipts (see `perf-baselines/README.md`); durable tune rows can only
-  cross binaries inside one evidence class because the class payload is part
-  of the fingerprint. Receipt precision is `cargo tree` resolution
-  (dev-dependencies participate in unification, a conservative
-  over-approximation of plain builds; the invocation-exact `-Z unit-graph`
-  no longer exists in Cargo).
+  not pin dependency CODEGEN. Receipt v1 accepts exactly one explicit
+  production root package plus graph-relevant target and root-feature flags;
+  workspace, test/dev/all-target, target-kind, and profile selections fail with
+  an explicit no-claim diagnosis. Both `cargo metadata` and `cargo tree` run
+  with `--locked` through one resolved Cargo executable. The receipt binds that
+  executable's bytes and verbose version identity. Stdout and stderr are drained
+  concurrently into finite buffers (32 MiB tree, 8 MiB metadata, 1 MiB stderr),
+  and the final shared parser/emitter refuses receipts above 1 MiB before print
+  or verification.
+- Cargo tree supplies distinct normal/build unit feature sets; every human tree
+  row must map unambiguously to its structured Cargo-metadata package/source ID.
+  A name/version collision without a unique metadata mapping fails closed.
+  External rows retain exact metadata IDs. Every local path package in the
+  fs-la closure, plus the selected root, receives a clone-stable
+  `path+blake3:<digest>#name@version` identity. The digest covers every regular
+  file under that package root (including build scripts and non-Rust inputs),
+  except `.git` and Cargo `target` output trees; file count, byte count, and
+  digest-manifest size are bounded before vectors are allocated. Contained
+  regular-file symlinks bind their normalized target; escapes, directory links,
+  sockets, devices, unreadable files, and changing/bound-exceeding trees refuse
+  a receipt. Exact repeat unit visits deduplicate, while different host/build
+  feature sets remain separate sorted rows.
+- `build.rs` and xtask compile the same dependency-free canonical format module.
+  The build parser binds BOTH the full receipt and its domain-separated BLAKE3
+  digest into `GEMM_BUILD_FINGERPRINT`. The full receipt is written under
+  `OUT_DIR` and compiled with `include_str!`; only the fixed class/digest markers
+  cross `cargo:rustc-env`, avoiding command/environment transport of the JSON.
+- The receipt is explicitly **operator-observed**, not verified correspondence
+  to the invoking Cargo process: stable Cargo exposes neither an exact unit
+  graph nor the build root/selection to a dependency build script. The API
+  exposes `GemmGraphEvidenceClass`, `gemm_graph_evidence()`, the class identity,
+  and the optional exact `GEMM_DEPGRAPH_RECEIPT` + digest so a root can require
+  and retain the artifact. `GEMM_DEPGRAPH_RECEIPT_DOMAIN` is the public hash
+  domain consumers must use to rehash those retained bytes.
+  `receipt:<digest>` means structurally validated
+  operator-observed evidence. `salt:<value>` from `.cargo/config.toml` means an
+  explicit **development equivalence class**, never verified graph evidence.
+  Neither present fails the build. Durable tune rows cannot cross evidence
+  classes because the complete material is fingerprint input. See
+  `perf-baselines/README.md` for the supported production workflow.
 - `factor::{cholesky, lu, qr, tsqr_r, svd_jacobi}` + `FactorError` —
   dense factorizations. Failure is DATA: `NotSpd{index}` /
   `Singular{index}` typed diagnostics, never panics for data conditions.
@@ -348,12 +370,21 @@ diagonal) fixtures; 128-byte plane alignment; cross-ISA golden hash.
   no-claim run. Successor design notes remain in bead 9ekv.
 
 ## No-claim boundaries
-- Cargo does not expose the resolved feature set of transitive dependencies to
-  `fs-la`'s build script. The canonical FrankenSim graph fixes fs-exec's
-  asupersync features through its manifest, but a build that feature-unifies an
-  additional asupersync capability must set `FRANKENSIM_GEMM_CODEGEN_ID`; tune
-  reuse across such an unsalted non-canonical graph is not claimed. A future
-  resolved-unit-graph receipt should replace this operator obligation.
+- `FRANKENSIM_DEPGRAPH_RECEIPT` is supplied by the build environment. Strict
+  canonical parsing prevents malformed/ambiguous receipt shapes, and
+  `--verify` detects later drift under the same declared selection, but neither
+  authenticates the operator nor proves that the receipt describes the Cargo
+  process compiling fs-la. Receipt-backed publication must retain that exact
+  artifact and state this operator-observed boundary. The workspace salt is a
+  development equivalence class only; graph correctness and evidence-bearing
+  tune publication from salt-class builds are not claimed.
+- Path-package hashing covers the complete bounded package-root file tree but
+  cannot discover a build script's dynamic reads from environment variables,
+  network services, files outside its package root, or previously generated
+  Cargo `target` outputs. Such a build must bind those external inputs through
+  `FRANKENSIM_GEMM_CODEGEN_ID` (and retain its operator protocol); receipt-only
+  equivalence for undisclosed dynamic inputs is not claimed. `.git` metadata and
+  build outputs are intentionally non-semantic rather than accidentally hashed.
 - Compiler and wrapper executable bytes are watched and content-addressed, but
   a wrapper that changes generated code through mutable configuration outside
   the declared Cargo/Rust environment must set `FRANKENSIM_GEMM_CODEGEN_ID`.

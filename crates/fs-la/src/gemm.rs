@@ -58,15 +58,80 @@ pub fn gemm_panel_run_id(operation: fs_exec::RunId, panel_ordinal: u64) -> fs_ex
 /// tune rows because their generated code differs.
 pub const GEMM_BUILD_FINGERPRINT: &str = env!("FS_LA_GEMM_BUILD_FINGERPRINT");
 
-/// Dependency-graph evidence class bound into [`GEMM_BUILD_FINGERPRINT`]
-/// (bead fz2.6): `receipt:<blake3-hex>` when build tooling supplied the
-/// canonical resolved normal-dependency receipt
-/// (`cargo run -p xtask -- depgraph-receipt`), or `salt:<value>` when the
-/// build carries the explicit workspace equivalence-class salt. A build with
-/// neither fails closed at compile time, so no third state exists. Durable
-/// tune rows only ever cross binaries within one evidence class because the
-/// class payload is part of the fingerprint itself.
+/// Dependency-graph evidence identity bound into [`GEMM_BUILD_FINGERPRINT`].
+///
+/// `receipt:<blake3-hex>` denotes a structurally validated, operator-observed
+/// single-root normal/build receipt. It does not prove that the supplied
+/// receipt describes the invoking Cargo process. `salt:<value>` denotes the
+/// explicit development equivalence class, never verified graph evidence.
 pub const GEMM_GRAPH_EVIDENCE: &str = env!("FS_LA_GEMM_GRAPH_EVIDENCE");
+
+const INCLUDED_DEPGRAPH_RECEIPT: &str =
+    include_str!(concat!(env!("OUT_DIR"), "/fs_la_depgraph_receipt.json"));
+
+/// Exact canonical dependency receipt supplied to this build, when present.
+///
+/// This is exposed so a root orchestration layer can retain the full artifact
+/// instead of citing only its digest. Presence means strict structural
+/// validation succeeded; the build environment/operator remains the authority
+/// for correspondence to the actual Cargo selection.
+pub const GEMM_DEPGRAPH_RECEIPT: Option<&str> = match option_env!("FS_LA_GEMM_HAS_DEPGRAPH_RECEIPT")
+{
+    Some(_) => Some(INCLUDED_DEPGRAPH_RECEIPT),
+    None => None,
+};
+
+/// Domain-separated BLAKE3 digest of [`GEMM_DEPGRAPH_RECEIPT`], when present.
+pub const GEMM_DEPGRAPH_RECEIPT_DIGEST: Option<&str> =
+    option_env!("FS_LA_GEMM_DEPGRAPH_RECEIPT_DIGEST");
+
+/// BLAKE3 derive-key domain used for [`GEMM_DEPGRAPH_RECEIPT_DIGEST`].
+///
+/// Evidence consumers use this exact exported domain to rehash retained
+/// receipt bytes instead of duplicating a private string literal.
+pub const GEMM_DEPGRAPH_RECEIPT_DOMAIN: &str = "org.frankensim.fs-la.depgraph-receipt.v1";
+
+/// Stable machine-readable spelling of this binary's graph evidence class.
+pub const GEMM_GRAPH_EVIDENCE_KIND: &str = env!("FS_LA_GEMM_GRAPH_EVIDENCE_KIND");
+
+/// Trust class of the dependency-graph material compiled into this binary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GemmGraphEvidenceClass {
+    /// Canonical receipt minted from an operator-selected Cargo tree and
+    /// structurally validated by `build.rs`; correspondence is operator-trusted.
+    OperatorObservedReceipt,
+    /// Explicit local-development equivalence salt; not graph evidence.
+    DevelopmentEquivalenceSalt,
+}
+
+/// Immutable dependency-graph evidence view for this exact binary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GemmGraphEvidence {
+    /// Trust/evidence class.
+    pub class: GemmGraphEvidenceClass,
+    /// Fingerprint-bound class identity (`receipt:<digest>` or `salt:<value>`).
+    pub class_identity: &'static str,
+    /// Exact canonical receipt artifact, only for the receipt class.
+    pub receipt: Option<&'static str>,
+    /// Domain-separated receipt digest, only for the receipt class.
+    pub receipt_digest: Option<&'static str>,
+}
+
+/// Dependency-graph evidence compiled into this exact binary.
+#[must_use]
+pub const fn gemm_graph_evidence() -> GemmGraphEvidence {
+    let class = if GEMM_DEPGRAPH_RECEIPT.is_some() {
+        GemmGraphEvidenceClass::OperatorObservedReceipt
+    } else {
+        GemmGraphEvidenceClass::DevelopmentEquivalenceSalt
+    };
+    GemmGraphEvidence {
+        class,
+        class_identity: GEMM_GRAPH_EVIDENCE,
+        receipt: GEMM_DEPGRAPH_RECEIPT,
+        receipt_digest: GEMM_DEPGRAPH_RECEIPT_DIGEST,
+    }
+}
 
 /// Maximum arithmetic work in one cancellable GEMM compute quantum. Packing
 /// and beta staging use smaller fixed quanta; the largest poll interval is one
@@ -2154,11 +2219,8 @@ mod tests {
 
     #[test]
     fn graph_evidence_class_is_present_and_well_formed() {
-        // fz2.6: a binary cannot exist without dependency-graph evidence —
-        // build.rs fails closed. Whichever class this test binary carries,
-        // the class marker must be canonical.
-        let evidence = GEMM_GRAPH_EVIDENCE;
-        if let Some(digest) = evidence.strip_prefix("receipt:") {
+        let evidence = gemm_graph_evidence();
+        if let Some(digest) = evidence.class_identity.strip_prefix("receipt:") {
             assert_eq!(digest.len(), 64, "receipt digest is full-width BLAKE3");
             assert!(
                 digest
@@ -2166,13 +2228,37 @@ mod tests {
                     .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
                 "receipt digest must be canonical lowercase hex"
             );
-        } else if let Some(salt) = evidence.strip_prefix("salt:") {
+            assert_eq!(
+                evidence.class,
+                GemmGraphEvidenceClass::OperatorObservedReceipt
+            );
+            assert_eq!(evidence.receipt_digest, Some(digest));
+            let receipt = evidence.receipt.expect("receipt class carries artifact");
+            assert!(receipt.starts_with("{\"schema\":\"fs-la-depgraph-receipt-v1\""));
+            assert_eq!(
+                fs_blake3::hash_domain(GEMM_DEPGRAPH_RECEIPT_DOMAIN, receipt.as_bytes())
+                    .to_string(),
+                digest,
+                "retained receipt bytes rehash under the exported domain"
+            );
+            assert_eq!(GEMM_GRAPH_EVIDENCE_KIND, "operator-observed-receipt");
+        } else if let Some(salt) = evidence.class_identity.strip_prefix("salt:") {
             assert!(
                 !salt.is_empty() && salt.len() <= 128,
                 "salt class must be short and non-empty: {salt:?}"
             );
+            assert_eq!(
+                evidence.class,
+                GemmGraphEvidenceClass::DevelopmentEquivalenceSalt
+            );
+            assert_eq!(evidence.receipt, None);
+            assert_eq!(evidence.receipt_digest, None);
+            assert_eq!(GEMM_GRAPH_EVIDENCE_KIND, "development-equivalence-salt");
         } else {
-            panic!("graph evidence must be receipt:* or salt:*, got {evidence:?}");
+            panic!(
+                "graph evidence must be receipt:* or salt:*, got {:?}",
+                evidence.class_identity
+            );
         }
     }
 

@@ -10,6 +10,7 @@
 
 // Radix-4 Stockham FFT butterfly capsule (bead 27d3), split out under the
 // 300-line cap like NEON's fft submodule; re-exported below.
+pub mod btile;
 pub mod elem;
 pub mod fft;
 pub mod gemm;

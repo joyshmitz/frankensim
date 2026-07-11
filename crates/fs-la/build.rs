@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 mod build_identity_support;
+mod depgraph_receipt_format;
 
 use build_identity_support::{
     ASUPERSYNC_NON_SRC_INPUTS, FINGERPRINT_CONTEXT, append_executable_identity,
@@ -25,6 +26,7 @@ const PROFILE_CODEGEN_KEYS: [&str; 11] = [
     "STRIP",
     "SPLIT_DEBUGINFO",
 ];
+const DEPGRAPH_RECEIPT_DOMAIN: &str = "org.frankensim.fs-la.depgraph-receipt.v1";
 
 fn required_env(name: &str) -> String {
     println!("cargo:rerun-if-env-changed={name}");
@@ -183,6 +185,7 @@ fn add_source_closure(payload: &mut Vec<u8>, workspace_root: &Path) {
         collect_rust_sources(&crate_root.join("src"), &mut files);
     }
     files.push(workspace_root.join("crates/fs-la/build_identity_support.rs"));
+    files.push(workspace_root.join("crates/fs-la/depgraph_receipt_format.rs"));
 
     let mut source_fields = Vec::with_capacity(files.len());
     for path in files {
@@ -310,6 +313,14 @@ fn add_asupersync_identity(
     append_external_identity(payload, constellation_lock, head_text, source_fields);
 }
 
+
+struct DepgraphEvidence {
+    class_identity: String,
+    kind: &'static str,
+    receipt: Option<String>,
+    receipt_digest: Option<String>,
+}
+
 /// Resolved dependency-graph evidence for feature unification (bead fz2.6).
 ///
 /// `CARGO_FEATURE_*` only covers this crate's own features: Cargo can compile
@@ -317,30 +328,33 @@ fn add_asupersync_identity(
 /// closure) under a different unified feature set without changing any other
 /// fingerprint input, letting a tune row cross binaries whose dependency
 /// codegen differs. Build tooling derives a canonical receipt of the resolved
-/// normal-dependency closure OUTSIDE this build script
-/// (`cargo run -p xtask -- depgraph-receipt -- <selection>`) and exports it as
+/// normal/build closure OUTSIDE this build script
+/// (`cargo run -p xtask -- depgraph-receipt -- --package <ROOT>`) and exports it as
 /// `FRANKENSIM_DEPGRAPH_RECEIPT`; interactive workspace builds carry the
 /// explicit `FRANKENSIM_DEPGRAPH_SALT` from `.cargo/config.toml`, which marks
-/// all such builds as ONE deliberate equivalence class rather than proven
-/// graphs. Neither present → fail closed. Receipt wins when both are set
+/// all such builds as ONE deliberate development equivalence class, never
+/// verified graph evidence. Neither present → fail closed. Receipt wins when both are set
 /// (tooling overrides the workspace default).
-fn add_depgraph_evidence(payload: &mut Vec<u8>) -> String {
+fn add_depgraph_evidence(payload: &mut Vec<u8>) -> DepgraphEvidence {
     let receipt = optional_env("FRANKENSIM_DEPGRAPH_RECEIPT");
     let salt = optional_env("FRANKENSIM_DEPGRAPH_SALT");
-    if let Some(receipt) = receipt.as_deref() {
-        assert!(
-            receipt.starts_with("{\"schema\":\"fs-la-depgraph-receipt-v1\"")
-                && receipt.contains("\"packages\":[")
-                && receipt.contains("\"id\":\"fs-la "),
-            "FRANKENSIM_DEPGRAPH_RECEIPT is not a fs-la depgraph receipt \
-             (expected canonical JSON from `cargo run -p xtask -- depgraph-receipt`)"
-        );
+    if let Some(receipt) = receipt {
+        depgraph_receipt_format::parse(&receipt).unwrap_or_else(|error| {
+            panic!(
+                "FRANKENSIM_DEPGRAPH_RECEIPT is not the strict canonical single-root fs-la \
+                 receipt minted by xtask: {error}"
+            )
+        });
         push_field(payload, "depgraph-receipt", receipt.as_bytes());
-        let digest = fs_blake3::hash_domain(
-            "org.frankensim.fs-la.depgraph-receipt.v1",
-            receipt.as_bytes(),
-        );
-        return format!("receipt:{digest}");
+        let digest =
+            fs_blake3::hash_domain(DEPGRAPH_RECEIPT_DOMAIN, receipt.as_bytes()).to_string();
+        push_field(payload, "depgraph-receipt-domain-digest", digest.as_bytes());
+        return DepgraphEvidence {
+            class_identity: format!("receipt:{digest}"),
+            kind: "operator-observed-receipt",
+            receipt: Some(receipt),
+            receipt_digest: Some(digest),
+        };
     }
     if let Some(salt) = salt.as_deref() {
         assert!(
@@ -352,12 +366,18 @@ fn add_depgraph_evidence(payload: &mut Vec<u8>) -> String {
             "FRANKENSIM_DEPGRAPH_SALT must be short printable ASCII, got {salt:?}"
         );
         push_field(payload, "depgraph-salt", salt.as_bytes());
-        return format!("salt:{salt}");
+        return DepgraphEvidence {
+            class_identity: format!("salt:{salt}"),
+            kind: "development-equivalence-salt",
+            receipt: None,
+            receipt_digest: None,
+        };
     }
     panic!(
         "GEMM build identity requires dependency-graph evidence (bead fz2.6): \
          export FRANKENSIM_DEPGRAPH_RECEIPT via \
-         `cargo run -p xtask -- depgraph-receipt -- <selection>` for citable builds, \
+         `cargo run -p xtask -- depgraph-receipt -- --package <ROOT>` for \
+         operator-observed receipt builds, \
          or build inside the workspace whose .cargo/config.toml supplies the \
          explicit FRANKENSIM_DEPGRAPH_SALT equivalence class"
     );
@@ -368,7 +388,32 @@ fn main() {
     let mut payload = Vec::new();
     push_field(&mut payload, "schema", b"fs-la-gemm-codegen-v2");
     let graph_evidence = add_depgraph_evidence(&mut payload);
-    println!("cargo:rustc-env=FS_LA_GEMM_GRAPH_EVIDENCE={graph_evidence}");
+    println!(
+        "cargo:rustc-env=FS_LA_GEMM_GRAPH_EVIDENCE={}",
+        graph_evidence.class_identity
+    );
+    println!(
+        "cargo:rustc-env=FS_LA_GEMM_GRAPH_EVIDENCE_KIND={}",
+        graph_evidence.kind
+    );
+    let out_dir = PathBuf::from(required_env("OUT_DIR"));
+    let receipt_path = out_dir.join("fs_la_depgraph_receipt.json");
+    std::fs::write(
+        &receipt_path,
+        graph_evidence.receipt.as_deref().unwrap_or("").as_bytes(),
+    )
+    .unwrap_or_else(|error| {
+        panic!(
+            "cannot write canonical dependency receipt {}: {error}",
+            receipt_path.display()
+        )
+    });
+    if graph_evidence.receipt.is_some() {
+        println!("cargo:rustc-env=FS_LA_GEMM_HAS_DEPGRAPH_RECEIPT=1");
+    }
+    if let Some(digest) = &graph_evidence.receipt_digest {
+        println!("cargo:rustc-env=FS_LA_GEMM_DEPGRAPH_RECEIPT_DIGEST={digest}");
+    }
 
     for name in [
         "PROFILE",
