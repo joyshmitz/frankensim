@@ -218,20 +218,39 @@ answers queries. The economics control loop lives in fs-verify
 ## Three-color write gate (bead qmao.1)
 
 `colors::ColorGraph` is the WRITE-TIME gatekeeper over fs-evidence's
-color schema: derived nodes' colors are COMPUTED from their parents
-(with regime re-checks against the current execution state,
-auto-demoting validated parents whose regime the state has exited,
-demotion events logged). An ordinary explicit claim must equal the exact
-canonical derived color: equal rank alone is insufficient because it could
-narrow an interval, widen a validity regime, or shrink dispersion; unsupported
-rank weakening is likewise refused until a formal weakening relation exists.
-Claims that outrank the derivation REFUSE with the capping parents named (the
-laundering refusal, G3 gauntlet-tested). The only override is an authenticated
-`WaiverGrant`; its signed payload and annotation appear in the schema-v2 ledger
-row and participate in the operation-bound node provenance hash, so neither the
-operation nor grant can be dropped or substituted without changing history.
-Rows are canonical JSON lines for the event stream. Note: this module adds
-fs-evidence as a runtime dependency (the colors are its types).
+color schema. `source()` accepts Estimated leaves only. A Verified leaf must
+carry a `SourceOrigin::Certificate`; the gate reruns `verified_from` and writes
+the rederived interval. A Validated leaf must carry an
+`SourceOrigin::Anchoring` with dataset content hash and exact regime; the gate
+reconstructs the complete color and refuses blank datasets, empty or malformed
+regimes, and any claimed dataset/regime drift.
+The exceptional source path is an authenticated `WaiverGrant` under the
+distinct `source-color` scope and v4 source signing payload. A derive grant
+cannot be replayed as source authority.
+
+Derived nodes' colors are COMPUTED from their parents with regime re-checks
+against the current execution state. Every parent that exits its regime emits
+a retained `ColorDemotion`, keyed by parent position and id in canonical
+parent-list order. This remains unambiguous when a parent id occurs twice.
+Demotions and typed source origins participate in the domain-separated v6 node
+hash. An ordinary explicit claim must equal the exact canonical derived color:
+equal rank alone is insufficient because it could narrow an interval, widen a
+validity regime, or shrink dispersion; unsupported rank weakening is likewise
+refused until a formal weakening relation exists. Claims that outrank the
+derivation REFUSE with the capping parents named (the laundering refusal, G3
+gauntlet-tested). The derived override is an authenticated `WaiverGrant` under
+the `color-upgrade` scope and operation-bound v3 signing payload.
+
+`ColorNode` fields are private and exposed read-only. `ColorGraph::node` is a
+checked `Option` lookup, never an indexing panic. `verify_replay()` checks
+append ids, backward parent references, canonical demotions, source-origin
+rederivation, grant-to-node/lineage binding, ordinary derived colors, and every
+node hash. Canonical schema-v3 JSON rows include the typed origin and the exact
+v3/v4 signed payload needed for an independent verifier. G3/G5 tests cover
+forged positive sources, source/derive grant separation, invalid ids,
+multi-parent demotion preservation, deterministic replay, origin substitution,
+and signed-payload tampering. Note: this module adds fs-evidence as a runtime
+dependency (the colors are its types).
 
 ## No-claim boundaries
 
@@ -251,6 +270,12 @@ fs-evidence as a runtime dependency (the colors are its types).
 - Multi-GiB single artifacts: chunk storage bounds row sizes, but the
   streaming path is verified at the tens-of-MiB scale only so far; fsqlite
   transaction memory behavior at multi-GiB scale is unmeasured.
+- `ColorGraph::verify_replay()` structurally re-earns colors and hashes but does
+  not re-authenticate stored waiver signatures: the graph does not retain the
+  verifier capability or admission day. The schema-v3 row retains the exact
+  signing payload, key id, signature, and expiry for an independent verifier.
+  Regime demotion records retain the offending value and are hash-bound, but
+  the complete execution-state map is not persisted by this in-memory gate.
 
 ## No-claim boundaries (tombstones)
 

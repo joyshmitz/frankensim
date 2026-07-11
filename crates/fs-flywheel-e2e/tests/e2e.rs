@@ -76,7 +76,9 @@ fn fw_002_colors_survive_the_loop_no_laundering() {
     // And the write gate itself refuses the upgrade attempt downstream:
     // a query stage claiming Verified over this headline fails.
     let mut graph = fs_ledger::ColorGraph::new();
-    let head = graph.source("loop-headline", report.headline.clone());
+    let head = graph
+        .source("loop-headline", report.headline.clone())
+        .expect("speculative loop headline is Estimated");
     let upgrade = graph.derive(
         "query-answer",
         &[head],

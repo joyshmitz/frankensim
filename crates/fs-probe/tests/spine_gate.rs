@@ -9,10 +9,10 @@
 use std::collections::BTreeMap;
 
 use fs_evidence::falsify::FalsifierRegistry;
-use fs_evidence::{Color, IntervalOp, ValidityDomain};
+use fs_evidence::{Color, IntervalOp, NumericalCertificate, ValidityDomain};
 use fs_iface::{CouplingGraph, CouplingRole, PairingRegistry, SpaceType};
-use fs_ledger::ColorGraph;
 use fs_ledger::tombstone::{Descriptor, ExplorationVerdict, TombstoneIndex};
+use fs_ledger::{ColorGraph, SourceOrigin};
 use fs_opt::{DeltaPerturbationStep, Endpoint, GoodhartGuard};
 use fs_probe::{BudgetPie, ErrorContribution};
 use fs_qty::{Dims, QtyAny};
@@ -30,14 +30,25 @@ fn verdict(case: &str, detail: &str) {
 fn spine_exit_1_laundering_refused() {
     let mut graph = ColorGraph::new();
     let state = BTreeMap::new();
-    let surrogate = graph.source(
-        "drag-surrogate",
-        Color::Estimated {
-            estimator: "fno-v1".to_string(),
-            dispersion: 0.12,
-        },
-    );
-    let mesh = graph.source("mesh-integral", Color::Verified { lo: 0.9, hi: 1.1 });
+    let surrogate = graph
+        .source(
+            "drag-surrogate",
+            Color::Estimated {
+                estimator: "fno-v1".to_string(),
+                dispersion: 0.12,
+            },
+        )
+        .expect("Estimated source");
+    let mesh = graph
+        .source_with_origin(
+            "mesh-integral",
+            &Color::Verified { lo: 0.9, hi: 1.1 },
+            SourceOrigin::Certificate {
+                producer: "fs-probe/spine-gate".to_string(),
+                certificate: NumericalCertificate::enclosure(0.9, 1.1),
+            },
+        )
+        .expect("mesh enclosure mints Verified");
     // The adversarial upgrade: claim Verified from an Estimated parent.
     let laundered = graph.derive(
         "polished-report",

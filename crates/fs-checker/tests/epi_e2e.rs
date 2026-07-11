@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use fs_evidence::falsify::{ClaimContext, FalsifierHistory, FalsifierRegistry};
 use fs_evidence::{Color, IntervalOp, ValidityDomain};
-use fs_ledger::{ColorGraph, EventRow, Ledger, Waiver};
+use fs_ledger::{ColorGraph, EventRow, Ledger, SourceOrigin, Waiver, hash_bytes};
 use fs_opt::{
     DeltaPerturbationStep, Endpoint, EscalationKind, EscalationStep, GoodhartGuard, GuardStatus,
     StepOutcome,
@@ -94,20 +94,30 @@ fn epi_e2e_battery() {
     let mut graph = ColorGraph::new();
     let state_in: BTreeMap<String, f64> = [("Re".to_string(), 2.0e5)].into();
     let state_out: BTreeMap<String, f64> = [("Re".to_string(), 5.0e5)].into();
-    let surrogate = graph.source(
-        "drag-surrogate",
-        Color::Estimated {
-            estimator: "fno-v1".to_string(),
-            dispersion: 0.1,
-        },
-    );
-    let anchored = graph.source(
-        "tunnel-anchor",
-        Color::Validated {
-            regime: ValidityDomain::unconstrained().with("Re", 1.0e5, 3.0e5),
-            dataset: "tunnel-2026".to_string(),
-        },
-    );
+    let surrogate = graph
+        .source(
+            "drag-surrogate",
+            Color::Estimated {
+                estimator: "fno-v1".to_string(),
+                dispersion: 0.1,
+            },
+        )
+        .expect("surrogate is Estimated");
+    let anchor_regime = ValidityDomain::unconstrained().with("Re", 1.0e5, 3.0e5);
+    let anchored = graph
+        .source_with_origin(
+            "tunnel-anchor",
+            &Color::Validated {
+                regime: anchor_regime.clone(),
+                dataset: "tunnel-2026".to_string(),
+            },
+            SourceOrigin::Anchoring {
+                dataset_id: "tunnel-2026".to_string(),
+                content_hash: hash_bytes(b"tunnel-2026 fixture"),
+                regime: anchor_regime,
+            },
+        )
+        .expect("dataset anchor mints Validated");
     // Adversarial upgrade: REFUSED at write time.
     let refusal = graph
         .derive(
@@ -134,13 +144,13 @@ fn epi_e2e_battery() {
             None,
         )
         .expect("derivation runs");
-    let node = graph.node(demoted);
+    let node = graph.node(demoted).expect("demoted node");
     assert!(
-        matches!(node.color, Color::Estimated { .. }),
+        matches!(node.color(), Color::Estimated { .. }),
         "regime exit demotes: {:?}",
-        node.color
+        node.color()
     );
-    assert!(node.demotion.is_some(), "the demotion event is recorded");
+    assert_eq!(node.demotions().len(), 1, "the demotion event is recorded");
     log.log(
         "laundering",
         "\"event\":\"auto-demotion\",\"input\":\"validated\",\"state\":\"Re=5e5\",\
@@ -163,7 +173,7 @@ fn epi_e2e_battery() {
         scope: fs_ledger::WAIVER_SCOPE_COLOR_UPGRADE.to_string(),
         node_name: "waived-upgrade".to_string(),
         claimed_color: claimed_color.canonical_bytes(),
-        parent_hashes: vec![graph.node(surrogate).hash],
+        parent_hashes: vec![graph.node(surrogate).expect("surrogate").hash()],
         expires_day: 400,
         signature: Vec::new(),
     };
@@ -180,9 +190,9 @@ fn epi_e2e_battery() {
             200,
         )
         .expect("an authenticated grant authorizes the upgrade");
-    let wnode = graph.node(waived);
+    let wnode = graph.node(waived).expect("waived node");
     assert_eq!(
-        wnode.waiver.as_ref().map(|w| w.signer.as_str()),
+        wnode.waiver().map(|w| w.signer.as_str()),
         Some("chief-engineer"),
         "the waiver travels with the node"
     );
@@ -397,18 +407,19 @@ fn epi_e2e_battery() {
 
     // ---- STAGE 5: the evidence-package round-trip -----------------------
     let package = EvidencePackage::new(Provenance::new("frankensim@3fab970", "lock-digest-77"))
-        .with_claim(Claim::new(
+        .with_claim(Claim::from_certificate(
             "drag",
             "Cd in [0.31, 0.33] at Re 2e5",
-            Color::Verified { lo: 0.31, hi: 0.33 },
+            0.31,
+            0.33,
+            "test-solver/cert",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         ))
-        .with_claim(Claim::new(
+        .with_claim(Claim::estimated(
             "fatigue",
             "life > 1e7 cycles per hazard-model-v2",
-            Color::Estimated {
-                estimator: "hazard-model-v2".to_string(),
-                dispersion: 0.2,
-            },
+            "hazard-model-v2",
+            0.2,
         ));
     let root = package.merkle_root();
     let package = package.signed("sig:royalchinchillas");
@@ -424,7 +435,14 @@ fn epi_e2e_battery() {
     );
     // TAMPER: polish the estimated claim after signing.
     let mut tampered = package.clone();
-    tampered.claims[1].color = Color::Verified { lo: 0.0, hi: 1.0 };
+    tampered.claims[1] = Claim::from_certificate(
+        "fatigue",
+        "life > 1e7 cycles per hazard-model-v2",
+        0.0,
+        1.0,
+        "tampered/certificate",
+        "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+    );
     let bad = fs_checker::check_against_root(&tampered, root);
     assert!(!bad.passed(), "tampering fails closed");
     let named = bad

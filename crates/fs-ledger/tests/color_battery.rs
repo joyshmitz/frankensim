@@ -9,8 +9,9 @@ use fs_evidence::{
     check_regime, color_of, compose, verified_from,
 };
 use fs_ledger::{
-    ColorGraph, ColorWriteError, NoWaiverVerifier, WAIVER_SCOPE_COLOR_UPGRADE, Waiver, WaiverGrant,
-    WaiverRejection, WaiverVerifier,
+    ColorGraph, ColorWriteError, NoWaiverVerifier, SourceOrigin, SourceOriginRejection,
+    WAIVER_SCOPE_COLOR_UPGRADE, WAIVER_SCOPE_SOURCE_COLOR, Waiver, WaiverGrant, WaiverRejection,
+    WaiverVerifier, hash_bytes,
 };
 use std::collections::BTreeMap as KeyMap;
 
@@ -63,6 +64,58 @@ fn signed_grant(
     };
     grant.signature = test_mac(secret, &grant.signing_payload(op));
     grant
+}
+
+fn signed_source_grant(
+    secret: u64,
+    key_id: &str,
+    name: &str,
+    color: &Color,
+    expires_day: u32,
+) -> WaiverGrant {
+    let mut grant = WaiverGrant {
+        annotation: Waiver {
+            id: "WVR-SOURCE-2026-001".to_string(),
+            signer: "chief-engineer".to_string(),
+            reason: "authenticated exceptional source admission".to_string(),
+        },
+        key_id: key_id.to_string(),
+        scope: WAIVER_SCOPE_SOURCE_COLOR.to_string(),
+        node_name: name.to_string(),
+        claimed_color: color.canonical_bytes(),
+        parent_hashes: Vec::new(),
+        expires_day,
+        signature: Vec::new(),
+    };
+    grant.signature = test_mac(secret, &grant.signing_payload_source());
+    grant
+}
+
+fn write_source(graph: &mut ColorGraph, name: &str, color: Color) -> u64 {
+    match &color {
+        Color::Estimated { .. } => graph.source(name, color).expect("Estimated source"),
+        Color::Verified { lo, hi } => graph
+            .source_with_origin(
+                name,
+                &color,
+                SourceOrigin::Certificate {
+                    producer: "fs-ledger/color-battery".to_string(),
+                    certificate: NumericalCertificate::enclosure(*lo, *hi),
+                },
+            )
+            .expect("Verified source certificate"),
+        Color::Validated { regime, dataset } => graph
+            .source_with_origin(
+                name,
+                &color,
+                SourceOrigin::Anchoring {
+                    dataset_id: dataset.clone(),
+                    content_hash: hash_bytes(dataset.as_bytes()),
+                    regime: regime.clone(),
+                },
+            )
+            .expect("Validated source anchor"),
+    }
 }
 
 fn test_hex(bytes: &[u8]) -> String {
@@ -279,8 +332,9 @@ fn col_003_laundering_gauntlet() {
     // (b) The write gate: estimated parent caps every claim.
     let state = BTreeMap::new();
     let mut g = ColorGraph::new();
-    let clean = g.source("fem-bound", Color::Verified { lo: 0.9, hi: 1.1 });
-    let dirty = g.source(
+    let clean = write_source(&mut g, "fem-bound", Color::Verified { lo: 0.9, hi: 1.1 });
+    let dirty = write_source(
+        &mut g,
         "surrogate-drag",
         Color::Estimated {
             estimator: "deeponet-v2".to_string(),
@@ -316,7 +370,8 @@ fn col_003_laundering_gauntlet() {
 
     // (d) Post-demotion upgrade attempts refuse: a validated parent
     // whose regime the state has exited caps at estimated.
-    let val = g.source(
+    let val = write_source(
+        &mut g,
         "turbulence-closure",
         Color::Validated {
             regime: ValidityDomain::unconstrained().with("reynolds", 1e3, 1e5),
@@ -346,14 +401,18 @@ fn col_003_laundering_gauntlet() {
         let mut gg = ColorGraph::new();
         let mut ids = Vec::new();
         for k in 0..5 {
-            ids.push(gg.source(&format!("s{k}"), rand_color(&mut rng)));
+            ids.push(write_source(
+                &mut gg,
+                &format!("s{k}"),
+                rand_color(&mut rng),
+            ));
         }
         for k in 0..6 {
             let a = ids[rng.below(ids.len() as u64) as usize];
             let b = ids[rng.below(ids.len() as u64) as usize];
             let derived_rank = {
-                let (ca, _) = check_regime(&gg.node(a).color.clone(), &state);
-                let (cb, _) = check_regime(&gg.node(b).color.clone(), &state);
+                let (ca, _) = check_regime(gg.node(a).expect("a").color(), &state);
+                let (cb, _) = check_regime(gg.node(b).expect("b").color(), &state);
                 compose(&ca, &cb, IntervalOp::Hull).rank()
             };
             // Claim strictly ABOVE what the parents support.
@@ -425,7 +484,8 @@ fn col_004_waiver_in_provenance() {
     let claimed = Color::Verified { lo: 0.0, hi: 1.0 };
     let fresh = || {
         let mut g = ColorGraph::new();
-        let dirty = g.source(
+        let dirty = write_source(
+            &mut g,
             "surrogate",
             Color::Estimated {
                 estimator: "pod-deim".to_string(),
@@ -454,7 +514,7 @@ fn col_004_waiver_in_provenance() {
     );
     // The authenticated grant DOES authorize, deterministically.
     let (mut g, dirty) = fresh();
-    let lineage = vec![g.node(dirty).hash];
+    let lineage = vec![g.node(dirty).expect("dirty source").hash()];
     let grant = signed_grant(
         0x5EC2E7,
         "release-key-1",
@@ -476,8 +536,8 @@ fn col_004_waiver_in_provenance() {
             200,
         )
         .expect("authenticated grant authorizes");
-    let node = g.node(id).clone();
-    assert!(node.grant.is_some() && node.waiver.is_some());
+    let node = g.node(id).expect("authorized node").clone();
+    assert!(node.grant().is_some() && node.waiver().is_some());
     assert!(
         g.rows()
             .iter()
@@ -485,7 +545,7 @@ fn col_004_waiver_in_provenance() {
     );
     // Re-verifiable FROM the ledger: the stored grant's payload still
     // authenticates under the same verifier.
-    let stored = node.grant.as_ref().unwrap();
+    let stored = node.grant().expect("stored grant");
     assert!(verifier.verify(
         &stored.key_id,
         &stored.signing_payload(IntervalOp::Hull),
@@ -503,7 +563,10 @@ fn col_004_waiver_in_provenance() {
             None,
         )
         .expect("plain");
-    assert_ne!(g2.node(plain).hash.to_hex(), node.hash.to_hex());
+    assert_ne!(
+        g2.node(plain).expect("plain node").hash().to_hex(),
+        node.hash().to_hex()
+    );
     // REFUSALS, each with its structured reason:
     let refusal = |grant: WaiverGrant, verifier: &dyn WaiverVerifier, day: u32| {
         let (mut gx, dx) = fresh();
@@ -674,8 +737,9 @@ fn col_006_determinism() {
     let build = || -> Vec<String> {
         let state: BTreeMap<String, f64> = [("re".to_string(), 5e4)].into();
         let mut g = ColorGraph::new();
-        let a = g.source("a", Color::Verified { lo: 0.0, hi: 1.0 });
-        let b = g.source(
+        let a = write_source(&mut g, "a", Color::Verified { lo: 0.0, hi: 1.0 });
+        let b = write_source(
+            &mut g,
             "b",
             Color::Validated {
                 regime: ValidityDomain::unconstrained().with("re", 1e3, 1e5),
@@ -714,12 +778,12 @@ fn col_006b_bit_exact_color_identity() {
     assert_ne!(first.canonical_bytes(), second.canonical_bytes());
 
     let mut first_graph = ColorGraph::new();
-    let first_id = first_graph.source("same-name", first);
+    let first_id = write_source(&mut first_graph, "same-name", first);
     let mut second_graph = ColorGraph::new();
-    let second_id = second_graph.source("same-name", second);
+    let second_id = write_source(&mut second_graph, "same-name", second);
     assert_ne!(
-        first_graph.node(first_id).hash,
-        second_graph.node(second_id).hash,
+        first_graph.node(first_id).expect("first").hash(),
+        second_graph.node(second_id).expect("second").hash(),
         "ledger identity must include the bit-exact color payload"
     );
 }
@@ -731,7 +795,7 @@ fn col_006b_bit_exact_color_identity() {
 fn col_008_ordinary_claim_must_equal_the_derived_color() {
     let mut graph = ColorGraph::new();
     let source_color = Color::Verified { lo: 0.0, hi: 1.0 };
-    let parent = graph.source("verified-source", source_color.clone());
+    let parent = write_source(&mut graph, "verified-source", source_color.clone());
 
     let exact = graph.derive(
         "exact-claim",
@@ -789,7 +853,11 @@ fn col_008_ordinary_claim_must_equal_the_derived_color() {
 fn col_009_operation_identity_and_waivers_are_separated() {
     let build = |op| {
         let mut graph = ColorGraph::new();
-        let parent = graph.source("same-parent", Color::Verified { lo: 0.0, hi: 1.0 });
+        let parent = write_source(
+            &mut graph,
+            "same-parent",
+            Color::Verified { lo: 0.0, hi: 1.0 },
+        );
         let node = graph
             .derive(
                 "same-derived-node",
@@ -800,7 +868,8 @@ fn col_009_operation_identity_and_waivers_are_separated() {
                 None,
             )
             .expect("single-parent derivation");
-        (graph.node(node).color.clone(), graph.node(node).hash)
+        let written = graph.node(node).expect("derived node");
+        (written.color().clone(), written.hash())
     };
     let (add_color, add_hash) = build(IntervalOp::Add);
     let (mul_color, mul_hash) = build(IntervalOp::Mul);
@@ -818,7 +887,8 @@ fn col_009_operation_identity_and_waivers_are_separated() {
         keys: KeyMap::from([("operation-key".to_string(), secret)]),
     };
     let mut graph = ColorGraph::new();
-    let parent = graph.source(
+    let parent = write_source(
+        &mut graph,
         "estimated-parent",
         Color::Estimated {
             estimator: "rom".to_string(),
@@ -831,7 +901,7 @@ fn col_009_operation_identity_and_waivers_are_separated() {
         "operation-key",
         "operation-bound-node",
         &claimed,
-        vec![graph.node(parent).hash],
+        vec![graph.node(parent).expect("parent").hash()],
         IntervalOp::Add,
         400,
     );
@@ -863,7 +933,10 @@ fn col_009_operation_identity_and_waivers_are_separated() {
             200,
         )
         .expect("the grant authorizes only Add");
-    assert_eq!(graph.node(authorized).operation, Some(IntervalOp::Add));
+    assert_eq!(
+        graph.node(authorized).expect("authorized").operation(),
+        Some(IntervalOp::Add)
+    );
 
     verdict(
         "col-009",
@@ -882,13 +955,13 @@ fn col_010_no_upgrade_waiver_is_still_authenticated() {
     };
     let mut graph = ColorGraph::new();
     let claimed = Color::Verified { lo: 0.0, hi: 1.0 };
-    let parent = graph.source("verified-parent", claimed.clone());
+    let parent = write_source(&mut graph, "verified-parent", claimed.clone());
     let forged = signed_grant(
         0xBAD,
         "release-key",
         "no-upgrade-node",
         &claimed,
-        vec![graph.node(parent).hash],
+        vec![graph.node(parent).expect("parent").hash()],
         IntervalOp::Hull,
         400,
     );
@@ -928,14 +1001,15 @@ fn col_011_serialized_grant_reverifies_and_tamper_refuses() {
         keys: KeyMap::from([("persistence-key".to_string(), secret)]),
     };
     let mut graph = ColorGraph::new();
-    let parent = graph.source(
+    let parent = write_source(
+        &mut graph,
         "persisted-parent",
         Color::Estimated {
             estimator: "surrogate".to_string(),
             dispersion: 0.2,
         },
     );
-    let parent_hash = graph.node(parent).hash;
+    let parent_hash = graph.node(parent).expect("parent").hash();
     let claimed = Color::Verified { lo: -1.0, hi: 1.0 };
     let grant = signed_grant(
         secret,
@@ -971,7 +1045,11 @@ fn col_011_serialized_grant_reverifies_and_tamper_refuses() {
     let serialized_signature =
         decode_hex(json_string_field(row, "signature_hex").expect("serialized signature"))
             .expect("signature hex");
-    let stored_grant = graph.node(node).grant.as_ref().expect("stored grant");
+    let stored_grant = graph
+        .node(node)
+        .expect("stored node")
+        .grant()
+        .expect("stored grant");
     assert_eq!(
         serialized_payload,
         stored_grant.signing_payload(IntervalOp::Add)
@@ -981,7 +1059,7 @@ fn col_011_serialized_grant_reverifies_and_tamper_refuses() {
         stored_grant.signing_payload(IntervalOp::Mul)
     );
     assert!(verifier.verify(serialized_key, &serialized_payload, &serialized_signature));
-    assert!(row.contains("\"schema_version\":2"));
+    assert!(row.contains("\"schema_version\":3"));
     assert!(row.contains("\"payload_version\":3"));
     assert!(row.contains("\"operation\":\"add\""));
     assert_eq!(
@@ -1019,6 +1097,326 @@ fn col_011_serialized_grant_reverifies_and_tamper_refuses() {
     );
 }
 
+/// col-012 — positive leaves cannot assert their own color. Typed source
+/// origins rederive the complete claim and bind every origin field into
+/// provenance; mismatched or forged origins fail closed.
+#[test]
+fn col_012_sources_are_minted_from_origin_evidence() {
+    let mut graph = ColorGraph::new();
+    let estimate = graph
+        .source(
+            "surrogate",
+            Color::Estimated {
+                estimator: "rom".to_string(),
+                dispersion: 0.2,
+            },
+        )
+        .expect("Estimated is the only direct source color");
+    assert!(graph.node(estimate).is_some());
+    assert!(graph.node(u64::MAX).is_none(), "invalid ids are checked");
+
+    let verified = Color::Verified { lo: -2.0, hi: 3.0 };
+    assert!(matches!(
+        graph.source("forged-verified", verified.clone()),
+        Err(ColorWriteError::SourceOriginRequired {
+            rank: ColorRank::Verified
+        })
+    ));
+    let verified_id = graph
+        .source_with_origin(
+            "certified",
+            &verified,
+            SourceOrigin::Certificate {
+                producer: "fs-ivl/enclosure".to_string(),
+                certificate: NumericalCertificate::enclosure(-2.0, 3.0),
+            },
+        )
+        .expect("matching enclosure mints Verified");
+    assert_eq!(
+        graph.node(verified_id).expect("verified").color(),
+        &verified
+    );
+    assert!(matches!(
+        graph.source_with_origin(
+            "mismatched-cert",
+            &verified,
+            SourceOrigin::Certificate {
+                producer: "fs-ivl/enclosure".to_string(),
+                certificate: NumericalCertificate::enclosure(-2.0, 4.0),
+            },
+        ),
+        Err(ColorWriteError::SourceOriginRefused {
+            rejection: SourceOriginRejection::CertificateMismatch
+        })
+    ));
+    assert!(matches!(
+        graph.source_with_origin(
+            "estimated-cert",
+            &verified,
+            SourceOrigin::Certificate {
+                producer: "surrogate".to_string(),
+                certificate: NumericalCertificate::estimate(-2.0, 3.0),
+            },
+        ),
+        Err(ColorWriteError::SourceOriginRefused {
+            rejection: SourceOriginRejection::CertificateRefused { .. }
+        })
+    ));
+
+    let regime = ValidityDomain::unconstrained().with("re", 1e3, 1e5);
+    let validated = Color::Validated {
+        regime: regime.clone(),
+        dataset: "wind-tunnel-a".to_string(),
+    };
+    assert!(matches!(
+        graph.source("forged-validated", validated.clone()),
+        Err(ColorWriteError::SourceOriginRequired {
+            rank: ColorRank::Validated
+        })
+    ));
+    let anchor = SourceOrigin::Anchoring {
+        dataset_id: "wind-tunnel-a".to_string(),
+        content_hash: hash_bytes(b"campaign-a"),
+        regime: regime.clone(),
+    };
+    let validated_id = graph
+        .source_with_origin("anchored", &validated, anchor.clone())
+        .expect("matching anchor mints Validated");
+    assert_eq!(
+        graph.node(validated_id).expect("validated").color(),
+        &validated
+    );
+    let wrong_regime = SourceOrigin::Anchoring {
+        dataset_id: "wind-tunnel-a".to_string(),
+        content_hash: hash_bytes(b"campaign-a"),
+        regime: ValidityDomain::unconstrained().with("re", 1e3, 2e5),
+    };
+    assert!(matches!(
+        graph.source_with_origin("wrong-regime", &validated, wrong_regime),
+        Err(ColorWriteError::SourceOriginRefused {
+            rejection: SourceOriginRejection::RegimeMismatch
+        })
+    ));
+    let empty_regime_color = Color::Validated {
+        regime: ValidityDomain::unconstrained(),
+        dataset: "wind-tunnel-a".to_string(),
+    };
+    assert!(matches!(
+        graph.source_with_origin(
+            "empty-regime",
+            &empty_regime_color,
+            SourceOrigin::Anchoring {
+                dataset_id: "wind-tunnel-a".to_string(),
+                content_hash: hash_bytes(b"campaign-a"),
+                regime: ValidityDomain::unconstrained(),
+            },
+        ),
+        Err(ColorWriteError::SourceOriginRefused {
+            rejection: SourceOriginRejection::InvalidRegime { .. }
+        })
+    ));
+
+    let mut changed_anchor = ColorGraph::new();
+    let changed = changed_anchor
+        .source_with_origin(
+            "anchored",
+            &validated,
+            SourceOrigin::Anchoring {
+                dataset_id: "wind-tunnel-a".to_string(),
+                content_hash: hash_bytes(b"campaign-a-tampered"),
+                regime,
+            },
+        )
+        .expect("a different real artifact is admissible but has a different identity");
+    assert_ne!(
+        graph.node(validated_id).expect("original").hash(),
+        changed_anchor.node(changed).expect("changed").hash(),
+        "the anchoring artifact hash is provenance, not an unbound annotation"
+    );
+    graph.verify_replay().expect("source origins replay");
+}
+
+/// col-013 — source waivers use their own scope and v4 signing payload.
+/// A derived grant cannot be replayed at a leaf; payload or signature
+/// tampering refuses; the persisted row independently re-verifies.
+#[test]
+fn col_013_source_waiver_is_separate_and_replayable() {
+    let secret = 0x50A7CE;
+    let verifier = TestVerifier {
+        keys: KeyMap::from([("source-key".to_string(), secret)]),
+    };
+    let color = Color::Verified { lo: 4.0, hi: 5.0 };
+    let grant = signed_source_grant(secret, "source-key", "exceptional-source", &color, 400);
+    assert_ne!(
+        grant.signing_payload_source(),
+        grant.signing_payload(IntervalOp::Hull),
+        "source and derive authority are domain-separated"
+    );
+    let mut graph = ColorGraph::new();
+    let id = graph
+        .source_waived(
+            "exceptional-source",
+            color.clone(),
+            grant.clone(),
+            &verifier,
+            200,
+        )
+        .expect("valid source grant");
+    let row = graph
+        .rows()
+        .iter()
+        .find(|row| row.contains(&format!("\"node\":{id}")))
+        .expect("source row");
+    let payload =
+        decode_hex(json_string_field(row, "signing_payload_hex").expect("source payload field"))
+            .expect("source payload hex");
+    let signature =
+        decode_hex(json_string_field(row, "signature_hex").expect("source signature field"))
+            .expect("source signature hex");
+    assert_eq!(payload, grant.signing_payload_source());
+    assert!(row.contains("\"payload_version\":4"));
+    assert!(row.contains("\"schema_version\":3"));
+    assert!(verifier.verify("source-key", &payload, &signature));
+    graph.verify_replay().expect("source grant fields replay");
+
+    let mut tampered = grant.clone();
+    tampered.annotation.reason.push_str(" edited");
+    assert!(matches!(
+        ColorGraph::new().source_waived(
+            "exceptional-source",
+            color.clone(),
+            tampered,
+            &verifier,
+            200,
+        ),
+        Err(ColorWriteError::WaiverRefused {
+            rejection: WaiverRejection::BadSignature
+        })
+    ));
+    let derive_grant = signed_grant(
+        secret,
+        "source-key",
+        "exceptional-source",
+        &color,
+        Vec::new(),
+        IntervalOp::Hull,
+        400,
+    );
+    assert!(matches!(
+        ColorGraph::new().source_waived("exceptional-source", color, derive_grant, &verifier, 200,),
+        Err(ColorWriteError::WaiverRefused {
+            rejection: WaiverRejection::ScopeMismatch
+        })
+    ));
+}
+
+/// col-014 — every parent's regime exit survives in canonical parent-list
+/// order and is part of the replayable node identity.
+#[test]
+fn col_014_all_regime_demotions_are_preserved() {
+    let mut graph = ColorGraph::new();
+    let first = write_source(
+        &mut graph,
+        "first-anchor",
+        Color::Validated {
+            regime: ValidityDomain::unconstrained().with("mach", 0.0, 0.8),
+            dataset: "tunnel-mach".to_string(),
+        },
+    );
+    let second = write_source(
+        &mut graph,
+        "second-anchor",
+        Color::Validated {
+            regime: ValidityDomain::unconstrained().with("re", 1e3, 1e5),
+            dataset: "tunnel-re".to_string(),
+        },
+    );
+    let state: BTreeMap<String, f64> = [("mach".to_string(), 1.2), ("re".to_string(), 5e5)].into();
+    let derived = graph
+        .derive(
+            "both-exited",
+            &[first, second],
+            IntervalOp::Hull,
+            None,
+            &state,
+            None,
+        )
+        .expect("both parents demote");
+    let demotions = graph.node(derived).expect("derived").demotions();
+    assert_eq!(demotions.len(), 2);
+    assert_eq!(
+        (demotions[0].parent_index(), demotions[0].parent_id()),
+        (0, first)
+    );
+    assert_eq!(
+        (demotions[1].parent_index(), demotions[1].parent_id()),
+        (1, second)
+    );
+    assert_eq!(demotions[0].reason().axis, "mach");
+    assert_eq!(demotions[1].reason().axis, "re");
+    let rows: Vec<&str> = graph
+        .rows()
+        .iter()
+        .filter(|row| row.contains("\"event\":\"demotion\""))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(rows.len(), 2);
+    assert!(rows[0].contains("\"parent_index\":0"));
+    assert!(rows[1].contains("\"parent_index\":1"));
+    let duplicate = graph
+        .derive(
+            "duplicate-parent-exit",
+            &[first, first],
+            IntervalOp::Hull,
+            None,
+            &state,
+            None,
+        )
+        .expect("both occurrences of one parent demote");
+    let duplicate_demotions = graph.node(duplicate).expect("duplicate").demotions();
+    assert_eq!(duplicate_demotions.len(), 2);
+    assert_eq!(duplicate_demotions[0].parent_index(), 0);
+    assert_eq!(duplicate_demotions[1].parent_index(), 1);
+    assert_eq!(duplicate_demotions[0].parent_id(), first);
+    assert_eq!(duplicate_demotions[1].parent_id(), first);
+
+    let mut changed = ColorGraph::new();
+    let changed_first = write_source(
+        &mut changed,
+        "first-anchor",
+        Color::Validated {
+            regime: ValidityDomain::unconstrained().with("mach", 0.0, 0.8),
+            dataset: "tunnel-mach".to_string(),
+        },
+    );
+    let changed_second = write_source(
+        &mut changed,
+        "second-anchor",
+        Color::Validated {
+            regime: ValidityDomain::unconstrained().with("re", 1e3, 1e5),
+            dataset: "tunnel-re".to_string(),
+        },
+    );
+    let changed_state: BTreeMap<String, f64> =
+        [("mach".to_string(), 1.3), ("re".to_string(), 6e5)].into();
+    let changed_derived = changed
+        .derive(
+            "both-exited",
+            &[changed_first, changed_second],
+            IntervalOp::Hull,
+            None,
+            &changed_state,
+            None,
+        )
+        .expect("changed exits");
+    assert_ne!(
+        graph.node(derived).expect("original").hash(),
+        changed.node(changed_derived).expect("changed").hash(),
+        "demotion values participate in the node hash"
+    );
+    graph.verify_replay().expect("all demotions replay");
+}
+
 /// col-007 — color rows remain strict JSON when fail-closed demotion emits
 /// non-finite sentinels and caller-controlled metadata contains JSON syntax or
 /// control characters. Validation goes through the ledger's SQLite `json_valid`
@@ -1030,7 +1428,8 @@ fn col_007_color_rows_are_strict_json_under_hostile_metadata() {
         let axis = format!("Re-{hostile}");
         let dataset = format!("anchors-{hostile}");
         let mut graph = ColorGraph::new();
-        let validated = graph.source(
+        let validated = write_source(
+            &mut graph,
             &format!("validated-{hostile}"),
             Color::Validated {
                 regime: ValidityDomain::unconstrained().with(&axis, 1.0, 10.0),
@@ -1049,7 +1448,8 @@ fn col_007_color_rows_are_strict_json_under_hostile_metadata() {
             )
             .expect("non-finite state demotes instead of refusing the write");
 
-        let estimated = graph.source(
+        let estimated = write_source(
+            &mut graph,
             &format!("estimated-{hostile}"),
             Color::Estimated {
                 estimator: format!("surrogate-{hostile}"),

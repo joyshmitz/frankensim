@@ -25,8 +25,9 @@ pub mod travel;
 pub mod vcs;
 
 pub use colors::{
-    ColorGraph, ColorNode, ColorWriteError, NoWaiverVerifier, WAIVER_SCOPE_COLOR_UPGRADE, Waiver,
-    WaiverGrant, WaiverRejection, WaiverVerifier,
+    ColorDemotion, ColorGraph, ColorNode, ColorReplayError, ColorWriteError, NoWaiverVerifier,
+    SourceOrigin, SourceOriginRejection, WAIVER_SCOPE_COLOR_UPGRADE, WAIVER_SCOPE_SOURCE_COLOR,
+    Waiver, WaiverGrant, WaiverRejection, WaiverVerifier,
 };
 pub use hash::{Blake3, ContentHash, hash_bytes};
 pub use schema::{ALL_TABLES, SCHEMA_VERSION, STORAGE_CHUNK_LEN, V1_TABLES};

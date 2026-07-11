@@ -152,7 +152,9 @@ fn dw_003_laundering_fails_the_type_check() {
     // The unbracketed accept is estimated; writing it into the ledger
     // claiming VERIFIED must fail the type check.
     let mut graph = fs_ledger::ColorGraph::new();
-    let node = graph.source("dwr-accept", outcome.color.clone());
+    let node = graph
+        .source("dwr-accept", outcome.color.clone())
+        .expect("unbracketed DWR accept is Estimated");
     let laundered = graph.derive(
         "query-report",
         &[node],
