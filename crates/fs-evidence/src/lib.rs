@@ -828,6 +828,8 @@ pub enum CertifyError {
         /// The rejected relative discrepancy.
         discrepancy_rel: f64,
     },
+    /// The declared model-validity box is empty or has a non-finite bound.
+    InvalidModelValidity,
 }
 
 impl fmt::Display for CertifyError {
@@ -883,6 +885,11 @@ impl fmt::Display for CertifyError {
                 "Certified<T> refused: model discrepancy {discrepancy_rel} is NaN or negative; \
                  relative discrepancy must be non-negative (infinity is an honest unbounded \
                  claim)"
+            ),
+            CertifyError::InvalidModelValidity => write!(
+                f,
+                "Certified<T> refused: the model validity domain is empty or contains a \
+                 non-finite bound; an impossible regime cannot be asserted in-domain"
             ),
         }
     }
@@ -964,6 +971,9 @@ impl<T> Evidence<T> {
                 }
             }
         }
+        if self.model.validity.is_empty() {
+            return Err(CertifyError::InvalidModelValidity);
+        }
         if !self.model.in_domain {
             return Err(CertifyError::OutOfDomain);
         }
@@ -1018,6 +1028,7 @@ impl<T> Evidence<T> {
             numerical_rel: self.numerical.rel_half_width(self.qoi),
             statistical_rel: self.statistical.rel_width(self.qoi),
             model_rel: if self.model.in_domain
+                && !self.model.validity.is_empty()
                 && ModelEvidence::valid_discrepancy(self.model.discrepancy_rel)
             {
                 self.model.discrepancy_rel
@@ -1142,18 +1153,8 @@ impl<T> Evidence<T> {
             s,
             ",\"model\":{{\"cards\":[{}],\"assumptions\":[{}],\"discrepancy_rel\":{},\
              \"in_domain\":{},\"validity\":{}}},\"sensitivity\":{},\"adjoint\":{}}}",
-            self.model
-                .cards
-                .iter()
-                .map(|c| json_string(c))
-                .collect::<Vec<_>>()
-                .join(","),
-            self.model
-                .assumptions
-                .iter()
-                .map(|assumption| json_string(assumption))
-                .collect::<Vec<_>>()
-                .join(","),
+            canonical_json_string_list(&self.model.cards),
+            canonical_json_string_list(&self.model.assumptions),
             fmt_f64(self.model.discrepancy_rel),
             self.model.in_domain,
             self.model.validity.to_json(),
@@ -1193,6 +1194,18 @@ pub(crate) fn json_string(value: &str) -> String {
     }
     out.push('"');
     out
+}
+
+/// Render a set-like public string vector in canonical lexical order.
+pub(crate) fn canonical_json_string_list(values: &[String]) -> String {
+    let mut canonical: Vec<&str> = values.iter().map(String::as_str).collect();
+    canonical.sort_unstable();
+    canonical.dedup();
+    canonical
+        .into_iter()
+        .map(json_string)
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn sensitivity_json(summary: &SensitivitySummary) -> String {
@@ -1379,5 +1392,43 @@ mod tests {
         assert!(row.contains("\"non-finite:inf\""), "{row}");
         assert!(row.contains("\"non-finite:NaN\""), "{row}");
         assert!(!row.chars().any(|ch| u32::from(ch) < 0x20), "{row:?}");
+    }
+
+    #[test]
+    fn ledger_row_canonicalizes_public_model_sets() {
+        let provenance = ProvenanceHash::of_bytes(b"canonical-public-model-sets");
+        let base = Evidence::exact(1.0, provenance);
+        let first = base.clone().with_model(ModelEvidence {
+            cards: vec!["zeta".to_string(), "alpha".to_string(), "zeta".to_string()],
+            assumptions: vec![
+                "steady".to_string(),
+                "isothermal".to_string(),
+                "steady".to_string(),
+            ],
+            validity: ValidityDomain::unconstrained(),
+            discrepancy_rel: 0.1,
+            in_domain: true,
+        });
+        let second = base.with_model(ModelEvidence {
+            cards: vec!["alpha".to_string(), "zeta".to_string()],
+            assumptions: vec!["isothermal".to_string(), "steady".to_string()],
+            validity: ValidityDomain::unconstrained(),
+            discrepancy_rel: 0.1,
+            in_domain: true,
+        });
+
+        let first_row = first.to_ledger_row_json();
+        assert_eq!(
+            first_row,
+            second.to_ledger_row_json(),
+            "caller ordering and duplicates cannot change a set-like durable row"
+        );
+        assert_eq!(first_row.matches("zeta").count(), 1, "duplicates survive");
+        let alpha = first_row.find("alpha").expect("alpha card retained");
+        let zeta = first_row.find("zeta").expect("zeta card retained");
+        assert!(
+            alpha < zeta,
+            "sets are not lexically canonical: {first_row}"
+        );
     }
 }
