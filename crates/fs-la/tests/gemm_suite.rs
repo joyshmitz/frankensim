@@ -100,23 +100,14 @@ fn alpha_and_beta_zero_no_read_semantics_reach_public_routes() {
     let original64 = [1.0f64, -2.0, 3.5, -4.5];
     let original32 = [1.0f32, -2.0, 3.5, -4.5];
 
-    for beta in [0.0f64, 1.0, -0.75] {
+    for beta in [0.0f64, -0.0, 1.0, -0.75] {
         let expected: Vec<f64> = original64
             .iter()
             .map(|&value| if beta == 0.0 { 0.0 } else { beta * value })
             .collect();
         for alpha in [0.0f64, -0.0] {
             let mut c = original64;
-            fs_la::gemm_f64(
-                m,
-                n,
-                k,
-                alpha,
-                &poisoned_a64,
-                &poisoned_b64,
-                beta,
-                &mut c,
-            );
+            fs_la::gemm_f64(m, n, k, alpha, &poisoned_a64, &poisoned_b64, beta, &mut c);
             assert!(
                 c.iter()
                     .zip(&expected)
@@ -169,23 +160,14 @@ fn alpha_and_beta_zero_no_read_semantics_reach_public_routes() {
         }
     }
 
-    for beta in [0.0f32, 1.0, -0.75] {
+    for beta in [0.0f32, -0.0, 1.0, -0.75] {
         let expected: Vec<f32> = original32
             .iter()
             .map(|&value| if beta == 0.0 { 0.0 } else { beta * value })
             .collect();
         for alpha in [0.0f32, -0.0] {
             let mut c = original32;
-            fs_la::gemm_f32(
-                m,
-                n,
-                k,
-                alpha,
-                &poisoned_a32,
-                &poisoned_b32,
-                beta,
-                &mut c,
-            );
+            fs_la::gemm_f32(m, n, k, alpha, &poisoned_a32, &poisoned_b32, beta, &mut c);
             assert!(
                 c.iter()
                     .zip(&expected)
@@ -196,18 +178,24 @@ fn alpha_and_beta_zero_no_read_semantics_reach_public_routes() {
 
     let finite_a64 = [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0];
     let finite_b64 = [1.0f64, -1.0, 2.0, 0.5, -2.0, 3.0];
-    let mut c64 = [f64::NAN; 4];
-    fs_la::gemm_f64(m, n, k, 1.0, &finite_a64, &finite_b64, 0.0, &mut c64);
-    assert!(c64.iter().all(|value| value.is_finite()));
+    for beta in [0.0f64, -0.0] {
+        let mut c64 = [f64::NAN; 4];
+        fs_la::gemm_f64(m, n, k, 1.0, &finite_a64, &finite_b64, beta, &mut c64);
+        assert!(c64.iter().all(|value| value.is_finite()));
+    }
 
     let finite_a32 = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
     let finite_b32 = [1.0f32, -1.0, 2.0, 0.5, -2.0, 3.0];
-    let mut c32 = [f32::NAN; 4];
-    fs_la::gemm_f32(m, n, k, 1.0, &finite_a32, &finite_b32, 0.0, &mut c32);
-    assert!(c32.iter().all(|value| value.is_finite()));
-    let mut mixed = [f64::NAN; 4];
-    fs_la::gemm_mixed(m, n, k, 1.0, &finite_a32, &finite_b32, 0.0, &mut mixed);
-    assert!(mixed.iter().all(|value| value.is_finite()));
+    for beta in [0.0f32, -0.0] {
+        let mut c32 = [f32::NAN; 4];
+        fs_la::gemm_f32(m, n, k, 1.0, &finite_a32, &finite_b32, beta, &mut c32);
+        assert!(c32.iter().all(|value| value.is_finite()));
+    }
+    for beta in [0.0f64, -0.0] {
+        let mut mixed = [f64::NAN; 4];
+        fs_la::gemm_mixed(m, n, k, 1.0, &finite_a32, &finite_b32, beta, &mut mixed);
+        assert!(mixed.iter().all(|value| value.is_finite()));
+    }
 }
 
 /// G0: tuner quanta need not align to the microkernel. Packed storage must
