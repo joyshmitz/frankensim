@@ -3,7 +3,7 @@
 This is a synthesized, agent-facing changelog for FrankenSim.
 
 Scope window: project inception on 2026-07-05 through
-[`main@2568c82`](https://github.com/Dicklesworthstone/frankensim/commit/2568c8262bf50789d20be528265b5c96d575fb1b)
+[`main@291c7db`](https://github.com/Dicklesworthstone/frankensim/commit/291c7dbfdc6fd366f6ee55a6dbc39f137e05afd6)
 on 2026-07-10.
 
 This document was rebuilt from git history, tag/release metadata, the checked-in
@@ -13,10 +13,11 @@ is organized by landed capabilities rather than raw diff order.
 ## Version Timeline
 
 There are no git tags and no GitHub Releases as of
-[`main@2568c82`](https://github.com/Dicklesworthstone/frankensim/commit/2568c8262bf50789d20be528265b5c96d575fb1b).
+[`main@291c7db`](https://github.com/Dicklesworthstone/frankensim/commit/291c7dbfdc6fd366f6ee55a6dbc39f137e05afd6).
 
 | Version | Kind | Date | Summary |
 |---------|------|------|---------|
+| [`main@291c7db`](https://github.com/Dicklesworthstone/frankensim/commit/291c7dbfdc6fd366f6ee55a6dbc39f137e05afd6) | Public mainline snapshot | 2026-07-10 | 999 commits, refining the FEEC register-accumulator contractions into const-bound index loops while preserving their golden and pending both-ISA gate. |
 | [`main@2568c82`](https://github.com/Dicklesworthstone/frankensim/commit/2568c8262bf50789d20be528265b5c96d575fb1b) | Public mainline snapshot | 2026-07-10 | 998 commits, adding a measured NEON complex-transpose capsule, SLP-friendly FEEC contraction accumulators, and a standalone zero-dependency clean-machine constellation bootstrap. |
 | [`main@fb34ef6`](https://github.com/Dicklesworthstone/frankensim/commit/fb34ef6b6fb2b57f6c55e2ec8c4cc33653a958f8) | Public mainline snapshot | 2026-07-10 | 992 commits, adding governed historical roofline baselines, documenting why global x86 FMA contraction violates G5 determinism, and re-pinning FrankenNumpy past an unrepresentable case-colliding corpus revision. |
 | [`main@f93c9de`](https://github.com/Dicklesworthstone/frankensim/commit/f93c9de48367ec43a1ac4ab3df7e24a1050882f0) | Public mainline snapshot | 2026-07-10 | 988 commits, adding evidence-package schema v4 and shared BLAKE3 roots, failure-compounding and repository claim/closure gates, machine-adaptive execution, fail-closed numerical repairs, and the first production GEMM autotune/roofline integration. |
@@ -1170,11 +1171,11 @@ not resolve the cited artifact and independently prove that artifact passes.
 
 ## 21. SIMD Transpose, FEEC Accumulation, And Pre-Cargo Bootstrap
 
-The six-commit follow-up from
+The seven-commit follow-up from
 [`f7e9787`](https://github.com/Dicklesworthstone/frankensim/commit/f7e9787f7dcf412b35642b7fffb7e943d1c64045)
 through
-[`2568c82`](https://github.com/Dicklesworthstone/frankensim/commit/2568c8262bf50789d20be528265b5c96d575fb1b)
-touches 19 files, with 1,038 insertions and 102 deletions. It advances two
+[`291c7db`](https://github.com/Dicklesworthstone/frankensim/commit/291c7dbfdc6fd366f6ee55a6dbc39f137e05afd6)
+touches 19 files, with 1,043 insertions and 104 deletions. It advances two
 measured numerical kernels without erasing their remaining no-claim boundaries,
 and it moves clean-machine constellation materialization out of the Cargo
 workspace so it can run before sibling path dependencies exist.
@@ -1209,6 +1210,11 @@ workspace so it can run before sibling path dependencies exist.
   lane, up from the prior 0.44 row. The commit deliberately leaves
   `frankensim-cwjn` in progress: the x86 gate verdict and the declared both-ISA
   30% target were not complete at this endpoint.
+- A follow-up replaced iterator/zip chains inside those register accumulators
+  with explicit `0..P` index loops. This exposes constant loop bounds more
+  directly to x86 SLP while retaining the same ascending-`l` fused chain; the
+  release battery remained 10/10 with the frozen golden unchanged. M4
+  remeasurement and the quiet x86 verdict were still pending.
 - A standalone `tools/bootstrap` package now lives outside the root workspace,
   has its own empty workspace and lockfile, and uses no dependencies. It can
   parse `constellation.lock`, clone missing siblings at detached pinned commits,
@@ -1233,11 +1239,11 @@ reasons to erase the landed standalone bootstrap and replay evidence.
 
 ### Closed and active workstreams
 
-- [`frankensim-1t8i`](https://github.com/Dicklesworthstone/frankensim/blob/2568c8262bf50789d20be528265b5c96d575fb1b/.beads/issues.jsonl) - closed with the standalone zero-dependency bootstrap, hermetic replay drills, and real-lock offline verification; a literal blank-machine fetch from the public remotes remained outside the recorded session.
-- [`frankensim-7n2n`](https://github.com/Dicklesworthstone/frankensim/blob/2568c8262bf50789d20be528265b5c96d575fb1b/.beads/issues.jsonl) - closed after the FrankenNumpy corpus rename and pinned clean checkouts on case-insensitive macOS and case-sensitive Linux.
-- [`frankensim-27d3`](https://github.com/Dicklesworthstone/frankensim/blob/2568c8262bf50789d20be528265b5c96d575fb1b/.beads/issues.jsonl) - open after the NEON transpose improvement because the six-step FFT still loses to the stage walk and remains gated off.
-- [`frankensim-cwjn`](https://github.com/Dicklesworthstone/frankensim/blob/2568c8262bf50789d20be528265b5c96d575fb1b/.beads/issues.jsonl) - in progress after the register-accumulator rewrite; the committed M4 row improved, while the x86 verdict remained pending.
-- [`frankensim-dfh3`](https://github.com/Dicklesworthstone/frankensim/blob/2568c8262bf50789d20be528265b5c96d575fb1b/.beads/issues.jsonl) - open again with a coordination note that production historical-baseline wiring was in flight on another lane.
+- [`frankensim-1t8i`](https://github.com/Dicklesworthstone/frankensim/blob/291c7dbfdc6fd366f6ee55a6dbc39f137e05afd6/.beads/issues.jsonl) - closed with the standalone zero-dependency bootstrap, hermetic replay drills, and real-lock offline verification; a literal blank-machine fetch from the public remotes remained outside the recorded session.
+- [`frankensim-7n2n`](https://github.com/Dicklesworthstone/frankensim/blob/291c7dbfdc6fd366f6ee55a6dbc39f137e05afd6/.beads/issues.jsonl) - closed after the FrankenNumpy corpus rename and pinned clean checkouts on case-insensitive macOS and case-sensitive Linux.
+- [`frankensim-27d3`](https://github.com/Dicklesworthstone/frankensim/blob/291c7dbfdc6fd366f6ee55a6dbc39f137e05afd6/.beads/issues.jsonl) - open after the NEON transpose improvement because the six-step FFT still loses to the stage walk and remains gated off.
+- [`frankensim-cwjn`](https://github.com/Dicklesworthstone/frankensim/blob/291c7dbfdc6fd366f6ee55a6dbc39f137e05afd6/.beads/issues.jsonl) - in progress after the register-accumulator and const-bound-loop rewrites; the committed M4 row improved, while the x86 verdict remained pending.
+- [`frankensim-dfh3`](https://github.com/Dicklesworthstone/frankensim/blob/291c7dbfdc6fd366f6ee55a6dbc39f137e05afd6/.beads/issues.jsonl) - open again with a coordination note that production historical-baseline wiring was in flight on another lane.
 
 ### Representative commits
 
@@ -1246,13 +1252,14 @@ reasons to erase the landed standalone bootstrap and replay evidence.
 - [`2168810`](https://github.com/Dicklesworthstone/frankensim/commit/2168810f3544652cb6e53dc46c8c488930a0b741) - make FEEC sum-factorized contractions register-accumulator friendly without moving their golden.
 - [`a3edf0e`](https://github.com/Dicklesworthstone/frankensim/commit/a3edf0ec681d679865d5e5796f0802e1a4c3f48b) - add the standalone zero-dependency constellation bootstrap and its replay harness.
 - [`2568c82`](https://github.com/Dicklesworthstone/frankensim/commit/2568c8262bf50789d20be528265b5c96d575fb1b) - close the clean-machine bootstrap tracker slice with explicit evidence and a residual blank-machine no-claim.
+- [`291c7db`](https://github.com/Dicklesworthstone/frankensim/commit/291c7dbfdc6fd366f6ee55a6dbc39f137e05afd6) - expose const-bound FEEC accumulation loops to x86 SLP while preserving the golden and open cross-ISA verdict.
 
 ## Current Non-Release Status
 
 - No package or crate release has been tagged yet.
 - The canonical project state is `main`, not a versioned artifact; the latest
   implementation and tracker snapshot covered here is
-  [`2568c82`](https://github.com/Dicklesworthstone/frankensim/commit/2568c8262bf50789d20be528265b5c96d575fb1b).
+  [`291c7db`](https://github.com/Dicklesworthstone/frankensim/commit/291c7dbfdc6fd366f6ee55a6dbc39f137e05afd6).
 - The repository is actively changing; use crate `CONTRACT.md` files and Beads
   close reasons for detailed no-claim boundaries.
 - The README describes the implemented workspace; the long-form plan remains

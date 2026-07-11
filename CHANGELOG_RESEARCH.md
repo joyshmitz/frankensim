@@ -5,10 +5,11 @@
 - Repo: `Dicklesworthstone/frankensim`
 - Requested task: update the changelog using `changelog-md-workmanship`.
 - Scope window: project inception on 2026-07-05 through
-  `main@2568c8262bf50789d20be528265b5c96d575fb1b` on 2026-07-10.
+  `main@291c7dbfdc6fd366f6ee55a6dbc39f137e05afd6` on 2026-07-10.
 - Public remote state when researched: local `HEAD` resolved to
-  `2568c8262bf50789d20be528265b5c96d575fb1b`; `origin/main` resolved to
-  `2568c8262bf50789d20be528265b5c96d575fb1b`.
+  `291c7dbfdc6fd366f6ee55a6dbc39f137e05afd6`; `origin/main` resolved to
+  `291c7dbfdc6fd366f6ee55a6dbc39f137e05afd6` immediately before the
+  changelog commit.
 - Working-tree policy: the changelog covers committed history only. Local
   uncommitted edits and scratch files were not used as changelog evidence,
   including the live Beads export, README, manifests and locks, crate source,
@@ -17,40 +18,39 @@
 ## Evidence Sources
 
 - Git history:
-  - `git rev-list --count HEAD` -> 998 commits.
-  - `git rev-list --count origin/main` -> 998 commits.
-  - `git rev-list --count 43d52f2..HEAD` -> 665 commits since the prior
+  - `git rev-list --count 291c7db` -> 999 commits.
+  - `git rev-list --count 43d52f2..291c7db` -> 666 commits since the prior
     changelog baseline.
-  - `git rev-list --count fb08842..HEAD` -> 376 commits since the previous
+  - `git rev-list --count fb08842..291c7db` -> 377 commits since the previous
     changelog pass endpoint.
-  - `git rev-list --count 319cb64..HEAD` -> 365 commits since the previous
+  - `git rev-list --count 319cb64..291c7db` -> 366 commits since the previous
     changelog endpoint.
-  - `git rev-list --count d5873bf..HEAD` -> 317 commits since the 2026-07-09
+  - `git rev-list --count d5873bf..291c7db` -> 318 commits since the 2026-07-09
     flagship expansion checkpoint.
-  - `git rev-list --count e08e302..HEAD` -> 302 commits since the previous
+  - `git rev-list --count e08e302..291c7db` -> 303 commits since the previous
     changelog endpoint.
-  - `git rev-list --count 6725739..HEAD` -> 260 commits since that public
+  - `git rev-list --count 6725739..291c7db` -> 261 commits since that public
     mainline snapshot.
-  - `git rev-list --count e993e76..HEAD` -> 141 commits in this update window.
-  - `git rev-list --count fb34ef6..HEAD` -> 6 commits in the final follow-up.
+  - `git rev-list --count e993e76..291c7db` -> 142 commits in this update window.
+  - `git rev-list --count fb34ef6..291c7db` -> 7 commits in the final follow-up.
   - `git log --reverse --no-merges --pretty=format:'%h %ad %s' --date=short`.
   - `git log --all --no-merges --pretty=format:'%H %h %ad %s' --date=short`.
-  - `git diff --shortstat 43d52f2..HEAD` -> 774 files changed,
-    142,926 insertions, 2,639 deletions.
-  - `git diff --shortstat fb08842..HEAD` -> 475 files changed,
-    63,439 insertions, 3,068 deletions.
-  - `git diff --shortstat 319cb64..HEAD` -> 450 files changed,
-    58,129 insertions, 3,092 deletions.
-  - `git diff --shortstat d5873bf..HEAD` -> 388 files changed,
-    43,986 insertions, 3,064 deletions.
-  - `git diff --shortstat e08e302..HEAD` -> 384 files changed,
-    42,267 insertions, 3,024 deletions.
-  - `git diff --shortstat 6725739..HEAD` -> 347 files changed,
-    36,239 insertions, 2,972 deletions.
-  - `git diff --shortstat e993e76..HEAD` -> 250 files changed,
-    24,971 insertions, 2,354 deletions.
-  - `git diff --shortstat fb34ef6..HEAD` -> 19 files changed,
-    1,038 insertions, 102 deletions.
+  - `git diff --shortstat 43d52f2..291c7db` -> 774 files changed,
+    142,929 insertions, 2,639 deletions.
+  - `git diff --shortstat fb08842..291c7db` -> 475 files changed,
+    63,442 insertions, 3,068 deletions.
+  - `git diff --shortstat 319cb64..291c7db` -> 450 files changed,
+    58,132 insertions, 3,092 deletions.
+  - `git diff --shortstat d5873bf..291c7db` -> 388 files changed,
+    43,989 insertions, 3,064 deletions.
+  - `git diff --shortstat e08e302..291c7db` -> 384 files changed,
+    42,270 insertions, 3,024 deletions.
+  - `git diff --shortstat 6725739..291c7db` -> 347 files changed,
+    36,242 insertions, 2,972 deletions.
+  - `git diff --shortstat e993e76..291c7db` -> 250 files changed,
+    24,976 insertions, 2,356 deletions.
+  - `git diff --shortstat fb34ef6..291c7db` -> 19 files changed,
+    1,043 insertions, 104 deletions.
 - Version metadata:
   - `git for-each-ref refs/tags ...` -> no tags.
   - `gh release list --limit 100` -> no GitHub Releases.
@@ -91,6 +91,7 @@
 | `f93c9de` | Public mainline snapshot | 2026-07-10 | Evidence-package schema and BLAKE3 roots, failure compounding, golden/claim/closure policy gates, machine-adaptive execution, fail-closed numerical fixes, and the first production GEMM autotune/roofline integration; 988 commits. |
 | `fb34ef6` | Public mainline snapshot | 2026-07-10 | Trusted historical roofline baselines, an explicit rejection of global x86 FMA contraction, and a FrankenNumpy re-pin past the case-colliding corpus; 992 commits. |
 | `2568c82` | Public mainline snapshot | 2026-07-10 | NEON interleaved-complex transpose, register-accumulator FEEC contractions, and a standalone zero-dependency clean-machine bootstrap; 998 commits. |
+| `291c7db` | Public mainline snapshot | 2026-07-10 | Const-bound FEEC accumulation loops preserve the frozen golden while exposing a friendlier x86 SLP shape; 999 commits. |
 
 No tags or GitHub Releases existed when researched.
 
@@ -116,7 +117,7 @@ No tags or GitHub Releases existed when researched.
 | 16 | e993e76..81c11df | distilled | Golden-coupling and claim-state policy, certificate/package hardening, canonical replay identity, deterministic math repairs, topology fixes, and failure-compounding families. |
 | 17 | 81c11df..cdb62ee | distilled | Lock-driven bootstrap, canonical replay adoption, package schema v3, machine-adaptive execution, honest FFT/batched-GEMM measurements, and fail-closed roofline admission. |
 | 18 | cdb62ee..fb34ef6 | distilled | Roofline receipt and historical-baseline admission, typed GEMM autotuning, transactional parallel GEMM, package schema v4/BLAKE3 ownership, closure-evidence enforcement, FFT/FEEC measured outcomes, production registry wiring, and the constellation case-collision re-pin. |
-| 19 | fb34ef6..2568c82 | distilled | Measured NEON complex transpose, FEEC register accumulators with unchanged goldens, standalone pre-Cargo constellation bootstrap, and tracker handoffs preserving unresolved performance and admission boundaries. |
+| 19 | fb34ef6..291c7db | distilled | Measured NEON complex transpose, FEEC register accumulators and const-bound loops with unchanged goldens, standalone pre-Cargo constellation bootstrap, and tracker handoffs preserving unresolved performance and admission boundaries. |
 
 ## Representative Commit Clusters
 
@@ -288,6 +289,8 @@ No tags or GitHub Releases existed when researched.
     bootstrap and its hermetic replay harness.
   - `2568c82` close 1t8i with explicit evidence and a residual literal
     blank-machine public-remote no-claim.
+  - `291c7db` replace FEEC iterator/zip accumulator loops with explicit
+    const-bound indexing while preserving the golden and pending ISA proofs.
 - 2026-07-10 golden governance and counterexample compounding:
   - `10bdac0` add the golden-coupling registry and justified-bump protocol.
   - `a2a2b10` record four-quadrant deterministic-power evidence.
