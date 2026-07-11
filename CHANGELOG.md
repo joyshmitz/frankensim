@@ -3,20 +3,23 @@
 This is a synthesized, agent-facing changelog for FrankenSim.
 
 Scope window: project inception on 2026-07-05 through
-[`main@e993e76`](https://github.com/Dicklesworthstone/frankensim/commit/e993e7640a547ca9b11ded6d580a3ce6846a4c82)
+[`main@2568c82`](https://github.com/Dicklesworthstone/frankensim/commit/2568c8262bf50789d20be528265b5c96d575fb1b)
 on 2026-07-10.
 
 This document was rebuilt from git history, tag/release metadata, the checked-in
-Beads tracker, and the current README/contract surface. It is organized by
-landed capabilities rather than raw diff order.
+Beads tracker, and the committed README/contract surface at each endpoint. It
+is organized by landed capabilities rather than raw diff order.
 
 ## Version Timeline
 
 There are no git tags and no GitHub Releases as of
-[`main@e993e76`](https://github.com/Dicklesworthstone/frankensim/commit/e993e7640a547ca9b11ded6d580a3ce6846a4c82).
+[`main@2568c82`](https://github.com/Dicklesworthstone/frankensim/commit/2568c8262bf50789d20be528265b5c96d575fb1b).
 
 | Version | Kind | Date | Summary |
 |---------|------|------|---------|
+| [`main@2568c82`](https://github.com/Dicklesworthstone/frankensim/commit/2568c8262bf50789d20be528265b5c96d575fb1b) | Public mainline snapshot | 2026-07-10 | 998 commits, adding a measured NEON complex-transpose capsule, SLP-friendly FEEC contraction accumulators, and a standalone zero-dependency clean-machine constellation bootstrap. |
+| [`main@fb34ef6`](https://github.com/Dicklesworthstone/frankensim/commit/fb34ef6b6fb2b57f6c55e2ec8c4cc33653a958f8) | Public mainline snapshot | 2026-07-10 | 992 commits, adding governed historical roofline baselines, documenting why global x86 FMA contraction violates G5 determinism, and re-pinning FrankenNumpy past an unrepresentable case-colliding corpus revision. |
+| [`main@f93c9de`](https://github.com/Dicklesworthstone/frankensim/commit/f93c9de48367ec43a1ac4ab3df7e24a1050882f0) | Public mainline snapshot | 2026-07-10 | 988 commits, adding evidence-package schema v4 and shared BLAKE3 roots, failure-compounding and repository claim/closure gates, machine-adaptive execution, fail-closed numerical repairs, and the first production GEMM autotune/roofline integration. |
 | [`main@e993e76`](https://github.com/Dicklesworthstone/frankensim/commit/e993e7640a547ca9b11ded6d580a3ce6846a4c82) | Public mainline snapshot | 2026-07-10 | 857 commits, adding deterministic `.powi` policy, run-identity RNG binding, caller-owned race/session cancellation gates, solver snapshot envelopes, GEMM perf evidence lanes, legal face-first PLY import, standard empirical CVaR weighting, and adjoint certificate fail-closed regressions. |
 | [`main@6725739`](https://github.com/Dicklesworthstone/frankensim/commit/6725739f42b878b310e7e7e318fb8c980cef71f3) | Public mainline snapshot | 2026-07-09 | 738 commits, adding live browser flagship pipelines, mesh v2/v3 closure, sparse roofline and NUMA lanes, rand/FFT perf work, and fail-closed IO/risk/probe hardening. |
 | [`main@e08e302`](https://github.com/Dicklesworthstone/frankensim/commit/e08e30280bcd7af05ae55e990b129d6f75192ead) | Public mainline snapshot | 2026-07-09 | 696 commits, adding the gated SME2 exploratory capsule, SME2 battery, mesh hull-regression guard, and topopt proof-hygiene cleanups. |
@@ -713,7 +716,7 @@ underspecified to support the claims around them.
 - [`1337058`](https://github.com/Dicklesworthstone/frankensim/commit/1337058ac6bc4b8f1dd9b7cdeb85db2fd0713bfd) - tighten the flagship replay-suite battery lint posture.
 - [`1fe4ef5`](https://github.com/Dicklesworthstone/frankensim/commit/1fe4ef5c21737a92aa58dd02f901052de5b0a88b) - mark the fs-mesh v2 follow-up in progress.
 - [`438128d`](https://github.com/Dicklesworthstone/frankensim/commit/438128d988082f2183f406d75883b766fd6b7324) - protect hull refinement and tighten marquee witnesses.
-- [`70e1d24`](https://github.com/Dicklesworthstone/frankensim/commit/70e1d246103fab3a26f30c4a0aee8d71f76ff6ed) - refine boundary splitting and grid traversal.
+- [`70e1d24`](https://github.com/Dicklesworthstone/frankensim/commit/70e1d2437087b8b3dd04237cd56a8daefedbac2b) - refine boundary splitting and grid traversal.
 - [`a8e98b2`](https://github.com/Dicklesworthstone/frankensim/commit/a8e98b21b8eb793069be9153d366618af172b801) - ledger the hull encroachment regression bound.
 - [`d93ca59`](https://github.com/Dicklesworthstone/frankensim/commit/d93ca592bb6f408095eb1d72ecb25e2a09dd7674) - add the gated SME2 exploratory capsule.
 - [`e08e302`](https://github.com/Dicklesworthstone/frankensim/commit/e08e30280bcd7af05ae55e990b129d6f75192ead) - add the SME2 exploratory battery.
@@ -856,25 +859,400 @@ claims rely on.
 
 ### Representative commits
 
-- [`8c6db27`](https://github.com/Dicklesworthstone/frankensim/commit/8c6db276f28d7238ebba9f30bf330011c5f9cf34) - pin deterministic integer powers and extend the policy surface that catches drift.
-- [`921c486`](https://github.com/Dicklesworthstone/frankensim/commit/921c4866b55a9d377eac41585afb49b1722d83a7) - bind RNG streams to declared run identity rather than pool history.
-- [`d31573b`](https://github.com/Dicklesworthstone/frankensim/commit/d31573b40fd75233d8b283797986fdfda97245a0) - make races panic-total and require cancellation wiring.
-- [`98ea5db`](https://github.com/Dicklesworthstone/frankensim/commit/98ea5dbdb0b3023a169c93dddecd0ba03e86e8b1) - require caller-owned cancellation gates in `fs-race`.
-- [`361bb36`](https://github.com/Dicklesworthstone/frankensim/commit/361bb368b871d23827024938c619b10452226ce9) - bind session pressure pauses to owned gates.
-- [`b2cb2c2`](https://github.com/Dicklesworthstone/frankensim/commit/b2cb2c2fa66a8c867ec4c723a32afb44607dc1d9) - wrap solver snapshots in a versioned self-authenticating envelope.
-- [`af0339e`](https://github.com/Dicklesworthstone/frankensim/commit/af0339e90f2a81833879ab87d0219e804ba9d14e) - add packed f32 and mixed-precision GEMM paths.
-- [`dbbffa8`](https://github.com/Dicklesworthstone/frankensim/commit/dbbffa877b6806b170751a1bad503fba9cc1c926) - add transposed and strided op-form GEMM.
-- [`5b8aeb7`](https://github.com/Dicklesworthstone/frankensim/commit/5b8aeb7d3c9510c3af164683bb8cfbb5e0588901) - wire GEMM and batched perf evidence lanes.
-- [`7f6420f`](https://github.com/Dicklesworthstone/frankensim/commit/7f6420f1a1d8e447a8673db4c2ce2e578d2b4081) - weight CVaR boundary samples fractionally.
-- [`4fbdefc`](https://github.com/Dicklesworthstone/frankensim/commit/4fbdefcadc8b7ac126c5723950f2c486e690b4e1) - accept legal face-before-vertex PLY element order.
+- [`8c6db27`](https://github.com/Dicklesworthstone/frankensim/commit/8c6db27329488ff61ae3be9a33c1ba3591ea5e95) - pin deterministic integer powers and extend the policy surface that catches drift.
+- [`921c486`](https://github.com/Dicklesworthstone/frankensim/commit/921c486e400ad918b9853e2ffd5a9a6f681d4658) - bind RNG streams to declared run identity rather than pool history.
+- [`d31573b`](https://github.com/Dicklesworthstone/frankensim/commit/d31573bd7ddcb82a1cac0906d471af303ca8c38f) - make races panic-total and require cancellation wiring.
+- [`98ea5db`](https://github.com/Dicklesworthstone/frankensim/commit/98ea5dbc2fc0f783b4a1753e1d074f5eb4dc0098) - require caller-owned cancellation gates in `fs-race`.
+- [`361bb36`](https://github.com/Dicklesworthstone/frankensim/commit/361bb360e49b82f59b43b220bd6170cd9fb04d0d) - bind session pressure pauses to owned gates.
+- [`b2cb2c2`](https://github.com/Dicklesworthstone/frankensim/commit/b2cb2c24796f1f43be972c1b59b456fee6f5cd3d) - wrap solver snapshots in a versioned self-authenticating envelope.
+- [`af0339e`](https://github.com/Dicklesworthstone/frankensim/commit/af0339e2f0f6356faf4a901f788579351f2402aa) - add packed f32 and mixed-precision GEMM paths.
+- [`dbbffa8`](https://github.com/Dicklesworthstone/frankensim/commit/dbbffa83901a6554478e3a850824c9ca231eed16) - add transposed and strided op-form GEMM.
+- [`5b8aeb7`](https://github.com/Dicklesworthstone/frankensim/commit/5b8aeb71737a758a0eedb22d9e9bf1702f295acc) - wire GEMM and batched perf evidence lanes.
+- [`7f6420f`](https://github.com/Dicklesworthstone/frankensim/commit/7f6420f585d4a2baf8a5cca4f9112ca5d1c0ca7c) - weight CVaR boundary samples fractionally.
+- [`4fbdefc`](https://github.com/Dicklesworthstone/frankensim/commit/4fbdefc124c4b7e98617c467be24757fd6c51391) - accept legal face-before-vertex PLY element order.
 - [`e993e76`](https://github.com/Dicklesworthstone/frankensim/commit/e993e7640a547ca9b11ded6d580a3ce6846a4c82) - cover adjoint certificate fail-closed regressions.
+
+## 18. Golden Governance, Certificate Soundness, And Failure Compounding
+
+The 26-commit window from
+[`e993e76`](https://github.com/Dicklesworthstone/frankensim/commit/e993e7640a547ca9b11ded6d580a3ce6846a4c82)
+through
+[`81c11df`](https://github.com/Dicklesworthstone/frankensim/commit/81c11df36fb421d0e7bbfede4c094c96602dce6f)
+turns several determinism and certification incidents into governed repository
+surfaces. It spans 87 files, with 4,913 insertions and 660 deletions. The
+important change is not just more tests: semantic dependencies, replay
+identities, package payloads, and minimized failures became inspectable data.
+
+### Delivered capability
+
+- `golden-couplings.json`, semantic-surface version constants, and `xtask
+  check-goldens` now identify which downstream sentinels must be deliberately
+  re-frozen when a bit-producing surface changes. `docs/GOLDEN_POLICY.md`
+  requires committed-tree reproduction, both build modes, a plausible
+  bit-moving cause, and a same-commit registry update.
+- `xtask check-claims` ties README-cited hashes, `fs-*` crate names, and named
+  sentinel functions to the tracked tree instead of trusting manually
+  maintained capability prose.
+- Deterministic-power enforcement expanded across workspace surfaces, while
+  dimension exponent arithmetic now refuses overflow instead of narrowing,
+  wrapping, or saturating silently.
+- `fs-evidence::Certified<T>` became an opaque validated trust boundary, and
+  `fs-sos` separated algebraic decomposition checks from rigorous global or
+  radius-scoped value bounds. Under-calibrated conformal bands now return an
+  honest unbounded interval rather than finite under-coverage.
+- Evidence-package schema v2 began carrying complete color payloads,
+  provenance, magnitude budgets, and roots through a strict parser. The
+  solver-free checker re-derives budgets and roots, rejects hostile or
+  incomplete transport, and treats signature validity as an injected
+  capability rather than inferring it from signature presence.
+- `fs-obs::ident` introduced typed, versioned, length-prefixed replay identity
+  with float-bit encoding, explicit exclusions, dependency roots, and
+  collision-boundary tests. Flagship metric identities migrated onto that
+  surface and their expected golden changes were re-frozen deliberately.
+- Topology fixes aligned closed-cube component counting with 26-connectivity
+  and made persistence penalties count components alive at the requested
+  level, removing phantom tunnels and historical-bar over-counting.
+- `fs_bisect::compound` now turns a counterexample into a deterministic
+  regression family: capture, greedy shrinking, bounded neighborhood probes,
+  content-addressed manifests, tracking references, replay, and stale-family
+  detection. Its first fixture reduces the real `.powi` incident to the exact
+  `k = 7` divergence boundary and reproduces the manifest on both reference
+  ISAs in debug and release.
+
+Package checking in this slice proves structural and content-root integrity; it
+does not rerun solvers or establish scientific truth. The schema-v2 in-tree
+default also makes no cryptographic signature-validity claim. Failure
+compounding returns a minimum under the caller's shrink order, not a global
+minimum, and it records recommended admission rules without enacting them.
+
+### Closed and active workstreams
+
+- [`frankensim-golden-coupling-discipline-y4pt`](https://github.com/Dicklesworthstone/frankensim/blob/81c11df36fb421d0e7bbfede4c094c96602dce6f/.beads/issues.jsonl) - closed golden dependency registry and justified-bump protocol.
+- [`frankensim-claim-state-lint-06yc`](https://github.com/Dicklesworthstone/frankensim/blob/81c11df36fb421d0e7bbfede4c094c96602dce6f/.beads/issues.jsonl) - closed README/source claim-state coupling.
+- [`frankensim-powi-build-mode-determinism-4xnt`](https://github.com/Dicklesworthstone/frankensim/blob/81c11df36fb421d0e7bbfede4c094c96602dce6f/.beads/issues.jsonl) - closed deterministic integer-power repair and four-quadrant sentinel.
+- [`frankensim-epic-epistype-qmao.6.1`](https://github.com/Dicklesworthstone/frankensim/blob/81c11df36fb421d0e7bbfede4c094c96602dce6f/.beads/issues.jsonl) - closed schema-v2 package round-trip and solver-free reverification.
+- [`frankensim-epic-gauntlet-6nb.9`](https://github.com/Dicklesworthstone/frankensim/blob/81c11df36fb421d0e7bbfede4c094c96602dce6f/.beads/issues.jsonl) - closed failure-compounding workflow with cross-ISA manifest evidence.
+- [`frankensim-epic-helm-gp3.14`](https://github.com/Dicklesworthstone/frankensim/blob/81c11df36fb421d0e7bbfede4c094c96602dce6f/.beads/issues.jsonl) - remained in progress because canonical replay identity had landed as a shared primitive and selected adoption, not a completed workspace-wide migration.
+
+### Representative commits
+
+- [`10bdac0`](https://github.com/Dicklesworthstone/frankensim/commit/10bdac0a123543d8c14512a5244470447af02cb0) - add the golden-coupling registry and justified-bump protocol.
+- [`2ca177e`](https://github.com/Dicklesworthstone/frankensim/commit/2ca177ee8bd6157048e6d3cd3a06cfb858cc65cf) - add README claim-state drift checks.
+- [`3712602`](https://github.com/Dicklesworthstone/frankensim/commit/3712602e520a8de14276773a4dc2954bd5127f4d) - refuse overflowing dimensional exponent arithmetic.
+- [`d0c1e09`](https://github.com/Dicklesworthstone/frankensim/commit/d0c1e092c6d0b48ff95adf34dd2f2e2b2beeca07) - make certified evidence opaque and validated.
+- [`049538f`](https://github.com/Dicklesworthstone/frankensim/commit/049538f05bc718738824ee55e68a5965542a1bfb) - separate SOS algebra verification from certified value bounds.
+- [`914ff55`](https://github.com/Dicklesworthstone/frankensim/commit/914ff55fe51452c50c04b78fdd89f05139843826) - introduce canonical typed replay identities.
+- [`f882987`](https://github.com/Dicklesworthstone/frankensim/commit/f882987b5912a3513af2aa5e036c9e803c3f26e2) - complete schema-v2 package/checker transport and robust-SOS integration.
+- [`81c11df`](https://github.com/Dicklesworthstone/frankensim/commit/81c11df36fb421d0e7bbfede4c094c96602dce6f) - close failure compounding with four-quadrant evidence.
+
+## 19. Reproducible Bootstrap, Canonical Replay, And Honest Performance
+
+The 43 commits from
+[`81c11df`](https://github.com/Dicklesworthstone/frankensim/commit/81c11df36fb421d0e7bbfede4c094c96602dce6f)
+through
+[`cdb62ee`](https://github.com/Dicklesworthstone/frankensim/commit/cdb62eea326e523fed26048d4d53c717bf43d455)
+span 111 files, 6,443 insertions, and 836 deletions. This wave made
+bootstrap, replay identity, package semantics, hardware placement, and
+performance admission more reproducible while retaining measured misses as
+explicit evidence.
+
+### Delivered capability
+
+- `xtask bootstrap-constellation` now materializes locked dependencies into
+  detached, transform-free checkouts; verifies existing heads and cleanliness;
+  supports offline caches and mirror transport; distinguishes provable
+  case-collision artifacts from unrelated dirt; and writes bootstrap
+  provenance. A layer inversion found during this work moved package coverage
+  out of `fs-crosswalk` and into the legal L6 dependency direction.
+- DSR quality coverage gained Cargo-metadata-derived feature lanes, visible
+  `required-features` skips, standalone `fs-wasm` native/build lanes, complete
+  per-lane logs with tested-tree identity, and derived repository inventories.
+  The inventory is also checked against README crate, contract, and test counts.
+- Canonical typed replay identity spread into capability fingerprints,
+  reports, flagship metric streams, and steered-study fingerprints. Vessel,
+  LBM, and BEM paths replaced platform `sin`, `cos`, `powf`, `atan2`, `ln`,
+  and related calls with deterministic math, restoring the poured-mass and
+  ornithoid ROA metrics to their full cross-mode hash streams.
+- Evidence-package schema v3 added backward-only composition receipts,
+  falsifier records, and content-hashed dataset anchors. The checker recomposes
+  parent evidence, refuses color laundering and refuted claims, and keeps those
+  semantics bound into the package root without importing solver code.
+- Package admission was tightened across in-memory verification, JSON parsing,
+  and standalone checker diagnostics: complete provenance, unique claim IDs,
+  finite/ordered payloads, exact integer handling, magnitude-overflow refusal,
+  and bounded bytes, depth, nodes, containers, tokens, and strings.
+- `fs-sparse` gained optional FrankenNumpy dense-array conversion interop with
+  explicit copy/densification semantics, shape and overflow refusal,
+  non-finite rejection, and documented treatment of stored and signed zeros.
+- Linux affinity syscalls were isolated in a registered capsule; measured L3
+  groups, first-touch audits, advisory TilePool CCD pinning, hugepage/THP
+  provenance, and A/B harnesses made machine placement measurable. Per-kernel
+  SIMD tier audits found and repaired a slower NEON scale path and an x86
+  fused-multiply-add path that had fallen back to per-element libm calls.
+- Autotuner persistence began refusing foreign probes, invalid pins,
+  noncanonical records, and refresh-counter exhaustion. Per-worker throughput
+  rows also demonstrated that bandwidth-rich and bandwidth-starved machines
+  can select different schedule families without changing result bits.
+- The roofline gate gained an `EnvironmentInvalid` result after a saturated
+  host collapsed both the measured machine roof and the kernel by roughly the
+  same factor, producing a vacuous passing ratio. Absolute plausibility floors,
+  over-roof detection, and run-wide poisoning now prevent that false
+  performance certificate.
+- FFT moved to mixed radix-8/4/2 Stockham stages and improved raw M4 throughput
+  by 11–18%, but the corrected traffic model left attainment around 16–25%; the
+  40% gate remained open. Batched f32 and mixed f32-storage/f64-accumulation
+  GEMM also landed without claiming the still-unmet 60% small-dense target.
+
+Affinity, hugepages, prefetch distance, and schedule selection are
+machine-specific measurement surfaces, not portable speed guarantees. The
+bootstrap fetch path was exercised through mirror transport rather than a new
+clean remote host. Package verification remains solver-free structural and
+semantic checking, and at this point package roots were still the in-house FNV
+content address rather than the later BLAKE3 schema.
+
+### Closed and active workstreams
+
+- [`frankensim-epic-foundations-huq.17`](https://github.com/Dicklesworthstone/frankensim/blob/cdb62eea326e523fed26048d4d53c717bf43d455/.beads/issues.jsonl) - closed lock-driven constellation bootstrap.
+- [`frankensim-epic-foundations-huq.18`](https://github.com/Dicklesworthstone/frankensim/blob/cdb62eea326e523fed26048d4d53c717bf43d455/.beads/issues.jsonl) - closed derived feature-matrix, standalone-workspace, and inventory coverage.
+- [`frankensim-epic-helm-gp3.14`](https://github.com/Dicklesworthstone/frankensim/blob/cdb62eea326e523fed26048d4d53c717bf43d455/.beads/issues.jsonl) - closed canonical replay identity adoption.
+- [`frankensim-xfxq`](https://github.com/Dicklesworthstone/frankensim/blob/cdb62eea326e523fed26048d4d53c717bf43d455/.beads/issues.jsonl) - closed evidence-package schema v3 receipts, falsifiers, and anchors.
+- [`frankensim-gtql`](https://github.com/Dicklesworthstone/frankensim/blob/cdb62eea326e523fed26048d4d53c717bf43d455/.beads/issues.jsonl) - closed sparse FrankenNumpy and graph-constellation interop with explicit conversion no-claims.
+- [`frankensim-epic-perf-fz2.2`](https://github.com/Dicklesworthstone/frankensim/blob/cdb62eea326e523fed26048d4d53c717bf43d455/.beads/issues.jsonl) - remained active at this endpoint while the machine-adaptive scoreboard was reconciled; it closes later in the next window.
+- [`frankensim-27d3`](https://github.com/Dicklesworthstone/frankensim/blob/cdb62eea326e523fed26048d4d53c717bf43d455/.beads/issues.jsonl) - remained active because the FFT roofline target was not met.
+- [`frankensim-9ekv`](https://github.com/Dicklesworthstone/frankensim/blob/cdb62eea326e523fed26048d4d53c717bf43d455/.beads/issues.jsonl) - remained open because batched small-dense GEMM had not met its 60% target.
+
+### Representative commits
+
+- [`6fb8513`](https://github.com/Dicklesworthstone/frankensim/commit/6fb85130c893b2e9de652adec124f6fd38d48083) - add lock-driven constellation bootstrap and repair the exposed layer inversion.
+- [`f96156d`](https://github.com/Dicklesworthstone/frankensim/commit/f96156dd91662856971bb2494cca7b1f190a1bc3) - derive DSR feature lanes, visible skips, standalone WASM coverage, and inventories.
+- [`3a263c2`](https://github.com/Dicklesworthstone/frankensim/commit/3a263c2fb14d94eeda511d1a6e6a4c86ddffbc21) - canonicalize replay identities and deterministic flagship trigonometry.
+- [`b24b0dc`](https://github.com/Dicklesworthstone/frankensim/commit/b24b0dc914c74b39f95a8ef2c20693a99dd87edc) - finish deterministic BEM routing and four-quadrant flagship goldens.
+- [`e00858c`](https://github.com/Dicklesworthstone/frankensim/commit/e00858c2b97451baef410681e422199cc0963cb4) - add schema-v3 composition receipts, falsifiers, and anchors.
+- [`cd185a6`](https://github.com/Dicklesworthstone/frankensim/commit/cd185a6e5808394edafc9884f525c2a999fdbbff) - harden standalone evidence-verification boundaries.
+- [`dc99094`](https://github.com/Dicklesworthstone/frankensim/commit/dc990942c6aca864644df5b5860061482e964ab4) - add explicit FrankenNumpy dense-array conversion for sparse matrices.
+- [`fb3bfc8`](https://github.com/Dicklesworthstone/frankensim/commit/fb3bfc83320ae26806d9f8e007c38618d9f50057) - add OS affinity, measured L3 topology, and CCD/first-touch A/B evidence.
+- [`ceccb00`](https://github.com/Dicklesworthstone/frankensim/commit/ceccb003ba0914b488474a2dfaeb57cd3eedb080) - add advisory TilePool CCD pinning with bit-equivalence gates.
+- [`535aa83`](https://github.com/Dicklesworthstone/frankensim/commit/535aa8393aa1484cdef4df4edd36dfe21bf951ac) - improve FFT throughput while recording the unmet roofline target.
+- [`cdb62ee`](https://github.com/Dicklesworthstone/frankensim/commit/cdb62eea326e523fed26048d4d53c717bf43d455) - refuse self-normalizing performance gates on saturated machines.
+
+## 20. Evidence-Bound Autotuning, BLAKE3 Packages, And Closure Enforcement
+
+The 66-commit window from
+[`cdb62ee`](https://github.com/Dicklesworthstone/frankensim/commit/cdb62eea326e523fed26048d4d53c717bf43d455)
+through
+[`fb34ef6`](https://github.com/Dicklesworthstone/frankensim/commit/fb34ef6b6fb2b57f6c55e2ec8c4cc33653a958f8)
+touch 119 files, with 13,684 insertions and 1,863 deletions. They establish the
+first production-facing GEMM measure-cache-model-dispatch path, move package
+integrity onto domain-separated BLAKE3 roots, and extend the repository's
+failure-compounding doctrine to issue closure itself. Several commits retain
+explicit `wip` boundaries; this section preserves those distinctions.
+
+### Delivered capability
+
+- `fs-roofline` moved its citation boundary from plausible-looking attainment
+  ratios to exact timed receipts bound to pre-run machine axes, kernel identity,
+  work count, raw sample-duration bits, derived statistics, and verdict.
+  Admission re-derives every row, corroborates post-run axes, and makes analytic,
+  tampered, duplicate, invalid-axis, or drifted measurements non-citable.
+- A governed historical-baseline API models the remaining sustained-contention
+  hole: trusted axes require at least three mutually agreeing, floor-plausible
+  runs plus operator, justification, fingerprint, topology,
+  OS/architecture/firmware identity, and age policy. First-run measurements are
+  candidates rather than self-authorizing evidence; the API marks degraded,
+  suspicious, stale, or identity-drifted environments ineligible. Binding that
+  admission result into every citable GEMM receipt remains an active blocker.
+- `fs-exec` tuning evidence became versioned, unit-safe, canonical, bounded,
+  and explicitly non-statistical. Exact wall-time samples determine a
+  deterministic ranked argmin; summaries and candidate separation are
+  re-derived rather than trusted as independent claims.
+- A bounded GEMM block-plan lattice and `fs-session` orchestration now implement
+  cold measurement, validated cache adoption, pinned replay, ledger
+  read/write-through, and dispatch. Tune rows bind bit semantics, shape,
+  requested threads and thread budget, exact probe dimensions, ISA tier,
+  placement, and implementation identity through one canonical key.
+- Tuning publication was split into prepare, durable persistence, in-memory row
+  commit, transactional dispatch, and decision commit. Cancelled or failed
+  dispatches do not publish a success decision, and cache imports must match the
+  requested execution identity and the ranked-evidence winner.
+- `fs-la` added cancellation-aware parallel f64 GEMM with private output
+  staging. Cancellation stops new acquisition, drains scoped workers, and
+  preserves caller-visible `C` bit-for-bit; only a successful operation crosses
+  the documented non-cancellable final-copy boundary.
+- Core and batched GEMM paths added checked extent, stride, packing, allocation,
+  and tuning-quantum admission before mutation or unsafe SIMD entry. Batched
+  f64, f32, and mixed paths also implement `alpha == 0` without reading
+  poisoned inputs. The final endpoint still carries open SIMD-pointer and
+  batched-semantics workstreams, so this is landed hardening rather than a
+  claim that every safe-facade audit is closed.
+- The shipped roofline registry now invokes the session-backed GEMM tuner and
+  derives §14.1 implementation coverage from registered kernels. A `landed`
+  target row means the registry contains the production path; it does not mean
+  the declared 75% performance target was met.
+- `fs-substrate` added architecture-specific software-prefetch hints and a
+  distance sweep that found different optima on the M4 Pro and Threadripper,
+  while proving the hint cannot affect result bits. A repository Cargo note
+  also records why globally enabling x86 FMA is rejected: LLVM contraction
+  changed a Chebyshev golden, so the libm-FMA trap must be repaired in narrow
+  pure-`mul_add` target-feature capsules instead of changing workspace-wide
+  arithmetic.
+- A dependency-free `fs-blake3` crate became the shared safe-Rust content-hash
+  owner. Evidence-package schema v4 moved from 64-bit FNV roots to 32-byte
+  BLAKE3 roots with distinct derive-key domains for headers, claims, internal
+  nodes, and raw artifacts while keeping the checker solver-free.
+- A clean-bootstrap audit narrowed the earlier `xtask` claim: Cargo cannot run
+  that command before unresolved path dependencies have been materialized.
+  Bootstrap now refuses unverifiable substitutions and the docs distinguish
+  prebuilt-cache verification from true clean-clone setup. The FrankenNumpy pin
+  was advanced past its case-colliding fuzz-corpus filenames, restoring clean
+  checkouts on default macOS, but a strict pre-Cargo bootstrap remains open.
+- Evidence waivers now bind to exact canonical color payloads rather than only
+  a color rank. Package coverage depends on valid authenticated records, and a
+  refused package exposes no positive evidence summary that could be mistaken
+  for a partial pass.
+- Interval Newton gained bounded work and completeness receipts; high-order IGA
+  gained degree-aware Gauss-Legendre quadrature; constrained optimization began
+  validating complete KKT state; chart agreement became
+  `Agreed`/`Disagreed`/`Unknown`; and voxel queries refuse mixed frames,
+  unrepresentable coordinates, and unbudgeted dense transforms.
+- The cache-blocked six-step FFT passed its correctness and golden batteries but
+  measured roughly twice as slow as the existing stage walk, so it remains
+  default-off behind `frontier-sixstep`. FEEC's high-order x86 path removed the
+  per-element libm `fma` hole, but scalar fused code generation still left the
+  30% cross-ISA vectorization target open.
+- `xtask check-closures` became the eighth `check-all` lane. A closed bug Bead
+  must name retained regression evidence or an explicit disposition, connecting
+  tracker closure to the previously landed failure-compounding workflow.
+
+This snapshot does not close every production claim. The exhaustive GEMM
+performance oracle was still manual and exercised the legacy parallel path; the
+later hardening commits carried no current x86 production-oracle result; GEMM
+staging was not memory-budgeted; and worker scopes still used scoped standard
+threads rather than a full asupersync `Cx`. The roofline wrapper could also
+persist a reusable session tune row during warmup before post-run roofline
+admission, so rejected axes withheld citable roofline output without yet
+guaranteeing that no tuning state survived. Content roots prove transit
+integrity, not scientific truth, authorship, or claim origin. The closure gate
+checks that a close reason names regression evidence or a disposition; it does
+not resolve the cited artifact and independently prove that artifact passes.
+
+### Closed and active workstreams
+
+- [`frankensim-yqug`](https://github.com/Dicklesworthstone/frankensim/blob/fb34ef6b6fb2b57f6c55e2ec8c4cc33653a958f8/.beads/issues.jsonl) - closed at [`f93c9de`](https://github.com/Dicklesworthstone/frankensim/commit/f93c9de48367ec43a1ac4ab3df7e24a1050882f0) after the first real GEMM autotune loop, then reopened by the final endpoint for receipt/decision binding, real `TilePool`/`Cx` traversal, exact build/effective-tier identity, and no-write-before-admission blockers.
+- [`frankensim-epic-perf-fz2.2`](https://github.com/Dicklesworthstone/frankensim/blob/fb34ef6b6fb2b57f6c55e2ec8c4cc33653a958f8/.beads/issues.jsonl) - closed the machine-adaptive hardening scoreboard with measured per-ISA outcomes and remaining gap beads.
+- [`frankensim-hx4p`](https://github.com/Dicklesworthstone/frankensim/blob/fb34ef6b6fb2b57f6c55e2ec8c4cc33653a958f8/.beads/issues.jsonl) - closed the self-expanding Gauntlet slice by reconciling failure compounding with universal closure-evidence enforcement.
+- [`frankensim-7uq9`](https://github.com/Dicklesworthstone/frankensim/blob/fb34ef6b6fb2b57f6c55e2ec8c4cc33653a958f8/.beads/issues.jsonl) and [`frankensim-t7x3`](https://github.com/Dicklesworthstone/frankensim/blob/fb34ef6b6fb2b57f6c55e2ec8c4cc33653a958f8/.beads/issues.jsonl) - remained in progress in the tracker despite the shared BLAKE3 owner and schema-v4 root migration landing materially.
+- [`frankensim-krym`](https://github.com/Dicklesworthstone/frankensim/blob/fb34ef6b6fb2b57f6c55e2ec8c4cc33653a958f8/.beads/issues.jsonl) - remained open for schema-v5 non-forgeable claim origins and authenticated waiver transport.
+- [`frankensim-27d3`](https://github.com/Dicklesworthstone/frankensim/blob/fb34ef6b6fb2b57f6c55e2ec8c4cc33653a958f8/.beads/issues.jsonl) - remained open after the six-step FFT was honestly rejected for default promotion.
+- [`frankensim-a55x`](https://github.com/Dicklesworthstone/frankensim/blob/fb34ef6b6fb2b57f6c55e2ec8c4cc33653a958f8/.beads/issues.jsonl) - closed the narrow FEEC libm-call defect, while [`frankensim-cwjn`](https://github.com/Dicklesworthstone/frankensim/blob/fb34ef6b6fb2b57f6c55e2ec8c4cc33653a958f8/.beads/issues.jsonl) remained open for packed vectorization and the 30% target.
+- [`frankensim-9ekv`](https://github.com/Dicklesworthstone/frankensim/blob/fb34ef6b6fb2b57f6c55e2ec8c4cc33653a958f8/.beads/issues.jsonl) - remained open for the batched small-dense 60% target.
+- [`frankensim-rpgc`](https://github.com/Dicklesworthstone/frankensim/blob/fb34ef6b6fb2b57f6c55e2ec8c4cc33653a958f8/.beads/issues.jsonl) - closed core GEMM extent-overflow admission, while [`frankensim-zevq`](https://github.com/Dicklesworthstone/frankensim/blob/fb34ef6b6fb2b57f6c55e2ec8c4cc33653a958f8/.beads/issues.jsonl) and [`frankensim-9ry9`](https://github.com/Dicklesworthstone/frankensim/blob/fb34ef6b6fb2b57f6c55e2ec8c4cc33653a958f8/.beads/issues.jsonl) remained in progress for SIMD pointer-safety and batched no-read/overflow closure.
+- [`frankensim-dfh3`](https://github.com/Dicklesworthstone/frankensim/blob/fb34ef6b6fb2b57f6c55e2ec8c4cc33653a958f8/.beads/issues.jsonl) - closed the governed historical machine-axis baseline layer; receipt binding remains under the reopened GEMM blockers.
+- [`frankensim-1t8i`](https://github.com/Dicklesworthstone/frankensim/blob/fb34ef6b6fb2b57f6c55e2ec8c4cc33653a958f8/.beads/issues.jsonl) - remained open for a strict pre-Cargo clean-clone bootstrap; [`frankensim-7n2n`](https://github.com/Dicklesworthstone/frankensim/blob/fb34ef6b6fb2b57f6c55e2ec8c4cc33653a958f8/.beads/issues.jsonl) also remained open despite the case-collision re-pin landing in [`fb34ef6`](https://github.com/Dicklesworthstone/frankensim/commit/fb34ef6b6fb2b57f6c55e2ec8c4cc33653a958f8).
+
+### Representative commits
+
+- [`2ecb0cd`](https://github.com/Dicklesworthstone/frankensim/commit/2ecb0cd5396a5c632c64441f6527844a94cc526e) - bind citable roofline runs to re-derivable timed receipts.
+- [`dc859e2`](https://github.com/Dicklesworthstone/frankensim/commit/dc859e2504aa0249937d74c8a10f0f41993f0702) - introduce bounded GEMM plans and the session autotune scaffold.
+- [`666967d`](https://github.com/Dicklesworthstone/frankensim/commit/666967def6b9827ff1862b2458b66a72afb70632) - make tuner evidence unit-safe, canonical, bounded, and non-statistical.
+- [`f91b775`](https://github.com/Dicklesworthstone/frankensim/commit/f91b7753f9c665f468ee6edd571f66f3996311a7) - add transactional cancellation-aware parallel GEMM.
+- [`3096ee5`](https://github.com/Dicklesworthstone/frankensim/commit/3096ee5bc110504ed5b04b56352d2eabffa3ead8) - bind tune rows and decisions to completed execution identity.
+- [`da8f438`](https://github.com/Dicklesworthstone/frankensim/commit/da8f438fb7c442500bf62e94bb14380686dbfddf) - wire the session-backed tuner into the shipped roofline registry.
+- [`f93c9de`](https://github.com/Dicklesworthstone/frankensim/commit/f93c9de48367ec43a1ac4ab3df7e24a1050882f0) - derive target coverage from the production registry while separating coverage from performance proof.
+- [`3a4257a`](https://github.com/Dicklesworthstone/frankensim/commit/3a4257a76c031eaa93f4763ed9e39c6de061d2f7) - add bit-neutral software prefetch and per-machine distance sweeps.
+- [`2d6d3f9`](https://github.com/Dicklesworthstone/frankensim/commit/2d6d3f99bc103684d33c183589d6d7f19a6f3828) - add governed historical roofline baselines and sustained-contention admission semantics.
+- [`005f0e2`](https://github.com/Dicklesworthstone/frankensim/commit/005f0e2b4570f200006ba4d1805fca61d86b7789) - document why global x86 FMA contraction violates G5 bit determinism.
+- [`9711705`](https://github.com/Dicklesworthstone/frankensim/commit/971170581e555ec44ede17f6bec3612aa023ed78) - extract the shared dependency-free BLAKE3 owner.
+- [`10d1e2c`](https://github.com/Dicklesworthstone/frankensim/commit/10d1e2cfb80dc1bed6df237cc1695364d912d61f) - migrate package/checker roots to domain-separated 32-byte BLAKE3.
+- [`d4b9c04`](https://github.com/Dicklesworthstone/frankensim/commit/d4b9c04c74dc173bb6f47d735f9f999a9483ec0f) - retain the correct-but-slower six-step FFT as gated frontier evidence.
+- [`acedb1b`](https://github.com/Dicklesworthstone/frankensim/commit/acedb1b87e686013173081683e8de79068bf1e1f) - remove the FEEC x86 libm-FMA call path while preserving an explicit performance no-claim.
+- [`504d2a8`](https://github.com/Dicklesworthstone/frankensim/commit/504d2a89003913e04efad13a6e9d0c464f3dd04e) - require closed bugs to cite regression evidence or an explicit disposition.
+- [`fb34ef6`](https://github.com/Dicklesworthstone/frankensim/commit/fb34ef6b6fb2b57f6c55e2ec8c4cc33653a958f8) - re-pin FrankenNumpy after removing case-colliding corpus filenames upstream.
+
+## 21. SIMD Transpose, FEEC Accumulation, And Pre-Cargo Bootstrap
+
+The six-commit follow-up from
+[`f7e9787`](https://github.com/Dicklesworthstone/frankensim/commit/f7e9787f7dcf412b35642b7fffb7e943d1c64045)
+through
+[`2568c82`](https://github.com/Dicklesworthstone/frankensim/commit/2568c8262bf50789d20be528265b5c96d575fb1b)
+touches 19 files, with 1,038 insertions and 102 deletions. It advances two
+measured numerical kernels without erasing their remaining no-claim boundaries,
+and it moves clean-machine constellation materialization out of the Cargo
+workspace so it can run before sibling path dependencies exist.
+
+### Delivered capability
+
+- `fs-simd` gained an 8-by-8-tiled NEON transpose for interleaved complex f64
+  matrices. One complex value occupies one 128-bit vector register, so the
+  capsule performs exact loads and stores without floating-point arithmetic or
+  shuffle-induced bit changes. The scalar twin and tier battery cover irregular
+  and tile-aligned sizes, while `fs-fft` routes its six-step transpose through
+  the shared operation table.
+- The capsule improved the large-transform six-step/stage-walk ratio from the
+  earlier approximately 0.44 to measured values of 0.731 and 0.679 on the
+  macOS-aarch64 lane. That halves the deficit but does not produce a win, so
+  `frontier-sixstep` remains default-off and the existing
+  `0x79aa_108f_a517_012f` six-step golden remains unchanged. The tracker released
+  `frankensim-27d3` for its next measured lever rather than declaring the
+  performance target complete.
+- A post-landing audit found that the safe scalar and NEON transpose facades
+  compute `2 * n1 * n1` with unchecked `usize` arithmetic before validating
+  slice lengths. The endpoint therefore records a measured optimization, not a
+  completed safe-facade proof; overflow-safe geometry admission and a retained
+  regression are still required before treating the capsule as fully closed.
+- `fs-feec` rewrote all three sum-factorized hexahedral contractions to keep
+  each output row in a local `[f64; P]` accumulator and store once. The
+  per-output operation chain remains `+0.0` followed by ascending-`l`
+  `mul_add`, preserving the `0xaaf1_076a_196c_6902` golden while removing repeated
+  destination loads/stores and making the const-`P` loops friendlier to SLP
+  vectorization.
+- The FEEC change measured 0.56-0.70 attainment across `r = 1..5` on the M4
+  lane, up from the prior 0.44 row. The commit deliberately leaves
+  `frankensim-cwjn` in progress: the x86 gate verdict and the declared both-ISA
+  30% target were not complete at this endpoint.
+- A standalone `tools/bootstrap` package now lives outside the root workspace,
+  has its own empty workspace and lockfile, and uses no dependencies. It can
+  parse `constellation.lock`, clone missing siblings at detached pinned commits,
+  verify existing sibling HEAD and cleanliness, honor a network-free offline
+  mode, use a mirror base, and write deterministic schema-v1 provenance without
+  first asking Cargo to resolve the very path dependencies it is meant to
+  materialize.
+- Hermetic replay drills cover first clone, idempotent offline verification,
+  dirty and drift refusal, and offline-missing refusal. The committed close
+  evidence also records a real seven-sibling offline verification including the
+  case-collision-safe FrankenNumpy pin. `frankensim-1t8i` and
+  `frankensim-7n2n` are closed at this endpoint.
+
+The bootstrap closure is narrower than a claim that every hostile invocation
+is already fail-closed. The endpoint README and parts of the bootstrap/CI docs
+still retain earlier language saying clean-clone bootstrap is unavailable or
+open. Code review also found that the newly cloned path re-checks the detached
+HEAD but does not apply the existing-sibling clean-tree check after checkout,
+and a bare `--root` or `--from` silently falls back instead of refusing a
+missing value. These are follow-up documentation and admission defects, not
+reasons to erase the landed standalone bootstrap and replay evidence.
+
+### Closed and active workstreams
+
+- [`frankensim-1t8i`](https://github.com/Dicklesworthstone/frankensim/blob/2568c8262bf50789d20be528265b5c96d575fb1b/.beads/issues.jsonl) - closed with the standalone zero-dependency bootstrap, hermetic replay drills, and real-lock offline verification; a literal blank-machine fetch from the public remotes remained outside the recorded session.
+- [`frankensim-7n2n`](https://github.com/Dicklesworthstone/frankensim/blob/2568c8262bf50789d20be528265b5c96d575fb1b/.beads/issues.jsonl) - closed after the FrankenNumpy corpus rename and pinned clean checkouts on case-insensitive macOS and case-sensitive Linux.
+- [`frankensim-27d3`](https://github.com/Dicklesworthstone/frankensim/blob/2568c8262bf50789d20be528265b5c96d575fb1b/.beads/issues.jsonl) - open after the NEON transpose improvement because the six-step FFT still loses to the stage walk and remains gated off.
+- [`frankensim-cwjn`](https://github.com/Dicklesworthstone/frankensim/blob/2568c8262bf50789d20be528265b5c96d575fb1b/.beads/issues.jsonl) - in progress after the register-accumulator rewrite; the committed M4 row improved, while the x86 verdict remained pending.
+- [`frankensim-dfh3`](https://github.com/Dicklesworthstone/frankensim/blob/2568c8262bf50789d20be528265b5c96d575fb1b/.beads/issues.jsonl) - open again with a coordination note that production historical-baseline wiring was in flight on another lane.
+
+### Representative commits
+
+- [`f7e9787`](https://github.com/Dicklesworthstone/frankensim/commit/f7e9787f7dcf412b35642b7fffb7e943d1c64045) - add the NEON interleaved-complex transpose capsule and record its measured, still-insufficient six-step improvement.
+- [`ea03f01`](https://github.com/Dicklesworthstone/frankensim/commit/ea03f0125e3100e14dd93449ab0109adf9d4906c) - record the 27d3 capsule slice and release the still-open workstream.
+- [`2168810`](https://github.com/Dicklesworthstone/frankensim/commit/2168810f3544652cb6e53dc46c8c488930a0b741) - make FEEC sum-factorized contractions register-accumulator friendly without moving their golden.
+- [`a3edf0e`](https://github.com/Dicklesworthstone/frankensim/commit/a3edf0ec681d679865d5e5796f0802e1a4c3f48b) - add the standalone zero-dependency constellation bootstrap and its replay harness.
+- [`2568c82`](https://github.com/Dicklesworthstone/frankensim/commit/2568c8262bf50789d20be528265b5c96d575fb1b) - close the clean-machine bootstrap tracker slice with explicit evidence and a residual blank-machine no-claim.
 
 ## Current Non-Release Status
 
 - No package or crate release has been tagged yet.
 - The canonical project state is `main`, not a versioned artifact; the latest
   implementation and tracker snapshot covered here is
-  [`e993e76`](https://github.com/Dicklesworthstone/frankensim/commit/e993e7640a547ca9b11ded6d580a3ce6846a4c82).
+  [`2568c82`](https://github.com/Dicklesworthstone/frankensim/commit/2568c8262bf50789d20be528265b5c96d575fb1b).
 - The repository is actively changing; use crate `CONTRACT.md` files and Beads
   close reasons for detailed no-claim boundaries.
 - The README describes the implemented workspace; the long-form plan remains

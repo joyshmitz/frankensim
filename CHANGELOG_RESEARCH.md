@@ -5,46 +5,52 @@
 - Repo: `Dicklesworthstone/frankensim`
 - Requested task: update the changelog using `changelog-md-workmanship`.
 - Scope window: project inception on 2026-07-05 through
-  `main@e993e7640a547ca9b11ded6d580a3ce6846a4c82` on 2026-07-10.
+  `main@2568c8262bf50789d20be528265b5c96d575fb1b` on 2026-07-10.
 - Public remote state when researched: local `HEAD` resolved to
-  `e993e7640a547ca9b11ded6d580a3ce6846a4c82`; `origin/main` resolved to
-  `e993e7640a547ca9b11ded6d580a3ce6846a4c82`.
+  `2568c8262bf50789d20be528265b5c96d575fb1b`; `origin/main` resolved to
+  `2568c8262bf50789d20be528265b5c96d575fb1b`.
 - Working-tree policy: the changelog covers committed history only. Local
   uncommitted edits and scratch files were not used as changelog evidence,
-  including `.beads/issues.jsonl`, source edits under `crates/`, `xtask`, the
-  Wrangler cache files, and the untracked FlowCert probe file.
+  including the live Beads export, README, manifests and locks, crate source,
+  contracts, tests, unsafe-capsule registry, and untracked probe/helper files.
 
 ## Evidence Sources
 
 - Git history:
-  - `git rev-list --count HEAD` -> 857 commits.
-  - `git rev-list --count origin/main` -> 857 commits.
-  - `git rev-list --count 43d52f2..HEAD` -> 524 commits since the prior
+  - `git rev-list --count HEAD` -> 998 commits.
+  - `git rev-list --count origin/main` -> 998 commits.
+  - `git rev-list --count 43d52f2..HEAD` -> 665 commits since the prior
     changelog baseline.
-  - `git rev-list --count fb08842..HEAD` -> 235 commits since the previous
+  - `git rev-list --count fb08842..HEAD` -> 376 commits since the previous
     changelog pass endpoint.
-  - `git rev-list --count 319cb64..HEAD` -> 224 commits since the previous
+  - `git rev-list --count 319cb64..HEAD` -> 365 commits since the previous
     changelog endpoint.
-  - `git rev-list --count d5873bf..HEAD` -> 176 commits since the 2026-07-09
+  - `git rev-list --count d5873bf..HEAD` -> 317 commits since the 2026-07-09
     flagship expansion checkpoint.
-  - `git rev-list --count e08e302..HEAD` -> 161 commits since the previous
+  - `git rev-list --count e08e302..HEAD` -> 302 commits since the previous
     changelog endpoint.
-  - `git rev-list --count 6725739..HEAD` -> 119 commits since the previous
-    changelog endpoint.
+  - `git rev-list --count 6725739..HEAD` -> 260 commits since that public
+    mainline snapshot.
+  - `git rev-list --count e993e76..HEAD` -> 141 commits in this update window.
+  - `git rev-list --count fb34ef6..HEAD` -> 6 commits in the final follow-up.
   - `git log --reverse --no-merges --pretty=format:'%h %ad %s' --date=short`.
   - `git log --all --no-merges --pretty=format:'%H %h %ad %s' --date=short`.
-  - `git diff --stat --compact-summary 43d52f2..HEAD` -> 686 files changed,
-    119,151 insertions, 1,481 deletions.
-  - `git diff --stat --compact-summary fb08842..HEAD` -> 329 files changed,
-    39,336 insertions, 1,582 deletions.
-  - `git diff --stat --compact-summary 319cb64..HEAD` -> 301 files changed,
-    34,024 insertions, 1,604 deletions.
-  - `git diff --stat --compact-summary d5873bf..HEAD` -> 224 files changed,
-    19,795 insertions, 1,490 deletions.
-  - `git diff --stat --compact-summary e08e302..HEAD` -> 215 files changed,
-    18,032 insertions, 1,406 deletions.
-  - `git diff --stat --compact-summary 6725739..HEAD` -> 169 files changed,
-    11,967 insertions, 1,317 deletions.
+  - `git diff --shortstat 43d52f2..HEAD` -> 774 files changed,
+    142,926 insertions, 2,639 deletions.
+  - `git diff --shortstat fb08842..HEAD` -> 475 files changed,
+    63,439 insertions, 3,068 deletions.
+  - `git diff --shortstat 319cb64..HEAD` -> 450 files changed,
+    58,129 insertions, 3,092 deletions.
+  - `git diff --shortstat d5873bf..HEAD` -> 388 files changed,
+    43,986 insertions, 3,064 deletions.
+  - `git diff --shortstat e08e302..HEAD` -> 384 files changed,
+    42,267 insertions, 3,024 deletions.
+  - `git diff --shortstat 6725739..HEAD` -> 347 files changed,
+    36,239 insertions, 2,972 deletions.
+  - `git diff --shortstat e993e76..HEAD` -> 250 files changed,
+    24,971 insertions, 2,354 deletions.
+  - `git diff --shortstat fb34ef6..HEAD` -> 19 files changed,
+    1,038 insertions, 102 deletions.
 - Version metadata:
   - `git for-each-ref refs/tags ...` -> no tags.
   - `gh release list --limit 100` -> no GitHub Releases.
@@ -56,11 +62,12 @@
   - `AGENTS.md`.
   - crate-level `CONTRACT.md` files referenced through README/workstream scope.
   - Workspace count checks on 2026-07-10:
-    - `find crates -mindepth 1 -maxdepth 1 -type d -name 'fs-*' | wc -l`
-      -> 125 crates.
-    - `find crates -mindepth 2 -maxdepth 2 -name CONTRACT.md | wc -l`
-      -> 125 contracts.
-    - `git ls-files 'crates/fs-*/tests/*.rs' | wc -l` -> 240 tracked test files.
+    - `git ls-tree -d --name-only HEAD:crates | rg '^fs-' | wc -l`
+      -> 126 tracked `fs-*` crate directories.
+    - `git ls-tree -r --name-only HEAD | rg '^crates/fs-[^/]+/CONTRACT\.md$' | wc -l`
+      -> 126 tracked contracts.
+    - `git ls-tree -r --name-only HEAD | rg '^crates/fs-[^/]+/tests/.*\.rs$' | wc -l`
+      -> 251 tracked crate-level test files.
 
 ## Version Spine
 
@@ -81,6 +88,9 @@
 | `e08e302` | Public mainline snapshot | 2026-07-09 | SME2 exploratory battery; 696 commits. |
 | `6725739` | Public mainline snapshot | 2026-07-09 | Live browser flagship pipelines, mesh v2/v3 closure, sparse roofline/NUMA lanes, rand/FFT perf work, fail-closed IO/risk/probe hardening; 738 commits. |
 | `e993e76` | Public mainline snapshot | 2026-07-10 | Deterministic `.powi` policy, declared RNG run identity, caller-owned cancellation gates, solver snapshot envelopes, GEMM perf evidence lanes, legal PLY face-first imports, standard empirical CVaR, and adjoint fail-closed regressions; 857 commits. |
+| `f93c9de` | Public mainline snapshot | 2026-07-10 | Evidence-package schema and BLAKE3 roots, failure compounding, golden/claim/closure policy gates, machine-adaptive execution, fail-closed numerical fixes, and the first production GEMM autotune/roofline integration; 988 commits. |
+| `fb34ef6` | Public mainline snapshot | 2026-07-10 | Trusted historical roofline baselines, an explicit rejection of global x86 FMA contraction, and a FrankenNumpy re-pin past the case-colliding corpus; 992 commits. |
+| `2568c82` | Public mainline snapshot | 2026-07-10 | NEON interleaved-complex transpose, register-accumulator FEEC contractions, and a standalone zero-dependency clean-machine bootstrap; 998 commits. |
 
 No tags or GitHub Releases existed when researched.
 
@@ -103,6 +113,10 @@ No tags or GitHub Releases existed when researched.
 | 13 | 319cb64..e08e302 | distilled | Self-knowledge and flywheel gates, Stokes block preconditioners, NSGA-III/MOEA/D/steering, sparse GP, adaptive MLMC/chance constraints, constrained polish engines, proposal-only generation, browser campaign tiers, differentiable rendering, ornithoid and CutFEM-octree flagships, exact e2e certificate payloads, topopt evidence hardening, frozen-golden flagship replay suite, mesh refinement protection, SME2 exploratory capsule, tracker state, proof-hygiene fixes. |
 | 14 | e08e302..6725739 | distilled | Live `fs-wasm` flagship browser pipelines, `fs-mesh` v2/v3 closure, hex-dominant meshing scaffold, compact sparse roofline/NUMA work, deterministic rand/FFT perf lanes, PLY integer validation, non-finite risk/probe hardening, and packaging panic-surface cleanup. |
 | 15 | 6725739..e993e76 | distilled | Deterministic integer-power policy, run-identity RNG replay, race/session cancellation ownership, versioned solver snapshots, f32/mixed/transposed/strided GEMM evidence lanes, standard empirical CVaR boundary weighting, legal PLY face-first import, and adjoint certificate fail-closed regressions. |
+| 16 | e993e76..81c11df | distilled | Golden-coupling and claim-state policy, certificate/package hardening, canonical replay identity, deterministic math repairs, topology fixes, and failure-compounding families. |
+| 17 | 81c11df..cdb62ee | distilled | Lock-driven bootstrap, canonical replay adoption, package schema v3, machine-adaptive execution, honest FFT/batched-GEMM measurements, and fail-closed roofline admission. |
+| 18 | cdb62ee..fb34ef6 | distilled | Roofline receipt and historical-baseline admission, typed GEMM autotuning, transactional parallel GEMM, package schema v4/BLAKE3 ownership, closure-evidence enforcement, FFT/FEEC measured outcomes, production registry wiring, and the constellation case-collision re-pin. |
+| 19 | fb34ef6..2568c82 | distilled | Measured NEON complex transpose, FEEC register accumulators with unchanged goldens, standalone pre-Cargo constellation bootstrap, and tracker handoffs preserving unresolved performance and admission boundaries. |
 
 ## Representative Commit Clusters
 
@@ -239,6 +253,76 @@ No tags or GitHub Releases existed when researched.
   - `7f6420f` standard empirical CVaR boundary weighting.
   - `4fbdefc` legal face-before-vertex PLY element order.
   - `e993e76` adjoint certificate fail-closed regressions.
+- 2026-07-10 evidence-bound performance and package integrity:
+  - `2ecb0cd` bind citable roofline runs to exact, re-derivable timed receipts.
+  - `dc859e2` introduce bounded GEMM plans and the session autotune scaffold.
+  - `666967d` make tuner evidence unit-safe, canonical, bounded, and explicitly
+    non-statistical.
+  - `f91b775` add private-staging transactional cancellation to parallel GEMM.
+  - `3096ee5` bind tune rows and decisions to the complete execution identity.
+  - `da8f438` wire the session-backed GEMM tuner into the shipped roofline
+    registry, retaining its pre-admission persistence no-claim.
+  - `f93c9de` derive target coverage from the production registry while keeping
+    target attainment a separate evidence question.
+  - `2d6d3f9` add governed fingerprint-specific historical axis baselines so
+    sustained contention cannot self-authorize citable roofline evidence.
+  - `005f0e2` document why globally enabling x86 FMA would break G5 bit
+    determinism and must be replaced by narrow per-kernel capsules.
+  - `fb34ef6` re-pin FrankenNumpy after upstream renamed case-colliding corpus
+    files, restoring representable clean checkouts on default macOS.
+  - `9711705` extract the dependency-free safe-Rust BLAKE3 owner.
+  - `10d1e2c` migrate package/checker roots to domain-separated 32-byte BLAKE3.
+  - `504d2a8` require closed bug beads to cite regression evidence or an
+    explicit disposition.
+  - `d4b9c04` retain the correct-but-slower six-step FFT behind its frontier
+    gate instead of promoting it.
+  - `acedb1b` remove the FEEC x86 libm-FMA call path while leaving the packed
+    vectorization target open.
+- 2026-07-10 post-checkpoint kernel and bootstrap follow-up:
+  - `f7e9787` add the NEON interleaved-complex transpose capsule, scalar twin,
+    and measured six-step relative lane while keeping the feature default-off.
+  - `ea03f01` record the partial 27d3 result and release the open workstream.
+  - `2168810` replace FEEC destination-memory accumulation with local register
+    arrays while preserving the frozen golden and leaving x86 proof pending.
+  - `a3edf0e` add the isolated zero-dependency clean-machine constellation
+    bootstrap and its hermetic replay harness.
+  - `2568c82` close 1t8i with explicit evidence and a residual literal
+    blank-machine public-remote no-claim.
+- 2026-07-10 golden governance and counterexample compounding:
+  - `10bdac0` add the golden-coupling registry and justified-bump protocol.
+  - `a2a2b10` record four-quadrant deterministic-power evidence.
+  - `2ca177e` couple README hashes, crate names, and sentinels to live source.
+  - `3712602` refuse overflowing dimensional exponent arithmetic.
+  - `d0c1e09` make certified evidence an opaque validated trust boundary.
+  - `049538f` separate SOS algebra verification from rigorous value bounds.
+  - `914ff55` introduce typed, length-prefixed canonical replay identities.
+  - `f882987` land strict schema-v2 packages and solver-free checking.
+  - `b426193` repair phantom topology tunnels from inconsistent connectivity.
+  - `81c11df` close the failure-compounding workflow with four-quadrant
+    manifest evidence.
+- 2026-07-10 reproducible bootstrap, canonical replay, and honest performance:
+  - `6fb8513` add lock-driven constellation bootstrap and repair a layer
+    inversion exposed by policy checks.
+  - `f96156d` derive feature-gated DSR lanes, visible skips, standalone WASM
+    checks, and repository inventories.
+  - `3a263c2` remove deterministic-trig drift and migrate capability identity.
+  - `b24b0dc` finish deterministic BEM routing and restore full flagship metric
+    streams.
+  - `e00858c` add package composition receipts, falsifiers, and anchors in
+    schema v3.
+  - `cd185a6` align in-memory, serialized, and standalone package verification
+    while bounding hostile inputs.
+  - `fb3bfc8` add measured L3 topology, the affinity capsule, and CCD/first-touch
+    A/B evidence.
+  - `ceccb00` add advisory TilePool CCD pinning with bit-equivalence gates.
+  - `ad80d5c` make autotuner replay and persistence refuse foreign or ambiguous
+    records.
+  - `535aa83` improve FFT raw throughput while recording that the 40% roofline
+    target remains unmet.
+  - `6d55c1b` add deterministic batched f32 and mixed GEMM without a performance
+    claim.
+  - `cdb62ee` refuse vacuous roofline passes when contention crushes both axes
+    and the measured kernel together.
 - Addendum:
   - `e43e3b1` three-color schema.
   - `39fd1a5` falsifier pairing.
@@ -256,4 +340,32 @@ No tags or GitHub Releases existed when researched.
 - Links to Beads currently target the committed `.beads/issues.jsonl` file as a
   durable tracker source; a future issue viewer could provide more precise
   per-record URLs.
+- `frankensim-yqug` was closed at `f93c9de` and reopened by `fb34ef6` with four
+  active blockers: citable receipts must bind target/decision identity,
+  production scheduling must traverse `TilePool`/`Cx`, durable keys must bind
+  exact build/effective tier, and tune rows must not persist before roofline
+  admission. Changelog prose must preserve that transition.
+- `frankensim-7uq9` and `frankensim-t7x3` remain in progress even though the
+  shared BLAKE3 owner and schema-v4 package migration landed materially; future
+  updates should reconcile tracker state before calling those workstreams
+  closed.
+- FEEC's narrow baseline-x86 libm `fma` hole is closed, but the measured packed
+  vectorization target remains red and `frankensim-cwjn` stays open. Do not
+  infer target attainment from capsule registration.
+- `frankensim-dfh3` closed at `2d6d3f9` with governed fingerprint-specific
+  historical baselines. First-run measurements remain candidate evidence and
+  cannot authorize themselves.
+- `frankensim-1t8i` and `frankensim-7n2n` are closed at `2568c82`: the
+  standalone bootstrap can run before Cargo resolves sibling paths, and the
+  current FrankenNumpy pin checks out cleanly on both filesystem classes.
+  Follow-up review still found documentation drift, no post-checkout
+  cleanliness check for a newly cloned sibling, and silent fallback for a bare
+  `--root` or `--from`; do not broaden the closure beyond the recorded replay
+  and real-lock evidence.
+- The committed NEON transpose facade uses unchecked `2 * n1 * n1` size
+  arithmetic before entering its unsafe pointer loop. The measured performance
+  result is real, but a safe-facade overflow regression remains required.
+- The closure-evidence lint validates the vocabulary of close reasons; it does
+  not resolve cited artifacts and prove that those external artifacts exist or
+  pass.
 - Uncommitted local work should only be added after it is committed and proven.
