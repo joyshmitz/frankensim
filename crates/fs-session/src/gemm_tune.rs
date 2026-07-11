@@ -106,10 +106,14 @@ pub enum GemmTuneError {
     /// The cancel gate was requested. Compute may have completed in private
     /// staging, but the caller's output was not committed.
     Cancelled {
-        /// Completed bounded compute tiles before the request was observed.
-        completed_tiles: usize,
-        /// Total bounded compute tiles in the interrupted dispatch.
-        total_tiles: usize,
+        /// The caller-visible envelope in force.
+        limit_bytes: u64,
+        /// Largest session-owned logical reservation concurrency reached.
+        peak_used_bytes: u128,
+        /// Drained numerical-run report when cancellation was returned by
+        /// fs-la. `None` means the gate was observed between dispatch calls;
+        /// earlier completed probes may still contribute to the peak.
+        report: Option<fs_la::GemmRunReport>,
     },
     /// Tuner-side refusal (invalid pin, evidence, or adoption).
     Tune(TuneError),
@@ -150,10 +154,12 @@ pub enum GemmTuneError {
     Executor {
         /// Structured fs-exec outcome with logical tile provenance.
         error: fs_exec::RunError,
-        /// Completed GEMM microtiles before the refusal.
-        completed_tiles: usize,
-        /// Total GEMM microtiles in the attempted dispatch.
-        total_tiles: usize,
+        /// The caller-visible envelope in force.
+        limit_bytes: u64,
+        /// Largest session-owned logical reservation concurrency reached.
+        peak_used_bytes: u128,
+        /// Drained numerical-run report, including memory and tile progress.
+        report: fs_la::GemmRunReport,
     },
 }
 
@@ -161,11 +167,15 @@ impl core::fmt::Display for GemmTuneError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Cancelled {
-                completed_tiles,
-                total_tiles,
+                limit_bytes,
+                peak_used_bytes,
+                report,
             } => write!(
                 f,
-                "gemm work cancelled after {completed_tiles}/{total_tiles} compute tiles; output not committed"
+                "gemm work cancelled after {}/{} compute tiles under a {limit_bytes}-byte envelope \
+                 after reaching {peak_used_bytes} logical bytes; output not committed",
+                report.as_ref().map_or(0, |run| run.completed_tiles),
+                report.as_ref().map_or(0, |run| run.total_tiles),
             ),
             Self::Tune(e) => write!(f, "gemm autotune: {e}"),
             Self::Ledger(detail) => write!(f, "gemm autotune ledger cache: {detail}"),
@@ -194,11 +204,14 @@ impl core::fmt::Display for GemmTuneError {
             ),
             Self::Executor {
                 error,
-                completed_tiles,
-                total_tiles,
+                limit_bytes,
+                peak_used_bytes,
+                report,
             } => write!(
                 f,
-                "gemm executor failed after {completed_tiles}/{total_tiles} compute tiles: {error}"
+                "gemm executor failed after {}/{} compute tiles under a {limit_bytes}-byte \
+                 envelope after reaching {peak_used_bytes} logical bytes: {error}",
+                report.completed_tiles, report.total_tiles,
             ),
         }
     }
@@ -214,9 +227,12 @@ impl From<TuneError> for GemmTuneError {
 
 impl From<fs_la::GemmCancelled> for GemmTuneError {
     fn from(cancelled: fs_la::GemmCancelled) -> Self {
+        let limit_bytes = cancelled.report.memory.limit_bytes;
+        let peak_used_bytes = cancelled.report.memory.peak_used_bytes;
         Self::Cancelled {
-            completed_tiles: cancelled.report.completed_tiles,
-            total_tiles: cancelled.report.total_tiles,
+            limit_bytes,
+            peak_used_bytes,
+            report: Some(cancelled.report),
         }
     }
 }
@@ -225,11 +241,16 @@ impl From<fs_la::GemmRunError> for GemmTuneError {
     fn from(error: fs_la::GemmRunError) -> Self {
         match error {
             fs_la::GemmRunError::Cancelled(cancelled) => Self::from(cancelled),
-            fs_la::GemmRunError::Executor { error, report } => Self::Executor {
-                error,
-                completed_tiles: report.completed_tiles,
-                total_tiles: report.total_tiles,
-            },
+            fs_la::GemmRunError::Executor { error, report } => {
+                let limit_bytes = report.memory.limit_bytes;
+                let peak_used_bytes = report.memory.peak_used_bytes;
+                Self::Executor {
+                    error,
+                    limit_bytes,
+                    peak_used_bytes,
+                    report,
+                }
+            }
             fs_la::GemmRunError::MemoryRefused {
                 what,
                 requested_bytes,
@@ -274,14 +295,65 @@ fn gemm_error_with_session_memory(
                 limit_bytes: envelope.limit_bytes,
             },
         },
+        GemmTuneError::Cancelled {
+            peak_used_bytes,
+            report,
+            ..
+        } => match session_bytes.checked_add(peak_used_bytes) {
+            Some(peak_used_bytes) => GemmTuneError::Cancelled {
+                limit_bytes: envelope.limit_bytes,
+                peak_used_bytes,
+                report,
+            },
+            None => GemmTuneError::MemoryPlanOverflow {
+                what: "session-plus-gemm-peak",
+                limit_bytes: envelope.limit_bytes,
+            },
+        },
+        GemmTuneError::Executor {
+            error,
+            peak_used_bytes,
+            report,
+            ..
+        } => match session_bytes.checked_add(peak_used_bytes) {
+            Some(peak_used_bytes) => GemmTuneError::Executor {
+                error,
+                limit_bytes: envelope.limit_bytes,
+                peak_used_bytes,
+                report,
+            },
+            None => GemmTuneError::MemoryPlanOverflow {
+                what: "session-plus-gemm-peak",
+                limit_bytes: envelope.limit_bytes,
+            },
+        },
         other => other,
     }
 }
 
-fn cancelled_before_compute() -> GemmTuneError {
+fn cancelled_before_compute(envelope: fs_la::GemmMemoryEnvelope) -> GemmTuneError {
     GemmTuneError::Cancelled {
-        completed_tiles: 0,
-        total_tiles: 0,
+        limit_bytes: envelope.limit_bytes,
+        peak_used_bytes: 0,
+        report: None,
+    }
+}
+
+fn cancelled_with_live_probe_memory(
+    envelope: fs_la::GemmMemoryEnvelope,
+    session_bytes: u128,
+    numerical_peak: u128,
+) -> GemmTuneError {
+    let Some(peak_used_bytes) = session_bytes.checked_add(numerical_peak) else {
+        return GemmTuneError::MemoryPlanOverflow {
+            what: "session-plus-gemm-peak",
+            limit_bytes: envelope.limit_bytes,
+        };
+    };
+    GemmTuneError::Cancelled {
+        limit_bytes: envelope.limit_bytes,
+        peak_used_bytes,
+        report: None,
     }
 }
 
@@ -937,7 +1009,7 @@ fn measure_candidates<R>(
     mut run: R,
 ) -> Result<SweepResult, GemmTuneError>
 where
-    R: FnMut(&SweepCandidate, &mut [f64]) -> Result<(), GemmTuneError>,
+    R: FnMut(&SweepCandidate, &mut [f64]) -> Result<u128, GemmTuneError>,
 {
     let output_bytes = (output_len as u128)
         .checked_mul(core::mem::size_of::<u64>() as u128)
@@ -945,6 +1017,20 @@ where
             what: "tune-probe-output",
             limit_bytes: envelope.limit_bytes,
         })?;
+    let first_output_peak =
+        base_used_bytes
+            .checked_add(output_bytes)
+            .ok_or(GemmTuneError::MemoryPlanOverflow {
+                what: "tune-probe-output-peak",
+                limit_bytes: envelope.limit_bytes,
+            })?;
+    let live_probe_bytes =
+        first_output_peak
+            .checked_add(output_bytes)
+            .ok_or(GemmTuneError::MemoryPlanOverflow {
+                what: "tune-probe-reference-peak",
+                limit_bytes: envelope.limit_bytes,
+            })?;
     let mut c = try_filled_buffer(
         output_len,
         0.0_f64,
@@ -957,32 +1043,40 @@ where
         0_u64,
         "tune-probe-reference",
         envelope,
-        base_used_bytes
-            .checked_add(output_bytes)
-            .ok_or(GemmTuneError::MemoryPlanOverflow {
-                what: "tune-probe-reference-peak",
-                limit_bytes: envelope.limit_bytes,
-            })?,
+        first_output_peak,
     )?;
     let mut observations = Vec::with_capacity(candidates.len());
     let mut ranked: Vec<(u64, usize, GemmBlockPlan)> = Vec::with_capacity(candidates.len());
     let mut reference_initialized = false;
+    let mut numerical_peak = 0_u128;
     for (index, candidate) in candidates.iter().enumerate() {
         if gate.is_requested() {
-            return Err(cancelled_before_compute());
+            return Err(cancelled_with_live_probe_memory(
+                envelope,
+                live_probe_bytes,
+                numerical_peak,
+            ));
         }
         let mut samples_ns = Vec::with_capacity(SWEEP_SAMPLES);
         for repeat in 1..=SWEEP_SAMPLES {
             if gate.is_requested() {
-                return Err(cancelled_before_compute());
+                return Err(cancelled_with_live_probe_memory(
+                    envelope,
+                    live_probe_bytes,
+                    numerical_peak,
+                ));
             }
             c.fill(0.0);
             let t0 = std::time::Instant::now();
-            run(candidate, &mut c)?;
+            numerical_peak = numerical_peak.max(run(candidate, &mut c)?);
             let ns = u64::try_from(t0.elapsed().as_nanos()).unwrap_or(u64::MAX);
             samples_ns.push(ns.max(1));
             if gate.is_requested() {
-                return Err(cancelled_before_compute());
+                return Err(cancelled_with_live_probe_memory(
+                    envelope,
+                    live_probe_bytes,
+                    numerical_peak,
+                ));
             }
 
             // Compare every output word directly. A fixed-width digest is
@@ -1121,7 +1215,7 @@ fn run_sweep(
                 sweep_run,
                 child_envelope,
             )
-            .map(|_| ())
+            .map(|report| report.memory.peak_used_bytes)
             .map_err(|error| gemm_error_with_session_memory(error, envelope, probe_buffer_bytes))
         },
     )
@@ -1420,7 +1514,7 @@ pub fn gemm_f64_session_with_pool_declared_budgeted(
     // tuning state and `c` is still untouched when this panics.
     assert_contiguous_shapes(m, n, k, a, b, c);
     if gate.is_requested() {
-        return Err(cancelled_before_compute());
+        return Err(cancelled_before_compute(envelope));
     }
 
     let key = gemm_tune_key_with_pool_budgeted(pool, m, n, k, envelope)?;
@@ -1495,7 +1589,7 @@ pub fn gemm_f64_session_with_pool_declared_budgeted(
     }
 
     if gate.is_requested() {
-        return Err(cancelled_before_compute());
+        return Err(cancelled_before_compute(envelope));
     }
     let decision = tuner.prepare_gemm_decision(&key);
     let (plan, source, run) = execute_prepared_decision(tuner, decision, |plan| {
@@ -1654,7 +1748,7 @@ mod tests {
                         c[0] = -0.0;
                         c[1] = f64::from_bits(0x7ff8_0000_0000_0002);
                     }
-                    Ok(())
+                    Ok(0)
                 },
             )
             .expect_err("the injected repeat must fail closed");
@@ -1705,7 +1799,7 @@ mod tests {
             |candidate, c| {
                 executed.push((candidate.effective_mc, candidate.effective_nc));
                 c[0] = 1.0;
-                Ok(())
+                Ok(0)
             },
         )
         .expect("synthetic sweep");
@@ -1734,15 +1828,16 @@ mod tests {
             |_, c| {
                 c[0] = 1.0;
                 gate.request();
-                Ok(())
+                Ok(0)
             },
         )
         .expect_err("the post-repeat poll must observe cancellation");
         assert!(matches!(
             error,
             GemmTuneError::Cancelled {
-                completed_tiles: 0,
-                total_tiles: 0
+                peak_used_bytes: 16,
+                report: None,
+                ..
             }
         ));
     }
@@ -1855,7 +1950,12 @@ mod tests {
                     completed_tiles: 7,
                     total_tiles: 19,
                     pool_runs: Vec::new(),
-                    memory: fs_la::GemmMemoryReport::default(),
+                    memory: fs_la::GemmMemoryReport {
+                        limit_bytes: 1_024,
+                        requested_bytes: 512,
+                        peak_used_bytes: 384,
+                        ..fs_la::GemmMemoryReport::default()
+                    },
                 },
             }))
         })
@@ -1863,11 +1963,63 @@ mod tests {
         assert!(matches!(
             error,
             GemmTuneError::Cancelled {
-                completed_tiles: 7,
-                total_tiles: 19
+                limit_bytes: 1_024,
+                peak_used_bytes: 384,
+                report: Some(fs_la::GemmRunReport {
+                    completed_tiles: 7,
+                    total_tiles: 19,
+                    memory: fs_la::GemmMemoryReport {
+                        requested_bytes: 512,
+                        peak_used_bytes: 384,
+                        ..
+                    },
+                    ..
+                }),
+                ..
             }
         ));
         assert!(tuner.decisions().is_empty());
         assert!(tuner.has_gemm_pin(&key));
+    }
+
+    #[test]
+    fn executor_failure_retains_full_memory_and_progress_report() {
+        let report = fs_la::GemmRunReport {
+            declared_run: fs_exec::RunId(12),
+            completed_tiles: 3,
+            total_tiles: 11,
+            pool_runs: Vec::new(),
+            memory: fs_la::GemmMemoryReport {
+                limit_bytes: 2_048,
+                requested_bytes: 1_024,
+                peak_used_bytes: 768,
+                ..fs_la::GemmMemoryReport::default()
+            },
+        };
+        let error = GemmTuneError::from(fs_la::GemmRunError::Executor {
+            error: fs_exec::RunError::Incomplete {
+                kernel: "fixture",
+                tile: 4,
+            },
+            report,
+        });
+        assert!(matches!(
+            error,
+            GemmTuneError::Executor {
+                limit_bytes: 2_048,
+                peak_used_bytes: 768,
+                report: fs_la::GemmRunReport {
+                    completed_tiles: 3,
+                    total_tiles: 11,
+                    memory: fs_la::GemmMemoryReport {
+                        requested_bytes: 1_024,
+                        peak_used_bytes: 768,
+                        ..
+                    },
+                    ..
+                },
+                ..
+            }
+        ));
     }
 }

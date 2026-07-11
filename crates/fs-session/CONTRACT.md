@@ -200,10 +200,15 @@ Consumers: the P2 marquee demo, the HELM e2e suite (gp3.11).
 
 `SessionError`: `UnknownSession`, `SessionAlreadyOpen`, `InvalidResource`,
 `Submission`, `Persistence`. `GemmTuneError`: cancellation with
-completed/total bounded tile counts, structured TilePool failure with tile
-provenance, typed tuner refusal, ledger refusal, or exact-bit drift with
-candidate and repeat. Refusals that teach travel as `Guidance` values with
-ranked fixes.
+the drained numerical report when dispatch began, structured TilePool failure
+with tile provenance and its full report, typed tuner refusal, ledger refusal,
+exact-bit drift with candidate and repeat, `MemoryRefused` with the outer
+session peak plus any fs-la report, or `MemoryPlanOverflow` before unsafe
+allocation. Cancellation observed before or between numerical dispatches has
+no fs-la report but still retains the outer session peak; cancellation returned
+by fs-la and every executor/memory refusal preserve the full drained report.
+All such paths leave caller-visible `C` unchanged. Refusals that teach travel
+as `Guidance` values with ranked fixes.
 A caller-work panic is data, not an unwind across the governor API:
 `SubmitOutcome::Failed` records its receipt and diagnosis.
 

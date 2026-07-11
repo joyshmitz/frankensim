@@ -199,7 +199,12 @@ Dense linear algebra: GEMM, batched small dense, factorizations, eigensolvers. L
 Slice-length/shape mismatches panic with structured messages (programmer
 errors). DATA conditions in factorizations return `FactorError` with the
 offending index: non-SPD pivots, exactly-singular columns. LU `growth`
-exposes the pivot-growth statistic for ledgering.
+exposes the pivot-growth statistic for ledgering. Pool GEMM returns
+`GemmRunError::MemoryRefused` when its checked plan exceeds the caller envelope
+or a fallible reservation is declined, retaining drained progress and memory
+accounting; `MemoryPlanOverflow` refuses before allocation when the plan cannot
+be represented. Cancellation and executor failures likewise retain the full
+`GemmRunReport`, and caller-visible `C` is unchanged on every error path.
 
 ## Determinism class
 GEMM: bit-deterministic CROSS-ISA by construction (fixed per-element loop

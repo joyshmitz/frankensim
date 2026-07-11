@@ -118,8 +118,11 @@ fn cold_start_sweeps_once_and_matches_serial_bits() {
     let reference = serial_reference(&a, &b);
     let mut tuner = Tuner::cold(FP_THIS);
     let gate = CancelGate::new();
+    let envelope = fs_la::GemmMemoryEnvelope {
+        limit_bytes: 64 * 1024 * 1024,
+    };
     let mut c = vec![f64::NAN; M * N]; // beta = 0 must overwrite garbage
-    let first = gemm_f64_session(
+    let first = gemm_f64_session_budgeted(
         &mut tuner,
         GemmTuneCache::Disabled,
         &gate,
@@ -132,14 +135,19 @@ fn cold_start_sweeps_once_and_matches_serial_bits() {
         &b,
         0.0,
         &mut c,
+        envelope,
     )
     .expect("cold dispatch");
     assert!(first.swept, "cold start measures");
     assert_eq!(first.source, TuneSource::Tuned);
-    let exact_key = key(THREADS, M, N, K);
+    let exact_key = gemm_tune_key_budgeted(THREADS, M, N, K, envelope).expect("bounded exact key");
     assert_eq!(first.kernel, exact_key.kernel());
     assert!(first.kernel.starts_with(&gemm_kernel_key()));
     assert_eq!(first.shape_class, gemm_shape_class(M, N, K));
+    let first_receipt = first.execution_receipt();
+    assert!(first_receipt.is_complete());
+    assert_eq!(first_receipt.memory.limit_bytes, envelope.limit_bytes);
+    assert!(first_receipt.memory.requested_bytes <= u128::from(envelope.limit_bytes));
     assert_eq!(
         c.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
         reference.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
@@ -147,7 +155,7 @@ fn cold_start_sweeps_once_and_matches_serial_bits() {
     );
     // Second call: row cached, no sweep, same plan.
     let mut c2 = vec![0.0f64; M * N];
-    let second = gemm_f64_session(
+    let second = gemm_f64_session_budgeted(
         &mut tuner,
         GemmTuneCache::Disabled,
         &gate,
@@ -160,11 +168,17 @@ fn cold_start_sweeps_once_and_matches_serial_bits() {
         &b,
         0.0,
         &mut c2,
+        envelope,
     )
     .expect("warm dispatch");
     assert!(!second.swept, "cached row answers the second call");
     assert_eq!(second.plan, first.plan);
     assert_eq!(second.source, TuneSource::Tuned);
+    assert_eq!(second.kernel, exact_key.kernel());
+    assert_eq!(
+        second.execution_receipt().memory.limit_bytes,
+        envelope.limit_bytes
+    );
     // Decisions were recorded for study pinning.
     assert!(
         tuner
@@ -364,8 +378,9 @@ fn cancelled_sweep_records_nothing_and_leaves_c_untouched() {
     assert!(matches!(
         err,
         GemmTuneError::Cancelled {
-            completed_tiles: 0,
-            total_tiles: 0
+            peak_used_bytes: 0,
+            report: None,
+            ..
         }
     ));
     let exact_key = key(THREADS, M, N, K);
@@ -675,8 +690,9 @@ fn pre_requested_warm_and_pinned_paths_leave_output_and_decisions_untouched() {
     assert!(matches!(
         warm_error,
         GemmTuneError::Cancelled {
-            completed_tiles: 0,
-            total_tiles: 0
+            peak_used_bytes: 0,
+            report: None,
+            ..
         }
     ));
     assert!(
