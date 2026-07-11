@@ -339,31 +339,80 @@ impl Fft {
     fn transform_sixstep(&self, data: &mut [C64], scratch: &mut [C64], inverse: bool) {
         let sub = self.sub.as_deref().expect("dispatch guaranteed a sub-plan");
         let n1 = sub.n;
-        transpose_into(data, scratch, n1);
+        // FUSED six-step (bead 27d3 copy-back fusion): the three
+        // transposes and the final copy-back are folded into
+        // line-blocked gather/scatter around the two row-FFT sweeps —
+        // TWO full-array memory passes instead of six. The arithmetic
+        // is BIT-IDENTICAL to the unfused formulation: the same
+        // sub-FFTs see the same values, the same twiddles apply in the
+        // same per-element order, and only STORAGE locations moved
+        // (the frozen sixstep golden pins exactly this).
+        //
+        // Line blocking: one gathered/scattered group is GCOLS = 8
+        // complex = 128 bytes = one cache line, so the strided side of
+        // each pass still reads/writes every line exactly once (a
+        // column-at-a-time walk would touch each line 8x).
+        const GCOLS: usize = 8;
+        debug_assert_eq!(n1 % GCOLS, 0, "sixstep sizes have n1 = 2^e >= 256");
         let mut row_scratch = vec![C64::default(); n1];
-        for j in 0..n1 {
-            let row = &mut scratch[j * n1..(j + 1) * n1];
-            // Full dispatch (not transform_stages): a sub-plan large
-            // enough to qualify recurses into its own six-step.
-            sub.transform(row, &mut row_scratch, inverse);
-            // Fused inter-stage twiddle: element k of row j picks up
-            // w_n^(k·j) (conjugated for the inverse). tw(0) = 1 exactly,
-            // and C64::mul by (1, 0) is exact — no special case needed.
-            for (k, v) in row.iter_mut().enumerate() {
-                let mut w = self.tw(k * j);
-                if inverse {
-                    w = w.conj();
+        let mut bufs = vec![C64::default(); GCOLS * n1];
+        // STAGE A (was T1 + sweep1 + T2): per column group of `data`,
+        // gather 8 columns (each line feeds all 8 buffers), sub-FFT +
+        // fused twiddle each column j — tw(0) = 1 exactly, and C64::mul
+        // by (1, 0) is exact, so no special case — then scatter into
+        // the same 8 columns of `scratch`. A column is dead after its
+        // own gather, so writing it back cannot alias live input.
+        let mut g = 0;
+        while g < n1 {
+            for i1 in 0..n1 {
+                let line = &data[i1 * n1 + g..i1 * n1 + g + GCOLS];
+                for (c, v) in line.iter().enumerate() {
+                    bufs[c * n1 + i1] = *v;
                 }
-                *v = v.mul(w);
             }
+            for c in 0..GCOLS {
+                let j = g + c;
+                let buf = &mut bufs[c * n1..(c + 1) * n1];
+                // Full dispatch (not transform_stages): a sub-plan large
+                // enough to qualify recurses into its own six-step.
+                sub.transform(buf, &mut row_scratch, inverse);
+                for (k, v) in buf.iter_mut().enumerate() {
+                    let mut w = self.tw(k * j);
+                    if inverse {
+                        w = w.conj();
+                    }
+                    *v = v.mul(w);
+                }
+            }
+            for k1 in 0..n1 {
+                let line = &mut scratch[k1 * n1 + g..k1 * n1 + g + GCOLS];
+                for (c, v) in line.iter_mut().enumerate() {
+                    *v = bufs[c * n1 + k1];
+                }
+            }
+            g += GCOLS;
         }
-        transpose_into(scratch, data, n1);
-        for j in 0..n1 {
-            let row = &mut data[j * n1..(j + 1) * n1];
-            sub.transform(row, &mut row_scratch, inverse);
+        // STAGE B (was sweep2 + T3 + copy): rows of `scratch` are the
+        // contiguous second-sweep inputs — sub-FFT each group of 8 rows
+        // in place, then scatter those finished rows into 8 COLUMNS of
+        // `data`. Everything `data` held was consumed by stage A's
+        // gathers, so the scatter aliases nothing live, and the result
+        // lands in `data` already output-transposed: no third
+        // transpose, no copy-back.
+        let mut r = 0;
+        while r < n1 {
+            for c in 0..GCOLS {
+                let row = &mut scratch[(r + c) * n1..(r + c + 1) * n1];
+                sub.transform(row, &mut row_scratch, inverse);
+            }
+            for k2 in 0..n1 {
+                let line = &mut data[k2 * n1 + r..k2 * n1 + r + GCOLS];
+                for (c, v) in line.iter_mut().enumerate() {
+                    *v = scratch[(r + c) * n1 + k2];
+                }
+            }
+            r += GCOLS;
         }
-        transpose_into(data, scratch, n1);
-        data.copy_from_slice(scratch);
     }
 
     /// Mixed radix-8/4/2 Stockham autosort (bead 27d3): ping-pongs between
@@ -504,6 +553,7 @@ impl Fft {
 /// 8×8-element tiles (8 C64 = 128 B = one Apple cache line) with
 /// SEQUENTIAL writes per destination row chunk (the strided side is the
 /// read, which prefetches better than strided read-modify-write swaps).
+#[cfg(test)] // production transposes are fused into the sixstep passes (bead 27d3)
 fn transpose_into(src: &[C64], dst: &mut [C64], n1: usize) {
     debug_assert_eq!(src.len(), n1 * n1, "transpose needs a square matrix");
     debug_assert_eq!(dst.len(), n1 * n1, "transpose needs a square dst");

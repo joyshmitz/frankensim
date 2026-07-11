@@ -169,7 +169,7 @@ fn sixstep_golden_hash() {
 #[test]
 #[ignore = "wall-clock comparison lane: run explicitly in release with --ignored"]
 fn sixstep_vs_stage_walk_relative_throughput() {
-    let n = 1usize << 20;
+    let n = 1usize << 22; // DRAM-resident (128 MB working set beats the SLC)
     let plan = Fft::new(n);
     let mut seed = 0x27d3;
     let signal: Vec<C64> = (0..n)
