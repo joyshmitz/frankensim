@@ -11,9 +11,11 @@
 //! `_mm256_setzero_pd()` (+0.0) with `_mm256_fmadd_pd` in l-ascending order —
 //! EXACTLY the scalar twin's per-lane `mul_add` from a +0.0 start — so every
 //! lane is bit-identical. Lanes past the last full group of 4 (`mb % 4`) run
-//! the scalar per-lane loop. The 4×4 tile keeps 16 live accumulators (> the 16
-//! YMM registers), so LLVM spills; this is a correctness-first vectorization of
-//! the lane dimension, not a register-optimal kernel.
+//! the scalar per-lane loop. The 4×4 tile runs as two ti-half passes of 8
+//! accumulators so the live set (8 acc + 4 b + 2 a vectors) fits the 16-entry
+//! YMM file; the second pass re-reads the L1-resident B stream, and the split
+//! is bit-neutral because each output element's l-ascending fused chain is
+//! untouched.
 #![allow(unsafe_code)] // registered capsule — see SAFETY.md beside this file
 
 #[cfg(target_arch = "x86_64")]
@@ -179,47 +181,50 @@ unsafe fn btile4x4p_256(
         ];
         let mut m = 0;
         while m < full {
-            let mut acc = [_mm256_setzero_pd(); 16];
-            let mut ap = [
-                a_base[0].add(m),
-                a_base[1].add(m),
-                a_base[2].add(m),
-                a_base[3].add(m),
-            ];
-            let mut bp = [
-                b_base[0].add(m),
-                b_base[1].add(m),
-                b_base[2].add(m),
-                b_base[3].add(m),
-            ];
-            for l in 0..k {
-                let av = [
-                    _mm256_loadu_pd(ap[0]),
-                    _mm256_loadu_pd(ap[1]),
-                    _mm256_loadu_pd(ap[2]),
-                    _mm256_loadu_pd(ap[3]),
+            // Two ti-half passes of 8 accumulators each: a single 16-vector
+            // accumulator block plus 8 operand vectors exceeds the 16-entry
+            // YMM file and spills every l iteration (measured ~0.27-0.34
+            // attainment ceiling on Zen 3). 8 acc + 4 bv + 2 av = 14 live
+            // vectors fits; the second pass re-reads the L1-resident B
+            // stream. Per-element accumulation order is UNCHANGED (each
+            // output's chain stays l-ascending fused), so the split is
+            // bit-neutral by construction.
+            for half in 0..2 {
+                let ti0 = half * 2;
+                let mut acc = [_mm256_setzero_pd(); 8];
+                let mut ap = [a_base[ti0].add(m), a_base[ti0 + 1].add(m)];
+                let mut bp = [
+                    b_base[0].add(m),
+                    b_base[1].add(m),
+                    b_base[2].add(m),
+                    b_base[3].add(m),
                 ];
-                let bv = [
-                    _mm256_loadu_pd(bp[0]),
-                    _mm256_loadu_pd(bp[1]),
-                    _mm256_loadu_pd(bp[2]),
-                    _mm256_loadu_pd(bp[3]),
-                ];
-                for ti in 0..4 {
+                for l in 0..k {
+                    let av = [_mm256_loadu_pd(ap[0]), _mm256_loadu_pd(ap[1])];
+                    let bv = [
+                        _mm256_loadu_pd(bp[0]),
+                        _mm256_loadu_pd(bp[1]),
+                        _mm256_loadu_pd(bp[2]),
+                        _mm256_loadu_pd(bp[3]),
+                    ];
+                    for ti in 0..2 {
+                        for tj in 0..4 {
+                            acc[ti * 4 + tj] = _mm256_fmadd_pd(av[ti], bv[tj], acc[ti * 4 + tj]);
+                        }
+                    }
+                    if l + 1 < k {
+                        for t in 0..2 {
+                            ap[t] = ap[t].add(mb);
+                        }
+                        for t in 0..4 {
+                            bp[t] = bp[t].add(mb);
+                        }
+                    }
+                }
+                for ti in 0..2 {
                     for tj in 0..4 {
-                        acc[ti * 4 + tj] = _mm256_fmadd_pd(av[ti], bv[tj], acc[ti * 4 + tj]);
+                        _mm256_storeu_pd(op.add(((ti0 + ti) * 4 + tj) * mb + m), acc[ti * 4 + tj]);
                     }
-                }
-                if l + 1 < k {
-                    for t in 0..4 {
-                        ap[t] = ap[t].add(mb);
-                        bp[t] = bp[t].add(mb);
-                    }
-                }
-            }
-            for ti in 0..4 {
-                for tj in 0..4 {
-                    _mm256_storeu_pd(op.add((ti * 4 + tj) * mb + m), acc[ti * 4 + tj]);
                 }
             }
             m += 4;
