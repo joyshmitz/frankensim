@@ -322,6 +322,69 @@ fn evd_006_certified_discipline_composes() {
     );
 }
 
+fn scalar_value_mismatch_refuses(p: ProvenanceHash) -> bool {
+    let mut evidence = Evidence::exact(1.0, p);
+    evidence.value = 2.0;
+    matches!(
+        evidence.certified(),
+        Err(fs_evidence::CertifyError::ScalarValueMismatch {
+            value: 2.0,
+            qoi: 1.0
+        })
+    )
+}
+
+fn impossible_model_validity_refuses(p: ProvenanceHash) -> bool {
+    [
+        ValidityDomain::unconstrained()
+            .with("Re", 1.0, 2.0)
+            .intersect(&ValidityDomain::unconstrained().with("Re", 3.0, 4.0)),
+        ValidityDomain::unconstrained().with("Re", f64::NAN, 2.0),
+        ValidityDomain::unconstrained().with("Re", 1.0, f64::INFINITY),
+    ]
+    .into_iter()
+    .all(|validity| {
+        let evidence = Evidence::exact(1.0, p).with_model(ModelEvidence {
+            cards: vec!["forged-regime".to_string()],
+            assumptions: Vec::new(),
+            validity,
+            discrepancy_rel: 0.01,
+            in_domain: true,
+        });
+        matches!(
+            evidence.clone().certified(),
+            Err(fs_evidence::CertifyError::InvalidModelValidity)
+        ) && evidence.breakdown().model_rel.is_infinite()
+            && matches!(
+                evidence.assess(0.05),
+                DecisionStatus::NotDecisionGrade { .. }
+            )
+    })
+}
+
+fn certification_round_trip_revalidates(p: ProvenanceHash) -> (bool, bool, bool) {
+    let a = Evidence::exact(2.0, p);
+    let b = Evidence::enclosed(3.0, 2.9, 3.1, p);
+    let certified = Evidence::combine(Op::Mul, &a, &b, ())
+        .certified()
+        .expect("rigorous chain certifies");
+    let readable =
+        certified.qoi.to_bits() == 6.0f64.to_bits() && certified.evidence().numerical.lo <= 6.0;
+    let mut reopened = certified.into_evidence();
+    reopened.numerical = NumericalCertificate::estimate(5.9, 6.1);
+    let weakened_refused = matches!(
+        reopened.clone().certified(),
+        Err(fs_evidence::CertifyError::NotRigorous { .. })
+    );
+    reopened.numerical = NumericalCertificate::enclosure(5.9, 6.1);
+    reopened.qoi = 7.0;
+    let drifted_refused = matches!(
+        reopened.certified(),
+        Err(fs_evidence::CertifyError::QoiOutsideEnclosure { .. })
+    );
+    (readable, weakened_refused, drifted_refused)
+}
+
 /// gp3.2.1 — the Certified<T> trust boundary: every public forge route
 /// is refused with the structured reason; the opaque newtype has no
 /// mutable access, so weakening means an EXPLICIT downgrade whose
@@ -400,64 +463,13 @@ fn evd_012_certified_is_unforgeable_and_validated() {
         Err(CertifyError::QoiOutsideEnclosure { .. })
     );
     // (e) Scalar evidence cannot carry one value while certifying another.
-    let mut mismatched_scalar = Evidence::exact(1.0, p);
-    mismatched_scalar.value = 2.0;
-    let scalar_mismatch = matches!(
-        mismatched_scalar.certified(),
-        Err(CertifyError::ScalarValueMismatch {
-            value: 2.0,
-            qoi: 1.0
-        })
-    );
+    let scalar_mismatch = scalar_value_mismatch_refuses(p);
     // (f) A public ModelEvidence literal cannot override an impossible
     // validity box by merely asserting `in_domain: true`.
-    let invalid_model_validity = [
-        ValidityDomain::unconstrained()
-            .with("Re", 1.0, 2.0)
-            .intersect(&ValidityDomain::unconstrained().with("Re", 3.0, 4.0)),
-        ValidityDomain::unconstrained().with("Re", f64::NAN, 2.0),
-        ValidityDomain::unconstrained().with("Re", 1.0, f64::INFINITY),
-    ]
-    .into_iter()
-    .all(|validity| {
-        let forged_model = Evidence::exact(1.0, p).with_model(ModelEvidence {
-            cards: vec!["forged-regime".to_string()],
-            assumptions: Vec::new(),
-            validity,
-            discrepancy_rel: 0.01,
-            in_domain: true,
-        });
-        matches!(
-            forged_model.clone().certified(),
-            Err(CertifyError::InvalidModelValidity)
-        ) && forged_model.breakdown().model_rel.is_infinite()
-            && matches!(
-                forged_model.assess(0.05),
-                DecisionStatus::NotDecisionGrade { .. }
-            )
-    });
-    // (g) Legitimate exact/enclosure composition remains usable, and
-    // reads flow through the immutable Deref view.
-    let a = Evidence::exact(2.0, p);
-    let b = Evidence::enclosed(3.0, 2.9, 3.1, p);
-    let cert = Evidence::combine(Op::Mul, &a, &b, ())
-        .certified()
-        .expect("rigorous chain certifies");
-    let readable = cert.qoi.to_bits() == 6.0f64.to_bits() && cert.evidence().numerical.lo <= 6.0;
-    // (h) Downgrade-mutate-recertify: the ONLY mutation path loses the
-    // mark, and reconstruction re-validates (round-trip invariance).
-    let mut reopened = cert.into_evidence();
-    reopened.numerical = NumericalCertificate::estimate(5.9, 6.1);
-    let weakened_refused = matches!(
-        reopened.clone().certified(),
-        Err(CertifyError::NotRigorous { .. })
-    );
-    reopened.numerical = NumericalCertificate::enclosure(5.9, 6.1);
-    reopened.qoi = 7.0; // outside the reclaimed enclosure
-    let drifted_refused = matches!(
-        reopened.certified(),
-        Err(CertifyError::QoiOutsideEnclosure { .. })
-    );
+    let invalid_model_validity = impossible_model_validity_refuses(p);
+    // (g-h) Legitimate composition certifies, while an explicit downgrade
+    // loses the mark and every reconstruction re-enters validation.
+    let (readable, weakened_refused, drifted_refused) = certification_round_trip_revalidates(p);
     verdict(
         "evd-012",
         nan_exact
