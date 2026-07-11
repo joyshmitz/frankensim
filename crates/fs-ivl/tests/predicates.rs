@@ -6,6 +6,7 @@
 use fs_ivl::{
     Sign, Stage, incircle, insphere, orient2d, orient2d_sos, orient2d_with_stage, orient3d,
 };
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 fn verdict(case: &str, detail: &str) {
     println!(
@@ -124,5 +125,64 @@ fn pd_004_filter_rate_measured_and_logged() {
     verdict(
         "pd-004",
         &format!("orient2d stage-A filter rate {rate:.4} over {total} general-position samples"),
+    );
+}
+
+#[test]
+fn pd_005_invalid_numeric_domains_fail_closed() {
+    let fails_closed = |case: &str, f: &mut dyn FnMut()| {
+        assert!(
+            catch_unwind(AssertUnwindSafe(f)).is_err(),
+            "{case} returned a predicate sign outside the certified numeric domain"
+        );
+    };
+
+    fails_closed("orient2d non-finite", &mut || {
+        let _ = orient2d([f64::NAN, 0.0], [1.0, 0.0], [0.0, 1.0]);
+    });
+    fails_closed("orient3d non-finite", &mut || {
+        let _ = orient3d(
+            [f64::INFINITY, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0; 3],
+        );
+    });
+    fails_closed("incircle non-finite", &mut || {
+        let _ = incircle([0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [f64::NAN, 0.0]);
+    });
+    fails_closed("insphere non-finite", &mut || {
+        let _ = insphere(
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, f64::INFINITY, 0.0],
+        );
+    });
+
+    let m = f64::MAX;
+    fails_closed("orient2d finite overflow", &mut || {
+        let _ = orient2d([m, 0.0], [0.0, m], [-m, 0.0]);
+    });
+    fails_closed("orient3d finite overflow", &mut || {
+        let _ = orient3d([m, 0.0, 0.0], [0.0, m, 0.0], [0.0, 0.0, m], [-m, 0.0, 0.0]);
+    });
+    fails_closed("incircle finite overflow", &mut || {
+        let _ = incircle([m, 0.0], [0.0, m], [0.0, -m], [-m, 0.0]);
+    });
+    fails_closed("insphere finite overflow", &mut || {
+        let _ = insphere(
+            [m, 0.0, 0.0],
+            [0.0, m, 0.0],
+            [0.0, 0.0, m],
+            [0.0, -m, 0.0],
+            [-m, 0.0, 0.0],
+        );
+    });
+
+    verdict(
+        "pd-005",
+        "all four public predicates rejected non-finite coordinates and finite-coordinate overflow",
     );
 }

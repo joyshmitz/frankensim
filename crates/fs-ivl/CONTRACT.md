@@ -78,7 +78,9 @@ implementation shared with fs-la — recorded relocation, beads
   2D term-by-term; 3D as the exact sign of the leading κ-coefficient of a
   moment-curve perturbation `pᵢ + κ·(sᵢ, sᵢ², sᵢ³)` (consistent — moment-curve
   points are always in general position), antisymmetry supplied by sort-by-index
-  parity.
+  parity. Public predicate boundaries reject non-finite coordinates and panic
+  before returning a sign if their filter or exact tail leaves the finite
+  certified arithmetic domain.
 
 ## Invariants
 1. **Containment law (G0)**: for every op and every point tuple inside the
@@ -111,6 +113,11 @@ domain. Low-level expansion sum/product operations retain their documented
 valid-finite-expansion input precondition and panic if an intermediate result
 leaves the finite representable domain. Sign extraction panics if any component
 is non-finite rather than treating NaN as exact zero.
+
+Geometric predicates panic on non-finite coordinates and on detected
+intermediate overflow. Inputs that underflow intermediate monomials remain
+outside the certified domain as documented below; they do not acquire an exact
+claim merely by producing finite machine values.
 
 Interval root isolation accepts only finite domains, finite positive target
 widths, and nonzero box budgets. `newton_roots_bounded` returns structured
@@ -161,9 +168,9 @@ golden-hash case bit-for-bit.
   unconditionally rigorous.
 - No Taylor models yet (future bead 6ys.13).
 - Predicates are certified for inputs whose difference monomials (degree
-  ≤ 5) stay inside the normal f64 range — no intermediate overflow or
-  underflow (Shewchuk's standard caveat, inherited; out-of-range inputs
-  are outside the certificate).
+  ≤ 5) stay inside the normal f64 range. Non-finite coordinates and detected
+  overflow fail closed; intermediate underflow remains Shewchuk's inherited
+  no-claim boundary.
 - `incircle`/`insphere` symbolic perturbation is NOT provided (hooks and
   2D/3D orientation SoS only). `orient3d_sos` now IS a full Edelsbrunner–Mücke
   ladder (moment-curve perturbation, exact leading-coefficient sign) — the

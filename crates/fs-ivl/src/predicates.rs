@@ -18,7 +18,9 @@
 //! are exact provided no intermediate overflow/underflow occurs — i.e.
 //! coordinate differences and their degree-≤5 monomials stay inside the
 //! normal f64 range. Inputs violating that are outside the certificate
-//! (CONTRACT.md no-claim).
+//! (CONTRACT.md no-claim). Public entry points reject non-finite coordinates
+//! and fail closed on detected intermediate overflow before returning a sign;
+//! subnormal underflow remains an explicit no-claim boundary.
 //!
 //! Symbolic perturbation: [`orient2d_sos`] and [`orient3d_sos`] implement the
 //! Edelsbrunner–Mücke Simulation-of-Simplicity ladder — 2D derived term-by-term
@@ -102,6 +104,22 @@ const O3DERRBOUND_A: f64 = (7.0 + 56.0 * EPS) * EPS;
 const ICCERRBOUND_A: f64 = (10.0 + 96.0 * EPS) * EPS;
 const ISPERRBOUND_A: f64 = (16.0 + 224.0 * EPS) * EPS;
 
+#[track_caller]
+fn assert_finite_coordinates<const D: usize>(predicate: &str, points: &[[f64; D]]) {
+    assert!(
+        points.iter().flatten().all(|x| x.is_finite()),
+        "{predicate} requires finite coordinates"
+    );
+}
+
+#[track_caller]
+fn assert_finite_arithmetic(predicate: &str, values: &[f64]) {
+    assert!(
+        values.iter().all(|x| x.is_finite()),
+        "{predicate} arithmetic left the finite certified domain"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // orient2d — full faithful adaptive ladder
 // ---------------------------------------------------------------------------
@@ -117,9 +135,16 @@ pub fn orient2d(pa: [f64; 2], pb: [f64; 2], pc: [f64; 2]) -> Sign {
 /// [`orient2d`] plus the ladder stage that resolved it.
 #[must_use]
 pub fn orient2d_with_stage(pa: [f64; 2], pb: [f64; 2], pc: [f64; 2]) -> (Sign, Stage) {
-    let detleft = (pa[0] - pc[0]) * (pb[1] - pc[1]);
-    let detright = (pa[1] - pc[1]) * (pb[0] - pc[0]);
+    assert_finite_coordinates("orient2d", &[pa, pb, pc]);
+    let acx = pa[0] - pc[0];
+    let bcx = pb[0] - pc[0];
+    let acy = pa[1] - pc[1];
+    let bcy = pb[1] - pc[1];
+    assert_finite_arithmetic("orient2d", &[acx, bcx, acy, bcy]);
+    let detleft = acx * bcy;
+    let detright = acy * bcx;
     let det = detleft - detright;
+    assert_finite_arithmetic("orient2d", &[detleft, detright, det]);
     let detsum = if detleft > 0.0 {
         if detright <= 0.0 {
             return (Sign::of(det), Stage::Filtered);
@@ -135,6 +160,7 @@ pub fn orient2d_with_stage(pa: [f64; 2], pb: [f64; 2], pc: [f64; 2]) -> (Sign, S
         // so det = −detright with detright's float sign exact.
         return (Sign::of(det), Stage::Filtered);
     };
+    assert_finite_arithmetic("orient2d", &[detsum]);
     let errbound = CCWERRBOUND_A * detsum;
     if det >= errbound || -det >= errbound {
         return (Sign::of(det), Stage::Filtered);
@@ -204,6 +230,7 @@ pub fn orient3d_with_stage(
     pc: [f64; 3],
     pd: [f64; 3],
 ) -> (Sign, Stage) {
+    assert_finite_coordinates("orient3d", &[pa, pb, pc, pd]);
     let adx = pa[0] - pd[0];
     let bdx = pb[0] - pd[0];
     let cdx = pc[0] - pd[0];
@@ -213,6 +240,7 @@ pub fn orient3d_with_stage(
     let adz = pa[2] - pd[2];
     let bdz = pb[2] - pd[2];
     let cdz = pc[2] - pd[2];
+    assert_finite_arithmetic("orient3d", &[adx, bdx, cdx, ady, bdy, cdy, adz, bdz, cdz]);
 
     let bdxcdy = bdx * cdy;
     let cdxbdy = cdx * bdy;
@@ -225,6 +253,12 @@ pub fn orient3d_with_stage(
     let permanent = (bdxcdy.abs() + cdxbdy.abs()) * adz.abs()
         + (cdxady.abs() + adxcdy.abs()) * bdz.abs()
         + (adxbdy.abs() + bdxady.abs()) * cdz.abs();
+    assert_finite_arithmetic(
+        "orient3d",
+        &[
+            bdxcdy, cdxbdy, cdxady, adxcdy, adxbdy, bdxady, det, permanent,
+        ],
+    );
     let errbound = O3DERRBOUND_A * permanent;
     if det > errbound || -det > errbound {
         return (Sign::of(det), Stage::Filtered);
@@ -270,12 +304,14 @@ pub fn incircle_with_stage(
     pc: [f64; 2],
     pd: [f64; 2],
 ) -> (Sign, Stage) {
+    assert_finite_coordinates("incircle", &[pa, pb, pc, pd]);
     let adx = pa[0] - pd[0];
     let bdx = pb[0] - pd[0];
     let cdx = pc[0] - pd[0];
     let ady = pa[1] - pd[1];
     let bdy = pb[1] - pd[1];
     let cdy = pc[1] - pd[1];
+    assert_finite_arithmetic("incircle", &[adx, bdx, cdx, ady, bdy, cdy]);
 
     let bdxcdy = bdx * cdy;
     let cdxbdy = cdx * bdy;
@@ -291,6 +327,12 @@ pub fn incircle_with_stage(
     let permanent = (bdxcdy.abs() + cdxbdy.abs()) * alift
         + (cdxady.abs() + adxcdy.abs()) * blift
         + (adxbdy.abs() + bdxady.abs()) * clift;
+    assert_finite_arithmetic(
+        "incircle",
+        &[
+            bdxcdy, cdxbdy, alift, cdxady, adxcdy, blift, adxbdy, bdxady, clift, det, permanent,
+        ],
+    );
     let errbound = ICCERRBOUND_A * permanent;
     if det > errbound || -det > errbound {
         return (Sign::of(det), Stage::Filtered);
@@ -339,6 +381,7 @@ pub fn insphere_with_stage(
     pd: [f64; 3],
     pe: [f64; 3],
 ) -> (Sign, Stage) {
+    assert_finite_coordinates("insphere", &[pa, pb, pc, pd, pe]);
     let aex = pa[0] - pe[0];
     let bex = pb[0] - pe[0];
     let cex = pc[0] - pe[0];
@@ -351,6 +394,10 @@ pub fn insphere_with_stage(
     let bez = pb[2] - pe[2];
     let cez = pc[2] - pe[2];
     let dez = pd[2] - pe[2];
+    assert_finite_arithmetic(
+        "insphere",
+        &[aex, bex, cex, dex, aey, bey, cey, dey, aez, bez, cez, dez],
+    );
 
     let ab = aex * bey - bex * aey;
     let bc = bex * cey - cex * bey;
@@ -382,6 +429,13 @@ pub fn insphere_with_stage(
     let cda_p = cez.abs() * da_p + dez.abs() * ac_p + aez.abs() * cd_p;
     let dab_p = dez.abs() * ab_p + aez.abs() * bd_p + bez.abs() * da_p;
     let permanent = dlift * abc_p + clift * dab_p + blift * cda_p + alift * bcd_p;
+    assert_finite_arithmetic(
+        "insphere",
+        &[
+            ab, bc, cd, da, ac, bd, abc, bcd, cda, dab, alift, blift, clift, dlift, det, ab_p,
+            bc_p, cd_p, da_p, ac_p, bd_p, abc_p, bcd_p, cda_p, dab_p, permanent,
+        ],
+    );
     let errbound = ISPERRBOUND_A * permanent;
     if det > errbound || -det > errbound {
         return (Sign::of(det), Stage::Filtered);
