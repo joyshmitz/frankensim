@@ -26,10 +26,13 @@ Runtime deps: `std`, fs-geom, fs-ledger.
   model-form), each entry carrying its `Rigor` class (certified /
   estimated / rate-model). First-order ADDITIVE composition; `total()`
   = Σ contributions + declared residual; `lint()` refuses NaN/negative
-  mass (no silent error, ever); `dominant()` names what escalation should
-  attack; `explain()` renders the query payload.
+  mass and aggregate overflow (no silent error, ever); `dominant()` names
+  what escalation should attack; `explain()` renders strict JSON and emits an
+  explicit `valid:false` diagnostic instead of non-JSON NaN/Infinity.
 - `TimeLedger` — per-stage predicted quantile bands vs measured wall
-  seconds, with a band-coverage calibration audit and `explain()`.
+  seconds, with a band-coverage calibration audit, a lint for finite
+  nonnegative ordered quantiles/measured times and aggregate overflow, and a
+  strict-JSON `explain()` (`null`, never Rust `Some`/`None` syntax).
 - `PlanCostOracle` — implements fs-geom's `CostOracle`, so the Rep Router
   plans with THIS machine's measured history (per-edge models at
   registered reference sizes; recorded actuals feed refits; observed
@@ -88,12 +91,16 @@ Runtime deps: `std`, fs-geom, fs-ledger.
    fixture-pipeline law).
 4. Attribution is complete by construction: unattributed mass must be
    declared residual, and the lint refuses invalid mass.
+5. Explanation payloads are valid JSON for valid and invalid internal state.
+   Invalid ledgers produce a fail-closed diagnostic object; they never emit
+   `NaN`, infinities, or Rust `Debug` option syntax as evidence.
 
 ## Error model
 
-`CostRefusal` (insufficient data, bad input) and `LedgerDefect`
-(bad contribution/residual) — structured, teaching, never panics across
-the boundary. Ledger I/O errors propagate as `fs_ledger::LedgerError`.
+`CostRefusal` (insufficient data, bad input), `LedgerDefect` (bad
+contribution/residual/aggregate), and `TimeLedgerDefect` (bad stage or
+aggregate) are structured and teaching; none panic across the boundary. Ledger
+I/O errors propagate as `fs_ledger::LedgerError`.
 
 ## Determinism class
 

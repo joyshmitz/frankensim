@@ -15,6 +15,26 @@
 
 use core::fmt;
 
+fn json_escape(value: &str) -> String {
+    use core::fmt::Write as _;
+
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => {
+                let _ = write!(out, "\\u{:04x}", u32::from(c));
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// Where a piece of QoI error came from (the plan's canonical sources).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ErrorSource {
@@ -58,6 +78,16 @@ pub enum Rigor {
     RateModel,
 }
 
+impl Rigor {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Certified => "certified",
+            Self::Estimated => "estimated",
+            Self::RateModel => "rate_model",
+        }
+    }
+}
+
 /// One attributed error contribution.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Contribution {
@@ -90,6 +120,8 @@ pub enum LedgerDefect {
     },
     /// The declared residual is negative or non-finite.
     BadResidual,
+    /// Individually valid contributions overflowed during aggregation.
+    AggregateOverflow,
 }
 
 impl fmt::Display for LedgerDefect {
@@ -102,6 +134,12 @@ impl fmt::Display for LedgerDefect {
             ),
             LedgerDefect::BadResidual => {
                 write!(f, "declared residual must be nonnegative and finite")
+            }
+            LedgerDefect::AggregateOverflow => {
+                write!(
+                    f,
+                    "error contribution total overflowed to a non-finite value"
+                )
             }
         }
     }
@@ -143,6 +181,9 @@ impl ErrorLedger {
         }
         if !valid(self.declared_residual) {
             return Err(LedgerDefect::BadResidual);
+        }
+        if !self.total().is_finite() {
+            return Err(LedgerDefect::AggregateOverflow);
         }
         Ok(())
     }
@@ -188,12 +229,18 @@ impl ErrorLedger {
     #[must_use]
     pub fn explain(&self) -> String {
         use std::fmt::Write as _;
-        let mut out = String::from("{\"error_ledger\":{\"by_source\":{");
+        if let Err(error) = self.lint() {
+            return format!(
+                "{{\"error_ledger\":{{\"valid\":false,\"error\":\"{}\"}}}}",
+                json_escape(&error.to_string())
+            );
+        }
+        let mut out = String::from("{\"error_ledger\":{\"valid\":true,\"by_source\":{");
         for (i, (s, v)) in self.by_source().iter().enumerate() {
             if i > 0 {
                 out.push(',');
             }
-            let _ = write!(out, "\"{}\":{v:?}", s.name());
+            let _ = write!(out, "\"{}\":{v}", s.name());
         }
         out.push_str("},\"entries\":[");
         for (i, c) in self.contributions.iter().enumerate() {
@@ -202,20 +249,25 @@ impl ErrorLedger {
             }
             let _ = write!(
                 out,
-                "{{\"label\":{:?},\"source\":\"{}\",\"abs\":{:?},\"rigor\":\"{:?}\"}}",
-                c.label,
+                "{{\"label\":\"{}\",\"source\":\"{}\",\"abs\":{},\"rigor\":\"{}\"}}",
+                json_escape(&c.label),
                 c.source.name(),
                 c.abs,
-                c.rigor
+                c.rigor.name(),
             );
         }
         let _ = write!(
             out,
-            "],\"residual\":{:?},\"total\":{:?},\"dominant\":{:?}}}}}",
+            "],\"residual\":{},\"total\":{},\"dominant\":",
             self.declared_residual,
             self.total(),
-            self.dominant().map(|(s, _)| s.name())
         );
+        if let Some((source, _)) = self.dominant() {
+            let _ = write!(out, "\"{}\"", source.name());
+        } else {
+            out.push_str("null");
+        }
+        out.push_str("}}");
         out
     }
 }
@@ -229,6 +281,32 @@ pub struct TimeStage {
     pub predicted: Option<(f64, f64, f64)>,
     /// Measured wall seconds, when the stage ran.
     pub measured_s: Option<f64>,
+}
+
+/// A malformed or non-representable time-attribution row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TimeLedgerDefect {
+    /// One stage has a blank identity, invalid quantiles, or invalid measured
+    /// duration.
+    BadStage {
+        /// Stage identity (possibly blank).
+        op: String,
+        /// Exact violated requirement.
+        problem: &'static str,
+    },
+    /// Individually valid stage durations overflowed during aggregation.
+    AggregateOverflow,
+}
+
+impl fmt::Display for TimeLedgerDefect {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BadStage { op, problem } => write!(f, "time stage {op:?}: {problem}"),
+            Self::AggregateOverflow => {
+                write!(f, "time ledger total overflowed to a non-finite value")
+            }
+        }
+    }
 }
 
 /// A study's wall-clock attribution.
@@ -250,6 +328,46 @@ impl TimeLedger {
         self.stages.push(stage);
     }
 
+    /// Validate stage identities, nonnegative finite durations, quantile order,
+    /// and aggregate representability.
+    ///
+    /// # Errors
+    /// The first [`TimeLedgerDefect`] in pipeline order.
+    pub fn lint(&self) -> Result<(), TimeLedgerDefect> {
+        for stage in &self.stages {
+            if stage.op.trim().is_empty() {
+                return Err(TimeLedgerDefect::BadStage {
+                    op: stage.op.clone(),
+                    problem: "operator identity must be non-blank",
+                });
+            }
+            if let Some((p10, p50, p90)) = stage.predicted
+                && (!(p10.is_finite() && p50.is_finite() && p90.is_finite())
+                    || p10 < 0.0
+                    || p10 > p50
+                    || p50 > p90)
+            {
+                return Err(TimeLedgerDefect::BadStage {
+                    op: stage.op.clone(),
+                    problem: "predicted p10/p50/p90 must be finite, nonnegative, and ordered",
+                });
+            }
+            if stage
+                .measured_s
+                .is_some_and(|value| !value.is_finite() || value < 0.0)
+            {
+                return Err(TimeLedgerDefect::BadStage {
+                    op: stage.op.clone(),
+                    problem: "measured wall time must be finite and nonnegative",
+                });
+            }
+        }
+        if !self.total_measured_s().is_finite() || !self.total_p50_s().is_finite() {
+            return Err(TimeLedgerDefect::AggregateOverflow);
+        }
+        Ok(())
+    }
+
     /// Total measured seconds (only stages that ran).
     #[must_use]
     pub fn total_measured_s(&self) -> f64 {
@@ -269,6 +387,9 @@ impl TimeLedger {
     /// (the calibration audit; `None` when nothing is comparable).
     #[must_use]
     pub fn calibration(&self) -> Option<f64> {
+        if self.lint().is_err() {
+            return None;
+        }
         let comparable: Vec<&TimeStage> = self
             .stages
             .iter()
@@ -292,27 +413,38 @@ impl TimeLedger {
     #[must_use]
     pub fn explain(&self) -> String {
         use std::fmt::Write as _;
-        let mut out = String::from("{\"time_ledger\":{\"stages\":[");
+        if let Err(error) = self.lint() {
+            return format!(
+                "{{\"time_ledger\":{{\"valid\":false,\"error\":\"{}\"}}}}",
+                json_escape(&error.to_string())
+            );
+        }
+        let mut out = String::from("{\"time_ledger\":{\"valid\":true,\"stages\":[");
         for (i, s) in self.stages.iter().enumerate() {
             if i > 0 {
                 out.push(',');
             }
-            let _ = write!(out, "{{\"op\":{:?}", s.op);
+            let _ = write!(out, "{{\"op\":\"{}\"", json_escape(&s.op));
             if let Some((p10, p50, p90)) = s.predicted {
-                let _ = write!(out, ",\"p10\":{p10:?},\"p50\":{p50:?},\"p90\":{p90:?}");
+                let _ = write!(out, ",\"p10\":{p10},\"p50\":{p50},\"p90\":{p90}");
             }
             if let Some(m) = s.measured_s {
-                let _ = write!(out, ",\"measured\":{m:?}");
+                let _ = write!(out, ",\"measured\":{m}");
             }
             out.push('}');
         }
         let _ = write!(
             out,
-            "],\"total_measured\":{:?},\"total_p50\":{:?},\"calibration\":{:?}}}}}",
+            "],\"total_measured\":{},\"total_p50\":{},\"calibration\":",
             self.total_measured_s(),
             self.total_p50_s(),
-            self.calibration()
         );
+        if let Some(calibration) = self.calibration() {
+            let _ = write!(out, "{calibration}");
+        } else {
+            out.push_str("null");
+        }
+        out.push_str("}}");
         out
     }
 }

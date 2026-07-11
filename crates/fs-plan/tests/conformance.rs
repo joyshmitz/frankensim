@@ -9,8 +9,8 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use fs_plan::{
-    Contribution, CostModel, CostObservation, ErrorLedger, ErrorSource, PlanCostOracle, Rigor,
-    TimeLedger, TimeStage, cost_model_from_tune,
+    Contribution, CostModel, CostObservation, ErrorLedger, ErrorSource, LedgerDefect,
+    PlanCostOracle, Rigor, TimeLedger, TimeLedgerDefect, TimeStage, cost_model_from_tune,
 };
 
 static NEXT_DB: AtomicU32 = AtomicU32::new(0);
@@ -92,6 +92,8 @@ fn pl_001_error_ledger_bounds_fixture_pipeline() {
     );
     let json = ledger.explain();
     assert!(json.contains("\"discretization\"") && json.contains("\"dominant\""));
+    assert!(json.contains("\"dominant\":\"discretization\""));
+    assert!(!json.contains("Some(") && !json.contains("None"));
     verdict(
         "pl-001",
         &format!("composed bound held on 2000 draws; worst tightness ratio {worst_ratio:.3}"),
@@ -284,8 +286,91 @@ fn pl_007_time_ledger_attributes_and_calibrates() {
     );
     let json = tl.explain();
     assert!(json.contains("flux.lbm") && json.contains("calibration"));
+    assert!(json.contains("\"calibration\":0.5"));
+    assert!(!json.contains("Some(") && !json.contains("None"));
     verdict(
         "pl-007",
         "time attribution totals, band calibration, and explain() payload",
     );
+}
+
+#[test]
+fn pl_008_explain_payloads_remain_strict_json_under_hostile_state() {
+    let mut valid_error = ErrorLedger::new();
+    valid_error.attribute(Contribution {
+        source: ErrorSource::Statistical,
+        label: "hostile\"label\\line\n\u{0001}".to_string(),
+        abs: 0.25,
+        rigor: Rigor::Estimated,
+    });
+    let valid_error_json = valid_error.explain();
+    assert!(valid_error_json.contains("hostile\\\"label\\\\line\\n\\u0001"));
+
+    let empty_error = ErrorLedger::new().explain();
+    assert!(empty_error.contains("\"dominant\":null"));
+    assert!(empty_error.contains("\"valid\":true"));
+
+    let mut overflow = ErrorLedger::new();
+    for label in ["first", "second"] {
+        overflow.attribute(Contribution {
+            source: ErrorSource::Geometry,
+            label: label.to_string(),
+            abs: f64::MAX,
+            rigor: Rigor::Certified,
+        });
+    }
+    assert_eq!(overflow.lint(), Err(LedgerDefect::AggregateOverflow));
+    let error_json = overflow.explain();
+    assert!(error_json.contains("\"valid\":false"));
+    assert!(!error_json.contains("inf") && !error_json.contains("NaN"));
+
+    let mut invalid_time = TimeLedger::new();
+    invalid_time.record(TimeStage {
+        op: "hostile\"stage\n".to_string(),
+        predicted: Some((1.0, f64::NAN, 3.0)),
+        measured_s: Some(2.0),
+    });
+    assert!(matches!(
+        invalid_time.lint(),
+        Err(TimeLedgerDefect::BadStage { .. })
+    ));
+    let time_json = invalid_time.explain();
+    assert!(time_json.contains("\"valid\":false"));
+    assert!(!time_json.contains("NaN") && !time_json.contains("Some("));
+
+    let empty_time = TimeLedger::new().explain();
+    assert!(empty_time.contains("\"calibration\":null"));
+    assert!(empty_time.contains("\"valid\":true"));
+
+    let mut valid_time = TimeLedger::new();
+    valid_time.record(TimeStage {
+        op: "hostile\"op\\line\n\u{0001}".to_string(),
+        predicted: Some((1.0, 2.0, 3.0)),
+        measured_s: Some(2.5),
+    });
+    let valid_time_json = valid_time.explain();
+    assert!(valid_time_json.contains("hostile\\\"op\\\\line\\n\\u0001"));
+
+    let validator = fs_ledger::Ledger::open(":memory:").expect("JSON validator ledger");
+    for (ordinal, payload) in [
+        &valid_error_json,
+        &empty_error,
+        &error_json,
+        &time_json,
+        &empty_time,
+        &valid_time_json,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        validator
+            .append_event(&fs_ledger::EventRow {
+                session: None,
+                t: i64::try_from(ordinal).expect("small ordinal"),
+                kind: "fs-plan.explain-json",
+                payload: Some(payload),
+            })
+            .expect("every explain payload must pass the production JSON validator");
+    }
+    assert_eq!(validator.table_count("events").unwrap(), 6);
 }

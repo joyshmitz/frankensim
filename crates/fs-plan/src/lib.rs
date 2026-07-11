@@ -30,7 +30,8 @@ pub use alloc::{
 };
 pub use cost::{CostModel, CostObservation, CostPrediction, CostRefusal, MIN_OBS};
 pub use ledgers::{
-    Contribution, ErrorLedger, ErrorSource, LedgerDefect, Rigor, TimeLedger, TimeStage,
+    Contribution, ErrorLedger, ErrorSource, LedgerDefect, Rigor, TimeLedger, TimeLedgerDefect,
+    TimeStage,
 };
 pub use oracle::{PlanCostOracle, cost_model_from_tune, json_f64_field};
 
