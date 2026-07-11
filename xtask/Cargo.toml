@@ -9,6 +9,7 @@ description = "FrankenSim repository policy checks: layer discipline, dependency
 layer = "TOOL"
 
 [dependencies]
+fs-blake3 = { path = "../crates/fs-blake3" }
 
 [lints]
 workspace = true

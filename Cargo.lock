@@ -3706,6 +3706,9 @@ dependencies = [
 [[package]]
 name = "xtask"
 version = "0.0.1"
+dependencies = [
+ "fs-blake3",
+]
 
 [[package]]
 name = "xxhash-rust"
