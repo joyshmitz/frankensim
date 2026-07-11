@@ -14,7 +14,9 @@ diagonal works unchanged, and accuracy is controlled by one number
   diagonal convention is the caller's (Laplace3d returns 0 there).
 - `Laplace3d`: `1/(4π|x−y|)`.
 - `Fmm::new(kernel, points, order, leaf_cap)`: fallible UNIFORM-depth octree
-  (depth from N/leaf_cap, empty cells omitted, ancestors registered) —
+  (depth from N/leaf_cap, empty cells omitted, ancestors registered;
+  `leaf_cap` targets uniform-cloud occupancy rather than imposing a strict
+  clustered-leaf capacity) —
   on a uniform tree, "adjacent leaves run P2P, first-separated
   ancestors run M2L" partitions every source–target pair EXACTLY ONCE
   (no gap, no double count). `potentials(charges)` runs P2M/M2M

@@ -120,10 +120,13 @@ impl Airfoil2d {
         }
 
         let mut twice_area = 0.0;
+        let origin = self.nodes[0];
         for i in 0..n {
             let a = self.nodes[i];
             let b = self.nodes[(i + 1) % n];
-            twice_area += a[0].mul_add(b[1], -(b[0] * a[1]));
+            let ar = [a[0] - origin[0], a[1] - origin[1]];
+            let br = [b[0] - origin[0], b[1] - origin[1]];
+            twice_area += ar[0].mul_add(br[1], -(br[0] * ar[1]));
         }
         let linear_tol = scale * 1.0e-14;
         let area_tol = scale * scale * 1.0e-14;

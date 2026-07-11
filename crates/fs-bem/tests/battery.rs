@@ -317,10 +317,22 @@ fn bem_rejects_invalid_geometry_work_and_trace_requests() {
     assert!(naca4_symmetric(f64::NAN, 80).is_err());
     assert!(naca4_symmetric(0.1, usize::MAX).is_err());
     assert!(panel2d::Airfoil2d::new(vec![[0.0, 0.0]; 4]).is_err());
+    let offset = 1.0e12 - 2.0;
+    let translated_square = panel2d::Airfoil2d::new(vec![
+        [offset, offset],
+        [offset, offset + 1.0],
+        [offset + 1.0, offset + 1.0],
+        [offset + 1.0, offset],
+    ]);
+    assert!(
+        translated_square.is_ok(),
+        "orientation and area validation must be translation-stable"
+    );
 
     let foil = naca4_symmetric(0.1, 80).expect("valid fixture");
     assert!(panel2d::solve(&foil, f64::NAN).is_err());
     assert!(WakeSim::new(&foil, 0.1, 0.0, 0.05).is_err());
+    assert!(WakeSim::new(&foil, 0.1, 0.05, 5.0e-7).is_err());
     let sim = WakeSim::new(&foil, 0.1, 0.05, 0.05).expect("valid wake");
     assert!(sim.trace_json(0).is_err());
 
@@ -337,7 +349,7 @@ fn bem_rejects_invalid_geometry_work_and_trace_requests() {
 
     let zero = solve_exterior(&small, [0.0; 3], 4, 1e-8).expect("zero flow is exact");
     assert!(zero.report.converged);
-    assert_eq!(zero.report.rel_residual, 0.0);
+    assert_eq!(zero.report.rel_residual.to_bits(), 0.0f64.to_bits());
     assert!(zero.sigma.iter().all(|value| *value == 0.0));
 }
 

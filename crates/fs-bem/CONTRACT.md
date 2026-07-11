@@ -74,8 +74,9 @@ success. Airfoil, sphere-panel, and wake state storage is read-only after
 validated construction. Physical honesty: every battery verdict carries the
 `inviscid-screening` model label; no viscous claims anywhere.
 `BemError::AllocationFailed` covers explicitly reserved BEM geometry, dense,
-wake, and trace buffers; fs-fmm's separately documented process-level allocator
-no-claim still applies inside FMM passes.
+wake, and exactly sized trace buffers. The separately documented process-level
+allocator no-claim still applies inside fs-fmm passes, and fs-solver's current
+GMRES state allocation remains infallible after the bounded BEM admission step.
 
 ## Determinism class
 

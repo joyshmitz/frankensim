@@ -82,9 +82,8 @@ impl core::fmt::Display for ExteriorSolveError {
 impl std::error::Error for ExteriorSolveError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Input(source) => Some(source),
+            Self::Input(source) | Self::OperatorRefused { source, .. } => Some(source),
             Self::NotConverged { .. } => None,
-            Self::OperatorRefused { source, .. } => Some(source),
         }
     }
 }
@@ -521,7 +520,9 @@ impl LinearOp for FmmOp<'_> {
 ///
 /// A successful value always has `report.converged == true`. Budget
 /// exhaustion and breakdown return [`ExteriorSolveError::NotConverged`] with
-/// both the last iterate and complete [`SolveReport`] preserved.
+/// both the last iterate and complete [`SolveReport`] preserved. A fallible
+/// operator application returns [`ExteriorSolveError::OperatorRefused`] with
+/// its first error and the same diagnostic state.
 pub fn solve_exterior(
     panels: &SpherePanels,
     u_inf: [f64; 3],

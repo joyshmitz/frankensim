@@ -5,8 +5,8 @@
 //! works unchanged, and the accuracy knob is one number: the
 //! interpolation order p.
 //!
-//! Layer: L2. The pipeline: an octree over the point cloud (leaf
-//! capacity bounded); UPWARD, source strengths anterpolate to each
+//! Layer: L2. The pipeline: an octree over the point cloud (uniform-cloud
+//! leaf occupancy targeted by `leaf_cap`); UPWARD, source strengths anterpolate to each
 //! leaf's p³ Chebyshev grid (P2M) and coarsen grid-to-grid (M2M);
 //! ACROSS, well-separated cells exchange through the kernel evaluated
 //! between their grids (M2L, the only place the kernel is touched);
@@ -75,7 +75,7 @@ pub enum FmmError {
         /// Admitted maximum.
         max: usize,
     },
-    /// The conservative cell-grid work envelope was exceeded.
+    /// An explicit work envelope was exceeded.
     WorkEnvelopeExceeded {
         /// Bounded work category.
         operation: &'static str,
@@ -241,9 +241,11 @@ pub struct Fmm<'k> {
 impl<'k> Fmm<'k> {
     /// Validate a construction request without allocating the octree.
     ///
-    /// The coefficient bound is conservative: every point is charged for one
-    /// occupied cell at every tree level. The real tree can only contain fewer
-    /// cells, so admission cannot underestimate grid storage.
+    /// The coefficient bound is conservative: each level is charged for the
+    /// smaller of its full uniform grid and one occupied cell per point. The
+    /// real tree can only contain fewer cells, so admission cannot
+    /// underestimate grid storage.
+    #[allow(clippy::too_many_lines)] // validation and all work ledgers form one admission audit
     pub fn validate_request(
         points: &[[f64; 3]],
         order: usize,
@@ -308,11 +310,7 @@ impl<'k> Fmm<'k> {
                     },
                 )?;
                 pair_scans = pair_scans
-                    .checked_add(
-                        cells_at_level
-                            .checked_mul(cells_at_level)
-                            .unwrap_or(usize::MAX),
-                    )
+                    .checked_add(cells_at_level.saturating_mul(cells_at_level))
                     .ok_or(FmmError::WorkEnvelopeExceeded {
                         operation: "cell-pair scan",
                         requested: usize::MAX,
@@ -366,7 +364,8 @@ impl<'k> Fmm<'k> {
     }
 
     /// Build the octree: UNIFORM depth chosen from N/leaf_cap (empty
-    /// cells omitted) — on a uniform tree, "adjacent leaves run P2P,
+    /// cells omitted; `leaf_cap` is a uniform-cloud occupancy target, not a
+    /// strict bound for clustered clouds) — on a uniform tree, "adjacent leaves run P2P,
     /// first-separated ancestors run M2L" partitions every pair
     /// EXACTLY ONCE (the adaptive U/V/W/X machinery is a recorded
     /// successor).
@@ -438,9 +437,7 @@ impl<'k> Fmm<'k> {
                         let Some(source_cell) = cells.get(&neighbor) else {
                             continue;
                         };
-                        let pairs = target_count
-                            .checked_mul(source_cell.points.len())
-                            .unwrap_or(usize::MAX);
+                        let pairs = target_count.saturating_mul(source_cell.points.len());
                         near_field_pairs = near_field_pairs.checked_add(pairs).ok_or(
                             FmmError::WorkEnvelopeExceeded {
                                 operation: "near-field pair",
@@ -708,7 +705,7 @@ impl<'k> Fmm<'k> {
         if n > MAX_DIRECT_POINTS {
             return Err(FmmError::WorkEnvelopeExceeded {
                 operation: "direct pair",
-                requested: n.checked_mul(n).unwrap_or(usize::MAX),
+                requested: n.saturating_mul(n),
                 max: MAX_DIRECT_POINTS * MAX_DIRECT_POINTS,
             });
         }

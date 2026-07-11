@@ -14,7 +14,6 @@
 
 use crate::BemError;
 use crate::panel2d::{Airfoil2d, solve};
-use std::fmt::Write as _;
 
 /// Largest admitted number of wake steps/vortices in one v1 state.
 pub const MAX_WAKE_STEPS: usize = 1_000_000;
@@ -24,8 +23,21 @@ pub const MAX_DIRECT_WAKE_VORTICES: usize = 1_024;
 pub const MAX_DIRECT_WAKE_PAIR_WORK: usize = MAX_DIRECT_WAKE_VORTICES * MAX_DIRECT_WAKE_VORTICES;
 const MAX_ABS_WAKE_ALPHA: f64 = std::f64::consts::FRAC_PI_2;
 const MAX_WAKE_DT: f64 = 1.0;
-const MIN_WAKE_CORE: f64 = 1.0e-9;
+const MIN_WAKE_CORE: f64 = 1.0e-6;
 const MAX_WAKE_CORE: f64 = 1.0;
+const MAX_WAKE_TRACE_BYTES: usize = MAX_WAKE_STEPS * 128 + 192;
+
+#[derive(Default)]
+struct ByteCounter {
+    len: usize,
+}
+
+impl std::fmt::Write for ByteCounter {
+    fn write_str(&mut self, value: &str) -> std::fmt::Result {
+        self.len = self.len.checked_add(value.len()).ok_or(std::fmt::Error)?;
+        Ok(())
+    }
+}
 
 /// One wake vortex.
 #[derive(Debug, Clone, Copy)]
@@ -83,7 +95,7 @@ impl WakeSim {
             return Err(BemError::InvalidScalar {
                 name: "wake regularization radius",
                 value: core,
-                requirement: "finite and in [1e-9, 1] chord lengths",
+                requirement: "finite and in [1e-6, 1] chord lengths",
             });
         }
         let steady = solve(foil, alpha)?;
@@ -146,6 +158,7 @@ impl WakeSim {
     /// the Kutta value against the wake's downwash; the DEFICIT is
     /// shed at the trailing edge (Kelvin), and the wake convects with
     /// the induced flow (forward Euler at fixture scale).
+    #[allow(clippy::too_many_lines)] // one transactional wake update, including all refusal checks
     pub fn step(&mut self) -> Result<(), BemError> {
         self.validate_state()?;
         if self.history.len() >= MAX_WAKE_STEPS {
@@ -195,10 +208,11 @@ impl WakeSim {
             });
         }
 
+        let sheds_vortex = shed != 0.0;
         let next_count = self
             .wake
             .len()
-            .checked_add(if shed != 0.0 { 1 } else { 0 })
+            .checked_add(usize::from(sheds_vortex))
             .ok_or(BemError::WorkEnvelopeExceeded {
                 operation: "wake vortices",
                 requested: usize::MAX,
@@ -212,7 +226,7 @@ impl WakeSim {
                 operation: "wake candidate state",
             })?;
         candidate.extend_from_slice(&self.wake);
-        if shed.abs() > 0.0 {
+        if sheds_vortex {
             candidate.push(WakeVortex {
                 pos: [self.te[0] + 0.3 * self.dt, self.te[1]],
                 gamma: shed,
@@ -274,47 +288,60 @@ impl WakeSim {
         if stride == 0 {
             return Err(BemError::InvalidTraceStride);
         }
-        let rows = self.history.len().div_ceil(stride);
-        let reserve = rows
-            .checked_mul(128)
-            .and_then(|bytes| bytes.checked_add(192))
-            .ok_or(BemError::WorkEnvelopeExceeded {
+
+        // Count the exact UTF-8 output first. This pass does not allocate, and
+        // it guarantees that the subsequent String writes cannot trigger an
+        // infallible growth after the fallible reservation succeeds.
+        let mut counter = ByteCounter::default();
+        self.write_trace(stride, &mut counter)
+            .map_err(|_| BemError::WorkEnvelopeExceeded {
                 operation: "wake trace bytes",
                 requested: usize::MAX,
-                max: MAX_WAKE_STEPS * 128 + 192,
+                max: MAX_WAKE_TRACE_BYTES,
             })?;
+        if counter.len > MAX_WAKE_TRACE_BYTES {
+            return Err(BemError::WorkEnvelopeExceeded {
+                operation: "wake trace bytes",
+                requested: counter.len,
+                max: MAX_WAKE_TRACE_BYTES,
+            });
+        }
         let mut s = String::new();
-        s.try_reserve(reserve)
+        s.try_reserve_exact(counter.len)
             .map_err(|_| BemError::AllocationFailed {
                 operation: "wake JSON trace",
             })?;
+        self.write_trace(stride, &mut s)
+            .map_err(|_| BemError::AllocationFailed {
+                operation: "wake JSON trace",
+            })?;
+        debug_assert_eq!(s.len(), counter.len);
+        Ok(s)
+    }
+
+    fn write_trace(&self, stride: usize, out: &mut impl std::fmt::Write) -> std::fmt::Result {
         let core = fs_math::det::sqrt(self.core2);
         write!(
-            s,
+            out,
             "{{\"schema\":\"fs-bem.wake-trace.v1\",\"model\":\"inviscid-screening\",\"alpha_rad\":{},\"dt_nondimensional\":{},\"core_radius_chord\":{},\"stride\":{},\"rows\":[",
             self.alpha, self.dt, core, stride
-        )
-        .map_err(|_| BemError::AllocationFailed {
-            operation: "wake JSON trace",
-        })?;
+        )?;
+        let mut first = true;
         for (i, st) in self.history.iter().enumerate() {
             if i % stride != 0 {
                 continue;
             }
+            if !first {
+                out.write_str(",")?;
+            }
+            first = false;
             write!(
-                s,
-                "{{\"time_nondimensional\":{},\"bound_circulation_nondimensional\":{},\"vortices\":{},\"peak_speed_freestream_ratio\":{}}},",
+                out,
+                "{{\"time_nondimensional\":{},\"bound_circulation_nondimensional\":{},\"vortices\":{},\"peak_speed_freestream_ratio\":{}}}",
                 st.t, st.bound, st.vortices, st.peak_speed
-            )
-            .map_err(|_| BemError::AllocationFailed {
-                operation: "wake JSON trace",
-            })?;
+            )?;
         }
-        if s.ends_with(',') {
-            s.pop();
-        }
-        s.push_str("]}");
-        Ok(s)
+        out.write_str("]}")
     }
 
     fn validate_state(&self) -> Result<(), BemError> {
