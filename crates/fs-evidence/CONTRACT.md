@@ -15,8 +15,9 @@ on fs-obs only.
 ## Public types and semantics
 - `Evidence<T> { value, qoi, numerical, statistical, model, sensitivity,
   provenance, adjoint_ref }` — the traveling noun. `Certified<T>` is the
-  alias whose constructor discipline is `Evidence::certified()`: rigorous
-  numerics (Exact/Enclosure) + in-domain model evidence; pure math
+  opaque newtype whose constructor discipline is `Evidence::certified()`: rigorous
+  numerics (Exact/Enclosure), valid statistical parameters, and in-domain
+  non-negative model discrepancy; pure math
   certifies with `ModelEvidence::none()` (the explicit "no model involved"
   statement); refusals are structured `CertifyError`s.
 - `NumericalCertificate { kind: Exact|Enclosure|Estimate|NoClaim, lo, hi }`
@@ -24,7 +25,8 @@ on fs-obs only.
   provenance + adjoint hook) kept intact as the numerical slice. Severity
   is ordered; float composition never claims Exact; NoClaim absorbs.
 - `StatisticalCertificate { None | EValue{e, alpha} | HalfWidth{...} }` —
-  v1 composition is conservative-weakest (see no-claims).
+  finite non-negative e-values and widths with levels/confidences strictly in
+  `(0,1)`; v1 composition is conservative-weakest (see no-claims).
 - `ModelEvidence { cards, assumptions, validity, discrepancy_rel,
   in_domain }`; `ValidityDomain` — named-parameter boxes with
   intersection/containment; `SensitivitySummary` — d(qoi)/d(param)
@@ -94,14 +96,17 @@ on fs-obs only.
    propagation of operand-enclosed true values (300k seeded samples);
    composed validity is exactly the per-parameter intersection;
    assumptions union sorted; discrepancy bands add; `in_domain` is a
-   conjunction.
+   conjunction. Indeterminate IEEE endpoint arithmetic widens to the whole
+   real line instead of discarding NaN corners.
 2. Severity monotonicity: composition kind = max operand severity, floored
    at Enclosure for float ops; NoClaim absorbs to infinite bounds; an
    Estimate anywhere poisons `certified()` downstream (evd-006).
 3. No card, no solver: `ModelRegistry::register_solver` refuses unknown
    cards with teaching text (evd-002).
 4. Out-of-distribution discrepancy queries refuse with the violated
-   parameter named — never silent extrapolation (evd-004).
+   parameter named — never silent extrapolation; non-finite training or query
+   coordinates are unusable, not a way to synthesize or enter a trained box
+   (evd-004).
 5. Dominance ties break in declaration order (ModelForm, Statistical,
    Numerical) — deterministic verdicts.
 6. Ledger rows and provenance chains are deterministic (repeat-identical);
@@ -115,7 +120,10 @@ on fs-obs only.
    `Evidence::certified()`, which validates the ACTUAL numbers, not the
    constructor that claimed them: Exact requires a finite QoI with
    bit-identical bounds; Enclosure requires finite ordered bounds that
-   CONTAIN the QoI; Estimate/NoClaim and out-of-domain models refuse.
+   CONTAIN the QoI; statistical e-values, levels, widths, and confidence
+   parameters must satisfy their finite domains; model discrepancy must be
+   non-negative (positive infinity is the explicit unbounded claim);
+   Estimate/NoClaim and out-of-domain models refuse.
    Reads flow through `Deref<Target = Evidence<T>>`;
    `Certified::into_evidence()` is the explicit downgrade — the mark is
    lost and any reconstruction must re-enter `certified()`
@@ -127,6 +135,9 @@ on fs-obs only.
    and callers that only read fields are unchanged via Deref. This
    crate has no serializer; persisted evidence re-enters through
    `certified()` on ingest by construction.
+9. Decision assessment fails closed (evd-013): malformed or negative
+   uncertainty becomes an infinite band; infinite totals and malformed
+   thresholds cannot become `DecisionGrade`.
 
 ## Error model
 Structured teaching errors throughout: `CertifyError`, `RegistryError`,
@@ -152,7 +163,7 @@ None. The mechanisms are `[S]`-grade bookkeeping; the models they DESCRIBE
 carry their own ambition tags in their cards.
 
 ## Conformance tests
-tests/conformance.rs, cases evd-001..evd-009 (JSON-line verdicts; seeded
+tests/conformance.rs, cases evd-001..evd-013 (JSON-line verdicts; seeded
 cases carry seeds): the G0 conservativeness battery, the registration
 lint, the worked model-discrepancy-dominates example (10% closure vs 0.7%
 mesh at a 5% threshold → NotDecisionGrade{ModelForm} + escalation advice,
@@ -164,6 +175,8 @@ dispersion, outward-rounded verified arithmetic, non-finite state/regime
 demotion, and deterministic escaping/tagging of hostile JSON payloads.
 In-module suites cover the certificate algebra, validity laws, tie-breaking,
 provenance chaining, and card rendering.
+`evd-013` exercises the public `Evidence` layer against indeterminate interval
+arithmetic and malformed statistical/model uncertainty.
 
 - Falsifier registration is total: empty falsifier lists refuse at the
   source; the ship gate names every unpaired class.

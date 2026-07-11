@@ -185,22 +185,44 @@ impl NumericalCertificate {
     /// Relative half-width against a reference magnitude (∞ for NoClaim).
     #[must_use]
     pub fn rel_half_width(&self, reference: f64) -> f64 {
-        if self.kind == NumericalKind::NoClaim {
+        if self.kind == NumericalKind::NoClaim
+            || !reference.is_finite()
+            || self.lo.is_nan()
+            || self.hi.is_nan()
+            || self.lo > self.hi
+        {
             return f64::INFINITY;
         }
         let half = 0.5 * (self.hi - self.lo);
-        half / reference.abs().max(f64::MIN_POSITIVE)
+        let relative = half / reference.abs().max(f64::MIN_POSITIVE);
+        if half.is_finite() && half >= 0.0 && relative.is_finite() {
+            relative
+        } else {
+            f64::INFINITY
+        }
     }
 
     fn compose(a: &Self, b: &Self, op: Op) -> Self {
         if a.kind == NumericalKind::NoClaim || b.kind == NumericalKind::NoClaim {
             return Self::no_claim();
         }
+        // Public fields permit hand-built certificates. Preserve invalidity
+        // instead of allowing f64::min/max to discard a NaN operand.
+        let kind = a.kind.max(b.kind).max(NumericalKind::Enclosure);
+        if a.lo.is_nan() || a.hi.is_nan() || b.lo.is_nan() || b.hi.is_nan() {
+            return Self::whole_line(kind);
+        }
+        if a.lo > a.hi || b.lo > b.hi {
+            return Self::whole_line(kind);
+        }
         let (lo, hi) = match op {
             Op::Add => (a.lo + b.lo, a.hi + b.hi),
             Op::Sub => (a.lo - b.hi, a.hi - b.lo),
             Op::Mul => {
                 let c = [a.lo * b.lo, a.lo * b.hi, a.hi * b.lo, a.hi * b.hi];
+                if c.iter().any(|v| v.is_nan()) {
+                    return Self::whole_line(kind);
+                }
                 (
                     c.iter().copied().fold(f64::INFINITY, f64::min),
                     c.iter().copied().fold(f64::NEG_INFINITY, f64::max),
@@ -211,11 +233,22 @@ impl NumericalCertificate {
         };
         // Outward rounding: one ulp each way covers the composition
         // arithmetic itself. Float composition never claims Exact.
-        let kind = a.kind.max(b.kind).max(NumericalKind::Enclosure);
+        if lo.is_nan() || hi.is_nan() || lo > hi {
+            Self::whole_line(kind)
+        } else {
+            NumericalCertificate {
+                kind,
+                lo: lo.next_down(),
+                hi: hi.next_up(),
+            }
+        }
+    }
+
+    fn whole_line(kind: NumericalKind) -> Self {
         NumericalCertificate {
             kind,
-            lo: lo.next_down(),
-            hi: hi.next_up(),
+            lo: f64::NEG_INFINITY,
+            hi: f64::INFINITY,
         }
     }
 }
@@ -228,16 +261,16 @@ pub enum StatisticalCertificate {
     None,
     /// An anytime-valid e-value against the stated null level.
     EValue {
-        /// The e-value.
+        /// The finite, non-negative e-value.
         e: f64,
-        /// The design level the e-threshold was set for.
+        /// The finite design level in `(0, 1)`.
         alpha: f64,
     },
     /// A confidence half-width around the QoI.
     HalfWidth {
-        /// Absolute half-width.
+        /// Finite, non-negative absolute half-width.
         half_width: f64,
-        /// Confidence level in (0, 1).
+        /// Finite confidence level in `(0, 1)`.
         confidence: f64,
     },
 }
@@ -248,16 +281,29 @@ impl StatisticalCertificate {
     /// anytime-valid); half-widths scale by the reference.
     #[must_use]
     pub fn rel_width(&self, reference: f64) -> f64 {
+        if self.validation_issue().is_some() {
+            return f64::INFINITY;
+        }
         match self {
             StatisticalCertificate::None | StatisticalCertificate::EValue { .. } => 0.0,
             StatisticalCertificate::HalfWidth { half_width, .. } => {
-                half_width / reference.abs().max(f64::MIN_POSITIVE)
+                if reference.is_finite() {
+                    half_width / reference.abs().max(f64::MIN_POSITIVE)
+                } else {
+                    f64::INFINITY
+                }
             }
         }
     }
 
     fn compose(a: &Self, b: &Self) -> Self {
         use StatisticalCertificate as S;
+        if a.validation_issue().is_some() || b.validation_issue().is_some() {
+            return S::HalfWidth {
+                half_width: f64::INFINITY,
+                confidence: 0.0,
+            };
+        }
         match (*a, *b) {
             (S::None, x) | (x, S::None) => x,
             (
@@ -283,6 +329,41 @@ impl StatisticalCertificate {
             | (S::EValue { .. }, w @ S::HalfWidth { .. }) => w,
         }
     }
+
+    fn validation_issue(&self) -> Option<(&'static str, f64, &'static str)> {
+        match *self {
+            StatisticalCertificate::None => None,
+            StatisticalCertificate::EValue { e, .. } if !e.is_finite() || e < 0.0 => {
+                Some(("e", e, "must be finite and non-negative"))
+            }
+            StatisticalCertificate::EValue { alpha, .. }
+                if !alpha.is_finite() || alpha <= 0.0 || alpha >= 1.0 =>
+            {
+                Some((
+                    "alpha",
+                    alpha,
+                    "must be finite and strictly between 0 and 1",
+                ))
+            }
+            StatisticalCertificate::HalfWidth { half_width, .. }
+                if !half_width.is_finite() || half_width < 0.0 =>
+            {
+                Some(("half_width", half_width, "must be finite and non-negative"))
+            }
+            StatisticalCertificate::HalfWidth { confidence, .. }
+                if !confidence.is_finite() || confidence <= 0.0 || confidence >= 1.0 =>
+            {
+                Some((
+                    "confidence",
+                    confidence,
+                    "must be finite and strictly between 0 and 1",
+                ))
+            }
+            StatisticalCertificate::EValue { .. } | StatisticalCertificate::HalfWidth { .. } => {
+                None
+            }
+        }
+    }
 }
 
 /// A named-parameter validity box: which region of parameter space the
@@ -305,10 +386,11 @@ impl ValidityDomain {
         &self.bounds
     }
 
-    /// Constrain one parameter to `[lo, hi]`.
+    /// Constrain one parameter to `[lo, hi]`. Reversed finite endpoints
+    /// normalize; a NaN endpoint is preserved as an unusable domain.
     #[must_use]
     pub fn with(mut self, param: impl Into<String>, lo: f64, hi: f64) -> Self {
-        self.bounds.insert(param.into(), (lo.min(hi), lo.max(hi)));
+        self.bounds.insert(param.into(), ordered_bounds(lo, hi));
         self
     }
 
@@ -321,9 +403,14 @@ impl ValidityDomain {
     /// True when the point satisfies every constraint.
     #[must_use]
     pub fn contains(&self, point: &BTreeMap<String, f64>) -> bool {
-        self.bounds
-            .iter()
-            .all(|(k, &(lo, hi))| point.get(k).is_some_and(|&v| v >= lo && v <= hi))
+        self.bounds.iter().all(|(k, &(lo, hi))| {
+            lo.is_finite()
+                && hi.is_finite()
+                && lo <= hi
+                && point
+                    .get(k)
+                    .is_some_and(|&v| v.is_finite() && v >= lo && v <= hi)
+        })
     }
 
     /// Per-parameter intersection (the composition law: composed validity
@@ -334,18 +421,25 @@ impl ValidityDomain {
         for (k, &(lo2, hi2)) in &other.bounds {
             out.entry(k.clone())
                 .and_modify(|(lo, hi)| {
-                    *lo = lo.max(lo2);
-                    *hi = hi.min(hi2);
+                    if lo.is_nan() || hi.is_nan() || lo2.is_nan() || hi2.is_nan() {
+                        *lo = f64::NAN;
+                        *hi = f64::NAN;
+                    } else {
+                        *lo = lo.max(lo2);
+                        *hi = hi.min(hi2);
+                    }
                 })
                 .or_insert((lo2, hi2));
         }
         ValidityDomain { bounds: out }
     }
 
-    /// True when some parameter's interval is empty (nothing satisfies it).
+    /// True when some parameter's interval is empty or unusable.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.bounds.values().any(|&(lo, hi)| lo > hi)
+        self.bounds
+            .values()
+            .any(|&(lo, hi)| !lo.is_finite() || !hi.is_finite() || lo > hi)
     }
 
     /// Constrained parameter names, sorted (BTreeMap order — deterministic
@@ -402,8 +496,9 @@ pub struct ModelEvidence {
     pub assumptions: Vec<String>,
     /// Validity domain (composition intersects).
     pub validity: ValidityDomain,
-    /// Relative model-form discrepancy band (composition adds —
-    /// first-order conservative).
+    /// Non-negative relative model-form discrepancy band (composition adds —
+    /// first-order conservative). Positive infinity is an explicit unbounded
+    /// claim; NaN and negative values are invalid.
     pub discrepancy_rel: f64,
     /// False the moment any constituent was queried outside its domain.
     pub in_domain: bool,
@@ -445,9 +540,19 @@ impl ModelEvidence {
             cards,
             assumptions,
             validity: a.validity.intersect(&b.validity),
-            discrepancy_rel: a.discrepancy_rel + b.discrepancy_rel,
+            discrepancy_rel: if Self::valid_discrepancy(a.discrepancy_rel)
+                && Self::valid_discrepancy(b.discrepancy_rel)
+            {
+                a.discrepancy_rel + b.discrepancy_rel
+            } else {
+                f64::INFINITY
+            },
             in_domain: a.in_domain && b.in_domain,
         }
+    }
+
+    fn valid_discrepancy(discrepancy_rel: f64) -> bool {
+        !discrepancy_rel.is_nan() && discrepancy_rel >= 0.0
     }
 }
 
@@ -503,16 +608,27 @@ impl UncertaintyBreakdown {
     /// First-order conservative total.
     #[must_use]
     pub fn total_rel(&self) -> f64 {
-        self.numerical_rel + self.statistical_rel + self.model_rel
+        Self::usable_band(self.numerical_rel)
+            + Self::usable_band(self.statistical_rel)
+            + Self::usable_band(self.model_rel)
     }
 
     /// The dominant source (declaration-order tie-break).
     #[must_use]
     pub fn dominant(&self) -> UncertaintySource {
         let entries = [
-            (UncertaintySource::ModelForm, self.model_rel),
-            (UncertaintySource::Statistical, self.statistical_rel),
-            (UncertaintySource::Numerical, self.numerical_rel),
+            (
+                UncertaintySource::ModelForm,
+                Self::usable_band(self.model_rel),
+            ),
+            (
+                UncertaintySource::Statistical,
+                Self::usable_band(self.statistical_rel),
+            ),
+            (
+                UncertaintySource::Numerical,
+                Self::usable_band(self.numerical_rel),
+            ),
         ];
         let mut best = entries[0];
         for &(src, band) in &entries[1..] {
@@ -521,6 +637,14 @@ impl UncertaintyBreakdown {
             }
         }
         best.0
+    }
+
+    fn usable_band(band: f64) -> f64 {
+        if band.is_nan() || band < 0.0 {
+            f64::INFINITY
+        } else {
+            band
+        }
     }
 }
 
@@ -602,8 +726,8 @@ pub struct Evidence<T> {
 
 /// `Certified<T>`: evidence whose certificate slate PASSED the full
 /// validation boundary in [`Evidence::certified`] — rigorous numerics
-/// (Exact/Enclosure), finite ordered bounds, QoI containment, and
-/// in-domain model evidence.
+/// (Exact/Enclosure), finite ordered bounds, QoI containment, valid
+/// statistical parameters, and in-domain non-negative model evidence.
 ///
 /// UNFORGEABLE BY CONSTRUCTION (bead gp3.2.1): the inner evidence is
 /// private, the ONLY constructor is [`Evidence::certified`], and no
@@ -690,6 +814,20 @@ pub enum CertifyError {
         /// The certificate's upper bound.
         hi: f64,
     },
+    /// A statistical certificate contains an invalid uncertainty value.
+    InvalidStatistical {
+        /// The invalid field.
+        field: &'static str,
+        /// The rejected value.
+        value: f64,
+        /// The field's validity requirement.
+        requirement: &'static str,
+    },
+    /// A model-form discrepancy is NaN or negative.
+    InvalidModelDiscrepancy {
+        /// The rejected relative discrepancy.
+        discrepancy_rel: f64,
+    },
 }
 
 impl fmt::Display for CertifyError {
@@ -731,6 +869,21 @@ impl fmt::Display for CertifyError {
                 "Certified<T> refused: qoi {qoi} lies outside its own claimed enclosure \
                  [{lo}, {hi}] — the certificate contradicts the value it travels with"
             ),
+            CertifyError::InvalidStatistical {
+                field,
+                value,
+                requirement,
+            } => write!(
+                f,
+                "Certified<T> refused: statistical field `{field}` = {value} is invalid; it \
+                 {requirement} — keep the value as plain Evidence until uncertainty is valid"
+            ),
+            CertifyError::InvalidModelDiscrepancy { discrepancy_rel } => write!(
+                f,
+                "Certified<T> refused: model discrepancy {discrepancy_rel} is NaN or negative; \
+                 relative discrepancy must be non-negative (infinity is an honest unbounded \
+                 claim)"
+            ),
         }
     }
 }
@@ -767,8 +920,9 @@ impl<T> Evidence<T> {
     /// The `Certified<T>` constructor discipline — the ONLY door into
     /// [`Certified<T>`], and the FULL validation boundary (bead
     /// gp3.2.1): rigorous numerics (Exact/Enclosure), finite ordered
-    /// bounds, the QoI contained in its own enclosure, and EXPLICIT,
-    /// in-domain model evidence. Pure-math values certify with
+    /// bounds, the QoI contained in its own enclosure, valid statistical
+    /// parameters, and EXPLICIT in-domain non-negative model evidence.
+    /// Pure-math values certify with
     /// `ModelEvidence::none()` — that IS the explicit "no model
     /// involved" statement.
     ///
@@ -813,6 +967,18 @@ impl<T> Evidence<T> {
         if !self.model.in_domain {
             return Err(CertifyError::OutOfDomain);
         }
+        if let Some((field, value, requirement)) = self.statistical.validation_issue() {
+            return Err(CertifyError::InvalidStatistical {
+                field,
+                value,
+                requirement,
+            });
+        }
+        if !ModelEvidence::valid_discrepancy(self.model.discrepancy_rel) {
+            return Err(CertifyError::InvalidModelDiscrepancy {
+                discrepancy_rel: self.model.discrepancy_rel,
+            });
+        }
         Ok(Certified(self))
     }
 
@@ -851,7 +1017,9 @@ impl<T> Evidence<T> {
         UncertaintyBreakdown {
             numerical_rel: self.numerical.rel_half_width(self.qoi),
             statistical_rel: self.statistical.rel_width(self.qoi),
-            model_rel: if self.model.in_domain {
+            model_rel: if self.model.in_domain
+                && ModelEvidence::valid_discrepancy(self.model.discrepancy_rel)
+            {
                 self.model.discrepancy_rel
             } else {
                 f64::INFINITY
@@ -864,25 +1032,41 @@ impl<T> Evidence<T> {
     #[must_use]
     pub fn assess(&self, threshold_rel: f64) -> DecisionStatus {
         let b = self.breakdown();
-        if b.total_rel() <= threshold_rel {
+        let total_rel = b.total_rel();
+        let valid_threshold = threshold_rel.is_finite() && threshold_rel >= 0.0;
+        if valid_threshold && total_rel.is_finite() && total_rel <= threshold_rel {
             return DecisionStatus::DecisionGrade;
         }
         let dominant = b.dominant();
-        let detail = format!(
-            "total relative band {:.3} exceeds the decision threshold {:.3}: numerical {:.3}, \
-             statistical {:.3}, model-form {:.3} — {} uncertainty dominates{}",
-            b.total_rel(),
-            threshold_rel,
-            b.numerical_rel,
-            b.statistical_rel,
-            b.model_rel,
-            dominant.name(),
-            if dominant == UncertaintySource::ModelForm {
-                "; cheap refinement cannot fix this, escalate model fidelity or bracket"
-            } else {
-                ""
-            }
-        );
+        let suffix = if dominant == UncertaintySource::ModelForm {
+            "; cheap refinement cannot fix this, escalate model fidelity or bracket"
+        } else {
+            ""
+        };
+        let detail = if valid_threshold {
+            format!(
+                "total relative band {:.3} exceeds the decision threshold {:.3}: numerical \
+                 {:.3}, statistical {:.3}, model-form {:.3} — {} uncertainty dominates{}",
+                total_rel,
+                threshold_rel,
+                b.numerical_rel,
+                b.statistical_rel,
+                b.model_rel,
+                dominant.name(),
+                suffix,
+            )
+        } else {
+            format!(
+                "decision threshold {threshold_rel} is invalid (must be finite and \
+                 non-negative): numerical {:.3}, statistical {:.3}, model-form {:.3} — {} \
+                 uncertainty dominates{}",
+                b.numerical_rel,
+                b.statistical_rel,
+                b.model_rel,
+                dominant.name(),
+                suffix,
+            )
+        };
         DecisionStatus::NotDecisionGrade { dominant, detail }
     }
 

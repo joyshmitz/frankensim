@@ -53,7 +53,7 @@ impl fmt::Display for FitError {
         write!(
             f,
             "discrepancy fit refused: {}; supply at least one (lo-fi, hi-fi) pair with finite \
-             values",
+             QoIs and finite parameter coordinates",
             self.detail
         )
     }
@@ -128,6 +128,11 @@ impl DiscrepancyModel {
                 });
             }
             for (k, &v) in &p.params {
+                if !v.is_finite() {
+                    return Err(FitError {
+                        detail: "a training parameter is non-finite",
+                    });
+                }
                 bounds
                     .entry(k.clone())
                     .and_modify(|(lo, hi)| {
@@ -179,7 +184,7 @@ impl DiscrepancyModel {
                         trained: (lo, hi),
                     });
                 }
-                Some(&v) if v < lo || v > hi => {
+                Some(&v) if !v.is_finite() || v < lo || v > hi => {
                     return Err(OutOfDomain {
                         param: param.clone(),
                         value: Some(v),
@@ -311,6 +316,15 @@ mod tests {
         }])
         .expect_err("nan");
         assert!(err.to_string().contains("non-finite"), "{err}");
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let err = DiscrepancyModel::fit(&[FidelityPair {
+                params: pt(&[("Re", value)]),
+                lo_fi: 1.0,
+                hi_fi: 1.0,
+            }])
+            .expect_err("non-finite parameter");
+            assert!(err.to_string().contains("parameter"), "{err}");
+        }
     }
 
     #[test]
@@ -333,6 +347,13 @@ mod tests {
         assert!(err.to_string().contains("extrapolation"), "{err}");
         let err = model.query(&pt(&[("Ma", 0.1)])).expect_err("missing param");
         assert!(err.to_string().contains("not supplied"), "{err}");
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let err = model
+                .query(&pt(&[("Re", value)]))
+                .expect_err("non-finite query");
+            assert_eq!(err.param, "Re");
+            assert_eq!(err.value.map(f64::to_bits), Some(value.to_bits()));
+        }
     }
 
     #[test]

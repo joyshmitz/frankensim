@@ -438,6 +438,161 @@ fn evd_012_certified_is_unforgeable_and_validated() {
     );
 }
 
+fn indeterminate_arithmetic_fails_closed(p: ProvenanceHash) -> bool {
+    // Public Evidence composition must preserve an honest whole-line
+    // enclosure when IEEE arithmetic is indeterminate. In particular,
+    // min/max folds must not silently discard the NaN corners of 0 * ±∞.
+    let zero = Evidence::exact(0.0, p);
+    let whole = Evidence::enclosed(1.0, f64::NEG_INFINITY, f64::INFINITY, p);
+    let positive_infinity = Evidence::enclosed(f64::INFINITY, f64::INFINITY, f64::INFINITY, p);
+    let negative_infinity =
+        Evidence::enclosed(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY, p);
+    [
+        Evidence::combine(Op::Mul, &zero, &whole, ()),
+        Evidence::combine(Op::Add, &positive_infinity, &negative_infinity, ()),
+        Evidence::combine(Op::Sub, &positive_infinity, &positive_infinity, ()),
+    ]
+    .iter()
+    .all(|evidence| {
+        evidence.numerical.lo == f64::NEG_INFINITY
+            && evidence.numerical.hi == f64::INFINITY
+            && evidence.breakdown().numerical_rel.is_infinite()
+    })
+}
+
+fn malformed_statistics_fail_closed(p: ProvenanceHash) -> bool {
+    use fs_evidence::CertifyError;
+
+    let malformed_statistics = [
+        StatisticalCertificate::EValue {
+            e: -1.0,
+            alpha: 0.05,
+        },
+        StatisticalCertificate::EValue {
+            e: 1.0,
+            alpha: f64::NAN,
+        },
+        StatisticalCertificate::HalfWidth {
+            half_width: -0.1,
+            confidence: 0.95,
+        },
+        StatisticalCertificate::HalfWidth {
+            half_width: 0.1,
+            confidence: 1.0,
+        },
+    ];
+    let direct_inputs_fail_closed = malformed_statistics.into_iter().all(|statistical| {
+        let evidence = Evidence::exact(1.0, p).with_statistical(statistical);
+        matches!(
+            evidence.clone().certified(),
+            Err(CertifyError::InvalidStatistical { .. })
+        ) && evidence.breakdown().statistical_rel.is_infinite()
+            && matches!(
+                evidence.assess(0.05),
+                DecisionStatus::NotDecisionGrade { .. }
+            )
+    });
+    let invalid_statistical_operand =
+        Evidence::exact(1.0, p).with_statistical(StatisticalCertificate::EValue {
+            e: f64::NAN,
+            alpha: 0.05,
+        });
+    let valid_statistical_operand =
+        Evidence::exact(1.0, p).with_statistical(StatisticalCertificate::HalfWidth {
+            half_width: 0.1,
+            confidence: 0.95,
+        });
+    let composed_statistical = Evidence::combine(
+        Op::Add,
+        &invalid_statistical_operand,
+        &valid_statistical_operand,
+        (),
+    );
+    let statistical_composition_fails_closed = matches!(
+        composed_statistical.clone().certified(),
+        Err(CertifyError::InvalidStatistical { .. })
+    ) && composed_statistical
+        .breakdown()
+        .statistical_rel
+        .is_infinite();
+    direct_inputs_fail_closed && statistical_composition_fails_closed
+}
+
+fn malformed_model_discrepancies_fail_closed(p: ProvenanceHash) -> bool {
+    use fs_evidence::CertifyError;
+
+    let direct_inputs_fail_closed =
+        [f64::NAN, -0.1, f64::NEG_INFINITY]
+            .into_iter()
+            .all(|discrepancy_rel| {
+                let mut model = ModelEvidence::none();
+                model.discrepancy_rel = discrepancy_rel;
+                let evidence = Evidence::exact(1.0, p).with_model(model);
+                matches!(
+                    evidence.clone().certified(),
+                    Err(CertifyError::InvalidModelDiscrepancy { .. })
+                ) && evidence.breakdown().model_rel.is_infinite()
+                    && matches!(
+                        evidence.assess(0.05),
+                        DecisionStatus::NotDecisionGrade { .. }
+                    )
+            });
+
+    // Invalid negative uncertainty must not cancel a valid positive band
+    // during composition and emerge as apparently exact model evidence.
+    let mut invalid_model = ModelEvidence::none();
+    invalid_model.discrepancy_rel = -0.2;
+    let invalid_operand = Evidence::exact(1.0, p).with_model(invalid_model);
+    let mut valid_model = ModelEvidence::none();
+    valid_model.discrepancy_rel = 0.2;
+    let valid_operand = Evidence::exact(1.0, p).with_model(valid_model);
+    let composed = Evidence::combine(Op::Add, &invalid_operand, &valid_operand, ());
+    direct_inputs_fail_closed
+        && composed.model.discrepancy_rel == f64::INFINITY
+        && matches!(
+            composed.assess(0.05),
+            DecisionStatus::NotDecisionGrade { .. }
+        )
+}
+
+#[test]
+fn evd_013_malformed_uncertainty_and_indeterminate_arithmetic_fail_closed() {
+    let p = ProvenanceHash::of_bytes(b"fail-closed-evidence");
+
+    // Positive infinity is a valid, explicit unbounded model claim. It may
+    // retain the Certified integrity mark, but can never be decision-grade.
+    let mut unbounded_model = ModelEvidence::none();
+    unbounded_model.discrepancy_rel = f64::INFINITY;
+    let unbounded = Evidence::exact(1.0, p).with_model(unbounded_model);
+    let unbounded_is_honest = unbounded.clone().certified().is_ok()
+        && unbounded.breakdown().model_rel == f64::INFINITY
+        && matches!(
+            unbounded.assess(0.05),
+            DecisionStatus::NotDecisionGrade { .. }
+        );
+
+    let invalid_threshold_refuses = [f64::NAN, f64::INFINITY, -0.1]
+        .into_iter()
+        .all(|threshold| {
+            matches!(
+                Evidence::exact(1.0, p).assess(threshold),
+                DecisionStatus::NotDecisionGrade { .. }
+            )
+        });
+
+    verdict(
+        "evd-013",
+        indeterminate_arithmetic_fails_closed(p)
+            && malformed_statistics_fail_closed(p)
+            && malformed_model_discrepancies_fail_closed(p)
+            && unbounded_is_honest
+            && invalid_threshold_refuses,
+        "indeterminate interval arithmetic widens to the whole line; malformed statistical \
+         and model uncertainty cannot certify or become decision-grade; an explicit infinite \
+         model band remains honest but non-decision-grade",
+    );
+}
+
 #[test]
 fn evd_007_disjoint_validated_regimes_demote_not_launder() {
     use fs_evidence::{Color, IntervalOp, compose};
@@ -546,6 +701,8 @@ fn evd_009_non_finite_regimes_fail_closed_and_payloads_escape() {
         ValidityDomain::unconstrained(),
         ValidityDomain::unconstrained().with("Re", f64::NEG_INFINITY, 10.0),
         ValidityDomain::unconstrained().with("Re", f64::NAN, f64::NAN),
+        ValidityDomain::unconstrained().with("Re", f64::NAN, 10.0),
+        ValidityDomain::unconstrained().with("Re", 1.0, f64::NAN),
         inverted,
     ];
     let mut invalid_regimes_demote = true;
