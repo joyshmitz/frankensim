@@ -12,10 +12,10 @@
 //! and — when `--ledger` is given — records the run as ledger provenance
 //! and reports staleness for every registered kernel.
 
-use fs_roofline::kernels::production_registry_with_ledger;
+use fs_roofline::production::{ProductionProbe, ProductionRunConfig};
 use fs_roofline::{
     AxisBaselinePolicy, BaselineIdentity, BaselineStore, MachineAxes, SECTION_14_1_TARGETS,
-    STALENESS_MAX_AGE_NS, days_since_epoch_now, finalize_registry_tuning, run_registry, staleness,
+    STALENESS_MAX_AGE_NS, days_since_epoch_now, staleness,
 };
 use std::io::Read;
 
@@ -316,28 +316,31 @@ fn main() -> std::process::ExitCode {
         None => None,
     };
 
-    let axes = MachineAxes::probe();
-    println!("{}", axes.to_jsonl());
+    // Sealed production protocol (bead fz2.5): the CLI never supplies axes,
+    // kernels, or the post-probe — it observes the probe (baseline selection
+    // needs the fingerprint), then hands the whole lifecycle to the protocol.
+    let probe = ProductionProbe::observe();
+    println!("{}", probe.axes().to_jsonl());
 
-    let baseline_inputs = match load_baseline_inputs(&args, &axes) {
+    let baseline_inputs = match load_baseline_inputs(&args, probe.axes()) {
         Ok(inputs) => inputs,
         Err(error) => return fail(&error),
     };
-    let baseline_policy = baseline_inputs.policy(axes.fingerprint);
+    let baseline_policy = baseline_inputs.policy(probe.axes().fingerprint);
 
-    let mut registry = production_registry_with_ledger(args.n, &axes, tune_ledger);
-    let mut results = run_registry(&mut registry, args.warmup, args.reps, &axes);
-    let post_axes = MachineAxes::probe();
-    println!("{}", post_axes.to_jsonl());
-    println!("{}", baseline_policy.receipt_json(&axes, &post_axes));
-    let mut finalized =
-        match finalize_registry_tuning(&mut registry, &axes, &post_axes, baseline_policy, &results)
-        {
-            Ok(finalized) => finalized,
-            Err(error) => return fail(&error),
-        };
-    let citable = finalized.admitted();
-    for r in &results {
+    let config = ProductionRunConfig {
+        n: args.n,
+        warmup: args.warmup,
+        reps: args.reps,
+    };
+    let run = match probe.run(config, baseline_policy, tune_ledger) {
+        Ok(run) => run,
+        Err(error) => return fail(&error),
+    };
+    println!("{}", run.post_axes().to_jsonl());
+    println!("{}", run.receipt_json());
+    let citable = run.citable();
+    for r in run.results() {
         println!("{}", r.to_jsonl());
     }
     for row in SECTION_14_1_TARGETS {
@@ -349,42 +352,37 @@ fn main() -> std::process::ExitCode {
         );
     }
 
-    // The registry owns fsqlite's deliberately !Send tune connection. Drop it
-    // before reopening the same database for the atomic evidence transaction;
-    // run_registry is synchronous, so no kernel work survives this point.
-    drop(registry);
     if let Some(db) = args.ledger_path {
         let ledger = match fs_ledger::Ledger::open(&db) {
             Ok(l) => l,
             Err(e) => return fail(&e.to_string()),
         };
-        match fs_roofline::record_run(
-            &ledger,
-            &axes,
-            &post_axes,
-            baseline_policy,
-            &mut finalized,
-            &mut results,
-        ) {
+        let fingerprint = run.axes().fingerprint;
+        let kernel_ids: Vec<(String, String)> = run
+            .results()
+            .iter()
+            .map(|r| (r.kernel.clone(), r.version.clone()))
+            .collect();
+        match run.record(&ledger) {
             Ok(op) => {
                 println!(
-                    "{{\"ledgered\":true,\"citable\":{citable},\"op\":{op},\"db\":\"{}\"}}",
+                    "{{\"ledgered\":true,\"citable\":{citable},\"protocol\":\"production-v1\",\"op\":{op},\"db\":\"{}\"}}",
                     json_escape(&db)
                 );
             }
             Err(e) => return fail(&e.to_string()),
         }
-        for r in &results {
+        for (kernel, version) in &kernel_ids {
             match staleness(
                 &ledger,
-                &r.kernel,
-                &r.version,
-                axes.fingerprint,
+                kernel,
+                version,
+                fingerprint,
                 baseline_policy.baseline_hash(),
             ) {
                 Ok(s) => println!(
                     "{{\"kernel\":\"{}\",\"staleness\":\"{s:?}\",\"max_age_ns\":{STALENESS_MAX_AGE_NS}}}",
-                    json_escape(&r.kernel),
+                    json_escape(kernel),
                 ),
                 Err(e) => return fail(&e.to_string()),
             }

@@ -71,6 +71,22 @@ crates plus `std`.
   identity. `Fresh` requires the newest current-build op to be no more than 30
   days old. `staleness_at` takes explicit wall nanoseconds for deterministic
   replay; `staleness` supplies the current clock.
+- Sealed production protocol (bead fz2.5): `production::ProductionProbe` /
+  `ProductionRun` is the ONLY path to citable evidence. `observe()` performs
+  the pre-probe and mints a per-run nonce (callers may read the axes for
+  baseline selection but never supply them); `run()` owns production
+  registry selection, timed warmup/repetitions, the post-probe (observed
+  strictly after the timed loop), aggregate admission, and tune
+  finalization; `record()` consumes the run and stamps the operation `ir`
+  with `"protocol":"production-v1"`, the nonce, and content hashes of both
+  observed axis receipts. The public `record_run` path stays available for
+  harness tests but is stamped `"protocol":"custom-registry"` and is
+  explicitly NON-CITABLE — a custom kernel wearing a production name,
+  replaying a cloned execution binding, or passing the pre-probe twice can
+  never wear the production stamp (`tests/production_seal.rs`, in-crate
+  drifted-post/finalizer-failure/probe-ordering battery). Unforgeability is
+  type opacity per the workspace capability pattern, not cryptography: the
+  nonce is a process-unique challenge, and the no-crypto no-claim applies.
 - Ordered result manifest (bead gp3.15, ledger row schema v3): every recorded
   run binds a versioned `result_manifest` (ordinal × kernel × version ×
   payload content hash, canonical JSON) into the operation `ir` and folds its

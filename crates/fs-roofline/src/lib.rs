@@ -14,6 +14,7 @@ pub mod authority;
 pub mod axes;
 pub mod baseline;
 pub mod kernels;
+pub mod production;
 pub mod stats;
 
 pub use authority::{
@@ -1716,9 +1717,17 @@ fn parse_roofline_row_params(text: &str) -> Option<RooflineRowParams> {
 /// A successful commit consumes each result's one-shot fresh-row marker;
 /// rollback retains it so the same transaction can be retried.
 ///
+/// Evidence recorded through this public entry point is stamped
+/// `"protocol":"custom-registry"` in the operation `ir` (bead fz2.5): the
+/// caller supplied the registry and both axis probes, so nothing proves the
+/// kernels are the production set or that the post-probe was observed after
+/// the timed repetitions. Custom-registry evidence is explicitly
+/// NON-CITABLE for performance claims; the sealed
+/// [`production::ProductionRun`] protocol is the only path that records
+/// `"protocol":"production-v1"`.
+///
 /// # Errors
 /// Ledger errors propagate and roll back the whole write set.
-#[allow(clippy::too_many_lines)] // one auditable all-or-nothing evidence transaction
 pub fn record_run(
     ledger: &Ledger,
     axes: &MachineAxes,
@@ -1726,6 +1735,27 @@ pub fn record_run(
     baseline: AxisBaselinePolicy<'_>,
     finalized: &mut FinalizedRegistryRun,
     results: &mut [Attainment],
+) -> Result<i64, LedgerError> {
+    record_run_with_protocol(
+        ledger,
+        axes,
+        post_axes,
+        baseline,
+        finalized,
+        results,
+        "\"protocol\":\"custom-registry\"",
+    )
+}
+
+#[allow(clippy::too_many_lines)] // one auditable all-or-nothing evidence transaction
+pub(crate) fn record_run_with_protocol(
+    ledger: &Ledger,
+    axes: &MachineAxes,
+    post_axes: &MachineAxes,
+    baseline: AxisBaselinePolicy<'_>,
+    finalized: &mut FinalizedRegistryRun,
+    results: &mut [Attainment],
+    protocol_ir_fields: &str,
 ) -> Result<i64, LedgerError> {
     let admission_error = run_admission_error(axes, post_axes, baseline, results);
     let run_valid = admission_error.is_none();
@@ -1753,8 +1783,11 @@ pub fn record_run(
         budget: "{\"wall_s\":600}",
         capability: "{\"ops\":[\"perf.roofline\"]}",
     };
+    // The protocol stamp sits between `admitted` and the receipt/manifest
+    // tail; `baseline_admission` must stay the final field (staleness
+    // extracts the baseline receipt bytes by stripping the closing brace).
     let ir = format!(
-        "{{\"op\":\"perf.roofline\",\"kernels\":{},\"fingerprint\":\"{:016x}\",\"post_fingerprint\":\"{:016x}\",\"admitted\":{run_valid},\"finalized_run_receipt\":\"{}\",\"result_manifest\":{},\"baseline_admission\":{baseline_receipt}}}",
+        "{{\"op\":\"perf.roofline\",\"kernels\":{},\"fingerprint\":\"{:016x}\",\"post_fingerprint\":\"{:016x}\",\"admitted\":{run_valid},{protocol_ir_fields},\"finalized_run_receipt\":\"{}\",\"result_manifest\":{},\"baseline_admission\":{baseline_receipt}}}",
         results.len(),
         axes.fingerprint,
         post_axes.fingerprint,
