@@ -14,6 +14,7 @@ layer = "L5"
 fs-ad = { path = "../fs-ad", optional = true }
 fs-exec = { path = "../fs-exec", optional = true }
 fs-geom = { path = "../fs-geom", optional = true }
+fs-img = { path = "../fs-img", optional = true }
 fs-math = { path = "../fs-math" }
 fs-rand = { path = "../fs-rand", optional = true }
 fs-rep-nurbs = { path = "../fs-rep-nurbs", optional = true }
@@ -35,10 +36,17 @@ volumes = ["dep:fs-rand"]
 # differentiable rendering, smoke tier (deterministic quadrature;
 # MC/reparameterized estimators are recorded successors).
 differentiable = ["dep:fs-ad"]
+# [F]-gated per the Ambition-Tag rule (bead 872c): the spectral path
+# tracer v1 — hero-wavelength MIS over the chart backends, EXR out.
+tracer = ["chart-backends", "dep:fs-rand", "dep:fs-img"]
 
 [[test]]
 name = "volumes_battery"
 required-features = ["volumes"]
+
+[[test]]
+name = "tracer_battery"
+required-features = ["tracer"]
 
 [[test]]
 name = "diff_battery"

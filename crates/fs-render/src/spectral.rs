@@ -385,8 +385,8 @@ mod tests {
         for rgb in [[0.0, 0.0, 0.0], [1.0, 0.2, 0.9], [1.0, 1.0, 1.0]] {
             let s = lift_rgb(rgb);
             let dl = (LAMBDA_MAX - LAMBDA_MIN) / 200.0;
-            for k in 0..200 {
-                let v = s.eval(LAMBDA_MIN + (k as f64 + 0.5) * dl);
+            for k in 0u16..200 {
+                let v = s.eval(LAMBDA_MIN + (f64::from(k) + 0.5) * dl);
                 assert!(v > 0.0 && v < 1.0, "S out of (0,1): {v}");
             }
         }
