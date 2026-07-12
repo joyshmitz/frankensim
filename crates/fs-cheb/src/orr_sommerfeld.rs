@@ -24,6 +24,16 @@ use fs_math::c64::C64;
 
 /// Real n×n matrix product (row-major helpers for the D powers).
 fn matmul(a: &[f64], b: &[f64], n: usize) -> Vec<f64> {
+    crate::fma::os_matmul_dispatch(a, b, n)
+}
+
+/// The matmul body, extracted so the x86 FMA-codegen capsule can
+/// recompile it under `target_feature` (bead nabk). MUST stay
+/// `inline(always)` — see `Cheb1::eval_body`. The k-outer skip-zero
+/// saxpy shape is untouched: pure codegen, never reordering.
+#[allow(clippy::inline_always)] // required to inherit the target-feature FMA capsule
+#[inline(always)]
+pub(crate) fn matmul_body(a: &[f64], b: &[f64], n: usize) -> Vec<f64> {
     let mut out = vec![0.0f64; n * n];
     for i in 0..n {
         for k in 0..n {

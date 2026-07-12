@@ -18,6 +18,7 @@
 
 pub mod cheb2;
 pub mod colleague;
+pub(crate) mod fma;
 pub mod fourier;
 pub mod orr_sommerfeld;
 
@@ -135,6 +136,16 @@ impl Cheb1 {
     #[must_use]
     pub fn eval(&self, x: f64) -> f64 {
         let t = 2.0 * (x - self.a) / (self.b - self.a) - 1.0;
+        fma::cheb_eval_dispatch(self, t)
+    }
+
+    /// The Clenshaw loop body, extracted so the x86 FMA-codegen capsule
+    /// can recompile it under `target_feature` (bead nabk). MUST stay
+    /// `inline(always)`: a non-inlined call keeps baseline codegen and
+    /// the per-element libm `fma()` call.
+    #[allow(clippy::inline_always)] // required to inherit the target-feature FMA capsule
+    #[inline(always)]
+    pub(crate) fn eval_body(&self, t: f64) -> f64 {
         let (mut b1, mut b2) = (0.0f64, 0.0f64);
         for &c in self.coeffs.iter().skip(1).rev() {
             let b0 = (2.0 * t).mul_add(b1, c - b2);
@@ -367,6 +378,37 @@ pub fn diff_matrix(n: usize) -> Vec<f64> {
     d
 }
 
+/// The D·D product body (j-inner fused dot chains) and the Rayleigh
+/// matvec body, extracted so the x86 FMA-codegen capsule can recompile
+/// them under `target_feature` (bead nabk). MUST stay `inline(always)`
+/// — see `Cheb1::eval_body`. Chain shapes untouched: pure codegen.
+#[allow(clippy::inline_always)] // required to inherit the target-feature FMA capsule
+#[inline(always)]
+pub(crate) fn dsq_into_body(d: &[f64], m: usize, d2: &mut [f64]) {
+    for i in 0..m {
+        for j in 0..m {
+            let mut acc = 0.0f64;
+            for l in 0..m {
+                acc = d[i * m + l].mul_add(d[l * m + j], acc);
+            }
+            d2[i * m + j] = acc;
+        }
+    }
+}
+
+/// The Rayleigh matvec body (see `dsq_into_body`'s extraction note).
+#[allow(clippy::inline_always)] // required to inherit the target-feature FMA capsule
+#[inline(always)]
+pub(crate) fn matvec_into_body(a: &[f64], v: &[f64], ni: usize, av: &mut [f64]) {
+    for i in 0..ni {
+        let mut acc = 0.0f64;
+        for j in 0..ni {
+            acc = a[i * ni + j].mul_add(v[j], acc);
+        }
+        av[i] = acc;
+    }
+}
+
 /// Smallest `k` eigenvalues of the Dirichlet problem −u″ = λu on [−1, 1]
 /// by collocation: interior block of −D², solved by SHIFT-INVERTED power
 /// iteration. Shifts come from a coarse FINITE-DIFFERENCE surrogate (a
@@ -380,15 +422,7 @@ pub fn dirichlet_laplace_eigs(n: usize, k: usize) -> Vec<f64> {
     let d = diff_matrix(n);
     // D² then take the interior (n−1)×(n−1) block, negated.
     let mut d2 = vec![0.0f64; m * m];
-    for i in 0..m {
-        for j in 0..m {
-            let mut acc = 0.0f64;
-            for l in 0..m {
-                acc = d[i * m + l].mul_add(d[l * m + j], acc);
-            }
-            d2[i * m + j] = acc;
-        }
-    }
+    fma::dsq_into_dispatch(&d, m, &mut d2);
     let ni = n - 1;
     let mut a = vec![0.0f64; ni * ni];
     for i in 0..ni {
@@ -436,13 +470,7 @@ pub fn dirichlet_laplace_eigs(n: usize, k: usize) -> Vec<f64> {
         // Rayleigh quotient λ = vᵀAv / vᵀv on the UNSHIFTED operator.
         let nrm2: f64 = v.iter().map(|x| x * x).sum();
         let mut av = vec![0.0f64; ni];
-        for i in 0..ni {
-            let mut acc = 0.0f64;
-            for j in 0..ni {
-                acc = a[i * ni + j].mul_add(v[j], acc);
-            }
-            av[i] = acc;
-        }
+        fma::matvec_into_dispatch(&a, &v, ni, &mut av);
         eigs.push(v.iter().zip(&av).map(|(x, y)| x * y).sum::<f64>() / nrm2);
     }
     eigs

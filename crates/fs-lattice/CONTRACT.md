@@ -115,6 +115,14 @@ lat-008 empty-hole-array finite solid SDF behavior.
 
 ## No-claim boundaries
 
+- x86 FMA codegen (bead nabk): this crate's four `mul_add` sites are
+  all cold or setup-only — the `affine` unit-strain fill (O(nodes),
+  three calls per homogenization, beside an LU solve), `voigt_bound`
+  (one scalar formula), and the graded interpolation return (one fused
+  op per query) — so they are OUT of the baseline-x86 per-element-
+  libm-call hazard class (no hot reduction loop) and deliberately get
+  no FMA-codegen capsule. The hot linear algebra underneath
+  homogenization lives in fs-la/fs-sparse, which are capsuled.
 - 3D TPMS families (gyroid/Schwarz) and their literature stiffness
   curves — need 3D elasticity; recorded successor with the formal
   Hashin–Shtrikman 3D bound audit.

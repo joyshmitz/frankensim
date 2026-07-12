@@ -81,7 +81,20 @@ Construction is bounded (max_degree cap); no poll points needed at v1
 scales.
 
 ## Unsafe boundary
-None.
+One registered capsule: `src/fma/mod.rs` (+ SAFETY.md beside it, entry
+in `unsafe-capsules.json`) — the bead-nabk x86 FMA-codegen pattern.
+The `unsafe` is ONLY the `target_feature(enable = "avx2,fma")` calling
+contract around `#[inline(always)]` safe bodies (Clenshaw `eval`, the
+Dirichlet D·D product and Rayleigh matvec, the Orr–Sommerfeld matmul);
+runtime-detected, and the portable body IS the twin. Bit-identical by
+construction (native fused instruction vs correctly-rounded libm
+`fma()`; chain shapes untouched). NO performance claims are made for
+these paths — the crate has no perf lane; the capsule exists to close
+the baseline-x86 per-element-libm-call hazard class, not to certify a
+number. The census sites deliberately NOT capsuled: `FourierSeries::
+eval` (trig-call-bound), `Cheb1::differentiate` (once-per-call, alloc-
+dominated), the `os_matrices` D4-clamp assembly (one O(n²) pass beside
+three O(n³) matmuls).
 
 ## Feature flags
 None.
