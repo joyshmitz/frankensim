@@ -13,6 +13,9 @@ pub fn nelder_mead<F: FnMut(&[f64]) -> f64>(
     f_target: f64,
 ) -> (Vec<f64>, f64, usize) {
     let n = x0.len();
+    // Structured panic for the empty-dimension modeling error (the CONTRACT's
+    // error model, matching `cmaes`); otherwise `idx[n - 1]` underflows.
+    assert!(n >= 1, "nelder_mead needs a positive dimension");
     let (alpha, gamma, rho, sigma) = (1.0, 2.0, 0.5, 0.5);
     // Initial simplex: x0 plus axis steps.
     let mut xs: Vec<Vec<f64>> = Vec::with_capacity(n + 1);
