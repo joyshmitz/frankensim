@@ -88,6 +88,15 @@ impl<S: Scalar> KnotVector<S> {
                 });
             }
         }
+        // The parametric domain [knots[degree], knots[len-1-degree]] must be
+        // non-empty. An all-equal (zero-width) knot vector passes every check
+        // above but has lo == hi, and `span(hi)`'s degenerate-span walk-back
+        // would decrement past 0 (usize underflow → panic).
+        if knots[degree] == knots[knots.len() - 1 - degree] {
+            return Err(NurbsError::Structure {
+                what: "knot vector has an empty parametric domain (lo == hi)".to_string(),
+            });
+        }
         Ok(KnotVector { knots, degree })
     }
 
@@ -159,5 +168,24 @@ impl<S: Scalar> KnotVector<S> {
             n[j] = saved;
         }
         Ok((span, n))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_domain_knot_vector_is_rejected_not_paniced() {
+        // Regression: an all-equal knot vector passes the count / monotone /
+        // clamped checks but has an empty domain (lo == hi). `span(hi)` then
+        // underflowed its degenerate-span walk-back (usize `0 - 1`). Must refuse
+        // at construction instead.
+        assert!(KnotVector::new(vec![5.0f64; 6], 2).is_err());
+        assert!(KnotVector::new(vec![0.0f64, 0.0, 0.0, 0.0], 1).is_err());
+        // A proper clamped vector with a real domain builds and resolves the
+        // upper-endpoint span without panicking.
+        let kv = KnotVector::new(vec![0.0f64, 0.0, 0.0, 1.0, 1.0, 1.0], 2).expect("valid");
+        assert_eq!(kv.span(1.0).expect("hi is in domain"), 2);
     }
 }
