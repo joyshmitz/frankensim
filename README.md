@@ -9,8 +9,8 @@
 [![Status](https://img.shields.io/badge/status-active%20Rust%20workspace-2ea44f)](#implemented-workspace)
 [![Rust](https://img.shields.io/badge/rust-nightly%202024-b7410e)](rust-toolchain.toml)
 [![Crates](https://img.shields.io/badge/workspace-126%20fs--%2A%20crates-0969da)](#implemented-workspace)
-[![Contracts](https://img.shields.io/badge/contracts-126%20of%20126%20crates-8250df)](#contracts-and-verification)
-[![Tests](https://img.shields.io/badge/tests-259%20crate%20test%20files-1f883d)](#contracts-and-verification)
+[![Contracts](https://img.shields.io/badge/contracts-127%20of%20127%20crates-8250df)](#contracts-and-verification)
+[![Tests](https://img.shields.io/badge/tests-260%20crate%20test%20files-1f883d)](#contracts-and-verification)
 [![License](https://img.shields.io/badge/license-MIT%20%2B%20AI%20rider-yellow)](LICENSE)
 
 </div>
@@ -32,13 +32,13 @@ There is not yet a packaged end-user simulation application or crates.io release
 | Area | Current implementation |
 |------|------------------------|
 | Workspace | Rust 2024 nightly Cargo workspace with 126 native `fs-*` workspace crates plus `xtask`; `fs-wasm` is a standalone nested workspace |
-| Contracts | 126 of 126 `fs-*` crate directories have `CONTRACT.md` files |
+| Contracts | 127 of 127 `fs-*` crate directories have `CONTRACT.md` files |
 | Runtime substrate | Capability probing, SIMD facades, aligned arenas, two-lane execution, cancellation contexts, tile pools, tuner and race scaffolding |
 | Numerics | Deterministic elementary math, dense/sparse linear algebra, FFT/DCT, interval/affine/Taylor arithmetic, Chebyshev collocation, random/QMC streams, AD/adjoint infrastructure, e-process inference |
 | Geometry | Region/chart abstraction, SDF, mesh and F-rep charts, representation conversion hooks, transformations, tet meshing, remeshing, quality audits |
 | Evidence and ledger | Composable `Evidence<T>`/`Certified<T>`, model cards, bracketing, FrankenSQLite-backed design ledger, artifact hashes, event streams, tune cache, roofline recording |
 | Policy tooling | `xtask` checks for layer direction, Franken-only runtime dependencies, contracts, unsafe capsules, and constellation lock verification |
-| Tests | 259 crate-level conformance and integration test files in the intended snapshot, exercising the implemented contracts |
+| Tests | 260 crate-level conformance and integration test files in the intended snapshot, exercising the implemented contracts |
 
 ### What You Can Use Today
 
@@ -992,7 +992,7 @@ Different readers should start in different places.
 
 ## Contracts and Verification
 
-The tree currently has 126 `CONTRACT.md` files for 126 `fs-*` crate directories.
+The tree currently has 127 `CONTRACT.md` files for 127 `fs-*` crate directories.
 The contract count is meant to be checkable, not aspirational.
 
 Existing contracts use these required sections:
@@ -1034,7 +1034,7 @@ The current DSR setup is preferred over GitHub Actions for this repository. If a
 |-- Cargo.toml                         # Workspace manifest
 |-- Cargo.lock                         # Committed lockfile
 |-- rust-toolchain.toml                # Nightly toolchain and components
-|-- crates/                            # 126 fs-* crates; selected entries shown below
+|-- crates/                            # 127 fs-* crates; selected entries shown below
 |   |-- fs-qty/                        # Dimensional quantities
 |   |-- fs-obs/                        # Structured observability
 |   |-- fs-evidence/                   # Evidence and certification wrappers
