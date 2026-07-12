@@ -286,6 +286,37 @@ fn geo_004_conversion_receipts_are_rigorous_and_refusals_teach() {
     );
 }
 
+#[test]
+fn geo_004c_zero_error_budget_refuses_instead_of_overflowing() {
+    // Regression: abs_sd_error = 0.0 asks for infinite resolution, so
+    // h_needed = 0 and edge / h_needed = +∞. The old
+    // `(+∞).ceil() as u32 + 1` OVERFLOWED — a debug/test panic (release: wraps
+    // to need_resolution = 0, a nonsensical diagnostic) — defeating the
+    // BudgetInfeasible refusal and breaking the "no panic crosses the
+    // boundary" contract. It must now refuse cleanly with a sane resolution.
+    let sphere = SphereChart {
+        center: Point3::new(0.1, 0.2, -0.1),
+        radius: 1.2,
+    };
+    let gate = CancelGate::new();
+    let refusal = with_cx(&gate, |cx| sphere.convert(ErrBudget { abs_sd_error: 0.0 }, cx));
+    let ok = matches!(
+        &refusal,
+        Err(ConvertDiag::BudgetInfeasible { need_resolution, cap, .. })
+            if need_resolution > cap // > 0, not the release wrap-to-0
+    );
+    assert!(
+        ok,
+        "a zero error budget must refuse as infeasible with a sane resolution, not panic \
+         or wrap to zero: {refusal:?}"
+    );
+    verdict(
+        "geo-004c",
+        ok,
+        "zero error budget refuses as infeasible without integer overflow",
+    );
+}
+
 /// An HONEST chart whose LOCAL Lipschitz varies: 1 near the origin, 50 in a
 /// fast-oscillating shell beyond `x = 1`. It never lies about any local bound.
 struct VaryingLipschitz;

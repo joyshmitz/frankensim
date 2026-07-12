@@ -219,7 +219,15 @@ impl<C: Chart> Convert<SampledSdf> for C {
         // Trilinear error of an L-Lipschitz field sampled at step h is
         // ≤ L·h (conservative; the √3/2 constant is left on the table).
         let h_needed = budget.abs_sd_error / lipschitz.max(f64::MIN_POSITIVE);
-        let need_resolution = (edge / h_needed).ceil() as u32 + 1;
+        // Guard the float→int cast: a zero (or tiny) `abs_sd_error` makes
+        // `h_needed` zero, so `edge / h_needed` is +∞ (or NaN for a degenerate
+        // box). The saturating `as u32` then yields u32::MAX and the `+ 1`
+        // OVERFLOWS — a debug/test panic (release: wraps to 0, a nonsensical
+        // diagnostic), defeating the BudgetInfeasible refusal just below.
+        // Do the `+ 1` (cells → nodes) in f64 and clamp BEFORE the cast, so an
+        // infinite/NaN/huge ratio saturates to u32::MAX (which the guard below
+        // rejects) instead of overflowing the integer add.
+        let need_resolution = ((edge / h_needed).ceil() + 1.0).min(f64::from(u32::MAX)) as u32;
         if need_resolution > SAMPLED_SDF_MAX_RESOLUTION {
             let h_cap = edge / f64::from(SAMPLED_SDF_MAX_RESOLUTION - 1);
             return Err(ConvertDiag::BudgetInfeasible {
@@ -268,7 +276,7 @@ impl<C: Chart> Convert<SampledSdf> for C {
             return Err(ConvertDiag::BudgetInfeasible {
                 requested: budget.abs_sd_error,
                 achievable: achieved,
-                need_resolution: (edge / refined_h).ceil() as u32 + 1,
+                need_resolution: ((edge / refined_h).ceil() + 1.0).min(f64::from(u32::MAX)) as u32,
                 cap: SAMPLED_SDF_MAX_RESOLUTION,
             });
         }
