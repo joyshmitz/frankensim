@@ -96,8 +96,10 @@ pub fn galpha_step(
     // Predictors (Newmark form).
     let cm = (1.0 - am) / (beta * h * h);
     let cc = (1.0 - af) * gamma / (beta * h);
-    // RHS = (1−αf)·f_next + αf·(K·q-term folds) … assembled explicitly:
-    // r = (1−αf) f + M·[cm·q + (1−am)/(βh)·v + ((1−am)/(2β) − 1)·a]
+    // RHS: the equilibrium load `F_{n+1−αf}` (= `f_next`, already the load at the
+    // intermediate time t+(1−αf)h per the API) enters with COEFFICIENT 1, plus
+    // the M/C history and the −αf·K·q stiffness history:
+    // r = f_next + M·[cm·q + (1−am)/(βh)·v + ((1−am)/(2β) − 1)·a]
     //   + C·[cc·q + ((1−αf)γ/β − 1)·v + (1−αf)h·(γ/(2β) − 1)·a]
     //   − αf·K·q.
     let mv_c1 = (1.0 - am) / (beta * h);
@@ -118,7 +120,7 @@ pub fn galpha_step(
     matvec(&ga.k_mat, n, q, &mut tk);
     let mut rhs = vec![0.0f64; n];
     for i in 0..n {
-        rhs[i] = (1.0 - af).mul_add(f_next[i], tm[i] + tc[i] - af * tk[i]);
+        rhs[i] = f_next[i] + tm[i] + tc[i] - af * tk[i];
     }
     ga.eff.solve(&mut rhs); // rhs now holds q_{n+1}
     // Newmark corrector for a_{n+1}, v_{n+1}.
