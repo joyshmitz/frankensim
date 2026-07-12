@@ -2863,6 +2863,192 @@ impl core::fmt::Display for ColorReplayError {
 
 impl std::error::Error for ColorReplayError {}
 
+/// Stable identity of the ledger color-admission policy (bead 6pf9): binds
+/// the row schema and algebra versions the authority mints receipts under.
+#[must_use]
+pub fn color_admission_policy_fingerprint() -> ContentHash {
+    hash_bytes(
+        format!(
+            "fs-ledger/color-admission-policy/v1/row-schema={COLOR_WRITE_ROW_SCHEMA_VERSION}/algebra={COLOR_ALGEBRA_VERSION}"
+        )
+        .as_bytes(),
+    )
+}
+
+/// Why the admission authority refused to mint a receipt for a node.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ColorAdmissionRefusal {
+    /// No node with this id exists in the graph (unresolved evidence).
+    UnknownNode {
+        /// The requested node id.
+        node: u64,
+    },
+    /// The node's scientific claim depends on an authenticated waiver,
+    /// directly or transitively. Waived evidence never converts to admitted
+    /// scientific evidence.
+    WaiverTainted {
+        /// The refused node id.
+        node: u64,
+    },
+    /// Only positive ranks (Verified/Validated) receive admission receipts.
+    NotPositive {
+        /// The refused node id.
+        node: u64,
+        /// The node's declared rank.
+        rank: ColorRank,
+    },
+    /// The node failed the structural replay audit: its stored state does
+    /// not rederive from its inputs.
+    ReplayDivergence(ColorReplayError),
+    /// The node's Validated regime excludes the current execution state.
+    /// Out-of-regime evidence must be re-derived (and demoted) before any
+    /// admission decision.
+    OutOfRegime {
+        /// The refused node id.
+        node: u64,
+        /// The demotion the regime check derived.
+        demotion: Demotion,
+    },
+}
+
+impl core::fmt::Display for ColorAdmissionRefusal {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::UnknownNode { node } => write!(f, "admission refused: node {node} not found"),
+            Self::WaiverTainted { node } => write!(
+                f,
+                "admission refused: node {node} depends on an authenticated waiver"
+            ),
+            Self::NotPositive { node, rank } => write!(
+                f,
+                "admission refused: node {node} declares {rank:?}, not positive evidence"
+            ),
+            Self::ReplayDivergence(error) => write!(f, "admission refused: {error}"),
+            Self::OutOfRegime { node, .. } => write!(
+                f,
+                "admission refused: node {node} regime excludes the current state"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ColorAdmissionRefusal {}
+
+impl ColorGraph {
+    /// Mint an admission receipt for one node (bead 6pf9). Receipts convert
+    /// declared colors into [`fs_evidence::AdmittedColor`] through
+    /// [`LedgerColorAdmissionVerifier`]; minting refuses waiver-tainted,
+    /// non-positive, and replay-divergent nodes, so waived, unresolved, and
+    /// tampered evidence never acquires scientific admission. Regime
+    /// awareness lives in [`Self::admission_receipt_in_regime`].
+    ///
+    /// # Errors
+    /// [`ColorAdmissionRefusal`] naming the refusing gate.
+    pub fn admission_receipt(
+        &self,
+        id: u64,
+    ) -> Result<fs_evidence::AdmissionReceipt, ColorAdmissionRefusal> {
+        let node = self
+            .node(id)
+            .ok_or(ColorAdmissionRefusal::UnknownNode { node: id })?;
+        let color = node
+            .scientific_color()
+            .ok_or(ColorAdmissionRefusal::WaiverTainted { node: id })?;
+        let rank = color.rank();
+        if rank == ColorRank::Estimated {
+            return Err(ColorAdmissionRefusal::NotPositive { node: id, rank });
+        }
+        let position =
+            usize::try_from(id).map_err(|_| ColorAdmissionRefusal::UnknownNode { node: id })?;
+        self.verify_replay_node(position, node)
+            .map_err(ColorAdmissionRefusal::ReplayDivergence)?;
+        Ok(fs_evidence::AdmissionReceipt::from_parts(
+            node.hash(),
+            COLOR_WRITE_ROW_SCHEMA_VERSION,
+            COLOR_ALGEBRA_VERSION,
+            color_admission_policy_fingerprint(),
+        ))
+    }
+
+    /// [`Self::admission_receipt`] with a regime gate: a Validated node whose
+    /// regime excludes the CURRENT execution state is refused with the exact
+    /// demotion the regime check derived. Regime exit demotes structurally —
+    /// it never converts to admitted evidence at the stale rank.
+    ///
+    /// # Errors
+    /// [`ColorAdmissionRefusal`] naming the refusing gate.
+    pub fn admission_receipt_in_regime(
+        &self,
+        id: u64,
+        state: &BTreeMap<String, f64>,
+    ) -> Result<fs_evidence::AdmissionReceipt, ColorAdmissionRefusal> {
+        let node = self
+            .node(id)
+            .ok_or(ColorAdmissionRefusal::UnknownNode { node: id })?;
+        if let Some(color) = node.scientific_color()
+            && let Some(demotion) = regime_demotion(color, state)
+        {
+            return Err(ColorAdmissionRefusal::OutOfRegime { node: id, demotion });
+        }
+        self.admission_receipt(id)
+    }
+}
+
+/// The ledger-side admission oracle (bead 6pf9): authenticates a
+/// (candidate, receipt) pair by re-deriving it from the graph's replay-
+/// audited node state. Acceptance requires the receipt's node hash to name
+/// a live node whose provenance hash re-derives, whose scientific color is
+/// bit-exactly the candidate (canonical bytes, not display JSON), whose
+/// receipt versions match this build, and whose policy fingerprint is this
+/// authority's own.
+#[derive(Debug, Clone, Copy)]
+pub struct LedgerColorAdmissionVerifier<'g> {
+    graph: &'g ColorGraph,
+}
+
+impl<'g> LedgerColorAdmissionVerifier<'g> {
+    /// Wrap the graph that will re-derive admissions.
+    #[must_use]
+    pub fn new(graph: &'g ColorGraph) -> Self {
+        LedgerColorAdmissionVerifier { graph }
+    }
+}
+
+impl fs_evidence::AdmissionVerifier for LedgerColorAdmissionVerifier<'_> {
+    fn verify(
+        &self,
+        candidate: &Color,
+        receipt: &fs_evidence::AdmissionReceipt,
+    ) -> fs_evidence::AdmissionDecision {
+        let policy = color_admission_policy_fingerprint();
+        if receipt.row_schema_version() != COLOR_WRITE_ROW_SCHEMA_VERSION
+            || receipt.color_algebra_version() != COLOR_ALGEBRA_VERSION
+            || receipt.policy_fingerprint() != policy
+        {
+            return fs_evidence::AdmissionDecision::reject(policy);
+        }
+        let Some((position, node)) = self
+            .graph
+            .nodes()
+            .iter()
+            .enumerate()
+            .find(|(_, node)| node.hash() == receipt.node_hash())
+        else {
+            return fs_evidence::AdmissionDecision::reject(policy);
+        };
+        let Some(scientific) = node.scientific_color() else {
+            return fs_evidence::AdmissionDecision::reject(policy);
+        };
+        if scientific.canonical_bytes() != candidate.canonical_bytes() {
+            return fs_evidence::AdmissionDecision::reject(policy);
+        }
+        if self.graph.verify_replay_node(position, node).is_err() {
+            return fs_evidence::AdmissionDecision::reject(policy);
+        }
+        fs_evidence::AdmissionDecision::accept(policy)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3540,5 +3726,250 @@ mod tests {
             .verify_replay()
             .expect_err("self/forward dependency must refuse");
         assert!(error.why.contains("self/forward"));
+    }
+
+    // ── Admission battery (bead 6pf9, stage S1) ────────────────────────────
+
+    use fs_evidence::{
+        AdmissionRejection, AdmissionVerifier as _, AdmittedColor, NoAdmissionVerifier,
+        no_admission_policy,
+    };
+
+    /// One clean graph with a certified Verified source, an anchored
+    /// Validated source, and an Estimated source.
+    fn admission_fixture() -> (ColorGraph, u64, u64, u64) {
+        let mut graph = ColorGraph::new();
+        let certified_color = Color::Verified { lo: 1.0, hi: 2.0 };
+        let certified = graph
+            .source_with_origin(
+                "certified",
+                &certified_color,
+                SourceOrigin::Certificate {
+                    producer: "fixture-certifier".to_string(),
+                    certificate_hash: hash_bytes(b"admission certificate"),
+                    certificate: NumericalCertificate::enclosure(1.0, 2.0),
+                },
+                &AllowFixtureSource,
+            )
+            .expect("certified source");
+        let regime = ValidityDomain::unconstrained().with("re", 1e3, 1e5);
+        let anchored = graph
+            .source_with_origin(
+                "anchored",
+                &Color::Validated {
+                    regime: regime.clone(),
+                    dataset: "campaign-a".to_string(),
+                },
+                SourceOrigin::Anchoring {
+                    dataset_id: "campaign-a".to_string(),
+                    content_hash: hash_bytes(b"admission anchor"),
+                    regime,
+                },
+                &AllowFixtureSource,
+            )
+            .expect("anchored source");
+        let estimated = graph
+            .source(
+                "estimated",
+                Color::Estimated {
+                    estimator: "rom-v1".to_string(),
+                    dispersion: 0.25,
+                },
+            )
+            .expect("estimated source");
+        (graph, certified, anchored, estimated)
+    }
+
+    #[test]
+    fn admission_mints_for_clean_positive_nodes_and_the_oracle_accepts() {
+        let (graph, certified, anchored, _) = admission_fixture();
+        let verifier = LedgerColorAdmissionVerifier::new(&graph);
+        for id in [certified, anchored] {
+            let receipt = graph.admission_receipt(id).expect("mint receipt");
+            assert_eq!(
+                receipt.policy_fingerprint(),
+                color_admission_policy_fingerprint()
+            );
+            let declared = graph
+                .node(id)
+                .expect("node")
+                .scientific_color()
+                .expect("unwaived")
+                .clone();
+            let admitted = AdmittedColor::from_receipt(declared.clone(), receipt, &verifier)
+                .expect("oracle admits its own receipt");
+            assert_eq!(admitted.admitted_color(), &declared);
+            assert!(admitted.rank() >= ColorRank::Validated);
+        }
+    }
+
+    #[test]
+    fn deny_all_default_refuses_even_a_genuine_receipt() {
+        let (graph, certified, _, _) = admission_fixture();
+        let receipt = graph.admission_receipt(certified).expect("mint receipt");
+        let declared = graph
+            .node(certified)
+            .expect("node")
+            .scientific_color()
+            .expect("unwaived")
+            .clone();
+        let error = AdmittedColor::from_receipt(declared, receipt, &NoAdmissionVerifier)
+            .expect_err("deny-all refuses genuine evidence");
+        assert_eq!(
+            error,
+            AdmissionRejection::Refused {
+                policy: no_admission_policy()
+            }
+        );
+    }
+
+    #[test]
+    fn waived_estimated_and_unknown_nodes_never_mint_receipts() {
+        let (waived_graph, child) = historical_waiver_dependency_graph();
+        // Both the directly waived source and its transitively tainted child.
+        assert_eq!(
+            waived_graph.admission_receipt(0),
+            Err(ColorAdmissionRefusal::WaiverTainted { node: 0 })
+        );
+        assert_eq!(
+            waived_graph.admission_receipt(child),
+            Err(ColorAdmissionRefusal::WaiverTainted { node: child })
+        );
+
+        let (graph, _, _, estimated) = admission_fixture();
+        assert_eq!(
+            graph.admission_receipt(estimated),
+            Err(ColorAdmissionRefusal::NotPositive {
+                node: estimated,
+                rank: ColorRank::Estimated
+            })
+        );
+        assert_eq!(
+            graph.admission_receipt(999),
+            Err(ColorAdmissionRefusal::UnknownNode { node: 999 })
+        );
+    }
+
+    #[test]
+    fn forged_receipts_and_substituted_candidates_are_refused() {
+        let (graph, certified, anchored, _) = admission_fixture();
+        let verifier = LedgerColorAdmissionVerifier::new(&graph);
+        let policy = color_admission_policy_fingerprint();
+        let declared = graph
+            .node(certified)
+            .expect("node")
+            .scientific_color()
+            .expect("unwaived")
+            .clone();
+
+        // Receipt naming a node hash the graph never produced.
+        let forged = fs_evidence::AdmissionReceipt::from_parts(
+            hash_bytes(b"no such node"),
+            COLOR_WRITE_ROW_SCHEMA_VERSION,
+            COLOR_ALGEBRA_VERSION,
+            policy,
+        );
+        assert!(!verifier.verify(&declared, &forged).accepted());
+
+        // Genuine receipt, substituted candidate payload.
+        let receipt = graph.admission_receipt(certified).expect("mint receipt");
+        let substituted = Color::Verified { lo: 0.0, hi: 9.0 };
+        assert!(!verifier.verify(&substituted, &receipt).accepted());
+
+        // Genuine candidate, receipt for a DIFFERENT node.
+        let anchored_receipt = graph.admission_receipt(anchored).expect("mint receipt");
+        assert!(!verifier.verify(&declared, &anchored_receipt).accepted());
+
+        // Wrong policy fingerprint and wrong schema version.
+        let wrong_policy = fs_evidence::AdmissionReceipt::from_parts(
+            receipt.node_hash(),
+            COLOR_WRITE_ROW_SCHEMA_VERSION,
+            COLOR_ALGEBRA_VERSION,
+            hash_bytes(b"someone else's policy"),
+        );
+        assert!(!verifier.verify(&declared, &wrong_policy).accepted());
+        let wrong_schema = fs_evidence::AdmissionReceipt::from_parts(
+            receipt.node_hash(),
+            COLOR_WRITE_ROW_SCHEMA_VERSION + 1,
+            COLOR_ALGEBRA_VERSION,
+            policy,
+        );
+        assert!(!verifier.verify(&declared, &wrong_schema).accepted());
+    }
+
+    #[test]
+    fn tampered_node_state_refuses_at_mint_and_at_verify() {
+        let (mut graph, certified, _, _) = admission_fixture();
+        let declared = graph
+            .node(certified)
+            .expect("node")
+            .scientific_color()
+            .expect("unwaived")
+            .clone();
+        // Mint against clean state, then tamper the stored color without
+        // recomputing the provenance hash.
+        let receipt = graph.admission_receipt(certified).expect("mint receipt");
+        graph.nodes[usize::try_from(certified).expect("small id")].color =
+            Color::Verified { lo: 0.5, hi: 9.5 };
+
+        let refusal = graph
+            .admission_receipt(certified)
+            .expect_err("tampered node must not mint");
+        assert!(matches!(
+            refusal,
+            ColorAdmissionRefusal::ReplayDivergence(_)
+        ));
+
+        let verifier = LedgerColorAdmissionVerifier::new(&graph);
+        assert!(
+            !verifier.verify(&declared, &receipt).accepted(),
+            "a pre-tamper receipt must die with the tampered graph"
+        );
+    }
+
+    #[test]
+    fn out_of_regime_state_refuses_admission_structurally() {
+        let (graph, _, anchored, _) = admission_fixture();
+        let outside = BTreeMap::from([("re".to_string(), 5e2)]);
+        let refusal = graph
+            .admission_receipt_in_regime(anchored, &outside)
+            .expect_err("out-of-regime must refuse");
+        assert!(matches!(
+            refusal,
+            ColorAdmissionRefusal::OutOfRegime { node, .. } if node == anchored
+        ));
+
+        let inside = BTreeMap::from([("re".to_string(), 5e4)]);
+        graph
+            .admission_receipt_in_regime(anchored, &inside)
+            .expect("in-regime state mints");
+    }
+
+    #[test]
+    fn stale_algebra_receipts_refuse_before_the_capability_decides() {
+        let (graph, certified, _, _) = admission_fixture();
+        let verifier = LedgerColorAdmissionVerifier::new(&graph);
+        let genuine = graph.admission_receipt(certified).expect("mint receipt");
+        let declared = graph
+            .node(certified)
+            .expect("node")
+            .scientific_color()
+            .expect("unwaived")
+            .clone();
+        let stale = fs_evidence::AdmissionReceipt::from_parts(
+            genuine.node_hash(),
+            genuine.row_schema_version(),
+            COLOR_ALGEBRA_VERSION + 1,
+            genuine.policy_fingerprint(),
+        );
+        let error = AdmittedColor::from_receipt(declared, stale, &verifier)
+            .expect_err("stale algebra must refuse");
+        assert_eq!(
+            error,
+            AdmissionRejection::StaleAlgebra {
+                receipt: COLOR_ALGEBRA_VERSION + 1,
+                current: COLOR_ALGEBRA_VERSION
+            }
+        );
     }
 }

@@ -464,6 +464,35 @@ all 1,024 parent slots with 1,025 distinct axes and also proves that a prior
 regime demotion correctly avoids a false-positive refusal. Note: this module
 adds fs-evidence as a runtime dependency (the colors are its types).
 
+## Color admission authority (bead 6pf9, stage S1)
+
+The graph is the minting authority for `fs_evidence::AdmittedColor`:
+
+- `ColorGraph::admission_receipt(id)` mints an `AdmissionReceipt` (node
+  provenance hash + row schema v7 + color-algebra v2 +
+  `color_admission_policy_fingerprint()`) ONLY for nodes that are known,
+  unwaived (`scientific_color()` present — direct and transitive waiver
+  taint both refuse), positively ranked (Verified/Validated; Estimated
+  refuses), and replay-clean (`verify_replay_node` re-earns the provenance
+  hash and stored state at mint time — a tampered node refuses with the
+  exact `ColorReplayError`).
+- `admission_receipt_in_regime(id, state)` additionally refuses a Validated
+  node whose regime excludes the CURRENT execution state, returning the
+  exact demotion the regime check derived: regime exit demotes structurally
+  and never converts at the stale rank.
+- `LedgerColorAdmissionVerifier` is the injected `AdmissionVerifier`
+  capability: acceptance re-derives everything — receipt versions and
+  policy fingerprint must match this build, the node hash must name a live
+  node, the candidate must equal the node's scientific color in CANONICAL
+  BYTES (display JSON is never trusted), and the node must still replay. A
+  receipt minted before a tamper dies with the tampered graph.
+- No-claim: authority is capability injection, not cryptography — a lying
+  verifier at the composition root can admit anything, exactly like a lying
+  `WaiverVerifier`. Receipts do not bind a graph instance identity; two
+  graphs replaying identical writes mint interchangeable receipts (the node
+  hash chain IS the identity). Consumer-API migration to require
+  `AdmittedColor` is staged in bead 6pf9 S2-S4.
+
 ## No-claim boundaries
 
 - Multi-process multi-writer access: unclaimed (FrankenSQLite documents this

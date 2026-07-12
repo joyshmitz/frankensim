@@ -35,11 +35,16 @@ use core::fmt;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
+pub mod admitted;
 mod cards;
 pub mod color;
 mod discrepancy;
 pub mod falsify;
 
+pub use admitted::{
+    AdmissionDecision, AdmissionReceipt, AdmissionRejection, AdmissionVerifier, AdmittedColor,
+    NoAdmissionVerifier, no_admission_policy,
+};
 pub use cards::{Ambition, ModelCard, ModelRegistry, RegistryError};
 pub use color::{
     COLOR_ALGEBRA_VERSION, Color, ColorError, ColorPayloadError, ColorRank, Demotion, IntervalOp,

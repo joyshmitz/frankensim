@@ -238,6 +238,29 @@ regime demotion sentinel and complete-set malformed-card identity stability.
 - Every falsifier hit produces BOTH a tombstone and an estimator bug
   report; neither is optional.
 
+## Admitted scientific color (bead 6pf9, stage S1)
+
+- `Color` is a DECLARATION: publicly constructible, structurally validated,
+  never authority. `AdmittedColor` is the opaque positive-evidence handle:
+  private fields, single constructor `AdmittedColor::from_receipt(color,
+  receipt, verifier)`.
+- Local gates fire before the injected capability: malformed payloads
+  (`validate_color_payload`), non-positive ranks (Estimated), and
+  stale-algebra receipts (`color_algebra_version !=
+  COLOR_ALGEBRA_VERSION`) refuse even under an accept-everything verifier.
+- `AdmissionReceipt` is plain data (node provenance hash, row schema
+  version, algebra version, policy fingerprint). Authority lives in the
+  `AdmissionVerifier` capability; the default `NoAdmissionVerifier` is
+  deny-all, so at this layer NOTHING admits. The authenticating verifier is
+  HELM-side (`fs_ledger::LedgerColorAdmissionVerifier`), keeping this crate
+  free of upward dependencies.
+- No-claim: `AdmittedColor` is capability-gated, not cryptographically
+  unforgeable. A lying verifier at the composition root can admit anything —
+  the same trust model as `WaiverVerifier` and `SourceOriginVerifier`, and
+  visible at the same audit surface. Stage S1 is additive: positive-evidence
+  consumer APIs migrate to require `AdmittedColor` in later stages of bead
+  6pf9.
+
 ## No-claim boundaries (colors)
 
 - Verified-interval composition here covers outward-rounded Add/Mul and exact
