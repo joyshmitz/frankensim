@@ -16,6 +16,14 @@ pub struct GradientVerdict {
     pub pass: bool,
 }
 
+fn fail_closed(pairs: Vec<(f64, f64)>) -> GradientVerdict {
+    GradientVerdict {
+        max_rel_err: f64::INFINITY,
+        pairs,
+        pass: false,
+    }
+}
+
 /// Verify a claimed gradient of `j` at `p` against central FD along
 /// the supplied directions (callers pass deterministic keyed-stream
 /// directions). `eps` is the FD step (scaled per direction by
@@ -29,25 +37,74 @@ pub fn verify_gradient(
     tol: f64,
 ) -> GradientVerdict {
     assert_eq!(p.len(), gradient.len(), "gradient length mismatch");
+    for d in directions {
+        assert_eq!(d.len(), p.len(), "direction length mismatch");
+    }
+    if !eps.is_finite()
+        || eps <= 0.0
+        || !tol.is_finite()
+        || tol <= 0.0
+        || !p.iter().all(|value| value.is_finite())
+        || !gradient.iter().all(|value| value.is_finite())
+        || !directions
+            .iter()
+            .flat_map(|direction| direction.iter())
+            .all(|value| value.is_finite())
+    {
+        return fail_closed(Vec::new());
+    }
+
     let mut pairs = Vec::with_capacity(directions.len());
     let mut worst = 0.0f64;
     for d in directions {
-        assert_eq!(d.len(), p.len(), "direction length mismatch");
         let analytic: f64 = gradient.iter().zip(d).map(|(g, di)| g * di).sum();
+        if !analytic.is_finite() {
+            return fail_closed(pairs);
+        }
         let mut plus = p.to_vec();
         let mut minus = p.to_vec();
         for i in 0..p.len() {
-            plus[i] += eps * d[i];
-            minus[i] -= eps * d[i];
+            let step = eps * d[i];
+            if !step.is_finite() {
+                return fail_closed(pairs);
+            }
+            let plus_value = p[i] + step;
+            let minus_value = p[i] - step;
+            if !plus_value.is_finite() || !minus_value.is_finite() {
+                return fail_closed(pairs);
+            }
+            plus[i] = plus_value;
+            minus[i] = minus_value;
         }
-        let fd = (j(&plus) - j(&minus)) / (2.0 * eps);
+        let j_plus = j(&plus);
+        let j_minus = j(&minus);
+        if !j_plus.is_finite() || !j_minus.is_finite() {
+            return fail_closed(pairs);
+        }
+        let fd_numerator = j_plus - j_minus;
+        let fd_denominator = 2.0 * eps;
+        if !fd_numerator.is_finite() || !fd_denominator.is_finite() {
+            return fail_closed(pairs);
+        }
+        let fd = fd_numerator / fd_denominator;
+        if !fd.is_finite() {
+            return fail_closed(pairs);
+        }
         let scale = analytic.abs().max(fd.abs()).max(1e-12);
-        worst = worst.max((analytic - fd).abs() / scale);
+        let error_numerator = (analytic - fd).abs();
+        if !scale.is_finite() || !error_numerator.is_finite() {
+            return fail_closed(pairs);
+        }
+        let relative_error = error_numerator / scale;
+        if !relative_error.is_finite() {
+            return fail_closed(pairs);
+        }
+        worst = worst.max(relative_error);
         pairs.push((analytic, fd));
     }
     GradientVerdict {
         max_rel_err: worst,
         pairs,
-        pass: worst < tol,
+        pass: worst.is_finite() && worst < tol,
     }
 }

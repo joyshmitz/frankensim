@@ -11,13 +11,13 @@
 
 use fs_evidence::Color;
 use fs_verify::estimator::{EstimatorFamily, verify};
-use fs_verify::fem1d::{MAX_FEM1D_POLY_COEFFICIENTS, MmsProblem, gauss5};
+use fs_verify::fem1d::{MAX_FEM1D_MESH_NODES, MAX_FEM1D_POLY_COEFFICIENTS, MmsProblem, gauss5};
 use fs_verify::interval::up;
 
 /// Maximum mesh nodes admitted by the in-process rigorous bracket verifier.
-pub const MAX_BRACKET_MESH_NODES: usize = 1_000_000;
+pub const MAX_BRACKET_MESH_NODES: usize = MAX_FEM1D_MESH_NODES;
 /// Maximum coarse mesh/candidate nodes admitted by the DWR execution path.
-pub const MAX_DWR_MESH_NODES: usize = 1_000_000;
+pub const MAX_DWR_MESH_NODES: usize = MAX_FEM1D_MESH_NODES;
 /// Maximum manufactured-solution polynomial coefficients admitted by DWR.
 pub const MAX_DWR_POLY_COEFFICIENTS: usize = MAX_FEM1D_POLY_COEFFICIENTS;
 /// Maximum conservative scalar work units admitted by one DWR execution.
@@ -124,6 +124,14 @@ fn verify_factor(
         return Err(BracketError::InvalidInput {
             factor,
             reason: "candidate contains a non-finite value",
+        });
+    }
+    if candidate.first().map(|value| value.to_bits()) != Some(0.0_f64.to_bits())
+        || candidate.last().map(|value| value.to_bits()) != Some(0.0_f64.to_bits())
+    {
+        return Err(BracketError::InvalidInput {
+            factor,
+            reason: "candidate endpoints must be canonical homogeneous +0.0",
         });
     }
     if !problem.mesh().iter().all(|value| value.is_finite())
@@ -376,6 +384,8 @@ pub enum DwrError {
         /// Candidate index.
         index: usize,
     },
+    /// Candidate endpoints are not canonical homogeneous `+0.0` values.
+    CandidateBoundary,
     /// A mesh coordinate is NaN or infinite.
     NonFiniteMeshNode {
         /// Mesh-node index.
@@ -481,6 +491,9 @@ impl core::fmt::Display for DwrError {
             }
             Self::NonFiniteCandidate { index } => {
                 write!(f, "DWR candidate value {index} is non-finite")
+            }
+            Self::CandidateBoundary => {
+                f.write_str("DWR candidate endpoints must be canonical homogeneous +0.0")
             }
             Self::NonFiniteMeshNode { index } => {
                 write!(f, "DWR mesh node {index} is non-finite")
@@ -622,6 +635,11 @@ fn validate_dwr_inputs(
     }
     if let Some(index) = candidate.iter().position(|value| !value.is_finite()) {
         return Err(DwrError::NonFiniteCandidate { index });
+    }
+    if candidate[0].to_bits() != 0.0_f64.to_bits()
+        || candidate[candidate.len() - 1].to_bits() != 0.0_f64.to_bits()
+    {
+        return Err(DwrError::CandidateBoundary);
     }
     if let Some(index) = mesh.iter().position(|value| !value.is_finite()) {
         return Err(DwrError::NonFiniteMeshNode { index });

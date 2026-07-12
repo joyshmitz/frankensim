@@ -9,8 +9,8 @@
 //! verification gate catching a corrupted gradient, and the golden.
 
 use fs_adjoint::{
-    DensityOp, DensityPoisson, HeatAdjoint, heat_initial_gradient, ift_gradient_matfree,
-    sobolev_smooth, verify_gradient, volume_shape_gradient,
+    DensityOp, DensityPoisson, GradientVerdict, HeatAdjoint, heat_initial_gradient,
+    ift_gradient_matfree, sobolev_smooth, verify_gradient, volume_shape_gradient,
 };
 use fs_feec::{element_geometry, kuhn_cube};
 use fs_rand::StreamKey;
@@ -20,6 +20,21 @@ use fs_sparse::precond::IdentityPrecond;
 fn log(case: &str, verdict: &str, detail: &str) {
     println!(
         "{{\"suite\":\"fs-adjoint\",\"case\":\"{case}\",\"verdict\":\"{verdict}\",\"detail\":\"{detail}\"}}"
+    );
+}
+
+fn assert_gradient_refused(verdict: &GradientVerdict) {
+    assert!(!verdict.pass, "invalid evidence passed the gradient gate");
+    assert!(
+        verdict.max_rel_err.is_infinite() && verdict.max_rel_err.is_sign_positive(),
+        "refusal must use the deterministic +infinity sentinel: {verdict:?}"
+    );
+    assert!(
+        verdict
+            .pairs
+            .iter()
+            .all(|(analytic, fd)| analytic.is_finite() && fd.is_finite()),
+        "refusal exposed non-finite directional evidence: {verdict:?}"
     );
 }
 
@@ -337,6 +352,173 @@ fn verification_gate_catches_corruption() {
     let caught = verify_gradient(&j, &p, &bad, &dirs, 1e-6, 1e-8);
     assert!(!caught.pass, "corrupted gradient passed the gate");
     log("verify-gate", "pass", "accepts correct, rejects corrupted");
+}
+
+#[test]
+fn verification_gate_fails_closed_on_non_finite_inputs() {
+    let objective = |point: &[f64]| point.iter().map(|value| value * value).sum();
+    let point = vec![1.0, -2.0];
+    let gradient = vec![2.0, -4.0];
+    let directions = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+
+    for non_finite in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let invalid_objective = |_: &[f64]| non_finite;
+        assert_gradient_refused(&verify_gradient(
+            &invalid_objective,
+            &point,
+            &gradient,
+            &directions,
+            1e-6,
+            1e-8,
+        ));
+
+        let mut invalid_point = point.clone();
+        invalid_point[0] = non_finite;
+        assert_gradient_refused(&verify_gradient(
+            &objective,
+            &invalid_point,
+            &gradient,
+            &directions,
+            1e-6,
+            1e-8,
+        ));
+
+        let mut invalid_gradient = gradient.clone();
+        invalid_gradient[0] = non_finite;
+        assert_gradient_refused(&verify_gradient(
+            &objective,
+            &point,
+            &invalid_gradient,
+            &directions,
+            1e-6,
+            1e-8,
+        ));
+
+        let mut invalid_directions = directions.clone();
+        invalid_directions[0][0] = non_finite;
+        assert_gradient_refused(&verify_gradient(
+            &objective,
+            &point,
+            &gradient,
+            &invalid_directions,
+            1e-6,
+            1e-8,
+        ));
+    }
+
+    for invalid_eps in [0.0, -1e-6, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert_gradient_refused(&verify_gradient(
+            &objective,
+            &point,
+            &gradient,
+            &directions,
+            invalid_eps,
+            1e-8,
+        ));
+    }
+    for invalid_tol in [0.0, -1e-8, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert_gradient_refused(&verify_gradient(
+            &objective,
+            &point,
+            &gradient,
+            &directions,
+            1e-6,
+            invalid_tol,
+        ));
+    }
+}
+
+#[test]
+fn verification_gate_fails_closed_on_non_finite_intermediates() {
+    let finite_objective = |point: &[f64]| point.iter().copied().sum();
+
+    let analytic_overflow = verify_gradient(
+        &finite_objective,
+        &[0.0, 0.0],
+        &[f64::MAX, f64::MAX],
+        &[vec![1.0, 1.0]],
+        1.0,
+        1e-8,
+    );
+    assert_gradient_refused(&analytic_overflow);
+
+    let step_overflow = verify_gradient(
+        &finite_objective,
+        &[0.0],
+        &[0.0],
+        &[vec![f64::MAX]],
+        2.0,
+        1e-8,
+    );
+    assert_gradient_refused(&step_overflow);
+
+    let subtraction_overflow = |point: &[f64]| {
+        if point[0].is_sign_positive() {
+            f64::MAX
+        } else {
+            -f64::MAX
+        }
+    };
+    assert_gradient_refused(&verify_gradient(
+        &subtraction_overflow,
+        &[0.0],
+        &[0.0],
+        &[vec![1.0]],
+        1.0,
+        1e-8,
+    ));
+
+    assert_gradient_refused(&verify_gradient(
+        &finite_objective,
+        &[0.0],
+        &[0.0],
+        &[vec![0.0]],
+        f64::MAX,
+        1e-8,
+    ));
+
+    let relative_error_overflow = |point: &[f64]| -0.5 * f64::MAX * point[0];
+    assert_gradient_refused(&verify_gradient(
+        &relative_error_overflow,
+        &[0.0],
+        &[f64::MAX],
+        &[vec![1.0]],
+        1.0,
+        1e-8,
+    ));
+}
+
+#[test]
+fn verification_gate_retains_only_a_deterministic_finite_prefix() {
+    let objective = |point: &[f64]| {
+        if point[1] == 0.0 {
+            point[0] * point[0]
+        } else {
+            f64::NAN
+        }
+    };
+    let directions = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+    let first = verify_gradient(
+        &objective,
+        &[0.0, 0.0],
+        &[0.0, 0.0],
+        &directions,
+        1e-6,
+        1e-8,
+    );
+    let second = verify_gradient(
+        &objective,
+        &[0.0, 0.0],
+        &[0.0, 0.0],
+        &directions,
+        1e-6,
+        1e-8,
+    );
+
+    assert_gradient_refused(&first);
+    assert_gradient_refused(&second);
+    assert_eq!(first.pairs, vec![(0.0, 0.0)]);
+    assert_eq!(first.pairs, second.pairs);
 }
 
 const GOLDEN_HASH: u64 = 0x0896_7e37_81b3_c044; // recorded at tfz.24 landing, frozen

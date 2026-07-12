@@ -39,8 +39,12 @@ solver without a passing gradient check cannot merge.
   not hidden).
 - `verify::verify_gradient(j, p, gradient, directions, eps, tol)` —
   central-FD directional checks returning a `GradientVerdict` (worst
-  relative error + per-direction pairs). The gate itself is tested to
-  REJECT a corrupted gradient — a gate that cannot fail is not a gate.
+  relative error + per-direction pairs). Non-finite points, gradients,
+  directions, objective values, or arithmetic intermediates, and non-finite or
+  non-positive steps/tolerances, fail closed with `pass=false`, a deterministic
+  positive-infinity error sentinel, and only the finite directional-pair prefix.
+  The gate itself is tested to REJECT corrupted and non-finite evidence — a gate
+  that cannot fail is not a gate.
 
 - `transpose` module (addendum Proposal 1, bead bk0o.1; [F], behind
   the `ledger-transpose` feature until its Gauntlet tier + kill metric
@@ -114,8 +118,9 @@ solver without a passing gradient check cannot merge.
   fallibly admitted `MmsProblem`: its canonical class identity binds the exact
   solution and derived forcing, and DWR shares fs-verify's 1..=6 coefficient
   envelope rather than advertising a divergent class. DWR admission validates
-  2..=1,000,000 coarse mesh nodes, candidate shape/finite values, strict finite
-  cell geometry and representable midpoints/QoI window, and a conservative
+  2..=1,000,000 coarse mesh nodes through fs-verify's shared node cap,
+  candidate shape/finite values and bit-canonical homogeneous `+0.0`
+  endpoints, strict finite cell geometry and representable midpoints/QoI window, and a conservative
   mesh×polynomial aggregate budget of 100,000,000 work units before refined
   allocation. Assembly, quadrature, forcing,
   elimination pivots, slopes, residuals, and outputs refuse on any non-finite

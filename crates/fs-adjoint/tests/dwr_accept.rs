@@ -7,14 +7,15 @@
 #![cfg(feature = "dwr-accept")]
 
 use fs_adjoint::dwr_accept::{
-    Bracket, DwrError, DwrQuery, MAX_DWR_MESH_NODES, MAX_DWR_POLY_COEFFICIENTS, MAX_DWR_WORK_UNITS,
-    accept, dwr_integral_qoi,
+    Bracket, BracketError, DwrError, DwrQuery, MAX_BRACKET_MESH_NODES, MAX_DWR_MESH_NODES,
+    MAX_DWR_POLY_COEFFICIENTS, MAX_DWR_WORK_UNITS, accept, dwr_integral_qoi,
 };
 use fs_evidence::Color;
 use fs_evidence::falsify::{FalsifierRegistry, FalsifierSpec};
 use fs_verify::estimator::{EstimatorFamily, VerifierReport};
 use fs_verify::fem1d::{
-    Fem1dError, MAX_FEM1D_POLY_COEFFICIENTS, MmsClass, MmsProblem, Poly, solve_p1,
+    Fem1dError, MAX_FEM1D_MESH_NODES, MAX_FEM1D_POLY_COEFFICIENTS, MmsClass, MmsProblem, Poly,
+    solve_p1,
 };
 use fs_verify::interval::Iv;
 
@@ -470,6 +471,26 @@ fn dwr_refuses_invalid_windows_and_resource_counts_at_owner_boundaries() {
         MAX_DWR_POLY_COEFFICIENTS, MAX_FEM1D_POLY_COEFFICIENTS,
         "DWR must not advertise a larger polynomial class than fs-verify admits"
     );
+    assert_eq!(MAX_DWR_MESH_NODES, MAX_FEM1D_MESH_NODES);
+    assert_eq!(MAX_BRACKET_MESH_NODES, MAX_FEM1D_MESH_NODES);
+
+    assert_eq!(
+        dwr_integral_qoi(&base, &[1.0, 1.0], 0.0, 1.0),
+        Err(DwrError::CandidateBoundary),
+        "a constant non-homogeneous candidate must not produce a zero-error accept"
+    );
+    assert_eq!(
+        dwr_integral_qoi(&base, &[-0.0, 0.0], 0.0, 1.0),
+        Err(DwrError::CandidateBoundary),
+        "DWR shares fs-verify's bit-canonical +0.0 endpoint rule"
+    );
+    assert!(matches!(
+        Bracket::cauchy_schwarz(&base, &[1.0, 1.0], &base, &[0.0, 0.0]),
+        Err(BracketError::InvalidInput {
+            factor: "primal",
+            reason: "candidate endpoints must be canonical homogeneous +0.0",
+        })
+    ));
 
     let too_many_candidates = vec![0.0; MAX_DWR_MESH_NODES + 1];
     assert!(matches!(

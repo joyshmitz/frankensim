@@ -117,10 +117,11 @@ same certified cuts; its constitutive parameters come from
     0.2 of the theoretical L2 = 2 and H1 = 1 orders, with monotone error
     decrease.
 12. CUT-INDEPENDENT COERCIVITY (cte-003): the Nitsche penalty never
-    scales with cut fraction. A cut-fraction sweep instead verifies
-    that the vector ghost penalty bounds condition-number growth while
-    the unstabilized reference deteriorates and is at least 100x worse
-    on the most degenerate cut.
+    scales with cut fraction. The vector Q1 acceptance family uses the
+    conservative fixed full-element trace constant `beta = 100`. A
+    cut-fraction sweep instead verifies that the vector ghost penalty
+    bounds condition-number growth while the unstabilized reference
+    deteriorates and is at least 100x worse on the most degenerate cut.
 13. OPERATOR ADJOINT (cte-004): local matrices are canonically mirrored
     before COO accumulation, making stored CSR bit-symmetric. The
     content-addressed registered apply VJP is bit-identical to explicit
