@@ -11,7 +11,7 @@ Plan §11.4 (Bet 12), Decalogue P4: every operator publishes an error model
 and a cost model; composition composes the models, so "how accurate is
 this number and where did the error come from" — and "where did the
 seconds go" — are queries over attribution trees. Layer: L6 (HELM).
-Runtime deps: `std`, fs-geom, fs-ledger.
+Runtime deps: `std`, fs-blake3, fs-geom, fs-ledger.
 
 ## Public types and semantics
 
@@ -19,8 +19,13 @@ Runtime deps: `std`, fs-geom, fs-ledger.
   EMPIRICAL residual quantiles supplying P10/P50/P90 bands; predictions
   carry observation counts and an extrapolation flag (an estimate is
   itself evidenced). Below `MIN_OBS` it refuses (`CostRefusal`) instead of
-  guessing. `observe()` refits online; `calibration()` audits held-out
-  band coverage; `median_rel_error()` is the improvement metric.
+  guessing. Fits use centered, finite-checked regression; batch fitting sorts
+  once and online insertion preserves total order. Observation and held-out
+  work are explicitly bounded. `observe()` is transactional; invalid input,
+  an unstable/nonfinite result, or capacity exhaustion leaves the prior model
+  unchanged. `calibration()` audits held-out band coverage;
+  `median_rel_error()` is the improvement metric. Empty probe sets refuse
+  rather than returning vacuous perfect scores.
 - `ErrorLedger` — attribution tree over the plan's canonical sources
   (geometry, discretization, algebraic, surrogate, statistical,
   model-form), each entry carrying a non-blank operator identity and its
@@ -37,9 +42,21 @@ Runtime deps: `std`, fs-geom, fs-ledger.
 - `PlanCostOracle` — implements fs-geom's `CostOracle`, so the Rep Router
   plans with THIS machine's measured history (per-edge models at
   registered reference sizes; recorded actuals feed refits; observed
-  error p90 backs `measured_error_abs`).
-- `cost_model_from_tune` — rebuilds a kernel's model deterministically
-  from fs-ledger `tune` rows (fs-roofline's recorded rates).
+  error p90 backs `measured_error_abs`). Edge registration and recording are
+  fallible and bounded. A record is atomic across cost and error histories;
+  unregistered edges, nonfinite values, capacity exhaustion, and reference
+  size changes after observation refuse without changing routing authority.
+- `cost_model_from_tune` — rebuilds a model from one EXACT
+  `(kernel, shape_class, machine)` fs-ledger key. It accepts only the current
+  fs-roofline receipt-v3 / row-v4 production schema through a bounded strict
+  JSON parser that rejects duplicate and unknown keys. Every timed sample is
+  retained as a same-size observation; median/P25/P75/dispersion and rate are
+  rederived from those samples. Embedded kernel/version/run/op/repetition
+  identities, the baseline-bound 40-byte machine key, completed production-v2
+  op envelope, build identity, result-manifest membership, payload artifact
+  bytes/metadata/OUT edge, and dependency-receipt bytes/domain digest/IN edge
+  must all agree before the model sees any evidence. Foreign machine/shape
+  rows are never scanned or mixed.
 
 - `voi` module (addendum Proposal C, bead knh1.6; [F], behind
   `voi-queries`): the ignorance market, v0 as a RANKED LIST.
@@ -114,14 +131,19 @@ Runtime deps: `std`, fs-geom, fs-ledger.
 5. Explanation payloads are valid JSON for valid and invalid internal state.
    Invalid ledgers produce a fail-closed diagnostic object; they never emit
    `NaN`, infinities, or Rust `Debug` option syntax as evidence.
+6. Tune evidence is scoped and transactional: no sample from a different
+   machine, shape key, producer schema, operation, build, or artifact lineage
+   can influence a returned model, and any failed validation returns no model.
 
 ## Error model
 
-`CostRefusal` (insufficient data, bad input), `LedgerDefect` (bad
-contribution/residual/aggregate), `TimeLedgerDefect` (bad stage or aggregate),
-`PlanInputError`/`AllocationError`, and feature-gated `VoiError` are structured
-and teaching; none panic across the boundary. Ledger I/O errors propagate as
-`fs_ledger::LedgerError`.
+`CostRefusal` (insufficient data, bad input, observation/evaluation limits,
+nonfinite arithmetic, empty evaluation), `PlanOracleError`, `TuneModelError`,
+`LedgerDefect` (bad contribution/residual/aggregate), `TimeLedgerDefect` (bad
+stage or aggregate), `PlanInputError`/`AllocationError`, and feature-gated
+`VoiError` are structured and teaching; none panic across the boundary.
+`TuneModelError` preserves ledger I/O errors and distinguishes absence, schema
+failure, scope mismatch, and numerical refusal.
 
 ## Determinism class
 
@@ -132,9 +154,22 @@ cached surrogate callback is itself deterministic.
 
 ## Cancellation behavior
 
-All calls are short pure computations or single ledger reads. VoI sweeps are
-bounded by `MAX_VOI_EVALUATIONS`; the fixture oracle has its own Cartesian-work
-cap. No `Cx` integration is needed at this layer.
+All calls are bounded pure computations or bounded ledger reads. Cost-model
+history/evaluation, oracle edges/errors, receipt bytes/depth/nodes/container
+items, and tune sample counts each have explicit caps. VoI sweeps are bounded
+by `MAX_VOI_EVALUATIONS`; the fixture oracle has its own Cartesian-work cap. No
+`Cx` integration is needed at this layer.
+
+## No-claim boundaries
+
+- A structurally and cryptographically linked roofline row proves provenance
+  and internal measurement consistency, not that the machine was free of every
+  unmodeled environmental disturbance. The producer's baseline/admission
+  policy remains the authority for that claim.
+- Repetitions in one receipt are independent timed observations for empirical
+  residual bands, but they cover one problem size and one run environment. The
+  model marks other sizes as extrapolation; it does not claim cross-shape or
+  cross-machine transfer.
 
 ## Unsafe boundary
 
@@ -154,10 +189,13 @@ None. Safe Rust only.
 `tests/conformance.rs`: fixture-pipeline conservativeness with tightness
 tracked (2000 adversarial draws), completeness-lint refusals, held-out
 quantile-band calibration (coverage logged), online-update improvement
-under cost drift, deterministic rebuild from ledger tune rows, LIVE Rep
-Router replanning from fitted models, Time Ledger attribution +
-calibration. Unit tests cover refusals, band ordering, extrapolation
-flags, and arrival-order determinism.
+under cost drift, exact-scope/legacy-schema tune refusals, LIVE Rep Router
+replanning from fitted models, Time Ledger attribution + calibration. The
+fs-roofline producer integration records a real production receipt-v3 row and
+rebuilds a three-sample exact-key model through this crate. Unit tests cover
+refusals, stable degenerate fits, band ordering, extrapolation, transactional
+invalid observations, exact caps plus limit+1, empty evaluation, hostile
+duplicate-key receipts, and producer-statistic rederivation.
 
 `tests/alloc_battery.rs` covers budget-safe allocation, typed input/work
 refusals, online re-planning, oracle bounds, evaluator safety, and tropical
@@ -172,8 +210,9 @@ economics, duplicate scheduling identities, and monotone budget arithmetic.
   fs-evidence/fs-ivl (each entry's `Rigor` says which you have).
 - Cost features are single-scalar (size); multi-feature quantile
   regression is future scope.
-- `json_f64_field` is a scanner for OUR canonical flat payloads, not a
-  JSON parser (fs-ir owns real JSON).
+- The strict receipt decoder intentionally accepts only current
+  fs-roofline production receipt-v3 / row-v4 evidence. It is not a generic
+  JSON API and does not provide compatibility authority for older schemas.
 - No DWR / conformal / MLMC estimator inputs yet — they wire in as their
   owning crates land (the enum slots exist).
 - Greedy V1 is not an exact optimizer; the fixture oracle is bounded and is

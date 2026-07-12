@@ -10,7 +10,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use fs_plan::{
     Contribution, CostModel, CostObservation, ErrorLedger, ErrorSource, LedgerDefect,
-    PlanCostOracle, Rigor, TimeLedger, TimeLedgerDefect, TimeStage, cost_model_from_tune,
+    PlanCostOracle, Rigor, TimeLedger, TimeLedgerDefect, TimeStage, TuneModelError,
+    cost_model_from_tune,
 };
 
 static NEXT_DB: AtomicU32 = AtomicU32::new(0);
@@ -193,30 +194,30 @@ fn pl_004_online_updates_improve_predictions() {
 }
 
 #[test]
-fn pl_005_models_rebuild_deterministically_from_ledger_tune() {
-    let db = temp_db("tune");
-    let ledger = fs_ledger::Ledger::open(&db).expect("open");
-    // Seed roofline-style tune rows for one kernel across two machines.
-    for (machine, rate) in [(b"m1".as_slice(), 2.0e9), (b"m2".as_slice(), 1.0e9)] {
-        ledger
-            .tune_put(
-                "simd-axpy-f64",
-                "roofline-v1",
-                machine,
-                r#"{"reps":9}"#,
-                &format!(r#"{{"elems_per_sec":{rate:?},"elements":4194304.0}}"#),
-            )
-            .expect("tune row");
-    }
-    let m1 = cost_model_from_tune(&ledger, "simd-axpy-f64", 4_194_304.0).expect("build");
-    let m2 = cost_model_from_tune(&ledger, "simd-axpy-f64", 4_194_304.0).expect("rebuild");
-    assert_eq!(m1.n_obs(), 2, "one observation per tune row");
-    assert_eq!(m2.n_obs(), m1.n_obs(), "snapshot determinism");
-    drop(ledger);
-    cleanup_db(&db);
+fn pl_005_tune_loader_refuses_legacy_schema_and_foreign_scope() {
+    let ledger = fs_ledger::Ledger::open(":memory:").expect("open");
+    let foreign_machine = [1_u8; 40];
+    let requested_machine = [2_u8; 40];
+    ledger
+        .tune_put(
+            "simd-axpy-f64",
+            "roofline-v1",
+            &foreign_machine,
+            r#"{"reps":9}"#,
+            r#"{"elems_per_sec":2000000000.0,"elements":4194304.0}"#,
+        )
+        .expect("legacy tune row");
+    assert!(matches!(
+        cost_model_from_tune(&ledger, "simd-axpy-f64", "roofline-v1", &requested_machine,),
+        Err(TuneModelError::MissingRow)
+    ));
+    assert!(matches!(
+        cost_model_from_tune(&ledger, "simd-axpy-f64", "roofline-v1", &foreign_machine,),
+        Err(TuneModelError::InvalidReceipt { .. })
+    ));
     verdict(
         "pl-005",
-        "tune-table rows rebuild into identical models across reads",
+        "exact tune lookup ignores foreign machines and refuses legacy ad-hoc JSON",
     );
 }
 
@@ -238,8 +239,8 @@ fn pl_006_router_plans_with_live_cost_models() {
             .unwrap();
     }
     let mut oracle = PlanCostOracle::new();
-    oracle.register_edge("frep->sdf/coarse", 1e6);
-    oracle.register_edge("frep->sdf/fine", 1e6);
+    oracle.register_edge("frep->sdf/coarse", 1e6).unwrap();
+    oracle.register_edge("frep->sdf/fine", 1e6).unwrap();
     let req = RouteRequest {
         from: "frep".to_string(),
         to: "sdf".to_string(),
@@ -252,8 +253,8 @@ fn pl_006_router_plans_with_live_cost_models() {
     assert_eq!(before.edges, vec!["frep->sdf/coarse"]);
     // Measured history says coarse is actually slow on THIS machine.
     for _ in 0..5 {
-        oracle.record("frep->sdf/coarse", 9.0, 0.005);
-        oracle.record("frep->sdf/fine", 2.0, 0.004);
+        oracle.record("frep->sdf/coarse", 9.0, 0.005).unwrap();
+        oracle.record("frep->sdf/fine", 2.0, 0.004).unwrap();
     }
     let after = router.plan(&req, &oracle).unwrap();
     assert_eq!(

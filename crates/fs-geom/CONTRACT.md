@@ -62,6 +62,11 @@ Depends on fs-exec (Cx), fs-evidence, fs-alloc, fs-obs.
   `EdgeRunner`s, composes per-edge Evidence receipts additively, and
   records actuals through `CostOracle` (an L2-clean abstraction — HELM
   wires the ledger tune table behind it; `MemoryCostOracle` in-process).
+  `CostOracle::record` is fallible: invalid/nonfinite/overflowing/capacity-
+  exceeding evidence returns `CostOracleError`, and `execute()` propagates it
+  as edge-attributed `ExecuteErrorKind::OracleRecord` instead of reporting a
+  successful chain whose actuals were silently dropped. `MemoryCostOracle`
+  updates sums/count atomically and bounds distinct edges.
   Learned measurements replace declared error magnitudes ONLY on
   uncertified additive edges; certificates are never learned away.
 
@@ -163,7 +168,9 @@ Depends on fs-exec (Cx), fs-evidence, fs-alloc, fs-obs.
 Structured teaching values throughout: `ConvertDiag` (ranked fixes),
 `fs_exec::Cancelled` for interrupted checks, `AgreementStatus::Unknown` plus
 structured `AgreementUnknownReason` for non-evaluable checks, and
-`fs_evidence::CertifyError` through receipts. Constructors are total
+`fs_evidence::CertifyError` through receipts. Router execution additionally
+returns `ExecuteError` with a stable missing-runner/runner/oracle-record class;
+oracle evidence refusals use `CostOracleError`. Constructors are total
 (`Aabb::new` normalizes); no panics cross the boundary.
 
 ## Determinism class

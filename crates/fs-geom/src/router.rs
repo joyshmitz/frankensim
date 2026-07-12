@@ -87,8 +87,61 @@ pub trait CostOracle {
     /// Mean measured absolute error for an edge, if any.
     fn measured_error_abs(&self, edge: &str) -> Option<f64>;
     /// Record one executed edge's actuals.
-    fn record(&mut self, edge: &str, cost_s: f64, error_abs: f64);
+    ///
+    /// # Errors
+    /// Invalid, overflowing, or capacity-exceeding evidence is refused before
+    /// it can influence later routes.
+    fn record(&mut self, edge: &str, cost_s: f64, error_abs: f64) -> Result<(), CostOracleError>;
 }
+
+/// Why an oracle refused an executed edge's measurement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CostOracleError {
+    /// The edge identity is empty, malformed, or unknown to the oracle.
+    InvalidEdge {
+        /// Human-readable, agent-actionable diagnosis.
+        problem: String,
+    },
+    /// A measured scalar is outside its declared finite domain.
+    InvalidMeasurement {
+        /// Rejected field (`cost_s` or `error_abs`).
+        field: &'static str,
+        /// Human-readable, agent-actionable diagnosis.
+        problem: String,
+    },
+    /// The oracle's bounded evidence budget is exhausted.
+    CapacityExceeded {
+        /// Bounded collection that is full.
+        resource: &'static str,
+        /// Maximum admitted entries.
+        limit: usize,
+    },
+    /// A backend/model refused the otherwise well-shaped record.
+    Backend {
+        /// Human-readable, agent-actionable diagnosis.
+        problem: String,
+    },
+}
+
+impl fmt::Display for CostOracleError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidEdge { problem } => write!(f, "invalid oracle edge: {problem}"),
+            Self::InvalidMeasurement { field, problem } => {
+                write!(f, "invalid oracle measurement {field}: {problem}")
+            }
+            Self::CapacityExceeded { resource, limit } => {
+                write!(f, "oracle {resource} capacity {limit} is exhausted")
+            }
+            Self::Backend { problem } => write!(f, "oracle backend refused record: {problem}"),
+        }
+    }
+}
+
+impl core::error::Error for CostOracleError {}
+
+/// Maximum distinct edges retained by the in-memory test/learning oracle.
+pub const MAX_MEMORY_ORACLE_EDGES: usize = 4_096;
 
 /// In-memory running-mean oracle (tests, in-process learning).
 #[derive(Debug, Clone, Default)]
@@ -113,11 +166,53 @@ impl CostOracle for MemoryCostOracle {
         self.rows.get(edge).map(|(_, e, n)| e / f64::from(*n))
     }
 
-    fn record(&mut self, edge: &str, cost_s: f64, error_abs: f64) {
-        let row = self.rows.entry(edge.to_string()).or_insert((0.0, 0.0, 0));
-        row.0 += cost_s;
-        row.1 += error_abs;
-        row.2 += 1;
+    fn record(&mut self, edge: &str, cost_s: f64, error_abs: f64) -> Result<(), CostOracleError> {
+        if edge.is_empty() {
+            return Err(CostOracleError::InvalidEdge {
+                problem: "edge identity is empty".to_string(),
+            });
+        }
+        if !cost_s.is_finite() || cost_s <= 0.0 {
+            return Err(CostOracleError::InvalidMeasurement {
+                field: "cost_s",
+                problem: "must be positive and finite".to_string(),
+            });
+        }
+        if !error_abs.is_finite() || error_abs < 0.0 {
+            return Err(CostOracleError::InvalidMeasurement {
+                field: "error_abs",
+                problem: "must be nonnegative and finite".to_string(),
+            });
+        }
+        let prior = self.rows.get(edge).copied();
+        if prior.is_none() && self.rows.len() >= MAX_MEMORY_ORACLE_EDGES {
+            return Err(CostOracleError::CapacityExceeded {
+                resource: "edges",
+                limit: MAX_MEMORY_ORACLE_EDGES,
+            });
+        }
+        let (cost_sum, error_sum, count) = prior.unwrap_or((0.0, 0.0, 0));
+        let next_cost = cost_sum + cost_s;
+        let next_error = error_sum + error_abs;
+        let next_count = count
+            .checked_add(1)
+            .ok_or_else(|| CostOracleError::CapacityExceeded {
+                resource: "observations_per_edge",
+                limit: u32::MAX as usize,
+            })?;
+        if !next_cost.is_finite() {
+            return Err(CostOracleError::Backend {
+                problem: "cost accumulator overflowed".to_string(),
+            });
+        }
+        if !next_error.is_finite() {
+            return Err(CostOracleError::Backend {
+                problem: "error accumulator overflowed".to_string(),
+            });
+        }
+        self.rows
+            .insert(edge.to_string(), (next_cost, next_error, next_count));
+        Ok(())
     }
 }
 
@@ -539,13 +634,21 @@ impl Router {
         for edge in &plan.edges {
             let runner = runners.get(edge).ok_or_else(|| ExecuteError {
                 edge: edge.clone(),
+                kind: ExecuteErrorKind::MissingRunner,
                 detail: "no runner registered for this edge".to_string(),
             })?;
             let outcome = runner.run(cx).map_err(|detail| ExecuteError {
                 edge: edge.clone(),
+                kind: ExecuteErrorKind::Runner,
                 detail,
             })?;
-            oracle.record(edge, outcome.measured_cost_s, outcome.receipt.qoi);
+            oracle
+                .record(edge, outcome.measured_cost_s, outcome.receipt.qoi)
+                .map_err(|error| ExecuteError {
+                    edge: edge.clone(),
+                    kind: ExecuteErrorKind::OracleRecord,
+                    detail: error.to_string(),
+                })?;
             total_cost += outcome.measured_cost_s;
             composed = Some(match composed {
                 None => outcome.receipt,
@@ -597,19 +700,34 @@ pub struct ChainOutcome {
 pub struct ExecuteError {
     /// The failing edge name.
     pub edge: String,
+    /// Which execution boundary refused.
+    pub kind: ExecuteErrorKind,
     /// What went wrong.
     pub detail: String,
+}
+
+/// Structured execution failure class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecuteErrorKind {
+    /// No runner exists for the planned edge.
+    MissingRunner,
+    /// The edge runner itself failed.
+    Runner,
+    /// The edge ran, but its evidence was invalid and the oracle refused it.
+    OracleRecord,
 }
 
 impl fmt::Display for ExecuteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "route execution failed at edge {:?}: {}",
-            self.edge, self.detail
+            "route execution failed at edge {:?} ({:?}): {}",
+            self.edge, self.kind, self.detail
         )
     }
 }
+
+impl core::error::Error for ExecuteError {}
 
 #[cfg(test)]
 mod tests {
@@ -838,8 +956,8 @@ mod tests {
         let before = r.plan(&req("mesh", 0.06, 100.0), &oracle).unwrap();
         assert_eq!(before.edges[0], "frep->sdf/coarse");
         // Measurements reveal the coarse edge is actually slow (10s).
-        oracle.record("frep->sdf/coarse", 10.0, 0.02);
-        oracle.record("frep->sdf/coarse", 10.0, 0.02);
+        oracle.record("frep->sdf/coarse", 10.0, 0.02).unwrap();
+        oracle.record("frep->sdf/coarse", 10.0, 0.02).unwrap();
         let after = r.plan(&req("mesh", 0.06, 100.0), &oracle).unwrap();
         assert_eq!(
             after.edges[0], "frep->sdf/fine",
@@ -933,6 +1051,32 @@ mod tests {
             let empty: BTreeMap<String, Box<dyn EdgeRunner>> = BTreeMap::new();
             let err = r.execute(&plan, &empty, &mut oracle, cx).unwrap_err();
             assert_eq!(err.edge, "frep->sdf/coarse");
+        });
+    }
+
+    #[test]
+    fn execution_propagates_oracle_rejection_without_laundering_actuals() {
+        with_cx(|cx| {
+            let r = test_router();
+            let oracle = MemoryCostOracle::new();
+            let plan = r.plan(&req("sdf", 0.03, 10.0), &oracle).unwrap();
+            let edge = plan.edges[0].clone();
+            let mut runners: BTreeMap<String, Box<dyn EdgeRunner>> = BTreeMap::new();
+            runners.insert(
+                edge.clone(),
+                Box::new(FixedRunner {
+                    err: 0.01,
+                    cost: f64::NAN,
+                }),
+            );
+            let mut oracle = MemoryCostOracle::new();
+            let error = r
+                .execute(&plan, &runners, &mut oracle, cx)
+                .expect_err("nonfinite actual must fail at the oracle boundary");
+            assert_eq!(error.edge, edge);
+            assert_eq!(error.kind, ExecuteErrorKind::OracleRecord);
+            assert_eq!(oracle.measured_cost_s(&error.edge), None);
+            assert_eq!(oracle.measured_error_abs(&error.edge), None);
         });
     }
 

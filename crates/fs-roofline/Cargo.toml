@@ -19,6 +19,7 @@ fs-simd = { path = "../fs-simd" }
 fs-ledger = { path = "../fs-ledger" }
 
 [dev-dependencies]
+fs-plan = { path = "../fs-plan" }
 
 [lints]
 workspace = true

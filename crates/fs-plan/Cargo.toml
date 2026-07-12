@@ -12,6 +12,7 @@ layer = "L6"
 
 [dependencies]
 fs-dfo = { path = "../fs-dfo", optional = true }
+fs-blake3 = { path = "../fs-blake3" }
 fs-geom = { path = "../fs-geom" }
 fs-ledger = { path = "../fs-ledger" }
 

@@ -3856,6 +3856,42 @@ mod tests {
     }
 
     #[test]
+    fn production_receipt_v3_feeds_exact_scoped_plan_cost_model() {
+        const SYNTHETIC_RECEIPT: &str = "{\"schema\":\"fs-roofline-plan-loader-integration-v1\",\"purpose\":\"exercise-real-producer-schema\"}";
+        let axes = synthetic_axes();
+        let (baseline, identity) = trusted_baseline(&axes);
+        let baseline_policy = AxisBaselinePolicy::new(Some(&baseline), &identity, 20_010);
+        let registry: Vec<Box<dyn RooflineKernel>> = vec![Box::new(ReceiptKernel {
+            elements: 64,
+            value: 0,
+        })];
+        let run = production::ProductionProbe::from_observed(axes.clone())
+            .run_with_test_receipt(
+                production::ProductionRunConfig {
+                    n: 64,
+                    warmup: 1,
+                    reps: 3,
+                },
+                baseline_policy,
+                registry,
+                || axes.clone(),
+                SYNTHETIC_RECEIPT,
+            )
+            .expect("seal real receipt-v3 fixture");
+        assert!(run.citation_eligible());
+        let kernel = run.results()[0].kernel.clone();
+        let ledger = Ledger::open(":memory:").expect("in-memory ledger");
+        run.record(&ledger).expect("record production evidence");
+        let rows = ledger.tune_rows(&kernel).expect("read exact tune row");
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        let model = fs_plan::cost_model_from_tune(&ledger, &kernel, &row.shape_class, &row.machine)
+            .expect("strict planner loader accepts producer-authored row");
+        assert_eq!(model.n_obs(), 3, "every timed repetition is retained");
+        assert!(model.predict(64.0).is_ok());
+    }
+
+    #[test]
     fn staleness_refuses_a_different_current_executable() {
         const SYNTHETIC_RECEIPT: &str = "{\"schema\":\"fs-roofline-synthetic-dependency-receipt-v1\",\"purpose\":\"build-drift-unit-test\"}";
         let axes = synthetic_axes();

@@ -66,7 +66,10 @@ solver without a passing gradient check cannot merge.
   seam (`DiffAwareOracle` penalizes non-differentiable edges under a
   gradient request — no fs-geom changes; the oracle IS the fitness),
   so SDF/spline paths win when gradients are requested while plain
-  queries keep the cheap mesh path. (2) HADAMARD boundary forms as the
+  queries keep the cheap mesh path. This wrapper is a read-only planning
+  view: its fallible `record` refuses and directs execution to record through
+  the backing oracle, so routing actuals cannot disappear silently. (2)
+  HADAMARD boundary forms as the
   mesh-free path (base `hadamard` module, verified against
   perturbation-resolve). (3) UNAVOIDABLE remesh in the path →
   `GradientGrade::EstimatedWithDiscontinuity`: Proposal-3 Estimated

@@ -1421,6 +1421,7 @@ dependencies = [
 name = "fs-plan"
 version = "0.0.1"
 dependencies = [
+ "fs-blake3",
  "fs-dfo",
  "fs-geom",
  "fs-ledger",
@@ -1610,6 +1611,7 @@ dependencies = [
  "fs-blake3",
  "fs-exec",
  "fs-ledger",
+ "fs-plan",
  "fs-session",
  "fs-simd",
  "fs-substrate",

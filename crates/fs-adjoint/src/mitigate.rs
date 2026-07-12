@@ -29,8 +29,8 @@ pub const NON_DIFF_PENALTY_S: f64 = 1e6;
 /// A cost-oracle wrapper that adds the DIFFERENTIABILITY TERM to the
 /// router's fitness: when `gradients_requested`, edges named in the
 /// non-differentiable set report a huge measured cost, so the Pareto
-/// planner prefers smooth (SDF/spline) paths. Recording is a no-op —
-/// this wrapper is a PLANNING view; actuals go to the real oracle.
+/// planner prefers smooth (SDF/spline) paths. Recording refuses — this
+/// wrapper is a PLANNING view; actuals must go to the real oracle.
 pub struct DiffAwareOracle<'a> {
     inner: &'a dyn CostOracle,
     non_differentiable: &'a BTreeSet<String>,
@@ -67,8 +67,15 @@ impl CostOracle for DiffAwareOracle<'_> {
         self.inner.measured_error_abs(edge)
     }
 
-    fn record(&mut self, _edge: &str, _cost_s: f64, _error_abs: f64) {
-        // Planning view only: actuals belong to the real oracle.
+    fn record(
+        &mut self,
+        _edge: &str,
+        _cost_s: f64,
+        _error_abs: f64,
+    ) -> Result<(), fs_geom::CostOracleError> {
+        Err(fs_geom::CostOracleError::Backend {
+            problem: "differentiability-aware oracle is a read-only planning view; record actuals through its backing oracle".to_string(),
+        })
     }
 }
 

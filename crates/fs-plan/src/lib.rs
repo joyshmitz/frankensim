@@ -30,12 +30,20 @@ pub use alloc::{
     MAX_ALLOCATION_KNOBS, MAX_EXECUTION_TRACKS, MAX_ORACLE_COMBINATIONS, MAX_SETTINGS_PER_KNOB,
     MAX_TOTAL_SETTINGS, Plan, PlanInputError, allocate, oracle_min_error,
 };
-pub use cost::{CostModel, CostObservation, CostPrediction, CostRefusal, MIN_OBS};
+pub use cost::{
+    CostModel, CostObservation, CostPrediction, CostRefusal, MAX_COST_EVALUATION_OBSERVATIONS,
+    MAX_COST_OBSERVATIONS, MIN_OBS,
+};
 pub use ledgers::{
     Contribution, ErrorLedger, ErrorSource, LedgerDefect, Rigor, TimeLedger, TimeLedgerDefect,
     TimeStage,
 };
-pub use oracle::{PlanCostOracle, cost_model_from_tune, json_f64_field};
+pub use oracle::{
+    MAX_PLAN_ORACLE_EDGE_BYTES, MAX_PLAN_ORACLE_EDGES, MAX_PLAN_ORACLE_ERROR_OBSERVATIONS,
+    MAX_ROOFLINE_RECEIPT_BYTES, PlanCostOracle, PlanOracleError, ROOFLINE_MACHINE_KEY_BYTES,
+    ROOFLINE_RECEIPT_VERSION, ROOFLINE_ROW_SCHEMA, ROOFLINE_TUNE_SHAPE_PREFIX, TuneModelError,
+    cost_model_from_tune,
+};
 #[cfg(feature = "voi-queries")]
 pub use voi::{
     MAX_VOI_EVALUATIONS, MAX_VOI_GRID, MAX_VOI_NAME_BYTES, MAX_VOI_NODES, MAX_VOI_PROBES, VoiError,
