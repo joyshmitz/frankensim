@@ -215,41 +215,54 @@ fn basis_row(kv: &KnotVector<f64>, n: usize, t: f64) -> Result<Vec<f64>, NurbsEr
     Ok(row)
 }
 
-/// Spline Lipschitz bounds from control differences (hodograph hull):
-/// derivative control points are `p·ΔC / (u_{i+p+1} − u_{i+1})`, and the
-/// open-uniform interior span of `p` intervals is `p/(n−p)`, so
-/// `L ≤ max‖ΔC‖ · (n − p)` per direction. Returns (L_u, L_v).
+/// Rigorous spline Lipschitz bounds from the hodograph hull. The derivative
+/// curve `S'(u) = Σ Dᵢ Nᵢ,ₚ₋₁(u)` has control points
+/// `Dᵢ = p·ΔCᵢ / (u_{i+p+1} − u_{i+1})`, and B-spline bases are a nonnegative
+/// partition of unity, so `|S'(u)| ≤ maxᵢ‖Dᵢ‖ = L`.
+///
+/// The per-difference knot span `u_{i+p+1} − u_{i+1}` MUST be used: the closed
+/// form `L ≤ max‖ΔC‖·(n−p)` only holds for the uniform interior span
+/// `p/(n−p)`. On a clamped open-uniform knot vector the END spans collapse
+/// (for ΔC₀, `u_{p+1} − u₁ = 1/(n−p)`, one interval), so `p/span = p·(n−p)` —
+/// the closed form UNDER-bounds by up to a factor `p` when the largest control
+/// difference sits near the clamp, which would make `spline_to_sdf_certified`
+/// a non-rigorous (too-tight) certificate. Returns (L_u, L_v).
 fn lipschitz_bound(surface: &NurbsSurface<f64>) -> (f64, f64) {
-    let p_u = surface.knots_u.degree as f64;
-    let p_v = surface.knots_v.degree as f64;
+    let p_u = surface.knots_u.degree;
+    let p_v = surface.knots_v.degree;
+    let ku = &surface.knots_u.knots;
+    let kv = &surface.knots_v.knots;
     let cart = |h: &[f64; 4]| [h[0] / h[3], h[1] / h[3], h[2] / h[3]];
-    let mut max_du = 0.0f64;
-    let mut max_dv = 0.0f64;
+    let dist = |a: [f64; 3], b: [f64; 3]| -> f64 {
+        det::sqrt((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2))
+    };
     let rows = surface.cpw.len();
     let cols = surface.cpw[0].len();
+    let mut lu = 0.0f64;
+    let mut lv = 0.0f64;
     for i in 0..rows {
         for j in 0..cols {
             let c = cart(&surface.cpw[i][j]);
             if i + 1 < rows {
-                let d = cart(&surface.cpw[i + 1][j]);
-                let n = det::sqrt(
-                    (d[0] - c[0]).powi(2) + (d[1] - c[1]).powi(2) + (d[2] - c[2]).powi(2),
-                );
-                max_du = max_du.max(n);
+                let dc = dist(cart(&surface.cpw[i + 1][j]), c);
+                let span = ku[i + p_u + 1] - ku[i + 1];
+                if span > 0.0 {
+                    #[allow(clippy::cast_precision_loss)]
+                    let coef = p_u as f64 * dc / span;
+                    lu = lu.max(coef);
+                }
             }
             if j + 1 < cols {
-                let d = cart(&surface.cpw[i][j + 1]);
-                let n = det::sqrt(
-                    (d[0] - c[0]).powi(2) + (d[1] - c[1]).powi(2) + (d[2] - c[2]).powi(2),
-                );
-                max_dv = max_dv.max(n);
+                let dc = dist(cart(&surface.cpw[i][j + 1]), c);
+                let span = kv[j + p_v + 1] - kv[j + 1];
+                if span > 0.0 {
+                    #[allow(clippy::cast_precision_loss)]
+                    let coef = p_v as f64 * dc / span;
+                    lv = lv.max(coef);
+                }
             }
         }
     }
-    #[allow(clippy::cast_precision_loss)]
-    let lu = max_du * (rows as f64 - p_u);
-    #[allow(clippy::cast_precision_loss)]
-    let lv = max_dv * (cols as f64 - p_v);
     (lu, lv)
 }
 
@@ -461,4 +474,45 @@ pub fn refit_radial(
             warnings,
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lipschitz_bound_uses_the_collapsed_clamp_span() {
+        // Regression: `lipschitz_bound` must divide by the ACTUAL hodograph knot
+        // span, not the closed form (n−p). On a clamped open-uniform knot vector
+        // the END span collapses from p/(n−p) (interior) to 1/(n−p), so a control
+        // difference at the clamp has a true hodograph coefficient p·(n−p), not
+        // (n−p). Under-bounding there makes `spline_to_sdf_certified` non-rigorous.
+        let (n, p) = (8usize, 3usize);
+        let ku = open_uniform_knots(n, p).expect("u knots");
+        let kv = open_uniform_knots(2, 1).expect("v knots"); // linear in v
+        // Large jump ONLY between the first two u-rows (the clamped end); every
+        // other u-difference is zero, so max‖ΔC_u‖ lives in the collapsed span.
+        let jump = 2.0;
+        let net: Vec<Vec<[f64; 3]>> = (0..n)
+            .map(|i| {
+                let x = if i == 0 { 0.0 } else { jump };
+                vec![[x, 0.0, 0.0], [x, 1.0, 0.0]]
+            })
+            .collect();
+        let weights = vec![vec![1.0, 1.0]; n];
+        let surface = NurbsSurface::new(ku, kv, &net, &weights).expect("surface");
+        let (lu, _lv) = lipschitz_bound(&surface);
+        // Rigorous: p · jump / (1/(n−p)) = p·(n−p)·jump.
+        let rigorous = p as f64 * (n - p) as f64 * jump;
+        let closed_form = (n - p) as f64 * jump; // the old factor-p under-estimate
+        assert!(
+            (lu - rigorous).abs() < 1e-9,
+            "L_u must use the collapsed clamp span: got {lu}, rigorous {rigorous}, \
+             old closed-form under-estimate {closed_form}"
+        );
+        assert!(
+            lu > closed_form + 1e-9,
+            "the rigorous bound must exceed the closed-form under-estimate ({lu} vs {closed_form})"
+        );
+    }
 }
