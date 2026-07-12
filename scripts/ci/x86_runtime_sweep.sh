@@ -197,7 +197,7 @@ set +e
 # cross-rustc contamination (seen live on ts2) and concurrent-agent
 # artifact races. The sweep owns its own warm dir inside the clone.
 setsid env PATH="$HOME/.cargo/bin:$PATH" \
-  CARGO_TARGET_DIR="$clone/target-x86-runtime-sweep" \
+  CARGO_TARGET_DIR="$clone/target/x86-runtime-sweep" \
   cargo test --locked --workspace --no-fail-fast >>"$log" 2>&1
 status=$?
 set -e
