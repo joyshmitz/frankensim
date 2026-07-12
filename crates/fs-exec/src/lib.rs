@@ -49,7 +49,7 @@ mod tune;
 
 pub use admit::{AdmittedStorage, Concat, LeaseAdmittedOut};
 pub use cx::{Budget, CancelGate, Cancelled, Cx, ExecMode, RunId, StreamKey, TileFailure};
-pub use kernel::{Reduce, TileKernel, TilePlan};
+pub use kernel::{KernelRunner, Reduce, TileKernel, TilePlan};
 pub use kill::{CandidateId, KillRegistry, UnregisteredKill};
 pub use latency::{LaneError, LatencyLane};
 pub use pool::{PoolConfig, RunError, RunReport, TilePool, victim_order, weighted_ranges};

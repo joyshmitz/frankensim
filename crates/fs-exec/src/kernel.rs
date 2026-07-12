@@ -95,6 +95,42 @@ pub trait TileKernel: Sync {
     fn run(&self, tile: u64, cx: &Cx<'_>) -> ControlFlow<Cancelled, Self::Out>;
 }
 
+/// Something that can execute a [`TileKernel`] under a cancel gate — the
+/// abstraction consumers program against so a spawned-per-run
+/// [`crate::TilePool`] and a parked-crew pool (bead tkr7) are
+/// interchangeable at every call site. Both drive the SAME worker
+/// protocol, so results are bitwise-identical across implementations by
+/// construction (P2); only the worker lifetime strategy differs.
+pub trait KernelRunner {
+    /// Normalized worker count, for callers sizing per-worker work
+    /// (e.g. column-group widths) BEFORE launching.
+    fn workers(&self) -> usize;
+
+    /// Run a kernel to completion (or drained cancellation) under an
+    /// external cancel gate; returns the outcome and the measured report.
+    fn run_with_gate<K: TileKernel>(
+        &self,
+        kernel: &K,
+        gate: &crate::cx::CancelGate,
+    ) -> (Result<K::Out, crate::pool::RunError>, crate::pool::RunReport);
+}
+
+/// The spawned-per-run pool is the reference runner: the trait methods
+/// delegate to the inherent ones.
+impl KernelRunner for crate::pool::TilePool {
+    fn workers(&self) -> usize {
+        crate::pool::TilePool::workers(self)
+    }
+
+    fn run_with_gate<K: TileKernel>(
+        &self,
+        kernel: &K,
+        gate: &crate::cx::CancelGate,
+    ) -> (Result<K::Out, crate::pool::RunError>, crate::pool::RunReport) {
+        crate::pool::TilePool::run_with_gate(self, kernel, gate)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

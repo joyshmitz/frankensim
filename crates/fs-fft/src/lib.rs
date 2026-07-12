@@ -1010,10 +1010,10 @@ impl FftNd {
     ///
     /// # Panics
     /// If `data.len()` differs from [`FftNd::total`].
-    pub fn forward_pooled(
+    pub fn forward_pooled<P: fs_exec::KernelRunner>(
         &self,
         data: &mut [C64],
-        pool: &fs_exec::TilePool,
+        pool: &P,
         gate: &fs_exec::CancelGate,
     ) -> Result<(), fs_exec::RunError> {
         self.run_pooled(data, false, pool, gate)
@@ -1027,10 +1027,10 @@ impl FftNd {
     ///
     /// # Panics
     /// As [`FftNd::forward_pooled`].
-    pub fn inverse_pooled(
+    pub fn inverse_pooled<P: fs_exec::KernelRunner>(
         &self,
         data: &mut [C64],
-        pool: &fs_exec::TilePool,
+        pool: &P,
         gate: &fs_exec::CancelGate,
     ) -> Result<(), fs_exec::RunError> {
         self.run_pooled(data, true, pool, gate)
@@ -1041,11 +1041,11 @@ impl FftNd {
     /// some pencils of the interrupted axis may be). Callers needing
     /// transactional output stage a copy first; the drained pool and the
     /// structured error are the guarantees, torn-freedom of `data` is not.
-    fn run_pooled(
+    fn run_pooled<P: fs_exec::KernelRunner>(
         &self,
         data: &mut [C64],
         inverse: bool,
-        pool: &fs_exec::TilePool,
+        pool: &P,
         gate: &fs_exec::CancelGate,
     ) -> Result<(), fs_exec::RunError> {
         let total = self.total();
