@@ -241,7 +241,15 @@ fn fused_sixstep_traffic_and_evidence_version_are_bound() {
 /// 0.40 floor with band margin — floors assert settled claims.
 /// Returns false when any row is environment-invalid.
 fn fftnd_report_rows(axes: &MachineAxes) -> bool {
-    let workers = std::thread::available_parallelism().map_or(8, std::num::NonZero::get);
+    // Diagnostic override (bead 3f6c): sweep worker counts on the
+    // report-only rows to locate the small-kernel granularity peak.
+    // Timing-only by construction (P2) — results are bitwise-identical
+    // at every worker count.
+    let workers = std::env::var("FRANKENSIM_FFTND_WORKERS")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .filter(|&w| w >= 1)
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(8, std::num::NonZero::get));
     let pool = fs_exec::TilePool::new(fs_exec::PoolConfig::for_host(workers, 0xFD1D));
     pool.with_parked_crew_local(|parked| {
         let mut env_ok = true;
