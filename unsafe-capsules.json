@@ -20,6 +20,7 @@
 {"crate": "fs-simd", "module": "crates/fs-simd/src/neon/gemmf32/mod.rs", "safety_md": "crates/fs-simd/src/neon/gemmf32/SAFETY.md"},
 {"crate": "fs-simd", "module": "crates/fs-simd/src/neon/transpose/mod.rs", "safety_md": "crates/fs-simd/src/neon/transpose/SAFETY.md"},
 {"crate": "fs-simd", "module": "crates/fs-simd/src/x86/gemm.rs", "safety_md": "crates/fs-simd/src/x86/SAFETY.md"},
-{"crate": "fs-simd", "module": "crates/fs-simd/src/x86/btile.rs", "safety_md": "crates/fs-simd/src/x86/SAFETY.md"}
+{"crate": "fs-simd", "module": "crates/fs-simd/src/x86/btile.rs", "safety_md": "crates/fs-simd/src/x86/SAFETY.md"},
+{"crate": "fs-exec", "module": "crates/fs-exec/src/crew.rs", "safety_md": "crates/fs-exec/src/SAFETY.md"}
 ]
 }

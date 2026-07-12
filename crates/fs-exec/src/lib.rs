@@ -36,6 +36,7 @@
 //! behavior, and no-claim boundaries.
 
 mod admit;
+mod crew;
 mod cx;
 mod kernel;
 mod kill;
