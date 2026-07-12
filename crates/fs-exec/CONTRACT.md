@@ -58,13 +58,17 @@ fs-blake3, fs-substrate, fs-obs.
   canonical accounting of the observed admission trace. Identical fixed plans
   with identical arena-cache state have deterministic cumulative demand;
   cache history and near-limit concurrent refusal/peak fields are
-  state/schedule-sensitive. The enforced envelope is deliberately narrow:
-  tracked executor root metadata plus lease-bound arena chunks. Thread stacks,
-  allocator bookkeeping, panic strings, and arbitrary heap owned directly by
-  a kernel or a heap-bearing `K::Out` are explicit no-claims. Workers are
-  scoped per run; per-worker deques are
-  seeded with contiguous, weight-proportional tile runs (`weighted_ranges`)
-  and steal HALF a victim's deque in `victim_order` (same-CCD ring first).
+  state/schedule-sensitive. The enforced envelope: tracked executor root
+  metadata, lease-bound arena chunks, and — since bead wf9.16.1 — output
+  payload storage, because the leased entries bound
+  `K::Out: LeaseAdmittedOut` (heap-bearing custom outputs fail to compile
+  there; see the no-claims section for the full contract). Thread stacks,
+  allocator bookkeeping, panic strings, and heap a kernel allocates and
+  drops entirely within its own tile body remain explicit no-claims.
+  Workers are scoped per run; each owns one contiguous `TileRun`
+  (bead wf9.16.2: two u64s, zero post-launch allocation) seeded from the
+  contiguous, weight-proportional `weighted_ranges` plan, stealing the
+  BACK HALF of a victim's run in `victim_order` (same-CCD ring first).
   `PoolConfig::for_host` / `TilePool::for_host` select the recorded host-probe
   topology; `workers()` and `placement_identity()` expose the normalized
   execution identity that tune producers must bind. The latter has a readable
@@ -379,15 +383,24 @@ and explicit row/decision commit semantics.
 - NO lock-free deque claim: the v1 deques are mutex-based with the correct
   stealing PROTOCOL; Chase–Lev arrives only with roofline evidence that
   justifies its unsafe capsule.
-- Workers are scoped per run (spawn cost ~tens of µs amortized over a
-  kernel run); the persistent parked-worker pool is deferred with the same
-  evidence bar.
-- The throughput lane currently implements those scopes with joined
-  `std::thread::scope` workers. Tile cancellation, drain, arena reclamation,
-  and structured containment are live, but the plan's stronger claim that
-  every throughput lifetime is an asupersync child scope is NOT made yet.
-  Replacing the worker-lifetime substrate without changing `TileKernel`/`Cx`
-  semantics remains L0 follow-up work.
+- Workers are scoped per run by default (spawn cost ~tens of µs amortized
+  over a kernel run). The parked-crew lane (`with_parked_crew`,
+  `with_parked_crew_local` — bead tkr7) is the OPT-IN answer where that
+  cost dominates (measured: N-D FFT axis passes, bead 27d3): a crew parks
+  once inside its owner's scope and runs dispatch to it over a condvar,
+  driving the SAME worker protocol — bitwise-identical results across
+  all three lanes by construction. The crew's job handoff is a registered
+  unsafe capsule (`crew.rs`, SAFETY.md beside it): a lifetime-erased job
+  borrow revoked by a completion latch that `dispatch` blocks on.
+- The throughput lane's default (`run`/`run_declared*`) still spawns
+  joined `std::thread::scope` workers. Callers holding a live asupersync
+  task use `run_scoped` (bead lx0e) or a task-scoped parked crew, whose
+  workers are scoped CPU children of the calling task via
+  `Cx::scoped_cpu` — task cancellation and budget exhaustion drain runs
+  at tile boundaries. The plan's stronger claim that EVERY throughput
+  lifetime is an asupersync child scope is still NOT made: untasked call
+  sites keep the std lane deliberately (forcing a runtime at every
+  perf-lane/tool call site would invert the layering).
 - NO achieved thread-pinning/NUMA-binding claim: `victim_order` steers
   locality and supported hosts may attempt the requested affinity through the
   audited fs-substrate capsule, but v1 workers ignore the syscall result. The
