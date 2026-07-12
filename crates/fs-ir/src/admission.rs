@@ -798,7 +798,13 @@ fn glob_matches(pattern: &str, verb: &str) -> bool {
         .map_or(pattern == verb, |prefix| verb.starts_with(prefix))
 }
 
-fn valid_operator_pattern(pattern: &str) -> bool {
+/// Whether an operator grant is one canonical exact name or a namespace
+/// wildcard ending in `.*`.
+///
+/// Capability issuers use this same predicate as admission so malformed
+/// wildcard spellings cannot acquire broader semantics before IR validation.
+#[must_use]
+pub fn valid_operator_pattern(pattern: &str) -> bool {
     if pattern.trim() != pattern
         || pattern.is_empty()
         || pattern.starts_with('.')
