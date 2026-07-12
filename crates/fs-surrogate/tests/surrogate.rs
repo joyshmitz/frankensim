@@ -107,9 +107,43 @@ fn the_conformal_band_achieves_its_nominal_coverage() {
 }
 
 #[test]
+fn conformal_band_fails_closed_when_alpha_below_one_over_n_plus_one() {
+    // Distribution-free (1-alpha) coverage needs rank ceil((1-alpha)(n+1)) <= n,
+    // i.e. alpha >= 1/(n+1). Below that the honest band is unbounded: the old
+    // `.clamp(1, n)` instead returned the MAX residual (rank n), whose true
+    // coverage is only n/(n+1) < 1-alpha -- a silent under-coverage on a crate
+    // that advertises "at least (1-alpha)" coverage. It must fail closed to +inf.
+    let residuals = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]; // n = 8
+    // alpha = 0.1 < 1/9: uncertifiable -> infinite band -> escalate.
+    let band = conformal_band(&residuals, 0.1);
+    assert!(
+        band.half_width.is_infinite(),
+        "n=8, alpha=0.1 is below 1/(n+1); the honest band is infinite"
+    );
+    assert!(
+        matches!(
+            certify_or_escalate(&band, true, 0.5),
+            Decision::Escalate { .. }
+        ),
+        "an uncertifiable (infinite) band must escalate, never use the surrogate"
+    );
+    // alpha = 0.15 >= 1/9: certifiable; rank = ceil(0.85*9) = 8 -> 8th residual.
+    let ok = conformal_band(&residuals, 0.15);
+    assert!(
+        (ok.half_width - 0.8).abs() < 1e-12,
+        "n=8, alpha=0.15 must return the 8th-smallest residual (0.8), got {}",
+        ok.half_width
+    );
+}
+
+#[test]
 fn certify_or_escalate_uses_the_surrogate_only_when_trustworthy() {
-    let narrow = conformal_band(&[0.001; 8], 0.1);
-    let wide = conformal_band(&[0.5; 8], 0.1);
+    // n = 20 (not 8): at alpha = 0.1 a split-conformal band needs n >= 9
+    // (alpha >= 1/(n+1)) to certify (1-alpha) coverage at all; with n = 8 the
+    // honest band is +inf. These fixtures exercise the DECISION logic, so use a
+    // certifiable calibration size and let the residual magnitude drive it.
+    let narrow = conformal_band(&[0.001; 20], 0.1);
+    let wide = conformal_band(&[0.5; 20], 0.1);
     // narrow band, in domain, tight enough -> use the surrogate.
     assert!(matches!(
         certify_or_escalate(&narrow, true, 0.1),
@@ -129,8 +163,12 @@ fn certify_or_escalate_uses_the_surrogate_only_when_trustworthy() {
 
 #[test]
 fn the_policy_reduces_cost_versus_all_high_fidelity() {
-    let narrow = conformal_band(&[0.001; 8], 0.1);
-    let wide = conformal_band(&[0.5; 8], 0.1);
+    // n = 20 (not 8): at alpha = 0.1 a split-conformal band needs n >= 9
+    // (alpha >= 1/(n+1)) to certify (1-alpha) coverage at all; with n = 8 the
+    // honest band is +inf. These fixtures exercise the DECISION logic, so use a
+    // certifiable calibration size and let the residual magnitude drive it.
+    let narrow = conformal_band(&[0.001; 20], 0.1);
+    let wide = conformal_band(&[0.5; 20], 0.1);
     let (surrogate_cost, full_cost) = (1.0, 100.0);
     // a fleet of queries: most trustworthy, a couple must escalate.
     let queries = [

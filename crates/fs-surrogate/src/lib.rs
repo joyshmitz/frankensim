@@ -202,6 +202,14 @@ impl ConformalBand {
 /// miscoverage `alpha`: the `⌈(1−α)(n+1)⌉`-th smallest absolute residual, which
 /// gives distribution-free `(1−α)` marginal coverage.
 ///
+/// Distribution-free `(1−α)` coverage requires that order statistic to EXIST,
+/// i.e. `⌈(1−α)(n+1)⌉ ≤ n`, equivalently `α ≥ 1/(n+1)`. With fewer calibration
+/// points than that, the only honest `(1−α)` band is unbounded: the function
+/// returns `half_width = +∞`, which forces [`certify_or_escalate`] to escalate.
+/// (A previous `.clamp(1, n)` silently returned the MAX residual there, whose
+/// true coverage is only `n/(n+1) < 1−α` — a band that under-covers while
+/// claiming its nominal guarantee.)
+///
 /// # Panics
 /// If `residuals` is empty or `alpha ∉ (0, 1)`.
 #[must_use]
@@ -214,11 +222,10 @@ pub fn conformal_band(residuals: &[f64], alpha: f64) -> ConformalBand {
     let mut r: Vec<f64> = residuals.iter().map(|x| x.abs()).collect();
     r.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let n = r.len();
-    let rank = (((1.0 - alpha) * (n as f64 + 1.0)).ceil() as usize).clamp(1, n);
-    ConformalBand {
-        half_width: r[rank - 1],
-        alpha,
-    }
+    let rank = ((1.0 - alpha) * (n as f64 + 1.0)).ceil() as usize;
+    // `(1−α)(n+1) > 0` so `rank ≥ 1`; only the upper end can fall off the sample.
+    let half_width = if rank > n { f64::INFINITY } else { r[rank - 1] };
+    ConformalBand { half_width, alpha }
 }
 
 /// Empirical coverage of a band on held-out `(prediction, truth)` pairs.
