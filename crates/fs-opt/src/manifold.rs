@@ -1,3 +1,14 @@
+// ============================================================================
+// ORPHANED SCAFFOLD — NOT COMPILED (bead frankensim-orpe, 2026-07-12).
+// This file is not declared in lib.rs; it is the original fs-opt scaffold
+// superseded by the ir.rs/serial.rs surface (which carries the mature
+// PdeResidual: String study identity, `over` binding, declared dims).
+// Retained under the no-deletion rule. The compile_error! below is INERT
+// while orphaned and fires the moment anyone re-wires this file without
+// reconciling it against the live IR — do not remove the sentinel.
+// ============================================================================
+compile_error!("fs-opt scaffold module resurrected without reconciliation against ir.rs — see bead frankensim-orpe");
+
 //! Manifold metadata for variables: the gradient stack consumes
 //! retraction + tangent projection so "optimize an orientation" never
 //! degenerates into "optimize 9 numbers and renormalize when it
