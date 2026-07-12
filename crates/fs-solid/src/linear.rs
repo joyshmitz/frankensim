@@ -56,6 +56,12 @@ pub struct LinearProblem<'m> {
     pub dirichlet: Vec<(Patch, VecField<'m>)>,
     /// Traction patches: (patch, traction field).
     pub traction: Vec<(Patch, VecField<'m>)>,
+    /// SYMMETRY constraints: (patch, component) pins ONE displacement
+    /// component to zero along a patch, leaving the other free — the
+    /// half/quarter-model boundary condition every NAFEMS LE-class
+    /// benchmark needs (bead g42o). An explicit `dirichlet` entry on
+    /// the same node takes precedence (symmetry never overwrites it).
+    pub symmetry: Vec<(Patch, usize)>,
 }
 
 /// The Lamé pair for the plane reduction (plane stress uses the
@@ -116,6 +122,16 @@ impl LinearProblem<'_> {
                 let val = g(p[0], p[1]);
                 fixed.insert(2 * node, val[0]);
                 fixed.insert(2 * node + 1, val[1]);
+            }
+        }
+        for (patch, comp) in &self.symmetry {
+            if self.mesh.patch_edges(*patch).is_none() {
+                return Err(SolidError::UnknownPatch { patch: *patch });
+            }
+            assert!(*comp < 2, "symmetry component index {comp} out of range");
+            for node in self.mesh.patch_nodes(*patch) {
+                // entry-or-insert: explicit Dirichlet wins on shared nodes.
+                fixed.entry(2 * node + comp).or_insert(0.0);
             }
         }
         let mut coo = Coo::new(ndof, ndof);

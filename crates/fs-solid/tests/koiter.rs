@@ -37,6 +37,7 @@ fn stab_006_koiter_column_symmetric_stable() {
         body_force: None,
         dirichlet: vec![(Patch::Left, &|_, _| [0.0, 0.0])],
         traction: vec![(Patch::Right, &|_, _| [-P, 0.0])],
+        symmetry: vec![],
     };
     let (k, kg, dof_map, _) = reduced_pencil(&linear).expect("pencil builds");
     let pencil = buckling_loads(&k, &kg, &dof_map, 1, 400).expect("pencil solves");

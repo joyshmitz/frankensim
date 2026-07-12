@@ -101,6 +101,21 @@ impl Mesh2 {
                 (0..ny).rev().map(|j| (id(0, j + 1), id(0, j))).collect(),
             ),
         ];
+        // ORIENTATION GUARD (bead g42o, found the hard way): an
+        // orientation-reversing map produces negative element Jacobians,
+        // which silently NEGATE the assembled stiffness and every derived
+        // stress — the solve "works" and every sign is wrong. Fail closed
+        // at construction with the remedy named.
+        for (k, conn) in elems.iter().enumerate() {
+            let p0 = nodes[conn[0]];
+            let p1 = nodes[conn[1]];
+            let p3 = nodes[conn[3]];
+            let cross = (p1[0] - p0[0]) * (p3[1] - p0[1]) - (p1[1] - p0[1]) * (p3[0] - p0[0]);
+            assert!(
+                cross > 0.0,
+                "mapped_quads: element {k} is orientation-reversing (corner cross                  product {cross:.3e} <= 0) — the map flips handedness; swap the two                  parameters or reverse one axis so det J > 0 everywhere"
+            );
+        }
         Mesh2 {
             nodes,
             elems,

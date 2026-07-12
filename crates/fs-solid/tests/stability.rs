@@ -54,6 +54,7 @@ fn column_problem(mesh: &Mesh2) -> LinearProblem<'_> {
         body_force: None,
         dirichlet: vec![(Patch::Left, &|_, _| [0.0, 0.0])],
         traction: vec![(Patch::Right, &|_, _| [-COL_P, 0.0])],
+        symmetry: vec![],
     }
 }
 

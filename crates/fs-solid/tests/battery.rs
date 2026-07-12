@@ -115,6 +115,7 @@ fn sol_001_patch_tests_exact() {
             body_force: None,
             dirichlet: all.iter().map(|&p| (p, &lin as _)).collect(),
             traction: vec![],
+        symmetry: vec![],
         };
         let u = problem.solve().expect("patch solves");
         for (node, val) in u.iter().enumerate() {
@@ -191,6 +192,7 @@ fn sol_002_mms_orders_families_and_frontends() {
                 body_force: Some(&mms_f),
                 dirichlet: all.iter().map(|&p| (p, &mms_u as _)).collect(),
                 traction: vec![],
+        symmetry: vec![],
             };
             let u = problem.solve().expect("mms solves");
             errs.push(l2_h1_error(&mesh, &u, &mms_u, &mms_grad));
@@ -400,6 +402,7 @@ fn cantilever_tip(nx: usize, ny: usize, poisson: f64, formulation: Formulation) 
         body_force: None,
         dirichlet: vec![(Patch::Left, &|_, _| [0.0, 0.0])],
         traction: vec![(Patch::Right, &|_, _| [0.0, 0.01])],
+        symmetry: vec![],
     };
     let u = problem.solve().expect("cantilever solves");
     // Mean tip deflection over the right edge.
@@ -459,6 +462,7 @@ fn cooks_tip(n: usize, poisson: f64, plane: PlaneKind, formulation: Formulation)
         body_force: None,
         dirichlet: vec![(Patch::Left, &|_, _| [0.0, 0.0])],
         traction: vec![(Patch::Right, &|_, _| [0.0, 1.0 / 16.0])],
+        symmetry: vec![],
     };
     let u = problem.solve().expect("cooks solves");
     // Vertical displacement at the right-edge midpoint (48, 52) — the
@@ -612,4 +616,136 @@ fn selection_guidance_is_consistent_with_battery() {
         }),
         Formulation::Standard
     );
+}
+
+// ------------------------------------------------------------------ sol-le1
+// NAFEMS LE1 "Elliptic membrane" (bead frankensim-g42o, Gauntlet G2).
+// Quarter model between inner ellipse x^2/2^2 + y^2/1 = 1 and outer
+// ellipse x^2/3.25^2 + y^2/2.75^2 = 1; plane stress, E = 210e3 MPa,
+// nu = 0.3; uniform outward NORMAL tension 10 MPa on the outer edge;
+// symmetry on both straight edges. TARGET: sigma_yy at point D = (2, 0)
+// equals 92.7 MPa (The Standard NAFEMS Benchmarks, TNSB Rev. 3, test
+// LE1). CI gates a coarse band at fixture resolution plus monotone
+// approach under refinement — the Ghia-cavity precedent (fine studies
+// live in perf lanes, the envelope lives here).
+
+/// Solve LE1 at mesh density (nx angular, ny radial); return sigma_yy
+/// evaluated at the Gauss point of the corner element nearest D.
+fn le1_sigma_yy(nx: usize, ny: usize) -> f64 {
+    let (ai, bi, ao, bo) = (2.0, 1.0, 3.25, 2.75);
+    // Radial-first parameterization: (s, t) = (radial blend, angle).
+    // The (e_r, e_theta) ordering keeps the Jacobian POSITIVE — the
+    // angle-first version is orientation-reversing (det J < 0), which
+    // silently flips assembled signs (found the hard way; see bead).
+    let map = move |s: f64, t: f64| -> [f64; 2] {
+        let th = t * std::f64::consts::FRAC_PI_2;
+        let inner = [ai * th.cos(), bi * th.sin()];
+        let outer = [ao * th.cos(), bo * th.sin()];
+        [
+            (1.0 - s).mul_add(inner[0], s * outer[0]),
+            (1.0 - s).mul_add(inner[1], s * outer[1]),
+        ]
+    };
+    let mesh = Mesh2::mapped_quads(ny, nx, &map);
+    let problem = LinearProblem {
+        mesh: &mesh,
+        youngs: 210_000.0, // MPa
+        poisson: 0.3,
+        plane: PlaneKind::Stress,
+        formulation: Formulation::Standard,
+        body_force: None,
+        dirichlet: vec![],
+        traction: vec![(Patch::Right, &|x, y| {
+            // Outward unit normal of the OUTER ellipse at (x, y), scaled
+            // by the 10 MPa tension.
+            let g = [x / (3.25 * 3.25), y / (2.75 * 2.75)];
+            let n = (g[0] * g[0] + g[1] * g[1]).sqrt();
+            [10.0 * g[0] / n, 10.0 * g[1] / n]
+        })],
+        // Bottom edge (t = 0) is the x-axis: u_y = 0. Top edge
+        // (t = 1) is the y-axis: u_x = 0. One component each — the
+        // constraint the `symmetry` field exists for.
+        symmetry: vec![(Patch::Bottom, 1), (Patch::Top, 0)],
+    };
+    let u = problem.solve().expect("LE1 solves");
+    if std::env::var("LE1_DEBUG").is_ok() {
+        let d_node = mesh.nodes.iter().position(|p| (p[0] - 2.0).abs() < 1e-9 && p[1].abs() < 1e-9).unwrap();
+        let o_node = mesh.nodes.iter().position(|p| (p[0] - 3.25).abs() < 1e-9 && p[1].abs() < 1e-9).unwrap();
+        println!("{{\"debug\":\"le1\",\"u_D\":[{:.6},{:.6}],\"u_outer\":[{:.6},{:.6}]}}", u[d_node][0], u[d_node][1], u[o_node][0], u[o_node][1]);
+    }
+    // Corner element at (xi, eta) = (0, 0): its first node is D itself
+    // under mapped_quads' row-major numbering. Evaluate strain at the
+    // Gauss point nearest the corner and form plane-stress sigma_yy.
+    let conn = mesh
+        .elems
+        .iter()
+        .find(|c| c.iter().any(|&n| {
+            let p = mesh.nodes[n];
+            (p[0] - 2.0).abs() < 1e-9 && p[1].abs() < 1e-9
+        }))
+        .expect("an element touches D");
+    if std::env::var("LE1_DEBUG").is_ok() {
+        for (label, xi, eta) in [("corner", -0.577, -0.577), ("center", 0.0, 0.0), ("xi+", 0.577, -0.577), ("eta+", -0.577, 0.577)] {
+            let (_, gr, _) = fs_solid::mesh2::shapes_at(&mesh.nodes, conn, xi, eta);
+            let (mut xx, mut yy) = (0.0, 0.0);
+            for (a, g2) in conn.iter().zip(&gr) { xx += g2[0]*u[*a][0]; yy += g2[1]*u[*a][1]; }
+            let cc: f64 = 210_000.0 / (1.0 - 0.09);
+            println!("{{\"probe\":\"{label}\",\"sxx\":{:.2},\"syy\":{:.2}}}", cc*(xx + 0.3*yy), cc*(0.3f64).mul_add(xx, yy));
+        }
+        println!("{{\"conn\":{conn:?},\"nodes\":[{:?},{:?},{:?},{:?}]}}", mesh.nodes[conn[0]], mesh.nodes[conn[1]], mesh.nodes[conn[2]], mesh.nodes[conn[3]]);
+    }
+    let g = -1.0 / 3.0_f64.sqrt(); // 2x2 Gauss point nearest the D corner
+    let (_, grads, _) = fs_solid::mesh2::shapes_at(&mesh.nodes, conn, g, g);
+    let (mut exx, mut eyy) = (0.0, 0.0);
+    for (a, gr) in conn.iter().zip(&grads) {
+        exx += gr[0] * u[*a][0];
+        eyy += gr[1] * u[*a][1];
+    }
+    let (e, nu): (f64, f64) = (210_000.0, 0.3);
+    let c = e / (1.0 - nu * nu);
+    c * nu.mul_add(exx, eyy)
+}
+
+#[test]
+fn sol_le1_nafems_elliptic_membrane_envelope() {
+    // Refinement ladder: the Gauss-point estimate must approach the
+    // published 92.7 MPa monotonically-in-error and land in the coarse
+    // band at the finest fixture level.
+    let ladder: Vec<(usize, f64)> = [(8, 4), (16, 8), (32, 16)]
+        .iter()
+        .map(|&(nx, ny)| ((nx), le1_sigma_yy(nx, ny)))
+        .collect();
+    for (n, s) in &ladder {
+        println!(
+            "{{\"suite\":\"fs-solid\",\"case\":\"le1\",\"nx\":{n},\"sigma_yy\":{s:.3},\"target\":92.7}}"
+        );
+    }
+    let errs: Vec<f64> = ladder.iter().map(|(_, s)| (s - 92.7).abs()).collect();
+    assert!(
+        errs[2] < errs[0],
+        "refinement must approach the NAFEMS target: errors {errs:?}"
+    );
+    assert!(
+        (85.0..=100.0).contains(&ladder[2].1),
+        "sigma_yy at D within the coarse band [85, 100] MPa (target 92.7): got {:.2}",
+        ladder[2].1
+    );
+    verdict(
+        "sol-le1",
+        true,
+        "\"detail\":\"NAFEMS LE1 sigma_yy(D) approaches 92.7 MPa under refinement, coarse band held\"",
+    );
+}
+
+#[test]
+#[should_panic(expected = "orientation-reversing")]
+fn sol_mapped_quads_refuses_orientation_reversing_maps() {
+    // The exact trap that produced sign-flipped LE1 stresses: an
+    // angle-first polar map has det J < 0. The constructor must refuse
+    // it loudly instead of letting the solve negate every sign.
+    let _ = Mesh2::mapped_quads(4, 4, &|xi, eta| {
+        let th = xi * std::f64::consts::FRAC_PI_2;
+        let r = 1.0 + eta;
+        [r * th.cos(), r * th.sin()]
+    });
 }
