@@ -680,9 +680,20 @@ does not cover the needed check or when you are intentionally running a narrow
 diagnostic:
 
 ```bash
-rch exec -- env CARGO_TARGET_DIR="${TMPDIR:-/tmp}/rch_target_frankensim_check" cargo check --all-targets
-rch exec -- env CARGO_TARGET_DIR="${TMPDIR:-/tmp}/rch_target_frankensim_test" cargo test --all-targets
+rch exec -- env CARGO_TARGET_DIR="${RCH_TARGET_BASE:-${TMPDIR:-/tmp}}/rch_target_frankensim_check" cargo check --all-targets
+rch exec -- env CARGO_TARGET_DIR="${RCH_TARGET_BASE:-${TMPDIR:-/tmp}}/rch_target_frankensim_test" cargo test --all-targets
 ```
+
+**ALWAYS use `${RCH_TARGET_BASE:-${TMPDIR:-/tmp}}` as the base — never `${TMPDIR:-/tmp}`
+or a bare `/tmp` — when you invent a new per-task target dir name.** These isolated
+target dirs are 5-15G *each* and are never cleaned up by the task that made them.
+On the Mac, `$TMPDIR` and `/tmp` both live on the internal Data volume: 600G+ of
+`rch_target_frankensim_*` accumulated there and wedged the machine at 100% full
+(2026-07-11). `RCH_TARGET_BASE` is exported per-machine (Mac: the external NVMe;
+Linux workers: unset, so `$TMPDIR`=/data/tmp is used, which is already correct).
+
+Prefer reusing one of the two names above. If you truly need a distinct target dir
+for an isolated task, still base it on `$RCH_TARGET_BASE` and delete it when done.
 
 Do not rely on local fallback for heavy builds in a shared-agent environment
 unless the user explicitly authorizes it.
