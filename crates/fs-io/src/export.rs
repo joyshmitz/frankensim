@@ -67,7 +67,12 @@ fn finish_zip(out: &mut Vec<u8>, entries: &[ZipEntry]) {
         out.extend_from_slice(&e.len.to_le_bytes());
         out.extend_from_slice(&e.len.to_le_bytes());
         out.extend_from_slice(&u16::try_from(e.name.len()).expect("short").to_le_bytes());
-        out.extend_from_slice(&[0u8; 12]); // extra/comment/disk/attrs(int)
+        // extra-field-len(2) + comment-len(2) + disk-start(2) + internal-attrs(2)
+        // = 8 bytes. Writing 12 made each central-directory record 50 bytes
+        // instead of the fixed 46, misaligning every following record's
+        // PK\x01\x02 signature and the EOCD's offsets — an invalid ZIP/OPC
+        // package no conformant reader can open.
+        out.extend_from_slice(&[0u8; 8]);
         out.extend_from_slice(&[0u8; 4]); // external attrs
         out.extend_from_slice(&e.offset.to_le_bytes());
         out.extend_from_slice(e.name.as_bytes());

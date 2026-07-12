@@ -368,6 +368,39 @@ fn io_006_container_exports_are_structurally_valid() {
     );
 }
 
+#[test]
+fn io_006b_3mf_central_directory_records_are_well_formed() {
+    // Regression: each ZIP central-directory file header is a FIXED 46 bytes
+    // before the name (this writer emits no extra/comment fields). A 4-byte
+    // inflation (50-byte records) misaligns every following record's
+    // PK\x01\x02 signature and the EOCD offsets, yielding a ZIP/OPC package no
+    // conformant reader can open — invisible to a test that only checks the
+    // EOCD magic and entry count. Walk the directory at the 46-byte stride and
+    // require it to land exactly on the EOCD.
+    let mesh = tetra();
+    let pkg = export_3mf(&mesh);
+    let eocd = pkg
+        .windows(4)
+        .rposition(|w| w == [0x50, 0x4B, 0x05, 0x06])
+        .expect("EOCD present");
+    let entries = u16::from_le_bytes([pkg[eocd + 10], pkg[eocd + 11]]) as usize;
+    let dir_start = u32::from_le_bytes(pkg[eocd + 16..eocd + 20].try_into().expect("4")) as usize;
+    let mut pos = dir_start;
+    for record in 0..entries {
+        assert_eq!(
+            &pkg[pos..pos + 4],
+            &[0x50, 0x4B, 0x01, 0x02],
+            "central-directory record {record} must begin at the 46-byte-strided offset"
+        );
+        let name_len = u16::from_le_bytes([pkg[pos + 28], pkg[pos + 29]]) as usize;
+        pos += 46 + name_len;
+    }
+    assert_eq!(
+        pos, eocd,
+        "the central directory must end exactly at the EOCD (records are 46+name bytes)"
+    );
+}
+
 /// wqd.25.1 — PLY element order is the HEADER's to define: face-first
 /// files import identically to vertex-first files (ASCII and binary),
 /// out-of-range indices still refuse after the full parse with the
