@@ -371,19 +371,13 @@ fn stage_6_value_of_information() {
         kind: ProbeKind::Physical,
     }];
     let ranked = rank_purchases(&decision, &live, &menu, 64).expect("valid live VoI request");
-    h.log(
-        "voi.live",
-        &format!("{{\"top_score\":{:.5}}}", ranked[0].score()),
-    );
+    let top = ranked.top().expect("nonempty sealed menu");
+    h.log("voi.live", &format!("{{\"top_score\":{:.5}}}", top.score()));
     assert!(
-        ranked[0].score() > 0.0,
+        top.score() > 0.0,
         "a flippable decision prices its evidence"
     );
-    assert!(
-        hint_for_query(&ranked)
-            .expect("valid live hint")
-            .contains("anchor")
-    );
+    assert!(hint_for_query(&ranked).render_text().contains("anchor"));
     // A decision that CANNOT flip: the recommendation is EMPTY (no
     // useless purchase — the fail-safe).
     let settled = vec![UncertaintyNode {
@@ -393,24 +387,25 @@ fn stage_6_value_of_information() {
         nominal: 0.95,
     }];
     let ranked = rank_purchases(&decision, &settled, &menu, 64).expect("valid settled VoI request");
+    let top = ranked.top().expect("nonempty sealed menu");
     h.log(
         "voi.settled",
-        &format!("{{\"top_score\":{:.5}}}", ranked[0].score()),
+        &format!("{{\"top_score\":{:.5}}}", top.score()),
     );
     assert_eq!(
-        ranked[0].score().to_bits(),
+        top.score().to_bits(),
         0.0f64.to_bits(),
         "an unflippable decision buys nothing"
     );
     assert!(
         hint_for_query(&ranked)
-            .expect("valid settled hint")
-            .contains("spend nothing"),
-        "the hint says so explicitly"
+            .render_text()
+            .contains("no sampled purchase"),
+        "the hint reports the sampled-zero boundary explicitly"
     );
     verdict(
         "stage-6",
-        "a flippable decision returns priced top-k purchases; an unflippable one \
-         returns 'spend nothing' — no useless VoI purchase (G0/G2)",
+        "a flippable decision returns a sealed priced menu; an unflippable sampled \
+         grid reports a non-authoritative zero instead of claiming omniscience (G0/G2)",
     );
 }

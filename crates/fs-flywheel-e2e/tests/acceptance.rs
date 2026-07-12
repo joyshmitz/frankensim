@@ -366,7 +366,8 @@ fn ac_003_package_recheck_solver_free_and_voi_hint() -> Result<(), PlanError> {
         kind: ProbeKind::Computational,
     }];
     let ranked = rank_purchases(&decision, &nodes, &menu, 32).expect("valid bounded VoI request");
-    let hint = fs_plan::voi::hint_for_query(&ranked).expect("valid VoI hint");
+    let hint = fs_plan::voi::hint_for_query(&ranked);
+    let hint_text = hint.render_text();
     // The package: colored claims, fixture-authenticated, Merkle-rooted.
     let Color::Verified { lo, hi } = last.color else {
         panic!("the wedge trajectory ends verified");
@@ -384,12 +385,7 @@ fn ac_003_package_recheck_solver_free_and_voi_hint() -> Result<(), PlanError> {
     let pkg = signed_fixture(
         EvidencePackage::new(provenance)
             .with_claim(qoi_claim)
-            .with_claim(Claim::estimated(
-                "voi-hint",
-                hint.clone(),
-                "voi-myopic",
-                1.0,
-            )),
+            .with_claim(Claim::estimated("voi-hint", hint_text, "voi-myopic", 1.0)),
         "acceptance-gate",
     );
     // SOLVER-FREE FIXTURE RE-CHECK: fs-checker exercises exact certificate,
@@ -433,8 +429,9 @@ fn ac_003_package_recheck_solver_free_and_voi_hint() -> Result<(), PlanError> {
     );
     let pie = check.render_pie();
     println!(
-        "{{\"metric\":\"package\",\"root\":\"{root}\",\"hint\":\"{hint}\",\
+        "{{\"metric\":\"package\",\"root\":\"{root}\",\"hint\":{},\
          \"pie\":\"{}\"}}",
+        hint.to_json(),
         pie.replace('"', "'").replace('\n', " | ")
     );
     verdict(

@@ -1,11 +1,11 @@
 //! VALUE-OF-INFORMATION QUERIES (addendum Proposal C, bead knh1.6;
-//! [F] — behind the `voi-queries` feature): THE IGNORANCE MARKET, v0
+//! \[F\] — behind the `voi-queries` feature): THE IGNORANCE MARKET, v0
 //! as a RANKED LIST. Across everything the ledger is uncertain about,
 //! where does one dollar of evidence most change the downstream
 //! decision? Decision sensitivity (does the decision FLIP inside the
 //! node's interval?) is computed from CACHED surrogate sweeps, crossed
 //! with a PRICED PROBE MENU that unifies computational and physical
-//! experiments, ranked by FLIP-PROBABILITY-PER-DOLLAR.
+//! experiments, ranked by SAMPLED FLIP-FRACTION REDUCTION PER DOLLAR.
 //!
 //! MYOPIC one-step VoI ONLY (the proposal's own discipline: full
 //! sequential VoI is intractable and myopic captures most of the
@@ -13,29 +13,38 @@
 //! upgrade the fs-ir anytime module's CONTRACT reserved for Proposal C
 //! — and (ii) the scheduler for discrepancy probes.
 //!
-//! THE KILL CRITERION AS CODE: [`audit_verdict`] compares
-//! VoI-recommended purchases against agent-chosen alternatives at
-//! matched cost; if recommendations do not measurably outperform on
-//! realized decision changes, VoI DEMOTES ITSELF to a reporting
-//! feature.
+//! THE KILL CRITERION AS CODE: [`audit_scheduling`] feeds validated
+//! matched-cost outcomes to an anytime-valid pairwise e-process. Only a
+//! successful bounded audit can mint the private-construction capability
+//! accepted by [`schedule_probes`]; otherwise VoI remains reporting-only.
 
 use std::collections::BTreeSet;
+
+use fs_blake3::{ContentHash, hash_domain};
+use fs_eproc::{LossSpan, PairwiseRace};
 
 /// Maximum uncertainty nodes in one myopic VoI request.
 pub const MAX_VOI_NODES: usize = 256;
 /// Maximum probe menu entries (and scheduled ranked entries).
 pub const MAX_VOI_PROBES: usize = 1024;
-/// Maximum UTF-8 byte length of node, probe, and target names.
+/// Maximum visible-ASCII byte length of node, probe, target, and audit names.
 pub const MAX_VOI_NAME_BYTES: usize = 128;
 /// Maximum interval-sweep grid size.
 pub const MAX_VOI_GRID: usize = 1024;
 /// Maximum surrogate evaluations admitted by one public VoI call.
 pub const MAX_VOI_EVALUATIONS: usize = 4096;
+/// Maximum matched-cost observations admitted by one prospective audit.
+pub const MAX_VOI_AUDIT_RECORDS: usize = 4096;
+/// Fixed anytime-valid false-activation level for VoI scheduling authority.
+pub const VOI_AUDIT_ALPHA: f64 = 0.05;
 
-/// Why a VoI query or schedule was refused.
+const RANKED_MENU_CONTEXT_DOMAIN: &str = "frankensim.fs-plan.voi-ranked-menu.v1";
+const AUDIT_CONTEXT_DOMAIN: &str = "frankensim.fs-plan.voi-audit.v1";
+
+/// Why a VoI query, audit, or schedule was refused.
 #[derive(Debug, Clone, PartialEq)]
 pub enum VoiError {
-    /// A bounded collection is empty or oversized.
+    /// A bounded collection falls outside its admitted size range.
     SizeLimit {
         /// Collection being validated.
         collection: &'static str,
@@ -53,7 +62,7 @@ pub enum VoiError {
         /// Supplied node count.
         node_count: usize,
     },
-    /// A node/probe/target name is blank, padded, or oversized.
+    /// A node/probe/target/audit identity is not bounded visible ASCII.
     InvalidName {
         /// Name category.
         kind: &'static str,
@@ -127,25 +136,32 @@ pub enum VoiError {
         /// Number of matching nodes.
         matches: usize,
     },
-    /// A ranked purchase contains a malformed derived scalar.
-    InvalidRankedValue {
-        /// Probe name.
-        probe: String,
-        /// Invalid field.
-        field: &'static str,
-        /// Supplied value.
-        value: f64,
-    },
-    /// A forged ranked menu repeats a purchase identity.
-    DuplicateRankedProbe {
-        /// Repeated probe name.
-        name: String,
-    },
     /// The scheduling budget is nonfinite or negative.
     InvalidBudget {
         /// Supplied budget.
         budget: f64,
     },
+    /// An audit observation has a malformed finite matched-cost pair.
+    InvalidAuditCost {
+        /// Observation identity.
+        observation: String,
+        /// Recommended-purchase cost.
+        recommended_cost: f64,
+        /// Alternative-purchase cost.
+        alternative_cost: f64,
+    },
+    /// An audit compares a purchase with itself.
+    InvalidAuditPair {
+        /// Observation identity.
+        observation: String,
+    },
+    /// An audit repeats an observation identity and could double-count evidence.
+    DuplicateAuditObservation {
+        /// Repeated observation identity.
+        observation: String,
+    },
+    /// Scheduling was requested without an anytime-valid authority capability.
+    MissingSchedulingAuthority,
     /// Finite inputs could not produce a finite, monotone result.
     ArithmeticRefusal {
         /// Operation that failed.
@@ -178,7 +194,7 @@ impl core::fmt::Display for VoiError {
                 max_bytes,
             } => write!(
                 f,
-                "{kind} name at index {index} is blank, padded, or {bytes} bytes long (limit {max_bytes})"
+                "{kind} name at index {index} is not nonempty visible ASCII or is {bytes} bytes long (limit {max_bytes})"
             ),
             Self::DuplicateName { kind, name } => {
                 write!(f, "duplicate {kind} name {name:?}")
@@ -222,20 +238,32 @@ impl core::fmt::Display for VoiError {
                 f,
                 "probe {probe:?} target {target:?} resolves to {matches} uncertainty node(s), expected exactly one"
             ),
-            Self::InvalidRankedValue {
-                probe,
-                field,
-                value,
-            } => write!(f, "ranked probe {probe:?} has invalid {field} {value:?}"),
-            Self::DuplicateRankedProbe { name } => {
-                write!(f, "ranked probe {name:?} appears more than once")
-            }
             Self::InvalidBudget { budget } => {
                 write!(
                     f,
                     "probe budget must be finite and non-negative, got {budget:?}"
                 )
             }
+            Self::InvalidAuditCost {
+                observation,
+                recommended_cost,
+                alternative_cost,
+            } => write!(
+                f,
+                "audit observation {observation:?} requires equal finite positive matched costs, got {recommended_cost:?} and {alternative_cost:?}"
+            ),
+            Self::InvalidAuditPair { observation } => write!(
+                f,
+                "audit observation {observation:?} compares a purchase with itself"
+            ),
+            Self::DuplicateAuditObservation { observation } => write!(
+                f,
+                "audit observation {observation:?} appears more than once"
+            ),
+            Self::MissingSchedulingAuthority => write!(
+                f,
+                "VoI scheduling requires a live anytime-valid audit authority capability"
+            ),
             Self::ArithmeticRefusal { operation, subject } => {
                 write!(
                     f,
@@ -290,7 +318,10 @@ fn validate_size(
 }
 
 fn validate_name(kind: &'static str, index: usize, name: &str) -> Result<(), VoiError> {
-    if name.is_empty() || name.trim() != name || name.len() > MAX_VOI_NAME_BYTES {
+    if name.is_empty()
+        || name.len() > MAX_VOI_NAME_BYTES
+        || !name.bytes().all(|byte| byte.is_ascii_graphic())
+    {
         Err(VoiError::InvalidName {
             kind,
             index,
@@ -440,9 +471,9 @@ impl LiveDecision<'_> {
 
     /// DECISION SENSITIVITY of one node: sweep the node's interval on
     /// the cached surrogate (others at nominal, `grid` points) and
-    /// return the fraction of the interval where the verdict differs
-    /// from nominal — the myopic flip probability under the uniform
-    /// interval measure (v0's declared prior).
+    /// return the fraction of MIDPOINT GRID SAMPLES where the verdict differs
+    /// from nominal. This is a myopic estimate under the uniform interval
+    /// measure, not a certified probability.
     ///
     /// # Errors
     /// [`VoiError`] when the request is malformed, exceeds the declared
@@ -499,11 +530,11 @@ pub struct Probe {
 pub struct RankedPurchase {
     /// The probe.
     probe: Probe,
-    /// Flip probability before the purchase.
+    /// Grid-sampled flip fraction before the purchase.
     flip_before: f64,
-    /// Expected flip probability after the purchase.
+    /// Grid-sampled flip fraction after the declared contraction.
     flip_after: f64,
-    /// THE SCORE: expected flip-probability reduction per dollar.
+    /// THE SCORE: sampled flip-fraction reduction per dollar.
     score: f64,
 }
 
@@ -514,23 +545,179 @@ impl RankedPurchase {
         &self.probe
     }
 
-    /// Flip probability before the purchase.
+    /// Grid-sampled flip fraction before the purchase.
     #[must_use]
     pub fn flip_before(&self) -> f64 {
         self.flip_before
     }
 
-    /// Expected flip probability after the purchase.
+    /// Grid-sampled flip fraction after the declared contraction.
     #[must_use]
     pub fn flip_after(&self) -> f64 {
         self.flip_after
     }
 
-    /// Expected flip-probability reduction per dollar.
+    /// Grid-sampled flip-fraction reduction per dollar.
     #[must_use]
     pub fn score(&self) -> f64 {
         self.score
     }
+}
+
+/// A complete, canonical ranking for one validated supplied
+/// uncertainty/menu/grid snapshot. Rows and context are private so safe callers
+/// cannot omit, splice, or reorder scheduling authority after ranking.
+#[derive(Debug, PartialEq)]
+pub struct RankedMenu {
+    rows: Vec<RankedPurchase>,
+    context_id: ContentHash,
+    grid: usize,
+}
+
+impl RankedMenu {
+    /// Number of ranked purchases in the complete menu.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// A ranked menu produced by [`rank_purchases`] is never empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// Inspect one canonical row without exposing mutable membership.
+    #[must_use]
+    pub fn get(&self, index: usize) -> Option<&RankedPurchase> {
+        self.rows.get(index)
+    }
+
+    /// Inspect the highest-ranked purchase.
+    #[must_use]
+    pub fn top(&self) -> Option<&RankedPurchase> {
+        self.rows.first()
+    }
+
+    /// Iterate over canonical rows for reporting only.
+    #[must_use]
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = &RankedPurchase> {
+        self.rows.iter()
+    }
+
+    /// Midpoint grid used for every sampled flip estimate in this menu.
+    #[must_use]
+    pub fn grid(&self) -> usize {
+        self.grid
+    }
+
+    /// BLAKE3 identity of the validated node/menu/grid snapshot.
+    ///
+    /// This binds supplied content but does not identify callback code, prove
+    /// catalog completeness, or prove that the snapshot remains current;
+    /// callers must compare it with their ledger/session snapshot before use.
+    #[must_use]
+    pub fn context_id(&self) -> ContentHash {
+        self.context_id
+    }
+}
+
+/// Structured, grid-qualified query hint. Its private optional purchase keeps
+/// the no-sampled-change state distinct from an authoritative zero claim.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QueryHint {
+    context_id: ContentHash,
+    grid: usize,
+    purchase: Option<RankedPurchase>,
+}
+
+impl QueryHint {
+    /// Ranked snapshot identity supporting this estimate.
+    #[must_use]
+    pub fn context_id(&self) -> ContentHash {
+        self.context_id
+    }
+
+    /// Midpoint grid supporting this estimate.
+    #[must_use]
+    pub fn grid(&self) -> usize {
+        self.grid
+    }
+
+    /// Estimated top purchase, or `None` when no sampled row changed the
+    /// decision on this grid. `None` is not a proof that no purchase can help.
+    #[must_use]
+    pub fn purchase(&self) -> Option<&RankedPurchase> {
+        self.purchase.as_ref()
+    }
+
+    /// Safe deterministic text. Identifiers are escaped and every finite
+    /// scalar uses Rust's shortest round-tripping representation.
+    #[must_use]
+    pub fn render_text(&self) -> String {
+        match &self.purchase {
+            Some(top) => format!(
+                "estimated top evidence on the supplied menu from a {}-point midpoint sweep: {} (${}) - sampled flip fraction {} -> {} on {} ({}/$)",
+                self.grid,
+                escape_text(&top.probe.name),
+                top.probe.cost,
+                top.flip_before,
+                top.flip_after,
+                escape_text(&top.probe.target),
+                top.score,
+            ),
+            None => format!(
+                "no sampled purchase changed the decision on the {}-point midpoint sweep; this estimate does not prove that further evidence has zero value",
+                self.grid
+            ),
+        }
+    }
+
+    /// Strict JSON rendering for logs and evidence payloads.
+    #[must_use]
+    pub fn to_json(&self) -> String {
+        let context = self.context_id.to_hex();
+        match &self.purchase {
+            Some(top) => format!(
+                "{{\"schema\":\"fs-plan.voi-hint.v1\",\"kind\":\"estimated_purchase\",\"context\":\"{context}\",\"grid\":{},\"probe\":{},\"target\":{},\"cost_dollars\":{},\"sampled_flip_before\":{},\"sampled_flip_after\":{},\"score_per_dollar\":{}}}",
+                self.grid,
+                json_string(&top.probe.name),
+                json_string(&top.probe.target),
+                top.probe.cost,
+                top.flip_before,
+                top.flip_after,
+                top.score,
+            ),
+            None => format!(
+                "{{\"schema\":\"fs-plan.voi-hint.v1\",\"kind\":\"no_sampled_change\",\"context\":\"{context}\",\"grid\":{},\"authoritative_zero\":false}}",
+                self.grid
+            ),
+        }
+    }
+}
+
+impl core::fmt::Display for QueryHint {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&self.render_text())
+    }
+}
+
+fn escape_text(value: &str) -> String {
+    value.chars().flat_map(char::escape_default).collect()
+}
+
+fn json_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for byte in value.bytes() {
+        match byte {
+            b'"' => out.push_str("\\\""),
+            b'\\' => out.push_str("\\\\"),
+            _ => out.push(char::from(byte)),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn compare_ranked(a: &RankedPurchase, b: &RankedPurchase) -> core::cmp::Ordering {
@@ -592,7 +779,102 @@ fn validate_menu(nodes: &[UncertaintyNode], menu: &[Probe]) -> Result<Vec<usize>
     Ok(targets)
 }
 
-/// Rank the probe menu by flip-probability-per-dollar for the live
+fn push_u32(out: &mut Vec<u8>, value: usize, subject: &'static str) -> Result<(), VoiError> {
+    let value = u32::try_from(value).map_err(|_| VoiError::ArithmeticRefusal {
+        operation: "VoI context length",
+        subject: subject.to_string(),
+    })?;
+    out.extend_from_slice(&value.to_le_bytes());
+    Ok(())
+}
+
+fn push_text(out: &mut Vec<u8>, value: &str, subject: &'static str) -> Result<(), VoiError> {
+    push_u32(out, value.len(), subject)?;
+    out.extend_from_slice(value.as_bytes());
+    Ok(())
+}
+
+fn ranked_menu_context(
+    nodes: &[UncertaintyNode],
+    menu: &[Probe],
+    grid: usize,
+) -> Result<ContentHash, VoiError> {
+    let mut canonical = Vec::new();
+    canonical.extend_from_slice(&1u32.to_le_bytes());
+    push_u32(&mut canonical, grid, "grid")?;
+    push_u32(&mut canonical, nodes.len(), "uncertainty nodes")?;
+    for node in nodes {
+        push_text(&mut canonical, &node.name, "uncertainty node name")?;
+        canonical.extend_from_slice(&node.lo.to_bits().to_le_bytes());
+        canonical.extend_from_slice(&node.nominal.to_bits().to_le_bytes());
+        canonical.extend_from_slice(&node.hi.to_bits().to_le_bytes());
+    }
+    let mut canonical_menu: Vec<&Probe> = menu.iter().collect();
+    canonical_menu.sort_by(|left, right| left.name.cmp(&right.name));
+    push_u32(&mut canonical, canonical_menu.len(), "probe menu")?;
+    for probe in canonical_menu {
+        push_text(&mut canonical, &probe.name, "probe name")?;
+        push_text(&mut canonical, &probe.target, "probe target")?;
+        canonical.extend_from_slice(&probe.cost.to_bits().to_le_bytes());
+        canonical.extend_from_slice(&probe.shrink.to_bits().to_le_bytes());
+        canonical.push(match probe.kind {
+            ProbeKind::Computational => 0,
+            ProbeKind::Physical => 1,
+        });
+    }
+    Ok(hash_domain(RANKED_MENU_CONTEXT_DOMAIN, &canonical))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PreparedProbe {
+    node_idx: usize,
+    post_lo: f64,
+    post_hi: f64,
+}
+
+fn prepare_probes(
+    nodes: &[UncertaintyNode],
+    menu: &[Probe],
+    targets: &[usize],
+) -> Result<Vec<PreparedProbe>, VoiError> {
+    let mut prepared = Vec::with_capacity(menu.len());
+    for (probe, &node_idx) in menu.iter().zip(targets) {
+        let node = node_at(nodes, node_idx)?;
+        let contracted_left = (node.nominal - node.lo) * probe.shrink;
+        let contracted_right = (node.hi - node.nominal) * probe.shrink;
+        let post_lo = node.nominal - contracted_left;
+        let post_hi = node.nominal + contracted_right;
+        let post_width = post_hi - post_lo;
+        let expected_width = (node.hi - node.lo) * probe.shrink;
+        if !contracted_left.is_finite()
+            || !contracted_right.is_finite()
+            || !post_lo.is_finite()
+            || !post_hi.is_finite()
+            || !post_width.is_finite()
+            || !expected_width.is_finite()
+            || (node.nominal > node.lo && contracted_left == 0.0)
+            || (node.hi > node.nominal && contracted_right == 0.0)
+            || post_lo < node.lo
+            || post_lo > node.nominal
+            || post_hi < node.nominal
+            || post_hi > node.hi
+            || (node.hi > node.lo && post_width == 0.0)
+        {
+            return Err(VoiError::ArithmeticRefusal {
+                operation: "post-probe interval contraction",
+                subject: probe.name.clone(),
+            });
+        }
+        prepared.push(PreparedProbe {
+            node_idx,
+            post_lo,
+            post_hi,
+        });
+    }
+    Ok(prepared)
+}
+
+/// Rank the probe menu by sampled flip-fraction reduction per dollar for the live
 /// decision — MYOPIC one-step VoI (each probe is evaluated against the
 /// CURRENT state only; no sequential tree).
 ///
@@ -604,7 +886,7 @@ pub fn rank_purchases(
     nodes: &[UncertaintyNode],
     menu: &[Probe],
     grid: usize,
-) -> Result<Vec<RankedPurchase>, VoiError> {
+) -> Result<RankedMenu, VoiError> {
     validate_nodes(decision, nodes)?;
     validate_grid(grid)?;
     let targets = validate_menu(nodes, menu)?;
@@ -617,35 +899,28 @@ pub fn rank_purchases(
             subject: "probe menu".to_string(),
         })?;
     validate_evaluations(evaluations)?;
+    // All input-derived intervals are prepared before the first callback, so
+    // a malformed later probe cannot leave observable partial callback work.
+    let prepared = prepare_probes(nodes, menu, &targets)?;
+    let context_id = ranked_menu_context(nodes, menu, grid)?;
 
     let mut ranked = Vec::with_capacity(menu.len());
-    for (probe, &node_idx) in menu.iter().zip(&targets) {
-        let node = node_at(nodes, node_idx)?;
+    for (probe, prepared) in menu.iter().zip(&prepared) {
+        let node = node_at(nodes, prepared.node_idx)?;
         let flip_before =
-            flip_probability_validated(decision, nodes, node_idx, node.lo, node.hi, grid)?;
-        // Myopic post-probe state: the interval shrinks around the
-        // nominal by the probe's factor.
-        let half = (node.hi - node.lo) / 2.0 * probe.shrink;
-        let post_lo = node.nominal - half;
-        let post_hi = node.nominal + half;
-        if !half.is_finite()
-            || !post_lo.is_finite()
-            || !post_hi.is_finite()
-            || !(post_hi - post_lo).is_finite()
-            || post_lo > node.nominal
-            || post_hi < node.nominal
-        {
-            return Err(VoiError::ArithmeticRefusal {
-                operation: "post-probe interval",
-                subject: probe.name.clone(),
-            });
-        }
-        let flip_after =
-            flip_probability_validated(decision, nodes, node_idx, post_lo, post_hi, grid)?;
+            flip_probability_validated(decision, nodes, prepared.node_idx, node.lo, node.hi, grid)?;
+        let flip_after = flip_probability_validated(
+            decision,
+            nodes,
+            prepared.node_idx,
+            prepared.post_lo,
+            prepared.post_hi,
+            grid,
+        )?;
         let score = (flip_before - flip_after).max(0.0) / probe.cost;
         if !score.is_finite() || score < 0.0 {
             return Err(VoiError::ArithmeticRefusal {
-                operation: "flip-probability-per-dollar score",
+                operation: "sampled flip-fraction-per-dollar score",
                 subject: probe.name.clone(),
             });
         }
@@ -657,151 +932,415 @@ pub fn rank_purchases(
         });
     }
     ranked.sort_by(compare_ranked);
-    Ok(ranked)
+    Ok(RankedMenu {
+        rows: ranked,
+        context_id,
+        grid,
+    })
 }
 
-fn canonical_ranked(ranked: &[RankedPurchase]) -> Result<Vec<&RankedPurchase>, VoiError> {
-    validate_size("ranked probe menu", ranked.len(), 1, MAX_VOI_PROBES)?;
-    let mut names = BTreeSet::new();
-    let mut canonical = Vec::with_capacity(ranked.len());
-    for (index, purchase) in ranked.iter().enumerate() {
-        validate_probe(index, &purchase.probe)?;
-        if !names.insert(purchase.probe.name.as_str()) {
-            return Err(VoiError::DuplicateRankedProbe {
-                name: purchase.probe.name.clone(),
-            });
-        }
-        for (field, value, valid) in [
-            (
-                "flip_before",
-                purchase.flip_before,
-                purchase.flip_before.is_finite() && (0.0..=1.0).contains(&purchase.flip_before),
-            ),
-            (
-                "flip_after",
-                purchase.flip_after,
-                purchase.flip_after.is_finite() && (0.0..=1.0).contains(&purchase.flip_after),
-            ),
-            (
-                "score",
-                purchase.score,
-                purchase.score.is_finite() && purchase.score >= 0.0,
-            ),
-        ] {
-            if !valid {
-                return Err(VoiError::InvalidRankedValue {
-                    probe: purchase.probe.name.clone(),
-                    field,
-                    value,
-                });
-            }
-        }
-        canonical.push(purchase);
+/// Surface a structured QUERY-RESULT HINT. Every scalar is explicitly a
+/// grid-sampled estimate; a sampled zero is never rendered as proof that no
+/// evidence could change the decision.
+#[must_use]
+pub fn hint_for_query(ranked: &RankedMenu) -> QueryHint {
+    QueryHint {
+        context_id: ranked.context_id,
+        grid: ranked.grid,
+        purchase: ranked.rows.iter().find(|row| row.score > 0.0).cloned(),
     }
-    canonical.sort_by(|a, b| compare_ranked(a, b));
-    Ok(canonical)
 }
 
-/// Surface the top purchase as the QUERY-RESULT HINT — the Proposal-8
-/// anytime-hint shape, now priced by decision impact instead of the
-/// O(h) extrapolation the fs-ir CONTRACT flagged as interim.
-///
-/// Input order is not authoritative: the validated score/cost/name
-/// comparator is re-applied before selecting a hint.
-///
-/// # Errors
-/// [`VoiError`] when the ranked menu is empty, oversized, duplicated,
-/// or internally malformed.
-pub fn hint_for_query(ranked: &[RankedPurchase]) -> Result<String, VoiError> {
-    let canonical = canonical_ranked(ranked)?;
-    let hint = match canonical.first() {
-        Some(top) if top.score > 0.0 => format!(
-            "highest-value evidence: {} (${:.0}) — expected flip-probability drop \
-             {:.3} -> {:.3} on '{}' ({:.4}/$)",
-            top.probe.name,
-            top.probe.cost,
-            top.flip_before,
-            top.flip_after,
-            top.probe.target,
-            top.score
-        ),
-        _ => "no purchase on the menu changes the decision — spend nothing".to_string(),
-    };
-    Ok(hint)
-}
-
-/// THE PROBE SCHEDULER: greedy top-k purchases under a dollar budget
-/// (the discrepancy-probe scheduler surface for color-probes).
-///
-/// # Errors
-/// [`VoiError`] when the budget or a ranked purchase is malformed,
-/// purchase identities repeat, or finite positive cost cannot decrease
-/// the remaining budget monotonically.
-pub fn schedule_probes(
-    ranked: &[RankedPurchase],
-    budget: f64,
-) -> Result<Vec<RankedPurchase>, VoiError> {
-    if !budget.is_finite() || budget < 0.0 {
-        return Err(VoiError::InvalidBudget { budget });
-    }
-    let canonical = canonical_ranked(ranked)?;
-
-    let mut remaining = budget;
-    let mut out = Vec::new();
-    for r in canonical {
-        if r.score > 0.0 && r.probe.cost <= remaining {
-            let next = remaining - r.probe.cost;
-            if !next.is_finite() || next < 0.0 || next >= remaining {
-                return Err(VoiError::ArithmeticRefusal {
-                    operation: "remaining-budget subtraction",
-                    subject: r.probe.name.clone(),
-                });
-            }
-            remaining = next.max(0.0);
-            out.push((*r).clone());
-        }
-    }
-    Ok(out)
-}
-
-/// One prospective-audit record: a VoI-recommended purchase vs the
-/// agent-chosen alternative at MATCHED COST, with the realized outcome
-/// (did the evidence change the decision?).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AuditRecord {
-    /// Did the RECOMMENDED purchase realize a decision change?
-    pub recommended_changed_decision: bool,
-    /// Did the agent-chosen alternative?
-    pub alternative_changed_decision: bool,
-}
-
-/// The audit verdict — the kill criterion as code.
+/// The audit verdict for reporting. This enum is not scheduling authority;
+/// only the private-construction [`SchedulingAuthority`] capability is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditVerdict {
-    /// Recommendations measurably outperform: keep scheduling by VoI.
+    /// Anytime-valid evidence crossed the fixed activation threshold.
     KeepScheduling,
-    /// They do not: DEMOTE VoI to a reporting feature.
+    /// Evidence is absent, insufficient, or has not crossed the threshold.
     DemoteToReporting,
 }
 
-/// Compare realized decision-change rates at matched cost. VoI keeps
-/// its scheduling authority only while it MEASURABLY outperforms.
-#[must_use]
-pub fn audit_verdict(records: &[AuditRecord]) -> AuditVerdict {
-    if records.is_empty() {
-        return AuditVerdict::DemoteToReporting; // no evidence, no authority
+/// One validated matched-cost prospective-audit observation.
+///
+/// Fields are private so raw booleans and unmatched prices cannot enter the
+/// e-process without identity, provenance, and economic validation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatchedAuditRecord {
+    observation_id: String,
+    recommended_id: String,
+    alternative_id: String,
+    provenance: String,
+    matched_cost: f64,
+    recommended_changed_decision: bool,
+    alternative_changed_decision: bool,
+}
+
+impl MatchedAuditRecord {
+    /// Construct one matched-cost comparison.
+    ///
+    /// # Errors
+    /// [`VoiError`] unless identities/provenance are bounded visible ASCII,
+    /// candidates differ, and both finite positive costs are bit-identical.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        observation_id: impl Into<String>,
+        recommended_id: impl Into<String>,
+        alternative_id: impl Into<String>,
+        provenance: impl Into<String>,
+        recommended_cost: f64,
+        alternative_cost: f64,
+        recommended_changed_decision: bool,
+        alternative_changed_decision: bool,
+    ) -> Result<Self, VoiError> {
+        let observation_id = observation_id.into();
+        let recommended_id = recommended_id.into();
+        let alternative_id = alternative_id.into();
+        let provenance = provenance.into();
+        for (kind, value) in [
+            ("audit observation", observation_id.as_str()),
+            ("recommended purchase", recommended_id.as_str()),
+            ("alternative purchase", alternative_id.as_str()),
+            ("audit provenance", provenance.as_str()),
+        ] {
+            validate_name(kind, 0, value)?;
+        }
+        if recommended_id == alternative_id {
+            return Err(VoiError::InvalidAuditPair {
+                observation: observation_id,
+            });
+        }
+        if !recommended_cost.is_finite()
+            || recommended_cost <= 0.0
+            || recommended_cost.to_bits() != alternative_cost.to_bits()
+        {
+            return Err(VoiError::InvalidAuditCost {
+                observation: observation_id,
+                recommended_cost,
+                alternative_cost,
+            });
+        }
+        Ok(Self {
+            observation_id,
+            recommended_id,
+            alternative_id,
+            provenance,
+            matched_cost: recommended_cost,
+            recommended_changed_decision,
+            alternative_changed_decision,
+        })
     }
-    let rec = records
-        .iter()
-        .filter(|r| r.recommended_changed_decision)
-        .count();
-    let alt = records
-        .iter()
-        .filter(|r| r.alternative_changed_decision)
-        .count();
-    if rec > alt {
-        AuditVerdict::KeepScheduling
-    } else {
-        AuditVerdict::DemoteToReporting
+
+    /// Stable observation identity used to prevent duplicate evidence.
+    #[must_use]
+    pub fn observation_id(&self) -> &str {
+        &self.observation_id
     }
+
+    /// Recommended-purchase identity.
+    #[must_use]
+    pub fn recommended_id(&self) -> &str {
+        &self.recommended_id
+    }
+
+    /// Matched alternative-purchase identity.
+    #[must_use]
+    pub fn alternative_id(&self) -> &str {
+        &self.alternative_id
+    }
+
+    /// Caller-supplied provenance identity.
+    #[must_use]
+    pub fn provenance(&self) -> &str {
+        &self.provenance
+    }
+
+    /// Exact matched cost.
+    #[must_use]
+    pub fn matched_cost(&self) -> f64 {
+        self.matched_cost
+    }
+
+    /// Whether the recommended purchase changed the realized decision.
+    #[must_use]
+    pub fn recommended_changed_decision(&self) -> bool {
+        self.recommended_changed_decision
+    }
+
+    /// Whether the matched alternative changed the realized decision.
+    #[must_use]
+    pub fn alternative_changed_decision(&self) -> bool {
+        self.alternative_changed_decision
+    }
+}
+
+/// Unforgeable-in-safe-Rust scheduling capability minted only by a successful
+/// bounded e-process audit. Construction and fields are module-private. The
+/// capability proves that supplied records crossed policy; ledger
+/// authentication of those records is a separate boundary.
+#[derive(Debug)]
+pub struct SchedulingAuthority {
+    audit_context_id: ContentHash,
+    observations: usize,
+    log_e_value: f64,
+}
+
+/// One authorized, single-epoch scheduling decision. The receipt retains the
+/// ranked snapshot, audit evidence root, and exact budget transition instead of
+/// returning a provenance-free probe row.
+#[derive(Debug, PartialEq)]
+pub struct ScheduledPurchase {
+    purchase: RankedPurchase,
+    ranked_context_id: ContentHash,
+    ranked_grid: usize,
+    audit_context_id: ContentHash,
+    audit_observations: usize,
+    audit_log_e_value: f64,
+    budget_dollars: f64,
+    remaining_budget_dollars: f64,
+}
+
+impl ScheduledPurchase {
+    /// Authorized purchase.
+    #[must_use]
+    pub fn purchase(&self) -> &RankedPurchase {
+        &self.purchase
+    }
+
+    /// Ranked node/menu/grid snapshot identity.
+    #[must_use]
+    pub fn ranked_context_id(&self) -> ContentHash {
+        self.ranked_context_id
+    }
+
+    /// Midpoint grid supporting the sampled purchase score.
+    #[must_use]
+    pub fn ranked_grid(&self) -> usize {
+        self.ranked_grid
+    }
+
+    /// Anytime-valid matched-audit evidence identity.
+    #[must_use]
+    pub fn audit_context_id(&self) -> ContentHash {
+        self.audit_context_id
+    }
+
+    /// Matched-cost observation count supporting authority.
+    #[must_use]
+    pub fn audit_observations(&self) -> usize {
+        self.audit_observations
+    }
+
+    /// Final log e-value supporting authority.
+    #[must_use]
+    pub fn audit_log_e_value(&self) -> f64 {
+        self.audit_log_e_value
+    }
+
+    /// Admitted scheduling budget in dollars.
+    #[must_use]
+    pub fn budget_dollars(&self) -> f64 {
+        self.budget_dollars
+    }
+
+    /// Exact remaining budget in dollars after this one purchase.
+    #[must_use]
+    pub fn remaining_budget_dollars(&self) -> f64 {
+        self.remaining_budget_dollars
+    }
+}
+
+impl SchedulingAuthority {
+    /// Content identity of the matched-cost evidence prefix.
+    #[must_use]
+    pub fn audit_context_id(&self) -> ContentHash {
+        self.audit_context_id
+    }
+
+    /// Number of observations supporting activation.
+    #[must_use]
+    pub fn observations(&self) -> usize {
+        self.observations
+    }
+
+    /// Final log e-value supporting activation.
+    #[must_use]
+    pub fn log_e_value(&self) -> f64 {
+        self.log_e_value
+    }
+}
+
+/// Bounded prospective-audit result. A reporting verdict is intentionally
+/// separate from the optional private-construction scheduling capability.
+#[derive(Debug)]
+pub struct AuditReport {
+    audit_context_id: ContentHash,
+    observations: usize,
+    log_e_value: f64,
+    authority: Option<SchedulingAuthority>,
+}
+
+impl AuditReport {
+    /// Reporting verdict.
+    #[must_use]
+    pub fn verdict(&self) -> AuditVerdict {
+        if self.authority.is_some() {
+            AuditVerdict::KeepScheduling
+        } else {
+            AuditVerdict::DemoteToReporting
+        }
+    }
+
+    /// Scheduling capability, absent until the fixed anytime-valid threshold
+    /// is satisfied.
+    #[must_use]
+    pub fn authority(&self) -> Option<&SchedulingAuthority> {
+        self.authority.as_ref()
+    }
+
+    /// Content identity of the canonical evidence prefix.
+    #[must_use]
+    pub fn audit_context_id(&self) -> ContentHash {
+        self.audit_context_id
+    }
+
+    /// Number of matched-cost observations evaluated.
+    #[must_use]
+    pub fn observations(&self) -> usize {
+        self.observations
+    }
+
+    /// Final log e-value, useful for reporting progress before activation.
+    #[must_use]
+    pub fn log_e_value(&self) -> f64 {
+        self.log_e_value
+    }
+}
+
+fn audit_context(records: &[&MatchedAuditRecord]) -> Result<ContentHash, VoiError> {
+    let mut canonical = Vec::new();
+    canonical.extend_from_slice(&1u32.to_le_bytes());
+    canonical.extend_from_slice(&VOI_AUDIT_ALPHA.to_bits().to_le_bytes());
+    push_u32(
+        &mut canonical,
+        MAX_VOI_AUDIT_RECORDS,
+        "maximum audit records",
+    )?;
+    push_u32(&mut canonical, records.len(), "audit records")?;
+    for record in records {
+        push_text(&mut canonical, &record.observation_id, "audit observation")?;
+        push_text(
+            &mut canonical,
+            &record.recommended_id,
+            "recommended purchase",
+        )?;
+        push_text(
+            &mut canonical,
+            &record.alternative_id,
+            "alternative purchase",
+        )?;
+        push_text(&mut canonical, &record.provenance, "audit provenance")?;
+        canonical.extend_from_slice(&record.matched_cost.to_bits().to_le_bytes());
+        canonical.push(u8::from(record.recommended_changed_decision));
+        canonical.push(u8::from(record.alternative_changed_decision));
+    }
+    Ok(hash_domain(AUDIT_CONTEXT_DOMAIN, &canonical))
+}
+
+/// Evaluate a canonical matched-cost evidence prefix with an anytime-valid
+/// pairwise e-process. Input order is non-authoritative: observation identity
+/// defines the deterministic replay order.
+///
+/// Records are caller-supplied and content-bound, not ledger-authenticated.
+/// See `frankensim-wk4m` for signed outcomes, freshness, and expiry.
+///
+/// # Errors
+/// [`VoiError`] when the bounded record limit or unique-identity invariant is
+/// violated, or the e-process produces invalid arithmetic.
+pub fn audit_scheduling(records: &[MatchedAuditRecord]) -> Result<AuditReport, VoiError> {
+    validate_size("VoI audit records", records.len(), 0, MAX_VOI_AUDIT_RECORDS)?;
+    let mut canonical: Vec<&MatchedAuditRecord> = records.iter().collect();
+    canonical.sort_by(|left, right| left.observation_id.cmp(&right.observation_id));
+    for pair in canonical.windows(2) {
+        if pair[0].observation_id == pair[1].observation_id {
+            return Err(VoiError::DuplicateAuditObservation {
+                observation: pair[0].observation_id.clone(),
+            });
+        }
+    }
+    let audit_context_id = audit_context(&canonical)?;
+    let mut race = PairwiseRace::new(LossSpan::ONE);
+    for record in &canonical {
+        let recommended_loss = f64::from(u8::from(!record.recommended_changed_decision));
+        let alternative_loss = f64::from(u8::from(!record.alternative_changed_decision));
+        race.observe(recommended_loss, alternative_loss)
+            .map_err(|_| VoiError::ArithmeticRefusal {
+                operation: "VoI matched-cost e-process",
+                subject: record.observation_id.clone(),
+            })?;
+    }
+    let log_e_value = race.log_e_value();
+    if !log_e_value.is_finite() {
+        return Err(VoiError::ArithmeticRefusal {
+            operation: "VoI audit log e-value",
+            subject: audit_context_id.to_hex(),
+        });
+    }
+    let authority = race
+        .a_beats_b(VOI_AUDIT_ALPHA)
+        .then_some(SchedulingAuthority {
+            audit_context_id,
+            observations: records.len(),
+            log_e_value,
+        });
+    Ok(AuditReport {
+        audit_context_id,
+        observations: records.len(),
+        log_e_value,
+        authority,
+    })
+}
+
+/// Execute at most one highest-value affordable purchase for this ranking
+/// epoch. The caller must obtain new evidence, update the uncertainty snapshot,
+/// and rerank before another purchase.
+///
+/// # Errors
+/// [`VoiError`] when the budget is malformed, no scheduling authority was
+/// minted, or finite positive cost cannot decrease the budget monotonically.
+pub fn schedule_probes(
+    ranked: RankedMenu,
+    budget: f64,
+    authority: Option<&SchedulingAuthority>,
+) -> Result<Option<ScheduledPurchase>, VoiError> {
+    if !budget.is_finite() || budget < 0.0 {
+        return Err(VoiError::InvalidBudget { budget });
+    }
+    let authority = authority.ok_or(VoiError::MissingSchedulingAuthority)?;
+    let ranked_context_id = ranked.context_id;
+    let ranked_grid = ranked.grid;
+    let Some(purchase) = ranked
+        .rows
+        .into_iter()
+        .find(|row| row.score > 0.0 && row.probe.cost <= budget)
+    else {
+        return Ok(None);
+    };
+    let remaining = budget - purchase.probe.cost;
+    if !remaining.is_finite() || remaining < 0.0 || remaining >= budget {
+        return Err(VoiError::ArithmeticRefusal {
+            operation: "remaining-budget subtraction",
+            subject: purchase.probe.name.clone(),
+        });
+    }
+    Ok(Some(ScheduledPurchase {
+        purchase,
+        ranked_context_id,
+        ranked_grid,
+        audit_context_id: authority.audit_context_id,
+        audit_observations: authority.observations,
+        audit_log_e_value: authority.log_e_value,
+        budget_dollars: budget,
+        remaining_budget_dollars: remaining,
+    }))
 }

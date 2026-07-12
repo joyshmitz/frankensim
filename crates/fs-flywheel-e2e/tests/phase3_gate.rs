@@ -241,16 +241,18 @@ fn p3_001_proposal_a_numeric_floor_observed_but_activation_unmet() {
 
 #[test]
 fn p3_002_proposal_c_instrumented_awaiting_audit() {
-    use fs_plan::voi::{AuditVerdict, audit_verdict};
+    use fs_plan::voi::{AuditVerdict, audit_scheduling};
     // Proposal C's activation is CONDITIONAL: the machinery is live
     // (Phase-2 benchmarks), but SCHEDULING AUTHORITY requires the
     // prospective audit to show recommendations beat agent choices —
     // and with no audit evidence the verdict is Demote by design.
+    let report = audit_scheduling(&[]).expect("empty bounded audit reports safely");
     assert_eq!(
-        audit_verdict(&[]),
+        report.verdict(),
         AuditVerdict::DemoteToReporting,
         "no evidence, no authority — the default is the safe one"
     );
+    assert!(report.authority().is_none());
     println!(
         "{{\"metric\":\"horizon-C\",\"status\":\"INSTRUMENTED — authority awaits the \
          prospective audit (two quarters of matched-cost comparisons)\"}}"

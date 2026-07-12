@@ -22,8 +22,8 @@ Every stage's FAIL-SAFE assertion:
 - no infinite descent (leaking queries terminate at full order with a
   complete leak trail);
 - no confabulated explanations (gate AND narrative refuse together);
-- no useless VoI purchases (unflippable decisions price to zero and say
-  "spend nothing").
+- no false-zero VoI claims (a zero sampled flip fraction stays explicitly
+  grid-qualified and non-authoritative).
 Each stage appends REAL fs-ledger events (the audit trail).
 
 ## Error model

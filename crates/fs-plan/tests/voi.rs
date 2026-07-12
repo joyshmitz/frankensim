@@ -1,6 +1,7 @@
 //! VoI-query conformance (the knh1.6 bead; runs under `voi-queries`).
 //! Acceptance: decision sensitivity from cached sweeps (near-free —
-//! call counts prove it); rankings by flip-probability-per-dollar; the
+//! call counts prove it); rankings by sampled flip-fraction reduction per
+//! dollar; the
 //! probe menu unifies computational and physical experiments; the
 //! ranking surfaces as the query hint and the probe scheduler; myopic
 //! one-step only; the prospective-audit kill criterion demotes VoI
@@ -8,11 +9,13 @@
 #![cfg(feature = "voi-queries")]
 
 use std::cell::Cell;
+use std::cell::RefCell;
 
 use fs_plan::voi::{
-    AuditRecord, AuditVerdict, LiveDecision, MAX_VOI_EVALUATIONS, MAX_VOI_GRID, MAX_VOI_NAME_BYTES,
-    MAX_VOI_NODES, MAX_VOI_PROBES, Probe, ProbeKind, RankedPurchase, UncertaintyNode, VoiError,
-    audit_verdict, hint_for_query, rank_purchases, schedule_probes,
+    AuditReport, AuditVerdict, LiveDecision, MAX_VOI_AUDIT_RECORDS, MAX_VOI_EVALUATIONS,
+    MAX_VOI_GRID, MAX_VOI_NAME_BYTES, MAX_VOI_NODES, MAX_VOI_PROBES, MatchedAuditRecord, Probe,
+    ProbeKind, RankedMenu, UncertaintyNode, VoiError, audit_scheduling, hint_for_query,
+    rank_purchases, schedule_probes,
 };
 
 fn verdict(case: &str, detail: &str) {
@@ -64,20 +67,40 @@ fn probe(name: &str, target: &str, cost: f64, shrink: f64) -> Probe {
     }
 }
 
-fn ranked_probe(name: &str, cost: f64) -> RankedPurchase {
+fn ranked_menu(probes: &[Probe]) -> RankedMenu {
     let decision = LiveDecision {
         margin: &margin,
         arity: 3,
     };
-    rank_purchases(
-        &decision,
-        &nodes(),
-        &[probe(name, "drag-gap", cost, 0.01)],
-        64,
+    rank_purchases(&decision, &nodes(), probes, 64).expect("valid ranked-menu fixture")
+}
+
+fn audit_record(index: usize, recommended_wins: bool) -> MatchedAuditRecord {
+    MatchedAuditRecord::new(
+        format!("audit-{index:04}"),
+        "voi-choice",
+        "agent-choice",
+        format!("fixture/run-{index:04}"),
+        10.0,
+        10.0,
+        recommended_wins,
+        !recommended_wins,
     )
-    .expect("valid ranked-probe fixture")
-    .pop()
-    .expect("one fixture purchase")
+    .expect("valid matched-cost audit fixture")
+}
+
+fn winning_audit() -> AuditReport {
+    let records: Vec<_> = (0..128).map(|index| audit_record(index, true)).collect();
+    let report = audit_scheduling(&records).expect("valid anytime audit");
+    assert_eq!(report.verdict(), AuditVerdict::KeepScheduling);
+    report
+}
+
+fn scheduler_menu() -> RankedMenu {
+    ranked_menu(&[
+        probe("a", "drag-gap", 10.0, 0.01),
+        probe("b", "drag-gap", 5.0, 0.01),
+    ])
 }
 
 #[test]
@@ -129,7 +152,7 @@ fn voi_001_sensitivity_from_cached_sweeps() {
     );
     verdict(
         "voi-001",
-        "flip probabilities from cached interval sweeps: pivotal 0.4-class, one-sided \
+        "sampled flip fractions from cached interval sweeps: pivotal 0.4-class, one-sided \
          exactly 0, mild in between — at <= 3(grid+1) surrogate calls (near-free)",
     );
 }
@@ -179,15 +202,18 @@ fn voi_002_ranking_is_flip_prob_per_dollar() {
     assert_eq!(names[0], "climb-rung-drag", "cheap+decisive wins");
     assert_eq!(names[1], "wind-tunnel-drag", "decisive-but-pricey second");
     assert_eq!(names[2], "refine-mass-model", "irrelevant last");
-    assert!(ranked[0].score() > ranked[1].score() && ranked[1].score() > 0.0);
+    let first = ranked.get(0).expect("first ranked purchase");
+    let second = ranked.get(1).expect("second ranked purchase");
+    let third = ranked.get(2).expect("third ranked purchase");
+    assert!(first.score() > second.score() && second.score() > 0.0);
     assert_eq!(
-        ranked[2].score().to_bits(),
+        third.score().to_bits(),
         0.0f64.to_bits(),
         "an irrelevant probe buys nothing"
     );
     verdict(
         "voi-002",
-        "the ranking is flip-probability-per-dollar: cheap+decisive > decisive+pricey > \
+        "the ranking is sampled flip-fraction reduction per dollar: cheap+decisive > decisive+pricey > \
          irrelevant (score exactly 0)",
     );
 }
@@ -219,12 +245,14 @@ fn voi_003_menu_unifies_compute_and_physical() {
         },
     ];
     let ranked = rank_purchases(&decision, &ns, &menu, 64).expect("valid mixed menu");
-    assert_eq!(ranked[0].probe().kind, ProbeKind::Physical);
+    let top = ranked.top().expect("nonempty sealed menu");
+    let second = ranked.get(1).expect("second ranked purchase");
+    assert_eq!(top.probe().kind, ProbeKind::Physical);
     assert!(
-        ranked[0].score() > ranked[1].score(),
+        top.score() > second.score(),
         "the physical anchor wins on flip-prob-per-dollar: {:.4} vs {:.4}",
-        ranked[0].score(),
-        ranked[1].score()
+        top.score(),
+        second.score()
     );
     verdict(
         "voi-003",
@@ -266,62 +294,80 @@ fn voi_004_surfacing_hint_and_scheduler() {
     let ranked = rank_purchases(&decision, &ns, &menu, 64).expect("valid scheduling menu");
     // (i) The query-result hint (the Proposal-8 anytime shape, now
     // decision-priced).
-    let hint = hint_for_query(&ranked).expect("valid canonical hint");
-    println!("{{\"metric\":\"hint\",\"text\":\"{hint}\"}}");
-    assert!(hint.contains("climb-rung-drag") && hint.contains("$10"));
-    assert!(hint.contains("flip-probability"));
-    // (ii) The probe scheduler under a budget: greedy top-k affordable.
-    let scheduled = schedule_probes(&ranked, 40.0).expect("valid finite schedule");
-    let names: Vec<&str> = scheduled.iter().map(|r| r.probe().name.as_str()).collect();
+    let hint = hint_for_query(&ranked);
+    println!("{{\"metric\":\"hint\",\"hint\":{}}}", hint.to_json());
+    let text = hint.render_text();
+    assert!(text.contains("climb-rung-drag") && text.contains("$10"));
+    assert!(text.contains("sampled flip fraction") && text.contains("64-point"));
+    // (ii) Scheduling requires independently won audit authority and executes
+    // one myopic purchase before the caller must update and rerank.
+    // Source menu order carries no authority: sealing canonicalizes both rows
+    // and the context identity.
+    let mut reordered_menu = menu.clone();
+    reordered_menu.reverse();
+    let reordered =
+        rank_purchases(&decision, &ns, &reordered_menu, 64).expect("reordered source menu");
+    assert_eq!(reordered.context_id(), ranked.context_id());
+    assert_eq!(reordered, ranked);
+    let audit = winning_audit();
+    let scheduled = schedule_probes(ranked, 40.0, audit.authority())
+        .expect("valid finite schedule")
+        .expect("one affordable purchase");
+    assert_eq!(scheduled.purchase().probe().name, "climb-rung-drag");
+    assert_eq!(scheduled.ranked_context_id(), reordered.context_id());
+    assert_eq!(scheduled.ranked_grid(), 64);
+    assert_eq!(scheduled.audit_context_id(), audit.audit_context_id());
+    assert_eq!(scheduled.audit_observations(), audit.observations());
     assert_eq!(
-        names,
-        vec!["climb-rung-drag", "hazard-samples"],
-        "greedy affordable top-k under $40"
+        scheduled.audit_log_e_value().to_bits(),
+        audit.log_e_value().to_bits()
     );
-    // Input order carries no authority: both surfaces reapply the
-    // canonical score/cost/name comparator.
-    let mut reordered = ranked.clone();
-    reordered.reverse();
-    assert_eq!(hint_for_query(&reordered).expect("reordered hint"), hint);
+    assert_eq!(scheduled.budget_dollars().to_bits(), 40.0f64.to_bits());
     assert_eq!(
-        schedule_probes(&reordered, 40.0).expect("reordered schedule"),
-        scheduled
+        scheduled.remaining_budget_dollars().to_bits(),
+        30.0f64.to_bits()
     );
-    // Myopic-only is structural: rank_purchases takes ONE state and
-    // returns ONE ranked step — there is no sequential-tree API to
-    // misuse.
     verdict(
         "voi-004",
-        "the top purchase surfaces as the priced query hint; the scheduler buys the \
-         greedy affordable top-k under budget; the API is one-step myopic by shape",
+        "the structured hint is grid-qualified; a sealed context ignores source-menu order; \
+         authority schedules exactly one purchase before mandatory reranking",
     );
 }
 
 #[test]
 fn voi_005_prospective_audit_kill_criterion() {
-    // Recommended purchases realize more decision changes: keep.
-    let winning: Vec<AuditRecord> = (0..10)
-        .map(|k| AuditRecord {
-            recommended_changed_decision: k < 6,
-            alternative_changed_decision: k < 3,
-        })
-        .collect();
-    assert_eq!(audit_verdict(&winning), AuditVerdict::KeepScheduling);
-    // They stop outperforming at matched cost: DEMOTE to reporting.
-    let losing: Vec<AuditRecord> = (0..10)
-        .map(|k| AuditRecord {
-            recommended_changed_decision: k < 3,
-            alternative_changed_decision: k < 4,
-        })
-        .collect();
-    assert_eq!(audit_verdict(&losing), AuditVerdict::DemoteToReporting);
-    // No evidence, no authority.
-    assert_eq!(audit_verdict(&[]), AuditVerdict::DemoteToReporting);
+    let empty = audit_scheduling(&[]).expect("empty audit reports safely");
+    assert_eq!(empty.verdict(), AuditVerdict::DemoteToReporting);
+    assert!(empty.authority().is_none());
+
+    let insufficient = vec![audit_record(0, true)];
+    let insufficient = audit_scheduling(&insufficient).expect("bounded prefix");
+    assert_eq!(insufficient.verdict(), AuditVerdict::DemoteToReporting);
+    assert!(matches!(
+        schedule_probes(scheduler_menu(), 15.0, insufficient.authority()),
+        Err(VoiError::MissingSchedulingAuthority)
+    ));
+
+    let losing: Vec<_> = (0..128).map(|index| audit_record(index, false)).collect();
+    let losing = audit_scheduling(&losing).expect("valid losing audit");
+    assert_eq!(losing.verdict(), AuditVerdict::DemoteToReporting);
+    assert!(matches!(
+        schedule_probes(scheduler_menu(), 15.0, losing.authority()),
+        Err(VoiError::MissingSchedulingAuthority)
+    ));
+
+    let mut winning: Vec<_> = (0..128).map(|index| audit_record(index, true)).collect();
+    let won = audit_scheduling(&winning).expect("valid winning audit");
+    assert_eq!(won.verdict(), AuditVerdict::KeepScheduling);
+    assert!(won.authority().is_some());
+    winning.reverse();
+    let replay = audit_scheduling(&winning).expect("input order is non-authoritative");
+    assert_eq!(replay.audit_context_id(), won.audit_context_id());
+    assert_eq!(replay.log_e_value().to_bits(), won.log_e_value().to_bits());
     verdict(
         "voi-005",
-        "the prospective audit keeps VoI's scheduling authority only while recommended \
-         purchases measurably outperform agent-chosen alternatives — and with no audit \
-         evidence there is no authority",
+        "the fixed-alpha pairwise e-process mints authority only after a sufficient winning \
+         matched-cost prefix; empty, short, and losing audits remain reporting-only",
     );
 }
 
@@ -396,7 +442,7 @@ fn voi_006_node_name_and_grid_boundaries() {
     }
     verdict(
         "voi-006",
-        "node count, UTF-8 name bytes, and sweep grid admit exact boundaries and refuse limit+1",
+        "node count, visible-ASCII name bytes, and sweep grid admit exact boundaries and refuse limit+1",
     );
 }
 
@@ -673,59 +719,223 @@ fn voi_010_probe_name_and_score_arithmetic_boundaries() {
 
 #[test]
 fn voi_011_scheduler_is_transactional_and_budget_monotone() {
-    let valid = vec![ranked_probe("a", 10.0), ranked_probe("b", 5.0)];
+    let audit = winning_audit();
     assert!(
-        schedule_probes(&valid, 0.0)
+        schedule_probes(scheduler_menu(), 0.0, audit.authority())
             .expect("zero budget is valid")
-            .is_empty()
+            .is_none()
     );
     for budget in [-1.0, f64::NAN, f64::INFINITY] {
         assert!(matches!(
-            schedule_probes(&valid, budget),
+            schedule_probes(scheduler_menu(), budget, audit.authority()),
             Err(VoiError::InvalidBudget { .. })
         ));
     }
     assert!(matches!(
-        schedule_probes(&[], 1.0),
-        Err(VoiError::SizeLimit { .. })
+        schedule_probes(scheduler_menu(), 15.0, None),
+        Err(VoiError::MissingSchedulingAuthority)
     ));
-
-    let duplicated = vec![ranked_probe("same", 10.0), ranked_probe("same", 10.0)];
-    let before = duplicated.clone();
+    let no_progress = ranked_menu(&[probe("tiny", "drag-gap", 1.0, 0.01)]);
     assert!(matches!(
-        schedule_probes(&duplicated, 100.0),
-        Err(VoiError::DuplicateRankedProbe { .. })
-    ));
-    assert_eq!(
-        duplicated, before,
-        "duplicate refusal does not mutate input"
-    );
-
-    assert!(matches!(
-        hint_for_query(&[]),
-        Err(VoiError::SizeLimit { .. })
-    ));
-    assert!(matches!(
-        hint_for_query(&duplicated),
-        Err(VoiError::DuplicateRankedProbe { .. })
-    ));
-    let no_progress = vec![ranked_probe("tiny", 1.0)];
-    assert!(matches!(
-        schedule_probes(&no_progress, f64::MAX),
+        schedule_probes(no_progress, f64::MAX, audit.authority()),
         Err(VoiError::ArithmeticRefusal { .. })
     ));
 
-    let scheduled = schedule_probes(&valid, 15.0).expect("exact finite budget");
-    assert_eq!(scheduled.len(), 2);
-    assert_eq!(
-        scheduled
-            .iter()
-            .map(|purchase| purchase.probe().name.as_str())
-            .collect::<Vec<_>>(),
-        vec!["b", "a"]
-    );
+    let scheduled = schedule_probes(scheduler_menu(), 15.0, audit.authority())
+        .expect("exact finite budget")
+        .expect("one purchase");
+    assert_eq!(scheduled.purchase().probe().name, "b");
     verdict(
         "voi-011",
-        "invalid budgets and duplicate identities refuse transactionally; hints and schedules canonicalize authority",
+        "invalid budgets and absent authority refuse; one sealed ranking epoch is consumed to schedule at most one purchase",
     );
+}
+
+#[test]
+fn voi_012_asymmetric_contraction_is_a_subset_and_preflights() {
+    let samples = RefCell::new(Vec::new());
+    let recording = |values: &[f64]| {
+        samples.borrow_mut().push(values[0]);
+        values[0] - 0.5
+    };
+    let decision = LiveDecision {
+        margin: &recording,
+        arity: 1,
+    };
+    let asymmetric = vec![UncertaintyNode {
+        name: "x".to_string(),
+        lo: 0.0,
+        hi: 1.0,
+        nominal: 0.9,
+    }];
+    rank_purchases(
+        &decision,
+        &asymmetric,
+        &[probe("contract", "x", 1.0, 0.8)],
+        2,
+    )
+    .expect("asymmetric interval contracts inside its support");
+    let samples = samples.borrow();
+    assert_eq!(samples.len(), 6, "two nominal-plus-grid sweeps");
+    let after = &samples[4..6];
+    assert!(after.iter().all(|sample| (0.0..=1.0).contains(sample)));
+    assert!((after[0] - 0.38).abs() < 1e-12, "left midpoint");
+    assert!((after[1] - 0.78).abs() < 1e-12, "right midpoint");
+    assert!((after[1] - after[0] - 0.4).abs() < 1e-12);
+
+    let calls = Cell::new(0usize);
+    let counting = |values: &[f64]| {
+        calls.set(calls.get() + 1);
+        values[0]
+    };
+    let decision = LiveDecision {
+        margin: &counting,
+        arity: 1,
+    };
+    let subnormal = vec![UncertaintyNode {
+        name: "tiny".to_string(),
+        lo: 0.0,
+        hi: f64::from_bits(1),
+        nominal: 0.0,
+    }];
+    assert!(matches!(
+        rank_purchases(
+            &decision,
+            &subnormal,
+            &[probe("underflow", "tiny", 1.0, 0.5)],
+            2,
+        ),
+        Err(VoiError::ArithmeticRefusal { .. })
+    ));
+    assert_eq!(
+        calls.get(),
+        0,
+        "derived intervals preflight before callbacks"
+    );
+}
+
+#[test]
+fn voi_013_context_and_sampled_zero_are_explicit() {
+    let threshold = |values: &[f64]| values[0];
+    let decision = LiveDecision {
+        margin: &threshold,
+        arity: 1,
+    };
+    let ns = vec![UncertaintyNode {
+        name: "x".to_string(),
+        lo: -1.0,
+        hi: 1.0,
+        nominal: 0.0,
+    }];
+    let menu = vec![probe("midpoint-alias", "x", 2.0, 0.5)];
+    let grid_one = rank_purchases(&decision, &ns, &menu, 1).expect("grid one is estimated");
+    let hint = hint_for_query(&grid_one);
+    assert!(hint.purchase().is_none());
+    assert!(hint.render_text().contains("no sampled purchase"));
+    assert!(hint.render_text().contains("does not prove"));
+    assert!(hint.to_json().contains("\"authoritative_zero\":false"));
+
+    let grid_two = rank_purchases(&decision, &ns, &menu, 2).expect("second grid");
+    assert_ne!(grid_one.context_id(), grid_two.context_id());
+    let mut expanded_menu = menu.clone();
+    expanded_menu.push(probe("second-probe", "x", 3.0, 0.25));
+    let expanded =
+        rank_purchases(&decision, &ns, &expanded_menu, 1).expect("expanded supplied menu");
+    assert_ne!(grid_one.context_id(), expanded.context_id());
+    let mut changed = ns;
+    changed[0].hi = 1.5;
+    let changed = rank_purchases(&decision, &changed, &menu, 1).expect("changed snapshot");
+    assert_ne!(grid_one.context_id(), changed.context_id());
+}
+
+#[test]
+fn voi_014_audit_validation_duplicates_and_work_bound() {
+    assert!(matches!(
+        MatchedAuditRecord::new("obs", "same", "same", "fixture/run", 1.0, 1.0, true, false,),
+        Err(VoiError::InvalidAuditPair { .. })
+    ));
+    for (recommended, alternative) in [(1.0, 2.0), (f64::NAN, f64::NAN), (0.0, 0.0)] {
+        assert!(matches!(
+            MatchedAuditRecord::new(
+                "obs",
+                "recommended",
+                "alternative",
+                "fixture/run",
+                recommended,
+                alternative,
+                true,
+                false,
+            ),
+            Err(VoiError::InvalidAuditCost { .. })
+        ));
+    }
+    assert!(matches!(
+        MatchedAuditRecord::new(
+            "bad\nobs",
+            "recommended",
+            "alternative",
+            "fixture/run",
+            1.0,
+            1.0,
+            true,
+            false,
+        ),
+        Err(VoiError::InvalidName { .. })
+    ));
+
+    let duplicated = vec![audit_record(0, true), audit_record(0, true)];
+    assert!(matches!(
+        audit_scheduling(&duplicated),
+        Err(VoiError::DuplicateAuditObservation { .. })
+    ));
+    let oversized: Vec<_> = (0..=MAX_VOI_AUDIT_RECORDS)
+        .map(|index| audit_record(index, true))
+        .collect();
+    assert!(matches!(
+        audit_scheduling(&oversized),
+        Err(VoiError::SizeLimit { .. })
+    ));
+}
+
+#[test]
+fn voi_015_structured_hint_escapes_and_preserves_price() {
+    let decision = LiveDecision {
+        margin: &margin,
+        arity: 3,
+    };
+    let quoted = probe("quoted\"probe", "drag-gap", 0.49, 0.01);
+    let ranked = rank_purchases(&decision, &nodes(), &[quoted], 64).expect("visible ASCII quote");
+    let hint = hint_for_query(&ranked);
+    let text = hint.render_text();
+    assert!(
+        text.contains("$0.49"),
+        "price is not rounded to zero: {text}"
+    );
+    assert!(
+        text.contains("quoted\\\"probe"),
+        "text escapes identity: {text}"
+    );
+    let json = hint.to_json();
+    assert!(json.contains("quoted\\\"probe"));
+    assert!(json.contains("\"cost_dollars\":0.49"));
+
+    let calls = Cell::new(0usize);
+    let counting = |values: &[f64]| {
+        calls.set(calls.get() + 1);
+        margin(values)
+    };
+    let decision = LiveDecision {
+        margin: &counting,
+        arity: 3,
+    };
+    assert!(matches!(
+        rank_purchases(
+            &decision,
+            &nodes(),
+            &[probe("line\nbreak", "drag-gap", 1.0, 0.5)],
+            64,
+        ),
+        Err(VoiError::InvalidName { .. })
+    ));
+    assert_eq!(calls.get(), 0, "control characters refuse before callback");
 }

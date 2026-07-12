@@ -46,7 +46,8 @@ pub use oracle::{
 };
 #[cfg(feature = "voi-queries")]
 pub use voi::{
-    MAX_VOI_EVALUATIONS, MAX_VOI_GRID, MAX_VOI_NAME_BYTES, MAX_VOI_NODES, MAX_VOI_PROBES, VoiError,
+    MAX_VOI_AUDIT_RECORDS, MAX_VOI_EVALUATIONS, MAX_VOI_GRID, MAX_VOI_NAME_BYTES, MAX_VOI_NODES,
+    MAX_VOI_PROBES, VOI_AUDIT_ALPHA, VoiError,
 };
 
 /// Crate version (compile-time stamp).

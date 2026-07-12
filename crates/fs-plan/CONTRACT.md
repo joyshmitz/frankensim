@@ -11,7 +11,8 @@ Plan §11.4 (Bet 12), Decalogue P4: every operator publishes an error model
 and a cost model; composition composes the models, so "how accurate is
 this number and where did the error come from" — and "where did the
 seconds go" — are queries over attribution trees. Layer: L6 (HELM).
-Runtime deps: `std`, fs-blake3, fs-geom, fs-ledger.
+Runtime deps: `std`, fs-blake3, fs-geom, fs-ledger; feature-gated VoI uses
+fs-eproc for anytime-valid audit authority.
 
 ## Public types and semantics
 
@@ -64,24 +65,28 @@ Runtime deps: `std`, fs-blake3, fs-geom, fs-ledger.
   surrogate threshold verdict; `flip_probability` sweeps one node's
   interval at grid cost — near-free by construction),
   `Probe`/`ProbeKind` (the priced menu UNIFYING computational and
-  physical evidence), `rank_purchases` (MYOPIC one-step VoI:
-  flip-probability-per-dollar, deterministic tie-breaks),
-  `hint_for_query` (the Proposal-8 anytime hint, now decision-priced),
-  `schedule_probes` (greedy affordable top-k — the discrepancy-probe
-  scheduler), `audit_verdict` (the kill criterion as code: VoI keeps
-  scheduling authority only while recommended purchases measurably
-  outperform agent-chosen alternatives; no evidence → no authority).
+  physical evidence), `rank_purchases` (MYOPIC one-step sampled VoI:
+  flip-fraction reduction per dollar, deterministic tie-breaks) returning a
+  sealed complete `RankedMenu`. Its private rows cannot be omitted, spliced,
+  or reordered; its BLAKE3 `context_id` binds validated nodes, the complete
+  supplied source menu, and grid. `QueryHint` is structured and grid-qualified,
+  with escaped lossless text and strict JSON renderers. A sampled zero is
+  explicitly non-authoritative. `MatchedAuditRecord` validates private matched-cost
+  observations with bounded identities/provenance; `audit_scheduling` runs a
+  bounded fixed-alpha fs-eproc `PairwiseRace` and is the only constructor of
+  `SchedulingAuthority`. `schedule_probes` requires that capability, consumes
+  one sealed ranking epoch, and returns at most one highest-value affordable
+  `ScheduledPurchase` receipt retaining the menu root/grid, audit root/e-value
+  support, and exact budget transition; the caller must update evidence and
+  rerank before another spend.
   Decision, sweep, ranking, and scheduling entry points are fallible:
   arity, nonempty bounded collections/names, unique identities, finite
   ordered intervals, nominal containment, callback margins, target
   resolution, grid and aggregate evaluation work, probe economics,
   ranked values, and budgets are validated before evaluation or spend.
-  `RankedPurchase` construction is sealed behind ranking with read-only
-  getters. Hinting and scheduling reapply the canonical
-  score-descending/cost-ascending/name-ascending comparator, so caller
-  order carries no authority. Duplicate ranked identities refuse rather
-  than buying twice, and a positive cost must strictly decrease a finite
-  remaining budget.
+  Probe-menu identity, score ordering, and matched-audit order are canonical.
+  Duplicate source or audit identities refuse, and a positive scheduled cost
+  must strictly decrease a finite budget.
 
 - `alloc::{Knob, KnobSetting, AllocProblem, Plan, allocate, Allocator,
   AllocationError, PlanInputError, BudgetInfeasible, oracle_min_error}`
@@ -157,8 +162,9 @@ cached surrogate callback is itself deterministic.
 All calls are bounded pure computations or bounded ledger reads. Cost-model
 history/evaluation, oracle edges/errors, receipt bytes/depth/nodes/container
 items, and tune sample counts each have explicit caps. VoI sweeps are bounded
-by `MAX_VOI_EVALUATIONS`; the fixture oracle has its own Cartesian-work cap. No
-`Cx` integration is needed at this layer.
+by `MAX_VOI_EVALUATIONS`; audits are bounded by `MAX_VOI_AUDIT_RECORDS`; the
+fixture oracle has its own Cartesian-work cap. No `Cx` integration is needed at
+this layer.
 
 ## No-claim boundaries
 
@@ -178,7 +184,8 @@ None. Safe Rust only.
 ## Feature flags
 
 - `voi-queries` [F] (default OFF) — value-of-information query planning
-  (knh1.6, Proposal C); gates the `voi` integration target.
+  (knh1.6, Proposal C); gates the `voi` integration target and its optional
+  fs-eproc authority dependency.
 - `moonshot-planner` [M] (default OFF, bead gp3.9) — the co-optimizing
   allocator + fs-dfo dependency; promotion gated on the huq.15 flagship
   Gauntlet (the fixture-matrix scoreboard here is necessary, not
@@ -201,7 +208,10 @@ duplicate-key receipts, and producer-statistic rederivation.
 refusals, online re-planning, oracle bounds, evaluator safety, and tropical
 composition. Feature-gated `tests/voi.rs` covers exact boundaries and limit+1,
 callback/domain refusals before evaluation, exact target resolution, probe
-economics, duplicate scheduling identities, and monotone budget arithmetic.
+economics, sealed menu/context identity, asymmetric subset contraction,
+structured estimated hints, single-purchase epochs, bounded matched-cost
+audits, anytime-valid authority activation/demotion, and monotone budget
+arithmetic.
 
 ## No-claim boundaries
 
@@ -223,20 +233,27 @@ economics, duplicate scheduling identities, and monotone budget arithmetic.
 
 - MYOPIC one-step VoI only — sequential VoI is intractable and
   deliberately not offered (there is no tree API to misuse).
-- The flip probability uses the UNIFORM measure over the node's
-  interval (v0's declared prior); posterior-weighted sweeps arrive
-  with the Proposal-3 inventory integration.
+- The reported flip fraction is a MIDPOINT-GRID ESTIMATE under the uniform
+  interval measure, not a certified probability. `RankedMenu::grid` and every
+  hint retain that qualifier; a sampled zero cannot authorize a universal
+  zero-value claim. Adaptive or regularity-certified quadrature arrives later.
 - One-node-at-a-time sweeps ignore uncertainty INTERACTIONS; joint
   flips are underestimated — documented, not hidden.
-- Probe `shrink` factors are menu declarations, not measured
-  posteriors; the prospective audit is what keeps the menu honest.
+- Probe `shrink` factors are menu declarations, not measured posteriors. Their
+  endpoint-wise contraction remains a subset with the declared width factor,
+  but the prospective audit is what tests their empirical value.
 - The library bounds and validates surrogate calls but cannot prove an
   arbitrary callback pure; VoI determinism and replay require the caller to
   supply the declared cached deterministic margin. A callback panic is also
   outside the typed-refusal contract and propagates to its owner.
-- Ranked rows cannot be forged or made authoritative by reordering, but a
-  caller passing a raw slice can omit valid rows or splice unique sealed rows
-  from different ranking requests. Scheduling authority assumes one complete
-  `rank_purchases` output (or ledger evidence retaining its context and
-  completeness); omission/splice detection requires a future sealed
-  ranked-menu receipt.
+- `RankedMenu::context_id` is a deterministic content identity, not a freshness
+  oracle: it binds nodes/menu/grid but cannot identify arbitrary callback code
+  or prove that the supplied menu is complete relative to an external catalog
+  or that the caller's ledger/session snapshot is still current.
+- Matched audit records are structurally validated, canonically content-bound,
+  bounded, and cannot mint authority without the e-process gate, but they are
+  caller-supplied rather than ledger-authenticated. Safe Rust cannot forge a
+  `SchedulingAuthority`; a dishonest producer can still lie in the evidence
+  supplied to `MatchedAuditRecord::new`. Ledger signatures, snapshot freshness,
+  expiry, and independent outcome authentication remain required follow-up
+  work (`frankensim-wk4m`); this crate makes no authenticated-audit claim yet.
