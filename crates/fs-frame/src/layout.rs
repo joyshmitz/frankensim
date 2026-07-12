@@ -1,5 +1,5 @@
-//! Stages 1–2: ground-structure LAYOUT (PDHG LP with the duality gap
-//! as CERTIFICATE) and code-checked SIZING (Euler floors, catalog
+//! Stages 1–2: ground-structure layout (PDHG LP with explicit convergence
+//! diagnostics) and code-checked sizing (Euler floors, catalog
 //! up-snap, mandatory post-prune equilibrium re-verification, member
 //! code rows) — thin, honest composition over fs-truss, whose own
 //! battery (truss-001..006) carries the per-stage evidence. The
@@ -10,17 +10,17 @@ use fs_truss::ground::{GroundRules, GroundStructure};
 use fs_truss::lp::{LayoutLp, PdhgSettings};
 use fs_truss::sizing::{CatalogAudit, size_and_snap};
 
-/// The layout + sizing record: solution, certificate, audit.
+/// The layout + sizing record: approximate solution, diagnostics, and audit.
 pub struct LayoutReport {
     /// The ground structure.
     pub gs: GroundStructure,
     /// Split LP solution (q⁺, q⁻).
     pub x: Vec<f64>,
-    /// Relative duality gap (the certificate).
+    /// Relative primal/dual objective separation diagnostic.
     pub gap: f64,
     /// Equilibrium residual.
     pub residual: f64,
-    /// Certified volume Σ l·|q|/σ_y.
+    /// Approximate returned-iterate volume Σ l·|q|/σ_y.
     pub volume: f64,
     /// Sizing/catalog audit (Euler floors, snap, code rows).
     pub audit: CatalogAudit,
@@ -73,9 +73,13 @@ pub fn layout_and_size(
     // scaling (measured: gap stuck at 1.0). Volume is rescaled to
     // physical units on report; sizing gets the TRUE σ_y.
     let lp = LayoutLp::assemble(&gs, &pin_fn, &load_fn, 1.0);
-    let (x, y, _report) = lp.solve(None, None, PdhgSettings::default());
+    let (x, y, _report) = lp
+        .solve(None, None, PdhgSettings::default())
+        .expect("default cold-start PDHG controls are valid");
     let bnorm = 1.0;
-    let (gap, residual, volume_unit) = lp.certificate(&x, &y, bnorm);
+    let (gap, residual, volume_unit) = lp
+        .diagnostics(&x, &y, bnorm)
+        .expect("solver output matches its assembled LP");
     let volume = volume_unit / sigma_y;
     let audit = size_and_snap(&gs, &lp, &x, sigma_y, youngs, catalog, 1e-3);
     LayoutReport {

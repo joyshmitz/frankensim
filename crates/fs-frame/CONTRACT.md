@@ -14,8 +14,9 @@ their own battery: fs-truss (layout LP + sizing), fs-solid/fs-material
 - `layout::layout_and_size` → `LayoutReport`: ground-structure grid,
   PDHG layout LP solved at σ_y = 1 (yield stress scales only the
   objective, never equilibrium — a 250 MPa σ_y measurably stalled the
-  primal-dual scaling, gap stuck at 1.0), duality gap + equilibrium
-  residual as the CERTIFICATE, physical volume rescaled on report;
+  primal-dual scaling, objective separation stuck at 1.0), relative
+  primal/dual objective separation + equilibrium residual as diagnostics,
+  physical returned-iterate volume rescaled on report;
   then fs-truss `size_and_snap` (Euler floors, catalog up-snap,
   mandatory post-prune equilibrium refit, member code rows).
 - `history::StoryFrame`: single-story, two fiber-hinge columns —
@@ -40,9 +41,10 @@ their own battery: fs-truss (layout LP + sizing), fs-solid/fs-material
 
 ## Invariants
 
-1. Layout LP certificate: duality gap 3.4e-7, equilibrium residual
-   4.1e-7 on the smoke fixture; volume positive and physically
-   rescaled (frame-001).
+1. Layout LP diagnostics: objective separation 3.4e-7, equilibrium residual
+   4.1e-7 on the smoke fixture; returned-iterate volume positive and
+   physically rescaled (frame-001). These values do not form a finite optimum
+   certificate because the primal is not exactly equilibrated.
 2. Sizing: post-prune equilibrium refit 1.8e-13, every member code
    row passes post-snap (frame-002).
 3. Dynamics: elastic runs do not ratchet over 10× duration (Newmark
@@ -90,7 +92,7 @@ None (the smoke tier ships enabled; heavier tiers will gate).
 
 ## Conformance tests
 
-`tests/battery.rs`: frame-001 LP certificate; frame-002 sizing code
+`tests/battery.rs`: frame-001 LP diagnostics; frame-002 sizing code
 rows; frame-003 elastic stability + hysteretic dissipation;
 frame-004 e-stopped fragility coverage + ledgered savings; frame-005
 CVaR monotonicity + design; frame-006 replay + drills.
@@ -115,6 +117,6 @@ CVaR monotonicity + design; frame-006 replay + drills.
 - MLMC here is a LEVEL-DESIGN REPORT, not the estimator of record
   (the CS is); driving the fragility estimate itself through MLMC
   with e-stopping per level is full-tier scope.
-- No `explain()` artifact chain yet — the certificate fields are the
-  auditable record; the fs-ledger integration is staged with the
+- No `explain()` artifact chain yet — the diagnostic and evidence fields are
+  the auditable record; the fs-ledger integration is staged with the
   study-program (Appendix C) runner.

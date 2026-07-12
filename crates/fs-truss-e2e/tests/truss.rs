@@ -1,39 +1,25 @@
-//! End-to-end battery: a PDHG-certified minimum-weight cantilever with a
-//! tropical critical load path from load to support.
+//! End-to-end battery: a deterministic PDHG cantilever iterate with an
+//! advisory, endpoint-checked tropical load path from load to support.
 
 use fs_evidence::Color;
-use fs_truss_e2e::run_campaign;
+use fs_truss_e2e::{TrussError, analyze_load_path, run_campaign};
 
 #[test]
-fn the_optimal_truss_has_a_certified_load_path() {
-    let report = run_campaign(4, 3, 4.0, 2.0, 1e-4);
+fn the_converged_truss_has_a_bounded_unique_load_path() {
+    let report = run_campaign(4, 3, 4.0, 2.0, 1e-4).expect("valid tropical load path");
     // a real ground structure was optimized down to a sparse active set.
     assert!(report.num_members > report.num_active, "nothing was pruned");
     assert!(report.num_active > 0, "no active bars");
     assert!(report.total_volume > 0.0, "zero volume");
-    // OPTIMALITY, CERTIFIED: PDHG closed the duality gap and equilibrium holds.
+    // The solver met its declared diagnostic thresholds, but the approximate
+    // primal does not acquire a finite optimum certificate.
     assert!(
-        report.certified_optimal,
+        report.solver_converged,
         "gap {} eq_res {}",
         report.gap, report.eq_residual
     );
-    // the certified band is a valid enclosure: the feasible volume is the UPPER
-    // bound (primal), the dual sits below it, and the interval is non-empty.
-    let Color::Verified { lo, hi } = report.optimality_color else {
-        panic!("optimum not certified");
-    };
-    assert!(lo <= hi, "empty band [{lo}, {hi}]");
-    assert!(
-        (hi - report.total_volume).abs() < 1e-12,
-        "primal (volume) must be the upper bound"
-    );
-    assert!(lo <= report.total_volume + 1e-12, "dual must be <= volume");
-    assert!(
-        lo >= report.total_volume * (1.0 - report.gap) - 1e-9,
-        "dual too low"
-    );
-    // LOAD PATH, CERTIFIED: a non-trivial critical chain carrying real volume,
-    // with a named bottleneck bar.
+    assert!(matches!(report.optimality_color, Color::Estimated { .. }));
+    // The advisory path is non-trivial and carries real rounded volume.
     assert!(
         report.critical_path.len() >= 2,
         "path too short: {:?}",
@@ -46,7 +32,10 @@ fn the_optimal_truss_has_a_certified_load_path() {
             .critical_path
             .contains(&report.bottleneck_member.unwrap())
     );
-    assert!(matches!(report.load_path_color, Color::Verified { .. }));
+    let Color::Estimated { dispersion, .. } = report.load_path_color else {
+        panic!("thresholded load path must remain estimated");
+    };
+    assert!(dispersion.is_infinite());
     // the critical path carries no more than the whole structure.
     assert!(report.critical_path_volume <= report.total_volume + 1e-6);
     println!(
@@ -66,9 +55,104 @@ fn the_optimal_truss_has_a_certified_load_path() {
 
 #[test]
 fn the_campaign_is_deterministic() {
-    let a = run_campaign(4, 3, 4.0, 2.0, 1e-4);
-    let b = run_campaign(4, 3, 4.0, 2.0, 1e-4);
+    let a = run_campaign(4, 3, 4.0, 2.0, 1e-4).expect("first run");
+    let b = run_campaign(4, 3, 4.0, 2.0, 1e-4).expect("second run");
     assert_eq!(a.total_volume.to_bits(), b.total_volume.to_bits());
     assert_eq!(a.critical_path, b.critical_path);
     assert_eq!(a.bottleneck_member, b.bottleneck_member);
+}
+
+#[test]
+fn invalid_or_unbounded_campaigns_refuse_before_ground_structure_work() {
+    assert!(matches!(
+        run_campaign(1, 2, 1.0, 1.0, 1e-4),
+        Err(TrussError::InvalidInput {
+            field: "grid dimensions",
+            ..
+        })
+    ));
+    assert!(matches!(
+        run_campaign(17, 16, 1.0, 1.0, 1e-4),
+        Err(TrussError::InvalidInput {
+            field: "grid node count",
+            ..
+        })
+    ));
+    for (width, height, tolerance) in [
+        (f64::NAN, 1.0, 1e-4),
+        (1.0, f64::INFINITY, 1e-4),
+        (1.0, 1.0, 0.0),
+    ] {
+        assert!(matches!(
+            run_campaign(2, 2, width, height, tolerance),
+            Err(TrussError::InvalidInput { .. })
+        ));
+    }
+    assert!(matches!(
+        run_campaign(2, 2, 0.01, 0.01, 1e-4),
+        Err(TrussError::NoCandidateMembers)
+    ));
+
+    // 64 nodes is the exact cubic-preflight boundary. It reaches the later
+    // candidate/solver budget; 65 nodes is refused before construction.
+    let boundary = run_campaign(8, 8, 4.0, 2.0, 1e-4);
+    assert!(
+        matches!(boundary, Err(TrussError::WorkBudget { resource, .. }) if resource != "ground-structure triplet checks")
+    );
+    assert!(matches!(
+        run_campaign(13, 5, 4.0, 2.0, 1e-4),
+        Err(TrussError::WorkBudget {
+            resource: "ground-structure triplet checks",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn tight_tolerance_does_not_mislabel_the_iteration_cap() {
+    let report = run_campaign(4, 3, 4.0, 2.0, f64::MIN_POSITIVE)
+        .expect("bounded campaign still returns its final iterate");
+    assert_eq!(report.iters, 60_000);
+    assert!(!report.solver_converged);
+}
+
+#[test]
+fn support_selection_is_index_based_even_below_the_old_coordinate_tolerance() {
+    match run_campaign(2, 4, 1e-10, 1.0, 1e-4) {
+        Ok(report) => {
+            assert!(report.total_volume > 0.0);
+            assert!(report.critical_path.len() >= 2);
+        }
+        Err(TrussError::NoCandidateMembers | TrussError::NoCompleteLoadPath) => {}
+        Err(error) => panic!("unexpected narrow-grid refusal: {error}"),
+    }
+}
+
+#[test]
+fn path_analysis_excludes_disconnected_heavy_components_and_checks_endpoints() {
+    let nodes = [[3.0, 0.0], [2.0, 0.0], [0.0, 0.0], [2.0, 2.0], [1.0, 2.0]];
+    let members = [(0, 1), (1, 2), (3, 4)];
+    let path = analyze_load_path(&nodes, &members, &[0, 1, 2], &[1.0, 2.0, 100.0], 0, &[2])
+        .expect("the connected load-support chain survives filtering");
+    assert_eq!(path.members, vec![0, 1]);
+    assert_eq!(path.weight.to_bits(), 3.0_f64.to_bits());
+    assert!(!path.members.contains(&2));
+
+    assert!(matches!(
+        analyze_load_path(&nodes, &members, &[0], &[1.0, 2.0, 100.0], 0, &[1]),
+        Err(TrussError::NoCompleteLoadPath)
+    ));
+    assert!(matches!(
+        analyze_load_path(
+            &nodes,
+            &members,
+            &[0, 1],
+            &[1.0, 2.0, 100.0],
+            0,
+            &[1, 2, 3, 4, 4, 4]
+        ),
+        Err(TrussError::InvalidLoadPath {
+            reason: "support count must be within 1..=node count"
+        })
+    ));
 }

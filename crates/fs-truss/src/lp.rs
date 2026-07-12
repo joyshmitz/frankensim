@@ -9,22 +9,25 @@
 //! PDHG (Chambolle–Pock): `x ← Π₊(x − τ(c + Aᵀy))`,
 //! `y ← y + σ(A(2x − x_prev) − b)`, with `τσ‖A‖² < 1` from a
 //! power-iteration norm estimate. Sparse-matvec dominated (fs-sparse
-//! CSR), bitwise deterministic, warm-startable across load cases. The
-//! DUALITY GAP and KKT residuals are tracked every check interval —
-//! the LP's own certificate of near-optimality (under this saddle the
-//! dual objective is `−bᵀy`, feasible where `c + Aᵀy ≥ 0`; a uniform
-//! shrink of y restores feasibility with the bound still certified).
+//! CSR), bitwise deterministic, warm-startable across load cases. Relative
+//! primal/dual objective separation and equilibrium residual are tracked at
+//! every check interval. These are convergence diagnostics, not a certified
+//! optimum interval: the returned primal is only approximately equilibrated,
+//! and the floating dual scaling is not outward-verified.
 
 use crate::ground::GroundStructure;
 use fs_sparse::{Coo, Csr};
 use std::fmt::Write as _;
+
+/// Maximum iterations admitted to one direct PDHG solve.
+pub const MAX_PDHG_ITERS: usize = 1_000_000;
 
 /// PDHG controls.
 #[derive(Debug, Clone, Copy)]
 pub struct PdhgSettings {
     /// Iteration cap.
     pub max_iters: usize,
-    /// Relative duality-gap target.
+    /// Relative primal/dual objective-separation target.
     pub gap_tol: f64,
     /// Check/ledger interval.
     pub check_every: usize,
@@ -40,6 +43,61 @@ impl Default for PdhgSettings {
     }
 }
 
+/// Structured refusal for invalid PDHG controls or warm-start state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PdhgError {
+    /// A solver setting is outside its admitted domain.
+    InvalidSetting {
+        /// Stable field name.
+        field: &'static str,
+        /// Stable requirement.
+        requirement: &'static str,
+    },
+    /// A solver-state vector has the wrong shape.
+    VectorLength {
+        /// `x` or `y`.
+        vector: &'static str,
+        /// Required length.
+        expected: usize,
+        /// Supplied length.
+        actual: usize,
+    },
+    /// A solver-state entry is outside its numerical domain.
+    InvalidVector {
+        /// `x` or `y`.
+        vector: &'static str,
+        /// Offending entry.
+        index: usize,
+        /// Stable requirement.
+        requirement: &'static str,
+    },
+}
+
+impl core::fmt::Display for PdhgError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::InvalidSetting { field, requirement } => {
+                write!(formatter, "PDHG setting {field} {requirement}")
+            }
+            Self::VectorLength {
+                vector,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "PDHG state {vector} length {actual}; expected {expected}"
+            ),
+            Self::InvalidVector {
+                vector,
+                index,
+                requirement,
+            } => write!(formatter, "PDHG state {vector}[{index}] {requirement}"),
+        }
+    }
+}
+
+impl std::error::Error for PdhgError {}
+
 /// Solve evidence.
 #[derive(Debug, Clone, Default)]
 pub struct PdhgReport {
@@ -47,7 +105,7 @@ pub struct PdhgReport {
     pub iters: usize,
     /// Final primal objective (volume).
     pub volume: f64,
-    /// Final certified relative duality gap.
+    /// Final relative primal/dual objective separation diagnostic.
     pub gap: f64,
     /// Final equilibrium residual ‖Ax − b‖/‖b‖.
     pub eq_residual: f64,
@@ -168,16 +226,79 @@ impl LayoutLp {
 
     /// Run PDHG from a warm start (zeros for cold); returns the
     /// primal solution (split forces) and the report.
-    #[must_use]
-    #[allow(clippy::too_many_lines)] // one iteration loop with certificates
+    ///
+    /// # Errors
+    /// Refuses zero iteration/check intervals, non-finite or out-of-range
+    /// tolerances, malformed warm-start lengths, non-finite state, and negative
+    /// primal warm starts before entering the iteration loop.
+    #[allow(clippy::too_many_lines)] // validation plus one diagnostic iteration loop
     pub fn solve(
         &self,
         warm_x: Option<Vec<f64>>,
         warm_y: Option<Vec<f64>>,
         settings: PdhgSettings,
-    ) -> (Vec<f64>, Vec<f64>, PdhgReport) {
+    ) -> Result<(Vec<f64>, Vec<f64>, PdhgReport), PdhgError> {
         let nvar = self.c.len();
         let nrow = self.b.len();
+        if settings.max_iters == 0 {
+            return Err(PdhgError::InvalidSetting {
+                field: "max_iters",
+                requirement: "must be at least one",
+            });
+        }
+        if settings.max_iters > MAX_PDHG_ITERS {
+            return Err(PdhgError::InvalidSetting {
+                field: "max_iters",
+                requirement: "exceeds the one-million-iteration direct-solve limit",
+            });
+        }
+        if settings.check_every == 0 {
+            return Err(PdhgError::InvalidSetting {
+                field: "check_every",
+                requirement: "must be at least one",
+            });
+        }
+        if !settings.gap_tol.is_finite() || !(0.0..=1.0).contains(&settings.gap_tol) {
+            return Err(PdhgError::InvalidSetting {
+                field: "gap_tol",
+                requirement: "must be finite and in 0..=1",
+            });
+        }
+        if let Some(values) = &warm_x {
+            if values.len() != nvar {
+                return Err(PdhgError::VectorLength {
+                    vector: "x",
+                    expected: nvar,
+                    actual: values.len(),
+                });
+            }
+            if let Some(index) = values
+                .iter()
+                .position(|value| !value.is_finite() || *value < 0.0)
+            {
+                return Err(PdhgError::InvalidVector {
+                    vector: "x",
+                    index,
+                    requirement: "must be finite and non-negative",
+                });
+            }
+        }
+        if let Some(values) = &warm_y {
+            if values.len() != nrow {
+                return Err(PdhgError::VectorLength {
+                    vector: "y",
+                    expected: nrow,
+                    actual: values.len(),
+                });
+            }
+            if let Some(index) = values.iter().position(|value| !value.is_finite()) {
+                return Err(PdhgError::InvalidVector {
+                    vector: "y",
+                    index,
+                    requirement: "must be finite",
+                });
+            }
+        }
         let mut x = warm_x.unwrap_or_else(|| vec![0.0; nvar]);
         let mut y = warm_y.unwrap_or_else(|| vec![0.0; nrow]);
         let step = 0.95 / self.norm_est.max(1e-30);
@@ -187,6 +308,7 @@ impl LayoutLp {
         let mut aty = vec![0.0f64; nvar];
         let mut ax = vec![0.0f64; nrow];
         let mut x_prev = x.clone();
+        let mut xbar = vec![0.0f64; nvar];
         for it in 0..settings.max_iters {
             // x ← Π₊(x − τ(c + Aᵀy))
             self.at.spmv(&y, &mut aty);
@@ -195,17 +317,15 @@ impl LayoutLp {
                 x[i] = (x[i] - tau * (self.c[i] + aty[i])).max(0.0);
             }
             // y ← y + σ(A(2x − x_prev) − b)
-            let xbar: Vec<f64> = x
-                .iter()
-                .zip(&x_prev)
-                .map(|(xi, xp)| 2.0 * xi - xp)
-                .collect();
+            for ((extrapolated, xi), previous) in xbar.iter_mut().zip(&x).zip(&x_prev) {
+                *extrapolated = 2.0 * xi - previous;
+            }
             self.a.spmv(&xbar, &mut ax);
             for r in 0..nrow {
                 y[r] += sigma * (ax[r] - self.b[r]);
             }
             if (it + 1) % settings.check_every == 0 || it + 1 == settings.max_iters {
-                let (gap, eq_res, primal) = self.certificate(&x, &y, bnorm);
+                let (gap, eq_res, primal) = self.diagnostics(&x, &y, bnorm)?;
                 report.trace.push((it + 1, gap));
                 report.iters = it + 1;
                 report.volume = primal;
@@ -216,16 +336,62 @@ impl LayoutLp {
                 }
             }
         }
-        (x, y, report)
+        Ok((x, y, report))
     }
 
-    /// The certificate: (relative duality gap, equilibrium residual,
-    /// primal objective). With the saddle `cᵀx + yᵀ(Ax − b)` this
-    /// solver ascends, the dual objective is `−bᵀy` under feasibility
-    /// `c + Aᵀy ≥ 0`; a uniform shrink λ·y restores feasibility with a
-    /// still-certified bound `−λ·bᵀy` (c > 0 for every member).
-    #[must_use]
-    pub fn certificate(&self, x: &[f64], y: &[f64], bnorm: f64) -> (f64, f64, f64) {
+    /// Return `(relative objective separation, equilibrium residual, primal
+    /// objective)`. With the saddle `cᵀx + yᵀ(Ax − b)`, the nominal dual
+    /// objective is `−bᵀy` under `c + Aᵀy ≥ 0`; scaling `y` repairs observed
+    /// floating violations. This routine does not outward-verify dual
+    /// feasibility or repair the primal to exact equilibrium, so its tuple is
+    /// diagnostic rather than a finite optimum certificate.
+    ///
+    /// # Errors
+    /// Refuses dimension mismatch, non-finite state, negative primal entries,
+    /// or a non-finite/non-positive load norm before sparse operations.
+    pub fn diagnostics(
+        &self,
+        x: &[f64],
+        y: &[f64],
+        bnorm: f64,
+    ) -> Result<(f64, f64, f64), PdhgError> {
+        if x.len() != self.c.len() {
+            return Err(PdhgError::VectorLength {
+                vector: "x",
+                expected: self.c.len(),
+                actual: x.len(),
+            });
+        }
+        if y.len() != self.b.len() {
+            return Err(PdhgError::VectorLength {
+                vector: "y",
+                expected: self.b.len(),
+                actual: y.len(),
+            });
+        }
+        if let Some(index) = x
+            .iter()
+            .position(|value| !value.is_finite() || *value < 0.0)
+        {
+            return Err(PdhgError::InvalidVector {
+                vector: "x",
+                index,
+                requirement: "must be finite and non-negative",
+            });
+        }
+        if let Some(index) = y.iter().position(|value| !value.is_finite()) {
+            return Err(PdhgError::InvalidVector {
+                vector: "y",
+                index,
+                requirement: "must be finite",
+            });
+        }
+        if !bnorm.is_finite() || bnorm <= 0.0 {
+            return Err(PdhgError::InvalidSetting {
+                field: "bnorm",
+                requirement: "must be finite and positive",
+            });
+        }
         let primal: f64 = self.c.iter().zip(x).map(|(c, x)| c * x).sum();
         let mut aty = vec![0.0f64; self.c.len()];
         self.at.spmv(y, &mut aty);
@@ -247,6 +413,6 @@ impl LayoutLp {
             .sqrt()
             / bnorm;
         let gap = (primal - dual).abs() / primal.abs().max(1e-30);
-        (gap, eq_res, primal)
+        Ok((gap, eq_res, primal))
     }
 }

@@ -5,7 +5,7 @@
 Layer: L4 (ASCENT). Ground-structure truss layout optimization (plan
 §9.5 [S/F], bead 7tv.13): candidate members under fabrication rules →
 plastic-design LP solved by an in-house first-order primal-dual
-iteration with the duality gap as a CERTIFICATE → Euler/code sizing
+iteration with explicit convergence diagnostics → Euler/code sizing
 with catalog snapping → fs-solid rod re-analysis. The
 steel-and-concrete flagship's engine (§15.2).
 
@@ -20,10 +20,13 @@ steel-and-concrete flagship's engine (§15.2).
   variables `q⁺, q⁻ ≥ 0`, volume objective `Σ l(q⁺+q⁻)/σ_y`, nodal
   equilibrium on free DOFs. `solve` = PDHG (Chambolle–Pock) with
   power-iteration step sizing, sparse matvecs, warm starts across load
-  cases, deterministic iterations. `certificate` returns (relative
-  duality gap, equilibrium residual, volume): under this saddle the
-  dual objective is `−bᵀy` with feasibility `c + Aᵀy ≥ 0`, restored by
-  a uniform shrink of y — the battery pinned the OPPOSITE textbook
+  cases, deterministic iterations. `solve` is fallible, caps direct solves at
+  one million iterations, and validates controls plus warm-start shape/domain
+  before work. `diagnostics` returns
+  (relative primal/dual objective separation, equilibrium residual, volume):
+  under this saddle the nominal dual objective is `−bᵀy` with feasibility
+  `c + Aᵀy ≥ 0`, approximately restored by a floating uniform shrink of y —
+  the battery pinned the OPPOSITE textbook
   convention (`+bᵀy`, `Aᵀy ≤ c`) reporting gap = 2 on exactly-solved
   instances.
 - `sizing::size_and_snap` → `CatalogAudit`: areas from yield, EULER
@@ -41,10 +44,12 @@ steel-and-concrete flagship's engine (§15.2).
 1. Ground rules hold member-by-member and generation is bitwise
    reproducible (truss-001).
 2. PDHG reaches hand-provable optima (aligned tie `PL/σ`; symmetric
-   two-bar `2PL/σ`) to 1e-4 with duality gap < 1e-5, equilibrium
-   residual < 1e-5, complementary slackness and dual feasibility
-   < 1e-4 (truss-002 — the LP's own truth serum).
-3. Densifying the ground structure never worsens the certified volume
+   two-bar `2PL/σ`) to 1e-4 with objective separation < 1e-5,
+   equilibrium residual < 1e-5, complementary slackness and observed dual
+   feasibility violation < 1e-4 (truss-002). These are numerical oracle checks,
+   not an outward-rounded certificate for arbitrary instances.
+3. Densifying the ground structure does not worsen the returned-iterate volume
+   beyond the declared diagnostic tolerance
    (truss-003); the Michell closed-form catalogue comparison is a
    LEDGERED PENDING row until its vetted constants land via the
    fs-fab oracle spec — stated, never silently skipped.
@@ -60,9 +65,11 @@ steel-and-concrete flagship's engine (§15.2).
 
 ## Error model
 
-Structured asserts on programmer contracts (degenerate grids, empty
-clouds). Optimization never claims more than its certificate: the
-gap/KKT numbers ARE the output quality statement; `NaN` catalog area
+Structured asserts remain on ground-construction programmer contracts
+(degenerate grids, empty clouds). `LayoutLp::solve` returns `PdhgError` for
+zero iteration/check intervals, invalid tolerance, malformed warm-start shape,
+or non-finite/out-of-domain warm state. The objective-separation and KKT
+numbers are diagnostics, not a rigorous optimum interval; `NaN` catalog area
 marks an un-satisfiable member in the audit rather than silently
 clamping.
 
@@ -88,7 +95,8 @@ None.
 ## Conformance tests
 
 `tests/battery.rs`: truss-001 rules + determinism; truss-002 provable
-oracles with certificates; truss-003 refinement monotonicity;
+oracles with numerical diagnostics and malformed-solver-input refusal;
+truss-003 refinement monotonicity within declared tolerances;
 truss-004 scale trend + warm starts; truss-005 sizing/snap audit;
 truss-006 rod spot check.
 
@@ -106,3 +114,7 @@ truss-006 rod spot check.
   families beyond angle sets; discrete member-count MILP.
 - Multi-load-case simultaneous layout (warm starts ship; the
   worst-case envelope LP is follow-up).
+- A finite optimum enclosure. The returned primal is only approximately
+  equilibrated, and the floating dual scaling is not outward-verified. Exact or
+  interval primal repair plus independently checked dual feasibility is tracked
+  separately before either objective becomes a certified bound.

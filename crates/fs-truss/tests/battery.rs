@@ -3,10 +3,10 @@
 //! - truss-001: ground-structure rules hold member-by-member;
 //!   generation is bitwise-reproducible; stats ledgered.
 //! - truss-002: PDHG vs PROVABLE-BY-STATICS oracles (aligned tie,
-//!   symmetric two-bar) with duality-gap and KKT certificates — the
-//!   LP's own truth serum on instances where truth is hand-computable.
+//!   symmetric two-bar) with objective-separation and KKT diagnostics —
+//!   independent truth on instances where the optimum is hand-computable.
 //! - truss-003: ground-structure refinement — volume non-increasing
-//!   under densification, every solve gap-certified (the
+//!   under densification within declared numerical tolerances (the
 //!   Michell-catalogue comparison row is ledgered as pending its
 //!   vetted constants — stated, never skipped silently).
 //! - truss-004: scale trend — PDHG cost per iteration tracks nnz;
@@ -20,7 +20,8 @@
 //!   member at a fraction of the area FAILS (the check has teeth).
 
 use fs_truss::{
-    GroundRules, GroundStructure, LayoutLp, PdhgSettings, rod_buckling_check, size_and_snap,
+    GroundRules, GroundStructure, LayoutLp, MAX_PDHG_ITERS, PdhgError, PdhgSettings,
+    rod_buckling_check, size_and_snap,
 };
 use std::fmt::Write as _;
 
@@ -100,7 +101,7 @@ fn truss_001_ground_rules_and_determinism() {
 // ---------------------------------------------------------------- truss-002
 
 #[test]
-fn truss_002_provable_oracles_with_certificates() {
+fn truss_002_provable_oracles_with_diagnostics() {
     // (a) Aligned tie: one member along the load; V* = P·L/σ.
     let tie = hand_structure(vec![[0.0, 0.0], [1.0, 0.0]], vec![(0, 1)]);
     let lp_tie = LayoutLp::assemble(
@@ -109,7 +110,9 @@ fn truss_002_provable_oracles_with_certificates() {
         &|node| if node == 1 { [1.0, 0.0] } else { [0.0, 0.0] },
         1.0,
     );
-    let (x_tie, y_tie, rep_tie) = lp_tie.solve(None, None, PdhgSettings::default());
+    let (x_tie, y_tie, rep_tie) = lp_tie
+        .solve(None, None, PdhgSettings::default())
+        .expect("valid cold-start fixture");
     let tie_dev = (rep_tie.volume - 1.0).abs();
     // (b) Symmetric two-bar: supports (0,0), (2,0); load (1,1)
     // downward P=1; V* = 2·P·L·cos⁻…= 2P/σ (per-bar |q| = P/√2·√2…).
@@ -123,7 +126,9 @@ fn truss_002_provable_oracles_with_certificates() {
         &|node| if node == 2 { [0.0, -1.0] } else { [0.0, 0.0] },
         1.0,
     );
-    let (_, _, rep_two) = lp_two.solve(None, None, PdhgSettings::default());
+    let (_, _, rep_two) = lp_two
+        .solve(None, None, PdhgSettings::default())
+        .expect("valid cold-start fixture");
     let two_dev = (rep_two.volume - 2.0).abs();
     // KKT on the tie: complementary slackness + dual feasibility.
     let mut aty = vec![0.0f64; lp_tie.c.len()];
@@ -145,13 +150,85 @@ fn truss_002_provable_oracles_with_certificates() {
         "truss-002",
         pass,
         &format!(
-            "\"detail\":\"hand-provable optima with duality-gap + KKT certificates\",\
+            "\"detail\":\"hand-provable optima with objective-separation + KKT diagnostics\",\
              \"tie\":{},\"two_bar\":{},\"tie_dev\":{tie_dev:.2e},\"two_dev\":{two_dev:.2e},\
              \"comp_slack\":{comp_slack:.2e},\"dual_viol\":{dual_viol:.2e}",
             rep_tie.to_json(),
             rep_two.to_json()
         ),
     );
+}
+
+#[test]
+fn truss_002b_solver_admission_refuses_malformed_controls_and_warm_starts() {
+    let tie = hand_structure(vec![[0.0, 0.0], [1.0, 0.0]], vec![(0, 1)]);
+    let lp = LayoutLp::assemble(
+        &tie,
+        &|node, _| node == 0,
+        &|node| {
+            if node == 1 { [1.0, 0.0] } else { [0.0, 0.0] }
+        },
+        1.0,
+    );
+    for settings in [
+        PdhgSettings {
+            max_iters: 0,
+            ..PdhgSettings::default()
+        },
+        PdhgSettings {
+            max_iters: MAX_PDHG_ITERS + 1,
+            ..PdhgSettings::default()
+        },
+        PdhgSettings {
+            check_every: 0,
+            ..PdhgSettings::default()
+        },
+        PdhgSettings {
+            gap_tol: f64::NAN,
+            ..PdhgSettings::default()
+        },
+    ] {
+        assert!(matches!(
+            lp.solve(None, None, settings),
+            Err(PdhgError::InvalidSetting { .. })
+        ));
+    }
+    assert!(matches!(
+        lp.solve(
+            Some(vec![0.0; lp.c.len() - 1]),
+            None,
+            PdhgSettings::default()
+        ),
+        Err(PdhgError::VectorLength { vector: "x", .. })
+    ));
+    let mut negative_x = vec![0.0; lp.c.len()];
+    negative_x[0] = -1.0;
+    assert!(matches!(
+        lp.solve(Some(negative_x), None, PdhgSettings::default()),
+        Err(PdhgError::InvalidVector { vector: "x", .. })
+    ));
+    assert!(matches!(
+        lp.solve(
+            None,
+            Some(vec![0.0; lp.b.len() - 1]),
+            PdhgSettings::default()
+        ),
+        Err(PdhgError::VectorLength { vector: "y", .. })
+    ));
+    let mut invalid_y = vec![0.0; lp.b.len()];
+    invalid_y[0] = f64::INFINITY;
+    assert!(matches!(
+        lp.solve(None, Some(invalid_y), PdhgSettings::default()),
+        Err(PdhgError::InvalidVector { vector: "y", .. })
+    ));
+    assert!(matches!(
+        lp.diagnostics(&[], &[], 1.0),
+        Err(PdhgError::VectorLength { vector: "x", .. })
+    ));
+    assert!(matches!(
+        lp.diagnostics(&vec![0.0; lp.c.len()], &vec![0.0; lp.b.len()], 0.0),
+        Err(PdhgError::InvalidSetting { field: "bnorm", .. })
+    ));
 }
 
 // ---------------------------------------------------------------- truss-003
@@ -176,7 +253,9 @@ fn cantilever_volume(nx: usize, ny: usize, settings: PdhgSettings) -> (f64, f64,
         &move |node| if node == tip { [0.0, -1.0] } else { [0.0, 0.0] },
         1.0,
     );
-    let (_, _, rep) = lp.solve(None, None, settings);
+    let (_, _, rep) = lp
+        .solve(None, None, settings)
+        .expect("valid cantilever settings");
     (rep.volume, rep.gap, gs.members.len())
 }
 
@@ -197,16 +276,16 @@ fn truss_003_refinement_monotonicity() {
         );
         vols.push((v, gap));
     }
-    // Non-increasing within the certified gap band.
+    // Non-increasing within the measured diagnostic tolerance.
     let mono = vols
         .windows(2)
         .all(|w| w[1].0 <= w[0].0 * (1.0 + w[0].1 + w[1].1 + 5e-4));
-    let certified = vols.iter().all(|&(_, g)| g < 5e-3);
+    let diagnostics_small = vols.iter().all(|&(_, g)| g < 5e-3);
     verdict(
         "truss-003",
-        mono && certified,
+        mono && diagnostics_small,
         &format!(
-            "\"detail\":\"denser ground structures do not worsen certified volume; \
+            "\"detail\":\"denser ground structures do not worsen returned-iterate volume within declared diagnostics; \
              michell_catalogue_row: pending vetted constants (fs-fab oracle spec), \
              stated not skipped\",\"rows\":[{}]",
             rows.trim_end_matches(',')
@@ -241,7 +320,9 @@ fn truss_004_scale_trend_and_warm_start() {
             check_every: 3000,
         };
         let t0 = Instant::now();
-        let (_, _, rep) = lp.solve(None, None, settings);
+        let (_, _, rep) = lp
+            .solve(None, None, settings)
+            .expect("valid fixed-iteration settings");
         let dt = t0.elapsed().as_secs_f64();
         let nnz = lp.a.nnz();
         #[allow(clippy::cast_precision_loss)]
@@ -277,12 +358,16 @@ fn truss_004_scale_trend_and_warm_start() {
         gap_tol: 1e-4,
         check_every: 200,
     };
-    let (x0, y0, rep_cold) = mk(1.0).solve(None, None, settings);
-    let (_, _, rep_warm) = mk(1.05).solve(
-        Some(x0.iter().map(|v| v * 1.05).collect()),
-        Some(y0),
-        settings,
-    );
+    let (x0, y0, rep_cold) = mk(1.0)
+        .solve(None, None, settings)
+        .expect("valid cold start");
+    let (_, _, rep_warm) = mk(1.05)
+        .solve(
+            Some(x0.iter().map(|v| v * 1.05).collect()),
+            Some(y0),
+            settings,
+        )
+        .expect("shape-compatible warm start");
     let warm_wins = rep_warm.iters < rep_cold.iters;
     let pass = spread < 3.0 && warm_wins;
     verdict(
@@ -315,15 +400,17 @@ fn truss_005_sizing_and_catalog_audit() {
         &move |node| if node == tip { [0.0, -1.0] } else { [0.0, 0.0] },
         1.0,
     );
-    let (x, _, rep) = lp.solve(
-        None,
-        None,
-        PdhgSettings {
-            max_iters: 120_000,
-            gap_tol: 1e-5,
-            check_every: 500,
-        },
-    );
+    let (x, _, rep) = lp
+        .solve(
+            None,
+            None,
+            PdhgSettings {
+                max_iters: 120_000,
+                gap_tol: 1e-5,
+                check_every: 500,
+            },
+        )
+        .expect("valid sizing solve");
     let catalog = [0.05, 0.1, 0.2, 0.35, 0.5, 0.75, 1.0, 1.5, 2.5, 5.0];
     let audit = size_and_snap(&gs, &lp, &x, 1.0, 1000.0, &catalog, 1e-3);
     let compression = audit.members.iter().filter(|m| m.force < 0.0).count();

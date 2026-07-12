@@ -1,5 +1,5 @@
 //! fs-frame conformance battery (bead mye.3, smoke tier): layout
-//! certificate, sizing code rows, fiber-hinge hysteresis, e-stopped
+//! diagnostics, sizing code rows, fiber-hinge hysteresis, e-stopped
 //! fragility with verified coverage and ledgered savings, CVaR mass
 //! minimization, and the replay/drill gates.
 
@@ -32,7 +32,7 @@ fn kt_ensemble(members: u32, s0: f64, seed: u64) -> StochasticEnsemble {
     }
 }
 
-/// frame-001/002: layout LP with duality-gap certificate + sizing
+/// frame-001/002: layout LP diagnostics + sizing
 /// audit — the fs-truss composition run end-to-end on the flagship's
 /// cantilever fixture. The Michell catalogue row stays LEDGERED
 /// PENDING (fs-truss contract).
@@ -41,10 +41,10 @@ fn frame_001_layout_and_sizing() {
     let catalog: Vec<f64> = (1..=20).map(|k| 2e-4 * f64::from(k)).collect();
     let report = layout_and_size(5, 3, 4.0, 2.0, 250e6, 200e9, &catalog);
     verdict(
-        "frame-001-lp-certificate",
+        "frame-001-lp-diagnostics",
         report.gap < 1e-3 && report.residual < 1e-3 && report.volume > 0.0,
         &format!(
-            "duality gap {:.2e}, eq residual {:.2e}, certified volume {:.4e}",
+            "objective separation {:.2e}, eq residual {:.2e}, approximate volume {:.4e}",
             report.gap, report.residual, report.volume
         ),
     );

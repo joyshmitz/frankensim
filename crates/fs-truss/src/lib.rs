@@ -1,6 +1,6 @@
 //! fs-truss — ground-structure truss layout optimization (plan §9.5
 //! [S/F], bead 7tv.13): candidate members at scale → plastic-design
-//! LP layout with the duality gap as a CERTIFICATE → Euler/code-based
+//! LP layout with explicit convergence diagnostics → Euler/code-based
 //! sizing with catalog snapping → fs-solid rod re-analysis. The
 //! steel-and-concrete flagship's engine (§15.2).
 //!
@@ -12,8 +12,9 @@
 //!   subject to nodal equilibrium and yield, tension/compression
 //!   split — solved by an in-house PDHG (Chambolle–Pock) first-order
 //!   primal-dual iteration: sparse-matvec-dominated, deterministic,
-//!   warm-startable, with duality-gap and KKT residual tracking (the
-//!   LP's own truth serum; the vetted Michell closed-form catalogue
+//!   warm-startable, with primal/dual objective-separation and KKT residual
+//!   tracking (diagnostics, not a finite optimum certificate; the vetted
+//!   Michell closed-form catalogue
 //!   comparison is a ledgered row pending the fs-fab oracle spec's
 //!   constants — stated, never silently skipped).
 //! - [`sizing`]: continuous areas from yield, EULER buckling floors
@@ -31,7 +32,7 @@ pub mod rodcheck;
 pub mod sizing;
 
 pub use ground::{GroundRules, GroundStructure};
-pub use lp::{LayoutLp, PdhgReport, PdhgSettings};
+pub use lp::{LayoutLp, MAX_PDHG_ITERS, PdhgError, PdhgReport, PdhgSettings};
 pub use rodcheck::rod_buckling_check;
 pub use sizing::{CatalogAudit, SizedMember, size_and_snap};
 

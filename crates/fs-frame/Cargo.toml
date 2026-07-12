@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Flagship 2 (plan 15.2): the seismic-minimal building frame - ground-structure layout LP with duality certificates, code-checked sizing, fiber-hinge nonlinear time history under Kanai-Tajimi ensembles, anytime-valid e-stopped fragility, and CVaR-constrained mass minimization. Smoke tier."
+description = "Flagship 2 (plan 15.2): the seismic-minimal building frame - ground-structure layout with PDHG diagnostics, code-checked sizing, fiber-hinge nonlinear time history under Kanai-Tajimi ensembles, anytime-valid e-stopped fragility, and CVaR-constrained mass minimization. Smoke tier."
 
 [package.metadata.frankensim]
 layer = "L6"
