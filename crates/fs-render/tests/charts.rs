@@ -1,5 +1,5 @@
-//! Chart-backend conformance (the qfx.2 bead; runs under
-//! `chart-backends`). Acceptance: ZERO missed intersections across the
+//! Chart-backend conformance (beads qfx.2 + 8ll9; default-on).
+//! Acceptance: ZERO missed intersections across the
 //! adversarial ray battery (thin shells, grazing rays) vs the certified
 //! root-finder oracle — the headline certificate test; NURBS Newton
 //! matches analytic references; mixed-chart scenes agree across backend
@@ -8,10 +8,15 @@
 #![cfg(feature = "chart-backends")]
 
 use asupersync::types::Budget;
+use fs_evidence::{NumericalCertificate, NumericalKind};
 use fs_exec::{CancelGate, Cx, ExecMode, StreamKey};
-use fs_geom::{Point3, Vec3};
-use fs_render::charts::{Backend, Ray, TriMesh, ray_intersect_nurbs, sphere_trace, trace_scene};
-use fs_rep_frep::{BoolOp, BoolStyle, FrepBuilder};
+use fs_geom::fixtures::TorusChart;
+use fs_geom::{Aabb, Chart, ChartSample, Point3, TraceStepClaim, Vec3};
+use fs_render::charts::{
+    Backend, CHART_BACKEND_BIT_SEMANTICS_VERSION, Ray, SceneTraceError, TraceTermination, TriMesh,
+    ray_intersect_nurbs, sphere_trace, trace_scene,
+};
+use fs_rep_frep::{BoolOp, BoolStyle, Frep, FrepBuilder};
 
 fn verdict(case: &str, detail: &str) {
     println!(
@@ -54,36 +59,318 @@ fn lcg(state: &mut u64) -> f64 {
 /// The THIN SHELL adversary: a sphere shell of thickness 2e-3 built as
 /// an F-rep difference — the classic tunneling victim.
 fn thin_shell() -> fs_rep_frep::Frep {
+    thin_shell_with_thickness(2e-3)
+}
+
+fn thin_shell_with_thickness(thickness: f64) -> fs_rep_frep::Frep {
     let mut b = FrepBuilder::new();
     let outer = b.sphere(Point3::new(0.0, 0.0, 0.0), 1.0).expect("outer");
-    let inner = b.sphere(Point3::new(0.0, 0.0, 0.0), 0.998).expect("inner");
+    let inner = b
+        .sphere(Point3::new(0.0, 0.0, 0.0), 1.0 - thickness)
+        .expect("inner");
     let shell = b
         .boolean(BoolOp::Difference, BoolStyle::Hard, outer, inner)
         .expect("shell");
     b.finish(shell).expect("frep")
 }
 
-/// The certified ROOT-FINDER ORACLE: march at a fixed step far below
-/// eps/L and bisect any bracketing interval — an independent code path
-/// that cannot miss a crossing wider than the micro-step.
-fn oracle_hits(chart: &dyn fs_geom::Chart, cx: &Cx<'_>, ray: &Ray, t_max: f64) -> bool {
+/// Test chart for fail-closed audit states. The value/bound under test and its
+/// point estimate are overridden together so unrelated certificate mismatch
+/// does not mask the intended termination state.
+struct SampleOverrideChart {
+    inner: Frep,
+    distance: f64,
+    lipschitz: Option<f64>,
+    trace_claim: TraceStepClaim,
+}
+
+impl Chart for SampleOverrideChart {
+    fn eval(&self, x: Point3, cx: &Cx<'_>) -> ChartSample {
+        let mut sample = self.inner.eval(x, cx);
+        sample.signed_distance = self.distance;
+        sample.gradient = None;
+        sample.lipschitz = self.lipschitz;
+        sample.error = NumericalCertificate::estimate(self.distance, self.distance);
+        sample
+    }
+
+    fn support(&self) -> fs_geom::Aabb {
+        self.inner.support()
+    }
+
+    fn trace_step_claim(&self) -> TraceStepClaim {
+        self.trace_claim
+    }
+
+    fn name(&self) -> &'static str {
+        "trace-audit-override"
+    }
+}
+
+/// Multiplies an F-rep field and its certified Lipschitz bound by the same
+/// positive scale. The zero set is unchanged, but a marcher that silently
+/// assumes `L = 1` can leap completely across the thin shell.
+struct ScaledChart {
+    inner: Frep,
+    scale: f64,
+    publish_bound: bool,
+    trace_claim: TraceStepClaim,
+}
+
+impl Chart for ScaledChart {
+    fn eval(&self, x: Point3, cx: &Cx<'_>) -> ChartSample {
+        let mut sample = self.inner.eval(x, cx);
+        sample.signed_distance *= self.scale;
+        sample.gradient = sample.gradient.map(|gradient| gradient.scale(self.scale));
+        sample.lipschitz = self
+            .publish_bound
+            .then(|| sample.lipschitz.expect("F-rep publishes a bound") * self.scale);
+        sample.error.lo *= self.scale;
+        sample.error.hi *= self.scale;
+        sample
+    }
+
+    fn support(&self) -> fs_geom::Aabb {
+        self.inner.support()
+    }
+
+    fn trace_step_claim(&self) -> TraceStepClaim {
+        self.trace_claim
+    }
+
+    fn name(&self) -> &'static str {
+        "scaled-thin-shell"
+    }
+}
+
+/// Exact signed distance to an infinite x-aligned slab.
+struct ExactSlabChart {
+    lo: f64,
+    hi: f64,
+}
+
+struct ConstantNoClaim;
+
+impl Chart for ConstantNoClaim {
+    fn eval(&self, _x: Point3, _cx: &Cx<'_>) -> ChartSample {
+        ChartSample {
+            signed_distance: 1.0,
+            gradient: None,
+            lipschitz: None,
+            error: NumericalCertificate::estimate(1.0, 1.0),
+        }
+    }
+
+    fn support(&self) -> Aabb {
+        Aabb::new(Point3::new(-1.0, -1.0, -1.0), Point3::new(1.0, 1.0, 1.0))
+    }
+
+    fn name(&self) -> &'static str {
+        "constant-no-claim"
+    }
+}
+
+struct CancelOnEvalChart<'a> {
+    gate: &'a CancelGate,
+}
+
+impl Chart for CancelOnEvalChart<'_> {
+    fn eval(&self, _x: Point3, _cx: &Cx<'_>) -> ChartSample {
+        self.gate.request();
+        ChartSample {
+            signed_distance: 0.0,
+            gradient: Some(Vec3::new(1.0, 0.0, 0.0)),
+            lipschitz: Some(1.0),
+            error: NumericalCertificate::exact(0.0),
+        }
+    }
+
+    fn support(&self) -> Aabb {
+        Aabb::new(Point3::new(-1.0, -1.0, -1.0), Point3::new(1.0, 1.0, 1.0))
+    }
+
+    fn trace_step_claim(&self) -> TraceStepClaim {
+        TraceStepClaim::ExactDistance
+    }
+
+    fn name(&self) -> &'static str {
+        "cancel-on-eval"
+    }
+}
+
+impl Chart for ExactSlabChart {
+    fn eval(&self, x: Point3, _cx: &Cx<'_>) -> ChartSample {
+        let center = f64::midpoint(self.lo, self.hi);
+        let half = 0.5 * (self.hi - self.lo);
+        let distance = (x.x - center).abs() - half;
+        ChartSample {
+            signed_distance: distance,
+            gradient: Some(Vec3::new((x.x - center).signum(), 0.0, 0.0)),
+            lipschitz: Some(1.0),
+            error: NumericalCertificate::exact(distance),
+        }
+    }
+
+    fn support(&self) -> Aabb {
+        Aabb::new(
+            Point3::new(self.lo, -1e6, -1e6),
+            Point3::new(self.hi, 1e6, 1e6),
+        )
+    }
+
+    fn trace_step_claim(&self) -> TraceStepClaim {
+        TraceStepClaim::ExactDistance
+    }
+
+    fn name(&self) -> &'static str {
+        "exact-thin-slab"
+    }
+}
+
+/// Exact signed distance to the half-space x >= boundary.
+struct ExactPlaneChart {
+    boundary: f64,
+    lipschitz: f64,
+}
+
+impl Chart for ExactPlaneChart {
+    fn eval(&self, x: Point3, _cx: &Cx<'_>) -> ChartSample {
+        let distance = self.boundary - x.x;
+        ChartSample {
+            signed_distance: distance,
+            gradient: Some(Vec3::new(-1.0, 0.0, 0.0)),
+            lipschitz: Some(self.lipschitz),
+            error: NumericalCertificate::exact(distance),
+        }
+    }
+
+    fn support(&self) -> Aabb {
+        Aabb::new(
+            Point3::new(self.boundary, -1e6, -1e6),
+            Point3::new(1e6, 1e6, 1e6),
+        )
+    }
+
+    fn trace_step_claim(&self) -> TraceStepClaim {
+        TraceStepClaim::ExactDistance
+    }
+
+    fn name(&self) -> &'static str {
+        "exact-plane"
+    }
+}
+
+/// Deliberately wrong negative control: unit-Lipschitz marching ignores the
+/// chart's published bound and therefore has no no-tunneling theorem.
+fn naive_unit_bound_hits(chart: &dyn Chart, cx: &Cx<'_>, ray: &Ray, t_max: f64) -> bool {
+    let mut t = 0.0;
+    for _ in 0..128 {
+        if t > t_max {
+            return false;
+        }
+        let distance = chart.eval(ray.at(t), cx).signed_distance.abs();
+        if distance <= 1e-6 {
+            return true;
+        }
+        t += distance;
+    }
+    false
+}
+
+/// The certified ROOT-FINDER ORACLE: march at a fixed micro-step and bisect the
+/// first sign-changing bracket — an independent earliest-root receipt.
+fn oracle_first_hit(chart: &dyn Chart, cx: &Cx<'_>, ray: &Ray, t_max: f64) -> Option<f64> {
     let micro = 2e-4;
     let mut t = 0.0f64;
     let mut prev = chart.eval(ray.at(0.0), cx).signed_distance;
     while t < t_max {
-        t += micro;
+        let previous_t = t;
+        t = (t + micro).min(t_max);
         let d = chart.eval(ray.at(t), cx).signed_distance;
         if prev.signum() != d.signum() {
-            return true;
+            let (mut lo, mut hi) = (previous_t, t);
+            let mut flo = prev;
+            for _ in 0..60 {
+                let mid = f64::midpoint(lo, hi);
+                let fmid = chart.eval(ray.at(mid), cx).signed_distance;
+                if flo.signum() == fmid.signum() {
+                    lo = mid;
+                    flo = fmid;
+                } else {
+                    hi = mid;
+                }
+            }
+            return Some(f64::midpoint(lo, hi));
         }
         prev = d;
     }
-    false
+    None
 }
 
 #[test]
 fn rb_001_zero_tunneling_headline() {
     with_cx(|cx| {
+        assert_eq!(CHART_BACKEND_BIT_SEMANTICS_VERSION, 1);
+        // Falsifier pairing: four thin-feature fields whose L > 1. The naive
+        // unit-bound marcher tunnels in every case; the certified d/L path
+        // reaches the first surface.
+        let axial_ray = Ray {
+            origin: Point3::new(0.0, 0.0, 3.0),
+            dir: Vec3::new(0.0, 0.0, -1.0),
+        };
+        let fixtures = [(4e-3, 4.0), (2e-3, 8.0), (1e-3, 16.0), (5e-4, 32.0)];
+        let mut naive_tunnels = 0usize;
+        let mut certified_tunnels = 0usize;
+        for (thickness, scale) in fixtures {
+            let scaled = ScaledChart {
+                inner: thin_shell_with_thickness(thickness),
+                scale,
+                publish_bound: true,
+                trace_claim: TraceStepClaim::LipschitzImplicit,
+            };
+            let oracle_t = oracle_first_hit(&scaled, cx, &axial_ray, 6.0)
+                .expect("the thin shell has a first crossing");
+            if !naive_unit_bound_hits(&scaled, cx, &axial_ray, 6.0) {
+                naive_tunnels += 1;
+            }
+            let (hit, audit) = sphere_trace(&scaled, cx, &axial_ray, 6.0, 1e-6, 1.0);
+            let Some(hit) = hit else {
+                certified_tunnels += 1;
+                continue;
+            };
+            assert!(audit.certified, "published finite bound carries the claim");
+            assert_eq!(audit.termination, TraceTermination::Hit);
+            assert!(
+                (hit.t - oracle_t).abs() <= 1e-6,
+                "certified path must hit the earliest oracle root: {} vs {oracle_t}",
+                hit.t
+            );
+            let normal = hit.normal.expect("scaled chart supplies a normal");
+            assert!(
+                (normal.norm() - 1.0).abs() <= 1e-12,
+                "backend normal must be unit length, got {}",
+                normal.norm()
+            );
+        }
+        // A chart that withholds the same bound may still use the preview
+        // fallback, but the audit must refuse the certified headline.
+        let unbounded = ScaledChart {
+            inner: thin_shell(),
+            scale: 8.0,
+            publish_bound: false,
+            trace_claim: TraceStepClaim::NoClaim,
+        };
+        let (_, unbounded_audit) = sphere_trace(&unbounded, cx, &axial_ray, 6.0, 1e-6, 1.0);
+        assert!(
+            !unbounded_audit.certified,
+            "missing bound cannot mint a certificate"
+        );
+        assert_eq!(
+            trace_scene(&[Backend::Chart(&unbounded)], cx, &axial_ray, 6.0, 1e-6),
+            Err(SceneTraceError::UncertifiedTrace),
+            "production scene tracing must preserve the uncertified refusal"
+        );
+
         let shell = thin_shell();
         let mut state = 0xbeef_u64;
         let mut audited = 0usize;
@@ -110,26 +397,316 @@ fn rb_001_zero_tunneling_headline() {
                 origin,
                 dir: unit(target.delta_from(origin)),
             };
-            let oracle = oracle_hits(&shell, cx, &ray, 6.0);
+            let oracle = oracle_first_hit(&shell, cx, &ray, 6.0);
             let (traced, audit) = sphere_trace(&shell, cx, &ray, 6.0, 1e-6, 1.0);
-            assert_eq!(
-                traced.is_some(),
-                oracle,
-                "ray {k}: tracer and oracle must agree (tunneling audit)"
-            );
+            match (traced, oracle) {
+                (Some(hit), Some(oracle_t)) => assert!(
+                    (hit.t - oracle_t).abs() <= 2e-5,
+                    "ray {k}: tracer skipped the earliest oracle root: {} vs {oracle_t}",
+                    hit.t
+                ),
+                (None, None) => {}
+                (traced, oracle) => panic!(
+                    "ray {k}: tracer/oracle hit disagreement: traced={} oracle={}",
+                    traced.is_some(),
+                    oracle.is_some()
+                ),
+            }
             // G0 step safety: no plain step ever exceeded |f|/L.
             assert!(
                 audit.worst_step_ratio <= 1.0 + 1e-12,
                 "step-safety property: {}",
                 audit.worst_step_ratio
             );
+            assert!(audit.certified);
             audited += 1;
         }
-        println!("{{\"metric\":\"tunneling-audit\",\"rays\":{audited},\"missed\":0}}");
+        println!(
+            "{{\"metric\":\"tunneling-audit\",\"falsifiers\":{},\"naive_tunnels\":{naive_tunnels},\"certified_tunnels\":{certified_tunnels},\"oracle_rays\":{audited},\"missed\":0}}",
+            fixtures.len()
+        );
+        assert_eq!(naive_tunnels, fixtures.len());
+        assert_eq!(certified_tunnels, 0);
         verdict(
             "rb-001",
-            "120 adversarial rays (thin 2e-3 shell, grazing bias): tracer agrees with \
-             the micro-step oracle on every ray; step-safety never violated",
+            "four scaled thin-shell falsifiers defeat the naive unit-bound marcher; the \
+             certified path hits all four, then agrees with the micro-step oracle on 120 \
+             grazing-biased rays; missing bounds remain explicitly uncertified",
+        );
+    });
+}
+
+#[test]
+fn rb_001a_over_relaxation_cannot_accept_a_far_shell_boundary() {
+    with_cx(|cx| {
+        let shell = thin_shell();
+        let ray = Ray {
+            origin: Point3::new(0.0, 0.0, 3.0),
+            dir: Vec3::new(0.0, 0.0, -1.0),
+        };
+        let (plain, plain_audit) = sphere_trace(&shell, cx, &ray, 6.0, 1e-9, 1.0);
+        let plain = plain.expect("plain trace hits the front shell boundary");
+        assert_eq!(plain_audit.termination, TraceTermination::Hit);
+        assert!((plain.t - 2.0).abs() <= 1e-9, "analytic first root is t=2");
+
+        for (omega, t_max) in [(1.001, 6.0), (1.6, 2.5)] {
+            let (relaxed, audit) = sphere_trace(&shell, cx, &ray, t_max, 1e-9, omega);
+            let relaxed = relaxed.expect("relaxed trace must retreat to the front boundary");
+            assert_eq!(relaxed.t.to_bits(), plain.t.to_bits());
+            assert!(audit.certified);
+            assert_eq!(audit.termination, TraceTermination::Hit);
+            assert!(audit.fallbacks > 0, "thin-shell overshoot must retreat");
+        }
+        verdict(
+            "rb-001a-over-relaxed-thin-shell",
+            "pending relaxed steps are validated before hit/miss acceptance; omega 1.001 and a \
+             t_max-crossing omega 1.6 both retreat to the bit-identical front boundary",
+        );
+    });
+}
+
+#[test]
+fn rb_001b_trace_audit_states_fail_closed() {
+    with_cx(|cx| {
+        let ray = Ray {
+            origin: Point3::new(0.0, 0.0, 3.0),
+            dir: Vec3::new(0.0, 0.0, -1.0),
+        };
+        let bad_ray = Ray {
+            origin: ray.origin,
+            dir: Vec3::new(0.0, 0.0, 0.0),
+        };
+        let (_, invalid_input) = sphere_trace(&thin_shell(), cx, &bad_ray, 6.0, 1e-6, 1.0);
+        assert_eq!(invalid_input.termination, TraceTermination::InvalidInput);
+        assert!(!invalid_input.certified);
+
+        let invalid_chart = SampleOverrideChart {
+            inner: thin_shell(),
+            distance: 1.0,
+            lipschitz: Some(0.0),
+            trace_claim: TraceStepClaim::LipschitzImplicit,
+        };
+        let (_, invalid_sample) = sphere_trace(&invalid_chart, cx, &ray, 6.0, 1e-6, 1.0);
+        assert_eq!(invalid_sample.termination, TraceTermination::InvalidSample);
+        assert!(!invalid_sample.certified);
+
+        let slow_chart = SampleOverrideChart {
+            inner: thin_shell(),
+            distance: 1e-12,
+            lipschitz: Some(1.0),
+            trace_claim: TraceStepClaim::LipschitzImplicit,
+        };
+        let (_, limited) = sphere_trace(&slow_chart, cx, &ray, 1.0, 1e-15, 1.0);
+        assert_eq!(limited.termination, TraceTermination::StepLimit);
+        assert!(limited.certified);
+
+        let (_, limited_relaxed) = sphere_trace(&slow_chart, cx, &ray, 1.0, 1e-15, 1.6);
+        assert_eq!(limited_relaxed.termination, TraceTermination::StepLimit);
+        assert!(limited_relaxed.certified);
+        assert!(
+            limited_relaxed.fallbacks > 0,
+            "a pending relaxed endpoint retreats before the step-limit verdict"
+        );
+
+        let subnormal_chart = SampleOverrideChart {
+            inner: thin_shell(),
+            distance: f64::from_bits(1),
+            lipschitz: Some(1e-300),
+            trace_claim: TraceStepClaim::LipschitzImplicit,
+        };
+        let (subnormal_hit, subnormal_audit) =
+            sphere_trace(&subnormal_chart, cx, &ray, 1.0, 1e-30, 1.0);
+        assert!(subnormal_hit.is_none());
+        assert_eq!(
+            subnormal_audit.termination,
+            TraceTermination::InvalidSample,
+            "a downward-rounded zero step must not become an early residual hit"
+        );
+
+        let declared_only = SampleOverrideChart {
+            inner: thin_shell(),
+            distance: 1.0,
+            lipschitz: Some(1.0),
+            trace_claim: TraceStepClaim::NoClaim,
+        };
+        let (_, declared_only_audit) = sphere_trace(&declared_only, cx, &ray, 2.0, 1e-6, 1.0);
+        assert!(
+            !declared_only_audit.certified,
+            "a sample Lipschitz number cannot upgrade a chart's typed no-claim"
+        );
+
+        let miss_ray = Ray {
+            origin: Point3::new(0.0, 0.0, 3.0),
+            dir: Vec3::new(0.0, 0.0, 1.0),
+        };
+        let (_, miss) = sphere_trace(&thin_shell(), cx, &miss_ray, 1.0, 1e-6, 1.0);
+        assert_eq!(miss.termination, TraceTermination::Miss);
+        assert!(miss.certified);
+    });
+}
+
+#[test]
+fn rb_001d_pre_cancelled_trace_stops_before_sampling() {
+    let gate = CancelGate::new();
+    let pool = fs_alloc::ArenaPool::new(fs_alloc::ArenaConfig::default());
+    pool.scope(|arena| {
+        let cx = Cx::new(
+            &gate,
+            arena,
+            StreamKey {
+                seed: 3,
+                kernel_id: 9,
+                tile: 0,
+                iteration: 0,
+            },
+            Budget::INFINITE,
+            ExecMode::Deterministic,
+        );
+        gate.request();
+        let ray = Ray {
+            origin: Point3::new(0.0, 0.0, 3.0),
+            dir: Vec3::new(0.0, 0.0, -1.0),
+        };
+        let (hit, audit) = sphere_trace(&thin_shell(), &cx, &ray, 6.0, 1e-6, 1.0);
+        assert!(hit.is_none());
+        assert_eq!(audit.steps, 0);
+        assert_eq!(audit.termination, TraceTermination::Cancelled);
+        assert!(!audit.certified);
+        assert_eq!(
+            trace_scene(&[Backend::Chart(&thin_shell())], &cx, &ray, 6.0, 1e-6),
+            Err(SceneTraceError::Cancelled)
+        );
+    });
+}
+
+#[test]
+fn rb_001e_production_rejects_uncertified_misses() {
+    with_cx(|cx| {
+        let ray = Ray {
+            origin: Point3::new(0.0, 0.0, 0.0),
+            dir: Vec3::new(1.0, 0.0, 0.0),
+        };
+        assert_eq!(
+            trace_scene(&[Backend::Chart(&ConstantNoClaim)], cx, &ray, 2.0, 1e-6),
+            Err(SceneTraceError::UncertifiedTrace),
+            "an uncertified preview miss is not proof of empty geometry"
+        );
+    });
+}
+
+#[test]
+fn rb_001f_cancellation_requested_by_terminal_eval_wins() {
+    let gate = CancelGate::new();
+    let pool = fs_alloc::ArenaPool::new(fs_alloc::ArenaConfig::default());
+    pool.scope(|arena| {
+        let cx = Cx::new(
+            &gate,
+            arena,
+            StreamKey {
+                seed: 3,
+                kernel_id: 9,
+                tile: 0,
+                iteration: 0,
+            },
+            Budget::INFINITE,
+            ExecMode::Deterministic,
+        );
+        let chart = CancelOnEvalChart { gate: &gate };
+        let ray = Ray {
+            origin: Point3::new(0.0, 0.0, 0.0),
+            dir: Vec3::new(1.0, 0.0, 0.0),
+        };
+        assert_eq!(
+            trace_scene(&[Backend::Chart(&chart)], &cx, &ray, 2.0, 1e-6),
+            Err(SceneTraceError::Cancelled),
+            "cancellation raised inside the final evaluation must beat its hit"
+        );
+    });
+}
+
+#[test]
+fn rb_001c_scale_direction_and_touching_spheres_are_conservative() {
+    with_cx(|cx| {
+        let axial_ray = Ray {
+            origin: Point3::new(0.0, 0.0, 3.0),
+            dir: Vec3::new(0.0, 0.0, -1.0),
+        };
+        let tiny_scale = ScaledChart {
+            inner: thin_shell(),
+            scale: 1e-9,
+            publish_bound: true,
+            trace_claim: TraceStepClaim::LipschitzImplicit,
+        };
+        let (scaled_hit, scaled_audit) = sphere_trace(&tiny_scale, cx, &axial_ray, 6.0, 1e-6, 1.0);
+        let scaled_hit = scaled_hit.expect("field scaling cannot create a t=0 hit or a miss");
+        assert!((scaled_hit.t - 2.0).abs() <= 1e-6);
+        assert!(scaled_audit.certified);
+
+        let plane = ExactPlaneChart {
+            boundary: 1.0,
+            lipschitz: 1.0,
+        };
+        let x_ray = Ray {
+            origin: Point3::new(0.0, 0.0, 0.0),
+            dir: Vec3::new(1.0, 0.0, 0.0),
+        };
+        let (plane_hit, plane_audit) = sphere_trace(&plane, cx, &x_ray, 3.0, 1e-12, 1.6);
+        let plane_hit = plane_hit.expect("touching speculative spheres retreat to the plane");
+        assert!((plane_hit.point.x - 1.0).abs() <= 1e-12);
+        assert!(plane_audit.certified && plane_audit.fallbacks > 0);
+
+        let loose_exact_plane = ExactPlaneChart {
+            boundary: 1.0,
+            lipschitz: 2.0,
+        };
+        let (loose_hit, loose_audit) = sphere_trace(&loose_exact_plane, cx, &x_ray, 3.0, 0.1, 1.0);
+        let loose_hit = loose_hit.expect("a conservative exact-distance bound converges");
+        assert!(loose_hit.t > 0.5, "loose L must not turn t=0 into a hit");
+        assert!((1.0 - loose_hit.point.x).abs() <= 0.1);
+        assert!(loose_audit.certified);
+
+        let invalid_exact_plane = ExactPlaneChart {
+            boundary: 1.0,
+            lipschitz: 0.5,
+        };
+        let (invalid_hit, invalid_audit) =
+            sphere_trace(&invalid_exact_plane, cx, &x_ray, 3.0, 1e-6, 1.0);
+        assert!(invalid_hit.is_none());
+        assert_eq!(invalid_audit.termination, TraceTermination::InvalidSample);
+
+        let slab = ExactSlabChart {
+            lo: 1.0,
+            hi: 1.0 + 2e-13,
+        };
+        let near_unit_ray = Ray {
+            origin: Point3::new(0.0, 0.0, 0.0),
+            dir: Vec3::new(1.0 + 5e-13, 0.0, 0.0),
+        };
+        let (slab_hit, slab_audit) = sphere_trace(&slab, cx, &near_unit_ray, 2.0, 1e-15, 1.0);
+        let slab_hit = slab_hit.expect("parameter steps account for non-unit ray speed");
+        assert!((slab_hit.point.x - 1.0).abs() <= 1e-14);
+        assert!(slab_audit.certified);
+
+        let horn = TorusChart {
+            center: Point3::new(0.0, 0.0, 0.0),
+            major: 1.0,
+            minor: 1.0,
+        };
+        assert_eq!(horn.trace_step_claim(), TraceStepClaim::LipschitzImplicit);
+        assert_eq!(
+            horn.eval(Point3::new(0.0, 0.0, 1e-3), cx).error.kind,
+            NumericalKind::Estimate
+        );
+        let mut offset_builder = FrepBuilder::new();
+        let base = offset_builder
+            .sphere(Point3::new(0.0, 0.0, 0.0), 1.0)
+            .expect("sphere");
+        let offset = offset_builder.offset(base, 0.25).expect("offset");
+        let offset_chart = offset_builder.finish(offset).expect("offset chart");
+        assert_eq!(
+            offset_chart.trace_step_claim(),
+            TraceStepClaim::LipschitzImplicit,
+            "offset exactness needs a reach certificate"
         );
     });
 }
@@ -146,7 +723,11 @@ fn rb_002_over_relaxation_stays_certified() {
             // to an axis — the many-small-steps regime over-relaxation
             // exists for (center-aimed rays converge in one jump and
             // have nothing to accelerate).
-            let offset = 1.02 + 0.13 * lcg(&mut state);
+            let offset = if k % 2 == 0 {
+                0.98 + 0.019 * lcg(&mut state)
+            } else {
+                1.02 + 0.13 * lcg(&mut state)
+            };
             let phi = lcg(&mut state) * std::f64::consts::TAU;
             let origin = Point3::new(-4.0, offset * phi.cos(), offset * phi.sin());
             let ray = Ray {
@@ -263,6 +844,18 @@ fn rb_003_nurbs_newton_matches_analytic() {
             n.dot(outward).abs() > 0.999,
             "normal aligned with the radial direction"
         );
+        for scale in [1e-12, 1e12, 1e300] {
+            let scaled_ray = Ray {
+                origin,
+                dir: dir.scale(scale),
+            };
+            let scaled_hit = ray_intersect_nurbs(&sphere, &scaled_ray, 8, 1e-9)
+                .expect("direction scaling preserves the NURBS hit");
+            assert!(
+                (scaled_hit.t * scale - t_ref).abs() < 1e-6,
+                "scaled Newton parameter maps to the same point"
+            );
+        }
     }
     verdict(
         "rb-003",
@@ -320,6 +913,82 @@ fn sphere_mesh(subdiv: usize) -> TriMesh {
 }
 
 #[test]
+fn rb_004a_bvh_build_is_deterministic_under_concurrent_construction() {
+    let source = sphere_mesh(3);
+    let vertices = source.vertices.clone();
+    let triangles = source.triangles.clone();
+    let ray = Ray {
+        origin: Point3::new(3.0, 0.2, -0.1),
+        dir: unit(Point3::new(0.0, 0.0, 0.0).delta_from(Point3::new(3.0, 0.2, -0.1))),
+    };
+    let reference_mesh = TriMesh::new(vertices.clone(), triangles.clone());
+    let reference_hit = reference_mesh.intersect(&ray).expect("reference mesh hit");
+    let reference = (
+        reference_mesh.bvh_fingerprint(),
+        reference_hit.t.to_bits(),
+        reference_hit.steps,
+    );
+
+    for workers in [1usize, 2, 4, 8] {
+        let outcomes = std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(workers);
+            for _ in 0..workers {
+                let worker_vertices = vertices.clone();
+                let worker_triangles = triangles.clone();
+                handles.push(scope.spawn(move || {
+                    let mesh = TriMesh::new(worker_vertices, worker_triangles);
+                    let hit = mesh.intersect(&ray).expect("worker mesh hit");
+                    (mesh.bvh_fingerprint(), hit.t.to_bits(), hit.steps)
+                }));
+            }
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("BVH worker did not panic"))
+                .collect::<Vec<_>>()
+        });
+        assert!(
+            outcomes.iter().all(|&outcome| outcome == reference),
+            "same input must produce the same BVH and hit bits with {workers} concurrent builders"
+        );
+    }
+    println!(
+        "{{\"metric\":\"bvh-determinism\",\"fingerprint\":\"{:#018x}\",\"hit_t_bits\":\"{:#018x}\",\"visits\":{},\"concurrent_builders\":[1,2,4,8]}}",
+        reference.0, reference.1, reference.2
+    );
+    verdict(
+        "rb-004a-bvh-determinism",
+        "same ordered mesh input produces one BVH fingerprint and bit-identical hit receipt \
+         across 1, 2, 4, and 8 concurrent builders",
+    );
+}
+
+#[test]
+fn rb_004b_bvh_grazing_pruning_matches_bruteforce() {
+    let mesh = TriMesh::new(
+        vec![
+            [1.0e12, 0.0, 0.0],
+            [1.0e12 + 1.0, 0.0, 0.0],
+            [1.0e12 + 1.0, 1.0, 0.0],
+            [1.0e12, 1.0, 0.0],
+        ],
+        vec![[0, 1, 2], [0, 2, 3]],
+    );
+    for y in [0.0, f64::from_bits(1), 0.5, 1.0 - f64::EPSILON, 1.0] {
+        let ray = Ray {
+            origin: Point3::new(1.0e12, y, 1.0),
+            dir: Vec3::new(0.0, 0.0, -1.0),
+        };
+        let bvh = mesh.intersect(&ray);
+        let brute = mesh.intersect_bruteforce(&ray);
+        assert_eq!(
+            bvh.map(|hit| hit.t.to_bits()),
+            brute.map(|hit| hit.t.to_bits()),
+            "BVH pruning changed a grazing result at y={y:.17e}"
+        );
+    }
+}
+
+#[test]
 fn rb_004_mixed_scene_consistency_and_frame_invariance() {
     with_cx(|cx| {
         // The SAME unit sphere held three ways.
@@ -347,11 +1016,40 @@ fn rb_004_mixed_scene_consistency_and_frame_invariance() {
                 mesh_hit.expect("mesh hits").t,
             );
             worst_spread = worst_spread.max((a - b_).abs()).max((a - c).abs());
+            for scale in [1e-12, 1e12, 1e300] {
+                let scaled_ray = Ray {
+                    origin,
+                    dir: ray.dir.scale(scale),
+                };
+                let scaled_hit = mesh
+                    .intersect(&scaled_ray)
+                    .expect("direction scaling preserves the mesh hit");
+                assert!(
+                    (scaled_hit.t * scale - c).abs() <= 1e-12 * c.abs().max(1.0),
+                    "mesh hit is invariant after mapping back to world distance"
+                );
+            }
         }
         // Mesh is a level-4 subdivision: geometric error ~ 1e-3.
         assert!(
             worst_spread < 5e-3,
             "the same shape across three backends: spread {worst_spread}"
+        );
+        let bounded_ray = Ray {
+            origin: Point3::new(4.0, 0.0, 0.0),
+            dir: Vec3::new(-1.0, 0.0, 0.0),
+        };
+        assert!(
+            trace_scene(&[Backend::Nurbs(&nurbs)], cx, &bounded_ray, 2.0, 1e-9)
+                .expect("bounded NURBS trace")
+                .is_none(),
+            "NURBS hits beyond t_max must not leak into the scene"
+        );
+        assert!(
+            trace_scene(&[Backend::Mesh(&mesh)], cx, &bounded_ray, 2.0, 1e-9)
+                .expect("bounded mesh trace")
+                .is_none(),
+            "mesh hits beyond t_max must not leak into the scene"
         );
         // Mixed scene: three unit spheres at distinct centers, one per
         // backend — the closest-hit wins and identifies its instance.
@@ -367,7 +1065,9 @@ fn rb_004_mixed_scene_consistency_and_frame_invariance() {
             origin: Point3::new(-8.0, 0.0, 0.01),
             dir: Vec3::new(1.0, 0.0, 0.0),
         };
-        let (idx, hit) = trace_scene(&backends, cx, &ray, 20.0, 1e-7).expect("hits");
+        let (idx, hit) = trace_scene(&backends, cx, &ray, 20.0, 1e-7)
+            .expect("mixed trace completes")
+            .expect("hits");
         assert_eq!(idx, 0, "the F-rep sphere at x=-3 is closest");
         assert!((hit.t - 4.0).abs() < 1e-3, "t ~ 4: {}", hit.t);
         // G3 frame invariance: translate everything by the same offset.
@@ -401,8 +1101,8 @@ fn rb_004_mixed_scene_consistency_and_frame_invariance() {
 #[test]
 fn rb_005_ray_rate_ledger() {
     with_cx(|cx| {
-        // MEASURED, honestly labeled: debug-build throughput on primary
-        // rays. The plan's Mray/s TARGETS are release-build perf-CI
+        // MEASURED, honestly labeled throughput on primary rays. The plan's
+        // Mray/s TARGETS are release-build perf-CI
         // gates (fz2.4) — this ledgers the measurement discipline, not
         // the target (AGENTS: no "fast" without a benchmark + machine).
         let mut b = FrepBuilder::new();
@@ -430,10 +1130,17 @@ fn rb_005_ray_rate_ledger() {
         let secs = start.elapsed().as_secs_f64();
         #[allow(clippy::cast_precision_loss)]
         let mray_s = (n * n) as f64 / secs / 1e6;
+        let profile = if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        };
         println!(
-            "{{\"metric\":\"ray-rate\",\"build\":\"debug\",\"machine\":\"darwin-arm64\",\
+            "{{\"metric\":\"ray-rate\",\"build\":\"{profile}\",\"os\":\"{}\",\"arch\":\"{}\",\
              \"rays\":{},\"hits\":{hits},\"mray_per_s\":{mray_s:.4},\
              \"note\":\"release perf gate lives in perf-CI (fz2.4)\"}}",
+            std::env::consts::OS,
+            std::env::consts::ARCH,
             n * n
         );
         assert!(hits > 0, "the turntable frame sees the sphere");

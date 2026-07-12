@@ -4,7 +4,11 @@ Unbiased spectral path-tracing core: the verifiable Monte-Carlo foundations.
 
 ## Purpose and layer
 
-Layer L5 (LUMEN). No dependencies — pure Rust.
+Layer L5 (LUMEN). The Monte-Carlo core depends on deterministic `fs-math`;
+the default chart backends consume lower-layer `fs-evidence`, `fs-exec`,
+`fs-geom`, and `fs-rep-nurbs`. Optional differentiable, volume, and tracer
+surfaces add their declared lower-layer dependencies (`fs-ad` for the
+differentiable lift). Pure Rust throughout.
 
 ## Public types and semantics
 
@@ -21,15 +25,36 @@ Layer L5 (LUMEN). No dependencies — pure Rust.
 - `hero_wavelengths(hero, count, min, max)` / `spectral_integral(spectrum, min,
   max, samples)` — hero-wavelength spectral integration.
 
-- `charts` module (plan §10.2, bead qfx.2; [F], behind
-  `chart-backends`): render whatever chart exists, WITHOUT conversion.
+- `charts` module (plan §10.2, beads qfx.2 + 8ll9; [S], default-on through
+  `chart-backends`): render charts that opt into a typed trace theorem, WITHOUT
+  conversion; other chart types remain explicit no-claim previews until they
+  supply the theorem their error model needs.
   `sphere_trace` steps `|f(p)|/L` with the chart's CERTIFIED Lipschitz
   bound — the sign cannot flip within that radius, so the marcher
   provably never tunnels (audited: `TraceAudit.worst_step_ratio`);
   over-relaxation uses the standard certified fallback (retreat when
   spheres fail to overlap). `ray_intersect_nurbs` is grid-seeded 3×3
   Newton on `S(u,v) − o − t·d` with the `[S_u, S_v, −d]` Jacobian.
-  `TriMesh` is Möller–Trumbore over a deterministic median-split BVH.
+  Certification requires the chart-level typed `TraceStepClaim`; a sample
+  carrying `Some(L)` cannot upgrade the default `NoClaim`. Exact-distance hits
+  use world-space distance tolerance. Generic Lipschitz implicit hits use the
+  scale-invariant normalized residual `|f|/L`, which certifies step safety but
+  is not promoted to a geometric-distance enclosure. Pending over-relaxed
+  endpoints are validated before either hit or miss acceptance. `TraceAudit`
+  states whether every marched sample supplied a positive finite certified
+  bound and compatible finite numerical certificate, counts retreats to the
+  safe endpoint, and
+  distinguishes hit, clean miss, step-limit, invalid-input, and invalid-sample
+  termination. Returned chart gradients are normalized before becoming hit
+  normals. `trace_scene` and the spectral/differentiable renderers accept chart
+  terminal results only when the full trace stayed certified; an uncertified
+  miss is not evidence of empty geometry. The uncertified `L = 1` fallback is
+  a direct-call preview surface, never a production geometry decision.
+  Mixed-scene tracing returns `Result`, propagates cancellation and chart
+  refusal, and enforces `t_max` uniformly across charts, NURBS, and meshes.
+  `TriMesh` is Möller–Trumbore over a deterministic median-split BVH with
+  outward-rounded slab pruning;
+  `bvh_fingerprint` is a stable diagnostic receipt over its sorted layout.
   `trace_scene` mixes all three backend kinds by closest hit.
 
 - `volumes` module (bead qfx.3, feature `volumes`): [`VolumeGrid`]
@@ -67,7 +92,14 @@ Layer L5 (LUMEN). No dependencies — pure Rust.
 
 ## Error model
 
-Total functions; `halton` panics only on `dim >= 8` (out of the prime table).
+`TraceTermination` reports invalid input/sample, cancellation, iteration-limit,
+miss, or hit without conflation. Differentiable rendering returns
+`RenderError` for cancellation, invalid parameters/configuration/targets,
+backend refusal, uncertified traces, and singular implicit/boundary
+derivatives. The tracer returns `TracerError`, preserving cancellation,
+invalid progressive ranges, backend refusal, uncertified traces, and missing
+normals. `halton`
+panics only on `dim >= 8` (out of the prime table).
 
 ## Determinism class
 
@@ -75,8 +107,14 @@ Fully deterministic: the sampling is low-discrepancy, keyed by sample index.
 
 ## Cancellation behavior
 
-None here; the production tracer polls `Cx` at tile boundaries (a render is a
-budgeted, cancellable study).
+`sphere_trace` polls its `Cx` before and after each chart evaluation and before
+terminal success. Cancellable NURBS seeding/Newton and BVH traversal poll before
+and after each bounded seed/iteration/node/triangle. Differentiable scanline rendering
+polls at entry, per search iteration, row, pixel, and loss-reduction element and
+propagates `RenderError::Cancelled`. The spectral tracer polls per row, sample,
+bounce, and primitive, and copies progressive staging buffers in checked
+chunks; it propagates `TracerError::Cancelled`. A failed or reversed range
+leaves both film sums and `spp_done` unchanged so retry cannot double-count.
 
 ## Unsafe boundary
 
@@ -84,13 +122,19 @@ None. `#![deny(unsafe_code)]` via the workspace lint.
 
 ## Feature flags
 
-None (the `frontier-polarization` Mueller-calculus path is staged).
+`chart-backends` is a DEFAULT feature. Bead 8ll9 requires its thin-feature
+falsifier, deterministic-BVH, workspace/default-matrix, nested-Wasm, and
+four-quadrant tracer-golden gates before closeout. The wider SIMD BVH and
+ray-rate claims remain evidence-gated successors; default-on does not promote
+those claims.
 
-`volumes` gates the volumetric media stack (fs-rand dependency) per
-the same Ambition-Tag rule as `chart-backends`.
+`volumes` [F] gates the volumetric media stack (fs-rand dependency).
 
-`differentiable` (bead qfx.5) gates the edge-aware differentiable
-renderer (fs-ad + fs-math dependencies), same Ambition-Tag rule.
+`differentiable` (bead qfx.5) gates the edge-aware differentiable renderer
+(fs-ad + fs-evidence + fs-math dependencies) and explicitly co-enables the
+default chart backend surface. Its primal silhouette and hit decisions use the
+same `Chart`/certified-sphere-trace backend; dual lanes lift those decisions by
+the implicit hit equation.
 
 `tracer` (bead 872c) gates the spectral path tracer v1
 (chart-backends + fs-rand + fs-img): hero-wavelength (4-packet)
@@ -118,29 +162,30 @@ weights sum to one (+ heuristic ordering); MIS integration is unbiased;
 hero-wavelength integration exact on a constant / accurate on a ramp;
 determinism.
 
-`tests/diff_battery.rs` (bead qfx.5, feature `differentiable`, 6
-cases): dr-001 edge-aware gradient of the full-image L2 loss vs
-central FD of the RENDER — worst rel 5.9e-6 over all 9 parameters
-(centers, radii, blend); dr-002 the NEGATIVE CONTROL — freezing the
-silhouette crossings (what naive pointwise autodiff computes) is off
-by 1.4e-1 relative where the edge-aware gradient sits at 1.6e-8 (the
-boundary term is ~9e6× the honest error budget: measured, not
-asserted); dr-003 deterministic-quadrature bias shrinks monotonically
-with supersampling (2.8e-1 → 1.6e-2); dr-004 inverse rendering
-recovers sphere position + radius to 7e-7 from a target image;
-dr-005 combined appearance+physics objective (image L2 + volume
-budget) optimized end-to-end through the shared gradient path
-(1.1e-2 → 8.9e-12, budget met); dr-006 bitwise replay of render AND
-gradient.
+`tests/diff_battery.rs` (bead qfx.5, feature `differentiable`): edge-aware
+gradient vs central FD, the frozen-crossing negative control, shrinking
+quadrature bias, inverse rendering, a combined appearance/physics objective,
+bitwise primal/gradient replay through the shared backend, a smooth-min seam
+derivative regression, and fail-closed cancellation. Numerical receipts are
+emitted by the current-tree run; this contract does not carry stale measurements
+across backend-semantic changes.
+
+`tests/charts.rs` (beads qfx.2 + 8ll9, default feature): four distinct
+thin-shell/scaling falsifiers that all defeat the naive unit-bound marcher while
+the certified `d/L` path hits; pending-overlap regressions at both a far shell
+boundary and `t_max`; 120 additional grazing-biased rays against a micro-step
+oracle; fail-closed audit-state coverage; explicit no-certificate behavior when
+a bound is withheld; analytic NURBS hits; one BVH fingerprint and bit-identical
+hit receipt across 1/2/4/8 concurrent builders; mixed-backend and
+translated-scene consistency; and honestly labeled throughput telemetry. The
+tracer's Cornell EXR golden composes both F-rep sphere tracing and the mesh BVH;
+its prior 872c freeze was four-quadrant, and 8ll9 requires current-tree replay.
 
 ## No-claim boundaries
 
-- v0 is the verifiable Monte-Carlo core (sampling, furnace, MIS, spectral
-  integration). The full unidirectional PATH TRACER — wide-BVH SIMD traversal,
-  watertight ray-triangle tests, next-event estimation with a LIGHT-BVH,
-  Beer–Lambert media, ray-stream sorting, progressive tile streaming to HELM,
-  per-tile Philox keyed by (seed, frame, tile), and `Cx` cancellation — is the
-  fuller deliverable, staged.
+- v0 includes the scalar-BVH spectral path tracer. Wide-BVH SIMD traversal,
+  watertight ray-triangle tests, a LIGHT-BVH, media coupling, ray-stream
+  sorting, and progressive tile streaming to HELM remain staged.
 - The spectral pipeline here integrates a spectrum; the radiometrically correct
   spectra→XYZ→display transforms and layered measured-spectrum materials are
   staged.
@@ -150,26 +195,38 @@ gradient.
 ## No-claim boundaries (differentiable)
 
 - Smoke tier is DETERMINISTIC QUADRATURE on SDF scenes (scanline with
-  analytic horizontal antialiasing; interior terms through converged
-  dual sphere tracing, boundary terms through explicit crossing
+  analytic horizontal antialiasing; primal crossings and hits through the
+  default chart backend, interior derivatives lifted from the certified hit by
+  the implicit equation, and boundary terms through explicit crossing
   velocities with Danskin's envelope at the z-argmin). The
   Monte-Carlo/reparameterized estimators for path-traced integration,
-  FrankenTorch-bridged learned BSDFs, unification with
-  `charts::Backend`, fs-xform θ→Region chart perturbations, and
-  fs-opt-ir term registration are the RECORDED SUCCESSORS (the loss
-  term's (value, gradient) shape is already compatible).
+  FrankenTorch-bridged learned BSDFs, heterogeneous differentiable
+  `charts::Backend` scenes, fs-xform θ→Region chart perturbations, and fs-opt-ir
+  term registration are the RECORDED SUCCESSORS (the loss term's (value,
+  gradient) shape is already compatible).
 - Vertical antialiasing is sub-row averaging (piecewise constant in
   y): FD steps that push a silhouette tangency across a sub-row line
   see an O(subrow²) kink — fixtures sit away from tangency rows; the
   bias battery measures the induced error honestly.
+- The smoke fixture uses deterministic ternary closest-approach search. A
+  general proof for arbitrary separated, multi-modal parameter sets is not
+  claimed; a certified global 1-D minimum/uniqueness diagnostic is required
+  before extending the exact-gradient claim beyond the conformance domain.
 - `render_grad(…, edge_terms = false)` exists ONLY as the battery's
   negative control; it is documented WRONG for real gradients.
 
 ## No-claim boundaries (charts)
 
-- The tunneling guarantee holds for charts whose `lipschitz` claim is
-  certified (Frep/exact SDFs); charts reporting no bound default to
-  L = 1, which is only safe for true distance fields.
+- The tunneling guarantee holds only when a chart opts into
+  `TraceStepClaim::{ExactDistance,LipschitzImplicit}` and every sample supplies
+  a positive finite Lipschitz bound plus a compatible finite numerical
+  certificate. Charts using the default `NoClaim` may retain an `L = 1` preview
+  fallback, but `TraceAudit::certified` is false and production render paths
+  reject every terminal result from that trace, including a miss. Malformed
+  claims stop as `InvalidSample`.
+- A `LipschitzImplicit` normalized-residual hit is not a Euclidean
+  distance-to-boundary certificate. Exact-distance charts retain world-space
+  tolerance semantics.
 - The mesh BVH is the interim scalar backend; the 8-wide SIMD BVH and
   ray streams are qfx.1's ledgered follow-up scope.
 - Ray-rate NUMBERS are measured and ledgered per build/machine; the

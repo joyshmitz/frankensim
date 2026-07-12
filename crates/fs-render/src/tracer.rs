@@ -25,13 +25,13 @@
 //! separate); no environment light; no Russian roulette (fixed depth
 //! keeps work deterministic).
 
-use crate::charts::{Hit, Ray, TriMesh, sphere_trace};
+use crate::charts::{Hit, Ray, TraceTermination, TriMesh, sphere_trace};
 use crate::spectral::{
-    LAMBDA_MAX, LAMBDA_MIN, LiftedSpectrum, cie_x, cie_y, cie_z, xyz_e_to_d65,
-    xyz_to_linear_srgb, y_integral,
+    LAMBDA_MAX, LAMBDA_MIN, LiftedSpectrum, cie_x, cie_y, cie_z, xyz_e_to_d65, xyz_to_linear_srgb,
+    y_integral,
 };
 use crate::{balance_heuristic, hero_wavelengths};
-use fs_exec::Cx;
+use fs_exec::{Cancelled, Cx};
 use fs_geom::{Chart, Point3, Vec3};
 use fs_math::det;
 use fs_rand::philox::philox4x32_10;
@@ -118,8 +118,8 @@ pub enum Material {
 }
 
 /// Scene geometry: a triangle mesh (BVH) or any certified chart
-/// (sphere-traced SDF/F-rep — the gated backends this bead develops
-/// against; un-gating them is bead 8ll9).
+/// (sphere-traced SDF/F-rep through the default [S] backend surface hardened by
+/// bead 8ll9).
 pub enum Shape {
     /// Triangle mesh over the deterministic median-split BVH.
     Mesh(TriMesh),
@@ -207,6 +207,50 @@ pub struct Settings {
     pub seed: u64,
 }
 
+/// Fail-closed spectral-tracer diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TracerError {
+    /// The supplied execution context requested cancellation.
+    Cancelled,
+    /// A chart backend stopped in a state other than a clean miss or certified
+    /// residual hit.
+    BackendFailure(TraceTermination),
+    /// A chart returned a terminal result without retaining its typed
+    /// no-tunneling claim. Uncertified misses are not geometry absence.
+    UncertifiedTrace,
+    /// A progressive sample range had its exclusive end before its start.
+    InvalidRange { from: u32, to: u32 },
+    /// Shading requires a finite surface normal; no arbitrary fallback normal
+    /// may be minted.
+    MissingNormal,
+}
+
+impl core::fmt::Display for TracerError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Cancelled => formatter.write_str("spectral render cancelled"),
+            Self::BackendFailure(termination) => {
+                write!(formatter, "chart backend stopped with {termination:?}")
+            }
+            Self::UncertifiedTrace => {
+                formatter.write_str("chart backend produced an uncertified trace result")
+            }
+            Self::InvalidRange { from, to } => {
+                write!(formatter, "invalid progressive sample range {from}..{to}")
+            }
+            Self::MissingNormal => formatter.write_str("surface hit has no finite normal"),
+        }
+    }
+}
+
+impl core::error::Error for TracerError {}
+
+impl From<Cancelled> for TracerError {
+    fn from(_: Cancelled) -> Self {
+        Self::Cancelled
+    }
+}
+
 /// Accumulated CIE XYZ film: `spp` samples summed per pixel (divide on
 /// output). Checkpointable: rendering samples `[a, b)` then `[b, c)`
 /// into the same film equals rendering `[a, c)` bitwise.
@@ -246,11 +290,7 @@ impl Film {
             1.0 / f64::from(self.spp_done)
         };
         for (i, xyz) in self.xyz.iter().enumerate() {
-            let rgb = xyz_to_linear_srgb(xyz_e_to_d65([
-                xyz[0] * inv,
-                xyz[1] * inv,
-                xyz[2] * inv,
-            ]));
+            let rgb = xyz_to_linear_srgb(xyz_e_to_d65([xyz[0] * inv, xyz[1] * inv, xyz[2] * inv]));
             for (p, v) in planes.iter_mut().zip(rgb) {
                 #[allow(clippy::cast_possible_truncation)]
                 {
@@ -267,34 +307,60 @@ impl Film {
 ///
 /// # Panics
 /// If the film shape or checkpoint does not match.
-pub fn render_range(scene: &Scene, cx: &Cx<'_>, s: &Settings, film: &mut Film, from: u32, to: u32) {
+pub fn render_range(
+    scene: &Scene,
+    cx: &Cx<'_>,
+    s: &Settings,
+    film: &mut Film,
+    from: u32,
+    to: u32,
+) -> Result<(), TracerError> {
     assert_eq!((film.width, film.height), (s.width, s.height), "film shape");
     assert_eq!(film.spp_done, from, "progressive checkpoint mismatch");
+    if to < from {
+        return Err(TracerError::InvalidRange { from, to });
+    }
+    cx.checkpoint()?;
+    if to == from {
+        return Ok(());
+    }
     let key = [(s.seed & 0xffff_ffff) as u32, (s.seed >> 32) as u32];
     let sobol = Sobol::scrambled(3, s.seed);
     let kn = 1.0 / y_integral();
+    // Cancellation and backend refusals are transactional: a failed range
+    // leaves both the accumulated sums and checkpoint unchanged, so retrying
+    // cannot double-count a partially completed range.
+    let mut staged_xyz = Vec::with_capacity(film.xyz.len());
+    for chunk in film.xyz.chunks(4096) {
+        cx.checkpoint()?;
+        staged_xyz.extend_from_slice(chunk);
+    }
     for py in 0..s.height {
+        cx.checkpoint()?;
         for px in 0..s.width {
             let pixel = py * s.width + px;
-            let slot = &mut film.xyz[pixel as usize];
+            let slot = &mut staged_xyz[pixel as usize];
             for sample in from..to {
+                cx.checkpoint()?;
                 let (jx, jy, ul) = pixel_dims(s, &sobol, key, pixel, sample);
-                let xyz = trace_path(scene, cx, s, kn, pixel, sample, jx, jy, ul);
+                let xyz = trace_path(scene, cx, s, kn, pixel, sample, jx, jy, ul)?;
                 slot[0] += xyz[0];
                 slot[1] += xyz[1];
                 slot[2] += xyz[2];
             }
         }
     }
+    cx.checkpoint()?;
+    film.xyz = staged_xyz;
     film.spp_done = to;
+    Ok(())
 }
 
 /// Render the full image (fresh film, samples `[0, spp)`).
-#[must_use]
-pub fn render(scene: &Scene, cx: &Cx<'_>, s: &Settings) -> Film {
+pub fn render(scene: &Scene, cx: &Cx<'_>, s: &Settings) -> Result<Film, TracerError> {
     let mut film = Film::new(s.width, s.height);
-    render_range(scene, cx, s, &mut film, 0, s.spp);
-    film
+    render_range(scene, cx, s, &mut film, 0, s.spp)?;
+    Ok(film)
 }
 
 /// The (jitter-x, jitter-y, hero-λ) dimensions for one (pixel, sample).
@@ -324,7 +390,11 @@ fn pixel_dims(
                 let v = x + u32_unit(u);
                 if v >= 1.0 { v - 1.0 } else { v }
             };
-            (wrap(pt[0], shift[0]), wrap(pt[1], shift[1]), wrap(pt[2], shift[2]))
+            (
+                wrap(pt[0], shift[0]),
+                wrap(pt[1], shift[1]),
+                wrap(pt[2], shift[2]),
+            )
         }
     }
 }
@@ -340,7 +410,7 @@ fn trace_path(
     jx: f64,
     jy: f64,
     ul: f64,
-) -> [f64; 3] {
+) -> Result<[f64; 3], TracerError> {
     let key = [(s.seed & 0xffff_ffff) as u32, (s.seed >> 32) as u32];
     let mut rng = PathRng {
         pixel,
@@ -372,11 +442,12 @@ fn trace_path(
     let mut prev_bsdf_pdf: Option<f64> = None;
     let mut prev_origin = ray.origin;
     for _depth in 0..s.max_depth {
-        let Some((prim_idx, hit)) = intersect(scene, cx, &ray) else {
+        cx.checkpoint()?;
+        let Some((prim_idx, hit)) = intersect(scene, cx, &ray)? else {
             break;
         };
         let prim = &scene.primitives[prim_idx];
-        let n = oriented_normal(&hit, &ray);
+        let n = oriented_normal(&hit, &ray)?;
         if let Some((spec, scale)) = &prim.emission {
             // MIS weight against NEE for this light, seen from the
             // previous vertex.
@@ -421,7 +492,7 @@ fn trace_path(
                     origin: hit.point.offset(n.scale(RAY_EPS)),
                     dir: wi,
                 };
-                let vis = match intersect(scene, cx, &shadow) {
+                let vis = match intersect(scene, cx, &shadow)? {
                     Some((i, h)) => i == scene.light.prim && h.t > dist - 1e-4,
                     None => false,
                 };
@@ -472,7 +543,7 @@ fn trace_path(
         xyz[1] += w * cie_y(l);
         xyz[2] += w * cie_z(l);
     }
-    xyz
+    Ok(xyz)
 }
 
 impl Settings {
@@ -481,12 +552,30 @@ impl Settings {
     }
 }
 
-fn intersect(scene: &Scene, cx: &Cx<'_>, ray: &Ray) -> Option<(usize, Hit)> {
+fn intersect(scene: &Scene, cx: &Cx<'_>, ray: &Ray) -> Result<Option<(usize, Hit)>, TracerError> {
     let mut best: Option<(usize, Hit)> = None;
     for (i, prim) in scene.primitives.iter().enumerate() {
+        cx.checkpoint()?;
         let hit = match &prim.shape {
-            Shape::Mesh(mesh) => mesh.intersect(ray),
-            Shape::Chart(chart) => sphere_trace(chart.as_ref(), cx, ray, 1e4, TRACE_EPS, 1.0).0,
+            Shape::Mesh(mesh) => mesh.intersect_with_cx(cx, ray)?,
+            Shape::Chart(chart) => {
+                let (hit, audit) = sphere_trace(chart.as_ref(), cx, ray, 1e4, TRACE_EPS, 1.0);
+                if matches!(
+                    audit.termination,
+                    TraceTermination::Hit | TraceTermination::Miss
+                ) && !audit.certified
+                {
+                    return Err(TracerError::UncertifiedTrace);
+                }
+                match audit.termination {
+                    TraceTermination::Cancelled => return Err(TracerError::Cancelled),
+                    TraceTermination::Miss => None,
+                    TraceTermination::Hit => {
+                        Some(hit.ok_or(TracerError::BackendFailure(TraceTermination::Hit))?)
+                    }
+                    termination => return Err(TracerError::BackendFailure(termination)),
+                }
+            }
         };
         if let Some(h) = hit
             && best.as_ref().is_none_or(|(_, bh)| h.t < bh.t)
@@ -494,12 +583,19 @@ fn intersect(scene: &Scene, cx: &Cx<'_>, ray: &Ray) -> Option<(usize, Hit)> {
             best = Some((i, h));
         }
     }
-    best
+    Ok(best)
 }
 
-fn oriented_normal(hit: &Hit, ray: &Ray) -> Vec3 {
-    let n = hit.normal.unwrap_or(Vec3::new(0.0, 0.0, 1.0));
-    if n.dot(ray.dir) > 0.0 { n.scale(-1.0) } else { n }
+fn oriented_normal(hit: &Hit, ray: &Ray) -> Result<Vec3, TracerError> {
+    let n = hit.normal.ok_or(TracerError::MissingNormal)?;
+    if !n.x.is_finite() || !n.y.is_finite() || !n.z.is_finite() || n.norm() <= 0.0 {
+        return Err(TracerError::MissingNormal);
+    }
+    Ok(if n.dot(ray.dir) > 0.0 {
+        n.scale(-1.0)
+    } else {
+        n
+    })
 }
 
 // ---- BSDF machinery --------------------------------------------------

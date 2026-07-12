@@ -16,7 +16,8 @@
 //! - HERO-WAVELENGTH spectral integration ([`spectral_integral`]) — an unbiased
 //!   estimate of a spectral integral.
 //!
-//! Deterministic; no dependencies.
+//! Deterministic and pure Rust. The default chart backend composes the
+//! lower-layer execution, geometry, and NURBS contracts.
 
 use core::f64::consts::PI;
 

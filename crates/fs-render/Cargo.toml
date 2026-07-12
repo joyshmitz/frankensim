@@ -12,6 +12,7 @@ layer = "L5"
 
 [dependencies]
 fs-ad = { path = "../fs-ad", optional = true }
+fs-evidence = { path = "../fs-evidence", optional = true }
 fs-exec = { path = "../fs-exec", optional = true }
 fs-geom = { path = "../fs-geom", optional = true }
 fs-img = { path = "../fs-img", optional = true }
@@ -26,16 +27,19 @@ fs-lbm = { path = "../fs-lbm" }
 fs-rep-frep = { path = "../fs-rep-frep" }
 
 [features]
-# [F]-gated per the Ambition-Tag rule: chart backends ship disabled
-# until the tunneling audit + ray-rate gates are green in perf-CI.
-chart-backends = ["dep:fs-exec", "dep:fs-geom", "dep:fs-rep-nurbs"]
+# [S] The certified sphere-tracing and deterministic scalar-BVH backends are
+# selected as production defaults by frankensim-8ll9. Closeout still requires
+# the recorded adversarial, workspace, nested-Wasm, and four-quadrant gates.
+# The wider SIMD BVH and ray-rate claims remain separate perf-evidence work.
+default = ["chart-backends"]
+chart-backends = ["dep:fs-evidence", "dep:fs-exec", "dep:fs-geom", "dep:fs-rep-nurbs"]
 # [F]-gated per the Ambition-Tag rule: volumetric media ship disabled
 # until the live-field progressive lane lands in perf-CI.
 volumes = ["dep:fs-rand"]
 # [F]-gated per the Ambition-Tag rule (bead qfx.5): edge-aware
 # differentiable rendering, smoke tier (deterministic quadrature;
 # MC/reparameterized estimators are recorded successors).
-differentiable = ["dep:fs-ad"]
+differentiable = ["chart-backends", "dep:fs-ad"]
 # [F]-gated per the Ambition-Tag rule (bead 872c): the spectral path
 # tracer v1 — hero-wavelength MIS over the chart backends, EXR out.
 tracer = ["chart-backends", "dep:fs-rand", "dep:fs-img"]

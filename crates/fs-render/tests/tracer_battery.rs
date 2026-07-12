@@ -6,14 +6,20 @@
 //! equal-spp claim (measured, never vibes).
 #![cfg(feature = "tracer")]
 
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+
 use asupersync::types::Budget;
+use fs_evidence::NumericalCertificate;
 use fs_exec::{CancelGate, Cx, ExecMode, StreamKey};
-use fs_geom::{Point3, Vec3};
+use fs_geom::{Aabb, Chart, ChartSample, Point3, TraceStepClaim, Vec3};
 use fs_render::charts::TriMesh;
 use fs_render::spectral::{LAMBDA_MAX, LAMBDA_MIN, lift_rgb, xyz_of_spectrum};
 use fs_render::tracer::{
     Camera, DirectStrategy, Film, Material, Primitive, RectLight, Sampler, Scene, Settings, Shape,
-    film_to_exr, render, render_range,
+    TracerError, film_to_exr, render, render_range,
 };
 use fs_render::{cosine_sample_hemisphere, hero_wavelengths, radical_inverse};
 use fs_rep_frep::FrepBuilder;
@@ -36,6 +42,90 @@ fn with_cx<R>(f: impl FnOnce(&Cx<'_>) -> R) -> R {
         );
         f(&cx)
     })
+}
+
+fn assert_film_bits_eq(left: &Film, right: &Film, context: &str) {
+    assert_eq!(
+        (left.width, left.height),
+        (right.width, right.height),
+        "{context}"
+    );
+    assert_eq!(left.spp_done, right.spp_done, "{context}");
+    assert_eq!(left.xyz.len(), right.xyz.len(), "{context}");
+    for (a, b) in left.xyz.iter().zip(&right.xyz) {
+        for channel in 0..3 {
+            assert_eq!(a[channel].to_bits(), b[channel].to_bits(), "{context}");
+        }
+    }
+}
+
+struct CancellingSphere {
+    center: Point3,
+    radius: f64,
+    evaluations: Arc<AtomicUsize>,
+    cancel_at: Option<usize>,
+    gate: Option<Arc<CancelGate>>,
+}
+
+impl Chart for CancellingSphere {
+    fn eval(&self, point: Point3, _cx: &Cx<'_>) -> ChartSample {
+        let evaluation = self.evaluations.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.cancel_at == Some(evaluation)
+            && let Some(gate) = &self.gate
+        {
+            gate.request();
+        }
+        let delta = point.delta_from(self.center);
+        let norm = delta.norm();
+        let distance = norm - self.radius;
+        ChartSample {
+            signed_distance: distance,
+            gradient: (norm > 1e-12).then(|| delta.scale(1.0 / norm)),
+            lipschitz: Some(1.0),
+            error: NumericalCertificate::exact(distance),
+        }
+    }
+
+    fn support(&self) -> Aabb {
+        let r = self.radius;
+        Aabb::new(
+            self.center.offset(Vec3::new(-r, -r, -r)),
+            self.center.offset(Vec3::new(r, r, r)),
+        )
+    }
+
+    fn trace_step_claim(&self) -> TraceStepClaim {
+        TraceStepClaim::ExactDistance
+    }
+
+    fn name(&self) -> &'static str {
+        "tracer-cancellation-sphere"
+    }
+}
+
+struct ConstantNoClaim;
+
+impl Chart for ConstantNoClaim {
+    fn eval(&self, _point: Point3, _cx: &Cx<'_>) -> ChartSample {
+        ChartSample {
+            signed_distance: 20_000.0,
+            gradient: None,
+            lipschitz: None,
+            error: NumericalCertificate::estimate(20_000.0, 20_000.0),
+        }
+    }
+
+    fn support(&self) -> Aabb {
+        Aabb::new(Point3::new(-1.0, -1.0, -1.0), Point3::new(1.0, 1.0, 1.0))
+    }
+
+    fn name(&self) -> &'static str {
+        "tracer-constant-no-claim"
+    }
+}
+
+fn replace_cornell_sphere(scene: &mut Scene, chart: CancellingSphere) {
+    scene.primitives[5].shape = Shape::Chart(Box::new(chart));
 }
 
 fn quad(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> TriMesh {
@@ -104,7 +194,9 @@ fn cornell() -> Scene {
     ];
     // GGX sphere via the certified F-rep chart (sphere-traced).
     let mut b = FrepBuilder::new();
-    let s = b.sphere(Point3::new(0.42, 0.28, 0.45), 0.28).expect("sphere");
+    let s = b
+        .sphere(Point3::new(0.42, 0.28, 0.45), 0.28)
+        .expect("sphere");
     let frep = b.finish(s).expect("frep");
     primitives.push(Primitive {
         shape: Shape::Chart(Box::new(frep)),
@@ -229,11 +321,12 @@ fn fnv(bytes: &[u8]) -> u64 {
     acc
 }
 
-/// Frozen 2026-07-12 (bead 872c) at the committed tree: 24×24, 8 spp,
+/// Frozen 2026-07-12 at the committed 872c tree: 24×24, 8 spp,
 /// depth 4, MIS + iid Philox, seed 7 — the first shaded COLOR image.
-/// FNV-1a over the EXR bytes. Verified debug + release on aarch64
-/// (M4 Pro) and x86-64 (ts2 5995WX). Depends on
-/// fs-render:tracer-bits=1 (golden-couplings.json); re-freeze only per
+/// FNV-1a over the EXR bytes. That original surface was verified debug +
+/// release on aarch64 (M4 Pro) and x86-64 (ts2 5995WX). Bead 8ll9 now records
+/// an explicit fs-render:chart-backend-bits=1 dependency; current-tree replay
+/// in all four quadrants remains mandatory before closeout. Re-freeze only per
 /// docs/GOLDEN_POLICY.md.
 const CORNELL_GOLDEN: u64 = 0x6ed8_706b_08d1_642e;
 
@@ -242,20 +335,30 @@ const CORNELL_GOLDEN: u64 = 0x6ed8_706b_08d1_642e;
 #[test]
 fn cornell_box_matches_the_frozen_golden() {
     let scene = cornell();
-    let film = with_cx(|cx| render(&scene, cx, &settings(DirectStrategy::Mis, Sampler::Iid, 7, 24, 8)));
+    let film = with_cx(|cx| {
+        render(
+            &scene,
+            cx,
+            &settings(DirectStrategy::Mis, Sampler::Iid, 7, 24, 8),
+        )
+    })
+    .expect("Cornell render");
     let exr = film_to_exr(&film).expect("encode");
     let hash = fnv(&exr);
     // The image is not black and not blown out: the mid pixel saw light.
     let mid = &film.xyz[(12 * 24 + 12) as usize];
-    assert!(mid[1] > 0.0, "mid-pixel Y is zero: the scene rendered black");
+    assert!(
+        mid[1] > 0.0,
+        "mid-pixel Y is zero: the scene rendered black"
+    );
     println!(
         "{{\"suite\":\"fs-render/tracer\",\"case\":\"cornell-golden\",\"verdict\":\"info\",\"detail\":\"{hash:#018x}\"}}"
     );
     assert_eq!(
         hash, CORNELL_GOLDEN,
         "Cornell EXR bits changed: {hash:#018x} vs {CORNELL_GOLDEN:#018x} — re-freeze only with \
-         a semantic justification per docs/GOLDEN_POLICY.md (bump fs-render:tracer-bits and the \
-         golden-couplings.json row in the same commit)"
+         a semantic justification per docs/GOLDEN_POLICY.md (bump the causative fs-render bit \
+         surface and update golden-couplings.json in the same commit)"
     );
 }
 
@@ -263,10 +366,18 @@ fn cornell_box_matches_the_frozen_golden() {
 #[test]
 fn exr_round_trips_byte_exactly() {
     let scene = cornell();
-    let film = with_cx(|cx| render(&scene, cx, &settings(DirectStrategy::Mis, Sampler::Iid, 7, 12, 2)));
+    let film = with_cx(|cx| {
+        render(
+            &scene,
+            cx,
+            &settings(DirectStrategy::Mis, Sampler::Iid, 7, 12, 2),
+        )
+    })
+    .expect("round-trip render");
     let bytes = film_to_exr(&film).expect("encode");
     let decoded = fs_img::read_exr(&bytes).expect("decode");
-    let re = fs_img::write_exr(decoded.width, decoded.height, &decoded.channels).expect("re-encode");
+    let re =
+        fs_img::write_exr(decoded.width, decoded.height, &decoded.channels).expect("re-encode");
     assert_eq!(bytes, re, "EXR bytes changed across a decode/encode cycle");
     println!(
         "{{\"suite\":\"fs-render/tracer\",\"case\":\"exr-roundtrip\",\"verdict\":\"pass\",\"detail\":\"{} bytes byte-exact\"}}",
@@ -281,10 +392,10 @@ fn progressive_checkpoint_is_bitwise() {
     let scene = cornell();
     let s = settings(DirectStrategy::Mis, Sampler::Iid, 11, 12, 8);
     let (direct, resumed) = with_cx(|cx| {
-        let direct = render(&scene, cx, &s);
+        let direct = render(&scene, cx, &s).expect("direct render");
         let mut film = Film::new(s.width, s.height);
-        render_range(&scene, cx, &s, &mut film, 0, 3);
-        render_range(&scene, cx, &s, &mut film, 3, 8);
+        render_range(&scene, cx, &s, &mut film, 0, 3).expect("first range");
+        render_range(&scene, cx, &s, &mut film, 3, 8).expect("resumed range");
         (direct, film)
     });
     assert_eq!(direct.spp_done, resumed.spp_done);
@@ -298,15 +409,107 @@ fn progressive_checkpoint_is_bitwise() {
     );
 }
 
-/// Worker/tile-order invariance: pixel streams are keyed by (pixel,
-/// sample), so accumulating per-pixel in ANY order gives the same
-/// bits. Rendered as two interleaved sample ranges vs one range —
-/// plus a straight determinism replay.
 #[test]
-fn sample_streams_are_schedule_invariant() {
+fn reversed_progressive_range_is_rejected_transactionally() {
+    let scene = cornell();
+    let s = settings(DirectStrategy::Mis, Sampler::Iid, 31, 2, 3);
+    let mut film = Film::new(s.width, s.height);
+    film.spp_done = 3;
+    for xyz in &mut film.xyz {
+        *xyz = [0.25, -0.0, f64::from_bits(0x7ff8_0000_0000_0042)];
+    }
+    let before = film.clone();
+    assert_eq!(
+        with_cx(|cx| render_range(&scene, cx, &s, &mut film, 3, 2)),
+        Err(TracerError::InvalidRange { from: 3, to: 2 })
+    );
+    assert_film_bits_eq(&film, &before, "invalid range changed film bits");
+}
+
+#[test]
+fn production_tracer_rejects_uncertified_misses() {
+    let mut scene = cornell();
+    scene.primitives[5].shape = Shape::Chart(Box::new(ConstantNoClaim));
+    let s = settings(DirectStrategy::Mis, Sampler::Iid, 37, 1, 1);
+    assert_eq!(
+        with_cx(|cx| render(&scene, cx, &s)),
+        Err(TracerError::UncertifiedTrace)
+    );
+}
+
+#[test]
+fn cancelled_range_is_transactional_and_retryable() {
+    let s = settings(DirectStrategy::Mis, Sampler::Iid, 23, 8, 3);
+    let mut reference_scene = cornell();
+    replace_cornell_sphere(
+        &mut reference_scene,
+        CancellingSphere {
+            center: Point3::new(0.42, 0.28, 0.45),
+            radius: 0.28,
+            evaluations: Arc::new(AtomicUsize::new(0)),
+            cancel_at: None,
+            gate: None,
+        },
+    );
+    let mut film = Film::new(s.width, s.height);
+    with_cx(|cx| render_range(&reference_scene, cx, &s, &mut film, 0, 1))
+        .expect("initial checkpoint");
+    let before = film.clone();
+
+    let gate = Arc::new(CancelGate::new());
+    let evaluations = Arc::new(AtomicUsize::new(0));
+    let mut cancelling_scene = cornell();
+    replace_cornell_sphere(
+        &mut cancelling_scene,
+        CancellingSphere {
+            center: Point3::new(0.42, 0.28, 0.45),
+            radius: 0.28,
+            evaluations: Arc::clone(&evaluations),
+            cancel_at: Some(64),
+            gate: Some(Arc::clone(&gate)),
+        },
+    );
+    let pool = fs_alloc::ArenaPool::new(fs_alloc::ArenaConfig::default());
+    pool.scope(|arena| {
+        let cx = Cx::new(
+            &gate,
+            arena,
+            StreamKey {
+                seed: 872,
+                kernel_id: 3,
+                tile: 0,
+                iteration: 0,
+            },
+            Budget::INFINITE,
+            ExecMode::Deterministic,
+        );
+        assert_eq!(
+            render_range(&cancelling_scene, &cx, &s, &mut film, 1, 3),
+            Err(TracerError::Cancelled)
+        );
+    });
+    assert!(evaluations.load(Ordering::SeqCst) >= 64);
+    assert_film_bits_eq(&film, &before, "failed ranges must not alter film state");
+
+    with_cx(|cx| render_range(&cancelling_scene, cx, &s, &mut film, 1, 3))
+        .expect("retry after cancellation");
+    let direct = with_cx(|cx| render(&reference_scene, cx, &s)).expect("direct reference");
+    assert_film_bits_eq(&film, &direct, "retry must equal a direct render bitwise");
+}
+
+/// Deterministic replay under the Owen-Sobol stream. Progressive sample-range
+/// equivalence is exercised separately above; this case does not claim a
+/// parallel tile-order execution it does not perform.
+#[test]
+fn sample_streams_replay_bitwise() {
     let scene = cornell();
     let s = settings(DirectStrategy::Mis, Sampler::OwenSobol, 5, 12, 4);
-    let (a, b) = with_cx(|cx| (render(&scene, cx, &s), render(&scene, cx, &s)));
+    let (a, b) = with_cx(|cx| {
+        (
+            render(&scene, cx, &s).expect("replay a"),
+            render(&scene, cx, &s).expect("replay b"),
+        )
+    });
     for (x, y) in a.xyz.iter().zip(&b.xyz) {
         for k in 0..3 {
             assert_eq!(x[k].to_bits(), y[k].to_bits(), "replay drifted");
@@ -317,14 +520,22 @@ fn sample_streams_are_schedule_invariant() {
     );
 }
 
-fn mean_pixel_variance(scene: &Scene, strategy: DirectStrategy, sampler: Sampler, spp: u32, px: u32) -> f64 {
+fn mean_pixel_variance(
+    scene: &Scene,
+    strategy: DirectStrategy,
+    sampler: Sampler,
+    spp: u32,
+    px: u32,
+) -> f64 {
     // Variance across independent seeds of the per-pixel luminance.
     const SEEDS: u64 = 6;
     let n = (px * px) as usize;
     let mut sum = vec![0.0f64; n];
     let mut sum2 = vec![0.0f64; n];
     for seed in 0..SEEDS {
-        let film = with_cx(|cx| render(scene, cx, &settings(strategy, sampler, 100 + seed, px, spp)));
+        let film =
+            with_cx(|cx| render(scene, cx, &settings(strategy, sampler, 100 + seed, px, spp)))
+                .expect("variance render");
         let inv = 1.0 / f64::from(spp);
         for (i, xyz) in film.xyz.iter().enumerate() {
             let y = xyz[1] * inv;
@@ -380,7 +591,11 @@ fn sobol_vs_iid_at_64spp() {
     let scene = cornell();
     let v_iid = mean_pixel_variance(&scene, DirectStrategy::Mis, Sampler::Iid, 64, 16);
     let v_sobol = mean_pixel_variance(&scene, DirectStrategy::Mis, Sampler::OwenSobol, 64, 16);
-    let verdict = if v_sobol < v_iid { "sobol-wins" } else { "iid-holds" };
+    let verdict = if v_sobol < v_iid {
+        "sobol-wins"
+    } else {
+        "iid-holds"
+    };
     println!(
         "{{\"suite\":\"fs-render/tracer\",\"case\":\"sobol-vs-iid-64spp\",\"verdict\":\"{verdict}\",\"detail\":\"var iid {v_iid:.3e} sobol {v_sobol:.3e} ratio {:.3} - ledger on bead 872c\"}}",
         v_sobol / v_iid

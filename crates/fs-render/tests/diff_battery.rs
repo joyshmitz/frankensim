@@ -6,7 +6,45 @@
 
 use std::fmt::Write as _;
 
-use fs_render::diff::{NPARAMS, RenderCfg, loss_and_grad, render, render_grad};
+use asupersync::types::Budget;
+use fs_ad::dual::Dual;
+use fs_exec::{CancelGate, Cx, ExecMode, StreamKey};
+use fs_render::diff::{
+    BlendScene, NPARAMS, RenderCfg, RenderError, loss_and_grad as loss_and_grad_with_cx,
+    render as render_with_cx, render_grad as render_grad_with_cx,
+};
+
+fn with_cx<R>(f: impl FnOnce(&Cx<'_>) -> R) -> R {
+    let gate = CancelGate::new();
+    let pool = fs_alloc::ArenaPool::new(fs_alloc::ArenaConfig::default());
+    pool.scope(|arena| {
+        let cx = Cx::new(
+            &gate,
+            arena,
+            StreamKey {
+                seed: 17,
+                kernel_id: 5,
+                tile: 0,
+                iteration: 0,
+            },
+            Budget::INFINITE,
+            ExecMode::Deterministic,
+        );
+        f(&cx)
+    })
+}
+
+fn render(params: &[f64], cfg: RenderCfg) -> Vec<f64> {
+    with_cx(|cx| render_with_cx(params, cx, cfg)).expect("primal render")
+}
+
+fn render_grad(params: &[f64], cfg: RenderCfg, edge_terms: bool) -> Vec<fs_render::diff::D9> {
+    with_cx(|cx| render_grad_with_cx(params, cx, cfg, edge_terms)).expect("gradient render")
+}
+
+fn loss_and_grad(params: &[f64], target: &[f64], cfg: RenderCfg) -> (f64, [f64; NPARAMS]) {
+    with_cx(|cx| loss_and_grad_with_cx(params, target, cx, cfg)).expect("loss gradient")
+}
 
 fn verdict(name: &str, pass: bool, details: &str) {
     println!("{{\"test\":\"{name}\",\"pass\":{pass},\"details\":\"{details}\"}}");
@@ -283,6 +321,10 @@ fn dr_006_bitwise_replay() {
     let bit_img = a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits());
     let ga = render_grad(&th, cfg, true);
     let gb = render_grad(&th, cfg, true);
+    let primal_shared = a
+        .iter()
+        .zip(&ga)
+        .all(|(primal, dual)| primal.to_bits() == dual.re.to_bits());
     let bit_grad = ga.iter().zip(&gb).all(|(x, y)| {
         x.re.to_bits() == y.re.to_bits()
             && x.eps
@@ -292,7 +334,125 @@ fn dr_006_bitwise_replay() {
     });
     verdict(
         "dr-006-bitwise-replay",
-        bit_img && bit_grad,
-        "render and edge-aware gradient replay bitwise",
+        bit_img && bit_grad && primal_shared,
+        "render and edge-aware gradient replay bitwise; render_grad reuses the exact primal backend bits",
     );
+}
+
+#[test]
+fn dr_007_smooth_min_seam_gradient_is_symmetric() {
+    let scene = BlendScene {
+        c1: [-1.0, 0.0, 0.0],
+        r1: 0.75,
+        c2: [1.0, 0.0, 0.0],
+        r2: 0.75,
+        k: 0.5,
+    };
+    let scene_d: BlendScene<Dual<f64, 1>> = BlendScene {
+        c1: scene.c1.map(Dual::constant),
+        r1: Dual::constant(scene.r1),
+        c2: scene.c2.map(Dual::constant),
+        r2: Dual::constant(scene.r2),
+        k: Dual::constant(scene.k),
+    };
+    let seam = scene_d.phi([
+        Dual::variable(0.0, 0),
+        Dual::constant(0.0),
+        Dual::constant(0.0),
+    ]);
+    let h = 1e-6;
+    let plus = scene.phi([h, 0.0, 0.0]);
+    let minus = scene.phi([-h, 0.0, 0.0]);
+    let fd = (plus - minus) / (2.0 * h);
+    verdict(
+        "dr-007-smooth-min-seam",
+        seam.eps[0].abs() <= 1e-14 && fd.abs() <= 1e-10 && plus.to_bits() == minus.to_bits(),
+        &format!(
+            "equal-distance seam has symmetric values and averaged derivative: AD {:.3e}, FD {fd:.3e}",
+            seam.eps[0]
+        ),
+    );
+}
+
+#[test]
+fn dr_008_cancellation_is_propagated() {
+    let gate = CancelGate::new();
+    let pool = fs_alloc::ArenaPool::new(fs_alloc::ArenaConfig::default());
+    pool.scope(|arena| {
+        let cx = Cx::new(
+            &gate,
+            arena,
+            StreamKey {
+                seed: 17,
+                kernel_id: 5,
+                tile: 0,
+                iteration: 0,
+            },
+            Budget::INFINITE,
+            ExecMode::Deterministic,
+        );
+        gate.request();
+        assert_eq!(
+            render_with_cx(&theta0(), &cx, RenderCfg::default()),
+            Err(RenderError::Cancelled)
+        );
+    });
+}
+
+#[test]
+fn dr_009_invalid_inputs_fail_without_panicking() {
+    with_cx(|cx| {
+        let params = theta0();
+        for cfg in [
+            RenderCfg {
+                res: 0,
+                ..RenderCfg::default()
+            },
+            RenderCfg {
+                subrows: 0,
+                ..RenderCfg::default()
+            },
+            RenderCfg {
+                xsamples: 0,
+                ..RenderCfg::default()
+            },
+            RenderCfg {
+                res: usize::MAX,
+                subrows: usize::MAX,
+                xsamples: usize::MAX,
+            },
+        ] {
+            assert_eq!(
+                render_with_cx(&params, cx, cfg),
+                Err(RenderError::InvalidInput)
+            );
+        }
+
+        assert!(matches!(
+            BlendScene::<f64>::from_params(&params[..NPARAMS - 1]),
+            Err(RenderError::InvalidInput)
+        ));
+        for lane in [0usize, 3, 7, 8] {
+            let mut invalid = params;
+            invalid[lane] = if lane == 0 { f64::NAN } else { 0.0 };
+            assert_eq!(
+                render_with_cx(&invalid, cx, RenderCfg::default()),
+                Err(RenderError::InvalidInput)
+            );
+        }
+
+        let cfg = RenderCfg {
+            res: 2,
+            subrows: 1,
+            xsamples: 1,
+        };
+        assert_eq!(
+            loss_and_grad_with_cx(&params, &[0.0; 3], cx, cfg),
+            Err(RenderError::InvalidInput)
+        );
+        assert_eq!(
+            loss_and_grad_with_cx(&params, &[f64::NAN; 4], cx, cfg),
+            Err(RenderError::InvalidInput)
+        );
+    });
 }
