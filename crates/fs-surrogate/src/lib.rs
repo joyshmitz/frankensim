@@ -14,7 +14,9 @@
 //!   AND the band narrow enough for the decision → USE the surrogate; otherwise
 //!   ESCALATE to a certified solve.
 //!
-//! Deterministic; no dependencies (an in-house symmetric eigensolver).
+//! The default core is deterministic and dependency-free (including an
+//! in-house symmetric eigensolver). The optional `abstraction-ladder` feature
+//! integrates FrankenSim execution, allocation, hashing, and evidence crates.
 
 #[cfg(feature = "abstraction-ladder")]
 pub mod ladder;

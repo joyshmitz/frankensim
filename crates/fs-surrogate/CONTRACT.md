@@ -7,7 +7,9 @@ validity bands — ML proposes, certified numerics disposes.
 
 Layer L4 (surrogate / ROM). The default core is dependency-free and pure Rust
 (an in-house symmetric eigensolver for the method of snapshots); the optional
-ladder feature depends on `fs-evidence` for color payloads.
+ladder feature depends downward on `fs-evidence`, `fs-blake3`, `fs-exec`,
+`fs-alloc`, and asupersync for evidence, content identity, bounded tile
+execution, memory admission, and live task cancellation.
 
 ## Public types and semantics
 
@@ -38,8 +40,13 @@ ladder feature depends on `fs-evidence` for color payloads.
   `Ladder::at_level(k)?.query(μ, tol)` performs AUTOMATIC BOUNDED
   DESCENT: an RB/concept rung answers only when its estimator is within
   tolerance; otherwise the leak is recorded and the query descends.
-  `ladder::SurrogateError` names all ladder refusals. `rb_coverage` is
-  the bounded, fallible kill measurement.
+  `ladder::SurrogateError` names all ladder refusals. `RbCoveragePlan`
+  retains the exact ordered battery, schema/algorithm version, and a
+  domain-separated content fingerprint of the truth family and every RB basis
+  value. `rb_coverage_scoped`
+  executes one logical parameter tile per μ and returns a complete Estimated
+  fraction or an incomplete no-claim plus deterministic prefix/progress
+  receipt. `rb_coverage` remains the smaller synchronous compatibility oracle.
 
 ## Invariants
 
@@ -74,25 +81,74 @@ ladder feature depends on `fs-evidence` for color payloads.
   product, and conservative aggregate work. Each parameter performs at most
   one descent (including at most one truth fallback), and the resulting RB
   estimators classify every requested tolerance without repeating solves.
+- Production coverage validates and retains exact IEEE-754 input bits, rung
+  dimensions, family, numerical-ladder fingerprint, Cartesian count, and a
+  conservative work envelope that dominates the same logical units recorded by
+  the kernel meter before execution.
+  The caller supplies a coverage-scoped or cap-compatible bounded
+  `OperationMemoryLease` whose hard limit is at most 512 MiB. A worst-case
+  coverage-owned scratch charge is reserved before slots or workers are
+  created; TilePool root metadata and arena chunks charge the same lease, so
+  their combined tracked live set cannot exceed that limit. Results commit to
+  unique parameter slots only after their final checkpoint; final aggregation
+  is ascending by parameter index and ignores out-of-order completions beyond
+  the first gap. Kernel and slot storage are destroyed before the matching
+  scratch charge is released. Exact battery axes are immutable shared slices
+  allocated when the caller constructs the plan; the receipt shares those
+  slices instead of copying their payload into run-local scratch.
+- Incomplete coverage cannot expose a fraction through its type. Its receipt
+  contains only the longest fully committed parameter prefix and the first
+  unfinished parameter's operational progress, together with an absorbing
+  `NumericalCertificate::no_claim()`. Coverage outcomes are opaque: callers
+  have read-only complete/incomplete accessors and cannot construct arbitrary
+  coverage, authority, no-claim, or finalization evidence. Worker-dependent
+  coverage-owned scratch declarations remain run diagnostics and never enter
+  the semantic receipt. They exclude separately charged TilePool metadata and
+  arena chunks; the returned cumulative lease snapshot records the shared
+  accounting state and can include other users of a cloned lease.
 
 ## Error model
 
 Structured `SurrogateError`. Ladder construction, energy, compliance,
 training, lookup, level selection, querying, and coverage return named
 errors for invalid shapes/values/ranges/grids, singular or non-finite
-derived arithmetic, and resource excess. The non-ladder conformal helper
-still panics on nonsensical inputs (empty residuals, `α ∉ (0,1)`).
+derived arithmetic, resource excess, exact lease refusal, and structured
+allocator/executor failure. Cooperative cancellation returns the drained partial
+run/receipt; numerical and executor errors return their typed error after
+drain but do not currently claim a replay receipt. The non-ladder conformal
+helper still panics on nonsensical inputs (empty residuals, `α ∉ (0,1)`).
 
 ## Determinism class
 
-Fully deterministic: the eigensolver, POD, band, and policy are pure functions
-of their inputs.
+Fully deterministic for synchronous work. A completed scoped coverage outcome,
+including its finalized semantic receipt, is bit-identical across worker counts
+and steal schedules because each parameter has a unique slot and final integer
+aggregation is in parameter order. The semantic receipt excludes timing, steal,
+and worker-dependent scratch data. With one worker, an explicitly
+injected cancellation at the same logical checkpoint replays the same retained
+prefix. Shared task-budget consumption and wall-time cancellation under
+multiple workers are schedule-dependent; any resulting prefix remains
+operational no-claim evidence rather than a deterministic scientific result.
 
 ## Cancellation behavior
 
-None (synchronous pure functions). In particular, the feature-gated coverage
-battery has checked admission but no `Cx` or bounded cancellation latency; it
-is not yet a production hot-kernel execution surface.
+The POD/conformal API and `rb_coverage` compatibility wrapper remain
+synchronous; `rb_coverage` has the explicit smaller
+`MAX_SYNCHRONOUS_COVERAGE_WORK_UNITS` cap and no interruption claim.
+
+`rb_coverage_scoped` requires a live asupersync `Cx`, `TilePool`, external
+`CancelGate`, declared `RunId`/per-tile `Budget`, and a bounded operation memory
+lease whose hard limit does not exceed 512 MiB. It polls both the tile gate and
+ambient task at every parameter/rung
+phase boundary and after at most 256 logical scalar updates inside allocation
+initialization, validation, assembly, Thomas solves, dense elimination,
+reconstruction, residual/Riesz work, and tolerance classification. A request
+raises the shared gate, all workers drain and join, scratch is released, and
+only then is an incomplete no-claim returned. A final ambient checkpoint occurs
+after drain, followed by an external gate read before a coverage fraction can
+be published. Because both request sources are monotone, a successful call can
+linearize at the earlier final ambient checkpoint; either observation can still
+force an incomplete outcome.
 
 ## Unsafe boundary
 
@@ -101,12 +157,14 @@ None. `#![deny(unsafe_code)]` via the workspace lint.
 ## Feature flags
 
 - `abstraction-ladder` [F] (default OFF) — the estimated, leak-alarmed
-  abstraction ladder (knh1.4/y6yv, Proposal A; `dep:fs-evidence`); gates
-  the `ladder` integration target.
+  abstraction ladder (knh1.4/y6yv, Proposal A; `dep:fs-evidence`,
+  `dep:fs-blake3`,
+  `dep:fs-exec`, `dep:fs-alloc`, `dep:asupersync`); gates the `ladder`
+  integration target.
 
 ## Conformance tests
 
-`tests/surrogate.rs` (8 cases): POD reproduces a low-rank set exactly;
+`tests/surrogate.rs` (9 cases): POD reproduces a low-rank set exactly;
 orthonormal modes; energy-based rank + reduced error; bad-input rejection; the
 conformal band achieves nominal coverage; certify-or-escalate uses the surrogate
 only when trustworthy; the policy reduces cost vs all-high-fidelity;
@@ -117,7 +175,12 @@ elliptic fixture, bounded descent, Estimated-only payload authority,
 deterministic replay, structured hostile-input refusals, representable
 grid and family binding, requested/retained fidelity descent,
 lower-rung uncertainty inheritance, pre-training memory/work limits,
-and bounded coverage batteries.
+bounded coverage batteries, complete scoped replay across worker counts,
+content-bound plans, work-envelope/meter agreement, pre-cancel and
+external-gate cancellation, deterministic logical-work storms across worker
+counts, nonzero single-worker retained-prefix replay, final-publication refusal,
+bounded observation latency, unbounded/over-cap/undersized lease refusal,
+memory/arena quiescence, and successful pool reuse.
 
 ## No-claim boundaries
 
@@ -154,11 +217,26 @@ and bounded coverage batteries.
   `|concept − lower RB| + lower RB QoI estimator`, augmented by the same
   query-local quantity. Neither is an enclosure over the continuous range.
   The Estimated color is load-bearing.
-- Coverage is currently a synchronous feature-gated measurement helper. Its
-  checked work cap bounds admission, but it has no `Cx`, tile polling, or
-  cancellation/drain contract. Production-scale batteries remain out of claim
-  until that execution surface is added; the current implementation is for
-  bounded Gauntlet/activation fixtures.
+- The synchronous `rb_coverage` helper is only a small compatibility oracle and
+  makes no interruption claim. Production-scale authority requires
+  `rb_coverage_scoped` and its explicit execution/memory inputs.
+- Scoped coverage's static declaration covers its bounded coverage-owned
+  vector, matrix, and progress-slot scratch. Executor root metadata and arena
+  chunks are separately charged to the same at-most-512-MiB lease, so the hard
+  limit bounds their combined tracked execution-phase live set. The returned
+  lease receipt is cumulative when the caller shares or clones that lease; it
+  is not an isolatable per-run heap census. Retained output payloads, thread
+  stacks, allocator bookkeeping, the immutable pre-existing ladder, and OS
+  scheduling latency remain outside the numerical claim. A callback or
+  dependency that ignores its supplied cancellation protocol would likewise be
+  outside claim; the current sealed arithmetic path does not do so.
+- The task-scoped executor contains per-tile kernel panics, but an OS refusal
+  while asupersync creates a scoped worker or a worker failure outside tile
+  containment follows the executor's documented panic boundary. No structured
+  coverage artifact is claimed for that executor-invariant failure.
+- A completed coverage fraction still classifies round-to-nearest f64 RB
+  estimators. It is `Estimated` with infinite dispersion, never a certificate
+  that the continuous model error lies below the requested tolerances.
 - The eventual certificate destination is an outward-rounded residual,
   Riesz solve, reduced solve, coercivity floor, and QoI enclosure whose
   complete arithmetic path is independently checkable. Only that path,

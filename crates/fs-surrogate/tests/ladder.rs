@@ -12,11 +12,14 @@
 #![cfg(feature = "abstraction-ladder")]
 
 use core::mem::size_of;
-use fs_evidence::{Color, validate_color_payload};
+use fs_alloc::OperationMemoryLease;
+use fs_evidence::{Color, NumericalKind, validate_color_payload};
+use fs_exec::{Budget, CancelGate, RunId, TilePool};
 use fs_surrogate::ladder::{
-    ConceptLevel, Ladder, MAX_CONCEPT_POINTS, MAX_COVERAGE_AXIS_POINTS, MAX_COVERAGE_QUERIES,
-    MAX_COVERAGE_WORK_UNITS, MAX_RB_DIM, MAX_RB_LEVELS, MAX_TRAINING_BYTES,
-    MAX_TRAINING_WORK_UNITS, RbLevel, SurrogateError, TruthModel, rb_coverage,
+    ConceptLevel, Ladder, MAX_CONCEPT_POINTS, MAX_COVERAGE_AXIS_POINTS, MAX_COVERAGE_MEMORY_BYTES,
+    MAX_COVERAGE_QUERIES, MAX_COVERAGE_WORK_UNITS, MAX_RB_DIM, MAX_RB_LEVELS,
+    MAX_SYNCHRONOUS_COVERAGE_WORK_UNITS, MAX_TRAINING_BYTES, MAX_TRAINING_WORK_UNITS,
+    RbCoveragePlan, RbLevel, SurrogateError, TruthModel, rb_coverage, rb_coverage_scoped,
 };
 
 fn verdict(case: &str, detail: &str) {
@@ -259,6 +262,256 @@ fn la_004_kill_measurement_rb_coverage() {
     verdict(
         "la-004",
         "RB coverage of the 48-point query battery ledgered and above the 0.2 kill floor",
+    );
+}
+
+#[test]
+fn la_004b_scoped_coverage_replays_across_worker_counts() {
+    let ladder = Ladder::build(200, (0.0, 4.0), &[6, 2], false).expect("canonical ladder");
+    let mus: Vec<f64> = (0..12).map(|i| 4.0 * f64::from(i) / 11.0).collect();
+    let tolerances = [1e-2, 1e-4, 1e-6, 1e-8];
+    let synchronous = rb_coverage(&ladder, &mus, &tolerances).expect("small oracle battery");
+    let plan = RbCoveragePlan::new(&ladder, &mus, &tolerances).expect("exact typed plan");
+
+    let mut observed = Vec::new();
+    let mut declared_scratch = Vec::new();
+    for workers in [1, 4] {
+        let pool = TilePool::for_host(workers, 0xC0_4E_2A_6E);
+        let cx = asupersync::Cx::for_testing();
+        let gate = CancelGate::new();
+        let lease = OperationMemoryLease::bounded(64 * 1024 * 1024);
+        let run = rb_coverage_scoped(
+            &cx,
+            &pool,
+            &gate,
+            RunId(0x4B),
+            Budget::INFINITE,
+            &lease,
+            &ladder,
+            &plan,
+        )
+        .expect("scoped coverage completes");
+        let outcome = run.outcome();
+        let coverage = outcome.coverage().expect("healthy coverage finalizes");
+        let covered_queries = outcome
+            .covered_queries()
+            .expect("healthy coverage publishes a count");
+        let authority = outcome
+            .authority()
+            .expect("healthy coverage publishes Estimated authority");
+        let receipt = outcome.receipt();
+        assert_eq!(coverage.to_bits(), synchronous.to_bits());
+        #[allow(clippy::cast_precision_loss)]
+        let counted_coverage = covered_queries as f64 / plan.total_queries() as f64;
+        assert_eq!(
+            counted_coverage.to_bits(),
+            synchronous.to_bits(),
+            "the complete outcome count and fraction agree exactly"
+        );
+        assert!(matches!(
+            authority,
+            Color::Estimated {
+                estimator,
+                dispersion
+            } if estimator == "fs-surrogate.rb-coverage-f64-v2" && dispersion.is_infinite()
+        ));
+        assert!(receipt.is_finalized());
+        assert_eq!(receipt.completed_parameter_prefix(), mus.len());
+        assert!(receipt.current_parameter().is_none());
+        assert_eq!(receipt.plan(), &plan);
+        assert!(
+            receipt.rb_queries_in_prefix() <= mus.len() * ladder.rb_level_count(),
+            "each parameter may query each RB rung at most once"
+        );
+        assert!(
+            receipt.truth_fallbacks_in_prefix() <= mus.len(),
+            "each parameter may enter truth at most once"
+        );
+        assert!(
+            receipt.logical_work_units_in_prefix()
+                <= u64::try_from(plan.declared_work_units()).expect("bounded declared work"),
+            "the completed kernel meter must remain inside admission"
+        );
+        assert_eq!(run.report().completed, mus.len() as u64);
+        assert_eq!(run.report().total, mus.len() as u64);
+        assert_eq!(run.memory_receipt().used_bytes, 0);
+        assert_eq!(run.memory_receipt().refusals, 0);
+        assert!(pool.arena_pool().stats().quiescent());
+        observed.push(outcome.clone());
+        declared_scratch.push(run.declared_scratch_bytes());
+    }
+    assert_eq!(observed[0], observed[1]);
+    assert!(
+        declared_scratch[0] < declared_scratch[1],
+        "worker-dependent scratch remains an operational diagnostic"
+    );
+    verdict(
+        "la-004b",
+        "production coverage is bit-identical to the synchronous oracle across worker counts; \
+         only measured scheduling diagnostics vary",
+    );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // one G4 lifecycle spanning cancellation, drain, and reuse
+fn la_004c_g4_cancellation_drains_retains_prefix_and_reuses_pool() {
+    let ladder = Ladder::build(2_048, (0.0, 4.0), &[4, 2], false).expect("canonical ladder");
+    let mus: Vec<f64> = (0..8).map(|i| 4.0 * f64::from(i) / 7.0).collect();
+    let tolerances = [1e-4, 1e-6, 1e-8];
+    let plan = RbCoveragePlan::new(&ladder, &mus, &tolerances).expect("exact typed plan");
+    let pool = TilePool::for_host(1, 0xC4_4C_E1);
+
+    let pre_cancelled = asupersync::Cx::for_testing();
+    pre_cancelled.set_cancel_requested(true);
+    let pre_gate = CancelGate::new();
+    let pre_lease = OperationMemoryLease::bounded(64 * 1024 * 1024);
+    let pre = rb_coverage_scoped(
+        &pre_cancelled,
+        &pool,
+        &pre_gate,
+        RunId(0x4C),
+        Budget::INFINITE,
+        &pre_lease,
+        &ladder,
+        &plan,
+    )
+    .expect("pre-cancellation is an incomplete outcome");
+    let no_claim = pre
+        .outcome()
+        .no_claim()
+        .expect("pre-cancelled work cannot publish coverage");
+    let receipt = pre.outcome().receipt();
+    assert_eq!(no_claim.kind, NumericalKind::NoClaim);
+    assert_eq!(receipt.completed_parameter_prefix(), 0);
+    assert!(!receipt.is_finalized());
+    assert_eq!(pre.memory_receipt().used_bytes, 0);
+    assert!(pool.arena_pool().stats().quiescent());
+
+    let unbounded = OperationMemoryLease::unbounded();
+    assert!(matches!(
+        rb_coverage_scoped(
+            &asupersync::Cx::for_testing(),
+            &pool,
+            &CancelGate::new(),
+            RunId(0x4C),
+            Budget::INFINITE,
+            &unbounded,
+            &ladder,
+            &plan,
+        ),
+        Err(SurrogateError::CoverageMemoryLeaseUnbounded)
+    ));
+    let maximum_memory_bytes =
+        u64::try_from(MAX_COVERAGE_MEMORY_BYTES).expect("coverage cap fits the lease ledger");
+    let oversized_lease = OperationMemoryLease::bounded(maximum_memory_bytes + 1);
+    let oversized = rb_coverage_scoped(
+        &asupersync::Cx::for_testing(),
+        &pool,
+        &CancelGate::new(),
+        RunId(0x4C),
+        Budget::INFINITE,
+        &oversized_lease,
+        &ladder,
+        &plan,
+    );
+    assert!(matches!(
+        oversized,
+        Err(SurrogateError::CoverageMemoryLimitTooLarge {
+            limit_bytes,
+            maximum_bytes,
+        }) if limit_bytes == maximum_memory_bytes + 1
+            && maximum_bytes == maximum_memory_bytes
+    ));
+    let oversized_receipt = oversized_lease.receipt();
+    assert_eq!(oversized_receipt.used_bytes, 0);
+    assert_eq!(oversized_receipt.requested_bytes, 0);
+    assert_eq!(oversized_receipt.peak_bytes, 0);
+    assert_eq!(oversized_receipt.refusals, 0);
+    let refusing_lease = OperationMemoryLease::bounded(1);
+    let refusal = rb_coverage_scoped(
+        &asupersync::Cx::for_testing(),
+        &pool,
+        &CancelGate::new(),
+        RunId(0x4C),
+        Budget::INFINITE,
+        &refusing_lease,
+        &ladder,
+        &plan,
+    );
+    assert!(matches!(
+        refusal,
+        Err(SurrogateError::CoverageMemoryRefused { .. })
+    ));
+    assert_eq!(refusing_lease.receipt().used_bytes, 0);
+    assert_eq!(refusing_lease.receipt().refusals, 1);
+    assert!(pool.arena_pool().stats().quiescent());
+
+    let gate_cx = asupersync::Cx::for_testing();
+    let requested_gate = CancelGate::new();
+    requested_gate.request();
+    let gate_lease = OperationMemoryLease::bounded(64 * 1024 * 1024);
+    let externally_cancelled = rb_coverage_scoped(
+        &gate_cx,
+        &pool,
+        &requested_gate,
+        RunId(0x4C),
+        Budget::INFINITE,
+        &gate_lease,
+        &ladder,
+        &plan,
+    )
+    .expect("an externally requested gate is an incomplete outcome");
+    assert_eq!(
+        externally_cancelled
+            .outcome()
+            .no_claim()
+            .expect("requested gate carries no-claim")
+            .kind,
+        NumericalKind::NoClaim
+    );
+    assert_eq!(
+        externally_cancelled
+            .outcome()
+            .receipt()
+            .completed_parameter_prefix(),
+        0
+    );
+    assert_eq!(gate_lease.receipt().used_bytes, 0);
+    assert!(pool.arena_pool().stats().quiescent());
+
+    let healthy_cx = asupersync::Cx::for_testing();
+    let healthy_gate = CancelGate::new();
+    let healthy_lease = OperationMemoryLease::bounded(64 * 1024 * 1024);
+    let healthy = rb_coverage_scoped(
+        &healthy_cx,
+        &pool,
+        &healthy_gate,
+        RunId(0x4C),
+        Budget::INFINITE,
+        &healthy_lease,
+        &ladder,
+        &plan,
+    )
+    .expect("pool remains reusable after cancellation storms");
+    assert!(healthy.outcome().is_complete());
+    assert_eq!(healthy.memory_receipt().used_bytes, 0);
+    assert_eq!(healthy.memory_receipt().refusals, 0);
+    assert!(
+        healthy.memory_receipt().peak_bytes
+            > u64::try_from(healthy.declared_scratch_bytes())
+                .expect("declared scratch fits the lease ledger")
+    );
+    assert!(
+        healthy.memory_receipt().peak_bytes
+            <= healthy_lease
+                .limit_bytes()
+                .expect("healthy coverage lease is bounded")
+    );
+    assert!(pool.arena_pool().stats().quiescent());
+    verdict(
+        "la-004c",
+        "G4 task/gate pre-cancellation and memory refusals publish no fraction, release memory, \
+         and leave the pool reusable; deterministic mid-kernel storms are unit-injected",
     );
 }
 
@@ -614,6 +867,14 @@ fn la_010_coverage_reuses_per_mu_solves_and_caps_aggregate_work() {
     let mus = vec![2.0; MAX_COVERAGE_AXIS_POINTS];
     assert!(matches!(
         rb_coverage(&ladder, &mus, &[1.0e-4]),
+        Err(SurrogateError::BudgetExceeded {
+            resource: "synchronous RB coverage total work",
+            limit: MAX_SYNCHRONOUS_COVERAGE_WORK_UNITS,
+            ..
+        })
+    ));
+    assert!(matches!(
+        RbCoveragePlan::new(&ladder, &mus, &[1.0e-4]),
         Err(SurrogateError::BudgetExceeded {
             resource: "RB coverage total work",
             limit: MAX_COVERAGE_WORK_UNITS,
