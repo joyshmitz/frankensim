@@ -82,8 +82,8 @@ impl GridSdf {
     fn locate(&self, p: [f64; 2]) -> (usize, usize, f64, f64) {
         #[allow(clippy::cast_precision_loss)]
         let nf = self.n as f64;
-        let x = (p[0] * nf).clamp(0.0, nf - 1e-12);
-        let y = (p[1] * nf).clamp(0.0, nf - 1e-12);
+        let x = (p[0] * nf).clamp(0.0, nf);
+        let y = (p[1] * nf).clamp(0.0, nf);
         let ci = (x.floor() as usize).min(self.n - 1);
         let cj = (y.floor() as usize).min(self.n - 1);
         #[allow(clippy::cast_precision_loss)]
@@ -138,11 +138,15 @@ impl CutSdf for GridSdf {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let ci0 = ((lo[0] * nf).floor().clamp(0.0, nf - 1.0)) as usize;
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let ci1 = ((hi[0] * nf).ceil().clamp(1.0, nf)) as usize;
+        let ci1 = (((hi[0] * nf).ceil().clamp(1.0, nf)) as usize)
+            .max(ci0 + 1)
+            .min(self.n);
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let cj0 = ((lo[1] * nf).floor().clamp(0.0, nf - 1.0)) as usize;
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let cj1 = ((hi[1] * nf).ceil().clamp(1.0, nf)) as usize;
+        let cj1 = (((hi[1] * nf).ceil().clamp(1.0, nf)) as usize)
+            .max(cj0 + 1)
+            .min(self.n);
         let mut vmin = f64::INFINITY;
         let mut vmax = f64::NEG_INFINITY;
         let h = self.h();
@@ -200,5 +204,35 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn enclosure_handles_degenerate_lattice_aligned_boxes() {
+        let g = GridSdf::from_fn(8, &|x, y| x + 2.0 * y - 1.0);
+        let boxes = [
+            ([0.25, 0.5], [0.75, 0.5]),
+            ([0.5, 0.25], [0.5, 0.75]),
+            ([0.5, 0.5], [0.5, 0.5]),
+            ([0.0, 0.25], [0.0, 0.75]),
+            ([0.25, 0.0], [0.75, 0.0]),
+            ([0.0, 0.0], [0.0, 0.0]),
+            ([1.0, 0.25], [1.0, 0.75]),
+            ([0.25, 1.0], [0.75, 1.0]),
+            ([1.0, 1.0], [1.0, 1.0]),
+        ];
+        for (lo, hi) in boxes {
+            let enclosure = g.enclose(lo, hi);
+            assert!(enclosure.lo().is_finite());
+            assert!(enclosure.hi().is_finite());
+            for point in [lo, hi, [0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1])]] {
+                assert!(enclosure.contains(g.value_at(point)));
+            }
+        }
+        assert_eq!(g.value_at([0.0, 0.5]).to_bits(), 0.0f64.to_bits());
+        assert_eq!(g.value_at([0.5, 0.0]).to_bits(), (-0.5f64).to_bits());
+        assert_eq!(g.value_at([0.0, 0.0]).to_bits(), (-1.0f64).to_bits());
+        assert_eq!(g.value_at([1.0, 0.5]).to_bits(), 1.0f64.to_bits());
+        assert_eq!(g.value_at([0.5, 1.0]).to_bits(), 1.5f64.to_bits());
+        assert_eq!(g.value_at([1.0, 1.0]).to_bits(), 2.0f64.to_bits());
     }
 }

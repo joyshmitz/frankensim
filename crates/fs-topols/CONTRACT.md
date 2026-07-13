@@ -16,7 +16,9 @@ with zero meshing anywhere in the loop.
   to an outward roundoff pad — a bilinear attains its extrema at the
   corners of any axis-aligned rectangle, so a box's range is the hull
   of per-cell clipped-corner evaluations (certified classification
-  holds on the moving geometry).
+  holds on the moving geometry). Horizontal, vertical, and point boxes
+  lying exactly on lattice lines still visit an adjacent cell and return a
+  finite enclosure; they do not degrade to `Interval::WHOLE`.
 - `weno::advect` + `Velocity::{Linear, Normal}`: WENO5 (Jiang–Shu)
   spatial stencils with TVD-RK3 time stepping under a CFL number;
   linear advection for the order battery, Godunov/Rouy–Tourin normal
@@ -40,14 +42,19 @@ with zero meshing anywhere in the loop.
   ledger rows (`NucleationEvent`).
 - `optimize::optimize_compliance` + `OptimizeSettings`/`Cantilever` →
   `OptimizeReport`: the descent loop — CutFEM solve (traction-free Γ,
-  strong box-edge clamps, box-edge dead tractions), nodal
+  strong box-edge clamps, a checked right-box-edge traction band), nodal
   strain-energy densities sampled inside material, normal extension,
   fs-adjoint Sobolev H¹ smoothing, `v_n = w − ℓ`, one interface move
   per iteration, redistance + audit, augmented-Lagrangian volume
   multiplier NORMALIZED BY THE MEAN ENERGY SCALE (an O(1) multiplier
   against O(J) energies shrinks the structure to nothing at full
   speed — measured failure mode), scheduled nucleation; ledger rows
-  with compliance, volume, ℓ, drift, and FNV snapshot hashes.
+  with compliance, volume, ℓ, drift, and FNV snapshot hashes. The load is
+  definitionally zero outside the checked `EdgeBand`; unrelated SDF cuts on
+  the same edge are skipped, while a cut through supported load refuses.
+  Reported compliance is canonical assembled-load `b^T u`, not the former
+  node-mask/trapezoid proxy. With zero body force and embedded displacement
+  data here, it is the exact discrete external work.
 - `optimize::material_volume`: certified cut-quadrature area of
   `{φ < 0}`.
 
@@ -77,14 +84,23 @@ with zero meshing anywhere in the loop.
    trivial uniform-band design at equal volume (tls-006).
 8. Determinism (P2): two descent runs produce bitwise-identical FNV
    snapshot sequences.
+9. Typed right-edge load support (G0/G3): aligned or non-aligned checked bands
+   wholly inside material solve deterministically; an SDF crossing through
+   the supported band refuses. Non-finite/non-positive load magnitudes, band
+   half-widths outside `[0, 0.5]`, and material settings outside the canonical
+   finite coercive plane-strain regime refuse before the level set mutates.
 
 ## Error model
 
-fs-solid's `SolidError` propagates from physics solves. Structured
-asserts (panics) guard programmer contracts: lattice/grid alignment,
-nodal-array lengths, non-uniform grids where v1 requires uniform.
-Audits never silently degrade — drift and gradient deviations are
-returned, not clamped.
+fs-solid's `SolidError` propagates from physics solves. `InvalidInput` names
+invalid cantilever load/band data, invalid optimizer material data, or the
+canonical typed-support refusal when the SDF cuts a loaded segment. The
+inherited certified plane-strain bound is `(lambda + 2*mu)/mu <= 4`,
+equivalent for the isotropic card to `nu <= 1/3`; larger values refuse rather
+than entering the unsupported near-incompressible regime. Structured asserts
+(panics) guard programmer contracts: lattice/grid alignment, nodal-array
+lengths, non-uniform grids where v1 requires uniform. Audits never silently
+degrade — drift and gradient deviations are returned, not clamped.
 
 ## Determinism class
 
@@ -116,7 +132,9 @@ drift policy; tls-005 numerical sensitivity gates (DT vs punched
 hole, shape velocity vs FD); tls-006 the cantilever descent (volume,
 stabilization, nucleation with interior-hole flood-fill proof,
 determinism, beats-trivial-at-equal-volume). Unit tests: enclosure
-containment, planar extension.
+containment including degenerate lattice-aligned boxes, planar extension,
+typed aligned-band success/replay, supported-cut refusal, and invalid
+fixture/material no-mutation refusals.
 
 ## No-claim boundaries
 
@@ -129,6 +147,10 @@ containment, planar extension.
   storage wiring is the consumer path per the plan's shared-substrate
   design).
 - 3D, multiple load cases, stress constraints, compliant mechanisms.
+- Certified clipping of an SDF-cut loaded edge segment is not claimed; typed
+  support refuses that case. The two-point rule is exact for the shipped
+  constant traction times Q1 edge shapes, but no quadrature-error claim is
+  made for arbitrary traction callbacks.
 - fs-adjoint Hadamard boundary-form velocities (the volumetric
   energy-density form ships; the Hadamard trace form composes when
   the FEEC trace machinery lands).

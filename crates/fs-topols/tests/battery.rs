@@ -20,7 +20,7 @@
 #![allow(clippy::cast_possible_wrap)] // lattice indices are tiny; i64 stencil arithmetic is exact
 
 use fs_cutfem::Quadtree;
-use fs_solid::CutElasticity;
+use fs_solid::{BoundaryTraction, CutElasticity, CutSolution, DesignBoxEdge, EdgeBand, SolidError};
 use fs_topols::optimize::{Cantilever, material_volume};
 use fs_topols::{
     GridSdf, OptimizeSettings, Velocity, advect, extend_velocity, hausdorff, nucleate,
@@ -203,18 +203,26 @@ fn tls_004_volume_conservation_and_drift_policy() {
 
 // ------------------------------------------------------------------ tls-005
 
-/// Solve the cantilever on a given level set; returns compliance.
-fn cantilever_compliance(grid: &Quadtree, phi: &GridSdf, load: f64, band: f64) -> f64 {
-    let n = phi.n();
-    let h = phi.h();
-    let clamp = |x: f64, _y: f64| x < 1e-9;
-    let traction = move |x: f64, y: f64| -> [f64; 2] {
-        if x > 1.0 - 1e-9 && (y - 0.5).abs() <= band {
-            [0.0, -load]
-        } else {
-            [0.0, 0.0]
+fn try_cantilever_solution(
+    grid: &Quadtree,
+    phi: &GridSdf,
+    load: f64,
+    band: f64,
+) -> Result<CutSolution, SolidError> {
+    if !(load.is_finite() && load > 0.0) {
+        return Err(SolidError::InvalidInput {
+            what: format!("cantilever load magnitude {load} must be finite and strictly positive"),
+        });
+    }
+    let support = EdgeBand::new(DesignBoxEdge::Right, 0.5 - band, 0.5 + band).map_err(|error| {
+        SolidError::InvalidInput {
+            what: format!(
+                "cantilever load-band half-width {band} must be finite and lie in [0, 0.5]: {error}"
+            ),
         }
-    };
+    })?;
+    let clamp = |x: f64, _y: f64| x < 1e-9;
+    let traction = move |_: f64, _: f64| [0.0, -load];
     let solver = CutElasticity {
         grid,
         sdf: phi,
@@ -224,26 +232,141 @@ fn cantilever_compliance(grid: &Quadtree, phi: &GridSdf, load: f64, band: f64) -
         ghost_gamma: 0.5,
         quad_depth: 2,
         clamp: Some(&clamp),
-        boundary_traction: Some(&traction),
+        boundary_traction: None,
         traction_free_interface: true,
     };
-    let sol = solver
-        .solve(&|_, _| [0.0, 0.0], &|_, _| [0.0, 0.0])
-        .expect("solves");
-    let mut j = 0.0;
-    for (&(gi, gj), u) in sol.nodal() {
-        if gi as usize == n {
-            let y = f64::from(gj) * h;
-            let t = traction(1.0, y);
-            let w = if gj == 0 || gj as usize == n {
-                0.5 * h
-            } else {
-                h
-            };
-            j += w * (t[0] * u[0] + t[1] * u[1]);
-        }
+    solver.solve_with_boundary_traction(
+        &|_, _| [0.0, 0.0],
+        &|_, _| [0.0, 0.0],
+        BoundaryTraction::EdgeBand {
+            support,
+            value: &traction,
+        },
+    )
+}
+
+/// Solve the cantilever on a given level set; returns the exact assembled-load
+/// compliance `b^T u` for this zero-body-force, zero-interface-data fixture.
+fn cantilever_compliance(grid: &Quadtree, phi: &GridSdf, load: f64, band: f64) -> f64 {
+    try_cantilever_solution(grid, phi, load, band)
+        .expect("cantilever solves")
+        .compliance()
+}
+
+#[test]
+fn typed_cantilever_support_succeeds_only_when_the_loaded_band_is_uncut() {
+    let level = 3;
+    let n = 1usize << level;
+    let grid = Quadtree::uniform(level);
+    let wide_beam = GridSdf::from_fn(n, &|_, y| (y - 0.5).abs() - 0.4);
+    let first = try_cantilever_solution(&grid, &wide_beam, 1.0, 0.125)
+        .expect("grid-aligned support disjoint from both SDF crossings must solve");
+    let replay = try_cantilever_solution(&grid, &wide_beam, 1.0, 0.125)
+        .expect("typed support solve must replay");
+    assert!(first.compliance().is_finite() && first.compliance() > 0.0);
+    assert_eq!(first.compliance().to_bits(), replay.compliance().to_bits());
+
+    let crossing = GridSdf::from_fn(n, &|_, y| y - 0.5);
+    assert!(matches!(
+        try_cantilever_solution(&grid, &crossing, 1.0, 0.125),
+        Err(SolidError::InvalidInput { .. })
+    ));
+}
+
+#[test]
+fn invalid_cantilever_and_material_settings_fail_before_mutation() {
+    let level = 3;
+    let n = 1usize << level;
+    let original = GridSdf::from_fn(n, &|_, y| (y - 0.5).abs() - 0.4);
+    let original_bits = original
+        .nodes()
+        .iter()
+        .map(|value| value.to_bits())
+        .collect::<Vec<_>>();
+    let settings = OptimizeSettings {
+        level,
+        iterations: 0,
+        ..OptimizeSettings::default()
+    };
+    for fixture in [
+        Cantilever {
+            load: f64::NAN,
+            band: 0.125,
+        },
+        Cantilever {
+            load: -1.0,
+            band: 0.125,
+        },
+        Cantilever {
+            load: 0.0,
+            band: 0.125,
+        },
+        Cantilever {
+            load: 1.0,
+            band: f64::NAN,
+        },
+        Cantilever {
+            load: 1.0,
+            band: -0.125,
+        },
+        Cantilever {
+            load: 1.0,
+            band: 0.625,
+        },
+    ] {
+        let mut phi = original.clone();
+        assert!(matches!(
+            optimize_compliance(&mut phi, fixture, settings),
+            Err(SolidError::InvalidInput { .. })
+        ));
+        assert_eq!(
+            phi.nodes()
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            original_bits
+        );
     }
-    j
+
+    let fixture = Cantilever {
+        load: 1.0,
+        band: 0.125,
+    };
+    for invalid_settings in [
+        OptimizeSettings {
+            youngs: f64::NAN,
+            ..settings
+        },
+        OptimizeSettings {
+            youngs: 0.0,
+            ..settings
+        },
+        OptimizeSettings {
+            poisson: f64::NAN,
+            ..settings
+        },
+        OptimizeSettings {
+            poisson: -1.0,
+            ..settings
+        },
+        OptimizeSettings {
+            poisson: 0.49,
+            ..settings
+        },
+    ] {
+        let mut phi = original.clone();
+        assert!(matches!(
+            optimize_compliance(&mut phi, fixture, invalid_settings),
+            Err(SolidError::InvalidInput { .. })
+        ));
+        assert_eq!(
+            phi.nodes()
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            original_bits
+        );
+    }
 }
 
 #[test]
@@ -261,30 +384,8 @@ fn tls_005_sensitivity_numerical_gates() {
     let (lambda, mu) = fs_solid::linear::lame(1.0, 0.3, fs_solid::PlaneKind::Strain);
     // Strain at the probe from a fresh solve (reuse the optimizer's
     // energy plumbing indirectly: finite differences of displacement).
-    let clamp = |x: f64, _y: f64| x < 1e-9;
     let load = 1.0f64;
-    let traction = move |x: f64, y: f64| -> [f64; 2] {
-        if x > 1.0 - 1e-9 && (y - 0.5).abs() <= 0.12 {
-            [0.0, -load]
-        } else {
-            [0.0, 0.0]
-        }
-    };
-    let solver = CutElasticity {
-        grid: &grid,
-        sdf: &phi,
-        youngs: 1.0,
-        poisson: 0.3,
-        nitsche_beta: 20.0,
-        ghost_gamma: 0.5,
-        quad_depth: 2,
-        clamp: Some(&clamp),
-        boundary_traction: Some(&traction),
-        traction_free_interface: true,
-    };
-    let sol = solver
-        .solve(&|_, _| [0.0, 0.0], &|_, _| [0.0, 0.0])
-        .expect("solves");
+    let sol = try_cantilever_solution(&grid, &phi, load, 0.12).expect("typed cantilever solves");
     let eps = strain_probe(&grid, &sol, probe);
     let sxx = (lambda + 2.0 * mu) * eps[0] + lambda * eps[1];
     let syy = lambda * eps[0] + (lambda + 2.0 * mu) * eps[1];

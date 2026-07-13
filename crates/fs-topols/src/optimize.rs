@@ -15,9 +15,9 @@ use crate::topder::{NucleationEvent, nucleate, topological_derivative};
 use crate::veloext::extend_velocity;
 use crate::weno::{Velocity, advect, build_band};
 use fs_cutfem::quad::cut_cell_rules;
-use fs_cutfem::{CutSdf, Quadtree};
+use fs_cutfem::{CutSdf, MAX_PLANE_STRAIN_STIFFNESS_RATIO, Quadtree};
 use fs_solid::linear::lame;
-use fs_solid::{CutElasticity, PlaneKind, SolidError};
+use fs_solid::{BoundaryTraction, CutElasticity, DesignBoxEdge, EdgeBand, PlaneKind, SolidError};
 use std::fmt::Write as _;
 
 /// Optimizer controls.
@@ -43,9 +43,10 @@ pub struct OptimizeSettings {
     pub nucleation_period: usize,
     /// Nucleation hole radius (in cells).
     pub hole_radius_cells: f64,
-    /// Young's modulus.
+    /// Young's modulus; must be finite and positive.
     pub youngs: f64,
-    /// Poisson ratio.
+    /// Poisson ratio in the canonical certified plane-strain regime:
+    /// `(lambda + 2*mu) / mu <= 4` (equivalently `nu <= 1/3`).
     pub poisson: f64,
 }
 
@@ -122,10 +123,64 @@ pub fn material_volume(grid: &Quadtree, phi: &GridSdf) -> f64 {
 /// traction band on the right edge around mid-height.
 #[derive(Debug, Clone, Copy)]
 pub struct Cantilever {
-    /// Traction magnitude.
+    /// Finite strictly positive traction magnitude.
     pub load: f64,
-    /// Load band half-width.
+    /// Finite load-band half-width in `[0, 0.5]`.
     pub band: f64,
+}
+
+fn invalid_input(what: impl Into<String>) -> SolidError {
+    SolidError::InvalidInput { what: what.into() }
+}
+
+fn cantilever_support(fixture: Cantilever) -> Result<EdgeBand, SolidError> {
+    if !(fixture.load.is_finite() && fixture.load > 0.0) {
+        return Err(invalid_input(format!(
+            "cantilever load magnitude {} must be finite and strictly positive",
+            fixture.load
+        )));
+    }
+    EdgeBand::new(DesignBoxEdge::Right, 0.5 - fixture.band, 0.5 + fixture.band).map_err(|error| {
+        invalid_input(format!(
+            "cantilever load-band half-width {} must be finite and lie in [0, 0.5]: {error}",
+            fixture.band
+        ))
+    })
+}
+
+fn validated_plane_strain_lame(settings: OptimizeSettings) -> Result<(f64, f64), SolidError> {
+    if !(settings.youngs.is_finite() && settings.youngs > 0.0) {
+        return Err(invalid_input(format!(
+            "optimizer Young's modulus {} must be finite and positive",
+            settings.youngs
+        )));
+    }
+    if !(settings.poisson.is_finite() && settings.poisson > -1.0 && settings.poisson < 0.5) {
+        return Err(invalid_input(format!(
+            "optimizer Poisson ratio {} must lie in (-1, 0.5)",
+            settings.poisson
+        )));
+    }
+    let (lambda, mu) = lame(settings.youngs, settings.poisson, PlaneKind::Strain);
+    let bulk_2d = lambda + mu;
+    let stiffness_ratio = (lambda + 2.0 * mu) / mu;
+    if !(lambda.is_finite()
+        && mu.is_finite()
+        && mu > 0.0
+        && bulk_2d.is_finite()
+        && bulk_2d > 0.0
+        && stiffness_ratio.is_finite())
+    {
+        return Err(invalid_input(
+            "optimizer material does not define a finite coercive plane-strain law",
+        ));
+    }
+    if stiffness_ratio > MAX_PLANE_STRAIN_STIFFNESS_RATIO {
+        return Err(invalid_input(format!(
+            "optimizer plane-strain stiffness ratio (lambda + 2*mu)/mu = {stiffness_ratio} exceeds the certified limit {MAX_PLANE_STRAIN_STIFFNESS_RATIO}"
+        )));
+    }
+    Ok((lambda, mu))
 }
 
 /// Uniform Q1 mass/stiffness on the full node lattice (Sobolev step).
@@ -168,7 +223,9 @@ fn mass_stiffness(n: usize) -> (fs_sparse::Csr, fs_sparse::Csr) {
 /// level set evolves in place.
 ///
 /// # Errors
-/// fs-solid solve refusals propagate.
+/// Returns [`SolidError::InvalidInput`] before mutating `phi` when the load,
+/// band, or material settings are outside the documented finite certified
+/// regime. Canonical fs-solid/fs-cutfem solve refusals otherwise propagate.
 ///
 /// # Panics
 /// If `phi.n() != 2^level` (the SDF lattice must match the CutFEM
@@ -179,25 +236,19 @@ pub fn optimize_compliance(
     fixture: Cantilever,
     settings: OptimizeSettings,
 ) -> Result<OptimizeReport, SolidError> {
+    let support = cantilever_support(fixture)?;
+    let (lambda, mu) = validated_plane_strain_lame(settings)?;
     let n = 1usize << settings.level;
     assert_eq!(phi.n(), n, "SDF lattice must match the CutFEM grid");
     let grid = Quadtree::uniform(settings.level);
     let h = phi.h();
     let stride = n + 1;
-    let (lambda, mu) = lame(settings.youngs, settings.poisson, PlaneKind::Strain);
     let (mass, stiffness) = mass_stiffness(n);
     let mut ell = settings.ell0;
     let mut report = OptimizeReport::default();
     let clamp = |x: f64, _y: f64| x < 1e-9;
-    let load_band = fixture.band;
     let load = fixture.load;
-    let traction = move |x: f64, y: f64| -> [f64; 2] {
-        if x > 1.0 - 1e-9 && (y - 0.5).abs() <= load_band {
-            [0.0, -load]
-        } else {
-            [0.0, 0.0]
-        }
-    };
+    let traction = move |_: f64, _: f64| [0.0, -load];
     for iter in 0..settings.iterations {
         // 1. Physics on the level set (zero meshing).
         let solver = CutElasticity {
@@ -209,27 +260,21 @@ pub fn optimize_compliance(
             ghost_gamma: 0.5,
             quad_depth: 2,
             clamp: Some(&clamp),
-            boundary_traction: Some(&traction),
+            boundary_traction: None,
             traction_free_interface: true,
         };
-        let sol = solver.solve(&|_, _| [0.0, 0.0], &|_, _| [0.0, 0.0])?;
-        // 2. Compliance J = ∫ t·u over the loaded edge.
-        let mut compliance = 0.0;
-        for (&(gi, gj), u) in sol.nodal() {
-            if gi as usize == n {
-                let y = f64::from(gj) * h;
-                let t = traction(1.0, y);
-                // Nodal quadrature of the edge integral (weight h,
-                // halved at the ends).
-                let w = if gj == 0 || gj as usize == n {
-                    0.5 * h
-                } else {
-                    h
-                };
-                compliance += w * (t[0] * u[0] + t[1] * u[1]);
-            }
-        }
-        // t·u is already positive: t = (0,−P) against uy < 0.
+        let sol = solver.solve_with_boundary_traction(
+            &|_, _| [0.0, 0.0],
+            &|_, _| [0.0, 0.0],
+            BoundaryTraction::EdgeBand {
+                support,
+                value: &traction,
+            },
+        )?;
+        // 2. Exact discrete external work for the assembled typed load.
+        // Here f = g = 0 and the supported right-edge DOFs are unclamped, so
+        // canonical b^T u is the compliance of this discrete problem.
+        let compliance = sol.compliance();
         // 3. Nodal strain-energy density w(x) = ½ σ:ε from adjacent
         // material; seeds for the extension are band nodes.
         let mut energy = vec![0.0f64; stride * stride];
