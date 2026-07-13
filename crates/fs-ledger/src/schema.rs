@@ -353,6 +353,10 @@ pub const V6: &[&str] = &[
     ) STRICT",
     "CREATE INDEX IF NOT EXISTS idx_session_flush_batch_members_authority
      ON session_flush_batch_members(authority)",
+    "CREATE INDEX IF NOT EXISTS idx_session_claims_recovery_pending
+     ON session_claims(
+         governor_hash, session_open_hash, kind, session, ledger_scope, generation, authority
+     )",
     "CREATE TRIGGER IF NOT EXISTS trg_session_claims_immutable_update
      BEFORE UPDATE ON session_claims
      BEGIN

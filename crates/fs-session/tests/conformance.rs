@@ -3056,6 +3056,89 @@ fn ss_013_durable_meter_and_l3_lifecycle_reopen_without_state_or_row_drift() {
         ),
         counts
     );
+    drop(governor);
+    drop(ledger);
+
+    // Recovery order is intentionally lifecycle-first here. Authenticated
+    // terminal meter/submission receipts from older generations must remain
+    // installable later in their own contiguous meter order.
+    let ledger = fs_ledger::Ledger::open(&path).expect("historical-order ledger");
+    let governor = SessionGovernor::new_durable(&ledger, nonce).expect("historical governor");
+    let historical_initial_gate = Arc::new(CancelGate::new());
+    governor
+        .recover_open(
+            &ledger,
+            open_id,
+            token_in_scope(session.0, "durable-lifecycle"),
+            Some(Arc::clone(&historical_initial_gate)),
+        )
+        .expect("historical-order open");
+    governor
+        .recover_pressure(&ledger, l1_id, 1)
+        .expect("historical L1");
+    governor
+        .recover_pressure(&ledger, l2_id, 2)
+        .expect("historical L2");
+    governor
+        .recover_pressure(&ledger, l3_id, 3)
+        .expect("historical first L3");
+    let historical_gate_one = Arc::new(CancelGate::new());
+    let historical_ack_one = governor
+        .recover_pause_acknowledgement(
+            &ledger,
+            pause_request,
+            "durable-checkpoint",
+            Arc::clone(&historical_gate_one),
+        )
+        .expect("historical first acknowledgement");
+    governor
+        .recover_resume_activation(&ledger, &historical_ack_one)
+        .expect("historical first activation");
+    governor
+        .recover_pressure(&ledger, second_l3_id, 3)
+        .expect("historical second L3");
+    let historical_gate_two = Arc::new(CancelGate::new());
+    governor
+        .recover_pause_acknowledgement(
+            &ledger,
+            second_pause_request,
+            "durable-checkpoint-second",
+            historical_gate_two,
+        )
+        .expect("historical second acknowledgement");
+    assert_eq!(
+        governor
+            .recover_meter(&ledger, meter_id, delta)
+            .expect("late historical meter"),
+        meter_receipt
+    );
+    let historical_executions = AtomicU32::new(0);
+    assert!(matches!(
+        governor
+            .submit_once_durable(
+                &ledger,
+                resumed_submission_id,
+                "resumed-program",
+                || {
+                    historical_executions.fetch_add(1, Ordering::SeqCst);
+                    Charge::default()
+                },
+            )
+            .expect("late historical submission"),
+        SubmitOutcome::Duplicate { receipt, .. } if receipt == resumed_submission_receipt
+    ));
+    assert_eq!(historical_executions.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        (
+            ledger.table_count("session_claims").unwrap(),
+            ledger.table_count("session_terminals").unwrap(),
+            ledger.table_count("session_terminal_events").unwrap(),
+            ledger.table_count("session_flush_batches").unwrap(),
+            ledger.table_count("session_flush_batch_members").unwrap(),
+            ledger.table_count("events").unwrap(),
+        ),
+        counts
+    );
     verdict(
         "ss-013",
         "durable meter and complete L3 lifecycle recover exactly after real ledger reopen",

@@ -36,8 +36,10 @@ about THAT region — no silent promotion to "exact distance".
   - `value(p)` / `value_grad(p)` — exact chain rule; `None` gradient
     propagates honestly from medial points; hard creases return the
     selected branch's subgradient (ties to the left operand).
-  - `lipschitz()` — primitives 1; rigid/scale/offset preserve; Booleans
-    take `max(La, Lb)` (blend weights are convex). Valid EVERYWHERE.
+  - `lipschitz()` — distance primitives are 1; generic rounded half-space
+    normals use an outward L1 upper bound; nontrivial Rodrigues transforms
+    multiply by a rigorous operator-norm upper bound; scale/offset preserve;
+    Booleans take `max(La, Lb)` (blend weights are convex). Valid EVERYWHERE.
   - `interval(box)` — outward-rounded distance/field ranges; rotated inputs
     use a deliberately wide interval evaluation of Rodrigues without assuming
     a platform-libm ULP budget; Booleans use monotonicity of min/smin.
@@ -46,15 +48,18 @@ about THAT region — no silent promotion to "exact distance".
   `d_value_d_param` is the Jacobian action (symmetric FD v1 — see
   no-claims).
 - `Chart` impl: composed Lipschitz bound in every sample; certificate
-  honesty — pure sphere/half-space/cylinder/box/valid-ring-torus chains under
-  rigid/uniform-scale transforms retain `ExactDistance` geometry but stamp a
-  rigorous `Enclosure` around their rounded binary64 evaluation;
-  spindle tori, offsets, and anything with a Boolean stamp `Estimate` (the value is a conservative
-  bound: exact SIGN, `|f(p)| ≤ dist(p, ∂Ω)` — exactly the
-  sphere-tracing safety contract). The matching typed
-  `Chart::trace_step_claim()` is `ExactDistance` for the exact chains and
-  `LipschitzImplicit` for composites; the latter certifies safe steps and the
-  zero set, not a geometric-distance upper bound. `differentiability()`
+  honesty — pure sphere/cylinder/box/valid-ring-torus chains, coordinate-axis
+  half-spaces, finite translations/uniform scales, and identity rotations
+  retain `ExactDistance` geometry. Generic normalized half-spaces, nontrivial
+  rotations, spindle tori, offsets, and anything with a Boolean are
+  `LipschitzImplicit`. Exact-distance samples stamp a rigorous outward
+  abstract-distance `Enclosure`; implicit samples retain an honest `Estimate`
+  relative to Euclidean distance. Both classes separately expose a rigorous
+  `trace_value_enclosure` of the field evaluation, so a rounded singleton can
+  never back a certified step. The implicit value remains a conservative bound
+  with exact sign and `|f(p)|/L ≤ dist(p, ∂Ω)`. `LipschitzImplicit` certifies safe
+  steps and the zero set, not a geometric-distance upper bound.
+  `differentiability()`
   reports C1 only for kink-free DAGs (no hard Booleans, no box edges).
 
 ## Invariants
@@ -62,8 +67,9 @@ about THAT region — no silent promotion to "exact distance".
 1. G0 containment: `interval(box)` contains `f(p)` for every sampled
    `p` in the box, on random DAGs mixing all node kinds (frep-001).
 2. The composed Lipschitz bound is never violated under adversarial
-   near/far pair sampling — and it is TIGHT (observed ratios ≈ 1), so
-   the certificate is not vacuous (frep-002).
+   near/far pair sampling. Coordinate primitives retain tight unit bounds;
+   rounded generic normals and rotations may use deliberately wider certified
+   bounds (frep-002).
 3. R-function blends are C¹ at seams: analytic gradients match
    crease-straddling central differences for union/intersect/difference,
    while the SAME probe exhibits an O(1) discontinuity on the hard
@@ -121,13 +127,14 @@ reimplementation must pass the suite unchanged.
 ## No-claim boundaries
 
 - The composite field's MAGNITUDE is a one-sided conservative bound,
-  not the exact distance; samples say `Estimate` on purpose. Per-query
-  rigorous sd enclosures join with fs-ivl. Accordingly a renderer's
+  not the exact distance. `ChartSample.error` remains an `Estimate`; only the
+  separate trace-field evaluation carries a rigorous enclosure. Accordingly a renderer's
   `|f|/L` termination is a normalized-residual hit, not a certified Euclidean
   distance-to-boundary enclosure.
-- The local interval kit rounds to nearest, not outward (frep-001
-  carries 1e-9 fp slack); unification with fs-ivl's outward-rounded
-  types is the tightening path.
+- The local interval kit rounds every arithmetic endpoint outward. Rotation
+  currently uses `sin,cos ∈ [-1,1]` instead of a tight deterministic trig
+  enclosure; this is rigorous but can stall certified tracing of rotated DAGs.
+  Tight fs-math/fs-ivl trig bounds are the progress-preserving successor.
 - `d_value_d_param` is symmetric finite difference; exact parameter
   adjoints (chain rule through the DAG) join with fs-xform.
 - Revolved/extruded fs-cheb profiles ("revolve THIS function") join

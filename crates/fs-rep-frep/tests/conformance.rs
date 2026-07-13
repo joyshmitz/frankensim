@@ -8,7 +8,7 @@
 
 use asupersync::types::Budget;
 use fs_exec::{CancelGate, Cx, ExecMode, StreamKey};
-use fs_geom::{Aabb, Chart, Differentiability, Point3, Vec3};
+use fs_geom::{Aabb, Chart, Differentiability, Point3, TraceStepClaim, Vec3};
 use fs_rep_frep::{BoolOp, BoolStyle, Frep, FrepBuilder, NodeId, smin_weights};
 
 fn verdict(case: &str, pass: bool, detail: &str) {
@@ -584,10 +584,99 @@ fn frep_005_sphere_tracing_safety() {
             "0 tunneling violations over {rays} rays on 12 random DAGs \
              ({hits} oracle-confirmed hits, {stalls} grazing stalls, worst standoff \
              {worst_late:.1e}); rigid chains enclose rounded exact-distance \
-             evaluations, CSG downgrades to \
-             Estimate, pure-blend DAGs advertise C1; seed 0x1001_2026_0706_0015"
+             evaluations, CSG keeps an Estimate relative to abstract distance \
+             while exposing a separate rigorous trace enclosure, pure-blend DAGs advertise C1; \
+             seed 0x1001_2026_0706_0015"
         ),
     );
+}
+
+/// frep-005b — evaluation rigor and typed geometric claims stay separate.
+/// Rounded primitive arithmetic is enclosed, while generic normalization and
+/// nontrivial Rodrigues maps cannot mint an exact-distance theorem.
+#[test]
+fn frep_005b_evaluation_enclosures_do_not_overpromote_geometry() {
+    with_cx(|cx| {
+        let mut sphere_builder = FrepBuilder::new();
+        let sphere = sphere_builder
+            .sphere(Point3::new(0.0, 0.0, 0.0), 1.0)
+            .expect("sphere");
+        let sphere = sphere_builder.finish(sphere).expect("sphere frep");
+        let point = Point3::new(
+            0.038_546_885_717_366_49,
+            -0.607_415_449_300_028_1,
+            -0.793_448_734_204_907_9,
+        );
+        let sample = sphere.eval(point, cx);
+        let independent_residual = 1.421_291_065_674_733_6e-7;
+        let sphere_ok = sphere.trace_step_claim() == TraceStepClaim::ExactDistance
+            && sample.error.kind == fs_evidence::NumericalKind::Enclosure
+            && sample.error.lo <= independent_residual
+            && independent_residual <= sample.error.hi;
+
+        let mut generic_plane_builder = FrepBuilder::new();
+        let plane = generic_plane_builder
+            .half_space(Vec3::new(1.0, 3.0, 7.0), 0.25)
+            .expect("generic plane");
+        let generic_plane = generic_plane_builder.finish(plane).expect("plane frep");
+        let plane_point = Point3::new(2.0, -1.0, 0.5);
+        let plane_sample = generic_plane.eval(plane_point, cx);
+        let plane_ok = generic_plane.trace_step_claim() == TraceStepClaim::LipschitzImplicit
+            && generic_plane.lipschitz() > 1.0
+            && plane_sample.error.kind == fs_evidence::NumericalKind::Estimate
+            && generic_plane
+                .trace_value_enclosure(plane_point, &plane_sample, cx)
+                .kind
+                == fs_evidence::NumericalKind::Enclosure;
+
+        let mut axis_plane_builder = FrepBuilder::new();
+        let axis_plane = axis_plane_builder
+            .half_space(Vec3::new(1.0, 0.0, 0.0), 0.25)
+            .expect("axis plane");
+        let axis_plane = axis_plane_builder
+            .finish(axis_plane)
+            .expect("axis plane frep");
+        let axis_ok = axis_plane.trace_step_claim() == TraceStepClaim::ExactDistance;
+
+        let mut rotated_builder = FrepBuilder::new();
+        let base = rotated_builder
+            .sphere(Point3::new(0.2, 0.0, 0.0), 0.5)
+            .expect("rotated base");
+        let rotated = rotated_builder
+            .rotate(base, Vec3::new(0.3, -0.5, 0.8), 0.7)
+            .expect("rotation");
+        let rotated = rotated_builder.finish(rotated).expect("rotated frep");
+        let rotated_point = Point3::new(1.0, 0.5, -0.25);
+        let rotated_sample = rotated.eval(rotated_point, cx);
+        let rotation_ok = rotated.trace_step_claim() == TraceStepClaim::LipschitzImplicit
+            && rotated.lipschitz() > 1.0
+            && rotated
+                .trace_value_enclosure(rotated_point, &rotated_sample, cx)
+                .kind
+                == fs_evidence::NumericalKind::Enclosure;
+
+        let mut reachable_builder = FrepBuilder::new();
+        let root = reachable_builder
+            .sphere(Point3::new(0.0, 0.0, 0.0), 1.0)
+            .expect("reachable root");
+        let unused = reachable_builder
+            .sphere(Point3::new(4.0, 0.0, 0.0), 0.5)
+            .expect("unused sphere");
+        let _unused_boolean = reachable_builder
+            .boolean(BoolOp::Union, BoolStyle::Hard, root, unused)
+            .expect("unused boolean");
+        let reachable = reachable_builder.finish(root).expect("reachable frep");
+        let reachable_ok = reachable.trace_step_claim() == TraceStepClaim::ExactDistance;
+
+        verdict(
+            "frep-005b",
+            sphere_ok && plane_ok && axis_ok && rotation_ok && reachable_ok,
+            "the seeded rounded sphere contains the independent residual; generic \
+             half-spaces and nontrivial rotations are Lipschitz-implicit with widened \
+             bounds; coordinate planes and exact root-reachable chains retain \
+             ExactDistance",
+        );
+    });
 }
 
 /// frep-006 — metamorphic algebra + design levers: hard idempotence and

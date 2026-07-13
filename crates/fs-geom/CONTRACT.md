@@ -5,7 +5,7 @@ The Region/Chart abstraction (plan §7.1): abstract regions presented
 through charts; agreement between presentations as a checkable, localized
 proposition; certified conversion receipts (fs-evidence) as the Error
 Ledger's geometry feed; no privileged representation, ever. Layer: L2.
-Depends on fs-exec (Cx), fs-evidence, fs-alloc, fs-obs.
+Depends on fs-exec (Cx), fs-evidence, fs-ivl, fs-alloc, fs-obs.
 
 ## Public types and semantics
 - `Point3`/`Vec3`/`Aabb` — minimal geometry-local types (fs-la owns real
@@ -26,10 +26,14 @@ Depends on fs-exec (Cx), fs-evidence, fs-alloc, fs-obs.
   endpoint closest to zero for its no-tunneling radius and the farthest endpoint
   for its hit residual. `LipschitzImplicit` states that the field has the
   represented region's exact sign and zero set and that each sample's bound is
-  valid over the entire closed `|f|/L` step ball, so that radius is safe but not
-  a geometric-distance upper bound.
+  valid over the entire closed `|f|/L` step ball. Its separate
+  `trace_value_enclosure` rigorously encloses `f(p)`; `ChartSample.error` remains
+  relative to abstract Euclidean signed distance and may honestly be only an
+  `Estimate`. The resulting radius is safe but not a geometric-distance upper
+  bound.
 - `Chart` (object-safe): `eval(x, &Cx)`, `support()`, `trace_step_claim()`,
-  `topology_hint()`, `name()`, `differentiability()`, provided `inside()`.
+  `trace_value_enclosure(x, sample, &Cx)`, `topology_hint()`, `name()`,
+  `differentiability()`, provided `inside()`.
   Implementations
   poll `cx.checkpoint()` at bounded strides. The plan's `type Param`
   lives on the `DesignChart: Chart` subtrait so `Region` can hold
@@ -64,7 +68,9 @@ Depends on fs-exec (Cx), fs-evidence, fs-alloc, fs-obs.
   Lipschitz, outward-rounded evaluation enclosures, `ExactDistance` trace claim,
   known Betti numbers); degenerate/invalid boxes downgrade to `NoClaim` and unknown
   topology, while horn/spindle torus parameters downgrade to
-  `LipschitzImplicit`, `Estimate`, and unknown topology. `LyingSphereChart` is
+  `LipschitzImplicit`, retain an abstract-distance `Estimate`, publish a
+  separate outward trace-value enclosure, and report unknown topology.
+  `LyingSphereChart` is
   deliberately biased with a lying error model and the default `NoClaim` for
   detection tests.
 

@@ -29,8 +29,9 @@
 use crate::charts::{Ray, TraceTermination, sphere_trace};
 use fs_ad::Real;
 use fs_ad::dual::Dual;
-use fs_evidence::NumericalCertificate;
+use fs_evidence::{NumericalCertificate, NumericalKind};
 use fs_exec::Cx;
+use fs_geom::fixtures::SphereChart;
 use fs_geom::{Aabb, Chart, ChartSample, Point3, TraceStepClaim, Vec3};
 
 /// Gradient width: two blended spheres (2 × (center, radius)) + blend.
@@ -148,6 +149,137 @@ struct BlendChart<'a> {
     scene: &'a BlendScene<f64>,
 }
 
+#[derive(Clone, Copy)]
+struct EvalInterval {
+    lo: f64,
+    hi: f64,
+}
+
+impl EvalInterval {
+    fn from_certificate(certificate: NumericalCertificate) -> Option<Self> {
+        matches!(
+            certificate.kind,
+            NumericalKind::Exact | NumericalKind::Enclosure
+        )
+        .then_some(Self {
+            lo: certificate.lo,
+            hi: certificate.hi,
+        })
+        .filter(|interval| {
+            interval.lo.is_finite() && interval.hi.is_finite() && interval.lo <= interval.hi
+        })
+    }
+
+    fn point(value: f64) -> Self {
+        Self {
+            lo: value,
+            hi: value,
+        }
+    }
+
+    fn outward(lo: f64, hi: f64) -> Self {
+        if lo.is_nan() || hi.is_nan() {
+            return Self {
+                lo: f64::NEG_INFINITY,
+                hi: f64::INFINITY,
+            };
+        }
+        Self {
+            lo: if lo.is_finite() { lo.next_down() } else { lo },
+            hi: if hi.is_finite() { hi.next_up() } else { hi },
+        }
+    }
+
+    fn sub(self, other: Self) -> Self {
+        Self::outward(self.lo - other.hi, self.hi - other.lo)
+    }
+
+    fn mul(self, other: Self) -> Self {
+        let products = [
+            self.lo * other.lo,
+            self.lo * other.hi,
+            self.hi * other.lo,
+            self.hi * other.hi,
+        ];
+        if products.iter().any(|value| value.is_nan()) {
+            return Self {
+                lo: f64::NEG_INFINITY,
+                hi: f64::INFINITY,
+            };
+        }
+        let lo = products.iter().copied().fold(f64::INFINITY, f64::min);
+        let hi = products.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        Self::outward(lo, hi)
+    }
+
+    fn div_positive(self, divisor: f64) -> Self {
+        Self::outward(self.lo / divisor, self.hi / divisor)
+    }
+
+    fn abs(self) -> Self {
+        if self.lo >= 0.0 {
+            self
+        } else if self.hi <= 0.0 {
+            Self {
+                lo: -self.hi,
+                hi: -self.lo,
+            }
+        } else {
+            Self {
+                lo: 0.0,
+                hi: self.hi.max(-self.lo),
+            }
+        }
+    }
+
+    fn max_zero(self) -> Self {
+        Self {
+            lo: self.lo.max(0.0),
+            hi: self.hi.max(0.0),
+        }
+    }
+
+    fn min(self, other: Self) -> Self {
+        Self {
+            lo: self.lo.min(other.lo),
+            hi: self.hi.min(other.hi),
+        }
+    }
+}
+
+fn blend_evaluation_enclosure(
+    scene: &BlendScene<f64>,
+    point: Point3,
+    cx: &Cx<'_>,
+    nominal: f64,
+) -> NumericalCertificate {
+    if !scene.k.is_finite() || scene.k <= 0.0 || !nominal.is_finite() {
+        return NumericalCertificate::no_claim();
+    }
+    let sphere = |center: [f64; 3], radius: f64| {
+        SphereChart {
+            center: Point3::new(center[0], center[1], center[2]),
+            radius,
+        }
+        .eval(point, cx)
+    };
+    let Some(a) = EvalInterval::from_certificate(sphere(scene.c1, scene.r1).error) else {
+        return NumericalCertificate::no_claim();
+    };
+    let Some(b) = EvalInterval::from_certificate(sphere(scene.c2, scene.r2).error) else {
+        return NumericalCertificate::no_claim();
+    };
+    let radius = EvalInterval::point(scene.k);
+    let h = radius.sub(a.sub(b).abs()).max_zero().div_positive(scene.k);
+    let correction = h.mul(h).mul(radius).mul(EvalInterval::point(0.25));
+    let result = a.min(b).sub(correction);
+    if result.lo.is_finite() && result.hi.is_finite() {
+        NumericalCertificate::enclosure(result.lo.min(nominal), result.hi.max(nominal))
+    } else {
+        NumericalCertificate::no_claim()
+    }
+}
+
 impl Chart for BlendChart<'_> {
     fn eval(&self, x: Point3, _cx: &Cx<'_>) -> ChartSample {
         let value = self.scene.phi([x.x, x.y, x.z]);
@@ -170,6 +302,9 @@ impl Chart for BlendChart<'_> {
             // A smooth minimum of 1-Lipschitz sphere fields has gradient
             // weights in their convex hull, hence remains 1-Lipschitz.
             lipschitz: Some(1.0),
+            // The smooth implicit value is not generally the Euclidean signed
+            // distance to the abstract region. Its separate trace enclosure
+            // below backs marching without strengthening this distance model.
             error: NumericalCertificate::estimate(value, value),
         }
     }
@@ -192,6 +327,15 @@ impl Chart for BlendChart<'_> {
 
     fn trace_step_claim(&self) -> TraceStepClaim {
         TraceStepClaim::LipschitzImplicit
+    }
+
+    fn trace_value_enclosure(
+        &self,
+        x: Point3,
+        sample: &ChartSample,
+        cx: &Cx<'_>,
+    ) -> NumericalCertificate {
+        blend_evaluation_enclosure(self.scene, x, cx, sample.signed_distance)
     }
 
     fn name(&self) -> &'static str {

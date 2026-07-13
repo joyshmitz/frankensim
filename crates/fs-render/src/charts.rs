@@ -2,9 +2,9 @@
 //! render any chart that supplies the typed theorem its production backend
 //! needs, WITHOUT conversion. No-claim charts remain direct-call previews and
 //! both their hits and misses are refused by production composition. Certified
-//! sphere tracing for SDF/F-rep charts (step
-//! sizes that PROVABLY never tunnel: within radius `|f(p)|/L` of `p`
-//! the field cannot change sign, by the certified Lipschitz bound —
+//! sphere tracing for SDF/F-rep charts (step sizes that PROVABLY never tunnel:
+//! the rigorous field enclosure's zero-nearest magnitude divided by certified
+//! `L` bounds a ball around `p` in which the field cannot change sign —
 //! the certificate machinery earning visual credibility), Bézier-seeded
 //! Newton intersection for NURBS patches, native triangle tracing over
 //! a deterministic median-split BVH, and mixed-chart scenes: one scene,
@@ -13,7 +13,7 @@
 //! An agent inspecting an F-rep mid-optimization sees the F-rep itself
 //! — the no-meshing-for-visualization doctrine.
 
-use fs_evidence::NumericalKind;
+use fs_evidence::{NumericalCertificate, NumericalKind};
 use fs_exec::{Cancelled, Cx};
 use fs_geom::{Chart, ChartSample, Point3, TraceStepClaim, Vec3};
 use fs_math::eft::two_sum;
@@ -22,7 +22,7 @@ use fs_rep_nurbs::NurbsSurface;
 /// Bit-affecting semantics of certified sphere tracing and scalar-BVH
 /// traversal. Downstream image goldens pin this surface separately from the
 /// spectral estimator so geometry changes cannot silently move image bytes.
-pub const CHART_BACKEND_BIT_SEMANTICS_VERSION: u32 = 2;
+pub const CHART_BACKEND_BIT_SEMANTICS_VERSION: u32 = 3;
 
 /// A ray with a finite, nonzero direction. The marcher converts certified
 /// physical step radii into this ray's parameter space; unit directions remain
@@ -109,10 +109,11 @@ impl TraceAudit {
 }
 
 /// CERTIFIED sphere tracing: an exact-distance chart steps within the lower
-/// magnitude of its exact or outward-rounded evaluation certificate; a
-/// Lipschitz-implicit chart steps within `|f(p)| / L` with `L` its certified
-/// bound. The sign cannot flip inside either theorem-backed radius, so the
-/// marcher can never cross (tunnel through) the surface.
+/// magnitude of its exact or outward-rounded distance certificate; a
+/// Lipschitz-implicit chart steps by the zero-nearest magnitude of its rigorous
+/// trace-field enclosure divided downward by certified `L`. The sign cannot
+/// flip inside either theorem-backed radius, so the marcher can never cross
+/// (tunnel through) the surface.
 /// Over-relaxation (`omega > 1`)
 /// accelerates marching with the standard certified fallback: if the
 /// relaxed sphere fails to overlap the previous safe sphere, the step
@@ -296,7 +297,20 @@ pub fn sphere_trace(
                 },
             );
         }
-        let Some(validated) = validate_trace_sample(&s, trace_claim) else {
+        let trace_value = chart.trace_value_enclosure(p, &s, cx);
+        if cx.checkpoint().is_err() {
+            return (
+                None,
+                TraceAudit {
+                    steps,
+                    worst_step_ratio: worst_ratio,
+                    certified: false,
+                    fallbacks,
+                    termination: TraceTermination::Cancelled,
+                },
+            );
+        }
+        let Some(validated) = validate_trace_sample(&s, trace_claim, trace_value) else {
             return (
                 None,
                 TraceAudit {
@@ -412,7 +426,21 @@ pub fn sphere_trace(
                         },
                     );
                 }
-                let Some(validated) = validate_trace_sample(&sample, trace_claim) else {
+                let trace_value = chart.trace_value_enclosure(boundary_point, &sample, cx);
+                if cx.checkpoint().is_err() {
+                    return (
+                        None,
+                        TraceAudit {
+                            steps,
+                            worst_step_ratio: worst_ratio,
+                            certified: false,
+                            fallbacks,
+                            termination: TraceTermination::Cancelled,
+                        },
+                    );
+                }
+                let Some(validated) = validate_trace_sample(&sample, trace_claim, trace_value)
+                else {
                     return (
                         None,
                         TraceAudit {
@@ -585,6 +613,7 @@ struct ValidatedTraceSample {
 fn validate_trace_sample(
     sample: &ChartSample,
     trace_claim: TraceStepClaim,
+    trace_value: NumericalCertificate,
 ) -> Option<ValidatedTraceSample> {
     let signed_distance = sample.signed_distance;
     if !signed_distance.is_finite() {
@@ -597,31 +626,31 @@ fn validate_trace_sample(
         None => return None,
     };
     if trace_claim != TraceStepClaim::NoClaim
-        && (!sample.error.lo.is_finite()
-            || !sample.error.hi.is_finite()
-            || sample.error.lo > signed_distance
-            || sample.error.hi < signed_distance)
+        && (!trace_value.lo.is_finite()
+            || !trace_value.hi.is_finite()
+            || trace_value.lo > signed_distance
+            || trace_value.hi < signed_distance)
     {
         return None;
     }
     let certified_bounds = if trace_claim != TraceStepClaim::NoClaim {
         if !matches!(
-            sample.error.kind,
+            trace_value.kind,
             NumericalKind::Exact | NumericalKind::Enclosure
-        ) || (sample.error.kind == NumericalKind::Exact
-            && (sample.error.lo != sample.error.hi || sample.error.lo != signed_distance))
+        ) || (trace_value.kind == NumericalKind::Exact
+            && (trace_value.lo != trace_value.hi || trace_value.lo != signed_distance))
             || (trace_claim == TraceStepClaim::ExactDistance && lipschitz < 1.0)
         {
             return None;
         }
-        let magnitude_lower = if sample.error.lo > 0.0 {
-            sample.error.lo
-        } else if sample.error.hi < 0.0 {
-            -sample.error.hi
+        let magnitude_lower = if trace_value.lo > 0.0 {
+            trace_value.lo
+        } else if trace_value.hi < 0.0 {
+            -trace_value.hi
         } else {
             0.0
         };
-        let magnitude_upper = sample.error.lo.abs().max(sample.error.hi.abs());
+        let magnitude_upper = trace_value.lo.abs().max(trace_value.hi.abs());
         Some((magnitude_lower, magnitude_upper))
     } else {
         None

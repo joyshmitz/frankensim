@@ -1140,8 +1140,7 @@ fn cached_pause_acknowledgement(
                 && completed.gate_binding == replay.gate_binding
                 && completed.acknowledgement_hash == replay.content_hash
         })
-        || inner.gate_generations.get(&request_id.session.0)
-            != Some(&replay.resume_generation)
+        || inner.gate_generations.get(&request_id.session.0) != Some(&replay.resume_generation)
         || replay.resume_generation != expected.resume_generation
         || replay.gate_binding != expected.gate_binding
         || replay.content_hash != expected.content_hash
@@ -1323,13 +1322,36 @@ impl Governor {
             });
         }
         let stored_receipt = decode_open_receipt(&terminal.receipt, self.id, open_id)?;
-        if stored_receipt.token_digest != capability_token_identity(&token)
+        let reconstructed_token_digest = capability_token_identity(&token);
+        if stored_receipt.token_digest != reconstructed_token_digest
             || stored_receipt.gate_identity != expected_gate_binding
         {
             return Err(SessionError::TerminalCorrupt {
                 kind: KIND_OPEN,
                 authority: open_id.content_hash,
                 detail: "open terminal token digest or gate binding does not verify".to_string(),
+            });
+        }
+        let reconstructed_receipt = SessionOpenReceipt {
+            open_id,
+            token_digest: reconstructed_token_digest,
+            gate_identity: expected_gate_binding,
+            permit: ScopeFlushPermit {
+                governor_id: self.id,
+                ledger_scope: token.ledger_scope.clone(),
+            },
+            content_hash: session_open_receipt_hash(
+                open_id,
+                reconstructed_token_digest,
+                expected_gate_binding,
+                &token.ledger_scope,
+            ),
+        };
+        if reconstructed_receipt != stored_receipt {
+            return Err(SessionError::TerminalCorrupt {
+                kind: KIND_OPEN,
+                authority: open_id.content_hash,
+                detail: "reconstructed open receipt differs from durable receipt".to_string(),
             });
         }
         let expected_event =
@@ -1445,11 +1467,30 @@ impl Governor {
                 })
             };
         }
-        let token = self.validate_meter_authority(&inner, report_id)?;
-        if token.ledger_scope != ledger_scope {
+        let token = inner.tokens.get(&report_id.session.0).cloned().ok_or(
+            SessionError::UnknownSession {
+                id: report_id.session.0,
+            },
+        )?;
+        if token.ledger_scope != ledger_scope
+            || Self::current_open_identity(&inner, report_id.session)? != report_id.session_open
+        {
             return Err(SessionError::MutationAuthorityMismatch {
                 kind: KIND_METER,
                 id: report_id.content_hash,
+            });
+        }
+        let current_generation = inner
+            .gate_generations
+            .get(&report_id.session.0)
+            .copied()
+            .unwrap_or(0);
+        if report_id.generation > current_generation {
+            return Err(SessionError::StaleMutationGeneration {
+                kind: KIND_METER,
+                id: report_id.session.0,
+                supplied: report_id.generation,
+                current: current_generation,
             });
         }
         let expected_ordinal =
@@ -1610,7 +1651,7 @@ impl Governor {
                         .get(&request_id.session.0)
                         .copied()
                         .unwrap_or(0);
-                    if current_generation != request_id.generation {
+                    if request_id.generation > current_generation {
                         return Err(SessionError::StaleMutationGeneration {
                             kind: KIND_SUBMISSION,
                             id: request_id.session.0,
@@ -1756,7 +1797,7 @@ impl Governor {
             .get(&request_id.session.0)
             .copied()
             .unwrap_or(0);
-        if current_generation != request_id.generation {
+        if request_id.generation > current_generation {
             return Err(SessionError::StaleMutationGeneration {
                 kind: KIND_SUBMISSION,
                 id: request_id.session.0,
@@ -1926,6 +1967,9 @@ impl Governor {
         action_id: PressureActionId,
         level: u8,
     ) -> Result<PressureReceipt, SessionError> {
+        if !(1..=3).contains(&level) {
+            return Err(SessionError::InvalidPressureLevel { level });
+        }
         if action_id.governor_id != self.id {
             return Err(SessionError::MutationAuthorityMismatch {
                 kind: KIND_PRESSURE,
@@ -2093,8 +2137,8 @@ impl Governor {
                 })?;
         if first_ordinal != expected_first
             || receipt.events.iter().enumerate().any(|(index, event)| {
-                event.ordinal
-                    != first_ordinal + i64::try_from(index).expect("bounded index fits i64")
+                first_ordinal.checked_add(i64::try_from(index).expect("bounded index fits i64"))
+                    != Some(event.ordinal)
             })
         {
             return Err(SessionError::TerminalCorrupt {
@@ -2179,9 +2223,7 @@ impl Governor {
                     id: action_id.session.0,
                 },
             )?;
-            if gate.is_requested()
-                || inner.gate_phases.get(&action_id.session.0) != Some(&GatePhase::Running)
-            {
+            if inner.gate_phases.get(&action_id.session.0) != Some(&GatePhase::Running) {
                 return Err(SessionError::SessionGateDraining {
                     id: action_id.session.0,
                     generation: action_id.generation,
@@ -2283,12 +2325,6 @@ impl Governor {
                 what: "pause recovery requires a non-empty checkpoint claim".to_string(),
             });
         }
-        if resume_gate.is_requested() {
-            return Err(SessionError::ResumeGateAlreadyRequested {
-                id: request_id.session.0,
-                generation: request_id.gate_generation.saturating_add(1),
-            });
-        }
         let authority = pause_ack_authority(request_id);
         let ledger_instance_id = self.recovery_ledger(ledger)?;
         let terminal = ledger
@@ -2325,6 +2361,12 @@ impl Governor {
             {
                 return Ok(replayed);
             }
+            if resume_gate.is_requested() {
+                return Err(SessionError::ResumeGateAlreadyRequested {
+                    id: request_id.session.0,
+                    generation: request_id.gate_generation.saturating_add(1),
+                });
+            }
             let token =
                 inner
                     .tokens
@@ -2354,6 +2396,22 @@ impl Governor {
                 action_receipt_hash,
             )
         };
+        if let Some(pending) = ledger
+            .pending_session_mutation(
+                self.id,
+                session_open,
+                KIND_SUBMISSION,
+                request_id.session.0,
+                &ledger_scope,
+                request_id.gate_generation,
+            )
+            .map_err(|error| ledger_error("recover pause Pending-claim probe", error))?
+        {
+            return Err(SessionError::IndeterminateMutation {
+                kind: KIND_SUBMISSION,
+                authority: pending.authority,
+            });
+        }
         let expected_event =
             buffered_degradation_event(&ledger_scope, &acknowledgement.event, action_receipt_hash)?;
         let expected_rows = [expected_event.as_row()];
@@ -2384,6 +2442,12 @@ impl Governor {
         {
             return Ok(replayed);
         }
+        if resume_gate.is_requested() {
+            return Err(SessionError::ResumeGateAlreadyRequested {
+                id: request_id.session.0,
+                generation: request_id.gate_generation.saturating_add(1),
+            });
+        }
         if inner
             .pending_submissions
             .get(&request_id.session.0)
@@ -2405,6 +2469,14 @@ impl Governor {
                 id: request_id.session.0,
                 requested_ordinal: request_id.requested_ordinal,
             })?;
+        if acknowledgement.event.pressure_action_id != Some(pending.pressure_action_id) {
+            return Err(SessionError::TerminalCorrupt {
+                kind: KIND_PAUSE_ACK,
+                authority,
+                detail: "pause completion names a different originating pressure action"
+                    .to_string(),
+            });
+        }
         let old_gate =
             inner
                 .gates

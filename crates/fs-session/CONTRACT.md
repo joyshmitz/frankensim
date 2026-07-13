@@ -250,6 +250,21 @@ Consumers: the P2 marquee demo, the HELM e2e suite (gp3.11).
   live schema before every authority-bearing flush;
   aliases and moved handles remain the same sink, while a replacement file at
   the same path or independent memory ledger is refused before writes.
+- `recover_open`, `recover_meter`, `recover_submission`, `recover_pressure`,
+  `recover_pause_acknowledgement`, and `recover_resume_activation` rebuild one
+  authenticated typed terminal at a time without dirtying a flush cursor.
+  Open state is recovered first. Meter and successful-submission receipts must
+  be installed in their contiguous global meter-commit order, but an
+  authenticated terminal from an older gate generation remains recoverable
+  after lifecycle recovery advances the current gate. Degradation and pause
+  terminals form one dense global event-ordinal prefix, so skipped or
+  interleaved actions refuse before mutation. Before rotating a recovered
+  pause, fs-session performs an indexed, one-row bounded ledger probe for any
+  unterminated submission claim in the draining generation; finding one
+  returns `IndeterminateMutation`. Exact cached acknowledgement/activation
+  replay requires the current completed generation and exact process-local
+  gate `Arc`, while a prior activation remains replayable after the next L3
+  request asks that still-current gate to drain.
 - Deterministic hard caps bound retained governor state and public
   materialization: 4,096 sessions/governor, 1,024 sessions/scope, 4,096
   submission keys/session, 8,192 meter reports/session, 4,096 pressure

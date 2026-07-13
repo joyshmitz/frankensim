@@ -265,22 +265,24 @@ pub enum TraceStepClaim {
     ExactDistance,
     /// The field has the exact sign and zero set of the represented region;
     /// each sample's positive finite Lipschitz bound is certified over the
-    /// entire closed `|f| / L` step ball, making that radius safe even when
-    /// the magnitude is not the exact distance.
+    /// entire closed `|f| / L` step ball. [`Chart::trace_value_enclosure`]
+    /// encloses the real implicit-field evaluation used for that step, making
+    /// the radius safe even when the magnitude is not the exact distance.
     LipschitzImplicit,
 }
 
-/// One signed-distance query's answer (plan Appendix B: value + gradient +
-/// certified Lipschitz data + the declared error model).
+/// One signed-field query's answer (plan Appendix B: value + gradient +
+/// certified Lipschitz data + the declared abstract-distance error model).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ChartSample {
-    /// Signed distance to the region boundary (negative inside — the SDF
-    /// convention every chart maps onto, whatever its native form).
+    /// Signed scalar representative of the region (negative inside). It is the
+    /// Euclidean signed distance only under [`TraceStepClaim::ExactDistance`];
+    /// a Lipschitz-implicit chart preserves sign and the zero set instead.
     pub signed_distance: f64,
-    /// Gradient of the signed distance where it exists (`None` on medial
-    /// axis/edges or for C0 charts).
+    /// Gradient of the reported scalar field where it exists (`None` on medial
+    /// axes/edges or for C0 charts).
     pub gradient: Option<Vec3>,
-    /// Certified LOCAL Lipschitz bound for the signed distance near the
+    /// Certified LOCAL Lipschitz bound for the reported scalar field near the
     /// query (sphere-tracing fuel; `None` = no claim). A chart opting into
     /// [`TraceStepClaim::LipschitzImplicit`] strengthens this to validity over
     /// the entire closed step ball specified by that claim.
@@ -307,6 +309,27 @@ pub trait Chart: Send + Sync {
     /// sample does not upgrade the default no-claim.
     fn trace_step_claim(&self) -> TraceStepClaim {
         TraceStepClaim::NoClaim
+    }
+
+    /// Rigorous enclosure of the real scalar field used by the typed trace
+    /// theorem at `x`. This is distinct from [`ChartSample::error`], which is
+    /// relative to the abstract region's signed distance and therefore may be
+    /// only an `Estimate` for a non-distance implicit field.
+    ///
+    /// Exact-distance charts inherit their sample's distance certificate.
+    /// Lipschitz-implicit charts must override this method; the default refuses
+    /// to promote a rounded field value into a certified trace step.
+    fn trace_value_enclosure(
+        &self,
+        _x: Point3,
+        sample: &ChartSample,
+        _cx: &Cx<'_>,
+    ) -> NumericalCertificate {
+        if self.trace_step_claim() == TraceStepClaim::ExactDistance {
+            sample.error
+        } else {
+            NumericalCertificate::no_claim()
+        }
     }
 
     /// Topology bounds this chart is willing to state.

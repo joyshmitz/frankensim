@@ -13,7 +13,7 @@
 {"id": "fs-fft:transform-bits", "file": "crates/fs-fft/src/lib.rs", "const": "TRANSFORM_BIT_SEMANTICS_VERSION", "version": 1},
 {"id": "fs-lbm:d3q19-bits", "file": "crates/fs-lbm/src/d3q19.rs", "const": "D3Q19_BIT_SEMANTICS_VERSION", "version": 1},
 {"id": "fs-render:tracer-bits", "file": "crates/fs-render/src/tracer.rs", "const": "TRACER_BIT_SEMANTICS_VERSION", "version": 1},
-{"id": "fs-render:chart-backend-bits", "file": "crates/fs-render/src/charts.rs", "const": "CHART_BACKEND_BIT_SEMANTICS_VERSION", "version": 2}
+{"id": "fs-render:chart-backend-bits", "file": "crates/fs-render/src/charts.rs", "const": "CHART_BACKEND_BIT_SEMANTICS_VERSION", "version": 3}
 ],
 "goldens": [
 {"golden": "fs-la:rand-nla", "file": "crates/fs-la/tests/rand_nla_battery.rs", "const": "GOLDEN_HASH", "depends_on": "fs-rand:stream-semantics=1,fs-la:factor-bits=1,fs-la:gemm-bits=1", "justification": "0xeef1_0550_7daf_c0d5 frozen 2026-07-09 after the powi build-mode fix (bead 4xnt); verified four quadrants (debug+release x aarch64+x86-64) at the committed tree. HISTORY: the 2026-07-09 re-pin to f3dcb63b wrongly blamed fs-rand d9ba0b6 (u64::MAX-boundary-only change) - the mover was optimization-dependent f64::powi in the fixture; that incident motivated this registry."},

@@ -25,12 +25,14 @@
 //! Boolean composites likewise downgrade magnitude exactness. Every valid node
 //! preserves its recorded Lipschitz composition rule and vanishes on its own
 //! region's boundary — hence
-//! `|f(p)| ≤ dist(p, ∂Ω)` with the EXACT sign. That one-sided conservative
+//! `|f(p)| / L ≤ dist(p, ∂Ω)` with the EXACT sign. That normalized one-sided
 //! bound is precisely the sphere-tracing safety contract; the magnitude
 //! is NOT the exact distance once a Boolean or erosion is involved, so
-//! composite samples still carry rigorous outward evaluation enclosures.
-//! Primitive paths proven by `is_exact` retain the exact-distance theorem, but
-//! likewise publish enclosures rather than false binary64 singletons.
+//! composite samples therefore retain an `Estimate` relative to abstract
+//! Euclidean distance. A separate `trace_value_enclosure` rigorously encloses
+//! the rounded implicit-field evaluation used for marching. Primitive paths
+//! proven by `is_exact` retain the exact-distance theorem and publish that
+//! enclosure directly as their abstract-distance certificate.
 
 mod ival;
 
@@ -473,11 +475,7 @@ fn vector_norm_upper(vector: Vec3) -> f64 {
     if !finite_vec(vector) {
         return f64::INFINITY;
     }
-    add_upper(
-        add_upper(vector.x.abs(), vector.y.abs()),
-        vector.z.abs(),
-    )
-    .max(1.0)
+    add_upper(add_upper(vector.x.abs(), vector.y.abs()), vector.z.abs()).max(1.0)
 }
 
 /// Operator-norm upper bound for Rodrigues:
@@ -723,9 +721,10 @@ impl Frep {
     }
 
     /// Composed Lipschitz bound of the field (valid everywhere; frep-002
-    /// hunts for violations). Primitive fields are unit-Lipschitz; rigid
-    /// motions, uniform scale, offsets, and both Boolean styles all
-    /// preserve `L ≤ max(L_children)` (the blend's weights are convex).
+    /// hunts for violations). Distance primitives are unit-Lipschitz; generic
+    /// normalized half-spaces and Rodrigues transforms use explicit upper
+    /// bounds. Uniform scale, offsets, and both Boolean styles preserve their
+    /// child bounds (the blend's weights are convex).
     #[must_use]
     pub fn lipschitz(&self) -> f64 {
         self.lipschitz_of(self.root)
@@ -769,6 +768,7 @@ impl Frep {
         self.is_exact_at(self.root)
     }
 
+    #[allow(clippy::float_cmp)] // Exact identity rotation is the sole rotation promoted here.
     fn is_exact_at(&self, id: NodeId) -> bool {
         match self.nodes[id.0 as usize] {
             Node::Sphere { center, radius } | Node::Cylinder { center, radius } => {
@@ -795,14 +795,10 @@ impl Frep {
                     && major > minor
                     && minor > 0.0
             }
-            Node::Translate { child, offset } => {
-                finite_vec(offset) && self.is_exact_at(child)
+            Node::Translate { child, offset } => finite_vec(offset) && self.is_exact_at(child),
+            Node::Rotate { child, axis, angle } => {
+                angle == 0.0 && finite_vec(axis) && self.is_exact_at(child)
             }
-            Node::Rotate {
-                child,
-                axis,
-                angle,
-            } => angle == 0.0 && finite_vec(axis) && self.is_exact_at(child),
             Node::Scale { child, factor } => {
                 factor.is_finite() && factor > 0.0 && self.is_exact_at(child)
             }
@@ -1127,28 +1123,35 @@ fn write_slot(node: &mut Node, node_ix: u32, slot: u8, value: f64) -> Result<(),
     Ok(())
 }
 
+impl Frep {
+    fn evaluation_enclosure(&self, x: Point3, nominal: f64) -> NumericalCertificate {
+        if !nominal.is_finite() || !x.x.is_finite() || !x.y.is_finite() || !x.z.is_finite() {
+            return NumericalCertificate::no_claim();
+        }
+        let (lo, hi) = self.interval(&Aabb::new(x, x));
+        if lo.is_finite() && hi.is_finite() && lo <= hi {
+            NumericalCertificate::enclosure(lo.min(nominal), hi.max(nominal))
+        } else {
+            NumericalCertificate::no_claim()
+        }
+    }
+}
+
 impl Chart for Frep {
     fn eval(&self, x: Point3, _cx: &Cx<'_>) -> ChartSample {
         let (f, gradient) = self.value_grad(x);
-        let evaluation_enclosure = || {
-            if !f.is_finite() || !x.x.is_finite() || !x.y.is_finite() || !x.z.is_finite() {
-                return NumericalCertificate::no_claim();
-            }
-            let (lo, hi) = self.interval(&Aabb::new(x, x));
-            if lo.is_finite() && hi.is_finite() && lo <= hi {
-                NumericalCertificate::enclosure(lo.min(f), hi.max(f))
-            } else {
-                NumericalCertificate::no_claim()
-            }
-        };
         ChartSample {
             signed_distance: f,
             gradient,
             lipschitz: Some(self.lipschitz()),
-            // Exact-distance and Lipschitz-implicit fields both need a rigorous
-            // enclosure of the real point evaluation. A rounded estimate cannot
-            // back a certified no-tunneling step.
-            error: evaluation_enclosure(),
+            // The public distance certificate remains relative to the abstract
+            // region. A composite implicit field is not the Euclidean signed
+            // distance even though its separate trace evaluation is rigorous.
+            error: if self.is_exact() {
+                self.evaluation_enclosure(x, f)
+            } else {
+                NumericalCertificate::estimate(f, f)
+            },
         }
     }
 
@@ -1162,6 +1165,15 @@ impl Chart for Frep {
         } else {
             TraceStepClaim::LipschitzImplicit
         }
+    }
+
+    fn trace_value_enclosure(
+        &self,
+        x: Point3,
+        sample: &ChartSample,
+        _cx: &Cx<'_>,
+    ) -> NumericalCertificate {
+        self.evaluation_enclosure(x, sample.signed_distance)
     }
 
     fn topology_hint(&self) -> BettiBounds {

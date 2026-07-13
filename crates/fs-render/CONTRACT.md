@@ -29,11 +29,13 @@ differentiable lift). Pure Rust throughout.
   `chart-backends`): render charts that opt into a typed trace theorem, WITHOUT
   conversion; other chart types remain explicit no-claim previews until they
   supply the theorem their error model needs.
-  `sphere_trace` steps within the endpoint closest to zero of an exact or
-  outward-rounded evaluation certificate for `ExactDistance` claims, and within
-  `|f(p)|/L` for `LipschitzImplicit` claims with the chart's CERTIFIED bound —
-  the sign cannot flip inside either radius, so the marcher provably never
-  tunnels (audited: `TraceAudit.worst_step_ratio`);
+  `sphere_trace` steps within the endpoint closest to zero of a rigorous trace
+  evaluation enclosure: for `ExactDistance` this defaults to the sample's
+  abstract-distance certificate; for `LipschitzImplicit` the chart must supply a
+  separate `trace_value_enclosure` of its real implicit field, whose zero-nearest
+  magnitude is divided outward by the chart's CERTIFIED `L`. The sign cannot
+  flip inside either radius, so the marcher provably never tunnels (audited:
+  `TraceAudit.worst_step_ratio`);
   over-relaxation uses the standard certified fallback (retreat when
   spheres fail to overlap). `ray_intersect_nurbs` is grid-seeded 3×3
   Newton on `S(u,v) − o − t·d` with the `[S_u, S_v, −d]` Jacobian.
@@ -48,10 +50,10 @@ differentiable lift). Pure Rust throughout.
   epsilon-clear safe-ball bridge across any coordinate-rounding gap. Normalized
   working parameters size steps, but every chart and overlap evaluation uses
   the caller ray's own `Ray::at` arithmetic so a certificate is never returned
-  for a numerically different point. This is chart-backend bit-semantics v2.
+  for a numerically different point. This is chart-backend bit-semantics v3.
   `TraceAudit`
   states whether every marched sample supplied a positive finite certified
-  bound and compatible finite numerical certificate, counts retreats to the
+  bound and compatible rigorous trace-value certificate, counts retreats to the
   safe endpoint, and
   distinguishes hit, clean miss, step-limit, invalid-input, and invalid-sample
   termination. Returned chart gradients are normalized before becoming hit
@@ -228,8 +230,10 @@ its prior 872c freeze was four-quadrant, and 8ll9 requires current-tree replay.
 
 - The tunneling guarantee holds only when a chart opts into
   `TraceStepClaim::{ExactDistance,LipschitzImplicit}` and every sample supplies
-  a positive finite Lipschitz bound plus a compatible finite numerical
-  certificate. Charts using the default `NoClaim` may retain an `L = 1` preview
+  a positive finite Lipschitz bound plus a compatible `Exact` or `Enclosure`
+  trace-value certificate containing the reported field value. An `Estimate`
+  in `ChartSample.error` remains valid abstract-distance honesty, but it cannot
+  substitute for that trace certificate. Charts using the default `NoClaim` may retain an `L = 1` preview
   fallback, but `TraceAudit::certified` is false and production render paths
   reject every terminal result from that trace, including a miss. Malformed
   claims stop as `InvalidSample`.

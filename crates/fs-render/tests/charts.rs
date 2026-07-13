@@ -104,6 +104,7 @@ struct SampleOverrideChart {
     distance: f64,
     lipschitz: Option<f64>,
     trace_claim: TraceStepClaim,
+    rigorous: bool,
 }
 
 impl Chart for SampleOverrideChart {
@@ -122,6 +123,19 @@ impl Chart for SampleOverrideChart {
 
     fn trace_step_claim(&self) -> TraceStepClaim {
         self.trace_claim
+    }
+
+    fn trace_value_enclosure(
+        &self,
+        _x: Point3,
+        _sample: &ChartSample,
+        _cx: &Cx<'_>,
+    ) -> NumericalCertificate {
+        if self.rigorous && self.distance.is_finite() {
+            NumericalCertificate::enclosure(self.distance.next_down(), self.distance.next_up())
+        } else {
+            NumericalCertificate::estimate(self.distance, self.distance)
+        }
     }
 
     fn name(&self) -> &'static str {
@@ -144,11 +158,16 @@ impl Chart for ScaledChart {
         let mut sample = self.inner.eval(x, cx);
         sample.signed_distance *= self.scale;
         sample.gradient = sample.gradient.map(|gradient| gradient.scale(self.scale));
-        sample.lipschitz = self
-            .publish_bound
-            .then(|| sample.lipschitz.expect("F-rep publishes a bound") * self.scale);
-        sample.error.lo *= self.scale;
-        sample.error.hi *= self.scale;
+        sample.lipschitz = self.publish_bound.then(|| {
+            let bound = sample.lipschitz.expect("F-rep publishes a bound") * self.scale;
+            if bound.is_finite() {
+                bound.next_up()
+            } else {
+                bound
+            }
+        });
+        sample.error =
+            NumericalCertificate::estimate(sample.signed_distance, sample.signed_distance);
         sample
     }
 
@@ -158,6 +177,33 @@ impl Chart for ScaledChart {
 
     fn trace_step_claim(&self) -> TraceStepClaim {
         self.trace_claim
+    }
+
+    fn trace_value_enclosure(
+        &self,
+        x: Point3,
+        sample: &ChartSample,
+        cx: &Cx<'_>,
+    ) -> NumericalCertificate {
+        if !self.scale.is_finite() || self.scale <= 0.0 {
+            return NumericalCertificate::no_claim();
+        }
+        let inner_sample = self.inner.eval(x, cx);
+        let inner = self.inner.trace_value_enclosure(x, &inner_sample, cx);
+        if !matches!(inner.kind, NumericalKind::Exact | NumericalKind::Enclosure)
+            || !inner.lo.is_finite()
+            || !inner.hi.is_finite()
+        {
+            return NumericalCertificate::no_claim();
+        }
+        NumericalCertificate::enclosure(
+            (inner.lo * self.scale)
+                .next_down()
+                .min(sample.signed_distance),
+            (inner.hi * self.scale)
+                .next_up()
+                .max(sample.signed_distance),
+        )
     }
 
     fn name(&self) -> &'static str {
@@ -343,7 +389,7 @@ fn oracle_first_hit(chart: &dyn Chart, cx: &Cx<'_>, ray: &Ray, t_max: f64) -> Op
 #[test]
 fn rb_001_zero_tunneling_headline() {
     with_cx(|cx| {
-        assert_eq!(CHART_BACKEND_BIT_SEMANTICS_VERSION, 2);
+        assert_eq!(CHART_BACKEND_BIT_SEMANTICS_VERSION, 3);
         // Falsifier pairing: four thin-feature fields whose L > 1. The naive
         // unit-bound marcher tunnels in every case; the certified d/L path
         // reaches the first surface.
@@ -529,6 +575,7 @@ fn rb_001b_trace_audit_states_fail_closed() {
             distance: 1.0,
             lipschitz: Some(0.0),
             trace_claim: TraceStepClaim::LipschitzImplicit,
+            rigorous: true,
         };
         let (_, invalid_sample) = sphere_trace(&invalid_chart, cx, &ray, 6.0, 1e-6, 1.0);
         assert_eq!(invalid_sample.termination, TraceTermination::InvalidSample);
@@ -539,6 +586,7 @@ fn rb_001b_trace_audit_states_fail_closed() {
             distance: 1.0,
             lipschitz: Some(1.0),
             trace_claim: TraceStepClaim::ExactDistance,
+            rigorous: false,
         };
         let (_, estimated_exact_audit) = sphere_trace(&estimated_exact, cx, &ray, 6.0, 1e-6, 1.0);
         assert_eq!(
@@ -548,11 +596,28 @@ fn rb_001b_trace_audit_states_fail_closed() {
         );
         assert!(!estimated_exact_audit.certified);
 
+        let estimated_lipschitz = SampleOverrideChart {
+            inner: thin_shell(),
+            distance: 1.0,
+            lipschitz: Some(1.0),
+            trace_claim: TraceStepClaim::LipschitzImplicit,
+            rigorous: false,
+        };
+        let (_, estimated_lipschitz_audit) =
+            sphere_trace(&estimated_lipschitz, cx, &ray, 6.0, 1e-6, 1.0);
+        assert_eq!(
+            estimated_lipschitz_audit.termination,
+            TraceTermination::InvalidSample,
+            "a Lipschitz theorem cannot promote an estimated rounded evaluation"
+        );
+        assert!(!estimated_lipschitz_audit.certified);
+
         let slow_chart = SampleOverrideChart {
             inner: thin_shell(),
             distance: 1e-12,
             lipschitz: Some(1.0),
             trace_claim: TraceStepClaim::LipschitzImplicit,
+            rigorous: true,
         };
         let (_, limited) = sphere_trace(&slow_chart, cx, &ray, 1.0, 1e-15, 1.0);
         assert_eq!(limited.termination, TraceTermination::StepLimit);
@@ -571,6 +636,7 @@ fn rb_001b_trace_audit_states_fail_closed() {
             distance: f64::from_bits(1),
             lipschitz: Some(1e-300),
             trace_claim: TraceStepClaim::LipschitzImplicit,
+            rigorous: true,
         };
         let (subnormal_hit, subnormal_audit) =
             sphere_trace(&subnormal_chart, cx, &ray, 1.0, 1e-30, 1.0);
@@ -586,6 +652,7 @@ fn rb_001b_trace_audit_states_fail_closed() {
             distance: 1.0,
             lipschitz: Some(1.0),
             trace_claim: TraceStepClaim::NoClaim,
+            rigorous: false,
         };
         let (_, declared_only_audit) = sphere_trace(&declared_only, cx, &ray, 2.0, 1e-6, 1.0);
         assert!(
@@ -841,9 +908,13 @@ fn rb_001c_scale_direction_and_touching_spheres_are_conservative() {
             minor: 1.0,
         };
         assert_eq!(horn.trace_step_claim(), TraceStepClaim::LipschitzImplicit);
+        let horn_point = Point3::new(0.0, 0.0, 1e-3);
+        let horn_sample = horn.eval(horn_point, cx);
+        assert_eq!(horn_sample.error.kind, NumericalKind::Estimate);
         assert_eq!(
-            horn.eval(Point3::new(0.0, 0.0, 1e-3), cx).error.kind,
-            NumericalKind::Estimate
+            horn.trace_value_enclosure(horn_point, &horn_sample, cx)
+                .kind,
+            NumericalKind::Enclosure
         );
         let mut offset_builder = FrepBuilder::new();
         let base = offset_builder

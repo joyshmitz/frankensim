@@ -2799,7 +2799,7 @@ impl Governor {
                 id: request_id.content_hash,
             });
         }
-        let (open_id, token, gate) = {
+        let (open_id, token, gate, historical_generation) = {
             let inner = self.inner.lock().expect("governor lock");
             let open_id = inner
                 .session_open_ids
@@ -2825,7 +2825,7 @@ impl Governor {
                 .get(&request_id.session.0)
                 .copied()
                 .unwrap_or(0);
-            if current_generation != request_id.generation {
+            if request_id.generation > current_generation {
                 return Err(SessionError::StaleMutationGeneration {
                     kind: recovery::KIND_SUBMISSION,
                     id: request_id.session.0,
@@ -2840,9 +2840,13 @@ impl Governor {
                     .open_requests
                     .get(&open_id)
                     .and_then(|replay| replay.gate.clone()),
+                request_id.generation < current_generation,
             )
         };
         self.recover_open(ledger, open_id, token, gate)?;
+        if historical_generation {
+            return self.recover_submission(ledger, request_id, canonical_program);
+        }
         self.submit_once_inner(
             request_id,
             Some((ledger, ledger_instance_id, canonical_program)),
@@ -6282,6 +6286,222 @@ mod tests {
         assert_eq!(ledger.table_count("session_claims").unwrap(), 2);
         assert_eq!(ledger.table_count("session_terminals").unwrap(), 1);
         assert_eq!(ledger.table_count("events").unwrap(), 1);
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // Constructs a crash-only Pending/L3 combination across a real reopen.
+    fn recovered_pause_refuses_while_draining_generation_has_a_durable_pending_claim() {
+        let path = durable_test_ledger_path("pending-pause");
+        let nonce = DurableGovernorNonce::from_bytes([0x63; 32]);
+        let ledger = fs_ledger::Ledger::open(&path).expect("on-disk ledger");
+        let governor = super::Governor::new_durable(&ledger, nonce).expect("durable governor");
+        let session = SessionId(953);
+        let token = test_token(session.0, "durable-pending-pause");
+        let initial_gate = Arc::new(CancelGate::new());
+        let open_id = governor
+            .session_open_id(session, "durable-open")
+            .expect("open authority");
+        let open_receipt = governor
+            .open_session_gated(open_id, token.clone(), Arc::clone(&initial_gate))
+            .expect("gated open");
+        let permit = open_receipt.flush_permit();
+        governor
+            .flush_scope_to_ledger(&permit, &ledger)
+            .expect("open prerequisite terminal");
+        let request_id = governor
+            .submission_request_id(session, "pending-slot", "pending-program")
+            .expect("submission authority");
+        let payload = recovery::encode_submission_payload(request_id);
+        let claim = fs_ledger::session_registry::SessionMutationClaim {
+            authority: request_id.content_hash,
+            ledger_instance_id: ledger.checked_instance_id().expect("ledger identity"),
+            governor_hash: governor.id,
+            session_open_hash: request_id.session_open,
+            kind: recovery::KIND_SUBMISSION,
+            session: session.0,
+            ledger_scope: &token.ledger_scope,
+            generation: request_id.generation,
+            causal_ordinal: None,
+            payload: &payload,
+        };
+        assert!(matches!(
+            ledger
+                .claim_session_mutation(&claim)
+                .expect("crash-only Pending claim"),
+            fs_ledger::session_registry::SessionMutationClaimResult::Claimed { .. }
+        ));
+        let action_id = governor
+            .pressure_action_id(session, "pause-action")
+            .expect("pressure authority");
+        let pressure = governor
+            .apply_memory_pressure(action_id, 3)
+            .expect("pause request");
+        let pause_request = pressure
+            .events()
+            .iter()
+            .find_map(|event| event.pause_request_id)
+            .expect("pause request authority");
+        let _acknowledgement = governor
+            .acknowledge_pause(pause_request, "checkpoint-after-unknown-work")
+            .expect("fixture terminal acknowledgement");
+        governor
+            .flush_scope_to_ledger(&permit, &ledger)
+            .expect("persist pressure and acknowledgement terminals");
+        drop(governor);
+        drop(ledger);
+
+        let ledger = fs_ledger::Ledger::open(&path).expect("reopened ledger");
+        let governor = super::Governor::new_durable(&ledger, nonce).expect("reopened governor");
+        let recovered_initial_gate = Arc::new(CancelGate::new());
+        governor
+            .recover_open(
+                &ledger,
+                open_id,
+                token,
+                Some(Arc::clone(&recovered_initial_gate)),
+            )
+            .expect("recover open");
+        governor
+            .recover_pressure(&ledger, action_id, 3)
+            .expect("recover pause request");
+        let before = {
+            let inner = governor.inner.lock().expect("governor lock");
+            (
+                inner.gate_generations[&session.0],
+                inner.gate_phases[&session.0],
+                inner.next_ordinal,
+                inner.reserved_pause_ordinals,
+                inner.scopes["durable-pending-pause"].reserved_pause_completions,
+                inner.scopes["durable-pending-pause"].events.len(),
+                inner.retained_bytes,
+            )
+        };
+        assert!(matches!(
+            governor.recover_pause_acknowledgement(
+                &ledger,
+                pause_request,
+                "checkpoint-after-unknown-work",
+                Arc::new(CancelGate::new()),
+            ),
+            Err(SessionError::IndeterminateMutation {
+                kind: recovery::KIND_SUBMISSION,
+                authority,
+            }) if authority == request_id.content_hash
+        ));
+        let after = {
+            let inner = governor.inner.lock().expect("governor lock");
+            (
+                inner.gate_generations[&session.0],
+                inner.gate_phases[&session.0],
+                inner.next_ordinal,
+                inner.reserved_pause_ordinals,
+                inner.scopes["durable-pending-pause"].reserved_pause_completions,
+                inner.scopes["durable-pending-pause"].events.len(),
+                inner.retained_bytes,
+            )
+        };
+        assert_eq!(after, before);
+        assert!(recovered_initial_gate.is_requested());
+        assert_eq!(ledger.table_count("session_terminals").unwrap(), 3);
+        assert_eq!(ledger.table_count("events").unwrap(), 5);
+    }
+
+    #[test]
+    fn future_and_truncated_terminal_codecs_fail_before_recovery_mutation() {
+        let ledger = fs_ledger::Ledger::open(":memory:").expect("fixture ledger");
+        let governor = super::Governor::new_durable(
+            &ledger,
+            DurableGovernorNonce::from_bytes([0x79; 32]),
+        )
+        .expect("durable governor");
+        let session = SessionId(954);
+        let token = test_token(session.0, "codec-refusal");
+        let open_id = governor
+            .session_open_id(session, "codec-open")
+            .expect("open authority");
+        let open_receipt = governor
+            .open_session(open_id, token.clone())
+            .expect("open session");
+        governor
+            .flush_scope_to_ledger(&open_receipt.flush_permit(), &ledger)
+            .expect("durable open prerequisite");
+        let delta = Charge {
+            core_s: 1.0,
+            ..Charge::default()
+        };
+        let future_id = governor
+            .meter_report_id(session, "future-codec")
+            .expect("future authority");
+        let truncated_id = governor
+            .meter_report_id(session, "truncated-codec")
+            .expect("truncated authority");
+        for (report_id, receipt) in [
+            (future_id, 2_u32.to_le_bytes().to_vec()),
+            (truncated_id, vec![1, 0]),
+        ] {
+            let payload = recovery::encode_meter_payload(delta);
+            let claim = fs_ledger::session_registry::SessionMutationClaim {
+                authority: report_id.content_hash,
+                ledger_instance_id: ledger.checked_instance_id().expect("ledger identity"),
+                governor_hash: governor.id,
+                session_open_hash: report_id.session_open,
+                kind: recovery::KIND_METER,
+                session: session.0,
+                ledger_scope: &token.ledger_scope,
+                generation: report_id.generation,
+                causal_ordinal: Some(1),
+                payload: &payload,
+            };
+            let group = fs_ledger::session_registry::SessionTerminalGroup {
+                terminal: fs_ledger::session_registry::SessionTerminalRow {
+                    claim,
+                    permit: None,
+                    receipt: &receipt,
+                },
+                events: &[],
+            };
+            let groups = [group];
+            ledger
+                .append_session_terminal_batch(
+                    &fs_ledger::session_registry::SessionTerminalBatch { groups: &groups },
+                )
+                .expect("store structurally bounded hostile codec");
+        }
+        let before = {
+            let inner = governor.inner.lock().expect("governor lock");
+            (
+                inner.next_meter_commit_ordinal,
+                inner.meter_reports.len(),
+                inner.meter_report_ids[&session.0].len(),
+                inner.meters[&session.0].snapshot(),
+                inner.retained_bytes,
+            )
+        };
+        assert_eq!(
+            governor.recover_meter(&ledger, future_id, delta),
+            Err(SessionError::UnsupportedTerminalSchema {
+                found: 2,
+                supported: recovery::TERMINAL_SCHEMA_VERSION,
+            })
+        );
+        assert!(matches!(
+            governor.recover_meter(&ledger, truncated_id, delta),
+            Err(SessionError::TerminalCorrupt {
+                kind: recovery::KIND_METER,
+                ..
+            })
+        ));
+        let after = {
+            let inner = governor.inner.lock().expect("governor lock");
+            (
+                inner.next_meter_commit_ordinal,
+                inner.meter_reports.len(),
+                inner.meter_report_ids[&session.0].len(),
+                inner.meters[&session.0].snapshot(),
+                inner.retained_bytes,
+            )
+        };
+        assert_eq!(after, before);
     }
 
     #[test]

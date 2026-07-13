@@ -1,8 +1,8 @@
 //! The auto-derived INTERVAL evaluator: `Frep::interval(box)` returns a
 //! range guaranteed to contain `f(p)` for every `p` in the box (the G0
-//! containment law, frep-001). Per-node inclusion rules — exact for
-//! spheres/half-spaces, conservative interval arithmetic elsewhere;
-//! transforms map the box (a rotated box is covered by its corner AABB).
+//! containment law, frep-001). Every primitive and transform uses conservative
+//! outward interval arithmetic. Rotations enclose Rodrigues directly; they do
+//! not rely on a rounded corner AABB or a platform-libm ULP assumption.
 //! Booleans use monotonicity: `min`/`smin` are nondecreasing in both
 //! arguments, so endpoint evaluation is an inclusion. The minimal local
 //! interval kit rounds every arithmetic endpoint outward; unification with

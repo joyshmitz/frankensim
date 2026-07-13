@@ -251,10 +251,7 @@ pub struct TorusChart {
 
 impl TorusChart {
     fn has_lipschitz_field(&self) -> bool {
-        self.major.is_finite()
-            && self.minor.is_finite()
-            && self.major > 0.0
-            && self.minor > 0.0
+        self.major.is_finite() && self.minor.is_finite() && self.major > 0.0 && self.minor > 0.0
     }
 
     fn is_exact_distance(&self) -> bool {
@@ -271,8 +268,10 @@ impl Chart for TorusChart {
             signed_distance: sd,
             gradient: None, // analytic gradient lands with rep-frep
             lipschitz: Some(1.0),
-            error: if self.has_lipschitz_field() {
+            error: if self.is_exact_distance() {
                 torus_distance_enclosure(x, self.center, self.major, self.minor, sd)
+            } else if self.has_lipschitz_field() {
+                NumericalCertificate::estimate(sd, sd)
             } else {
                 NumericalCertificate::no_claim()
             },
@@ -294,6 +293,25 @@ impl Chart for TorusChart {
             TraceStepClaim::LipschitzImplicit
         } else {
             TraceStepClaim::NoClaim
+        }
+    }
+
+    fn trace_value_enclosure(
+        &self,
+        x: Point3,
+        sample: &ChartSample,
+        _cx: &Cx<'_>,
+    ) -> NumericalCertificate {
+        if self.has_lipschitz_field() {
+            torus_distance_enclosure(
+                x,
+                self.center,
+                self.major,
+                self.minor,
+                sample.signed_distance,
+            )
+        } else {
+            NumericalCertificate::no_claim()
         }
     }
 
@@ -423,6 +441,9 @@ mod tests {
             assert_eq!(sample.error.kind, fs_evidence::NumericalKind::Enclosure);
             assert!(sample.error.lo <= sample.signed_distance);
             assert!(sample.signed_distance <= sample.error.hi);
+            let independent_residual = 1.421_291_065_674_733_6e-7;
+            assert!(sample.error.lo <= independent_residual);
+            assert!(independent_residual <= sample.error.hi);
 
             // Advancing by the rounded residual lands just inside the real
             // sphere in binary64. The endpoint enclosure must expose that the
