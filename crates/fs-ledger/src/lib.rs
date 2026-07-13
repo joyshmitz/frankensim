@@ -20,6 +20,7 @@
 pub mod colors;
 pub mod hash;
 pub mod schema;
+pub mod session_registry;
 pub mod tombstone;
 pub mod travel;
 pub mod vcs;
@@ -99,6 +100,1517 @@ pub const MAX_TUNE_SCAN_BYTES: usize = 16 * 1024 * 1024;
 
 /// Crate version (compile-time stamp).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+// ---------------------------------------------------------------------------
+// Semantic identity ownership (bead frankensim-semantic-identity-coverage-iu5l)
+// ---------------------------------------------------------------------------
+
+/// Schema version of the opaque physical-ledger identity.
+pub const PHYSICAL_INSTANCE_IDENTITY_VERSION: u32 = 1;
+/// Registry domain of the opaque physical-ledger identity.
+pub const PHYSICAL_INSTANCE_IDENTITY_DOMAIN: &str = "org.frankensim.fs-ledger.physical-instance.v1";
+/// Schema version of plain content-addressed artifact identity.
+pub const ARTIFACT_CONTENT_IDENTITY_VERSION: u32 = 1;
+/// Registry domain of plain content-addressed artifact identity.
+pub const ARTIFACT_CONTENT_IDENTITY_DOMAIN: &str = "org.frankensim.fs-ledger.artifact-content.v1";
+/// Schema version of the immutable session-mutation claim hash.
+pub const SESSION_MUTATION_CLAIM_IDENTITY_VERSION: u32 = 1;
+/// Registry domain of the immutable session-mutation claim hash.
+pub const SESSION_MUTATION_CLAIM_IDENTITY_DOMAIN: &str =
+    "org.frankensim.fs-ledger.session-mutation-claim.v1";
+/// Schema version of the ordered session-terminal event hash.
+pub const SESSION_TERMINAL_EVENTS_IDENTITY_VERSION: u32 = 2;
+/// Registry domain of the ordered session-terminal event hash.
+pub const SESSION_TERMINAL_EVENTS_IDENTITY_DOMAIN: &str =
+    "org.frankensim.fs-ledger.session-terminal-events.v2";
+/// Schema version of the complete session flush-batch witness.
+pub const SESSION_FLUSH_BATCH_IDENTITY_VERSION: u32 = 2;
+/// Registry domain of the complete session flush-batch witness.
+pub const SESSION_FLUSH_BATCH_IDENTITY_DOMAIN: &str =
+    "org.frankensim.fs-ledger.session-flush-batch.v2";
+/// Schema version of a source-origin admission request.
+pub const SOURCE_ORIGIN_REQUEST_IDENTITY_VERSION: u32 = 1;
+/// Logical registry domain of a source-origin admission request.
+pub const SOURCE_ORIGIN_REQUEST_IDENTITY_DOMAIN: &str =
+    "org.frankensim.fs-ledger.source-origin-request.v1";
+/// Schema version of a derived-color waiver signing subject.
+pub const DERIVED_COLOR_WAIVER_SUBJECT_IDENTITY_VERSION: u32 = 3;
+/// Logical registry domain of a derived-color waiver signing subject.
+pub const DERIVED_COLOR_WAIVER_SUBJECT_IDENTITY_DOMAIN: &str =
+    "org.frankensim.fs-ledger.derived-color-waiver-subject.v3";
+/// Schema version of a source-color waiver signing subject.
+pub const SOURCE_COLOR_WAIVER_SUBJECT_IDENTITY_VERSION: u32 = 4;
+/// Logical registry domain of a source-color waiver signing subject.
+pub const SOURCE_COLOR_WAIVER_SUBJECT_IDENTITY_DOMAIN: &str =
+    "org.frankensim.fs-ledger.source-color-waiver-subject.v4";
+/// Schema version of the complete color-node provenance hash.
+pub const COLOR_NODE_IDENTITY_VERSION: u32 = 9;
+/// Logical registry domain of the complete color-node provenance hash.
+pub const COLOR_NODE_IDENTITY_DOMAIN: &str = "org.frankensim.fs-ledger.color-node.v9";
+/// Schema version of the color-admission policy fingerprint.
+pub const COLOR_ADMISSION_POLICY_IDENTITY_VERSION: u32 = 1;
+/// Registry domain of the color-admission policy fingerprint.
+pub const COLOR_ADMISSION_POLICY_IDENTITY_DOMAIN: &str =
+    "org.frankensim.fs-ledger.color-admission-policy.v1";
+/// Schema version of the persisted VCS ledger-lineage identity.
+pub const VCS_LEDGER_LINEAGE_IDENTITY_VERSION: u32 = 1;
+/// Registry domain of the persisted VCS ledger-lineage identity.
+pub const VCS_LEDGER_LINEAGE_IDENTITY_DOMAIN: &str =
+    "org.frankensim.fs-ledger.vcs-ledger-lineage.v1";
+/// Schema version of a VCS semantic commit leaf.
+pub const VCS_COMMIT_LEAF_IDENTITY_VERSION: u32 = 2;
+/// Registry domain of a VCS semantic commit leaf.
+pub const VCS_COMMIT_LEAF_IDENTITY_DOMAIN: &str = "org.frankensim.fs-ledger.vcs-commit-leaf.v2";
+/// Schema version of a VCS semantic commit root.
+pub const VCS_COMMIT_ROOT_IDENTITY_VERSION: u32 = 2;
+/// Registry domain of a VCS semantic commit root.
+pub const VCS_COMMIT_ROOT_IDENTITY_DOMAIN: &str = "org.frankensim.fs-ledger.vcs-commit-root.v2";
+/// Schema version of the ledger/branch/root commit envelope key.
+pub const VCS_COMMIT_ENVELOPE_IDENTITY_VERSION: u32 = 1;
+/// Registry domain of the ledger/branch/root commit envelope key.
+pub const VCS_COMMIT_ENVELOPE_IDENTITY_DOMAIN: &str =
+    "org.frankensim.fs-ledger.vcs-commit-envelope.v1";
+
+const SOURCE_ORIGIN_REQUEST_PREIMAGE_DOMAIN: &[u8] = b"frankensim/fs-ledger/source-origin-request";
+const COLOR_WAIVER_SUBJECT_PREIMAGE_DOMAIN: &[u8] = b"frankensim/fs-ledger/color-waiver";
+const COLOR_NODE_PREIMAGE_DOMAIN: &[u8] = b"frankensim/fs-ledger/color-node/v2";
+const COLOR_ADMISSION_POLICY_PREIMAGE_DOMAIN: &str = "fs-ledger/color-admission-policy/v1";
+const VCS_LEDGER_LINEAGE_PREIMAGE_DOMAIN: &[u8] = b"frankensim.fs-ledger.vcs.ledger-identity.v1";
+const VCS_COMMIT_LEAF_PREIMAGE_DOMAIN: &[u8] = b"frankensim.fs-ledger.vcs.commit-leaf.v2";
+const VCS_MERKLE_PAIR_PREIMAGE_DOMAIN: &[u8] = b"frankensim.fs-ledger.vcs.merkle-pair.v2";
+const VCS_MERKLE_ODD_PREIMAGE_DOMAIN: &[u8] = b"frankensim.fs-ledger.vcs.merkle-odd.v2";
+const VCS_COMMIT_ROOT_PREIMAGE_DOMAIN: &[u8] = b"frankensim.fs-ledger.vcs.commit-root.v2";
+
+// These private witness shapes make every encoded input explicit in the owner
+// file. Production encoders remain the authorities; declarations fingerprint
+// those functions below, and the witnesses let the policy gate reject an
+// unclassified field before generated registry data can drift.
+#[allow(dead_code)]
+#[derive(Clone, PartialEq, Eq)]
+struct PhysicalInstanceIdentitySource {
+    uuid: [u8; 16],
+}
+
+#[allow(dead_code)]
+#[derive(Clone, PartialEq, Eq)]
+struct ArtifactContentIdentitySource {
+    content: Vec<u8>,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, PartialEq, Eq)]
+struct SessionMutationClaimIdentitySource {
+    authority: ContentHash,
+    ledger_instance_id: [u8; 16],
+    governor_hash: ContentHash,
+    session_open_hash: ContentHash,
+    registry_schema_version: i64,
+    kind: Vec<u8>,
+    session: u64,
+    ledger_scope: Vec<u8>,
+    generation: u64,
+    causal_ordinal: Option<u64>,
+    payload: Vec<u8>,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, PartialEq, Eq)]
+struct SessionTerminalEventIdentitySource {
+    session: Vec<u8>,
+    timestamp: i64,
+    kind: Vec<u8>,
+    payload: Option<Vec<u8>>,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, PartialEq, Eq)]
+struct SessionFlushTerminalIdentitySource {
+    authority: ContentHash,
+    claim_hash: ContentHash,
+    receipt_hash: ContentHash,
+    event_count: usize,
+    events_hash: ContentHash,
+    encoded_bytes: usize,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, PartialEq, Eq)]
+struct SessionFlushBatchIdentitySource {
+    ledger_instance_id: [u8; 16],
+    registry_schema_version: i64,
+    terminals: Vec<SessionFlushTerminalIdentitySource>,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, PartialEq, Eq)]
+struct SourceOriginRequestIdentitySource {
+    node_name: Vec<u8>,
+    claimed_color: Vec<u8>,
+    origin: Vec<u8>,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, PartialEq, Eq)]
+struct DerivedColorWaiverSubjectIdentitySource {
+    operation_tag: u8,
+    key_id: Vec<u8>,
+    scope: Vec<u8>,
+    node_name: Vec<u8>,
+    claimed_color: Vec<u8>,
+    annotation_id: Vec<u8>,
+    annotation_signer: Vec<u8>,
+    annotation_reason: Vec<u8>,
+    parent_hashes: Vec<ContentHash>,
+    expires_day: u32,
+    signature: Vec<u8>,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, PartialEq, Eq)]
+struct SourceColorWaiverSubjectIdentitySource {
+    key_id: Vec<u8>,
+    scope: Vec<u8>,
+    node_name: Vec<u8>,
+    claimed_color: Vec<u8>,
+    annotation_id: Vec<u8>,
+    annotation_signer: Vec<u8>,
+    annotation_reason: Vec<u8>,
+    parent_hashes: Vec<ContentHash>,
+    expires_day: u32,
+    signature: Vec<u8>,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, PartialEq, Eq)]
+struct ColorNodeIdentitySource {
+    node_id: u64,
+    operation_tag: Option<u8>,
+    name: Vec<u8>,
+    color: Vec<u8>,
+    parent_local_ids: Vec<u64>,
+    parent_hashes: Vec<ContentHash>,
+    demotions: Vec<Vec<u8>>,
+    origin: Option<Vec<u8>>,
+    origin_policy_fingerprint: Option<ContentHash>,
+    waiver_dependencies: Vec<Vec<u8>>,
+    waiver: Option<Vec<u8>>,
+    grant_payload: Option<Vec<u8>>,
+    grant_signature: Option<Vec<u8>>,
+    waiver_policy_fingerprint: Option<ContentHash>,
+    waiver_admission_day: Option<u32>,
+    stored_hash: ContentHash,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, PartialEq, Eq)]
+struct ColorAdmissionPolicyIdentitySource {
+    color_write_row_schema_version: u32,
+    color_algebra_version: u32,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, PartialEq, Eq)]
+struct VcsLedgerLineageIdentitySource {
+    mint_path: Vec<u8>,
+    minted_ns: i64,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, PartialEq, Eq)]
+struct VcsCommitEdgeIdentitySource {
+    role: Vec<u8>,
+    artifact_hash: ContentHash,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, PartialEq, Eq)]
+struct VcsCommitLeafIdentitySource {
+    ir: Vec<u8>,
+    seed: Vec<u8>,
+    versions: Vec<u8>,
+    budget: Vec<u8>,
+    capability: Vec<u8>,
+    outcome: Option<Vec<u8>>,
+    diagnostic: Option<Vec<u8>>,
+    execution_mode: Vec<u8>,
+    edges: Vec<VcsCommitEdgeIdentitySource>,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, PartialEq, Eq)]
+struct VcsCommitRootIdentitySource {
+    leaves: Vec<ContentHash>,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, PartialEq, Eq)]
+struct VcsCommitEnvelopeIdentitySource {
+    ledger: ContentHash,
+    branch: i64,
+    root: ContentHash,
+}
+
+#[allow(dead_code)]
+fn identity_push_len(out: &mut Vec<u8>, len: usize) {
+    out.extend_from_slice(
+        &u64::try_from(len)
+            .expect("identity witness length fits u64")
+            .to_le_bytes(),
+    );
+}
+
+#[allow(dead_code)]
+fn identity_push_field(out: &mut Vec<u8>, bytes: &[u8]) {
+    identity_push_len(out, bytes.len());
+    out.extend_from_slice(bytes);
+}
+
+#[allow(dead_code)]
+fn identity_update_len(hasher: &mut Blake3, len: usize) {
+    hasher.update(
+        &u64::try_from(len)
+            .expect("identity witness length fits u64")
+            .to_le_bytes(),
+    );
+}
+
+#[allow(dead_code)]
+fn identity_update_bytes(hasher: &mut Blake3, bytes: &[u8]) {
+    identity_update_len(hasher, bytes.len());
+    hasher.update(bytes);
+}
+
+#[allow(dead_code)]
+fn identity_update_optional_u64(hasher: &mut Blake3, value: Option<u64>) {
+    match value {
+        Some(value) => {
+            hasher.update(&[1]);
+            hasher.update(&value.to_be_bytes());
+        }
+        None => hasher.update(&[0]),
+    }
+}
+
+#[allow(dead_code)]
+fn identity_vcs_hash_frame(hasher: &mut Blake3, bytes: &[u8]) {
+    identity_update_len(hasher, bytes.len());
+    hasher.update(bytes);
+}
+
+#[allow(dead_code)]
+fn identity_vcs_domain_hasher(domain: &[u8]) -> Blake3 {
+    let mut hasher = Blake3::new();
+    identity_vcs_hash_frame(&mut hasher, b"domain");
+    identity_vcs_hash_frame(&mut hasher, domain);
+    hasher
+}
+
+#[allow(dead_code)]
+fn identity_vcs_hash_field(hasher: &mut Blake3, name: &[u8], value: &[u8]) {
+    identity_vcs_hash_frame(hasher, name);
+    identity_vcs_hash_frame(hasher, value);
+}
+
+#[allow(dead_code)]
+fn identity_vcs_hash_optional_field(hasher: &mut Blake3, name: &[u8], value: Option<&[u8]>) {
+    identity_vcs_hash_frame(hasher, name);
+    match value {
+        Some(value) => {
+            identity_vcs_hash_frame(hasher, b"present");
+            identity_vcs_hash_frame(hasher, value);
+        }
+        None => identity_vcs_hash_frame(hasher, b"absent"),
+    }
+}
+
+#[allow(dead_code)]
+fn identity_vcs_framed_hash(domain: &[u8], fields: &[(&[u8], &[u8])]) -> ContentHash {
+    let mut hasher = identity_vcs_domain_hasher(domain);
+    for (name, value) in fields {
+        identity_vcs_hash_field(&mut hasher, name, value);
+    }
+    hasher.finalize()
+}
+
+#[allow(dead_code)]
+fn identity_schema_is_current(
+    found_version: u32,
+    found_domain: &str,
+    supported_version: u32,
+    supported_domain: &str,
+) -> bool {
+    found_version == supported_version && found_domain == supported_domain
+}
+
+#[allow(dead_code)]
+fn ledger_physical_instance_identity(source: &PhysicalInstanceIdentitySource) -> [u8; 16] {
+    source.uuid
+}
+
+#[allow(dead_code)]
+fn ledger_artifact_content_identity(source: &ArtifactContentIdentitySource) -> ContentHash {
+    hash_bytes(&source.content)
+}
+
+#[allow(dead_code)]
+fn ledger_session_mutation_claim_identity_with_domain(
+    source: &SessionMutationClaimIdentitySource,
+    domain: &[u8],
+) -> ContentHash {
+    let mut hasher = Blake3::new();
+    hasher.update(domain);
+    hasher.update(source.authority.as_bytes());
+    hasher.update(&source.ledger_instance_id);
+    hasher.update(source.governor_hash.as_bytes());
+    hasher.update(source.session_open_hash.as_bytes());
+    hasher.update(&source.registry_schema_version.to_le_bytes());
+    identity_update_bytes(&mut hasher, &source.kind);
+    hasher.update(&source.session.to_be_bytes());
+    identity_update_bytes(&mut hasher, &source.ledger_scope);
+    hasher.update(&source.generation.to_be_bytes());
+    identity_update_optional_u64(&mut hasher, source.causal_ordinal);
+    hasher.update(hash_bytes(&source.payload).as_bytes());
+    hasher.finalize()
+}
+
+#[allow(dead_code)]
+fn ledger_session_mutation_claim_identity(
+    source: &SessionMutationClaimIdentitySource,
+) -> ContentHash {
+    ledger_session_mutation_claim_identity_with_domain(
+        source,
+        b"org.frankensim.fs-ledger.session-mutation-claim.v1\0",
+    )
+}
+
+#[allow(dead_code)]
+fn ledger_session_terminal_events_identity_with_schema(
+    events: &[SessionTerminalEventIdentitySource],
+    declared_count: usize,
+    domain: &[u8],
+) -> ContentHash {
+    let mut hasher = Blake3::new();
+    hasher.update(domain);
+    identity_update_len(&mut hasher, declared_count);
+    for event in events {
+        identity_update_bytes(&mut hasher, &event.session);
+        hasher.update(&event.timestamp.to_le_bytes());
+        identity_update_bytes(&mut hasher, &event.kind);
+        match &event.payload {
+            Some(payload) => {
+                hasher.update(&[1]);
+                identity_update_bytes(&mut hasher, payload);
+            }
+            None => hasher.update(&[0]),
+        }
+    }
+    hasher.finalize()
+}
+
+#[allow(dead_code)]
+fn ledger_session_terminal_events_identity(
+    events: &[SessionTerminalEventIdentitySource],
+) -> ContentHash {
+    ledger_session_terminal_events_identity_with_schema(
+        events,
+        events.len(),
+        b"org.frankensim.fs-ledger.session-terminal-events.v2\0",
+    )
+}
+
+#[allow(dead_code)]
+fn ledger_session_flush_batch_identity_with_schema(
+    source: &SessionFlushBatchIdentitySource,
+    declared_count: usize,
+    domain: &[u8],
+) -> ContentHash {
+    let mut hasher = Blake3::new();
+    hasher.update(domain);
+    hasher.update(&source.ledger_instance_id);
+    hasher.update(&source.registry_schema_version.to_le_bytes());
+    identity_update_len(&mut hasher, declared_count);
+    for terminal in &source.terminals {
+        hasher.update(terminal.authority.as_bytes());
+        hasher.update(terminal.claim_hash.as_bytes());
+        hasher.update(terminal.receipt_hash.as_bytes());
+        identity_update_len(&mut hasher, terminal.event_count);
+        hasher.update(terminal.events_hash.as_bytes());
+        identity_update_len(&mut hasher, terminal.encoded_bytes);
+    }
+    hasher.finalize()
+}
+
+#[allow(dead_code)]
+fn ledger_session_flush_batch_identity(source: &SessionFlushBatchIdentitySource) -> ContentHash {
+    ledger_session_flush_batch_identity_with_schema(
+        source,
+        source.terminals.len(),
+        b"org.frankensim.fs-ledger.session-flush-batch.v2\0",
+    )
+}
+
+#[allow(dead_code)]
+fn ledger_source_origin_request_identity_with_schema(
+    source: &SourceOriginRequestIdentitySource,
+    version: u8,
+    domain: &[u8],
+) -> Vec<u8> {
+    let mut out = vec![version];
+    identity_push_field(&mut out, domain);
+    identity_push_field(&mut out, &source.node_name);
+    identity_push_field(&mut out, &source.claimed_color);
+    out.extend_from_slice(&source.origin);
+    out
+}
+
+#[allow(dead_code)]
+fn ledger_source_origin_request_identity(source: &SourceOriginRequestIdentitySource) -> Vec<u8> {
+    ledger_source_origin_request_identity_with_schema(
+        source,
+        SOURCE_ORIGIN_REQUEST_IDENTITY_VERSION as u8,
+        SOURCE_ORIGIN_REQUEST_PREIMAGE_DOMAIN,
+    )
+}
+
+#[allow(dead_code)]
+fn identity_transport_has_versioned_domain(bytes: &[u8], version: u8, domain: &[u8]) -> bool {
+    let Some((&found_version, rest)) = bytes.split_first() else {
+        return false;
+    };
+    let Some(length_bytes) = rest.get(..8) else {
+        return false;
+    };
+    let Ok(length_bytes) = <[u8; 8]>::try_from(length_bytes) else {
+        return false;
+    };
+    let Ok(length) = usize::try_from(u64::from_le_bytes(length_bytes)) else {
+        return false;
+    };
+    let Some(domain_end) = 8_usize.checked_add(length) else {
+        return false;
+    };
+    found_version == version && length == domain.len() && rest.get(8..domain_end) == Some(domain)
+}
+
+#[allow(dead_code)]
+fn ledger_source_origin_request_transport_guard(bytes: &[u8]) -> bool {
+    identity_transport_has_versioned_domain(
+        bytes,
+        SOURCE_ORIGIN_REQUEST_IDENTITY_VERSION as u8,
+        SOURCE_ORIGIN_REQUEST_PREIMAGE_DOMAIN,
+    )
+}
+
+#[allow(dead_code)]
+fn ledger_derived_color_waiver_subject_identity_with_schema(
+    source: &DerivedColorWaiverSubjectIdentitySource,
+    version: u8,
+    domain: &[u8],
+) -> Vec<u8> {
+    let mut out = vec![version];
+    identity_push_field(&mut out, domain);
+    out.push(source.operation_tag);
+    for field in [&source.key_id, &source.scope, &source.node_name] {
+        identity_push_field(&mut out, field);
+    }
+    identity_push_field(&mut out, &source.claimed_color);
+    for field in [
+        &source.annotation_id,
+        &source.annotation_signer,
+        &source.annotation_reason,
+    ] {
+        identity_push_field(&mut out, field);
+    }
+    identity_push_len(&mut out, source.parent_hashes.len());
+    for parent in &source.parent_hashes {
+        out.extend_from_slice(parent.as_bytes());
+    }
+    out.extend_from_slice(&source.expires_day.to_le_bytes());
+    out
+}
+
+#[allow(dead_code)]
+fn ledger_derived_color_waiver_subject_identity(
+    source: &DerivedColorWaiverSubjectIdentitySource,
+) -> Vec<u8> {
+    ledger_derived_color_waiver_subject_identity_with_schema(
+        source,
+        DERIVED_COLOR_WAIVER_SUBJECT_IDENTITY_VERSION as u8,
+        COLOR_WAIVER_SUBJECT_PREIMAGE_DOMAIN,
+    )
+}
+
+#[allow(dead_code)]
+fn ledger_derived_color_waiver_subject_transport_guard(bytes: &[u8]) -> bool {
+    identity_transport_has_versioned_domain(
+        bytes,
+        DERIVED_COLOR_WAIVER_SUBJECT_IDENTITY_VERSION as u8,
+        COLOR_WAIVER_SUBJECT_PREIMAGE_DOMAIN,
+    )
+}
+
+#[allow(dead_code)]
+fn ledger_source_color_waiver_subject_identity_with_schema(
+    source: &SourceColorWaiverSubjectIdentitySource,
+    version: u8,
+    domain: &[u8],
+) -> Vec<u8> {
+    let mut out = vec![version];
+    identity_push_field(&mut out, domain);
+    out.push(0);
+    for field in [&source.key_id, &source.scope, &source.node_name] {
+        identity_push_field(&mut out, field);
+    }
+    identity_push_field(&mut out, &source.claimed_color);
+    for field in [
+        &source.annotation_id,
+        &source.annotation_signer,
+        &source.annotation_reason,
+    ] {
+        identity_push_field(&mut out, field);
+    }
+    identity_push_len(&mut out, source.parent_hashes.len());
+    for parent in &source.parent_hashes {
+        out.extend_from_slice(parent.as_bytes());
+    }
+    out.extend_from_slice(&source.expires_day.to_le_bytes());
+    out
+}
+
+#[allow(dead_code)]
+fn ledger_source_color_waiver_subject_identity(
+    source: &SourceColorWaiverSubjectIdentitySource,
+) -> Vec<u8> {
+    ledger_source_color_waiver_subject_identity_with_schema(
+        source,
+        SOURCE_COLOR_WAIVER_SUBJECT_IDENTITY_VERSION as u8,
+        COLOR_WAIVER_SUBJECT_PREIMAGE_DOMAIN,
+    )
+}
+
+#[allow(dead_code)]
+fn ledger_source_color_waiver_subject_transport_guard(bytes: &[u8]) -> bool {
+    identity_transport_has_versioned_domain(
+        bytes,
+        SOURCE_COLOR_WAIVER_SUBJECT_IDENTITY_VERSION as u8,
+        COLOR_WAIVER_SUBJECT_PREIMAGE_DOMAIN,
+    )
+}
+
+#[allow(dead_code)]
+fn ledger_color_node_identity_with_schema(
+    source: &ColorNodeIdentitySource,
+    version: u8,
+    domain: &[u8],
+) -> ContentHash {
+    let mut out = vec![version];
+    identity_push_field(&mut out, domain);
+    match source.operation_tag {
+        Some(operation) => {
+            out.push(1);
+            out.push(operation);
+        }
+        None => out.push(0),
+    }
+    identity_push_field(&mut out, &source.name);
+    identity_push_field(&mut out, &source.color);
+    identity_push_len(&mut out, source.parent_hashes.len());
+    for parent in &source.parent_hashes {
+        identity_push_field(&mut out, parent.as_bytes());
+    }
+    identity_push_len(&mut out, source.demotions.len());
+    for demotion in &source.demotions {
+        out.extend_from_slice(demotion);
+    }
+    match &source.origin {
+        Some(origin) => {
+            out.push(1);
+            out.extend_from_slice(origin);
+        }
+        None => out.push(0),
+    }
+    match source.origin_policy_fingerprint {
+        Some(policy) => {
+            out.push(1);
+            out.extend_from_slice(policy.as_bytes());
+        }
+        None => out.push(0),
+    }
+    identity_push_len(&mut out, source.waiver_dependencies.len());
+    for dependency in &source.waiver_dependencies {
+        out.extend_from_slice(dependency);
+    }
+    match &source.waiver {
+        Some(waiver) => {
+            out.push(1);
+            out.extend_from_slice(waiver);
+        }
+        None => out.push(0),
+    }
+    match (&source.grant_payload, &source.grant_signature) {
+        (Some(payload), Some(signature)) => {
+            out.push(1);
+            identity_push_field(&mut out, payload);
+            identity_push_field(&mut out, signature);
+        }
+        _ => out.push(0),
+    }
+    match source.waiver_policy_fingerprint {
+        Some(policy) => {
+            out.push(1);
+            out.extend_from_slice(policy.as_bytes());
+        }
+        None => out.push(0),
+    }
+    match source.waiver_admission_day {
+        Some(day) => {
+            out.push(1);
+            out.extend_from_slice(&day.to_le_bytes());
+        }
+        None => out.push(0),
+    }
+    hash_bytes(&out)
+}
+
+#[allow(dead_code)]
+fn ledger_color_node_identity(source: &ColorNodeIdentitySource) -> ContentHash {
+    ledger_color_node_identity_with_schema(
+        source,
+        COLOR_NODE_IDENTITY_VERSION as u8,
+        COLOR_NODE_PREIMAGE_DOMAIN,
+    )
+}
+
+#[allow(dead_code)]
+fn ledger_color_admission_policy_identity_with_schema(
+    source: &ColorAdmissionPolicyIdentitySource,
+    domain: &str,
+) -> ContentHash {
+    hash_bytes(
+        format!(
+            "{domain}/row-schema={}/algebra={}",
+            source.color_write_row_schema_version, source.color_algebra_version
+        )
+        .as_bytes(),
+    )
+}
+
+#[allow(dead_code)]
+fn ledger_color_admission_policy_identity(
+    source: &ColorAdmissionPolicyIdentitySource,
+) -> ContentHash {
+    ledger_color_admission_policy_identity_with_schema(
+        source,
+        COLOR_ADMISSION_POLICY_PREIMAGE_DOMAIN,
+    )
+}
+
+#[allow(dead_code)]
+fn ledger_vcs_ledger_lineage_identity_with_domain(
+    source: &VcsLedgerLineageIdentitySource,
+    domain: &[u8],
+) -> ContentHash {
+    identity_vcs_framed_hash(
+        domain,
+        &[
+            (b"path", &source.mint_path),
+            (b"minted_ns", &source.minted_ns.to_le_bytes()),
+        ],
+    )
+}
+
+#[allow(dead_code)]
+fn ledger_vcs_ledger_lineage_identity(source: &VcsLedgerLineageIdentitySource) -> ContentHash {
+    ledger_vcs_ledger_lineage_identity_with_domain(source, VCS_LEDGER_LINEAGE_PREIMAGE_DOMAIN)
+}
+
+#[allow(dead_code)]
+fn ledger_vcs_commit_leaf_identity_with_domain(
+    source: &VcsCommitLeafIdentitySource,
+    domain: &[u8],
+) -> ContentHash {
+    let mut hasher = identity_vcs_domain_hasher(domain);
+    identity_vcs_hash_field(&mut hasher, b"ir", &source.ir);
+    identity_vcs_hash_field(&mut hasher, b"seed", &source.seed);
+    identity_vcs_hash_field(&mut hasher, b"versions", &source.versions);
+    identity_vcs_hash_field(&mut hasher, b"budget", &source.budget);
+    identity_vcs_hash_field(&mut hasher, b"capability", &source.capability);
+    identity_vcs_hash_optional_field(&mut hasher, b"outcome", source.outcome.as_deref());
+    identity_vcs_hash_optional_field(&mut hasher, b"diag", source.diagnostic.as_deref());
+    identity_vcs_hash_field(&mut hasher, b"exec_mode", &source.execution_mode);
+    identity_vcs_hash_field(
+        &mut hasher,
+        b"edge_count",
+        &u64::try_from(source.edges.len())
+            .expect("bounded edge count fits u64")
+            .to_le_bytes(),
+    );
+    for edge in &source.edges {
+        identity_vcs_hash_field(&mut hasher, b"edge_role", &edge.role);
+        identity_vcs_hash_field(&mut hasher, b"artifact_hash", edge.artifact_hash.as_bytes());
+    }
+    hasher.finalize()
+}
+
+#[allow(dead_code)]
+fn ledger_vcs_commit_leaf_identity(source: &VcsCommitLeafIdentitySource) -> ContentHash {
+    ledger_vcs_commit_leaf_identity_with_domain(source, VCS_COMMIT_LEAF_PREIMAGE_DOMAIN)
+}
+
+#[allow(dead_code)]
+fn ledger_vcs_commit_root_identity_with_domains(
+    source: &VcsCommitRootIdentitySource,
+    pair_domain: &[u8],
+    odd_domain: &[u8],
+    root_domain: &[u8],
+) -> ContentHash {
+    let leaf_count = u64::try_from(source.leaves.len())
+        .expect("bounded leaf count fits u64")
+        .to_le_bytes();
+    if source.leaves.is_empty() {
+        return identity_vcs_framed_hash(root_domain, &[(b"leaf_count", &leaf_count)]);
+    }
+    let mut level = source.leaves.clone();
+    while level.len() > 1 {
+        let mut next = Vec::with_capacity(level.len().div_ceil(2));
+        for pair in level.chunks(2) {
+            next.push(if pair.len() == 2 {
+                identity_vcs_framed_hash(
+                    pair_domain,
+                    &[
+                        (b"left", pair[0].as_bytes()),
+                        (b"right", pair[1].as_bytes()),
+                    ],
+                )
+            } else {
+                identity_vcs_framed_hash(odd_domain, &[(b"child", pair[0].as_bytes())])
+            });
+        }
+        level = next;
+    }
+    identity_vcs_framed_hash(
+        root_domain,
+        &[(b"leaf_count", &leaf_count), (b"tree", level[0].as_bytes())],
+    )
+}
+
+#[allow(dead_code)]
+fn ledger_vcs_commit_root_identity(source: &VcsCommitRootIdentitySource) -> ContentHash {
+    ledger_vcs_commit_root_identity_with_domains(
+        source,
+        VCS_MERKLE_PAIR_PREIMAGE_DOMAIN,
+        VCS_MERKLE_ODD_PREIMAGE_DOMAIN,
+        VCS_COMMIT_ROOT_PREIMAGE_DOMAIN,
+    )
+}
+
+#[allow(dead_code)]
+fn ledger_vcs_commit_envelope_identity(source: &VcsCommitEnvelopeIdentitySource) -> Vec<u8> {
+    let mut out = Vec::with_capacity(72);
+    out.extend_from_slice(source.ledger.as_bytes());
+    out.extend_from_slice(&source.branch.to_le_bytes());
+    out.extend_from_slice(source.root.as_bytes());
+    out
+}
+
+#[allow(dead_code)]
+fn classify_physical_instance_identity_fields(source: &PhysicalInstanceIdentitySource) {
+    let PhysicalInstanceIdentitySource { uuid } = source;
+    let _ = uuid;
+}
+
+#[allow(dead_code)]
+fn classify_artifact_content_identity_fields(source: &ArtifactContentIdentitySource) {
+    let ArtifactContentIdentitySource { content } = source;
+    let _ = content;
+}
+
+#[allow(dead_code)]
+fn classify_session_mutation_claim_identity_fields(source: &SessionMutationClaimIdentitySource) {
+    let SessionMutationClaimIdentitySource {
+        authority,
+        ledger_instance_id,
+        governor_hash,
+        session_open_hash,
+        registry_schema_version,
+        kind,
+        session,
+        ledger_scope,
+        generation,
+        causal_ordinal,
+        payload,
+    } = source;
+    let _ = (
+        authority,
+        ledger_instance_id,
+        governor_hash,
+        session_open_hash,
+        registry_schema_version,
+        kind,
+        session,
+        ledger_scope,
+        generation,
+        causal_ordinal,
+        payload,
+    );
+}
+
+#[allow(dead_code)]
+fn classify_session_terminal_events_identity_fields(source: &SessionTerminalEventIdentitySource) {
+    let SessionTerminalEventIdentitySource {
+        session,
+        timestamp,
+        kind,
+        payload,
+    } = source;
+    let _ = (session, timestamp, kind, payload);
+}
+
+#[allow(dead_code)]
+fn classify_session_flush_batch_identity_fields(
+    batch: &SessionFlushBatchIdentitySource,
+    terminal: &SessionFlushTerminalIdentitySource,
+) {
+    let SessionFlushBatchIdentitySource {
+        ledger_instance_id,
+        registry_schema_version,
+        terminals,
+    } = batch;
+    let SessionFlushTerminalIdentitySource {
+        authority,
+        claim_hash,
+        receipt_hash,
+        event_count,
+        events_hash,
+        encoded_bytes,
+    } = terminal;
+    let _ = (
+        ledger_instance_id,
+        registry_schema_version,
+        terminals,
+        authority,
+        claim_hash,
+        receipt_hash,
+        event_count,
+        events_hash,
+        encoded_bytes,
+    );
+}
+
+#[allow(dead_code)]
+fn classify_source_origin_request_identity_fields(source: &SourceOriginRequestIdentitySource) {
+    let SourceOriginRequestIdentitySource {
+        node_name,
+        claimed_color,
+        origin,
+    } = source;
+    let _ = (node_name, claimed_color, origin);
+}
+
+#[allow(dead_code)]
+fn classify_derived_color_waiver_subject_identity_fields(
+    source: &DerivedColorWaiverSubjectIdentitySource,
+) {
+    let DerivedColorWaiverSubjectIdentitySource {
+        operation_tag,
+        key_id,
+        scope,
+        node_name,
+        claimed_color,
+        annotation_id,
+        annotation_signer,
+        annotation_reason,
+        parent_hashes,
+        expires_day,
+        signature,
+    } = source;
+    let _ = (
+        operation_tag,
+        key_id,
+        scope,
+        node_name,
+        claimed_color,
+        annotation_id,
+        annotation_signer,
+        annotation_reason,
+        parent_hashes,
+        expires_day,
+        signature,
+    );
+}
+
+#[allow(dead_code)]
+fn classify_source_color_waiver_subject_identity_fields(
+    source: &SourceColorWaiverSubjectIdentitySource,
+) {
+    let SourceColorWaiverSubjectIdentitySource {
+        key_id,
+        scope,
+        node_name,
+        claimed_color,
+        annotation_id,
+        annotation_signer,
+        annotation_reason,
+        parent_hashes,
+        expires_day,
+        signature,
+    } = source;
+    let _ = (
+        key_id,
+        scope,
+        node_name,
+        claimed_color,
+        annotation_id,
+        annotation_signer,
+        annotation_reason,
+        parent_hashes,
+        expires_day,
+        signature,
+    );
+}
+
+#[allow(dead_code)]
+fn classify_color_node_identity_fields(source: &ColorNodeIdentitySource) {
+    let ColorNodeIdentitySource {
+        node_id,
+        operation_tag,
+        name,
+        color,
+        parent_local_ids,
+        parent_hashes,
+        demotions,
+        origin,
+        origin_policy_fingerprint,
+        waiver_dependencies,
+        waiver,
+        grant_payload,
+        grant_signature,
+        waiver_policy_fingerprint,
+        waiver_admission_day,
+        stored_hash,
+    } = source;
+    let _ = (
+        node_id,
+        operation_tag,
+        name,
+        color,
+        parent_local_ids,
+        parent_hashes,
+        demotions,
+        origin,
+        origin_policy_fingerprint,
+        waiver_dependencies,
+        waiver,
+        grant_payload,
+        grant_signature,
+        waiver_policy_fingerprint,
+        waiver_admission_day,
+        stored_hash,
+    );
+}
+
+#[allow(dead_code)]
+fn classify_color_admission_policy_identity_fields(source: &ColorAdmissionPolicyIdentitySource) {
+    let ColorAdmissionPolicyIdentitySource {
+        color_write_row_schema_version,
+        color_algebra_version,
+    } = source;
+    let _ = (color_write_row_schema_version, color_algebra_version);
+}
+
+#[allow(dead_code)]
+fn classify_vcs_ledger_lineage_identity_fields(source: &VcsLedgerLineageIdentitySource) {
+    let VcsLedgerLineageIdentitySource {
+        mint_path,
+        minted_ns,
+    } = source;
+    let _ = (mint_path, minted_ns);
+}
+
+#[allow(dead_code)]
+fn classify_vcs_commit_leaf_identity_fields(
+    leaf: &VcsCommitLeafIdentitySource,
+    edge: &VcsCommitEdgeIdentitySource,
+) {
+    let VcsCommitLeafIdentitySource {
+        ir,
+        seed,
+        versions,
+        budget,
+        capability,
+        outcome,
+        diagnostic,
+        execution_mode,
+        edges,
+    } = leaf;
+    let VcsCommitEdgeIdentitySource {
+        role,
+        artifact_hash,
+    } = edge;
+    let _ = (
+        ir,
+        seed,
+        versions,
+        budget,
+        capability,
+        outcome,
+        diagnostic,
+        execution_mode,
+        edges,
+        role,
+        artifact_hash,
+    );
+}
+
+#[allow(dead_code)]
+fn classify_vcs_commit_root_identity_fields(source: &VcsCommitRootIdentitySource) {
+    let VcsCommitRootIdentitySource { leaves } = source;
+    let _ = leaves;
+}
+
+#[allow(dead_code)]
+fn classify_vcs_commit_envelope_identity_fields(source: &VcsCommitEnvelopeIdentitySource) {
+    let VcsCommitEnvelopeIdentitySource {
+        ledger,
+        branch,
+        root,
+    } = source;
+    let _ = (ledger, branch, root);
+}
+
+/// Owner declaration consumed by `xtask check-identities`.
+#[allow(dead_code)]
+pub const PHYSICAL_INSTANCE_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-ledger:physical-instance",
+    "version_const=PHYSICAL_INSTANCE_IDENTITY_VERSION",
+    "version=1",
+    "domain=org.frankensim.fs-ledger.physical-instance.v1",
+    "domain_const=PHYSICAL_INSTANCE_IDENTITY_DOMAIN",
+    "encoder=ledger_physical_instance_identity",
+    "encoder_helpers=identity_schema_is_current",
+    "schema_constants=PHYSICAL_INSTANCE_IDENTITY_VERSION,PHYSICAL_INSTANCE_IDENTITY_DOMAIN,crates/fs-ledger/src/schema.rs#V4,crates/fs-ledger/src/schema.rs#V5",
+    "schema_functions=fresh_ledger_instance_id,decode_ledger_instance_id,LedgerInstanceId::as_bytes,Ledger::instance_id,Ledger::checked_instance_id,Ledger::open,Ledger::migrate,Ledger::seed_instance_id_if_missing,Ledger::read_current_instance_id,identity_schema_is_current",
+    "schema_dependencies=none",
+    "digest=none-opaque-rfc4122-uuid",
+    "encoding=fixed-width-key",
+    "sources=PhysicalInstanceIdentitySource",
+    "source_fields=PhysicalInstanceIdentitySource.uuid:semantic",
+    "source_bindings=PhysicalInstanceIdentitySource.uuid>uuid-bytes",
+    "external_semantic_fields=none",
+    "semantic_fields=uuid-bytes",
+    "excluded_fields=path:location-is-not-instance-authority,path-alias:aliases-share-one-persisted-uuid,handle-address:object-location-is-ephemeral,reopen-count:reopen-is-an-envelope-event",
+    "consumers=Ledger::instance_id,Ledger::checked_instance_id,Ledger::open,fs-ledger:session-mutation-claim,fs-ledger:session-flush-batch",
+    "mutations=uuid-bytes:crates/fs-ledger/src/lib.rs#physical_instance_identity_fields_move_independently",
+    "nonsemantic_mutations=path:crates/fs-ledger/src/lib.rs#physical_instance_excluded_fields_do_not_move_identity,path-alias:crates/fs-ledger/src/lib.rs#physical_instance_excluded_fields_do_not_move_identity,handle-address:crates/fs-ledger/src/lib.rs#physical_instance_excluded_fields_do_not_move_identity,reopen-count:crates/fs-ledger/src/lib.rs#physical_instance_excluded_fields_do_not_move_identity",
+    "field_guard=classify_physical_instance_identity_fields",
+    "transport_guard=ledger_physical_instance_identity",
+    "version_guard=crates/fs-ledger/src/lib.rs#ledger_semantic_identity_versions_fail_closed",
+    "coupling_surface=fs-ledger:physical-instance",
+];
+
+/// Owner declaration consumed by `xtask check-identities`.
+#[allow(dead_code)]
+pub const ARTIFACT_CONTENT_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-ledger:artifact-content",
+    "version_const=ARTIFACT_CONTENT_IDENTITY_VERSION",
+    "version=1",
+    "domain=org.frankensim.fs-ledger.artifact-content.v1",
+    "domain_const=ARTIFACT_CONTENT_IDENTITY_DOMAIN",
+    "encoder=ledger_artifact_content_identity",
+    "encoder_helpers=none",
+    "schema_constants=ARTIFACT_CONTENT_IDENTITY_VERSION,ARTIFACT_CONTENT_IDENTITY_DOMAIN,crates/fs-blake3/src/lib.rs#IV,crates/fs-blake3/src/lib.rs#MSG_PERMUTATION,crates/fs-blake3/src/lib.rs#BLOCK_LEN,crates/fs-blake3/src/lib.rs#CHUNK_LEN,crates/fs-blake3/src/lib.rs#CHUNK_START,crates/fs-blake3/src/lib.rs#CHUNK_END,crates/fs-blake3/src/lib.rs#PARENT,crates/fs-blake3/src/lib.rs#ROOT,crates/fs-blake3/src/lib.rs#MAX_DEPTH",
+    "schema_functions=crates/fs-blake3/src/lib.rs#hash_bytes,crates/fs-blake3/src/lib.rs#Blake3::new,crates/fs-blake3/src/lib.rs#Blake3::update,crates/fs-blake3/src/lib.rs#Blake3::finalize,Ledger::put_artifact,Ledger::artifact_writer,ArtifactWriter::finish,ArtifactWriter::finish_inner,Ledger::insert_inline_artifact,Ledger::read_artifact_chunks_with_info,identity_schema_is_current",
+    "schema_dependencies=none",
+    "digest=blake3-256-plain-hash",
+    "encoding=typed-binary",
+    "sources=ArtifactContentIdentitySource",
+    "source_fields=ArtifactContentIdentitySource.content:semantic",
+    "source_bindings=ArtifactContentIdentitySource.content>content-bytes",
+    "external_semantic_fields=none",
+    "semantic_fields=content-bytes",
+    "excluded_fields=kind:typed-envelope-not-content,metadata:provenance-envelope-not-content,created-at:wall-clock-envelope,chunk-boundaries:storage-layout-only",
+    "consumers=Ledger::put_artifact,ArtifactWriter::finish,Ledger::get_artifact,Ledger::read_artifact_chunks,Ledger::verify_artifact_integrity,fs-ledger:vcs-commit-leaf",
+    "mutations=content-bytes:crates/fs-ledger/src/lib.rs#artifact_content_identity_fields_move_independently",
+    "nonsemantic_mutations=kind:crates/fs-ledger/src/lib.rs#artifact_content_excluded_fields_do_not_move_identity,metadata:crates/fs-ledger/src/lib.rs#artifact_content_excluded_fields_do_not_move_identity,created-at:crates/fs-ledger/src/lib.rs#artifact_content_excluded_fields_do_not_move_identity,chunk-boundaries:crates/fs-ledger/src/lib.rs#artifact_content_excluded_fields_do_not_move_identity",
+    "field_guard=classify_artifact_content_identity_fields",
+    "transport_guard=ledger_artifact_content_identity",
+    "version_guard=crates/fs-ledger/src/lib.rs#ledger_semantic_identity_versions_fail_closed",
+    "coupling_surface=fs-ledger:artifact-content",
+];
+
+/// Owner declaration consumed by `xtask check-identities`.
+#[allow(dead_code)]
+pub const SESSION_MUTATION_CLAIM_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-ledger:session-mutation-claim",
+    "version_const=SESSION_MUTATION_CLAIM_IDENTITY_VERSION",
+    "version=1",
+    "domain=org.frankensim.fs-ledger.session-mutation-claim.v1",
+    "domain_const=SESSION_MUTATION_CLAIM_IDENTITY_DOMAIN",
+    "encoder=ledger_session_mutation_claim_identity",
+    "encoder_helpers=ledger_session_mutation_claim_identity_with_domain,identity_update_len,identity_update_bytes,identity_update_optional_u64",
+    "schema_constants=SESSION_MUTATION_CLAIM_IDENTITY_VERSION,SESSION_MUTATION_CLAIM_IDENTITY_DOMAIN,crates/fs-ledger/src/session_registry.rs#SESSION_REGISTRY_ROW_SCHEMA_VERSION,crates/fs-ledger/src/session_registry.rs#SESSION_CLAIM_HASH_DOMAIN,crates/fs-ledger/src/session_registry.rs#MAX_SESSION_TERMINAL_KIND_BYTES,crates/fs-ledger/src/session_registry.rs#MAX_SESSION_TERMINAL_SCOPE_BYTES,crates/fs-ledger/src/session_registry.rs#MAX_SESSION_CLAIM_PAYLOAD_BYTES",
+    "schema_functions=crates/fs-ledger/src/session_registry.rs#compute_claim_hash,crates/fs-ledger/src/session_registry.rs#require_bounded_ascii,crates/fs-ledger/src/session_registry.rs#validate_claim,crates/fs-ledger/src/session_registry.rs#decode_stored_session_claim,crates/fs-ledger/src/session_registry.rs#StoredSessionMutationClaim::matches,crates/fs-ledger/src/session_registry.rs#Ledger::claim_session_mutation,identity_schema_is_current",
+    "schema_dependencies=fs-ledger:artifact-content,fs-ledger:physical-instance",
+    "digest=blake3-256-domain-separated",
+    "encoding=typed-binary",
+    "sources=SessionMutationClaimIdentitySource",
+    "source_fields=SessionMutationClaimIdentitySource.authority:semantic,SessionMutationClaimIdentitySource.ledger_instance_id:semantic,SessionMutationClaimIdentitySource.governor_hash:semantic,SessionMutationClaimIdentitySource.session_open_hash:semantic,SessionMutationClaimIdentitySource.registry_schema_version:semantic,SessionMutationClaimIdentitySource.kind:semantic,SessionMutationClaimIdentitySource.session:semantic,SessionMutationClaimIdentitySource.ledger_scope:semantic,SessionMutationClaimIdentitySource.generation:semantic,SessionMutationClaimIdentitySource.causal_ordinal:semantic,SessionMutationClaimIdentitySource.payload:semantic",
+    "source_bindings=SessionMutationClaimIdentitySource.authority>authority,SessionMutationClaimIdentitySource.ledger_instance_id>ledger-instance-id,SessionMutationClaimIdentitySource.governor_hash>governor-hash,SessionMutationClaimIdentitySource.session_open_hash>session-open-hash,SessionMutationClaimIdentitySource.registry_schema_version>registry-schema-version,SessionMutationClaimIdentitySource.kind>kind-byte-count+kind-bytes,SessionMutationClaimIdentitySource.session>session,SessionMutationClaimIdentitySource.ledger_scope>ledger-scope-byte-count+ledger-scope-bytes,SessionMutationClaimIdentitySource.generation>generation,SessionMutationClaimIdentitySource.causal_ordinal>causal-ordinal-presence+causal-ordinal-value,SessionMutationClaimIdentitySource.payload>payload-bytes-via-blake3",
+    "external_semantic_fields=identity-domain",
+    "semantic_fields=identity-domain,authority,ledger-instance-id,governor-hash,session-open-hash,registry-schema-version,kind-byte-count,kind-bytes,session,ledger-scope-byte-count,ledger-scope-bytes,generation,causal-ordinal-presence,causal-ordinal-value,payload-bytes-via-blake3",
+    "excluded_fields=claim-rowid:database-envelope-only,created-at:wall-clock-envelope,terminalization-permit:execution-authority-not-claim-content",
+    "consumers=Ledger::claim_session_mutation,Ledger::pending_session_mutation,Ledger::session_mutation_claim,Ledger::append_session_terminal_batch",
+    "mutations=identity-domain:crates/fs-ledger/src/lib.rs#session_mutation_claim_identity_fields_move_independently,authority:crates/fs-ledger/src/lib.rs#session_mutation_claim_identity_fields_move_independently,ledger-instance-id:crates/fs-ledger/src/lib.rs#session_mutation_claim_identity_fields_move_independently,governor-hash:crates/fs-ledger/src/lib.rs#session_mutation_claim_identity_fields_move_independently,session-open-hash:crates/fs-ledger/src/lib.rs#session_mutation_claim_identity_fields_move_independently,registry-schema-version:crates/fs-ledger/src/lib.rs#session_mutation_claim_identity_fields_move_independently,kind-byte-count:crates/fs-ledger/src/lib.rs#session_mutation_claim_identity_fields_move_independently,kind-bytes:crates/fs-ledger/src/lib.rs#session_mutation_claim_identity_fields_move_independently,session:crates/fs-ledger/src/lib.rs#session_mutation_claim_identity_fields_move_independently,ledger-scope-byte-count:crates/fs-ledger/src/lib.rs#session_mutation_claim_identity_fields_move_independently,ledger-scope-bytes:crates/fs-ledger/src/lib.rs#session_mutation_claim_identity_fields_move_independently,generation:crates/fs-ledger/src/lib.rs#session_mutation_claim_identity_fields_move_independently,causal-ordinal-presence:crates/fs-ledger/src/lib.rs#session_mutation_claim_identity_fields_move_independently,causal-ordinal-value:crates/fs-ledger/src/lib.rs#session_mutation_claim_identity_fields_move_independently,payload-bytes-via-blake3:crates/fs-ledger/src/lib.rs#session_mutation_claim_identity_fields_move_independently",
+    "nonsemantic_mutations=claim-rowid:crates/fs-ledger/src/lib.rs#session_mutation_claim_excluded_fields_do_not_move_identity,created-at:crates/fs-ledger/src/lib.rs#session_mutation_claim_excluded_fields_do_not_move_identity,terminalization-permit:crates/fs-ledger/src/lib.rs#session_mutation_claim_excluded_fields_do_not_move_identity",
+    "field_guard=classify_session_mutation_claim_identity_fields",
+    "transport_guard=ledger_session_mutation_claim_identity",
+    "version_guard=crates/fs-ledger/src/lib.rs#ledger_semantic_identity_versions_fail_closed",
+    "coupling_surface=fs-ledger:session-mutation-claim",
+];
+
+/// Owner declaration consumed by `xtask check-identities`.
+#[allow(dead_code)]
+pub const SESSION_TERMINAL_EVENTS_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-ledger:session-terminal-events",
+    "version_const=SESSION_TERMINAL_EVENTS_IDENTITY_VERSION",
+    "version=2",
+    "domain=org.frankensim.fs-ledger.session-terminal-events.v2",
+    "domain_const=SESSION_TERMINAL_EVENTS_IDENTITY_DOMAIN",
+    "encoder=ledger_session_terminal_events_identity",
+    "encoder_helpers=ledger_session_terminal_events_identity_with_schema",
+    "schema_constants=SESSION_TERMINAL_EVENTS_IDENTITY_VERSION,SESSION_TERMINAL_EVENTS_IDENTITY_DOMAIN,crates/fs-ledger/src/session_registry.rs#SESSION_EVENTS_HASH_DOMAIN,crates/fs-ledger/src/session_registry.rs#MAX_SESSION_TERMINAL_EVENT_KIND_BYTES,crates/fs-ledger/src/session_registry.rs#MAX_SESSION_TERMINAL_EVENT_PAYLOAD_BYTES,crates/fs-ledger/src/session_registry.rs#MAX_SESSION_FLUSH_EVENTS",
+    "schema_functions=crates/fs-ledger/src/session_registry.rs#events_hasher,crates/fs-ledger/src/session_registry.rs#update_event_preimage,crates/fs-ledger/src/session_registry.rs#hash_events,crates/fs-ledger/src/session_registry.rs#session_terminal_events_hash,crates/fs-ledger/src/session_registry.rs#validate_event,identity_schema_is_current",
+    "schema_dependencies=none",
+    "digest=blake3-256-domain-separated",
+    "encoding=typed-binary",
+    "sources=SessionTerminalEventIdentitySource",
+    "source_fields=SessionTerminalEventIdentitySource.session:semantic,SessionTerminalEventIdentitySource.timestamp:semantic,SessionTerminalEventIdentitySource.kind:semantic,SessionTerminalEventIdentitySource.payload:semantic",
+    "source_bindings=SessionTerminalEventIdentitySource.session>session-byte-count+session-bytes,SessionTerminalEventIdentitySource.timestamp>timestamp,SessionTerminalEventIdentitySource.kind>kind-byte-count+kind-bytes,SessionTerminalEventIdentitySource.payload>payload-presence+payload-byte-count+payload-bytes",
+    "external_semantic_fields=identity-domain,event-count,event-order",
+    "semantic_fields=identity-domain,event-count,event-order,session-byte-count,session-bytes,timestamp,kind-byte-count,kind-bytes,payload-presence,payload-byte-count,payload-bytes",
+    "excluded_fields=global-event-rowid:storage-envelope-only,owner-link-rowid:storage-envelope-only,batch-rowid:storage-envelope-only",
+    "consumers=session_terminal_events_hash,Ledger::append_session_terminal_batch,Ledger::session_mutation_terminal",
+    "mutations=identity-domain:crates/fs-ledger/src/lib.rs#session_terminal_events_identity_fields_move_independently,event-count:crates/fs-ledger/src/lib.rs#session_terminal_events_identity_fields_move_independently,event-order:crates/fs-ledger/src/lib.rs#session_terminal_events_identity_fields_move_independently,session-byte-count:crates/fs-ledger/src/lib.rs#session_terminal_events_identity_fields_move_independently,session-bytes:crates/fs-ledger/src/lib.rs#session_terminal_events_identity_fields_move_independently,timestamp:crates/fs-ledger/src/lib.rs#session_terminal_events_identity_fields_move_independently,kind-byte-count:crates/fs-ledger/src/lib.rs#session_terminal_events_identity_fields_move_independently,kind-bytes:crates/fs-ledger/src/lib.rs#session_terminal_events_identity_fields_move_independently,payload-presence:crates/fs-ledger/src/lib.rs#session_terminal_events_identity_fields_move_independently,payload-byte-count:crates/fs-ledger/src/lib.rs#session_terminal_events_identity_fields_move_independently,payload-bytes:crates/fs-ledger/src/lib.rs#session_terminal_events_identity_fields_move_independently",
+    "nonsemantic_mutations=global-event-rowid:crates/fs-ledger/src/lib.rs#session_terminal_events_excluded_fields_do_not_move_identity,owner-link-rowid:crates/fs-ledger/src/lib.rs#session_terminal_events_excluded_fields_do_not_move_identity,batch-rowid:crates/fs-ledger/src/lib.rs#session_terminal_events_excluded_fields_do_not_move_identity",
+    "field_guard=classify_session_terminal_events_identity_fields",
+    "transport_guard=ledger_session_terminal_events_identity",
+    "version_guard=crates/fs-ledger/src/lib.rs#ledger_semantic_identity_versions_fail_closed",
+    "coupling_surface=fs-ledger:session-terminal-events",
+];
+
+/// Owner declaration consumed by `xtask check-identities`.
+#[allow(dead_code)]
+pub const SESSION_FLUSH_BATCH_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-ledger:session-flush-batch",
+    "version_const=SESSION_FLUSH_BATCH_IDENTITY_VERSION",
+    "version=2",
+    "domain=org.frankensim.fs-ledger.session-flush-batch.v2",
+    "domain_const=SESSION_FLUSH_BATCH_IDENTITY_DOMAIN",
+    "encoder=ledger_session_flush_batch_identity",
+    "encoder_helpers=ledger_session_flush_batch_identity_with_schema",
+    "schema_constants=SESSION_FLUSH_BATCH_IDENTITY_VERSION,SESSION_FLUSH_BATCH_IDENTITY_DOMAIN,crates/fs-ledger/src/session_registry.rs#SESSION_BATCH_HASH_DOMAIN,crates/fs-ledger/src/session_registry.rs#SESSION_REGISTRY_ROW_SCHEMA_VERSION,crates/fs-ledger/src/session_registry.rs#MAX_SESSION_FLUSH_TERMINALS,crates/fs-ledger/src/session_registry.rs#MAX_SESSION_FLUSH_EVENTS,crates/fs-ledger/src/session_registry.rs#MAX_SESSION_FLUSH_ENCODED_BYTES",
+    "schema_functions=crates/fs-ledger/src/session_registry.rs#prepare_batch,crates/fs-ledger/src/session_registry.rs#update_prepared_terminal_preimage,crates/fs-ledger/src/session_registry.rs#validate_terminal,crates/fs-ledger/src/session_registry.rs#StoredSessionTerminal::matches,crates/fs-ledger/src/session_registry.rs#StoredSessionFlushBatch::matches,crates/fs-ledger/src/session_registry.rs#Ledger::append_session_terminal_batch,crates/fs-ledger/src/session_registry.rs#Ledger::verify_session_flush_batch_members,identity_schema_is_current",
+    "schema_dependencies=fs-ledger:artifact-content,fs-ledger:physical-instance,fs-ledger:session-mutation-claim,fs-ledger:session-terminal-events",
+    "digest=blake3-256-domain-separated",
+    "encoding=typed-binary",
+    "sources=SessionFlushBatchIdentitySource,SessionFlushTerminalIdentitySource",
+    "source_fields=SessionFlushBatchIdentitySource.ledger_instance_id:semantic,SessionFlushBatchIdentitySource.registry_schema_version:semantic,SessionFlushBatchIdentitySource.terminals:semantic,SessionFlushTerminalIdentitySource.authority:semantic,SessionFlushTerminalIdentitySource.claim_hash:semantic,SessionFlushTerminalIdentitySource.receipt_hash:semantic,SessionFlushTerminalIdentitySource.event_count:semantic,SessionFlushTerminalIdentitySource.events_hash:semantic,SessionFlushTerminalIdentitySource.encoded_bytes:semantic",
+    "source_bindings=SessionFlushBatchIdentitySource.ledger_instance_id>ledger-instance-id,SessionFlushBatchIdentitySource.registry_schema_version>registry-schema-version,SessionFlushBatchIdentitySource.terminals>terminal-count+terminal-order,SessionFlushTerminalIdentitySource.authority>authority,SessionFlushTerminalIdentitySource.claim_hash>claim-hash,SessionFlushTerminalIdentitySource.receipt_hash>receipt-hash,SessionFlushTerminalIdentitySource.event_count>event-count,SessionFlushTerminalIdentitySource.events_hash>events-hash,SessionFlushTerminalIdentitySource.encoded_bytes>encoded-byte-count",
+    "external_semantic_fields=identity-domain",
+    "semantic_fields=identity-domain,ledger-instance-id,registry-schema-version,terminal-count,terminal-order,authority,claim-hash,receipt-hash,event-count,events-hash,encoded-byte-count",
+    "excluded_fields=batch-rowid:storage-envelope-only,created-at:wall-clock-envelope,terminal-rowid:storage-envelope-only,terminalization-permit:execution-authority-not-batch-content",
+    "consumers=Ledger::append_session_terminal_batch,Ledger::session_mutation_terminal,Ledger::session_flush_batch",
+    "mutations=identity-domain:crates/fs-ledger/src/lib.rs#session_flush_batch_identity_fields_move_independently,ledger-instance-id:crates/fs-ledger/src/lib.rs#session_flush_batch_identity_fields_move_independently,registry-schema-version:crates/fs-ledger/src/lib.rs#session_flush_batch_identity_fields_move_independently,terminal-count:crates/fs-ledger/src/lib.rs#session_flush_batch_identity_fields_move_independently,terminal-order:crates/fs-ledger/src/lib.rs#session_flush_batch_identity_fields_move_independently,authority:crates/fs-ledger/src/lib.rs#session_flush_batch_identity_fields_move_independently,claim-hash:crates/fs-ledger/src/lib.rs#session_flush_batch_identity_fields_move_independently,receipt-hash:crates/fs-ledger/src/lib.rs#session_flush_batch_identity_fields_move_independently,event-count:crates/fs-ledger/src/lib.rs#session_flush_batch_identity_fields_move_independently,events-hash:crates/fs-ledger/src/lib.rs#session_flush_batch_identity_fields_move_independently,encoded-byte-count:crates/fs-ledger/src/lib.rs#session_flush_batch_identity_fields_move_independently",
+    "nonsemantic_mutations=batch-rowid:crates/fs-ledger/src/lib.rs#session_flush_batch_excluded_fields_do_not_move_identity,created-at:crates/fs-ledger/src/lib.rs#session_flush_batch_excluded_fields_do_not_move_identity,terminal-rowid:crates/fs-ledger/src/lib.rs#session_flush_batch_excluded_fields_do_not_move_identity,terminalization-permit:crates/fs-ledger/src/lib.rs#session_flush_batch_excluded_fields_do_not_move_identity",
+    "field_guard=classify_session_flush_batch_identity_fields",
+    "transport_guard=ledger_session_flush_batch_identity",
+    "version_guard=crates/fs-ledger/src/lib.rs#ledger_semantic_identity_versions_fail_closed",
+    "coupling_surface=fs-ledger:session-flush-batch",
+];
+
+/// Owner declaration consumed by `xtask check-identities`.
+#[allow(dead_code)]
+pub const SOURCE_ORIGIN_REQUEST_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-ledger:source-origin-request",
+    "version_const=SOURCE_ORIGIN_REQUEST_IDENTITY_VERSION",
+    "version=1",
+    "domain=org.frankensim.fs-ledger.source-origin-request.v1",
+    "domain_const=SOURCE_ORIGIN_REQUEST_IDENTITY_DOMAIN",
+    "encoder=ledger_source_origin_request_identity",
+    "encoder_helpers=ledger_source_origin_request_identity_with_schema,identity_push_len,identity_push_field,identity_transport_has_versioned_domain",
+    "schema_constants=SOURCE_ORIGIN_REQUEST_IDENTITY_VERSION,SOURCE_ORIGIN_REQUEST_IDENTITY_DOMAIN,SOURCE_ORIGIN_REQUEST_PREIMAGE_DOMAIN,crates/fs-ledger/src/colors.rs#SOURCE_ORIGIN_REQUEST_DOMAIN,crates/fs-evidence/src/color.rs#COLOR_ALGEBRA_VERSION",
+    "schema_functions=crates/fs-ledger/src/colors.rs#SourceOriginRequest::canonical_bytes,crates/fs-ledger/src/colors.rs#push_source_origin,crates/fs-ledger/src/colors.rs#source_origin_canonical_bytes,crates/fs-ledger/src/colors.rs#push_len,crates/fs-ledger/src/colors.rs#push_field,crates/fs-ledger/src/colors.rs#numerical_kind_tag,crates/fs-evidence/src/color.rs#Color::canonical_bytes,identity_transport_has_versioned_domain,identity_schema_is_current",
+    "schema_dependencies=fs-ledger:artifact-content",
+    "digest=none-exact-canonical-signing-transport",
+    "encoding=canonical-transport-exact-bits",
+    "sources=SourceOriginRequestIdentitySource",
+    "source_fields=SourceOriginRequestIdentitySource.node_name:semantic,SourceOriginRequestIdentitySource.claimed_color:semantic,SourceOriginRequestIdentitySource.origin:semantic",
+    "source_bindings=SourceOriginRequestIdentitySource.node_name>node-name-byte-count+node-name,SourceOriginRequestIdentitySource.claimed_color>claimed-color-byte-count+claimed-color-canonical-bytes,SourceOriginRequestIdentitySource.origin>typed-origin-canonical-bytes",
+    "external_semantic_fields=transport-version,domain-byte-count,preimage-domain",
+    "semantic_fields=transport-version,domain-byte-count,preimage-domain,node-name-byte-count,node-name,claimed-color-byte-count,claimed-color-canonical-bytes,typed-origin-canonical-bytes",
+    "excluded_fields=verifier-policy-fingerprint:callback-result-not-request,callback-order:execution-envelope-only",
+    "consumers=SourceOriginRequest::canonical_bytes,SourceOriginVerifier::verify,ColorGraph::source_with_origin",
+    "mutations=transport-version:crates/fs-ledger/src/lib.rs#source_origin_request_identity_fields_move_independently,domain-byte-count:crates/fs-ledger/src/lib.rs#source_origin_request_identity_fields_move_independently,preimage-domain:crates/fs-ledger/src/lib.rs#source_origin_request_identity_fields_move_independently,node-name-byte-count:crates/fs-ledger/src/lib.rs#source_origin_request_identity_fields_move_independently,node-name:crates/fs-ledger/src/lib.rs#source_origin_request_identity_fields_move_independently,claimed-color-byte-count:crates/fs-ledger/src/lib.rs#source_origin_request_identity_fields_move_independently,claimed-color-canonical-bytes:crates/fs-ledger/src/lib.rs#source_origin_request_identity_fields_move_independently,typed-origin-canonical-bytes:crates/fs-ledger/src/lib.rs#source_origin_request_identity_fields_move_independently",
+    "nonsemantic_mutations=verifier-policy-fingerprint:crates/fs-ledger/src/lib.rs#source_origin_request_excluded_fields_do_not_move_identity,callback-order:crates/fs-ledger/src/lib.rs#source_origin_request_excluded_fields_do_not_move_identity",
+    "field_guard=classify_source_origin_request_identity_fields",
+    "transport_guard=ledger_source_origin_request_transport_guard",
+    "version_guard=crates/fs-ledger/src/lib.rs#ledger_semantic_identity_versions_fail_closed",
+    "coupling_surface=fs-ledger:source-origin-request",
+];
+
+/// Owner declaration consumed by `xtask check-identities`.
+#[allow(dead_code)]
+pub const DERIVED_COLOR_WAIVER_SUBJECT_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-ledger:derived-color-waiver-subject",
+    "version_const=DERIVED_COLOR_WAIVER_SUBJECT_IDENTITY_VERSION",
+    "version=3",
+    "domain=org.frankensim.fs-ledger.derived-color-waiver-subject.v3",
+    "domain_const=DERIVED_COLOR_WAIVER_SUBJECT_IDENTITY_DOMAIN",
+    "encoder=ledger_derived_color_waiver_subject_identity",
+    "encoder_helpers=ledger_derived_color_waiver_subject_identity_with_schema",
+    "schema_constants=DERIVED_COLOR_WAIVER_SUBJECT_IDENTITY_VERSION,DERIVED_COLOR_WAIVER_SUBJECT_IDENTITY_DOMAIN,COLOR_WAIVER_SUBJECT_PREIMAGE_DOMAIN,crates/fs-ledger/src/colors.rs#WAIVER_PAYLOAD_DOMAIN,crates/fs-ledger/src/colors.rs#WAIVER_SCOPE_COLOR_UPGRADE",
+    "schema_functions=crates/fs-ledger/src/colors.rs#WaiverGrant::signing_payload,crates/fs-ledger/src/colors.rs#WaiverGrant::signing_payload_for,crates/fs-ledger/src/colors.rs#WaiverGrant::payload_version,crates/fs-ledger/src/colors.rs#interval_op_tag,crates/fs-ledger/src/colors.rs#push_len,crates/fs-ledger/src/colors.rs#push_field,crates/fs-ledger/src/colors.rs#validate_waiver_grant,identity_transport_has_versioned_domain,identity_schema_is_current",
+    "schema_dependencies=none",
+    "digest=none-exact-canonical-signing-transport",
+    "encoding=canonical-transport-exact-bits",
+    "sources=DerivedColorWaiverSubjectIdentitySource",
+    "source_fields=DerivedColorWaiverSubjectIdentitySource.operation_tag:semantic,DerivedColorWaiverSubjectIdentitySource.key_id:semantic,DerivedColorWaiverSubjectIdentitySource.scope:semantic,DerivedColorWaiverSubjectIdentitySource.node_name:semantic,DerivedColorWaiverSubjectIdentitySource.claimed_color:semantic,DerivedColorWaiverSubjectIdentitySource.annotation_id:semantic,DerivedColorWaiverSubjectIdentitySource.annotation_signer:semantic,DerivedColorWaiverSubjectIdentitySource.annotation_reason:semantic,DerivedColorWaiverSubjectIdentitySource.parent_hashes:semantic,DerivedColorWaiverSubjectIdentitySource.expires_day:semantic,DerivedColorWaiverSubjectIdentitySource.signature:nonsemantic:self-signature-is-outside-its-subject",
+    "source_bindings=DerivedColorWaiverSubjectIdentitySource.operation_tag>operation-tag,DerivedColorWaiverSubjectIdentitySource.key_id>key-id-byte-count+key-id,DerivedColorWaiverSubjectIdentitySource.scope>scope-byte-count+scope,DerivedColorWaiverSubjectIdentitySource.node_name>node-name-byte-count+node-name,DerivedColorWaiverSubjectIdentitySource.claimed_color>claimed-color-byte-count+claimed-color-canonical-bytes,DerivedColorWaiverSubjectIdentitySource.annotation_id>annotation-id-byte-count+annotation-id,DerivedColorWaiverSubjectIdentitySource.annotation_signer>annotation-signer-byte-count+annotation-signer,DerivedColorWaiverSubjectIdentitySource.annotation_reason>annotation-reason-byte-count+annotation-reason,DerivedColorWaiverSubjectIdentitySource.parent_hashes>parent-count+parent-order+parent-hashes,DerivedColorWaiverSubjectIdentitySource.expires_day>expires-day",
+    "external_semantic_fields=transport-version,domain-byte-count,preimage-domain",
+    "semantic_fields=transport-version,domain-byte-count,preimage-domain,operation-tag,key-id-byte-count,key-id,scope-byte-count,scope,node-name-byte-count,node-name,claimed-color-byte-count,claimed-color-canonical-bytes,annotation-id-byte-count,annotation-id,annotation-signer-byte-count,annotation-signer,annotation-reason-byte-count,annotation-reason,parent-count,parent-order,parent-hashes,expires-day",
+    "excluded_fields=admission-day:verification-context-not-signed-subject,policy-fingerprint:verifier-result-not-signed-subject",
+    "consumers=WaiverGrant::signing_payload,WaiverVerifier::verify,ColorGraph::derive_waived,ColorGraph::verify_replay",
+    "mutations=transport-version:crates/fs-ledger/src/lib.rs#derived_color_waiver_subject_identity_fields_move_independently,domain-byte-count:crates/fs-ledger/src/lib.rs#derived_color_waiver_subject_identity_fields_move_independently,preimage-domain:crates/fs-ledger/src/lib.rs#derived_color_waiver_subject_identity_fields_move_independently,operation-tag:crates/fs-ledger/src/lib.rs#derived_color_waiver_subject_identity_fields_move_independently,key-id-byte-count:crates/fs-ledger/src/lib.rs#derived_color_waiver_subject_identity_fields_move_independently,key-id:crates/fs-ledger/src/lib.rs#derived_color_waiver_subject_identity_fields_move_independently,scope-byte-count:crates/fs-ledger/src/lib.rs#derived_color_waiver_subject_identity_fields_move_independently,scope:crates/fs-ledger/src/lib.rs#derived_color_waiver_subject_identity_fields_move_independently,node-name-byte-count:crates/fs-ledger/src/lib.rs#derived_color_waiver_subject_identity_fields_move_independently,node-name:crates/fs-ledger/src/lib.rs#derived_color_waiver_subject_identity_fields_move_independently,claimed-color-byte-count:crates/fs-ledger/src/lib.rs#derived_color_waiver_subject_identity_fields_move_independently,claimed-color-canonical-bytes:crates/fs-ledger/src/lib.rs#derived_color_waiver_subject_identity_fields_move_independently,annotation-id-byte-count:crates/fs-ledger/src/lib.rs#derived_color_waiver_subject_identity_fields_move_independently,annotation-id:crates/fs-ledger/src/lib.rs#derived_color_waiver_subject_identity_fields_move_independently,annotation-signer-byte-count:crates/fs-ledger/src/lib.rs#derived_color_waiver_subject_identity_fields_move_independently,annotation-signer:crates/fs-ledger/src/lib.rs#derived_color_waiver_subject_identity_fields_move_independently,annotation-reason-byte-count:crates/fs-ledger/src/lib.rs#derived_color_waiver_subject_identity_fields_move_independently,annotation-reason:crates/fs-ledger/src/lib.rs#derived_color_waiver_subject_identity_fields_move_independently,parent-count:crates/fs-ledger/src/lib.rs#derived_color_waiver_subject_identity_fields_move_independently,parent-order:crates/fs-ledger/src/lib.rs#derived_color_waiver_subject_identity_fields_move_independently,parent-hashes:crates/fs-ledger/src/lib.rs#derived_color_waiver_subject_identity_fields_move_independently,expires-day:crates/fs-ledger/src/lib.rs#derived_color_waiver_subject_identity_fields_move_independently",
+    "nonsemantic_mutations=DerivedColorWaiverSubjectIdentitySource.signature:crates/fs-ledger/src/lib.rs#derived_color_waiver_subject_excluded_fields_do_not_move_identity,admission-day:crates/fs-ledger/src/lib.rs#derived_color_waiver_subject_excluded_fields_do_not_move_identity,policy-fingerprint:crates/fs-ledger/src/lib.rs#derived_color_waiver_subject_excluded_fields_do_not_move_identity",
+    "field_guard=classify_derived_color_waiver_subject_identity_fields",
+    "transport_guard=ledger_derived_color_waiver_subject_transport_guard",
+    "version_guard=crates/fs-ledger/src/lib.rs#ledger_semantic_identity_versions_fail_closed",
+    "coupling_surface=fs-ledger:derived-color-waiver-subject",
+];
+
+/// Owner declaration consumed by `xtask check-identities`.
+#[allow(dead_code)]
+pub const SOURCE_COLOR_WAIVER_SUBJECT_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-ledger:source-color-waiver-subject",
+    "version_const=SOURCE_COLOR_WAIVER_SUBJECT_IDENTITY_VERSION",
+    "version=4",
+    "domain=org.frankensim.fs-ledger.source-color-waiver-subject.v4",
+    "domain_const=SOURCE_COLOR_WAIVER_SUBJECT_IDENTITY_DOMAIN",
+    "encoder=ledger_source_color_waiver_subject_identity",
+    "encoder_helpers=ledger_source_color_waiver_subject_identity_with_schema",
+    "schema_constants=SOURCE_COLOR_WAIVER_SUBJECT_IDENTITY_VERSION,SOURCE_COLOR_WAIVER_SUBJECT_IDENTITY_DOMAIN,COLOR_WAIVER_SUBJECT_PREIMAGE_DOMAIN,crates/fs-ledger/src/colors.rs#WAIVER_PAYLOAD_DOMAIN,crates/fs-ledger/src/colors.rs#WAIVER_SCOPE_SOURCE_COLOR",
+    "schema_functions=crates/fs-ledger/src/colors.rs#WaiverGrant::signing_payload_source,crates/fs-ledger/src/colors.rs#WaiverGrant::signing_payload_for,crates/fs-ledger/src/colors.rs#WaiverGrant::payload_version,crates/fs-ledger/src/colors.rs#push_len,crates/fs-ledger/src/colors.rs#push_field,crates/fs-ledger/src/colors.rs#validate_waiver_grant,identity_transport_has_versioned_domain,identity_schema_is_current",
+    "schema_dependencies=none",
+    "digest=none-exact-canonical-signing-transport",
+    "encoding=canonical-transport-exact-bits",
+    "sources=SourceColorWaiverSubjectIdentitySource",
+    "source_fields=SourceColorWaiverSubjectIdentitySource.key_id:semantic,SourceColorWaiverSubjectIdentitySource.scope:semantic,SourceColorWaiverSubjectIdentitySource.node_name:semantic,SourceColorWaiverSubjectIdentitySource.claimed_color:semantic,SourceColorWaiverSubjectIdentitySource.annotation_id:semantic,SourceColorWaiverSubjectIdentitySource.annotation_signer:semantic,SourceColorWaiverSubjectIdentitySource.annotation_reason:semantic,SourceColorWaiverSubjectIdentitySource.parent_hashes:semantic,SourceColorWaiverSubjectIdentitySource.expires_day:semantic,SourceColorWaiverSubjectIdentitySource.signature:nonsemantic:self-signature-is-outside-its-subject",
+    "source_bindings=SourceColorWaiverSubjectIdentitySource.key_id>key-id-byte-count+key-id,SourceColorWaiverSubjectIdentitySource.scope>scope-byte-count+scope,SourceColorWaiverSubjectIdentitySource.node_name>node-name-byte-count+node-name,SourceColorWaiverSubjectIdentitySource.claimed_color>claimed-color-byte-count+claimed-color-canonical-bytes,SourceColorWaiverSubjectIdentitySource.annotation_id>annotation-id-byte-count+annotation-id,SourceColorWaiverSubjectIdentitySource.annotation_signer>annotation-signer-byte-count+annotation-signer,SourceColorWaiverSubjectIdentitySource.annotation_reason>annotation-reason-byte-count+annotation-reason,SourceColorWaiverSubjectIdentitySource.parent_hashes>parent-count+parent-order+parent-hashes,SourceColorWaiverSubjectIdentitySource.expires_day>expires-day",
+    "external_semantic_fields=transport-version,domain-byte-count,preimage-domain,source-operation-sentinel",
+    "semantic_fields=transport-version,domain-byte-count,preimage-domain,source-operation-sentinel,key-id-byte-count,key-id,scope-byte-count,scope,node-name-byte-count,node-name,claimed-color-byte-count,claimed-color-canonical-bytes,annotation-id-byte-count,annotation-id,annotation-signer-byte-count,annotation-signer,annotation-reason-byte-count,annotation-reason,parent-count,parent-order,parent-hashes,expires-day",
+    "excluded_fields=admission-day:verification-context-not-signed-subject,policy-fingerprint:verifier-result-not-signed-subject",
+    "consumers=WaiverGrant::signing_payload_source,WaiverVerifier::verify,ColorGraph::source_waived,ColorGraph::verify_replay",
+    "mutations=transport-version:crates/fs-ledger/src/lib.rs#source_color_waiver_subject_identity_fields_move_independently,domain-byte-count:crates/fs-ledger/src/lib.rs#source_color_waiver_subject_identity_fields_move_independently,preimage-domain:crates/fs-ledger/src/lib.rs#source_color_waiver_subject_identity_fields_move_independently,source-operation-sentinel:crates/fs-ledger/src/lib.rs#source_color_waiver_subject_identity_fields_move_independently,key-id-byte-count:crates/fs-ledger/src/lib.rs#source_color_waiver_subject_identity_fields_move_independently,key-id:crates/fs-ledger/src/lib.rs#source_color_waiver_subject_identity_fields_move_independently,scope-byte-count:crates/fs-ledger/src/lib.rs#source_color_waiver_subject_identity_fields_move_independently,scope:crates/fs-ledger/src/lib.rs#source_color_waiver_subject_identity_fields_move_independently,node-name-byte-count:crates/fs-ledger/src/lib.rs#source_color_waiver_subject_identity_fields_move_independently,node-name:crates/fs-ledger/src/lib.rs#source_color_waiver_subject_identity_fields_move_independently,claimed-color-byte-count:crates/fs-ledger/src/lib.rs#source_color_waiver_subject_identity_fields_move_independently,claimed-color-canonical-bytes:crates/fs-ledger/src/lib.rs#source_color_waiver_subject_identity_fields_move_independently,annotation-id-byte-count:crates/fs-ledger/src/lib.rs#source_color_waiver_subject_identity_fields_move_independently,annotation-id:crates/fs-ledger/src/lib.rs#source_color_waiver_subject_identity_fields_move_independently,annotation-signer-byte-count:crates/fs-ledger/src/lib.rs#source_color_waiver_subject_identity_fields_move_independently,annotation-signer:crates/fs-ledger/src/lib.rs#source_color_waiver_subject_identity_fields_move_independently,annotation-reason-byte-count:crates/fs-ledger/src/lib.rs#source_color_waiver_subject_identity_fields_move_independently,annotation-reason:crates/fs-ledger/src/lib.rs#source_color_waiver_subject_identity_fields_move_independently,parent-count:crates/fs-ledger/src/lib.rs#source_color_waiver_subject_identity_fields_move_independently,parent-order:crates/fs-ledger/src/lib.rs#source_color_waiver_subject_identity_fields_move_independently,parent-hashes:crates/fs-ledger/src/lib.rs#source_color_waiver_subject_identity_fields_move_independently,expires-day:crates/fs-ledger/src/lib.rs#source_color_waiver_subject_identity_fields_move_independently",
+    "nonsemantic_mutations=SourceColorWaiverSubjectIdentitySource.signature:crates/fs-ledger/src/lib.rs#source_color_waiver_subject_excluded_fields_do_not_move_identity,admission-day:crates/fs-ledger/src/lib.rs#source_color_waiver_subject_excluded_fields_do_not_move_identity,policy-fingerprint:crates/fs-ledger/src/lib.rs#source_color_waiver_subject_excluded_fields_do_not_move_identity",
+    "field_guard=classify_source_color_waiver_subject_identity_fields",
+    "transport_guard=ledger_source_color_waiver_subject_transport_guard",
+    "version_guard=crates/fs-ledger/src/lib.rs#ledger_semantic_identity_versions_fail_closed",
+    "coupling_surface=fs-ledger:source-color-waiver-subject",
+];
+
+/// Owner declaration consumed by `xtask check-identities`.
+#[allow(dead_code)]
+pub const COLOR_NODE_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-ledger:color-node",
+    "version_const=COLOR_NODE_IDENTITY_VERSION",
+    "version=9",
+    "domain=org.frankensim.fs-ledger.color-node.v9",
+    "domain_const=COLOR_NODE_IDENTITY_DOMAIN",
+    "encoder=ledger_color_node_identity",
+    "encoder_helpers=ledger_color_node_identity_with_schema",
+    "schema_constants=COLOR_NODE_IDENTITY_VERSION,COLOR_NODE_IDENTITY_DOMAIN,COLOR_NODE_PREIMAGE_DOMAIN,crates/fs-ledger/src/colors.rs#COLOR_NODE_HASH_ENCODING_VERSION,crates/fs-ledger/src/colors.rs#COLOR_NODE_HASH_DOMAIN,crates/fs-ledger/src/colors.rs#COLOR_WRITE_ROW_SCHEMA_VERSION,crates/fs-evidence/src/color.rs#COLOR_ALGEBRA_VERSION",
+    "schema_functions=crates/fs-ledger/src/colors.rs#ColorGraph::node_hash,crates/fs-ledger/src/colors.rs#ColorGraph::node_hash_from_canonical_payloads,crates/fs-ledger/src/colors.rs#source_origin_canonical_bytes,crates/fs-ledger/src/colors.rs#WaiverGrant::signing_payload_for,crates/fs-ledger/src/colors.rs#push_len,crates/fs-ledger/src/colors.rs#push_field,crates/fs-ledger/src/colors.rs#interval_op_tag,crates/fs-evidence/src/color.rs#Color::canonical_bytes,identity_schema_is_current",
+    "schema_dependencies=fs-ledger:derived-color-waiver-subject,fs-ledger:source-color-waiver-subject,fs-ledger:source-origin-request",
+    "digest=blake3-256-over-canonical-provenance-transport",
+    "encoding=typed-binary",
+    "sources=ColorNodeIdentitySource",
+    "source_fields=ColorNodeIdentitySource.node_id:nonsemantic:ledger-local-row-identity,ColorNodeIdentitySource.operation_tag:semantic,ColorNodeIdentitySource.name:semantic,ColorNodeIdentitySource.color:semantic,ColorNodeIdentitySource.parent_local_ids:nonsemantic:ledger-local-parent-addresses,ColorNodeIdentitySource.parent_hashes:semantic,ColorNodeIdentitySource.demotions:semantic,ColorNodeIdentitySource.origin:semantic,ColorNodeIdentitySource.origin_policy_fingerprint:semantic,ColorNodeIdentitySource.waiver_dependencies:semantic,ColorNodeIdentitySource.waiver:semantic,ColorNodeIdentitySource.grant_payload:semantic,ColorNodeIdentitySource.grant_signature:semantic,ColorNodeIdentitySource.waiver_policy_fingerprint:semantic,ColorNodeIdentitySource.waiver_admission_day:semantic,ColorNodeIdentitySource.stored_hash:derived:recomputed-identity-output",
+    "source_bindings=ColorNodeIdentitySource.operation_tag>operation-presence+operation-tag,ColorNodeIdentitySource.name>node-name-byte-count+node-name,ColorNodeIdentitySource.color>color-byte-count+color-canonical-bytes,ColorNodeIdentitySource.parent_hashes>parent-count+parent-order+parent-hashes,ColorNodeIdentitySource.demotions>demotion-count+demotion-order+demotion-canonical-bytes,ColorNodeIdentitySource.origin>origin-presence+origin-canonical-bytes,ColorNodeIdentitySource.origin_policy_fingerprint>origin-policy-presence+origin-policy-fingerprint,ColorNodeIdentitySource.waiver_dependencies>waiver-dependency-count+waiver-dependency-order+waiver-dependency-canonical-bytes,ColorNodeIdentitySource.waiver>waiver-presence+waiver-canonical-bytes,ColorNodeIdentitySource.grant_payload>grant-presence+grant-payload,ColorNodeIdentitySource.grant_signature>grant-signature,ColorNodeIdentitySource.waiver_policy_fingerprint>waiver-policy-presence+waiver-policy-fingerprint,ColorNodeIdentitySource.waiver_admission_day>waiver-admission-day-presence+waiver-admission-day",
+    "external_semantic_fields=transport-version,domain-byte-count,preimage-domain",
+    "semantic_fields=transport-version,domain-byte-count,preimage-domain,operation-presence,operation-tag,node-name-byte-count,node-name,color-byte-count,color-canonical-bytes,parent-count,parent-order,parent-hashes,demotion-count,demotion-order,demotion-canonical-bytes,origin-presence,origin-canonical-bytes,origin-policy-presence,origin-policy-fingerprint,waiver-dependency-count,waiver-dependency-order,waiver-dependency-canonical-bytes,waiver-presence,waiver-canonical-bytes,grant-presence,grant-payload,grant-signature,waiver-policy-presence,waiver-policy-fingerprint,waiver-admission-day-presence,waiver-admission-day",
+    "excluded_fields=display-json:audit-rendering-is-not-canonical,write-timestamp:wall-clock-envelope,color-row-schema:storage-envelope-version",
+    "consumers=ColorGraph::source,ColorGraph::source_with_origin,ColorGraph::source_waived,ColorGraph::derive,ColorGraph::derive_waived,ColorGraph::verify_replay,ColorNode::hash",
+    "mutations=transport-version:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently,domain-byte-count:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently,preimage-domain:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently,operation-presence:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently,operation-tag:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently,node-name-byte-count:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently,node-name:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently,color-byte-count:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently,color-canonical-bytes:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently,parent-count:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently,parent-order:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently,parent-hashes:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently,demotion-count:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently,demotion-order:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently,demotion-canonical-bytes:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently,origin-presence:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently,origin-canonical-bytes:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently,origin-policy-presence:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently,origin-policy-fingerprint:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently,waiver-dependency-count:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently,waiver-dependency-order:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently,waiver-dependency-canonical-bytes:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently,waiver-presence:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently,waiver-canonical-bytes:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently,grant-presence:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently,grant-payload:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently,grant-signature:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently,waiver-policy-presence:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently,waiver-policy-fingerprint:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently,waiver-admission-day-presence:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently,waiver-admission-day:crates/fs-ledger/src/lib.rs#color_node_identity_fields_move_independently",
+    "nonsemantic_mutations=ColorNodeIdentitySource.node_id:crates/fs-ledger/src/lib.rs#color_node_excluded_fields_do_not_move_identity,ColorNodeIdentitySource.parent_local_ids:crates/fs-ledger/src/lib.rs#color_node_excluded_fields_do_not_move_identity,display-json:crates/fs-ledger/src/lib.rs#color_node_excluded_fields_do_not_move_identity,write-timestamp:crates/fs-ledger/src/lib.rs#color_node_excluded_fields_do_not_move_identity,color-row-schema:crates/fs-ledger/src/lib.rs#color_node_excluded_fields_do_not_move_identity",
+    "field_guard=classify_color_node_identity_fields",
+    "transport_guard=ledger_color_node_identity",
+    "version_guard=crates/fs-ledger/src/lib.rs#ledger_semantic_identity_versions_fail_closed",
+    "coupling_surface=fs-ledger:color-node",
+];
+
+/// Owner declaration consumed by `xtask check-identities`.
+#[allow(dead_code)]
+pub const COLOR_ADMISSION_POLICY_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-ledger:color-admission-policy",
+    "version_const=COLOR_ADMISSION_POLICY_IDENTITY_VERSION",
+    "version=1",
+    "domain=org.frankensim.fs-ledger.color-admission-policy.v1",
+    "domain_const=COLOR_ADMISSION_POLICY_IDENTITY_DOMAIN",
+    "encoder=ledger_color_admission_policy_identity",
+    "encoder_helpers=ledger_color_admission_policy_identity_with_schema",
+    "schema_constants=COLOR_ADMISSION_POLICY_IDENTITY_VERSION,COLOR_ADMISSION_POLICY_IDENTITY_DOMAIN,COLOR_ADMISSION_POLICY_PREIMAGE_DOMAIN,crates/fs-ledger/src/colors.rs#COLOR_WRITE_ROW_SCHEMA_VERSION,crates/fs-evidence/src/color.rs#COLOR_ALGEBRA_VERSION",
+    "schema_functions=crates/fs-ledger/src/colors.rs#color_admission_policy_fingerprint,crates/fs-ledger/src/colors.rs#ColorGraph::admission_receipt,crates/fs-ledger/src/colors.rs#ColorGraph::admission_receipt_in_regime,crates/fs-ledger/src/colors.rs#LedgerColorAdmissionVerifier::verify,identity_schema_is_current",
+    "schema_dependencies=fs-ledger:color-node",
+    "digest=blake3-256-policy-fingerprint",
+    "encoding=typed-binary",
+    "sources=ColorAdmissionPolicyIdentitySource",
+    "source_fields=ColorAdmissionPolicyIdentitySource.color_write_row_schema_version:semantic,ColorAdmissionPolicyIdentitySource.color_algebra_version:semantic",
+    "source_bindings=ColorAdmissionPolicyIdentitySource.color_write_row_schema_version>color-write-row-schema-version,ColorAdmissionPolicyIdentitySource.color_algebra_version>color-algebra-version",
+    "external_semantic_fields=preimage-domain",
+    "semantic_fields=preimage-domain,color-write-row-schema-version,color-algebra-version",
+    "excluded_fields=build-version:build-envelope-not-policy-semantics,wall-clock:admission-time-not-policy-identity",
+    "consumers=color_admission_policy_fingerprint,ColorGraph::admission_receipt,LedgerColorAdmissionVerifier::verify,fs-evidence::AdmittedColor",
+    "mutations=preimage-domain:crates/fs-ledger/src/lib.rs#color_admission_policy_identity_fields_move_independently,color-write-row-schema-version:crates/fs-ledger/src/lib.rs#color_admission_policy_identity_fields_move_independently,color-algebra-version:crates/fs-ledger/src/lib.rs#color_admission_policy_identity_fields_move_independently",
+    "nonsemantic_mutations=build-version:crates/fs-ledger/src/lib.rs#color_admission_policy_excluded_fields_do_not_move_identity,wall-clock:crates/fs-ledger/src/lib.rs#color_admission_policy_excluded_fields_do_not_move_identity",
+    "field_guard=classify_color_admission_policy_identity_fields",
+    "transport_guard=ledger_color_admission_policy_identity",
+    "version_guard=crates/fs-ledger/src/lib.rs#ledger_semantic_identity_versions_fail_closed",
+    "coupling_surface=fs-ledger:color-admission-policy",
+];
+
+/// Owner declaration consumed by `xtask check-identities`.
+#[allow(dead_code)]
+pub const VCS_LEDGER_LINEAGE_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-ledger:vcs-ledger-lineage",
+    "version_const=VCS_LEDGER_LINEAGE_IDENTITY_VERSION",
+    "version=1",
+    "domain=org.frankensim.fs-ledger.vcs-ledger-lineage.v1",
+    "domain_const=VCS_LEDGER_LINEAGE_IDENTITY_DOMAIN",
+    "encoder=ledger_vcs_ledger_lineage_identity",
+    "encoder_helpers=ledger_vcs_ledger_lineage_identity_with_domain",
+    "schema_constants=VCS_LEDGER_LINEAGE_IDENTITY_VERSION,VCS_LEDGER_LINEAGE_IDENTITY_DOMAIN,VCS_LEDGER_LINEAGE_PREIMAGE_DOMAIN,crates/fs-ledger/src/vcs.rs#LEDGER_IDENTITY_DOMAIN,VCS_IDENTITY_EVENT_KIND",
+    "schema_functions=crates/fs-ledger/src/vcs.rs#hash_frame,crates/fs-ledger/src/vcs.rs#domain_hasher,crates/fs-ledger/src/vcs.rs#hash_field,crates/fs-ledger/src/vcs.rs#framed_hash,crates/fs-ledger/src/vcs.rs#Ledger::vcs_identity,Ledger::append_vcs_identity_event,identity_schema_is_current",
+    "schema_dependencies=none",
+    "digest=blake3-256-domain-separated",
+    "encoding=typed-binary",
+    "sources=VcsLedgerLineageIdentitySource",
+    "source_fields=VcsLedgerLineageIdentitySource.mint_path:semantic,VcsLedgerLineageIdentitySource.minted_ns:semantic",
+    "source_bindings=VcsLedgerLineageIdentitySource.mint_path>mint-path-byte-count+mint-path,VcsLedgerLineageIdentitySource.minted_ns>minted-nanoseconds",
+    "external_semantic_fields=domain-label-frame,domain-byte-count,preimage-domain",
+    "semantic_fields=domain-label-frame,domain-byte-count,preimage-domain,mint-path-byte-count,mint-path,minted-nanoseconds",
+    "excluded_fields=identity-event-rowid:storage-envelope-only,current-path-after-mint:persisted-lineage-survives-moves,reopen-time:reopen-is-not-remint",
+    "consumers=Ledger::vcs_identity,Vcs::commit,Vcs::lookup,Vcs::checkout,fs-ledger:vcs-commit-envelope",
+    "mutations=domain-label-frame:crates/fs-ledger/src/lib.rs#vcs_ledger_lineage_identity_fields_move_independently,domain-byte-count:crates/fs-ledger/src/lib.rs#vcs_ledger_lineage_identity_fields_move_independently,preimage-domain:crates/fs-ledger/src/lib.rs#vcs_ledger_lineage_identity_fields_move_independently,mint-path-byte-count:crates/fs-ledger/src/lib.rs#vcs_ledger_lineage_identity_fields_move_independently,mint-path:crates/fs-ledger/src/lib.rs#vcs_ledger_lineage_identity_fields_move_independently,minted-nanoseconds:crates/fs-ledger/src/lib.rs#vcs_ledger_lineage_identity_fields_move_independently",
+    "nonsemantic_mutations=identity-event-rowid:crates/fs-ledger/src/lib.rs#vcs_ledger_lineage_excluded_fields_do_not_move_identity,current-path-after-mint:crates/fs-ledger/src/lib.rs#vcs_ledger_lineage_excluded_fields_do_not_move_identity,reopen-time:crates/fs-ledger/src/lib.rs#vcs_ledger_lineage_excluded_fields_do_not_move_identity",
+    "field_guard=classify_vcs_ledger_lineage_identity_fields",
+    "transport_guard=ledger_vcs_ledger_lineage_identity",
+    "version_guard=crates/fs-ledger/src/lib.rs#ledger_semantic_identity_versions_fail_closed",
+    "coupling_surface=fs-ledger:vcs-ledger-lineage",
+];
+
+/// Owner declaration consumed by `xtask check-identities`.
+#[allow(dead_code)]
+pub const VCS_COMMIT_LEAF_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-ledger:vcs-commit-leaf",
+    "version_const=VCS_COMMIT_LEAF_IDENTITY_VERSION",
+    "version=2",
+    "domain=org.frankensim.fs-ledger.vcs-commit-leaf.v2",
+    "domain_const=VCS_COMMIT_LEAF_IDENTITY_DOMAIN",
+    "encoder=ledger_vcs_commit_leaf_identity",
+    "encoder_helpers=ledger_vcs_commit_leaf_identity_with_domain,identity_vcs_hash_optional_field",
+    "schema_constants=VCS_COMMIT_LEAF_IDENTITY_VERSION,VCS_COMMIT_LEAF_IDENTITY_DOMAIN,VCS_COMMIT_LEAF_PREIMAGE_DOMAIN,crates/fs-ledger/src/vcs.rs#COMMIT_LEAF_DOMAIN",
+    "schema_functions=crates/fs-ledger/src/vcs.rs#hash_frame,crates/fs-ledger/src/vcs.rs#domain_hasher,crates/fs-ledger/src/vcs.rs#hash_field,crates/fs-ledger/src/vcs.rs#hash_optional_field,crates/fs-ledger/src/vcs.rs#Ledger::commit_leaf,crates/fs-ledger/src/vcs.rs#Ledger::op_artifact_edges,crates/fs-ledger/src/vcs.rs#Ledger::commit_exec_mode,identity_schema_is_current",
+    "schema_dependencies=fs-ledger:artifact-content",
+    "digest=blake3-256-domain-separated",
+    "encoding=typed-binary",
+    "sources=VcsCommitLeafIdentitySource,VcsCommitEdgeIdentitySource",
+    "source_fields=VcsCommitLeafIdentitySource.ir:semantic,VcsCommitLeafIdentitySource.seed:semantic,VcsCommitLeafIdentitySource.versions:semantic,VcsCommitLeafIdentitySource.budget:semantic,VcsCommitLeafIdentitySource.capability:semantic,VcsCommitLeafIdentitySource.outcome:semantic,VcsCommitLeafIdentitySource.diagnostic:semantic,VcsCommitLeafIdentitySource.execution_mode:semantic,VcsCommitLeafIdentitySource.edges:semantic,VcsCommitEdgeIdentitySource.role:semantic,VcsCommitEdgeIdentitySource.artifact_hash:semantic",
+    "source_bindings=VcsCommitLeafIdentitySource.ir>ir-byte-count+ir-bytes,VcsCommitLeafIdentitySource.seed>seed-byte-count+seed-bytes,VcsCommitLeafIdentitySource.versions>versions-byte-count+versions-bytes,VcsCommitLeafIdentitySource.budget>budget-byte-count+budget-bytes,VcsCommitLeafIdentitySource.capability>capability-byte-count+capability-bytes,VcsCommitLeafIdentitySource.outcome>outcome-presence+outcome-byte-count+outcome-bytes,VcsCommitLeafIdentitySource.diagnostic>diagnostic-presence+diagnostic-byte-count+diagnostic-bytes,VcsCommitLeafIdentitySource.execution_mode>execution-mode-byte-count+execution-mode,VcsCommitLeafIdentitySource.edges>edge-count+edge-order,VcsCommitEdgeIdentitySource.role>edge-role-byte-count+edge-role,VcsCommitEdgeIdentitySource.artifact_hash>artifact-hash",
+    "external_semantic_fields=domain-label-frame,domain-byte-count,preimage-domain",
+    "semantic_fields=domain-label-frame,domain-byte-count,preimage-domain,ir-byte-count,ir-bytes,seed-byte-count,seed-bytes,versions-byte-count,versions-bytes,budget-byte-count,budget-bytes,capability-byte-count,capability-bytes,outcome-presence,outcome-byte-count,outcome-bytes,diagnostic-presence,diagnostic-byte-count,diagnostic-bytes,execution-mode-byte-count,execution-mode,edge-count,edge-order,edge-role-byte-count,edge-role,artifact-hash",
+    "excluded_fields=op-rowid:ledger-local-address,session:execution-envelope,t-start:wall-clock-envelope,t-end:wall-clock-envelope,branch-id:ledger-local-envelope,edge-rowid:storage-envelope-only",
+    "consumers=Ledger::commit_leaf,Vcs::commit,Vcs::checkout_delta,Vcs::lookup_semantic,fs-ledger:vcs-commit-root",
+    "mutations=domain-label-frame:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_identity_fields_move_independently,domain-byte-count:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_identity_fields_move_independently,preimage-domain:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_identity_fields_move_independently,ir-byte-count:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_identity_fields_move_independently,ir-bytes:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_identity_fields_move_independently,seed-byte-count:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_identity_fields_move_independently,seed-bytes:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_identity_fields_move_independently,versions-byte-count:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_identity_fields_move_independently,versions-bytes:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_identity_fields_move_independently,budget-byte-count:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_identity_fields_move_independently,budget-bytes:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_identity_fields_move_independently,capability-byte-count:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_identity_fields_move_independently,capability-bytes:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_identity_fields_move_independently,outcome-presence:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_identity_fields_move_independently,outcome-byte-count:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_identity_fields_move_independently,outcome-bytes:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_identity_fields_move_independently,diagnostic-presence:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_identity_fields_move_independently,diagnostic-byte-count:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_identity_fields_move_independently,diagnostic-bytes:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_identity_fields_move_independently,execution-mode-byte-count:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_identity_fields_move_independently,execution-mode:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_identity_fields_move_independently,edge-count:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_identity_fields_move_independently,edge-order:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_identity_fields_move_independently,edge-role-byte-count:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_identity_fields_move_independently,edge-role:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_identity_fields_move_independently,artifact-hash:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_identity_fields_move_independently",
+    "nonsemantic_mutations=op-rowid:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_excluded_fields_do_not_move_identity,session:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_excluded_fields_do_not_move_identity,t-start:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_excluded_fields_do_not_move_identity,t-end:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_excluded_fields_do_not_move_identity,branch-id:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_excluded_fields_do_not_move_identity,edge-rowid:crates/fs-ledger/src/lib.rs#vcs_commit_leaf_excluded_fields_do_not_move_identity",
+    "field_guard=classify_vcs_commit_leaf_identity_fields",
+    "transport_guard=ledger_vcs_commit_leaf_identity",
+    "version_guard=crates/fs-ledger/src/lib.rs#ledger_semantic_identity_versions_fail_closed",
+    "coupling_surface=fs-ledger:vcs-commit-leaf",
+];
+
+/// Owner declaration consumed by `xtask check-identities`.
+#[allow(dead_code)]
+pub const VCS_COMMIT_ROOT_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-ledger:vcs-commit-root",
+    "version_const=VCS_COMMIT_ROOT_IDENTITY_VERSION",
+    "version=2",
+    "domain=org.frankensim.fs-ledger.vcs-commit-root.v2",
+    "domain_const=VCS_COMMIT_ROOT_IDENTITY_DOMAIN",
+    "encoder=ledger_vcs_commit_root_identity",
+    "encoder_helpers=ledger_vcs_commit_root_identity_with_domains,identity_vcs_hash_frame,identity_vcs_domain_hasher,identity_vcs_hash_field,identity_vcs_framed_hash",
+    "schema_constants=VCS_COMMIT_ROOT_IDENTITY_VERSION,VCS_COMMIT_ROOT_IDENTITY_DOMAIN,VCS_MERKLE_PAIR_PREIMAGE_DOMAIN,VCS_MERKLE_ODD_PREIMAGE_DOMAIN,VCS_COMMIT_ROOT_PREIMAGE_DOMAIN,crates/fs-ledger/src/vcs.rs#MERKLE_PAIR_DOMAIN,crates/fs-ledger/src/vcs.rs#MERKLE_ODD_DOMAIN,crates/fs-ledger/src/vcs.rs#COMMIT_ROOT_DOMAIN",
+    "schema_functions=crates/fs-ledger/src/vcs.rs#hash_frame,crates/fs-ledger/src/vcs.rs#domain_hasher,crates/fs-ledger/src/vcs.rs#hash_field,crates/fs-ledger/src/vcs.rs#framed_hash,crates/fs-ledger/src/vcs.rs#merkle_root,crates/fs-ledger/src/vcs.rs#Vcs::commit,identity_schema_is_current",
+    "schema_dependencies=fs-ledger:vcs-commit-leaf",
+    "digest=blake3-256-domain-separated-binary-merkle",
+    "encoding=typed-binary",
+    "sources=VcsCommitRootIdentitySource",
+    "source_fields=VcsCommitRootIdentitySource.leaves:semantic",
+    "source_bindings=VcsCommitRootIdentitySource.leaves>leaf-count+leaf-order+leaf-hashes+tree-shape",
+    "external_semantic_fields=merkle-domain-set",
+    "semantic_fields=merkle-domain-set,leaf-count,leaf-order,leaf-hashes,tree-shape",
+    "excluded_fields=ledger-identity:semantic-state-is-portable,branch-id:semantic-state-is-portable,local-op-ids:leaf-hashes-are-portable,commit-time:wall-clock-envelope",
+    "consumers=Vcs::commit,Vcs::lookup_semantic,Vcs::checkout_delta,fs-ledger:vcs-commit-envelope",
+    "mutations=merkle-domain-set:crates/fs-ledger/src/lib.rs#vcs_commit_root_identity_fields_move_independently,leaf-count:crates/fs-ledger/src/lib.rs#vcs_commit_root_identity_fields_move_independently,leaf-order:crates/fs-ledger/src/lib.rs#vcs_commit_root_identity_fields_move_independently,leaf-hashes:crates/fs-ledger/src/lib.rs#vcs_commit_root_identity_fields_move_independently,tree-shape:crates/fs-ledger/src/lib.rs#vcs_commit_root_identity_fields_move_independently",
+    "nonsemantic_mutations=ledger-identity:crates/fs-ledger/src/lib.rs#vcs_commit_root_excluded_fields_do_not_move_identity,branch-id:crates/fs-ledger/src/lib.rs#vcs_commit_root_excluded_fields_do_not_move_identity,local-op-ids:crates/fs-ledger/src/lib.rs#vcs_commit_root_excluded_fields_do_not_move_identity,commit-time:crates/fs-ledger/src/lib.rs#vcs_commit_root_excluded_fields_do_not_move_identity",
+    "field_guard=classify_vcs_commit_root_identity_fields",
+    "transport_guard=ledger_vcs_commit_root_identity",
+    "version_guard=crates/fs-ledger/src/lib.rs#ledger_semantic_identity_versions_fail_closed",
+    "coupling_surface=fs-ledger:vcs-commit-root",
+];
+
+/// Owner declaration consumed by `xtask check-identities`.
+#[allow(dead_code)]
+pub const VCS_COMMIT_ENVELOPE_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-ledger:vcs-commit-envelope",
+    "version_const=VCS_COMMIT_ENVELOPE_IDENTITY_VERSION",
+    "version=1",
+    "domain=org.frankensim.fs-ledger.vcs-commit-envelope.v1",
+    "domain_const=VCS_COMMIT_ENVELOPE_IDENTITY_DOMAIN",
+    "encoder=ledger_vcs_commit_envelope_identity",
+    "encoder_helpers=none",
+    "schema_constants=VCS_COMMIT_ENVELOPE_IDENTITY_VERSION,VCS_COMMIT_ENVELOPE_IDENTITY_DOMAIN",
+    "schema_functions=crates/fs-ledger/src/vcs.rs#CommitInfo::id,crates/fs-ledger/src/vcs.rs#Vcs::commit,crates/fs-ledger/src/vcs.rs#Vcs::lookup,crates/fs-ledger/src/vcs.rs#Vcs::checkout,identity_schema_is_current",
+    "schema_dependencies=fs-ledger:vcs-commit-root,fs-ledger:vcs-ledger-lineage",
+    "digest=none-fixed-width-envelope-key",
+    "encoding=fixed-width-key",
+    "sources=VcsCommitEnvelopeIdentitySource",
+    "source_fields=VcsCommitEnvelopeIdentitySource.ledger:semantic,VcsCommitEnvelopeIdentitySource.branch:semantic,VcsCommitEnvelopeIdentitySource.root:semantic",
+    "source_bindings=VcsCommitEnvelopeIdentitySource.ledger>ledger-lineage,VcsCommitEnvelopeIdentitySource.branch>branch-id,VcsCommitEnvelopeIdentitySource.root>semantic-root",
+    "external_semantic_fields=none",
+    "semantic_fields=ledger-lineage,branch-id,semantic-root",
+    "excluded_fields=frontier-op:ledger-local-snapshot-envelope,parent-root:commit-graph-edge-not-key,event-rowid:storage-envelope-only,commit-time:wall-clock-envelope",
+    "consumers=CommitInfo::id,Vcs::commit,Vcs::lookup,Vcs::checkout,Vcs::checkout_delta",
+    "mutations=ledger-lineage:crates/fs-ledger/src/lib.rs#vcs_commit_envelope_identity_fields_move_independently,branch-id:crates/fs-ledger/src/lib.rs#vcs_commit_envelope_identity_fields_move_independently,semantic-root:crates/fs-ledger/src/lib.rs#vcs_commit_envelope_identity_fields_move_independently",
+    "nonsemantic_mutations=frontier-op:crates/fs-ledger/src/lib.rs#vcs_commit_envelope_excluded_fields_do_not_move_identity,parent-root:crates/fs-ledger/src/lib.rs#vcs_commit_envelope_excluded_fields_do_not_move_identity,event-rowid:crates/fs-ledger/src/lib.rs#vcs_commit_envelope_excluded_fields_do_not_move_identity,commit-time:crates/fs-ledger/src/lib.rs#vcs_commit_envelope_excluded_fields_do_not_move_identity",
+    "field_guard=classify_vcs_commit_envelope_identity_fields",
+    "transport_guard=ledger_vcs_commit_envelope_identity",
+    "version_guard=crates/fs-ledger/src/lib.rs#ledger_semantic_identity_versions_fail_closed",
+    "coupling_surface=fs-ledger:vcs-commit-envelope",
+];
 
 pub(crate) const VCS_IDENTITY_EVENT_KIND: &str = "vcs-identity";
 
@@ -1756,6 +3268,13 @@ impl Ledger {
                 if target == 4 {
                     self.seed_instance_id_if_missing()?;
                     let _ = self.read_current_instance_id()?;
+                }
+                if target == 8 {
+                    // V8 backfills a redundant immutable discovery witness from
+                    // v6/v7 claims. Authenticate every source claim before the
+                    // version marker commits so valid-looking pre-migration
+                    // semantic corruption cannot be copied into both indexes.
+                    self.verify_session_claim_discovery_backfill()?;
                 }
                 self.conn
                     .execute(&format!("PRAGMA user_version = {target}"))
@@ -3848,12 +5367,1481 @@ mod tests {
         Ledger::open(":memory:").expect("open :memory:")
     }
 
+    fn v7_ledger_with_claim(corrupt_before_migration: bool) -> (Ledger, ContentHash) {
+        let conn = Connection::open(":memory:").expect("open v7 fixture");
+        conn.query("PRAGMA foreign_keys=ON")
+            .expect("enable v7 fixture foreign keys");
+        for batch in schema::MIGRATIONS.iter().take(7) {
+            for ddl in *batch {
+                conn.execute(ddl).expect("apply v7 fixture DDL");
+            }
+        }
+        let instance_bytes = [
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x46, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+            0xee, 0xff,
+        ];
+        conn.prepare("INSERT INTO ledger_identity(singleton, instance_id) VALUES (1, ?1)")
+            .expect("prepare v7 fixture identity")
+            .execute_with_params(&[blob_param(&instance_bytes)])
+            .expect("insert v7 fixture identity");
+
+        let authority = ContentHash([0x41; 32]);
+        let governor_hash = ContentHash([0x42; 32]);
+        let session_open_hash = ContentHash([0x43; 32]);
+        let payload = b"v7-migration-claim".to_vec();
+        let source = SessionMutationClaimIdentitySource {
+            authority,
+            ledger_instance_id: instance_bytes,
+            governor_hash,
+            session_open_hash,
+            registry_schema_version: 1,
+            kind: b"meter-report".to_vec(),
+            session: 71,
+            ledger_scope: b"v7-migration".to_vec(),
+            generation: 2,
+            causal_ordinal: Some(1),
+            payload: payload.clone(),
+        };
+        let payload_hash = hash_bytes(&payload);
+        let claim_hash = ledger_session_mutation_claim_identity(&source);
+        conn.prepare(
+            "INSERT INTO session_claims( \
+                authority, ledger_instance_id, governor_hash, session_open_hash, \
+                registry_schema_version, kind, session, ledger_scope, generation, \
+                causal_ordinal, payload, payload_hash, claim_hash, created_at \
+             ) VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1)",
+        )
+        .expect("prepare v7 fixture claim")
+        .execute_with_params(&[
+            blob_param(authority.as_bytes()),
+            blob_param(&instance_bytes),
+            blob_param(governor_hash.as_bytes()),
+            blob_param(session_open_hash.as_bytes()),
+            text_param("meter-report"),
+            blob_param(&71_u64.to_be_bytes()),
+            text_param("v7-migration"),
+            blob_param(&2_u64.to_be_bytes()),
+            blob_param(&1_u64.to_be_bytes()),
+            blob_param(&payload),
+            blob_param(payload_hash.as_bytes()),
+            blob_param(claim_hash.as_bytes()),
+        ])
+        .expect("insert v7 fixture claim");
+        if corrupt_before_migration {
+            conn.execute("DROP TRIGGER trg_session_claims_immutable_update")
+                .expect("drop v7 claim update guard for corruption fixture");
+            conn.execute("UPDATE session_claims SET kind = 'meter-corrupt'")
+                .expect("inject valid-looking v7 semantic corruption");
+            let update_guard = schema::V6
+                .iter()
+                .find(|ddl| {
+                    ddl.contains("CREATE TRIGGER IF NOT EXISTS trg_session_claims_immutable_update")
+                })
+                .expect("shipped v6 claim update guard");
+            conn.execute(update_guard)
+                .expect("restore exact v7 claim update guard");
+        }
+        conn.execute("PRAGMA user_version = 7")
+            .expect("mark v7 fixture schema");
+        (
+            Ledger {
+                conn,
+                path: ":memory:".to_string(),
+                instance_id: LedgerInstanceId(instance_bytes),
+                read_queries: core::cell::Cell::new(0),
+            },
+            authority,
+        )
+    }
+
     const FX: FiveExplicits<'static> = FiveExplicits {
         seed: &[0x5E, 0xED, 0x00, 0x01],
         versions: r#"{"constellation":"f92683cc4572a198"}"#,
         budget: r#"{"wall_s":10}"#,
         capability: r#"{"ops":["test.*"]}"#,
     };
+
+    fn identity_test_hash(byte: u8) -> ContentHash {
+        ContentHash([byte; 32])
+    }
+
+    fn assert_identity_moves<T: core::fmt::Debug + PartialEq>(field: &str, base: &T, moved: &T) {
+        assert_ne!(base, moved, "semantic identity field {field} did not move");
+    }
+
+    #[test]
+    fn ledger_semantic_identity_versions_fail_closed() {
+        let schemas = [
+            (
+                PHYSICAL_INSTANCE_IDENTITY_VERSION,
+                PHYSICAL_INSTANCE_IDENTITY_DOMAIN,
+            ),
+            (
+                ARTIFACT_CONTENT_IDENTITY_VERSION,
+                ARTIFACT_CONTENT_IDENTITY_DOMAIN,
+            ),
+            (
+                SESSION_MUTATION_CLAIM_IDENTITY_VERSION,
+                SESSION_MUTATION_CLAIM_IDENTITY_DOMAIN,
+            ),
+            (
+                SESSION_TERMINAL_EVENTS_IDENTITY_VERSION,
+                SESSION_TERMINAL_EVENTS_IDENTITY_DOMAIN,
+            ),
+            (
+                SESSION_FLUSH_BATCH_IDENTITY_VERSION,
+                SESSION_FLUSH_BATCH_IDENTITY_DOMAIN,
+            ),
+            (
+                SOURCE_ORIGIN_REQUEST_IDENTITY_VERSION,
+                SOURCE_ORIGIN_REQUEST_IDENTITY_DOMAIN,
+            ),
+            (
+                DERIVED_COLOR_WAIVER_SUBJECT_IDENTITY_VERSION,
+                DERIVED_COLOR_WAIVER_SUBJECT_IDENTITY_DOMAIN,
+            ),
+            (
+                SOURCE_COLOR_WAIVER_SUBJECT_IDENTITY_VERSION,
+                SOURCE_COLOR_WAIVER_SUBJECT_IDENTITY_DOMAIN,
+            ),
+            (COLOR_NODE_IDENTITY_VERSION, COLOR_NODE_IDENTITY_DOMAIN),
+            (
+                COLOR_ADMISSION_POLICY_IDENTITY_VERSION,
+                COLOR_ADMISSION_POLICY_IDENTITY_DOMAIN,
+            ),
+            (
+                VCS_LEDGER_LINEAGE_IDENTITY_VERSION,
+                VCS_LEDGER_LINEAGE_IDENTITY_DOMAIN,
+            ),
+            (
+                VCS_COMMIT_LEAF_IDENTITY_VERSION,
+                VCS_COMMIT_LEAF_IDENTITY_DOMAIN,
+            ),
+            (
+                VCS_COMMIT_ROOT_IDENTITY_VERSION,
+                VCS_COMMIT_ROOT_IDENTITY_DOMAIN,
+            ),
+            (
+                VCS_COMMIT_ENVELOPE_IDENTITY_VERSION,
+                VCS_COMMIT_ENVELOPE_IDENTITY_DOMAIN,
+            ),
+        ];
+        for (version, domain) in schemas {
+            assert!(identity_schema_is_current(version, domain, version, domain));
+            assert!(!identity_schema_is_current(
+                version.saturating_sub(1),
+                domain,
+                version,
+                domain
+            ));
+            assert!(!identity_schema_is_current(
+                version + 1,
+                domain,
+                version,
+                domain
+            ));
+            assert!(!identity_schema_is_current(
+                version,
+                "org.frankensim.foreign.v1",
+                version,
+                domain
+            ));
+        }
+
+        let request = SourceOriginRequestIdentitySource {
+            node_name: b"node".to_vec(),
+            claimed_color: b"color".to_vec(),
+            origin: b"origin".to_vec(),
+        };
+        let current = ledger_source_origin_request_identity(&request);
+        assert!(ledger_source_origin_request_transport_guard(&current));
+        let stale = ledger_source_origin_request_identity_with_schema(
+            &request,
+            0,
+            SOURCE_ORIGIN_REQUEST_PREIMAGE_DOMAIN,
+        );
+        assert!(!ledger_source_origin_request_transport_guard(&stale));
+
+        let derived = derived_waiver_fixture();
+        let current = ledger_derived_color_waiver_subject_identity(&derived);
+        assert!(ledger_derived_color_waiver_subject_transport_guard(
+            &current
+        ));
+        let stale = ledger_derived_color_waiver_subject_identity_with_schema(
+            &derived,
+            2,
+            COLOR_WAIVER_SUBJECT_PREIMAGE_DOMAIN,
+        );
+        assert!(!ledger_derived_color_waiver_subject_transport_guard(&stale));
+
+        let source = source_waiver_fixture();
+        let current = ledger_source_color_waiver_subject_identity(&source);
+        assert!(ledger_source_color_waiver_subject_transport_guard(&current));
+        let stale = ledger_source_color_waiver_subject_identity_with_schema(
+            &source,
+            3,
+            COLOR_WAIVER_SUBJECT_PREIMAGE_DOMAIN,
+        );
+        assert!(!ledger_source_color_waiver_subject_transport_guard(&stale));
+    }
+
+    #[test]
+    fn physical_instance_identity_fields_move_independently() {
+        let source = PhysicalInstanceIdentitySource { uuid: [1; 16] };
+        let base = ledger_physical_instance_identity(&source);
+        let mut changed = source.clone();
+        changed.uuid[15] ^= 1;
+        assert_identity_moves(
+            "uuid-bytes",
+            &base,
+            &ledger_physical_instance_identity(&changed),
+        );
+    }
+
+    #[test]
+    fn physical_instance_excluded_fields_do_not_move_identity() {
+        let source = PhysicalInstanceIdentitySource { uuid: [2; 16] };
+        let base = ledger_physical_instance_identity(&source);
+        let envelope_a = ("/old/path", "/alias/a", 0x1000_usize, 1_u64);
+        let envelope_b = ("/new/path", "/alias/b", 0x2000_usize, 9_u64);
+        assert_ne!(envelope_a, envelope_b);
+        assert_eq!(base, ledger_physical_instance_identity(&source));
+    }
+
+    #[test]
+    fn artifact_content_identity_fields_move_independently() {
+        let source = ArtifactContentIdentitySource {
+            content: b"artifact".to_vec(),
+        };
+        let base = ledger_artifact_content_identity(&source);
+        let mut changed = source.clone();
+        changed.content.push(0);
+        assert_identity_moves(
+            "content-bytes",
+            &base,
+            &ledger_artifact_content_identity(&changed),
+        );
+    }
+
+    #[test]
+    fn artifact_content_excluded_fields_do_not_move_identity() {
+        let source = ArtifactContentIdentitySource {
+            content: b"same-content".to_vec(),
+        };
+        let base = ledger_artifact_content_identity(&source);
+        let envelope_a = ("mesh", "{}", 1_i64, vec![4_usize, 8]);
+        let envelope_b = ("field", "{\"unit\":\"m\"}", 2_i64, vec![3_usize, 9]);
+        assert_ne!(envelope_a, envelope_b);
+        assert_eq!(base, ledger_artifact_content_identity(&source));
+    }
+
+    fn session_claim_fixture() -> SessionMutationClaimIdentitySource {
+        SessionMutationClaimIdentitySource {
+            authority: identity_test_hash(1),
+            ledger_instance_id: [2; 16],
+            governor_hash: identity_test_hash(3),
+            session_open_hash: identity_test_hash(4),
+            registry_schema_version: 1,
+            kind: b"submission".to_vec(),
+            session: 5,
+            ledger_scope: b"scope".to_vec(),
+            generation: 6,
+            causal_ordinal: Some(7),
+            payload: b"payload".to_vec(),
+        }
+    }
+
+    #[test]
+    fn session_mutation_claim_identity_fields_move_independently() {
+        let source = session_claim_fixture();
+        let base = ledger_session_mutation_claim_identity(&source);
+        let foreign_domain = ledger_session_mutation_claim_identity_with_domain(
+            &source,
+            b"org.frankensim.fs-ledger.session-mutation-claim.w1\0",
+        );
+        assert_identity_moves("identity-domain", &base, &foreign_domain);
+
+        let mut changed = source.clone();
+        changed.authority = identity_test_hash(10);
+        assert_identity_moves(
+            "authority",
+            &base,
+            &ledger_session_mutation_claim_identity(&changed),
+        );
+        changed = source.clone();
+        changed.ledger_instance_id[0] ^= 1;
+        assert_identity_moves(
+            "ledger-instance-id",
+            &base,
+            &ledger_session_mutation_claim_identity(&changed),
+        );
+        changed = source.clone();
+        changed.governor_hash = identity_test_hash(11);
+        assert_identity_moves(
+            "governor-hash",
+            &base,
+            &ledger_session_mutation_claim_identity(&changed),
+        );
+        changed = source.clone();
+        changed.session_open_hash = identity_test_hash(12);
+        assert_identity_moves(
+            "session-open-hash",
+            &base,
+            &ledger_session_mutation_claim_identity(&changed),
+        );
+        changed = source.clone();
+        changed.registry_schema_version += 1;
+        assert_identity_moves(
+            "registry-schema-version",
+            &base,
+            &ledger_session_mutation_claim_identity(&changed),
+        );
+        changed = source.clone();
+        changed.kind.push(b'x');
+        for field in ["kind-byte-count", "kind-bytes"] {
+            assert_identity_moves(
+                field,
+                &base,
+                &ledger_session_mutation_claim_identity(&changed),
+            );
+        }
+        changed = source.clone();
+        changed.session += 1;
+        assert_identity_moves(
+            "session",
+            &base,
+            &ledger_session_mutation_claim_identity(&changed),
+        );
+        changed = source.clone();
+        changed.ledger_scope.push(b'x');
+        for field in ["ledger-scope-byte-count", "ledger-scope-bytes"] {
+            assert_identity_moves(
+                field,
+                &base,
+                &ledger_session_mutation_claim_identity(&changed),
+            );
+        }
+        changed = source.clone();
+        changed.generation += 1;
+        assert_identity_moves(
+            "generation",
+            &base,
+            &ledger_session_mutation_claim_identity(&changed),
+        );
+        changed = source.clone();
+        changed.causal_ordinal = None;
+        assert_identity_moves(
+            "causal-ordinal-presence",
+            &base,
+            &ledger_session_mutation_claim_identity(&changed),
+        );
+        changed = source.clone();
+        changed.causal_ordinal = Some(8);
+        assert_identity_moves(
+            "causal-ordinal-value",
+            &base,
+            &ledger_session_mutation_claim_identity(&changed),
+        );
+        changed = source;
+        changed.payload.push(0);
+        assert_identity_moves(
+            "payload-bytes-via-blake3",
+            &base,
+            &ledger_session_mutation_claim_identity(&changed),
+        );
+    }
+
+    #[test]
+    fn session_mutation_claim_excluded_fields_do_not_move_identity() {
+        let source = session_claim_fixture();
+        let base = ledger_session_mutation_claim_identity(&source);
+        let envelope_a = (1_i64, 10_i64, identity_test_hash(1));
+        let envelope_b = (2_i64, 20_i64, identity_test_hash(2));
+        assert_ne!(envelope_a, envelope_b);
+        assert_eq!(base, ledger_session_mutation_claim_identity(&source));
+    }
+
+    fn session_events_fixture() -> Vec<SessionTerminalEventIdentitySource> {
+        vec![
+            SessionTerminalEventIdentitySource {
+                session: 1_u64.to_be_bytes().to_vec(),
+                timestamp: 10,
+                kind: b"first".to_vec(),
+                payload: Some(b"{\"v\":1}".to_vec()),
+            },
+            SessionTerminalEventIdentitySource {
+                session: 1_u64.to_be_bytes().to_vec(),
+                timestamp: 11,
+                kind: b"second".to_vec(),
+                payload: None,
+            },
+        ]
+    }
+
+    #[test]
+    fn session_terminal_events_identity_fields_move_independently() {
+        let events = session_events_fixture();
+        let base = ledger_session_terminal_events_identity(&events);
+        assert_identity_moves(
+            "identity-domain",
+            &base,
+            &ledger_session_terminal_events_identity_with_schema(
+                &events,
+                events.len(),
+                b"org.frankensim.fs-ledger.session-terminal-events.w2\0",
+            ),
+        );
+        assert_identity_moves(
+            "event-count",
+            &base,
+            &ledger_session_terminal_events_identity_with_schema(
+                &events,
+                events.len() + 1,
+                b"org.frankensim.fs-ledger.session-terminal-events.v2\0",
+            ),
+        );
+        let mut changed = events.clone();
+        changed.swap(0, 1);
+        assert_identity_moves(
+            "event-order",
+            &base,
+            &ledger_session_terminal_events_identity(&changed),
+        );
+        changed = events.clone();
+        changed[0].session.push(0);
+        for field in ["session-byte-count", "session-bytes"] {
+            assert_identity_moves(
+                field,
+                &base,
+                &ledger_session_terminal_events_identity(&changed),
+            );
+        }
+        changed = events.clone();
+        changed[0].timestamp += 1;
+        assert_identity_moves(
+            "timestamp",
+            &base,
+            &ledger_session_terminal_events_identity(&changed),
+        );
+        changed = events.clone();
+        changed[0].kind.push(b'x');
+        for field in ["kind-byte-count", "kind-bytes"] {
+            assert_identity_moves(
+                field,
+                &base,
+                &ledger_session_terminal_events_identity(&changed),
+            );
+        }
+        changed = events.clone();
+        changed[0].payload = None;
+        assert_identity_moves(
+            "payload-presence",
+            &base,
+            &ledger_session_terminal_events_identity(&changed),
+        );
+        changed = events;
+        changed[0]
+            .payload
+            .as_mut()
+            .expect("fixture payload")
+            .push(b' ');
+        for field in ["payload-byte-count", "payload-bytes"] {
+            assert_identity_moves(
+                field,
+                &base,
+                &ledger_session_terminal_events_identity(&changed),
+            );
+        }
+    }
+
+    #[test]
+    fn session_terminal_events_excluded_fields_do_not_move_identity() {
+        let events = session_events_fixture();
+        let base = ledger_session_terminal_events_identity(&events);
+        let storage_a = (1_i64, 2_i64, 3_i64);
+        let storage_b = (4_i64, 5_i64, 6_i64);
+        assert_ne!(storage_a, storage_b);
+        assert_eq!(base, ledger_session_terminal_events_identity(&events));
+    }
+
+    fn session_batch_fixture() -> SessionFlushBatchIdentitySource {
+        SessionFlushBatchIdentitySource {
+            ledger_instance_id: [1; 16],
+            registry_schema_version: 1,
+            terminals: vec![
+                SessionFlushTerminalIdentitySource {
+                    authority: identity_test_hash(2),
+                    claim_hash: identity_test_hash(3),
+                    receipt_hash: identity_test_hash(4),
+                    event_count: 1,
+                    events_hash: identity_test_hash(5),
+                    encoded_bytes: 100,
+                },
+                SessionFlushTerminalIdentitySource {
+                    authority: identity_test_hash(6),
+                    claim_hash: identity_test_hash(7),
+                    receipt_hash: identity_test_hash(8),
+                    event_count: 2,
+                    events_hash: identity_test_hash(9),
+                    encoded_bytes: 200,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn session_flush_batch_identity_fields_move_independently() {
+        let source = session_batch_fixture();
+        let base = ledger_session_flush_batch_identity(&source);
+        assert_identity_moves(
+            "identity-domain",
+            &base,
+            &ledger_session_flush_batch_identity_with_schema(
+                &source,
+                source.terminals.len(),
+                b"org.frankensim.fs-ledger.session-flush-batch.w2\0",
+            ),
+        );
+        let mut changed = source.clone();
+        changed.ledger_instance_id[0] ^= 1;
+        assert_identity_moves(
+            "ledger-instance-id",
+            &base,
+            &ledger_session_flush_batch_identity(&changed),
+        );
+        changed = source.clone();
+        changed.registry_schema_version += 1;
+        assert_identity_moves(
+            "registry-schema-version",
+            &base,
+            &ledger_session_flush_batch_identity(&changed),
+        );
+        assert_identity_moves(
+            "terminal-count",
+            &base,
+            &ledger_session_flush_batch_identity_with_schema(
+                &source,
+                source.terminals.len() + 1,
+                b"org.frankensim.fs-ledger.session-flush-batch.v2\0",
+            ),
+        );
+        changed = source.clone();
+        changed.terminals.swap(0, 1);
+        assert_identity_moves(
+            "terminal-order",
+            &base,
+            &ledger_session_flush_batch_identity(&changed),
+        );
+        let field_mutations: [(&str, fn(&mut SessionFlushTerminalIdentitySource)); 6] = [
+            ("authority", |row| row.authority = identity_test_hash(20)),
+            ("claim-hash", |row| row.claim_hash = identity_test_hash(21)),
+            ("receipt-hash", |row| {
+                row.receipt_hash = identity_test_hash(22);
+            }),
+            ("event-count", |row| row.event_count += 1),
+            ("events-hash", |row| {
+                row.events_hash = identity_test_hash(23)
+            }),
+            ("encoded-byte-count", |row| row.encoded_bytes += 1),
+        ];
+        for (field, mutate) in field_mutations {
+            changed = source.clone();
+            mutate(&mut changed.terminals[0]);
+            assert_identity_moves(field, &base, &ledger_session_flush_batch_identity(&changed));
+        }
+    }
+
+    #[test]
+    fn session_flush_batch_excluded_fields_do_not_move_identity() {
+        let source = session_batch_fixture();
+        let base = ledger_session_flush_batch_identity(&source);
+        let storage_a = (1_i64, 2_i64, 3_i64, identity_test_hash(4));
+        let storage_b = (5_i64, 6_i64, 7_i64, identity_test_hash(8));
+        assert_ne!(storage_a, storage_b);
+        assert_eq!(base, ledger_session_flush_batch_identity(&source));
+    }
+
+    #[test]
+    fn source_origin_request_identity_fields_move_independently() {
+        let source = SourceOriginRequestIdentitySource {
+            node_name: b"node".to_vec(),
+            claimed_color: b"exact-color".to_vec(),
+            origin: b"typed-origin".to_vec(),
+        };
+        let base = ledger_source_origin_request_identity(&source);
+        assert_identity_moves(
+            "transport-version",
+            &base,
+            &ledger_source_origin_request_identity_with_schema(
+                &source,
+                2,
+                SOURCE_ORIGIN_REQUEST_PREIMAGE_DOMAIN,
+            ),
+        );
+        assert_identity_moves(
+            "preimage-domain",
+            &base,
+            &ledger_source_origin_request_identity_with_schema(
+                &source,
+                1,
+                b"frankensim/fs-ledger/source-origin-requesu",
+            ),
+        );
+        let mut corrupt_count = base.clone();
+        corrupt_count[1] ^= 1;
+        assert_identity_moves("domain-byte-count", &base, &corrupt_count);
+
+        let mut changed = source.clone();
+        changed.node_name.push(b'x');
+        for field in ["node-name-byte-count", "node-name"] {
+            assert_identity_moves(
+                field,
+                &base,
+                &ledger_source_origin_request_identity(&changed),
+            );
+        }
+        changed = source.clone();
+        changed.claimed_color.push(0);
+        for field in ["claimed-color-byte-count", "claimed-color-canonical-bytes"] {
+            assert_identity_moves(
+                field,
+                &base,
+                &ledger_source_origin_request_identity(&changed),
+            );
+        }
+        changed = source;
+        changed.origin.push(0);
+        assert_identity_moves(
+            "typed-origin-canonical-bytes",
+            &base,
+            &ledger_source_origin_request_identity(&changed),
+        );
+    }
+
+    #[test]
+    fn source_origin_request_excluded_fields_do_not_move_identity() {
+        let source = SourceOriginRequestIdentitySource {
+            node_name: b"node".to_vec(),
+            claimed_color: b"color".to_vec(),
+            origin: b"origin".to_vec(),
+        };
+        let base = ledger_source_origin_request_identity(&source);
+        let callback_a = (identity_test_hash(1), 1_usize);
+        let callback_b = (identity_test_hash(2), 9_usize);
+        assert_ne!(callback_a, callback_b);
+        assert_eq!(base, ledger_source_origin_request_identity(&source));
+    }
+
+    fn derived_waiver_fixture() -> DerivedColorWaiverSubjectIdentitySource {
+        DerivedColorWaiverSubjectIdentitySource {
+            operation_tag: 1,
+            key_id: b"key".to_vec(),
+            scope: b"color-upgrade".to_vec(),
+            node_name: b"node".to_vec(),
+            claimed_color: b"color".to_vec(),
+            annotation_id: b"waiver".to_vec(),
+            annotation_signer: b"signer".to_vec(),
+            annotation_reason: b"reason".to_vec(),
+            parent_hashes: vec![identity_test_hash(1), identity_test_hash(2)],
+            expires_day: 100,
+            signature: b"signature".to_vec(),
+        }
+    }
+
+    fn source_waiver_fixture() -> SourceColorWaiverSubjectIdentitySource {
+        SourceColorWaiverSubjectIdentitySource {
+            key_id: b"key".to_vec(),
+            scope: b"source-color".to_vec(),
+            node_name: b"node".to_vec(),
+            claimed_color: b"color".to_vec(),
+            annotation_id: b"waiver".to_vec(),
+            annotation_signer: b"signer".to_vec(),
+            annotation_reason: b"reason".to_vec(),
+            parent_hashes: vec![identity_test_hash(1), identity_test_hash(2)],
+            expires_day: 100,
+            signature: b"signature".to_vec(),
+        }
+    }
+
+    #[test]
+    fn derived_color_waiver_subject_identity_fields_move_independently() {
+        let source = derived_waiver_fixture();
+        let base = ledger_derived_color_waiver_subject_identity(&source);
+        assert_identity_moves(
+            "transport-version",
+            &base,
+            &ledger_derived_color_waiver_subject_identity_with_schema(
+                &source,
+                2,
+                COLOR_WAIVER_SUBJECT_PREIMAGE_DOMAIN,
+            ),
+        );
+        assert_identity_moves(
+            "preimage-domain",
+            &base,
+            &ledger_derived_color_waiver_subject_identity_with_schema(
+                &source,
+                3,
+                b"frankensim/fs-ledger/color-waiveq",
+            ),
+        );
+        let mut corrupt_count = base.clone();
+        corrupt_count[1] ^= 1;
+        assert_identity_moves("domain-byte-count", &base, &corrupt_count);
+
+        let mut changed = source.clone();
+        changed.operation_tag ^= 1;
+        assert_identity_moves(
+            "operation-tag",
+            &base,
+            &ledger_derived_color_waiver_subject_identity(&changed),
+        );
+        let text_mutations: [(&[&str], fn(&mut DerivedColorWaiverSubjectIdentitySource)); 7] = [
+            (&["key-id-byte-count", "key-id"], |value| {
+                value.key_id.push(b'x')
+            }),
+            (&["scope-byte-count", "scope"], |value| {
+                value.scope.push(b'x')
+            }),
+            (&["node-name-byte-count", "node-name"], |value| {
+                value.node_name.push(b'x')
+            }),
+            (
+                &["claimed-color-byte-count", "claimed-color-canonical-bytes"],
+                |value| value.claimed_color.push(0),
+            ),
+            (&["annotation-id-byte-count", "annotation-id"], |value| {
+                value.annotation_id.push(b'x')
+            }),
+            (
+                &["annotation-signer-byte-count", "annotation-signer"],
+                |value| value.annotation_signer.push(b'x'),
+            ),
+            (
+                &["annotation-reason-byte-count", "annotation-reason"],
+                |value| value.annotation_reason.push(b'x'),
+            ),
+        ];
+        for (fields, mutate) in text_mutations {
+            changed = source.clone();
+            mutate(&mut changed);
+            let moved = ledger_derived_color_waiver_subject_identity(&changed);
+            for field in fields {
+                assert_identity_moves(field, &base, &moved);
+            }
+        }
+        changed = source.clone();
+        changed.parent_hashes.push(identity_test_hash(3));
+        assert_identity_moves(
+            "parent-count",
+            &base,
+            &ledger_derived_color_waiver_subject_identity(&changed),
+        );
+        changed = source.clone();
+        changed.parent_hashes.swap(0, 1);
+        assert_identity_moves(
+            "parent-order",
+            &base,
+            &ledger_derived_color_waiver_subject_identity(&changed),
+        );
+        changed = source.clone();
+        changed.parent_hashes[0] = identity_test_hash(4);
+        assert_identity_moves(
+            "parent-hashes",
+            &base,
+            &ledger_derived_color_waiver_subject_identity(&changed),
+        );
+        changed = source;
+        changed.expires_day += 1;
+        assert_identity_moves(
+            "expires-day",
+            &base,
+            &ledger_derived_color_waiver_subject_identity(&changed),
+        );
+    }
+
+    #[test]
+    fn derived_color_waiver_subject_excluded_fields_do_not_move_identity() {
+        let source = derived_waiver_fixture();
+        let base = ledger_derived_color_waiver_subject_identity(&source);
+        let mut changed = source.clone();
+        changed.signature.push(0);
+        assert_eq!(
+            base,
+            ledger_derived_color_waiver_subject_identity(&changed),
+            "a signature is not part of its own signing subject"
+        );
+        let admission_a = (1_u32, identity_test_hash(1));
+        let admission_b = (2_u32, identity_test_hash(2));
+        assert_ne!(admission_a, admission_b);
+        assert_eq!(base, ledger_derived_color_waiver_subject_identity(&source));
+    }
+
+    #[test]
+    fn source_color_waiver_subject_identity_fields_move_independently() {
+        let source = source_waiver_fixture();
+        let base = ledger_source_color_waiver_subject_identity(&source);
+        assert_identity_moves(
+            "transport-version",
+            &base,
+            &ledger_source_color_waiver_subject_identity_with_schema(
+                &source,
+                3,
+                COLOR_WAIVER_SUBJECT_PREIMAGE_DOMAIN,
+            ),
+        );
+        assert_identity_moves(
+            "preimage-domain",
+            &base,
+            &ledger_source_color_waiver_subject_identity_with_schema(
+                &source,
+                4,
+                b"frankensim/fs-ledger/color-waiveq",
+            ),
+        );
+        let mut corrupt_count = base.clone();
+        corrupt_count[1] ^= 1;
+        assert_identity_moves("domain-byte-count", &base, &corrupt_count);
+        let sentinel = 1 + 8 + COLOR_WAIVER_SUBJECT_PREIMAGE_DOMAIN.len();
+        let mut changed_sentinel = base.clone();
+        changed_sentinel[sentinel] ^= 1;
+        assert_identity_moves("source-operation-sentinel", &base, &changed_sentinel);
+
+        let text_mutations: [(&[&str], fn(&mut SourceColorWaiverSubjectIdentitySource)); 7] = [
+            (&["key-id-byte-count", "key-id"], |value| {
+                value.key_id.push(b'x')
+            }),
+            (&["scope-byte-count", "scope"], |value| {
+                value.scope.push(b'x')
+            }),
+            (&["node-name-byte-count", "node-name"], |value| {
+                value.node_name.push(b'x')
+            }),
+            (
+                &["claimed-color-byte-count", "claimed-color-canonical-bytes"],
+                |value| value.claimed_color.push(0),
+            ),
+            (&["annotation-id-byte-count", "annotation-id"], |value| {
+                value.annotation_id.push(b'x')
+            }),
+            (
+                &["annotation-signer-byte-count", "annotation-signer"],
+                |value| value.annotation_signer.push(b'x'),
+            ),
+            (
+                &["annotation-reason-byte-count", "annotation-reason"],
+                |value| value.annotation_reason.push(b'x'),
+            ),
+        ];
+        for (fields, mutate) in text_mutations {
+            let mut changed = source.clone();
+            mutate(&mut changed);
+            let moved = ledger_source_color_waiver_subject_identity(&changed);
+            for field in fields {
+                assert_identity_moves(field, &base, &moved);
+            }
+        }
+        let mut changed = source.clone();
+        changed.parent_hashes.push(identity_test_hash(3));
+        assert_identity_moves(
+            "parent-count",
+            &base,
+            &ledger_source_color_waiver_subject_identity(&changed),
+        );
+        changed = source.clone();
+        changed.parent_hashes.swap(0, 1);
+        assert_identity_moves(
+            "parent-order",
+            &base,
+            &ledger_source_color_waiver_subject_identity(&changed),
+        );
+        changed = source.clone();
+        changed.parent_hashes[0] = identity_test_hash(4);
+        assert_identity_moves(
+            "parent-hashes",
+            &base,
+            &ledger_source_color_waiver_subject_identity(&changed),
+        );
+        changed = source;
+        changed.expires_day += 1;
+        assert_identity_moves(
+            "expires-day",
+            &base,
+            &ledger_source_color_waiver_subject_identity(&changed),
+        );
+    }
+
+    #[test]
+    fn source_color_waiver_subject_excluded_fields_do_not_move_identity() {
+        let source = source_waiver_fixture();
+        let base = ledger_source_color_waiver_subject_identity(&source);
+        let mut changed = source.clone();
+        changed.signature.push(0);
+        assert_eq!(
+            base,
+            ledger_source_color_waiver_subject_identity(&changed),
+            "a signature is not part of its own signing subject"
+        );
+        let admission_a = (1_u32, identity_test_hash(1));
+        let admission_b = (2_u32, identity_test_hash(2));
+        assert_ne!(admission_a, admission_b);
+        assert_eq!(base, ledger_source_color_waiver_subject_identity(&source));
+    }
+
+    fn color_node_fixture() -> ColorNodeIdentitySource {
+        ColorNodeIdentitySource {
+            node_id: 10,
+            operation_tag: Some(1),
+            name: b"node".to_vec(),
+            color: b"canonical-color".to_vec(),
+            parent_local_ids: vec![1, 2],
+            parent_hashes: vec![identity_test_hash(1), identity_test_hash(2)],
+            demotions: vec![b"demotion-a".to_vec(), b"demotion-b".to_vec()],
+            origin: Some(b"origin".to_vec()),
+            origin_policy_fingerprint: Some(identity_test_hash(3)),
+            waiver_dependencies: vec![b"dependency-a".to_vec(), b"dependency-b".to_vec()],
+            waiver: Some(b"waiver".to_vec()),
+            grant_payload: Some(b"grant-payload".to_vec()),
+            grant_signature: Some(b"grant-signature".to_vec()),
+            waiver_policy_fingerprint: Some(identity_test_hash(4)),
+            waiver_admission_day: Some(20),
+            stored_hash: identity_test_hash(5),
+        }
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn color_node_identity_fields_move_independently() {
+        let source = color_node_fixture();
+        let base = ledger_color_node_identity(&source);
+        assert_identity_moves(
+            "transport-version",
+            &base,
+            &ledger_color_node_identity_with_schema(
+                &source,
+                COLOR_NODE_IDENTITY_VERSION as u8 + 1,
+                COLOR_NODE_PREIMAGE_DOMAIN,
+            ),
+        );
+        let domain_moved = ledger_color_node_identity_with_schema(
+            &source,
+            COLOR_NODE_IDENTITY_VERSION as u8,
+            b"frankensim/fs-ledger/color-node/w2",
+        );
+        for field in ["domain-byte-count", "preimage-domain"] {
+            assert_identity_moves(field, &base, &domain_moved);
+        }
+        let mut changed = source.clone();
+        changed.operation_tag = None;
+        assert_identity_moves(
+            "operation-presence",
+            &base,
+            &ledger_color_node_identity(&changed),
+        );
+        changed = source.clone();
+        changed.operation_tag = Some(2);
+        assert_identity_moves(
+            "operation-tag",
+            &base,
+            &ledger_color_node_identity(&changed),
+        );
+        changed = source.clone();
+        changed.name.push(b'x');
+        for field in ["node-name-byte-count", "node-name"] {
+            assert_identity_moves(field, &base, &ledger_color_node_identity(&changed));
+        }
+        changed = source.clone();
+        changed.color.push(0);
+        for field in ["color-byte-count", "color-canonical-bytes"] {
+            assert_identity_moves(field, &base, &ledger_color_node_identity(&changed));
+        }
+        changed = source.clone();
+        changed.parent_hashes.push(identity_test_hash(6));
+        assert_identity_moves("parent-count", &base, &ledger_color_node_identity(&changed));
+        changed = source.clone();
+        changed.parent_hashes.swap(0, 1);
+        assert_identity_moves("parent-order", &base, &ledger_color_node_identity(&changed));
+        changed = source.clone();
+        changed.parent_hashes[0] = identity_test_hash(7);
+        assert_identity_moves(
+            "parent-hashes",
+            &base,
+            &ledger_color_node_identity(&changed),
+        );
+        changed = source.clone();
+        changed.demotions.push(b"demotion-c".to_vec());
+        assert_identity_moves(
+            "demotion-count",
+            &base,
+            &ledger_color_node_identity(&changed),
+        );
+        changed = source.clone();
+        changed.demotions.swap(0, 1);
+        assert_identity_moves(
+            "demotion-order",
+            &base,
+            &ledger_color_node_identity(&changed),
+        );
+        changed = source.clone();
+        changed.demotions[0].push(0);
+        assert_identity_moves(
+            "demotion-canonical-bytes",
+            &base,
+            &ledger_color_node_identity(&changed),
+        );
+        changed = source.clone();
+        changed.origin = None;
+        assert_identity_moves(
+            "origin-presence",
+            &base,
+            &ledger_color_node_identity(&changed),
+        );
+        changed = source.clone();
+        changed.origin.as_mut().expect("fixture origin").push(0);
+        assert_identity_moves(
+            "origin-canonical-bytes",
+            &base,
+            &ledger_color_node_identity(&changed),
+        );
+        changed = source.clone();
+        changed.origin_policy_fingerprint = None;
+        assert_identity_moves(
+            "origin-policy-presence",
+            &base,
+            &ledger_color_node_identity(&changed),
+        );
+        changed = source.clone();
+        changed.origin_policy_fingerprint = Some(identity_test_hash(8));
+        assert_identity_moves(
+            "origin-policy-fingerprint",
+            &base,
+            &ledger_color_node_identity(&changed),
+        );
+        changed = source.clone();
+        changed.waiver_dependencies.push(b"dependency-c".to_vec());
+        assert_identity_moves(
+            "waiver-dependency-count",
+            &base,
+            &ledger_color_node_identity(&changed),
+        );
+        changed = source.clone();
+        changed.waiver_dependencies.swap(0, 1);
+        assert_identity_moves(
+            "waiver-dependency-order",
+            &base,
+            &ledger_color_node_identity(&changed),
+        );
+        changed = source.clone();
+        changed.waiver_dependencies[0].push(0);
+        assert_identity_moves(
+            "waiver-dependency-canonical-bytes",
+            &base,
+            &ledger_color_node_identity(&changed),
+        );
+        changed = source.clone();
+        changed.waiver = None;
+        assert_identity_moves(
+            "waiver-presence",
+            &base,
+            &ledger_color_node_identity(&changed),
+        );
+        changed = source.clone();
+        changed.waiver.as_mut().expect("fixture waiver").push(0);
+        assert_identity_moves(
+            "waiver-canonical-bytes",
+            &base,
+            &ledger_color_node_identity(&changed),
+        );
+        changed = source.clone();
+        changed.grant_payload = None;
+        assert_identity_moves(
+            "grant-presence",
+            &base,
+            &ledger_color_node_identity(&changed),
+        );
+        changed = source.clone();
+        changed
+            .grant_payload
+            .as_mut()
+            .expect("fixture grant payload")
+            .push(0);
+        assert_identity_moves(
+            "grant-payload",
+            &base,
+            &ledger_color_node_identity(&changed),
+        );
+        changed = source.clone();
+        changed
+            .grant_signature
+            .as_mut()
+            .expect("fixture grant signature")
+            .push(0);
+        assert_identity_moves(
+            "grant-signature",
+            &base,
+            &ledger_color_node_identity(&changed),
+        );
+        changed = source.clone();
+        changed.waiver_policy_fingerprint = None;
+        assert_identity_moves(
+            "waiver-policy-presence",
+            &base,
+            &ledger_color_node_identity(&changed),
+        );
+        changed = source.clone();
+        changed.waiver_policy_fingerprint = Some(identity_test_hash(9));
+        assert_identity_moves(
+            "waiver-policy-fingerprint",
+            &base,
+            &ledger_color_node_identity(&changed),
+        );
+        changed = source.clone();
+        changed.waiver_admission_day = None;
+        assert_identity_moves(
+            "waiver-admission-day-presence",
+            &base,
+            &ledger_color_node_identity(&changed),
+        );
+        changed = source;
+        changed.waiver_admission_day = Some(21);
+        assert_identity_moves(
+            "waiver-admission-day",
+            &base,
+            &ledger_color_node_identity(&changed),
+        );
+    }
+
+    #[test]
+    fn color_node_excluded_fields_do_not_move_identity() {
+        let source = color_node_fixture();
+        let base = ledger_color_node_identity(&source);
+        let mut changed = source.clone();
+        changed.node_id += 1;
+        changed.parent_local_ids = vec![100, 200];
+        changed.stored_hash = identity_test_hash(99);
+        assert_eq!(base, ledger_color_node_identity(&changed));
+        let envelope_a = ("rounded-json-a", 10_i64, 6_u32);
+        let envelope_b = ("rounded-json-b", 20_i64, 7_u32);
+        assert_ne!(envelope_a, envelope_b);
+        assert_eq!(base, ledger_color_node_identity(&source));
+    }
+
+    #[test]
+    fn color_admission_policy_identity_fields_move_independently() {
+        let source = ColorAdmissionPolicyIdentitySource {
+            color_write_row_schema_version: 7,
+            color_algebra_version: 2,
+        };
+        let base = ledger_color_admission_policy_identity(&source);
+        assert_identity_moves(
+            "preimage-domain",
+            &base,
+            &ledger_color_admission_policy_identity_with_schema(
+                &source,
+                "fs-ledger/color-admission-policy/w1",
+            ),
+        );
+        let mut changed = source.clone();
+        changed.color_write_row_schema_version += 1;
+        assert_identity_moves(
+            "color-write-row-schema-version",
+            &base,
+            &ledger_color_admission_policy_identity(&changed),
+        );
+        changed = source;
+        changed.color_algebra_version += 1;
+        assert_identity_moves(
+            "color-algebra-version",
+            &base,
+            &ledger_color_admission_policy_identity(&changed),
+        );
+    }
+
+    #[test]
+    fn color_admission_policy_excluded_fields_do_not_move_identity() {
+        let source = ColorAdmissionPolicyIdentitySource {
+            color_write_row_schema_version: 7,
+            color_algebra_version: 2,
+        };
+        let base = ledger_color_admission_policy_identity(&source);
+        let envelope_a = ("build-a", 10_i64);
+        let envelope_b = ("build-b", 20_i64);
+        assert_ne!(envelope_a, envelope_b);
+        assert_eq!(base, ledger_color_admission_policy_identity(&source));
+    }
+
+    #[test]
+    fn vcs_ledger_lineage_identity_fields_move_independently() {
+        let source = VcsLedgerLineageIdentitySource {
+            mint_path: b"/ledger/path".to_vec(),
+            minted_ns: 10,
+        };
+        let base = ledger_vcs_ledger_lineage_identity(&source);
+        let moved_domain = ledger_vcs_ledger_lineage_identity_with_domain(
+            &source,
+            b"frankensim.fs-ledger.vcs.ledger-identity.w1",
+        );
+        for field in ["domain-label-frame", "domain-byte-count", "preimage-domain"] {
+            assert_identity_moves(field, &base, &moved_domain);
+        }
+        let mut changed = source.clone();
+        changed.mint_path.push(b'x');
+        for field in ["mint-path-byte-count", "mint-path"] {
+            assert_identity_moves(field, &base, &ledger_vcs_ledger_lineage_identity(&changed));
+        }
+        changed = source;
+        changed.minted_ns += 1;
+        assert_identity_moves(
+            "minted-nanoseconds",
+            &base,
+            &ledger_vcs_ledger_lineage_identity(&changed),
+        );
+    }
+
+    #[test]
+    fn vcs_ledger_lineage_excluded_fields_do_not_move_identity() {
+        let source = VcsLedgerLineageIdentitySource {
+            mint_path: b"/ledger/path".to_vec(),
+            minted_ns: 10,
+        };
+        let base = ledger_vcs_ledger_lineage_identity(&source);
+        let persisted_a = (1_i64, "/copy/a", 20_i64);
+        let persisted_b = (9_i64, "/copy/b", 30_i64);
+        assert_ne!(persisted_a, persisted_b);
+        assert_eq!(base, ledger_vcs_ledger_lineage_identity(&source));
+    }
+
+    fn vcs_leaf_fixture() -> VcsCommitLeafIdentitySource {
+        VcsCommitLeafIdentitySource {
+            ir: b"{\"op\":\"fixture\"}".to_vec(),
+            seed: b"seed".to_vec(),
+            versions: b"{\"v\":1}".to_vec(),
+            budget: b"{\"wall\":1}".to_vec(),
+            capability: b"{\"ops\":[\"fixture\"]}".to_vec(),
+            outcome: Some(b"ok".to_vec()),
+            diagnostic: Some(b"{\"detail\":\"done\"}".to_vec()),
+            execution_mode: b"deterministic".to_vec(),
+            edges: vec![
+                VcsCommitEdgeIdentitySource {
+                    role: b"in".to_vec(),
+                    artifact_hash: identity_test_hash(1),
+                },
+                VcsCommitEdgeIdentitySource {
+                    role: b"out".to_vec(),
+                    artifact_hash: identity_test_hash(2),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn vcs_commit_leaf_identity_fields_move_independently() {
+        let source = vcs_leaf_fixture();
+        let base = ledger_vcs_commit_leaf_identity(&source);
+        let moved_domain = ledger_vcs_commit_leaf_identity_with_domain(
+            &source,
+            b"frankensim.fs-ledger.vcs.commit-leaf.w2",
+        );
+        for field in ["domain-label-frame", "domain-byte-count", "preimage-domain"] {
+            assert_identity_moves(field, &base, &moved_domain);
+        }
+        let text_mutations: [(&[&str], fn(&mut VcsCommitLeafIdentitySource)); 6] = [
+            (&["ir-byte-count", "ir-bytes"], |value| value.ir.push(b' ')),
+            (&["seed-byte-count", "seed-bytes"], |value| {
+                value.seed.push(0)
+            }),
+            (&["versions-byte-count", "versions-bytes"], |value| {
+                value.versions.push(b' ')
+            }),
+            (&["budget-byte-count", "budget-bytes"], |value| {
+                value.budget.push(b' ')
+            }),
+            (&["capability-byte-count", "capability-bytes"], |value| {
+                value.capability.push(b' ')
+            }),
+            (&["execution-mode-byte-count", "execution-mode"], |value| {
+                value.execution_mode.push(b'x')
+            }),
+        ];
+        for (fields, mutate) in text_mutations {
+            let mut changed = source.clone();
+            mutate(&mut changed);
+            let moved = ledger_vcs_commit_leaf_identity(&changed);
+            for field in fields {
+                assert_identity_moves(field, &base, &moved);
+            }
+        }
+        let mut changed = source.clone();
+        changed.outcome = None;
+        assert_identity_moves(
+            "outcome-presence",
+            &base,
+            &ledger_vcs_commit_leaf_identity(&changed),
+        );
+        changed = source.clone();
+        changed
+            .outcome
+            .as_mut()
+            .expect("fixture outcome")
+            .push(b'x');
+        for field in ["outcome-byte-count", "outcome-bytes"] {
+            assert_identity_moves(field, &base, &ledger_vcs_commit_leaf_identity(&changed));
+        }
+        changed = source.clone();
+        changed.diagnostic = None;
+        assert_identity_moves(
+            "diagnostic-presence",
+            &base,
+            &ledger_vcs_commit_leaf_identity(&changed),
+        );
+        changed = source.clone();
+        changed
+            .diagnostic
+            .as_mut()
+            .expect("fixture diagnostic")
+            .push(b' ');
+        for field in ["diagnostic-byte-count", "diagnostic-bytes"] {
+            assert_identity_moves(field, &base, &ledger_vcs_commit_leaf_identity(&changed));
+        }
+        changed = source.clone();
+        changed.edges.push(VcsCommitEdgeIdentitySource {
+            role: b"out".to_vec(),
+            artifact_hash: identity_test_hash(3),
+        });
+        assert_identity_moves(
+            "edge-count",
+            &base,
+            &ledger_vcs_commit_leaf_identity(&changed),
+        );
+        changed = source.clone();
+        changed.edges.swap(0, 1);
+        assert_identity_moves(
+            "edge-order",
+            &base,
+            &ledger_vcs_commit_leaf_identity(&changed),
+        );
+        changed = source.clone();
+        changed.edges[0].role.push(b'x');
+        for field in ["edge-role-byte-count", "edge-role"] {
+            assert_identity_moves(field, &base, &ledger_vcs_commit_leaf_identity(&changed));
+        }
+        changed = source;
+        changed.edges[0].artifact_hash = identity_test_hash(4);
+        assert_identity_moves(
+            "artifact-hash",
+            &base,
+            &ledger_vcs_commit_leaf_identity(&changed),
+        );
+    }
+
+    #[test]
+    fn vcs_commit_leaf_excluded_fields_do_not_move_identity() {
+        let source = vcs_leaf_fixture();
+        let base = ledger_vcs_commit_leaf_identity(&source);
+        let envelope_a = (1_i64, b"session-a", 10_i64, 20_i64, 1_i64, 1_i64);
+        let envelope_b = (2_i64, b"session-b", 30_i64, 40_i64, 2_i64, 2_i64);
+        assert_ne!(envelope_a, envelope_b);
+        assert_eq!(base, ledger_vcs_commit_leaf_identity(&source));
+    }
+
+    #[test]
+    fn vcs_commit_root_identity_fields_move_independently() {
+        let source = VcsCommitRootIdentitySource {
+            leaves: vec![
+                identity_test_hash(1),
+                identity_test_hash(2),
+                identity_test_hash(3),
+            ],
+        };
+        let base = ledger_vcs_commit_root_identity(&source);
+        assert_identity_moves(
+            "merkle-domain-set",
+            &base,
+            &ledger_vcs_commit_root_identity_with_domains(
+                &source,
+                b"frankensim.fs-ledger.vcs.merkle-pair.w2",
+                VCS_MERKLE_ODD_PREIMAGE_DOMAIN,
+                VCS_COMMIT_ROOT_PREIMAGE_DOMAIN,
+            ),
+        );
+        let mut changed = source.clone();
+        changed.leaves.push(identity_test_hash(4));
+        for field in ["leaf-count", "tree-shape"] {
+            assert_identity_moves(field, &base, &ledger_vcs_commit_root_identity(&changed));
+        }
+        changed = source.clone();
+        changed.leaves.swap(0, 1);
+        assert_identity_moves(
+            "leaf-order",
+            &base,
+            &ledger_vcs_commit_root_identity(&changed),
+        );
+        changed = source;
+        changed.leaves[0] = identity_test_hash(5);
+        assert_identity_moves(
+            "leaf-hashes",
+            &base,
+            &ledger_vcs_commit_root_identity(&changed),
+        );
+    }
+
+    #[test]
+    fn vcs_commit_root_excluded_fields_do_not_move_identity() {
+        let source = VcsCommitRootIdentitySource {
+            leaves: vec![identity_test_hash(1), identity_test_hash(2)],
+        };
+        let base = ledger_vcs_commit_root_identity(&source);
+        let envelope_a = (identity_test_hash(3), 1_i64, vec![10_i64, 11], 20_i64);
+        let envelope_b = (identity_test_hash(4), 2_i64, vec![30_i64, 31], 40_i64);
+        assert_ne!(envelope_a, envelope_b);
+        assert_eq!(base, ledger_vcs_commit_root_identity(&source));
+    }
+
+    #[test]
+    fn vcs_commit_envelope_identity_fields_move_independently() {
+        let source = VcsCommitEnvelopeIdentitySource {
+            ledger: identity_test_hash(1),
+            branch: 2,
+            root: identity_test_hash(3),
+        };
+        let base = ledger_vcs_commit_envelope_identity(&source);
+        let mut changed = source.clone();
+        changed.ledger = identity_test_hash(4);
+        assert_identity_moves(
+            "ledger-lineage",
+            &base,
+            &ledger_vcs_commit_envelope_identity(&changed),
+        );
+        changed = source.clone();
+        changed.branch += 1;
+        assert_identity_moves(
+            "branch-id",
+            &base,
+            &ledger_vcs_commit_envelope_identity(&changed),
+        );
+        changed = source;
+        changed.root = identity_test_hash(5);
+        assert_identity_moves(
+            "semantic-root",
+            &base,
+            &ledger_vcs_commit_envelope_identity(&changed),
+        );
+    }
+
+    #[test]
+    fn vcs_commit_envelope_excluded_fields_do_not_move_identity() {
+        let source = VcsCommitEnvelopeIdentitySource {
+            ledger: identity_test_hash(1),
+            branch: 2,
+            root: identity_test_hash(3),
+        };
+        let base = ledger_vcs_commit_envelope_identity(&source);
+        let envelope_a = (Some(1_i64), Some(identity_test_hash(4)), 5_i64, 6_i64);
+        let envelope_b = (Some(7_i64), Some(identity_test_hash(8)), 9_i64, 10_i64);
+        assert_ne!(envelope_a, envelope_b);
+        assert_eq!(base, ledger_vcs_commit_envelope_identity(&source));
+    }
 
     #[test]
     fn open_migrates_to_current_version() {
@@ -3869,6 +6857,56 @@ mod tests {
                 "{table} fresh count"
             );
         }
+    }
+
+    #[test]
+    fn v8_migration_backfills_verified_claims_and_rejects_corrupt_v7_sources() {
+        let (valid, authority) = v7_ledger_with_claim(false);
+        valid.migrate().expect("migrate authenticated v7 claim");
+        assert_eq!(valid.schema_version().unwrap(), 8);
+        assert_eq!(
+            valid
+                .session_mutation_claim(&authority)
+                .expect("read migrated v8 claim")
+                .expect("migrated v8 claim")
+                .authority,
+            authority
+        );
+        assert_eq!(valid.table_count("session_claim_discovery").unwrap(), 1);
+
+        let (stale_marker, stale_authority) = v7_ledger_with_claim(false);
+        for ddl in schema::V8 {
+            stale_marker
+                .conn
+                .execute(ddl)
+                .expect("apply exact v8 DDL ahead of stale marker");
+        }
+        assert_eq!(stale_marker.schema_version().unwrap(), 7);
+        stale_marker
+            .migrate()
+            .expect("heal exact v8 objects with a stale v7 marker");
+        assert_eq!(stale_marker.schema_version().unwrap(), 8);
+        assert!(
+            stale_marker
+                .session_mutation_claim(&stale_authority)
+                .expect("read stale-marker migrated claim")
+                .is_some()
+        );
+
+        let (corrupt, _corrupt_authority) = v7_ledger_with_claim(true);
+        assert!(matches!(
+            corrupt.migrate(),
+            Err(LedgerError::Corrupt { .. })
+        ));
+        assert_eq!(corrupt.schema_version().unwrap(), 7);
+        let v8_objects = corrupt
+            .conn
+            .query(
+                "SELECT name FROM sqlite_master \
+                 WHERE name = 'session_claim_discovery' LIMIT 1",
+            )
+            .expect("inspect rolled-back v8 migration");
+        assert!(v8_objects.is_empty());
     }
 
     #[test]

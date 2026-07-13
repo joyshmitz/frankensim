@@ -18,9 +18,13 @@
 //! immutable through attested update/delete refusal triggers. Schema v6 adds
 //! immutable terminal-session receipts and deterministic flush-batch markers
 //! so retry after a database commit cannot append the same audit events twice.
+//! Schema v7 adds causal-ordinal ownership and insert guards without rewriting
+//! the shipped v6 tables. Schema v8 adds an immutable, independently indexed
+//! discovery witness for session claims and splits OR-based reinsert guards so
+//! each refusal probe follows one existing unique index.
 
 /// The schema version this crate writes and reads.
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 8;
 
 /// Storage chunk length for large artifacts (bytes). Artifacts strictly
 /// larger than this are stored as `artifact_chunks` rows of at most this
@@ -29,7 +33,7 @@ pub const STORAGE_CHUNK_LEN: usize = 4 * 1024 * 1024;
 
 /// Migration ladder: `MIGRATIONS[i]` migrates a database at `user_version`
 /// `i` to `i + 1`. Append-only; never edit a shipped batch.
-pub(crate) const MIGRATIONS: &[&[&str]] = &[V1, V2, V3, V4, V5, V6];
+pub(crate) const MIGRATIONS: &[&[&str]] = &[V1, V2, V3, V4, V5, V6, V7, V8];
 
 /// v1: the six core tables (Appendix D), chunk storage, and the Rev S
 /// extension tables (sparse in v0 but present EARLY so downstream crates can
@@ -472,10 +476,170 @@ pub const V6: &[&str] = &[
      )
      BEGIN
        SELECT RAISE(ABORT, 'owned session event is immutable');
+    END",
+];
+
+/// v7: strengthen the shipped v6 session registry without rebuilding tables.
+/// New causal ordinals are canonical positive signed-ledger values, one
+/// governor/kind ordinal has one owner. Legacy v6 submission claims may have a NULL
+/// admission ordinal; typed recovery reads the ordinal from their authenticated
+/// receipt, while the insert guard requires every new submission to bind it.
+pub const V7: &[&str] = &[
+    "CREATE INDEX IF NOT EXISTS idx_session_claims_governor_authority
+     ON session_claims(governor_hash, authority)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_session_claims_unique_causal_ordinal
+     ON session_claims(governor_hash, kind, causal_ordinal)
+     WHERE causal_ordinal IS NOT NULL",
+    "CREATE TRIGGER IF NOT EXISTS trg_session_claims_causal_ordinal_range
+     BEFORE INSERT ON session_claims
+     WHEN NEW.causal_ordinal IS NOT NULL AND (
+          typeof(NEW.causal_ordinal) != 'blob' OR
+          length(NEW.causal_ordinal) != 8 OR
+          NEW.causal_ordinal <= X'0000000000000000' OR
+          NEW.causal_ordinal > X'7FFFFFFFFFFFFFFF'
+     )
+     BEGIN
+       SELECT RAISE(ABORT, 'session causal ordinal is outside 1..=i64::MAX');
+     END",
+    "CREATE TRIGGER IF NOT EXISTS trg_session_submission_requires_admission_ordinal
+     BEFORE INSERT ON session_claims
+     WHEN NEW.kind = 'submission' AND NEW.causal_ordinal IS NULL
+     BEGIN
+       SELECT RAISE(ABORT, 'session submission requires admission ordinal');
+    END",
+];
+
+/// v8: add a compact second copy of the authenticated claim-discovery fields.
+/// Recovery can scan this witness without repeatedly decoding the potentially
+/// large claim payload, then compare every field with `session_claims` before
+/// trusting it. Existing claims are copied before the new table becomes
+/// immutable. The two v6 reinsert guards that used `OR` are also replaced by
+/// one indexable trigger per uniqueness constraint.
+pub const V8: &[&str] = &[
+    "CREATE TABLE IF NOT EXISTS session_claim_discovery(
+        authority BLOB NOT NULL PRIMARY KEY CHECK(length(authority) = 32)
+            REFERENCES session_claims(authority),
+        ledger_instance_id BLOB NOT NULL CHECK(length(ledger_instance_id) = 16),
+        governor_hash BLOB NOT NULL CHECK(length(governor_hash) = 32),
+        session_open_hash BLOB NOT NULL CHECK(length(session_open_hash) = 32),
+        registry_schema_version INTEGER NOT NULL CHECK(registry_schema_version = 1),
+        kind TEXT NOT NULL CHECK(
+            length(CAST(kind AS BLOB)) BETWEEN 1 AND 64 AND
+            length(CAST(kind AS BLOB)) = length(kind) AND
+            kind NOT GLOB '*[^!-~]*'
+        ),
+        session BLOB NOT NULL CHECK(length(session) = 8),
+        ledger_scope TEXT NOT NULL CHECK(
+            length(CAST(ledger_scope AS BLOB)) BETWEEN 1 AND 128 AND
+            length(CAST(ledger_scope AS BLOB)) = length(ledger_scope) AND
+            ledger_scope NOT GLOB '*[^!-~]*'
+        ),
+        generation BLOB NOT NULL CHECK(length(generation) = 8),
+        causal_ordinal BLOB CHECK(
+            causal_ordinal IS NULL OR
+            (typeof(causal_ordinal) = 'blob' AND length(causal_ordinal) = 8)
+        ),
+        payload_hash BLOB NOT NULL CHECK(length(payload_hash) = 32),
+        claim_hash BLOB NOT NULL CHECK(length(claim_hash) = 32)
+    ) STRICT",
+    "INSERT INTO session_claim_discovery(
+         authority, ledger_instance_id, governor_hash, session_open_hash,
+         registry_schema_version, kind, session, ledger_scope, generation,
+         causal_ordinal, payload_hash, claim_hash
+     )
+     SELECT authority, ledger_instance_id, governor_hash, session_open_hash,
+            registry_schema_version, kind, session, ledger_scope, generation,
+            causal_ordinal, payload_hash, claim_hash
+     FROM session_claims AS claim
+     WHERE NOT EXISTS(
+         SELECT 1 FROM session_claim_discovery AS discovery
+         WHERE discovery.authority = claim.authority
+     )
+     ORDER BY authority",
+    "CREATE INDEX IF NOT EXISTS idx_session_claim_discovery_recovery_pending
+     ON session_claim_discovery(
+         governor_hash, session_open_hash, kind, session, ledger_scope, generation, authority
+     )",
+    "CREATE INDEX IF NOT EXISTS idx_session_claim_discovery_governor_authority
+     ON session_claim_discovery(governor_hash, authority)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_session_claim_discovery_governor_kind_ordinal
+     ON session_claim_discovery(governor_hash, kind, causal_ordinal)
+     WHERE causal_ordinal IS NOT NULL",
+    "CREATE TRIGGER IF NOT EXISTS trg_session_claim_discovery_causal_ordinal_range
+     BEFORE INSERT ON session_claim_discovery
+     WHEN NEW.causal_ordinal IS NOT NULL AND (
+          typeof(NEW.causal_ordinal) != 'blob' OR
+          length(NEW.causal_ordinal) != 8 OR
+          NEW.causal_ordinal <= X'0000000000000000' OR
+          NEW.causal_ordinal > X'7FFFFFFFFFFFFFFF'
+     )
+     BEGIN
+       SELECT RAISE(ABORT, 'session causal ordinal is outside 1..=i64::MAX');
+     END",
+    "CREATE TRIGGER IF NOT EXISTS trg_session_claim_discovery_submission_requires_admission_ordinal
+     BEFORE INSERT ON session_claim_discovery
+     WHEN NEW.kind = 'submission' AND NEW.causal_ordinal IS NULL
+     BEGIN
+       SELECT RAISE(ABORT, 'session submission requires admission ordinal');
+     END",
+    "CREATE TRIGGER IF NOT EXISTS trg_session_claim_discovery_immutable_update
+     BEFORE UPDATE ON session_claim_discovery
+     BEGIN
+       SELECT RAISE(ABORT, 'session claim discovery witness is immutable');
+     END",
+    "CREATE TRIGGER IF NOT EXISTS trg_session_claim_discovery_immutable_delete
+     BEFORE DELETE ON session_claim_discovery
+     BEGIN
+       SELECT RAISE(ABORT, 'session claim discovery witness is immutable');
+     END",
+    "CREATE TRIGGER IF NOT EXISTS trg_session_claim_discovery_immutable_reinsert
+     BEFORE INSERT ON session_claim_discovery
+     WHEN EXISTS(
+         SELECT 1 FROM session_claim_discovery WHERE authority = NEW.authority
+     )
+     BEGIN
+       SELECT RAISE(ABORT, 'session claim discovery witness is immutable');
+     END",
+    "DROP TRIGGER IF EXISTS trg_session_terminal_events_immutable_reinsert",
+    "CREATE TRIGGER IF NOT EXISTS trg_session_terminal_events_immutable_reinsert
+     BEFORE INSERT ON session_terminal_events
+     WHEN EXISTS(
+         SELECT 1 FROM session_terminal_events
+         WHERE authority = NEW.authority AND seq = NEW.seq
+     )
+     BEGIN
+       SELECT RAISE(ABORT, 'session terminal event link is immutable');
+     END",
+    "CREATE TRIGGER IF NOT EXISTS trg_session_terminal_events_immutable_event_id_reinsert
+     BEFORE INSERT ON session_terminal_events
+     WHEN EXISTS(
+         SELECT 1 FROM session_terminal_events WHERE event_id = NEW.event_id
+     )
+     BEGIN
+       SELECT RAISE(ABORT, 'session terminal event link is immutable');
+     END",
+    "DROP TRIGGER IF EXISTS trg_session_flush_batch_members_immutable_reinsert",
+    "CREATE TRIGGER IF NOT EXISTS trg_session_flush_batch_members_immutable_reinsert
+     BEFORE INSERT ON session_flush_batch_members
+     WHEN EXISTS(
+         SELECT 1 FROM session_flush_batch_members
+         WHERE batch_id = NEW.batch_id AND seq = NEW.seq
+     )
+     BEGIN
+       SELECT RAISE(ABORT, 'session flush batch member is immutable');
+     END",
+    "CREATE TRIGGER IF NOT EXISTS trg_session_flush_batch_members_immutable_authority_reinsert
+     BEFORE INSERT ON session_flush_batch_members
+     WHEN EXISTS(
+         SELECT 1 FROM session_flush_batch_members
+         WHERE batch_id = NEW.batch_id AND authority = NEW.authority
+     )
+     BEGIN
+       SELECT RAISE(ABORT, 'session flush batch member is immutable');
      END",
 ];
 
-/// Every table the CURRENT schema owns (v1 set + v2 through v6 additions); the
+/// Every table the CURRENT schema owns (v1 set + v2 through v8 additions); the
 /// `table_count`/lint whitelist.
 pub const ALL_TABLES: &[&str] = &[
     "artifacts",
@@ -501,4 +665,5 @@ pub const ALL_TABLES: &[&str] = &[
     "session_terminal_events",
     "session_flush_batches",
     "session_flush_batch_members",
+    "session_claim_discovery",
 ];

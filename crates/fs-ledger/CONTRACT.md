@@ -1,6 +1,6 @@
 # CONTRACT: fs-ledger
 
-> Status: ACTIVE (Design Ledger, schema v5). Owns the core schema + Rev S
+> Status: ACTIVE (Design Ledger, schema v8). Owns the core schema + Rev S
 > extension tables, BLAKE3 content addressing, the WAL/snapshot concurrency
 > contract, and — since schema v2 — forkable worlds, `at(t)` views,
 > `explain()`, the replay audit, and unreferenced-artifact GC (`travel`
@@ -46,7 +46,7 @@ fine-grained event stream. Layer: L6 (HELM). Runtime deps: `std` + `fsqlite`.
   across the whole table before requiring exactly one `singleton = 1` row, so
   constraint-bypassed rows cannot hide outside a filtered query or force an
   unbounded corruption scan. `lint()` performs that checked
-  comparison. A v4 or v5 ledger with missing or malformed identity refuses
+  comparison. A v4+ ledger with missing or malformed identity refuses
   open rather than silently rotating authority.
 - `ContentHash`, `Blake3`, `hash_bytes` — in-house BLAKE3 (plain hash mode,
   32-byte output), pure safe Rust; artifact identity everywhere. The
@@ -93,6 +93,43 @@ fine-grained event stream. Layer: L6 (HELM). Runtime deps: `std` + `fsqlite`.
   validation behind type and byte-length checks, so an oversized raw row is
   refused without reparsing its payload. A kernel scan refuses before payload
   materialization above 1,024 rows or 16 MiB aggregate output.
+- Durable session registry (`session_registry`, schema v6-v8):
+  `SessionMutationClaim` binds one mutation authority to the checked physical
+  `LedgerInstanceId`, durable governor, session-open authority, kind, session,
+  exact scope, generation, optional causal ordinal, and exact payload bytes.
+  `claim_session_mutation` commits that claim before caller work and returns
+  exactly one of fresh `Claimed { permit }`, verified `Pending`, or verified
+  `Terminal`; only the fresh caller receives the sealed positive permit needed
+  to terminalize an existing Pending claim. New `submission` claims must carry
+  a unique governor/kind admission ordinal in `1..=i64::MAX` and cannot bypass
+  this preclaim boundary. `append_session_terminal_batch` atomically commits
+  each typed receipt, its dense authority-owned global audit events, and a
+  deterministic complete ordered batch witness. Exact batch replay appends
+  nothing. A mixed retry may re-witness an existing terminal beside a new one,
+  so one terminal may have up to 1,024 distinct witnesses; every witness is
+  rehashed over the complete member preimage and totals. Reads verify bounded
+  storage types, claim/payload/receipt hashes, dense event ownership, global
+  event bytes, every batch marker, and every complete membership preimage.
+  The reciprocal generation fence rejects a new old-generation submission
+  after a terminal successor pause acknowledgement and rejects a pause terminal
+  while an omitted draining-generation submission remains Pending; partial or
+  corrupt terminal-looking storage fails closed. Generation recovery probes
+  use indexed keyset pages, verify terminal witnesses rather than trusting raw
+  row presence, and cap inspection at 8,192 claims generally and 4,096
+  submission predecessors for a pause. One batch is capped at 1,024 terminals,
+  1,024 events, and 4 MiB encoded bytes; claim payloads and terminal receipts
+  are each capped at 1 MiB. Schema v8 mirrors every claim's bounded discovery
+  envelope in an independently indexed immutable witness. Exact authority
+  reads require one row in each table and compare every copied field after
+  authenticating the primary claim hash; filtered recovery and generation
+  fences take a deduplicated union of both indexes before authentication.
+  Single-table deletion, key drift, or semantic-column corruption therefore
+  cannot turn a dangerous claim into a trusted negative lookup. Governor
+  restart counts must also agree across both tables. Migration from v7
+  backfills inside the version transaction and hash-verifies every surviving
+  source claim before publishing v8. V8 also splits the two OR-based immutable
+  reinsert guards into one point lookup per unique key, avoiding dependence on
+  multi-index-OR planning at exact read-cap fixture scale.
 - Rev S extension tables (sparse v0, uniform `(name UNIQUE, body JSON)`
   shape): `put_extension`/`get_extension` over `requirements`, `model_cards`,
   `evidence`, `scenarios`, `constraints`, `capability_probes`, `imports`,
@@ -124,7 +161,17 @@ valid STRICT SQL), and `artifacts` gains `len`/`chunk_count` +
 singleton `ledger_identity` table so higher-layer sink authority is tied to
 the database instance rather than a path string or Rust object address;
 schema v5 makes ordinary SQL update/delete/replacement mutation of that row
-fail closed.
+fail closed. Schema v6 adds immutable session claims, terminal receipts,
+owned-event links, and flush-batch witnesses. Schema v7 appends causal-ordinal
+ownership/range indexes and insert guards without rewriting the shipped v6
+tables. Schema v8 adds the immutable dual-copy claim-discovery witness and
+independently indexed reinsert guards; genuine v7 backfill is authenticated
+before its marker advances. The tracked v6 table shape had no wired public
+registry writer; the v2
+batch/event hash domains in `session_registry` are therefore the first
+supported writer format. NULL submission ordinals in immutable v6-shaped rows
+are read only as defensive compatibility: Pending remains indeterminate and a
+terminal consumer must recover its authenticated ordinal from the receipt.
 
 - `tombstone` module (addendum Proposal E, bead lmp4.13): the TOMBSTONE
   LEDGER — swarm memory's cheap half. `Descriptor` (name + dimensioned
@@ -292,6 +339,14 @@ refusal, or verifier panic).
    Schema v5 refuses every UPDATE, DELETE, or non-initial INSERT through
    attested triggers, and the checked accessor detects drift against an
    already-open handle.
+10. A durable session terminal is valid only as the conjunction of its exact
+    immutable claim, receipt hash, dense owned-event sequence, rejoined global
+    event bytes, and at least one complete authenticated batch witness. Claim,
+    terminal, event ownership, batch marker, and batch membership commit in one
+    transaction. Missing, extra, reordered, foreign-ledger, future-schema, or
+    hash-mismatched state is corruption; raw terminal-row presence never proves
+    completion. Recovered Pending work is explicitly indeterminate and receives
+    no terminalization permit.
 
 ## Error model
 
@@ -307,7 +362,7 @@ above the caller's explicit validation/materialization budget before payload
 delivery; it makes no independent content-integrity claim.
 `OpCorrupt` refuses a stored op envelope that violates its type, byte, JSON, or
 finish-state contract before materialization.
-`InstanceIdentityCorrupt` refuses a v4/v5 database whose singleton identity is
+`InstanceIdentityCorrupt` refuses a v4+ database whose singleton identity is
 missing, malformed, or differs from the handle's cached open-time authority.
 `InstanceIdentityUnavailable` refuses to mint a new identity when the safe
 std-only OS entropy source is unavailable; it never falls back to process ids,
@@ -369,6 +424,21 @@ replacement, genuine v3 and v4 migrations, UUID shape, v5 update/delete/insert
 refusal for valid UUID-shaped replacements, fail-closed missing/malformed
 identity without advancing the marker, and checked old-handle/lint refusal
 after a deliberate DDL bypass plus restoration of the shipped trigger.
+`tests/session_registry.rs` covers preclaim/Pending/terminal state, exact and
+mixed-batch replay, submission admission ownership, reciprocal pause fences,
+real-file reopen, foreign-ledger and altered-byte conflicts, exact cap/limit+1
+claim/receipt/event/batch byte budgets, and transaction rollback. Nested
+registry tests use deliberate in-memory trigger/table bypasses to prove future
+schema, hash, event-link, batch-membership, batch-total, and partial-terminal
+corruption fails closed, including both directions of the generation fence.
+They also prove claim-side, discovery-side, and missing-witness corruption
+cannot hide a row from filtered recovery. The migration battery accepts an
+authenticated genuine-v7 claim, heals exact v8 objects under a stale v7 marker,
+and rolls back without advancing when a v7 claim's semantic bytes no longer
+match its hash.
+Canonical bulk fixtures exercise the exact and limit+1 read boundaries for the
+8,192-claim recovery probe, 4,096-submission pause fence, and 1,024-witness
+terminal lookup without weakening the production constants under test.
 `tests/travel.rs`: genuine-v1 →
 v2 migration with history intact, fork storage audit (N forks = 1× artifacts
 + deltas) + branch independence, replay audit battery (clean /
@@ -533,7 +603,7 @@ The graph is the minting authority for `fs_evidence::AdmittedColor`:
   intentionally retain one identity because they are copies of one lineage.
 - Safe std-only identity generation is implemented through `/dev/urandom` on
   Unix. Fresh identity creation on non-Unix targets is explicitly refused;
-  existing v4/v5 ledgers remain readable when their persisted identity and
+  existing v4+ ledgers remain readable when their persisted identity and
   schema attest. A client with arbitrary DDL authority can remove and restore
   guards; already-open handles detect resulting row drift, but the identity is
   not cryptographically authenticated against a hostile database owner.
@@ -561,6 +631,11 @@ The graph is the minting authority for `fs_evidence::AdmittedColor`:
   enforces them on writes, metadata-preflights and guards reads, and reports
   bounded envelope violations through lint; arbitrary raw SQL is therefore
   detected and refused, not prevented as a DDL property.
+- Registry rows produced by the earlier uncommitted, unwired session-registry
+  scaffold are not a compatibility claim. In particular, no dual verifier
+  auto-trusts its unpublished v1 batch/event hash domains; such rows fail
+  closed. Compatibility covers the tracked v6 table shape and the supported
+  v2 writer preimages described above.
 - `ColorGraph::verify_replay()` structurally re-earns colors and hashes but does
   not itself re-run external source-origin or waiver capabilities. It retains
   the complete request/artifact fields, exact policy fingerprints, waiver
