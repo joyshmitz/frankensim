@@ -755,11 +755,11 @@ fn outward_round(lo: f64, hi: f64) -> (f64, f64) {
     }
 }
 
-/// The TOTAL, conservative pairwise composition: the result's rank is
-/// the MINIMUM of the operands' ranks (no laundering), verified bounds
-/// combine per `op` (outward-rounded to preserve enclosure), validated
-/// regimes INTERSECT (both anchors must hold), and estimated dispersions
-/// add (conservative).
+/// The TOTAL, conservative pairwise composition: the result never OUTRANKS
+/// the weaker operand (no laundering). Malformed payloads and disjoint
+/// validated regimes may demote further. Verified bounds combine per `op`
+/// (outward-rounded to preserve enclosure), validated regimes INTERSECT (both
+/// anchors must hold), and estimated dispersions add (conservative).
 #[must_use]
 pub fn compose(a: &Color, b: &Color, op: IntervalOp) -> Color {
     let a = normalize_composition_input(a);

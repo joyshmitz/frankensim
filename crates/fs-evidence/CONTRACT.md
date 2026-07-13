@@ -59,10 +59,11 @@ on fs-obs only.
   `Color::{Verified{lo,hi}, Validated{regime: ValidityDomain, dataset},
   Estimated{estimator, dispersion}}` with the `ColorRank` lattice
   (verified > validated > estimated), the TOTAL conservative pairwise
-  `compose` (result rank = min of operands; verified intervals combine
-  per `IntervalOp` with outward-rounded arithmetic; validated regimes
-  INTERSECT, and a disjoint intersection demotes with infinite/no-claim
-  dispersion; estimated absorbs everything with additive dispersion),
+  `compose` (the result never outranks the weaker operand; verified intervals
+  combine per `IntervalOp` with outward-rounded arithmetic; validated regimes
+  INTERSECT, and a disjoint intersection demotes further with
+  infinite/no-claim dispersion; estimated absorbs everything with additive
+  dispersion),
   `check_regime` (validated is a REGIONAL property: exiting, failing to
   report a regime axis, supplying a non-finite state, or declaring an
   empty/non-finite/inverted regime AUTO-DEMOTES to estimated with a
@@ -229,6 +230,11 @@ arithmetic and malformed statistical/model uncertainty.
 namespace separation; `evd-015` locks the shared color structural invariant
 across every public variant and bridge input, including the malformed empty-
 regime demotion sentinel and complete-set malformed-card identity stability.
+`evd-016` uses `fs-propcheck` seed `0xE71D_4A48_0001` for 512 shrinkable color
+composition recipes: all 27 operand-kind/operation combinations, both operand
+orders, overlapping and disjoint validated regimes, and structural validation
+of every input and output. It locks the no-laundering rank law while preserving
+the fixed cases above as regression pins.
 
 - Falsifier registration is total: empty falsifier lists refuse at the
   source; the ship gate names every unpaired class.

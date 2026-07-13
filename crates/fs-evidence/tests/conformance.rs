@@ -7,11 +7,13 @@
 //! their seed.
 
 use fs_evidence::{
-    Ambition, DecisionStatus, DiscrepancyModel, EscalationAdvice, Evidence, FidelityPair,
-    ModelBracket, ModelCard, ModelEvidence, ModelRegistry, NumericalCertificate, Op,
-    ProvenanceHash, StatisticalCertificate, UncertaintySource, ValidityDomain,
+    Ambition, Color, ColorRank, DecisionStatus, DiscrepancyModel, EscalationAdvice, Evidence,
+    FidelityPair, IntervalOp, ModelBracket, ModelCard, ModelEvidence, ModelRegistry,
+    NumericalCertificate, Op, ProvenanceHash, StatisticalCertificate, UncertaintySource,
+    ValidityDomain, compose, validate_color_payload,
 };
-use std::collections::BTreeMap;
+use fs_propcheck::Stream;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn verdict(case: &str, pass: bool, detail: &str) {
     println!(
@@ -1419,5 +1421,133 @@ fn evd_015c_malformed_card_diagnostics_remain_derived() {
         "evd-015c",
         true,
         "malformed card diagnostics bind the complete canonical card set, remain derived, and \n+         cannot be re-rooted as evidence leaves",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// G0 property adoption (bead frankensim-4nh8): the color-rank lattice law,
+// generated + shrunk via fs-propcheck. Fixed color cases above remain pins.
+// ---------------------------------------------------------------------------
+
+type ColorRecipe = (u64, (i64, i64));
+type ColorCompositionCase = (ColorRecipe, ColorRecipe, u64);
+
+fn generate_color_composition_case(stream: &mut Stream) -> ColorCompositionCase {
+    (
+        (
+            stream.next_u64() % 3,
+            (stream.int_in(-8, 8), stream.int_in(-8, 8)),
+        ),
+        (
+            stream.next_u64() % 3,
+            (stream.int_in(-8, 8), stream.int_in(-8, 8)),
+        ),
+        stream.next_u64() % 3,
+    )
+}
+
+fn color_from_recipe(recipe: &ColorRecipe, side: &str) -> Color {
+    let &(kind, (a, b)) = recipe;
+    let lo = a.min(b) as f64;
+    let hi = a.max(b) as f64;
+    match kind % 3 {
+        0 => Color::Verified { lo, hi },
+        1 => Color::Validated {
+            regime: ValidityDomain::unconstrained().with("x", lo, hi),
+            dataset: format!("property-dataset-{side}"),
+        },
+        _ => Color::Estimated {
+            estimator: format!("property-estimator-{side}"),
+            dispersion: a.unsigned_abs() as f64 + b.unsigned_abs() as f64,
+        },
+    }
+}
+
+fn interval_op_from_recipe(recipe: u64) -> IntervalOp {
+    match recipe % 3 {
+        0 => IntervalOp::Add,
+        1 => IntervalOp::Mul,
+        _ => IntervalOp::Hull,
+    }
+}
+
+fn validated_pair_is_disjoint(left: &Color, right: &Color) -> bool {
+    match (left, right) {
+        (Color::Validated { regime: a, .. }, Color::Validated { regime: b, .. }) => {
+            a.intersect(b).is_empty()
+        }
+        _ => false,
+    }
+}
+
+fn color_composition_rank_law(case: &ColorCompositionCase) -> bool {
+    let left = color_from_recipe(&case.0, "left");
+    let right = color_from_recipe(&case.1, "right");
+    let op = interval_op_from_recipe(case.2);
+    let weakest = left.rank().min(right.rank());
+    let expected = if validated_pair_is_disjoint(&left, &right) {
+        ColorRank::Estimated
+    } else {
+        weakest
+    };
+    let forward = compose(&left, &right, op);
+    let reverse = compose(&right, &left, op);
+
+    validate_color_payload(&left).is_ok()
+        && validate_color_payload(&right).is_ok()
+        && validate_color_payload(&forward).is_ok()
+        && validate_color_payload(&reverse).is_ok()
+        && forward.rank() <= weakest
+        && reverse.rank() <= weakest
+        && forward.rank() == expected
+        && reverse.rank() == expected
+}
+
+#[test]
+fn evd_016_g0_color_composition_rank_never_launders() {
+    const SEED: u64 = 0xE71D_4A48_0001;
+    const CASES: u64 = 512;
+
+    // Keep the fixed seed honest: it covers the full 3x3x3 kind/op matrix and
+    // both branches of Validated + Validated composition.
+    let mut combinations = BTreeSet::new();
+    let mut saw_validated_overlap = false;
+    let mut saw_validated_disjoint = false;
+    for case_index in 0..CASES {
+        let mut stream = Stream::for_case(SEED, case_index);
+        let case = generate_color_composition_case(&mut stream);
+        combinations.insert((case.0.0 % 3, case.1.0 % 3, case.2 % 3));
+
+        let left = color_from_recipe(&case.0, "left");
+        let right = color_from_recipe(&case.1, "right");
+        if let (Color::Validated { .. }, Color::Validated { .. }) = (&left, &right) {
+            if validated_pair_is_disjoint(&left, &right) {
+                saw_validated_disjoint = true;
+            } else {
+                saw_validated_overlap = true;
+            }
+        }
+    }
+    assert_eq!(
+        combinations.len(),
+        27,
+        "fixed seed must cover all operand-kind/operation combinations"
+    );
+    assert!(
+        saw_validated_overlap && saw_validated_disjoint,
+        "fixed seed must cover both validated-regime branches"
+    );
+
+    fs_propcheck::check(
+        "color-composition-rank-never-launders",
+        SEED,
+        CASES,
+        generate_color_composition_case,
+        color_composition_rank_law,
+    );
+    verdict(
+        "evd-016",
+        true,
+        "512 generated shrinkable compositions cover all color-kind/operation combinations, both operand orders, and both validated-regime branches",
     );
 }
