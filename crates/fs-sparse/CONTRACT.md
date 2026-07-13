@@ -17,9 +17,12 @@ gated on fs-tilelang and the autotuner — see No-claim boundaries.
 - `Csr` — the canonical format. INVARIANT: within each row, columns are
   strictly ascending, no duplicates. Every constructor establishes this
   (`from_parts` validates and panics otherwise); every algorithm may rely on
-  it. `row(r)` doubles as the graph neighbor view (CSR IS the adjacency
-  structure). `spmv`, `spmm` (dense row-major right-hand sides), `to_dense`
-  (oracle use), `identity`, `get`.
+  it. `try_from_parts_with_checkpoint` validates the same invariant without a
+  panic and invokes a caller callback once per row and stored column, allowing
+  cancellation-aware callers without adding an executor dependency. `row(r)`
+  doubles as the graph neighbor view (CSR IS the adjacency structure). `spmv`,
+  `spmm` (dense row-major right-hand sides), `to_dense` (oracle use),
+  `identity`, `get`.
 - `Bsr` — block CSR with fixed r×c blocks for FEM vector unknowns.
   `from_csr` requires divisible dimensions (padding is a modeling decision,
   never invented by a conversion). `to_csr` drops exact-zero fill.
@@ -92,11 +95,14 @@ Structural violations panic with structured messages: out-of-range COO
 indices, non-canonical `from_parts` input, dimension mismatches in
 spmv/spmm/spgemm/symmetrize, indivisible BSR block shapes. These are
 programmer errors; silently proceeding would void determinism claims. No
-other fallible paths; no allocation-failure handling beyond std's.
+allocation-failure handling beyond std's. The checkpointed CSR constructor
+instead returns `Ok(None)` for malformed canonical parts and passes through a
+caller checkpoint error as `Err`.
 
 ## Determinism class
 **Bit-deterministic cross-ISA by construction**: kernels are fixed-order
-+, ×, mul_add; no libm, no data-dependent reassociation, no threading in v1.
++, ×, mul_add with no libm or data-dependent reassociation; parallel assembly
+and sharded kernels preserve their serial twins' logical accumulation order.
 Evidence: the conformance battery (three-matrix zoo × three formats ×
 transpose/symmetrize/SpGEMM) folds all output bits into FNV-64 golden hash
 `0xbcf5_52b6_c5bf_aed6`; the preconditioner battery (Chebyshev apply +
@@ -107,8 +113,10 @@ applies. NO platform libm feeds any solver state (workspace contract
 rule).
 
 ## Cancellation behavior
-v1 kernels are single-tile and uninterruptible; the executor-tiled parallel
-lanes (follow-up bead) will poll at row-range boundaries per Decalogue P7.
+v1 numeric kernels are single-tile and uninterruptible; the executor-tiled
+parallel lanes (follow-up bead) will poll at row-range boundaries per Decalogue
+P7. CSR construction can validate with a caller-supplied checkpoint at every
+row and stored column.
 
 ## Unsafe boundary
 None. `unsafe_code` denied; no capsules.
@@ -127,10 +135,15 @@ None. `unsafe_code` denied; no capsules.
 suites: assembly canonicalization + stream-order invariance, SpMV vs dense
 oracle, linearity, adversarial patterns (empty rows, dense row, single
 column, empty matrix), BSR/SELL round-trips, SELL padding economics,
+checkpointed CSR publication and malformed canonical-part refusal,
 transpose involution, symmetrize bitwise symmetry, SpGEMM vs dense oracle +
 Laplacian-square pattern sanity, sparse-SPA SpGEMM vs dense-SPA reference on
 random and 2e6-column-wide products, structured rejections. Any
 reimplementation must pass the conformance battery bit-for-bit.
+Bead 4nh8 adds 600 shrink-armed generated 8×8 cases (seed `0x5A_5001`): up
+to 64 integer COO triplets, including duplicates and stored zeros, are applied
+to an integer vector through CSR, BSR 4×4, and SELL-C-σ `(8, 32)` and compared
+bitwise. The fixed cross-ISA golden `0xbcf5_52b6_c5bf_aed6` is unchanged.
 
 ## FrankenNumpy interop (bead gtql item c, feature `fnp-interop`)
 
@@ -149,8 +162,6 @@ default; the L1 core pulls no constellation crate unless opted in.
 ## No-claim boundaries
 - **No performance claims yet**: scalar reference kernels; the ≥85% STREAM
   target, CCD sharding, prefetch, and SIMD belong to the perf follow-up.
-- No parallel assembly implementation (the CONTRACT for its accumulation
-  order is stated in Invariant 2; the tiled implementation is follow-up).
 - BSR `to_csr` is only structurally lossless for matrices without stored
   exact-zero values (fill is dropped by value test); the dense expansion is
   always bitwise faithful.

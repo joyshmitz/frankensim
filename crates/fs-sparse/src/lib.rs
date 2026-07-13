@@ -193,6 +193,58 @@ impl Csr {
         }
     }
 
+    /// Validate and publish canonical CSR storage with a caller-supplied
+    /// checkpoint between bounded validation steps.
+    ///
+    /// This is the cancellation-friendly sibling of [`Self::from_parts`]. The
+    /// callback is invoked for every row and stored column, so callers can map
+    /// their own cancellation or work-accounting error without adding a
+    /// runtime dependency to `fs-sparse`. `Ok(None)` reports malformed shape,
+    /// row pointers, or noncanonical/out-of-range columns; `Err(error)` passes
+    /// through a checkpoint refusal.
+    pub fn try_from_parts_with_checkpoint<E>(
+        nrows: usize,
+        ncols: usize,
+        row_ptr: Vec<usize>,
+        col_idx: Vec<usize>,
+        vals: Vec<f64>,
+        mut checkpoint: impl FnMut() -> Result<(), E>,
+    ) -> Result<Option<Csr>, E> {
+        let Some(expected_row_ptr_len) = nrows.checked_add(1) else {
+            return Ok(None);
+        };
+        if row_ptr.len() != expected_row_ptr_len
+            || row_ptr.first().copied() != Some(0)
+            || row_ptr.last().copied() != Some(col_idx.len())
+            || col_idx.len() != vals.len()
+        {
+            return Ok(None);
+        }
+        for window in row_ptr.windows(2) {
+            checkpoint()?;
+            let start = window[0];
+            let end = window[1];
+            if start > end || end > col_idx.len() {
+                return Ok(None);
+            }
+            let mut previous = None;
+            for &column in &col_idx[start..end] {
+                checkpoint()?;
+                if column >= ncols || previous.is_some_and(|prior| prior >= column) {
+                    return Ok(None);
+                }
+                previous = Some(column);
+            }
+        }
+        Ok(Some(Csr {
+            nrows,
+            ncols,
+            row_ptr,
+            col_idx,
+            vals,
+        }))
+    }
+
     /// An n×n identity.
     #[must_use]
     pub fn identity(n: usize) -> Csr {
@@ -540,6 +592,54 @@ mod tests {
                 std::panic::catch_unwind(|| Csr::from_parts(1, 2, rp.clone(), ci.clone(), vals));
             assert!(r.is_err(), "must reject: {why}");
         }
+    }
+
+    #[test]
+    fn checkpointed_parts_preserve_the_canonical_invariant() {
+        let row_ptr = vec![0, 2, 3];
+        let col_idx = vec![0, 2, 1];
+        let vals = vec![1.0, 2.0, 3.0];
+        let checked = Csr::from_parts(2, 3, row_ptr.clone(), col_idx.clone(), vals.clone());
+        let mut checkpoints = 0usize;
+        let checkpointed =
+            Csr::try_from_parts_with_checkpoint(2, 3, row_ptr, col_idx, vals, || {
+                checkpoints += 1;
+                Ok::<_, core::convert::Infallible>(())
+            })
+            .expect("checkpoint cannot fail")
+            .expect("canonical parts pass checked publication");
+        assert_eq!(checkpointed, checked);
+        assert_eq!(checkpoints, 5);
+
+        for columns in [vec![1, 0], vec![0, 0], vec![0, 3]] {
+            let malformed = Csr::try_from_parts_with_checkpoint(
+                1,
+                3,
+                vec![0, 2],
+                columns,
+                vec![1.0, 2.0],
+                || Ok::<_, core::convert::Infallible>(()),
+            )
+            .expect("checkpoint cannot fail");
+            assert!(malformed.is_none());
+        }
+        let bad_shape =
+            Csr::try_from_parts_with_checkpoint(2, 3, vec![0, 1], vec![0], vec![1.0], || {
+                Ok::<_, core::convert::Infallible>(())
+            })
+            .expect("checkpoint cannot fail");
+        assert!(bad_shape.is_none());
+        let decreasing_rows =
+            Csr::try_from_parts_with_checkpoint(2, 3, vec![0, 2, 1], vec![0], vec![1.0], || {
+                Ok::<_, core::convert::Infallible>(())
+            })
+            .expect("checkpoint cannot fail");
+        assert!(decreasing_rows.is_none());
+        let cancelled =
+            Csr::try_from_parts_with_checkpoint(1, 1, vec![0, 1], vec![0], vec![1.0], || {
+                Err("cancelled")
+            });
+        assert_eq!(cancelled, Err("cancelled"));
     }
 
     #[test]

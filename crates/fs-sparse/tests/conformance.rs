@@ -5,7 +5,47 @@
 //! aarch64-apple and required to match on x86-64 (the same evidence
 //! discipline as fs-math/fs-fft).
 
+use fs_propcheck::Shrink;
 use fs_sparse::{Bsr, Coo, Csr, Sell, ops};
+
+#[derive(Clone, Debug)]
+struct SparseCase {
+    triplets: Vec<(u64, u64, i64)>,
+    x: [i64; 8],
+}
+
+impl Shrink for SparseCase {
+    fn shrink_candidates(&self) -> Vec<Self> {
+        let mut candidates: Vec<Self> = self
+            .triplets
+            .shrink_candidates()
+            .into_iter()
+            .map(|triplets| SparseCase {
+                triplets,
+                x: self.x,
+            })
+            .collect();
+        for (index, value) in self.x.iter().enumerate() {
+            for candidate in value.shrink_candidates() {
+                let mut x = self.x;
+                x[index] = candidate;
+                candidates.push(SparseCase {
+                    triplets: self.triplets.clone(),
+                    x,
+                });
+            }
+        }
+        candidates
+    }
+}
+
+fn bitwise_equal(left: &[f64], right: &[f64]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(a, b)| a.to_bits() == b.to_bits())
+}
 
 fn lcg(seed: &mut u64) -> f64 {
     *seed = seed
@@ -139,6 +179,57 @@ fn cross_format_battery_and_golden_hash() {
         acc, GOLDEN_HASH,
         "sparse kernel output bits changed: {acc:#018x} vs {GOLDEN_HASH:#018x} — bump only \
          with semantic justification (golden-evidence policy)"
+    );
+}
+
+/// G0 generated cross-format battery (bead frankensim-4nh8). The fixed zoo
+/// and its cross-ISA golden above remain the durable regression pin; this
+/// layer fills the input space between those fixtures and shrinks failures.
+#[test]
+fn generated_cross_format_spmv_is_bitwise_equal() {
+    fs_propcheck::check(
+        "sparse-csr-bsr-sell-spmv-bitwise",
+        0x5A_5001,
+        600,
+        |s| SparseCase {
+            triplets: s.vec_of(64, |s| {
+                (
+                    u64::try_from(s.int_in(0, 7)).expect("row is non-negative"),
+                    u64::try_from(s.int_in(0, 7)).expect("column is non-negative"),
+                    s.int_in(-8, 8),
+                )
+            }),
+            x: core::array::from_fn(|_| s.int_in(-8, 8)),
+        },
+        |case| {
+            let mut coo = Coo::new(8, 8);
+            for &(row, column, value) in &case.triplets {
+                coo.push(
+                    usize::try_from(row).expect("generated row fits usize"),
+                    usize::try_from(column).expect("generated column fits usize"),
+                    value as f64,
+                );
+            }
+            let csr = coo.assemble();
+            let x: Vec<f64> = case.x.iter().map(|&value| value as f64).collect();
+
+            let mut csr_out = [0.0; 8];
+            csr.spmv(&x, &mut csr_out);
+
+            let bsr = Bsr::from_csr(&csr, 4, 4);
+            let mut bsr_out = [0.0; 8];
+            bsr.spmv(&x, &mut bsr_out);
+
+            let sell = Sell::from_csr(&csr, 8, 32);
+            let mut sell_out = [0.0; 8];
+            sell.spmv(&x, &mut sell_out);
+
+            bitwise_equal(&csr_out, &bsr_out) && bitwise_equal(&csr_out, &sell_out)
+        },
+    );
+    println!(
+        "{{\"suite\":\"fs-sparse\",\"case\":\"g0-generated-cross-format\",\
+         \"verdict\":\"pass\",\"detail\":\"600 shrink-armed 8x8 CSR/BSR4/SELL8x32 SpMV cases\"}}"
     );
 }
 
