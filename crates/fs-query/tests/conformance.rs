@@ -250,6 +250,50 @@ fn gq_002_raycast_safety() {
     });
 }
 
+/// gq-002b — raycast fails CLOSED on a chart that reports a Lipschitz value but
+/// makes no tunneling-safe trace claim. Regression: raycast admitted any
+/// `Some(lipschitz)` chart and stepped by φ/L, so an enclosure/heuristic chart
+/// (dense SDF, mesh — `Some(lipschitz)` but `NoClaim`) whose reported distance
+/// overshoots the true one would tunnel through the surface. Exact and
+/// Lipschitz-implicit charts still trace (gq-002).
+#[test]
+fn gq_002b_raycast_refuses_no_claim_charts() {
+    with_cx(|cx| {
+        // A degenerate SphereChart (radius 0) reports `lipschitz: Some(1.0)` but
+        // `trace_step_claim() == NoClaim` — exactly the Some(lipschitz)+NoClaim
+        // shape that TiledSdf / MeshChart present to a generic tracer.
+        let no_claim = SphereChart {
+            center: Point3::new(0.0, 0.0, 0.0),
+            radius: 0.0,
+        };
+        assert_eq!(
+            no_claim.trace_step_claim(),
+            fs_geom::TraceStepClaim::NoClaim,
+            "fixture precondition: radius-0 sphere makes no trace claim"
+        );
+        assert!(
+            no_claim
+                .eval(Point3::new(3.0, 0.0, 0.0), cx)
+                .lipschitz
+                .is_some(),
+            "fixture precondition: it still reports a Lipschitz value"
+        );
+        let r = raycast(
+            &no_claim,
+            Point3::new(-3.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            10.0,
+            cx,
+        );
+        verdict(
+            "gq-002b",
+            matches!(r, Err(QueryError::NoTraceClaim)),
+            "raycast fails closed (NoTraceClaim) on a Some(lipschitz)+NoClaim chart \
+             instead of tunneling; exact/Lipschitz-implicit charts still trace",
+        );
+    });
+}
+
 /// gq-003 — offsets and the ball-Minkowski identity: offset spheres
 /// are spheres (across chart types), erosion shrinks, and
 /// minkowski_ball IS the offset (exact by construction).

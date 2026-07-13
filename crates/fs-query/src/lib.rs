@@ -31,7 +31,7 @@
 //!   ([`CurvatureClass`]) documented and measured under refinement.
 
 use fs_exec::Cx;
-use fs_geom::{Aabb, Chart, Point3, Vec3};
+use fs_geom::{Aabb, Chart, Point3, TraceStepClaim, Vec3};
 use fs_mesh::delaunay;
 use fs_rep_mesh::Soup;
 
@@ -49,6 +49,12 @@ pub enum QueryError {
     /// The chart offers no Lipschitz certificate (required for safe
     /// tracing / rigorous bounds).
     NoLipschitz,
+    /// The chart states no tunneling-safe trace claim
+    /// ([`TraceStepClaim::NoClaim`]): a `Some(lipschitz)` sample does NOT
+    /// upgrade the default, so sphere tracing over it could step past the
+    /// true surface (an enclosure/heuristic chart under-reports the
+    /// distance). Fails closed rather than tunneling.
+    NoTraceClaim,
     /// The query point is not on/near the boundary as required.
     NotOnBoundary {
         /// The signed distance found.
@@ -75,6 +81,12 @@ impl core::fmt::Display for QueryError {
                 f,
                 "the chart carries no Lipschitz certificate; safe tracing and rigorous \
                  separation bounds require one"
+            ),
+            QueryError::NoTraceClaim => write!(
+                f,
+                "the chart states no tunneling-safe trace claim (NoClaim); a Lipschitz \
+                 value alone does not make sphere tracing safe on an enclosure/heuristic \
+                 chart — use the chart's native tracer or an exact/Lipschitz-implicit chart"
             ),
             QueryError::NotOnBoundary { sd } => write!(
                 f,
@@ -176,8 +188,19 @@ pub struct RayHit {
 /// Conservative sphere tracing: steps by `φ/L` (safe because certified
 /// charts guarantee `|φ| ≤ dist`). Returns `None` on a clean miss.
 ///
+/// Fails closed on any chart that does not state a tunneling-safe trace
+/// claim: per the [`Chart`] contract a `Some(lipschitz)` sample does NOT
+/// grant the no-tunneling theorem — only [`TraceStepClaim::ExactDistance`]
+/// and [`TraceStepClaim::LipschitzImplicit`] do. An enclosure/heuristic
+/// chart ([`TraceStepClaim::NoClaim`]) can report a `signed_distance` that
+/// OVERSHOOTS the true distance by its enclosure band, so stepping by `φ/L`
+/// would tunnel through the surface; such charts are refused (use the
+/// chart's own tracer, which knows its band). Callers needing an explicit
+/// uncertified preview must opt in elsewhere.
+///
 /// # Errors
-/// [`QueryError::NoLipschitz`] when the chart carries no bound.
+/// [`QueryError::NoLipschitz`] when the chart carries no bound;
+/// [`QueryError::NoTraceClaim`] when the chart states no trace-safe claim.
 pub fn raycast(
     chart: &dyn Chart,
     origin: Point3,
@@ -185,6 +208,12 @@ pub fn raycast(
     tmax: f64,
     cx: &Cx<'_>,
 ) -> Result<Option<RayHit>, QueryError> {
+    // The Lipschitz value alone is NOT sufficient: it must come with a
+    // certified trace claim, or an enclosure chart's overshoot tunnels.
+    match chart.trace_step_claim() {
+        TraceStepClaim::ExactDistance | TraceStepClaim::LipschitzImplicit => {}
+        TraceStepClaim::NoClaim => return Err(QueryError::NoTraceClaim),
+    }
     let l = chart
         .eval(origin, cx)
         .lipschitz
