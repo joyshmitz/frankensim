@@ -645,6 +645,12 @@ impl Bddc {
     /// topological locality win of CCD-aligned partitioning.
     #[must_use]
     pub fn ccd_locality(&self, ccds: usize) -> f64 {
+        // Zero islands is a degenerate request: `div_ceil(0)` divides by zero
+        // and `ccds - 1` underflows. No island can be shared, so the locality
+        // win is 0 — return it rather than panic (keep the method total).
+        if ccds == 0 {
+            return 0.0;
+        }
         let np = self.decomp.np();
         let island = |si: usize, sj: usize| -> usize {
             let per = self.decomp.s.div_ceil(ccds);

@@ -223,6 +223,9 @@ fn dd_005_sheaf_cross_check_and_ccd_locality() {
         degenerate < 0.1,
         "one-subdomain-per-island has no internal interfaces: {degenerate}"
     );
+    // Regression: ccd_locality(0) used to panic (div_ceil(0) + `ccds - 1`
+    // usize underflow). Zero islands is degenerate — it must return 0.0, total.
+    assert_eq!(big.ccd_locality(0), 0.0, "zero islands is total, not a panic");
     verdict(
         "dd-005",
         "the sheaf skeleton matches the enrichment (4 edges, 1 harmonic cycle mode \
