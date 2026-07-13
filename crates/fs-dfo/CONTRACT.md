@@ -2,14 +2,15 @@
 
 > Status: PARTIAL — CMA-ES (IGO form), BIPOP restarts, Nelder–Mead,
 > balanced entropic OT, NSGA-II/III, MOEA/D, hypervolume helpers and
-> archives, sample-CVaR, and discrete-support Wasserstein-DRO inner sup
-> are in force; sep/low-rank CMA, NES
+> archives, canonical sample-CVaR delegated to `fs-robust`, and
+> discrete-support Wasserstein-DRO inner sup are in force; sep/low-rank CMA, NES
 > parameterizations, DE, DIRECT, TR-DFO, and fs-exec population waves
 > are recorded follow-up scope.
 
 ## Purpose and layer
 Derivative-free optimization engines (plan §9.3). Layer: **L4 ASCENT**.
-Deps: fs-rand (keyed sampling), fs-la (eigendecomposition), fs-math.
+Deps: fs-rand (keyed sampling), fs-la (eigendecomposition), fs-math, fs-robust
+(canonical empirical risk algebra).
 Engines are IR-agnostic (closure objectives) BY DESIGN — routing from
 the fs-opt problem IR is a wiring bead once that crate stabilizes
 (deliberate collision avoidance, bead 7tv.4 trail).
@@ -35,6 +36,11 @@ the fs-opt problem IR is a wiring bead once that crate stabilizes
   support distribution. Kink cases split mass fractionally across
   active supports instead of pretending a single argmax distribution
   realizes the dual value.
+- `empirical_cvar(samples, alpha) -> Result<EmpiricalCvarReport, RobustError>`
+  — a direct re-export of the canonical `fs-robust` finite-sample risk algebra.
+  The report carries overflow-safe CVaR, the deterministic lower empirical
+  VaR/Rockafellar–Uryasev minimizer, boundary rank, and fractional boundary
+  weight; DFO does not maintain a second order-statistic implementation.
 
 - `steer` module (bead qlvf, lane a): WORLD-FORKING steering (P9).
   `SteeredStudy` = the deterministic (population, stream-index,
@@ -61,7 +67,8 @@ the fs-opt problem IR is a wiring bead once that crate stabilizes
 
 ## Error model
 Structured panics for modeling errors (empty dimension). Convergence
-failure is DATA: `converged: false` with best-found + diagnostics.
+failure is DATA: `converged: false` with best-found + diagnostics. Empirical
+CVaR instead returns the canonical structured `RobustError` and does not panic.
 
 ## Determinism class
 Bit-deterministic per seed, cross-ISA (golden hash
@@ -88,7 +95,7 @@ marginal feasibility ≤ 1e−8 and cost symmetry ≤ 1e−8; the ε-ladder
 approaching the 1D monotone-coupling CLOSED FORM monotonically
 (0.11 → 0.005 at ε = 0.05 → 0.002); translation covariance
 (W₂² of equal translates = t² within 0.2%); OT golden
-`0x58eb_8443_224c_a689`; tests/moo_battery.rs (12 cases): hypervolume vs
+`0x58eb_8443_224c_a689`; tests/moo_battery.rs: hypervolume vs
 hand-computed 2D/3D values including dominated/out-of-reference
 degenerate cases; non-dominated-sort front assignment exact;
 NSGA-II on ZDT1/ZDT2 at standard budgets (pop 80 × 200 generations —
@@ -97,11 +104,13 @@ in the test) with mean front gap ≤ 0.05 (measured ≤ 0.0008), full f1
 spread, hypervolume beating scrambled-Sobol random at MATCHED
 evaluations (0.87 vs 0.19 / 0.54 vs 0.00), and bitwise replay; helper
 edges for crowding; knee detection hitting a synthetic elbow exactly;
-CVaR Rockafellar–Uryasev
-on 2·10⁵ Gaussian samples vs the closed form μ + σφ(z_β)/(1−β) within
-0.02 (and the RU minimizer matching the VaR); duplicate order
-statistics handled in the linear tail pass; MOO golden hash
-`0x606f_35d4_bfb8_822a`; MC hypervolume vs exact at m = 2/3 within
+canonical empirical CVaR on 2·10⁵ Gaussian samples vs the closed form
+μ + σφ(z_β)/(1−β) within 0.02 (and the lower RU minimizer matching the
+VaR); fractional boundaries, tied integer boundaries, mixed-sign extremes,
+constant `f64::MAX`, permutations, and direct `fs-robust` parity; MOO golden
+hash `0x606f_35d4_bfb8_822a` remains frozen until the canonical accumulation is
+run and any bit change is deliberately justified; MC hypervolume vs exact at
+m = 2/3 within
 0.01 absolute and m = 6 CLOSED FORMS beyond exact reach (single point
 ∏(ref − p) and two-point inclusion-exclusion, within 8% at 1.2·10⁵
 Sobol samples, deterministic per seed with the hit count returned as
@@ -153,7 +162,8 @@ DRO golden hash `0xd21c_d092_b4a5_ba98`.
   losses are follow-up scope.
 - MOO scope (module `moo`): NSGA-II/III, MOEA/D, exact hypervolume
   m ≤ 4, MC hypervolume beyond m = 4, bounded hypervolume archive,
-  knee, and sample-CVaR. Gradient-based Pareto tracing (fs-ascent
+  and knee detection. Canonical sample-CVaR is re-exported from `fs-robust` at
+  the crate root. Gradient-based Pareto tracing (fs-ascent
   continuation), ledger world-forking steering, and chance constraints
   are still split lanes.
 - Sep-CMA/low-rank (dim > ~200), NES, DE, DIRECT, TR-DFO: not built.

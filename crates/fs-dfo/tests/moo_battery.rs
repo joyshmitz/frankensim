@@ -3,11 +3,12 @@
 //! laws; NSGA-II on ZDT1/ZDT2 (known Pareto fronts) with convergence
 //! and diversity gates and the hypervolume advantage over QMC-random
 //! MEASURED at matched evaluations; knee detection on an asymmetric
-//! synthetic front; CVaR Rockafellar–Uryasev vs the Gaussian closed
-//! form; bitwise replay (G5); and the golden hash.
+//! synthetic front; canonical empirical CVaR vs the Gaussian closed
+//! form; cross-owner risk-algebra parity; bitwise replay (G5); and the
+//! golden hash.
 
 use fs_dfo::{
-    Individual, NsgaParams, crowding_distance, cvar_rockafellar_uryasev, hypervolume, knee_point,
+    Individual, NsgaParams, crowding_distance, empirical_cvar, hypervolume, knee_point,
     non_dominated_sort, nsga2,
 };
 use fs_rand::StreamKey;
@@ -235,7 +236,9 @@ fn cvar_matches_gaussian_closed_form() {
     .stream();
     let n = 200_000usize;
     let losses: Vec<f64> = (0..n).map(|_| sigma.mul_add(s.next_normal(), mu)).collect();
-    let (cvar, alpha) = cvar_rockafellar_uryasev(&losses, beta);
+    let report = empirical_cvar(&losses, beta).expect("valid Gaussian loss samples");
+    let cvar = report.cvar();
+    let alpha = report.var();
     // z_0.9 (standard normal 90% quantile) — fixed constant; fs-bo has
     // the general quantile but depends on fs-dfo (dev-cycle avoided).
     let z_beta = 1.281_551_565_544_600_4_f64;
@@ -259,15 +262,57 @@ fn cvar_matches_gaussian_closed_form() {
 }
 
 #[test]
-fn cvar_handles_ties_in_linear_tail_pass() {
+fn cvar_reports_lower_minimizer_at_tied_boundary() {
     let losses = [0.0, 0.0, 10.0, 10.0];
-    let (cvar, alpha) = cvar_rockafellar_uryasev(&losses, 0.5);
+    let report = empirical_cvar(&losses, 0.5).expect("valid tied losses");
+    let cvar = report.cvar();
+    let alpha = report.var();
     assert_eq!(alpha.to_bits(), 0.0f64.to_bits());
     assert!((cvar - 10.0).abs() < 1e-12, "{cvar}");
-    log("cvar-ties", "pass", "duplicate order statistics handled");
+    assert_eq!(report.boundary_rank(), 2);
+    assert_eq!(report.boundary_weight().to_bits(), 0.0_f64.to_bits());
+    log(
+        "cvar-ties",
+        "pass",
+        "duplicate order statistics choose the lower RU minimizer",
+    );
 }
 
-const GOLDEN_HASH: u64 = 0x606f_35d4_bfb8_822a; // recorded after linear CVaR tail pass
+#[test]
+fn cvar_reexport_matches_canonical_owner_on_boundaries_and_extremes() {
+    let cases: [(&[f64], f64); 4] = [
+        (&[0.0, 10.0, 20.0], 0.5),
+        (&[0.0, 0.0, 10.0, 10.0], 0.5),
+        (&[-f64::MAX, 0.0, f64::MAX], 0.25),
+        (&[f64::MAX, f64::MAX, f64::MAX], 0.5),
+    ];
+    for (losses, beta) in cases {
+        let through_dfo = empirical_cvar(losses, beta).expect("valid DFO risk inputs");
+        let canonical =
+            fs_robust::empirical_cvar(losses, beta).expect("valid canonical risk inputs");
+        assert_eq!(through_dfo, canonical);
+    }
+
+    let expected =
+        empirical_cvar(&[-f64::MAX, 0.0, f64::MAX], 0.25).expect("valid mixed-extreme losses");
+    for permutation in [
+        [-f64::MAX, f64::MAX, 0.0],
+        [f64::MAX, -f64::MAX, 0.0],
+        [f64::MAX, 0.0, -f64::MAX],
+        [0.0, -f64::MAX, f64::MAX],
+        [0.0, f64::MAX, -f64::MAX],
+    ] {
+        assert_eq!(
+            empirical_cvar(&permutation, 0.25).expect("valid loss permutation"),
+            expected
+        );
+    }
+}
+
+// Recorded with the removed suffix-sum CVaR path. Keep frozen until the
+// canonical accumulation runs in the serialized proof lane; refreeze only if
+// that exact test reports a justified bit change.
+const GOLDEN_HASH: u64 = 0x606f_35d4_bfb8_822a;
 
 #[test]
 fn moo_golden_hash() {
@@ -301,9 +346,9 @@ fn moo_golden_hash() {
     }
     .stream();
     let losses: Vec<f64> = (0..500).map(|_| s.next_normal()).collect();
-    let (cv, al) = cvar_rockafellar_uryasev(&losses, 0.85);
-    feed(cv);
-    feed(al);
+    let report = empirical_cvar(&losses, 0.85).expect("valid golden loss samples");
+    feed(report.cvar());
+    feed(report.var());
     log("moo-golden", "info", &format!("{acc:#018x}"));
     assert_eq!(
         acc, GOLDEN_HASH,

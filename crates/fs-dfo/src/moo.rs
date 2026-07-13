@@ -3,8 +3,9 @@
 //! exact hypervolume for m <= 4 (2D sweep + recursive exclusive
 //! contributions above), Monte Carlo hypervolume beyond that,
 //! least-contributor archives, NSGA-III/MOEA/D many-objective lanes,
-//! knee-point detection, and CVaR through the Rockafellar-Uryasev
-//! reformulation. All randomness flows through fs-rand streams.
+//! and knee-point detection. Canonical empirical CVaR lives in
+//! fs-robust and is re-exported by the crate root. All randomness flows
+//! through fs-rand streams.
 
 use fs_rand::StreamKey;
 
@@ -440,38 +441,6 @@ pub fn knee_point(front: &[Vec<f64>]) -> usize {
         if d > best_d {
             best_d = d;
             best = i;
-        }
-    }
-    best
-}
-
-/// CVaR_β of a loss SAMPLE SET via the Rockafellar–Uryasev
-/// reformulation: CVaR = min_α α + E[max(0, L − α)]/(1 − β). The
-/// minimizer α* is the β-quantile; on samples the minimum is attained
-/// at an order statistic, so we evaluate all candidates exactly
-/// (deterministic; no inner optimizer needed).
-#[must_use]
-pub fn cvar_rockafellar_uryasev(losses: &[f64], beta: f64) -> (f64, f64) {
-    assert!(beta.is_finite() && beta > 0.0 && beta < 1.0);
-    assert!(!losses.is_empty(), "CVaR needs at least one loss sample");
-    assert!(
-        losses.iter().all(|l| l.is_finite()),
-        "CVaR loss samples must be finite"
-    );
-    let n = losses.len() as f64;
-    let mut sorted = losses.to_vec();
-    sorted.sort_by(f64::total_cmp);
-    let mut best = (f64::INFINITY, 0.0f64);
-    let mut suffix_sum = vec![0.0f64; sorted.len() + 1];
-    for i in (0..sorted.len()).rev() {
-        suffix_sum[i] = suffix_sum[i + 1] + sorted[i];
-    }
-    for (i, &alpha) in sorted.iter().enumerate() {
-        let tail_count = sorted.len() - i - 1;
-        let excess = (suffix_sum[i + 1] - alpha * tail_count as f64).max(0.0);
-        let val = alpha + excess / (n * (1.0 - beta));
-        if val < best.0 {
-            best = (val, alpha);
         }
     }
     best

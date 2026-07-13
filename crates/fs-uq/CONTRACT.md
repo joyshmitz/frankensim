@@ -2,7 +2,7 @@
 
 ## Purpose and layer
 
-Layer: **L4 ASCENT** (deps: fs-bo L4, fs-la/fs-rand L1, fs-math L0).
+Layer: **L4 ASCENT** (deps: fs-bo/fs-robust L4, fs-la/fs-rand L1, fs-math L0).
 Uncertainty quantification (plan §8.8): random-field inputs,
 spectral and sampling propagation, and multilevel Monte Carlo.
 Layered at L4 deliberately: propagation WRAPS solvers the way
@@ -44,8 +44,10 @@ for QMC Gaussian germs instead of duplicating the polynomial.
   half-width — valid AT the stopping time by construction (fs-eproc's
   `interval()` returns (center, radius); mis-reading it as (lo, hi)
   produced 58% miss rates in development — the semantics are
-  load-bearing). `cvar` (the UQ-side risk functional; fs-robust hosts
-  the ASCENT twin). `adaptive` — `adaptive_mlmc`: levels added while
+  load-bearing). `cvar` and `empirical_cvar` are direct re-exports of
+  `fs-robust`, the canonical ASCENT risk algebra; the report includes CVaR,
+  lower empirical VaR/Rockafellar–Uryasev minimizer, boundary rank, and
+  fractional boundary weight. `adaptive` — `adaptive_mlmc`: levels added while
   the extrapolated bias `|mean_L|/(2^α − 1)` exceeds tol/2, with weak/
   strong rates FITTED from level statistics.
 
@@ -73,7 +75,9 @@ for QMC Gaussian germs instead of duplicating the polynomial.
 Structured panics on dimension mismatches, under-sampled PCE
 regressions, and non-SPD normal equations. Statistical quality is
 REPORTED (captured variance, reconstruction error, per-level
-variances), never assumed.
+variances), never assumed. The canonical CVaR re-exports instead return
+structured `RobustError` values for empty samples, invalid tail levels, and
+non-finite losses; they do not panic.
 
 ## Determinism class
 
@@ -111,6 +115,11 @@ synthetic ladder with classic decay rates — telescoping identity to
 favoring coarse levels > 10×, and cost win > 3× vs single-level MC
 at MATCHED estimator variance; cross-ISA golden hash.
 
+`tests/slice2.rs`: UQ-side CVaR re-exports match the canonical `fs-robust`
+report for fractional and tied integer boundaries, mixed-sign extremes,
+constant `f64::MAX`, and input permutations; invalid risk inputs return
+structured errors rather than panicking.
+
 ## No-claim boundaries
 
 - Slice-1 scope. The bead's split lanes: seismic machinery
@@ -142,9 +151,12 @@ at MATCHED estimator variance; cross-ISA golden hash.
   over the worst `n·(1−β)` fraction of losses, with a FRACTIONAL weight on the
   boundary order statistic when `n·β` is not an integer. A plain top-`⌈n(1−β)⌉`
   mean under-reports the shortfall (anti-conservative — the wrong direction for a
-  risk measure); the fractional weight makes the estimator honest. It panics on
-  empty samples, non-finite samples, or a tail level outside `(0,1)`; returning
-  zero risk for an empty loss set would be a false certificate.
+  risk measure); the fractional weight makes the estimator honest. The
+  canonical `fs-robust` implementation uses bounded convex combinations so
+  finite constant and mixed-sign extreme samples do not overflow intermediate
+  sums. Empty samples, non-finite samples, or a tail level outside `(0,1)`
+  return `RobustError`; returning zero risk for an empty loss set would be a
+  false certificate.
 - Adaptive-MLMC rate fits assume geometric level decay; oscillatory
   correction means defeat the extrapolation (documented, as in the
   classical literature).

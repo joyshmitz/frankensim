@@ -13,6 +13,8 @@
 //!
 //! - the default deliverable is a ROBUST optimum — [`cvar`] (Conditional
 //!   Value at Risk) over the cost distribution, not the nominal mean;
+//!   [`empirical_cvar`] exposes the same canonical calculation together with
+//!   its deterministic empirical VaR/minimizer metadata;
 //! - the headline number's color is the color of its WEAKEST input
 //!   ([`ColoredObjective::headline_color`]) — a verified solve under an
 //!   estimated hazard is an ESTIMATED answer, and the report says so;
@@ -24,8 +26,8 @@
 //! Deterministic; sample paths are supplied by the caller (common random
 //! numbers live in fs-scenario). This crate is the coloring + risk algebra.
 
-pub use fs_evidence::{AdmittedColor, Color, ColorPayloadError, ColorRank};
 use fs_evidence::validate_color_payload;
+pub use fs_evidence::{AdmittedColor, Color, ColorPayloadError, ColorRank};
 
 /// A structured objective-epistemics failure.
 #[derive(Debug, Clone, PartialEq)]
@@ -66,14 +68,60 @@ pub enum RobustError {
     },
 }
 
+/// Canonical finite-sample CVaR result, including the order-statistic metadata
+/// needed by Rockafellar–Uryasev consumers.
+///
+/// The reported VaR is the lower deterministic minimizer when the empirical
+/// Rockafellar–Uryasev objective has an interval of minimizers. The boundary
+/// rank is one-based in the ascending total order of the finite samples, and
+/// the boundary weight is the fraction of that order statistic included in
+/// the upper tail.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EmpiricalCvarReport {
+    cvar: f64,
+    var: f64,
+    boundary_rank: usize,
+    boundary_weight: f64,
+}
+
+impl EmpiricalCvarReport {
+    /// Conditional Value at Risk: the mean of exactly the worst
+    /// `(1 - alpha)` empirical mass.
+    #[must_use]
+    pub const fn cvar(&self) -> f64 {
+        self.cvar
+    }
+
+    /// Deterministic empirical VaR, also the lower Rockafellar–Uryasev
+    /// minimizer when the minimizer is non-unique.
+    #[must_use]
+    pub const fn var(&self) -> f64 {
+        self.var
+    }
+
+    /// One-based rank of the boundary order statistic in ascending total
+    /// order.
+    #[must_use]
+    pub const fn boundary_rank(&self) -> usize {
+        self.boundary_rank
+    }
+
+    /// Fractional mass of the boundary order statistic included in the upper
+    /// tail. This is in `[0, 1]`; zero means an integral tail boundary.
+    #[must_use]
+    pub const fn boundary_weight(&self) -> f64 {
+        self.boundary_weight
+    }
+}
+
 /// Conditional Value at Risk at confidence `alpha`: the expected loss in the
-/// worst `(1 − alpha)` tail of `samples` (costs/losses, higher = worse). More
-/// robust than the mean because it weights the tail.
+/// worst `(1 - alpha)` tail of `samples` (costs/losses, higher = worse), plus
+/// the exact empirical boundary metadata used to obtain it.
 ///
 /// # Errors
 /// [`RobustError::EmptySamples`] / [`RobustError::BadAlpha`] /
 /// [`RobustError::BadSample`].
-pub fn cvar(samples: &[f64], alpha: f64) -> Result<f64, RobustError> {
+pub fn empirical_cvar(samples: &[f64], alpha: f64) -> Result<EmpiricalCvarReport, RobustError> {
     if samples.is_empty() {
         return Err(RobustError::EmptySamples);
     }
@@ -100,11 +148,27 @@ pub fn cvar(samples: &[f64], alpha: f64) -> Result<f64, RobustError> {
     let boundary_weight = boundary_rank as f64 - n * alpha;
     let (at_or_below, above) = sorted.split_at(boundary_rank);
     let boundary = *at_or_below.last().ok_or(RobustError::EmptySamples)?;
-    weighted_mean(
+    let cvar = weighted_mean(
         core::iter::once((boundary, boundary_weight))
             .chain(above.iter().copied().map(|value| (value, 1.0))),
     )
-    .ok_or(RobustError::EmptySamples)
+    .ok_or(RobustError::EmptySamples)?;
+    Ok(EmpiricalCvarReport {
+        cvar,
+        var: boundary,
+        boundary_rank,
+        boundary_weight,
+    })
+}
+
+/// Scalar compatibility surface for the canonical [`empirical_cvar`]
+/// calculation.
+///
+/// # Errors
+/// [`RobustError::EmptySamples`] / [`RobustError::BadAlpha`] /
+/// [`RobustError::BadSample`].
+pub fn cvar(samples: &[f64], alpha: f64) -> Result<f64, RobustError> {
+    empirical_cvar(samples, alpha).map(|report| report.cvar())
 }
 
 /// The weakest (lowest-rank) DECLARED color among the inputs — the
@@ -262,7 +326,7 @@ impl ColoredObjective {
         reject_non_finite(&self.cost_samples)?;
         let mut ordered = self.cost_samples.clone();
         ordered.sort_by(f64::total_cmp);
-        weighted_mean(ordered.into_iter().map(|value| (value, 1.0)))
+        weighted_mean(ordered.iter().copied().map(|value| (value, 1.0)))
             .ok_or(RobustError::EmptySamples)
     }
 
@@ -466,27 +530,41 @@ fn reject_non_finite(values: &[f64]) -> Result<(), RobustError> {
     Ok(())
 }
 
-fn weighted_mean(values: impl IntoIterator<Item = (f64, f64)>) -> Option<f64> {
-    let mut mean = 0.0_f64;
+fn weighted_mean(values: impl Iterator<Item = (f64, f64)> + Clone) -> Option<f64> {
     let mut total_weight = 0.0_f64;
-    let mut present = false;
+    let mut minimum = f64::INFINITY;
+    let mut maximum = f64::NEG_INFINITY;
+    for (value, weight) in values.clone() {
+        if weight <= 0.0 {
+            continue;
+        }
+        total_weight += weight;
+        minimum = minimum.min(value);
+        maximum = maximum.max(value);
+    }
+    if total_weight <= 0.0 {
+        return None;
+    }
+
+    // Center before accumulating. `midpoint` avoids overflow even when the
+    // finite range spans `[-f64::MAX, f64::MAX]`, so every deviation remains
+    // finite. Neumaier compensation then retains small residuals that would be
+    // erased by adding them directly between opposite extreme samples.
+    let center = f64::midpoint(minimum, maximum);
+    let mut sum = 0.0_f64;
+    let mut correction = 0.0_f64;
     for (value, weight) in values {
         if weight <= 0.0 {
             continue;
         }
-        let combined_weight = total_weight + weight;
-        if present {
-            let incoming_share = weight / combined_weight;
-            mean = if mean.is_sign_positive() == value.is_sign_positive() {
-                mean + (value - mean) * incoming_share
-            } else {
-                mean * (total_weight / combined_weight) + value * incoming_share
-            };
+        let term = (value - center) * (weight / total_weight);
+        let next = sum + term;
+        if sum.abs() >= term.abs() {
+            correction += (sum - next) + term;
         } else {
-            mean = value;
-            present = true;
+            correction += (term - next) + sum;
         }
-        total_weight = combined_weight;
+        sum = next;
     }
-    present.then_some(mean)
+    Some((center + (sum + correction)).clamp(minimum, maximum))
 }

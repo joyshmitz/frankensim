@@ -9,6 +9,7 @@
 //! snapped design is INDEPENDENTLY re-checked.
 
 use crate::history::{StoryFrame, StoryParams, peak_drift};
+pub use fs_robust::{EmpiricalCvarReport, RobustError, cvar, empirical_cvar};
 use fs_scenario::ensemble::StochasticEnsemble;
 
 /// The CVaR design record.
@@ -28,37 +29,12 @@ pub struct CvarDesign {
     pub iters: u32,
 }
 
-/// Empirical CVaR_β by the Rockafellar–Uryasev minimization (exact
-/// for empirical measures: t* is the β-quantile).
-///
-/// # Panics
-/// If `losses` is empty, any loss is non-finite, or `beta` is not finite
-/// and strictly between 0 and 1.
-#[must_use]
-pub fn empirical_cvar(losses: &[f64], beta: f64) -> f64 {
-    assert!(!losses.is_empty(), "empirical_cvar needs at least one loss");
-    assert!(
-        beta.is_finite() && 0.0 < beta && beta < 1.0,
-        "empirical_cvar beta must be finite and in (0, 1)"
-    );
-    assert!(
-        losses.iter().all(|loss| loss.is_finite()),
-        "empirical_cvar losses must be finite"
-    );
-    let mut sorted = losses.to_vec();
-    sorted.sort_by(f64::total_cmp);
-    let n = sorted.len();
-    let q_idx = ((beta * n as f64).floor() as usize).min(n - 1);
-    let t = sorted[q_idx];
-    let tail: f64 = sorted.iter().map(|&l| (l - t).max(0.0)).sum();
-    t + tail / ((1.0 - beta) * n as f64)
-}
-
 /// CVaR of the peak-drift loss over the ensemble at section scale
 /// `s` — the battery's monotonicity probe and limit-bracketing tool.
 #[must_use]
 pub fn ensemble_cvar(ensemble: &StochasticEnsemble, base: StoryParams, s: f64, beta: f64) -> f64 {
-    empirical_cvar(&losses(ensemble, base, s), beta)
+    cvar(&losses(ensemble, base, s), beta)
+        .expect("frame-generated losses and beta must satisfy the canonical CVaR contract")
 }
 
 /// Peak-drift losses over the whole ensemble at section scale `s`.
@@ -89,7 +65,10 @@ pub fn cvar_mass_min(
     limit: f64,
     catalog: &[f64],
 ) -> CvarDesign {
-    let cvar_at = |s: f64| empirical_cvar(&losses(ensemble, base, s), beta);
+    let cvar_at = |s: f64| {
+        cvar(&losses(ensemble, base, s), beta)
+            .expect("frame-generated losses and beta must satisfy the canonical CVaR contract")
+    };
     let (mut lo, mut hi) = (0.25f64, 4.0f64);
     assert!(
         cvar_at(hi) <= limit,

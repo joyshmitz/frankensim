@@ -3,13 +3,14 @@
 //! parameters spanning the target liquids × pour rates — is swept
 //! directly: the NOMINAL design minimizes growth at the band center,
 //! the ROBUST design minimizes the CVaR of growth over the band
-//! (Rockafellar–Uryasev empirical form, the fs-frame pattern). The
+//! (Rockafellar–Uryasev empirical form from fs-robust). The
 //! battery gates the flagship claim: the robust lip beats the nominal
 //! lip on off-nominal fluids. Candidate screening under the (noisy)
 //! validator runs through fs-race — dominated lips die early with
 //! anytime validity, eliminations ledgered.
 
 use crate::stability::{VesselProfile, growth_objective};
+pub use fs_robust::{EmpiricalCvarReport, RobustError, cvar, empirical_cvar};
 
 /// The robustification record.
 #[derive(Debug, Clone)]
@@ -24,36 +25,6 @@ pub struct RobustReport {
     pub robust_offband_growth: f64,
     /// CVaR level used.
     pub beta: f64,
-}
-
-/// Empirical CVaR_β (Rockafellar–Uryasev; exact for empirical
-/// measures: the tail mean past the β-quantile).
-///
-/// # Panics
-/// If `losses` is empty, any loss is non-finite, or `beta` is not finite
-/// and strictly between 0 and 1.
-#[must_use]
-pub fn empirical_cvar(losses: &[f64], beta: f64) -> f64 {
-    assert!(!losses.is_empty(), "empirical_cvar needs at least one loss");
-    assert!(
-        beta.is_finite() && 0.0 < beta && beta < 1.0,
-        "empirical_cvar beta must be finite and in (0, 1)"
-    );
-    assert!(
-        losses.iter().all(|loss| loss.is_finite()),
-        "empirical_cvar losses must be finite"
-    );
-    let mut sorted = losses.to_vec();
-    sorted.sort_by(f64::total_cmp);
-    let n = sorted.len();
-    #[allow(clippy::cast_precision_loss)]
-    let q = ((beta * n as f64).floor() as usize).min(n - 1);
-    let t = sorted[q];
-    let tail: f64 = sorted.iter().map(|&l| (l - t).max(0.0)).sum();
-    #[allow(clippy::cast_precision_loss)]
-    {
-        t + tail / ((1.0 - beta) * n as f64)
-    }
 }
 
 /// The (rate, viscosity) band: nominal center plus off-nominal
@@ -89,7 +60,8 @@ pub fn robustify(beta: f64) -> RobustReport {
             .iter()
             .map(|&(r, v)| growth_objective(&p, r, v, stations, modes))
             .collect();
-        empirical_cvar(&losses, beta)
+        cvar(&losses, beta)
+            .expect("fluid-band losses and beta must satisfy the canonical CVaR contract")
     };
     let minimize = |f: &dyn Fn(f64) -> f64| -> f64 {
         // Two-stage deterministic grid refinement over the lip range.

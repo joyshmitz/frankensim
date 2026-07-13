@@ -7,7 +7,8 @@ SEISMIC-MINIMAL building frame, SMOKE TIER — minimum material with
 certified fragility, run end-to-end through crates that each carry
 their own battery: fs-truss (layout LP + sizing), fs-solid/fs-material
 (fiber hysteresis), fs-scenario (Kanai–Tajimi ensembles), fs-eproc
-(anytime-valid confidence sequences), fs-uq (MLMC levels).
+(anytime-valid confidence sequences), fs-uq (MLMC levels), and fs-robust
+(canonical empirical CVaR risk algebra).
 
 ## Public types and semantics
 
@@ -36,12 +37,16 @@ their own battery: fs-truss (layout LP + sizing), fs-solid/fs-material
   stops itself when the radius is decision-grade — validity AT the
   stopping time is the CS's construction, not a correction. An fs-uq
   MLMC report over dt levels rides along as level-design evidence.
+- `cvar::empirical_cvar` and `cvar::cvar` are direct re-exports of the
+  canonical `fs-robust` report and scalar surfaces, respectively. The report
+  retains deterministic VaR/minimizer and fractional-boundary metadata; empty
+  or non-finite losses and beta outside `(0,1)` are structured refusals.
 - `cvar::cvar_mass_min` → `CvarDesign`: Rockafellar–Uryasev empirical
-  CVaR (exact for empirical measures: t* = β-quantile), bisection on
-  the section scale (monotone at smoke scale), catalog UP-snap with
-  an independent CVaR re-check. Empty/non-finite losses and beta
-  outside `(0,1)` panic as programmer-contract defects instead of
-  returning fake risk. `ensemble_cvar` exposes the monotonicity probe.
+  CVaR from `fs-robust`, bisection on the section scale (monotone at smoke
+  scale), catalog UP-snap with an independent CVaR re-check.
+  `ensemble_cvar` exposes the monotonicity probe. These smoke-tier
+  orchestrators generate their own finite, non-empty loss sets and treat a
+  canonical risk-algebra refusal as an internal programmer-contract defect.
 
 ## Invariants
 
@@ -72,10 +77,12 @@ their own battery: fs-truss (layout LP + sizing), fs-solid/fs-material
 `layout_and_size` returns `LayoutError::Construction` for malformed geometry,
 physical parameters, catalog, resource excess, allocation refusal, or observed
 cancellation, and `LayoutError::Solver` for rejected PDHG/diagnostic state. It
-does not publish a partial layout. Other programmer contracts still panic with
-teaching messages (ensemble spec defects, infeasible CVaR studies — the drill
-gates the diagnostic). Statistical outputs carry their own uncertainty: the CS
-radius and stopping state ARE the answer's quality statement.
+does not publish a partial layout. Direct empirical-CVaR calls return
+`RobustError`; smoke-tier orchestration contracts still panic with teaching
+messages when internally generated losses violate that contract, an ensemble
+spec is malformed, or a CVaR study is infeasible (the drill gates the
+diagnostic). Statistical outputs carry their own uncertainty: the CS radius and
+stopping state ARE the answer's quality statement.
 
 ## Determinism class
 
@@ -104,7 +111,8 @@ None (the smoke tier ships enabled; heavier tiers will gate).
 `tests/battery.rs`: frame-001 LP diagnostics; frame-002 sizing code
 rows plus pre-cancelled construction refusal; frame-003 elastic stability + hysteretic dissipation;
 frame-004 e-stopped fragility coverage + ledgered savings; frame-005
-CVaR monotonicity + design; frame-006 replay + drills.
+CVaR monotonicity + design; frame-006 replay, infeasibility, and structured
+canonical-CVaR refusal drills.
 
 ## No-claim boundaries
 

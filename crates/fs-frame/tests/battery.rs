@@ -4,7 +4,7 @@
 //! minimization, and the replay/drill gates.
 
 use fs_exec::{Budget, CancelGate, Cx, ExecMode, StreamKey};
-use fs_frame::cvar::empirical_cvar;
+use fs_frame::cvar::{RobustError, cvar, empirical_cvar};
 use fs_frame::history::{StoryFrame, StoryParams, peak_drift};
 use fs_frame::{LayoutError, cvar_mass_min, e_stopped_fragility, ensemble_cvar, layout_and_size};
 use fs_qty::{Dims, QtyAny};
@@ -281,28 +281,39 @@ fn frame_006_replay_and_drills() {
         infeasible.is_err(),
         "infeasible CVaR limit fires the diagnostic instead of returning a fake design",
     );
-    let empty_cvar = std::panic::catch_unwind(|| empirical_cvar(&[], 0.9));
+    let extreme_samples = [-f64::MAX, 0.0, f64::MAX];
+    let frame_report = empirical_cvar(&extreme_samples, 0.25).expect("valid extreme samples");
+    let canonical_report =
+        fs_robust::empirical_cvar(&extreme_samples, 0.25).expect("canonical extreme samples");
+    verdict(
+        "frame-006-canonical-cvar-parity",
+        frame_report == canonical_report
+            && cvar(&extreme_samples, 0.25)
+                .is_ok_and(|value| value.to_bits() == canonical_report.cvar().to_bits()),
+        "frame report and scalar CVaR surfaces are exact canonical fs-robust re-exports",
+    );
+    let empty_cvar = empirical_cvar(&[], 0.9);
     verdict(
         "frame-006-empty-cvar-drill",
-        empty_cvar.is_err(),
-        "empty CVaR samples fire the diagnostic instead of returning fake zero risk",
+        matches!(empty_cvar, Err(RobustError::EmptySamples)),
+        "empty CVaR samples return a structured refusal instead of fake zero risk",
     );
-    let bad_beta = std::panic::catch_unwind(|| empirical_cvar(&[1.0, 2.0], 1.0));
+    let bad_beta = empirical_cvar(&[1.0, 2.0], 1.0);
     verdict(
         "frame-006-bad-beta-drill",
-        bad_beta.is_err(),
-        "invalid CVaR beta fires the diagnostic before quantile indexing",
+        matches!(bad_beta, Err(RobustError::BadAlpha { alpha }) if alpha == 1.0),
+        "invalid CVaR beta returns a structured refusal before quantile indexing",
     );
-    let nan_beta = std::panic::catch_unwind(|| empirical_cvar(&[1.0, 2.0], f64::NAN));
+    let nan_beta = empirical_cvar(&[1.0, 2.0], f64::NAN);
     verdict(
         "frame-006-nan-beta-drill",
-        nan_beta.is_err(),
-        "non-finite CVaR beta fires the diagnostic before quantile indexing",
+        matches!(nan_beta, Err(RobustError::BadAlpha { alpha }) if alpha.is_nan()),
+        "non-finite CVaR beta returns a structured refusal before quantile indexing",
     );
-    let bad_loss = std::panic::catch_unwind(|| empirical_cvar(&[1.0, f64::NAN], 0.9));
+    let bad_loss = empirical_cvar(&[1.0, f64::NAN], 0.9);
     verdict(
         "frame-006-nonfinite-cvar-drill",
-        bad_loss.is_err(),
-        "non-finite CVaR losses fire the diagnostic before tail aggregation",
+        matches!(bad_loss, Err(RobustError::BadSample { value }) if value.is_nan()),
+        "non-finite CVaR losses return a structured refusal before tail aggregation",
     );
 }

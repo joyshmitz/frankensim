@@ -17,6 +17,7 @@ fs-lbm = { path = "../fs-lbm" }
 fs-math = { path = "../fs-math" }
 fs-race = { path = "../fs-race" }
 fs-render = { path = "../fs-render", features = ["volumes"] }
+fs-robust = { path = "../fs-robust" }
 
 [lints]
 workspace = true

@@ -10,9 +10,10 @@ physics.
 
 Layer **L6 (HELM)**. Composes battle-tested lower crates end-to-end:
 fs-cheb (profile + Orr–Sommerfeld), fs-lbm (free-surface pour,
-rheology), fs-race/fs-exec (e-raced screening), fs-render `volumes`
-(Woodcock transmittance deliverable). No new numerics live here; the
-crate's claim is the COMPOSITION with certificates at every joint.
+rheology), fs-race/fs-exec (e-raced screening), fs-robust (canonical
+empirical CVaR), and fs-render `volumes` (Woodcock transmittance
+deliverable). No new numerics live here; the crate's claim is the
+COMPOSITION with certificates at every joint.
 
 ## Public types and semantics
 
@@ -44,9 +45,13 @@ crate's claim is the COMPOSITION with certificates at every joint.
 - `robust::robustify(beta) -> RobustReport` — nominal (band-center)
   vs CVaR_β lip optimization over the fluid band (rates ×
   viscosities), both evaluated on the OFF-NOMINAL corners.
-  `robust::empirical_cvar` is the exact Rockafellar–Uryasev empirical
-  tail mean; empty/non-finite losses and beta outside `(0,1)` panic
-  as programmer-contract defects instead of returning fake risk.
+  `robust::empirical_cvar` and `robust::cvar` directly re-export the canonical
+  `fs-robust` report and scalar surfaces, respectively. The report retains
+  deterministic VaR/minimizer and fractional-boundary metadata;
+  empty/non-finite losses and beta outside `(0,1)` are structured refusals.
+  `robustify` generates its own fixed, finite fluid band and
+  treats a canonical refusal there as an internal programmer-contract
+  defect.
 
 ## Invariants
 
@@ -65,12 +70,13 @@ crate's claim is the COMPOSITION with certificates at every joint.
 
 ## Error model
 
-Fixture-scale programmer errors panic (`expect`) — the eigensolver
-failing to converge, `Cheb1::build` failing on the smooth carafe, or
-render dimensions disagreeing with the outcome buffer. No `Result`
-surface: the flagship consumes typed results from lower crates and
-converts failure to a loud stop; there is no recovery story at the
-smoke tier.
+Direct empirical-CVaR calls preserve `fs-robust`'s typed `RobustError`
+refusals. Fixture-scale orchestration errors panic (`expect`) — including
+an impossible rejection of the internally generated fluid-band losses,
+the eigensolver failing to converge, `Cheb1::build` failing on the smooth
+carafe, or render dimensions disagreeing with the outcome buffer. The
+flagship has no recovery story for those internally generated smoke-tier
+invariants and converts their failure to a loud stop.
 
 ## Determinism class
 
@@ -115,7 +121,8 @@ REPORTED):
   (−0.00044) while the nominal lip 1.11 goes UNSTABLE off-band
   (+0.00023) — the flagship claim, gated. The e-raced screen recovers
   the deterministic argmin under jitter and eliminates all 4 dominated
-  lips in 76 evals vs fixed-N 2000.
+  lips in 76 evals vs fixed-N 2000. Invalid direct CVaR inputs return
+  exact structured refusals rather than panicking or reporting fake risk.
 - **vsl-006** deliverable: bitwise render replay, transmittance range
   1.000.
 

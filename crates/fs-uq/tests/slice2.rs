@@ -6,7 +6,7 @@
 
 use fs_math::det;
 use fs_uq::seismic::{KanaiTajimi, bilinear_peak_ductility, cqc, ida_fragility, sdof_peak, srss};
-use fs_uq::{adaptive_mlmc, cvar, estimate_probability_anytime};
+use fs_uq::{RobustError, adaptive_mlmc, cvar, empirical_cvar, estimate_probability_anytime};
 
 fn verdict(case: &str, detail: &str) {
     println!(
@@ -203,7 +203,7 @@ fn anytime_probability_refuses_inputs_that_void_the_cs() {
 fn uq_005_cvar_and_adaptive_mlmc_rate_recovery() {
     // CVaR sanity: the tail mean of a known sample set.
     let samples: Vec<f64> = (1..=100).map(f64::from).collect();
-    let c = cvar(&samples, 0.9);
+    let c = cvar(&samples, 0.9).expect("valid CVaR samples");
     assert!(
         (c - 95.5).abs() < 0.6,
         "CVaR_0.9 of 1..100 is the top-decile mean: {c}"
@@ -213,7 +213,7 @@ fn uq_005_cvar_and_adaptive_mlmc_rate_recovery() {
     // statistic. A plain top-k mean returns 2.0 here (UNDER-reporting the risk);
     // the correct CVaR_0.85 is (0.5·1 + 3)/1.5 = 7/3.
     let tail = vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 3.0];
-    let cv = cvar(&tail, 0.85);
+    let cv = cvar(&tail, 0.85).expect("valid fractional-tail samples");
     assert!(
         (cv - 7.0 / 3.0).abs() < 1e-12,
         "CVaR_0.85 must use the fractional boundary weight (2.333…), got {cv}"
@@ -270,22 +270,57 @@ fn uq_005_cvar_and_adaptive_mlmc_rate_recovery() {
 
 #[test]
 fn cvar_rejects_invalid_risk_inputs() {
+    assert_eq!(cvar(&[], 0.9), Err(RobustError::EmptySamples));
+    for beta in [0.0, 1.0, f64::NAN] {
+        assert!(
+            matches!(cvar(&[1.0], beta), Err(RobustError::BadAlpha { .. })),
+            "beta must define a strict finite upper tail: {beta}"
+        );
+    }
     assert!(
-        std::panic::catch_unwind(|| cvar(&[], 0.9)).is_err(),
-        "empty loss samples must not report zero risk"
-    );
-    assert!(
-        std::panic::catch_unwind(|| cvar(&[1.0], 0.0)).is_err(),
-        "beta must define a strict upper tail"
-    );
-    assert!(
-        std::panic::catch_unwind(|| cvar(&[1.0], 1.0)).is_err(),
-        "beta=1 would leave an empty tail"
-    );
-    assert!(
-        std::panic::catch_unwind(|| cvar(&[1.0, f64::NAN], 0.9)).is_err(),
+        matches!(
+            cvar(&[1.0, f64::NAN], 0.9),
+            Err(RobustError::BadSample { value }) if value.is_nan()
+        ),
         "non-finite samples must not sort into a risk estimate"
     );
+}
+
+#[test]
+fn cvar_reexports_match_canonical_owner_on_boundaries_and_extremes() {
+    let cases: [(&[f64], f64); 4] = [
+        (&[0.0, 10.0, 20.0], 0.5),
+        (&[0.0, 0.0, 10.0, 10.0], 0.5),
+        (&[-f64::MAX, 0.0, f64::MAX], 0.25),
+        (&[f64::MAX, f64::MAX, f64::MAX], 0.5),
+    ];
+    for (samples, beta) in cases {
+        let through_uq = empirical_cvar(samples, beta).expect("valid UQ risk inputs");
+        let canonical =
+            fs_robust::empirical_cvar(samples, beta).expect("valid canonical risk inputs");
+        assert_eq!(through_uq, canonical);
+        assert_eq!(
+            cvar(samples, beta)
+                .expect("valid scalar risk inputs")
+                .to_bits(),
+            canonical.cvar().to_bits()
+        );
+    }
+
+    let expected =
+        empirical_cvar(&[-f64::MAX, 0.0, f64::MAX], 0.25).expect("valid mixed-extreme samples");
+    for permutation in [
+        [-f64::MAX, f64::MAX, 0.0],
+        [f64::MAX, -f64::MAX, 0.0],
+        [f64::MAX, 0.0, -f64::MAX],
+        [0.0, -f64::MAX, f64::MAX],
+        [0.0, f64::MAX, -f64::MAX],
+    ] {
+        assert_eq!(
+            empirical_cvar(&permutation, 0.25).expect("valid sample permutation"),
+            expected
+        );
+    }
 }
 
 #[test]

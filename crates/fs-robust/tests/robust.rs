@@ -4,8 +4,8 @@
 //! kill-criterion dominance test, and colored fragility curves.
 
 use fs_robust::{
-    Color, ColorRank, ColoredObjective, RobustError, cvar, dominated_by_nominal, fragility_curve,
-    robust_optimum, weakest_color,
+    Color, ColorRank, ColoredObjective, RobustError, cvar, dominated_by_nominal, empirical_cvar,
+    fragility_curve, robust_optimum, weakest_color,
 };
 
 fn verified() -> Color {
@@ -41,12 +41,59 @@ fn cvar_fractionally_weights_a_non_integral_tail_boundary() {
         actual > 15.0,
         "the old rounded-tail estimator was anti-conservative"
     );
+
+    let report = empirical_cvar(&[0.0, 10.0, 20.0], 0.5).unwrap();
+    assert_eq!(report.cvar().to_bits(), actual.to_bits());
+    assert_eq!(report.var().to_bits(), 10.0_f64.to_bits());
+    assert_eq!(report.boundary_rank(), 2);
+    assert_eq!(report.boundary_weight().to_bits(), 0.5_f64.to_bits());
+}
+
+#[test]
+fn cvar_reports_the_lower_minimizer_at_an_integral_tied_boundary() {
+    let report = empirical_cvar(&[0.0, 0.0, 10.0, 10.0], 0.5).unwrap();
+    assert_eq!(report.cvar().to_bits(), 10.0_f64.to_bits());
+    assert_eq!(
+        report.var().to_bits(),
+        0.0_f64.to_bits(),
+        "the canonical RU minimizer is the lower endpoint"
+    );
+    assert_eq!(report.boundary_rank(), 2);
+    assert_eq!(report.boundary_weight().to_bits(), 0.0_f64.to_bits());
+}
+
+#[test]
+fn cvar_is_finite_for_mixed_extreme_samples_and_permutation_invariant() {
+    let samples = [-f64::MAX, 0.0, f64::MAX];
+    let expected = empirical_cvar(&samples, 0.25).unwrap();
+    assert!(expected.cvar().is_finite());
+    assert!(
+        (expected.cvar() / f64::MAX - 1.0 / 3.0).abs() <= 8.0 * f64::EPSILON,
+        "mixed-extreme CVaR must equal one third of f64::MAX, got {}",
+        expected.cvar()
+    );
+    assert_eq!(expected.var().to_bits(), (-f64::MAX).to_bits());
+    assert_eq!(expected.boundary_rank(), 1);
+    assert_eq!(expected.boundary_weight().to_bits(), 0.25_f64.to_bits());
+
+    for permutation in [
+        [-f64::MAX, f64::MAX, 0.0],
+        [f64::MAX, -f64::MAX, 0.0],
+        [f64::MAX, 0.0, -f64::MAX],
+        [0.0, -f64::MAX, f64::MAX],
+        [0.0, f64::MAX, -f64::MAX],
+    ] {
+        assert_eq!(empirical_cvar(&permutation, 0.25).unwrap(), expected);
+    }
 }
 
 #[test]
 fn risk_means_do_not_overflow_on_finite_constant_samples() {
     let samples = [f64::MAX, f64::MAX, f64::MAX];
     assert_eq!(cvar(&samples, 0.5).unwrap().to_bits(), f64::MAX.to_bits());
+    let report = empirical_cvar(&samples, 0.5).unwrap();
+    assert_eq!(report.cvar().to_bits(), f64::MAX.to_bits());
+    assert_eq!(report.var().to_bits(), f64::MAX.to_bits());
     let objective = ColoredObjective::new("extreme", samples.to_vec(), vec![verified()]);
     assert_eq!(
         objective.nominal_value().unwrap().to_bits(),
@@ -68,6 +115,30 @@ fn risk_means_do_not_overflow_on_finite_constant_samples() {
         reversed.nominal_value().unwrap().to_bits(),
         "a sample statistic must not depend on input permutation"
     );
+
+    let residual = [f64::MAX, 1.0, -f64::MAX];
+    let expected_residual_mean = 1.0 / 3.0;
+    let mut expected_bits = None;
+    for permutation in [
+        residual,
+        [f64::MAX, -f64::MAX, 1.0],
+        [1.0, f64::MAX, -f64::MAX],
+        [1.0, -f64::MAX, f64::MAX],
+        [-f64::MAX, f64::MAX, 1.0],
+        [-f64::MAX, 1.0, f64::MAX],
+    ] {
+        let objective =
+            ColoredObjective::new("mixed-residual", permutation.to_vec(), vec![verified()]);
+        let actual = objective.nominal_value().expect("finite residual mean");
+        assert!(
+            (actual - expected_residual_mean).abs() <= f64::EPSILON,
+            "opposite extremes must not erase the finite residual: {actual}"
+        );
+        match expected_bits {
+            Some(bits) => assert_eq!(actual.to_bits(), bits, "permutation changed the mean"),
+            None => expected_bits = Some(actual.to_bits()),
+        }
+    }
 }
 
 #[test]
@@ -336,7 +407,11 @@ fn admitted_headline_ignores_surplus_admitted_values_and_is_order_free() {
     let reversed = [surplus, admit(verified(), b"node-a")];
     let a = admitted_headline_for(&objective, &forward).expect("covered");
     let b = admitted_headline_for(&objective, &reversed).expect("covered");
-    assert_eq!(a.rank(), ColorRank::Verified, "surplus Validated must not leak");
+    assert_eq!(
+        a.rank(),
+        ColorRank::Verified,
+        "surplus Validated must not leak"
+    );
     assert_eq!(a, b, "admitted headline must be order-free");
 }
 

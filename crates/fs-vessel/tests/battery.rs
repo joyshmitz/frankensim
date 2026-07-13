@@ -8,7 +8,7 @@
 use fs_lbm::freesurface::ContactModel;
 use fs_lbm::rheology::Rheology;
 use fs_vessel::pour::{PourRig, render_pour, run_pour};
-use fs_vessel::robust::{empirical_cvar, robustify};
+use fs_vessel::robust::{RobustError, cvar, empirical_cvar, robustify};
 use fs_vessel::stability::{VesselProfile, growth_objective};
 
 fn verdict(name: &str, pass: bool, details: &str) {
@@ -203,25 +203,45 @@ fn vsl_005_cvar_and_race() {
 
 #[test]
 fn vsl_005_cvar_rejects_invalid_risk_inputs() {
+    let extreme_samples = [-f64::MAX, 0.0, f64::MAX];
+    let vessel_report = empirical_cvar(&extreme_samples, 0.25).expect("valid extreme samples");
+    let canonical_report =
+        fs_robust::empirical_cvar(&extreme_samples, 0.25).expect("canonical extreme samples");
+    verdict(
+        "vsl-005-canonical-cvar-parity",
+        vessel_report == canonical_report
+            && cvar(&extreme_samples, 0.25)
+                .is_ok_and(|value| value.to_bits() == canonical_report.cvar().to_bits()),
+        "vessel report and scalar CVaR surfaces are exact canonical fs-robust re-exports",
+    );
     verdict(
         "vsl-005-empty-cvar-drill",
-        std::panic::catch_unwind(|| empirical_cvar(&[], 0.7)).is_err(),
-        "empty CVaR losses fire the diagnostic instead of returning fake zero risk",
+        matches!(empirical_cvar(&[], 0.7), Err(RobustError::EmptySamples)),
+        "empty CVaR losses return a structured refusal instead of fake zero risk",
     );
     verdict(
         "vsl-005-bad-beta-drill",
-        std::panic::catch_unwind(|| empirical_cvar(&[1.0, 2.0], 0.0)).is_err(),
-        "invalid CVaR beta fires the diagnostic before quantile indexing",
+        matches!(
+            empirical_cvar(&[1.0, 2.0], 0.0),
+            Err(RobustError::BadAlpha { alpha }) if alpha == 0.0
+        ),
+        "invalid CVaR beta returns a structured refusal before quantile indexing",
     );
     verdict(
         "vsl-005-nan-beta-drill",
-        std::panic::catch_unwind(|| empirical_cvar(&[1.0, 2.0], f64::NAN)).is_err(),
-        "non-finite CVaR beta fires the diagnostic before quantile indexing",
+        matches!(
+            empirical_cvar(&[1.0, 2.0], f64::NAN),
+            Err(RobustError::BadAlpha { alpha }) if alpha.is_nan()
+        ),
+        "non-finite CVaR beta returns a structured refusal before quantile indexing",
     );
     verdict(
         "vsl-005-nonfinite-cvar-drill",
-        std::panic::catch_unwind(|| empirical_cvar(&[1.0, f64::INFINITY], 0.7)).is_err(),
-        "non-finite CVaR losses fire the diagnostic before tail aggregation",
+        matches!(
+            empirical_cvar(&[1.0, f64::INFINITY], 0.7),
+            Err(RobustError::BadSample { value }) if value.is_infinite()
+        ),
+        "non-finite CVaR losses return a structured refusal before tail aggregation",
     );
 }
 

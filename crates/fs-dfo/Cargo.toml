@@ -15,6 +15,7 @@ fs-la = { path = "../fs-la" }
 fs-obs = { path = "../fs-obs" }
 fs-math = { path = "../fs-math" }
 fs-rand = { path = "../fs-rand" }
+fs-robust = { path = "../fs-robust" }
 
 [lints]
 workspace = true

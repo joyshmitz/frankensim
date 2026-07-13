@@ -19,8 +19,10 @@ pub mod mlmc;
 pub mod pce;
 pub mod seismic;
 
+pub use fs_robust::{EmpiricalCvarReport, RobustError, cvar, empirical_cvar};
+
 pub use adaptive::{AdaptiveReport, adaptive_mlmc};
-pub use anytime::{AnytimeEstimate, cvar, estimate_probability_anytime};
+pub use anytime::{AnytimeEstimate, estimate_probability_anytime};
 pub use chance::{ChanceSolution, NoFeasibleChanceCandidate, chance_constrained_min};
 pub use kl::{CovarianceKind, KlExpansion};
 pub use mlmc::{MlmcReport, mlmc_estimate};

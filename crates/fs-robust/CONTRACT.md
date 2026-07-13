@@ -11,9 +11,15 @@ random numbers) are supplied by the caller (fs-scenario).
 
 ## Public types and semantics
 
-- `cvar(samples, alpha)` — finite-sample Conditional Value at Risk: the mean
-  of exactly the worst `(1 - alpha)` empirical mass, with fractional weight on
-  the boundary order statistic when the tail mass is non-integral.
+- `empirical_cvar(samples, alpha) -> Result<EmpiricalCvarReport, RobustError>`
+  — the canonical finite-sample risk-algebra entry point. Its report carries
+  Conditional Value at Risk, the deterministic lower empirical
+  VaR/Rockafellar–Uryasev minimizer, the one-based boundary rank, and the
+  fractional boundary weight.
+- `cvar(samples, alpha) -> Result<f64, RobustError>` — scalar compatibility
+  surface delegating to `empirical_cvar`; the mean of exactly the worst
+  `(1 - alpha)` empirical mass, with fractional weight on the boundary order
+  statistic when the tail mass is non-integral.
 - `weakest_color(&[Color]) -> Option<Color>` — the lowest-rank DECLARED
   color; rank ties break by canonical payload bytes, so the result is
   permutation-invariant (bead 6pf9). Declaration-level API: it authenticates
@@ -62,9 +68,13 @@ random numbers) are supplied by the caller (fs-scenario).
   diagnostics; they cannot satisfy the admitted APIs.
 - CVaR of the tail is `>=` the mean; `alpha ∈ (0, 1)` enforced; non-finite
   samples are refused instead of sorted into risk or headline values. CVaR and
-  nominal means use bounded convex combinations, so finite constant samples
-  near `f64::MAX` do not overflow through an intermediate sum. Both statistics
-  canonically total-order samples, making them permutation-invariant.
+  nominal means use midpoint-centered compensated convex combinations, so
+  finite constant samples near `f64::MAX`, mixed-sign extreme tails, and small
+  residuals between opposite extremes neither overflow nor silently cancel
+  away. The empirical report chooses the lower VaR/minimizer at an
+  integral boundary, reports a zero boundary weight there, and otherwise
+  includes exactly the fractional boundary mass. Both statistics canonically
+  total-order samples, making values and report metadata permutation-invariant.
 - A fragility curve is sorted and nondecreasing in intensity (`P(failure)` =
   CDF of demand exceeding capacity), independent of caller input order.
 
@@ -91,10 +101,13 @@ None.
 
 ## Conformance tests
 
-`tests/robust.rs` (Proposal F, 16 cases): CVaR weights integral and non-integral
-worst tails + rejects bad inputs; the weakest-input color rule; robust vs
-nominal optima diverge; the un-colored-objective contract (+ no-candidates);
-extreme finite means remain finite; the kill-criterion dominance test;
+`tests/robust.rs` (Proposal F): CVaR weights integral and non-integral worst
+tails, reports deterministic VaR/minimizer metadata, remains finite for
+constant and mixed-sign `f64::MAX` samples, is permutation-invariant, and
+rejects bad inputs; the weakest-input color rule; robust vs nominal optima
+diverge; the un-colored-objective contract (+ no-candidates); extreme finite
+means remain finite and retain a nonzero residual between opposite extremes;
+the kill-criterion dominance test;
 non-finite dominance costs refuse; unsorted fragility inputs produce monotone
 canonical curves; determinism. Admitted battery (bead 6pf9): tie
 permutation-invariance, malformed-payload refusal, count-aware coverage
