@@ -1925,6 +1925,8 @@ dependencies = [
  "fs-alloc",
  "fs-evidence",
  "fs-exec",
+ "fs-ivl",
+ "fs-sparse",
  "fs-tropical",
  "fs-truss",
 ]

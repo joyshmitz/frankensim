@@ -9,28 +9,29 @@
 //!
 //! - **Ground-structure optimization** ([`fs_truss`]): a Michell ground
 //!   structure (all admissible candidate bars) is iterated toward minimum
-//!   volume and equilibrium by a first-order PDHG solver, which emits a relative
-//!   primal-dual gap and equilibrium-residual diagnostic. The approximate
-//!   primal is not exactly feasible, so the returned volume is not a certified
-//!   optimum bound.
+//!   volume and equilibrium by a first-order PDHG solver. A separate outward
+//!   certificate repairs the primal to exact feasibility and independently
+//!   scales and checks the dual before publishing optimum bounds.
 //! - **The critical load path** ([`fs_tropical`]): the active bars form a
 //!   directed acyclic graph oriented by distance-to-support; a MAX-PLUS
 //!   (tropical) critical-path computation finds a connected chain of active
 //!   bars from the load node to a support, and names a bottleneck only when the
 //!   rounded task graph has a unique heaviest chain.
-//! - **Honest colors** ([`fs_evidence`]): PDHG convergence remains `Estimated`
-//!   until an exactly feasible primal upper bound is constructed. The load path
-//!   also remains `Estimated` until active-set membership and member volumes
-//!   carry interval separation through the tropical analysis.
+//! - **Honest colors** ([`fs_evidence`]): optimality becomes `Verified` only
+//!   from the retained outward primal/dual certificate. The load path remains
+//!   `Estimated` until active-set membership and member volumes carry interval
+//!   separation through the tropical analysis.
 //!
 //! Deterministic; no dependencies beyond the composed crates.
 
 use fs_evidence::Color;
 use fs_exec::Cx;
+use fs_ivl::Interval;
 use fs_tropical::{MAX_TASK_DAG_EDGES, MAX_TASK_DAG_NODES, TaskDag, TropicalError};
 use fs_truss::{
-    GroundLimits, GroundRules, GroundStructure, LayoutCase, LayoutLimits, LayoutLp, PdhgError,
-    PdhgSettings, TrussConstructionError,
+    GroundLimits, GroundRules, GroundStructure, LayoutCase, LayoutCertificateError,
+    LayoutCertificateLimits, LayoutCertificateProblem, LayoutCertificateStatus, LayoutLimits,
+    LayoutLp, PdhgError, PdhgSettings, TrussConstructionError,
 };
 use std::collections::BTreeSet;
 
@@ -76,6 +77,10 @@ pub enum TrussError {
     },
     /// The checked PDHG solver refused its controls or warm-start state.
     Solver(PdhgError),
+    /// The optimum-certificate attempt encountered malformed state, allocation
+    /// failure, or cancellation. A sound numerical refusal is not an error and
+    /// remains `Estimated`.
+    Certificate(LayoutCertificateError),
     /// Ground-structure or LP construction refused before publishing output.
     Construction(TrussConstructionError),
     /// Tropical analysis refused solver-derived task data.
@@ -106,6 +111,9 @@ impl core::fmt::Display for TrussError {
                 write!(formatter, "truss load-path input {reason}")
             }
             Self::Solver(error) => write!(formatter, "truss solver refused: {error}"),
+            Self::Certificate(error) => {
+                write!(formatter, "truss optimum certificate refused: {error}")
+            }
             Self::Construction(error) => {
                 write!(formatter, "truss construction refused: {error}")
             }
@@ -125,6 +133,12 @@ impl From<TropicalError> for TrussError {
 impl From<PdhgError> for TrussError {
     fn from(value: PdhgError) -> Self {
         Self::Solver(value)
+    }
+}
+
+impl From<LayoutCertificateError> for TrussError {
+    fn from(value: LayoutCertificateError) -> Self {
+        Self::Certificate(value)
     }
 }
 
@@ -168,7 +182,8 @@ pub struct TrussReport {
     pub critical_path_volume: f64,
     /// The uniquely heaviest bar on a unique advisory path (original index).
     pub bottleneck_member: Option<usize>,
-    /// The optimality color (currently `Estimated`; see no-claim boundary).
+    /// Certified optimum bounds, or an honest diagnostic estimate when the
+    /// outward proof is unavailable.
     pub optimality_color: Color,
     /// Load-path evidence (currently `Estimated`; see no-claim boundary).
     pub load_path_color: Color,
@@ -185,6 +200,91 @@ pub struct LoadPathAnalysis {
     pub bottleneck_member: Option<usize>,
     /// Whether directed rounding separates the selected path from all rivals.
     pub path_is_unique: bool,
+}
+
+/// Convert one outward certificate result into the sole optimality-promotion
+/// gate shared by native and browser TrussPath consumers.
+///
+/// A finite PDHG gap or equilibrium residual is never sufficient for
+/// `Verified`. An unavailable proof, or a proof whose private receipt no longer
+/// validates, falls back to an explicitly diagnostic `Estimated` color.
+///
+/// # Errors
+/// Returns a structured cancellation or allocation error if the bounded,
+/// context-binding receipt preflight cannot finish.
+#[allow(clippy::too_many_arguments)] // Complete problem, solver state, diagnostics, and Cx binding.
+pub fn optimality_color_from_certificate(
+    problem: &LayoutCertificateProblem<'_>,
+    x: &[f64],
+    y: &[f64],
+    settings: PdhgSettings,
+    status: &LayoutCertificateStatus,
+    gap: f64,
+    eq_residual: f64,
+    cx: &Cx<'_>,
+) -> Result<Color, LayoutCertificateError> {
+    if let LayoutCertificateStatus::Certified(certificate) = status
+        && certificate.verifies_for_problem(problem, x, y, settings, cx)?
+    {
+        let bounds = certificate.bounds();
+        return Ok(Color::Verified {
+            lo: bounds.lower(),
+            hi: bounds.upper(),
+        });
+    }
+
+    Ok(estimated_optimality_color(gap, eq_residual))
+}
+
+/// Preserve finite PDHG diagnostics without implying a proved optimum bound.
+///
+/// Browser consumers use this same fallback when malformed state, allocation
+/// failure, or cancellation prevents a complete certificate attempt.
+#[must_use]
+pub fn estimated_optimality_color(gap: f64, eq_residual: f64) -> Color {
+    Color::Estimated {
+        estimator: "pdhg-diagnostics-with-unavailable-optimum-certificate-v1".to_string(),
+        dispersion: if gap.is_finite()
+            && eq_residual.is_finite()
+            && gap >= 0.0
+            && eq_residual >= 0.0
+        {
+            gap.max(eq_residual)
+        } else {
+            f64::INFINITY
+        },
+    }
+}
+
+/// Divide a verified optimum interval by a finite positive physical scale
+/// using outward arithmetic.
+///
+/// This preserves an existing proof; it never promotes weaker evidence. An
+/// invalid scale or malformed interval is demoted to an infinite-dispersion
+/// diagnostic estimate.
+#[must_use]
+pub fn rescale_optimality_color(color: &Color, positive_divisor: f64) -> Color {
+    match color {
+        Color::Verified { lo, hi }
+            if positive_divisor.is_finite()
+                && positive_divisor > 0.0
+                && lo.is_finite()
+                && hi.is_finite()
+                && lo <= hi =>
+        {
+            let scaled = Interval::new(*lo, *hi) / Interval::point(positive_divisor);
+            if scaled.lo().is_finite() && scaled.hi().is_finite() {
+                Color::Verified {
+                    lo: scaled.lo(),
+                    hi: scaled.hi(),
+                }
+            } else {
+                estimated_optimality_color(f64::INFINITY, f64::INFINITY)
+            }
+        }
+        Color::Verified { .. } => estimated_optimality_color(f64::INFINITY, f64::INFINITY),
+        weaker => weaker.clone(),
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -408,7 +508,9 @@ pub fn analyze_load_path(
 /// Returns a structured refusal for invalid/unbounded grid parameters, an empty
 /// candidate set, an excessive construction/solver budget, or invalid
 /// solver-derived path data. Ground and LP construction also return structured
-/// allocation or cancellation refusals through the supplied context.
+/// allocation or cancellation refusals through the supplied context. The
+/// outward certificate stage can additionally return [`TrussError::Certificate`]
+/// for malformed retained state, allocation failure, or cancellation.
 #[allow(clippy::too_many_lines)] // One bounded campaign, diagnostics, and evidence report pipeline.
 pub fn run_campaign(
     nx: usize,
@@ -592,7 +694,16 @@ pub fn run_campaign(
         gap_tol,
         check_every: TRUSS_PDHG_CHECK_EVERY,
     };
-    let (x, _y, report) = lp.solve(None, None, settings)?;
+    let (x, y, mut report) = lp.solve(None, None, settings)?;
+    let certificate_status = lp.certify_optimum_for_report(
+        &x,
+        &y,
+        settings,
+        &mut report,
+        LayoutCertificateLimits::default(),
+        cx,
+    )?;
+    let certificate_problem = LayoutCertificateProblem::try_new(lp.a(), lp.c(), lp.b())?;
 
     // Member force (q⁺ − q⁻) and material volume (both split costs).
     let force = |k: usize| x[k] - x[m + k];
@@ -629,18 +740,16 @@ pub fn run_campaign(
         && report.eq_residual >= 0.0
         && report.gap < gap_tol
         && report.eq_residual < gap_tol;
-    let optimality_color = Color::Estimated {
-        estimator: "pdhg-gap-with-equilibrium-residual-v1".to_string(),
-        dispersion: if report.gap.is_finite()
-            && report.eq_residual.is_finite()
-            && report.gap >= 0.0
-            && report.eq_residual >= 0.0
-        {
-            report.gap.max(report.eq_residual)
-        } else {
-            f64::INFINITY
-        },
-    };
+    let optimality_color = optimality_color_from_certificate(
+        &certificate_problem,
+        &x,
+        &y,
+        settings,
+        &certificate_status,
+        report.gap,
+        report.eq_residual,
+        cx,
+    )?;
 
     Ok(TrussReport {
         num_members: m,

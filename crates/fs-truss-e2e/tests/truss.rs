@@ -3,7 +3,14 @@
 
 use fs_evidence::Color;
 use fs_exec::{Budget, CancelGate, Cx, ExecMode, StreamKey};
-use fs_truss_e2e::{TrussError, analyze_load_path, run_campaign};
+use fs_sparse::Csr;
+use fs_truss::{
+    LayoutCertificateProblem, LayoutCertificateRefusal, LayoutCertificateStatus, PdhgSettings,
+};
+use fs_truss_e2e::{
+    TrussError, analyze_load_path, optimality_color_from_certificate, rescale_optimality_color,
+    run_campaign,
+};
 
 fn with_gate_cx<R>(gate: &CancelGate, f: impl FnOnce(&Cx<'_>) -> R) -> R {
     let pool = fs_alloc::ArenaPool::new(fs_alloc::ArenaConfig::default());
@@ -45,14 +52,22 @@ fn the_converged_truss_has_a_bounded_unique_load_path() {
     assert!(report.num_members > report.num_active, "nothing was pruned");
     assert!(report.num_active > 0, "no active bars");
     assert!(report.total_volume > 0.0, "zero volume");
-    // The solver met its declared diagnostic thresholds, but the approximate
-    // primal does not acquire a finite optimum certificate.
+    // Solver convergence remains a diagnostic, independent of the outward
+    // optimum certificate.
     assert!(
         report.solver_converged,
         "gap {} eq_res {}",
         report.gap, report.eq_residual
     );
-    assert!(matches!(report.optimality_color, Color::Estimated { .. }));
+    let Color::Verified { lo, hi } = report.optimality_color else {
+        panic!("the repaired primal and checked dual must certify optimality");
+    };
+    assert!(lo.is_finite() && hi.is_finite());
+    assert!(
+        lo > 0.0,
+        "the scaled solver dual must retain a useful bound"
+    );
+    assert!(lo <= hi, "inverted optimum interval [{lo}, {hi}]");
     // The advisory path is non-trivial and carries real rounded volume.
     assert!(
         report.critical_path.len() >= 2,
@@ -94,6 +109,103 @@ fn the_campaign_is_deterministic() {
     assert_eq!(a.total_volume.to_bits(), b.total_volume.to_bits());
     assert_eq!(a.critical_path, b.critical_path);
     assert_eq!(a.bottleneck_member, b.bottleneck_member);
+    assert_eq!(a.optimality_color, b.optimality_color);
+}
+
+#[test]
+fn unavailable_certificate_never_promotes_finite_diagnostics() {
+    let matrix = Csr::from_parts(1, 2, vec![0, 2], vec![0, 1], vec![1.0, -1.0]);
+    let costs = [1.0, 1.0];
+    let loads = [1.0];
+    let problem = LayoutCertificateProblem::try_new(&matrix, &costs, &loads)
+        .expect("well-formed paired fixture");
+    let status = LayoutCertificateStatus::Unavailable(LayoutCertificateRefusal::RankDeficient {
+        active_rows: 1,
+        rank: 0,
+    });
+    let settings = PdhgSettings::default();
+    with_cx(|cx| {
+        assert!(matches!(
+            optimality_color_from_certificate(
+                &problem,
+                &[0.0, 0.0],
+                &[0.0],
+                settings,
+                &status,
+                0.0,
+                0.0,
+                cx,
+            )
+            .expect("unavailable promotion fallback"),
+            Color::Estimated {
+                dispersion: 0.0,
+                ..
+            }
+        ));
+        assert!(matches!(
+            optimality_color_from_certificate(
+                &problem,
+                &[0.0, 0.0],
+                &[0.0],
+                settings,
+                &status,
+                f64::NAN,
+                0.0,
+                cx,
+            )
+            .expect("non-finite diagnostic fallback"),
+            Color::Estimated { dispersion, .. } if dispersion.is_infinite()
+        ));
+    });
+}
+
+#[test]
+fn certificate_promotion_rejects_another_problem_and_rescales_outward() {
+    let matrix = Csr::from_parts(1, 2, vec![0, 2], vec![0, 1], vec![1.0, -1.0]);
+    let costs = [1.0, 1.0];
+    let loads = [1.0];
+    let other_loads = [2.0];
+    let problem = LayoutCertificateProblem::try_new(&matrix, &costs, &loads)
+        .expect("well-formed source problem");
+    let other_problem = LayoutCertificateProblem::try_new(&matrix, &costs, &other_loads)
+        .expect("well-formed distinct problem");
+    let settings = PdhgSettings::default();
+    with_cx(|cx| {
+        let status = problem
+            .certify_optimum(
+                &[0.0, 0.0],
+                &[0.0],
+                settings,
+                fs_truss::LayoutCertificateLimits::default(),
+                cx,
+            )
+            .expect("source certificate attempt");
+        assert!(matches!(status, LayoutCertificateStatus::Certified(_)));
+        assert!(matches!(
+            optimality_color_from_certificate(
+                &other_problem,
+                &[0.0, 0.0],
+                &[0.0],
+                settings,
+                &status,
+                0.0,
+                0.0,
+                cx,
+            )
+            .expect("context-mismatch preflight"),
+            Color::Estimated { .. }
+        ));
+    });
+
+    let scaled = rescale_optimality_color(&Color::Verified { lo: 1.0, hi: 2.0 }, 3.0);
+    let Color::Verified { lo, hi } = scaled else {
+        panic!("positive physical scaling must preserve Verified");
+    };
+    assert!(lo <= 1.0 / 3.0 && hi >= 2.0 / 3.0);
+    assert!(matches!(
+        rescale_optimality_color(&Color::Verified { lo: 1.0, hi: 2.0 }, 0.0),
+        Color::Estimated { dispersion, .. } if dispersion.is_infinite()
+    ));
 }
 
 #[test]
