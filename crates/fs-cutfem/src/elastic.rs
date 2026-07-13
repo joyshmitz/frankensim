@@ -8,9 +8,11 @@
 //! `beta * mu / h`. Degenerating cuts are controlled by the ghost
 //! penalty, not hidden behind an exploding boundary penalty.
 //!
-//! The current vector lift is restricted to a uniform active quadtree
-//! level. That refusal is explicit because silently ignoring scalar
-//! hanging-node expansions would make a nonconforming elasticity space.
+//! On graded active trees, scalar 2:1 hanging-node constraints are lifted
+//! componentwise and eliminated by the explicit transform `T`: element and
+//! face terms scatter as `T^T K T`, loads as `T^T f`, and solved terminal
+//! coefficients reconstruct every active mesh node. Uniform trees retain the
+//! literal legacy scatter path so their operator and topology bits do not move.
 
 use crate::CutFemError;
 use crate::fem::{JacobiPrecond, q1};
@@ -37,14 +39,18 @@ pub const ELASTICITY_APPLY_VJP_OP: &str = "fs-cutfem.elasticity-apply.v1";
 pub const MAX_PLANE_STRAIN_STIFFNESS_RATIO: f64 = 4.0;
 
 type FaceKey = (CellKey, CellKey);
+type NodeExpansion = Vec<(usize, f64)>;
+type TerminalIds = BTreeMap<NodeKey, usize>;
+type NodeExpansions = BTreeMap<NodeKey, NodeExpansion>;
 
 /// Vector Q1 CutFEM problem on `Omega = {phi < 0}`.
 ///
 /// The constitutive parameters come from [`IsotropicElastic`], so the
 /// material's admissibility checks and model-card identity are shared
 /// with the rest of FLUX rather than duplicated here.
+#[derive(Clone, Copy)]
 pub struct CutElasticity<'a> {
-    /// Uniform background quadtree.
+    /// Uniform or 2:1-balanced graded background quadtree.
     pub grid: &'a Quadtree,
     /// Certified negative-inside level set.
     pub sdf: &'a dyn CutSdf,
@@ -97,10 +103,14 @@ impl core::fmt::Debug for CutElasticity<'_> {
 pub struct CutElasticityOperator {
     matrix: Csr,
     rhs: Vec<f64>,
-    node_ids: BTreeMap<NodeKey, usize>,
+    node_ids: TerminalIds,
+    /// Present only when hanging nodes exist. Keys cover every active mesh
+    /// node; values resolve it into unconstrained terminal blocks.
+    node_expansions: Option<NodeExpansions>,
     clamped: Vec<bool>,
     active: Vec<CellKey>,
     rules: BTreeMap<CellKey, CutRules>,
+    ghost_faces: Vec<FaceKey>,
     dropped_cut_cells: usize,
 }
 
@@ -123,8 +133,9 @@ impl CutElasticityOperator {
         self.matrix.nrows()
     }
 
-    /// Deterministic node-to-block map. Node `id` owns displacement DOFs
-    /// `2*id` and `2*id + 1`.
+    /// Deterministic terminal-node-to-block map. Node `id` owns displacement
+    /// DOFs `2*id` and `2*id + 1`. On a uniform tree every active node is a
+    /// terminal, preserving the original map exactly.
     #[must_use]
     pub fn node_ids(&self) -> &BTreeMap<NodeKey, usize> {
         &self.node_ids
@@ -135,6 +146,62 @@ impl CutElasticityOperator {
     #[must_use]
     pub fn clamped_dofs(&self) -> &[bool] {
         &self.clamped
+    }
+
+    /// Active cells in canonical quadtree-key order.
+    #[must_use]
+    pub fn active_cells(&self) -> &[CellKey] {
+        &self.active
+    }
+
+    /// Certified cut-cell quadrature retained by the assembly.
+    #[must_use]
+    pub fn cut_rules(&self) -> &BTreeMap<CellKey, CutRules> {
+        &self.rules
+    }
+
+    /// Canonically ordered equal-level faces carrying ghost stabilization.
+    /// The slice is empty when `ghost_gamma == 0`.
+    #[must_use]
+    pub fn ghost_faces(&self) -> &[(CellKey, CellKey)] {
+        &self.ghost_faces
+    }
+
+    /// Algebraic compliance `b^T x` for this assembled load vector.
+    ///
+    /// This is the discrete assembled-load functional. In particular, when
+    /// nonzero embedded displacement data contribute to `b`, it is not by
+    /// itself a claim about physical external work.
+    ///
+    /// # Errors
+    /// Refuses a coefficient-length mismatch or any non-finite input/result.
+    pub fn algebraic_compliance(&self, x: &[f64]) -> Result<f64, CutFemError> {
+        if x.len() != self.dof_count() {
+            return Err(CutFemError::InvalidElasticityInput {
+                what: format!(
+                    "elasticity coefficient length {} does not match DOF count {}",
+                    x.len(),
+                    self.dof_count()
+                ),
+            });
+        }
+        if x.iter().any(|value| !value.is_finite()) {
+            return Err(CutFemError::InvalidElasticityInput {
+                what: "elasticity coefficients must be finite".to_string(),
+            });
+        }
+        let compliance: f64 = self
+            .rhs
+            .iter()
+            .zip(x)
+            .map(|(load, coefficient)| load * coefficient)
+            .sum();
+        if !compliance.is_finite() {
+            return Err(CutFemError::InvalidElasticityInput {
+                what: "algebraic compliance b^T x is non-finite".to_string(),
+            });
+        }
+        Ok(compliance)
     }
 
     /// Conservatively classified cut cells whose quadrature retained less
@@ -163,9 +230,23 @@ impl CutElasticityOperator {
     #[must_use]
     pub fn nodal_values(&self, x: &[f64]) -> BTreeMap<NodeKey, [f64; 2]> {
         assert_eq!(x.len(), self.dof_count(), "elasticity coefficient length");
-        self.node_ids
+        let Some(expansions) = &self.node_expansions else {
+            return self
+                .node_ids
+                .iter()
+                .map(|(&node, &id)| (node, [x[2 * id], x[2 * id + 1]]))
+                .collect();
+        };
+        expansions
             .iter()
-            .map(|(&node, &id)| (node, [x[2 * id], x[2 * id + 1]]))
+            .map(|(&node, expansion)| {
+                let mut value = [0.0; 2];
+                for &(id, weight) in expansion {
+                    value[0] += weight * x[2 * id];
+                    value[1] += weight * x[2 * id + 1];
+                }
+                (node, value)
+            })
             .collect()
     }
 }
@@ -194,6 +275,8 @@ pub struct CutElasticitySolution {
     nodal: BTreeMap<NodeKey, [f64; 2]>,
     active: Vec<CellKey>,
     rules: BTreeMap<CellKey, CutRules>,
+    ghost_faces: Vec<FaceKey>,
+    compliance: f64,
     dropped_cut_cells: usize,
     /// CG iterations.
     pub iters: usize,
@@ -202,11 +285,26 @@ pub struct CutElasticitySolution {
 }
 
 impl CutElasticitySolution {
-    /// Displacement coefficients, two components per active node. Zero-clamped
-    /// DOFs remain present as unit-identity rows.
+    /// Displacement coefficients, two components per algebraic terminal node.
+    /// Zero-clamped DOFs remain present as unit-identity rows; hanging values
+    /// are available through [`Self::nodal`].
     #[must_use]
     pub fn coefficients(&self) -> &[f64] {
         &self.coefficients
+    }
+
+    /// Number of vector displacement DOFs, including zero-clamped identity
+    /// rows retained in the coefficient vector.
+    #[must_use]
+    pub fn dof_count(&self) -> usize {
+        self.coefficients.len()
+    }
+
+    /// Exact deterministic dot product `b^T x` for the assembled discrete
+    /// load and converged coefficient vector.
+    #[must_use]
+    pub fn compliance(&self) -> f64 {
+        self.compliance
     }
 
     /// Nodal displacements in deterministic node-key order.
@@ -221,6 +319,100 @@ impl CutElasticitySolution {
         &self.active
     }
 
+    /// Certified cut-cell quadrature retained by the solve's assembly.
+    #[must_use]
+    pub fn cut_rules(&self) -> &BTreeMap<CellKey, CutRules> {
+        &self.rules
+    }
+
+    /// Canonically ordered equal-level faces carrying ghost stabilization.
+    /// The slice is empty when `ghost_gamma == 0`.
+    #[must_use]
+    pub fn ghost_faces(&self) -> &[(CellKey, CellKey)] {
+        &self.ghost_faces
+    }
+
+    /// Evaluate the vector Q1 displacement and its componentwise gradient on
+    /// one active cell without inventing values for absent or poisoned nodes.
+    ///
+    /// The gradient is indexed `[component][axis]`.
+    ///
+    /// # Errors
+    /// Refuses inactive cells, points outside the cell, missing corners, or
+    /// any non-finite point, nodal value, shape quantity, or result.
+    pub fn value_gradient(
+        &self,
+        grid: &Quadtree,
+        cell: CellKey,
+        point: [f64; 2],
+    ) -> Result<([f64; 2], [[f64; 2]; 2]), CutFemError> {
+        if self.active.binary_search(&cell).is_err() {
+            return Err(CutFemError::InvalidElasticityInput {
+                what: format!("cannot evaluate inactive elasticity cell {cell:?}"),
+            });
+        }
+        if point.iter().any(|coordinate| !coordinate.is_finite()) {
+            return Err(CutFemError::InvalidElasticityInput {
+                what: format!("elasticity evaluation point {point:?} must be finite"),
+            });
+        }
+        let (lo, hi) = grid.rect(cell);
+        if (0..2).any(|axis| point[axis] < lo[axis] || point[axis] > hi[axis]) {
+            return Err(CutFemError::InvalidElasticityInput {
+                what: format!(
+                    "elasticity evaluation point {point:?} lies outside cell {cell:?} rectangle {lo:?}--{hi:?}"
+                ),
+            });
+        }
+        let corners = grid.corner_nodes(cell);
+        let mut values = [[0.0; 2]; 4];
+        for (corner, value) in corners.iter().zip(&mut values) {
+            let Some(nodal) = self.nodal.get(corner) else {
+                return Err(CutFemError::InvalidElasticityInput {
+                    what: format!("elasticity cell {cell:?} is missing nodal corner {corner:?}"),
+                });
+            };
+            if nodal.iter().any(|component| !component.is_finite()) {
+                return Err(CutFemError::InvalidElasticityInput {
+                    what: format!("elasticity nodal value at corner {corner:?} is non-finite"),
+                });
+            }
+            *value = *nodal;
+        }
+        let (shapes, gradients) = q1(lo, hi, point);
+        if shapes.iter().any(|shape| !shape.is_finite())
+            || gradients
+                .iter()
+                .flatten()
+                .any(|gradient| !gradient.is_finite())
+        {
+            return Err(CutFemError::InvalidElasticityInput {
+                what: format!("Q1 evaluation is non-finite on cell {cell:?} at {point:?}"),
+            });
+        }
+        let mut displacement = [0.0; 2];
+        let mut gradient = [[0.0; 2]; 2];
+        for corner in 0..4 {
+            for component in 0..2 {
+                displacement[component] += shapes[corner] * values[corner][component];
+                for axis in 0..2 {
+                    gradient[component][axis] +=
+                        gradients[corner][axis] * values[corner][component];
+                }
+            }
+        }
+        if displacement
+            .iter()
+            .chain(gradient.iter().flatten())
+            .any(|value| !value.is_finite())
+        {
+            return Err(CutFemError::InvalidElasticityInput {
+                what: format!("elasticity field evaluation is non-finite on cell {cell:?}"),
+            });
+        }
+        Ok((displacement, gradient))
+    }
+
     /// Conservatively classified cut cells omitted below the documented area
     /// threshold during assembly.
     #[must_use]
@@ -231,8 +423,8 @@ impl CutElasticitySolution {
 
 impl CutElasticity<'_> {
     fn validate_assembly(&self) -> Result<(f64, f64), CutFemError> {
-        if !self.traction_free_interface
-            && !(self.nitsche_beta > 0.0 && self.nitsche_beta.is_finite())
+        if !(self.traction_free_interface
+            || (self.nitsche_beta > 0.0 && self.nitsche_beta.is_finite()))
         {
             return Err(CutFemError::InvalidElasticityInput {
                 what: format!(
@@ -326,7 +518,7 @@ impl CutElasticity<'_> {
     ///
     /// # Errors
     /// Returns a structured refusal for invalid parameters/callback values,
-    /// empty domains, or non-uniform active levels.
+    /// empty domains, or malformed hanging-node transforms.
     #[allow(clippy::too_many_lines)]
     pub fn assemble(
         &self,
@@ -356,45 +548,42 @@ impl CutElasticity<'_> {
                 }
             }
         }
-        let Some(expected_level) = active.first().map(|cell| cell.0) else {
+        if active.is_empty() {
             return Err(CutFemError::EmptyDomain);
-        };
-        if let Some(&cell) = active.iter().find(|cell| cell.0 != expected_level) {
-            return Err(CutFemError::ElasticityGridNotUniform {
-                cell,
-                expected_level,
-            });
         }
         let active_set: BTreeSet<CellKey> = active.iter().copied().collect();
-        let mut node_ids = BTreeMap::new();
+        let mut nodes = BTreeSet::new();
+        let mut legacy_node_ids = BTreeMap::new();
         for &cell in &active {
             for node in self.grid.corner_nodes(cell) {
-                let next = node_ids.len();
-                node_ids.entry(node).or_insert(next);
+                nodes.insert(node);
+                let next = legacy_node_ids.len();
+                legacy_node_ids.entry(node).or_insert(next);
             }
         }
+        let constraints: BTreeMap<NodeKey, Vec<(NodeKey, f64)>> = self
+            .grid
+            .hanging_constraints(&active_set, &nodes)
+            .into_iter()
+            .map(|(node, terms)| (node, terms.to_vec()))
+            .collect();
+        let (node_ids, node_expansions) = if constraints.is_empty() {
+            // Do not route a uniform operator through even an identity
+            // transform: this is the literal pre-graded numbering/scatter
+            // path, preserving CSR/RHS/map/clamp/topology bits.
+            (legacy_node_ids, None)
+        } else {
+            let (terminal_ids, expansions) = build_terminal_expansions(&nodes, &constraints)?;
+            (terminal_ids, Some(expansions))
+        };
         let ndof = 2 * node_ids.len();
-        let extent = self.grid.node_extent();
-        let mut clamped = vec![false; ndof];
-        if let Some(predicate) = self.clamp {
-            for (&node, &id) in &node_ids {
-                let on_box = node.0 == 0 || node.0 == extent || node.1 == 0 || node.1 == extent;
-                if on_box {
-                    let point = self.grid.node_pos(node);
-                    if predicate(point[0], point[1]) {
-                        clamped[2 * id] = true;
-                        clamped[2 * id + 1] = true;
-                    }
-                }
-            }
-        }
+        let clamped = self.build_clamp_mask(&node_ids, node_expansions.as_ref())?;
 
         let mut coo = Coo::new(ndof, ndof);
         let mut rhs = vec![0.0; ndof];
         for &cell in &active {
             let (lo, hi) = self.grid.rect(cell);
             let corners = self.grid.corner_nodes(cell);
-            let ids = corners.map(|node| node_ids[&node]);
             let h = self.grid.cell_h(cell);
             let mut local_k = [[0.0; 8]; 8];
             let mut local_f = [0.0; 8];
@@ -473,17 +662,30 @@ impl CutElasticity<'_> {
             // one bit pattern so CG and the registered K^T VJP do not rest on
             // an "equal within roundoff" assumption.
             symmetrize_local(&mut local_k);
-            scatter_local(&mut coo, &mut rhs, &clamped, &ids, &local_k, &local_f);
+            if let Some(expansions) = &node_expansions {
+                scatter_local_reduced(
+                    &mut coo, &mut rhs, &clamped, &corners, expansions, &local_k, &local_f,
+                )?;
+            } else {
+                let ids = corners.map(|node| node_ids[&node]);
+                scatter_local(&mut coo, &mut rhs, &clamped, &ids, &local_k, &local_f);
+            }
         }
 
-        self.assemble_outer_traction(&active, &node_ids, &clamped, &mut rhs)?;
+        self.assemble_outer_traction(
+            &active,
+            &node_ids,
+            node_expansions.as_ref(),
+            &clamped,
+            &mut rhs,
+        )?;
         for (dof, is_clamped) in clamped.iter().enumerate() {
             if *is_clamped {
                 coo.push(dof, dof, 1.0);
             }
         }
+        let mut ghost_faces = BTreeSet::<FaceKey>::new();
         if self.ghost_gamma > 0.0 {
-            let mut seen = BTreeSet::<FaceKey>::new();
             for &cell in &cut {
                 for direction in 0..4u8 {
                     let Some(neighbor) = self.grid.covering_neighbor(cell, direction) else {
@@ -500,8 +702,15 @@ impl CutElasticity<'_> {
                     } else {
                         (neighbor, cell)
                     };
-                    if seen.insert(face) {
-                        self.assemble_ghost_face(face, mu, &node_ids, &clamped, &mut coo)?;
+                    if ghost_faces.insert(face) {
+                        self.assemble_ghost_face(
+                            face,
+                            mu,
+                            &node_ids,
+                            node_expansions.as_ref(),
+                            &clamped,
+                            &mut coo,
+                        )?;
                     }
                 }
             }
@@ -510,17 +719,51 @@ impl CutElasticity<'_> {
             matrix: coo.assemble(),
             rhs,
             node_ids,
+            node_expansions,
             clamped,
             active,
             rules,
+            ghost_faces: ghost_faces.into_iter().collect(),
             dropped_cut_cells,
         })
+    }
+
+    fn build_clamp_mask(
+        &self,
+        node_ids: &TerminalIds,
+        expansions: Option<&NodeExpansions>,
+    ) -> Result<Vec<bool>, CutFemError> {
+        let mut selected = BTreeSet::new();
+        let Some(predicate) = self.clamp else {
+            return Ok(vec![false; 2 * node_ids.len()]);
+        };
+        let extent = self.grid.node_extent();
+        let mut select = |node: NodeKey| {
+            let on_box = node.0 == 0 || node.0 == extent || node.1 == 0 || node.1 == extent;
+            if on_box {
+                let point = self.grid.node_pos(node);
+                if predicate(point[0], point[1]) {
+                    selected.insert(node);
+                }
+            }
+        };
+        if let Some(expansions) = expansions {
+            for node in expansions.keys().copied() {
+                select(node);
+            }
+        } else {
+            for node in node_ids.keys().copied() {
+                select(node);
+            }
+        }
+        clamp_terminal_blocks(node_ids, expansions, &selected)
     }
 
     fn assemble_outer_traction(
         &self,
         active: &[CellKey],
-        node_ids: &BTreeMap<NodeKey, usize>,
+        node_ids: &TerminalIds,
+        expansions: Option<&NodeExpansions>,
         clamped: &[bool],
         rhs: &mut [f64],
     ) -> Result<(), CutFemError> {
@@ -580,11 +823,21 @@ impl CutElasticity<'_> {
                     for (corner_index, shape) in
                         [(corner_indices[0], 1.0 - t), (corner_indices[1], t)]
                     {
-                        let id = node_ids[&corners[corner_index]];
                         for (component, traction_component) in value.iter().enumerate() {
-                            let dof = 2 * id + component;
-                            if !clamped[dof] {
-                                rhs[dof] += weight * shape * traction_component;
+                            let load = weight * shape * traction_component;
+                            if let Some(expansions) = expansions {
+                                for &(id, terminal_weight) in &expansions[&corners[corner_index]] {
+                                    let dof = 2 * id + component;
+                                    if !clamped[dof] {
+                                        rhs[dof] += terminal_weight * load;
+                                    }
+                                }
+                            } else {
+                                let id = node_ids[&corners[corner_index]];
+                                let dof = 2 * id + component;
+                                if !clamped[dof] {
+                                    rhs[dof] += load;
+                                }
                             }
                         }
                     }
@@ -598,7 +851,8 @@ impl CutElasticity<'_> {
         &self,
         face: FaceKey,
         mu: f64,
-        node_ids: &BTreeMap<NodeKey, usize>,
+        node_ids: &TerminalIds,
+        expansions: Option<&NodeExpansions>,
         clamped: &[bool],
         coo: &mut Coo,
     ) -> Result<(), CutFemError> {
@@ -641,6 +895,34 @@ impl CutElasticity<'_> {
                 what: format!("derived ghost penalty is non-finite on face {face:?}"),
             });
         }
+        if let Some(expansions) = expansions {
+            let mut terminal_jump = BTreeMap::<usize, [f64; 2]>::new();
+            for (node, node_jump) in jump {
+                for &(id, terminal_weight) in &expansions[&node] {
+                    let entry = terminal_jump.entry(id).or_default();
+                    entry[0] += terminal_weight * node_jump[0];
+                    entry[1] += terminal_weight * node_jump[1];
+                }
+            }
+            let entries: Vec<(usize, [f64; 2])> = terminal_jump.into_iter().collect();
+            for (id_a, jump_a) in &entries {
+                for (id_b, jump_b) in &entries {
+                    let value = scale * (jump_a[0] * jump_b[0] + jump_a[1] * jump_b[1]);
+                    if value == 0.0 {
+                        continue;
+                    }
+                    for component in 0..2 {
+                        let row = 2 * *id_a + component;
+                        let col = 2 * *id_b + component;
+                        if !clamped[row] && !clamped[col] {
+                            coo.push(row, col, value);
+                        }
+                    }
+                }
+            }
+            return Ok(());
+        }
+
         let entries: Vec<(NodeKey, [f64; 2])> = jump.into_iter().collect();
         for (node_a, jump_a) in &entries {
             for (node_b, jump_b) in &entries {
@@ -687,11 +969,14 @@ impl CutElasticity<'_> {
             });
         }
         let nodal = operator.nodal_values(&state.x);
+        let compliance = operator.algebraic_compliance(&state.x)?;
         Ok(CutElasticitySolution {
             coefficients: state.x,
             nodal,
             active: operator.active,
             rules: operator.rules,
+            ghost_faces: operator.ghost_faces,
+            compliance,
             dropped_cut_cells: operator.dropped_cut_cells,
             iters: report.iters,
             rel_residual: report.rel_residual,
@@ -758,13 +1043,187 @@ impl CutElasticity<'_> {
     }
 }
 
-fn symmetrize_local(matrix: &mut [[f64; 8]; 8]) {
-    for row in 0..8 {
-        for column in (row + 1)..8 {
-            let value = f64::midpoint(matrix[row][column], matrix[column][row]);
-            matrix[row][column] = value;
-            matrix[column][row] = value;
+fn build_terminal_expansions(
+    nodes: &BTreeSet<NodeKey>,
+    constraints: &BTreeMap<NodeKey, Vec<(NodeKey, f64)>>,
+) -> Result<(TerminalIds, NodeExpansions), CutFemError> {
+    for (&node, terms) in constraints {
+        if !nodes.contains(&node) {
+            return Err(CutFemError::InvalidElasticityInput {
+                what: format!("hanging constraint target {node:?} is not an active mesh node"),
+            });
         }
+        validate_affine_terms(node, terms, "raw")?;
+        if let Some((child, _)) = terms.iter().find(|(child, _)| !nodes.contains(child)) {
+            return Err(CutFemError::InvalidElasticityInput {
+                what: format!(
+                    "hanging constraint target {node:?} references absent mesh node {child:?}"
+                ),
+            });
+        }
+    }
+    let node_ids: TerminalIds = nodes
+        .iter()
+        .filter(|node| !constraints.contains_key(node))
+        .copied()
+        .enumerate()
+        .map(|(id, node)| (node, id))
+        .collect();
+    if node_ids.is_empty() {
+        return Err(CutFemError::InvalidElasticityInput {
+            what: "hanging constraint graph has no unconstrained terminal node".to_string(),
+        });
+    }
+    let mut memo = BTreeMap::new();
+    for &node in nodes {
+        let mut stack = BTreeSet::new();
+        expand_terminal_node(node, constraints, &node_ids, &mut memo, &mut stack)?;
+    }
+    Ok((node_ids, memo))
+}
+
+fn expand_terminal_node(
+    node: NodeKey,
+    constraints: &BTreeMap<NodeKey, Vec<(NodeKey, f64)>>,
+    node_ids: &TerminalIds,
+    memo: &mut NodeExpansions,
+    stack: &mut BTreeSet<NodeKey>,
+) -> Result<(), CutFemError> {
+    if memo.contains_key(&node) {
+        return Ok(());
+    }
+    if !stack.insert(node) {
+        return Err(CutFemError::ConstraintCycle { node });
+    }
+    let expansion = if let Some(terms) = constraints.get(&node) {
+        let mut composed = BTreeMap::<usize, f64>::new();
+        for &(child, raw_weight) in terms {
+            expand_terminal_node(child, constraints, node_ids, memo, stack)?;
+            let child_expansion =
+                memo.get(&child)
+                    .ok_or_else(|| CutFemError::InvalidElasticityInput {
+                        what: format!("hanging child {child:?} did not resolve to terminals"),
+                    })?;
+            for &(id, child_weight) in child_expansion {
+                let contribution = raw_weight * child_weight;
+                if !contribution.is_finite() {
+                    return Err(CutFemError::InvalidElasticityInput {
+                        what: format!(
+                            "hanging transform contribution through {node:?} and {child:?} is non-finite"
+                        ),
+                    });
+                }
+                let weight = composed.entry(id).or_insert(0.0);
+                *weight += contribution;
+                if !weight.is_finite() {
+                    return Err(CutFemError::InvalidElasticityInput {
+                        what: format!(
+                            "composed hanging transform for node {node:?} has a non-finite terminal weight"
+                        ),
+                    });
+                }
+            }
+        }
+        let expansion: NodeExpansion = composed.into_iter().collect();
+        validate_affine_terms(node, &expansion, "composed")?;
+        expansion
+    } else {
+        let id =
+            node_ids
+                .get(&node)
+                .copied()
+                .ok_or_else(|| CutFemError::InvalidElasticityInput {
+                    what: format!(
+                        "active node {node:?} has neither a constraint nor a terminal block"
+                    ),
+                })?;
+        vec![(id, 1.0)]
+    };
+    stack.remove(&node);
+    memo.insert(node, expansion);
+    Ok(())
+}
+
+fn validate_affine_terms<K: core::fmt::Debug>(
+    node: NodeKey,
+    terms: &[(K, f64)],
+    stage: &str,
+) -> Result<(), CutFemError> {
+    if terms.is_empty() {
+        return Err(CutFemError::InvalidElasticityInput {
+            what: format!("{stage} hanging transform for node {node:?} is empty"),
+        });
+    }
+    if let Some((key, weight)) = terms.iter().find(|(_, weight)| !weight.is_finite()) {
+        return Err(CutFemError::InvalidElasticityInput {
+            what: format!(
+                "{stage} hanging transform for node {node:?} has non-finite weight {weight} at {key:?}"
+            ),
+        });
+    }
+    let sum: f64 = terms.iter().map(|(_, weight)| weight).sum();
+    if sum.to_bits() != 1.0f64.to_bits() {
+        return Err(CutFemError::InvalidElasticityInput {
+            what: format!(
+                "{stage} hanging transform for node {node:?} has affine weight sum {sum}, expected exactly 1"
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn clamp_terminal_blocks(
+    node_ids: &TerminalIds,
+    expansions: Option<&NodeExpansions>,
+    selected: &BTreeSet<NodeKey>,
+) -> Result<Vec<bool>, CutFemError> {
+    let mut clamped = vec![false; 2 * node_ids.len()];
+    for node in selected {
+        if let Some(&id) = node_ids.get(node) {
+            clamped[2 * id] = true;
+            clamped[2 * id + 1] = true;
+        }
+    }
+    if let Some(expansions) = expansions {
+        for node in selected {
+            if node_ids.contains_key(node) {
+                continue;
+            }
+            let expansion =
+                expansions
+                    .get(node)
+                    .ok_or_else(|| CutFemError::InvalidElasticityInput {
+                        what: format!("selected clamp node {node:?} has no terminal expansion"),
+                    })?;
+            let unclamped: Vec<usize> = expansion
+                .iter()
+                .filter(|&&(id, _)| !clamped[2 * id])
+                .map(|&(id, _)| id)
+                .collect();
+            if !unclamped.is_empty() {
+                return Err(CutFemError::InvalidElasticityInput {
+                    what: format!(
+                        "clamp selects hanging node {node:?}, but terminal blocks {unclamped:?} are not all clamped"
+                    ),
+                });
+            }
+        }
+    }
+    Ok(clamped)
+}
+
+fn symmetrize_local(matrix: &mut [[f64; 8]; 8]) {
+    let mut remaining_rows = matrix.as_mut_slice();
+    let mut row = 0;
+    while let Some((upper_row, lower_rows)) = remaining_rows.split_first_mut() {
+        for (offset, lower_row) in lower_rows.iter_mut().enumerate() {
+            let column = row + offset + 1;
+            let value = f64::midpoint(upper_row[column], lower_row[row]);
+            upper_row[column] = value;
+            lower_row[row] = value;
+        }
+        remaining_rows = lower_rows;
+        row += 1;
     }
 }
 
@@ -790,6 +1249,100 @@ fn scatter_local(
             }
         }
     }
+}
+
+fn scatter_local_reduced(
+    coo: &mut Coo,
+    rhs: &mut [f64],
+    clamped: &[bool],
+    corners: &[NodeKey; 4],
+    expansions: &NodeExpansions,
+    local_k: &[[f64; 8]; 8],
+    local_f: &[f64; 8],
+) -> Result<(), CutFemError> {
+    let mut reduced_rhs = BTreeMap::<usize, f64>::new();
+    let mut reduced_matrix = BTreeMap::<(usize, usize), f64>::new();
+    for a in 0..8 {
+        let row_expansion = &expansions[&corners[a / 2]];
+        for &(row_id, row_weight) in row_expansion {
+            let row = 2 * row_id + a % 2;
+            if clamped[row] {
+                continue;
+            }
+            *reduced_rhs.entry(row).or_insert(0.0) += row_weight * local_f[a];
+            for b in 0..8 {
+                let value = local_k[a][b];
+                if value == 0.0 {
+                    continue;
+                }
+                for &(column_id, column_weight) in &expansions[&corners[b / 2]] {
+                    let column = 2 * column_id + b % 2;
+                    if !clamped[column] {
+                        *reduced_matrix.entry((row, column)).or_insert(0.0) +=
+                            value * (row_weight * column_weight);
+                    }
+                }
+            }
+        }
+    }
+    // Constraint collisions can make the transpose pair accumulate the same
+    // analytical terms in a different order. Canonicalize each reduced cell
+    // pair before COO insertion, just as `symmetrize_local` does before the
+    // legacy scatter. Cell traversal is shared by both orientations, so the
+    // final duplicate-accumulation sequences remain bit-identical.
+    let off_diagonal: BTreeSet<(usize, usize)> = reduced_matrix
+        .keys()
+        .copied()
+        .filter(|(row, column)| row != column)
+        .map(|(row, column)| (row.min(column), row.max(column)))
+        .collect();
+    for (row, column) in off_diagonal {
+        let Some(&upper) = reduced_matrix.get(&(row, column)) else {
+            return Err(CutFemError::InvalidElasticityInput {
+                what: format!(
+                    "reduced elasticity cell contribution is missing transpose entry ({row}, {column})"
+                ),
+            });
+        };
+        let Some(&lower) = reduced_matrix.get(&(column, row)) else {
+            return Err(CutFemError::InvalidElasticityInput {
+                what: format!(
+                    "reduced elasticity cell contribution is missing transpose entry ({column}, {row})"
+                ),
+            });
+        };
+        let value = f64::midpoint(upper, lower);
+        if !value.is_finite() {
+            return Err(CutFemError::InvalidElasticityInput {
+                what: format!(
+                    "reduced elasticity cell contribution is non-finite at ({row}, {column})"
+                ),
+            });
+        }
+        reduced_matrix.insert((row, column), value);
+        reduced_matrix.insert((column, row), value);
+    }
+    for (row, value) in reduced_rhs {
+        if !value.is_finite() {
+            return Err(CutFemError::InvalidElasticityInput {
+                what: format!("reduced elasticity load is non-finite at terminal DOF {row}"),
+            });
+        }
+        rhs[row] += value;
+    }
+    for ((row, column), value) in reduced_matrix {
+        if !value.is_finite() {
+            return Err(CutFemError::InvalidElasticityInput {
+                what: format!(
+                    "reduced elasticity cell contribution is non-finite at ({row}, {column})"
+                ),
+            });
+        }
+        if value != 0.0 {
+            coo.push(row, column, value);
+        }
+    }
+    Ok(())
 }
 
 fn strain_row(gradient: [f64; 2], component: usize) -> [f64; 3] {
@@ -831,6 +1384,80 @@ fn dot2(a: [f64; 2], b: [f64; 2]) -> f64 {
 
 fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hanging_transform_refuses_cycles() {
+        let nodes = BTreeSet::from([(0, 0), (1, 0), (2, 0)]);
+        let constraints =
+            BTreeMap::from([((0, 0), vec![((1, 0), 1.0)]), ((1, 0), vec![((0, 0), 1.0)])]);
+        assert!(matches!(
+            build_terminal_expansions(&nodes, &constraints),
+            Err(CutFemError::ConstraintCycle { .. })
+        ));
+    }
+
+    #[test]
+    fn hanging_transform_refuses_nonfinite_and_nonunit_weights() {
+        let nodes = BTreeSet::from([(0, 0), (1, 0), (2, 0)]);
+        for weights in [[f64::NAN, 0.5], [0.25, 0.5]] {
+            let constraints =
+                BTreeMap::from([((1, 0), vec![((0, 0), weights[0]), ((2, 0), weights[1])])]);
+            assert!(matches!(
+                build_terminal_expansions(&nodes, &constraints),
+                Err(CutFemError::InvalidElasticityInput { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn hanging_transform_refuses_empty_and_absent_children() {
+        let nodes = BTreeSet::from([(0, 0), (1, 0), (2, 0)]);
+        for constraints in [
+            BTreeMap::from([((1, 0), Vec::new())]),
+            BTreeMap::from([((1, 0), vec![((0, 0), 0.5), ((3, 0), 0.5)])]),
+        ] {
+            assert!(matches!(
+                build_terminal_expansions(&nodes, &constraints),
+                Err(CutFemError::InvalidElasticityInput { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn hanging_clamp_refuses_a_partially_clamped_terminal_trace() {
+        // A valid leaf partition cannot place a hanging midpoint on the
+        // exterior design-box edge, which is the public clamp predicate's
+        // current scope. Exercise the generic transform/clamp invariant here
+        // with the same synthetic corruption seam used for cycle coverage.
+        let nodes = BTreeSet::from([(0, 0), (1, 0), (2, 0)]);
+        let constraints = BTreeMap::from([((1, 0), vec![((0, 0), 0.5), ((2, 0), 0.5)])]);
+        let (node_ids, expansions) =
+            build_terminal_expansions(&nodes, &constraints).expect("valid midpoint transform");
+        let selected = BTreeSet::from([(0, 0), (1, 0)]);
+        let error = clamp_terminal_blocks(&node_ids, Some(&expansions), &selected)
+            .expect_err("one unclamped master must refuse");
+        assert!(
+            matches!(&error, CutFemError::InvalidElasticityInput { what } if what.contains("not all clamped")),
+            "unexpected refusal: {error}"
+        );
+
+        let all_selected = BTreeSet::from([(0, 0), (1, 0), (2, 0)]);
+        let all_clamped = clamp_terminal_blocks(&node_ids, Some(&expansions), &all_selected)
+            .expect("a wholly clamped midpoint trace is compatible");
+        assert!(all_clamped.iter().all(|value| *value));
+
+        let terminal_only = BTreeSet::from([(0, 0)]);
+        let one_clamped = clamp_terminal_blocks(&node_ids, Some(&expansions), &terminal_only)
+            .expect("clamping one terminal alone is compatible");
+        let selected_id = node_ids[&(0, 0)];
+        assert!(one_clamped[2 * selected_id] && one_clamped[2 * selected_id + 1]);
+        assert_eq!(one_clamped.iter().filter(|&&value| value).count(), 2);
+    }
 }
 
 #[cfg(feature = "adjoint-vjp")]

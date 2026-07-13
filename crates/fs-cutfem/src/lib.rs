@@ -92,18 +92,6 @@ pub enum CutFemError {
         /// Actionable description of the invalid field/value.
         what: String,
     },
-    /// The vector Q1 elasticity frontend currently requires one uniform
-    /// active level. Unlike the scalar space it does not yet eliminate
-    /// hanging-node constraints componentwise. Repair: use a uniform
-    /// background grid (or uniformly refine the active band) before
-    /// building the elasticity operator.
-    ElasticityGridNotUniform {
-        /// The first active cell whose level differs from the canonical
-        /// active level.
-        cell: CellKey,
-        /// The active level established by the first classified cell.
-        expected_level: u32,
-    },
     /// A vector-elasticity parameter or callback returned a value that
     /// cannot define a finite coercive discrete problem.
     InvalidElasticityInput {
@@ -154,15 +142,6 @@ impl core::fmt::Display for CutFemError {
             CutFemError::InvalidFemInput { what } => {
                 write!(f, "invalid scalar CutFEM input: {what}")
             }
-            CutFemError::ElasticityGridNotUniform {
-                cell,
-                expected_level,
-            } => write!(
-                f,
-                "vector CutFEM cell {cell:?} is not on the required uniform active \
-                 level {expected_level}; uniformly refine the active domain before \
-                 building elasticity"
-            ),
             CutFemError::InvalidElasticityInput { what } => {
                 write!(f, "invalid vector CutFEM elasticity input: {what}")
             }

@@ -13,5 +13,9 @@ layer = "L3"
 [dependencies]
 fs-cutfem = { path = "../fs-cutfem" }
 
+[dev-dependencies]
+fs-ivl = { path = "../fs-ivl" }
+fs-material = { path = "../fs-material" }
+
 [lints]
 workspace = true

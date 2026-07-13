@@ -1,0 +1,521 @@
+//! `frankensim-m4rb` vector-compliance DWR acceptance fixtures.
+
+use fs_cutfem::{Circle, CutElasticity, CutFemError, CutSdf, Quadtree};
+use fs_dwr::{ElasticityDwrEstimate, estimate_elasticity_compliance};
+use fs_ivl::Interval;
+use fs_material::IsotropicElastic;
+use std::collections::BTreeMap;
+use std::f64::consts::PI;
+
+fn material() -> IsotropicElastic {
+    IsotropicElastic::new(1.0, 0.3, 10.0).expect("fixture material")
+}
+
+fn problem<'a>(
+    grid: &'a Quadtree,
+    sdf: &'a dyn CutSdf,
+    material: &'a IsotropicElastic,
+    clamp: Option<&'a dyn Fn(f64, f64) -> bool>,
+    traction: Option<&'a dyn Fn(f64, f64) -> [f64; 2]>,
+    traction_free_interface: bool,
+    ghost_gamma: f64,
+) -> CutElasticity<'a> {
+    CutElasticity {
+        grid,
+        sdf,
+        material,
+        nitsche_beta: 100.0,
+        ghost_gamma,
+        quad_depth: 3,
+        clamp,
+        boundary_traction: traction,
+        traction_free_interface,
+        solver_tol: 1e-12,
+        solver_max_iters: 60_000,
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AlwaysInside;
+
+impl CutSdf for AlwaysInside {
+    fn value(&self, _point: [f64; 2]) -> f64 {
+        -1.0
+    }
+
+    fn gradient(&self, _point: [f64; 2]) -> [f64; 2] {
+        [1.0, 0.0]
+    }
+
+    fn enclose(&self, _lo: [f64; 2], _hi: [f64; 2]) -> Interval {
+        Interval::point(-1.0)
+    }
+}
+
+/// Material outside an interior circular hole is negative-inside.
+#[derive(Debug, Clone, Copy)]
+struct CircularHole {
+    center: [f64; 2],
+    radius: f64,
+}
+
+impl CutSdf for CircularHole {
+    fn value(&self, point: [f64; 2]) -> f64 {
+        let dx = point[0] - self.center[0];
+        let dy = point[1] - self.center[1];
+        self.radius - dx.hypot(dy)
+    }
+
+    fn gradient(&self, point: [f64; 2]) -> [f64; 2] {
+        let dx = point[0] - self.center[0];
+        let dy = point[1] - self.center[1];
+        let norm = dx.hypot(dy);
+        if norm < 1e-300 {
+            [1.0, 0.0]
+        } else {
+            [-dx / norm, -dy / norm]
+        }
+    }
+
+    fn enclose(&self, lo: [f64; 2], hi: [f64; 2]) -> Interval {
+        let dx = (Interval::new(lo[0], hi[0]) - Interval::point(self.center[0])).abs();
+        let dy = (Interval::new(lo[1], hi[1]) - Interval::point(self.center[1])).abs();
+        Interval::point(self.radius) - (dx * dx + dy * dy).sqrt()
+    }
+}
+
+fn assert_reconstruction(estimate: &ElasticityDwrEstimate) {
+    let cell_sum: f64 = estimate.indicators.values().sum();
+    let cell_abs: f64 = estimate.indicators.values().map(|value| value.abs()).sum();
+    let face_sum: f64 = estimate.face_indicators.values().sum();
+    let scale = estimate.eta_signed.abs().max(1.0);
+    assert!(
+        (cell_sum - estimate.eta_signed).abs() <= 8.0 * f64::EPSILON * scale,
+        "cell allocation reconstructs eta: cells={cell_sum:.17e}, eta={:.17e}",
+        estimate.eta_signed
+    );
+    assert!(
+        (estimate.terms.total() - estimate.eta_signed).abs() <= 64.0 * f64::EPSILON * scale,
+        "term decomposition reconstructs eta: terms={:.17e}, eta={:.17e}",
+        estimate.terms.total(),
+        estimate.eta_signed
+    );
+    assert_eq!(
+        cell_abs.to_bits(),
+        estimate.eta_abs.to_bits(),
+        "eta_abs is exactly the deterministic cell marking mass"
+    );
+    assert!(
+        (face_sum - estimate.terms.ghost).abs() <= 16.0 * f64::EPSILON * face_sum.abs().max(1.0),
+        "face indicators reconstruct the coarse consistent-energy correction"
+    );
+    assert_eq!(estimate.ghost_method.as_str(), "coarse-consistent-energy");
+    let cell_term_sums = estimate.cell_terms.values().fold(
+        fs_dwr::ElasticityResidualTerms::default(),
+        |mut sums, terms| {
+            sums.bulk += terms.bulk;
+            sums.nitsche += terms.nitsche;
+            sums.outer_traction += terms.outer_traction;
+            sums.ghost += terms.ghost;
+            sums
+        },
+    );
+    for (name, cell_sum, global) in [
+        ("bulk", cell_term_sums.bulk, estimate.terms.bulk),
+        ("Nitsche", cell_term_sums.nitsche, estimate.terms.nitsche),
+        (
+            "outer traction",
+            cell_term_sums.outer_traction,
+            estimate.terms.outer_traction,
+        ),
+        ("ghost", cell_term_sums.ghost, estimate.terms.ghost),
+    ] {
+        let term_scale = cell_sum.abs().max(global.abs()).max(1.0);
+        assert!(
+            (cell_sum - global).abs() <= 64.0 * f64::EPSILON * term_scale,
+            "per-cell {name} decomposition must reconstruct its global term: cells={cell_sum:.17e}, global={global:.17e}"
+        );
+    }
+    for (cell, terms) in &estimate.cell_terms {
+        let indicator = estimate.indicators[cell];
+        let term_scale = indicator.abs().max(terms.total().abs()).max(1.0);
+        assert!(
+            (terms.total() - indicator).abs() <= 16.0 * f64::EPSILON * term_scale,
+            "per-cell terms must reconstruct aggregate indicator at {cell:?}"
+        );
+    }
+}
+
+fn assert_coarse_ghost_energy_matches_operator(
+    problem: &CutElasticity<'_>,
+    body: &dyn Fn(f64, f64) -> [f64; 2],
+    embedded_data: &dyn Fn(f64, f64) -> [f64; 2],
+    estimate: &ElasticityDwrEstimate,
+) {
+    let solution = problem
+        .solve(body, embedded_data)
+        .expect("coarse ghost-energy witness solve");
+    let stabilized = problem
+        .assemble(body, embedded_data)
+        .expect("stabilized coarse operator");
+    let unstabilized_problem = CutElasticity {
+        ghost_gamma: 0.0,
+        ..*problem
+    };
+    let unstabilized = unstabilized_problem
+        .assemble(body, embedded_data)
+        .expect("unstabilized coarse operator");
+    let stabilized_action = stabilized.apply_vec(solution.coefficients());
+    let unstabilized_action = unstabilized.apply_vec(solution.coefficients());
+    let operator_energy: f64 = solution
+        .coefficients()
+        .iter()
+        .zip(stabilized_action.iter().zip(&unstabilized_action))
+        .map(|(coefficient, (with_ghost, without_ghost))| {
+            coefficient * (with_ghost - without_ghost)
+        })
+        .sum();
+    let scale = operator_energy
+        .abs()
+        .max(estimate.terms.ghost.abs())
+        .max(1.0);
+    assert!(
+        (operator_energy - estimate.terms.ghost).abs() <= 256.0 * f64::EPSILON * scale,
+        "coarse face decomposition must match x^T(K_gamma-K_0)x: faces={:.17e}, operator={operator_energy:.17e}",
+        estimate.terms.ghost
+    );
+}
+
+fn assert_bitwise_equal(a: &ElasticityDwrEstimate, b: &ElasticityDwrEstimate) {
+    for (left, right) in [
+        (a.eta_signed, b.eta_signed),
+        (a.eta_abs, b.eta_abs),
+        (a.terms.bulk, b.terms.bulk),
+        (a.terms.nitsche, b.terms.nitsche),
+        (a.terms.outer_traction, b.terms.outer_traction),
+        (a.terms.ghost, b.terms.ghost),
+        (a.j_primal, b.j_primal),
+        (a.j_enriched, b.j_enriched),
+    ] {
+        assert_eq!(left.to_bits(), right.to_bits(), "bitwise replay");
+    }
+    assert_eq!(a.dofs, b.dofs);
+    assert_eq!(a.enriched_dofs, b.enriched_dofs);
+    assert_eq!(a.ghost_method, b.ghost_method);
+    assert_map_bits_equal(&a.indicators, &b.indicators);
+    assert_cell_term_bits_equal(&a.cell_terms, &b.cell_terms);
+    assert_map_bits_equal(&a.face_indicators, &b.face_indicators);
+}
+
+fn assert_cell_term_bits_equal(
+    a: &BTreeMap<fs_cutfem::CellKey, fs_dwr::ElasticityResidualTerms>,
+    b: &BTreeMap<fs_cutfem::CellKey, fs_dwr::ElasticityResidualTerms>,
+) {
+    assert_eq!(a.len(), b.len());
+    for ((key_a, terms_a), (key_b, terms_b)) in a.iter().zip(b) {
+        assert_eq!(key_a, key_b);
+        for (left, right) in [
+            (terms_a.bulk, terms_b.bulk),
+            (terms_a.nitsche, terms_b.nitsche),
+            (terms_a.outer_traction, terms_b.outer_traction),
+            (terms_a.ghost, terms_b.ghost),
+        ] {
+            assert_eq!(left.to_bits(), right.to_bits(), "cell term at {key_a:?}");
+        }
+    }
+}
+
+fn assert_map_bits_equal<K: Ord + core::fmt::Debug>(a: &BTreeMap<K, f64>, b: &BTreeMap<K, f64>) {
+    assert_eq!(a.len(), b.len());
+    for ((key_a, value_a), (key_b, value_b)) in a.iter().zip(b) {
+        assert_eq!(key_a, key_b);
+        assert_eq!(
+            value_a.to_bits(),
+            value_b.to_bits(),
+            "map value at {key_a:?}"
+        );
+    }
+}
+
+fn assert_effectivity(case: &str, level: u32, estimate: &ElasticityDwrEstimate, reference: f64) {
+    let true_error = reference - estimate.j_primal;
+    let scale = reference.abs().max(estimate.j_primal.abs()).max(1.0);
+    assert!(
+        true_error.is_finite() && true_error.abs() > 1e-10 * scale,
+        "{case} level {level} reference error must be finite and non-degenerate: {true_error:.6e}"
+    );
+    let effectivity = estimate.eta_signed / true_error;
+    let hierarchy_increment = estimate.j_enriched - estimate.j_primal;
+    assert!(
+        hierarchy_increment.is_finite() && hierarchy_increment.abs() > 1e-10 * scale,
+        "{case} level {level} hierarchy increment must be finite and non-degenerate: {hierarchy_increment:.6e}"
+    );
+    let residual_to_increment = estimate.eta_signed / hierarchy_increment;
+    println!(
+        "{{\"suite\":\"fs-dwr/elasticity\",\"case\":\"{case}\",\"level\":{level},\"j_h\":{:.10e},\"j_enriched\":{:.10e},\"j_ref\":{reference:.10e},\"true_error\":{true_error:.10e},\"hierarchy_increment\":{hierarchy_increment:.10e},\"eta_signed\":{:.10e},\"eta_abs\":{:.10e},\"bulk\":{:.10e},\"nitsche\":{:.10e},\"outer_traction\":{:.10e},\"ghost\":{:.10e},\"effectivity\":{effectivity:.8},\"residual_to_increment\":{residual_to_increment:.8},\"ghost_method\":\"{}\"}}",
+        estimate.j_primal,
+        estimate.j_enriched,
+        estimate.eta_signed,
+        estimate.eta_abs,
+        estimate.terms.bulk,
+        estimate.terms.nitsche,
+        estimate.terms.outer_traction,
+        estimate.terms.ghost,
+        estimate.ghost_method.as_str(),
+    );
+    assert!(
+        (0.5..=2.0).contains(&effectivity),
+        "{case} level {level} effectivity {effectivity:.6} outside [0.5, 2.0]"
+    );
+}
+
+#[test]
+fn elasticity_estimator_refuses_lattice_cap_before_solving() {
+    let grid = Quadtree::with_room(0, 16);
+    let sdf = AlwaysInside;
+    let material = material();
+    let zero = |_: f64, _: f64| [0.0, 0.0];
+    let err = estimate_elasticity_compliance(
+        &problem(&grid, &sdf, &material, None, None, true, 0.0),
+        &zero,
+        &zero,
+    )
+    .expect_err("level-16 grid cannot be enriched safely");
+    assert!(matches!(err, CutFemError::InvalidElasticityInput { .. }));
+}
+
+#[test]
+#[allow(
+    clippy::float_cmp,
+    clippy::too_many_lines,
+    reason = "exact dyadic box-boundary fixtures and one end-to-end acceptance narrative"
+)]
+fn elasticity_compliance_effectivity_family_and_determinism() {
+    let material = material();
+    let (lambda, mu) = material.lame();
+    let zero = |_: f64, _: f64| [0.0, 0.0];
+    let clamp_left = |x: f64, _: f64| x == 0.0;
+
+    // Fixture 1: full box, exact quadratic displacement, body force, and
+    // exact outer traction. It isolates the bulk and dead-traction signs.
+    let full = AlwaysInside;
+    let displacement_scale = 0.01;
+    let full_body = |_: f64, _: f64| [-2.0 * displacement_scale * (lambda + 2.0 * mu), 0.0];
+    let full_traction = |x: f64, y: f64| {
+        if x == 1.0 {
+            [2.0 * displacement_scale * (lambda + 2.0 * mu), 0.0]
+        } else if y == 0.0 {
+            [0.0, -2.0 * displacement_scale * lambda * x]
+        } else if y == 1.0 {
+            [0.0, 2.0 * displacement_scale * lambda * x]
+        } else {
+            [0.0, 0.0]
+        }
+    };
+    let full_reference = {
+        let grid = Quadtree::uniform(6);
+        problem(
+            &grid,
+            &full,
+            &material,
+            Some(&clamp_left),
+            Some(&full_traction),
+            true,
+            0.0,
+        )
+        .solve(&full_body, &zero)
+        .expect("full-box reference")
+        .compliance()
+    };
+    for level in [3u32, 4] {
+        let grid = Quadtree::uniform(level);
+        let estimate = estimate_elasticity_compliance(
+            &problem(
+                &grid,
+                &full,
+                &material,
+                Some(&clamp_left),
+                Some(&full_traction),
+                true,
+                0.0,
+            ),
+            &full_body,
+            &zero,
+        )
+        .expect("full-box estimate");
+        assert_reconstruction(&estimate);
+        assert!(estimate.terms.bulk.abs() > 0.0);
+        assert!(estimate.terms.outer_traction.abs() > 0.0);
+        assert_eq!(estimate.terms.nitsche.to_bits(), 0.0f64.to_bits());
+        assert_eq!(estimate.terms.ghost.to_bits(), 0.0f64.to_bits());
+        assert!(estimate.face_indicators.is_empty());
+        assert_effectivity("full-box", level, &estimate, full_reference);
+    }
+
+    // Fixture 2: an all-embedded disk with a quadratic exact displacement
+    // zero on the circle. It exercises Nitsche and coarse ghost terms.
+    let disk = Circle {
+        center: [0.47, 0.53],
+        radius: 0.31,
+    };
+    let disk_body = |_: f64, _: f64| [-2.0 * displacement_scale * (lambda + 3.0 * mu), 0.0];
+    let disk_reference = {
+        let grid = Quadtree::uniform(6);
+        problem(&grid, &disk, &material, None, None, false, 0.5)
+            .solve(&disk_body, &zero)
+            .expect("disk reference")
+            .compliance()
+    };
+    let mut disk_level_three = None;
+    for level in [3u32, 4] {
+        let grid = Quadtree::uniform(level);
+        let cut = problem(&grid, &disk, &material, None, None, false, 0.5);
+        let estimate =
+            estimate_elasticity_compliance(&cut, &disk_body, &zero).expect("disk estimate");
+        assert_reconstruction(&estimate);
+        assert!(estimate.terms.bulk.abs() > 0.0);
+        assert!(estimate.terms.nitsche.abs() > 0.0);
+        assert!(estimate.terms.ghost.abs() > 0.0);
+        assert_eq!(estimate.terms.outer_traction.to_bits(), 0.0f64.to_bits());
+        assert!(!estimate.face_indicators.is_empty());
+        if level == 3 {
+            assert_coarse_ghost_energy_matches_operator(&cut, &disk_body, &zero, &estimate);
+        }
+        assert_effectivity("embedded-disk", level, &estimate, disk_reference);
+        if level == 3 {
+            disk_level_three = Some((grid, estimate));
+        }
+    }
+    let (replay_grid, first) = disk_level_three.expect("level-three disk estimate");
+    let replay = estimate_elasticity_compliance(
+        &problem(&replay_grid, &disk, &material, None, None, false, 0.5),
+        &disk_body,
+        &zero,
+    )
+    .expect("deterministic replay");
+    assert_bitwise_equal(&first, &replay);
+
+    // Disabling ghost stabilization is exact in both term and evidence shape.
+    let zero_ghost_grid = Quadtree::uniform(3);
+    let zero_ghost = estimate_elasticity_compliance(
+        &problem(&zero_ghost_grid, &disk, &material, None, None, false, 0.0),
+        &disk_body,
+        &zero,
+    )
+    .expect("ghost-free disk estimate");
+    assert_eq!(zero_ghost.terms.ghost.to_bits(), 0.0f64.to_bits());
+    assert!(zero_ghost.face_indicators.is_empty());
+    assert_reconstruction(&zero_ghost);
+
+    // Fixture 3: off-grid plate with a traction-free circular hole, left
+    // clamp, and a smooth right-edge dead traction. It carries the literal
+    // stress/cut-boundary localization claim.
+    let hole = CircularHole {
+        center: [0.47, 0.53],
+        radius: 0.24,
+    };
+    let hole_body = |_: f64, _: f64| [0.0, 0.0];
+    let right_traction = |x: f64, y: f64| {
+        if x == 1.0 {
+            [0.05 * (PI * y).sin().powi(2), 0.0]
+        } else {
+            [0.0, 0.0]
+        }
+    };
+    let hole_reference = {
+        let grid = Quadtree::uniform(6);
+        problem(
+            &grid,
+            &hole,
+            &material,
+            Some(&clamp_left),
+            Some(&right_traction),
+            true,
+            0.5,
+        )
+        .solve(&hole_body, &zero)
+        .expect("plate-with-hole reference")
+        .compliance()
+    };
+    let mut localization_estimate = None;
+    for level in [3u32, 4] {
+        let grid = Quadtree::uniform(level);
+        let estimate = estimate_elasticity_compliance(
+            &problem(
+                &grid,
+                &hole,
+                &material,
+                Some(&clamp_left),
+                Some(&right_traction),
+                true,
+                0.5,
+            ),
+            &hole_body,
+            &zero,
+        )
+        .expect("plate-with-hole estimate");
+        assert_reconstruction(&estimate);
+        assert!(estimate.terms.bulk.abs() > 0.0);
+        assert_eq!(estimate.terms.nitsche.to_bits(), 0.0f64.to_bits());
+        assert!(estimate.terms.outer_traction.abs() > 0.0);
+        assert!(estimate.terms.ghost.abs() > 0.0);
+        assert_effectivity("plate-with-hole", level, &estimate, hole_reference);
+        if level == 4 {
+            localization_estimate = Some((grid, estimate));
+        }
+    }
+    let (localization_grid, localization) = localization_estimate.expect("level-four hole");
+    assert_top_decile_near_hole(&localization_grid, &hole, &localization);
+}
+
+fn assert_top_decile_near_hole(
+    grid: &Quadtree,
+    hole: &CircularHole,
+    estimate: &ElasticityDwrEstimate,
+) {
+    let mut ranked: Vec<(fs_cutfem::CellKey, f64)> = estimate
+        .cell_terms
+        .iter()
+        .map(|(&cell, terms)| {
+            // The dead-load edge residual legitimately localizes where the load
+            // is applied.  The separate stress/cut-boundary claim therefore
+            // uses the non-traction part of the exact per-cell decomposition;
+            // the aggregate marking indicator still retains every term.
+            let hole_sensitive = (terms.bulk + terms.nitsche) + terms.ghost;
+            (cell, hole_sensitive.abs())
+        })
+        .collect();
+    ranked.sort_by(|left, right| right.1.total_cmp(&left.1).then(left.0.cmp(&right.0)));
+    let count = ranked.len().div_ceil(10).max(1);
+    let top = &ranked[..count];
+    let k = 3.0;
+    let localization_mass: f64 = ranked.iter().map(|(_, value)| value).sum();
+    assert!(
+        localization_mass.is_finite() && localization_mass > 0.0,
+        "hole-sensitive localization mass must be finite and nonzero"
+    );
+    let mut top_mass = 0.0;
+    for &(cell, indicator) in top {
+        let (lo, hi) = grid.rect(cell);
+        let center = [f64::midpoint(lo[0], hi[0]), f64::midpoint(lo[1], hi[1])];
+        let h = grid.cell_h(cell);
+        let boundary_distance =
+            ((center[0] - hole.center[0]).hypot(center[1] - hole.center[1]) - hole.radius).abs();
+        let cell_reach = f64::sqrt(2.0) * 0.5 * h;
+        assert!(
+            boundary_distance <= k * h + cell_reach,
+            "top-decile cell {cell:?} lies {:.3} cell widths beyond the k={k} hole band",
+            (boundary_distance - cell_reach).max(0.0) / h
+        );
+        top_mass += indicator;
+    }
+    let mass_fraction = top_mass / localization_mass;
+    assert!(
+        mass_fraction.is_finite() && mass_fraction >= 0.35,
+        "top indicator decile must carry visible marking mass: {mass_fraction:.3}"
+    );
+    println!(
+        "{{\"suite\":\"fs-dwr/elasticity\",\"case\":\"plate-with-hole-localization\",\"indicator_terms\":\"bulk+nitsche+ghost\",\"top_decile_cells\":{},\"k_cells\":{k},\"top_mass_fraction\":{mass_fraction:.8}}}",
+        top.len()
+    );
+}

@@ -210,7 +210,7 @@ fn dwr_003_goal_oriented_beats_uniform() {
         let grid = Quadtree::uniform(7);
         let space = fs_cutfem::Space::build(&grid, &disk, FemParams::default()).expect("ref");
         let sol = space.solve(&src, &zero).expect("ref solves");
-        fs_dwr::goal_value(&space, &grid, &disk, &sol.nodal, &goal, 3)
+        fs_dwr::goal_value(&space, &sol.nodal, &goal).expect("reference goal")
     };
     // Uniform ladder.
     let mut uni_rows = String::new();

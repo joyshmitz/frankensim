@@ -15,17 +15,40 @@ that knows the difference.
 
 - `GoalContext` / `goal_value`: volumetric goal functionals
   `J(u) = ∫ jw·u` (region averages, windowed integrals) evaluated
-  with fs-cutfem's certified cut quadrature.
-- `estimate` → `DwrEstimate`: primal solve on the given quadtree,
-  ENRICHED adjoint solved on `Quadtree::refined_once` (the documented
-  higher-resolution enrichment; patch recovery is the recorded
+  over the built `Space` using its retained active topology and certified
+  cut quadrature. Evaluation returns `Result` and refuses missing or
+  non-finite nodal/goal evidence rather than substituting zero.
+- `estimate` → `DwrEstimate`: primal and adjoint solves on the given
+  quadtree, an ENRICHED adjoint solved on `Quadtree::refined_once` (the
+  documented higher-resolution enrichment; patch recovery is the recorded
   alternative), and SIGNED per-cell indicators from the full discrete
   residual — interior `∫ f·w − ∇u_h·∇w` plus the Nitsche interface
   terms in fs-cutfem's exact sign convention. `eta_signed`
   approximates `J(u) − J(u_h)`; `eta_abs` is the marking mass. The
   coarse ghost-penalty residual contribution is a deliberately
   omitted O(γh)-scaled correction absorbed into the measured
-  effectivity band.
+  effectivity band. The two-level weight is evaluated pointwise as
+  `z_{h/2} - z_h`; every requested corner in either active space must
+  exist and be finite, so a non-nested topology never becomes a plausible
+  zero coefficient.
+- `estimate_elasticity_compliance` → `ElasticityDwrEstimate`: vector
+  CutFEM compliance estimator with `J_h = b_h^T u_h`. Symmetry makes the
+  compliance adjoint equal to the primal, so the enriched weight is the
+  pointwise, fail-closed difference `w = u_{h/2} - u_h`; there is no
+  second adjoint solve and no missing-node zero fallback. Signed bulk,
+  symmetric-Nitsche, outer-traction, and stabilization terms are exposed
+  separately. Cell indicators reconstruct `eta_signed`; `eta_abs` is only
+  Dörfler marking mass; canonical coarse-face indicators reconstruct the
+  reported stabilization correction. `cell_terms` exposes the same signed
+  bulk, Nitsche, outer-traction, and ghost decomposition per coarse cell while
+  `indicators` remains their complete marking sum.
+- `ElasticityGhostMethod::CoarseConsistentEnergy`: the elasticity ghost
+  term is the coarse consistent-limit correction `+g_h(u_h,u_h)` on the
+  actual coarse ghost-face set, split equally between its two cells. It is
+  `-g_h(u_h,w)` in the smooth-adjoint limit, where the exact adjoint has no
+  normal-derivative jump and `jump(w) = -jump(u_h)`. This avoids inventing
+  enriched traces on inactive halves of a coarse ghost face. It is measured
+  estimator evidence, not a certified bound.
 - `dorfler`: fixed-energy marking, DETERMINISTIC — |indicator|
   descending, cell key ascending on ties, smallest prefix reaching
   θ·total. Bitwise-reproducible (P2).
@@ -70,13 +93,39 @@ that knows the difference.
 7. h-vs-p: >90% correct routing on a kink+smooth composite (dwr-006).
 8. Determinism: BTree traversal, deterministic solves and marking —
    bit-identical runs.
+9. Vector residual signs match fs-cutfem assembly: bulk
+   `f·w - sigma(u_h):epsilon(w)`; Nitsche
+   `t(u_h)·w + t(w)·(u_h-g) - (beta*mu/h)(u_h-g)·w`; outer
+   traction `t_bar·w`; coarse consistent-limit stabilization
+   `+g_h(u_h,u_h)`.
+   The signed cell allocation reconstructs the term sum to roundoff.
+10. Vector compliance effectivity uses an independent reference solve
+    finer than the estimator's enriched solve. The signed ratio
+    `eta_signed / (J_ref - J_h)` must be finite, non-degenerate, and in
+    the fixture's measured acceptance band; `eta_abs` is never substituted
+    for the signed numerator.
+11. Scalar enrichment is fail-closed with bidirectional direct coverage: every
+    enriched active cell has an active direct coarse parent, every coarse
+    active cell has at least one enriched active child, and every field or
+    coarse/enriched adjoint corner needed by a retained quadrature rule exists and is
+    finite. One active child is sufficient; four-child coverage is not
+    invented as a stronger topology precondition.
 
 ## Error model
 
 fs-cutfem's `CutFemError` teaching errors propagate unchanged
-(build/solve refusals). Marking on empty/zero indicators returns
-empty. `synthesize_metric`/`h_vs_p` panic (structured asserts) on
-non-uniform grids — the documented v1 surface, not a recoverable
+(build/solve refusals). The scalar estimator and `goal_value` use
+`InvalidFemInput` to refuse the level-16 enrichment cap, active-space
+parent/child mismatch, missing or non-finite nodal/adjoint-corner data,
+non-finite goal/residual terms or totals, and retained topology/rule mismatch.
+Non-finite primal source/boundary callbacks may first surface through the
+propagated scalar build/solve teaching error because they enter assembly before
+the residual sweep.
+The vector estimator makes the analogous refusals through its documented
+elasticity-input path and additionally refuses duplicate canonical ghost
+faces or failed signed allocation reconstruction. Marking on empty/zero
+indicators returns empty. `synthesize_metric`/`h_vs_p` panic (structured
+asserts) on non-uniform grids — the documented v1 surface, not a recoverable
 state.
 
 ## Determinism class
@@ -110,6 +159,24 @@ dwr-004 metric synthesis (complexity/alignment/graded-beats-iso);
 dwr-005 weighted Haar thresholding vs matched-compression unweighted;
 dwr-006 h-vs-p routing. Unit tests: Haar lossless/mean roundtrips.
 
+`tests/elasticity.rs`: independent-reference vector compliance
+effectivity rows across bulk/traction, embedded-Nitsche/ghost, and
+plate-with-hole fixtures; exact zero/empty stabilization evidence when
+`ghost_gamma = 0`; signed term/cell/face reconstruction; deterministic
+replay; and falsifiable top-decile localization of the non-traction residual
+at the hole boundary. That residual is bulk plus ghost in the traction-free
+hole fixture; Nitsche remains in the generic decomposition but is zero there.
+The separately reconstructed dead-load traction term is intentionally excluded
+from that spatial claim because it correctly localizes on the loaded design-box
+edge; it remains in the actual marking indicator and effectivity estimate.
+Scalar estimator unit regressions cover a missing active nodal corner, a
+missing enriched-field corner, non-finite nodal/goal evidence,
+fine-to-coarse and coarse-to-fine
+active-space mismatch, valid one-child coverage, and level-16 refusal before
+`refined_once` can panic. A level-4 disk regression proves that legitimate
+absent mapped fine nodes succeed through the coarse-adjoint two-level weight;
+a level-15 boundary regression retains exactly one legal enrichment level.
+
 ## No-claim boundaries
 
 - p-enrichment EXECUTION (local high-order spaces await dcng/FEEC-p;
@@ -120,11 +187,25 @@ dwr-006 h-vs-p routing. Unit tests: Haar lossless/mean roundtrips.
   the metric's value).
 - Patch-recovery adjoint enrichment (higher-resolution solve ships;
   recovery is the cheaper documented alternative).
-- The ghost-penalty residual term (O(γh) correction absorbed into
-  the measured effectivity band).
+- The scalar estimator's coarse ghost-penalty residual term (O(γh)
+  correction absorbed into its measured effectivity band). The vector
+  estimator instead reports the explicitly named coarse consistent-energy
+  correction; it is the smooth-adjoint limit of the coarse ghost residual,
+  not an exact evaluation against the non-nested enriched field.
 - fs-opdsl-generated DWR residual terms (the DSL bead's one-source
   path; the hand path here passes the gates the generated one must).
 - Error-Ledger/fs-plan budget reallocation wiring (AdaptStep rows are
   the ledger-ready shape; the composed-budget loop is Bet 12's bead).
 - Graded-tree metric recovery and time-dependent (reverse-sweep)
   DWR.
+- A certified upper/lower error bound. Every vector `eta` is Estimated;
+  effectivity is fixture evidence, not a certificate.
+- Physical-work semantics for nonzero embedded displacement data. In that
+  case `b^T u` is only the algebraic assembled-load compliance.
+- A graded vector-elasticity re-solve or repeated vector adaptive loop.
+  The current vector CutFEM frontend refuses graded active trees until
+  componentwise hanging constraints land; integration may drive the
+  deterministic split policy but must not claim the post-split solve.
+- Exact treatment of the non-nested active-space variational crime. The
+  coarse consistent-energy ghost method is logged on every estimate and its
+  adequacy is measured by independent-reference effectivity fixtures.

@@ -339,6 +339,25 @@ impl<'g> Space<'g> {
         &self.agg_log
     }
 
+    /// Background quadtree whose topology and node lattice define this
+    /// assembled space.
+    #[must_use]
+    pub fn grid(&self) -> &Quadtree {
+        self.grid
+    }
+
+    /// Active cells in canonical key order.
+    #[must_use]
+    pub fn active_cells(&self) -> &BTreeSet<CellKey> {
+        &self.active
+    }
+
+    /// Certified quadrature retained for active cut cells.
+    #[must_use]
+    pub fn cut_rules(&self) -> &BTreeMap<CellKey, CutRules> {
+        &self.rules
+    }
+
     /// A cell's classification (`None` for unknown keys).
     #[must_use]
     pub fn class_of(&self, c: CellKey) -> Option<CellClass> {

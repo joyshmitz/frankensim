@@ -37,12 +37,20 @@ same certified cuts; its constitutive parameters come from
   u = g (Nitsche on Γ, strong on the outer box when enabled);
   `solve` runs Jacobi-preconditioned fs-solver CG; `l2_h1_error`
   measures against an exact solution with one-deeper cut quadrature.
+  Read-only `grid`, `active_cells`, and `cut_rules` accessors let
+  goal/error estimators consume the exact topology and certified rules
+  retained by the built space instead of reconstructing a second view.
 - `FemParams`: `nitsche_beta` (applied as β/h), `ghost_gamma` (0
   disables), `quad_depth`, `agg: Option<AggPolicy>`, `strong_outer`,
   solver knobs.
-- `CutElasticity`: vector Q1 small-strain elasticity on a uniform active
-  quadtree level. `IsotropicElastic` supplies the plane-strain Lamé
-  parameters. Symmetric Nitsche imposes displacement data on the SDF
+- `CutElasticity`: vector Q1 small-strain elasticity on uniform or 2:1
+  graded active quadtrees. Hanging nodes are reduced componentwise through
+  deterministic terminal expansions: bulk, Nitsche, boundary-traction, and
+  equal-level ghost terms use `T^T K T` / `T^T f`, and solution
+  reconstruction restores every active mesh node. A literal no-constraint
+  path retains the original uniform-grid numbering, COO/RHS insertion order,
+  clamp mask, and topology bits. `IsotropicElastic` supplies the plane-strain
+  Lamé parameters. Symmetric Nitsche imposes displacement data on the SDF
   interface with the cut-independent penalty
   `nitsche_beta * mu / h`; the componentwise ghost penalty scales as
   `ghost_gamma * mu * h` and controls degenerating cut fractions. The
@@ -56,11 +64,19 @@ same certified cuts; its constitutive parameters come from
   certified wholly inside or wholly outside each boundary cell; an
   SDF-cut loaded edge refuses until certified 1-D clipping exists.
 - `CutElasticityOperator`: the assembled symmetric CSR operator, load,
-  public deterministic node/block map, clamp mask, dropped-cut count,
-  and `fs_solver::LinearOp` implementation. Its `apply_vec` /
-  `apply_transpose_vec` conveniences expose the exact-symmetric seam.
-  `CutElasticitySolution` carries coefficients, nodal values, active
-  cells, dropped-cut count, CG iterations, and final relative residual.
+  public deterministic terminal-node/block map, clamp mask, canonical active-cell /
+  cut-rule / ghost-face topology, dropped-cut count, exact algebraic
+  compliance `b^T x`, and `fs_solver::LinearOp` implementation. Its
+  `apply_vec` / `apply_transpose_vec` conveniences expose the
+  exact-symmetric seam. `CutElasticitySolution` carries coefficients,
+  nodal values, active cells, the retained cut rules and canonical ghost
+  faces, algebraic compliance, dropped-cut count, CG iterations, and final
+  relative residual. On a graded tree, `node_ids()` contains only algebraic
+  terminal blocks while `nodal_values()` and solved fields reconstruct all
+  active hanging nodes. A requested hanging-node clamp refuses unless every
+  terminal in its trace is clamped; clamping a terminal alone is valid. Its
+  Q1 value/gradient evaluator refuses inactive cells, absent corners, and
+  non-finite state rather than substituting zero.
 - With `adjoint-vjp`, `register_elasticity_apply_vjp` registers the
   exact matrix under a BLAKE3 content-addressed key beneath the stable
   `fs-cutfem.elasticity-apply.v1` prefix, and returns that key for the
@@ -113,9 +129,10 @@ same certified cuts; its constitutive parameters come from
     arbitrary cell cuts, so the reused rule represents both interface
     segment and normal exactly.
 11. VECTOR MMS ORDER (cte-002, G1): a manufactured displacement on a
-    curved SDF domain gates both successive Q1 refinement slopes within
-    0.2 of the theoretical L2 = 2 and H1 = 1 orders, with monotone error
-    decrease.
+    curved SDF domain gates the fixed three-level log-log Q1 convergence
+    fit within 0.2 of the theoretical L2 = 2 and H1 = 1 orders, with
+    strict monotone error decrease and both cut-position-sensitive
+    adjacent slopes retained in the evidence row.
 12. CUT-INDEPENDENT COERCIVITY (cte-003): the Nitsche penalty never
     scales with cut fraction. The vector Q1 acceptance family uses the
     conservative fixed full-element trace constant `beta = 100`. A
@@ -127,6 +144,17 @@ same certified cuts; its constitutive parameters come from
     content-addressed registered apply VJP is bit-identical to explicit
     transpose apply, remains correct with two operators in one registry,
     and passes deterministic central finite-difference directions.
+14. GRADED VECTOR REDUCTION (cte-005, G0/G3): a closed-polygon affine
+    two-component patch on a 2:1 tree passes the exact algebraic residual,
+    CG residual, bit-symmetry, field-error, explicit midpoint reconstruction,
+    deterministic replay, and a nonzero constrained-node ghost-energy oracle.
+    Separate all-inside graded fixtures exercise body and design-box traction
+    reduction against an independent analytic `T^T` load. Synthetic corrupted
+    graphs refuse cycles, empty/non-finite/non-unit transforms, and partially
+    clamped hanging traces. The uniform pre-graded operator is frozen in both
+    mostly-clamped (cte-000) and fully-unclamped (cte-000b) fixtures by portable
+    whole-operator FNV-1a goldens over CSR, RHS, terminal map, clamp, active/cut
+    topology, certified rule bits, ghost faces, and dropped count.
 
 ## Error model
 
@@ -135,12 +163,13 @@ the grid), `CutBandNotUniform` (enabled ghost faces need an equal-level
 interface band; names the offending pair and the repair; ghost-free
 aggregation does not impose this precondition),
 `InvalidFemInput` (a scalar stabilization parameter is non-finite or
-outside its documented range),
-`ElasticityGridNotUniform` (the vector frontend refuses graded active
-cells until componentwise hanging constraints exist),
+outside its documented range, or a scalar field/goal evaluation has
+missing, non-finite, inactive, or topology-inconsistent evidence),
 `InvalidElasticityInput` (non-finite/non-coercive or unsupported
 near-incompressible material, parameter, load, boundary data, or an
-uncertified SDF-cut loaded box edge),
+uncertified SDF-cut loaded box edge; malformed/non-finite coefficient,
+Q1 field-evaluation, terminal transform, or incompatible hanging-clamp
+requests also refuse),
 `AggregationNoAnchor` (no well-cut anchor within 4 BFS rings),
 `ConstraintCycle` (corrupted constraint graph), `SolveNotConverged`
 (configured residual gate missed; carries iterations and residual).
@@ -153,8 +182,9 @@ the vector operator and solution surface their dropped-cut count.
 Bit-deterministic across runs on a fixed platform (BTree iteration
 order, no threading, no ambient rounding-mode state). Cross-ISA
 determinism inherits fs-math/fs-ivl discipline through fs-ivl
-enclosures and fs-solver CG; no golden hash is recorded yet for this
-crate (recorded follow-up).
+enclosures and fs-solver CG. The cte-000/000b portable goldens freeze the
+uniform operator's exact public evidence surface; cte-005 separately
+requires bit-identical graded replay.
 
 ## Cancellation behavior
 
@@ -199,7 +229,8 @@ leaf partition of unity.
 exactly represented piecewise-linear closed cuts, with a roundoff-scale
 algebraic residual gate distinct from explicit solver forward-error
 tolerances; cte-002 G1 curved-circle, nonzero-divergence manufactured
-solution and both successive convergence slopes; cte-003
+solution, three-level fitted convergence slopes, and adjacent-slope
+evidence; cte-003
 condition-number sweep over cut fractions 0.5…1e-8
 with fixed Nitsche scaling and ghost ON/OFF; fail-closed invalid-input,
 material, and cut-loaded-edge coverage. `tests/elasticity_adjoint.rs`
@@ -221,10 +252,11 @@ ledger evidence.
 - DWR-driven refinement loops: this crate exposes the `refine_where`
   hook and proves the hanging-node machinery; the dual-weighted
   estimator itself is dwr-adaptivity's bead.
-- Vector elasticity on graded active trees: the scalar hanging-node
-  constraint machinery is not silently reused componentwise. The
-  vector frontend returns `ElasticityGridNotUniform` until that lift is
-  implemented and proven.
+- Mixed-level vector ghost faces are not claimed. Componentwise hanging-node
+  reduction permits graded active trees, but enabled ghost stabilization still
+  requires the cut/interface band itself to have equal-level face neighbors;
+  `CutBandNotUniform` remains the structured refusal and child work owns the
+  mixed-level face quadrature/topology redesign.
 - Vector constitutive scope is two-dimensional plane-strain isotropic
   small-strain elasticity. Plane stress, orthotropy, nonlinear
   material state updates, finite strain, and higher-order vector
@@ -239,6 +271,9 @@ ledger evidence.
 - The apply VJP covers a fixed assembled matrix and state vector only.
   A solve VJP, material/SDF/design derivatives, and a topopt compliance
   adjoint remain consumer/integration work.
+- `b^T x` is the exact algebraic assembled-load compliance. With nonzero
+  embedded displacement data, the Nitsche data terms are part of `b`; this
+  value alone is not claimed to equal physical external work.
 - Certified clipping quadrature for nonzero traction on an SDF-cut
   design-box edge is not implemented; that configuration refuses rather
   than sample-masking a partial edge.
