@@ -964,6 +964,7 @@ dependencies = [
  "fs-math",
  "fs-obs",
  "fs-rand",
+ "fs-robust",
 ]
 
 [[package]]
@@ -1148,6 +1149,7 @@ dependencies = [
  "fs-eproc",
  "fs-exec",
  "fs-qty",
+ "fs-robust",
  "fs-scenario",
  "fs-solid",
  "fs-truss",
@@ -1557,6 +1559,8 @@ dependencies = [
  "fs-evidence",
  "fs-exec",
  "fs-geom",
+ "fs-ivl",
+ "fs-math",
  "fs-obs",
 ]
 
@@ -1800,7 +1804,11 @@ dependencies = [
 name = "fs-surrogate"
 version = "0.0.1"
 dependencies = [
+ "asupersync",
+ "fs-alloc",
+ "fs-blake3",
  "fs-evidence",
+ "fs-exec",
 ]
 
 [[package]]
@@ -1928,6 +1936,7 @@ dependencies = [
  "fs-la",
  "fs-math",
  "fs-rand",
+ "fs-robust",
 ]
 
 [[package]]
@@ -1949,6 +1958,7 @@ dependencies = [
  "fs-math",
  "fs-race",
  "fs-render",
+ "fs-robust",
 ]
 
 [[package]]
