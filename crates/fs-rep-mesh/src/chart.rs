@@ -15,12 +15,41 @@ use fs_evidence::NumericalCertificate;
 use fs_exec::Cx;
 use fs_geom::{Aabb, Chart, ChartSample, Differentiability, Point3, Vec3};
 
+/// Exact closest distance from `p` to segment `[s0, s1]`. A zero-length
+/// segment (`s0 == s1`) degrades gracefully to the point distance (`t = 0`).
+fn point_segment_distance(p: Point3, s0: Point3, s1: Point3) -> f64 {
+    let e = s1.delta_from(s0);
+    let ee = e.dot(e);
+    let t = if ee > 0.0 {
+        (p.delta_from(s0).dot(e) / ee).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    p.delta_from(s0.offset(e.scale(t))).norm()
+}
+
 /// Exact closest distance from `p` to triangle `[a, b, c]` (Ericson,
 /// Real-Time Collision Detection §5.1.5 — the standard region test).
 #[must_use]
 pub fn point_triangle_distance(p: Point3, a: Point3, b: Point3, c: Point3) -> f64 {
     let ab = b.delta_from(a);
     let ac = c.delta_from(a);
+    // Ericson's region test divides by |ab|², |ac|², |bc|², and (twice) the
+    // triangle area — every one of which is zero EXACTLY when the triangle is
+    // degenerate (a repeated vertex, or three collinear vertices). Their shared
+    // witness is |ab×ac|² = |ab|²·|ac|² − (ab·ac)² (Lagrange): strictly > 0 for a
+    // proper triangle, ≤ 0 (zero, modulo cancellation on a razor-thin one) when
+    // degenerate. In that case the "triangle" collapses to a segment/point, so
+    // the true closest distance is the nearest of the three edge distances —
+    // returning it keeps the result well-defined (never a 0/0 NaN, e.g. the
+    // edge-AB branch's `d1/(d1-d3)` with `a == b`), as the CONTRACT promises.
+    // Non-degenerate triangles skip this and hit the unchanged region test.
+    let dab_ac = ab.dot(ac);
+    if ab.dot(ab) * ac.dot(ac) - dab_ac * dab_ac <= 0.0 {
+        return point_segment_distance(p, a, b)
+            .min(point_segment_distance(p, b, c))
+            .min(point_segment_distance(p, a, c));
+    }
     let ap = p.delta_from(a);
     let d1 = ab.dot(ap);
     let d2 = ac.dot(ap);

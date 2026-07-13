@@ -163,6 +163,83 @@ fn rmesh_002_point_triangle_distance_matches_brute_force_and_chart_laws() {
 }
 
 #[test]
+fn rmesh_002b_degenerate_triangles_yield_finite_correct_distances() {
+    // Regression: on a degenerate triangle (repeated vertex or collinear
+    // vertices) Ericson's edge-region parameter divides by |ab|²/|ac|²/|bc|²
+    // or the area — all zero here — so e.g. the edge-AB branch's `d1/(d1-d3)`
+    // was `0/0 = NaN`. The CONTRACT promises degenerate triangles yield
+    // well-defined distances. The collapse is a segment/point, so the answer
+    // is the nearest edge distance; verify it is finite AND matches brute force.
+    const SEED: u64 = 0x1002_B026_0706_DE9E;
+    let mut rng = Lcg(SEED);
+    let rp = |rng: &mut Lcg| {
+        Point3::new(
+            (rng.unit() - 0.5) * 4.0,
+            (rng.unit() - 0.5) * 4.0,
+            (rng.unit() - 0.5) * 4.0,
+        )
+    };
+    let brute = |p: Point3, a: Point3, b: Point3, c: Point3| {
+        let n = 60;
+        let mut best = f64::INFINITY;
+        for i in 0..=n {
+            for j in 0..=(n - i) {
+                let (u, v) = (f64::from(i) / f64::from(n), f64::from(j) / f64::from(n));
+                let w = 1.0 - u - v;
+                let q = Point3::new(
+                    a.x * w + b.x * u + c.x * v,
+                    a.y * w + b.y * u + c.y * v,
+                    a.z * w + b.z * u + c.z * v,
+                );
+                best = best.min(p.delta_from(q).norm());
+            }
+        }
+        best
+    };
+    let mut worst = 0.0f64;
+    let mut all_finite = true;
+    for _ in 0..400 {
+        let (a, c, p) = (rp(&mut rng), rp(&mut rng), rp(&mut rng));
+        let d = Vec3::new(rng.unit() - 0.5, rng.unit() - 0.5, rng.unit() - 0.5);
+        // Every family the guard must handle: repeated a=b, repeated b=c,
+        // collinear (a, a+d, a+2d), and fully collapsed a=b=c.
+        let cases = [
+            (a, a, c),                                    // a == b
+            (a, c, c),                                    // b == c
+            (a, a.offset(d), a.offset(d.scale(2.0))),     // collinear
+            (a, a, a),                                    // single point
+        ];
+        for (ta, tb, tc) in cases {
+            let fast = point_triangle_distance(p, ta, tb, tc);
+            all_finite &= fast.is_finite();
+            let bf = brute(p, ta, tb, tc);
+            worst = worst.max((fast - bf).abs());
+            assert!(
+                fast <= bf + 1e-12,
+                "exact distance can never exceed a sampled distance (degenerate)"
+            );
+        }
+    }
+    // The exact repro that used to NaN: a == b collapses to segment a–c; the
+    // closest point to (0.5,1,0) is (0.5,0,0), so the distance is exactly 1.
+    let repro = point_triangle_distance(
+        Point3::new(0.5, 1.0, 0.0),
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(1.0, 0.0, 0.0),
+    );
+    verdict(
+        "rmesh-002b",
+        all_finite && worst < 0.02 && (repro - 1.0).abs() < 1e-12,
+        &format!(
+            "degenerate triangles (repeated/collinear/collapsed) give finite distances that \
+             match brute force (worst {worst:.4}); the a==b repro is {repro:.6} (want 1.0), \
+             not NaN (seed {SEED:#x})"
+        ),
+    );
+}
+
+#[test]
 fn rmesh_003_winding_classifies_nightmare_soup() {
     const SEED: u64 = 0x1003_2026_0706_50FA;
     let mut rng = Lcg(SEED);
