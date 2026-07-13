@@ -256,7 +256,11 @@ pub fn plan_repair(
     // offset exceeds its budget — silently distorting geometry beyond budget,
     // the one thing this planner promises never to do. Fail closed, matching
     // `hodge_decompose`'s cochain-size assertion.
-    assert_eq!(budgets.len(), skeleton.n_patches, "one gauge budget per patch");
+    assert_eq!(
+        budgets.len(),
+        skeleton.n_patches,
+        "one gauge budget per patch"
+    );
     let split = hodge_decompose(skeleton, mismatch);
     let residual_after_exact: Vec<f64> = mismatch
         .iter()
