@@ -15,7 +15,12 @@ fn points(n: usize, seed: u64) -> Vec<[f64; 2]> {
         s = s
             .wrapping_mul(6_364_136_223_846_793_005)
             .wrapping_add(1_442_695_040_888_963_407);
-        ((s >> 33) as f64 / f64::from(1u32 << 31)) - 1.0
+        // `s >> 32` ∈ [0, 2^32); /2^31 ∈ [0, 2); −1 ∈ [-1, 1). (The former
+        // `s >> 33` gave [0, 2^31)/2^31 − 1 = [-1, 0) — only the third
+        // quadrant, so the certificate tests silently probed one octant of the
+        // domain. `L` is a GLOBAL Lipschitz bound, so full-domain coverage is
+        // still sound.)
+        ((s >> 32) as f64 / f64::from(1u32 << 31)) - 1.0
     };
     (0..n).map(|_| [next(), next()]).collect()
 }
