@@ -335,6 +335,141 @@ fn sc_002_compatibility_checks_catch_seeded_violations() {
 }
 
 #[test]
+fn sc_001b_non_ascii_names_round_trip() {
+    // Regression: the IR string parser decoded bytes as Latin-1 (`push(byte as
+    // char)`), splitting every multi-byte UTF-8 code point, so any non-ASCII
+    // name (scenario/region/frame) silently corrupted on parse — violating the
+    // round-trip losslessness invariant. The writer emits proper UTF-8.
+    let mut s = Scenario::new("Kármán–pour café ✓", 7, Environment::earth_lab());
+    s.frames.add(Frame {
+        id: FrameId(1),
+        name: "vase — 花瓶".to_string(),
+        parent: FrameId(0),
+        motion: FrameMotion::Fixed {
+            orientation: Quat::from_axis_angle(Vec3::new(1.0, 0.0, 0.0), 0.0),
+            translation: Vec3::new(0.0, 0.0, 0.0),
+        },
+    });
+    s.base_bcs.push(BoundaryCondition {
+        region: "über-inlet — 入口".to_string(),
+        physics: Physics::IncompressibleFlow,
+        kind: BcKind::WallNoSlip,
+        value: None,
+        compatibility: None,
+        frame: 0,
+    });
+    let text = write_ir(&s);
+    let back = parse_ir(&text).expect("non-ASCII IR parses");
+    assert_eq!(back, s, "non-ASCII names must round-trip losslessly");
+    verdict(
+        "sc-001b",
+        "scenario/frame/region names with non-ASCII (é, ü, –, ✓, CJK) round-trip losslessly",
+    );
+}
+
+/// Replace the balanced sub-form beginning at `head` (e.g. `"(fixed"`) with
+/// just its head token (`"(fixed)"`) — a truncated, under-arity form.
+fn truncate_form(ir: &str, head: &str) -> String {
+    let start = ir.find(head).expect("truncation target form present in IR");
+    let mut depth = 0i32;
+    let mut end = ir.len();
+    for (i, ch) in ir[start..].char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = start + i + 1; // ')' is one byte
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = String::with_capacity(ir.len());
+    out.push_str(&ir[..start]);
+    out.push_str(head); // "(fixed"
+    out.push(')'); // -> "(fixed)"
+    out.push_str(&ir[end..]);
+    out
+}
+
+#[test]
+fn sc_002b_truncated_ir_forms_error_not_panic() {
+    // Regression: several parser arms indexed `rest[0]`/`rest[0..2]` without an
+    // arity check, so a truncated form panicked (index out of bounds) instead
+    // of returning `ScenarioError::Parse`. `parse_ir` is public and documented
+    // to return `Result` on malformed input. Truncate each sub-form in a valid
+    // scenario's IR to just its head and confirm a clean error, not a panic.
+    let ir = write_ir(&rich_scenario());
+    for head in [
+        "(fixed",
+        "(rotating",
+        "(tilt",
+        "(dryden",
+        "(kanai-tajimi",
+        "(uniform",
+    ] {
+        let broken = truncate_form(&ir, head);
+        assert!(
+            parse_ir(&broken).is_err(),
+            "truncated {head}) form must return an error, not panic"
+        );
+    }
+    verdict(
+        "sc-002b",
+        "truncated frame/model/bc IR forms return Parse errors, never an index-OOB panic",
+    );
+}
+
+#[test]
+fn sc_002c_ensemble_rejects_nan_producing_spectra() {
+    // Regression: KanaiTajimi `check` validated S0/zeta_g but NOT omega_g (the
+    // psd divisor `r = ω/ω_g`), and Dryden had no positivity check at all
+    // (`mean_speed` is the divisor `x = l·ω/v`). A zero divisor makes every
+    // realization NaN/inf, yet `validate()` admitted the ensemble. Both now
+    // fail closed.
+    let mut s = Scenario::new("nan-ensembles", 1, Environment::earth_lab());
+    s.ensembles.push(StochasticEnsemble {
+        name: "kt-zero-omega".to_string(),
+        seed: 1,
+        members: 2,
+        duration: QtyAny::new(1.0, TIME),
+        dt: QtyAny::new(0.1, TIME),
+        model: SpectrumModel::KanaiTajimi {
+            s0: 0.02,
+            omega_g: QtyAny::new(0.0, RATE),
+            zeta_g: 0.5,
+        },
+    });
+    s.ensembles.push(StochasticEnsemble {
+        name: "dryden-zero-speed".to_string(),
+        seed: 2,
+        members: 2,
+        duration: QtyAny::new(1.0, TIME),
+        dt: QtyAny::new(0.1, TIME),
+        model: SpectrumModel::Dryden {
+            sigma: QtyAny::new(1.0, Dims([1, 0, -1, 0, 0])),
+            length_scale: QtyAny::new(10.0, Dims([1, 0, 0, 0, 0])),
+            mean_speed: QtyAny::new(0.0, Dims([1, 0, -1, 0, 0])),
+        },
+    });
+    let v = s.validate();
+    assert!(
+        v.iter().any(|x| x.code == "ensemble-kt-params"),
+        "zero omega_g (KT psd divisor) must be rejected"
+    );
+    assert!(
+        v.iter().any(|x| x.code == "ensemble-dryden-params"),
+        "zero mean_speed (Dryden psd divisor) must be rejected"
+    );
+    verdict(
+        "sc-002c",
+        "ensembles whose PSD divisor (omega_g / mean_speed) is zero fail closed, not admitted as NaN",
+    );
+}
+
+#[test]
 fn sc_003_ensembles_reproduce_bitwise_from_seed() {
     let s = rich_scenario();
     for e in &s.ensembles {

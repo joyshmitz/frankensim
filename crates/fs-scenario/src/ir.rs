@@ -382,21 +382,30 @@ fn parse_one(bytes: &[u8], pos: &mut usize) -> Result<Sx, ScenarioError> {
         Some(b')') => Err(err(*pos, "unexpected ')'")),
         Some(b'"') => {
             *pos += 1;
-            let mut s = String::new();
+            // Accumulate RAW BYTES and decode UTF-8 once at the end. The writer
+            // (`w_str`) emits each `char` UTF-8-encoded and escapes only the
+            // ASCII bytes `"`/`\`; pushing `byte as char` here would Latin-1-
+            // decode, splitting every multi-byte code point (e.g. `é` → `Ã©`)
+            // and breaking round-trip losslessness for non-ASCII names. Escape
+            // bytes and the closing quote never collide with a UTF-8
+            // continuation byte (those are all ≥ 0x80, `"`/`\` are ASCII).
+            let mut buf: Vec<u8> = Vec::new();
             loop {
                 match bytes.get(*pos) {
                     None => return Err(err(*pos, "unterminated string")),
                     Some(b'\\') => {
                         let c = *bytes.get(*pos + 1).ok_or_else(|| err(*pos, "bad escape"))?;
-                        s.push(c as char);
+                        buf.push(c);
                         *pos += 2;
                     }
                     Some(b'"') => {
                         *pos += 1;
+                        let s = String::from_utf8(buf)
+                            .map_err(|_| err(*pos, "string is not valid UTF-8"))?;
                         return Ok(Sx::Str(s));
                     }
                     Some(&c) => {
-                        s.push(c as char);
+                        buf.push(c);
                         *pos += 1;
                     }
                 }
@@ -540,7 +549,12 @@ fn as_signal(sx: &Sx) -> Result<TimeSignal, ScenarioError> {
     let head = as_atom(items.first().ok_or_else(|| err(0, "empty signal"))?)?;
     let rest = &items[1..];
     match head {
-        "constant" => Ok(TimeSignal::Constant(as_qty(&rest[0])?)),
+        "constant" => {
+            if rest.len() != 1 {
+                return Err(err(0, "constant needs a value"));
+            }
+            Ok(TimeSignal::Constant(as_qty(&rest[0])?))
+        }
         "ramp" => {
             if rest.len() != 4 {
                 return Err(err(0, "ramp needs t0 t1 from to"));
@@ -606,8 +620,18 @@ fn as_bc(sx: &Sx) -> Result<BoundaryCondition, ScenarioError> {
         Sx::List(inner) => {
             let head = as_atom(inner.first().ok_or_else(|| err(0, "empty bc value"))?)?;
             match head {
-                "uniform" => Some(BcValue::Uniform(as_qty(&inner[1])?)),
-                "signal" => Some(BcValue::Signal(as_signal(&inner[1])?)),
+                "uniform" => {
+                    if inner.len() != 2 {
+                        return Err(err(0, "uniform bc value needs a quantity"));
+                    }
+                    Some(BcValue::Uniform(as_qty(&inner[1])?))
+                }
+                "signal" => {
+                    if inner.len() != 2 {
+                        return Err(err(0, "signal bc value needs a signal form"));
+                    }
+                    Some(BcValue::Signal(as_signal(&inner[1])?))
+                }
                 "profile" => Some(BcValue::Profile(as_profile(&inner[1..])?)),
                 other => return Err(err(0, &format!("unknown bc value {other:?}"))),
             }
@@ -641,6 +665,9 @@ fn as_frame(sx: &Sx) -> Result<Frame, ScenarioError> {
     let rest = &motion_items[1..];
     let motion = match head {
         "fixed" => {
+            if rest.len() != 2 {
+                return Err(err(0, "fixed motion needs orientation and translation"));
+            }
             let q_items = as_list(&rest[0], "quat")?;
             if q_items.len() != 4 {
                 return Err(err(0, "quat needs four components"));
@@ -656,6 +683,9 @@ fn as_frame(sx: &Sx) -> Result<Frame, ScenarioError> {
             }
         }
         "rotating" => {
+            if rest.len() != 3 {
+                return Err(err(0, "rotating motion needs axis center rate"));
+            }
             let axis = as_vec3(&rest[0])?;
             FrameMotion::Rotating {
                 axis: [axis.x, axis.y, axis.z],
@@ -664,6 +694,9 @@ fn as_frame(sx: &Sx) -> Result<Frame, ScenarioError> {
             }
         }
         "tilt" => {
+            if rest.len() != 3 {
+                return Err(err(0, "tilt motion needs axis center angle"));
+            }
             let axis = as_vec3(&rest[0])?;
             FrameMotion::Tilt {
                 axis: [axis.x, axis.y, axis.z],
@@ -688,16 +721,26 @@ fn as_model(sx: &Sx) -> Result<SpectrumModel, ScenarioError> {
     let head = as_atom(items.first().ok_or_else(|| err(0, "empty model"))?)?;
     let rest = &items[1..];
     match head {
-        "dryden" => Ok(SpectrumModel::Dryden {
-            sigma: as_qty(&rest[0])?,
-            length_scale: as_qty(&rest[1])?,
-            mean_speed: as_qty(&rest[2])?,
-        }),
-        "kanai-tajimi" => Ok(SpectrumModel::KanaiTajimi {
-            s0: as_f64(&rest[0])?,
-            omega_g: as_qty(&rest[1])?,
-            zeta_g: as_f64(&rest[2])?,
-        }),
+        "dryden" => {
+            if rest.len() != 3 {
+                return Err(err(0, "dryden needs sigma length_scale mean_speed"));
+            }
+            Ok(SpectrumModel::Dryden {
+                sigma: as_qty(&rest[0])?,
+                length_scale: as_qty(&rest[1])?,
+                mean_speed: as_qty(&rest[2])?,
+            })
+        }
+        "kanai-tajimi" => {
+            if rest.len() != 3 {
+                return Err(err(0, "kanai-tajimi needs s0 omega_g zeta_g"));
+            }
+            Ok(SpectrumModel::KanaiTajimi {
+                s0: as_f64(&rest[0])?,
+                omega_g: as_qty(&rest[1])?,
+                zeta_g: as_f64(&rest[2])?,
+            })
+        }
         "carreau" => {
             if rest.len() != 8 {
                 return Err(err(0, "carreau needs six qty bounds + two n bounds"));

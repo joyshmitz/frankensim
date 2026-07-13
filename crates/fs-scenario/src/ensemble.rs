@@ -250,6 +250,20 @@ impl StochasticEnsemble {
                     out,
                 );
                 expect_dims(&ctx, "mean speed", mean_speed, Dims([1, 0, -1, 0, 0]), out);
+                // `psd` divides by `mean_speed` (`x = l·ω/v`, and `2l/(πv)`), so
+                // a zero/negative/non-finite speed makes every realization
+                // inf/NaN — validate must reject it, not admit a NaN ensemble.
+                // sigma (intensity) and length scale must likewise be positive.
+                let positive = |v: f64| v.is_finite() && v > 0.0;
+                if !positive(sigma.value) || !positive(length_scale.value) || !positive(mean_speed.value)
+                {
+                    out.push(Violation {
+                        code: "ensemble-dryden-params",
+                        what: format!("{ctx}: sigma, length scale, and mean speed must be positive"),
+                        fix: "supply positive Dryden intensity, length scale, and mean speed"
+                            .to_string(),
+                    });
+                }
             }
             SpectrumModel::KanaiTajimi {
                 s0,
@@ -257,12 +271,16 @@ impl StochasticEnsemble {
                 zeta_g,
             } => {
                 expect_dims(&ctx, "omega_g", omega_g, Dims([0, 0, -1, 0, 0]), out);
+                // `psd` divides by `omega_g` (`r = ω/ω_g`), so a zero/negative
+                // ground frequency makes every realization NaN — reject it
+                // alongside S0 and zeta_g rather than admit a NaN ensemble.
                 let positive = |v: f64| v.is_finite() && v > 0.0;
-                if !positive(*s0) || !positive(*zeta_g) {
+                if !positive(*s0) || !positive(*zeta_g) || !positive(omega_g.value) {
                     out.push(Violation {
                         code: "ensemble-kt-params",
-                        what: format!("{ctx}: S0 and zeta_g must be positive"),
-                        fix: "supply positive Kanai–Tajimi intensity and damping".to_string(),
+                        what: format!("{ctx}: S0, zeta_g, and omega_g must be positive"),
+                        fix: "supply positive Kanai–Tajimi intensity, damping, and ground frequency"
+                            .to_string(),
                     });
                 }
             }
