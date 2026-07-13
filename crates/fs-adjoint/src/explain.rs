@@ -34,9 +34,67 @@ use std::collections::BTreeSet;
 /// Canonical explanation-node fingerprint semantics.
 pub const EXPLANATION_FINGERPRINT_VERSION: u32 = 2;
 const EXPLANATION_FINGERPRINT_DOMAIN: &str = "org.frankensim.fs-adjoint.explanation-node.v2";
+/// Owner-local declaration consumed by `xtask check-identities`.
+pub const EXPLANATION_NODE_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-adjoint:explanation-node",
+    "version_const=EXPLANATION_FINGERPRINT_VERSION",
+    "version=2",
+    "domain=org.frankensim.fs-adjoint.explanation-node.v2",
+    "domain_const=EXPLANATION_FINGERPRINT_DOMAIN",
+    "encoder=node_fingerprint",
+    "encoder_helpers=node_fingerprint_with_versions,node_fingerprint_with_schema,ExplanationNodeOrigin::tag,push_len,push_bytes,push_str,push_f64,push_usize",
+    "schema_constants=EXPLANATION_FINGERPRINT_VERSION,EXPLANATION_FINGERPRINT_DOMAIN,crates/fs-evidence/src/color.rs#COLOR_ALGEBRA_VERSION,crates/fs-blake3/src/lib.rs#IV,crates/fs-blake3/src/lib.rs#MSG_PERMUTATION,crates/fs-blake3/src/lib.rs#BLOCK_LEN,crates/fs-blake3/src/lib.rs#CHUNK_LEN,crates/fs-blake3/src/lib.rs#CHUNK_START,crates/fs-blake3/src/lib.rs#CHUNK_END,crates/fs-blake3/src/lib.rs#PARENT,crates/fs-blake3/src/lib.rs#ROOT,crates/fs-blake3/src/lib.rs#DERIVE_KEY_CONTEXT,crates/fs-blake3/src/lib.rs#DERIVE_KEY_MATERIAL,crates/fs-blake3/src/lib.rs#MAX_DEPTH",
+    "schema_functions=ExplanationNode::verifies,ExplanationNodeAuthority::is_valid,node_payload_is_valid,evidence_is_valid,digest_is_valid,bounded_text_is_valid,crates/fs-evidence/src/color.rs#validate_color_payload,crates/fs-evidence/src/color.rs#Color::canonical_bytes,crates/fs-evidence/src/color.rs#push_canonical_len,crates/fs-evidence/src/color.rs#push_canonical_field,crates/fs-blake3/src/lib.rs#hash_domain,crates/fs-blake3/src/lib.rs#ContentHash::to_hex,crates/fs-blake3/src/lib.rs#g,crates/fs-blake3/src/lib.rs#round,crates/fs-blake3/src/lib.rs#permute,crates/fs-blake3/src/lib.rs#compress,crates/fs-blake3/src/lib.rs#words_from_block,crates/fs-blake3/src/lib.rs#first_8_words,crates/fs-blake3/src/lib.rs#Output::chaining_value,crates/fs-blake3/src/lib.rs#Output::root_hash,crates/fs-blake3/src/lib.rs#parent_output,crates/fs-blake3/src/lib.rs#ChunkState::new,crates/fs-blake3/src/lib.rs#ChunkState::len,crates/fs-blake3/src/lib.rs#ChunkState::start_flag,crates/fs-blake3/src/lib.rs#ChunkState::update,crates/fs-blake3/src/lib.rs#ChunkState::output,crates/fs-blake3/src/lib.rs#Blake3::new_internal,crates/fs-blake3/src/lib.rs#Blake3::push_stack,crates/fs-blake3/src/lib.rs#Blake3::pop_stack,crates/fs-blake3/src/lib.rs#Blake3::add_chunk_chaining_value,crates/fs-blake3/src/lib.rs#Blake3::update,crates/fs-blake3/src/lib.rs#Blake3::finalize",
+    "schema_dependencies=none",
+    "digest=fs-blake3",
+    "encoding=typed-binary",
+    "sources=ExplanationNode,ExplanationNodeAuthority",
+    "source_fields=ExplanationNode.channel:semantic,ExplanationNode.contribution:semantic,ExplanationNode.bound:semantic,ExplanationNode.color:semantic,ExplanationNode.evidence:semantic,ExplanationNode.authority:derived:nested-authority-fields-encoded-separately,ExplanationNode.fingerprint:derived:recomputed-payload-root,ExplanationNode.fingerprint_version:semantic,ExplanationNodeAuthority.origin:semantic,ExplanationNodeAuthority.derivation_digest:semantic,ExplanationNodeAuthority.batch_digest:semantic,ExplanationNodeAuthority.batch_index:semantic,ExplanationNodeAuthority.batch_size:semantic",
+    "source_bindings=ExplanationNode.channel>channel,ExplanationNode.contribution>contribution,ExplanationNode.bound>bound,ExplanationNode.color>color,ExplanationNode.evidence>evidence-count+evidence-order+evidence-item,ExplanationNode.fingerprint_version>fingerprint-version,ExplanationNodeAuthority.origin>origin,ExplanationNodeAuthority.derivation_digest>derivation-digest,ExplanationNodeAuthority.batch_digest>batch-digest,ExplanationNodeAuthority.batch_index>batch-index,ExplanationNodeAuthority.batch_size>batch-size",
+    "external_semantic_fields=artifact-domain,color-algebra-version",
+    "semantic_fields=artifact-domain,fingerprint-version,color-algebra-version,origin,channel,contribution,bound,color,evidence-count,evidence-order,evidence-item,derivation-digest,batch-digest,batch-index,batch-size",
+    "excluded_fields=render-narrative:presentation-only,color-payload-json:display-only",
+    "consumers=ExplanationNode::verifies,nodes_are_unique,built_in_batch_is_coherent,explanation_root",
+    "mutations=artifact-domain:crates/fs-adjoint/src/explain.rs#explanation_node_identity_versions_move_fingerprint,fingerprint-version:crates/fs-adjoint/src/explain.rs#explanation_node_identity_versions_move_fingerprint,color-algebra-version:crates/fs-adjoint/src/explain.rs#explanation_node_identity_versions_move_fingerprint,origin:crates/fs-adjoint/src/explain.rs#explanation_node_authority_mutations_move_fingerprint,channel:crates/fs-adjoint/src/explain.rs#explanation_node_payload_mutations_move_fingerprint,contribution:crates/fs-adjoint/src/explain.rs#explanation_node_payload_mutations_move_fingerprint,bound:crates/fs-adjoint/src/explain.rs#explanation_node_payload_mutations_move_fingerprint,color:crates/fs-adjoint/src/explain.rs#explanation_node_payload_mutations_move_fingerprint,evidence-count:crates/fs-adjoint/src/explain.rs#explanation_node_evidence_mutations_move_fingerprint,evidence-order:crates/fs-adjoint/src/explain.rs#explanation_node_evidence_mutations_move_fingerprint,evidence-item:crates/fs-adjoint/src/explain.rs#explanation_node_evidence_mutations_move_fingerprint,derivation-digest:crates/fs-adjoint/src/explain.rs#explanation_node_authority_mutations_move_fingerprint,batch-digest:crates/fs-adjoint/src/explain.rs#explanation_node_authority_mutations_move_fingerprint,batch-index:crates/fs-adjoint/src/explain.rs#explanation_node_authority_mutations_move_fingerprint,batch-size:crates/fs-adjoint/src/explain.rs#explanation_node_authority_mutations_move_fingerprint",
+    "nonsemantic_mutations=render-narrative:crates/fs-adjoint/src/explain.rs#explanation_identity_ignores_presentation_renderers,color-payload-json:crates/fs-adjoint/src/explain.rs#explanation_identity_ignores_presentation_renderers",
+    "field_guard=classify_explanation_node_identity_fields",
+    "transport_guard=node_fingerprint",
+    "version_guard=crates/fs-adjoint/src/explain.rs#explanation_node_identity_versions_fail_closed",
+    "coupling_surface=fs-adjoint:explanation-node",
+];
 /// Canonical finalized-explanation receipt semantics.
 pub const EXPLANATION_RECEIPT_VERSION: u32 = 1;
 const EXPLANATION_RECEIPT_DOMAIN: &str = "org.frankensim.fs-adjoint.explanation-receipt.v1";
+/// Owner-local declaration consumed by `xtask check-identities`.
+pub const EXPLANATION_RECEIPT_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-adjoint:explanation-receipt",
+    "version_const=EXPLANATION_RECEIPT_VERSION",
+    "version=1",
+    "domain=org.frankensim.fs-adjoint.explanation-receipt.v1",
+    "domain_const=EXPLANATION_RECEIPT_DOMAIN",
+    "encoder=explanation_root",
+    "encoder_helpers=explanation_root_with_schema,ExplanationVariant::tag,push_len,push_bytes,push_str,push_f64,push_usize",
+    "schema_constants=EXPLANATION_RECEIPT_VERSION,EXPLANATION_RECEIPT_DOMAIN,crates/fs-evidence/src/color.rs#COLOR_ALGEBRA_VERSION,crates/fs-blake3/src/lib.rs#IV,crates/fs-blake3/src/lib.rs#MSG_PERMUTATION,crates/fs-blake3/src/lib.rs#BLOCK_LEN,crates/fs-blake3/src/lib.rs#CHUNK_LEN,crates/fs-blake3/src/lib.rs#CHUNK_START,crates/fs-blake3/src/lib.rs#CHUNK_END,crates/fs-blake3/src/lib.rs#PARENT,crates/fs-blake3/src/lib.rs#ROOT,crates/fs-blake3/src/lib.rs#DERIVE_KEY_CONTEXT,crates/fs-blake3/src/lib.rs#DERIVE_KEY_MATERIAL,crates/fs-blake3/src/lib.rs#MAX_DEPTH",
+    "schema_functions=common_structure_is_valid,Explanation::reconciles,Explanation::is_structurally_valid,same_f64,replay_values_match,nodes_are_unique,built_in_batch_is_coherent,ExplanationNode::verifies,ExplanationNodeAuthority::is_valid,node_payload_is_valid,evidence_is_valid,digest_is_valid,bounded_text_is_valid,crates/fs-evidence/src/color.rs#validate_color_payload,crates/fs-evidence/src/color.rs#Color::canonical_bytes,crates/fs-evidence/src/color.rs#push_canonical_len,crates/fs-evidence/src/color.rs#push_canonical_field,crates/fs-blake3/src/lib.rs#hash_domain,crates/fs-blake3/src/lib.rs#ContentHash::to_hex,crates/fs-blake3/src/lib.rs#g,crates/fs-blake3/src/lib.rs#round,crates/fs-blake3/src/lib.rs#permute,crates/fs-blake3/src/lib.rs#compress,crates/fs-blake3/src/lib.rs#words_from_block,crates/fs-blake3/src/lib.rs#first_8_words,crates/fs-blake3/src/lib.rs#Output::chaining_value,crates/fs-blake3/src/lib.rs#Output::root_hash,crates/fs-blake3/src/lib.rs#parent_output,crates/fs-blake3/src/lib.rs#ChunkState::new,crates/fs-blake3/src/lib.rs#ChunkState::len,crates/fs-blake3/src/lib.rs#ChunkState::start_flag,crates/fs-blake3/src/lib.rs#ChunkState::update,crates/fs-blake3/src/lib.rs#ChunkState::output,crates/fs-blake3/src/lib.rs#Blake3::new_internal,crates/fs-blake3/src/lib.rs#Blake3::push_stack,crates/fs-blake3/src/lib.rs#Blake3::pop_stack,crates/fs-blake3/src/lib.rs#Blake3::add_chunk_chaining_value,crates/fs-blake3/src/lib.rs#Blake3::update,crates/fs-blake3/src/lib.rs#Blake3::finalize",
+    "schema_dependencies=fs-adjoint:explanation-node",
+    "digest=fs-blake3",
+    "encoding=typed-binary",
+    "sources=ExplanationReceipt",
+    "source_fields=ExplanationReceipt.version:semantic,ExplanationReceipt.color_algebra_version:semantic,ExplanationReceipt.requested_threshold:semantic,ExplanationReceipt.certified_coverage:semantic,ExplanationReceipt.effective_limit:semantic,ExplanationReceipt.aggregation_roundoff:semantic,ExplanationReceipt.aggregate_color:semantic,ExplanationReceipt.root:derived:recomputed-payload-root",
+    "source_bindings=ExplanationReceipt.version>receipt-version,ExplanationReceipt.color_algebra_version>color-algebra-version,ExplanationReceipt.requested_threshold>requested-threshold,ExplanationReceipt.certified_coverage>certified-coverage,ExplanationReceipt.effective_limit>effective-limit,ExplanationReceipt.aggregation_roundoff>aggregation-roundoff,ExplanationReceipt.aggregate_color>aggregate-color",
+    "external_semantic_fields=artifact-domain,variant,ordered-node-count,ordered-node-order,node-fingerprint-version,node-derivation-digest,node-batch-digest,node-batch-index,node-batch-size,node-fingerprint,observed,residual",
+    "semantic_fields=artifact-domain,receipt-version,variant,ordered-node-count,ordered-node-order,node-fingerprint-version,node-derivation-digest,node-batch-digest,node-batch-index,node-batch-size,node-fingerprint,observed,residual,requested-threshold,certified-coverage,effective-limit,aggregation-roundoff,color-algebra-version,aggregate-color",
+    "excluded_fields=render-narrative:presentation-only",
+    "consumers=common_structure_is_valid,Explanation::reconciles,Explanation::is_structurally_valid",
+    "mutations=artifact-domain:crates/fs-adjoint/src/explain.rs#explanation_receipt_top_level_mutations_move_root,receipt-version:crates/fs-adjoint/src/explain.rs#explanation_receipt_identity_versions_fail_closed,variant:crates/fs-adjoint/src/explain.rs#explanation_receipt_top_level_mutations_move_root,ordered-node-count:crates/fs-adjoint/src/explain.rs#explanation_receipt_node_sequence_mutations_move_root,ordered-node-order:crates/fs-adjoint/src/explain.rs#explanation_receipt_node_sequence_mutations_move_root,node-fingerprint-version:crates/fs-adjoint/src/explain.rs#explanation_receipt_node_item_mutations_move_root,node-derivation-digest:crates/fs-adjoint/src/explain.rs#explanation_receipt_node_item_mutations_move_root,node-batch-digest:crates/fs-adjoint/src/explain.rs#explanation_receipt_node_item_mutations_move_root,node-batch-index:crates/fs-adjoint/src/explain.rs#explanation_receipt_node_item_mutations_move_root,node-batch-size:crates/fs-adjoint/src/explain.rs#explanation_receipt_node_item_mutations_move_root,node-fingerprint:crates/fs-adjoint/src/explain.rs#explanation_receipt_node_item_mutations_move_root,observed:crates/fs-adjoint/src/explain.rs#explanation_receipt_top_level_mutations_move_root,residual:crates/fs-adjoint/src/explain.rs#explanation_receipt_top_level_mutations_move_root,requested-threshold:crates/fs-adjoint/src/explain.rs#explanation_receipt_payload_mutations_move_root,certified-coverage:crates/fs-adjoint/src/explain.rs#explanation_receipt_payload_mutations_move_root,effective-limit:crates/fs-adjoint/src/explain.rs#explanation_receipt_payload_mutations_move_root,aggregation-roundoff:crates/fs-adjoint/src/explain.rs#explanation_receipt_payload_mutations_move_root,color-algebra-version:crates/fs-adjoint/src/explain.rs#explanation_receipt_identity_versions_fail_closed,aggregate-color:crates/fs-adjoint/src/explain.rs#explanation_receipt_payload_mutations_move_root",
+    "nonsemantic_mutations=render-narrative:crates/fs-adjoint/src/explain.rs#explanation_identity_ignores_presentation_renderers",
+    "field_guard=classify_explanation_receipt_identity_fields",
+    "transport_guard=explanation_root",
+    "version_guard=crates/fs-adjoint/src/explain.rs#explanation_receipt_identity_versions_fail_closed",
+    "coupling_surface=fs-adjoint:explanation-receipt",
+];
 const UNRETAINED_DERIVATION_DOMAIN: &str =
     "org.frankensim.fs-adjoint.explanation-unretained-derivation.v1";
 const ADJOINT_DERIVATION_DOMAIN: &str =
@@ -243,7 +301,7 @@ fn digest_is_valid(digest: &str) -> bool {
 }
 
 fn derivation_digest(domain: &str, payload: &[u8]) -> String {
-    fs_blake3::hash_domain(domain, payload).to_string()
+    fs_blake3::hash_domain(domain, payload).to_hex()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -404,7 +462,35 @@ fn node_payload_is_valid(
         }
 }
 
-fn node_fingerprint(
+#[allow(clippy::too_many_arguments)]
+fn node_fingerprint_with_versions(
+    fingerprint_version: u32,
+    color_algebra_version: u32,
+    channel: &str,
+    contribution: f64,
+    bound: f64,
+    color: &Color,
+    evidence: &[String],
+    authority: &ExplanationNodeAuthority,
+) -> String {
+    node_fingerprint_with_schema(
+        EXPLANATION_FINGERPRINT_DOMAIN,
+        fingerprint_version,
+        color_algebra_version,
+        channel,
+        contribution,
+        bound,
+        color,
+        evidence,
+        authority,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn node_fingerprint_with_schema(
+    domain: &str,
+    fingerprint_version: u32,
+    color_algebra_version: u32,
     channel: &str,
     contribution: f64,
     bound: f64,
@@ -413,8 +499,8 @@ fn node_fingerprint(
     authority: &ExplanationNodeAuthority,
 ) -> String {
     let mut canon = Vec::new();
-    canon.extend_from_slice(&EXPLANATION_FINGERPRINT_VERSION.to_le_bytes());
-    canon.extend_from_slice(&COLOR_ALGEBRA_VERSION.to_le_bytes());
+    canon.extend_from_slice(&fingerprint_version.to_le_bytes());
+    canon.extend_from_slice(&color_algebra_version.to_le_bytes());
     canon.push(authority.origin.tag());
     push_str(&mut canon, channel);
     push_f64(&mut canon, contribution);
@@ -428,7 +514,27 @@ fn node_fingerprint(
     push_str(&mut canon, &authority.batch_digest);
     push_usize(&mut canon, authority.batch_index);
     push_usize(&mut canon, authority.batch_size);
-    fs_blake3::hash_domain(EXPLANATION_FINGERPRINT_DOMAIN, &canon).to_string()
+    fs_blake3::hash_domain(domain, &canon).to_hex()
+}
+
+fn node_fingerprint(
+    channel: &str,
+    contribution: f64,
+    bound: f64,
+    color: &Color,
+    evidence: &[String],
+    authority: &ExplanationNodeAuthority,
+) -> String {
+    node_fingerprint_with_versions(
+        EXPLANATION_FINGERPRINT_VERSION,
+        COLOR_ALGEBRA_VERSION,
+        channel,
+        contribution,
+        bound,
+        color,
+        evidence,
+        authority,
+    )
 }
 
 /// One attribution node: a named channel's contribution with its
@@ -453,6 +559,27 @@ pub struct ExplanationNode {
     fingerprint: String,
     /// Version of the canonical fingerprint semantics.
     fingerprint_version: u32,
+}
+
+#[allow(dead_code)]
+fn classify_explanation_node_identity_fields(node: &ExplanationNode) {
+    let ExplanationNode {
+        channel: _,
+        contribution: _,
+        bound: _,
+        color: _,
+        evidence: _,
+        authority,
+        fingerprint: _,
+        fingerprint_version: _,
+    } = node;
+    let ExplanationNodeAuthority {
+        origin: _,
+        derivation_digest: _,
+        batch_digest: _,
+        batch_index: _,
+        batch_size: _,
+    } = authority;
 }
 
 impl ExplanationNode {
@@ -737,7 +864,39 @@ pub struct ExplanationReceipt {
     pub root: String,
 }
 
+#[allow(dead_code)]
+fn classify_explanation_receipt_identity_fields(receipt: &ExplanationReceipt) {
+    let ExplanationReceipt {
+        version: _,
+        color_algebra_version: _,
+        requested_threshold: _,
+        certified_coverage: _,
+        effective_limit: _,
+        aggregation_roundoff: _,
+        aggregate_color: _,
+        root: _,
+    } = receipt;
+}
+
 fn explanation_root(
+    variant: ExplanationVariant,
+    nodes: &[ExplanationNode],
+    observed: f64,
+    residual: f64,
+    receipt: &ExplanationReceipt,
+) -> String {
+    explanation_root_with_schema(
+        EXPLANATION_RECEIPT_DOMAIN,
+        variant,
+        nodes,
+        observed,
+        residual,
+        receipt,
+    )
+}
+
+fn explanation_root_with_schema(
+    domain: &str,
     variant: ExplanationVariant,
     nodes: &[ExplanationNode],
     observed: f64,
@@ -764,7 +923,7 @@ fn explanation_root(
     push_f64(&mut canon, receipt.aggregation_roundoff);
     canon.extend_from_slice(&receipt.color_algebra_version.to_le_bytes());
     push_bytes(&mut canon, &receipt.aggregate_color.canonical_bytes());
-    fs_blake3::hash_domain(EXPLANATION_RECEIPT_DOMAIN, &canon).to_string()
+    fs_blake3::hash_domain(domain, &canon).to_hex()
 }
 
 fn build_receipt(
@@ -2142,4 +2301,647 @@ pub fn drag_decomposition(
         wave_explanation_node(mach, subsonic_evidence, wave_digest, batch_digest)?,
     ];
     finalize(nodes, cd_total_observed, threshold)
+}
+
+#[cfg(test)]
+mod identity_registry_tests {
+    use super::*;
+
+    #[derive(Clone)]
+    struct NodeIdentityFixture {
+        fingerprint_version: u32,
+        color_algebra_version: u32,
+        channel: String,
+        contribution: f64,
+        bound: f64,
+        color: Color,
+        evidence: Vec<String>,
+        authority: ExplanationNodeAuthority,
+    }
+
+    impl NodeIdentityFixture {
+        fn fingerprint(&self) -> String {
+            node_fingerprint_with_versions(
+                self.fingerprint_version,
+                self.color_algebra_version,
+                &self.channel,
+                self.contribution,
+                self.bound,
+                &self.color,
+                &self.evidence,
+                &self.authority,
+            )
+        }
+
+        fn fingerprint_with_domain(&self, domain: &str) -> String {
+            node_fingerprint_with_schema(
+                domain,
+                self.fingerprint_version,
+                self.color_algebra_version,
+                &self.channel,
+                self.contribution,
+                self.bound,
+                &self.color,
+                &self.evidence,
+                &self.authority,
+            )
+        }
+    }
+
+    fn node_identity_fixture() -> NodeIdentityFixture {
+        NodeIdentityFixture {
+            fingerprint_version: EXPLANATION_FINGERPRINT_VERSION,
+            color_algebra_version: COLOR_ALGEBRA_VERSION,
+            channel: "channel".to_string(),
+            contribution: 1.0,
+            bound: 0.25,
+            color: Color::Estimated {
+                estimator: "fixture".to_string(),
+                dispersion: 0.25,
+            },
+            evidence: vec!["evidence-a".to_string(), "evidence-b".to_string()],
+            authority: ExplanationNodeAuthority::built_in("a".repeat(64), "b".repeat(64), 0, 2),
+        }
+    }
+
+    #[test]
+    fn explanation_node_identity_versions_move_fingerprint() {
+        let fixture = node_identity_fixture();
+        let base = fixture.fingerprint();
+
+        assert_ne!(
+            fixture
+                .fingerprint_with_domain("org.frankensim.fs-adjoint.explanation-node.v2.alternate"),
+            base,
+            "artifact domain must move the node identity"
+        );
+
+        let mut fingerprint_version = fixture.clone();
+        fingerprint_version.fingerprint_version += 1;
+        assert_ne!(
+            fingerprint_version.fingerprint(),
+            base,
+            "fingerprint schema version must move the node identity"
+        );
+
+        let mut color_algebra_version = fixture;
+        color_algebra_version.color_algebra_version += 1;
+        assert_ne!(
+            color_algebra_version.fingerprint(),
+            base,
+            "color-algebra version must move the node identity"
+        );
+    }
+
+    #[test]
+    fn explanation_node_payload_mutations_move_fingerprint() {
+        let fixture = node_identity_fixture();
+        let base = fixture.fingerprint();
+
+        let mut channel = fixture.clone();
+        channel.channel.push_str("-changed");
+        assert_ne!(
+            channel.fingerprint(),
+            base,
+            "channel must move the node identity"
+        );
+
+        let mut contribution = fixture.clone();
+        contribution.contribution = contribution.contribution.next_up();
+        assert_ne!(
+            contribution.fingerprint(),
+            base,
+            "contribution bits must move the node identity"
+        );
+
+        let mut bound = fixture.clone();
+        bound.bound = bound.bound.next_up();
+        assert_ne!(
+            bound.fingerprint(),
+            base,
+            "bound bits must move the node identity"
+        );
+
+        let mut color = fixture;
+        color.color = Color::Estimated {
+            estimator: "fixture".to_string(),
+            dispersion: 0.25_f64.next_up(),
+        };
+        assert_ne!(
+            color.fingerprint(),
+            base,
+            "exact color bytes must move the node identity"
+        );
+    }
+
+    #[test]
+    fn explanation_node_evidence_mutations_move_fingerprint() {
+        let fixture = node_identity_fixture();
+        let base = fixture.fingerprint();
+
+        let mut count = fixture.clone();
+        count.evidence.push("evidence-c".to_string());
+        assert_ne!(
+            count.fingerprint(),
+            base,
+            "evidence count must move the node identity"
+        );
+
+        let mut order = fixture.clone();
+        order.evidence.swap(0, 1);
+        assert_ne!(
+            order.fingerprint(),
+            base,
+            "evidence order must move the node identity"
+        );
+
+        let mut item = fixture;
+        item.evidence[0].push_str("-changed");
+        assert_ne!(
+            item.fingerprint(),
+            base,
+            "each evidence item must move the node identity"
+        );
+    }
+
+    #[test]
+    fn explanation_node_authority_mutations_move_fingerprint() {
+        let fixture = node_identity_fixture();
+        let base = fixture.fingerprint();
+
+        let mut origin = fixture.clone();
+        origin.authority.origin = ExplanationNodeOrigin::Unretained;
+        assert_ne!(
+            origin.fingerprint(),
+            base,
+            "origin must move the node identity"
+        );
+
+        let mut derivation_digest = fixture.clone();
+        derivation_digest.authority.derivation_digest = "c".repeat(64);
+        assert_ne!(
+            derivation_digest.fingerprint(),
+            base,
+            "derivation digest must move the node identity"
+        );
+
+        let mut batch_digest = fixture.clone();
+        batch_digest.authority.batch_digest = "d".repeat(64);
+        assert_ne!(
+            batch_digest.fingerprint(),
+            base,
+            "batch digest must move the node identity"
+        );
+
+        let mut batch_index = fixture.clone();
+        batch_index.authority.batch_index += 1;
+        assert_ne!(
+            batch_index.fingerprint(),
+            base,
+            "batch index must move the node identity"
+        );
+
+        let mut batch_size = fixture;
+        batch_size.authority.batch_size += 1;
+        assert_ne!(
+            batch_size.fingerprint(),
+            base,
+            "batch size must move the node identity"
+        );
+    }
+
+    #[test]
+    fn explanation_node_identity_versions_fail_closed() {
+        let fixture = node_identity_fixture();
+        let mut foreign_domain = ExplanationNode::new(
+            &fixture.channel,
+            fixture.contribution,
+            fixture.bound,
+            fixture.color.clone(),
+            fixture.evidence.clone(),
+        )
+        .expect("valid node");
+        foreign_domain.fingerprint = node_fingerprint_with_schema(
+            "org.frankensim.fs-adjoint.explanation-node.v2.alternate",
+            foreign_domain.fingerprint_version,
+            COLOR_ALGEBRA_VERSION,
+            &foreign_domain.channel,
+            foreign_domain.contribution,
+            foreign_domain.bound,
+            &foreign_domain.color,
+            &foreign_domain.evidence,
+            &foreign_domain.authority,
+        );
+        assert!(
+            !foreign_domain.verifies(),
+            "a digest produced in a foreign artifact domain must refuse"
+        );
+
+        let mut stale_fingerprint_version = ExplanationNode::new(
+            &fixture.channel,
+            fixture.contribution,
+            fixture.bound,
+            fixture.color.clone(),
+            fixture.evidence.clone(),
+        )
+        .expect("valid node");
+        stale_fingerprint_version.fingerprint_version += 1;
+        let recomputed_stale_fingerprint = node_fingerprint_with_versions(
+            stale_fingerprint_version.fingerprint_version,
+            COLOR_ALGEBRA_VERSION,
+            &stale_fingerprint_version.channel,
+            stale_fingerprint_version.contribution,
+            stale_fingerprint_version.bound,
+            &stale_fingerprint_version.color,
+            &stale_fingerprint_version.evidence,
+            &stale_fingerprint_version.authority,
+        );
+        stale_fingerprint_version.fingerprint = recomputed_stale_fingerprint;
+        assert!(
+            !stale_fingerprint_version.verifies(),
+            "an unknown fingerprint version must refuse even with a recomputed digest"
+        );
+
+        let mut stale_color_algebra_version = ExplanationNode::new(
+            &fixture.channel,
+            fixture.contribution,
+            fixture.bound,
+            fixture.color,
+            fixture.evidence,
+        )
+        .expect("valid node");
+        let recomputed_stale_color_fingerprint = node_fingerprint_with_versions(
+            EXPLANATION_FINGERPRINT_VERSION,
+            COLOR_ALGEBRA_VERSION + 1,
+            &stale_color_algebra_version.channel,
+            stale_color_algebra_version.contribution,
+            stale_color_algebra_version.bound,
+            &stale_color_algebra_version.color,
+            &stale_color_algebra_version.evidence,
+            &stale_color_algebra_version.authority,
+        );
+        stale_color_algebra_version.fingerprint = recomputed_stale_color_fingerprint;
+        assert!(
+            !stale_color_algebra_version.verifies(),
+            "a digest made with an unknown color-algebra version must refuse"
+        );
+    }
+
+    #[derive(Clone)]
+    struct ReceiptIdentityFixture {
+        variant: ExplanationVariant,
+        nodes: Vec<ExplanationNode>,
+        observed: f64,
+        residual: f64,
+        receipt: ExplanationReceipt,
+    }
+
+    impl ReceiptIdentityFixture {
+        fn root(&self) -> String {
+            explanation_root(
+                self.variant,
+                &self.nodes,
+                self.observed,
+                self.residual,
+                &self.receipt,
+            )
+        }
+
+        fn root_with_domain(&self, domain: &str) -> String {
+            explanation_root_with_schema(
+                domain,
+                self.variant,
+                &self.nodes,
+                self.observed,
+                self.residual,
+                &self.receipt,
+            )
+        }
+
+        fn into_explanation(self) -> Explanation {
+            match self.variant {
+                ExplanationVariant::Explained => Explanation::Explained {
+                    nodes: self.nodes,
+                    observed: self.observed,
+                    residual: self.residual,
+                    receipt: self.receipt,
+                },
+                ExplanationVariant::Refused => Explanation::Refused {
+                    partial: self.nodes,
+                    observed: self.observed,
+                    residual: self.residual,
+                    receipt: self.receipt,
+                },
+            }
+        }
+    }
+
+    fn receipt_identity_fixture() -> ReceiptIdentityFixture {
+        let nodes = vec![
+            ExplanationNode::new(
+                "receipt-a",
+                0.25,
+                0.0,
+                Color::Estimated {
+                    estimator: "receipt-fixture-a".to_string(),
+                    dispersion: 0.25,
+                },
+                vec!["receipt-evidence-a".to_string()],
+            )
+            .expect("valid first receipt node"),
+            ExplanationNode::new(
+                "receipt-b",
+                0.75,
+                0.0,
+                Color::Estimated {
+                    estimator: "receipt-fixture-b".to_string(),
+                    dispersion: 0.5,
+                },
+                vec!["receipt-evidence-b".to_string()],
+            )
+            .expect("valid second receipt node"),
+        ];
+        let explanation = finalize(nodes, 1.0, 1.0).expect("valid receipt fixture");
+        let Explanation::Explained {
+            nodes,
+            observed,
+            residual,
+            receipt,
+        } = explanation
+        else {
+            panic!("zero-residual receipt fixture must be explained");
+        };
+        ReceiptIdentityFixture {
+            variant: ExplanationVariant::Explained,
+            nodes,
+            observed,
+            residual,
+            receipt,
+        }
+    }
+
+    #[test]
+    fn explanation_receipt_top_level_mutations_move_root() {
+        let fixture = receipt_identity_fixture();
+        let base = fixture.root();
+
+        let foreign_domain_root =
+            fixture.root_with_domain("org.frankensim.fs-adjoint.explanation-receipt.v1.alternate");
+        assert_ne!(
+            foreign_domain_root, base,
+            "artifact domain must move the receipt root"
+        );
+        let mut foreign_domain = fixture.clone();
+        foreign_domain.receipt.root = foreign_domain_root;
+        let foreign_domain = foreign_domain.into_explanation();
+        assert!(
+            !foreign_domain.is_structurally_valid(),
+            "a receipt produced in a foreign artifact domain must refuse"
+        );
+        assert!(
+            !foreign_domain.reconciles(),
+            "a receipt produced in a foreign artifact domain cannot reconcile"
+        );
+
+        let mut variant = fixture.clone();
+        variant.variant = ExplanationVariant::Refused;
+        assert_ne!(
+            variant.root(),
+            base,
+            "outcome variant must move the receipt root"
+        );
+
+        let mut observed = fixture.clone();
+        observed.observed = observed.observed.next_up();
+        assert_ne!(
+            observed.root(),
+            base,
+            "observed bits must move the receipt root"
+        );
+
+        let mut residual = fixture;
+        residual.residual = residual.residual.next_up();
+        assert_ne!(
+            residual.root(),
+            base,
+            "residual bits must move the receipt root"
+        );
+    }
+
+    #[test]
+    fn explanation_receipt_node_sequence_mutations_move_root() {
+        let fixture = receipt_identity_fixture();
+        let base = fixture.root();
+
+        let mut count = fixture.clone();
+        let _removed = count.nodes.pop().expect("fixture contains two nodes");
+        assert_ne!(
+            count.root(),
+            base,
+            "ordered node count must move the receipt root"
+        );
+
+        let mut order = fixture;
+        order.nodes.swap(0, 1);
+        assert_ne!(
+            order.root(),
+            base,
+            "ordered node order must move the receipt root"
+        );
+    }
+
+    #[test]
+    fn explanation_receipt_node_item_mutations_move_root() {
+        let fixture = receipt_identity_fixture();
+        let base = fixture.root();
+
+        let mut fingerprint_version = fixture.clone();
+        fingerprint_version.nodes[0].fingerprint_version += 1;
+        assert_ne!(
+            fingerprint_version.root(),
+            base,
+            "node fingerprint version must move the receipt root"
+        );
+
+        let mut derivation_digest = fixture.clone();
+        derivation_digest.nodes[0].authority.derivation_digest = "c".repeat(64);
+        assert_ne!(
+            derivation_digest.root(),
+            base,
+            "node derivation digest must move the receipt root"
+        );
+
+        let mut batch_digest = fixture.clone();
+        batch_digest.nodes[0].authority.batch_digest = "d".repeat(64);
+        assert_ne!(
+            batch_digest.root(),
+            base,
+            "node batch digest must move the receipt root"
+        );
+
+        let mut batch_index = fixture.clone();
+        batch_index.nodes[0].authority.batch_index += 1;
+        assert_ne!(
+            batch_index.root(),
+            base,
+            "node batch index must move the receipt root"
+        );
+
+        let mut batch_size = fixture.clone();
+        batch_size.nodes[0].authority.batch_size += 1;
+        assert_ne!(
+            batch_size.root(),
+            base,
+            "node batch size must move the receipt root"
+        );
+
+        let mut fingerprint = fixture;
+        fingerprint.nodes[0].fingerprint = "e".repeat(64);
+        assert_ne!(
+            fingerprint.root(),
+            base,
+            "node fingerprint must move the receipt root"
+        );
+    }
+
+    #[test]
+    fn explanation_receipt_payload_mutations_move_root() {
+        let fixture = receipt_identity_fixture();
+        let base = fixture.root();
+
+        let mut requested_threshold = fixture.clone();
+        requested_threshold.receipt.requested_threshold =
+            requested_threshold.receipt.requested_threshold.next_up();
+        assert_ne!(
+            requested_threshold.root(),
+            base,
+            "requested threshold must move the receipt root"
+        );
+
+        let mut certified_coverage = fixture.clone();
+        certified_coverage.receipt.certified_coverage =
+            certified_coverage.receipt.certified_coverage.next_up();
+        assert_ne!(
+            certified_coverage.root(),
+            base,
+            "certified coverage must move the receipt root"
+        );
+
+        let mut effective_limit = fixture.clone();
+        effective_limit.receipt.effective_limit = effective_limit.receipt.effective_limit.next_up();
+        assert_ne!(
+            effective_limit.root(),
+            base,
+            "effective limit must move the receipt root"
+        );
+
+        let mut aggregation_roundoff = fixture.clone();
+        aggregation_roundoff.receipt.aggregation_roundoff =
+            aggregation_roundoff.receipt.aggregation_roundoff.next_up();
+        assert_ne!(
+            aggregation_roundoff.root(),
+            base,
+            "aggregation roundoff must move the receipt root"
+        );
+
+        let mut aggregate_color = fixture;
+        aggregate_color.receipt.aggregate_color = Color::Estimated {
+            estimator: "changed-receipt-color".to_string(),
+            dispersion: 1.0,
+        };
+        assert_ne!(
+            aggregate_color.root(),
+            base,
+            "aggregate color must move the receipt root"
+        );
+    }
+
+    #[test]
+    fn explanation_identity_ignores_presentation_renderers() {
+        let fixture = receipt_identity_fixture();
+        let base_root = fixture.root();
+        let base_fingerprint = fixture.nodes[0].fingerprint.clone();
+        let base_narrative = fixture.clone().into_explanation().render_narrative();
+
+        let mut rounded_alias = fixture;
+        rounded_alias.nodes[0].contribution = rounded_alias.nodes[0].contribution.next_up();
+        rounded_alias.nodes[0].fingerprint = node_fingerprint(
+            &rounded_alias.nodes[0].channel,
+            rounded_alias.nodes[0].contribution,
+            rounded_alias.nodes[0].bound,
+            &rounded_alias.nodes[0].color,
+            &rounded_alias.nodes[0].evidence,
+            &rounded_alias.nodes[0].authority,
+        );
+        rounded_alias.receipt.root = rounded_alias.root();
+
+        assert_eq!(
+            rounded_alias.clone().into_explanation().render_narrative(),
+            base_narrative,
+            "rounded prose may alias distinct exact contribution bits"
+        );
+        assert_ne!(rounded_alias.nodes[0].fingerprint, base_fingerprint);
+        assert_ne!(rounded_alias.root(), base_root);
+
+        let color_fixture = node_identity_fixture();
+        let base_color_json = color_fixture.color.payload_json();
+        let base_color_bytes = color_fixture.color.canonical_bytes();
+        let base_color_fingerprint = color_fixture.fingerprint();
+        let mut rounded_color_alias = color_fixture;
+        let Color::Estimated { dispersion, .. } = &mut rounded_color_alias.color else {
+            panic!("node fixture must use estimated color");
+        };
+        *dispersion = dispersion.next_up();
+
+        assert_eq!(rounded_color_alias.color.payload_json(), base_color_json);
+        assert_ne!(
+            rounded_color_alias.color.canonical_bytes(),
+            base_color_bytes
+        );
+        assert_ne!(rounded_color_alias.fingerprint(), base_color_fingerprint);
+    }
+
+    #[test]
+    fn explanation_receipt_identity_versions_fail_closed() {
+        let fixture = receipt_identity_fixture();
+        let base = fixture.root();
+
+        let mut receipt_version = fixture.clone();
+        receipt_version.receipt.version += 1;
+        assert_ne!(
+            receipt_version.root(),
+            base,
+            "receipt schema version must move the receipt root"
+        );
+        let recomputed_receipt_version_root = receipt_version.root();
+        receipt_version.receipt.root = recomputed_receipt_version_root;
+        let stale_receipt_version = receipt_version.into_explanation();
+        assert!(
+            !stale_receipt_version.is_structurally_valid(),
+            "an unknown receipt version must refuse even with a recomputed root"
+        );
+        assert!(
+            !stale_receipt_version.reconciles(),
+            "an unknown receipt version cannot reconcile"
+        );
+
+        let mut color_algebra_version = fixture;
+        color_algebra_version.receipt.color_algebra_version += 1;
+        assert_ne!(
+            color_algebra_version.root(),
+            base,
+            "color-algebra version must move the receipt root"
+        );
+        let recomputed_color_algebra_root = color_algebra_version.root();
+        color_algebra_version.receipt.root = recomputed_color_algebra_root;
+        let stale_color_algebra_version = color_algebra_version.into_explanation();
+        assert!(
+            !stale_color_algebra_version.is_structurally_valid(),
+            "an unknown color-algebra version must refuse even with a recomputed root"
+        );
+        assert!(
+            !stale_color_algebra_version.reconciles(),
+            "an unknown color-algebra version cannot reconcile"
+        );
+    }
 }

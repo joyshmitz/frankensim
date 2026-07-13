@@ -40,8 +40,8 @@ quadrature.
   finite values, and bounded resources. v0 caps are 1,000,000 mesh
   nodes, six polynomial coefficients (exact-solution degree at most
   five) after canonical zero trimming, 4,096 raw coefficients before
-  normalization, 10,000 Newton updates, 4,096 class-name bytes, 4,438
-  class canonical-identity bytes, 8,004,620 meshed-problem
+  normalization, 10,000 Newton updates, 4,096 class-name bytes, 4,441
+  class canonical-identity bytes, 8,004,626 meshed-problem
   canonical-identity bytes, and 50,000,000 conservative scalar-work units per
   synchronous call. Solver, refinement, ordering, candidate work vectors, and
   canonical identity construction use fallible reserve. The degree-five envelope is
@@ -89,7 +89,19 @@ quadrature.
   construction boundary and exposed only by borrowed accessors. A versioned
   `fs-obs::ReplayIdentity` binds the class name, exact solution, both derived
   polynomials, and their explicit schema; the problem identity additionally
-  binds the exact canonical mesh bytes. Canonically equivalent
+  binds the generic child frame/version/root, the complete class canonical
+  bytes, and the exact canonical mesh bytes. Producer schema v2 deliberately
+  rotates the formerly unversioned artifact kinds to
+  `fs-verify/fem1d-mms-class.v2` and
+  `fs-verify/fem1d-mms-problem.v2`; this is distinct from fs-obs's enclosing
+  replay-frame v1. `MmsClassIdentityReceipt` and
+  `MmsProblemIdentityReceipt` retain producer version, exact bytes, and root.
+  Receipt capture reserves fallibly. Retained receipt parts are untrusted
+  transport inputs: construction checks the exact producer version before
+  inspecting or hashing bytes, then enforces the byte cap and self-consistent
+  FNV root. Admission against a live object defensively repeats those checks
+  before exact byte/root equality. Stale/future v1/v3 receipts fail closed
+  rather than being guessed. Canonically equivalent
   signed/trailing-zero inputs therefore share identity, while changing any
   admitted semantic field changes the corresponding identity. The bounded
   identity builder checks u64 framing and the complete producer-specific byte
@@ -282,7 +294,12 @@ savings ≥ 1.5×) stay green.
 
 `tests/conformance.rs`, cases ver-001..ver-007; `tests/zoo.rs`, cases
 zoo-001..zoo-008; `tests/economics.rs`, cases econ-001..econ-009; and
-the fem1d unit refusal/convergence/Gauss batteries. JSON-line verdicts,
+the fem1d unit refusal/convergence/Gauss batteries. The identity battery
+independently mutates producer domain/version, every class transport field,
+both nested problem bindings, and mesh bytes; a one-ULP exact-solution change
+with identical six-digit display still moves the root. It locks the v2 class
+root `0x959a77719f308c27` at 281 bytes and problem root
+`0x7148ea04d6605664` at 490 bytes, and refuses stale/future receipts. JSON-line verdicts,
 seeded LCG randomness, fs-obs events for the effectivity table and
 ledger rows. Any reimplementation must pass the suite unchanged.
 
@@ -299,9 +316,10 @@ ledger rows. Any reimplementation must pass the suite unchanged.
   certificate is for the homogeneous-boundary problem defined by the
   recomputed canonical forcing and the conforming candidate; it does
   not claim that rounded Horner evaluation is symbolic algebra.
-- Canonical bytes are an in-process replay identity for this versioned MMS
-  schema. They do not authenticate provenance or replace a ledger signature;
-  consumers must still use the evidence and ledger trust boundaries.
+- Canonical bytes and their owner-local receipts are replay identities for the
+  producer-v2 MMS schemas. They do not authenticate provenance or replace a
+  ledger signature; consumers must still use the evidence and ledger trust
+  boundaries.
 - `ReplayIdentity::clone` and its formatted display remain allocation-infallible
   lower-layer conveniences; this contract's fallible construction guarantee
   covers MMS admission and identity minting, not arbitrary downstream cloning.

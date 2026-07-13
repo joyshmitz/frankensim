@@ -203,6 +203,28 @@ solver without a passing gradient check cannot merge.
   envelopes, digest/version mismatch, and malformed fixture dimensions.
   Version-2 node fingerprints use exact length-framed binary fields,
   `Color::canonical_bytes`, and the in-tree domain-separated BLAKE3 owner.
+  The owner-local `fs-adjoint:explanation-node` declaration classifies every
+  `ExplanationNode` and `ExplanationNodeAuthority` field, names the exact
+  domain/version/encoder/consumers, and links an independent mutation for each
+  semantic input. Evidence-list coverage distinguishes count, order, and item
+  mutations rather than treating the vector as one opaque case; the declared
+  artifact domain is independently mutated and a digest recomputed under a
+  foreign domain is refused by the live verifier. The companion
+  `fs-adjoint:explanation-receipt` declaration exhaustively classifies the
+  receipt fields and binds the outcome variant, ordered node count/order and
+  each retained node-identity component, observed value, residual, receipt
+  policy arithmetic, color-algebra version, and exact aggregate-color bytes.
+  Its guards refuse unknown receipt/color-algebra versions and foreign-domain
+  roots even when the supplied root is internally recomputed. `xtask
+  check-identities` compares both declarations
+  to the generated registry and their golden-coupling surfaces. Fingerprint and
+  receipt-root outputs are derived and recomputed; natural-language rendering
+  and `Color::payload_json()` are presentation-only and forbidden as identity
+  inputs. The unretained, adjoint, provenance, lifting-line, and drag
+  derivation grammars remain explicit follow-up registry rows; shared v1
+  derivation domains that currently host more than one grammar are not claimed
+  collision-separated by a role tag until a deliberate versioned rotation
+  lands.
   Finalized trees contain 1..=1024 unique nodes. Adjoint channel names are
   unique and masks are nonempty, duplicate-free, and mutually disjoint (partial
   coverage is allowed so the honesty gate can expose omitted channels).

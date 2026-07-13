@@ -35,12 +35,26 @@ const fn identity_field_bytes(key: &str, value_bytes: usize) -> usize {
     IDENTITY_FIELD_FRAME_BYTES + key.len() + value_bytes
 }
 
-/// Largest schema-v1 canonical replay identity for an admitted MMS class.
+/// Semantic schema for canonical manufactured-solution class identities.
+///
+/// Version 2 deliberately rotates the formerly unversioned artifact kind.
+pub const MMS_CLASS_IDENTITY_VERSION: u32 = 2;
+/// Versioned artifact domain for an admitted manufactured-solution class.
+pub const MMS_CLASS_IDENTITY_DOMAIN: &str = "fs-verify/fem1d-mms-class.v2";
+/// Semantic schema for canonical meshed manufactured-problem identities.
+///
+/// Version 2 deliberately rotates the formerly unversioned artifact kind and
+/// embeds the v2 class identity.
+pub const MMS_PROBLEM_IDENTITY_VERSION: u32 = 2;
+/// Versioned artifact domain for an admitted meshed manufactured problem.
+pub const MMS_PROBLEM_IDENTITY_DOMAIN: &str = "fs-verify/fem1d-mms-problem.v2";
+
+/// Largest producer-v2 canonical replay identity for an admitted MMS class.
 ///
 /// The polynomial payload maximum is 15 stored f64 coefficients: six for `u`,
 /// four for `-u''`, and five for its antiderivative.
 pub const MAX_FEM1D_CLASS_CANONICAL_IDENTITY_BYTES: usize =
-    identity_header_bytes("fs-verify/fem1d-mms-class")
+    identity_header_bytes(MMS_CLASS_IDENTITY_DOMAIN)
         + identity_field_bytes("class_schema", size_of::<u64>())
         + identity_field_bytes("name", MAX_FEM1D_CLASS_NAME_BYTES)
         + identity_field_bytes(
@@ -55,12 +69,12 @@ pub const MAX_FEM1D_CLASS_CANONICAL_IDENTITY_BYTES: usize =
             "rounded_forcing_antiderivative_f64_le",
             size_of::<u64>() * (MAX_FEM1D_POLY_COEFFICIENTS - 1),
         );
-/// Largest schema-v1 canonical replay identity for an admitted meshed problem.
+/// Largest producer-v2 canonical replay identity for an admitted meshed problem.
 ///
 /// It binds the maximum class identity and eight exact bytes for each of the
 /// 1,000,000 admitted mesh nodes.
 pub const MAX_FEM1D_PROBLEM_CANONICAL_IDENTITY_BYTES: usize =
-    identity_header_bytes("fs-verify/fem1d-mms-problem")
+    identity_header_bytes(MMS_PROBLEM_IDENTITY_DOMAIN)
         + identity_field_bytes("problem_schema", size_of::<u64>())
         + identity_field_bytes("class", size_of::<u32>() + size_of::<u64>())
         + identity_field_bytes(
@@ -68,10 +82,65 @@ pub const MAX_FEM1D_PROBLEM_CANONICAL_IDENTITY_BYTES: usize =
             MAX_FEM1D_CLASS_CANONICAL_IDENTITY_BYTES,
         )
         + identity_field_bytes("mesh_f64_le", size_of::<u64>() * MAX_FEM1D_MESH_NODES);
-/// Semantic schema for canonical manufactured-solution class identities.
-pub const MMS_CLASS_IDENTITY_VERSION: u64 = 1;
-/// Semantic schema for canonical meshed manufactured-problem identities.
-pub const MMS_PROBLEM_IDENTITY_VERSION: u64 = 1;
+/// Owner-local class-identity declaration consumed by `xtask check-identities`.
+pub const MMS_CLASS_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-verify:fem1d-mms-class",
+    "version_const=MMS_CLASS_IDENTITY_VERSION",
+    "version=2",
+    "domain=fs-verify/fem1d-mms-class.v2",
+    "domain_const=MMS_CLASS_IDENTITY_DOMAIN",
+    "encoder=class_identity",
+    "encoder_helpers=class_identity_with_budget,f64_bytes,class_identity_from_parts_with_budget",
+    "schema_constants=MMS_CLASS_IDENTITY_VERSION,MMS_CLASS_IDENTITY_DOMAIN,MAX_FEM1D_CLASS_CANONICAL_IDENTITY_BYTES,MAX_FEM1D_CLASS_NAME_BYTES,MAX_FEM1D_POLY_COEFFICIENTS,MAX_FEM1D_RAW_POLY_COEFFICIENTS,IDENTITY_STREAM_FRAME_BYTES,IDENTITY_FIELD_FRAME_BYTES",
+    "schema_functions=identity_header_bytes,identity_field_bytes,identity_build_error,MmsClass::new,Poly::from_coefficients,Poly::is_exactly_zero_at_one,Poly::derive,Poly::neg,Poly::antiderive,canonicalize_zero,validate_identity,validate_retained_identity_parts,copy_identity_bytes,check_mms_identity_version,check_mms_class_identity_version,MmsClass::identity_receipt,MmsClass::admit_identity_receipt,crates/fs-obs/src/ident.rs#ReplayIdentity::root,crates/fs-obs/src/ident.rs#ReplayIdentity::canonical_bytes",
+    "schema_dependencies=fs-obs:replay-identity-frame",
+    "digest=fnv1a64",
+    "encoding=typed-binary",
+    "sources=MmsClass,MmsClassIdentityReceipt",
+    "source_fields=MmsClass.name:semantic,MmsClass.u:semantic,MmsClass.forcing:semantic,MmsClass.rounded_forcing_antiderivative:semantic,MmsClass.identity:derived:recomputed-from-class-fields,MmsClassIdentityReceipt.declared_identity_version:semantic,MmsClassIdentityReceipt.canonical_bytes:semantic,MmsClassIdentityReceipt.root:derived:validated-fnv-root-of-retained-canonical-bytes",
+    "source_bindings=MmsClass.name>name-utf8,MmsClass.u>exact-solution-f64-le,MmsClass.forcing>forcing-f64-le,MmsClass.rounded_forcing_antiderivative>rounded-forcing-antiderivative-f64-le,MmsClassIdentityReceipt.declared_identity_version>retained-producer-version,MmsClassIdentityReceipt.canonical_bytes>retained-canonical-bytes",
+    "external_semantic_fields=artifact-domain,class-schema-version",
+    "semantic_fields=artifact-domain,class-schema-version,name-utf8,exact-solution-f64-le,forcing-f64-le,rounded-forcing-antiderivative-f64-le,retained-producer-version,retained-canonical-bytes",
+    "excluded_fields=none",
+    "consumers=MmsClass::new,MmsClassIdentityReceipt,MmsClass::admit_identity_receipt,MmsProblem::from_class,MmsProblem::with_mesh",
+    "mutations=artifact-domain:crates/fs-verify/src/fem1d.rs#mms_class_identity_fields_move_independently,class-schema-version:crates/fs-verify/src/fem1d.rs#mms_class_identity_fields_move_independently,name-utf8:crates/fs-verify/src/fem1d.rs#mms_class_identity_fields_move_independently,exact-solution-f64-le:crates/fs-verify/src/fem1d.rs#mms_class_identity_fields_move_independently,forcing-f64-le:crates/fs-verify/src/fem1d.rs#mms_class_identity_fields_move_independently,rounded-forcing-antiderivative-f64-le:crates/fs-verify/src/fem1d.rs#mms_class_identity_fields_move_independently,retained-producer-version:crates/fs-verify/src/fem1d.rs#mms_class_identity_receipts_fail_closed,retained-canonical-bytes:crates/fs-verify/src/fem1d.rs#mms_class_identity_receipts_fail_closed",
+    "nonsemantic_mutations=none",
+    "field_guard=classify_mms_class_identity_fields",
+    "transport_guard=MmsClassIdentityReceipt::from_retained_parts",
+    "version_guard=crates/fs-verify/src/fem1d.rs#mms_class_identity_receipts_fail_closed",
+    "coupling_surface=fs-verify:fem1d-mms-class",
+];
+
+/// Owner-local problem-identity declaration consumed by `xtask check-identities`.
+pub const MMS_PROBLEM_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-verify:fem1d-mms-problem",
+    "version_const=MMS_PROBLEM_IDENTITY_VERSION",
+    "version=2",
+    "domain=fs-verify/fem1d-mms-problem.v2",
+    "domain_const=MMS_PROBLEM_IDENTITY_DOMAIN",
+    "encoder=problem_identity",
+    "encoder_helpers=problem_identity_with_budget,f64_bytes,problem_identity_from_parts_with_budget",
+    "schema_constants=MMS_PROBLEM_IDENTITY_VERSION,MMS_PROBLEM_IDENTITY_DOMAIN,MAX_FEM1D_PROBLEM_CANONICAL_IDENTITY_BYTES,MAX_FEM1D_MESH_NODES,IDENTITY_STREAM_FRAME_BYTES,IDENTITY_FIELD_FRAME_BYTES",
+    "schema_functions=identity_header_bytes,identity_field_bytes,identity_build_error,admit_mesh,validate_mesh,validate_mesh_size,canonicalize_zero,Poly::try_copy,validate_retained_identity_parts,copy_identity_bytes,check_mms_identity_version,check_mms_problem_identity_version,MmsClass::identity,MmsClass::canonical_bytes,MmsClass::name,MmsClass::exact_solution,MmsProblem::new,MmsProblem::from_class,MmsProblem::from_admitted_parts,MmsProblem::with_mesh,MmsProblem::identity_receipt,MmsProblem::admit_identity_receipt,crates/fs-obs/src/ident.rs#ReplayIdentity::root,crates/fs-obs/src/ident.rs#ReplayIdentity::canonical_bytes",
+    "schema_dependencies=fs-obs:replay-identity-frame,fs-verify:fem1d-mms-class",
+    "digest=fnv1a64",
+    "encoding=typed-binary",
+    "sources=MmsProblem,MmsProblemIdentityReceipt",
+    "source_fields=MmsProblem.class:semantic,MmsProblem.mesh:semantic,MmsProblem.identity:derived:recomputed-from-class-and-mesh,MmsProblemIdentityReceipt.declared_identity_version:semantic,MmsProblemIdentityReceipt.canonical_bytes:semantic,MmsProblemIdentityReceipt.root:derived:validated-fnv-root-of-retained-canonical-bytes",
+    "source_bindings=MmsProblem.class>class-child-frame-version-root+class-canonical-bytes,MmsProblem.mesh>mesh-f64-le,MmsProblemIdentityReceipt.declared_identity_version>retained-producer-version,MmsProblemIdentityReceipt.canonical_bytes>retained-canonical-bytes",
+    "external_semantic_fields=artifact-domain,problem-schema-version",
+    "semantic_fields=artifact-domain,problem-schema-version,class-child-frame-version-root,class-canonical-bytes,mesh-f64-le,retained-producer-version,retained-canonical-bytes",
+    "excluded_fields=none",
+    "consumers=MmsProblem::new,MmsProblem::from_class,MmsProblem::with_mesh,MmsProblemIdentityReceipt,MmsProblem::admit_identity_receipt",
+    "mutations=artifact-domain:crates/fs-verify/src/fem1d.rs#mms_problem_identity_fields_move_independently,problem-schema-version:crates/fs-verify/src/fem1d.rs#mms_problem_identity_fields_move_independently,class-child-frame-version-root:crates/fs-verify/src/fem1d.rs#mms_problem_identity_fields_move_independently,class-canonical-bytes:crates/fs-verify/src/fem1d.rs#mms_problem_identity_fields_move_independently,mesh-f64-le:crates/fs-verify/src/fem1d.rs#mms_problem_identity_fields_move_independently,retained-producer-version:crates/fs-verify/src/fem1d.rs#mms_problem_identity_receipts_fail_closed,retained-canonical-bytes:crates/fs-verify/src/fem1d.rs#mms_problem_identity_receipts_fail_closed",
+    "nonsemantic_mutations=none",
+    "field_guard=classify_mms_problem_identity_fields",
+    "transport_guard=MmsProblemIdentityReceipt::from_retained_parts",
+    "version_guard=crates/fs-verify/src/fem1d.rs#mms_problem_identity_receipts_fail_closed",
+    "coupling_surface=fs-verify:fem1d-mms-problem",
+];
 
 const NEWTON_RESIDUAL_TOLERANCE: f64 = 1.0e-10;
 
@@ -307,6 +376,107 @@ impl fmt::Display for Fem1dError {
 }
 
 impl std::error::Error for Fem1dError {}
+
+/// Why retained MMS identity evidence was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MmsIdentityAdmissionError {
+    /// The producer-specific identity schema is stale or unknown.
+    UnsupportedVersion {
+        /// Identity surface being admitted.
+        identity: &'static str,
+        /// Version declared by retained state.
+        declared: u32,
+        /// Exact version supported by this build.
+        supported: u32,
+    },
+    /// Retained canonical bytes exceed the owner-specific admission cap.
+    CanonicalBytesExceeded {
+        /// Identity surface being admitted.
+        identity: &'static str,
+        /// Bytes supplied by retained state.
+        requested: usize,
+        /// Maximum canonical bytes admitted by this build.
+        limit: usize,
+    },
+    /// The retained root is not the FNV-1a root of the retained bytes.
+    RootMismatch {
+        /// Identity surface being admitted.
+        identity: &'static str,
+    },
+    /// Self-consistent retained evidence does not equal the current object.
+    IdentityMismatch {
+        /// Identity surface being admitted.
+        identity: &'static str,
+    },
+}
+
+impl fmt::Display for MmsIdentityAdmissionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedVersion {
+                identity,
+                declared,
+                supported,
+            } => write!(
+                f,
+                "retained {identity} identity v{declared} is unsupported; this build accepts exactly v{supported}"
+            ),
+            Self::CanonicalBytesExceeded {
+                identity,
+                requested,
+                limit,
+            } => write!(
+                f,
+                "retained {identity} identity has {requested} canonical bytes; limit is {limit}"
+            ),
+            Self::RootMismatch { identity } => {
+                write!(
+                    f,
+                    "retained {identity} root does not match its canonical bytes"
+                )
+            }
+            Self::IdentityMismatch { identity } => {
+                write!(f, "retained {identity} does not match the admitted object")
+            }
+        }
+    }
+}
+
+impl std::error::Error for MmsIdentityAdmissionError {}
+
+fn check_mms_identity_version(
+    identity: &'static str,
+    declared: u32,
+    supported: u32,
+) -> Result<(), MmsIdentityAdmissionError> {
+    if declared == supported {
+        Ok(())
+    } else {
+        Err(MmsIdentityAdmissionError::UnsupportedVersion {
+            identity,
+            declared,
+            supported,
+        })
+    }
+}
+
+/// Refuse retained MMS-class evidence from stale or future producer schemas.
+///
+/// # Errors
+/// [`MmsIdentityAdmissionError::UnsupportedVersion`] unless `declared` is
+/// exactly [`MMS_CLASS_IDENTITY_VERSION`].
+pub fn check_mms_class_identity_version(declared: u32) -> Result<(), MmsIdentityAdmissionError> {
+    check_mms_identity_version("MMS class", declared, MMS_CLASS_IDENTITY_VERSION)
+}
+
+/// Refuse retained MMS-problem evidence from stale or future producer schemas.
+///
+/// # Errors
+/// [`MmsIdentityAdmissionError::UnsupportedVersion`] unless `declared` is
+/// exactly [`MMS_PROBLEM_IDENTITY_VERSION`].
+pub fn check_mms_problem_identity_version(declared: u32) -> Result<(), MmsIdentityAdmissionError> {
+    check_mms_identity_version("MMS problem", declared, MMS_PROBLEM_IDENTITY_VERSION)
+}
 
 /// An immutable canonical polynomial in monomial coefficients
 /// (`c[0] + c[1]x + …`).
@@ -552,6 +722,145 @@ impl Poly {
     }
 }
 
+/// Retained, self-consistent identity evidence for one admitted MMS class.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MmsClassIdentityReceipt {
+    declared_identity_version: u32,
+    canonical_bytes: Vec<u8>,
+    root: u64,
+}
+
+impl MmsClassIdentityReceipt {
+    /// Admit retained receipt parts after enforcing the class byte cap and
+    /// verifying that `root` authenticates the exact supplied bytes.
+    ///
+    /// # Errors
+    /// [`MmsIdentityAdmissionError`] when the producer version is not current,
+    /// the bytes exceed the class cap, or the supplied root is not
+    /// self-consistent. Version refusal precedes byte hashing.
+    pub fn from_retained_parts(
+        declared_identity_version: u32,
+        canonical_bytes: Vec<u8>,
+        root: u64,
+    ) -> Result<Self, MmsIdentityAdmissionError> {
+        check_mms_class_identity_version(declared_identity_version)?;
+        validate_retained_identity_parts(
+            "MMS class",
+            &canonical_bytes,
+            root,
+            MAX_FEM1D_CLASS_CANONICAL_IDENTITY_BYTES,
+        )?;
+        Ok(Self {
+            declared_identity_version,
+            canonical_bytes,
+            root,
+        })
+    }
+
+    /// Producer-specific schema declared by retained evidence.
+    #[must_use]
+    pub const fn declared_identity_version(&self) -> u32 {
+        self.declared_identity_version
+    }
+
+    /// Exact retained canonical bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> &[u8] {
+        &self.canonical_bytes
+    }
+
+    /// Retained FNV-1a root over [`Self::canonical_bytes`].
+    #[must_use]
+    pub const fn root(&self) -> u64 {
+        self.root
+    }
+}
+
+/// Retained, self-consistent identity evidence for one meshed MMS problem.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MmsProblemIdentityReceipt {
+    declared_identity_version: u32,
+    canonical_bytes: Vec<u8>,
+    root: u64,
+}
+
+impl MmsProblemIdentityReceipt {
+    /// Admit retained receipt parts after enforcing the problem byte cap and
+    /// verifying that `root` authenticates the exact supplied bytes.
+    ///
+    /// # Errors
+    /// [`MmsIdentityAdmissionError`] when the producer version is not current,
+    /// the bytes exceed the problem cap, or the supplied root is not
+    /// self-consistent. Version refusal precedes byte hashing.
+    pub fn from_retained_parts(
+        declared_identity_version: u32,
+        canonical_bytes: Vec<u8>,
+        root: u64,
+    ) -> Result<Self, MmsIdentityAdmissionError> {
+        check_mms_problem_identity_version(declared_identity_version)?;
+        validate_retained_identity_parts(
+            "MMS problem",
+            &canonical_bytes,
+            root,
+            MAX_FEM1D_PROBLEM_CANONICAL_IDENTITY_BYTES,
+        )?;
+        Ok(Self {
+            declared_identity_version,
+            canonical_bytes,
+            root,
+        })
+    }
+
+    /// Producer-specific schema declared by retained evidence.
+    #[must_use]
+    pub const fn declared_identity_version(&self) -> u32 {
+        self.declared_identity_version
+    }
+
+    /// Exact retained canonical bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> &[u8] {
+        &self.canonical_bytes
+    }
+
+    /// Retained FNV-1a root over [`Self::canonical_bytes`].
+    #[must_use]
+    pub const fn root(&self) -> u64 {
+        self.root
+    }
+}
+
+fn validate_retained_identity_parts(
+    identity: &'static str,
+    canonical_bytes: &[u8],
+    root: u64,
+    limit: usize,
+) -> Result<(), MmsIdentityAdmissionError> {
+    if canonical_bytes.len() > limit {
+        return Err(MmsIdentityAdmissionError::CanonicalBytesExceeded {
+            identity,
+            requested: canonical_bytes.len(),
+            limit,
+        });
+    }
+    if fs_obs::fnv1a64(canonical_bytes) != root {
+        return Err(MmsIdentityAdmissionError::RootMismatch { identity });
+    }
+    Ok(())
+}
+
+fn copy_identity_bytes(bytes: &[u8], stage: &'static str) -> Result<Vec<u8>, Fem1dError> {
+    let mut retained = Vec::new();
+    retained
+        .try_reserve_exact(bytes.len())
+        .map_err(|_| Fem1dError::AllocationFailed {
+            stage,
+            requested: bytes.len(),
+        })?;
+    retained.extend_from_slice(bytes);
+    Ok(retained)
+}
+
 /// One admitted manufactured-solution class, independent of discretization.
 ///
 /// The exact solution is canonical and immutable. The forcing and its rounded
@@ -636,6 +945,50 @@ impl MmsClass {
     #[must_use]
     pub fn canonical_bytes(&self) -> &[u8] {
         self.identity.canonical_bytes()
+    }
+
+    /// Fallibly capture retained identity evidence for this exact class.
+    ///
+    /// # Errors
+    /// [`Fem1dError::AllocationFailed`] if the canonical-byte copy cannot be
+    /// reserved before any receipt escapes.
+    pub fn identity_receipt(&self) -> Result<MmsClassIdentityReceipt, Fem1dError> {
+        let canonical_bytes = copy_identity_bytes(
+            self.identity.canonical_bytes(),
+            "MMS class identity receipt",
+        )?;
+        Ok(MmsClassIdentityReceipt {
+            declared_identity_version: MMS_CLASS_IDENTITY_VERSION,
+            canonical_bytes,
+            root: self.identity.root(),
+        })
+    }
+
+    /// Admit a retained class receipt only when its producer version, exact
+    /// canonical bytes, and root equal this admitted class.
+    ///
+    /// # Errors
+    /// [`MmsIdentityAdmissionError`] for stale/future versions, hostile sizes,
+    /// inconsistent roots, or a different class identity.
+    pub fn admit_identity_receipt(
+        &self,
+        receipt: &MmsClassIdentityReceipt,
+    ) -> Result<(), MmsIdentityAdmissionError> {
+        check_mms_class_identity_version(receipt.declared_identity_version)?;
+        validate_retained_identity_parts(
+            "MMS class",
+            &receipt.canonical_bytes,
+            receipt.root,
+            MAX_FEM1D_CLASS_CANONICAL_IDENTITY_BYTES,
+        )?;
+        if receipt.root != self.identity.root()
+            || receipt.canonical_bytes != self.identity.canonical_bytes()
+        {
+            return Err(MmsIdentityAdmissionError::IdentityMismatch {
+                identity: "MMS class",
+            });
+        }
+        Ok(())
     }
 }
 
@@ -738,6 +1091,80 @@ impl MmsProblem {
     pub fn canonical_bytes(&self) -> &[u8] {
         self.identity.canonical_bytes()
     }
+
+    /// Fallibly capture retained identity evidence for this exact problem.
+    ///
+    /// # Errors
+    /// [`Fem1dError::AllocationFailed`] if the canonical-byte copy cannot be
+    /// reserved before any receipt escapes.
+    pub fn identity_receipt(&self) -> Result<MmsProblemIdentityReceipt, Fem1dError> {
+        let canonical_bytes = copy_identity_bytes(
+            self.identity.canonical_bytes(),
+            "MMS problem identity receipt",
+        )?;
+        Ok(MmsProblemIdentityReceipt {
+            declared_identity_version: MMS_PROBLEM_IDENTITY_VERSION,
+            canonical_bytes,
+            root: self.identity.root(),
+        })
+    }
+
+    /// Admit a retained problem receipt only when its producer version, exact
+    /// canonical bytes, and root equal this admitted problem.
+    ///
+    /// # Errors
+    /// [`MmsIdentityAdmissionError`] for stale/future versions, hostile sizes,
+    /// inconsistent roots, or a different problem identity.
+    pub fn admit_identity_receipt(
+        &self,
+        receipt: &MmsProblemIdentityReceipt,
+    ) -> Result<(), MmsIdentityAdmissionError> {
+        check_mms_problem_identity_version(receipt.declared_identity_version)?;
+        validate_retained_identity_parts(
+            "MMS problem",
+            &receipt.canonical_bytes,
+            receipt.root,
+            MAX_FEM1D_PROBLEM_CANONICAL_IDENTITY_BYTES,
+        )?;
+        if receipt.root != self.identity.root()
+            || receipt.canonical_bytes != self.identity.canonical_bytes()
+        {
+            return Err(MmsIdentityAdmissionError::IdentityMismatch {
+                identity: "MMS problem",
+            });
+        }
+        Ok(())
+    }
+}
+
+#[allow(dead_code)]
+fn classify_mms_class_identity_fields(class: &MmsClass, receipt: &MmsClassIdentityReceipt) {
+    let MmsClass {
+        name: _,
+        u: _,
+        forcing: _,
+        rounded_forcing_antiderivative: _,
+        identity: _,
+    } = class;
+    let MmsClassIdentityReceipt {
+        declared_identity_version: _,
+        canonical_bytes: _,
+        root: _,
+    } = receipt;
+}
+
+#[allow(dead_code)]
+fn classify_mms_problem_identity_fields(problem: &MmsProblem, receipt: &MmsProblemIdentityReceipt) {
+    let MmsProblem {
+        class: _,
+        mesh: _,
+        identity: _,
+    } = problem;
+    let MmsProblemIdentityReceipt {
+        declared_identity_version: _,
+        canonical_bytes: _,
+        root: _,
+    } = receipt;
 }
 
 fn canonicalize_zero(value: f64) -> f64 {
@@ -811,16 +1238,36 @@ fn class_identity_with_budget(
         &rounded_forcing_antiderivative.0,
         "MMS forcing-antiderivative identity",
     )?;
+    class_identity_from_parts_with_budget(
+        MMS_CLASS_IDENTITY_DOMAIN,
+        MMS_CLASS_IDENTITY_VERSION,
+        name,
+        &exact_solution_bytes,
+        &forcing_bytes,
+        &antiderivative_bytes,
+        max_canonical_bytes,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn class_identity_from_parts_with_budget(
+    domain: &str,
+    producer_version: u32,
+    name: &str,
+    exact_solution_bytes: &[u8],
+    forcing_bytes: &[u8],
+    antiderivative_bytes: &[u8],
+    max_canonical_bytes: usize,
+) -> Result<ReplayIdentity, Fem1dError> {
     let identity = (|| -> Result<ReplayIdentity, IdentityBuildError> {
-        let builder =
-            BoundedIdentityBuilder::new("fs-verify/fem1d-mms-class", max_canonical_bytes)?;
-        let builder = builder.u64("class_schema", MMS_CLASS_IDENTITY_VERSION)?;
+        let builder = BoundedIdentityBuilder::new(domain, max_canonical_bytes)?;
+        let builder = builder.u64("class_schema", u64::from(producer_version))?;
         let builder = builder.str("name", name)?;
-        let builder = builder.bytes("exact_solution_f64_le", &exact_solution_bytes)?;
-        let builder = builder.bytes("forcing_f64_le", &forcing_bytes)?;
+        let builder = builder.bytes("exact_solution_f64_le", exact_solution_bytes)?;
+        let builder = builder.bytes("forcing_f64_le", forcing_bytes)?;
         let builder = builder.bytes(
             "rounded_forcing_antiderivative_f64_le",
-            &antiderivative_bytes,
+            antiderivative_bytes,
         )?;
         Ok(builder.finish())
     })()
@@ -856,13 +1303,30 @@ fn problem_identity_with_budget(
     max_canonical_bytes: usize,
 ) -> Result<ReplayIdentity, Fem1dError> {
     let mesh_bytes = f64_bytes(mesh, "MMS problem mesh identity")?;
+    problem_identity_from_parts_with_budget(
+        MMS_PROBLEM_IDENTITY_DOMAIN,
+        MMS_PROBLEM_IDENTITY_VERSION,
+        class.identity(),
+        class.canonical_bytes(),
+        &mesh_bytes,
+        max_canonical_bytes,
+    )
+}
+
+fn problem_identity_from_parts_with_budget(
+    domain: &str,
+    producer_version: u32,
+    class_identity: &ReplayIdentity,
+    class_canonical_bytes: &[u8],
+    mesh_bytes: &[u8],
+    max_canonical_bytes: usize,
+) -> Result<ReplayIdentity, Fem1dError> {
     let identity = (|| -> Result<ReplayIdentity, IdentityBuildError> {
-        let builder =
-            BoundedIdentityBuilder::new("fs-verify/fem1d-mms-problem", max_canonical_bytes)?;
-        let builder = builder.u64("problem_schema", MMS_PROBLEM_IDENTITY_VERSION)?;
-        let builder = builder.child("class", class.identity())?;
-        let builder = builder.bytes("class_canonical_bytes", class.canonical_bytes())?;
-        let builder = builder.bytes("mesh_f64_le", &mesh_bytes)?;
+        let builder = BoundedIdentityBuilder::new(domain, max_canonical_bytes)?;
+        let builder = builder.u64("problem_schema", u64::from(producer_version))?;
+        let builder = builder.child("class", class_identity)?;
+        let builder = builder.bytes("class_canonical_bytes", class_canonical_bytes)?;
+        let builder = builder.bytes("mesh_f64_le", mesh_bytes)?;
         Ok(builder.finish())
     })()
     .map_err(|error| {
@@ -1830,9 +2294,333 @@ mod tests {
     }
 
     #[test]
+    fn mms_class_identity_fields_move_independently() {
+        let exact = poly(vec![0.0, 1.0, -1.0]);
+        let forcing = exact.derive().unwrap().derive().unwrap().neg();
+        let antiderivative = forcing.antiderive().unwrap();
+        let exact_bytes = f64_bytes(&exact.0, "class identity test").unwrap();
+        let forcing_bytes = f64_bytes(&forcing.0, "class identity test").unwrap();
+        let antiderivative_bytes = f64_bytes(&antiderivative.0, "class identity test").unwrap();
+        let cap = MAX_FEM1D_CLASS_CANONICAL_IDENTITY_BYTES + 64;
+        let root = |domain: &str,
+                    version: u32,
+                    name: &str,
+                    exact: &[u8],
+                    forcing: &[u8],
+                    antiderivative: &[u8]| {
+            class_identity_from_parts_with_budget(
+                domain,
+                version,
+                name,
+                exact,
+                forcing,
+                antiderivative,
+                cap,
+            )
+            .unwrap()
+            .root()
+        };
+        let baseline = root(
+            MMS_CLASS_IDENTITY_DOMAIN,
+            MMS_CLASS_IDENTITY_VERSION,
+            "elliptic",
+            &exact_bytes,
+            &forcing_bytes,
+            &antiderivative_bytes,
+        );
+        assert_ne!(
+            baseline,
+            root(
+                "fs-verify/fem1d-mms-class-shadow.v2",
+                MMS_CLASS_IDENTITY_VERSION,
+                "elliptic",
+                &exact_bytes,
+                &forcing_bytes,
+                &antiderivative_bytes,
+            )
+        );
+        assert_ne!(
+            baseline,
+            root(
+                MMS_CLASS_IDENTITY_DOMAIN,
+                MMS_CLASS_IDENTITY_VERSION + 1,
+                "elliptic",
+                &exact_bytes,
+                &forcing_bytes,
+                &antiderivative_bytes,
+            )
+        );
+        assert_ne!(
+            baseline,
+            root(
+                MMS_CLASS_IDENTITY_DOMAIN,
+                MMS_CLASS_IDENTITY_VERSION,
+                "elliptic-renamed",
+                &exact_bytes,
+                &forcing_bytes,
+                &antiderivative_bytes,
+            )
+        );
+
+        let value = exact.0[1];
+        let adjacent = f64::from_bits(value.to_bits() + 1);
+        assert_eq!(format!("{value:.6e}"), format!("{adjacent:.6e}"));
+        assert_ne!(value.to_bits(), adjacent.to_bits());
+        let mut changed_exact = exact_bytes.clone();
+        changed_exact[8..16].copy_from_slice(&adjacent.to_bits().to_le_bytes());
+        assert_ne!(
+            baseline,
+            root(
+                MMS_CLASS_IDENTITY_DOMAIN,
+                MMS_CLASS_IDENTITY_VERSION,
+                "elliptic",
+                &changed_exact,
+                &forcing_bytes,
+                &antiderivative_bytes,
+            )
+        );
+        let mut changed_forcing = forcing_bytes.clone();
+        changed_forcing[0] ^= 1;
+        assert_ne!(
+            baseline,
+            root(
+                MMS_CLASS_IDENTITY_DOMAIN,
+                MMS_CLASS_IDENTITY_VERSION,
+                "elliptic",
+                &exact_bytes,
+                &changed_forcing,
+                &antiderivative_bytes,
+            )
+        );
+        let mut changed_antiderivative = antiderivative_bytes.clone();
+        changed_antiderivative[0] ^= 1;
+        assert_ne!(
+            baseline,
+            root(
+                MMS_CLASS_IDENTITY_DOMAIN,
+                MMS_CLASS_IDENTITY_VERSION,
+                "elliptic",
+                &exact_bytes,
+                &forcing_bytes,
+                &changed_antiderivative,
+            )
+        );
+    }
+
+    #[test]
+    fn mms_problem_identity_fields_move_independently() {
+        let class = MmsClass::new("elliptic", poly(vec![0.0, 1.0, -1.0])).unwrap();
+        let alternate = MmsClass::new("elliptic-alt", poly(vec![0.0, 1.0, -1.0])).unwrap();
+        let mesh_bytes = f64_bytes(&[0.0, 0.5, 1.0], "problem identity test").unwrap();
+        let cap = MAX_FEM1D_PROBLEM_CANONICAL_IDENTITY_BYTES;
+        let root = |domain: &str,
+                    version: u32,
+                    child: &ReplayIdentity,
+                    class_bytes: &[u8],
+                    mesh: &[u8]| {
+            problem_identity_from_parts_with_budget(domain, version, child, class_bytes, mesh, cap)
+                .unwrap()
+                .root()
+        };
+        let baseline = root(
+            MMS_PROBLEM_IDENTITY_DOMAIN,
+            MMS_PROBLEM_IDENTITY_VERSION,
+            class.identity(),
+            class.canonical_bytes(),
+            &mesh_bytes,
+        );
+        assert_ne!(
+            baseline,
+            root(
+                "fs-verify/fem1d-mms-problem-shadow.v2",
+                MMS_PROBLEM_IDENTITY_VERSION,
+                class.identity(),
+                class.canonical_bytes(),
+                &mesh_bytes,
+            )
+        );
+        assert_ne!(
+            baseline,
+            root(
+                MMS_PROBLEM_IDENTITY_DOMAIN,
+                MMS_PROBLEM_IDENTITY_VERSION + 1,
+                class.identity(),
+                class.canonical_bytes(),
+                &mesh_bytes,
+            )
+        );
+        assert_ne!(
+            baseline,
+            root(
+                MMS_PROBLEM_IDENTITY_DOMAIN,
+                MMS_PROBLEM_IDENTITY_VERSION,
+                alternate.identity(),
+                class.canonical_bytes(),
+                &mesh_bytes,
+            )
+        );
+        let mut changed_class_bytes = class.canonical_bytes().to_vec();
+        changed_class_bytes[0] ^= 1;
+        assert_ne!(
+            baseline,
+            root(
+                MMS_PROBLEM_IDENTITY_DOMAIN,
+                MMS_PROBLEM_IDENTITY_VERSION,
+                class.identity(),
+                &changed_class_bytes,
+                &mesh_bytes,
+            )
+        );
+        let mut changed_mesh = mesh_bytes.clone();
+        changed_mesh[8] ^= 1;
+        assert_ne!(
+            baseline,
+            root(
+                MMS_PROBLEM_IDENTITY_DOMAIN,
+                MMS_PROBLEM_IDENTITY_VERSION,
+                class.identity(),
+                class.canonical_bytes(),
+                &changed_mesh,
+            )
+        );
+    }
+
+    #[test]
+    fn mms_class_identity_receipts_fail_closed() {
+        let class = MmsClass::new("elliptic", poly(vec![0.0, 1.0, -1.0])).unwrap();
+        let current = class.identity_receipt().unwrap();
+        assert_eq!(class.admit_identity_receipt(&current), Ok(()));
+        for declared in [
+            MMS_CLASS_IDENTITY_VERSION - 1,
+            MMS_CLASS_IDENTITY_VERSION + 1,
+        ] {
+            assert_eq!(
+                MmsClassIdentityReceipt::from_retained_parts(
+                    declared,
+                    current.canonical_bytes().to_vec(),
+                    current.root(),
+                ),
+                Err(MmsIdentityAdmissionError::UnsupportedVersion {
+                    identity: "MMS class",
+                    declared,
+                    supported: MMS_CLASS_IDENTITY_VERSION,
+                })
+            );
+        }
+        assert!(matches!(
+            MmsClassIdentityReceipt::from_retained_parts(
+                MMS_CLASS_IDENTITY_VERSION,
+                current.canonical_bytes().to_vec(),
+                current.root() ^ 1,
+            ),
+            Err(MmsIdentityAdmissionError::RootMismatch {
+                identity: "MMS class"
+            })
+        ));
+        let mut changed_bytes = current.canonical_bytes().to_vec();
+        changed_bytes[0] ^= 1;
+        assert!(matches!(
+            MmsClassIdentityReceipt::from_retained_parts(
+                MMS_CLASS_IDENTITY_VERSION,
+                changed_bytes,
+                current.root(),
+            ),
+            Err(MmsIdentityAdmissionError::RootMismatch {
+                identity: "MMS class"
+            })
+        ));
+        assert!(matches!(
+            MmsClassIdentityReceipt::from_retained_parts(
+                MMS_CLASS_IDENTITY_VERSION,
+                vec![0; MAX_FEM1D_CLASS_CANONICAL_IDENTITY_BYTES + 1],
+                0,
+            ),
+            Err(MmsIdentityAdmissionError::CanonicalBytesExceeded {
+                identity: "MMS class",
+                requested,
+                limit: MAX_FEM1D_CLASS_CANONICAL_IDENTITY_BYTES,
+            }) if requested == MAX_FEM1D_CLASS_CANONICAL_IDENTITY_BYTES + 1
+        ));
+        let foreign = MmsClass::new("foreign", poly(vec![0.0, 1.0, -1.0])).unwrap();
+        assert!(matches!(
+            class.admit_identity_receipt(&foreign.identity_receipt().unwrap()),
+            Err(MmsIdentityAdmissionError::IdentityMismatch {
+                identity: "MMS class"
+            })
+        ));
+    }
+
+    #[test]
+    fn mms_problem_identity_receipts_fail_closed() {
+        let class = MmsClass::new("elliptic", poly(vec![0.0, 1.0, -1.0])).unwrap();
+        let problem = MmsProblem::from_class(class, vec![0.0, 0.5, 1.0]).unwrap();
+        let current = problem.identity_receipt().unwrap();
+        assert_eq!(problem.admit_identity_receipt(&current), Ok(()));
+        for declared in [
+            MMS_PROBLEM_IDENTITY_VERSION - 1,
+            MMS_PROBLEM_IDENTITY_VERSION + 1,
+        ] {
+            assert_eq!(
+                MmsProblemIdentityReceipt::from_retained_parts(
+                    declared,
+                    current.canonical_bytes().to_vec(),
+                    current.root(),
+                ),
+                Err(MmsIdentityAdmissionError::UnsupportedVersion {
+                    identity: "MMS problem",
+                    declared,
+                    supported: MMS_PROBLEM_IDENTITY_VERSION,
+                })
+            );
+        }
+        assert!(matches!(
+            MmsProblemIdentityReceipt::from_retained_parts(
+                MMS_PROBLEM_IDENTITY_VERSION,
+                current.canonical_bytes().to_vec(),
+                current.root() ^ 1,
+            ),
+            Err(MmsIdentityAdmissionError::RootMismatch {
+                identity: "MMS problem"
+            })
+        ));
+        let mut changed_bytes = current.canonical_bytes().to_vec();
+        changed_bytes[0] ^= 1;
+        assert!(matches!(
+            MmsProblemIdentityReceipt::from_retained_parts(
+                MMS_PROBLEM_IDENTITY_VERSION,
+                changed_bytes,
+                current.root(),
+            ),
+            Err(MmsIdentityAdmissionError::RootMismatch {
+                identity: "MMS problem"
+            })
+        ));
+        assert!(matches!(
+            MmsProblemIdentityReceipt::from_retained_parts(
+                MMS_PROBLEM_IDENTITY_VERSION,
+                vec![0; MAX_FEM1D_PROBLEM_CANONICAL_IDENTITY_BYTES + 1],
+                0,
+            ),
+            Err(MmsIdentityAdmissionError::CanonicalBytesExceeded {
+                identity: "MMS problem",
+                requested,
+                limit: MAX_FEM1D_PROBLEM_CANONICAL_IDENTITY_BYTES,
+            }) if requested == MAX_FEM1D_PROBLEM_CANONICAL_IDENTITY_BYTES + 1
+        ));
+        let foreign =
+            MmsProblem::new("elliptic", poly(vec![0.0, 1.0, -1.0]), vec![0.0, 0.25, 1.0]).unwrap();
+        assert!(matches!(
+            problem.admit_identity_receipt(&foreign.identity_receipt().unwrap()),
+            Err(MmsIdentityAdmissionError::IdentityMismatch {
+                identity: "MMS problem"
+            })
+        ));
+    }
+
+    #[test]
     fn canonical_class_and_problem_identity_bind_every_semantic_field() {
-        assert_eq!(MAX_FEM1D_CLASS_CANONICAL_IDENTITY_BYTES, 4_438);
-        assert_eq!(MAX_FEM1D_PROBLEM_CANONICAL_IDENTITY_BYTES, 8_004_620);
+        assert_eq!(MAX_FEM1D_CLASS_CANONICAL_IDENTITY_BYTES, 4_441);
+        assert_eq!(MAX_FEM1D_PROBLEM_CANONICAL_IDENTITY_BYTES, 8_004_626);
         let normalized = MmsClass::new(
             "elliptic",
             poly(vec![-0.0, 1.0, -1.0, -0.0, 0.0, -0.0, 0.0]),
@@ -1853,8 +2641,8 @@ mod tests {
         );
         assert_eq!(normalized.identity(), ordinary.identity());
         assert_eq!(normalized.canonical_bytes(), ordinary.canonical_bytes());
-        assert_eq!(normalized.identity().root(), 0xff26_2525_aacf_380f);
-        assert_eq!(normalized.canonical_bytes().len(), 278);
+        assert_eq!(normalized.identity().root(), 0x959a_7771_9f30_8c27);
+        assert_eq!(normalized.canonical_bytes().len(), 281);
         let exact_class = class_identity_with_budget(
             normalized.name(),
             normalized.exact_solution(),
@@ -1874,8 +2662,8 @@ mod tests {
             ),
             Err(Fem1dError::ResourceLimit {
                 resource: "MMS class canonical identity bytes",
-                requested: 278,
-                limit: 277,
+                requested: 281,
+                limit: 280,
             })
         ));
 
@@ -1900,8 +2688,8 @@ mod tests {
             .expect("fallible class reuse on a new mesh");
         assert_eq!(coarse.identity(), same.identity());
         assert_eq!(coarse.canonical_bytes(), same.canonical_bytes());
-        assert_eq!(coarse.identity().root(), 0x447c_875d_7d12_a8e3);
-        assert_eq!(coarse.canonical_bytes().len(), 484);
+        assert_eq!(coarse.identity().root(), 0x7148_ea04_d660_5664);
+        assert_eq!(coarse.canonical_bytes().len(), 490);
         let exact_problem = problem_identity_with_budget(
             coarse.class(),
             coarse.mesh(),
@@ -1917,8 +2705,8 @@ mod tests {
             ),
             Err(Fem1dError::ResourceLimit {
                 resource: "MMS problem canonical identity bytes",
-                requested: 484,
-                limit: 483,
+                requested: 490,
+                limit: 489,
             })
         ));
         assert_ne!(coarse.identity(), shifted.identity());
