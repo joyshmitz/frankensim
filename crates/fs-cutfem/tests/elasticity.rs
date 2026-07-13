@@ -709,7 +709,7 @@ fn assert_public_expansion_basis(
         basis[dof] = 1.0;
         let nodal = operator.nodal_values(&basis);
         for (&node, &id) in operator.node_ids() {
-            for component in 0..2 {
+            for component in [0, 1] {
                 let expected: f64 = if dof == 2 * id + component { 1.0 } else { 0.0 };
                 assert_eq!(
                     nodal[&node][component].to_bits(),
@@ -719,7 +719,7 @@ fn assert_public_expansion_basis(
             }
         }
         for &(midpoint, endpoints) in constraints {
-            for component in 0..2 {
+            for component in [0, 1] {
                 let expected = endpoints[0].1 * nodal[&endpoints[0].0][component]
                     + endpoints[1].1 * nodal[&endpoints[1].0][component];
                 assert_eq!(
@@ -862,7 +862,7 @@ fn independent_ghost_energy(
             };
             let gradients_a = test_q1_gradients(lo_a, hi_a, point);
             let gradients_b = test_q1_gradients(lo_b, hi_b, point);
-            for component in 0..2 {
+            for component in [0, 1] {
                 let mut jump = 0.0;
                 for corner in 0..4 {
                     let derivative_a =
@@ -970,7 +970,7 @@ fn cte_005_graded_componentwise_patch_reconstructs_midpoints_and_replays() {
         }
     }
     for (midpoint, endpoints) in constraints {
-        for component in 0..2 {
+        for component in [0, 1] {
             let expected = endpoints[0].1 * nodal[&endpoints[0].0][component]
                 + endpoints[1].1 * nodal[&endpoints[1].0][component];
             assert!(
@@ -1361,7 +1361,7 @@ fn aligned_typed_edge_band_matches_legacy_callback_bits() {
     let mat = material();
     let value = [0.25, -0.75];
     let legacy_traction = |x: f64, y: f64| {
-        if x == 1.0 && (0.25..=0.75).contains(&y) {
+        if x.to_bits() == 1.0f64.to_bits() && (0.25..=0.75).contains(&y) {
             value
         } else {
             [0.0, 0.0]

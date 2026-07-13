@@ -140,6 +140,67 @@ pub enum BoundaryTraction<'a> {
     },
 }
 
+#[derive(Clone, Copy)]
+struct SupportedTractionSegment<'a> {
+    value: &'a dyn Fn(f64, f64) -> [f64; 2],
+    local_start: f64,
+    local_end: f64,
+    start: [f64; 2],
+    end: [f64; 2],
+}
+
+fn supported_traction_segment(
+    boundary_traction: BoundaryTraction<'_>,
+    edge: DesignBoxEdge,
+    point_a: [f64; 2],
+    point_b: [f64; 2],
+) -> Option<SupportedTractionSegment<'_>> {
+    match boundary_traction {
+        BoundaryTraction::Uncertified(value) => Some(SupportedTractionSegment {
+            value,
+            local_start: 0.0,
+            local_end: 1.0,
+            start: point_a,
+            end: point_b,
+        }),
+        BoundaryTraction::EdgeBand { support, value } => {
+            if support.edge != edge {
+                return None;
+            }
+            let (coordinate_a, coordinate_b) = match edge {
+                DesignBoxEdge::Bottom | DesignBoxEdge::Top => (point_a[0], point_b[0]),
+                DesignBoxEdge::Left | DesignBoxEdge::Right => (point_a[1], point_b[1]),
+            };
+            let edge_start = coordinate_a.min(coordinate_b);
+            let edge_end = coordinate_a.max(coordinate_b);
+            // Closed intervals deliberately use strict disjointness: endpoint
+            // contact remains potentially nonzero support and is classified.
+            if support.end < edge_start || support.start > edge_end {
+                return None;
+            }
+            let supported_start = support.start.max(edge_start);
+            let supported_end = support.end.min(edge_end);
+            let first = (supported_start - coordinate_a) / (coordinate_b - coordinate_a);
+            let second = (supported_end - coordinate_a) / (coordinate_b - coordinate_a);
+            let (start, end) = match edge {
+                DesignBoxEdge::Bottom | DesignBoxEdge::Top => {
+                    ([supported_start, point_a[1]], [supported_end, point_a[1]])
+                }
+                DesignBoxEdge::Left | DesignBoxEdge::Right => {
+                    ([point_a[0], supported_start], [point_a[0], supported_end])
+                }
+            };
+            Some(SupportedTractionSegment {
+                value,
+                local_start: first.min(second),
+                local_end: first.max(second),
+                start,
+                end,
+            })
+        }
+    }
+}
+
 /// Vector Q1 CutFEM problem on `Omega = {phi < 0}`.
 ///
 /// The constitutive parameters come from [`IsotropicElastic`], so the
@@ -927,69 +988,33 @@ impl CutElasticity<'_> {
                 let pb = self.grid.node_pos(corners[corner_indices[1]]);
                 let dx = pb[0] - pa[0];
                 let dy = pb[1] - pa[1];
-                let (traction, local_start, local_end, segment_a, segment_b) =
-                    match boundary_traction {
-                        BoundaryTraction::Uncertified(value) => (value, 0.0, 1.0, pa, pb),
-                        BoundaryTraction::EdgeBand { support, value } => {
-                            if support.edge != edge {
-                                continue;
-                            }
-                            let (coordinate_a, coordinate_b) = match edge {
-                                DesignBoxEdge::Bottom | DesignBoxEdge::Top => (pa[0], pb[0]),
-                                DesignBoxEdge::Left | DesignBoxEdge::Right => (pa[1], pb[1]),
-                            };
-                            let edge_start = coordinate_a.min(coordinate_b);
-                            let edge_end = coordinate_a.max(coordinate_b);
-                            // Closed intervals deliberately use strict disjointness:
-                            // endpoint contact remains part of potentially nonzero
-                            // support and is classified fail-closed.
-                            if support.end < edge_start || support.start > edge_end {
-                                continue;
-                            }
-                            let supported_start = support.start.max(edge_start);
-                            let supported_end = support.end.min(edge_end);
-                            let first =
-                                (supported_start - coordinate_a) / (coordinate_b - coordinate_a);
-                            let second =
-                                (supported_end - coordinate_a) / (coordinate_b - coordinate_a);
-                            let (segment_a, segment_b) = match edge {
-                                DesignBoxEdge::Bottom | DesignBoxEdge::Top => {
-                                    ([supported_start, pa[1]], [supported_end, pa[1]])
-                                }
-                                DesignBoxEdge::Left | DesignBoxEdge::Right => {
-                                    ([pa[0], supported_start], [pa[0], supported_end])
-                                }
-                            };
-                            (
-                                value,
-                                first.min(second),
-                                first.max(second),
-                                segment_a,
-                                segment_b,
-                            )
-                        }
-                    };
+                let Some(segment) = supported_traction_segment(boundary_traction, edge, pa, pb)
+                else {
+                    continue;
+                };
                 let segment_lo = [
-                    segment_a[0].min(segment_b[0]),
-                    segment_a[1].min(segment_b[1]),
+                    segment.start[0].min(segment.end[0]),
+                    segment.start[1].min(segment.end[1]),
                 ];
                 let segment_hi = [
-                    segment_a[0].max(segment_b[0]),
-                    segment_a[1].max(segment_b[1]),
+                    segment.start[0].max(segment.end[0]),
+                    segment.start[1].max(segment.end[1]),
                 ];
                 let enclosure = self.sdf.enclose(segment_lo, segment_hi);
                 if !(enclosure.lo().is_finite() && enclosure.hi().is_finite()) {
                     return Err(CutFemError::InvalidElasticityInput {
                         what: format!(
-                            "SDF enclosure is non-finite on supported {edge:?} design-box segment {segment_a:?}--{segment_b:?}"
+                            "SDF enclosure is non-finite on supported {edge:?} design-box segment {:?}--{:?}",
+                            segment.start, segment.end
                         ),
                     });
                 }
                 if enclosure.lo() <= 0.0 && enclosure.hi() >= 0.0 {
                     return Err(CutFemError::InvalidElasticityInput {
                         what: format!(
-                            "supported {edge:?} boundary traction segment {segment_a:?}--{segment_b:?} is cut by the SDF; \
-                             supported cut-edge traction quadrature is not yet certified"
+                            "supported {edge:?} boundary traction segment {:?}--{:?} is cut by the SDF; \
+                             supported cut-edge traction quadrature is not yet certified",
+                            segment.start, segment.end
                         ),
                     });
                 }
@@ -997,12 +1022,12 @@ impl CutElasticity<'_> {
                     continue;
                 }
                 let length = dx.hypot(dy);
-                let midpoint = 0.5 * (local_start + local_end);
-                let half_span = 0.5 * (local_end - local_start);
+                let midpoint = f64::midpoint(segment.local_start, segment.local_end);
+                let half_span = 0.5 * (segment.local_end - segment.local_start);
                 let gauss = half_span / 3.0f64.sqrt();
                 for t in [midpoint - gauss, midpoint + gauss] {
                     let point = [pa[0] + t * dx, pa[1] + t * dy];
-                    let value = traction(point[0], point[1]);
+                    let value = (segment.value)(point[0], point[1]);
                     if value.iter().any(|component| !component.is_finite()) {
                         return Err(CutFemError::InvalidElasticityInput {
                             what: format!("boundary traction is non-finite at {point:?}"),
