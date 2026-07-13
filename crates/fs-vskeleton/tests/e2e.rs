@@ -177,6 +177,12 @@ fn pre_v2_ledger_is_version_refused_with_teaching_error() {
         err.contains("LedgerFormatMismatch") && err.contains("fresh ledger"),
         "teaching refusal expected, got: {err}"
     );
+    // Regression: the teaching string was line-wrapped INSIDE the literal, so it
+    // rendered with long embedded space runs. It must read cleanly.
+    assert!(
+        !err.contains("  "),
+        "teaching message must not have garbled space runs: {err}"
+    );
     println!("{{\"suite\":\"fs-vskeleton\",\"case\":\"v1-refusal\",\"verdict\":\"pass\",\"detail\":\"{}\"}}",
         err.split(':').next().unwrap_or(""));
     let _ = std::fs::remove_file(&db); // test temp file cleanup, same as temp_db siblings
@@ -198,5 +204,9 @@ fn future_format_ledger_is_version_refused() {
         .err()
         .expect("future format must refuse");
     assert!(err.contains("v99"), "names the found version: {err}");
+    assert!(
+        !err.contains("  "),
+        "teaching message must not have garbled space runs: {err}"
+    );
     let _ = std::fs::remove_file(&db);
 }

@@ -17,6 +17,31 @@ pub const LEDGER_FORMAT_VERSION: &str = "2";
 
 const ARTIFACT_HASH_DOMAIN: &str = "frankensim.fs-vskeleton.artifact.v2";
 
+// The hash domain MUST carry the format version, so a future version bump that
+// forgets to re-tag the domain cannot let two ledger formats hash identical
+// bytes to the SAME content address (the cross-version replay this format gate
+// exists to prevent). The `.v2` above and `LEDGER_FORMAT_VERSION` were two
+// independent literals; pin them together at COMPILE TIME — the domain must end
+// with `v{LEDGER_FORMAT_VERSION}`, so bumping the version without updating the
+// domain fails the build rather than shipping a silent cross-version collision.
+const _: () = {
+    let d = ARTIFACT_HASH_DOMAIN.as_bytes();
+    let v = LEDGER_FORMAT_VERSION.as_bytes();
+    assert!(d.len() > v.len(), "hash domain must be longer than the version tag");
+    assert!(
+        d[d.len() - v.len() - 1] == b'v',
+        "hash domain must end with 'v' + LEDGER_FORMAT_VERSION"
+    );
+    let mut i = 0;
+    while i < v.len() {
+        assert!(
+            d[d.len() - v.len() + i] == v[i],
+            "hash domain version tag must equal LEDGER_FORMAT_VERSION"
+        );
+        i += 1;
+    }
+};
+
 /// Content hash rendered as fixed-width hex (64 chars, BLAKE3).
 #[must_use]
 pub fn content_hash(bytes: &[u8]) -> String {
@@ -55,7 +80,9 @@ impl MiniLedger {
             Some(SqliteValue::Text(v)) if v.as_str() == LEDGER_FORMAT_VERSION => {}
             Some(SqliteValue::Text(v)) => {
                 return Err(format!(
-                    "LedgerFormatMismatch: {path} is format v{} but this build reads/writes                      v{LEDGER_FORMAT_VERSION}; replay it with a matching build or re-run the                      study into a fresh ledger — hashes are not comparable across formats",
+                    "LedgerFormatMismatch: {path} is format v{} but this build reads/writes \
+                     v{LEDGER_FORMAT_VERSION}; replay it with a matching build or re-run the \
+                     study into a fresh ledger — hashes are not comparable across formats",
                     v.as_str()
                 ));
             }
@@ -65,7 +92,10 @@ impl MiniLedger {
                     .map_err(|e| format!("ledger census: {e}"))?;
                 if !artifacts.is_empty() {
                     return Err(format!(
-                        "LedgerFormatMismatch: {path} holds artifacts but no format version —                          a pre-v2 (FNV-era) ledger; its 16-hex hashes are not comparable to                          v{LEDGER_FORMAT_VERSION} BLAKE3 addresses; replay the original study                          into a fresh ledger instead of migrating hashes in place"
+                        "LedgerFormatMismatch: {path} holds artifacts but no format version — \
+                         a pre-v2 (FNV-era) ledger; its 16-hex hashes are not comparable to \
+                         v{LEDGER_FORMAT_VERSION} BLAKE3 addresses; replay the original study \
+                         into a fresh ledger instead of migrating hashes in place"
                     ));
                 }
                 conn.prepare(
