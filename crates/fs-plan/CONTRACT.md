@@ -89,6 +89,25 @@ anytime-valid audit authority.
   validated nodes, complete supplied source menu, grid, oracle metadata, exact
   declared-work charge, and full budget;
   final `context_id` additionally binds every canonical output row and score.
+  These roots are registered as `fs-plan:voi-ranked-source` and
+  `fs-plan:voi-ranked-menu`, both at identity v2 under their existing BLAKE3
+  domains. Artifact domain and producer version are explicit semantic inputs
+  for all three identities. The ranked-source grammar binds explicit counts,
+  node input order, and exact `f64::to_bits()` payloads. Caller probe input
+  order is deliberately nonsemantic because validation requires unique names
+  and the encoder sorts by name; that canonical sort is schema behavior, not a
+  separate logical semantic field. The ranked-menu grammar binds the exact
+  source root, row count/order, ranked probe names, and exact sampled/score
+  bits. `fs-plan:voi-audit-context` v2 separately binds policy, fixed alpha,
+  audit cap, chronological count/order, and every exact matched-audit field.
+  The declarations pin each local domain/version constant, plus the audit
+  alpha and record cap, and fingerprint the exact in-tree fs-blake3 constants
+  and function bodies. The ranked-menu schema depends explicitly on the
+  ranked-source schema whose root it embeds.
+  Retained consumers must admit the producer-declared version through
+  `RankedMenu::admit_retained_identity_versions` or
+  `AuditReport::admit_retained_identity_version` before comparing a retained
+  root; stale and future versions fail closed.
   `QueryHint` is structured and grid-qualified, with escaped lossless text and
   strict JSON renderers. A sampled zero is explicitly non-authoritative.
   `MatchedAuditRecord` validates private matched-cost observations with bounded
@@ -182,7 +201,10 @@ deterministic tie-breaking, and BTreeMap iteration. No RNG anywhere. VoI uses
 a fixed sweep and ranking order, canonical evaluation-permit ordinals, and
 exact computation receipts while preserving prospective audit append order;
 its result is deterministic when the supplied oracle is deterministic and its
-bounded metadata and declared work are truthful.
+bounded metadata and declared work are truthful. VoI identity floats bind by
+exact IEEE-754 bits rather than display text; node and audit order are
+semantic, ranked-row order is semantic, and source probe-menu input order is
+the documented canonicalized exception.
 
 ## Cancellation behavior
 
@@ -259,7 +281,12 @@ probe economics, sealed menu/context identity, asymmetric subset contraction,
 structured estimated hints, chronological-order e-process counterexamples,
 bounded append-only matched-cost audits, live activation/demotion, policy and
 snapshot isolation, concurrent duplicate-spend refusal, and cumulative monotone
-budget arithmetic.
+budget arithmetic. Owner-unit identity batteries additionally change every
+registered semantic field, including counts, sequence order, and exact one-ULP
+float-bit mutations whose chosen fixed-precision display text remains
+identical; an explicit non-movement case reverses the source menu.
+The integration lane admits current retained versions and refuses both stale
+and future ranked-source, ranked-menu, and audit-context versions.
 
 ## No-claim boundaries
 

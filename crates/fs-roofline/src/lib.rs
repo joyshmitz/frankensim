@@ -37,11 +37,15 @@ pub mod regress;
 /// Crate version (compile-time stamp).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-const FINALIZED_RUN_DOMAIN: &str = "org.frankensim.fs-roofline.finalized-run.v2";
-const RESULT_MANIFEST_DOMAIN: &str = "org.frankensim.fs-roofline.run-result-manifest.v1";
+/// Semantic version of the finalized registry-run identity.
+pub const FINALIZED_RUN_IDENTITY_VERSION: u32 = 2;
+/// BLAKE3 derive-key domain for the finalized registry-run identity.
+pub const FINALIZED_RUN_DOMAIN: &str = "org.frankensim.fs-roofline.finalized-run.v2";
+/// Semantic version of the ordered result-manifest child digest.
+pub const RESULT_MANIFEST_IDENTITY_VERSION: u32 = 1;
+/// BLAKE3 derive-key domain for the ordered result-manifest child digest.
+pub const RESULT_MANIFEST_DOMAIN: &str = "org.frankensim.fs-roofline.run-result-manifest.v1";
 const RESULT_MANIFEST_SCHEMA: &str = "fs-roofline-run-manifest-v1";
-const PRODUCTION_AXES_RECEIPT_DOMAIN: &str =
-    "org.frankensim.fs-roofline.production-axes-receipt.v1";
 /// Ledger protocol version for receipt-backed production roofline evidence.
 pub const PRODUCTION_PROTOCOL_VERSION: &str = "production-v2";
 pub(crate) const PRODUCTION_PROTOCOL_FIELD: &str = "\"protocol\":\"production-v2\"";
@@ -58,6 +62,103 @@ const INCONSISTENT_RECEIPT_REFUSAL: &str = "dependency receipt fields compiled i
 const ROOFLINE_SEED: &[u8] = b"roofline";
 const ROOFLINE_BUDGET: &str = "{\"wall_s\":600}";
 const ROOFLINE_CAPABILITY: &str = "{\"ops\":[\"perf.roofline\"]}";
+/// Semantic version of the current executable-content identity.
+pub const EXECUTABLE_BUILD_IDENTITY_VERSION: u32 = 1;
+/// BLAKE3 derive-key domain for the current executable-content identity.
+pub const ROOFLINE_EXECUTABLE_DOMAIN: &str = "org.frankensim.fs-roofline.executable.v1";
+
+/// Owner-local execution-binding declaration consumed by `xtask check-identities`.
+#[allow(dead_code)]
+pub const EXECUTION_BINDING_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-roofline:execution-binding",
+    "version_const=EXECUTION_BINDING_IDENTITY_VERSION",
+    "version=4",
+    "domain=org.frankensim.fs-roofline.execution-binding.v4",
+    "domain_const=EXECUTION_BINDING_DOMAIN",
+    "encoder=KernelExecutionBinding::receipt_identity",
+    "encoder_helpers=KernelExecutionBinding::canonical_json,execution_binding_receipt_with_domain,execution_path_json,execution_path_identity",
+    "schema_constants=EXECUTION_BINDING_IDENTITY_VERSION,EXECUTION_BINDING_DOMAIN,EXECUTION_BINDING_KIND,crates/fs-session/src/gemm_tune.rs#GEMM_TUNE_ROW_RECEIPT_IDENTITY_VERSION,crates/fs-session/src/gemm_tune.rs#GEMM_TUNE_ROW_RECEIPT_DOMAIN,crates/fs-session/src/gemm_tune.rs#GEMM_EXECUTION_RECEIPT_IDENTITY_VERSION,crates/fs-session/src/gemm_tune.rs#GEMM_EXECUTION_RECEIPT_DOMAIN",
+    "schema_functions=KernelExecutionBinding::gemm,KernelExecutionBinding::is_valid_for,KernelExecutionBinding::stable_equivalent,execution_path_is_complete,execution_path_shape_eq,stable_decision_binding,crates/fs-session/src/gemm_tune.rs#ValidatedGemmTuneRow::receipt_identity,crates/fs-session/src/gemm_tune.rs#ValidatedGemmTuneRow::receipt_json,crates/fs-session/src/gemm_tune.rs#GemmExecutionReceipt::receipt_identity,crates/fs-session/src/gemm_tune.rs#GemmExecutionReceipt::canonical_bytes,crates/fs-blake3/src/lib.rs#hash_domain",
+    "schema_dependencies=fs-session:gemm-tune-row-receipt,fs-session:gemm-execution-receipt",
+    "digest=fs-blake3",
+    "encoding=canonical-transport-exact-bits",
+    "sources=KernelExecutionBinding,GemmDecisionBinding",
+    "source_fields=KernelExecutionBinding.gemm:derived:nested-decision-fields-classified-separately,GemmDecisionBinding.scoped_tune_key:semantic,GemmDecisionBinding.shape_class:semantic,GemmDecisionBinding.canonical_plan:semantic,GemmDecisionBinding.source:semantic,GemmDecisionBinding.operation_tier:semantic,GemmDecisionBinding.build_identity:semantic,GemmDecisionBinding.tune_row_identity:derived:cached-child-receipt-identity,GemmDecisionBinding.validated_row:derived:nested-fs-session-tune-row-receipt,GemmDecisionBinding.execution_path:derived:nested-fs-session-execution-receipt,GemmDecisionBinding.execution_path_identity:derived:cached-child-receipt-identity",
+    "source_bindings=GemmDecisionBinding.scoped_tune_key>scoped-tune-key,GemmDecisionBinding.shape_class>shape-class,GemmDecisionBinding.canonical_plan>canonical-plan,GemmDecisionBinding.source>decision-source,GemmDecisionBinding.operation_tier>operation-tier,GemmDecisionBinding.build_identity>build-identity",
+    "external_semantic_fields=digest-domain,identity-version,kind-tag,tune-row-receipt-child,execution-path-receipt-child",
+    "semantic_fields=digest-domain,identity-version,kind-tag,scoped-tune-key,shape-class,canonical-plan,decision-source,operation-tier,build-identity,tune-row-receipt-child,execution-path-receipt-child",
+    "excluded_fields=none",
+    "consumers=Attainment::to_jsonl,Attainment::is_citable_against,stable_decision_binding,run_admission_error",
+    "mutations=digest-domain:crates/fs-roofline/src/lib.rs#execution_binding_identity_versions_fail_closed,identity-version:crates/fs-roofline/src/lib.rs#execution_binding_identity_versions_fail_closed,kind-tag:crates/fs-roofline/src/lib.rs#execution_binding_identity_versions_fail_closed,scoped-tune-key:crates/fs-roofline/src/kernels.rs#citable_gemm_receipt_rejects_every_bound_field_tamper,shape-class:crates/fs-roofline/src/kernels.rs#citable_gemm_receipt_rejects_every_bound_field_tamper,canonical-plan:crates/fs-roofline/src/kernels.rs#citable_gemm_receipt_rejects_every_bound_field_tamper,decision-source:crates/fs-roofline/src/kernels.rs#citable_gemm_receipt_rejects_every_bound_field_tamper,operation-tier:crates/fs-roofline/src/kernels.rs#citable_gemm_receipt_rejects_every_bound_field_tamper,build-identity:crates/fs-roofline/src/kernels.rs#citable_gemm_receipt_rejects_every_bound_field_tamper,tune-row-receipt-child:crates/fs-roofline/src/kernels.rs#citable_gemm_receipt_rejects_every_bound_field_tamper,execution-path-receipt-child:crates/fs-roofline/src/kernels.rs#citable_gemm_receipt_rejects_every_bound_field_tamper",
+    "nonsemantic_mutations=none",
+    "field_guard=classify_execution_binding_identity_fields",
+    "transport_guard=KernelExecutionBinding::is_valid_for",
+    "version_guard=crates/fs-roofline/src/lib.rs#execution_binding_identity_versions_fail_closed",
+    "coupling_surface=fs-roofline:execution-binding",
+];
+
+/// Owner-local finalized-run declaration consumed by `xtask check-identities`.
+#[allow(dead_code)]
+pub const FINALIZED_RUN_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-roofline:finalized-run",
+    "version_const=FINALIZED_RUN_IDENTITY_VERSION",
+    "version=2",
+    "domain=org.frankensim.fs-roofline.finalized-run.v2",
+    "domain_const=FINALIZED_RUN_DOMAIN",
+    "encoder=finalized_run_receipt",
+    "encoder_helpers=FinalizedRunIdentityInput::from_run,finalized_run_receipt_from_input,push_receipt_field,run_result_manifest_json,manifest_entry_json",
+    "schema_constants=FINALIZED_RUN_IDENTITY_VERSION,FINALIZED_RUN_DOMAIN,RESULT_MANIFEST_IDENTITY_VERSION,RESULT_MANIFEST_DOMAIN,RESULT_MANIFEST_SCHEMA",
+    "schema_functions=parse_result_manifest,valid_manifest_identifier,receipt_recomputes_from_stored_rows,Attainment::to_jsonl,AxisBaselinePolicy::receipt_json,crates/fs-blake3/src/lib.rs#hash_domain,crates/fs-blake3/src/lib.rs#hash_bytes",
+    "schema_dependencies=fs-roofline:baseline-record,fs-roofline:production-axes-receipt,fs-roofline:execution-binding",
+    "digest=fs-blake3",
+    "encoding=canonical-transport-exact-bits",
+    "sources=FinalizedRunIdentityInput",
+    "source_fields=FinalizedRunIdentityInput.baseline_receipt:semantic,FinalizedRunIdentityInput.result_payloads:semantic,FinalizedRunIdentityInput.result_manifest:semantic",
+    "source_bindings=FinalizedRunIdentityInput.baseline_receipt>baseline-receipt-bytes,FinalizedRunIdentityInput.result_payloads>result-count+ordered-result-payloads,FinalizedRunIdentityInput.result_manifest>result-manifest-bytes",
+    "external_semantic_fields=digest-domain,identity-version,receipt-length-prefixes,result-manifest-domain,result-manifest-version",
+    "semantic_fields=digest-domain,identity-version,receipt-length-prefixes,baseline-receipt-bytes,result-count,ordered-result-payloads,result-manifest-domain,result-manifest-version,result-manifest-bytes",
+    "excluded_fields=none",
+    "consumers=FinalizedRegistryRun::receipt_identity,finalize_registry_tuning,record_run_with_protocol,receipt_recomputes_from_stored_rows",
+    "mutations=digest-domain:crates/fs-roofline/src/lib.rs#finalized_run_identity_fields_move_independently,identity-version:crates/fs-roofline/src/lib.rs#finalized_run_identity_versions_fail_closed,receipt-length-prefixes:crates/fs-roofline/src/lib.rs#finalized_run_identity_fields_move_independently,baseline-receipt-bytes:crates/fs-roofline/src/lib.rs#finalized_run_identity_fields_move_independently,result-count:crates/fs-roofline/src/lib.rs#finalized_run_identity_fields_move_independently,ordered-result-payloads:crates/fs-roofline/src/lib.rs#finalized_run_identity_fields_move_independently,result-manifest-domain:crates/fs-roofline/src/lib.rs#finalized_run_identity_fields_move_independently,result-manifest-version:crates/fs-roofline/src/lib.rs#finalized_run_identity_versions_fail_closed,result-manifest-bytes:crates/fs-roofline/src/lib.rs#finalized_run_identity_fields_move_independently",
+    "nonsemantic_mutations=none",
+    "field_guard=classify_finalized_run_identity_fields",
+    "transport_guard=receipt_recomputes_from_stored_rows",
+    "version_guard=crates/fs-roofline/src/lib.rs#finalized_run_identity_versions_fail_closed",
+    "coupling_surface=fs-roofline:finalized-run",
+];
+
+/// Owner-local executable-build declaration consumed by `xtask check-identities`.
+#[allow(dead_code)]
+pub const EXECUTABLE_BUILD_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-roofline:executable-build",
+    "version_const=EXECUTABLE_BUILD_IDENTITY_VERSION",
+    "version=1",
+    "domain=org.frankensim.fs-roofline.executable.v1",
+    "domain_const=ROOFLINE_EXECUTABLE_DOMAIN",
+    "encoder=read_executable_build_identity",
+    "encoder_helpers=executable_build_identity_from_input",
+    "schema_constants=EXECUTABLE_BUILD_IDENTITY_VERSION,ROOFLINE_EXECUTABLE_DOMAIN",
+    "schema_functions=executable_build_identity,require_stable_executable_identity,crates/fs-blake3/src/lib.rs#Blake3::new,crates/fs-blake3/src/lib.rs#Blake3::update,crates/fs-blake3/src/lib.rs#Blake3::finalize,crates/fs-blake3/src/lib.rs#hash_domain",
+    "schema_dependencies=none",
+    "digest=fs-blake3",
+    "encoding=typed-binary",
+    "sources=ExecutableBuildIdentityInput",
+    "source_fields=ExecutableBuildIdentityInput.byte_len:semantic,ExecutableBuildIdentityInput.raw_hash:semantic",
+    "source_bindings=ExecutableBuildIdentityInput.byte_len>executable-byte-count,ExecutableBuildIdentityInput.raw_hash>raw-executable-content-hash",
+    "external_semantic_fields=digest-domain,identity-version,length-prefix-layout",
+    "semantic_fields=digest-domain,identity-version,length-prefix-layout,executable-byte-count,raw-executable-content-hash",
+    "excluded_fields=executable-path:path-location-is-not-content,read-chunk-size:streaming-implementation-only",
+    "consumers=versions_json,record_run_with_protocol,staleness_at,production_op_envelope_is_valid",
+    "mutations=digest-domain:crates/fs-roofline/src/lib.rs#executable_build_identity_fields_move_independently,identity-version:crates/fs-roofline/src/lib.rs#executable_build_identity_versions_fail_closed,length-prefix-layout:crates/fs-roofline/src/lib.rs#executable_build_identity_fields_move_independently,executable-byte-count:crates/fs-roofline/src/lib.rs#executable_build_identity_fields_move_independently,raw-executable-content-hash:crates/fs-roofline/src/lib.rs#executable_build_identity_fields_move_independently",
+    "nonsemantic_mutations=executable-path:crates/fs-roofline/src/lib.rs#executable_build_identity_excludes_path_and_chunking,read-chunk-size:crates/fs-roofline/src/lib.rs#executable_build_identity_excludes_path_and_chunking",
+    "field_guard=classify_executable_build_identity_fields",
+    "transport_guard=require_stable_executable_identity",
+    "version_guard=crates/fs-roofline/src/lib.rs#executable_build_identity_versions_fail_closed",
+    "coupling_surface=fs-roofline:executable-build",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EvidenceNamespace {
@@ -263,16 +364,7 @@ fn baseline_identity_json(identity: &BaselineIdentity) -> String {
 }
 
 fn machine_axes_receipt_json(axes: &MachineAxes) -> String {
-    format!(
-        "{{\"fingerprint\":\"{:016x}\",\"cpu_brand\":\"{}\",\"logical_cpus\":{},\"bandwidth_single_bits\":\"{:016x}\",\"bandwidth_all_core_bits\":\"{:016x}\",\"peak_single_bits\":\"{:016x}\",\"peak_all_core_bits\":\"{:016x}\"}}",
-        axes.fingerprint,
-        json_escape(&axes.cpu_brand),
-        axes.logical_cpus,
-        axes.bandwidth_single_gbs.to_bits(),
-        axes.bandwidth_all_core_gbs.to_bits(),
-        axes.peak_single_gflops.to_bits(),
-        axes.peak_all_core_gflops.to_bits(),
-    )
+    production::machine_axes_receipt_json(axes)
 }
 
 /// Shape-class prefix under which versioned roofline rows land in the ledger
@@ -451,8 +543,44 @@ struct GemmDecisionBinding {
     execution_path_identity: fs_ledger::ContentHash,
 }
 
-const GEMM_EXECUTION_PATH_DOMAIN: &str = "org.frankensim.fs-roofline.gemm-execution-path.v3";
-const EXECUTION_BINDING_DOMAIN: &str = "org.frankensim.fs-roofline.execution-binding.v3";
+/// Semantic version of the complete GEMM decision/execution binding.
+pub const EXECUTION_BINDING_IDENTITY_VERSION: u32 = 4;
+/// BLAKE3 derive-key domain for the complete GEMM decision/execution binding.
+pub const EXECUTION_BINDING_DOMAIN: &str = "org.frankensim.fs-roofline.execution-binding.v4";
+const EXECUTION_BINDING_KIND: &str = "gemm-v4";
+
+#[allow(dead_code)]
+fn classify_execution_binding_identity_fields(
+    binding: &KernelExecutionBinding,
+    gemm_source: &GemmDecisionBinding,
+) {
+    let KernelExecutionBinding { gemm } = binding;
+    let GemmDecisionBinding {
+        scoped_tune_key,
+        shape_class,
+        canonical_plan,
+        source,
+        operation_tier,
+        build_identity,
+        tune_row_identity,
+        validated_row,
+        execution_path,
+        execution_path_identity,
+    } = gemm_source;
+    let _ = (
+        gemm,
+        scoped_tune_key,
+        shape_class,
+        canonical_plan,
+        source,
+        operation_tier,
+        build_identity,
+        tune_row_identity,
+        validated_row,
+        execution_path,
+        execution_path_identity,
+    );
+}
 
 fn execution_path_is_complete(path: &fs_session::GemmExecutionReceipt) -> bool {
     path.is_complete()
@@ -484,6 +612,20 @@ fn execution_path_json(path: &fs_session::GemmExecutionReceipt) -> String {
     )
 }
 
+fn execution_path_identity(
+    path: &fs_session::GemmExecutionReceipt,
+) -> Result<fs_ledger::ContentHash, String> {
+    path.receipt_identity()
+        .map_err(|error| format!("cannot bind the complete GEMM execution receipt: {error}"))
+}
+
+fn execution_binding_receipt_with_domain(
+    canonical_json: &str,
+    domain: &str,
+) -> fs_ledger::ContentHash {
+    fs_blake3::hash_domain(domain, canonical_json.as_bytes())
+}
+
 impl KernelExecutionBinding {
     #[allow(clippy::too_many_arguments)] // every independent provenance field stays explicit
     pub(crate) fn gemm(
@@ -504,10 +646,7 @@ impl KernelExecutionBinding {
             );
         }
         let tune_row_identity = validated_row.receipt_identity();
-        let execution_path_identity = fs_blake3::hash_domain(
-            GEMM_EXECUTION_PATH_DOMAIN,
-            execution_path_json(&execution_path).as_bytes(),
-        );
+        let execution_path_identity = execution_path_identity(&execution_path)?;
         let binding = Self {
             gemm: GemmDecisionBinding {
                 scoped_tune_key,
@@ -547,11 +686,8 @@ impl KernelExecutionBinding {
                 .ends_with(&format!("/build={}", gemm.build_identity))
             && gemm.tune_row_identity == gemm.validated_row.receipt_identity()
             && execution_path_is_complete(&gemm.execution_path)
-            && gemm.execution_path_identity
-                == fs_blake3::hash_domain(
-                    GEMM_EXECUTION_PATH_DOMAIN,
-                    execution_path_json(&gemm.execution_path).as_bytes(),
-                )
+            && execution_path_identity(&gemm.execution_path)
+                .is_ok_and(|identity| gemm.execution_path_identity == identity)
             && gemm.validated_row.matches_decision(
                 &gemm.scoped_tune_key,
                 &gemm.shape_class,
@@ -581,7 +717,7 @@ impl KernelExecutionBinding {
     fn canonical_json(&self) -> String {
         let gemm = &self.gemm;
         format!(
-            "{{\"kind\":\"gemm-v3\",\"scoped_tune_key\":\"{}\",\"shape_class\":\"{}\",\"plan\":\"{}\",\"source\":\"{}\",\"operation_tier\":\"{}\",\"build_identity\":\"{}\",\"tune_row_identity\":\"{}\",\"tune_row\":{},\"execution_path_identity\":\"{}\",\"execution_path\":{}}}",
+            "{{\"kind\":\"{EXECUTION_BINDING_KIND}\",\"scoped_tune_key\":\"{}\",\"shape_class\":\"{}\",\"plan\":\"{}\",\"source\":\"{}\",\"operation_tier\":\"{}\",\"build_identity\":\"{}\",\"tune_row_identity\":\"{}\",\"tune_row\":{},\"execution_path_identity\":\"{}\",\"execution_path\":{}}}",
             json_escape(&gemm.scoped_tune_key),
             json_escape(&gemm.shape_class),
             json_escape(&gemm.canonical_plan),
@@ -596,7 +732,7 @@ impl KernelExecutionBinding {
     }
 
     fn receipt_identity(&self) -> fs_ledger::ContentHash {
-        fs_blake3::hash_domain(EXECUTION_BINDING_DOMAIN, self.canonical_json().as_bytes())
+        execution_binding_receipt_with_domain(&self.canonical_json(), EXECUTION_BINDING_DOMAIN)
     }
 
     fn validated_row(&self) -> &fs_session::ValidatedGemmTuneRow {
@@ -612,6 +748,7 @@ fn execution_path_shape_eq(
         && right.is_complete()
         && left.completed_tiles == right.completed_tiles
         && left.total_tiles == right.total_tiles
+        && left.memory == right.memory
         && left.panels.len() == right.panels.len()
         && left.panels.iter().zip(&right.panels).all(|(left, right)| {
             left.kernel == right.kernel
@@ -1430,6 +1567,38 @@ struct ManifestEntry {
     payload: fs_blake3::ContentHash,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FinalizedRunIdentityInput {
+    baseline_receipt: String,
+    result_payloads: Vec<String>,
+    result_manifest: String,
+}
+
+impl FinalizedRunIdentityInput {
+    fn from_run(
+        axes: &MachineAxes,
+        post_axes: &MachineAxes,
+        baseline: AxisBaselinePolicy<'_>,
+        results: &[Attainment],
+    ) -> Self {
+        Self {
+            baseline_receipt: baseline.receipt_json(axes, post_axes),
+            result_payloads: results.iter().map(Attainment::to_jsonl).collect(),
+            result_manifest: run_result_manifest_json(results),
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn classify_finalized_run_identity_fields(input: &FinalizedRunIdentityInput) {
+    let FinalizedRunIdentityInput {
+        baseline_receipt,
+        result_payloads,
+        result_manifest,
+    } = input;
+    let _ = (baseline_receipt, result_payloads, result_manifest);
+}
+
 fn manifest_entry_json(ordinal: u64, kernel: &str, version: &str, payload: &str) -> String {
     format!(
         "{{\"ordinal\":{ordinal},\"kernel\":\"{}\",\"version\":\"{}\",\"payload\":\"{payload}\"}}",
@@ -1519,31 +1688,32 @@ fn parse_result_manifest(text: &str) -> Option<Vec<ManifestEntry>> {
     (reserialized == text).then_some(entries)
 }
 
+fn finalized_run_receipt_from_input(
+    input: &FinalizedRunIdentityInput,
+    finalized_domain: &str,
+    result_manifest_domain: &str,
+) -> fs_blake3::ContentHash {
+    let mut payload = Vec::new();
+    push_receipt_field(&mut payload, input.baseline_receipt.as_bytes());
+    let result_count = u64::try_from(input.result_payloads.len()).expect("result count fits u64");
+    payload.extend_from_slice(&result_count.to_le_bytes());
+    for result_payload in &input.result_payloads {
+        push_receipt_field(&mut payload, result_payload.as_bytes());
+    }
+    let manifest_hash =
+        fs_blake3::hash_domain(result_manifest_domain, input.result_manifest.as_bytes());
+    push_receipt_field(&mut payload, manifest_hash.as_bytes());
+    fs_blake3::hash_domain(finalized_domain, &payload)
+}
+
 fn finalized_run_receipt(
     axes: &MachineAxes,
     post_axes: &MachineAxes,
     baseline: AxisBaselinePolicy<'_>,
     results: &[Attainment],
 ) -> fs_blake3::ContentHash {
-    let mut payload = Vec::new();
-    let baseline_receipt = baseline.receipt_json(axes, post_axes);
-    push_receipt_field(&mut payload, baseline_receipt.as_bytes());
-    let result_count = u64::try_from(results.len()).expect("result count fits u64");
-    payload.extend_from_slice(&result_count.to_le_bytes());
-    for result in results {
-        let receipt = result.to_jsonl();
-        push_receipt_field(&mut payload, receipt.as_bytes());
-    }
-    // Bind the ordered result manifest (kernel/version/ordinal/payload hash
-    // per row) into the receipt itself: staleness later recomputes this whole
-    // hash from the manifest and the stored rows, so a row swap that keeps
-    // the old receipt can no longer classify as fresh evidence (bead gp3.15).
-    let manifest_hash = fs_blake3::hash_domain(
-        RESULT_MANIFEST_DOMAIN,
-        run_result_manifest_json(results).as_bytes(),
-    );
-    push_receipt_field(&mut payload, manifest_hash.as_bytes());
-    fs_blake3::hash_domain(FINALIZED_RUN_DOMAIN, &payload)
+    let input = FinalizedRunIdentityInput::from_run(axes, post_axes, baseline, results);
+    finalized_run_receipt_from_input(&input, FINALIZED_RUN_DOMAIN, RESULT_MANIFEST_DOMAIN)
 }
 
 /// Complete the registry's tuning lifecycle at the same admission boundary
@@ -1755,8 +1925,6 @@ pub const SECTION_14_1_TARGETS: &[TargetRow] = &[
 const ROOFLINE_ROW_SCHEMA: &str = "fs-roofline-ledger-row-v4";
 const ROOFLINE_PAYLOAD_ARTIFACT_KIND: &str = "roofline-benchmark-result";
 const ROOFLINE_PAYLOAD_ARTIFACT_META: &str = "{\"schema\":\"fs-roofline-benchmark-result-v1\"}";
-const ROOFLINE_EXECUTABLE_DOMAIN: &str = "org.frankensim.fs-roofline.executable.v1";
-
 /// Maximum age of a roofline measurement that can be reported as fresh.
 pub const STALENESS_MAX_AGE_NS: i64 = 30 * 24 * 60 * 60 * 1_000_000_000;
 
@@ -1768,6 +1936,28 @@ fn executable_build_identity() -> Result<fs_blake3::ContentHash, LedgerError> {
     static IDENTITY: std::sync::OnceLock<Result<fs_blake3::ContentHash, LedgerError>> =
         std::sync::OnceLock::new();
     IDENTITY.get_or_init(read_executable_build_identity).clone()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ExecutableBuildIdentityInput {
+    byte_len: u64,
+    raw_hash: fs_blake3::ContentHash,
+}
+
+#[allow(dead_code)]
+fn classify_executable_build_identity_fields(input: &ExecutableBuildIdentityInput) {
+    let ExecutableBuildIdentityInput { byte_len, raw_hash } = input;
+    let _ = (byte_len, raw_hash);
+}
+
+fn executable_build_identity_from_input(
+    input: &ExecutableBuildIdentityInput,
+    domain: &str,
+) -> fs_blake3::ContentHash {
+    let mut preimage = [0_u8; 40];
+    preimage[..8].copy_from_slice(&input.byte_len.to_le_bytes());
+    preimage[8..].copy_from_slice(input.raw_hash.as_bytes());
+    fs_blake3::hash_domain(domain, &preimage)
 }
 
 fn read_executable_build_identity() -> Result<fs_blake3::ContentHash, LedgerError> {
@@ -1810,12 +2000,12 @@ fn read_executable_build_identity() -> Result<fs_blake3::ContentHash, LedgerErro
         hasher.update(&chunk[..read]);
     }
     let raw = hasher.finalize();
-    let mut preimage = [0_u8; 40];
-    preimage[..8].copy_from_slice(&total.to_le_bytes());
-    preimage[8..].copy_from_slice(raw.as_bytes());
-    Ok(fs_blake3::hash_domain(
+    Ok(executable_build_identity_from_input(
+        &ExecutableBuildIdentityInput {
+            byte_len: total,
+            raw_hash: raw,
+        },
         ROOFLINE_EXECUTABLE_DOMAIN,
-        &preimage,
     ))
 }
 
@@ -2749,10 +2939,14 @@ fn validate_protocol_axes(
         || pre_fingerprint != current_fingerprint
         || protocol.post_fingerprint != post_fingerprint
         || baseline.baseline_hash != current_baseline
-        || fs_blake3::hash_domain(PRODUCTION_AXES_RECEIPT_DOMAIN, baseline.pre.as_bytes())
-            != protocol.pre_axes_receipt
-        || fs_blake3::hash_domain(PRODUCTION_AXES_RECEIPT_DOMAIN, baseline.post.as_bytes())
-            != protocol.post_axes_receipt
+        || fs_blake3::hash_domain(
+            production::PRODUCTION_AXES_RECEIPT_DOMAIN,
+            baseline.pre.as_bytes(),
+        ) != protocol.pre_axes_receipt
+        || fs_blake3::hash_domain(
+            production::PRODUCTION_AXES_RECEIPT_DOMAIN,
+            baseline.post.as_bytes(),
+        ) != protocol.post_axes_receipt
         || !protocol
             .baseline_admission
             .ends_with(",\"verdict\":{\"baseline\":\"trusted\"}}")
@@ -3301,6 +3495,220 @@ mod tests {
         };
         let timed = measure(&mut kernel, 0, 3, &axes).expect("bounded receipt measurement");
         (axes, baseline, identity, timed)
+    }
+
+    #[test]
+    fn execution_binding_identity_versions_fail_closed() {
+        assert_eq!(EXECUTION_BINDING_IDENTITY_VERSION, 4);
+        assert!(EXECUTION_BINDING_DOMAIN.ends_with(".v4"));
+        assert_eq!(EXECUTION_BINDING_KIND, "gemm-v4");
+        let current_json = format!("{{\"kind\":\"{EXECUTION_BINDING_KIND}\"}}");
+        let current =
+            execution_binding_receipt_with_domain(&current_json, EXECUTION_BINDING_DOMAIN);
+        assert_ne!(
+            current,
+            execution_binding_receipt_with_domain(
+                &current_json,
+                "org.frankensim.fs-roofline.execution-binding.v3",
+            ),
+            "the old domain cannot alias the complete v4 binding"
+        );
+        assert_ne!(
+            current,
+            execution_binding_receipt_with_domain(
+                "{\"kind\":\"gemm-v3\"}",
+                EXECUTION_BINDING_DOMAIN,
+            ),
+            "the retained kind tag is versioned independently of formatting"
+        );
+    }
+
+    #[test]
+    fn finalized_run_identity_fields_move_independently() {
+        fn identity(input: &FinalizedRunIdentityInput) -> fs_blake3::ContentHash {
+            finalized_run_receipt_from_input(input, FINALIZED_RUN_DOMAIN, RESULT_MANIFEST_DOMAIN)
+        }
+
+        let input = FinalizedRunIdentityInput {
+            baseline_receipt: "{\"baseline\":\"trusted\"}".to_string(),
+            result_payloads: vec!["row-a".to_string(), "row-b".to_string()],
+            result_manifest: format!("{{\"schema\":\"{RESULT_MANIFEST_SCHEMA}\",\"entries\":[]}}"),
+        };
+        let original = identity(&input);
+
+        assert_ne!(
+            original,
+            finalized_run_receipt_from_input(
+                &input,
+                "org.frankensim.fs-roofline.finalized-run-foreign.v2",
+                RESULT_MANIFEST_DOMAIN,
+            ),
+            "the finalized-run digest domain is semantic"
+        );
+        assert_ne!(
+            original,
+            finalized_run_receipt_from_input(
+                &input,
+                FINALIZED_RUN_DOMAIN,
+                "org.frankensim.fs-roofline.run-result-manifest-foreign.v1",
+            ),
+            "the result-manifest child domain is semantic"
+        );
+
+        let mut altered = input.clone();
+        altered.baseline_receipt.push('x');
+        assert_ne!(
+            original,
+            identity(&altered),
+            "baseline receipt must move identity"
+        );
+        let mut altered = input.clone();
+        altered.result_payloads.push("row-c".to_string());
+        assert_ne!(
+            original,
+            identity(&altered),
+            "result count must move identity"
+        );
+        let mut altered = input.clone();
+        altered.result_payloads.swap(0, 1);
+        assert_ne!(
+            original,
+            identity(&altered),
+            "ordered result payloads must move identity"
+        );
+        let mut altered = input.clone();
+        altered.result_manifest.push('x');
+        assert_ne!(
+            original,
+            identity(&altered),
+            "result-manifest bytes must move identity"
+        );
+
+        let mut unframed = Vec::new();
+        unframed.extend_from_slice(input.baseline_receipt.as_bytes());
+        for row in &input.result_payloads {
+            unframed.extend_from_slice(row.as_bytes());
+        }
+        unframed.extend_from_slice(
+            fs_blake3::hash_domain(RESULT_MANIFEST_DOMAIN, input.result_manifest.as_bytes())
+                .as_bytes(),
+        );
+        assert_ne!(
+            original,
+            fs_blake3::hash_domain(FINALIZED_RUN_DOMAIN, &unframed),
+            "removing the count and length prefixes must move identity"
+        );
+    }
+
+    #[test]
+    fn finalized_run_identity_versions_fail_closed() {
+        assert_eq!(FINALIZED_RUN_IDENTITY_VERSION, 2);
+        assert!(FINALIZED_RUN_DOMAIN.ends_with(".v2"));
+        assert_eq!(RESULT_MANIFEST_IDENTITY_VERSION, 1);
+        assert!(RESULT_MANIFEST_DOMAIN.ends_with(".v1"));
+        let current = format!("{{\"schema\":\"{RESULT_MANIFEST_SCHEMA}\",\"entries\":[]}}");
+        assert!(parse_result_manifest(&current).is_some());
+        assert!(
+            parse_result_manifest(&current.replace("manifest-v1", "manifest-v2")).is_none(),
+            "a stale or future child-manifest version must fail closed"
+        );
+        let input = FinalizedRunIdentityInput {
+            baseline_receipt: "baseline".to_string(),
+            result_payloads: vec!["result".to_string()],
+            result_manifest: current,
+        };
+        assert_ne!(
+            finalized_run_receipt_from_input(&input, FINALIZED_RUN_DOMAIN, RESULT_MANIFEST_DOMAIN,),
+            finalized_run_receipt_from_input(
+                &input,
+                "org.frankensim.fs-roofline.finalized-run.v3",
+                RESULT_MANIFEST_DOMAIN,
+            ),
+            "a version/domain rotation must move the finalized-run identity"
+        );
+    }
+
+    #[test]
+    fn executable_build_identity_fields_move_independently() {
+        let input = ExecutableBuildIdentityInput {
+            byte_len: 3,
+            raw_hash: fs_blake3::hash_bytes(b"abc"),
+        };
+        let original = executable_build_identity_from_input(&input, ROOFLINE_EXECUTABLE_DOMAIN);
+        assert_ne!(
+            original,
+            executable_build_identity_from_input(
+                &input,
+                "org.frankensim.fs-roofline.executable-foreign.v1",
+            ),
+            "the executable digest domain is semantic"
+        );
+        let mut altered = input;
+        altered.byte_len += 1;
+        assert_ne!(
+            original,
+            executable_build_identity_from_input(&altered, ROOFLINE_EXECUTABLE_DOMAIN),
+            "the executable byte count is semantic"
+        );
+        let mut altered = input;
+        altered.raw_hash = fs_blake3::hash_bytes(b"abd");
+        assert_ne!(
+            original,
+            executable_build_identity_from_input(&altered, ROOFLINE_EXECUTABLE_DOMAIN),
+            "the raw executable content hash is semantic"
+        );
+        let mut reversed = [0_u8; 40];
+        reversed[..32].copy_from_slice(input.raw_hash.as_bytes());
+        reversed[32..].copy_from_slice(&input.byte_len.to_le_bytes());
+        assert_ne!(
+            original,
+            fs_blake3::hash_domain(ROOFLINE_EXECUTABLE_DOMAIN, &reversed),
+            "the length-prefix layout is semantic"
+        );
+    }
+
+    #[test]
+    fn executable_build_identity_excludes_path_and_chunking() {
+        fn streamed_identity(_path: &str, chunks: &[&[u8]]) -> fs_blake3::ContentHash {
+            let mut hasher = fs_blake3::Blake3::new();
+            let mut byte_len = 0_u64;
+            for chunk in chunks {
+                byte_len += u64::try_from(chunk.len()).expect("fixture length fits u64");
+                hasher.update(chunk);
+            }
+            executable_build_identity_from_input(
+                &ExecutableBuildIdentityInput {
+                    byte_len,
+                    raw_hash: hasher.finalize(),
+                },
+                ROOFLINE_EXECUTABLE_DOMAIN,
+            )
+        }
+
+        assert_eq!(
+            streamed_identity("/first/path", &[b"abcdef"]),
+            streamed_identity("/other/path", &[b"ab", b"c", b"def"]),
+            "path spelling and read chunking are not executable content"
+        );
+    }
+
+    #[test]
+    fn executable_build_identity_versions_fail_closed() {
+        assert_eq!(EXECUTABLE_BUILD_IDENTITY_VERSION, 1);
+        assert!(ROOFLINE_EXECUTABLE_DOMAIN.ends_with(".v1"));
+        let input = ExecutableBuildIdentityInput {
+            byte_len: 3,
+            raw_hash: fs_blake3::hash_bytes(b"abc"),
+        };
+        let current = executable_build_identity_from_input(&input, ROOFLINE_EXECUTABLE_DOMAIN);
+        let stale = executable_build_identity_from_input(
+            &input,
+            "org.frankensim.fs-roofline.executable.v2",
+        );
+        assert!(
+            require_stable_executable_identity(current, stale).is_err(),
+            "a stale or future executable identity cannot satisfy the current build guard"
+        );
     }
 
     #[test]

@@ -42,7 +42,11 @@ crates plus `std`.
   necessary but not sufficient for citation: only the sealed production
   protocol supplies production-registry provenance. GEMM additionally requires
   at least one warmup and an identical sealed decision/path binding after every
-  timed repetition. Analytic helper rows are deliberately non-citable.
+  timed repetition. Execution binding v4 binds the complete producer-owned
+  `fs_session::GemmExecutionReceipt::receipt_identity`, including every logical
+  memory-plan field; the embedded `execution_path` JSON is a diagnostic
+  projection, while its adjacent child identity is the authoritative complete
+  receipt. Analytic helper rows are deliberately non-citable.
 - `finalize_registry_tuning` / `RooflineKernel::finalize_tuning` — apply that
   single aggregate admission decision to process-local state. Both outcomes
   consume the kernel's pending marker; rejection also invalidates its local

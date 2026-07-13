@@ -16,7 +16,8 @@ use fs_plan::voi::{
     AuditReport, AuditVerdict, Cx, DecisionBudget, DecisionEvaluationPermit, DecisionOracle,
     LiveDecision, MAX_VOI_AUDIT_RECORDS, MAX_VOI_EVALUATIONS, MAX_VOI_GRID, MAX_VOI_NAME_BYTES,
     MAX_VOI_NODES, MAX_VOI_PROBES, MAX_VOI_WORK_UNITS, MatchedAuditRecord, Probe, ProbeKind,
-    RankedMenu, UncertaintyNode, VoiError, VoiScheduler,
+    RankedMenu, UncertaintyNode, VOI_AUDIT_CONTEXT_IDENTITY_VERSION,
+    VOI_RANKED_MENU_IDENTITY_VERSION, VOI_RANKED_SOURCE_IDENTITY_VERSION, VoiError, VoiScheduler,
     audit_scheduling as audit_scheduling_scoped, hint_for_query,
     rank_purchases as rank_purchases_impl,
 };
@@ -1576,4 +1577,71 @@ fn voi_017_oracle_cancellation_and_work_budget_fail_closed() {
     assert_ne!(first.context_id(), second.context_id());
     assert_eq!(first.computation().evaluations(), required_evaluations);
     assert_eq!(first.computation().work_units(), ORACLE_TEST_WORK_UNITS);
+}
+
+#[test]
+fn voi_identity_versions_fail_closed() {
+    let ranked = scheduler_menu();
+    assert_eq!(
+        ranked.source_identity_version(),
+        VOI_RANKED_SOURCE_IDENTITY_VERSION
+    );
+    assert_eq!(ranked.identity_version(), VOI_RANKED_MENU_IDENTITY_VERSION);
+    assert_eq!(
+        ranked.admit_retained_identity_versions(
+            VOI_RANKED_SOURCE_IDENTITY_VERSION,
+            VOI_RANKED_MENU_IDENTITY_VERSION,
+        ),
+        Ok(())
+    );
+
+    for declared in [
+        VOI_RANKED_SOURCE_IDENTITY_VERSION - 1,
+        VOI_RANKED_SOURCE_IDENTITY_VERSION + 1,
+    ] {
+        assert_eq!(
+            ranked.admit_retained_identity_versions(declared, VOI_RANKED_MENU_IDENTITY_VERSION,),
+            Err(VoiError::UnsupportedIdentityVersion {
+                identity: "VoI ranked source",
+                declared,
+                supported: VOI_RANKED_SOURCE_IDENTITY_VERSION,
+            })
+        );
+    }
+    for declared in [
+        VOI_RANKED_MENU_IDENTITY_VERSION - 1,
+        VOI_RANKED_MENU_IDENTITY_VERSION + 1,
+    ] {
+        assert_eq!(
+            ranked.admit_retained_identity_versions(VOI_RANKED_SOURCE_IDENTITY_VERSION, declared,),
+            Err(VoiError::UnsupportedIdentityVersion {
+                identity: "VoI ranked menu",
+                declared,
+                supported: VOI_RANKED_MENU_IDENTITY_VERSION,
+            })
+        );
+    }
+
+    let report = audit_scheduling(&[audit_record(0, true)]).expect("valid retained audit root");
+    assert_eq!(
+        report.identity_version(),
+        VOI_AUDIT_CONTEXT_IDENTITY_VERSION
+    );
+    assert_eq!(
+        report.admit_retained_identity_version(VOI_AUDIT_CONTEXT_IDENTITY_VERSION),
+        Ok(())
+    );
+    for declared in [
+        VOI_AUDIT_CONTEXT_IDENTITY_VERSION - 1,
+        VOI_AUDIT_CONTEXT_IDENTITY_VERSION + 1,
+    ] {
+        assert_eq!(
+            report.admit_retained_identity_version(declared),
+            Err(VoiError::UnsupportedIdentityVersion {
+                identity: "VoI audit context",
+                declared,
+                supported: VOI_AUDIT_CONTEXT_IDENTITY_VERSION,
+            })
+        );
+    }
 }

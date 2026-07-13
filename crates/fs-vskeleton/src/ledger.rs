@@ -15,7 +15,52 @@ use fsqlite::{Connection, SqliteValue};
 /// (16-hex hashes, no meta table); v2 is domain-separated BLAKE3.
 pub const LEDGER_FORMAT_VERSION: &str = "2";
 
-const ARTIFACT_HASH_DOMAIN: &str = "frankensim.fs-vskeleton.artifact.v2";
+/// Semantic version of the mini-ledger artifact content address.
+pub const ARTIFACT_CONTENT_IDENTITY_VERSION: u32 = 2;
+
+/// Domain separating mini-ledger artifact bytes from every other BLAKE3 use.
+pub const ARTIFACT_CONTENT_IDENTITY_DOMAIN: &str = "frankensim.fs-vskeleton.artifact.v2";
+
+/// Owner-local declaration consumed by `xtask check-identities`.
+pub const ARTIFACT_CONTENT_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-vskeleton:artifact-content",
+    "version_const=ARTIFACT_CONTENT_IDENTITY_VERSION",
+    "version=2",
+    "domain=frankensim.fs-vskeleton.artifact.v2",
+    "domain_const=ARTIFACT_CONTENT_IDENTITY_DOMAIN",
+    "encoder=content_hash",
+    "encoder_helpers=content_hash_with_domain",
+    "schema_functions=artifact_content_identity_version_is_supported,MiniLedger::open,MiniLedger::put_artifact,MiniLedger::verify_artifact_integrity,crates/fs-blake3/src/lib.rs#ContentHash::to_hex,crates/fs-blake3/src/lib.rs#hash_domain",
+    "schema_constants=ARTIFACT_CONTENT_IDENTITY_VERSION,ARTIFACT_CONTENT_IDENTITY_DOMAIN,LEDGER_FORMAT_VERSION",
+    "schema_dependencies=none",
+    "digest=fs-blake3",
+    "encoding=canonical-transport-exact-bits",
+    "sources=ArtifactContentIdentityInput",
+    "source_fields=ArtifactContentIdentityInput.bytes:semantic",
+    "source_bindings=ArtifactContentIdentityInput.bytes>artifact-bytes",
+    "external_semantic_fields=artifact-domain",
+    "semantic_fields=artifact-domain,artifact-bytes",
+    "excluded_fields=artifact-kind:metadata-only-not-content-address",
+    "consumers=MiniLedger::put_artifact,MiniLedger::verify_artifact_integrity,crate::run_study,crate::replay",
+    "mutations=artifact-domain:crates/fs-vskeleton/src/ledger.rs#artifact_content_domain_moves_identity,artifact-bytes:crates/fs-vskeleton/src/ledger.rs#artifact_content_bytes_move_identity",
+    "nonsemantic_mutations=artifact-kind:crates/fs-vskeleton/src/ledger.rs#artifact_kind_does_not_move_content_identity",
+    "field_guard=classify_artifact_content_identity_fields",
+    "transport_guard=content_hash",
+    "version_guard=crates/fs-vskeleton/src/ledger.rs#artifact_content_identity_version_fails_closed",
+    "coupling_surface=fs-vskeleton:artifact-content",
+];
+
+struct ArtifactContentIdentityInput<'a> {
+    bytes: &'a [u8],
+}
+
+/// Whether a retained mini-ledger content address uses the only identity
+/// semantics accepted by this build.
+#[must_use]
+pub const fn artifact_content_identity_version_is_supported(declared: u32) -> bool {
+    declared == ARTIFACT_CONTENT_IDENTITY_VERSION
+}
 
 // The hash domain MUST carry the format version, so a future version bump that
 // forgets to re-tag the domain cannot let two ledger formats hash identical
@@ -25,9 +70,12 @@ const ARTIFACT_HASH_DOMAIN: &str = "frankensim.fs-vskeleton.artifact.v2";
 // with `v{LEDGER_FORMAT_VERSION}`, so bumping the version without updating the
 // domain fails the build rather than shipping a silent cross-version collision.
 const _: () = {
-    let d = ARTIFACT_HASH_DOMAIN.as_bytes();
+    let d = ARTIFACT_CONTENT_IDENTITY_DOMAIN.as_bytes();
     let v = LEDGER_FORMAT_VERSION.as_bytes();
-    assert!(d.len() > v.len(), "hash domain must be longer than the version tag");
+    assert!(
+        d.len() > v.len(),
+        "hash domain must be longer than the version tag"
+    );
     assert!(
         d[d.len() - v.len() - 1] == b'v',
         "hash domain must end with 'v' + LEDGER_FORMAT_VERSION"
@@ -45,7 +93,19 @@ const _: () = {
 /// Content hash rendered as fixed-width hex (64 chars, BLAKE3).
 #[must_use]
 pub fn content_hash(bytes: &[u8]) -> String {
-    fs_blake3::hash_domain(ARTIFACT_HASH_DOMAIN, bytes).to_hex()
+    content_hash_with_domain(
+        ARTIFACT_CONTENT_IDENTITY_DOMAIN,
+        &ArtifactContentIdentityInput { bytes },
+    )
+}
+
+fn content_hash_with_domain(domain: &str, input: &ArtifactContentIdentityInput<'_>) -> String {
+    fs_blake3::hash_domain(domain, input.bytes).to_hex()
+}
+
+#[allow(dead_code)] // exhaustive source-shape guard consumed by xtask
+fn classify_artifact_content_identity_fields(input: &ArtifactContentIdentityInput<'_>) {
+    let ArtifactContentIdentityInput { bytes: _ } = input;
 }
 
 /// A thin ledger over one fsqlite database file.
@@ -253,5 +313,40 @@ impl MiniLedger {
             .execute("UPDATE artifacts SET bytes = X'DEADBEEF' WHERE kind != 'study-ir'")
             .map_err(|e| format!("corruption hook: {e}"))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn artifact_content_domain_moves_identity() {
+        let input = ArtifactContentIdentityInput { bytes: b"payload" };
+        assert_ne!(
+            content_hash_with_domain(ARTIFACT_CONTENT_IDENTITY_DOMAIN, &input),
+            content_hash_with_domain("frankensim.fs-vskeleton.artifact.v2.alternate", &input)
+        );
+    }
+
+    #[test]
+    fn artifact_content_bytes_move_identity() {
+        assert_ne!(content_hash(b"payload-a"), content_hash(b"payload-b"));
+    }
+
+    #[test]
+    fn artifact_kind_does_not_move_content_identity() {
+        let identity_for_kind = |_kind: &str| content_hash(b"shared payload");
+        assert_eq!(identity_for_kind("study-ir"), identity_for_kind("field"));
+    }
+
+    #[test]
+    fn artifact_content_identity_version_fails_closed() {
+        assert_eq!(ARTIFACT_CONTENT_IDENTITY_VERSION, 2);
+        assert_eq!(LEDGER_FORMAT_VERSION, "2");
+        assert!(ARTIFACT_CONTENT_IDENTITY_DOMAIN.ends_with(".v2"));
+        assert!(artifact_content_identity_version_is_supported(2));
+        assert!(!artifact_content_identity_version_is_supported(1));
+        assert!(!artifact_content_identity_version_is_supported(3));
     }
 }

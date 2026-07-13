@@ -6,7 +6,7 @@
 
 use fs_obs::ident::{
     BoundedIdentityBuilder, IDENT_SCHEMA_VERSION, IdentError, IdentityBuildError, IdentityBuilder,
-    ReplayIdentity, check_version,
+    REPLAY_IDENTITY_DOMAIN, ReplayIdentity, check_version,
 };
 
 fn verdict(case: &str, pass: bool, detail: &str) {
@@ -174,7 +174,9 @@ fn ident_004_type_confusion_and_order_are_semantic() {
         .u64("a", 1)
         .finish()
         .root();
-    // Floats bind by BIT PATTERN: -0.0 vs 0.0 differ; NaN is stable.
+    // Floats bind by BIT PATTERN: -0.0 vs 0.0 differ; identical NaNs are
+    // stable, while distinct payloads remain distinct even when display text
+    // collapses them.
     let z = IdentityBuilder::new("x").f64_bits("v", 0.0).finish().root();
     let nz = IdentityBuilder::new("x")
         .f64_bits("v", -0.0)
@@ -188,10 +190,24 @@ fn ident_004_type_confusion_and_order_are_semantic() {
         .f64_bits("v", f64::NAN)
         .finish()
         .root();
+    let display_nan_a = f64::from_bits(0x7ff8_0000_0000_0001);
+    let display_nan_b = f64::from_bits(0x7ff8_0000_0000_0002);
+    assert_eq!(display_nan_a.to_string(), display_nan_b.to_string());
+    let nan_payload_a = IdentityBuilder::new("x")
+        .f64_bits("v", display_nan_a)
+        .finish();
+    let nan_payload_b = IdentityBuilder::new("x")
+        .f64_bits("v", display_nan_b)
+        .finish();
     verdict(
         "ident-004",
-        types_distinct && ab != ba && z != nz && nan1 == nan2,
-        "type tags, field order, and float bit patterns are all semantic; NaN is stable",
+        types_distinct
+            && ab != ba
+            && z != nz
+            && nan1 == nan2
+            && nan_payload_a.root() != nan_payload_b.root()
+            && nan_payload_a.canonical_bytes() != nan_payload_b.canonical_bytes(),
+        "type tags, field order, and exact float bits are semantic; same-display NaN payloads remain distinct",
     );
 }
 
@@ -230,12 +246,37 @@ fn ident_006_unknown_schema_versions_fail_closed() {
     // The version is also part of the hashed frame: an identity's hex
     // form names it explicitly.
     let id = IdentityBuilder::new("x").finish();
-    let versioned_display = id.hex().starts_with("fsid-v1:x:");
+    let versioned_display = id
+        .hex()
+        .starts_with(&format!("{REPLAY_IDENTITY_DOMAIN}-v1:x:"));
+    assert_eq!(
+        id.root(),
+        fs_obs::fnv1a64(id.canonical_bytes()),
+        "the root is derived from the retained canonical bytes"
+    );
+    assert!(
+        id.canonical_bytes()
+            .starts_with(REPLAY_IDENTITY_DOMAIN.as_bytes()),
+        "the canonical frame begins with the declared replay domain bytes"
+    );
+    let version_offset = REPLAY_IDENTITY_DOMAIN.len();
+    let mut future_bytes = id.canonical_bytes().to_vec();
+    future_bytes[version_offset..version_offset + core::mem::size_of::<u32>()]
+        .copy_from_slice(&(IDENT_SCHEMA_VERSION + 1).to_le_bytes());
+    let version_bytes_move_root = fs_obs::fnv1a64(&future_bytes) != id.root();
+    let mut foreign_domain_bytes = id.canonical_bytes().to_vec();
+    foreign_domain_bytes[0] ^= 1;
+    let domain_bytes_move_root = fs_obs::fnv1a64(&foreign_domain_bytes) != id.root();
     verdict(
         "ident-006",
-        current_ok && future_refused && past_refused && versioned_display,
+        current_ok
+            && future_refused
+            && past_refused
+            && versioned_display
+            && version_bytes_move_root
+            && domain_bytes_move_root,
         "declared schema versions other than the supported one are refused (fail closed); \
-         the version is framed into the root and the display form",
+         the declared domain and version bytes are framed into the root and display form",
     );
 }
 
@@ -274,6 +315,11 @@ fn ident_007_bounded_builder_is_byte_exact_and_refuses_at_the_cap() {
     let bounded = bounded_reference(&parent, exact_limit).expect("exact byte cap is admitted");
     assert_eq!(bounded, legacy);
     assert_eq!(bounded.exclusions(), legacy.exclusions());
+    let roomier = bounded_reference(&parent, exact_limit + 64)
+        .expect("a larger admission budget preserves the exact artifact");
+    assert_eq!(roomier, legacy);
+    assert_eq!(roomier.canonical_bytes(), bounded.canonical_bytes());
+    assert_eq!(roomier.root(), bounded.root());
 
     assert_eq!(
         bounded_reference(&parent, exact_limit - 1),
@@ -283,9 +329,17 @@ fn ident_007_bounded_builder_is_byte_exact_and_refuses_at_the_cap() {
         })
     );
 
-    // For kind "x" and key "k", the v1 header and field framing consume
-    // 35 bytes before payload. This locks exact-limit and limit+1 behavior.
-    let payload_limit = 39;
+    // Derive the header directly from the declared replay domain so this cap
+    // cannot preserve an obsolete split-magic assumption.
+    let framing_without_payload = REPLAY_IDENTITY_DOMAIN.len()
+        + core::mem::size_of::<u32>()
+        + core::mem::size_of::<u64>()
+        + "x".len()
+        + core::mem::size_of::<u8>()
+        + core::mem::size_of::<u64>()
+        + "k".len()
+        + core::mem::size_of::<u64>();
+    let payload_limit = framing_without_payload + 4;
     let exact_payload = BoundedIdentityBuilder::new("x", payload_limit)
         .expect("header fits")
         .bytes("k", b"1234")

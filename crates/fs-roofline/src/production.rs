@@ -35,12 +35,94 @@ use fs_ledger::{Ledger, LedgerError};
 use crate::kernels::production_registry_with_ledger;
 use crate::{
     Attainment, AxisBaselinePolicy, DependencyReceiptBinding, FinalizedRegistryRun, MachineAxes,
-    PRODUCTION_AXES_RECEIPT_DOMAIN, PRODUCTION_PROTOCOL_FIELD, RooflineKernel,
-    finalize_registry_tuning, json_escape, record_run_with_protocol, run_admission_error,
-    run_registry,
+    PRODUCTION_PROTOCOL_FIELD, RooflineKernel, finalize_registry_tuning, json_escape,
+    record_run_with_protocol, run_admission_error, run_registry,
 };
 
 const RUN_NONCE_DOMAIN: &str = "org.frankensim.fs-roofline.production-run-nonce.v1";
+/// Semantic version of a production machine-axis observation receipt.
+pub const PRODUCTION_AXES_RECEIPT_IDENTITY_VERSION: u32 = 1;
+/// BLAKE3 derive-key domain for a production machine-axis observation receipt.
+pub const PRODUCTION_AXES_RECEIPT_DOMAIN: &str =
+    "org.frankensim.fs-roofline.production-axes-receipt.v1";
+
+/// Owner-local production-axis declaration consumed by `xtask check-identities`.
+#[allow(dead_code)]
+pub const PRODUCTION_AXES_RECEIPT_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-roofline:production-axes-receipt",
+    "version_const=PRODUCTION_AXES_RECEIPT_IDENTITY_VERSION",
+    "version=1",
+    "domain=org.frankensim.fs-roofline.production-axes-receipt.v1",
+    "domain_const=PRODUCTION_AXES_RECEIPT_DOMAIN",
+    "encoder=axes_receipt",
+    "encoder_helpers=ProductionAxesReceiptInput::from_axes,production_axes_receipt_json,machine_axes_receipt_json,axes_receipt_with_domain",
+    "schema_constants=PRODUCTION_AXES_RECEIPT_IDENTITY_VERSION,PRODUCTION_AXES_RECEIPT_DOMAIN",
+    "schema_functions=production_axes_receipt_is_current,crates/fs-roofline/src/lib.rs#json_escape,crates/fs-roofline/src/lib.rs#parse_machine_axes_receipt,crates/fs-blake3/src/lib.rs#hash_domain",
+    "schema_dependencies=none",
+    "digest=fs-blake3",
+    "encoding=canonical-transport-exact-bits",
+    "sources=ProductionAxesReceiptInput",
+    "source_fields=ProductionAxesReceiptInput.fingerprint:semantic,ProductionAxesReceiptInput.cpu_brand:semantic,ProductionAxesReceiptInput.logical_cpus:semantic,ProductionAxesReceiptInput.bandwidth_single_bits:semantic,ProductionAxesReceiptInput.bandwidth_all_core_bits:semantic,ProductionAxesReceiptInput.peak_single_bits:semantic,ProductionAxesReceiptInput.peak_all_core_bits:semantic",
+    "source_bindings=ProductionAxesReceiptInput.fingerprint>machine-fingerprint,ProductionAxesReceiptInput.cpu_brand>cpu-brand-utf8,ProductionAxesReceiptInput.logical_cpus>logical-cpus,ProductionAxesReceiptInput.bandwidth_single_bits>bandwidth-single-bits,ProductionAxesReceiptInput.bandwidth_all_core_bits>bandwidth-all-core-bits,ProductionAxesReceiptInput.peak_single_bits>peak-single-bits,ProductionAxesReceiptInput.peak_all_core_bits>peak-all-core-bits",
+    "external_semantic_fields=digest-domain,identity-version",
+    "semantic_fields=digest-domain,identity-version,machine-fingerprint,cpu-brand-utf8,logical-cpus,bandwidth-single-bits,bandwidth-all-core-bits,peak-single-bits,peak-all-core-bits",
+    "excluded_fields=none",
+    "consumers=ProductionRun::protocol_fields,validate_protocol_axes,AxisBaselinePolicy::receipt_json",
+    "mutations=digest-domain:crates/fs-roofline/src/production.rs#production_axes_receipt_identity_fields_move_independently,identity-version:crates/fs-roofline/src/production.rs#production_axes_receipt_versions_fail_closed,machine-fingerprint:crates/fs-roofline/src/production.rs#production_axes_receipt_identity_fields_move_independently,cpu-brand-utf8:crates/fs-roofline/src/production.rs#production_axes_receipt_identity_fields_move_independently,logical-cpus:crates/fs-roofline/src/production.rs#production_axes_receipt_identity_fields_move_independently,bandwidth-single-bits:crates/fs-roofline/src/production.rs#production_axes_receipt_identity_fields_move_independently,bandwidth-all-core-bits:crates/fs-roofline/src/production.rs#production_axes_receipt_identity_fields_move_independently,peak-single-bits:crates/fs-roofline/src/production.rs#production_axes_receipt_identity_fields_move_independently,peak-all-core-bits:crates/fs-roofline/src/production.rs#production_axes_receipt_identity_fields_move_independently",
+    "nonsemantic_mutations=none",
+    "field_guard=classify_production_axes_receipt_identity_fields",
+    "transport_guard=production_axes_receipt_is_current",
+    "version_guard=crates/fs-roofline/src/production.rs#production_axes_receipt_versions_fail_closed",
+    "coupling_surface=fs-roofline:production-axes-receipt",
+];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProductionAxesReceiptInput {
+    fingerprint: u64,
+    cpu_brand: String,
+    logical_cpus: u32,
+    bandwidth_single_bits: u64,
+    bandwidth_all_core_bits: u64,
+    peak_single_bits: u64,
+    peak_all_core_bits: u64,
+}
+
+impl ProductionAxesReceiptInput {
+    fn from_axes(axes: &MachineAxes) -> Self {
+        Self {
+            fingerprint: axes.fingerprint,
+            cpu_brand: axes.cpu_brand.clone(),
+            logical_cpus: axes.logical_cpus,
+            bandwidth_single_bits: axes.bandwidth_single_gbs.to_bits(),
+            bandwidth_all_core_bits: axes.bandwidth_all_core_gbs.to_bits(),
+            peak_single_bits: axes.peak_single_gflops.to_bits(),
+            peak_all_core_bits: axes.peak_all_core_gflops.to_bits(),
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn classify_production_axes_receipt_identity_fields(input: &ProductionAxesReceiptInput) {
+    let ProductionAxesReceiptInput {
+        fingerprint,
+        cpu_brand,
+        logical_cpus,
+        bandwidth_single_bits,
+        bandwidth_all_core_bits,
+        peak_single_bits,
+        peak_all_core_bits,
+    } = input;
+    let _ = (
+        fingerprint,
+        cpu_brand,
+        logical_cpus,
+        bandwidth_single_bits,
+        bandwidth_all_core_bits,
+        peak_single_bits,
+        peak_all_core_bits,
+    );
+}
 #[cfg(test)]
 const DEVELOPMENT_SALT_REFUSAL: &str = "dependency graph uses the development equivalence salt; production citation requires an exact operator-observed normal/build receipt";
 
@@ -407,12 +489,44 @@ impl ProductionRun<'_> {
     }
 }
 
+fn production_axes_receipt_json(input: &ProductionAxesReceiptInput) -> String {
+    format!(
+        "{{\"fingerprint\":\"{:016x}\",\"cpu_brand\":\"{}\",\"logical_cpus\":{},\"bandwidth_single_bits\":\"{:016x}\",\"bandwidth_all_core_bits\":\"{:016x}\",\"peak_single_bits\":\"{:016x}\",\"peak_all_core_bits\":\"{:016x}\"}}",
+        input.fingerprint,
+        json_escape(&input.cpu_brand),
+        input.logical_cpus,
+        input.bandwidth_single_bits,
+        input.bandwidth_all_core_bits,
+        input.peak_single_bits,
+        input.peak_all_core_bits,
+    )
+}
+
+pub(crate) fn machine_axes_receipt_json(axes: &MachineAxes) -> String {
+    production_axes_receipt_json(&ProductionAxesReceiptInput::from_axes(axes))
+}
+
+fn axes_receipt_with_domain(
+    input: &ProductionAxesReceiptInput,
+    domain: &str,
+) -> fs_blake3::ContentHash {
+    fs_blake3::hash_domain(domain, production_axes_receipt_json(input).as_bytes())
+}
+
 /// Content hash of one observed probe's canonical JSONL receipt.
 fn axes_receipt(axes: &MachineAxes) -> fs_blake3::ContentHash {
-    fs_blake3::hash_domain(
+    axes_receipt_with_domain(
+        &ProductionAxesReceiptInput::from_axes(axes),
         PRODUCTION_AXES_RECEIPT_DOMAIN,
-        crate::machine_axes_receipt_json(axes).as_bytes(),
     )
+}
+
+#[allow(dead_code)]
+fn production_axes_receipt_is_current(
+    axes: &MachineAxes,
+    retained: fs_blake3::ContentHash,
+) -> bool {
+    axes_receipt(axes) == retained
 }
 
 /// Process-unique per-run challenge: wall clock, pid, a monotone counter,
@@ -452,6 +566,71 @@ mod tests {
             peak_single_gflops: 50_000.0,
             peak_all_core_gflops: 300_000.0,
         }
+    }
+
+    #[test]
+    fn production_axes_receipt_identity_fields_move_independently() {
+        fn assert_moves(
+            original: fs_blake3::ContentHash,
+            altered: &ProductionAxesReceiptInput,
+            field: &str,
+        ) {
+            assert_ne!(
+                original,
+                axes_receipt_with_domain(altered, PRODUCTION_AXES_RECEIPT_DOMAIN),
+                "mutating {field} must move the production-axis receipt"
+            );
+        }
+
+        let axes = synthetic_axes(0xA11CE);
+        let input = ProductionAxesReceiptInput::from_axes(&axes);
+        let original = axes_receipt(&axes);
+        assert!(production_axes_receipt_is_current(&axes, original));
+        assert_ne!(
+            original,
+            axes_receipt_with_domain(
+                &input,
+                "org.frankensim.fs-roofline.production-axes-receipt-foreign.v1",
+            ),
+            "the digest domain is semantic"
+        );
+
+        let mut altered = input.clone();
+        altered.fingerprint += 1;
+        assert_moves(original, &altered, "machine-fingerprint");
+        let mut altered = input.clone();
+        altered.cpu_brand.push('x');
+        assert_moves(original, &altered, "cpu-brand-utf8");
+        let mut altered = input.clone();
+        altered.logical_cpus += 1;
+        assert_moves(original, &altered, "logical-cpus");
+        let mut altered = input.clone();
+        altered.bandwidth_single_bits ^= 1;
+        assert_moves(original, &altered, "bandwidth-single-bits");
+        let mut altered = input.clone();
+        altered.bandwidth_all_core_bits ^= 1;
+        assert_moves(original, &altered, "bandwidth-all-core-bits");
+        let mut altered = input.clone();
+        altered.peak_single_bits ^= 1;
+        assert_moves(original, &altered, "peak-single-bits");
+        let mut altered = input;
+        altered.peak_all_core_bits ^= 1;
+        assert_moves(original, &altered, "peak-all-core-bits");
+    }
+
+    #[test]
+    fn production_axes_receipt_versions_fail_closed() {
+        assert_eq!(PRODUCTION_AXES_RECEIPT_IDENTITY_VERSION, 1);
+        assert!(PRODUCTION_AXES_RECEIPT_DOMAIN.ends_with(".v1"));
+        let axes = synthetic_axes(0xA11CE);
+        let stale = axes_receipt_with_domain(
+            &ProductionAxesReceiptInput::from_axes(&axes),
+            "org.frankensim.fs-roofline.production-axes-receipt.v2",
+        );
+        assert!(
+            !production_axes_receipt_is_current(&axes, stale),
+            "a receipt under a stale or future identity domain must not be admitted"
+        );
     }
 
     fn trusted_baseline(axes: &MachineAxes) -> (BaselineAxes, BaselineIdentity) {

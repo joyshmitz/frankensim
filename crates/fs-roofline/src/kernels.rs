@@ -1356,6 +1356,9 @@ mod tests {
                 binding.gemm.execution_path.panels[0].declared_run = 1;
             }),
             tamper_all_bindings(&measured, |binding| {
+                binding.gemm.execution_path.memory.limit_bytes ^= 1;
+            }),
+            tamper_all_bindings(&measured, |binding| {
                 binding.gemm.execution_path_identity = fs_ledger::hash_bytes(b"tampered");
             }),
         ];

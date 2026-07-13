@@ -71,6 +71,37 @@ pub const BASELINE_SCHEMA_VERSION: u32 = 1;
 /// Domain for the content identity of one admitted baseline record.
 pub const BASELINE_HASH_DOMAIN: &str = "frankensim.fs-roofline.baseline.v1";
 
+/// Owner-local baseline-record declaration consumed by `xtask check-identities`.
+#[allow(dead_code)]
+pub const BASELINE_RECORD_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-roofline:baseline-record",
+    "version_const=BASELINE_SCHEMA_VERSION",
+    "version=1",
+    "domain=frankensim.fs-roofline.baseline.v1",
+    "domain_const=BASELINE_HASH_DOMAIN",
+    "encoder=BaselineAxes::content_hash",
+    "encoder_helpers=BaselineAxes::canonical_json,BaselineAxes::canonical_json_unchecked,push_json_string,push_json_string_body",
+    "schema_constants=BASELINE_SCHEMA_VERSION,BASELINE_HASH_DOMAIN,BASELINE_LOW_BAND,BASELINE_HIGH_BAND,MAX_BASELINE_AGE_DAYS,MIN_PROMOTION_RUNS,MAX_BASELINE_STORE_BYTES,MAX_BASELINE_LINE_BYTES,MAX_BASELINE_STRING_BYTES,crates/fs-roofline/src/axes.rs#MAX_AXIS_REPROBE_DRIFT",
+    "schema_functions=parse_baseline_line,validate_baseline,validate_identity,validate_text,LineParser::take,LineParser::string,LineParser::hex_u64,LineParser::content_hash,LineParser::decimal_u64,crates/fs-blake3/src/lib.rs#hash_domain,crates/fs-blake3/src/lib.rs#ContentHash::to_hex",
+    "schema_dependencies=none",
+    "digest=fs-blake3",
+    "encoding=canonical-transport-exact-bits",
+    "sources=BaselineAxes,BaselineIdentity,BaselineProvenance",
+    "source_fields=BaselineAxes.schema_version:semantic,BaselineAxes.identity:derived:nested-identity-fields-classified-separately,BaselineAxes.bandwidth_single_gbs:semantic,BaselineAxes.bandwidth_all_core_gbs:semantic,BaselineAxes.peak_single_gflops:semantic,BaselineAxes.peak_all_core_gflops:semantic,BaselineAxes.provenance:derived:nested-provenance-fields-classified-separately,BaselineAxes.age_policy_days:semantic,BaselineIdentity.fingerprint:semantic,BaselineIdentity.cpu_brand:semantic,BaselineIdentity.logical_cpus:semantic,BaselineIdentity.os:semantic,BaselineIdentity.arch:semantic,BaselineIdentity.firmware:semantic,BaselineProvenance.promoted_by:semantic,BaselineProvenance.justification:semantic,BaselineProvenance.promoted_day:semantic,BaselineProvenance.source_receipts:semantic",
+    "source_bindings=BaselineAxes.schema_version>schema-version,BaselineAxes.bandwidth_single_gbs>bandwidth-single-bits,BaselineAxes.bandwidth_all_core_gbs>bandwidth-all-core-bits,BaselineAxes.peak_single_gflops>peak-single-bits,BaselineAxes.peak_all_core_gflops>peak-all-core-bits,BaselineAxes.age_policy_days>age-policy-days,BaselineIdentity.fingerprint>machine-fingerprint,BaselineIdentity.cpu_brand>cpu-brand-utf8,BaselineIdentity.logical_cpus>logical-cpus,BaselineIdentity.os>os-utf8,BaselineIdentity.arch>arch-utf8,BaselineIdentity.firmware>firmware-utf8,BaselineProvenance.promoted_by>promoted-by-utf8,BaselineProvenance.justification>justification-utf8,BaselineProvenance.promoted_day>promoted-day,BaselineProvenance.source_receipts>source-receipt-count+ordered-source-receipts",
+    "external_semantic_fields=digest-domain,low-band-policy,high-band-policy,promotion-drift-policy",
+    "semantic_fields=digest-domain,schema-version,low-band-policy,high-band-policy,promotion-drift-policy,machine-fingerprint,cpu-brand-utf8,logical-cpus,os-utf8,arch-utf8,firmware-utf8,bandwidth-single-bits,bandwidth-all-core-bits,peak-single-bits,peak-all-core-bits,source-receipt-count,ordered-source-receipts,promoted-by-utf8,justification-utf8,promoted-day,age-policy-days",
+    "excluded_fields=none",
+    "consumers=BaselineStore::admit,BaselineStore::from_jsonl,BaselineAxes::promotion_message,PromotionAuthorityVerifier,AxisBaselinePolicy::receipt_json",
+    "mutations=digest-domain:crates/fs-roofline/src/baseline.rs#baseline_record_identity_fields_move_independently,schema-version:crates/fs-roofline/src/baseline.rs#baseline_record_identity_fields_move_independently,low-band-policy:crates/fs-roofline/src/baseline.rs#baseline_record_identity_fields_move_independently,high-band-policy:crates/fs-roofline/src/baseline.rs#baseline_record_identity_fields_move_independently,promotion-drift-policy:crates/fs-roofline/src/baseline.rs#baseline_record_identity_fields_move_independently,machine-fingerprint:crates/fs-roofline/src/baseline.rs#baseline_record_identity_fields_move_independently,cpu-brand-utf8:crates/fs-roofline/src/baseline.rs#baseline_record_identity_fields_move_independently,logical-cpus:crates/fs-roofline/src/baseline.rs#baseline_record_identity_fields_move_independently,os-utf8:crates/fs-roofline/src/baseline.rs#baseline_record_identity_fields_move_independently,arch-utf8:crates/fs-roofline/src/baseline.rs#baseline_record_identity_fields_move_independently,firmware-utf8:crates/fs-roofline/src/baseline.rs#baseline_record_identity_fields_move_independently,bandwidth-single-bits:crates/fs-roofline/src/baseline.rs#baseline_record_identity_fields_move_independently,bandwidth-all-core-bits:crates/fs-roofline/src/baseline.rs#baseline_record_identity_fields_move_independently,peak-single-bits:crates/fs-roofline/src/baseline.rs#baseline_record_identity_fields_move_independently,peak-all-core-bits:crates/fs-roofline/src/baseline.rs#baseline_record_identity_fields_move_independently,source-receipt-count:crates/fs-roofline/src/baseline.rs#baseline_record_identity_fields_move_independently,ordered-source-receipts:crates/fs-roofline/src/baseline.rs#baseline_record_identity_fields_move_independently,promoted-by-utf8:crates/fs-roofline/src/baseline.rs#baseline_record_identity_fields_move_independently,justification-utf8:crates/fs-roofline/src/baseline.rs#baseline_record_identity_fields_move_independently,promoted-day:crates/fs-roofline/src/baseline.rs#baseline_record_identity_fields_move_independently,age-policy-days:crates/fs-roofline/src/baseline.rs#baseline_record_identity_fields_move_independently",
+    "nonsemantic_mutations=none",
+    "field_guard=classify_baseline_record_identity_fields",
+    "transport_guard=BaselineStore::admit",
+    "version_guard=crates/fs-roofline/src/baseline.rs#baseline_record_identity_versions_fail_closed",
+    "coupling_surface=fs-roofline:baseline-record",
+];
+
 /// The environment identity a baseline is valid for. `firmware` is a
 /// DECLARED string (OS build / kernel release / SMC version — whatever
 /// the operator's fleet discipline tracks): declared at promotion,
@@ -273,6 +304,58 @@ pub struct BaselineAxes {
     provenance: BaselineProvenance,
     /// This baseline's age policy in days (≤ [`MAX_BASELINE_AGE_DAYS`]).
     age_policy_days: u32,
+}
+
+#[allow(dead_code)]
+fn classify_baseline_record_identity_fields(
+    baseline: &BaselineAxes,
+    identity_source: &BaselineIdentity,
+    provenance_source: &BaselineProvenance,
+) {
+    let BaselineAxes {
+        schema_version,
+        identity,
+        bandwidth_single_gbs,
+        bandwidth_all_core_gbs,
+        peak_single_gflops,
+        peak_all_core_gflops,
+        provenance,
+        age_policy_days,
+    } = baseline;
+    let BaselineIdentity {
+        fingerprint,
+        cpu_brand,
+        logical_cpus,
+        os,
+        arch,
+        firmware,
+    } = identity_source;
+    let BaselineProvenance {
+        promoted_by,
+        justification,
+        promoted_day,
+        source_receipts,
+    } = provenance_source;
+    let _ = (
+        schema_version,
+        identity,
+        bandwidth_single_gbs,
+        bandwidth_all_core_gbs,
+        peak_single_gflops,
+        peak_all_core_gflops,
+        provenance,
+        age_policy_days,
+        fingerprint,
+        cpu_brand,
+        logical_cpus,
+        os,
+        arch,
+        firmware,
+        promoted_by,
+        justification,
+        promoted_day,
+        source_receipts,
+    );
 }
 
 /// Why a promotion was refused.
@@ -1918,6 +2001,122 @@ mod tests {
         .expect("ordered promotion");
         assert_eq!(ordered.content_hash(), reversed.content_hash());
         assert_ne!(baseline.content_hash(), ordered.content_hash());
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // each independently bound field moves once
+    fn baseline_record_identity_fields_move_independently() {
+        fn assert_moves(original: ContentHash, altered: &BaselineAxes, field: &str) {
+            assert_ne!(
+                original,
+                altered.content_hash(),
+                "mutating {field} must move the baseline-record identity"
+            );
+        }
+
+        let baseline = promoted();
+        let original = baseline.content_hash();
+
+        assert_ne!(
+            original,
+            hash_domain(
+                "frankensim.fs-roofline.baseline-foreign.v1",
+                baseline.canonical_json().as_bytes(),
+            ),
+            "the digest domain is semantic"
+        );
+        for (field, from, to) in [
+            (
+                "low-band-policy",
+                BASELINE_LOW_BAND.to_bits(),
+                (BASELINE_LOW_BAND - 0.01).to_bits(),
+            ),
+            (
+                "high-band-policy",
+                BASELINE_HIGH_BAND.to_bits(),
+                (BASELINE_HIGH_BAND + 0.01).to_bits(),
+            ),
+            (
+                "promotion-drift-policy",
+                MAX_AXIS_REPROBE_DRIFT.to_bits(),
+                (MAX_AXIS_REPROBE_DRIFT + 0.01).to_bits(),
+            ),
+        ] {
+            let canonical = baseline.canonical_json();
+            let moved =
+                canonical.replacen(&format!("\"{from:016x}\""), &format!("\"{to:016x}\""), 1);
+            assert_ne!(canonical, moved, "fixture did not locate {field}");
+            assert_ne!(
+                original,
+                hash_domain(BASELINE_HASH_DOMAIN, moved.as_bytes()),
+                "mutating {field} must move the baseline-record identity"
+            );
+        }
+
+        let mut altered = baseline.clone();
+        altered.schema_version += 1;
+        assert_moves(original, &altered, "schema-version");
+        let mut altered = baseline.clone();
+        altered.identity.fingerprint += 1;
+        assert_moves(original, &altered, "machine-fingerprint");
+        let mut altered = baseline.clone();
+        altered.identity.cpu_brand.push('x');
+        assert_moves(original, &altered, "cpu-brand-utf8");
+        let mut altered = baseline.clone();
+        altered.identity.logical_cpus += 1;
+        assert_moves(original, &altered, "logical-cpus");
+        let mut altered = baseline.clone();
+        altered.identity.os.push('x');
+        assert_moves(original, &altered, "os-utf8");
+        let mut altered = baseline.clone();
+        altered.identity.arch.push('x');
+        assert_moves(original, &altered, "arch-utf8");
+        let mut altered = baseline.clone();
+        altered.identity.firmware.push('x');
+        assert_moves(original, &altered, "firmware-utf8");
+        let mut altered = baseline.clone();
+        altered.bandwidth_single_gbs += 1.0;
+        assert_moves(original, &altered, "bandwidth-single-bits");
+        let mut altered = baseline.clone();
+        altered.bandwidth_all_core_gbs += 1.0;
+        assert_moves(original, &altered, "bandwidth-all-core-bits");
+        let mut altered = baseline.clone();
+        altered.peak_single_gflops += 1.0;
+        assert_moves(original, &altered, "peak-single-bits");
+        let mut altered = baseline.clone();
+        altered.peak_all_core_gflops += 1.0;
+        assert_moves(original, &altered, "peak-all-core-bits");
+        let mut altered = baseline.clone();
+        altered.provenance.source_receipts.pop();
+        assert_moves(original, &altered, "source-receipt-count");
+        let mut altered = baseline.clone();
+        altered.provenance.source_receipts.swap(0, 1);
+        assert_moves(original, &altered, "ordered-source-receipts");
+        let mut altered = baseline.clone();
+        altered.provenance.promoted_by.push('x');
+        assert_moves(original, &altered, "promoted-by-utf8");
+        let mut altered = baseline.clone();
+        altered.provenance.justification.push('x');
+        assert_moves(original, &altered, "justification-utf8");
+        let mut altered = baseline.clone();
+        altered.provenance.promoted_day += 1;
+        assert_moves(original, &altered, "promoted-day");
+        let mut altered = baseline;
+        altered.age_policy_days += 1;
+        assert_moves(original, &altered, "age-policy-days");
+    }
+
+    #[test]
+    fn baseline_record_identity_versions_fail_closed() {
+        assert_eq!(BASELINE_SCHEMA_VERSION, 1);
+        assert!(BASELINE_HASH_DOMAIN.ends_with(".v1"));
+        let current = promoted().canonical_json();
+        let stale = current.replacen("\"schema_version\":1", "\"schema_version\":2", 1);
+        assert_ne!(current, stale, "fixture must rotate the retained version");
+        assert!(
+            BaselineStore::from_jsonl(&stale).is_err(),
+            "an unsupported retained baseline version must never be admitted"
+        );
     }
 
     /// Store round-trip is lossless; corruption and duplicates refuse.

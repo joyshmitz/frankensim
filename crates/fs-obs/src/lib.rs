@@ -34,6 +34,174 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Schema version stamped into every line; bump on any non-additive change.
 pub const SCHEMA_VERSION: u32 = 1;
 
+/// Exact typed event-content identity semantics. Version 2 replaces the
+/// legacy display-JSON hash, which collapsed distinct NaN payload bits.
+pub const EVENT_CONTENT_IDENTITY_VERSION: u32 = 2;
+
+/// Domain-separated artifact kind framed into the typed event identity.
+pub const EVENT_CONTENT_IDENTITY_DOMAIN: &str = "org.frankensim.fs-obs.event-content.v2";
+
+/// Owner-local declaration consumed by `xtask check-identities`.
+pub const EVENT_CONTENT_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-obs:event-content",
+    "version_const=EVENT_CONTENT_IDENTITY_VERSION",
+    "version=2",
+    "domain=org.frankensim.fs-obs.event-content.v2",
+    "domain_const=EVENT_CONTENT_IDENTITY_DOMAIN",
+    "encoder=Event::content_identity",
+    "encoder_helpers=Event::content_identity_with_versions,Event::content_identity_with_schema,Severity::name,EventKind::kind_name",
+    "schema_constants=EVENT_CONTENT_IDENTITY_VERSION,EVENT_CONTENT_IDENTITY_DOMAIN,SCHEMA_VERSION",
+    "schema_functions=check_event_content_identity_version,Event::content_identity_receipt,Event::admit_content_identity,fnv1a64",
+    "schema_dependencies=fs-obs:replay-identity-frame",
+    "digest=fnv1a64",
+    "encoding=typed-binary",
+    "sources=Event,EventIdentityReceipt",
+    "source_fields=Event.session:semantic,Event.scope:semantic,Event.seq:semantic,Event.severity:semantic,Event.kind:semantic,Event.wall_ns:nonsemantic:wall-clock-envelope-only,EventIdentityReceipt.declared_identity_version:semantic,EventIdentityReceipt.canonical_bytes:semantic,EventIdentityReceipt.root:derived:validated-fnv-root-of-retained-canonical-bytes",
+    "source_bindings=Event.session>session,Event.scope>scope,Event.seq>seq,Event.severity>severity,Event.kind>kind+solver-residual-solver+solver-residual-iter+solver-residual-residual+tile-complete-tile+tile-complete-kernel+cancellation-reason+budget-delta-resource+budget-delta-spent+budget-delta-remaining+gradient-check-op+gradient-check-max-rel-err+gradient-check-pass+conformance-case-suite+conformance-case-case+conformance-case-pass+conformance-case-detail+conformance-case-seed+benchmark-result-kernel+benchmark-result-metric+benchmark-result-value+benchmark-result-machine+storm-assertion-name+storm-assertion-pass+storm-assertion-seed+custom-name+custom-json-exact-opaque-utf8,EventIdentityReceipt.declared_identity_version>retained-producer-version,EventIdentityReceipt.canonical_bytes>retained-canonical-bytes",
+    "external_semantic_fields=artifact-domain,identity-version,wire-schema",
+    "semantic_fields=artifact-domain,identity-version,wire-schema,session,scope,seq,severity,kind,solver-residual-solver,solver-residual-iter,solver-residual-residual,tile-complete-tile,tile-complete-kernel,cancellation-reason,budget-delta-resource,budget-delta-spent,budget-delta-remaining,gradient-check-op,gradient-check-max-rel-err,gradient-check-pass,conformance-case-suite,conformance-case-case,conformance-case-pass,conformance-case-detail,conformance-case-seed,benchmark-result-kernel,benchmark-result-metric,benchmark-result-value,benchmark-result-machine,storm-assertion-name,storm-assertion-pass,storm-assertion-seed,custom-name,custom-json-exact-opaque-utf8,retained-producer-version,retained-canonical-bytes",
+    "excluded_fields=to-jsonl:display-transport-only",
+    "consumers=Event::content_hash,EventIdentityReceipt,Event::admit_content_identity,ledger-event-sinks,replay-comparison",
+    "mutations=artifact-domain:crates/fs-obs/src/lib.rs#event_content_identity_domain_version_and_wire_schema_bytes_are_independent,identity-version:crates/fs-obs/src/lib.rs#event_content_identity_domain_version_and_wire_schema_bytes_are_independent,wire-schema:crates/fs-obs/src/lib.rs#event_content_identity_domain_version_and_wire_schema_bytes_are_independent,session:crates/fs-obs/src/lib.rs#event_content_identity_mutation_battery,scope:crates/fs-obs/src/lib.rs#event_content_identity_mutation_battery,seq:crates/fs-obs/src/lib.rs#event_content_identity_mutation_battery,severity:crates/fs-obs/src/lib.rs#event_content_identity_mutation_battery,kind:crates/fs-obs/src/lib.rs#event_content_identity_mutation_battery,solver-residual-solver:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,solver-residual-iter:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,solver-residual-residual:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,tile-complete-tile:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,tile-complete-kernel:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,cancellation-reason:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,budget-delta-resource:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,budget-delta-spent:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,budget-delta-remaining:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,gradient-check-op:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,gradient-check-max-rel-err:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,gradient-check-pass:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,conformance-case-suite:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,conformance-case-case:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,conformance-case-pass:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,conformance-case-detail:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,conformance-case-seed:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,benchmark-result-kernel:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,benchmark-result-metric:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,benchmark-result-value:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,benchmark-result-machine:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,storm-assertion-name:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,storm-assertion-pass:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,storm-assertion-seed:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,custom-name:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,custom-json-exact-opaque-utf8:crates/fs-obs/src/lib.rs#custom_payload_identity_is_exact_opaque_utf8,retained-producer-version:crates/fs-obs/src/lib.rs#retained_event_identity_receipts_admit_exactly_or_fail_closed,retained-canonical-bytes:crates/fs-obs/src/lib.rs#retained_event_identity_receipts_admit_exactly_or_fail_closed",
+    "nonsemantic_mutations=Event.wall_ns:crates/fs-obs/src/lib.rs#wall_clock_is_envelope_only,to-jsonl:crates/fs-obs/src/lib.rs#content_identity_preserves_bits_that_display_json_collapses",
+    "field_guard=classify_event_identity_fields",
+    "transport_guard=Event::admit_content_identity",
+    "version_guard=crates/fs-obs/src/lib.rs#event_content_identity_versions_fail_closed",
+    "coupling_surface=fs-obs:event-content-identity",
+];
+
+/// Structured refusal for event identities produced under unknown semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EventIdentityVersionError {
+    /// Version declared by retained evidence.
+    pub declared: u32,
+    /// Exact version supported by this build.
+    pub supported: u32,
+}
+
+impl fmt::Display for EventIdentityVersionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "event content identity v{} is unsupported; this build accepts exactly v{}",
+            self.declared, self.supported
+        )
+    }
+}
+
+impl core::error::Error for EventIdentityVersionError {}
+
+/// Retained proof of one event's exact content identity.
+///
+/// A receipt is deliberately more than a naked root: it carries the declared
+/// event-identity semantics and the complete canonical preimage. Consumers
+/// must call [`Event::admit_content_identity`] before trusting retained data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventIdentityReceipt {
+    declared_identity_version: u32,
+    canonical_bytes: Vec<u8>,
+    root: u64,
+}
+
+impl EventIdentityReceipt {
+    /// Reconstruct a receipt loaded from retained evidence.
+    ///
+    /// This constructor intentionally does not bless the parts. Call
+    /// [`Event::admit_content_identity`] to verify the declared version, root,
+    /// exact bytes, and event content together.
+    #[must_use]
+    pub fn from_retained_parts(
+        declared_identity_version: u32,
+        canonical_bytes: Vec<u8>,
+        root: u64,
+    ) -> Self {
+        Self {
+            declared_identity_version,
+            canonical_bytes,
+            root,
+        }
+    }
+
+    /// Event-content identity semantics declared by the retained producer.
+    #[must_use]
+    pub fn declared_identity_version(&self) -> u32 {
+        self.declared_identity_version
+    }
+
+    /// Complete canonical typed preimage retained by the producer.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> &[u8] {
+        &self.canonical_bytes
+    }
+
+    /// Retained FNV-1a root over [`Self::canonical_bytes`].
+    #[must_use]
+    pub fn root(&self) -> u64 {
+        self.root
+    }
+}
+
+/// Fail-closed refusal when retained event-identity evidence is not exactly
+/// the identity of the event being admitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventIdentityAdmissionError {
+    /// The producer declared identity semantics unknown to this build.
+    UnsupportedVersion(EventIdentityVersionError),
+    /// The retained root is not derived from the retained canonical bytes.
+    RootMismatch {
+        /// Root recorded in the receipt.
+        declared: u64,
+        /// Root recomputed from the receipt's canonical bytes.
+        computed: u64,
+    },
+    /// The self-consistent receipt names different exact event content.
+    CanonicalBytesMismatch {
+        /// Root recorded in the receipt.
+        declared_root: u64,
+        /// Root computed from the event supplied to admission.
+        expected_root: u64,
+    },
+}
+
+impl fmt::Display for EventIdentityAdmissionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedVersion(error) => fmt::Display::fmt(error, f),
+            Self::RootMismatch { declared, computed } => write!(
+                f,
+                "retained event identity root {declared:016x} does not match canonical bytes root {computed:016x}"
+            ),
+            Self::CanonicalBytesMismatch {
+                declared_root,
+                expected_root,
+            } => write!(
+                f,
+                "retained event identity {declared_root:016x} does not bind the admitted event identity {expected_root:016x}"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for EventIdentityAdmissionError {}
+
+/// Refuse retained event identities whose exact typed semantics are unknown.
+///
+/// # Errors
+/// [`EventIdentityVersionError`] for any version other than the current one.
+pub fn check_event_content_identity_version(
+    declared: u32,
+) -> Result<(), EventIdentityVersionError> {
+    if declared == EVENT_CONTENT_IDENTITY_VERSION {
+        Ok(())
+    } else {
+        Err(EventIdentityVersionError {
+            declared,
+            supported: EVENT_CONTENT_IDENTITY_VERSION,
+        })
+    }
+}
+
 /// Severity ladder. `Error` events MUST satisfy [`lint_failure_record`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
@@ -138,12 +306,14 @@ pub enum EventKind {
         /// Storm seed for replay.
         seed: u64,
     },
-    /// Escape hatch for kinds not yet in the registry; the payload must be a
-    /// single pre-serialized JSON object (validated for balance, not schema).
+    /// Escape hatch for kinds not yet in the registry. `json` is exact opaque
+    /// UTF-8: whitespace and object-member order are semantic identity bytes;
+    /// fs-obs never claims to canonicalize unchecked JSON. The caller must
+    /// still supply one valid pre-serialized JSON object for `to_jsonl`.
     Custom {
         /// Kind name (kebab-case).
         name: String,
-        /// Pre-serialized JSON object.
+        /// Exact opaque UTF-8 bytes of the pre-serialized JSON object.
         json: String,
     },
 }
@@ -183,6 +353,23 @@ pub struct Event {
     /// from `content_hash`, always serialized LAST, `None` in deterministic
     /// replay comparisons.
     pub wall_ns: Option<u64>,
+}
+
+#[allow(dead_code)]
+fn classify_event_identity_fields(event: &Event, receipt: &EventIdentityReceipt) {
+    let Event {
+        session: _,
+        scope: _,
+        seq: _,
+        severity: _,
+        kind: _,
+        wall_ns: _,
+    } = event;
+    let EventIdentityReceipt {
+        declared_identity_version: _,
+        canonical_bytes: _,
+        root: _,
+    } = receipt;
 }
 
 fn esc(out: &mut String, s: &str) {
@@ -322,13 +509,174 @@ impl Event {
         content
     }
 
-    /// Deterministic content hash (FNV-1a 64 over the content JSON —
-    /// EXCLUDING wall-clock). Not cryptographic; ledger-grade content
-    /// addressing (BLAKE3-class) arrives with fs-ledger and this method's
-    /// contract permits strengthening the hash at a schema-version bump.
+    fn content_identity_with_versions(
+        &self,
+        event_identity_version: u32,
+        event_wire_schema_version: u32,
+    ) -> ident::ReplayIdentity {
+        self.content_identity_with_schema(
+            EVENT_CONTENT_IDENTITY_DOMAIN,
+            event_identity_version,
+            event_wire_schema_version,
+        )
+    }
+
+    fn content_identity_with_schema(
+        &self,
+        artifact_domain: &str,
+        event_identity_version: u32,
+        event_wire_schema_version: u32,
+    ) -> ident::ReplayIdentity {
+        let Event {
+            session,
+            scope,
+            seq,
+            severity,
+            kind,
+            wall_ns: _,
+        } = self;
+        let builder = ident::IdentityBuilder::new(artifact_domain)
+            .u64(
+                "event_content_identity_version",
+                u64::from(event_identity_version),
+            )
+            .u64(
+                "event_wire_schema_version",
+                u64::from(event_wire_schema_version),
+            )
+            .str("session", session)
+            .str("scope", scope)
+            .u64("seq", *seq)
+            .str("severity", severity.name())
+            .str("kind", kind.kind_name());
+        let builder = match kind {
+            EventKind::SolverResidual {
+                solver,
+                iter,
+                residual,
+            } => builder
+                .str("solver", solver)
+                .u64("iter", *iter)
+                .f64_bits("residual", *residual),
+            EventKind::TileComplete { tile, kernel } => {
+                builder.u64("tile", *tile).str("kernel", kernel)
+            }
+            EventKind::Cancellation { reason } => builder.str("reason", reason),
+            EventKind::BudgetDelta {
+                resource,
+                spent,
+                remaining,
+            } => builder
+                .str("resource", resource)
+                .f64_bits("spent", *spent)
+                .f64_bits("remaining", *remaining),
+            EventKind::GradientCheck {
+                op,
+                max_rel_err,
+                pass,
+            } => builder
+                .str("op", op)
+                .f64_bits("max_rel_err", *max_rel_err)
+                .flag("pass", *pass),
+            EventKind::ConformanceCase {
+                suite,
+                case,
+                pass,
+                detail,
+                seed,
+            } => builder
+                .str("suite", suite)
+                .str("case", case)
+                .flag("pass", *pass)
+                .str("detail", detail)
+                .u64("seed", *seed),
+            EventKind::BenchmarkResult {
+                kernel,
+                metric,
+                value,
+                machine,
+            } => builder
+                .str("kernel", kernel)
+                .str("metric", metric)
+                .f64_bits("value", *value)
+                .u64("machine", *machine),
+            EventKind::StormAssertion { name, pass, seed } => builder
+                .str("name", name)
+                .flag("pass", *pass)
+                .u64("seed", *seed),
+            EventKind::Custom { name, json } => builder
+                .str("name", name)
+                .bytes("custom_json_opaque_utf8", json.as_bytes()),
+        };
+        builder
+            .exclude(
+                "wall_ns",
+                "wall-clock is observability envelope, not replay identity",
+            )
+            .finish()
+    }
+
+    /// Canonical typed identity for the deterministic event content.
+    ///
+    /// This is deliberately independent of the display-oriented JSON line:
+    /// floats bind by their exact bit patterns, every payload variant has a
+    /// closed typed encoder, and wall-clock remains an explicit exclusion.
+    #[must_use]
+    pub fn content_identity(&self) -> ident::ReplayIdentity {
+        self.content_identity_with_versions(EVENT_CONTENT_IDENTITY_VERSION, SCHEMA_VERSION)
+    }
+
+    /// Capture a retained receipt containing the declared event-identity
+    /// version, exact canonical bytes, and their root.
+    #[must_use]
+    pub fn content_identity_receipt(&self) -> EventIdentityReceipt {
+        let identity = self.content_identity();
+        EventIdentityReceipt::from_retained_parts(
+            EVENT_CONTENT_IDENTITY_VERSION,
+            identity.canonical_bytes().to_vec(),
+            identity.root(),
+        )
+    }
+
+    /// Admit a retained identity receipt only when all three proof surfaces
+    /// agree: declared semantics, root-over-retained-bytes, and the exact
+    /// canonical identity of this event.
+    ///
+    /// # Errors
+    /// [`EventIdentityAdmissionError`] if any proof surface differs.
+    pub fn admit_content_identity(
+        &self,
+        receipt: &EventIdentityReceipt,
+    ) -> Result<(), EventIdentityAdmissionError> {
+        check_event_content_identity_version(receipt.declared_identity_version)
+            .map_err(EventIdentityAdmissionError::UnsupportedVersion)?;
+
+        let computed = fnv1a64(&receipt.canonical_bytes);
+        if computed != receipt.root {
+            return Err(EventIdentityAdmissionError::RootMismatch {
+                declared: receipt.root,
+                computed,
+            });
+        }
+
+        let expected = self.content_identity();
+        if receipt.canonical_bytes.as_slice() != expected.canonical_bytes()
+            || receipt.root != expected.root()
+        {
+            return Err(EventIdentityAdmissionError::CanonicalBytesMismatch {
+                declared_root: receipt.root,
+                expected_root: expected.root(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Deterministic FNV-1a root over [`Event::content_identity`]'s exact
+    /// typed bytes. Not cryptographic; ledger-grade content addressing uses
+    /// the same canonical identity bytes under a stronger digest.
     #[must_use]
     pub fn content_hash(&self) -> u64 {
-        fnv1a64(self.content_json().as_bytes())
+        self.content_identity().root()
     }
 }
 
@@ -554,12 +902,28 @@ mod tests {
             ),
             em.emit(
                 Severity::Warn,
+                EventKind::Cancellation {
+                    reason: "budget".into(),
+                },
+                Some(1_500),
+            ),
+            em.emit(
+                Severity::Warn,
                 EventKind::BudgetDelta {
                     resource: "wall_s".into(),
                     spent: 12.5,
                     remaining: 7187.5,
                 },
                 Some(2_000),
+            ),
+            em.emit(
+                Severity::Info,
+                EventKind::GradientCheck {
+                    op: "poisson".into(),
+                    max_rel_err: 2.5e-8,
+                    pass: true,
+                },
+                None,
             ),
             em.emit(
                 Severity::Error,
@@ -574,6 +938,25 @@ mod tests {
             ),
             em.emit(
                 Severity::Info,
+                EventKind::BenchmarkResult {
+                    kernel: "gemm".into(),
+                    metric: "gflops".into(),
+                    value: 123.5,
+                    machine: 0x1234,
+                },
+                None,
+            ),
+            em.emit(
+                Severity::Info,
+                EventKind::StormAssertion {
+                    name: "no-arena-leak".into(),
+                    pass: true,
+                    seed: 99,
+                },
+                None,
+            ),
+            em.emit(
+                Severity::Info,
                 EventKind::Custom {
                     name: "regime-report".into(),
                     json: r#"{"re":100.5,"we":0.3}"#.into(),
@@ -581,6 +964,70 @@ mod tests {
                 None,
             ),
         ]
+    }
+
+    fn read_identity_len(bytes: &[u8], cursor: &mut usize) -> usize {
+        let end = cursor
+            .checked_add(core::mem::size_of::<u64>())
+            .expect("test identity length offset fits usize");
+        let encoded: [u8; 8] = bytes[*cursor..end]
+            .try_into()
+            .expect("identity length has eight bytes");
+        *cursor = end;
+        usize::try_from(u64::from_le_bytes(encoded)).expect("test identity length fits usize")
+    }
+
+    fn identity_field<'a>(canonical: &'a [u8], wanted: &str) -> (u8, &'a [u8]) {
+        assert!(
+            canonical.starts_with(ident::REPLAY_IDENTITY_DOMAIN.as_bytes()),
+            "identity frame must start with its declared replay domain"
+        );
+        let mut cursor = ident::REPLAY_IDENTITY_DOMAIN.len() + core::mem::size_of::<u32>();
+        let kind_len = read_identity_len(canonical, &mut cursor);
+        cursor += kind_len;
+        while cursor < canonical.len() {
+            let tag = canonical[cursor];
+            cursor += 1;
+            let key_len = read_identity_len(canonical, &mut cursor);
+            let key_end = cursor + key_len;
+            let key = core::str::from_utf8(&canonical[cursor..key_end])
+                .expect("identity field keys are UTF-8");
+            cursor = key_end;
+            let value_len = read_identity_len(canonical, &mut cursor);
+            let value_end = cursor + value_len;
+            if key == wanted {
+                return (tag, &canonical[cursor..value_end]);
+            }
+            cursor = value_end;
+        }
+        panic!("identity field {wanted:?} was not encoded");
+    }
+
+    fn event_with_kind(kind: EventKind) -> Event {
+        Event {
+            session: "identity-session".into(),
+            scope: "identity-scope".into(),
+            seq: 17,
+            severity: Severity::Info,
+            kind,
+            wall_ns: None,
+        }
+    }
+
+    fn assert_payload_mutations(
+        base: EventKind,
+        mutations: Vec<(&'static str, EventKind)>,
+        observed: &mut Vec<&'static str>,
+    ) {
+        let base_root = event_with_kind(base).content_hash();
+        for (field, mutation) in mutations {
+            assert_ne!(
+                event_with_kind(mutation).content_hash(),
+                base_root,
+                "mutating {field} must move the exact event identity"
+            );
+            observed.push(field);
+        }
     }
 
     #[test]
@@ -613,6 +1060,667 @@ mod tests {
             events.len(),
             "distinct events must hash distinctly"
         );
+    }
+
+    #[test]
+    fn content_identity_preserves_bits_that_display_json_collapses() {
+        let event = |residual| Event {
+            session: "same-session".into(),
+            scope: "same-scope".into(),
+            seq: 7,
+            severity: Severity::Info,
+            kind: EventKind::SolverResidual {
+                solver: "cg".into(),
+                iter: 3,
+                residual,
+            },
+            wall_ns: None,
+        };
+        let first = event(f64::from_bits(0x7ff8_0000_0000_0001));
+        let second = event(f64::from_bits(0x7ff8_0000_0000_0002));
+        assert_eq!(
+            first.to_jsonl(),
+            second.to_jsonl(),
+            "tagged display JSON intentionally does not expose NaN payload bits"
+        );
+        assert_ne!(first.content_hash(), second.content_hash());
+        assert_ne!(
+            first.content_identity().canonical_bytes(),
+            second.content_identity().canonical_bytes()
+        );
+        assert_eq!(
+            first.content_hash(),
+            fnv1a64(first.content_identity().canonical_bytes()),
+            "the stored root is derived from the exact canonical bytes"
+        );
+    }
+
+    #[test]
+    fn every_event_kind_payload_field_moves_identity() {
+        let mut observed = Vec::new();
+
+        assert_payload_mutations(
+            EventKind::SolverResidual {
+                solver: "cg".into(),
+                iter: 3,
+                residual: 0.25,
+            },
+            vec![
+                (
+                    "solver_residual.solver",
+                    EventKind::SolverResidual {
+                        solver: "gmres".into(),
+                        iter: 3,
+                        residual: 0.25,
+                    },
+                ),
+                (
+                    "solver_residual.iter",
+                    EventKind::SolverResidual {
+                        solver: "cg".into(),
+                        iter: 4,
+                        residual: 0.25,
+                    },
+                ),
+                (
+                    "solver_residual.residual",
+                    EventKind::SolverResidual {
+                        solver: "cg".into(),
+                        iter: 3,
+                        residual: 0.5,
+                    },
+                ),
+            ],
+            &mut observed,
+        );
+        assert_payload_mutations(
+            EventKind::TileComplete {
+                tile: 7,
+                kernel: "lbm".into(),
+            },
+            vec![
+                (
+                    "tile_complete.tile",
+                    EventKind::TileComplete {
+                        tile: 8,
+                        kernel: "lbm".into(),
+                    },
+                ),
+                (
+                    "tile_complete.kernel",
+                    EventKind::TileComplete {
+                        tile: 7,
+                        kernel: "gemm".into(),
+                    },
+                ),
+            ],
+            &mut observed,
+        );
+        assert_payload_mutations(
+            EventKind::Cancellation {
+                reason: "budget".into(),
+            },
+            vec![(
+                "cancellation.reason",
+                EventKind::Cancellation {
+                    reason: "panic".into(),
+                },
+            )],
+            &mut observed,
+        );
+        assert_payload_mutations(
+            EventKind::BudgetDelta {
+                resource: "wall_s".into(),
+                spent: 1.0,
+                remaining: 9.0,
+            },
+            vec![
+                (
+                    "budget_delta.resource",
+                    EventKind::BudgetDelta {
+                        resource: "mem_bytes".into(),
+                        spent: 1.0,
+                        remaining: 9.0,
+                    },
+                ),
+                (
+                    "budget_delta.spent",
+                    EventKind::BudgetDelta {
+                        resource: "wall_s".into(),
+                        spent: 2.0,
+                        remaining: 9.0,
+                    },
+                ),
+                (
+                    "budget_delta.remaining",
+                    EventKind::BudgetDelta {
+                        resource: "wall_s".into(),
+                        spent: 1.0,
+                        remaining: 8.0,
+                    },
+                ),
+            ],
+            &mut observed,
+        );
+        assert_payload_mutations(
+            EventKind::GradientCheck {
+                op: "poisson".into(),
+                max_rel_err: 0.125,
+                pass: true,
+            },
+            vec![
+                (
+                    "gradient_check.op",
+                    EventKind::GradientCheck {
+                        op: "elasticity".into(),
+                        max_rel_err: 0.125,
+                        pass: true,
+                    },
+                ),
+                (
+                    "gradient_check.max_rel_err",
+                    EventKind::GradientCheck {
+                        op: "poisson".into(),
+                        max_rel_err: 0.25,
+                        pass: true,
+                    },
+                ),
+                (
+                    "gradient_check.pass",
+                    EventKind::GradientCheck {
+                        op: "poisson".into(),
+                        max_rel_err: 0.125,
+                        pass: false,
+                    },
+                ),
+            ],
+            &mut observed,
+        );
+        assert_payload_mutations(
+            EventKind::ConformanceCase {
+                suite: "suite-a".into(),
+                case: "case-a".into(),
+                pass: true,
+                detail: "ok".into(),
+                seed: 11,
+            },
+            vec![
+                (
+                    "conformance_case.suite",
+                    EventKind::ConformanceCase {
+                        suite: "suite-b".into(),
+                        case: "case-a".into(),
+                        pass: true,
+                        detail: "ok".into(),
+                        seed: 11,
+                    },
+                ),
+                (
+                    "conformance_case.case",
+                    EventKind::ConformanceCase {
+                        suite: "suite-a".into(),
+                        case: "case-b".into(),
+                        pass: true,
+                        detail: "ok".into(),
+                        seed: 11,
+                    },
+                ),
+                (
+                    "conformance_case.pass",
+                    EventKind::ConformanceCase {
+                        suite: "suite-a".into(),
+                        case: "case-a".into(),
+                        pass: false,
+                        detail: "ok".into(),
+                        seed: 11,
+                    },
+                ),
+                (
+                    "conformance_case.detail",
+                    EventKind::ConformanceCase {
+                        suite: "suite-a".into(),
+                        case: "case-a".into(),
+                        pass: true,
+                        detail: "different".into(),
+                        seed: 11,
+                    },
+                ),
+                (
+                    "conformance_case.seed",
+                    EventKind::ConformanceCase {
+                        suite: "suite-a".into(),
+                        case: "case-a".into(),
+                        pass: true,
+                        detail: "ok".into(),
+                        seed: 12,
+                    },
+                ),
+            ],
+            &mut observed,
+        );
+        assert_payload_mutations(
+            EventKind::BenchmarkResult {
+                kernel: "gemm".into(),
+                metric: "gflops".into(),
+                value: 100.0,
+                machine: 7,
+            },
+            vec![
+                (
+                    "benchmark_result.kernel",
+                    EventKind::BenchmarkResult {
+                        kernel: "spmv".into(),
+                        metric: "gflops".into(),
+                        value: 100.0,
+                        machine: 7,
+                    },
+                ),
+                (
+                    "benchmark_result.metric",
+                    EventKind::BenchmarkResult {
+                        kernel: "gemm".into(),
+                        metric: "bandwidth_gbs".into(),
+                        value: 100.0,
+                        machine: 7,
+                    },
+                ),
+                (
+                    "benchmark_result.value",
+                    EventKind::BenchmarkResult {
+                        kernel: "gemm".into(),
+                        metric: "gflops".into(),
+                        value: 101.0,
+                        machine: 7,
+                    },
+                ),
+                (
+                    "benchmark_result.machine",
+                    EventKind::BenchmarkResult {
+                        kernel: "gemm".into(),
+                        metric: "gflops".into(),
+                        value: 100.0,
+                        machine: 8,
+                    },
+                ),
+            ],
+            &mut observed,
+        );
+        assert_payload_mutations(
+            EventKind::StormAssertion {
+                name: "no-leak".into(),
+                pass: true,
+                seed: 23,
+            },
+            vec![
+                (
+                    "storm_assertion.name",
+                    EventKind::StormAssertion {
+                        name: "cancel-latency".into(),
+                        pass: true,
+                        seed: 23,
+                    },
+                ),
+                (
+                    "storm_assertion.pass",
+                    EventKind::StormAssertion {
+                        name: "no-leak".into(),
+                        pass: false,
+                        seed: 23,
+                    },
+                ),
+                (
+                    "storm_assertion.seed",
+                    EventKind::StormAssertion {
+                        name: "no-leak".into(),
+                        pass: true,
+                        seed: 24,
+                    },
+                ),
+            ],
+            &mut observed,
+        );
+        assert_payload_mutations(
+            EventKind::Custom {
+                name: "opaque".into(),
+                json: r#"{"a":1,"b":2}"#.into(),
+            },
+            vec![
+                (
+                    "custom.name",
+                    EventKind::Custom {
+                        name: "other".into(),
+                        json: r#"{"a":1,"b":2}"#.into(),
+                    },
+                ),
+                (
+                    "custom.json",
+                    EventKind::Custom {
+                        name: "opaque".into(),
+                        json: r#"{"b":2,"a":1}"#.into(),
+                    },
+                ),
+            ],
+            &mut observed,
+        );
+
+        let expected = [
+            "solver_residual.solver",
+            "solver_residual.iter",
+            "solver_residual.residual",
+            "tile_complete.tile",
+            "tile_complete.kernel",
+            "cancellation.reason",
+            "budget_delta.resource",
+            "budget_delta.spent",
+            "budget_delta.remaining",
+            "gradient_check.op",
+            "gradient_check.max_rel_err",
+            "gradient_check.pass",
+            "conformance_case.suite",
+            "conformance_case.case",
+            "conformance_case.pass",
+            "conformance_case.detail",
+            "conformance_case.seed",
+            "benchmark_result.kernel",
+            "benchmark_result.metric",
+            "benchmark_result.value",
+            "benchmark_result.machine",
+            "storm_assertion.name",
+            "storm_assertion.pass",
+            "storm_assertion.seed",
+            "custom.name",
+            "custom.json",
+        ];
+        assert_eq!(
+            observed.as_slice(),
+            expected.as_slice(),
+            "all 26 payload fields stay enumerated"
+        );
+    }
+
+    #[test]
+    fn custom_payload_identity_is_exact_opaque_utf8() {
+        let opaque = r#"{ "b":2, "a":1 }"#;
+        let event = event_with_kind(EventKind::Custom {
+            name: "opaque-json".into(),
+            json: opaque.into(),
+        });
+        let identity = event.content_identity();
+        let (tag, retained) = identity_field(identity.canonical_bytes(), "custom_json_opaque_utf8");
+        assert_eq!(
+            tag, 0x05,
+            "custom JSON is bound as exact bytes, not text claiming canonical JSON"
+        );
+        assert_eq!(
+            retained,
+            opaque.as_bytes(),
+            "opaque UTF-8 round-trips byte-for-byte through the identity frame"
+        );
+        assert!(event.to_jsonl().contains(&format!("\"data\":{opaque}")));
+        validate_line(&event.to_jsonl())
+            .expect("the valid opaque object remains a valid event line");
+
+        let reordered = event_with_kind(EventKind::Custom {
+            name: "opaque-json".into(),
+            json: r#"{"a":1,"b":2}"#.into(),
+        });
+        assert_ne!(
+            event.content_hash(),
+            reordered.content_hash(),
+            "whitespace and member order are honestly semantic under opaque-byte identity"
+        );
+    }
+
+    #[test]
+    fn event_content_identity_mutation_battery() {
+        let base = Event {
+            session: "session-a".into(),
+            scope: "scope-a".into(),
+            seq: 11,
+            severity: Severity::Info,
+            kind: EventKind::GradientCheck {
+                op: "poisson".into(),
+                max_rel_err: 0.25,
+                pass: true,
+            },
+            wall_ns: None,
+        };
+        let base_hash = base.content_hash();
+        let mutations = [
+            Event {
+                session: "session-b".into(),
+                ..base.clone()
+            },
+            Event {
+                scope: "scope-b".into(),
+                ..base.clone()
+            },
+            Event {
+                seq: 12,
+                ..base.clone()
+            },
+            Event {
+                severity: Severity::Warn,
+                ..base.clone()
+            },
+            Event {
+                kind: EventKind::Cancellation {
+                    reason: "budget".into(),
+                },
+                ..base.clone()
+            },
+            Event {
+                kind: EventKind::GradientCheck {
+                    op: "poisson".into(),
+                    max_rel_err: 0.25_f64.next_up(),
+                    pass: true,
+                },
+                ..base.clone()
+            },
+        ];
+        assert!(
+            mutations
+                .iter()
+                .all(|mutation| mutation.content_hash() != base_hash),
+            "every mutable semantic event field must move the typed identity"
+        );
+        let mut envelope = base;
+        envelope.wall_ns = Some(u64::MAX);
+        assert_eq!(
+            envelope.content_hash(),
+            base_hash,
+            "the declared wall-clock exclusion must not move identity"
+        );
+    }
+
+    #[test]
+    fn event_content_identity_domain_version_and_wire_schema_bytes_are_independent() {
+        let event = event_with_kind(EventKind::Cancellation {
+            reason: "budget".into(),
+        });
+        let current =
+            event.content_identity_with_versions(EVENT_CONTENT_IDENTITY_VERSION, SCHEMA_VERSION);
+        let domain_mutation = event.content_identity_with_schema(
+            "org.frankensim.fs-obs.event-content.v2.alternate",
+            EVENT_CONTENT_IDENTITY_VERSION,
+            SCHEMA_VERSION,
+        );
+        let identity_version_mutation = event
+            .content_identity_with_versions(EVENT_CONTENT_IDENTITY_VERSION + 1, SCHEMA_VERSION);
+        let wire_schema_mutation = event
+            .content_identity_with_versions(EVENT_CONTENT_IDENTITY_VERSION, SCHEMA_VERSION + 1);
+
+        let (identity_tag, current_identity_version) =
+            identity_field(current.canonical_bytes(), "event_content_identity_version");
+        let (schema_tag, current_wire_schema) =
+            identity_field(current.canonical_bytes(), "event_wire_schema_version");
+        assert_eq!(identity_tag, 0x02);
+        assert_eq!(schema_tag, 0x02);
+        assert!(
+            current
+                .canonical_bytes()
+                .starts_with(EVENT_CONTENT_IDENTITY_DOMAIN.as_bytes())
+        );
+        assert!(
+            domain_mutation
+                .canonical_bytes()
+                .starts_with(b"org.frankensim.fs-obs.event-content.v2.alternate")
+        );
+        assert_eq!(
+            current_identity_version,
+            u64::from(EVENT_CONTENT_IDENTITY_VERSION)
+                .to_le_bytes()
+                .as_slice()
+        );
+        assert_eq!(
+            current_wire_schema,
+            u64::from(SCHEMA_VERSION).to_le_bytes().as_slice()
+        );
+        assert_eq!(
+            identity_field(
+                domain_mutation.canonical_bytes(),
+                "event_content_identity_version"
+            )
+            .1,
+            current_identity_version,
+            "artifact-domain mutation must leave identity-version bytes unchanged"
+        );
+        assert_eq!(
+            identity_field(
+                domain_mutation.canonical_bytes(),
+                "event_wire_schema_version"
+            )
+            .1,
+            current_wire_schema,
+            "artifact-domain mutation must leave wire-schema bytes unchanged"
+        );
+
+        assert_eq!(
+            identity_field(
+                identity_version_mutation.canonical_bytes(),
+                "event_wire_schema_version"
+            )
+            .1,
+            current_wire_schema,
+            "identity-version mutation must leave the wire-schema bytes unchanged"
+        );
+        assert_eq!(
+            identity_field(
+                wire_schema_mutation.canonical_bytes(),
+                "event_content_identity_version"
+            )
+            .1,
+            current_identity_version,
+            "wire-schema mutation must leave the identity-version bytes unchanged"
+        );
+        assert_ne!(
+            identity_field(
+                identity_version_mutation.canonical_bytes(),
+                "event_content_identity_version"
+            )
+            .1,
+            current_identity_version
+        );
+        assert_ne!(
+            identity_field(
+                wire_schema_mutation.canonical_bytes(),
+                "event_wire_schema_version"
+            )
+            .1,
+            current_wire_schema
+        );
+        assert_ne!(
+            current.canonical_bytes(),
+            identity_version_mutation.canonical_bytes()
+        );
+        assert_ne!(current.canonical_bytes(), domain_mutation.canonical_bytes());
+        assert_ne!(current.root(), domain_mutation.root());
+        assert_ne!(current.root(), identity_version_mutation.root());
+        assert_ne!(
+            current.canonical_bytes(),
+            wire_schema_mutation.canonical_bytes()
+        );
+        assert_ne!(current.root(), wire_schema_mutation.root());
+    }
+
+    #[test]
+    fn retained_event_identity_receipts_admit_exactly_or_fail_closed() {
+        let event = event_with_kind(EventKind::StormAssertion {
+            name: "no-leak".into(),
+            pass: true,
+            seed: 23,
+        });
+        let captured = event.content_identity_receipt();
+        assert_eq!(
+            captured.declared_identity_version(),
+            EVENT_CONTENT_IDENTITY_VERSION
+        );
+        assert_eq!(captured.root(), fnv1a64(captured.canonical_bytes()));
+
+        let retained = EventIdentityReceipt::from_retained_parts(
+            captured.declared_identity_version(),
+            captured.canonical_bytes().to_vec(),
+            captured.root(),
+        );
+        assert_eq!(event.admit_content_identity(&retained), Ok(()));
+
+        let stale = EventIdentityReceipt::from_retained_parts(
+            0,
+            captured.canonical_bytes().to_vec(),
+            captured.root(),
+        );
+        assert_eq!(
+            event.admit_content_identity(&stale),
+            Err(EventIdentityAdmissionError::UnsupportedVersion(
+                EventIdentityVersionError {
+                    declared: 0,
+                    supported: EVENT_CONTENT_IDENTITY_VERSION,
+                }
+            ))
+        );
+
+        let wrong_root = EventIdentityReceipt::from_retained_parts(
+            EVENT_CONTENT_IDENTITY_VERSION,
+            captured.canonical_bytes().to_vec(),
+            captured.root() ^ 1,
+        );
+        assert!(matches!(
+            event.admit_content_identity(&wrong_root),
+            Err(EventIdentityAdmissionError::RootMismatch { .. })
+        ));
+
+        let mut foreign_bytes = captured.canonical_bytes().to_vec();
+        let last = foreign_bytes
+            .last_mut()
+            .expect("event identity canonical bytes are non-empty");
+        *last ^= 1;
+        let foreign_root = fnv1a64(&foreign_bytes);
+        let self_consistent_but_foreign = EventIdentityReceipt::from_retained_parts(
+            EVENT_CONTENT_IDENTITY_VERSION,
+            foreign_bytes,
+            foreign_root,
+        );
+        assert_eq!(
+            event.admit_content_identity(&self_consistent_but_foreign),
+            Err(EventIdentityAdmissionError::CanonicalBytesMismatch {
+                declared_root: foreign_root,
+                expected_root: captured.root(),
+            })
+        );
+    }
+
+    #[test]
+    fn event_content_identity_versions_fail_closed() {
+        assert!(check_event_content_identity_version(EVENT_CONTENT_IDENTITY_VERSION).is_ok());
+        for declared in [0, EVENT_CONTENT_IDENTITY_VERSION + 1] {
+            assert_eq!(
+                check_event_content_identity_version(declared),
+                Err(EventIdentityVersionError {
+                    declared,
+                    supported: EVENT_CONTENT_IDENTITY_VERSION,
+                })
+            );
+        }
     }
 
     #[test]

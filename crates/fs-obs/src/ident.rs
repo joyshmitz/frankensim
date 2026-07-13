@@ -13,8 +13,9 @@
 //!
 //! THE ENCODING (schema v1). A field is
 //! `tag(1B) | key_len(u64 LE) | key | val_len(u64 LE) | val_bytes`;
-//! the stream is framed by magic `fsid`, the schema version, and the
-//! length-prefixed artifact kind. Properties the battery certifies:
+//! the stream is framed by [`REPLAY_IDENTITY_DOMAIN`]'s exact bytes, the
+//! schema version, and the length-prefixed artifact kind. Properties the
+//! battery certifies:
 //! - length prefixes kill delimiter/split collisions;
 //! - the TYPE TAG is hashed, so `str "1"`, `u64 1`, and `bytes b"1"`
 //!   have different roots (type confusion changes the identity);
@@ -50,8 +51,38 @@ use core::fmt;
 /// re-keys every root — a justified-golden-bump event by definition).
 pub const IDENT_SCHEMA_VERSION: u32 = 1;
 
-/// Frame magic: identifies a canonical identity stream.
-const MAGIC: &[u8; 4] = b"fsid";
+/// Domain prefix framed into every canonical replay identity.
+pub const REPLAY_IDENTITY_DOMAIN: &str = "fsid";
+
+/// Owner-local declaration consumed by `xtask check-identities`.
+pub const REPLAY_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-obs:replay-identity-frame",
+    "version_const=IDENT_SCHEMA_VERSION",
+    "version=1",
+    "domain=fsid",
+    "domain_const=REPLAY_IDENTITY_DOMAIN",
+    "encoder=IdentityBuilder::finish",
+    "encoder_helpers=IdentityBuilder::new",
+    "schema_constants=IDENT_SCHEMA_VERSION,REPLAY_IDENTITY_DOMAIN,TAG_STR,TAG_U64,TAG_I64,TAG_F64_BITS,TAG_BYTES,TAG_CHILD,TAG_FLAG",
+    "schema_functions=IdentityBuilder::str,IdentityBuilder::u64,IdentityBuilder::i64,IdentityBuilder::f64_bits,IdentityBuilder::bytes,IdentityBuilder::flag,IdentityBuilder::child,IdentityBuilder::child_root64,BoundedIdentityBuilder::new,BoundedIdentityBuilder::field,BoundedIdentityBuilder::str,BoundedIdentityBuilder::u64,BoundedIdentityBuilder::i64,BoundedIdentityBuilder::f64_bits,BoundedIdentityBuilder::bytes,BoundedIdentityBuilder::flag,BoundedIdentityBuilder::child,BoundedIdentityBuilder::child_root64,BoundedIdentityBuilder::finish,framed_length,encoded_field_len,enforce_canonical_budget,reserve_canonical_bytes,append_len_bytes,push_len_bytes,crates/fs-obs/src/lib.rs#fnv1a64",
+    "schema_dependencies=none",
+    "digest=fnv1a64",
+    "encoding=typed-binary",
+    "sources=ReplayIdentity",
+    "source_fields=ReplayIdentity.version:semantic,ReplayIdentity.kind:semantic,ReplayIdentity.root:derived:fnv-root-of-canonical-bytes,ReplayIdentity.bytes:semantic,ReplayIdentity.excluded:nonsemantic:audit-only",
+    "source_bindings=ReplayIdentity.version>schema-version,ReplayIdentity.kind>kind,ReplayIdentity.bytes>field-order+type-tag+field-key+exact-value-bytes+child-version-root",
+    "external_semantic_fields=domain-prefix",
+    "semantic_fields=domain-prefix,schema-version,kind,field-order,type-tag,field-key,exact-value-bytes,child-version-root",
+    "excluded_fields=max-canonical-bytes:admission-budget-only",
+    "consumers=IdentityBuilder,BoundedIdentityBuilder,fs-substrate,fs-evidence,fs-flagship-e2e,fs-report,fs-geom,fs-verify",
+    "mutations=domain-prefix:crates/fs-obs/tests/ident.rs#ident_006_unknown_schema_versions_fail_closed,schema-version:crates/fs-obs/tests/ident.rs#ident_006_unknown_schema_versions_fail_closed,kind:crates/fs-obs/tests/ident.rs#ident_001_every_semantic_field_moves_the_root,field-order:crates/fs-obs/tests/ident.rs#ident_004_type_confusion_and_order_are_semantic,type-tag:crates/fs-obs/tests/ident.rs#ident_004_type_confusion_and_order_are_semantic,field-key:crates/fs-obs/tests/ident.rs#ident_003_delimiter_and_split_collisions_refused,exact-value-bytes:crates/fs-obs/tests/ident.rs#ident_004_type_confusion_and_order_are_semantic,child-version-root:crates/fs-obs/tests/ident.rs#ident_005_dependency_children_propagate",
+    "nonsemantic_mutations=ReplayIdentity.excluded:crates/fs-obs/tests/ident.rs#ident_002_documented_exclusions_do_not_move_the_root,max-canonical-bytes:crates/fs-obs/tests/ident.rs#ident_007_bounded_builder_is_byte_exact_and_refuses_at_the_cap",
+    "field_guard=classify_replay_identity_fields",
+    "transport_guard=IdentityBuilder::field",
+    "version_guard=crates/fs-obs/tests/ident.rs#ident_006_unknown_schema_versions_fail_closed",
+    "coupling_surface=fs-obs:replay-identity-frame",
+];
 
 /// Typed field tags — hashed, so type confusion changes the root.
 const TAG_STR: u8 = 0x01;
@@ -71,6 +102,17 @@ pub struct ReplayIdentity {
     root: u64,
     bytes: Vec<u8>,
     excluded: Vec<(&'static str, &'static str)>,
+}
+
+#[allow(dead_code)]
+fn classify_replay_identity_fields(identity: &ReplayIdentity) {
+    let ReplayIdentity {
+        version: _,
+        kind: _,
+        root: _,
+        bytes: _,
+        excluded: _,
+    } = identity;
 }
 
 impl ReplayIdentity {
@@ -106,10 +148,14 @@ impl ReplayIdentity {
         &self.excluded
     }
 
-    /// Canonical display form: `fsid-v<version>:<kind>:<root hex>`.
+    /// Canonical display form:
+    /// `<REPLAY_IDENTITY_DOMAIN>-v<version>:<kind>:<root hex>`.
     #[must_use]
     pub fn hex(&self) -> String {
-        format!("fsid-v{}:{}:{:016x}", self.version, self.kind, self.root)
+        format!(
+            "{}-v{}:{}:{:016x}",
+            REPLAY_IDENTITY_DOMAIN, self.version, self.kind, self.root
+        )
     }
 }
 
@@ -248,7 +294,7 @@ impl IdentityBuilder {
     #[must_use]
     pub fn new(kind: &str) -> Self {
         let mut buf = Vec::with_capacity(128);
-        buf.extend_from_slice(MAGIC);
+        buf.extend_from_slice(REPLAY_IDENTITY_DOMAIN.as_bytes());
         buf.extend_from_slice(&IDENT_SCHEMA_VERSION.to_le_bytes());
         push_len_bytes(&mut buf, kind.as_bytes());
         IdentityBuilder {
@@ -362,7 +408,7 @@ impl BoundedIdentityBuilder {
     /// the byte cap, or capacity cannot be reserved.
     pub fn new(kind: &str, max_canonical_bytes: usize) -> Result<Self, IdentityBuildError> {
         let kind_len = framed_length(kind.len())?;
-        let header_len = MAGIC
+        let header_len = REPLAY_IDENTITY_DOMAIN
             .len()
             .checked_add(core::mem::size_of::<u32>())
             .and_then(|length| length.checked_add(core::mem::size_of::<u64>()))
@@ -380,7 +426,7 @@ impl BoundedIdentityBuilder {
 
         let mut buf = Vec::new();
         reserve_canonical_bytes(&mut buf, header_len, header_len)?;
-        buf.extend_from_slice(MAGIC);
+        buf.extend_from_slice(REPLAY_IDENTITY_DOMAIN.as_bytes());
         buf.extend_from_slice(&IDENT_SCHEMA_VERSION.to_le_bytes());
         append_len_bytes(&mut buf, kind_len, kind.as_bytes());
         Ok(Self {

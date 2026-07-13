@@ -49,9 +49,106 @@ pub const MAX_VOI_SCHEDULED_CONTEXTS: usize = 4096;
 /// Fixed anytime-valid false-activation level for VoI scheduling authority.
 pub const VOI_AUDIT_ALPHA: f64 = 0.05;
 
+/// Canonical semantics of the validated inputs to a ranked VoI menu.
+pub const VOI_RANKED_SOURCE_IDENTITY_VERSION: u32 = 2;
+/// Canonical semantics of the ranked output rows.
+pub const VOI_RANKED_MENU_IDENTITY_VERSION: u32 = 2;
+/// Canonical semantics of a chronological matched-audit prefix.
+pub const VOI_AUDIT_CONTEXT_IDENTITY_VERSION: u32 = 2;
+
 const RANKED_MENU_SOURCE_DOMAIN: &str = "frankensim.fs-plan.voi-ranked-source.v2";
 const RANKED_MENU_CONTEXT_DOMAIN: &str = "frankensim.fs-plan.voi-ranked-menu.v2";
 const AUDIT_CONTEXT_DOMAIN: &str = "frankensim.fs-plan.voi-audit.v2";
+
+/// Owner-local ranked-source declaration consumed by `xtask check-identities`.
+pub const VOI_RANKED_SOURCE_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-plan:voi-ranked-source",
+    "version_const=VOI_RANKED_SOURCE_IDENTITY_VERSION",
+    "version=2",
+    "domain=frankensim.fs-plan.voi-ranked-source.v2",
+    "domain_const=RANKED_MENU_SOURCE_DOMAIN",
+    "encoder=ranked_source_context",
+    "encoder_helpers=ranked_source_context_with_schema,ranked_source_context_with_declared_counts,push_u32,push_text,ProbeKind::identity_tag",
+    "schema_constants=RANKED_MENU_SOURCE_DOMAIN,VOI_RANKED_SOURCE_IDENTITY_VERSION,crates/fs-blake3/src/lib.rs#IV,crates/fs-blake3/src/lib.rs#MSG_PERMUTATION,crates/fs-blake3/src/lib.rs#BLOCK_LEN,crates/fs-blake3/src/lib.rs#CHUNK_LEN,crates/fs-blake3/src/lib.rs#CHUNK_START,crates/fs-blake3/src/lib.rs#CHUNK_END,crates/fs-blake3/src/lib.rs#PARENT,crates/fs-blake3/src/lib.rs#ROOT,crates/fs-blake3/src/lib.rs#DERIVE_KEY_CONTEXT,crates/fs-blake3/src/lib.rs#DERIVE_KEY_MATERIAL,crates/fs-blake3/src/lib.rs#MAX_DEPTH",
+    "schema_functions=check_identity_version,check_ranked_source_identity_version,RankedMenu::source_identity_version,crates/fs-blake3/src/lib.rs#hash_domain,crates/fs-blake3/src/lib.rs#ContentHash::as_bytes,crates/fs-blake3/src/lib.rs#g,crates/fs-blake3/src/lib.rs#round,crates/fs-blake3/src/lib.rs#permute,crates/fs-blake3/src/lib.rs#compress,crates/fs-blake3/src/lib.rs#words_from_block,crates/fs-blake3/src/lib.rs#first_8_words,crates/fs-blake3/src/lib.rs#Output::chaining_value,crates/fs-blake3/src/lib.rs#Output::root_hash,crates/fs-blake3/src/lib.rs#parent_output,crates/fs-blake3/src/lib.rs#ChunkState::new,crates/fs-blake3/src/lib.rs#ChunkState::len,crates/fs-blake3/src/lib.rs#ChunkState::start_flag,crates/fs-blake3/src/lib.rs#ChunkState::update,crates/fs-blake3/src/lib.rs#ChunkState::output,crates/fs-blake3/src/lib.rs#Blake3::new_internal,crates/fs-blake3/src/lib.rs#Blake3::push_stack,crates/fs-blake3/src/lib.rs#Blake3::pop_stack,crates/fs-blake3/src/lib.rs#Blake3::add_chunk_chaining_value,crates/fs-blake3/src/lib.rs#Blake3::update,crates/fs-blake3/src/lib.rs#Blake3::finalize",
+    "schema_dependencies=none",
+    "digest=fs-blake3",
+    "encoding=typed-binary",
+    "sources=UncertaintyNode,Probe,DecisionOracleMetadata,DecisionComputationReceipt,DecisionBudget",
+    "source_fields=UncertaintyNode.name:semantic,UncertaintyNode.lo:semantic,UncertaintyNode.hi:semantic,UncertaintyNode.nominal:semantic,Probe.name:semantic,Probe.target:semantic,Probe.cost:semantic,Probe.shrink:semantic,Probe.kind:semantic,DecisionOracleMetadata.arity:semantic,DecisionOracleMetadata.work_units_per_evaluation:semantic,DecisionComputationReceipt.evaluations:semantic,DecisionComputationReceipt.work_units:semantic,DecisionComputationReceipt.budget:derived:nested-budget-fields-encoded-separately,DecisionBudget.max_evaluations:semantic,DecisionBudget.max_work_units:semantic",
+    "source_bindings=UncertaintyNode.name>node-name,UncertaintyNode.lo>node-lo,UncertaintyNode.hi>node-hi,UncertaintyNode.nominal>node-nominal,Probe.name>probe-name,Probe.target>probe-target,Probe.cost>probe-cost,Probe.shrink>probe-shrink,Probe.kind>probe-kind,DecisionOracleMetadata.arity>oracle-arity,DecisionOracleMetadata.work_units_per_evaluation>work-units-per-evaluation,DecisionComputationReceipt.evaluations>decision-evaluations,DecisionComputationReceipt.work_units>decision-work-units,DecisionBudget.max_evaluations>decision-evaluation-budget,DecisionBudget.max_work_units>decision-work-budget",
+    "external_semantic_fields=artifact-domain,identity-version,policy-scope,snapshot-id,grid,node-count,node-order,probe-count",
+    "semantic_fields=artifact-domain,identity-version,policy-scope,snapshot-id,grid,oracle-arity,work-units-per-evaluation,decision-evaluations,decision-work-units,decision-evaluation-budget,decision-work-budget,node-count,node-order,node-name,node-lo,node-nominal,node-hi,probe-count,probe-name,probe-target,probe-cost,probe-shrink,probe-kind",
+    "excluded_fields=source-menu-input-order:canonicalized-by-validated-probe-name,allocation-capacity:representation-only",
+    "consumers=rank_purchases,RankedMenu::source_context_id,RankedMenu::context_id,VoiScheduler::schedule",
+    "mutations=artifact-domain:crates/fs-plan/src/voi.rs#voi_ranked_source_identity_mutation_battery,identity-version:crates/fs-plan/src/voi.rs#voi_ranked_source_identity_mutation_battery,policy-scope:crates/fs-plan/src/voi.rs#voi_ranked_source_identity_mutation_battery,snapshot-id:crates/fs-plan/src/voi.rs#voi_ranked_source_identity_mutation_battery,grid:crates/fs-plan/src/voi.rs#voi_ranked_source_identity_mutation_battery,oracle-arity:crates/fs-plan/src/voi.rs#voi_ranked_source_identity_mutation_battery,work-units-per-evaluation:crates/fs-plan/src/voi.rs#voi_ranked_source_identity_mutation_battery,decision-evaluations:crates/fs-plan/src/voi.rs#voi_ranked_source_identity_mutation_battery,decision-work-units:crates/fs-plan/src/voi.rs#voi_ranked_source_identity_mutation_battery,decision-evaluation-budget:crates/fs-plan/src/voi.rs#voi_ranked_source_identity_mutation_battery,decision-work-budget:crates/fs-plan/src/voi.rs#voi_ranked_source_identity_mutation_battery,node-count:crates/fs-plan/src/voi.rs#voi_ranked_source_identity_mutation_battery,node-order:crates/fs-plan/src/voi.rs#voi_ranked_source_identity_mutation_battery,node-name:crates/fs-plan/src/voi.rs#voi_ranked_source_identity_mutation_battery,node-lo:crates/fs-plan/src/voi.rs#voi_ranked_source_identity_mutation_battery,node-nominal:crates/fs-plan/src/voi.rs#voi_ranked_source_identity_mutation_battery,node-hi:crates/fs-plan/src/voi.rs#voi_ranked_source_identity_mutation_battery,probe-count:crates/fs-plan/src/voi.rs#voi_ranked_source_identity_mutation_battery,probe-name:crates/fs-plan/src/voi.rs#voi_ranked_source_identity_mutation_battery,probe-target:crates/fs-plan/src/voi.rs#voi_ranked_source_identity_mutation_battery,probe-cost:crates/fs-plan/src/voi.rs#voi_ranked_source_identity_mutation_battery,probe-shrink:crates/fs-plan/src/voi.rs#voi_ranked_source_identity_mutation_battery,probe-kind:crates/fs-plan/src/voi.rs#voi_ranked_source_identity_mutation_battery",
+    "nonsemantic_mutations=source-menu-input-order:crates/fs-plan/src/voi.rs#voi_ranked_source_menu_input_order_is_nonsemantic,allocation-capacity:crates/fs-plan/src/voi.rs#voi_identity_allocation_capacity_is_nonsemantic",
+    "field_guard=classify_voi_ranked_source_identity_fields",
+    "transport_guard=ranked_source_context",
+    "version_guard=crates/fs-plan/tests/voi.rs#voi_identity_versions_fail_closed",
+    "coupling_surface=fs-plan:voi-ranked-source",
+];
+
+/// Owner-local ranked-menu declaration consumed by `xtask check-identities`.
+pub const VOI_RANKED_MENU_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-plan:voi-ranked-menu",
+    "version_const=VOI_RANKED_MENU_IDENTITY_VERSION",
+    "version=2",
+    "domain=frankensim.fs-plan.voi-ranked-menu.v2",
+    "domain_const=RANKED_MENU_CONTEXT_DOMAIN",
+    "encoder=ranked_output_context",
+    "encoder_helpers=ranked_output_context_with_schema,ranked_output_context_with_declared_count,push_u32,push_text",
+    "schema_constants=RANKED_MENU_CONTEXT_DOMAIN,VOI_RANKED_MENU_IDENTITY_VERSION,crates/fs-blake3/src/lib.rs#IV,crates/fs-blake3/src/lib.rs#MSG_PERMUTATION,crates/fs-blake3/src/lib.rs#BLOCK_LEN,crates/fs-blake3/src/lib.rs#CHUNK_LEN,crates/fs-blake3/src/lib.rs#CHUNK_START,crates/fs-blake3/src/lib.rs#CHUNK_END,crates/fs-blake3/src/lib.rs#PARENT,crates/fs-blake3/src/lib.rs#ROOT,crates/fs-blake3/src/lib.rs#DERIVE_KEY_CONTEXT,crates/fs-blake3/src/lib.rs#DERIVE_KEY_MATERIAL,crates/fs-blake3/src/lib.rs#MAX_DEPTH",
+    "schema_functions=check_identity_version,check_ranked_source_identity_version,check_ranked_menu_identity_version,RankedMenu::source_identity_version,RankedMenu::identity_version,RankedMenu::admit_retained_identity_versions,crates/fs-blake3/src/lib.rs#hash_domain,crates/fs-blake3/src/lib.rs#ContentHash::as_bytes,crates/fs-blake3/src/lib.rs#g,crates/fs-blake3/src/lib.rs#round,crates/fs-blake3/src/lib.rs#permute,crates/fs-blake3/src/lib.rs#compress,crates/fs-blake3/src/lib.rs#words_from_block,crates/fs-blake3/src/lib.rs#first_8_words,crates/fs-blake3/src/lib.rs#Output::chaining_value,crates/fs-blake3/src/lib.rs#Output::root_hash,crates/fs-blake3/src/lib.rs#parent_output,crates/fs-blake3/src/lib.rs#ChunkState::new,crates/fs-blake3/src/lib.rs#ChunkState::len,crates/fs-blake3/src/lib.rs#ChunkState::start_flag,crates/fs-blake3/src/lib.rs#ChunkState::update,crates/fs-blake3/src/lib.rs#ChunkState::output,crates/fs-blake3/src/lib.rs#Blake3::new_internal,crates/fs-blake3/src/lib.rs#Blake3::push_stack,crates/fs-blake3/src/lib.rs#Blake3::pop_stack,crates/fs-blake3/src/lib.rs#Blake3::add_chunk_chaining_value,crates/fs-blake3/src/lib.rs#Blake3::update,crates/fs-blake3/src/lib.rs#Blake3::finalize",
+    "schema_dependencies=fs-plan:voi-ranked-source",
+    "digest=fs-blake3",
+    "encoding=typed-binary",
+    "sources=RankedPurchase,Probe",
+    "source_fields=RankedPurchase.probe:derived:nested-probe-fields-classified-separately,RankedPurchase.flip_before:semantic,RankedPurchase.flip_after:semantic,RankedPurchase.score:semantic,Probe.name:semantic,Probe.target:derived:already-bound-by-source-context-root,Probe.cost:derived:already-bound-by-source-context-root,Probe.shrink:derived:already-bound-by-source-context-root,Probe.kind:derived:already-bound-by-source-context-root",
+    "source_bindings=RankedPurchase.flip_before>flip-before,RankedPurchase.flip_after>flip-after,RankedPurchase.score>score,Probe.name>ranked-probe-name",
+    "external_semantic_fields=artifact-domain,identity-version,source-context-root,row-count,row-order",
+    "semantic_fields=artifact-domain,identity-version,source-context-root,row-count,row-order,ranked-probe-name,flip-before,flip-after,score",
+    "excluded_fields=ranked-probe-payload:already-bound-by-source-context-root,allocation-capacity:representation-only",
+    "consumers=RankedMenu::context_id,QueryHint,VoiScheduler::schedule",
+    "mutations=artifact-domain:crates/fs-plan/src/voi.rs#voi_ranked_menu_identity_mutation_battery,identity-version:crates/fs-plan/src/voi.rs#voi_ranked_menu_identity_mutation_battery,source-context-root:crates/fs-plan/src/voi.rs#voi_ranked_menu_identity_mutation_battery,row-count:crates/fs-plan/src/voi.rs#voi_ranked_menu_identity_mutation_battery,row-order:crates/fs-plan/src/voi.rs#voi_ranked_menu_identity_mutation_battery,ranked-probe-name:crates/fs-plan/src/voi.rs#voi_ranked_menu_identity_mutation_battery,flip-before:crates/fs-plan/src/voi.rs#voi_ranked_menu_identity_mutation_battery,flip-after:crates/fs-plan/src/voi.rs#voi_ranked_menu_identity_mutation_battery,score:crates/fs-plan/src/voi.rs#voi_ranked_menu_identity_mutation_battery",
+    "nonsemantic_mutations=ranked-probe-payload:crates/fs-plan/src/voi.rs#voi_ranked_menu_probe_payload_is_bound_by_source_context,allocation-capacity:crates/fs-plan/src/voi.rs#voi_identity_allocation_capacity_is_nonsemantic",
+    "field_guard=classify_voi_ranked_menu_identity_fields",
+    "transport_guard=ranked_output_context",
+    "version_guard=crates/fs-plan/tests/voi.rs#voi_identity_versions_fail_closed",
+    "coupling_surface=fs-plan:voi-ranked-menu",
+];
+
+/// Owner-local audit-context declaration consumed by `xtask check-identities`.
+pub const VOI_AUDIT_CONTEXT_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-plan:voi-audit-context",
+    "version_const=VOI_AUDIT_CONTEXT_IDENTITY_VERSION",
+    "version=2",
+    "domain=frankensim.fs-plan.voi-audit.v2",
+    "domain_const=AUDIT_CONTEXT_DOMAIN",
+    "encoder=audit_context",
+    "encoder_helpers=audit_context_with_schema,audit_context_with_declared_count,push_u32,push_text",
+    "schema_constants=AUDIT_CONTEXT_DOMAIN,VOI_AUDIT_ALPHA,VOI_AUDIT_CONTEXT_IDENTITY_VERSION,MAX_VOI_AUDIT_RECORDS,crates/fs-blake3/src/lib.rs#IV,crates/fs-blake3/src/lib.rs#MSG_PERMUTATION,crates/fs-blake3/src/lib.rs#BLOCK_LEN,crates/fs-blake3/src/lib.rs#CHUNK_LEN,crates/fs-blake3/src/lib.rs#CHUNK_START,crates/fs-blake3/src/lib.rs#CHUNK_END,crates/fs-blake3/src/lib.rs#PARENT,crates/fs-blake3/src/lib.rs#ROOT,crates/fs-blake3/src/lib.rs#DERIVE_KEY_CONTEXT,crates/fs-blake3/src/lib.rs#DERIVE_KEY_MATERIAL,crates/fs-blake3/src/lib.rs#MAX_DEPTH",
+    "schema_functions=check_identity_version,check_audit_context_identity_version,AuditReport::identity_version,AuditReport::admit_retained_identity_version,crates/fs-blake3/src/lib.rs#hash_domain,crates/fs-blake3/src/lib.rs#ContentHash::as_bytes,crates/fs-blake3/src/lib.rs#g,crates/fs-blake3/src/lib.rs#round,crates/fs-blake3/src/lib.rs#permute,crates/fs-blake3/src/lib.rs#compress,crates/fs-blake3/src/lib.rs#words_from_block,crates/fs-blake3/src/lib.rs#first_8_words,crates/fs-blake3/src/lib.rs#Output::chaining_value,crates/fs-blake3/src/lib.rs#Output::root_hash,crates/fs-blake3/src/lib.rs#parent_output,crates/fs-blake3/src/lib.rs#ChunkState::new,crates/fs-blake3/src/lib.rs#ChunkState::len,crates/fs-blake3/src/lib.rs#ChunkState::start_flag,crates/fs-blake3/src/lib.rs#ChunkState::update,crates/fs-blake3/src/lib.rs#ChunkState::output,crates/fs-blake3/src/lib.rs#Blake3::new_internal,crates/fs-blake3/src/lib.rs#Blake3::push_stack,crates/fs-blake3/src/lib.rs#Blake3::pop_stack,crates/fs-blake3/src/lib.rs#Blake3::add_chunk_chaining_value,crates/fs-blake3/src/lib.rs#Blake3::update,crates/fs-blake3/src/lib.rs#Blake3::finalize",
+    "schema_dependencies=none",
+    "digest=fs-blake3",
+    "encoding=typed-binary",
+    "sources=MatchedAuditRecord",
+    "source_fields=MatchedAuditRecord.observation_id:semantic,MatchedAuditRecord.recommended_id:semantic,MatchedAuditRecord.alternative_id:semantic,MatchedAuditRecord.provenance:semantic,MatchedAuditRecord.matched_cost:semantic,MatchedAuditRecord.recommended_changed_decision:semantic,MatchedAuditRecord.alternative_changed_decision:semantic",
+    "source_bindings=MatchedAuditRecord.observation_id>observation-id,MatchedAuditRecord.recommended_id>recommended-id,MatchedAuditRecord.alternative_id>alternative-id,MatchedAuditRecord.provenance>provenance,MatchedAuditRecord.matched_cost>matched-cost,MatchedAuditRecord.recommended_changed_decision>recommended-changed-decision,MatchedAuditRecord.alternative_changed_decision>alternative-changed-decision",
+    "external_semantic_fields=artifact-domain,identity-version,policy-scope,audit-alpha,max-audit-records,record-count,record-order",
+    "semantic_fields=artifact-domain,identity-version,policy-scope,audit-alpha,max-audit-records,record-count,record-order,observation-id,recommended-id,alternative-id,provenance,matched-cost,recommended-changed-decision,alternative-changed-decision",
+    "excluded_fields=allocation-capacity:representation-only,report-verdict:derived-from-chronological-e-process",
+    "consumers=VoiScheduler::audit_report,VoiScheduler::schedule,audit_scheduling,AuditReport::audit_context_id",
+    "mutations=artifact-domain:crates/fs-plan/src/voi.rs#voi_audit_context_identity_mutation_battery,identity-version:crates/fs-plan/src/voi.rs#voi_audit_context_identity_mutation_battery,policy-scope:crates/fs-plan/src/voi.rs#voi_audit_context_identity_mutation_battery,audit-alpha:crates/fs-plan/src/voi.rs#voi_audit_context_identity_mutation_battery,max-audit-records:crates/fs-plan/src/voi.rs#voi_audit_context_identity_mutation_battery,record-count:crates/fs-plan/src/voi.rs#voi_audit_context_identity_mutation_battery,record-order:crates/fs-plan/src/voi.rs#voi_audit_context_identity_mutation_battery,observation-id:crates/fs-plan/src/voi.rs#voi_audit_context_identity_mutation_battery,recommended-id:crates/fs-plan/src/voi.rs#voi_audit_context_identity_mutation_battery,alternative-id:crates/fs-plan/src/voi.rs#voi_audit_context_identity_mutation_battery,provenance:crates/fs-plan/src/voi.rs#voi_audit_context_identity_mutation_battery,matched-cost:crates/fs-plan/src/voi.rs#voi_audit_context_identity_mutation_battery,recommended-changed-decision:crates/fs-plan/src/voi.rs#voi_audit_context_identity_mutation_battery,alternative-changed-decision:crates/fs-plan/src/voi.rs#voi_audit_context_identity_mutation_battery",
+    "nonsemantic_mutations=allocation-capacity:crates/fs-plan/src/voi.rs#voi_identity_allocation_capacity_is_nonsemantic,report-verdict:crates/fs-plan/src/voi.rs#voi_audit_report_verdict_is_derived_and_nonsemantic",
+    "field_guard=classify_voi_audit_context_identity_fields",
+    "transport_guard=audit_context",
+    "version_guard=crates/fs-plan/tests/voi.rs#voi_identity_versions_fail_closed",
+    "coupling_surface=fs-plan:voi-audit-context",
+];
 
 /// Why a VoI query, audit, or schedule was refused.
 #[derive(Debug, Clone, PartialEq)]
@@ -216,6 +313,15 @@ pub enum VoiError {
     },
     /// Scheduling was requested before the live audit crossed its threshold.
     MissingSchedulingAuthority,
+    /// Retained identity bytes declare semantics unknown to this build.
+    UnsupportedIdentityVersion {
+        /// Identity surface being admitted.
+        identity: &'static str,
+        /// Version declared by the retained producer.
+        declared: u32,
+        /// Exact version supported by this build.
+        supported: u32,
+    },
     /// Finite inputs could not produce a finite, monotone result.
     ArithmeticRefusal {
         /// Operation that failed.
@@ -348,6 +454,14 @@ impl core::fmt::Display for VoiError {
                 f,
                 "the live VoI audit has not crossed the anytime-valid scheduling threshold"
             ),
+            Self::UnsupportedIdentityVersion {
+                identity,
+                declared,
+                supported,
+            } => write!(
+                f,
+                "retained {identity} identity v{declared} is unsupported; this build accepts exactly v{supported}"
+            ),
             Self::ArithmeticRefusal { operation, subject } => {
                 write!(
                     f,
@@ -359,6 +473,61 @@ impl core::fmt::Display for VoiError {
 }
 
 impl std::error::Error for VoiError {}
+
+fn check_identity_version(
+    identity: &'static str,
+    declared: u32,
+    supported: u32,
+) -> Result<(), VoiError> {
+    if declared == supported {
+        Ok(())
+    } else {
+        Err(VoiError::UnsupportedIdentityVersion {
+            identity,
+            declared,
+            supported,
+        })
+    }
+}
+
+/// Refuse retained ranked-source identities from stale or future schemas.
+///
+/// # Errors
+/// [`VoiError::UnsupportedIdentityVersion`] unless `declared` is exactly the
+/// current ranked-source identity version.
+pub fn check_ranked_source_identity_version(declared: u32) -> Result<(), VoiError> {
+    check_identity_version(
+        "VoI ranked source",
+        declared,
+        VOI_RANKED_SOURCE_IDENTITY_VERSION,
+    )
+}
+
+/// Refuse retained ranked-menu identities from stale or future schemas.
+///
+/// # Errors
+/// [`VoiError::UnsupportedIdentityVersion`] unless `declared` is exactly the
+/// current ranked-menu identity version.
+pub fn check_ranked_menu_identity_version(declared: u32) -> Result<(), VoiError> {
+    check_identity_version(
+        "VoI ranked menu",
+        declared,
+        VOI_RANKED_MENU_IDENTITY_VERSION,
+    )
+}
+
+/// Refuse retained audit-context identities from stale or future schemas.
+///
+/// # Errors
+/// [`VoiError::UnsupportedIdentityVersion`] unless `declared` is exactly the
+/// current audit-context identity version.
+pub fn check_audit_context_identity_version(declared: u32) -> Result<(), VoiError> {
+    check_identity_version(
+        "VoI audit context",
+        declared,
+        VOI_AUDIT_CONTEXT_IDENTITY_VERSION,
+    )
+}
 
 /// One uncertainty node touching a live decision: a named quantity the
 /// ledger only knows to an interval.
@@ -939,6 +1108,15 @@ pub enum ProbeKind {
     Physical,
 }
 
+impl ProbeKind {
+    const fn identity_tag(self) -> u8 {
+        match self {
+            Self::Computational => 0,
+            Self::Physical => 1,
+        }
+    }
+}
+
 /// One priced probe: buying it SHRINKS a node's interval around its
 /// nominal by `shrink` (0 < shrink < 1).
 #[derive(Debug, Clone, PartialEq)]
@@ -992,6 +1170,59 @@ impl RankedPurchase {
     pub fn score(&self) -> f64 {
         self.score
     }
+}
+
+#[allow(dead_code)]
+fn classify_voi_ranked_source_identity_fields(
+    node: &UncertaintyNode,
+    probe: &Probe,
+    metadata: &DecisionOracleMetadata,
+    computation: &DecisionComputationReceipt,
+    budget: &DecisionBudget,
+) {
+    let UncertaintyNode {
+        name: _,
+        lo: _,
+        hi: _,
+        nominal: _,
+    } = node;
+    let Probe {
+        name: _,
+        target: _,
+        cost: _,
+        shrink: _,
+        kind: _,
+    } = probe;
+    let DecisionOracleMetadata {
+        arity: _,
+        work_units_per_evaluation: _,
+    } = metadata;
+    let DecisionComputationReceipt {
+        evaluations: _,
+        work_units: _,
+        budget: _,
+    } = computation;
+    let DecisionBudget {
+        max_evaluations: _,
+        max_work_units: _,
+    } = budget;
+}
+
+#[allow(dead_code)]
+fn classify_voi_ranked_menu_identity_fields(row: &RankedPurchase, probe: &Probe) {
+    let RankedPurchase {
+        probe: _,
+        flip_before: _,
+        flip_after: _,
+        score: _,
+    } = row;
+    let Probe {
+        name: _,
+        target: _,
+        cost: _,
+        shrink: _,
+        kind: _,
+    } = probe;
 }
 
 /// A complete, canonical ranking for one validated supplied
@@ -1060,6 +1291,44 @@ impl RankedMenu {
     #[must_use]
     pub fn source_context_id(&self) -> ContentHash {
         self.source_context_id
+    }
+
+    /// Ranked-source identity semantics used for [`Self::source_context_id`].
+    #[must_use]
+    pub const fn source_identity_version(&self) -> u32 {
+        VOI_RANKED_SOURCE_IDENTITY_VERSION
+    }
+
+    /// Ranked-output identity semantics used for [`Self::context_id`].
+    #[must_use]
+    pub const fn identity_version(&self) -> u32 {
+        VOI_RANKED_MENU_IDENTITY_VERSION
+    }
+
+    /// Admit versions carried beside retained ranked-menu roots.
+    ///
+    /// Safe `RankedMenu` values are sealed by [`rank_purchases`]; this gate is
+    /// for callers that retain the two roots with their producer-declared
+    /// versions. Root comparison must follow this fail-closed version check.
+    ///
+    /// # Errors
+    /// [`VoiError::UnsupportedIdentityVersion`] for any stale or future
+    /// ranked-source or ranked-output version.
+    pub fn admit_retained_identity_versions(
+        &self,
+        declared_source_version: u32,
+        declared_menu_version: u32,
+    ) -> Result<(), VoiError> {
+        check_identity_version(
+            "VoI ranked source",
+            declared_source_version,
+            self.source_identity_version(),
+        )?;
+        check_identity_version(
+            "VoI ranked menu",
+            declared_menu_version,
+            self.identity_version(),
+        )
     }
 
     /// Caller-declared policy/version scope bound into this ranking.
@@ -1262,8 +1531,62 @@ fn ranked_source_context(
     metadata: DecisionOracleMetadata,
     computation: DecisionComputationReceipt,
 ) -> Result<ContentHash, VoiError> {
+    ranked_source_context_with_schema(
+        RANKED_MENU_SOURCE_DOMAIN,
+        VOI_RANKED_SOURCE_IDENTITY_VERSION,
+        nodes,
+        menu,
+        grid,
+        policy_scope,
+        snapshot_id,
+        metadata,
+        computation,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ranked_source_context_with_schema(
+    domain: &str,
+    producer_version: u32,
+    nodes: &[UncertaintyNode],
+    menu: &[Probe],
+    grid: usize,
+    policy_scope: &str,
+    snapshot_id: &str,
+    metadata: DecisionOracleMetadata,
+    computation: DecisionComputationReceipt,
+) -> Result<ContentHash, VoiError> {
+    ranked_source_context_with_declared_counts(
+        domain,
+        producer_version,
+        nodes,
+        nodes.len(),
+        menu,
+        menu.len(),
+        grid,
+        policy_scope,
+        snapshot_id,
+        metadata,
+        computation,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ranked_source_context_with_declared_counts(
+    domain: &str,
+    producer_version: u32,
+    nodes: &[UncertaintyNode],
+    declared_node_count: usize,
+    menu: &[Probe],
+    declared_probe_count: usize,
+    grid: usize,
+    policy_scope: &str,
+    snapshot_id: &str,
+    metadata: DecisionOracleMetadata,
+    computation: DecisionComputationReceipt,
+) -> Result<ContentHash, VoiError> {
     let mut canonical = Vec::new();
-    canonical.extend_from_slice(&2u32.to_le_bytes());
+    canonical.extend_from_slice(&producer_version.to_le_bytes());
     push_text(&mut canonical, policy_scope, "VoI policy scope")?;
     push_text(&mut canonical, snapshot_id, "VoI snapshot identity")?;
     push_u32(&mut canonical, grid, "grid")?;
@@ -1281,7 +1604,7 @@ fn ranked_source_context(
         "decision evaluation budget",
     )?;
     canonical.extend_from_slice(&computation.budget.max_work_units.to_le_bytes());
-    push_u32(&mut canonical, nodes.len(), "uncertainty nodes")?;
+    push_u32(&mut canonical, declared_node_count, "uncertainty nodes")?;
     for node in nodes {
         push_text(&mut canonical, &node.name, "uncertainty node name")?;
         canonical.extend_from_slice(&node.lo.to_bits().to_le_bytes());
@@ -1290,35 +1613,62 @@ fn ranked_source_context(
     }
     let mut canonical_menu: Vec<&Probe> = menu.iter().collect();
     canonical_menu.sort_by(|left, right| left.name.cmp(&right.name));
-    push_u32(&mut canonical, canonical_menu.len(), "probe menu")?;
+    push_u32(&mut canonical, declared_probe_count, "probe menu")?;
     for probe in canonical_menu {
         push_text(&mut canonical, &probe.name, "probe name")?;
         push_text(&mut canonical, &probe.target, "probe target")?;
         canonical.extend_from_slice(&probe.cost.to_bits().to_le_bytes());
         canonical.extend_from_slice(&probe.shrink.to_bits().to_le_bytes());
-        canonical.push(match probe.kind {
-            ProbeKind::Computational => 0,
-            ProbeKind::Physical => 1,
-        });
+        canonical.push(probe.kind.identity_tag());
     }
-    Ok(hash_domain(RANKED_MENU_SOURCE_DOMAIN, &canonical))
+    Ok(hash_domain(domain, &canonical))
 }
 
 fn ranked_output_context(
     source_context_id: ContentHash,
     rows: &[RankedPurchase],
 ) -> Result<ContentHash, VoiError> {
+    ranked_output_context_with_schema(
+        RANKED_MENU_CONTEXT_DOMAIN,
+        VOI_RANKED_MENU_IDENTITY_VERSION,
+        source_context_id,
+        rows,
+    )
+}
+
+fn ranked_output_context_with_schema(
+    domain: &str,
+    producer_version: u32,
+    source_context_id: ContentHash,
+    rows: &[RankedPurchase],
+) -> Result<ContentHash, VoiError> {
+    ranked_output_context_with_declared_count(
+        domain,
+        producer_version,
+        source_context_id,
+        rows,
+        rows.len(),
+    )
+}
+
+fn ranked_output_context_with_declared_count(
+    domain: &str,
+    producer_version: u32,
+    source_context_id: ContentHash,
+    rows: &[RankedPurchase],
+    declared_row_count: usize,
+) -> Result<ContentHash, VoiError> {
     let mut canonical = Vec::new();
-    canonical.extend_from_slice(&2u32.to_le_bytes());
+    canonical.extend_from_slice(&producer_version.to_le_bytes());
     canonical.extend_from_slice(source_context_id.as_bytes());
-    push_u32(&mut canonical, rows.len(), "ranked output rows")?;
+    push_u32(&mut canonical, declared_row_count, "ranked output rows")?;
     for row in rows {
         push_text(&mut canonical, &row.probe.name, "ranked probe name")?;
         canonical.extend_from_slice(&row.flip_before.to_bits().to_le_bytes());
         canonical.extend_from_slice(&row.flip_after.to_bits().to_le_bytes());
         canonical.extend_from_slice(&row.score.to_bits().to_le_bytes());
     }
-    Ok(hash_domain(RANKED_MENU_CONTEXT_DOMAIN, &canonical))
+    Ok(hash_domain(domain, &canonical))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1629,6 +1979,19 @@ impl MatchedAuditRecord {
     }
 }
 
+#[allow(dead_code)]
+fn classify_voi_audit_context_identity_fields(record: &MatchedAuditRecord) {
+    let MatchedAuditRecord {
+        observation_id: _,
+        recommended_id: _,
+        alternative_id: _,
+        provenance: _,
+        matched_cost: _,
+        recommended_changed_decision: _,
+        alternative_changed_decision: _,
+    } = record;
+}
+
 /// One authorized, single-epoch scheduling decision. The receipt retains the
 /// ranked snapshot, audit evidence root, and exact budget transition instead of
 /// returning a provenance-free probe row.
@@ -1756,22 +2119,73 @@ impl AuditReport {
     pub fn log_e_value(&self) -> f64 {
         self.log_e_value
     }
+
+    /// Audit-context identity semantics used for [`Self::audit_context_id`].
+    #[must_use]
+    pub const fn identity_version(&self) -> u32 {
+        VOI_AUDIT_CONTEXT_IDENTITY_VERSION
+    }
+
+    /// Admit a version carried beside a retained audit-context root.
+    ///
+    /// Root comparison must follow this fail-closed version check.
+    ///
+    /// # Errors
+    /// [`VoiError::UnsupportedIdentityVersion`] for a stale or future audit
+    /// identity version.
+    pub fn admit_retained_identity_version(&self, declared: u32) -> Result<(), VoiError> {
+        check_identity_version("VoI audit context", declared, self.identity_version())
+    }
 }
 
 fn audit_context(
     policy_scope: &str,
     records: &[MatchedAuditRecord],
 ) -> Result<ContentHash, VoiError> {
-    let mut canonical = Vec::new();
-    canonical.extend_from_slice(&2u32.to_le_bytes());
-    push_text(&mut canonical, policy_scope, "VoI audit policy scope")?;
-    canonical.extend_from_slice(&VOI_AUDIT_ALPHA.to_bits().to_le_bytes());
-    push_u32(
-        &mut canonical,
+    audit_context_with_schema(
+        AUDIT_CONTEXT_DOMAIN,
+        VOI_AUDIT_CONTEXT_IDENTITY_VERSION,
+        policy_scope,
+        records,
+        VOI_AUDIT_ALPHA,
         MAX_VOI_AUDIT_RECORDS,
-        "maximum audit records",
-    )?;
-    push_u32(&mut canonical, records.len(), "audit records")?;
+    )
+}
+
+fn audit_context_with_schema(
+    domain: &str,
+    producer_version: u32,
+    policy_scope: &str,
+    records: &[MatchedAuditRecord],
+    audit_alpha: f64,
+    max_audit_records: usize,
+) -> Result<ContentHash, VoiError> {
+    audit_context_with_declared_count(
+        domain,
+        producer_version,
+        policy_scope,
+        records,
+        records.len(),
+        audit_alpha,
+        max_audit_records,
+    )
+}
+
+fn audit_context_with_declared_count(
+    domain: &str,
+    producer_version: u32,
+    policy_scope: &str,
+    records: &[MatchedAuditRecord],
+    declared_record_count: usize,
+    audit_alpha: f64,
+    max_audit_records: usize,
+) -> Result<ContentHash, VoiError> {
+    let mut canonical = Vec::new();
+    canonical.extend_from_slice(&producer_version.to_le_bytes());
+    push_text(&mut canonical, policy_scope, "VoI audit policy scope")?;
+    canonical.extend_from_slice(&audit_alpha.to_bits().to_le_bytes());
+    push_u32(&mut canonical, max_audit_records, "maximum audit records")?;
+    push_u32(&mut canonical, declared_record_count, "audit records")?;
     for record in records {
         push_text(&mut canonical, &record.observation_id, "audit observation")?;
         push_text(
@@ -1789,7 +2203,7 @@ fn audit_context(
         canonical.push(u8::from(record.recommended_changed_decision));
         canonical.push(u8::from(record.alternative_changed_decision));
     }
-    Ok(hash_domain(AUDIT_CONTEXT_DOMAIN, &canonical))
+    Ok(hash_domain(domain, &canonical))
 }
 
 /// Single-owner live VoI audit and purchase scheduler.
@@ -2008,6 +2422,423 @@ mod retained_capacity_tests {
         let mut out = String::with_capacity(4096);
         out.push_str(value);
         out
+    }
+
+    fn next_up(value: f64) -> f64 {
+        assert!(value.is_finite() && value >= 0.0);
+        let bits = value.to_bits();
+        let rendered = format!("{value:.12}");
+        let next = f64::from_bits(bits + 1);
+        assert_ne!(
+            next.to_bits(),
+            bits,
+            "one-ULP mutation must change exact bits"
+        );
+        assert_eq!(next.to_bits(), bits + 1, "mutation must be exactly one ULP");
+        assert_eq!(
+            format!("{next:.12}"),
+            rendered,
+            "chosen display rendering must hide the exact-bit mutation"
+        );
+        next
+    }
+
+    #[derive(Clone)]
+    struct SourceIdentityFixture {
+        domain: String,
+        producer_version: u32,
+        nodes: Vec<UncertaintyNode>,
+        probes: Vec<Probe>,
+        grid: usize,
+        policy_scope: String,
+        snapshot_id: String,
+        metadata: DecisionOracleMetadata,
+        computation: DecisionComputationReceipt,
+    }
+
+    impl SourceIdentityFixture {
+        fn root(&self) -> ContentHash {
+            self.root_with_declared_counts(self.nodes.len(), self.probes.len())
+        }
+
+        fn root_with_declared_counts(
+            &self,
+            declared_node_count: usize,
+            declared_probe_count: usize,
+        ) -> ContentHash {
+            ranked_source_context_with_declared_counts(
+                &self.domain,
+                self.producer_version,
+                &self.nodes,
+                declared_node_count,
+                &self.probes,
+                declared_probe_count,
+                self.grid,
+                &self.policy_scope,
+                &self.snapshot_id,
+                self.metadata,
+                self.computation,
+            )
+            .expect("bounded ranked-source identity fixture")
+        }
+    }
+
+    fn source_identity_fixture() -> SourceIdentityFixture {
+        SourceIdentityFixture {
+            domain: RANKED_MENU_SOURCE_DOMAIN.to_string(),
+            producer_version: VOI_RANKED_SOURCE_IDENTITY_VERSION,
+            nodes: vec![
+                UncertaintyNode {
+                    name: "a".to_string(),
+                    lo: 0.25,
+                    hi: 2.0,
+                    nominal: 1.0,
+                },
+                UncertaintyNode {
+                    name: "b".to_string(),
+                    lo: 2.0,
+                    hi: 4.0,
+                    nominal: 3.0,
+                },
+            ],
+            probes: vec![
+                Probe {
+                    name: "alpha".to_string(),
+                    target: "a".to_string(),
+                    cost: 2.0,
+                    shrink: 0.5,
+                    kind: ProbeKind::Computational,
+                },
+                Probe {
+                    name: "beta".to_string(),
+                    target: "b".to_string(),
+                    cost: 4.0,
+                    shrink: 0.25,
+                    kind: ProbeKind::Physical,
+                },
+            ],
+            grid: 8,
+            policy_scope: "policy-v1".to_string(),
+            snapshot_id: "snapshot-v1".to_string(),
+            metadata: DecisionOracleMetadata {
+                arity: 2,
+                work_units_per_evaluation: 3,
+            },
+            computation: DecisionComputationReceipt {
+                evaluations: 9,
+                work_units: 27,
+                budget: DecisionBudget {
+                    max_evaluations: 16,
+                    max_work_units: 64,
+                },
+            },
+        }
+    }
+
+    fn assert_source_identity_moves(mutate: impl FnOnce(&mut SourceIdentityFixture)) {
+        let fixture = source_identity_fixture();
+        let baseline = fixture.root();
+        let mut changed = fixture;
+        mutate(&mut changed);
+        assert_ne!(baseline, changed.root());
+    }
+
+    fn ranked_row(name: &str, flip_before: f64, flip_after: f64, score: f64) -> RankedPurchase {
+        RankedPurchase {
+            probe: Probe {
+                name: name.to_string(),
+                target: "a".to_string(),
+                cost: 2.0,
+                shrink: 0.5,
+                kind: ProbeKind::Computational,
+            },
+            flip_before,
+            flip_after,
+            score,
+        }
+    }
+
+    #[derive(Clone)]
+    struct RankedIdentityFixture {
+        domain: String,
+        producer_version: u32,
+        source_context_id: ContentHash,
+        rows: Vec<RankedPurchase>,
+    }
+
+    impl RankedIdentityFixture {
+        fn root(&self) -> ContentHash {
+            self.root_with_declared_count(self.rows.len())
+        }
+
+        fn root_with_declared_count(&self, declared_row_count: usize) -> ContentHash {
+            ranked_output_context_with_declared_count(
+                &self.domain,
+                self.producer_version,
+                self.source_context_id,
+                &self.rows,
+                declared_row_count,
+            )
+            .expect("bounded ranked-menu identity fixture")
+        }
+    }
+
+    fn ranked_identity_fixture() -> RankedIdentityFixture {
+        RankedIdentityFixture {
+            domain: RANKED_MENU_CONTEXT_DOMAIN.to_string(),
+            producer_version: VOI_RANKED_MENU_IDENTITY_VERSION,
+            source_context_id: hash_domain("identity-test-source", b"source-a"),
+            rows: vec![
+                ranked_row("alpha", 0.75, 0.25, 0.125),
+                ranked_row("beta", 0.5, 0.125, 0.0625),
+            ],
+        }
+    }
+
+    fn assert_ranked_identity_moves(mutate: impl FnOnce(&mut RankedIdentityFixture)) {
+        let fixture = ranked_identity_fixture();
+        let baseline = fixture.root();
+        let mut changed = fixture;
+        mutate(&mut changed);
+        assert_ne!(baseline, changed.root());
+    }
+
+    fn audit_record_fixture(id: &str, cost: f64, recommended_wins: bool) -> MatchedAuditRecord {
+        MatchedAuditRecord::new(
+            id,
+            format!("recommended-{id}"),
+            format!("alternative-{id}"),
+            format!("provenance-{id}"),
+            cost,
+            cost,
+            recommended_wins,
+            !recommended_wins,
+        )
+        .expect("valid audit identity fixture")
+    }
+
+    #[derive(Clone)]
+    struct AuditIdentityFixture {
+        domain: String,
+        producer_version: u32,
+        policy_scope: String,
+        records: Vec<MatchedAuditRecord>,
+        audit_alpha: f64,
+        max_audit_records: usize,
+    }
+
+    impl AuditIdentityFixture {
+        fn root(&self) -> ContentHash {
+            self.root_with_declared_count(self.records.len())
+        }
+
+        fn root_with_declared_count(&self, declared_record_count: usize) -> ContentHash {
+            audit_context_with_declared_count(
+                &self.domain,
+                self.producer_version,
+                &self.policy_scope,
+                &self.records,
+                declared_record_count,
+                self.audit_alpha,
+                self.max_audit_records,
+            )
+            .expect("bounded audit identity fixture")
+        }
+    }
+
+    fn audit_identity_fixture() -> AuditIdentityFixture {
+        AuditIdentityFixture {
+            domain: AUDIT_CONTEXT_DOMAIN.to_string(),
+            producer_version: VOI_AUDIT_CONTEXT_IDENTITY_VERSION,
+            policy_scope: "policy-v1".to_string(),
+            records: vec![
+                audit_record_fixture("a", 2.0, true),
+                audit_record_fixture("b", 4.0, false),
+            ],
+            audit_alpha: VOI_AUDIT_ALPHA,
+            max_audit_records: MAX_VOI_AUDIT_RECORDS,
+        }
+    }
+
+    fn assert_audit_identity_moves(mutate: impl FnOnce(&mut AuditIdentityFixture)) {
+        let fixture = audit_identity_fixture();
+        let baseline = fixture.root();
+        let mut changed = fixture;
+        mutate(&mut changed);
+        assert_ne!(baseline, changed.root());
+    }
+
+    #[test]
+    fn voi_ranked_source_identity_mutation_battery() {
+        assert_source_identity_moves(|fixture| fixture.domain.push_str(".alternate"));
+        assert_source_identity_moves(|fixture| fixture.producer_version += 1);
+        assert_source_identity_moves(|fixture| fixture.policy_scope.push('x'));
+        assert_source_identity_moves(|fixture| fixture.snapshot_id.push('x'));
+        assert_source_identity_moves(|fixture| fixture.grid += 1);
+        assert_source_identity_moves(|fixture| fixture.metadata.arity += 1);
+        assert_source_identity_moves(|fixture| fixture.metadata.work_units_per_evaluation += 1);
+        assert_source_identity_moves(|fixture| fixture.computation.evaluations += 1);
+        assert_source_identity_moves(|fixture| fixture.computation.work_units += 1);
+        assert_source_identity_moves(|fixture| fixture.computation.budget.max_evaluations += 1);
+        assert_source_identity_moves(|fixture| fixture.computation.budget.max_work_units += 1);
+
+        let fixture = source_identity_fixture();
+        assert_ne!(
+            fixture.root(),
+            fixture.root_with_declared_counts(fixture.nodes.len() + 1, fixture.probes.len()),
+            "the node-count frame must move independently of node bytes",
+        );
+        assert_source_identity_moves(|fixture| fixture.nodes.reverse());
+        assert_source_identity_moves(|fixture| fixture.nodes[0].name.push('x'));
+        assert_source_identity_moves(|fixture| fixture.nodes[0].lo = next_up(fixture.nodes[0].lo));
+        assert_source_identity_moves(|fixture| {
+            fixture.nodes[0].nominal = next_up(fixture.nodes[0].nominal);
+        });
+        assert_source_identity_moves(|fixture| fixture.nodes[0].hi = next_up(fixture.nodes[0].hi));
+
+        let fixture = source_identity_fixture();
+        assert_ne!(
+            fixture.root(),
+            fixture.root_with_declared_counts(fixture.nodes.len(), fixture.probes.len() + 1),
+            "the probe-count frame must move independently of probe bytes",
+        );
+        assert_source_identity_moves(|fixture| fixture.probes[0].name.push('x'));
+        assert_source_identity_moves(|fixture| fixture.probes[0].target = "b".to_string());
+        assert_source_identity_moves(|fixture| {
+            fixture.probes[0].cost = next_up(fixture.probes[0].cost);
+        });
+        assert_source_identity_moves(|fixture| {
+            fixture.probes[0].shrink = next_up(fixture.probes[0].shrink);
+        });
+        assert_source_identity_moves(|fixture| fixture.probes[0].kind = ProbeKind::Physical);
+    }
+
+    #[test]
+    fn voi_ranked_source_menu_input_order_is_nonsemantic() {
+        let fixture = source_identity_fixture();
+        let baseline = fixture.root();
+        let mut reordered = fixture;
+        reordered.probes.reverse();
+        assert_eq!(baseline, reordered.root());
+    }
+
+    #[test]
+    fn voi_identity_allocation_capacity_is_nonsemantic() {
+        let source = source_identity_fixture();
+        let mut source_with_spare_capacity = source.clone();
+        source_with_spare_capacity.nodes = Vec::with_capacity(64);
+        source_with_spare_capacity
+            .nodes
+            .extend(source.nodes.iter().cloned());
+        source_with_spare_capacity.probes = Vec::with_capacity(64);
+        source_with_spare_capacity
+            .probes
+            .extend(source.probes.iter().cloned());
+        assert_eq!(source.root(), source_with_spare_capacity.root());
+
+        let ranked = ranked_identity_fixture();
+        let mut ranked_with_spare_capacity = ranked.clone();
+        ranked_with_spare_capacity.rows = Vec::with_capacity(64);
+        ranked_with_spare_capacity
+            .rows
+            .extend(ranked.rows.iter().cloned());
+        assert_eq!(ranked.root(), ranked_with_spare_capacity.root());
+
+        let audit = audit_identity_fixture();
+        let mut audit_with_spare_capacity = audit.clone();
+        audit_with_spare_capacity.records = Vec::with_capacity(64);
+        audit_with_spare_capacity
+            .records
+            .extend(audit.records.iter().cloned());
+        assert_eq!(audit.root(), audit_with_spare_capacity.root());
+    }
+
+    #[test]
+    fn voi_ranked_menu_probe_payload_is_bound_by_source_context() {
+        let fixture = ranked_identity_fixture();
+        let baseline = fixture.root();
+        let mut changed = fixture;
+        changed.rows[0].probe.target = "different-source-target".to_string();
+        changed.rows[0].probe.cost = changed.rows[0].probe.cost.next_up();
+        changed.rows[0].probe.shrink = changed.rows[0].probe.shrink.next_up();
+        changed.rows[0].probe.kind = ProbeKind::Physical;
+        assert_eq!(baseline, changed.root());
+    }
+
+    #[test]
+    fn voi_ranked_menu_identity_mutation_battery() {
+        assert_ranked_identity_moves(|fixture| fixture.domain.push_str(".alternate"));
+        assert_ranked_identity_moves(|fixture| fixture.producer_version += 1);
+        assert_ranked_identity_moves(|fixture| {
+            fixture.source_context_id = hash_domain("identity-test-source", b"source-b");
+        });
+        let fixture = ranked_identity_fixture();
+        assert_ne!(
+            fixture.root(),
+            fixture.root_with_declared_count(fixture.rows.len() + 1),
+            "the ranked-row count frame must move independently of row bytes",
+        );
+        assert_ranked_identity_moves(|fixture| fixture.rows.reverse());
+        assert_ranked_identity_moves(|fixture| fixture.rows[0].probe.name.push('x'));
+        assert_ranked_identity_moves(|fixture| {
+            fixture.rows[0].flip_before = next_up(fixture.rows[0].flip_before);
+        });
+        assert_ranked_identity_moves(|fixture| {
+            fixture.rows[0].flip_after = next_up(fixture.rows[0].flip_after);
+        });
+        assert_ranked_identity_moves(|fixture| {
+            fixture.rows[0].score = next_up(fixture.rows[0].score);
+        });
+    }
+
+    #[test]
+    fn voi_audit_context_identity_mutation_battery() {
+        assert_audit_identity_moves(|fixture| fixture.domain.push_str(".alternate"));
+        assert_audit_identity_moves(|fixture| fixture.producer_version += 1);
+        assert_audit_identity_moves(|fixture| fixture.policy_scope.push('x'));
+        assert_audit_identity_moves(|fixture| {
+            fixture.audit_alpha = next_up(fixture.audit_alpha);
+        });
+        assert_audit_identity_moves(|fixture| fixture.max_audit_records += 1);
+        let fixture = audit_identity_fixture();
+        assert_ne!(
+            fixture.root(),
+            fixture.root_with_declared_count(fixture.records.len() + 1),
+            "the audit-record count frame must move independently of record bytes",
+        );
+        assert_audit_identity_moves(|fixture| fixture.records.reverse());
+        assert_audit_identity_moves(|fixture| fixture.records[0].observation_id.push('x'));
+        assert_audit_identity_moves(|fixture| fixture.records[0].recommended_id.push('x'));
+        assert_audit_identity_moves(|fixture| fixture.records[0].alternative_id.push('x'));
+        assert_audit_identity_moves(|fixture| fixture.records[0].provenance.push('x'));
+        assert_audit_identity_moves(|fixture| {
+            fixture.records[0].matched_cost = next_up(fixture.records[0].matched_cost);
+        });
+        assert_audit_identity_moves(|fixture| {
+            fixture.records[0].recommended_changed_decision =
+                !fixture.records[0].recommended_changed_decision;
+        });
+        assert_audit_identity_moves(|fixture| {
+            fixture.records[0].alternative_changed_decision =
+                !fixture.records[0].alternative_changed_decision;
+        });
+    }
+
+    #[test]
+    fn voi_audit_report_verdict_is_derived_and_nonsemantic() {
+        let fixture = audit_identity_fixture();
+        let root = fixture.root();
+        let report = AuditReport {
+            policy_scope: fixture.policy_scope,
+            audit_context_id: root,
+            observations: fixture.records.len(),
+            log_e_value: 0.0,
+            verdict: AuditVerdict::DemoteToReporting,
+        };
+        let mut changed = report.clone();
+        changed.verdict = AuditVerdict::KeepScheduling;
+        assert_eq!(report.audit_context_id(), changed.audit_context_id());
+        assert_ne!(report.verdict(), changed.verdict());
     }
 
     #[test]
