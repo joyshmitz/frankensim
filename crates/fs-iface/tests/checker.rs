@@ -68,6 +68,31 @@ fn cross_space_continuity_is_illegal() {
     assert_eq!(rejects_on(&report, "coupling.continuity"), 1);
     // localized to the offending coupling.
     assert_eq!(report.findings[0].coupling, "bad-iface");
+    // Regression (copy/paste bug): the fix must name BOTH trace spaces, not the
+    // trial twice — it previously read "(L2 to L2)" for this L²↔H(grad) case.
+    assert!(
+        report.findings[0].fix.contains("H(grad)"),
+        "fix must name the test space, got {:?}",
+        report.findings[0].fix
+    );
+}
+
+#[test]
+fn same_l2_continuity_is_illegal_because_l2_has_no_trace() {
+    // Regression: `check_continuity`'s `trial == test` shortcut admitted an
+    // L²↔L² continuity coupling, but L² (3-forms) has NO interface trace, so
+    // trace continuity is ill-posed — it must be a saddle/flux coupling. The
+    // rule is "share a trace space that HAS a trace", not merely "same space".
+    let g = CouplingGraph::new()
+        .field("p_left", SpaceType::L2)
+        .field("p_right", SpaceType::L2)
+        .couple("l2-iface", "p_left", "p_right", CouplingRole::Continuity);
+    let report = check(&g, &PairingRegistry::standard());
+    assert!(!report.admitted, "L²↔L² continuity has no trace to match");
+    assert_eq!(rejects_on(&report, "coupling.continuity"), 1);
+    assert_eq!(report.findings[0].coupling, "l2-iface");
+    // and the fix directs to the correct (saddle/flux) coupling instead.
+    assert!(report.findings[0].fix.contains("saddle"));
 }
 
 #[test]

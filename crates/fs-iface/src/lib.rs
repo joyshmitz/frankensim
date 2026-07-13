@@ -372,25 +372,46 @@ fn check_coupling(
     }
 }
 
-/// Continuity is legal iff both sides share a trace space.
+/// Continuity is legal iff both sides share a trace space that actually
+/// HAS a trace. `L²` (3-forms) has NO interface trace, so an `L²`↔`L²`
+/// continuity coupling is ill-posed even though the spaces are equal — it
+/// must be a saddle/multiplier (DG-flux) coupling instead.
 fn check_continuity(c: &Coupling, trial: SpaceType, test: SpaceType) -> Option<CheckFinding> {
-    if trial == test {
+    if trial == test && trial != SpaceType::L2 {
         return None;
     }
+    let (what, fix) = if trial == test {
+        // Both L²: same space, but it carries no trace to be continuous across.
+        (
+            format!(
+                "{} has no interface trace: a continuity coupling is ill-posed",
+                trial.name()
+            ),
+            "use a saddle coupling with a certified multiplier pairing (L² fields are coupled by \
+             flux, not trace continuity)"
+                .to_string(),
+        )
+    } else {
+        (
+            format!(
+                "incompatible traces: {} cannot continuity-couple to {} (different trace spaces)",
+                trial.name(),
+                test.name()
+            ),
+            format!(
+                "match the trace spaces ({} to {}), or use a saddle coupling with a certified \
+                 pairing",
+                trial.name(),
+                test.name()
+            ),
+        )
+    };
     Some(CheckFinding {
         coupling: c.id.clone(),
         check: "coupling.continuity",
         severity: Severity::Reject,
-        what: format!(
-            "incompatible traces: {} cannot continuity-couple to {} (different trace spaces)",
-            trial.name(),
-            test.name()
-        ),
-        fix: format!(
-            "match the trace spaces ({} to {}), or use a saddle coupling with a certified pairing",
-            trial.name(),
-            trial.name()
-        ),
+        what,
+        fix,
     })
 }
 
