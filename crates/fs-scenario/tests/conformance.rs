@@ -470,6 +470,55 @@ fn sc_002c_ensemble_rejects_nan_producing_spectra() {
 }
 
 #[test]
+fn sc_002d_signal_failure_is_not_misreported_as_a_frame_cycle() {
+    // Regression: the cycle check was `world_pose(...).is_err()`, which returns
+    // Err both for a real cycle AND for a `local_pose` evaluation failure. An
+    // ACYCLIC frame whose Tilt angle is an (independently flagged) empty table
+    // therefore got a SPURIOUS `frame-chain-cyclic` violation on top of the
+    // real `signal-table-shape` one, misdirecting repair. The check is now
+    // structural (no pose evaluation).
+    let mut s = Scenario::new("acyclic-with-bad-signal", 1, Environment::earth_lab());
+    s.frames.add(Frame {
+        id: FrameId(1),
+        name: "base".to_string(),
+        parent: FrameId(0),
+        motion: FrameMotion::Fixed {
+            orientation: Quat::from_axis_angle(Vec3::new(1.0, 0.0, 0.0), 0.0),
+            translation: Vec3::new(0.0, 0.0, 0.0),
+        },
+    });
+    // Acyclic child of frame 1 whose Tilt angle is an empty table.
+    s.frames.add(Frame {
+        id: FrameId(2),
+        name: "tilter".to_string(),
+        parent: FrameId(1),
+        motion: FrameMotion::Tilt {
+            axis: [0.0, 1.0, 0.0],
+            center: Vec3::new(0.0, 0.0, 0.0),
+            angle: TimeSignal::Table {
+                interp: Interp::Linear,
+                dims: Dims([0, 0, 0, 0, 0]),
+                times: vec![],
+                values: vec![],
+            },
+        },
+    });
+    let v = s.validate();
+    assert!(
+        v.iter().any(|x| x.code == "signal-table-shape"),
+        "the genuine empty-table defect must still be reported"
+    );
+    assert!(
+        !v.iter().any(|x| x.code == "frame-chain-cyclic"),
+        "an acyclic chain must NOT be flagged cyclic just because a signal failed to evaluate"
+    );
+    verdict(
+        "sc-002d",
+        "a local-pose/signal evaluation failure is reported as itself, not misattributed to a cycle",
+    );
+}
+
+#[test]
 fn sc_003_ensembles_reproduce_bitwise_from_seed() {
     let s = rich_scenario();
     for e in &s.ensembles {

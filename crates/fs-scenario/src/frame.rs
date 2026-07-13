@@ -208,13 +208,37 @@ impl FrameTree {
                     }
                 }
             }
-            // Cycle detection: the chain must reach the world.
-            if self.world_pose(f.id, 0.0).is_err() && self.find(f.parent).is_some() {
-                out.push(Violation {
-                    code: "frame-chain-cyclic",
-                    what: format!("{ctx}: parent chain never reaches the world frame"),
-                    fix: "break the cycle so every chain terminates at frame 0".to_string(),
-                });
+            // Cycle detection: walk the parent chain STRUCTURALLY — no pose
+            // evaluation. Using `world_pose(...).is_err()` conflated a genuine
+            // cycle with a `local_pose` failure (a bad motion dimension or an
+            // unevaluable angle signal, e.g. an empty table), so a well-formed
+            // acyclic frame with an independently-reported signal defect got a
+            // spurious `frame-chain-cyclic` that misdirected the repair. A
+            // dangling parent is reported separately (`frame-parent-missing`)
+            // and is not a cycle here.
+            if self.find(f.parent).is_some() {
+                let mut current = f.id;
+                let mut hops = 0usize;
+                let cyclic = loop {
+                    if current == WORLD {
+                        break false;
+                    }
+                    match self.find(current) {
+                        None => break false, // chain left the graph — not a cycle
+                        Some(frame) => current = frame.parent,
+                    }
+                    hops += 1;
+                    if hops > self.frames.len() {
+                        break true;
+                    }
+                };
+                if cyclic {
+                    out.push(Violation {
+                        code: "frame-chain-cyclic",
+                        what: format!("{ctx}: parent chain never reaches the world frame"),
+                        fix: "break the cycle so every chain terminates at frame 0".to_string(),
+                    });
+                }
             }
         }
     }
