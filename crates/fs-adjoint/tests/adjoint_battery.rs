@@ -452,6 +452,16 @@ fn verification_gate_fails_closed_on_non_finite_intermediates() {
     );
     assert_gradient_refused(&step_overflow);
 
+    let coordinate_overflow = verify_gradient(
+        &finite_objective,
+        &[f64::MAX],
+        &[0.0],
+        &[vec![1.0]],
+        f64::MAX / 2.0,
+        1e-8,
+    );
+    assert_gradient_refused(&coordinate_overflow);
+
     let subtraction_overflow = |point: &[f64]| {
         if point[0].is_sign_positive() {
             f64::MAX
@@ -472,8 +482,24 @@ fn verification_gate_fails_closed_on_non_finite_intermediates() {
         &finite_objective,
         &[0.0],
         &[0.0],
-        &[vec![0.0]],
+        &[vec![f64::MIN_POSITIVE]],
         f64::MAX,
+        1e-8,
+    ));
+
+    let division_overflow = |point: &[f64]| {
+        if point[0].is_sign_positive() {
+            1.0
+        } else {
+            0.0
+        }
+    };
+    assert_gradient_refused(&verify_gradient(
+        &division_overflow,
+        &[0.0],
+        &[0.0],
+        &[vec![1.0]],
+        f64::from_bits(1),
         1e-8,
     ));
 
@@ -486,6 +512,90 @@ fn verification_gate_fails_closed_on_non_finite_intermediates() {
         1.0,
         1e-8,
     ));
+}
+
+#[test]
+fn verification_gate_rejects_vacuous_or_unrepresentable_directions() {
+    let objective = |point: &[f64]| point.iter().map(|value| value * value).sum();
+    assert_gradient_refused(&verify_gradient(
+        &objective,
+        &[1.0],
+        &[2.0],
+        &[],
+        1e-6,
+        1e-8,
+    ));
+    assert_gradient_refused(&verify_gradient(
+        &objective,
+        &[1.0],
+        &[2.0],
+        &[vec![0.0]],
+        1e-6,
+        1e-8,
+    ));
+    assert_gradient_refused(&verify_gradient(
+        &objective,
+        &[f64::MAX],
+        &[0.0],
+        &[vec![f64::MIN_POSITIVE]],
+        1.0,
+        1e-8,
+    ));
+}
+
+#[test]
+fn verification_gate_is_invariant_to_paired_direction_step_rescaling() {
+    let objective = |point: &[f64]| 2.0 * point[0] - 0.5 * point[1];
+    let point = [0.0, 0.0];
+    let gradient = [2.0, -0.5];
+    let direction = vec![0.25, -0.5];
+    let scaled_direction = direction.iter().map(|value| 8.0 * value).collect();
+    let base = verify_gradient(
+        &objective,
+        &point,
+        &gradient,
+        &[direction],
+        2.0_f64.powi(-10),
+        1e-12,
+    );
+    let scaled = verify_gradient(
+        &objective,
+        &point,
+        &gradient,
+        &[scaled_direction],
+        2.0_f64.powi(-13),
+        1e-12,
+    );
+
+    assert!(base.pass && scaled.pass);
+    assert_eq!(base.max_rel_err.to_bits(), scaled.max_rel_err.to_bits());
+    assert_eq!(
+        scaled.pairs[0].0.to_bits(),
+        (8.0 * base.pairs[0].0).to_bits()
+    );
+    assert_eq!(
+        scaled.pairs[0].1.to_bits(),
+        (8.0 * base.pairs[0].1).to_bits()
+    );
+}
+
+#[test]
+fn verification_gate_tiny_direction_cannot_hide_a_wrong_gradient() {
+    let verdict = verify_gradient(
+        &|point: &[f64]| point[0],
+        &[0.0],
+        &[0.0],
+        &[vec![f64::MIN_POSITIVE]],
+        1.0,
+        1e-8,
+    );
+
+    assert!(
+        !verdict.pass,
+        "tiny direction suppressed a unit gradient error"
+    );
+    assert_eq!(verdict.pairs, vec![(0.0, f64::MIN_POSITIVE)]);
+    assert_eq!(verdict.max_rel_err.to_bits(), 1.0_f64.to_bits());
 }
 
 #[test]

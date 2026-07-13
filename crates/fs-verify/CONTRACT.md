@@ -32,17 +32,19 @@ quadrature.
   derives `f = -u''` plus the rounded zero-constant antiderivative;
   `MmsProblem::from_class` admits and owns the mesh. All semantic fields are
   private and immutable. `MmsProblem::new` fully admits/canonicalizes its mesh
-  before constructing the class, and `with_mesh` does so before cloning the
-  retained class identity. Construction, followed by defensive operation-level
+  before constructing the class, and `with_mesh` does so before fallibly
+  copying the retained class data and rebuilding its identity.
+  Construction, followed by defensive operation-level
   validation, checks canonical domain/BCs and derived polynomials, finite
   strictly increasing mesh, exact nodal shape,
   finite values, and bounded resources. v0 caps are 1,000,000 mesh
   nodes, six polynomial coefficients (exact-solution degree at most
   five) after canonical zero trimming, 4,096 raw coefficients before
-  normalization, 10,000 Newton updates, 4,096
-  identity bytes, and 50,000,000 conservative scalar-work units per
-  synchronous call. Solver, refinement, ordering, and candidate work
-  vectors use fallible reserve. The degree-five envelope is
+  normalization, 10,000 Newton updates, 4,096 class-name bytes, 4,438
+  class canonical-identity bytes, 8,004,620 meshed-problem
+  canonical-identity bytes, and 50,000,000 conservative scalar-work units per
+  synchronous call. Solver, refinement, ordering, candidate work vectors, and
+  canonical identity construction use fallible reserve. The degree-five envelope is
   load-bearing: the equilibrated integrand squares an antiderivative
   of degree `deg(u)-1`, so five-point Gauss exactness requires
   `deg(u) <= 5` even though P1 load assembly alone admits higher degree.
@@ -89,7 +91,11 @@ quadrature.
   polynomials, and their explicit schema; the problem identity additionally
   binds the exact canonical mesh bytes. Canonically equivalent
   signed/trailing-zero inputs therefore share identity, while changing any
-  admitted semantic field changes the corresponding identity.
+  admitted semantic field changes the corresponding identity. The bounded
+  identity builder checks u64 framing and the complete producer-specific byte
+  cap, reserves each field before mutation, and maps refusal into the existing
+  `Fem1dError::ResourceLimit` or `AllocationFailed` boundary; no partial replay
+  identity escapes.
 - `VerifierReport::refusal` carries a closed structured reason. A
   refusal preserves the requested tolerance and estimator family but
   returns `[-∞,+∞]`, `accept=false`, no color, and flux hash zero. A
@@ -296,6 +302,9 @@ ledger rows. Any reimplementation must pass the suite unchanged.
 - Canonical bytes are an in-process replay identity for this versioned MMS
   schema. They do not authenticate provenance or replace a ledger signature;
   consumers must still use the evidence and ledger trust boundaries.
+- `ReplayIdentity::clone` and its formatted display remain allocation-infallible
+  lower-layer conveniences; this contract's fallible construction guarantee
+  covers MMS admission and identity minting, not arbitrary downstream cloning.
 - Variable diffusion coefficients, non-polynomial data (with data-
   oscillation terms and explicit Poincaré constants), and quadrature
   ERROR bounds for transcendental integrands are the same successor.

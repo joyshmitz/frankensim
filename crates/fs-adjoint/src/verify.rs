@@ -26,8 +26,10 @@ fn fail_closed(pairs: Vec<(f64, f64)>) -> GradientVerdict {
 
 /// Verify a claimed gradient of `j` at `p` against central FD along
 /// the supplied directions (callers pass deterministic keyed-stream
-/// directions). `eps` is the FD step (scaled per direction by
-/// ‖p‖/‖d‖ internally).
+/// directions). `eps` is the literal scalar step in `p ± eps * d`;
+/// the perturbation is not rescaled by the point or direction norm.
+/// The relative-error floor is `1e-12 * ‖d‖∞`, making that floor
+/// homogeneous under paired rescalings of `d` and the inverse `eps`.
 pub fn verify_gradient(
     j: &dyn Fn(&[f64]) -> f64,
     p: &[f64],
@@ -46,10 +48,7 @@ pub fn verify_gradient(
         || tol <= 0.0
         || !p.iter().all(|value| value.is_finite())
         || !gradient.iter().all(|value| value.is_finite())
-        || !directions
-            .iter()
-            .flat_map(|direction| direction.iter())
-            .all(|value| value.is_finite())
+        || directions.is_empty()
     {
         return fail_closed(Vec::new());
     }
@@ -57,9 +56,23 @@ pub fn verify_gradient(
     let mut pairs = Vec::with_capacity(directions.len());
     let mut worst = 0.0f64;
     for d in directions {
-        let analytic: f64 = gradient.iter().zip(d).map(|(g, di)| g * di).sum();
-        if !analytic.is_finite() {
+        if !d.iter().all(|value| value.is_finite()) || d.iter().all(|value| *value == 0.0) {
             return fail_closed(pairs);
+        }
+        let direction_magnitude = d.iter().map(|value| value.abs()).fold(0.0_f64, f64::max);
+        if !direction_magnitude.is_finite() || direction_magnitude == 0.0 {
+            return fail_closed(pairs);
+        }
+        let mut analytic = 0.0;
+        for (&gradient_value, &direction_value) in gradient.iter().zip(d) {
+            let term = gradient_value * direction_value;
+            if !term.is_finite() {
+                return fail_closed(pairs);
+            }
+            analytic += term;
+            if !analytic.is_finite() {
+                return fail_closed(pairs);
+            }
         }
         let mut plus = p.to_vec();
         let mut minus = p.to_vec();
@@ -71,6 +84,12 @@ pub fn verify_gradient(
             let plus_value = p[i] + step;
             let minus_value = p[i] - step;
             if !plus_value.is_finite() || !minus_value.is_finite() {
+                return fail_closed(pairs);
+            }
+            if d[i] != 0.0
+                && (plus_value.to_bits() == p[i].to_bits()
+                    || minus_value.to_bits() == p[i].to_bits())
+            {
                 return fail_closed(pairs);
             }
             plus[i] = plus_value;
@@ -90,7 +109,8 @@ pub fn verify_gradient(
         if !fd.is_finite() {
             return fail_closed(pairs);
         }
-        let scale = analytic.abs().max(fd.abs()).max(1e-12);
+        let scale_floor = 1e-12 * direction_magnitude;
+        let scale = analytic.abs().max(fd.abs()).max(scale_floor);
         let error_numerator = (analytic - fd).abs();
         if !scale.is_finite() || !error_numerator.is_finite() {
             return fail_closed(pairs);
@@ -102,9 +122,11 @@ pub fn verify_gradient(
         worst = worst.max(relative_error);
         pairs.push((analytic, fd));
     }
+    let pass =
+        !pairs.is_empty() && pairs.len() == directions.len() && worst.is_finite() && worst < tol;
     GradientVerdict {
         max_rel_err: worst,
         pairs,
-        pass: worst.is_finite() && worst < tol,
+        pass,
     }
 }

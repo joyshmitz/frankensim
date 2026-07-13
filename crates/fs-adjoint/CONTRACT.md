@@ -39,12 +39,21 @@ solver without a passing gradient check cannot merge.
   not hidden).
 - `verify::verify_gradient(j, p, gradient, directions, eps, tol)` —
   central-FD directional checks returning a `GradientVerdict` (worst
-  relative error + per-direction pairs). Non-finite points, gradients,
+  relative error + per-direction pairs). The finite-difference experiment is
+  exactly `p ± eps * direction`; `eps` is a literal scalar step and no hidden
+  point/direction-norm rescaling occurs. Relative error uses
+  `max(|analytic|, |fd|, 1e-12 * ‖direction‖∞)`, making the comparison floor
+  homogeneous under paired rescalings of a direction and the inverse step.
+  The complete experiment still refuses rescalings whose perturbations or
+  arithmetic are not representable. Non-finite points, gradients,
   directions, objective values, or arithmetic intermediates, and non-finite or
   non-positive steps/tolerances, fail closed with `pass=false`, a deterministic
   positive-infinity error sentinel, and only the finite directional-pair prefix.
-  The gate itself is tested to REJECT corrupted and non-finite evidence — a gate
-  that cannot fail is not a gate.
+  Empty/all-zero directions and finite perturbations that round back to the
+  unperturbed coordinate are likewise refused as vacuous evidence, matching the
+  certificate path's perturbation preflight. The gate itself is tested to REJECT
+  corrupted, non-finite, and vacuous evidence — a gate that cannot fail is not a
+  gate.
 
 - `transpose` module (addendum Proposal 1, bead bk0o.1; [F], behind
   the `ledger-transpose` feature until its Gauntlet tier + kill metric
@@ -259,7 +268,7 @@ Each gates its own integration target (required-features declared).
 
 ## Conformance tests
 
-`tests/adjoint_battery.rs` (8 cases): IFT source-parameter gradient
+`tests/adjoint_battery.rs`: IFT source-parameter gradient
 vs central FD along random directions (rel ≤ 1e−6, adjoint iterations
 reported); the SIMP density chain rule FD-verified (rel ~1e−6);
 Sobolev smoothing DEMONSTRABLY rescuing a grid-noise-corrupted

@@ -7,7 +7,7 @@
 
 use crate::interval::Iv;
 use core::{fmt, mem::size_of};
-use fs_obs::ident::{IdentityBuilder, ReplayIdentity};
+use fs_obs::ident::{BoundedIdentityBuilder, IdentityBuildError, ReplayIdentity};
 
 /// Largest mesh admitted by one synchronous v0 fem1d operation.
 pub const MAX_FEM1D_MESH_NODES: usize = 1_000_000;
@@ -22,8 +22,52 @@ pub const MAX_FEM1D_RAW_POLY_COEFFICIENTS: usize = 4_096;
 pub const MAX_FEM1D_NEWTON_ITERATIONS: u32 = 10_000;
 /// Conservative scalar-work ceiling for one synchronous fem1d call.
 pub const MAX_FEM1D_WORK_UNITS: usize = 50_000_000;
-/// Largest provenance/diagnostic identity admitted at this boundary.
-pub const MAX_FEM1D_IDENTITY_BYTES: usize = 4_096;
+/// Largest manufactured-class name admitted at this boundary.
+pub const MAX_FEM1D_CLASS_NAME_BYTES: usize = 4_096;
+const IDENTITY_STREAM_FRAME_BYTES: usize = 4 + size_of::<u32>() + size_of::<u64>();
+const IDENTITY_FIELD_FRAME_BYTES: usize = 1 + 2 * size_of::<u64>();
+
+const fn identity_header_bytes(kind: &str) -> usize {
+    IDENTITY_STREAM_FRAME_BYTES + kind.len()
+}
+
+const fn identity_field_bytes(key: &str, value_bytes: usize) -> usize {
+    IDENTITY_FIELD_FRAME_BYTES + key.len() + value_bytes
+}
+
+/// Largest schema-v1 canonical replay identity for an admitted MMS class.
+///
+/// The polynomial payload maximum is 15 stored f64 coefficients: six for `u`,
+/// four for `-u''`, and five for its antiderivative.
+pub const MAX_FEM1D_CLASS_CANONICAL_IDENTITY_BYTES: usize =
+    identity_header_bytes("fs-verify/fem1d-mms-class")
+        + identity_field_bytes("class_schema", size_of::<u64>())
+        + identity_field_bytes("name", MAX_FEM1D_CLASS_NAME_BYTES)
+        + identity_field_bytes(
+            "exact_solution_f64_le",
+            size_of::<u64>() * MAX_FEM1D_POLY_COEFFICIENTS,
+        )
+        + identity_field_bytes(
+            "forcing_f64_le",
+            size_of::<u64>() * (MAX_FEM1D_POLY_COEFFICIENTS - 2),
+        )
+        + identity_field_bytes(
+            "rounded_forcing_antiderivative_f64_le",
+            size_of::<u64>() * (MAX_FEM1D_POLY_COEFFICIENTS - 1),
+        );
+/// Largest schema-v1 canonical replay identity for an admitted meshed problem.
+///
+/// It binds the maximum class identity and eight exact bytes for each of the
+/// 1,000,000 admitted mesh nodes.
+pub const MAX_FEM1D_PROBLEM_CANONICAL_IDENTITY_BYTES: usize =
+    identity_header_bytes("fs-verify/fem1d-mms-problem")
+        + identity_field_bytes("problem_schema", size_of::<u64>())
+        + identity_field_bytes("class", size_of::<u32>() + size_of::<u64>())
+        + identity_field_bytes(
+            "class_canonical_bytes",
+            MAX_FEM1D_CLASS_CANONICAL_IDENTITY_BYTES,
+        )
+        + identity_field_bytes("mesh_f64_le", size_of::<u64>() * MAX_FEM1D_MESH_NODES);
 /// Semantic schema for canonical manufactured-solution class identities.
 pub const MMS_CLASS_IDENTITY_VERSION: u64 = 1;
 /// Semantic schema for canonical meshed manufactured-problem identities.
@@ -326,6 +370,18 @@ impl Poly {
         &self.0
     }
 
+    fn try_copy(&self, stage: &'static str) -> Result<Self, Fem1dError> {
+        let mut coefficients = Vec::new();
+        coefficients
+            .try_reserve_exact(self.0.len())
+            .map_err(|_| Fem1dError::AllocationFailed {
+                stage,
+                requested: self.0.len(),
+            })?;
+        coefficients.extend_from_slice(&self.0);
+        Ok(Self(coefficients))
+    }
+
     /// Whether the finite binary64 coefficients sum to exactly zero.
     ///
     /// At `x = 1`, every monomial equals one, so this is the exact
@@ -397,7 +453,15 @@ impl Poly {
     #[must_use]
     pub fn derive(&self) -> Result<Poly, Fem1dError> {
         if self.0.len() <= 1 {
-            return Poly::from_coefficients(vec![0.0], "derived polynomial");
+            let mut derived = Vec::new();
+            derived
+                .try_reserve_exact(1)
+                .map_err(|_| Fem1dError::AllocationFailed {
+                    stage: "polynomial derivative",
+                    requested: 1,
+                })?;
+            derived.push(0.0);
+            return Poly::from_coefficients(derived, "derived polynomial");
         }
         let mut derived = Vec::new();
         derived
@@ -615,10 +679,16 @@ impl MmsProblem {
     /// Reuse the same admitted class on a new mesh.
     ///
     /// # Errors
-    /// Returns [`Fem1dError`] when the new mesh is inadmissible.
+    /// Returns [`Fem1dError`] when the new mesh is inadmissible or rebuilding
+    /// the immutable class/problem identity cannot reserve bounded storage.
     pub fn with_mesh(&self, mesh: Vec<f64>) -> Result<Self, Fem1dError> {
         let mesh = admit_mesh(mesh)?;
-        Self::from_admitted_parts(self.class.clone(), mesh)
+        let exact_solution = self
+            .class
+            .exact_solution()
+            .try_copy("MMS exact solution reuse")?;
+        let class = MmsClass::new(self.class.name(), exact_solution)?;
+        Self::from_admitted_parts(class, mesh)
     }
 
     /// Admitted manufactured-solution class.
@@ -702,11 +772,38 @@ fn f64_bytes(values: &[f64], stage: &'static str) -> Result<Vec<u8>, Fem1dError>
     Ok(bytes)
 }
 
-fn class_identity(
+fn identity_build_error(
+    error: IdentityBuildError,
+    stage: &'static str,
+    resource: &'static str,
+    limit: usize,
+) -> Fem1dError {
+    match error {
+        IdentityBuildError::CanonicalBytesExceeded { requested, .. }
+        | IdentityBuildError::FramedLengthNotRepresentable { length: requested } => {
+            Fem1dError::ResourceLimit {
+                resource,
+                requested,
+                limit,
+            }
+        }
+        IdentityBuildError::CanonicalLengthOverflow => Fem1dError::ResourceLimit {
+            resource,
+            requested: usize::MAX,
+            limit,
+        },
+        IdentityBuildError::AllocationFailed { requested } => {
+            Fem1dError::AllocationFailed { stage, requested }
+        }
+    }
+}
+
+fn class_identity_with_budget(
     name: &str,
     exact_solution: &Poly,
     forcing: &Poly,
     rounded_forcing_antiderivative: &Poly,
+    max_canonical_bytes: usize,
 ) -> Result<ReplayIdentity, Fem1dError> {
     let exact_solution_bytes = f64_bytes(&exact_solution.0, "MMS exact-solution identity")?;
     let forcing_bytes = f64_bytes(&forcing.0, "MMS forcing identity")?;
@@ -714,26 +811,73 @@ fn class_identity(
         &rounded_forcing_antiderivative.0,
         "MMS forcing-antiderivative identity",
     )?;
-    Ok(IdentityBuilder::new("fs-verify/fem1d-mms-class")
-        .u64("class_schema", MMS_CLASS_IDENTITY_VERSION)
-        .str("name", name)
-        .bytes("exact_solution_f64_le", &exact_solution_bytes)
-        .bytes("forcing_f64_le", &forcing_bytes)
-        .bytes(
+    let identity = (|| -> Result<ReplayIdentity, IdentityBuildError> {
+        let builder =
+            BoundedIdentityBuilder::new("fs-verify/fem1d-mms-class", max_canonical_bytes)?;
+        let builder = builder.u64("class_schema", MMS_CLASS_IDENTITY_VERSION)?;
+        let builder = builder.str("name", name)?;
+        let builder = builder.bytes("exact_solution_f64_le", &exact_solution_bytes)?;
+        let builder = builder.bytes("forcing_f64_le", &forcing_bytes)?;
+        let builder = builder.bytes(
             "rounded_forcing_antiderivative_f64_le",
             &antiderivative_bytes,
+        )?;
+        Ok(builder.finish())
+    })()
+    .map_err(|error| {
+        identity_build_error(
+            error,
+            "MMS class replay identity",
+            "MMS class canonical identity bytes",
+            max_canonical_bytes,
         )
-        .finish())
+    })?;
+    Ok(identity)
+}
+
+fn class_identity(
+    name: &str,
+    exact_solution: &Poly,
+    forcing: &Poly,
+    rounded_forcing_antiderivative: &Poly,
+) -> Result<ReplayIdentity, Fem1dError> {
+    class_identity_with_budget(
+        name,
+        exact_solution,
+        forcing,
+        rounded_forcing_antiderivative,
+        MAX_FEM1D_CLASS_CANONICAL_IDENTITY_BYTES,
+    )
+}
+
+fn problem_identity_with_budget(
+    class: &MmsClass,
+    mesh: &[f64],
+    max_canonical_bytes: usize,
+) -> Result<ReplayIdentity, Fem1dError> {
+    let mesh_bytes = f64_bytes(mesh, "MMS problem mesh identity")?;
+    let identity = (|| -> Result<ReplayIdentity, IdentityBuildError> {
+        let builder =
+            BoundedIdentityBuilder::new("fs-verify/fem1d-mms-problem", max_canonical_bytes)?;
+        let builder = builder.u64("problem_schema", MMS_PROBLEM_IDENTITY_VERSION)?;
+        let builder = builder.child("class", class.identity())?;
+        let builder = builder.bytes("class_canonical_bytes", class.canonical_bytes())?;
+        let builder = builder.bytes("mesh_f64_le", &mesh_bytes)?;
+        Ok(builder.finish())
+    })()
+    .map_err(|error| {
+        identity_build_error(
+            error,
+            "MMS problem replay identity",
+            "MMS problem canonical identity bytes",
+            max_canonical_bytes,
+        )
+    })?;
+    Ok(identity)
 }
 
 fn problem_identity(class: &MmsClass, mesh: &[f64]) -> Result<ReplayIdentity, Fem1dError> {
-    let mesh_bytes = f64_bytes(mesh, "MMS problem mesh identity")?;
-    Ok(IdentityBuilder::new("fs-verify/fem1d-mms-problem")
-        .u64("problem_schema", MMS_PROBLEM_IDENTITY_VERSION)
-        .child("class", class.identity())
-        .bytes("class_canonical_bytes", class.canonical_bytes())
-        .bytes("mesh_f64_le", &mesh_bytes)
-        .finish())
+    problem_identity_with_budget(class, mesh, MAX_FEM1D_PROBLEM_CANONICAL_IDENTITY_BYTES)
 }
 
 fn poly_bits_equal(left: &Poly, right: &Poly) -> bool {
@@ -831,11 +975,11 @@ pub(crate) fn validate_identity(value: &str, field: &'static str) -> Result<(), 
             reason: "must not be empty",
         });
     }
-    if value.len() > MAX_FEM1D_IDENTITY_BYTES {
+    if value.len() > MAX_FEM1D_CLASS_NAME_BYTES {
         return Err(Fem1dError::ResourceLimit {
             resource: field,
             requested: value.len(),
-            limit: MAX_FEM1D_IDENTITY_BYTES,
+            limit: MAX_FEM1D_CLASS_NAME_BYTES,
         });
     }
     if value.chars().any(char::is_control) {
@@ -1606,7 +1750,89 @@ mod tests {
     }
 
     #[test]
+    fn identity_builder_failures_map_to_owner_errors() {
+        assert_eq!(
+            identity_build_error(
+                IdentityBuildError::AllocationFailed { requested: 17 },
+                "identity stage",
+                "identity resource",
+                64,
+            ),
+            Fem1dError::AllocationFailed {
+                stage: "identity stage",
+                requested: 17,
+            }
+        );
+        assert_eq!(
+            identity_build_error(
+                IdentityBuildError::CanonicalBytesExceeded {
+                    requested: 65,
+                    limit: 64,
+                },
+                "identity stage",
+                "identity resource",
+                64,
+            ),
+            Fem1dError::ResourceLimit {
+                resource: "identity resource",
+                requested: 65,
+                limit: 64,
+            }
+        );
+        assert_eq!(
+            identity_build_error(
+                IdentityBuildError::FramedLengthNotRepresentable { length: 65 },
+                "identity stage",
+                "identity resource",
+                64,
+            ),
+            Fem1dError::ResourceLimit {
+                resource: "identity resource",
+                requested: 65,
+                limit: 64,
+            }
+        );
+        assert_eq!(
+            identity_build_error(
+                IdentityBuildError::CanonicalLengthOverflow,
+                "identity stage",
+                "identity resource",
+                64,
+            ),
+            Fem1dError::ResourceLimit {
+                resource: "identity resource",
+                requested: usize::MAX,
+                limit: 64,
+            }
+        );
+    }
+
+    #[test]
+    fn maximum_mms_identity_reaches_the_derived_canonical_caps() {
+        let name = "m".repeat(MAX_FEM1D_CLASS_NAME_BYTES);
+        let class = MmsClass::new(&name, poly(vec![0.0, 1.0, 1.0, 1.0, 1.0, -4.0]))
+            .expect("maximum-size degree-five class is admitted");
+        assert_eq!(
+            class.canonical_bytes().len(),
+            MAX_FEM1D_CLASS_CANONICAL_IDENTITY_BYTES
+        );
+
+        let denominator = (MAX_FEM1D_MESH_NODES - 1) as f64;
+        let mesh: Vec<f64> = (0..MAX_FEM1D_MESH_NODES)
+            .map(|index| index as f64 / denominator)
+            .collect();
+        let problem = MmsProblem::from_class(class, mesh)
+            .expect("maximum-size mesh identity reaches the exact admitted cap");
+        assert_eq!(
+            problem.canonical_bytes().len(),
+            MAX_FEM1D_PROBLEM_CANONICAL_IDENTITY_BYTES
+        );
+    }
+
+    #[test]
     fn canonical_class_and_problem_identity_bind_every_semantic_field() {
+        assert_eq!(MAX_FEM1D_CLASS_CANONICAL_IDENTITY_BYTES, 4_438);
+        assert_eq!(MAX_FEM1D_PROBLEM_CANONICAL_IDENTITY_BYTES, 8_004_620);
         let normalized = MmsClass::new(
             "elliptic",
             poly(vec![-0.0, 1.0, -1.0, -0.0, 0.0, -0.0, 0.0]),
@@ -1629,6 +1855,29 @@ mod tests {
         assert_eq!(normalized.canonical_bytes(), ordinary.canonical_bytes());
         assert_eq!(normalized.identity().root(), 0xff26_2525_aacf_380f);
         assert_eq!(normalized.canonical_bytes().len(), 278);
+        let exact_class = class_identity_with_budget(
+            normalized.name(),
+            normalized.exact_solution(),
+            normalized.forcing(),
+            normalized.rounded_forcing_antiderivative(),
+            normalized.canonical_bytes().len(),
+        )
+        .expect("the exact class identity cap is admitted");
+        assert_eq!(&exact_class, normalized.identity());
+        assert!(matches!(
+            class_identity_with_budget(
+                normalized.name(),
+                normalized.exact_solution(),
+                normalized.forcing(),
+                normalized.rounded_forcing_antiderivative(),
+                normalized.canonical_bytes().len() - 1,
+            ),
+            Err(Fem1dError::ResourceLimit {
+                resource: "MMS class canonical identity bytes",
+                requested: 278,
+                limit: 277,
+            })
+        ));
 
         let renamed =
             MmsClass::new("elliptic-renamed", poly(vec![0.0, 1.0, -1.0])).expect("renamed class");
@@ -1646,12 +1895,41 @@ mod tests {
             .expect("same-size different mesh");
         let refined =
             MmsProblem::from_class(normalized, vec![0.0, 0.25, 0.5, 1.0]).expect("different mesh");
+        let reused = coarse
+            .with_mesh(vec![0.0, 0.25, 0.5, 1.0])
+            .expect("fallible class reuse on a new mesh");
         assert_eq!(coarse.identity(), same.identity());
         assert_eq!(coarse.canonical_bytes(), same.canonical_bytes());
         assert_eq!(coarse.identity().root(), 0x447c_875d_7d12_a8e3);
         assert_eq!(coarse.canonical_bytes().len(), 484);
+        let exact_problem = problem_identity_with_budget(
+            coarse.class(),
+            coarse.mesh(),
+            coarse.canonical_bytes().len(),
+        )
+        .expect("the exact problem identity cap is admitted");
+        assert_eq!(&exact_problem, coarse.identity());
+        assert!(matches!(
+            problem_identity_with_budget(
+                coarse.class(),
+                coarse.mesh(),
+                coarse.canonical_bytes().len() - 1,
+            ),
+            Err(Fem1dError::ResourceLimit {
+                resource: "MMS problem canonical identity bytes",
+                requested: 484,
+                limit: 483,
+            })
+        ));
         assert_ne!(coarse.identity(), shifted.identity());
         assert_ne!(coarse.identity(), refined.identity());
+        assert_eq!(reused.class().identity(), coarse.class().identity());
+        assert_eq!(
+            reused.class().canonical_bytes(),
+            coarse.class().canonical_bytes()
+        );
+        assert_eq!(reused.identity(), refined.identity());
+        assert_eq!(reused.canonical_bytes(), refined.canonical_bytes());
 
         let rounded = MmsClass::new(
             "rounded-antiderivative",

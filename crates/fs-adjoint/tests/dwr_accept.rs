@@ -474,14 +474,18 @@ fn dwr_refuses_invalid_windows_and_resource_counts_at_owner_boundaries() {
     assert_eq!(MAX_DWR_MESH_NODES, MAX_FEM1D_MESH_NODES);
     assert_eq!(MAX_BRACKET_MESH_NODES, MAX_FEM1D_MESH_NODES);
 
-    assert_eq!(
-        dwr_integral_qoi(&base, &[1.0, 1.0], 0.0, 1.0),
-        Err(DwrError::CandidateBoundary),
+    assert!(
+        matches!(
+            dwr_integral_qoi(&base, &[1.0, 1.0], 0.0, 1.0),
+            Err(DwrError::CandidateBoundary)
+        ),
         "a constant non-homogeneous candidate must not produce a zero-error accept"
     );
-    assert_eq!(
-        dwr_integral_qoi(&base, &[-0.0, 0.0], 0.0, 1.0),
-        Err(DwrError::CandidateBoundary),
+    assert!(
+        matches!(
+            dwr_integral_qoi(&base, &[-0.0, 0.0], 0.0, 1.0),
+            Err(DwrError::CandidateBoundary)
+        ),
         "DWR shares fs-verify's bit-canonical +0.0 endpoint rule"
     );
     assert!(matches!(
@@ -527,9 +531,9 @@ fn dwr_refuses_finite_inputs_that_overflow_derived_arithmetic() {
         })
     ));
 
-    let base = admitted_problem("base", vec![0.0], vec![0.0, 1.0]);
+    let base = admitted_problem("base", vec![0.0], vec![0.0, 0.5, 1.0]);
     assert!(matches!(
-        dwr_integral_qoi(&base, &[-f64::MAX, f64::MAX], 2.0, 3.0),
+        dwr_integral_qoi(&base, &[0.0, f64::MAX, 0.0], 2.0, 3.0),
         Err(DwrError::NonFiniteDerived {
             quantity: "primal slope",
             index: Some(0)
