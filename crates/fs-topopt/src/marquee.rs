@@ -8,13 +8,18 @@
 //! REFINED (splits), never rebuilt, and the run log proves it.
 //!
 //! DWR-goal-driven refinement: fs-dwr's per-leaf compliance-goal
-//! indicators, weighted by the density gradient, choose the splits —
-//! the octree refines where the OBJECTIVE feels the design boundary.
+//! indicators gate one-level refinement of the cut band and its ghost-
+//! penalty halo — the octree refines when enough of the OBJECTIVE's
+//! estimated error mass lies on the design boundary.
 
 use fs_cutfem::sdf::CutSdf;
-use fs_cutfem::{FemParams, Quadtree, Space};
+use fs_cutfem::{CellKey, FemParams, Quadtree, Space};
 use fs_dwr::{GoalContext, estimate, goal_value};
 use fs_ivl::Interval;
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+
+const DWR_CUT_BAND_MASS_GATE: f64 = 0.15;
 
 /// The design: densities on an `n × n` node lattice over `[0, 1]²`;
 /// the solid region is `ρ > ½` and `φ = ½ − ρ` (bilinear) is the
@@ -319,15 +324,156 @@ pub struct MarqueeReport {
     pub total_rebuilds: usize,
 }
 
+/// Evidence from one estimator-agnostic cut-band refinement decision.
+///
+/// The indicator source may be scalar heat or vector elasticity. This helper
+/// only applies the marquee's shared planning policy; it does not claim that a
+/// consumer can re-solve on the resulting graded grid.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DwrBandRefinement {
+    /// Sum of absolute indicator mass on zero-straddling cells.
+    pub cut_mass: f64,
+    /// Sum of absolute indicator mass over every supplied cell.
+    pub total_mass: f64,
+    /// Band level before this decision.
+    pub previous_level: u32,
+    /// Band level after this decision.
+    pub band_level: u32,
+    /// Whether the policy advanced the band by one level.
+    pub advanced: bool,
+    /// Actual quadtree split count, including balance and halo splits.
+    pub splits: usize,
+}
+
 /// True when the cell OR its one-cell halo is cut: fs-cutfem's ghost
 /// penalty demands equal-level FACE NEIGHBORS of cut cells, so the
 /// refinement band must include the halo, not just the straddling
 /// cells (the CutBandNotUniform contract, learned the hard way twice).
-fn halo_cut(design: &DensityDesign, lo: [f64; 2], hi: [f64; 2]) -> bool {
+fn halo_cut(sdf: &dyn CutSdf, lo: [f64; 2], hi: [f64; 2]) -> bool {
     let (wx, wy) = (hi[0] - lo[0], hi[1] - lo[1]);
     let xlo = [(lo[0] - wx).max(0.0), (lo[1] - wy).max(0.0)];
     let xhi = [(hi[0] + wx).min(1.0), (hi[1] + wy).min(1.0)];
-    design.enclose(xlo, xhi).contains_zero()
+    sdf.enclose(xlo, xhi).contains_zero()
+}
+
+/// Apply the marquee's shared DWR cut-band policy once.
+///
+/// The total marking mass is recomputed from `indicators`; callers cannot pass
+/// an inconsistent denominator. A zero total, a disabled policy, or exhausted
+/// level headroom is a deterministic no-op. A positive decision advances the
+/// whole cut band and its one-cell halo by exactly one level. The reported
+/// `splits` is the actual structural count, not a requested split budget.
+///
+/// # Errors
+///
+/// Returns [`fs_cutfem::CutFemError::InvalidFemInput`] without mutating the
+/// grid or `band_level` when the level is out of range, an indicator is
+/// non-finite, an indicator key is not a current leaf, an accumulated mass is
+/// non-finite, or an SDF enclosure queried by the policy is non-finite.
+pub fn refine_dwr_cut_band(
+    grid: &mut Quadtree,
+    sdf: &dyn CutSdf,
+    indicators: &BTreeMap<CellKey, f64>,
+    band_level: &mut u32,
+    enabled: bool,
+) -> Result<DwrBandRefinement, fs_cutfem::CutFemError> {
+    if *band_level > grid.max_level() {
+        return Err(fs_cutfem::CutFemError::InvalidFemInput {
+            what: format!(
+                "DWR band level {} exceeds grid maximum {}",
+                *band_level,
+                grid.max_level()
+            ),
+        });
+    }
+
+    let previous_level = *band_level;
+    let mut total_mass = 0.0f64;
+    let mut cut_mass = 0.0f64;
+    for (&cell, &eta) in indicators {
+        if !grid.is_leaf(cell) {
+            return Err(fs_cutfem::CutFemError::InvalidFemInput {
+                what: format!("DWR indicator key {cell:?} is not a current grid leaf"),
+            });
+        }
+        if !eta.is_finite() {
+            return Err(fs_cutfem::CutFemError::InvalidFemInput {
+                what: format!("DWR indicator for cell {cell:?} is non-finite: {eta}"),
+            });
+        }
+        let (lo, hi) = grid.rect(cell);
+        let enclosure = sdf.enclose(lo, hi);
+        if !(enclosure.lo().is_finite() && enclosure.hi().is_finite()) {
+            return Err(fs_cutfem::CutFemError::InvalidFemInput {
+                what: format!(
+                    "DWR SDF enclosure for cell {cell:?} is non-finite: [{}, {}]",
+                    enclosure.lo(),
+                    enclosure.hi()
+                ),
+            });
+        }
+        total_mass += eta.abs();
+        if !total_mass.is_finite() {
+            return Err(fs_cutfem::CutFemError::InvalidFemInput {
+                what: "DWR total indicator mass is non-finite".to_string(),
+            });
+        }
+        if enclosure.contains_zero() {
+            cut_mass += eta.abs();
+            if !cut_mass.is_finite() {
+                return Err(fs_cutfem::CutFemError::InvalidFemInput {
+                    what: "DWR cut-band indicator mass is non-finite".to_string(),
+                });
+            }
+        }
+    }
+    let advanced = enabled
+        && total_mass > 0.0
+        && cut_mass > DWR_CUT_BAND_MASS_GATE * total_mass
+        && *band_level < grid.max_level();
+    let splits = if advanced {
+        let target_level = *band_level + 1;
+        let mut planned = grid.clone();
+        let before = planned.leaf_count();
+        let enclosure_error = RefCell::new(None::<String>);
+        planned.refine_where(target_level, &|lo, hi| {
+            if enclosure_error.borrow().is_some() {
+                return false;
+            }
+            let (wx, wy) = (hi[0] - lo[0], hi[1] - lo[1]);
+            let xlo = [(lo[0] - wx).max(0.0), (lo[1] - wy).max(0.0)];
+            let xhi = [(hi[0] + wx).min(1.0), (hi[1] + wy).min(1.0)];
+            let enclosure = sdf.enclose(xlo, xhi);
+            if enclosure.lo().is_finite() && enclosure.hi().is_finite() {
+                enclosure.contains_zero()
+            } else {
+                *enclosure_error.borrow_mut() = Some(format!(
+                    "DWR halo SDF enclosure for box {xlo:?}..{xhi:?} is non-finite: [{}, {}]",
+                    enclosure.lo(),
+                    enclosure.hi()
+                ));
+                false
+            }
+        });
+        if let Some(what) = enclosure_error.into_inner() {
+            return Err(fs_cutfem::CutFemError::InvalidFemInput { what });
+        }
+        let splits = planned.leaf_count().saturating_sub(before) / 3;
+        *grid = planned;
+        *band_level = target_level;
+        splits
+    } else {
+        0
+    };
+
+    Ok(DwrBandRefinement {
+        cut_mass,
+        total_mass,
+        previous_level,
+        band_level: *band_level,
+        advanced,
+        splits,
+    })
 }
 
 fn fem_params() -> FemParams {
@@ -345,8 +491,8 @@ fn fem_params() -> FemParams {
 /// Run the marquee: the volume-to-point heat fixture (f = 1 body
 /// heating, the design boundary cooled to 0) at a fixed solid
 /// fraction. Interface-flux redistribution evolves the density;
-/// DWR × |∇ρ| chooses octree splits; the background grid is built
-/// ONCE and never rebuilt.
+/// the DWR cut-band mass gate enables at most one band-level advance
+/// per iteration; the background grid is built ONCE and never rebuilt.
 ///
 /// # Errors
 /// CutFEM build/solve errors propagate.
@@ -356,7 +502,7 @@ pub fn run_marquee(
     base_level: u32,
     max_level: u32,
     iters: usize,
-    splits_per_iter: usize,
+    enable_band_refinement: bool,
 ) -> Result<MarqueeReport, fs_cutfem::CutFemError> {
     design.assert_shape();
     // THE GRID IS BUILT ONCE. Refinement = splits only; there is no
@@ -388,7 +534,7 @@ pub fn run_marquee(
         let sol = space.solve(&f, &g)?;
         let nodal = space.nodal_values(&sol.free, &g);
         let goal = GoalContext { weight: &f };
-        let j = goal_value(&space, &grid, &design, &nodal, &goal, params.quad_depth);
+        let j = goal_value(&space, &nodal, &goal)?;
         // DWR per-leaf indicators for the compliance goal.
         let dwr = estimate(&grid, &design, params, &f, &g, &goal)?;
         // --- Density update: interface-flux redistribution. ---------
@@ -515,31 +661,17 @@ pub fn run_marquee(
         // --- DWR-gated refinement: splits ONLY, band-uniform. --------
         // fs-cutfem requires the CUT BAND at a uniform level (its
         // CutBandNotUniform contract — the first draft split top-k
-        // cells individually and the solver refused, correctly). So
-        // the DWR indicators decide WHEN to refine (is the interface
-        // band carrying enough of the compliance-goal error mass?) and
-        // `refine_where` refines the WHOLE band one level, uniformly.
-        let mut band_mass = 0.0f64;
-        let mut band_min_level = max_level;
-        for (&(lv, cx, cy), &eta) in &dwr.indicators {
-            let cells = f64::from(1u32 << lv);
-            let lo = [f64::from(cx) / cells, f64::from(cy) / cells];
-            let hi = [lo[0] + 1.0 / cells, lo[1] + 1.0 / cells];
-            let enc = design.enclose(lo, hi);
-            if enc.contains_zero() {
-                band_mass += eta.abs();
-                band_min_level = band_min_level.min(lv);
-            }
-        }
-        let mut splits = pre_splits;
-        let _ = band_min_level;
-        if splits_per_iter > 0 && band_mass > 0.15 * dwr.eta_abs && band_level < max_level {
-            let before = grid.leaf_count();
-            band_level += 1;
-            let d_ref = &design;
-            grid.refine_where(band_level, &|lo, hi| halo_cut(d_ref, lo, hi));
-            splits += grid.leaf_count().saturating_sub(before) / 3;
-        }
+        // cells individually and the solver refused, correctly). The
+        // estimator-agnostic helper is also the integration surface for
+        // vector compliance indicators; it applies planning policy only.
+        let refinement = refine_dwr_cut_band(
+            &mut grid,
+            &design,
+            &dwr.indicators,
+            &mut band_level,
+            enable_band_refinement,
+        )?;
+        let splits = pre_splits + refinement.splits;
         total_splits += splits;
         #[allow(clippy::cast_precision_loss)]
         let wall_ms = t0.elapsed().as_secs_f64() * 1e3;

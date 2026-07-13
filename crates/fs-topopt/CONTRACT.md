@@ -70,8 +70,15 @@ cubical homology), so the optimization stack lives here.
   CutSdf with an exact-containment enclosure), `run_marquee` (the
   volume-to-point heat fixture: interface-flux redistribution with a
   BAND-LOCAL volume projection, DWR-gated band refinement, zero
-  rebuilds structurally), `void_components` (topology witness),
-  `min_feature_cells` (the medial-axis-class thickness oracle).
+  rebuilds structurally), `refine_dwr_cut_band` (an estimator-agnostic,
+  one-step cut-band planning policy over `CellKey` indicators, returning
+  the ACTUAL halo/balance split count; invalid levels, non-leaf keys,
+  non-finite indicators/masses, and non-finite SDF enclosures return
+  `InvalidFemInput` before caller-visible mutation), `void_components`
+  (topology witness), `min_feature_cells` (the medial-axis-class thickness oracle).
+  The `run_marquee` refinement argument is an enable flag: each enabled
+  iteration may advance the whole band by at most one level; it is not a
+  requested split budget.
   HARD-WON INVARIANTS from development, all conformance-guarded:
   fs-cutfem's ghost penalty demands the cut band AND ITS ONE-CELL HALO
   at a uniform level (`halo_cut`), re-conformed EVERY iteration
@@ -96,6 +103,10 @@ cubical homology), so the optimization stack lives here.
 Structured panics on solver failures and invalid materials
 (modeling errors). Optimization outcomes are reported traces
 (compliance, volume, final change), never silent.
+The public DWR band-planning helper is fail-closed: it validates its
+complete supplied indicator map and plans recursive halo refinement on a
+clone, so a structured input refusal leaves both the caller's grid and
+band level unchanged.
 
 ## Determinism class
 
@@ -147,18 +158,28 @@ share 0.000% of σ_max AND the gradient FD-verifiable AT the void
 floor), −22% max-stress descent demo at fixed volume; FOUR cross-ISA
 golden hashes (pipeline, robust, eigenfrequency
 `0xbb7e_5ad3_851a_2bf1`, stress `0xc539_ad97_34d8_1b66`). Plus
-`tests/probe_robust.rs`: the limit-cycle regression.
+`tests/probe_robust.rs`: the limit-cycle regression. Feature-gated
+`tests/marquee.rs` additionally covers the heat solve/update/refine loop,
+zero rebuilds, cut-band concentration, and deterministic synthetic
+`CellKey` indicators driving `refine_dwr_cut_band` for exactly one
+planning step, including the disabled no-op path; invalid-level,
+non-finite-indicator/accumulated-mass/recursive-enclosure, and non-leaf-key
+cases assert structured refusal with no grid or band-level mutation. The
+literal heat-parity integration uses `estimate_elasticity_compliance` on
+an embedded disk whose below-cell-width radius and off-grid center are chosen
+so every active coarse indicator cell is cut by construction, and passes its
+UNMODIFIED real vector indicator map into the same helper; it asserts the
+exact total/cut marking mass, one band-level advance, actual halo splits,
+and records coarse/enriched compliances plus estimator and cut-mass metadata.
 
 ## No-claim boundaries
 
 - Scope: compliance/volume, robust three-field, eigenfrequency, and
   stress-aggregate objectives on FIXED kuhn meshes. The medial-axis
   thickness oracle (geometry-layer audit) and the CutFEM-octree
-  marquee (zero remeshing + DWR adaptivity + literature-benchmark
-  envelopes on MBB/L-bracket class fixtures — where stress
-  concentrations are geometrically meaningful and
-  compliance-baseline comparisons live) are recorded splits
-  (frankensim-b7d0).
+  heat marquee (zero remeshing + DWR-gated cut-band adaptivity on its
+  recorded volume-to-point fixture) are the feature-gated extension;
+  elasticity benchmark envelopes remain outside this contract.
 - Eigen solves are dense (fixture scale); LOBPCG-scale pencils join
   via fs-solid stability's machinery when the consumer needs them.
 - Stress constraints ship as the aggregate + gradient; the
@@ -173,8 +194,15 @@ golden hashes (pipeline, robust, eigenfrequency
 ## No-claim boundaries (marquee)
 
 - Heat-conduction (volume-to-point) benchmark class: the recorded
-  compliance envelope is THIS fixture's golden band; MBB/cantilever
-  ELASTICITY envelopes ride CutFEM elasticity when it lands.
+  compliance envelope is THIS fixture's golden band; no MBB/cantilever
+  ELASTICITY compliance envelope is claimed here.
+- The shared refinement helper accepts indicators from scalar or vector
+  estimators. Its real-vector integration proves the estimator-to-policy
+  handoff and one graded planning-grid split only. Vector CutFEM currently
+  refuses mixed-level active grids, so there is no claim of a graded
+  elasticity solve, much less a complete solve-estimate-refine-re-solve
+  vector loop. The logged `eta_signed / (J_h2 - J_h)` value is an enriched-
+  delta diagnostic, not an independent-reference effectivity claim.
 - Per-iteration wall times are DEBUG-build measurements, labeled; the
   interactive-cadence targets are perf-CI's gates.
 - The flux redistribution is a smeared shape-derivative heuristic with
@@ -183,3 +211,6 @@ golden hashes (pipeline, robust, eigenfrequency
 - Split concentration is bounded by the halo contract at ~2/3, not the
   0.8 a halo-free marker could reach — the ceiling is the solver's
   ghost-penalty stencil, documented in the test.
+- The heat marquee gates refinement on the fraction of absolute DWR mass
+  carried by zero-straddling cells. It does not multiply indicators by
+  `|grad rho|`, and no such weighting is claimed.

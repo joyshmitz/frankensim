@@ -233,7 +233,7 @@ fn solve_and_grade(
     let nodal = space.nodal_values(&sol.free, &g);
     // Compliance J = ∫ f·u over Ω (the DWR goal functional with w = f).
     let goal = GoalContext { weight: &f };
-    let j = goal_value(&space, &grid, design, &nodal, &goal, params.quad_depth);
+    let j = goal_value(&space, &nodal, &goal)?;
     // DWR discretization estimate for THIS goal (estimated color: DWR
     // constants are not guaranteed — the lmp4.4 rule).
     let dwr = estimate(&grid, design, params, &f, &g, &goal)?;
