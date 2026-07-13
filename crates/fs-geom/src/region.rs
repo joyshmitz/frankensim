@@ -798,7 +798,7 @@ mod tests {
         });
         assert_eq!(r1.status, AgreementStatus::Agreed);
         assert!(r1.disagreements.is_empty() && r1.unknowns.is_empty());
-        assert_eq!(r1.weakest_evidence, Some(NumericalKind::Exact));
+        assert_eq!(r1.weakest_evidence, Some(NumericalKind::Enclosure));
         assert!(r1.worst_excess.is_some_and(|excess| excess < 0.0));
         assert_eq!(r1.to_json(), r2.to_json(), "seeded check replays (G5)");
     }
@@ -826,7 +826,7 @@ mod tests {
         );
         assert_eq!(
             report.strongest_counterexample_evidence,
-            Some(NumericalKind::Exact)
+            Some(NumericalKind::Enclosure)
         );
         let d = &report.disagreements[0];
         assert!(d.gap > d.allowed);
@@ -1074,7 +1074,7 @@ mod tests {
         assert!(report.disagreements.is_empty());
         assert_eq!(
             report.strongest_counterexample_evidence,
-            Some(NumericalKind::Exact)
+            Some(NumericalKind::Enclosure)
         );
     }
 

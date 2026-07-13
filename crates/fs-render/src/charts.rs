@@ -15,13 +15,14 @@
 
 use fs_evidence::NumericalKind;
 use fs_exec::{Cancelled, Cx};
-use fs_geom::{Chart, Point3, TraceStepClaim, Vec3};
+use fs_geom::{Chart, ChartSample, Point3, TraceStepClaim, Vec3};
+use fs_math::eft::two_sum;
 use fs_rep_nurbs::NurbsSurface;
 
 /// Bit-affecting semantics of certified sphere tracing and scalar-BVH
 /// traversal. Downstream image goldens pin this surface separately from the
 /// spectral estimator so geometry changes cannot silently move image bytes.
-pub const CHART_BACKEND_BIT_SEMANTICS_VERSION: u32 = 1;
+pub const CHART_BACKEND_BIT_SEMANTICS_VERSION: u32 = 2;
 
 /// A ray with a finite, nonzero direction. The marcher converts certified
 /// physical step radii into this ray's parameter space; unit directions remain
@@ -107,10 +108,12 @@ impl TraceAudit {
     }
 }
 
-/// CERTIFIED sphere tracing: at each point the next step is
-/// `|f(p)| / L` with `L` the chart's certified Lipschitz bound — the
-/// sign cannot flip within that radius, so the marcher can never cross
-/// (tunnel through) the surface. Over-relaxation (`omega > 1`)
+/// CERTIFIED sphere tracing: an exact-distance chart steps within the lower
+/// magnitude of its exact or outward-rounded evaluation certificate; a
+/// Lipschitz-implicit chart steps within `|f(p)| / L` with `L` its certified
+/// bound. The sign cannot flip inside either theorem-backed radius, so the
+/// marcher can never cross (tunnel through) the surface.
+/// Over-relaxation (`omega > 1`)
 /// accelerates marching with the standard certified fallback: if the
 /// relaxed sphere fails to overlap the previous safe sphere, the step
 /// is redone unrelaxed from the last safe point. Certification additionally
@@ -201,7 +204,7 @@ pub fn sphere_trace(
     let mut t = 0.0f64;
     let mut steps = 0u32;
     let mut worst_ratio = 0.0f64;
-    let mut certified = trace_claim != TraceStepClaim::NoClaim;
+    let certified = trace_claim != TraceStepClaim::NoClaim;
     let mut fallbacks = 0u32;
     // State for one speculative over-relaxed endpoint. `fallback_t` is stored
     // when the safe step is launched; retreat never reconstructs it by
@@ -221,7 +224,19 @@ pub fn sphere_trace(
             relaxed_pending = false;
             fallbacks += 1;
         }
-        if t > march_t_max || steps >= max_steps {
+        if t > march_t_max {
+            return (
+                None,
+                TraceAudit {
+                    steps,
+                    worst_step_ratio: worst_ratio,
+                    certified: false,
+                    fallbacks,
+                    termination: TraceTermination::InvalidSample,
+                },
+            );
+        }
+        if steps >= max_steps {
             break;
         }
 
@@ -238,7 +253,36 @@ pub fn sphere_trace(
             );
         }
 
-        let p = march_ray.at(t);
+        let caller_t = t / parameter_scale;
+        if !caller_t.is_finite() || (t > 0.0 && caller_t <= 0.0) {
+            return (
+                None,
+                TraceAudit {
+                    steps,
+                    worst_step_ratio: worst_ratio,
+                    certified: false,
+                    fallbacks,
+                    termination: TraceTermination::InvalidSample,
+                },
+            );
+        }
+        // Working parameters stay normalized for overflow-safe step sizing,
+        // but chart evaluation always uses the caller ray's actual arithmetic.
+        // Otherwise equal mapped parameters can still name different IEEE
+        // points and a certificate for one point could be returned for another.
+        let p = ray.at(caller_t);
+        if !p.x.is_finite() || !p.y.is_finite() || !p.z.is_finite() {
+            return (
+                None,
+                TraceAudit {
+                    steps,
+                    worst_step_ratio: worst_ratio,
+                    certified: false,
+                    fallbacks,
+                    termination: TraceTermination::InvalidSample,
+                },
+            );
+        }
         let s = chart.eval(p, cx);
         if cx.checkpoint().is_err() {
             return (
@@ -252,8 +296,7 @@ pub fn sphere_trace(
                 },
             );
         }
-        let d = s.signed_distance;
-        if !d.is_finite() {
+        let Some(validated) = validate_trace_sample(&s, trace_claim) else {
             return (
                 None,
                 TraceAudit {
@@ -264,74 +307,9 @@ pub fn sphere_trace(
                     termination: TraceTermination::InvalidSample,
                 },
             );
-        }
-        let lipschitz = match s.lipschitz {
-            Some(bound) if bound.is_finite() && bound > 0.0 => bound,
-            Some(_) => {
-                return (
-                    None,
-                    TraceAudit {
-                        steps,
-                        worst_step_ratio: worst_ratio,
-                        certified: false,
-                        fallbacks,
-                        termination: TraceTermination::InvalidSample,
-                    },
-                );
-            }
-            None => {
-                if trace_claim == TraceStepClaim::NoClaim {
-                    certified = false;
-                    1.0
-                } else {
-                    return (
-                        None,
-                        TraceAudit {
-                            steps,
-                            worst_step_ratio: worst_ratio,
-                            certified: false,
-                            fallbacks,
-                            termination: TraceTermination::InvalidSample,
-                        },
-                    );
-                }
-            }
         };
-        if trace_claim != TraceStepClaim::NoClaim
-            && (!s.error.lo.is_finite()
-                || !s.error.hi.is_finite()
-                || s.error.lo > d
-                || s.error.hi < d)
-        {
-            return (
-                None,
-                TraceAudit {
-                    steps,
-                    worst_step_ratio: worst_ratio,
-                    certified: false,
-                    fallbacks,
-                    termination: TraceTermination::InvalidSample,
-                },
-            );
-        }
-        if trace_claim == TraceStepClaim::ExactDistance
-            && (s.error.kind != NumericalKind::Exact
-                || s.error.lo != s.error.hi
-                || s.error.lo != d
-                || lipschitz < 1.0)
-        {
-            return (
-                None,
-                TraceAudit {
-                    steps,
-                    worst_step_ratio: worst_ratio,
-                    certified: false,
-                    fallbacks,
-                    termination: TraceTermination::InvalidSample,
-                },
-            );
-        }
-        let safe = conservative_safe_radius(d, lipschitz);
+        let d = validated.signed_distance;
+        let safe = validated.safe_radius;
 
         // Validate the endpoint of the preceding over-relaxed step BEFORE it
         // can be accepted as a hit. Otherwise a step that crosses a thin
@@ -349,12 +327,8 @@ pub fn sphere_trace(
             relaxed_pending = false;
         }
 
-        let hit_residual_upper = if trace_claim == TraceStepClaim::ExactDistance {
-            if d == 0.0 { 0.0 } else { d.abs().next_up() }
-        } else {
-            conservative_normalized_residual_upper(d, lipschitz)
-        };
-        if hit_residual_upper <= eps {
+        let hit_residual_upper = validated.hit_residual_upper;
+        if caller_t <= t_max && hit_residual_upper <= eps {
             let normal = s
                 .gradient
                 .and_then(normalize_gradient)
@@ -371,48 +345,10 @@ pub fn sphere_trace(
                     },
                 );
             }
-            let hit_t = t / parameter_scale;
-            if !hit_t.is_finite() || (t > 0.0 && hit_t <= 0.0) {
-                return (
-                    None,
-                    TraceAudit {
-                        steps,
-                        worst_step_ratio: worst_ratio,
-                        certified: false,
-                        fallbacks,
-                        termination: TraceTermination::InvalidSample,
-                    },
-                );
-            }
-            if hit_t > t_max {
-                return (
-                    None,
-                    TraceAudit {
-                        steps,
-                        worst_step_ratio: worst_ratio,
-                        certified,
-                        fallbacks,
-                        termination: TraceTermination::Miss,
-                    },
-                );
-            }
-            let hit_point = ray.at(hit_t);
-            if !hit_point.x.is_finite() || !hit_point.y.is_finite() || !hit_point.z.is_finite() {
-                return (
-                    None,
-                    TraceAudit {
-                        steps,
-                        worst_step_ratio: worst_ratio,
-                        certified: false,
-                        fallbacks,
-                        termination: TraceTermination::InvalidSample,
-                    },
-                );
-            }
             return (
                 Some(Hit {
-                    t: hit_t,
-                    point: hit_point,
+                    t: caller_t,
+                    point: p,
                     normal,
                     steps,
                 }),
@@ -425,9 +361,130 @@ pub fn sphere_trace(
                 },
             );
         }
+
+        // The working-space limit is rounded outward. Classify a reached
+        // caller boundary in caller geometry: a hit needs a validated endpoint
+        // sample, while a miss needs an epsilon-clear safe-ball bridge from
+        // the marched point. Equality is terminal too; parameter equality does
+        // not by itself prove point equality under IEEE arithmetic.
+        if caller_t >= t_max || t >= march_t_max {
+            let boundary_point = ray.at(t_max);
+            if !boundary_point.x.is_finite()
+                || !boundary_point.y.is_finite()
+                || !boundary_point.z.is_finite()
+            {
+                return (
+                    None,
+                    TraceAudit {
+                        steps,
+                        worst_step_ratio: worst_ratio,
+                        certified: false,
+                        fallbacks,
+                        termination: TraceTermination::InvalidSample,
+                    },
+                );
+            }
+            let (boundary_sample, boundary_validated) = if boundary_point == p {
+                (s, validated)
+            } else {
+                if cx.checkpoint().is_err() {
+                    return (
+                        None,
+                        TraceAudit {
+                            steps,
+                            worst_step_ratio: worst_ratio,
+                            certified: false,
+                            fallbacks,
+                            termination: TraceTermination::Cancelled,
+                        },
+                    );
+                }
+                let sample = chart.eval(boundary_point, cx);
+                if cx.checkpoint().is_err() {
+                    return (
+                        None,
+                        TraceAudit {
+                            steps,
+                            worst_step_ratio: worst_ratio,
+                            certified: false,
+                            fallbacks,
+                            termination: TraceTermination::Cancelled,
+                        },
+                    );
+                }
+                let Some(validated) = validate_trace_sample(&sample, trace_claim) else {
+                    return (
+                        None,
+                        TraceAudit {
+                            steps,
+                            worst_step_ratio: worst_ratio,
+                            certified: false,
+                            fallbacks,
+                            termination: TraceTermination::InvalidSample,
+                        },
+                    );
+                };
+                (sample, validated)
+            };
+            if boundary_validated.hit_residual_upper <= eps {
+                let normal = boundary_sample
+                    .gradient
+                    .and_then(normalize_gradient)
+                    .or_else(|| gradient_fd(chart, cx, boundary_point));
+                if cx.checkpoint().is_err() {
+                    return (
+                        None,
+                        TraceAudit {
+                            steps,
+                            worst_step_ratio: worst_ratio,
+                            certified: false,
+                            fallbacks,
+                            termination: TraceTermination::Cancelled,
+                        },
+                    );
+                }
+                return (
+                    Some(Hit {
+                        t: t_max,
+                        point: boundary_point,
+                        normal,
+                        steps,
+                    }),
+                    TraceAudit {
+                        steps,
+                        worst_step_ratio: worst_ratio,
+                        certified,
+                        fallbacks,
+                        termination: TraceTermination::Hit,
+                    },
+                );
+            }
+            let bridge_distance = point_distance_upper(p, boundary_point);
+            let current_margin =
+                conservative_difference_lower(validated.hit_clearance_lower, bridge_distance);
+            let boundary_margin = conservative_difference_lower(
+                boundary_validated.hit_clearance_lower,
+                bridge_distance,
+            );
+            let termination = if current_margin > eps || boundary_margin > eps {
+                TraceTermination::Miss
+            } else {
+                TraceTermination::InvalidSample
+            };
+            return (
+                None,
+                TraceAudit {
+                    steps,
+                    worst_step_ratio: worst_ratio,
+                    certified: certified && termination == TraceTermination::Miss,
+                    fallbacks,
+                    termination,
+                },
+            );
+        }
         let safe_dt = conservative_safe_parameter(safe, speed_upper);
         let Some((safe_endpoint, safe_distance_upper)) =
-            certified_safe_endpoint(&march_ray, p, t, safe_dt, safe)
+            certified_safe_endpoint(ray, parameter_scale, p, t, safe_dt, safe, march_t_max)
         else {
             return (
                 None,
@@ -444,7 +501,7 @@ pub fn sphere_trace(
         if omega > 1.0 {
             let relaxed_dt = omega * safe_dt;
             let relaxed_endpoint = t + relaxed_dt;
-            if !relaxed_endpoint.is_finite() || relaxed_endpoint <= t {
+            if relaxed_endpoint <= t {
                 return (
                     None,
                     TraceAudit {
@@ -456,25 +513,33 @@ pub fn sphere_trace(
                     },
                 );
             }
-            fallback_t = safe_endpoint;
-            prev_radius = safe;
-            let relaxed_point = march_ray.at(relaxed_endpoint);
-            pending_distance_upper = point_distance_upper(p, relaxed_point);
-            if !pending_distance_upper.is_finite() {
-                return (
-                    None,
-                    TraceAudit {
-                        steps,
-                        worst_step_ratio: worst_ratio,
-                        certified: false,
-                        fallbacks,
-                        termination: TraceTermination::InvalidSample,
-                    },
-                );
+            if !relaxed_endpoint.is_finite() || relaxed_endpoint > march_t_max {
+                // A speculative step cannot probe beyond the caller's bounded
+                // trace. Retreat immediately to the capped safe endpoint; the
+                // next iteration classifies the actual caller boundary.
+                t = safe_endpoint;
+                fallbacks += 1;
+            } else {
+                fallback_t = safe_endpoint;
+                prev_radius = safe;
+                let relaxed_point = ray.at(relaxed_endpoint / parameter_scale);
+                pending_distance_upper = point_distance_upper(p, relaxed_point);
+                if !pending_distance_upper.is_finite() {
+                    return (
+                        None,
+                        TraceAudit {
+                            steps,
+                            worst_step_ratio: worst_ratio,
+                            certified: false,
+                            fallbacks,
+                            termination: TraceTermination::InvalidSample,
+                        },
+                    );
+                }
+                pending_negative = d.is_sign_negative();
+                relaxed_pending = true;
+                t = relaxed_endpoint;
             }
-            pending_negative = d.is_sign_negative();
-            relaxed_pending = true;
-            t = relaxed_endpoint;
         } else {
             t = safe_endpoint;
         }
@@ -506,6 +571,85 @@ pub fn sphere_trace(
             },
         },
     )
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ValidatedTraceSample {
+    signed_distance: f64,
+    safe_radius: f64,
+    hit_residual_upper: f64,
+    hit_clearance_lower: f64,
+}
+
+#[allow(clippy::float_cmp)] // Exact zero has exact residual and clearance.
+fn validate_trace_sample(
+    sample: &ChartSample,
+    trace_claim: TraceStepClaim,
+) -> Option<ValidatedTraceSample> {
+    let signed_distance = sample.signed_distance;
+    if !signed_distance.is_finite() {
+        return None;
+    }
+    let lipschitz = match sample.lipschitz {
+        Some(bound) if bound.is_finite() && bound > 0.0 => bound,
+        Some(_) => return None,
+        None if trace_claim == TraceStepClaim::NoClaim => 1.0,
+        None => return None,
+    };
+    if trace_claim != TraceStepClaim::NoClaim
+        && (!sample.error.lo.is_finite()
+            || !sample.error.hi.is_finite()
+            || sample.error.lo > signed_distance
+            || sample.error.hi < signed_distance)
+    {
+        return None;
+    }
+    let exact_distance_bounds = if trace_claim == TraceStepClaim::ExactDistance {
+        if !matches!(
+            sample.error.kind,
+            NumericalKind::Exact | NumericalKind::Enclosure
+        ) || (sample.error.kind == NumericalKind::Exact
+            && (sample.error.lo != sample.error.hi || sample.error.lo != signed_distance))
+            || lipschitz < 1.0
+        {
+            return None;
+        }
+        let magnitude_lower = if sample.error.lo > 0.0 {
+            sample.error.lo
+        } else if sample.error.hi < 0.0 {
+            -sample.error.hi
+        } else {
+            0.0
+        };
+        let magnitude_upper = sample.error.lo.abs().max(sample.error.hi.abs());
+        Some((magnitude_lower, magnitude_upper))
+    } else {
+        None
+    };
+    let safe_radius = if let Some((magnitude_lower, _)) = exact_distance_bounds {
+        // `ExactDistance` is a theorem about the represented real field, while
+        // a binary64 evaluation may need an outward enclosure. The closest
+        // certified endpoint to zero is the largest no-tunneling radius.
+        magnitude_lower
+    } else {
+        conservative_safe_radius(signed_distance, lipschitz)
+    };
+    let hit_residual_upper = if let Some((_, magnitude_upper)) = exact_distance_bounds {
+        magnitude_upper
+    } else {
+        conservative_normalized_residual_upper(signed_distance, lipschitz)
+    };
+    let hit_clearance_lower = if let Some((magnitude_lower, _)) = exact_distance_bounds {
+        magnitude_lower
+    } else {
+        safe_radius
+    };
+    Some(ValidatedTraceSample {
+        signed_distance,
+        safe_radius,
+        hit_residual_upper,
+        hit_clearance_lower,
+    })
 }
 
 fn conservative_safe_radius(value: f64, lipschitz: f64) -> f64 {
@@ -626,10 +770,12 @@ fn conservative_normalized_residual_upper(value: f64, lipschitz: f64) -> f64 {
 
 fn certified_safe_endpoint(
     ray: &Ray,
+    parameter_scale: f64,
     current_point: Point3,
     current_t: f64,
     safe_dt: f64,
     safe_radius: f64,
+    t_max: f64,
 ) -> Option<(f64, f64)> {
     enum Probe {
         NoProgress,
@@ -637,15 +783,29 @@ fn certified_safe_endpoint(
         TooFar,
     }
 
-    if !safe_dt.is_finite() || safe_dt <= 0.0 {
+    if !parameter_scale.is_finite()
+        || parameter_scale <= 0.0
+        || !safe_dt.is_finite()
+        || safe_dt <= 0.0
+        || !t_max.is_finite()
+        || t_max <= current_t
+    {
         return None;
     }
-    let candidate = conservative_positive_sum(current_t, safe_dt);
+    let conservative_candidate = conservative_positive_sum(current_t, safe_dt).min(t_max);
+    // A lower-rounded parameter sum can collapse to `current_t` even when the
+    // next representable parameter maps to a point inside the certified ball.
+    // Probe that single ULP only through the evaluated-point guard below.
+    let candidate = if conservative_candidate <= current_t {
+        current_t.next_up().min(t_max)
+    } else {
+        conservative_candidate
+    };
     if candidate <= current_t {
         return None;
     }
     let admissible = |candidate_t: f64| {
-        let candidate_point = ray.at(candidate_t);
+        let candidate_point = ray.at(candidate_t / parameter_scale);
         if candidate_point == current_point {
             return Probe::NoProgress;
         }
@@ -696,6 +856,31 @@ fn point_distance_upper(lhs: Point3, rhs: Point3) -> f64 {
     {
         return f64::INFINITY;
     }
+    let exact_component = |left: f64, right: f64| {
+        if left == right {
+            return Some(0.0);
+        }
+        let difference = right - left;
+        if !difference.is_finite() {
+            return None;
+        }
+        // Knuth's error-free transform. A zero tail proves that the stored
+        // subtraction is the exact difference of the two binary64 coordinates.
+        let (_, tail) = two_sum(right, -left);
+        (tail == 0.0).then_some(difference.abs())
+    };
+    if let (Some(dx), Some(dy), Some(dz)) = (
+        exact_component(lhs.x, rhs.x),
+        exact_component(lhs.y, rhs.y),
+        exact_component(lhs.z, rhs.z),
+    ) {
+        let nonzero = u8::from(dx > 0.0) + u8::from(dy > 0.0) + u8::from(dz > 0.0);
+        if nonzero <= 1 {
+            // The Euclidean norm of an exactly known one-axis displacement is
+            // exactly that component magnitude; no outward inflation is due.
+            return dx.max(dy).max(dz);
+        }
+    }
     let component = |left: f64, right: f64| {
         if left == right {
             0.0
@@ -715,6 +900,18 @@ fn conservative_positive_sum(lhs: f64, rhs: f64) -> f64 {
         lhs
     } else {
         sum.next_down().max(lhs)
+    }
+}
+
+fn conservative_difference_lower(lhs: f64, rhs: f64) -> f64 {
+    if !lhs.is_finite() || !rhs.is_finite() || lhs <= rhs {
+        return 0.0;
+    }
+    let difference = lhs - rhs;
+    if difference <= 0.0 {
+        0.0
+    } else {
+        difference.next_down().max(0.0)
     }
 }
 
@@ -1371,6 +1568,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn adjacent_exact_axis_endpoint_is_admissible_without_underbounding() {
+        let ray = Ray {
+            origin: Point3::new(0.0, 0.0, 0.0),
+            dir: Vec3::new(3.0, 0.0, 0.0),
+        };
+        let parameter_scale = 3.0;
+        let boundary_point = ray.at(0.1);
+        let current_t = boundary_point.x.next_down();
+        let current_point = ray.at(current_t / parameter_scale);
+        let safe_radius = boundary_point.x - current_point.x;
+        assert_eq!(
+            point_distance_upper(current_point, boundary_point),
+            safe_radius
+        );
+
+        let safe_dt = conservative_safe_parameter(
+            safe_radius,
+            conservative_norm_upper(Vec3::new(1.0, 0.0, 0.0)),
+        );
+        let (endpoint, distance) = certified_safe_endpoint(
+            &ray,
+            parameter_scale,
+            current_point,
+            current_t,
+            safe_dt,
+            safe_radius,
+            conservative_product_upper(0.1, parameter_scale),
+        )
+        .expect("the adjacent evaluated endpoint lies in the exact safe ball");
+        assert_eq!(endpoint, current_t.next_up());
+        assert_eq!(distance, safe_radius);
+
+        let inexact_lhs = Point3::new(1.0, 0.0, 0.0);
+        let inexact_rhs = Point3::new(-(f64::EPSILON * 0.25), 0.0, 0.0);
+        assert!(
+            point_distance_upper(inexact_lhs, inexact_rhs) > 1.0,
+            "a nonzero EFT tail must retain the generic outward bound"
+        );
+    }
+
+    #[test]
     fn large_origin_endpoint_is_checked_in_evaluated_point_space() {
         let ray = Ray {
             origin: Point3::new(1_366_407_051_212.641_6, 908_310_235_173.732_8, 0.0),
@@ -1387,9 +1625,16 @@ mod tests {
             raw_distance > safe_radius,
             "negative control must expose parameter-only rounding gap"
         );
-        let (guarded_t, guarded_distance) =
-            certified_safe_endpoint(&ray, current_point, current_t, safe_dt, safe_radius)
-                .expect("a shrunken endpoint retains forward progress");
+        let (guarded_t, guarded_distance) = certified_safe_endpoint(
+            &ray,
+            1.0,
+            current_point,
+            current_t,
+            safe_dt,
+            safe_radius,
+            f64::MAX,
+        )
+        .expect("a shrunken endpoint retains forward progress");
         assert!(guarded_t > current_t && guarded_t < raw_t);
         assert!(guarded_distance <= safe_radius);
     }

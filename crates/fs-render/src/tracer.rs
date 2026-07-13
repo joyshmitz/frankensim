@@ -219,7 +219,12 @@ pub enum TracerError {
     /// no-tunneling claim. Uncertified misses are not geometry absence.
     UncertifiedTrace,
     /// A progressive sample range had its exclusive end before its start.
-    InvalidRange { from: u32, to: u32 },
+    InvalidRange {
+        /// Inclusive start of the rejected sample range.
+        from: u32,
+        /// Exclusive end of the rejected sample range.
+        to: u32,
+    },
     /// Render dimensions or a public film buffer were structurally invalid or
     /// could not be allocated without exceeding address-space bounds.
     InvalidInput,

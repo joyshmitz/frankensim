@@ -20,11 +20,14 @@ Depends on fs-exec (Cx), fs-evidence, fs-alloc, fs-obs.
 - `TraceStepClaim::{NoClaim, ExactDistance, LipschitzImplicit}` — the typed
   theorem available to a ray stepper. The default is `NoClaim`: a sample-level
   `Some(lipschitz)` alone cannot mint a no-tunneling certificate.
-  `ExactDistance` additionally requires an exact singleton numerical
-  certificate; `LipschitzImplicit` states that the field has the represented
-  region's exact sign and zero set and that each sample's bound is valid over
-  the entire closed `|f|/L` step ball, so that radius is safe but not a
-  geometric-distance upper bound.
+  `ExactDistance` states that the represented real field is the exact signed
+  distance and requires either a genuinely exact singleton or a rigorous
+  outward enclosure of each rounded evaluation. A stepper uses the enclosure
+  endpoint closest to zero for its no-tunneling radius and the farthest endpoint
+  for its hit residual. `LipschitzImplicit` states that the field has the
+  represented region's exact sign and zero set and that each sample's bound is
+  valid over the entire closed `|f|/L` step ball, so that radius is safe but not
+  a geometric-distance upper bound.
 - `Chart` (object-safe): `eval(x, &Cx)`, `support()`, `trace_step_claim()`,
   `topology_hint()`, `name()`, `differentiability()`, provided `inside()`.
   Implementations
@@ -58,8 +61,8 @@ Depends on fs-exec (Cx), fs-evidence, fs-alloc, fs-obs.
 - `fixtures` (PUBLIC on purpose — the shared MORPH test vocabulary):
   valid positive-radius `SphereChart`, finite strictly three-dimensional
   `BoxChart`, and valid ring `TorusChart` instances (unit
-  Lipschitz, Exact error models, `ExactDistance` trace claim, known Betti
-  numbers); degenerate/invalid boxes downgrade to `NoClaim` and unknown
+  Lipschitz, outward-rounded evaluation enclosures, `ExactDistance` trace claim,
+  known Betti numbers); degenerate/invalid boxes downgrade to `NoClaim` and unknown
   topology, while horn/spindle torus parameters downgrade to
   `LipschitzImplicit`, `Estimate`, and unknown topology. `LyingSphereChart` is
   deliberately biased with a lying error model and the default `NoClaim` for

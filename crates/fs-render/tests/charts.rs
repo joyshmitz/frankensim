@@ -10,8 +10,9 @@
 use asupersync::types::Budget;
 use fs_evidence::{NumericalCertificate, NumericalKind};
 use fs_exec::{CancelGate, Cx, ExecMode, StreamKey};
-use fs_geom::fixtures::TorusChart;
+use fs_geom::fixtures::{SphereChart, TorusChart};
 use fs_geom::{Aabb, Chart, ChartSample, Point3, TraceStepClaim, Vec3};
+use fs_math::eft::two_sum;
 use fs_render::charts::{
     Backend, CHART_BACKEND_BIT_SEMANTICS_VERSION, Ray, SceneTraceError, TraceTermination, TriMesh,
     ray_intersect_nurbs, sphere_trace, trace_scene,
@@ -47,6 +48,27 @@ fn with_cx<R>(f: impl FnOnce(&Cx<'_>) -> R) -> R {
 
 fn unit(v: Vec3) -> Vec3 {
     v.scale(1.0 / v.norm())
+}
+
+fn exact_subtraction_bounds(lhs: f64, rhs: f64) -> (f64, f64) {
+    let (rounded, tail) = two_sum(lhs, -rhs);
+    if tail > 0.0 {
+        (rounded, rounded.next_up())
+    } else if tail < 0.0 {
+        (rounded.next_down(), rounded)
+    } else {
+        (rounded, rounded)
+    }
+}
+
+fn bounded_certificate(lo: f64, hi: f64, nominal: f64) -> NumericalCertificate {
+    let lo = lo.min(nominal);
+    let hi = hi.max(nominal);
+    if lo == hi {
+        NumericalCertificate::exact(lo)
+    } else {
+        NumericalCertificate::enclosure(lo, hi)
+    }
 }
 
 fn lcg(state: &mut u64) -> f64 {
@@ -203,11 +225,21 @@ impl Chart for ExactSlabChart {
         let center = f64::midpoint(self.lo, self.hi);
         let half = 0.5 * (self.hi - self.lo);
         let distance = (x.x - center).abs() - half;
+        let (lo, hi) = if x.x < self.lo {
+            exact_subtraction_bounds(self.lo, x.x)
+        } else if x.x > self.hi {
+            exact_subtraction_bounds(x.x, self.hi)
+        } else {
+            let left = exact_subtraction_bounds(x.x, self.lo);
+            let right = exact_subtraction_bounds(self.hi, x.x);
+            let clearance = (left.0.min(right.0), left.1.min(right.1));
+            (-clearance.1, -clearance.0)
+        };
         ChartSample {
             signed_distance: distance,
             gradient: Some(Vec3::new((x.x - center).signum(), 0.0, 0.0)),
             lipschitz: Some(1.0),
-            error: NumericalCertificate::exact(distance),
+            error: bounded_certificate(lo, hi, distance),
         }
     }
 
@@ -236,11 +268,12 @@ struct ExactPlaneChart {
 impl Chart for ExactPlaneChart {
     fn eval(&self, x: Point3, _cx: &Cx<'_>) -> ChartSample {
         let distance = self.boundary - x.x;
+        let (lo, hi) = exact_subtraction_bounds(self.boundary, x.x);
         ChartSample {
             signed_distance: distance,
             gradient: Some(Vec3::new(-1.0, 0.0, 0.0)),
             lipschitz: Some(self.lipschitz),
-            error: NumericalCertificate::exact(distance),
+            error: bounded_certificate(lo, hi, distance),
         }
     }
 
@@ -310,7 +343,7 @@ fn oracle_first_hit(chart: &dyn Chart, cx: &Cx<'_>, ray: &Ray, t_max: f64) -> Op
 #[test]
 fn rb_001_zero_tunneling_headline() {
     with_cx(|cx| {
-        assert_eq!(CHART_BACKEND_BIT_SEMANTICS_VERSION, 1);
+        assert_eq!(CHART_BACKEND_BIT_SEMANTICS_VERSION, 2);
         // Falsifier pairing: four thin-feature fields whose L > 1. The naive
         // unit-bound marcher tunnels in every case; the certified d/L path
         // reaches the first surface.
@@ -400,11 +433,21 @@ fn rb_001_zero_tunneling_headline() {
             let oracle = oracle_first_hit(&shell, cx, &ray, 6.0);
             let (traced, audit) = sphere_trace(&shell, cx, &ray, 6.0, 1e-6, 1.0);
             match (traced, oracle) {
-                (Some(hit), Some(oracle_t)) => assert!(
-                    (hit.t - oracle_t).abs() <= 2e-5,
-                    "ray {k}: tracer skipped the earliest oracle root: {} vs {oracle_t}",
-                    hit.t
-                ),
+                (Some(hit), Some(oracle_t)) => {
+                    assert!(
+                        hit.t <= oracle_t.next_up(),
+                        "ray {k}: tracer tunneled past the earliest oracle root: {} vs {oracle_t}",
+                        hit.t
+                    );
+                    let hit_sample = shell.eval(hit.point, cx);
+                    let hit_bound = hit_sample
+                        .lipschitz
+                        .expect("the F-rep hit publishes a finite Lipschitz bound");
+                    assert!(
+                        hit_sample.signed_distance.abs() / hit_bound <= 1e-6,
+                        "ray {k}: entry-side hit must satisfy the normalized residual tolerance"
+                    );
+                }
                 (None, None) => {}
                 (traced, oracle) => panic!(
                     "ray {k}: tracer/oracle hit disagreement: traced={} oracle={}",
@@ -430,8 +473,9 @@ fn rb_001_zero_tunneling_headline() {
         verdict(
             "rb-001",
             "four scaled thin-shell falsifiers defeat the naive unit-bound marcher; the \
-             certified path hits all four, then agrees with the micro-step oracle on 120 \
-             grazing-biased rays; missing bounds remain explicitly uncertified",
+             certified path hits all four, then reaches the entry-side residual envelope \
+             without passing the micro-step oracle root on 120 grazing-biased rays; missing \
+             bounds remain explicitly uncertified",
         );
     });
 }
@@ -489,6 +533,20 @@ fn rb_001b_trace_audit_states_fail_closed() {
         let (_, invalid_sample) = sphere_trace(&invalid_chart, cx, &ray, 6.0, 1e-6, 1.0);
         assert_eq!(invalid_sample.termination, TraceTermination::InvalidSample);
         assert!(!invalid_sample.certified);
+
+        let estimated_exact = SampleOverrideChart {
+            inner: thin_shell(),
+            distance: 1.0,
+            lipschitz: Some(1.0),
+            trace_claim: TraceStepClaim::ExactDistance,
+        };
+        let (_, estimated_exact_audit) = sphere_trace(&estimated_exact, cx, &ray, 6.0, 1e-6, 1.0);
+        assert_eq!(
+            estimated_exact_audit.termination,
+            TraceTermination::InvalidSample,
+            "an analytical exact-distance claim cannot promote an estimated evaluation"
+        );
+        assert!(!estimated_exact_audit.certified);
 
         let slow_chart = SampleOverrideChart {
             inner: thin_shell(),
@@ -690,6 +748,78 @@ fn rb_001c_scale_direction_and_touching_spheres_are_conservative() {
         );
         assert_eq!(boundary_audit.termination, TraceTermination::Miss);
         assert!(boundary_audit.certified);
+        let (relaxed_boundary_hit, relaxed_boundary_audit) =
+            sphere_trace(&beyond_limit, cx, &boundary_ray, 0.1, 1e-18, 1.6);
+        assert!(
+            relaxed_boundary_hit.is_none(),
+            "an out-of-range speculative endpoint must retreat to the bounded miss"
+        );
+        assert_eq!(relaxed_boundary_audit.termination, TraceTermination::Miss);
+        assert!(relaxed_boundary_audit.certified);
+        assert_eq!(
+            trace_scene(
+                &[Backend::Chart(&beyond_limit)],
+                cx,
+                &boundary_ray,
+                0.1,
+                1e-18,
+            ),
+            Ok(None),
+            "production composition must accept the certified bounded miss"
+        );
+
+        let exact_limit = ExactPlaneChart {
+            boundary: boundary_ray.at(0.1).x,
+            lipschitz: 1.0,
+        };
+        let (limit_hit, limit_audit) =
+            sphere_trace(&exact_limit, cx, &boundary_ray, 0.1, 1e-18, 1.0);
+        let limit_hit = limit_hit.expect("an exact hit at caller t_max must not become a miss");
+        assert_eq!(limit_hit.t, 0.1);
+        assert_eq!(limit_hit.point, boundary_ray.at(0.1));
+        assert_eq!(limit_audit.termination, TraceTermination::Hit);
+        assert!(limit_audit.certified);
+        let (relaxed_limit_hit, relaxed_limit_audit) =
+            sphere_trace(&exact_limit, cx, &boundary_ray, 0.1, 1e-18, 1.6);
+        let relaxed_limit_hit =
+            relaxed_limit_hit.expect("over-relaxation must retain the exact caller endpoint");
+        assert_eq!(relaxed_limit_hit.t, limit_hit.t);
+        assert_eq!(relaxed_limit_hit.point, limit_hit.point);
+        assert_eq!(relaxed_limit_audit.termination, TraceTermination::Hit);
+        assert!(relaxed_limit_audit.certified);
+        let scene_limit_hit = trace_scene(
+            &[Backend::Chart(&exact_limit)],
+            cx,
+            &boundary_ray,
+            0.1,
+            1e-18,
+        )
+        .expect("production composition accepts a certified endpoint hit")
+        .expect("the certified endpoint is present");
+        assert_eq!(scene_limit_hit.0, 0);
+        assert_eq!(scene_limit_hit.1.t, limit_hit.t);
+        assert_eq!(scene_limit_hit.1.point, limit_hit.point);
+
+        let equality_ray = Ray {
+            origin: Point3::new(0.0, 0.0, 0.0),
+            dir: Vec3::new(0.1, 0.0, 0.0),
+        };
+        let equality_t_max = 0.3;
+        let outward_working_x = (equality_t_max * equality_ray.dir.x).next_up();
+        assert_eq!(outward_working_x / equality_ray.dir.x, equality_t_max);
+        assert_ne!(outward_working_x, equality_ray.at(equality_t_max).x);
+        let equality_gap = ExactPlaneChart {
+            boundary: outward_working_x,
+            lipschitz: 1.0,
+        };
+        let (equality_hit, equality_audit) =
+            sphere_trace(&equality_gap, cx, &equality_ray, equality_t_max, 1e-20, 1.0);
+        assert!(
+            equality_hit.is_none(),
+            "equal mapped parameters must still classify the caller endpoint"
+        );
+        assert_eq!(equality_audit.termination, TraceTermination::Miss);
+        assert!(equality_audit.certified);
 
         let slab = ExactSlabChart {
             lo: 1.0,
@@ -725,6 +855,53 @@ fn rb_001c_scale_direction_and_touching_spheres_are_conservative() {
             offset_chart.trace_step_claim(),
             TraceStepClaim::LipschitzImplicit,
             "offset exactness needs a reach certificate"
+        );
+    });
+}
+
+#[test]
+fn rb_001d_rounded_exact_distance_overstatement_fails_closed() {
+    with_cx(|cx| {
+        let sphere = SphereChart {
+            center: Point3::new(0.0, 0.0, 0.0),
+            radius: 1.0,
+        };
+        let ray = Ray {
+            origin: Point3::new(
+                0.038_546_885_717_366_49,
+                -0.607_415_449_300_028_1,
+                -0.793_448_734_204_907_9,
+            ),
+            dir: Vec3::new(
+                -0.038_546_880_238_732_83,
+                0.607_415_362_968_625_2,
+                0.793_448_621_432_764_2,
+            ),
+        };
+        let first = sphere.eval(ray.origin, cx);
+        let rounded_endpoint = ray.at(first.signed_distance);
+        assert!(
+            sphere
+                .eval(rounded_endpoint, cx)
+                .signed_distance
+                .is_sign_negative(),
+            "the nearest-rounded residual is the seeded unsafe step"
+        );
+
+        let (hit, audit) = sphere_trace(&sphere, cx, &ray, 1.0, 1e-18, 1.0);
+        assert!(
+            hit.is_none(),
+            "an interval too wide to certify the first root must not return a far-side hit"
+        );
+        assert_eq!(audit.termination, TraceTermination::InvalidSample);
+        assert!(
+            !audit.certified,
+            "the unresolved rounding band fails closed"
+        );
+        verdict(
+            "rb-001d-rounded-distance",
+            "a cancelled binary64 sphere residual that flips sign is enclosed; sub-band hit \
+             tolerance fails closed instead of tunneling to the far boundary",
         );
     });
 }

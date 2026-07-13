@@ -10,6 +10,100 @@ use crate::{
 };
 use fs_evidence::NumericalCertificate;
 use fs_exec::Cx;
+use fs_ivl::Interval;
+
+fn finite_point(point: Point3) -> bool {
+    point.x.is_finite() && point.y.is_finite() && point.z.is_finite()
+}
+
+fn interval_max(lhs: Interval, rhs: Interval) -> Interval {
+    Interval::new(lhs.lo().max(rhs.lo()), lhs.hi().max(rhs.hi()))
+}
+
+fn interval_min(lhs: Interval, rhs: Interval) -> Interval {
+    Interval::new(lhs.lo().min(rhs.lo()), lhs.hi().min(rhs.hi()))
+}
+
+fn interval_norm3(x: Interval, y: Interval, z: Interval) -> Interval {
+    (x * x + y * y + z * z).sqrt()
+}
+
+fn interval_delta(point: Point3, center: Point3) -> [Interval; 3] {
+    [
+        Interval::point(point.x) - Interval::point(center.x),
+        Interval::point(point.y) - Interval::point(center.y),
+        Interval::point(point.z) - Interval::point(center.z),
+    ]
+}
+
+fn enclosure_with_nominal(interval: Interval, nominal: f64) -> NumericalCertificate {
+    if nominal.is_finite() && interval.lo().is_finite() && interval.hi().is_finite() {
+        NumericalCertificate::enclosure(interval.lo().min(nominal), interval.hi().max(nominal))
+    } else {
+        NumericalCertificate::no_claim()
+    }
+}
+
+fn sphere_distance_enclosure(
+    point: Point3,
+    center: Point3,
+    radius: f64,
+    nominal: f64,
+) -> NumericalCertificate {
+    if !finite_point(point) || !finite_point(center) || !radius.is_finite() {
+        return NumericalCertificate::no_claim();
+    }
+    let [x, y, z] = interval_delta(point, center);
+    let distance = interval_norm3(x, y, z) - Interval::point(radius);
+    enclosure_with_nominal(distance, nominal)
+}
+
+fn box_distance_enclosure(aabb: Aabb, point: Point3, nominal: f64) -> NumericalCertificate {
+    if !finite_point(point) || !finite_point(aabb.min) || !finite_point(aabb.max) {
+        return NumericalCertificate::no_claim();
+    }
+    let half = Interval::point(0.5);
+    let center = [
+        (Interval::point(aabb.min.x) + Interval::point(aabb.max.x)) * half,
+        (Interval::point(aabb.min.y) + Interval::point(aabb.max.y)) * half,
+        (Interval::point(aabb.min.z) + Interval::point(aabb.max.z)) * half,
+    ];
+    let extent = [
+        (Interval::point(aabb.max.x) - Interval::point(aabb.min.x)) * half,
+        (Interval::point(aabb.max.y) - Interval::point(aabb.min.y)) * half,
+        (Interval::point(aabb.max.z) - Interval::point(aabb.min.z)) * half,
+    ];
+    let coordinate = [point.x, point.y, point.z];
+    let q: [Interval; 3] = core::array::from_fn(|axis| {
+        (Interval::point(coordinate[axis]) - center[axis]).abs() - extent[axis]
+    });
+    let zero = Interval::point(0.0);
+    let outside = [
+        interval_max(q[0], zero),
+        interval_max(q[1], zero),
+        interval_max(q[2], zero),
+    ];
+    let outside_distance = interval_norm3(outside[0], outside[1], outside[2]);
+    let inside_distance = interval_min(interval_max(interval_max(q[0], q[1]), q[2]), zero);
+    enclosure_with_nominal(outside_distance + inside_distance, nominal)
+}
+
+fn torus_distance_enclosure(
+    point: Point3,
+    center: Point3,
+    major: f64,
+    minor: f64,
+    nominal: f64,
+) -> NumericalCertificate {
+    if !finite_point(point) || !finite_point(center) || !major.is_finite() || !minor.is_finite() {
+        return NumericalCertificate::no_claim();
+    }
+    let [x, y, z] = interval_delta(point, center);
+    let radial = (x * x + y * y).sqrt();
+    let ring = radial - Interval::point(major);
+    let distance = (ring * ring + z * z).sqrt() - Interval::point(minor);
+    enclosure_with_nominal(distance, nominal)
+}
 
 /// Exact sphere SDF: `|x - c| - r`.
 #[derive(Debug, Clone, Copy)]
@@ -24,16 +118,17 @@ impl Chart for SphereChart {
     fn eval(&self, x: Point3, _cx: &Cx<'_>) -> ChartSample {
         let d = x.delta_from(self.center);
         let dist = d.norm();
+        let signed_distance = dist - self.radius;
         let gradient = if dist > 1e-12 {
             Some(d.scale(1.0 / dist))
         } else {
             None // the center is the medial axis: no gradient claim
         };
         ChartSample {
-            signed_distance: dist - self.radius,
+            signed_distance,
             gradient,
             lipschitz: Some(1.0),
-            error: NumericalCertificate::exact(dist - self.radius),
+            error: sphere_distance_enclosure(x, self.center, self.radius, signed_distance),
         }
     }
 
@@ -109,7 +204,11 @@ impl Chart for BoxChart {
             signed_distance: sd,
             gradient: None, // piecewise form; gradients per-face arrive with rep-sdf
             lipschitz: Some(1.0),
-            error: NumericalCertificate::exact(sd),
+            error: if self.is_solid_box() {
+                box_distance_enclosure(self.aabb, x, sd)
+            } else {
+                NumericalCertificate::no_claim()
+            },
         }
     }
 
@@ -170,7 +269,7 @@ impl Chart for TorusChart {
             gradient: None, // analytic gradient lands with rep-frep
             lipschitz: Some(1.0),
             error: if self.is_exact_distance() {
-                NumericalCertificate::exact(sd)
+                torus_distance_enclosure(x, self.center, self.major, self.minor, sd)
             } else {
                 NumericalCertificate::estimate(sd, sd)
             },
@@ -301,6 +400,39 @@ mod tests {
             };
             assert!((t.eval(Point3::new(3.0, 0.0, 0.0), cx).signed_distance + 1.0).abs() < 1e-12);
             assert!((t.eval(Point3::new(5.0, 0.0, 0.0), cx).signed_distance - 1.0).abs() < 1e-12);
+        });
+    }
+
+    #[test]
+    fn rounded_sphere_residual_publishes_an_outward_enclosure() {
+        with_cx(|cx| {
+            let sphere = SphereChart {
+                center: Point3::new(0.0, 0.0, 0.0),
+                radius: 1.0,
+            };
+            let origin = Point3::new(
+                0.038_546_885_717_366_49,
+                -0.607_415_449_300_028_1,
+                -0.793_448_734_204_907_9,
+            );
+            let direction = Vec3::new(
+                -0.038_546_880_238_732_83,
+                0.607_415_362_968_625_2,
+                0.793_448_621_432_764_2,
+            );
+            let sample = sphere.eval(origin, cx);
+            assert_eq!(sample.error.kind, fs_evidence::NumericalKind::Enclosure);
+            assert!(sample.error.lo <= sample.signed_distance);
+            assert!(sample.signed_distance <= sample.error.hi);
+
+            // Advancing by the rounded residual lands just inside the real
+            // sphere in binary64. The endpoint enclosure must expose that the
+            // residual sign is no longer certified instead of stamping the
+            // rounded value as an exact singleton.
+            let endpoint = origin.offset(direction.scale(sample.signed_distance));
+            let endpoint_sample = sphere.eval(endpoint, cx);
+            assert!(endpoint_sample.signed_distance.is_sign_negative());
+            assert!(endpoint_sample.error.lo <= 0.0 && endpoint_sample.error.hi >= 0.0);
         });
     }
 }

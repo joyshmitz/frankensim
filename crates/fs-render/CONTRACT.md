@@ -29,9 +29,11 @@ differentiable lift). Pure Rust throughout.
   `chart-backends`): render charts that opt into a typed trace theorem, WITHOUT
   conversion; other chart types remain explicit no-claim previews until they
   supply the theorem their error model needs.
-  `sphere_trace` steps `|f(p)|/L` with the chart's CERTIFIED Lipschitz
-  bound — the sign cannot flip within that radius, so the marcher
-  provably never tunnels (audited: `TraceAudit.worst_step_ratio`);
+  `sphere_trace` steps within the endpoint closest to zero of an exact or
+  outward-rounded evaluation certificate for `ExactDistance` claims, and within
+  `|f(p)|/L` for `LipschitzImplicit` claims with the chart's CERTIFIED bound —
+  the sign cannot flip inside either radius, so the marcher provably never
+  tunnels (audited: `TraceAudit.worst_step_ratio`);
   over-relaxation uses the standard certified fallback (retreat when
   spheres fail to overlap). `ray_intersect_nurbs` is grid-seeded 3×3
   Newton on `S(u,v) − o − t·d` with the `[S_u, S_v, −d]` Jacobian.
@@ -40,7 +42,14 @@ differentiable lift). Pure Rust throughout.
   use world-space distance tolerance. Generic Lipschitz implicit hits use the
   scale-invariant normalized residual `|f|/L`, which certifies step safety but
   is not promoted to a geometric-distance enclosure. Pending over-relaxed
-  endpoints are validated before either hit or miss acceptance. `TraceAudit`
+  endpoints are validated before either hit or miss acceptance. An
+  outward-rounded working limit is classified at the caller's actual endpoint:
+  hits require a validated endpoint sample, and misses require an
+  epsilon-clear safe-ball bridge across any coordinate-rounding gap. Normalized
+  working parameters size steps, but every chart and overlap evaluation uses
+  the caller ray's own `Ray::at` arithmetic so a certificate is never returned
+  for a numerically different point. This is chart-backend bit-semantics v2.
+  `TraceAudit`
   states whether every marched sample supplied a positive finite certified
   bound and compatible finite numerical certificate, counts retreats to the
   safe endpoint, and

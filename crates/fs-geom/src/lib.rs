@@ -258,7 +258,10 @@ pub enum TraceStepClaim {
     /// No generic no-tunneling theorem. Callers may offer an explicitly
     /// uncertified preview, but production render paths must fail closed.
     NoClaim,
-    /// `signed_distance` is the exact signed distance and `error` is `Exact`.
+    /// The represented real field is the exact signed distance. Each sample's
+    /// `error` is either a genuinely exact singleton or a rigorous enclosure
+    /// of its rounded evaluation; steppers use the enclosure endpoint closest
+    /// to zero as the no-tunneling radius.
     ExactDistance,
     /// The field has the exact sign and zero set of the represented region;
     /// each sample's positive finite Lipschitz bound is certified over the
@@ -283,8 +286,8 @@ pub struct ChartSample {
     /// the entire closed step ball specified by that claim.
     pub lipschitz: Option<f64>,
     /// Declared error of `signed_distance` relative to the ABSTRACT region
-    /// (fs-evidence certificate: exact charts say Exact, sampled charts say
-    /// Enclosure, heuristics say Estimate).
+    /// (fs-evidence certificate: by-construction identities may say Exact,
+    /// rounded analytic evaluations say Enclosure, and heuristics say Estimate).
     pub error: NumericalCertificate,
 }
 

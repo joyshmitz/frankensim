@@ -14,6 +14,7 @@ use std::sync::{
 use asupersync::types::Budget;
 use fs_evidence::NumericalCertificate;
 use fs_exec::{CancelGate, Cx, ExecMode, StreamKey};
+use fs_geom::fixtures::SphereChart;
 use fs_geom::{Aabb, Chart, ChartSample, Point3, TraceStepClaim, Vec3};
 use fs_render::charts::TriMesh;
 use fs_render::spectral::{LAMBDA_MAX, LAMBDA_MIN, lift_rgb, xyz_of_spectrum};
@@ -68,22 +69,18 @@ struct CancellingSphere {
 }
 
 impl Chart for CancellingSphere {
-    fn eval(&self, point: Point3, _cx: &Cx<'_>) -> ChartSample {
+    fn eval(&self, point: Point3, cx: &Cx<'_>) -> ChartSample {
         let evaluation = self.evaluations.fetch_add(1, Ordering::SeqCst) + 1;
         if self.cancel_at == Some(evaluation)
             && let Some(gate) = &self.gate
         {
             gate.request();
         }
-        let delta = point.delta_from(self.center);
-        let norm = delta.norm();
-        let distance = norm - self.radius;
-        ChartSample {
-            signed_distance: distance,
-            gradient: (norm > 1e-12).then(|| delta.scale(1.0 / norm)),
-            lipschitz: Some(1.0),
-            error: NumericalCertificate::exact(distance),
+        SphereChart {
+            center: self.center,
+            radius: self.radius,
         }
+        .eval(point, cx)
     }
 
     fn support(&self) -> Aabb {
@@ -325,7 +322,7 @@ fn fnv(bytes: &[u8]) -> u64 {
 /// depth 4, MIS + iid Philox, seed 7 — the first shaded COLOR image.
 /// FNV-1a over the EXR bytes. That original surface was verified debug +
 /// release on aarch64 (M4 Pro) and x86-64 (ts2 5995WX). Bead 8ll9 now records
-/// an explicit fs-render:chart-backend-bits=1 dependency; current-tree replay
+/// an explicit fs-render:chart-backend-bits=2 dependency; current-tree replay
 /// in all four quadrants remains mandatory before closeout. Re-freeze only per
 /// docs/GOLDEN_POLICY.md.
 const CORNELL_GOLDEN: u64 = 0x6ed8_706b_08d1_642e;

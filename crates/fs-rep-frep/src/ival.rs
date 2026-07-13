@@ -4,12 +4,12 @@
 //! spheres/half-spaces, conservative interval arithmetic elsewhere;
 //! transforms map the box (a rotated box is covered by its corner AABB).
 //! Booleans use monotonicity: `min`/`smin` are nondecreasing in both
-//! arguments, so endpoint evaluation is an inclusion. A minimal local
-//! interval kit is used on purpose; unification with fs-ivl's types (and
-//! its tighter forms) is a contract no-claim.
+//! arguments, so endpoint evaluation is an inclusion. The minimal local
+//! interval kit rounds every arithmetic endpoint outward; unification with
+//! fs-ivl's richer types remains a contract no-claim.
 
-use crate::{BoolStyle, Frep, Node, NodeId, bool_signs, corners, rotate_vec, smin};
-use fs_geom::{Aabb, Point3, Vec3};
+use crate::{BoolStyle, Frep, Node, NodeId, bool_signs};
+use fs_geom::{Aabb, Point3};
 
 /// Closed interval `[lo, hi]`.
 #[derive(Debug, Clone, Copy)]
@@ -19,12 +19,68 @@ pub(crate) struct Iv {
 }
 
 impl Iv {
+    const WHOLE: Iv = Iv {
+        lo: f64::NEG_INFINITY,
+        hi: f64::INFINITY,
+    };
+
     fn new(lo: f64, hi: f64) -> Iv {
         Iv { lo, hi }
     }
 
+    fn point(value: f64) -> Iv {
+        Iv::new(value, value)
+    }
+
+    fn down(value: f64) -> f64 {
+        if value.is_finite() {
+            value.next_down()
+        } else {
+            value
+        }
+    }
+
+    fn up(value: f64) -> f64 {
+        if value.is_finite() {
+            value.next_up()
+        } else {
+            value
+        }
+    }
+
+    fn outward(lo: f64, hi: f64) -> Iv {
+        if lo.is_nan() || hi.is_nan() {
+            Iv::WHOLE
+        } else {
+            Iv::new(Iv::down(lo), Iv::up(hi))
+        }
+    }
+
+    fn add(self, other: Iv) -> Iv {
+        Iv::outward(self.lo + other.lo, self.hi + other.hi)
+    }
+
+    fn sub(self, other: Iv) -> Iv {
+        Iv::outward(self.lo - other.hi, self.hi - other.lo)
+    }
+
+    fn mul(self, other: Iv) -> Iv {
+        let products = [
+            self.lo * other.lo,
+            self.lo * other.hi,
+            self.hi * other.lo,
+            self.hi * other.hi,
+        ];
+        if products.iter().any(|value| value.is_nan()) {
+            return Iv::WHOLE;
+        }
+        let lo = products.iter().copied().fold(f64::INFINITY, f64::min);
+        let hi = products.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        Iv::outward(lo, hi)
+    }
+
     fn add_c(self, c: f64) -> Iv {
-        Iv::new(self.lo + c, self.hi + c)
+        self.add(Iv::point(c))
     }
 
     fn neg(self) -> Iv {
@@ -32,7 +88,11 @@ impl Iv {
     }
 
     fn scale_pos(self, s: f64) -> Iv {
-        Iv::new(self.lo * s, self.hi * s)
+        Iv::outward(self.lo * s, self.hi * s)
+    }
+
+    fn div_pos(self, divisor: f64) -> Iv {
+        Iv::outward(self.lo / divisor, self.hi / divisor)
     }
 
     fn abs(self) -> Iv {
@@ -47,11 +107,21 @@ impl Iv {
 
     fn sq(self) -> Iv {
         let a = self.abs();
-        Iv::new(a.lo * a.lo, a.hi * a.hi)
+        let lo = if a.lo == 0.0 {
+            0.0
+        } else {
+            Iv::down(a.lo * a.lo).max(0.0)
+        };
+        Iv::new(lo, Iv::up(a.hi * a.hi))
     }
 
     fn sqrt(self) -> Iv {
-        Iv::new(self.lo.max(0.0).sqrt(), self.hi.max(0.0).sqrt())
+        let lo = if self.lo <= 0.0 {
+            0.0
+        } else {
+            Iv::down(self.lo.sqrt()).max(0.0)
+        };
+        Iv::new(lo, Iv::up(self.hi.max(0.0).sqrt()))
     }
 
     fn max_c(self, c: f64) -> Iv {
@@ -73,42 +143,37 @@ impl Iv {
     /// `smin` is nondecreasing in both arguments (its partials are the
     /// convex weights), so endpoint evaluation is an inclusion.
     fn smin_iv(self, o: Iv, r: f64) -> Iv {
-        Iv::new(smin(self.lo, o.lo, r), smin(self.hi, o.hi, r))
+        fn point_smin(a: f64, b: f64, r: f64) -> Iv {
+            let a = Iv::point(a);
+            let b = Iv::point(b);
+            let h = Iv::point(r).sub(a.sub(b).abs()).max_c(0.0).div_pos(r);
+            let correction = h.sq().scale_pos(r).scale_pos(0.25);
+            a.min_iv(b).sub(correction)
+        }
+        let lower = point_smin(self.lo, o.lo, r);
+        let upper = point_smin(self.hi, o.hi, r);
+        Iv::new(lower.lo, upper.hi)
     }
 
     /// `hypot`-style √(a² + b²) inclusion.
     fn hypot_iv(self, o: Iv) -> Iv {
-        let s = Iv::new(self.sq().lo + o.sq().lo, self.sq().hi + o.sq().hi);
-        s.sqrt()
+        self.sq().add(o.sq()).sqrt()
     }
 }
 
 /// Component intervals of `p − c` for `p` in the box.
 fn delta_iv(b: &Aabb, c: Point3) -> [Iv; 3] {
     [
-        Iv::new(b.min.x - c.x, b.max.x - c.x),
-        Iv::new(b.min.y - c.y, b.max.y - c.y),
-        Iv::new(b.min.z - c.z, b.max.z - c.z),
+        Iv::new(b.min.x, b.max.x).sub(Iv::point(c.x)),
+        Iv::new(b.min.y, b.max.y).sub(Iv::point(c.y)),
+        Iv::new(b.min.z, b.max.z).sub(Iv::point(c.z)),
     ]
 }
 
-/// Exact `|p − c|` range over a box (nearest/farthest point distances).
+/// Outward-rounded `|p - c|` range over a box.
 fn dist_iv(b: &Aabb, c: Point3) -> Iv {
-    let mut near2 = 0.0;
-    let mut far2 = 0.0;
-    for (lo, hi, cc) in [
-        (b.min.x, b.max.x, c.x),
-        (b.min.y, b.max.y, c.y),
-        (b.min.z, b.max.z, c.z),
-    ] {
-        let below = (lo - cc).max(0.0);
-        let above = (cc - hi).max(0.0);
-        let near = below.max(above);
-        near2 += near * near;
-        let far = (cc - lo).abs().max((hi - cc).abs());
-        far2 += far * far;
-    }
-    Iv::new(near2.sqrt(), far2.sqrt())
+    let [x, y, z] = delta_iv(b, c);
+    x.sq().add(y.sq()).add(z.sq()).sqrt()
 }
 
 impl Frep {
@@ -123,17 +188,21 @@ impl Frep {
         match self.nodes()[id.0 as usize] {
             Node::Sphere { center, radius } => dist_iv(b, center).add_c(-radius),
             Node::HalfSpace { normal, offset } => {
-                let mut lo = -offset;
-                let mut hi = -offset;
+                let mut value = Iv::point(-offset);
                 for (n, bmin, bmax) in [
                     (normal.x, b.min.x, b.max.x),
                     (normal.y, b.min.y, b.max.y),
                     (normal.z, b.min.z, b.max.z),
                 ] {
-                    lo += (n * bmin).min(n * bmax);
-                    hi += (n * bmin).max(n * bmax);
+                    let coordinate = Iv::new(bmin, bmax);
+                    let product = if n >= 0.0 {
+                        coordinate.scale_pos(n)
+                    } else {
+                        coordinate.neg().scale_pos(-n)
+                    };
+                    value = value.add(product);
                 }
-                Iv::new(lo, hi)
+                value
             }
             Node::BoxPrim { center, half } => {
                 let d = delta_iv(b, center);
@@ -143,13 +212,9 @@ impl Frep {
                     d[2].abs().add_c(-half.z),
                 ];
                 let out = [q[0].max_c(0.0), q[1].max_c(0.0), q[2].max_c(0.0)];
-                let norm = Iv::new(
-                    out[0].sq().lo + out[1].sq().lo + out[2].sq().lo,
-                    out[0].sq().hi + out[1].sq().hi + out[2].sq().hi,
-                )
-                .sqrt();
+                let norm = out[0].sq().add(out[1].sq()).add(out[2].sq()).sqrt();
                 let inner = q[0].max_iv(q[1]).max_iv(q[2]).min_c(0.0);
-                Iv::new(norm.lo + inner.lo, norm.hi + inner.hi)
+                norm.add(inner)
             }
             Node::Torus {
                 center,
@@ -165,32 +230,53 @@ impl Frep {
                 d[0].hypot_iv(d[1]).add_c(-radius)
             }
             Node::Translate { child, offset } => {
-                let shifted = Aabb::new(
-                    b.min.offset(Vec3::new(-offset.x, -offset.y, -offset.z)),
-                    b.max.offset(Vec3::new(-offset.x, -offset.y, -offset.z)),
-                );
+                let x = Iv::new(b.min.x, b.max.x).add_c(-offset.x);
+                let y = Iv::new(b.min.y, b.max.y).add_c(-offset.y);
+                let z = Iv::new(b.min.z, b.max.z).add_c(-offset.z);
+                let shifted =
+                    Aabb::new(Point3::new(x.lo, y.lo, z.lo), Point3::new(x.hi, y.hi, z.hi));
                 self.iv_at(child, &shifted)
             }
             Node::Rotate { child, axis, angle } => {
-                // Query points map through R⁻¹; cover the rotated box by
-                // its corner AABB (a superset — containment is preserved).
-                let mut out: Option<Aabb> = None;
-                for corner in corners(b) {
-                    let v = rotate_vec(corner.delta_from(Point3::new(0.0, 0.0, 0.0)), axis, -angle);
-                    let p = Point3::new(v.x, v.y, v.z);
-                    let cell = Aabb::new(p, p);
-                    out = Some(match out {
-                        Some(acc) => acc.union(&cell),
-                        None => cell,
-                    });
-                }
-                self.iv_at(child, &out.expect("a box has corners"))
+                // The platform trig result is finite and lies in [-1, 1], but
+                // this local evaluator does not assume a libm ULP budget.
+                // Enclose Rodrigues for every such sine/cosine value. This is
+                // deliberately wide, yet it is rigorous and therefore cannot
+                // turn a rotated exact chain into a false singleton.
+                let _ = angle;
+                let v = [
+                    Iv::new(b.min.x, b.max.x),
+                    Iv::new(b.min.y, b.max.y),
+                    Iv::new(b.min.z, b.max.z),
+                ];
+                let a = [Iv::point(axis.x), Iv::point(axis.y), Iv::point(axis.z)];
+                let sine = Iv::new(-1.0, 1.0);
+                let cosine = Iv::new(-1.0, 1.0);
+                let one_minus_cosine = Iv::point(1.0).sub(cosine);
+                let cross = [
+                    a[1].mul(v[2]).sub(a[2].mul(v[1])),
+                    a[2].mul(v[0]).sub(a[0].mul(v[2])),
+                    a[0].mul(v[1]).sub(a[1].mul(v[0])),
+                ];
+                let dot = a[0].mul(v[0]).add(a[1].mul(v[1])).add(a[2].mul(v[2]));
+                let rotated: [Iv; 3] = core::array::from_fn(|component| {
+                    v[component]
+                        .mul(cosine)
+                        .add(cross[component].mul(sine))
+                        .add(a[component].mul(dot).mul(one_minus_cosine))
+                });
+                let mapped = Aabb::new(
+                    Point3::new(rotated[0].lo, rotated[1].lo, rotated[2].lo),
+                    Point3::new(rotated[0].hi, rotated[1].hi, rotated[2].hi),
+                );
+                self.iv_at(child, &mapped)
             }
             Node::Scale { child, factor } => {
-                let shrunk = Aabb::new(
-                    Point3::new(b.min.x / factor, b.min.y / factor, b.min.z / factor),
-                    Point3::new(b.max.x / factor, b.max.y / factor, b.max.z / factor),
-                );
+                let x = Iv::new(b.min.x, b.max.x).div_pos(factor);
+                let y = Iv::new(b.min.y, b.max.y).div_pos(factor);
+                let z = Iv::new(b.min.z, b.max.z).div_pos(factor);
+                let shrunk =
+                    Aabb::new(Point3::new(x.lo, y.lo, z.lo), Point3::new(x.hi, y.hi, z.hi));
                 self.iv_at(child, &shrunk).scale_pos(factor)
             }
             Node::Offset { child, distance } => self.iv_at(child, b).add_c(-distance),
