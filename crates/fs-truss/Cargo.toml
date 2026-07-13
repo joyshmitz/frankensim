@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Ground-structure truss layout optimization: fnx candidate graphs, checked PDHG diagnostics, Euler/code sizing with catalog snapping, and fs-solid rod buckling spot checks."
+description = "Ground-structure truss optimization with checked PDHG diagnostics, outward optimum certificates, catalog sizing, and rod buckling spot checks."
 
 [package.metadata.frankensim]
 layer = "L4"
@@ -13,8 +13,10 @@ layer = "L4"
 [dependencies]
 fnx-classes = { path = "../../../franken_networkx/crates/fnx-classes" }
 fnx-runtime = { path = "../../../franken_networkx/crates/fnx-runtime" }
+fs-blake3 = { path = "../fs-blake3" }
 fs-constraint = { path = "../fs-constraint" }
 fs-exec = { path = "../fs-exec" }
+fs-ivl = { path = "../fs-ivl" }
 fs-solid = { path = "../fs-solid" }
 fs-sparse = { path = "../fs-sparse" }
 

@@ -662,7 +662,7 @@ fn spmv_checked(
 pub const MAX_PDHG_ITERS: usize = 1_000_000;
 
 /// PDHG controls.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PdhgSettings {
     /// Iteration cap.
     pub max_iters: usize,
@@ -750,18 +750,125 @@ pub struct PdhgReport {
     pub eq_residual: f64,
     /// Gap trace (iteration, gap) at check intervals.
     pub trace: Vec<(usize, f64)>,
+    /// Outward lower endpoint from an independently verified dual witness.
+    verified_dual_lower_bound: Option<f64>,
+    /// Outward upper endpoint from an exactly feasible repaired primal.
+    verified_primal_upper_bound: Option<f64>,
+    /// Uniform scale used by the retained verified dual witness.
+    verified_dual_scale: Option<f64>,
+    /// Content identity of the complete retained certificate.
+    certificate_identity: Option<[u8; 32]>,
+    /// Private binding of this report to one LP/settings/output state.
+    solver_state_identity: Option<[u8; 32]>,
+    /// Private snapshot preventing public diagnostic-field substitution.
+    solver_diagnostic_bits: Option<[u64; 3]>,
+    /// Private snapshot of the final trace tail.
+    solver_trace_tail: Option<(usize, u64)>,
 }
 
 impl PdhgReport {
+    /// Verified dual lower bound, if a complete certificate was retained.
+    #[must_use]
+    pub const fn verified_dual_lower_bound(&self) -> Option<f64> {
+        self.verified_dual_lower_bound
+    }
+
+    /// Verified primal upper bound, if a complete certificate was retained.
+    #[must_use]
+    pub const fn verified_primal_upper_bound(&self) -> Option<f64> {
+        self.verified_primal_upper_bound
+    }
+
+    /// Uniform scale used by the retained verified dual witness.
+    #[must_use]
+    pub const fn verified_dual_scale(&self) -> Option<f64> {
+        self.verified_dual_scale
+    }
+
+    /// Content identity of the retained certificate.
+    #[must_use]
+    pub const fn certificate_identity(&self) -> Option<[u8; 32]> {
+        self.certificate_identity
+    }
+
+    pub(crate) fn bind_solver_state(&mut self, identity: [u8; 32]) {
+        self.solver_state_identity = Some(identity);
+        self.solver_diagnostic_bits = Some([
+            self.volume.to_bits(),
+            self.gap.to_bits(),
+            self.eq_residual.to_bits(),
+        ]);
+        self.solver_trace_tail = self
+            .trace
+            .last()
+            .map(|&(iteration, gap)| (iteration, gap.to_bits()));
+    }
+
+    pub(crate) fn matches_solver_state(&self, identity: [u8; 32]) -> bool {
+        self.solver_state_identity == Some(identity)
+            && self.solver_diagnostic_bits
+                == Some([
+                    self.volume.to_bits(),
+                    self.gap.to_bits(),
+                    self.eq_residual.to_bits(),
+                ])
+            && self.solver_trace_tail
+                == self
+                    .trace
+                    .last()
+                    .map(|&(iteration, gap)| (iteration, gap.to_bits()))
+            && self
+                .solver_trace_tail
+                .is_some_and(|(iteration, _)| iteration == self.iters)
+    }
+
+    pub(crate) fn clear_certified_bounds(&mut self) {
+        self.verified_dual_lower_bound = None;
+        self.verified_primal_upper_bound = None;
+        self.verified_dual_scale = None;
+        self.certificate_identity = None;
+    }
+
+    pub(crate) fn retain_certified_bounds(
+        &mut self,
+        lower: f64,
+        upper: f64,
+        dual_scale: f64,
+        identity: [u8; 32],
+    ) {
+        self.verified_dual_lower_bound = Some(lower);
+        self.verified_primal_upper_bound = Some(upper);
+        self.verified_dual_scale = Some(dual_scale);
+        self.certificate_identity = Some(identity);
+    }
+
     /// Ledger row.
     #[must_use]
     pub fn to_json(&self) -> String {
         let mut s = String::new();
         let _ = write!(
             s,
-            "{{\"iters\":{},\"volume\":{:.8e},\"gap\":{:.3e},\"eq_residual\":{:.3e}}}",
+            "{{\"iters\":{},\"volume\":{:.8e},\"gap\":{:.3e},\"eq_residual\":{:.3e}",
             self.iters, self.volume, self.gap, self.eq_residual
         );
+        if let (Some(lower), Some(upper), Some(scale)) = (
+            self.verified_dual_lower_bound,
+            self.verified_primal_upper_bound,
+            self.verified_dual_scale,
+        ) {
+            let _ = write!(
+                s,
+                ",\"verified_dual_lower_bound\":{lower},\"verified_primal_upper_bound\":{upper},\"verified_dual_scale\":{scale}"
+            );
+            if let Some(identity) = self.certificate_identity {
+                s.push_str(",\"certificate_identity\":\"");
+                for byte in identity {
+                    let _ = write!(s, "{byte:02x}");
+                }
+                s.push('"');
+            }
+        }
+        s.push('}');
         s
     }
 }
@@ -1351,6 +1458,9 @@ impl LayoutLp {
                 }
             }
         }
+        report.bind_solver_state(crate::certificate::solver_state_identity(
+            self, &x, &y, settings,
+        ));
         Ok((x, y, report))
     }
 

@@ -19,9 +19,12 @@
 //!   member is stable at 1.3× design with catalog area, and the same
 //!   member at a fraction of the area FAILS (the check has teeth).
 
+use fs_sparse::Csr;
 use fs_truss::{
     ESTIMATED_GRAPH_BYTES_PER_MEMBER, ESTIMATED_GRAPH_BYTES_PER_NODE, GroundLimits, GroundRules,
-    GroundStructure, LayoutCase, LayoutLimits, LayoutLp, MAX_PDHG_ITERS, PdhgError, PdhgSettings,
+    GroundStructure, LayoutCase, LayoutCertificateError, LayoutCertificateLimits,
+    LayoutCertificateProblem, LayoutCertificateRefusal, LayoutCertificateStatus, LayoutLimits,
+    LayoutLp, LayoutOptimalityCertificate, MAX_PDHG_ITERS, PdhgError, PdhgReport, PdhgSettings,
     TrussConstructionError, rod_buckling_check, size_and_snap,
 };
 use std::{fmt::Write as _, mem::size_of};
@@ -89,6 +92,133 @@ fn layout_lp(
 
 fn construction_error<T>(result: Result<T, TrussConstructionError>) -> TrussConstructionError {
     result.err().expect("construction unexpectedly succeeded")
+}
+
+fn certified(status: LayoutCertificateStatus) -> LayoutOptimalityCertificate {
+    match status {
+        LayoutCertificateStatus::Certified(certificate) => certificate,
+        LayoutCertificateStatus::Unavailable(reason) => {
+            panic!("certificate unexpectedly unavailable: {reason:?}")
+        }
+    }
+}
+
+fn json_number_field(json: &str, field: &str) -> f64 {
+    let marker = format!("\"{field}\":");
+    let tail = json
+        .split_once(&marker)
+        .unwrap_or_else(|| panic!("missing JSON field {field}"))
+        .1;
+    let end = tail.find([',', '}']).unwrap_or(tail.len());
+    tail[..end]
+        .parse::<f64>()
+        .unwrap_or_else(|error| panic!("invalid JSON number for {field}: {error}"))
+}
+
+/// Development-only basic-feasible-solution enumerator.  It shares no repair,
+/// dual, diagnostic, or certificate code with production: tiny split-variable
+/// bases are solved and checked directly against public `A`, `b`, and `c`.
+#[allow(clippy::needless_range_loop)] // Index arithmetic is the oracle's explicit matrix model.
+#[allow(clippy::too_many_lines)] // Independent exhaustive oracle, separate from the certifier.
+fn tiny_lp_oracle(lp: &LayoutLp) -> f64 {
+    let rows = lp.a().nrows();
+    let variables = lp.a().ncols();
+    assert!(rows <= 8 && variables <= 16, "tiny oracle cap exceeded");
+    let mut best = f64::INFINITY;
+    for variable_mask in 1usize..(1usize << variables) {
+        let basis_size = variable_mask.count_ones() as usize;
+        if basis_size > rows || basis_size > 4 {
+            continue;
+        }
+        let basis_variables = (0..variables)
+            .filter(|variable| variable_mask & (1usize << variable) != 0)
+            .collect::<Vec<_>>();
+        for row_mask in 1usize..(1usize << rows) {
+            if row_mask.count_ones() as usize != basis_size {
+                continue;
+            }
+            let basis_rows = (0..rows)
+                .filter(|row| row_mask & (1usize << row) != 0)
+                .collect::<Vec<_>>();
+            let mut matrix = vec![0.0; basis_size * basis_size];
+            let mut rhs = vec![0.0; basis_size];
+            for (local_row, &row) in basis_rows.iter().enumerate() {
+                rhs[local_row] = lp.b()[row];
+                let (columns, values) = lp.a().row(row);
+                for (local_column, &variable) in basis_variables.iter().enumerate() {
+                    if let Ok(index) = columns.binary_search(&variable) {
+                        matrix[local_row * basis_size + local_column] = values[index];
+                    }
+                }
+            }
+            let mut nonsingular = true;
+            for pivot in 0..basis_size {
+                let mut best_row = pivot;
+                for row in (pivot + 1)..basis_size {
+                    if matrix[row * basis_size + pivot].abs()
+                        > matrix[best_row * basis_size + pivot].abs()
+                    {
+                        best_row = row;
+                    }
+                }
+                if matrix[best_row * basis_size + pivot].abs() <= 1e-12 {
+                    nonsingular = false;
+                    break;
+                }
+                if best_row != pivot {
+                    for column in 0..basis_size {
+                        matrix.swap(pivot * basis_size + column, best_row * basis_size + column);
+                    }
+                    rhs.swap(pivot, best_row);
+                }
+                let diagonal = matrix[pivot * basis_size + pivot];
+                for column in pivot..basis_size {
+                    matrix[pivot * basis_size + column] /= diagonal;
+                }
+                rhs[pivot] /= diagonal;
+                for row in 0..basis_size {
+                    if row == pivot {
+                        continue;
+                    }
+                    let factor = matrix[row * basis_size + pivot];
+                    for column in pivot..basis_size {
+                        matrix[row * basis_size + column] -=
+                            factor * matrix[pivot * basis_size + column];
+                    }
+                    rhs[row] -= factor * rhs[pivot];
+                }
+            }
+            if !nonsingular
+                || rhs
+                    .iter()
+                    .any(|value| *value < -1e-10 || !value.is_finite())
+            {
+                continue;
+            }
+            let mut candidate = vec![0.0; variables];
+            for (&variable, &value) in basis_variables.iter().zip(&rhs) {
+                candidate[variable] = value.max(0.0);
+            }
+            let mut residual = vec![0.0; rows];
+            lp.a().spmv(&candidate, &mut residual);
+            if residual
+                .iter()
+                .zip(lp.b())
+                .any(|(actual, expected)| (actual - expected).abs() > 1e-9)
+            {
+                continue;
+            }
+            let objective = lp
+                .c()
+                .iter()
+                .zip(&candidate)
+                .map(|(cost, value)| cost * value)
+                .sum::<f64>();
+            best = best.min(objective);
+        }
+    }
+    assert!(best.is_finite(), "tiny LP oracle found no feasible basis");
+    best
 }
 
 type MalformedParts = (&'static str, Vec<[f64; 2]>, Vec<(usize, usize)>, Vec<f64>);
@@ -510,6 +640,546 @@ fn truss_002b_solver_admission_refuses_malformed_controls_and_warm_starts() {
         assert!(matches!(
             lp.diagnostics(&vec![0.0; lp.c().len()], &vec![0.0; lp.b().len()], 0.0),
             Err(PdhgError::InvalidSetting { field: "bnorm", .. })
+        ));
+    });
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // Two complete hand-oracle certificate/replay cases.
+fn truss_002h_exact_bounds_bracket_hand_oracles_and_replay() {
+    with_active_cx(|cx| {
+        let settings = PdhgSettings::default();
+        let tie = hand_structure(cx, &[[0.0, 0.0], [1.0, 0.0]], &[(0, 1)]);
+        let lp_tie = layout_lp(
+            &tie,
+            cx,
+            |node, _| node == 0,
+            |node| {
+                if node == 1 { [1.0, 0.0] } else { [0.0, 0.0] }
+            },
+        );
+        let (x_tie, y_tie, mut report_tie) =
+            lp_tie.solve(None, None, settings).expect("valid tie solve");
+        let tie_certificate = certified(
+            lp_tie
+                .certify_optimum_for_report(
+                    &x_tie,
+                    &y_tie,
+                    settings,
+                    &mut report_tie,
+                    LayoutCertificateLimits::default(),
+                    cx,
+                )
+                .expect("well-formed tie certificate attempt"),
+        );
+        let tie_bounds = tie_certificate.bounds();
+        let tie_oracle = tiny_lp_oracle(&lp_tie);
+        assert!((tie_oracle - 1.0).abs() < 1e-12);
+        assert!((tie_bounds.lower()..=tie_bounds.upper()).contains(&tie_oracle));
+        assert!(tie_bounds.lower().is_finite() && tie_bounds.upper().is_finite());
+        assert!(
+            tie_bounds.lower() >= 0.45 * tie_oracle,
+            "tie dual lower bound {} is not decision-useful against oracle {tie_oracle}",
+            tie_bounds.lower()
+        );
+        assert!(tie_bounds.upper() < 1.0 + 1e-10);
+        assert!(tie_certificate.dual_scale() > 0.0);
+        assert!(
+            tie_certificate
+                .repaired_split_forces()
+                .iter()
+                .all(|force| force.lo() >= 0.0)
+        );
+        assert!(
+            tie_certificate
+                .equilibrium_residuals()
+                .iter()
+                .all(|residual| residual.contains_zero())
+        );
+        assert!(
+            tie_certificate
+                .dual_slacks()
+                .iter()
+                .all(|slack| slack.lo() >= 0.0)
+        );
+        assert_eq!(
+            report_tie.verified_dual_lower_bound(),
+            Some(tie_bounds.lower())
+        );
+        assert_eq!(
+            report_tie.verified_primal_upper_bound(),
+            Some(tie_bounds.upper())
+        );
+        let report_json = report_tie.to_json();
+        for (field, expected) in [
+            ("verified_dual_lower_bound", tie_bounds.lower()),
+            ("verified_primal_upper_bound", tie_bounds.upper()),
+            ("verified_dual_scale", tie_certificate.dual_scale()),
+        ] {
+            assert_eq!(
+                json_number_field(&report_json, field).to_bits(),
+                expected.to_bits(),
+                "verified JSON field {field} must round-trip exactly"
+            );
+        }
+        assert!(
+            tie_certificate
+                .verifies_for(&lp_tie, &x_tie, &y_tie, settings, cx)
+                .expect("tie certificate identity preflight")
+        );
+        assert!(
+            lp_tie
+                .verify_optimum_certificate(
+                    &tie_certificate,
+                    &x_tie,
+                    &y_tie,
+                    settings,
+                    LayoutCertificateLimits::default(),
+                    cx,
+                )
+                .expect("tie certificate replay")
+        );
+
+        let mut replay_report = report_tie.clone();
+        let replay = certified(
+            lp_tie
+                .certify_optimum_for_report(
+                    &x_tie,
+                    &y_tie,
+                    settings,
+                    &mut replay_report,
+                    LayoutCertificateLimits::default(),
+                    cx,
+                )
+                .expect("deterministic tie replay"),
+        );
+        assert_eq!(
+            replay.certificate_identity(),
+            tie_certificate.certificate_identity()
+        );
+        assert_eq!(
+            replay.bounds().lower().to_bits(),
+            tie_bounds.lower().to_bits()
+        );
+        assert_eq!(
+            replay.bounds().upper().to_bits(),
+            tie_bounds.upper().to_bits()
+        );
+
+        let two = hand_structure(cx, &[[0.0, 0.0], [2.0, 0.0], [1.0, 1.0]], &[(0, 2), (1, 2)]);
+        let lp_two = layout_lp(
+            &two,
+            cx,
+            |node, _| node <= 1,
+            |node| {
+                if node == 2 { [0.0, -1.0] } else { [0.0, 0.0] }
+            },
+        );
+        let (x_two, y_two, mut report_two) = lp_two
+            .solve(None, None, settings)
+            .expect("valid two-bar solve");
+        let two_certificate = certified(
+            lp_two
+                .certify_optimum_for_report(
+                    &x_two,
+                    &y_two,
+                    settings,
+                    &mut report_two,
+                    LayoutCertificateLimits::default(),
+                    cx,
+                )
+                .expect("well-formed two-bar certificate attempt"),
+        );
+        let two_bounds = two_certificate.bounds();
+        let two_oracle = tiny_lp_oracle(&lp_two);
+        assert!((two_oracle - 2.0).abs() < 1e-12);
+        assert!((two_bounds.lower()..=two_bounds.upper()).contains(&two_oracle));
+        assert!(
+            two_bounds.lower() >= 0.45 * two_oracle,
+            "two-bar dual lower bound {} is not decision-useful against oracle {two_oracle}",
+            two_bounds.lower()
+        );
+        assert!(
+            two_bounds.upper() <= two_oracle * (1.0 + 1e-10),
+            "two-bar primal upper bound {} is unexpectedly wide",
+            two_bounds.upper()
+        );
+        assert!(
+            lp_two
+                .verify_optimum_certificate(
+                    &two_certificate,
+                    &x_two,
+                    &y_two,
+                    settings,
+                    LayoutCertificateLimits::default(),
+                    cx,
+                )
+                .expect("two-bar certificate replay")
+        );
+    });
+}
+
+#[test]
+fn truss_002i_rank_deficiency_and_infeasible_iterates_fail_closed() {
+    with_active_cx(|cx| {
+        let settings = PdhgSettings::default();
+        let tie = hand_structure(cx, &[[0.0, 0.0], [1.0, 0.0]], &[(0, 1)]);
+        let lp_tie = layout_lp(
+            &tie,
+            cx,
+            |node, _| node == 0,
+            |node| {
+                if node == 1 { [1.0, 0.0] } else { [0.0, 0.0] }
+            },
+        );
+        let zero_x = vec![0.0; lp_tie.c().len()];
+        let zero_y = vec![0.0; lp_tie.b().len()];
+        let repaired = certified(
+            lp_tie
+                .certify_optimum(
+                    &zero_x,
+                    &zero_y,
+                    settings,
+                    LayoutCertificateLimits::default(),
+                    cx,
+                )
+                .expect("zero iterate is well formed"),
+        );
+        assert!(repaired.bounds().upper() >= 1.0);
+        assert!(repaired.repaired_member_forces()[0].abs().contains(1.0));
+        assert_ne!(
+            repaired.bounds().upper().to_bits(),
+            0.0f64.to_bits(),
+            "raw infeasible iterate objective must not become the upper bound"
+        );
+
+        let diagonal = hand_structure(cx, &[[0.0, 0.0], [1.0, 1.0]], &[(0, 1)]);
+        let lp_rank_deficient = layout_lp(
+            &diagonal,
+            cx,
+            |node, _| node == 0,
+            |node| {
+                if node == 1 { [1.0, 1.0] } else { [0.0, 0.0] }
+            },
+        );
+        let status = lp_rank_deficient
+            .certify_optimum(
+                &vec![0.0; lp_rank_deficient.c().len()],
+                &vec![0.0; lp_rank_deficient.b().len()],
+                settings,
+                LayoutCertificateLimits::default(),
+                cx,
+            )
+            .expect("rank-deficient attempt is well formed");
+        assert!(matches!(
+            status,
+            LayoutCertificateStatus::Unavailable(LayoutCertificateRefusal::RankDeficient { .. })
+        ));
+    });
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // One fail-closed matrix for identity, mutation, and cancellation.
+fn truss_002j_certificate_admission_identity_and_cancellation_are_fail_closed() {
+    with_active_cx(|cx| {
+        let settings = PdhgSettings::default();
+        let tie = hand_structure(cx, &[[0.0, 0.0], [1.0, 0.0]], &[(0, 1)]);
+        let lp = layout_lp(
+            &tie,
+            cx,
+            |node, _| node == 0,
+            |node| {
+                if node == 1 { [1.0, 0.0] } else { [0.0, 0.0] }
+            },
+        );
+        let (x, y, mut report) = lp.solve(None, None, settings).expect("valid tie solve");
+        let mut unrelated_report = PdhgReport::default();
+        assert!(matches!(
+            lp.certify_optimum_for_report(
+                &x,
+                &y,
+                settings,
+                &mut unrelated_report,
+                LayoutCertificateLimits::default(),
+                cx,
+            ),
+            Err(LayoutCertificateError::ReportMismatch { .. })
+        ));
+        assert!(matches!(
+            lp.certify_optimum_for_report(
+                &x[..x.len() - 1],
+                &y,
+                settings,
+                &mut report,
+                LayoutCertificateLimits::default(),
+                cx,
+            ),
+            Err(LayoutCertificateError::VectorLength { vector: "x", .. })
+        ));
+        assert_eq!(report.verified_primal_upper_bound(), None);
+
+        let certificate = certified(
+            lp.certify_optimum_for_report(
+                &x,
+                &y,
+                settings,
+                &mut report,
+                LayoutCertificateLimits::default(),
+                cx,
+            )
+            .expect("valid certificate"),
+        );
+        assert!(
+            report
+                .verified_dual_scale()
+                .is_some_and(|scale| scale > 0.0)
+        );
+        assert!(report.to_json().contains("\"certificate_identity\""));
+        let mut substituted_report = report.clone();
+        substituted_report.gap = f64::from_bits(substituted_report.gap.to_bits() + 1);
+        assert!(matches!(
+            lp.certify_optimum_for_report(
+                &x,
+                &y,
+                settings,
+                &mut substituted_report,
+                LayoutCertificateLimits::default(),
+                cx,
+            ),
+            Err(LayoutCertificateError::ReportMismatch { .. })
+        ));
+        assert_eq!(substituted_report.verified_dual_lower_bound(), None);
+        assert_eq!(substituted_report.verified_primal_upper_bound(), None);
+        assert_eq!(substituted_report.certificate_identity(), None);
+        let changed_settings = PdhgSettings {
+            check_every: settings.check_every + 1,
+            ..settings
+        };
+        assert!(
+            !certificate
+                .verifies_for(&lp, &x, &y, changed_settings, cx)
+                .expect("changed-settings identity preflight")
+        );
+        let mut changed_x = x.clone();
+        changed_x[0] = f64::from_bits(changed_x[0].to_bits() + 1);
+        assert!(
+            !certificate
+                .verifies_for(&lp, &changed_x, &y, settings, cx)
+                .expect("changed-primal identity preflight")
+        );
+
+        let mut invalid_y = y.clone();
+        invalid_y[0] = f64::NAN;
+        assert!(matches!(
+            lp.certify_optimum(
+                &x,
+                &invalid_y,
+                settings,
+                LayoutCertificateLimits::default(),
+                cx,
+            ),
+            Err(LayoutCertificateError::InvalidVector { vector: "y", .. })
+        ));
+
+        let gate = CancelGate::new();
+        gate.request();
+        with_cx(&gate, |cancelled_cx| {
+            assert!(matches!(
+                lp.certify_optimum_for_report(
+                    &x,
+                    &y,
+                    settings,
+                    &mut report,
+                    LayoutCertificateLimits::default(),
+                    cancelled_cx,
+                ),
+                Err(LayoutCertificateError::Cancelled {
+                    stage: "certificate admission"
+                })
+            ));
+        });
+        assert_eq!(report.verified_dual_lower_bound(), None);
+        assert_eq!(report.verified_primal_upper_bound(), None);
+        assert_eq!(report.certificate_identity(), None);
+    });
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // Exact admission caps plus numerical-extreme refusal fixtures.
+fn truss_002k_extremes_and_certificate_limits_fail_closed() {
+    with_active_cx(|cx| {
+        let settings = PdhgSettings::default();
+        let tie = hand_structure(cx, &[[0.0, 0.0], [1.0, 0.0]], &[(0, 1)]);
+        let lp = layout_lp(
+            &tie,
+            cx,
+            |node, _| node == 0,
+            |node| {
+                if node == 1 { [1.0, 0.0] } else { [0.0, 0.0] }
+            },
+        );
+        let zero_y = vec![0.0; lp.b().len()];
+        let mut overflow_x = vec![0.0; lp.c().len()];
+        overflow_x[0] = f64::MAX;
+        assert!(matches!(
+            lp.certify_optimum(
+                &overflow_x,
+                &zero_y,
+                settings,
+                LayoutCertificateLimits::default(),
+                cx,
+            )
+            .expect("overflow is a numerical refusal, not a malformed input"),
+            LayoutCertificateStatus::Unavailable(
+                LayoutCertificateRefusal::NonFiniteArithmetic { .. }
+                    | LayoutCertificateRefusal::InvalidObjectiveBounds { .. }
+            )
+        ));
+
+        let one_step_limits = LayoutCertificateLimits::try_new(1, 1, 1, 1)
+            .expect("positive limits beneath hard ceilings");
+        assert!(matches!(
+            lp.certify_optimum(
+                &vec![0.0; lp.c().len()],
+                &zero_y,
+                settings,
+                one_step_limits,
+                cx,
+            )
+            .expect("work excess is a typed refusal"),
+            LayoutCertificateStatus::Unavailable(LayoutCertificateRefusal::ResourceLimit { .. })
+        ));
+
+        // This one-member fixture retains exactly 32 conservatively counted
+        // dense entries and admits exactly 1,238 conservatively counted
+        // arithmetic operations. Exact caps pass; one-less caps fail closed.
+        let exact_limits = LayoutCertificateLimits::try_new(1, 1, 32, 1_238)
+            .expect("exact certificate caps are in range");
+        assert!(matches!(
+            lp.certify_optimum(
+                &vec![0.0; lp.c().len()],
+                &zero_y,
+                settings,
+                exact_limits,
+                cx,
+            )
+            .expect("work exactly at every certificate cap is admitted"),
+            LayoutCertificateStatus::Certified(_)
+        ));
+        for limits in [
+            LayoutCertificateLimits::try_new(1, 1, 31, 1_238).expect("one-less dense cap"),
+            LayoutCertificateLimits::try_new(1, 1, 32, 1_237).expect("one-less operation cap"),
+        ] {
+            assert!(matches!(
+                lp.certify_optimum(&vec![0.0; lp.c().len()], &zero_y, settings, limits, cx,)
+                    .expect("one-less cap is a typed refusal"),
+                LayoutCertificateStatus::Unavailable(
+                    LayoutCertificateRefusal::ResourceLimit { .. }
+                )
+            ));
+        }
+
+        let tiny_lp = layout_lp(
+            &tie,
+            cx,
+            |node, _| node == 0,
+            |node| {
+                if node == 1 { [2e-30, 0.0] } else { [0.0, 0.0] }
+            },
+        );
+        let tiny_certificate = certified(
+            tiny_lp
+                .certify_optimum(
+                    &vec![0.0; tiny_lp.c().len()],
+                    &vec![0.0; tiny_lp.b().len()],
+                    settings,
+                    LayoutCertificateLimits::default(),
+                    cx,
+                )
+                .expect("near-zero admitted load certificate"),
+        );
+        assert!(
+            (tiny_certificate.bounds().lower()..=tiny_certificate.bounds().upper())
+                .contains(&2e-30)
+        );
+        assert!(tiny_certificate.bounds().upper().is_finite());
+        assert!(tiny_certificate.bounds().upper() > 0.0);
+
+        // A full-rank but one-ulp-separated basis is mathematically invertible.
+        // Its floating inverse cannot prove the required Neumann contraction,
+        // so the certifier must refuse instead of publishing narrow bounds.
+        let epsilon = f64::EPSILON;
+        let ill_conditioned_a = Csr::from_parts(
+            2,
+            4,
+            vec![0, 4, 8],
+            vec![0, 1, 2, 3, 0, 1, 2, 3],
+            vec![
+                1.0,
+                1.0,
+                -1.0,
+                -1.0,
+                1.0,
+                1.0 + epsilon,
+                -1.0,
+                -(1.0 + epsilon),
+            ],
+        );
+        let ill_conditioned_costs = [1.0; 4];
+        let ill_conditioned_loads = [1.0, 1.0];
+        let ill_conditioned = LayoutCertificateProblem::try_new(
+            &ill_conditioned_a,
+            &ill_conditioned_costs,
+            &ill_conditioned_loads,
+        )
+        .expect("well-formed paired ill-conditioned LP");
+        assert!(matches!(
+            ill_conditioned
+                .certify_optimum(
+                    &[0.0; 4],
+                    &[0.0; 2],
+                    settings,
+                    LayoutCertificateLimits::default(),
+                    cx,
+                )
+                .expect("ill-conditioning is a numerical refusal"),
+            LayoutCertificateStatus::Unavailable(
+                LayoutCertificateRefusal::IllConditioned {
+                    contraction_bound
+                }
+            ) if contraction_bound >= 1.0
+        ));
+
+        let unequal_pair = Csr::from_parts(1, 2, vec![0, 2], vec![0, 1], vec![1.0, -0.5]);
+        let unequal_problem = LayoutCertificateProblem::try_new(&unequal_pair, &[1.0; 2], &[1.0])
+            .expect("dimensionally valid unequal-pair fixture");
+        assert!(matches!(
+            unequal_problem.certify_optimum(
+                &[0.0; 2],
+                &[0.0],
+                settings,
+                LayoutCertificateLimits::default(),
+                cx,
+            ),
+            Err(LayoutCertificateError::InvalidProblem { .. })
+        ));
+
+        let zero_row = Csr::from_parts(1, 2, vec![0, 2], vec![0, 1], vec![0.0, -0.0]);
+        let inconsistent_problem = LayoutCertificateProblem::try_new(&zero_row, &[1.0; 2], &[1.0])
+            .expect("dimensionally valid inconsistent-row fixture");
+        assert!(matches!(
+            inconsistent_problem
+                .certify_optimum(
+                    &[0.0; 2],
+                    &[0.0],
+                    settings,
+                    LayoutCertificateLimits::default(),
+                    cx,
+                )
+                .expect("zero-row inconsistency is a numerical refusal"),
+            LayoutCertificateStatus::Unavailable(LayoutCertificateRefusal::InconsistentZeroRow {
+                row: 0
+            })
         ));
     });
 }

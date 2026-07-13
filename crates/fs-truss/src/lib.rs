@@ -13,10 +13,15 @@
 //!   split — solved by an in-house PDHG (Chambolle–Pock) first-order
 //!   primal-dual iteration: sparse-matvec-dominated, deterministic,
 //!   warm-startable, with primal/dual objective-separation and KKT residual
-//!   tracking (diagnostics, not a finite optimum certificate; the vetted
-//!   Michell closed-form catalogue
+//!   tracking (diagnostics, never promoted by themselves; the vetted Michell
+//!   closed-form catalogue
 //!   comparison is a ledgered row pending the fs-fab oracle spec's
 //!   constants — stated, never silently skipped).
+//! - [`certificate`]: a separate, bounded cold proof path. It repairs signed
+//!   forces through a deterministic member basis, proves an exact equilibrium
+//!   point exists with a Neumann interval bound, outward-checks a scaled dual,
+//!   and content-binds finite optimum bounds. Rank/conditioning/overflow or
+//!   cancellation failures return no finite certificate.
 //! - [`sizing`]: continuous areas from yield, EULER buckling floors
 //!   for compression members, joint parsimony with MANDATORY
 //!   equilibrium re-verification after pruning, catalog UP-snapping
@@ -26,11 +31,19 @@
 //!   fs-solid Cosserat rod with a seeded imperfection to 1.3× design
 //!   load — the tfz.14/tfz.15 global-buckling spot check.
 
+pub mod certificate;
 pub mod ground;
 pub mod lp;
 pub mod rodcheck;
 pub mod sizing;
 
+pub use certificate::{
+    ArithmeticEnclosureMethod, CertifiedObjectiveBounds, HARD_MAX_CERTIFICATE_ACTIVE_ROWS,
+    HARD_MAX_CERTIFICATE_DENSE_ENTRIES, HARD_MAX_CERTIFICATE_MEMBERS,
+    HARD_MAX_CERTIFICATE_OPERATIONS, LayoutCertificateError, LayoutCertificateIdentity,
+    LayoutCertificateLimits, LayoutCertificateProblem, LayoutCertificateRefusal,
+    LayoutCertificateStatus, LayoutOptimalityCertificate, PrimalCorrectionMethod,
+};
 pub use ground::{
     ESTIMATED_GRAPH_BYTES_PER_MEMBER, ESTIMATED_GRAPH_BYTES_PER_NODE, GroundLimits, GroundRules,
     GroundStructure, TrussConstructionError,

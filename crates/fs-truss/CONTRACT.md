@@ -43,6 +43,27 @@ steel-and-concrete flagship's engine (§15.2).
   the battery pinned the OPPOSITE textbook
   convention (`+bᵀy`, `Aᵀy ≤ c`) reporting gap = 2 on exactly-solved
   instances.
+- `LayoutLp::certify_optimum` is the separate cold certificate path. It turns
+  split iterates into signed member forces, selects a deterministic square
+  member basis after dropping only identically-zero/zero-load rows, and proves
+  basis invertibility plus an exact equilibrium correction by the outward
+  Neumann condition `rho = ||I - H M||_inf < 1`. The retained member-force box
+  contains one correlated exactly equilibrated force; its positive/negative
+  split is therefore nonnegative by construction. Independent residual boxes
+  are sanity checks only: zero containment by itself is not the existence
+  proof. The primal upper endpoint is the outward sum of cost times the
+  supremum absolute repaired force.
+- The dual witness uses this crate's `c + A^T y >= 0`, `-b^T y` convention.
+  A representable uniform shrink is re-evaluated directly from authoritative
+  `A` with `fs-ivl`; every outward slack lower endpoint must be nonnegative.
+  The finite lower endpoint is combined with the primal endpoint only when
+  they are ordered. `LayoutOptimalityCertificate` fields are private and bind
+  `A`, `b`, `c`, both input iterates, solver settings, proof budgets, correction
+  and arithmetic versions, all witness endpoints, and the final receipt with
+  domain-separated `fs-blake3` identities. `verify_optimum_certificate`
+  recomputes the proof. `certify_optimum_for_report` additionally requires the
+  private identity of the exact `solve` output before retaining bounds in
+  `PdhgReport`; unrelated reports cannot acquire them.
 - `sizing::size_and_snap` → `CatalogAudit`: areas from yield, EULER
   floors for compression members (solid square `A ≥ √(12|q|l²/π²E)`),
   joint parsimony pruning with MANDATORY least-squares equilibrium
@@ -64,20 +85,27 @@ steel-and-concrete flagship's engine (§15.2).
    two-bar `2PL/σ`) to 1e-4 with objective separation < 1e-5,
    equilibrium residual < 1e-5, complementary slackness and observed dual
    feasibility violation < 1e-4 (truss-002). These are numerical oracle checks,
-   not an outward-rounded certificate for arbitrary instances.
-3. Densifying the ground structure does not worsen the returned-iterate volume
+   not by themselves an outward-rounded certificate.
+3. A finite optimum interval exists only after both independent certificate
+   sides pass. A Neumann contraction proves existence of an exactly feasible
+   nonnegative primal split; outward dual slacks prove the lower bound. Tiny
+   basis enumeration independently checks the aligned-tie and symmetric
+   two-bar optima. Approximate infeasible iterates contribute no raw upper
+   bound; rank deficiency, poor conditioning, non-finite arithmetic, budget
+   excess, identity mismatch, and cancellation fail closed (truss-002h-k).
+4. Densifying the ground structure does not worsen the returned-iterate volume
    beyond the declared diagnostic tolerance
    (truss-003); the Michell closed-form catalogue comparison is a
    LEDGERED PENDING row until its vetted constants land via the
    fs-fab oracle spec — stated, never silently skipped.
-4. PDHG cost per (iteration × nnz) is flat across problem sizes
+5. PDHG cost per (iteration × nnz) is flat across problem sizes
    (spread < 3×) and warm starts reduce iterations on perturbed load
    cases (truss-004; the 10⁶-member wall-clock target is perf-lane
    scope, ledgered).
-5. Sizing: post-prune equilibrium re-verified < 1e-6; Euler floors
+6. Sizing: post-prune equilibrium re-verified < 1e-6; Euler floors
    active on compression members; post-snap member-by-member audit
    all-pass (truss-005).
-6. The rod spot check has teeth: catalog area stable at 1.3× design,
+7. The rod spot check has teeth: catalog area stable at 1.3× design,
    an under-sized member fails or bows an order harder (truss-006).
 
 ## Error model
@@ -89,23 +117,30 @@ reservation, or observed cancellation. No public ground or layout constructor
 panics on caller input or publishes partial state. `LayoutLp::solve` separately
 returns `PdhgError` for zero iteration/check intervals, invalid tolerance,
 malformed warm-start shape, or non-finite/out-of-domain warm state. The
-objective-separation and KKT numbers are diagnostics, not a rigorous optimum
-interval; `NaN` catalog area marks an un-satisfiable member in the audit rather
-than silently clamping.
+objective-separation and KKT numbers remain diagnostics. Certificate malformed
+state, invalid limits, allocation failure, report substitution, and
+cancellation are hard `LayoutCertificateError`s. Sound numerical inability is
+`LayoutCertificateStatus::Unavailable` with a typed resource, rank,
+conditioning, residual, non-finite, or endpoint refusal; it never fabricates a
+wide finite bound. `NaN` catalog area marks an un-satisfiable member in the
+audit rather than silently clamping.
 
 ## Determinism class
 
 Bit-deterministic across runs on a platform (BTree generation, fixed
-iteration order, deterministic solvers). Cross-ISA goldens not yet
-recorded.
+iteration/basis/pivot order, deterministic solvers and canonical receipt
+hashing). Cross-ISA goldens not yet recorded.
 
 ## Cancellation behavior
 
 Ground construction and LP assembly poll an explicit `Cx` at deterministic
 bounded strides and immediately before publication. Cancellation returns a
 structured `Cancelled { stage }` refusal; no partially built authoritative
-value escapes. The PDHG solver remains iteration-bounded but does not yet poll
-`Cx` inside its fixed synchronous solve loop.
+value escapes. Certificate validation, matrix visits, elimination, interval
+work, hashing, verification, and final publication likewise poll at bounded
+strides; a cancelled attempt clears report bounds and publishes no proof. The
+PDHG solver remains iteration-bounded but does not yet poll `Cx` inside its
+fixed synchronous solve loop.
 
 ## Unsafe boundary
 
@@ -120,7 +155,10 @@ None.
 `tests/battery.rs`: truss-001 rules + determinism plus adversarial construction
 admission, exact-cap/cap-plus-one, malformed-part, numerical, load, and
 cancellation refusals; truss-002 provable oracles with numerical diagnostics
-and malformed-solver-input refusal;
+and malformed-solver-input refusal; truss-002h-k exact bound bracketing against
+an independent tiny LP oracle, deterministic replay, private report binding,
+rank/resource/overflow/near-zero fail-closed behavior, tamper identity, and
+cancellation-before-publication;
 truss-003 refinement monotonicity within declared tolerances;
 truss-004 scale trend + warm starts; truss-005 sizing/snap audit;
 truss-006 rod spot check.
@@ -139,7 +177,10 @@ truss-006 rod spot check.
   families beyond angle sets; discrete member-count MILP.
 - Multi-load-case simultaneous layout (warm starts ship; the
   worst-case envelope LP is follow-up).
-- A finite optimum enclosure. The returned primal is only approximately
-  equilibrated, and the floating dual scaling is not outward-verified. Exact or
-  interval primal repair plus independently checked dual feasibility is tracked
-  separately before either objective becomes a certified bound.
+- Rank-deficient nonzero equilibrium systems and bases whose Neumann
+  contraction cannot be proved remain `Unavailable`, even when some such
+  systems are feasible. Generic rectangular exact-feasibility certificates are
+  follow-up scope; no residual-containing-zero shortcut is claimed.
+- Active-set membership and tropical load-path weights are not implied by an
+  optimum interval. They remain estimated until their separate interval proof
+  lands.

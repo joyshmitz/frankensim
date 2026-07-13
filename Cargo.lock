@@ -1910,8 +1910,10 @@ dependencies = [
  "fnx-classes",
  "fnx-runtime",
  "fs-alloc",
+ "fs-blake3",
  "fs-constraint",
  "fs-exec",
+ "fs-ivl",
  "fs-solid",
  "fs-sparse",
 ]
