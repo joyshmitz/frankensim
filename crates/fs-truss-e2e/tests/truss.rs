@@ -2,11 +2,45 @@
 //! advisory, endpoint-checked tropical load path from load to support.
 
 use fs_evidence::Color;
+use fs_exec::{Budget, CancelGate, Cx, ExecMode, StreamKey};
 use fs_truss_e2e::{TrussError, analyze_load_path, run_campaign};
+
+fn with_gate_cx<R>(gate: &CancelGate, f: impl FnOnce(&Cx<'_>) -> R) -> R {
+    let pool = fs_alloc::ArenaPool::new(fs_alloc::ArenaConfig::default());
+    pool.scope(|arena| {
+        let cx = Cx::new(
+            gate,
+            arena,
+            StreamKey {
+                seed: 0x7A55,
+                kernel_id: 1,
+                tile: 0,
+                iteration: 0,
+            },
+            Budget::INFINITE,
+            ExecMode::Deterministic,
+        );
+        f(&cx)
+    })
+}
+
+fn with_cx<R>(f: impl FnOnce(&Cx<'_>) -> R) -> R {
+    with_gate_cx(&CancelGate::new(), f)
+}
+
+fn campaign(
+    nx: usize,
+    ny: usize,
+    w: f64,
+    h: f64,
+    gap_tol: f64,
+) -> Result<fs_truss_e2e::TrussReport, TrussError> {
+    with_cx(|cx| run_campaign(nx, ny, w, h, gap_tol, cx))
+}
 
 #[test]
 fn the_converged_truss_has_a_bounded_unique_load_path() {
-    let report = run_campaign(4, 3, 4.0, 2.0, 1e-4).expect("valid tropical load path");
+    let report = campaign(4, 3, 4.0, 2.0, 1e-4).expect("valid tropical load path");
     // a real ground structure was optimized down to a sparse active set.
     assert!(report.num_members > report.num_active, "nothing was pruned");
     assert!(report.num_active > 0, "no active bars");
@@ -55,8 +89,8 @@ fn the_converged_truss_has_a_bounded_unique_load_path() {
 
 #[test]
 fn the_campaign_is_deterministic() {
-    let a = run_campaign(4, 3, 4.0, 2.0, 1e-4).expect("first run");
-    let b = run_campaign(4, 3, 4.0, 2.0, 1e-4).expect("second run");
+    let a = campaign(4, 3, 4.0, 2.0, 1e-4).expect("first run");
+    let b = campaign(4, 3, 4.0, 2.0, 1e-4).expect("second run");
     assert_eq!(a.total_volume.to_bits(), b.total_volume.to_bits());
     assert_eq!(a.critical_path, b.critical_path);
     assert_eq!(a.bottleneck_member, b.bottleneck_member);
@@ -65,14 +99,14 @@ fn the_campaign_is_deterministic() {
 #[test]
 fn invalid_or_unbounded_campaigns_refuse_before_ground_structure_work() {
     assert!(matches!(
-        run_campaign(1, 2, 1.0, 1.0, 1e-4),
+        campaign(1, 2, 1.0, 1.0, 1e-4),
         Err(TrussError::InvalidInput {
             field: "grid dimensions",
             ..
         })
     ));
     assert!(matches!(
-        run_campaign(17, 16, 1.0, 1.0, 1e-4),
+        campaign(17, 16, 1.0, 1.0, 1e-4),
         Err(TrussError::InvalidInput {
             field: "grid node count",
             ..
@@ -84,23 +118,23 @@ fn invalid_or_unbounded_campaigns_refuse_before_ground_structure_work() {
         (1.0, 1.0, 0.0),
     ] {
         assert!(matches!(
-            run_campaign(2, 2, width, height, tolerance),
+            campaign(2, 2, width, height, tolerance),
             Err(TrussError::InvalidInput { .. })
         ));
     }
     assert!(matches!(
-        run_campaign(2, 2, 0.01, 0.01, 1e-4),
+        campaign(2, 2, 0.01, 0.01, 1e-4),
         Err(TrussError::NoCandidateMembers)
     ));
 
     // 64 nodes is the exact cubic-preflight boundary. It reaches the later
     // candidate/solver budget; 65 nodes is refused before construction.
-    let boundary = run_campaign(8, 8, 4.0, 2.0, 1e-4);
+    let boundary = campaign(8, 8, 4.0, 2.0, 1e-4);
     assert!(
         matches!(boundary, Err(TrussError::WorkBudget { resource, .. }) if resource != "ground-structure triplet checks")
     );
     assert!(matches!(
-        run_campaign(13, 5, 4.0, 2.0, 1e-4),
+        campaign(13, 5, 4.0, 2.0, 1e-4),
         Err(TrussError::WorkBudget {
             resource: "ground-structure triplet checks",
             ..
@@ -109,8 +143,21 @@ fn invalid_or_unbounded_campaigns_refuse_before_ground_structure_work() {
 }
 
 #[test]
+fn pre_cancelled_campaign_refuses_without_a_partial_report() {
+    let gate = CancelGate::new();
+    gate.request();
+    let result = with_gate_cx(&gate, |cx| run_campaign(4, 3, 4.0, 2.0, 1e-4, cx));
+    assert!(matches!(
+        result,
+        Err(TrussError::Construction(
+            fs_truss::TrussConstructionError::Cancelled { .. }
+        ))
+    ));
+}
+
+#[test]
 fn tight_tolerance_does_not_mislabel_the_iteration_cap() {
-    let report = run_campaign(4, 3, 4.0, 2.0, f64::MIN_POSITIVE)
+    let report = campaign(4, 3, 4.0, 2.0, f64::MIN_POSITIVE)
         .expect("bounded campaign still returns its final iterate");
     assert_eq!(report.iters, 60_000);
     assert!(!report.solver_converged);
@@ -118,7 +165,7 @@ fn tight_tolerance_does_not_mislabel_the_iteration_cap() {
 
 #[test]
 fn support_selection_is_index_based_even_below_the_old_coordinate_tolerance() {
-    match run_campaign(2, 4, 1e-10, 1.0, 1e-4) {
+    match campaign(2, 4, 1e-10, 1.0, 1e-4) {
         Ok(report) => {
             assert!(report.total_volume > 0.0);
             assert!(report.critical_path.len() >= 2);

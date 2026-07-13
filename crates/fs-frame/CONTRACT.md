@@ -11,13 +11,17 @@ their own battery: fs-truss (layout LP + sizing), fs-solid/fs-material
 
 ## Public types and semantics
 
-- `layout::layout_and_size` → `LayoutReport`: ground-structure grid,
-  PDHG layout LP solved at σ_y = 1 (yield stress scales only the
+- `layout::layout_and_size(..., cx) -> Result<LayoutReport, LayoutError>`:
+  admits physical parameters and a strictly increasing positive catalog, then
+  constructs the immutable ground grid and support/load case through
+  `fs-truss`'s bounded, cancellation-aware APIs. It assembles the LP only after
+  exact shape, sparse-resource, numerical, and surviving-load checks. The
+  PDHG layout LP is solved at σ_y = 1 (yield stress scales only the
   objective, never equilibrium — a 250 MPa σ_y measurably stalled the
   primal-dual scaling, objective separation stuck at 1.0), relative
-  primal/dual objective separation + equilibrium residual as diagnostics,
-  physical returned-iterate volume rescaled on report;
-  then fs-truss `size_and_snap` (Euler floors, catalog up-snap,
+  primal/dual objective separation + equilibrium residual are diagnostics, and
+  physical returned-iterate volume is rescaled on report. It then calls
+  fs-truss `size_and_snap` (Euler floors, catalog up-snap,
   mandatory post-prune equilibrium refit, member code rows).
 - `history::StoryFrame`: single-story, two fiber-hinge columns —
   concentrated plasticity: drift x → hinge curvature x/(h·l_p), the
@@ -65,10 +69,13 @@ their own battery: fs-truss (layout LP + sizing), fs-solid/fs-material
 
 ## Error model
 
-Programmer contracts panic with teaching messages (ensemble spec
-defects, infeasible CVaR studies — the drill gates the diagnostic).
-Statistical outputs carry their own uncertainty: the CS radius and
-stopping state ARE the answer's quality statement.
+`layout_and_size` returns `LayoutError::Construction` for malformed geometry,
+physical parameters, catalog, resource excess, allocation refusal, or observed
+cancellation, and `LayoutError::Solver` for rejected PDHG/diagnostic state. It
+does not publish a partial layout. Other programmer contracts still panic with
+teaching messages (ensemble spec defects, infeasible CVaR studies — the drill
+gates the diagnostic). Statistical outputs carry their own uncertainty: the CS
+radius and stopping state ARE the answer's quality statement.
 
 ## Determinism class
 
@@ -78,8 +85,10 @@ frame-006 pins bitwise replay.
 
 ## Cancellation behavior
 
-Bounded synchronous loops (member budgets, iteration caps); the
-e-stop is itself the anytime-cancellation story: stopping at ANY
+Ground construction and LP assembly poll the explicit `Cx` at deterministic
+bounded strides and return structured cancellation before publication. Later
+fixed solver/dynamics loops remain synchronously bounded by iteration/member
+budgets. The e-stop is itself the anytime-cancellation story: stopping at ANY
 member count leaves a valid interval.
 
 ## Unsafe boundary
@@ -93,7 +102,7 @@ None (the smoke tier ships enabled; heavier tiers will gate).
 ## Conformance tests
 
 `tests/battery.rs`: frame-001 LP diagnostics; frame-002 sizing code
-rows; frame-003 elastic stability + hysteretic dissipation;
+rows plus pre-cancelled construction refusal; frame-003 elastic stability + hysteretic dissipation;
 frame-004 e-stopped fragility coverage + ledgered savings; frame-005
 CVaR monotonicity + design; frame-006 replay + drills.
 

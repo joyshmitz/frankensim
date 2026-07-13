@@ -15,9 +15,648 @@
 //! optimum interval: the returned primal is only approximately equilibrated,
 //! and the floating dual scaling is not outward-verified.
 
-use crate::ground::GroundStructure;
-use fs_sparse::{Coo, Csr};
+use crate::ground::{GroundStructure, TrussConstructionError};
+use fs_exec::Cx;
+use fs_sparse::Csr;
 use std::fmt::Write as _;
+use std::mem::size_of;
+
+/// Hard ceiling for free equilibrium degrees of freedom in one layout LP.
+pub const HARD_MAX_LAYOUT_FREE_DOFS: usize = 1_048_576;
+/// Hard ceiling for split tension/compression variables in one layout LP.
+pub const HARD_MAX_LAYOUT_VARIABLES: usize = 2_000_000;
+/// Hard ceiling for COO triplets staged while assembling one layout LP.
+pub const HARD_MAX_LAYOUT_STAGED_TRIPLETS: usize = 8_000_000;
+/// Hard ceiling for conservatively estimated retained LP storage.
+pub const HARD_MAX_LAYOUT_RETAINED_BYTES: usize = 512 * 1024 * 1024;
+
+const LAYOUT_POLL_STRIDE: usize = 256;
+const MIN_LAYOUT_LOAD_NORM_SQUARED: f64 = 1e-60;
+
+/// Immutable support mask and nodal loads admitted for one ground structure.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LayoutCase {
+    supported: Vec<[bool; 2]>,
+    loads: Vec<[f64; 2]>,
+}
+
+impl LayoutCase {
+    /// Admit one support/load case for an expected number of nodes.
+    ///
+    /// # Errors
+    /// Returns a structured refusal when either vector has the wrong length,
+    /// the expected node count is zero, or any load component is non-finite.
+    pub fn try_new(
+        supported: Vec<[bool; 2]>,
+        loads: Vec<[f64; 2]>,
+        expected_nodes: usize,
+    ) -> Result<Self, TrussConstructionError> {
+        if expected_nodes == 0 {
+            return Err(TrussConstructionError::InvalidInput {
+                field: "expected_nodes",
+                requirement: "must be at least one",
+            });
+        }
+        if supported.len() != expected_nodes {
+            return Err(TrussConstructionError::VectorLength {
+                field: "supported",
+                expected: expected_nodes,
+                actual: supported.len(),
+            });
+        }
+        if loads.len() != expected_nodes {
+            return Err(TrussConstructionError::VectorLength {
+                field: "loads",
+                expected: expected_nodes,
+                actual: loads.len(),
+            });
+        }
+        if loads
+            .iter()
+            .flatten()
+            .any(|component| !component.is_finite())
+        {
+            return Err(TrussConstructionError::InvalidInput {
+                field: "loads",
+                requirement: "must contain only finite components",
+            });
+        }
+        Ok(Self { supported, loads })
+    }
+
+    /// Per-node support flags, indexed as `[x, y]`.
+    #[must_use]
+    pub fn supported(&self) -> &[[bool; 2]] {
+        &self.supported
+    }
+
+    /// Per-node load vectors, indexed as `[x, y]`.
+    #[must_use]
+    pub fn loads(&self) -> &[[f64; 2]] {
+        &self.loads
+    }
+
+    /// Number of nodes represented by this admitted case.
+    #[must_use]
+    pub fn node_count(&self) -> usize {
+        self.loads.len()
+    }
+}
+
+/// Per-call resource limits for deterministic layout construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LayoutLimits {
+    free_dofs: usize,
+    variables: usize,
+    staged_triplets: usize,
+    retained_bytes: usize,
+}
+
+impl LayoutLimits {
+    /// Admit caller-selected limits below the crate's hard ceilings.
+    ///
+    /// # Errors
+    /// Returns a structured refusal when any limit is zero or exceeds its hard
+    /// ceiling.
+    pub fn try_new(
+        max_free_dofs: usize,
+        max_variables: usize,
+        max_staged_triplets: usize,
+        max_retained_bytes: usize,
+    ) -> Result<Self, TrussConstructionError> {
+        validate_limit("max_free_dofs", max_free_dofs, HARD_MAX_LAYOUT_FREE_DOFS)?;
+        validate_limit("max_variables", max_variables, HARD_MAX_LAYOUT_VARIABLES)?;
+        validate_limit(
+            "max_staged_triplets",
+            max_staged_triplets,
+            HARD_MAX_LAYOUT_STAGED_TRIPLETS,
+        )?;
+        validate_limit(
+            "max_retained_bytes",
+            max_retained_bytes,
+            HARD_MAX_LAYOUT_RETAINED_BYTES,
+        )?;
+        Ok(Self {
+            free_dofs: max_free_dofs,
+            variables: max_variables,
+            staged_triplets: max_staged_triplets,
+            retained_bytes: max_retained_bytes,
+        })
+    }
+
+    /// Maximum admitted free equilibrium degrees of freedom.
+    #[must_use]
+    pub const fn max_free_dofs(self) -> usize {
+        self.free_dofs
+    }
+
+    /// Maximum admitted split tension/compression variables.
+    #[must_use]
+    pub const fn max_variables(self) -> usize {
+        self.variables
+    }
+
+    /// Maximum admitted staged COO triplets.
+    #[must_use]
+    pub const fn max_staged_triplets(self) -> usize {
+        self.staged_triplets
+    }
+
+    /// Maximum conservative retained-storage estimate in bytes.
+    #[must_use]
+    pub const fn max_retained_bytes(self) -> usize {
+        self.retained_bytes
+    }
+}
+
+impl Default for LayoutLimits {
+    fn default() -> Self {
+        Self {
+            free_dofs: HARD_MAX_LAYOUT_FREE_DOFS,
+            variables: HARD_MAX_LAYOUT_VARIABLES,
+            staged_triplets: HARD_MAX_LAYOUT_STAGED_TRIPLETS,
+            retained_bytes: HARD_MAX_LAYOUT_RETAINED_BYTES,
+        }
+    }
+}
+
+fn validate_limit(
+    field: &'static str,
+    requested: usize,
+    hard_ceiling: usize,
+) -> Result<(), TrussConstructionError> {
+    if requested == 0 || requested > hard_ceiling {
+        return Err(TrussConstructionError::InvalidInput {
+            field,
+            requirement: "must be positive and no greater than its hard ceiling",
+        });
+    }
+    Ok(())
+}
+
+fn poll(cx: &Cx<'_>, stage: &'static str) -> Result<(), TrussConstructionError> {
+    cx.checkpoint()
+        .map_err(|_| TrussConstructionError::Cancelled { stage })
+}
+
+fn empty_with_capacity<T>(
+    requested: usize,
+    resource: &'static str,
+) -> Result<Vec<T>, TrussConstructionError> {
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(requested)
+        .map_err(|_| TrussConstructionError::AllocationFailed {
+            resource,
+            requested,
+        })?;
+    Ok(values)
+}
+
+fn zeroed_f64(
+    requested: usize,
+    resource: &'static str,
+    cx: &Cx<'_>,
+    stage: &'static str,
+) -> Result<Vec<f64>, TrussConstructionError> {
+    let mut values = empty_with_capacity(requested, resource)?;
+    for index in 0..requested {
+        if index % LAYOUT_POLL_STRIDE == 0 {
+            poll(cx, stage)?;
+        }
+        values.push(0.0);
+    }
+    Ok(values)
+}
+
+fn zeroed_usize(
+    requested: usize,
+    resource: &'static str,
+    cx: &Cx<'_>,
+    stage: &'static str,
+) -> Result<Vec<usize>, TrussConstructionError> {
+    let mut values = empty_with_capacity(requested, resource)?;
+    for index in 0..requested {
+        if index % LAYOUT_POLL_STRIDE == 0 {
+            poll(cx, stage)?;
+        }
+        values.push(0);
+    }
+    Ok(values)
+}
+
+fn copied_usize(
+    source: &[usize],
+    resource: &'static str,
+    cx: &Cx<'_>,
+    stage: &'static str,
+) -> Result<Vec<usize>, TrussConstructionError> {
+    let mut values = empty_with_capacity(source.len(), resource)?;
+    for chunk in source.chunks(LAYOUT_POLL_STRIDE) {
+        poll(cx, stage)?;
+        values.extend_from_slice(chunk);
+    }
+    Ok(values)
+}
+
+#[allow(clippy::too_many_arguments)] // Owned CSR parts plus publication diagnostics and context.
+fn publish_canonical_csr(
+    rows: usize,
+    columns: usize,
+    row_ptr: Vec<usize>,
+    col_idx: Vec<usize>,
+    values: Vec<f64>,
+    field: &'static str,
+    requirement: &'static str,
+    stage: &'static str,
+    cx: &Cx<'_>,
+) -> Result<Csr, TrussConstructionError> {
+    let mut validation_steps = 0usize;
+    Csr::try_from_parts_with_checkpoint(rows, columns, row_ptr, col_idx, values, || {
+        if validation_steps.is_multiple_of(LAYOUT_POLL_STRIDE) {
+            poll(cx, stage)?;
+        }
+        validation_steps += 1;
+        Ok(())
+    })?
+    .ok_or(TrussConstructionError::InvalidInput { field, requirement })
+}
+
+fn checked_product(a: usize, b: usize) -> Option<usize> {
+    a.checked_mul(b)
+}
+
+fn checked_sum(parts: &[usize]) -> Option<usize> {
+    parts
+        .iter()
+        .try_fold(0usize, |total, part| total.checked_add(*part))
+}
+
+fn retained_layout_bytes(
+    node_dofs: usize,
+    free_dofs: usize,
+    variables: usize,
+    staged_triplets: usize,
+) -> Option<usize> {
+    let dof_map = checked_product(node_dofs, size_of::<Option<usize>>())?;
+    let rhs = checked_product(free_dofs, size_of::<f64>())?;
+    let costs = checked_product(variables, size_of::<f64>())?;
+    let sparse_entries = checked_product(
+        staged_triplets,
+        size_of::<usize>().checked_add(size_of::<f64>())?,
+    )?;
+    let a_rows = checked_product(free_dofs.checked_add(1)?, size_of::<usize>())?;
+    let at_rows = checked_product(variables.checked_add(1)?, size_of::<usize>())?;
+    checked_sum(&[
+        dof_map,
+        rhs,
+        costs,
+        sparse_entries,
+        sparse_entries,
+        a_rows,
+        at_rows,
+        size_of::<f64>(),
+    ])
+}
+
+fn csr_is_finite_and_nonzero(
+    matrix: &Csr,
+    cx: &Cx<'_>,
+    stage: &'static str,
+) -> Result<bool, TrussConstructionError> {
+    let mut nonzero = false;
+    let mut visited = 0usize;
+    for row in 0..matrix.nrows() {
+        if row % LAYOUT_POLL_STRIDE == 0 {
+            poll(cx, stage)?;
+        }
+        for &value in matrix.row(row).1 {
+            if visited.is_multiple_of(LAYOUT_POLL_STRIDE) {
+                poll(cx, stage)?;
+            }
+            visited += 1;
+            if !value.is_finite() {
+                return Ok(false);
+            }
+            nonzero |= value != 0.0;
+        }
+    }
+    Ok(nonzero)
+}
+
+fn first_nonzero_column(matrix: &Csr, cx: &Cx<'_>) -> Result<usize, TrussConstructionError> {
+    let mut visited = 0usize;
+    for row in 0..matrix.nrows() {
+        if row % LAYOUT_POLL_STRIDE == 0 {
+            poll(cx, "layout fallback-column search")?;
+        }
+        let (columns, values) = matrix.row(row);
+        for (&column, &value) in columns.iter().zip(values) {
+            if visited.is_multiple_of(LAYOUT_POLL_STRIDE) {
+                poll(cx, "layout fallback-column search")?;
+            }
+            visited += 1;
+            if value != 0.0 {
+                return Ok(column);
+            }
+        }
+    }
+    Err(TrussConstructionError::InvalidInput {
+        field: "equilibrium matrix",
+        requirement: "must expose a nonzero column for norm estimation",
+    })
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // One checked canonical CSR construction.
+fn assemble_equilibrium(
+    nodes: &[[f64; 2]],
+    members: &[(usize, usize)],
+    lengths: &[f64],
+    dof_map: &[Option<usize>],
+    free_dofs: usize,
+    variables: usize,
+    staged_triplets: usize,
+    cx: &Cx<'_>,
+) -> Result<Csr, TrussConstructionError> {
+    let member_count = members.len();
+    let mut row_counts = zeroed_usize(
+        free_dofs,
+        "layout row counts",
+        cx,
+        "layout row-count allocation",
+    )?;
+    let mut staged_entries_visited = 0usize;
+    for (member, &(a, b)) in members.iter().enumerate() {
+        if member % LAYOUT_POLL_STRIDE == 0 {
+            poll(cx, "layout sparse row counting")?;
+        }
+        for dof in [2 * a, 2 * a + 1, 2 * b, 2 * b + 1] {
+            if let Some(row) = dof_map[dof] {
+                for _ in 0..2 {
+                    if staged_entries_visited.is_multiple_of(LAYOUT_POLL_STRIDE) {
+                        poll(cx, "layout sparse row counting")?;
+                    }
+                    staged_entries_visited += 1;
+                }
+                row_counts[row] =
+                    row_counts[row]
+                        .checked_add(2)
+                        .ok_or(TrussConstructionError::WorkBudget {
+                            resource: "layout staged triplets",
+                            limit: staged_triplets,
+                            observed: usize::MAX,
+                        })?;
+            }
+        }
+    }
+
+    let mut row_ptr = zeroed_usize(
+        free_dofs
+            .checked_add(1)
+            .ok_or(TrussConstructionError::WorkBudget {
+                resource: "layout sparse row pointers",
+                limit: free_dofs,
+                observed: usize::MAX,
+            })?,
+        "layout sparse row pointers",
+        cx,
+        "layout row-pointer allocation",
+    )?;
+    let mut row_offset = 0usize;
+    for (row, count) in row_counts.iter().copied().enumerate() {
+        if row % LAYOUT_POLL_STRIDE == 0 {
+            poll(cx, "layout sparse row offsets")?;
+        }
+        row_offset = row_offset
+            .checked_add(count)
+            .ok_or(TrussConstructionError::WorkBudget {
+                resource: "layout staged triplets",
+                limit: staged_triplets,
+                observed: usize::MAX,
+            })?;
+        row_ptr[row + 1] = row_offset;
+    }
+    if row_ptr[free_dofs] != staged_triplets {
+        return Err(TrussConstructionError::InvalidInput {
+            field: "equilibrium matrix",
+            requirement: "must preserve the exact admitted triplet count",
+        });
+    }
+
+    let mut col_idx = zeroed_usize(
+        staged_triplets,
+        "layout sparse columns",
+        cx,
+        "layout sparse-column allocation",
+    )?;
+    let mut values = zeroed_f64(
+        staged_triplets,
+        "layout sparse values",
+        cx,
+        "layout sparse-value allocation",
+    )?;
+    let mut plus_cursor = copied_usize(
+        &row_ptr[..free_dofs],
+        "layout positive cursors",
+        cx,
+        "layout positive-cursor allocation",
+    )?;
+    let mut minus_cursor = empty_with_capacity(free_dofs, "layout negative cursors")?;
+    for (row, &count) in row_counts.iter().enumerate() {
+        if row % LAYOUT_POLL_STRIDE == 0 {
+            poll(cx, "layout negative-cursor allocation")?;
+        }
+        minus_cursor.push(row_ptr[row] + count / 2);
+    }
+
+    staged_entries_visited = 0;
+    for (member, &(a, b)) in members.iter().enumerate() {
+        if member % LAYOUT_POLL_STRIDE == 0 {
+            poll(cx, "layout sparse fill")?;
+        }
+        let dx = (nodes[b][0] - nodes[a][0]) / lengths[member];
+        let dy = (nodes[b][1] - nodes[a][1]) / lengths[member];
+        for (dof, value) in [(2 * a, dx), (2 * a + 1, dy), (2 * b, -dx), (2 * b + 1, -dy)] {
+            if let Some(row) = dof_map[dof] {
+                for _ in 0..2 {
+                    if staged_entries_visited.is_multiple_of(LAYOUT_POLL_STRIDE) {
+                        poll(cx, "layout sparse fill")?;
+                    }
+                    staged_entries_visited += 1;
+                }
+                let positive = plus_cursor[row];
+                col_idx[positive] = member;
+                values[positive] = value;
+                plus_cursor[row] += 1;
+
+                let negative = minus_cursor[row];
+                col_idx[negative] = member_count + member;
+                values[negative] = -value;
+                minus_cursor[row] += 1;
+            }
+        }
+    }
+    for (row, ((&positive, &negative), &count)) in plus_cursor
+        .iter()
+        .zip(&minus_cursor)
+        .zip(&row_counts)
+        .enumerate()
+    {
+        if row % LAYOUT_POLL_STRIDE == 0 {
+            poll(cx, "layout sparse fill validation")?;
+        }
+        if positive != row_ptr[row] + count / 2 || negative != row_ptr[row + 1] {
+            return Err(TrussConstructionError::InvalidInput {
+                field: "equilibrium matrix",
+                requirement: "must fill every admitted sparse slot exactly once",
+            });
+        }
+    }
+    poll(cx, "layout sparse publication")?;
+    publish_canonical_csr(
+        free_dofs,
+        variables,
+        row_ptr,
+        col_idx,
+        values,
+        "equilibrium matrix",
+        "must preserve checked canonical CSR shape",
+        "layout sparse canonical validation",
+        cx,
+    )
+}
+
+fn transpose_checked(matrix: &Csr, cx: &Cx<'_>) -> Result<Csr, TrussConstructionError> {
+    let rows = matrix.nrows();
+    let columns = matrix.ncols();
+    let mut counts = zeroed_usize(
+        columns
+            .checked_add(1)
+            .ok_or(TrussConstructionError::WorkBudget {
+                resource: "layout transpose row pointers",
+                limit: columns,
+                observed: usize::MAX,
+            })?,
+        "layout transpose row pointers",
+        cx,
+        "layout transpose-count allocation",
+    )?;
+    let mut visited = 0usize;
+    for row in 0..rows {
+        if row % LAYOUT_POLL_STRIDE == 0 {
+            poll(cx, "layout transpose counting")?;
+        }
+        for &column in matrix.row(row).0 {
+            if visited.is_multiple_of(LAYOUT_POLL_STRIDE) {
+                poll(cx, "layout transpose counting")?;
+            }
+            visited += 1;
+            counts[column + 1] =
+                counts[column + 1]
+                    .checked_add(1)
+                    .ok_or(TrussConstructionError::WorkBudget {
+                        resource: "layout transpose entries",
+                        limit: matrix.nnz(),
+                        observed: usize::MAX,
+                    })?;
+        }
+    }
+    let mut transpose_offset = 0usize;
+    for (column, count) in counts.iter_mut().enumerate().skip(1) {
+        if column % LAYOUT_POLL_STRIDE == 0 {
+            poll(cx, "layout transpose row offsets")?;
+        }
+        transpose_offset =
+            transpose_offset
+                .checked_add(*count)
+                .ok_or(TrussConstructionError::WorkBudget {
+                    resource: "layout transpose entries",
+                    limit: matrix.nnz(),
+                    observed: usize::MAX,
+                })?;
+        *count = transpose_offset;
+    }
+    let row_ptr = copied_usize(
+        &counts,
+        "layout transpose published row pointers",
+        cx,
+        "layout transpose row-pointer copy",
+    )?;
+    let mut cursor = counts;
+    let mut col_idx = zeroed_usize(
+        matrix.nnz(),
+        "layout transpose columns",
+        cx,
+        "layout transpose-column allocation",
+    )?;
+    let mut values = zeroed_f64(
+        matrix.nnz(),
+        "layout transpose values",
+        cx,
+        "layout transpose-value allocation",
+    )?;
+    visited = 0;
+    for row in 0..rows {
+        if row % LAYOUT_POLL_STRIDE == 0 {
+            poll(cx, "layout transpose fill")?;
+        }
+        let (source_columns, source_values) = matrix.row(row);
+        for (&column, &value) in source_columns.iter().zip(source_values) {
+            if visited.is_multiple_of(LAYOUT_POLL_STRIDE) {
+                poll(cx, "layout transpose fill")?;
+            }
+            visited += 1;
+            let destination = cursor[column];
+            col_idx[destination] = row;
+            values[destination] = value;
+            cursor[column] += 1;
+        }
+    }
+    poll(cx, "layout transpose publication")?;
+    publish_canonical_csr(
+        columns,
+        rows,
+        row_ptr,
+        col_idx,
+        values,
+        "equilibrium transpose",
+        "must preserve checked canonical CSR shape",
+        "layout transpose canonical validation",
+        cx,
+    )
+}
+
+fn spmv_checked(
+    matrix: &Csr,
+    input: &[f64],
+    output: &mut [f64],
+    cx: &Cx<'_>,
+    stage: &'static str,
+) -> Result<(), TrussConstructionError> {
+    if input.len() != matrix.ncols() || output.len() != matrix.nrows() {
+        return Err(TrussConstructionError::InvalidInput {
+            field: "layout norm multiply",
+            requirement: "must have exact matrix/vector dimensions",
+        });
+    }
+    let mut visited = 0usize;
+    for (row, destination) in output.iter_mut().enumerate() {
+        if row % LAYOUT_POLL_STRIDE == 0 {
+            poll(cx, stage)?;
+        }
+        let (columns, values) = matrix.row(row);
+        let mut accumulator = 0.0f64;
+        for (&column, &value) in columns.iter().zip(values) {
+            if visited.is_multiple_of(LAYOUT_POLL_STRIDE) {
+                poll(cx, stage)?;
+            }
+            visited += 1;
+            accumulator = value.mul_add(input[column], accumulator);
+        }
+        *destination = accumulator;
+    }
+    Ok(())
+}
 
 /// Maximum iterations admitted to one direct PDHG solve.
 pub const MAX_PDHG_ITERS: usize = 1_000_000;
@@ -131,97 +770,473 @@ impl PdhgReport {
 pub struct LayoutLp {
     /// Equilibrium matrix on free DOFs over split variables (n_free ×
     /// 2·members): columns `[q⁺ | q⁻]` with `B` and `−B` blocks.
-    pub a: Csr,
+    a: Csr,
     /// Aᵀ (materialized once; PDHG applies both directions).
-    pub at: Csr,
+    at: Csr,
     /// Cost per split variable (length/σ_y).
-    pub c: Vec<f64>,
+    c: Vec<f64>,
     /// Free-DOF load vector.
-    pub b: Vec<f64>,
+    b: Vec<f64>,
     /// Free-DOF index per (node, component); None = supported.
-    pub dof_map: Vec<Option<usize>>,
+    dof_map: Vec<Option<usize>>,
     /// Estimated operator norm ‖A‖.
-    pub norm_est: f64,
+    norm_est: f64,
 }
 
 impl LayoutLp {
-    /// Assemble from a ground structure, support predicate, nodal
-    /// loads, and yield stress.
+    /// Equilibrium matrix on the free degrees of freedom.
     #[must_use]
-    pub fn assemble(
+    pub fn a(&self) -> &Csr {
+        &self.a
+    }
+
+    /// Materialized transpose of the equilibrium matrix.
+    #[must_use]
+    pub fn at(&self) -> &Csr {
+        &self.at
+    }
+
+    /// Split-variable objective costs in `[q⁺ | q⁻]` order.
+    #[must_use]
+    pub fn c(&self) -> &[f64] {
+        &self.c
+    }
+
+    /// Load vector after supported degrees of freedom are eliminated.
+    #[must_use]
+    pub fn b(&self) -> &[f64] {
+        &self.b
+    }
+
+    /// Free-row identity for each node/component pair.
+    #[must_use]
+    pub fn dof_map(&self) -> &[Option<usize>] {
+        &self.dof_map
+    }
+
+    /// Deterministic power-iteration estimate of the operator norm.
+    #[must_use]
+    pub fn norm_est(&self) -> f64 {
+        self.norm_est
+    }
+
+    /// Assemble a bounded layout LP from admitted ground and load values.
+    ///
+    /// The constructor validates all dimensions and numerical domains, checks
+    /// free-DOF, variable, triplet, and retained-byte budgets before allocating
+    /// authoritative output, and polls cancellation at deterministic strides.
+    ///
+    /// # Errors
+    /// Returns a structured refusal for malformed dimensions, non-finite
+    /// numerical state, a load eliminated entirely by supports, a degenerate
+    /// sparse operator, budget or allocation failure, or cancellation.
+    #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
+    pub fn try_assemble(
         gs: &GroundStructure,
-        supported: &dyn Fn(usize, usize) -> bool,
-        loads: &dyn Fn(usize) -> [f64; 2],
+        case: &LayoutCase,
         sigma_y: f64,
-    ) -> LayoutLp {
-        let n = gs.nodes.len();
-        let mut dof_map: Vec<Option<usize>> = Vec::with_capacity(2 * n);
-        let mut nf = 0usize;
-        for node in 0..n {
+        limits: LayoutLimits,
+        cx: &Cx<'_>,
+    ) -> Result<LayoutLp, TrussConstructionError> {
+        let nodes = gs.nodes();
+        let members = gs.members();
+        let lengths = gs.lengths();
+        let n = nodes.len();
+        let m = members.len();
+        if n == 0 {
+            return Err(TrussConstructionError::InvalidInput {
+                field: "ground nodes",
+                requirement: "must not be empty",
+            });
+        }
+        if members.len() != lengths.len() {
+            return Err(TrussConstructionError::VectorLength {
+                field: "ground lengths",
+                expected: members.len(),
+                actual: lengths.len(),
+            });
+        }
+        if case.node_count() != n {
+            return Err(TrussConstructionError::VectorLength {
+                field: "layout case nodes",
+                expected: n,
+                actual: case.node_count(),
+            });
+        }
+        if !sigma_y.is_finite() || sigma_y <= 0.0 {
+            return Err(TrussConstructionError::InvalidInput {
+                field: "sigma_y",
+                requirement: "must be finite and positive",
+            });
+        }
+        let node_dofs = n.checked_mul(2).ok_or(TrussConstructionError::WorkBudget {
+            resource: "layout node degrees of freedom",
+            limit: limits.max_free_dofs(),
+            observed: usize::MAX,
+        })?;
+        let variables = m.checked_mul(2).ok_or(TrussConstructionError::WorkBudget {
+            resource: "layout split variables",
+            limit: limits.max_variables(),
+            observed: usize::MAX,
+        })?;
+        if variables == 0 {
+            return Err(TrussConstructionError::InvalidInput {
+                field: "ground members",
+                requirement: "must not be empty",
+            });
+        }
+        if variables > limits.max_variables() {
+            return Err(TrussConstructionError::WorkBudget {
+                resource: "layout split variables",
+                limit: limits.max_variables(),
+                observed: variables,
+            });
+        }
+
+        let mut free_dofs = 0usize;
+        let mut has_surviving_load = false;
+        for (node, coordinates) in nodes.iter().enumerate() {
+            if node % LAYOUT_POLL_STRIDE == 0 {
+                poll(cx, "layout support/load admission")?;
+            }
+            if coordinates.iter().any(|coordinate| !coordinate.is_finite()) {
+                return Err(TrussConstructionError::InvalidInput {
+                    field: "ground nodes",
+                    requirement: "must contain only finite coordinates",
+                });
+            }
             for comp in 0..2 {
-                if supported(node, comp) {
+                let load = case.loads[node][comp];
+                if !load.is_finite() {
+                    return Err(TrussConstructionError::InvalidInput {
+                        field: "loads",
+                        requirement: "must contain only finite components",
+                    });
+                }
+                if !case.supported[node][comp] {
+                    free_dofs =
+                        free_dofs
+                            .checked_add(1)
+                            .ok_or(TrussConstructionError::WorkBudget {
+                                resource: "layout free degrees of freedom",
+                                limit: limits.max_free_dofs(),
+                                observed: usize::MAX,
+                            })?;
+                    has_surviving_load |= load != 0.0;
+                }
+            }
+        }
+        if free_dofs == 0 {
+            return Err(TrussConstructionError::InvalidInput {
+                field: "supports",
+                requirement: "must leave at least one free degree of freedom",
+            });
+        }
+        if free_dofs > limits.max_free_dofs() {
+            return Err(TrussConstructionError::WorkBudget {
+                resource: "layout free degrees of freedom",
+                limit: limits.max_free_dofs(),
+                observed: free_dofs,
+            });
+        }
+        if !has_surviving_load {
+            return Err(TrussConstructionError::InvalidInput {
+                field: "loads",
+                requirement: "must contain a nonzero component on a free degree of freedom",
+            });
+        }
+
+        let mut staged_triplets = 0usize;
+        let mut previous_member = None;
+        for (member_index, (&(a, b), &length)) in members.iter().zip(lengths).enumerate() {
+            if member_index % LAYOUT_POLL_STRIDE == 0 {
+                poll(cx, "layout member admission")?;
+            }
+            if a >= n || b >= n || a >= b {
+                return Err(TrussConstructionError::InvalidInput {
+                    field: "ground members",
+                    requirement: "must contain distinct in-range canonical endpoints a < b",
+                });
+            }
+            if previous_member.is_some_and(|previous| previous >= (a, b)) {
+                return Err(TrussConstructionError::InvalidInput {
+                    field: "ground members",
+                    requirement: "must be unique and strictly lexicographically ordered",
+                });
+            }
+            previous_member = Some((a, b));
+            if !length.is_finite() || length <= 0.0 {
+                return Err(TrussConstructionError::InvalidInput {
+                    field: "ground lengths",
+                    requirement: "must contain only finite positive lengths",
+                });
+            }
+            let dx = (nodes[b][0] - nodes[a][0]) / length;
+            let dy = (nodes[b][1] - nodes[a][1]) / length;
+            if !dx.is_finite() || !dy.is_finite() {
+                return Err(TrussConstructionError::InvalidInput {
+                    field: "ground directions",
+                    requirement: "must remain finite after length normalization",
+                });
+            }
+            for (node, comp) in [(a, 0usize), (a, 1), (b, 0), (b, 1)] {
+                if !case.supported[node][comp] {
+                    staged_triplets = staged_triplets.checked_add(2).ok_or(
+                        TrussConstructionError::WorkBudget {
+                            resource: "layout staged triplets",
+                            limit: limits.max_staged_triplets(),
+                            observed: usize::MAX,
+                        },
+                    )?;
+                }
+            }
+        }
+        if staged_triplets == 0 {
+            return Err(TrussConstructionError::InvalidInput {
+                field: "equilibrium matrix",
+                requirement: "must contain at least one staged contribution",
+            });
+        }
+        if staged_triplets > limits.max_staged_triplets() {
+            return Err(TrussConstructionError::WorkBudget {
+                resource: "layout staged triplets",
+                limit: limits.max_staged_triplets(),
+                observed: staged_triplets,
+            });
+        }
+        let retained_bytes =
+            retained_layout_bytes(node_dofs, free_dofs, variables, staged_triplets).ok_or(
+                TrussConstructionError::WorkBudget {
+                    resource: "layout retained bytes",
+                    limit: limits.max_retained_bytes(),
+                    observed: usize::MAX,
+                },
+            )?;
+        if retained_bytes > limits.max_retained_bytes() {
+            return Err(TrussConstructionError::WorkBudget {
+                resource: "layout retained bytes",
+                limit: limits.max_retained_bytes(),
+                observed: retained_bytes,
+            });
+        }
+
+        let mut dof_map = empty_with_capacity(node_dofs, "layout DOF map")?;
+        let mut next_free = 0usize;
+        for node in 0..n {
+            if node % LAYOUT_POLL_STRIDE == 0 {
+                poll(cx, "layout DOF map construction")?;
+            }
+            for comp in 0..2 {
+                if case.supported[node][comp] {
                     dof_map.push(None);
                 } else {
-                    dof_map.push(Some(nf));
-                    nf += 1;
+                    dof_map.push(Some(next_free));
+                    next_free += 1;
                 }
             }
         }
-        let m = gs.members.len();
-        let mut coo = Coo::new(nf, 2 * m);
-        for (k, &(a, b)) in gs.members.iter().enumerate() {
-            let dx = (gs.nodes[b][0] - gs.nodes[a][0]) / gs.lengths[k];
-            let dy = (gs.nodes[b][1] - gs.nodes[a][1]) / gs.lengths[k];
-            // Unit tension in member k pulls node a toward b and b
-            // toward a.
-            let entries = [(2 * a, dx), (2 * a + 1, dy), (2 * b, -dx), (2 * b + 1, -dy)];
-            for (dof, v) in entries {
-                if let Some(row) = dof_map[dof] {
-                    coo.push(row, k, v); // q⁺ column
-                    coo.push(row, m + k, -v); // q⁻ column
-                }
-            }
+        debug_assert_eq!(next_free, free_dofs);
+
+        let a_mat = assemble_equilibrium(
+            nodes,
+            members,
+            lengths,
+            &dof_map,
+            free_dofs,
+            variables,
+            staged_triplets,
+            cx,
+        )?;
+        if a_mat.nrows() != free_dofs
+            || a_mat.ncols() != variables
+            || a_mat.nnz() != staged_triplets
+            || !csr_is_finite_and_nonzero(&a_mat, cx, "layout sparse validation")?
+        {
+            return Err(TrussConstructionError::InvalidInput {
+                field: "equilibrium matrix",
+                requirement: "must have exact dimensions/nnz and finite nonzero state",
+            });
         }
-        let a_mat = coo.assemble();
-        let at = fs_sparse::ops::transpose(&a_mat);
-        let mut b_vec = vec![0.0f64; nf];
+        let at = transpose_checked(&a_mat, cx)?;
+        if at.nrows() != variables
+            || at.ncols() != free_dofs
+            || at.nnz() != a_mat.nnz()
+            || !csr_is_finite_and_nonzero(&at, cx, "layout transpose validation")?
+        {
+            return Err(TrussConstructionError::InvalidInput {
+                field: "equilibrium transpose",
+                requirement: "must preserve finite canonical matrix state",
+            });
+        }
+
+        let mut b_vec = zeroed_f64(
+            free_dofs,
+            "layout load vector",
+            cx,
+            "layout load-vector allocation",
+        )?;
         for node in 0..n {
-            let f = loads(node);
+            if node % LAYOUT_POLL_STRIDE == 0 {
+                poll(cx, "layout load assembly")?;
+            }
             for comp in 0..2 {
                 if let Some(row) = dof_map[2 * node + comp] {
-                    b_vec[row] = f[comp];
+                    b_vec[row] = case.loads[node][comp];
                 }
             }
         }
-        let mut c = Vec::with_capacity(2 * m);
-        for &l in &gs.lengths {
-            c.push(l / sigma_y);
-        }
-        for &l in &gs.lengths {
-            c.push(l / sigma_y);
-        }
-        // Power iteration for ‖A‖ (deterministic start).
-        let mut v: Vec<f64> = (0..2 * m).map(|i| 1.0 + ((i % 7) as f64) * 0.1).collect();
-        let mut norm_est = 1.0;
-        let mut av = vec![0.0f64; nf];
-        for _ in 0..30 {
-            a_mat.spmv(&v, &mut av);
-            let mut atv = vec![0.0f64; 2 * m];
-            at.spmv(&av, &mut atv);
-            let nrm = atv.iter().map(|x| x * x).sum::<f64>().sqrt().max(1e-30);
-            norm_est = nrm.sqrt();
-            for (vi, ai) in v.iter_mut().zip(&atv) {
-                *vi = ai / nrm;
+        let mut squared_load_norm = 0.0f64;
+        let mut load_entries_visited = 0usize;
+        for (row, &load) in b_vec.iter().enumerate() {
+            if row % LAYOUT_POLL_STRIDE == 0 {
+                poll(cx, "layout load validation")?;
+            }
+            let squared = load * load;
+            squared_load_norm += squared;
+            if !load.is_finite() || !squared.is_finite() || !squared_load_norm.is_finite() {
+                return Err(TrussConstructionError::InvalidInput {
+                    field: "free load vector",
+                    requirement: "must have a finite squared Euclidean norm",
+                });
+            }
+            if load != 0.0 {
+                let mut connected = false;
+                for &coefficient in a_mat.row(row).1 {
+                    if load_entries_visited.is_multiple_of(LAYOUT_POLL_STRIDE) {
+                        poll(cx, "layout loaded-row validation")?;
+                    }
+                    load_entries_visited += 1;
+                    connected |= coefficient != 0.0;
+                }
+                if !connected {
+                    return Err(TrussConstructionError::InvalidInput {
+                        field: "free load vector",
+                        requirement: "must act only on free degrees of freedom connected to a member",
+                    });
+                }
             }
         }
-        LayoutLp {
+        if squared_load_norm < MIN_LAYOUT_LOAD_NORM_SQUARED {
+            return Err(TrussConstructionError::InvalidInput {
+                field: "free load vector",
+                requirement: "must have squared Euclidean norm at least 1e-60",
+            });
+        }
+
+        let mut c = empty_with_capacity(variables, "layout objective costs")?;
+        for (index, &length) in lengths.iter().enumerate() {
+            if index % LAYOUT_POLL_STRIDE == 0 {
+                poll(cx, "layout cost assembly")?;
+            }
+            let cost = length / sigma_y;
+            if !cost.is_finite() || cost <= 0.0 {
+                return Err(TrussConstructionError::InvalidInput {
+                    field: "layout objective costs",
+                    requirement: "must remain finite and positive",
+                });
+            }
+            c.push(cost);
+        }
+        for (index, &length) in lengths.iter().enumerate() {
+            if index % LAYOUT_POLL_STRIDE == 0 {
+                poll(cx, "layout cost assembly")?;
+            }
+            c.push(length / sigma_y);
+        }
+        // Power iteration for ‖A‖ (deterministic start).
+        let mut v = empty_with_capacity(variables, "layout norm input")?;
+        for i in 0..variables {
+            if i % LAYOUT_POLL_STRIDE == 0 {
+                poll(cx, "layout norm-input allocation")?;
+            }
+            v.push(1.0 + (i % 7) as f64 * 0.1);
+        }
+        let mut norm_est = 1.0;
+        let mut av = zeroed_f64(
+            free_dofs,
+            "layout norm row workspace",
+            cx,
+            "layout norm-row allocation",
+        )?;
+        let mut atv = zeroed_f64(
+            variables,
+            "layout norm column workspace",
+            cx,
+            "layout norm-column allocation",
+        )?;
+        let mut completed_iterations = 0usize;
+        let mut fallback_used = false;
+        while completed_iterations < 30 {
+            poll(cx, "layout norm estimation")?;
+            spmv_checked(&a_mat, &v, &mut av, cx, "layout norm forward multiply")?;
+            spmv_checked(&at, &av, &mut atv, cx, "layout norm transpose multiply")?;
+            for (index, value) in av.iter().enumerate() {
+                if index % LAYOUT_POLL_STRIDE == 0 {
+                    poll(cx, "layout norm-row validation")?;
+                }
+                if !value.is_finite() {
+                    return Err(TrussConstructionError::InvalidInput {
+                        field: "layout norm estimate",
+                        requirement: "must retain finite power-iteration state",
+                    });
+                }
+            }
+            let mut squared_norm = 0.0f64;
+            for (index, value) in atv.iter().enumerate() {
+                if index % LAYOUT_POLL_STRIDE == 0 {
+                    poll(cx, "layout norm-column validation")?;
+                }
+                if !value.is_finite() {
+                    return Err(TrussConstructionError::InvalidInput {
+                        field: "layout norm estimate",
+                        requirement: "must retain finite power-iteration state",
+                    });
+                }
+                squared_norm += value * value;
+            }
+            if squared_norm == 0.0 && !fallback_used {
+                let fallback_column = first_nonzero_column(&a_mat, cx)?;
+                for (index, value) in v.iter_mut().enumerate() {
+                    if index % LAYOUT_POLL_STRIDE == 0 {
+                        poll(cx, "layout norm fallback seed")?;
+                    }
+                    *value = 0.0;
+                }
+                v[fallback_column] = 1.0;
+                fallback_used = true;
+                continue;
+            }
+            if !squared_norm.is_finite() || squared_norm <= 0.0 {
+                return Err(TrussConstructionError::InvalidInput {
+                    field: "layout norm estimate",
+                    requirement: "must have finite positive iteration norm",
+                });
+            }
+            let nrm = squared_norm.sqrt();
+            norm_est = nrm.sqrt();
+            if !norm_est.is_finite() || norm_est <= 0.0 {
+                return Err(TrussConstructionError::InvalidInput {
+                    field: "layout norm estimate",
+                    requirement: "must be finite and positive",
+                });
+            }
+            for (index, (vi, ai)) in v.iter_mut().zip(&atv).enumerate() {
+                if index % LAYOUT_POLL_STRIDE == 0 {
+                    poll(cx, "layout norm-vector update")?;
+                }
+                *vi = ai / nrm;
+            }
+            completed_iterations += 1;
+        }
+        poll(cx, "layout publication")?;
+        Ok(LayoutLp {
             a: a_mat,
             at,
             c,
             b: b_vec,
             dof_map,
             norm_est,
-        }
+        })
     }
 
     /// Run PDHG from a warm start (zeros for cold); returns the

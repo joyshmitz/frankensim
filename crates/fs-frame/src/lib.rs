@@ -26,7 +26,7 @@ pub mod layout;
 pub use cvar::{CvarDesign, cvar_mass_min, ensemble_cvar};
 pub use fragility::{FragilityReport, e_stopped_fragility};
 pub use history::{StoryFrame, StoryParams, peak_drift};
-pub use layout::{LayoutReport, layout_and_size};
+pub use layout::{LayoutError, LayoutReport, layout_and_size};
 
 /// Crate version, re-exported for provenance stamping.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -3,11 +3,13 @@
 //! fragility with verified coverage and ledgered savings, CVaR mass
 //! minimization, and the replay/drill gates.
 
+use fs_exec::{Budget, CancelGate, Cx, ExecMode, StreamKey};
 use fs_frame::cvar::empirical_cvar;
 use fs_frame::history::{StoryFrame, StoryParams, peak_drift};
-use fs_frame::{cvar_mass_min, e_stopped_fragility, ensemble_cvar, layout_and_size};
+use fs_frame::{LayoutError, cvar_mass_min, e_stopped_fragility, ensemble_cvar, layout_and_size};
 use fs_qty::{Dims, QtyAny};
 use fs_scenario::ensemble::{SpectrumModel, StochasticEnsemble};
+use fs_truss::ground::TrussConstructionError;
 
 fn verdict(name: &str, pass: bool, details: &str) {
     println!("{{\"test\":\"{name}\",\"pass\":{pass},\"details\":\"{details}\"}}");
@@ -16,6 +18,29 @@ fn verdict(name: &str, pass: bool, details: &str) {
 
 const TIME: Dims = Dims([0, 0, 1, 0, 0]);
 const RATE: Dims = Dims([0, 0, -1, 0, 0]);
+
+fn with_cx<R>(cancelled: bool, f: impl FnOnce(&Cx<'_>) -> R) -> R {
+    let gate = CancelGate::new();
+    if cancelled {
+        gate.request();
+    }
+    let pool = fs_alloc::ArenaPool::new(fs_alloc::ArenaConfig::default());
+    pool.scope(|arena| {
+        let cx = Cx::new(
+            &gate,
+            arena,
+            StreamKey {
+                seed: 0xF2A4_E001,
+                kernel_id: 1,
+                tile: 0,
+                iteration: 0,
+            },
+            Budget::INFINITE,
+            ExecMode::Deterministic,
+        );
+        f(&cx)
+    })
+}
 
 fn kt_ensemble(members: u32, s0: f64, seed: u64) -> StochasticEnsemble {
     StochasticEnsemble {
@@ -39,7 +64,10 @@ fn kt_ensemble(members: u32, s0: f64, seed: u64) -> StochasticEnsemble {
 #[test]
 fn frame_001_layout_and_sizing() {
     let catalog: Vec<f64> = (1..=20).map(|k| 2e-4 * f64::from(k)).collect();
-    let report = layout_and_size(5, 3, 4.0, 2.0, 250e6, 200e9, &catalog);
+    let report = with_cx(false, |cx| {
+        layout_and_size(5, 3, 4.0, 2.0, 250e6, 200e9, &catalog, cx)
+            .expect("valid smoke-tier frame layout is admitted")
+    });
     verdict(
         "frame-001-lp-diagnostics",
         report.gap < 1e-3 && report.residual < 1e-3 && report.volume > 0.0,
@@ -59,6 +87,26 @@ fn frame_001_layout_and_sizing() {
             report.audit.pruned,
             report.audit.eq_residual
         ),
+    );
+}
+
+/// G4: a pre-cancelled construction scope refuses the frame before publishing
+/// a partial ground structure or LP.
+#[test]
+fn frame_002_pre_cancelled_layout_is_refused() {
+    let catalog: Vec<f64> = (1..=20).map(|k| 2e-4 * f64::from(k)).collect();
+    let result = with_cx(true, |cx| {
+        layout_and_size(5, 3, 4.0, 2.0, 250e6, 200e9, &catalog, cx)
+    });
+    verdict(
+        "frame-002-pre-cancel-refusal",
+        matches!(
+            result,
+            Err(LayoutError::Construction(
+                TrussConstructionError::Cancelled { .. }
+            ))
+        ),
+        "pre-cancelled construction returns a structured refusal",
     );
 }
 

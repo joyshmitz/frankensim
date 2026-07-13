@@ -31,8 +31,13 @@ pub mod lp;
 pub mod rodcheck;
 pub mod sizing;
 
-pub use ground::{GroundRules, GroundStructure};
-pub use lp::{LayoutLp, MAX_PDHG_ITERS, PdhgError, PdhgReport, PdhgSettings};
+pub use ground::{
+    ESTIMATED_GRAPH_BYTES_PER_MEMBER, ESTIMATED_GRAPH_BYTES_PER_NODE, GroundLimits, GroundRules,
+    GroundStructure, TrussConstructionError,
+};
+pub use lp::{
+    LayoutCase, LayoutLimits, LayoutLp, MAX_PDHG_ITERS, PdhgError, PdhgReport, PdhgSettings,
+};
 pub use rodcheck::rod_buckling_check;
 pub use sizing::{CatalogAudit, SizedMember, size_and_snap};
 

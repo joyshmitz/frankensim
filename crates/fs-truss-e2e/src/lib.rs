@@ -26,8 +26,12 @@
 //! Deterministic; no dependencies beyond the composed crates.
 
 use fs_evidence::Color;
+use fs_exec::Cx;
 use fs_tropical::{MAX_TASK_DAG_EDGES, MAX_TASK_DAG_NODES, TaskDag, TropicalError};
-use fs_truss::{GroundRules, GroundStructure, LayoutLp, PdhgError, PdhgSettings};
+use fs_truss::{
+    GroundLimits, GroundRules, GroundStructure, LayoutCase, LayoutLimits, LayoutLp, PdhgError,
+    PdhgSettings, TrussConstructionError,
+};
 use std::collections::BTreeSet;
 
 /// Maximum grid nodes admitted to the cubic ground-structure constructor.
@@ -72,6 +76,8 @@ pub enum TrussError {
     },
     /// The checked PDHG solver refused its controls or warm-start state.
     Solver(PdhgError),
+    /// Ground-structure or LP construction refused before publishing output.
+    Construction(TrussConstructionError),
     /// Tropical analysis refused solver-derived task data.
     Tropical(TropicalError),
 }
@@ -100,6 +106,9 @@ impl core::fmt::Display for TrussError {
                 write!(formatter, "truss load-path input {reason}")
             }
             Self::Solver(error) => write!(formatter, "truss solver refused: {error}"),
+            Self::Construction(error) => {
+                write!(formatter, "truss construction refused: {error}")
+            }
             Self::Tropical(error) => write!(formatter, "truss load-path analysis refused: {error}"),
         }
     }
@@ -116,6 +125,23 @@ impl From<TropicalError> for TrussError {
 impl From<PdhgError> for TrussError {
     fn from(value: PdhgError) -> Self {
         Self::Solver(value)
+    }
+}
+
+impl From<TrussConstructionError> for TrussError {
+    fn from(value: TrussConstructionError) -> Self {
+        match value {
+            TrussConstructionError::WorkBudget {
+                resource,
+                limit,
+                observed,
+            } => Self::WorkBudget {
+                resource,
+                limit,
+                observed,
+            },
+            other => Self::Construction(other),
+        }
     }
 }
 
@@ -381,7 +407,8 @@ pub fn analyze_load_path(
 /// # Errors
 /// Returns a structured refusal for invalid/unbounded grid parameters, an empty
 /// candidate set, an excessive construction/solver budget, or invalid
-/// solver-derived path data.
+/// solver-derived path data. Ground and LP construction also return structured
+/// allocation or cancellation refusals through the supplied context.
 #[allow(clippy::too_many_lines)] // One bounded campaign, diagnostics, and evidence report pipeline.
 pub fn run_campaign(
     nx: usize,
@@ -389,6 +416,7 @@ pub fn run_campaign(
     w: f64,
     h: f64,
     gap_tol: f64,
+    cx: &Cx<'_>,
 ) -> Result<TrussReport, TrussError> {
     if nx < 2 || ny < 2 {
         return Err(TrussError::InvalidInput {
@@ -440,14 +468,20 @@ pub fn run_campaign(
             requirement: "must be finite and in 0 < gap_tol <= 1",
         });
     }
-    let rules = GroundRules {
-        min_len: 0.1,
-        max_len: w.hypot(h) / 1.5,
-        angles: Vec::new(),
-        angle_tol: 1e-6,
-    };
-    let gs = GroundStructure::grid(nx, ny, w, h, &rules);
-    let m = gs.members.len();
+    let max_member_length = w.hypot(h) / 1.5;
+    if max_member_length < 0.1 {
+        return Err(TrussError::NoCandidateMembers);
+    }
+    let rules = GroundRules::try_new(0.1, max_member_length, Vec::new(), 1e-6)?;
+    let ground_limits = GroundLimits::try_new(
+        MAX_TRUSS_CAMPAIGN_NODES,
+        MAX_TRUSS_CAMPAIGN_NODES * (MAX_TRUSS_CAMPAIGN_NODES - 1) / 2,
+        MAX_TRUSS_GROUND_CHECKS,
+        MAX_TRUSS_CANDIDATE_MEMBERS,
+        1 << 20,
+    )?;
+    let gs = GroundStructure::try_grid(nx, ny, w, h, &rules, ground_limits, cx)?;
+    let m = gs.members().len();
     if m == 0 {
         return Err(TrussError::NoCandidateMembers);
     }
@@ -462,63 +496,67 @@ pub fn run_campaign(
     // Left edge supported; unit downward load at the free bottom-right node.
     let support_nodes: Vec<usize> = (0..ny).map(|row| row * nx).collect();
     let support_set: BTreeSet<usize> = support_nodes.iter().copied().collect();
-    let supported = |node: usize, _comp: usize| support_set.contains(&node);
     let load_node = nx - 1;
-    let loads = |node: usize| {
-        if node == load_node {
-            [0.0, -1.0]
-        } else {
-            [0.0, 0.0]
-        }
-    };
-
-    let lp = LayoutLp::assemble(&gs, &supported, &loads, 1.0);
-    if lp.b.iter().all(|load| *load == 0.0) {
-        return Err(TrussError::InvalidInput {
-            field: "load degree of freedom",
-            requirement: "must survive support elimination",
-        });
-    }
+    let supported: Vec<[bool; 2]> = (0..node_count)
+        .map(|node| [support_set.contains(&node); 2])
+        .collect();
+    let loads: Vec<[f64; 2]> = (0..node_count)
+        .map(|node| {
+            if node == load_node {
+                [0.0, -1.0]
+            } else {
+                [0.0, 0.0]
+            }
+        })
+        .collect();
+    let case = LayoutCase::try_new(supported, loads, node_count)?;
+    let lp = LayoutLp::try_assemble(&gs, &case, 1.0, LayoutLimits::default(), cx)?;
     // Two sparse multiply-add passes (4*nnz scalar arithmetic), the projected
     // primal update plus extrapolation (6*nvar), and the dual update (3*nrow).
     // Diagnostic checkpoints add two more SpMVs and bounded reductions.
-    let per_iteration =
-        lp.a.nnz()
-            .checked_mul(4)
-            .and_then(|steps| {
-                lp.c.len()
-                    .checked_mul(10)
-                    .and_then(|vector_steps| steps.checked_add(vector_steps))
-            })
-            .and_then(|steps| {
-                lp.b.len()
-                    .checked_mul(3)
-                    .and_then(|row_steps| steps.checked_add(row_steps))
-            })
-            .ok_or(TrussError::WorkBudget {
-                resource: "PDHG scalar steps",
-                limit: MAX_TRUSS_PDHG_SCALAR_STEPS,
-                observed: usize::MAX,
-            })?;
-    let per_diagnostic =
-        lp.a.nnz()
-            .checked_mul(4)
-            .and_then(|steps| {
-                lp.c.len()
-                    .checked_mul(6)
-                    .and_then(|vector_steps| steps.checked_add(vector_steps))
-            })
-            .and_then(|steps| {
-                lp.b.len()
-                    .checked_mul(7)
-                    .and_then(|row_steps| steps.checked_add(row_steps))
-            })
-            .and_then(|steps| steps.checked_add(16))
-            .ok_or(TrussError::WorkBudget {
-                resource: "PDHG scalar steps",
-                limit: MAX_TRUSS_PDHG_SCALAR_STEPS,
-                observed: usize::MAX,
-            })?;
+    let per_iteration = lp
+        .a()
+        .nnz()
+        .checked_mul(4)
+        .and_then(|steps| {
+            lp.c()
+                .len()
+                .checked_mul(10)
+                .and_then(|vector_steps| steps.checked_add(vector_steps))
+        })
+        .and_then(|steps| {
+            lp.b()
+                .len()
+                .checked_mul(3)
+                .and_then(|row_steps| steps.checked_add(row_steps))
+        })
+        .ok_or(TrussError::WorkBudget {
+            resource: "PDHG scalar steps",
+            limit: MAX_TRUSS_PDHG_SCALAR_STEPS,
+            observed: usize::MAX,
+        })?;
+    let per_diagnostic = lp
+        .a()
+        .nnz()
+        .checked_mul(4)
+        .and_then(|steps| {
+            lp.c()
+                .len()
+                .checked_mul(6)
+                .and_then(|vector_steps| steps.checked_add(vector_steps))
+        })
+        .and_then(|steps| {
+            lp.b()
+                .len()
+                .checked_mul(7)
+                .and_then(|row_steps| steps.checked_add(row_steps))
+        })
+        .and_then(|steps| steps.checked_add(16))
+        .ok_or(TrussError::WorkBudget {
+            resource: "PDHG scalar steps",
+            limit: MAX_TRUSS_PDHG_SCALAR_STEPS,
+            observed: usize::MAX,
+        })?;
     let iteration_steps =
         per_iteration
             .checked_mul(TRUSS_PDHG_MAX_ITERS)
@@ -558,7 +596,7 @@ pub fn run_campaign(
 
     // Member force (q⁺ − q⁻) and material volume (both split costs).
     let force = |k: usize| x[k] - x[m + k];
-    let volume = |k: usize| lp.c[k] * x[k] + lp.c[m + k] * x[m + k];
+    let volume = |k: usize| lp.c()[k] * x[k] + lp.c()[m + k] * x[m + k];
     let max_force = (0..m).map(|k| force(k).abs()).fold(0.0, f64::max);
     let active_tol = 1e-3 * max_force.max(1e-12);
 
@@ -567,8 +605,8 @@ pub fn run_campaign(
 
     let volumes: Vec<f64> = (0..m).map(volume).collect();
     let load_path = analyze_load_path(
-        &gs.nodes,
-        &gs.members,
+        gs.nodes(),
+        gs.members(),
         &active,
         &volumes,
         load_node,

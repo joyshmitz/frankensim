@@ -14,8 +14,12 @@ layer = "L4"
 fnx-classes = { path = "../../../franken_networkx/crates/fnx-classes" }
 fnx-runtime = { path = "../../../franken_networkx/crates/fnx-runtime" }
 fs-constraint = { path = "../fs-constraint" }
+fs-exec = { path = "../fs-exec" }
 fs-solid = { path = "../fs-solid" }
 fs-sparse = { path = "../fs-sparse" }
+
+[dev-dependencies]
+fs-alloc = { path = "../fs-alloc" }
 
 [lints]
 workspace = true

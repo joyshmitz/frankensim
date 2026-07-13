@@ -10,11 +10,13 @@ Composes `fs-truss` (ground-structure LP + PDHG diagnostics), `fs-tropical`
 
 ## Public types and semantics
 
-- `run_campaign(nx, ny, w, h, gap_tol) -> Result<TrussReport, TrussError>` —
+- `run_campaign(nx, ny, w, h, gap_tol, cx) -> Result<TrussReport, TrussError>` —
   optimizes a cantilever ground structure by PDHG and extracts a checked
   tropical path, refusing invalid solver-derived latencies. Grid dimensions
   must be at least 2x2. Admission bounds cubic ground-generation work,
   candidate members, sparse PDHG scalar work, active tasks, and path edges.
+  Ground rules, the support/load case, and the assembled sparse LP cross the
+  immutable fallible `fs-truss` admission boundary before solver work.
 - `analyze_load_path(...)` — shared native/WASM path analysis. It admits only
   unique in-range identities, finite positive weights, and a connected chain
   of at least two strictly support-ward bars from the indexed load node to an
@@ -40,7 +42,8 @@ Composes `fs-truss` (ground-structure LP + PDHG diagnostics), `fs-tropical`
 
 `TrussError` refuses degenerate/oversized grids, unsafe geometry scales,
 non-finite or non-positive tolerances, excessive construction/solver/path work,
-empty member sets, malformed path data, and incomplete load-support chains.
+allocation failure, cancellation, empty member sets, malformed path data, and
+incomplete load-support chains.
 Caller input does not panic, and a path refusal is never converted to positive
 evidence.
 
@@ -50,7 +53,10 @@ Fully deterministic (G5).
 
 ## Cancellation behavior
 
-None (a synchronous batch); production PDHG would poll `Cx` per iteration block.
+Ground construction and LP assembly poll the caller's `Cx` at deterministic
+bounded strides and return a structured cancellation refusal without publishing
+partial state. The fixed PDHG solve remains synchronous and iteration-bounded;
+solver-loop cancellation is a separate successor.
 
 ## Unsafe boundary
 
@@ -64,7 +70,8 @@ None.
 
 `tests/truss.rs`: diagnostic convergence and iteration-cap truthfulness;
 determinism; invalid/exact-bound work admission; index-based supports; and a
-synthetic disconnected-heavy-component path falsifier.
+synthetic disconnected-heavy-component path falsifier. A pre-cancelled context
+is refused before a campaign report exists.
 
 ## No-claim boundaries
 

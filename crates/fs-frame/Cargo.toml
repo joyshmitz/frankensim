@@ -12,12 +12,14 @@ layer = "L6"
 
 [dependencies]
 fs-eproc = { path = "../fs-eproc" }
+fs-exec = { path = "../fs-exec" }
 fs-scenario = { path = "../fs-scenario" }
 fs-solid = { path = "../fs-solid" }
 fs-truss = { path = "../fs-truss" }
 fs-uq = { path = "../fs-uq" }
 
 [dev-dependencies]
+fs-alloc = { path = "../fs-alloc" }
 fs-qty = { path = "../fs-qty" }
 
 [lints]

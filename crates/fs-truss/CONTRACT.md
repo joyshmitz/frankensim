@@ -11,14 +11,28 @@ steel-and-concrete flagship's engine (§15.2).
 
 ## Public types and semantics
 
-- `GroundRules`/`GroundStructure`: node grids + all-pairs candidates
-  filtered by length bounds, allowed angle sets, and
-  collinear-through-node dedup, carried as a FrankenNetworkx `Graph`;
-  generation reproducible (BTree orders), `stats()` the ledger row
-  (counts + FNV hash).
-- `LayoutLp`: the member-force LP — split tension/compression
+- `GroundRules` is immutable and admitted only through `try_new` or a finite
+  default. `GroundLimits` applies caller limits beneath crate hard ceilings.
+  `GroundStructure::try_grid` and `try_from_parts` return immutable nodes,
+  canonical members, length-consistent vectors, and FrankenNetworkx graph state
+  only after complete validation, bounded pair/triplet/member/retained-byte work,
+  fallible vector reservations, and a final cancellation checkpoint. Imported
+  within-tolerance lengths are replaced with recomputed canonical `hypot` bits;
+  graph compatibility timestamps are cleared before publication.
+  Generation is reproducible and `stats()` is the ledger row (counts + FNV
+  hash).
+- `LayoutCase` immutably admits exact-shape support flags and finite nodal
+  loads. `LayoutLimits` bounds free DOFs, split variables, staged sparse
+  triplets, and retained LP storage beneath hard ceilings.
+- `LayoutLp::try_assemble`: the member-force LP — split tension/compression
   variables `q⁺, q⁻ ≥ 0`, volume objective `Σ l(q⁺+q⁻)/σ_y`, nodal
-  equilibrium on free DOFs. `solve` = PDHG (Chambolle–Pock) with
+  equilibrium on free DOFs. Assembly validates canonical ground identity,
+  surviving connected load DOFs, exact sparse dimensions/nnz, finite positive
+  load norm at least `1e-30` with finite squared norm, costs and norm state,
+  and cancellation before publishing immutable LP state. Sparse A/A-transpose
+  construction uses fallibly reserved canonical CSR buffers directly and polls
+  throughout counting, fill, validation, transpose, and norm multiplies.
+  `solve` = PDHG (Chambolle–Pock) with
   power-iteration step sizing, sparse matvecs, warm starts across load
   cases, deterministic iterations. `solve` is fallible, caps direct solves at
   one million iterations, and validates controls plus warm-start shape/domain
@@ -42,7 +56,10 @@ steel-and-concrete flagship's engine (§15.2).
 ## Invariants
 
 1. Ground rules hold member-by-member and generation is bitwise
-   reproducible (truss-001).
+   reproducible. Exact-cap admission succeeds; cap-plus-one, malformed parallel
+   vectors, noncanonical member identity, inconsistent lengths, unsafe numeric
+   state, allocation pressure, and cancellation return structured refusal with
+   no partial `GroundStructure` (truss-001 and admission battery).
 2. PDHG reaches hand-provable optima (aligned tie `PL/σ`; symmetric
    two-bar `2PL/σ`) to 1e-4 with objective separation < 1e-5,
    equilibrium residual < 1e-5, complementary slackness and observed dual
@@ -65,13 +82,16 @@ steel-and-concrete flagship's engine (§15.2).
 
 ## Error model
 
-Structured asserts remain on ground-construction programmer contracts
-(degenerate grids, empty clouds). `LayoutLp::solve` returns `PdhgError` for
-zero iteration/check intervals, invalid tolerance, malformed warm-start shape,
-or non-finite/out-of-domain warm state. The objective-separation and KKT
-numbers are diagnostics, not a rigorous optimum interval; `NaN` catalog area
-marks an un-satisfiable member in the audit rather than silently
-clamping.
+`GroundRules`, `GroundLimits`, `GroundStructure`, `LayoutCase`, `LayoutLimits`,
+and `LayoutLp::try_assemble` return `TrussConstructionError` for invalid input,
+parallel-vector shape mismatch, work/retained-byte excess, failed vector
+reservation, or observed cancellation. No public ground or layout constructor
+panics on caller input or publishes partial state. `LayoutLp::solve` separately
+returns `PdhgError` for zero iteration/check intervals, invalid tolerance,
+malformed warm-start shape, or non-finite/out-of-domain warm state. The
+objective-separation and KKT numbers are diagnostics, not a rigorous optimum
+interval; `NaN` catalog area marks an un-satisfiable member in the audit rather
+than silently clamping.
 
 ## Determinism class
 
@@ -81,8 +101,11 @@ recorded.
 
 ## Cancellation behavior
 
-Bounded synchronous loops (iteration caps everywhere); chunked Cx
-polling belongs to the fs-exec driver.
+Ground construction and LP assembly poll an explicit `Cx` at deterministic
+bounded strides and immediately before publication. Cancellation returns a
+structured `Cancelled { stage }` refusal; no partially built authoritative
+value escapes. The PDHG solver remains iteration-bounded but does not yet poll
+`Cx` inside its fixed synchronous solve loop.
 
 ## Unsafe boundary
 
@@ -94,8 +117,10 @@ None.
 
 ## Conformance tests
 
-`tests/battery.rs`: truss-001 rules + determinism; truss-002 provable
-oracles with numerical diagnostics and malformed-solver-input refusal;
+`tests/battery.rs`: truss-001 rules + determinism plus adversarial construction
+admission, exact-cap/cap-plus-one, malformed-part, numerical, load, and
+cancellation refusals; truss-002 provable oracles with numerical diagnostics
+and malformed-solver-input refusal;
 truss-003 refinement monotonicity within declared tolerances;
 truss-004 scale trend + warm starts; truss-005 sizing/snap audit;
 truss-006 rod spot check.

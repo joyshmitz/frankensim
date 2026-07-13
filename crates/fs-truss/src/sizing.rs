@@ -64,7 +64,7 @@ pub fn size_and_snap(
     catalog: &[f64],
     prune_frac: f64,
 ) -> CatalogAudit {
-    let m = gs.members.len();
+    let m = gs.members().len();
     let forces: Vec<f64> = (0..m).map(|k| x[k] - x[m + k]).collect();
     let fmax = forces
         .iter()
@@ -91,7 +91,7 @@ pub fn size_and_snap(
     let mut all_pass = true;
     for (si, &k) in survivors.iter().enumerate() {
         let q = q_refit[si];
-        let l = gs.lengths[k];
+        let l = gs.lengths()[k];
         let area_yield = q.abs() / sigma_y;
         let area_buckling = if q < 0.0 {
             // Euler with pinned ends, solid square I = A²/12:
@@ -132,7 +132,7 @@ pub fn size_and_snap(
         audit.rows.push(row);
         audit.members.push(SizedMember {
             index: k,
-            ends: gs.members[k],
+            ends: gs.members()[k],
             force: q,
             length: l,
             area_yield,
@@ -147,7 +147,7 @@ pub fn size_and_snap(
 /// Least-squares force refit on a survivor subset: minimize
 /// ‖B_s q − f‖ (normal equations by conjugate gradients, dense-free).
 fn refit_forces(gs: &GroundStructure, lp: &LayoutLp, survivors: &[usize]) -> (Vec<f64>, f64) {
-    let nrow = lp.b.len();
+    let nrow = lp.b().len();
     let ns = survivors.len();
     // Column extraction: b_s columns of the SIGNED equilibrium matrix
     // (q⁺ columns of A, i.e. columns 0..m).
@@ -155,11 +155,11 @@ fn refit_forces(gs: &GroundStructure, lp: &LayoutLp, survivors: &[usize]) -> (Ve
         out.clear();
         out.resize(nrow, 0.0);
         // A's q⁺ column k = signed geometry column.
-        let (a, b) = gs.members[k];
-        let dx = (gs.nodes[b][0] - gs.nodes[a][0]) / gs.lengths[k];
-        let dy = (gs.nodes[b][1] - gs.nodes[a][1]) / gs.lengths[k];
+        let (a, b) = gs.members()[k];
+        let dx = (gs.nodes()[b][0] - gs.nodes()[a][0]) / gs.lengths()[k];
+        let dy = (gs.nodes()[b][1] - gs.nodes()[a][1]) / gs.lengths()[k];
         for (dof, v) in [(2 * a, dx), (2 * a + 1, dy), (2 * b, -dx), (2 * b + 1, -dy)] {
-            if let Some(row) = lp.dof_map[dof] {
+            if let Some(row) = lp.dof_map()[dof] {
                 out[row] = v;
             }
         }
@@ -185,7 +185,7 @@ fn refit_forces(gs: &GroundStructure, lp: &LayoutLp, survivors: &[usize]) -> (Ve
         out
     };
     // CG on the normal equations BᵀB q = Bᵀ f.
-    let bt_f = rmatvec(&lp.b);
+    let bt_f = rmatvec(lp.b());
     let mut q = vec![0.0f64; ns];
     let mut r = bt_f.clone();
     let mut p = r.clone();
@@ -213,10 +213,10 @@ fn refit_forces(gs: &GroundStructure, lp: &LayoutLp, survivors: &[usize]) -> (Ve
         }
     }
     let ax = matvec(&q);
-    let bnorm = lp.b.iter().map(|v| v * v).sum::<f64>().sqrt().max(1e-30);
+    let bnorm = lp.b().iter().map(|v| v * v).sum::<f64>().sqrt().max(1e-30);
     let res = ax
         .iter()
-        .zip(&lp.b)
+        .zip(lp.b())
         .map(|(a, b)| (a - b) * (a - b))
         .sum::<f64>()
         .sqrt()
