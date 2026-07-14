@@ -1,11 +1,12 @@
 //! Sheaf-certificate conformance (the wqd.13 bead). Acceptance: verdicts
 //! correct with correct localization on seeded watertight/leaky
 //! multi-chart fixtures; interval verification SOUND (no PASS on a truly
-//! leaky seam — ray-parity cross-examines); δδ = 0 bitwise; verdict
-//! invariance under patch re-indexing (exact) and rigid motion
-//! (tolerance-level); the adversarial seam zoo (near-tangent, T-junction)
-//! behaves honestly; the coboundary/structural split feeds the merge
-//! semantics.
+//! leaky retained sample); δδ = 0 bitwise; the retained two-chart mismatch
+//! bound is invariant under swapping chart order (exact), and the fixture is
+//! stable under rigid motion (tolerance-level); the adversarial seam zoo
+//! (near-tangent, T-junction)
+//! behaves honestly; the graph-gauge diagnostic remains explicitly separate
+//! from the feature-gated cohomology classifier used by merge semantics.
 
 use asupersync::types::Budget;
 use fs_evidence::NumericalKind;
@@ -13,8 +14,8 @@ use fs_exec::{CancelGate, Cx, ExecMode, StreamKey};
 use fs_geom::fixtures::{BoxChart, SphereChart};
 use fs_geom::{
     Aabb, Chart, Interface, InterfaceSample, Point3, RAY_PARITY_MAX_EVALUATIONS, RayEndpoint,
-    RayParityError, SamplingDomainError, SheafBuildError, SheafComplex, SheafVerdict, Vec3,
-    ray_parity_falsifier,
+    RayParityError, SamplingDomainError, SheafBuildError, SheafComplex, SheafVerdict, TripleCell,
+    Vec3, ray_parity_falsifier,
 };
 use fs_ivl::Interval;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -402,27 +403,39 @@ fn sh_001_verdicts_and_localization() {
             "interval-verified"
         );
         // Leaky: radius off by 1e-2 — FAIL, localized to the (0,1) seam,
-        // with the mismatch magnitude ~ delta.
+        // with the mismatch magnitude ~ delta. This two-vertex, one-edge
+        // adjacency graph is a tree, so its first graph cohomology is zero:
+        // the failure is an interface violation, not an H¹ obstruction.
         let (a2, b2) = leaky_pair(1e-2);
         let charts2: Vec<&dyn Chart> = vec![&a2, &b2];
         let complex2 = SheafComplex::from_charts(&charts2, cx).expect("bounded sheaf domain");
         let ev2 = complex2.watertightness(1e-4);
         match &ev2.value {
             SheafVerdict::Fail {
-                obstruction,
-                coboundary_share,
+                interface_violations,
+                gauge_fit_share,
             } => {
-                assert_eq!(obstruction[0].0, (0, 1), "offending interface named");
+                assert_eq!(
+                    complex2.n_patches,
+                    complex2.interfaces.len() + 1,
+                    "the connected adjacency graph is a tree and has H1 = 0"
+                );
+                assert_eq!(
+                    interface_violations[0].0,
+                    (0, 1),
+                    "offending interface named"
+                );
                 assert!(
-                    obstruction[0].1 > 5e-3 && obstruction[0].1 < 2e-2,
+                    interface_violations[0].1 > 5e-3 && interface_violations[0].1 < 2e-2,
                     "mismatch magnitude ~ delta: {}",
-                    obstruction[0].1
+                    interface_violations[0].1
                 );
                 // A pure radius offset is a CONSTANT mismatch on the seam —
-                // exactly the coboundary (gauge) component.
+                // graph-gauge explained, without a topology claim.
                 assert!(
-                    coboundary_share.is_some_and(|share| share > 0.9),
-                    "constant seam mismatch is reconcilable: {coboundary_share:?}"
+                    gauge_fit_share.is_some_and(|share| share > 0.9),
+                    "constant seam mismatch is graph-gauge explained: \
+                     {gauge_fit_share:?}"
                 );
             }
             other => panic!("leaky seam must fail: {other:?}"),
@@ -430,7 +443,7 @@ fn sh_001_verdicts_and_localization() {
         verdict_line(
             "sh-001",
             "identical charts PASS; radius leak FAILs at the named seam with ~delta \
-             magnitude and >0.9 coboundary share",
+             magnitude and >0.9 graph-gauge explained share, without an H1 claim",
         );
     });
 }
@@ -450,11 +463,11 @@ fn sh_001b_overflowing_section_diagnostic_is_explicitly_unavailable() {
                 samples: vec![sample(1e200)],
             },
             Interface {
-                patches: (1, 2),
+                patches: (0, 2),
                 samples: vec![sample(1e200)],
             },
             Interface {
-                patches: (0, 2),
+                patches: (1, 2),
                 samples: vec![sample(1e200)],
             },
         ],
@@ -463,9 +476,9 @@ fn sh_001b_overflowing_section_diagnostic_is_explicitly_unavailable() {
     let evidence = complex.watertightness(1.0);
     match evidence.value {
         SheafVerdict::Fail {
-            coboundary_share, ..
+            gauge_fit_share, ..
         } => assert_eq!(
-            coboundary_share, None,
+            gauge_fit_share, None,
             "overflow in a diagnostic least-squares split must not publish NaN or a made-up share"
         ),
         other => panic!("finite rigorous mismatches above tolerance must still falsify: {other:?}"),
@@ -473,9 +486,264 @@ fn sh_001b_overflowing_section_diagnostic_is_explicitly_unavailable() {
 }
 
 #[test]
+fn sh_001c_three_patch_pure_gauge_mismatch_is_fully_explained() {
+    let sample = |left: f64, right: f64| InterfaceSample {
+        point: Point3::new(0.0, 0.0, 0.0),
+        values: [Interval::point(left), Interval::point(right)],
+    };
+    // Patch potentials [0, 1, 3] induce edge mismatches [1, 2, 3]. The
+    // triangle has a 2-cell and the loop sum is exactly zero, so this is a
+    // pure graph gauge rather than a structural/topological witness.
+    let complex = SheafComplex {
+        sampling_clip: None,
+        n_patches: 3,
+        interfaces: vec![
+            Interface {
+                patches: (0, 1),
+                samples: vec![sample(0.0, 1.0)],
+            },
+            Interface {
+                patches: (0, 2),
+                samples: vec![sample(0.0, 3.0)],
+            },
+            Interface {
+                patches: (1, 2),
+                samples: vec![sample(1.0, 3.0)],
+            },
+        ],
+        triples: vec![TripleCell {
+            patches: (0, 1, 2),
+            samples: 1,
+        }],
+    };
+
+    let potentials = [0.0, 1.0, 3.0];
+    let d0 = complex.delta0_edges();
+    let mismatch: Vec<f64> = (0..d0.nrows())
+        .map(|row| {
+            let (columns, values) = d0.row(row);
+            columns
+                .iter()
+                .zip(values)
+                .map(|(&column, &value)| value * potentials[column])
+                .sum()
+        })
+        .collect();
+    assert_eq!(mismatch, vec![1.0, 3.0, 2.0]);
+    let d1 = complex.delta1();
+    let (columns, values) = d1.row(0);
+    let loop_sum: f64 = columns
+        .iter()
+        .zip(values)
+        .map(|(&column, &value)| value * mismatch[column])
+        .sum();
+    assert_eq!(
+        loop_sum.to_bits(),
+        0.0f64.to_bits(),
+        "the retained pure-gauge cochain must be closed bitwise"
+    );
+
+    let (_, raw, residual) = complex.section_solve();
+    assert!(raw > 0.0);
+    assert!(
+        residual <= raw * 1e-24,
+        "pure gauge mismatch must have no edge-mean fit residual: raw={raw}, residual={residual}"
+    );
+    match complex.watertightness(1e-6).value {
+        SheafVerdict::Fail {
+            interface_violations,
+            gauge_fit_share: Some(share),
+        } => {
+            assert_eq!(interface_violations.len(), 3);
+            assert!(
+                share >= 1.0 - 1e-12,
+                "pure gauge edge means must be fully explained: {share}"
+            );
+        }
+        other => panic!("above-tolerance pure gauge seams must be localized: {other:?}"),
+    }
+}
+
+#[test]
+fn sh_001c2_gauge_share_measures_sample_energy_not_only_edge_means() {
+    let complex = SheafComplex {
+        sampling_clip: None,
+        n_patches: 2,
+        interfaces: vec![Interface {
+            patches: (0, 1),
+            samples: vec![
+                InterfaceSample {
+                    point: Point3::new(0.0, 0.0, 0.0),
+                    values: [Interval::point(0.0), Interval::point(100.0)],
+                },
+                InterfaceSample {
+                    point: Point3::new(1.0, 0.0, 0.0),
+                    values: [Interval::point(0.0), Interval::point(-98.0)],
+                },
+            ],
+        }],
+        triples: Vec::new(),
+    };
+    let (_, raw, residual) = complex.section_solve();
+    assert!((raw - 9_802.0).abs() <= f64::EPSILON * raw);
+    assert!((residual - 9_801.0).abs() <= f64::EPSILON * residual);
+    match complex.watertightness(1.0).value {
+        SheafVerdict::Fail {
+            gauge_fit_share: Some(share),
+            ..
+        } => assert!(
+            share > 0.0 && share < 0.001,
+            "removing the edge mean explains almost none of the sample energy: {share}"
+        ),
+        other => panic!("finite above-tolerance samples must localize a failure: {other:?}"),
+    }
+}
+
+#[test]
+fn sh_001d_interval_verdict_trichotomy_is_preserved() {
+    let complex_with_mismatch = |mismatch: Interval| SheafComplex {
+        sampling_clip: None,
+        n_patches: 2,
+        interfaces: vec![Interface {
+            patches: (0, 1),
+            samples: vec![InterfaceSample {
+                point: Point3::new(0.0, 0.0, 0.0),
+                values: [Interval::point(0.0), mismatch],
+            }],
+        }],
+        triples: Vec::new(),
+    };
+
+    let pass = complex_with_mismatch(Interval::new(0.25, 0.75)).watertightness(1.0);
+    assert!(matches!(pass.value, SheafVerdict::Pass { .. }));
+    assert_eq!(pass.numerical.kind, NumericalKind::Enclosure);
+
+    let fail = complex_with_mismatch(Interval::new(1.25, 1.5)).watertightness(1.0);
+    assert!(matches!(
+        fail.value,
+        SheafVerdict::Fail {
+            interface_violations,
+            ..
+        } if interface_violations.len() == 1 && interface_violations[0].0 == (0, 1)
+    ));
+    assert_eq!(fail.numerical.kind, NumericalKind::Enclosure);
+
+    let unknown = complex_with_mismatch(Interval::new(0.75, 1.25)).watertightness(1.0);
+    assert!(matches!(unknown.value, SheafVerdict::Unknown { .. }));
+    assert_eq!(unknown.numerical.kind, NumericalKind::NoClaim);
+}
+
+#[test]
+fn sh_001e_public_structure_cannot_vacuously_pass_or_alias_provenance() {
+    let empty_interface = SheafComplex {
+        sampling_clip: None,
+        n_patches: 2,
+        interfaces: vec![Interface {
+            patches: (0, 1),
+            samples: Vec::new(),
+        }],
+        triples: Vec::new(),
+    };
+    let empty = empty_interface.watertightness(1.0);
+    assert!(matches!(empty.value, SheafVerdict::Unknown { .. }));
+    assert_eq!(empty.numerical.kind, NumericalKind::NoClaim);
+
+    let malformed_scope = SheafComplex {
+        sampling_clip: Some(Aabb {
+            min: Point3::new(1.0, 0.0, 0.0),
+            max: Point3::new(0.0, 1.0, 1.0),
+        }),
+        n_patches: 2,
+        interfaces: vec![Interface {
+            patches: (0, 1),
+            samples: vec![InterfaceSample {
+                point: Point3::new(0.5, 0.5, 0.5),
+                values: [Interval::point(0.0), Interval::point(2.0)],
+            }],
+        }],
+        triples: Vec::new(),
+    }
+    .watertightness(1.0);
+    assert!(matches!(
+        malformed_scope.value,
+        SheafVerdict::Unknown { .. }
+    ));
+    assert_eq!(malformed_scope.numerical.kind, NumericalKind::NoClaim);
+
+    let out_of_scope = SheafComplex {
+        sampling_clip: Some(Aabb::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 1.0, 1.0),
+        )),
+        n_patches: 2,
+        interfaces: vec![Interface {
+            patches: (0, 1),
+            samples: vec![InterfaceSample {
+                point: Point3::new(2.0, 0.5, 0.5),
+                values: [Interval::point(0.0), Interval::point(2.0)],
+            }],
+        }],
+        triples: Vec::new(),
+    }
+    .watertightness(1.0);
+    assert!(matches!(out_of_scope.value, SheafVerdict::Unknown { .. }));
+    assert_eq!(out_of_scope.numerical.kind, NumericalKind::NoClaim);
+
+    let sample = |point: Point3, value: Interval| InterfaceSample {
+        point,
+        values: [Interval::point(0.0), value],
+    };
+    let mixed = SheafComplex {
+        sampling_clip: None,
+        n_patches: 3,
+        interfaces: vec![
+            Interface {
+                patches: (0, 1),
+                samples: vec![sample(Point3::new(0.0, 0.0, 0.0), Interval::new(2.0, 3.0))],
+            },
+            Interface {
+                patches: (1, 2),
+                samples: vec![sample(Point3::new(1.0, 0.0, 0.0), Interval::WHOLE)],
+            },
+        ],
+        triples: Vec::new(),
+    };
+    let mixed_evidence = mixed.watertightness(1.0);
+    assert!(matches!(
+        mixed_evidence.value,
+        SheafVerdict::Fail {
+            ref interface_violations,
+            gauge_fit_share: None,
+        } if interface_violations == &[((0, 1), 2.0)]
+    ));
+    assert_eq!(mixed_evidence.numerical.kind, NumericalKind::NoClaim);
+
+    let evidence_at = |x: f64| {
+        SheafComplex {
+            sampling_clip: None,
+            n_patches: 2,
+            interfaces: vec![Interface {
+                patches: (0, 1),
+                samples: vec![sample(Point3::new(x, 0.0, 0.0), Interval::new(0.25, 0.5))],
+            }],
+            triples: Vec::new(),
+        }
+        .watertightness(1.0)
+    };
+    assert_ne!(
+        evidence_at(0.0).provenance,
+        evidence_at(1.0).provenance,
+        "sample coordinates are authority-bearing evidence inputs"
+    );
+}
+
+#[test]
 fn sh_002_delta_delta_is_zero_bitwise() {
     with_cx(|cx| {
-        // Three pairwise-overlapping boxes: a genuine triple junction.
+        // Three pairwise-overlapping boxes: the current discovery path retains
+        // a candidate triangle from the pairwise-interface clique. It is
+        // sufficient for the algebraic δδ fixture, but it is not verified
+        // common-intersection or aligned-restriction evidence.
         let boxes: Vec<BoxChart> = (0..3)
             .map(|i| {
                 let base = f64::from(i) * 0.4;
@@ -492,16 +760,32 @@ fn sh_002_delta_delta_is_zero_bitwise() {
         assert!(!complex.interfaces.is_empty());
         assert!(
             !complex.triples.is_empty(),
-            "fixture must produce a triple junction; adjust geometry"
+            "fixture must produce a candidate triangle cell; adjust geometry"
         );
         let d0 = complex.delta0_edges();
         let d1 = complex.delta1();
+        let sampled_d0 = complex.delta0();
         // δ¹ · δ⁰ computed densely (test scale): every entry EXACTLY 0.0.
         let (rows, mid, cols) = (
             complex.triples.len(),
             complex.interfaces.len(),
             complex.n_patches,
         );
+        assert_eq!(d0.nrows(), mid);
+        assert_eq!(d0.ncols(), cols);
+        assert_eq!(d1.nrows(), rows);
+        assert_eq!(d1.ncols(), mid);
+        assert_eq!(d1.ncols(), d0.nrows());
+        assert_eq!(
+            sampled_d0.nrows(),
+            complex
+                .interfaces
+                .iter()
+                .map(|interface| interface.samples.len())
+                .sum::<usize>(),
+            "sample-row restriction incidence is distinct from edge-level delta0"
+        );
+        assert_eq!(sampled_d0.ncols(), cols);
         for r in 0..rows {
             for c in 0..cols {
                 let mut acc = 0.0f64;
@@ -517,17 +801,20 @@ fn sh_002_delta_delta_is_zero_bitwise() {
                 assert_eq!(acc.to_bits(), 0.0f64.to_bits(), "δδ must be bitwise zero");
             }
         }
-        let _ = mid;
-        verdict_line("sh-002", "δ¹·δ⁰ == 0 bitwise on a genuine triple junction");
+        verdict_line(
+            "sh-002",
+            "δ¹·δ⁰ == 0 bitwise on a retained pairwise-clique 2-cell; no common-overlap claim",
+        );
     });
 }
 
 #[test]
-fn sh_003_invariance_reindex_exact_rigid_tolerance() {
+fn sh_003_pair_bound_swap_exact_rigid_tolerance() {
     with_cx(|cx| {
         let (a, b) = leaky_pair(2e-2);
-        // Re-indexing: swap chart order — the verdict is EXACTLY equal
-        // (geometry-derived sample seeds are index-free).
+        // Swapping this two-chart pair preserves the localized mismatch bound
+        // exactly because geometry-derived sample seeds are index-free. Full
+        // evidence/provenance still binds numeric patch labels.
         let fwd: Vec<&dyn Chart> = vec![&a, &b];
         let rev: Vec<&dyn Chart> = vec![&b, &a];
         let v1 = SheafComplex::from_charts(&fwd, cx)
@@ -537,13 +824,16 @@ fn sh_003_invariance_reindex_exact_rigid_tolerance() {
             .expect("bounded sheaf domain")
             .watertightness(1e-4);
         let key = |v: &SheafVerdict| match v {
-            SheafVerdict::Fail { obstruction, .. } => obstruction[0].1,
+            SheafVerdict::Fail {
+                interface_violations,
+                ..
+            } => interface_violations[0].1,
             _ => f64::NAN,
         };
         assert_eq!(
             key(&v1.value).to_bits(),
             key(&v2.value).to_bits(),
-            "re-indexing invariance is exact"
+            "the swapped two-chart mismatch bound is exact"
         );
         // Rigid motion: rotate+translate BOTH charts — verdict class and
         // magnitude agree to tolerance (samples differ, physics doesn't).
@@ -556,10 +846,12 @@ fn sh_003_invariance_reindex_exact_rigid_tolerance() {
         match (&v1.value, &v3.value) {
             (
                 SheafVerdict::Fail {
-                    obstruction: o1, ..
+                    interface_violations: o1,
+                    ..
                 },
                 SheafVerdict::Fail {
-                    obstruction: o3, ..
+                    interface_violations: o3,
+                    ..
                 },
             ) => {
                 assert!(
@@ -573,7 +865,7 @@ fn sh_003_invariance_reindex_exact_rigid_tolerance() {
         }
         verdict_line(
             "sh-003",
-            "re-index invariance bitwise; rigid-motion invariance to 5e-3",
+            "two-chart swapped-pair bound bitwise; rigid-motion invariance to 5e-3",
         );
     });
 }
@@ -581,10 +873,7 @@ fn sh_003_invariance_reindex_exact_rigid_tolerance() {
 #[test]
 fn sh_004_adversarial_seams_and_soundness() {
     with_cx(|cx| {
-        // T-junction: three consistent boxes sharing faces — PASS (all
-        // charts are exact SDFs of the same union's pieces... each chart
-        // is ITS OWN box; interfaces only certify agreement where both
-        // charts are near zero, i.e. shared face bands).
+        // T-junction stress case: three distinct boxes with nearby faces.
         let mk = |cx: f64, cy: f64| BoxChart {
             aabb: fs_geom::Aabb::new(
                 Point3::new(cx - 0.5, cy - 0.5, -0.5),
@@ -596,17 +885,16 @@ fn sh_004_adversarial_seams_and_soundness() {
         let b3 = mk(0.45, 0.9);
         let charts: Vec<&dyn Chart> = vec![&b1, &b2, &b3];
         let complex = SheafComplex::from_charts(&charts, cx).expect("bounded sheaf domain");
-        // Adjacent identical box SDFs disagree off the shared face (each
-        // is its own box), so this is genuinely adversarial: the verdict
-        // must not be a false PASS at tight tolerance, and must not be a
-        // false FAIL at a tolerance matching the band geometry.
+        // Adjacent distinct box SDFs disagree off the shared face, so this is
+        // genuinely adversarial: the exercised tight-tolerance verdict must
+        // not be a false PASS.
         let ev = complex.watertightness(1e-12);
         assert!(
             !matches!(ev.value, SheafVerdict::Pass { .. }),
             "distinct-box seams must not certify at 1e-12"
         );
-        // Near-tangent spheres (distinct surfaces, kissing at one point):
-        // NOT a false PASS.
+        // Near-separated spheres (distinct surfaces with a small gap): NOT a
+        // false PASS.
         let s1 = SphereChart {
             center: Point3::new(0.0, 0.0, 0.0),
             radius: 1.0,
@@ -615,23 +903,23 @@ fn sh_004_adversarial_seams_and_soundness() {
             center: Point3::new(2.05, 0.0, 0.0),
             radius: 1.0,
         };
-        let kiss: Vec<&dyn Chart> = vec![&s1, &s2];
-        let kiss_complex =
-            SheafComplex::from_charts(&kiss, cx).expect("disjoint supports are admissible");
+        let separated: Vec<&dyn Chart> = vec![&s1, &s2];
+        let separated_complex =
+            SheafComplex::from_charts(&separated, cx).expect("disjoint supports are admissible");
         // The 0.05 gap means NO overlap interface is discovered, so the
         // interface-agreement check has gathered zero evidence. It must NOT
         // report a positive PASS from an empty bound set (bead obnw: `all()`
         // on the empty set was vacuously true) — the honest verdict is Unknown.
-        let kv = kiss_complex.watertightness(1e-9);
+        let kv = separated_complex.watertightness(1e-9);
         assert!(
             matches!(kv.value, SheafVerdict::Unknown { .. }),
-            "near-tangent distinct surfaces (no interface) must be Unknown, not a \
+            "near-separated distinct surfaces (no interface) must be Unknown, not a \
              false PASS, got {:?}",
             kv.value
         );
-        // SOUNDNESS cross-examination (the falsifier pairing): a PASSing
-        // watertight model survives ray parity; the falsifier runs a
-        // DIFFERENT algorithm (sign-crossing counts) on the same charts.
+        // Legacy sign-sequence replay: this validates the bounded sampler and
+        // outside-endpoint contract only. Outside/outside boolean toggles are
+        // necessarily even, so this is not independent topology evidence.
         let (wa, wb) = watertight_pair();
         let watertight: Vec<&dyn Chart> = vec![&wa, &wb];
         let rays = [
@@ -643,12 +931,12 @@ fn sh_004_adversarial_seams_and_soundness() {
             ray_parity_falsifier(&watertight, &rays, 4001, cx)
                 .expect("finite outside rays fit the public work cap")
                 .is_none(),
-            "the ray-parity falsifier must not refute a sound PASS"
+            "the legacy outside/outside sign scan must remain stable"
         );
         verdict_line(
             "sh-004",
-            "distinct-surface seams never falsely certify; ray parity cross-examines the \
-             sound PASS",
+            "these distinct-surface fixtures do not falsely certify; the legacy sign scan is \
+             retained only as a bounded replay diagnostic",
         );
     });
 }
@@ -755,11 +1043,12 @@ fn sh_004c_ray_parity_observes_cancellation_requested_by_a_chart() {
 }
 
 #[test]
-fn sh_005_section_split_feeds_merge_semantics() {
+fn sh_005_section_solve_reports_graph_gauge_fit_only() {
     with_cx(|cx| {
         // A chain of three spheres where the middle chart carries a
-        // constant radial offset: the mismatch is pure gauge (coboundary)
-        // and the section solve should absorb nearly all of it.
+        // constant radial offset: per-patch graph offsets should fit nearly
+        // all of the sampled edge-mean mismatch. This numerical diagnostic
+        // does not itself classify a cochain or feed merge semantics.
         let a = SphereChart {
             center: Point3::new(0.0, 0.0, 0.0),
             radius: 1.0,
@@ -774,7 +1063,7 @@ fn sh_005_section_split_feeds_merge_semantics() {
         assert!(raw > 0.0, "the leak is visible pre-gauge");
         assert!(
             residual < raw * 0.01,
-            "a constant offset is pure coboundary: raw {raw}, residual {residual}"
+            "a constant edge-mean offset is graph-gauge fitted: raw {raw}, residual {residual}"
         );
         assert!(
             (offsets[1] - offsets[0] - 0.015).abs() < 1e-3,
@@ -782,8 +1071,8 @@ fn sh_005_section_split_feeds_merge_semantics() {
         );
         verdict_line(
             "sh-005",
-            "constant seam offsets are absorbed by the section solve (the merge-semantics \
-             coboundary split)",
+            "constant seam offsets are fitted by the graph-gauge section diagnostic without \
+             a topology or merge-classification claim",
         );
     });
 }

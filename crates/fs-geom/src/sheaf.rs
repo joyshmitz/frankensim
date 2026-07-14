@@ -1,22 +1,26 @@
-//! SHEAF CERTIFICATES (plan §7.3, Bet 11): the cellular-sheaf
-//! watertightness certificate for multi-representation models. A model
+//! SHEAF CERTIFICATES (plan §7.3, Bet 11): cellular-sheaf sampled
+//! interface-agreement evidence for multi-representation models. A model
 //! whose patches live in different charts is a cellular sheaf over the
 //! patch-adjacency complex: stalks are per-patch sample spaces,
 //! restriction maps are selection operators onto shared interface
 //! samples, and GLOBAL CONSISTENCY is the existence of a section. The
-//! watertightness certificate is an INTERVAL-VERIFIED bound
-//! `‖δs‖∞ ≤ tol` on the interface mismatch cocycle; when the coboundary
-//! cannot be driven below tolerance, the H¹ obstruction is reported WITH
-//! THE OFFENDING INTERFACE CELLS ATTACHED — exactly the diagnostic an
-//! agent needs to fix a leaky model.
+//! current positive certificate is an INTERVAL-VERIFIED bound
+//! `‖δs‖∞ ≤ tol` on sampled interface mismatches. When a mismatch
+//! enclosure lies entirely above tolerance, the offending interface cells are
+//! reported as proven interface violations. This base certificate does not
+//! establish between-sample coverage, continuum watertightness, cocycle
+//! membership, or non-exactness and therefore makes no global or H¹ claim.
 //!
-//! The construction is finite linear algebra: δ⁰ and δ¹ assemble as
-//! sparse matrices with entries in {−1, 0, +1} (restrictions are point
-//! samplers), so `δ¹·δ⁰ = 0` holds BITWISE — small-integer f64
-//! arithmetic is exact. The least-squares section solve (per-patch gauge
-//! offsets over the adjacency Laplacian) splits the mismatch into a
-//! reconcilable coboundary part and the structural residual — the same
-//! split Proposal 10's merge semantics reuses unmodified.
+//! The construction is finite linear algebra: the edge-level
+//! [`SheafComplex::delta0_edges`] and [`SheafComplex::delta1`] maps assemble as
+//! sparse matrices with entries in {−1, 0, +1}, so their `δ¹·δ⁰ = 0` identity
+//! holds BITWISE — small-integer f64 arithmetic is exact. The separate
+//! sample-row restriction incidence is [`SheafComplex::delta0`]. The
+//! least-squares section solve (per-patch gauge offsets over the adjacency
+//! Laplacian) reports the fractional reduction in uncentered sample-level
+//! midpoint-mismatch mean-square energy. That graph-gauge diagnostic is not a cohomology
+//! certificate; the feature-gated repair classifier owns exact/coexact/harmonic
+//! claims.
 
 use crate::{Aabb, Chart, ChartSample, Point3, SamplingDomain, SamplingDomainError};
 use fs_evidence::{
@@ -39,13 +43,43 @@ pub const BAND_FRACTION: f64 = 0.05;
 
 /// Maximum number of chart evaluations admitted by one ray-parity probe.
 ///
-/// The falsifier is deliberately a bounded diagnostic, not an unbounded
-/// marching workload hidden behind a sample-count argument.
+/// The legacy sign-sequence diagnostic is deliberately bounded rather than
+/// hiding an unbounded marching workload behind a sample-count argument.
 pub const RAY_PARITY_MAX_EVALUATIONS: usize = 1_048_576;
 
-/// Maximum number of fully connected triple candidates admitted during one
-/// sheaf build.
+/// Maximum number of neighbor-membership probes admitted while discovering
+/// fully connected triples during one sheaf build.
 pub const SHEAF_MAX_TRIPLE_CANDIDATES: usize = 1_048_576;
+
+/// Allocation-free writer for the legacy FNV provenance stream.
+///
+/// `watertightness` historically materialized its complete canonical transcript
+/// in one `String` before hashing it.  A public complex can contain many samples,
+/// so that duplicated all evidence bytes without an admission budget.  Streaming
+/// the identical bytes preserves the legacy fingerprint while keeping auxiliary
+/// memory constant.  This remains a non-cryptographic fingerprint; strong
+/// identity migration is tracked separately.
+struct LegacyProvenanceWriter(u64);
+
+impl LegacyProvenanceWriter {
+    const fn new() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+
+    const fn finish(self) -> u64 {
+        self.0
+    }
+}
+
+impl std::fmt::Write for LegacyProvenanceWriter {
+    fn write_str(&mut self, value: &str) -> std::fmt::Result {
+        for byte in value.bytes() {
+            self.0 ^= u64::from(byte);
+            self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        Ok(())
+    }
+}
 
 /// Endpoint of a ray named by a structured parity refusal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,12 +90,12 @@ pub enum RayEndpoint {
     End,
 }
 
-/// Why the independent ray-parity falsifier could not return a verdict.
+/// Why the legacy ray-parity diagnostic could not return a result.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RayParityError {
     /// A union-of-charts model needs at least one presentation.
     EmptyCharts,
-    /// A falsification run with no rays gathers no evidence.
+    /// A diagnostic run with no rays gathers no evidence.
     EmptyRays,
     /// At least one interval is required to define a segment march.
     InvalidSteps {
@@ -199,12 +233,16 @@ pub struct Interface {
     pub samples: Vec<InterfaceSample>,
 }
 
-/// A triple junction (2-cell): three patches with a common overlap.
+/// An unverified pairwise-interface clique completion (candidate 2-cell).
+/// Pairwise sampled overlaps do not by themselves prove a common triple
+/// overlap or aligned restriction samples, so this carries no Čech/topology
+/// authority.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TripleCell {
     /// Patch indices (sorted).
     pub patches: (usize, usize, usize),
-    /// Sample count shared by all three pairwise interfaces.
+    /// Minimum of the three independent pairwise sample counts. This is not a
+    /// count of common aligned triple samples.
     pub samples: usize,
 }
 
@@ -218,8 +256,37 @@ pub struct SheafComplex {
     pub n_patches: usize,
     /// Pairwise interfaces (sorted by patch pair — deterministic).
     pub interfaces: Vec<Interface>,
-    /// Triple junctions.
+    /// Unverified pairwise-interface clique completions.
     pub triples: Vec<TripleCell>,
+}
+
+/// Immutable complex produced by the chart-sampling admission path. Only this
+/// wrapper may publish positive or negative sampled-interface evidence. It
+/// dereferences immutably for incidence algebra and diagnostics, but exposes no
+/// `DerefMut` or ownership escape that could mutate retained evidence after
+/// admission.
+#[derive(Debug)]
+pub struct AdmittedSheafComplex {
+    inner: SheafComplex,
+}
+
+impl core::ops::Deref for AdmittedSheafComplex {
+    type Target = SheafComplex;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl AdmittedSheafComplex {
+    /// Assess builder-retained sampled interfaces. This authority says only
+    /// that the declared chart certificates were sampled through the admitted
+    /// path and then kept immutable; it does not independently prove a chart
+    /// implementation truthful.
+    #[must_use]
+    pub fn watertightness(&self, tol: f64) -> Evidence<SheafVerdict> {
+        self.inner.assess_sampled_agreement(tol, true)
+    }
 }
 
 /// One interface's assessed mismatch. Verdict bits are predicate-sound and
@@ -232,8 +299,9 @@ pub struct InterfaceBound {
     pub all_within: bool,
     /// Some sample's enclosure lies ENTIRELY above tol (proven leak).
     pub proven_leak: bool,
-    /// Every mismatch interval had finite outward endpoints and the supplied
-    /// tolerance was a finite non-negative value.
+    /// The interface has ordered in-range patch indices and at least one sample,
+    /// every sample point and mismatch-interval endpoint is finite, and the
+    /// supplied tolerance is finite and non-negative.
     pub determinate: bool,
     /// Reported worst lower bound.
     pub lo_report: f64,
@@ -244,30 +312,34 @@ pub struct InterfaceBound {
 /// The certificate verdict.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SheafVerdict {
-    /// `‖δs‖∞ ≤ tol` with the enclosure upper bound as the margin —
-    /// per-interface margins attached.
+    /// Every retained sample proves `‖δs‖∞ ≤ tol`, with per-interface
+    /// margins attached. This is sampled agreement, not by itself a continuum
+    /// covering or global watertightness theorem.
     Pass {
         /// Upper bound of the worst interface mismatch.
         worst_mismatch: f64,
         /// Per-interface (patch pair, mismatch upper bound).
         margins: Vec<((usize, usize), f64)>,
     },
-    /// The H¹ obstruction: some interface's mismatch enclosure lies
-    /// ENTIRELY above tolerance — a proven leak, localized.
+    /// Some interface's mismatch enclosure lies entirely above tolerance —
+    /// an interval-proven interface violation, localized without a topology
+    /// claim.
     Fail {
         /// Offending interfaces: (patch pair, mismatch lower bound).
-        obstruction: Vec<((usize, usize), f64)>,
-        /// The reconcilable (coboundary) share of the raw mismatch in
-        /// `[0, 1]`: how much a re-gauge would fix (the merge-semantics
-        /// split — near 1 means gauge drift, near 0 means structure). `None`
+        interface_violations: Vec<((usize, usize), f64)>,
+        /// Fractional reduction in uncentered midpoint-mismatch mean-square
+        /// energy from per-patch graph gauge offsets, in `[0, 1]`. Near 1
+        /// means a constant re-gauge fits the sampled edge means; it does not
+        /// prove exactness or classify the residual topologically. `None`
         /// refuses the diagnostic when its least-squares arithmetic is not
         /// representable.
-        coboundary_share: Option<f64>,
+        gauge_fit_share: Option<f64>,
     },
-    /// Enclosures straddle the tolerance: no sound claim either way
-    /// (tighten chart certificates or the band and re-run).
+    /// No sound aggregate claim: enclosures may straddle the tolerance, or the
+    /// retained structure/scope/tolerance may be absent or malformed.
     Unknown {
-        /// Straddling interfaces: (patch pair, lower, upper).
+        /// Non-authoritative interface bounds: (patch pair, lower, upper).
+        /// This may be empty when the structure or interface set is absent.
         straddling: Vec<((usize, usize), f64, f64)>,
     },
 }
@@ -307,8 +379,8 @@ pub enum SheafBuildError {
         stage: &'static str,
         /// Pair being sampled, when cancellation occurred inside an interface.
         patches: Option<(usize, usize)>,
-        /// Candidate points fully evaluated for that pair, or connected
-        /// triple candidates inspected when `patches` is `None`.
+        /// Candidate points fully evaluated for that pair, or neighbor
+        /// membership probes inspected when `patches` is `None`.
         completed_draws: usize,
     },
     /// The requested finite sampling clip itself was not admissible. This is
@@ -340,11 +412,11 @@ pub enum SheafBuildError {
         /// Pair draws fully evaluated before the refusal.
         completed_draws: usize,
     },
-    /// Fully connected triple discovery exceeded its deterministic work cap.
+    /// Triple discovery exceeded its deterministic membership-probe cap.
     TripleWorkLimit {
-        /// Connected triple candidates encountered.
+        /// Neighbor membership probes encountered.
         candidates: usize,
-        /// Public candidate cap.
+        /// Public work cap.
         cap: usize,
     },
 }
@@ -359,7 +431,7 @@ impl core::fmt::Display for SheafBuildError {
             } => write!(
                 f,
                 "sheaf build cancelled during {stage} for patches {patches:?} after \
-                 {completed_draws} completed interface draws; no complex was published"
+                 {completed_draws} completed work units; no complex was published"
             ),
             Self::SamplingClip { source } => {
                 write!(f, "sheaf explicit sampling clip {source}")
@@ -382,7 +454,7 @@ impl core::fmt::Display for SheafBuildError {
             ),
             Self::TripleWorkLimit { candidates, cap } => write!(
                 f,
-                "sheaf triple discovery refused {candidates} connected candidates; the deterministic cap is {cap}"
+                "sheaf triple discovery refused after {candidates} neighbor probes; the deterministic cap is {cap}"
             ),
         }
     }
@@ -392,8 +464,9 @@ impl core::error::Error for SheafBuildError {}
 
 /// Outward enclosure of a chart sample's signed distance from its own error
 /// certificate. Only well-formed rigorous claims are usable: estimates,
-/// no-claims, and malformed rigorous certificates poison the interface into
-/// the whole extended real line, which can only yield `Unknown`.
+/// no-claims, and malformed rigorous certificates poison that sample into the
+/// whole extended real line. It cannot contribute positive authority, though
+/// it may coexist with an independently proven violation and aggregate `Fail`.
 fn sample_interval(s: &ChartSample) -> Interval {
     match s.error.kind {
         NumericalKind::Exact
@@ -442,27 +515,37 @@ fn discover_triples(
     }
 
     let mut triples = Vec::new();
-    let mut candidates = 0usize;
+    let mut inspected = 0usize;
     for (&(a, b), &ab_samples) in &edge_samples {
         let (Some(a_neighbors), Some(b_neighbors)) = (adjacency.get(&a), adjacency.get(&b)) else {
             continue;
         };
-        for &c in a_neighbors.intersection(b_neighbors) {
-            if c <= b {
-                continue;
-            }
-            if candidates >= SHEAF_MAX_TRIPLE_CANDIDATES {
+        // Iterate the smaller neighbor set explicitly so every membership
+        // probe is counted and cancellation-checkable. `BTreeSet::intersection`
+        // hides the work spent skipping non-common neighbors, allowing a dense
+        // triangle-free graph to consume substantial unmetered work.
+        let (probe, lookup) = if a_neighbors.len() <= b_neighbors.len() {
+            (a_neighbors, b_neighbors)
+        } else {
+            (b_neighbors, a_neighbors)
+        };
+        for &c in probe {
+            if inspected >= SHEAF_MAX_TRIPLE_CANDIDATES {
                 return Err(SheafBuildError::TripleWorkLimit {
-                    candidates: candidates.saturating_add(1),
+                    candidates: inspected.saturating_add(1),
                     cap: SHEAF_MAX_TRIPLE_CANDIDATES,
                 });
             }
-            if candidates.is_multiple_of(256) {
+            if inspected.is_multiple_of(256) {
                 cx.checkpoint().map_err(|_| SheafBuildError::Cancelled {
                     stage: "triple-discovery",
                     patches: None,
-                    completed_draws: candidates,
+                    completed_draws: inspected,
                 })?;
+            }
+            inspected += 1;
+            if c <= b || !lookup.contains(&c) {
+                continue;
             }
             let Some(&bc_samples) = edge_samples.get(&(b, c)) else {
                 continue;
@@ -474,13 +557,12 @@ fn discover_triples(
                 patches: (a, b, c),
                 samples: ab_samples.min(bc_samples).min(ac_samples),
             });
-            candidates += 1;
         }
     }
     cx.checkpoint().map_err(|_| SheafBuildError::Cancelled {
         stage: "triple-discovery",
         patches: None,
-        completed_draws: candidates,
+        completed_draws: inspected,
     })?;
     Ok(triples)
 }
@@ -488,11 +570,13 @@ fn discover_triples(
 impl SheafComplex {
     /// Build the complex from charts: interface discovery via
     /// support-overlap, shared-surface samples via the zero band of BOTH
-    /// charts, triple junctions via triple overlaps.
+    /// charts, plus deterministic pairwise-interface clique completions. The
+    /// latter are algebraic candidate cells, not verified common triple
+    /// overlaps.
     pub fn from_charts(
         charts: &[&dyn Chart],
         cx: &Cx<'_>,
-    ) -> Result<SheafComplex, SheafBuildError> {
+    ) -> Result<AdmittedSheafComplex, SheafBuildError> {
         Self::from_charts_with_clip(charts, None, cx)
     }
 
@@ -503,7 +587,7 @@ impl SheafComplex {
         charts: &[&dyn Chart],
         clip: Aabb,
         cx: &Cx<'_>,
-    ) -> Result<SheafComplex, SheafBuildError> {
+    ) -> Result<AdmittedSheafComplex, SheafBuildError> {
         Self::from_charts_with_clip(charts, Some(clip), cx)
     }
 
@@ -512,7 +596,7 @@ impl SheafComplex {
         charts: &[&dyn Chart],
         clip: Option<Aabb>,
         cx: &Cx<'_>,
-    ) -> Result<SheafComplex, SheafBuildError> {
+    ) -> Result<AdmittedSheafComplex, SheafBuildError> {
         cx.checkpoint().map_err(|_| SheafBuildError::Cancelled {
             stage: "admission",
             patches: None,
@@ -635,17 +719,21 @@ impl SheafComplex {
             patches: None,
             completed_draws: triples.len(),
         })?;
-        Ok(SheafComplex {
-            sampling_clip: clip,
-            n_patches: n,
-            interfaces,
-            triples,
+        Ok(AdmittedSheafComplex {
+            inner: SheafComplex {
+                sampling_clip: clip,
+                n_patches: n,
+                interfaces,
+                triples,
+            },
         })
     }
 
-    /// Assemble δ⁰ (edges × patches) with ±1 entries: one row per
-    /// interface SAMPLE, `+1` on patch v's slot, `−1` on patch u's.
-    /// (Per-sample rows: the stalk of an edge is its sample space.)
+    /// Assemble the sampled restriction incidence (samples × patches) with
+    /// ±1 entries: one row per interface sample, `+1` on patch v's slot and
+    /// `−1` on patch u's. These sample rows are not dimension-compatible with
+    /// [`Self::delta1`]; use [`Self::delta0_edges`] for the edge-level cochain
+    /// map in the bitwise `δ¹δ⁰ = 0` identity.
     #[must_use]
     pub fn delta0(&self) -> Csr {
         let rows: usize = self.interfaces.iter().map(|i| i.samples.len()).sum();
@@ -661,7 +749,8 @@ impl SheafComplex {
         coo.assemble()
     }
 
-    /// Assemble δ¹ (triples × edges) with ±1 entries per the oriented
+    /// Assemble the edge-level δ¹ (triples × interfaces) with ±1 entries
+    /// per the oriented
     /// triangle boundary: for triple (a,b,c) with edges e_ab, e_bc, e_ac:
     /// `+e_ab + e_bc − e_ac` (edge-level stalks: one column per edge).
     #[must_use]
@@ -694,6 +783,67 @@ impl SheafComplex {
         coo.assemble()
     }
 
+    pub(crate) fn structure_is_valid(&self) -> bool {
+        if self.n_patches == 0 {
+            return false;
+        }
+        if self
+            .sampling_clip
+            .is_some_and(|clip| SamplingDomain::resolve(Aabb::WHOLE_SPACE, Some(clip)).is_err())
+        {
+            return false;
+        }
+        let mut previous_edge = None;
+        for interface in &self.interfaces {
+            let (u, v) = interface.patches;
+            if u >= v
+                || v >= self.n_patches
+                || interface.samples.is_empty()
+                || previous_edge.is_some_and(|previous| previous >= (u, v))
+                || interface.samples.iter().any(|sample| {
+                    !finite_point(sample.point)
+                        || self
+                            .sampling_clip
+                            .is_some_and(|clip| !clip.contains(sample.point))
+                })
+            {
+                return false;
+            }
+            previous_edge = Some((u, v));
+        }
+
+        let mut previous_triple = None;
+        for triple in &self.triples {
+            let (a, b, c) = triple.patches;
+            if a >= b
+                || b >= c
+                || c >= self.n_patches
+                || triple.samples == 0
+                || previous_triple.is_some_and(|previous| previous >= (a, b, c))
+            {
+                return false;
+            }
+            // The interface loop above has already established strict edge
+            // ordering, so each lookup is logarithmic rather than rescanning
+            // every interface three times for every triple.
+            let edge_samples = |u: usize, v: usize| {
+                self.interfaces
+                    .binary_search_by_key(&(u, v), |interface| interface.patches)
+                    .ok()
+                    .map(|index| self.interfaces[index].samples.len())
+            };
+            let expected = match (edge_samples(a, b), edge_samples(a, c), edge_samples(b, c)) {
+                (Some(ab), Some(ac), Some(bc)) => ab.min(ac).min(bc),
+                _ => return false,
+            };
+            if triple.samples != expected {
+                return false;
+            }
+            previous_triple = Some((a, b, c));
+        }
+        true
+    }
+
     /// Per-interface mismatch assessment. The VERDICT bits come from
     /// fs-ivl's sound predicates (`encloses`/`contains`). Reported magnitudes
     /// are aggregated directly from the intervals' outward endpoints; an
@@ -706,11 +856,19 @@ impl SheafComplex {
         self.interfaces
             .iter()
             .map(|iface| {
-                let mut all_within = valid_tolerance;
+                let (u, v) = iface.patches;
+                let valid_interface = u < v
+                    && v < self.n_patches
+                    && !iface.samples.is_empty()
+                    && iface
+                        .samples
+                        .iter()
+                        .all(|sample| finite_point(sample.point));
+                let mut all_within = valid_tolerance && valid_interface;
                 let mut proven_leak = false;
-                let mut determinate = valid_tolerance;
+                let mut determinate = valid_tolerance && valid_interface;
                 let mut lo = 0.0f64;
-                let mut hi = 0.0f64;
+                let mut hi = if valid_interface { 0.0 } else { f64::INFINITY };
                 for s in &iface.samples {
                     let d = (s.values[1] - s.values[0]).abs();
                     if !(d.lo().is_finite() && d.hi().is_finite()) {
@@ -723,7 +881,7 @@ impl SheafComplex {
                     all_within &= within;
                     // |mismatch| enclosure entirely above tol: a proven
                     // violation (sound: the true value is inside d).
-                    if valid_tolerance && d.lo() > tol {
+                    if valid_tolerance && valid_interface && d.lo() > tol {
                         proven_leak = true;
                     }
                     lo = lo.max(d.lo());
@@ -761,7 +919,7 @@ impl SheafComplex {
                 (iface.patches, sum, s_len(iface))
             })
             .collect();
-        let raw_ms = mean_square(&edges, &offsets);
+        let raw_ms = sample_mean_square(&self.interfaces, &offsets);
         for _ in 0..200 {
             for p in 1..n {
                 // Optimal c_p given the rest: weighted average balance.
@@ -783,21 +941,32 @@ impl SheafComplex {
                 }
             }
         }
-        let residual_ms = mean_square(&edges, &offsets);
+        let residual_ms = sample_mean_square(&self.interfaces, &offsets);
         (offsets, raw_ms, residual_ms)
     }
 
-    /// The watertightness certificate: interval-verified verdict as
-    /// Evidence (enclosure numerics; content-addressed provenance).
-    /// PASS requires every sample's enclosure INSIDE `[0, tol]` (sound);
-    /// FAIL requires a proven-above-tolerance interface; anything else
-    /// is an honest Unknown.
+    /// Assess raw public parts as non-authoritative diagnostics. Raw complexes
+    /// can exercise incidence and mismatch algebra, but callers can construct
+    /// every field themselves, so neither `Pass` nor `Fail` would be evidence.
+    /// Use [`Self::from_charts`] to obtain an immutable
+    /// [`AdmittedSheafComplex`] when sampled-interface authority is required.
     #[must_use]
     pub fn watertightness(&self, tol: f64) -> Evidence<SheafVerdict> {
+        self.assess_sampled_agreement(tol, false)
+    }
+
+    fn assess_sampled_agreement(
+        &self,
+        tol: f64,
+        admitted_builder_origin: bool,
+    ) -> Evidence<SheafVerdict> {
         let bounds = self.mismatch_bounds(tol);
+        let structure_is_valid = self.structure_is_valid();
         let worst_hi = bounds.iter().map(|b| b.hi_report).fold(0.0f64, f64::max);
         let worst_lo = bounds.iter().map(|b| b.lo_report).fold(0.0f64, f64::max);
-        let all_determinate = !bounds.is_empty() && bounds.iter().all(|bound| bound.determinate);
+        let all_determinate = structure_is_valid
+            && !bounds.is_empty()
+            && bounds.iter().all(|bound| bound.determinate);
         // PASS requires at least one DISCOVERED interface whose samples all lie
         // inside [0, tol]. An empty `bounds` means NO interface was found (charts
         // are disjoint/gapped/near-tangent, or the geometry is empty) — the
@@ -806,28 +975,39 @@ impl SheafComplex {
         // empty set is vacuously true; guarding on non-emptiness closes the
         // vacuous-truth false certificate (bead obnw).
         let all_pass = all_determinate && bounds.iter().all(|b| b.all_within);
-        let obstruction: Vec<((usize, usize), f64)> = bounds
+        let interface_violations: Vec<((usize, usize), f64)> = bounds
             .iter()
             .filter(|b| b.proven_leak)
             .map(|b| (b.patches, b.lo_report))
             .collect();
-        let verdict = if all_pass {
+        let verdict = if !admitted_builder_origin {
+            SheafVerdict::Unknown {
+                straddling: bounds
+                    .iter()
+                    .map(|b| (b.patches, b.lo_report, b.hi_report))
+                    .collect(),
+            }
+        } else if all_pass {
             SheafVerdict::Pass {
                 worst_mismatch: worst_hi,
                 margins: bounds.iter().map(|b| (b.patches, b.hi_report)).collect(),
             }
-        } else if all_determinate && !obstruction.is_empty() {
-            let (_, raw, residual) = self.section_solve();
-            let share = if raw.is_finite() && residual.is_finite() && raw > 0.0 && residual >= 0.0 {
-                Some((1.0 - residual / raw).clamp(0.0, 1.0))
-            } else if raw == 0.0 && residual == 0.0 {
-                Some(0.0)
+        } else if structure_is_valid && !interface_violations.is_empty() {
+            let share = if all_determinate {
+                let (_, raw, residual) = self.section_solve();
+                if raw.is_finite() && residual.is_finite() && raw > 0.0 && residual >= 0.0 {
+                    Some((1.0 - residual / raw).clamp(0.0, 1.0))
+                } else if raw == 0.0 && residual == 0.0 {
+                    Some(0.0)
+                } else {
+                    None
+                }
             } else {
                 None
             };
             SheafVerdict::Fail {
-                obstruction,
-                coboundary_share: share,
+                interface_violations,
+                gauge_fit_share: share,
             }
         } else {
             SheafVerdict::Unknown {
@@ -838,13 +1018,20 @@ impl SheafComplex {
                     .collect(),
             }
         };
-        let mut canon = format!(
-            "sheaf-watertightness;patches={};interfaces={};tol={tol}",
+        let mut canon = LegacyProvenanceWriter::new();
+        let _ = write!(
+            canon,
+            "sheaf-sampled-agreement;schema=3;origin={};patches={};interfaces={};triples={};tol={:016x};structure_valid={structure_is_valid}",
+            if admitted_builder_origin { "chart-sampling-builder" } else { "raw-public-parts" },
             self.n_patches,
-            self.interfaces.len()
+            self.interfaces.len(),
+            self.triples.len(),
+            tol.to_bits(),
         );
         match self.sampling_clip {
-            None => canon.push_str(";sampling_clip=none"),
+            None => {
+                let _ = canon.write_str(";sampling_clip=none");
+            }
             Some(clip) => {
                 let _ = write!(
                     canon,
@@ -858,14 +1045,103 @@ impl SheafComplex {
                 );
             }
         }
+        for interface in &self.interfaces {
+            let _ = write!(
+                canon,
+                ";interface={}-{};samples={}",
+                interface.patches.0,
+                interface.patches.1,
+                interface.samples.len()
+            );
+            for sample in &interface.samples {
+                let _ = write!(
+                    canon,
+                    ";sample={:016x},{:016x},{:016x}:{:016x},{:016x}:{:016x},{:016x}",
+                    sample.point.x.to_bits(),
+                    sample.point.y.to_bits(),
+                    sample.point.z.to_bits(),
+                    sample.values[0].lo().to_bits(),
+                    sample.values[0].hi().to_bits(),
+                    sample.values[1].lo().to_bits(),
+                    sample.values[1].hi().to_bits(),
+                );
+            }
+        }
+        for triple in &self.triples {
+            let _ = write!(
+                canon,
+                ";triple={}-{}-{}:{}",
+                triple.patches.0, triple.patches.1, triple.patches.2, triple.samples
+            );
+        }
         for b in &bounds {
             let _ = write!(
                 canon,
-                ";{}-{}:{}:{}",
-                b.patches.0, b.patches.1, b.lo_report, b.hi_report
+                ";bound={}-{}:{:016x}:{:016x}:within={}:leak={}:determinate={}",
+                b.patches.0,
+                b.patches.1,
+                b.lo_report.to_bits(),
+                b.hi_report.to_bits(),
+                b.all_within,
+                b.proven_leak,
+                b.determinate,
             );
         }
-        let numerical = if all_determinate
+        match &verdict {
+            SheafVerdict::Pass {
+                worst_mismatch,
+                margins,
+            } => {
+                let _ = write!(canon, ";verdict=pass:{:016x}", worst_mismatch.to_bits());
+                for (patches, margin) in margins {
+                    let _ = write!(
+                        canon,
+                        ";margin={}-{}:{:016x}",
+                        patches.0,
+                        patches.1,
+                        margin.to_bits()
+                    );
+                }
+            }
+            SheafVerdict::Fail {
+                interface_violations,
+                gauge_fit_share,
+            } => {
+                let _ = canon.write_str(";verdict=fail");
+                for (patches, lower) in interface_violations {
+                    let _ = write!(
+                        canon,
+                        ";violation={}-{}:{:016x}",
+                        patches.0,
+                        patches.1,
+                        lower.to_bits()
+                    );
+                }
+                match gauge_fit_share {
+                    Some(share) => {
+                        let _ = write!(canon, ";gauge_fit_share={:016x}", share.to_bits());
+                    }
+                    None => {
+                        let _ = canon.write_str(";gauge_fit_share=none");
+                    }
+                }
+            }
+            SheafVerdict::Unknown { straddling } => {
+                let _ = canon.write_str(";verdict=unknown");
+                for (patches, lower, upper) in straddling {
+                    let _ = write!(
+                        canon,
+                        ";straddling={}-{}:{:016x}:{:016x}",
+                        patches.0,
+                        patches.1,
+                        lower.to_bits(),
+                        upper.to_bits()
+                    );
+                }
+            }
+        }
+        let numerical = if admitted_builder_origin
+            && all_determinate
             && !matches!(&verdict, SheafVerdict::Unknown { .. })
             && worst_lo.is_finite()
             && worst_hi.is_finite()
@@ -880,7 +1156,7 @@ impl SheafComplex {
             statistical: StatisticalCertificate::None,
             model: ModelEvidence::none(),
             sensitivity: SensitivitySummary::default(),
-            provenance: ProvenanceHash::of_bytes(canon.as_bytes()),
+            provenance: ProvenanceHash(canon.finish()),
             adjoint_ref: None,
             value: verdict,
         }
@@ -891,28 +1167,30 @@ fn s_len(iface: &Interface) -> usize {
     iface.samples.len()
 }
 
-fn mean_square(edges: &[((usize, usize), f64, usize)], offsets: &[f64]) -> f64 {
+fn sample_mean_square(interfaces: &[Interface], offsets: &[f64]) -> f64 {
     let mut num = 0.0f64;
     let mut den = 0.0f64;
-    for ((u, v), sum, count) in edges {
-        #[allow(clippy::cast_precision_loss)]
-        let w = *count as f64;
-        // Mean mismatch on the edge after gauging.
-        let gauged = sum / w + offsets[*v] - offsets[*u];
-        num += w * gauged * gauged;
-        den += w;
+    for interface in interfaces {
+        let (u, v) = interface.patches;
+        for sample in &interface.samples {
+            let mismatch = sample.values[1].midpoint() - sample.values[0].midpoint();
+            let gauged = mismatch + offsets[v] - offsets[u];
+            num += gauged * gauged;
+            den += 1.0;
+        }
     }
     if den > 0.0 { num / den } else { 0.0 }
 }
 
-/// THE INDEPENDENT FALSIFIER (registry pairing: watertightness →
-/// ray-parity): a different algorithm on a different code path. March a
-/// segment through the union-of-charts model counting sign changes of
-/// the min-SDF; a closed (watertight) model yields an EVEN count on
-/// segments with both endpoints strictly outside. Returns the violating ray
-/// index, if any. The sample count is work-capped, every endpoint and field
-/// sample is validated, convex interpolation avoids an overflowing endpoint
-/// subtraction, and cancellation is observed after every chart evaluation.
+/// Legacy sign-sequence diagnostic retained for input validation and replay.
+/// It is NOT an independent topology falsifier: because both endpoints are
+/// required to be strictly outside, the sampled boolean sequence begins and
+/// ends with the same sign and therefore has an even number of toggles by
+/// construction. Authentic cross-examination needs certified oriented
+/// intersections or winding/degree evidence. The sample count remains
+/// work-capped, every endpoint and field sample is validated, convex
+/// interpolation avoids an overflowing endpoint subtraction, and cancellation
+/// is observed after every chart evaluation.
 ///
 /// # Errors
 /// [`RayParityError`] when the inputs do not satisfy the finite outside-ray

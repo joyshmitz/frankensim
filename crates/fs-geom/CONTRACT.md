@@ -147,40 +147,71 @@ Depends on fs-exec (Cx), fs-evidence, fs-ivl, fs-alloc, fs-obs.
   each edge and before evidence persistence. Optional sheaf rerouting retains a
   structured `RoutePlanError` instead of silently dropping malformed authority.
 
-- `sheaf` module (bead wqd.13, Bet 11 [F/M]): cellular-sheaf
-  WATERTIGHTNESS certificates. Fallible `SheafComplex::from_charts` discovers
-  interfaces by support overlap + shared zero-band sampling
-  (geometry-seeded, index-free — re-index invariance is exact), plus
-  triple junctions as 2-cells. δ⁰/δ¹ assemble as fs-sparse matrices with
-  entries in {−1, 0, +1}; `δ¹·δ⁰ = 0` holds BITWISE (small-integer f64).
-  Triple discovery indexes pairwise edges once, intersects deterministic
-  adjacency sets instead of rescanning every interface for every patch triple,
-  polls cancellation at bounded strides and before publication, and enforces
-  `SHEAF_MAX_TRIPLE_CANDIDATES` with a structured work refusal.
+- `sheaf` module (bead wqd.13, Bet 11 [F/M]): cellular-sheaf sampled
+  interface-agreement evidence, with continuum watertightness retained as the
+  ambitious successor theorem. Fallible `SheafComplex::from_charts` discovers
+  interfaces by support overlap + shared zero-band sampling. Geometry-derived
+  seeds make the retained two-chart swapped-pair mismatch bound bitwise stable,
+  but full evidence/provenance binds patch labels and the finite-iteration
+  multi-patch gauge diagnostic is not yet permutation-invariant. Plus
+  pairwise-interface 3-cliques as candidate 2-cells. Their three pairwise
+  rejection-sample sets are independent; a clique and the retained minimum
+  pairwise count do not prove a common triple zero-band point or aligned
+  restriction samples and carry no Čech/topology authority. The fallible
+  `SheafSkeleton::of` first validates the public complex and then omits those
+  candidate triples from topology-sensitive repair until verified common
+  intersections land. The edge-level `delta0_edges`/`delta1` maps
+  assemble as fs-sparse matrices with entries in {−1, 0, +1}; their
+  `δ¹·δ⁰ = 0` identity holds BITWISE (small-integer f64). The public `delta0`
+  sample-row restriction incidence is deliberately a different cochain space.
+  Triple discovery indexes pairwise edges once, probes the smaller deterministic
+  adjacency set explicitly, counts every membership probe (not only emitted
+  triangles), polls cancellation at bounded strides and before publication, and
+  enforces `SHEAF_MAX_TRIPLE_CANDIDATES` with a structured work refusal.
   Every producer sample is checked immediately after evaluation; a non-finite
   signed distance is a pair-, chart-, and point-attributed build refusal rather
-  than an implicit rejection-sampling miss. `watertightness(tol)` returns
-  `Evidence<SheafVerdict>`: PASS requires
+  than an implicit rejection-sampling miss. The legacy-named
+  `watertightness(tol)` returns `Evidence<SheafVerdict>`: PASS requires a valid
+  retained sampling scope and a uniquely ordered public complex with at least
+  one nonempty interface and
   every sample's |mismatch| enclosure INSIDE `[0, tol]` via fs-ivl's
   sound predicates (no bound extraction); FAIL requires an enclosure
-  ENTIRELY above tol — the H¹ obstruction with the offending interface
-  cells and magnitudes attached; anything else is an honest Unknown.
+  ENTIRELY above tol — an interval-proven interface violation with the
+  offending interface cells and magnitudes attached; anything else is an
+  honest Unknown. A proven leak remains FAIL even when unrelated intervals are
+  indeterminate; the optional gauge diagnostic is then unavailable. Positive
+  sampled agreement does not establish between-sample coverage, continuum
+  watertightness, cocycle membership, or non-exactness and therefore emits no
+  H¹ or topological-obstruction claim.
   Unresolved unbounded overlaps refuse with pair attribution;
   `from_charts_clipped` admits an explicit finite local scope and preflights
   that clip even for empty/disjoint inputs. `SheafComplex::sampling_clip`
   retains the exact caller scope (`None` means admitted global supports), and
-  watertightness provenance binds the global/local discriminator plus all six
-  clip endpoint bit patterns. `section_solve` computes per-patch gauge offsets over the adjacency
-  Laplacian, splitting mismatch into a reconcilable coboundary share and
-  the structural residual — the exact split Proposal 10's merge
-  semantics reuses. `ray_parity_falsifier` is the independent
-  cross-examination (registry pairing: watertightness → ray-parity). It is a
-  fallible, work-capped diagnostic: empty inputs, zero steps, non-finite
+  sampled-agreement fingerprint input binds the global/local discriminator, all six
+  clip endpoint bit patterns, complete interface sample points/enclosures,
+  triples, assessed bounds, and the verdict payload. Those legacy canonical bytes
+  are fed incrementally into FNV rather than duplicated in an unbounded transcript
+  `String`. The v1 complex does not
+  retain source chart identities, and its live `ProvenanceHash` is a 64-bit FNV
+  fingerprint. It is neither collision-resistant content identity nor a
+  replay-complete source-model receipt; migration to the shared strong identity
+  substrate is tracked by `frankensim-sj31i.52`. `section_solve` computes
+  per-patch gauge offsets
+  over the adjacency Laplacian and reports the fractional reduction in
+  uncentered sample-level midpoint-mismatch mean-square energy from that graph gauge. This
+  diagnostic is not an
+  exact/coexact/harmonic classifier; the feature-gated `sheaf_repair` module
+  owns those claims. The legacy `ray_parity_falsifier` name is not an
+  independent topology falsifier: with both sampled endpoints strictly outside,
+  a boolean sign sequence necessarily has an even number of toggles. It is only
+  a fallible, work-capped input/sampling diagnostic: empty inputs, zero steps, non-finite
   endpoints or chart values, endpoints not strictly outside, and
   unrepresentable interpolation are structured refusals. Segment points use
   convex interpolation rather than a potentially overflowing endpoint
   subtraction, and producer-side cancellation is checked after every chart
-  evaluation before any parity verdict is published.
+  evaluation. It carries no promotion authority. Authentic independent
+  cross-examination requires certified oriented surface intersections or
+  winding/degree evidence and remains tracked work.
 
 - `ident` module (the R3 AMENDMENT, bead lmp4.10): STABLE PERSISTENT
   ENTITY IDENTITY is a hard core requirement — `EntityId`s are assigned
@@ -210,40 +241,70 @@ Depends on fs-exec (Cx), fs-evidence, fs-ivl, fs-alloc, fs-obs.
   region/quantity/magnitude.
 
 - `sheaf_repair` module (patch Rev L, bead wqd.14; [M], behind the
-  `sheaf-repair` feature until certifier trials pass): DIAGNOSIS →
-  CONSTRUCTIVE REPAIR. `hodge_decompose` splits the interface mismatch
-  cochain into exact ⊕ coexact ⊕ harmonic over the skeleton
-  (Gauss–Seidel normal equations; dense-oracle-verified), with the
-  INTERPRETATION CONTRACT: exact → local gauge repair (auto-appliable
+  `sheaf-repair` feature until certifier trials pass): DIAGNOSIS → ALGEBRAIC
+  GAUGE-CORRECTION PLANNING. `hodge_decompose` currently performs a deterministic,
+  fixed-iteration sequence: least-squares fit to the coboundary image, then a
+  least-squares fit of the residual to the retained triangle-coboundary image,
+  followed by a remainder. The retained fixtures compare the first fit with an
+  independent dense reference, but a generic result is not yet a certified
+  orthogonal Hodge decomposition. Its INTERPRETATION CONTRACT is: fitted exact
+  component → a sampled-mismatch 0-cochain correction candidate
   ONLY when every per-patch offset fits that chart's declared error
-  budget — a repair never silently distorts geometry); coexact →
-  circulation around triple junctions, diagnosed CONVERTER-side (not a
-  geometry edit); harmonic → true topological obstruction, declared
-  unrepairable-locally with the interface cut-set. `plan_repair` emits
-  ranked agent-facing proposals (expected post-repair norms; optional
-  Rep-Router reroute with modeled cost); `apply_gauge` is the
-  constructive, idempotent step.
+  budget — a repair never silently distorts geometry); coexact → a circulation
+  candidate over retained triangle cells, with converter, chart/model,
+  junction, and sampling causes left as ranked hypotheses until provenance or
+  intervention distinguishes them; harmonic → a retained candidate remainder and its interface
+  support after the current deterministic fits. The three reported squared-norm
+  ratios use the original mismatch norm as a common denominator; without a
+  per-result orthogonality proof they are diagnostics and need not sum to one.
+  The fixed-iteration numerical solves carry no per-result convergence
+  certificate, so
+  `plan_repair` does not generically certify non-exactness, impossibility of a
+  gauge repair, or a required geometry-topology change. The ring conformance
+  fixture separately checks a retained nonzero remainder for closure and
+  non-exactness before labeling that fixture H¹. `plan_repair` emits ranked
+  agent-facing proposals. A finite post-repair seam norm is attached only to
+  the constructive gauge proposal; diagnostic and reroute proposals use `+∞`
+  to mean that no comparable post-state seam norm has been established.
+  Optional Rep-Router reroutes retain modeled cost. `apply_gauge` subtracts one
+  explicit coboundary from the retained mismatch vector; it does not edit or
+  re-evaluate a chart, commit geometry, or prove realization of that correction.
+  Applying the same nonzero correction twice is not idempotent, while re-planning
+  a converged algebraic mismatch can produce a zero follow-up gauge. Transactional
+  chart mutation plus revalidation remains explicit successor work.
 
 - `sheaf_merge` module (Proposal 10's CROWN JEWEL, bead lmp4.12; [M],
   behind the `sheaf-merge` feature — which enables `sheaf-repair` —
-  until its Gauntlet tier + kill metric are green): the sheaf machinery
-  as a merge-conflict classifier. `three_way_merge` forms the union of
-  edits (X + Y − B at the cochain level), Hodge-decomposes, applies the
-  canonical least-squares gauge reconciliation, and RE-VERIFIES the
-  reconciled state's own certificate before reporting resolved (Sev-0:
-  a passing certificate is never attached over a failing state).
-  Verification failures classify: a dominant harmonic residue above
-  tolerance is a STRUCTURAL CONFLICT localized to its supporting cells
-  with both parents' provenance; anything else (coexact circulation)
-  ESCALATES unresolved. Auto-resolution is licensed exactly when the
-  reconciled state passes — a harmonic remnant below the watertightness
-  tolerance is not an obstruction (a lesson the kill-criterion harness
-  taught: machine-floor triggers made every noisy merge conflict).
-  Type-level collisions (same key, different values) are caught BEFORE
-  decomposition; trust is conditioned on `spectral_gap` (weighted
-  algebraic connectivity, Jacobi eigenvalues) with LowGap flagging
-  (R5). `harmonic_conflict_rate` is the kill-criterion measurement
-  (25% line).
+  until its Gauntlet tier + kill metric are green): the sheaf operators
+  support a guarded merge heuristic, not an H¹ certifier.
+  `three_way_merge` forms the union of edits (X + Y − B at the cochain
+  level), runs deterministic fixed-iteration gauge reconciliation, and
+  reports `Resolved` only when the resulting nominal `f64` infinity norm
+  passes the requested tolerance. The v1 `MergeResidualReceipt` is only that
+  local post-state numerical observation; it is not yet content-bound to the
+  skeleton, parents, union, gauge, or algorithm and therefore is neither a
+  portable replay receipt nor an interval watertightness certificate. When the
+  check fails, a dominant decomposition remainder is retained as a
+  `CandidateRemainderConflict` localized to its supra-tolerance cells with both
+  caller-supplied parent labels (not authenticated identities); it proves neither closure,
+  non-exactness, H¹, nor the absence of another local repair. Other
+  numerical residues ESCALATE unresolved. A separately retained valid
+  skeleton cochain may receive an H¹ interpretation only after executable
+  closure and non-exactness evidence, as in the ring conformance fixture.
+  Because the v1 call has no base assignment map and its success variants
+  cannot return merged assignments, every assignment payload currently refuses
+  before decomposition instead of being silently discarded. Even same-key,
+  different branch values are only pairwise conflict candidates: either value
+  may equal the unknown base. True base-aware assignment merge is tracked
+  successor work. Trust is
+  conditioned on `spectral_gap` (the thresholded second sorted
+  weighted vertex-Laplacian eigenvalue) with LowGap flagging on `Resolved`,
+  `Conflicted`, and `EscalatedUnresolved` numerical outcomes (R5).
+  `candidate_remainder_conflict_rate` returns a typed error for invalid or
+  refused trial sets and measures only the candidate-remainder numerator. It
+  is diagnostic-only: without the full
+  Resolved/Trivial/Conflicted/Escalated/Refused outcome histogram it cannot
+  satisfy the 25% kill criterion, and it is not a certified cohomology rate.
 
 ## Invariants
 1. Trait laws (G0, geo-001, 12k seeded queries): `inside(x)` ⇔ `sd(x) <
@@ -276,8 +337,12 @@ Structured teaching values throughout: `ConvertDiag` (ranked fixes),
 structured `AgreementUnknownReason` for non-evaluable checks, and
 `fs_evidence::CertifyError` through receipts. Router execution additionally
 returns `ExecuteError` with a stable missing-runner/runner/oracle-record class;
-oracle evidence refusals use `CostOracleError`. Constructors are total
-(`Aabb::new` normalizes); no panics cross the boundary.
+oracle evidence refusals use `CostOracleError`. Fallible sampling and conversion
+entry points return structured refusals, and `Aabb::new` is total and normalizes.
+Legacy public incidence, Hodge/repair, and merge diagnostic APIs still assert
+shape/index preconditions and can panic on malformed caller-built skeletons;
+their total, budgeted `Result` replacements are required before promotion and
+are tracked in the fresh-eyes successor epic.
 
 ## Determinism class
 Deterministic: seeded sampling, insertion-ordered charts, canonical JSON
@@ -372,9 +437,14 @@ limit+1 refusals.
   report; an `Unknown` verdict or any indeterminate interface publishes
   `NumericalCertificate::NoClaim`, never an enclosure reconstructed from a
   human-facing approximation.
-- The coboundary-share field is optional: finite least-squares diagnostics are
-  reported in `[0, 1]`; if their unscaled public diagnostic arithmetic is not
+- The gauge-fit-share field is optional: finite least-squares diagnostics
+  report fractional reduction in uncentered weighted mean-square mismatch
+  energy in `[0, 1]`; if their unscaled public diagnostic arithmetic is not
   representable, the field is `None` rather than NaN or a fabricated split.
+  The Laplacian optimizer is assembled from per-interface sample sums and
+  counts, while the reported before/after energy is evaluated over every
+  retained sample midpoint mismatch. It is a graph-gauge diagnostic, not
+  evidence of cocycle membership, exactness, or an H¹ class.
 - BDDC-style coarse spaces from harmonic sections (the second consumer)
   belong to the solver-dd bead; the spectral-gap confidence signal to
   Proposal 5.
@@ -382,8 +452,10 @@ limit+1 refusals.
   discovery + linear sampling); measured perf gates land with MORPH
   conformance.
 - Chart samples with `Estimate`, `NoClaim`, or malformed rigorous error
-  certificates poison their interfaces to infinite enclosures — such models
-  can only ever be `Unknown` (honest).
+  certificates poison their own interfaces to infinite enclosures. They can
+  never contribute positive authority; an independent, determinate interface
+  may still establish a localized `Fail`, while the aggregate numerical
+  certificate remains `NoClaim`.
 
 ## No-claim boundaries (identity + diff)
 
@@ -408,21 +480,47 @@ limit+1 refusals.
   boundary control-point projection (the NURBS example) lands with the
   converter beads that own those charts.
 - The auto-apply POLICY (when to apply without human acceptance) is
-  session governance; this module computes `auto_repairable` and
-  refuses over-budget repairs in the proposal text.
-- The harmonic cut-set is the harmonic component's support, minimal for
-  the reported cochain; graph-min-cut refinement over weighted
+  session governance. For the current constant-gauge model, this module first
+  intersects the admissible constant-shift interval independently on each
+  connected component, chooses its deterministic maximum-slack midpoint (or a
+  finite edge for half-unbounded intervals), and computes
+  `gauge_step_eligible` against that gauge. This field authorizes only the
+  budget-feasible exact-component step, never complete repair. It refuses when no
+  representative fits every per-patch budget.
+- Reported harmonic support first requires the entire remainder's squared-norm
+  ratio to exceed `COMPONENT_FLOOR`, then retains entries above the
+  within-component relative amplitude floor
+  `sqrt(COMPONENT_FLOOR) * max(|h|)`. The raw split still retains sub-floor
+  residue for diagnosis. This two-stage rule is unit-rescaling stable but is
+  not a graph-theoretic minimal cut-set; graph-min-cut refinement over weighted
   topologies is future work if fixtures demand it.
 
 ## No-claim boundaries (merge)
 
+- `Trivial` proves only exact branch/base equality and carries no post-state
+  residual receipt. `MergeResidualReceipt` checks nominal `f64` edge values;
+  it is not the interval seam certificate, and the legacy ray-parity routine
+  is itself only a bounded sampling/input diagnostic rather than an independent
+  falsifier.
+- A `CandidateRemainderConflict` is an operational auto-merge refusal from a
+  fixed-iteration heuristic. It is not an H¹ class, a graph-minimal cut, or
+  evidence that no local repair exists. Diagnostic component ratios are not a
+  certified orthogonal energy partition.
+- Malformed skeletons (including duplicate cells), lengths, tolerances,
+  weights, and non-finite cochains return `Refused` before fast-path or
+  resolution authority. Non-finite weighted-Laplacian, union, decomposition,
+  or post-gauge arithmetic also refuses.
 - The gap proxy is the weighted VERTEX-Laplacian algebraic
   connectivity; full sheaf-Laplacian edge spectra land with the
   Proposal-5/eigensolver integration (knh1.3).
-- Coupling-graph LEGALITY of merged assignments is fs-iface's contract
-  at its own layer; this module catches keyed collisions.
+- Coupling-graph LEGALITY of merged assignments is fs-iface's contract at its
+  own layer. The current merge API lacks base assignments and refuses every
+  assignment payload; its pairwise difference helper cannot by itself prove a
+  three-way collision.
 - Merge operates on interface cochains (gauge states); merging chart
   GEOMETRY payloads routes through the converters + semantic diff.
-- The kill measurement here is the harness; the quarterly swarm
-  concurrency TRIAL and any fallback to ownership partitioning are
-  governance decisions (xpck.6).
+- The seeded harness measures candidate-remainder conflicts only. A full kill
+  measurement must retain candidate conflicts, escalations, refusals, and type
+  conflicts from the same realistic swarm-concurrency trials; that quarterly
+  trial and any fallback to ownership partitioning are governance decisions
+  (xpck.6).

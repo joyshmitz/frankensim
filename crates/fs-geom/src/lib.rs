@@ -588,6 +588,9 @@ impl BettiBounds {
 /// Differentiability class a chart advertises for its signed distance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Differentiability {
+    /// No continuity claim. Sampling, finite-budget search, or discrete
+    /// selection may change the returned value discontinuously.
+    Unknown,
     /// Continuous only (gradients may be `None` anywhere).
     C0,
     /// Continuously differentiable away from the medial axis.

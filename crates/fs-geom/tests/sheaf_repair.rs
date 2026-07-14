@@ -1,14 +1,20 @@
 //! Sheaf-repair conformance (the wqd.14 bead; runs under the
 //! `sheaf-repair` feature). Acceptance: exact-component defects
-//! auto-repair to certificate-passing without exceeding chart budgets;
-//! coexact seeding (flipped orientation) diagnoses as converter-side;
-//! harmonic seeding declares unrepairable-locally with the correct
-//! cut-set; predicted post-repair norms match actuals; the decomposition
-//! matches a dense oracle; repair is idempotent and budget-safe.
+//! produce a budget-eligible gauge step and a passing nominal residual;
+//! coexact seeding retains a localized, explicitly non-causal circulation
+//! diagnostic;
+//! harmonic seeding retains a closed, non-exact witness and its full
+//! interface support; predicted post-repair norms match actuals; the retained
+//! first-fit fixture matches a dense reference; converged re-planning and
+//! repair are budget-safe. These fixtures do not confer generic convergence or
+//! orthogonality authority on the fixed-iteration routine.
 #![cfg(feature = "sheaf-repair")]
 
 use fs_geom::router::{ConverterSpec, ErrorModel, MemoryCostOracle, RouteRequest, Router};
-use fs_geom::sheaf_repair::{SheafSkeleton, apply_gauge, hodge_decompose, plan_repair};
+use fs_geom::sheaf::{Interface, SheafComplex};
+use fs_geom::sheaf_repair::{
+    COMPONENT_FLOOR, SheafSkeleton, apply_gauge, hodge_decompose, plan_repair,
+};
 
 fn verdict(case: &str, detail: &str) {
     println!(
@@ -36,6 +42,10 @@ fn ring() -> SheafSkeleton {
 }
 
 fn norm_inf(v: &[f64]) -> f64 {
+    assert!(
+        v.iter().all(|value| value.is_finite()),
+        "test norm requires finite values: {v:?}"
+    );
     v.iter().fold(0.0f64, |a, &b| a.max(b.abs()))
 }
 
@@ -97,7 +107,7 @@ fn dense_projection(m: &[f64], columns: &[Vec<f64>]) -> Vec<f64> {
 }
 
 #[test]
-fn sr_001_decomposition_matches_dense_oracle() {
+fn sr_001_sequential_fit_matches_dense_fixture() {
     let sk = triangle();
     // A mixed cochain: gauge part + circulation part.
     let gauge_part = sk.d0(&[0.0, 0.7, -0.3]);
@@ -138,16 +148,17 @@ fn sr_001_decomposition_matches_dense_oracle() {
     // Orthogonality residuals: δ⁰ᵀh ≈ 0 and δ¹h ≈ 0.
     assert!(norm_inf(&sk.d0t(&split.harmonic)) < 1e-8);
     assert!(norm_inf(&sk.d1(&split.harmonic)) < 1e-8);
-    // Energy fractions sum to ~1 on an orthogonal split.
+    // This fixture also verifies near-orthogonality, so its diagnostic ratios
+    // sum to approximately one. The API does not claim that law generically.
     let (fe, fc, fh) = split.fractions;
     assert!(
         (fe + fc + fh - 1.0).abs() < 1e-6,
-        "fractions partition energy: {fe} + {fc} + {fh}"
+        "this verified fixture approximately partitions energy: {fe} + {fc} + {fh}"
     );
     verdict(
         "sr-001",
-        "exact component matches the dense-oracle projection; contractible harmonic \
-         vanishes; energy partitions",
+        "the fitted exact component matches the dense-reference projection; the \
+         fixture remainder vanishes and its checked ratios approximately sum to one",
     );
 }
 
@@ -158,9 +169,12 @@ fn sr_002_exact_defect_auto_repairs_within_budget() {
     let mismatch = sk.d0(&[0.0, 0.0, 0.012]);
     let budgets = [0.02, 0.02, 0.02];
     let plan = plan_repair(&sk, &mismatch, &budgets, None);
-    assert!(plan.auto_repairable, "within budgets: auto-repairable");
+    assert!(
+        plan.gauge_step_eligible,
+        "within budgets: gauge step eligible"
+    );
     assert!(plan.split.fractions.0 > 0.999, "pure exact defect");
-    assert!(plan.obstruction_cutset.is_empty(), "no obstruction");
+    assert!(plan.harmonic_support.is_empty(), "no harmonic remainder");
     // Predicted-vs-actual: apply the gauge, re-measure.
     let predicted = plan.proposals[0].expected_post_norm;
     let repaired = apply_gauge(&sk, &mismatch, &plan.gauge);
@@ -169,12 +183,14 @@ fn sr_002_exact_defect_auto_repairs_within_budget() {
         (predicted - actual).abs() < 1e-9,
         "prediction {predicted} vs actual {actual}"
     );
-    assert!(actual < 1e-9, "certificate-passing after repair");
+    assert!(actual < 1e-9, "nominal residual passes after repair");
     // Repair SAFETY: offsets stay within each chart's declared budget.
     for (off, b) in plan.gauge.iter().zip(&budgets) {
         assert!(off.abs() <= *b, "repair never exceeds a budget");
     }
-    // Repair IDEMPOTENCE: repairing the repaired model is a no-op.
+    // Converged re-planning: planning from the repaired state yields a
+    // near-zero follow-up gauge. Applying the original nonzero gauge twice is
+    // deliberately not claimed to be idempotent.
     let plan2 = plan_repair(&sk, &repaired, &budgets, None);
     assert!(
         norm_inf(&plan2.gauge) < 1e-9,
@@ -191,7 +207,7 @@ fn sr_002_exact_defect_auto_repairs_within_budget() {
     let tight = [0.001, 0.001, 0.001];
     let gated = plan_repair(&sk, &mismatch, &tight, None);
     assert!(
-        !gated.auto_repairable,
+        !gated.gauge_step_eligible,
         "budget gate blocks silent distortion"
     );
     assert!(
@@ -201,17 +217,83 @@ fn sr_002_exact_defect_auto_repairs_within_budget() {
     );
     verdict(
         "sr-002",
-        "gauge defect repaired to ~0 with exact prediction; idempotent; budget gate \
-         blocks over-budget auto-apply",
+        "gauge defect repaired to ~0 with exact prediction; converged re-planning is a \
+         no-op; budget gate blocks over-budget auto-apply",
+    );
+}
+
+#[test]
+fn sr_002a_component_gauge_shift_finds_feasible_budget_representative() {
+    let sk = SheafSkeleton {
+        n_patches: 4,
+        edges: vec![(0, 1), (2, 3)],
+        triangles: Vec::new(),
+    };
+    // The pinned least-squares representative is [0,2,0,4], which appears to
+    // violate the budgets. Independent component shifts produce [-1,1,-2,2]
+    // without changing either coboundary correction.
+    let mismatch = vec![2.0, 4.0];
+    let budgets = [1.0, 1.0, 2.0, 2.0];
+    let plan = plan_repair(&sk, &mismatch, &budgets, None);
+    assert!(
+        plan.gauge_step_eligible,
+        "a feasible gauge representative exists"
+    );
+    assert_eq!(plan.gauge, vec![-1.0, 1.0, -2.0, 2.0]);
+    assert_eq!(sk.d0(&plan.gauge), mismatch);
+    assert_eq!(apply_gauge(&sk, &mismatch, &plan.gauge), vec![0.0; 2]);
+
+    let impossible = plan_repair(&sk, &mismatch, &[0.9, 0.9, 1.9, 1.9], None);
+    assert!(
+        !impossible.gauge_step_eligible,
+        "a component difference larger than the sum of its patch budgets must refuse auto-apply"
+    );
+
+    let one_edge = SheafSkeleton {
+        n_patches: 2,
+        edges: vec![(0, 1)],
+        triangles: Vec::new(),
+    };
+    let slack = plan_repair(&one_edge, &[-2.0], &[f64::INFINITY, 1.0], None);
+    assert_eq!(
+        slack.gauge,
+        vec![2.0, 0.0],
+        "feasible shift interval [1,3] uses its deterministic maximum-slack midpoint"
+    );
+    assert_eq!(one_edge.d0(&slack.gauge), vec![-2.0]);
+
+    let centered = plan_repair(&one_edge, &[2.0], &[100.0, 100.0], None);
+    assert_eq!(
+        centered.gauge,
+        vec![-1.0, 1.0],
+        "feasible interval [-100,98] uses its maximum-slack midpoint, not zero"
+    );
+    assert_eq!(one_edge.d0(&centered.gauge), vec![2.0]);
+}
+
+#[test]
+fn sr_002aa_skeleton_extraction_refuses_unvalidated_public_complex() {
+    let malformed = SheafComplex {
+        n_patches: 2,
+        interfaces: vec![Interface {
+            patches: (1, 0),
+            samples: Vec::new(),
+        }],
+        triples: Vec::new(),
+        sampling_clip: None,
+    };
+    assert!(
+        SheafSkeleton::of(&malformed).is_err(),
+        "public malformed indices must not be copied into later incidence panics"
     );
 }
 
 #[test]
 #[should_panic(expected = "one gauge budget per patch")]
-fn sr_002b_short_budget_vector_is_refused_not_silently_truncated() {
+fn sr_002b_short_budget_vector_hits_documented_precondition_guard() {
     // Regression: a budgets slice shorter than n_patches was silently truncated
     // by `potential.iter().zip(budgets)`, leaving trailing patches unchecked so
-    // `auto_repairable` could bless an over-budget distortion — the one thing
+    // `gauge_step_eligible` could bless an over-budget distortion — the one thing
     // the planner promises never to do. Must fail closed.
     let sk = triangle(); // n_patches = 3
     let mismatch = vec![0.0; sk.edges.len()];
@@ -219,7 +301,7 @@ fn sr_002b_short_budget_vector_is_refused_not_silently_truncated() {
 }
 
 #[test]
-fn sr_003_coexact_seeding_diagnoses_converter_side() {
+fn sr_003_coexact_seeding_retains_noncausal_diagnostic() {
     let sk = triangle();
     // Seed a pure circulation (the flipped-orientation signature): the
     // image of δ¹ᵀ.
@@ -230,15 +312,22 @@ fn sr_003_coexact_seeding_diagnoses_converter_side() {
         "pure coexact defect: {:?}",
         plan.split.fractions
     );
-    let converter_proposal = plan
+    let circulation_proposal = plan
         .proposals
         .iter()
-        .find(|p| p.action.contains("CONVERTER"))
-        .expect("converter-side diagnosis present");
+        .find(|p| p.action.contains("coexact circulation candidate"))
+        .expect("coexact circulation diagnostic present");
     assert!(
-        converter_proposal.action.contains("(0, 1, 2)"),
+        circulation_proposal.action.contains("(0, 1, 2)"),
         "localized to the triple junction: {}",
-        converter_proposal.action
+        circulation_proposal.action
+    );
+    assert!(
+        circulation_proposal
+            .action
+            .contains("algebra alone does not assign cause"),
+        "diagnostic must not turn one hypothesis into a causal conclusion: {}",
+        circulation_proposal.action
     );
     // Gauge repair CANNOT fix circulation: applying it leaves the norm.
     let repaired = apply_gauge(&sk, &mismatch, &plan.gauge);
@@ -248,13 +337,13 @@ fn sr_003_coexact_seeding_diagnoses_converter_side() {
     );
     verdict(
         "sr-003",
-        "circulation seeding is >99.9% coexact, diagnosed converter-side at the right \
-         junction, and provably not gauge-fixable",
+        "circulation seeding is >99.9% coexact, localized at the retained triangle \
+         without assigning cause, and this fixture is not gauge-fixable",
     );
 }
 
 #[test]
-fn sr_004_harmonic_seeding_declares_unrepairable_with_cutset() {
+fn sr_004_harmonic_seeding_retains_closed_nonexact_witness() {
     let sk = ring();
     // A circulation around the 4-cycle: with no 2-cells, nothing coexact
     // exists and no gauge kills a loop sum — genuinely harmonic.
@@ -264,29 +353,92 @@ fn sr_004_harmonic_seeding_declares_unrepairable_with_cutset() {
     let mismatch = vec![eps, eps, eps, -eps];
     let plan = plan_repair(&sk, &mismatch, &[1.0; 4], None);
     assert!(
+        norm_inf(&plan.split.harmonic) > 0.9 * eps,
+        "the retained harmonic witness must be nonzero: {:?}",
+        plan.split.harmonic
+    );
+    assert!(
+        norm_inf(&sk.d1(&plan.split.harmonic)) < 1e-12,
+        "the retained mismatch cochain must be closed"
+    );
+    assert!(
+        norm_inf(&sk.d0t(&plan.split.harmonic)) < 1e-12,
+        "the harmonic witness must be orthogonal to every exact cochain"
+    );
+    // Exact edge cochains telescope to zero around this oriented cycle.
+    // A nonzero cycle pairing therefore witnesses that the retained closed
+    // cochain is not in im(delta0), which is the extra evidence required
+    // before calling an interface mismatch an H1 obstruction.
+    let cycle_pairing = plan.split.harmonic[0] + plan.split.harmonic[1] + plan.split.harmonic[2]
+        - plan.split.harmonic[3];
+    assert!(
+        (cycle_pairing - 4.0 * eps).abs() < 1e-12,
+        "nonzero cycle pairing witnesses non-exactness: {cycle_pairing}"
+    );
+    assert!(
         plan.split.fractions.2 > 0.999,
         "pure harmonic: {:?}",
         plan.split.fractions
     );
-    assert!(!plan.auto_repairable || plan.split.fractions.0 < 1e-9);
-    assert_eq!(
-        plan.obstruction_cutset.len(),
-        4,
-        "the whole cycle is the cut-set"
+    assert!(
+        !plan.gauge_step_eligible,
+        "a retained non-exact fixture must not be auto-repairable"
     );
-    let unrepairable = plan
+    assert!(
+        plan.split.fractions.0 < 1e-9,
+        "the ring fixture must not acquire a material exact component: {:?}",
+        plan.split.fractions
+    );
+    assert_eq!(
+        plan.harmonic_support.len(),
+        4,
+        "the whole cycle is retained as harmonic support"
+    );
+    let remainder = plan
         .proposals
         .iter()
-        .find(|p| p.action.contains("NO local fix"))
-        .expect("honest unrepairable proposal");
-    assert!(unrepairable.cost_s.is_infinite(), "no local cost claim");
+        .find(|p| p.action.contains("no generic exactness or topology claim"))
+        .expect("honest candidate-remainder proposal");
+    assert!(
+        remainder.cost_s.is_infinite(),
+        "no fabricated repair-cost claim"
+    );
     // And indeed gauge repair achieves nothing.
     let repaired = apply_gauge(&sk, &mismatch, &plan.gauge);
     assert!(norm_inf(&repaired) > 0.9 * eps, "harmonic survives gauge");
     verdict(
         "sr-004",
-        "cycle circulation is >99.9% harmonic, declared unrepairable-locally with the \
-         full-cycle cut-set",
+        "retained cycle circulation is closed, non-exact by nonzero cycle pairing, \
+         >99.9% harmonic, and outside the patch-gauge repair class with full support",
+    );
+}
+
+#[test]
+fn sr_004a_subfloor_remainder_is_retained_but_not_promoted_to_support() {
+    let sk = ring();
+    let exact = sk.d0(&[0.0, 1.0, 0.0, -1.0]);
+    let eps = 1e-8;
+    let cycle = [eps, eps, eps, -eps];
+    let mismatch: Vec<f64> = exact.iter().zip(cycle).map(|(a, b)| a + b).collect();
+    let plan = plan_repair(&sk, &mismatch, &[2.0; 4], None);
+    assert!(
+        plan.split.harmonic.iter().any(|value| *value != 0.0),
+        "the raw diagnostic split retains the nonzero remainder"
+    );
+    assert!(
+        plan.split.fractions.2 <= COMPONENT_FLOOR,
+        "fixture must stay below component admission: {:?}",
+        plan.split.fractions
+    );
+    assert!(
+        plan.harmonic_support.is_empty(),
+        "a component cannot bootstrap significance from its own maximum"
+    );
+    assert!(
+        plan.proposals
+            .iter()
+            .all(|proposal| !proposal.action.contains("retained harmonic remainder")),
+        "sub-floor residue must not create a scary +inf remainder proposal"
     );
 }
 
@@ -294,8 +446,8 @@ fn sr_004_harmonic_seeding_declares_unrepairable_with_cutset() {
 fn sr_005_router_reroute_proposal_ranks_by_expected_norm() {
     let sk = triangle();
     let mismatch = sk.d0(&[0.0, 0.0, 0.012]);
-    // A router with one certified conversion available for the worst
-    // patch's chart kind.
+    // A router with one declared conversion available for the worst patch's
+    // chart kind. The declaration is not authenticated certificate authority.
     let mut router = Router::new();
     router
         .register(ConverterSpec {
@@ -323,9 +475,11 @@ fn sr_005_router_reroute_proposal_ranks_by_expected_norm() {
         .expect("router proposal present");
     assert!(reroute.action.contains("dc-interval"), "{}", reroute.action);
     assert!((reroute.cost_s - 2.0).abs() < 1e-9, "router-modeled cost");
-    // Ranking: proposals sorted by expected post-repair norm — the gauge
-    // repair (→ ~0) outranks the reroute (→ 5e-7) only if smaller; both
-    // must be ordered non-decreasingly.
+    // The route's composed representation error is not a post-repair seam
+    // norm. It remains explicitly unavailable until the reroute is
+    // constructively applied and re-evaluated.
+    assert!(reroute.expected_post_norm.is_infinite());
+    // Available constructive predictions sort before unavailable ones.
     for pair in plan.proposals.windows(2) {
         assert!(
             pair[0].expected_post_norm <= pair[1].expected_post_norm + 1e-12,
