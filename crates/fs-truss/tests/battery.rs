@@ -935,6 +935,37 @@ fn truss_002j_certificate_admission_identity_and_cancellation_are_fail_closed() 
                 .is_some_and(|scale| scale > 0.0)
         );
         assert!(report.to_json().contains("\"certificate_identity\""));
+        let assert_certification_hidden = |candidate: &PdhgReport| {
+            assert_eq!(candidate.verified_dual_lower_bound(), None);
+            assert_eq!(candidate.verified_primal_upper_bound(), None);
+            assert_eq!(candidate.verified_dual_scale(), None);
+            assert_eq!(candidate.certificate_identity(), None);
+            assert!(!candidate.to_json().contains("\"verified_"));
+            assert!(!candidate.to_json().contains("\"certificate_identity\""));
+        };
+        let mut changed_iters = report.clone();
+        changed_iters.iters = changed_iters.iters.saturating_add(1);
+        assert_certification_hidden(&changed_iters);
+        let mut changed_volume = report.clone();
+        changed_volume.volume = f64::from_bits(changed_volume.volume.to_bits().wrapping_add(1));
+        assert_certification_hidden(&changed_volume);
+        let mut changed_gap = report.clone();
+        changed_gap.gap = f64::from_bits(changed_gap.gap.to_bits().wrapping_add(1));
+        assert_certification_hidden(&changed_gap);
+        let mut changed_residual = report.clone();
+        changed_residual.eq_residual =
+            f64::from_bits(changed_residual.eq_residual.to_bits().wrapping_add(1));
+        assert_certification_hidden(&changed_residual);
+        let mut changed_trace_tail = report.clone();
+        let tail = changed_trace_tail
+            .trace
+            .last_mut()
+            .expect("solved report retains a trace tail");
+        tail.1 = f64::from_bits(tail.1.to_bits().wrapping_add(1));
+        assert_certification_hidden(&changed_trace_tail);
+        let mut changed_trace_length = report.clone();
+        changed_trace_length.trace.insert(0, (0, 0.0));
+        assert_certification_hidden(&changed_trace_length);
         let mut substituted_report = report.clone();
         substituted_report.gap = f64::from_bits(substituted_report.gap.to_bits() + 1);
         assert!(matches!(

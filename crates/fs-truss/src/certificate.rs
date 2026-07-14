@@ -19,6 +19,11 @@ const PROBLEM_ID_DOMAIN: &str = "frankensim.fs-truss.layout-problem.v1";
 const INPUT_ID_DOMAIN: &str = "frankensim.fs-truss.layout-certificate-input.v1";
 const SOLVER_STATE_ID_DOMAIN: &str = "frankensim.fs-truss.pdhg-state.v1";
 
+#[cfg(test)]
+std::thread_local! {
+    static IDENTITY_HASH_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Hard ceiling for active equilibrium rows in one certificate attempt.
 pub const HARD_MAX_CERTIFICATE_ACTIVE_ROWS: usize = 4_096;
 /// Hard ceiling for physical members in one certificate attempt.
@@ -440,6 +445,42 @@ impl LayoutOptimalityCertificate {
         settings: PdhgSettings,
         cx: Option<&Cx<'_>>,
     ) -> Result<bool, LayoutCertificateError> {
+        if let Some(cx) = cx {
+            poll(cx, "certificate verification admission")?;
+        }
+        let Ok(members) = validate_input_shape(problem, x, y, settings) else {
+            return Ok(false);
+        };
+        let Some(expected_variables) = self.repaired_member_forces.len().checked_mul(2) else {
+            return Ok(false);
+        };
+        let expected_rows = self.equilibrium_residuals.len();
+        if members != self.repaired_member_forces.len()
+            || problem.a().nrows() != expected_rows
+            || problem.a().ncols() != expected_variables
+            || problem.b().len() != expected_rows
+            || problem.c().len() != expected_variables
+            || x.len() != expected_variables
+            || y.len() != expected_rows
+            || self.repaired_split_forces.len() != expected_variables
+            || self.dual_slacks.len() != expected_variables
+            || self.scaled_dual.len() != expected_rows
+            || members > self.limits.max_members
+            || self.selected_members.len() > self.limits.max_active_rows
+        {
+            return Ok(false);
+        }
+        let required_work = checked_work(
+            self.selected_members.len(),
+            members,
+            problem.a().nrows(),
+            problem.a().ncols(),
+            problem.a().nnz(),
+        )
+        .unwrap_or(usize::MAX);
+        if required_work > self.limits.max_operations || !self.verifies_identity_checked(cx)? {
+            return Ok(false);
+        }
         let problem_identity = problem_identity(problem, cx)?;
         let input_identity = input_identity(
             self.problem_identity,
@@ -451,9 +492,7 @@ impl LayoutOptimalityCertificate {
             self.limits,
             cx,
         )?;
-        Ok(self.verifies_identity_checked(cx)?
-            && self.problem_identity == problem_identity
-            && self.input_identity == input_identity)
+        Ok(self.problem_identity == problem_identity && self.input_identity == input_identity)
     }
 
     /// Verified optimum interval.
@@ -785,6 +824,8 @@ fn problem_identity<P: CertificateProblemView + ?Sized>(
     lp: &P,
     cx: Option<&Cx<'_>>,
 ) -> Result<LayoutCertificateIdentity, LayoutCertificateError> {
+    #[cfg(test)]
+    IDENTITY_HASH_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
     let mut writer = IdentityWriter::new(PROBLEM_ID_DOMAIN);
     let mut steps = 0usize;
     writer.usize(lp.a().nrows());
@@ -828,6 +869,8 @@ fn input_identity(
     limits: LayoutCertificateLimits,
     cx: Option<&Cx<'_>>,
 ) -> Result<LayoutCertificateIdentity, LayoutCertificateError> {
+    #[cfg(test)]
+    IDENTITY_HASH_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
     let mut writer = IdentityWriter::new(INPUT_ID_DOMAIN);
     let mut steps = 0usize;
     writer.identity(problem);
@@ -904,6 +947,8 @@ fn certificate_identity(
     certificate: &LayoutOptimalityCertificate,
     cx: Option<&Cx<'_>>,
 ) -> Result<LayoutCertificateIdentity, LayoutCertificateError> {
+    #[cfg(test)]
+    IDENTITY_HASH_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
     let mut writer = IdentityWriter::new(CERTIFICATE_ID_DOMAIN);
     let mut steps = 0usize;
     writer.identity(certificate.problem_identity);
@@ -2148,5 +2193,33 @@ mod tests {
         let mut witness_tamper = certificate;
         witness_tamper.scaled_dual[0] = f64::EPSILON;
         assert!(!witness_tamper.verifies_identity_checked(None).unwrap());
+    }
+
+    #[test]
+    fn verification_work_excess_is_rejected_before_identity_hashing() {
+        let matrix = Csr::from_parts(1, 2, vec![0, 2], vec![0, 1], vec![1.0, -1.0]);
+        let costs = [1.0, 1.0];
+        let loads = [1.0];
+        let problem = LayoutCertificateProblem::try_new(&matrix, &costs, &loads)
+            .expect("dimensionally valid split problem");
+        let mut certificate = identity_fixture();
+        certificate.limits =
+            LayoutCertificateLimits::try_new(1, 1, 1, 1).expect("positive retained limits");
+        certificate.certificate_identity =
+            certificate_identity(&certificate, None).expect("fixture identity");
+        IDENTITY_HASH_CALLS.with(|calls| calls.set(0));
+
+        assert!(
+            !certificate
+                .verifies_for_problem_view_checked(
+                    &problem,
+                    &[0.0, 0.0],
+                    &[0.0],
+                    PdhgSettings::default(),
+                    None,
+                )
+                .expect("work excess is a clean verification miss")
+        );
+        IDENTITY_HASH_CALLS.with(|calls| assert_eq!(calls.get(), 0));
     }
 }

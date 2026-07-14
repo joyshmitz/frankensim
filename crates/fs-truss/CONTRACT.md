@@ -63,7 +63,11 @@ steel-and-concrete flagship's engine (§15.2).
   domain-separated `fs-blake3` identities. `verify_optimum_certificate`
   recomputes the proof. `certify_optimum_for_report` additionally requires the
   private identity of the exact `solve` output before retaining bounds in
-  `PdhgReport`; unrelated reports cannot acquire them.
+  `PdhgReport`; unrelated reports cannot acquire them. The retained solve
+  snapshot binds every public diagnostic and the complete trace. Any later
+  mutation makes all verified accessors return `None` and omits verified fields
+  from `to_json`, even before another certification attempt. An O(1) retained
+  trace-length check rejects caller growth before the bounded snapshot scan.
 - `sizing::size_and_snap` → `CatalogAudit`: areas from yield, EULER
   floors for compression members (solid square `A ≥ √(12|q|l²/π²E)`),
   joint parsimony pruning with MANDATORY least-squares equilibrium
@@ -138,7 +142,9 @@ bounded strides and immediately before publication. Cancellation returns a
 structured `Cancelled { stage }` refusal; no partially built authoritative
 value escapes. Certificate validation, matrix visits, elimination, interval
 work, hashing, verification, and final publication likewise poll at bounded
-strides; a cancelled attempt clears report bounds and publishes no proof. The
+strides; the cheap promotion verifier rejects shape or retained-operation-cap
+excess before traversing caller arrays. A cancelled attempt clears report
+bounds and publishes no proof. The
 PDHG solver remains iteration-bounded but does not yet poll `Cx` inside its
 fixed synchronous solve loop.
 
@@ -157,8 +163,11 @@ admission, exact-cap/cap-plus-one, malformed-part, numerical, load, and
 cancellation refusals; truss-002 provable oracles with numerical diagnostics
 and malformed-solver-input refusal; truss-002h-k exact bound bracketing against
 an independent tiny LP oracle, deterministic replay, private report binding,
-rank/resource/overflow/near-zero fail-closed behavior, tamper identity, and
-cancellation-before-publication;
+post-certification diagnostic/trace mutation, rank/resource/overflow/near-zero
+fail-closed behavior, tamper identity, and cancellation-before-publication;
+`src/certificate.rs` unit tests: private receipt tamper detection and pre-hash
+verification-budget admission;
+`src/lp.rs` unit tests: same-length non-tail report-trace mutation detection;
 truss-003 refinement monotonicity within declared tolerances;
 truss-004 scale trend + warm starts; truss-005 sizing/snap audit;
 truss-006 rod spot check.

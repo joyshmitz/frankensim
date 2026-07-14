@@ -16,6 +16,7 @@
 //! and the floating dual scaling is not outward-verified.
 
 use crate::ground::{GroundStructure, TrussConstructionError};
+use fs_blake3::{Blake3, hash_domain};
 use fs_exec::Cx;
 use fs_sparse::Csr;
 use std::fmt::Write as _;
@@ -32,6 +33,7 @@ pub const HARD_MAX_LAYOUT_RETAINED_BYTES: usize = 512 * 1024 * 1024;
 
 const LAYOUT_POLL_STRIDE: usize = 256;
 const MIN_LAYOUT_LOAD_NORM_SQUARED: f64 = 1e-60;
+const PDHG_REPORT_SNAPSHOT_DOMAIN: &str = "frankensim.fs-truss.pdhg-report-snapshot.v1";
 
 /// Immutable support mask and nodal loads admitted for one ground structure.
 #[derive(Debug, Clone, PartialEq)]
@@ -760,66 +762,84 @@ pub struct PdhgReport {
     certificate_identity: Option<[u8; 32]>,
     /// Private binding of this report to one LP/settings/output state.
     solver_state_identity: Option<[u8; 32]>,
-    /// Private snapshot preventing public diagnostic-field substitution.
-    solver_diagnostic_bits: Option<[u64; 3]>,
-    /// Private snapshot of the final trace tail.
-    solver_trace_tail: Option<(usize, u64)>,
+    /// Private snapshot preventing public report-field or trace substitution.
+    solver_report_snapshot: Option<[u8; 32]>,
+    /// Solver-minted trace length, checked before any snapshot traversal.
+    solver_trace_len: Option<usize>,
 }
 
 impl PdhgReport {
     /// Verified dual lower bound, if a complete certificate was retained.
     #[must_use]
-    pub const fn verified_dual_lower_bound(&self) -> Option<f64> {
-        self.verified_dual_lower_bound
+    pub fn verified_dual_lower_bound(&self) -> Option<f64> {
+        self.certification_is_current()
+            .then_some(self.verified_dual_lower_bound)
+            .flatten()
     }
 
     /// Verified primal upper bound, if a complete certificate was retained.
     #[must_use]
-    pub const fn verified_primal_upper_bound(&self) -> Option<f64> {
-        self.verified_primal_upper_bound
+    pub fn verified_primal_upper_bound(&self) -> Option<f64> {
+        self.certification_is_current()
+            .then_some(self.verified_primal_upper_bound)
+            .flatten()
     }
 
     /// Uniform scale used by the retained verified dual witness.
     #[must_use]
-    pub const fn verified_dual_scale(&self) -> Option<f64> {
-        self.verified_dual_scale
+    pub fn verified_dual_scale(&self) -> Option<f64> {
+        self.certification_is_current()
+            .then_some(self.verified_dual_scale)
+            .flatten()
     }
 
     /// Content identity of the retained certificate.
     #[must_use]
-    pub const fn certificate_identity(&self) -> Option<[u8; 32]> {
-        self.certificate_identity
+    pub fn certificate_identity(&self) -> Option<[u8; 32]> {
+        self.certification_is_current()
+            .then_some(self.certificate_identity)
+            .flatten()
+    }
+
+    fn report_snapshot(&self) -> [u8; 32] {
+        let mut hasher = Blake3::new();
+        hasher.update(&self.iters.to_le_bytes());
+        hasher.update(&self.volume.to_bits().to_le_bytes());
+        hasher.update(&self.gap.to_bits().to_le_bytes());
+        hasher.update(&self.eq_residual.to_bits().to_le_bytes());
+        hasher.update(&self.trace.len().to_le_bytes());
+        for &(iteration, gap) in &self.trace {
+            hasher.update(&iteration.to_le_bytes());
+            hasher.update(&gap.to_bits().to_le_bytes());
+        }
+        let stream_hash = hasher.finalize();
+        *hash_domain(PDHG_REPORT_SNAPSHOT_DOMAIN, stream_hash.as_bytes()).as_bytes()
+    }
+
+    fn certification_is_current(&self) -> bool {
+        self.verified_dual_lower_bound.is_some()
+            && self.verified_primal_upper_bound.is_some()
+            && self.verified_dual_scale.is_some()
+            && self.certificate_identity.is_some()
+            && self.solver_state_identity.is_some()
+            && self.solver_trace_len == Some(self.trace.len())
+            && self.solver_report_snapshot == Some(self.report_snapshot())
     }
 
     pub(crate) fn bind_solver_state(&mut self, identity: [u8; 32]) {
         self.solver_state_identity = Some(identity);
-        self.solver_diagnostic_bits = Some([
-            self.volume.to_bits(),
-            self.gap.to_bits(),
-            self.eq_residual.to_bits(),
-        ]);
-        self.solver_trace_tail = self
-            .trace
-            .last()
-            .map(|&(iteration, gap)| (iteration, gap.to_bits()));
+        self.solver_trace_len = Some(self.trace.len());
+        self.solver_report_snapshot = Some(self.report_snapshot());
     }
 
     pub(crate) fn matches_solver_state(&self, identity: [u8; 32]) -> bool {
         self.solver_state_identity == Some(identity)
-            && self.solver_diagnostic_bits
-                == Some([
-                    self.volume.to_bits(),
-                    self.gap.to_bits(),
-                    self.eq_residual.to_bits(),
-                ])
-            && self.solver_trace_tail
-                == self
-                    .trace
-                    .last()
-                    .map(|&(iteration, gap)| (iteration, gap.to_bits()))
+            && self.solver_trace_len == Some(self.trace.len())
+            && self.solver_report_snapshot == Some(self.report_snapshot())
             && self
-                .solver_trace_tail
-                .is_some_and(|(iteration, _)| iteration == self.iters)
+                .trace
+                .last()
+                .is_some_and(|&(iteration, _)| iteration == self.iters)
     }
 
     pub(crate) fn clear_certified_bounds(&mut self) {
@@ -851,11 +871,13 @@ impl PdhgReport {
             "{{\"iters\":{},\"volume\":{:.8e},\"gap\":{:.3e},\"eq_residual\":{:.3e}",
             self.iters, self.volume, self.gap, self.eq_residual
         );
-        if let (Some(lower), Some(upper), Some(scale)) = (
-            self.verified_dual_lower_bound,
-            self.verified_primal_upper_bound,
-            self.verified_dual_scale,
-        ) {
+        if self.certification_is_current()
+            && let (Some(lower), Some(upper), Some(scale)) = (
+                self.verified_dual_lower_bound,
+                self.verified_primal_upper_bound,
+                self.verified_dual_scale,
+            )
+        {
             let _ = write!(
                 s,
                 ",\"verified_dual_lower_bound\":{lower},\"verified_primal_upper_bound\":{upper},\"verified_dual_scale\":{scale}"
@@ -1539,5 +1561,34 @@ impl LayoutLp {
             / bnorm;
         let gap = (primal - dual).abs() / primal.abs().max(1e-30);
         Ok((gap, eq_res, primal))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PdhgReport;
+
+    #[test]
+    fn certified_report_snapshot_covers_non_tail_trace_entries() {
+        let mut report = PdhgReport {
+            iters: 2,
+            volume: 1.0,
+            gap: 0.25,
+            eq_residual: 0.125,
+            trace: vec![(1, 0.5), (2, 0.25)],
+            ..PdhgReport::default()
+        };
+        report.bind_solver_state([7; 32]);
+        report.retain_certified_bounds(0.75, 1.25, 0.5, [9; 32]);
+        assert_eq!(report.verified_dual_lower_bound(), Some(0.75));
+        assert!(report.to_json().contains("\"certificate_identity\""));
+
+        report.trace[0].1 = f64::from_bits(report.trace[0].1.to_bits().wrapping_add(1));
+        assert_eq!(report.verified_dual_lower_bound(), None);
+        assert_eq!(report.verified_primal_upper_bound(), None);
+        assert_eq!(report.verified_dual_scale(), None);
+        assert_eq!(report.certificate_identity(), None);
+        assert!(!report.to_json().contains("\"verified_"));
+        assert!(!report.to_json().contains("\"certificate_identity\""));
     }
 }

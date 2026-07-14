@@ -26,8 +26,9 @@ Composes `fs-truss` (ground-structure LP + PDHG diagnostics), `fs-tropical`
 - `optimality_color_from_certificate(problem, x, y, settings, status, gap,
   eq_residual)` — the sole native/browser promotion gate. Only a structurally
   valid private certificate bound to those canonical arrays, iterates, and
-  settings yields `Verified { lo, hi }`; every unavailable proof remains
-  `Estimated`.
+  settings yields `Verified { lo, hi }`. The gate checks retained shapes and the
+  certificate's operation cap before hashing caller arrays; every mismatch,
+  work excess, or unavailable proof remains `Estimated`.
 - `rescale_optimality_color(color, positive_divisor)` — preserves an existing
   Verified interval through outward division (used for normalized-to-physical
   yield-stress scaling), preserves weaker colors, and demotes invalid scaling.
