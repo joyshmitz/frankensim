@@ -6,6 +6,7 @@
 //! total (fuzz: structured rejections with in-bounds spans, never panics).
 
 use fs_ir::{IR_VERSION, Node, NodeKind, Study, VersionedProgram, json, lower, sexpr};
+use fs_qty::Dims;
 
 fn count_qty(n: &Node, hits: &mut usize) {
     match &n.kind {
@@ -379,7 +380,7 @@ fn ir_0xx_exact_count_literals_survive_admission_and_identity() {
 
 #[test]
 fn ir_006_version_pinning_round_trips() {
-    assert_eq!(IR_VERSION, 2);
+    assert_eq!(IR_VERSION, 3);
     let src = "(study \"v\" (seed 0x2) (versions (constellation :lock \"2026-07\")))";
     let ast = sexpr::parse(src).unwrap();
     // Through BOTH syntaxes, the pin survives verbatim.
@@ -391,14 +392,14 @@ fn ir_006_version_pinning_round_trips() {
     let artifact = VersionedProgram::current(ast);
     let canonical_sexpr = artifact.print_sexpr();
     let canonical_json = artifact.print_json();
-    let from_sexpr = VersionedProgram::parse_sexpr(&canonical_sexpr).expect("v2 envelope");
-    let from_json = VersionedProgram::parse_json(&canonical_json).expect("v2 JSON envelope");
+    let from_sexpr = VersionedProgram::parse_sexpr(&canonical_sexpr).expect("v3 envelope");
+    let from_json = VersionedProgram::parse_json(&canonical_json).expect("v3 JSON envelope");
     assert_eq!(from_sexpr.version(), IR_VERSION);
     assert!(from_sexpr.program().same_shape(from_json.program()));
     assert_eq!(from_sexpr.print_sexpr(), canonical_sexpr);
     assert_eq!(from_json.print_json(), canonical_json);
 
-    for unsupported in [1, IR_VERSION + 1] {
+    for unsupported in [1, 2, IR_VERSION + 1] {
         let source = canonical_sexpr.replacen(
             &format!(":version {IR_VERSION}"),
             &format!(":version {unsupported}"),
@@ -425,15 +426,20 @@ fn ir_006_version_pinning_round_trips() {
         "IrUnsupportedVersion"
     );
 
-    let v1_count = sexpr::parse("384.0GiB").expect("legacy bare syntax parses syntax-only");
-    let migrated = VersionedProgram::current(v1_count);
+    let legacy_count = sexpr::parse("384.0GiB").expect("legacy bare syntax parses syntax-only");
+    let migrated = VersionedProgram::current(legacy_count);
     assert!(
         migrated.print_sexpr().contains("384e0GiB"),
-        "migration is explicit re-emission under the v2 envelope"
+        "migration is explicit re-emission under the v3 envelope"
     );
+    let mol = sexpr::parse("2mol").expect("sixth-base quantity parses");
+    let NodeKind::Qty { dims, .. } = mol.kind else {
+        panic!("quantity expected");
+    };
+    assert_eq!(dims, Dims([0, 0, 0, 0, 0, 1]));
     verdict(
         "ir-006",
-        "constellation lock and IR v2 envelope survive both syntaxes; unsupported versions refuse",
+        "constellation lock and six-base IR v3 envelope survive both syntaxes; stale versions refuse",
     );
 }
 
@@ -468,7 +474,8 @@ fn gen_node(seed: &mut u64, depth: usize) -> Node {
                     "5mm",
                     "0.5L/s",
                     "36h",
-                ][next(10) as usize];
+                    "2mol",
+                ][next(11) as usize];
                 match sexpr::parse(qty).map(|n| n.kind) {
                     Ok(k @ NodeKind::Qty { .. }) => k,
                     _ => unreachable!("qty pool entries always parse"),

@@ -10,7 +10,7 @@ use fs_ir::admission::Severity;
 use fs_ir::query::{FieldRegistry, Qoi, Query, Target};
 use fs_qty::Dims;
 
-// von Mises stress: Pa = kg·m⁻¹·s⁻²  → [M,KG,S,K,A]
+// von Mises stress: Pa = kg·m⁻¹·s⁻²  → [M,KG,S,K,A,MOL]
 const PA: Dims = Dims([-1, 1, -2, 0, 0, 0]);
 // temperature: K
 const KELVIN: Dims = Dims([0, 0, 0, 1, 0, 0]);

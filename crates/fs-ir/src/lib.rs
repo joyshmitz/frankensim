@@ -41,12 +41,12 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The IR language version this build reads and writes. Bare syntax parsers are
 /// intentionally syntax-only; use [`VersionedProgram`] for persisted/replayed
 /// artifacts whose canonical identity must bind and enforce this version.
-pub const IR_VERSION: u32 = 2;
+pub const IR_VERSION: u32 = 3;
 
 /// A canonical, version-bound FrankenScript artifact envelope.
 ///
 /// Both concrete encodings represent the same envelope AST:
-/// `(frankensim-ir :version 2 :program <node>)`. Construction always writes the
+/// `(frankensim-ir :version 3 :program <node>)`. Construction always writes the
 /// current version; parsing rejects every unsupported version rather than
 /// guessing migration semantics.
 #[derive(Debug, Clone, PartialEq)]

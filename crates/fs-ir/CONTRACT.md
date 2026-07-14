@@ -31,7 +31,7 @@ typed AST. Layer: L6 (HELM). Runtime deps: `std` + fs-qty.
   presentation; the isomorphism property is stated in terms of it.
 - `VersionedProgram` — the persisted/replayed artifact boundary shared by both
   syntaxes. It canonically wraps a program as
-  `(frankensim-ir :version 2 :program <node>)`, binds the language version into
+  `(frankensim-ir :version 3 :program <node>)`, binds the language version into
   serialized identity, and refuses older/newer semantics unless a caller first
   performs an explicit audited migration. Bare parsers remain syntax-only.
 - `sexpr::parse/print` — total reader with spans, comments (`;`),
@@ -341,6 +341,10 @@ telemetry for a completed speculative transition.
   integer/decimal atoms. V1 canonical artifacts must be reparsed and re-emitted
   under v2 before their new identity is recorded; no silent v1 hash migration
   is claimed.
+- IR v3 changes quantity semantics from five SI base exponents to six
+  `[m, kg, s, K, A, mol]`. V1/v2 envelopes refuse at the persisted boundary;
+  callers must explicitly reparse and re-emit legacy source under v3 so the
+  new semantic identity is visible rather than silently reusing an old hash.
 - Bare `sexpr::parse`/`json::parse` intentionally do not infer an artifact
   version. Persisted or replayed programs must use `VersionedProgram`; callers
   that ledger a bare AST have no version-binding claim.

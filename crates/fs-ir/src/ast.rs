@@ -311,7 +311,7 @@ pub enum NodeKind {
     Qty {
         /// Value in SI base units.
         value: f64,
-        /// The five base dimensions.
+        /// The six base dimensions `[m, kg, s, K, A, mol]`.
         dims: Dims,
         /// The literal as written (e.g. `"65deg"`), printed verbatim.
         text: String,
