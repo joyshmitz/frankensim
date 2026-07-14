@@ -310,7 +310,7 @@ pub const ROOFLINE_RECEIPT_VERSION: u64 = 3;
 pub const ROOFLINE_ROW_SCHEMA: &str = "fs-roofline-ledger-row-v4";
 
 /// Production tune shape prefix written by fs-roofline.
-pub const ROOFLINE_TUNE_SHAPE_PREFIX: &str = "roofline-v7";
+pub const ROOFLINE_TUNE_SHAPE_PREFIX: &str = "roofline-v8";
 
 /// Exact byte width of fs-roofline's fingerprint + baseline machine key.
 pub const ROOFLINE_MACHINE_KEY_BYTES: usize = 40;
@@ -329,7 +329,29 @@ const MAX_RECEIPT_JSON_NODES: usize = 65_536;
 const MAX_RECEIPT_JSON_STRING_BYTES: usize = 256 * 1024;
 const MAX_RECEIPT_JSON_CONTAINER_ITEMS: usize = 32_768;
 const MAX_RECEIPT_JSON_NUMBER_BYTES: usize = 64;
-const MAX_ROOFLINE_REPS: usize = 1_000;
+const MAX_PRODUCTION_ELEMENTS: u64 = 1 << 24;
+const MAX_PRODUCTION_KERNEL_RUNS: u64 = 64;
+const MAX_PRODUCTION_WARMUP: u64 = MAX_PRODUCTION_KERNEL_RUNS - 1;
+const MAX_PRODUCTION_REPS: u64 = MAX_PRODUCTION_KERNEL_RUNS;
+const MAX_PRODUCTION_REGISTRY_FLOPS: u128 = 1 << 39;
+const MAX_PRODUCTION_REGISTRY_BYTES: u128 = 1 << 33;
+const MAX_PRODUCTION_LOGICAL_CPUS: u64 = 4_096;
+const SEALED_PRODUCTION_REGISTRY: [(&str, &str); 4] = [
+    ("simd-axpy-f64", "1"),
+    ("simd-dot-f64", "1"),
+    ("simd-sum-f64", "1"),
+    ("gemm-f64", "2"),
+];
+const MAX_BASELINE_STRING_BYTES: usize = 4_096;
+const MAX_BASELINE_LINE_BYTES: usize = 16 * 1_024;
+const MAX_BASELINE_AGE_DAYS: u64 = 365;
+const MIN_PROMOTION_RUNS: usize = 3;
+const WALL_NS_PER_DAY: u64 = 86_400 * 1_000_000_000;
+const BASELINE_HASH_DOMAIN: &str = "frankensim.fs-roofline.baseline.v1";
+const PRODUCTION_AXES_RECEIPT_DOMAIN: &str =
+    "org.frankensim.fs-roofline.production-axes-receipt.v1";
+const RESULT_MANIFEST_DOMAIN: &str = "org.frankensim.fs-roofline.run-result-manifest.v1";
+const FINALIZED_RUN_DOMAIN: &str = "org.frankensim.fs-roofline.finalized-run.v3";
 
 /// Why an exact ledger tune row could not become cost-model evidence.
 #[derive(Debug)]
@@ -913,16 +935,20 @@ fn finite_from_bits(
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ReceiptObservation {
     kernel: String,
     version: String,
     machine: u64,
+    logical_cpus: u64,
+    axis_bits: [u64; 4],
+    elements: u64,
+    warmup_runs: u64,
     observations: Vec<CostObservation>,
     reps: u64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct RowBinding {
     op: u64,
     run_receipt: String,
@@ -932,10 +958,67 @@ struct RowBinding {
     baseline_hash: String,
     build_identity: String,
     reps: u64,
+    post_axis_bits: [u64; 4],
+}
+
+#[derive(Debug, Clone)]
+struct ManifestEntry {
+    ordinal: u64,
+    kernel: String,
+    version: String,
+    payload: String,
+}
+
+#[derive(Debug)]
+struct ValidatedProductionOp {
+    baseline_admission: String,
+    result_manifest: String,
+    manifest: Vec<ManifestEntry>,
+    finalized_run_receipt: String,
+    admission: ValidatedAxisAdmission,
+}
+
+#[derive(Debug)]
+struct ValidatedAxisAdmission {
+    decision_day: u64,
+    baseline_hash: String,
+    pre: DecodedAxes,
+    post: DecodedAxes,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DecodedIdentity {
+    fingerprint: u64,
+    cpu_brand: String,
+    logical_cpus: u64,
+    os: String,
+    arch: String,
+    firmware: String,
+    canonical: String,
+}
+
+#[derive(Debug)]
+struct DecodedAxes {
+    fingerprint: u64,
+    cpu_brand: String,
+    logical_cpus: u64,
+    bits: [u64; 4],
+    canonical: String,
+}
+
+#[derive(Debug)]
+struct DecodedBaseline {
+    identity: DecodedIdentity,
+    bits: [u64; 4],
+    source_receipts: Vec<String>,
+    promoted_day: u64,
+    age_policy_days: u64,
+    canonical: String,
 }
 
 struct DecodedMeasurement {
     elements: u64,
+    warmup_runs: u64,
     sample_times: Vec<f64>,
     decision_count: usize,
     median_bits: u64,
@@ -948,6 +1031,36 @@ struct DecodedMeasurement {
 struct ReceiptMetrics {
     rate_bits: u64,
     reps: u64,
+}
+
+fn validate_production_run_counts(warmup_runs: u64, reps: u64) -> Result<u64, TuneModelError> {
+    if warmup_runs > MAX_PRODUCTION_WARMUP {
+        return Err(invalid_receipt(
+            "receipt.measurement.warmup_runs",
+            format!("must be in 0..={MAX_PRODUCTION_WARMUP}"),
+        ));
+    }
+    if reps == 0 || reps > MAX_PRODUCTION_REPS {
+        return Err(invalid_receipt(
+            "receipt.reps",
+            format!("must be in 1..={MAX_PRODUCTION_REPS}"),
+        ));
+    }
+    let runs_per_kernel = warmup_runs.checked_add(reps).ok_or_else(|| {
+        invalid_receipt(
+            "receipt.measurement.warmup_runs",
+            "warmup + repetition count overflows u64",
+        )
+    })?;
+    if runs_per_kernel > MAX_PRODUCTION_KERNEL_RUNS {
+        return Err(invalid_receipt(
+            "receipt.measurement.warmup_runs",
+            format!(
+                "warmup + reps must be at most {MAX_PRODUCTION_KERNEL_RUNS}, got {runs_per_kernel}"
+            ),
+        ));
+    }
+    Ok(runs_per_kernel)
 }
 
 fn decode_row_binding(text: &str) -> Result<RowBinding, TuneModelError> {
@@ -983,19 +1096,20 @@ fn decode_row_binding(text: &str) -> Result<RowBinding, TuneModelError> {
     let baseline_hash = expect_hash(object.take("baseline_hash")?, "params.baseline_hash")?;
     let build_identity = expect_hash(object.take("build_identity")?, "params.build_identity")?;
     let reps = expect_u64(object.take("reps")?, "params.reps")?;
-    if reps == 0 || reps > MAX_ROOFLINE_REPS as u64 {
+    if reps == 0 || reps > MAX_PRODUCTION_REPS {
         return Err(invalid_receipt(
             "params.reps",
-            format!("must be in 1..={MAX_ROOFLINE_REPS}"),
+            format!("must be in 1..={MAX_PRODUCTION_REPS}"),
         ));
     }
-    for field in [
+    let mut post_axis_bits = [0_u64; 4];
+    for (slot, field) in post_axis_bits.iter_mut().zip([
         "post_bandwidth_single_bits",
         "post_bandwidth_all_core_bits",
         "post_peak_single_bits",
         "post_peak_all_core_bits",
-    ] {
-        let _ = finite_from_bits(object.take(field)?, &format!("params.{field}"), true)?;
+    ]) {
+        *slot = finite_from_bits(object.take(field)?, &format!("params.{field}"), true)?.0;
     }
     object.finish()?;
     Ok(RowBinding {
@@ -1007,27 +1121,30 @@ fn decode_row_binding(text: &str) -> Result<RowBinding, TuneModelError> {
         baseline_hash,
         build_identity,
         reps,
+        post_axis_bits,
     })
 }
 
-fn decode_receipt_axes(value: JsonValue) -> Result<(), TuneModelError> {
+fn decode_receipt_axes(value: JsonValue) -> Result<(u64, [u64; 4]), TuneModelError> {
     let mut axes = ObjectFields::new(value, "receipt.axes")?;
     let logical_cpus = expect_u64(axes.take("logical_cpus")?, "receipt.axes.logical_cpus")?;
-    if logical_cpus == 0 || u32::try_from(logical_cpus).is_err() {
+    if logical_cpus == 0 || logical_cpus > MAX_PRODUCTION_LOGICAL_CPUS {
         return Err(invalid_receipt(
             "receipt.axes.logical_cpus",
-            "must be in 1..=u32::MAX",
+            format!("must be in 1..={MAX_PRODUCTION_LOGICAL_CPUS}"),
         ));
     }
-    for field in [
+    let mut axis_bits = [0_u64; 4];
+    for (slot, field) in axis_bits.iter_mut().zip([
         "bandwidth_single_bits",
         "bandwidth_all_core_bits",
         "peak_single_bits",
         "peak_all_core_bits",
-    ] {
-        let _ = finite_from_bits(axes.take(field)?, &format!("receipt.axes.{field}"), true)?;
+    ]) {
+        *slot = finite_from_bits(axes.take(field)?, &format!("receipt.axes.{field}"), true)?.0;
     }
-    axes.finish()
+    axes.finish()?;
+    Ok((logical_cpus, axis_bits))
 }
 
 fn decode_receipt_spec(value: JsonValue) -> Result<(), TuneModelError> {
@@ -1110,30 +1227,34 @@ fn decode_receipt_measurement(value: JsonValue) -> Result<DecodedMeasurement, Tu
         measurement.take("elements")?,
         "receipt.measurement.elements",
     )?;
-    if elements == 0 || usize::try_from(elements).is_err() {
+    if elements == 0 || elements > MAX_PRODUCTION_ELEMENTS {
         return Err(invalid_receipt(
             "receipt.measurement.elements",
-            "must be in 1..=usize::MAX",
+            format!("must be in 1..={MAX_PRODUCTION_ELEMENTS}"),
         ));
     }
     let warmup_runs = expect_u64(
         measurement.take("warmup_runs")?,
         "receipt.measurement.warmup_runs",
     )?;
-    if warmup_runs > MAX_ROOFLINE_REPS as u64 {
+    if warmup_runs > MAX_PRODUCTION_WARMUP {
         return Err(invalid_receipt(
             "receipt.measurement.warmup_runs",
-            format!("exceeds limit {MAX_ROOFLINE_REPS}"),
+            format!("must be in 0..={MAX_PRODUCTION_WARMUP}"),
         ));
     }
     let sample_bits = expect_array(
         measurement.take("sample_seconds_bits")?,
         "receipt.measurement.sample_seconds_bits",
     )?;
-    if sample_bits.is_empty() || sample_bits.len() > MAX_ROOFLINE_REPS {
+    if sample_bits.is_empty()
+        || u64::try_from(sample_bits.len())
+            .ok()
+            .is_none_or(|len| len > MAX_PRODUCTION_REPS)
+    {
         return Err(invalid_receipt(
             "receipt.measurement.sample_seconds_bits",
-            format!("length must be in 1..={MAX_ROOFLINE_REPS}"),
+            format!("length must be in 1..={MAX_PRODUCTION_REPS}"),
         ));
     }
     let mut sample_times = Vec::with_capacity(sample_bits.len());
@@ -1149,10 +1270,13 @@ fn decode_receipt_measurement(value: JsonValue) -> Result<DecodedMeasurement, Tu
         measurement.take("decision_binding_hashes")?,
         "receipt.measurement.decision_binding_hashes",
     )?;
-    if decision_hashes.len() > MAX_ROOFLINE_REPS {
+    if u64::try_from(decision_hashes.len())
+        .ok()
+        .is_none_or(|len| len > MAX_PRODUCTION_REPS)
+    {
         return Err(invalid_receipt(
             "receipt.measurement.decision_binding_hashes",
-            format!("length exceeds limit {MAX_ROOFLINE_REPS}"),
+            format!("length exceeds limit {MAX_PRODUCTION_REPS}"),
         ));
     }
     validate_decision_hashes(&decision_hashes)?;
@@ -1185,6 +1309,7 @@ fn decode_receipt_measurement(value: JsonValue) -> Result<DecodedMeasurement, Tu
     measurement.finish()?;
     Ok(DecodedMeasurement {
         elements,
+        warmup_runs,
         sample_times,
         decision_count: decision_hashes.len(),
         median_bits,
@@ -1259,12 +1384,13 @@ fn decode_receipt_metrics(
         return Err(invalid_receipt("receipt.roof", "unknown roof side"));
     }
     let reps = expect_u64(receipt.take("reps")?, "receipt.reps")?;
-    if reps == 0 || reps > MAX_ROOFLINE_REPS as u64 {
+    if reps == 0 || reps > MAX_PRODUCTION_REPS {
         return Err(invalid_receipt(
             "receipt.reps",
-            format!("must be in 1..={MAX_ROOFLINE_REPS}"),
+            format!("must be in 1..={MAX_PRODUCTION_REPS}"),
         ));
     }
+    validate_production_run_counts(measurement.warmup_runs, reps)?;
     let expected_reps = sample_bits_len(reps)?;
     if measurement.sample_times.len() != expected_reps
         || measurement.decision_count != expected_reps
@@ -1342,7 +1468,7 @@ fn decode_receipt(text: &str) -> Result<ReceiptObservation, TuneModelError> {
     }
     let machine = expect_hex_u64(receipt.take("machine")?, "receipt.machine")?;
 
-    decode_receipt_axes(receipt.take("axes")?)?;
+    let (logical_cpus, axis_bits) = decode_receipt_axes(receipt.take("axes")?)?;
 
     decode_receipt_spec(receipt.take("spec")?)?;
 
@@ -1355,6 +1481,10 @@ fn decode_receipt(text: &str) -> Result<ReceiptObservation, TuneModelError> {
         kernel,
         version,
         machine,
+        logical_cpus,
+        axis_bits,
+        elements: measurement.elements,
+        warmup_runs: measurement.warmup_runs,
         observations: measurement
             .sample_times
             .into_iter()
@@ -1381,13 +1511,550 @@ fn nearest_rank(sorted: &[f64], probability: f64) -> Result<f64, TuneModelError>
         .ok_or_else(|| invalid_receipt("receipt.measurement", "quantile index out of bounds"))
 }
 
+fn canonical_json_string(value: &str) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            control if control.is_control() => {
+                let _ = write!(out, "\\u{:04x}", u32::from(control));
+            }
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn validate_baseline_text(value: &str, field: &str) -> Result<(), TuneModelError> {
+    if value.trim().is_empty()
+        || value.len() > MAX_BASELINE_STRING_BYTES
+        || value.chars().any(char::is_control)
+    {
+        return Err(invalid_receipt(
+            field,
+            "expected nonblank, control-free text within the producer bound",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_authority_text(value: &str, field: &str) -> Result<(), TuneModelError> {
+    if value.is_empty()
+        || value.trim() != value
+        || value.len() > MAX_BASELINE_STRING_BYTES
+        || value.chars().any(char::is_control)
+    {
+        return Err(invalid_receipt(
+            field,
+            "expected trimmed, nonblank, control-free text within the authority bound",
+        ));
+    }
+    Ok(())
+}
+
+fn decode_hash_array(value: JsonValue, field: &str) -> Result<Vec<String>, TuneModelError> {
+    let values = expect_array(value, field)?;
+    if values.len() < MIN_PROMOTION_RUNS || values.len() > MAX_RECEIPT_JSON_CONTAINER_ITEMS {
+        return Err(invalid_receipt(
+            field,
+            format!("expected {MIN_PROMOTION_RUNS}..={MAX_RECEIPT_JSON_CONTAINER_ITEMS} receipts"),
+        ));
+    }
+    let mut hashes = Vec::with_capacity(values.len());
+    for (index, value) in values.into_iter().enumerate() {
+        hashes.push(expect_hash(value, &format!("{field}[{index}]"))?);
+    }
+    if hashes.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(invalid_receipt(field, "hashes must be sorted and unique"));
+    }
+    Ok(hashes)
+}
+
+fn hash_array_json(hashes: &[String]) -> String {
+    format!(
+        "[{}]",
+        hashes
+            .iter()
+            .map(|hash| format!("\"{hash}\""))
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
+fn identity_json(identity: &DecodedIdentity) -> String {
+    format!(
+        "{{\"fingerprint\":\"{:016x}\",\"cpu_brand\":{},\"logical_cpus\":{},\"os\":{},\"arch\":{},\"firmware\":{}}}",
+        identity.fingerprint,
+        canonical_json_string(&identity.cpu_brand),
+        identity.logical_cpus,
+        canonical_json_string(&identity.os),
+        canonical_json_string(&identity.arch),
+        canonical_json_string(&identity.firmware),
+    )
+}
+
+fn decode_identity(value: JsonValue, what: &str) -> Result<DecodedIdentity, TuneModelError> {
+    let mut identity = ObjectFields::new(value, what)?;
+    let fingerprint = expect_hex_u64(
+        identity.take("fingerprint")?,
+        &format!("{what}.fingerprint"),
+    )?;
+    let cpu_brand = expect_string(identity.take("cpu_brand")?, &format!("{what}.cpu_brand"))?;
+    let logical_cpus = expect_u64(
+        identity.take("logical_cpus")?,
+        &format!("{what}.logical_cpus"),
+    )?;
+    let os = expect_string(identity.take("os")?, &format!("{what}.os"))?;
+    let arch = expect_string(identity.take("arch")?, &format!("{what}.arch"))?;
+    let firmware = expect_string(identity.take("firmware")?, &format!("{what}.firmware"))?;
+    identity.finish()?;
+    if logical_cpus == 0 || u32::try_from(logical_cpus).is_err() {
+        return Err(invalid_receipt(
+            format!("{what}.logical_cpus"),
+            "must be in 1..=u32::MAX",
+        ));
+    }
+    for (field, value) in [
+        ("cpu_brand", cpu_brand.as_str()),
+        ("os", os.as_str()),
+        ("arch", arch.as_str()),
+        ("firmware", firmware.as_str()),
+    ] {
+        validate_baseline_text(value, &format!("{what}.{field}"))?;
+    }
+    let mut decoded = DecodedIdentity {
+        fingerprint,
+        cpu_brand,
+        logical_cpus,
+        os,
+        arch,
+        firmware,
+        canonical: String::new(),
+    };
+    decoded.canonical = identity_json(&decoded);
+    Ok(decoded)
+}
+
+fn axes_values(bits: [u64; 4]) -> [f64; 4] {
+    bits.map(f64::from_bits)
+}
+
+fn axes_are_plausible(bits: [u64; 4]) -> bool {
+    let values = axes_values(bits);
+    values.iter().all(|value| value.is_finite() && *value > 0.0)
+        && values[0] >= 5.0
+        && values[2] >= 5.0
+        && values[1] >= values[0] * 0.5
+        && values[3] >= values[2] * 0.5
+}
+
+fn decode_axes(value: JsonValue, what: &str) -> Result<DecodedAxes, TuneModelError> {
+    let mut axes = ObjectFields::new(value, what)?;
+    let fingerprint = expect_hex_u64(axes.take("fingerprint")?, &format!("{what}.fingerprint"))?;
+    let cpu_brand = expect_string(axes.take("cpu_brand")?, &format!("{what}.cpu_brand"))?;
+    validate_baseline_text(&cpu_brand, &format!("{what}.cpu_brand"))?;
+    let logical_cpus = expect_u64(axes.take("logical_cpus")?, &format!("{what}.logical_cpus"))?;
+    if logical_cpus == 0 || u32::try_from(logical_cpus).is_err() {
+        return Err(invalid_receipt(
+            format!("{what}.logical_cpus"),
+            "must be in 1..=u32::MAX",
+        ));
+    }
+    let mut bits = [0_u64; 4];
+    for (slot, field) in bits.iter_mut().zip([
+        "bandwidth_single_bits",
+        "bandwidth_all_core_bits",
+        "peak_single_bits",
+        "peak_all_core_bits",
+    ]) {
+        *slot = finite_from_bits(axes.take(field)?, &format!("{what}.{field}"), true)?.0;
+    }
+    axes.finish()?;
+    if !axes_are_plausible(bits) {
+        return Err(invalid_receipt(
+            what,
+            "axes fail producer plausibility floors",
+        ));
+    }
+    let canonical = format!(
+        "{{\"fingerprint\":\"{fingerprint:016x}\",\"cpu_brand\":{},\"logical_cpus\":{logical_cpus},\"bandwidth_single_bits\":\"{:016x}\",\"bandwidth_all_core_bits\":\"{:016x}\",\"peak_single_bits\":\"{:016x}\",\"peak_all_core_bits\":\"{:016x}\"}}",
+        canonical_json_string(&cpu_brand),
+        bits[0],
+        bits[1],
+        bits[2],
+        bits[3],
+    );
+    Ok(DecodedAxes {
+        fingerprint,
+        cpu_brand,
+        logical_cpus,
+        bits,
+        canonical,
+    })
+}
+
+fn decode_baseline(value: JsonValue) -> Result<DecodedBaseline, TuneModelError> {
+    let what = "op.ir.baseline_admission.baseline";
+    let mut baseline = ObjectFields::new(value, what)?;
+    if expect_u64(
+        baseline.take("schema_version")?,
+        &format!("{what}.schema_version"),
+    )? != 1
+    {
+        return Err(invalid_receipt(
+            format!("{what}.schema_version"),
+            "expected baseline schema 1",
+        ));
+    }
+    for (field, expected) in [
+        ("low_band_bits", 0.70_f64.to_bits()),
+        ("high_band_bits", 1.15_f64.to_bits()),
+        ("promotion_drift_bits", 0.25_f64.to_bits()),
+    ] {
+        if expect_hex_u64(baseline.take(field)?, &format!("{what}.{field}"))? != expected {
+            return Err(invalid_receipt(
+                format!("{what}.{field}"),
+                "producer policy constant mismatch",
+            ));
+        }
+    }
+    let fingerprint = expect_hex_u64(
+        baseline.take("fingerprint")?,
+        &format!("{what}.fingerprint"),
+    )?;
+    let cpu_brand = expect_string(baseline.take("cpu_brand")?, &format!("{what}.cpu_brand"))?;
+    let logical_cpus = expect_u64(
+        baseline.take("logical_cpus")?,
+        &format!("{what}.logical_cpus"),
+    )?;
+    let os = expect_string(baseline.take("os")?, &format!("{what}.os"))?;
+    let arch = expect_string(baseline.take("arch")?, &format!("{what}.arch"))?;
+    let firmware = expect_string(baseline.take("firmware")?, &format!("{what}.firmware"))?;
+    if logical_cpus == 0 || u32::try_from(logical_cpus).is_err() {
+        return Err(invalid_receipt(
+            format!("{what}.logical_cpus"),
+            "must be in 1..=u32::MAX",
+        ));
+    }
+    for (field, value) in [
+        ("cpu_brand", cpu_brand.as_str()),
+        ("os", os.as_str()),
+        ("arch", arch.as_str()),
+        ("firmware", firmware.as_str()),
+    ] {
+        validate_baseline_text(value, &format!("{what}.{field}"))?;
+    }
+    let mut bits = [0_u64; 4];
+    for (slot, field) in bits.iter_mut().zip([
+        "bandwidth_single_bits",
+        "bandwidth_all_core_bits",
+        "peak_single_bits",
+        "peak_all_core_bits",
+    ]) {
+        *slot = finite_from_bits(baseline.take(field)?, &format!("{what}.{field}"), true)?.0;
+    }
+    if !axes_are_plausible(bits) {
+        return Err(invalid_receipt(
+            what,
+            "baseline axes fail producer plausibility floors",
+        ));
+    }
+    let source_receipts = decode_hash_array(
+        baseline.take("source_receipts")?,
+        &format!("{what}.source_receipts"),
+    )?;
+    let promoted_by = expect_string(
+        baseline.take("promoted_by")?,
+        &format!("{what}.promoted_by"),
+    )?;
+    let justification = expect_string(
+        baseline.take("justification")?,
+        &format!("{what}.justification"),
+    )?;
+    validate_baseline_text(&promoted_by, &format!("{what}.promoted_by"))?;
+    validate_baseline_text(&justification, &format!("{what}.justification"))?;
+    let promoted_day = expect_u64(
+        baseline.take("promoted_day")?,
+        &format!("{what}.promoted_day"),
+    )?;
+    let source_runs = expect_u64(
+        baseline.take("source_runs")?,
+        &format!("{what}.source_runs"),
+    )?;
+    if usize::try_from(source_runs).ok() != Some(source_receipts.len()) {
+        return Err(invalid_receipt(
+            format!("{what}.source_runs"),
+            "does not equal source_receipts length",
+        ));
+    }
+    let age_policy_days = expect_u64(
+        baseline.take("age_policy_days")?,
+        &format!("{what}.age_policy_days"),
+    )?;
+    if !(1..=MAX_BASELINE_AGE_DAYS).contains(&age_policy_days) {
+        return Err(invalid_receipt(
+            format!("{what}.age_policy_days"),
+            "outside 1..=365",
+        ));
+    }
+    baseline.finish()?;
+    let mut identity = DecodedIdentity {
+        fingerprint,
+        cpu_brand: cpu_brand.clone(),
+        logical_cpus,
+        os: os.clone(),
+        arch: arch.clone(),
+        firmware: firmware.clone(),
+        canonical: String::new(),
+    };
+    identity.canonical = identity_json(&identity);
+    let canonical = format!(
+        "{{\"schema_version\":1,\"low_band_bits\":\"{:016x}\",\"high_band_bits\":\"{:016x}\",\"promotion_drift_bits\":\"{:016x}\",\"fingerprint\":\"{fingerprint:016x}\",\"cpu_brand\":{},\"logical_cpus\":{logical_cpus},\"os\":{},\"arch\":{},\"firmware\":{},\"bandwidth_single_bits\":\"{:016x}\",\"bandwidth_all_core_bits\":\"{:016x}\",\"peak_single_bits\":\"{:016x}\",\"peak_all_core_bits\":\"{:016x}\",\"source_receipts\":{},\"promoted_by\":{},\"justification\":{},\"promoted_day\":{promoted_day},\"source_runs\":{source_runs},\"age_policy_days\":{age_policy_days}}}",
+        0.70_f64.to_bits(),
+        1.15_f64.to_bits(),
+        0.25_f64.to_bits(),
+        canonical_json_string(&cpu_brand),
+        canonical_json_string(&os),
+        canonical_json_string(&arch),
+        canonical_json_string(&firmware),
+        bits[0],
+        bits[1],
+        bits[2],
+        bits[3],
+        hash_array_json(&source_receipts),
+        canonical_json_string(&promoted_by),
+        canonical_json_string(&justification),
+    );
+    if canonical.len() > MAX_BASELINE_LINE_BYTES {
+        return Err(invalid_receipt(
+            what,
+            format!("canonical baseline exceeds {MAX_BASELINE_LINE_BYTES} bytes"),
+        ));
+    }
+    Ok(DecodedBaseline {
+        identity,
+        bits,
+        source_receipts,
+        promoted_day,
+        age_policy_days,
+        canonical,
+    })
+}
+
+fn validate_trusted_axis_math(
+    admission_day: u64,
+    baseline: &DecodedBaseline,
+    pre: &DecodedAxes,
+    post: &DecodedAxes,
+) -> Result<(), TuneModelError> {
+    if admission_day < baseline.promoted_day
+        || admission_day - baseline.promoted_day > baseline.age_policy_days
+    {
+        return Err(invalid_receipt(
+            "op.ir.baseline_admission.verdict",
+            "trusted verdict contradicts baseline age policy",
+        ));
+    }
+    let pre_values = axes_values(pre.bits);
+    let post_values = axes_values(post.bits);
+    let baseline_values = axes_values(baseline.bits);
+    for index in 0..4 {
+        let drift = (pre_values[index] - post_values[index]).abs()
+            / pre_values[index].abs().max(post_values[index].abs());
+        let pre_ratio = pre_values[index] / baseline_values[index];
+        let post_ratio = post_values[index] / baseline_values[index];
+        if drift > 0.25
+            || !(0.70..=1.15).contains(&pre_ratio)
+            || !(0.70..=1.15).contains(&post_ratio)
+        {
+            return Err(invalid_receipt(
+                "op.ir.baseline_admission.verdict",
+                "trusted verdict contradicts axis drift or baseline bands",
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_axis_admission(
+    value: JsonValue,
+    binding: &RowBinding,
+    receipt: &ReceiptObservation,
+    fingerprint: u64,
+    post_fingerprint: u64,
+    pre_axes_receipt: &str,
+    post_axes_receipt: &str,
+) -> Result<(ValidatedAxisAdmission, String), TuneModelError> {
+    let what = "op.ir.baseline_admission";
+    let mut admission = ObjectFields::new(value, what)?;
+    if expect_string(admission.take("schema")?, &format!("{what}.schema"))?
+        != "fs-roofline-axis-admission-v2"
+    {
+        return Err(invalid_receipt(
+            format!("{what}.schema"),
+            "expected fs-roofline-axis-admission-v2",
+        ));
+    }
+    if expect_string(admission.take("tier")?, &format!("{what}.tier"))? != "attested" {
+        return Err(invalid_receipt(
+            format!("{what}.tier"),
+            "production evidence requires attested tier",
+        ));
+    }
+    let now_day = expect_u64(admission.take("now_day")?, &format!("{what}.now_day"))?;
+    let decision_day = expect_u64(
+        admission.take("decision_day")?,
+        &format!("{what}.decision_day"),
+    )?;
+    if now_day != decision_day {
+        return Err(invalid_receipt(
+            format!("{what}.decision_day"),
+            "must equal now_day",
+        ));
+    }
+    let identity = decode_identity(admission.take("identity")?, &format!("{what}.identity"))?;
+    let pre = decode_axes(admission.take("pre")?, &format!("{what}.pre"))?;
+    let post = decode_axes(admission.take("post")?, &format!("{what}.post"))?;
+    let baseline_hash = expect_hash(
+        admission.take("baseline_hash")?,
+        &format!("{what}.baseline_hash"),
+    )?;
+    let baseline = decode_baseline(admission.take("baseline")?)?;
+    let mut attestation = ObjectFields::new(
+        admission.take("attestation")?,
+        format!("{what}.attestation"),
+    )?;
+    let key_id = expect_string(
+        attestation.take("key_id")?,
+        &format!("{what}.attestation.key_id"),
+    )?;
+    let signature = expect_string(
+        attestation.take("signature")?,
+        &format!("{what}.attestation.signature"),
+    )?;
+    attestation.finish()?;
+    validate_authority_text(&key_id, &format!("{what}.attestation.key_id"))?;
+    validate_authority_text(&signature, &format!("{what}.attestation.signature"))?;
+    let required_sources = decode_hash_array(
+        admission.take("required_source_receipts")?,
+        &format!("{what}.required_source_receipts"),
+    )?;
+    let mut authority =
+        ObjectFields::new(admission.take("authority")?, format!("{what}.authority"))?;
+    if expect_string(
+        authority.take("verdict")?,
+        &format!("{what}.authority.verdict"),
+    )? != "authorized"
+    {
+        return Err(invalid_receipt(
+            format!("{what}.authority.verdict"),
+            "production evidence requires authorized authority verdict",
+        ));
+    }
+    let policy_receipt = expect_hash(
+        authority.take("policy_receipt")?,
+        &format!("{what}.authority.policy_receipt"),
+    )?;
+    authority.finish()?;
+    let mut verdict = ObjectFields::new(admission.take("verdict")?, format!("{what}.verdict"))?;
+    if expect_string(
+        verdict.take("baseline")?,
+        &format!("{what}.verdict.baseline"),
+    )? != "trusted"
+    {
+        return Err(invalid_receipt(
+            format!("{what}.verdict.baseline"),
+            "production evidence requires trusted baseline verdict",
+        ));
+    }
+    verdict.finish()?;
+    admission.finish()?;
+
+    if identity != baseline.identity
+        || identity.fingerprint != pre.fingerprint
+        || identity.fingerprint != post.fingerprint
+        || identity.fingerprint != fingerprint
+        || identity.cpu_brand != pre.cpu_brand
+        || identity.cpu_brand != post.cpu_brand
+        || identity.logical_cpus != pre.logical_cpus
+        || identity.logical_cpus != post.logical_cpus
+        || post.fingerprint != post_fingerprint
+    {
+        return Err(invalid_receipt(
+            format!("{what}.identity"),
+            "baseline, probe, or operation identity mismatch",
+        ));
+    }
+    if pre.logical_cpus != receipt.logical_cpus
+        || pre.bits != receipt.axis_bits
+        || post.bits != binding.post_axis_bits
+    {
+        return Err(invalid_receipt(
+            format!("{what}.axes"),
+            "probe axes do not bind the measured receipt and row parameters",
+        ));
+    }
+    if required_sources != baseline.source_receipts {
+        return Err(invalid_receipt(
+            format!("{what}.required_source_receipts"),
+            "must equal the canonical baseline provenance",
+        ));
+    }
+    let rederived_baseline_hash =
+        fs_blake3::hash_domain(BASELINE_HASH_DOMAIN, baseline.canonical.as_bytes()).to_string();
+    if baseline_hash != rederived_baseline_hash || baseline_hash != binding.baseline_hash {
+        return Err(TuneModelError::ScopeMismatch {
+            field: "baseline_admission.baseline_hash",
+        });
+    }
+    if fs_blake3::hash_domain(PRODUCTION_AXES_RECEIPT_DOMAIN, pre.canonical.as_bytes()).to_string()
+        != pre_axes_receipt
+        || fs_blake3::hash_domain(PRODUCTION_AXES_RECEIPT_DOMAIN, post.canonical.as_bytes())
+            .to_string()
+            != post_axes_receipt
+    {
+        return Err(TuneModelError::ScopeMismatch {
+            field: "axis receipt",
+        });
+    }
+    validate_trusted_axis_math(now_day, &baseline, &pre, &post)?;
+    let canonical = format!(
+        "{{\"schema\":\"fs-roofline-axis-admission-v2\",\"tier\":\"attested\",\"now_day\":{now_day},\"decision_day\":{decision_day},\"identity\":{},\"pre\":{},\"post\":{},\"baseline_hash\":\"{baseline_hash}\",\"baseline\":{},\"attestation\":{{\"key_id\":{},\"signature\":{}}},\"required_source_receipts\":{},\"authority\":{{\"verdict\":\"authorized\",\"policy_receipt\":\"{policy_receipt}\"}},\"verdict\":{{\"baseline\":\"trusted\"}}}}",
+        identity.canonical,
+        pre.canonical,
+        post.canonical,
+        baseline.canonical,
+        canonical_json_string(&key_id),
+        canonical_json_string(&signature),
+        hash_array_json(&required_sources),
+    );
+    Ok((
+        ValidatedAxisAdmission {
+            decision_day,
+            baseline_hash,
+            pre,
+            post,
+        },
+        canonical,
+    ))
+}
+
 fn validate_result_manifest(
     value: JsonValue,
     expected_kernel: &str,
     expected_version: &str,
     expected_payload: &str,
     expected_count: u64,
-) -> Result<(), TuneModelError> {
+) -> Result<(String, Vec<ManifestEntry>), TuneModelError> {
     let mut manifest = ObjectFields::new(value, "op.ir.result_manifest")?;
     let schema = expect_string(manifest.take("schema")?, "op.ir.result_manifest.schema")?;
     if schema != "fs-roofline-run-manifest-v1" {
@@ -1398,13 +2065,18 @@ fn validate_result_manifest(
     }
     let entries = expect_array(manifest.take("entries")?, "op.ir.result_manifest.entries")?;
     manifest.finish()?;
-    if u64::try_from(entries.len()).ok() != Some(expected_count) || entries.is_empty() {
+    let sealed_count = u64::try_from(SEALED_PRODUCTION_REGISTRY.len())
+        .expect("sealed production registry length fits u64");
+    if expected_count != sealed_count || u64::try_from(entries.len()).ok() != Some(sealed_count) {
         return Err(invalid_receipt(
             "op.ir.result_manifest.entries",
-            "entry count does not match op.ir.kernels",
+            format!(
+                "production-v3 requires exactly {sealed_count} sealed registry entries matching op.ir.kernels"
+            ),
         ));
     }
     let mut matching_entries = 0_usize;
+    let mut decoded_entries = Vec::with_capacity(entries.len());
     for (expected_ordinal, entry) in entries.into_iter().enumerate() {
         let mut entry = ObjectFields::new(
             entry,
@@ -1433,9 +2105,24 @@ fn validate_result_manifest(
             &format!("op.ir.result_manifest.entries[{expected_ordinal}].payload"),
         )?;
         entry.finish()?;
+        let (sealed_kernel, sealed_version) = SEALED_PRODUCTION_REGISTRY[expected_ordinal];
+        if kernel != sealed_kernel || version != sealed_version {
+            return Err(invalid_receipt(
+                format!("op.ir.result_manifest.entries[{expected_ordinal}].identity"),
+                format!(
+                    "expected sealed production-v3 member {sealed_kernel}/{sealed_version}, got {kernel}/{version}"
+                ),
+            ));
+        }
         if kernel == expected_kernel && version == expected_version && payload == expected_payload {
             matching_entries += 1;
         }
+        decoded_entries.push(ManifestEntry {
+            ordinal,
+            kernel,
+            version,
+            payload,
+        });
     }
     if matching_entries != 1 {
         return Err(invalid_receipt(
@@ -1443,7 +2130,21 @@ fn validate_result_manifest(
             "exactly one manifest member must bind this kernel/version/payload",
         ));
     }
-    Ok(())
+    let canonical = format!(
+        "{{\"schema\":\"fs-roofline-run-manifest-v1\",\"entries\":[{}]}}",
+        decoded_entries
+            .iter()
+            .map(|entry| format!(
+                "{{\"ordinal\":{},\"kernel\":{},\"version\":{},\"payload\":\"{}\"}}",
+                entry.ordinal,
+                canonical_json_string(&entry.kernel),
+                canonical_json_string(&entry.version),
+                entry.payload
+            ))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    Ok((canonical, decoded_entries))
 }
 
 fn validate_versions(versions: &str, build_identity: &str) -> Result<(), TuneModelError> {
@@ -1474,7 +2175,8 @@ fn validate_op_ir(
     ir: &str,
     binding: &RowBinding,
     receipt: &ReceiptObservation,
-) -> Result<(), TuneModelError> {
+) -> Result<ValidatedProductionOp, TuneModelError> {
+    let original_ir = ir;
     let mut ir = ObjectFields::new(
         StrictJson::parse(ir, fs_ledger::MAX_TUNE_PARAMS_BYTES)?,
         "op.ir",
@@ -1483,11 +2185,16 @@ fn validate_op_ir(
         return Err(invalid_receipt("op.ir.op", "expected perf.roofline"));
     }
     let kernel_count = expect_u64(ir.take("kernels")?, "op.ir.kernels")?;
-    if kernel_count == 0 {
-        return Err(invalid_receipt("op.ir.kernels", "must be positive"));
+    let sealed_kernel_count = u64::try_from(SEALED_PRODUCTION_REGISTRY.len())
+        .expect("sealed production registry length fits u64");
+    if kernel_count != sealed_kernel_count {
+        return Err(invalid_receipt(
+            "op.ir.kernels",
+            format!("production-v3 requires exactly {sealed_kernel_count} kernels"),
+        ));
     }
     let fingerprint = expect_hex_u64(ir.take("fingerprint")?, "op.ir.fingerprint")?;
-    let _ = expect_hex_u64(ir.take("post_fingerprint")?, "op.ir.post_fingerprint")?;
+    let post_fingerprint = expect_hex_u64(ir.take("post_fingerprint")?, "op.ir.post_fingerprint")?;
     if fingerprint != receipt.machine {
         return Err(TuneModelError::ScopeMismatch {
             field: "op fingerprint",
@@ -1503,12 +2210,12 @@ fn validate_op_ir(
             "production tune evidence requires admitted=true and measurement_admitted=true",
         ));
     }
-    if expect_string(ir.take("protocol")?, "op.ir.protocol")? != "production-v2" {
-        return Err(invalid_receipt("op.ir.protocol", "expected production-v2"));
+    if expect_string(ir.take("protocol")?, "op.ir.protocol")? != "production-v3" {
+        return Err(invalid_receipt("op.ir.protocol", "expected production-v3"));
     }
-    let _ = expect_hash(ir.take("run_nonce")?, "op.ir.run_nonce")?;
-    let _ = expect_hash(ir.take("pre_axes_receipt")?, "op.ir.pre_axes_receipt")?;
-    let _ = expect_hash(ir.take("post_axes_receipt")?, "op.ir.post_axes_receipt")?;
+    let run_nonce = expect_hash(ir.take("run_nonce")?, "op.ir.run_nonce")?;
+    let pre_axes_receipt = expect_hash(ir.take("pre_axes_receipt")?, "op.ir.pre_axes_receipt")?;
+    let post_axes_receipt = expect_hash(ir.take("post_axes_receipt")?, "op.ir.post_axes_receipt")?;
     if expect_string(
         ir.take("dependency_graph_evidence")?,
         "op.ir.dependency_graph_evidence",
@@ -1519,52 +2226,370 @@ fn validate_op_ir(
             "expected operator-observed-receipt",
         ));
     }
-    if expect_hash(
+    let dependency_receipt_digest = expect_hash(
         ir.take("dependency_receipt_digest")?,
         "op.ir.dependency_receipt_digest",
-    )? != binding.dependency_receipt_digest
-    {
+    )?;
+    if dependency_receipt_digest != binding.dependency_receipt_digest {
         return Err(TuneModelError::ScopeMismatch {
             field: "dependency_receipt_digest",
         });
     }
-    if expect_hash(
+    let dependency_receipt_artifact = expect_hash(
         ir.take("dependency_receipt_artifact")?,
         "op.ir.dependency_receipt_artifact",
-    )? != binding.dependency_receipt_artifact
-    {
+    )?;
+    if dependency_receipt_artifact != binding.dependency_receipt_artifact {
         return Err(TuneModelError::ScopeMismatch {
             field: "dependency_receipt_artifact",
         });
     }
-    if expect_hash(
+    let finalized_run_receipt = expect_hash(
         ir.take("finalized_run_receipt")?,
         "op.ir.finalized_run_receipt",
-    )? != binding.run_receipt
-    {
+    )?;
+    if finalized_run_receipt != binding.run_receipt {
         return Err(TuneModelError::ScopeMismatch {
             field: "finalized_run_receipt",
         });
     }
-    validate_result_manifest(
+    let (result_manifest, manifest) = validate_result_manifest(
         ir.take("result_manifest")?,
         &receipt.kernel,
         &receipt.version,
         &binding.payload_artifact,
         kernel_count,
     )?;
-    if !matches!(ir.take("baseline_admission")?, JsonValue::Object(_)) {
+    let (admission, baseline_admission) = validate_axis_admission(
+        ir.take("baseline_admission")?,
+        binding,
+        receipt,
+        fingerprint,
+        post_fingerprint,
+        &pre_axes_receipt,
+        &post_axes_receipt,
+    )?;
+    ir.finish()?;
+    let canonical = format!(
+        "{{\"op\":\"perf.roofline\",\"kernels\":{kernel_count},\"fingerprint\":\"{fingerprint:016x}\",\"post_fingerprint\":\"{post_fingerprint:016x}\",\"measurement_admitted\":true,\"admitted\":true,\"protocol\":\"production-v3\",\"run_nonce\":\"{run_nonce}\",\"pre_axes_receipt\":\"{pre_axes_receipt}\",\"post_axes_receipt\":\"{post_axes_receipt}\",\"dependency_graph_evidence\":\"operator-observed-receipt\",\"dependency_receipt_digest\":\"{dependency_receipt_digest}\",\"dependency_receipt_artifact\":\"{dependency_receipt_artifact}\",\"finalized_run_receipt\":\"{finalized_run_receipt}\",\"result_manifest\":{result_manifest},\"baseline_admission\":{baseline_admission}}}"
+    );
+    if canonical != original_ir {
         return Err(invalid_receipt(
-            "op.ir.baseline_admission",
-            "expected object",
+            "op.ir",
+            "production envelope is not byte-identical to canonical serialization",
         ));
     }
-    ir.finish()
+    Ok(ValidatedProductionOp {
+        baseline_admission,
+        result_manifest,
+        manifest,
+        finalized_run_receipt,
+        admission,
+    })
 }
 
 fn content_hash(text: &str, field: &str) -> Result<fs_ledger::ContentHash, TuneModelError> {
     fs_ledger::ContentHash::from_hex(text)
         .ok_or_else(|| invalid_receipt(field, "invalid content hash"))
+}
+
+fn wall_ns_day(wall_ns: i64) -> Result<u64, TuneModelError> {
+    let wall_ns = u64::try_from(wall_ns)
+        .map_err(|_| invalid_receipt("op.t_end", "must be a nonnegative Unix timestamp"))?;
+    Ok(wall_ns / WALL_NS_PER_DAY)
+}
+
+fn push_receipt_field(payload: &mut Vec<u8>, bytes: &[u8]) -> Result<(), TuneModelError> {
+    let len = u64::try_from(bytes.len())
+        .map_err(|_| invalid_receipt("finalized_run_receipt", "field length exceeds u64"))?;
+    payload.extend_from_slice(&len.to_le_bytes());
+    payload.extend_from_slice(bytes);
+    Ok(())
+}
+
+fn validate_payload_artifact(
+    ledger: &Ledger,
+    row: &fs_ledger::TuneRow,
+    binding: &RowBinding,
+) -> Result<(), TuneModelError> {
+    let payload_hash = content_hash(&binding.payload_artifact, "params.payload_artifact")?;
+    let payload_info =
+        ledger
+            .artifact_info(&payload_hash)?
+            .ok_or(TuneModelError::ScopeMismatch {
+                field: "payload_artifact",
+            })?;
+    let payload_limit = u64::try_from(row.measured.len())
+        .map_err(|_| invalid_receipt("measured", "payload length exceeds u64"))?;
+    let op_id = i64::try_from(binding.op)
+        .map_err(|_| invalid_receipt("params.op", "operation id exceeds i64"))?;
+    if payload_info.kind != "roofline-benchmark-result"
+        || payload_info.meta.as_deref() != Some("{\"schema\":\"fs-roofline-benchmark-result-v1\"}")
+        || u64::try_from(row.measured.len()).ok() != Some(payload_info.len)
+        || ledger
+            .get_artifact_bounded(&payload_hash, payload_limit)?
+            .as_deref()
+            != Some(row.measured.as_bytes())
+        || !ledger.edge_exists(op_id, &payload_hash, fs_ledger::EdgeRole::Out)?
+    {
+        return Err(TuneModelError::ScopeMismatch {
+            field: "payload_artifact",
+        });
+    }
+    Ok(())
+}
+
+fn manifest_shape(version: &str, run_receipt: &str, op: u64) -> String {
+    format!("{ROOFLINE_TUNE_SHAPE_PREFIX}:{version}:run={run_receipt}:op={op}")
+}
+
+fn checked_production_product(
+    left: u128,
+    right: u128,
+    component: &str,
+) -> Result<u128, TuneModelError> {
+    left.checked_mul(right).ok_or_else(|| {
+        invalid_receipt(
+            "result_manifest production profile",
+            format!("production-v3 {component} multiplication overflowed u128"),
+        )
+    })
+}
+
+fn checked_production_sum(
+    left: u128,
+    right: u128,
+    component: &str,
+) -> Result<u128, TuneModelError> {
+    left.checked_add(right).ok_or_else(|| {
+        invalid_receipt(
+            "result_manifest production profile",
+            format!("production-v3 {component} addition overflowed u128"),
+        )
+    })
+}
+
+fn production_registry_work(n: u64, runs_per_kernel: u64) -> Result<(u128, u128), TuneModelError> {
+    let side = u128::from(n.isqrt().max(256));
+    let n = u128::from(n);
+    let gemm_outputs = checked_production_product(side, side, "GEMM output extent")?;
+    let gemm_flops_per_output = checked_production_product(side, 2, "GEMM per-output FLOPs")?;
+    let vector_flops = checked_production_product(n, 5, "vector FLOPs")?;
+    let gemm_flops = checked_production_product(gemm_outputs, gemm_flops_per_output, "GEMM FLOPs")?;
+    let flops_per_run = checked_production_sum(vector_flops, gemm_flops, "registry FLOPs")?;
+    let vector_bytes = checked_production_product(n, 48, "vector bytes")?;
+    let gemm_bytes = checked_production_product(gemm_outputs, 24, "GEMM bytes")?;
+    let bytes_per_run = checked_production_sum(vector_bytes, gemm_bytes, "registry bytes")?;
+    let runs = u128::from(runs_per_kernel);
+    Ok((
+        checked_production_product(flops_per_run, runs, "total FLOPs")?,
+        checked_production_product(bytes_per_run, runs, "total bytes")?,
+    ))
+}
+
+fn validate_production_registry_profile(
+    receipts: &[ReceiptObservation],
+) -> Result<(), TuneModelError> {
+    if receipts.len() != SEALED_PRODUCTION_REGISTRY.len() {
+        return Err(invalid_receipt(
+            "result_manifest production profile",
+            format!(
+                "production-v3 requires exactly {} result receipts",
+                SEALED_PRODUCTION_REGISTRY.len()
+            ),
+        ));
+    }
+    let target = &receipts[0];
+    let runs_per_kernel = validate_production_run_counts(target.warmup_runs, target.reps)?;
+    for (index, (receipt, (expected_kernel, expected_version))) in
+        receipts.iter().zip(SEALED_PRODUCTION_REGISTRY).enumerate()
+    {
+        if receipt.kernel != expected_kernel || receipt.version != expected_version {
+            return Err(invalid_receipt(
+                format!("result_manifest production profile[{index}].identity"),
+                format!(
+                    "expected {expected_kernel}/{expected_version}, got {}/{}",
+                    receipt.kernel, receipt.version
+                ),
+            ));
+        }
+        if receipt.elements == 0 || receipt.elements > MAX_PRODUCTION_ELEMENTS {
+            return Err(invalid_receipt(
+                format!("result_manifest production profile[{index}].elements"),
+                format!("must be in 1..={MAX_PRODUCTION_ELEMENTS}"),
+            ));
+        }
+        if receipt.logical_cpus == 0 || receipt.logical_cpus > MAX_PRODUCTION_LOGICAL_CPUS {
+            return Err(invalid_receipt(
+                format!("result_manifest production profile[{index}].logical_cpus"),
+                format!("must be in 1..={MAX_PRODUCTION_LOGICAL_CPUS}"),
+            ));
+        }
+        if receipt.logical_cpus != target.logical_cpus
+            || receipt.warmup_runs != target.warmup_runs
+            || receipt.reps != target.reps
+        {
+            return Err(TuneModelError::ScopeMismatch {
+                field: "result_manifest sibling configuration",
+            });
+        }
+    }
+
+    let n = receipts[0].elements;
+    if receipts[1].elements != n || receipts[2].elements != n {
+        return Err(TuneModelError::ScopeMismatch {
+            field: "result_manifest vector elements",
+        });
+    }
+    let gemm_side = n.isqrt().max(256);
+    let expected_gemm_elements = gemm_side.checked_mul(gemm_side).ok_or_else(|| {
+        invalid_receipt(
+            "result_manifest GEMM elements",
+            "derived GEMM output extent overflowed u64",
+        )
+    })?;
+    if receipts[3].elements != expected_gemm_elements {
+        return Err(TuneModelError::ScopeMismatch {
+            field: "result_manifest GEMM elements",
+        });
+    }
+
+    let (total_flops, total_bytes) = production_registry_work(n, runs_per_kernel)?;
+    if total_flops > MAX_PRODUCTION_REGISTRY_FLOPS {
+        return Err(invalid_receipt(
+            "result_manifest production profile",
+            format!(
+                "production-v3 requires {total_flops} modeled FLOPs, exceeding {MAX_PRODUCTION_REGISTRY_FLOPS}"
+            ),
+        ));
+    }
+    if total_bytes > MAX_PRODUCTION_REGISTRY_BYTES {
+        return Err(invalid_receipt(
+            "result_manifest production profile",
+            format!(
+                "production-v3 requires {total_bytes} modeled logical bytes, exceeding {MAX_PRODUCTION_REGISTRY_BYTES}"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_manifest_sibling_configuration(
+    binding: &RowBinding,
+    receipt: &ReceiptObservation,
+    shared: &RowBinding,
+    target: &ReceiptObservation,
+) -> Result<(), TuneModelError> {
+    if binding.reps != shared.reps
+        || receipt.reps != binding.reps
+        || receipt.reps != target.reps
+        || receipt.warmup_runs != target.warmup_runs
+    {
+        return Err(TuneModelError::ScopeMismatch {
+            field: "result_manifest sibling configuration",
+        });
+    }
+    Ok(())
+}
+
+fn validate_manifest_sibling(
+    ledger: &Ledger,
+    entry: &ManifestEntry,
+    protocol: &ValidatedProductionOp,
+    shared: &RowBinding,
+    target: &ReceiptObservation,
+    machine: &[u8],
+) -> Result<(String, ReceiptObservation), TuneModelError> {
+    let shape = manifest_shape(&entry.version, &protocol.finalized_run_receipt, shared.op);
+    let row =
+        ledger
+            .tune_get(&entry.kernel, &shape, machine)?
+            .ok_or(TuneModelError::ScopeMismatch {
+                field: "result_manifest sibling",
+            })?;
+    let binding = decode_row_binding(&row.params)?;
+    let receipt = decode_receipt(&row.measured)?;
+    validate_manifest_sibling_configuration(&binding, &receipt, shared, target)?;
+    if row.kernel != entry.kernel
+        || row.shape_class != shape
+        || row.machine != machine
+        || binding.op != shared.op
+        || binding.run_receipt != protocol.finalized_run_receipt
+        || binding.payload_artifact != entry.payload
+        || binding.dependency_receipt_artifact != shared.dependency_receipt_artifact
+        || binding.dependency_receipt_digest != shared.dependency_receipt_digest
+        || binding.baseline_hash != shared.baseline_hash
+        || binding.build_identity != shared.build_identity
+        || binding.post_axis_bits != shared.post_axis_bits
+        || receipt.kernel != entry.kernel
+        || receipt.version != entry.version
+        || receipt.machine != protocol.admission.pre.fingerprint
+        || receipt.logical_cpus != protocol.admission.pre.logical_cpus
+        || receipt.axis_bits != protocol.admission.pre.bits
+        || fs_ledger::hash_bytes(row.measured.as_bytes()).to_string() != entry.payload
+    {
+        return Err(TuneModelError::ScopeMismatch {
+            field: "result_manifest sibling",
+        });
+    }
+    validate_payload_artifact(ledger, &row, &binding)?;
+    Ok((row.measured, receipt))
+}
+
+fn validate_finalized_run_receipt(
+    ledger: &Ledger,
+    protocol: &ValidatedProductionOp,
+    binding: &RowBinding,
+    target: &ReceiptObservation,
+    machine: &[u8],
+) -> Result<(), TuneModelError> {
+    if protocol.manifest.len() != SEALED_PRODUCTION_REGISTRY.len() {
+        return Err(invalid_receipt(
+            "op.ir.result_manifest.entries",
+            format!(
+                "finalized production-v3 run requires exactly {} manifest entries",
+                SEALED_PRODUCTION_REGISTRY.len()
+            ),
+        ));
+    }
+    let mut result_payloads = Vec::with_capacity(protocol.manifest.len());
+    let mut receipts = Vec::with_capacity(protocol.manifest.len());
+    for entry in &protocol.manifest {
+        let (payload, receipt) =
+            validate_manifest_sibling(ledger, entry, protocol, binding, target, machine)?;
+        result_payloads.push(payload);
+        receipts.push(receipt);
+    }
+    validate_production_registry_profile(&receipts)?;
+    if finalized_run_receipt_for_payloads(
+        &protocol.baseline_admission,
+        &result_payloads,
+        &protocol.result_manifest,
+    )? != protocol.finalized_run_receipt
+    {
+        return Err(TuneModelError::ScopeMismatch {
+            field: "finalized_run_receipt",
+        });
+    }
+    Ok(())
+}
+
+fn finalized_run_receipt_for_payloads(
+    baseline_admission: &str,
+    result_payloads: &[String],
+    result_manifest: &str,
+) -> Result<String, TuneModelError> {
+    let mut payload = Vec::new();
+    push_receipt_field(&mut payload, baseline_admission.as_bytes())?;
+    let result_count = u64::try_from(result_payloads.len())
+        .map_err(|_| invalid_receipt("op.ir.result_manifest", "entry count exceeds u64"))?;
+    payload.extend_from_slice(&result_count.to_le_bytes());
+    for measured in result_payloads {
+        push_receipt_field(&mut payload, measured.as_bytes())?;
+    }
+    let manifest_hash = fs_blake3::hash_domain(RESULT_MANIFEST_DOMAIN, result_manifest.as_bytes());
+    push_receipt_field(&mut payload, manifest_hash.as_bytes())?;
+    Ok(fs_blake3::hash_domain(FINALIZED_RUN_DOMAIN, &payload).to_string())
 }
 
 fn validate_provenance(
@@ -1585,6 +2610,9 @@ fn validate_provenance(
     let op = ledger
         .op(op_id)?
         .ok_or(TuneModelError::ScopeMismatch { field: "operation" })?;
+    let recorded_at_ns = op.t_end.ok_or(TuneModelError::ScopeMismatch {
+        field: "operation envelope",
+    })?;
     if op.id != op_id
         || op.session.as_deref() != Some(b"roofline".as_slice())
         || op.seed != b"roofline"
@@ -1592,37 +2620,24 @@ fn validate_provenance(
         || op.capability != "{\"ops\":[\"perf.roofline\"]}"
         || op.outcome.as_deref() != Some("ok")
         || op.diag.is_some()
-        || op.t_end.is_none_or(|end| end < op.t_start)
+        || recorded_at_ns < op.t_start
     {
         return Err(TuneModelError::ScopeMismatch {
             field: "operation envelope",
         });
     }
     validate_versions(&op.versions, &binding.build_identity)?;
-    validate_op_ir(&op.ir, binding, receipt)?;
-
-    let payload_hash = content_hash(&binding.payload_artifact, "params.payload_artifact")?;
-    let payload_info =
-        ledger
-            .artifact_info(&payload_hash)?
-            .ok_or(TuneModelError::ScopeMismatch {
-                field: "payload_artifact",
-            })?;
-    let payload_limit = u64::try_from(row.measured.len())
-        .map_err(|_| invalid_receipt("measured", "payload length exceeds u64"))?;
-    if payload_info.kind != "roofline-benchmark-result"
-        || payload_info.meta.as_deref() != Some("{\"schema\":\"fs-roofline-benchmark-result-v1\"}")
-        || u64::try_from(row.measured.len()).ok() != Some(payload_info.len)
-        || ledger
-            .get_artifact_bounded(&payload_hash, payload_limit)?
-            .as_deref()
-            != Some(row.measured.as_bytes())
-        || !ledger.edge_exists(op_id, &payload_hash, fs_ledger::EdgeRole::Out)?
+    let protocol = validate_op_ir(&op.ir, binding, receipt)?;
+    if protocol.admission.baseline_hash != binding.baseline_hash
+        || protocol.admission.post.bits != binding.post_axis_bits
+        || wall_ns_day(recorded_at_ns)? != protocol.admission.decision_day
     {
         return Err(TuneModelError::ScopeMismatch {
-            field: "payload_artifact",
+            field: "baseline admission",
         });
     }
+    validate_payload_artifact(ledger, row, binding)?;
+    validate_finalized_run_receipt(ledger, &protocol, binding, receipt, machine)?;
 
     let dependency_hash = content_hash(
         &binding.dependency_receipt_artifact,
@@ -1752,6 +2767,472 @@ mod tests {
         format!("{:016x}", value.to_bits())
     }
 
+    struct AdmissionFixture {
+        admission: String,
+        pre_receipt: String,
+        post_receipt: String,
+        manifest: String,
+        payloads: Vec<String>,
+        binding: RowBinding,
+        receipt: ReceiptObservation,
+    }
+
+    fn numbered_hash(value: u64) -> String {
+        format!("{value:064x}")
+    }
+
+    fn admission_fixture() -> AdmissionFixture {
+        admission_fixture_for_target(std::env::consts::OS, std::env::consts::ARCH)
+    }
+
+    fn admission_fixture_for_target(os: &str, arch: &str) -> AdmissionFixture {
+        let fingerprint = 0x0102_0304_0506_0708_u64;
+        let logical_cpus = 8_u64;
+        let axis_bits = [
+            100.0_f64.to_bits(),
+            200.0_f64.to_bits(),
+            1_000.0_f64.to_bits(),
+            2_000.0_f64.to_bits(),
+        ];
+        let cpu_brand = "fixture-cpu";
+        let firmware = "fixture-firmware";
+        let identity = format!(
+            "{{\"fingerprint\":\"{fingerprint:016x}\",\"cpu_brand\":\"{cpu_brand}\",\"logical_cpus\":{logical_cpus},\"os\":\"{os}\",\"arch\":\"{arch}\",\"firmware\":\"{firmware}\"}}"
+        );
+        let axes = format!(
+            "{{\"fingerprint\":\"{fingerprint:016x}\",\"cpu_brand\":\"{cpu_brand}\",\"logical_cpus\":{logical_cpus},\"bandwidth_single_bits\":\"{:016x}\",\"bandwidth_all_core_bits\":\"{:016x}\",\"peak_single_bits\":\"{:016x}\",\"peak_all_core_bits\":\"{:016x}\"}}",
+            axis_bits[0], axis_bits[1], axis_bits[2], axis_bits[3]
+        );
+        let sources = [numbered_hash(1), numbered_hash(2), numbered_hash(3)];
+        let sources_json = format!("[\"{}\",\"{}\",\"{}\"]", sources[0], sources[1], sources[2]);
+        let baseline = format!(
+            "{{\"schema_version\":1,\"low_band_bits\":\"{:016x}\",\"high_band_bits\":\"{:016x}\",\"promotion_drift_bits\":\"{:016x}\",\"fingerprint\":\"{fingerprint:016x}\",\"cpu_brand\":\"{cpu_brand}\",\"logical_cpus\":{logical_cpus},\"os\":\"{os}\",\"arch\":\"{arch}\",\"firmware\":\"{firmware}\",\"bandwidth_single_bits\":\"{:016x}\",\"bandwidth_all_core_bits\":\"{:016x}\",\"peak_single_bits\":\"{:016x}\",\"peak_all_core_bits\":\"{:016x}\",\"source_receipts\":{sources_json},\"promoted_by\":\"fixture-operator\",\"justification\":\"fixture baseline\",\"promoted_day\":100,\"source_runs\":3,\"age_policy_days\":90}}",
+            0.70_f64.to_bits(),
+            1.15_f64.to_bits(),
+            0.25_f64.to_bits(),
+            axis_bits[0],
+            axis_bits[1],
+            axis_bits[2],
+            axis_bits[3],
+        );
+        let baseline_hash =
+            fs_blake3::hash_domain(BASELINE_HASH_DOMAIN, baseline.as_bytes()).to_string();
+        let policy_receipt = numbered_hash(9);
+        let admission = format!(
+            "{{\"schema\":\"fs-roofline-axis-admission-v2\",\"tier\":\"attested\",\"now_day\":100,\"decision_day\":100,\"identity\":{identity},\"pre\":{axes},\"post\":{axes},\"baseline_hash\":\"{baseline_hash}\",\"baseline\":{baseline},\"attestation\":{{\"key_id\":\"fixture-key\",\"signature\":\"fixture-signature\"}},\"required_source_receipts\":{sources_json},\"authority\":{{\"verdict\":\"authorized\",\"policy_receipt\":\"{policy_receipt}\"}},\"verdict\":{{\"baseline\":\"trusted\"}}}}"
+        );
+        let pre_receipt =
+            fs_blake3::hash_domain(PRODUCTION_AXES_RECEIPT_DOMAIN, axes.as_bytes()).to_string();
+        let post_receipt = pre_receipt.clone();
+        let payloads = SEALED_PRODUCTION_REGISTRY
+            .iter()
+            .enumerate()
+            .map(|(ordinal, _)| format!("fixture-result-payload-{ordinal}"))
+            .collect::<Vec<_>>();
+        let payload_hashes = payloads
+            .iter()
+            .map(|payload| fs_ledger::hash_bytes(payload.as_bytes()).to_string())
+            .collect::<Vec<_>>();
+        let manifest = format!(
+            "{{\"schema\":\"fs-roofline-run-manifest-v1\",\"entries\":[{}]}}",
+            SEALED_PRODUCTION_REGISTRY
+                .iter()
+                .zip(&payload_hashes)
+                .enumerate()
+                .map(|(ordinal, ((kernel, version), payload))| format!(
+                    "{{\"ordinal\":{ordinal},\"kernel\":\"{kernel}\",\"version\":\"{version}\",\"payload\":\"{payload}\"}}"
+                ))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let run_receipt =
+            finalized_run_receipt_for_payloads(&admission, &payloads, &manifest).unwrap();
+        AdmissionFixture {
+            admission,
+            pre_receipt,
+            post_receipt,
+            manifest,
+            payloads,
+            binding: RowBinding {
+                op: 7,
+                run_receipt,
+                payload_artifact: payload_hashes[0].clone(),
+                dependency_receipt_artifact: numbered_hash(10),
+                dependency_receipt_digest: numbered_hash(11),
+                baseline_hash,
+                build_identity: numbered_hash(12),
+                reps: 3,
+                post_axis_bits: axis_bits,
+            },
+            receipt: ReceiptObservation {
+                kernel: "simd-axpy-f64".to_string(),
+                version: "1".to_string(),
+                machine: fingerprint,
+                logical_cpus,
+                axis_bits,
+                elements: 1_000,
+                warmup_runs: 1,
+                observations: Vec::new(),
+                reps: 3,
+            },
+        }
+    }
+
+    fn fixture_op_ir(fixture: &AdmissionFixture, admission: &str) -> String {
+        format!(
+            "{{\"op\":\"perf.roofline\",\"kernels\":{},\"fingerprint\":\"{:016x}\",\"post_fingerprint\":\"{:016x}\",\"measurement_admitted\":true,\"admitted\":true,\"protocol\":\"production-v3\",\"run_nonce\":\"{}\",\"pre_axes_receipt\":\"{}\",\"post_axes_receipt\":\"{}\",\"dependency_graph_evidence\":\"operator-observed-receipt\",\"dependency_receipt_digest\":\"{}\",\"dependency_receipt_artifact\":\"{}\",\"finalized_run_receipt\":\"{}\",\"result_manifest\":{},\"baseline_admission\":{admission}}}",
+            SEALED_PRODUCTION_REGISTRY.len(),
+            fixture.receipt.machine,
+            fixture.receipt.machine,
+            numbered_hash(13),
+            fixture.pre_receipt,
+            fixture.post_receipt,
+            fixture.binding.dependency_receipt_digest,
+            fixture.binding.dependency_receipt_artifact,
+            fixture.binding.run_receipt,
+            fixture.manifest,
+        )
+    }
+
+    #[test]
+    fn production_v3_consumer_refuses_empty_candidate_and_untrusted_admission() {
+        let fixture = admission_fixture();
+        let valid = fixture_op_ir(&fixture, &fixture.admission);
+        assert!(validate_op_ir(&valid, &fixture.binding, &fixture.receipt).is_ok());
+
+        for invalid in [
+            "{}".to_string(),
+            fixture
+                .admission
+                .replacen("\"tier\":\"attested\"", "\"tier\":\"candidate\"", 1),
+            fixture.admission.replacen(
+                "\"verdict\":\"authorized\"",
+                "\"verdict\":\"revoked-key\"",
+                1,
+            ),
+            fixture
+                .admission
+                .replacen("\"baseline\":\"trusted\"", "\"baseline\":\"degraded\"", 1),
+        ] {
+            assert!(
+                validate_op_ir(
+                    &fixture_op_ir(&fixture, &invalid),
+                    &fixture.binding,
+                    &fixture.receipt,
+                )
+                .is_err(),
+                "admission unexpectedly accepted: {invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn production_v3_replay_is_independent_of_the_consumer_host_target() {
+        let fixture = admission_fixture_for_target("historical-os", "historical-arch");
+        let valid = fixture_op_ir(&fixture, &fixture.admission);
+        assert!(
+            validate_op_ir(&valid, &fixture.binding, &fixture.receipt).is_ok(),
+            "a self-consistent historical receipt must replay on a different audit host"
+        );
+
+        let mismatched_identity =
+            fixture
+                .admission
+                .replacen("\"os\":\"historical-os\"", "\"os\":\"substituted-os\"", 1);
+        assert!(
+            validate_op_ir(
+                &fixture_op_ir(&fixture, &mismatched_identity),
+                &fixture.binding,
+                &fixture.receipt,
+            )
+            .is_err(),
+            "identity disagreement inside the historical receipt must still fail closed"
+        );
+    }
+
+    #[test]
+    fn production_v3_manifest_requires_the_exact_ordered_sealed_registry() {
+        let fixture = admission_fixture();
+        let wrong_count = fixture_op_ir(&fixture, &fixture.admission).replacen(
+            &format!("\"kernels\":{}", SEALED_PRODUCTION_REGISTRY.len()),
+            "\"kernels\":3",
+            1,
+        );
+        assert!(validate_op_ir(&wrong_count, &fixture.binding, &fixture.receipt).is_err());
+
+        let wrong_first_member = fixture.manifest.replacen(
+            "\"kernel\":\"simd-axpy-f64\"",
+            "\"kernel\":\"simd-dot-f64\"",
+            1,
+        );
+        let wrong_manifest = fixture_op_ir(&fixture, &fixture.admission).replacen(
+            &fixture.manifest,
+            &wrong_first_member,
+            1,
+        );
+        assert!(validate_op_ir(&wrong_manifest, &fixture.binding, &fixture.receipt).is_err());
+    }
+
+    fn production_profile(n: u64, warmup_runs: u64, reps: u64) -> Vec<ReceiptObservation> {
+        let gemm_side = n.isqrt().max(256);
+        SEALED_PRODUCTION_REGISTRY
+            .iter()
+            .enumerate()
+            .map(|(index, (kernel, version))| ReceiptObservation {
+                kernel: (*kernel).to_string(),
+                version: (*version).to_string(),
+                machine: 0x0102_0304_0506_0708,
+                logical_cpus: 8,
+                axis_bits: [1; 4],
+                elements: if index == 3 { gemm_side * gemm_side } else { n },
+                warmup_runs,
+                observations: Vec::new(),
+                reps,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn production_v3_profile_enforces_exact_run_and_aggregate_work_caps() {
+        assert_eq!(
+            production_registry_work(1, 1).unwrap(),
+            (33_554_437, 1_572_912),
+            "consumer work algebra must include the floor GEMM and all vector kernels"
+        );
+        assert_eq!(validate_production_run_counts(63, 1).unwrap(), 64);
+        assert!(validate_production_run_counts(64, 1).is_err());
+        assert!(validate_production_run_counts(0, 65).is_err());
+        assert!(validate_production_run_counts(63, 2).is_err());
+
+        validate_production_registry_profile(&production_profile(1, 0, 64))
+            .expect("minimum shape admits the exact per-kernel run cap");
+        validate_production_registry_profile(&production_profile(1 << 24, 2, 1))
+            .expect("three maximum-shape runs remain inside the FLOP cap");
+        let flops = validate_production_registry_profile(&production_profile(1 << 24, 3, 1))
+            .expect_err("four maximum-shape runs exceed the FLOP cap");
+        assert!(format!("{flops}").contains("modeled FLOPs"), "{flops}");
+
+        validate_production_registry_profile(&production_profile(1 << 22, 27, 1))
+            .expect("twenty-eight default-shape runs remain inside the byte cap");
+        let bytes = validate_production_registry_profile(&production_profile(1 << 22, 28, 1))
+            .expect_err("twenty-nine default-shape runs exceed the byte cap");
+        assert!(
+            format!("{bytes}").contains("modeled logical bytes"),
+            "{bytes}"
+        );
+    }
+
+    #[test]
+    fn production_v3_profile_and_sibling_configuration_fail_closed() {
+        let valid = production_profile(1_000, 1, 3);
+        validate_production_registry_profile(&valid).expect("valid sealed profile");
+
+        let mut reordered = valid.clone();
+        reordered.swap(0, 1);
+        assert!(validate_production_registry_profile(&reordered).is_err());
+        let mut changed_vector = valid.clone();
+        changed_vector[1].elements += 1;
+        assert!(validate_production_registry_profile(&changed_vector).is_err());
+        let mut changed_gemm = valid.clone();
+        changed_gemm[3].elements += 1;
+        assert!(validate_production_registry_profile(&changed_gemm).is_err());
+        let mut changed_warmup = valid.clone();
+        changed_warmup[2].warmup_runs += 1;
+        assert!(validate_production_registry_profile(&changed_warmup).is_err());
+
+        let fixture = admission_fixture();
+        let target = fixture.receipt.clone();
+        let sibling = target.clone();
+        let shared = fixture.binding.clone();
+        let mut sibling_binding = shared.clone();
+        validate_manifest_sibling_configuration(&sibling_binding, &sibling, &shared, &target)
+            .expect("identical sibling configuration");
+        sibling_binding.reps += 1;
+        assert!(
+            validate_manifest_sibling_configuration(&sibling_binding, &sibling, &shared, &target,)
+                .is_err(),
+            "sibling row-binding reps must equal the target binding"
+        );
+        let mut changed_receipt = sibling;
+        changed_receipt.warmup_runs += 1;
+        assert!(
+            validate_manifest_sibling_configuration(&shared, &changed_receipt, &shared, &target,)
+                .is_err(),
+            "sibling receipt warmup must equal the target receipt"
+        );
+    }
+
+    #[test]
+    fn admission_source_baseline_policy_and_day_mutations_fail_closed() {
+        let fixture = admission_fixture();
+        let source_mutation = fixture
+            .admission
+            .replacen(&numbered_hash(3), &numbered_hash(4), 1);
+        assert!(
+            validate_op_ir(
+                &fixture_op_ir(&fixture, &source_mutation),
+                &fixture.binding,
+                &fixture.receipt,
+            )
+            .is_err()
+        );
+
+        let baseline_mutation =
+            fixture
+                .admission
+                .replacen("\"age_policy_days\":90", "\"age_policy_days\":91", 1);
+        assert!(
+            validate_op_ir(
+                &fixture_op_ir(&fixture, &baseline_mutation),
+                &fixture.binding,
+                &fixture.receipt,
+            )
+            .is_err()
+        );
+
+        let day_mutation =
+            fixture
+                .admission
+                .replacen("\"decision_day\":100", "\"decision_day\":101", 1);
+        assert!(
+            validate_op_ir(
+                &fixture_op_ir(&fixture, &day_mutation),
+                &fixture.binding,
+                &fixture.receipt,
+            )
+            .is_err()
+        );
+
+        let policy_mutation = fixture
+            .admission
+            .replacen(&numbered_hash(9), &numbered_hash(8), 1);
+        let mutated_receipt = finalized_run_receipt_for_payloads(
+            &policy_mutation,
+            &fixture.payloads,
+            &fixture.manifest,
+        )
+        .unwrap();
+        assert_ne!(fixture.binding.run_receipt, mutated_receipt);
+        assert_eq!(wall_ns_day(100 * WALL_NS_PER_DAY as i64).unwrap(), 100);
+        assert_ne!(wall_ns_day(101 * WALL_NS_PER_DAY as i64).unwrap(), 100);
+    }
+
+    #[test]
+    fn finalized_run_v3_binds_every_sibling_payload_and_manifest_byte() {
+        let fixture = admission_fixture();
+        let payloads = vec!["first-result".to_string(), "second-result".to_string()];
+        let first = fs_ledger::hash_bytes(payloads[0].as_bytes());
+        let second = fs_ledger::hash_bytes(payloads[1].as_bytes());
+        let manifest = format!(
+            "{{\"schema\":\"fs-roofline-run-manifest-v1\",\"entries\":[{{\"ordinal\":0,\"kernel\":\"first\",\"version\":\"1\",\"payload\":\"{first}\"}},{{\"ordinal\":1,\"kernel\":\"second\",\"version\":\"1\",\"payload\":\"{second}\"}}]}}"
+        );
+        let retained =
+            finalized_run_receipt_for_payloads(&fixture.admission, &payloads, &manifest).unwrap();
+
+        let mut changed_sibling = payloads.clone();
+        changed_sibling[1].push('!');
+        assert_ne!(
+            retained,
+            finalized_run_receipt_for_payloads(&fixture.admission, &changed_sibling, &manifest,)
+                .unwrap()
+        );
+        let changed_manifest = manifest.replacen("\"ordinal\":1", "\"ordinal\":2", 1);
+        assert_ne!(
+            retained,
+            finalized_run_receipt_for_payloads(&fixture.admission, &payloads, &changed_manifest,)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn roofline_protocol_constants_are_source_pinned() {
+        let lib = include_str!("../../fs-roofline/src/lib.rs");
+        let baseline = include_str!("../../fs-roofline/src/baseline.rs");
+        let axes = include_str!("../../fs-roofline/src/axes.rs");
+        let production = include_str!("../../fs-roofline/src/production.rs");
+        let kernels = include_str!("../../fs-roofline/src/kernels.rs");
+        let authority = include_str!("../../fs-roofline/src/authority.rs");
+        for needle in [
+            FINALIZED_RUN_DOMAIN,
+            RESULT_MANIFEST_DOMAIN,
+            "fs-roofline-axis-admission-v2",
+            "fs-roofline-run-manifest-v1",
+        ] {
+            assert!(lib.contains(needle), "fs-roofline lib drifted at {needle}");
+        }
+        for needle in [
+            BASELINE_HASH_DOMAIN,
+            "pub const MIN_PROMOTION_RUNS: usize = 3;",
+            "pub const MAX_BASELINE_AGE_DAYS: u32 = 365;",
+            "pub const BASELINE_LOW_BAND: f64 = 0.70;",
+            "pub const BASELINE_HIGH_BAND: f64 = 1.15;",
+            "const MAX_BASELINE_LINE_BYTES: usize = 16 * 1024;",
+        ] {
+            assert!(
+                baseline.contains(needle),
+                "fs-roofline baseline drifted at {needle}"
+            );
+        }
+        assert!(axes.contains("pub const MAX_AXIS_REPROBE_DRIFT: f64 = 0.25;"));
+        for needle in [
+            PRODUCTION_AXES_RECEIPT_DOMAIN,
+            "pub const MAX_PRODUCTION_ELEMENTS: usize = crate::kernels::MAX_VECTOR_KERNEL_ELEMENTS;",
+            "pub const MAX_PRODUCTION_KERNEL_RUNS: usize = 64;",
+            "pub const MAX_PRODUCTION_WARMUP: usize = MAX_PRODUCTION_KERNEL_RUNS - 1;",
+            "pub const MAX_PRODUCTION_REPS: usize = MAX_PRODUCTION_KERNEL_RUNS;",
+            "pub const MAX_PRODUCTION_REGISTRY_FLOPS: u128 = 1 << 39;",
+            "pub const MAX_PRODUCTION_REGISTRY_BYTES: u128 = 1 << 33;",
+        ] {
+            assert!(
+                production.contains(needle),
+                "fs-roofline production envelope drifted at {needle}"
+            );
+        }
+        for needle in [
+            "pub const MAX_VECTOR_KERNEL_ELEMENTS: usize = 1 << 24;",
+            "pub const MAX_GEMM_THREADS: usize = 4_096;",
+            "n.isqrt().max(256)",
+            "ProductionKernelWork::scaled(\"simd-axpy-f64\", n_u128, 2, 24)",
+            "ProductionKernelWork::scaled(\"simd-dot-f64\", n_u128, 2, 16)",
+            "ProductionKernelWork::scaled(\"simd-sum-f64\", n_u128, 1, 8)",
+            "ProductionKernelWork::scaled(\"gemm-f64\", gemm_outputs, gemm_flops_per_output, 24)",
+            "pub const GEMM_ROOFLINE_VERSION: &str = \"2\";",
+            "let mut registry = default_registry(n)?;",
+            "registry.push(Box::new(GemmKernel::new(",
+        ] {
+            assert!(
+                kernels.contains(needle),
+                "fs-roofline sealed registry drifted at {needle}"
+            );
+        }
+        let mut prior = None;
+        for constructor in [
+            "Box::new(AxpyKernel::new(n)?)",
+            "Box::new(DotKernel::new(n)?)",
+            "Box::new(SumKernel::new(n)?)",
+            "registry.push(Box::new(GemmKernel::new(",
+        ] {
+            let position = kernels
+                .find(constructor)
+                .unwrap_or_else(|| panic!("missing sealed registry constructor {constructor}"));
+            if let Some(prior) = prior {
+                assert!(
+                    position > prior,
+                    "sealed registry constructor order drifted at {constructor}"
+                );
+            }
+            prior = Some(position);
+        }
+        assert_eq!(MAX_PRODUCTION_ELEMENTS, 1 << 24);
+        assert_eq!(MAX_PRODUCTION_KERNEL_RUNS, 64);
+        assert_eq!(MAX_PRODUCTION_WARMUP, 63);
+        assert_eq!(MAX_PRODUCTION_REPS, 64);
+        assert_eq!(MAX_PRODUCTION_REGISTRY_FLOPS, 1 << 39);
+        assert_eq!(MAX_PRODUCTION_REGISTRY_BYTES, 1 << 33);
+        assert_eq!(MAX_PRODUCTION_LOGICAL_CPUS, 4_096);
+        assert!(authority.contains("const MAX_PROMOTION_AUTHORITY_FIELD_BYTES: usize = 4096;"));
+    }
+
     fn production_receipt() -> String {
         let elements = 1_000_u64;
         let sample = [0.003_f64, 0.001, 0.002];
@@ -1796,6 +3277,9 @@ mod tests {
     #[test]
     fn receipt_v3_decodes_every_timed_sample() {
         let decoded = decode_receipt(&production_receipt()).unwrap();
+        assert_eq!(decoded.elements, 1_000);
+        assert_eq!(decoded.warmup_runs, 1);
+        assert_eq!(decoded.reps, 3);
         assert_eq!(decoded.observations.len(), 3);
         assert_eq!(
             decoded.observations[0].size.to_bits(),
@@ -1808,6 +3292,31 @@ mod tests {
         let model = CostModel::fit(&decoded.observations).unwrap();
         assert_eq!(model.n_obs(), 3);
         assert!(model.predict(1_000.0).is_ok());
+    }
+
+    #[test]
+    fn receipt_v3_refuses_values_outside_the_sealed_production_envelope() {
+        let receipt = production_receipt();
+        for hostile in [
+            receipt.replacen(
+                "\"elements\":1000",
+                &format!("\"elements\":{}", MAX_PRODUCTION_ELEMENTS + 1),
+                1,
+            ),
+            receipt.replacen("\"warmup_runs\":1", "\"warmup_runs\":64", 1),
+            receipt.replacen("\"warmup_runs\":1", "\"warmup_runs\":63", 1),
+            receipt.replacen("\"reps\":3", "\"reps\":65", 1),
+            receipt.replacen(
+                "\"logical_cpus\":8",
+                &format!("\"logical_cpus\":{}", MAX_PRODUCTION_LOGICAL_CPUS + 1),
+                1,
+            ),
+        ] {
+            assert!(
+                decode_receipt(&hostile).is_err(),
+                "producer-impossible receipt unexpectedly decoded: {hostile}"
+            );
+        }
     }
 
     #[test]

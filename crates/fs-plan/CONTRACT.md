@@ -53,14 +53,40 @@ anytime-valid audit authority.
   declared hard bound.
 - `cost_model_from_tune` — rebuilds a model from one EXACT
   `(kernel, shape_class, machine)` fs-ledger key. It accepts only the current
-  fs-roofline receipt-v3 / row-v4 production schema through a bounded strict
-  JSON parser that rejects duplicate and unknown keys. Every timed sample is
+  fs-roofline receipt-v3 / row-v4 / `roofline-v8` production-v3 schema
+  through a bounded strict JSON parser that rejects duplicate and unknown
+  keys. Every timed sample is
   retained as a same-size observation; median/P25/P75/dispersion and rate are
   rederived from those samples. Embedded kernel/version/run/op/repetition
-  identities, the baseline-bound 40-byte machine key, completed production-v2
+  identities, the baseline-bound 40-byte machine key, completed production-v3
   op envelope, build identity, result-manifest membership, payload artifact
   bytes/metadata/OUT edge, and dependency-receipt bytes/domain digest/IN edge
-  must all agree before the model sees any evidence. The op row uses
+  must all agree before the model sees any evidence. `baseline_admission` is
+  not an opaque object: the consumer requires the byte-canonical
+  `fs-roofline-axis-admission-v2` attested envelope, independently rederives
+  its baseline-record hash and trusted axis/age math, requires exact
+  baseline/identity/source-list agreement plus authorized/trusted verdicts,
+  binds pre/post axis receipt hashes and row post-axis bits, and requires the
+  frozen decision day to equal the operation's UTC completion day. Historical
+  replay is host-independent: OS and architecture must agree inside the bound
+  baseline/admission identity, but are never compared with the audit process's
+  ambient target. The exact caller-supplied 40-byte machine key still prevents
+  cross-machine model lookup. It then reconstructs finalized-run v3 over the
+  exact admission bytes, every ordered manifest sibling's currently stored
+  measured bytes, and the manifest child digest. Production-v3 accepts only the
+  sealed ordered `simd-axpy-f64/1`, `simd-dot-f64/1`, `simd-sum-f64/1`, and
+  `gemm-f64/2` registry. All siblings must bind one repetition/warmup profile;
+  vector element counts must equal the sealed `n`, GEMM elements must equal
+  `max(isqrt(n), 256)^2`, and the consumer independently enforces `n <= 2^24`,
+  at most 64 total warmup-plus-timed runs, the 4096-worker ceiling, and the
+  producer's checked `2^39`-FLOP / `2^33`-logical-byte aggregate caps. A
+  missing/rekeyed/tampered sibling, mismatched sibling configuration, impossible
+  producer workload, policy receipt, source list, baseline, or manifest refuses
+  the complete run. Source-pin tests make duplicated L6 consumer constants and
+  sealed-registry algebra fail when fs-roofline rotates its schema.
+  fs-plan does not re-run the external promotion authority or prove retained
+  source bytes; it consumes the exact authorized policy decision sealed into
+  the producer's recomputed finalized-run identity. The op row uses
   fs-ledger's metadata-preflighted bounded read; the measured artifact is
   capped at its exact tune-row byte length and the fs-la dependency receipt at
   its producer-owned 1 MiB ceiling before either payload is materialized; a
