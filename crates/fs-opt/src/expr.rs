@@ -258,7 +258,7 @@ impl ExprGraph {
     /// [`OptDiag::UnknownNode`] for dangling ids.
     pub fn powi(&mut self, a: ExprId, e: i32) -> Result<ExprId, OptDiag> {
         self.check(a)?;
-        let mut dims = Dims([0; 5]);
+        let mut dims = Dims([0; 6]);
         let step = self.dims(a);
         for _ in 0..e.unsigned_abs() {
             dims = if e >= 0 { dims.plus(step) } else { dims.minus(step) };

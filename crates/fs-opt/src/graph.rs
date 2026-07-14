@@ -165,7 +165,7 @@ pub struct Unevaluable {
     pub node: NodeId,
 }
 
-const DIMLESS: Dims = Dims([0; 5]);
+const DIMLESS: Dims = Dims([0; 6]);
 
 impl Problem {
     /// Empty problem.
@@ -374,7 +374,14 @@ impl Problem {
                         arg: d.unit_string(),
                     });
                 }
-                let half = Dims([d.0[0] / 2, d.0[1] / 2, d.0[2] / 2, d.0[3] / 2, d.0[4] / 2]);
+                let half = Dims([
+                    d.0[0] / 2,
+                    d.0[1] / 2,
+                    d.0[2] / 2,
+                    d.0[3] / 2,
+                    d.0[4] / 2,
+                    d.0[5] / 2,
+                ]);
                 (Node::Sqrt(a), half)
             }
             _ => panic!("unknown unary op {op}"),

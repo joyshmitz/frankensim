@@ -37,7 +37,7 @@ pub use ir::{
     Class, Constraint, ConstraintKind, EvalBudget, Expr, Manifold, NodeId, Objective, OptError,
     OptimizerFamily, Problem, ProblemBuilder, ProblemTag, Sense, Shape, VarId, Variable,
 };
-pub use serial::{parse, problem_hash, serialize};
+pub use serial::{ParsedProblem, WireVersion, parse, parse_with_version, problem_hash, serialize};
 
 /// Crate version, re-exported for provenance stamping.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

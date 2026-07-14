@@ -40,8 +40,13 @@ structure; FLUX/UQ execute it.
   `LeZero` — semantics/repair are fs-constraint's), `ProblemTag`
   (multi-fidelity, chance-constrained, bilevel-by-hash), `EvalBudget`
   (P4, enforced by consumers).
-- Serialization: `serialize`/`parse` round-trip the canonical
-  line-based text form BITWISE (floats travel as bit patterns);
+- Serialization: `serialize` writes the canonical six-base `fsopt v2`
+  line-based text form and `parse` round-trips it BITWISE (floats travel as
+  bit patterns). The reader also accepts exact legacy five-base `fsopt v1`
+  bytes, mapping the absent amount exponent to `mol = 0`;
+  `parse_with_version` returns the declared `WireVersion` and embedded source
+  hash so a ledger-owning caller can record the required immutable
+  old-hash-to-new-hash semantic-crosswalk receipt;
   `problem_hash` (in-house FNV-1a 64 over the canonical body) is the
   study identity; parsing REBUILDS through the validating builder and
   verifies the integrity hash — tampered or ill-typed files refuse
@@ -70,9 +75,11 @@ structure; FLUX/UQ execute it.
 1. Seeded ill-typed constructions refuse with teaching text naming
    ops/nodes, and a 600-op fuzz storm matches an independent validity
    model exactly (opt-001).
-2. build→serialize→parse yields an IDENTICAL problem; hashes are
-   stable across identical builds, differ across edits, and guard
-   integrity (opt-002).
+2. build→serialize→parse through canonical `fsopt v2` yields an IDENTICAL
+   problem; hashes are stable across identical builds, differ across edits,
+   and guard integrity. Exact five-dimension `fsopt v1` inputs remain
+   readable with `mol = 0`, while v1/v2 dimension arities are otherwise
+   strict (opt-002 plus focused serializer unit tests).
 3. Hash-consing gives CSE identity; substitution commutes with
    evaluation BITWISE; `neg∘neg` and `min(x,x)` are bitwise identities
    (opt-003).

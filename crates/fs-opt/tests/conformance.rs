@@ -62,7 +62,7 @@ fn with_cx<R>(f: impl FnOnce(&Cx<'_>) -> R) -> R {
     })
 }
 
-const METER: Dims = Dims([1, 0, 0, 0, 0]);
+const METER: Dims = Dims([1, 0, 0, 0, 0, 0]);
 
 /// opt-001 — incremental validation TEACHES: dimension mismatches,
 /// shape mismatches, non-dimensionless transcendentals, odd sqrt dims,
@@ -90,16 +90,16 @@ fn opt_001_validation_teaches() {
         e.to_string().contains("dimensionless")
     };
     // sqrt of m³ → OddDims.
-    let m3 = b.konst(1.0, Dims([3, 0, 0, 0, 0]));
+    let m3 = b.konst(1.0, Dims([3, 0, 0, 0, 0, 0]));
     let odd_err = b.sqrt(m3).expect_err("odd dims").to_string();
     let pow_dims_checked = {
         let mut powers = ProblemBuilder::new();
         let m = powers.konst(2.0, METER);
-        let m2 = powers.konst(2.0, Dims([2, 0, 0, 0, 0]));
+        let m2 = powers.konst(2.0, Dims([2, 0, 0, 0, 0, 0]));
         let m101 = powers.powi(m, 101).expect("m^101 is representable");
         let overflow = powers.powi(m2, 100).expect_err("m^200 cannot fit i8 dims");
         let problem = powers.finish();
-        problem.node_dims(m101) == Dims([101, 0, 0, 0, 0])
+        problem.node_dims(m101) == Dims([101, 0, 0, 0, 0, 0])
             && matches!(overflow, OptError::DimOverflow { exponent: 100, .. })
     };
     // component out of range.
@@ -117,7 +117,7 @@ fn opt_001_validation_teaches() {
     let mut disagreed = 0u64;
     let mut fb = ProblemBuilder::new();
     let v = fb.var("v", Manifold::Rn { dim: 3 }, METER);
-    let mut model: Vec<(bool, [i8; 5])> = Vec::new(); // (is_vector, dims)
+    let mut model: Vec<(bool, [i8; 6])> = Vec::new(); // (is_vector, dims)
     let mut ids = Vec::new();
     let seed_node = fb.var_ref(v).expect("seed");
     ids.push(seed_node);
@@ -181,7 +181,7 @@ fn opt_001_validation_teaches() {
             }
             2 => {
                 // exp: legal iff scalar and dimensionless.
-                let legal = !pv && pd == [0i8; 5];
+                let legal = !pv && pd == [0i8; 6];
                 match fb.exp(pick) {
                     Ok(id) => {
                         if legal {
@@ -190,7 +190,7 @@ fn opt_001_validation_teaches() {
                             disagreed += 1;
                         }
                         if (id.0 as usize) == model.len() {
-                            model.push((false, [0; 5]));
+                            model.push((false, [0; 6]));
                         }
                         ids.push(id);
                     }
@@ -233,7 +233,14 @@ fn opt_001_validation_teaches() {
             }
             _ => {
                 // konst with random dims (always legal).
-                let dims = Dims([(rng.below(3) as i8) - 1, 0, (rng.below(3) as i8) - 1, 0, 0]);
+                let dims = Dims([
+                    (rng.below(3) as i8) - 1,
+                    0,
+                    (rng.below(3) as i8) - 1,
+                    0,
+                    0,
+                    (rng.below(3) as i8) - 1,
+                ]);
                 let id = fb.konst(rng.unit(), dims);
                 if (id.0 as usize) == model.len() {
                     model.push((false, dims.0));
@@ -271,9 +278,9 @@ fn fixture() -> fs_opt::Problem {
     let _ = q;
     let tr = b.var_ref(theta).expect("ref");
     let compliance = b.norm_sq(tr).expect("norm_sq");
-    let limit = b.konst(4.0, Dims([2, 0, 0, 0, 0]));
+    let limit = b.konst(4.0, Dims([2, 0, 0, 0, 0, 0]));
     let excess = b.sub(compliance, limit).expect("sub");
-    let zero = b.konst(0.0, Dims([2, 0, 0, 0, 0]));
+    let zero = b.konst(0.0, Dims([2, 0, 0, 0, 0, 0]));
     let hinge = b.max_of(excess, zero).expect("max");
     let pde = b
         .pde_residual("stokes-channel", theta, true, Dims::NONE)

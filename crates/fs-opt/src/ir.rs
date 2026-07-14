@@ -288,16 +288,16 @@ pub enum OptError {
         /// Operation name.
         op: &'static str,
         /// Left dims (fs-qty exponent vector).
-        left: [i8; 5],
+        left: [i8; 6],
         /// Right dims.
-        right: [i8; 5],
+        right: [i8; 6],
     },
     /// Dimension exponents would leave the representable runtime domain.
     DimOverflow {
         /// Operation that attempted the dimension arithmetic.
         op: &'static str,
         /// Base dimensions before scaling.
-        dims: [i8; 5],
+        dims: [i8; 6],
         /// Requested integer exponent.
         exponent: i32,
     },
@@ -306,12 +306,12 @@ pub enum OptError {
         /// Operation name.
         op: &'static str,
         /// The offending dims.
-        dims: [i8; 5],
+        dims: [i8; 6],
     },
     /// `sqrt` of odd dimension exponents.
     OddDims {
         /// The offending dims.
-        dims: [i8; 5],
+        dims: [i8; 6],
     },
     /// A parameter left its valid range.
     BadParam {
@@ -877,6 +877,7 @@ impl ProblemBuilder {
             self.dims[a.0 as usize].0[2].saturating_sub(self.dims[b.0 as usize].0[2]),
             self.dims[a.0 as usize].0[3].saturating_sub(self.dims[b.0 as usize].0[3]),
             self.dims[a.0 as usize].0[4].saturating_sub(self.dims[b.0 as usize].0[4]),
+            self.dims[a.0 as usize].0[5].saturating_sub(self.dims[b.0 as usize].0[5]),
         ]);
         Ok(self.push(Expr::Div(a, b), Shape::Scalar, dims))
     }
@@ -899,7 +900,7 @@ impl ProblemBuilder {
         self.check_node(base)?;
         self.scalar("powi", base)?;
         let d = self.dims[base.0 as usize].0;
-        let mut scaled = [0i8; 5];
+        let mut scaled = [0i8; 6];
         for (out, &e) in scaled.iter_mut().zip(&d) {
             let product = i32::from(e).checked_mul(exp).ok_or(OptError::DimOverflow {
                 op: "powi",

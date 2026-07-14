@@ -41,8 +41,8 @@ pub fn to_sexpr(p: &Problem) -> String {
             Node::Const(v, d) => {
                 let dd = d.0;
                 format!(
-                    "(const {v:?} ({} {} {} {} {}))",
-                    dd[0], dd[1], dd[2], dd[3], dd[4]
+                    "(const {v:?} ({} {} {} {} {} {}))",
+                    dd[0], dd[1], dd[2], dd[3], dd[4], dd[5]
                 )
             }
             Node::Component(v, i) => format!("(comp {} {})", v.0, i),
@@ -213,7 +213,7 @@ fn rebuild_node(
                 return Err(ParseError::Syntax("expected dims".into()));
             }
             *i += 1;
-            let mut d = [0i8; 5];
+            let mut d = [0i8; 6];
             for slot in &mut d {
                 let w = toks
                     .get(*i)

@@ -1,9 +1,10 @@
-//! Canonical serialization: problems round-trip through a line-based
-//! text form whose floats are BIT PATTERNS (exact round-trip), and the
-//! problem HASH (FNV-1a 64 over the canonical body) is the study
-//! identity. Parsing rebuilds THROUGH the validating builder, so a
-//! tampered file cannot smuggle in an ill-typed graph — revalidation is
-//! free.
+//! Canonical serialization: problems round-trip through the six-base
+//! `fsopt v2` line form whose floats are BIT PATTERNS (exact round-trip),
+//! and the problem HASH (FNV-1a 64 over the canonical body) is the study
+//! identity. The reader also decodes exact five-base `fsopt v1` inputs by
+//! appending `mol = 0`. Parsing rebuilds THROUGH the validating builder,
+//! so a tampered file cannot smuggle in an ill-typed graph — revalidation
+//! is free.
 
 use crate::ir::{
     ConstraintKind, Expr, Manifold, NodeId, OptError, Problem, ProblemBuilder, ProblemTag, Sense,
@@ -61,17 +62,45 @@ fn hex_nibble(b: u8) -> Option<u8> {
     }
 }
 
-fn dims_str(d: Dims) -> String {
-    format!("({},{},{},{},{})", d.0[0], d.0[1], d.0[2], d.0[3], d.0[4])
+/// Version of the line-oriented `fsopt` representation read from a file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireVersion {
+    /// Legacy five-base dimensions `(m, kg, s, K, A)`.
+    V1,
+    /// Canonical six-base dimensions `(m, kg, s, K, A, mol)`.
+    V2,
 }
 
-fn parse_dims(s: &str) -> Option<Dims> {
+/// A parsed problem together with the provenance needed by a caller to
+/// record an external v1-to-v2 semantic-crosswalk receipt.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParsedProblem {
+    /// Revalidated optimization problem. Legacy v1 dimensions have `mol = 0`.
+    pub problem: Problem,
+    /// Wire version declared by the source header.
+    pub source_version: WireVersion,
+    /// Integrity hash embedded in the source, when one was present.
+    pub source_hash: Option<u64>,
+}
+
+fn dims_str(d: Dims) -> String {
+    format!(
+        "({},{},{},{},{},{})",
+        d.0[0], d.0[1], d.0[2], d.0[3], d.0[4], d.0[5]
+    )
+}
+
+fn parse_dims(s: &str, version: WireVersion) -> Option<Dims> {
     let inner = s.strip_prefix('(')?.strip_suffix(')')?;
     let parts: Vec<&str> = inner.split(',').collect();
-    if parts.len() != 5 {
+    let expected_len = match version {
+        WireVersion::V1 => 5,
+        WireVersion::V2 => 6,
+    };
+    if parts.len() != expected_len {
         return None;
     }
-    let mut d = [0i8; 5];
+    let mut d = [0i8; 6];
     for (slot, p) in d.iter_mut().zip(&parts) {
         *slot = p.parse().ok()?;
     }
@@ -181,7 +210,7 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 }
 
 fn body(problem: &Problem) -> String {
-    let mut s = String::from("fsopt v1\n");
+    let mut s = String::from("fsopt v2\n");
     for (i, v) in problem.vars.iter().enumerate() {
         let _ = writeln!(
             s,
@@ -252,11 +281,21 @@ fn perr(line: usize, what: impl Into<String>) -> OptError {
 ///
 /// # Errors
 /// [`OptError::Parse`] (with line numbers) or any builder error.
-#[allow(clippy::too_many_lines)] // one grammar rule per block
 pub fn parse(text: &str) -> Result<Problem, OptError> {
+    Ok(parse_with_version(text)?.problem)
+}
+
+/// Parse the canonical form while retaining its source wire version and
+/// embedded hash for provenance/crosswalk recording by the caller.
+///
+/// # Errors
+/// [`OptError::Parse`] (with line numbers) or any builder error.
+#[allow(clippy::too_many_lines)] // one grammar rule per block
+pub fn parse_with_version(text: &str) -> Result<ParsedProblem, OptError> {
     let mut b = ProblemBuilder::new();
     let mut expected_hash: Option<u64> = None;
     let mut body_end = 0usize;
+    let mut source_version: Option<WireVersion> = None;
     let lines: Vec<&str> = text.lines().collect();
     for (ln0, line) in lines.iter().enumerate() {
         let ln = ln0 + 1;
@@ -264,11 +303,23 @@ pub fn parse(text: &str) -> Result<Problem, OptError> {
         let head = tok.next().unwrap_or("");
         match head {
             "fsopt" => {
-                if tok.next() != Some("v1") {
-                    return Err(perr(ln, "unsupported version (expected `fsopt v1`)"));
+                if source_version.is_some() {
+                    return Err(perr(ln, "duplicate fsopt version header"));
                 }
+                source_version = Some(match tok.next() {
+                    Some("v1") => WireVersion::V1,
+                    Some("v2") => WireVersion::V2,
+                    _ => {
+                        return Err(perr(
+                            ln,
+                            "unsupported version (expected `fsopt v1` or `fsopt v2`)",
+                        ));
+                    }
+                });
             }
             "var" => {
+                let version = source_version
+                    .ok_or_else(|| perr(ln, "var appears before fsopt version header"))?;
                 let _ix: u32 = tok
                     .next()
                     .and_then(|t| t.parse().ok())
@@ -280,17 +331,19 @@ pub fn parse(text: &str) -> Result<Problem, OptError> {
                     .ok_or_else(|| perr(ln, "var: bad manifold"))?;
                 let dims = tok
                     .next()
-                    .and_then(parse_dims)
+                    .and_then(|value| parse_dims(value, version))
                     .ok_or_else(|| perr(ln, "var: bad dims"))?;
                 b.var(&name, manifold, dims);
             }
             "expr" => {
+                let version = source_version
+                    .ok_or_else(|| perr(ln, "expr appears before fsopt version header"))?;
                 let ix: u32 = tok
                     .next()
                     .and_then(|t| t.parse().ok())
                     .ok_or_else(|| perr(ln, "expr: missing index"))?;
                 let rest: Vec<&str> = tok.collect();
-                let id = parse_expr(&mut b, &rest, ln)?;
+                let id = parse_expr(&mut b, &rest, ln, version)?;
                 if id.0 != ix {
                     return Err(perr(
                         ln,
@@ -374,6 +427,7 @@ pub fn parse(text: &str) -> Result<Problem, OptError> {
             other => return Err(perr(ln, format!("unknown directive `{other}`"))),
         }
     }
+    let source_version = source_version.ok_or_else(|| perr(1, "missing fsopt version header"))?;
     let problem = b.finish();
     if let Some(h) = expected_hash {
         let mut body_text = lines[..body_end].join("\n");
@@ -386,10 +440,19 @@ pub fn parse(text: &str) -> Result<Problem, OptError> {
             ));
         }
     }
-    Ok(problem)
+    Ok(ParsedProblem {
+        problem,
+        source_version,
+        source_hash: expected_hash,
+    })
 }
 
-fn parse_expr(b: &mut ProblemBuilder, toks: &[&str], ln: usize) -> Result<NodeId, OptError> {
+fn parse_expr(
+    b: &mut ProblemBuilder,
+    toks: &[&str],
+    ln: usize,
+    version: WireVersion,
+) -> Result<NodeId, OptError> {
     let get = |i: usize| -> Result<&str, OptError> {
         toks.get(i)
             .copied()
@@ -416,7 +479,7 @@ fn parse_expr(b: &mut ProblemBuilder, toks: &[&str], ln: usize) -> Result<NodeId
         }
         "const" => {
             let value = parse_f64_hex(get(1)?).ok_or_else(|| perr(ln, "const: bad value"))?;
-            let dims = parse_dims(get(2)?).ok_or_else(|| perr(ln, "const: bad dims"))?;
+            let dims = parse_dims(get(2)?, version).ok_or_else(|| perr(ln, "const: bad dims"))?;
             Ok(b.konst(value, dims))
         }
         "add" => b.add(node(1)?, node(2)?),
@@ -444,7 +507,7 @@ fn parse_expr(b: &mut ProblemBuilder, toks: &[&str], ln: usize) -> Result<NodeId
             let study = unesc(get(1)?);
             let over: u32 = get(2)?.parse().map_err(|_| perr(ln, "pde: bad var"))?;
             let adj = get(3)? == "1";
-            let dims = parse_dims(get(4)?).ok_or_else(|| perr(ln, "pde: bad dims"))?;
+            let dims = parse_dims(get(4)?, version).ok_or_else(|| perr(ln, "pde: bad dims"))?;
             b.pde_residual(&study, VarId(over), adj, dims)
         }
         "expectation" => {
@@ -470,7 +533,11 @@ fn parse_expr(b: &mut ProblemBuilder, toks: &[&str], ln: usize) -> Result<NodeId
 
 #[cfg(test)]
 mod tests {
-    use super::{esc, unesc};
+    use super::{
+        WireVersion, esc, fnv1a, parse, parse_with_version, problem_hash, serialize, unesc,
+    };
+    use crate::ir::{NodeId, ProblemBuilder, Sense};
+    use fs_qty::Dims;
 
     #[test]
     fn esc_unesc_round_trips_utf8_and_delimiters() {
@@ -489,5 +556,59 @@ mod tests {
         let _ = unesc("%\u{20AC}x");
         let _ = unesc("%");
         let _ = unesc("%2");
+    }
+
+    #[test]
+    fn exact_v1_bytes_decode_with_zero_amount_and_source_provenance() {
+        let legacy_body = concat!(
+            "fsopt v1\n",
+            "expr 0 const 3FF0000000000000 (1,2,3,4,5)\n",
+            "objective min 0 3FF0000000000000\n",
+            "budget 0\n",
+        );
+        const LEGACY_HASH: u64 = 0xEA73_E3CB_2B7D_E122;
+        let legacy_hash = fnv1a(legacy_body.as_bytes());
+        assert_eq!(
+            legacy_hash, LEGACY_HASH,
+            "legacy bytes and hash are immutable"
+        );
+        let legacy_text = format!("{legacy_body}hash {legacy_hash:016X}\n");
+
+        let decoded = parse_with_version(&legacy_text).expect("exact v1 bytes decode");
+        assert_eq!(decoded.source_version, WireVersion::V1);
+        assert_eq!(decoded.source_hash, Some(legacy_hash));
+        assert_eq!(
+            decoded.problem.node_dims(NodeId(0)),
+            Dims([1, 2, 3, 4, 5, 0]),
+            "legacy inputs acquire an explicit zero amount exponent"
+        );
+
+        let canonical = serialize(&decoded.problem);
+        assert!(canonical.starts_with("fsopt v2\n"));
+        assert!(canonical.contains("(1,2,3,4,5,0)"));
+        let reparsed = parse_with_version(&canonical).expect("canonical v2 bytes decode");
+        assert_eq!(reparsed.source_version, WireVersion::V2);
+        assert_eq!(reparsed.source_hash, Some(problem_hash(&decoded.problem)));
+        assert_eq!(reparsed.problem, decoded.problem);
+    }
+
+    #[test]
+    fn v2_writer_and_parser_preserve_amount_dimensions() {
+        let mut builder = ProblemBuilder::new();
+        let amount = builder.konst(2.0, Dims([0, 0, 0, 0, 0, 1]));
+        builder
+            .objective(amount, Sense::Minimize, 1.0)
+            .expect("amount-valued scalar objective");
+        let problem = builder.finish();
+
+        let text = serialize(&problem);
+        assert!(text.starts_with("fsopt v2\n"));
+        assert!(text.contains("(0,0,0,0,0,1)"));
+        assert_eq!(parse(&text).expect("v2 round-trip"), problem);
+
+        let v1_with_six_dims = "fsopt v1\nexpr 0 const 3FF0000000000000 (0,0,0,0,0,1)\n";
+        let v2_with_five_dims = "fsopt v2\nexpr 0 const 3FF0000000000000 (0,0,0,0,0)\n";
+        assert!(parse(v1_with_six_dims).is_err(), "v1 arity stays exact");
+        assert!(parse(v2_with_five_dims).is_err(), "v2 arity stays exact");
     }
 }
