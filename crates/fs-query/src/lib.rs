@@ -43,7 +43,10 @@ use fs_mesh::delaunay;
 use fs_rep_mesh::Soup;
 
 mod convex;
+mod features;
 mod moments;
+
+pub use features::{Feature, FeatureComplex, MAX_COMPLEX_FEATURES, ccd_candidates};
 
 pub use convex::{
     CONVEX_SEPARATION_DEFAULT_ITERATIONS, CONVEX_SEPARATION_MAX_ITERATIONS, ConvexBox,
@@ -227,6 +230,25 @@ pub enum QueryError {
         /// The offending value triple.
         at: [f64; 3],
     },
+    /// A feature complex exceeds the deterministic feature ceiling.
+    FeatureComplexTooLarge {
+        /// Total features requested.
+        features: usize,
+        /// Public deterministic ceiling.
+        max: usize,
+    },
+    /// A CCD motion inflation was non-finite or negative.
+    FeatureInvalidInflation {
+        /// Exact IEEE-754 bits of the rejected inflation.
+        inflation_bits: u64,
+    },
+    /// The CCD candidate count exceeded the caller's cap (refusal, not
+    /// truncation: a silently clipped candidate set would break the
+    /// conservative superset guarantee).
+    FeatureTooManyPairs {
+        /// The caller's cap.
+        max: usize,
+    },
     /// Cancelled mid-scan.
     Cancelled,
     /// Delaunay refused (carried through from fs-mesh).
@@ -374,6 +396,21 @@ impl core::fmt::Display for QueryError {
                 f,
                 "convex support evaluation produced non-finite values ({}, {}, {})",
                 at[0], at[1], at[2]
+            ),
+            QueryError::FeatureComplexTooLarge { features, max } => write!(
+                f,
+                "feature complex needs {features} features, above the deterministic \
+                 {max}-feature ceiling; split the boundary"
+            ),
+            QueryError::FeatureInvalidInflation { inflation_bits } => write!(
+                f,
+                "CCD motion inflation must be finite and nonnegative \
+                 (bits {inflation_bits:#018x})"
+            ),
+            QueryError::FeatureTooManyPairs { max } => write!(
+                f,
+                "CCD candidate pairs exceed the caller's cap of {max}; raising the cap or \
+                 shrinking the motion window keeps the superset guarantee intact"
             ),
             QueryError::Cancelled => write!(f, "cancelled mid-query"),
             QueryError::Mesh(m) => write!(f, "medial sampling failed: {m}"),

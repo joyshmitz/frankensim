@@ -52,6 +52,17 @@ answers to the MULTI-CHART AGREEMENT discipline (same abstract region
   (iteration cap, nonsmooth `1/k` residual) widens the bracket, never
   falsifies it. Constructors validate geometry; degraded arithmetic
   refuses typed.
+- `FeatureComplex` (`Feature::{Vertex, Edge, Face}`) and
+  `ccd_candidates`: the typed vertex/edge/face decomposition of a
+  triangle boundary with outward-rounded per-feature boxes, and
+  conservative CCD candidate enumeration through a deterministic
+  median-split BVH. Each side's boxes are inflated by its declared
+  motion bound with upward rounding, so every feature pair that could
+  approach within the combined window is INCLUDED; the output is a
+  lexicographically sorted candidate SUPERSET (a pure function of the
+  inputs), and exceeding the caller's pair cap refuses rather than
+  truncates. Degenerate triangles, bad indices, non-finite positions
+  or inflations, and the `MAX_COMPLEX_FEATURES` ceiling refuse typed.
 - `OffsetChart` / `minkowski_ball`: dilation/erosion as a chart
   wrapper (`φ − r`); the ball case of the Minkowski sum IS the offset
   (bitwise), which is the fillet/clearance workhorse. Construction is fallible
@@ -174,7 +185,9 @@ the sd found and the advice to project first), `NoOppositeWall`,
 `MomentsVolumeUnproven` (COM needs a positive certified volume lower
 bound), `ConvexInvalidShape` (non-finite/degenerate convex geometry or
 a zero iteration budget), `ConvexInvalidSupport` (non-finite support
-evaluation or bound arithmetic), `Cancelled`,
+evaluation or bound arithmetic), `FeatureComplexTooLarge`,
+`FeatureInvalidInflation`, `FeatureTooManyPairs` (cap refusal, never
+silent truncation), `Cancelled`,
 `Mesh` (fs-mesh refusals carried through). Honest gaps refuse; nothing guesses.
 
 ## Determinism class
@@ -217,6 +230,11 @@ bracket contains the true unit-density integral of the chart's region.
 analytic sphere/box distance containment, nonsmooth box-box honesty,
 touching/overlap never claiming separation, bit-identical replay, and
 constructor/budget/cancellation refusals.
+`tests/features.rs`, cases gf-001..gf-005 — feature complexes and CCD
+candidates: canonical construction, BVH-equals-brute-force oracle
+agreement, guaranteed inclusion of the closest pair inside the motion
+window, translation invariance and window monotonicity metamorphics,
+identical replay, and refusal drills.
 
 ## No-claim boundaries
 
@@ -246,8 +264,15 @@ constructor/budget/cancellation refusals.
   downstream (fs-matdb consumers), never here. Rotation covariance and
   spatially-varying weighting are deferred surfaces —
   [`GeometricMoments::translated`] covers translation only. The bead
-  rjnd remainder (feature complexes, gap oracles, codimensional
-  thickness, deformation hooks) is not yet claimed by this crate.
+  rjnd remainder (gap oracles, codimensional thickness, deformation
+  hooks) is not yet claimed by this crate.
+- `ccd_candidates` is a broad phase only: candidates are a
+  conservative SUPERSET under the caller's declared motion bounds, and
+  no narrow-phase, time-of-impact, or contact claim is made. The
+  motion bound is a caller assertion (a certified radius over the CCD
+  window); the routine cannot detect an understated bound. Boxes are
+  axis-aligned in the input frame — rotation-aware swept bounds are a
+  deferred surface.
 - `convex_separation` proves separation only (`lo > 0`); an enclosure
   containing zero claims NOTHING about overlap, and penetration-depth
   certificates (EPA-style lower bounds) are a deferred rjnd surface.
