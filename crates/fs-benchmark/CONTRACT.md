@@ -17,8 +17,8 @@ six+ proposals so they are not killed-by-default.
   with `reference_answer`, `reference_cost`, `reference_color`),
   `design_tasks()` (`DesignTask`s with known optima), `edit_traces()`
   (`EditTrace`s with known-correct skip sets), `mms_battery()` (`MmsCase`
-  elliptic references), `merge_trials()` (`MergeTrial`s with harmonic-conflict
-  counts).
+  elliptic references), `merge_trials()` (synthetic `MergeTrial` fixtures with
+  candidate-remainder counts for exercising the corpus shape and rate API).
 - Measurement helpers: `speedup(baseline, candidate)` (Prop 8 / 2, `>= 2×`),
   `win_rate(&[bool])` (Prop 1, `>= 0.70`), `rate(count, total)` /
   `conflict_rate(trial)` (Prop 10, `< 0.25`), `accept_rate(accepts, attempts)`
@@ -65,9 +65,9 @@ None.
 `tests/benchmark.rs` (Proposal 7, 8 cases): every dataset populated; reference
 answers carry their color (all three classes); the measurement helpers compute
 the kill numbers (speedup / win-rate / accept-rate + divide-by-zero guards);
-the harmonic-conflict rate from merge trials; the skippable fraction from edit
-traces; Governance-Rule-2 discharge for all eight instrumented proposals; the
-deterministic digest; the complete audit.
+the synthetic candidate-remainder diagnostic rate from merge fixtures; the
+skippable fraction from edit traces; Governance-Rule-2 discharge for all eight
+instrumented proposals; the deterministic digest; the complete audit.
 
 ## No-claim boundaries
 
@@ -79,5 +79,9 @@ deterministic digest; the complete audit.
   certificate payload is materialized by the reference solver.
 - The corpus provides the DATA + the measurement helpers; each proposal's bead
   computes its own kill number by feeding its results through them.
+- Merge-trial counts are synthetic fixtures for the guarded candidate-remainder
+  path; they are neither retained realistic trace evidence nor certified H¹ or
+  topology counts. The full Proposal 10 gate must additionally count
+  escalations, refusals, and type conflicts on retained trials.
 - Coupling to the base-plan Gauntlet G1/G2 registries + fs-roofline for the
   cost model is a downstream integration.

@@ -1,9 +1,11 @@
 //! fs-spectral — spectral health monitoring (plan addendum, Proposal 5).
 //! Layer: L1.
 //!
-//! The harmonic/coboundary split — the "fixable vs structural" triage that
-//! MERGE (Proposal 10) and sheaf repair depend on — is only as trustworthy as
-//! the sheaf Laplacian's SPECTRAL GAP. A system that can say "I am becoming
+//! The fixed-iteration gauge-fit/candidate-remainder triage used by MERGE
+//! (Proposal 10) and sheaf repair is only as trustworthy as the sheaf
+//! Laplacian's SPECTRAL GAP. The gap conditions numerical confidence; it does
+//! not certify H¹ or turn a remainder into a structural obstruction. A system
+//! that can say "I am becoming
 //! numerically unreliable in this region, and here is the reroute" is a
 //! different species from one that silently degrades. This crate:
 //!

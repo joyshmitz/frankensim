@@ -404,7 +404,7 @@ const REGISTER: [Risk; 10] = [
     Risk {
         id: RiskId::R5,
         name: "Spectral-gap fragility",
-        description: "The fixable/structural triage (and merge adjudication) degrades in ill-conditioned regions.",
+        description: "The fixed-iteration gauge-fit/candidate-remainder triage (and merge adjudication) degrades in ill-conditioned regions.",
         mitigation: "Spectral-health monitoring with mandatory low-confidence propagation into merge outputs; the Gauntlet refusal-is-the-pass suite.",
         early_warning: "gap-collapse incidence per assembly class",
         threshold: "gap collapse observed outside synthetic cases at volume",

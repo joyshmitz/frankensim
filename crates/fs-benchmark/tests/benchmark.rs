@@ -47,8 +47,9 @@ fn the_measurement_helpers_compute_the_kill_numbers() {
 }
 
 #[test]
-fn the_harmonic_conflict_rate_is_computed_from_merge_trials() {
-    // Proposal 10 kill metric: <25% of merges surface harmonic conflicts.
+fn the_candidate_conflict_rate_is_computed_from_merge_trials() {
+    // Synthetic Proposal 10 API fixture: <25% retain candidate remainders.
+    // This does not discharge the broader realistic-trace kill criterion.
     let t = &merge_trials()[0]; // 6 of 40
     assert!((conflict_rate(t) - 0.15).abs() < 1e-12);
     assert!(conflict_rate(t) < 0.25);

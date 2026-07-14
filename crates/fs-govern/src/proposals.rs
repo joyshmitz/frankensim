@@ -54,7 +54,7 @@ const PROPOSALS: [Proposal; 19] = [
         name: "Version control for physics",
         phase: "flywheel",
         mean: 820,
-        kill_metric: "<25% of realistic merges surface harmonic (structural) conflicts",
+        kill_metric: "<25% of realistic merges retain candidate remainders or otherwise remain unresolved/refused",
         owning_bead: "frankensim-epic-flywheel-lmp4.12",
         receipt: None,
     },
@@ -237,7 +237,9 @@ impl GovernanceAudit {
     /// zero-row audit is a measurement gap, never a green.
     #[must_use]
     pub fn declared_schema_ok(&self) -> bool {
-        self.total > 0 && self.with_kill_metric_and_owner == self.total && self.schema_gaps.is_empty()
+        self.total > 0
+            && self.with_kill_metric_and_owner == self.total
+            && self.schema_gaps.is_empty()
     }
 
     /// Is every proposal OPERATIONALLY managed — declared AND its kill

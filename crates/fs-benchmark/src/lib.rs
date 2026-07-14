@@ -20,7 +20,7 @@
 pub use fs_evidence::{Color, ColorRank};
 
 /// The corpus version (measurements are only comparable within a version).
-pub const BENCHMARK_VERSION: u32 = 1;
+pub const BENCHMARK_VERSION: u32 = 2;
 
 /// One conjugate-heat-transfer design query with a certified reference answer.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -72,15 +72,19 @@ pub struct MmsCase {
     pub exact_center: f64,
 }
 
-/// A swarm-concurrency merge trial with its harmonic-conflict count.
+/// A synthetic swarm-concurrency fixture with its candidate-remainder count.
+///
+/// These small rows exercise the corpus shape and measurement API. They are not
+/// retained realistic merge traces and do not discharge Proposal 10's broader
+/// unresolved-merge gate.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MergeTrial {
     /// Stable id.
     pub id: &'static str,
     /// Total merges attempted.
     pub total_merges: usize,
-    /// Merges that surfaced a harmonic (structural) conflict.
-    pub harmonic_conflicts: usize,
+    /// Synthetic merges assigned a fixed-iteration candidate remainder.
+    pub candidate_remainder_conflicts: usize,
 }
 
 const QUERY_SET: [QueryCase; 3] = [
@@ -156,12 +160,12 @@ const MERGE_TRIALS: [MergeTrial; 2] = [
     MergeTrial {
         id: "two-agent-fin-vs-duct",
         total_merges: 40,
-        harmonic_conflicts: 6,
+        candidate_remainder_conflicts: 6,
     },
     MergeTrial {
         id: "three-agent-layout",
         total_merges: 60,
-        harmonic_conflicts: 13,
+        candidate_remainder_conflicts: 13,
     },
 ];
 
@@ -218,7 +222,7 @@ pub fn win_rate(outcomes: &[bool]) -> f64 {
     outcomes.iter().filter(|&&b| b).count() as f64 / outcomes.len() as f64
 }
 
-/// A generic rate `count / total` (Proposal 10 harmonic-conflict rate `< 25%`,
+/// A generic rate `count / total` (Proposal 10 candidate diagnostic `< 25%`,
 /// Proposal 9 accept-rate, Proposal D catch-rate). Zero if `total == 0`.
 #[must_use]
 pub fn rate(count: usize, total: usize) -> f64 {
@@ -229,10 +233,10 @@ pub fn rate(count: usize, total: usize) -> f64 {
     }
 }
 
-/// The harmonic (structural) conflict rate of a merge trial (Proposal 10).
+/// The candidate-remainder diagnostic rate of a synthetic merge fixture.
 #[must_use]
 pub fn conflict_rate(trial: &MergeTrial) -> f64 {
-    rate(trial.harmonic_conflicts, trial.total_merges)
+    rate(trial.candidate_remainder_conflicts, trial.total_merges)
 }
 
 /// The accept-rate `accepts / attempts` (Proposal 9 certified speculation).
@@ -289,7 +293,7 @@ const INSTRUMENTED: [InstrumentedProposal; 8] = [
     InstrumentedProposal {
         proposal: "10",
         dataset: "merge_trials",
-        kill_metric: "<25% of realistic merges surface harmonic conflicts",
+        kill_metric: "candidate diagnostic <25%; full gate also counts escalations/refusals/type conflicts on retained realistic traces",
     },
     InstrumentedProposal {
         proposal: "A",
@@ -334,7 +338,12 @@ pub fn corpus_digest() -> u64 {
         write!(buf, "M{}:{}", m.id, m.exact_center.to_bits()).expect("write");
     }
     for t in &MERGE_TRIALS {
-        write!(buf, "T{}:{}:{}", t.id, t.total_merges, t.harmonic_conflicts).expect("write");
+        write!(
+            buf,
+            "T{}:{}:{}",
+            t.id, t.total_merges, t.candidate_remainder_conflicts
+        )
+        .expect("write");
     }
     let mut h = 0xcbf2_9ce4_8422_2325_u64;
     for b in buf.bytes() {
