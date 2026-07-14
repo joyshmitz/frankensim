@@ -23,6 +23,11 @@
 //! Deterministic; no dependencies (Gaussian decision algebra with an in-house
 //! normal CDF).
 
+/// Semantic version of [`evpi`] and the Gaussian top-two decision algebra it
+/// depends on. Bump this whenever a change can alter EVPI result bits, top-two
+/// selection, uncertainty composition, or the Gaussian helper semantics.
+pub const EVPI_SEMANTICS_VERSION: u64 = 1;
+
 /// The three uncertainty components of an estimate (they compose in quadrature).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Uncertainty {

@@ -21,6 +21,202 @@ use std::fmt::Write as _;
 pub const MAX_VERIFIER_MESH_NODES: usize = MAX_FEM1D_MESH_NODES;
 /// Exactness envelope for the manufactured solution: degree at most five.
 pub const MAX_VERIFIER_POLY_COEFFICIENTS: usize = MAX_FEM1D_POLY_COEFFICIENTS;
+/// Semantic version of the verifier's complete bounded-work accounting.
+pub const VERIFIER_WORK_PLAN_VERSION: u32 = 1;
+/// Semantic version of the verifier's callback/checkpoint schedule.
+pub const VERIFIER_POLL_POLICY_VERSION: u32 = 1;
+/// Maximum completed logical work between verifier work-boundary callbacks.
+pub const VERIFIER_POLL_STRIDE_WORK_UNITS: u128 = 256;
+
+/// One phase of the bounded equilibrated-flux verification workflow.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VerifierPhase {
+    /// Input and derived-polynomial validation.
+    Validation,
+    /// Rounded optimizer for the free equilibrated-flux constant.
+    Tightness,
+    /// Outward-rounded equilibrated-bound construction.
+    Equilibrated,
+    /// Deterministic reconstructed-flux identity.
+    Hash,
+    /// Final report construction and publication.
+    Finalization,
+}
+
+/// Why a verifier progress callback is being invoked.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VerifierCheckpointKind {
+    /// Mandatory callback before a phase begins.
+    PhaseEntry,
+    /// Invocation-global multiple of [`VERIFIER_POLL_STRIDE_WORK_UNITS`].
+    WorkBoundary,
+    /// Mandatory callback after a structured refusal has inspected all work it reports.
+    RefusalFlush,
+    /// Mandatory final callback after the complete report is ready to publish.
+    Publication,
+}
+
+/// Immutable invocation-global verifier progress passed to a callback by value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct VerifierProgress {
+    /// Callback reason.
+    pub kind: VerifierCheckpointKind,
+    /// Phase active at this callback.
+    pub phase: VerifierPhase,
+    /// Exact logical work completed across all phases.
+    pub completed_work_units: u128,
+    /// Complete constant-time preflighted work for this invocation.
+    pub planned_work_units: u128,
+}
+
+/// Complete checked logical-work shape for one verifier invocation.
+///
+/// Counts are exact credited logical progress, not instruction counters. The
+/// fixed-cap polynomial helpers process at most six coefficients atomically and
+/// are credited only after success; this can conservatively lag physical work
+/// by one such micro-tile but never overstates completed work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct VerifierWorkPlan {
+    validation_work_units: u128,
+    tightness_work_units: u128,
+    equilibrated_work_units: u128,
+    hash_work_units: u128,
+    finalization_work_units: u128,
+    planned_work_units: u128,
+}
+
+impl VerifierWorkPlan {
+    /// Preflight the complete work shape without running a callback.
+    ///
+    /// Shape refusals therefore have exact zero-work semantics. Content
+    /// validation happens later through [`verify_with_checkpoint`].
+    ///
+    /// # Errors
+    /// Returns a structured shape refusal for an inadmissible mesh, candidate,
+    /// polynomial envelope, or checked work-plan overflow.
+    pub fn for_inputs(problem: &MmsProblem, candidate: &[f64]) -> Result<Self, VerifierRefusal> {
+        let mesh_nodes = problem.mesh().len();
+        if !(2..=MAX_VERIFIER_MESH_NODES).contains(&mesh_nodes) {
+            return Err(VerifierRefusal::MeshNodeCount);
+        }
+        if candidate.len() != mesh_nodes {
+            return Err(VerifierRefusal::CandidateLength);
+        }
+        for (role, polynomial) in [
+            (VerifierPolynomial::ExactSolution, problem.exact_solution()),
+            (VerifierPolynomial::Forcing, problem.forcing()),
+            (
+                VerifierPolynomial::ForcingAntiderivative,
+                problem.rounded_forcing_antiderivative(),
+            ),
+        ] {
+            if !(1..=MAX_VERIFIER_POLY_COEFFICIENTS).contains(&polynomial.coefficients().len()) {
+                return Err(VerifierRefusal::PolynomialCoefficientCount { polynomial: role });
+            }
+        }
+
+        let mesh_nodes =
+            u128::try_from(mesh_nodes).map_err(|_| VerifierRefusal::WorkPlanOverflow)?;
+        let cells = mesh_nodes
+            .checked_sub(1)
+            .ok_or(VerifierRefusal::WorkPlanOverflow)?;
+        let exact_coefficients = u128::try_from(problem.exact_solution().coefficients().len())
+            .map_err(|_| VerifierRefusal::WorkPlanOverflow)?;
+        let forcing_coefficients = u128::try_from(problem.forcing().coefficients().len())
+            .map_err(|_| VerifierRefusal::WorkPlanOverflow)?;
+        let antiderivative_coefficients = u128::try_from(
+            problem
+                .rounded_forcing_antiderivative()
+                .coefficients()
+                .len(),
+        )
+        .map_err(|_| VerifierRefusal::WorkPlanOverflow)?;
+
+        let validation_work_units = 3_u128
+            .checked_add(
+                mesh_nodes
+                    .checked_mul(2)
+                    .ok_or(VerifierRefusal::WorkPlanOverflow)?,
+            )
+            .and_then(|work| work.checked_add(cells))
+            .and_then(|work| work.checked_add(exact_coefficients.checked_mul(3)?))
+            .and_then(|work| work.checked_add(forcing_coefficients.checked_mul(3)?))
+            .and_then(|work| work.checked_add(antiderivative_coefficients.checked_mul(2)?))
+            .ok_or(VerifierRefusal::WorkPlanOverflow)?;
+        let tightness_work_units = cells;
+        let equilibrated_work_units = cells;
+        let hash_work_units = 3_u128
+            .checked_add(forcing_coefficients)
+            .and_then(|work| work.checked_add(antiderivative_coefficients))
+            .ok_or(VerifierRefusal::WorkPlanOverflow)?;
+        let finalization_work_units = 1;
+        let planned_work_units = validation_work_units
+            .checked_add(tightness_work_units)
+            .and_then(|work| work.checked_add(equilibrated_work_units))
+            .and_then(|work| work.checked_add(hash_work_units))
+            .and_then(|work| work.checked_add(finalization_work_units))
+            .ok_or(VerifierRefusal::WorkPlanOverflow)?;
+        Ok(Self {
+            validation_work_units,
+            tightness_work_units,
+            equilibrated_work_units,
+            hash_work_units,
+            finalization_work_units,
+            planned_work_units,
+        })
+    }
+
+    /// Validation work in the plan.
+    #[must_use]
+    pub const fn validation_work_units(self) -> u128 {
+        self.validation_work_units
+    }
+
+    /// Tightness-optimizer work in the plan.
+    #[must_use]
+    pub const fn tightness_work_units(self) -> u128 {
+        self.tightness_work_units
+    }
+
+    /// Equilibrated-bound work in the plan.
+    #[must_use]
+    pub const fn equilibrated_work_units(self) -> u128 {
+        self.equilibrated_work_units
+    }
+
+    /// Flux-identity work in the plan.
+    #[must_use]
+    pub const fn hash_work_units(self) -> u128 {
+        self.hash_work_units
+    }
+
+    /// Final report/publication work in the plan.
+    #[must_use]
+    pub const fn finalization_work_units(self) -> u128 {
+        self.finalization_work_units
+    }
+
+    /// Total work in the plan.
+    #[must_use]
+    pub const fn planned_work_units(self) -> u128 {
+        self.planned_work_units
+    }
+
+    /// Stable phase counts used by downstream evidence identities.
+    #[must_use]
+    pub const fn identity_fields(self) -> [u128; 6] {
+        [
+            self.validation_work_units,
+            self.tightness_work_units,
+            self.equilibrated_work_units,
+            self.hash_work_units,
+            self.finalization_work_units,
+            self.planned_work_units,
+        ]
+    }
+}
 
 /// Estimator families (Proposal D's independence escalation needs at
 /// least two registered per class).
@@ -82,6 +278,10 @@ pub enum VerifierRefusal {
     NonFiniteTightness,
     /// Interval construction produced a non-finite, reversed, or unusable enclosure.
     InvalidEnclosure,
+    /// Complete verifier work-shape arithmetic overflowed.
+    WorkPlanOverflow,
+    /// Executed logical work did not match the complete preflighted plan.
+    WorkPlanMismatch,
 }
 
 impl VerifierRefusal {
@@ -126,6 +326,8 @@ impl VerifierRefusal {
             } => "derived-u-mismatch",
             Self::NonFiniteTightness => "non-finite-tightness",
             Self::InvalidEnclosure => "invalid-enclosure",
+            Self::WorkPlanOverflow => "work-plan-overflow",
+            Self::WorkPlanMismatch => "work-plan-mismatch",
         }
     }
 }
@@ -249,43 +451,102 @@ fn fnv_extend(mut h: u64, bytes: &[u8]) -> u64 {
     h
 }
 
-fn hash_polynomial(mut hash: u64, polynomial: &crate::fem1d::Poly) -> u64 {
-    hash = fnv_extend(
-        hash,
-        &(polynomial.coefficients().len() as u64).to_le_bytes(),
-    );
-    for coefficient in polynomial.coefficients() {
-        hash = fnv_extend(hash, &coefficient.to_bits().to_le_bytes());
+enum VerifierRunError<E> {
+    Callback(E),
+    Refusal(VerifierRefusal),
+}
+
+struct VerifierDriver<F> {
+    callback: F,
+    plan: VerifierWorkPlan,
+    completed_work_units: u128,
+    phase: VerifierPhase,
+}
+
+impl<F> VerifierDriver<F> {
+    fn new(plan: VerifierWorkPlan, callback: F) -> Self {
+        Self {
+            callback,
+            plan,
+            completed_work_units: 0,
+            phase: VerifierPhase::Validation,
+        }
     }
-    hash
+
+    fn emit<E>(&mut self, kind: VerifierCheckpointKind) -> Result<(), E>
+    where
+        F: FnMut(VerifierProgress) -> Result<(), E>,
+    {
+        (self.callback)(VerifierProgress {
+            kind,
+            phase: self.phase,
+            completed_work_units: self.completed_work_units,
+            planned_work_units: self.plan.planned_work_units,
+        })
+    }
+
+    fn enter<E>(&mut self, phase: VerifierPhase) -> Result<(), VerifierRunError<E>>
+    where
+        F: FnMut(VerifierProgress) -> Result<(), E>,
+    {
+        self.phase = phase;
+        self.emit(VerifierCheckpointKind::PhaseEntry)
+            .map_err(VerifierRunError::Callback)
+    }
+
+    fn complete_one<E>(&mut self) -> Result<(), VerifierRunError<E>>
+    where
+        F: FnMut(VerifierProgress) -> Result<(), E>,
+    {
+        self.completed_work_units = self
+            .completed_work_units
+            .checked_add(1)
+            .filter(|completed| *completed <= self.plan.planned_work_units)
+            .ok_or(VerifierRunError::Refusal(VerifierRefusal::WorkPlanMismatch))?;
+        if self
+            .completed_work_units
+            .is_multiple_of(VERIFIER_POLL_STRIDE_WORK_UNITS)
+        {
+            self.emit(VerifierCheckpointKind::WorkBoundary)
+                .map_err(VerifierRunError::Callback)?;
+        }
+        Ok(())
+    }
+
+    fn refusal_flush<E>(&mut self) -> Result<(), E>
+    where
+        F: FnMut(VerifierProgress) -> Result<(), E>,
+    {
+        self.emit(VerifierCheckpointKind::RefusalFlush)
+    }
+
+    fn require_completed<E>(&self, expected: u128) -> Result<(), VerifierRunError<E>> {
+        if self.completed_work_units == expected {
+            Ok(())
+        } else {
+            Err(VerifierRunError::Refusal(VerifierRefusal::WorkPlanMismatch))
+        }
+    }
+
+    fn publication<E>(&mut self) -> Result<(), VerifierRunError<E>>
+    where
+        F: FnMut(VerifierProgress) -> Result<(), E>,
+    {
+        self.emit(VerifierCheckpointKind::Publication)
+            .map_err(VerifierRunError::Callback)
+    }
 }
 
-fn flux_hash(c_star: f64, f: &crate::fem1d::Poly, big_f: &crate::fem1d::Poly) -> u64 {
-    let mut hash = fnv_extend(0xcbf2_9ce4_8422_2325, &c_star.to_bits().to_le_bytes());
-    hash = hash_polynomial(hash, f);
-    hash_polynomial(hash, big_f)
-}
-
-fn poly_bits_equal(left: &crate::fem1d::Poly, right: &crate::fem1d::Poly) -> bool {
-    left.coefficients().len() == right.coefficients().len()
-        && left
-            .coefficients()
-            .iter()
-            .zip(right.coefficients())
-            .all(|(left, right)| left.to_bits() == right.to_bits())
-}
-
-fn validate_inputs(
+#[allow(clippy::too_many_lines)] // One auditable refusal order with exact partial-work semantics.
+fn validate_inputs_with_checkpoint<F, E>(
     problem: &MmsProblem,
     candidate: &[f64],
     tolerance: f64,
-) -> Result<(crate::fem1d::Poly, crate::fem1d::Poly), VerifierRefusal> {
-    if !(2..=MAX_VERIFIER_MESH_NODES).contains(&problem.mesh().len()) {
-        return Err(VerifierRefusal::MeshNodeCount);
-    }
-    if candidate.len() != problem.mesh().len() {
-        return Err(VerifierRefusal::CandidateLength);
-    }
+    driver: &mut VerifierDriver<F>,
+) -> Result<(crate::fem1d::Poly, crate::fem1d::Poly), VerifierRunError<E>>
+where
+    F: FnMut(VerifierProgress) -> Result<(), E>,
+{
     for (role, polynomial) in [
         (VerifierPolynomial::ExactSolution, problem.exact_solution()),
         (VerifierPolynomial::Forcing, problem.forcing()),
@@ -294,30 +555,52 @@ fn validate_inputs(
             problem.rounded_forcing_antiderivative(),
         ),
     ] {
-        if !(1..=MAX_VERIFIER_POLY_COEFFICIENTS).contains(&polynomial.coefficients().len()) {
-            return Err(VerifierRefusal::PolynomialCoefficientCount { polynomial: role });
+        let valid_count =
+            (1..=MAX_VERIFIER_POLY_COEFFICIENTS).contains(&polynomial.coefficients().len());
+        driver.complete_one()?;
+        if !valid_count {
+            return Err(VerifierRunError::Refusal(
+                VerifierRefusal::PolynomialCoefficientCount { polynomial: role },
+            ));
         }
     }
     if !tolerance.is_finite() || tolerance <= 0.0 {
-        return Err(VerifierRefusal::InvalidTolerance);
+        return Err(VerifierRunError::Refusal(VerifierRefusal::InvalidTolerance));
     }
     if problem.mesh().first().map(|value| value.to_bits()) != Some(0.0_f64.to_bits())
         || problem.mesh().last().map(|value| value.to_bits()) != Some(1.0_f64.to_bits())
     {
-        return Err(VerifierRefusal::MeshDomain);
+        return Err(VerifierRunError::Refusal(VerifierRefusal::MeshDomain));
     }
-    if !problem.mesh().iter().all(|value| value.is_finite())
-        || !problem.mesh().windows(2).all(|pair| pair[0] < pair[1])
-    {
-        return Err(VerifierRefusal::MeshCoordinates);
+    for value in problem.mesh() {
+        let finite = value.is_finite();
+        driver.complete_one()?;
+        if !finite {
+            return Err(VerifierRunError::Refusal(VerifierRefusal::MeshCoordinates));
+        }
     }
-    if !candidate.iter().all(|value| value.is_finite()) {
-        return Err(VerifierRefusal::CandidateNonFinite);
+    for pair in problem.mesh().windows(2) {
+        let increasing = pair[0] < pair[1];
+        driver.complete_one()?;
+        if !increasing {
+            return Err(VerifierRunError::Refusal(VerifierRefusal::MeshCoordinates));
+        }
+    }
+    for value in candidate {
+        let finite = value.is_finite();
+        driver.complete_one()?;
+        if !finite {
+            return Err(VerifierRunError::Refusal(
+                VerifierRefusal::CandidateNonFinite,
+            ));
+        }
     }
     if candidate.first().map(|value| value.to_bits()) != Some(0.0_f64.to_bits())
         || candidate.last().map(|value| value.to_bits()) != Some(0.0_f64.to_bits())
     {
-        return Err(VerifierRefusal::CandidateBoundary);
+        return Err(VerifierRunError::Refusal(
+            VerifierRefusal::CandidateBoundary,
+        ));
     }
     for (role, polynomial) in [
         (VerifierPolynomial::ExactSolution, problem.exact_solution()),
@@ -327,23 +610,34 @@ fn validate_inputs(
             problem.rounded_forcing_antiderivative(),
         ),
     ] {
-        if !polynomial
-            .coefficients()
-            .iter()
-            .all(|value| value.is_finite())
-        {
-            return Err(VerifierRefusal::PolynomialNonFinite { polynomial: role });
+        for value in polynomial.coefficients() {
+            let finite = value.is_finite();
+            driver.complete_one()?;
+            if !finite {
+                return Err(VerifierRunError::Refusal(
+                    VerifierRefusal::PolynomialNonFinite { polynomial: role },
+                ));
+            }
         }
     }
-    if problem
+    // The fixed 34-limb boundary certifier is an atomic U<=6 micro-tile. Credit
+    // its coefficient units only after the result exists, so cancellation can
+    // conservatively under-report by at most one tile but never over-report.
+    let first_is_zero = problem
         .exact_solution()
         .coefficients()
         .first()
         .map(|value| value.to_bits())
-        != Some(0.0_f64.to_bits())
-        || !problem.exact_solution().is_exactly_zero_at_one()
-    {
-        return Err(VerifierRefusal::ExactSolutionBoundary);
+        == Some(0.0_f64.to_bits());
+    let zero_at_one = problem.exact_solution().is_exactly_zero_at_one();
+    let exact_solution_has_boundary = first_is_zero && zero_at_one;
+    for _ in problem.exact_solution().coefficients() {
+        driver.complete_one()?;
+    }
+    if !exact_solution_has_boundary {
+        return Err(VerifierRunError::Refusal(
+            VerifierRefusal::ExactSolutionBoundary,
+        ));
     }
 
     let expected_f = problem
@@ -351,40 +645,94 @@ fn validate_inputs(
         .derive()
         .and_then(|derivative| derivative.derive())
         .map(crate::fem1d::Poly::neg)
-        .map_err(|_| VerifierRefusal::PolynomialNonFinite {
-            polynomial: VerifierPolynomial::Forcing,
+        .map_err(|_| {
+            VerifierRunError::Refusal(VerifierRefusal::PolynomialNonFinite {
+                polynomial: VerifierPolynomial::Forcing,
+            })
         })?;
-    if !poly_bits_equal(problem.forcing(), &expected_f) {
-        return Err(VerifierRefusal::DerivedPolynomialMismatch {
-            polynomial: VerifierPolynomial::Forcing,
-        });
+    for _ in problem.exact_solution().coefficients() {
+        driver.complete_one()?;
     }
-    let expected_big_f =
-        expected_f
-            .antiderive()
-            .map_err(|_| VerifierRefusal::PolynomialNonFinite {
-                polynomial: VerifierPolynomial::ForcingAntiderivative,
-            })?;
-    if !poly_bits_equal(problem.rounded_forcing_antiderivative(), &expected_big_f) {
-        return Err(VerifierRefusal::DerivedPolynomialMismatch {
+    if problem.forcing().coefficients().len() != expected_f.coefficients().len() {
+        return Err(VerifierRunError::Refusal(
+            VerifierRefusal::DerivedPolynomialMismatch {
+                polynomial: VerifierPolynomial::Forcing,
+            },
+        ));
+    }
+    for (declared, expected) in problem
+        .forcing()
+        .coefficients()
+        .iter()
+        .zip(expected_f.coefficients())
+    {
+        let equal = declared.to_bits() == expected.to_bits();
+        driver.complete_one()?;
+        if !equal {
+            return Err(VerifierRunError::Refusal(
+                VerifierRefusal::DerivedPolynomialMismatch {
+                    polynomial: VerifierPolynomial::Forcing,
+                },
+            ));
+        }
+    }
+    let expected_big_f = expected_f.antiderive().map_err(|_| {
+        VerifierRunError::Refusal(VerifierRefusal::PolynomialNonFinite {
             polynomial: VerifierPolynomial::ForcingAntiderivative,
-        });
+        })
+    })?;
+    for _ in problem.forcing().coefficients() {
+        driver.complete_one()?;
+    }
+    if problem
+        .rounded_forcing_antiderivative()
+        .coefficients()
+        .len()
+        != expected_big_f.coefficients().len()
+    {
+        return Err(VerifierRunError::Refusal(
+            VerifierRefusal::DerivedPolynomialMismatch {
+                polynomial: VerifierPolynomial::ForcingAntiderivative,
+            },
+        ));
+    }
+    for (declared, expected) in problem
+        .rounded_forcing_antiderivative()
+        .coefficients()
+        .iter()
+        .zip(expected_big_f.coefficients())
+    {
+        let equal = declared.to_bits() == expected.to_bits();
+        driver.complete_one()?;
+        if !equal {
+            return Err(VerifierRunError::Refusal(
+                VerifierRefusal::DerivedPolynomialMismatch {
+                    polynomial: VerifierPolynomial::ForcingAntiderivative,
+                },
+            ));
+        }
     }
     Ok((expected_f, expected_big_f))
 }
 
-fn tightness_constant(
+fn tightness_constant_with_checkpoint<F, E>(
     problem: &MmsProblem,
     candidate: &[f64],
     big_f: &crate::fem1d::Poly,
-) -> Result<f64, VerifierRefusal> {
+    driver: &mut VerifierDriver<F>,
+) -> Result<f64, VerifierRunError<E>>
+where
+    F: FnMut(VerifierProgress) -> Result<(), E>,
+{
     let mut mean = 0.0;
     for element in 0..problem.mesh().len() - 1 {
         let (x0, x1) = (problem.mesh()[element], problem.mesh()[element + 1]);
         let h = x1 - x0;
         let slope = (candidate[element + 1] - candidate[element]) / h;
         if !h.is_finite() || h <= 0.0 || !slope.is_finite() {
-            return Err(VerifierRefusal::NonFiniteTightness);
+            return Err(VerifierRunError::Refusal(
+                VerifierRefusal::NonFiniteTightness,
+            ));
         }
         for (point, weight) in gauss5(x0, x1) {
             let value = big_f.eval(point) + slope;
@@ -394,13 +742,18 @@ fn tightness_constant(
                 || !value.is_finite()
                 || !contribution.is_finite()
             {
-                return Err(VerifierRefusal::NonFiniteTightness);
+                return Err(VerifierRunError::Refusal(
+                    VerifierRefusal::NonFiniteTightness,
+                ));
             }
             mean += contribution;
             if !mean.is_finite() {
-                return Err(VerifierRefusal::NonFiniteTightness);
+                return Err(VerifierRunError::Refusal(
+                    VerifierRefusal::NonFiniteTightness,
+                ));
             }
         }
+        driver.complete_one()?;
     }
     Ok(mean)
 }
@@ -470,32 +823,68 @@ fn interval_forcing_antiderivative(
     finite_interval(x.mul(accumulated))
 }
 
-fn equilibrated_bound(
+fn equilibrated_bound_with_checkpoint<F, E>(
     problem: &MmsProblem,
     candidate: &[f64],
     forcing: &crate::fem1d::Poly,
     c_star: f64,
-) -> Result<Iv, VerifierRefusal> {
+    driver: &mut VerifierDriver<F>,
+) -> Result<Iv, VerifierRunError<E>>
+where
+    F: FnMut(VerifierProgress) -> Result<(), E>,
+{
     let mut eta_sq = Iv::zero();
     for element in 0..problem.mesh().len() - 1 {
         let (h, midpoint, half) =
-            interval_element_geometry(problem.mesh()[element], problem.mesh()[element + 1])?;
-        let slope = interval_candidate_slope(candidate[element], candidate[element + 1], h)?;
+            interval_element_geometry(problem.mesh()[element], problem.mesh()[element + 1])
+                .map_err(VerifierRunError::Refusal)?;
+        let slope = interval_candidate_slope(candidate[element], candidate[element + 1], h)
+            .map_err(VerifierRunError::Refusal)?;
         for (node_constant, weight_constant) in GAUSS5_REF {
             let (node, weight) =
-                interval_quadrature_geometry(midpoint, half, node_constant, weight_constant)?;
-            let antiderivative = interval_forcing_antiderivative(forcing, node)?;
-            let residual = finite_interval(Iv::point(c_star).sub(antiderivative).sub(slope))?;
-            let contribution = finite_interval(weight.mul(residual.sq()))?;
-            eta_sq = finite_interval(eta_sq.add(contribution))?;
+                interval_quadrature_geometry(midpoint, half, node_constant, weight_constant)
+                    .map_err(VerifierRunError::Refusal)?;
+            let antiderivative = interval_forcing_antiderivative(forcing, node)
+                .map_err(VerifierRunError::Refusal)?;
+            let residual = finite_interval(Iv::point(c_star).sub(antiderivative).sub(slope))
+                .map_err(VerifierRunError::Refusal)?;
+            let contribution =
+                finite_interval(weight.mul(residual.sq())).map_err(VerifierRunError::Refusal)?;
+            eta_sq =
+                finite_interval(eta_sq.add(contribution)).map_err(VerifierRunError::Refusal)?;
         }
+        driver.complete_one()?;
     }
-    let bound = finite_interval(eta_sq.sqrt())?;
+    let bound = finite_interval(eta_sq.sqrt()).map_err(VerifierRunError::Refusal)?;
     if bound.lo < 0.0 {
-        Err(VerifierRefusal::InvalidEnclosure)
+        Err(VerifierRunError::Refusal(VerifierRefusal::InvalidEnclosure))
     } else {
         Ok(bound)
     }
+}
+
+fn flux_hash_with_checkpoint<F, E>(
+    c_star: f64,
+    forcing: &crate::fem1d::Poly,
+    antiderivative: &crate::fem1d::Poly,
+    driver: &mut VerifierDriver<F>,
+) -> Result<u64, VerifierRunError<E>>
+where
+    F: FnMut(VerifierProgress) -> Result<(), E>,
+{
+    let mut hash = fnv_extend(0xcbf2_9ce4_8422_2325, &c_star.to_bits().to_le_bytes());
+    driver.complete_one()?;
+    for polynomial in [forcing, antiderivative] {
+        let length = u64::try_from(polynomial.coefficients().len())
+            .map_err(|_| VerifierRunError::Refusal(VerifierRefusal::WorkPlanMismatch))?;
+        hash = fnv_extend(hash, &length.to_le_bytes());
+        driver.complete_one()?;
+        for coefficient in polynomial.coefficients() {
+            hash = fnv_extend(hash, &coefficient.to_bits().to_le_bytes());
+            driver.complete_one()?;
+        }
+    }
+    Ok(hash)
 }
 
 fn refused(tolerance: f64, reason: VerifierRefusal) -> VerifierReport {
@@ -513,25 +902,45 @@ fn refused(tolerance: f64, reason: VerifierRefusal) -> VerifierReport {
     }
 }
 
-/// The equilibrated-flux VERIFIER: certify (or reject) a candidate's
-/// nodal values against `tolerance`. The returned bound is a TRUE
-/// upper bound on `‖(u − u_h)′‖` whenever the candidate satisfies the
-/// boundary conditions; the enclosure is rigorous by outward rounding.
-#[must_use]
-pub fn verify(problem: &MmsProblem, candidate: &[f64], tolerance: f64) -> VerifierReport {
-    let (canonical_f, canonical_big_f) = match validate_inputs(problem, candidate, tolerance) {
-        Ok(polynomials) => polynomials,
-        Err(reason) => return refused(tolerance, reason),
-    };
+fn run_verifier<F, E>(
+    problem: &MmsProblem,
+    candidate: &[f64],
+    tolerance: f64,
+    driver: &mut VerifierDriver<F>,
+) -> Result<VerifierReport, VerifierRunError<E>>
+where
+    F: FnMut(VerifierProgress) -> Result<(), E>,
+{
+    driver.enter(VerifierPhase::Validation)?;
+    let (canonical_f, canonical_big_f) =
+        validate_inputs_with_checkpoint(problem, candidate, tolerance, driver)?;
+    driver.require_completed(driver.plan.validation_work_units)?;
+
+    driver.enter(VerifierPhase::Tightness)?;
     // Any finite c is sound. This rounded optimizer affects tightness only.
-    let c_star = match tightness_constant(problem, candidate, &canonical_big_f) {
-        Ok(value) => value,
-        Err(reason) => return refused(tolerance, reason),
-    };
-    let bound = match equilibrated_bound(problem, candidate, &canonical_f, c_star) {
-        Ok(bound) => bound,
-        Err(reason) => return refused(tolerance, reason),
-    };
+    let c_star = tightness_constant_with_checkpoint(problem, candidate, &canonical_big_f, driver)?;
+    let after_tightness = driver
+        .plan
+        .validation_work_units
+        .checked_add(driver.plan.tightness_work_units)
+        .ok_or(VerifierRunError::Refusal(VerifierRefusal::WorkPlanMismatch))?;
+    driver.require_completed(after_tightness)?;
+
+    driver.enter(VerifierPhase::Equilibrated)?;
+    let bound =
+        equilibrated_bound_with_checkpoint(problem, candidate, &canonical_f, c_star, driver)?;
+    let after_equilibrated = after_tightness
+        .checked_add(driver.plan.equilibrated_work_units)
+        .ok_or(VerifierRunError::Refusal(VerifierRefusal::WorkPlanMismatch))?;
+    driver.require_completed(after_equilibrated)?;
+
+    driver.enter(VerifierPhase::Hash)?;
+    let flux_hash = flux_hash_with_checkpoint(c_star, &canonical_f, &canonical_big_f, driver)?;
+    let after_hash = after_equilibrated
+        .checked_add(driver.plan.hash_work_units)
+        .ok_or(VerifierRunError::Refusal(VerifierRefusal::WorkPlanMismatch))?;
+    driver.require_completed(after_hash)?;
+
     let accept = bound.hi <= tolerance;
     let color = if accept {
         Some(Color::Verified {
@@ -541,14 +950,72 @@ pub fn verify(problem: &MmsProblem, candidate: &[f64], tolerance: f64) -> Verifi
     } else {
         None
     };
-    VerifierReport {
+    driver.enter(VerifierPhase::Finalization)?;
+    let report = VerifierReport {
         bound,
         accept,
         color,
         tolerance,
         family: EstimatorFamily::EquilibratedFlux.id(),
-        flux_hash: flux_hash(c_star, &canonical_f, &canonical_big_f),
+        flux_hash,
         refusal: None,
+    };
+    driver.complete_one()?;
+    driver.require_completed(driver.plan.planned_work_units)?;
+    driver.publication()?;
+    Ok(report)
+}
+
+/// The equilibrated-flux VERIFIER with an explicit sparse progress callback.
+///
+/// The callback runs at every phase entry, each invocation-global multiple of
+/// [`VERIFIER_POLL_STRIDE_WORK_UNITS`], every structured-refusal flush, and the
+/// final publication gate. Callback failure wins over any pending scientific
+/// refusal and no report is returned. Shape refusals happen during constant-time
+/// preflight and invoke no callback.
+///
+/// # Errors
+/// Returns the callback's error unchanged. Scientific input or arithmetic
+/// failures remain fail-closed [`VerifierReport`] values with a structured
+/// [`VerifierReport::refusal`].
+pub fn verify_with_checkpoint<E, F>(
+    problem: &MmsProblem,
+    candidate: &[f64],
+    tolerance: f64,
+    callback: F,
+) -> Result<VerifierReport, E>
+where
+    F: FnMut(VerifierProgress) -> Result<(), E>,
+{
+    let plan = match VerifierWorkPlan::for_inputs(problem, candidate) {
+        Ok(plan) => plan,
+        Err(reason) => return Ok(refused(tolerance, reason)),
+    };
+    let mut driver = VerifierDriver::new(plan, callback);
+    match run_verifier(problem, candidate, tolerance, &mut driver) {
+        Ok(report) => Ok(report),
+        Err(VerifierRunError::Callback(error)) => Err(error),
+        Err(VerifierRunError::Refusal(reason)) => {
+            driver.refusal_flush()?;
+            Ok(refused(tolerance, reason))
+        }
+    }
+}
+
+/// The equilibrated-flux VERIFIER: certify (or reject) a candidate's
+/// nodal values against `tolerance`. The returned bound is a TRUE
+/// upper bound on `‖(u − u_h)′‖` whenever the candidate satisfies the
+/// boundary conditions; the enclosure is rigorous by outward rounding.
+///
+/// This convenience wrapper is bitwise equivalent to
+/// [`verify_with_checkpoint`] with an infallible no-op callback.
+#[must_use]
+pub fn verify(problem: &MmsProblem, candidate: &[f64], tolerance: f64) -> VerifierReport {
+    match verify_with_checkpoint(problem, candidate, tolerance, |_| {
+        Ok::<(), core::convert::Infallible>(())
+    }) {
+        Ok(report) => report,
+        Err(never) => match never {},
     }
 }
 

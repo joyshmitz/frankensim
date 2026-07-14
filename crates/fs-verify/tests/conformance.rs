@@ -7,8 +7,10 @@
 //! verdicts; seeded cases carry seeds.
 
 use fs_verify::estimator::{
-    EstimatorFamily, VerifierRefusal, effectivity as try_effectivity,
-    hierarchical_estimate as try_hierarchical_estimate, verify, warm_start as try_warm_start,
+    EstimatorFamily, VerifierCheckpointKind, VerifierPhase, VerifierProgress, VerifierRefusal,
+    VerifierWorkPlan, effectivity as try_effectivity,
+    hierarchical_estimate as try_hierarchical_estimate, verify, verify_with_checkpoint,
+    warm_start as try_warm_start,
 };
 use fs_verify::fem1d::{
     Fem1dError, MAX_FEM1D_MESH_NODES, MAX_FEM1D_POLY_COEFFICIENTS, MmsProblem, Poly,
@@ -111,6 +113,327 @@ fn meshes() -> Vec<Vec<f64>> {
         graded,
         uniform(2),
     ]
+}
+
+fn assert_same_verifier_report(
+    left: &fs_verify::estimator::VerifierReport,
+    right: &fs_verify::estimator::VerifierReport,
+) {
+    assert_eq!(left.bound.lo.to_bits(), right.bound.lo.to_bits());
+    assert_eq!(left.bound.hi.to_bits(), right.bound.hi.to_bits());
+    assert_eq!(left.accept, right.accept);
+    assert_eq!(left.color, right.color);
+    assert_eq!(left.tolerance.to_bits(), right.tolerance.to_bits());
+    assert_eq!(left.family, right.family);
+    assert_eq!(left.flux_hash, right.flux_hash);
+    assert_eq!(left.refusal, right.refusal);
+}
+
+#[test]
+fn g4_verifier_work_plan_sparse_trace_and_legacy_equivalence_are_exact() {
+    let p = problem(
+        "checkpoint-small",
+        poly(vec![0.0, 1.0, -1.0]),
+        vec![0.0, 0.5, 1.0],
+    );
+    let candidate = [0.0, 0.0, 0.0];
+    let plan = VerifierWorkPlan::for_inputs(&p, &candidate).expect("bounded verifier shape");
+    assert_eq!(plan.identity_fields(), [27, 2, 2, 6, 1, 38]);
+
+    let mut trace = Vec::new();
+    let explicit = verify_with_checkpoint(&p, &candidate, 10.0, |progress| {
+        trace.push(progress);
+        Ok::<(), core::convert::Infallible>(())
+    })
+    .expect("infallible callback");
+    let legacy = verify(&p, &candidate, 10.0);
+    assert_same_verifier_report(&explicit, &legacy);
+    assert_eq!(
+        trace,
+        vec![
+            VerifierProgress {
+                kind: VerifierCheckpointKind::PhaseEntry,
+                phase: VerifierPhase::Validation,
+                completed_work_units: 0,
+                planned_work_units: 38,
+            },
+            VerifierProgress {
+                kind: VerifierCheckpointKind::PhaseEntry,
+                phase: VerifierPhase::Tightness,
+                completed_work_units: 27,
+                planned_work_units: 38,
+            },
+            VerifierProgress {
+                kind: VerifierCheckpointKind::PhaseEntry,
+                phase: VerifierPhase::Equilibrated,
+                completed_work_units: 29,
+                planned_work_units: 38,
+            },
+            VerifierProgress {
+                kind: VerifierCheckpointKind::PhaseEntry,
+                phase: VerifierPhase::Hash,
+                completed_work_units: 31,
+                planned_work_units: 38,
+            },
+            VerifierProgress {
+                kind: VerifierCheckpointKind::PhaseEntry,
+                phase: VerifierPhase::Finalization,
+                completed_work_units: 37,
+                planned_work_units: 38,
+            },
+            VerifierProgress {
+                kind: VerifierCheckpointKind::Publication,
+                phase: VerifierPhase::Finalization,
+                completed_work_units: 38,
+                planned_work_units: 38,
+            },
+        ]
+    );
+
+    for target in trace {
+        let result = verify_with_checkpoint(&p, &candidate, 10.0, |progress| {
+            if progress == target {
+                Err(target)
+            } else {
+                Ok(())
+            }
+        });
+        assert!(matches!(result, Err(error) if error == target));
+    }
+}
+
+#[test]
+fn g4_verifier_refusals_report_exact_partial_work_and_callback_errors_win() {
+    let p = problem(
+        "checkpoint-refusal",
+        poly(vec![0.0, 1.0, -1.0]),
+        vec![0.0, 0.5, 1.0],
+    );
+
+    let mut shape_callbacks = 0;
+    let shape_refusal = verify_with_checkpoint(&p, &[0.0, 0.0], 1.0, |_| {
+        shape_callbacks += 1;
+        Ok::<(), core::convert::Infallible>(())
+    })
+    .expect("infallible callback");
+    assert_eq!(
+        shape_refusal.refusal,
+        Some(VerifierRefusal::CandidateLength)
+    );
+    assert_eq!(shape_callbacks, 0);
+
+    let mut invalid_tolerance_trace = Vec::new();
+    let invalid_tolerance = verify_with_checkpoint(&p, &[0.0, 0.0, 0.0], f64::NAN, |progress| {
+        invalid_tolerance_trace.push(progress);
+        Ok::<(), core::convert::Infallible>(())
+    })
+    .expect("infallible callback");
+    assert_eq!(
+        invalid_tolerance.refusal,
+        Some(VerifierRefusal::InvalidTolerance)
+    );
+    assert_eq!(
+        invalid_tolerance_trace,
+        vec![
+            VerifierProgress {
+                kind: VerifierCheckpointKind::PhaseEntry,
+                phase: VerifierPhase::Validation,
+                completed_work_units: 0,
+                planned_work_units: 38,
+            },
+            VerifierProgress {
+                kind: VerifierCheckpointKind::RefusalFlush,
+                phase: VerifierPhase::Validation,
+                completed_work_units: 3,
+                planned_work_units: 38,
+            },
+        ]
+    );
+
+    let callback_wins = verify_with_checkpoint(&p, &[0.0, 0.0, 0.0], f64::NAN, |progress| {
+        if progress.kind == VerifierCheckpointKind::RefusalFlush {
+            Err("cancel-at-refusal")
+        } else {
+            Ok(())
+        }
+    });
+    assert!(matches!(callback_wins, Err("cancel-at-refusal")));
+
+    let mut candidate = [0.0, 0.0, 0.0];
+    candidate[1] = f64::NAN;
+    let mut candidate_trace = Vec::new();
+    let candidate_refusal = verify_with_checkpoint(&p, &candidate, 1.0, |progress| {
+        candidate_trace.push(progress);
+        Ok::<(), core::convert::Infallible>(())
+    })
+    .expect("infallible callback");
+    assert_eq!(
+        candidate_refusal.refusal,
+        Some(VerifierRefusal::CandidateNonFinite)
+    );
+    assert_eq!(candidate_trace.len(), 2);
+    assert_eq!(
+        candidate_trace[1],
+        VerifierProgress {
+            kind: VerifierCheckpointKind::RefusalFlush,
+            phase: VerifierPhase::Validation,
+            completed_work_units: 10,
+            planned_work_units: 38,
+        }
+    );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // One exact invocation-global trace across every phase.
+fn g4_verifier_work_boundaries_are_invocation_global_and_deterministic() {
+    let mesh: Vec<f64> = (0..=512).map(|index| f64::from(index) / 512.0).collect();
+    let p = problem("checkpoint-large", poly(vec![0.0]), mesh);
+    let candidate = vec![0.0; 513];
+    let plan = VerifierWorkPlan::for_inputs(&p, &candidate).expect("bounded verifier shape");
+    assert_eq!(plan.identity_fields(), [1549, 512, 512, 5, 1, 2579]);
+
+    let mut trace = Vec::new();
+    let report = verify_with_checkpoint(&p, &candidate, 1.0, |progress| {
+        trace.push(progress);
+        Ok::<(), core::convert::Infallible>(())
+    })
+    .expect("infallible callback");
+    assert!(report.refusal.is_none());
+    let expected = vec![
+        (
+            VerifierCheckpointKind::PhaseEntry,
+            VerifierPhase::Validation,
+            0,
+        ),
+        (
+            VerifierCheckpointKind::WorkBoundary,
+            VerifierPhase::Validation,
+            256,
+        ),
+        (
+            VerifierCheckpointKind::WorkBoundary,
+            VerifierPhase::Validation,
+            512,
+        ),
+        (
+            VerifierCheckpointKind::WorkBoundary,
+            VerifierPhase::Validation,
+            768,
+        ),
+        (
+            VerifierCheckpointKind::WorkBoundary,
+            VerifierPhase::Validation,
+            1024,
+        ),
+        (
+            VerifierCheckpointKind::WorkBoundary,
+            VerifierPhase::Validation,
+            1280,
+        ),
+        (
+            VerifierCheckpointKind::WorkBoundary,
+            VerifierPhase::Validation,
+            1536,
+        ),
+        (
+            VerifierCheckpointKind::PhaseEntry,
+            VerifierPhase::Tightness,
+            1549,
+        ),
+        (
+            VerifierCheckpointKind::WorkBoundary,
+            VerifierPhase::Tightness,
+            1792,
+        ),
+        (
+            VerifierCheckpointKind::WorkBoundary,
+            VerifierPhase::Tightness,
+            2048,
+        ),
+        (
+            VerifierCheckpointKind::PhaseEntry,
+            VerifierPhase::Equilibrated,
+            2061,
+        ),
+        (
+            VerifierCheckpointKind::WorkBoundary,
+            VerifierPhase::Equilibrated,
+            2304,
+        ),
+        (
+            VerifierCheckpointKind::WorkBoundary,
+            VerifierPhase::Equilibrated,
+            2560,
+        ),
+        (
+            VerifierCheckpointKind::PhaseEntry,
+            VerifierPhase::Hash,
+            2573,
+        ),
+        (
+            VerifierCheckpointKind::PhaseEntry,
+            VerifierPhase::Finalization,
+            2578,
+        ),
+        (
+            VerifierCheckpointKind::Publication,
+            VerifierPhase::Finalization,
+            2579,
+        ),
+    ];
+    assert_eq!(trace.len(), expected.len());
+    for (progress, (kind, phase, completed_work_units)) in trace.iter().zip(&expected) {
+        assert_eq!(progress.kind, *kind);
+        assert_eq!(progress.phase, *phase);
+        assert_eq!(progress.completed_work_units, *completed_work_units);
+        assert_eq!(progress.planned_work_units, 2579);
+    }
+
+    let boundary = trace
+        .iter()
+        .copied()
+        .find(|progress| progress.completed_work_units == 2304)
+        .expect("equilibrated global boundary");
+    let interrupted = verify_with_checkpoint(&p, &candidate, 1.0, |progress| {
+        if progress == boundary {
+            Err(boundary)
+        } else {
+            Ok(())
+        }
+    });
+    assert!(matches!(interrupted, Err(error) if error == boundary));
+}
+
+#[test]
+fn g4_verifier_publication_is_distinct_when_final_work_hits_a_boundary() {
+    #[allow(clippy::cast_precision_loss)]
+    let mesh: Vec<f64> = (0..149).map(|index| index as f64 / 148.0).collect();
+    let p = problem(
+        "checkpoint-publication-boundary",
+        poly(vec![0.0, 1.0, -1.0]),
+        mesh,
+    );
+    let candidate = vec![0.0; 149];
+    let plan = VerifierWorkPlan::for_inputs(&p, &candidate).expect("bounded verifier shape");
+    assert_eq!(plan.planned_work_units(), 768);
+
+    let mut trace = Vec::new();
+    let report = verify_with_checkpoint(&p, &candidate, 10.0, |progress| {
+        trace.push(progress);
+        Ok::<(), core::convert::Infallible>(())
+    })
+    .expect("infallible callback");
+    assert!(report.refusal.is_none());
+    assert_eq!(trace[trace.len() - 2].completed_work_units, 768);
+    assert_eq!(
+        trace[trace.len() - 2].kind,
+        VerifierCheckpointKind::WorkBoundary
+    );
+    assert_eq!(trace[trace.len() - 1].completed_work_units, 768);
+    assert_eq!(
+        trace[trace.len() - 1].kind,
+        VerifierCheckpointKind::Publication
+    );
 }
 
 /// ver-001 — THE UPPER-BOUND PROPERTY (G1 MMS class): over the battery

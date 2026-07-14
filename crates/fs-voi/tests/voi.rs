@@ -4,8 +4,9 @@
 //! beating the uncertainty-proportional baseline, and model-form escalation.
 
 use fs_voi::{
-    Action, ActionKind, Component, DesignEstimate, Recommendation, Uncertainty, action_value,
-    decision_posture, evpi, heuristic_choice, ranking_flip_probability, recommend,
+    Action, ActionKind, Component, DesignEstimate, EVPI_SEMANTICS_VERSION, Recommendation,
+    Uncertainty, action_value, decision_posture, evpi, heuristic_choice, ranking_flip_probability,
+    recommend,
 };
 
 fn unc(n: f64, s: f64, m: f64) -> Uncertainty {
@@ -26,6 +27,11 @@ fn act(name: &str, kind: ActionKind, target: &str, cost: f64) -> Action {
         reduction: 0.9,
         cost,
     }
+}
+
+#[test]
+fn evpi_semantics_version_is_locked() {
+    assert_eq!(EVPI_SEMANTICS_VERSION, 1);
 }
 
 #[test]
