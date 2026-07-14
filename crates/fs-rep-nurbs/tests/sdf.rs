@@ -1,16 +1,17 @@
 //! NURBS→SDF converter conformance (the wqd.11 bead; runs under the
 //! `nurbs-sdf` feature). Acceptance: against exactly-representable
 //! revolution fixtures (sphere/cylinder/torus as rational quadratics)
-//! the certified intervals CONTAIN the analytic distance everywhere
-//! sampled; near-trim behavior downgrades honestly on adversarial trims;
+//! measured brackets are cross-checked against analytic distance everywhere
+//! sampled; near-trim behavior widens honestly on adversarial trims;
 //! sign assignment follows declared orientation with the unsigned
 //! fallback named; G3 frame invariance; adaptive tiled generation with
 //! throughput evidence.
 #![cfg(feature = "nurbs-sdf")]
 
 use asupersync::types::Budget;
+use fs_evidence::NumericalKind;
 use fs_exec::{CancelGate, Cx, ExecMode, StreamKey};
-use fs_geom::{Chart, Point3};
+use fs_geom::{Chart, Differentiability, Point3};
 use fs_rep_nurbs::sdf::{Orientation, ShellSdf, ShellSdfChart, generate_tile};
 use fs_rep_nurbs::{KnotVector, NurbsCurve, NurbsSurface, Rat, TrimLoop, TrimmedPatch};
 
@@ -170,7 +171,7 @@ fn ns_001_containment_battery_vs_analytic() {
             let truth = analytic(q);
             assert!(
                 query.lower - 1e-7 <= truth && truth <= query.upper + 1e-7,
-                "{name}: certified [{}, {}] must contain analytic {truth} at {q:?}",
+                "{name}: measured bracket [{}, {}] missed analytic {truth} at {q:?}",
                 query.lower,
                 query.upper
             );
@@ -183,8 +184,8 @@ fn ns_001_containment_battery_vs_analytic() {
     );
     verdict(
         "ns-001",
-        "150 sampled points across sphere/cylinder/torus: certified intervals contain \
-         the analytic distance; worst bracket width < 5e-3",
+        "150 sampled points across sphere/cylinder/torus: measured brackets contain \
+         the sampled analytic oracle; worst observed width < 5e-3 (no enclosure claim)",
     );
 }
 
@@ -208,11 +209,20 @@ fn ns_002_sign_follows_declared_orientation() {
         );
         let g = outside.gradient.expect("gradient off the surface");
         assert!(g.x > 0.99, "gradient points outward: {g:?}");
-        assert_eq!(signed.name(), "nurbs-sdf/signed");
+        assert_eq!(signed.name(), "nurbs-sdf/estimated-signed");
         assert_eq!(
-            inside.lipschitz,
-            Some(1.0),
-            "distance fields are 1-Lipschitz"
+            signed.differentiability(),
+            Differentiability::Unknown,
+            "finite-budget witness switching grants no continuity claim"
+        );
+        assert_eq!(outside.error.kind, NumericalKind::Estimate);
+        assert!(
+            outside.lipschitz.is_none(),
+            "measured field grants no Lipschitz authority"
+        );
+        assert_eq!(
+            inside.lipschitz, None,
+            "the measured field must not claim a certified Lipschitz constant"
         );
         // Unknown orientation: unsigned field, named as such.
         let unsigned = ShellSdfChart::new(
@@ -226,7 +236,7 @@ fn ns_002_sign_follows_declared_orientation() {
             u_inside.signed_distance > 0.0,
             "no sign claim: non-negative"
         );
-        assert_eq!(unsigned.name(), "nurbs-sdf/unsigned");
+        assert_eq!(unsigned.name(), "nurbs-sdf/estimated-unsigned");
         verdict(
             "ns-002",
             "outward orientation signs correctly with outward gradients; unknown \
@@ -278,7 +288,30 @@ fn ns_003_trim_downgrade_is_honest() {
         south.trim_downgrade,
         "southern closest point is trimmed away"
     );
-    // A point nearest the NORTH pole: kept region, fully certified.
+    assert!(
+        south.upper.is_infinite(),
+        "a trimmed-away point is not a kept-surface upper witness"
+    );
+    let alternate = ShellSdf::new(
+        vec![sphere(), sphere()],
+        vec![
+            Some(TrimmedPatch {
+                loops: vec![poly_loop(&[[0, 8], [16, 8], [16, 16], [0, 16]], 16)],
+                max_subdivision: 24,
+            }),
+            None,
+        ],
+        Orientation::Outward,
+    )
+    .expect("shell with an untrimmed alternate");
+    let alternate_south = alternate
+        .distance([0.0, 0.99, -0.99], 1e-6, 4000)
+        .expect("alternate query");
+    assert!(
+        !alternate_south.trim_downgrade && alternate_south.upper.is_finite(),
+        "a valid kept-surface witness must outrank a closer trimmed-away diagnostic"
+    );
+    // A point nearest the NORTH pole: kept region, finite measured estimate.
     let north = shell
         .distance([0.0, 0.99, 0.99], 1e-6, 4000)
         .expect("query");
@@ -289,7 +322,7 @@ fn ns_003_trim_downgrade_is_honest() {
         "{} vs {expect}",
         north.upper
     );
-    // The chart widens the downgraded certificate instead of lying.
+    // The chart widens the trim-downgraded estimate instead of lying.
     with_cx(|cx| {
         let chart = ShellSdfChart::new(
             ShellSdf::new(
@@ -308,23 +341,32 @@ fn ns_003_trim_downgrade_is_honest() {
         let s = chart.eval(Point3::new(0.0, 0.99, -0.99), cx);
         assert!(
             s.error.hi.is_infinite(),
-            "downgraded certificate is widened, not asserted: {:?}",
+            "downgraded estimate is widened, not asserted: {:?}",
             s.error
         );
+        assert_eq!(s.error.kind, NumericalKind::NoClaim);
+        assert!(
+            s.signed_distance.is_infinite(),
+            "a trimmed-away point must not survive as a finite nominal chart value"
+        );
         let n = chart.eval(Point3::new(0.0, 0.99, 0.99), cx);
-        assert!(n.error.hi.is_finite(), "kept region stays certified");
+        assert!(
+            n.error.hi.is_finite(),
+            "kept region retains a finite estimate"
+        );
+        assert_eq!(n.error.kind, NumericalKind::Estimate);
     });
     verdict(
         "ns-003",
-        "adversarial trim: closest-point-in-hole downgrades (infinite upper bound); \
-         kept region certifies at ~0.4",
+        "adversarial trim: closest-point-in-hole widens to an infinite upper estimate; \
+         kept region retains a finite measured value near 0.4",
     );
 }
 
 #[test]
 fn ns_004_frame_invariance_g3() {
     // Translate the whole shell (control points) and the query by the
-    // same offset: the certified bracket must agree tightly.
+    // same offset: the measured bracket should agree tightly.
     let base =
         ShellSdf::new(vec![torus(1.0, 0.3)], vec![None], Orientation::Outward).expect("shell");
     let mut moved_surface = torus(1.0, 0.3);
@@ -371,6 +413,10 @@ fn ns_005_adaptive_tile_generation() {
     let tile = generate_tile(&chart, &aabb, 8, 1e-5, 2000).expect("tile");
     assert_eq!(tile.values.len(), 512);
     assert_eq!(tile.downgraded, 0, "untrimmed shell never downgrades");
+    assert!(generate_tile(&chart, &aabb, 1, 1e-5, 1).is_err());
+    assert!(generate_tile(&chart, &aabb, usize::MAX, 1e-5, 1).is_err());
+    assert!(generate_tile(&chart, &aabb, 2, f64::NAN, 1).is_err());
+    assert!(generate_tile(&chart, &aabb, 2, 1e-5, u32::MAX).is_err());
     // Adaptive contract: near-surface cells are TIGHT; far cells may be
     // loose (that is the budget being spent where it matters).
     // The adaptive CONTRACT at the documented budget (2000 splits/cell):

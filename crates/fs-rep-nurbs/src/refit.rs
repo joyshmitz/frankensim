@@ -1,28 +1,36 @@
 //! CONVERTER SDF → NURBS (plan §7.3 edge 4, bead wqd.12; [F] — behind
 //! the `nurbs-refit` feature until its Gauntlet tier is green): spline
-//! RE-FITTING with thin-plate smoothing and an honest two-sided error
+//! RE-FITTING with thin-plate smoothing and an honest sampled error
 //! report. THE STRATEGIC ROLE (§7.2): Booleans route through F-rep/SDF
 //! and re-fit to splines when a spline chart is required — this edge is
 //! what makes the honest NURBS Boolean policy work.
 //!
 //! v1 pipeline (star-shaped domains): radial projection through a
-//! (u, v) direction grid finds surface points by BISECTION ON THE SDF
-//! ITSELF (each sample is certified by the field's own sign changes);
+//! (u, v) direction grid finds retained sign-bracket targets by BISECTION ON
+//! THE CALLER'S SCALAR CLOSURE. Without an admitted continuity/root witness a
+//! target is not authoritative evidence of a zero set or source surface;
 //! tensor-product B-spline least squares with discrete thin-plate
 //! (control-lattice Laplacian) regularization; exact G⁰ seam closure by
 //! control-column tying, G¹ measured.
 //!
-//! Error honesty: the spline→SDF direction is PROMOTED to a certificate
-//! — `sup |sdf(S(u,v))| ≤ max sampled + L_S · h` with the spline
-//! Lipschitz bound from control-net differences (hodograph hull) and
-//! the SDF 1-Lipschitz — while surface COVERAGE (SDF→spline) stays a
-//! measured estimate. The Evidence records which is which. Thin
-//! features below patch resolution produce STRUCTURED WARNINGS with
-//! locations, never silent smoothing.
+//! Error honesty: the report keeps `max sampled |f(S(u,v))|` separate from the
+//! geometric probe-spacing estimate `L_S·h_probe`, where `h_probe` is the
+//! retained probe grid covering radius in parameter space. Adding them is dimensionally and
+//! analytically justified only when the caller separately proves a compatible
+//! unit-Lipschitz field model. This generic closure API carries neither that
+//! authority, a metric-error bound, nor directed-rounding evidence, and `|f|`
+//! is not generically an upper geometric distance. Retained projection-target
+//! coverage is likewise sampled. A future admitted-field API may promote these
+//! the required units, metric regularity, and interval evidence. Thin features
+//! encountered by retained projection rays can produce structured warnings
+//! with locations; features missed by every ray remain outside this API's
+//! visibility.
 
 use crate::NurbsError;
 use crate::basis::KnotVector;
+use crate::closest::norm3;
 use crate::surface::NurbsSurface;
+use core::mem::size_of;
 use fs_math::det;
 
 /// The fitting knobs (the ErrBudget-style trade: patch density vs
@@ -43,7 +51,8 @@ pub struct RefitConfig {
     pub samples_v: usize,
     /// Residuals above this trigger thin-feature warnings.
     pub warn_residual: f64,
-    /// Dense-probe resolution per axis for the spline→SDF promotion.
+    /// Dense-probe resolution per axis for sampled field residuals and the
+    /// separate geometric probe-spacing estimate.
     pub probe: usize,
 }
 
@@ -62,6 +71,164 @@ impl Default for RefitConfig {
     }
 }
 
+/// Static safety envelope for the legacy closure-based refit API. A successor
+/// budgeted/cancellable API will make these caller-visible ledger values.
+const REFIT_MAX_ALLOC_BYTES: usize = 256 * 1024 * 1024;
+const REFIT_MAX_PROBE_POINTS: usize = 4 * 1024 * 1024;
+const REFIT_MAX_WORK_UNITS: u128 = 1_000_000_000;
+
+fn refit_structure_error(what: impl Into<String>) -> NurbsError {
+    NurbsError::Structure { what: what.into() }
+}
+
+/// Validate dimensions and derive all allocation/work sizes before the first
+/// field evaluation or allocation.
+fn validate_refit_request(
+    center: [f64; 3],
+    r_max: f64,
+    config: &RefitConfig,
+) -> Result<(usize, usize, usize), NurbsError> {
+    if center.iter().any(|coordinate| !coordinate.is_finite()) {
+        return Err(refit_structure_error("refit center must be finite"));
+    }
+    if !r_max.is_finite() || r_max <= 0.0 {
+        return Err(refit_structure_error(
+            "refit radial extent must be finite and positive",
+        ));
+    }
+    if config.degree == 0
+        || config.nu < 2
+        || config.nv < 2
+        || config.degree >= config.nu
+        || config.degree >= config.nv
+    {
+        return Err(refit_structure_error(
+            "refit needs degree >= 1 and at least degree+1 control points on each axis",
+        ));
+    }
+    if config.samples_u == 0 || config.samples_v == 0 || config.probe == 0 {
+        return Err(refit_structure_error(
+            "refit sample and probe resolutions must be positive",
+        ));
+    }
+    if !config.lambda.is_finite()
+        || config.lambda < 0.0
+        || !config.warn_residual.is_finite()
+        || config.warn_residual < 0.0
+    {
+        return Err(refit_structure_error(
+            "refit lambda and warning threshold must be finite and non-negative",
+        ));
+    }
+
+    let control_points = config
+        .nu
+        .checked_mul(config.nv)
+        .ok_or_else(|| refit_structure_error("refit control-grid size overflow"))?;
+    let sample_points = config
+        .samples_u
+        .checked_mul(config.samples_v)
+        .ok_or_else(|| refit_structure_error("refit sample-grid size overflow"))?;
+    let minimum_probe = config
+        .samples_u
+        .max(config.samples_v)
+        .checked_mul(2)
+        .ok_or_else(|| refit_structure_error("refit probe-axis size overflow"))?;
+    let probe = config.probe.max(minimum_probe);
+    let probe_points = probe
+        .checked_mul(probe)
+        .ok_or_else(|| refit_structure_error("refit probe-grid size overflow"))?;
+    if probe_points > REFIT_MAX_PROBE_POINTS {
+        return Err(refit_structure_error(format!(
+            "refit probe grid {probe_points} exceeds static cap {REFIT_MAX_PROBE_POINTS}"
+        )));
+    }
+
+    let row_scalars = sample_points
+        .checked_mul(control_points)
+        .ok_or_else(|| refit_structure_error("refit sample-matrix size overflow"))?;
+    let dense_scalars = control_points
+        .checked_mul(control_points)
+        .ok_or_else(|| refit_structure_error("refit normal-matrix size overflow"))?;
+    let bytes_for = |count: usize, element_bytes: usize| {
+        count
+            .checked_mul(element_bytes)
+            .ok_or_else(|| refit_structure_error("refit allocation-byte estimate overflow"))
+    };
+    let mut allocation_bytes = 0usize;
+    let mut add_bytes = |bytes: usize| -> Result<(), NurbsError> {
+        allocation_bytes = allocation_bytes
+            .checked_add(bytes)
+            .ok_or_else(|| refit_structure_error("refit aggregate allocation size overflow"))?;
+        Ok(())
+    };
+    // Conservative simultaneously-live envelope. Include nested `Vec` headers
+    // and every sample-sized side buffer rather than counting only f64 matrix
+    // payloads. Allocator metadata is implementation-defined and remains outside
+    // this deterministic process cap.
+    add_bytes(bytes_for(row_scalars, size_of::<f64>())?)?;
+    add_bytes(bytes_for(sample_points, size_of::<Vec<f64>>())?)?;
+    add_bytes(bytes_for(sample_points, size_of::<[f64; 3]>())?)?; // targets
+    add_bytes(bytes_for(sample_points, size_of::<[f64; 2]>())?)?; // uvs
+    add_bytes(bytes_for(sample_points, size_of::<ThinFeatureWarning>())?)?;
+    add_bytes(bytes_for(dense_scalars, size_of::<f64>())?)?;
+    add_bytes(bytes_for(control_points, size_of::<Vec<f64>>())?)?;
+    add_bytes(bytes_for(control_points, size_of::<f64>())?)?; // rhs
+    add_bytes(bytes_for(control_points, size_of::<[f64; 3]>())?)?; // net
+    add_bytes(bytes_for(config.nu, size_of::<Vec<[f64; 3]>>())?)?;
+    add_bytes(bytes_for(control_points, size_of::<f64>())?)?; // weights
+    add_bytes(bytes_for(config.nu, size_of::<Vec<f64>>())?)?;
+    add_bytes(bytes_for(control_points, size_of::<[f64; 4]>())?)?; // surface cpw
+    add_bytes(bytes_for(config.nu, size_of::<Vec<[f64; 4]>>())?)?;
+    let knot_overhead = config
+        .degree
+        .checked_add(1)
+        .and_then(|value| value.checked_mul(2))
+        .ok_or_else(|| refit_structure_error("refit knot allocation size overflow"))?;
+    let knot_scalars = config
+        .nu
+        .checked_add(config.nv)
+        .and_then(|value| value.checked_add(knot_overhead))
+        .ok_or_else(|| refit_structure_error("refit knot allocation size overflow"))?;
+    add_bytes(bytes_for(knot_scalars, size_of::<f64>())?)?;
+    if allocation_bytes > REFIT_MAX_ALLOC_BYTES {
+        return Err(refit_structure_error(format!(
+            "refit allocation estimate {allocation_bytes} bytes exceeds static cap {REFIT_MAX_ALLOC_BYTES}"
+        )));
+    }
+
+    let active_basis = config
+        .degree
+        .checked_add(1)
+        .and_then(|value| value.checked_mul(value))
+        .ok_or_else(|| refit_structure_error("refit active-basis size overflow"))?;
+    let assembly_work = (sample_points as u128)
+        .saturating_mul(active_basis as u128)
+        .saturating_mul(control_points as u128);
+    let factor_work = (control_points as u128)
+        .saturating_mul(control_points as u128)
+        .saturating_mul(control_points as u128);
+    let rhs_and_report_work = (sample_points as u128)
+        .saturating_mul(control_points as u128)
+        .saturating_mul(6);
+    let triangular_solve_work = (control_points as u128)
+        .saturating_mul(control_points as u128)
+        .saturating_mul(3);
+    let projection_evaluations = (sample_points as u128).saturating_mul(42);
+    let total_work = assembly_work
+        .saturating_add(factor_work)
+        .saturating_add(rhs_and_report_work)
+        .saturating_add(triangular_solve_work)
+        .saturating_add(projection_evaluations)
+        .saturating_add(probe_points as u128);
+    if total_work > REFIT_MAX_WORK_UNITS {
+        return Err(refit_structure_error(format!(
+            "refit work estimate {total_work} exceeds static cap {REFIT_MAX_WORK_UNITS}"
+        )));
+    }
+    Ok((control_points, sample_points, probe))
+}
+
 /// A localized thin-feature warning: the fit could not follow the field
 /// here at this patch density (NOT silently smoothed).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -74,28 +241,38 @@ pub struct ThinFeatureWarning {
     pub residual: f64,
 }
 
-/// The fit report: measured numbers plus the promoted certificate.
+/// The fit report: sampled and analytic-model estimates with no continuum or
+/// geometric-distance certificate.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RefitReport {
     /// RMS fit residual over the sample grid.
     pub rms_residual: f64,
     /// Worst fit residual.
     pub max_residual: f64,
-    /// MEASURED one-sided Hausdorff estimate, SDF surface → spline
-    /// (coverage; sampled, no continuum claim).
-    pub sdf_to_spline_estimate: f64,
-    /// Sampled maximum of |sdf(S(u,v))| (spline → SDF direction).
-    pub spline_to_sdf_sampled: f64,
-    /// The PROMOTED bound: `sampled + L_S · h` — a certificate for the
-    /// whole parameter box under the stated SDF assumptions
-    /// (1-Lipschitz, exact zero set within its own certificate).
-    pub spline_to_sdf_certified: f64,
-    /// The spline Lipschitz bound used in the promotion.
-    pub spline_lipschitz: f64,
+    /// Worst paired-parameter residual from a retained radial sign-bracket
+    /// target to the fitted spline point at the same `(u,v)`. This is an upper
+    /// witness for target-to-spline point-set distance, not that distance
+    /// itself. A generic closure also does not prove that targets lie on a
+    /// source surface or even on a continuous field's zero set.
+    pub projected_target_to_spline_sampled: f64,
+    /// Sampled maximum of `|field(S(u,v))|` (spline → source-field direction).
+    pub spline_to_field_sampled: f64,
+    /// Geometric probe-spacing estimate `(L_u + L_v) · h_probe` from the fitted
+    /// surface to the nearest retained probe in parameter space. This has
+    /// position units, not arbitrary field-value units, and therefore is not
+    /// added to `spline_to_field_sampled` by this generic API. Ordinary f64
+    /// arithmetic makes it an estimate rather than an outward enclosure.
+    pub spline_probe_spacing_estimate: f64,
+    /// Numerically evaluated hodograph Lipschitz estimate used above. The
+    /// analytic formula is sound for this non-rational unit-weight surface,
+    /// but the f64 result is not outward-rounded.
+    pub spline_lipschitz_estimate: f64,
     /// Max G¹ seam deviation (angle proxy: 1 − cos between u-tangents
     /// across the seam); G⁰ is exact by construction.
     pub seam_g1_max: f64,
-    /// Thin-feature warnings (empty = the fit followed the field).
+    /// Thin-feature warnings. Empty means no retained projection sample
+    /// exceeded the configured residual threshold; it does not prove that an
+    /// unsampled feature is absent.
     pub warnings: Vec<ThinFeatureWarning>,
 }
 
@@ -119,32 +296,44 @@ fn direction(u: f64, v: f64) -> [f64; 3] {
     [phi.sin() * theta.cos(), phi.sin() * theta.sin(), phi.cos()]
 }
 
-/// Bisect the SDF along `center + r·dir` for the zero crossing.
+/// Bisect the implicit field along `center + r·dir` for a sign crossing.
 fn project_radial(
-    sdf: &dyn Fn([f64; 3]) -> f64,
+    field: &dyn Fn([f64; 3]) -> f64,
     center: [f64; 3],
     dir: [f64; 3],
     r_max: f64,
 ) -> Result<f64, NurbsError> {
-    let at = |r: f64| {
-        sdf([
+    let at = |r: f64| -> Result<f64, NurbsError> {
+        let point = [
             center[0] + r * dir[0],
             center[1] + r * dir[1],
             center[2] + r * dir[2],
-        ])
+        ];
+        if point.iter().any(|coordinate| !coordinate.is_finite()) {
+            return Err(refit_structure_error(
+                "radial field sample point is not representable",
+            ));
+        }
+        let value = field(point);
+        if !value.is_finite() {
+            return Err(refit_structure_error(format!(
+                "implicit field returned non-finite value at {point:?}"
+            )));
+        }
+        Ok(value)
     };
     let (mut lo, mut hi) = (0.0f64, r_max);
-    if at(lo) >= 0.0 || at(hi) <= 0.0 {
+    if at(lo)? >= 0.0 || at(hi)? <= 0.0 {
         return Err(NurbsError::Structure {
             what: format!(
                 "radial bracket failed along {dir:?}: refit v1 needs a star-shaped \
-                 domain around the given center (sdf(center) < 0 < sdf(center + r_max·dir))"
+                 domain around the given center (field(center) < 0 < field(center + r_max·dir))"
             ),
         });
     }
     for _ in 0..40 {
         let mid = f64::midpoint(lo, hi);
-        if at(mid) < 0.0 {
+        if at(mid)? < 0.0 {
             lo = mid;
         } else {
             hi = mid;
@@ -153,10 +342,10 @@ fn project_radial(
     Ok(f64::midpoint(lo, hi))
 }
 
-/// Dense symmetric-positive-definite solve (Cholesky, in place) — the
-/// normal equations are small (control-net sized).
-fn cholesky_solve(a: &mut [Vec<f64>], b: &mut [f64]) -> Result<(), NurbsError> {
-    let n = b.len();
+/// Dense symmetric-positive-definite Cholesky factorization in place. The
+/// factor is shared across all three coordinate right-hand sides.
+fn cholesky_factor(a: &mut [Vec<f64>]) -> Result<(), NurbsError> {
+    let n = a.len();
     for i in 0..n {
         for j in 0..=i {
             let mut sum = a[i][j];
@@ -165,7 +354,7 @@ fn cholesky_solve(a: &mut [Vec<f64>], b: &mut [f64]) -> Result<(), NurbsError> {
                 sum -= x * y;
             }
             if i == j {
-                if sum <= 0.0 {
+                if !sum.is_finite() || sum <= 0.0 {
                     return Err(NurbsError::Structure {
                         what: "normal equations not SPD (raise lambda or sample count)".to_string(),
                     });
@@ -173,15 +362,32 @@ fn cholesky_solve(a: &mut [Vec<f64>], b: &mut [f64]) -> Result<(), NurbsError> {
                 a[i][i] = det::sqrt(sum);
             } else {
                 a[i][j] = sum / a[j][j];
+                if !a[i][j].is_finite() {
+                    return Err(refit_structure_error(
+                        "normal-equation factorization became non-finite",
+                    ));
+                }
             }
         }
     }
+    Ok(())
+}
+
+/// Solve one right-hand side using a factor produced by
+/// [`cholesky_factor`].
+fn cholesky_solve_factored(a: &[Vec<f64>], b: &mut [f64]) -> Result<(), NurbsError> {
+    let n = b.len();
     for i in 0..n {
         let mut sum = b[i];
         for k in 0..i {
             sum -= a[i][k] * b[k];
         }
         b[i] = sum / a[i][i];
+        if !b[i].is_finite() {
+            return Err(refit_structure_error(
+                "normal-equation forward solve became non-finite",
+            ));
+        }
     }
     for i in (0..n).rev() {
         let mut sum = b[i];
@@ -189,6 +395,11 @@ fn cholesky_solve(a: &mut [Vec<f64>], b: &mut [f64]) -> Result<(), NurbsError> {
             sum -= a[k][i] * b[k];
         }
         b[i] = sum / a[i][i];
+        if !b[i].is_finite() {
+            return Err(refit_structure_error(
+                "normal-equation back solve became non-finite",
+            ));
+        }
     }
     Ok(())
 }
@@ -215,7 +426,7 @@ fn basis_row(kv: &KnotVector<f64>, n: usize, t: f64) -> Result<Vec<f64>, NurbsEr
     Ok(row)
 }
 
-/// Rigorous spline Lipschitz bounds from the hodograph hull. The derivative
+/// Analytic spline Lipschitz formula from the hodograph hull. The derivative
 /// curve `S'(u) = Σ Dᵢ Nᵢ,ₚ₋₁(u)` has control points
 /// `Dᵢ = p·ΔCᵢ / (u_{i+p+1} − u_{i+1})`, and B-spline bases are a nonnegative
 /// partition of unity, so `|S'(u)| ≤ maxᵢ‖Dᵢ‖ = L`.
@@ -225,16 +436,17 @@ fn basis_row(kv: &KnotVector<f64>, n: usize, t: f64) -> Result<Vec<f64>, NurbsEr
 /// `p/(n−p)`. On a clamped open-uniform knot vector the END spans collapse
 /// (for ΔC₀, `u_{p+1} − u₁ = 1/(n−p)`, one interval), so `p/span = p·(n−p)` —
 /// the closed form UNDER-bounds by up to a factor `p` when the largest control
-/// difference sits near the clamp, which would make `spline_to_sdf_certified`
-/// a non-rigorous (too-tight) certificate. Returns (L_u, L_v).
-fn lipschitz_bound(surface: &NurbsSurface<f64>) -> (f64, f64) {
+/// difference sits near the clamp, which would make the estimate too tight.
+/// The implementation uses ordinary f64 arithmetic and therefore returns an
+/// estimate, not an outward-rounded enclosure. Returns (L_u, L_v).
+fn lipschitz_estimate(surface: &NurbsSurface<f64>) -> (f64, f64) {
     let p_u = surface.knots_u.degree;
     let p_v = surface.knots_v.degree;
     let ku = &surface.knots_u.knots;
     let kv = &surface.knots_v.knots;
     let cart = |h: &[f64; 4]| [h[0] / h[3], h[1] / h[3], h[2] / h[3]];
     let dist = |a: [f64; 3], b: [f64; 3]| -> f64 {
-        det::sqrt((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2))
+        norm3([a[0] - b[0], a[1] - b[1], a[2] - b[2]])
     };
     let rows = surface.cpw.len();
     let cols = surface.cpw[0].len();
@@ -318,40 +530,56 @@ fn assemble_normal(rows_b: &[Vec<f64>], nu: usize, nv: usize, lambda: f64) -> Ve
     a
 }
 
-/// The SDF → NURBS refit (radial pipeline; star-shaped domains).
+/// The implicit-field → NURBS refit (radial pipeline; star-shaped domains).
 ///
 /// # Errors
-/// Bracket failures (non-star-shaped inputs) and degenerate systems —
-/// both structured and teaching.
+/// Invalid configuration, static allocation/work-cap refusal, radial bracket
+/// failure, non-finite field/evaluation/report arithmetic, and degenerate
+/// systems are returned as structured [`NurbsError`] values.
 #[allow(clippy::too_many_lines)]
 pub fn refit_radial(
-    sdf: &dyn Fn([f64; 3]) -> f64,
+    field: &dyn Fn([f64; 3]) -> f64,
     center: [f64; 3],
     r_max: f64,
     config: &RefitConfig,
 ) -> Result<Refit, NurbsError> {
+    let (control_points, sample_points, probe) = validate_refit_request(center, r_max, config)?;
     let (nu, nv) = (config.nu, config.nv);
     let ku = open_uniform_knots(nu, config.degree)?;
     let kv = open_uniform_knots(nv, config.degree)?;
     // Sample the field: radial projections on a (u, v) grid.
     let (mu, mv) = (config.samples_u, config.samples_v);
-    let mut rows_b: Vec<Vec<f64>> = Vec::with_capacity(mu * mv);
-    let mut targets: Vec<[f64; 3]> = Vec::with_capacity(mu * mv);
-    let mut uvs: Vec<[f64; 2]> = Vec::with_capacity(mu * mv);
+    let mut rows_b: Vec<Vec<f64>> = Vec::new();
+    let mut targets: Vec<[f64; 3]> = Vec::new();
+    let mut uvs: Vec<[f64; 2]> = Vec::new();
+    rows_b
+        .try_reserve_exact(sample_points)
+        .map_err(|_| refit_structure_error("refit sample-row allocation refused"))?;
+    targets
+        .try_reserve_exact(sample_points)
+        .map_err(|_| refit_structure_error("refit target allocation refused"))?;
+    uvs.try_reserve_exact(sample_points)
+        .map_err(|_| refit_structure_error("refit parameter allocation refused"))?;
     for a in 0..mu {
         for b in 0..mv {
             #[allow(clippy::cast_precision_loss)]
             let (u, v) = ((a as f64 + 0.5) / mu as f64, (b as f64 + 0.5) / mv as f64);
             let dir = direction(u, v);
-            let r = project_radial(sdf, center, dir, r_max)?;
-            targets.push([
+            let r = project_radial(field, center, dir, r_max)?;
+            let target = [
                 center[0] + r * dir[0],
                 center[1] + r * dir[1],
                 center[2] + r * dir[2],
-            ]);
+            ];
+            if target.iter().any(|coordinate| !coordinate.is_finite()) {
+                return Err(refit_structure_error(
+                    "projected refit target is not representable",
+                ));
+            }
+            targets.push(target);
             let bu = basis_row(&ku, nu, u)?;
             let bv = basis_row(&kv, nv, v)?;
-            let mut row = vec![0.0f64; nu * nv];
+            let mut row = vec![0.0f64; control_points];
             for (i, &wu) in bu.iter().enumerate() {
                 if wu == 0.0 {
                     continue;
@@ -366,11 +594,13 @@ pub fn refit_radial(
             uvs.push([u, v]);
         }
     }
-    // Solve per coordinate (shared factor structure, small system).
+    // Assemble and factor once, then solve the three coordinate right-hand
+    // sides against the same deterministic factor.
     let mut net = vec![vec![[0.0f64; 3]; nv]; nu];
+    let mut factor = assemble_normal(&rows_b, nu, nv, config.lambda);
+    cholesky_factor(&mut factor)?;
     for axis in 0..3 {
-        let mut a = assemble_normal(&rows_b, nu, nv, config.lambda);
-        let mut rhs = vec![0.0f64; nu * nv];
+        let mut rhs = vec![0.0f64; control_points];
         for (row, t) in rows_b.iter().zip(&targets) {
             for (k, &w) in row.iter().enumerate() {
                 if w != 0.0 {
@@ -378,7 +608,7 @@ pub fn refit_radial(
                 }
             }
         }
-        cholesky_solve(&mut a, &mut rhs)?;
+        cholesky_solve_factored(&factor, &mut rhs)?;
         for i in 0..nu {
             for j in 0..nv {
                 net[i][j][axis] = rhs[i * nv + j];
@@ -403,6 +633,9 @@ pub fn refit_radial(
     let mut rms = 0.0f64;
     let mut max_res = 0.0f64;
     let mut warnings = Vec::new();
+    warnings
+        .try_reserve_exact(sample_points)
+        .map_err(|_| refit_structure_error("refit warning allocation refused"))?;
     for ((row, t), uv) in rows_b.iter().zip(&targets).zip(&uvs) {
         let mut p = [0.0f64; 3];
         for (k, &w) in row.iter().enumerate() {
@@ -413,8 +646,18 @@ pub fn refit_radial(
                 }
             }
         }
-        let r = det::sqrt((p[0] - t[0]).powi(2) + (p[1] - t[1]).powi(2) + (p[2] - t[2]).powi(2));
+        let r = norm3([p[0] - t[0], p[1] - t[1], p[2] - t[2]]);
+        if !r.is_finite() {
+            return Err(refit_structure_error(
+                "refit residual arithmetic is non-finite",
+            ));
+        }
         rms += r * r;
+        if !rms.is_finite() {
+            return Err(refit_structure_error(
+                "refit RMS accumulation is non-finite",
+            ));
+        }
         max_res = max_res.max(r);
         if r > config.warn_residual {
             warnings.push(ThinFeatureWarning {
@@ -425,11 +668,10 @@ pub fn refit_radial(
         }
     }
     #[allow(clippy::cast_precision_loss)]
-    let rms_residual = det::sqrt(rms / (mu * mv) as f64);
-    // Spline → SDF: dense probe (one sdf evaluation per point) plus the
-    // Lipschitz promotion; coverage stays the measured fit-target worst
-    // case (the projected surface samples ARE the coverage witnesses).
-    let probe = config.probe.max(2 * mu.max(mv));
+    let rms_residual = det::sqrt(rms / sample_points as f64);
+    // Spline → field: dense probe plus an analytic-model Lipschitz estimate;
+    // the other reported direction stays the sampled fit-target worst case and
+    // does not claim that a generic closure's targets belong to a source set.
     let mut sampled = 0.0f64;
     for a in 0..probe {
         for b in 0..probe {
@@ -439,25 +681,56 @@ pub fn refit_radial(
                 (b as f64 + 0.5) / probe as f64,
             );
             let p = surface.eval(u, v)?;
-            sampled = sampled.max(sdf([p[0], p[1], p[2]]).abs());
+            let point = [p[0], p[1], p[2]];
+            if point.iter().any(|coordinate| !coordinate.is_finite()) {
+                return Err(refit_structure_error(format!(
+                    "fitted surface returned a non-finite probe point at ({u}, {v})"
+                )));
+            }
+            let field_value = field(point);
+            if !field_value.is_finite() {
+                return Err(refit_structure_error(format!(
+                    "implicit field returned non-finite value at probe {point:?}"
+                )));
+            }
+            sampled = sampled.max(field_value.abs());
         }
     }
     let coverage = max_res;
-    let (lip_u, lip_v) = lipschitz_bound(&surface);
+    let (lip_u, lip_v) = lipschitz_estimate(&surface);
     let lip = lip_u + lip_v;
     #[allow(clippy::cast_precision_loss)]
-    let h = 0.5 / probe as f64;
-    let certified = sampled + (lip_u + lip_v) * h;
+    let probe_param_radius = 0.5 / probe as f64;
+    let probe_spacing_estimate = (lip_u + lip_v) * probe_param_radius;
+    if !rms_residual.is_finite()
+        || !sampled.is_finite()
+        || !lip.is_finite()
+        || !probe_spacing_estimate.is_finite()
+    {
+        return Err(refit_structure_error(
+            "refit report arithmetic is non-finite",
+        ));
+    }
     // Seam G1: compare u-tangents across the (exactly closed) seam.
     let mut seam_g1 = 0.0f64;
     for b in 1..24 {
         let v = f64::from(b) / 24.0;
         let (_, du0, _) = surface.partials(0.0, v)?;
         let (_, du1, _) = surface.partials(1.0 - 1e-12, v)?;
-        let n0 = det::sqrt(du0.iter().map(|x| x * x).sum());
-        let n1 = det::sqrt(du1.iter().map(|x| x * x).sum());
+        let n0 = norm3(du0);
+        let n1 = norm3(du1);
+        if !n0.is_finite() || !n1.is_finite() {
+            return Err(refit_structure_error(
+                "refit seam-derivative arithmetic is non-finite",
+            ));
+        }
         if n0 > 1e-12 && n1 > 1e-12 {
             let cosang = (du0[0] * du1[0] + du0[1] * du1[1] + du0[2] * du1[2]) / (n0 * n1);
+            if !cosang.is_finite() {
+                return Err(refit_structure_error(
+                    "refit seam-angle arithmetic is non-finite",
+                ));
+            }
             seam_g1 = seam_g1.max(1.0 - cosang);
         }
     }
@@ -466,10 +739,10 @@ pub fn refit_radial(
         report: RefitReport {
             rms_residual,
             max_residual: max_res,
-            sdf_to_spline_estimate: coverage,
-            spline_to_sdf_sampled: sampled,
-            spline_to_sdf_certified: certified,
-            spline_lipschitz: lip,
+            projected_target_to_spline_sampled: coverage,
+            spline_to_field_sampled: sampled,
+            spline_probe_spacing_estimate: probe_spacing_estimate,
+            spline_lipschitz_estimate: lip,
             seam_g1_max: seam_g1,
             warnings,
         },
@@ -479,14 +752,66 @@ pub fn refit_radial(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     #[test]
-    fn lipschitz_bound_uses_the_collapsed_clamp_span() {
-        // Regression: `lipschitz_bound` must divide by the ACTUAL hodograph knot
+    fn refit_admission_refuses_invalid_or_unbounded_work_before_field_evaluation() {
+        let calls = Cell::new(0usize);
+        let field = |point: [f64; 3]| {
+            calls.set(calls.get() + 1);
+            point[0]
+        };
+        let zero_samples = RefitConfig {
+            samples_u: 0,
+            ..RefitConfig::default()
+        };
+        assert!(refit_radial(&field, [0.0; 3], 1.0, &zero_samples).is_err());
+
+        let overflowing_grid = RefitConfig {
+            nu: usize::MAX,
+            nv: 2,
+            degree: 1,
+            ..RefitConfig::default()
+        };
+        assert!(refit_radial(&field, [0.0; 3], 1.0, &overflowing_grid).is_err());
+
+        let excessive_grid = RefitConfig {
+            nu: 4096,
+            nv: 4096,
+            degree: 1,
+            ..RefitConfig::default()
+        };
+        assert!(refit_radial(&field, [0.0; 3], 1.0, &excessive_grid).is_err());
+        assert_eq!(
+            calls.get(),
+            0,
+            "all shape/cap refusals must precede field evaluation"
+        );
+    }
+
+    #[test]
+    fn refit_refuses_nonfinite_field_samples() {
+        let config = RefitConfig {
+            nu: 2,
+            nv: 2,
+            degree: 1,
+            samples_u: 2,
+            samples_v: 2,
+            probe: 2,
+            ..RefitConfig::default()
+        };
+        let error = refit_radial(&|_| f64::NAN, [0.0; 3], 1.0, &config)
+            .expect_err("non-finite fields must refuse");
+        assert!(error.to_string().contains("non-finite"));
+    }
+
+    #[test]
+    fn lipschitz_estimate_uses_the_collapsed_clamp_span() {
+        // Regression: `lipschitz_estimate` must divide by the ACTUAL hodograph knot
         // span, not the closed form (n−p). On a clamped open-uniform knot vector
         // the END span collapses from p/(n−p) (interior) to 1/(n−p), so a control
         // difference at the clamp has a true hodograph coefficient p·(n−p), not
-        // (n−p). Under-bounding there makes `spline_to_sdf_certified` non-rigorous.
+        // (n−p). Under-bounding there makes the analytic estimate too tight.
         let (n, p) = (8usize, 3usize);
         let ku = open_uniform_knots(n, p).expect("u knots");
         let kv = open_uniform_knots(2, 1).expect("v knots"); // linear in v
@@ -501,18 +826,18 @@ mod tests {
             .collect();
         let weights = vec![vec![1.0, 1.0]; n];
         let surface = NurbsSurface::new(ku, kv, &net, &weights).expect("surface");
-        let (lu, _lv) = lipschitz_bound(&surface);
-        // Rigorous: p · jump / (1/(n−p)) = p·(n−p)·jump.
-        let rigorous = p as f64 * (n - p) as f64 * jump;
+        let (lu, _lv) = lipschitz_estimate(&surface);
+        // Analytic formula: p · jump / (1/(n−p)) = p·(n−p)·jump.
+        let expected = p as f64 * (n - p) as f64 * jump;
         let closed_form = (n - p) as f64 * jump; // the old factor-p under-estimate
         assert!(
-            (lu - rigorous).abs() < 1e-9,
-            "L_u must use the collapsed clamp span: got {lu}, rigorous {rigorous}, \
+            (lu - expected).abs() < 1e-9,
+            "L_u must use the collapsed clamp span: got {lu}, expected {expected}, \
              old closed-form under-estimate {closed_form}"
         );
         assert!(
             lu > closed_form + 1e-9,
-            "the rigorous bound must exceed the closed-form under-estimate ({lu} vs {closed_form})"
+            "the per-span estimate must exceed the closed-form under-estimate ({lu} vs {closed_form})"
         );
     }
 }

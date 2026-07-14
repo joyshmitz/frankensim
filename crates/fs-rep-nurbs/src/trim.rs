@@ -106,9 +106,34 @@ impl TrimmedPatch {
     /// # Errors
     /// Propagates structural errors from exact subdivision.
     pub fn classify(&self, q: [Rat; 2]) -> Result<Classification, NurbsError> {
+        self.classify_box(q, q)
+    }
+
+    /// Certified classification of every point in a closed parameter-space
+    /// box. A verdict is returned only after every trim-curve Bézier hull is
+    /// separated from the entire box, which proves that winding is constant
+    /// throughout the connected box. Otherwise bounded subdivision returns
+    /// [`Classification::Boundary`] rather than guessing from its corners or
+    /// centre.
+    ///
+    /// # Errors
+    /// Returns [`NurbsError::Domain`] for an inverted box and propagates
+    /// structural errors from exact subdivision.
+    pub fn classify_box(
+        &self,
+        min: [Rat; 2],
+        max: [Rat; 2],
+    ) -> Result<Classification, NurbsError> {
+        if min[0] > max[0] || min[1] > max[1] {
+            return Err(NurbsError::Domain {
+                what: "trim classification box must be componentwise ordered".to_string(),
+            });
+        }
+        let two = Rat::int(2);
+        let witness = [(min[0] + max[0]) / two, (min[1] + max[1]) / two];
         let mut winding = 0i64;
         for l in &self.loops {
-            match loop_winding(&l.curve, q, self.max_subdivision)? {
+            match loop_winding_box(&l.curve, min, max, witness, self.max_subdivision)? {
                 Some(w) => winding += w,
                 None => return Ok(Classification::Boundary),
             }
@@ -124,9 +149,11 @@ impl TrimmedPatch {
 /// Certified winding number of one closed rational curve about `q`, or
 /// `None` when `q` cannot be separated from the curve within the
 /// subdivision budget.
-fn loop_winding(
+fn loop_winding_box(
     curve: &NurbsCurve<Rat, 2>,
-    q: [Rat; 2],
+    query_min: [Rat; 2],
+    query_max: [Rat; 2],
+    witness: [Rat; 2],
     max_depth: u32,
 ) -> Result<Option<i64>, NurbsError> {
     // Work in Bézier form so each span's control hull tightly bounds it.
@@ -137,13 +164,20 @@ fn loop_winding(
         let offending: Vec<(Rat, Rat)> = boxes
             .iter()
             .filter(|(min, max, _, _)| {
-                q[0] >= min[0] && q[0] <= max[0] && q[1] >= min[1] && q[1] <= max[1]
+                max[0] >= query_min[0]
+                    && min[0] <= query_max[0]
+                    && max[1] >= query_min[1]
+                    && min[1] <= query_max[1]
             })
             .map(|&(_, _, t0, t1)| (t0, t1))
             .collect();
         if offending.is_empty() {
-            // Separated: the control polygon's winding is the curve's.
-            return Ok(Some(polygon_winding(&control_polygon(&work), q)));
+            // Separated from the whole connected query box: winding is
+            // constant throughout it, so one exact witness is sufficient.
+            return Ok(Some(polygon_winding(
+                &control_polygon(&work),
+                witness,
+            )));
         }
         if depth >= max_depth {
             return Ok(None);

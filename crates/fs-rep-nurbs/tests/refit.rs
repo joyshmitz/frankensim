@@ -1,9 +1,9 @@
 //! SDF→NURBS refit conformance (the wqd.12 bead; runs under the
 //! `nurbs-refit` feature). Acceptance: the NURBS→SDF→NURBS round-trip
-//! recovers shape within the declared Hausdorff (near-exactly on
-//! unblended regions); Boolean-then-refit produces WATERTIGHT-CERTIFIED
-//! (sheaf) results on a CSG fixture; seam continuity within tolerance
-//! with exact G⁰; Evidence records estimate-vs-certificate correctly;
+//! recovers shape within retained sampled/analytic estimates (near-exactly on
+//! unblended regions); Boolean-then-refit produces sampled sheaf
+//! interface-agreement evidence on a CSG fixture (no continuum claim); seam continuity within tolerance
+//! with exact G⁰; reports retain their sampled/no-certificate boundary;
 //! thin features warn with locations instead of silently smoothing; the
 //! patch-density budget knob trades fidelity monotonically.
 #![cfg(feature = "nurbs-refit")]
@@ -120,14 +120,14 @@ fn rf_001_round_trip_through_the_real_converter() {
         }
     }
     assert!(worst < 5e-3, "round-trip radius recovery: {worst}");
+    // This fixture is intentionally signed-distance-like, so its own test may
+    // combine field residual and geometric probe spacing under that local
+    // modeling assumption. The generic report keeps them separate.
+    let fixture_unit_lipschitz_estimate =
+        refit.report.spline_to_field_sampled + refit.report.spline_probe_spacing_estimate;
     assert!(
-        refit.report.spline_to_sdf_certified < 8e-2,
-        "promoted bound closes: {}",
-        refit.report.spline_to_sdf_certified
-    );
-    assert!(
-        refit.report.spline_to_sdf_sampled <= refit.report.spline_to_sdf_certified,
-        "the certificate dominates its sample"
+        fixture_unit_lipschitz_estimate < 8e-2,
+        "fixture-conditional field-residual estimate closes: {fixture_unit_lipschitz_estimate}"
     );
     assert!(
         refit.report.warnings.is_empty(),
@@ -135,8 +135,8 @@ fn rf_001_round_trip_through_the_real_converter() {
     );
     verdict(
         "rf-001",
-        "NURBS->SDF->NURBS on the unit sphere: radius recovered to 5e-3, promoted \
-         spline->SDF bound closes",
+        "NURBS->SDF->NURBS on the unit sphere: radius recovered to 5e-3; the \
+         non-rigorous spline->field residual estimate closes",
     );
 }
 
@@ -160,7 +160,10 @@ impl<F: Fn([f64; 3]) -> f64 + Send + Sync> Chart for CsgChart<F> {
             signed_distance: d,
             gradient: None,
             lipschitz: Some(1.0),
-            error: fs_evidence::NumericalCertificate::exact(d),
+            // This test adapter computes ordinary floating arithmetic; a
+            // singleton Estimate records the observation without asserting
+            // an exact-real or trusted-kernel proof.
+            error: fs_evidence::NumericalCertificate::estimate(d, d),
         }
     }
 
@@ -177,11 +180,12 @@ impl<F: Fn([f64; 3]) -> f64 + Send + Sync> Chart for CsgChart<F> {
 }
 
 #[test]
-fn rf_002_boolean_then_refit_watertight_certified() {
+fn rf_002_boolean_then_refit_sampled_interface_agreement() {
     with_cx(|cx| {
         // CSG union of two spheres (the F-rep Boolean), refit to NURBS,
-        // then SHEAF-certified against the source field: the refit chart
-        // and the CSG chart must agree on the shared surface band.
+        // then compare sampled interface evidence against the source field:
+        // the refit chart and the CSG chart must agree at retained samples in
+        // the shared surface band. This does not prove continuum watertightness.
         let union = |q: [f64; 3]| {
             let a = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt() - 1.0;
             let dx = q[0] - 0.55;
@@ -197,11 +201,16 @@ fn rf_002_boolean_then_refit_watertight_certified() {
             ..RefitConfig::default()
         };
         let refit = refit_radial(&union, [0.2, 0.0, 0.0], 2.5, &config).expect("refit");
-        let hausdorff = refit
-            .report
-            .spline_to_sdf_certified
-            .max(refit.report.sdf_to_spline_estimate);
-        // Present BOTH as charts and run the watertightness certificate.
+        // A minimum of exact sphere signed-distance functions is 1-Lipschitz,
+        // so this fixture may combine the otherwise separate field-residual
+        // and geometric probe-spacing estimates. This is test-local authority,
+        // not authority supplied by the closure-based refit API.
+        let conditional_field_estimate =
+            refit.report.spline_to_field_sampled + refit.report.spline_probe_spacing_estimate;
+        let sampled_tolerance_scale =
+            conditional_field_estimate.max(refit.report.projected_target_to_spline_sampled);
+        // Present both as charts and run the legacy-named sampled-interface
+        // check.
         let refit_chart = ShellSdfChart::new(
             ShellSdf::new(vec![refit.surface], vec![None], Orientation::Outward).expect("shell"),
             1e-4,
@@ -215,18 +224,18 @@ fn rf_002_boolean_then_refit_watertight_certified() {
         let charts: Vec<&dyn Chart> = vec![&refit_chart, &csg_chart];
         let complex = SheafComplex::from_charts(&charts, cx).expect("finite patch supports");
         assert!(!complex.interfaces.is_empty(), "shared surface band found");
-        let tol = 2.0 * hausdorff;
+        let tol = 2.0 * sampled_tolerance_scale;
         let ev = complex.watertightness(tol);
-        match &ev.value {
-            SheafVerdict::Pass { worst_mismatch, .. } => {
-                assert!(*worst_mismatch <= tol);
-            }
-            other => panic!("Boolean-then-refit must certify at 2x Hausdorff: {other:?}"),
-        }
+        assert!(
+            matches!(&ev.value, SheafVerdict::Unknown { .. }),
+            "the measured NURBS distance chart must not be laundered into interval-verified seam authority: {:?}",
+            ev.value
+        );
         verdict(
             "rf-002",
-            "CSG union -> refit -> sheaf watertightness PASSES against the source field \
-             at 2x the reported Hausdorff",
+            "CSG union -> refit retains a composite sampled residual, while the sheaf gate \
+             correctly stays Unknown because the NURBS distance chart is measured rather \
+             than outward-enclosed; no Hausdorff or continuum claim",
         );
     });
 }
@@ -235,14 +244,13 @@ fn rf_002_boolean_then_refit_watertight_certified() {
 fn rf_003_seam_g0_exact_g1_measured() {
     let sdf = |q: [f64; 3]| (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt() - 1.0;
     let refit = refit_radial(&sdf, [0.0, 0.0, 0.0], 2.0, &RefitConfig::default()).expect("refit");
-    // G0: the tied control columns make the seam positions IDENTICAL.
+    // G0: the tied control columns make the clamped endpoint evaluations
+    // identical, not merely close at a nearby parameter.
     for b in 0..12 {
         let v = (f64::from(b) + 0.5) / 12.0;
         let p0 = refit.surface.eval(0.0, v).expect("eval");
-        let p1 = refit.surface.eval(1.0 - 1e-13, v).expect("eval");
-        let gap =
-            ((p0[0] - p1[0]).powi(2) + (p0[1] - p1[1]).powi(2) + (p0[2] - p1[2]).powi(2)).sqrt();
-        assert!(gap < 1e-9, "G0 seam gap at v={v}: {gap}");
+        let p1 = refit.surface.eval(1.0, v).expect("eval");
+        assert_eq!(p0, p1, "tied G0 seam endpoint at v={v}");
     }
     // G1: measured and small on a smooth field.
     assert!(
@@ -335,18 +343,18 @@ fn rf_005_patch_density_budget_knob() {
     )
     .expect("fine");
     assert!(
-        fine.report.spline_to_sdf_sampled < coarse.report.spline_to_sdf_sampled,
+        fine.report.spline_to_field_sampled < coarse.report.spline_to_field_sampled,
         "more patches, better fidelity: fine {} vs coarse {}",
-        fine.report.spline_to_sdf_sampled,
-        coarse.report.spline_to_sdf_sampled
+        fine.report.spline_to_field_sampled,
+        coarse.report.spline_to_field_sampled
     );
     println!(
         "{{\"metric\":\"refit-budget-knob\",\"coarse_sampled\":{:.3e},\"fine_sampled\":{:.3e},\
-         \"coarse_certified\":{:.3e},\"fine_certified\":{:.3e}}}",
-        coarse.report.spline_to_sdf_sampled,
-        fine.report.spline_to_sdf_sampled,
-        coarse.report.spline_to_sdf_certified,
-        fine.report.spline_to_sdf_certified
+         \"coarse_probe_spacing_estimate\":{:.3e},\"fine_probe_spacing_estimate\":{:.3e}}}",
+        coarse.report.spline_to_field_sampled,
+        fine.report.spline_to_field_sampled,
+        coarse.report.spline_probe_spacing_estimate,
+        fine.report.spline_probe_spacing_estimate
     );
     verdict(
         "rf-005",

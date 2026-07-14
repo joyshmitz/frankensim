@@ -1,8 +1,8 @@
 //! fs-rep-nurbs conformance (the wqd.5 bead). Acceptance: knot insertion
 //! and degree elevation EXACT (rational equality at common parameters —
 //! the definitive spline-algebra test); trimmed classification correct on
-//! adversarial fixtures (tangent trims, slivers, nested loops); certified
-//! closest-point brackets always contain the dense-sampling oracle;
+//! adversarial fixtures (tangent trims, slivers, nested loops); measured
+//! closest-point brackets are cross-checked against a dense-sampling oracle;
 //! partition-of-unity / endpoint / derivative-vs-dual G0 laws; the honest
 //! Boolean policy refuses with the route named.
 
@@ -352,6 +352,20 @@ fn nb_003_trim_classification_adversarial_battery() {
         Classification::Inside,
         "above the sliver is solid"
     );
+    assert_eq!(
+        patch2
+            .classify_box(q(1, 1, 1), q(2, 2, 1))
+            .expect("inside box"),
+        Classification::Inside,
+        "a curve-separated connected box inherits one winding verdict"
+    );
+    assert_eq!(
+        patch2
+            .classify_box(q(-1, 5, 10), q(1, 5, 10))
+            .expect("straddling box"),
+        Classification::Boundary,
+        "a cell that straddles a trim curve must never inherit point authority"
+    );
     verdict(
         "nb-003",
         "square/diamond/island nesting, boundary honesty, near-tangent vertex, sliver hole",
@@ -359,7 +373,7 @@ fn nb_003_trim_classification_adversarial_battery() {
 }
 
 #[test]
-fn nb_004_certified_closest_point_brackets_the_oracle() {
+fn nb_004_measured_closest_point_brackets_the_oracle() {
     let mut seed = 0x9B_0004u64;
     // Curves.
     for round in 0..5 {
@@ -370,7 +384,12 @@ fn nb_004_certified_closest_point_brackets_the_oracle() {
             lcg(&mut seed) * 8.0 - 4.0,
             lcg(&mut seed) * 8.0 - 4.0,
         ];
-        let cert = closest_point_curve(&c, q, 1e-7, 4000).expect("cert");
+        if round == 0 {
+            assert!(closest_point_curve(&c, [f64::NAN, 0.0, 0.0], 1e-7, 1).is_err());
+            assert!(closest_point_curve(&c, q, -1.0, 1).is_err());
+            assert!(closest_point_curve(&c, q, 1e-7, u32::MAX).is_err());
+        }
+        let estimate = closest_point_curve(&c, q, 1e-7, 4000).expect("estimate");
         // Dense-sampling oracle.
         let (lo, hi) = c.knots.domain();
         let mut oracle = f64::INFINITY;
@@ -381,20 +400,20 @@ fn nb_004_certified_closest_point_brackets_the_oracle() {
             oracle = oracle.min(d);
         }
         assert!(
-            cert.lower <= oracle + 1e-12 && oracle <= cert.upper + 1e-9,
-            "round {round}: bracket [{}, {}] must contain oracle {oracle}",
-            cert.lower,
-            cert.upper
+            estimate.lower <= oracle + 1e-12 && oracle <= estimate.upper + 1e-9,
+            "round {round}: measured bracket [{}, {}] missed oracle {oracle}",
+            estimate.lower,
+            estimate.upper
         );
         assert!(
-            cert.upper - cert.lower < 1e-3,
+            estimate.upper - estimate.lower < 1e-3,
             "round {round}: bracket width {} too loose",
-            cert.upper - cert.lower
+            estimate.upper - estimate.lower
         );
         println!(
             "{{\"suite\":\"fs-rep-nurbs/conformance\",\"metric\":\"closest-curve\",\
              \"round\":{round},\"lb\":{},\"ub\":{},\"iters\":{}}}",
-            cert.lower, cert.upper, cert.iterations
+            estimate.lower, estimate.upper, estimate.iterations
         );
     }
     // Surface (biquadratic with a bump).
@@ -411,7 +430,7 @@ fn nb_004_certified_closest_point_brackets_the_oracle() {
     let weights = vec![vec![1.0; 3]; 3];
     let s = NurbsSurface::new(kv.clone(), kv, &points, &weights).expect("surface");
     let q = [1.0, 1.0, 2.0];
-    let cert = closest_point_surface(&s, q, 1e-4, 4000).expect("cert");
+    let estimate = closest_point_surface(&s, q, 1e-4, 4000).expect("estimate");
     let mut oracle = f64::INFINITY;
     for a in 0..=300 {
         for b in 0..=300 {
@@ -422,14 +441,79 @@ fn nb_004_certified_closest_point_brackets_the_oracle() {
         }
     }
     assert!(
-        cert.lower <= oracle + 1e-12 && oracle <= cert.upper + 1e-9,
+        estimate.lower <= oracle + 1e-12 && oracle <= estimate.upper + 1e-9,
         "surface bracket [{}, {}] vs oracle {oracle}",
-        cert.lower,
-        cert.upper
+        estimate.lower,
+        estimate.upper
     );
     verdict(
         "nb-004",
-        "curve + surface certified brackets contain dense oracles",
+        "curve + surface measured brackets contain sampled dense oracles; no rigorous enclosure claim",
+    );
+}
+
+#[test]
+fn nb_004b_closest_point_numeric_edge_regressions() {
+    let line_knots = KnotVector::new(vec![0.0, 0.0, 1.0, 1.0], 1).expect("line knots");
+    let line = NurbsCurve::new(
+        line_knots.clone(),
+        &[[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
+        &[1.0, 1.0],
+    )
+    .expect("line");
+    let line_estimate =
+        closest_point_curve(&line, [1.0, 1.0, 0.0], 0.0, 64).expect("linear estimate");
+    assert!(line_estimate.upper.is_finite(), "degree-1 Newton must not index C''");
+    let line_point = line.eval(line_estimate.param[0]).expect("line witness");
+    let witness_distance = ((line_point[0] - 1.0).powi(2)
+        + (line_point[1] - 1.0).powi(2)
+        + line_point[2].powi(2))
+    .sqrt();
+    assert!((witness_distance - line_estimate.upper).abs() <= 4.0 * f64::EPSILON);
+
+    let large = NurbsCurve::new(
+        line_knots,
+        &[[1.0e200, 0.0, 0.0], [1.0e200, 0.0, 0.0]],
+        &[1.0, 1.0],
+    )
+    .expect("large-coordinate line");
+    let large_estimate = closest_point_curve(&large, [0.0, 1.0e200, 0.0], 0.0, 1)
+        .expect("scaled norm estimate");
+    assert!(
+        large_estimate.upper.is_finite() && large_estimate.upper > 1.0e200,
+        "representable large distance must not overflow during squaring"
+    );
+
+    let adjacent = f64::from_bits(1.0f64.to_bits() + 1);
+    let adjacent_u =
+        KnotVector::new(vec![1.0, 1.0, adjacent, adjacent], 1).expect("adjacent u");
+    let ordinary_v = KnotVector::new(vec![0.0, 0.0, 1.0, 1.0], 1).expect("ordinary v");
+    let points = vec![
+        vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+        vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+    ];
+    let weights = vec![vec![1.0; 2]; 2];
+    let one_axis = NurbsSurface::new(adjacent_u.clone(), ordinary_v, &points, &weights)
+        .expect("one splittable axis");
+    let one_axis_estimate = closest_point_surface(&one_axis, [0.5, 1.0, 0.0], 0.0, 1)
+        .expect("fallback-axis split");
+    assert_eq!(
+        one_axis_estimate.iterations, 1,
+        "an unsplittable preferred axis must fall back to the other axis"
+    );
+
+    let adjacent_v =
+        KnotVector::new(vec![1.0, 1.0, adjacent, adjacent], 1).expect("adjacent v");
+    let neither = NurbsSurface::new(adjacent_u, adjacent_v, &points, &weights)
+        .expect("unsplittable axes");
+    let neither_estimate = closest_point_surface(&neither, [0.5, 1.0, 0.0], 0.0, 1)
+        .expect("retained unsplittable frontier");
+    assert_eq!(neither_estimate.iterations, 0);
+    assert!(neither_estimate.lower <= neither_estimate.upper);
+
+    verdict(
+        "nb-004b",
+        "degree-1 Newton, scaled large-coordinate norms, and adjacent-float split termination",
     );
 }
 
@@ -444,7 +528,10 @@ fn nb_005_boolean_policy_refuses_with_the_route() {
         gated.diagnostics.iter().any(|d| d.contains("certificate")),
         "gated refusal must teach the certificate requirement"
     );
-    assert!(gated.route.contains("wqd.13"));
+    assert!(
+        gated.route.contains("coverage-complete continuum"),
+        "the direct route must require the successor continuum certificate, not sampled wqd.13 evidence"
+    );
     verdict(
         "nb-005",
         "both policies refuse with teaching routes (the honest position)",

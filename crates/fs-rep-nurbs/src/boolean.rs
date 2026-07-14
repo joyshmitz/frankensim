@@ -3,7 +3,7 @@
 //! B-reps therefore ROUTE THROUGH F-rep/SDF charts BY DEFAULT (convert,
 //! CSG in implicit form, re-fit splines when a spline chart is needed).
 //! Direct B-rep Booleans are a certificate-gated capability: without a
-//! sheaf watertightness certificate they REFUSE with teaching
+//! continuum watertightness certificate they REFUSE with teaching
 //! diagnostics — an attempt, never a promise.
 
 /// The requested set operation.
@@ -25,8 +25,8 @@ pub enum BooleanPolicy {
     /// required (the Rep Router owns the conversions).
     #[default]
     RouteThroughSdf,
-    /// Attempt a direct B-rep Boolean, gated on a sheaf watertightness
-    /// certificate for the result. Refuses without one.
+    /// Attempt a direct B-rep Boolean, gated on a continuum watertightness
+    /// certificate for the result. Sampled seam agreement is insufficient.
     DirectCertificateGated,
 }
 
@@ -57,19 +57,23 @@ pub fn boolean(op: BooleanOp, policy: BooleanPolicy) -> BooleanRefusal {
                     convert-sdf-nurbs re-fit (wqd.12) when a spline chart is required"
                 .to_string(),
             diagnostics: vec![
-                "trimmed-NURBS Booleans are not watertight in general; the implicit route \
-                 is exact on the CSG and carries a measured Hausdorff bound on the re-fit"
+                "trimmed-NURBS Booleans are not watertight in general; min/max CSG is \
+                 algebraically exact on the converted implicit fields, while conversion and \
+                 re-fit currently report sampled coverage, sampled field residuals, and \
+                 geometric probe-spacing estimates without a continuum geometric-error certificate"
                     .to_string(),
             ],
         },
         BooleanPolicy::DirectCertificateGated => BooleanRefusal {
             op,
             policy,
-            route: "attach a sheaf watertightness certificate (wqd.13) for the projected \
-                    result, or fall back to BooleanPolicy::RouteThroughSdf"
+            route: "attach a coverage-complete continuum watertightness certificate for the \
+                    projected result, or fall back to BooleanPolicy::RouteThroughSdf"
                 .to_string(),
             diagnostics: vec![
-                "no watertightness certificate is available for the requested result".to_string(),
+                "no coverage-complete continuum watertightness certificate is available for \
+                 the requested result; sampled seam agreement is insufficient"
+                    .to_string(),
                 "direct B-rep Booleans are certificate-gated by design (plan section 7.2): \
                  an attempt, never a promise"
                     .to_string(),

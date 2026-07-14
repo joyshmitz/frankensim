@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Rational B-spline charts: exact (rational-arithmetic) spline algebra, trimmed patches with certified classification, certified closest-point brackets, and the honest SDF-routed Boolean policy."
+description = "Rational B-spline charts: exact spline algebra, certified trim classification, measured closest-point brackets, and an honest SDF-routed Boolean policy."
 
 [package.metadata.frankensim]
 layer = "L2"
@@ -28,7 +28,7 @@ fs-alloc = { path = "../fs-alloc" }
 nurbs-sdf = []
 # [F]-gated: the SDF->NURBS refit ships disabled until its Gauntlet tier
 # is green. Depends on nurbs-sdf (the CSG acceptance closes the loop
-# through the forward converter + sheaf certificates).
+# through the forward converter + sampled sheaf evidence).
 nurbs-refit = ["nurbs-sdf"]
 
 [lints]

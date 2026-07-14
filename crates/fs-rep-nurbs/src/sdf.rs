@@ -1,59 +1,54 @@
 //! CONVERTER NURBS → SDF (plan §7.3 edge 3, bead wqd.11; [F] — behind
-//! the `nurbs-sdf` feature until its Gauntlet tier is green): CERTIFIED
-//! distance to trimmed NURBS shells. The bracket comes from the
-//! convex-hull property (Bézier-clipping branch-and-bound: the patch
-//! lies inside its control hull, so hull distance is a rigorous lower
-//! bound; any evaluated point is a rigorous upper bound), POLISHED by
-//! damped Gauss–Newton on the projection equations (which can only
-//! tighten the upper bound — certification never depends on Newton
-//! converging). Trim classification decides which surface regions count;
-//! a closest point landing outside the kept region (or in the boundary
-//! band) DOWNGRADES the certificate rather than lying. Sign comes from
-//! declared B-rep orientation; without one, the field is unsigned and
-//! the chart says so — the router edge label (certified vs
-//! measured-only) is decided PER INPUT, never assumed.
+//! the `nurbs-sdf` feature until its Gauntlet tier is green): measured distance
+//! estimates to trimmed NURBS shells. Bézier control hulls drive a useful
+//! branch-and-bound bracket and damped Gauss–Newton improves an evaluated-point
+//! estimate, but Cartesian division, hull inflation, surface evaluation, and
+//! distance arithmetic are ordinary f64 operations rather than outward-rounded
+//! enclosures. The chart therefore emits `Estimate`, no Lipschitz authority,
+//! and an explicitly estimated name. Trim classification can further widen the
+//! estimate. A successor interval/Taylor path owns certified distance and sign.
 
 use crate::NurbsError;
-use crate::closest::closest_point_surface;
+use crate::closest::{CLOSEST_MAX_SPLITS, closest_point_surface, norm3};
 use crate::rat::Rat;
 use crate::surface::NurbsSurface;
 use crate::trim::{Classification, TrimmedPatch};
 use fs_evidence::NumericalCertificate;
 use fs_exec::Cx;
 use fs_geom::{Aabb, BettiBounds, Chart, ChartSample, Differentiability, Point3, Vec3};
-use fs_math::det;
+use fs_math::{next_down, next_up};
 
 /// Sign policy for the generated field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Orientation {
     /// Surface normals (du × dv) point OUTWARD (B-rep topology says so):
-    /// the field is signed.
+    /// the lower-authority distance estimate uses an orientation-based sign.
     Outward,
     /// No orientation claim: the field is UNSIGNED (all non-negative)
     /// and the chart name says so.
     Unknown,
 }
 
-/// One certified distance query answer.
+/// One measured distance-bracket query answer.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SdfQuery {
-    /// Rigorous lower bound of the (unsigned) distance.
+    /// Convex-hull lower estimate with heuristic f64 inflation.
     pub lower: f64,
-    /// Rigorous upper bound (distance to an evaluated surface point).
+    /// Evaluated-point distance estimate.
     pub upper: f64,
     /// The best parameter found (u, v).
     pub param: [f64; 2],
     /// Which shell surface owned the minimum.
     pub surface: usize,
     /// The closest point fell outside the kept trim region (or in the
-    /// boundary band): the certificate below is WIDENED and the label
-    /// degrades to measured-only.
+    /// boundary band): `upper` is infinite because no kept-surface witness was
+    /// established. `param` and `surface` remain diagnostic only.
     pub trim_downgrade: bool,
     /// Branch-and-bound splits spent (throughput evidence).
     pub splits: u32,
 }
 
-/// A NURBS shell presented as a certified distance field.
+/// A NURBS shell presented as a measured distance-field approximation.
 #[derive(Debug)]
 pub struct ShellSdf {
     surfaces: Vec<NurbsSurface<f64>>,
@@ -61,12 +56,20 @@ pub struct ShellSdf {
     orientation: Orientation,
 }
 
-/// Gauss–Newton polish iterations (upper-bound tightening only).
+/// Gauss–Newton polish iterations (evaluated-distance improvement only).
 const POLISH_STEPS: usize = 8;
 
-/// Trim classification scale: params are rationalized at 2^20
-/// (sub-ppm parameter resolution — the boundary band absorbs the rest).
+/// Trim-classification grid. The entire closed cell containing the floating
+/// parameter is classified; no point sample stands in for the original value.
 const TRIM_SCALE: i128 = 1 << 20;
+const TRIM_SCALE_F64: f64 = 1_048_576.0;
+const MAX_EXACT_GRID_INDEX: f64 = 9_007_199_254_740_991.0;
+
+/// Defensive sample ceiling for one legacy tile allocation.
+const SDF_TILE_MAX_SAMPLES: usize = 16_777_216;
+
+/// Defensive worst-case split ceiling for one legacy tile request.
+const SDF_TILE_MAX_WORST_CASE_SPLITS: u128 = 1_073_741_824;
 
 impl ShellSdf {
     /// A shell from surfaces + optional trims (parallel arrays).
@@ -99,10 +102,20 @@ impl ShellSdf {
         })
     }
 
-    /// The control-net bounding box (contains the shell by the convex
-    /// hull property), padded.
+    /// One-ULP-outward control-net support, padded outward by one further ULP.
+    /// For the exact-real interpretation of the stored f64 homogeneous
+    /// controls, correctly rounded division plus this expansion contains each
+    /// Cartesian control point and hence the rational surface.
+    ///
+    /// # Panics
+    /// If `pad` is non-finite or negative. This legacy infallible API treats
+    /// support padding as a caller configuration precondition.
     #[must_use]
     pub fn control_aabb(&self, pad: f64) -> Aabb {
+        assert!(
+            pad.is_finite() && pad >= 0.0,
+            "NURBS SDF support padding must be finite and non-negative"
+        );
         let mut min = [f64::INFINITY; 3];
         let mut max = [f64::NEG_INFINITY; 3];
         for s in &self.surfaces {
@@ -110,76 +123,128 @@ impl ShellSdf {
                 for h in row {
                     let c = [h[0] / h[3], h[1] / h[3], h[2] / h[3]];
                     for k in 0..3 {
-                        min[k] = min[k].min(c[k]);
-                        max[k] = max[k].max(c[k]);
+                        min[k] = min[k].min(next_down(c[k]));
+                        max[k] = max[k].max(next_up(c[k]));
                     }
                 }
             }
         }
         Aabb::new(
-            Point3::new(min[0] - pad, min[1] - pad, min[2] - pad),
-            Point3::new(max[0] + pad, max[1] + pad, max[2] + pad),
+            Point3::new(
+                next_down(min[0] - pad),
+                next_down(min[1] - pad),
+                next_down(min[2] - pad),
+            ),
+            Point3::new(
+                next_up(max[0] + pad),
+                next_up(max[1] + pad),
+                next_up(max[2] + pad),
+            ),
         )
     }
 
-    /// Certified unsigned distance: branch-and-bound bracket per surface
-    /// (hull lower bounds are rigorous; evaluated points are rigorous
-    /// upper bounds), Gauss–Newton polish, then trim classification of
-    /// the winning parameter.
+    /// Measured unsigned-distance bracket per surface, Gauss–Newton polish,
+    /// then trim classification of the winning parameter.
     ///
     /// # Errors
     /// Propagates surface-evaluation structural errors.
     pub fn distance(&self, q: [f64; 3], tol: f64, max_splits: u32) -> Result<SdfQuery, NurbsError> {
+        let surface_count = u64::try_from(self.surfaces.len()).map_err(|_| NurbsError::Domain {
+            what: "NURBS shell surface count cannot be represented as u64".to_string(),
+        })?;
+        let requested_splits = u64::from(max_splits)
+            .checked_mul(surface_count)
+            .ok_or_else(|| NurbsError::Domain {
+                what: "NURBS shell split accounting overflows u64".to_string(),
+            })?;
+        if requested_splits > u64::from(u32::MAX) {
+            return Err(NurbsError::Domain {
+                what: "NURBS shell worst-case split accounting exceeds u32".to_string(),
+            });
+        }
         let mut best: Option<SdfQuery> = None;
+        let mut global_lower = f64::INFINITY;
+        let mut total_splits = 0u32;
         for (idx, s) in self.surfaces.iter().enumerate() {
             let cd = closest_point_surface(s, q, tol, max_splits)?;
+            global_lower = global_lower.min(cd.lower);
+            total_splits = total_splits.checked_add(cd.iterations).ok_or_else(|| {
+                NurbsError::Domain {
+                    what: "NURBS shell split accounting exceeds u32".to_string(),
+                }
+            })?;
             let (upper, param) = polish_upper(s, q, cd.param, cd.upper);
+            let trim_downgrade = if let Some(trim) = &self.trims[idx] {
+                match (
+                    trim_parameter_cell(param[0]),
+                    trim_parameter_cell(param[1]),
+                ) {
+                    (Some((umin, umax)), Some((vmin, vmax))) => {
+                        trim.classify_box([umin, vmin], [umax, vmax])?
+                            != Classification::Inside
+                    }
+                    // A parameter outside the checked rationalization domain
+                    // cannot acquire trim authority from a saturating cast.
+                    _ => true,
+                }
+            } else {
+                false
+            };
             let cand = SdfQuery {
                 lower: cd.lower.min(upper),
                 upper,
                 param,
                 surface: idx,
-                trim_downgrade: false,
-                splits: cd.iterations,
+                trim_downgrade,
+                splits: 0,
             };
             best = Some(match best {
                 None => cand,
-                Some(b) if cand.upper < b.upper => SdfQuery {
-                    // The shell minimum: the lower bound must cover ALL
-                    // surfaces (min of lowers), the upper the best found.
-                    lower: cand.lower.min(b.lower),
-                    splits: b.splits + cand.splits,
-                    ..cand
-                },
-                Some(b) => SdfQuery {
-                    lower: b.lower.min(cand.lower),
-                    splits: b.splits + cand.splits,
-                    ..b
-                },
+                // A point on a kept surface is a usable upper witness and
+                // always outranks a numerically closer point that was trimmed
+                // away. Within the same trim class, retain the smaller
+                // evaluated distance deterministically.
+                Some(b) if b.trim_downgrade && !cand.trim_downgrade => cand,
+                Some(b) if !b.trim_downgrade && cand.trim_downgrade => b,
+                Some(b) if cand.upper < b.upper => cand,
+                Some(b) => b,
             });
         }
         let mut out = best.expect("non-empty shell");
-        if let Some(trim) = &self.trims[out.surface] {
-            let ru = Rat::new(
-                (out.param[0] * TRIM_SCALE as f64).round() as i128,
-                TRIM_SCALE,
-            );
-            let rv = Rat::new(
-                (out.param[1] * TRIM_SCALE as f64).round() as i128,
-                TRIM_SCALE,
-            );
-            if trim.classify([ru, rv])? != Classification::Inside {
-                out.trim_downgrade = true;
-            }
+        out.lower = global_lower.min(out.upper);
+        out.splits = total_splits;
+        if out.trim_downgrade {
+            out.upper = f64::INFINITY;
         }
         Ok(out)
     }
 }
 
+/// Exact rational endpoints of the 2^-20 cell containing a finite f64.
+/// Multiplication by this power of two is exact while representable. Values
+/// outside the exactly integral f64 grid-index range fail closed so no
+/// saturating float-to-integer cast can manufacture trim authority.
+fn trim_parameter_cell(value: f64) -> Option<(Rat, Rat)> {
+    let scaled = value * TRIM_SCALE_F64;
+    if !scaled.is_finite() || scaled.abs() > MAX_EXACT_GRID_INDEX {
+        return None;
+    }
+    let lo_f = scaled.floor();
+    let hi_f = scaled.ceil();
+    if lo_f.abs() > MAX_EXACT_GRID_INDEX || hi_f.abs() > MAX_EXACT_GRID_INDEX {
+        return None;
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    let lo = i128::from(lo_f as i64);
+    #[allow(clippy::cast_possible_truncation)]
+    let hi = i128::from(hi_f as i64);
+    Some((Rat::new(lo, TRIM_SCALE), Rat::new(hi, TRIM_SCALE)))
+}
+
 /// Damped Gauss–Newton on `min ‖S(u,v) − q‖²`: only an ACCEPTED
 /// improvement (a strictly smaller evaluated distance inside the domain)
-/// updates the answer, so the returned upper bound is always the
-/// distance to a genuinely evaluated surface point.
+/// updates the answer, so the returned upper estimate comes from a genuinely
+/// evaluated surface point (still ordinary, non-directed f64 arithmetic).
 fn polish_upper(
     s: &NurbsSurface<f64>,
     q: [f64; 3],
@@ -211,9 +276,7 @@ fn polish_upper(
                 (uv[1] + damp * step[1]).clamp(vlo, vhi),
             ];
             if let Ok(p) = s.eval(cand[0], cand[1]) {
-                let d = det::sqrt(
-                    (p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2),
-                );
+                let d = norm3([p[0] - q[0], p[1] - q[1], p[2] - q[2]]);
                 if d < best.0 {
                     best = (d, cand);
                     uv = cand;
@@ -245,8 +308,24 @@ pub struct ShellSdfChart {
 
 impl ShellSdfChart {
     /// Wrap a shell with query effort settings.
+    ///
+    /// # Panics
+    /// If `tol` or `support_pad` is non-finite or negative, or if
+    /// `max_splits` exceeds the defensive legacy-path ceiling.
     #[must_use]
     pub fn new(shell: ShellSdf, tol: f64, max_splits: u32, support_pad: f64) -> ShellSdfChart {
+        assert!(
+            tol.is_finite() && tol >= 0.0,
+            "NURBS SDF tolerance must be finite and non-negative"
+        );
+        assert!(
+            max_splits <= CLOSEST_MAX_SPLITS,
+            "NURBS SDF split request exceeds the defensive legacy-path ceiling"
+        );
+        assert!(
+            support_pad.is_finite() && support_pad >= 0.0,
+            "NURBS SDF support padding must be finite and non-negative"
+        );
         ShellSdfChart {
             shell,
             tol,
@@ -255,17 +334,23 @@ impl ShellSdfChart {
         }
     }
 
-    /// Signed (or unsigned) distance + certificate for one point.
+    /// Signed-or-unsigned distance estimate for one point.
     fn sample(&self, x: Point3) -> Result<ChartSample, NurbsError> {
         let q = [x.x, x.y, x.z];
         let query = self.shell.distance(q, self.tol, self.max_splits)?;
-        let (mut lo, mut hi) = (query.lower, query.upper);
         if query.trim_downgrade {
-            // The closest kept-region point is at least this far, but the
-            // upper bound no longer certifies (the found point is
-            // trimmed away): widen honestly.
-            hi = f64::INFINITY;
+            // The found point is trimmed away, so it is not a witness on the
+            // kept surface. Do not retain its finite value as the chart's
+            // nominal distance: consumers that forget to inspect `error` must
+            // fail closed too.
+            return Ok(ChartSample {
+                signed_distance: f64::INFINITY,
+                gradient: None,
+                lipschitz: None,
+                error: NumericalCertificate::no_claim(),
+            });
         }
+        let (mut lo, mut hi) = (query.lower, query.upper);
         let (sign, gradient) = self.sign_and_gradient(q, &query);
         let signed = sign * query.upper;
         if sign < 0.0 {
@@ -274,8 +359,8 @@ impl ShellSdfChart {
         Ok(ChartSample {
             signed_distance: signed,
             gradient,
-            lipschitz: Some(1.0),
-            error: NumericalCertificate::enclosure(lo, hi),
+            lipschitz: None,
+            error: NumericalCertificate::estimate(lo, hi),
         })
     }
 
@@ -287,7 +372,7 @@ impl ShellSdfChart {
             return (1.0, None);
         };
         let off = [q[0] - pos[0], q[1] - pos[1], q[2] - pos[2]];
-        let off_norm = det::sqrt(dot3(off, off));
+        let off_norm = norm3(off);
         let gradient = if off_norm > 1e-12 {
             Some(Vec3::new(
                 off[0] / off_norm,
@@ -333,24 +418,25 @@ impl Chart for ShellSdfChart {
 
     fn name(&self) -> &'static str {
         match self.shell.orientation {
-            Orientation::Outward => "nurbs-sdf/signed",
-            Orientation::Unknown => "nurbs-sdf/unsigned",
+            Orientation::Outward => "nurbs-sdf/estimated-signed",
+            Orientation::Unknown => "nurbs-sdf/estimated-unsigned",
         }
     }
 
     fn differentiability(&self) -> Differentiability {
-        Differentiability::C1
+        Differentiability::Unknown
     }
 }
 
-/// One generated tile: certified samples on a regular grid.
+/// One generated tile of measured samples on a regular grid.
 #[derive(Debug, Clone)]
 pub struct SdfTile {
     /// Grid resolution per axis.
     pub n: usize,
-    /// Field values (x-fastest), signed per the shell orientation.
+    /// Field values (x-fastest), signed per the shell orientation; a
+    /// trim-downgraded cell stores positive infinity as an unusable sentinel.
     pub values: Vec<f32>,
-    /// Worst certified bound width among NEAR-surface cells.
+    /// Worst measured bracket width among near-surface cells.
     pub worst_near_width: f64,
     /// Worst width among far cells (cheap bounds are allowed there).
     pub worst_far_width: f64,
@@ -360,12 +446,14 @@ pub struct SdfTile {
     pub downgraded: usize,
 }
 
-/// Tiled generation with ADAPTIVE effort (budget-aware per P4): tight
-/// tolerance inside the near band (|d| ≤ 2 cell diagonals), cheap
-/// bounds elsewhere — far-field accuracy is not paid for.
+/// Tiled generation with adaptive effort under defensive static ceilings:
+/// a tighter requested tolerance inside the near band (|d| ≤ 2 cell
+/// diagonals), and cheaper measured bounds elsewhere.
 ///
 /// # Errors
-/// Propagates structural surface errors.
+/// Returns a structured domain/structure error for malformed tile settings,
+/// overflow, requests above the defensive static ceilings, allocation refusal,
+/// or a structural surface error.
 pub fn generate_tile(
     chart: &ShellSdfChart,
     aabb: &Aabb,
@@ -373,24 +461,104 @@ pub fn generate_tile(
     tol_near: f64,
     max_splits: u32,
 ) -> Result<SdfTile, NurbsError> {
-    assert!(n >= 2, "a tile needs at least 2 samples per axis");
+    if n < 2 {
+        return Err(NurbsError::Domain {
+            what: "an SDF tile needs at least 2 samples per axis".to_string(),
+        });
+    }
+    if !aabb.is_finite() {
+        return Err(NurbsError::Domain {
+            what: "an SDF tile requires a finite well-formed AABB".to_string(),
+        });
+    }
+    if !tol_near.is_finite() || tol_near < 0.0 {
+        return Err(NurbsError::Domain {
+            what: "SDF tile tolerance must be finite and non-negative".to_string(),
+        });
+    }
+    if max_splits > CLOSEST_MAX_SPLITS {
+        return Err(NurbsError::Domain {
+            what: "SDF tile split request exceeds the defensive legacy-path ceiling".to_string(),
+        });
+    }
+    let sample_count = n
+        .checked_mul(n)
+        .and_then(|square| square.checked_mul(n))
+        .ok_or_else(|| NurbsError::Domain {
+            what: "SDF tile sample count overflows usize".to_string(),
+        })?;
+    if sample_count > SDF_TILE_MAX_SAMPLES {
+        return Err(NurbsError::Domain {
+            what: format!(
+                "SDF tile sample count {sample_count} exceeds defensive ceiling {SDF_TILE_MAX_SAMPLES}"
+            ),
+        });
+    }
+    let sample_count_u128 = u128::try_from(sample_count).map_err(|_| NurbsError::Domain {
+        what: "SDF tile sample count cannot be represented as u128".to_string(),
+    })?;
+    let surface_count = u128::try_from(chart.shell.surfaces.len()).map_err(|_| {
+        NurbsError::Domain {
+            what: "SDF shell surface count cannot be represented as u128".to_string(),
+        }
+    })?;
+    let splits_per_query = u128::from(max_splits)
+        .checked_mul(surface_count)
+        .ok_or_else(|| NurbsError::Domain {
+            what: "SDF shell per-query split count overflows u128".to_string(),
+        })?;
+    if splits_per_query > u128::from(u32::MAX) {
+        return Err(NurbsError::Domain {
+            what: "SDF shell per-query split accounting exceeds u32".to_string(),
+        });
+    }
+    let worst_case_splits = sample_count_u128
+        .checked_mul(u128::from(max_splits) + u128::from(max_splits / 4))
+        .and_then(|one_surface| one_surface.checked_mul(surface_count))
+        .ok_or_else(|| NurbsError::Domain {
+            what: "SDF tile worst-case split count overflows u128".to_string(),
+        })?;
+    if worst_case_splits > SDF_TILE_MAX_WORST_CASE_SPLITS {
+        return Err(NurbsError::Domain {
+            what: format!(
+                "SDF tile worst-case split request {worst_case_splits} exceeds defensive ceiling {SDF_TILE_MAX_WORST_CASE_SPLITS}"
+            ),
+        });
+    }
     #[allow(clippy::cast_precision_loss)]
     let step = [
         (aabb.max.x - aabb.min.x) / (n - 1) as f64,
         (aabb.max.y - aabb.min.y) / (n - 1) as f64,
         (aabb.max.z - aabb.min.z) / (n - 1) as f64,
     ];
-    let diag = det::sqrt(step.iter().map(|s| s * s).sum());
-    // Refinement fires within two diagonals of the surface; the TIGHT
-    // claim is made only for cells genuinely adjacent to it (medial-axis
+    let diag = norm3(step);
+    if step.iter().any(|value| !value.is_finite()) || !diag.is_finite() {
+        return Err(NurbsError::Domain {
+            what: "SDF tile step or diagonal is not representable as finite f64".to_string(),
+        });
+    }
+    // Refinement fires within two diagonals of the surface; the tighter
+    // measured-effort lane is used only for cells adjacent by this heuristic
+    // (medial-axis
     // cells are equidistant from many patches — hull pruning stalls
-    // there, and the certificate honestly stays wider).
+    // there, and the estimate honestly stays wider).
     let refine_band = 2.0 * diag;
     let near_band = 0.75 * diag;
     let tol_far = (refine_band * 0.5).max(tol_near);
+    if !refine_band.is_finite() || !near_band.is_finite() || !tol_far.is_finite() {
+        return Err(NurbsError::Domain {
+            what: "SDF tile refinement scale is not representable as finite f64".to_string(),
+        });
+    }
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(sample_count)
+        .map_err(|_| NurbsError::Structure {
+            what: format!("SDF tile allocation refused for {sample_count} samples"),
+        })?;
     let mut tile = SdfTile {
         n,
-        values: Vec::with_capacity(n * n * n),
+        values,
         worst_near_width: 0.0,
         worst_far_width: 0.0,
         total_splits: 0,
@@ -423,6 +591,10 @@ pub fn generate_tile(
                 }
                 if query.trim_downgrade {
                     tile.downgraded += 1;
+                    tile.worst_near_width = f64::INFINITY;
+                    tile.worst_far_width = f64::INFINITY;
+                    tile.values.push(f32::INFINITY);
+                    continue;
                 }
                 let (sign, _) = chart.sign_and_gradient(q, &query);
                 #[allow(clippy::cast_possible_truncation)]

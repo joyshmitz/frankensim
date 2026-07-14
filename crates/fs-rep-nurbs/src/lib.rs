@@ -2,8 +2,9 @@
 //! algebra (knot insertion and degree elevation in i128 rational
 //! arithmetic, so "identical before/after refinement" is provable
 //! equality, not tolerance), trimmed patches with CERTIFIED point
-//! classification (convex-hull winding with exact subdivision), certified
-//! closest-point brackets (branch-and-bound over exact hulls), and the
+//! classification (convex-hull winding with exact subdivision), measured
+//! closest-point bracket estimates (f64 branch-and-bound pending an
+//! outward-rounded upgrade), and the
 //! HONEST Boolean position: route through SDF by default, refuse direct
 //! B-rep Booleans without a certificate.
 //!
@@ -23,7 +24,7 @@ pub mod trim;
 
 pub use basis::{KnotVector, Scalar};
 pub use boolean::{BooleanOp, BooleanPolicy, BooleanRefusal, boolean};
-pub use closest::{CertifiedDistance, closest_point_curve, closest_point_surface};
+pub use closest::{DistanceBracketEstimate, closest_point_curve, closest_point_surface};
 pub use curve::NurbsCurve;
 pub use rat::Rat;
 pub use surface::NurbsSurface;
