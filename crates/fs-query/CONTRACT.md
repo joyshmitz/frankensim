@@ -30,6 +30,17 @@ answers to the MULTI-CHART AGREEMENT discipline (same abstract region
   `UnresolvedTrace` error. A Lipschitz-implicit chart's `|f|/L` certifies only
   the step radius; without separate proximity evidence, only a rigorous exact
   zero can authorize `RayHit` — incomplete, never unsafe.
+- `geometric_moments` → `GeometricMoments` (`MomentEnclosure` volume,
+  first moments, `SecondMoments` about the origin): certified
+  unit-density integrals over a chart's region by exact-distance cell
+  classification with outward rounding — sure-inside cells add exact
+  closed-form box integrals, straddling cells add conservative
+  brackets, and everything degraded refuses (capability, domain,
+  spacing, per-sample evidence class, `MAX_MOMENT_CELLS` work,
+  cancellation). `com_enclosure` divides only through a proven-positive
+  volume; `translated` applies the exact translation-covariance /
+  parallel-axis laws with outward rounding. The domain must contain the
+  chart's support box: moments are whole-region claims.
 - `OffsetChart` / `minkowski_ball`: dilation/erosion as a chart
   wrapper (`φ − r`); the ball case of the Minkowski sum IS the offset
   (bitwise), which is the fillet/clearance workhorse. Construction is fallible
@@ -144,7 +155,13 @@ answers to the MULTI-CHART AGREEMENT discipline (same abstract region
 `InvalidTraceSample` (with the location), `InvalidThicknessSample`,
 `InvalidThicknessArithmetic`, `NoThicknessSamples`,
 `UnresolvedTrace` (with the location and sample count), `NotOnBoundary` (with
-the sd found and the advice to project first), `NoOppositeWall`, `Cancelled`,
+the sd found and the advice to project first), `NoOppositeWall`,
+`MomentsUncertifiedChart` (moments demand the exact-distance capability),
+`MomentsInvalidDomain`, `MomentsInvalidSpacing`, `MomentsExcessiveWork`
+(the deterministic `MAX_MOMENT_CELLS` ceiling), `MomentsInvalidSample`
+(Estimate/NoClaim-class evidence cannot feed a certified integral),
+`MomentsVolumeUnproven` (COM needs a positive certified volume lower
+bound), `Cancelled`,
 `Mesh` (fs-mesh refusals carried through). Honest gaps refuse; nothing guesses.
 
 ## Determinism class
@@ -177,6 +194,12 @@ None.
 — JSON-line verdicts, seeded LCG randomness, fs-obs events for the
 thickness estimator and curvature convergence tables. Any
 reimplementation must pass the suite unchanged.
+`tests/moments.rs`, cases gm-001..gm-005 — certified geometric moments:
+box/sphere closed-form containment with bounded widths, COM enclosures,
+the translation-covariance metamorphic (outward-rounded law vs direct
+recomputation must overlap), capability/input/work refusals, and
+cancellation. `geometric_moments` is Enclosure-class: every returned
+bracket contains the true unit-density integral of the chart's region.
 
 ## No-claim boundaries
 
@@ -198,5 +221,16 @@ reimplementation must pass the suite unchanged.
 - Curvature on mesh charts is an ESTIMATE class by design; discrete
   curvature operators (cotan/normal-cycle) on the half-edge mesh are
   a separate surface.
+- `geometric_moments` is Enclosure-class only under
+  `TraceStepClaim::ExactDistance`; weaker claims refuse rather than
+  downgrade. Band brackets are conservative, not convergence-optimal:
+  no width-vs-`h` rate is claimed. Moments are unit-density geometric
+  integrals; densities, inertia tensors, and material identity live
+  downstream (fs-matdb consumers), never here. Rotation covariance and
+  spatially-varying weighting are deferred surfaces —
+  [`GeometricMoments::translated`] covers translation only. The bead
+  rjnd remainder (support maps, GJK/EPA, feature complexes, gap
+  oracles, codimensional thickness, deformation hooks) is not yet
+  claimed by this crate.
 - Chart-native fast paths (mesh BVH closest-point dispatch instead of
   generic Newton) are perf-lane work; answers here are correct first.

@@ -42,6 +42,12 @@ use fs_geom::{
 use fs_mesh::delaunay;
 use fs_rep_mesh::Soup;
 
+mod moments;
+
+pub use moments::{
+    GeometricMoments, MAX_MOMENT_CELLS, MomentEnclosure, SecondMoments, geometric_moments,
+};
+
 /// Crate version, re-exported for provenance stamping.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -171,6 +177,40 @@ pub enum QueryError {
     },
     /// The inward probe never found the opposite wall.
     NoOppositeWall,
+    /// Certified moments require the exact-distance capability; a weaker
+    /// claim refuses instead of guessing mass properties.
+    MomentsUncertifiedChart {
+        /// The weaker claim actually supplied.
+        claim: TraceStepClaim,
+    },
+    /// A moments domain was non-finite, inverted, or did not contain the
+    /// chart's support box (moments are whole-region claims).
+    MomentsInvalidDomain {
+        /// Actionable deterministic refusal reason.
+        detail: &'static str,
+    },
+    /// A moments cell spacing was non-finite or non-positive.
+    MomentsInvalidSpacing {
+        /// Exact IEEE-754 bits of the rejected spacing.
+        spacing_bits: u64,
+    },
+    /// The requested moments grid exceeds the deterministic work ceiling.
+    MomentsExcessiveWork {
+        /// Public deterministic ceiling in cells.
+        max_cells: u64,
+    },
+    /// A moments sample's enclosure was missing, non-finite, inverted, or
+    /// only Estimate/NoClaim class.
+    MomentsInvalidSample {
+        /// Where validation failed.
+        at: [f64; 3],
+    },
+    /// A center-of-mass enclosure needs a strictly positive certified
+    /// volume lower bound.
+    MomentsVolumeUnproven {
+        /// The certified volume lower bound that failed the requirement.
+        volume_lo: f64,
+    },
     /// Cancelled mid-scan.
     Cancelled,
     /// Delaunay refused (carried through from fs-mesh).
@@ -282,6 +322,34 @@ impl core::fmt::Display for QueryError {
                 f,
                 "the inward probe exited the support without re-crossing the boundary; \
                  the region may be unbounded or the normal degenerate here"
+            ),
+            QueryError::MomentsUncertifiedChart { claim } => write!(
+                f,
+                "certified moments require TraceStepClaim::ExactDistance; the chart \
+                 supplied {claim:?} — refuse rather than guess mass properties"
+            ),
+            QueryError::MomentsInvalidDomain { detail } => {
+                write!(f, "moments domain refused: {detail}")
+            }
+            QueryError::MomentsInvalidSpacing { spacing_bits } => write!(
+                f,
+                "moments cell spacing must be positive and finite (bits {spacing_bits:#018x})"
+            ),
+            QueryError::MomentsExcessiveWork { max_cells } => write!(
+                f,
+                "moments grid exceeds the deterministic {max_cells}-cell ceiling; \
+                 coarsen h or split the domain"
+            ),
+            QueryError::MomentsInvalidSample { at } => write!(
+                f,
+                "moments sample at ({}, {}, {}) lacked a finite Exact/Enclosure-class \
+                 certificate",
+                at[0], at[1], at[2]
+            ),
+            QueryError::MomentsVolumeUnproven { volume_lo } => write!(
+                f,
+                "center of mass needs a strictly positive certified volume lower bound \
+                 (got {volume_lo:.3e})"
             ),
             QueryError::Cancelled => write!(f, "cancelled mid-query"),
             QueryError::Mesh(m) => write!(f, "medial sampling failed: {m}"),
