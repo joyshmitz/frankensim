@@ -10,7 +10,7 @@
 [![Rust](https://img.shields.io/badge/rust-nightly%202024-b7410e)](rust-toolchain.toml)
 [![Crates](https://img.shields.io/badge/workspace-126%20fs--%2A%20crates-0969da)](#implemented-workspace)
 [![Contracts](https://img.shields.io/badge/contracts-127%20of%20127%20crates-8250df)](#contracts-and-verification)
-[![Tests](https://img.shields.io/badge/tests-263%20crate%20test%20files-1f883d)](#contracts-and-verification)
+[![Tests](https://img.shields.io/badge/tests-276%20crate%20test%20files-1f883d)](#contracts-and-verification)
 [![License](https://img.shields.io/badge/license-MIT%20%2B%20AI%20rider-yellow)](LICENSE)
 
 </div>
@@ -38,7 +38,7 @@ There is not yet a packaged end-user simulation application or crates.io release
 | Geometry | Region/chart abstraction, SDF, mesh and F-rep charts, representation conversion hooks, transformations, tet meshing, remeshing, quality audits |
 | Evidence and ledger | Composable `Evidence<T>`/`Certified<T>`, model cards, bracketing, FrankenSQLite-backed design ledger, artifact hashes, event streams, tune cache, roofline recording |
 | Policy tooling | `xtask` checks for layer direction, Franken-only runtime dependencies, contracts, unsafe capsules, and constellation lock verification |
-| Tests | 263 crate-level conformance and integration test files in the intended snapshot, exercising the implemented contracts |
+| Tests | 276 crate-level conformance and integration test files in the intended snapshot, exercising the implemented contracts |
 
 ### What You Can Use Today
 
@@ -189,6 +189,15 @@ FrankenSim is organized as layered Rust crates. The names below are crates prese
 | `fs-vskeleton` | Photovoltaic vertical skeleton tying SDF/PDE/objective/adjoint/optimization/ledger concepts into a narrow demonstrator path |
 | `fs-opt` | ASCENT optimization problem IR crate with typed objective/constraint graphs, dimensional validation, differentiability-class routing, canonical serialization, manifold metadata, and a conformance contract |
 
+The current positive `fs-geom` seam result means agreement at the retained
+finite interface samples. It is not yet continuum coverage, manifoldness,
+self-intersection freedom, or global watertightness. Likewise, the current
+outside-to-outside ray routine is only a bounded input/sample validator: under
+its own endpoint precondition its Boolean toggle count is necessarily even, so
+it supplies no orientation, sign, topology, or independent falsification
+authority. The continuum and oriented-intersection/winding successors remain
+explicit planned work.
+
 ### Expanded Crate Map
 
 The workspace has grown beyond the first substrate and geometry layer. These crates are also implemented today and fill in the physics, optimization, audit, and orchestration layers.
@@ -196,7 +205,7 @@ The workspace has grown beyond the first substrate and geometry layer. These cra
 | Crate family | Implemented role |
 |--------------|------------------|
 | `fs-query`, `fs-topo`, `fs-geocon` | Geometry query and certificate layer: closest-point, raycast, offset, clearance, thickness, curvature, topology validity, and geometric constraints |
-| `fs-rep-nurbs`, `fs-rep-voxel` | Additional MORPH representations: rational B-spline charts with exact spline algebra and certified closest-point brackets; voxel, point-cloud, and lattice/strut representations |
+| `fs-rep-nurbs`, `fs-rep-voxel` | Additional MORPH representations: rational B-spline charts with exact spline algebra and measured f64 closest-point brackets (outward-rounded certification remains tracked); voxel, point-cloud, and lattice/strut representations |
 | `fs-feec` | Exterior-calculus core: cochains, Whitney forms, exact incidence operators, Hodge stars, Betti checks, high-order tensor/simplex spaces, and cohomology/Hodge-decomposition utilities |
 | `fs-opdsl`, `fs-tilelang`, `fs-tilelang-macros`, `fs-soa`, `fs-soa-derive` | Operator and layout tooling: DSL scaffolding for operators, deterministic tile-language lowering, and structured data layouts for stable kernel memory behavior |
 | `fs-solver` | Resumable Krylov and multigrid stack: CG, MINRES, GMRES, matrix-free operators, transposed solves, mixed-precision refinement, and p-multigrid over the FEEC hierarchy |
@@ -252,10 +261,23 @@ use fs_evidence::{Evidence, ProvenanceHash};
 let provenance = ProvenanceHash::of_bytes(b"example kernel output");
 let value = Evidence::exact(42.0, provenance)
     .certified()
-    .expect("exact pure-math evidence is certifiable");
+    .expect("the wrapper is structurally self-consistent");
 
 assert_eq!(value.value, 42.0);
 ```
+
+This demonstrates the wrapper mechanics only. Calling a literal `exact` and
+checking its internal consistency does not prove that a scientific computation
+was exact; that authority must enter through an admitted trusted kernel or an
+independently checked proof receipt bound to the actual operation and inputs.
+
+`ProvenanceHash` is currently a deterministic legacy FNV fingerprint. It is
+useful for deterministic correlation and accidental-corruption detection, but it is not
+collision-resistant, cryptographic, or an authenticity anchor. Authority must
+come from an independently trusted anchor over the exact canonical bytes or a
+collision-resistant canonical digest of those bytes. Signing or trusting the
+same 64-bit FNV value does not repair its collision weakness; typed
+cryptographic identity migration remains tracked work.
 
 ### Evidence Packages and Standalone Checking
 
@@ -273,18 +295,21 @@ let claim = Claim::estimated(
 let pkg = EvidencePackage::new(Provenance::new("commit-abc", "lock-def"))
     .with_claim(claim);
 
-let root = pkg.try_merkle_root().expect("bounded example package");
-let report = check_against_root(&pkg, root);
+let computed_root = pkg.try_merkle_root().expect("bounded example package");
+let report = check_against_root(&pkg, computed_root);
 
 assert!(report.passed());
-assert_eq!(report.merkle_root(), root);
+assert_eq!(report.merkle_root(), computed_root);
 assert!(report.render_pie().contains("estimated"));
 ```
 
-This deny-all example checks an honestly Estimated claim and the expected
-content root. Verified certificates, anchoring datasets, waivers, signatures,
-and falsifier artifacts never authorize themselves: use the corresponding
-typed verifier capabilities and retain the returned verification receipt.
+This deny-all example demonstrates package self-consistency for an honestly
+Estimated claim; because the root is computed from the package immediately
+before checking, it is not an authenticity demonstration. Authoritative replay
+must receive the expected collision-resistant root or signature from an
+independent trust channel. Verified certificates, anchoring datasets, waivers,
+signatures, and falsifier artifacts never authorize themselves: use the
+corresponding typed verifier capabilities and retain the returned verification receipt.
 Scientific release admission additionally requires a purpose-bound approval
 signature over the exact checker protocol, expected root, scientific policy
 fingerprints, waiver clock, and per-claim admission context, at least one
@@ -673,7 +698,7 @@ project's design rules becoming ordinary code rather than project vocabulary.
 | Deterministic integer powers | `fs-math` now owns pinned integer-power semantics and `xtask` checks for drifting `.powi` usage across dependent crates | Golden values no longer depend on libm or build-mode accidents for a common scalar operation |
 | Declared run identity | `fs-exec` and `fs-rand` bind random streams to a declared run identity instead of pool history | Stochastic replay follows the logical study, not whichever worker happened to execute first |
 | Caller-owned cancellation gates | `fs-race` and session pressure handling now require gates supplied by the caller/session owner | A race, pause, or memory-pressure response cannot manufacture private cancellation state that the owner cannot observe |
-| Versioned solver snapshots | `fs-exec` solver state is wrapped in a versioned, self-authenticating envelope | Pause/resume/fork support gets a concrete artifact boundary instead of a raw struct dump |
+| Versioned solver snapshots | `fs-exec` solver state is wrapped in a versioned, type-tagged and checksummed envelope | Pause/resume/fork support gets a concrete artifact boundary instead of a raw struct dump; the caller still supplies the compatible decoder, and the checksum detects accidental changes but requires a trusted external root or signature for authenticity |
 | GEMM performance evidence | `fs-la` added packed f32 and mixed-precision paths, transposed/strided op-form GEMM, batched perf lanes, and roofline regression hooks | Dense-kernel speedups are tied to workload shape, denominator, and regression checks instead of prose claims |
 | Risk and certificate hardening | CVaR uses fractional boundary weighting, adjoint certificates fail closed on vacuous evidence, and explain/DWR regressions stay executable | Evidence objects stop accepting plausible-but-empty proofs or biased tail estimates |
 | Import-order correctness | `fs-io` accepts legal face-before-vertex PLY element order while still validating face payloads | The importer distinguishes format legality from malformed data, which is the right failure boundary for quarantined IO |
@@ -1162,7 +1187,7 @@ FrankenSim has substantial working code, but it is still early infrastructure.
 | Full multiphysics solver suite | Not complete in the current workspace |
 | Neural representations | Not implemented as a first-class representation crate in the current workspace |
 | Randomized NLA golden sentinel | Resolved: `rand_nla_golden_hash` is deliberately recorded (`0xeef1_0550_7daf_c0d5`) and verified identical on arm64 and x86-64 in both debug and release, after fixing a build-mode-dependent `powi` fixture; the workspace-wide `powi` sweep is tracked in bead `frankensim-powi-build-mode-determinism-4xnt` |
-| Ascent golden sentinel | `fs-ascent` implements the optimizer stack, but its trajectory golden hash lane still needs the recorded hash to be frozen in the test source |
+| Ascent golden sentinels | Resolved: both the trajectory and Pareto golden constants are frozen in the test sources (`0xb28d_3cf4_99e8_9071` and `0x301b_04df_db91_3965`); cross-ISA/profile authority still depends on retained admitted replay evidence rather than the constants alone |
 | Long-running stability fixtures | Some structural stability and snap-through tests are active proof lanes and may need targeted runtime/threshold work rather than being treated as cheap smoke tests |
 | Production validation corpus | In progress through contracts, tests, ledger records, and roofline harnesses |
 | Performance claims | Must be backed by `fs-roofline`/ledger evidence; do not infer claims from architecture text alone |

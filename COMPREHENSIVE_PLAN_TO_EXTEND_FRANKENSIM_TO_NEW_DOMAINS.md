@@ -5,7 +5,7 @@
 > Coupled Machines on a Sheaf-Cohomological and Port-Thermodynamic Spine.
 >
 > Companion to `COMPREHENSIVE_PLAN_FOR_FRANKENSIM.md` and
-> `COMPREHENSIVE_ADDENDUM_TO_FRANKENSIM_PLAN.md`. The master plan remains the
+> `COMPREHENSIVE_ADDENDUM_TO_FRANKENSIM_PLAN.md`. The primary plan remains the
 > constitution, the addendum remains its refinement, and this document is the
 > expansion charter. It answers one question:
 > **what is preventing FrankenSim from simulating a Geneva drive, an involute
@@ -22,13 +22,13 @@
 > in Appendix D. The implementation pass pins the exact repository commit and
 > source artifact for every resulting Bead.
 >
-> **Amendment rule.** The master plan remains authoritative for mission,
+> **Amendment rule.** The primary plan remains authoritative for mission,
 > layering, dependency policy, and the Decalogue. Where this charter explicitly
-> adds assumptions or narrows an aspirational master-plan statement—for example,
+> adds assumptions or narrows an aspirational primary-plan statement—for example,
 > that exact incidence alone removes every spurious mode, that IPC is
 > unconditionally intersection-free, or that a Dirac interconnection makes an
 > arbitrary partitioned time discretization passive—the stricter statement is
-> the governing amendment for these new domains until the master text is
+> the governing amendment for these new domains until the primary text is
 > updated. Live crate contracts remain the authority for what is implemented
 > now. This prevents document precedence from resurrecting a claim this review
 > has already falsified.
@@ -43,14 +43,14 @@ The following deltas are intentional amendments, not accidental drift:
 | Coupling/passivity | A Dirac or power-preserving interconnection can read as passive “by construction” | Only the interconnection is lossless by construction. Component storage/dissipation/source laws, time discretization, transfer, iteration, and the closed accounting-window audit determine a coupled passivity claim (§3.7, §6). |
 | Contact ownership | Contact appears inside `fs-solid` | Reusable detection/response protocols move to L3 `fs-contact`; `fs-solid` and `fs-mbd` consume adapters. Generic nonlinear/conic algorithms remain in L1 `fs-solver`. |
 | Spectral ownership | Some domain eigensolvers appear in `fs-la` | Generic operator spectra, nullity, continuation-health, and multiplier extraction belong to L1 `fs-spectral`; domain crates assemble operators and interpret results. |
-| Dimensional algebra | `Qty` and Buckingham-π use five base dimensions | The amount-of-substance exponent is added atomically, with versioned five-to-six wire migration and semantic crosswalks (§7.3). |
+| Dimensional algebra | The charter originally found `Qty` and Buckingham-π on five base dimensions | The core six-base amount-of-substance representation and v1→v2 wire migration have landed; every remaining consumer must use the typed migration/crosswalk rather than preserve or reconstruct five-base authority (§7.3). |
 | Phase sequencing | The older roadmap did not contain the machine-domain prerequisite graph | The E0–E8 dependency/exit gates in §10 govern this expansion, including a dry-tribology baseline before the E2 Geneva exit. |
 | Research governance | The addendum's “one research bet” can be read as one bet for the entire program | One unproven mechanism is admitted **per independently falsifiable proof lane**, under an explicit portfolio WIP/budget cap. Many such lanes may run in parallel; no acceptance gate may hide two unproven mechanisms behind one result. This increases theorem throughput without weakening falsifiability. |
 
-The implementation program creates a ratification Bead that mirrors every
-accepted delta into the master plan/addendum and records the exact affected
-sections. Until that synchronization lands, this table wins for the named
-deltas; it does not authorize unrelated layer or dependency-policy exceptions.
+The ratification register and Beads decomposition now mirror the accepted
+deltas into the primary plan/addendum and record the affected sections. This
+table remains the detailed rationale for its named refinements; it does not
+authorize unrelated layer or dependency-policy exceptions.
 These are present-tense proof boundaries, not prohibitions: a stronger theorem
 for a precisely quantified class may supersede any one of them through the
 Theorem Foundry, independent reproduction, and an explicit ratification diff.
@@ -158,7 +158,7 @@ paths as committed architecture, and operationalization must refresh the scan.
 | Discrete de Rham complex: Whitney 0–3 forms, exact incidence `dd=0`, Galerkin + diagonal Hodge stars | `fs-feec/src/{whitney.rs,hodge.rs}`; incidence in `fs-rep-mesh/src/complex.rs:95-129` | A major substrate for Maxwell, heat, and Darcy. Weighted operators, formulations, sources, BCs, stability and solvers remain real work. |
 | Nédélec H(curl) and Raviart–Thomas H(div) families, r = 1..4, with discrete grad/curl/div chain maps | `fs-feec/src/highorder/vecfam.rs:362-1050` | The exact element families EM needs. Explicitly deferred to a curl-curl solve: `fs-feec/CONTRACT.md:298-301`. |
 | Computable cohomology: exact Betti (Bareiss), Hodge decomposition, harmonic basis, cycle pairing (`circulation`), harmonic deflation | `fs-feec/src/{betti.rs,cohomology.rs}` | Multiply-connected EM domains, flux linkage, and circuit coupling through H¹ generators are *already computable*. |
-| Real cellular-sheaf watertightness: δ⁰/δ¹ coboundaries, H¹ obstruction, gauge section solve, ray-parity falsifier, repair/merge | `fs-geom/src/sheaf.rs:41-488`, `sheaf_repair.rs`, `sheaf_merge.rs` | A reusable artifact/falsifier pattern for compatibility problems; it does not prove kinematic or conservative-transfer semantics verbatim. |
+| Interval-sound cellular-sheaf sampled-seam classification and legacy ray-parity input diagnostic; separate feature-gated δ⁰/δ¹ Hodge-style repair diagnostics/candidate decomposition | `fs-geom/src/sheaf.rs`, `sheaf_repair.rs`, `sheaf_merge.rs` | The base verdict localizes sampled interface violations without a continuum or topology claim; the current ray-parity routine is not an independent falsifier. The fixed-iteration decomposition does not generically prove orthogonality, convergence, non-exactness, or H¹. Only a retained closed, non-exact harmonic witness supports an H¹ obstruction. Authentic cross-examination by certified oriented intersections or winding/degree evidence is tracked successor work. This remains a reusable artifact pattern for compatibility problems, not proof of kinematic or conservative-transfer semantics verbatim. |
 | Certified separation lower bound between two bodies (positive gap only) | `fs-query/src/lib.rs:619-733` | Seed of certified contact detection; needs penetration depth and motion. |
 | IPC barrier contact vs. fixed SDF obstacle, lagged smoothed Coulomb friction (feature-gated) | `fs-solid/src/contact.rs` | The smooth contact lane exists in embryo; CCD explicitly deferred (`contact.rs:12-13`). |
 | Generic constant-coefficient 2-D steady scalar Poisson/diffusion CutFEM on certified SDF cuts | `fs-cutfem/CONTRACT.md:5-9,34-39`; `fs-cutfem/src/fem.rs` | A direct seed for a first steady isotropic heat/current manufactured slice; it is not yet a thermal-domain solver, variable-coefficient constitutive assembly, or transient energy balance. |
@@ -586,8 +586,11 @@ existing chart-overlap sheaf. Then:
   constants/normal fluxes must be preserved, mortar spaces need an inf-sup
   bound, and moving meshes need a discrete geometric-conservation law. These
   identities—not vanishing `H¹` alone—certify zero artificial interface power.
-  Existing watertightness code is a design pattern and falsifier, not a
-  verbatim proof reuse.
+  Existing sampled-interface code is a design pattern and can localize sampled
+  violations, but is neither a continuum certificate nor an independent
+  falsifier. Coverage-complete sheaf/descent and oriented-intersection or
+  winding/degree cross-examiners are explicit successor obligations rather
+  than verbatim proof reuse.
 - **Symmetry block-diagonalization.** On a circular interface whose mesh,
   coefficients, boundary data, and excitation preserve the declared cyclic
   action, rotation acts through a Cₙ representation (or S¹ truncated to Fourier modes):
@@ -769,26 +772,68 @@ intended to exceed what any single commercial workflow exposes; roadmap phase
 E7 must test that competitive workflow claim with a versioned survey, while
 phase E8 tests the
 mathematical claims rather than assuming either. The research unit is a
-`TheoremCard { statement_id, statement_version, exact_quantifiers, assumptions,
-imported_lemmas, statement_state, mathematics_state, formalization_state,
-falsification_state, implementation_state, review_state, trusted_computing_base,
-kernel_version, proof_hash, unresolved_gaps, formal_kernel, executable_checker,
-counterexample_search, downstream_claims }`.
+`TheoremCard { statement_id, statement_version, exact_quantifiers,
+assumption_manifest_id, imported_lemmas, statement_state, mathematics_state,
+formalization_state, falsification_state, implementation_state, review_state,
+trusted_computing_base, kernel_version, derivation_and_proof_ids,
+unresolved_gaps, formal_kernel, executable_checker, counterexample_search,
+baseline_relation, nonvacuity_requirement, downstream_evidence_edges }`.
+Admission, nonvacuity, and candidate classification are **not singular mutable
+card fields**: each tested instance, witness family, and candidate receives its
+own immutable receipt bound to the exact statement and assumption revisions,
+semantic instance/witness identity, units/conventions/domain, checker and TCB.
 Those states are **orthogonal**: a theorem can be proved but not implemented at
 scale, an executable checker can pass without constituting a proof, and a scale
 failure does not refute a theorem outside the failed implementation claim.
 The axes are statement lifecycle (`Draft|Stable|Superseded|Withdrawn`),
 mathematics (`Conjectured|ConditionalProof|Proved|Refuted`), formalization
 (`Unformalized|PartiallyFormalized|KernelChecked`), falsification
-(`Unchallenged|CampaignRunning|FalsifierSurvived|CounterexampleFound`),
+(`Unchallenged | CampaignRunning | FalsifierSurvived | CandidatePending |
+AdmittedCountermodel`),
 implementation (`Absent|ConformanceChecked|ScaleQualified`), and review
-(`Unreviewed|IndependentAuditPassed|Reproduced`). `CounterexampleFound`
-forces the exact mathematics statement to `Refuted`; surviving a finite
-falsification campaign never forces it to `Proved`. A Rust checker establishes
-implementation conformance, not automatically a formal proof. A counterexample marks the exact statement
-version `Refuted`, invalidates every downstream claim that depended on it, and
-produces a minimal failure artifact plus a separately versioned sharper
-successor—it never silently edits the old theorem into something true.
+(`Unreviewed|IndependentAuditPassed|Reproduced`). `AssumptionSetState` is
+`Unchecked|SatisfiableWitnessed|InconsistentProved|Unknown`; implication under
+inconsistent assumptions may remain logically valid, but its applicability is
+`NoClaim`. Each instance has `Admitted|OutOfDomain|Indeterminate|Malformed`
+admissibility, and `Indeterminate` never coerces to admitted. Nonvacuity declares
+the strength actually needed—`Point|OpenFamily|PositiveMeasureFamily|
+ScaleFamily|Custom`, including per-quantified-fibre evidence where necessary—so
+a single point cannot satisfy an open, measure, fibrewise, or scale claim.
+
+Card-level axis values are immutable-receipt-derived summaries, never mutable
+votes. `FalsifierSurvived` names one content-addressed campaign and budget;
+`Reproduced` names an independently replayed artifact/version and cannot leak to
+a revised statement. Open-family receipts bind a topology, positive-measure
+receipts bind a reference measure, fibrewise receipts bind the quantified base
+and fibre map, and scale receipts bind an ordered scale family and admission
+range. Countermodel-witness admission for refuting a universal claim is distinct
+from the usually stronger nonvacuity family needed to establish production
+applicability. Legal transitions reject skipped prerequisites and preserve the
+prior state plus refusal receipt rather than coercing an axis forward.
+
+A raw candidate is independently adjudicated as `ClassificationPending`,
+`GenuineCountermodel`, `OutOfDomain`, `CheckerDefect`, `SpecificationDefect`,
+`AdmissionCheckerDefect`, or `ProofKernelOrTcbDefect`. Only a
+`GenuineCountermodel` whose witness is
+independently admitted against every exact assumption of the immutable statement
+revision forces that mathematics revision to `Refuted`. Out-of-domain candidates
+refine the campaign; specification defects force a new statement revision;
+admission-checker defects invalidate affected admission receipts; executable
+checker defects demote implementation evidence; kernel/TCB defects invalidate
+the affected formalization-support edges and trigger downstream authority
+recomputation. Independently supported downstream authority survives only when
+its alternative dependency closure still checks. None is
+laundered into theorem refutation. Surviving a finite campaign never forces
+`Proved`, and a Rust checker establishes implementation conformance rather than
+formal proof. A universal statement may be refuted by an independently admitted
+genuine countermodel; an existential or other statement may instead be refuted
+by an independently kernel-checked proof of its negation. Either route
+invalidates the affected theorem-dependency edge and triggers downstream
+authority recomputation; an independently supported downstream claim need not
+be refuted. The failure, admission and nonvacuity
+receipts remain immutable, and any sharper successor is a separately versioned
+statement with a direction-checked relation—the old theorem is never silently
+edited into something true.
 
 The initial theorem portfolio is:
 
@@ -903,7 +948,8 @@ The initial theorem portfolio is:
     extrapolation refusal, with approximation and discretization errors kept
     separate. Artifact: `ThermodynamicConstitutiveLearningTheorem`.
 
-Every card has a boring finite-dimensional baseline, an adversarial
+Every card has a boring finite-dimensional baseline, a machine-checked
+nonempty admissible instance family, an adversarial
 counterexample generator, a paper derivation, a small formal proof kernel where
 feasible, an executable Rust checker, and a scale-up experiment. These are not
 decorative future claims: cards start beside their enabling work—E0 whole-
@@ -1011,7 +1057,7 @@ and a minimal compile target fail on any same-layer cycle or undeclared edge.
 | `fs-qty` | Unit aliases/parser tokens plus **amount of substance as a sixth base dimension now**; version and migrate `Dims`, `QtyAny`, canonical IR, scenario/package/material schemas; keep candela out until photometry is real | B8 (units half) |
 | `fs-symmetry` | Remain generic L1 group/representation/block-diagonalization machinery; add complex sector phases, dihedral Dₙ, and representation-residual tests. L3 consumers—not this crate—prove their materials, sources, BCs, faults, and excitation admit a reduction | §3.5 |
 | `fs-spectral` | Own the L1 generic resumable sparse Lanczos/LOBPCG/eigen-gap service over `fs-la`. L2/L3 consumers assemble operators and push dimensionless samples; no upward type dependency or duplicate L3 eigensolver | B11 |
-| `fs-scenario` | Add versioned `Scalar`, `Vector`, `Tensor`, `ComplexPhasor`, `SpeciesBundle`, `CharacteristicState`, `FieldTraceRef`, and `PortRef` payloads with units/basis/frame/orientation, histories/tables/distributions and continuity/reset semantics. Add Physics/expectation rows; retain the L3 `FrameTree` schema/evaluation and add a one-way adapter that lowers its motion specifications into L2 `fs-motion` paths/tubes—`fs-motion` never imports scenario types. Joints, terminals, controllers and resets remain machine-graph relations, not fake `BcKind`s. L6 `fs-ir` lowers one-way into versioned scenario/domain artifacts and preserves the existing canonical identity via explicit crosswalks | B1, B5–B7 |
+| `fs-scenario` | Add versioned `Scalar`, `Vector`, `Tensor`, `ComplexPhasor`, `SpeciesBundle`, `CharacteristicState`, `FieldTraceRef`, and `PortRef` payloads with units/basis/frame/orientation, histories/tables/distributions and continuity/reset semantics. Add Physics/expectation rows; retain the L3 `FrameTree` schema/evaluation and add a one-way adapter that lowers its motion specifications into L2 `fs-motion` paths/tubes—`fs-motion` never imports scenario types. Joints, terminals, controllers and resets remain machine-graph relations, not fake `BcKind`s. L6 `fs-ir` lowers one-way into versioned scenario/domain artifacts: it preserves durable `EntityId` lineage, emits a distinct representation-specific `WireContentId` for each artifact's exact canonical bytes, and relates admitted equivalent meaning with `ProblemSemanticId` crosswalk receipts; it never pretends different bytes have one content identity | B1, B5–B7 |
 | `fs-flux` | Promote the live exactly-divergence-free 2-D path to 3-D/high-order curved and CutFEM boundaries; own multi-D incompressible/compressible spatial discretization and consume `fs-gas` closures without a reverse edge; ALE with discrete GCL/conservative remap; monolithic/partitioned FSI; DNS resolution/convergence lanes, LES/RANS closure model cards, cavitation and multiphase ladders | P7 fluid side |
 | `fs-lbm` | Curved moving boundaries, Galilean-invariance-corrected momentum exchange with measured residual, fresh-cell mass/momentum receipts, under-resolved lubrication correction, MRT/cumulant stability, thermal/multiphase/cavitation ladders and moving-boundary benchmark suite | B1 fluid side |
 | `fs-material` | Consume L1 `fs-matdb` law IDs/versions, canonical parameter blocks, state-schema descriptors and initial-state metadata; own the generic executable `ConstitutiveGraph`, implementation registry, aggregate runtime-state codec/protocol and objectivity/free-energy/dissipation/locality behavior; extend laws to nonlocal/gradient/phase-field behavior, viscoelasticity, mixed hardening, damage/fracture/fatigue/creep/corrosion, magneto/piezo/thermoelectric coupling and guarded learned laws | B8, P7 |
@@ -1357,8 +1403,8 @@ becomes a three-line scenario.
   acceleration analysis with certified loop closure; Grashof classification as
   an interval certificate; dimensional synthesis (3–5 precision points via
   Burmester theory) posed as an `fs-opt` problem with `fs-constraint` typed
-  constraints — linkage synthesis was already name-checked in the master plan
-  as an SOS-scale problem (plan L410); this is its home.
+  constraints — linkage synthesis was already name-checked in the primary plan
+  as an SOS-scale problem (primary plan §9.8); this is its home.
 
 **Gauntlet.** G0: frame equivariance; analytic/AD/FD agreement for `J=DC`;
 primal/dual work identity; Maxwell–Calladine index; exact catalog nullities;
@@ -1989,11 +2035,18 @@ The port bus becomes the machine-composition runtime:
    state plus resumable frontier; a half-solved or half-audited window is never
    externally committed. Pause/resume and migration replay to the declared
    determinism class.
-9. **Stable identity is physical infrastructure.** Body, surface patch,
-   feature, terminal, port and state-slot IDs are semantic—not array indices.
-   Split/merge/remesh/wear/fracture events emit lineage morphisms. Ambiguous
-   lineage invalidates dependent caches and returns a typed ambiguity instead
-   of silently reconnecting a winding, contact, constraint or adjoint.
+9. **Typed identity is physical infrastructure.** Durable body, surface-patch,
+   feature, terminal, port and state-slot lineage uses `EntityId`, never an array
+   index. Exact ingested bytes use domain-separated `SourceByteId`; each
+   representation's exact canonical serialization receives its own
+   `WireContentId`. A bare generic `ContentId` is forbidden at authority
+   boundaries because it hides which byte grammar was hashed. Normalized
+   problem meaning uses `ProblemSemanticId`; signatures, expected
+   roots and attestations remain separate `AuthorityRef` data. No widening or
+   equality conversion between these identities is implicit. Split/merge/remesh/
+   wear/fracture events emit lineage morphisms. Ambiguous lineage invalidates
+   dependent caches and returns a typed ambiguity instead of silently
+   reconnecting a winding, contact, constraint or adjoint.
 
 **Worked example — the ICE port graph (§8.5):**
 crank `fs-mbd` ⇄ (torque·ω) ⇄ piston/rod/crank mechanism; cylinder `fs-gas`
@@ -2043,17 +2096,17 @@ crank for the genset capstone.
 Ampere and kelvin already exist; EM/thermal units add aliases and parser tokens.
 Chemistry, equilibrium constants, molar NASA reference data, stoichiometric
 rates, electrochemistry and Faraday coupling cannot be dimensionally honest if
-kilograms per mole are represented as an “ordinary” five-base quantity. Widen
-`Dims` from `[m,kg,s,K,A]` to `[m,kg,s,K,A,mol]` atomically across the root and
-standalone `fs-wasm` workspaces. This is an intentional source break, not a
-source-compatible alias. Migrate every literal dimension vector and generic
-arity, especially `fs-regime`'s 5×n Buckingham-π rank/nullspace/named-group
-algebra, `fs-opt`, `fs-ir`, `fs-scenario::ir`, `fs-ledger`, `fs-package`,
-`fs-crosswalk`, identity digests, parsers, JSON, tests and goldens. Versioned
-five- and six-vector decoders map legacy values to `mol=0` under a semantic-
-crosswalk receipt; old bytes/content hashes remain immutable and record
-`old_hash→new_hash` rather than being overwritten. Candela remains omitted
-until photometry is real.
+kilograms per mole are represented as an “ordinary” five-base quantity. The core
+`fs-qty` implementation has now widened `Dims` to `[m,kg,s,K,A,mol]`, added
+amount/molar aliases, and ships canonical v2 six-vector JSON plus explicit v1
+five-vector decoding that appends `mol=0` under an immutable migration receipt.
+That landing does not make the workspace-wide migration self-proving. Audit and
+migrate every remaining literal dimension vector and generic arity, especially
+Buckingham-π rank/nullspace/named-group algebra, optimization/IR/scenario,
+ledger/package/crosswalk identities, parsers, standalone `fs-wasm`, tests and
+goldens. Old bytes/content identities remain immutable and bind an explicit
+old→new crosswalk rather than being overwritten. Candela remains omitted until
+photometry is real.
 
 Dimensional equality is still not semantic equality. Add noninterchangeable
 quantity kinds/conversions for affine absolute temperature versus temperature
@@ -2354,7 +2407,7 @@ oscillating-cylinder and gerotor flow (moving-boundary LBM). A family name such
 as TEAM, NAFEMS or CFR is not an executable benchmark until those fields and an
 independently reviewed expected result are present.
 
-**Certifying the certifiers (master-plan/addendum falsifier discipline):**
+**Certifying the certifiers (primary-plan/addendum falsifier discipline):**
 - Mobility certificates vs. randomized Jacobian rank probes and Grübler
   falsifiers (disagreement is Sev-0).
 - Event soundness derives from validated true-flow and root-count proofs;
@@ -2397,7 +2450,7 @@ fixture, while theorem cards start with their enabling phases.
 
 | Phase | Scope | Exit criteria (all Gauntlet-gated) |
 |---|---|---|
-| **E0a — Units, identity, schema** | six-base/semantic units; stable machine IDs/lineage; scenario/machine IR; ledger/package/crosswalk and standalone-fs-wasm migration | five↔six wire decoding and immutable old/new hashes; all literal/generic consumers migrated; FrankenScript→scenario→package stable-ID/hash round trip; ambiguous lineage refuses |
+| **E0a — Units, identity, schema** | six-base/semantic units; typed `EntityId`, `SourceByteId`, representation-specific `WireContentId`, and problem-semantic identities; scenario/machine IR; ledger/package/crosswalk and standalone-fs-wasm migration | five↔six wire decoding and immutable old/new typed identities; all literal/generic consumers migrated; FrankenScript→scenario→package preserves lineage `EntityId`, emits a distinct `WireContentId` for each exact serialization, and relates admitted meaning through `ProblemSemanticId` crosswalk receipts; exact source bytes retain their separate `SourceByteId`, and ambiguous lineage or authority refuses |
 | **E0b — Operators and solvers** | weighted/coupled constitutive operators; `ConstitutiveGraph`; nonlinear/block solver; neutral versioned ports/transfers | heat/current manufactured order/units plus free-energy/dissipation/cross-coupling checks; manifest fixture compiles without cycles; scalar-port migration and power-pairing battery |
 | **E0c — Data and V&V registry** | immutable observation/claim/model cards; offline pack compiler; typed validity/evidence; benchmark and V&V registry | one complete material-query dependency closure with source/license/covariance; blind calibration/validation split; intentionally invalid pack/query refused |
 | **E0d — Replayed vertical slice** | one minimal admitted **machine-graph skeleton** using typed toy rotational/electrical/thermal storage, loss and source elements—not a physical motor claim—plus transactional snapshot/cancellation and report | incomplete graph rejected; admitted graph runs, audits, checkpoints, cancels/drains/resumes and bit-replays at the declared scale; the graph is later rebound to real E1–E5 domain artifacts without identity drift; initial thermodynamics/identity theorem cards open |
@@ -2408,7 +2461,7 @@ fixture, while theorem cards start with their enabling phases.
 | **E5 — Reactive-flow machine stack** | typed thermochemistry, conservative 0-D/1-D gas, EOS-specific entropy/invariant-domain lane, porous/capillary transport, moving-boundary `fs-flux`/LBM, CHT, acoustics and seal leakage | thermo/species/detailed-balance laws; Riemann/nozzle/engine/acoustic validation QoIs; fluid/body impulse-torque-work and GCL; Wankel geometry/volume/seal/blow-by/thermal receipts; `fs-wankel-e2e` |
 | **E6 — High-fidelity escalation** | dynamic hp/adaptivity; real-gas/multiphase/sprays, multi-D reacting ALE/CutFEM, emissions/aftertreatment, advanced hysteresis/radiation/FSI; single-node scale and multi-node decision gate | reduced↔high-fidelity discrepancy/escalation validated on at least two machines; ScaleQualification at matched QoI error; at least one reproducible 3-D reacting moving-domain deck closes mass/element/energy/GCL and its named QoI band, so 3-D combustion is an admitted measured rung rather than a permanent exclusion |
 | **E7 — Whole-machine synthesis** | genset, induction, constant-width, pump-bearing and turbo-e-fuel flagships; safety/EMC cases; mature campaigns; upgraded correlated UQ/GD&T, nonlinear assimilation/as-built, rare-event reliability, OED/optimization/interoperability | closed accounting/stability/error/loss-ownership windows; blind experimental validation; one safety/fault-containment case; FMI/SSP quarantine conformance; a versioned `CompetitiveCapabilityLedger` on named whole-machine decks; at least two robust design improvements and one posterior digital-twin update |
-| **E8 — Theorem Foundry integration summit** | independent reproduction and formal adjudication/promotion attempts for all §3.11 cards; nonlinear stacks, multisymplectic composition, set-valued hybrid reachability and adaptive model-category routing | every card has exact quantifiers, TCB, baseline, counterexample generator, checker, retained falsifier and reproduction pack; at least three independent cards spanning (i) topology/coupling, (ii) mechanisms/hybrids/contact and (iii) thermodynamics/fidelity/life are both `KernelChecked` and `ScaleQualified`; failed moonshots remain versioned/refuted and do not block solid lanes or become hidden prerequisites |
+| **E8 — Theorem Foundry integration summit** | independent reproduction and formal adjudication/promotion attempts for all §3.11 cards; nonlinear stacks, multisymplectic composition, set-valued hybrid reachability and adaptive model-category routing | every card has exact quantifiers, TCB, baseline, counterexample generator, checker, retained falsifier, per-instance `AdmissibilityReceipt`, topology/measure/fibre/scale-order-bound strength-matched `NonVacuityReceipt`, and reproduction pack; at least three independent cards spanning (i) topology/coupling, (ii) mechanisms/hybrids/contact and (iii) thermodynamics/fidelity/life have an immutable `Stable` statement, `SatisfiableWitnessed` assumptions, `Proved` mathematics (or a `ConditionalProof` whose declared obligations are all discharged), positively `Admitted` qualifying instances, reproduced strength-matched nonvacuity, no authority-relevant unresolved gap, and are also `KernelChecked`, `ScaleQualified`, and `Reproduced`. No conjecture qualifies merely by having code or a scale run. Unsuccessful moonshots retain their exact terminal state (`Refuted` only by an independently admitted genuine countermodel or an independently kernel-checked proof of negation), do not block solid lanes, and never become hidden prerequisites |
 
 Parallel tracks may start after their actual prerequisites, but one unproven
 research mechanism is isolated per proof lane. E6 high-fidelity promotions and
@@ -2443,10 +2496,10 @@ This exposes “brilliant but unadoptable” ideas instead of hiding adoption co
 | R13 Topological/distributed winding coupling | 4 | 4 | 4 | 3 | 2 | 10.7 | E4 |
 | R14 Entropy/invariant-domain flux ledger | 4 | 4 | 4 | 4 | 2 | 8.0 | E5 |
 | R15 Port-thermodynamic + multirate/monolithic bus | 5 | 4 | 5 | 4 | 2 | 12.5 | E0–E7 |
-| R16 Add amount-of-substance dimension now | 5 | 5 | 5 | 2 | 1 | **62.5** | E0 |
+| R16 Complete six-base amount-of-substance consumer migration and authority crosswalks | 5 | 5 | 5 | 2 | 1 | **62.5** | E0 |
 | R17 Power-electronics/control/bifurcation stack | 5 | 4 | 4 | 4 | 2 | 10.0 | E4 |
 
-Before conversion to Beads, **every** row gets a full recommendation card:
+The Beads conversion gives **every** row a full recommendation card, maintained with:
 failure signature, change, adoption wedge, baseline comparator, primary-paper
 status, budgeted mode, cost p50/p95/p99, assumptions, calibration trigger,
 fallback/rollback, interference tests, verification and validation artifacts,
@@ -2528,10 +2581,10 @@ the simpler artifact.
 | PO-14 | Moving meshes/fresh cells satisfy GCL and mass/momentum/energy remap as applicable, plus equal-and-opposite fluid/body impulse, torque and boundary-work/power receipts | ALE/LBM direct audits |
 | PO-15 | Material/interface queries are unit/frame/domain/definition correct, covariance preserving and provenance/license complete. Intrinsic porous permeability, hydraulic conductivity, basis-specific membrane permeability and thickness-normalized permeance cannot crosswalk without definition/test receipts | schema/property mutation battery |
 | PO-16 | Performance gates bind model, resolution, error/QoI, machine fingerprint and baseline; no naked throughput number is a claim | `fs-roofline` receipt schema |
-| PO-17 | A §3.11 theorem can strengthen a production claim only when its exact statement/assumptions are machine-readable, its formal/executable checker reproduces, and adversarial representative changes/counterexamples fail to break it | `TheoremCard` lifecycle + independent reproduction pack |
+| PO-17 | A §3.11 theorem can strengthen a production claim only when its exact statement/assumptions are machine-readable, the instance has an independently checked `AdmissibilityReceipt`, the declared point/open/positive-measure/fibrewise/scale nonvacuity obligation is reproduced, and its formal/executable checker and TCB reproduce; finite falsifier survival alone never proves it | `TheoremCard` lifecycle + admission/nonvacuity receipts + independent reproduction pack |
 | PO-18 | The electromechanical and gluing theorem cards prove representative/gauge/cut invariance and whole-interface work/GCL identities, while the force card encloses every named numerical/geometry/material contribution | commuting-diagram checker + guaranteed functional bounds |
 | PO-19 | The whole-machine thermodynamics card composes open-system first/second-law statements across multirate windows with explicit boundary entropy/exergy; unresolved defect cannot be hidden in a component audit | compositional theorem kernel + runtime boundary ledger |
-| PO-20 | Fidelity descent and conjugate-geometry cards preserve evidence monotonicity and bound model/envelope naturality defects; a counterexample revises the theorem rather than being discarded | crosswalk/envelope proof kernels + counterexample corpus |
+| PO-20 | Fidelity descent and conjugate-geometry cards preserve evidence monotonicity and bound model/envelope naturality defects; each candidate is independently classified as genuine admitted countermodel, out-of-domain, checker defect, kernel/TCB defect, or pending. Only the first refutes the exact revision; any sharper statement is a new related revision rather than a silent edit | crosswalk/envelope proof kernels + admission checker + adjudicated counterexample corpus |
 | PO-21 | Multicontact action/reaction, stored contact energy, dissipation, passive impact work, frictional heat and wear-state updates close globally; compliant/barrier/nonsmooth substitutions expose model discrepancy and limit path | contact/tribology work and state-transition ledger |
 | PO-22 | Acoustic lanes satisfy radiation, complex-power/energy-flux, dispersion and interface reciprocity where applicable; source transfer/surface equivalence and turbulence/combustion source validity are separate claims | analytic radiation/dispersion + structural/source-transfer batteries |
 | PO-23 | Sampled/periodic/hybrid controls declare transform conventions and pass stability/region-of-attraction, observability/detectability, implementation-error, timing/fault-isolation and closed-loop risk obligations appropriate to their nonlinearities | lifted/Floquet/IQC/Lyapunov/reachability + fault batteries |
@@ -2675,12 +2728,12 @@ strong claim while preserving the partial artifacts.
 
 ## 15. Operationalization
 
-1. **Beads conversion.** This plan should be decomposed into `br` issues per
-   phase with dependency edges mirroring §10 (E0 items unblock E1–E5;
-   flagships depend on their §8 composition lists), including explicit unit +
-   e2e test beads per feature cluster, per the house beads workflow. That
-   conversion is a follow-up work session with 4–5 plan-space refinement
-   passes; this document is written to be self-contained input for it.
+1. **Beads execution and maintenance.** The plan is now decomposed into `br`
+   issues with phase, flagship, theorem-card, unit/conformance and real E2E
+   dependencies. Treat those self-contained beads as the executable program:
+   keep implementation status, dependency edges, estimates, authority/no-claim
+   boundaries and verification evidence current as the live tree evolves. Use
+   `bv --robot-*` graph diagnostics and never silently recreate plan-only work.
 2. **Contracts first.** Each new crate lands `CONTRACT.md` (all ten required
    sections, honest no-claims from §14) *before* it becomes a dependency
    target — `xtask check-contracts` enforces.
@@ -2962,8 +3015,8 @@ gate, evidence route or honest boundary.
 ---
 
 *End of plan. The constitution remains `COMPREHENSIVE_PLAN_FOR_FRANKENSIM.md`
-for mission, layers, dependency policy and the Decalogue. The explicit
-Normative Delta and Ratification Register at the beginning of this charter
-governs its named refinements until they are mirrored upstream; live crate
-contracts govern implemented reality. Every other conflict is resolved loudly,
-with a reviewable diff and ratification Bead—not by silent precedence.*
+for mission, layers, dependency policy and the Decalogue. Its mirrored
+Ratification Register governs the accepted named refinements; this charter
+retains their detailed rationale, and live crate contracts govern implemented
+reality. Every later conflict is resolved loudly with a reviewable diff and a
+ratification Bead—not by silent precedence.*
