@@ -311,8 +311,13 @@ Consumers: the P2 marquee demo, the HELM e2e suite (gp3.11).
   or pending pause acknowledgement at the sampled point. The caller owns the
   surrounding end-of-session coordination and ordinary scope flushes. One
   governor/session/open tuple has one
-  opaque `ProgramRiskReportId`; exact report retry is a zero-row replay and any
-  changed logical time or assessment conflicts. The receipt retains the
+  opaque `ProgramRiskReportId`; exact report retry adds no artifact, operation,
+  edge, terminal, witness, or event row, and any changed logical time or
+  assessment conflicts. A valid schema-v8 report has no schema-v9 seal rows;
+  its first replay or recovery atomically revalidates the complete historic
+  lineage and installs whichever of the two immutable seals are missing. This
+  bounded compatibility write is the only row addition permitted on such a
+  retry. The receipt retains the
   report-time execution generation, so later pause/resume progress cannot
   rewrite the singleton's durable claim or make an exact retry structurally
   stale. A process-local singleton reservation prevents two callers sharing
@@ -323,7 +328,21 @@ Consumers: the P2 marquee demo, the HELM e2e suite (gp3.11).
   Adoption verifies the exact seed, versions, byte budget, capability, logical
   timestamps, deterministic main-branch execution, successful no-diagnostic
   outcome, roles, and complete two-artifact edge set rather than trusting IR
-  text alone.
+  text alone. Verification uses fixed-size `LIMIT cap+1` ledger reads capped at
+  one report producer and two role-qualified edges through covering lineage
+  indexes; any truncation, second producer, third edge, missing edge, or role
+  substitution fails closed before an unbounded lineage fan-out can be scanned,
+  sorted, or materialized. Materialization also installs both the ledger's
+  immutable exclusive output seal for the report artifact and its exact
+  two-edge-set seal for the lineage operation in the same transaction as a
+  newly-created op. Both unpublished-lineage adoption and schema-v8 lazy seal
+  adoption validate the unsealed exact shape and install both seals in one
+  transaction. Existing wrong-owner or wrong-count seals fail closed and are
+  never replaced. Consequently, an arbitrary second ledger
+  handle cannot add either a competing producer or a third lineage edge between
+  verification and terminal commit or after publication; schema-attested edge
+  triggers refuse both mutations. Replay and recovery revalidate both seals and
+  their parent state with bounded covering-index probes.
   Artifact/lineage materialization precedes the atomic terminal/event batch: a
   crash in that seam can leave only reusable content-addressed artifacts and
   lineage, never a falsely terminal report. `recover_program_risk_report`
@@ -513,9 +532,11 @@ Consumers: the P2 marquee demo, the HELM e2e suite (gp3.11).
 12. **Program-risk surfacing is singleton and fail-closed**: one drained,
     sink-bound session snapshot owns one typed terminal and alert-summary event.
     Missing, duplicate, malformed, or tripped evidence remains visible as an
-    alert; exact retry adds no artifact, lineage, terminal, witness, or event
-    row even after the live session advances to a later gate generation;
-    changed retry cannot replace the original report.
+    alert; exact retry adds no artifact, operation, edge, terminal, witness, or
+    event row even after the live session advances to a later gate generation.
+    The first schema-v9 replay or recovery of a valid schema-v8 report may add
+    only its missing immutable output and exact-edge-set seals; changed retry
+    cannot replace the original report.
 
 ## Error model
 
@@ -647,9 +668,10 @@ regression advances through pause acknowledgement and resume after publication,
 then proves replay still uses the report's original generation and adds no row;
 a durable generation-one report refuses recovery until that pause,
 acknowledgement, and activation have themselves been reconstructed.
-In-module G0 tests freeze the v1 positional row order, status-byte/code mapping,
-codec offsets, historic register/report decoder, and process-local singleton
-reservation.
+In-module G0/G3 tests freeze the v1 positional row order, status-byte/code
+mapping, codec offsets, historic register/report decoder, process-local
+singleton reservation, and populated schema-v8-style terminal replay/recovery
+whose first schema-v9 verification adds only the two missing seal rows.
 
 `tests/gemm_tune.rs` (bead yqug drills): cold start sweeps once and
 matches serial bits; ledger warm start seeds a fresh session without
@@ -739,13 +761,13 @@ armed and runs when an x86 host picks it up.
   crash may retain rooted artifacts without the terminal; retry deterministically
   reuses them. Consumers must treat only the typed terminal/event receipt as a
   published session snapshot.
-- **A completed fs-ledger op is not yet physically sealed against later links**:
-  program-risk replay/recovery detects any extra, missing, or role-shifted edge
-  and refuses the receipt, but this slice does not claim tamper resistance
-  against another in-process caller holding the same mutable ledger. There is
-  also a verify-to-terminal transaction seam. Finished-op sealing belongs in a
-  ledger-wide invariant so every lineage consumer receives the same guarantee;
-  it is tracked by `frankensim-cgt07`.
+- **Schema-v8 program-risk lineage is sealed lazily, not by migration-time
+  inference**: schema v9 creates empty seal tables because the ledger layer
+  cannot infer which historic consumers claimed exclusive provenance. The
+  first PPVS replay or recovery revalidates the exact bounded lineage inside a
+  transaction and installs its missing seals. Until that consumer verification
+  succeeds, a migrated report remains unsealed and is not accepted as
+  replayable/recoverable by fs-session.
 - **Two-lane executor integration** (interactive vs batch lanes with
   core quotas) is deferred to gp3.11's study-scale batteries; the
   enforcement/idempotency/estimate surfaces here are what it composes.

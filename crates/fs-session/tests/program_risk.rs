@@ -49,7 +49,7 @@ fn observations_with_pr001_trigger() -> Vec<ProgramRiskObservation<'static>> {
     observations
 }
 
-fn durable_counts(ledger: &fs_ledger::Ledger) -> [u64; 11] {
+fn durable_counts(ledger: &fs_ledger::Ledger) -> [u64; 13] {
     [
         ledger.table_count("artifacts").expect("artifact count"),
         ledger
@@ -57,6 +57,12 @@ fn durable_counts(ledger: &fs_ledger::Ledger) -> [u64; 11] {
             .expect("artifact-chunk count"),
         ledger.table_count("ops").expect("op count"),
         ledger.table_count("edges").expect("edge count"),
+        ledger
+            .table_count("artifact_output_seals")
+            .expect("artifact-output-seal count"),
+        ledger
+            .table_count("op_artifact_edge_seals")
+            .expect("op-artifact-edge-seal count"),
         ledger.table_count("session_claims").expect("claim count"),
         ledger
             .table_count("session_claim_discovery")
@@ -154,12 +160,22 @@ fn g0_tripped_risk_is_automatically_artifacted_rooted_and_surfaced_once() {
     assert!(report_json.contains("\"alert_count\":1"));
     assert!(report_json.contains("\"generation\":0"));
     assert!(report_json.contains("\"id\":\"PR-001\",\"status\":\"triggered\""));
-    assert!(
+    let producers = ledger
+        .artifact_producer_ops_bounded(&first.receipt.report_artifact(), 1)
+        .expect("bounded lineage query");
+    assert!(!producers.truncated);
+    assert_eq!(producers.op_ids, vec![first.receipt.lineage_op()]);
+    assert_eq!(
         ledger
-            .explain(&first.receipt.report_artifact(), 1)
-            .expect("lineage query")
-            .is_some(),
-        "the report artifact is rooted in the lineage DAG"
+            .artifact_output_seal(&first.receipt.report_artifact())
+            .expect("report output seal"),
+        Some(first.receipt.lineage_op())
+    );
+    assert_eq!(
+        ledger
+            .op_artifact_edge_seal(first.receipt.lineage_op())
+            .expect("lineage edge-set seal"),
+        Some(2)
     );
 
     let counts = durable_counts(&ledger);
@@ -208,6 +224,99 @@ fn g0_tripped_risk_is_automatically_artifacted_rooted_and_surfaced_once() {
             .is_some()
     );
     assert!(ledger.lint().expect("ledger lint").is_clean());
+}
+
+#[test]
+fn g3_sealed_report_refuses_a_second_producer_before_replay() {
+    let ledger = fs_ledger::Ledger::open(":memory:").expect("program-risk ledger");
+    let governor = Governor::new();
+    let session = SessionId(70_101);
+    let open_id = governor
+        .session_open_id(session, "program-risk-multiple-producers")
+        .expect("open authority");
+    let open = governor
+        .open_session(open_id, token(session, "program-risk-multiple-producers"))
+        .expect("session open");
+    governor
+        .flush_scope_to_ledger(&open.flush_permit(), &ledger)
+        .expect("persist open prerequisite");
+    let observations = observations_with_pr001_trigger();
+    let first = governor
+        .write_program_risk_session_end_report(&ledger, &open, 42, &observations)
+        .expect("publish canonical report");
+
+    let explicits = fs_ledger::FiveExplicits {
+        seed: b"foreign-producer",
+        versions: "{}",
+        budget: "{}",
+        capability: "{}",
+    };
+    let foreign = ledger
+        .begin_op(None, "{}", &explicits, 0)
+        .expect("foreign producer op");
+    let error = ledger
+        .link(
+            foreign,
+            &first.receipt.report_artifact(),
+            fs_ledger::EdgeRole::Out,
+        )
+        .expect_err("sealed report must reject a foreign output edge");
+    assert!(matches!(
+        error,
+        fs_ledger::LedgerError::Invalid { field, problem }
+            if field == "edge" && problem.contains("exclusive output-producer seal")
+    ));
+    ledger
+        .finish_op(foreign, fs_ledger::OpOutcome::Ok, None, 0)
+        .expect("finish foreign producer");
+
+    let replay = governor
+        .write_program_risk_session_end_report(&ledger, &open, 42, &observations)
+        .expect("sealed exact report replay");
+    assert_eq!(replay.disposition, ProgramRiskReportDisposition::Replayed);
+    assert_eq!(replay.receipt, first.receipt);
+}
+
+#[test]
+fn g3_sealed_lineage_refuses_a_third_edge_before_replay() {
+    let ledger = fs_ledger::Ledger::open(":memory:").expect("program-risk ledger");
+    let governor = Governor::new();
+    let session = SessionId(70_102);
+    let open_id = governor
+        .session_open_id(session, "program-risk-extra-edge")
+        .expect("open authority");
+    let open = governor
+        .open_session(open_id, token(session, "program-risk-extra-edge"))
+        .expect("session open");
+    governor
+        .flush_scope_to_ledger(&open.flush_permit(), &ledger)
+        .expect("persist open prerequisite");
+    let observations = observations_with_pr001_trigger();
+    let first = governor
+        .write_program_risk_session_end_report(&ledger, &open, 42, &observations)
+        .expect("publish canonical report");
+
+    let extra = ledger
+        .put_artifact("program-risk-adversarial-extra", b"extra-edge", None)
+        .expect("extra artifact");
+    let error = ledger
+        .link(
+            first.receipt.lineage_op(),
+            &extra.hash,
+            fs_ledger::EdgeRole::In,
+        )
+        .expect_err("sealed lineage op must reject a third edge");
+    assert!(matches!(
+        error,
+        fs_ledger::LedgerError::Invalid { field, problem }
+            if field == "edge" && problem.contains("artifact-edge-set seal")
+    ));
+
+    let replay = governor
+        .write_program_risk_session_end_report(&ledger, &open, 42, &observations)
+        .expect("sealed exact report replay");
+    assert_eq!(replay.disposition, ProgramRiskReportDisposition::Replayed);
+    assert_eq!(replay.receipt, first.receipt);
 }
 
 #[test]

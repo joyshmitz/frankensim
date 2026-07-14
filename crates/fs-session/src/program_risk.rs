@@ -17,7 +17,7 @@ use fs_ledger::session_registry::{
     SessionMutationClaim, SessionTerminalBatch, SessionTerminalBatchResult, SessionTerminalGroup,
     SessionTerminalRow,
 };
-use fs_ledger::{EdgeRole, EventRow, FiveExplicits, Ledger, OpOutcome};
+use fs_ledger::{EdgeRole, EventRow, ExecMode, FiveExplicits, Ledger, OpArtifactEdge, OpOutcome};
 
 use crate::governor::{Governor, SessionOpenReceipt};
 use crate::{SessionError, SessionId};
@@ -29,10 +29,10 @@ pub const PROGRAM_RISK_SESSION_REPORT_ARTIFACT_KIND: &str = "program-risk-sessio
 /// Owned event kind for one published session report.
 pub const PROGRAM_RISK_REPORT_EVENT_KIND: &str = "program-risk-report";
 /// Version of the singleton report authority.
-pub const PROGRAM_RISK_REPORT_IDENTITY_VERSION: u32 = 1;
+pub const PROGRAM_RISK_REPORT_IDENTITY_VERSION: u32 = 2;
 /// Domain for the singleton report authority.
 pub const PROGRAM_RISK_REPORT_ID_DOMAIN: &str =
-    "org.frankensim.fs-session.program-risk-report-id.v1";
+    "org.frankensim.fs-session.program-risk-report-id.v2";
 /// Version of the strict terminal payload/receipt codec.
 pub const PROGRAM_RISK_REPORT_CODEC_VERSION: u32 = 1;
 /// Version of the positional PR-001--PR-012 row order in the terminal codec.
@@ -52,6 +52,8 @@ const PROGRAM_RISK_REPORT_CODEC_V1_STATUSES_OFFSET: usize = 92;
 const PROGRAM_RISK_REPORT_CODEC_V1_BYTES: usize =
     PROGRAM_RISK_REPORT_CODEC_V1_STATUSES_OFFSET + PROGRAM_RISK_REPORT_LOGICAL_ROWS;
 const MAX_PROGRAM_RISK_ARTIFACT_BYTES: u64 = 1024 * 1024;
+const PROGRAM_RISK_REPORT_PRODUCER_CAP: usize = 1;
+const PROGRAM_RISK_LINEAGE_EDGE_CAP: usize = 2;
 const PROGRAM_RISK_REGISTER_META: &str = "{\"schema\":\"frankensim.program-risk-register.v1\"}";
 const PROGRAM_RISK_SESSION_REPORT_META: &str =
     "{\"schema\":\"frankensim.program-risk-session-report.v1\"}";
@@ -116,8 +118,8 @@ pub const PROGRAM_RISK_REPORT_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
     "frankensim-identity-schema-v1",
     "id=fs-session:program-risk-report-id",
     "version_const=PROGRAM_RISK_REPORT_IDENTITY_VERSION",
-    "version=1",
-    "domain=org.frankensim.fs-session.program-risk-report-id.v1",
+    "version=2",
+    "domain=org.frankensim.fs-session.program-risk-report-id.v2",
     "domain_const=PROGRAM_RISK_REPORT_ID_DOMAIN",
     "encoder=program_risk_report_authority_identity",
     "encoder_helpers=none",
@@ -1279,7 +1281,7 @@ fn validate_historic_report_v1(
 }
 
 #[allow(clippy::too_many_arguments)] // Exact historic byte lengths are part of the frozen lineage budget.
-fn verify_lineage_op(
+fn verify_lineage_shape(
     ledger: &Ledger,
     op: i64,
     report_id: ProgramRiskReportId,
@@ -1315,23 +1317,23 @@ fn verify_lineage_op(
         });
     }
 
-    let explained = ledger
-        .explain(&report_artifact, 1)
-        .map_err(|error| map_ledger("program-risk lineage execution envelope", error))?
-        .ok_or_else(|| SessionError::Persistence {
-            what: "program-risk report artifact disappeared during lineage verification"
-                .to_string(),
-        })?;
-    let producer = explained
-        .produced_by
-        .iter()
-        .find(|candidate| candidate.id == op)
-        .ok_or_else(|| SessionError::Persistence {
+    let producers = ledger
+        .artifact_producer_ops_bounded(&report_artifact, PROGRAM_RISK_REPORT_PRODUCER_CAP)
+        .map_err(|error| map_ledger("program-risk report producer query", error))?;
+    if producers.truncated || producers.op_ids.as_slice() != [op] {
+        return Err(SessionError::Persistence {
             what: format!(
-                "program-risk lineage op {op} is not an output producer of the report artifact"
+                "program-risk lineage op {op} is not the sole output producer of the report artifact"
             ),
+        });
+    }
+    let context = ledger
+        .op_execution_context(op)
+        .map_err(|error| map_ledger("program-risk lineage execution context", error))?
+        .ok_or_else(|| SessionError::Persistence {
+            what: format!("program-risk lineage op {op} disappeared during verification"),
         })?;
-    if producer.exec_mode != "deterministic" || producer.branch != fs_ledger::MAIN_BRANCH {
+    if context.exec_mode != ExecMode::Deterministic || context.branch != fs_ledger::MAIN_BRANCH {
         return Err(SessionError::Persistence {
             what: format!(
                 "program-risk lineage op {op} was not recorded in deterministic mode on the main branch"
@@ -1339,32 +1341,153 @@ fn verify_lineage_op(
         });
     }
 
-    let mut expected_artifacts = [register_artifact, report_artifact];
-    expected_artifacts.sort_unstable();
-    let linked_artifacts = ledger
-        .op_artifact_hashes(op)
-        .map_err(|error| map_ledger("program-risk exact lineage artifact set", error))?;
-    if linked_artifacts.as_slice() != expected_artifacts.as_slice() {
+    let linked = ledger
+        .op_artifact_edges_bounded(op, PROGRAM_RISK_LINEAGE_EDGE_CAP)
+        .map_err(|error| map_ledger("program-risk exact lineage edge set", error))?;
+    let expected_edges = [
+        OpArtifactEdge {
+            role: EdgeRole::In,
+            artifact: register_artifact,
+        },
+        OpArtifactEdge {
+            role: EdgeRole::Out,
+            artifact: report_artifact,
+        },
+    ];
+    if linked.truncated || linked.edges.as_slice() != expected_edges {
         return Err(SessionError::Persistence {
             what: format!(
-                "program-risk lineage op {op} has extra, missing, or duplicate artifact edges"
-            ),
-        });
-    }
-    let register_edge = ledger
-        .edge_exists(op, &register_artifact, EdgeRole::In)
-        .map_err(|error| map_ledger("program-risk register lineage edge", error))?;
-    let report_edge = ledger
-        .edge_exists(op, &report_artifact, EdgeRole::Out)
-        .map_err(|error| map_ledger("program-risk report lineage edge", error))?;
-    if !register_edge || !report_edge {
-        return Err(SessionError::Persistence {
-            what: format!(
-                "program-risk lineage op {op} lacks its register input or report output edge"
+                "program-risk lineage op {op} has extra, missing, duplicate, or role-mismatched artifact edges"
             ),
         });
     }
     Ok(())
+}
+
+fn verify_lineage_seals(
+    ledger: &Ledger,
+    op: i64,
+    report_artifact: fs_blake3::ContentHash,
+) -> Result<(), SessionError> {
+    if lineage_seals_are_complete(ledger, op, report_artifact)? {
+        return Ok(());
+    }
+    Err(SessionError::Persistence {
+        what: format!(
+            "program-risk lineage op {op} is missing one or both immutable lineage seals"
+        ),
+    })
+}
+
+fn lineage_seals_are_complete(
+    ledger: &Ledger,
+    op: i64,
+    report_artifact: fs_blake3::ContentHash,
+) -> Result<bool, SessionError> {
+    let sealed = ledger
+        .artifact_output_seal(&report_artifact)
+        .map_err(|error| map_ledger("program-risk report output seal", error))?;
+    if let Some(sealed_op) = sealed
+        && sealed_op != op
+    {
+        return Err(SessionError::Persistence {
+            what: format!(
+                "program-risk report artifact is immutably sealed to lineage op {sealed_op}, not {op}"
+            ),
+        });
+    }
+    let edge_count = ledger
+        .op_artifact_edge_seal(op)
+        .map_err(|error| map_ledger("program-risk lineage edge-set seal", error))?;
+    if let Some(sealed_count) = edge_count
+        && sealed_count != PROGRAM_RISK_LINEAGE_EDGE_CAP
+    {
+        return Err(SessionError::Persistence {
+            what: format!(
+                "program-risk lineage op {op} is immutably sealed at {sealed_count} artifact edges, not the required exact two"
+            ),
+        });
+    }
+    Ok(sealed.is_some() && edge_count.is_some())
+}
+
+#[allow(clippy::too_many_arguments)] // Exact historic byte lengths are part of the frozen lineage budget.
+fn verify_lineage_op(
+    ledger: &Ledger,
+    op: i64,
+    report_id: ProgramRiskReportId,
+    expected_ir: &str,
+    register_artifact: fs_blake3::ContentHash,
+    register_len: usize,
+    report_artifact: fs_blake3::ContentHash,
+    report_len: usize,
+) -> Result<(), SessionError> {
+    if lineage_seals_are_complete(ledger, op, report_artifact)? {
+        verify_lineage_shape(
+            ledger,
+            op,
+            report_id,
+            expected_ir,
+            register_artifact,
+            register_len,
+            report_artifact,
+            report_len,
+        )?;
+        return Ok(());
+    }
+    if ledger.in_transaction() {
+        return Err(SessionError::Persistence {
+            what: "program-risk legacy lineage-seal adoption refuses a caller-owned transaction"
+                .to_string(),
+        });
+    }
+
+    ledger
+        .begin()
+        .map_err(|error| map_ledger("program-risk legacy lineage-seal adoption begin", error))?;
+    let adoption = (|| -> Result<(), SessionError> {
+        lineage_seals_are_complete(ledger, op, report_artifact)?;
+        verify_lineage_shape(
+            ledger,
+            op,
+            report_id,
+            expected_ir,
+            register_artifact,
+            register_len,
+            report_artifact,
+            report_len,
+        )?;
+        ledger
+            .seal_artifact_output(&report_artifact, op)
+            .map_err(|error| map_ledger("program-risk legacy report output seal", error))?;
+        ledger
+            .seal_op_artifact_edges(op, PROGRAM_RISK_LINEAGE_EDGE_CAP)
+            .map_err(|error| map_ledger("program-risk legacy lineage edge-set seal", error))?;
+        Ok(())
+    })();
+    if let Err(error) = adoption {
+        let _ = ledger.rollback();
+        return Err(error);
+    }
+    if let Err(error) = ledger.commit() {
+        let _ = ledger.rollback();
+        return Err(map_ledger(
+            "program-risk legacy lineage-seal adoption commit",
+            error,
+        ));
+    }
+
+    verify_lineage_shape(
+        ledger,
+        op,
+        report_id,
+        expected_ir,
+        register_artifact,
+        register_len,
+        report_artifact,
+        report_len,
+    )?;
+    verify_lineage_seals(ledger, op, report_artifact)
 }
 
 fn ensure_lineage_op(
@@ -1376,26 +1499,6 @@ fn ensure_lineage_op(
     report_len: usize,
 ) -> Result<i64, SessionError> {
     let ir = lineage_ir(report_id, register_artifact, report_artifact);
-    let explained = ledger
-        .explain(&report_artifact, 1)
-        .map_err(|error| map_ledger("program-risk lineage lookup", error))?
-        .ok_or_else(|| SessionError::Persistence {
-            what: "program-risk report artifact disappeared before lineage rooting".to_string(),
-        })?;
-    if let Some(existing) = explained.produced_by.iter().find(|op| op.ir == ir) {
-        verify_lineage_op(
-            ledger,
-            existing.id,
-            report_id,
-            &ir,
-            register_artifact,
-            register_len,
-            report_artifact,
-            report_len,
-        )?;
-        return Ok(existing.id);
-    }
-
     if ledger.in_transaction() {
         return Err(SessionError::Persistence {
             what: "program-risk lineage materialization refuses a caller-owned transaction"
@@ -1413,12 +1516,55 @@ fn ensure_lineage_op(
     ledger
         .begin()
         .map_err(|error| map_ledger("program-risk lineage begin", error))?;
-    let write = (|| {
-        let op = ledger.begin_op(Some(&session_bytes), &ir, &explicits, 0)?;
-        ledger.link(op, &register_artifact, EdgeRole::In)?;
-        ledger.link(op, &report_artifact, EdgeRole::Out)?;
-        ledger.finish_op(op, OpOutcome::Ok, None, 0)?;
-        Ok::<i64, fs_ledger::LedgerError>(op)
+    let write = (|| -> Result<i64, SessionError> {
+        let producers = ledger
+            .artifact_producer_ops_bounded(&report_artifact, PROGRAM_RISK_REPORT_PRODUCER_CAP)
+            .map_err(|error| map_ledger("program-risk lineage lookup", error))?;
+        if producers.truncated {
+            return Err(SessionError::Persistence {
+                what: "program-risk report artifact has multiple output producers; refusing ambiguous lineage"
+                    .to_string(),
+            });
+        }
+        if let Some(&existing) = producers.op_ids.first() {
+            verify_lineage_shape(
+                ledger,
+                existing,
+                report_id,
+                &ir,
+                register_artifact,
+                register_len,
+                report_artifact,
+                report_len,
+            )?;
+            ledger
+                .seal_artifact_output(&report_artifact, existing)
+                .map_err(|error| map_ledger("program-risk report output seal", error))?;
+            ledger
+                .seal_op_artifact_edges(existing, PROGRAM_RISK_LINEAGE_EDGE_CAP)
+                .map_err(|error| map_ledger("program-risk lineage edge-set seal", error))?;
+            return Ok(existing);
+        }
+
+        let op = ledger
+            .begin_op(Some(&session_bytes), &ir, &explicits, 0)
+            .map_err(|error| map_ledger("program-risk lineage op begin", error))?;
+        ledger
+            .link(op, &register_artifact, EdgeRole::In)
+            .map_err(|error| map_ledger("program-risk register input edge", error))?;
+        ledger
+            .link(op, &report_artifact, EdgeRole::Out)
+            .map_err(|error| map_ledger("program-risk report output edge", error))?;
+        ledger
+            .seal_artifact_output(&report_artifact, op)
+            .map_err(|error| map_ledger("program-risk report output seal", error))?;
+        ledger
+            .seal_op_artifact_edges(op, PROGRAM_RISK_LINEAGE_EDGE_CAP)
+            .map_err(|error| map_ledger("program-risk lineage edge-set seal", error))?;
+        ledger
+            .finish_op(op, OpOutcome::Ok, None, 0)
+            .map_err(|error| map_ledger("program-risk lineage finish", error))?;
+        Ok(op)
     })();
     match write {
         Ok(op) => {
@@ -1440,7 +1586,7 @@ fn ensure_lineage_op(
         }
         Err(error) => {
             let _ = ledger.rollback();
-            Err(map_ledger("program-risk lineage materialization", error))
+            Err(error)
         }
     }
 }
@@ -1518,8 +1664,10 @@ impl Governor {
     ///
     /// Exact retry with the same logical time and observations appends zero
     /// terminal/event rows, including after the live session advances to a
-    /// later execution generation once the session is quiescent again. Any
-    /// changed retry conflicts under the same singleton authority.
+    /// later execution generation once the session is quiescent again. The
+    /// first schema-v9 retry of valid schema-v8 lineage may atomically install
+    /// its two missing immutable seal rows. Any changed retry conflicts under
+    /// the same singleton authority.
     ///
     /// # Errors
     /// Foreign/open-mismatched receipts, pending submissions or pauses,
@@ -1818,9 +1966,305 @@ impl Governor {
 #[cfg(test)]
 mod identity_tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use crate::{CapabilityToken, DurableGovernorNonce};
 
     fn hash(byte: u8) -> fs_blake3::ContentHash {
         fs_blake3::ContentHash([byte; 32])
+    }
+
+    fn legacy_token(session: SessionId, ledger_scope: &str) -> CapabilityToken {
+        CapabilityToken {
+            session,
+            ops: vec!["governance.*".to_string()],
+            core_s: 60.0,
+            mem_bytes: 1024 * 1024,
+            wall_s: 60.0,
+            cores: 1,
+            ledger_scope: ledger_scope.to_string(),
+        }
+    }
+
+    fn durable_legacy_path(case: &str) -> String {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let ordinal = NEXT.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir()
+            .join(format!(
+                "fs-session-program-risk-v8-migration-{}-{ordinal}-{case}.ledger",
+                std::process::id()
+            ))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    fn non_seal_row_counts(ledger: &Ledger) -> [u64; 6] {
+        [
+            ledger.table_count("artifacts").expect("artifact count"),
+            ledger.table_count("ops").expect("op count"),
+            ledger.table_count("edges").expect("edge count"),
+            ledger
+                .table_count("session_terminals")
+                .expect("terminal count"),
+            ledger
+                .table_count("session_terminal_events")
+                .expect("terminal-event count"),
+            ledger.table_count("events").expect("event count"),
+        ]
+    }
+
+    fn durable_report_row_counts(ledger: &Ledger) -> [u64; 8] {
+        let [artifacts, ops, edges, terminals, terminal_events, events] =
+            non_seal_row_counts(ledger);
+        [
+            artifacts,
+            ops,
+            edges,
+            terminals,
+            terminal_events,
+            events,
+            ledger
+                .table_count("artifact_output_seals")
+                .expect("output-seal count"),
+            ledger
+                .table_count("op_artifact_edge_seals")
+                .expect("edge-set-seal count"),
+        ]
+    }
+
+    /// Reproduce the populated row state immediately after a schema-v8 ledger
+    /// migrates to v9: the PPVS artifacts, exact lineage, terminal, and event
+    /// exist, while the newly-created seal tables are still empty.
+    #[allow(clippy::too_many_lines)] // One exact populated legacy terminal fixture.
+    fn persist_migrated_v8_style_report(
+        governor: &Governor,
+        ledger: &Ledger,
+        open_receipt: &SessionOpenReceipt,
+        logical_time: i64,
+        observations: &[ProgramRiskObservation<'_>],
+    ) -> ProgramRiskReportReceipt {
+        let sink = ledger
+            .checked_instance_id()
+            .expect("legacy ledger identity");
+        let (session, ledger_scope, generation) = governor
+            .program_risk_session_context(open_receipt, sink)
+            .expect("legacy report context");
+        let report_id = report_id(governor, open_receipt);
+        let assessment = assess_program_risks(observations);
+        let statuses = assessment_statuses(&assessment).expect("twelve legacy statuses");
+        let register_json = program_risk_register_json();
+        let register_artifact = fs_blake3::hash_bytes(register_json.as_bytes());
+        let report_json = report_artifact_json(
+            session,
+            &ledger_scope,
+            open_receipt,
+            register_artifact,
+            logical_time,
+            generation,
+            &assessment,
+        );
+        let report_artifact = fs_blake3::hash_bytes(report_json.as_bytes());
+        assert_eq!(
+            ledger
+                .put_artifact(
+                    PROGRAM_RISK_REGISTER_ARTIFACT_KIND,
+                    register_json.as_bytes(),
+                    Some(PROGRAM_RISK_REGISTER_META),
+                )
+                .expect("legacy register artifact")
+                .hash,
+            register_artifact
+        );
+        assert_eq!(
+            ledger
+                .put_artifact(
+                    PROGRAM_RISK_SESSION_REPORT_ARTIFACT_KIND,
+                    report_json.as_bytes(),
+                    Some(PROGRAM_RISK_SESSION_REPORT_META),
+                )
+                .expect("legacy report artifact")
+                .hash,
+            report_artifact
+        );
+
+        let ir = lineage_ir(report_id, register_artifact, report_artifact);
+        let budget = lineage_budget(register_json.len(), report_json.len());
+        let session_bytes = session.0.to_be_bytes();
+        let explicits = FiveExplicits {
+            seed: report_id.content_hash.as_bytes(),
+            versions: PROGRAM_RISK_LINEAGE_VERSIONS_V1,
+            budget: &budget,
+            capability: PROGRAM_RISK_LINEAGE_CAPABILITY_V1,
+        };
+        let lineage_op = ledger
+            .begin_op(Some(&session_bytes), &ir, &explicits, 0)
+            .expect("legacy lineage op");
+        ledger
+            .link(lineage_op, &register_artifact, EdgeRole::In)
+            .expect("legacy register edge");
+        ledger
+            .link(lineage_op, &report_artifact, EdgeRole::Out)
+            .expect("legacy report edge");
+        ledger
+            .finish_op(lineage_op, OpOutcome::Ok, None, 0)
+            .expect("legacy lineage finish");
+
+        let receipt = ProgramRiskReportReceipt {
+            report_id,
+            register_artifact,
+            report_artifact,
+            lineage_op,
+            logical_time,
+            generation,
+            statuses,
+        };
+        let terminal_bytes = encode_terminal_receipt(&receipt);
+        let payload = event_payload(&receipt);
+        let event = EventRow {
+            session: Some(&session_bytes),
+            t: logical_time,
+            kind: PROGRAM_RISK_REPORT_EVENT_KIND,
+            payload: Some(&payload),
+        };
+        let events = [event];
+        let claim = SessionMutationClaim {
+            authority: report_id.content_hash,
+            ledger_instance_id: sink,
+            governor_hash: governor.identity(),
+            session_open_hash: open_receipt.content_hash(),
+            kind: crate::governor::recovery::KIND_PROGRAM_RISK_REPORT,
+            session: session.0,
+            ledger_scope: &ledger_scope,
+            generation,
+            causal_ordinal: None,
+            payload: &terminal_bytes,
+        };
+        let group = SessionTerminalGroup {
+            terminal: SessionTerminalRow {
+                claim,
+                permit: None,
+                receipt: &terminal_bytes,
+            },
+            events: &events,
+        };
+        let groups = [group];
+        assert!(matches!(
+            ledger
+                .append_session_terminal_batch(&SessionTerminalBatch { groups: &groups })
+                .expect("legacy terminal batch"),
+            SessionTerminalBatchResult::Committed {
+                terminals_inserted: 1,
+                events_appended: 1,
+                ..
+            }
+        ));
+        assert_eq!(
+            ledger
+                .artifact_output_seal(&report_artifact)
+                .expect("legacy output seal absence"),
+            None
+        );
+        assert_eq!(
+            ledger
+                .op_artifact_edge_seal(lineage_op)
+                .expect("legacy edge-set seal absence"),
+            None
+        );
+        receipt
+    }
+
+    #[test]
+    fn migrated_v8_populated_report_replay_adopts_only_missing_v9_seals() {
+        let ledger = Ledger::open(":memory:").expect("migrated-v8 replay ledger");
+        let governor = Governor::new();
+        let session = SessionId(91_001);
+        let open_id = governor
+            .session_open_id(session, "migrated-v8-replay-open")
+            .expect("open authority");
+        let open = governor
+            .open_session(open_id, legacy_token(session, "migrated-v8-replay"))
+            .expect("open session");
+        governor
+            .flush_scope_to_ledger(&open.flush_permit(), &ledger)
+            .expect("persist open prerequisite");
+        let observations: [ProgramRiskObservation<'static>; 0] = [];
+        let legacy = persist_migrated_v8_style_report(&governor, &ledger, &open, 51, &observations);
+        let counts = non_seal_row_counts(&ledger);
+
+        let replay = governor
+            .write_program_risk_session_end_report(&ledger, &open, 51, &observations)
+            .expect("first schema-v9 replay adopts seals");
+        assert_eq!(replay.disposition, ProgramRiskReportDisposition::Replayed);
+        assert_eq!(replay.receipt, legacy);
+        assert_eq!(non_seal_row_counts(&ledger), counts);
+        assert_eq!(
+            ledger
+                .artifact_output_seal(&legacy.report_artifact)
+                .expect("adopted output seal"),
+            Some(legacy.lineage_op)
+        );
+        assert_eq!(
+            ledger
+                .op_artifact_edge_seal(legacy.lineage_op)
+                .expect("adopted edge-set seal"),
+            Some(PROGRAM_RISK_LINEAGE_EDGE_CAP)
+        );
+    }
+
+    #[test]
+    fn migrated_v8_populated_report_recovery_adopts_seals_before_acceptance() {
+        let path = durable_legacy_path("recovery");
+        let nonce = DurableGovernorNonce::from_bytes([0xD8; 32]);
+        let session = SessionId(91_002);
+        let capability = legacy_token(session, "migrated-v8-recovery");
+        let observations: [ProgramRiskObservation<'static>; 0] = [];
+
+        let ledger = Ledger::open(&path).expect("legacy durable ledger");
+        let governor = Governor::new_durable(&ledger, nonce).expect("legacy durable governor");
+        let open_id = governor
+            .session_open_id(session, "migrated-v8-recovery-open")
+            .expect("open authority");
+        let open = governor
+            .open_session(open_id, capability.clone())
+            .expect("open durable session");
+        governor
+            .flush_scope_to_ledger(&open.flush_permit(), &ledger)
+            .expect("persist durable open");
+        let legacy = persist_migrated_v8_style_report(&governor, &ledger, &open, 57, &observations);
+        let counts = non_seal_row_counts(&ledger);
+        drop(governor);
+        drop(ledger);
+
+        let ledger = Ledger::open(&path).expect("reopened migrated-v8 ledger");
+        let governor = Governor::new_durable(&ledger, nonce).expect("reopened governor");
+        let recovered_open = governor
+            .recover_open(&ledger, open_id, capability, None)
+            .expect("recover durable open first");
+        let recovered = governor
+            .recover_program_risk_report(&ledger, &recovered_open)
+            .expect("schema-v9 recovery adopts legacy seals");
+        assert_eq!(recovered, legacy);
+        assert_eq!(non_seal_row_counts(&ledger), counts);
+        assert_eq!(
+            ledger
+                .artifact_output_seal(&legacy.report_artifact)
+                .expect("recovery output seal"),
+            Some(legacy.lineage_op)
+        );
+        assert_eq!(
+            ledger
+                .op_artifact_edge_seal(legacy.lineage_op)
+                .expect("recovery edge-set seal"),
+            Some(PROGRAM_RISK_LINEAGE_EDGE_CAP)
+        );
+
+        let sealed_counts = durable_report_row_counts(&ledger);
+        let replay = governor
+            .write_program_risk_session_end_report(&ledger, &recovered_open, 57, &observations)
+            .expect("post-recovery exact replay");
+        assert_eq!(replay.disposition, ProgramRiskReportDisposition::Replayed);
+        assert_eq!(replay.receipt, legacy);
+        assert_eq!(durable_report_row_counts(&ledger), sealed_counts);
     }
 
     #[test]
@@ -1856,7 +2300,7 @@ mod identity_tests {
         assert_ne!(
             identity,
             fs_blake3::hash_domain(
-                "org.frankensim.fs-session.program-risk-report-id.alternate.v1",
+                "org.frankensim.fs-session.program-risk-report-id.alternate.v2",
                 &canonical,
             ),
             "digest domain is semantic",
@@ -1864,7 +2308,7 @@ mod identity_tests {
         assert_ne!(
             identity,
             fs_blake3::hash_domain(
-                "org.frankensim.fs-session.program-risk-report-id.v2",
+                "org.frankensim.fs-session.program-risk-report-id.v3",
                 &canonical,
             ),
             "identity version is semantic",
@@ -1889,7 +2333,7 @@ mod identity_tests {
 
     #[test]
     fn program_risk_report_identity_version_and_transport_fail_closed() {
-        assert_eq!(PROGRAM_RISK_REPORT_IDENTITY_VERSION, 1);
+        assert_eq!(PROGRAM_RISK_REPORT_IDENTITY_VERSION, 2);
         assert_eq!(PROGRAM_RISK_REPORT_SLOT_TAG, 1);
         let source = ProgramRiskReportIdIdentitySource {
             governor_id: hash(1),
