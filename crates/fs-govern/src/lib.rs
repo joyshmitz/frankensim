@@ -21,10 +21,13 @@
 //! Sibling modules encode the rest of the addendum's governance as data: the
 //! design principles + governance rules ([`doctrine`]) and the nineteen
 //! proposals with their kill metrics + owning beads + a completeness audit
-//! ([`proposals`]).
+//! ([`proposals`]). The distinct expansion-program namespace PR-001--PR-012,
+//! with quantitative triggers and fail-closed session observations, lives in
+//! [`program_risks`]; it does not replace this crate root's R1--R10 register.
 
 pub mod crates;
 pub mod doctrine;
+pub mod program_risks;
 pub mod proposals;
 
 pub use crates::{AddendumCrate, CrateAudit, addendum_crates, crate_audit, crates_json};

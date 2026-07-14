@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-mod recovery;
+pub(crate) mod recovery;
 
 /// Hard-bound ratio: past 6/5 of a grant the session pauses. Float and exact
 /// integer resource paths derive from this one policy definition.
@@ -3652,6 +3652,7 @@ struct Inner {
     retained_bytes: usize,
     durable_claims_at_open: u64,
     recovered_durable_claims: BTreeSet<fs_blake3::ContentHash>,
+    program_risk_publications: BTreeSet<fs_blake3::ContentHash>,
 }
 
 fn checked_retained_add(current: usize, added: usize) -> usize {
@@ -3732,6 +3733,27 @@ pub struct Governor {
     id: fs_blake3::ContentHash,
     durable_sink: Option<fs_ledger::LedgerInstanceId>,
     inner: Mutex<Inner>,
+}
+
+/// Process-local exclusion for one program-risk singleton publication.
+///
+/// The ledger terminal remains the durable arbitration point. This guard
+/// prevents two callers sharing the same live governor from materializing
+/// duplicate lineage operations before either reaches that terminal.
+pub(crate) struct ProgramRiskPublicationGuard<'a> {
+    governor: &'a Governor,
+    authority: fs_blake3::ContentHash,
+}
+
+impl Drop for ProgramRiskPublicationGuard<'_> {
+    fn drop(&mut self) {
+        self.governor
+            .inner
+            .lock()
+            .expect("governor lock")
+            .program_risk_publications
+            .remove(&self.authority);
+    }
 }
 
 impl Default for Governor {
@@ -4041,6 +4063,113 @@ impl Governor {
             .get(&session.0)
             .cloned()
             .ok_or(SessionError::UnknownSession { id: session.0 })
+    }
+
+    pub(crate) fn ensure_program_risk_mutation_ready(&self) -> Result<(), SessionError> {
+        let inner = self.inner.lock().expect("governor lock");
+        self.ensure_durable_recovery_complete(&inner)
+    }
+
+    pub(crate) fn reserve_program_risk_publication(
+        &self,
+        authority: fs_blake3::ContentHash,
+    ) -> Result<ProgramRiskPublicationGuard<'_>, SessionError> {
+        let mut inner = self.inner.lock().expect("governor lock");
+        if !inner.program_risk_publications.insert(authority) {
+            return Err(SessionError::ProgramRiskReportInFlight { id: authority });
+        }
+        Ok(ProgramRiskPublicationGuard {
+            governor: self,
+            authority,
+        })
+    }
+
+    pub(crate) fn program_risk_session_context(
+        &self,
+        receipt: &SessionOpenReceipt,
+        attempted_sink: fs_ledger::LedgerInstanceId,
+    ) -> Result<(SessionId, String, u64), SessionError> {
+        let open_id = receipt.open_id;
+        if open_id.governor_id != self.id {
+            return Err(SessionError::MutationAuthorityMismatch {
+                kind: recovery::KIND_PROGRAM_RISK_REPORT,
+                id: open_id.content_hash,
+            });
+        }
+        let inner = self.inner.lock().expect("governor lock");
+        let known_open =
+            inner
+                .session_open_ids
+                .get(&open_id.session.0)
+                .ok_or(SessionError::UnknownSession {
+                    id: open_id.session.0,
+                })?;
+        let replay =
+            inner
+                .open_requests
+                .get(known_open)
+                .ok_or_else(|| SessionError::Persistence {
+                    what: format!(
+                        "session {} lost its immutable open receipt",
+                        open_id.session.0
+                    ),
+                })?;
+        if *known_open != open_id || replay.receipt != *receipt {
+            return Err(SessionError::MutationAuthorityMismatch {
+                kind: recovery::KIND_PROGRAM_RISK_REPORT,
+                id: open_id.content_hash,
+            });
+        }
+        let pending_submissions = inner
+            .pending_submissions
+            .get(&open_id.session.0)
+            .copied()
+            .unwrap_or(0);
+        let pause_pending = inner.pending_pause.contains_key(&open_id.session.0);
+        if pending_submissions != 0 || pause_pending {
+            return Err(SessionError::SessionNotQuiescent {
+                id: open_id.session.0,
+                pending_submissions,
+                pause_pending,
+            });
+        }
+        let token = inner
+            .tokens
+            .get(&open_id.session.0)
+            .expect("validated open receipt retains its token");
+        let scope = inner
+            .scopes
+            .get(&token.ledger_scope)
+            .expect("validated token retains its scope");
+        match scope.sink {
+            Some(bound_sink) if bound_sink != attempted_sink => {
+                return Err(SessionError::LedgerScopeSinkMismatch {
+                    scope: token.ledger_scope.clone(),
+                    bound_sink,
+                    attempted_sink,
+                });
+            }
+            None => {
+                return Err(SessionError::Persistence {
+                    what: format!(
+                        "session {} scope {:?} must be flushed to the target ledger before its program-risk session-end report",
+                        open_id.session.0, token.ledger_scope
+                    ),
+                });
+            }
+            Some(_) => {}
+        }
+        let generation = inner
+            .gate_generations
+            .get(&open_id.session.0)
+            .copied()
+            .unwrap_or(0);
+        Ok((open_id.session, token.ledger_scope.clone(), generation))
+    }
+
+    pub(crate) fn mark_program_risk_report_recovered(&self, authority: fs_blake3::ContentHash) {
+        let mut inner = self.inner.lock().expect("governor lock");
+        self.mark_durable_claim_recovered(&mut inner, authority);
     }
 
     fn mutation_context(

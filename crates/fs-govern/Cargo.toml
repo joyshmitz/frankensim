@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Addendum governance as machine-readable data: the design principles (P1-P8), the governance rules, the nineteen proposals with kill metrics + owning beads, and the risk register (R1-R10) — each with a CI-gateable completeness audit so nothing survives unmeasured (Governance Rule 2 / design principle P8)."
+description = "Machine-readable addendum and expansion-program governance: doctrine, proposals, R1-R10, and quantitative PR-001--PR-012 risk evidence."
 
 [package.metadata.frankensim]
 layer = "UTIL"

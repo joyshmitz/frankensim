@@ -15,6 +15,7 @@ pub(super) const KIND_PRESSURE: &str = "pressure-action";
 pub(super) const KIND_SUBMISSION: &str = "submission";
 pub(super) const KIND_PAUSE_ACK: &str = "pause-acknowledgement";
 pub(super) const KIND_RESUME_ACTIVATION: &str = "resume-activation";
+pub(crate) const KIND_PROGRAM_RISK_REPORT: &str = "program-risk-report";
 
 const MAX_CODEC_STRING_BYTES: usize = MAX_IDEMPOTENCY_INPUT_BYTES;
 
@@ -1197,7 +1198,7 @@ fn cached_resume_activation(
 }
 
 impl Governor {
-    pub(super) fn recovery_ledger(
+    pub(crate) fn recovery_ledger(
         &self,
         ledger: &fs_ledger::Ledger,
     ) -> Result<fs_ledger::LedgerInstanceId, SessionError> {
@@ -1217,7 +1218,7 @@ impl Governor {
     }
 
     #[allow(clippy::too_many_arguments)] // Exact expected durable claim envelope.
-    fn validate_recovered_terminal(
+    pub(crate) fn validate_recovered_terminal(
         &self,
         terminal: &fs_ledger::session_registry::StoredSessionTerminal,
         ledger_instance_id: fs_ledger::LedgerInstanceId,

@@ -2,15 +2,16 @@
 
 The addendum's governance as machine-readable data: the design principles
 (P1–P8), the governance rules, the nineteen proposals (with kill metrics +
-owning beads), and the risk register (Part V, R1–R10) — each with a
-CI-gateable completeness audit.
+owning beads), the original Part V runtime risks (R1–R10), and the distinct
+expansion-program risks (PR-001–PR-012) — each with a CI-gateable completeness
+surface.
 
 ## Purpose and layer
 
 Layer UTIL. Pure data + audit, with `fs-blake3` as its only dependency for
-canonical content identities. Encodes the doctrine, the proposals, and the ten
-named risks, and audits that nothing survives unmeasured (design principle P8 /
-Governance Rule 2).
+canonical content identities. Encodes the doctrine, proposals, original ten
+runtime risks, and twelve expansion-program risks, and audits that nothing
+survives unmeasured (design principle P8 / Governance Rule 2).
 
 ## Crate registry (`crates` module)
 
@@ -32,6 +33,24 @@ Governance Rule 2).
   DECLARES a kill metric AND an owning bead (Governance Rule 2), counting how
   many are instrumented; `proposals_json()` emits the deterministic
   machine-readable record.
+
+## Expansion-program register (`program_risks` module)
+
+- `ProgramRiskId` is the namespace `PR-001` through `PR-012`; it is deliberately
+  disjoint from the original `RiskId::R1` through `R10` runtime register.
+- Every `ProgramRisk` row carries a named workstream and owning Bead, likelihood
+  and impact, a leading indicator, a numeric comparator/threshold/unit/typed
+  domain/minimum-sample trigger, mitigation, contingency (kill/refuse/escalate),
+  residual likelihood and impact, and one E0–E7 review gate.
+- `program_risks()` returns the twelve rows in canonical id order;
+  `program_risk(id)` performs total typed lookup; and
+  `program_risk_register_json()` emits the deterministic ledger artifact.
+- `assess_program_risks(observations)` always emits twelve ordered rows. Missing,
+  duplicate, non-finite, unit-mismatched, out-of-domain, and under-sampled
+  evidence is non-green. Only one finite, correctly unit-tagged, in-domain,
+  sufficiently sampled observation below its declared trip condition is
+  `Clear`. Caller units are retained only as a 64-byte UTF-8-safe preview plus
+  their exact original byte length.
 
 ## Public types and semantics
 
@@ -95,6 +114,11 @@ artifact checking are deployment policy. Calling a public hash an
 - `to_json()` and `audit()` are deterministic.
 - Receipt identities change when any semantic field changes, are bound to one
   governed subject, and cannot be mutated through the safe public API.
+- The program register has exactly twelve unique rows in `ProgramRiskId::ALL`
+  order, and every trigger contains a finite number, explicit unit, typed
+  numeric domain, and positive sampling floor.
+- Program assessment is input-order independent and cannot become all-clear by
+  omission, duplication, malformed units, invalid numeric domains, or NaN.
 
 ## Error model
 
@@ -103,6 +127,12 @@ dashboard, verifier, or an all-zero missing-evidence artifact sentinel. Audits
 report missing, stale, future-dated, subject-mismatched, and otherwise
 inconsistent receipts as data and fail closed; they do not panic or silently
 promote coverage.
+
+The expansion-program evaluator is total over its bounded slice input: evidence
+defects are represented by `AssessmentStatus`, not panics. The caller remains
+responsible for bounding the number of supplied aggregate observations; output
+and retained unit text remain bounded by the fixed twelve-row register and unit
+preview limit.
 
 ## Determinism class
 
@@ -139,6 +169,13 @@ metric + bead-id owner; the governance audit is complete with a zero
 instrumented baseline; owner mapping spot-checks; `proposals_json` is
 well-formed + deterministic.
 
+`tests/program_risks.rs` (G0): exactly twelve ordered unique rows; an exact
+twelve-row owner/trigger/review-gate mapping lock; complete quantitative
+schemas and review gates; exact comparator boundaries; fail-closed
+missing/duplicate/non-finite/unit/domain/sample handling; integer/fraction
+domain checks; input-order-independent assessment JSON; and deterministic
+numeric-threshold register serialization.
+
 ## No-claim boundaries
 
 - This crate encodes the risk register as governance DATA; it does not itself
@@ -147,8 +184,11 @@ well-formed + deterministic.
   and deployment policy establishes issuer authority. The audit enforces that
   each risk declares a metric + owner and fails closed when receipt evidence is
   absent or malformed; it cannot establish the truth of an issuer's assertion.
-- The addendum's design principles (P1–P8), the four governance rules, and the
-  per-proposal kill criteria are the sibling doctrine bead's scope; this crate
-  is the risk register (R1–R10) only.
+- The original R1–R10 register and the PR-001–PR-012 expansion-program register
+  are separate authorities. Neither namespace silently substitutes for the
+  other, and neither measures its own leading indicators.
+- Program-risk thresholds are governance trip points over caller-supplied
+  aggregates. They do not establish scientific validity, automatically execute
+  a contingency, or prove that the named Bead owner has reviewed the result.
 - Bead-id owners are string references; this crate does not read the beads
   database (that coupling is deliberately avoided).

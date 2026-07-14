@@ -10,9 +10,10 @@ label; shipped surface tested to [S] discipline].
 ## Purpose and layer
 
 Layer **L6** (HELM). Runtime deps: `std`, fs-ir (admission bridge +
-study parsing), fs-exec (CancelGate/SolverState/TilePool), fs-la (production
-GEMM), fs-ledger (persistence/content hash), fs-blake3 (domain-separated
-receipt identity), fs-plan (cost models), fs-obs, fs-qty.
+study parsing), fs-exec (CancelGate/SolverState/TilePool), fs-govern
+(PR-001–PR-012 program-risk data/evaluation), fs-la (production GEMM),
+fs-ledger (persistence/content hash), fs-blake3 (domain-separated receipt
+identity), fs-plan (cost models), fs-obs, fs-qty.
 Consumers: the P2 marquee demo, the HELM e2e suite (gp3.11).
 
 ## Public types and semantics
@@ -302,6 +303,38 @@ Consumers: the P2 marquee demo, the HELM e2e suite (gp3.11).
   replay requires the current completed generation and exact process-local
   gate `Arc`, while a prior activation remains replayable after the next L3
   request asks that still-current gate to drain.
+- `write_program_risk_session_end_report(ledger, open_receipt, logical_time,
+  observations)` evaluates fs-govern's distinct PR-001–PR-012 expansion-program
+  register and automatically surfaces every non-green row in one owned
+  `program-risk-report` event. The exact session open must already be persisted
+  to the same physical sink, and the session must have no executing submission
+  or pending pause acknowledgement at the sampled point. The caller owns the
+  surrounding end-of-session coordination and ordinary scope flushes. One
+  governor/session/open tuple has one
+  opaque `ProgramRiskReportId`; exact report retry is a zero-row replay and any
+  changed logical time or assessment conflicts. The receipt retains the
+  report-time execution generation, so later pause/resume progress cannot
+  rewrite the singleton's durable claim or make an exact retry structurally
+  stale. A process-local singleton reservation prevents two callers sharing
+  one live governor from creating duplicate lineage before terminal
+  arbitration. The canonical register and
+  session assessment are separate content-addressed artifacts rooted as input
+  and output of one Five-Explicits lineage operation, so ledger GC retains both.
+  Adoption verifies the exact seed, versions, byte budget, capability, logical
+  timestamps, deterministic main-branch execution, successful no-diagnostic
+  outcome, roles, and complete two-artifact edge set rather than trusting IR
+  text alone.
+  Artifact/lineage materialization precedes the atomic terminal/event batch: a
+  crash in that seam can leave only reusable content-addressed artifacts and
+  lineage, never a falsely terminal report. `recover_program_risk_report`
+  validates the strict terminal codec, owned event, historic artifact kinds and
+  content addresses, exact lineage envelope, and frozen v1 JSON semantics
+  before satisfying the durable recovery fence. The stored register must have
+  twelve ordered, complete rows; the report envelope and statuses must bind the
+  terminal; and every embedded trigger must equal its stored-register trigger.
+  A report generation ahead of reconstructed pause/resume lifecycle state is
+  refused. Recovery deliberately accepts the exact stored historical register;
+  later canonical register revisions do not brick an already-durable report.
 - Deterministic hard caps bound retained governor state and public
   materialization: 4,096 sessions/governor, 1,024 sessions/scope, 4,096
   submission keys/session, 8,192 meter reports/session, 4,096 pressure
@@ -477,10 +510,16 @@ Consumers: the P2 marquee demo, the HELM e2e suite (gp3.11).
     before their corresponding state transition. Limit refusal never runs
     caller work or partially advances a cursor, gate, meter, event stream, or
     authority binding.
+12. **Program-risk surfacing is singleton and fail-closed**: one drained,
+    sink-bound session snapshot owns one typed terminal and alert-summary event.
+    Missing, duplicate, malformed, or tripped evidence remains visible as an
+    alert; exact retry adds no artifact, lineage, terminal, witness, or event
+    row even after the live session advances to a later gate generation;
+    changed retry cannot replace the original report.
 
 ## Error model
 
-`SessionError`: `UnknownSession`, `SessionAlreadyOpen`,
+`SessionError`: `UnknownSession`, `SessionNotQuiescent`, `SessionAlreadyOpen`,
 `MutationAuthorityMismatch`, `MutationConflict`, `StaleMutationGeneration`,
 `InvalidLedgerScope`,
 `InvalidOperatorGrant`, `DuplicateOperatorGrant`,
@@ -517,7 +556,9 @@ scheduling-dependent, but enforcement is authoritative and re-earnable from
 commit-ordered meter pre/post receipts. GEMM numerical bits are
 independent of the selected MC/NC plan; the wall-clock winner is inherently
 environment-dependent and therefore travels as scoped evidence plus an exact
-replayable decision.
+replayable decision. Program-risk reports use the caller's explicit logical
+time; register order, assessment order, JSON bytes, content addresses, alert
+order, and retry identity are otherwise deterministic.
 
 ## Cancellation behavior
 
@@ -596,6 +637,20 @@ altered program reuse conflicts; a restored pre-commit cursor snapshot
 replays the exact batch without adding a terminal, membership, or audit row;
 and a three-event terminal group is never split at the row boundary.
 
+`tests/program_risk.rs` covers a quantitative PR-001 trip automatically
+surfacing in the receipt, report artifact, typed terminal, and one owned event;
+register/report lineage and GC retention; zero-row exact replay; atomic changed
+retry conflict; unflushed, foreign-receipt, and wrong-sink refusal; and a real
+durable reopen in which fresh report replay remains fenced until typed report
+recovery restores the historic artifacts without row drift. A lifecycle
+regression advances through pause acknowledgement and resume after publication,
+then proves replay still uses the report's original generation and adds no row;
+a durable generation-one report refuses recovery until that pause,
+acknowledgement, and activation have themselves been reconstructed.
+In-module G0 tests freeze the v1 positional row order, status-byte/code mapping,
+codec offsets, historic register/report decoder, and process-local singleton
+reservation.
+
 `tests/gemm_tune.rs` (bead yqug drills): cold start sweeps once and
 matches serial bits; ledger warm start seeds a fresh session without
 re-measuring; stale (foreign-fingerprint) and invalid cache rows are
@@ -669,6 +724,28 @@ armed and runs when an x86 host picks it up.
   receiving a partial history. Paths are not sink identity.
   Different scopes can bind independent sinks. Cross-ledger replication of one
   scope remains an event-log concern above this API.
+- **A program-risk report is a session-end snapshot, not session closure**:
+  fs-session has no terminal session lifecycle state here. The report requires
+  current point-in-time quiescence but does not reserve the scope, flush already
+  completed ordinary mutations, revoke the capability token, or prove that an
+  orchestrator will never admit later work. An exact replay attempted during
+  later in-flight work refuses until the caller drains again. The caller must
+  establish and order the wider session-end boundary. The event surfaces
+  governance status; it does not execute a mitigation/contingency or
+  authenticate the observation producer.
+- **Program-risk artifact and terminal publication are a documented two-phase
+  seam**: fs-ledger does not currently combine content-addressed artifact writes,
+  lineage creation, and session-terminal publication in one transaction. A
+  crash may retain rooted artifacts without the terminal; retry deterministically
+  reuses them. Consumers must treat only the typed terminal/event receipt as a
+  published session snapshot.
+- **A completed fs-ledger op is not yet physically sealed against later links**:
+  program-risk replay/recovery detects any extra, missing, or role-shifted edge
+  and refuses the receipt, but this slice does not claim tamper resistance
+  against another in-process caller holding the same mutable ledger. There is
+  also a verify-to-terminal transaction seam. Finished-op sealing belongs in a
+  ledger-wide invariant so every lineage consumer receives the same guarantee;
+  it is tracked by `frankensim-cgt07`.
 - **Two-lane executor integration** (interactive vs batch lanes with
   core quotas) is deferred to gp3.11's study-scale batteries; the
   enforcement/idempotency/estimate surfaces here are what it composes.

@@ -3,6 +3,9 @@
 //! trio: idempotency keys (a retry cannot double-spend), `estimate()` dry
 //! runs (plan before you spend), and errors as GUIDANCE ("a refusal that
 //! teaches is worth ten silent successes").
+//! Quiescent session snapshots can also persist and automatically surface the
+//! expansion program's quantitative PR-001--PR-012 register through
+//! [`program_risk`].
 //!
 //! Layer: L6 (HELM). Threading contract: the governor's hot paths are
 //! `Send + Sync` (in-memory, mutex-guarded) so enforcement and idempotency
@@ -14,6 +17,7 @@ pub mod estimate;
 pub mod gemm_tune;
 pub mod governor;
 pub mod guidance;
+pub mod program_risk;
 pub mod token;
 
 pub use estimate::{
@@ -43,6 +47,14 @@ pub use governor::{
     SubmissionReceipt, SubmissionRequestId, SubmitOutcome,
 };
 pub use guidance::Guidance;
+pub use program_risk::{
+    PROGRAM_RISK_REGISTER_ARTIFACT_KIND, PROGRAM_RISK_REPORT_CODEC_VERSION,
+    PROGRAM_RISK_REPORT_EVENT_KIND, PROGRAM_RISK_REPORT_ID_DOMAIN,
+    PROGRAM_RISK_REPORT_IDENTITY_VERSION, PROGRAM_RISK_REPORT_LOGICAL_ROWS,
+    PROGRAM_RISK_REPORT_ROW_ORDER_VERSION, PROGRAM_RISK_REPORT_STATUS_TAG_VERSION,
+    PROGRAM_RISK_SESSION_REPORT_ARTIFACT_KIND, ProgramRiskAlert, ProgramRiskReportDisposition,
+    ProgramRiskReportId, ProgramRiskReportReceipt, ProgramRiskReportWrite,
+};
 pub use token::{
     CapabilityToken, MAX_CAPABILITY_OP_BYTES, MAX_CAPABILITY_OPS, MAX_CAPABILITY_TOTAL_OP_BYTES,
     MAX_LEDGER_SCOPE_BYTES, SessionId,
@@ -60,6 +72,32 @@ pub enum SessionError {
     UnknownSession {
         /// The id.
         id: u64,
+    },
+    /// A session-end snapshot was requested while caller work or a pause
+    /// acknowledgement was still in flight.
+    SessionNotQuiescent {
+        /// Session that has not drained.
+        id: u64,
+        /// Exact admitted submissions still executing.
+        pending_submissions: usize,
+        /// Whether a pause request still awaits acknowledgement.
+        pause_pending: bool,
+    },
+    /// This live governor is already publishing or recovering the same
+    /// program-risk singleton.
+    ProgramRiskReportInFlight {
+        /// Domain-separated singleton authority already reserved in-process.
+        id: fs_blake3::ContentHash,
+    },
+    /// A durable report belongs to a gate generation whose lifecycle has not
+    /// yet been recovered into this governor.
+    ProgramRiskReportGenerationAhead {
+        /// Session whose recovered lifecycle is behind the report.
+        id: u64,
+        /// Generation recorded by the durable report.
+        report_generation: u64,
+        /// Generation currently reconstructed by lifecycle recovery.
+        recovered_generation: u64,
     },
     /// A session id was registered more than once. Session identity is
     /// immutable: replacing a token would let new authority inherit old
@@ -332,6 +370,26 @@ impl fmt::Display for SessionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SessionError::UnknownSession { id } => write!(f, "unknown session {id}"),
+            SessionError::SessionNotQuiescent {
+                id,
+                pending_submissions,
+                pause_pending,
+            } => write!(
+                f,
+                "session {id} is not quiescent: {pending_submissions} submission(s) remain in flight and pause_pending={pause_pending}; drain work and acknowledge any pause before publishing a session-end snapshot"
+            ),
+            SessionError::ProgramRiskReportInFlight { id } => write!(
+                f,
+                "program-risk report {id} already has an in-process publication or recovery attempt; retry after that bounded attempt completes"
+            ),
+            SessionError::ProgramRiskReportGenerationAhead {
+                id,
+                report_generation,
+                recovered_generation,
+            } => write!(
+                f,
+                "program-risk report for session {id} belongs to generation {report_generation}, but lifecycle recovery has reconstructed only generation {recovered_generation}; recover the intervening pause/resume lifecycle before this report"
+            ),
             SessionError::SessionAlreadyOpen { id } => write!(
                 f,
                 "session {id} is already open; capability tokens are immutable and the existing \
