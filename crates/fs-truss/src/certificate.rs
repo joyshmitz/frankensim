@@ -36,10 +36,10 @@ pub const HARD_MAX_CERTIFICATE_OPERATIONS: usize = 1_000_000_000;
 /// Caller-selected limits beneath the certificate hard ceilings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayoutCertificateLimits {
-    max_active_rows: usize,
-    max_members: usize,
-    max_dense_entries: usize,
-    max_operations: usize,
+    active_rows: usize,
+    members: usize,
+    dense_entries: usize,
+    operations: usize,
 }
 
 impl LayoutCertificateLimits {
@@ -71,45 +71,45 @@ impl LayoutCertificateLimits {
             HARD_MAX_CERTIFICATE_OPERATIONS,
         )?;
         Ok(Self {
-            max_active_rows,
-            max_members,
-            max_dense_entries,
-            max_operations,
+            active_rows: max_active_rows,
+            members: max_members,
+            dense_entries: max_dense_entries,
+            operations: max_operations,
         })
     }
 
     /// Maximum nonzero equilibrium rows admitted by this attempt.
     #[must_use]
     pub const fn max_active_rows(self) -> usize {
-        self.max_active_rows
+        self.active_rows
     }
 
     /// Maximum physical members admitted by this attempt.
     #[must_use]
     pub const fn max_members(self) -> usize {
-        self.max_members
+        self.members
     }
 
     /// Maximum dense scalar entries admitted by this attempt.
     #[must_use]
     pub const fn max_dense_entries(self) -> usize {
-        self.max_dense_entries
+        self.dense_entries
     }
 
     /// Maximum arithmetic operations admitted by this attempt.
     #[must_use]
     pub const fn max_operations(self) -> usize {
-        self.max_operations
+        self.operations
     }
 }
 
 impl Default for LayoutCertificateLimits {
     fn default() -> Self {
         Self {
-            max_active_rows: 128,
-            max_members: 32_768,
-            max_dense_entries: 2_097_152,
-            max_operations: 50_000_000,
+            active_rows: 128,
+            members: 32_768,
+            dense_entries: 2_097_152,
+            operations: 50_000_000,
         }
     }
 }
@@ -401,6 +401,9 @@ pub enum LayoutCertificateRefusal {
 
 /// Result of a well-formed certificate attempt.
 #[derive(Debug, Clone)]
+// Boxing the successful certificate would add a non-reportable allocation to
+// a path whose allocation failures are otherwise explicit structured errors.
+#[allow(clippy::large_enum_variant)]
 pub enum LayoutCertificateStatus {
     /// Both independently checked witnesses produced finite ordered bounds.
     Certified(LayoutOptimalityCertificate),
@@ -465,8 +468,8 @@ impl LayoutOptimalityCertificate {
             || self.repaired_split_forces.len() != expected_variables
             || self.dual_slacks.len() != expected_variables
             || self.scaled_dual.len() != expected_rows
-            || members > self.limits.max_members
-            || self.selected_members.len() > self.limits.max_active_rows
+            || members > self.limits.max_members()
+            || self.selected_members.len() > self.limits.max_active_rows()
         {
             return Ok(false);
         }
@@ -478,7 +481,7 @@ impl LayoutOptimalityCertificate {
             problem.a().nnz(),
         )
         .unwrap_or(usize::MAX);
-        if required_work > self.limits.max_operations || !self.verifies_identity_checked(cx)? {
+        if required_work > self.limits.max_operations() || !self.verifies_identity_checked(cx)? {
             return Ok(false);
         }
         let problem_identity = problem_identity(problem, cx)?;
@@ -877,10 +880,10 @@ fn input_identity(
     writer.usize(settings.max_iters);
     writer.f64(settings.gap_tol);
     writer.usize(settings.check_every);
-    writer.usize(limits.max_active_rows);
-    writer.usize(limits.max_members);
-    writer.usize(limits.max_dense_entries);
-    writer.usize(limits.max_operations);
+    writer.usize(limits.max_active_rows());
+    writer.usize(limits.max_members());
+    writer.usize(limits.max_dense_entries());
+    writer.usize(limits.max_operations());
     writer.bytes(match correction_method {
         PrimalCorrectionMethod::SignedForceBasisNeumannV1 => b"signed-force-basis-neumann-v1",
     });
@@ -953,10 +956,10 @@ fn certificate_identity(
     let mut steps = 0usize;
     writer.identity(certificate.problem_identity);
     writer.identity(certificate.input_identity);
-    writer.usize(certificate.limits.max_active_rows);
-    writer.usize(certificate.limits.max_members);
-    writer.usize(certificate.limits.max_dense_entries);
-    writer.usize(certificate.limits.max_operations);
+    writer.usize(certificate.limits.max_active_rows());
+    writer.usize(certificate.limits.max_members());
+    writer.usize(certificate.limits.max_dense_entries());
+    writer.usize(certificate.limits.max_operations());
     writer.f64(certificate.bounds.lower);
     writer.f64(certificate.bounds.upper);
     writer.usize(certificate.repaired_member_forces.len());
@@ -1731,7 +1734,7 @@ fn prove_primal(
         cx,
         "certificate residual-check allocation",
     )?;
-    for row in 0..lp.a().nrows() {
+    for (row, residual_slot) in residuals.iter_mut().enumerate() {
         counter.step(cx, "certificate independent equilibrium row")?;
         let (columns, values) = lp.a().row(row);
         let mut residual = -Interval::point(lp.b()[row]);
@@ -1747,7 +1750,7 @@ fn prove_primal(
         if !residual.contains_zero() {
             return refuse(LayoutCertificateRefusal::ResidualVerificationFailed { row });
         }
-        residuals[row] = residual;
+        *residual_slot = residual;
     }
 
     let mut objective = Interval::point(0.0);
@@ -1784,6 +1787,13 @@ fn dual_slacks(
     scaled_dual: &[f64],
     cx: &Cx<'_>,
 ) -> Result<Vec<Interval>, LayoutCertificateError> {
+    if scaled_dual.len() != lp.a().nrows() {
+        return Err(LayoutCertificateError::VectorLength {
+            vector: "y",
+            expected: lp.a().nrows(),
+            actual: scaled_dual.len(),
+        });
+    }
     let mut slacks = point_intervals(
         lp.c().len(),
         "dual slack enclosures",
@@ -1797,13 +1807,12 @@ fn dual_slacks(
     }
     // Derive A^T y from the authoritative matrix instead of trusting its
     // cached transpose. The proof identity binds these exact A entries.
-    for row in 0..lp.a().nrows() {
+    for (row, &dual) in scaled_dual.iter().enumerate() {
         counter.step(cx, "certificate dual-slack row")?;
         let (columns, values) = lp.a().row(row);
         for (&variable, &value) in columns.iter().zip(values) {
             counter.step(cx, "certificate dual-slack evaluation")?;
-            slacks[variable] =
-                slacks[variable] + Interval::point(value) * Interval::point(scaled_dual[row]);
+            slacks[variable] = slacks[variable] + Interval::point(value) * Interval::point(dual);
         }
     }
     Ok(slacks)
@@ -1918,47 +1927,47 @@ fn build_certificate(
 ) -> ProofResult<LayoutOptimalityCertificate> {
     poll(cx, "certificate admission")?;
     let members = validate_input_shape(lp, x, y, settings)?;
-    if members > limits.max_members {
+    if members > limits.max_members() {
         return refuse(LayoutCertificateRefusal::ResourceLimit {
             resource: "physical members",
             required: members,
-            limit: limits.max_members,
+            limit: limits.max_members(),
         });
     }
     let admission_work = checked_work(0, members, lp.a().nrows(), lp.a().ncols(), lp.a().nnz())
         .unwrap_or(usize::MAX);
-    if admission_work > limits.max_operations {
+    if admission_work > limits.max_operations() {
         return refuse(LayoutCertificateRefusal::ResourceLimit {
             resource: "certificate arithmetic operations",
             required: admission_work,
-            limit: limits.max_operations,
+            limit: limits.max_operations(),
         });
     }
     let _ = validate_inputs(lp, x, y, settings, cx)?;
-    let active_rows = collect_active_rows(lp, members, limits.max_active_rows, cx)?;
+    let active_rows = collect_active_rows(lp, members, limits.max_active_rows(), cx)?;
     let rows = active_rows.len();
-    let dense = rows.checked_mul(members).unwrap_or(usize::MAX);
-    let square = rows.checked_mul(rows).unwrap_or(usize::MAX);
+    let dense = rows.saturating_mul(members);
+    let square = rows.saturating_mul(rows);
     let retained_dense = dense
         .checked_mul(2)
         .and_then(|value| value.checked_add(square.checked_mul(6)?))
         .and_then(|value| value.checked_add(members.checked_mul(16)?))
         .and_then(|value| value.checked_add(lp.a().nrows().checked_mul(4)?))
         .unwrap_or(usize::MAX);
-    if retained_dense > limits.max_dense_entries {
+    if retained_dense > limits.max_dense_entries() {
         return refuse(LayoutCertificateRefusal::ResourceLimit {
             resource: "dense proof entries",
             required: retained_dense,
-            limit: limits.max_dense_entries,
+            limit: limits.max_dense_entries(),
         });
     }
     let required_work = checked_work(rows, members, lp.a().nrows(), lp.a().ncols(), lp.a().nnz())
         .unwrap_or(usize::MAX);
-    if required_work > limits.max_operations {
+    if required_work > limits.max_operations() {
         return refuse(LayoutCertificateRefusal::ResourceLimit {
             resource: "certificate arithmetic operations",
             required: required_work,
-            limit: limits.max_operations,
+            limit: limits.max_operations(),
         });
     }
     let dense_block = dense_first_block(lp, &active_rows, members, cx)?;
@@ -2088,12 +2097,15 @@ impl LayoutLp {
         let status = self.certify_optimum(x, y, settings, limits, cx)?;
         if let LayoutCertificateStatus::Certified(certificate) = &status {
             let expected_identity = solver_state_identity_checked(self, x, y, settings, Some(cx))?;
-            if !report.matches_solver_state(expected_identity) {
+            if !report.matches_solver_state_checked(expected_identity, || {
+                poll(cx, "certificate report-snapshot hash")
+            })? {
                 return Err(LayoutCertificateError::ReportMismatch {
                     requirement: "must match this LP, settings, returned state, and final diagnostics",
                 });
             }
             let bounds = certificate.bounds();
+            poll(cx, "certificate report publication")?;
             report.retain_certified_bounds(
                 bounds.lower(),
                 bounds.upper(),

@@ -19,6 +19,7 @@ use crate::ground::{GroundStructure, TrussConstructionError};
 use fs_blake3::{Blake3, hash_domain};
 use fs_exec::Cx;
 use fs_sparse::Csr;
+use std::convert::Infallible;
 use std::fmt::Write as _;
 use std::mem::size_of;
 
@@ -33,7 +34,16 @@ pub const HARD_MAX_LAYOUT_RETAINED_BYTES: usize = 512 * 1024 * 1024;
 
 const LAYOUT_POLL_STRIDE: usize = 256;
 const MIN_LAYOUT_LOAD_NORM_SQUARED: f64 = 1e-60;
-const PDHG_REPORT_SNAPSHOT_DOMAIN: &str = "frankensim.fs-truss.pdhg-report-snapshot.v1";
+const PDHG_REPORT_SCALAR_SNAPSHOT_DOMAIN: &str =
+    "frankensim.fs-truss.pdhg-report-scalar-snapshot.v1";
+const PDHG_REPORT_TRACE_SNAPSHOT_DOMAIN: &str = "frankensim.fs-truss.pdhg-report-trace-snapshot.v1";
+
+fn stable_usize_bytes(value: usize) -> [u8; 8] {
+    // Solver-minted values are far below u64::MAX on every admitted target.
+    // Saturation keeps hostile future 128-bit mutations deterministic and
+    // unable to reproduce any valid solver snapshot.
+    u64::try_from(value).unwrap_or(u64::MAX).to_le_bytes()
+}
 
 /// Immutable support mask and nodal loads admitted for one ground structure.
 #[derive(Debug, Clone, PartialEq)]
@@ -750,8 +760,9 @@ pub struct PdhgReport {
     pub gap: f64,
     /// Final equilibrium residual ‖Ax − b‖/‖b‖.
     pub eq_residual: f64,
-    /// Gap trace (iteration, gap) at check intervals.
-    pub trace: Vec<(usize, f64)>,
+    /// Gap trace (iteration, gap) at check intervals. Kept private so a
+    /// solver-minted trace cannot be mutated after it is bound.
+    trace: Vec<(usize, f64)>,
     /// Outward lower endpoint from an independently verified dual witness.
     verified_dual_lower_bound: Option<f64>,
     /// Outward upper endpoint from an exactly feasible repaired primal.
@@ -762,13 +773,21 @@ pub struct PdhgReport {
     certificate_identity: Option<[u8; 32]>,
     /// Private binding of this report to one LP/settings/output state.
     solver_state_identity: Option<[u8; 32]>,
-    /// Private snapshot preventing public report-field or trace substitution.
-    solver_report_snapshot: Option<[u8; 32]>,
+    /// Private snapshot preventing public diagnostic substitution.
+    solver_scalar_snapshot: Option<[u8; 32]>,
+    /// Private snapshot binding the complete solver-minted trace.
+    solver_trace_snapshot: Option<[u8; 32]>,
     /// Solver-minted trace length, checked before any snapshot traversal.
     solver_trace_len: Option<usize>,
 }
 
 impl PdhgReport {
+    /// Read-only solver convergence trace.
+    #[must_use]
+    pub fn trace(&self) -> &[(usize, f64)] {
+        &self.trace
+    }
+
     /// Verified dual lower bound, if a complete certificate was retained.
     #[must_use]
     pub fn verified_dual_lower_bound(&self) -> Option<f64> {
@@ -801,19 +820,40 @@ impl PdhgReport {
             .flatten()
     }
 
-    fn report_snapshot(&self) -> [u8; 32] {
+    fn scalar_snapshot(&self) -> [u8; 32] {
         let mut hasher = Blake3::new();
-        hasher.update(&self.iters.to_le_bytes());
+        hasher.update(&stable_usize_bytes(self.iters));
         hasher.update(&self.volume.to_bits().to_le_bytes());
         hasher.update(&self.gap.to_bits().to_le_bytes());
         hasher.update(&self.eq_residual.to_bits().to_le_bytes());
-        hasher.update(&self.trace.len().to_le_bytes());
-        for &(iteration, gap) in &self.trace {
-            hasher.update(&iteration.to_le_bytes());
-            hasher.update(&gap.to_bits().to_le_bytes());
-        }
         let stream_hash = hasher.finalize();
-        *hash_domain(PDHG_REPORT_SNAPSHOT_DOMAIN, stream_hash.as_bytes()).as_bytes()
+        *hash_domain(PDHG_REPORT_SCALAR_SNAPSHOT_DOMAIN, stream_hash.as_bytes()).as_bytes()
+    }
+
+    fn trace_snapshot_checked<E>(
+        &self,
+        mut checkpoint: impl FnMut() -> Result<(), E>,
+    ) -> Result<[u8; 32], E> {
+        let mut hasher = Blake3::new();
+        hasher.update(&stable_usize_bytes(self.trace.len()));
+        checkpoint()?;
+        for (index, &(iteration, gap)) in self.trace.iter().enumerate() {
+            hasher.update(&stable_usize_bytes(iteration));
+            hasher.update(&gap.to_bits().to_le_bytes());
+            if (index + 1) % LAYOUT_POLL_STRIDE == 0 {
+                checkpoint()?;
+            }
+        }
+        checkpoint()?;
+        let stream_hash = hasher.finalize();
+        Ok(*hash_domain(PDHG_REPORT_TRACE_SNAPSHOT_DOMAIN, stream_hash.as_bytes()).as_bytes())
+    }
+
+    fn trace_snapshot(&self) -> [u8; 32] {
+        match self.trace_snapshot_checked(|| Ok::<(), Infallible>(())) {
+            Ok(snapshot) => snapshot,
+            Err(never) => match never {},
+        }
     }
 
     fn certification_is_current(&self) -> bool {
@@ -822,24 +862,40 @@ impl PdhgReport {
             && self.verified_dual_scale.is_some()
             && self.certificate_identity.is_some()
             && self.solver_state_identity.is_some()
+            && self.solver_scalar_snapshot == Some(self.scalar_snapshot())
+            && self.solver_trace_snapshot.is_some()
             && self.solver_trace_len == Some(self.trace.len())
-            && self.solver_report_snapshot == Some(self.report_snapshot())
-    }
-
-    pub(crate) fn bind_solver_state(&mut self, identity: [u8; 32]) {
-        self.solver_state_identity = Some(identity);
-        self.solver_trace_len = Some(self.trace.len());
-        self.solver_report_snapshot = Some(self.report_snapshot());
-    }
-
-    pub(crate) fn matches_solver_state(&self, identity: [u8; 32]) -> bool {
-        self.solver_state_identity == Some(identity)
-            && self.solver_trace_len == Some(self.trace.len())
-            && self.solver_report_snapshot == Some(self.report_snapshot())
             && self
                 .trace
                 .last()
                 .is_some_and(|&(iteration, _)| iteration == self.iters)
+    }
+
+    pub(crate) fn bind_solver_state(&mut self, identity: [u8; 32]) {
+        self.solver_state_identity = Some(identity);
+        self.solver_scalar_snapshot = Some(self.scalar_snapshot());
+        self.solver_trace_len = Some(self.trace.len());
+        self.solver_trace_snapshot = Some(self.trace_snapshot());
+    }
+
+    pub(crate) fn matches_solver_state_checked<E>(
+        &self,
+        identity: [u8; 32],
+        checkpoint: impl FnMut() -> Result<(), E>,
+    ) -> Result<bool, E> {
+        if self.solver_state_identity != Some(identity)
+            || self.solver_scalar_snapshot != Some(self.scalar_snapshot())
+            || self.solver_trace_len != Some(self.trace.len())
+        {
+            return Ok(false);
+        }
+        Ok(
+            self.solver_trace_snapshot == Some(self.trace_snapshot_checked(checkpoint)?)
+                && self
+                    .trace
+                    .last()
+                    .is_some_and(|&(iteration, _)| iteration == self.iters),
+        )
     }
 
     pub(crate) fn clear_certified_bounds(&mut self) {
@@ -1566,10 +1622,10 @@ impl LayoutLp {
 
 #[cfg(test)]
 mod tests {
-    use super::PdhgReport;
+    use super::{LAYOUT_POLL_STRIDE, PdhgReport};
 
     #[test]
-    fn certified_report_snapshot_covers_non_tail_trace_entries() {
+    fn checked_report_snapshot_covers_non_tail_trace_entries() {
         let mut report = PdhgReport {
             iters: 2,
             volume: 1.0,
@@ -1581,14 +1637,77 @@ mod tests {
         report.bind_solver_state([7; 32]);
         report.retain_certified_bounds(0.75, 1.25, 0.5, [9; 32]);
         assert_eq!(report.verified_dual_lower_bound(), Some(0.75));
+        assert_eq!(report.trace(), &[(1, 0.5), (2, 0.25)]);
         assert!(report.to_json().contains("\"certificate_identity\""));
+        assert_eq!(
+            report.matches_solver_state_checked([7; 32], || Ok::<(), ()>(())),
+            Ok(true)
+        );
 
         report.trace[0].1 = f64::from_bits(report.trace[0].1.to_bits().wrapping_add(1));
-        assert_eq!(report.verified_dual_lower_bound(), None);
-        assert_eq!(report.verified_primal_upper_bound(), None);
-        assert_eq!(report.verified_dual_scale(), None);
-        assert_eq!(report.certificate_identity(), None);
-        assert!(!report.to_json().contains("\"verified_"));
-        assert!(!report.to_json().contains("\"certificate_identity\""));
+        assert_eq!(
+            report.matches_solver_state_checked([7; 32], || Ok::<(), ()>(())),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn checked_report_snapshot_polls_at_bounded_strides() {
+        let trace_len = LAYOUT_POLL_STRIDE * 2 + 1;
+        let mut report = PdhgReport {
+            iters: trace_len,
+            volume: 1.0,
+            gap: 0.25,
+            eq_residual: 0.125,
+            trace: (1..=trace_len).map(|iteration| (iteration, 0.25)).collect(),
+            ..PdhgReport::default()
+        };
+        report.bind_solver_state([7; 32]);
+
+        let mut interrupted_polls = 0usize;
+        let interrupted = report.matches_solver_state_checked([7; 32], || {
+            interrupted_polls += 1;
+            if interrupted_polls == 2 {
+                Err(())
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(interrupted, Err(()));
+        assert_eq!(interrupted_polls, 2);
+
+        let mut completed_polls = 0usize;
+        assert_eq!(
+            report.matches_solver_state_checked([7; 32], || {
+                completed_polls += 1;
+                Ok::<(), ()>(())
+            }),
+            Ok(true)
+        );
+        assert_eq!(completed_polls, 4);
+    }
+
+    #[test]
+    fn checked_report_snapshot_rejects_length_mismatch_before_polling() {
+        let mut report = PdhgReport {
+            iters: 2,
+            volume: 1.0,
+            gap: 0.25,
+            eq_residual: 0.125,
+            trace: vec![(1, 0.5), (2, 0.25)],
+            ..PdhgReport::default()
+        };
+        report.bind_solver_state([7; 32]);
+        report.trace.insert(0, (0, 0.0));
+
+        let mut polls = 0usize;
+        assert_eq!(
+            report.matches_solver_state_checked([7; 32], || {
+                polls += 1;
+                Ok::<(), ()>(())
+            }),
+            Ok(false)
+        );
+        assert_eq!(polls, 0);
     }
 }

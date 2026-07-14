@@ -956,16 +956,13 @@ fn truss_002j_certificate_admission_identity_and_cancellation_are_fail_closed() 
         changed_residual.eq_residual =
             f64::from_bits(changed_residual.eq_residual.to_bits().wrapping_add(1));
         assert_certification_hidden(&changed_residual);
-        let mut changed_trace_tail = report.clone();
-        let tail = changed_trace_tail
-            .trace
-            .last_mut()
-            .expect("solved report retains a trace tail");
-        tail.1 = f64::from_bits(tail.1.to_bits().wrapping_add(1));
-        assert_certification_hidden(&changed_trace_tail);
-        let mut changed_trace_length = report.clone();
-        changed_trace_length.trace.insert(0, (0, 0.0));
-        assert_certification_hidden(&changed_trace_length);
+        assert!(
+            report
+                .trace()
+                .last()
+                .is_some_and(|&(iteration, _)| iteration == report.iters),
+            "the solver trace is read-only and ends at the reported iteration"
+        );
         let mut substituted_report = report.clone();
         substituted_report.gap = f64::from_bits(substituted_report.gap.to_bits() + 1);
         assert!(matches!(
