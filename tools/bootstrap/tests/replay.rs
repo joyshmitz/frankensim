@@ -26,6 +26,14 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const LOCK_NOTE: &str = "lock_hash covers (lib, version, git_head) only — paths are per-machine; remote is transport for bootstrap-constellation (content identity is the git head)";
+const LOCK_IDENTITY_DOMAIN: &str = "org.frankensim.xtask.constellation-lock.v1";
+const LOCK_IDENTITY_VERSION: u32 = 1;
+const BOOTSTRAP_PROVENANCE_IDENTITY_DOMAIN: &str =
+    "org.frankensim.xtask.constellation-bootstrap-provenance.v1";
+const BOOTSTRAP_PROVENANCE_IDENTITY_VERSION: u32 = 1;
+const TRACKED_LOCK: &str = include_str!("../../../constellation.lock");
+const CHECKOUT_CONSTELLATION_SH: &str =
+    include_str!("../../../scripts/ci/checkout_constellation.sh");
 
 fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut value = 0xcbf2_9ce4_8422_2325u64;
@@ -145,7 +153,7 @@ fn make_constellation(tag: &str) -> Constellation {
         })
         .collect();
     let lock = format!(
-        "{{\n  \"schema\": \"frankensim-constellation-lock-v2\",\n  \"lock_hash\": \"{lock_hash}\",\n  \"note\": \"{LOCK_NOTE}\",\n  \"libraries\": [\n{}\n  ]\n}}\n",
+        "{{\n  \"schema\": \"frankensim-constellation-lock-v2\",\n  \"identity_domain\": \"{LOCK_IDENTITY_DOMAIN}\",\n  \"identity_version\": {LOCK_IDENTITY_VERSION},\n  \"lock_hash\": \"{lock_hash}\",\n  \"note\": \"{LOCK_NOTE}\",\n  \"libraries\": [\n{}\n  ]\n}}\n",
         rows.join(",\n")
     );
     std::fs::write(root.join("constellation.lock"), lock).expect("write lock");
@@ -174,6 +182,142 @@ fn run_command(command: &mut Command) -> (bool, String) {
     (out.status.success(), text)
 }
 
+fn identity_tamper_cases(canonical: &str) -> Vec<(&'static str, String)> {
+    let domain_line = format!("  \"identity_domain\": \"{LOCK_IDENTITY_DOMAIN}\",\n");
+    let version_line = format!("  \"identity_version\": {LOCK_IDENTITY_VERSION},\n");
+    vec![
+        (
+            "missing identity domain",
+            canonical.replacen(&domain_line, "", 1),
+        ),
+        (
+            "wrong identity domain",
+            canonical.replacen(
+                LOCK_IDENTITY_DOMAIN,
+                "org.frankensim.xtask.constellation-lock.v0",
+                1,
+            ),
+        ),
+        (
+            "duplicate identity domain",
+            canonical.replacen(&domain_line, &format!("{domain_line}{domain_line}"), 1),
+        ),
+        (
+            "type-invalid identity domain",
+            canonical.replacen(
+                &format!("\"identity_domain\": \"{LOCK_IDENTITY_DOMAIN}\""),
+                "\"identity_domain\": 1",
+                1,
+            ),
+        ),
+        (
+            "missing identity version",
+            canonical.replacen(&version_line, "", 1),
+        ),
+        (
+            "wrong identity version",
+            canonical.replacen(
+                &format!("\"identity_version\": {LOCK_IDENTITY_VERSION}"),
+                "\"identity_version\": 0",
+                1,
+            ),
+        ),
+        (
+            "duplicate identity version",
+            canonical.replacen(&version_line, &format!("{version_line}{version_line}"), 1),
+        ),
+        (
+            "type-invalid identity version",
+            canonical.replacen(
+                &format!("\"identity_version\": {LOCK_IDENTITY_VERSION}"),
+                "\"identity_version\": true",
+                1,
+            ),
+        ),
+        (
+            "unknown identity field",
+            canonical.replacen(
+                &version_line,
+                &format!("{version_line}  \"identity_epoch\": 1,\n"),
+                1,
+            ),
+        ),
+    ]
+}
+
+fn noncanonical_encoding_cases(canonical: &str) -> Vec<(&'static str, String)> {
+    let schema_line = "  \"schema\": \"frankensim-constellation-lock-v2\",\n";
+    let domain_line = format!("  \"identity_domain\": \"{LOCK_IDENTITY_DOMAIN}\",\n");
+    vec![
+        (
+            "noncanonical whitespace",
+            canonical.replacen("  \"schema\": ", "  \"schema\":", 1),
+        ),
+        (
+            "reordered top-level keys",
+            canonical.replacen(
+                &format!("{schema_line}{domain_line}"),
+                &format!("{domain_line}{schema_line}"),
+                1,
+            ),
+        ),
+        (
+            "reordered row keys",
+            canonical.replacen(
+                "    {\"lib\": \"asupersync\", \"version\": \"0.0.0\"",
+                "    {\"version\": \"0.0.0\", \"lib\": \"asupersync\"",
+                1,
+            ),
+        ),
+        ("noncanonical CRLF", canonical.replace('\n', "\r\n")),
+    ]
+}
+
+fn install_shell_checkout(c: &Constellation) {
+    let script = c.root.join("scripts/ci/checkout_constellation.sh");
+    std::fs::create_dir_all(script.parent().expect("script parent")).expect("mkdir scripts/ci");
+    std::fs::write(&script, CHECKOUT_CONSTELLATION_SH).expect("write checkout script");
+}
+
+fn run_shell_checkout(c: &Constellation, mode: Option<&str>) -> (bool, String) {
+    let mut command = Command::new("bash");
+    command.arg(c.root.join("scripts/ci/checkout_constellation.sh"));
+    if let Some(mode) = mode {
+        command.arg(mode);
+    }
+    command.arg(c.root.parent().expect("constellation destination"));
+    run_command(&mut command)
+}
+
+fn use_local_mirror_as_locked_transport(c: &Constellation) {
+    let lock_path = c.root.join("constellation.lock");
+    let mut lock = std::fs::read_to_string(&lock_path).expect("fixture lock");
+    for (name, _) in &c.heads {
+        let remote = c.mirror.join(name).display().to_string();
+        lock = lock.replacen(
+            "\"remote\": \"no-remote\"",
+            &format!("\"remote\": \"{remote}\""),
+            1,
+        );
+    }
+    std::fs::write(lock_path, lock).expect("write local transports");
+}
+
+fn commit_synthetic_root(c: &Constellation) {
+    git(&c.root, &["init", "-q", "-b", "main"]);
+    git(&c.root, &["config", "user.email", "drill@frankensim.test"]);
+    git(&c.root, &["config", "user.name", "bootstrap drill"]);
+    git(
+        &c.root,
+        &[
+            "add",
+            "constellation.lock",
+            "scripts/ci/checkout_constellation.sh",
+        ],
+    );
+    git(&c.root, &["commit", "-qm", "synthetic root"]);
+}
+
 #[test]
 fn value_taking_flags_refuse_missing_operands() {
     for args in [
@@ -198,35 +342,182 @@ fn canonical_lock_tamper_and_traversal_rows_refuse_before_destination_access() {
     let c = make_constellation("lock-tamper");
     let lock_path = c.root.join("constellation.lock");
     let canonical = std::fs::read_to_string(&lock_path).expect("canonical fixture lock");
-    let cases = [
-        canonical.replacen(
-            "frankensim-constellation-lock-v2",
-            "frankensim-constellation-lock-v3",
-            1,
+    let mut cases = identity_tamper_cases(&canonical);
+    cases.extend(noncanonical_encoding_cases(&canonical));
+    cases.extend([
+        (
+            "wrong schema",
+            canonical.replacen(
+                "frankensim-constellation-lock-v2",
+                "frankensim-constellation-lock-v3",
+                1,
+            ),
         ),
-        canonical.replacen(&c.lock_hash, "0000000000000000", 1),
-        canonical.replacen(
-            "\"lib\": \"franken_networkx\"",
-            "\"lib\": \"asupersync\"",
-            1,
+        (
+            "wrong row hash",
+            canonical.replacen(&c.lock_hash, "0000000000000000", 1),
         ),
-        canonical.replacen("\"lib\": \"asupersync\"", "\"lib\": \"../../escaped\"", 1),
-        format!("{canonical}trailing-data\n"),
-        "x".repeat(1_048_577),
-    ];
-    for (index, tampered) in cases.into_iter().enumerate() {
+        (
+            "duplicate library",
+            canonical.replacen(
+                "\"lib\": \"franken_networkx\"",
+                "\"lib\": \"asupersync\"",
+                1,
+            ),
+        ),
+        (
+            "path-traversing library",
+            canonical.replacen("\"lib\": \"asupersync\"", "\"lib\": \"../../escaped\"", 1),
+        ),
+        ("trailing data", format!("{canonical}trailing-data\n")),
+        ("oversized lock", "x".repeat(1_048_577)),
+    ]);
+    for (case, tampered) in cases {
         std::fs::write(&lock_path, tampered).expect("write tampered lock");
         let (ok, text) = run_bootstrap(&c, &["--offline"]);
-        assert!(!ok, "tampered lock case {index} must refuse:\n{text}");
+        assert!(!ok, "tampered lock case {case} must refuse:\n{text}");
         assert!(
             !c.root.parent().unwrap().join("asupersync").exists(),
-            "case {index} reached sibling materialization"
+            "case {case} reached sibling materialization"
         );
         assert!(
             !c.base.join("escaped").exists(),
-            "case {index} escaped the constellation destination"
+            "case {case} escaped the constellation destination"
         );
     }
+}
+
+#[test]
+fn shell_lock_identity_tamper_refuses_before_repository_or_destination_access() {
+    let c = make_constellation("shell-lock-identity-tamper");
+    install_shell_checkout(&c);
+    let lock_path = c.root.join("constellation.lock");
+    let canonical = std::fs::read_to_string(&lock_path).expect("canonical fixture lock");
+
+    let mut cases = identity_tamper_cases(&canonical);
+    cases.extend(noncanonical_encoding_cases(&canonical));
+    cases.push(("oversized lock", "x".repeat(1_048_577)));
+    for (case, tampered) in cases {
+        std::fs::write(&lock_path, tampered).expect("write tampered lock");
+        let (ok, text) = run_shell_checkout(&c, None);
+        assert!(!ok, "shell accepted {case}:\n{text}");
+        assert!(
+            text.contains("could not parse"),
+            "shell must classify {case} as a lock refusal before pin checks:\n{text}"
+        );
+        assert!(
+            !c.root.parent().unwrap().join("asupersync").exists(),
+            "shell case {case} reached repository materialization"
+        );
+        assert!(
+            !c.root
+                .parent()
+                .unwrap()
+                .join("constellation-bootstrap.json")
+                .exists(),
+            "shell case {case} published destination provenance"
+        );
+    }
+}
+
+#[test]
+fn tracked_xtask_lock_reaches_every_consumer_before_pin_checks() {
+    let c = make_constellation("tracked-lock-consumers");
+    std::fs::write(c.root.join("constellation.lock"), TRACKED_LOCK)
+        .expect("install tracked xtask lock");
+    install_shell_checkout(&c);
+
+    let (standalone_ok, standalone_text) = run_bootstrap(&c, &["--offline"]);
+    assert!(!standalone_ok, "synthetic cache is intentionally empty");
+    assert!(
+        standalone_text.contains("missing from the source cache in --offline mode"),
+        "standalone must parse the tracked producer bytes before reporting missing pins:\n{standalone_text}"
+    );
+    assert!(
+        !standalone_text.contains("expected canonical token")
+            && !standalone_text.contains("unsupported constellation lock")
+            && !standalone_text.contains("not canonical"),
+        "tracked xtask lock was rejected as grammar drift:\n{standalone_text}"
+    );
+
+    let (shell_ok, shell_text) = run_shell_checkout(&c, Some("--verify-only"));
+    assert!(!shell_ok, "synthetic shell cache is intentionally empty");
+    assert!(
+        shell_text.contains("required constellation sibling") && shell_text.contains("is missing"),
+        "shell must parse the tracked producer bytes before reporting missing pins:\n{shell_text}"
+    );
+    assert!(
+        !shell_text.contains("could not parse"),
+        "tracked xtask lock was rejected by the shell grammar:\n{shell_text}"
+    );
+}
+
+#[test]
+fn shell_checkout_verify_and_snapshot_share_the_canonical_lock_grammar() {
+    let c = make_constellation("shell-modes");
+    use_local_mirror_as_locked_transport(&c);
+    install_shell_checkout(&c);
+    commit_synthetic_root(&c);
+
+    let lock = std::fs::read_to_string(c.root.join("constellation.lock")).expect("fixture lock");
+    assert!(
+        lock.contains(&format!("\"lock_hash\": \"{}\"", c.lock_hash)),
+        "transport-only fixture rewrites must preserve row-only lock_hash semantics"
+    );
+
+    let (checkout_ok, checkout_text) = run_shell_checkout(&c, None);
+    assert!(
+        checkout_ok,
+        "synthetic shell checkout failed:\n{checkout_text}"
+    );
+    for (name, head) in &c.heads {
+        assert!(
+            checkout_text.contains(&format!(
+                "\"constellation\":\"{name}\",\"verdict\":\"cloned\""
+            )),
+            "{name} was not cloned through the canonical shell parser:\n{checkout_text}"
+        );
+        let checkout = c.root.parent().unwrap().join(name);
+        assert_eq!(&git(&checkout, &["rev-parse", "HEAD"]), head);
+        assert_eq!(git(&checkout, &["status", "--porcelain"]), "");
+    }
+
+    let (verify_ok, verify_text) = run_shell_checkout(&c, Some("--verify-only"));
+    assert!(verify_ok, "synthetic shell verify failed:\n{verify_text}");
+    for (name, _) in &c.heads {
+        assert!(
+            verify_text.contains(&format!(
+                "\"constellation\":\"{name}\",\"verdict\":\"verified\""
+            )),
+            "{name} was not verified through the canonical shell parser:\n{verify_text}"
+        );
+    }
+
+    let (snapshot_ok, snapshot_text) = run_shell_checkout(&c, Some("--snapshot"));
+    assert!(
+        snapshot_ok,
+        "synthetic shell snapshot failed:\n{snapshot_text}"
+    );
+    let snapshot = snapshot_text.trim();
+    assert_eq!(
+        snapshot.len(),
+        64,
+        "snapshot must be one SHA-256 hex identity"
+    );
+    assert!(
+        snapshot
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()),
+        "snapshot must be canonical lowercase hex: {snapshot}"
+    );
+
+    let (replay_ok, replay_text) = run_shell_checkout(&c, Some("--snapshot"));
+    assert!(replay_ok, "second shell snapshot failed:\n{replay_text}");
+    assert_eq!(
+        snapshot,
+        replay_text.trim(),
+        "unchanged shell snapshot must replay bitwise"
+    );
 }
 
 #[test]
@@ -264,7 +555,15 @@ fn clean_machine_clone_then_idempotent_replay_from_offline_mirror() {
         .unwrap()
         .join("constellation-bootstrap.json");
     let prov1 = std::fs::read_to_string(&prov_path).expect("provenance written");
-    assert!(prov1.contains("frankensim-constellation-bootstrap-v2"));
+    let provenance_prefix = format!(
+        "{{\n\"schema\": \"frankensim-constellation-bootstrap-v2\",\n\
+         \"identity_domain\": \"{BOOTSTRAP_PROVENANCE_IDENTITY_DOMAIN}\",\n\
+         \"identity_version\": {BOOTSTRAP_PROVENANCE_IDENTITY_VERSION},\n"
+    );
+    assert!(
+        prov1.starts_with(&provenance_prefix),
+        "standalone and xtask provenance headers must match exactly: {prov1}"
+    );
     assert!(
         prov1.contains(&c.lock_hash),
         "canonical lock hash bound: {prov1}"

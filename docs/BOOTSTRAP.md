@@ -1,11 +1,14 @@
 # Constellation bootstrap (beads huq.17, 1t8i)
 
 The workspace's Franken dependencies resolve through sibling paths
-(`../asupersync`, `../franken_numpy`, …). `constellation.lock`
-(schema v2) records each repository's semantic identity — version,
-git head — plus its remote as TRANSPORT (content identity is the
-commit hash, never the URL). A host whose sibling dependencies already exist
-can verify or refresh the pinned sources from the lock:
+(`../asupersync`, `../franken_numpy`, …). `constellation.lock` (schema v2) is
+owned by identity domain `org.frankensim.xtask.constellation-lock.v1` at
+identity version `1`. It records each repository's semantic identity — version
+and git head — plus its remote as TRANSPORT (content identity is the commit
+hash, never the URL). The row-only `lock_hash` continues to cover
+`(lib, version, git_head)`; schema/domain/version, paths, and remotes do not
+silently enter that existing identity. A host whose sibling dependencies
+already exist can verify or refresh the pinned sources from the lock:
 
     cargo run -p xtask -- bootstrap-constellation            # workspace parent only
     cargo run -p xtask -- bootstrap-constellation --offline  # verify-only, no network
@@ -22,9 +25,12 @@ workspace member, so it builds alone:
     cargo run --manifest-path tools/bootstrap/Cargo.toml -- --from <mirror-base>
 
 It reads `constellation.lock` through a 1 MiB bound and accepts only the
-canonical v2 grammar, exact seven-library set, unique safe library identities,
-lowercase pinned heads, canonical note, and recomputed lock hash before deriving
-any destination path. It initializes each missing destination in place with
+canonical v2 grammar, exact identity domain and integer identity version, exact
+seven-library set, unique safe library identities, lowercase pinned heads,
+canonical note, and recomputed row-only lock hash before deriving any destination
+path. Missing, wrong, duplicate, unknown, or type-invalid identity metadata is a
+lock parse failure before repository or destination access. It initializes each
+missing destination in place with
 local marker `frankensim.bootstrapIncomplete=true`, fetches the exact pin,
 checks it out DETACHED, applies the same pinned-head and clean-tree verification
 as an existing sibling, and clears the marker. A retry resumes only a clean
@@ -37,16 +43,21 @@ substitutions — a case-folding checkout collision surfaces as a dirty
 tree and refuses. Clean verification disables global excludes, independently
 enumerates untracked files hidden by repository-local excludes, and rejects
 `assume-unchanged`/`skip-worktree` index flags, so local Git configuration
-cannot conceal source drift. The tool then writes `constellation-bootstrap.json` provenance
-(schema `frankensim-constellation-bootstrap-v2`) beside the siblings. The
+cannot conceal source drift. The tool then writes
+`constellation-bootstrap.json` provenance (schema
+`frankensim-constellation-bootstrap-v2`, identity domain
+`org.frankensim.xtask.constellation-bootstrap-provenance.v1`, identity version
+`1`) beside the siblings. The
 sibling layout itself is the reproducible Cargo
 configuration: no config files are generated or mutated. Idempotent:
-re-runs verify. Hermetic offline-cache replay drills (clean-machine
-fetch from a local bare mirror, idempotent replay, interrupted marked and
-exact-origin unborn resume, unsafe-destination and lock tamper/path-traversal
-refusal, ordinary and ignore/index-hidden dirt, newly-fetched-tree dirt, drift,
-offline-missing, and malformed CLI
-refusals) live in `tools/bootstrap/tests/replay.rs`. A bare `--root` or
+re-runs verify. Hermetic replay drills cover producer-to-consumer parsing of the
+tracked xtask lock; missing/wrong/duplicate/unknown/type-invalid identity-field
+refusal; clean-machine fetch from a local bare mirror; idempotent offline replay;
+interrupted marked and exact-origin unborn resume; unsafe-destination and lock
+tamper/path-traversal refusal; ordinary and ignore/index-hidden dirt;
+newly-fetched-tree dirt; drift; offline-missing; malformed CLI refusal; and the
+shell checkout's synthetic checkout, verify, and stable snapshot modes. They live
+in `tools/bootstrap/tests/replay.rs`. A bare `--root` or
 `--from`, including one immediately followed by another option, is a
 structured admission failure. The xtask command remains the in-workspace
 verifier once the workspace builds and applies the same post-clone clean-tree
@@ -77,11 +88,12 @@ Standalone bootstrap behavior, per library:
 - **Offline re-runs** succeed from a verified sibling set with no network.
 
 Provenance: `constellation-bootstrap.json` is written into the workspace parent
-with the lock hash and every library's head, canonical lock remote, selected
-transport/mirror, whether that transport was actually used, and terminal state.
-The two Rust bootstrap implementations emit the same v2 row shape. A verified or
-offline-cache row records `transport_used: false`; a fresh clone records the
-exact selected transport with `transport_used: true`.
+with the exact schema/domain/version header, lock hash, and every library's head,
+canonical lock remote, selected transport/mirror, whether that transport was
+actually used, and terminal state. The standalone and in-workspace Rust
+implementations emit the same v2 top-level and row shapes. A verified or
+offline-cache row records `transport_used: false`; a fresh clone records the exact
+selected transport with `transport_used: true`.
 
 Re-locking (`lock-constellation`) is a DELIBERATE act: it re-records
 live heads and remotes; `check-constellation` gates drift in CI.

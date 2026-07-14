@@ -42,8 +42,13 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const BOOTSTRAP_PROVENANCE_SCHEMA: &str = "frankensim-constellation-bootstrap-v2";
+const BOOTSTRAP_PROVENANCE_IDENTITY_VERSION: u32 = 1;
+const BOOTSTRAP_PROVENANCE_IDENTITY_DOMAIN: &str =
+    "org.frankensim.xtask.constellation-bootstrap-provenance.v1";
 const BOOTSTRAP_INCOMPLETE_KEY: &str = "frankensim.bootstrapIncomplete";
 const CONSTELLATION_LOCK_SCHEMA: &str = "frankensim-constellation-lock-v2";
+const CONSTELLATION_LOCK_IDENTITY_VERSION: u32 = 1;
+const CONSTELLATION_LOCK_IDENTITY_DOMAIN: &str = "org.frankensim.xtask.constellation-lock.v1";
 const CONSTELLATION_LOCK_NOTE: &str = "lock_hash covers (lib, version, git_head) only — paths are per-machine; remote is transport for bootstrap-constellation (content identity is the git head)";
 const MAX_CONSTELLATION_LOCK_BYTES: usize = 1_048_576;
 
@@ -218,7 +223,7 @@ fn lock_rows_identity(rows: &[LockRow]) -> Result<String, String> {
 
 fn render_lock_rows(rows: &[LockRow], lock_hash: &str) -> String {
     let mut rendered = format!(
-        "{{\n  \"schema\": \"{CONSTELLATION_LOCK_SCHEMA}\",\n  \"lock_hash\": \"{lock_hash}\",\n  \"note\": \"{}\",\n  \"libraries\": [\n",
+        "{{\n  \"schema\": \"{CONSTELLATION_LOCK_SCHEMA}\",\n  \"identity_domain\": \"{CONSTELLATION_LOCK_IDENTITY_DOMAIN}\",\n  \"identity_version\": {CONSTELLATION_LOCK_IDENTITY_VERSION},\n  \"lock_hash\": \"{lock_hash}\",\n  \"note\": \"{}\",\n  \"libraries\": [\n",
         json_escape(CONSTELLATION_LOCK_NOTE)
     );
     for (index, row) in rows.iter().enumerate() {
@@ -246,6 +251,11 @@ fn parse_lock_rows(text: &str) -> Result<(String, Vec<LockRow>), String> {
     let mut parser = CanonicalJsonParser::new(text);
     parser.expect("{\n  \"schema\": ")?;
     let schema = parser.string()?;
+    parser.expect(",\n  \"identity_domain\": ")?;
+    let identity_domain = parser.string()?;
+    parser.expect(&format!(
+        ",\n  \"identity_version\": {CONSTELLATION_LOCK_IDENTITY_VERSION}"
+    ))?;
     parser.expect(",\n  \"lock_hash\": ")?;
     let lock_hash = parser.string()?;
     parser.expect(",\n  \"note\": ")?;
@@ -302,8 +312,16 @@ fn parse_lock_rows(text: &str) -> Result<(String, Vec<LockRow>), String> {
     }
     parser.finish()?;
 
-    if schema != CONSTELLATION_LOCK_SCHEMA || note != CONSTELLATION_LOCK_NOTE {
-        return Err("constellation lock schema or identity note is not canonical".to_string());
+    if schema != CONSTELLATION_LOCK_SCHEMA {
+        return Err(format!("unsupported constellation lock schema {schema:?}"));
+    }
+    if identity_domain != CONSTELLATION_LOCK_IDENTITY_DOMAIN {
+        return Err(format!(
+            "unsupported constellation lock identity domain {identity_domain:?}"
+        ));
+    }
+    if note != CONSTELLATION_LOCK_NOTE {
+        return Err("constellation.lock carries a non-canonical identity note".to_string());
     }
     if lock_hash.len() != 16
         || !lock_hash
@@ -745,16 +763,16 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let Some(dest) = root.parent().map(Path::to_path_buf) else {
-        eprintln!("error: {} has no parent directory", root.display());
-        return ExitCode::FAILURE;
-    };
     let (lock_hash, rows) = match parse_lock_rows(&lock_text) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("error: {e}");
             return ExitCode::FAILURE;
         }
+    };
+    let Some(dest) = root.parent().map(Path::to_path_buf) else {
+        eprintln!("error: {} has no parent directory", root.display());
+        return ExitCode::FAILURE;
     };
     let mut provenance = Vec::new();
     let mut failures = 0usize;
@@ -797,10 +815,12 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     let prov = format!(
-        "{{\n\"schema\": \"{BOOTSTRAP_PROVENANCE_SCHEMA}\",\n\"lock_hash\": \"{}\",\n\"dest\": \"{}\",\n\"libraries\": [\n{}\n]\n}}\n",
+        "{{\n\"schema\": \"{BOOTSTRAP_PROVENANCE_SCHEMA}\",\n\"identity_domain\": \"{identity_domain}\",\n\"identity_version\": {identity_version},\n\"lock_hash\": \"{}\",\n\"dest\": \"{}\",\n\"libraries\": [\n{}\n]\n}}\n",
         json_escape(&lock_hash),
         json_escape(&dest.display().to_string()),
-        provenance.join(",\n")
+        provenance.join(",\n"),
+        identity_domain = BOOTSTRAP_PROVENANCE_IDENTITY_DOMAIN,
+        identity_version = BOOTSTRAP_PROVENANCE_IDENTITY_VERSION,
     );
     let prov_path = dest.join("constellation-bootstrap.json");
     if let Err(e) = std::fs::write(&prov_path, prov) {
