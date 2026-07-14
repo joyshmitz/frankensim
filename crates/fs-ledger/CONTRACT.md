@@ -1,6 +1,6 @@
 # CONTRACT: fs-ledger
 
-> Status: ACTIVE (Design Ledger, schema v8). Owns the core schema + Rev S
+> Status: ACTIVE (Design Ledger, schema v9). Owns the core schema + Rev S
 > extension tables, BLAKE3 content addressing, the WAL/snapshot concurrency
 > contract, and — since schema v2 — forkable worlds, `at(t)` views,
 > `explain()`, the replay audit, and unreferenced-artifact GC (`travel`
@@ -79,8 +79,33 @@ fine-grained event stream. Layer: L6 (HELM). Runtime deps: `std` + `fsqlite`.
   `finish_op` (exactly once; `ok|error|cancelled`; optional diagnostic JSON is
   bounded at 1 MiB before validation), `op` (metadata-only
   type/length/CASE-gated JSON preflight followed by the same guarded payload
-  query), `link` (FK-checked
-  `in|out` edges), `edge_exists` (exact role-qualified verifier query).
+  query), `op_execution_context` (fixed-size typed branch/mode read after the
+  same op-envelope preflight), `link` (FK-checked `in|out` edges),
+  `edge_exists` (exact role-qualified verifier query), plus
+  `artifact_producer_ops_bounded` and `op_artifact_edges_bounded`. The bounded
+  lineage reads accept caller caps through 1,024 rows, issue `LIMIT cap+1`
+  through the schema-v9 covering indexes `(artifact, role, op)` and
+  `(op, role, artifact)`, return only the capped deterministic prefix, and
+  expose `truncated` so verifier paths can refuse extra producer/edge fan-out
+  without scanning, sorting, or materializing an unbounded DAG. Selected edge
+  values are SQL-CASE-sanitized to fixed role/hash envelopes before Rust can
+  materialize them. A zero cap is a bounded existence probe.
+  `seal_artifact_output` atomically binds an artifact to an already-existing
+  sole output producer; the immutable `artifact_output_seals` row and attested
+  edge triggers then reject every different producer. Exact same-op sealing is
+  idempotent, input reuse remains legal, and `artifact_output_seal` is the
+  fixed-size verifier read. `seal_op_artifact_edges` independently freezes one
+  operation's complete bounded edge set after an exact-cardinality `cap+1`
+  probe. Its immutable `op_artifact_edge_seals` row blocks every later edge
+  insert, update, or delete for that op; `op_artifact_edge_seal` revalidates the
+  stored count with at most `count+1` covering-index rows before returning it.
+  Both seal accessors verify their parent edge/op state, so constraint-bypassed
+  orphan or fan-out corruption fails closed rather than becoming idempotent.
+  Migration to schema v9 deliberately leaves both seal tables empty: exclusive
+  provenance is a consumer claim that the ledger cannot infer from historic
+  edges alone. Consumers may atomically adopt missing seals only after
+  revalidating their complete bounded historic lineage; conflicting seals are
+  immutable and must fail closed.
 - Streams: `record_metric` (finite REAL only), `append_event` /
   `append_events` (batched, atomic), `tune_put`/`tune_get` (single-statement
   atomic upsert keyed kernel × shape-class × exact machine fingerprint),
@@ -360,8 +385,15 @@ offending Five Explicits field), `Invalid` (names the field),
 `ArtifactReadLimit` refuses an artifact whose stored metadata declares a length
 above the caller's explicit validation/materialization budget before payload
 delivery; it makes no independent content-integrity claim.
-`OpCorrupt` refuses a stored op envelope that violates its type, byte, JSON, or
-finish-state contract before materialization.
+`OpCorrupt` refuses a stored op envelope that violates its type, byte, JSON,
+finish-state, branch, execution-context, or role-qualified edge contract before
+materialization. `Invalid { field: "cap", .. }` refuses a bounded lineage cap
+above 1,024 before issuing SQL; malformed producer identities surface as
+`Corrupt`. `Invalid { field: "artifact_output_seal", .. }` refuses a missing,
+ambiguous, or conflicting producer at seal time, while `Invalid { field:
+"op_artifact_edge_seal", .. }` refuses an excessive, missing, or mismatched
+edge-set seal. `Invalid { field: "edge", .. }` refuses an output link that
+conflicts with an immutable producer seal or any link to a sealed operation.
 `InstanceIdentityCorrupt` refuses a v4+ database whose singleton identity is
 missing, malformed, or differs from the handle's cached open-time authority.
 `InstanceIdentityUnavailable` refuses to mint a new identity when the safe
@@ -417,7 +449,12 @@ Artifact unit regressions cover inline and chunked exact caller caps, cap+1
 refusal with zero payload callbacks, and the explicit metadata-declaration
 precedence for a tampered length. Op unit regressions cover exact and cap+1 canonical writes
 for every variable-size field, raw-SQL oversized IR/version rows, guarded read
-refusal, and `malformed_ops` lint detection.
+refusal, typed execution-context corruption/missing behavior, deterministic
+role-qualified lineage ordering, exact-cap/cap+1/zero-cap truncation, explicit
+covering-index query plans without temporary sorts, hostile edge-identity
+sanitization, immutable sole-producer and exact-op-edge-set seals, raw trigger
+and orphan detection, a real two-connection seal/link race, v8-to-v9 migration
+including stale-marker healing, and `malformed_ops` lint detection.
 The `ledger_003b`/`ledger_003c`/`ledger_003d` identity battery covers handle
 movement, independent memory ledgers, file reopen and aliasing, same-path file
 replacement, genuine v3 and v4 migrations, UUID shape, v5 update/delete/insert

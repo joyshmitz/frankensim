@@ -98,6 +98,12 @@ pub const MAX_TUNE_ROWS_PER_KERNEL: usize = 1024;
 /// Maximum aggregate bytes returned by one [`Ledger::tune_rows`] scan.
 pub const MAX_TUNE_SCAN_BYTES: usize = 16 * 1024 * 1024;
 
+/// Maximum caller cap accepted by one bounded lineage-row query.
+///
+/// Each bounded query reads at most `cap + 1` fixed-size rows so it can report
+/// truncation without materializing an unbounded producer or edge fan-out.
+pub const MAX_LINEAGE_QUERY_ROWS: usize = 1024;
+
 /// Crate version (compile-time stamp).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -2146,6 +2152,54 @@ impl EdgeRole {
             EdgeRole::Out => "out",
         }
     }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "in" => Some(Self::In),
+            "out" => Some(Self::Out),
+            _ => None,
+        }
+    }
+}
+
+/// Fixed-size execution context for one operation.
+///
+/// This intentionally excludes the variable-size IR and Five Explicits so a
+/// verifier can check branch/mode provenance without materializing an
+/// [`OpRow`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpExecutionContext {
+    /// Branch containing the operation.
+    pub branch: i64,
+    /// Recorded deterministic or fast execution mode.
+    pub exec_mode: ExecMode,
+}
+
+/// One role-qualified artifact edge returned by a bounded lineage query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpArtifactEdge {
+    /// Whether the operation consumed or produced the artifact.
+    pub role: EdgeRole,
+    /// Content identity of the linked artifact.
+    pub artifact: ContentHash,
+}
+
+/// Capped output-producer lookup for one artifact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundedProducerOps {
+    /// Producer operation ids, ordered by id and limited to the caller cap.
+    pub op_ids: Vec<i64>,
+    /// `true` when at least one additional producer exists beyond `op_ids`.
+    pub truncated: bool,
+}
+
+/// Capped role-qualified artifact edges for one operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundedOpArtifactEdges {
+    /// Edges ordered by role and artifact identity, limited to the caller cap.
+    pub edges: Vec<OpArtifactEdge>,
+    /// `true` when at least one additional edge exists beyond `edges`.
+    pub truncated: bool,
 }
 
 /// The frozen Five Explicits of an op (P4). Units are the fifth explicit and
@@ -2531,6 +2585,7 @@ fn op_storage_predicate() -> String {
              CASE WHEN length(CAST(capability AS BLOB)) BETWEEN 1 AND {MAX_OP_CAPABILITY_BYTES} \
                   THEN json_valid(capability) ELSE 0 END ELSE 0 END = 1 AND \
          typeof(t_start) = 'integer' AND \
+         typeof(branch) = 'integer' AND \
          ((t_end IS NULL AND outcome IS NULL) OR \
           (typeof(t_end) = 'integer' AND typeof(outcome) = 'text' AND \
            outcome IN ('ok','error','cancelled'))) AND \
@@ -2539,6 +2594,22 @@ fn op_storage_predicate() -> String {
              CASE WHEN length(CAST(diag AS BLOB)) BETWEEN 1 AND {MAX_OP_DIAG_BYTES} \
                   THEN json_valid(diag) ELSE 0 END ELSE 0 END = 1"
     )
+}
+
+fn bounded_lineage_query_limit(cap: usize) -> Result<usize, LedgerError> {
+    if cap > MAX_LINEAGE_QUERY_ROWS {
+        return Err(LedgerError::Invalid {
+            field: "cap".to_string(),
+            problem: format!(
+                "lineage query cap {cap} exceeds the public maximum \
+                 {MAX_LINEAGE_QUERY_ROWS}; narrow the verification query"
+            ),
+        });
+    }
+    cap.checked_add(1).ok_or_else(|| LedgerError::Invalid {
+        field: "cap".to_string(),
+        problem: "lineage query cap cannot be represented as cap + 1".to_string(),
+    })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3098,10 +3169,10 @@ impl Ledger {
     }
 
     /// Monotone count of typed read-API queries issued through this
-    /// connection (bead vm3i): `tune_rows`/`tune_get`/`get_artifact`/`op`/
-    /// `edge_exists`/`checked_instance_id` each count once. The measurable
-    /// basis for verification query budgets; diagnostic only, never part of a
-    /// receipt.
+    /// connection (bead vm3i): `tune_rows`/`tune_get`/`get_artifact`/`op`,
+    /// bounded lineage reads, seal reads, `edge_exists`, and
+    /// `checked_instance_id` each count once. The measurable basis for
+    /// verification query budgets; diagnostic only, never part of a receipt.
     #[must_use]
     pub fn read_queries(&self) -> u64 {
         self.read_queries.get()
@@ -4524,27 +4595,81 @@ impl Ledger {
         Ok(true)
     }
 
-    pub(crate) fn bounded_op_exec_mode(&self, id: i64) -> Result<String, LedgerError> {
+    fn op_execution_context_inner(
+        &self,
+        id: i64,
+    ) -> Result<Option<OpExecutionContext>, LedgerError> {
         if !self.op_row_is_bounded(id)? {
-            return Err(LedgerError::NotFound {
-                what: format!("op {id}"),
-            });
+            return Ok(None);
         }
         let rows = self
             .conn
             .query_with_params(
-                "SELECT exec_mode FROM ops WHERE id = ?1 AND typeof(exec_mode) = 'text' \
-                 AND exec_mode IN ('deterministic','fast')",
+                &format!(
+                    "SELECT branch, exec_mode, \
+                            EXISTS(SELECT 1 FROM branches WHERE id = ops.branch) \
+                     FROM ops WHERE id = ?1 AND {}",
+                    op_storage_predicate()
+                ),
                 &[SqliteValue::Integer(id)],
             )
-            .map_err(|e| sql_err("bounded op exec_mode", &e))?;
-        match rows.first().and_then(|row| row.get(0)) {
-            Some(SqliteValue::Text(mode)) => Ok(mode.as_str().to_string()),
-            _ => Err(LedgerError::OpCorrupt {
+            .map_err(|e| sql_err("bounded op execution context", &e))?;
+        let row = rows.first().ok_or_else(|| LedgerError::OpCorrupt {
+            op: id,
+            detail: "operation context disappeared or changed after bounded preflight".to_string(),
+        })?;
+        let branch = match row.get(0) {
+            Some(SqliteValue::Integer(branch)) => *branch,
+            _ => {
+                return Err(LedgerError::OpCorrupt {
+                    op: id,
+                    detail: "branch has non-integer storage after bounded preflight".to_string(),
+                });
+            }
+        };
+        let exec_mode = match row.get(1) {
+            Some(SqliteValue::Text(mode)) => {
+                ExecMode::parse(mode).ok_or_else(|| LedgerError::OpCorrupt {
+                    op: id,
+                    detail: "execution mode is outside the deterministic/fast domain".to_string(),
+                })?
+            }
+            _ => {
+                return Err(LedgerError::OpCorrupt {
+                    op: id,
+                    detail: "execution mode has non-text storage after bounded preflight"
+                        .to_string(),
+                });
+            }
+        };
+        if !matches!(row.get(2), Some(SqliteValue::Integer(1))) {
+            return Err(LedgerError::OpCorrupt {
                 op: id,
-                detail: "execution mode disappeared or changed after bounded preflight".to_string(),
-            }),
+                detail: format!("branch {branch} does not exist in the branch registry"),
+            });
         }
+        Ok(Some(OpExecutionContext { branch, exec_mode }))
+    }
+
+    /// Fetch the fixed-size branch/mode execution context for one op.
+    ///
+    /// The complete bounded op envelope is checked before this query returns,
+    /// but its variable-size fields are never materialized.
+    ///
+    /// # Errors
+    /// Engine errors or [`LedgerError::OpCorrupt`] for a malformed operation
+    /// or missing branch; an unknown op is `Ok(None)`.
+    pub fn op_execution_context(&self, id: i64) -> Result<Option<OpExecutionContext>, LedgerError> {
+        self.note_read_query();
+        self.op_execution_context_inner(id)
+    }
+
+    pub(crate) fn bounded_op_exec_mode(&self, id: i64) -> Result<String, LedgerError> {
+        self.op_execution_context_inner(id)?
+            .map(|context| context.exec_mode.as_str().to_string())
+            .ok_or_else(|| LedgerError::NotFound {
+                what: format!("op {id}"),
+            })
     }
 
     /// Fetch one op row, if present. Every variable-size field is checked by
@@ -4628,6 +4753,27 @@ impl Ledger {
     /// # Errors
     /// [`LedgerError::Invalid`] on a dangling reference (names which side).
     pub fn link(&self, op: i64, artifact: &ContentHash, role: EdgeRole) -> Result<(), LedgerError> {
+        if self.op_artifact_edge_seal_inner(op)?.is_some() {
+            return Err(LedgerError::Invalid {
+                field: "edge".to_string(),
+                problem: format!(
+                    "operation {op} has an immutable artifact-edge-set seal; no edge may be added"
+                ),
+            });
+        }
+        if role == EdgeRole::Out {
+            if let Some(sealed) = self.artifact_output_seal_inner(artifact)? {
+                if sealed != op {
+                    return Err(LedgerError::Invalid {
+                        field: "edge".to_string(),
+                        problem: format!(
+                            "artifact {} has an immutable exclusive output-producer seal for operation {sealed}",
+                            artifact.to_hex()
+                        ),
+                    });
+                }
+            }
+        }
         let insert = self
             .conn
             .prepare("INSERT INTO edges(op, artifact, role) VALUES (?1, ?2, ?3)")
@@ -4646,6 +4792,31 @@ impl Ledger {
                     artifact.to_hex()
                 ),
             }),
+            Err(error)
+                if error
+                    .to_string()
+                    .contains("sealed artifact rejects a different output producer") =>
+            {
+                Err(LedgerError::Invalid {
+                    field: "edge".to_string(),
+                    problem: format!(
+                        "artifact {} has an immutable exclusive output-producer seal",
+                        artifact.to_hex()
+                    ),
+                })
+            }
+            Err(error)
+                if error
+                    .to_string()
+                    .contains("sealed operation artifact-edge set is immutable") =>
+            {
+                Err(LedgerError::Invalid {
+                    field: "edge".to_string(),
+                    problem: format!(
+                        "operation {op} has an immutable artifact-edge-set seal; no edge may be added"
+                    ),
+                })
+            }
             Err(e) => Err(sql_err("edge insert", &e)),
         }
     }
@@ -4678,6 +4849,429 @@ impl Ledger {
             )
             .map_err(|error| sql_err("edge existence query", &error))?;
         Ok(!rows.is_empty())
+    }
+
+    fn artifact_output_seal_inner(
+        &self,
+        artifact: &ContentHash,
+    ) -> Result<Option<i64>, LedgerError> {
+        let rows = self
+            .conn
+            .query_with_params(
+                "SELECT CASE WHEN typeof(seal.op) = 'integer' THEN seal.op ELSE NULL END, \
+                        CASE WHEN typeof(seal.role) = 'text' AND seal.role = 'out' \
+                             THEN 1 ELSE 0 END, \
+                        EXISTS( \
+                            SELECT 1 FROM edges INDEXED BY idx_edges_artifact_role_op \
+                            WHERE artifact = seal.artifact AND role = 'out' AND op = seal.op \
+                            LIMIT 1 \
+                        ), \
+                        NOT EXISTS( \
+                            SELECT 1 FROM edges INDEXED BY idx_edges_artifact_role_op \
+                            WHERE artifact = seal.artifact AND role = 'out' AND op != seal.op \
+                            LIMIT 1 \
+                        ) \
+                 FROM artifact_output_seals AS seal WHERE seal.artifact = ?1 LIMIT 1",
+                &[blob_param(artifact.as_bytes())],
+            )
+            .map_err(|error| sql_err("artifact output seal query", &error))?;
+        let Some(row) = rows.first() else {
+            return Ok(None);
+        };
+        let op = match row.get(0) {
+            Some(SqliteValue::Integer(op)) => *op,
+            _ => {
+                return Err(LedgerError::Corrupt {
+                    hash_hex: artifact.to_hex(),
+                    detail: "artifact output seal has a non-integer operation identity".to_string(),
+                });
+            }
+        };
+        if !matches!(row.get(1), Some(SqliteValue::Integer(1)))
+            || !matches!(row.get(2), Some(SqliteValue::Integer(1)))
+            || !matches!(row.get(3), Some(SqliteValue::Integer(1)))
+        {
+            return Err(LedgerError::Corrupt {
+                hash_hex: artifact.to_hex(),
+                detail: "artifact output seal has a malformed role, missing exact output edge, or competing producer"
+                    .to_string(),
+            });
+        }
+        Ok(Some(op))
+    }
+
+    /// Return the immutable exclusive output-producer seal for one artifact.
+    ///
+    /// A seal is absent unless a consumer explicitly requested single-producer
+    /// provenance. Once present, schema-attested triggers reject every output
+    /// edge from a different operation.
+    ///
+    /// # Errors
+    /// Engine errors or [`LedgerError::Corrupt`] for malformed stored state.
+    pub fn artifact_output_seal(&self, artifact: &ContentHash) -> Result<Option<i64>, LedgerError> {
+        self.note_read_query();
+        self.artifact_output_seal_inner(artifact)
+    }
+
+    /// Atomically seal one artifact to its existing sole output producer.
+    ///
+    /// The insert trigger verifies that `(op, artifact, out)` exists and that
+    /// no different output producer exists in the same SQLite statement. The
+    /// seal is idempotent for the same `op`, immutable, and may be created
+    /// inside a caller-owned transaction so op/edge/seal materialization can
+    /// commit together.
+    ///
+    /// # Errors
+    /// [`LedgerError::Invalid`] when the requested producer conflicts with an
+    /// existing seal or the artifact does not currently have exactly that sole
+    /// output producer; engine errors otherwise.
+    pub fn seal_artifact_output(&self, artifact: &ContentHash, op: i64) -> Result<(), LedgerError> {
+        match self.artifact_output_seal_inner(artifact)? {
+            Some(stored) if stored == op => return Ok(()),
+            Some(stored) => {
+                return Err(LedgerError::Invalid {
+                    field: "artifact_output_seal".to_string(),
+                    problem: format!(
+                        "artifact {} is already sealed to operation {stored}, not {op}",
+                        artifact.to_hex()
+                    ),
+                });
+            }
+            None => {}
+        }
+
+        let insert = self
+            .conn
+            .prepare(
+                "INSERT INTO artifact_output_seals(artifact, op, role) \
+                 SELECT ?1, ?2, 'out' \
+                 WHERE EXISTS( \
+                     SELECT 1 FROM edges INDEXED BY idx_edges_artifact_role_op \
+                     WHERE artifact = ?1 AND role = 'out' AND op = ?2 LIMIT 1 \
+                 ) AND NOT EXISTS( \
+                     SELECT 1 FROM edges INDEXED BY idx_edges_artifact_role_op \
+                     WHERE artifact = ?1 AND role = 'out' AND op != ?2 LIMIT 1 \
+                 )",
+            )
+            .map_err(|error| sql_err("artifact output seal prepare", &error))?
+            .execute_with_params(&[blob_param(artifact.as_bytes()), SqliteValue::Integer(op)]);
+        match insert {
+            Ok(1) => Ok(()),
+            Ok(0) => Err(LedgerError::Invalid {
+                field: "artifact_output_seal".to_string(),
+                problem: format!(
+                    "artifact {} does not have operation {op} as its sole output producer",
+                    artifact.to_hex()
+                ),
+            }),
+            Ok(affected) => Err(LedgerError::Sql {
+                context: "artifact output seal insert".to_string(),
+                detail: format!("expected one inserted row, observed {affected}"),
+            }),
+            Err(error) => match self.artifact_output_seal_inner(artifact)? {
+                Some(stored) if stored == op => Ok(()),
+                Some(stored) => Err(LedgerError::Invalid {
+                    field: "artifact_output_seal".to_string(),
+                    problem: format!(
+                        "artifact {} raced with an immutable seal for operation {stored}, not {op}",
+                        artifact.to_hex()
+                    ),
+                }),
+                None if error
+                    .to_string()
+                    .contains("artifact output seal requires one exact producer") =>
+                {
+                    Err(LedgerError::Invalid {
+                        field: "artifact_output_seal".to_string(),
+                        problem: format!(
+                            "artifact {} does not have operation {op} as its sole output producer",
+                            artifact.to_hex()
+                        ),
+                    })
+                }
+                None => Err(sql_err("artifact output seal insert", &error)),
+            },
+        }
+    }
+
+    fn op_artifact_edge_seal_inner(&self, op: i64) -> Result<Option<usize>, LedgerError> {
+        let rows = self
+            .conn
+            .query_with_params(
+                &format!(
+                    "SELECT \
+                         CASE WHEN typeof(seal.edge_count) = 'integer' AND \
+                                        seal.edge_count BETWEEN 0 AND {MAX_LINEAGE_QUERY_ROWS} \
+                              THEN seal.edge_count ELSE NULL END, \
+                         EXISTS(SELECT 1 FROM ops WHERE id = seal.op LIMIT 1) \
+                     FROM op_artifact_edge_seals AS seal WHERE seal.op = ?1 LIMIT 1"
+                ),
+                &[SqliteValue::Integer(op)],
+            )
+            .map_err(|error| sql_err("op artifact-edge seal query", &error))?;
+        let Some(row) = rows.first() else {
+            return Ok(None);
+        };
+        let edge_count = match row.get(0) {
+            Some(SqliteValue::Integer(count)) => {
+                usize::try_from(*count).map_err(|_| LedgerError::OpCorrupt {
+                    op,
+                    detail: "artifact-edge seal count is negative or unrepresentable".to_string(),
+                })?
+            }
+            _ => {
+                return Err(LedgerError::OpCorrupt {
+                    op,
+                    detail: "artifact-edge seal has a non-integer or out-of-range count"
+                        .to_string(),
+                });
+            }
+        };
+        if !matches!(row.get(1), Some(SqliteValue::Integer(1))) {
+            return Err(LedgerError::OpCorrupt {
+                op,
+                detail: "artifact-edge seal references a missing operation".to_string(),
+            });
+        }
+        let probe_limit = edge_count + 1;
+        let actual = self
+            .conn
+            .query_with_params(
+                &format!(
+                    "SELECT 1 FROM edges INDEXED BY idx_edges_op_role_artifact \
+                     WHERE op = ?1 LIMIT {probe_limit}"
+                ),
+                &[SqliteValue::Integer(op)],
+            )
+            .map_err(|error| sql_err("op artifact-edge seal validation", &error))?
+            .len();
+        if actual != edge_count {
+            return Err(LedgerError::OpCorrupt {
+                op,
+                detail: format!(
+                    "artifact-edge seal records {edge_count} edges but the bounded validation observed {actual}"
+                ),
+            });
+        }
+        Ok(Some(edge_count))
+    }
+
+    /// Return the immutable artifact-edge-set seal for one operation.
+    ///
+    /// The stored count and operation parent are fixed-size validated, then a
+    /// covering-index probe reads at most `count + 1` rows to prove the sealed
+    /// set has not been bypass-mutated.
+    ///
+    /// # Errors
+    /// Engine errors or [`LedgerError::OpCorrupt`] for malformed or
+    /// count-inconsistent stored state.
+    pub fn op_artifact_edge_seal(&self, op: i64) -> Result<Option<usize>, LedgerError> {
+        self.note_read_query();
+        self.op_artifact_edge_seal_inner(op)
+    }
+
+    /// Atomically freeze one operation's complete current artifact-edge set.
+    ///
+    /// `expected_count` is capped at [`MAX_LINEAGE_QUERY_ROWS`]. The insert
+    /// reads at most `expected_count + 1` covering-index rows and succeeds only
+    /// on exact cardinality; schema-attested triggers then reject every edge
+    /// insert, update, or delete involving the sealed operation. Exact same-
+    /// count retry is idempotent.
+    ///
+    /// # Errors
+    /// [`LedgerError::Invalid`] for an excessive cap, missing op, cardinality
+    /// mismatch, or conflicting existing seal; engine errors otherwise.
+    pub fn seal_op_artifact_edges(
+        &self,
+        op: i64,
+        expected_count: usize,
+    ) -> Result<(), LedgerError> {
+        if expected_count > MAX_LINEAGE_QUERY_ROWS {
+            return Err(LedgerError::Invalid {
+                field: "op_artifact_edge_seal".to_string(),
+                problem: format!(
+                    "edge count {expected_count} exceeds the public maximum {MAX_LINEAGE_QUERY_ROWS}"
+                ),
+            });
+        }
+        match self.op_artifact_edge_seal_inner(op)? {
+            Some(stored) if stored == expected_count => return Ok(()),
+            Some(stored) => {
+                return Err(LedgerError::Invalid {
+                    field: "op_artifact_edge_seal".to_string(),
+                    problem: format!(
+                        "operation {op} is already sealed at {stored} edges, not {expected_count}"
+                    ),
+                });
+            }
+            None => {}
+        }
+
+        let probe_limit = expected_count + 1;
+        let expected_i64 = i64::try_from(expected_count).expect("public lineage cap fits i64");
+        let insert = self
+            .conn
+            .prepare(&format!(
+                "INSERT INTO op_artifact_edge_seals(op, edge_count) \
+                 SELECT ?1, ?2 \
+                 WHERE EXISTS(SELECT 1 FROM ops WHERE id = ?1 LIMIT 1) AND \
+                       (SELECT COUNT(*) FROM ( \
+                            SELECT 1 FROM edges INDEXED BY idx_edges_op_role_artifact \
+                            WHERE op = ?1 LIMIT {probe_limit} \
+                        )) = ?2"
+            ))
+            .map_err(|error| sql_err("op artifact-edge seal prepare", &error))?
+            .execute_with_params(&[SqliteValue::Integer(op), SqliteValue::Integer(expected_i64)]);
+        match insert {
+            Ok(1) => Ok(()),
+            Ok(0) => Err(LedgerError::Invalid {
+                field: "op_artifact_edge_seal".to_string(),
+                problem: format!(
+                    "operation {op} does not exist or does not have exactly {expected_count} artifact edges"
+                ),
+            }),
+            Ok(affected) => Err(LedgerError::Sql {
+                context: "op artifact-edge seal insert".to_string(),
+                detail: format!("expected one inserted row, observed {affected}"),
+            }),
+            Err(error) => match self.op_artifact_edge_seal_inner(op)? {
+                Some(stored) if stored == expected_count => Ok(()),
+                Some(stored) => Err(LedgerError::Invalid {
+                    field: "op_artifact_edge_seal".to_string(),
+                    problem: format!(
+                        "operation {op} raced with an immutable {stored}-edge seal, not {expected_count}"
+                    ),
+                }),
+                None if error
+                    .to_string()
+                    .contains("op artifact-edge seal requires the exact bounded edge count") =>
+                {
+                    Err(LedgerError::Invalid {
+                        field: "op_artifact_edge_seal".to_string(),
+                        problem: format!(
+                            "operation {op} does not have exactly {expected_count} artifact edges"
+                        ),
+                    })
+                }
+                None => Err(sql_err("op artifact-edge seal insert", &error)),
+            },
+        }
+    }
+
+    /// Return output-producer op ids for one artifact under an explicit row
+    /// cap. The query reads at most `cap + 1` fixed-size rows; callers must
+    /// reject or otherwise account for [`BoundedProducerOps::truncated`].
+    ///
+    /// A zero cap is valid and acts as a bounded existence probe. Unknown
+    /// artifacts return an empty, non-truncated result.
+    ///
+    /// # Errors
+    /// [`LedgerError::Invalid`] when `cap` exceeds
+    /// [`MAX_LINEAGE_QUERY_ROWS`], [`LedgerError::Corrupt`] for malformed
+    /// stored producer identities, or an engine error.
+    pub fn artifact_producer_ops_bounded(
+        &self,
+        artifact: &ContentHash,
+        cap: usize,
+    ) -> Result<BoundedProducerOps, LedgerError> {
+        let limit = bounded_lineage_query_limit(cap)?;
+        self.note_read_query();
+        let rows = self
+            .conn
+            .query_with_params(
+                &format!(
+                    "SELECT CASE WHEN typeof(op) = 'integer' THEN op ELSE NULL END \
+                     FROM edges INDEXED BY idx_edges_artifact_role_op \
+                     WHERE artifact = ?1 AND role = 'out' \
+                     ORDER BY op LIMIT {limit}"
+                ),
+                &[blob_param(artifact.as_bytes())],
+            )
+            .map_err(|error| sql_err("bounded artifact producer query", &error))?;
+        let truncated = rows.len() > cap;
+        let mut op_ids = Vec::with_capacity(rows.len().min(cap));
+        for row in rows.iter().take(cap) {
+            match row.get(0) {
+                Some(SqliteValue::Integer(op)) => op_ids.push(*op),
+                _ => {
+                    return Err(LedgerError::Corrupt {
+                        hash_hex: artifact.to_hex(),
+                        detail: "an output-producer edge has a non-integer operation identity"
+                            .to_string(),
+                    });
+                }
+            }
+        }
+        Ok(BoundedProducerOps { op_ids, truncated })
+    }
+
+    /// Return role-qualified artifact edges for one op under an explicit row
+    /// cap. The query reads at most `cap + 1` fixed-size rows and orders them
+    /// deterministically by role then content identity.
+    ///
+    /// A zero cap is valid and acts as a bounded existence probe. Unknown
+    /// operations return an empty, non-truncated result.
+    ///
+    /// # Errors
+    /// [`LedgerError::Invalid`] when `cap` exceeds
+    /// [`MAX_LINEAGE_QUERY_ROWS`], [`LedgerError::OpCorrupt`] for malformed
+    /// stored edges, or an engine error.
+    pub fn op_artifact_edges_bounded(
+        &self,
+        op: i64,
+        cap: usize,
+    ) -> Result<BoundedOpArtifactEdges, LedgerError> {
+        let limit = bounded_lineage_query_limit(cap)?;
+        self.note_read_query();
+        let rows = self
+            .conn
+            .query_with_params(
+                &format!(
+                    "SELECT \
+                         CASE WHEN typeof(role) = 'text' AND role IN ('in','out') \
+                              THEN role ELSE NULL END, \
+                         CASE WHEN typeof(artifact) = 'blob' AND length(artifact) = 32 \
+                              THEN artifact ELSE NULL END \
+                     FROM edges INDEXED BY idx_edges_op_role_artifact WHERE op = ?1 \
+                     ORDER BY role, artifact LIMIT {limit}"
+                ),
+                &[SqliteValue::Integer(op)],
+            )
+            .map_err(|error| sql_err("bounded op artifact-edge query", &error))?;
+        let truncated = rows.len() > cap;
+        let mut edges = Vec::with_capacity(rows.len().min(cap));
+        for row in rows.iter().take(cap) {
+            let role = match row.get(0) {
+                Some(SqliteValue::Text(role)) => {
+                    EdgeRole::parse(role).ok_or_else(|| LedgerError::OpCorrupt {
+                        op,
+                        detail: "an artifact edge has a role outside the in/out domain".to_string(),
+                    })?
+                }
+                _ => {
+                    return Err(LedgerError::OpCorrupt {
+                        op,
+                        detail: "an artifact edge role has non-text storage".to_string(),
+                    });
+                }
+            };
+            let artifact = match row.get(1) {
+                Some(SqliteValue::Blob(bytes)) => {
+                    ContentHash::from_slice(bytes).ok_or_else(|| LedgerError::OpCorrupt {
+                        op,
+                        detail: "an artifact edge has a malformed content identity".to_string(),
+                    })?
+                }
+                _ => {
+                    return Err(LedgerError::OpCorrupt {
+                        op,
+                        detail: "an artifact edge identity has non-blob storage".to_string(),
+                    });
+                }
+            };
+            edges.push(OpArtifactEdge { role, artifact });
+        }
+        Ok(BoundedOpArtifactEdges { edges, truncated })
     }
 
     // -- metrics, events, tune ---------------------------------------------
@@ -6866,7 +7460,7 @@ mod tests {
     fn v8_migration_backfills_verified_claims_and_rejects_corrupt_v7_sources() {
         let (valid, authority) = v7_ledger_with_claim(false);
         valid.migrate().expect("migrate authenticated v7 claim");
-        assert_eq!(valid.schema_version().unwrap(), 8);
+        assert_eq!(valid.schema_version().unwrap(), SCHEMA_VERSION);
         assert_eq!(
             valid
                 .session_mutation_claim(&authority)
@@ -6888,7 +7482,7 @@ mod tests {
         stale_marker
             .migrate()
             .expect("heal exact v8 objects with a stale v7 marker");
-        assert_eq!(stale_marker.schema_version().unwrap(), 8);
+        assert_eq!(stale_marker.schema_version().unwrap(), SCHEMA_VERSION);
         assert!(
             stale_marker
                 .session_mutation_claim(&stale_authority)
@@ -6910,6 +7504,37 @@ mod tests {
             )
             .expect("inspect rolled-back v8 migration");
         assert!(v8_objects.is_empty());
+    }
+
+    #[test]
+    fn v9_migration_installs_exact_lineage_indexes_and_seals_from_v8() {
+        for preapply_v9 in [false, true] {
+            let conn = reference_connection(8).expect("construct exact v8 schema");
+            let instance = [0x39; 16];
+            conn.prepare("INSERT INTO ledger_identity(singleton, instance_id) VALUES (1, ?1)")
+                .unwrap()
+                .execute_with_params(&[blob_param(&instance)])
+                .unwrap();
+            if preapply_v9 {
+                for ddl in schema::V9 {
+                    conn.execute(ddl).expect("preapply exact v9 object");
+                }
+            }
+            conn.execute("PRAGMA user_version = 8").unwrap();
+            let ledger = Ledger {
+                conn,
+                path: ":memory:".to_string(),
+                instance_id: LedgerInstanceId(instance),
+                read_queries: core::cell::Cell::new(0),
+            };
+            ledger.migrate().expect("migrate exact v8 to v9");
+            assert_eq!(ledger.schema_version().unwrap(), SCHEMA_VERSION);
+            assert_eq!(ledger.table_count("artifact_output_seals").unwrap(), 0);
+            assert_eq!(ledger.table_count("op_artifact_edge_seals").unwrap(), 0);
+            ledger
+                .attest_schema(SCHEMA_VERSION)
+                .expect("attest v9 schema");
+        }
     }
 
     #[test]
@@ -7629,6 +8254,44 @@ mod tests {
     }
 
     #[test]
+    fn op_execution_context_is_typed_and_rejects_missing_branches() {
+        let ledger = mem();
+        let main_op = ledger.begin_op(None, "{}", &FX, 1).unwrap();
+        assert_eq!(
+            ledger.op_execution_context(main_op).unwrap(),
+            Some(OpExecutionContext {
+                branch: MAIN_BRANCH,
+                exec_mode: ExecMode::Deterministic,
+            })
+        );
+
+        let branch = ledger.fork("fast-context", MAIN_BRANCH).unwrap();
+        let fast_op = ledger
+            .begin_op_on(branch, ExecMode::Fast, None, "{}", &FX, 2)
+            .unwrap();
+        assert_eq!(
+            ledger.op_execution_context(fast_op).unwrap(),
+            Some(OpExecutionContext {
+                branch,
+                exec_mode: ExecMode::Fast,
+            })
+        );
+        assert_eq!(ledger.op_execution_context(9_999).unwrap(), None);
+
+        ledger
+            .conn
+            .prepare("UPDATE ops SET branch = 9999 WHERE id = ?1")
+            .unwrap()
+            .execute_with_params(&[SqliteValue::Integer(fast_op)])
+            .unwrap();
+        assert!(matches!(
+            ledger.op_execution_context(fast_op),
+            Err(LedgerError::OpCorrupt { op, detail })
+                if op == fast_op && detail.contains("does not exist")
+        ));
+    }
+
+    #[test]
     fn op_lifecycle_and_double_finish() {
         let l = mem();
         let op = l
@@ -7660,6 +8323,417 @@ mod tests {
         assert!(!l.edge_exists(op, &real.hash, EdgeRole::In).unwrap());
         assert!(!l.edge_exists(op + 1, &real.hash, EdgeRole::Out).unwrap());
         assert_eq!(l.table_count("edges").unwrap(), 1);
+    }
+
+    #[test]
+    fn bounded_lineage_queries_report_exact_cap_plus_one_and_roles() {
+        let ledger = mem();
+        let report = ledger.put_artifact("report", b"report", None).unwrap();
+        let other = ledger.put_artifact("other", b"other", None).unwrap();
+        let first = ledger.begin_op(None, "{}", &FX, 1).unwrap();
+        let second = ledger.begin_op(None, "{}", &FX, 2).unwrap();
+        ledger.link(first, &report.hash, EdgeRole::In).unwrap();
+        ledger.link(first, &report.hash, EdgeRole::Out).unwrap();
+        ledger.link(first, &other.hash, EdgeRole::Out).unwrap();
+        ledger.link(second, &report.hash, EdgeRole::Out).unwrap();
+
+        let exact_producers = ledger
+            .artifact_producer_ops_bounded(&report.hash, 2)
+            .unwrap();
+        assert_eq!(exact_producers.op_ids, vec![first, second]);
+        assert!(!exact_producers.truncated);
+        let capped_producers = ledger
+            .artifact_producer_ops_bounded(&report.hash, 1)
+            .unwrap();
+        assert_eq!(capped_producers.op_ids, vec![first]);
+        assert!(capped_producers.truncated);
+        let zero_producers = ledger
+            .artifact_producer_ops_bounded(&report.hash, 0)
+            .unwrap();
+        assert!(zero_producers.op_ids.is_empty());
+        assert!(zero_producers.truncated);
+
+        let exact_edges = ledger.op_artifact_edges_bounded(first, 3).unwrap();
+        assert!(!exact_edges.truncated);
+        assert_eq!(exact_edges.edges.len(), 3);
+        assert!(exact_edges.edges.contains(&OpArtifactEdge {
+            role: EdgeRole::In,
+            artifact: report.hash,
+        }));
+        assert!(exact_edges.edges.contains(&OpArtifactEdge {
+            role: EdgeRole::Out,
+            artifact: report.hash,
+        }));
+        assert!(exact_edges.edges.contains(&OpArtifactEdge {
+            role: EdgeRole::Out,
+            artifact: other.hash,
+        }));
+        assert_eq!(
+            ledger.op_artifact_edges_bounded(first, 3).unwrap(),
+            exact_edges,
+            "bounded lineage ordering is deterministic"
+        );
+        let capped_edges = ledger.op_artifact_edges_bounded(first, 2).unwrap();
+        assert_eq!(capped_edges.edges.len(), 2);
+        assert!(capped_edges.truncated);
+        assert_eq!(
+            ledger.op_artifact_edges_bounded(9_999, 2).unwrap(),
+            BoundedOpArtifactEdges {
+                edges: Vec::new(),
+                truncated: false,
+            }
+        );
+
+        for error in [
+            ledger
+                .artifact_producer_ops_bounded(&report.hash, MAX_LINEAGE_QUERY_ROWS + 1)
+                .unwrap_err(),
+            ledger
+                .op_artifact_edges_bounded(first, MAX_LINEAGE_QUERY_ROWS + 1)
+                .unwrap_err(),
+        ] {
+            assert!(matches!(
+                error,
+                LedgerError::Invalid { field, problem }
+                    if field == "cap" && problem.contains("public maximum")
+            ));
+        }
+    }
+
+    #[test]
+    fn lineage_indexes_bound_query_work_and_output_seals_are_immutable() {
+        let ledger = mem();
+        let report = ledger
+            .put_artifact("sealed-report", b"sealed", None)
+            .unwrap();
+        let source = ledger.put_artifact("source", b"source", None).unwrap();
+        let extra = ledger.put_artifact("extra", b"extra", None).unwrap();
+        let canonical = ledger.begin_op(None, "{}", &FX, 1).unwrap();
+        ledger.link(canonical, &source.hash, EdgeRole::In).unwrap();
+        ledger.link(canonical, &report.hash, EdgeRole::Out).unwrap();
+        ledger
+            .seal_artifact_output(&report.hash, canonical)
+            .expect("seal exact sole producer");
+        ledger
+            .seal_op_artifact_edges(canonical, 2)
+            .expect("seal exact two-edge set");
+        ledger
+            .seal_artifact_output(&report.hash, canonical)
+            .expect("same seal is idempotent");
+        ledger
+            .seal_op_artifact_edges(canonical, 2)
+            .expect("same edge-set seal is idempotent");
+        assert_eq!(
+            ledger.artifact_output_seal(&report.hash).unwrap(),
+            Some(canonical)
+        );
+        assert_eq!(ledger.op_artifact_edge_seal(canonical).unwrap(), Some(2));
+        assert!(matches!(
+            ledger.link(canonical, &extra.hash, EdgeRole::In),
+            Err(LedgerError::Invalid { field, problem })
+                if field == "edge" && problem.contains("artifact-edge-set seal")
+        ));
+
+        let foreign = ledger.begin_op(None, "{}", &FX, 2).unwrap();
+        let error = ledger
+            .link(foreign, &report.hash, EdgeRole::Out)
+            .expect_err("sealed artifact must reject another producer");
+        assert!(matches!(
+            error,
+            LedgerError::Invalid { field, problem }
+                if field == "edge" && problem.contains("exclusive output-producer seal")
+        ));
+        ledger
+            .link(foreign, &report.hash, EdgeRole::In)
+            .expect("the output seal does not prohibit input use");
+        assert!(matches!(
+            ledger.seal_artifact_output(&report.hash, foreign),
+            Err(LedgerError::Invalid { field, .. }) if field == "artifact_output_seal"
+        ));
+
+        let raw_competing_output = ledger
+            .conn
+            .prepare("INSERT INTO edges(op, artifact, role) VALUES (?1, ?2, 'out')")
+            .unwrap()
+            .execute_with_params(&[
+                SqliteValue::Integer(foreign),
+                blob_param(report.hash.as_bytes()),
+            ]);
+        assert!(
+            raw_competing_output.is_err(),
+            "schema trigger is the race backstop"
+        );
+        for sql in [
+            "UPDATE artifact_output_seals SET op = op",
+            "DELETE FROM artifact_output_seals",
+            "UPDATE op_artifact_edge_seals SET edge_count = edge_count",
+            "DELETE FROM op_artifact_edge_seals",
+            "DELETE FROM edges WHERE role = 'out'",
+        ] {
+            assert!(ledger.conn.execute(sql).is_err(), "guard must refuse {sql}");
+        }
+        assert!(
+            ledger
+                .conn
+                .prepare(
+                    "INSERT INTO artifact_output_seals(artifact, op, role) VALUES (?1, ?2, 'out')",
+                )
+                .unwrap()
+                .execute_with_params(&[
+                    blob_param(report.hash.as_bytes()),
+                    SqliteValue::Integer(canonical),
+                ])
+                .is_err(),
+            "output-seal reinsert guard"
+        );
+        assert!(
+            ledger
+                .conn
+                .prepare("INSERT INTO op_artifact_edge_seals(op, edge_count) VALUES (?1, 2)",)
+                .unwrap()
+                .execute_with_params(&[SqliteValue::Integer(canonical)])
+                .is_err(),
+            "op-edge-seal reinsert guard"
+        );
+
+        let producer_plan = ledger
+            .conn
+            .query_with_params(
+                "EXPLAIN QUERY PLAN \
+                 SELECT op FROM edges INDEXED BY idx_edges_artifact_role_op \
+                 WHERE artifact = ?1 AND role = 'out' ORDER BY op LIMIT 2",
+                &[blob_param(report.hash.as_bytes())],
+            )
+            .unwrap()
+            .iter()
+            .map(|row| row_text(row, 3, "producer query plan").unwrap())
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase();
+        assert!(producer_plan.contains("idx_edges_artifact_role_op"));
+        assert!(producer_plan.contains("covering"));
+        assert!(!producer_plan.contains("temp b-tree"));
+
+        let edge_plan = ledger
+            .conn
+            .query_with_params(
+                "EXPLAIN QUERY PLAN \
+                 SELECT role, artifact FROM edges INDEXED BY idx_edges_op_role_artifact \
+                 WHERE op = ?1 ORDER BY role, artifact LIMIT 3",
+                &[SqliteValue::Integer(canonical)],
+            )
+            .unwrap()
+            .iter()
+            .map(|row| row_text(row, 3, "op-edge query plan").unwrap())
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase();
+        assert!(edge_plan.contains("idx_edges_op_role_artifact"));
+        assert!(edge_plan.contains("covering"));
+        assert!(!edge_plan.contains("temp b-tree"));
+    }
+
+    #[test]
+    fn output_seal_read_refuses_a_constraint_bypassed_missing_parent_edge() {
+        let ledger = mem();
+        let report = ledger
+            .put_artifact("sealed-report", b"orphan", None)
+            .unwrap();
+        let op = ledger.begin_op(None, "{}", &FX, 1).unwrap();
+        ledger.link(op, &report.hash, EdgeRole::Out).unwrap();
+        ledger.seal_artifact_output(&report.hash, op).unwrap();
+
+        ledger.conn.execute("PRAGMA foreign_keys=OFF").unwrap();
+        ledger
+            .conn
+            .execute("DROP TRIGGER trg_edges_sealed_output_delete")
+            .unwrap();
+        ledger
+            .conn
+            .prepare("DELETE FROM edges WHERE op = ?1")
+            .unwrap()
+            .execute_with_params(&[SqliteValue::Integer(op)])
+            .unwrap();
+        let delete_guard = schema::V9
+            .iter()
+            .find(|ddl| ddl.contains("CREATE TRIGGER IF NOT EXISTS trg_edges_sealed_output_delete"))
+            .expect("shipped output-edge delete guard");
+        ledger.conn.execute(delete_guard).unwrap();
+        ledger.conn.execute("PRAGMA foreign_keys=ON").unwrap();
+
+        assert!(matches!(
+            ledger.artifact_output_seal(&report.hash),
+            Err(LedgerError::Corrupt { hash_hex, detail })
+                if hash_hex == report.hash.to_hex() && detail.contains("missing exact output edge")
+        ));
+        assert!(matches!(
+            ledger.seal_artifact_output(&report.hash, op),
+            Err(LedgerError::Corrupt { .. })
+        ));
+    }
+
+    #[test]
+    fn op_edge_seal_read_refuses_a_constraint_bypassed_extra_edge() {
+        let ledger = mem();
+        let first = ledger.put_artifact("edge", b"first", None).unwrap();
+        let second = ledger.put_artifact("edge", b"second", None).unwrap();
+        let op = ledger.begin_op(None, "{}", &FX, 1).unwrap();
+        ledger.link(op, &first.hash, EdgeRole::In).unwrap();
+        ledger.seal_op_artifact_edges(op, 1).unwrap();
+
+        ledger
+            .conn
+            .execute("DROP TRIGGER trg_edges_sealed_op_insert")
+            .unwrap();
+        ledger
+            .conn
+            .prepare("INSERT INTO edges(op, artifact, role) VALUES (?1, ?2, 'in')")
+            .unwrap()
+            .execute_with_params(&[SqliteValue::Integer(op), blob_param(second.hash.as_bytes())])
+            .unwrap();
+        let insert_guard = schema::V9
+            .iter()
+            .find(|ddl| ddl.contains("CREATE TRIGGER IF NOT EXISTS trg_edges_sealed_op_insert"))
+            .expect("shipped sealed-op insert guard");
+        ledger.conn.execute(insert_guard).unwrap();
+
+        assert!(matches!(
+            ledger.op_artifact_edge_seal(op),
+            Err(LedgerError::OpCorrupt { op: rejected, detail })
+                if rejected == op && detail.contains("records 1 edges")
+        ));
+        assert!(matches!(
+            ledger.seal_op_artifact_edges(op, 1),
+            Err(LedgerError::OpCorrupt { .. })
+        ));
+    }
+
+    #[test]
+    fn concurrent_output_seal_and_competing_link_cannot_both_commit() {
+        let path = std::env::temp_dir()
+            .join(format!(
+                "fs-ledger-output-seal-race-{}-{}.ledger",
+                std::process::id(),
+                now_wall_ns()
+            ))
+            .to_string_lossy()
+            .into_owned();
+        let setup = Ledger::open(&path).unwrap();
+        let report = setup.put_artifact("race-report", b"race", None).unwrap();
+        let canonical = setup.begin_op(None, "{}", &FX, 1).unwrap();
+        let foreign = setup.begin_op(None, "{}", &FX, 2).unwrap();
+        setup.link(canonical, &report.hash, EdgeRole::Out).unwrap();
+        drop(setup);
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let seal_barrier = barrier.clone();
+        let seal_path = path.clone();
+        let seal_hash = report.hash;
+        let seal = std::thread::spawn(move || {
+            let ledger = Ledger::open(&seal_path).unwrap();
+            seal_barrier.wait();
+            ledger.seal_artifact_output(&seal_hash, canonical).is_ok()
+        });
+        let link_barrier = barrier;
+        let link_path = path.clone();
+        let link_hash = report.hash;
+        let link = std::thread::spawn(move || {
+            let ledger = Ledger::open(&link_path).unwrap();
+            link_barrier.wait();
+            ledger.link(foreign, &link_hash, EdgeRole::Out).is_ok()
+        });
+        let sealed = seal.join().unwrap();
+        let linked = link.join().unwrap();
+        assert_ne!(sealed, linked, "exactly one competing write may commit");
+
+        let ledger = Ledger::open(&path).unwrap();
+        let producers = ledger
+            .artifact_producer_ops_bounded(&report.hash, 2)
+            .unwrap();
+        if sealed {
+            assert_eq!(producers.op_ids, vec![canonical]);
+            assert_eq!(
+                ledger.artifact_output_seal(&report.hash).unwrap(),
+                Some(canonical)
+            );
+        } else {
+            assert_eq!(producers.op_ids, vec![canonical, foreign]);
+            assert_eq!(ledger.artifact_output_seal(&report.hash).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn concurrent_op_edge_seal_and_third_edge_cannot_both_commit() {
+        let path = std::env::temp_dir()
+            .join(format!(
+                "fs-ledger-op-edge-seal-race-{}-{}.ledger",
+                std::process::id(),
+                now_wall_ns()
+            ))
+            .to_string_lossy()
+            .into_owned();
+        let setup = Ledger::open(&path).unwrap();
+        let first = setup.put_artifact("race-edge", b"first", None).unwrap();
+        let second = setup.put_artifact("race-edge", b"second", None).unwrap();
+        let third = setup.put_artifact("race-edge", b"third", None).unwrap();
+        let op = setup.begin_op(None, "{}", &FX, 1).unwrap();
+        setup.link(op, &first.hash, EdgeRole::In).unwrap();
+        setup.link(op, &second.hash, EdgeRole::Out).unwrap();
+        drop(setup);
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let seal_barrier = barrier.clone();
+        let seal_path = path.clone();
+        let seal = std::thread::spawn(move || {
+            let ledger = Ledger::open(&seal_path).unwrap();
+            seal_barrier.wait();
+            ledger.seal_op_artifact_edges(op, 2).is_ok()
+        });
+        let link_barrier = barrier;
+        let link_path = path.clone();
+        let third_hash = third.hash;
+        let link = std::thread::spawn(move || {
+            let ledger = Ledger::open(&link_path).unwrap();
+            link_barrier.wait();
+            ledger.link(op, &third_hash, EdgeRole::In).is_ok()
+        });
+        let sealed = seal.join().unwrap();
+        let linked = link.join().unwrap();
+        assert_ne!(sealed, linked, "exactly one competing write may commit");
+
+        let ledger = Ledger::open(&path).unwrap();
+        let edges = ledger.op_artifact_edges_bounded(op, 3).unwrap();
+        if sealed {
+            assert_eq!(edges.edges.len(), 2);
+            assert_eq!(ledger.op_artifact_edge_seal(op).unwrap(), Some(2));
+        } else {
+            assert_eq!(edges.edges.len(), 3);
+            assert_eq!(ledger.op_artifact_edge_seal(op).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn bounded_op_edges_sanitize_malformed_identities_before_materialization() {
+        let ledger = mem();
+        let artifact = ledger.put_artifact("edge", b"edge", None).unwrap();
+        let op = ledger.begin_op(None, "{}", &FX, 1).unwrap();
+        ledger.link(op, &artifact.hash, EdgeRole::In).unwrap();
+        ledger.conn.execute("PRAGMA foreign_keys=OFF").unwrap();
+        ledger
+            .conn
+            .prepare("UPDATE edges SET artifact = ?1 WHERE op = ?2")
+            .unwrap()
+            .execute_with_params(&[
+                SqliteValue::Blob(vec![0xA5; MAX_OP_FIELD_BYTES + 1].into()),
+                SqliteValue::Integer(op),
+            ])
+            .unwrap();
+        assert!(matches!(
+            ledger.op_artifact_edges_bounded(op, 1),
+            Err(LedgerError::OpCorrupt { op: rejected, detail })
+                if rejected == op && detail.contains("non-blob storage")
+        ));
+        ledger.conn.execute("PRAGMA foreign_keys=ON").unwrap();
     }
 
     #[test]
@@ -8114,11 +9188,19 @@ mod tests {
         assert_eq!(l.read_queries(), 2);
         let _ = l.op(1).unwrap();
         assert_eq!(l.read_queries(), 3);
+        let _ = l.op_execution_context(1).unwrap();
+        assert_eq!(l.read_queries(), 4);
         let absent = hash_bytes(b"absent");
+        let _ = l.artifact_producer_ops_bounded(&absent, 1).unwrap();
+        let _ = l.op_artifact_edges_bounded(1, 1).unwrap();
+        assert_eq!(l.read_queries(), 6);
+        let _ = l.artifact_output_seal(&absent).unwrap();
+        let _ = l.op_artifact_edge_seal(1).unwrap();
+        assert_eq!(l.read_queries(), 8);
         let _ = l.get_artifact(&absent).unwrap();
         let _ = l.edge_exists(1, &absent, EdgeRole::Out).unwrap();
-        assert_eq!(l.read_queries(), 5);
+        assert_eq!(l.read_queries(), 10);
         let _ = l.checked_instance_id().unwrap();
-        assert_eq!(l.read_queries(), 6);
+        assert_eq!(l.read_queries(), 11);
     }
 }

@@ -21,10 +21,13 @@
 //! Schema v7 adds causal-ordinal ownership and insert guards without rewriting
 //! the shipped v6 tables. Schema v8 adds an immutable, independently indexed
 //! discovery witness for session claims and splits OR-based reinsert guards so
-//! each refusal probe follows one existing unique index.
+//! each refusal probe follows one existing unique index. Schema v9 adds the
+//! two covering lineage indexes used by capped verifier reads and immutable
+//! per-artifact output seals for consumers that require exactly one producer,
+//! plus immutable operation-edge-set seals for exact-lineage consumers.
 
 /// The schema version this crate writes and reads.
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 
 /// Storage chunk length for large artifacts (bytes). Artifacts strictly
 /// larger than this are stored as `artifact_chunks` rows of at most this
@@ -33,7 +36,7 @@ pub const STORAGE_CHUNK_LEN: usize = 4 * 1024 * 1024;
 
 /// Migration ladder: `MIGRATIONS[i]` migrates a database at `user_version`
 /// `i` to `i + 1`. Append-only; never edit a shipped batch.
-pub(crate) const MIGRATIONS: &[&[&str]] = &[V1, V2, V3, V4, V5, V6, V7, V8];
+pub(crate) const MIGRATIONS: &[&[&str]] = &[V1, V2, V3, V4, V5, V6, V7, V8, V9];
 
 /// v1: the six core tables (Appendix D), chunk storage, and the Rev S
 /// extension tables (sparse in v0 but present EARLY so downstream crates can
@@ -639,7 +642,145 @@ pub const V8: &[&str] = &[
      END",
 ];
 
-/// Every table the CURRENT schema owns (v1 set + v2 through v8 additions); the
+/// v9: make verifier-side lineage caps bound SQLite work as well as returned
+/// rows, and provide a durable generic seal for artifacts whose output
+/// provenance must remain single-producer. Operation-edge seals independently
+/// freeze one bounded, already-validated edge set. Once present, the attested
+/// guards reject every conflicting producer or edge-set mutation and every
+/// attempt to rewrite or remove either seal.
+pub const V9: &[&str] = &[
+    "CREATE INDEX IF NOT EXISTS idx_edges_artifact_role_op
+     ON edges(artifact, role, op)",
+    "CREATE INDEX IF NOT EXISTS idx_edges_op_role_artifact
+     ON edges(op, role, artifact)",
+    "CREATE TABLE IF NOT EXISTS artifact_output_seals(
+        artifact BLOB NOT NULL PRIMARY KEY CHECK(length(artifact) = 32),
+        op INTEGER NOT NULL,
+        role TEXT NOT NULL CHECK(role = 'out'),
+        FOREIGN KEY(op, artifact, role) REFERENCES edges(op, artifact, role)
+    ) STRICT",
+    "CREATE TABLE IF NOT EXISTS op_artifact_edge_seals(
+        op INTEGER NOT NULL PRIMARY KEY REFERENCES ops(id),
+        edge_count INTEGER NOT NULL CHECK(edge_count BETWEEN 0 AND 1024)
+    ) STRICT",
+    "CREATE TRIGGER IF NOT EXISTS trg_artifact_output_seals_exact_producer
+     BEFORE INSERT ON artifact_output_seals
+     WHEN NOT EXISTS(
+              SELECT 1 FROM edges INDEXED BY idx_edges_artifact_role_op
+              WHERE artifact = NEW.artifact AND role = 'out' AND op = NEW.op
+              LIMIT 1
+          ) OR EXISTS(
+              SELECT 1 FROM edges INDEXED BY idx_edges_artifact_role_op
+              WHERE artifact = NEW.artifact AND role = 'out' AND op != NEW.op
+              LIMIT 1
+          )
+     BEGIN
+       SELECT RAISE(ABORT, 'artifact output seal requires one exact producer');
+     END",
+    "CREATE TRIGGER IF NOT EXISTS trg_artifact_output_seals_immutable_update
+     BEFORE UPDATE ON artifact_output_seals
+     BEGIN
+       SELECT RAISE(ABORT, 'artifact output seal is immutable');
+     END",
+    "CREATE TRIGGER IF NOT EXISTS trg_artifact_output_seals_immutable_delete
+     BEFORE DELETE ON artifact_output_seals
+     BEGIN
+       SELECT RAISE(ABORT, 'artifact output seal is immutable');
+     END",
+    "CREATE TRIGGER IF NOT EXISTS trg_artifact_output_seals_immutable_reinsert
+     BEFORE INSERT ON artifact_output_seals
+     WHEN EXISTS(
+         SELECT 1 FROM artifact_output_seals WHERE artifact = NEW.artifact
+     )
+     BEGIN
+       SELECT RAISE(ABORT, 'artifact output seal is immutable');
+     END",
+    "CREATE TRIGGER IF NOT EXISTS trg_op_artifact_edge_seals_exact_count
+     BEFORE INSERT ON op_artifact_edge_seals
+     WHEN NOT EXISTS(SELECT 1 FROM ops WHERE id = NEW.op LIMIT 1) OR
+          NEW.edge_count != (
+              SELECT COUNT(*) FROM (
+                  SELECT 1 FROM edges INDEXED BY idx_edges_op_role_artifact
+                  WHERE op = NEW.op LIMIT 1025
+              )
+          )
+     BEGIN
+       SELECT RAISE(ABORT, 'op artifact-edge seal requires the exact bounded edge count');
+     END",
+    "CREATE TRIGGER IF NOT EXISTS trg_op_artifact_edge_seals_immutable_update
+     BEFORE UPDATE ON op_artifact_edge_seals
+     BEGIN
+       SELECT RAISE(ABORT, 'op artifact-edge seal is immutable');
+     END",
+    "CREATE TRIGGER IF NOT EXISTS trg_op_artifact_edge_seals_immutable_delete
+     BEFORE DELETE ON op_artifact_edge_seals
+     BEGIN
+       SELECT RAISE(ABORT, 'op artifact-edge seal is immutable');
+     END",
+    "CREATE TRIGGER IF NOT EXISTS trg_op_artifact_edge_seals_immutable_reinsert
+     BEFORE INSERT ON op_artifact_edge_seals
+     WHEN EXISTS(SELECT 1 FROM op_artifact_edge_seals WHERE op = NEW.op)
+     BEGIN
+       SELECT RAISE(ABORT, 'op artifact-edge seal is immutable');
+     END",
+    "CREATE TRIGGER IF NOT EXISTS trg_edges_sealed_output_insert
+     BEFORE INSERT ON edges
+     WHEN NEW.role = 'out' AND EXISTS(
+         SELECT 1 FROM artifact_output_seals
+         WHERE artifact = NEW.artifact AND op != NEW.op
+     )
+     BEGIN
+       SELECT RAISE(ABORT, 'sealed artifact rejects a different output producer');
+     END",
+    "CREATE TRIGGER IF NOT EXISTS trg_edges_sealed_output_update
+     BEFORE UPDATE ON edges
+     WHEN NEW.role = 'out' AND EXISTS(
+         SELECT 1 FROM artifact_output_seals
+         WHERE artifact = NEW.artifact AND op != NEW.op
+     )
+     BEGIN
+       SELECT RAISE(ABORT, 'sealed artifact rejects a different output producer');
+     END",
+    "CREATE TRIGGER IF NOT EXISTS trg_edges_sealed_output_update_existing
+     BEFORE UPDATE ON edges
+     WHEN OLD.role = 'out' AND EXISTS(
+         SELECT 1 FROM artifact_output_seals
+         WHERE artifact = OLD.artifact AND op = OLD.op
+     )
+     BEGIN
+       SELECT RAISE(ABORT, 'sealed artifact output edge is immutable');
+     END",
+    "CREATE TRIGGER IF NOT EXISTS trg_edges_sealed_output_delete
+     BEFORE DELETE ON edges
+     WHEN OLD.role = 'out' AND EXISTS(
+         SELECT 1 FROM artifact_output_seals
+         WHERE artifact = OLD.artifact AND op = OLD.op
+     )
+     BEGIN
+       SELECT RAISE(ABORT, 'sealed artifact output edge is immutable');
+     END",
+    "CREATE TRIGGER IF NOT EXISTS trg_edges_sealed_op_insert
+     BEFORE INSERT ON edges
+     WHEN EXISTS(SELECT 1 FROM op_artifact_edge_seals WHERE op = NEW.op)
+     BEGIN
+       SELECT RAISE(ABORT, 'sealed operation artifact-edge set is immutable');
+     END",
+    "CREATE TRIGGER IF NOT EXISTS trg_edges_sealed_op_update
+     BEFORE UPDATE ON edges
+     WHEN EXISTS(SELECT 1 FROM op_artifact_edge_seals WHERE op = OLD.op) OR
+          EXISTS(SELECT 1 FROM op_artifact_edge_seals WHERE op = NEW.op)
+     BEGIN
+       SELECT RAISE(ABORT, 'sealed operation artifact-edge set is immutable');
+     END",
+    "CREATE TRIGGER IF NOT EXISTS trg_edges_sealed_op_delete
+     BEFORE DELETE ON edges
+     WHEN EXISTS(SELECT 1 FROM op_artifact_edge_seals WHERE op = OLD.op)
+     BEGIN
+       SELECT RAISE(ABORT, 'sealed operation artifact-edge set is immutable');
+     END",
+];
+
+/// Every table the CURRENT schema owns (v1 set + v2 through v9 additions); the
 /// `table_count`/lint whitelist.
 pub const ALL_TABLES: &[&str] = &[
     "artifacts",
@@ -666,4 +807,6 @@ pub const ALL_TABLES: &[&str] = &[
     "session_flush_batches",
     "session_flush_batch_members",
     "session_claim_discovery",
+    "artifact_output_seals",
+    "op_artifact_edge_seals",
 ];
