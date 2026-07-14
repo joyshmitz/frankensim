@@ -84,6 +84,16 @@ answers to the MULTI-CHART AGREEMENT discipline (same abstract region
   actual midsurface points — the separation composition DOWNGRADES
   contact to `Unresolved` when the caller cannot vouch for the
   witnesses. A straddling bracket claims nothing.
+- `DeformationMap` / `DeformedChart`: the deformable-adapter hook —
+  a certified pull-back into a reference configuration presents a
+  reference exact-distance chart as a CURRENT-configuration
+  `LipschitzImplicit` chart (composed bound `1 × L_pullback`, rounded
+  up). Sign and zero set transfer; distance does not, and the wrapper
+  never claims it. Gradients are declined (no certified Jacobian yet),
+  reference enclosures pass through rigorously or collapse to
+  no-claim, and a broken pull-back yields a no-claim sample every
+  typed consumer refuses. Construction refuses non-exact-distance
+  references and unusable Lipschitz bounds.
 - `OffsetChart` / `minkowski_ball`: dilation/erosion as a chart
   wrapper (`φ − r`); the ball case of the Minkowski sum IS the offset
   (bitwise), which is the fillet/clearance workhorse. Construction is fallible
@@ -209,6 +219,7 @@ a zero iteration budget), `ConvexInvalidSupport` (non-finite support
 evaluation or bound arithmetic), `FeatureComplexTooLarge`,
 `FeatureInvalidInflation`, `FeatureTooManyPairs` (cap refusal, never
 silent truncation), `CodimInvalidThickness`, `CodimInvalidDistance`,
+`DeformationRequiresExactDistance`, `DeformationInvalidMap`,
 `Cancelled`,
 `Mesh` (fs-mesh refusals carried through). Honest gaps refuse; nothing guesses.
 
@@ -266,6 +277,13 @@ bracket containment with all three verdicts on their exact sides,
 shelled-sphere composition against analytic offset-body geometry with
 hull-only contact downgrades, thickening monotonicity, and refusal
 drills.
+`tests/deform.rs`, cases gh-001..gh-004 — deformation hook: sign and
+safe-step transfer under scale+shift against the analytic deformed
+sphere, rigorous enclosure pass-through with Estimate collapse,
+construction/sample refusals, and no distance-claim laundering into
+exact-distance consumers. The moments battery adds gm-006 (torus and
+hollow-shell closed forms) and gm-007 (an open mesh refuses mass
+properties through capability routing).
 
 ## No-claim boundaries
 
@@ -295,7 +313,19 @@ drills.
   downstream (fs-matdb consumers), never here. Rotation covariance and
   spatially-varying weighting are deferred surfaces —
   [`GeometricMoments::translated`] covers translation only. The bead
-  rjnd remainder (deformation hooks) is not yet claimed by this crate.
+  The overlap side of any two-body query in this crate is carried
+  STRICTLY as an overlap-inradius witness: `max(φ_A, φ_B)` certified
+  negative proves a common ball of that radius and nothing else
+  (`ImplicitGapOracle::overlap_inradius` is the pointwise carrier),
+  while `ClearanceField`'s positive-part sum remains an authority-free
+  convenience. Neither is, or may be upgraded into, a penetration
+  depth.
+- `DeformedChart` transfers sign, zero set, and a Lipschitz theorem —
+  never distances, gradients, or support tightness. Pull-back
+  bijectivity (no self-interpenetration) and the declared Lipschitz
+  bound are the adapter's certificates; a lying map produces sound
+  refusals only where non-finiteness betrays it. Certified Jacobian
+  chains and swept/rotating deformations are deferred surfaces.
 - `codim_gap` verdicts inherit the caller's midsurface-distance
   certificate: a lying enclosure or an overstated thickness radius
   produces confident nonsense the routine cannot detect. Thickness is

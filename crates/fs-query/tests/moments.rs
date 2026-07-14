@@ -11,13 +11,19 @@
 //!   Estimate-class samples, malformed spacing/domains, and excessive
 //!   work all refuse with the named typed error.
 //! - gm-005 G4: cancellation surfaces as `QueryError::Cancelled`.
+//! - gm-006 G0/G2: torus and hollow-shell closed forms are contained
+//!   (curved, genus-1, and non-simply-connected solids).
+//! - gm-007 G0: an OPEN triangle mesh cannot claim the exact-distance
+//!   capability, so mass properties refuse — the watertightness
+//!   precondition enforced through capability routing, with the chart
+//!   type and missing capability logged.
 //!
 //! JSON-line verdicts log every admitted/refused decision.
 
 use asupersync::types::Budget;
 use fs_evidence::NumericalCertificate;
 use fs_exec::{CancelGate, Cx, ExecMode, StreamKey};
-use fs_geom::fixtures::{BoxChart, SphereChart};
+use fs_geom::fixtures::{BoxChart, SphereChart, TorusChart};
 use fs_geom::{Aabb, Chart, ChartSample, Point3, TraceStepClaim, Vec3};
 use fs_query::{GeometricMoments, MomentEnclosure, QueryError, geometric_moments};
 use std::f64::consts::PI;
@@ -438,5 +444,154 @@ fn gm_005_cancellation_fails_closed() {
         "gm-005",
         matches!(refused, Err(QueryError::Cancelled)),
         "a pre-cancelled context refuses before publishing moment enclosures",
+    );
+}
+
+/// Exact spherical-shell SDF: `| |p| - mid | - half` (exact distance
+/// for `mid > half`), the hollow-solid fixture.
+struct ShellChart {
+    mid: f64,
+    half: f64,
+}
+
+impl Chart for ShellChart {
+    fn eval(&self, x: Point3, _cx: &Cx<'_>) -> ChartSample {
+        let r = (x.x * x.x + x.y * x.y + x.z * x.z).sqrt();
+        let sd = (r - self.mid).abs() - self.half;
+        ChartSample {
+            signed_distance: sd,
+            gradient: None,
+            lipschitz: Some(1.0),
+            error: NumericalCertificate::enclosure(sd - 1e-12, sd + 1e-12),
+        }
+    }
+
+    fn support(&self) -> Aabb {
+        let a = self.mid + self.half;
+        Aabb::new(Point3::new(-a, -a, -a), Point3::new(a, a, a))
+    }
+
+    fn trace_step_claim(&self) -> TraceStepClaim {
+        TraceStepClaim::ExactDistance
+    }
+
+    fn name(&self) -> &'static str {
+        "test/shell"
+    }
+}
+
+#[test]
+fn gm_006_torus_and_hollow_shell_closed_forms() {
+    // Ring torus (major 0.5, minor 0.125), axis z, centered: exact SDF.
+    let torus = TorusChart {
+        center: Point3::new(0.0, 0.0, 0.0),
+        major: 0.5,
+        minor: 0.125,
+    };
+    let m = with_cx(|cx| geometric_moments(&torus, &unit_domain(), 0.02, cx)).expect("torus");
+    let (rr, r) = (0.5f64, 0.125f64);
+    let volume = 2.0 * PI * PI * rr * (r * r);
+    let m2_axis = volume * (r * r / 4.0);
+    let m2_planar = volume * (rr * rr / 2.0 + 3.0 * r * r / 8.0);
+    assert!(
+        m.volume.contains(volume) && m.volume.width() < 0.2,
+        "torus volume [{}, {}] must contain {volume}",
+        m.volume.lo,
+        m.volume.hi
+    );
+    for a in 0..3 {
+        assert!(m.first[a].contains(0.0), "torus COM component {a} is 0");
+    }
+    assert!(
+        m.second.zz.contains(m2_axis),
+        "torus axial second moment [{}, {}] must contain {m2_axis}",
+        m.second.zz.lo,
+        m.second.zz.hi
+    );
+    for (enclosure, label) in [(m.second.xx, "xx"), (m.second.yy, "yy")] {
+        assert!(
+            enclosure.contains(m2_planar),
+            "torus planar {label} [{}, {}] must contain {m2_planar}",
+            enclosure.lo,
+            enclosure.hi
+        );
+    }
+    for (enclosure, label) in [
+        (m.second.xy, "xy"),
+        (m.second.xz, "xz"),
+        (m.second.yz, "yz"),
+    ] {
+        assert!(enclosure.contains(0.0), "torus cross {label} contains 0");
+    }
+
+    // Hollow spherical shell (outer 0.625, inner 0.375).
+    let shell = ShellChart {
+        mid: 0.5,
+        half: 0.125,
+    };
+    let s = with_cx(|cx| geometric_moments(&shell, &unit_domain(), 0.02, cx)).expect("shell");
+    let (outer, inner) = (0.625f64, 0.375f64);
+    let cube = |x: f64| x * x * x;
+    let pow5 = |x: f64| x * x * x * x * x;
+    let shell_volume = 4.0 / 3.0 * PI * (cube(outer) - cube(inner));
+    let shell_m2 = 4.0 * PI / 15.0 * (pow5(outer) - pow5(inner));
+    assert!(
+        s.volume.contains(shell_volume) && s.volume.width() < 0.35,
+        "shell volume [{}, {}] must contain {shell_volume}",
+        s.volume.lo,
+        s.volume.hi
+    );
+    let com = s.com_enclosure().expect("positive shell volume");
+    for (a, c) in com.iter().enumerate() {
+        assert!(c.contains(0.0), "shell COM component {a} contains 0");
+    }
+    for (enclosure, label) in [
+        (s.second.xx, "xx"),
+        (s.second.yy, "yy"),
+        (s.second.zz, "zz"),
+    ] {
+        assert!(
+            enclosure.contains(shell_m2),
+            "shell {label} [{}, {}] must contain {shell_m2}",
+            enclosure.lo,
+            enclosure.hi
+        );
+    }
+    verdict(
+        "gm-006",
+        m.sure_cells > 0 && s.sure_cells > 0,
+        &format!(
+            "torus V∋{volume:.6} zz∋{m2_axis:.6} xx∋{m2_planar:.6}; \
+             shell V∋{shell_volume:.6} xx∋{shell_m2:.6}",
+        ),
+    );
+}
+
+#[test]
+fn gm_007_open_mesh_refuses_mass_properties() {
+    // A single triangle is an OPEN surface: it bounds no volume, and
+    // the mesh chart honestly claims no exact-distance theorem. Mass
+    // properties must therefore refuse through capability routing —
+    // the watertightness precondition, enforced as a typed refusal.
+    let open_soup = fs_rep_mesh::Soup {
+        positions: vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.5, 0.0, 0.0),
+            Point3::new(0.0, 0.5, 0.0),
+        ],
+        triangles: vec![[0, 1, 2]],
+    };
+    let open_mesh = fs_rep_mesh::MeshChart::new(open_soup);
+    let claim = open_mesh.trace_step_claim();
+    let refused = with_cx(|cx| geometric_moments(&open_mesh, &unit_domain(), 0.1, cx));
+    let pass = matches!(refused, Err(QueryError::MomentsUncertifiedChart { .. }));
+    verdict(
+        "gm-007",
+        pass,
+        &format!(
+            "chart '{}' with claim {claim:?} lacks the ExactDistance capability; \
+             mass properties refused typed",
+            open_mesh.name()
+        ),
     );
 }

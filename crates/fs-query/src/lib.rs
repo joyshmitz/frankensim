@@ -44,11 +44,13 @@ use fs_rep_mesh::Soup;
 
 mod codim;
 mod convex;
+mod deform;
 mod features;
 mod gap;
 mod moments;
 
 pub use codim::{CodimGap, CodimThickness, CodimVerdict, codim_gap, codim_gap_from_separation};
+pub use deform::{DeformationMap, DeformedChart};
 
 pub use features::{Feature, FeatureComplex, MAX_COMPLEX_FEATURES, ccd_candidates};
 pub use gap::{GapSample, ImplicitGapOracle};
@@ -264,6 +266,18 @@ pub enum QueryError {
         /// Actionable deterministic refusal reason.
         reason: &'static str,
     },
+    /// The deformation hook needs the reference field's certified
+    /// 1-Lipschitz theorem (exact distance) to compose a Lipschitz
+    /// claim; a weaker reference refuses.
+    DeformationRequiresExactDistance {
+        /// The weaker claim actually supplied.
+        claim: TraceStepClaim,
+    },
+    /// A deformation map's declared bounds are structurally unusable.
+    DeformationInvalidMap {
+        /// Actionable deterministic refusal reason.
+        reason: &'static str,
+    },
     /// Cancelled mid-scan.
     Cancelled,
     /// Delaunay refused (carried through from fs-mesh).
@@ -434,6 +448,14 @@ impl core::fmt::Display for QueryError {
             ),
             QueryError::CodimInvalidDistance { reason } => {
                 write!(f, "codimensional gap refused: {reason}")
+            }
+            QueryError::DeformationRequiresExactDistance { claim } => write!(
+                f,
+                "the deformation hook needs an exact-distance reference field to compose \
+                 a certified Lipschitz claim; the reference supplied {claim:?}"
+            ),
+            QueryError::DeformationInvalidMap { reason } => {
+                write!(f, "deformation map refused: {reason}")
             }
             QueryError::Cancelled => write!(f, "cancelled mid-query"),
             QueryError::Mesh(m) => write!(f, "medial sampling failed: {m}"),
