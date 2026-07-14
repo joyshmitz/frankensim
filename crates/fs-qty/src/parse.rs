@@ -25,7 +25,7 @@
 //! - `mol` is the sixth admitted base dimension; `cd` remains outside the
 //!   vector until photometry is real (no-claim).
 
-use crate::{Dims, QtyAny};
+use crate::{DIMENSION_COUNT, Dims, QtyAny};
 use core::fmt;
 
 /// Where and why parsing failed, with a suggested fix (errors-as-guidance).
@@ -54,8 +54,11 @@ pub enum ParseErrorKind {
     InformationUnit(String),
     /// Trailing garbage after a valid expression.
     TrailingInput,
-    /// Exponent didn't parse or overflowed i8.
+    /// Exponent did not parse or exceeded the public dimension cap.
     BadExponent,
+    /// A literal or unit conversion produced NaN, infinity, or an
+    /// unrepresentable underflow to zero.
+    NonFiniteValue,
 }
 
 impl fmt::Display for ParseError {
@@ -247,6 +250,11 @@ const PREFIXES: &[(&str, f64)] = &[
 /// Information-unit symbols we explicitly refuse with a teaching error.
 const INFORMATION_UNITS: &[&str] = &["B", "iB", "KiB", "MiB", "GiB", "TiB", "bit"];
 
+/// Public parser cap for every syntactic and accumulated dimension exponent.
+/// Keeping this wider than the stored `i8` representation is deliberate: all
+/// arithmetic and cap checks happen before the final narrowing conversion.
+const MAX_ABS_UNIT_EXPONENT: i32 = 60;
+
 fn err(input: &str, at: usize, kind: ParseErrorKind, help: &str) -> ParseError {
     ParseError {
         input: input.to_string(),
@@ -254,6 +262,26 @@ fn err(input: &str, at: usize, kind: ParseErrorKind, help: &str) -> ParseError {
         kind,
         help: help.to_string(),
     }
+}
+
+fn trim_start_at<'a>(text: &'a str, pos: &mut usize) -> &'a str {
+    let trimmed = text.trim_start();
+    *pos += text.len() - trimmed.len();
+    trimmed
+}
+
+fn nonfinite(input: &str, at: usize, help: &str) -> ParseError {
+    err(input, at, ParseErrorKind::NonFiniteValue, help)
+}
+
+fn significand_is_nonzero(number: &str) -> bool {
+    let exponent_at = number
+        .find('e')
+        .or_else(|| number.find('E'))
+        .unwrap_or(number.len());
+    number[..exponent_at]
+        .bytes()
+        .any(|digit| matches!(digit, b'1'..=b'9'))
 }
 
 /// Resolve one unit token (no exponent) to (scale, dims).
@@ -324,8 +352,9 @@ fn scan_number(s: &str) -> usize {
 }
 
 /// Parse an optional exponent (`^`? `-`? digits) at the head of `rest`.
-/// Returns `(exponent, bytes_consumed)`; the default exponent is 1.
-fn parse_exponent(input: &str, pos: usize, rest: &str) -> Result<(i8, usize), ParseError> {
+/// Returns `(exponent, bytes_consumed)`; the default exponent is 1. Parsing and
+/// validation stay in a wider integer so `-128` can never reach `i8::MIN`.
+fn parse_exponent(input: &str, pos: usize, rest: &str) -> Result<(i32, usize), ParseError> {
     let mut r = rest;
     let mut consumed = 0;
     if let Some(stripped) = r.strip_prefix('^') {
@@ -354,30 +383,118 @@ fn parse_exponent(input: &str, pos: usize, rest: &str) -> Result<(i8, usize), Pa
         }
         return Ok((1, 0));
     }
-    let parsed: i32 = r[..dig_len].parse().map_err(|_| {
+    let magnitude: u64 = r[..dig_len].parse().map_err(|_| {
         err(
             input,
             pos,
             ParseErrorKind::BadExponent,
-            "exponent must be a small integer",
+            "unit exponent is too large to parse; use an integer from -60 through 60",
         )
     })?;
-    let signed = if neg { -parsed } else { parsed };
-    let exp = i8::try_from(signed).map_err(|_| {
+    if magnitude > MAX_ABS_UNIT_EXPONENT as u64 {
+        return Err(err(
+            input,
+            pos,
+            ParseErrorKind::BadExponent,
+            "unit exponent exceeds the supported ±60 cap; reduce the exponent",
+        ));
+    }
+    let magnitude = i32::try_from(magnitude).map_err(|_| {
         err(
             input,
             pos,
             ParseErrorKind::BadExponent,
-            "exponent magnitude too large",
+            "unit exponent is outside the supported wider-integer domain",
         )
     })?;
+    let exp = if neg {
+        magnitude.checked_neg().ok_or_else(|| {
+            err(
+                input,
+                pos,
+                ParseErrorKind::BadExponent,
+                "negative unit exponent is outside the supported wider-integer domain",
+            )
+        })?
+    } else {
+        magnitude
+    };
     Ok((exp, consumed + dig_len))
+}
+
+fn checked_dims_after_factor(
+    input: &str,
+    at: usize,
+    dims: [i32; DIMENSION_COUNT],
+    factor_dims: Dims,
+    exponent: i32,
+    divide: bool,
+) -> Result<[i32; DIMENSION_COUNT], ParseError> {
+    let mut next = dims;
+    for index in 0..DIMENSION_COUNT {
+        let scaled = i32::from(factor_dims.0[index])
+            .checked_mul(exponent)
+            .ok_or_else(|| {
+                err(
+                    input,
+                    at,
+                    ParseErrorKind::BadExponent,
+                    "unit-dimension scaling overflowed; reduce the exponent",
+                )
+            })?;
+        let signed = if divide {
+            scaled.checked_neg().ok_or_else(|| {
+                err(
+                    input,
+                    at,
+                    ParseErrorKind::BadExponent,
+                    "unit-dimension division overflowed; reduce the exponent",
+                )
+            })?
+        } else {
+            scaled
+        };
+        let accumulated = dims[index].checked_add(signed).ok_or_else(|| {
+            err(
+                input,
+                at,
+                ParseErrorKind::BadExponent,
+                "accumulated unit dimension overflowed; shorten the unit chain",
+            )
+        })?;
+        if accumulated.unsigned_abs() > MAX_ABS_UNIT_EXPONENT as u32 {
+            return Err(err(
+                input,
+                at,
+                ParseErrorKind::BadExponent,
+                "accumulated unit exponent exceeds the supported ±60 cap; check for a runaway unit chain",
+            ));
+        }
+        next[index] = accumulated;
+    }
+    Ok(next)
+}
+
+fn narrow_dims(input: &str, at: usize, dims: [i32; DIMENSION_COUNT]) -> Result<Dims, ParseError> {
+    let mut narrowed = [0i8; DIMENSION_COUNT];
+    for (target, exponent) in narrowed.iter_mut().zip(dims) {
+        *target = i8::try_from(exponent).map_err(|_| {
+            err(
+                input,
+                at,
+                ParseErrorKind::BadExponent,
+                "validated unit exponent could not be represented; reduce the exponent",
+            )
+        })?;
+    }
+    Ok(Dims(narrowed))
 }
 
 /// Parse a quantity literal into a [`QtyAny`].
 ///
 /// # Errors
 /// Returns a [`ParseError`] with position, kind, and a suggested fix.
+#[allow(clippy::too_many_lines)] // Keeping the strict left-to-right grammar and refusal positions together is auditable.
 pub fn parse_qty(input: &str) -> Result<QtyAny, ParseError> {
     let s = input.trim();
     let base = input.len() - input.trim_start().len();
@@ -391,8 +508,22 @@ pub fn parse_qty(input: &str) -> Result<QtyAny, ParseError> {
             "a quantity starts with a number, e.g. 0.12Pa*s",
         )
     })?;
-    let mut rest = s[end..].trim_start();
+    if !num.is_finite() {
+        return Err(nonfinite(
+            input,
+            base,
+            "quantity literals must start with a finite number; reduce the magnitude",
+        ));
+    }
+    if num == 0.0 && significand_is_nonzero(&s[..end]) {
+        return Err(nonfinite(
+            input,
+            base,
+            "the nonzero decimal significand underflowed to zero; use a representable magnitude",
+        ));
+    }
     let mut pos = base + end;
+    let mut rest = trim_start_at(&s[end..], &mut pos);
 
     // --- bare number: dimensionless ---
     if rest.is_empty() {
@@ -401,14 +532,23 @@ pub fn parse_qty(input: &str) -> Result<QtyAny, ParseError> {
 
     // --- special-case lone affine unit degC ---
     if rest == "degC" {
-        return Ok(QtyAny::new(num + 273.15, D_K));
+        let value = num + 273.15;
+        if !value.is_finite() {
+            return Err(nonfinite(
+                input,
+                pos,
+                "converting degrees Celsius to coherent kelvin overflowed; reduce the magnitude",
+            ));
+        }
+        return Ok(QtyAny::new(value, D_K));
     }
 
     // --- unit expression, strict left-to-right ---
     let mut value = num;
-    let mut dims = Dims::NONE;
+    let mut dims = [0i32; DIMENSION_COUNT];
     let mut divide = false;
     loop {
+        let factor_at = pos;
         // token = leading unit letters/µ/%
         let tok_len = rest
             .char_indices()
@@ -437,47 +577,55 @@ pub fn parse_qty(input: &str) -> Result<QtyAny, ParseError> {
         pos += tok_len;
 
         // optional exponent: '^'? '-'? digits
-        let (exp, consumed) = parse_exponent(input, pos, rest)?;
+        let exponent_at = pos;
+        let (exp, consumed) = parse_exponent(input, exponent_at, rest)?;
         rest = &rest[consumed..];
         pos += consumed;
 
-        // apply factor
-        let factor_scale = crate::powi_pinned(scale, i32::from(exp));
-        let factor_dims = tok_dims.times(exp);
-        if divide {
-            value /= factor_scale;
-            dims = dims.minus(factor_dims);
+        let arithmetic_at = if consumed == 0 {
+            factor_at
         } else {
-            value *= factor_scale;
-            dims = dims.plus(factor_dims);
-        }
-        // Semantic sanity: physically meaningful exponents are tiny. Reject
-        // accumulations beyond ±60 with a structured error well before the
-        // (saturating) i8 arithmetic could mask an adversarial chain.
-        if dims.0.iter().any(|&d| d.abs() > 60) {
-            return Err(err(
+            exponent_at
+        };
+        dims = checked_dims_after_factor(input, arithmetic_at, dims, tok_dims, exp, divide)?;
+
+        // Apply the numerical scale only after the dimension metadata is known
+        // to be admissible. No nonfinite intermediate may enter QtyAny or IR.
+        let factor_scale = crate::powi_pinned(scale, exp);
+        if !factor_scale.is_finite() || factor_scale <= 0.0 {
+            return Err(nonfinite(
                 input,
-                pos,
-                ParseErrorKind::BadExponent,
-                "accumulated unit exponent beyond ±60 is not physically meaningful; \
-                 check for a runaway unit chain",
+                arithmetic_at,
+                "raising this positive unit scale to its exponent overflowed or underflowed to zero; reduce the exponent or prefix",
             ));
         }
+        let next_value = if divide {
+            value / factor_scale
+        } else {
+            value * factor_scale
+        };
+        if !next_value.is_finite() || (value != 0.0 && next_value == 0.0) {
+            return Err(nonfinite(
+                input,
+                arithmetic_at,
+                "applying this unit factor produced a nonfinite value or underflowed a nonzero quantity to zero; reduce the literal magnitude, prefix, or exponent",
+            ));
+        }
+        value = next_value;
 
         // separator or end
-        rest = rest.trim_start();
+        rest = trim_start_at(rest, &mut pos);
         match rest.chars().next() {
-            None => return Ok(QtyAny::new(value, dims)),
-            Some('*' | '·') => {
+            None => return Ok(QtyAny::new(value, narrow_dims(input, pos, dims)?)),
+            Some(c @ ('*' | '·')) => {
                 divide = false;
-                let c = rest.chars().next().expect("just matched");
-                rest = rest[c.len_utf8()..].trim_start();
                 pos += c.len_utf8();
+                rest = trim_start_at(&rest[c.len_utf8()..], &mut pos);
             }
             Some('/') => {
                 divide = true;
-                rest = rest[1..].trim_start();
                 pos += 1;
+                rest = trim_start_at(&rest[1..], &mut pos);
             }
             Some(_) => {
                 return Err(err(
@@ -559,38 +707,42 @@ mod tests {
     #[test]
     fn six_base_and_electrical_tokens_resolve_without_prefix_collisions() {
         let cases = [
-            ("2mol", 2.0, D_MOL),
-            ("3V", 3.0, D_V),
-            ("4C", 4.0, D_C),
-            ("5Wb", 5.0, D_WB),
-            ("6H", 6.0, D_H),
-            ("7Ohm", 7.0, D_OHM),
-            ("8S", 8.0, D_SIEMENS),
-            ("9F", 9.0, D_F),
-            ("10T", 10.0, D_T),
-            ("11mT", 0.011, D_T),
-            ("12TW", 12e12, D_W),
-            ("13mS", 0.013, D_SIEMENS),
-            ("14mH", 0.014, D_H),
-            ("15mWb", 0.015, D_WB),
-            ("16kOhm", 16e3, D_OHM),
-            ("17uF", 17e-6, D_F),
+            ("2mol", crate::units::moles(2.0).erase()),
+            ("3V", crate::units::volts(3.0).erase()),
+            ("4C", crate::units::coulombs(4.0).erase()),
+            ("5Wb", crate::units::webers(5.0).erase()),
+            ("6H", crate::units::henries(6.0).erase()),
+            ("7Ohm", crate::units::ohms(7.0).erase()),
+            ("8S", crate::units::siemens(8.0).erase()),
+            ("9F", crate::units::farads(9.0).erase()),
+            ("10T", crate::units::teslas(10.0).erase()),
+            ("11mT", crate::units::teslas(0.011).erase()),
+            ("12TW", crate::units::watts(12e12).erase()),
+            ("13mS", crate::units::siemens(0.013).erase()),
+            ("14mH", crate::units::henries(0.014).erase()),
+            ("15mWb", crate::units::webers(0.015).erase()),
+            ("16kOhm", crate::units::ohms(16e3).erase()),
+            ("17uF", crate::units::farads(17e-6).erase()),
         ];
-        for (text, value, dims) in cases {
+        for (text, expected) in cases {
             let parsed = parse_qty(text).unwrap_or_else(|e| panic!("{text}: {e}"));
-            assert_eq!(parsed.dims, dims, "{text}");
+            assert_eq!(parsed.dims, expected.dims, "{text}");
             assert!(
-                (parsed.value - value).abs() <= 1e-12 * value.abs().max(1.0),
-                "{text}: {} != {value}",
-                parsed.value
+                (parsed.value - expected.value).abs() <= 1e-12 * expected.value.abs().max(1.0),
+                "{text}: {} != {}",
+                parsed.value,
+                expected.value
             );
         }
 
         // `degC` remains the affine temperature token, while lone `C` is
         // coulomb. Whole-token matching must beat prefix interpretation.
         let celsius = parse_qty("20degC").expect("affine temperature");
-        assert_eq!(celsius.dims, D_K);
-        assert_eq!(parse_qty("1THz").expect("tera-hertz").dims, D_HZ);
+        assert_eq!(celsius, crate::units::celsius(20.0).erase());
+        assert_eq!(
+            parse_qty("1THz").expect("tera-hertz"),
+            crate::units::hertz(1e12).erase()
+        );
     }
 
     #[test]
@@ -666,6 +818,23 @@ mod tests {
 #[cfg(test)]
 mod hardening {
     use super::{ParseErrorKind, parse_qty};
+    use crate::Dims;
+
+    fn structured_refusal(input: &str, expected_kind: ParseErrorKind, expected_at: usize) {
+        let outcome = std::panic::catch_unwind(|| parse_qty(input));
+        assert!(outcome.is_ok(), "parser panicked for {input:?}");
+        let error = outcome
+            .expect("panic outcome checked")
+            .expect_err("hostile literal must refuse");
+        assert_eq!(error.input, input, "error lost its source input");
+        assert_eq!(error.kind, expected_kind, "wrong refusal for {input:?}");
+        assert_eq!(error.at, expected_at, "wrong byte offset for {input:?}");
+        assert!(
+            error.at <= input.len(),
+            "out-of-bounds offset for {input:?}"
+        );
+        assert!(!error.help.is_empty(), "missing guidance for {input:?}");
+    }
 
     /// The parser sits behind fs-ir admission and will see agent-supplied
     /// text. It must never panic — every outcome is Ok or a structured
@@ -751,5 +920,102 @@ mod hardening {
             "teaching help expected: {}",
             e.help
         );
+    }
+
+    #[test]
+    fn exponent_cap_is_checked_wide_before_narrowing() {
+        assert_eq!(
+            parse_qty("1m^60").expect("positive cap is valid").dims,
+            Dims([60, 0, 0, 0, 0, 0])
+        );
+        assert_eq!(
+            parse_qty("1m^-60").expect("negative cap is valid").dims,
+            Dims([-60, 0, 0, 0, 0, 0])
+        );
+        assert_eq!(
+            parse_qty("1Pa^30")
+                .expect("derived dimension at cap is valid")
+                .dims,
+            Dims([-30, 30, -60, 0, 0, 0])
+        );
+
+        for (input, at) in [
+            ("1m^61", 2),
+            ("1m^-61", 2),
+            ("1m^-128", 2),
+            ("1Pa^31", 3),
+            ("1Pa^127", 3),
+            ("  1m^-128", 4),
+        ] {
+            structured_refusal(input, ParseErrorKind::BadExponent, at);
+        }
+    }
+
+    #[test]
+    fn repeated_factor_chains_enforce_every_intermediate_cap() {
+        let product_at_cap = format!("1{}", vec!["m"; 60].join("*"));
+        let product_over_cap = format!("1{}", vec!["m"; 61].join("*"));
+        let product_then_cancel = format!("{product_over_cap}/m");
+        let quotient_at_cap = format!("1rad{}", "/m".repeat(60));
+        let quotient_over_cap = format!("1rad{}", "/m".repeat(61));
+
+        assert_eq!(
+            parse_qty(&product_at_cap)
+                .expect("positive repeated chain at cap")
+                .dims,
+            Dims([60, 0, 0, 0, 0, 0])
+        );
+        assert_eq!(
+            parse_qty(&quotient_at_cap)
+                .expect("negative repeated chain at cap")
+                .dims,
+            Dims([-60, 0, 0, 0, 0, 0])
+        );
+        for input in [&product_over_cap, &product_then_cancel, &quotient_over_cap] {
+            let outcome = std::panic::catch_unwind(|| parse_qty(input));
+            assert!(outcome.is_ok(), "parser panicked for repeated chain");
+            let error = outcome
+                .expect("panic outcome checked")
+                .expect_err("cap+1 intermediate must refuse");
+            assert_eq!(error.kind, ParseErrorKind::BadExponent);
+            assert!(error.help.contains("±60"), "unexpected guidance: {error}");
+            assert!(error.at <= input.len());
+        }
+    }
+
+    #[test]
+    fn every_nonfinite_quantity_path_refuses() {
+        for (input, at) in [
+            ("1e999", 0),
+            ("1e999m", 0),
+            ("1e-999", 0),
+            ("-1e-999", 0),
+            ("  1e999degC", 2),
+            ("1e308TW", 5),
+            ("1Trad^26", 5),
+            ("1THz^-30", 4),
+            ("1e-308pHz^2", 9),
+            ("1e-308rad/THz^25", 13),
+            ("1rad/THz^-30", 8),
+        ] {
+            structured_refusal(input, ParseErrorKind::NonFiniteValue, at);
+        }
+    }
+
+    #[test]
+    fn textual_zero_remains_valid_with_large_exponents() {
+        for input in ["0", "-0.0", "0e999", "-0e999"] {
+            let quantity = parse_qty(input).unwrap_or_else(|error| panic!("{input}: {error}"));
+            assert_eq!(quantity.value, 0.0, "{input}");
+            assert!(quantity.dims.is_none(), "{input}");
+        }
+    }
+
+    #[test]
+    fn whitespace_is_counted_in_error_offsets() {
+        let error =
+            parse_qty("  1m *   flurbs").expect_err("unknown unit after whitespace must refuse");
+        assert!(matches!(error.kind, ParseErrorKind::UnknownUnit(_)));
+        assert_eq!(error.at, 9);
     }
 }

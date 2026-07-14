@@ -2,7 +2,7 @@
 //! [`QtyAny`], and SI unit-expression parsing.
 //!
 //! This crate is the "units" pillar of the Five Explicits (plan §11.5,
-//! Appendix B): a pressure cannot be added to a stress IN THE TYPE SYSTEM,
+//! Appendix B): a pressure cannot be added to a time IN THE TYPE SYSTEM,
 //! and runtime-loaded data carries its dimensions as checked values.
 //!
 //! Dimension vector: `(M, KG, S, K, A, MOL)` — metre, kilogram, second,
@@ -20,8 +20,10 @@
 #![feature(generic_const_exprs)]
 #![allow(incomplete_features)]
 
+pub mod chemistry;
 pub mod json;
 pub mod parse;
+pub mod semantic;
 
 use core::cmp::Ordering;
 use core::fmt;
@@ -166,23 +168,12 @@ impl fmt::Debug for Dims {
 /// let _: Volume = Length::new(2.0) * Length::new(3.0); // ERROR: Area, not Volume
 /// ```
 #[derive(Clone, Copy, PartialEq, PartialOrd, Default)]
-pub struct Qty<
-    const M: i8,
-    const KG: i8,
-    const S: i8,
-    const K: i8,
-    const A: i8,
-    const MOL: i8,
->(pub f64);
+pub struct Qty<const M: i8, const KG: i8, const S: i8, const K: i8, const A: i8, const MOL: i8>(
+    pub f64,
+);
 
-impl<
-    const M: i8,
-    const KG: i8,
-    const S: i8,
-    const K: i8,
-    const A: i8,
-    const MOL: i8,
-> Qty<M, KG, S, K, A, MOL>
+impl<const M: i8, const KG: i8, const S: i8, const K: i8, const A: i8, const MOL: i8>
+    Qty<M, KG, S, K, A, MOL>
 {
     /// This type's dimension vector as a value.
     pub const DIMS: Dims = Dims([M, KG, S, K, A, MOL]);
@@ -234,42 +225,24 @@ impl<
     }
 }
 
-impl<
-    const M: i8,
-    const KG: i8,
-    const S: i8,
-    const K: i8,
-    const A: i8,
-    const MOL: i8,
-> fmt::Debug for Qty<M, KG, S, K, A, MOL>
+impl<const M: i8, const KG: i8, const S: i8, const K: i8, const A: i8, const MOL: i8> fmt::Debug
+    for Qty<M, KG, S, K, A, MOL>
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} {}", self.0, Self::DIMS.unit_string())
     }
 }
 
-impl<
-    const M: i8,
-    const KG: i8,
-    const S: i8,
-    const K: i8,
-    const A: i8,
-    const MOL: i8,
-> fmt::Display for Qty<M, KG, S, K, A, MOL>
+impl<const M: i8, const KG: i8, const S: i8, const K: i8, const A: i8, const MOL: i8> fmt::Display
+    for Qty<M, KG, S, K, A, MOL>
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(self, f)
     }
 }
 
-impl<
-    const M: i8,
-    const KG: i8,
-    const S: i8,
-    const K: i8,
-    const A: i8,
-    const MOL: i8,
-> Add for Qty<M, KG, S, K, A, MOL>
+impl<const M: i8, const KG: i8, const S: i8, const K: i8, const A: i8, const MOL: i8> Add
+    for Qty<M, KG, S, K, A, MOL>
 {
     type Output = Self;
     fn add(self, rhs: Self) -> Self {
@@ -277,14 +250,8 @@ impl<
     }
 }
 
-impl<
-    const M: i8,
-    const KG: i8,
-    const S: i8,
-    const K: i8,
-    const A: i8,
-    const MOL: i8,
-> Sub for Qty<M, KG, S, K, A, MOL>
+impl<const M: i8, const KG: i8, const S: i8, const K: i8, const A: i8, const MOL: i8> Sub
+    for Qty<M, KG, S, K, A, MOL>
 {
     type Output = Self;
     fn sub(self, rhs: Self) -> Self {
@@ -292,14 +259,8 @@ impl<
     }
 }
 
-impl<
-    const M: i8,
-    const KG: i8,
-    const S: i8,
-    const K: i8,
-    const A: i8,
-    const MOL: i8,
-> Neg for Qty<M, KG, S, K, A, MOL>
+impl<const M: i8, const KG: i8, const S: i8, const K: i8, const A: i8, const MOL: i8> Neg
+    for Qty<M, KG, S, K, A, MOL>
 {
     type Output = Self;
     fn neg(self) -> Self {
@@ -307,14 +268,8 @@ impl<
     }
 }
 
-impl<
-    const M: i8,
-    const KG: i8,
-    const S: i8,
-    const K: i8,
-    const A: i8,
-    const MOL: i8,
-> Mul<f64> for Qty<M, KG, S, K, A, MOL>
+impl<const M: i8, const KG: i8, const S: i8, const K: i8, const A: i8, const MOL: i8> Mul<f64>
+    for Qty<M, KG, S, K, A, MOL>
 {
     type Output = Self;
     fn mul(self, rhs: f64) -> Self {
@@ -322,14 +277,8 @@ impl<
     }
 }
 
-impl<
-    const M: i8,
-    const KG: i8,
-    const S: i8,
-    const K: i8,
-    const A: i8,
-    const MOL: i8,
-> Mul<Qty<M, KG, S, K, A, MOL>> for f64
+impl<const M: i8, const KG: i8, const S: i8, const K: i8, const A: i8, const MOL: i8>
+    Mul<Qty<M, KG, S, K, A, MOL>> for f64
 {
     type Output = Qty<M, KG, S, K, A, MOL>;
     fn mul(self, rhs: Qty<M, KG, S, K, A, MOL>) -> Qty<M, KG, S, K, A, MOL> {
@@ -337,14 +286,8 @@ impl<
     }
 }
 
-impl<
-    const M: i8,
-    const KG: i8,
-    const S: i8,
-    const K: i8,
-    const A: i8,
-    const MOL: i8,
-> Div<f64> for Qty<M, KG, S, K, A, MOL>
+impl<const M: i8, const KG: i8, const S: i8, const K: i8, const A: i8, const MOL: i8> Div<f64>
+    for Qty<M, KG, S, K, A, MOL>
 {
     type Output = Self;
     fn div(self, rhs: f64) -> Self {
@@ -368,23 +311,10 @@ impl<
     const MOL2: i8,
 > Mul<Qty<M2, KG2, S2, K2, A2, MOL2>> for Qty<M1, KG1, S1, K1, A1, MOL1>
 where
-    Qty<
-        { M1 + M2 },
-        { KG1 + KG2 },
-        { S1 + S2 },
-        { K1 + K2 },
-        { A1 + A2 },
-        { MOL1 + MOL2 },
-    >: Sized,
+    Qty<{ M1 + M2 }, { KG1 + KG2 }, { S1 + S2 }, { K1 + K2 }, { A1 + A2 }, { MOL1 + MOL2 }>: Sized,
 {
-    type Output = Qty<
-        { M1 + M2 },
-        { KG1 + KG2 },
-        { S1 + S2 },
-        { K1 + K2 },
-        { A1 + A2 },
-        { MOL1 + MOL2 },
-    >;
+    type Output =
+        Qty<{ M1 + M2 }, { KG1 + KG2 }, { S1 + S2 }, { K1 + K2 }, { A1 + A2 }, { MOL1 + MOL2 }>;
     fn mul(self, rhs: Qty<M2, KG2, S2, K2, A2, MOL2>) -> Self::Output {
         Qty(self.0 * rhs.0)
     }
@@ -406,23 +336,10 @@ impl<
     const MOL2: i8,
 > Div<Qty<M2, KG2, S2, K2, A2, MOL2>> for Qty<M1, KG1, S1, K1, A1, MOL1>
 where
-    Qty<
-        { M1 - M2 },
-        { KG1 - KG2 },
-        { S1 - S2 },
-        { K1 - K2 },
-        { A1 - A2 },
-        { MOL1 - MOL2 },
-    >: Sized,
+    Qty<{ M1 - M2 }, { KG1 - KG2 }, { S1 - S2 }, { K1 - K2 }, { A1 - A2 }, { MOL1 - MOL2 }>: Sized,
 {
-    type Output = Qty<
-        { M1 - M2 },
-        { KG1 - KG2 },
-        { S1 - S2 },
-        { K1 - K2 },
-        { A1 - A2 },
-        { MOL1 - MOL2 },
-    >;
+    type Output =
+        Qty<{ M1 - M2 }, { KG1 - KG2 }, { S1 - S2 }, { K1 - K2 }, { A1 - A2 }, { MOL1 - MOL2 }>;
     fn div(self, rhs: Qty<M2, KG2, S2, K2, A2, MOL2>) -> Self::Output {
         Qty(self.0 / rhs.0)
     }
@@ -528,10 +445,10 @@ pub type Angle = Dimensionless;
 /// Unit-bearing constructors, all returning coherent-SI values.
 pub mod units {
     use super::{
-        Amount, AmountConcentration, Angle, Capacitance, Conductance, DynViscosity,
-        ElectricCharge, Energy, Force, Frequency, Inductance, Length, MagneticFlux,
-        MagneticFluxDensity, Mass, MolarMass, Power, Pressure, Qty, Resistance, SurfaceTension,
-        Temperature, Time, Velocity, Voltage, Volume, VolumetricFlowRate,
+        Amount, AmountConcentration, Angle, Capacitance, Conductance, DynViscosity, ElectricCharge,
+        Energy, Force, Frequency, Inductance, Length, MagneticFlux, MagneticFluxDensity, Mass,
+        MolarMass, Power, Pressure, Qty, Resistance, SurfaceTension, Temperature, Time, Velocity,
+        Voltage, Volume, VolumetricFlowRate,
     };
 
     /// Metres.

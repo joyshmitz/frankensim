@@ -167,6 +167,10 @@ pub fn to_json(q: QtyAny) -> Result<String, JsonError> {
 /// # Errors
 /// Returns [`JsonError`] for non-finite values or a nonzero mole exponent.
 pub fn to_legacy_json(q: QtyAny) -> Result<String, JsonError> {
+    legacy_json(q, false)
+}
+
+fn legacy_json(q: QtyAny, explicit_version: bool) -> Result<String, JsonError> {
     if q.dims.0[5] != 0 {
         return Err(JsonError {
             at: 0,
@@ -181,10 +185,17 @@ pub fn to_legacy_json(q: QtyAny) -> Result<String, JsonError> {
         });
     }
     let [m, kg, s, k, a, _] = q.dims.0;
-    Ok(format!(
-        "{{\"value\":{},\"dims\":[{m},{kg},{s},{k},{a}]}}",
-        q.value
-    ))
+    if explicit_version {
+        Ok(format!(
+            "{{\"schema_version\":{LEGACY_WIRE_VERSION},\"value\":{},\"dims\":[{m},{kg},{s},{k},{a}]}}",
+            q.value
+        ))
+    } else {
+        Ok(format!(
+            "{{\"value\":{},\"dims\":[{m},{kg},{s},{k},{a}]}}",
+            q.value
+        ))
+    }
 }
 
 struct Cursor<'a> {
@@ -212,49 +223,135 @@ impl Cursor<'_> {
         }
     }
 
-    fn number(&mut self) -> Result<f64, JsonError> {
+    /// Scan exactly one RFC 8259 JSON number and report whether its spelling
+    /// is an integer (no fraction or exponent). The semantic integer readers
+    /// use the spelling, not the resulting `f64`, so `1.0` and `1e0` cannot
+    /// masquerade as dimension exponents or schema versions.
+    fn number_span(&mut self) -> Result<(usize, usize, bool), JsonError> {
         self.skip_ws();
         let start = self.i;
-        while self.i < self.s.len()
-            && matches!(
-                self.s[self.i],
-                b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E'
-            )
-        {
+
+        if self.s.get(self.i) == Some(&b'-') {
             self.i += 1;
         }
-        core::str::from_utf8(&self.s[start..self.i])
+
+        match self.s.get(self.i).copied() {
+            Some(b'0') => {
+                self.i += 1;
+                if self.s.get(self.i).is_some_and(u8::is_ascii_digit) {
+                    return Err(JsonError {
+                        at: self.i,
+                        message: "JSON numbers cannot contain leading zeros".to_string(),
+                    });
+                }
+            }
+            Some(b'1'..=b'9') => {
+                self.i += 1;
+                while self.s.get(self.i).is_some_and(u8::is_ascii_digit) {
+                    self.i += 1;
+                }
+            }
+            _ => {
+                return Err(JsonError {
+                    at: start,
+                    message: "expected a JSON number".to_string(),
+                });
+            }
+        }
+
+        let mut integer_syntax = true;
+        if self.s.get(self.i) == Some(&b'.') {
+            integer_syntax = false;
+            self.i += 1;
+            let fraction_start = self.i;
+            while self.s.get(self.i).is_some_and(u8::is_ascii_digit) {
+                self.i += 1;
+            }
+            if self.i == fraction_start {
+                return Err(JsonError {
+                    at: self.i,
+                    message: "a JSON fraction requires at least one digit after '.'".to_string(),
+                });
+            }
+        }
+
+        if matches!(self.s.get(self.i).copied(), Some(b'e' | b'E')) {
+            integer_syntax = false;
+            self.i += 1;
+            if matches!(self.s.get(self.i).copied(), Some(b'+' | b'-')) {
+                self.i += 1;
+            }
+            let exponent_start = self.i;
+            while self.s.get(self.i).is_some_and(u8::is_ascii_digit) {
+                self.i += 1;
+            }
+            if self.i == exponent_start {
+                return Err(JsonError {
+                    at: self.i,
+                    message: "a JSON exponent requires at least one digit".to_string(),
+                });
+            }
+        }
+
+        Ok((start, self.i, integer_syntax))
+    }
+
+    fn number(&mut self) -> Result<f64, JsonError> {
+        let (start, end, _) = self.number_span()?;
+        let value: f64 = core::str::from_utf8(&self.s[start..end])
             .ok()
             .and_then(|t| t.parse().ok())
             .ok_or(JsonError {
                 at: start,
                 message: "expected a JSON number".to_string(),
-            })
+            })?;
+        if !value.is_finite() {
+            return Err(JsonError {
+                at: start,
+                message: "JSON number is outside the finite f64 domain".to_string(),
+            });
+        }
+        Ok(value)
     }
 
     fn int_i8(&mut self) -> Result<i8, JsonError> {
-        let v = self.number()?;
-        let i = v as i8;
-        if (f64::from(i) - v).abs() > 0.0 {
+        let (start, end, integer_syntax) = self.number_span()?;
+        let raw = core::str::from_utf8(&self.s[start..end]).map_err(|_| JsonError {
+            at: start,
+            message: "dimension exponent is not valid UTF-8".to_string(),
+        })?;
+        if !integer_syntax {
             return Err(JsonError {
-                at: self.i,
-                message: format!("dimension exponent {v} is not a small integer"),
+                at: start,
+                message: format!(
+                    "dimension exponent {raw:?} must use integer JSON syntax without a fraction or exponent"
+                ),
             });
         }
-        Ok(i)
+        raw.parse::<i8>().map_err(|_| JsonError {
+            at: start,
+            message: format!("dimension exponent {raw:?} is not a small integer"),
+        })
     }
 
     fn int_u32(&mut self) -> Result<u32, JsonError> {
-        let at = self.i;
-        let v = self.number()?;
-        let i = v as u32;
-        if !v.is_finite() || f64::from(i) != v {
+        let (start, end, integer_syntax) = self.number_span()?;
+        let raw = core::str::from_utf8(&self.s[start..end]).map_err(|_| JsonError {
+            at: start,
+            message: "schema version is not valid UTF-8".to_string(),
+        })?;
+        if !integer_syntax || raw.starts_with('-') {
             return Err(JsonError {
-                at,
-                message: format!("schema version {v} is not an unsigned integer"),
+                at: start,
+                message: format!(
+                    "schema version {raw:?} must use unsigned integer JSON syntax without a sign, fraction, or exponent"
+                ),
             });
         }
-        Ok(i)
+        raw.parse::<u32>().map_err(|_| JsonError {
+            at: start,
+            message: format!("schema version {raw:?} is not an unsigned integer"),
+        })
     }
 }
 
@@ -277,7 +374,8 @@ pub fn decode_json(text: &str) -> Result<DecodedQty, JsonError> {
     c.expect("{")?;
 
     c.skip_ws();
-    let source_version = if c.s[c.i..].starts_with(b"\"schema_version\"") {
+    let explicit_version = c.s[c.i..].starts_with(b"\"schema_version\"");
+    let source_version = if explicit_version {
         c.expect("\"schema_version\"")?;
         c.expect(":")?;
         let raw_version = c.int_u32()?;
@@ -339,6 +437,24 @@ pub fn decode_json(text: &str) -> Result<DecodedQty, JsonError> {
         });
     }
     let qty = QtyAny::new(value, Dims([m, kg, s, k, a, mol]));
+    let canonical_source = match (source_version, explicit_version) {
+        (QtyWireVersion::LegacyFive, false) => to_legacy_json(qty)?,
+        (QtyWireVersion::LegacyFive, true) => legacy_json(qty, true)?,
+        (QtyWireVersion::SixBase, true) => to_json(qty)?,
+        (QtyWireVersion::SixBase, false) => unreachable!("implicit input is always legacy v1"),
+    };
+    if text != canonical_source {
+        let at = text
+            .bytes()
+            .zip(canonical_source.bytes())
+            .position(|(actual, canonical)| actual != canonical)
+            .unwrap_or(text.len().min(canonical_source.len()));
+        return Err(JsonError {
+            at,
+            message: "quantity JSON must exactly match its canonical versioned encoding; preserve historical v1 bytes and use to_json for v2"
+                .to_string(),
+        });
+    }
     let migration = if source_version == QtyWireVersion::LegacyFive {
         let new_bytes = to_json(qty)?;
         Some(DimensionCrosswalkReceipt {
@@ -428,8 +544,7 @@ mod tests {
     #[test]
     fn legacy_bytes_require_and_verify_immutable_crosswalk_receipt() {
         const OLD: &str = r#"{"value":0.12,"dims":[-1,1,-1,0,0]}"#;
-        const NEW: &str =
-            r#"{"schema_version":2,"value":0.12,"dims":[-1,1,-1,0,0,0]}"#;
+        const NEW: &str = r#"{"schema_version":2,"value":0.12,"dims":[-1,1,-1,0,0,0]}"#;
         let decoded = decode_json(OLD).expect("legacy decodes with evidence");
         assert_eq!(decoded.source_version(), QtyWireVersion::LegacyFive);
         assert_eq!(decoded.qty().dims, Dims([-1, 1, -1, 0, 0, 0]));
@@ -451,6 +566,7 @@ mod tests {
         );
         assert!(receipt.verifies(OLD.as_bytes(), NEW.as_bytes()));
         assert!(!receipt.verifies(b"tampered", NEW.as_bytes()));
+        assert!(!receipt.verifies(OLD.as_bytes(), b"tampered"));
         assert_eq!(to_legacy_json(decoded.qty()).unwrap(), OLD);
         assert!(from_json(OLD).unwrap_err().message.contains("receipt"));
     }
@@ -466,8 +582,40 @@ mod tests {
             r#"{"schema_version":1,"value":1,"dims":[1,2,3,4,5,6]}"#,
             r#"{"schema_version":2,"value":1,"dims":[1,2,3,4,5]}"#,
             r#"{"schema_version":3,"value":1,"dims":[1,2,3,4,5,6]}"#,
+            r#"{"schema_version":+1,"value":1,"dims":[1,2,3,4,5]}"#,
+            r#"{"schema_version":01,"value":1,"dims":[1,2,3,4,5]}"#,
+            r#"{"schema_version":1.0,"value":1,"dims":[1,2,3,4,5]}"#,
+            r#"{"schema_version":1e0,"value":1,"dims":[1,2,3,4,5]}"#,
+            r#"{"schema_version":-1,"value":1,"dims":[1,2,3,4,5]}"#,
+            r#"{"schema_version":4294967296,"value":1,"dims":[1,2,3,4,5]}"#,
         ] {
             assert!(decode_json(bad).is_err(), "must reject {bad}");
+        }
+    }
+
+    #[test]
+    fn json_number_grammar_is_strict_and_role_aware() {
+        for expected in [0.0_f64, -0.0, 0.125, -3.5e-9, 6.022_140_76e23] {
+            let text = to_json(QtyAny::dimensionless(expected)).expect("canonical number");
+            let decoded = decode_json(&text).unwrap_or_else(|e| panic!("must accept {text}: {e}"));
+            assert_eq!(
+                decoded.qty().value.to_bits(),
+                expected.to_bits(),
+                "{text}"
+            );
+        }
+
+        for raw in ["+1", "01", "-01", ".5", "1.", "1e", "1e+", "1e999"] {
+            let text = format!(r#"{{"schema_version":2,"value":{raw},"dims":[0,0,0,0,0,0]}}"#);
+            assert!(decode_json(&text).is_err(), "must reject value {raw}");
+        }
+
+        for raw in ["+1", "01", "-01", "1.0", "1e0", "-0.0", "128", "-129"] {
+            let text = format!(r#"{{"schema_version":2,"value":1,"dims":[{raw},0,0,0,0,0]}}"#);
+            assert!(
+                decode_json(&text).is_err(),
+                "must reject dimension exponent {raw}"
+            );
         }
     }
 
@@ -493,12 +641,19 @@ mod tests {
     }
 
     #[test]
-    fn whitespace_tolerant_parse() {
-        let q = from_json(
+    fn noncanonical_v1_and_v2_mutations_fail_closed() {
+        for mutated in [
             " { \"schema_version\" : 2 , \"value\" : 2.5 , \"dims\" : [ 1 , 0 , -1 , 0 , 0 , 0 ] } ",
-        )
-        .expect("parses");
-        assert!((q.value - 2.5).abs() < 1e-15);
-        assert_eq!(q.dims, Dims([1, 0, -1, 0, 0, 0]));
+            r#"{"schema_version":2,"value":1e0,"dims":[0,0,0,0,0,0]}"#,
+            r#"{"value":1,"schema_version":2,"dims":[0,0,0,0,0,0]}"#,
+            r#"{ "value":1,"dims":[0,0,0,0,0]}"#,
+            r#"{"schema_version":1,"value":1.0,"dims":[0,0,0,0,0]}"#,
+            r#"{"schema_version":1,"dims":[0,0,0,0,0],"value":1}"#,
+        ] {
+            assert!(
+                decode_json(mutated).is_err(),
+                "noncanonical mutation must refuse before issuing a receipt: {mutated}"
+            );
+        }
     }
 }
