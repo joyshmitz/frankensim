@@ -14,6 +14,7 @@ layer = "L3"
 fs-ad = { path = "../fs-ad" }
 fs-blake3 = { path = "../fs-blake3" }
 fs-evidence = { path = "../fs-evidence" }
+fs-exec = { path = "../fs-exec" }
 fs-feec = { path = "../fs-feec" }
 fs-geom = { path = "../fs-geom" }
 fs-ivl = { path = "../fs-ivl" }
@@ -41,6 +42,7 @@ gradient-certs = ["diff-mitigations"]
 dwr-accept = ["dep:fs-verify"]
 
 [dev-dependencies]
+fs-alloc = { path = "../fs-alloc" }
 fs-ledger = { path = "../fs-ledger" }
 fs-rand = { path = "../fs-rand" }
 

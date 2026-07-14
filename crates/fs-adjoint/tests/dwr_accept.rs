@@ -7,17 +7,109 @@
 #![cfg(feature = "dwr-accept")]
 
 use fs_adjoint::dwr_accept::{
-    Bracket, BracketError, DwrError, DwrQuery, MAX_BRACKET_MESH_NODES, MAX_DWR_MESH_NODES,
-    MAX_DWR_POLY_COEFFICIENTS, MAX_DWR_WORK_UNITS, accept, dwr_integral_qoi,
+    AcceptOutcome, Bracket, BracketError, DWR_EVIDENCE_IDENTITY_VERSION, DWR_POLL_POLICY_VERSION,
+    DWR_POLL_STRIDE_ITEMS, DWR_WORK_PLAN_VERSION, DwrError, DwrOutput, DwrQuery,
+    MAX_BRACKET_MESH_NODES, MAX_DWR_MESH_NODES, MAX_DWR_POLY_COEFFICIENTS, MAX_DWR_QOI_BYTES,
+    MAX_DWR_WORK_UNITS, accept as accept_with_cx, dwr_integral_qoi as dwr_integral_qoi_with_cx,
 };
 use fs_evidence::Color;
 use fs_evidence::falsify::{FalsifierRegistry, FalsifierSpec};
+use fs_exec::{Budget, CancelGate, Cx, ExecMode, StreamKey};
 use fs_verify::estimator::{EstimatorFamily, VerifierReport};
 use fs_verify::fem1d::{
     Fem1dError, MAX_FEM1D_MESH_NODES, MAX_FEM1D_POLY_COEFFICIENTS, MmsClass, MmsProblem, Poly,
     solve_p1,
 };
 use fs_verify::interval::Iv;
+
+fn with_cx<R>(
+    cancelled: bool,
+    mode: ExecMode,
+    budget: Budget,
+    stream: StreamKey,
+    f: impl FnOnce(&Cx<'_>) -> R,
+) -> R {
+    let gate = CancelGate::new_clock_free();
+    if cancelled {
+        gate.request();
+    }
+    let pool = fs_alloc::ArenaPool::new(fs_alloc::ArenaConfig::default());
+    pool.scope(|arena| {
+        let cx = Cx::new(&gate, arena, stream, budget, mode);
+        f(&cx)
+    })
+}
+
+fn default_stream() -> StreamKey {
+    StreamKey {
+        seed: 0xD0_00_00_01,
+        kernel_id: 0xAD_10_17,
+        tile: 3,
+        iteration: 5,
+    }
+}
+
+fn with_default_cx<R>(f: impl FnOnce(&Cx<'_>) -> R) -> R {
+    with_cx(
+        false,
+        ExecMode::Deterministic,
+        Budget::INFINITE,
+        default_stream(),
+        f,
+    )
+}
+
+fn dwr_integral_qoi(
+    problem: &MmsProblem,
+    candidate: &[f64],
+    w_lo: f64,
+    w_hi: f64,
+) -> Result<DwrOutput, DwrError> {
+    with_default_cx(|cx| dwr_integral_qoi_with_cx(problem, candidate, w_lo, w_hi, cx))
+}
+
+fn accept(query: &DwrQuery, dwr_abs: f64, bracket: Option<&Bracket>) -> AcceptOutcome {
+    with_default_cx(|cx| accept_with_cx(query, dwr_abs, bracket, cx))
+        .expect("healthy DWR acceptance context")
+}
+
+fn cauchy_schwarz(
+    primal_problem: &MmsProblem,
+    primal_candidate: &[f64],
+    dual_problem: &MmsProblem,
+    dual_candidate: &[f64],
+) -> Result<Bracket, BracketError> {
+    with_default_cx(|cx| {
+        Bracket::cauchy_schwarz(
+            primal_problem,
+            primal_candidate,
+            dual_problem,
+            dual_candidate,
+            cx,
+        )
+    })
+}
+
+fn assert_same_dwr_semantics(left: &DwrOutput, right: &DwrOutput) {
+    assert_eq!(left.j_primal().to_bits(), right.j_primal().to_bits());
+    assert_eq!(left.eta().to_bits(), right.eta().to_bits());
+    assert_eq!(left.indicators().len(), right.indicators().len());
+    for (left, right) in left.indicators().iter().zip(right.indicators()) {
+        assert_eq!(left.to_bits(), right.to_bits());
+    }
+}
+
+fn assert_same_accept_semantics(left: &AcceptOutcome, right: &AcceptOutcome) {
+    assert_eq!(left.accepted(), right.accepted());
+    assert_eq!(left.color(), right.color());
+    assert_eq!(left.refused(), right.refused());
+    assert_eq!(left.audit(), right.audit());
+}
+
+fn assert_same_bracket_semantics(left: &Bracket, right: &Bracket) {
+    assert_eq!(left.bound().to_bits(), right.bound().to_bits());
+    assert_eq!(left.source(), right.source());
+}
 
 fn poly(coefficients: Vec<f64>) -> Poly {
     Poly::new(coefficients).expect("valid DWR fixture polynomial")
@@ -58,12 +150,12 @@ fn dw_001_g1_effectivity_and_estimated_accept() {
     let u_h = solve_p1(&problem).expect("quartic primal fixture must solve");
     let (a, b) = (0.25, 0.75);
     let out = dwr_integral_qoi(&problem, &u_h, a, b).expect("valid DWR inputs");
-    let true_err = exact_qoi(&problem, a, b) - out.j_primal;
-    let effectivity = out.eta / true_err;
+    let true_err = exact_qoi(&problem, a, b) - out.j_primal();
+    let effectivity = out.eta() / true_err;
     assert!(
         (0.7..=1.3).contains(&effectivity),
         "G1: DWR effectivity near 1: eta {:.3e} vs true {:.3e} ({effectivity:.2})",
-        out.eta,
+        out.eta(),
         true_err
     );
     // The DWR-only accept at a discharging tolerance is ESTIMATED.
@@ -71,13 +163,13 @@ fn dw_001_g1_effectivity_and_estimated_accept() {
         qoi: "integral[0.25,0.75]".to_string(),
         tolerance: 1e-3,
     };
-    let outcome = accept(&query, out.eta.abs(), None);
-    assert!(outcome.accepted);
-    assert!(!outcome.refused);
+    let outcome = accept(&query, out.eta().abs(), None);
+    assert!(outcome.accepted());
+    assert!(!outcome.refused());
     assert!(
-        matches!(outcome.color, Color::Estimated { .. }),
+        matches!(outcome.color(), Color::Estimated { .. }),
         "DWR constants are not guaranteed: {:?}",
-        outcome.color
+        outcome.color()
     );
     // And a too-tight tolerance rejects.
     let strict = accept(
@@ -85,12 +177,12 @@ fn dw_001_g1_effectivity_and_estimated_accept() {
             qoi: "integral".to_string(),
             tolerance: 1e-12,
         },
-        out.eta.abs(),
+        out.eta().abs(),
         None,
     );
-    assert!(!strict.accepted, "no silent discharge");
+    assert!(!strict.accepted(), "no silent discharge");
     assert!(
-        !strict.refused,
+        !strict.refused(),
         "over-tolerance is a decision, not a refusal"
     );
     verdict(
@@ -117,7 +209,7 @@ fn dw_002_reverified_energy_product_does_not_promote_without_a_typed_dual_relati
         problem.mesh().to_vec(),
     );
     let dual_h = solve_p1(&dual_problem).expect("dual surrogate fixture must solve");
-    let bracket = Bracket::cauchy_schwarz(&problem, &u_h, &dual_problem, &dual_h)
+    let bracket = cauchy_schwarz(&problem, &u_h, &dual_problem, &dual_h)
         .expect("both factors independently reverify");
     assert!(
         bracket.bound().is_finite(),
@@ -127,17 +219,17 @@ fn dw_002_reverified_energy_product_does_not_promote_without_a_typed_dual_relati
         qoi: "integral[0.25,0.75]".to_string(),
         tolerance: bracket.bound() * 1.5,
     };
-    let outcome = accept(&query, out.eta.abs(), Some(&bracket));
-    assert!(outcome.accepted);
+    let outcome = accept(&query, out.eta().abs(), Some(&bracket));
+    assert!(outcome.accepted());
     assert!(
-        matches!(outcome.color, Color::Estimated { .. }),
+        matches!(outcome.color(), Color::Estimated { .. }),
         "an unbound dual relation cannot mint Verified: {:?}",
-        outcome.color
+        outcome.color()
     );
     assert!(
-        outcome.audit.contains("QoI-dual relation unverified"),
+        outcome.audit().contains("QoI-dual relation unverified"),
         "audit retains the exact no-claim: {}",
-        outcome.audit
+        outcome.audit()
     );
     verdict(
         "dw-002",
@@ -169,7 +261,7 @@ fn forged_public_verifier_report_is_not_bracket_authority() {
         0.0,
         None,
     );
-    assert!(matches!(outcome.color, Color::Estimated { .. }));
+    assert!(matches!(outcome.color(), Color::Estimated { .. }));
     // There is intentionally no API that consumes `forged`: Bracket fields are
     // private and its only constructor reruns verification from exact inputs.
 }
@@ -184,14 +276,14 @@ fn dw_003_laundering_fails_the_type_check() {
             qoi: "integral".to_string(),
             tolerance: 1e-3,
         },
-        out.eta.abs(),
+        out.eta().abs(),
         None,
     );
     // The unbracketed accept is estimated; writing it into the ledger
     // claiming VERIFIED must fail the type check.
     let mut graph = fs_ledger::ColorGraph::new();
     let node = graph
-        .source("dwr-accept", outcome.color.clone())
+        .source("dwr-accept", outcome.color().clone())
         .expect("unbracketed DWR accept is Estimated");
     let laundered = graph.derive(
         "query-report",
@@ -218,8 +310,8 @@ fn dw_004_refinement_concentrates_where_the_qoi_lives() {
     let u_h = solve_p1(&problem).expect("quartic primal fixture must solve");
     // QoI window on the RIGHT fifth of the domain.
     let out = dwr_integral_qoi(&problem, &u_h, 0.8, 1.0).expect("valid DWR inputs");
-    let total: f64 = out.indicators.iter().sum();
-    let right: f64 = out.indicators[12..].iter().sum();
+    let total: f64 = out.indicators().iter().sum();
+    let right: f64 = out.indicators()[12..].iter().sum();
     assert!(
         right > 0.6 * total,
         "goal-oriented indicators concentrate near the QoI window: right-40% share {:.2}",
@@ -227,8 +319,8 @@ fn dw_004_refinement_concentrates_where_the_qoi_lives() {
     );
     // Control: a CENTERED QoI does not pile mass on the right.
     let centered = dwr_integral_qoi(&problem, &u_h, 0.4, 0.6).expect("valid DWR inputs");
-    let ctotal: f64 = centered.indicators.iter().sum();
-    let cright: f64 = centered.indicators[12..].iter().sum();
+    let ctotal: f64 = centered.indicators().iter().sum();
+    let cright: f64 = centered.indicators()[12..].iter().sum();
     assert!(
         cright < 0.5 * ctotal,
         "centered QoI spreads differently: {:.2}",
@@ -249,8 +341,8 @@ fn dw_005_falsifier_spot_check_and_pairing() {
     let u_c = solve_p1(&coarse).expect("coarse falsifier fixture must solve");
     let out = dwr_integral_qoi(&coarse, &u_c, 0.25, 0.75).expect("valid DWR inputs");
     let reference = exact_qoi(&coarse, 0.25, 0.75);
-    let corrected = out.j_primal + out.eta;
-    let raw_err = (out.j_primal - reference).abs();
+    let corrected = out.j_primal() + out.eta();
+    let raw_err = (out.j_primal() - reference).abs();
     let corr_err = (corrected - reference).abs();
     assert!(
         corr_err < 0.35 * raw_err,
@@ -298,22 +390,22 @@ fn unrelated_over_tolerance_energy_product_cannot_veto_the_dwr_decision() {
         primal.mesh().to_vec(),
     );
     let unrelated_h = solve_p1(&unrelated_dual).expect("unrelated dual fixture must solve");
-    let bracket = Bracket::cauchy_schwarz(&primal, &primal_h, &unrelated_dual, &unrelated_h)
+    let bracket = cauchy_schwarz(&primal, &primal_h, &unrelated_dual, &unrelated_h)
         .expect("both unrelated energy factors still reverify");
     let outcome = accept(&query, 5e-4, Some(&bracket));
     assert!(
-        outcome.accepted,
+        outcome.accepted(),
         "an unrelated dual product cannot veto an Estimated DWR decision: {}",
-        outcome.audit
+        outcome.audit()
     );
     assert!(
-        matches!(outcome.color, Color::Estimated { .. }),
+        matches!(outcome.color(), Color::Estimated { .. }),
         "unrelated genuine reports cannot promote"
     );
     assert!(
-        outcome.audit.contains("QoI-dual relation unverified"),
+        outcome.audit().contains("QoI-dual relation unverified"),
         "audit must state the no-claim: {}",
-        outcome.audit
+        outcome.audit()
     );
 }
 
@@ -327,11 +419,11 @@ fn malformed_accept_inputs_fail_closed_without_minting_invalid_colors() {
     };
     for estimate in [f64::NAN, f64::NEG_INFINITY, -1.0] {
         let outcome = accept(&base, estimate, None);
-        assert!(!outcome.accepted);
-        assert!(outcome.refused);
-        validate_color_payload(&outcome.color).expect("refusal color remains structurally valid");
+        assert!(!outcome.accepted());
+        assert!(outcome.refused());
+        validate_color_payload(outcome.color()).expect("refusal color remains structurally valid");
         assert!(matches!(
-            outcome.color,
+            outcome.color(),
             Color::Estimated { dispersion, .. } if dispersion.is_infinite()
         ));
     }
@@ -345,15 +437,15 @@ fn malformed_accept_inputs_fail_closed_without_minting_invalid_colors() {
             1e-4,
             None,
         );
-        assert!(!outcome.accepted);
-        assert!(outcome.refused);
-        validate_color_payload(&outcome.color).expect("invalid tolerance refusal is valid");
+        assert!(!outcome.accepted());
+        assert!(outcome.refused());
+        validate_color_payload(outcome.color()).expect("invalid tolerance refusal is valid");
     }
 
     let problem = quartic_problem(4);
     let candidate = solve_p1(&problem).expect("malformed-input control fixture must solve");
     assert!(
-        Bracket::cauchy_schwarz(
+        cauchy_schwarz(
             &problem,
             &candidate[..candidate.len() - 1],
             &problem,
@@ -362,15 +454,15 @@ fn malformed_accept_inputs_fail_closed_without_minting_invalid_colors() {
         .is_err(),
         "malformed candidates fail before verifier execution"
     );
-    let bracket = Bracket::cauchy_schwarz(&problem, &candidate, &problem, &candidate)
-        .expect("valid diagnostic");
+    let bracket =
+        cauchy_schwarz(&problem, &candidate, &problem, &candidate).expect("valid diagnostic");
     let independent = accept(&base, f64::NAN, Some(&bracket));
     assert!(
-        !independent.accepted,
+        !independent.accepted(),
         "an unbound energy product cannot discharge malformed DWR"
     );
-    assert!(independent.refused);
-    validate_color_payload(&independent.color).expect("refusal color is valid");
+    assert!(independent.refused());
+    validate_color_payload(independent.color()).expect("refusal color is valid");
 }
 
 #[test]
@@ -378,10 +470,10 @@ fn dwr_two_node_mesh_is_a_finite_supported_boundary_case() {
     let problem = admitted_problem("two-node", vec![0.0], vec![0.0, 1.0]);
     let output = dwr_integral_qoi(&problem, &[0.0, 0.0], 0.0, 1.0)
         .expect("two boundary nodes refine to one interior dual degree of freedom");
-    assert_eq!(output.indicators.len(), 1);
-    assert!(output.j_primal.is_finite());
-    assert!(output.eta.is_finite());
-    assert!(output.indicators[0].is_finite());
+    assert_eq!(output.indicators().len(), 1);
+    assert!(output.j_primal().is_finite());
+    assert!(output.eta().is_finite());
+    assert!(output.indicators()[0].is_finite());
 }
 
 #[test]
@@ -489,7 +581,7 @@ fn dwr_refuses_invalid_windows_and_resource_counts_at_owner_boundaries() {
         "DWR shares fs-verify's bit-canonical +0.0 endpoint rule"
     );
     assert!(matches!(
-        Bracket::cauchy_schwarz(&base, &[1.0, 1.0], &base, &[0.0, 0.0]),
+        cauchy_schwarz(&base, &[1.0, 1.0], &base, &[0.0, 0.0]),
         Err(BracketError::InvalidInput {
             factor: "primal",
             reason: "candidate endpoints must be canonical homogeneous +0.0",
@@ -517,6 +609,25 @@ fn dwr_refuses_invalid_windows_and_resource_counts_at_owner_boundaries() {
         .checked_mul(MAX_DWR_POLY_COEFFICIENTS * 10 + 15)
         .expect("shared finite caps have a representable work product");
     assert!(maximum_admitted_work <= MAX_DWR_WORK_UNITS);
+
+    let maximum_qoi = DwrQuery {
+        qoi: "q".repeat(MAX_DWR_QOI_BYTES),
+        tolerance: 1.0,
+    };
+    let maximum_qoi_outcome = accept(&maximum_qoi, 0.0, None);
+    assert!(maximum_qoi_outcome.accepted());
+    let plus_one_qoi = DwrQuery {
+        qoi: "q".repeat(MAX_DWR_QOI_BYTES + 1),
+        tolerance: 1.0,
+    };
+    let plus_one = with_default_cx(|cx| accept_with_cx(&plus_one_qoi, 0.0, None, cx));
+    assert!(matches!(
+        plus_one,
+        Err(DwrError::QoiLabelTooLong {
+            bytes,
+            maximum: MAX_DWR_QOI_BYTES,
+        }) if bytes == MAX_DWR_QOI_BYTES + 1
+    ));
 }
 
 #[test]
@@ -569,4 +680,522 @@ fn dwr_consumes_canonical_mms_class_and_problem_identities() {
         MmsClass::new("dwr-identity", poly(vec![0.0, 2.0, -2.0])).expect("rescaled admitted class");
     assert_ne!(normalized.identity(), renamed.identity());
     assert_ne!(normalized.identity(), rescaled.identity());
+}
+
+#[test]
+fn g4_dwr_and_accept_cancellation_are_bounded_and_retryable() {
+    let problem = quartic_problem(16);
+    let candidate = solve_p1(&problem).expect("G4 primal fixture must solve");
+    let baseline =
+        dwr_integral_qoi(&problem, &candidate, 0.25, 0.75).expect("healthy DWR baseline");
+
+    let pre_cancelled = with_cx(
+        true,
+        ExecMode::Deterministic,
+        Budget::INFINITE,
+        default_stream(),
+        |cx| dwr_integral_qoi_with_cx(&problem, &candidate, 0.25, 0.75, cx),
+    );
+    assert!(matches!(
+        pre_cancelled,
+        Err(DwrError::Cancelled {
+            phase: "dwr.initial",
+            completed_work_units: 0,
+            planned_work_units,
+        }) if planned_work_units > 0
+    ));
+
+    #[allow(clippy::cast_precision_loss)]
+    let stride_mesh: Vec<f64> = (0..=257).map(|node| node as f64 / 257.0).collect();
+    let stride_problem = admitted_problem("g4-stride", vec![0.0], stride_mesh);
+    let stride_candidate = vec![0.0; 258];
+    let stride_cancelled = with_cx(
+        false,
+        ExecMode::Deterministic,
+        Budget::INFINITE.with_poll_quota(3),
+        default_stream(),
+        |cx| dwr_integral_qoi_with_cx(&stride_problem, &stride_candidate, 0.25, 0.75, cx),
+    );
+    assert!(matches!(
+        stride_cancelled,
+        Err(DwrError::Cancelled {
+            phase: "dwr.validate-candidate",
+            completed_work_units: 257,
+            planned_work_units,
+        }) if planned_work_units > 257
+    ));
+
+    let mut dwr_phases = std::collections::BTreeSet::new();
+    let mut reached_success = false;
+    for quota in 0..512 {
+        let attempt = with_cx(
+            false,
+            ExecMode::Deterministic,
+            Budget::INFINITE.with_poll_quota(quota),
+            default_stream(),
+            |cx| dwr_integral_qoi_with_cx(&problem, &candidate, 0.25, 0.75, cx),
+        );
+        match attempt {
+            Err(DwrError::Cancelled {
+                phase,
+                completed_work_units,
+                planned_work_units,
+            }) => {
+                assert!(completed_work_units <= planned_work_units);
+                dwr_phases.insert(phase);
+                let retry = dwr_integral_qoi(&problem, &candidate, 0.25, 0.75)
+                    .expect("cancelled DWR leaves no retained state");
+                assert_same_dwr_semantics(&baseline, &retry);
+            }
+            Ok(output) => {
+                assert_same_dwr_semantics(&baseline, &output);
+                reached_success = true;
+                break;
+            }
+            Err(error) => panic!("quota sweep produced a non-cancellation refusal: {error}"),
+        }
+    }
+    assert!(reached_success, "finite healthy quota must complete DWR");
+    for phase in [
+        "dwr.dual-assembly",
+        "dwr.thomas-forward",
+        "dwr.residual",
+        "dwr.identity",
+        "dwr.publish",
+    ] {
+        assert!(dwr_phases.contains(phase), "quota sweep missed {phase}");
+    }
+
+    let query = DwrQuery {
+        qoi: "accept-finalization-".repeat(20),
+        tolerance: 1.0,
+    };
+    let baseline_accept = accept(&query, baseline.eta().abs(), None);
+    let pre_cancelled_accept = with_cx(
+        true,
+        ExecMode::Deterministic,
+        Budget::INFINITE,
+        default_stream(),
+        |cx| accept_with_cx(&query, baseline.eta().abs(), None, cx),
+    );
+    assert!(matches!(
+        pre_cancelled_accept,
+        Err(DwrError::Cancelled {
+            phase: "dwr-accept.initial",
+            completed_work_units: 0,
+            planned_work_units,
+        }) if planned_work_units
+            == u128::try_from(query.qoi.len()).expect("bounded QoI length") + 2
+    ));
+
+    let mut accept_phases = std::collections::BTreeSet::new();
+    let mut accept_reached_success = false;
+    for quota in 0..32 {
+        let attempt = with_cx(
+            false,
+            ExecMode::Deterministic,
+            Budget::INFINITE.with_poll_quota(quota),
+            default_stream(),
+            |cx| accept_with_cx(&query, baseline.eta().abs(), None, cx),
+        );
+        match attempt {
+            Err(DwrError::Cancelled {
+                phase,
+                completed_work_units,
+                planned_work_units,
+            }) => {
+                assert!(completed_work_units <= planned_work_units);
+                accept_phases.insert(phase);
+                let retry = accept(&query, baseline.eta().abs(), None);
+                assert_same_accept_semantics(&baseline_accept, &retry);
+            }
+            Ok(outcome) => {
+                assert_same_accept_semantics(&baseline_accept, &outcome);
+                accept_reached_success = true;
+                break;
+            }
+            Err(error) => panic!("accept quota sweep produced a non-cancellation refusal: {error}"),
+        }
+    }
+    assert!(
+        accept_reached_success,
+        "finite healthy quota must complete accept"
+    );
+    assert!(accept_phases.contains("dwr-accept.identity"));
+    assert!(accept_phases.contains("dwr-accept.publish"));
+}
+
+#[test]
+fn g4_bracket_cancellation_drains_each_nested_verifier_phase_and_is_retryable() {
+    let problem = quartic_problem(16);
+    let candidate = solve_p1(&problem).expect("G4 bracket fixture must solve");
+    let baseline = cauchy_schwarz(&problem, &candidate, &problem, &candidate)
+        .expect("healthy bracket baseline");
+
+    let pre_cancelled = with_cx(
+        true,
+        ExecMode::Deterministic,
+        Budget::INFINITE,
+        default_stream(),
+        |cx| Bracket::cauchy_schwarz(&problem, &candidate, &problem, &candidate, cx),
+    );
+    assert!(matches!(
+        pre_cancelled,
+        Err(BracketError::Cancelled {
+            phase: "dwr-bracket.initial",
+            completed_work_units: 0,
+            planned_work_units,
+        }) if planned_work_units > 0
+    ));
+
+    let mut phases = std::collections::BTreeSet::new();
+    let mut reached_success = false;
+    for quota in 0..64 {
+        let attempt = with_cx(
+            false,
+            ExecMode::Deterministic,
+            Budget::INFINITE.with_poll_quota(quota),
+            default_stream(),
+            |cx| Bracket::cauchy_schwarz(&problem, &candidate, &problem, &candidate, cx),
+        );
+        match attempt {
+            Err(BracketError::Cancelled {
+                phase,
+                completed_work_units,
+                planned_work_units,
+            }) => {
+                assert!(completed_work_units <= planned_work_units);
+                phases.insert(phase);
+                let retry = cauchy_schwarz(&problem, &candidate, &problem, &candidate)
+                    .expect("cancelled nested verifier retains no partial bracket");
+                assert_same_bracket_semantics(&baseline, &retry);
+                assert_eq!(baseline.evidence_identity(), retry.evidence_identity());
+            }
+            Ok(bracket) => {
+                assert_same_bracket_semantics(&baseline, &bracket);
+                assert_ne!(baseline.evidence_identity(), bracket.evidence_identity());
+                let replay = with_cx(
+                    false,
+                    ExecMode::Deterministic,
+                    Budget::INFINITE.with_poll_quota(quota),
+                    default_stream(),
+                    |cx| Bracket::cauchy_schwarz(&problem, &candidate, &problem, &candidate, cx),
+                )
+                .expect("the same finite healthy quota must replay");
+                assert_same_bracket_semantics(&bracket, &replay);
+                assert_eq!(bracket.evidence_identity(), replay.evidence_identity());
+                reached_success = true;
+                break;
+            }
+            Err(error) => panic!("bracket quota sweep produced a non-cancellation error: {error}"),
+        }
+    }
+    assert!(
+        reached_success,
+        "finite healthy quota must complete bracket"
+    );
+    for phase in [
+        "dwr-bracket.primal-verifier.validation",
+        "dwr-bracket.primal-verifier.tightness",
+        "dwr-bracket.primal-verifier.equilibrated",
+        "dwr-bracket.primal-verifier.hash",
+        "dwr-bracket.primal-verifier.finalization",
+        "dwr-bracket.dual-verifier.validation",
+        "dwr-bracket.dual-verifier.tightness",
+        "dwr-bracket.dual-verifier.equilibrated",
+        "dwr-bracket.dual-verifier.hash",
+        "dwr-bracket.dual-verifier.finalization",
+        "dwr-bracket.identity",
+        "dwr-bracket.publish",
+    ] {
+        assert!(phases.contains(phase), "quota sweep missed {phase}");
+    }
+}
+
+#[test]
+fn g5_bracket_identity_binds_execution_and_complete_nested_work_policy() {
+    let problem = quartic_problem(8);
+    let candidate = solve_p1(&problem).expect("G5 bracket fixture must solve");
+    let run = |mode: ExecMode, budget: Budget, stream: StreamKey| {
+        with_cx(false, mode, budget, stream, |cx| {
+            Bracket::cauchy_schwarz(&problem, &candidate, &problem, &candidate, cx)
+                .expect("G5 bracket execution")
+        })
+    };
+    let stream = default_stream();
+    let baseline = run(ExecMode::Deterministic, Budget::INFINITE, stream);
+    let repeat = run(ExecMode::Deterministic, Budget::INFINITE, stream);
+    assert_same_bracket_semantics(&baseline, &repeat);
+    assert_eq!(baseline.evidence_identity(), repeat.evidence_identity());
+
+    let variants = [
+        ("mode", ExecMode::Fast, Budget::INFINITE, stream),
+        (
+            "deadline",
+            ExecMode::Deterministic,
+            Budget {
+                deadline: Budget::with_deadline_at_ns(123).deadline,
+                ..Budget::INFINITE
+            },
+            stream,
+        ),
+        (
+            "poll quota",
+            ExecMode::Deterministic,
+            Budget::INFINITE.with_poll_quota(10_000),
+            stream,
+        ),
+        (
+            "cost quota",
+            ExecMode::Deterministic,
+            Budget::INFINITE.with_cost_quota(456),
+            stream,
+        ),
+        (
+            "priority",
+            ExecMode::Deterministic,
+            Budget::INFINITE.with_priority(7),
+            stream,
+        ),
+        (
+            "stream",
+            ExecMode::Deterministic,
+            Budget::INFINITE,
+            StreamKey {
+                iteration: stream.iteration + 1,
+                ..stream
+            },
+        ),
+    ];
+    for (field, mode, budget, stream) in variants {
+        let changed = run(mode, budget, stream);
+        assert_same_bracket_semantics(&baseline, &changed);
+        assert_ne!(
+            baseline.evidence_identity(),
+            changed.evidence_identity(),
+            "bracket identity omitted {field}"
+        );
+    }
+
+    let coarse = admitted_problem("g5-bracket-shape", vec![0.0], vec![0.0, 0.5, 1.0]);
+    let refined = admitted_problem("g5-bracket-shape", vec![0.0], vec![0.0, 0.25, 0.5, 1.0]);
+    let coarse_bracket =
+        cauchy_schwarz(&coarse, &[0.0; 3], &coarse, &[0.0; 3]).expect("coarse zero bracket");
+    let refined_bracket =
+        cauchy_schwarz(&refined, &[0.0; 4], &refined, &[0.0; 4]).expect("refined zero bracket");
+    for bracket in [&coarse_bracket, &refined_bracket] {
+        assert!(bracket.bound().is_finite());
+        assert!(bracket.bound() >= 0.0);
+    }
+    assert_ne!(
+        coarse_bracket.evidence_identity(),
+        refined_bracket.evidence_identity(),
+        "nested verifier work shape and exact problem inputs are semantic"
+    );
+    assert_eq!(fs_verify::estimator::VERIFIER_WORK_PLAN_VERSION, 1);
+    assert_eq!(fs_verify::estimator::VERIFIER_POLL_POLICY_VERSION, 1);
+    assert_eq!(fs_verify::estimator::VERIFIER_POLL_STRIDE_WORK_UNITS, 256);
+}
+
+#[test]
+fn g5_execution_identity_binds_mode_budget_stream_and_work_shape() {
+    let problem = quartic_problem(12);
+    let candidate = solve_p1(&problem).expect("G5 primal fixture must solve");
+    let query = DwrQuery {
+        qoi: "g5-integral".to_string(),
+        tolerance: 1.0,
+    };
+    let run = |mode: ExecMode, budget: Budget, stream: StreamKey| {
+        with_cx(false, mode, budget, stream, |cx| {
+            let output = dwr_integral_qoi_with_cx(&problem, &candidate, 0.25, 0.75, cx)
+                .expect("G5 execution must remain scientifically valid");
+            let outcome = accept_with_cx(&query, output.eta().abs(), None, cx)
+                .expect("G5 acceptance must remain valid");
+            (output, outcome)
+        })
+    };
+
+    let stream = default_stream();
+    let (baseline_output, baseline_accept) = run(ExecMode::Deterministic, Budget::INFINITE, stream);
+    let (repeat_output, repeat_accept) = run(ExecMode::Deterministic, Budget::INFINITE, stream);
+    assert_same_dwr_semantics(&baseline_output, &repeat_output);
+    assert_same_accept_semantics(&baseline_accept, &repeat_accept);
+    assert_eq!(
+        baseline_output.evidence_identity(),
+        repeat_output.evidence_identity()
+    );
+    assert_eq!(
+        baseline_accept.evidence_identity(),
+        repeat_accept.evidence_identity()
+    );
+
+    let variants = [
+        ("mode", ExecMode::Fast, Budget::INFINITE, stream),
+        (
+            "deadline",
+            ExecMode::Deterministic,
+            Budget {
+                deadline: Budget::with_deadline_at_ns(123).deadline,
+                ..Budget::INFINITE
+            },
+            stream,
+        ),
+        (
+            "poll quota",
+            ExecMode::Deterministic,
+            Budget::INFINITE.with_poll_quota(10_000),
+            stream,
+        ),
+        (
+            "cost quota",
+            ExecMode::Deterministic,
+            Budget::INFINITE.with_cost_quota(456),
+            stream,
+        ),
+        (
+            "priority",
+            ExecMode::Deterministic,
+            Budget::INFINITE.with_priority(7),
+            stream,
+        ),
+        (
+            "seed",
+            ExecMode::Deterministic,
+            Budget::INFINITE,
+            StreamKey {
+                seed: stream.seed + 1,
+                ..stream
+            },
+        ),
+        (
+            "kernel",
+            ExecMode::Deterministic,
+            Budget::INFINITE,
+            StreamKey {
+                kernel_id: stream.kernel_id + 1,
+                ..stream
+            },
+        ),
+        (
+            "tile",
+            ExecMode::Deterministic,
+            Budget::INFINITE,
+            StreamKey {
+                tile: stream.tile + 1,
+                ..stream
+            },
+        ),
+        (
+            "iteration",
+            ExecMode::Deterministic,
+            Budget::INFINITE,
+            StreamKey {
+                iteration: stream.iteration + 1,
+                ..stream
+            },
+        ),
+    ];
+    for (field, mode, budget, stream) in variants {
+        let (output, outcome) = run(mode, budget, stream);
+        assert_same_dwr_semantics(&baseline_output, &output);
+        assert_same_accept_semantics(&baseline_accept, &outcome);
+        assert_ne!(
+            baseline_output.evidence_identity(),
+            output.evidence_identity(),
+            "DWR identity omitted {field}"
+        );
+        assert_ne!(
+            baseline_accept.evidence_identity(),
+            outcome.evidence_identity(),
+            "accept identity omitted {field}"
+        );
+    }
+
+    let renamed_problem = admitted_problem(
+        "g5-renamed-but-numerically-identical",
+        vec![0.0, 1.0, -1.0, 2.0, -2.0],
+        problem.mesh().to_vec(),
+    );
+    let renamed_output = dwr_integral_qoi(&renamed_problem, &candidate, 0.25, 0.75)
+        .expect("renaming preserves the numerical problem");
+    assert_same_dwr_semantics(&baseline_output, &renamed_output);
+    assert_ne!(
+        baseline_output.evidence_identity(),
+        renamed_output.evidence_identity(),
+        "exact canonical problem bytes are semantic"
+    );
+
+    let mut changed_candidate = candidate.clone();
+    changed_candidate[candidate.len() / 2] += f64::EPSILON;
+    let candidate_output = dwr_integral_qoi(&problem, &changed_candidate, 0.25, 0.75)
+        .expect("finite interior candidate mutation remains admitted");
+    assert_ne!(
+        baseline_output.evidence_identity(),
+        candidate_output.evidence_identity(),
+        "candidate values are semantic"
+    );
+    let window_output = dwr_integral_qoi(&problem, &candidate, 0.2, 0.8)
+        .expect("alternate finite QoI window remains admitted");
+    assert_ne!(
+        baseline_output.evidence_identity(),
+        window_output.evidence_identity(),
+        "QoI window is semantic"
+    );
+
+    let same_length_qoi = accept(
+        &DwrQuery {
+            qoi: "g5-integrax".to_string(),
+            tolerance: query.tolerance,
+        },
+        baseline_output.eta().abs(),
+        None,
+    );
+    assert_same_accept_semantics(&baseline_accept, &same_length_qoi);
+    assert_ne!(
+        baseline_accept.evidence_identity(),
+        same_length_qoi.evidence_identity(),
+        "QoI label content is semantic independently of work shape"
+    );
+    let changed_tolerance = accept(
+        &DwrQuery {
+            qoi: query.qoi.clone(),
+            tolerance: 2.0,
+        },
+        baseline_output.eta().abs(),
+        None,
+    );
+    assert_ne!(
+        baseline_accept.evidence_identity(),
+        changed_tolerance.evidence_identity(),
+        "tolerance is semantic"
+    );
+    let changed_estimate = accept(&query, baseline_output.eta().abs() + f64::EPSILON, None);
+    assert_ne!(
+        baseline_accept.evidence_identity(),
+        changed_estimate.evidence_identity(),
+        "DWR estimate is semantic"
+    );
+
+    let short = accept(
+        &DwrQuery {
+            qoi: "q".to_string(),
+            tolerance: query.tolerance,
+        },
+        baseline_output.eta().abs(),
+        None,
+    );
+    let long = accept(
+        &DwrQuery {
+            qoi: "same-science-longer-provenance-label".to_string(),
+            tolerance: query.tolerance,
+        },
+        baseline_output.eta().abs(),
+        None,
+    );
+    assert_same_accept_semantics(&short, &long);
+    assert_ne!(short.evidence_identity(), long.evidence_identity());
+    assert_eq!(DWR_WORK_PLAN_VERSION, 2);
+    assert_eq!(DWR_POLL_POLICY_VERSION, 2);
+    assert_eq!(DWR_EVIDENCE_IDENTITY_VERSION, 2);
+    assert_eq!(DWR_POLL_STRIDE_ITEMS, 256);
 }
