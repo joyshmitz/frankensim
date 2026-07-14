@@ -620,7 +620,6 @@ impl Poly {
     }
 
     /// Derivative.
-    #[must_use]
     pub fn derive(&self) -> Result<Poly, Fem1dError> {
         if self.0.len() <= 1 {
             let mut derived = Vec::new();
@@ -654,7 +653,6 @@ impl Poly {
     }
 
     /// Antiderivative with zero constant term.
-    #[must_use]
     pub fn antiderive(&self) -> Result<Poly, Fem1dError> {
         let requested =
             self.0
@@ -692,6 +690,7 @@ impl Poly {
 
     /// Negate this canonical polynomial without another allocation.
     #[must_use]
+    #[allow(clippy::should_implement_trait)] // consuming canonicalization helper, not algebraic `Neg`
     pub fn neg(mut self) -> Poly {
         for coefficient in &mut self.0 {
             *coefficient = canonicalize_zero(-*coefficient);
@@ -2294,6 +2293,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // one identity-field mutation matrix
     fn mms_class_identity_fields_move_independently() {
         let exact = poly(vec![0.0, 1.0, -1.0]);
         let forcing = exact.derive().unwrap().derive().unwrap().neg();
@@ -2618,6 +2618,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // one canonical identity and semantic-field matrix
     fn canonical_class_and_problem_identity_bind_every_semantic_field() {
         assert_eq!(MAX_FEM1D_CLASS_CANONICAL_IDENTITY_BYTES, 4_441);
         assert_eq!(MAX_FEM1D_PROBLEM_CANONICAL_IDENTITY_BYTES, 8_004_626);

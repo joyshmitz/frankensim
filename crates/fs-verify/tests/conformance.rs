@@ -444,7 +444,7 @@ fn ver_007_hostile_public_inputs_fail_closed() {
     for mesh in [vec![0.0, 0.5, 2.0], vec![0.0, 0.5, f64::NAN]] {
         assert!(matches!(
             MmsProblem::new("wrong-domain", exact.clone(), mesh),
-            Err(Fem1dError::MeshDomain) | Err(Fem1dError::NonFiniteMeshNode { .. })
+            Err(Fem1dError::MeshDomain | Fem1dError::NonFiniteMeshNode { .. })
         ));
     }
     for mesh in [
@@ -454,8 +454,7 @@ fn ver_007_hostile_public_inputs_fail_closed() {
     ] {
         assert!(matches!(
             MmsProblem::new("bad-coordinates", exact.clone(), mesh),
-            Err(Fem1dError::NonIncreasingMeshCell { .. })
-                | Err(Fem1dError::NonFiniteMeshNode { .. })
+            Err(Fem1dError::NonIncreasingMeshCell { .. } | Fem1dError::NonFiniteMeshNode { .. })
         ));
     }
 

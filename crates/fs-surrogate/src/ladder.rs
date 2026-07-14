@@ -766,6 +766,7 @@ impl TruthModel {
         finish_unpolled(self.solve_polled(mu, &mut poll))
     }
 
+    #[allow(clippy::too_many_lines)] // keep assembly, polling, and Thomas refusal order atomic
     fn solve_polled<P: WorkPoll>(
         &self,
         mu: f64,
@@ -1102,6 +1103,7 @@ impl RbLevel {
         finish_unpolled(self.query_polled(mu, &mut poll))
     }
 
+    #[allow(clippy::type_complexity)] // private bridge mirrors the documented four-value query result
     fn query_polled<P: WorkPoll>(
         &self,
         mu: f64,
@@ -1179,6 +1181,7 @@ impl RbLevel {
     }
 
     /// Solve the reference-Laplacian Riesz problem for the residual.
+    #[allow(clippy::too_many_lines)] // keep residual assembly, polling, and Thomas refusal order atomic
     fn residual_riesz_polled<P: WorkPoll>(
         &self,
         u_rb: &[f64],
@@ -3292,7 +3295,7 @@ mod tests {
             let current = receipt
                 .current_parameter()
                 .expect("cancelled first parameter retains progress");
-            assert!(current.logical_work_units() >= RB_COVERAGE_CHECKPOINT_WORK_UNITS + 1);
+            assert!(current.logical_work_units() > RB_COVERAGE_CHECKPOINT_WORK_UNITS);
             assert!(
                 current.logical_work_units() < 2 * RB_COVERAGE_CHECKPOINT_WORK_UNITS + 1,
                 "the production poll adapter exceeded one logical checkpoint stride"
@@ -3334,7 +3337,7 @@ mod tests {
                 .current_parameter()
                 .expect("second parameter retains progress");
             assert_eq!(current.parameter_index(), 1);
-            assert!(current.logical_work_units() >= RB_COVERAGE_CHECKPOINT_WORK_UNITS + 1);
+            assert!(current.logical_work_units() > RB_COVERAGE_CHECKPOINT_WORK_UNITS);
             assert!(
                 current.logical_work_units() < 2 * RB_COVERAGE_CHECKPOINT_WORK_UNITS + 1,
                 "the real production poll adapter exceeded one checkpoint stride"

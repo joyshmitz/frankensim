@@ -36,6 +36,7 @@ fn la_001_rb_estimators_empirically_contain_fixture_errors() {
     // this crate's f64 path, so this is useful regression evidence, not an
     // independent enclosure or a certifier test (y6yv).
     const ABSOLUTE_ROUNDOFF_SLACK: f64 = 1e-14;
+    const ROUNDOFF_FLOOR: f64 = 1e-15; // matches the effectivity guard below
     let truth = TruthModel::new(200).expect("bounded dimension");
     for k in [2usize, 4, 6] {
         let rb = RbLevel::train(&truth, (0.0, 4.0), k).expect("canonical training");
@@ -88,7 +89,6 @@ fn la_001_rb_estimators_empirically_contain_fixture_errors() {
     // values is noise, not tightening. The observation keeps its teeth:
     // every adjacent pair must tighten OR both sit at the floor, and the
     // first refinement must still tighten visibly from above the floor.
-    const ROUNDOFF_FLOOR: f64 = 1e-15; // matches the effectivity guard above
     assert!(
         bounds
             .windows(2)

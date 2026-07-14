@@ -350,7 +350,7 @@ fn validate_inputs(
         .exact_solution()
         .derive()
         .and_then(|derivative| derivative.derive())
-        .map(|second_derivative| second_derivative.neg())
+        .map(crate::fem1d::Poly::neg)
         .map_err(|_| VerifierRefusal::PolynomialNonFinite {
             polynomial: VerifierPolynomial::Forcing,
         })?;
