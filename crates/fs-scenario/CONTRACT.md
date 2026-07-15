@@ -184,7 +184,9 @@ before executing. Net-flux validation streams base and optional-case slices
 without materializing a vector for every effective set; its exact raw
 checkpoint capacity is fallibly reserved before append/sort. Its
 identity/reference phase uses deterministic O(N log N) indexes and its
-frame-cycle traversal is linear after indexing. The explicit `Cx` lane polls
+frame ID/name indexes and linear cycle traversal scratch are exactly and
+fallibly reserved before population; the indexes sort in place with row index
+as the total-order tiebreaker. The explicit `Cx` lane polls
 before preflight, at every top-level and nested record visited while constructing
 the semantic plan, after planning, after fixed phases, at every frame-index row,
 frame-cycle traversal/finalization step, and frame validation row, at
@@ -193,7 +195,7 @@ net-flux provider evaluation, at every tabulated signal scalar and Chebyshev
 coefficient, and after private validation before publication. Tabulated signal
 validity and ordering are accumulated in one pass while retaining diagnostic
 order. A request observed at any checkpoint publishes no partial findings.
-Fallible index/output reservation remains active work under
+Fallible scenario-level index/output reservation remains active work under
 `frankensim-sj31i.24`. No loop is admitted from an unchecked float-to-size
 conversion.
 
@@ -254,6 +256,8 @@ None.
   case boundary conditions and proves no semantic plan is published.
 - A focused frame regression injects cancellation inside the tri-color cycle
   walk and proves frame findings remain private at that boundary.
+- A focused frame scratch regression forces a capacity overflow and proves a
+  typed allocation refusal without partial scratch state.
 - A focused table-signal regression proves the checkpointed scalar traversal
   is one pass, preserves public diagnostic order, and observes injected
   cancellation before findings escape.

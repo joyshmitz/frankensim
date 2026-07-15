@@ -189,7 +189,7 @@ impl fmt::Display for ValidationError {
 impl core::error::Error for ValidationError {}
 
 impl ValidationError {
-    fn into_violation(self) -> Violation {
+    pub(crate) fn into_violation(self) -> Violation {
         Violation {
             code: "validation-resource-refused",
             what: self.to_string(),

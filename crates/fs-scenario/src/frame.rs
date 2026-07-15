@@ -6,11 +6,10 @@
 //! solver crash).
 
 use crate::ScenarioError;
-use crate::scenario::Violation;
+use crate::scenario::{ValidationError, Violation};
 use crate::signal::TimeSignal;
 use fs_ga::{Motor, Quat, Vec3};
 use fs_qty::{Dims, QtyAny};
-use std::collections::BTreeMap;
 
 /// A frame identity (0 is the world frame).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -113,6 +112,33 @@ fn quat_is_unit(quaternion: Quat) -> bool {
 
 fn motor_is_finite(motor: &Motor) -> bool {
     motor.0.0.iter().all(|coefficient| coefficient.is_finite())
+}
+
+fn reserve_frame_validation<T>(
+    values: &mut Vec<T>,
+    requested: usize,
+    resource: &'static str,
+) -> Result<(), ValidationError> {
+    values
+        .try_reserve_exact(requested)
+        .map_err(|_| ValidationError::AllocationRefused {
+            resource,
+            requested,
+        })
+}
+
+fn first_frame_id_row(index: &[(u32, usize)], id: u32) -> Option<usize> {
+    let position = index.partition_point(|(candidate, _)| *candidate < id);
+    index
+        .get(position)
+        .and_then(|(candidate, row)| (*candidate == id).then_some(*row))
+}
+
+fn first_frame_name_row(index: &[(&str, usize)], name: &str) -> Option<usize> {
+    let position = index.partition_point(|(candidate, _)| *candidate < name);
+    index
+        .get(position)
+        .and_then(|(candidate, row)| (*candidate == name).then_some(*row))
 }
 
 impl FrameTree {
@@ -291,18 +317,24 @@ impl FrameTree {
         Ok(pose)
     }
 
-    fn validation_cycle_flags<E>(
+    fn validation_cycle_flags(
         &self,
-        first_by_id: &BTreeMap<u32, usize>,
-        checkpoint: &mut impl FnMut(&'static str) -> Result<(), E>,
-    ) -> Result<Vec<bool>, E> {
+        first_by_id: &[(u32, usize)],
+        checkpoint: &mut impl FnMut(&'static str) -> Result<(), ValidationError>,
+    ) -> Result<Vec<bool>, ValidationError> {
         // Each frame has at most one parent, so a tri-color walk visits every
         // storage row at most once. Nodes leading into a cycle are marked too:
         // their parent chain also never reaches WORLD.
-        let mut state = vec![0u8; self.frames.len()];
-        let mut reaches_cycle = vec![false; self.frames.len()];
+        let frame_count = self.frames.len();
+        let mut state = Vec::new();
+        reserve_frame_validation(&mut state, frame_count, "frame cycle states")?;
+        state.resize(frame_count, 0u8);
+        let mut reaches_cycle = Vec::new();
+        reserve_frame_validation(&mut reaches_cycle, frame_count, "frame cycle result flags")?;
+        reaches_cycle.resize(frame_count, false);
         let mut path = Vec::new();
-        for start in 0..self.frames.len() {
+        reserve_frame_validation(&mut path, frame_count, "frame cycle path")?;
+        for start in 0..frame_count {
             checkpoint("frame cycle start")?;
             if state[start] != 0 {
                 continue;
@@ -322,7 +354,7 @@ impl FrameTree {
                         current = if frame.id == WORLD || frame.parent == WORLD {
                             None
                         } else {
-                            first_by_id.get(&frame.parent.0).copied()
+                            first_frame_id_row(first_by_id, frame.parent.0)
                         };
                     }
                     1 => break true,
@@ -345,25 +377,29 @@ impl FrameTree {
     /// Identity lookup is indexed once and cycle detection is a tri-color
     /// parent walk, avoiding the former repeated linear scans per chain.
     pub fn check(&self, out: &mut Vec<Violation>) {
-        let mut checkpoint = |_: &'static str| Ok::<(), core::convert::Infallible>(());
-        match self.check_with_checkpoint(out, &mut checkpoint) {
-            Ok(()) => {}
-            Err(never) => match never {},
+        let mut checkpoint = |_: &'static str| Ok(());
+        if let Err(error) = self.check_with_checkpoint(out, &mut checkpoint) {
+            out.push(error.into_violation());
         }
     }
 
-    pub(crate) fn check_with_checkpoint<E>(
+    pub(crate) fn check_with_checkpoint(
         &self,
         out: &mut Vec<Violation>,
-        checkpoint: &mut impl FnMut(&'static str) -> Result<(), E>,
-    ) -> Result<(), E> {
-        let mut first_by_id = BTreeMap::new();
-        let mut first_by_name = BTreeMap::new();
+        checkpoint: &mut impl FnMut(&'static str) -> Result<(), ValidationError>,
+    ) -> Result<(), ValidationError> {
+        let frame_count = self.frames.len();
+        let mut first_by_id = Vec::new();
+        reserve_frame_validation(&mut first_by_id, frame_count, "frame id index")?;
+        let mut first_by_name = Vec::new();
+        reserve_frame_validation(&mut first_by_name, frame_count, "frame name index")?;
         for (index, frame) in self.frames.iter().enumerate() {
             checkpoint("frame index")?;
-            first_by_id.entry(frame.id.0).or_insert(index);
-            first_by_name.entry(frame.name.as_str()).or_insert(index);
+            first_by_id.push((frame.id.0, index));
+            first_by_name.push((frame.name.as_str(), index));
         }
+        first_by_id.sort_unstable();
+        first_by_name.sort_unstable();
         let reaches_cycle = self.validation_cycle_flags(&first_by_id, checkpoint)?;
 
         for (i, f) in self.frames.iter().enumerate() {
@@ -383,27 +419,29 @@ impl FrameTree {
                     fix: "give every frame a nonempty exact UTF-8 name".to_string(),
                 });
             }
-            if first_by_id[&f.id.0] != i {
+            let first_id_row = first_frame_id_row(&first_by_id, f.id.0).unwrap_or(i);
+            if first_id_row != i {
                 out.push(Violation {
                     code: "frame-id-duplicate",
                     what: format!(
                         "{ctx}: id {} first appears at frame row {} and repeats at row {i}",
-                        f.id.0, first_by_id[&f.id.0]
+                        f.id.0, first_id_row
                     ),
                     fix: "give every frame a unique id".to_string(),
                 });
             }
-            if first_by_name[f.name.as_str()] != i {
+            let first_name_row = first_frame_name_row(&first_by_name, f.name.as_str()).unwrap_or(i);
+            if first_name_row != i {
                 out.push(Violation {
                     code: "frame-name-duplicate",
                     what: format!(
                         "{ctx}: name first appears at frame row {} and repeats at row {i}",
-                        first_by_name[f.name.as_str()]
+                        first_name_row
                     ),
                     fix: "give every frame a unique name".to_string(),
                 });
             }
-            if f.parent != WORLD && !first_by_id.contains_key(&f.parent.0) {
+            if f.parent != WORLD && first_frame_id_row(&first_by_id, f.parent.0).is_none() {
                 out.push(Violation {
                     code: "frame-parent-missing",
                     what: format!("{ctx}: parent id {} does not exist", f.parent.0),
@@ -510,7 +548,8 @@ fn dims_violation(ctx: &str, quantity: &str, expected: Dims, got: Dims) -> Viola
 
 #[cfg(test)]
 mod validation_internal_tests {
-    use super::{Frame, FrameId, FrameMotion, FrameTree, WORLD};
+    use super::{Frame, FrameId, FrameMotion, FrameTree, WORLD, reserve_frame_validation};
+    use crate::scenario::ValidationError;
     use fs_ga::{Quat, Vec3};
 
     fn fixed_frame(id: u32, parent: FrameId) -> Frame {
@@ -536,13 +575,24 @@ mod validation_internal_tests {
         let result = tree.check_with_checkpoint(&mut findings, &mut |phase| {
             visited.push(phase);
             if phase == "frame cycle traversal" {
-                Err("cancelled")
+                Err(ValidationError::Cancelled {
+                    phase,
+                    completed: 0,
+                    planned: 2,
+                })
             } else {
                 Ok(())
             }
         });
 
-        assert_eq!(result, Err("cancelled"));
+        assert!(matches!(
+            result,
+            Err(ValidationError::Cancelled {
+                phase: "frame cycle traversal",
+                completed: 0,
+                planned: 2,
+            })
+        ));
         assert!(findings.is_empty());
         assert_eq!(
             visited,
@@ -553,5 +603,18 @@ mod validation_internal_tests {
                 "frame cycle traversal",
             ]
         );
+    }
+
+    #[test]
+    fn frame_scratch_capacity_overflow_is_typed() {
+        let mut scratch = Vec::<u8>::new();
+        assert!(matches!(
+            reserve_frame_validation(&mut scratch, usize::MAX, "frame test scratch"),
+            Err(ValidationError::AllocationRefused {
+                resource: "frame test scratch",
+                requested: usize::MAX,
+            })
+        ));
+        assert!(scratch.is_empty());
     }
 }
