@@ -145,6 +145,36 @@ fs-ivl, fs-alloc, fs-obs, fs-sparse.
   equivalence boundary explicit rather than assuming generator or coordinate
   invariance.
 
+- `exit_path` module (RD.X1, `[M]`, behind `derived-geometry`) admits a bounded,
+  executable statement language for maximal exit/entrance-path approximation
+  and constructibility theorem families over an admitted RD.1a geometry. Each
+  `ExitPathFamilyIrV1` fixes direction, sheaf/cosheaf variance, constructible
+  coefficient system, stratified-path equivalence, link fidelity, monodromy/
+  local-system fidelity, constructibility, properness, refinement, homotopy
+  truncation, theorem lifecycle, TCB, budgets, and a canonical set containing
+  all four required adversarial classes. Admission rejects zero identity sentinels,
+  any geometry/model/stratification/frame/unit tuple that does not match the
+  supplied `AdmittedDerivedGeometryV1`, unsupported/infinite presentations,
+  invalid truncations, insufficient referenced-artifact or implication
+  budgets, malformed falsifiers, mismatched theorem cards, and dangling
+  refutations. It derives every requested node from incidence poset through a
+  directed exit/entrance one-category enriched by within-stratum groupoids,
+  simplicial category, finite higher truncations, and the full higher category.
+  A node is `SufficientStatement` only when every fidelity axis reaches that node's
+  degree; otherwise it retains a precise `Unknown` reason. Trivial fundamental
+  group/monodromy data reaches only degree one. An unauthenticated refutation
+  record names one exact lattice node and does not erase independently eligible
+  richer fallbacks or mint a scientific verdict.
+  `SufficientStatement` means that the implication is well formed under the
+  declared hypotheses, never that the implication has been proved. The
+  `ExitPathFamilySnapshotIdV1` intentionally binds lifecycle, TCB, falsifier,
+  and budget metadata; it identifies a complete statement/evidence/operation
+  snapshot, not a stable theorem statement across checker runs.
+  `constructible_coefficients` names the target category for constructible
+  (co)sheaves; it is intentionally independent of the admitted geometry's
+  coordinate algebra and is therefore identity-bound rather than equality-
+  checked against `DerivedGeometryIrV1::coefficients`.
+
 - `router` (the Rep Router, Bet 1): converter-edge registry
   (`ConverterSpec`: cost model, error model with declared composition rule,
   declared certificate availability), bounded Pareto label-correcting planner over
@@ -445,6 +475,10 @@ before sorting, once per chart/constraint/complex/local-model/stratum/incidence/
 link, during nested canonical item encoding, inside the streaming identity
 encoder, and immediately before publication. Cancellation returns a stage and
 completed-object count and cannot expose a partial admitted object.
+RD.X1 statement admission polls before validation, once for every derived
+theorem-lattice node, before identity construction, and inside the streaming
+encoder. Its falsifier set and truncation lattice have hard versioned caps;
+cancellation cannot expose a partial `ValidatedExitPathFamilyV1`.
 
 ## Unsafe boundary
 None. `unsafe_code` denied workspace-wide.
@@ -453,8 +487,9 @@ None. `unsafe_code` denied workspace-wide.
 All OFF by default per the Ambition-Tag rule (the default-path chart
 abstractions remain unflagged `[S]`):
 - `derived-geometry` [M] — RD.1a finite admitted derived/stratified object
-  language; disabled until RD.1b/RD.1c theorem/equivalence and independent
-  checker lanes establish promotion evidence.
+  language plus the RD.X1 exit-path theorem-statement lattice; disabled until
+  RD.1b/RD.1c/RD.X2 theorem, equivalence, artifact, and independent-checker
+  lanes establish promotion evidence.
 - `semantic-diff` [F] — semantic design diff; disabled until its
   Gauntlet tier + kill metric (R3 fallback fraction) are green.
 - `sheaf-repair` [M] — sheaf-adjudicated repair; disabled until
@@ -498,6 +533,17 @@ programs versus opaque callback refusal, unbounded/infinite model refusal,
 complex-role and incidence/link mutations, resource caps, proof-scope refusal,
 cross-chart reference refusal, negative-zero contact-coefficient refusal,
 model-version identity movement, and pre-publication cancellation.
+`tests/exit_path.rs` supplies RD.X1 G0/G3 examples and a bounded-cancellation
+regression: regular-cell poset sufficiency, cone/cusp groupoid-enriched
+one-category fallback, circular-stratum local systems, finite-versus-full
+higher fidelity, weak path-equivalence and monodromy
+boundaries, hypothesis deletion, node-scoped refutation recording with richer fallback,
+admitted-subject cross-binding, identity movement across every encoded family,
+canonical and mandatory falsifiers, zero-identity refusal, exact referenced-
+artifact budget boundaries, schema/truncation/implication/falsifier caps, and
+already-requested cancellation. Mid-lattice cancellation storms and cross-
+thread replay remain RD.X2/batch-verification work; this test target does not
+claim those stronger G4/G5 results.
 
 ## No-claim boundaries
 - NO watertightness/manifoldness/self-intersection certificates here —
@@ -568,6 +614,26 @@ model-version identity movement, and pre-publication cancellation.
   These are admitted-class limits, not claims that the excluded mathematics is
   invalid. A later version may expand the finite theorem/checker envelope
   without reinterpreting v1 receipts.
+
+## No-claim boundaries (exit-path theorem families)
+
+- `ValidatedExitPathFamilyV1` establishes only bounded structural admission,
+  canonical identity, and deterministic evaluation of declared sufficient-
+  hypothesis predicates. It does not prove an exit-path equivalence,
+  constructible descent, link contractibility, monodromy triviality, refinement
+  invariance, or any theorem-card claim. V1 deliberately exposes only
+  `ScientificCorrectnessNotProven`; RD.X2 owns retained finite artifacts and an
+  independent checker lane owns any future authority promotion.
+- Opaque witness, countermodel, theorem, checker, and no-claim identities are
+  content references, not authenticated evidence. Admission checks that they
+  are nonzero and internally referenced consistently, but does not dereference,
+  execute, or authenticate them. The preregistered same-incidence countermodels
+  therefore lock the required adversarial *classes* and artifacts, not the
+  truth of their topological premises.
+- `declared_wall_seconds` is a positive, identity-bound semantic declaration;
+  it is not an execution receipt. Cooperative `Cx` cancellation and hard
+  referenced-artifact/truncation caps bound the local work, while a deadline-
+  enforcing executor remains a successor responsibility.
 
 ## No-claim boundaries (sheaf)
 

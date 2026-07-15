@@ -40,6 +40,8 @@ mod convert;
 pub mod derived;
 #[cfg(feature = "semantic-diff")]
 pub mod diff;
+#[cfg(feature = "derived-geometry")]
+pub mod exit_path;
 pub mod fixtures;
 pub mod ident;
 mod region;
