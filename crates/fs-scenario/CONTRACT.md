@@ -164,8 +164,15 @@ flagships.
     nested traversal; checked plans account for aggregate case BCs, combination
     terms, dynamic signal scalars, raw flux checkpoints, exact identity bytes,
     worst-case finding slots, ordered-index comparisons, checkpoint sorting,
-    and flux evaluation work. Exact requested limits admit and one-unit-short
-    limits refuse for every budget field.
+    and flux evaluation work. String comparison work is charged per identity
+    role using its maximum key width: twice the checkpointed heap-sort envelope
+    plus both operands of every subsequent ordered lookup. Combination
+    references additionally charge the sum of the case/reference maxima for
+    their cross-lookup into the case index; contact keys charge both
+    canonicalization passes, self-pair comparison, and grouped adjacency.
+    Empty identities retain a one-unit comparison width. Numeric frame/parent
+    and BC-frame index lookups are charged separately. Exact requested limits
+    admit and one-unit-short limits refuse for every budget field.
 
 ## Error model
 

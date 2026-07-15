@@ -102,7 +102,7 @@ pub const DEFAULT_VALIDATION_BUDGET: ValidationBudget = ValidationBudget {
     max_flux_checkpoints: 1_048_576,
     max_identity_bytes: 16_777_216,
     max_findings: 8_388_608,
-    max_work: 134_217_728,
+    max_work: 268_435_456,
 };
 
 impl Default for ValidationBudget {
@@ -559,6 +559,59 @@ fn heap_sort_work(items: usize, phase: &'static str) -> Result<u128, ValidationE
         .ok_or(ValidationError::WorkPlanOverflow { phase })
 }
 
+/// Ordered lookup envelope: global partition height plus candidate equality,
+/// duplicate-neighbor ambiguity detection, and one fixed guard.
+fn ordered_lookup_work(
+    lookups: usize,
+    index_height: u128,
+    phase: &'static str,
+) -> Result<u128, ValidationError> {
+    let per_lookup = index_height
+        .checked_add(3)
+        .ok_or(ValidationError::WorkPlanOverflow { phase })?;
+    work_units(lookups, phase)?
+        .checked_mul(per_lookup)
+        .ok_or(ValidationError::WorkPlanOverflow { phase })
+}
+
+/// Conservative byte work for one string-key index and its later lookups.
+///
+/// `heap_sort_work` bounds comparator calls; the factor of two charges both
+/// key operands at the role's maximum UTF-8 width. Ordered lookups charge both
+/// query and candidate operands as well. A zero-byte identity still costs one
+/// unit so empty-key comparisons and equality checks are admitted.
+fn string_index_identity_work(
+    items: usize,
+    lookups: usize,
+    max_key_bytes: usize,
+    index_height: u128,
+    phase: &'static str,
+) -> Result<u128, ValidationError> {
+    let key_width = work_units(max_key_bytes.max(1), phase)?;
+    let sort_work = heap_sort_work(items, phase)?
+        .checked_mul(2)
+        .and_then(|work| work.checked_mul(key_width))
+        .ok_or(ValidationError::WorkPlanOverflow { phase })?;
+    let lookup_work = ordered_lookup_work(lookups, index_height, phase)?
+        .checked_mul(2)
+        .and_then(|work| work.checked_mul(key_width))
+        .ok_or(ValidationError::WorkPlanOverflow { phase })?;
+    sort_work
+        .checked_add(lookup_work)
+        .ok_or(ValidationError::WorkPlanOverflow { phase })
+}
+
+fn repeated_identity_comparison_work(
+    items: usize,
+    comparisons_per_item: usize,
+    max_key_bytes: usize,
+    phase: &'static str,
+) -> Result<u128, ValidationError> {
+    checked_work_product(items, comparisons_per_item, phase)?
+        .checked_mul(work_units(max_key_bytes.max(1), phase)?)
+        .ok_or(ValidationError::WorkPlanOverflow { phase })
+}
+
 fn checked_work_scale(
     work: u128,
     count: usize,
@@ -751,8 +804,15 @@ impl Scenario {
         )?;
 
         let mut identity_bytes = self.name.len();
+        let mut max_frame_name_bytes = 0usize;
+        let mut max_case_name_bytes = 0usize;
+        let mut max_combination_name_bytes = 0usize;
+        let mut max_term_reference_bytes = 0usize;
+        let mut max_ensemble_name_bytes = 0usize;
+        let mut max_contact_pair_bytes = 0usize;
         let mut signal_scalars = 0usize;
         for frame in &self.frames.frames {
+            max_frame_name_bytes = max_frame_name_bytes.max(frame.name.len().max(1));
             checked_count_add(
                 &mut identity_bytes,
                 frame.name.len(),
@@ -798,6 +858,7 @@ impl Scenario {
             checkpoint("preflight base boundary conditions")?;
         }
         for case in &self.cases {
+            max_case_name_bytes = max_case_name_bytes.max(case.name.len().max(1));
             checked_count_add(&mut identity_bytes, case.name.len(), "case identity bytes")?;
             for bc in &case.bcs {
                 checked_count_add(
@@ -815,12 +876,15 @@ impl Scenario {
             checkpoint("preflight load cases")?;
         }
         for combination in &self.combinations {
+            max_combination_name_bytes =
+                max_combination_name_bytes.max(combination.name.len().max(1));
             checked_count_add(
                 &mut identity_bytes,
                 combination.name.len(),
                 "combination identity bytes",
             )?;
             for (case, _) in &combination.terms {
+                max_term_reference_bytes = max_term_reference_bytes.max(case.len().max(1));
                 checked_count_add(
                     &mut identity_bytes,
                     case.len(),
@@ -831,6 +895,7 @@ impl Scenario {
             checkpoint("preflight combinations")?;
         }
         for ensemble in &self.ensembles {
+            max_ensemble_name_bytes = max_ensemble_name_bytes.max(ensemble.name.len().max(1));
             checked_count_add(
                 &mut identity_bytes,
                 ensemble.name.len(),
@@ -839,6 +904,15 @@ impl Scenario {
             checkpoint("preflight ensembles")?;
         }
         for contact in &self.contacts {
+            let pair_bytes = contact
+                .region_a
+                .len()
+                .checked_add(contact.region_b.len())
+                .and_then(|bytes| bytes.checked_add(2))
+                .ok_or(ValidationError::WorkPlanOverflow {
+                    phase: "contact pair key width",
+                })?;
+            max_contact_pair_bytes = max_contact_pair_bytes.max(pair_bytes);
             checked_count_add(
                 &mut identity_bytes,
                 contact.region_a.len(),
@@ -1017,15 +1091,97 @@ impl Scenario {
             .ok_or(ValidationError::WorkPlanOverflow {
                 phase: "validation index work",
             })?;
-        let identity_work = work_units(identity_bytes, "identity comparison work")?
-            .checked_mul(index_height.max(1))
+        let mut identity_work = work_units(identity_bytes, "identity linear scan work")?;
+        for (items, lookups, max_key_bytes, phase) in [
+            (
+                frames,
+                frames,
+                max_frame_name_bytes,
+                "frame name comparison work",
+            ),
+            (
+                cases,
+                cases,
+                max_case_name_bytes,
+                "case name comparison work",
+            ),
+            (
+                combinations,
+                combinations,
+                max_combination_name_bytes,
+                "combination name comparison work",
+            ),
+            (
+                combination_terms,
+                combination_terms,
+                max_term_reference_bytes,
+                "combination term comparison work",
+            ),
+            (
+                ensembles,
+                ensembles,
+                max_ensemble_name_bytes,
+                "ensemble name comparison work",
+            ),
+            (
+                contacts,
+                contacts,
+                max_contact_pair_bytes,
+                "contact pair comparison work",
+            ),
+        ] {
+            checked_work_add(
+                &mut identity_work,
+                string_index_identity_work(items, lookups, max_key_bytes, index_height, phase)?,
+                phase,
+            )?;
+        }
+        let cross_case_key_bytes = max_case_name_bytes
+            .max(1)
+            .checked_add(max_term_reference_bytes.max(1))
             .ok_or(ValidationError::WorkPlanOverflow {
-                phase: "identity comparison work",
+                phase: "combination case-reference key width",
             })?;
+        let cross_case_lookup_work = ordered_lookup_work(
+            combination_terms,
+            index_height,
+            "combination case-reference lookup work",
+        )?
+        .checked_mul(work_units(
+            cross_case_key_bytes,
+            "combination case-reference lookup work",
+        )?)
+        .ok_or(ValidationError::WorkPlanOverflow {
+            phase: "combination case-reference lookup work",
+        })?;
+        checked_work_add(
+            &mut identity_work,
+            cross_case_lookup_work,
+            "combination case-reference lookup work",
+        )?;
+        checked_work_add(
+            &mut identity_work,
+            repeated_identity_comparison_work(
+                contacts,
+                5,
+                max_contact_pair_bytes,
+                "contact direct comparison work",
+            )?,
+            "contact direct comparison work",
+        )?;
+        let frame_lookup_count = frames
+            .checked_mul(3)
+            .and_then(|lookups| lookups.checked_add(total_bcs))
+            .ok_or(ValidationError::WorkPlanOverflow {
+                phase: "frame lookup count",
+            })?;
+        let numeric_lookup_work =
+            ordered_lookup_work(frame_lookup_count, index_height, "frame lookup work")?;
         let mut planned_work = work_units(record_visits, "validation record work")?;
         for (amount, phase) in [
             (index_work, "validation index work"),
             (identity_work, "identity comparison work"),
+            (numeric_lookup_work, "frame lookup work"),
             (
                 work_units(signal_scalars, "signal scalar work")?,
                 "signal scalar work",
@@ -1611,8 +1767,9 @@ mod validation_internal_tests {
     use super::{
         Combination, ContactLaw, ContactModel, DIAGNOSTIC_IDENTITY_PREVIEW_BYTES,
         DiagnosticIdentity, Environment, LoadCase, Scenario, ValidationBudget, ValidationError,
-        ValidationIndex, contact_pair, dedup_validation_times, reserve_validation_times,
-        sort_validation_index,
+        ValidationIndex, ceil_log2, contact_pair, dedup_validation_times, heap_sort_work,
+        ordered_lookup_work, reserve_validation_times, sort_validation_index,
+        string_index_identity_work,
     };
     use crate::bc::{BcKind, BcValue, BoundaryCondition, Compat, Physics};
     use crate::ensemble::{SpectrumModel, StochasticEnsemble};
@@ -1724,6 +1881,58 @@ mod validation_internal_tests {
             if calls == 2 { Err("cancelled") } else { Ok(()) }
         });
         assert_eq!(result, Err("cancelled"));
+
+        let shared_identity = "x".repeat(256);
+        let mut identical = (0..64usize)
+            .rev()
+            .map(|row| (shared_identity.as_str(), row))
+            .collect::<Vec<_>>();
+        sort_validation_index(&mut identical, "identical identity sort", &mut |_| {
+            Ok::<(), core::convert::Infallible>(())
+        })
+        .expect("infallible checkpoint");
+        assert!(identical.iter().map(|(_, row)| *row).eq(0..identical.len()));
+        let height = ceil_log2(identical.len() + 1);
+        let charged = string_index_identity_work(
+            identical.len(),
+            identical.len(),
+            shared_identity.len(),
+            height,
+            "identical identity work",
+        )
+        .expect("representable identity work");
+        let width = u128::try_from(shared_identity.len()).expect("identity width fits u128");
+        let sort_work = heap_sort_work(identical.len(), "identical identity work")
+            .expect("representable sort work")
+            * 2
+            * width;
+        let lookup_work = ordered_lookup_work(identical.len(), height, "identical identity work")
+            .expect("representable lookup work")
+            * 2
+            * width;
+        assert_eq!(charged, sort_work + lookup_work);
+
+        let empty_key_work = string_index_identity_work(
+            identical.len(),
+            identical.len() * 2,
+            0,
+            height,
+            "empty identity work",
+        )
+        .expect("empty identities retain comparison work");
+        assert!(empty_key_work > 0);
+        assert!(matches!(
+            string_index_identity_work(
+                usize::MAX,
+                usize::MAX,
+                usize::MAX,
+                u128::MAX,
+                "identity comparison overflow",
+            ),
+            Err(ValidationError::WorkPlanOverflow {
+                phase: "identity comparison overflow",
+            })
+        ));
     }
 
     #[test]
