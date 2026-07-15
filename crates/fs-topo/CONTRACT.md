@@ -44,7 +44,9 @@ constraints will consume.
     incident voxel is filled);
   - `persistence0`: true 0-dimensional persistence of the sublevel
     filtration — elder rule at every merge, essential classes kept,
-    deterministic (voxels sorted by value then index);
+    deterministic (voxels sorted by value then index); every `Bar` retains the
+    exact `birth_index` whose activation created that component, so disconnected
+    components with equal scalar endpoints remain distinguishable;
   - `verify_topology`: chart-level Betti at resolution `n`, HONESTLY
     framed — exact for the voxel solid, Estimate-grade for the chart
     (sub-cell features can be missed).
@@ -60,7 +62,9 @@ constraints will consume.
   domain boundary — localizes H₂ with union-find, cross-checked
   against `betti`'s b₂), `apply_attribution_step` (the descent
   primitive), `heuristic_cc_penalty` (the fallback the [M] gate
-  compares against).
+  compares against). Excess-component attribution floods from each retained
+  H₀ birth representative below that bar's death/target-level cap; it never
+  re-derives identity from a possibly shared scalar birth value.
 
 ## Invariants
 
@@ -92,6 +96,10 @@ constraints will consume.
    clipped APIs sample the actual geometric intersection; zero resolution and
    checked voxel-cap refusals precede evaluation; translated chart+clip pairs
    preserve occupancy and Betti numbers (G3).
+9. Equal-minimum disconnected H₀ components retain distinct birth
+   representatives and disjoint excess-component attributions; one guided
+   descent step repairs both islands without collapsing either attribution onto
+   the first scalar match (tp-001b).
 
 ## Error model
 
@@ -129,6 +137,11 @@ None. `#![forbid(unsafe_code)]` via workspace lints; no capsules.
 `tests/conformance.rs`, cases topo-001..topo-008 — JSON-line
 verdicts, seeded LCG randomness, the fs-obs scale ledger. Any
 reimplementation must pass the suite unchanged.
+
+With `moonshot-topo-persistence`,
+`tests/penalty.rs::tp_001b_equal_minimum_islands_keep_distinct_birth_representatives`
+locks the retained-representative, disjoint-attribution, and one-step repair
+semantics for equal-valued disconnected islands.
 
 ## No-claim boundaries
 
