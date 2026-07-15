@@ -39,10 +39,11 @@ scaling plan) and deterministic `fs-math` primitives. Pure, deterministic
   body-force core on aligned 4x4x4 SoA tiles, with stationary halfway
   bounce-back x/y walls and periodic z for the rectangular-duct fixture.
 - `d3q19::{CollisionModel3, collide_cell3, CollisionError3}` — the shared
-  checked per-cell collision authority used by both D3Q19 grids. The initial
-  `Bgk { tau }` rung retains each frozen force-projection arithmetic path and
-  rejects invalid relaxation, force, population, density, velocity, or output
-  state before publication.
+  checked per-cell collision authority used by both D3Q19 grids. `Bgk { tau }`
+  retains each frozen force-projection arithmetic path. The unforced
+  `CentralMoment` reference rung relaxes a full-rank centered D3Q19 monomial
+  basis with independent second/higher-order rates. Both paths reject invalid
+  parameters or state before publication.
 - `Face3`, `FaceBoundary3`, and `BoundarySpec3` — six-face axis-aligned
   boundary declarations: paired periodic faces, tangential moving/stationary
   halfway walls, regularized velocity faces, and isothermal pressure/density
@@ -69,6 +70,9 @@ scaling plan) and deterministic `fs-math` primitives. Pure, deterministic
 - Unforced shared-cell collision preserves density and all three momentum
   components to roundoff; both grid implementations delegate collision to this
   one authority path.
+- Equal-rate central-moment collision reduces to BGK within deterministic
+  transform/solve roundoff. Split higher-order relaxation changes
+  nonequilibrium modes without relaxing degree-zero/one invariants.
 - MASS is conserved by a closed-domain step (collision, forcing, streaming,
   and bounce-back all conserve mass). Prescribed velocity/pressure faces are
   open-system flux boundaries and do not claim global mass conservation.
@@ -122,7 +126,9 @@ first-interior open-face layer, and topology mutation after initialization.
 Boundary-grid perturbation rejects non-finite amplitudes or magnitudes at least
 one before changing populations or locking topology.
 `collide_cell3` returns typed errors rather than publishing non-finite or
-non-positive cell states.
+non-positive cell states. The central-moment rung additionally refuses rates
+outside `(0, 2)`, nonzero body forcing, or a numerically rank-deficient moment
+transform.
 
 ## Determinism class
 
@@ -169,7 +175,8 @@ shear-wave decay-rate transmission, first-order labels).
 `tests/d3q19_battery.rs` covers the frozen D3Q19 core: exact integer lattice
 moments/opposites, equilibrium moments, mass conservation, analytic
 rectangular-duct flow, replay determinism, the registered core golden, shared
-kernel bit-equivalence, collision invariants, and fail-closed inputs.
+kernel bit-equivalence, BGK/central-moment equal-rate equivalence, split-rate
+conservation, and fail-closed inputs.
 
 `tests/d3q19_boundaries.rs` (bead 40p2) covers all six hand-enumerated planar
 link masks, aligned deterministic mask ordering, the exact 18 links around one
@@ -183,9 +190,11 @@ a boundary replay-hash candidate. Ignored release fixtures carry the full
 
 ## No-claim boundaries
 
-- D3Q19 is BGK + Guo on a dense set of aligned SoA tiles. D3Q27, sparse
-  active-tile storage/sweeps, CUMULANT / central-moment collision (BGK's
-  high-Re replacement), momentum-exchange drag/lift, and bandwidth roofline /
+- D3Q19 grids remain BGK + Guo on a dense set of aligned SoA tiles. The
+  selectable central-moment cell operator is a deterministic `O(Q^3)`
+  correctness reference: it is unforced and has no performance or high-Re
+  stability claim. D3Q27, sparse active-tile storage/sweeps, a production
+  cumulant collision, momentum-exchange drag/lift, and bandwidth roofline /
   fs-tilelang kernels remain staged. Geier et al.'s primary cumulant derivation
   (doi:10.1016/j.camwa.2015.05.001) explicitly restricts itself to D3Q27 after
   identifying non-refining D3Q19 anisotropy; therefore this crate makes no

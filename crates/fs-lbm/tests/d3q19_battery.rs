@@ -252,6 +252,108 @@ fn shared_bgk_collision_is_bit_compatible_and_fail_closed() {
     ));
 }
 
+/// lbm3-002c (G0): the correctness-first central-moment rung preserves the
+/// collision invariants, reduces to BGK within solve roundoff at equal rates,
+/// and refuses unverified forcing/rate combinations.
+#[test]
+fn central_moment_collision_is_conservative_and_explicitly_bounded() {
+    let rho = 1.01;
+    let velocity = [0.027, -0.019, 0.011];
+    let mut populations = equilibrium3(rho, velocity);
+    for (direction, value) in populations.iter_mut().enumerate() {
+        *value += (direction as f64 - 9.0) * 1e-5;
+    }
+    let tau = 0.81;
+    let equal_rate = 1.0 / tau;
+    let bgk = collide_cell3(populations, CollisionModel3::Bgk { tau }, [0.0; 3])
+        .expect("admissible unforced BGK collision");
+    let central_equal = collide_cell3(
+        populations,
+        CollisionModel3::CentralMoment {
+            second_order_rate: equal_rate,
+            higher_order_rate: equal_rate,
+        },
+        [0.0; 3],
+    )
+    .expect("admissible equal-rate central-moment collision");
+    let equal_rate_delta = bgk
+        .iter()
+        .zip(central_equal)
+        .map(|(left, right)| (left - right).abs())
+        .fold(0.0_f64, f64::max);
+    assert!(
+        equal_rate_delta < 5e-13,
+        "equal-rate central moments must reduce to BGK within solve roundoff, got {equal_rate_delta:.3e}"
+    );
+
+    let central_split = collide_cell3(
+        populations,
+        CollisionModel3::CentralMoment {
+            second_order_rate: equal_rate,
+            higher_order_rate: 1.65,
+        },
+        [0.0; 3],
+    )
+    .expect("admissible split-rate central-moment collision");
+    let split_delta = bgk
+        .iter()
+        .zip(central_split)
+        .map(|(left, right)| (left - right).abs())
+        .fold(0.0_f64, f64::max);
+    assert!(
+        split_delta > 1e-9,
+        "independent higher-order relaxation must affect a nonequilibrium state"
+    );
+
+    let conserved = |values: &[f64; Q3]| {
+        let density = values.iter().sum::<f64>();
+        let momentum: [f64; 3] = core::array::from_fn(|axis| {
+            values
+                .iter()
+                .enumerate()
+                .map(|(direction, value)| {
+                    let component = match axis {
+                        0 => E3[direction].0,
+                        1 => E3[direction].1,
+                        _ => E3[direction].2,
+                    };
+                    f64::from(component) * value
+                })
+                .sum::<f64>()
+        });
+        (density, momentum)
+    };
+    let (before_density, before_momentum) = conserved(&populations);
+    let (after_density, after_momentum) = conserved(&central_split);
+    assert!((after_density - before_density).abs() < 5e-13);
+    for axis in 0..3 {
+        assert!((after_momentum[axis] - before_momentum[axis]).abs() < 5e-13);
+    }
+
+    let invalid_rate = CollisionModel3::CentralMoment {
+        second_order_rate: 0.0,
+        higher_order_rate: 1.0,
+    };
+    assert!(matches!(
+        invalid_rate.validate(),
+        Err(CollisionError3::InvalidMomentRelaxationRate {
+            moment_order: 2,
+            ..
+        })
+    ));
+    assert!(matches!(
+        collide_cell3(
+            populations,
+            CollisionModel3::CentralMoment {
+                second_order_rate: equal_rate,
+                higher_order_rate: 1.0,
+            },
+            [1e-7, 0.0, 0.0],
+        ),
+        Err(CollisionError3::CentralMomentForceUnsupported { .. })
+    ));
+}
+
 /// lbm3-003: mass is conserved to the 2-D crate's roundoff bar (1e-11)
 /// — collision, Guo forcing, streaming, and bounce-back all preserve
 /// Σf by construction, so drift is summation roundoff only.

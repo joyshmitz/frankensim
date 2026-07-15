@@ -125,11 +125,41 @@ pub fn equilibrium3(rho: f64, u: [f64; 3]) -> [f64; Q3] {
     f
 }
 
+/// Full-rank monomial basis on D3Q19, ordered by total degree.
+///
+/// Every D3Q19 velocity has at least one zero component, so monomials that
+/// contain all three axes vanish on the lattice. The remaining tensor-product
+/// monomials through exponent two give exactly 19 independent rows. Centering
+/// these rows at the local velocity is a triangular change of basis and
+/// therefore preserves full rank.
+const CENTRAL_MOMENT_EXPONENTS3: [[u8; 3]; Q3] = [
+    [0, 0, 0],
+    [1, 0, 0],
+    [0, 1, 0],
+    [0, 0, 1],
+    [2, 0, 0],
+    [0, 2, 0],
+    [0, 0, 2],
+    [1, 1, 0],
+    [1, 0, 1],
+    [0, 1, 1],
+    [2, 1, 0],
+    [2, 0, 1],
+    [1, 2, 0],
+    [0, 2, 1],
+    [1, 0, 2],
+    [0, 1, 2],
+    [2, 2, 0],
+    [2, 0, 2],
+    [0, 2, 2],
+];
+
 /// Selectable D3Q19 collision law for the shared per-cell kernel.
 ///
-/// The first rung contains only the frozen BGK law. Central-moment and
-/// reduced-cumulant rungs extend this enum without duplicating the cell
-/// authority path in [`Duct`] and [`BoundaryGrid3`].
+/// The frozen BGK law remains the grid default. The central-moment rung is an
+/// unforced, correctness-first reference operator; it exposes independent
+/// second- and higher-order relaxation without claiming a production
+/// high-Reynolds-number model.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CollisionModel3 {
     /// Single-relaxation-time BGK collision.
@@ -137,25 +167,48 @@ pub enum CollisionModel3 {
         /// Relaxation time; must be finite and greater than one half.
         tau: f64,
     },
+    /// Relax central moments around the measured local velocity.
+    ///
+    /// Rates must be finite and strictly between zero and two. Rows of total
+    /// degree zero and one are conserved; degree-two rows use
+    /// `second_order_rate`, and all remaining rows use `higher_order_rate`.
+    /// Body forcing is deliberately refused until a moment-space forcing
+    /// contract is separately verified.
+    CentralMoment {
+        /// Relaxation rate for the six degree-two moments.
+        second_order_rate: f64,
+        /// Relaxation rate for the nine degree-three/four moments.
+        higher_order_rate: f64,
+    },
 }
 
 impl CollisionModel3 {
     /// Validate all declared relaxation parameters.
     ///
     /// # Errors
-    /// [`CollisionError3::InvalidRelaxationTime`] when a parameter is outside
-    /// the finite positive-viscosity window.
+    /// [`CollisionError3::InvalidRelaxationTime`] or
+    /// [`CollisionError3::InvalidMomentRelaxationRate`] when a parameter is
+    /// outside its finite physical window.
     pub fn validate(self) -> Result<(), CollisionError3> {
         match self {
             Self::Bgk { tau } if tau.is_finite() && tau > 0.5 => Ok(()),
             Self::Bgk { tau } => Err(CollisionError3::InvalidRelaxationTime { tau }),
+            Self::CentralMoment {
+                second_order_rate,
+                higher_order_rate,
+            } => {
+                validate_moment_rate(2, second_order_rate)?;
+                validate_moment_rate(3, higher_order_rate)
+            }
         }
     }
+}
 
-    fn tau(self) -> f64 {
-        match self {
-            Self::Bgk { tau } => tau,
-        }
+fn validate_moment_rate(moment_order: u8, rate: f64) -> Result<(), CollisionError3> {
+    if rate.is_finite() && rate > 0.0 && rate < 2.0 {
+        Ok(())
+    } else {
+        Err(CollisionError3::InvalidMomentRelaxationRate { moment_order, rate })
     }
 }
 
@@ -166,6 +219,13 @@ pub enum CollisionError3 {
     InvalidRelaxationTime {
         /// Rejected relaxation time.
         tau: f64,
+    },
+    /// A central-moment relaxation rate is outside `(0, 2)`.
+    InvalidMomentRelaxationRate {
+        /// Lowest total moment order governed by this rate (`2` or `3`).
+        moment_order: u8,
+        /// Rejected relaxation rate.
+        rate: f64,
     },
     /// A body-force component is non-finite.
     NonFiniteForce {
@@ -193,6 +253,18 @@ pub enum CollisionError3 {
         /// Computed component.
         value: f64,
     },
+    /// Central-moment forcing is not yet admitted by its contract.
+    CentralMomentForceUnsupported {
+        /// Rejected body-force vector.
+        force: [f64; 3],
+    },
+    /// The centered monomial transform could not be solved reliably.
+    SingularCentralMomentTransform {
+        /// Pivot column that lost rank.
+        column: usize,
+        /// Absolute value of the rejected pivot.
+        pivot_abs: f64,
+    },
     /// Collision produced a non-finite outgoing population.
     NonFiniteOutput {
         /// D3Q19 direction index.
@@ -208,6 +280,10 @@ impl core::fmt::Display for CollisionError3 {
             Self::InvalidRelaxationTime { tau } => {
                 write!(f, "D3Q19 relaxation time {tau} must be finite and > 0.5")
             }
+            Self::InvalidMomentRelaxationRate { moment_order, rate } => write!(
+                f,
+                "D3Q19 order-{moment_order}+ relaxation rate {rate} must be finite and in (0, 2)"
+            ),
             Self::NonFiniteForce { axis, value } => {
                 write!(f, "D3Q19 force axis {axis} is non-finite ({value})")
             }
@@ -221,6 +297,14 @@ impl core::fmt::Display for CollisionError3 {
             Self::NonFiniteVelocity { axis, value } => {
                 write!(f, "D3Q19 velocity axis {axis} is non-finite ({value})")
             }
+            Self::CentralMomentForceUnsupported { force } => write!(
+                f,
+                "D3Q19 central-moment collision does not yet admit body force {force:?}"
+            ),
+            Self::SingularCentralMomentTransform { column, pivot_abs } => write!(
+                f,
+                "D3Q19 central-moment transform lost rank at column {column} (pivot {pivot_abs})"
+            ),
             Self::NonFiniteOutput { direction, value } => write!(
                 f,
                 "D3Q19 outgoing population {direction} is non-finite ({value})"
@@ -286,50 +370,183 @@ fn collide_cell3_with_projection(
     if !(rho.is_finite() && rho > 0.0) {
         return Err(CollisionError3::NonPositiveDensity { rho });
     }
-    let velocity = core::array::from_fn(|axis| (momentum[axis] + 0.5 * force[axis]) / rho);
+    let velocity: [f64; 3] =
+        core::array::from_fn(|axis| (momentum[axis] + 0.5 * force[axis]) / rho);
     for (axis, value) in velocity.into_iter().enumerate() {
         if !value.is_finite() {
             return Err(CollisionError3::NonFiniteVelocity { axis, value });
         }
     }
 
-    let tau = model.tau();
     let equilibrium = equilibrium3(rho, velocity);
-    let coefficient = 1.0 - 0.5 / tau;
-    let cs2 = 1.0 / 3.0;
-    let cs4 = cs2 * cs2;
-    let mut post = [0.0; Q3];
-    for direction in 0..Q3 {
-        let e = [
-            f64::from(E3[direction].0),
-            f64::from(E3[direction].1),
-            f64::from(E3[direction].2),
-        ];
-        let eu = if frozen_axial_z_projection {
-            e[0] * velocity[0] + e[1] * velocity[1] + e[2] * velocity[2]
+    match model {
+        CollisionModel3::Bgk { tau } => {
+            let coefficient = 1.0 - 0.5 / tau;
+            let cs2 = 1.0 / 3.0;
+            let cs4 = cs2 * cs2;
+            let mut post = [0.0; Q3];
+            for direction in 0..Q3 {
+                let e = [
+                    f64::from(E3[direction].0),
+                    f64::from(E3[direction].1),
+                    f64::from(E3[direction].2),
+                ];
+                let eu = if frozen_axial_z_projection {
+                    e[0] * velocity[0] + e[1] * velocity[1] + e[2] * velocity[2]
+                } else {
+                    e.iter()
+                        .zip(velocity)
+                        .map(|(component, u)| *component * u)
+                        .sum::<f64>()
+                };
+                let forcing = if frozen_axial_z_projection {
+                    coefficient
+                        * W3[direction]
+                        * (3.0 * (e[2] - velocity[2]) + 9.0 * eu * e[2])
+                        * force[2]
+                } else {
+                    let projection = (0..3)
+                        .map(|axis| {
+                            ((e[axis] - velocity[axis]) / cs2 + eu * e[axis] / cs4) * force[axis]
+                        })
+                        .sum::<f64>();
+                    coefficient * W3[direction] * projection
+                };
+                let value = populations[direction]
+                    + (equilibrium[direction] - populations[direction]) / tau
+                    + forcing;
+                if !value.is_finite() {
+                    return Err(CollisionError3::NonFiniteOutput { direction, value });
+                }
+                post[direction] = value;
+            }
+            Ok(post)
+        }
+        CollisionModel3::CentralMoment {
+            second_order_rate,
+            higher_order_rate,
+        } => {
+            if force.iter().any(|component| component.abs() > 0.0) {
+                return Err(CollisionError3::CentralMomentForceUnsupported { force });
+            }
+            collide_central_moments3(
+                populations,
+                equilibrium,
+                velocity,
+                second_order_rate,
+                higher_order_rate,
+            )
+        }
+    }
+}
+
+fn centered_power3(value: f64, exponent: u8) -> f64 {
+    match exponent {
+        0 => 1.0,
+        1 => value,
+        2 => value * value,
+        _ => unreachable!("D3Q19 central-moment exponents are at most two"),
+    }
+}
+
+fn central_moment_matrix3(velocity: [f64; 3]) -> [[f64; Q3]; Q3] {
+    core::array::from_fn(|moment| {
+        let exponent = CENTRAL_MOMENT_EXPONENTS3[moment];
+        core::array::from_fn(|direction| {
+            let centered = [
+                f64::from(E3[direction].0) - velocity[0],
+                f64::from(E3[direction].1) - velocity[1],
+                f64::from(E3[direction].2) - velocity[2],
+            ];
+            centered_power3(centered[0], exponent[0])
+                * centered_power3(centered[1], exponent[1])
+                * centered_power3(centered[2], exponent[2])
+        })
+    })
+}
+
+fn apply_moment_matrix3(matrix: &[[f64; Q3]; Q3], populations: [f64; Q3]) -> [f64; Q3] {
+    core::array::from_fn(|moment| {
+        let mut value = 0.0;
+        for (direction, population) in populations.into_iter().enumerate() {
+            value += matrix[moment][direction] * population;
+        }
+        value
+    })
+}
+
+fn collide_central_moments3(
+    populations: [f64; Q3],
+    equilibrium: [f64; Q3],
+    velocity: [f64; 3],
+    second_order_rate: f64,
+    higher_order_rate: f64,
+) -> Result<[f64; Q3], CollisionError3> {
+    let matrix = central_moment_matrix3(velocity);
+    let moments = apply_moment_matrix3(&matrix, populations);
+    let equilibrium_moments = apply_moment_matrix3(&matrix, equilibrium);
+    let mut relaxed = moments;
+    for moment in 4..Q3 {
+        let rate = if moment < 10 {
+            second_order_rate
         } else {
-            e.iter()
-                .zip(velocity)
-                .map(|(component, u)| *component * u)
-                .sum::<f64>()
+            higher_order_rate
         };
-        let forcing = if frozen_axial_z_projection {
-            coefficient * W3[direction] * (3.0 * (e[2] - velocity[2]) + 9.0 * eu * e[2]) * force[2]
-        } else {
-            let projection = (0..3)
-                .map(|axis| ((e[axis] - velocity[axis]) / cs2 + eu * e[axis] / cs4) * force[axis])
-                .sum::<f64>();
-            coefficient * W3[direction] * projection
-        };
-        let value = populations[direction]
-            + (equilibrium[direction] - populations[direction]) / tau
-            + forcing;
+        relaxed[moment] = moments[moment] + rate * (equilibrium_moments[moment] - moments[moment]);
+    }
+    let post = solve_moment_system3(matrix, relaxed)?;
+    for (direction, value) in post.into_iter().enumerate() {
         if !value.is_finite() {
             return Err(CollisionError3::NonFiniteOutput { direction, value });
         }
-        post[direction] = value;
     }
     Ok(post)
+}
+
+fn solve_moment_system3(
+    mut matrix: [[f64; Q3]; Q3],
+    mut rhs: [f64; Q3],
+) -> Result<[f64; Q3], CollisionError3> {
+    for column in 0..Q3 {
+        let mut pivot_row = column;
+        let mut pivot_abs = matrix[column][column].abs();
+        for (row, coefficients) in matrix.iter().enumerate().skip(column + 1) {
+            let candidate = coefficients[column].abs();
+            if candidate > pivot_abs {
+                pivot_row = row;
+                pivot_abs = candidate;
+            }
+        }
+        if !pivot_abs.is_finite() || pivot_abs <= 256.0 * f64::EPSILON {
+            return Err(CollisionError3::SingularCentralMomentTransform { column, pivot_abs });
+        }
+        if pivot_row != column {
+            matrix.swap(column, pivot_row);
+            rhs.swap(column, pivot_row);
+        }
+
+        let pivot_coefficients = matrix[column];
+        let pivot = pivot_coefficients[column];
+        let pivot_rhs = rhs[column];
+        for (row, coefficients) in matrix.iter_mut().enumerate().skip(column + 1) {
+            let factor = coefficients[column] / pivot;
+            coefficients[column] = 0.0;
+            for (coefficient, value) in coefficients.iter_mut().enumerate().skip(column + 1) {
+                *value -= factor * pivot_coefficients[coefficient];
+            }
+            rhs[row] -= factor * pivot_rhs;
+        }
+    }
+
+    let mut solution = [0.0; Q3];
+    for row in (0..Q3).rev() {
+        let mut value = rhs[row];
+        for (column, solved) in solution.iter().enumerate().skip(row + 1) {
+            value -= matrix[row][column] * solved;
+        }
+        solution[row] = value / matrix[row][row];
+    }
+    Ok(solution)
 }
 
 /// A D3Q19 duct: halfway bounce-back walls on the x and y boundaries,
