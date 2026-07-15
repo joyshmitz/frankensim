@@ -11,8 +11,8 @@ Layer UTIL (versioned registry data + fail-closed citation gates). Depends
 only on `fs-blake3` (domain-separated content identity) and `fs-evidence`
 (`ColorRank` for the citation color caps). A family name (TEAM, NAFEMS,
 CFR, IFToMM, ECN) is NOT an executable benchmark: every G1/G2 entry needs
-exact version/edition, source, license, input-deck identity, QoIs, and
-acceptance envelopes before any solver claims against it.
+exact version/edition, source, license, input-deck identity, oracle binding,
+QoIs, and acceptance envelopes before any solver claims against it.
 
 ## Public types and semantics
 
@@ -23,27 +23,28 @@ acceptance envelopes before any solver claims against it.
   refuse citation.
 - `validate_entry` — the citation gates as a validation-only probe: it
   returns `Ok(())` or a typed `CitationRefusal` naming the first failing
-  gate, in documented order: blank text fields (id, family, title,
-  source, notes, QoI names/units), edition, license, deck, oracle
-  binding, QoI presence, duplicate QoI names, per-QoI envelope
-  pin/validity. It can never mint a receipt.
+  gate, in documented order: id shape/size, QoI-count cap, blank text
+  fields (family, title, source, notes, QoI names/units), edition, license,
+  deck, oracle binding, QoI presence, duplicate QoI names, per-QoI
+  envelope pin/validity. It can never mint a receipt.
 - `Registry::cite` — the ONLY receipt-minting path. It refuses
   caller-built registries (`UnauthoritativeRegistry`), refuses ambiguous
   (duplicated) ids rather than picking one of the conflicting rows, runs
   the full gate chain, and binds the resulting `CitationReceipt` to the
   seeded registry's content digest.
-- `OracleBinding` — `SelfContained` decks carry their complete closed
+- `OracleBinding` — `Unpinned` targets have no pinned oracle identity or
+  comparison procedure; `SelfContained` decks carry their complete closed
   form/procedure; `DerivationRequired` decks deliberately delegate a
   load-bearing derivation and stay NON-CITABLE (typed `UnboundOracle`
   refusal) until a derivation receipt mechanism binds the obligation.
 - `CitationReceipt` — SEALED: private fields, no public constructor;
   holding one proves admission ran. Accessors expose entry id, tier,
-  exact edition, deck digest, entry digest, and registry version. Color
-  rule lives here: `numerical_claim_cap()` is at most `Verified` for the
-  exact edition and scope; `physical_claim_cap()` is unconditionally
-  `Estimated` in this slice (the `Validated` upgrade requires a typed
-  held-out-evidence binding, not a caller-asserted flag). No color is
-  inherited from a publisher's name.
+  exact edition, deck digest, entry digest, registry digest, and registry
+  version. Color rule lives here: `numerical_claim_cap()` is at most
+  `Verified` for the exact edition and scope; `physical_claim_cap()` is
+  unconditionally `Estimated` in this slice (the `Validated` upgrade
+  requires a typed held-out-evidence binding, not a caller-asserted flag).
+  No color is inherited from a publisher's name.
 - `ConsumptionStatus` / `ConsumptionRecord` — Appendix-D discipline:
   consuming beads record unread/read/derived/reproduced/
   independently_falsified and pin the exact artifact version (the entry
@@ -65,8 +66,8 @@ acceptance envelopes before any solver claims against it.
 ## Invariants
 
 - FAIL-CLOSED CITATION: an entry missing any load-bearing field (edition,
-  license, deck hash, QoI, envelope) cannot be cited; the refusal is typed
-  and names the field. An unpinned family name never acts as an oracle.
+  license, deck hash, oracle, QoI, envelope) cannot be cited; the refusal
+  is typed and names the field. An unpinned family name never acts as an oracle.
   Ambiguous ids and duplicate QoI names refuse; a deck that delegates its
   oracle refuses.
 - SEALED RECEIPTS AND AUTHORITY: `CitationReceipt` cannot be constructed
@@ -83,15 +84,18 @@ acceptance envelopes before any solver claims against it.
 - ROW/IDENTITY AGREEMENT: `canonical_row` preserves the deck variant and
   state (authored / external / malformed-external / unpinned) and uses one
   canonical hex spelling; a valid external digest is normalized to its raw
-  32 bytes in the identity, so hex case cannot fork either surface.
+  32 bytes in the identity, so hex case cannot fork either surface. Oracle
+  state (unpinned / self-contained / derivation-required) is likewise
+  distinct in both the row and identity.
 - NO AUTHORITY-BY-CITATION: `PrimaryReference` has no color/authority API;
   receipts cap colors, they never mint them; composition cannot upgrade
   the physical-prediction cap without independent held-out evidence.
-- DERIVATION-REQUIRED DECKS: G1 specs where a memorized formula is a known
-  trap (Geneva, epitrochoid specialization, Atkinson) pin the
-  parameterization and mandatory limit checks, not a mnemonic formula.
-- G2 seeds stay uncitable until edition/license/deck/QoIs/envelopes are
-  pinned; pinning them is downstream work, not a tolerance relaxation.
+- DERIVATION-REQUIRED DECKS: the Bennett mobility, Geneva, Sod, Lax,
+  isentropic-nozzle, and Atkinson G1 targets pin their parameterization and
+  mandatory limit checks while delegating a load-bearing derivation; they
+  are not mnemonic-formula oracles.
+- G2 seeds stay uncitable until edition/license/deck/oracle/QoIs/envelopes
+  are pinned; pinning them is downstream work, not a tolerance relaxation.
 
 ## Error model
 
@@ -113,12 +117,15 @@ None; operations are synchronous with no cancellation points. Honest
 cost model for caller-supplied data: `Registry::build` sorts
 (`O(n log n)` comparisons over rows and references, with one content
 digest per row for the canonical tie-break); `lint`/`canonical_rows`/
-`digest` are linear in rows plus per-entry gate cost; the per-entry gate
-is bounded by the `MAX_QOIS_PER_ENTRY` cap (checked before the
-duplicate-name scan, so the quadratic name scan is capped at 64²).
-Enforced input caps: `MAX_QOIS_PER_ENTRY` on gate checks and
-`MAX_BEAD_ID_LEN` on `ConsumptionRecord::bind` (validated before the
-copy). Row/reference COUNTS are uncapped — see no-claim boundaries.
+`digest` are linear in rows plus per-entry gate cost; the
+`MAX_QOIS_PER_ENTRY` cap is checked before any QoI traversal, so QoI-count
+work and the quadratic name-comparison count are capped at 64 and 64².
+String byte lengths outside registry ids remain uncapped.
+Enforced input caps: `MAX_QOIS_PER_ENTRY` on gate checks,
+`MAX_LOOKUP_ID_LEN` plus lowercase-ASCII-slug validation on
+entry validation and `Registry::cite`, and `MAX_BEAD_ID_LEN` on
+`ConsumptionRecord::bind` (validated before any trim or copy).
+Row/reference COUNTS are uncapped — see no-claim boundaries.
 
 ## Unsafe boundary
 
@@ -137,6 +144,7 @@ receipt, and seeded receipts bind the registry digest); the bead's named
 fixtures — registry lint
 partition and the unpinned family-name citation refusal (TEAM 10) — plus
 unknown-id refusal, duplicate-id fail-closed citation and lint exclusion,
+bounded/malformed lookup-id refusal before input copies,
 duplicate reference keys at non-adjacent indices, gate ordering probes
 (including oracle-before-QoI and dedup-before-envelope), invalid-envelope
 reasons, the canonical-row golden for the unpinned TEAM 10 row,
@@ -158,8 +166,8 @@ digest).
   match their registered digest — artifact retrieval/verification is the
   consuming lane's job.
 - The 15 G2 seeds are targets, not benchmarks: no claim may cite them
-  until their decks are pinned (exact edition, license, deck hash, QoIs,
-  acceptance data).
+  until their decks are pinned (exact edition, license, deck hash, oracle,
+  QoIs, acceptance data).
 - G1 acceptance envelopes bound agreement with the authored analytic
   oracle under its stated assumptions; they say nothing about physical
   validity (the physical cap stays `Estimated` without held-out evidence).
@@ -173,10 +181,10 @@ digest).
 - The `Validated` physical-cap upgrade is deliberately absent: it requires
   a typed, non-forgeable binding of independent held-out evidence (future
   work tracked on the bead), not a boolean argument.
-- Derivation-required entries (Geneva, Atkinson, Bennett mobility,
-  isentropic nozzle) stay non-citable until a derivation receipt
-  mechanism exists; their registration is a target declaration, not an
-  oracle.
+- Derivation-required entries (Bennett mobility, Geneva, Sod, Lax,
+  isentropic nozzle, and Atkinson) stay non-citable until a derivation
+  receipt mechanism exists; their registration is a target declaration,
+  not an oracle.
 - No registry-size caps: rows are compiled-in seed data here, and a
   caller-built `Registry` is the caller's resource decision —
   `build`/`canonical_rows`/`digest` do not police hostile row counts.

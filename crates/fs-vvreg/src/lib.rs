@@ -4,7 +4,7 @@
 //! A family name (TEAM, NAFEMS, CFR, IFToMM, ECN) is NOT an executable
 //! benchmark. Before any solver claims a G1/G2 result against a registry
 //! entry, that entry must pin: exact version/edition, source, license,
-//! input-deck identity, QoIs, and acceptance envelopes. Citation is
+//! input-deck identity, oracle binding, QoIs, and acceptance envelopes. Citation is
 //! fail-closed: [`Registry::cite`] returns a typed [`CitationRefusal`]
 //! naming the first missing field instead of letting an unpinned family
 //! name act as an oracle, and only the seeded registry behind
@@ -171,6 +171,9 @@ pub enum AcceptanceEnvelope {
 /// Whether the deck's oracle is executable from the deck text alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OracleBinding {
+    /// The oracle identity or executable comparison procedure has not yet
+    /// been pinned. This is a target declaration, never a citable oracle.
+    Unpinned,
     /// The deck contains the complete closed form or uniquely determined
     /// procedure; a consumer can implement it from the deck alone.
     SelfContained,
@@ -226,14 +229,25 @@ pub struct RegistryEntry {
 }
 
 /// Why an entry cannot be cited by a Gauntlet test. Each variant names the
-/// first gate that failed, in the documented check order: empty fields,
-/// edition, license, deck, QoI presence, per-QoI envelope.
+/// first gate that failed in the documented entry-validation or lookup
+/// order: id shape/size, QoI-count cap, required fields, edition, license,
+/// deck, oracle, QoI presence/uniqueness, and per-QoI envelope.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CitationRefusal {
     /// Citation was attempted against a caller-built registry. Only the
     /// seeded workspace registry behind [`registry()`] carries authority;
     /// caller-built registries are lint-only.
     UnauthoritativeRegistry,
+    /// The requested or declared id exceeds [`MAX_LOOKUP_ID_LEN`] bytes. The
+    /// refusal deliberately carries only the length so hostile input is
+    /// rejected before it is copied into an error value.
+    OversizedLookupId {
+        /// The offered length in bytes.
+        len: usize,
+    },
+    /// The requested or declared id is not a lowercase ASCII slug. This refusal
+    /// deliberately carries no copy of the hostile input.
+    InvalidLookupId,
     /// The requested id is not in the registry.
     UnknownEntry {
         /// The id that was requested.
@@ -269,6 +283,11 @@ pub enum CitationRefusal {
     },
     /// The external deck digest is not 64 valid hex chars.
     MalformedDeckDigest {
+        /// Entry id.
+        id: &'static str,
+    },
+    /// The oracle identity or executable comparison procedure is not pinned.
+    UnpinnedOracle {
         /// Entry id.
         id: &'static str,
     },
@@ -323,6 +342,13 @@ impl fmt::Display for CitationRefusal {
             Self::UnauthoritativeRegistry => f.write_str(
                 "caller-built registries are lint-only; cite through the seeded registry()",
             ),
+            Self::OversizedLookupId { len } => write!(
+                f,
+                "registry citation id is {len} bytes; the cap is {MAX_LOOKUP_ID_LEN}"
+            ),
+            Self::InvalidLookupId => {
+                f.write_str("registry citation id must be a non-empty lowercase ASCII slug")
+            }
             Self::UnknownEntry { id } => {
                 write!(f, "registry has no entry '{id}'")
             }
@@ -345,6 +371,12 @@ impl fmt::Display for CitationRefusal {
             }
             Self::MalformedDeckDigest { id } => {
                 write!(f, "entry '{id}': external deck digest is not 64 hex chars")
+            }
+            Self::UnpinnedOracle { id } => {
+                write!(
+                    f,
+                    "entry '{id}': oracle identity or procedure is not pinned"
+                )
             }
             Self::UnboundOracle { id, obligation } => write!(
                 f,
@@ -461,10 +493,10 @@ impl CitationReceipt {
 /// no receipt and no color API can be reached through this function. It
 /// exists so seed authors and downstream pin work can probe gates.
 ///
-/// Check order (documented so refusal tests are stable): blank required
-/// fields (id, family, title, source, notes, QoI names/units), edition,
-/// license, deck, oracle binding, QoI presence, duplicate QoI names,
-/// per-QoI envelope pin, per-QoI envelope validity.
+/// Check order (documented so refusal tests are stable): id shape/size,
+/// QoI-count cap, blank required fields (family, title, source, notes, QoI
+/// names/units), edition, license, deck, oracle binding, QoI presence,
+/// duplicate QoI names, per-QoI envelope pin, per-QoI envelope validity.
 ///
 /// # Errors
 ///
@@ -478,6 +510,14 @@ pub fn validate_entry(entry: &RegistryEntry) -> Result<(), CitationRefusal> {
 /// digest. Private: receipts are minted only through [`Registry::cite`]
 /// on the authoritative seeded registry.
 fn gate_entry(entry: &RegistryEntry) -> Result<(&'static str, ContentHash), CitationRefusal> {
+    validate_registry_id(entry.id)?;
+    // Bound every later QoI traversal before touching caller-supplied rows.
+    if entry.qois.len() > MAX_QOIS_PER_ENTRY {
+        return Err(CitationRefusal::TooManyQois {
+            id: entry.id,
+            count: entry.qois.len(),
+        });
+    }
     check_text_fields(entry)?;
     let Edition::Exact { version } = entry.edition else {
         return Err(CitationRefusal::UnpinnedEdition { id: entry.id });
@@ -490,20 +530,20 @@ fn gate_entry(entry: &RegistryEntry) -> Result<(&'static str, ContentHash), Cita
     }
     check_license(entry)?;
     let deck_digest = check_deck(entry)?;
-    if let OracleBinding::DerivationRequired { obligation } = entry.oracle {
-        return Err(CitationRefusal::UnboundOracle {
-            id: entry.id,
-            obligation,
-        });
+    match entry.oracle {
+        OracleBinding::Unpinned => {
+            return Err(CitationRefusal::UnpinnedOracle { id: entry.id });
+        }
+        OracleBinding::DerivationRequired { obligation } => {
+            return Err(CitationRefusal::UnboundOracle {
+                id: entry.id,
+                obligation,
+            });
+        }
+        OracleBinding::SelfContained => {}
     }
     if entry.qois.is_empty() {
         return Err(CitationRefusal::MissingQois { id: entry.id });
-    }
-    if entry.qois.len() > MAX_QOIS_PER_ENTRY {
-        return Err(CitationRefusal::TooManyQois {
-            id: entry.id,
-            count: entry.qois.len(),
-        });
     }
     for (i, qoi) in entry.qois.iter().enumerate() {
         if entry.qois[..i].iter().any(|prior| prior.name == qoi.name) {
@@ -689,6 +729,36 @@ impl ConsumptionStatus {
 /// the string is copied into a record).
 pub const MAX_BEAD_ID_LEN: usize = 256;
 
+/// Maximum accepted registry entry or lookup id length in bytes. IDs are
+/// also restricted to lowercase ASCII slugs; lookup checks run before a
+/// missing id can be copied into [`CitationRefusal::UnknownEntry`].
+pub const MAX_LOOKUP_ID_LEN: usize = 256;
+
+fn is_registry_slug(id: &str) -> bool {
+    let bytes = id.as_bytes();
+    let Some((&first, rest)) = bytes.split_first() else {
+        return false;
+    };
+    first.is_ascii_lowercase()
+        && bytes
+            .last()
+            .is_some_and(|last| last.is_ascii_alphanumeric())
+        && rest
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
+        && !bytes.windows(2).any(|pair| pair == b"--")
+}
+
+fn validate_registry_id(id: &str) -> Result<(), CitationRefusal> {
+    if id.len() > MAX_LOOKUP_ID_LEN {
+        return Err(CitationRefusal::OversizedLookupId { len: id.len() });
+    }
+    if !is_registry_slug(id) {
+        return Err(CitationRefusal::InvalidLookupId);
+    }
+    Ok(())
+}
+
 /// Why a consumption record could not be bound.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConsumptionRefusal {
@@ -743,11 +813,11 @@ impl ConsumptionRecord {
         bead: &str,
         status: ConsumptionStatus,
     ) -> Result<Self, ConsumptionRefusal> {
-        if bead.trim().is_empty() {
-            return Err(ConsumptionRefusal::EmptyBead);
-        }
         if bead.len() > MAX_BEAD_ID_LEN {
             return Err(ConsumptionRefusal::OversizedBead { len: bead.len() });
+        }
+        if bead.trim().is_empty() {
+            return Err(ConsumptionRefusal::EmptyBead);
         }
         Ok(Self {
             bead: bead.to_string(),
@@ -899,6 +969,8 @@ impl Registry {
     ///
     /// [`CitationRefusal::UnauthoritativeRegistry`] on any caller-built
     /// registry (synthetic rows can never mint receipts),
+    /// [`CitationRefusal::OversizedLookupId`] or
+    /// [`CitationRefusal::InvalidLookupId`] before copying hostile input,
     /// [`CitationRefusal::UnknownEntry`] for a missing id,
     /// [`CitationRefusal::DuplicateEntry`] when the registry holds
     /// conflicting rows for the id (admission never picks one), otherwise
@@ -907,6 +979,7 @@ impl Registry {
         if self.authority != RegistryAuthority::Seeded {
             return Err(CitationRefusal::UnauthoritativeRegistry);
         }
+        validate_registry_id(id)?;
         let mut matches = self.entries.iter().filter(|e| e.id == id);
         let entry = matches
             .next()
@@ -933,9 +1006,11 @@ impl Registry {
     #[must_use]
     pub fn lint(&self) -> RegistryLint {
         let mut duplicate_ids = Vec::new();
+        let mut last_duplicate = None;
         for pair in self.entries.windows(2) {
-            if pair[0].id == pair[1].id && !duplicate_ids.contains(&pair[0].id) {
+            if pair[0].id == pair[1].id && last_duplicate != Some(pair[0].id) {
                 duplicate_ids.push(pair[0].id);
+                last_duplicate = Some(pair[0].id);
             }
         }
         let mut citable = Vec::new();
@@ -1090,6 +1165,7 @@ pub fn entry_digest(entry: &RegistryEntry) -> ContentHash {
         DeckPin::Unpinned => payload.push(0),
     }
     match entry.oracle {
+        OracleBinding::Unpinned => payload.push(0),
         OracleBinding::SelfContained => payload.push(1),
         OracleBinding::DerivationRequired { obligation } => {
             payload.push(2);
@@ -1217,6 +1293,7 @@ pub fn canonical_row(entry: &RegistryEntry) -> String {
     }
     row.push_str(",\"oracle\":");
     match entry.oracle {
+        OracleBinding::Unpinned => row.push_str("null"),
         OracleBinding::SelfContained => row.push_str("\"self-contained\""),
         OracleBinding::DerivationRequired { obligation } => {
             row.push_str("{\"derivation_required\":");

@@ -11,8 +11,8 @@
 use fs_vvreg::{
     AcceptanceEnvelope, CitationRefusal, ColorRank, ConsumptionRecord, ConsumptionRefusal,
     ConsumptionStatus, DeckPin, Edition, IntegrityFinding, LicenseState, MAX_BEAD_ID_LEN,
-    MAX_QOIS_PER_ENTRY, OracleBinding, Qoi, Registry, RegistryEntry, RegistryTier, VVREG_VERSION,
-    canonical_row, entry_digest, registry, validate_entry,
+    MAX_LOOKUP_ID_LEN, MAX_QOIS_PER_ENTRY, OracleBinding, Qoi, Registry, RegistryEntry,
+    RegistryTier, VVREG_VERSION, canonical_row, entry_digest, registry, validate_entry,
 };
 
 /// Distinct QoIs for the count/order mutation locks.
@@ -120,6 +120,11 @@ fn unpinned_family_name_citation_fails_with_a_typed_refusal() {
             continue;
         }
         g2_count += 1;
+        assert_eq!(
+            entry.oracle,
+            OracleBinding::Unpinned,
+            "an unpinned G2 target must not claim a self-contained oracle"
+        );
         let refusal = reg
             .cite(entry.id)
             .expect_err("no seeded G2 row is citable until its deck is pinned");
@@ -134,12 +139,54 @@ fn unpinned_family_name_citation_fails_with_a_typed_refusal() {
 #[test]
 fn unknown_and_bare_family_ids_are_refused() {
     let reg = registry();
-    for bogus in ["team-10", "TEAM", "nafems", ""] {
+    for bogus in ["team-10", "nafems", "g9-not-seeded"] {
         match reg.cite(bogus) {
             Err(CitationRefusal::UnknownEntry { id }) => assert_eq!(id, bogus),
             other => panic!("'{bogus}' must be unknown, got {other:?}"),
         }
     }
+    for malformed in ["", "TEAM", "g2 team", "-g2-team"] {
+        assert_eq!(
+            reg.cite(malformed),
+            Err(CitationRefusal::InvalidLookupId),
+            "malformed lookup ids refuse without copying their input"
+        );
+    }
+}
+
+#[test]
+fn oversized_lookup_ids_are_refused_before_the_copy() {
+    let oversized = "a".repeat(MAX_LOOKUP_ID_LEN + 1);
+    assert_eq!(
+        registry().cite(&oversized),
+        Err(CitationRefusal::OversizedLookupId {
+            len: MAX_LOOKUP_ID_LEN + 1
+        })
+    );
+    let at_cap = format!("a{}", "1".repeat(MAX_LOOKUP_ID_LEN - 1));
+    assert!(matches!(
+        registry().cite(&at_cap),
+        Err(CitationRefusal::UnknownEntry { id }) if id == at_cap
+    ));
+}
+
+#[test]
+fn entry_validation_uses_the_same_bounded_slug_rule_as_lookup() {
+    let mut malformed = pinned_probe();
+    malformed.id = "TEAM";
+    assert_eq!(
+        validate_entry(&malformed),
+        Err(CitationRefusal::InvalidLookupId)
+    );
+
+    let oversized = Box::leak("a".repeat(MAX_LOOKUP_ID_LEN + 1).into_boxed_str());
+    malformed.id = oversized;
+    assert_eq!(
+        validate_entry(&malformed),
+        Err(CitationRefusal::OversizedLookupId {
+            len: MAX_LOOKUP_ID_LEN + 1
+        })
+    );
 }
 
 #[test]
@@ -315,6 +362,13 @@ fn admission_gates_fire_in_the_documented_order() {
         })
     ));
 
+    let mut unpinned_oracle = pinned;
+    unpinned_oracle.oracle = OracleBinding::Unpinned;
+    assert!(matches!(
+        validate_entry(&unpinned_oracle),
+        Err(CitationRefusal::UnpinnedOracle { .. })
+    ));
+
     let mut no_qois = pinned;
     no_qois.qois = &[];
     assert!(matches!(
@@ -354,10 +408,15 @@ fn admission_gates_fire_in_the_documented_order() {
         Err(CitationRefusal::UnpinnedEnvelope { qoi: "q", .. })
     ));
 
-    // The QoI-count cap fires before the duplicate-name scan, bounding
-    // per-entry gate cost even for hostile rows.
+    // The QoI-count cap fires before every QoI traversal, bounding the row
+    // count work even when each hostile QoI would fail the text gate.
+    let hostile_qoi = Qoi {
+        name: "",
+        unit: "",
+        envelope: AcceptanceEnvelope::Unpinned,
+    };
     let mut too_many = pinned;
-    too_many.qois = Box::leak(vec![QOI_A; MAX_QOIS_PER_ENTRY + 1].into_boxed_slice());
+    too_many.qois = Box::leak(vec![hostile_qoi; MAX_QOIS_PER_ENTRY + 1].into_boxed_slice());
     assert!(matches!(
         validate_entry(&too_many),
         Err(CitationRefusal::TooManyQois { count, .. }) if count == MAX_QOIS_PER_ENTRY + 1
@@ -428,7 +487,7 @@ fn canonical_serialization_golden_for_the_unpinned_team_10_row() {
         "\"title\":\"TEAM problem 10: steel plates around a coil, nonlinear transient eddy current\",",
         "\"edition\":null,",
         "\"source\":\"COMPUMAG TEAM benchmark suite, official problem definition 10\",",
-        "\"license\":null,\"deck\":null,\"oracle\":\"self-contained\",",
+        "\"license\":null,\"deck\":null,\"oracle\":null,",
         "\"qois\":[{\"name\":\"average_flux_density_probe\",\"unit\":\"T\",\"envelope\":null}],",
         "\"notes\":\"Family name only: exact geometry revision, excitation, material law, ",
         "circuit, QoI set, and acceptance data must be pinned before citation.\"}",
@@ -590,6 +649,11 @@ fn entry_identity_is_mutation_sensitive_in_every_semantic_field() {
     };
     assert_ne!(entry_digest(&oracle), base_digest);
 
+    let mut unpinned_oracle = base;
+    unpinned_oracle.oracle = OracleBinding::Unpinned;
+    assert_ne!(entry_digest(&unpinned_oracle), base_digest);
+    assert_ne!(entry_digest(&unpinned_oracle), entry_digest(&oracle));
+
     let mut envelope = base;
     envelope.qois = &[Qoi {
         name: "probe_qoi",
@@ -657,7 +721,7 @@ fn blank_authored_specs_have_no_wellformed_digest_and_refuse_admission() {
 fn oversized_bead_ids_are_refused_before_the_copy() {
     let reg = registry();
     let receipt = reg.cite("g1-otto-cycle").expect("citable G1 seed");
-    let oversized = "b".repeat(MAX_BEAD_ID_LEN + 1);
+    let oversized = " ".repeat(MAX_BEAD_ID_LEN + 1);
     assert_eq!(
         ConsumptionRecord::bind(&receipt, &oversized, ConsumptionStatus::Read),
         Err(ConsumptionRefusal::OversizedBead {
