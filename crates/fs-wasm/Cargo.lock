@@ -1023,6 +1023,7 @@ version = "0.0.1"
 dependencies = [
  "fs-blake3",
  "fs-cheb",
+ "fs-exec",
  "fs-ga",
  "fs-math",
  "fs-qty",
