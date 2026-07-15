@@ -20,6 +20,7 @@ fs-tilelang = { path = "../fs-tilelang" }
 
 [dev-dependencies]
 fs-opdsl = { path = "../fs-opdsl" }
+fs-propcheck = { path = "../fs-propcheck" }
 fs-rand = { path = "../fs-rand" }
 
 [lints]

@@ -136,6 +136,10 @@ diagnoses, never timeout mysteries).
 - The V-cycle preconditioner is symmetric (identical pre/post
   smoothing, Galerkin-consistent transfers, near-exact coarse).
 - Transposed solves share every piece of primal infrastructure.
+- The G3 bounded-integer nonsymmetric fixture satisfies the exact linear
+  adjoint/finite-difference identity through `CsrOp::apply` and
+  `CsrOp::apply_transpose`. This is not a claim about arbitrary nonlinear
+  objectives or floating-roundoff regimes.
 - Block row/column partitions and their nonzero aggregate dimension
   are validated once, then traversed in stable index order for both
   primal and transpose applications.
@@ -206,6 +210,10 @@ a fixed envelope (≤ 80) while identity-preconditioned counts blow up
 (hard corner m = 4, r = 4: 9 vs 1192 — a 132× advantage), solutions
 matching identity-CG to 1e−7; deterministic dot; golden hash (bumped
 at x08j with justification: the smoother change is semantic).
+`tests/metamorphic.rs`: a declared, jointly shrinkable adjoint/finite-difference
+relation exercises both production actions of a general `CsrOp` on an exact
+bounded-integer fixture. The broader GMRES transpose/LU pin above remains
+independent.
 `tests/stokes_battery.rs` (5 cases): FEEC tensor Stokes fixture with
 P-MINRES + blockdiag(p-MG, pressure mass) agrees with a dense
 constant-pressure-pinned LU reference on m = 2, r = 2; velocity is
