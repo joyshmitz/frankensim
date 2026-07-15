@@ -2,11 +2,14 @@
 //! executable state: the skip-yield dashboard live (Proposal 2), the
 //! proposer accept-rate dashboard stratified by kernel × regime
 //! (Proposal 9 telemetry), the merge swarm candidate-remainder diagnostic
-//! (one input to Proposal 10's broader unresolved-merge gate), and THE
-//! SIX-MONTH CHECKPOINT — the single
-//! measurement most of the addendum's weight rests on: accept rates
-//! above ~30% AND median warm-start savings ≥ 1.5× at realistic
-//! tolerances, on the verifier's kernel classes.
+//! (one input to Proposal 10's broader unresolved-merge gate), and the
+//! CHECKPOINT FIXTURE — machinery conformance on a deliberately
+//! favorable linear θ-family. The six-month ACTIVATION claim (accept
+//! rate > 30% AND median warm-start savings ≥ 1.5× on customer-realistic
+//! corpora) is adjudicated exclusively by `fs_flywheel_e2e::activation`
+//! (bead sj31i.18): preregistered sampling frame, independent holdout,
+//! exact denominators, anytime-valid e-process bounds. This fixture can
+//! never activate anything.
 #![cfg(feature = "flywheel-e2e")]
 
 use fs_geom::sheaf_merge::candidate_remainder_conflict_rate;
@@ -120,7 +123,7 @@ fn certified_run(theta: f64, cells: usize) -> (f64, Vec<f64>) {
 }
 
 #[allow(clippy::too_many_lines)]
-fn run_checkpoint(cells: usize, tolerance: f64) -> (f64, f64, ZooTelemetry, DriftGuard) {
+fn run_checkpoint(cells: usize, tolerance: f64) -> (f64, Option<f64>, ZooTelemetry, DriftGuard) {
     // The proposer cache: certified prior runs across the θ range.
     let cache: Vec<(f64, Vec<f64>, Option<Vec<f64>>)> = [0.8, 1.0, 1.2, 1.4]
         .iter()
@@ -164,10 +167,14 @@ fn run_checkpoint(cells: usize, tolerance: f64) -> (f64, f64, ZooTelemetry, Drif
     #[allow(clippy::cast_precision_loss)]
     let accept_rate = accepts as f64 / thetas.len() as f64;
     ratios.sort_by(f64::total_cmp);
+    // No warm-started measurements means savings are UNMEASURED — never
+    // infinite (bead sj31i.18); the caller must treat None as
+    // not-demonstrable, exactly like the activation adjudicator's
+    // NoWarmStartEvidence refusal.
     let median = if ratios.is_empty() {
-        f64::INFINITY // every query accepted outright: infinite savings
+        None
     } else {
-        ratios[ratios.len() / 2]
+        Some(ratios[ratios.len() / 2])
     };
     (accept_rate, median, telemetry, guard)
 }
@@ -234,31 +241,33 @@ fn p1_003_merge_swarm_candidate_diagnostic() {
 }
 
 #[test]
-fn p1_004_the_six_month_checkpoint() {
-    // THE keystone measurement, at a realistic tolerance on the
-    // verifier's elliptic class: accept rate > 30% AND median
-    // warm-start savings >= 1.5x — else the documented fallback fires
-    // (keep estimators + warm starts, retire the proposer zoo).
-    // 0.05 energy tolerance IS customer-realistic for P1 on 24 cells:
-    // commensurate with the discretization's own accuracy (asking for
-    // 1e-4 of a 0.08-error mesh is not a tolerance, it is a refinement
-    // request — the planner's job, not the proposer's).
+fn p1_004_the_checkpoint_fixture_is_conformance_not_activation() {
+    // FIXTURE CONFORMANCE ONLY (bead sj31i.18): 20 correlated grid
+    // points from a deliberately linear θ-family, with the proposer
+    // cache drawn from the same family — the machinery's best case,
+    // NOT a sampling frame. It proves the speculation economy runs and
+    // that the measurement can fail (hostile control); it mints no
+    // activation authority. Activation is adjudicated exclusively by
+    // `fs_flywheel_e2e::activation` on preregistered holdout corpora.
     let (accept_rate, median_savings, _, _) = run_checkpoint(24, 0.05);
+    let median_savings =
+        median_savings.expect("the conformance fixture must produce warm-started measurements");
     println!(
-        "{{\"metric\":\"six-month-checkpoint\",\"accept_rate\":{accept_rate:.3},\
-         \"median_warm_savings\":{median_savings:.3},\"gates\":[0.30,1.5]}}"
+        "{{\"metric\":\"checkpoint-fixture-conformance\",\"accept_rate\":{accept_rate:.3},\
+         \"median_warm_savings\":{median_savings:.3},\"gates\":[0.30,1.5],\
+         \"activation_authority\":false}}"
     );
     assert!(
         accept_rate > 0.30,
-        "the speculation economy closes only above 30% accepts: {accept_rate}"
+        "fixture conformance: the machinery accepts on its best case: {accept_rate}"
     );
     assert!(
         median_savings >= 1.5,
-        "median warm-start savings must reach 1.5x: {median_savings}"
+        "fixture conformance: warm starts save on the best case: {median_savings}"
     );
     // The measurement is honest in both directions: a hostile tolerance
-    // collapses the accept rate (the checkpoint CAN fail — this gate
-    // measures, it does not assume).
+    // collapses the accept rate (the fixture CAN fail — it measures,
+    // it does not assume).
     let (hostile_rate, _, _, _) = run_checkpoint(24, 0.02);
     assert!(
         hostile_rate < 0.30,
@@ -267,7 +276,70 @@ fn p1_004_the_six_month_checkpoint() {
     );
     verdict(
         "p1-004",
-        "checkpoint PASSED at realistic tolerance (rate > 30%, median savings >= 1.5x); \
-         the hostile control shows the measurement can fail",
+        "checkpoint FIXTURE conforms (machinery runs; hostile control fails); \
+         activation authority lives in the preregistered holdout adjudicator only",
+    );
+}
+
+#[test]
+fn p1_005_the_fixture_can_never_activate() {
+    // The fixture's 20 correlated development points, fed to the real
+    // adjudicator, refuse structurally: they are development-tagged
+    // (holdout leakage) and nowhere near a preregistered frame's
+    // minimum counts.
+    use fs_flywheel_e2e::activation::{
+        ActivationRefusal, ActivationThresholds, Outcome, Partition, Sample, SamplingFrame,
+        StratumSpec, adjudicate,
+    };
+    let frame = SamplingFrame {
+        study: "flywheel-activation-study",
+        seed: 0x5A31_0018,
+        strata: vec![
+            StratumSpec {
+                name: "re-low",
+                min_samples: 40,
+            },
+            StratumSpec {
+                name: "re-high",
+                min_samples: 40,
+            },
+        ],
+        thresholds: ActivationThresholds {
+            accept_rate_floor: 0.30,
+            savings_floor: 1.5,
+            confidence_delta: 0.05,
+            betting_fraction: 0.5,
+        },
+    };
+    // Development-tagged fixture rows refuse as leakage.
+    let dev_rows: Vec<Sample> = (0..20)
+        .map(|k| Sample {
+            key: k,
+            stratum: if k % 2 == 0 { "re-low" } else { "re-high" },
+            partition: Partition::Development,
+            outcome: Outcome::WarmStarted { cold: 30, warm: 10 },
+        })
+        .collect();
+    assert!(matches!(
+        adjudicate(&frame, &dev_rows),
+        Err(ActivationRefusal::HoldoutLeakage { .. })
+    ));
+    // Even relabeled as holdout (the corrupt path), 10 rows per stratum
+    // cannot meet the preregistered 40-sample minimum.
+    let relabeled: Vec<Sample> = dev_rows
+        .iter()
+        .map(|s| Sample {
+            partition: Partition::Holdout,
+            ..*s
+        })
+        .collect();
+    assert!(matches!(
+        adjudicate(&frame, &relabeled),
+        Err(ActivationRefusal::InsufficientSamples { .. })
+    ));
+    verdict(
+        "p1-005",
+        "the linear-family fixture refuses at the activation adjudicator: \
+         leakage when honest, insufficient samples even when relabeled",
     );
 }

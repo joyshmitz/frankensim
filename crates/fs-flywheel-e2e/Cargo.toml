@@ -54,6 +54,12 @@ required-features = ["flywheel-e2e"]
 # Feature-gated integration target (huq.18): skipped-with-reason when the
 # feature is off, never a zero-test pass.
 [[test]]
+name = "activation_stats"
+required-features = ["flywheel-e2e"]
+
+# Feature-gated integration target (huq.18): skipped-with-reason when the
+# feature is off, never a zero-test pass.
+[[test]]
 name = "cal"
 required-features = ["flywheel-e2e"]
 

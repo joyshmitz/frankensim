@@ -94,9 +94,19 @@ by proposer × regime, the merge candidate-remainder diagnostic (<25% in its
 synthetic corpus and seeded live fixtures; explicitly not the full unresolved-
 merge kill criterion, which also needs retained escalation, refusal, and
 type-conflict counts), and
-Proposal 9's six-month checkpoint (accept rate > 30% AND median
+Proposal 9's checkpoint FIXTURE (accept rate > 30% AND median
 warm-start savings ≥ 1.5× at the calibrated realistic tolerance, with
-a hostile control proving the measurement can fail);
+a hostile control proving the measurement can fail) — machinery
+CONFORMANCE on a deliberately favorable linear θ-family, never
+activation evidence (bead sj31i.18): the six-month ACTIVATION claim is
+adjudicated exclusively by `activation::adjudicate` against a
+preregistered `SamplingFrame` (identity-retained strata, minimum
+counts, seed, thresholds) over independent holdout rows with exact
+denominators — development rows, duplicate identities, zero warm
+denominators, and warm-start-free (unmeasured-savings) strata are typed
+refusals, and each gate is an anytime-valid betting e-process at the
+preregistered δ, per stratum, so optional stopping and favorable
+pooling cannot manufacture a pass (`tests/activation_stats.rs`);
 tests/cal.rs — the tolerance-calibration probe behind the gate's
 0.05/0.02 choices. `tests/phase3_gate.rs` retains the horizon activation
 ledger: Proposal A's single typed coverage battery is recomputed and stored as

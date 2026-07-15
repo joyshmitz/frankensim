@@ -37,6 +37,8 @@ use fs_qty::{Dims, QtyAny};
 use fs_recompute::{NodeRecord, ParamValue, SkipDecision, Store};
 use fs_spececo::{Decision, ProposerTelemetry, SolveRecord, decide};
 
+pub mod activation;
+
 /// Which proposals are switched ON for a run (a feature-toggle matrix
 /// by design: the harness measures every on/off combination).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
