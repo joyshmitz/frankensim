@@ -343,9 +343,13 @@ a claim about the dense GEMM transpose action, not every operator in fs-la.
 `tests/metamorphic.rs` declares the G3 relation
 `gemv-vector-scale-equivariance` for `gemm_f64` (seed `0x2ACE_0001`, 384
 generated 2×2 matrix/vector/scale cases, `2e-12` absolute-relative component
-tolerance). It jointly shrinks the operator input and rescaling transform. The
-fixed shape/oracle/golden pins and the separate transpose-adjoint property above
-remain authoritative and independent.
+tolerance). Each generated matrix is a dimensionless linear operator; both
+vector components carry one coherent unit, so the positive nonidentity factors
+`2^k`, `k in {-4, -3, -2, -1, 1, 2, 3, 4}`, rescale both input components and
+the output together. The exponent remains jointly shrinkable with the operator
+input without admitting the identity transform. The fixed shape/oracle/golden
+pins and the separate transpose-adjoint property above remain authoritative
+and independent.
 Batched battery (tests/batched_battery.rs): GEMM vs scalar oracle
 across size classes + β-accumulate path; batch-membership bitwise
 invariance for Cholesky and pivoted LU; L·Lᵀ reconstruction and solve
