@@ -3,7 +3,8 @@
 //! Small coordinate MLPs as shapes (DeepSDF-style). The load-bearing property
 //! is NOT the fit — it is the CERTIFICATE: with SPECTRAL-NORM-constrained
 //! layers and 1-Lipschitz activations, the network carries a certified global
-//! LIPSCHITZ CONSTANT `L = Π σᵢ`, and that bound holds for every input
+//! LIPSCHITZ CONSTANT `L = Π Uᵢ`, where every `Uᵢ` is an outward-rounded upper
+//! bound on a layer's largest singular value. That bound holds for every input
 //! regardless of training. That is what keeps a neural shape inside the
 //! certificate regime:
 //!
@@ -16,7 +17,8 @@
 //! Neural charts PROPOSE geometry; certification (watertightness, Hausdorff
 //! agreement, topology) comes from the certificate machinery, NEVER the loss
 //! curve — so [`TopologyHint`] is honestly `Unknown` here. Deterministic; no
-//! dependencies (in-house power iteration for the spectral norm).
+//! dependencies (in-house power iteration for diagnostics and scaled
+//! Frobenius/induced-norm upper bounds for certificates).
 
 /// A dense affine layer (`out × in` weights + bias).
 #[derive(Debug, Clone, PartialEq)]
@@ -31,7 +33,8 @@ impl Layer {
     /// A layer.
     ///
     /// # Panics
-    /// If the weight rows disagree with the bias length or are ragged.
+    /// If the weight rows disagree with the bias length, are ragged, or contain
+    /// non-finite values. Biases must also be finite.
     #[must_use]
     pub fn new(weights: Vec<Vec<f64>>, bias: Vec<f64>) -> Layer {
         assert!(weights.len() == bias.len(), "weights/bias length mismatch");
@@ -41,6 +44,11 @@ impl Layer {
                 "ragged weights"
             );
         }
+        assert!(
+            weights.iter().flatten().all(|w| w.is_finite()),
+            "weights must be finite"
+        );
+        assert!(bias.iter().all(|b| b.is_finite()), "bias must be finite");
         Layer { weights, bias }
     }
 
@@ -49,8 +57,14 @@ impl Layer {
     }
 }
 
-/// The spectral norm (largest singular value) of a matrix, by power iteration
-/// on `WᵀW`.
+/// A deterministic power-iteration estimate of the spectral norm (largest
+/// singular value) of a matrix.
+///
+/// This estimate is retained for diagnostics and backwards compatibility. It
+/// can converge from below or miss a singular direction orthogonal to its
+/// fixed starting vector, so it MUST NOT be used as a safety certificate. Use
+/// [`spectral_norm_upper_bound`] for admission, normalization, and Lipschitz
+/// claims.
 #[must_use]
 pub fn spectral_norm(weights: &[Vec<f64>]) -> f64 {
     if weights.is_empty() || weights[0].is_empty() {
@@ -72,22 +86,105 @@ pub fn spectral_norm(weights: &[Vec<f64>]) -> f64 {
         }
         v = z;
     }
-    norm(&matvec(weights, &v)) // ‖W v‖ = σ_max
+    norm(&matvec(weights, &v)) // ‖W v‖ estimates σ_max from below.
 }
 
-/// Spectrally normalize a layer so its weight matrix has spectral norm exactly
-/// `bound` (the constraint that yields the Lipschitz certificate).
+/// A guaranteed finite upper bound on a matrix's spectral norm.
+///
+/// The result is the tighter of the scaled Frobenius bound and
+/// `sqrt(||W||_1 ||W||_∞)`, each evaluated with outward rounding at every
+/// positive arithmetic operation. The result can conservatively exceed the
+/// true spectral norm by as much as `sqrt(rank)`, but unlike power iteration it
+/// cannot miss a singular direction. Scaling by the largest entry avoids
+/// intermediate square/sum overflow.
+///
+/// # Panics
+///
+/// Panics for ragged or non-finite matrices, or when no finite `f64` can
+/// represent the certified upper bound. The latter is a fail-closed admission
+/// outcome: returning `f64::MAX` would be unsound when the mathematical norm is
+/// larger than `f64::MAX`.
+#[must_use]
+pub fn spectral_norm_upper_bound(weights: &[Vec<f64>]) -> f64 {
+    let (max_abs, unit_bound) = scaled_spectral_upper_parts(weights);
+    finite_scaled_upper(max_abs, unit_bound)
+        .unwrap_or_else(|| panic!("spectral-norm upper bound is not representable as a finite f64"))
+}
+
+/// Normalize a layer so its weight matrix has spectral norm at most `bound`.
+///
+/// This uses [`spectral_norm_upper_bound`], not the power-iteration estimate.
+/// The stored matrix is re-certified after floating-point scaling; if an
+/// extreme rounding case cannot be corrected in a few deterministic passes,
+/// the weights are collapsed to zero as a fail-closed fallback.
+///
+/// # Panics
+///
+/// Panics if `bound` is negative or non-finite, or if the layer was mutated
+/// after construction into a ragged or non-finite state.
 #[must_use]
 pub fn spectral_normalize(mut layer: Layer, bound: f64) -> Layer {
-    let sigma = spectral_norm(&layer.weights);
-    if sigma > 1e-30 {
-        let scale = bound / sigma;
-        for row in &mut layer.weights {
-            for w in row {
-                *w *= scale;
+    assert!(
+        bound.is_finite() && bound >= 0.0,
+        "spectral bound must be finite and non-negative"
+    );
+    assert!(
+        layer.bias.iter().all(|b| b.is_finite()),
+        "bias must be finite"
+    );
+    assert!(
+        layer.weights.len() == layer.bias.len(),
+        "weights/bias length mismatch"
+    );
+
+    let (max_abs, unit_bound) = scaled_spectral_upper_parts(&layer.weights);
+    if max_abs == 0.0 {
+        return layer;
+    }
+    if bound == 0.0 {
+        zero_weights(&mut layer.weights);
+        return layer;
+    }
+
+    // Form each normalized value relative to max_abs instead of first forming
+    // bound / (max_abs * unit_bound). This remains useful when the original
+    // matrix's norm exceeds f64::MAX or max_abs is subnormal.
+    let target = next_down_nonnegative(bound / unit_bound);
+    for row in &mut layer.weights {
+        for w in row {
+            *w = (*w / max_abs) * target;
+        }
+    }
+
+    // Re-certify the values actually stored after rounded division and
+    // multiplication. Ordinarily one pass suffices; the fixed limit keeps the
+    // operation deterministic even at subnormal boundaries.
+    for _ in 0..4 {
+        match try_spectral_norm_upper_bound(&layer.weights) {
+            Some(certified) if certified <= bound => return layer,
+            Some(certified) => {
+                let correction = next_down_nonnegative(bound / certified);
+                for row in &mut layer.weights {
+                    for w in row {
+                        *w *= correction;
+                    }
+                }
+            }
+            None => {
+                // The current certificate is not finitely representable yet.
+                for row in &mut layer.weights {
+                    for w in row {
+                        *w *= 0.5;
+                    }
+                }
             }
         }
     }
+
+    // A zero matrix is always within the requested bound. Reaching this path
+    // requires an extreme rounding plateau; safety takes precedence over
+    // preserving a non-certifiable parameterization.
+    zero_weights(&mut layer.weights);
     layer
 }
 
@@ -106,15 +203,21 @@ pub struct MlpSdf {
 }
 
 impl MlpSdf {
-    /// Build a chart from raw layers, spectrally normalizing each to `bound`
-    /// (so `L = boundᵏ` with 1-Lipschitz `tanh` activations). The last layer
-    /// must map to a scalar.
+    /// Build a chart from raw layers, spectrally normalizing each to at most
+    /// `bound` (so `L ≤ boundᵏ` with 1-Lipschitz `tanh` activations). The last
+    /// layer must map to a scalar.
     ///
     /// # Panics
-    /// If `layers` is empty, dimensions do not chain, or the output is not scalar.
+    /// If `layers` is empty, dimensions do not chain, the output is not scalar,
+    /// `bound` is invalid, or the global certificate is not finitely
+    /// representable.
     #[must_use]
     pub fn new(layers: Vec<Layer>, bound: f64) -> MlpSdf {
         assert!(!layers.is_empty(), "need at least one layer");
+        assert!(
+            bound.is_finite() && bound >= 0.0,
+            "spectral bound must be finite and non-negative"
+        );
         assert!(
             layers.last().unwrap().weights.len() == 1,
             "output must be scalar"
@@ -129,11 +232,15 @@ impl MlpSdf {
             .into_iter()
             .map(|l| spectral_normalize(l, bound))
             .collect();
-        // certified global Lipschitz constant = Π σᵢ (tanh is 1-Lipschitz).
-        let lipschitz = normalized
-            .iter()
-            .map(|l| spectral_norm(&l.weights))
-            .product();
+        // Certified global Lipschitz constant = Π Uᵢ, where each Uᵢ is a
+        // guaranteed spectral-norm upper bound (tanh is 1-Lipschitz).
+        let lipschitz = normalized.iter().fold(1.0, |product, layer| {
+            product_up(product, spectral_norm_upper_bound(&layer.weights))
+        });
+        assert!(
+            lipschitz.is_finite(),
+            "global Lipschitz certificate is not representable as a finite f64"
+        );
         MlpSdf {
             layers: normalized,
             lipschitz,
@@ -223,13 +330,18 @@ impl MlpSdf {
 
 /// The provably-safe sphere-tracing step radius: with SDF value `value` and
 /// Lipschitz constant `lipschitz`, `f` cannot change sign within `|value|/L`, so
-/// a step of that size never tunnels through the surface.
+/// a step of that size never tunnels through the surface. The returned finite
+/// quotient is rounded DOWN; a nearest-rounded quotient can exceed the exact
+/// safe radius by one ulp. Invalid inputs fail closed to a zero step.
 #[must_use]
 pub fn safe_step_radius(value: f64, lipschitz: f64) -> f64 {
-    if lipschitz <= 0.0 {
+    if !value.is_finite() || !lipschitz.is_finite() || lipschitz < 0.0 {
+        return 0.0;
+    }
+    if lipschitz == 0.0 {
         return f64::INFINITY;
     }
-    value.abs() / lipschitz
+    next_down_nonnegative(value.abs() / lipschitz)
 }
 
 // -- linear-algebra helpers -------------------------------------------------
@@ -263,5 +375,141 @@ fn normalize(v: &mut [f64]) {
         for vi in v {
             *vi /= n;
         }
+    }
+}
+
+/// Return `(max_abs, unit_bound)` such that the spectral norm is at most
+/// `max_abs * unit_bound`, without forming that potentially overflowing
+/// product. All inputs are validated here so every certificate-bearing caller
+/// shares the same fail-closed boundary.
+fn scaled_spectral_upper_parts(weights: &[Vec<f64>]) -> (f64, f64) {
+    let Some(first) = weights.first() else {
+        return (0.0, 0.0);
+    };
+    let n_in = first.len();
+    assert!(
+        weights.iter().all(|row| row.len() == n_in),
+        "ragged weights"
+    );
+    assert!(
+        weights.iter().flatten().all(|w| w.is_finite()),
+        "weights must be finite"
+    );
+
+    let max_abs = weights
+        .iter()
+        .flatten()
+        .map(|w| w.abs())
+        .fold(0.0_f64, f64::max);
+    if max_abs == 0.0 {
+        return (0.0, 0.0);
+    }
+
+    let mut frobenius_sum = 0.0;
+    let mut max_row_sum = 0.0;
+    let mut column_sums = vec![0.0; n_in];
+    for row in weights {
+        let mut row_sum = 0.0;
+        for (column_sum, magnitude) in column_sums.iter_mut().zip(row.iter().map(|w| w.abs())) {
+            if magnitude == 0.0 {
+                continue;
+            }
+            let ratio = if magnitude == max_abs {
+                1.0
+            } else {
+                next_up_nonnegative(magnitude / max_abs)
+            };
+            frobenius_sum = add_up_nonnegative(frobenius_sum, mul_up_nonnegative(ratio, ratio));
+            row_sum = add_up_nonnegative(row_sum, ratio);
+            *column_sum = add_up_nonnegative(*column_sum, ratio);
+        }
+        max_row_sum = max_row_sum.max(row_sum);
+    }
+
+    let frobenius_bound = if frobenius_sum == 1.0 {
+        1.0
+    } else {
+        next_up_nonnegative(frobenius_sum.sqrt())
+    };
+    let max_column_sum = column_sums.into_iter().fold(0.0_f64, f64::max);
+    let induced_product = mul_up_nonnegative(max_column_sum, max_row_sum);
+    let induced_bound = if induced_product == 1.0 {
+        1.0
+    } else {
+        next_up_nonnegative(induced_product.sqrt())
+    };
+    let unit_bound = frobenius_bound.min(induced_bound);
+    (max_abs, unit_bound)
+}
+
+fn try_spectral_norm_upper_bound(weights: &[Vec<f64>]) -> Option<f64> {
+    let (max_abs, unit_bound) = scaled_spectral_upper_parts(weights);
+    finite_scaled_upper(max_abs, unit_bound)
+}
+
+fn finite_scaled_upper(max_abs: f64, unit_bound: f64) -> Option<f64> {
+    if max_abs == 0.0 || unit_bound == 0.0 {
+        return Some(0.0);
+    }
+    if unit_bound == 1.0 {
+        // The induced certificate is exactly max_abs (for example, a single
+        // nonzero or a scaled permutation matrix). Keeping this exact also
+        // admits a 1×1 matrix containing f64::MAX.
+        return Some(max_abs);
+    }
+    let product = mul_up_nonnegative(max_abs, unit_bound);
+    product.is_finite().then_some(product)
+}
+
+fn add_up_nonnegative(a: f64, b: f64) -> f64 {
+    if a == 0.0 {
+        return b;
+    }
+    if b == 0.0 {
+        return a;
+    }
+    next_up_nonnegative(a + b)
+}
+
+fn mul_up_nonnegative(a: f64, b: f64) -> f64 {
+    if a == 0.0 || b == 0.0 {
+        return 0.0;
+    }
+    if a == 1.0 {
+        return b;
+    }
+    if b == 1.0 {
+        return a;
+    }
+    next_up_nonnegative(a * b)
+}
+
+fn product_up(a: f64, b: f64) -> f64 {
+    mul_up_nonnegative(a, b)
+}
+
+fn next_up_nonnegative(value: f64) -> f64 {
+    if value == f64::INFINITY {
+        return value;
+    }
+    if value == 0.0 {
+        return f64::from_bits(1);
+    }
+    f64::from_bits(value.to_bits() + 1)
+}
+
+fn next_down_nonnegative(value: f64) -> f64 {
+    if value <= 0.0 {
+        return 0.0;
+    }
+    if value == f64::INFINITY {
+        return f64::MAX;
+    }
+    f64::from_bits(value.to_bits() - 1)
+}
+
+fn zero_weights(weights: &mut [Vec<f64>]) {
+    for row in weights {
+        row.fill(0.0);
     }
 }

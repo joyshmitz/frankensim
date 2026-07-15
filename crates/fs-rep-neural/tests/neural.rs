@@ -1,11 +1,13 @@
 //! Battery for neural implicit charts (fs-rep-neural). The load-bearing tests
-//! are the CERTIFICATE ones: the spectral norm is correct, the certified
-//! Lipschitz constant is never violated by sampling, interval bound propagation
-//! is sound over a box, the gradient is bounded by L, and a sphere-trace step
-//! of |f|/L never tunnels through the surface.
+//! are the CERTIFICATE ones: the spectral-norm upper bound never understates
+//! the true norm, the certified Lipschitz constant is never violated by
+//! sampling, interval bound propagation is sound over a box, the gradient is
+//! bounded by L, and a sphere-trace step of |f|/L never tunnels through the
+//! surface.
 
 use fs_rep_neural::{
-    Layer, MlpSdf, TopologyHint, safe_step_radius, spectral_norm, spectral_normalize,
+    Layer, MlpSdf, TopologyHint, safe_step_radius, spectral_norm, spectral_norm_upper_bound,
+    spectral_normalize,
 };
 
 // A deterministic pseudo-random point stream in [-1, 1)^2 (no rand crate).
@@ -44,10 +46,135 @@ fn spectral_norm_matches_known_values() {
 }
 
 #[test]
-fn spectral_normalization_sets_the_norm_to_the_bound() {
+fn spectral_normalization_certifies_at_most_the_bound() {
     let layer = Layer::new(vec![vec![1.0, 2.0], vec![3.0, 4.0]], vec![0.0, 0.0]);
     let normed = spectral_normalize(layer, 2.0);
-    assert!((spectral_norm(&normed.weights) - 2.0).abs() < 1e-6);
+    let certified = spectral_norm_upper_bound(&normed.weights);
+    assert!(certified <= 2.0, "certified upper bound = {certified}");
+    assert!(spectral_norm(&normed.weights) <= certified);
+}
+
+#[test]
+fn certified_bound_covers_a_power_iteration_blind_direction() {
+    // Recreate spectral_norm's normalized fixed starting direction, then make
+    // a nonzero row orthogonal to it. The small scale keeps even a last-ULP
+    // residual below power iteration's fixed cutoff; a safety certificate must
+    // still see the matrix.
+    let initial_norm = (1.0_f64 + 1.1_f64 * 1.1_f64).sqrt();
+    let v0 = 1.0 / initial_norm;
+    let v1 = 1.1 / initial_norm;
+    let blind_scale = 1e-8;
+    let weights = vec![vec![v1 * blind_scale, -v0 * blind_scale]];
+    assert_eq!(spectral_norm(&weights), 0.0);
+
+    let exact = v0.hypot(v1) * blind_scale;
+    let certified = spectral_norm_upper_bound(&weights);
+    assert!(certified >= exact, "upper {certified} < exact {exact}");
+    assert!(certified.is_finite());
+
+    let normed = spectral_normalize(Layer::new(weights, vec![0.0]), 0.5);
+    let normalized_exact = normed.weights[0][0].hypot(normed.weights[0][1]);
+    let normalized_certified = spectral_norm_upper_bound(&normed.weights);
+    assert!(normalized_exact <= normalized_certified);
+    assert!(normalized_certified <= 0.5);
+}
+
+#[test]
+fn certified_bound_preserves_sparse_axis_layer_scale() {
+    // This is the hidden-layer structure used by NeuroShapeCert. Its exact
+    // spectral norm is sqrt(18); the induced bound sees that structure while a
+    // Frobenius-only bound would be 6 and unnecessarily alter the chart.
+    let weights = vec![
+        vec![3.0, 0.0],
+        vec![-3.0, 0.0],
+        vec![0.0, 3.0],
+        vec![0.0, -3.0],
+    ];
+    let exact = (18.0_f64).sqrt();
+    let certified = spectral_norm_upper_bound(&weights);
+    assert!(certified >= exact);
+    assert!(
+        certified - exact < 1e-12,
+        "overly conservative: {certified}"
+    );
+}
+
+#[test]
+fn certificate_handles_zero_rectangular_and_extreme_finite_matrices() {
+    let zero = vec![vec![0.0; 3], vec![0.0; 3]];
+    assert_eq!(spectral_norm_upper_bound(&zero), 0.0);
+    assert_eq!(
+        spectral_normalize(Layer::new(zero.clone(), vec![0.0; 2]), 1.0).weights,
+        zero
+    );
+    let collapsed = spectral_normalize(Layer::new(vec![vec![1.0, -2.0]], vec![0.0]), 0.0);
+    assert_eq!(spectral_norm_upper_bound(&collapsed.weights), 0.0);
+
+    // A single maximum-finite entry has an exactly representable finite norm.
+    assert_eq!(spectral_norm_upper_bound(&[vec![f64::MAX]]), f64::MAX);
+
+    // Two maximum-finite entries have a mathematical norm greater than
+    // f64::MAX, so a direct finite certificate is impossible and must fail
+    // closed. Normalization operates on scaled entries and remains useful.
+    assert!(
+        std::panic::catch_unwind(|| { spectral_norm_upper_bound(&[vec![f64::MAX, f64::MAX]]) })
+            .is_err()
+    );
+    let huge = spectral_normalize(Layer::new(vec![vec![f64::MAX, f64::MAX]], vec![0.0]), 1.0);
+    assert!(huge.weights.iter().flatten().all(|w| w.is_finite()));
+    assert!(huge.weights.iter().flatten().any(|w| *w != 0.0));
+    assert!(spectral_norm_upper_bound(&huge.weights) <= 1.0);
+
+    // Relative scaling also avoids overflow when growing subnormal weights.
+    let tiny = spectral_normalize(
+        Layer::new(vec![vec![f64::from_bits(1), f64::from_bits(1)]], vec![0.0]),
+        1.0,
+    );
+    assert!(tiny.weights.iter().flatten().all(|w| w.is_finite()));
+    assert!(tiny.weights.iter().flatten().any(|w| *w != 0.0));
+    assert!(spectral_norm_upper_bound(&tiny.weights) <= 1.0);
+}
+
+#[test]
+fn certificate_rejects_nonfinite_inputs_and_unrepresentable_products() {
+    assert!(std::panic::catch_unwind(|| Layer::new(vec![vec![f64::NAN]], vec![0.0])).is_err());
+    assert!(std::panic::catch_unwind(|| Layer::new(vec![vec![1.0]], vec![f64::INFINITY])).is_err());
+    assert!(std::panic::catch_unwind(|| spectral_norm_upper_bound(&[vec![f64::NAN]])).is_err());
+    assert!(
+        std::panic::catch_unwind(|| {
+            spectral_normalize(Layer::new(vec![vec![1.0]], vec![0.0]), f64::INFINITY)
+        })
+        .is_err()
+    );
+    assert!(
+        std::panic::catch_unwind(|| {
+            spectral_normalize(Layer::new(vec![vec![1.0]], vec![0.0]), -1.0)
+        })
+        .is_err()
+    );
+
+    let layers = vec![
+        Layer::new(vec![vec![1.0]], vec![0.0]),
+        Layer::new(vec![vec![1.0]], vec![0.0]),
+    ];
+    assert!(std::panic::catch_unwind(|| MlpSdf::new(layers, f64::MAX)).is_err());
+}
+
+#[test]
+fn safe_step_rounds_toward_the_conservative_side() {
+    // The nearest f64 representation of exact 1/10 lies above the rational
+    // value. A safety radius must therefore step down one ulp.
+    let nearest = 1.0_f64 / 10.0;
+    let radius = safe_step_radius(1.0, 10.0);
+    assert_eq!(radius.to_bits() + 1, nearest.to_bits());
+    assert_eq!(safe_step_radius(0.0, 10.0), 0.0);
+
+    // Invalid claimed bounds cannot create motion authority. A genuinely
+    // constant finite field retains the mathematically unbounded radius.
+    assert_eq!(safe_step_radius(1.0, f64::NAN), 0.0);
+    assert_eq!(safe_step_radius(f64::INFINITY, 1.0), 0.0);
+    assert_eq!(safe_step_radius(1.0, -1.0), 0.0);
+    assert_eq!(safe_step_radius(1.0, 0.0), f64::INFINITY);
 }
 
 #[test]
