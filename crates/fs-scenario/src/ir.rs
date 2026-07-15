@@ -764,9 +764,25 @@ fn as_f64(sx: &Sx) -> Result<f64, ScenarioError> {
     Err(err(0, "expected a finite number"))
 }
 
+fn reserve_decoded_string(value: &mut String, additional: usize) -> Result<(), ScenarioError> {
+    value
+        .try_reserve_exact(additional)
+        .map_err(|allocation_error| {
+            err(
+                0,
+                &format!(
+                    "IR decoded string allocation for {additional} bytes was refused: {allocation_error}"
+                ),
+            )
+        })
+}
+
 fn as_str(sx: &Sx) -> Result<String, ScenarioError> {
     if let Sx::Str(s) = sx {
-        return Ok(s.clone());
+        let mut owned = String::new();
+        reserve_decoded_string(&mut owned, s.len())?;
+        owned.push_str(s);
+        return Ok(owned);
     }
     Err(err(0, "expected a string"))
 }
@@ -1348,7 +1364,7 @@ pub fn check_round_trip(s: &Scenario, out: &mut Vec<Violation>) {
 
 #[cfg(test)]
 mod allocation_internal_tests {
-    use super::reserve_decoded;
+    use super::{reserve_decoded, reserve_decoded_string};
     use crate::ScenarioError;
 
     #[test]
@@ -1364,5 +1380,16 @@ mod allocation_internal_tests {
                     && what.contains("was refused")
         ));
         assert!(values.is_empty());
+
+        let mut value = String::new();
+        let error = reserve_decoded_string(&mut value, usize::MAX)
+            .expect_err("impossible decoded string capacity must be refused");
+        assert!(matches!(
+            error,
+            ScenarioError::Parse { at: 0, what }
+                if what.contains("IR decoded string allocation")
+                    && what.contains("was refused")
+        ));
+        assert!(value.is_empty());
     }
 }
