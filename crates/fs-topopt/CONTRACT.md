@@ -201,11 +201,12 @@ The iteration log emits policy version, cut/total mass and fraction, band
 levels, exhaustive decision reason, analysis/target design witnesses and
 metrics, target leaf counts, policy splits, post-update motion-conformance
 splits, the fully conformed target-grid leaf count, and their reconstructed
-total. Exact leaf-count chaining proves that each target grid is the next
-analysis grid and that the last target grid is the final re-solve grid;
-non-cryptographic design witnesses correlate each target with the next
-analysis snapshot and the returned design. The returned design receives an
-explicit finite final solve.
+total. Leaf-count chaining, together with the split-only implementation and
+absence of an intervening grid mutation, accounts for continuity into each
+next analysis and the final re-solve; cardinality alone is not claimed as a
+topology-identity certificate. Non-cryptographic design witnesses correlate
+each target with the next analysis snapshot and the returned design. The
+returned design receives an explicit finite final solve.
 The battery separately pins disabled, zero-mass, strict-threshold,
 and exhausted-headroom no-op reasons; invalid-level,
 non-finite-indicator/accumulated-mass/recursive-enclosure, and non-leaf-key

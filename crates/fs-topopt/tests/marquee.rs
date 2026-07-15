@@ -322,7 +322,7 @@ fn tm_003_dwr_splits_concentrate_at_the_boundary() {
         );
         assert_eq!(
             pair[0].target_grid_leaf_count, pair[1].dwr_refinement.leaves_before,
-            "a row's target grid is exactly the next row's analysis grid"
+            "split-only accounting permits no hidden leaf-count change before the next analysis"
         );
     }
     let last_iteration = report.iterations.last().expect("nonempty fixture run");
@@ -332,7 +332,7 @@ fn tm_003_dwr_splits_concentrate_at_the_boundary() {
     );
     assert_eq!(
         last_iteration.target_grid_leaf_count, report.final_grid_leaf_count,
-        "the last target grid is the final re-solve grid"
+        "split-only accounting permits no hidden leaf-count change before the final re-solve"
     );
     assert_eq!(
         report.final_design_witness,
