@@ -65,8 +65,11 @@ fs-iga (geometry basis = analysis basis), fs-render NURBS tracing
   without a second structural scan. Owning `admit_with_cx` returns
   `CurveAdmissionRun` and gates the
   lifetime-bound authority after knot and control validation. Its admitted-only
-  `eval_with_cx` returns transactional
-  `CurveEvaluationRun` state and never publishes a partial Cartesian point.
+  `eval_homogeneous_with_cx` returns transactional
+  `CurveHomogeneousEvaluationRun` state and never publishes a partial finite
+  homogeneous representation. Its admitted-only `eval_with_cx` returns
+  transactional `CurveEvaluationRun` state and never publishes a partial
+  Cartesian point.
   Its f64-only admitted `derivatives_with_cx` returns transactional
   `CurveDerivativesRun` state and publishes only a complete Cartesian jet.
   Its admitted-only `insert_knot_with_cx` returns transactional
@@ -266,11 +269,21 @@ individual scalar copies, and destruction are non-preemptible. The primitive
 performs no source revalidation and claims no wall-time bound, exact caller-budget
 consumption, executor drain/finalize, or resumability. Trait `Clone` remains
 available but does not acquire these measured-path claims.
-`AdmittedNurbsCurve::eval_with_cx` carries the same cancellation gate through
-basis construction, polls homogeneous accumulation every 64 logical scalar
-updates, and gates final Cartesian publication. `CurveEvaluationRun::Cancelled`
-contains no partial point; owning curve admission and caller-owned affine
-budget/drain/finalize semantics remain outside this primitive claim.
+`AdmittedNurbsCurve::eval_homogeneous_with_cx` carries one gate through admitted
+basis construction, polls the four-lane homogeneous accumulation every 64
+logical scalar updates, checks each accumulated component for finiteness, and
+gates final homogeneous publication. `CurveHomogeneousEvaluationRun::Cancelled`
+contains no partial representation. This path does not divide by the weight and
+therefore makes no denominator-admissibility, Cartesian-finiteness, regularity,
+topology, or geometric-certificate claim. Generic scalar operations remain
+non-preemptible; owning curve admission, exact caller-budget consumption,
+executor drain/finalize, and resumability remain outside the primitive claim.
+`AdmittedNurbsCurve::eval_with_cx` consumes the same internal accumulation
+directly, then preserves denominator/projection checks and its existing final
+Cartesian publication gate without adding the homogeneous publication
+checkpoint. `CurveEvaluationRun::Cancelled` contains no partial point; owning
+curve admission and caller-owned affine budget/drain/finalize semantics remain
+outside this primitive claim.
 `NurbsCurve::try_clone_with_cx` preserves count-derived copy-work and 64 MiB
 retained-output refusal precedence, then carries one fixed-stride gate through
 fallible knot allocation/copy, fallible control allocation/copy, and final

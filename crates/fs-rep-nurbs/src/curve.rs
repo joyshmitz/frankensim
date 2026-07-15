@@ -710,6 +710,19 @@ pub enum CurveAdmissionRun<'a, S: Scalar, const DIM: usize> {
     Cancelled,
 }
 
+/// Transactional terminal state of cancellation-aware homogeneous evaluation.
+#[must_use]
+#[derive(Debug, Clone, PartialEq)]
+pub enum CurveHomogeneousEvaluationRun<S: Scalar> {
+    /// The complete finite homogeneous point `(w*x..., w)`.
+    Complete {
+        /// Evaluated four-lane homogeneous storage.
+        homogeneous: [S; 4],
+    },
+    /// Cancellation was observed; no partial homogeneous point was published.
+    Cancelled,
+}
+
 /// Transactional terminal state of cancellation-aware Cartesian evaluation.
 #[must_use]
 #[derive(Debug, Clone, PartialEq)]
@@ -1168,22 +1181,71 @@ impl<'a, S: Scalar, const DIM: usize> AdmittedNurbsCurve<'a, S, DIM> {
     /// [`NurbsError::Domain`] outside the domain or when basis work/allocation
     /// is refused.
     pub fn eval_homogeneous(&self, t: S) -> Result<[S; 4], NurbsError> {
-        let knots = self.knots();
-        let (span, basis) = knots.basis(t)?;
-        let p = knots.degree();
-        let mut acc = [S::zero(); 4];
-        for (r, &b) in basis.iter().enumerate() {
-            let cp = &self.inner.cpw[span - p + r];
-            for (a, &c) in acc.iter_mut().zip(cp.iter()) {
-                *a = *a + b * c;
-            }
+        let mut never_cancel = || false;
+        match self.eval_homogeneous_with_poll(t, &mut never_cancel)? {
+            CurveHomogeneousEvaluationRun::Complete { homogeneous } => Ok(homogeneous),
+            CurveHomogeneousEvaluationRun::Cancelled => Err(NurbsError::Domain {
+                what: "non-cancelling homogeneous curve evaluation observed cancellation"
+                    .to_string(),
+            }),
         }
-        if acc.iter().copied().any(|component| !component.is_finite()) {
-            return Err(NurbsError::Domain {
-                what: "homogeneous curve evaluation left the finite numeric domain".to_string(),
-            });
+    }
+
+    /// Evaluate a homogeneous point with bounded cancellation polling.
+    ///
+    /// This admitted-only path reuses the exact immutable curve generation,
+    /// delegates cancellable basis construction to its admitted knot view,
+    /// polls the four-lane accumulation at fixed logical-work strides, and
+    /// gates final homogeneous publication. It does not divide by the weight
+    /// or make a Cartesian-finiteness claim. The caller remains responsible
+    /// for owning admission, `Cx` budget consumption, and request -> drain ->
+    /// finalize semantics around this primitive.
+    ///
+    /// # Errors
+    /// Returns the same parameter, work, allocation, and homogeneous
+    /// finite-arithmetic refusals as [`Self::eval_homogeneous`] when they win
+    /// before an observed cancellation.
+    pub fn eval_homogeneous_with_cx(
+        &self,
+        t: S,
+        cx: &Cx<'_>,
+    ) -> Result<CurveHomogeneousEvaluationRun<S>, NurbsError> {
+        let mut should_cancel = || cx.checkpoint().is_err();
+        self.eval_homogeneous_with_poll(t, &mut should_cancel)
+    }
+
+    /// Evaluate an admitted homogeneous point while sharing a compound
+    /// caller's cancellation callback.
+    pub(crate) fn eval_homogeneous_with_poll(
+        &self,
+        t: S,
+        should_cancel: &mut impl FnMut() -> bool,
+    ) -> Result<CurveHomogeneousEvaluationRun<S>, NurbsError> {
+        let (span, basis) = match self.knots().basis_with_poll(t, should_cancel)? {
+            BasisRun::Complete { span, values } => (span, values),
+            BasisRun::Cancelled => return Ok(CurveHomogeneousEvaluationRun::Cancelled),
+        };
+        self.eval_homogeneous_from_basis_with_poll(span, &basis, should_cancel)
+    }
+
+    fn eval_homogeneous_from_basis_with_poll(
+        &self,
+        span: usize,
+        basis: &[S],
+        mut should_cancel: impl FnMut() -> bool,
+    ) -> Result<CurveHomogeneousEvaluationRun<S>, NurbsError> {
+        let (homogeneous, _) = match self.accumulate_homogeneous_from_basis_with_poll(
+            span,
+            basis,
+            &mut should_cancel,
+        )? {
+            CurveWorkRun::Complete(accumulation) => accumulation,
+            CurveWorkRun::Cancelled => return Ok(CurveHomogeneousEvaluationRun::Cancelled),
+        };
+        if should_cancel() {
+            return Ok(CurveHomogeneousEvaluationRun::Cancelled);
         }
-        Ok(acc)
+        Ok(CurveHomogeneousEvaluationRun::Complete { homogeneous })
     }
 
     /// Cartesian evaluation.
@@ -1261,32 +1323,12 @@ impl<'a, S: Scalar, const DIM: usize> AdmittedNurbsCurve<'a, S, DIM> {
         basis: &[S],
         mut should_cancel: impl FnMut() -> bool,
     ) -> Result<CurveEvaluationRun<S, DIM>, NurbsError> {
-        if should_cancel() {
-            return Ok(CurveEvaluationRun::Cancelled);
-        }
-
-        let p = self.knots().degree();
-        let mut operations_since_poll = 0usize;
-        let mut homogeneous = [S::zero(); 4];
-        for (r, &coefficient) in basis.iter().enumerate() {
-            let control = &self.inner.cpw[span - p + r];
-            for (accumulator, &component) in homogeneous.iter_mut().zip(control) {
-                *accumulator = *accumulator + coefficient * component;
-                if curve_poll_due(&mut operations_since_poll, &mut should_cancel) {
-                    return Ok(CurveEvaluationRun::Cancelled);
-                }
-            }
-        }
-        for &component in &homogeneous {
-            if !component.is_finite() {
-                return Err(NurbsError::Domain {
-                    what: "homogeneous curve evaluation left the finite numeric domain".to_string(),
-                });
-            }
-            if curve_poll_due(&mut operations_since_poll, &mut should_cancel) {
-                return Ok(CurveEvaluationRun::Cancelled);
-            }
-        }
+        let (homogeneous, mut operations_since_poll) = match self
+            .accumulate_homogeneous_from_basis_with_poll(span, basis, &mut should_cancel)?
+        {
+            CurveWorkRun::Complete(accumulation) => accumulation,
+            CurveWorkRun::Cancelled => return Ok(CurveEvaluationRun::Cancelled),
+        };
         if !homogeneous[3].is_admissible_weight() {
             return Err(NurbsError::Domain {
                 what: "curve evaluation produced an inadmissible rational denominator".to_string(),
@@ -1309,6 +1351,41 @@ impl<'a, S: Scalar, const DIM: usize> AdmittedNurbsCurve<'a, S, DIM> {
             return Ok(CurveEvaluationRun::Cancelled);
         }
         Ok(CurveEvaluationRun::Complete { point })
+    }
+
+    fn accumulate_homogeneous_from_basis_with_poll(
+        &self,
+        span: usize,
+        basis: &[S],
+        should_cancel: &mut impl FnMut() -> bool,
+    ) -> Result<CurveWorkRun<([S; 4], usize)>, NurbsError> {
+        if should_cancel() {
+            return Ok(CurveWorkRun::Cancelled);
+        }
+
+        let p = self.knots().degree();
+        let mut operations_since_poll = 0usize;
+        let mut homogeneous = [S::zero(); 4];
+        for (r, &coefficient) in basis.iter().enumerate() {
+            let control = &self.inner.cpw[span - p + r];
+            for (accumulator, &component) in homogeneous.iter_mut().zip(control) {
+                *accumulator = *accumulator + coefficient * component;
+                if curve_poll_due(&mut operations_since_poll, should_cancel) {
+                    return Ok(CurveWorkRun::Cancelled);
+                }
+            }
+        }
+        for &component in &homogeneous {
+            if !component.is_finite() {
+                return Err(NurbsError::Domain {
+                    what: "homogeneous curve evaluation left the finite numeric domain".to_string(),
+                });
+            }
+            if curve_poll_due(&mut operations_since_poll, should_cancel) {
+                return Ok(CurveWorkRun::Cancelled);
+            }
+        }
+        Ok(CurveWorkRun::Complete((homogeneous, operations_since_poll)))
     }
 
     /// Insert one knot while reusing this exact source admission.
@@ -3116,6 +3193,58 @@ mod tests {
     }
 
     #[test]
+    fn admitted_homogeneous_curve_evaluation_with_cx_is_transactional_and_exact() {
+        let curve = line_curve();
+        let admitted = curve.admit().expect("admitted line");
+        with_curve_cx(true, |cx| {
+            assert_eq!(
+                admitted
+                    .eval_homogeneous_with_cx(0.25, cx)
+                    .expect("valid homogeneous request"),
+                CurveHomogeneousEvaluationRun::Cancelled
+            );
+            assert!(matches!(
+                admitted.eval_homogeneous_with_cx(-1.0, cx),
+                Err(NurbsError::Domain { .. })
+            ));
+        });
+        with_curve_cx(false, |cx| {
+            assert_eq!(
+                admitted
+                    .eval_homogeneous_with_cx(0.25, cx)
+                    .expect("active homogeneous context"),
+                CurveHomogeneousEvaluationRun::Complete {
+                    homogeneous: admitted
+                        .eval_homogeneous(0.25)
+                        .expect("legacy homogeneous evaluation"),
+                }
+            );
+        });
+
+        let exact = NurbsCurve::<Rat, 1>::new(
+            KnotVector::new(vec![Rat::int(0), Rat::int(0), Rat::int(1), Rat::int(1)], 1)
+                .expect("exact line knots"),
+            &[[Rat::int(0)], [Rat::int(2)]],
+            &[Rat::int(1), Rat::int(2)],
+        )
+        .expect("exact rational line");
+        let exact_admitted = exact.admit().expect("admitted exact line");
+        let parameter = Rat::new(1, 2);
+        with_curve_cx(false, |cx| {
+            assert_eq!(
+                exact_admitted
+                    .eval_homogeneous_with_cx(parameter, cx)
+                    .expect("active exact homogeneous context"),
+                CurveHomogeneousEvaluationRun::Complete {
+                    homogeneous: exact_admitted
+                        .eval_homogeneous(parameter)
+                        .expect("legacy exact homogeneous evaluation"),
+                }
+            );
+        });
+    }
+
+    #[test]
     fn curve_copy_with_cx_is_transactional_and_exact() {
         let curve = line_curve();
         with_curve_cx(true, |cx| {
@@ -3943,9 +4072,73 @@ mod tests {
         assert_eq!(run(), run());
         assert_eq!(run(), (CurveEvaluationRun::Cancelled, 2));
 
+        let homogeneous_run = || {
+            let mut polls = 0usize;
+            let outcome = admitted
+                .eval_homogeneous_from_basis_with_poll(span, &basis, || {
+                    polls += 1;
+                    polls == 2
+                })
+                .expect("finite homogeneous accumulation");
+            (outcome, polls)
+        };
+        assert_eq!(homogeneous_run(), homogeneous_run());
+        assert_eq!(
+            homogeneous_run(),
+            (CurveHomogeneousEvaluationRun::Cancelled, 2)
+        );
+
         let line = line_curve();
         let admitted_line = line.admit().expect("admitted line");
         let (line_span, line_basis) = admitted_line.knots().basis(0.5).expect("line basis");
+        let mut homogeneous_total_polls = 0usize;
+        assert!(matches!(
+            admitted_line
+                .eval_homogeneous_from_basis_with_poll(line_span, &line_basis, || {
+                    homogeneous_total_polls += 1;
+                    false
+                })
+                .expect("healthy homogeneous line evaluation"),
+            CurveHomogeneousEvaluationRun::Complete { .. }
+        ));
+        assert_eq!(homogeneous_total_polls, 2);
+        let mut homogeneous_replay_polls = 0usize;
+        assert_eq!(
+            admitted_line
+                .eval_homogeneous_from_basis_with_poll(line_span, &line_basis, || {
+                    homogeneous_replay_polls += 1;
+                    homogeneous_replay_polls == homogeneous_total_polls
+                })
+                .expect("homogeneous publication cancellation"),
+            CurveHomogeneousEvaluationRun::Cancelled
+        );
+        assert_eq!(homogeneous_replay_polls, homogeneous_total_polls);
+
+        let mut full_homogeneous_polls = 0usize;
+        let mut never_cancel = || {
+            full_homogeneous_polls += 1;
+            false
+        };
+        assert!(matches!(
+            admitted_line
+                .eval_homogeneous_with_poll(0.5, &mut never_cancel)
+                .expect("healthy full homogeneous evaluation"),
+            CurveHomogeneousEvaluationRun::Complete { .. }
+        ));
+        assert_eq!(full_homogeneous_polls, 7);
+        let mut full_homogeneous_replay = 0usize;
+        let mut cancel_at_homogeneous_publication = || {
+            full_homogeneous_replay += 1;
+            full_homogeneous_replay == full_homogeneous_polls
+        };
+        assert_eq!(
+            admitted_line
+                .eval_homogeneous_with_poll(0.5, &mut cancel_at_homogeneous_publication)
+                .expect("full homogeneous publication cancellation"),
+            CurveHomogeneousEvaluationRun::Cancelled
+        );
+        assert_eq!(full_homogeneous_replay, full_homogeneous_polls);
+
         let mut total_polls = 0usize;
         assert!(matches!(
             admitted_line
@@ -3956,6 +4149,7 @@ mod tests {
                 .expect("healthy line evaluation"),
             CurveEvaluationRun::Complete { .. }
         ));
+        assert_eq!(total_polls, 2);
         let mut replay_polls = 0usize;
         assert_eq!(
             admitted_line
