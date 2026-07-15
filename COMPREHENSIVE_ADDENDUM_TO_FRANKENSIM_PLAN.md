@@ -34,7 +34,23 @@ an arbitrary partitioned time discretization passive (extension charter §3.1,
 
 # Part 0 — Executive Summary
 
-The base plan builds a system whose **composition is trustworthy**: multi-representation geometry glued by cellular sheaf cohomology, physics coupled through certified interfaces, and error bounds that survive every seam because they compose algebraically instead of dying at file-exchange boundaries. For power coupling, "trustworthy" means the Dirac interconnection is lossless and the full component/discretization/transfer/iteration/accounting-window obligations are audited; it does not mean arbitrary partitioned coupling is passive by topology alone. **Ratification note:** `frankensim-ext-ratification-register-ozq0`, extension charter §3.7 and §6. That property is real, rare, and architecturally unavailable to incumbents, whose seams are held together by human operators.
+The base plan builds toward a system whose **composition is trustworthy**:
+multi-representation geometry related through cellular-sheaf machinery, physics
+coupled through typed interfaces, and property-specific error bounds that
+survive admitted seams because they compose algebraically instead of dying at
+file-exchange boundaries. Today's retained geometry authority is deliberately
+narrower: it proves sampled-interface compatibility for builder-admitted
+scalar traces, while continuum descent, topology, transfer, and coupled-power
+claims each require their own coverage and formulation obligations. The
+ambition is stronger than a universal metaphor: discover and prove the exact
+composition theorems that let each named property descend globally. For power
+coupling, "trustworthy" means the Dirac interconnection is lossless and the
+full component/discretization/transfer/iteration/accounting-window obligations
+are audited; it does not mean arbitrary partitioned coupling is passive by
+topology alone. **Ratification note:**
+`frankensim-ext-ratification-register-ozq0`, extension charter §3.7 and §6.
+That target property is real, rare, and architecturally unavailable to
+incumbents whose seams are held together by human operators.
 
 This addendum's thesis is that trustworthy composition is the *foundation*, not the product. Once composition is algebra, everything done **with** the composed object — optimizing it, re-solving variants of it, budgeting evidence about it, doubting it, merging concurrent edits to it, defending it to a regulator — inherits the algebraic structure. The nineteen proposals here systematically claim that inheritance. Their combined effect is an identity shift:
 
@@ -49,9 +65,21 @@ Four proposals form a closed economic loop — the **flywheel** — and dominate
 
 Speculation makes answers cheap; incremental recompute makes variants cheap; version control makes concurrency safe; swarm memory makes it all cumulative. Each accelerates the others. On top of the loop sits the interface the operator actually wants — **declarative queries against physics (Proposal 8)**: *"Is max von Mises stress under 180 MPa at 95% confidence, for under $50 of compute?"* — the imperative-to-declarative transition that databases made in the 1970s, available here for the same reason it was available then: a closed algebra over the operations.
 
-Wrapped around the loop is an **epistemic type system** (Proposals 3, F, 6, D, 12) that prevents the failure mode certificates otherwise invite — being precisely wrong with a pedigree. Every quantity is colored *verified*, *validated*, or *estimated*; the objective function itself is subject to the same typing; every certificate ships with an independent falsifier; optimizer endpoints are distrusted by default; and results export as machine-checkable evidence packages a regulator can audit without trusting the vendor.
+Wrapped around the loop is an **epistemic type system** (Proposals 3, F, 6,
+D, 12) that prevents the failure mode certificates otherwise invite — being
+precisely wrong with a pedigree. Every quantity is colored *verified*,
+*validated*, or *estimated*; the objective function itself is subject to the
+same typing; optimizer endpoints are distrusted by default; and results export
+as machine-checkable evidence packages a regulator can audit without trusting
+the vendor. The current Phase-0A release boundary authenticates declared,
+content-addressed falsifier artifacts against exact package claim subjects. The
+load-bearing target is Phase 0B: every exact certificate instance is admitted
+only after a risk-appropriate, independently structured falsifier portfolio
+produces authenticated retained receipts under explicit coverage floors,
+optional-stopping and multiplicity policy, adjudication, and residual
+common-mode-risk accounting.
 
-The sequencing philosophy, argued quantitatively in Part II and laid out in Part IV: **ship the practical spine immediately** (schema and policy work: 3, 6, D, E-tombstones, 13's type checker), **admit at most one unproven mechanism inside each independently falsifiable proof lane** (9 is the flywheel lane's mechanism, whose certified a-posteriori bounds unlock the speculation economy), and **let radical interfaces arrive as thin layers over proven machinery** (8 over 9's economics, B over 1's adjoints). Multiple proof lanes may proceed only under an explicit portfolio WIP/budget cap, with quarterly lane-specific kill criteria. **Ratification note:** `frankensim-ext-ratification-register-ozq0`, extension charter §2, D12.
+The sequencing philosophy, argued quantitatively in Part II and laid out in Part IV: **ship the practical spine immediately** (schema, catalog, and fail-closed policy scaffolding from 3, 6, D, E-tombstones, and 13's type checker), then complete 6's deeper exact-instance authority milestone before those gates authorize release; **admit at most one unproven mechanism inside each independently falsifiable proof lane** (9 is the flywheel lane's mechanism, whose certified a-posteriori bounds unlock the speculation economy); and **let radical interfaces arrive as thin layers over proven machinery** (8 over 9's economics, B over 1's adjoints). Multiple proof lanes may proceed only under an explicit portfolio WIP/budget cap, with quarterly lane-specific kill criteria. **Ratification note:** `frankensim-ext-ratification-register-ozq0`, extension charter §2, D12.
 
 ---
 
@@ -61,7 +89,21 @@ This addendum was not brainstormed; it was derived. The chain of analysis matter
 
 ## I.1 The gluing problem is self-inflicted, and that is the point
 
-Conventional simulation pipelines dissolve the consistency problem upstream: one privileged representation, one conforming mesh, consistency by construction. FrankenSim's Rep Router deliberately un-dissolves it — patches live simultaneously as SDFs, splines, and meshes, converted per-operation — because per-operation representation choice is where large accuracy-per-cost gains live. The cellular sheaf machinery of Bet 11 is the tax that choice imposes, paid in the cheapest currency available: on a finite patch-adjacency complex, cohomology is null spaces of sparse matrices. No deep theorem is load-bearing; the payoff is a type discipline for gluing whose interval errors localize to interfaces, whose deterministic gauge fits propose bounded repairs, and whose separately witnessed closed, non-exact skeleton cochains can justify cohomology labels without turning every numerical remainder into topology.
+Conventional simulation pipelines dissolve the consistency problem upstream:
+one privileged representation, one conforming mesh, consistency by
+construction. FrankenSim's Rep Router deliberately un-dissolves it — patches
+live simultaneously as SDFs, splines, and meshes, converted per-operation —
+because per-operation representation choice is where large accuracy-per-cost
+gains live. The cellular sheaf machinery of Bet 11 is the tax that choice
+imposes, paid in the cheapest currency available: on a finite patch-adjacency
+complex, cohomology is null spaces of sparse matrices. No **unproved** deep
+theorem is load-bearing in today's baseline; admitted, proved Theorem Cards may
+become load-bearing, and discovering unusually powerful composition theorems is
+an explicit program objective. The present payoff is a type discipline for
+gluing whose interval errors localize to sampled interfaces, whose
+deterministic gauge fits propose bounded repairs, and whose separately
+witnessed closed, non-exact skeleton cochains can justify cohomology labels
+without turning every numerical remainder into topology.
 
 ## I.2 The differentiation is composition, not physics
 
@@ -83,7 +125,7 @@ Eight principles, distilled from the analysis above, govern every implementation
 
 **P2 — Certificates must compose.** Any accuracy, sensitivity, or consistency statement that cannot be propagated through the ledger's DAG is a side channel, and side channels rot.
 
-**P3 — Every certificate ships with its cheapest independent falsifier.** Certificates prove what the model claims; falsifiers probe whether the claims connect to reality. The gap between them is where simulation systems silently rot.
+**P3 — Every exact certificate instance faces a risk-matched independent falsifier portfolio.** Certificates prove what the model claims; falsifiers probe whether the claims connect to reality. “No counterexample found” satisfies only the declared procedural gate unless calibrated detection power supports a separate evidence model; it never silently strengthens the claim's epistemic color. The gap between proof, coverage, and reality is where simulation systems silently rot.
 
 **P4 — Type the epistemics.** Verified, validated, and estimated are different kinds of knowledge with different composition rules. The type system must refuse to launder one into another.
 
@@ -91,7 +133,11 @@ Eight principles, distilled from the analysis above, govern every implementation
 
 **P6 — Exploit the check/produce asymmetry.** Verifying a candidate solution is vastly cheaper than producing one. This asymmetry is the economic engine of the whole system: speculation, cheap re-verification of evidence packages, and third-party audit all run on it.
 
-**P7 — Concentrate research risk.** One research-grade bet at a time, chosen so its hard problem unlocks the most downstream value; everything else ships as engineering over known results.
+**P7 — Concentrate research risk per proof lane.** Each independently
+falsifiable lane admits at most one unproved mechanism against a boring
+baseline. Multiple lanes—and therefore multiple audacious theorem searches—may
+run concurrently under an explicit aggregate WIP/budget cap, but no acceptance
+gate may hide two unproved mechanisms behind one result.
 
 **P8 — The plan itself must be falsifiable.** Every proposal carries a kill criterion with a measurement and a deadline. A proposal that survives only because nobody defined its failure condition is dead weight with good branding.
 
@@ -273,7 +319,7 @@ The nineteen proposals are organized into five architectural layers rather than 
 
 **Implementation blueprint.**
 
-*Tombstones (ship in weeks — this is the cheap half):* a tombstone records `(hypothesis/design-region descriptor, evidence against, certificates and their colors, compute spent, date, authoring context)`. Indexed two ways: embedding similarity over the descriptor, and — the domain-native index — signature in dimensionless-group space (π-coordinates from Proposal 9's units-typed schema), because "aluminum bracket at Re 2×10⁵" and "steel bracket at Re 2.1×10⁵" should collide as the *same death* even though their raw parameters differ. Agent protocol, enforced at the orchestrator: before funding an exploration, query the tombstone index; on a hit, the agent must either cite a distinguishing feature (which is itself logged, so distinguishing features accumulate too) or skip. Tombstones are appended automatically whenever a falsification-budget test (Proposal 6) kills a claim or an optimization branch is abandoned above a cost threshold.
+*Tombstones (ship in weeks — this is the cheap half):* a tombstone records `(hypothesis/design-region descriptor, evidence against, certificates and their colors, compute spent, date, authoring context)`. Indexed two ways: embedding similarity over the descriptor, and — the domain-native index — signature in dimensionless-group space (π-coordinates from Proposal 9's units-typed schema), because "aluminum bracket at Re 2×10⁵" and "steel bracket at Re 2.1×10⁵" should collide as the *same death* even though their raw parameters differ. Agent protocol, enforced at the orchestrator: before funding an exploration, query the tombstone index; on a hit, the agent must either cite a distinguishing feature (which is itself logged, so distinguishing features accumulate too) or skip. Pending tombstone candidates are appended atomically with retained discrepancy evidence whenever a falsification-budget test (Proposal 6) reports a possible counterexample; they become active tombstones only after the proposal's independent reproduction and adjudication policy identifies the exact claim/specification/policy artifact that failed. Cost-threshold abandonment can mint a separate operational tombstone without pretending the abandoned branch was scientifically refuted.
 
 *Contracts (the ambitious half):* a contract is `(environment envelope ⇒ guaranteed behavior, certificate)`, with the envelope expressed over typed interface quantities (Proposal 13) as interval boxes — e.g., "for traction loads within this box on this interface type, max stress ≤ σ* with a rung-2 verified certificate." Composition rule v1 is deliberately primitive: **envelope containment** — component contracts compose into a system claim iff each component's operating conditions, as computed by the system model, provably land inside its envelope (an interval containment check, hence cheap and *verified*-color). Start where superposition makes envelopes tractable (linear regimes); nonlinear contracts carry validity-region tags and remain *estimated*-color until validated per regime (Proposal 3's rules apply — contracts are not exempt from the type system). A contract library becomes the swarm's vocabulary of certified motifs: "this stiffener topology dominates in this load regime, envelope attached," reusable by instance N+1 without re-derivation.
 
@@ -366,23 +412,123 @@ The nineteen proposals are organized into five architectural layers rather than 
 
 ### Proposal 6 — Falsifier Pairing *(800 · 650 · 900 · 700 · 900 · Mean 790)*
 
-**Claim.** No certificate ships without an attached independent falsifier — a different algorithm on a different code path that would catch the certificate being wrong — and agents carry a falsification budget allocated by consequence-times-doubt.
+**Claim.** No exact immutable certificate instance ships unless it is bound to
+an executable falsifier portfolio, the portfolio's declared independence has
+passed a machine-checkable threat-model policy, and authenticated retained run
+receipts show the required outcomes for that same claim/specification/policy
+root. Agents carry a falsification budget allocated by
+consequence-times-anytime-valid-doubt. Catalog declarations are necessary
+admission metadata, never sufficient release authority.
 
-**Rationale.** Certificates prove what the model claims; falsifiers probe whether the claims connect to reality; the gap between them is exactly where simulation systems silently rot. The base plan already has the instinct (ray-parity as an adversarial cross-check on watertightness); this proposal promotes the instinct to architecture. It is Popper as infrastructure, at Pract 900 because it is mostly registry and policy.
+**Rationale.** Certificates prove what the model claims; falsifiers probe
+whether the claims connect to reality; the gap between them is exactly where
+simulation systems silently rot. The base plan already has the instinct of
+independently structured cross-checks, but sampled ray parity cannot establish
+continuum watertightness: finite outside-to-outside parity is compatible with
+missed holes, tangencies, coincident intersections, and even intersection
+counts. This proposal promotes the sound instinct—not that insufficient
+instance—to architecture. It is Popper as infrastructure, with release
+authority split from public metadata so prose cannot impersonate execution.
 
 **Implementation blueprint.**
 
-*Schema:* the certificate object gains a mandatory `falsifiers: [...]` field; a certificate class cannot be registered without at least one registered falsifier type. The starting registry: watertightness → ray-parity sampling; conservation → independent global flux audit on a different quadrature; adjoint gradients → finite-difference spot checks in random directions; interpolation/surrogate accepts → held-out-point evaluation; symmetry-block solves (13) → occasional full solves on random instances; validated-color claims → held-out experimental anchors.
+*Two-level schema and authority:* `CatalogAdmission` binds every certificate
+class to one or more typed falsifier specifications and refuses empty,
+malformed, or duplicate declarations. `InstanceFalsifierAdmission` is a
+deny-by-default fs-package/fs-checker decision over authenticated receipts bound
+to the exact claim root, specification digest, policy root, implementation and
+TCB roots, input/artifact roots, units, versions, capabilities, seed stream,
+stopping rule, budget, coverage obligation, and runner outcome. Runner outcomes
+distinguish `NoCounterexampleFound`, `CounterexampleCandidate`,
+`Inconclusive`, `Cancelled`, `BudgetExhausted`, and `Invalidated`.
+`NoCounterexampleFound` can satisfy a procedural release prerequisite but
+leaves epistemic color unchanged by default; calibrated power,
+likelihood/e-value, or coverage models must mint any separate positive evidence.
+Adjudication is a different opaque authority transition. A candidate starts in
+the pre-adjudication state `ClassificationPending`; terminal outcomes distinguish
+`ConfirmedCountermodel`, `AuthenticatedEmpiricalContradiction`,
+`KernelCheckedNegation`, `OutOfDomain`, `SpecificationDefect`,
+`AdmissionCheckerDefect`, `ImplementationCheckerDefect`,
+`ProofKernelOrTcbDefect`, and an explicitly reasoned
+`RejectedOrIndeterminateCandidate`. This ownership split is load-bearing:
+Only an independently reproduced exact countermodel, a claim-specific
+authenticated empirical contradiction under the claim's stated semantics, or
+an independently kernel-checked proof of negation can refute the matching
+immutable revision. Specification, admission, implementation, or TCB defects
+invalidate/revise the appropriate artifact rather than being mislabeled as
+mathematical refutation.
 
-*Budget allocation:* a fixed percentage of every job's compute is reserved for falsification and allocated by `consequence × doubt`, where consequence is estimated from downstream decision weight (what depends on this claim in the DAG) and doubt is `1 − historical pass rate` of that certificate class in that regime. Effort concentrates where a wrong certificate would hurt most and where the class has embarrassed itself before.
+*Starting portfolio:* sampled chart-interface agreement → independently chosen
+challenge samples plus retained-sample replay, so the checker tests selection
+and coverage as well as arithmetic; continuum watertightness → certified
+oriented intersections plus winding/degree and coverage-complete interval
+subdivision; conservation → global and localized control-volume/subdomain flux
+audits using independent assembly and quadrature, preventing cancelling local
+defects from hiding in one global balance; adjoint gradients → multiscale
+directional Taylor-remainder/finite-difference checks with conditioning and
+nonsmooth-event handling on an independently assembled path;
+interpolation/surrogate accepts → custody-proven held-out evaluations with
+leakage audits; symmetry-block solves (13) → occasional unreduced solves with
+independent assembly and solver/preconditioner diversity; validated-color
+claims → authenticated experimental anchors withheld from calibration under
+dataset custody and lineage proofs. The geometry pair intentionally separates a
+useful sampled diagnostic from the far stronger continuum claim.
 
-*Cultural enforcement:* a Gauntlet gate — certificate classes without falsifiers fail review, the way untested code fails CI. Every falsifier hit is automatically a tombstone (E) and a bug report against the certificate's estimator.
+*Independence as evidence:* each specification carries an independence threat
+graph covering shared code, formulas, meshes, quadrature, data, calibration,
+randomness, compiler/toolchain, and human adjudicators. Policy requires
+diversity appropriate to consequence and records residual common-mode risk;
+“different function name” or a string describing another method is never
+accepted as independence. Machines can verify declarations, roots, policy
+constraints, and known shared dependencies; they cannot prove the threat graph
+is complete. Residual independence is an explicit auditor-assessed no-claim,
+subject to red-team challenge and transitive revocation.
 
-**Dependencies.** None hard. Feeds E (tombstones) and D (the guard is a falsifier-escalation policy).
+*Budget allocation:* every claim class has a nonzero minimum coverage schedule
+for its rare/catastrophic failure modes. Beyond that floor, the planner allocates
+by expected loss, downstream consequence, doubt, blind-spot coverage, and
+marginal value of information—not a gameable fixed percentage or DAG fan-out
+alone. Doubt is an anytime-valid process over authenticated outcomes in the
+relevant predeclared family/regime, with maximum cold-start doubt and a nonzero
+floor. Raw pass rate is forbidden: optional stopping, multiple testing,
+selective reporting, one-pass confidence laundering, and fabricated/replayed
+telemetry must not reduce scrutiny. Arithmetic validates finiteness, uses
+overflow-safe normalization, and exposes explicit caps. Retiring or decaying
+one low-yield method reallocates its coverage obligation; it never silently
+reduces total scrutiny of the claim.
 
-**Amendments to base plan.** The ray-parity check is re-documented as the first instance of a general architectural rule; the Gauntlet gains the no-falsifier-no-ship gate.
+*Cultural enforcement:* the Gauntlet has two separate fail-closed gates:
+declaration-catalog completeness at class registration and authenticated
+exact-instance falsifier admission at release. A reported discrepancy creates
+pending tombstone and estimator-bug candidates atomically with its retained
+evidence; it cannot silently mutate authority. Independent reproduction and
+adjudication determine whether to activate a tombstone, file an estimator
+defect, revise a specification, invalidate an admission policy/TCB, or refute
+the exact claim revision. Discovery of a falsifier implementation,
+independence-graph, policy, adjudicator, or TCB defect transitively invalidates
+every dependent admission receipt and downstream release until replay under a
+repaired immutable root succeeds.
 
-**Kill criterion.** Track falsifier yield (true catches per compute spent). If a falsifier class yields nothing across a quarter at meaningful volume, its budget share is decayed automatically — the *pairing rule* itself is not killable, but every individual falsifier must pay rent.
+**Dependencies.** The declaration catalog and diagnostic allocator can start
+independently. Release authority depends on 3's typed evidence schema, E's
+candidate/adjudicated tombstone lifecycle, 13's type-checker boundary, and the
+content-addressed fs-package/fs-checker/ledger spine; it feeds D, whose endpoint
+guard is an instance-falsifier escalation policy.
+
+**Amendments to base plan.** Sampled ray/interface checks are explicitly
+diagnostic and cannot prove continuum watertightness. The Gauntlet gains both a
+falsifier-catalog gate and a stronger authenticated exact-instance admission
+gate; the latter is the actual no-falsifier-no-ship authority.
+
+**Kill criterion.** Track independently adjudicated yield, blind-spot coverage,
+common-mode exposure, and compute spent per individual falsifier in
+authenticated policy windows. A zero-yield method at meaningful volume has its
+share decayed toward a nonzero exploration floor only after accounting for the
+severity and observability of the failures it is meant to catch; stale hits do
+not grant permanent immunity, and repeated review of one unchanged window is
+idempotent. Restore or increase share when regime drift, new counterexamples,
+or independence erosion raises doubt. The pairing rule and cold-start
+exploration floor are not killable, but every method must pay rent.
 
 ---
 
@@ -392,7 +538,7 @@ The nineteen proposals are organized into five architectural layers rather than 
 
 **Rationale.** Adjoint optimizers are notorious for converging to nonphysical exploits of the discretization, and an agent is, in the limit, a very creative adjoint optimizer: it will find the cracks in the model and call them design. A human designer wants tools that trust them; an agent operator needs tools that don't — its confidence and its correctness are less correlated than a human expert's. Distrust the system's outputs most at exactly the points the optimizer is proudest of.
 
-**Implementation blueprint.** A policy engine over machinery that already exists (hence Pract 850): optimizer endpoints are auto-tagged in the ledger; the guard escalates through a fixed sequence — (i) re-solve at rung k+1; (ii) re-route through a different representation path via the Rep Router and re-solve (cross-representation agreement is a powerful independent check that only a multi-representation system can perform — the Rep Router becomes a *verification* asset here, not just a performance one); (iii) δ-perturbation robustness: the optimum must persist, within certified bounds, under small perturbations of design and environment (an optimum living in a crack is sharp; a real optimum is smooth at the certificate's scale); (iv) estimator independence: re-verify with a different a-posteriori estimator family. An endpoint's certificate is **provisional** until the guard passes; guard failures are treasure — logged as tombstones and filed as estimator or discretization bug reports, which is how the guard improves the platform rather than merely policing it.
+**Implementation blueprint.** A policy engine over machinery that already exists (hence Pract 850): optimizer endpoints are auto-tagged in the ledger; the guard escalates through a fixed sequence — (i) re-solve at rung k+1; (ii) re-route through a different representation path via the Rep Router and re-solve (cross-representation agreement is a powerful independent check that only a multi-representation system can perform — the Rep Router becomes a *verification* asset here, not just a performance one); (iii) δ-perturbation robustness: the optimum must persist, within certified bounds, under small perturbations of design and environment (an optimum living in a crack is sharp; a real optimum is smooth at the certificate's scale); (iv) estimator independence: re-verify with a different a-posteriori estimator family. An endpoint's certificate is **provisional** until the guard passes; reported guard failures are treasure, retained atomically as pending tombstone and defect candidates. Proposal 6's independent adjudication determines whether they activate as a scientific tombstone, an estimator/discretization defect, a specification revision, or a rejected candidate.
 
 **Dependencies.** 6 (this is a falsifier-escalation policy), 3 (rungs), Rep Router (base plan).
 
@@ -448,11 +594,41 @@ The nineteen proposals are organized into five architectural layers rather than 
 
 ### Proposal 11 — Reality Is Just Another Chart *(900 · 750 · 500 · 850 · 800 · Mean 760)*
 
-**Claim.** A CT scan of the manufactured part is one more representation with its own restriction maps, so as-built-vs-as-designed is a δ between two sections computed by the watertightness machinery; strain-gauge and wind-tunnel data assimilate through the adjoints; and the commercial kicker is **adjoint-driven tolerance allocation** — spend tight manufacturing tolerances only where ∂performance/∂geometry is large, provably loosen everywhere else, and deliver the savings as a certified statement.
+**Claim.** A CT scan of the manufactured part can become a measured-data chart
+only after its measurement operator, frame, units, support, registration
+covariance, calibration, and custody are explicit and the proposed restriction
+maps satisfy the required sheaf axioms. Under those obligations,
+as-built-vs-as-designed becomes a property-specific coboundary between admitted
+sections—not automatically a watertightness result by analogy; strain-gauge and
+wind-tunnel data assimilate through typed observation operators and adjoints;
+and the commercial kicker is **adjoint-driven tolerance allocation** — spend
+tight manufacturing tolerances only where ∂performance/∂geometry is large,
+provably loosen everywhere else, and deliver the savings as a certified
+statement.
 
 **Rationale.** This closes the loop through the physical world: the "validated" color stops being a static stamp and becomes a living, regime-tagged belief state, and the tolerance-allocation deliverable is a value proposition a CFO understands without a physics lecture — GD&T today is assigned by convention and fear.
 
-**Implementation blueprint.** *Ingestion:* scan data (CT voxel grids, laser point clouds) as a representation type with restriction maps to interface trace spaces; registration (alignment) is itself an optimization with error, so it is **ledgered** — made well-posed by physical fiducials/datums specified at design time (a design-for-verification requirement this proposal pushes upstream into the geometry layer). *As-built diff:* the δ between as-designed and as-scanned sections under a measurement-noise-aware tolerance, colored *validated* and anchored to the metrology instrument's calibration certificate. *Assimilation:* weak-constraint 4D-Var using Proposal 1's adjoints, with observation operators expressed as restriction maps — sensor data updates the model-form posterior that Proposal 3 tracks, per regime. *Tolerance allocation:* minimize manufacturing cost subject to P(performance ∈ spec) ≥ target, driven by ∂QoI/∂geometry sensitivity fields mapped through a first-order variance propagation, then robustness-checked with Proposal 9's cheap re-solves at sampled tolerance-band extremes. Deliverable: a GD&T suggestion report where every loosened tolerance carries the certified sensitivity that justifies it.
+**Implementation blueprint.** *Ingestion:* scan data (CT voxel grids, laser
+point clouds) as a representation type carrying explicit measurement and
+calibration semantics. Registration (alignment) is itself an optimization with
+error and covariance, so it is **ledgered**—and made identifiable by physical
+fiducials/datums specified at design time. A chart-to-trace map is admitted only
+for the measured property and support it actually observes; missing coverage,
+unknown frame transforms, expired calibration, or broken custody produce typed
+Unknown/NoClaim results. *As-built diff:* a measurement-noise-aware,
+registration-covariant comparison between as-designed and as-scanned sections,
+colored *validated* only when its calibration, coverage, and property-specific
+validation obligations close. Geometry/watertightness authority requires its
+own continuum cover and topology evidence. *Assimilation:* weak-constraint
+4D-Var using Proposal 1's adjoints, with typed observation operators and their
+units/support expressed as restriction maps only after the relevant axioms are
+checked—sensor data updates the model-form posterior that Proposal 3 tracks,
+per regime. *Tolerance allocation:* minimize manufacturing cost subject to
+P(performance ∈ spec) ≥ target, driven by ∂QoI/∂geometry sensitivity fields
+mapped through a first-order variance propagation, then robustness-checked with
+Proposal 9's cheap re-solves at sampled tolerance-band extremes. Deliverable:
+a GD&T suggestion report where every loosened tolerance carries the certified
+sensitivity, metrology domain, and residual uncertainty that justify it.
 
 **Dependencies.** 1 (hard), 3 (colors), 9 (robustness sampling). Metrology partnerships are the practical gate — hence Pract 500.
 
@@ -585,12 +761,18 @@ graph TD
         ROUTER["Rep Router"]
     end
 
-    subgraph SPINE["Phase 0 — Spine (schema & policy)"]
+    subgraph SPINEA["Phase 0A — Immediate spine (declaration schema; no release authority)"]
         P3["3 Three-color ledger"]
-        P6["6 Falsifier pairing"]
+        P6A["6 Catalog declarations + diagnostic allocator"]
         PD["D Goodhart guard"]
-        PEt["E Tombstones"]
+        PEC["E Pending candidate records"]
         P13["13 Type checker"]
+    end
+
+    subgraph SPINEB["Phase 0B — Exact-instance falsifier authority"]
+        P6B["6 Authenticated receipts + threat graphs"]
+        PEA["E Independent adjudication + support-graph revocation"]
+        REL["Package/checker deny-by-default release authority"]
     end
 
     subgraph FLY["Phase 1 — Flywheel"]
@@ -618,8 +800,13 @@ graph TD
     end
 
     LEDGER --> P3 --> PF
-    LEDGER --> P6 --> PD
-    P6 --> PEt
+    LEDGER --> P6A --> PD
+    P6A --> PEC
+    P6A --> P6B
+    PEC --> PEA
+    P6B --> PEA
+    P6B --> REL
+    PEA --> REL
     FEEC --> P13
     FEEC --> P9
     P3 --> P9
@@ -637,7 +824,7 @@ graph TD
     P3 --> PEc
     P1 --> PF
     P3 --> P12
-    P6 --> P12
+    REL --> P12
     P1 --> P11
     P9 --> P11
     P3 --> PC
@@ -659,7 +846,8 @@ baseline. **Ratification note:**
 
 | Phase | Contents | Character | Exit test |
 |---|---|---|---|
-| **0 — Spine** | 3 (schema), 6 (registry + budget), D (policy), E-tombstones, 13 (type checker) | Weeks-scale schema and policy work over existing machinery; Pract ≥ 800 throughout | Laundering tests pass; no-falsifier-no-ship gate live; tombstone protocol enforced in orchestrator |
+| **0A — Immediate spine** | 3 (schema), 6 (bounded declaration catalog + diagnostic allocator), D (provisional policy), E candidate-tombstones, 13 (type checker) | Weeks-scale fail-closed schema and policy scaffolding over existing machinery; no release-authority claim | Laundering tests pass; catalog lint live; candidate discrepancies cannot mutate release authority |
+| **0B — Falsifier authority** | 6 (typed exact-instance receipts, independence threat graphs, calibrated outcomes, authenticated windows, transitive revocation), E adjudication | Deeper security/scientific-infrastructure milestone; duration earned by Gauntlet evidence, not assumed | Authenticated no-falsifier-no-ship admission gate live; replay/forgery/common-mode/red-team suites pass; pending candidates require independent adjudication; dependent releases revoke and replay correctly |
 | **1 — Flywheel** | 2, 10, 5, and **9 as this proof lane's sole unproven mechanism** (equilibrated estimators on the elliptic/FEEC class first, warm-start economics from day one) | The economic engine; determinism and stable entity IDs promoted to certified contracts | Skip-yield and accept-rate dashboards live; merge demo on swarm trials; 9's six-month checkpoint |
 | **2 — Leverage** | 1, 8 (interface + greedy planner), E-contracts, F, B-v0 (drag decomposition flagship), 12 | Radical interfaces arriving as thin layers over Phase-1 machinery | Adjoint-vs-derivative-free benchmark; planner-vs-baseline benchmark; first evidence package audited externally |
 | **3 — Horizon** | 11, C, A (RB beachhead), 4, 13's symmetry solver | Each individually gated by its own activation condition (see kill criteria) | Per-proposal |

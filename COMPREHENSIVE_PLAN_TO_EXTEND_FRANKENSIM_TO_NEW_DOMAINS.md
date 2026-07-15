@@ -158,7 +158,7 @@ paths as committed architecture, and operationalization must refresh the scan.
 | Discrete de Rham complex: Whitney 0–3 forms, exact incidence `dd=0`, Galerkin + diagonal Hodge stars | `fs-feec/src/{whitney.rs,hodge.rs}`; incidence in `fs-rep-mesh/src/complex.rs:95-129` | A major substrate for Maxwell, heat, and Darcy. Weighted operators, formulations, sources, BCs, stability and solvers remain real work. |
 | Nédélec H(curl) and Raviart–Thomas H(div) families, r = 1..4, with discrete grad/curl/div chain maps | `fs-feec/src/highorder/vecfam.rs:362-1050` | The exact element families EM needs. Explicitly deferred to a curl-curl solve: `fs-feec/CONTRACT.md:298-301`. |
 | Computable cohomology: exact Betti (Bareiss), Hodge decomposition, harmonic basis, cycle pairing (`circulation`), harmonic deflation | `fs-feec/src/{betti.rs,cohomology.rs}` | Multiply-connected EM domains, flux linkage, and circuit coupling through H¹ generators are *already computable*. |
-| Interval-sound cellular-sheaf sampled-seam classification and legacy ray-parity input diagnostic; separate feature-gated δ⁰/δ¹ Hodge-style repair diagnostics/candidate decomposition | `fs-geom/src/sheaf.rs`, `sheaf_repair.rs`, `sheaf_merge.rs` | The base verdict localizes sampled interface violations without a continuum or topology claim; the current ray-parity routine is not an independent falsifier. The fixed-iteration decomposition does not generically prove orthogonality, convergence, non-exactness, or H¹. Only a retained closed, non-exact harmonic witness supports an H¹ obstruction. Authentic cross-examination by certified oriented intersections or winding/degree evidence is tracked successor work. This remains a reusable artifact pattern for compatibility problems, not proof of kinematic or conservative-transfer semantics verbatim. |
+| Interval-sound cellular-sheaf sampled-seam classification and bounded proven-outside endpoint / nominal interior sign-transition replay diagnostic; separate feature-gated δ⁰/δ¹ Hodge-style repair diagnostics/candidate decomposition | `fs-geom/src/sheaf.rs`, `sheaf_repair.rs`, `sheaf_merge.rs` | The base verdict localizes sampled interface violations without a continuum or topology claim; the current outside-ray routine certificate-checks only endpoint outside status, while its interior toggles are nominal telemetry and not an independent falsifier. The fixed-iteration decomposition does not generically prove orthogonality, convergence, non-exactness, or H¹. Only a retained closed, non-exact harmonic witness supports an H¹ obstruction. Authentic cross-examination by certified oriented intersections or winding/degree evidence is tracked successor work. This remains a reusable artifact pattern for compatibility problems, not proof of kinematic or conservative-transfer semantics verbatim. |
 | Certified separation lower bound between two bodies (positive gap only) | `fs-query/src/lib.rs:619-733` | Seed of certified contact detection; needs penetration depth and motion. |
 | IPC barrier contact vs. fixed SDF obstacle, lagged smoothed Coulomb friction (feature-gated) | `fs-solid/src/contact.rs` | The smooth contact lane exists in embryo; CCD explicitly deferred (`contact.rs:12-13`). |
 | Generic constant-coefficient 2-D steady scalar Poisson/diffusion CutFEM on certified SDF cuts | `fs-cutfem/CONTRACT.md:5-9,34-39`; `fs-cutfem/src/fem.rs` | A direct seed for a first steady isotropic heat/current manufactured slice; it is not yet a thermal-domain solver, variable-coefficient constitutive assembly, or transient energy balance. |
@@ -811,15 +811,18 @@ from the usually stronger nonvacuity family needed to establish production
 applicability. Legal transitions reject skipped prerequisites and preserve the
 prior state plus refusal receipt rather than coercing an axis forward.
 
-A raw candidate is independently adjudicated as `ClassificationPending`,
-`GenuineCountermodel`, `OutOfDomain`, `CheckerDefect`, `SpecificationDefect`,
-`AdmissionCheckerDefect`, or `ProofKernelOrTcbDefect`. Only a
+A raw candidate begins in `ClassificationPending`; that is a pre-adjudication
+state, not a scientific outcome. Independent adjudication terminates in
+`GenuineCountermodel`, `OutOfDomain`, `SpecificationDefect`,
+`AdmissionCheckerDefect`, `ImplementationCheckerDefect`,
+`ProofKernelOrTcbDefect`, or an explicitly reasoned rejected/indeterminate
+candidate state. Only a
 `GenuineCountermodel` whose witness is
 independently admitted against every exact assumption of the immutable statement
 revision forces that mathematics revision to `Refuted`. Out-of-domain candidates
 refine the campaign; specification defects force a new statement revision;
 admission-checker defects invalidate affected admission receipts; executable
-checker defects demote implementation evidence; kernel/TCB defects invalidate
+implementation-checker defects demote implementation evidence; kernel/TCB defects invalidate
 the affected formalization-support edges and trigger downstream authority
 recomputation. Independently supported downstream authority survives only when
 its alternative dependency closure still checks. None is

@@ -189,8 +189,11 @@ FrankenSim is organized as layered Rust crates. The names below are crates prese
 | `fs-vskeleton` | Photovoltaic vertical skeleton tying SDF/PDE/objective/adjoint/optimization/ledger concepts into a narrow demonstrator path |
 | `fs-opt` | ASCENT optimization problem IR crate with typed objective/constraint graphs, dimensional validation, differentiability-class routing, canonical serialization, manifold metadata, and a conformance contract |
 
-The current positive `fs-geom` seam result means agreement at the retained
-finite interface samples. It is not yet continuum coverage, manifoldness,
+The current positive `fs-geom` seam result can be emitted only by the immutable
+chart-sampling builder and means agreement at its retained finite interface
+samples. Caller-constructed raw complexes remain diagnostics and always yield
+`Unknown`/`NoClaim`. Even builder admission does not independently prove an
+arbitrary chart producer truthful. The result is not continuum coverage, manifoldness,
 self-intersection freedom, or global watertightness. Likewise, the current
 outside-to-outside ray routine is only a bounded input/sample validator: under
 its own endpoint precondition its Boolean toggle count is necessarily even, so
@@ -205,7 +208,7 @@ The workspace has grown beyond the first substrate and geometry layer. These cra
 | Crate family | Implemented role |
 |--------------|------------------|
 | `fs-query`, `fs-topo`, `fs-geocon` | Geometry query and certificate layer: closest-point, raycast, offset, clearance, thickness, curvature, topology validity, and geometric constraints |
-| `fs-rep-nurbs`, `fs-rep-voxel` | Additional MORPH representations: rational B-spline charts with exact spline algebra and measured f64 closest-point brackets (outward-rounded certification remains tracked); voxel, point-cloud, and lattice/strut representations |
+| `fs-rep-nurbs`, `fs-rep-voxel` | Additional MORPH representations: rational B-spline charts with exact rational refinement/elevation while every `i128` intermediate remains representable (the current exact backend fails loudly rather than wrapping on overflow), plus measured f64 closest-point brackets whose outward-rounded certification remains tracked; voxel, point-cloud, and lattice/strut representations |
 | `fs-feec` | Exterior-calculus core: cochains, Whitney forms, exact incidence operators, Hodge stars, Betti checks, high-order tensor/simplex spaces, and cohomology/Hodge-decomposition utilities |
 | `fs-opdsl`, `fs-tilelang`, `fs-tilelang-macros`, `fs-soa`, `fs-soa-derive` | Operator and layout tooling: DSL scaffolding for operators, deterministic tile-language lowering, and structured data layouts for stable kernel memory behavior |
 | `fs-solver` | Resumable Krylov and multigrid stack: CG, MINRES, GMRES, matrix-free operators, transposed solves, mixed-precision refinement, and p-multigrid over the FEEC hierarchy |
@@ -274,8 +277,10 @@ independently checked proof receipt bound to the actual operation and inputs.
 `ProvenanceHash` is currently a deterministic legacy FNV fingerprint. It is
 useful for deterministic correlation and accidental-corruption detection, but it is not
 collision-resistant, cryptographic, or an authenticity anchor. Authority must
-come from an independently trusted anchor over the exact canonical bytes or a
-collision-resistant canonical digest of those bytes. Signing or trusting the
+come through an independent trust channel carrying either the expected exact
+canonical bytes or an expected collision-resistant canonical digest of those
+bytes; recomputing a digest from the received payload alone proves no origin or
+scientific correctness. Signing or trusting the
 same 64-bit FNV value does not repair its collision weakness; typed
 cryptographic identity migration remains tracked work.
 
@@ -310,12 +315,17 @@ must receive the expected collision-resistant root or signature from an
 independent trust channel. Verified certificates, anchoring datasets, waivers,
 signatures, and falsifier artifacts never authorize themselves: use the
 corresponding typed verifier capabilities and retain the returned verification receipt.
-Scientific release admission additionally requires a purpose-bound approval
-signature over the exact checker protocol, expected root, scientific policy
-fingerprints, waiver clock, and per-claim admission context, at least one
-admitted scientific Verified or Validated claim, and authenticated falsifier
-evidence for every certificate-class claim. It does not infer signer identity,
-role, or authorship from detached signature bytes.
+The current Phase-0A scientific release API additionally requires a
+purpose-bound approval signature over the exact checker protocol, expected
+root, scientific policy fingerprints, waiver clock, and per-claim admission
+context, at least one admitted scientific Verified or Validated claim, and an
+authenticated, content-addressed declared falsifier artifact for every
+certificate-class claim. It does not infer signer identity, role, or authorship
+from detached signature bytes. This is exact package/artifact authentication,
+not yet the complete Proposal-6 authority: Phase 0B adds risk-matched
+threat-graph portfolios, nonzero coverage floors, optional-stopping and
+multiplicity semantics, adjudicated outcomes, residual common-mode-risk
+accounting, and transitive revocation.
 
 ### Repository Policy Checks
 
@@ -475,7 +485,12 @@ That flow is still library-level rather than an end-user app, but the important 
 
 FrankenSim uses representation-specific charts instead of flattening all geometry into one mesh too early. SDF grids, triangle/tet meshes, rational NURBS patches, voxel fields, point clouds, lattices, and F-reps each keep their own query and validity contracts. Conversion is treated as an operation with a record, not as a silent cast.
 
-Important mechanics already implemented include exact rational spline refinement in `fs-rep-nurbs`, sparse VDB-style fields and exact Euclidean distance transforms in `fs-rep-voxel`, mesh repair and winding support in `fs-rep-mesh`, CSG/F-rep evaluation in `fs-rep-frep`, and topology/validity checks in `fs-topo`.
+Important mechanics already implemented include bounded, overflow-checked
+exact rational spline refinement through the `i128` backend in
+`fs-rep-nurbs` (with f64 paths explicitly numerical), sparse VDB-style fields
+and exact Euclidean distance transforms in `fs-rep-voxel`, mesh repair and
+winding support in `fs-rep-mesh`, CSG/F-rep evaluation in `fs-rep-frep`, and
+topology/validity checks in `fs-topo`.
 
 ### Discretization and Physics
 
@@ -491,7 +506,18 @@ On top of that, `fs-ascent` provides L-BFGS with strong-Wolfe search, trust-regi
 
 ### Evidence, Packages, and Standards
 
-`fs-evidence` gives values a claim type. `fs-package` groups color-typed claims and provenance into a content-addressed Merkle bundle. `fs-checker` re-verifies package completeness, content address, signature status, and budget breakdown without depending on solvers, geometry, or license gates. Its distinct release gate additionally requires an injected signature verifier, falsifier pairing, and matching anchors; ordinary integrity checking does not authenticate a signature merely because text is present. `fs-crosswalk` maps the same package concepts onto ASME V&V 10/20/40 and FAA/EASA certification-by-analysis vocabulary.
+`fs-evidence` gives values a claim type. `fs-package` groups color-typed claims
+and provenance into a content-addressed Merkle bundle. `fs-checker` re-verifies
+package completeness, content address, signature status, and budget breakdown
+without depending on solvers, geometry, or license gates. Its distinct
+Phase-0A release gate additionally requires injected signature and artifact
+verifiers, exact subject binding for declared falsifiers, and matching anchors;
+ordinary integrity checking does not authenticate a signature merely because
+text is present. Phase 0B promotes that structural/authentication spine into
+risk-matched exact-instance portfolio authority with coverage, sequential
+testing, adjudication, and revocation semantics. `fs-crosswalk` maps the same
+package concepts onto ASME V&V 10/20/40 and FAA/EASA
+certification-by-analysis vocabulary.
 
 That division matters: the expensive solver can produce evidence once, while a reviewer can later check the package structure and provenance without re-running the solver stack.
 
@@ -995,7 +1021,13 @@ The evidence-package crates are small, but they define an important workflow:
 
 1. A solver, verifier, optimizer, or study runner creates claims with evidence colors: verified, validated, or estimated.
 2. `fs-package` bundles those claims with provenance and a deterministic content address.
-3. `fs-checker` re-verifies the bundle's structural completeness, expected root, signature status, and budget pie without pulling in the solver stack. Its explicit release API additionally requires a caller-supplied authenticator, certificate-class falsifiers, and matching validation anchors.
+3. `fs-checker` re-verifies the bundle's structural completeness, expected
+   root, signature status, and budget pie without pulling in the solver stack.
+   Its Phase-0A release API additionally requires caller-supplied authenticators
+   for the purpose-bound approval and declared, exact-subject falsifier/source/
+   derivation artifacts, plus matching validation anchors. That gate does not
+   yet claim Phase-0B risk-matched portfolio coverage, optional-stopping and
+   multiplicity control, or adjudicated transitive revocation.
 4. `fs-crosswalk` gives the package a standards-facing vocabulary so the same artifact can be discussed as validation metrics, domain of validation, provenance, certified bounds, and content integrity.
 5. `fs-ledger` can retain artifacts, operations, events, tune rows, roofline measurements, and lineage so a later report can connect package claims back to the actual run history.
 
