@@ -172,7 +172,11 @@ Consumers: the P2 marquee demo, the HELM e2e suite (gp3.11).
 - `estimate(study, cost_models, cores)` — the dry run: p10/p50/p90 wall
   from fs-plan quantile models over `:dof`/`:size` features, declared
   memory ask, energy (p50 × cores × 45 W/core), and an HONEST
-  `unmodeled_ops` coverage list (never silent gaps). The result is fallible:
+  `unmodeled_ops` coverage list (never silent gaps). Models are
+  `fs_plan::SealedCostModel` (bead 2pmb) and the result carries
+  `weakest_cost_evidence`: `None` with no modeled calls, otherwise
+  weakest-wins across contributors — one provisional model marks the
+  whole estimate, and mixing never upgrades receipt-backed evidence. The result is fallible:
   cores and derived wall/energy values must stay finite and non-negative, and a
   memory Count must scale to an exact positive whole-byte `u64`; zero, negative,
   fractional-byte, wrong-unit, and overflowed asks are structured refusals.

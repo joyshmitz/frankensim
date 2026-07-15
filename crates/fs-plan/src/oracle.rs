@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 
 use crate::cost::{CostModel, CostObservation, CostRefusal, MAX_COST_OBSERVATIONS};
+use crate::sealed::{CostModelScope, SealedCostModel};
 use fs_ledger::Ledger;
 
 /// Maximum distinct converter edges tracked by one planner oracle.
@@ -2592,13 +2593,15 @@ fn finalized_run_receipt_for_payloads(
     Ok(fs_blake3::hash_domain(FINALIZED_RUN_DOMAIN, &payload).to_string())
 }
 
+/// Full provenance validation; returns the evidence operation's
+/// completion time so the sealed scope can retain it.
 fn validate_provenance(
     ledger: &Ledger,
     row: &fs_ledger::TuneRow,
     binding: &RowBinding,
     receipt: &ReceiptObservation,
     machine: &[u8],
-) -> Result<(), TuneModelError> {
+) -> Result<i64, TuneModelError> {
     let baseline = content_hash(&binding.baseline_hash, "params.baseline_hash")?;
     if machine.get(8..) != Some(baseline.as_bytes()) {
         return Err(TuneModelError::ScopeMismatch {
@@ -2669,7 +2672,7 @@ fn validate_provenance(
             field: "dependency_receipt",
         });
     }
-    Ok(())
+    Ok(recorded_at_ns)
 }
 
 /// Rebuild one model from one exact production roofline tune key.
@@ -2680,6 +2683,14 @@ fn validate_provenance(
 /// observation. Rows with fewer than [`crate::cost::MIN_OBS`] repetitions
 /// therefore continue to refuse prediction honestly.
 ///
+/// The returned model is SEALED (bead 2pmb): the validation this
+/// function performs — receipt scope, operation envelope, build
+/// identity, payload and dependency digests, finalized-run receipt —
+/// travels with the model as a [`CostModelScope`] under
+/// [`crate::sealed::CostEvidenceClass::ExactRooflineReceipt`], which
+/// only this loader can mint. A caller-fitted [`CostModel`] can enter
+/// consumers only as explicitly provisional evidence.
+///
 /// # Errors
 /// Ledger corruption/absence, malformed or duplicate-key JSON, unsupported
 /// schema versions, scope mismatches, nonfinite measurements, and model
@@ -2689,7 +2700,7 @@ pub fn cost_model_from_tune(
     kernel: &str,
     shape_class: &str,
     machine: &[u8],
-) -> Result<CostModel, TuneModelError> {
+) -> Result<SealedCostModel, TuneModelError> {
     if machine.len() != ROOFLINE_MACHINE_KEY_BYTES {
         return Err(TuneModelError::ScopeMismatch { field: "machine" });
     }
@@ -2726,8 +2737,20 @@ pub fn cost_model_from_tune(
             field: "payload_artifact",
         });
     }
-    validate_provenance(ledger, &row, &binding, &receipt, machine)?;
-    CostModel::fit(&receipt.observations).map_err(Into::into)
+    let recorded_at_ns = validate_provenance(ledger, &row, &binding, &receipt, machine)?;
+    let model = CostModel::fit(&receipt.observations)?;
+    Ok(SealedCostModel::mint_exact(
+        model,
+        CostModelScope::from_validated(
+            kernel.to_string(),
+            shape_class.to_string(),
+            machine.to_vec(),
+            binding.run_receipt.clone(),
+            binding.op,
+            binding.build_identity.clone(),
+            recorded_at_ns,
+        ),
+    ))
 }
 
 #[cfg(test)]

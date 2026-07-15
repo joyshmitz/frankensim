@@ -12,6 +12,7 @@ fn estimate_with(p50: f64, unmodeled: &[&str]) -> Estimate {
         mem_ask_bytes: None,
         energy_j: 0.0,
         unmodeled_ops: unmodeled.iter().map(ToString::to_string).collect(),
+        weakest_cost_evidence: None,
     }
 }
 

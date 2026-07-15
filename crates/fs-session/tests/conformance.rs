@@ -8,7 +8,7 @@
 
 use fs_exec::CancelGate;
 use fs_exec::solver::{SolverState, codec};
-use fs_plan::{CostModel, CostObservation};
+use fs_plan::{CostModel, CostObservation, SealedCostModel};
 use fs_session::{
     CalibrationReport, CapabilityToken, Charge, DegradationEvent, DegradationStep,
     DurableGovernorNonce, Enforcement, Estimate, Governor as SessionGovernor, Guidance,
@@ -164,14 +164,14 @@ const SPOUT: &str = r#"(study "spout-laminar-v3"
   (let lever (xform.level-set-velocity vessel :band 12mm :dof 4096))
   (ascent.optimize J :over lever :method (lbfgs :m 17)))"#;
 
-fn lbm_cost_model() -> CostModel {
+fn lbm_cost_model() -> SealedCostModel {
     let obs: Vec<CostObservation> = (1..=12)
         .map(|k| CostObservation {
             size: f64::from(k) * 512.0,
             cost_s: 0.1 * f64::from(k) * 512.0,
         })
         .collect();
-    CostModel::fit(&obs).expect("fits")
+    SealedCostModel::provisional_unaudited(CostModel::fit(&obs).expect("fits"), "session-test")
 }
 
 #[test]
@@ -2125,6 +2125,7 @@ fn ss_004b_estimate_refuses_invalid_resource_domains() {
         mem_ask_bytes: None,
         energy_j: 45.0,
         unmodeled_ops: Vec::new(),
+        weakest_cost_evidence: None,
     };
     for actual in [f64::NAN, f64::INFINITY, -1.0] {
         assert!(calibration.record(&finite, actual).is_err());
@@ -3315,5 +3316,25 @@ fn ss_013_durable_meter_and_l3_lifecycle_reopen_without_state_or_row_drift() {
     verdict(
         "ss-013",
         "durable meter and complete L3 lifecycle recover exactly after real ledger reopen",
+    );
+}
+
+#[test]
+fn ss_004a_estimate_carries_weakest_cost_evidence() {
+    // Sealed authority (bead 2pmb): weakest-wins, never upgraded.
+    let node = fs_ir::sexpr::parse(SPOUT).expect("parses");
+    let empty: BTreeMap<String, SealedCostModel> = BTreeMap::new();
+    let unmodeled_est = estimate(&node, &empty, 4.0).expect("estimates without models");
+    assert_eq!(
+        unmodeled_est.weakest_cost_evidence, None,
+        "no modeled calls means no evidence claim at all"
+    );
+    let mut models = BTreeMap::new();
+    models.insert("xform.level-set-velocity".to_string(), lbm_cost_model());
+    let est = estimate(&node, &models, 4.0).expect("estimates");
+    assert_eq!(
+        est.weakest_cost_evidence,
+        Some(fs_plan::CostEvidenceClass::ProvisionalUnaudited),
+        "one provisional contributor marks the whole estimate"
     );
 }

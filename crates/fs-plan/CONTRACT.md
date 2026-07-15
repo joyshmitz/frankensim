@@ -51,7 +51,18 @@ anytime-valid audit authority.
   exhaustion, and reference-size changes after observation refuse without
   changing routing authority. Router never uses observed errors to tighten a
   declared hard bound.
-- `cost_model_from_tune` — rebuilds a model from one EXACT
+- `sealed::SealedCostModel` / `SealedCostPrediction` / `CostModelScope` /
+  `CostEvidenceClass` (bead 2pmb) — authority carriers for cost models.
+  `CostModel` stays freely constructible provisional MATH; the sealed
+  type is the AUTHORITY: its `ExactRooflineReceipt` class is mintable
+  only by `cost_model_from_tune` after full validation, with the
+  validated scope (kernel, shape class, machine key, run receipt, op id,
+  build identity, recorded-at) retained behind private fields so a
+  caller-fitted model can never impersonate receipt-backed evidence.
+  `provisional_unaudited` wraps caller fits as visibly provisional; every
+  prediction carries the scope fields and mint-time class, and
+  composition never upgrades the class.
+- `cost_model_from_tune` — rebuilds a SEALED model from one EXACT
   `(kernel, shape_class, machine)` fs-ledger key. It accepts only the current
   fs-roofline receipt-v3 / row-v4 / `roofline-v8` production-v3 schema
   through a bounded strict JSON parser that rejects duplicate and unknown
@@ -259,8 +270,16 @@ preempt or enforce a time or memory limit on an arbitrary synchronous closure.
   cross-machine transfer.
 - `PlanCostOracle` costs are predictive empirical estimates, not worst-case
   wall-time certificates. Its observed error maximum is retrospective; the Rep
-  Router therefore uses it only to enlarge an uncertified declaration. Fully
-  authenticated admitted cost-model authority remains tracked separately.
+  Router therefore uses it only to enlarge an uncertified declaration.
+- The sealed carrier proves WHO minted a model and from WHAT validated
+  row; it does not re-verify the ledger at prediction time (staleness
+  beyond `recorded_at_ns` is the consumer's freshness policy, not yet
+  folded into the class), and `provisional_unaudited` is a labeling
+  mechanism, not a sandbox — a consumer that ignores
+  `CostEvidenceClass` forfeits the distinction (fs-ir admission and
+  fs-session estimate do not). External issuer signatures over sealed
+  scopes remain future scope, coordinated with the admitted-scientific-
+  color lane (bead 6pf9).
 - VoI work units are oracle-declared accounting, not measured wall time,
   instructions, allocations, or proof of cooperation. A direct oracle that
   ignores `Cx`, understates work, blocks, or panics, and an arbitrary

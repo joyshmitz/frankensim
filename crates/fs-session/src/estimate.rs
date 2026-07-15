@@ -5,7 +5,7 @@
 //! an artifact.
 
 use fs_ir::{Node, NodeKind};
-use fs_plan::CostModel;
+use fs_plan::{CostEvidenceClass, SealedCostModel};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::sync::Mutex;
@@ -29,6 +29,11 @@ pub struct Estimate {
     /// Ops that had no cost model (their wall is NOT included) — an
     /// honest coverage statement, never silent.
     pub unmodeled_ops: Vec<String>,
+    /// The WEAKEST evidence class among the models that contributed
+    /// wall seconds (bead 2pmb): `None` when nothing was modeled,
+    /// `ProvisionalUnaudited` whenever any contributing model lacked a
+    /// validated roofline receipt. Composition never upgrades it.
+    pub weakest_cost_evidence: Option<CostEvidenceClass>,
 }
 
 #[allow(clippy::cast_precision_loss)]
@@ -72,7 +77,7 @@ fn size_of_call(items: &[Node], verb: &str) -> Result<f64, crate::SessionError> 
 
 fn walk_calls(
     node: &Node,
-    models: &BTreeMap<String, CostModel>,
+    models: &BTreeMap<String, SealedCostModel>,
     out: &mut Vec<(String, f64)>,
 ) -> Result<(), crate::SessionError> {
     if let NodeKind::List(items) = &node.kind {
@@ -161,7 +166,7 @@ fn mem_ask(budget: Option<&Node>) -> Result<Option<u64>, crate::SessionError> {
 /// features and for cost-model refusals.
 pub fn estimate(
     study: &Node,
-    models: &BTreeMap<String, CostModel>,
+    models: &BTreeMap<String, SealedCostModel>,
     cores: f64,
 ) -> Result<Estimate, crate::SessionError> {
     if !cores.is_finite() || cores < 0.0 {
@@ -185,6 +190,7 @@ pub fn estimate(
     }
     let (mut p10, mut p50, mut p90) = (0.0f64, 0.0f64, 0.0f64);
     let mut unmodeled = Vec::new();
+    let mut weakest_cost_evidence: Option<CostEvidenceClass> = None;
     for (verb, size) in &calls {
         if !size.is_finite() || *size < 0.0 {
             return Err(crate::SessionError::InvalidResource {
@@ -197,8 +203,18 @@ pub fn estimate(
             unmodeled.push(verb.clone());
             continue;
         };
+        // Weakest-wins (bead 2pmb): one provisional contributor marks
+        // the whole estimate; receipts cannot be upgraded by mixing.
+        weakest_cost_evidence = Some(match (weakest_cost_evidence, model.evidence_class()) {
+            (Some(CostEvidenceClass::ProvisionalUnaudited), _)
+            | (_, CostEvidenceClass::ProvisionalUnaudited) => {
+                CostEvidenceClass::ProvisionalUnaudited
+            }
+            _ => CostEvidenceClass::ExactRooflineReceipt,
+        });
         let prediction = model
             .predict(*size)
+            .map(|sealed| sealed.prediction)
             .map_err(|error| crate::SessionError::Submission {
                 what: format!("cost model for operation {verb:?} refused size {size}: {error}"),
             })?;
@@ -255,6 +271,7 @@ pub fn estimate(
         mem_ask_bytes,
         energy_j,
         unmodeled_ops: unmodeled,
+        weakest_cost_evidence,
     })
 }
 

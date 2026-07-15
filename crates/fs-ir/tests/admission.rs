@@ -11,7 +11,7 @@ use fs_ir::admission::{
     admit,
 };
 use fs_ir::sexpr;
-use fs_plan::{CostModel, CostObservation};
+use fs_plan::{CostModel, CostObservation, SealedCostModel};
 use fs_qty::{Dims, QtyAny};
 use std::collections::BTreeMap;
 
@@ -56,7 +56,7 @@ const FRAME: &str = r#"(study "frame-seismic-cvar-v9"
 
 /// A cost model fitted so `predict(4096).p90` is ~410 s (fits a 2-hour
 /// budget alongside the rest). Keyed to the verb that carries `:dof`.
-fn lbm_cost_model() -> CostModel {
+fn lbm_cost_model() -> SealedCostModel {
     let obs: Vec<CostObservation> = (1..=12)
         .map(|k| {
             let size = f64::from(k) * 512.0;
@@ -66,7 +66,10 @@ fn lbm_cost_model() -> CostModel {
             }
         })
         .collect();
-    CostModel::fit(&obs).expect("cost model fits")
+    SealedCostModel::provisional_unaudited(
+        CostModel::fit(&obs).expect("cost model fits"),
+        "admission-test",
+    )
 }
 
 fn token() -> SessionCapability {
@@ -549,12 +552,13 @@ fn ad_004_budget_infeasible_with_ranked_cost_derived_fixes() {
     let src = SPOUT.replace("(wall 2h)", "(wall 60s)");
     let report = admit_src(&src, &cx);
     assert!(!report.admitted, "60s wall must be infeasible");
+    // Two budget findings coexist now (bead 2pmb): the provisional-
+    // evidence Warn and the infeasibility Reject; select the Reject.
     let f = report
         .findings
         .iter()
-        .find(|f| f.check == "budget")
-        .expect("budget finding");
-    assert!(f.what.contains("BudgetInfeasible"), "{}", f.what);
+        .find(|f| f.check == "budget" && f.what.contains("BudgetInfeasible"))
+        .expect("budget infeasibility finding");
     assert!(f.fixes.len() >= 2, "ranked fixes required");
     // Fixes are ranked by predicted wall ascending, and estimates come
     // from the cost model.
@@ -622,9 +626,10 @@ fn ad_004_budget_infeasible_with_ranked_cost_derived_fixes() {
     // from an absent model: its structured refusal must survive as an
     // admission rejection instead of silently contributing zero cost.
     let mut thin_cx = full_context(&regime);
-    thin_cx
-        .cost_models
-        .insert("xform.level-set-velocity".to_string(), CostModel::new());
+    thin_cx.cost_models.insert(
+        "xform.level-set-velocity".to_string(),
+        SealedCostModel::provisional_unaudited(CostModel::new(), "empty-model-test"),
+    );
     let thin = admit_src(&src, &thin_cx);
     let refusal = thin
         .findings
@@ -896,5 +901,44 @@ fn ad_007b_empty_list_operand_does_not_panic_dimensional_inference() {
     verdict(
         "ad-007b",
         "bare () body clause fails closed; () arithmetic operand infers without panic",
+    );
+}
+
+#[test]
+fn ad_010_provisional_cost_models_warn_but_admit() {
+    // Sealed authority (bead 2pmb): a provisional fit may inform the
+    // budget arithmetic, but the admission record must say so.
+    let regime = spout_regime();
+    let cx = full_context(&regime);
+    let report = admit_src(SPOUT, &cx);
+    assert!(
+        report.admitted,
+        "provisional evidence admits with notice, never silently blocks:\n{}",
+        report.diagnosis()
+    );
+    let provisional: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|f| f.severity == Severity::Warn && f.what.contains("CostModelProvisional"))
+        .collect();
+    assert_eq!(
+        provisional.len(),
+        1,
+        "exactly one warning per provisional verb:\n{}",
+        report.diagnosis()
+    );
+    assert!(
+        provisional[0].what.contains("provisional-unaudited"),
+        "the finding names the evidence class: {}",
+        provisional[0].what
+    );
+    assert!(
+        provisional[0].what.contains("provisional:admission-test"),
+        "the finding names the scope label: {}",
+        provisional[0].what
+    );
+    verdict(
+        "ad-010",
+        "provisional cost evidence admits with a named once-per-verb warning",
     );
 }

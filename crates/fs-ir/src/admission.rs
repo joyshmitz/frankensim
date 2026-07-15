@@ -14,7 +14,7 @@
 use crate::ast::{CountUnit, Node, NodeKind, Span};
 use crate::study::Study;
 use fs_geom::{CostOracle, RoutePlanError, RouteRequest, Router};
-use fs_plan::CostModel;
+use fs_plan::{CostEvidenceClass, SealedCostModel};
 use fs_qty::Dims;
 use fs_regime::RegimeReport;
 use std::collections::{BTreeMap, BTreeSet};
@@ -101,8 +101,12 @@ pub struct AdmissionContext<'a> {
     pub router: Option<(&'a Router, &'a dyn CostOracle)>,
     /// Conversion requirements to verify.
     pub chart_requirements: Vec<ChartRequirement>,
-    /// Learned wall-cost models keyed by verb head.
-    pub cost_models: BTreeMap<String, CostModel>,
+    /// Learned wall-cost models keyed by verb head. Sealed (bead 2pmb):
+    /// receipt-backed authority is mintable only by fs-plan's exact
+    /// roofline loader; caller-fitted models enter as explicitly
+    /// provisional evidence and every admission that costs through one
+    /// carries a Warn finding naming the class.
+    pub cost_models: BTreeMap<String, SealedCostModel>,
     /// The session capability token.
     pub capability: Option<SessionCapability>,
     /// The regime report for the study's physics, when computed.
@@ -622,7 +626,7 @@ type CostedCall<'a> = (&'a str, f64, f64, Span);
 
 fn modeled_calls<'a>(
     node: &'a Node,
-    models: &BTreeMap<String, CostModel>,
+    models: &BTreeMap<String, SealedCostModel>,
     out: &mut Vec<ModeledCall<'a>>,
     findings: &mut Vec<Finding>,
 ) {
@@ -663,17 +667,45 @@ fn cost_model_rejection(span: Span, what: String, action: String) -> Finding {
 
 fn cost_registered_calls<'a>(
     calls: &[ModeledCall<'a>],
-    models: &BTreeMap<String, CostModel>,
+    models: &BTreeMap<String, SealedCostModel>,
     out: &mut Vec<Finding>,
 ) -> Option<(f64, Vec<CostedCall<'a>>)> {
     let mut total = 0.0f64;
     let mut costed = Vec::with_capacity(calls.len());
     let mut refused = false;
+    let mut provisional_warned: Vec<&str> = Vec::new();
     for &(verb, size, span) in calls {
         let model = models
             .get(verb)
             .expect("modeled_calls only returns registered models");
-        match model.predict(size) {
+        // Sealed authority (bead 2pmb): a provisional fit may inform
+        // the budget arithmetic, but the admission record must say so
+        // — once per verb, admitting with notice, never silently.
+        if model.evidence_class() == CostEvidenceClass::ProvisionalUnaudited
+            && !provisional_warned.contains(&verb)
+        {
+            provisional_warned.push(verb);
+            out.push(Finding {
+                check: "budget",
+                severity: Severity::Warn,
+                span,
+                what: format!(
+                    "CostModelProvisional: the wall-cost model for operation {verb:?} is \
+                     {} evidence (scope {:?}), not a validated roofline receipt",
+                    model.evidence_class().name(),
+                    model.scope().kernel(),
+                ),
+                fixes: vec![RankedFix {
+                    action: format!(
+                        "record {verb} tune evidence through the exact roofline lane so \
+                         fs-plan::cost_model_from_tune can mint receipt-backed authority"
+                    ),
+                    predicted_wall_s: None,
+                    qoi_impact: "evidence provenance only; no modeled QoI change".to_string(),
+                }],
+            });
+        }
+        match model.predict(size).map(|sealed| sealed.prediction) {
             Ok(prediction) if prediction.p90.is_finite() && prediction.p90 >= 0.0 => {
                 let next_total = total + prediction.p90;
                 if next_total.is_finite() {
@@ -749,7 +781,7 @@ fn check_budget(study: &Study<'_>, cx: &AdmissionContext<'_>, out: &mut Vec<Find
             .cost_models
             .get(*verb)
             .and_then(|model| model.predict(size / 2.0).ok())
-            .map(|prediction| prediction.p90)
+            .map(|sealed| sealed.prediction.p90)
             .filter(|prediction| prediction.is_finite() && *prediction >= 0.0);
         if let Some(halved) = halved {
             fixes.push(RankedFix {

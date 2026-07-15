@@ -79,7 +79,12 @@ typed AST. Layer: L6 (HELM). Runtime deps: `std` + fs-qty.
   AdmissionReport` runs six timed dimensions — Five Explicits structure,
   dimensional analysis (fs-qty dims inferred bottom-up through `+ - * /
   min max` and comparisons; unknown verbs never false-reject), budget
-  feasibility (fs-plan cost models over exact numeric `:dof`/`:size`/`:modes`
+  feasibility (fs-plan SEALED cost models, bead 2pmb: receipt-backed
+  authority mintable only by the exact roofline loader, and costing any
+  verb through a `ProvisionalUnaudited` model adds a once-per-verb
+  `Warn` finding naming the evidence class and scope, so an admitted
+  study's record states what its wall-cost evidence was; models range
+  over exact numeric `:dof`/`:size`/`:modes`
   features, with malformed or duplicate explicit features refused rather than
   priced as unit size; p90
   totals vs the `(budget (wall …))` bound, with RANKED cost-model-derived
