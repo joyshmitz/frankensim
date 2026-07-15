@@ -293,6 +293,19 @@ pub enum SurfacePartialsRun {
     Cancelled,
 }
 
+/// Transactional terminal state of cancellation-aware surface span boxes.
+#[must_use]
+#[derive(Debug, Clone, PartialEq)]
+pub enum SurfaceSpanBoxesRun<S: Scalar> {
+    /// Every admitted nonempty span pair has a complete Cartesian control box.
+    Complete {
+        /// Boxes in deterministic U-major, V-minor source-span order.
+        boxes: Vec<SurfaceSpanBox<S>>,
+    },
+    /// Cancellation was observed; no partial box table was published.
+    Cancelled,
+}
+
 impl<S: Scalar> NurbsSurface<S> {
     fn validation_work_for(
         knots_u: &KnotVector<S>,
@@ -900,6 +913,35 @@ impl<'a, S: Scalar> AdmittedNurbsSurface<'a, S> {
     /// Returns a structured refusal when nested control scans, retained output,
     /// or the output allocation exceed the defensive legacy envelope.
     pub fn span_boxes(&self) -> Result<Vec<SurfaceSpanBox<S>>, NurbsError> {
+        let mut never_cancel = || false;
+        match self.span_boxes_with_poll(&mut never_cancel)? {
+            SurfaceSpanBoxesRun::Complete { boxes } => Ok(boxes),
+            SurfaceSpanBoxesRun::Cancelled => Err(NurbsError::Domain {
+                what: "non-cancelling surface span-box traversal observed cancellation".to_string(),
+            }),
+        }
+    }
+
+    /// Build the complete U-major, V-minor span-box table with bounded
+    /// cancellation polling and transactional publication.
+    ///
+    /// Checked traversal work and retained-output refusal precede cancellation.
+    /// The gate then spans allocation, candidate-span traversal, Cartesian
+    /// projection/bounds work, and final publication. This method does not
+    /// consume the `Cx` budget or finalize its executor scope.
+    ///
+    /// # Errors
+    /// Returns the synchronous span-box builder's work, memory, and allocation
+    /// refusals when they win before an observed cancellation.
+    pub fn span_boxes_with_cx(&self, cx: &Cx<'_>) -> Result<SurfaceSpanBoxesRun<S>, NurbsError> {
+        let mut should_cancel = || cx.checkpoint().is_err();
+        self.span_boxes_with_poll(&mut should_cancel)
+    }
+
+    fn span_boxes_with_poll(
+        &self,
+        should_cancel: &mut impl FnMut() -> bool,
+    ) -> Result<SurfaceSpanBoxesRun<S>, NurbsError> {
         let knots_u = self.knots_u();
         let knots_v = self.knots_v();
         let (pu, pv) = (knots_u.degree(), knots_v.degree());
@@ -910,18 +952,28 @@ impl<'a, S: Scalar> AdmittedNurbsSurface<'a, S> {
             pv,
             core::mem::size_of::<SurfaceSpanBox<S>>(),
         )?;
+        if should_cancel() {
+            return Ok(SurfaceSpanBoxesRun::Cancelled);
+        }
         let mut out = Vec::new();
         out.try_reserve_exact(span_capacity)
             .map_err(|_| NurbsError::Domain {
                 what: "surface span-box allocation was refused".to_string(),
             })?;
+        let mut operations_since_poll = 0usize;
         for su in pu..knots_u.control_count() {
             let (u0, u1) = (knots_u.knots()[su], knots_u.knots()[su + 1]);
+            if surface_poll_due(&mut operations_since_poll, should_cancel) {
+                return Ok(SurfaceSpanBoxesRun::Cancelled);
+            }
             if u1 <= u0 {
                 continue;
             }
             for sv in pv..knots_v.control_count() {
                 let (v0, v1) = (knots_v.knots()[sv], knots_v.knots()[sv + 1]);
+                if surface_poll_due(&mut operations_since_poll, should_cancel) {
+                    return Ok(SurfaceSpanBoxesRun::Cancelled);
+                }
                 if v1 <= v0 {
                     continue;
                 }
@@ -929,6 +981,9 @@ impl<'a, S: Scalar> AdmittedNurbsSurface<'a, S> {
                 let mut max = [S::zero(); 3];
                 let mut first = true;
                 for row in &self.inner.cpw[su - pu..=su] {
+                    if surface_poll_due(&mut operations_since_poll, should_cancel) {
+                        return Ok(SurfaceSpanBoxesRun::Cancelled);
+                    }
                     for cp in &row[sv - pv..=sv] {
                         let w = cp[3];
                         for d in 0..3 {
@@ -944,14 +999,26 @@ impl<'a, S: Scalar> AdmittedNurbsSurface<'a, S> {
                                     max[d] = c;
                                 }
                             }
+                            if surface_poll_due(&mut operations_since_poll, should_cancel) {
+                                return Ok(SurfaceSpanBoxesRun::Cancelled);
+                            }
                         }
                         first = false;
+                        if surface_poll_due(&mut operations_since_poll, should_cancel) {
+                            return Ok(SurfaceSpanBoxesRun::Cancelled);
+                        }
                     }
                 }
                 out.push((min, max, (u0, u1), (v0, v1)));
+                if surface_poll_due(&mut operations_since_poll, should_cancel) {
+                    return Ok(SurfaceSpanBoxesRun::Cancelled);
+                }
             }
         }
-        Ok(out)
+        if should_cancel() {
+            return Ok(SurfaceSpanBoxesRun::Cancelled);
+        }
+        Ok(SurfaceSpanBoxesRun::Complete { boxes: out })
     }
 }
 
@@ -1373,6 +1440,31 @@ mod tests {
             );
         });
 
+        let degree = 32usize;
+        let mut high_overlap_knots = vec![0.0; degree + 1];
+        high_overlap_knots.extend(vec![0.5; degree]);
+        high_overlap_knots.extend(vec![1.0; degree + 1]);
+        let control_count = 2 * degree + 1;
+        let high_overlap = NurbsSurface::new(
+            KnotVector::new(high_overlap_knots.clone(), degree).expect("high-overlap U knots"),
+            KnotVector::new(high_overlap_knots, degree).expect("high-overlap V knots"),
+            &vec![vec![[0.0; 3]; control_count]; control_count],
+            &vec![vec![1.0; control_count]; control_count],
+        )
+        .expect("high-overlap surface");
+        let admitted_high_overlap = high_overlap.admit().expect("admitted high-overlap surface");
+        let work_error = admitted_high_overlap
+            .span_boxes()
+            .expect_err("legacy span-box work refusal");
+        with_surface_cx(true, |cx| {
+            assert_eq!(
+                admitted_high_overlap
+                    .span_boxes_with_cx(cx)
+                    .expect_err("work refusal must precede cancellation"),
+                work_error
+            );
+        });
+
         let zero = Rat::int(0);
         let one = Rat::int(1);
         let knots_u = KnotVector::new(vec![zero, zero, one, one], 1).expect("exact u knots");
@@ -1519,6 +1611,102 @@ mod tests {
             SurfacePartialsRun::Cancelled
         ));
         assert_eq!(replay_polls, 31);
+    }
+
+    #[test]
+    fn admitted_surface_span_boxes_with_cx_are_transactional_and_exact() {
+        let surface = bilinear_surface();
+        let admitted = surface.admit().expect("admitted bilinear surface");
+        with_surface_cx(true, |cx| {
+            assert!(matches!(
+                admitted
+                    .span_boxes_with_cx(cx)
+                    .expect("valid span-box request"),
+                SurfaceSpanBoxesRun::Cancelled
+            ));
+        });
+        with_surface_cx(false, |cx| {
+            assert_eq!(
+                admitted
+                    .span_boxes_with_cx(cx)
+                    .expect("active span-box request"),
+                SurfaceSpanBoxesRun::Complete {
+                    boxes: admitted.span_boxes().expect("legacy span boxes"),
+                }
+            );
+        });
+
+        let zero = Rat::int(0);
+        let one = Rat::int(1);
+        let exact = NurbsSurface::new(
+            KnotVector::new(vec![zero, zero, one, one], 1).expect("exact U knots"),
+            KnotVector::new(vec![zero, zero, one, one], 1).expect("exact V knots"),
+            &vec![
+                vec![[zero, zero, zero], [zero, one, zero]],
+                vec![[one, zero, zero], [one, one, zero]],
+            ],
+            &vec![vec![one; 2]; 2],
+        )
+        .expect("exact bilinear surface");
+        let admitted_exact = exact.admit().expect("admitted exact surface");
+        with_surface_cx(false, |cx| {
+            assert_eq!(
+                admitted_exact
+                    .span_boxes_with_cx(cx)
+                    .expect("active exact span-box request"),
+                SurfaceSpanBoxesRun::Complete {
+                    boxes: admitted_exact
+                        .span_boxes()
+                        .expect("legacy exact span boxes"),
+                }
+            );
+        });
+    }
+
+    #[test]
+    fn surface_span_box_cancellation_replays_inside_work_and_at_publication() {
+        let surface = high_degree_surface();
+        let admitted = surface.admit().expect("admitted high-degree surface");
+        let run = || {
+            let mut polls = 0usize;
+            let mut should_cancel = || {
+                polls += 1;
+                polls == 2
+            };
+            let outcome = admitted
+                .span_boxes_with_poll(&mut should_cancel)
+                .expect("valid high-degree span-box work");
+            (matches!(outcome, SurfaceSpanBoxesRun::Cancelled), polls)
+        };
+        assert_eq!(run(), run());
+        assert_eq!(run(), (true, 2));
+
+        let bilinear = bilinear_surface();
+        let admitted_bilinear = bilinear.admit().expect("admitted bilinear surface");
+        let mut total_polls = 0usize;
+        let mut never_cancel = || {
+            total_polls += 1;
+            false
+        };
+        assert!(matches!(
+            admitted_bilinear
+                .span_boxes_with_poll(&mut never_cancel)
+                .expect("healthy span-box work"),
+            SurfaceSpanBoxesRun::Complete { .. }
+        ));
+        assert_eq!(total_polls, 2);
+        let mut replay_polls = 0usize;
+        let mut cancel_at_publication = || {
+            replay_polls += 1;
+            replay_polls == 2
+        };
+        assert!(matches!(
+            admitted_bilinear
+                .span_boxes_with_poll(&mut cancel_at_publication)
+                .expect("publication cancellation"),
+            SurfaceSpanBoxesRun::Cancelled
+        ));
+        assert_eq!(replay_polls, 2);
     }
 
     #[test]

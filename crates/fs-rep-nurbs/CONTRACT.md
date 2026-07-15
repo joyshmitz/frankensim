@@ -60,6 +60,8 @@ fs-iga (geometry basis = analysis basis), fs-render NURBS tracing
   `CurveEvaluationRun` state and never publishes a partial Cartesian point.
   Its f64-only admitted `derivatives_with_cx` returns transactional
   `CurveDerivativesRun` state and publishes only a complete Cartesian jet.
+  Its admitted `span_boxes_with_cx` returns transactional
+  `CurveSpanBoxesRun` state and publishes only the complete ordered box table.
   Its admitted-only `to_bezier_form_with_cx` returns transactional
   `CurveBezierRun` state and publishes only a fully validated exact derived
   generation.
@@ -79,6 +81,9 @@ fs-iga (geometry basis = analysis basis), fs-render NURBS tracing
   its f64-only admitted `partials_with_cx` returns transactional
   `SurfacePartialsRun` state and publishes value plus both first partials only
   as one complete result;
+  its admitted `span_boxes_with_cx` returns transactional
+  `SurfaceSpanBoxesRun` state and publishes only the complete U-major, V-minor
+  box table;
   directional knot insertion remains an owning transformation.
 - `TrimLoop`/`TrimmedPatch` — trim curves in EXACT RATIONAL form
   (closure and continuity validated by rational equality, including exact
@@ -224,6 +229,15 @@ and drops all scratch. The f64 scalar operations and allocator calls themselves
 are not preemptible, the conservative legacy envelope is not an exact caller
 work-budget ledger, and owning admission, one-sided jets, executor
 drain/finalize, and resumability remain outside the claim.
+Admitted curve and surface `span_boxes_with_cx` preserve their existing checked
+traversal-work and 64 MiB retained-output envelopes before carrying bounded
+polling through output allocation, candidate spans (including skipped
+zero-width spans), Cartesian projection/bound updates, and final table
+publication. Their Cancelled variants expose no partial box vector. Individual
+allocator calls and generic scalar division/comparison remain non-preemptible;
+the APIs add no wall-time, Cx-budget, drain/finalize, tight-box, topology, or
+certificate claim, and the documented exact-scalar overflow boundary is
+unchanged.
 `NurbsCurve::admit_with_cx` preserves dimension and static work-refusal
 precedence, then carries one cancellation gate through both knot validation and
 the homogeneous-control weight, finite, quotient, and inactive-lane scans. A

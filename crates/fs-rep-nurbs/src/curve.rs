@@ -423,6 +423,19 @@ pub enum CurveDerivativesRun<const DIM: usize> {
     Cancelled,
 }
 
+/// Transactional terminal state of cancellation-aware curve span boxes.
+#[must_use]
+#[derive(Debug, Clone, PartialEq)]
+pub enum CurveSpanBoxesRun<S: Scalar, const DIM: usize> {
+    /// Every admitted nonempty span has a complete Cartesian control box.
+    Complete {
+        /// Boxes in deterministic source-span order.
+        boxes: Vec<SpanBox<S, DIM>>,
+    },
+    /// Cancellation was observed; no partial box table was published.
+    Cancelled,
+}
+
 /// Transactional terminal state of cancellation-aware exact Bezier conversion.
 #[must_use]
 #[derive(Debug, PartialEq)]
@@ -1011,6 +1024,23 @@ impl<'a, S: Scalar, const DIM: usize> AdmittedNurbsCurve<'a, S, DIM> {
     pub fn span_boxes(&self) -> Result<Vec<SpanBox<S, DIM>>, NurbsError> {
         self.inner.span_boxes_after_validation()
     }
+
+    /// Build the complete ordered span-box table with bounded cancellation
+    /// polling and transactional publication.
+    ///
+    /// Checked traversal work and retained-output refusal precede cancellation.
+    /// The gate then spans allocation, candidate-span traversal, Cartesian
+    /// projection/bounds work, and final publication. This method does not
+    /// consume the `Cx` budget or finalize its executor scope.
+    ///
+    /// # Errors
+    /// Returns the synchronous span-box builder's work, memory, and allocation
+    /// refusals when they win before an observed cancellation.
+    pub fn span_boxes_with_cx(&self, cx: &Cx<'_>) -> Result<CurveSpanBoxesRun<S, DIM>, NurbsError> {
+        let mut should_cancel = || cx.checkpoint().is_err();
+        self.inner
+            .span_boxes_after_validation_with_poll(&mut should_cancel)
+    }
 }
 
 impl<S: Scalar, const DIM: usize> NurbsCurve<S, DIM> {
@@ -1522,19 +1552,39 @@ impl<S: Scalar, const DIM: usize> NurbsCurve<S, DIM> {
     }
 
     fn span_boxes_after_validation(&self) -> Result<Vec<SpanBox<S, DIM>>, NurbsError> {
+        let mut never_cancel = || false;
+        match self.span_boxes_after_validation_with_poll(&mut never_cancel)? {
+            CurveSpanBoxesRun::Complete { boxes } => Ok(boxes),
+            CurveSpanBoxesRun::Cancelled => Err(NurbsError::Domain {
+                what: "non-cancelling curve span-box traversal observed cancellation".to_string(),
+            }),
+        }
+    }
+
+    fn span_boxes_after_validation_with_poll(
+        &self,
+        should_cancel: &mut impl FnMut() -> bool,
+    ) -> Result<CurveSpanBoxesRun<S, DIM>, NurbsError> {
         let p = self.knots.degree;
         let span_capacity = preflight_span_boxes(
             self.knots.control_count(),
             p,
             core::mem::size_of::<SpanBox<S, DIM>>(),
         )?;
+        if should_cancel() {
+            return Ok(CurveSpanBoxesRun::Cancelled);
+        }
         let mut out = Vec::new();
         out.try_reserve_exact(span_capacity)
             .map_err(|_| NurbsError::Domain {
                 what: "curve span-box allocation was refused".to_string(),
             })?;
+        let mut operations_since_poll = 0usize;
         for span in p..self.knots.control_count() {
             let (t0, t1) = (self.knots.knots[span], self.knots.knots[span + 1]);
+            if curve_poll_due(&mut operations_since_poll, should_cancel) {
+                return Ok(CurveSpanBoxesRun::Cancelled);
+            }
             if t1 <= t0 {
                 continue;
             }
@@ -1556,12 +1606,24 @@ impl<S: Scalar, const DIM: usize> NurbsCurve<S, DIM> {
                             max[d] = c;
                         }
                     }
+                    if curve_poll_due(&mut operations_since_poll, should_cancel) {
+                        return Ok(CurveSpanBoxesRun::Cancelled);
+                    }
                 }
                 first = false;
+                if curve_poll_due(&mut operations_since_poll, should_cancel) {
+                    return Ok(CurveSpanBoxesRun::Cancelled);
+                }
             }
             out.push((min, max, t0, t1));
+            if curve_poll_due(&mut operations_since_poll, should_cancel) {
+                return Ok(CurveSpanBoxesRun::Cancelled);
+            }
         }
-        Ok(out)
+        if should_cancel() {
+            return Ok(CurveSpanBoxesRun::Cancelled);
+        }
+        Ok(CurveSpanBoxesRun::Complete { boxes: out })
     }
 }
 
@@ -2462,6 +2524,142 @@ mod tests {
             ),
             Err(NurbsError::Structure { .. })
         ));
+    }
+
+    #[test]
+    fn admitted_curve_span_boxes_with_cx_are_transactional_and_exact() {
+        let curve = line_curve();
+        let admitted = curve.admit().expect("admitted line");
+        with_curve_cx(true, |cx| {
+            assert!(matches!(
+                admitted
+                    .span_boxes_with_cx(cx)
+                    .expect("valid span-box request"),
+                CurveSpanBoxesRun::Cancelled
+            ));
+        });
+        with_curve_cx(false, |cx| {
+            assert_eq!(
+                admitted
+                    .span_boxes_with_cx(cx)
+                    .expect("active span-box request"),
+                CurveSpanBoxesRun::Complete {
+                    boxes: admitted.span_boxes().expect("legacy span boxes"),
+                }
+            );
+        });
+
+        let degree = 1_024usize;
+        let mut high_overlap_knots = vec![0.0; degree + 1];
+        high_overlap_knots.extend(vec![0.5; degree]);
+        high_overlap_knots.extend(vec![1.0; degree + 1]);
+        let control_count = 2 * degree + 1;
+        let high_overlap = NurbsCurve::new(
+            KnotVector::new(high_overlap_knots, degree).expect("high-overlap knots"),
+            &vec![[0.0]; control_count],
+            &vec![1.0; control_count],
+        )
+        .expect("high-overlap curve");
+        let admitted_high_overlap = high_overlap.admit().expect("admitted high-overlap curve");
+        let work_error = admitted_high_overlap
+            .span_boxes()
+            .expect_err("legacy span-box work refusal");
+        with_curve_cx(true, |cx| {
+            assert_eq!(
+                admitted_high_overlap
+                    .span_boxes_with_cx(cx)
+                    .expect_err("work refusal must precede cancellation"),
+                work_error
+            );
+        });
+
+        let zero = Rat::int(0);
+        let one = Rat::int(1);
+        let exact = NurbsCurve::new(
+            KnotVector::new(vec![zero, zero, one, one], 1).expect("exact line knots"),
+            &[[zero], [one]],
+            &[one, one],
+        )
+        .expect("exact line");
+        let admitted_exact = exact.admit().expect("admitted exact line");
+        with_curve_cx(false, |cx| {
+            assert_eq!(
+                admitted_exact
+                    .span_boxes_with_cx(cx)
+                    .expect("active exact span-box request"),
+                CurveSpanBoxesRun::Complete {
+                    boxes: admitted_exact
+                        .span_boxes()
+                        .expect("legacy exact span boxes"),
+                }
+            );
+        });
+    }
+
+    #[test]
+    fn curve_span_box_cancellation_replays_inside_work_and_at_publication() {
+        let high_degree = high_degree_insertion_curve();
+        let run = || {
+            let mut polls = 0usize;
+            let mut should_cancel = || {
+                polls += 1;
+                polls == 2
+            };
+            let outcome = high_degree
+                .span_boxes_after_validation_with_poll(&mut should_cancel)
+                .expect("valid high-degree span-box work");
+            (matches!(outcome, CurveSpanBoxesRun::Cancelled), polls)
+        };
+        assert_eq!(run(), run());
+        assert_eq!(run(), (true, 2));
+
+        let long = long_linear_curve();
+        let zero_points: Vec<[f64; 0]> = vec![[]; long.cpw.len()];
+        let zero_weights = vec![1.0; long.cpw.len()];
+        let zero_dim = NurbsCurve::<f64, 0>::new(
+            long.knots.try_clone().expect("zero-D knot copy"),
+            &zero_points,
+            &zero_weights,
+        )
+        .expect("long zero-D curve");
+        let mut zero_dim_polls = 0usize;
+        let mut cancel_zero_dim = || {
+            zero_dim_polls += 1;
+            zero_dim_polls == 2
+        };
+        assert!(matches!(
+            zero_dim
+                .span_boxes_after_validation_with_poll(&mut cancel_zero_dim)
+                .expect("zero-D span-box cancellation"),
+            CurveSpanBoxesRun::Cancelled
+        ));
+        assert_eq!(zero_dim_polls, 2);
+
+        let curve = line_curve();
+        let mut total_polls = 0usize;
+        let mut never_cancel = || {
+            total_polls += 1;
+            false
+        };
+        assert!(matches!(
+            curve
+                .span_boxes_after_validation_with_poll(&mut never_cancel)
+                .expect("healthy span-box work"),
+            CurveSpanBoxesRun::Complete { .. }
+        ));
+        assert_eq!(total_polls, 2);
+        let mut replay_polls = 0usize;
+        let mut cancel_at_publication = || {
+            replay_polls += 1;
+            replay_polls == 2
+        };
+        assert!(matches!(
+            curve
+                .span_boxes_after_validation_with_poll(&mut cancel_at_publication)
+                .expect("publication cancellation"),
+            CurveSpanBoxesRun::Cancelled
+        ));
+        assert_eq!(replay_polls, 2);
     }
 
     #[test]
