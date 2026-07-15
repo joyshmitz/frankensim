@@ -127,11 +127,33 @@ fn reserve_frame_validation<T>(
         })
 }
 
-fn first_frame_id_row(index: &[(u32, usize)], id: u32) -> Option<usize> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrameIdLookup {
+    Missing,
+    Unique(usize),
+    Ambiguous(usize),
+}
+
+fn frame_id_lookup(index: &[(u32, usize)], id: u32) -> FrameIdLookup {
     let position = index.partition_point(|(candidate, _)| *candidate < id);
-    index
-        .get(position)
-        .and_then(|(candidate, row)| (*candidate == id).then_some(*row))
+    let Some((candidate, row)) = index.get(position) else {
+        return FrameIdLookup::Missing;
+    };
+    if *candidate != id {
+        return FrameIdLookup::Missing;
+    }
+    if index.get(position + 1).is_some_and(|(next, _)| *next == id) {
+        FrameIdLookup::Ambiguous(*row)
+    } else {
+        FrameIdLookup::Unique(*row)
+    }
+}
+
+fn first_frame_id_row(index: &[(u32, usize)], id: u32) -> Option<usize> {
+    match frame_id_lookup(index, id) {
+        FrameIdLookup::Missing => None,
+        FrameIdLookup::Unique(row) | FrameIdLookup::Ambiguous(row) => Some(row),
+    }
 }
 
 fn first_frame_name_row(index: &[(&str, usize)], name: &str) -> Option<usize> {
@@ -354,7 +376,10 @@ impl FrameTree {
                         current = if frame.id == WORLD || frame.parent == WORLD {
                             None
                         } else {
-                            first_frame_id_row(first_by_id, frame.parent.0)
+                            match frame_id_lookup(first_by_id, frame.parent.0) {
+                                FrameIdLookup::Unique(parent) => Some(parent),
+                                FrameIdLookup::Missing | FrameIdLookup::Ambiguous(_) => None,
+                            }
                         };
                     }
                     1 => break true,
@@ -441,12 +466,25 @@ impl FrameTree {
                     fix: "give every frame a unique name".to_string(),
                 });
             }
-            if f.parent != WORLD && first_frame_id_row(&first_by_id, f.parent.0).is_none() {
-                out.push(Violation {
-                    code: "frame-parent-missing",
-                    what: format!("{ctx}: parent id {} does not exist", f.parent.0),
-                    fix: "point the frame at an existing parent or at the world (0)".to_string(),
-                });
+            if f.parent != WORLD {
+                match frame_id_lookup(&first_by_id, f.parent.0) {
+                    FrameIdLookup::Missing => out.push(Violation {
+                        code: "frame-parent-missing",
+                        what: format!("{ctx}: parent id {} does not exist", f.parent.0),
+                        fix: "point the frame at an existing parent or at the world (0)"
+                            .to_string(),
+                    }),
+                    FrameIdLookup::Ambiguous(first) => out.push(Violation {
+                        code: "frame-parent-ambiguous",
+                        what: format!(
+                            "{ctx}: parent id {} is defined more than once, first at frame row {first}",
+                            f.parent.0
+                        ),
+                        fix: "give every frame a unique id before resolving parent chains"
+                            .to_string(),
+                    }),
+                    FrameIdLookup::Unique(_) => {}
+                }
             }
             match &f.motion {
                 FrameMotion::Fixed {
@@ -614,5 +652,51 @@ mod validation_internal_tests {
             })
         ));
         assert!(scratch.is_empty());
+    }
+
+    #[test]
+    fn duplicate_parent_ids_are_ambiguous_under_every_declaration_order() {
+        let root = Frame {
+            id: FrameId(1),
+            name: "root-definition".to_string(),
+            parent: WORLD,
+            motion: fixed_frame(1, WORLD).motion,
+        };
+        let back_edge = Frame {
+            id: FrameId(1),
+            name: "back-edge-definition".to_string(),
+            parent: FrameId(2),
+            motion: fixed_frame(1, WORLD).motion,
+        };
+        let child = Frame {
+            id: FrameId(2),
+            name: "child".to_string(),
+            parent: FrameId(1),
+            motion: fixed_frame(2, WORLD).motion,
+        };
+
+        for frames in [
+            [root.clone(), back_edge.clone(), child.clone()],
+            [back_edge.clone(), root.clone(), child.clone()],
+        ] {
+            let tree = FrameTree {
+                frames: frames.into(),
+            };
+            let mut findings = Vec::new();
+            tree.check(&mut findings);
+            assert_eq!(
+                findings
+                    .iter()
+                    .map(|finding| finding.code)
+                    .collect::<Vec<_>>(),
+                ["frame-id-duplicate", "frame-parent-ambiguous"]
+            );
+            assert!(
+                findings
+                    .iter()
+                    .all(|finding| finding.code != "frame-chain-cyclic"),
+                "an ambiguous parent must not be resolved through an arbitrary first row"
+            );
+        }
     }
 }

@@ -112,6 +112,8 @@ flagships.
    silently reinterpreted as zero flow, and a pressure outlet cannot mask a
    malformed inlet declaration.
 4. **Frame chains terminate**: cycles and dangling parents are violations;
+   a parent reference to a duplicated frame id is explicitly ambiguous and is
+   never resolved through an arbitrary storage row;
    `world_pose` refuses cyclic chains at runtime too (hop budget).
 5. **Bitwise ensemble replay (G5)**: identical complete canonical ensemble
    specifications, member identities, and implementation stream/synthesis
@@ -151,6 +153,8 @@ flagships.
     and repeated rows.
 11. **Indexed structural validation**: frame identity indexes are built once;
     the tri-color parent traversal visits each storage row at most once, and
+    follows only uniquely resolved parent ids so duplicate declarations cannot
+    make cycle findings depend on declaration order;
     case/frame/combination/ensemble/contact reference checks use deterministic
     ordered indexes rather than repeated prefix or whole-collection scans.
 12. **Semantic preflight before validation**: top-level collection caps precede
@@ -298,6 +302,9 @@ None.
   escape.
 - A focused frame regression injects cancellation inside the tri-color cycle
   walk and proves frame findings remain private at that boundary.
+- A focused frame permutation regression proves duplicated parent ids produce
+  the same explicit ambiguity finding without declaration-order-dependent cycle
+  findings.
 - A focused frame scratch regression forces a capacity overflow and proves a
   typed allocation refusal without partial scratch state.
 - A focused table-signal regression proves the checkpointed scalar traversal
