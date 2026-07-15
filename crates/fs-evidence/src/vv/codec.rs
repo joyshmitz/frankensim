@@ -2042,7 +2042,7 @@ fn decode_waterfall(decoder: &mut Decoder<'_>) -> Result<UncertaintyWaterfall, V
     let unit = decode_unit_id(decoder)?;
     let mode = decode_waterfall_mode(decoder)?;
     let count = decoder.count()?;
-    let mut terms = bounded_vec(decoder, count, "waterfall terms")?;
+    let mut terms: Vec<UncertaintyTerm> = bounded_vec(decoder, count, "waterfall terms")?;
     for _ in 0..count {
         let offset = decoder.position();
         let term = decode_uncertainty_term(decoder)?;
