@@ -18,12 +18,12 @@ use fs_evidence::{NumericalCertificate, NumericalKind};
 use fs_exec::{Cancelled, Cx};
 use fs_geom::{Chart, ChartSample, Point3, TraceStepClaim, Vec3};
 use fs_math::eft::two_sum;
-use fs_rep_nurbs::NurbsSurface;
+use fs_rep_nurbs::{NurbsError, NurbsSurface};
 
 /// Bit-affecting semantics of certified sphere tracing and scalar-BVH
 /// traversal. Downstream image goldens pin this surface separately from the
 /// spectral estimator so geometry changes cannot silently move image bytes.
-pub const CHART_BACKEND_BIT_SEMANTICS_VERSION: u32 = 5;
+pub const CHART_BACKEND_BIT_SEMANTICS_VERSION: u32 = 7;
 
 /// A ray with a finite, nonzero direction. The marcher converts certified
 /// physical step radii into this ray's parameter space; unit directions remain
@@ -58,6 +58,81 @@ pub struct Hit {
     /// Work spent (marcher steps / Newton iterations / BVH visits).
     pub steps: u32,
 }
+
+/// Structured admission/execution failures for the public NURBS ray path. A
+/// malformed chart or impossible request is not a geometric miss.
+#[derive(Debug, Clone, PartialEq)]
+pub enum NurbsRayError {
+    /// The execution context requested cancellation.
+    Cancelled,
+    /// A ray or solver setting was outside the admitted finite domain.
+    InvalidInput {
+        /// Actionable diagnosis.
+        what: &'static str,
+    },
+    /// The caller-mutable NURBS representation failed live validation.
+    InvalidSurface(NurbsError),
+    /// The deterministic legacy work envelope was exceeded.
+    ResourceLimit {
+        /// Requested coarse-grid seed count.
+        requested: usize,
+        /// Maximum admitted seed count.
+        cap: usize,
+    },
+    /// The structure-sensitive seed plus Newton work estimate exceeded the
+    /// defensive synchronous legacy ceiling.
+    WorkLimit {
+        /// Conservative requested work units.
+        requested: u128,
+        /// Maximum admitted work units.
+        cap: u128,
+    },
+    /// A bounded seed allocation was refused by the allocator.
+    ResourceExhausted,
+    /// The bounded heuristic search did not construct a hit. This is not a
+    /// geometric miss: the current Newton path has no exclusion certificate.
+    IterationLimit {
+        /// Number of ranked Newton starts attempted.
+        starts: usize,
+        /// Maximum iterations admitted for each start.
+        iterations_per_start: u32,
+    },
+}
+
+impl From<Cancelled> for NurbsRayError {
+    fn from(_: Cancelled) -> Self {
+        Self::Cancelled
+    }
+}
+
+impl core::fmt::Display for NurbsRayError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Cancelled => formatter.write_str("NURBS ray intersection cancelled"),
+            Self::InvalidInput { what } => write!(formatter, "invalid NURBS ray input: {what}"),
+            Self::InvalidSurface(error) => write!(formatter, "invalid NURBS ray surface: {error}"),
+            Self::ResourceLimit { requested, cap } => write!(
+                formatter,
+                "NURBS ray seed request {requested} exceeds defensive ceiling {cap}"
+            ),
+            Self::WorkLimit { requested, cap } => write!(
+                formatter,
+                "NURBS ray request needs {requested} work units above defensive ceiling {cap}"
+            ),
+            Self::ResourceExhausted => formatter.write_str("NURBS ray seed allocation was refused"),
+            Self::IterationLimit {
+                starts,
+                iterations_per_start,
+            } => write!(
+                formatter,
+                "NURBS ray search was inconclusive after {starts} starts of at most \
+                 {iterations_per_start} iterations"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for NurbsRayError {}
 
 /// Why a sphere-trace stopped. A miss caused by exhausting the bounded
 /// iteration budget is not interchangeable with a geometrically clean miss.
@@ -1315,12 +1390,43 @@ fn conservative_difference_lower(lhs: f64, rhs: f64) -> f64 {
     }
 }
 
+fn finite_norm(vector: Vec3) -> Option<f64> {
+    if !vector.x.is_finite() || !vector.y.is_finite() || !vector.z.is_finite() {
+        return None;
+    }
+    let scale = vector.x.abs().max(vector.y.abs()).max(vector.z.abs());
+    if scale == 0.0 {
+        return Some(0.0);
+    }
+    let scaled = Vec3::new(vector.x / scale, vector.y / scale, vector.z / scale);
+    let square_sum = scaled.dot(scaled);
+    let norm = scale * square_sum.sqrt();
+    norm.is_finite().then_some(norm)
+}
+
 fn normalize_gradient(gradient: Vec3) -> Option<Vec3> {
     if !gradient.x.is_finite() || !gradient.y.is_finite() || !gradient.z.is_finite() {
         return None;
     }
-    let norm = gradient.norm();
-    (norm.is_finite() && norm > 1e-12).then(|| gradient.scale(1.0 / norm))
+    let scale = gradient.x.abs().max(gradient.y.abs()).max(gradient.z.abs());
+    if !scale.is_finite() || scale <= 0.0 {
+        return None;
+    }
+    let scaled = gradient.scale(1.0 / scale);
+    let norm = finite_norm(scaled)?;
+    (norm > 1e-12).then(|| scaled.scale(1.0 / norm))
+}
+
+fn normalized_cross(lhs: [f64; 3], rhs: [f64; 3]) -> Option<Vec3> {
+    let lhs = normalize_gradient(Vec3::new(lhs[0], lhs[1], lhs[2]))?;
+    let rhs = normalize_gradient(Vec3::new(rhs[0], rhs[1], rhs[2]))?;
+    let cross = Vec3::new(
+        lhs.y * rhs.z - lhs.z * rhs.y,
+        lhs.z * rhs.x - lhs.x * rhs.z,
+        lhs.x * rhs.y - lhs.y * rhs.x,
+    );
+    let angular_sine = finite_norm(cross)?;
+    (angular_sine > 1e-12).then(|| cross.scale(1.0 / angular_sine))
 }
 
 /// Central-difference normal fallback (charts without gradients).
@@ -1339,18 +1445,14 @@ fn gradient_fd(chart: &dyn Chart, cx: &Cx<'_>, p: Point3) -> Option<Vec3> {
 /// ray line, then 3×3 Newton on `F(u, v, t) = S(u, v) − o − t·d = 0`
 /// with the Jacobian `[S_u, S_v, −d]` — the Bézier-clipping-seeded
 /// Newton the plan names, adapted from the closest-point machinery.
-#[must_use]
 #[allow(clippy::too_many_lines)]
 pub fn ray_intersect_nurbs(
     surface: &NurbsSurface<f64>,
     ray: &Ray,
     seeds_per_axis: usize,
     eps: f64,
-) -> Option<Hit> {
-    match ray_intersect_nurbs_impl(surface, None, ray, seeds_per_axis, eps) {
-        Ok(hit) => hit,
-        Err(_) => unreachable!("no cancellation context was supplied"),
-    }
+) -> Result<Option<Hit>, NurbsRayError> {
+    ray_intersect_nurbs_impl(surface, None, ray, seeds_per_axis, eps)
 }
 
 /// Cancellable NURBS ray intersection for production mixed-backend paths.
@@ -1360,8 +1462,74 @@ pub fn ray_intersect_nurbs_with_cx(
     ray: &Ray,
     seeds_per_axis: usize,
     eps: f64,
-) -> Result<Option<Hit>, Cancelled> {
+) -> Result<Option<Hit>, NurbsRayError> {
     ray_intersect_nurbs_impl(surface, Some(cx), ray, seeds_per_axis, eps)
+}
+
+/// Defensive cap for the allocation-bearing legacy coarse seed grid. The
+/// successor should accept an explicit work/memory budget and retain only a
+/// bounded top-k frontier.
+const NURBS_RAY_MAX_SEEDS: usize = 65_536;
+
+/// Structure-sensitive synchronous work ceiling for seed evaluation plus the
+/// six retained Newton starts. This is a defensive legacy constant, not a
+/// substitute for the planned caller-owned budget.
+const NURBS_RAY_MAX_WORK_UNITS: u128 = 67_108_864;
+
+fn preflight_nurbs_ray_work(
+    surface: &NurbsSurface<f64>,
+    seed_count: usize,
+) -> Result<(), NurbsRayError> {
+    let limit = || NurbsRayError::WorkLimit {
+        requested: u128::MAX,
+        cap: NURBS_RAY_MAX_WORK_UNITS,
+    };
+    let order_u = (surface.knots_u.degree as u128)
+        .checked_add(1)
+        .ok_or_else(limit)?;
+    let order_v = (surface.knots_v.degree as u128)
+        .checked_add(1)
+        .ok_or_else(limit)?;
+    let knot_entries = (surface.knots_u.knots.len() as u128)
+        .checked_add(surface.knots_v.knots.len() as u128)
+        .ok_or_else(limit)?;
+    let controls = (surface.knots_u.control_count() as u128)
+        .checked_mul(surface.knots_v.control_count() as u128)
+        .ok_or_else(limit)?;
+    // Price repeated live structure validation, both basis triangles and the
+    // tensor-product accumulation. `partials` constructs/evaluates additional
+    // isocurves; eight base evaluations per Newton step is conservative for
+    // the current implementation.
+    let knot_work = knot_entries.checked_mul(64).ok_or_else(limit)?;
+    let control_work = controls.checked_mul(16).ok_or_else(limit)?;
+    let basis_work = order_u
+        .checked_mul(order_u)
+        .and_then(|u| order_v.checked_mul(order_v).and_then(|v| u.checked_add(v)))
+        .and_then(|work| work.checked_mul(4))
+        .ok_or_else(limit)?;
+    let accumulation_work = order_u
+        .checked_mul(order_v)
+        .and_then(|work| work.checked_mul(8))
+        .ok_or_else(limit)?;
+    let per_evaluation = knot_work
+        .checked_add(control_work)
+        .and_then(|work| work.checked_add(basis_work))
+        .and_then(|work| work.checked_add(accumulation_work))
+        .ok_or_else(limit)?;
+    let newton_equivalent_evaluations = 6u128 * 24 * 8;
+    let total_evaluations = (seed_count as u128)
+        .checked_add(newton_equivalent_evaluations)
+        .ok_or_else(limit)?;
+    let requested = per_evaluation
+        .checked_mul(total_evaluations)
+        .ok_or_else(limit)?;
+    if requested > NURBS_RAY_MAX_WORK_UNITS {
+        return Err(NurbsRayError::WorkLimit {
+            requested,
+            cap: NURBS_RAY_MAX_WORK_UNITS,
+        });
+    }
+    Ok(())
 }
 
 fn ray_intersect_nurbs_impl(
@@ -1370,35 +1538,72 @@ fn ray_intersect_nurbs_impl(
     input_ray: &Ray,
     seeds_per_axis: usize,
     eps: f64,
-) -> Result<Option<Hit>, Cancelled> {
+) -> Result<Option<Hit>, NurbsRayError> {
+    if !eps.is_finite() || eps <= 0.0 {
+        return Err(NurbsRayError::InvalidInput {
+            what: "tolerance must be finite and positive",
+        });
+    }
+    if seeds_per_axis == 0 {
+        return Err(NurbsRayError::InvalidInput {
+            what: "seeds_per_axis must be nonzero",
+        });
+    }
+    let seed_count =
+        seeds_per_axis
+            .checked_mul(seeds_per_axis)
+            .ok_or(NurbsRayError::ResourceLimit {
+                requested: usize::MAX,
+                cap: NURBS_RAY_MAX_SEEDS,
+            })?;
+    if seed_count > NURBS_RAY_MAX_SEEDS {
+        return Err(NurbsRayError::ResourceLimit {
+            requested: seed_count,
+            cap: NURBS_RAY_MAX_SEEDS,
+        });
+    }
+    preflight_nurbs_ray_work(surface, seed_count)?;
     if let Some(cx) = cx {
-        cx.checkpoint()?;
+        cx.checkpoint().map_err(NurbsRayError::from)?;
     }
     let Some((ray, parameter_scale)) = scaled_parameter_ray(input_ray) else {
-        return Ok(None);
+        return Err(NurbsRayError::InvalidInput {
+            what: "ray origin/direction must be finite and direction nonzero",
+        });
     };
-    let (ulo, uhi) = surface.knots_u.domain();
-    let (vlo, vhi) = surface.knots_v.domain();
+    let (ulo, uhi) = surface
+        .knots_u
+        .domain()
+        .map_err(NurbsRayError::InvalidSurface)?;
+    let (vlo, vhi) = surface
+        .knots_v
+        .domain()
+        .map_err(NurbsRayError::InvalidSurface)?;
     let direction_norm_squared = ray.dir.dot(ray.dir);
     if !direction_norm_squared.is_finite() || direction_norm_squared <= 0.0 {
-        return Ok(None);
+        return Err(NurbsRayError::InvalidInput {
+            what: "scaled ray direction has no finite positive squared norm",
+        });
     }
     // Seed ranking: distance from the sample point to the ray LINE.
     let mut seeds: Vec<(f64, f64, f64, f64)> = Vec::new(); // (dist, u, v, t)
+    seeds
+        .try_reserve_exact(seed_count)
+        .map_err(|_| NurbsRayError::ResourceExhausted)?;
     for a in 0..seeds_per_axis {
         for b in 0..seeds_per_axis {
             if let Some(cx) = cx {
-                cx.checkpoint()?;
+                cx.checkpoint().map_err(NurbsRayError::from)?;
             }
             #[allow(clippy::cast_precision_loss)]
             let u = ulo + (uhi - ulo) * (a as f64 + 0.5) / seeds_per_axis as f64;
             #[allow(clippy::cast_precision_loss)]
             let v = vlo + (vhi - vlo) * (b as f64 + 0.5) / seeds_per_axis as f64;
-            let evaluated = surface.eval(u, v);
+            let evaluated = surface.eval(u, v).map_err(NurbsRayError::InvalidSurface)?;
             if let Some(cx) = cx {
-                cx.checkpoint()?;
+                cx.checkpoint().map_err(NurbsRayError::from)?;
             }
-            let Ok(p) = evaluated else { continue };
+            let p = evaluated;
             let rel = [
                 p[0] - ray.origin.x,
                 p[1] - ray.origin.y,
@@ -1407,26 +1612,29 @@ fn ray_intersect_nurbs_impl(
             let t = (rel[0] * ray.dir.x + rel[1] * ray.dir.y + rel[2] * ray.dir.z)
                 / direction_norm_squared;
             let closest = ray.at(t);
-            let dist = ((p[0] - closest.x).powi(2)
-                + (p[1] - closest.y).powi(2)
-                + (p[2] - closest.z).powi(2))
-            .sqrt();
-            if t > 0.0 {
+            let dist = finite_norm(Vec3::new(
+                p[0] - closest.x,
+                p[1] - closest.y,
+                p[2] - closest.z,
+            ));
+            if t.is_finite() && t > 0.0 {
+                let Some(dist) = dist else { continue };
                 seeds.push((dist, u, v, t));
             }
         }
     }
     seeds.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.3.total_cmp(&y.3)));
+    let starts = seeds.len().min(6);
     let mut best: Option<Hit> = None;
-    for &(_, u0, v0, t0) in seeds.iter().take(6) {
+    for &(_, u0, v0, t0) in seeds.iter().take(starts) {
         let (mut u, mut v, mut t) = (u0, v0, t0);
         for iter_count in 1..=24u32 {
             if let Some(cx) = cx {
-                cx.checkpoint()?;
+                cx.checkpoint().map_err(NurbsRayError::from)?;
             }
             let partials = surface.partials(u, v);
             if let Some(cx) = cx {
-                cx.checkpoint()?;
+                cx.checkpoint().map_err(NurbsRayError::from)?;
             }
             let Ok((pos, su, sv)) = partials else {
                 break;
@@ -1436,19 +1644,13 @@ fn ray_intersect_nurbs_impl(
                 pos[1] - ray.origin.y - t * ray.dir.y,
                 pos[2] - ray.origin.z - t * ray.dir.z,
             ];
-            let fn2 = f[0] * f[0] + f[1] * f[1] + f[2] * f[2];
-            if fn2 < eps * eps {
-                let n = Vec3::new(
-                    su[1] * sv[2] - su[2] * sv[1],
-                    su[2] * sv[0] - su[0] * sv[2],
-                    su[0] * sv[1] - su[1] * sv[0],
-                );
-                let nn = n.norm();
+            let residual = finite_norm(Vec3::new(f[0], f[1], f[2]));
+            if residual.is_some_and(|norm| norm < eps) {
                 let parameter_t = t / parameter_scale;
                 let hit = Hit {
                     t: parameter_t,
                     point: input_ray.at(parameter_t),
-                    normal: (nn > 1e-12).then(|| n.scale(1.0 / nn)),
+                    normal: normalized_cross(su, sv),
                     steps: iter_count,
                 };
                 if parameter_t.is_finite()
@@ -1468,14 +1670,10 @@ fn ray_intersect_nurbs_impl(
                 [su[1], sv[1], -ray.dir.y],
                 [su[2], sv[2], -ray.dir.z],
             ];
-            let det = det3(&j);
-            if det.abs() < 1e-14 {
-                break;
-            }
             let rhs = [-f[0], -f[1], -f[2]];
-            let du = det3(&replace_col(&j, 0, &rhs)) / det;
-            let dv = det3(&replace_col(&j, 1, &rhs)) / det;
-            let dt = det3(&replace_col(&j, 2, &rhs)) / det;
+            let Some([du, dv, dt]) = scaled_newton_step(&j, &rhs) else {
+                break;
+            };
             u = (u + du).clamp(ulo, uhi);
             v = (v + dv).clamp(vlo, vhi);
             t += dt;
@@ -1485,15 +1683,77 @@ fn ray_intersect_nurbs_impl(
         }
     }
     if let Some(cx) = cx {
-        cx.checkpoint()?;
+        cx.checkpoint().map_err(NurbsRayError::from)?;
     }
-    Ok(best)
+    best.map(Some).ok_or(NurbsRayError::IterationLimit {
+        starts,
+        iterations_per_start: 24,
+    })
 }
 
 fn det3(m: &[[f64; 3]; 3]) -> f64 {
     m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
         - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
         + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+}
+
+/// Solve the Newton system after normalizing every Jacobian column and the
+/// residual. The determinant is therefore a dimensionless angular-volume
+/// condition test, not an absolute tolerance that changes when the same
+/// surface is reparameterized onto a larger or smaller knot domain.
+fn scaled_newton_step(j: &[[f64; 3]; 3], rhs: &[f64; 3]) -> Option<[f64; 3]> {
+    let column_scales = [
+        finite_norm(Vec3::new(j[0][0], j[1][0], j[2][0]))?,
+        finite_norm(Vec3::new(j[0][1], j[1][1], j[2][1]))?,
+        finite_norm(Vec3::new(j[0][2], j[1][2], j[2][2]))?,
+    ];
+    if column_scales.iter().any(|&scale| scale <= 0.0) {
+        return None;
+    }
+    let normalized = [
+        [
+            j[0][0] / column_scales[0],
+            j[0][1] / column_scales[1],
+            j[0][2] / column_scales[2],
+        ],
+        [
+            j[1][0] / column_scales[0],
+            j[1][1] / column_scales[1],
+            j[1][2] / column_scales[2],
+        ],
+        [
+            j[2][0] / column_scales[0],
+            j[2][1] / column_scales[1],
+            j[2][2] / column_scales[2],
+        ],
+    ];
+    let determinant = det3(&normalized);
+    if !determinant.is_finite() || determinant.abs() <= 1e-12 {
+        return None;
+    }
+
+    let rhs_scale = rhs[0].abs().max(rhs[1].abs()).max(rhs[2].abs());
+    if !rhs_scale.is_finite() {
+        return None;
+    }
+    if rhs_scale == 0.0 {
+        return Some([0.0; 3]);
+    }
+    let normalized_rhs = [rhs[0] / rhs_scale, rhs[1] / rhs_scale, rhs[2] / rhs_scale];
+    let normalized_solution = [
+        det3(&replace_col(&normalized, 0, &normalized_rhs)) / determinant,
+        det3(&replace_col(&normalized, 1, &normalized_rhs)) / determinant,
+        det3(&replace_col(&normalized, 2, &normalized_rhs)) / determinant,
+    ];
+    let solution = [
+        normalized_solution[0] * (rhs_scale / column_scales[0]),
+        normalized_solution[1] * (rhs_scale / column_scales[1]),
+        normalized_solution[2] * (rhs_scale / column_scales[2]),
+    ];
+    solution
+        .iter()
+        .all(|value| value.is_finite())
+        .then_some(solution)
 }
 
 fn replace_col(m: &[[f64; 3]; 3], col: usize, v: &[f64; 3]) -> [[f64; 3]; 3] {
@@ -1889,6 +2149,26 @@ impl From<Cancelled> for SceneTraceError {
     }
 }
 
+impl From<NurbsRayError> for SceneTraceError {
+    fn from(error: NurbsRayError) -> Self {
+        match error {
+            NurbsRayError::Cancelled => Self::Cancelled,
+            NurbsRayError::InvalidSurface(_) => {
+                Self::BackendFailure(TraceTermination::InvalidSample)
+            }
+            NurbsRayError::InvalidInput { .. }
+            | NurbsRayError::ResourceLimit { .. }
+            | NurbsRayError::WorkLimit { .. }
+            | NurbsRayError::ResourceExhausted => {
+                Self::BackendFailure(TraceTermination::InvalidInput)
+            }
+            NurbsRayError::IterationLimit { .. } => {
+                Self::BackendFailure(TraceTermination::StepLimit)
+            }
+        }
+    }
+}
+
 impl core::fmt::Display for SceneTraceError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
@@ -1969,6 +2249,18 @@ pub fn trace_scene(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scaled_cross_normalization_survives_finite_tangent_overflow_scale() {
+        let normal = normalized_cross([f64::MAX, 0.0, 0.0], [0.0, f64::MAX, 0.0])
+            .expect("independent finite tangents have a normal");
+        assert_eq!(normal, Vec3::new(0.0, 0.0, 1.0));
+        assert!(normalized_cross([f64::MAX, 0.0, 0.0], [f64::MAX, 0.0, 0.0]).is_none());
+        assert!(
+            normalized_cross([1.0, 0.0, 0.0], [1.0, 1e-300, 0.0]).is_none(),
+            "normal authority must retain the angle magnitude after tangent scaling"
+        );
+    }
 
     #[test]
     fn adjacent_exact_axis_endpoint_is_admissible_without_underbounding() {

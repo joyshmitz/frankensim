@@ -16,8 +16,8 @@ use fs_geom::fixtures::{SphereChart, TorusChart};
 use fs_geom::{Aabb, Chart, ChartSample, Point3, TraceStepClaim, Vec3};
 use fs_math::eft::two_sum;
 use fs_render::charts::{
-    Backend, CHART_BACKEND_BIT_SEMANTICS_VERSION, Ray, SceneTraceError, TraceTermination, TriMesh,
-    ray_intersect_nurbs, sphere_trace, trace_scene,
+    Backend, CHART_BACKEND_BIT_SEMANTICS_VERSION, NurbsRayError, Ray, SceneTraceError,
+    TraceTermination, TriMesh, ray_intersect_nurbs, sphere_trace, trace_scene,
 };
 use fs_rep_frep::{BoolOp, BoolStyle, Frep, FrepBuilder};
 
@@ -592,7 +592,7 @@ fn oracle_first_hit(chart: &dyn Chart, cx: &Cx<'_>, ray: &Ray, t_max: f64) -> Op
 #[test]
 fn rb_001_zero_tunneling_headline() {
     with_cx(|cx| {
-        assert_eq!(CHART_BACKEND_BIT_SEMANTICS_VERSION, 5);
+        assert_eq!(CHART_BACKEND_BIT_SEMANTICS_VERSION, 7);
         // Falsifier pairing: four thin-feature fields whose L > 1. The naive
         // unit-bound marcher tunnels in every case; the certified d/L path
         // approaches under a no-tunneling theorem and closes a short rigorous
@@ -1542,7 +1542,9 @@ fn rb_003_nurbs_newton_matches_analytic() {
         let disc = b * b - c;
         assert!(disc > 0.0, "aimed at the center: always hits");
         let t_ref = -b - disc.sqrt();
-        let hit = ray_intersect_nurbs(&sphere, &ray, 8, 1e-9).expect("Newton converges");
+        let hit = ray_intersect_nurbs(&sphere, &ray, 8, 1e-9)
+            .expect("valid NURBS ray request")
+            .expect("Newton converges");
         assert!(
             (hit.t - t_ref).abs() < 1e-6,
             "Newton matches analytic: {} vs {t_ref}",
@@ -1561,6 +1563,7 @@ fn rb_003_nurbs_newton_matches_analytic() {
                 dir: dir.scale(scale),
             };
             let scaled_hit = ray_intersect_nurbs(&sphere, &scaled_ray, 8, 1e-9)
+                .expect("valid scaled NURBS ray request")
                 .expect("direction scaling preserves the NURBS hit");
             assert_eq!(
                 scaled_hit.point,
@@ -1577,6 +1580,87 @@ fn rb_003_nurbs_newton_matches_analytic() {
         "rb-003",
         "40 rays: Bezier-seeded Newton matches the analytic sphere intersection to 1e-6 \
          with radial normals",
+    );
+}
+
+#[test]
+fn rb_003a_nurbs_newton_is_invariant_to_parameter_domain_scale() {
+    fn plane(parameter_hi: f64) -> fs_rep_nurbs::NurbsSurface<f64> {
+        let knots_u = fs_rep_nurbs::KnotVector::new(vec![0.0, 0.0, parameter_hi, parameter_hi], 1)
+            .expect("valid u knots");
+        let knots_v = fs_rep_nurbs::KnotVector::new(vec![0.0, 0.0, parameter_hi, parameter_hi], 1)
+            .expect("valid v knots");
+        let points = vec![
+            vec![[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            vec![[1.0, 0.0, 0.0], [1.0, 1.0, 0.0]],
+        ];
+        let weights = vec![vec![1.0; 2]; 2];
+        fs_rep_nurbs::NurbsSurface::new(knots_u, knots_v, &points, &weights).expect("valid plane")
+    }
+
+    let ray = Ray {
+        origin: Point3::new(0.37, 0.41, 2.0),
+        dir: Vec3::new(0.0, 0.0, -1.0),
+    };
+    let reference = ray_intersect_nurbs(&plane(1.0), &ray, 3, 1e-12)
+        .expect("unit-domain request is valid")
+        .expect("unit-domain plane intersects");
+    let reparameterized = ray_intersect_nurbs(&plane(1e15), &ray, 3, 1e-12)
+        .expect("large-domain request is valid")
+        .expect("surface parameterization cannot turn a hit into a miss");
+    assert!((reference.t - 2.0).abs() <= 1e-12);
+    assert!((reparameterized.t - reference.t).abs() <= 1e-12);
+    assert!((reparameterized.point.x - 0.37).abs() <= 1e-12);
+    assert!((reparameterized.point.y - 0.41).abs() <= 1e-12);
+    verdict(
+        "rb-003a",
+        "G3: a 1e15 knot-domain reparameterization preserves the same finite Newton hit",
+    );
+}
+
+#[test]
+fn rb_003b_nurbs_ray_admission_is_bounded_and_fail_closed() {
+    let sphere = sphere_nurbs();
+    let ray = Ray {
+        origin: Point3::new(3.0, 0.0, 0.0),
+        dir: Vec3::new(-1.0, 0.0, 0.0),
+    };
+    for eps in [f64::NAN, f64::INFINITY, 0.0, -1.0] {
+        assert!(matches!(
+            ray_intersect_nurbs(&sphere, &ray, 8, eps),
+            Err(NurbsRayError::InvalidInput { .. })
+        ));
+    }
+    assert!(matches!(
+        ray_intersect_nurbs(&sphere, &ray, 0, 1e-9),
+        Err(NurbsRayError::InvalidInput { .. })
+    ));
+    assert!(matches!(
+        ray_intersect_nurbs(&sphere, &ray, usize::MAX, 1e-9),
+        Err(NurbsRayError::ResourceLimit { .. })
+    ));
+    assert!(matches!(
+        ray_intersect_nurbs(&sphere, &ray, 256, 1e-9),
+        Err(NurbsRayError::WorkLimit { .. })
+    ));
+
+    let mut malformed = sphere;
+    malformed.cpw.clear();
+    assert!(matches!(
+        ray_intersect_nurbs(&malformed, &ray, 8, 1e-9),
+        Err(NurbsRayError::InvalidSurface(_))
+    ));
+    let geometric_miss = Ray {
+        origin: Point3::new(3.0, 3.0, 3.0),
+        dir: Vec3::new(1.0, 0.0, 0.0),
+    };
+    assert!(matches!(
+        ray_intersect_nurbs(&sphere_nurbs(), &geometric_miss, 8, 1e-9),
+        Err(NurbsRayError::IterationLimit { .. })
+    ));
+    verdict(
+        "rb-003b",
+        "invalid requests refuse before unbounded work, and heuristic nonconvergence cannot impersonate a certified miss",
     );
 }
 
@@ -1724,7 +1808,8 @@ fn rb_004_mixed_scene_consistency_and_frame_invariance() {
                 dir: unit(Point3::new(0.0, 0.0, 0.0).delta_from(origin)),
             };
             let (sdf_hit, _) = sphere_trace(&frep, cx, &ray, 8.0, 1e-7, 1.0);
-            let nurbs_hit = ray_intersect_nurbs(&nurbs, &ray, 8, 1e-9);
+            let nurbs_hit =
+                ray_intersect_nurbs(&nurbs, &ray, 8, 1e-9).expect("valid NURBS ray request");
             let mesh_hit = mesh.intersect(&ray);
             let (a, b_, c) = (
                 sdf_hit.expect("sdf hits").t,

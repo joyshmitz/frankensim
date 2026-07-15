@@ -38,7 +38,16 @@ differentiable lift). Pure Rust throughout.
   `TraceAudit.worst_step_ratio`);
   over-relaxation uses the standard certified fallback (retreat when
   spheres fail to overlap). `ray_intersect_nurbs` is grid-seeded 3×3
-  Newton on `S(u,v) − o − t·d` with the `[S_u, S_v, −d]` Jacobian.
+  Newton on `S(u,v) − o − t·d` with the `[S_u, S_v, −d]` Jacobian. Its
+  allocation-bearing legacy seed grid is checked, capped, and fallibly
+  reserved before evaluation; malformed mutable NURBS state, invalid settings,
+  resource refusal, cancellation, and bounded-search nonconvergence remain
+  distinct typed outcomes. The current Newton path has no exclusion theorem,
+  so exhausted starts fail closed as `IterationLimit`; `Ok(None)` is reserved
+  for a future certified miss. Jacobian columns and residuals are normalized
+  before the dimensionless angular-volume condition test, and residual/normal
+  norms use scale-safe finite arithmetic, so knot-domain or ray scaling cannot
+  manufacture convergence, a miss, or a `Some(NaN)` normal.
   Certification requires the chart-level typed `TraceStepClaim`; a sample
   carrying `Some(L)` cannot upgrade the default `NoClaim`. Exact-distance hits
   use world-space distance tolerance. A Lipschitz-implicit chart authorizes a
