@@ -11,16 +11,21 @@
 
 use crate::NurbsError;
 use crate::basis::AdmittedKnotVector;
-use crate::curve::{AdmittedNurbsCurve, BezierConversionPlan, NurbsCurve};
+use crate::curve::{
+    AdmittedNurbsCurve, BezierConversionPlan, CurveBezierRun, CurveDerivativesRun,
+    CurveEvaluationRun, NurbsCurve,
+};
 use crate::surface::{AdmittedNurbsSurface, NurbsSurface};
+use fs_exec::Cx;
 use fs_math::{det, next_down, next_up};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::mem::size_of;
 
 /// Defensive ceiling for the legacy allocation-bearing subdivision path.
-/// Caller-owned work/memory budgets and cancellation belong to the successor
-/// certifying API; this cap only prevents an unbounded `u32` request here.
+/// Caller-owned work/memory budgets and certifying request-drain-finalize
+/// cancellation belong to the successor API. The admitted measured path only
+/// observes a borrowed `Cx`; this cap still prevents an unbounded `u32` request.
 pub(crate) const CLOSEST_MAX_SPLITS: u32 = 1_048_576;
 
 /// Defensive ceiling for conservative initial validation and stage-faithful
@@ -42,6 +47,25 @@ const CLOSEST_MAX_RETAINED_BYTES: u128 = 256 * 1024 * 1024;
 // claim for any particular machine.
 const CLOSEST_CURVE_SOURCE_SCAN_WORK_PER_ENTRY: u128 = 16;
 const CLOSEST_SURFACE_SOURCE_SCAN_WORK_PER_CONTROL: u128 = 16;
+const CLOSEST_CANCELLATION_STRIDE: usize = 64;
+
+fn closest_poll_due(
+    operations_since_poll: &mut usize,
+    should_cancel: &mut impl FnMut() -> bool,
+) -> bool {
+    *operations_since_poll += 1;
+    if *operations_since_poll < CLOSEST_CANCELLATION_STRIDE {
+        return false;
+    }
+    *operations_since_poll = 0;
+    should_cancel()
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum ClosestWorkRun<T> {
+    Complete(T),
+    Cancelled,
+}
 
 /// Deterministic minimum-priority entry. `BinaryHeap` is a max-heap, so the
 /// comparisons are reversed: lower bound first, then lower logical ID. IDs
@@ -87,6 +111,20 @@ pub struct DistanceBracketEstimate {
     pub param: [f64; 2],
     /// Branch-and-bound splits spent.
     pub iterations: u32,
+}
+
+/// Transactional terminal state of cancellation-aware measured closest-point
+/// search.
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ClosestPointRun {
+    /// A complete finite measured bracket estimate.
+    Complete {
+        /// The fully published closest-point estimate.
+        estimate: DistanceBracketEstimate,
+    },
+    /// Cancellation was observed; no partial estimate was published.
+    Cancelled,
 }
 
 pub(crate) fn norm3(value: [f64; 3]) -> f64 {
@@ -642,6 +680,26 @@ fn preflight_curve_closest<const DIM: usize>(
     max_splits: u32,
     source_admission_work: u128,
 ) -> Result<CurveClosestPlan, NurbsError> {
+    let mut never_cancel = || false;
+    match preflight_curve_closest_with_poll(
+        curve,
+        max_splits,
+        source_admission_work,
+        &mut never_cancel,
+    )? {
+        ClosestWorkRun::Complete(plan) => Ok(plan),
+        ClosestWorkRun::Cancelled => Err(NurbsError::Domain {
+            what: "non-cancelling closest-curve preflight observed cancellation".to_string(),
+        }),
+    }
+}
+
+fn preflight_curve_closest_with_poll<const DIM: usize>(
+    curve: AdmittedNurbsCurve<'_, f64, DIM>,
+    max_splits: u32,
+    source_admission_work: u128,
+    should_cancel: &mut impl FnMut() -> bool,
+) -> Result<ClosestWorkRun<CurveClosestPlan>, NurbsError> {
     // This count-only gate precedes the first knot-run scan performed by the
     // exact conversion planner.
     let pre_scan_work = curve.bezier_pre_scan_work()?;
@@ -651,18 +709,29 @@ fn preflight_curve_closest<const DIM: usize>(
             what: "closest-curve admission and plan-scan work overflows u128".to_string(),
         })?;
     enforce_base_work(work_before_plan_scan, "curve plan scan")?;
-    let conversion = curve.bezier_conversion_plan()?;
+    let Some(conversion) = curve.bezier_conversion_plan_with_poll(should_cancel)? else {
+        return Ok(ClosestWorkRun::Cancelled);
+    };
     let knots = curve.knots();
     let order = (knots.degree() as u128)
         .checked_add(1)
         .ok_or_else(|| NurbsError::Domain {
             what: "closest-curve order accounting overflows u128".to_string(),
         })?;
-    let seed_leaves = knots
-        .knots()
-        .windows(2)
-        .filter(|pair| pair[1] > pair[0])
-        .count();
+    let mut seed_leaves = 0usize;
+    let mut operations_since_poll = 0usize;
+    for pair in knots.knots().windows(2) {
+        if pair[1] > pair[0] {
+            seed_leaves = seed_leaves
+                .checked_add(1)
+                .ok_or_else(|| NurbsError::Domain {
+                    what: "closest-curve seed-leaf count overflows usize".to_string(),
+                })?;
+        }
+        if closest_poll_due(&mut operations_since_poll, should_cancel) {
+            return Ok(ClosestWorkRun::Cancelled);
+        }
+    }
     if seed_leaves == 0 {
         return Err(NurbsError::Structure {
             what: "closest-curve admitted source has no nonempty knot span".to_string(),
@@ -768,11 +837,14 @@ fn preflight_curve_closest<const DIM: usize>(
         frontier_bytes,
         polish_peak_bytes,
     )?;
-    Ok(CurveClosestPlan {
+    if should_cancel() {
+        return Ok(ClosestWorkRun::Cancelled);
+    }
+    Ok(ClosestWorkRun::Complete(CurveClosestPlan {
         conversion,
         seed_leaves,
         queue_capacity,
-    })
+    }))
 }
 
 pub(crate) fn surface_subdivision_work_per_split(
@@ -1010,14 +1082,25 @@ fn validate_closest_request(q: [f64; 3], tol: f64, max_splits: u32) -> Result<()
     Ok(())
 }
 
-fn hull_lower_bound<'a>(q: [f64; 3], cps: impl Iterator<Item = &'a [f64; 4]>) -> f64 {
+fn hull_lower_bound_with_poll<'a>(
+    q: [f64; 3],
+    cps: impl Iterator<Item = &'a [f64; 4]>,
+    should_cancel: &mut impl FnMut() -> bool,
+) -> ClosestWorkRun<f64> {
+    if should_cancel() {
+        return ClosestWorkRun::Cancelled;
+    }
     let mut min = [f64::INFINITY; 3];
     let mut max = [f64::NEG_INFINITY; 3];
+    let mut operations_since_poll = 0usize;
     for h in cps {
         let c = cartesian(h);
         for k in 0..3 {
             min[k] = min[k].min(c[k]);
             max[k] = max[k].max(c[k]);
+            if closest_poll_due(&mut operations_since_poll, should_cancel) {
+                return ClosestWorkRun::Cancelled;
+            }
         }
     }
     let mut gaps = [0.0; 3];
@@ -1035,27 +1118,68 @@ fn hull_lower_bound<'a>(q: [f64; 3], cps: impl Iterator<Item = &'a [f64; 4]>) ->
         } else {
             0.0
         };
+        if closest_poll_due(&mut operations_since_poll, should_cancel) {
+            return ClosestWorkRun::Cancelled;
+        }
     }
-    norm3(gaps)
+    let lower = norm3(gaps);
+    if should_cancel() {
+        return ClosestWorkRun::Cancelled;
+    }
+    ClosestWorkRun::Complete(lower)
+}
+
+fn hull_lower_bound<'a>(q: [f64; 3], cps: impl Iterator<Item = &'a [f64; 4]>) -> f64 {
+    let mut never_cancel = || false;
+    match hull_lower_bound_with_poll(q, cps, &mut never_cancel) {
+        ClosestWorkRun::Complete(lower) => lower,
+        ClosestWorkRun::Cancelled => unreachable!("non-cancelling hull scan observed cancellation"),
+    }
 }
 
 /// De Casteljau split of a homogeneous Bézier control net at 1/2.
-fn split_bezier(cps: &[[f64; 4]]) -> Result<(Vec<[f64; 4]>, Vec<[f64; 4]>), NurbsError> {
+fn split_bezier_with_poll(
+    cps: &[[f64; 4]],
+    should_cancel: &mut impl FnMut() -> bool,
+) -> Result<ClosestWorkRun<(Vec<[f64; 4]>, Vec<[f64; 4]>)>, NurbsError> {
+    if should_cancel() {
+        return Ok(ClosestWorkRun::Cancelled);
+    }
     let n = cps.len();
     let mut tri = Vec::new();
     tri.try_reserve_exact(n).map_err(|_| NurbsError::Domain {
         what: "Bezier split triangle allocation was refused".to_string(),
     })?;
-    tri.extend_from_slice(cps);
+    if should_cancel() {
+        return Ok(ClosestWorkRun::Cancelled);
+    }
     let mut left = Vec::new();
     left.try_reserve_exact(n).map_err(|_| NurbsError::Domain {
         what: "Bezier split left-boundary allocation was refused".to_string(),
     })?;
+    if should_cancel() {
+        return Ok(ClosestWorkRun::Cancelled);
+    }
     let mut right = Vec::new();
     right.try_reserve_exact(n).map_err(|_| NurbsError::Domain {
         what: "Bezier split right-boundary allocation was refused".to_string(),
     })?;
-    right.resize(n, [0.0f64; 4]);
+    if should_cancel() {
+        return Ok(ClosestWorkRun::Cancelled);
+    }
+    let mut operations_since_poll = 0usize;
+    for &control in cps {
+        tri.push(control);
+        if closest_poll_due(&mut operations_since_poll, should_cancel) {
+            return Ok(ClosestWorkRun::Cancelled);
+        }
+    }
+    for _ in 0..n {
+        right.push([0.0f64; 4]);
+        if closest_poll_due(&mut operations_since_poll, should_cancel) {
+            return Ok(ClosestWorkRun::Cancelled);
+        }
+    }
     left.push(tri[0]);
     right[n - 1] = tri[n - 1];
     for level in 1..n {
@@ -1063,12 +1187,31 @@ fn split_bezier(cps: &[[f64; 4]]) -> Result<(Vec<[f64; 4]>, Vec<[f64; 4]>), Nurb
             let (head, tail) = tri.split_at_mut(i + 1);
             for (x, &y) in head[i].iter_mut().zip(&tail[0]) {
                 *x = f64::midpoint(*x, y);
+                if closest_poll_due(&mut operations_since_poll, should_cancel) {
+                    return Ok(ClosestWorkRun::Cancelled);
+                }
             }
         }
         left.push(tri[0]);
         right[n - 1 - level] = tri[n - 1 - level];
+        if closest_poll_due(&mut operations_since_poll, should_cancel) {
+            return Ok(ClosestWorkRun::Cancelled);
+        }
     }
-    Ok((left, right))
+    if should_cancel() {
+        return Ok(ClosestWorkRun::Cancelled);
+    }
+    Ok(ClosestWorkRun::Complete((left, right)))
+}
+
+fn split_bezier(cps: &[[f64; 4]]) -> Result<(Vec<[f64; 4]>, Vec<[f64; 4]>), NurbsError> {
+    let mut never_cancel = || false;
+    match split_bezier_with_poll(cps, &mut never_cancel)? {
+        ClosestWorkRun::Complete(halves) => Ok(halves),
+        ClosestWorkRun::Cancelled => Err(NurbsError::Domain {
+            what: "non-cancelling Bezier split observed cancellation".to_string(),
+        }),
+    }
 }
 
 struct Seg {
@@ -1110,6 +1253,70 @@ impl AdmittedNurbsCurve<'_, f64, 3> {
         validate_closest_request(q, tol, max_splits)?;
         closest_point_curve_after_request(*self, q, tol, max_splits, 0)
     }
+
+    /// Measured closest-point search with bounded cancellation polling and
+    /// transactional estimate publication.
+    ///
+    /// Request shape and the constant-time pre-scan work gate retain their
+    /// synchronous precedence. One `Cx` then spans Bezier planning/conversion,
+    /// seed construction, branch-and-bound splitting, optional Newton polish,
+    /// final evaluation, and publication. Cancellation during optional polish
+    /// is not downgraded to an ordinary polish miss. This method does not
+    /// consume the `Cx` budget or finalize its executor scope.
+    ///
+    /// # Errors
+    /// Returns the synchronous search's request, work, retained-memory,
+    /// allocation, structure, and finite-arithmetic refusals when they win
+    /// before an observed cancellation.
+    pub fn closest_point_with_cx(
+        &self,
+        q: [f64; 3],
+        tol: f64,
+        max_splits: u32,
+        cx: &Cx<'_>,
+    ) -> Result<ClosestPointRun, NurbsError> {
+        validate_closest_request(q, tol, max_splits)?;
+        let mut should_cancel = || cx.checkpoint().is_err();
+        let plan =
+            match preflight_curve_closest_with_poll(*self, max_splits, 0, &mut should_cancel)? {
+                ClosestWorkRun::Complete(plan) => plan,
+                ClosestWorkRun::Cancelled => return Ok(ClosestPointRun::Cancelled),
+            };
+        let mut kernels = CurveClosestKernels {
+            conversion: || match self.to_bezier_form_with_cx(cx)? {
+                CurveBezierRun::Complete { curve } => Ok(ClosestWorkRun::Complete(curve)),
+                CurveBezierRun::Cancelled => Ok(ClosestWorkRun::Cancelled),
+            },
+            derivatives: |t, order| match self.derivatives_with_cx(t, order, cx)? {
+                CurveDerivativesRun::Complete { derivatives } => {
+                    Ok(ClosestWorkRun::Complete(derivatives))
+                }
+                CurveDerivativesRun::Cancelled => Ok(ClosestWorkRun::Cancelled),
+            },
+            evaluation: |t| match self.eval_with_cx(t, cx)? {
+                CurveEvaluationRun::Complete { point } => Ok(ClosestWorkRun::Complete(point)),
+                CurveEvaluationRun::Cancelled => Ok(ClosestWorkRun::Cancelled),
+            },
+        };
+        match closest_point_curve_after_plan_with_poll(
+            *self,
+            q,
+            tol,
+            max_splits,
+            plan,
+            &mut kernels,
+            &mut should_cancel,
+        )? {
+            ClosestWorkRun::Complete(estimate) => Ok(ClosestPointRun::Complete { estimate }),
+            ClosestWorkRun::Cancelled => Ok(ClosestPointRun::Cancelled),
+        }
+    }
+}
+
+struct CurveClosestKernels<C, D, E> {
+    conversion: C,
+    derivatives: D,
+    evaluation: E,
 }
 
 fn closest_point_curve_after_request(
@@ -1120,7 +1327,52 @@ fn closest_point_curve_after_request(
     source_admission_work: u128,
 ) -> Result<DistanceBracketEstimate, NurbsError> {
     let plan = preflight_curve_closest(curve, max_splits, source_admission_work)?;
-    let bezier_curve = curve.to_bezier_form()?;
+    let mut kernels = CurveClosestKernels {
+        conversion: || curve.to_bezier_form().map(ClosestWorkRun::Complete),
+        derivatives: |t, order| curve.derivatives(t, order).map(ClosestWorkRun::Complete),
+        evaluation: |t| curve.eval(t).map(ClosestWorkRun::Complete),
+    };
+    let mut never_cancel = || false;
+    match closest_point_curve_after_plan_with_poll(
+        curve,
+        q,
+        tol,
+        max_splits,
+        plan,
+        &mut kernels,
+        &mut never_cancel,
+    )? {
+        ClosestWorkRun::Complete(estimate) => Ok(estimate),
+        ClosestWorkRun::Cancelled => Err(NurbsError::Domain {
+            what: "non-cancelling closest-curve search observed cancellation".to_string(),
+        }),
+    }
+}
+
+fn closest_point_curve_after_plan_with_poll<C, D, E>(
+    curve: AdmittedNurbsCurve<'_, f64, 3>,
+    q: [f64; 3],
+    tol: f64,
+    max_splits: u32,
+    plan: CurveClosestPlan,
+    kernels: &mut CurveClosestKernels<C, D, E>,
+    should_cancel: &mut impl FnMut() -> bool,
+) -> Result<ClosestWorkRun<DistanceBracketEstimate>, NurbsError>
+where
+    C: FnMut() -> Result<ClosestWorkRun<NurbsCurve<f64, 3>>, NurbsError>,
+    D: FnMut(f64, usize) -> Result<ClosestWorkRun<Vec<[f64; 3]>>, NurbsError>,
+    E: FnMut(f64) -> Result<ClosestWorkRun<[f64; 3]>, NurbsError>,
+{
+    if should_cancel() {
+        return Ok(ClosestWorkRun::Cancelled);
+    }
+    let bezier_curve = match (kernels.conversion)()? {
+        ClosestWorkRun::Complete(curve) => curve,
+        ClosestWorkRun::Cancelled => return Ok(ClosestWorkRun::Cancelled),
+    };
+    if should_cancel() {
+        return Ok(ClosestWorkRun::Cancelled);
+    }
     let bezier = bezier_curve.admitted_after_validation();
     let knots = bezier.knots();
     let entries = knots.knots();
@@ -1134,6 +1386,9 @@ fn closest_point_curve_after_request(
     }
     let p = knots.degree();
     let mut queue: BinaryHeap<MinEntry<Seg>> = BinaryHeap::new();
+    if should_cancel() {
+        return Ok(ClosestWorkRun::Cancelled);
+    }
     queue
         .try_reserve_exact(plan.queue_capacity)
         .map_err(|_| NurbsError::Domain {
@@ -1142,28 +1397,55 @@ fn closest_point_curve_after_request(
                 plan.queue_capacity
             ),
         })?;
+    if should_cancel() {
+        return Ok(ClosestWorkRun::Cancelled);
+    }
     let mut next_logical_id = 0u64;
     let mut upper = f64::INFINITY;
     let mut best_t = knots.domain().0;
+    let mut operations_since_poll = 0usize;
     for span in p..knots.control_count() {
         let (t0, t1) = (entries[span], entries[span + 1]);
+        if closest_poll_due(&mut operations_since_poll, should_cancel) {
+            return Ok(ClosestWorkRun::Cancelled);
+        }
         if t1 <= t0 {
             continue;
         }
         let mut cpw = Vec::new();
+        if should_cancel() {
+            return Ok(ClosestWorkRun::Cancelled);
+        }
         cpw.try_reserve_exact(p + 1)
             .map_err(|_| NurbsError::Domain {
                 what: "closest-curve seed control allocation was refused".to_string(),
             })?;
-        cpw.extend_from_slice(&controls[span - p..=span]);
+        if should_cancel() {
+            return Ok(ClosestWorkRun::Cancelled);
+        }
+        for &control in &controls[span - p..=span] {
+            cpw.push(control);
+            if closest_poll_due(&mut operations_since_poll, should_cancel) {
+                return Ok(ClosestWorkRun::Cancelled);
+            }
+        }
         for (h, tt) in [(&cpw[0], t0), (&cpw[p], t1)] {
             let d = dist3(cartesian(h), q);
             if d < upper {
                 upper = d;
                 best_t = tt;
             }
+            if closest_poll_due(&mut operations_since_poll, should_cancel) {
+                return Ok(ClosestWorkRun::Cancelled);
+            }
         }
-        let lb = hull_lower_bound(q, cpw.iter());
+        let lb = match hull_lower_bound_with_poll(q, cpw.iter(), should_cancel) {
+            ClosestWorkRun::Complete(lower) => lower,
+            ClosestWorkRun::Cancelled => return Ok(ClosestWorkRun::Cancelled),
+        };
+        if should_cancel() {
+            return Ok(ClosestWorkRun::Cancelled);
+        }
         push_heap_within_admitted_capacity(
             &mut queue,
             MinEntry {
@@ -1174,6 +1456,9 @@ fn closest_point_curve_after_request(
             plan.queue_capacity,
             "closest-curve seed",
         )?;
+        if should_cancel() {
+            return Ok(ClosestWorkRun::Cancelled);
+        }
         next_logical_id += 1;
     }
     if queue.len() != plan.seed_leaves {
@@ -1185,28 +1470,53 @@ fn closest_point_curve_after_request(
             ),
         });
     }
-    if queue.is_empty() || !upper.is_finite() || queue.iter().any(|entry| !entry.key.is_finite()) {
+    if queue.is_empty() || !upper.is_finite() {
         return Err(NurbsError::Domain {
             what: "closest-curve initial distance bounds are not finite".to_string(),
         });
     }
+    for entry in &queue {
+        if !entry.key.is_finite() {
+            return Err(NurbsError::Domain {
+                what: "closest-curve initial distance bounds are not finite".to_string(),
+            });
+        }
+        if closest_poll_due(&mut operations_since_poll, should_cancel) {
+            return Ok(ClosestWorkRun::Cancelled);
+        }
+    }
+    if should_cancel() {
+        return Ok(ClosestWorkRun::Cancelled);
+    }
     let mut iterations = 0u32;
     while iterations < max_splits {
+        if should_cancel() {
+            return Ok(ClosestWorkRun::Cancelled);
+        }
         let Some(entry) = queue.peek() else {
             break;
         };
+        if should_cancel() {
+            return Ok(ClosestWorkRun::Cancelled);
+        }
         if upper - entry.key <= tol {
             break; // bracket closed
         }
         let Some(entry) = queue.pop() else {
             break;
         };
+        if should_cancel() {
+            return Ok(ClosestWorkRun::Cancelled);
+        }
         let seg = entry.value;
         let tm = f64::midpoint(seg.t0, seg.t1);
         if tm == seg.t0 || tm == seg.t1 {
             // De Casteljau would still create a geometric half-split even
             // though the recorded parameter interval cannot shrink. Retain
             // the leaf so its lower estimate remains part of the bracket.
+            if should_cancel() {
+                return Ok(ClosestWorkRun::Cancelled);
+            }
             push_heap_within_admitted_capacity(
                 &mut queue,
                 MinEntry {
@@ -1217,9 +1527,18 @@ fn closest_point_curve_after_request(
                 plan.queue_capacity,
                 "closest-curve unsplittable leaf",
             )?;
+            if should_cancel() {
+                return Ok(ClosestWorkRun::Cancelled);
+            }
             break;
         }
-        let (l, r) = split_bezier(&seg.cpw)?;
+        let (l, r) = match split_bezier_with_poll(&seg.cpw, should_cancel)? {
+            ClosestWorkRun::Complete(halves) => halves,
+            ClosestWorkRun::Cancelled => return Ok(ClosestWorkRun::Cancelled),
+        };
+        if should_cancel() {
+            return Ok(ClosestWorkRun::Cancelled);
+        }
         // The split junction is C(mid): a free upper-bound sample.
         let d = dist3(cartesian(&l[l.len() - 1]), q);
         if d < upper {
@@ -1227,13 +1546,19 @@ fn closest_point_curve_after_request(
             best_t = tm;
         }
         for (cpw, t0, t1) in [(l, seg.t0, tm), (r, tm, seg.t1)] {
-            let lb = hull_lower_bound(q, cpw.iter());
+            let lb = match hull_lower_bound_with_poll(q, cpw.iter(), should_cancel) {
+                ClosestWorkRun::Complete(lower) => lower,
+                ClosestWorkRun::Cancelled => return Ok(ClosestWorkRun::Cancelled),
+            };
             if !lb.is_finite() {
                 return Err(NurbsError::Domain {
                     what: "closest-curve child distance bound is not finite".to_string(),
                 });
             }
             if lb < upper {
+                if should_cancel() {
+                    return Ok(ClosestWorkRun::Cancelled);
+                }
                 push_heap_within_admitted_capacity(
                     &mut queue,
                     MinEntry {
@@ -1244,17 +1569,31 @@ fn closest_point_curve_after_request(
                     plan.queue_capacity,
                     "closest-curve child",
                 )?;
+                if should_cancel() {
+                    return Ok(ClosestWorkRun::Cancelled);
+                }
                 next_logical_id += 1;
             }
         }
         iterations += 1;
     }
+    if should_cancel() {
+        return Ok(ClosestWorkRun::Cancelled);
+    }
     let lower = queue.peek().map_or(upper, |entry| entry.key);
+    if should_cancel() {
+        return Ok(ClosestWorkRun::Cancelled);
+    }
     // The bracket no longer needs the converted generation or frontier.
     // Release both phases before optional derivative polish so the aggregate
     // peak is max(conversion, search, polish), not their sum.
     drop(queue);
     drop(bezier_curve);
+    // Allocator and destructor latency is outside this measured poll bound;
+    // gate the next phase immediately after both owned generations are gone.
+    if should_cancel() {
+        return Ok(ClosestWorkRun::Cancelled);
+    }
     // Newton polish on g(t) = (C − q)·C' sharpens the upper bound.
     let (dlo, dhi) = curve.knots().domain();
     let mut t = best_t;
@@ -1263,8 +1602,13 @@ fn closest_point_curve_after_request(
         // B&B estimate. A derivative can be undefined at a repeated knot (or
         // unavailable in the legacy jet API); that must not erase the retained
         // geometric witness and bracket.
-        let Ok(ders) = curve.derivatives(t, 2) else {
-            break;
+        if should_cancel() {
+            return Ok(ClosestWorkRun::Cancelled);
+        }
+        let ders = match (kernels.derivatives)(t, 2) {
+            Ok(ClosestWorkRun::Complete(derivatives)) => derivatives,
+            Ok(ClosestWorkRun::Cancelled) => return Ok(ClosestWorkRun::Cancelled),
+            Err(_) => break,
         };
         if ders.len() < 2 {
             break;
@@ -1284,24 +1628,35 @@ fn closest_point_curve_after_request(
         }
         t = next;
     }
-    let (upper, best_t) = if let Ok(point) = curve.eval(t) {
-        let polished = dist3(point, q);
-        if polished.is_finite() && polished < upper {
-            (polished, t)
-        } else {
+    if should_cancel() {
+        return Ok(ClosestWorkRun::Cancelled);
+    }
+    let (upper, best_t) = match (kernels.evaluation)(t) {
+        Ok(ClosestWorkRun::Complete(point)) => {
+            let polished = dist3(point, q);
+            if polished.is_finite() && polished < upper {
+                (polished, t)
+            } else {
+                (upper, best_t)
+            }
+        }
+        Ok(ClosestWorkRun::Cancelled) => return Ok(ClosestWorkRun::Cancelled),
+        Err(_) => {
+            // Newton is optional polish. Its failure cannot erase the finite
+            // branch-and-bound witness retained above.
             (upper, best_t)
         }
-    } else {
-        // Newton is optional polish. Its failure cannot erase the finite
-        // branch-and-bound witness retained above.
-        (upper, best_t)
     };
-    Ok(DistanceBracketEstimate {
+    let estimate = DistanceBracketEstimate {
         lower: lower.min(upper),
         upper,
         param: [best_t, 0.0],
         iterations,
-    })
+    };
+    if should_cancel() {
+        return Ok(ClosestWorkRun::Cancelled);
+    }
+    Ok(ClosestWorkRun::Complete(estimate))
 }
 
 /// A homogeneous Bézier control net (rows × cols).
@@ -1733,15 +2088,81 @@ fn closest_point_surface_after_request(
 #[cfg(test)]
 mod tests {
     use super::{
-        BinaryHeap, CLOSEST_MAX_BASE_WORK_UNITS, CLOSEST_MAX_RETAINED_BYTES, MinEntry,
-        closest_point_curve, closest_point_surface, curve_subdivision_work_per_split,
-        enforce_curve_retained_envelope, enforce_surface_retained_envelope,
-        preflight_surface_subdivision, subdivision_frontier_bytes, surface_base_work_units,
+        BinaryHeap, CLOSEST_MAX_BASE_WORK_UNITS, CLOSEST_MAX_RETAINED_BYTES, CLOSEST_MAX_SPLITS,
+        ClosestPointRun, ClosestWorkRun, CurveClosestKernels, MinEntry, closest_point_curve,
+        closest_point_curve_after_plan_with_poll, closest_point_surface,
+        curve_subdivision_work_per_split, enforce_curve_retained_envelope,
+        enforce_surface_retained_envelope, hull_lower_bound_with_poll, preflight_curve_closest,
+        preflight_curve_closest_with_poll, preflight_surface_subdivision, split_bezier_with_poll,
+        subdivision_frontier_bytes, surface_base_work_units,
         surface_conversion_peak_allocated_bytes, surface_final_eval_workspace_bytes,
         surface_storage_bytes,
     };
-    use crate::{KnotVector, NurbsCurve, NurbsSurface};
+    use crate::{KnotVector, NurbsCurve, NurbsError, NurbsSurface};
+    use asupersync::types::Budget;
+    use fs_exec::{CancelGate, Cx, ExecMode, StreamKey};
     use std::mem::size_of;
+
+    fn with_closest_cx<R>(cancelled: bool, f: impl FnOnce(&Cx<'_>) -> R) -> R {
+        let gate = CancelGate::new_clock_free();
+        if cancelled {
+            gate.request();
+        }
+        let pool = fs_alloc::ArenaPool::new(fs_alloc::ArenaConfig::default());
+        pool.scope(|arena| {
+            let cx = Cx::new(
+                &gate,
+                arena,
+                StreamKey {
+                    seed: 0xC105_E570,
+                    kernel_id: 1,
+                    tile: 0,
+                    iteration: 0,
+                },
+                Budget::INFINITE,
+                ExecMode::Deterministic,
+            );
+            f(&cx)
+        })
+    }
+
+    fn quadratic_curve() -> NurbsCurve<f64, 3> {
+        NurbsCurve::<f64, 3>::new(
+            KnotVector::new(vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2).expect("quadratic knots"),
+            &[[0.0, 0.0, 0.0], [1.0, 2.0, 0.0], [2.0, 0.0, 0.0]],
+            &[1.0; 3],
+        )
+        .expect("quadratic curve")
+    }
+
+    fn long_linear_curve() -> NurbsCurve<f64, 3> {
+        let mut knots = vec![0.0, 0.0];
+        knots.extend((1..=128).map(|index| f64::from(index) / 129.0));
+        knots.extend([1.0, 1.0]);
+        let points: Vec<_> = (0..130)
+            .map(|index| [f64::from(index) / 129.0, 0.0, 0.0])
+            .collect();
+        let weights = vec![1.0; points.len()];
+        NurbsCurve::new(
+            KnotVector::new(knots, 1).expect("long linear knots"),
+            &points,
+            &weights,
+        )
+        .expect("long linear curve")
+    }
+
+    fn high_degree_bezier_curve() -> NurbsCurve<f64, 3> {
+        let mut knots = vec![0.0; 65];
+        knots.extend([1.0; 65]);
+        let controls = (0..65)
+            .map(|index| [f64::from(index) / 64.0, 0.0, 0.0, 1.0])
+            .collect();
+        NurbsCurve::from_homogeneous(
+            KnotVector::new(knots, 64).expect("degree-64 Bezier knots"),
+            controls,
+        )
+        .expect("degree-64 Bezier curve")
+    }
 
     #[test]
     fn min_heap_order_is_key_then_logical_identity() {
@@ -1765,12 +2186,7 @@ mod tests {
 
     #[test]
     fn curve_closest_owning_and_admitted_paths_match_exactly() {
-        let curve = NurbsCurve::<f64, 3>::new(
-            KnotVector::new(vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2).expect("quadratic knots"),
-            &[[0.0, 0.0, 0.0], [1.0, 2.0, 0.0], [2.0, 0.0, 0.0]],
-            &[1.0; 3],
-        )
-        .expect("quadratic curve");
+        let curve = quadratic_curve();
         let query = [1.0, 0.25, 0.0];
         let owning = closest_point_curve(&curve, query, 1e-9, 8).expect("owning closest");
         let admitted = curve.admit().expect("admitted curve");
@@ -1782,6 +2198,237 @@ mod tests {
             .expect("repeated admitted closest");
         assert_eq!(first, owning);
         assert_eq!(repeated, first);
+        let cancellable = with_closest_cx(false, |cx| {
+            admitted
+                .closest_point_with_cx(query, 1e-9, 8, cx)
+                .expect("active cancellable closest")
+        });
+        assert_eq!(cancellable, ClosestPointRun::Complete { estimate: first });
+    }
+
+    #[test]
+    fn curve_closest_cancellation_preserves_request_refusal_precedence() {
+        let curve = quadratic_curve();
+        let admitted = curve.admit().expect("admitted curve");
+        let mut pre_scan_polls = 0usize;
+        let pre_scan_refusal = preflight_curve_closest_with_poll(
+            admitted,
+            0,
+            CLOSEST_MAX_BASE_WORK_UNITS,
+            &mut || {
+                pre_scan_polls += 1;
+                true
+            },
+        )
+        .expect_err("count-only pre-scan work refusal must precede cancellation");
+        assert!(matches!(pre_scan_refusal, NurbsError::Domain { .. }));
+        assert_eq!(pre_scan_polls, 0);
+
+        with_closest_cx(true, |cx| {
+            assert_eq!(
+                admitted
+                    .closest_point_with_cx([1.0, 0.25, 0.0], 1e-9, 8, cx)
+                    .expect("valid pre-cancelled request"),
+                ClosestPointRun::Cancelled
+            );
+            for (query, tolerance, splits) in [
+                ([f64::NAN, 0.0, 0.0], 0.0, 0),
+                ([0.0; 3], -1.0, 0),
+                ([0.0; 3], f64::NAN, 0),
+                ([0.0; 3], 0.0, CLOSEST_MAX_SPLITS + 1),
+            ] {
+                let synchronous = admitted
+                    .closest_point(query, tolerance, splits)
+                    .expect_err("malformed synchronous request");
+                let cancellable = admitted
+                    .closest_point_with_cx(query, tolerance, splits, cx)
+                    .expect_err("request refusal must precede cancellation");
+                assert_eq!(cancellable, synchronous);
+            }
+        });
+    }
+
+    #[test]
+    fn curve_closest_planning_hull_and_split_have_replayable_ordinals() {
+        let long = long_linear_curve();
+        let admitted = long.admit().expect("admitted long curve");
+        let high_degree = high_degree_bezier_curve();
+        let high_degree_admitted = high_degree.admit().expect("admitted degree-64 curve");
+        let controls = high_degree.homogeneous_control_points();
+        let seed_plan =
+            preflight_curve_closest(high_degree_admitted, 0, 0).expect("high-degree seed plan");
+        for _ in 0..2 {
+            let mut plan_polls = 0usize;
+            let plan = preflight_curve_closest_with_poll(admitted, 0, 0, &mut || {
+                plan_polls += 1;
+                plan_polls == 2
+            })
+            .expect("cancellable planning");
+            assert!(matches!(plan, ClosestWorkRun::Cancelled));
+            assert_eq!(plan_polls, 2);
+
+            let mut hull_polls = 0usize;
+            let hull = hull_lower_bound_with_poll([0.5, 1.0, 0.0], controls.iter(), &mut || {
+                hull_polls += 1;
+                hull_polls == 2
+            });
+            assert_eq!(hull, ClosestWorkRun::Cancelled);
+            assert_eq!(hull_polls, 2);
+
+            let mut split_polls = 0usize;
+            let split = split_bezier_with_poll(controls, &mut || {
+                split_polls += 1;
+                split_polls == 7
+            })
+            .expect("cancellable split");
+            assert_eq!(split, ClosestWorkRun::Cancelled);
+            assert_eq!(split_polls, 7);
+
+            let mut seed_kernels = CurveClosestKernels {
+                conversion: || {
+                    high_degree_admitted
+                        .to_bezier_form()
+                        .map(ClosestWorkRun::Complete)
+                },
+                derivatives: |t, order| {
+                    high_degree_admitted
+                        .derivatives(t, order)
+                        .map(ClosestWorkRun::Complete)
+                },
+                evaluation: |t| high_degree_admitted.eval(t).map(ClosestWorkRun::Complete),
+            };
+            let mut seed_polls = 0usize;
+            let seed = closest_point_curve_after_plan_with_poll(
+                high_degree_admitted,
+                [0.5, 1.0, 0.0],
+                0.0,
+                0,
+                seed_plan,
+                &mut seed_kernels,
+                &mut || {
+                    seed_polls += 1;
+                    seed_polls == 7
+                },
+            )
+            .expect("cancellable seed copy");
+            assert_eq!(seed, ClosestWorkRun::Cancelled);
+            assert_eq!(seed_polls, 7);
+        }
+    }
+
+    #[test]
+    fn curve_closest_kernel_cancellation_is_not_an_optional_polish_miss() {
+        let curve = quadratic_curve();
+        let admitted = curve.admit().expect("admitted curve");
+        let plan = preflight_curve_closest(admitted, 0, 0).expect("closest plan");
+        let query = [1.0, 0.25, 0.0];
+
+        let mut conversion_cancel = CurveClosestKernels {
+            conversion: || Ok(ClosestWorkRun::Cancelled),
+            derivatives: |t, order| admitted.derivatives(t, order).map(ClosestWorkRun::Complete),
+            evaluation: |t| admitted.eval(t).map(ClosestWorkRun::Complete),
+        };
+        let result = closest_point_curve_after_plan_with_poll(
+            admitted,
+            query,
+            1e-9,
+            0,
+            plan,
+            &mut conversion_cancel,
+            &mut || false,
+        )
+        .expect("conversion cancellation");
+        assert_eq!(result, ClosestWorkRun::Cancelled);
+
+        let mut derivative_cancel = CurveClosestKernels {
+            conversion: || admitted.to_bezier_form().map(ClosestWorkRun::Complete),
+            derivatives: |_t, _order| Ok(ClosestWorkRun::Cancelled),
+            evaluation: |t| admitted.eval(t).map(ClosestWorkRun::Complete),
+        };
+        let result = closest_point_curve_after_plan_with_poll(
+            admitted,
+            query,
+            1e-9,
+            0,
+            plan,
+            &mut derivative_cancel,
+            &mut || false,
+        )
+        .expect("derivative cancellation");
+        assert_eq!(result, ClosestWorkRun::Cancelled);
+
+        let mut evaluation_cancel = CurveClosestKernels {
+            conversion: || admitted.to_bezier_form().map(ClosestWorkRun::Complete),
+            derivatives: |_t, _order| {
+                Err(NurbsError::Domain {
+                    what: "ordinary optional polish miss".to_string(),
+                })
+            },
+            evaluation: |_t| Ok(ClosestWorkRun::Cancelled),
+        };
+        let result = closest_point_curve_after_plan_with_poll(
+            admitted,
+            query,
+            1e-9,
+            0,
+            plan,
+            &mut evaluation_cancel,
+            &mut || false,
+        )
+        .expect("evaluation cancellation");
+        assert_eq!(result, ClosestWorkRun::Cancelled);
+    }
+
+    #[test]
+    fn curve_closest_final_publication_checkpoint_replays_exactly() {
+        let curve = quadratic_curve();
+        let admitted = curve.admit().expect("admitted curve");
+        let plan = preflight_curve_closest(admitted, 2, 0).expect("closest plan");
+        let query = [1.0, 0.25, 0.0];
+
+        let mut first_kernels = CurveClosestKernels {
+            conversion: || admitted.to_bezier_form().map(ClosestWorkRun::Complete),
+            derivatives: |t, order| admitted.derivatives(t, order).map(ClosestWorkRun::Complete),
+            evaluation: |t| admitted.eval(t).map(ClosestWorkRun::Complete),
+        };
+        let mut complete_polls = 0usize;
+        let complete = closest_point_curve_after_plan_with_poll(
+            admitted,
+            query,
+            1e-9,
+            2,
+            plan,
+            &mut first_kernels,
+            &mut || {
+                complete_polls += 1;
+                false
+            },
+        )
+        .expect("complete closest replay");
+        assert!(matches!(complete, ClosestWorkRun::Complete(_)));
+        assert!(complete_polls > 0);
+
+        let mut replay_kernels = CurveClosestKernels {
+            conversion: || admitted.to_bezier_form().map(ClosestWorkRun::Complete),
+            derivatives: |t, order| admitted.derivatives(t, order).map(ClosestWorkRun::Complete),
+            evaluation: |t| admitted.eval(t).map(ClosestWorkRun::Complete),
+        };
+        let mut replay_polls = 0usize;
+        let replay = closest_point_curve_after_plan_with_poll(
+            admitted,
+            query,
+            1e-9,
+            2,
+            plan,
+            &mut replay_kernels,
+            &mut || {
+                replay_polls += 1;
+                replay_polls == complete_polls
+            },
+        )
+        .expect("cancelled closest replay");
+        assert_eq!(replay, ClosestWorkRun::Cancelled);
+        assert_eq!(replay_polls, complete_polls);
     }
 
     #[test]

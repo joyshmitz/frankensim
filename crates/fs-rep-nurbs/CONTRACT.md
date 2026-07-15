@@ -115,6 +115,9 @@ fs-iga (geometry basis = analysis basis), fs-render NURBS tracing
   expanded by one ULP. Cartesian division, evaluation and norm
   arithmetic are ordinary f64, so dense-oracle containment is measured
   evidence rather than a rigorous enclosure.
+  An admitted curve also exposes `closest_point_with_cx`, whose
+  `ClosestPointRun` publishes either that complete estimate or `Cancelled`;
+  cancellation never publishes a partial frontier-derived bracket.
 - `boolean(op, policy)` — THE BOOLEAN POSITION: always a structured
   `BooleanRefusal` in v0. Default policy routes through SDF (convert →
   implicit CSG → re-fit); `DirectCertificateGated` refuses pending a
@@ -339,10 +342,22 @@ converted-curve plus queue/frontier/scratch, and post-release derivative-polish
 phases; the converted curve and queue are dropped before polish. The owning
 wrapper rejects malformed requests before scanning the source, while an
 `AdmittedNurbsCurve` can repeat closest-point calls without rescanning source
-structure. Surface closest-point execution follows the same malformed-request
-before source-scan order and exposes an admitted repeat path. It reuses that
-source admission through conversion planning and final evaluation, pre-reserves
-the exact `seed_leaves + max_splits` heap extent, bounds every push, and prices
+structure. Its admitted-only `closest_point_with_cx` path keeps
+malformed-request and count-only pre-scan work refusals ahead of cancellation,
+then uses the same `Cx` through Bezier planning/conversion, seed copies and
+hulls, heap traversal, de Casteljau splits, Newton polish, final evaluation,
+and publication. Linear and triangular logical work polls at most every 64
+operations, with explicit gates around owned allocations and bounded heap
+operations. `Cancelled` publishes no partial estimate; cancellation inside
+optional derivative/evaluation kernels is not downgraded to a polish miss.
+Individual allocator, heap, scalar, and destructor calls remain
+non-preemptible. This measured primitive does not consume the caller budget,
+own request-drain-finalize, promise wall-time preemption, or provide resumable
+frontier state. Surface closest-point execution follows the same
+malformed-request before source-scan order and exposes an admitted repeat path.
+It reuses that source admission through conversion planning and final
+evaluation, pre-reserves the exact `seed_leaves + max_splits` heap extent,
+bounds every push, and prices
 log-height heap operations. Its stage-faithful knot-insertion, expanded-grid,
 run-scan, and queue-seeding estimate is charged before conversion, including
 when the requested split budget is zero; degree-scaled de Casteljau split work

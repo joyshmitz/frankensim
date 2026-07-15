@@ -761,11 +761,22 @@ impl<'a, S: Scalar> AdmittedKnotVector<'a, S> {
     /// Returns a structured refusal for domain, work, allocation, or finite
     /// arithmetic failures that precede successful publication.
     pub fn basis_with_cx(&self, t: S, cx: &Cx<'_>) -> Result<BasisRun<S>, NurbsError> {
+        let mut should_cancel = || cx.checkpoint().is_err();
+        self.basis_with_poll(t, &mut should_cancel)
+    }
+
+    /// Evaluate one admitted basis row while sharing a compound caller's
+    /// cancellation callback.
+    pub(crate) fn basis_with_poll(
+        &self,
+        t: S,
+        should_cancel: &mut impl FnMut() -> bool,
+    ) -> Result<BasisRun<S>, NurbsError> {
         KnotVector::<S>::enforce_work(
             self.inner.basis_operation_work()?,
             "admitted basis evaluation",
         )?;
-        self.basis_after_preflight_with_poll(t, || cx.checkpoint().is_err())
+        self.basis_after_preflight_with_poll(t, should_cancel)
     }
 
     fn basis_after_preflight(&self, t: S) -> Result<(usize, Vec<S>), NurbsError> {

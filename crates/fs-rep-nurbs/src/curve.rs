@@ -947,16 +947,27 @@ impl<'a, S: Scalar, const DIM: usize> AdmittedNurbsCurve<'a, S, DIM> {
         t: S,
         cx: &Cx<'_>,
     ) -> Result<CurveEvaluationRun<S, DIM>, NurbsError> {
+        let mut should_cancel = || cx.checkpoint().is_err();
+        self.eval_with_poll(t, &mut should_cancel)
+    }
+
+    /// Evaluate an admitted point while sharing a compound caller's
+    /// cancellation callback.
+    pub(crate) fn eval_with_poll(
+        &self,
+        t: S,
+        should_cancel: &mut impl FnMut() -> bool,
+    ) -> Result<CurveEvaluationRun<S, DIM>, NurbsError> {
         if DIM > 3 {
             return Err(NurbsError::Structure {
                 what: format!("curve dimension {DIM} exceeds the homogeneous storage limit 3"),
             });
         }
-        let (span, basis) = match self.knots().basis_with_cx(t, cx)? {
+        let (span, basis) = match self.knots().basis_with_poll(t, should_cancel)? {
             BasisRun::Complete { span, values } => (span, values),
             BasisRun::Cancelled => return Ok(CurveEvaluationRun::Cancelled),
         };
-        self.eval_from_basis_with_poll(span, &basis, || cx.checkpoint().is_err())
+        self.eval_from_basis_with_poll(span, &basis, should_cancel)
     }
 
     fn eval_from_basis_with_poll(
@@ -1096,13 +1107,34 @@ impl<'a, S: Scalar, const DIM: usize> AdmittedNurbsCurve<'a, S, DIM> {
         cx: &Cx<'_>,
     ) -> Result<CurveBezierRun<S, DIM>, NurbsError> {
         let mut should_cancel = || cx.checkpoint().is_err();
-        self.inner
-            .to_bezier_form_after_validation_with_poll(&mut should_cancel)
+        self.to_bezier_form_with_poll(&mut should_cancel)
     }
 
     /// Return the checked Bezier conversion envelope without allocating.
     pub(crate) fn bezier_conversion_plan(&self) -> Result<BezierConversionPlan, NurbsError> {
         plan_bezier_conversion(*self)
+    }
+
+    /// Return the checked Bezier conversion envelope with bounded polling of
+    /// its knot-run scan. `None` means cancellation won before publication.
+    pub(crate) fn bezier_conversion_plan_with_poll(
+        &self,
+        should_cancel: &mut impl FnMut() -> bool,
+    ) -> Result<Option<BezierConversionPlan>, NurbsError> {
+        match plan_bezier_conversion_with_poll(*self, should_cancel)? {
+            CurveWorkRun::Complete(plan) => Ok(Some(plan)),
+            CurveWorkRun::Cancelled => Ok(None),
+        }
+    }
+
+    /// Convert this admitted generation while sharing a compound caller's
+    /// cancellation callback across planning and every derived generation.
+    pub(crate) fn to_bezier_form_with_poll(
+        &self,
+        should_cancel: &mut impl FnMut() -> bool,
+    ) -> Result<CurveBezierRun<S, DIM>, NurbsError> {
+        self.inner
+            .to_bezier_form_after_validation_with_poll(should_cancel)
     }
 
     /// Constant-time charge required before scanning knot runs to construct a
@@ -2332,15 +2364,26 @@ impl<const DIM: usize> AdmittedNurbsCurve<'_, f64, DIM> {
         order: usize,
         cx: &Cx<'_>,
     ) -> Result<CurveDerivativesRun<DIM>, NurbsError> {
+        let mut should_cancel = || cx.checkpoint().is_err();
+        self.derivatives_with_poll(t, order, &mut should_cancel)
+    }
+
+    /// Evaluate an admitted Cartesian jet while sharing a compound caller's
+    /// cancellation callback.
+    pub(crate) fn derivatives_with_poll(
+        &self,
+        t: f64,
+        order: usize,
+        should_cancel: &mut impl FnMut() -> bool,
+    ) -> Result<CurveDerivativesRun<DIM>, NurbsError> {
         let knots = self.knots();
         NurbsCurve::<f64, DIM>::preflight_derivative_request(knots, t, order)?;
-        let mut should_cancel = || cx.checkpoint().is_err();
         NurbsCurve::<f64, DIM>::derivatives_from_admitted_parts_after_preflight_with_poll(
             knots,
             &self.inner.cpw,
             t,
             order,
-            &mut should_cancel,
+            should_cancel,
         )
     }
 }
