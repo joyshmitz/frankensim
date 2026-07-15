@@ -24,6 +24,28 @@ fn grid_points(m: usize) -> Vec<[f64; 3]> {
     pts
 }
 
+fn reference_sample_variance(samples: &[f64]) -> f64 {
+    if samples.len() < 2 {
+        return 0.0;
+    }
+    // Shift before taking the mean so this independent two-pass audit remains
+    // stable when all samples have a large common offset.
+    let origin = samples[0];
+    #[allow(clippy::cast_precision_loss)]
+    let mean_offset =
+        samples.iter().map(|sample| sample - origin).sum::<f64>() / samples.len() as f64;
+    let centered_sum_squares = samples
+        .iter()
+        .map(|sample| {
+            let centered = (sample - origin) - mean_offset;
+            centered * centered
+        })
+        .sum::<f64>();
+    #[allow(clippy::cast_precision_loss)]
+    let degrees_of_freedom = (samples.len() - 1) as f64;
+    centered_sum_squares / degrees_of_freedom
+}
+
 #[test]
 fn kl_truncation_evidence_and_reconstruction() {
     let pts = grid_points(7);
@@ -229,8 +251,6 @@ fn mlmc_telescoping_and_cost_win() {
     );
     // Cost win vs single-level MC at the SAME estimator variance:
     // single-level needs N = V_L^single/target on the finest level.
-    let mut sum = 0.0f64;
-    let mut sum2 = 0.0f64;
     let npilot = 2000usize;
     let mut st2 = StreamKey {
         seed: 92,
@@ -238,12 +258,10 @@ fn mlmc_telescoping_and_cost_win() {
         tile: 0,
     }
     .stream();
-    for _ in 0..npilot {
-        let v = level_value(nl - 1, st2.next_normal());
-        sum += v;
-        sum2 = v.mul_add(v, sum2);
-    }
-    let var_fine = sum2 / npilot as f64 - (sum / npilot as f64).powi(2);
+    let fine_samples: Vec<f64> = (0..npilot)
+        .map(|_| level_value(nl - 1, st2.next_normal()))
+        .collect();
+    let var_fine = reference_sample_variance(&fine_samples);
     let single_cost = (var_fine / rep.estimator_variance) * costs[nl - 1];
     let win = single_cost / rep.total_cost;
     assert!(
@@ -338,4 +356,43 @@ fn mlmc_rejects_a_zero_cost_level() {
     // → the same unbounded sampling loop. (NaN costs fail the same > 0 test.)
     let mut sampler = |_l: usize, _g: u64| 1.0;
     let _ = mlmc_estimate(&mut sampler, &[1.0, 0.0], 8, 5e-5);
+}
+
+#[test]
+fn mlmc_level_variance_is_bessel_corrected() {
+    let samples = [1.0, 3.0];
+    let mut sampler =
+        |_level: usize, germ: u64| samples[usize::try_from(germ).expect("sample index fits")];
+    let report = mlmc_estimate(&mut sampler, &[1.0], samples.len(), 10.0);
+
+    assert_eq!(report.levels[0].samples, 2);
+    assert_eq!(report.levels[0].variance, 2.0);
+    assert_eq!(report.estimator_variance, 1.0);
+}
+
+#[test]
+fn mlmc_level_variance_is_stable_around_a_large_offset() {
+    let offset = 1.0e12;
+    let samples = [offset + 1.0, offset + 2.0, offset + 3.0, offset + 4.0];
+    let mut sampler =
+        |_level: usize, germ: u64| samples[usize::try_from(germ).expect("sample index fits")];
+    let report = mlmc_estimate(&mut sampler, &[1.0], samples.len(), 10.0);
+    let expected = reference_sample_variance(&samples);
+
+    assert_eq!(report.levels[0].samples, samples.len());
+    assert!(
+        (report.levels[0].variance - expected).abs() <= f64::EPSILON,
+        "stable variance mismatch: {} vs {expected}",
+        report.levels[0].variance
+    );
+}
+
+#[test]
+fn mlmc_singleton_level_reports_zero_variance() {
+    let mut sampler = |_level: usize, _germ: u64| 42.0;
+    let report = mlmc_estimate(&mut sampler, &[1.0], 1, 1.0);
+
+    assert_eq!(report.levels[0].samples, 1);
+    assert_eq!(report.levels[0].variance, 0.0);
+    assert_eq!(report.estimator_variance, 0.0);
 }
