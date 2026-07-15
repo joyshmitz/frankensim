@@ -1912,6 +1912,16 @@ fn sc_009_identity_and_unordered_contact_integrity_fail_closed() {
             region_b: "self".to_string(),
             model: ContactModel::Tied,
         },
+        ContactLaw {
+            region_a: "duplicate-a".to_string(),
+            region_b: "duplicate-b".to_string(),
+            model: ContactModel::Frictionless,
+        },
+        ContactLaw {
+            region_a: "duplicate-b".to_string(),
+            region_b: "duplicate-a".to_string(),
+            model: ContactModel::Frictionless,
+        },
     ]);
 
     let violations = scenario.validate();
@@ -1948,9 +1958,48 @@ fn sc_009_identity_and_unordered_contact_integrity_fail_closed() {
         .find(|violation| violation.code == "contact-pair-conflict")
         .expect("unordered conflict diagnosis");
     assert!(conflicting_pair.what.contains("row 0") && conflicting_pair.what.contains("row 1"));
+
+    for models in [
+        [
+            ContactModel::Frictionless,
+            ContactModel::Tied,
+            ContactModel::Frictionless,
+        ],
+        [
+            ContactModel::Tied,
+            ContactModel::Frictionless,
+            ContactModel::Frictionless,
+        ],
+        [
+            ContactModel::Frictionless,
+            ContactModel::Frictionless,
+            ContactModel::Tied,
+        ],
+    ] {
+        let mut permuted = Scenario::new("contact-permutation", 23, Environment::earth_lab());
+        for (row, model) in models.into_iter().enumerate() {
+            let (region_a, region_b) = if row % 2 == 0 { ("a", "b") } else { ("b", "a") };
+            permuted.contacts.push(ContactLaw {
+                region_a: region_a.to_string(),
+                region_b: region_b.to_string(),
+                model,
+            });
+        }
+        let pair_codes = permuted
+            .validate()
+            .into_iter()
+            .filter(|violation| violation.code.starts_with("contact-pair-"))
+            .map(|violation| violation.code)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            pair_codes,
+            ["contact-pair-conflict", "contact-pair-conflict"],
+            "a mixed-model unordered pair is conflicting under every declaration permutation"
+        );
+    }
     verdict(
         "sc-009",
-        "nonempty unique exact identities, duplicate combination terms, and unordered contact-pair semantics fail closed with declaration provenance",
+        "nonempty unique exact identities, duplicate combination terms, and permutation-stable unordered contact-pair semantics fail closed with declaration provenance",
     );
 }
 

@@ -145,7 +145,10 @@ flagships.
 10. **Identity integrity**: every scenario/frame/case/combination/ensemble/
     region identity is nonempty; names are unique within their role;
     combination terms do not repeat a case; and an unordered contact pair has
-    exactly one declared model. Diagnostics retain first and repeated rows.
+    exactly one declared model. A pair group with multiple models classifies
+    every repeated row as a conflict regardless of declaration permutation; an
+    all-equal group classifies repeats as duplicates. Diagnostics retain first
+    and repeated rows.
 11. **Indexed structural validation**: frame identity indexes are built once;
     the tri-color parent traversal visits each storage row at most once, and
     case/frame/combination/ensemble/contact reference checks use deterministic
@@ -186,11 +189,12 @@ checkpoint capacity is fallibly reserved before append/sort. Its
 identity/reference phase uses deterministic O(N log N) indexes. Frame ID/name,
 frame-membership, case, combination, term, ensemble, and
 unordered-contact indexes plus linear cycle traversal scratch are exactly and
-fallibly reserved before population; every index sorts in place with row index
-as the total-order tiebreaker using a deterministic checkpointed heap sort. The
-preflight work total counts each index population item and a conservative heap
-comparison/swap envelope, including per-combination term entries. The explicit
-`Cx` lane polls
+fallibly reserved before population. Contact conflict flags are also fallibly
+reserved and populated by one grouped pass over the pair index. Every index
+sorts in place with row index as the total-order tiebreaker using a deterministic
+checkpointed heap sort. The preflight work total counts each index population
+item and a conservative heap comparison/swap envelope, including
+per-combination term entries. The explicit `Cx` lane polls
 before preflight, at every top-level and nested record visited while constructing
 the semantic plan, after planning, after fixed phases, at every frame-index row,
 frame-cycle traversal/finalization step, and frame validation row, at
@@ -248,7 +252,8 @@ None.
 - **sc-009** exact non-ASCII identities remain admissible, while empty and
   duplicate role identities, repeated combination terms, self-contact, and
   duplicate/conflicting unordered contact pairs fail closed with declaration
-  provenance.
+  provenance; mixed-model pair classification is invariant under model/order
+  permutations.
 - **sc-010** the retained semantic plan replays exactly; frames, base/case BCs,
   cases, combinations/terms, ensembles, contacts, signal scalars, raw flux
   checkpoints, identity bytes, finding slots, and total work each admit at the

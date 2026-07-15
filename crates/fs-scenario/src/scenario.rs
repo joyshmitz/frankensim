@@ -909,6 +909,10 @@ impl Scenario {
                 work_units(signal_scalars, "signal scalar work")?,
                 "signal scalar work",
             ),
+            (
+                checked_work_product(contacts, 3, "contact classification work")?,
+                "contact classification work",
+            ),
             (flux_sort_work, "flux sort work"),
             (flux_evaluation_work, "flux evaluation work"),
         ] {
@@ -1189,6 +1193,8 @@ impl Scenario {
             "contact pair index",
             checkpoint,
         )?;
+        let contact_pair_conflicts =
+            self.contact_pair_conflicts(&first_contact_by_pair, checkpoint)?;
         for (contact_index, c) in self.contacts.iter().enumerate() {
             if c.region_a.is_empty() || c.region_b.is_empty() {
                 out.push(Violation {
@@ -1215,20 +1221,19 @@ impl Scenario {
                 .first_row(&pair)
                 .unwrap_or(contact_index);
             if first != contact_index {
-                let first_model = self
-                    .contacts
-                    .get(first)
-                    .map(|contact| &contact.model)
-                    .unwrap_or(&c.model);
-                let (code, fix) = if first_model == &c.model {
-                    (
-                        "contact-pair-duplicate",
-                        "remove the repeated unordered contact pair",
-                    )
-                } else {
+                let (code, fix) = if contact_pair_conflicts
+                    .get(contact_index)
+                    .copied()
+                    .unwrap_or(true)
+                {
                     (
                         "contact-pair-conflict",
                         "choose one contact model for the unordered region pair",
+                    )
+                } else {
+                    (
+                        "contact-pair-duplicate",
+                        "remove the repeated unordered contact pair",
                     )
                 };
                 out.push(Violation {
@@ -1260,6 +1265,51 @@ impl Scenario {
             });
         }
         Ok(out)
+    }
+
+    fn contact_pair_conflicts(
+        &self,
+        index: &ValidationIndex<(&str, &str)>,
+        checkpoint: &mut impl FnMut(&'static str) -> Result<(), ValidationError>,
+    ) -> Result<Vec<bool>, ValidationError> {
+        let contact_count = self.contacts.len();
+        let mut conflicts = Vec::new();
+        reserve_validation(&mut conflicts, contact_count, "contact conflict flags")?;
+        conflicts.resize(contact_count, false);
+
+        let mut start = 0usize;
+        while start < index.entries.len() {
+            let key = &index.entries[start].0;
+            let mut end = start + 1;
+            while end < index.entries.len() && &index.entries[end].0 == key {
+                checkpoint("contact conflict grouping")?;
+                end += 1;
+            }
+            let first_row = index.entries[start].1;
+            let first_model = self.contacts.get(first_row).map(|contact| &contact.model);
+            let mut group_conflicts = first_model.is_none();
+            for (_, row) in &index.entries[start + 1..end] {
+                checkpoint("contact conflict models")?;
+                group_conflicts |= self
+                    .contacts
+                    .get(*row)
+                    .map(|contact| Some(&contact.model) != first_model)
+                    .unwrap_or(true);
+            }
+            if group_conflicts {
+                for (_, row) in &index.entries[start..end] {
+                    checkpoint("contact conflict publication")?;
+                    let Some(conflict) = conflicts.get_mut(*row) else {
+                        return Err(ValidationError::WorkPlanOverflow {
+                            phase: "contact conflict row invariant",
+                        });
+                    };
+                    *conflict = true;
+                }
+            }
+            start = end;
+        }
+        Ok(conflicts)
     }
 
     fn check_bc_frame(
