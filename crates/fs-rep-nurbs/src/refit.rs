@@ -28,7 +28,7 @@
 //! signal; features missed by every ray remain outside this API's visibility.
 
 use crate::NurbsError;
-use crate::basis::KnotVector;
+use crate::basis::{AdmittedKnotVector, KnotVector};
 use crate::closest::norm3;
 use crate::surface::{AdmittedNurbsSurface, NurbsSurface};
 use core::mem::size_of;
@@ -86,6 +86,22 @@ fn refit_allocation_error(what: &'static str) -> NurbsError {
     NurbsError::Domain {
         what: format!("{what} allocation was refused"),
     }
+}
+
+fn checked_refit_work_product(values: &[u128], stage: &str) -> Result<u128, NurbsError> {
+    values.iter().try_fold(1u128, |work, value| {
+        work.checked_mul(*value).ok_or_else(|| {
+            refit_structure_error(format!("refit {stage} work accounting overflows u128"))
+        })
+    })
+}
+
+fn checked_refit_work_sum(values: &[u128], stage: &str) -> Result<u128, NurbsError> {
+    values.iter().try_fold(0u128, |work, value| {
+        work.checked_add(*value).ok_or_else(|| {
+            refit_structure_error(format!("refit {stage} work accounting overflows u128"))
+        })
+    })
 }
 
 fn try_vec_with_capacity<T>(capacity: usize, what: &'static str) -> Result<Vec<T>, NurbsError> {
@@ -259,37 +275,65 @@ fn validate_refit_request(
                 .and_then(|v_knots| u_knots.checked_add(v_knots))
         })
         .ok_or_else(|| refit_structure_error("refit probe knot-scan size overflow"))?;
-    let assembly_work = (sample_points as u128)
-        .saturating_mul(active_basis as u128)
-        .saturating_mul(control_points as u128);
-    let factor_work = (control_points as u128)
-        .saturating_mul(control_points as u128)
-        .saturating_mul(control_points as u128);
-    let rhs_and_report_work = (sample_points as u128)
-        .saturating_mul(control_points as u128)
-        .saturating_mul(6);
-    let triangular_solve_work = (control_points as u128)
-        .saturating_mul(control_points as u128)
-        .saturating_mul(3);
-    let projection_evaluations = (sample_points as u128).saturating_mul(42);
+    let assembly_work = checked_refit_work_product(
+        &[
+            sample_points as u128,
+            active_basis as u128,
+            control_points as u128,
+        ],
+        "sample assembly",
+    )?;
+    let factor_work = checked_refit_work_product(
+        &[
+            control_points as u128,
+            control_points as u128,
+            control_points as u128,
+        ],
+        "normal factorization",
+    )?;
+    let rhs_and_report_work = checked_refit_work_product(
+        &[sample_points as u128, control_points as u128, 6],
+        "right-hand-side and report",
+    )?;
+    let triangular_solve_work = checked_refit_work_product(
+        &[control_points as u128, control_points as u128, 3],
+        "triangular solve",
+    )?;
+    let projection_evaluations =
+        checked_refit_work_product(&[sample_points as u128, 42], "radial projection")?;
     // The report binds one admitted immutable surface across all probes. Keep
     // charging the former owning-evaluator scan on every probe as conservative
     // headroom: this validate-once migration must not silently loosen the
     // legacy process ceiling. Tightening that ceiling belongs to the successor
     // caller-budgeted API. The arbitrary closure's own cost remains outside
     // this legacy static model.
-    let per_probe_work = (control_points as u128)
-        .saturating_add(knots_per_axis as u128)
-        .saturating_add((basis_triangle as u128).saturating_mul(2))
-        .saturating_add((active_basis as u128).saturating_mul(8))
-        .saturating_add(16);
-    let probe_work = (probe_points as u128).saturating_mul(per_probe_work);
-    let total_work = assembly_work
-        .saturating_add(factor_work)
-        .saturating_add(rhs_and_report_work)
-        .saturating_add(triangular_solve_work)
-        .saturating_add(projection_evaluations)
-        .saturating_add(probe_work);
+    let basis_triangle_work =
+        checked_refit_work_product(&[basis_triangle as u128, 2], "probe basis triangle")?;
+    let active_basis_work =
+        checked_refit_work_product(&[active_basis as u128, 8], "probe active basis")?;
+    let per_probe_work = checked_refit_work_sum(
+        &[
+            control_points as u128,
+            knots_per_axis as u128,
+            basis_triangle_work,
+            active_basis_work,
+            16,
+        ],
+        "per-probe",
+    )?;
+    let probe_work =
+        checked_refit_work_product(&[probe_points as u128, per_probe_work], "probe grid")?;
+    let total_work = checked_refit_work_sum(
+        &[
+            assembly_work,
+            factor_work,
+            rhs_and_report_work,
+            triangular_solve_work,
+            projection_evaluations,
+            probe_work,
+        ],
+        "aggregate",
+    )?;
     if total_work > REFIT_MAX_WORK_UNITS {
         return Err(refit_structure_error(format!(
             "refit work estimate {total_work} exceeds static cap {REFIT_MAX_WORK_UNITS}"
@@ -518,10 +562,11 @@ fn open_uniform_knots(n: usize, degree: usize) -> Result<KnotVector<f64>, NurbsE
 }
 
 /// Row of basis values over the whole control axis (dense, small).
-fn basis_row(kv: &KnotVector<f64>, n: usize, t: f64) -> Result<Vec<f64>, NurbsError> {
+fn basis_row(kv: AdmittedKnotVector<'_, f64>, t: f64) -> Result<Vec<f64>, NurbsError> {
     let (span, vals) = kv.basis(t)?;
+    let n = kv.control_count();
     let mut row = try_filled_vec(n, 0.0f64, "refit dense basis row")?;
-    let p = kv.degree;
+    let p = kv.degree();
     for (c, &b) in vals.iter().enumerate() {
         row[span - p + c] = b;
     }
@@ -660,6 +705,11 @@ pub fn refit_radial(
     let (nu, nv) = (config.nu, config.nv);
     let ku = open_uniform_knots(nu, config.degree)?;
     let kv = open_uniform_knots(nv, config.degree)?;
+    // Construction already validated both sealed owners. Bind one admitted
+    // view per axis and reuse it for every dense sample row instead of
+    // rescanning the same immutable knots for every (u, v) pair.
+    let admitted_ku = ku.admitted_after_validation();
+    let admitted_kv = kv.admitted_after_validation();
     // Sample the field: radial projections on a (u, v) grid.
     let (mu, mv) = (config.samples_u, config.samples_v);
     let mut rows_b = try_vec_with_capacity(sample_points, "refit sample rows")?;
@@ -682,8 +732,8 @@ pub fn refit_radial(
                 ));
             }
             targets.push(target);
-            let bu = basis_row(&ku, nu, u)?;
-            let bv = basis_row(&kv, nv, v)?;
+            let bu = basis_row(admitted_ku, u)?;
+            let bv = basis_row(admitted_kv, v)?;
             let mut row = try_filled_vec(control_points, 0.0f64, "refit sample matrix row")?;
             for (i, &wu) in bu.iter().enumerate() {
                 if wu == 0.0 {
@@ -912,11 +962,69 @@ mod tests {
             ..RefitConfig::default()
         };
         assert!(refit_radial(&field, [0.0; 3], 1.0, &excessive_grid).is_err());
+
+        let excessive_work = RefitConfig {
+            nu: 32,
+            nv: 32,
+            degree: 3,
+            ..RefitConfig::default()
+        };
+        let error = refit_radial(&field, [0.0; 3], 1.0, &excessive_work)
+            .expect_err("work above the process cap must refuse before sampling");
+        assert!(
+            error.to_string().contains("work estimate"),
+            "the reachable work-only refusal must remain distinct: {error}"
+        );
         assert_eq!(
             calls.get(),
             0,
             "all shape/cap refusals must precede field evaluation"
         );
+    }
+
+    #[test]
+    fn refit_work_accounting_is_exact_and_overflow_fallible() {
+        assert_eq!(
+            checked_refit_work_product(&[7, 11, 13], "test product").expect("small product"),
+            1_001
+        );
+        assert_eq!(
+            checked_refit_work_sum(&[7, 11, 13], "test sum").expect("small sum"),
+            31
+        );
+        assert!(matches!(
+            checked_refit_work_product(&[u128::MAX, 2], "test product"),
+            Err(NurbsError::Structure { ref what })
+                if what == "refit test product work accounting overflows u128"
+        ));
+        assert!(matches!(
+            checked_refit_work_sum(&[u128::MAX, 1], "test sum"),
+            Err(NurbsError::Structure { ref what })
+                if what == "refit test sum work accounting overflows u128"
+        ));
+    }
+
+    #[test]
+    fn admitted_refit_basis_rows_match_owning_basis_without_rescans() {
+        let knots = open_uniform_knots(4, 2).expect("quadratic refit knots");
+        let parameter = 0.375;
+        let (span, values) = knots.basis(parameter).expect("owning basis oracle");
+        let mut expected = vec![0.0; knots.control_count()];
+        for (offset, value) in values.into_iter().enumerate() {
+            expected[span - knots.degree() + offset] = value;
+        }
+        assert_eq!(
+            basis_row(knots.admitted_after_validation(), parameter)
+                .expect("admitted dense basis row"),
+            expected
+        );
+
+        let owning_error = knots
+            .basis(-0.25)
+            .expect_err("owning out-of-domain refusal");
+        let admitted_error = basis_row(knots.admitted_after_validation(), -0.25)
+            .expect_err("admitted out-of-domain refusal");
+        assert_eq!(admitted_error, owning_error);
     }
 
     #[test]

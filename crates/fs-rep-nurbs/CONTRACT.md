@@ -223,7 +223,10 @@ fs-iga (geometry basis = analysis basis), fs-render NURBS tracing
   The report records all three estimates. Features encountered by retained
   projection rays can produce STRUCTURED WARNINGS with parameter and world
   locations; a feature missed by every ray is invisible to this API. The
-  patch-density knobs are the ErrBudget trade, ledgered.
+  open-uniform U/V knot owners bind their constructor-validated authority once
+  and reuse admitted views for every dense sample basis row; the conservative
+  legacy work charge is intentionally unchanged. The patch-density knobs are
+  the ErrBudget trade, ledgered.
   The G¹ seam-angle diagnostic evaluates the open `v` interior at the exact
   two `u` seam endpoints. Its report explicitly marks `v=0,1` as excluded,
   because pole-chart tangent directions may be undefined; those endpoints gain
@@ -745,8 +748,11 @@ refinement + partials vs central differences.
 - The legacy closure API uses validated dimensions plus a conservative live-
   payload allocation estimate, fallible checked reservations before initializing
   every stage-owned numerical `Vec`/matrix buffer, and fixed
-  probe/algorithmic-work ceilings so malformed configurations refuse before
-  evaluating the field. Allocator metadata, diagnostic strings, arbitrary
+  probe/algorithmic-work ceilings with stage-named checked product/sum
+  accounting so malformed or arithmetically unrepresentable configurations
+  refuse before evaluating the field. Refit-owned U/V knots reuse their sealed
+  constructor validation across all sample-row basis evaluations. Allocator
+  metadata, diagnostic strings, arbitrary
   closure cost, and every small transient are not a complete memory or time
   budget. These caps are process constants, not caller budgets;
   the dense fit has no `Cx` cancellation points. Typed admitted-field authority,
