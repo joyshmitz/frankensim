@@ -22,6 +22,7 @@
 pub mod algebra;
 pub mod analytic;
 pub mod clearance;
+pub mod events;
 pub mod spacetime;
 pub mod swept;
 pub mod tube;

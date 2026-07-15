@@ -202,6 +202,34 @@ None. `#![forbid(unsafe_code)]`.
 None. Everything here is `[S]`-ambition machinery. Validated events remain a
 separate bead.
 
+## Validated events (bead 6b8h)
+
+The `events` module implements the PRESCRIBED-PATH rung of doctrine
+D3: no silent event misses. A [`GuardModel`] pairs a Taylor model of a
+guard with a Taylor model whose band rigorously encloses the guard's
+TRUE time derivative (the caller's class invariant; discharged by
+construction for `plane_crossing_guard`, which weight-clears
+`⟨M(t)·x, n⟩ − offset` after certifying the homogeneous weight band
+strictly positive and builds the derivative by the sandwich product
+rule from `screw_tube_with_derivative`'s rate tube — same constants,
+differentiated basis, so both models describe one real function).
+`scan_events` classifies a deterministic left-first bisection cover:
+every leaf ends root-free (band excludes zero, or certified-monotone
+with equal rigorous endpoint signs), a certified unique crossing
+(certified-monotone, opposite endpoint signs, bisection-refined
+without weakening the certificate), or an explicit `PossibleEvent`
+(grazing, resolution floor, or budget) — nothing is dropped, and the
+`RootCountCertificate` verdict is set-valued whenever anything stayed
+possible. Zeno and subdivision budgets surface as typed verdicts.
+`estimated_scan` is the classical dense lane: LABELED Estimated, used
+as the independent falsifier. `enumerate_simultaneous` groups
+overlapping certified windows across guards and enumerates admissible
+orders (set-valued; groups above `MAX_ENUMERATED_GROUP` stay
+explicitly unordered). Piecewise double-cover continuity is chained at
+construction: the first segment uses the anchor rule and every later
+segment matches the previous segment's representative at the shared
+junction, so rotations through π cannot tear the cover.
+
 ## Conformance tests
 
 `tests/conformance.rs`:
@@ -264,9 +292,34 @@ separate bead.
   Wankel chamber with unproven bore/flank/seal closure refuses before chart
   construction. The manufactured fixture makes no Wankel geometry claim.
 
+`tests/events.rs` (bead 6b8h, printed measurements): known analytic
+root counts found and certified with directions (ev-001); top-level
+no-event certificates (ev-002); tangency yields `PossibleEvent`
+grazing windows, never a certified crossing — the Sev-0 gate (ev-003);
+a 100×-resolution dense-scan falsifier finds no sign change outside
+certified/possible windows (ev-004); duplicated-guard simultaneous
+groups enumerate both admissible orders while disjoint crossings stay
+separate (ev-005); subdivision-budget exhaustion drains into visible
+possible windows with a typed verdict (ev-006); bitwise-deterministic
+replay (ev-007); certified windows refine to sub-1e-3 localization
+around analytic roots (ev-008).
+
 ## No-claim boundaries
 
 - **Rigid paths only.** No deformable sweeps, no scaling, no shear.
+- Event completeness is claimed ONLY for the Taylor-pair guard class
+  (guard + certified derivative band describing one real function). A
+  zero-containing band alone never admits a certificate; black-box
+  guards get `estimated_scan`'s labeled Estimated outputs. Certified
+  windows locate SIGN CROSSINGS of the weight-cleared guard; roots at
+  segment junctions or bisection cut points may surface as
+  possible-event windows instead of certified crossings. Even-order
+  touch points (grazing) are always `PossibleEvent`, never counted.
+  Root-count completeness is relative to the scan span and the
+  possible windows: the true count lies in
+  `[confirmed, confirmed + possible]`. No interval-Newton tightening
+  is performed in v1; the mode-ledger and true-flow (ValidatedStep)
+  rungs live in fs-time bead ow2o, not here.
 - Analytic constructors enclose their **constructed component path**;
   the deviation of that path from the ideal real-number screw or
   Wankel motion is bounded by the reported versor defect, not

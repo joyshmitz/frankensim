@@ -23,6 +23,27 @@ pub enum EnclosureClass {
 /// refuses instead of guessing.
 const SIGN_ANCHOR_TOL: f64 = 1e-9;
 
+/// The anchor sign rule: at the domain's low endpoint, the first
+/// component midpoint exceeding tolerance (scalar first, then fixed
+/// blade order) decides whether the representation must be negated.
+pub(crate) fn anchor_flip(mv: &TmMv) -> Result<bool, MotionError> {
+    let t0 = Interval::point(mv.domain().lo());
+    let at_start = mv.eval_all(t0)?;
+    let scalar_mid = at_start[SCALAR].midpoint();
+    if scalar_mid.abs() > SIGN_ANCHOR_TOL {
+        return Ok(scalar_mid < 0.0);
+    }
+    for enc in at_start.iter().skip(1) {
+        let mid = enc.midpoint();
+        if mid.abs() > SIGN_ANCHOR_TOL {
+            return Ok(mid < 0.0);
+        }
+    }
+    Err(MotionError::DoubleCoverAmbiguous {
+        at: mv.domain().lo(),
+    })
+}
+
 /// One tube segment: sixteen component models over one domain, plus
 /// the rigorously computed versor-defect bound.
 #[derive(Debug, Clone)]
@@ -37,29 +58,29 @@ impl MotorTubeSegment {
     /// the domain's low endpoint, scanned in fixed blade order
     /// starting from the scalar; all-tiny anchors refuse as ambiguous.
     pub fn seal(mv: TmMv) -> Result<MotorTubeSegment, MotionError> {
-        let t0 = Interval::point(mv.domain().lo());
-        let at_start = mv.eval_all(t0)?;
-        let mut flip: Option<bool> = None;
-        let scalar_mid = at_start[SCALAR].midpoint();
-        if scalar_mid.abs() > SIGN_ANCHOR_TOL {
-            flip = Some(scalar_mid < 0.0);
-        } else {
-            for enc in at_start.iter().skip(1) {
-                let mid = enc.midpoint();
-                if mid.abs() > SIGN_ANCHOR_TOL {
-                    flip = Some(mid < 0.0);
-                    break;
-                }
-            }
-        }
-        let Some(flip) = flip else {
-            return Err(MotionError::DoubleCoverAmbiguous {
-                at: mv.domain().lo(),
-            });
-        };
+        Self::seal_with_flip(mv).map(|(segment, _)| segment)
+    }
+
+    /// [`Self::seal`] that also reports whether the double-cover sign
+    /// was flipped, so a companion object (e.g. a derivative tube)
+    /// built from the same pre-seal components can be negated in
+    /// tandem.
+    pub(crate) fn seal_with_flip(mv: TmMv) -> Result<(MotorTubeSegment, bool), MotionError> {
+        let flip = anchor_flip(&mv)?;
+        Self::seal_with_sign(mv, flip)
+    }
+
+    /// Seal with an EXPLICIT sign decision (continuity chaining across
+    /// piecewise constructors: only the first segment uses the anchor
+    /// rule; later segments must match the previous segment's sign at
+    /// the shared junction or the double cover tears).
+    pub(crate) fn seal_with_sign(
+        mv: TmMv,
+        flip: bool,
+    ) -> Result<(MotorTubeSegment, bool), MotionError> {
         let mv = if flip { mv.negate()? } else { mv };
         let defect = mv.versor_defect()?;
-        Ok(MotorTubeSegment { mv, defect })
+        Ok((MotorTubeSegment { mv, defect }, flip))
     }
 
     /// The segment's time domain.

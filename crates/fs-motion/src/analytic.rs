@@ -125,6 +125,33 @@ fn segment_domains(domain: Interval, segments: usize) -> Vec<Interval> {
     cuts.windows(2).map(|w| Interval::new(w[0], w[1])).collect()
 }
 
+/// Continuity-chained double-cover decision for piecewise
+/// constructors: the FIRST segment uses the anchor rule; every later
+/// segment matches the previous sealed segment's representative at
+/// the shared junction (a per-segment anchor rule would tear the
+/// cover whenever the scalar component crosses zero mid-path, e.g. a
+/// rotation through π).
+fn chained_flip(
+    sealed: &[MotorTubeSegment],
+    mv: &TmMv,
+) -> Result<bool, MotionError> {
+    let Some(prev) = sealed.last() else {
+        return crate::tube::anchor_flip(mv);
+    };
+    let t = mv.domain().lo();
+    let prev_enc = prev.components_over(Interval::point(t))?;
+    let cur_enc = mv.eval_all(Interval::point(t))?;
+    let dot: f64 = prev_enc
+        .iter()
+        .zip(cur_enc.iter())
+        .map(|(a, b)| a.midpoint() * b.midpoint())
+        .sum();
+    if dot == 0.0 {
+        return Err(MotionError::DoubleCoverAmbiguous { at: t });
+    }
+    Ok(dot < 0.0)
+}
+
 /// `cos` of a model via `1 − 2·sin²(u/2)` (no irrational coefficient).
 fn cos_model(u: &TaylorModel1) -> Result<TaylorModel1, MotionError> {
     let half = u.scale(0.5)?;
@@ -174,6 +201,25 @@ pub struct ScrewParams {
     pub base_pose: Motor,
 }
 
+/// The time-derivative companion of a tube: per-segment component
+/// models of `dM/dt`, sign-locked to the primal tube's canonical
+/// double-cover choice. This is NOT a motor path (it lives in the
+/// tangent, not on the group), so it carries no defect or
+/// canonicalization semantics of its own.
+#[derive(Debug, Clone)]
+pub struct MotorRateTube {
+    segments: Vec<TmMv>,
+}
+
+impl MotorRateTube {
+    /// The per-segment component-rate models, aligned index-for-index
+    /// with the primal tube's segments.
+    #[must_use]
+    pub fn segments(&self) -> &[TmMv] {
+        &self.segments
+    }
+}
+
 /// Build a certified tube for a constant-twist screw over `domain`,
 /// split into `segments` pieces of Taylor order `order`.
 pub fn screw_tube(
@@ -182,6 +228,23 @@ pub fn screw_tube(
     order: usize,
     segments: usize,
 ) -> Result<CertifiedMotorTube, MotionError> {
+    screw_tube_with_derivative(params, domain, order, segments).map(|(tube, _)| tube)
+}
+
+/// [`screw_tube`] plus the rigorously enclosed component derivative
+/// path. The derivative models reuse the SAME constant multivectors
+/// as the primal and differentiate only the basis functions
+/// ({cosθ, sinθ, t·cosθ, t·sinθ} is closed under d/dt up to exact
+/// halving of ω), so both tubes enclose the same real component path
+/// and its true derivative; every rounding lands in Taylor-model
+/// remainders. The rate models are negated in tandem with the
+/// primal's double-cover canonicalization.
+pub fn screw_tube_with_derivative(
+    params: &ScrewParams,
+    domain: Interval,
+    order: usize,
+    segments: usize,
+) -> Result<(CertifiedMotorTube, MotorRateTube), MotionError> {
     validate_domain(domain)?;
     validate_segments(segments)?;
     for v in params
@@ -211,8 +274,10 @@ pub fn screw_tube(
     let c2 = a.0.gp(&u2).gp(&t_back.0);
     let c3 = a.0.gp(&u3).gp(&t_back.0);
     let c4 = a.0.gp(&u4).gp(&t_back.0);
+    let half_omega = params.omega * 0.5;
 
     let mut sealed = Vec::with_capacity(segments);
+    let mut rates = Vec::with_capacity(segments);
     for sub in segment_domains(domain, segments) {
         let t = TaylorModel1::variable(sub, order)?;
         let theta = t.scale(params.omega)?.scale(0.5)?;
@@ -225,9 +290,30 @@ pub fn screw_tube(
         accumulate(&mut mv, &c2, &sin_t)?;
         accumulate(&mut mv, &c3, &t_cos)?;
         accumulate(&mut mv, &c4, &t_sin)?;
-        sealed.push(MotorTubeSegment::seal(mv)?);
+        // Differentiated basis (θ' = ω/2, exact halving):
+        //   d(cosθ)   = −(ω/2)·sinθ
+        //   d(sinθ)   =  (ω/2)·cosθ
+        //   d(t·cosθ) =  cosθ + t·d(cosθ)
+        //   d(t·sinθ) =  sinθ + t·d(sinθ)
+        let d_cos = sin_t.scale(-half_omega)?;
+        let d_sin = cos_t.scale(half_omega)?;
+        let d_tcos = cos_t.try_add(&t.try_mul(&d_cos)?)?;
+        let d_tsin = sin_t.try_add(&t.try_mul(&d_sin)?)?;
+        let mut rate = TmMv::zero(sub, order)?;
+        accumulate(&mut rate, &c1, &d_cos)?;
+        accumulate(&mut rate, &c2, &d_sin)?;
+        accumulate(&mut rate, &c3, &d_tcos)?;
+        accumulate(&mut rate, &c4, &d_tsin)?;
+        let flip = chained_flip(&sealed, &mv)?;
+        let (segment, _) = MotorTubeSegment::seal_with_sign(mv, flip)?;
+        let rate = if flip { rate.negate()? } else { rate };
+        sealed.push(segment);
+        rates.push(rate);
     }
-    CertifiedMotorTube::from_segments(sealed)
+    Ok((
+        CertifiedMotorTube::from_segments(sealed)?,
+        MotorRateTube { segments: rates },
+    ))
 }
 
 /// Parameters of the Wankel rotor POSE: the rotor center orbits the
@@ -312,7 +398,9 @@ pub fn wankel_tube(
         // World-side constant pose, rebuilt on this segment's domain.
         let base_seg = TmMv::constant(&params.base_pose.0, sub, order)?;
         let mv = base_seg.gp(&pose)?;
-        sealed.push(MotorTubeSegment::seal(mv)?);
+        let flip = chained_flip(&sealed, &mv)?;
+        let (segment, _) = MotorTubeSegment::seal_with_sign(mv, flip)?;
+        sealed.push(segment);
     }
     CertifiedMotorTube::from_segments(sealed)
 }

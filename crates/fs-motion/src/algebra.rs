@@ -220,6 +220,27 @@ impl TmMv {
         Ok(out)
     }
 
+    /// Componentwise sum (shapes must match).
+    pub fn add_componentwise(&self, rhs: &TmMv) -> Result<TmMv, MotionError> {
+        if rhs.domain != self.domain || rhs.order != self.order {
+            return Err(MotionError::MixedModelShape {
+                blade: 0,
+                expected_order: self.order,
+                got_order: rhs.order,
+            });
+        }
+        let mut out = TmMv::zero(self.domain, self.order)?;
+        for k in 0..BLADES {
+            match (self.nonzero[k], rhs.nonzero[k]) {
+                (false, false) => {}
+                (true, false) => out.set(k, self.comp[k].clone())?,
+                (false, true) => out.set(k, rhs.comp[k].clone())?,
+                (true, true) => out.set(k, self.comp[k].try_add(&rhs.comp[k])?)?,
+            }
+        }
+        Ok(out)
+    }
+
     /// Negate every component (double-cover sign choice).
     pub fn negate(&self) -> Result<TmMv, MotionError> {
         let mut out = self.clone();
