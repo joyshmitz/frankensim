@@ -1,0 +1,19 @@
+[package]
+name = "fs-vmanifest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Typed, sealed, content-addressed VerificationManifest schema for leapfrog G1 claim/evidence freezes, plus the frozen I01 instance."
+
+[package.metadata.frankensim]
+layer = "UTIL"
+
+[dependencies]
+fs-blake3 = { path = "../fs-blake3" }
+
+[dev-dependencies]
+
+[lints]
+workspace = true
