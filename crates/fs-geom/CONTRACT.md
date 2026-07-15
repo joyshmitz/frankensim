@@ -5,7 +5,8 @@ The Region/Chart abstraction (plan §7.1): abstract regions presented
 through charts; agreement between presentations as a checkable, localized
 proposition; certified conversion receipts (fs-evidence) as the Error
 Ledger's geometry feed; no privileged representation, ever. Layer: L2.
-Depends on fs-exec (Cx), fs-evidence, fs-ivl, fs-alloc, fs-obs, fs-sparse.
+Depends on fs-exec (Cx), fs-blake3 (typed canonical identities), fs-evidence,
+fs-ivl, fs-alloc, fs-obs, fs-sparse.
 
 ## Public types and semantics
 - `Point3`/`Vec3`/`Aabb` — minimal geometry-local types (fs-la owns real
@@ -117,6 +118,32 @@ Depends on fs-exec (Cx), fs-evidence, fs-ivl, fs-alloc, fs-obs, fs-sparse.
   `LyingSphereChart` is
   deliberately biased with a lying error model and the default `NoClaim` for
   detection tests.
+
+- `derived` module (RD.1a, `[M]`, behind `derived-geometry`) defines the finite
+  admitted *object language* for stratified derived machine geometry. A
+  `DerivedGeometryIrV1` binds an immutable subject/model version to an explicit
+  algebraic or restricted-analytic category, coefficient field/ring and
+  real-versus-complex semantics, finite configuration charts, frame and unit
+  conventions, locality and compactness, equality germs, ordered inequality
+  germs and active sets, relative boundaries, unilateral contacts, constitutive
+  metadata, tangent/cotangent/deformation-obstruction complexes, finite
+  resolutions, local singular-model classes, a finite stratum poset, compact
+  local links, and proof-state metadata. Equality, inequality, contact, and
+  constitutive IDs are nominally different Rust types and live in different
+  collections; matching digest bytes cannot interchange their roles.
+  `admit_derived_geometry_v1(ir, budget, &Cx)` checks collection/rank/identity
+  ceilings before canonical sorting, rejects unbounded or infinite-dimensional
+  locality, opaque/infinite computation, unsupported analytic callbacks,
+  unordered complex inequality/contact semantics, mixed frames/units without
+  an explicit successor morphism, malformed complexes/references/incidences,
+  and invalid proof scope. It polls cancellation per finite object and while
+  streaming identity bytes. Success returns an opaque
+  `AdmittedDerivedGeometryV1` with canonically ordered IR and an fs-blake3
+  `IdentityReceipt<DerivedGeometryIdV1>`; the receipt is content-addressed
+  structural admission, not a theorem or physical-validity certificate.
+  Literal/fixed-resolution/external presentation scopes make the RD.1b
+  equivalence boundary explicit rather than assuming generator or coordinate
+  invariance.
 
 - `router` (the Rep Router, Bet 1): converter-edge registry
   (`ConverterSpec`: cost model, error model with declared composition rule,
@@ -366,6 +393,16 @@ Depends on fs-exec (Cx), fs-evidence, fs-ivl, fs-alloc, fs-obs, fs-sparse.
    and admits a finite `SamplingDomain` before evaluating charts. Unbounded
    geometry requires explicit finite scope; bounded disjoint pairs remain
    ordinary no-overlap rather than errors.
+7. RD.1a admission is finite and type preserving: resource limits are checked
+   before sorting, canonical order is independent of input collection order,
+   every reference resolves within its nominal family, active local-model
+   references resolve only to `Active` inequalities/contacts, local links bind
+   real incidence edges with `dim(link) + 1 = codim`, and ordered
+   inequality/contact semantics never admit complex coefficients. The typed
+   BLAKE3 receipt binds all semantic fields and the immutable model version.
+   Graded spaces are contiguous (including explicit zero-dimensional degrees),
+   differentials cover every adjacent degree, and boundary/incidence/
+   constitutive references cannot cross chart ownership.
 
 ## Error model
 Structured teaching values throughout: `ConvertDiag` (ranked fixes),
@@ -379,12 +416,20 @@ Feature-gated public Hodge/repair and merge diagnostic APIs still assert some
 shape/index preconditions on caller-built skeletons; their total, budgeted
 `Result` replacements remain required before promotion. The base
 `SheafComplex` incidence and section APIs are now structured refusals for
-malformed/oversized raw parts.
+malformed/oversized raw parts. RD.1a uses `DerivedAdmissionReportV1`:
+unsupported schema/category/scope/encoding, typed-reference defects, mixed
+units/frames, finite-complex and stratification defects, resource exhaustion,
+cancellation, and canonical identity failures publish no admitted token.
 
 ## Determinism class
 Deterministic: seeded sampling, insertion-ordered charts, canonical JSON
 renderings; no clocks, no addresses. Float behavior inherits
-fs-math-class scalar arithmetic.
+fs-math-class scalar arithmetic. RD.1a sorts every set-valued object collection
+by nominal identity, uses an unambiguous length-framed nested encoding and the
+shared schema-typed BLAKE3 canonical encoder, and retains exact f64 unit/contact
+coefficient bits. Reordering input collections does not move identity; changing
+category, coefficients, units, frame, model version, local singular class,
+stratification, or proof metadata does.
 
 ## Cancellation behavior
 Chart evaluation and production sampling paths take `&Cx`.
@@ -395,7 +440,11 @@ cancellation diagnostics without publishing partial authoritative output.
 Incidence assembly, mismatch assessment/section solve, Hodge/repair, and merge
 diagnostics do not yet accept `Cx`; base-complex work is statically bounded and
 fallibly allocated, but these APIs are not P7-complete. Chart-local polls remain
-an additional inner-kernel obligation.
+an additional inner-kernel obligation. RD.1a admission takes `&Cx`, checks it
+before sorting, once per chart/constraint/complex/local-model/stratum/incidence/
+link, during nested canonical item encoding, inside the streaming identity
+encoder, and immediately before publication. Cancellation returns a stage and
+completed-object count and cannot expose a partial admitted object.
 
 ## Unsafe boundary
 None. `unsafe_code` denied workspace-wide.
@@ -403,6 +452,9 @@ None. `unsafe_code` denied workspace-wide.
 ## Feature flags
 All OFF by default per the Ambition-Tag rule (the default-path chart
 abstractions remain unflagged `[S]`):
+- `derived-geometry` [M] — RD.1a finite admitted derived/stratified object
+  language; disabled until RD.1b/RD.1c theorem/equivalence and independent
+  checker lanes establish promotion evidence.
 - `semantic-diff` [F] — semantic design diff; disabled until its
   Gauntlet tier + kill metric (R3 fallback fraction) are green.
 - `sheaf-repair` [M] — sheaf-adjudicated repair; disabled until
@@ -438,6 +490,14 @@ a nonidentity power of two and requires the certified receipt QoI not to
 increase and the dense grid resolution not to decrease. The fixed conversion,
 cancellation, and refusal pins in `tests/conformance.rs` remain authoritative
 for their individual semantics.
+`tests/derived.rs` is the RD.1a G0/G3/G5 battery: regular linkage admission and
+schema replay, canonical redundant-equation ordering, distinct cusp/node local
+models, relative boundary/contact-corner/local-link typing, active-set refusal,
+mixed-unit and real/complex category mutations, admitted restricted-analytic
+programs versus opaque callback refusal, unbounded/infinite model refusal,
+complex-role and incidence/link mutations, resource caps, proof-scope refusal,
+cross-chart reference refusal, negative-zero contact-coefficient refusal,
+model-version identity movement, and pre-publication cancellation.
 
 ## No-claim boundaries
 - NO watertightness/manifoldness/self-intersection certificates here —
@@ -484,6 +544,30 @@ for their individual semantics.
   certificates are wqd.19's).
 - Cost models, chart selection, and the Pareto routing plane are the Rep
   Router bead's; `Region::primary` is insertion-order only.
+
+## No-claim boundaries (derived geometry)
+
+- `AdmittedDerivedGeometryV1` proves only bounded structural well-formedness,
+  nominal typing, deterministic canonical identity, and the stated finite
+  admission predicates. It does not prove a derived intersection, exactness or
+  quasi-isomorphism of a complex, virtual-dimension theorem, smoothability,
+  Whitney A/B or Thom conditions, link topology, transversality, rigidity,
+  contact well-posedness, constitutive admissibility, or physical validity.
+- `DerivedProofStateV1::ExternallyChecked` retains theorem/checker/receipt/scope
+  identities but does not authenticate or independently execute them. RD.1c
+  owns that promotion. Likewise a `StratificationClassV1::Whitney*` or `Thom`
+  payload is exact metadata attached to a witness, not authority minted by this
+  structural checker.
+- `PresentationScopeV1` is deliberately scoped. Literal presentations receive
+  no coordinate/generator equivalence; fixed-resolution and externally checked
+  variants identify their asserted scope but do not supply the morphisms,
+  composition laws, quasi-isomorphism receipts, refinement variance, or
+  physical crosswalks owned by RD.1b.
+- V1 refuses unbounded and infinite-dimensional local models, opaque external
+  analytic functions, unknown compactness/regularity, and infinite computation.
+  These are admitted-class limits, not claims that the excluded mathematics is
+  invalid. A later version may expand the finite theorem/checker envelope
+  without reinterpreting v1 receipts.
 
 ## No-claim boundaries (sheaf)
 

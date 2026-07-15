@@ -36,6 +36,8 @@ use fs_evidence::NumericalCertificate;
 use fs_exec::Cx;
 
 mod convert;
+#[cfg(feature = "derived-geometry")]
+pub mod derived;
 #[cfg(feature = "semantic-diff")]
 pub mod diff;
 pub mod fixtures;

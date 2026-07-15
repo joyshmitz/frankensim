@@ -12,6 +12,7 @@ layer = "L2"
 
 [dependencies]
 fs-alloc = { path = "../fs-alloc" }
+fs-blake3 = { path = "../fs-blake3", optional = true }
 fs-evidence = { path = "../fs-evidence" }
 fs-exec = { path = "../fs-exec" }
 fs-ivl = { path = "../fs-ivl" }
@@ -23,6 +24,10 @@ asupersync = { path = "../../../asupersync" }
 fs-propcheck = { path = "../fs-propcheck" }
 
 [features]
+# [M]-gated: admitted finite derived/stratified machine geometry is an
+# object/schema foundation only until the RD theorem and independent-checker
+# lanes promote particular claims.
+derived-geometry = ["dep:fs-blake3"]
 # [F]-gated per the Ambition-Tag rule: semantic diff ships disabled until
 # its Gauntlet tier + kill metric (R3 fallback fraction) are green.
 semantic-diff = []
@@ -42,6 +47,10 @@ workspace = true
 [[test]]
 name = "diff"
 required-features = ["semantic-diff"]
+
+[[test]]
+name = "derived"
+required-features = ["derived-geometry"]
 
 # Feature-gated integration target (huq.18): skipped-with-reason when the
 # feature is off, never a zero-test pass.
