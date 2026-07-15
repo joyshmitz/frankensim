@@ -155,6 +155,8 @@ flagships.
     bytes from each combination or case identity, append the exact original
     byte length when truncated, and retain combination-row/term coordinates so
     equal UTF-8-safe previews do not erase exact declaration provenance.
+    Net-flux set labels allocate no eager case-name copy; findings render the
+    same bounded identity preview and retain the exact case row.
 11. **Indexed structural validation**: frame identity indexes are built once;
     the tri-color parent traversal visits each storage row at most once, and
     follows only uniquely resolved parent ids so duplicate declarations cannot

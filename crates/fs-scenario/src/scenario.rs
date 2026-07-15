@@ -50,6 +50,25 @@ impl fmt::Debug for DiagnosticIdentity<'_> {
     }
 }
 
+#[derive(Clone, Copy)]
+enum NetFluxSetLabel<'a> {
+    Base,
+    Case { row: usize, name: &'a str },
+}
+
+impl fmt::Display for NetFluxSetLabel<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Base => formatter.write_str("base"),
+            Self::Case { row, name } => write!(
+                formatter,
+                "base+case row {row} {:?}",
+                DiagnosticIdentity(name)
+            ),
+        }
+    }
+}
+
 /// Explicit deterministic limits for whole-scenario semantic validation.
 ///
 /// Collection fields cap public `Vec` authority before validation allocates
@@ -1625,20 +1644,29 @@ impl Scenario {
         checkpoint: &mut impl FnMut(&'static str) -> Result<(), ValidationError>,
     ) -> Result<(), ValidationError> {
         self.check_net_flux_set(None, out, checkpoint)?;
-        for case in &self.cases {
-            self.check_net_flux_set(Some(case), out, checkpoint)?;
+        for (case_row, case) in self.cases.iter().enumerate() {
+            self.check_net_flux_set(Some((case_row, case)), out, checkpoint)?;
         }
         Ok(())
     }
 
     fn check_net_flux_set(
         &self,
-        case: Option<&LoadCase>,
+        case: Option<(usize, &LoadCase)>,
         out: &mut Vec<Violation>,
         checkpoint: &mut impl FnMut(&'static str) -> Result<(), ValidationError>,
     ) -> Result<(), ValidationError> {
         checkpoint("net-flux set")?;
-        let case_bcs: &[BoundaryCondition] = case.map_or(&[], |case| case.bcs.as_slice());
+        let (label, case_bcs): (NetFluxSetLabel<'_>, &[BoundaryCondition]) = match case {
+            None => (NetFluxSetLabel::Base, &[]),
+            Some((row, case)) => (
+                NetFluxSetLabel::Case {
+                    row,
+                    name: case.name.as_str(),
+                },
+                case.bcs.as_slice(),
+            ),
+        };
         let mut declares_incompressible = false;
         let mut has_pressure_outlet = false;
         for bc in self.base_bcs.iter().chain(case_bcs.iter()) {
@@ -1650,7 +1678,6 @@ impl Scenario {
         if !declares_incompressible {
             return Ok(());
         }
-        let label = case.map_or_else(|| "base".to_string(), |case| format!("base+{}", case.name));
         let mut requested_times = 1usize;
         for bc in self.base_bcs.iter().chain(case_bcs.iter()) {
             checkpoint("net-flux checkpoint count")?;
@@ -1708,7 +1735,7 @@ impl Scenario {
                         out.push(Violation {
                             code: "flux-evaluation",
                             what: format!(
-                                "set {label:?} at t={time:.6e} s: declared mass flow could not be evaluated: {error}"
+                                "set {label} at t={time:.6e} s: declared mass flow could not be evaluated: {error}"
                             ),
                             fix: "repair the total-flow value or use a uniform/time-signal kg/s declaration that is finite at every compatibility checkpoint"
                                 .to_string(),
@@ -1727,7 +1754,7 @@ impl Scenario {
                 out.push(Violation {
                     code: "flux-aggregation-nonfinite",
                     what: format!(
-                        "set {label:?} at t={time:.6e} s: declared mass-flow aggregation overflowed or contained a non-finite value"
+                        "set {label} at t={time:.6e} s: declared mass-flow aggregation overflowed or contained a non-finite value"
                     ),
                     fix: "rescale or partition the declared mass flows so their finite net/gross balance can be certified"
                         .to_string(),
@@ -1752,7 +1779,7 @@ impl Scenario {
             out.push(Violation {
                 code: "flux-imbalance",
                 what: format!(
-                    "set {label:?} at t={time:.6e} s: declared incompressible but net mass flow is \
+                    "set {label} at t={time:.6e} s: declared incompressible but net mass flow is \
                      {net:+.6e} kg/s over gross {gross:.6e} kg/s with no pressure outlet"
                 ),
                 fix: "balance the declared inlet/outlet mass flows at every instant or add a \
@@ -2071,6 +2098,40 @@ mod validation_internal_tests {
         assert!(factor_findings[0].contains("combination row 0"));
         assert!(factor_findings[1].contains("combination row 1"));
         assert_ne!(factor_findings[0], factor_findings[1]);
+    }
+
+    #[test]
+    fn net_flux_diagnostics_bound_case_identity_and_retain_row() {
+        let case_name = "flux-case".repeat(DIAGNOSTIC_IDENTITY_PREVIEW_BYTES);
+        let mut scenario = Scenario::new("bounded-flux-diagnostics", 3, Environment::earth_lab());
+        scenario.cases.push(LoadCase {
+            name: case_name.clone(),
+            bcs: vec![BoundaryCondition {
+                region: "inlet".to_string(),
+                physics: Physics::IncompressibleFlow,
+                kind: BcKind::MassFlowInlet,
+                value: Some(BcValue::Uniform(QtyAny::new(
+                    1.0,
+                    Dims([0, 1, -1, 0, 0, 0]),
+                ))),
+                compatibility: Some(Compat::Incompressible),
+                frame: 0,
+            }],
+        });
+
+        let finding = scenario
+            .validate()
+            .into_iter()
+            .find(|finding| finding.code == "flux-imbalance")
+            .expect("unbalanced case must produce a net-flux finding");
+        assert!(finding.what.contains("set base+case row 0"));
+        assert!(
+            finding
+                .what
+                .contains(&format!("<{} bytes total>", case_name.len()))
+        );
+        assert!(!finding.what.contains(case_name.as_str()));
+        assert!(finding.what.len() < DIAGNOSTIC_IDENTITY_PREVIEW_BYTES * 4 + 512);
     }
 
     #[test]
