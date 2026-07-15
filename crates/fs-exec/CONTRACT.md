@@ -232,6 +232,18 @@ fs-blake3, fs-substrate, fs-obs.
   operation-memory lease. Child splits transfer exact capacity into
   non-cloneable leases; unused capacity returns only when `finish` consumes the
   child. Scientific refusals latch a typed content identity.
+- `AdmittedBudget` (bead sj31i.6) is the uniform tile-boundary enforcement
+  primitive for the ambient `Cx` budget: admitted once from `cx.budget()` plus
+  the checked work plan's declared cost under a caller-supplied deterministic
+  `TimeSource`, it refuses an already-expired deadline (`Budget::ZERO` can
+  never admit) and an over-quota cost plan before any work runs, then enforces
+  cancellation (precedence), deadline, and poll quota at every `checkpoint`
+  and cost at every `charge_cost`/`tile_boundary`. Refusals latch
+  (no-partial-success); `BudgetConsumption` retains the admitted contract,
+  final consumption, and the first refusal for evidence — the hashed budget
+  and the enforced budget are the same contract. It carries no children,
+  memory leases, or receipt hashing; that remains `InvocationBudget`'s
+  nested-science contract.
 - `InvocationReceipt` / `ChildReceipt` retain the admitted envelope, required
   plan, deterministic parent/ordinal/phase topology, direct and subtree spend,
   returned capacity, live-memory high water and release totals, output,

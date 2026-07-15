@@ -36,6 +36,7 @@
 //! behavior, and no-claim boundaries.
 
 mod admit;
+mod budget_accountant;
 mod crew;
 mod cx;
 mod fault;
@@ -50,6 +51,7 @@ pub mod solver;
 mod tune;
 
 pub use admit::{AdmittedStorage, Concat, LeaseAdmittedOut};
+pub use budget_accountant::{AdmittedBudget, BudgetConsumption, BudgetRefusal};
 pub use cx::{
     Budget, CancelGate, Cancelled, Cx, DRAIN_FINALIZE_REPORT_IDENTITY_DOMAIN,
     DRAIN_FINALIZE_REPORT_IDENTITY_VERSION, DrainFinalizeError, DrainFinalizeReport, DrainTracker,
