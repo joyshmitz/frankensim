@@ -501,10 +501,14 @@ pub(crate) fn derive_expr(
                 Shape::Vector(len) if *index < len => (Shape::Scalar, info.1),
                 Shape::Vector(len) => return Err(OptError::IndexOut { index: *index, len }),
                 Shape::Scalar => {
+                    // Diagnostic-only arithmetic: the "required" shape
+                    // saturates so component(scalar, u32::MAX) reports
+                    // instead of wrapping/panicking (fail-closed on
+                    // arbitrary indices).
                     return Err(OptError::ShapeMismatch {
                         op: "component",
                         left: Shape::Scalar,
-                        right: Shape::Vector(index + 1),
+                        right: Shape::Vector(index.saturating_add(1)),
                     });
                 }
             }

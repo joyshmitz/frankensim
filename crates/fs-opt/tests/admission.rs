@@ -535,3 +535,26 @@ fn adm_012_checked_dimension_arithmetic() {
     let fine = b.mul(big, neg).expect("m^0 is representable");
     assert_eq!(b.finish().node_dims(fine).expect("known node"), Dims::NONE);
 }
+
+/// adm-013 — arbitrary component indices cannot panic: asking for
+/// component u32::MAX of a scalar is a REPORTED shape mismatch with
+/// saturated diagnostic arithmetic, never a wrap or debug panic.
+#[test]
+fn adm_013_max_component_index_reports_instead_of_panicking() {
+    let mut b = ProblemBuilder::new();
+    let scalar = b.konst(1.0, Dims::NONE).expect("konst");
+    let err = b
+        .component(scalar, u32::MAX)
+        .expect_err("a scalar has no components");
+    match err {
+        OptError::ShapeMismatch { op, right, .. } => {
+            assert_eq!(op, "component");
+            assert_eq!(
+                format!("{right:?}"),
+                format!("{:?}", fs_opt::Shape::Vector(u32::MAX)),
+                "the required-shape diagnostic saturates at the u32 boundary"
+            );
+        }
+        other => panic!("expected a shape mismatch, got {other:?}"),
+    }
+}
