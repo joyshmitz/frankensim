@@ -26,7 +26,9 @@ pub mod layout;
 
 pub use cvar::{CvarDesign, cvar_mass_min, ensemble_cvar};
 pub use fragility::{FragilityReport, e_stopped_fragility};
-pub use history::{StoryFrame, StoryParams, peak_drift};
+pub use history::{
+    GroundMotion, HistoryError, HistoryLimits, HistoryResponse, StoryFrame, StoryParams, peak_drift,
+};
 pub use layout::{LayoutError, LayoutReport, layout_and_size};
 
 use fs_scenario::ensemble::{SpectrumModel, StochasticEnsemble};

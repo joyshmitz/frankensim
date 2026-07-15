@@ -6,7 +6,9 @@
 use fs_evidence::Color;
 use fs_exec::{Budget, CancelGate, Cx, ExecMode, StreamKey};
 use fs_frame::cvar::{RobustError, cvar, empirical_cvar};
-use fs_frame::history::{StoryFrame, StoryParams, peak_drift};
+use fs_frame::history::{
+    GroundMotion, HistoryError, HistoryLimits, StoryFrame, StoryParams, peak_drift,
+};
 use fs_frame::{LayoutError, cvar_mass_min, e_stopped_fragility, ensemble_cvar, layout_and_size};
 use fs_qty::{Dims, QtyAny};
 use fs_scenario::ensemble::{SpectrumModel, StochasticEnsemble};
@@ -161,6 +163,152 @@ fn frame_003_hysteresis() {
         "frame-003-hysteretic-dissipation",
         dissipated > 0.0 && peak > 0.002,
         &format!("cyclic work {dissipated:.4e} > 0 at peak drift ratio {peak:.4}"),
+    );
+}
+
+/// G4/G5: the recorded-motion integration surface binds units and work limits,
+/// retains the displacement/restoring-shear pair, reproduces the legacy Newmark
+/// path bit-for-bit, and publishes no fiber state when a sample fails to
+/// converge. This is the response artifact required before a cited El Centro
+/// envelope can be claimed; this fixture remains synthetic.
+#[test]
+#[allow(clippy::too_many_lines)] // One lifecycle proves parity, rollback, and admission.
+fn frame_003_checked_response_is_bounded_atomic_and_replayable() {
+    let params = StoryParams::default();
+    let dt_s = 0.02;
+    let acceleration_m_s2: Vec<f64> = (0..240)
+        .map(|sample| 0.35 * (1.1 * f64::from(sample) * dt_s * std::f64::consts::TAU).sin())
+        .collect();
+    let limits = HistoryLimits::new(acceleration_m_s2.len(), 30, 1e-12, 1e-2);
+
+    let mut legacy = StoryFrame::new(params);
+    let legacy_displacement = legacy.run(&acceleration_m_s2, dt_s);
+    let mut checked = StoryFrame::new(params);
+    let response = checked
+        .run_checked(GroundMotion::new(&acceleration_m_s2, dt_s), limits)
+        .expect("admitted synthetic record converges");
+    let same_displacement = legacy_displacement
+        .iter()
+        .zip(&response.displacement_m)
+        .all(|(legacy, checked)| legacy.to_bits() == checked.to_bits());
+    let peak_displacement = response
+        .displacement_m
+        .iter()
+        .fold(0.0f64, |peak, value| peak.max(value.abs()));
+    let peak_shear = response
+        .restoring_shear_n
+        .iter()
+        .fold(0.0f64, |peak, value| peak.max(value.abs()));
+    verdict(
+        "frame-003-checked-response",
+        same_displacement
+            && response.displacement_m.len() == acceleration_m_s2.len()
+            && response.restoring_shear_n.len() == acceleration_m_s2.len()
+            && response
+                .restoring_shear_n
+                .iter()
+                .all(|value| value.is_finite())
+            && response.peak_abs_displacement_m.to_bits() == peak_displacement.to_bits()
+            && response.peak_abs_restoring_shear_n.to_bits() == peak_shear.to_bits()
+            && response.max_abs_equilibrium_residual_n < limits.equilibrium_tolerance_n
+            && (1..=limits.max_newton_iterations).contains(&response.max_newton_iterations_used),
+        &format!(
+            "{} displacement/shear pairs; peak |x| {:.4e} m, peak |V_restore| {:.4e} N, \
+             max Newton corrections {}",
+            response.displacement_m.len(),
+            response.peak_abs_displacement_m,
+            response.peak_abs_restoring_shear_n,
+            response.max_newton_iterations_used
+        ),
+    );
+
+    let mut refused = StoryFrame::new(params);
+    let state_before_refusal = (
+        refused.x.to_bits(),
+        refused.v.to_bits(),
+        refused.a.to_bits(),
+    );
+    let refusal = refused.run_checked(
+        GroundMotion::new(&[1e-9, 3.0], dt_s),
+        HistoryLimits::new(2, 1, 1e-12, 1e-2),
+    );
+    let public_state_preserved = state_before_refusal
+        == (
+            refused.x.to_bits(),
+            refused.v.to_bits(),
+            refused.a.to_bits(),
+        );
+    let mut pristine = StoryFrame::new(params);
+    let probe = [0.1, -0.1, 0.0];
+    let after_refusal = refused
+        .run_checked(
+            GroundMotion::new(&probe, dt_s),
+            HistoryLimits::new(probe.len(), 30, 1e-12, 1e-2),
+        )
+        .expect("frame remains usable after refusal");
+    let pristine_response = pristine
+        .run_checked(
+            GroundMotion::new(&probe, dt_s),
+            HistoryLimits::new(probe.len(), 30, 1e-12, 1e-2),
+        )
+        .expect("pristine probe converges");
+    let no_state_published = after_refusal
+        .displacement_m
+        .iter()
+        .zip(&pristine_response.displacement_m)
+        .all(|(after, pristine)| after.to_bits() == pristine.to_bits())
+        && after_refusal
+            .restoring_shear_n
+            .iter()
+            .zip(&pristine_response.restoring_shear_n)
+            .all(|(after, pristine)| after.to_bits() == pristine.to_bits());
+    verdict(
+        "frame-003-checked-response-refusal",
+        matches!(
+            refusal,
+            Err(HistoryError::NewtonDidNotConverge {
+                sample: 1,
+                iterations: 1,
+                ..
+            })
+        ) && public_state_preserved
+            && no_state_published,
+        "one-correction budget refuses sample 1 and rolls back sample 0's staged commit",
+    );
+
+    let invalid = StoryFrame::new(params).run_checked(
+        GroundMotion::new(&[0.0, f64::NAN], dt_s),
+        HistoryLimits::new(2, 30, 1e-12, 1e-2),
+    );
+    let over_budget = StoryFrame::new(params).run_checked(
+        GroundMotion::new(&[0.0], dt_s),
+        HistoryLimits::new(0, 30, 1e-12, 1e-2),
+    );
+    let invalid_geometry = StoryFrame::new(StoryParams {
+        h: f64::MAX,
+        lp: 2.0,
+        ..params
+    })
+    .run_checked(
+        GroundMotion::new(&[0.0], dt_s),
+        HistoryLimits::new(1, 30, 1e-12, 1e-2),
+    );
+    verdict(
+        "frame-003-checked-response-admission",
+        matches!(
+            invalid,
+            Err(HistoryError::NonFiniteAcceleration { sample: 1, .. })
+        ) && matches!(
+            over_budget,
+            Err(HistoryError::SampleLimitExceeded {
+                samples: 1,
+                max_samples: 0
+            })
+        ) && matches!(
+            invalid_geometry,
+            Err(HistoryError::InvalidStoryParameter { .. })
+        ),
+        "non-finite acceleration, sample excess, and derived-geometry overflow fail admission",
     );
 }
 

@@ -33,6 +33,18 @@ their own battery: fs-truss (layout LP + sizing), fs-solid/fs-material
   shear V = 2M/h. Newmark average acceleration with Newton on the
   fiber tangent, one commit per step. SI units (probed k₀ ≈ 4.4e7
   N/m, V_y ≈ 4.8e5 N; the 280 t default mass gives T ≈ 0.5 s).
+- `history::GroundMotion` + `StoryFrame::run_checked` bind a borrowed
+  acceleration record to explicit SI units, its sample interval, and sample/Newton
+  limits. The checked path returns paired relative-displacement and actual
+  path-dependent fiber restoring-shear histories plus their peak absolute
+  values, maximum final equilibrium residual, and maximum Newton work. The
+  restoring channel excludes the viscous contribution and is not a full
+  support reaction. Samples have step-end semantics: a table with an explicit
+  `t = 0` row must handle that row before constructing the advancing sequence.
+  The path validates the whole record, reserves both output channels, and
+  integrates a staged clone; a refusal publishes neither response nor committed
+  hinge state. The original `run(&[f64], dt)` remains the compatibility surface
+  for the synthetic smoke studies and preserves its fixed 30-correction behavior.
 - `fragility::e_stopped_fragility` → `FragilityReport`: exceedance
   P(peak drift ratio > limit) over an fs-scenario ensemble, estimated
   by an fs-eproc Gaussian-mixture confidence sequence (σ = ½ is the
@@ -67,7 +79,11 @@ their own battery: fs-truss (layout LP + sizing), fs-solid/fs-material
 3. Dynamics: elastic runs do not ratchet over 10× duration (Newmark
    average acceleration, fiber tangent Newton); yielding cycles
    dissipate positive hysteretic work through the fibers at 3.3%
-   peak drift (frame-003).
+   peak drift (frame-003). The checked surface reproduces the compatibility
+   displacement path bit-for-bit on an admitted fixture, retains one finite
+   restoring-shear value per displacement, reports peaks from those exact
+   channels, and leaves the frame bit-replayable from its pre-call state after
+   a nonlinear refusal.
 4. Fragility: the CS at the DATA-DEPENDENT stop covers the fixed-N
    reference (p_ref 0.105 inside 0.098 ± 0.120 after 163/200
    members); the threshold discriminates (16/200 exceedances); the
@@ -95,11 +111,23 @@ spec is malformed, or a CVaR study is infeasible (the drill gates the
 diagnostic). Statistical outputs carry their own uncertainty: the CS radius and
 stopping state ARE the answer's quality statement.
 
+`StoryFrame::run_checked` returns `HistoryError` for an empty or non-finite
+record, invalid SI time step or story parameter, sample-budget excess, invalid
+Newton limits/tolerances, response-allocation failure, non-finite dynamic state,
+or exhaustion of the per-sample correction limit. Convergence currently means
+both the absolute Newton displacement correction and the absolute dynamic-
+equilibrium residual are below their caller-supplied finite, positive
+tolerances, including a final post-correction residual check. The checked path
+is all-or-error with respect to both the returned histories and the frame's
+committed state; the compatibility `run` retains the older unchecked fixed-cap
+contract.
+
 ## Determinism class
 
 Bit-deterministic per platform: Philox-streamed ensembles
 (fs-scenario), fixed iteration orders, deterministic solvers.
-frame-006 pins bitwise replay.
+frame-006 pins bitwise study replay; frame-003 additionally pins checked versus
+compatibility Newmark displacement bits and post-refusal frame replay.
 
 ## Cancellation behavior
 
@@ -107,8 +135,11 @@ Ground construction and LP assembly poll the explicit `Cx` at deterministic
 bounded strides and return structured cancellation before publication. The
 outward certificate stage polls the same context through repair, verification,
 identity binding, and publication. Later fixed solver/dynamics loops remain
-synchronously bounded by iteration/member budgets. The e-stop is itself the
-anytime-cancellation story: stopping at ANY member count leaves a valid interval.
+synchronously bounded by iteration/member budgets. Checked history integration
+also has explicit sample and per-sample Newton limits and stages all mutable
+fiber state until success; it is synchronously bounded but does not yet accept
+an explicit `Cx`. The e-stop is itself the anytime-cancellation story: stopping
+at ANY member count leaves a valid interval.
 
 ## Unsafe boundary
 
@@ -122,7 +153,9 @@ None (the smoke tier ships enabled; heavier tiers will gate).
 
 `tests/battery.rs`: frame-001 LP diagnostics and physical outward optimum bounds;
 frame-002 sizing code
-rows plus pre-cancelled construction refusal; frame-003 elastic stability + hysteretic dissipation;
+rows plus pre-cancelled construction refusal; frame-003 elastic stability,
+hysteretic dissipation, bounded/atomic displacement + restoring-shear response
+history, and admission refusals;
 frame-004 e-stopped fragility coverage + ledgered savings; frame-005
 CVaR monotonicity + design; frame-006 replay, infeasibility, and structured
 canonical-CVaR refusal drills; frame-007 wrong-physics and empty-ensemble
@@ -134,8 +167,12 @@ refusals at the realization boundary.
   Distributed-plasticity frames (fs-solid `ForceBasedElement`
   columns), multi-story assemblies, and joint modeling are recorded
   successors.
-- Motions are SYNTHETIC Kanai–Tajimi only; recorded-motion suites and
-  spectral matching are staged with fs-scenario's data lanes.
+- The checked integrator can consume a unit-explicit recorded-motion
+  vector and retain the two response quantities needed by a comparison, but no
+  recorded suite, source/provenance binding, spectral matching, or published
+  El Centro acceptance envelope is claimed yet. In particular, restoring shear
+  is not mislabeled as a published total support reaction. Those data artifacts
+  remain staged with fs-scenario/fs-vvreg; the current batteries are synthetic.
 - Newmark average acceleration ships; the fs-time VARIATIONAL
   integrator swap (the plan's long-duration drift story) is a named
   successor — the 10×-duration stability gate stands in.
