@@ -325,6 +325,15 @@ publishes no admitted view. Polling is fixed-stride between logical knot-run
 and continuity checks; an individual exact-rational operation is not
 preemptible. The primitive does not consume caller budget or own surrounding
 request drain/finalize, wall-time, or resumability semantics.
+`TrimmedPatch::admit_with_cx` retains the constant-time minimum loop-count work
+refusal ahead of cancellation, then carries the same caller gate through the
+exact aggregate validation-work scan, every nested loop/curve admission, and
+final patch-authority publication. Plan and loop-table traversal polls at most
+every 64 logical entries in addition to the nested curve/loop gates.
+`TrimmedPatchAdmissionRun::Cancelled` exposes no partially admitted loop table.
+Individual exact-rational operations remain non-preemptible, and the primitive
+does not consume the `Cx` budget or own caller drain/finalize, wall-time, or
+resumability semantics.
 Owning trim classification now binds one admitted patch/loop/curve generation
 through exact Bezier conversion, span boxes, and winding. Its checked conversion
 plan charges scan/insertion work and old-plus-new curve storage before the first

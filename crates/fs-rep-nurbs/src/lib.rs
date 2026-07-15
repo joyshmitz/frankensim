@@ -39,7 +39,7 @@ pub use surface::{
 };
 pub use trim::{
     AdmittedTrimLoop, AdmittedTrimmedPatch, Classification, TrimLoop, TrimLoopAdmissionRun,
-    TrimmedPatch,
+    TrimmedPatch, TrimmedPatchAdmissionRun,
 };
 
 use core::fmt;

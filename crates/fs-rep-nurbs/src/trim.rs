@@ -322,6 +322,27 @@ pub struct AdmittedTrimmedPatch<'a> {
     inner: &'a TrimmedPatch,
 }
 
+/// Transactional terminal state of cancellation-aware trimmed-patch
+/// admission.
+#[must_use]
+#[derive(Debug, Clone, Copy)]
+pub enum TrimmedPatchAdmissionRun<'a> {
+    /// Every exact loop in the immutable patch snapshot was fully validated.
+    Complete {
+        /// Lifetime-bound authority for the validated trimmed-patch
+        /// generation.
+        admitted: AdmittedTrimmedPatch<'a>,
+    },
+    /// Cancellation was observed; no admitted authority was published.
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrimmedPatchValidationOutcome {
+    Complete,
+    Cancelled,
+}
+
 impl TrimmedPatch {
     pub(crate) fn validate_live_with_budget(
         &self,
@@ -334,6 +355,25 @@ impl TrimmedPatch {
         &'a self,
         work_remaining: &mut u128,
     ) -> Result<AdmittedTrimmedPatch<'a>, NurbsError> {
+        let mut never_cancel = || false;
+        let mut admit_loop = |trim_loop: &TrimLoop| {
+            trim_loop.admit()?;
+            Ok(TrimmedPatchValidationOutcome::Complete)
+        };
+        match self.admit_with_budget_and_poll(work_remaining, &mut never_cancel, &mut admit_loop)? {
+            TrimmedPatchAdmissionRun::Complete { admitted } => Ok(admitted),
+            TrimmedPatchAdmissionRun::Cancelled => Err(NurbsError::Domain {
+                what: "non-cancelling trimmed-patch admission observed cancellation".to_string(),
+            }),
+        }
+    }
+
+    fn admit_with_budget_and_poll<'a>(
+        &'a self,
+        work_remaining: &mut u128,
+        should_cancel: &mut impl FnMut() -> bool,
+        admit_loop: &mut impl FnMut(&TrimLoop) -> Result<TrimmedPatchValidationOutcome, NurbsError>,
+    ) -> Result<TrimmedPatchAdmissionRun<'a>, NurbsError> {
         let minimum_work = (self.loops.len() as u128)
             .checked_mul(TRIM_MIN_LOOP_VALIDATION_WORK_UNITS)
             .ok_or_else(|| NurbsError::Domain {
@@ -347,18 +387,43 @@ impl TrimmedPatch {
                 ),
             });
         }
-        let validation_work = self.loops.iter().try_fold(0u128, |total, trim_loop| {
-            total
+        if should_cancel() {
+            return Ok(TrimmedPatchAdmissionRun::Cancelled);
+        }
+        let mut validation_work = 0u128;
+        let mut operations_since_poll = 0usize;
+        for trim_loop in &self.loops {
+            validation_work = validation_work
                 .checked_add(trim_loop_validation_work(&trim_loop.curve)?)
                 .ok_or_else(|| NurbsError::Domain {
                     what: "trim live-validation accounting overflows u128".to_string(),
-                })
-        })?;
-        spend_trim_work(work_remaining, validation_work, "live validation")?;
-        for trim_loop in &self.loops {
-            trim_loop.admit()?;
+                })?;
+            if trim_poll_due(&mut operations_since_poll, should_cancel) {
+                return Ok(TrimmedPatchAdmissionRun::Cancelled);
+            }
         }
-        Ok(AdmittedTrimmedPatch { inner: self })
+        spend_trim_work(work_remaining, validation_work, "live validation")?;
+        if should_cancel() {
+            return Ok(TrimmedPatchAdmissionRun::Cancelled);
+        }
+        operations_since_poll = 0;
+        for trim_loop in &self.loops {
+            match admit_loop(trim_loop)? {
+                TrimmedPatchValidationOutcome::Complete => {}
+                TrimmedPatchValidationOutcome::Cancelled => {
+                    return Ok(TrimmedPatchAdmissionRun::Cancelled);
+                }
+            }
+            if trim_poll_due(&mut operations_since_poll, should_cancel) {
+                return Ok(TrimmedPatchAdmissionRun::Cancelled);
+            }
+        }
+        if should_cancel() {
+            return Ok(TrimmedPatchAdmissionRun::Cancelled);
+        }
+        Ok(TrimmedPatchAdmissionRun::Complete {
+            admitted: AdmittedTrimmedPatch { inner: self },
+        })
     }
 
     /// Construct with the default certification depth.
@@ -420,6 +485,33 @@ impl TrimmedPatch {
     pub fn admit(&self) -> Result<AdmittedTrimmedPatch<'_>, NurbsError> {
         let mut work_remaining = TRIM_CLASSIFY_MAX_WORK_UNITS;
         self.admit_with_budget(&mut work_remaining)
+    }
+
+    /// Validate this exact immutable patch with bounded cancellation polling
+    /// and publish only a lifetime-bound admitted view.
+    ///
+    /// The constant-time minimum loop-count work refusal precedes the first
+    /// checkpoint. One `Cx` then spans the exact aggregate validation-work
+    /// scan, every nested loop/curve admission, and final authority
+    /// publication. Cancellation exposes no partially admitted loop table.
+    /// This method does not consume the `Cx` budget or finalize its executor
+    /// scope.
+    ///
+    /// # Errors
+    /// Returns the synchronous admission's checked-work, knot, control,
+    /// closure, continuity, and exact-arithmetic refusals when they win before
+    /// an observed cancellation.
+    pub fn admit_with_cx<'a>(
+        &'a self,
+        cx: &Cx<'_>,
+    ) -> Result<TrimmedPatchAdmissionRun<'a>, NurbsError> {
+        let mut work_remaining = TRIM_CLASSIFY_MAX_WORK_UNITS;
+        let mut should_cancel = || cx.checkpoint().is_err();
+        let mut admit_loop = |trim_loop: &TrimLoop| match trim_loop.admit_with_cx(cx)? {
+            TrimLoopAdmissionRun::Complete { .. } => Ok(TrimmedPatchValidationOutcome::Complete),
+            TrimLoopAdmissionRun::Cancelled => Ok(TrimmedPatchValidationOutcome::Cancelled),
+        };
+        self.admit_with_budget_and_poll(&mut work_remaining, &mut should_cancel, &mut admit_loop)
     }
 
     /// Certified classification of a parameter-space point.
@@ -1207,6 +1299,138 @@ mod tests {
             .expect("publication cancellation"),
             TrimLoopValidationOutcome::Cancelled
         );
+        assert_eq!(replay_polls, total_polls);
+    }
+
+    #[test]
+    fn trimmed_patch_admission_with_cx_is_transactional_and_lifetime_bound() {
+        let patch = TrimmedPatch::with_max_subdivision(vec![point_trim_loop()], 7);
+        with_trim_cx(true, |cx| {
+            assert!(matches!(
+                patch
+                    .admit_with_cx(cx)
+                    .expect("valid pre-cancelled trimmed patch"),
+                TrimmedPatchAdmissionRun::Cancelled
+            ));
+        });
+        with_trim_cx(false, |cx| {
+            let TrimmedPatchAdmissionRun::Complete { admitted } = patch
+                .admit_with_cx(cx)
+                .expect("active trimmed-patch admission")
+            else {
+                panic!("active trimmed-patch admission must complete");
+            };
+            assert!(core::ptr::eq(admitted.source(), &patch));
+            assert_eq!(admitted.loops().len(), 1);
+            assert_eq!(admitted.max_subdivision(), 7);
+        });
+    }
+
+    #[test]
+    fn trimmed_patch_minimum_work_refusal_precedes_cancellation() {
+        let patch = TrimmedPatch::new(vec![point_trim_loop()]);
+        let mut work_remaining = 0u128;
+        let mut polls = 0usize;
+        let error = patch
+            .admit_with_budget_and_poll(
+                &mut work_remaining,
+                &mut || {
+                    polls += 1;
+                    true
+                },
+                &mut |_trim_loop| -> Result<TrimmedPatchValidationOutcome, NurbsError> {
+                    panic!("static minimum-work refusal must precede loop admission")
+                },
+            )
+            .expect_err("static minimum-work refusal must precede cancellation");
+        assert!(matches!(
+            error,
+            NurbsError::Domain { ref what } if what.contains("at least")
+        ));
+        assert_eq!(polls, 0);
+    }
+
+    #[test]
+    fn trimmed_patch_plan_scan_cancels_at_a_replayable_stride() {
+        let patch = TrimmedPatch::new((0..130).map(|_| point_trim_loop()).collect());
+        let run = || {
+            let mut work_remaining = TRIM_CLASSIFY_MAX_WORK_UNITS;
+            let mut polls = 0usize;
+            let mut admitted_loops = 0usize;
+            let outcome = patch
+                .admit_with_budget_and_poll(
+                    &mut work_remaining,
+                    &mut || {
+                        polls += 1;
+                        polls == 2
+                    },
+                    &mut |_trim_loop| {
+                        admitted_loops += 1;
+                        Ok(TrimmedPatchValidationOutcome::Complete)
+                    },
+                )
+                .expect("cancellable trimmed-patch plan scan");
+            (
+                matches!(outcome, TrimmedPatchAdmissionRun::Cancelled),
+                polls,
+                admitted_loops,
+                work_remaining,
+            )
+        };
+        assert_eq!(run(), run());
+        assert_eq!(run(), (true, 2, 0, TRIM_CLASSIFY_MAX_WORK_UNITS));
+    }
+
+    #[test]
+    fn trimmed_patch_nested_cancellation_is_not_published() {
+        let patch = TrimmedPatch::new(vec![point_trim_loop()]);
+        let mut work_remaining = TRIM_CLASSIFY_MAX_WORK_UNITS;
+        let mut admitted_loops = 0usize;
+        let outcome = patch
+            .admit_with_budget_and_poll(&mut work_remaining, &mut || false, &mut |_trim_loop| {
+                admitted_loops += 1;
+                Ok(TrimmedPatchValidationOutcome::Cancelled)
+            })
+            .expect("nested trim-loop cancellation");
+        assert!(matches!(outcome, TrimmedPatchAdmissionRun::Cancelled));
+        assert_eq!(admitted_loops, 1);
+    }
+
+    #[test]
+    fn trimmed_patch_final_checkpoint_gates_authority_publication() {
+        let patch = TrimmedPatch::new(Vec::new());
+        let mut healthy_work = TRIM_CLASSIFY_MAX_WORK_UNITS;
+        let mut total_polls = 0usize;
+        let healthy = patch
+            .admit_with_budget_and_poll(
+                &mut healthy_work,
+                &mut || {
+                    total_polls += 1;
+                    false
+                },
+                &mut |_trim_loop| -> Result<TrimmedPatchValidationOutcome, NurbsError> {
+                    panic!("empty patch has no loop admission")
+                },
+            )
+            .expect("healthy empty-patch admission");
+        assert!(matches!(healthy, TrimmedPatchAdmissionRun::Complete { .. }));
+        assert!(total_polls > 0);
+
+        let mut replay_work = TRIM_CLASSIFY_MAX_WORK_UNITS;
+        let mut replay_polls = 0usize;
+        let replay = patch
+            .admit_with_budget_and_poll(
+                &mut replay_work,
+                &mut || {
+                    replay_polls += 1;
+                    replay_polls == total_polls
+                },
+                &mut |_trim_loop| -> Result<TrimmedPatchValidationOutcome, NurbsError> {
+                    panic!("empty patch has no loop admission")
+                },
+            )
+            .expect("cancelled empty-patch admission replay");
+        assert!(matches!(replay, TrimmedPatchAdmissionRun::Cancelled));
         assert_eq!(replay_polls, total_polls);
     }
 
