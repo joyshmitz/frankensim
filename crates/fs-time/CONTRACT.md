@@ -2,8 +2,9 @@
 
 ## Purpose and layer
 
-Layer: **L3 FLUX** (deps: fs-ad, fs-ga, fs-la, fs-math, and the shared
-fs-solver operator/Newton-Krylov spine — all downward or same-layer services).
+Layer: **L3 FLUX** (deps: fs-ad, fs-blake3, fs-exec, fs-ga, fs-la,
+fs-math, and the shared fs-solver operator/Newton-Krylov spine — all downward
+or same-layer services).
 Structure-preserving time integration (plan §8.5): integrators that
 preserve what the physics preserves — symplectic (Störmer–Verlet with
 its discrete-Lagrangian equivalence tested), Lie-group SO(3) via
@@ -114,6 +115,47 @@ where claimed below.
   ledger reporting rejects hand-built malformed entries before
   attribution or JSON emission.
 
+- `hybrid` module (RE.Z1; `[M]` object semantics, no theorem promotion):
+  `ZenoProblemIrV1` is the finite, versioned object language for a hybrid
+  model and immutable model version, original-versus-regularized lineage,
+  initial-state set, frame and unit conventions, physical time scale, finite
+  modes and continuous ODE/inclusion/admitted-DAE dynamics, oriented guards,
+  transverse/grazing/Unknown crossing state, deterministic/set-valued/
+  terminal/Unknown reset relations, contact/relay laws, simultaneous-event
+  groups and policy, dwell semantics, event language, hybrid-time domain,
+  compactness, numerical accumulation candidates, continuation category, and
+  semantic-analysis budget. All artifact roles use non-confusable typed IDs.
+  Unsupported infinite-dimensional dynamics, zero DAE index, invalid time or
+  budget data, missing mode references, malformed simultaneous priorities,
+  and self-referential regularization refuse.
+- `validate_zeno_problem_v1(ir, cx)` caps modes/events/reset targets before
+  sorting or graph work, polls cancellation at bounded strides, canonicalizes
+  set order, and mints a domain-separated `ZenoProblemIdV1` plus independent
+  canonical-preimage receipt only on success. Its conservative finite graph
+  analysis records zero/Unknown-dwell cycles and local nonuniqueness. A unique
+  continuation category refuses when differential inclusions, grazing or
+  unresolved guards, set-valued or unresolved resets, unresolved simultaneous
+  ordering make it an overclaim. A zero-time cycle is recorded separately: it
+  enables an accumulation question but does not by itself select a unique or
+  nonunique post-Zeno rule.
+- `ZenoClassificationV1` keeps five states disjoint: positive finite-event
+  separation, theorem-shaped certified-Zeno descriptor, numerical
+  event-density warning, a distinct regularized-model lineage, and Unknown.
+  `PostZenoStateV1` independently records not-applicable, unique, set-valued,
+  terminal, or unresolved post-accumulation semantics.
+  `validate_zeno_claim_descriptor_v1` cross-checks the exact problem and
+  continuation category. Event caps and numerical-only traces cannot enter a
+  theorem-shaped classification; finite separation requires a positive dwell
+  bound on every admitted event; certified Zeno requires a zero/Unknown-dwell
+  accumulation cycle in this finite automaton; regularized claims require the exact second
+  validated problem and matching source lineage. Claim and post-state choices
+  participate in `ZenoClaimIdV1`.
+- A successful `ValidatedZenoClaimDescriptorV1` always returns
+  `ScientificCorrectnessNotProven`. Opaque analytic/interval witness IDs are
+  replay references, not authority tokens. RE.Z2 must independently check and
+  promote a descriptor before any Zeno, finite-separation, or continuation
+  theorem exists.
+
 ## Invariants
 
 - Verlet is symplectic ⇒ **bounded** (non-secular) energy error;
@@ -135,6 +177,10 @@ where claimed below.
   and counters included (P7). A step shortened to land exactly on
   t_end does not feed the controller (the clamped h would poison the
   h carried into a later resumed segment).
+- Hybrid identities are invariant to input ordering of mode/event sets and
+  sensitive to every model version, initial set, frame/unit/time convention,
+  guard/reset/law, event order, regularization, budget, claim, and no-claim
+  artifact. An execution event cap is byte-visible policy, never proof.
 
 ## Error model
 
@@ -163,6 +209,11 @@ identical on Threadripper (x86_64). The operator-backed paths use
 `fs-solver`'s deterministic reductions and logical-iteration preconditioner
 contract. Their dense-vs-operator and split-run fixtures are deterministic on
 the exercised build; they do not yet add a retained cross-ISA golden.
+Hybrid problem and claim identities use bounded `fs-blake3` canonical schemas.
+Canonical sets sort by typed identity, ordered priorities remain ordered, and
+signed zero is normalized before hashing. Identical admitted input and schema
+version replay byte-for-byte on every ISA; no numerical trajectory participates
+in identity unless named by its exact trace ID.
 
 ## Cancellation behavior
 
@@ -172,7 +223,10 @@ FGMRES cycle/restart budgets; operator IMEX bounds each stage by its configured
 FGMRES budget. Long trajectories are resumable by cloning `SecondOrderState`,
 `FirstOrderState`, `ImexState`, or `AdaptiveState` between calls; split runs
 continue bitwise when the same operators, forcing, preconditioner policy, and
-configuration are supplied. No async, no internal threading, no I/O.
+configuration are supplied. Hybrid problem validation polls `Cx` before work,
+every 32 modes/events, during zero-time graph analysis, and inside canonical
+identity streaming; cancellation publishes no token. No async, no internal
+threading, no I/O.
 
 ## Unsafe boundary
 
@@ -231,6 +285,13 @@ measured drift despite converged solves (se3-006); 10⁵-step
 renormalization receipts bounding the final unit defect (se3-007);
 SE(3) rigid-body agreement with the SO(3) lane and spatial
 free-velocity drift at the measured-order level (se3-008).
+`tests/hybrid.rs` (RE.Z1; G0/G3/G4/G5): relay-chatter and positive-dwell
+microcases; mode/event input-order and schema replay; model-version identity
+sensitivity; event-cap and numerical-trace theorem falsifiers; finite
+separation versus zero/Unknown-dwell cycles; simultaneous guards, grazing, and
+set-valued-reset uniqueness refusals; exact regularization lineage; numerical
+warning post-state honesty; unknown-mode, zero-index DAE, out-of-domain window,
+unsupported-version, resource-cap, and pre-cancellation refusals.
 
 ## No-claim boundaries
 
@@ -270,6 +331,15 @@ free-velocity drift at the measured-order level (se3-008).
   records but does not independently certify that model consistency. The
   nonlinear `SecondOrderProblem`/`FirstOrderProblem` implementer likewise owns
   tangent consistency; this lane does not yet run an automatic JVP audit.
+- RE.Z1 validates only finite hybrid object semantics and content identity. It
+  does not locate events, enclose accumulation times, prove transversality,
+  prove compactness, establish finite separation, certify Zeno behavior, or
+  choose physically correct post-Zeno dynamics. `CertifiedZeno`, analytic, and
+  interval-validated are descriptor labels bound to opaque evidence references;
+  every returned descriptor says `ScientificCorrectnessNotProven` until the
+  independent RE.Z2 checker promotes it. A compliant/penalty regularization is
+  a distinct model with an explicit no-equivalence artifact, never evidence
+  about the discontinuous source model.
 
 ## No-claim boundaries (slabs)
 

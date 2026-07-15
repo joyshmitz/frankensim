@@ -12,9 +12,12 @@
 //! (checkpoint = clone; split runs bitwise-equal to straight runs) and
 //! DISCRETE ADJOINTS of the stepper (Verlet's ships here, checkpointed
 //! through fs-ad's revolve; it is the template for the rest).
+//! Hybrid-time/event-order/Zeno object semantics are isolated in [`hybrid`];
+//! their validated receipts prove schema consistency, never a Zeno theorem.
 
 pub mod adaptive;
 pub mod galpha;
+pub mod hybrid;
 pub mod lie;
 pub mod se3;
 #[cfg(feature = "time-slabs")]

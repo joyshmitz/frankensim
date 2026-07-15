@@ -12,12 +12,15 @@ layer = "L3"
 
 [dependencies]
 fs-ad = { path = "../fs-ad" }
+fs-blake3 = { path = "../fs-blake3" }
+fs-exec = { path = "../fs-exec" }
 fs-ga = { path = "../fs-ga" }
 fs-la = { path = "../fs-la" }
 fs-math = { path = "../fs-math" }
 fs-solver = { path = "../fs-solver" }
 
 [dev-dependencies]
+fs-alloc = { path = "../fs-alloc" }
 
 [features]
 # [F]-gated per the Ambition-Tag rule (bead bk0o.7, Proposal 4).
