@@ -259,6 +259,13 @@ None.
   checkpoints, identity bytes, finding slots, and total work each admit at the
   exact boundary and refuse one unit short; pre-requested cancellation publishes
   no findings.
+- **sc-011** all 1,296 four-frame parent graphs match an independent exhaustive
+  chain oracle, including world roots, dangling parents, self-cycles, and
+  multi-node cycles.
+- **sc-012** 100k-frame deep, wide, and cyclic adversaries complete under the
+  admitted `Cx`; deep/wide graphs remain green, every cyclic row is diagnosed,
+  wall times are emitted, and deterministic planned work grows by less than 3x
+  for each 25k -> 50k -> 100k doubling.
 - A focused `scenario` unit regression forces checkpoint-capacity overflow and
   proves a typed `AllocationRefused` with the scratch vector left empty.
 - A deterministic injected-checkpoint regression cancels at the environment

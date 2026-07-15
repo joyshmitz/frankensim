@@ -11,13 +11,15 @@ use fs_ga::{Motor, Point, Quat, Vec3};
 use fs_qty::{Dims, QtyAny};
 use fs_scenario::{
     BcKind, BcValue, BoundaryCondition, ChebProfile, Combination, Compat, ContactLaw, ContactModel,
-    Environment, Frame, FrameId, FrameMotion, Interp, LoadCase, Physics, RealizationBudget,
-    Scenario, SpectrumModel, StochasticEnsemble, TimeSignal, ValidationBudget, ValidationError,
+    Environment, Frame, FrameId, FrameMotion, FrameTree, Interp, LoadCase, Physics,
+    RealizationBudget, Scenario, SpectrumModel, StochasticEnsemble, TimeSignal, ValidationBudget,
+    ValidationError,
     ir::{
         FiveToSixRule, IrParseBudget, LEGACY_SCENARIO_IR_VERSION, SCENARIO_IR_VERSION, parse_ir,
         parse_ir_with_budget, write_ir,
     },
 };
+use std::time::Instant;
 
 fn verdict(case: &str, detail: &str) {
     println!(
@@ -2093,5 +2095,153 @@ fn sc_010_semantic_validation_plan_hits_every_exact_budget_boundary() {
     verdict(
         "sc-010",
         "every semantic collection/signal/checkpoint/identity/finding/work budget admits at the exact plan and refuses one unit short; pre-requested cancellation publishes no findings",
+    );
+}
+
+fn fixed_validation_frame(id: u32, parent: u32) -> Frame {
+    Frame {
+        id: FrameId(id),
+        name: format!("frame-{id}"),
+        parent: FrameId(parent),
+        motion: FrameMotion::Fixed {
+            orientation: Quat::identity(),
+            translation: Vec3::new(0.0, 0.0, 0.0),
+        },
+    }
+}
+
+fn oracle_parent_chain_is_cyclic(start: u32, parents: &[u32]) -> bool {
+    let mut seen = vec![false; parents.len()];
+    let mut current = start;
+    while current != 0 {
+        let Ok(index) = usize::try_from(current - 1) else {
+            return false;
+        };
+        let Some(parent) = parents.get(index) else {
+            return false;
+        };
+        if seen[index] {
+            return true;
+        }
+        seen[index] = true;
+        current = *parent;
+    }
+    false
+}
+
+#[test]
+fn sc_011_frame_graph_matches_small_exhaustive_oracle() {
+    const FRAME_COUNT: u32 = 4;
+    let radix = usize::try_from(FRAME_COUNT + 2).expect("small radix");
+    let configurations = radix.pow(FRAME_COUNT);
+
+    for encoded in 0..configurations {
+        let mut digits = encoded;
+        let mut parents = Vec::new();
+        for _ in 0..FRAME_COUNT {
+            parents.push(u32::try_from(digits % radix).expect("small parent id"));
+            digits /= radix;
+        }
+        let mut tree = FrameTree::new();
+        for id in 1..=FRAME_COUNT {
+            let index = usize::try_from(id - 1).expect("small frame index");
+            tree.add(fixed_validation_frame(id, parents[index]));
+        }
+
+        let mut actual = Vec::new();
+        tree.check(&mut actual);
+        let actual_codes = actual
+            .iter()
+            .map(|violation| violation.code)
+            .collect::<Vec<_>>();
+        let mut expected_codes = Vec::new();
+        for id in 1..=FRAME_COUNT {
+            let index = usize::try_from(id - 1).expect("small frame index");
+            if parents[index] > FRAME_COUNT {
+                expected_codes.push("frame-parent-missing");
+            }
+            if oracle_parent_chain_is_cyclic(id, &parents) {
+                expected_codes.push("frame-chain-cyclic");
+            }
+        }
+        assert_eq!(actual_codes, expected_codes, "parents={parents:?}");
+    }
+
+    verdict(
+        "sc-011",
+        "all 6^4 parent graphs, including world roots, dangling edges, self cycles, and multi-node cycles, match an independent exhaustive oracle",
+    );
+}
+
+fn large_frame_scenario(frame_count: u32, mut parent_of: impl FnMut(u32) -> u32) -> Scenario {
+    let mut scenario = Scenario::new("large-frame-graph", 31, Environment::earth_lab());
+    scenario.frames.frames.reserve_exact(
+        usize::try_from(frame_count).expect("the retained frame count fits this target"),
+    );
+    for id in 1..=frame_count {
+        scenario
+            .frames
+            .add(fixed_validation_frame(id, parent_of(id)));
+    }
+    scenario
+}
+
+#[test]
+fn sc_012_hundred_thousand_frame_adversaries_are_bounded() {
+    const FRAME_COUNT: u32 = 100_000;
+    let mut planned_work = Vec::new();
+    let mut deep_millis = 0u128;
+
+    for count in [25_000u32, 50_000, FRAME_COUNT] {
+        let deep = large_frame_scenario(count, |id| if id == 1 { 0 } else { id - 1 });
+        let plan = deep
+            .validation_plan(ValidationBudget::default())
+            .expect("deep chain semantic plan");
+        planned_work.push(plan.planned_work);
+        if count == FRAME_COUNT {
+            let started = Instant::now();
+            let findings = with_validation_cx(false, |cx| {
+                deep.validate_with_budget(ValidationBudget::default(), cx)
+                    .expect("100k deep chain admission")
+            });
+            deep_millis = started.elapsed().as_millis();
+            assert!(findings.is_empty(), "deep chain findings: {findings:#?}");
+        }
+    }
+    assert!(planned_work[1] < planned_work[0] * 3);
+    assert!(planned_work[2] < planned_work[1] * 3);
+
+    let wide = large_frame_scenario(FRAME_COUNT, |_| 0);
+    let started = Instant::now();
+    let findings = with_validation_cx(false, |cx| {
+        wide.validate_with_budget(ValidationBudget::default(), cx)
+            .expect("100k wide graph admission")
+    });
+    let wide_millis = started.elapsed().as_millis();
+    assert!(findings.is_empty(), "wide graph findings: {findings:#?}");
+
+    let cyclic = large_frame_scenario(FRAME_COUNT, |id| if id == 1 { FRAME_COUNT } else { id - 1 });
+    let started = Instant::now();
+    let findings = with_validation_cx(false, |cx| {
+        cyclic
+            .validate_with_budget(ValidationBudget::default(), cx)
+            .expect("100k cyclic graph admission")
+    });
+    let cyclic_millis = started.elapsed().as_millis();
+    assert_eq!(
+        findings.len(),
+        usize::try_from(FRAME_COUNT).expect("retained frame count")
+    );
+    assert!(
+        findings
+            .iter()
+            .all(|finding| finding.code == "frame-chain-cyclic")
+    );
+
+    verdict(
+        "sc-012",
+        &format!(
+            "25k/50k/100k logical work={planned_work:?}; 100k deep={deep_millis}ms wide={wide_millis}ms cyclic={cyclic_millis}ms; each doubling stays below 3x planned work"
+        ),
     );
 }
