@@ -148,6 +148,31 @@ fs-ivl, fs-alloc, fs-obs, fs-sparse.
   equivalence boundary explicit rather than assuming generator or coordinate
   invariance.
 
+- `derived_morphism` module (RD.1b foundation, `[M]`, behind
+  `derived-geometry`) admits one rank-neutral identity arrow per exact geometry
+  and structurally strict maps between exact `AdmittedDerivedGeometryV1`
+  endpoints. Strict maps require
+  equal physical subject, mathematical category, coefficient semantics, frame,
+  and unit system; coordinate/unit transitions are not silently inferred.
+  Evidence transport is explicitly contravariant restriction or covariant
+  balance corestriction and binds exact input/output geometry identities plus
+  nominal caller-declared input/output evidence-artifact identities and ranks.
+  Admission rejects a declared output rank above the declared input rank.
+  Composition requires an exact middle endpoint and matching nominal evidence
+  identity/rank seam, flattens primitive factors and no-equivalence artifacts in
+  semantic order, and produces an associative content-addressed receipt with
+  exact endpoint identities and ordered primitive lineage. Immediate composite
+  operand IDs are intentionally not encoded because that would make the receipt
+  depend on parenthesization. Only an identity arrow carries identity
+  equivalence; every strict primitive/composite retains explicit no-equivalence
+  artifacts. The evidence artifact IDs and `ColorRank` values are structural
+  declarations with zero payload authority: they do not authenticate evidence,
+  establish payload preservation or validity-domain inclusion, prove theorem
+  truth, or establish physical equivalence. Chart transitions,
+  refinements, inclusions, quasi-isomorphism witnesses, stratified/constructible
+  maps, spans/correspondences, and L6 Machine-IR crosswalks remain typed RD.1b
+  follow-ups rather than being represented as strict maps.
+
 - `exit_path` module (RD.X1, `[M]`, behind `derived-geometry`) admits a bounded,
   executable statement language for maximal exit/entrance-path approximation
   and constructibility theorem families over an admitted RD.1a geometry. Each
@@ -453,6 +478,11 @@ fs-ivl, fs-alloc, fs-obs, fs-sparse.
    Graded spaces are contiguous (including explicit zero-dimensional degrees),
    differentials cover every adjacent degree, and boundary/incidence/
    constitutive references cannot cross chart ownership.
+8. RD.1b structural morphisms have one rank-neutral identity per exact admitted
+   geometry. Strict composition is defined only across exact geometry and
+   declared evidence-artifact/rank seams. Primitive morphism identities and
+   no-equivalence artifacts remain in semantic order, making receipt identity
+   independent of composition parenthesization but sensitive to factor order.
 
 ## Error model
 Structured teaching values throughout: `ConvertDiag` (ranked fixes),
@@ -474,6 +504,11 @@ unsupported schema/category/scope/encoding, typed-reference defects, explicit
 cross-chart references, mixed units/frames, finite-complex and stratification
 defects, resource exhaustion, cancellation, and canonical identity failures
 publish no admitted token.
+RD.1b uses `DerivedMorphismErrorV1` for schema/endpoint/convention defects,
+evidence orientation, missing nominal evidence IDs, declared-rank
+strengthening, equivalence laundering, composition seams, bounded lineage,
+allocation, cancellation, and canonical identity failures. Refusal publishes no
+admitted morphism.
 
 ## Determinism class
 Deterministic: seeded sampling, insertion-ordered charts, canonical JSON
@@ -486,6 +521,10 @@ coefficient bits. Negative-zero Coulomb coefficients are refused as
 noncanonical input. Reordering input collections does not move identity;
 changing category, coefficients, units, frame, model version, local singular class,
 stratification, or proof metadata does.
+RD.1b encodes exact endpoints, map witness/class, structural evidence transport,
+ordered no-equivalence artifacts, and ordered primitive identities. Flattened
+composition makes equal ordered factor sequences replay to the same receipt
+regardless of parenthesization; reversing factors changes identity.
 
 ## Cancellation behavior
 Chart evaluation and production sampling paths take `&Cx`.
@@ -506,6 +545,11 @@ canonical item encoding, inside the
 streaming identity encoder, and immediately before publication. Cancellation
 returns a stage and completed-work count and cannot expose a partial admitted
 object.
+RD.1b admission polls at entry, before canonical identity construction, inside
+the streaming encoder, and immediately before publication. Composition polls at
+entry, at a fixed stride while copying bounded primitive/no-claim lineage,
+inside identity construction, and before publication. Cancellation exposes no
+partial admitted morphism.
 RD.X1 statement admission polls before validation, once for every derived
 theorem-lattice node, before identity construction, and inside the streaming
 encoder. Its falsifier set and truncation lattice have hard versioned caps;
@@ -518,7 +562,8 @@ None. `unsafe_code` denied workspace-wide.
 All OFF by default per the Ambition-Tag rule (the default-path chart
 abstractions remain unflagged `[S]`):
 - `derived-geometry` [M] — RD.1a finite admitted derived/stratified object
-  language plus the RD.X1 exit-path theorem-statement lattice; disabled until
+  language, the RD.1b structural morphism spine, and the RD.X1 exit-path
+  theorem-statement lattice; disabled until
   RD.1b/RD.1c/RD.X2 theorem, equivalence, artifact, and independent-checker
   lanes establish promotion evidence.
 - `semantic-diff` [F] — semantic design diff; disabled until its
@@ -568,6 +613,14 @@ refusal, declared basis-dimension and local-link overflow refusal, model-version
 identity movement, and pre-publication cancellation. The `derived` module's
 private unit suite injects
 mid-canonicalization cancellation deterministically without timing races.
+The `derived_morphism` private G0/G3/G5 suite covers unique neutral identities,
+associative ordered receipt replay, factor/no-claim order, exact middle-object
+refusal, declared evidence-seam and mixed-variance refusal, declared-rank
+strengthening refusal, both variance directions, equivalence laundering,
+convention mismatch, the lineage cap/cap+1 boundary, deterministic replay, and
+already-requested entry cancellation. Public wrapper coverage against fully
+admitted RD.1a fixtures and deterministic mid-flight cancellation injection
+remain explicit batch-verification follow-ups.
 `tests/exit_path.rs` supplies RD.X1 G0/G3 examples and a bounded-cancellation
 regression: regular-cell poset sufficiency, cone/cusp groupoid-enriched
 one-category fallback, circular-stratum local systems, finite-versus-full
@@ -644,6 +697,13 @@ claim those stronger G4/G5 results.
   variants identify their asserted scope but do not supply the morphisms,
   composition laws, quasi-isomorphism receipts, refinement variance, or
   physical crosswalks owned by RD.1b.
+- `AdmittedDerivedMorphismV1` proves only bounded structural compatibility,
+  deterministic identity, declared evidence orientation/rank shape, and an
+  explicit no-equivalence boundary. Nominal `DerivedEvidenceArtifactIdV1`
+  values are not authenticated evidence receipts; callers can declare their
+  bytes and ranks. RD.1c or a successor admitted-evidence type must bind and
+  independently validate payload authority before any evidence-preservation
+  claim is promotable.
 - V1 refuses unbounded and infinite-dimensional local models, opaque external
   analytic functions, unknown compactness/regularity, and infinite computation.
   These are admitted-class limits, not claims that the excluded mathematics is

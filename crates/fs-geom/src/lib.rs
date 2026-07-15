@@ -38,6 +38,8 @@ use fs_exec::Cx;
 mod convert;
 #[cfg(feature = "derived-geometry")]
 pub mod derived;
+#[cfg(feature = "derived-geometry")]
+pub mod derived_morphism;
 #[cfg(feature = "semantic-diff")]
 pub mod diff;
 #[cfg(feature = "derived-geometry")]
