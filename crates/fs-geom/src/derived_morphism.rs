@@ -1,8 +1,9 @@
 //! Typed structural morphisms between admitted RD.1a geometries (RD.1b).
 //!
-//! This RD.1b spine admits category identities, generic strict maps, and typed
-//! declared chart maps; checks structural evidence restriction/corestriction;
-//! and composes ordered typed primitive paths with content-addressed lineage. It
+//! This RD.1b spine admits category identities, generic strict maps, typed
+//! declared chart maps, and finite-complex rank refinements; checks structural
+//! evidence restriction/corestriction; and composes ordered typed primitive
+//! paths with content-addressed lineage. It
 //! deliberately cannot mint a non-identity equivalence: a witness digest is
 //! data, not a proof of an inverse, quasi-isomorphism, refinement theorem, or
 //! physical crosswalk.
@@ -18,8 +19,9 @@ use fs_exec::Cx;
 
 use crate::derived::{
     AdmittedDerivedGeometryV1, CoefficientSystemV1, ConfigurationChartIdV1, ConfigurationChartV1,
-    DerivedFrameIdV1, DerivedGeometryIdV1, DerivedModelVersionIdV1, DerivedNoClaimIdV1,
-    DerivedSubjectIdV1, DerivedUnitSystemIdV1, DerivedWitnessIdV1, GeometricCategoryV1,
+    DerivedComplexIdV1, DerivedFrameIdV1, DerivedGeometryIdV1, DerivedModelVersionIdV1,
+    DerivedNoClaimIdV1, DerivedResolutionIdV1, DerivedSubjectIdV1, DerivedUnitSystemIdV1,
+    DerivedWitnessIdV1, FiniteDerivedComplexV1, GeometricCategoryV1,
 };
 
 /// Current schema for structural RD.1b morphism receipts.
@@ -88,6 +90,24 @@ impl DerivedChartOverlapIdV1 {
     }
 }
 
+/// Nominal aggregate prolongation artifact for one finite-complex refinement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DerivedComplexRefinementMapIdV1([u8; 32]);
+
+impl DerivedComplexRefinementMapIdV1 {
+    /// Construct a nominal refinement-map artifact identity from exact bytes.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Borrow the exact identity bytes.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
 /// Caller-supplied primitive map class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DerivedMorphismKindV1 {
@@ -109,6 +129,21 @@ pub enum DerivedMorphismKindV1 {
         /// Exact forward coordinate-map artifact.
         map: DerivedChartMapIdV1,
     },
+    /// A coarse-to-refined finite-complex declaration without chain-map authority.
+    DeclaredComplexRefinement {
+        /// Complex owned by the coarse/source geometry.
+        source_complex: DerivedComplexIdV1,
+        /// Complex owned by the refined/target geometry.
+        target_complex: DerivedComplexIdV1,
+        /// Exact resolution retained by the source complex.
+        source_resolution: DerivedResolutionIdV1,
+        /// Exact resolution retained by the target complex.
+        target_resolution: DerivedResolutionIdV1,
+        /// Nominal aggregate coarse-to-refined prolongation artifact.
+        prolongation: DerivedComplexRefinementMapIdV1,
+        /// Nominal differential-commutation witness; not authenticated here.
+        commutation: DerivedWitnessIdV1,
+    },
 }
 
 /// Admitted map family. Composition flattens ordered typed primitive lineage.
@@ -120,6 +155,8 @@ pub enum AdmittedDerivedMorphismClassV1 {
     Strict,
     /// One or more ordered declared chart-map primitives.
     DeclaredChartMapPath,
+    /// One or more ordered finite-complex refinement primitives.
+    DeclaredComplexRefinementPath,
     /// An ordered path containing more than one nonidentity primitive family.
     HeterogeneousPath,
 }
@@ -150,6 +187,27 @@ pub struct DeclaredChartMapPrimitiveV1 {
     pub map: DerivedChartMapIdV1,
 }
 
+/// One retained coarse-to-refined finite-complex declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeclaredComplexRefinementPrimitiveV1 {
+    /// Exact admitted geometry owning the coarse complex.
+    pub source_geometry: DerivedGeometryIdV1,
+    /// Exact admitted geometry owning the refined complex.
+    pub target_geometry: DerivedGeometryIdV1,
+    /// Exact coarse/source complex.
+    pub source_complex: DerivedComplexIdV1,
+    /// Exact refined/target complex.
+    pub target_complex: DerivedComplexIdV1,
+    /// Exact source resolution.
+    pub source_resolution: DerivedResolutionIdV1,
+    /// Exact target resolution.
+    pub target_resolution: DerivedResolutionIdV1,
+    /// Nominal aggregate prolongation artifact.
+    pub prolongation: DerivedComplexRefinementMapIdV1,
+    /// Nominal commutation witness with zero theorem authority in v1.
+    pub commutation: DerivedWitnessIdV1,
+}
+
 /// One typed nonidentity primitive retained in semantic path order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdmittedDerivedPrimitiveV1 {
@@ -164,28 +222,32 @@ pub enum AdmittedDerivedPrimitiveV1 {
     },
     /// One declared chart-map primitive.
     DeclaredChartMap(DeclaredChartMapPrimitiveV1),
+    /// One declared finite-complex refinement primitive.
+    DeclaredComplexRefinement(DeclaredComplexRefinementPrimitiveV1),
 }
 
 impl AdmittedDerivedPrimitiveV1 {
     /// Exact admitted source geometry of this primitive.
     #[must_use]
-    pub const fn source_geometry(self) -> DerivedGeometryIdV1 {
+    pub const fn source_geometry(&self) -> DerivedGeometryIdV1 {
         match self {
             Self::Strict {
                 source_geometry, ..
-            } => source_geometry,
+            } => *source_geometry,
             Self::DeclaredChartMap(primitive) => primitive.source_geometry,
+            Self::DeclaredComplexRefinement(primitive) => primitive.source_geometry,
         }
     }
 
     /// Exact admitted target geometry of this primitive.
     #[must_use]
-    pub const fn target_geometry(self) -> DerivedGeometryIdV1 {
+    pub const fn target_geometry(&self) -> DerivedGeometryIdV1 {
         match self {
             Self::Strict {
                 target_geometry, ..
-            } => target_geometry,
+            } => *target_geometry,
             Self::DeclaredChartMap(primitive) => primitive.target_geometry,
+            Self::DeclaredComplexRefinement(primitive) => primitive.target_geometry,
         }
     }
 }
@@ -370,6 +432,16 @@ pub enum DerivedMorphismErrorV1 {
     ChartDimensionMismatch,
     /// Declared chart-map frames or coordinate-unit bindings differ.
     ChartConventionMismatch,
+    /// A declared finite-complex ID is not owned by its exact endpoint geometry.
+    MissingComplex {
+        /// Stable source/target complex field.
+        field: &'static str,
+    },
+    /// A finite-complex refinement violates one structural rank-envelope rule.
+    ComplexRefinementMismatch {
+        /// Stable failed refinement field or relation.
+        field: &'static str,
+    },
     /// Evidence endpoints contradict the declared variance.
     EvidenceOrientationMismatch,
     /// Declared evidence metadata attempted to strengthen authority.
@@ -389,6 +461,8 @@ pub enum DerivedMorphismErrorV1 {
     CompositionClassMismatch,
     /// Adjacent chart-map primitives do not share the exact middle chart.
     CompositionChartMismatch,
+    /// Adjacent refinement primitives do not share an exact complex/resolution seam.
+    CompositionRefinementMismatch,
     /// Evidence artifact identity or declared rank at the seam is inconsistent.
     CompositionEvidenceMismatch,
     /// Flattened lineage/no-claim retention exceeded the hard ceiling.
@@ -515,6 +589,7 @@ struct GeometryEndpointV1<'a> {
     frame: DerivedFrameIdV1,
     unit_system: DerivedUnitSystemIdV1,
     charts: &'a [ConfigurationChartV1],
+    complexes: &'a [FiniteDerivedComplexV1],
 }
 
 impl<'a> GeometryEndpointV1<'a> {
@@ -529,6 +604,7 @@ impl<'a> GeometryEndpointV1<'a> {
             frame: ir.frame,
             unit_system: ir.unit_system,
             charts: &ir.charts,
+            complexes: &ir.complexes,
         }
     }
 }
@@ -546,6 +622,15 @@ enum ReceiptClassV1 {
     },
     CompositeDeclaredChartMap,
     CompositeHeterogeneous,
+    PrimitiveDeclaredComplexRefinement {
+        source_complex: DerivedComplexIdV1,
+        target_complex: DerivedComplexIdV1,
+        source_resolution: DerivedResolutionIdV1,
+        target_resolution: DerivedResolutionIdV1,
+        prolongation: DerivedComplexRefinementMapIdV1,
+        commutation: DerivedWitnessIdV1,
+    },
+    CompositeDeclaredComplexRefinement,
 }
 
 fn is_zero(bytes: &[u8; 32]) -> bool {
@@ -636,6 +721,7 @@ enum ClassBytesV1 {
     Tag([u8; 1]),
     Primitive([u8; 33]),
     DeclaredChartMap([u8; 129]),
+    DeclaredComplexRefinement([u8; 193]),
 }
 
 impl ClassBytesV1 {
@@ -644,6 +730,7 @@ impl ClassBytesV1 {
             Self::Tag(bytes) => bytes,
             Self::Primitive(bytes) => bytes,
             Self::DeclaredChartMap(bytes) => bytes,
+            Self::DeclaredComplexRefinement(bytes) => bytes,
         }
     }
 }
@@ -674,6 +761,25 @@ fn class_bytes(class: ReceiptClassV1) -> ClassBytesV1 {
         }
         ReceiptClassV1::CompositeDeclaredChartMap => ClassBytesV1::Tag([4]),
         ReceiptClassV1::CompositeHeterogeneous => ClassBytesV1::Tag([5]),
+        ReceiptClassV1::PrimitiveDeclaredComplexRefinement {
+            source_complex,
+            target_complex,
+            source_resolution,
+            target_resolution,
+            prolongation,
+            commutation,
+        } => {
+            let mut bytes = [0_u8; 193];
+            bytes[0] = 6;
+            bytes[1..33].copy_from_slice(source_complex.as_bytes());
+            bytes[33..65].copy_from_slice(target_complex.as_bytes());
+            bytes[65..97].copy_from_slice(source_resolution.as_bytes());
+            bytes[97..129].copy_from_slice(target_resolution.as_bytes());
+            bytes[129..161].copy_from_slice(prolongation.as_bytes());
+            bytes[161..193].copy_from_slice(commutation.as_bytes());
+            ClassBytesV1::DeclaredComplexRefinement(bytes)
+        }
+        ReceiptClassV1::CompositeDeclaredComplexRefinement => ClassBytesV1::Tag([7]),
     }
 }
 
@@ -878,6 +984,164 @@ fn declared_chart_path(
     })
 }
 
+const fn truncation_refinement_progress(source: u32, target: u32) -> Option<bool> {
+    match (source, target) {
+        (0, 0) => Some(false),
+        (0, _) => None,
+        (_, 0) => Some(true),
+        (source, target) if target >= source => Some(target > source),
+        _ => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // One bounded rank-envelope admission.
+fn declared_complex_refinement(
+    source: GeometryEndpointV1<'_>,
+    target: GeometryEndpointV1<'_>,
+    source_complex: DerivedComplexIdV1,
+    target_complex: DerivedComplexIdV1,
+    source_resolution: DerivedResolutionIdV1,
+    target_resolution: DerivedResolutionIdV1,
+    prolongation: DerivedComplexRefinementMapIdV1,
+    commutation: DerivedWitnessIdV1,
+    cx: &Cx<'_>,
+) -> Result<DeclaredComplexRefinementPrimitiveV1, DerivedMorphismErrorV1> {
+    let source_spec = source
+        .complexes
+        .iter()
+        .find(|complex| complex.id == source_complex)
+        .ok_or(DerivedMorphismErrorV1::MissingComplex {
+            field: "source-complex",
+        })?;
+    let target_spec = target
+        .complexes
+        .iter()
+        .find(|complex| complex.id == target_complex)
+        .ok_or(DerivedMorphismErrorV1::MissingComplex {
+            field: "target-complex",
+        })?;
+    for (matches, field) in [
+        (
+            source_spec.resolution.id == source_resolution,
+            "source-resolution",
+        ),
+        (
+            target_spec.resolution.id == target_resolution,
+            "target-resolution",
+        ),
+        (source_spec.role == target_spec.role, "complex-role"),
+        (source_spec.chart == target_spec.chart, "complex-chart"),
+    ] {
+        if !matches {
+            return Err(DerivedMorphismErrorV1::ComplexRefinementMismatch { field });
+        }
+    }
+    let source_chart = source
+        .charts
+        .iter()
+        .find(|chart| chart.id == source_spec.chart)
+        .ok_or(DerivedMorphismErrorV1::MissingChart {
+            field: "source-complex-chart",
+        })?;
+    let target_chart = target
+        .charts
+        .iter()
+        .find(|chart| chart.id == target_spec.chart)
+        .ok_or(DerivedMorphismErrorV1::MissingChart {
+            field: "target-complex-chart",
+        })?;
+    if source_chart != target_chart {
+        return Err(DerivedMorphismErrorV1::ComplexRefinementMismatch {
+            field: "chart-semantics",
+        });
+    }
+
+    let mut target_index = 0usize;
+    let mut strict_progress = truncation_refinement_progress(
+        source_spec.resolution.truncation_order,
+        target_spec.resolution.truncation_order,
+    )
+    .ok_or(DerivedMorphismErrorV1::ComplexRefinementMismatch {
+        field: "truncation-policy",
+    })?;
+    for (completed, source_space) in source_spec.spaces.iter().enumerate() {
+        if completed.is_multiple_of(DERIVED_MORPHISM_CANCELLATION_STRIDE_V1)
+            && cx.checkpoint().is_err()
+        {
+            return Err(DerivedMorphismErrorV1::Cancelled {
+                stage: "complex-refinement-shape",
+            });
+        }
+        while let Some(extra_space) = target_spec
+            .spaces
+            .get(target_index)
+            .filter(|space| space.degree < source_space.degree)
+        {
+            if target_index.is_multiple_of(DERIVED_MORPHISM_CANCELLATION_STRIDE_V1)
+                && cx.checkpoint().is_err()
+            {
+                return Err(DerivedMorphismErrorV1::Cancelled {
+                    stage: "complex-refinement-shape",
+                });
+            }
+            strict_progress |= extra_space.dimension > 0;
+            target_index += 1;
+        }
+        let target_space = target_spec.spaces.get(target_index).ok_or(
+            DerivedMorphismErrorV1::ComplexRefinementMismatch {
+                field: "degree-coverage",
+            },
+        )?;
+        if target_space.degree != source_space.degree {
+            return Err(DerivedMorphismErrorV1::ComplexRefinementMismatch {
+                field: "degree-coverage",
+            });
+        }
+        if target_space.quantity != source_space.quantity {
+            return Err(DerivedMorphismErrorV1::ComplexRefinementMismatch {
+                field: "degree-quantity",
+            });
+        }
+        if target_space.dimension < source_space.dimension {
+            return Err(DerivedMorphismErrorV1::ComplexRefinementMismatch {
+                field: "degree-rank",
+            });
+        }
+        strict_progress |= target_space.dimension > source_space.dimension;
+        target_index += 1;
+    }
+    for (completed, extra_space) in target_spec.spaces[target_index..].iter().enumerate() {
+        if completed.is_multiple_of(DERIVED_MORPHISM_CANCELLATION_STRIDE_V1)
+            && cx.checkpoint().is_err()
+        {
+            return Err(DerivedMorphismErrorV1::Cancelled {
+                stage: "complex-refinement-shape",
+            });
+        }
+        strict_progress |= extra_space.dimension > 0;
+    }
+    if !strict_progress {
+        return Err(DerivedMorphismErrorV1::ComplexRefinementMismatch {
+            field: "strict-progress",
+        });
+    }
+    if cx.checkpoint().is_err() {
+        return Err(DerivedMorphismErrorV1::Cancelled {
+            stage: "complex-refinement-shape",
+        });
+    }
+    Ok(DeclaredComplexRefinementPrimitiveV1 {
+        source_geometry: source.id,
+        target_geometry: target.id,
+        source_complex,
+        target_complex,
+        source_resolution,
+        target_resolution,
+        prolongation,
+        commutation,
+    })
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ValidatedMorphismClassV1 {
     admitted: AdmittedDerivedMorphismClassV1,
@@ -893,6 +1157,7 @@ fn validate_morphism_class(
     ir: DerivedMorphismIrV1,
     source: GeometryEndpointV1<'_>,
     target: GeometryEndpointV1<'_>,
+    cx: &Cx<'_>,
 ) -> Result<ValidatedMorphismClassV1, DerivedMorphismErrorV1> {
     match (ir.kind, ir.equivalence) {
         (DerivedMorphismKindV1::Identity, DerivedEquivalenceBoundaryV1::IdentityOnly) => {
@@ -986,9 +1251,68 @@ fn validate_morphism_class(
                 chart_primitive: Some(chart_primitive),
             })
         }
+        (
+            DerivedMorphismKindV1::DeclaredComplexRefinement {
+                source_complex,
+                target_complex,
+                source_resolution,
+                target_resolution,
+                prolongation,
+                commutation,
+            },
+            DerivedEquivalenceBoundaryV1::NoClaim { artifact },
+        ) => {
+            for (bytes, field) in [
+                (source_complex.as_bytes(), "source-complex"),
+                (target_complex.as_bytes(), "target-complex"),
+                (source_resolution.as_bytes(), "source-resolution"),
+                (target_resolution.as_bytes(), "target-resolution"),
+                (prolongation.as_bytes(), "complex-refinement-prolongation"),
+                (commutation.as_bytes(), "complex-refinement-commutation"),
+                (artifact.as_bytes(), "no-equivalence-claim"),
+            ] {
+                if is_zero(bytes) {
+                    return Err(DerivedMorphismErrorV1::MissingIdentity { field });
+                }
+            }
+            if ir.evidence == DerivedEvidenceTransportV1::Identity {
+                return Err(DerivedMorphismErrorV1::EvidenceOrientationMismatch);
+            }
+            shared_nonidentity_compatibility(source, target)?;
+            let primitive = declared_complex_refinement(
+                source,
+                target,
+                source_complex,
+                target_complex,
+                source_resolution,
+                target_resolution,
+                prolongation,
+                commutation,
+                cx,
+            )?;
+            Ok(ValidatedMorphismClassV1 {
+                admitted: AdmittedDerivedMorphismClassV1::DeclaredComplexRefinementPath,
+                receipt: ReceiptClassV1::PrimitiveDeclaredComplexRefinement {
+                    source_complex,
+                    target_complex,
+                    source_resolution,
+                    target_resolution,
+                    prolongation,
+                    commutation,
+                },
+                no_claim: Some(artifact),
+                chart_path: None,
+                primitive: Some(AdmittedDerivedPrimitiveV1::DeclaredComplexRefinement(
+                    primitive,
+                )),
+                chart_primitive: None,
+            })
+        }
         (DerivedMorphismKindV1::Identity, _) => Err(DerivedMorphismErrorV1::InvalidIdentity),
         (
-            DerivedMorphismKindV1::Strict { .. } | DerivedMorphismKindV1::DeclaredChartMap { .. },
+            DerivedMorphismKindV1::Strict { .. }
+            | DerivedMorphismKindV1::DeclaredChartMap { .. }
+            | DerivedMorphismKindV1::DeclaredComplexRefinement { .. },
             _,
         ) => Err(DerivedMorphismErrorV1::EquivalenceLaundering),
     }
@@ -1062,7 +1386,7 @@ fn admit_between_endpoints(
     if ir.target != target.id {
         return Err(DerivedMorphismErrorV1::EndpointMismatch { field: "target" });
     }
-    let validated = validate_morphism_class(ir, source, target)?;
+    let validated = validate_morphism_class(ir, source, target, cx)?;
     validate_evidence(source.id, target.id, ir.evidence)?;
 
     if cx.checkpoint().is_err() {
@@ -1108,18 +1432,20 @@ fn admit_between_endpoints(
     })
 }
 
-/// Admit one primitive identity, generic strict map, or declared chart map.
+/// Admit one primitive identity, strict map, chart map, or complex refinement.
 ///
-/// This validates only structural compatibility and monotonicity of the
-/// caller-declared evidence ranks. Nominal evidence identities are retained but
-/// not authenticated. A strict witness cannot mint equivalence, inverse,
-/// quasi-isomorphism, chart-map invertibility, overlap coverage, physical
-/// correspondence, or theorem authority.
+/// This validates structural endpoint compatibility, caller-declared evidence
+/// rank monotonicity, and family-specific chart or finite graded-rank envelopes.
+/// Nominal evidence/map/witness identities are retained but not authenticated.
+/// No primitive can mint equivalence, inverse, quasi-isomorphism, chart-map
+/// invertibility, overlap coverage, chain commutation, injectivity, numerical
+/// error reduction, physical correspondence, or theorem authority.
 ///
 /// # Errors
 /// Returns a typed refusal for endpoint/model/category/coefficient/frame/unit,
-/// evidence-direction/rank, equivalence-boundary, cancellation, allocation, or
-/// canonical-identity defects.
+/// chart/complex ownership and shape, evidence-direction/rank,
+/// equivalence-boundary, cancellation, allocation, or canonical-identity
+/// defects.
 #[must_use = "a raw morphism request has no structural authority"]
 pub fn admit_derived_morphism_v1(
     ir: DerivedMorphismIrV1,
@@ -1278,13 +1604,22 @@ fn validate_typed_primitive_seam(
     {
         return Err(DerivedMorphismErrorV1::CompositionClassMismatch);
     }
-    if let (
-        AdmittedDerivedPrimitiveV1::DeclaredChartMap(first_chart),
-        AdmittedDerivedPrimitiveV1::DeclaredChartMap(second_chart),
-    ) = (first_end, second_start)
-        && first_chart.target_chart != second_chart.source_chart
-    {
-        return Err(DerivedMorphismErrorV1::CompositionChartMismatch);
+    match (first_end, second_start) {
+        (
+            AdmittedDerivedPrimitiveV1::DeclaredChartMap(first_chart),
+            AdmittedDerivedPrimitiveV1::DeclaredChartMap(second_chart),
+        ) if first_chart.target_chart != second_chart.source_chart => {
+            return Err(DerivedMorphismErrorV1::CompositionChartMismatch);
+        }
+        (
+            AdmittedDerivedPrimitiveV1::DeclaredComplexRefinement(first_refinement),
+            AdmittedDerivedPrimitiveV1::DeclaredComplexRefinement(second_refinement),
+        ) if first_refinement.target_complex != second_refinement.source_complex
+            || first_refinement.target_resolution != second_refinement.source_resolution =>
+        {
+            return Err(DerivedMorphismErrorV1::CompositionRefinementMismatch);
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -1344,6 +1679,14 @@ fn compose_class(
                 }),
             ))
         }
+        (
+            AdmittedDerivedMorphismClassV1::DeclaredComplexRefinementPath,
+            AdmittedDerivedMorphismClassV1::DeclaredComplexRefinementPath,
+        ) => Ok((
+            AdmittedDerivedMorphismClassV1::DeclaredComplexRefinementPath,
+            ReceiptClassV1::CompositeDeclaredComplexRefinement,
+            None,
+        )),
         (AdmittedDerivedMorphismClassV1::Identity, _)
         | (_, AdmittedDerivedMorphismClassV1::Identity) => {
             Err(DerivedMorphismErrorV1::CompositionClassMismatch)
@@ -1435,12 +1778,13 @@ fn compose_evidence(
 ///
 /// Typed primitive factors and no-equivalence artifacts are flattened in
 /// semantic order, so parenthesization does not change the receipt. Adjacent
-/// declared chart maps require an exact middle chart even inside heterogeneous
-/// paths. Identity arrows are unique per geometry and rank-neutral, so they are
-/// exact composition units.
+/// declared chart maps require an exact middle chart, and adjacent complex
+/// refinements require exact complex and resolution seams, even inside
+/// heterogeneous paths. Identity arrows are unique per geometry and
+/// rank-neutral, so they are exact composition units.
 ///
 /// # Errors
-/// Returns a typed refusal for endpoint, path-family/chart/variance/evidence
+/// Returns a typed refusal for endpoint, chart/refinement/variance/evidence
 /// seams, lineage caps, allocation, cancellation, or identity defects.
 #[must_use = "composition refusal must not be treated as a morphism"]
 pub fn compose_derived_morphisms_v1(
@@ -1525,8 +1869,9 @@ mod tests {
     use fs_exec::{CancelGate, ExecMode, StreamKey};
 
     use crate::derived::{
-        CompactnessV1, ConfigurationChartClassV1, DerivedQuantityKindIdV1, FiniteComputabilityV1,
-        LocalityScopeV1, RegularityClassV1, UnitBindingV1,
+        CompactnessV1, ComplexDifferentialV1, ConfigurationChartClassV1, DerivedComplexRoleV1,
+        DerivedLinearMapIdV1, DerivedQuantityKindIdV1, FiniteComputabilityV1, FiniteResolutionV1,
+        GradedSpaceV1, LocalityScopeV1, RegularityClassV1, UnitBindingV1,
     };
 
     fn with_cx<R>(cancelled: bool, f: impl FnOnce(&Cx<'_>) -> R) -> R {
@@ -1566,6 +1911,7 @@ mod tests {
             frame: DerivedFrameIdV1::from_bytes([2; 32]),
             unit_system: DerivedUnitSystemIdV1::from_bytes([3; 32]),
             charts: &[],
+            complexes: &[],
         }
     }
 
@@ -1612,6 +1958,84 @@ mod tests {
     ) -> GeometryEndpointV1<'a> {
         GeometryEndpointV1 {
             charts,
+            ..endpoint(seed)
+        }
+    }
+
+    fn complex_id(seed: u8) -> DerivedComplexIdV1 {
+        DerivedComplexIdV1::from_bytes([seed; 32])
+    }
+
+    fn resolution_id(seed: u8) -> DerivedResolutionIdV1 {
+        DerivedResolutionIdV1::from_bytes([seed; 32])
+    }
+
+    fn complex(
+        seed: u8,
+        resolution_seed: u8,
+        chart: ConfigurationChartIdV1,
+        role: DerivedComplexRoleV1,
+        spaces: &[(i16, u32, u8)],
+        truncation_order: u32,
+    ) -> FiniteDerivedComplexV1 {
+        let spaces = spaces
+            .iter()
+            .map(|(degree, dimension, quantity)| GradedSpaceV1 {
+                degree: *degree,
+                dimension: *dimension,
+                quantity: DerivedQuantityKindIdV1::from_bytes([*quantity; 32]),
+            })
+            .collect::<Vec<_>>();
+        let differentials = spaces
+            .windows(2)
+            .enumerate()
+            .map(|(index, degrees)| ComplexDifferentialV1 {
+                from_degree: degrees[0].degree,
+                to_degree: degrees[1].degree,
+                map: DerivedLinearMapIdV1::from_bytes([seed.wrapping_add(16 + index as u8); 32]),
+                square_zero_witness: DerivedWitnessIdV1::from_bytes(
+                    [seed.wrapping_add(32 + index as u8); 32],
+                ),
+            })
+            .collect::<Vec<_>>();
+        let min_degree = spaces.first().expect("nonempty complex fixture").degree;
+        let max_degree = spaces.last().expect("nonempty complex fixture").degree;
+        let max_basis_dimension = spaces
+            .iter()
+            .map(|space| space.dimension)
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        FiniteDerivedComplexV1 {
+            id: complex_id(seed),
+            chart,
+            role,
+            spaces,
+            differentials,
+            resolution: FiniteResolutionV1 {
+                id: resolution_id(resolution_seed),
+                min_degree,
+                max_degree,
+                max_basis_dimension,
+                truncation_order,
+                remainder: (truncation_order > 0).then_some(DerivedWitnessIdV1::from_bytes(
+                    [resolution_seed.wrapping_add(1); 32],
+                )),
+            },
+            computability: FiniteComputabilityV1::ExactFinite {
+                kernel: DerivedWitnessIdV1::from_bytes([seed.wrapping_add(48); 32]),
+            },
+        }
+    }
+
+    fn endpoint_with_parts<'a>(
+        seed: u8,
+        charts: &'a [ConfigurationChartV1],
+        complexes: &'a [FiniteDerivedComplexV1],
+    ) -> GeometryEndpointV1<'a> {
+        GeometryEndpointV1 {
+            charts,
+            complexes,
             ..endpoint(seed)
         }
     }
@@ -1663,6 +2087,32 @@ mod tests {
             target_chart,
             overlap: DerivedChartOverlapIdV1::from_bytes([artifact_seed.wrapping_add(1); 32]),
             map: DerivedChartMapIdV1::from_bytes([artifact_seed.wrapping_add(2); 32]),
+        };
+        ir
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn complex_refinement_ir(
+        source: GeometryEndpointV1<'_>,
+        target: GeometryEndpointV1<'_>,
+        source_complex: DerivedComplexIdV1,
+        target_complex: DerivedComplexIdV1,
+        source_resolution: DerivedResolutionIdV1,
+        target_resolution: DerivedResolutionIdV1,
+        artifact_seed: u8,
+        input_rank: ColorRank,
+        output_rank: ColorRank,
+    ) -> DerivedMorphismIrV1 {
+        let mut ir = strict_ir(source, target, artifact_seed, input_rank, output_rank);
+        ir.kind = DerivedMorphismKindV1::DeclaredComplexRefinement {
+            source_complex,
+            target_complex,
+            source_resolution,
+            target_resolution,
+            prolongation: DerivedComplexRefinementMapIdV1::from_bytes(
+                [artifact_seed.wrapping_add(1); 32],
+            ),
+            commutation: DerivedWitnessIdV1::from_bytes([artifact_seed.wrapping_add(2); 32]),
         };
         ir
     }
@@ -1731,6 +2181,63 @@ mod tests {
         .expect("valid declared chart map")
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn admit_complex_refinement(
+        source: GeometryEndpointV1<'_>,
+        target: GeometryEndpointV1<'_>,
+        source_complex: DerivedComplexIdV1,
+        target_complex: DerivedComplexIdV1,
+        source_resolution: DerivedResolutionIdV1,
+        target_resolution: DerivedResolutionIdV1,
+        artifact_seed: u8,
+        input_rank: ColorRank,
+        output_rank: ColorRank,
+        cx: &Cx<'_>,
+    ) -> AdmittedDerivedMorphismV1 {
+        admit_between_endpoints(
+            complex_refinement_ir(
+                source,
+                target,
+                source_complex,
+                target_complex,
+                source_resolution,
+                target_resolution,
+                artifact_seed,
+                input_rank,
+                output_rank,
+            ),
+            source,
+            target,
+            cx,
+        )
+        .expect("valid declared finite-complex refinement")
+    }
+
+    fn try_complex_refinement(
+        source: GeometryEndpointV1<'_>,
+        target: GeometryEndpointV1<'_>,
+        source_complex: &FiniteDerivedComplexV1,
+        target_complex: &FiniteDerivedComplexV1,
+        cx: &Cx<'_>,
+    ) -> Result<AdmittedDerivedMorphismV1, DerivedMorphismErrorV1> {
+        admit_between_endpoints(
+            complex_refinement_ir(
+                source,
+                target,
+                source_complex.id,
+                target_complex.id,
+                source_complex.resolution.id,
+                target_complex.resolution.id,
+                30,
+                ColorRank::Validated,
+                ColorRank::Estimated,
+            ),
+            source,
+            target,
+            cx,
+        )
+    }
+
     fn admit_identity(object: GeometryEndpointV1<'_>, cx: &Cx<'_>) -> AdmittedDerivedMorphismV1 {
         admit_between_endpoints(
             DerivedMorphismIrV1 {
@@ -1749,7 +2256,7 @@ mod tests {
     }
 
     #[test]
-    fn v1_class_bytes_keep_old_tags_and_domain_separate_heterogeneous_paths() {
+    fn v1_class_bytes_keep_old_tags_and_domain_separate_new_paths() {
         assert_eq!(
             <DerivedMorphismIdentitySchemaV1 as CanonicalSchema>::CONTEXT,
             "typed endpoints, strict map class, evidence variance, no-equivalence boundary, and ordered primitive lineage"
@@ -1759,6 +2266,7 @@ mod tests {
             (ReceiptClassV1::CompositeStrict, 2),
             (ReceiptClassV1::CompositeDeclaredChartMap, 4),
             (ReceiptClassV1::CompositeHeterogeneous, 5),
+            (ReceiptClassV1::CompositeDeclaredComplexRefinement, 7),
         ] {
             assert_eq!(class_bytes(class).as_slice(), &[expected]);
         }
@@ -1787,6 +2295,41 @@ mod tests {
             &chart.as_slice()[97..129],
             DerivedChartMapIdV1::from_bytes([11; 32]).as_bytes()
         );
+
+        let refinement = class_bytes(ReceiptClassV1::PrimitiveDeclaredComplexRefinement {
+            source_complex: complex_id(12),
+            target_complex: complex_id(13),
+            source_resolution: resolution_id(14),
+            target_resolution: resolution_id(15),
+            prolongation: DerivedComplexRefinementMapIdV1::from_bytes([16; 32]),
+            commutation: DerivedWitnessIdV1::from_bytes([17; 32]),
+        });
+        assert_eq!(refinement.as_slice().len(), 193);
+        assert_eq!(refinement.as_slice()[0], 6);
+        for (range, expected) in [
+            (1..33, 12),
+            (33..65, 13),
+            (65..97, 14),
+            (97..129, 15),
+            (129..161, 16),
+            (161..193, 17),
+        ] {
+            assert!(
+                refinement.as_slice()[range]
+                    .iter()
+                    .all(|byte| *byte == expected)
+            );
+        }
+    }
+
+    #[test]
+    fn refinement_truncation_order_is_fail_closed_at_untruncated_zero() {
+        assert_eq!(truncation_refinement_progress(0, 0), Some(false));
+        assert_eq!(truncation_refinement_progress(0, 1), None);
+        assert_eq!(truncation_refinement_progress(2, 1), None);
+        assert_eq!(truncation_refinement_progress(2, 2), Some(false));
+        assert_eq!(truncation_refinement_progress(2, 3), Some(true));
+        assert_eq!(truncation_refinement_progress(2, 0), Some(true));
     }
 
     #[test]
@@ -2122,6 +2665,800 @@ mod tests {
                 compose_derived_morphisms_v1(&mixed, &wrong_chart, cx),
                 Err(DerivedMorphismErrorV1::CompositionChartMismatch)
             );
+        });
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // Full three-level refinement law and retained-lineage fixture.
+    fn finite_complex_refinements_compose_as_associative_typed_paths() {
+        with_cx(false, |cx| {
+            let charts = [chart(190, 2, 2, 21, 1.0)];
+            let x_complexes = [complex(
+                200,
+                210,
+                charts[0].id,
+                DerivedComplexRoleV1::Tangent,
+                &[(0, 1, 21), (1, 1, 22)],
+                2,
+            )];
+            let y_complexes = [complex(
+                201,
+                211,
+                charts[0].id,
+                DerivedComplexRoleV1::Tangent,
+                &[(0, 2, 21), (1, 1, 22)],
+                2,
+            )];
+            let z_complexes = [complex(
+                202,
+                212,
+                charts[0].id,
+                DerivedComplexRoleV1::Tangent,
+                &[(0, 2, 21), (1, 2, 22)],
+                3,
+            )];
+            let w_complexes = [complex(
+                203,
+                213,
+                charts[0].id,
+                DerivedComplexRoleV1::Tangent,
+                &[(-1, 1, 23), (0, 2, 21), (1, 2, 22)],
+                0,
+            )];
+            let x = endpoint_with_parts(220, &charts, &x_complexes);
+            let y = endpoint_with_parts(221, &charts, &y_complexes);
+            let z = endpoint_with_parts(222, &charts, &z_complexes);
+            let w = endpoint_with_parts(223, &charts, &w_complexes);
+            let f = admit_complex_refinement(
+                x,
+                y,
+                x_complexes[0].id,
+                y_complexes[0].id,
+                x_complexes[0].resolution.id,
+                y_complexes[0].resolution.id,
+                120,
+                ColorRank::Verified,
+                ColorRank::Validated,
+                cx,
+            );
+            let g = admit_complex_refinement(
+                y,
+                z,
+                y_complexes[0].id,
+                z_complexes[0].id,
+                y_complexes[0].resolution.id,
+                z_complexes[0].resolution.id,
+                124,
+                ColorRank::Validated,
+                ColorRank::Validated,
+                cx,
+            );
+            let h = admit_complex_refinement(
+                z,
+                w,
+                z_complexes[0].id,
+                w_complexes[0].id,
+                z_complexes[0].resolution.id,
+                w_complexes[0].resolution.id,
+                128,
+                ColorRank::Validated,
+                ColorRank::Estimated,
+                cx,
+            );
+
+            let fg = compose_derived_morphisms_v1(&f, &g, cx).expect("f then g");
+            let gh = compose_derived_morphisms_v1(&g, &h, cx).expect("g then h");
+            let left = compose_derived_morphisms_v1(&fg, &h, cx).expect("(fg)h");
+            let right = compose_derived_morphisms_v1(&f, &gh, cx).expect("f(gh)");
+            assert_eq!(left, right);
+            assert_eq!(
+                left.class(),
+                AdmittedDerivedMorphismClassV1::DeclaredComplexRefinementPath
+            );
+            assert_eq!(left.primitive_factors(), &[f.id(), g.id(), h.id()]);
+            assert_eq!(
+                left.primitive_path(),
+                &[
+                    f.primitive_path()[0],
+                    g.primitive_path()[0],
+                    h.primitive_path()[0],
+                ]
+            );
+            assert!(left.primitive_path().iter().all(|primitive| matches!(
+                primitive,
+                AdmittedDerivedPrimitiveV1::DeclaredComplexRefinement(_)
+            )));
+            let left_identity = admit_identity(x, cx);
+            let right_identity = admit_identity(w, cx);
+            assert_eq!(
+                compose_derived_morphisms_v1(&left_identity, &left, cx)
+                    .expect("refinement left identity"),
+                left
+            );
+            assert_eq!(
+                compose_derived_morphisms_v1(&left, &right_identity, cx)
+                    .expect("refinement right identity"),
+                left
+            );
+        });
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // Replay plus independent movement of every receipt selector.
+    fn complex_refinement_receipt_binds_typed_nominal_artifacts() {
+        with_cx(false, |cx| {
+            let charts = [chart(170, 2, 2, 17, 1.0)];
+            let source_complexes = [complex(
+                171,
+                173,
+                charts[0].id,
+                DerivedComplexRoleV1::Tangent,
+                &[(0, 1, 17), (1, 1, 18)],
+                1,
+            )];
+            let target_complexes = [complex(
+                172,
+                174,
+                charts[0].id,
+                DerivedComplexRoleV1::Tangent,
+                &[(0, 2, 17), (1, 1, 18)],
+                1,
+            )];
+            let source = endpoint_with_parts(175, &charts, &source_complexes);
+            let target = endpoint_with_parts(176, &charts, &target_complexes);
+            let base_ir = complex_refinement_ir(
+                source,
+                target,
+                source_complexes[0].id,
+                target_complexes[0].id,
+                source_complexes[0].resolution.id,
+                target_complexes[0].resolution.id,
+                50,
+                ColorRank::Validated,
+                ColorRank::Estimated,
+            );
+            let base = admit_between_endpoints(base_ir, source, target, cx)
+                .expect("base complex refinement");
+            let replay = admit_between_endpoints(base_ir, source, target, cx)
+                .expect("replayed complex refinement");
+            assert_eq!(base, replay);
+            assert_eq!(
+                base.primitive_path(),
+                &[AdmittedDerivedPrimitiveV1::DeclaredComplexRefinement(
+                    DeclaredComplexRefinementPrimitiveV1 {
+                        source_geometry: source.id,
+                        target_geometry: target.id,
+                        source_complex: source_complexes[0].id,
+                        target_complex: target_complexes[0].id,
+                        source_resolution: source_complexes[0].resolution.id,
+                        target_resolution: target_complexes[0].resolution.id,
+                        prolongation: DerivedComplexRefinementMapIdV1::from_bytes([51; 32]),
+                        commutation: DerivedWitnessIdV1::from_bytes([52; 32]),
+                    }
+                )]
+            );
+
+            let mut changed_prolongation = base_ir;
+            if let DerivedMorphismKindV1::DeclaredComplexRefinement { prolongation, .. } =
+                &mut changed_prolongation.kind
+            {
+                *prolongation = DerivedComplexRefinementMapIdV1::from_bytes([53; 32]);
+            }
+            let changed_prolongation =
+                admit_between_endpoints(changed_prolongation, source, target, cx)
+                    .expect("changed prolongation remains a declaration");
+            assert_ne!(base.id(), changed_prolongation.id());
+
+            let mut changed_commutation = base_ir;
+            if let DerivedMorphismKindV1::DeclaredComplexRefinement { commutation, .. } =
+                &mut changed_commutation.kind
+            {
+                *commutation = DerivedWitnessIdV1::from_bytes([54; 32]);
+            }
+            let changed_commutation =
+                admit_between_endpoints(changed_commutation, source, target, cx)
+                    .expect("changed commutation remains a declaration");
+            assert_ne!(base.id(), changed_commutation.id());
+
+            let mut changed_source_complex = source_complexes[0].clone();
+            changed_source_complex.id = complex_id(177);
+            let changed_source_complexes = [changed_source_complex];
+            let changed_source = endpoint_with_parts(175, &charts, &changed_source_complexes);
+            let mut changed_source_complex_ir = base_ir;
+            if let DerivedMorphismKindV1::DeclaredComplexRefinement { source_complex, .. } =
+                &mut changed_source_complex_ir.kind
+            {
+                *source_complex = changed_source_complexes[0].id;
+            }
+            let changed_source_complex =
+                admit_between_endpoints(changed_source_complex_ir, changed_source, target, cx)
+                    .expect("changed source complex remains a declaration");
+            assert_ne!(base.id(), changed_source_complex.id());
+
+            let mut changed_target_complex = target_complexes[0].clone();
+            changed_target_complex.id = complex_id(178);
+            let changed_target_complexes = [changed_target_complex];
+            let changed_target = endpoint_with_parts(176, &charts, &changed_target_complexes);
+            let mut changed_target_complex_ir = base_ir;
+            if let DerivedMorphismKindV1::DeclaredComplexRefinement { target_complex, .. } =
+                &mut changed_target_complex_ir.kind
+            {
+                *target_complex = changed_target_complexes[0].id;
+            }
+            let changed_target_complex =
+                admit_between_endpoints(changed_target_complex_ir, source, changed_target, cx)
+                    .expect("changed target complex remains a declaration");
+            assert_ne!(base.id(), changed_target_complex.id());
+
+            let mut changed_source_resolution = source_complexes[0].clone();
+            changed_source_resolution.resolution.id = resolution_id(179);
+            let changed_source_resolutions = [changed_source_resolution];
+            let changed_source = endpoint_with_parts(175, &charts, &changed_source_resolutions);
+            let mut changed_source_resolution_ir = base_ir;
+            if let DerivedMorphismKindV1::DeclaredComplexRefinement {
+                source_resolution, ..
+            } = &mut changed_source_resolution_ir.kind
+            {
+                *source_resolution = changed_source_resolutions[0].resolution.id;
+            }
+            let changed_source_resolution =
+                admit_between_endpoints(changed_source_resolution_ir, changed_source, target, cx)
+                    .expect("changed source resolution remains a declaration");
+            assert_ne!(base.id(), changed_source_resolution.id());
+
+            let mut changed_target_resolution = target_complexes[0].clone();
+            changed_target_resolution.resolution.id = resolution_id(180);
+            let changed_target_resolutions = [changed_target_resolution];
+            let changed_target = endpoint_with_parts(176, &charts, &changed_target_resolutions);
+            let mut changed_target_resolution_ir = base_ir;
+            if let DerivedMorphismKindV1::DeclaredComplexRefinement {
+                target_resolution, ..
+            } = &mut changed_target_resolution_ir.kind
+            {
+                *target_resolution = changed_target_resolutions[0].resolution.id;
+            }
+            let changed_target_resolution =
+                admit_between_endpoints(changed_target_resolution_ir, source, changed_target, cx)
+                    .expect("changed target resolution remains a declaration");
+            assert_ne!(base.id(), changed_target_resolution.id());
+        });
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // One mutation table for selector and authority boundaries.
+    fn complex_refinement_refuses_missing_selectors_and_authority_laundering() {
+        with_cx(false, |cx| {
+            let charts = [chart(40, 2, 2, 4, 1.0)];
+            let source_complexes = [complex(
+                60,
+                80,
+                charts[0].id,
+                DerivedComplexRoleV1::Tangent,
+                &[(0, 1, 4), (1, 1, 5)],
+                1,
+            )];
+            let target_complexes = [complex(
+                61,
+                81,
+                charts[0].id,
+                DerivedComplexRoleV1::Tangent,
+                &[(0, 2, 4), (1, 1, 5)],
+                1,
+            )];
+            let source = endpoint_with_parts(90, &charts, &source_complexes);
+            let target = endpoint_with_parts(91, &charts, &target_complexes);
+            let base = complex_refinement_ir(
+                source,
+                target,
+                source_complexes[0].id,
+                target_complexes[0].id,
+                source_complexes[0].resolution.id,
+                target_complexes[0].resolution.id,
+                100,
+                ColorRank::Validated,
+                ColorRank::Estimated,
+            );
+
+            let mut unknown_complex = base;
+            if let DerivedMorphismKindV1::DeclaredComplexRefinement { source_complex, .. } =
+                &mut unknown_complex.kind
+            {
+                *source_complex = complex_id(62);
+            }
+            assert_eq!(
+                admit_between_endpoints(unknown_complex, source, target, cx),
+                Err(DerivedMorphismErrorV1::MissingComplex {
+                    field: "source-complex"
+                })
+            );
+
+            let mut unknown_target_complex = base;
+            if let DerivedMorphismKindV1::DeclaredComplexRefinement { target_complex, .. } =
+                &mut unknown_target_complex.kind
+            {
+                *target_complex = complex_id(62);
+            }
+            assert_eq!(
+                admit_between_endpoints(unknown_target_complex, source, target, cx),
+                Err(DerivedMorphismErrorV1::MissingComplex {
+                    field: "target-complex"
+                })
+            );
+
+            let mut wrong_resolution = base;
+            if let DerivedMorphismKindV1::DeclaredComplexRefinement {
+                source_resolution, ..
+            } = &mut wrong_resolution.kind
+            {
+                *source_resolution = resolution_id(82);
+            }
+            assert_eq!(
+                admit_between_endpoints(wrong_resolution, source, target, cx),
+                Err(DerivedMorphismErrorV1::ComplexRefinementMismatch {
+                    field: "source-resolution"
+                })
+            );
+
+            let mut wrong_target_resolution = base;
+            if let DerivedMorphismKindV1::DeclaredComplexRefinement {
+                target_resolution, ..
+            } = &mut wrong_target_resolution.kind
+            {
+                *target_resolution = resolution_id(82);
+            }
+            assert_eq!(
+                admit_between_endpoints(wrong_target_resolution, source, target, cx),
+                Err(DerivedMorphismErrorV1::ComplexRefinementMismatch {
+                    field: "target-resolution"
+                })
+            );
+
+            let mut zero_complex = base;
+            if let DerivedMorphismKindV1::DeclaredComplexRefinement { source_complex, .. } =
+                &mut zero_complex.kind
+            {
+                *source_complex = complex_id(0);
+            }
+            assert_eq!(
+                admit_between_endpoints(zero_complex, source, target, cx),
+                Err(DerivedMorphismErrorV1::MissingIdentity {
+                    field: "source-complex"
+                })
+            );
+
+            let mut zero_target_complex = base;
+            if let DerivedMorphismKindV1::DeclaredComplexRefinement { target_complex, .. } =
+                &mut zero_target_complex.kind
+            {
+                *target_complex = complex_id(0);
+            }
+            assert_eq!(
+                admit_between_endpoints(zero_target_complex, source, target, cx),
+                Err(DerivedMorphismErrorV1::MissingIdentity {
+                    field: "target-complex"
+                })
+            );
+
+            let mut zero_source_resolution = base;
+            if let DerivedMorphismKindV1::DeclaredComplexRefinement {
+                source_resolution, ..
+            } = &mut zero_source_resolution.kind
+            {
+                *source_resolution = resolution_id(0);
+            }
+            assert_eq!(
+                admit_between_endpoints(zero_source_resolution, source, target, cx),
+                Err(DerivedMorphismErrorV1::MissingIdentity {
+                    field: "source-resolution"
+                })
+            );
+
+            let mut zero_target_resolution = base;
+            if let DerivedMorphismKindV1::DeclaredComplexRefinement {
+                target_resolution, ..
+            } = &mut zero_target_resolution.kind
+            {
+                *target_resolution = resolution_id(0);
+            }
+            assert_eq!(
+                admit_between_endpoints(zero_target_resolution, source, target, cx),
+                Err(DerivedMorphismErrorV1::MissingIdentity {
+                    field: "target-resolution"
+                })
+            );
+
+            let mut zero_prolongation = base;
+            if let DerivedMorphismKindV1::DeclaredComplexRefinement { prolongation, .. } =
+                &mut zero_prolongation.kind
+            {
+                *prolongation = DerivedComplexRefinementMapIdV1::from_bytes([0; 32]);
+            }
+            assert_eq!(
+                admit_between_endpoints(zero_prolongation, source, target, cx),
+                Err(DerivedMorphismErrorV1::MissingIdentity {
+                    field: "complex-refinement-prolongation"
+                })
+            );
+
+            let mut zero_commutation = base;
+            if let DerivedMorphismKindV1::DeclaredComplexRefinement { commutation, .. } =
+                &mut zero_commutation.kind
+            {
+                *commutation = DerivedWitnessIdV1::from_bytes([0; 32]);
+            }
+            assert_eq!(
+                admit_between_endpoints(zero_commutation, source, target, cx),
+                Err(DerivedMorphismErrorV1::MissingIdentity {
+                    field: "complex-refinement-commutation"
+                })
+            );
+
+            let mut zero_no_claim = base;
+            if let DerivedEquivalenceBoundaryV1::NoClaim { artifact } =
+                &mut zero_no_claim.equivalence
+            {
+                *artifact = DerivedNoClaimIdV1::from_bytes([0; 32]);
+            }
+            assert_eq!(
+                admit_between_endpoints(zero_no_claim, source, target, cx),
+                Err(DerivedMorphismErrorV1::MissingIdentity {
+                    field: "no-equivalence-claim"
+                })
+            );
+
+            let mut identity_evidence = base;
+            identity_evidence.evidence = DerivedEvidenceTransportV1::Identity;
+            assert_eq!(
+                admit_between_endpoints(identity_evidence, source, target, cx),
+                Err(DerivedMorphismErrorV1::EvidenceOrientationMismatch)
+            );
+
+            let mut laundering = base;
+            laundering.equivalence = DerivedEquivalenceBoundaryV1::IdentityOnly;
+            assert_eq!(
+                admit_between_endpoints(laundering, source, target, cx),
+                Err(DerivedMorphismErrorV1::EquivalenceLaundering)
+            );
+        });
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // Independent mutations for every rank-envelope rule.
+    fn complex_refinement_refuses_role_chart_and_shape_regressions() {
+        with_cx(false, |cx| {
+            let charts = [chart(41, 2, 2, 6, 1.0)];
+            let source_complexes = [complex(
+                70,
+                90,
+                charts[0].id,
+                DerivedComplexRoleV1::Tangent,
+                &[(0, 2, 6), (1, 1, 7)],
+                2,
+            )];
+            let source = endpoint_with_parts(110, &charts, &source_complexes);
+
+            let wrong_role = [complex(
+                71,
+                91,
+                charts[0].id,
+                DerivedComplexRoleV1::Cotangent,
+                &[(0, 3, 6), (1, 1, 7)],
+                2,
+            )];
+            let wrong_role_target = endpoint_with_parts(111, &charts, &wrong_role);
+            assert_eq!(
+                try_complex_refinement(
+                    source,
+                    wrong_role_target,
+                    &source_complexes[0],
+                    &wrong_role[0],
+                    cx,
+                ),
+                Err(DerivedMorphismErrorV1::ComplexRefinementMismatch {
+                    field: "complex-role"
+                })
+            );
+
+            let other_charts = [chart(42, 2, 2, 6, 1.0)];
+            let wrong_chart = [complex(
+                72,
+                92,
+                other_charts[0].id,
+                DerivedComplexRoleV1::Tangent,
+                &[(0, 3, 6), (1, 1, 7)],
+                2,
+            )];
+            let wrong_chart_target = endpoint_with_parts(112, &other_charts, &wrong_chart);
+            assert_eq!(
+                try_complex_refinement(
+                    source,
+                    wrong_chart_target,
+                    &source_complexes[0],
+                    &wrong_chart[0],
+                    cx,
+                ),
+                Err(DerivedMorphismErrorV1::ComplexRefinementMismatch {
+                    field: "complex-chart"
+                })
+            );
+
+            let mut changed_chart = charts[0].clone();
+            changed_chart.coordinates.scale_to_canonical = 2.0;
+            let changed_charts = [changed_chart];
+            let changed_chart_complexes = [complex(
+                73,
+                93,
+                charts[0].id,
+                DerivedComplexRoleV1::Tangent,
+                &[(0, 3, 6), (1, 1, 7)],
+                2,
+            )];
+            let changed_chart_target =
+                endpoint_with_parts(113, &changed_charts, &changed_chart_complexes);
+            assert_eq!(
+                try_complex_refinement(
+                    source,
+                    changed_chart_target,
+                    &source_complexes[0],
+                    &changed_chart_complexes[0],
+                    cx,
+                ),
+                Err(DerivedMorphismErrorV1::ComplexRefinementMismatch {
+                    field: "chart-semantics"
+                })
+            );
+
+            for (target_complex, expected_field) in [
+                (
+                    complex(
+                        74,
+                        94,
+                        charts[0].id,
+                        DerivedComplexRoleV1::Tangent,
+                        &[(0, 1, 6), (1, 1, 7)],
+                        2,
+                    ),
+                    "degree-rank",
+                ),
+                (
+                    complex(
+                        75,
+                        95,
+                        charts[0].id,
+                        DerivedComplexRoleV1::Tangent,
+                        &[(0, 3, 8), (1, 1, 7)],
+                        2,
+                    ),
+                    "degree-quantity",
+                ),
+                (
+                    complex(
+                        76,
+                        96,
+                        charts[0].id,
+                        DerivedComplexRoleV1::Tangent,
+                        &[(0, 3, 6)],
+                        2,
+                    ),
+                    "degree-coverage",
+                ),
+                (
+                    complex(
+                        67,
+                        87,
+                        charts[0].id,
+                        DerivedComplexRoleV1::Tangent,
+                        &[(1, 3, 6), (2, 1, 7)],
+                        2,
+                    ),
+                    "degree-coverage",
+                ),
+                (
+                    complex(
+                        77,
+                        97,
+                        charts[0].id,
+                        DerivedComplexRoleV1::Tangent,
+                        &[(0, 2, 6), (1, 1, 7)],
+                        2,
+                    ),
+                    "strict-progress",
+                ),
+                (
+                    complex(
+                        78,
+                        98,
+                        charts[0].id,
+                        DerivedComplexRoleV1::Tangent,
+                        &[(-1, 0, 8), (0, 2, 6), (1, 1, 7)],
+                        2,
+                    ),
+                    "strict-progress",
+                ),
+                (
+                    complex(
+                        79,
+                        99,
+                        charts[0].id,
+                        DerivedComplexRoleV1::Tangent,
+                        &[(0, 3, 6), (1, 1, 7)],
+                        1,
+                    ),
+                    "truncation-policy",
+                ),
+            ] {
+                let target_complexes = [target_complex];
+                let target = endpoint_with_parts(114, &charts, &target_complexes);
+                assert_eq!(
+                    try_complex_refinement(
+                        source,
+                        target,
+                        &source_complexes[0],
+                        &target_complexes[0],
+                        cx,
+                    ),
+                    Err(DerivedMorphismErrorV1::ComplexRefinementMismatch {
+                        field: expected_field
+                    })
+                );
+            }
+
+            for (seed, resolution_seed, truncation_order) in [(68, 88, 3), (69, 89, 0)] {
+                let target_complexes = [complex(
+                    seed,
+                    resolution_seed,
+                    charts[0].id,
+                    DerivedComplexRoleV1::Tangent,
+                    &[(0, 2, 6), (1, 1, 7)],
+                    truncation_order,
+                )];
+                let target = endpoint_with_parts(115, &charts, &target_complexes);
+                assert!(
+                    try_complex_refinement(
+                        source,
+                        target,
+                        &source_complexes[0],
+                        &target_complexes[0],
+                        cx,
+                    )
+                    .is_ok(),
+                    "truncation-only improvement should admit"
+                );
+            }
+
+            let trailing_degree = [complex(
+                66,
+                86,
+                charts[0].id,
+                DerivedComplexRoleV1::Tangent,
+                &[(0, 2, 6), (1, 1, 7), (2, 1, 8)],
+                2,
+            )];
+            let trailing_degree_target = endpoint_with_parts(116, &charts, &trailing_degree);
+            assert!(
+                try_complex_refinement(
+                    source,
+                    trailing_degree_target,
+                    &source_complexes[0],
+                    &trailing_degree[0],
+                    cx,
+                )
+                .is_ok(),
+                "positive trailing degree should establish strict progress"
+            );
+        });
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // Exact homogeneous and heterogeneous seam fixture.
+    fn complex_refinement_seams_survive_heterogeneous_parenthesization() {
+        with_cx(false, |cx| {
+            let charts = [chart(150, 2, 2, 15, 1.0)];
+            let x_complexes = [complex(
+                151,
+                160,
+                charts[0].id,
+                DerivedComplexRoleV1::Tangent,
+                &[(0, 1, 15), (1, 1, 16)],
+                1,
+            )];
+            let y_complexes = [
+                complex(
+                    152,
+                    161,
+                    charts[0].id,
+                    DerivedComplexRoleV1::Tangent,
+                    &[(0, 2, 15), (1, 1, 16)],
+                    1,
+                ),
+                complex(
+                    153,
+                    162,
+                    charts[0].id,
+                    DerivedComplexRoleV1::Tangent,
+                    &[(0, 2, 15), (1, 1, 16)],
+                    1,
+                ),
+            ];
+            let z_complexes = [complex(
+                154,
+                163,
+                charts[0].id,
+                DerivedComplexRoleV1::Tangent,
+                &[(0, 2, 15), (1, 2, 16)],
+                1,
+            )];
+            let w = endpoint(159);
+            let x = endpoint_with_parts(155, &charts, &x_complexes);
+            let y = endpoint_with_parts(156, &charts, &y_complexes);
+            let z = endpoint_with_parts(157, &charts, &z_complexes);
+            let strict = admit_strict(w, x, 48, ColorRank::Verified, ColorRank::Verified, cx);
+            let f = admit_complex_refinement(
+                x,
+                y,
+                x_complexes[0].id,
+                y_complexes[0].id,
+                x_complexes[0].resolution.id,
+                y_complexes[0].resolution.id,
+                40,
+                ColorRank::Verified,
+                ColorRank::Validated,
+                cx,
+            );
+            let good = admit_complex_refinement(
+                y,
+                z,
+                y_complexes[0].id,
+                z_complexes[0].id,
+                y_complexes[0].resolution.id,
+                z_complexes[0].resolution.id,
+                44,
+                ColorRank::Validated,
+                ColorRank::Estimated,
+                cx,
+            );
+            let wrong = admit_complex_refinement(
+                y,
+                z,
+                y_complexes[1].id,
+                z_complexes[0].id,
+                y_complexes[1].resolution.id,
+                z_complexes[0].resolution.id,
+                52,
+                ColorRank::Validated,
+                ColorRank::Estimated,
+                cx,
+            );
+            assert_eq!(
+                compose_derived_morphisms_v1(&f, &wrong, cx),
+                Err(DerivedMorphismErrorV1::CompositionRefinementMismatch)
+            );
+
+            let mixed_prefix =
+                compose_derived_morphisms_v1(&strict, &f, cx).expect("strict then refinement");
+            assert_eq!(
+                compose_derived_morphisms_v1(&mixed_prefix, &wrong, cx),
+                Err(DerivedMorphismErrorV1::CompositionRefinementMismatch)
+            );
+            let left = compose_derived_morphisms_v1(&mixed_prefix, &good, cx)
+                .expect("(strict-refinement)-refinement");
+            let refinement_path =
+                compose_derived_morphisms_v1(&f, &good, cx).expect("refinement path");
+            let right = compose_derived_morphisms_v1(&strict, &refinement_path, cx)
+                .expect("strict-(refinement-refinement)");
+            assert_eq!(left, right);
+            assert_eq!(
+                left.class(),
+                AdmittedDerivedMorphismClassV1::HeterogeneousPath
+            );
+            assert!(matches!(
+                left.primitive_path(),
+                [
+                    AdmittedDerivedPrimitiveV1::Strict { .. },
+                    AdmittedDerivedPrimitiveV1::DeclaredComplexRefinement(_),
+                    AdmittedDerivedPrimitiveV1::DeclaredComplexRefinement(_)
+                ]
+            ));
         });
     }
 

@@ -169,6 +169,18 @@ fs-ivl, fs-alloc, fs-obs, fs-sparse.
   primitive path. Mixed generic-strict/chart-map composition produces a
   `HeterogeneousPath` without erasing primitive family or endpoints; any two
   adjacent chart-map primitives still require an exact chart seam.
+  `DeclaredComplexRefinement` is a coarse-source to refined-target finite-
+  complex rank-envelope declaration. It binds exact source/target complex and
+  resolution IDs plus nominal aggregate prolongation and differential-
+  commutation artifacts. Admission resolves both complexes in their exact
+  endpoint objects, requires equal roles and an exactly unchanged chart
+  presentation, covers every source degree with the same quantity and no rank
+  decrease, and requires strict progress through positive-rank degree growth,
+  degreewise rank growth, higher positive truncation order, or removal of
+  truncation. An untruncated source cannot regress to a truncated target.
+  Homogeneous refinement paths compose only across exact middle complex and
+  resolution IDs; the same seam remains enforced when a refinement is adjacent
+  to another refinement inside a heterogeneous path.
   Evidence transport is explicitly contravariant restriction or covariant
   balance corestriction and binds exact input/output geometry identities plus
   nominal caller-declared input/output evidence-artifact identities and ranks.
@@ -177,9 +189,10 @@ fs-ivl, fs-alloc, fs-obs, fs-sparse.
   identity/rank seam, flattens primitive factors and no-equivalence artifacts in
   semantic order, and produces an associative content-addressed receipt with
   exact endpoint identities and ordered typed primitive lineage. Homogeneous
-  strict and chart composites retain their existing class encoding; a distinct
-  heterogeneous composite tag plus the flattened primitive-factor identities
-  binds mixed-family order. Immediate composite operand IDs are intentionally
+  strict, chart, and complex-refinement composites retain family-specific class
+  encoding; a distinct heterogeneous composite tag plus the flattened
+  primitive-factor identities binds mixed-family order. Immediate composite
+  operand IDs are intentionally
   not encoded because that would make the receipt depend on parenthesization.
   Only an identity arrow carries identity equivalence; every nonidentity
   primitive/composite retains explicit no-equivalence artifacts. The evidence
@@ -187,9 +200,9 @@ fs-ivl, fs-alloc, fs-obs, fs-sparse.
   declarations with zero payload authority: they do not authenticate evidence,
   establish payload preservation or validity-domain inclusion, prove theorem
   truth, or establish physical equivalence. Invertible chart transitions,
-  refinements, inclusions, quasi-isomorphism witnesses, stratified/constructible
-  maps, spans/correspondences, and L6 Machine-IR crosswalks remain typed RD.1b
-  follow-ups rather than being represented as strict maps.
+  geometric/stratified refinements, inclusions, quasi-isomorphism witnesses,
+  constructible maps, spans/correspondences, and L6 Machine-IR crosswalks remain
+  typed RD.1b follow-ups rather than being represented as strict maps.
 
 - `exit_path` module (RD.X1, `[M]`, behind `derived-geometry`) admits a bounded,
   executable statement language for maximal exit/entrance-path approximation
@@ -506,6 +519,11 @@ fs-ivl, fs-alloc, fs-obs, fs-sparse.
    paths additionally require an exact chart seam. Mixed strict/chart paths
    retain one ordered typed primitive sequence, and adjacent chart primitives
    preserve the same exact seam obligation inside a heterogeneous path.
+   Primitive finite-complex refinement receipts additionally bind exact
+   source/target complex and resolution IDs plus nominal prolongation and
+   commutation IDs. Homogeneous refinement paths require exact complex and
+   resolution seams; heterogeneous paths preserve that obligation for adjacent
+   refinement primitives.
 
 ## Error model
 Structured teaching values throughout: `ConvertDiag` (ranked fixes),
@@ -528,11 +546,11 @@ cross-chart references, mixed units/frames, finite-complex and stratification
 defects, resource exhaustion, cancellation, and canonical identity failures
 publish no admitted token.
 RD.1b uses `DerivedMorphismErrorV1` for schema/endpoint/convention defects,
-model-version drift, chart ownership/dimension/unit defects, evidence
-orientation, missing nominal artifact IDs, declared-rank strengthening,
-equivalence laundering, typed path-family/chart/evidence seams, bounded lineage,
-allocation, cancellation, and canonical identity failures. Refusal publishes no
-admitted morphism.
+model-version drift, chart and complex ownership/shape defects, structural rank-
+envelope or truncation regression, evidence orientation, missing nominal
+artifact IDs, declared-rank strengthening, equivalence laundering, typed chart/
+refinement/evidence seams, bounded lineage, allocation, cancellation, and
+canonical identity failures. Refusal publishes no admitted morphism.
 
 ## Determinism class
 Deterministic: seeded sampling, insertion-ordered charts, canonical JSON
@@ -554,6 +572,10 @@ chart, nominal overlap, and nominal map IDs under a distinct family tag.
 Heterogeneous composites use a distinct class tag while the ordered primitive
 factor IDs bind every family-specific nominal ID and structural field without
 encoding parenthesized intermediate operands or authenticating artifact payloads.
+Finite-complex refinement primitives use a distinct tag and bind source/target
+complex, resolution, prolongation, and commutation IDs; homogeneous composites
+use another distinct tag while flattened factors preserve parenthesization-
+independent identity.
 
 ## Cancellation behavior
 Chart evaluation and production sampling paths take `&Cx`.
@@ -575,10 +597,11 @@ streaming identity encoder, and immediately before publication. Cancellation
 returns a stage and completed-work count and cannot expose a partial admitted
 object.
 RD.1b admission polls at entry, before canonical identity construction, inside
-the streaming encoder, and immediately before publication. Composition polls at
-entry, at a fixed stride while copying bounded typed-primitive, factor, and
-no-claim lineage, inside identity construction, and before publication.
-Cancellation exposes no partial admitted morphism.
+finite-complex refinement rank-envelope scans, inside the streaming encoder, and
+immediately before publication. Composition polls at entry, at a fixed stride
+while copying bounded typed-primitive, factor, and no-claim lineage, inside
+identity construction, and before publication. Cancellation exposes no partial
+admitted morphism.
 RD.X1 statement admission polls before validation, once for every derived
 theorem-lattice node, before identity construction, and inside the streaming
 encoder. Its falsifier set and truncation lattice have hard versioned caps;
@@ -655,6 +678,10 @@ quantity/scale mutations, typed-ID-bound receipt replay and public primitive
 retention, homogeneous associativity, exact chart seams, identity neutrality,
 mixed-family associativity, typed primitive order, and chart-seam retention
 through heterogeneous paths.
+Finite-complex refinement coverage adds exact selector/resolution ownership,
+role/chart/rank/quantity/truncation/progress refusals, nominal-artifact receipt
+movement, homogeneous associativity and identity, exact refinement seams, and
+seam retention across heterogeneous parenthesization.
 `tests/exit_path.rs` supplies RD.X1 G0/G3 examples and a bounded-cancellation
 regression: regular-cell poset sufficiency, cone/cusp groupoid-enriched
 one-category fallback, circular-stratum local systems, finite-versus-full
@@ -743,11 +770,20 @@ claim those stronger G4/G5 results.
   atlas compatibility, coordinate equivalence, or physical correspondence.
   Those require a separate scoped-equivalence receipt with independently
   checked inverse laws; `IdentityOnly` is refused for every declared chart map.
+- `DeclaredComplexRefinement` proves only a same-chart, structurally monotone
+  finite graded-rank/truncation envelope. It does not prove that the target is
+  geometrically or numerically finer; that prolongation exists, is linear,
+  injective, degree-preserving, or unit-preserving; that differentials commute;
+  or that exactness, cohomology, quasi-isomorphism, remainder inclusion, error
+  reduction, convergence, constraints, strata, physics, or evidence authority
+  are preserved. Nonzero prolongation and commutation IDs name nominal artifacts
+  only, and `IdentityOnly` is refused.
 - The v1 sublanguage containing identities, generic strict maps, and declared
-  chart maps closes mixed map-family composition through ordered typed
-  heterogeneous paths whenever its exact geometry, evidence, and adjacent-chart
-  seams pass. This removes the map-family closure gap but does not promote the
-  full RD.1b category claim. Refinements, inclusions, correspondences, scoped
+  chart maps and finite-complex refinements closes mixed map-family composition
+  through ordered typed heterogeneous paths whenever its exact geometry,
+  evidence, adjacent-chart, and adjacent-refinement seams pass. This removes the
+  implemented-family closure gap but does not promote the full RD.1b category
+  claim. Inclusions, geometric/stratified refinements, correspondences, scoped
   equivalences, and crosswalks still need distinct primitives and their own seam
   laws before that broader claim is promotable.
 - V1 refuses unbounded and infinite-dimensional local models, opaque external
