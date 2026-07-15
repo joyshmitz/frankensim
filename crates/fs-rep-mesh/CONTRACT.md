@@ -1,8 +1,9 @@
 # CONTRACT: fs-rep-mesh
 
 ## Purpose and layer
-Mesh charts (plan §7.2): half-edge surfaces with an edit core, oriented
-tet complexes with exact-arithmetic incidence (the pre-FEEC δδ = 0
+Mesh charts (plan §7.2): half-edge surfaces with an edit core, genuine
+oriented 2-D triangle complexes and oriented tet complexes with
+exact-arithmetic incidence (the pre-FEEC δδ = 0
 sanity), generalized-winding-number robustness for polygon soup, a
 BVH-accelerated signed-distance chart with watertight raycasts, and the
 repair suite with structured receipts. Layer: L2. Depends on fs-geom,
@@ -18,6 +19,30 @@ fs-exec, fs-evidence, fs-alloc, fs-obs.
 - `TetComplex` — canonical sorted edge/face tables (BTreeMap order,
   deterministic) and signed `Incidence` operators d0/d1/d2 over INTEGER
   cochains; `HexComplex` is storage-only (no-claim below).
+- `TriComplex2` — an admitted oriented 2-D triangle cell complex, distinct
+  from a surface half-edge mesh. It retains explicit topological dimension 2,
+  embedding dimension 2, oriented face rows, canonical edges, exact integer
+  d0/d1, caller-owned stable vertex keys, typed vertex/edge/face `EntityId`s,
+  and prevalidated cell measures. Construction rejects malformed indices,
+  repeated keys/cells, non-manifold or same-direction shared edges, non-finite
+  coordinates, negative axisymmetric radii, degenerate faces, and
+  non-representable measures.
+- `TriComplex2LineageId` / `TriFeatureId` — schema- and role-typed entity
+  identities from `fs-blake3`. A lineage binds an exact caller-owned namespace;
+  a feature binds that lineage, its topological dimension, and the canonical
+  set of stable vertex keys. Storage order, coordinates, face order, and face
+  orientation are deliberately not feature-identity inputs. Parsing or digest
+  equality supplies no authority or provenance claim.
+- `TraceMap2` / `TraceEdge2` — deterministic selected-side trace extraction.
+  Exact d1 coefficients cancel selected-selected edges; selected-unselected
+  edges become interface traces, and the complete face selection yields the
+  outer boundary. Trace vertices and edges carry explicit parent maps and an
+  exact trace-local d0.
+- `Metric2::Planar` / `Metric2::Axisymmetric` — explicit measure metadata.
+  Planar faces integrate area times a finite positive thickness. Axisymmetric
+  coordinates are `(radius, z)` and integrate a finite positive sweep of at
+  most one turn using exact linear-radius simplex quadrature; this weighting
+  does not change the stored complex's topological or embedding dimension.
 - `Soup` / `triangle_winding` (van Oosterom–Strackee) / `winding_exact` /
   `WindingOctree` — the Barill-style dipole hierarchy (β accuracy knob,
   area-weighted normal moments, exact leaves); octree stores indices
@@ -144,10 +169,18 @@ fs-exec, fs-evidence, fs-alloc, fs-obs.
     chart evaluation and returned with completed triangle/evaluation progress.
     Existing sphere/box exact-distance certificate coverage remains in
     rmesh-008.
+11. The 2-D complex battery (rmesh-011) checks d1∘d0 = 0 exactly over seeded
+    admissible fans, refuses a flipped shared-edge orientation, matches
+    hand-computed whole-boundary and selected-face traces, preserves vertex and
+    surviving boundary-edge typed IDs across append-only refinement, and
+    reproduces the closed-form full-turn axisymmetric triangle measure.
 
 ## Error model
-Structured teaching errors (`MeshBuildError`, `ContourError`,
-`BracketCertificateError`, and wrapped `SamplingDomainError`); contour errors
+Structured teaching errors (`MeshBuildError`, `TriComplex2Error`,
+`Metric2Error`, `ContourError`, `BracketCertificateError`, and wrapped
+`SamplingDomainError`). TriComplex2 errors retain the offending cell, edge,
+face pair, coordinate bits, trace selection, or canonical-identity refusal;
+no partial complex or feature table is published. Contour errors
 name invalid spacing/regularization, excessive resolution, checked
 grid/coordinate overflow, non-finite chart samples or gradients,
 non-representable derived arithmetic, cancellation, and empty zero sets.
@@ -159,8 +192,13 @@ distances; empty-soup handling is the caller's constructor discipline). No
 panics across the boundary.
 
 ## Determinism class
-Deterministic: BTreeMap orders, index-tie-broken BVH sorts, seeded
-batteries; no clocks, no addresses in results.
+Deterministic: BTreeMap/BTreeSet orders, index-tie-broken BVH sorts, seeded
+batteries; no clocks, no addresses in results. `TriComplex2` incidence and
+trace tables are integer and storage-deterministic. Typed feature IDs are
+bit-stable functions of the exact lineage ID, topological dimension, and
+canonical stable-key set; admissible refinements that retain those inputs do
+not move surviving IDs. Floating metric measures are deterministic exact-order
+f64 evaluations on one implementation/ISA, not cross-ISA bit claims.
 
 ## Cancellation behavior
 `MeshChart::eval` is bounded per query (BVH descent); batch consumers
@@ -183,8 +221,8 @@ None. `unsafe_code` denied workspace-wide.
 None. `[S]` solid-tier.
 
 ## Conformance tests
-tests/conformance.rs, cases rmesh-001..rmesh-010 (JSON-line verdicts;
-seeded cases carry seeds) covering invariants 1–9 with fs-obs-validated
+tests/conformance.rs, cases rmesh-001..rmesh-011 (JSON-line verdicts;
+seeded cases carry seeds) covering invariants 1–11 with fs-obs-validated
 evidence events (dipole error, repair receipts).
 
 ## No-claim boundaries
@@ -192,6 +230,20 @@ evidence events (dipole error, repair receipts).
   bead (wqd.7), which owns certified broad/narrow phases via fs-ivl.
 - `HexComplex` is storage only; its incidence operators land with
   fs-feec's tensor-product families.
+- `TriComplex2` v1 is straight-sided and simplicial. It does not certify a
+  curved-cell geometry, embedding injectivity, self-intersection freedom,
+  domain topology, mesh quality, material/formulation correctness, or a 2-D
+  FEEC mass matrix. The weighted-operator consumer owns those later claims.
+- Stable vertex keys and lineage namespaces are caller authority. Typed feature
+  hashes prevent role/schema confusion but do not prove that a key was minted
+  by machine IR, that two namespaces denote the same entity, or that a
+  refinement crosswalk is honest. Reindexing the convenience
+  `from_indexed_triangles` constructor moves keys; durable graphs must provide
+  explicit stable keys.
+- Axisymmetric v1 assumes the first coordinate is nonnegative radius and uses
+  the declared angular sweep. It does not certify an axis crossing, curved
+  meridian interpolation, orientation of a generated 3-D body, or the physical
+  applicability of an axisymmetric formulation.
 - Curvature via discrete operators (cotan/normal-cycle) is deferred to
   its first consumer, with convergence-class documentation there.
 - NO throughput claims (million-triangle dipole performance is the perf

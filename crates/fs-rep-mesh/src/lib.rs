@@ -6,6 +6,9 @@
 //! - [`TetComplex`]: oriented volume elements whose signed incidence
 //!   operators satisfy δδ = 0 EXACTLY (integer arithmetic) — the
 //!   pre-FEEC sanity that makes fs-feec's exact sequences possible;
+//! - [`TriComplex2`]: a genuine oriented 2-D complex with exact d1*d0,
+//!   typed stable feature IDs, selected-side trace maps, and explicit planar
+//!   or axisymmetric measure metadata;
 //! - [`Soup`] + generalized winding numbers ([`winding_exact`],
 //!   [`WindingOctree`]): robust inside/outside on broken input, with the
 //!   dipole octree's error MEASURED against exact;
@@ -30,7 +33,11 @@ pub mod shapes;
 mod winding;
 
 pub use chart::{Bvh, MeshChart, point_triangle_distance, ray_triangle_watertight};
-pub use complex::{HexComplex, Incidence, TetComplex};
+pub use complex::{
+    HexComplex, Incidence, Metric2, Metric2Error, TetComplex, TraceEdge2, TraceMap2, TriComplex2,
+    TriComplex2Error, TriComplex2LineageId, TriComplex2LineageSchema, TriFeatureId,
+    TriFeatureSchema, tri_complex2_lineage_id,
+};
 pub use contour::{
     BracketCertificateError, BracketEvidenceIssue, BracketFailure, BracketGeometryStage,
     BracketReport, ContourArithmeticStage, ContourError, ContourSampleStage, DC_MAX_CELLS_PER_AXIS,

@@ -12,10 +12,11 @@ use fs_geom::{
 };
 use fs_rep_mesh::{
     BracketCertificateError, BracketEvidenceIssue, ContourError, DC_MAX_CELLS_PER_AXIS, DcOptions,
-    HalfEdgeMesh, MeshChart, TetComplex, WindingOctree, bracket_certificate, dual_contour,
-    dual_contour_clipped, point_triangle_distance, ray_triangle_watertight, repair, shapes,
-    winding_exact,
+    HalfEdgeMesh, MeshChart, Metric2, TetComplex, TriComplex2, TriComplex2Error, WindingOctree,
+    bracket_certificate, dual_contour, dual_contour_clipped, point_triangle_distance,
+    ray_triangle_watertight, repair, shapes, tri_complex2_lineage_id, winding_exact,
 };
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 fn verdict(case: &str, pass: bool, detail: &str) {
@@ -596,6 +597,154 @@ fn rmesh_006_incidence_satisfies_dd_zero_and_rays_are_watertight() {
             "d1∘d0 = 0 and d2∘d1 = 0 EXACTLY on 5-tet cube + random fan (seed {SEED:#x}); \
              axis rays never leak through shared edges (center {through_center} hits, \
              off-center {through_offcenter}); chart raycast hits at analytic t=2"
+        ),
+    );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // One cross-cutting G0 complex/trace/metric battery.
+fn rmesh_011_tricomplex2_exact_trace_identity_and_metric_contract() {
+    const SEED: u64 = 0x1011_2026_0714_DD00;
+    let lineage = tri_complex2_lineage_id("rmesh-011/durable-machine-feature-lineage")
+        .expect("valid typed lineage");
+    let planar = Metric2::planar(1.0).expect("unit planar thickness");
+
+    // G0: deterministic admissible fans exercise d1*d0 exactly. A failing
+    // assertion names the fan, basis vertex, and complete integer chain.
+    let mut fan_count = 0usize;
+    let mut rng = Lcg(SEED);
+    for case in 0..64u64 {
+        let ring_len = 3 + rng.below(8) as u32;
+        let phase = core::f64::consts::TAU * rng.unit();
+        let mut vertices = vec![[0.0, 0.0]];
+        for index in 0..ring_len {
+            let theta = phase + core::f64::consts::TAU * f64::from(index) / f64::from(ring_len);
+            let radius = 0.75 + 0.5 * rng.unit();
+            vertices.push([radius * theta.cos(), radius * theta.sin()]);
+        }
+        let faces: Vec<[u32; 3]> = (0..ring_len)
+            .map(|index| [0, index + 1, (index + 1) % ring_len + 1])
+            .collect();
+        let keys: Vec<u64> = (0..vertices.len())
+            .map(|index| SEED.wrapping_add(index as u64).wrapping_add(case << 32))
+            .collect();
+        let complex = TriComplex2::from_triangles(lineage, vertices, keys, faces, planar)
+            .unwrap_or_else(|error| {
+                panic!("fan case {case}, ring {ring_len} construction refused: {error}")
+            });
+        let (d0, d1) = (complex.d0(), complex.d1());
+        for probe in 0..complex.vertices.len() {
+            let mut basis = vec![0i64; complex.vertices.len()];
+            basis[probe] = 1;
+            let first = d0.apply(&basis);
+            let chain = d1.apply(&first);
+            assert!(
+                chain.iter().all(|&coefficient| coefficient == 0),
+                "fan case {case}, ring {ring_len}, vertex basis {probe}: \
+                 d0={first:?}, d1*d0={chain:?}"
+            );
+        }
+        fan_count += 1;
+    }
+
+    let square_vertices = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+    let square_keys = vec![10, 20, 30, 40];
+    let square = TriComplex2::from_triangles(
+        lineage,
+        square_vertices.clone(),
+        square_keys.clone(),
+        vec![[0, 1, 2], [0, 2, 3]],
+        planar,
+    )
+    .expect("coherent square complex");
+    assert_eq!(square.topological_dimension(), 2);
+    assert_eq!(square.embedding_dimension(), 2);
+
+    // Hand-computed CCW outer trace; the selected-face trace also retains the
+    // diagonal as an interface edge.
+    let boundary = square.boundary_trace().expect("whole-complex trace");
+    let oriented: BTreeSet<[u32; 2]> = boundary
+        .edges
+        .iter()
+        .map(|edge| edge.oriented_vertices)
+        .collect();
+    assert_eq!(oriented, BTreeSet::from([[0, 1], [1, 2], [2, 3], [3, 0]]));
+    assert_eq!(boundary.vertices, vec![0, 1, 2, 3]);
+    assert!(
+        boundary
+            .d0
+            .apply(&[1, 1, 1, 1])
+            .iter()
+            .all(|&value| value == 0)
+    );
+    let selected = square.trace_for_faces([0]).expect("selected-face trace");
+    assert_eq!(selected.edges.len(), 3);
+    assert!(selected.edges.iter().any(|edge| {
+        square.edges[edge.global_edge] == [0, 2] && edge.oriented_vertices == [2, 0]
+    }));
+
+    let flipped = TriComplex2::from_triangles(
+        lineage,
+        square_vertices.clone(),
+        square_keys.clone(),
+        vec![[0, 1, 2], [0, 3, 2]],
+        planar,
+    );
+    assert!(matches!(
+        flipped,
+        Err(TriComplex2Error::IncoherentOrientation {
+            edge: [0, 2],
+            first_face: 0,
+            second_face: 1,
+        })
+    ));
+
+    // Refinement appends one stable key. Existing vertex IDs and boundary-edge
+    // IDs remain unchanged even though the face table is replaced.
+    let refined = TriComplex2::from_triangles(
+        lineage,
+        vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.5, 0.5]],
+        vec![10, 20, 30, 40, 50],
+        vec![[0, 1, 4], [1, 2, 4], [2, 3, 4], [3, 0, 4]],
+        planar,
+    )
+    .expect("coherent stable-key refinement");
+    assert_eq!(&square.vertex_ids()[..4], &refined.vertex_ids()[..4]);
+    for [a, b] in [[0, 1], [1, 2], [2, 3], [3, 0]] {
+        let coarse_edge = square.edge_index(a, b).expect("coarse boundary edge");
+        let refined_edge = refined.edge_index(a, b).expect("refined boundary edge");
+        assert_eq!(
+            square.edge_ids()[coarse_edge],
+            refined.edge_ids()[refined_edge],
+            "feature identity moved for preserved boundary edge {a}->{b}"
+        );
+    }
+
+    // Exact linear-radius quadrature over the meridian triangle:
+    // area=1/2, mean radius=4/3, full sweep=2π, hence volume=4π/3.
+    let axisymmetric = TriComplex2::from_triangles(
+        lineage,
+        vec![[1.0, 0.0], [2.0, 0.0], [1.0, 1.0]],
+        vec![101, 102, 103],
+        vec![[0, 1, 2]],
+        Metric2::axisymmetric(core::f64::consts::TAU).expect("full axisymmetric turn"),
+    )
+    .expect("axisymmetric metric fixture");
+    let measured = axisymmetric.face_measure(0).expect("face zero measure");
+    let expected = 4.0 * core::f64::consts::PI / 3.0;
+    assert!(
+        (measured - expected).abs() <= 8.0 * f64::EPSILON * expected,
+        "axisymmetric measure mismatch: measured={measured:.17e}, expected={expected:.17e}"
+    );
+
+    verdict(
+        "rmesh-011",
+        true,
+        &format!(
+            "{fan_count} seeded admissible fans satisfy d1*d0=0 exactly (seed {SEED:#x}); \
+             flipped adjacency refused; whole/subcomplex traces match hand orientation; \
+             vertex and boundary-edge EntityIds survive append-only refinement; \
+             full-turn axisymmetric triangle measure={measured:.17e}"
         ),
     );
 }
