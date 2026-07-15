@@ -254,9 +254,9 @@ impl EndpointWeightV1 {
 /// Explicit left/right endpoint convention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EndpointConventionV1 {
-    /// Weight assigned to a crossing at the initial parameter.
+    /// Weight assigned to the initial endpoint in the chosen orientation.
     pub left: EndpointWeightV1,
-    /// Weight assigned to a crossing at the final parameter.
+    /// Weight assigned to the final endpoint in the chosen orientation.
     pub right: EndpointWeightV1,
 }
 
@@ -366,17 +366,19 @@ pub fn derive_convention_transform_v1(
     endpoints: EndpointSignatureTraceV1,
 ) -> Result<SignedCountTransformV1, ConventionTransformErrorV1> {
     let sign_i64 = target.orientation.sign() * source.orientation.sign();
+    let (source_left, source_right) = canonical_endpoint_weights(source);
+    let (target_left, target_right) = canonical_endpoint_weights(target);
     let mut doubled_offset = 0_i64;
     for (source_weight, target_weight, signature, unresolved) in [
         (
-            source.endpoints.left,
-            target.endpoints.left,
+            source_left,
+            target_left,
             endpoints.left,
             ConventionTransformErrorV1::LeftEndpointUnresolved,
         ),
         (
-            source.endpoints.right,
-            target.endpoints.right,
+            source_right,
+            target_right,
             endpoints.right,
             ConventionTransformErrorV1::RightEndpointUnresolved,
         ),
@@ -396,6 +398,15 @@ pub fn derive_convention_transform_v1(
     }
     SignedCountTransformV1::new(map, sign_i64 as i8, doubled_offset)
         .ok_or(ConventionTransformErrorV1::Overflow)
+}
+
+fn canonical_endpoint_weights(
+    convention: SignedCountConventionV1,
+) -> (EndpointWeightV1, EndpointWeightV1) {
+    match convention.orientation {
+        CountOrientationV1::Positive => (convention.endpoints.left, convention.endpoints.right),
+        CountOrientationV1::Negative => (convention.endpoints.right, convention.endpoints.left),
+    }
 }
 
 /// Neutral-signature handling for the Krein count.
@@ -557,6 +568,15 @@ impl BridgeTheoremScopeV1 {
             Self::SpatialDynamicsEvans { .. } => 2,
             Self::MaximalMaslovKreinEvans { .. } => 3,
             Self::MachineInstabilityCorollary { .. } => 4,
+        }
+    }
+
+    const fn extension_rank(self) -> u8 {
+        match self {
+            Self::MachineInstabilityCorollary { .. } => 0,
+            Self::ClassicalFiniteHamiltonian { .. } => 1,
+            Self::PeriodicMonodromy { .. } | Self::SpatialDynamicsEvans { .. } => 2,
+            Self::MaximalMaslovKreinEvans { .. } => 3,
         }
     }
 }
@@ -1208,12 +1228,27 @@ pub enum BridgeValidationIssueV1 {
     },
     /// Duplicate stronger-to-weaker edge.
     DuplicateImplication,
+    /// An implication points from a lower extension scope to a higher one.
+    ImplicationScopeOrderMismatch {
+        /// Alleged stronger node.
+        stronger: BridgeTheoremNodeIdV1,
+        /// Alleged weaker node.
+        weaker: BridgeTheoremNodeIdV1,
+    },
     /// Implication graph contains a directed cycle.
     ImplicationCycle,
-    /// A maximal theorem exists but exposes no weaker node through an edge.
+    /// A non-refuted maximal theorem exposes no non-refuted weaker projection.
     MaximalNodeHasNoWeakerProjection {
         /// Affected maximal node.
         node: BridgeTheoremNodeIdV1,
+    },
+    /// A maximal node has no non-refuted branch of the named scope that reaches
+    /// a classical finite theorem.
+    MaximalProjectionCoverageMissing {
+        /// Affected maximal node.
+        node: BridgeTheoremNodeIdV1,
+        /// Missing periodic or spatial branch.
+        scope: &'static str,
     },
     /// Canonical identity construction failed.
     Identity(CanonicalError),
@@ -1351,14 +1386,14 @@ pub fn validate_bridge_lattice_v1(
         if node.hypotheses.len() > hypothesis_limit
             && oversized_hypotheses
                 .as_ref()
-                .is_none_or(|(id, _)| node.id < *id)
+                .is_none_or(|(id, found)| (node.id, node.hypotheses.len()) < (*id, *found))
         {
             oversized_hypotheses = Some((node.id, node.hypotheses.len()));
         }
         if node.falsifiers.len() > falsifier_limit
             && oversized_falsifiers
                 .as_ref()
-                .is_none_or(|(id, _)| node.id < *id)
+                .is_none_or(|(id, found)| (node.id, node.falsifiers.len()) < (*id, *found))
         {
             oversized_falsifiers = Some((node.id, node.falsifiers.len()));
         }
@@ -1382,12 +1417,26 @@ pub fn validate_bridge_lattice_v1(
         ));
     }
 
-    spec.nodes.sort_by_key(|node| *node.id.as_bytes());
     for node in &mut spec.nodes {
-        node.hypotheses.sort_by_key(|item| item.kind);
-        node.falsifiers.sort_by_key(|item| item.kind);
+        node.hypotheses.sort_by_cached_key(|item| {
+            let mut encoded = Vec::with_capacity(34);
+            push_hypothesis(&mut encoded, *item);
+            encoded
+        });
+        node.falsifiers.sort_by_cached_key(|item| {
+            let mut encoded = Vec::with_capacity(34);
+            push_falsifier(&mut encoded, *item);
+            encoded
+        });
     }
-    spec.implications.sort_by_key(implication_sort_key);
+    spec.nodes
+        .sort_by_cached_key(|node| (*node.id.as_bytes(), node_bytes(node)));
+    spec.implications.sort_by_cached_key(|implication| {
+        (
+            implication_sort_key(implication),
+            implication_bytes(implication),
+        )
+    });
 
     let mut issues = Vec::new();
     if spec.schema_version != BRIDGE_LATTICE_SCHEMA_VERSION_V1 {
@@ -1425,6 +1474,19 @@ pub fn validate_bridge_lattice_v1(
     let mut edges = BTreeSet::new();
     let mut adjacency: BTreeMap<BridgeTheoremNodeIdV1, Vec<BridgeTheoremNodeIdV1>> =
         BTreeMap::new();
+    let mut non_refuted_adjacency: BTreeMap<BridgeTheoremNodeIdV1, Vec<BridgeTheoremNodeIdV1>> =
+        BTreeMap::new();
+    let scopes_by_node: BTreeMap<_, _> = spec
+        .nodes
+        .iter()
+        .map(|node| (node.id, node.scope))
+        .collect();
+    let non_refuted_scopes: BTreeMap<_, _> = spec
+        .nodes
+        .iter()
+        .filter(|node| !node_is_refuted(node))
+        .map(|node| (node.id, node.scope))
+        .collect();
     for implication in &spec.implications {
         checkpoint(cx)?;
         if !node_ids.contains(&implication.stronger) || !node_ids.contains(&implication.weaker) {
@@ -1441,22 +1503,65 @@ pub fn validate_bridge_lattice_v1(
             issues.push(BridgeValidationIssueV1::DuplicateImplication);
             continue;
         }
+        let stronger_scope = scopes_by_node[&implication.stronger];
+        let weaker_scope = scopes_by_node[&implication.weaker];
+        let scope_order_valid = stronger_scope.extension_rank() >= weaker_scope.extension_rank();
+        if !scope_order_valid {
+            issues.push(BridgeValidationIssueV1::ImplicationScopeOrderMismatch {
+                stronger: implication.stronger,
+                weaker: implication.weaker,
+            });
+        }
         adjacency
             .entry(implication.stronger)
             .or_default()
             .push(implication.weaker);
+        if scope_order_valid
+            && !matches!(implication.state, BridgeImplicationStateV1::Refuted { .. })
+            && non_refuted_scopes.contains_key(&implication.stronger)
+            && non_refuted_scopes.contains_key(&implication.weaker)
+        {
+            non_refuted_adjacency
+                .entry(implication.stronger)
+                .or_default()
+                .push(implication.weaker);
+        }
     }
     if implication_cycle(&node_ids, &adjacency, cx)? {
         issues.push(BridgeValidationIssueV1::ImplicationCycle);
     }
+    let reaches_classical =
+        nodes_reaching_classical(&non_refuted_scopes, &non_refuted_adjacency, cx)?;
     for node in &spec.nodes {
-        if matches!(
+        let is_non_refuted_maximal = matches!(
             node.scope,
             BridgeTheoremScopeV1::MaximalMaslovKreinEvans { .. }
-        ) && adjacency.get(&node.id).is_none_or(Vec::is_empty)
+        ) && !node_is_refuted(node);
+        if is_non_refuted_maximal
+            && non_refuted_adjacency
+                .get(&node.id)
+                .is_none_or(Vec::is_empty)
         {
             issues
                 .push(BridgeValidationIssueV1::MaximalNodeHasNoWeakerProjection { node: node.id });
+        }
+        if is_non_refuted_maximal {
+            let direct_projections = non_refuted_adjacency
+                .get(&node.id)
+                .map_or(&[][..], Vec::as_slice);
+            for (branch_tag, scope) in [(1, "periodic-monodromy"), (2, "spatial-dynamics-Evans")] {
+                if !direct_projections.iter().any(|projection| {
+                    reaches_classical.contains(projection)
+                        && scopes_by_node
+                            .get(projection)
+                            .is_some_and(|scope| scope.tag() == branch_tag)
+                }) {
+                    issues.push(BridgeValidationIssueV1::MaximalProjectionCoverageMissing {
+                        node: node.id,
+                        scope,
+                    });
+                }
+            }
         }
     }
 
@@ -1504,7 +1609,14 @@ fn validate_scope(node: &BridgeTheoremNodeV1, issues: &mut Vec<BridgeValidationI
         }
         BridgeTheoremScopeV1::PeriodicMonodromy {
             state_dimension, ..
-        } => state_dimension == 0,
+        } => {
+            state_dimension == 0
+                || (node
+                    .conclusion
+                    .count_kinds()
+                    .contains(&BridgeCountKindV1::Maslov)
+                    && state_dimension % 2 != 0)
+        }
         BridgeTheoremScopeV1::SpatialDynamicsEvans {
             stable_dimension,
             unstable_dimension,
@@ -1784,13 +1896,44 @@ fn implication_cycle(
     Ok(visited != nodes.len())
 }
 
-fn node_disposition(node: &BridgeTheoremNodeV1) -> BridgeNodeDispositionV1 {
-    if matches!(node.proof, BridgeProofStateV1::Refuted { .. })
+fn nodes_reaching_classical(
+    scopes: &BTreeMap<BridgeTheoremNodeIdV1, BridgeTheoremScopeV1>,
+    adjacency: &BTreeMap<BridgeTheoremNodeIdV1, Vec<BridgeTheoremNodeIdV1>>,
+    cx: &Cx<'_>,
+) -> Result<BTreeSet<BridgeTheoremNodeIdV1>, BridgeValidationReportV1> {
+    let mut reverse: BTreeMap<_, Vec<_>> = BTreeMap::new();
+    for (stronger, weaker_nodes) in adjacency {
+        for weaker in weaker_nodes {
+            reverse.entry(*weaker).or_default().push(*stronger);
+        }
+    }
+    let mut reaches_classical = BTreeSet::new();
+    let mut pending: Vec<_> = scopes
+        .iter()
+        .filter_map(|(node, scope)| (scope.tag() == 0).then_some(*node))
+        .collect();
+    while let Some(node) = pending.pop() {
+        checkpoint(cx)?;
+        if !reaches_classical.insert(node) {
+            continue;
+        }
+        if let Some(parents) = reverse.get(&node) {
+            pending.extend(parents.iter().copied());
+        }
+    }
+    Ok(reaches_classical)
+}
+
+fn node_is_refuted(node: &BridgeTheoremNodeV1) -> bool {
+    matches!(node.proof, BridgeProofStateV1::Refuted { .. })
         || node
             .hypotheses
             .iter()
             .any(|item| matches!(item.state, BridgeHypothesisStateV1::Refuted { .. }))
-    {
+}
+
+fn node_disposition(node: &BridgeTheoremNodeV1) -> BridgeNodeDispositionV1 {
+    if node_is_refuted(node) {
         return BridgeNodeDispositionV1::Refuted;
     }
     let all_hypotheses_referenced = node.hypotheses.iter().all(|item| {

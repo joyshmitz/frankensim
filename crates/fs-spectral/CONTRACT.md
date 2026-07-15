@@ -188,8 +188,11 @@ neutral-closure hypothesis; it must remain explicitly unresolved or refuted.
 Endpoint half-signatures use `DoubledSignedCountV1`, avoiding floating-point
 convention ambiguity. `derive_convention_transform_v1` computes the exact
 orientation sign and endpoint correction, refuses unresolved endpoint
-signatures, and uses checked integer arithmetic. Every theorem node must also
-preregister the falsifiers relevant to its count product: multiple/degenerate
+signatures, maps reversed initial/final rules back onto canonical positive
+left/right endpoints, and uses checked integer arithmetic. Periodic conclusions
+that include the Maslov object require an even-dimensional symplectic state
+space. Every theorem node must also preregister the falsifiers relevant to its
+count product: multiple/degenerate
 and tangential crossings, endpoint crossings, neutral Krein type,
 non-Fredholmness, contour and essential-spectrum contact, orientation changes,
 multiplicity changes, and reviewer statement mutation.
@@ -200,14 +203,20 @@ node/edge/topological-sort strides, canonicalizes all set-valued inputs, rejects
 duplicate or cyclic implications, and returns a domain-separated identity plus
 canonical-preimage receipt. Statement version, count objects, conventions,
 hypothesis/proof states, falsifiers, implication maps, TCB, and budget are all
-byte-visible identity inputs.
+byte-visible identity inputs. Implication edges cannot run from a lower
+extension rank to a higher one. Each non-refuted maximal node must directly
+project to distinct non-refuted periodic and spatial branch roots, and each
+branch root must reach a non-refuted classical finite node without traversing
+refuted theorem nodes or implications; machine-corollary edges cannot
+substitute for that spectral coverage.
 
 G0/G3/G5 bridge tests cover canonical replay under node/hypothesis/falsifier
 permutation, orientation and endpoint transformations, unresolved endpoint
 refusal, required hypothesis and falsifier gates, neutral/tangential/essential
 contact preregistration, machine-count separation, implication cycles, missing
-weaker scopes, retained refutations, schema/convention/reviewer mutation,
-resource caps, cancellation, and the fixed no-theorem authority boundary.
+weaker scopes, lower-to-higher edges, direct projection coverage, retained
+refutations, schema/convention/reviewer mutation, resource caps, cancellation,
+and the fixed no-theorem authority boundary.
 
 ### Authority boundary
 

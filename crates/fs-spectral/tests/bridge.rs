@@ -364,11 +364,11 @@ fn executable_orientation_and_endpoint_transforms_are_exact() {
         source,
         target,
         EndpointSignatureTraceV1 {
-            left: Some(3),
-            right: None,
+            left: None,
+            right: Some(3),
         },
     )
-    .expect("left signature resolves the changed endpoint rule");
+    .expect("canonical-right signature resolves the reversed initial endpoint");
     assert_eq!(derived.sign(), -1);
     assert_eq!(derived.doubled_offset(), -6);
     assert_eq!(
@@ -385,12 +385,187 @@ fn executable_orientation_and_endpoint_transforms_are_exact() {
                 right: None,
             },
         ),
-        Err(ConventionTransformErrorV1::LeftEndpointUnresolved)
+        Err(ConventionTransformErrorV1::RightEndpointUnresolved)
     );
+
+    let asymmetric_source = SignedCountConventionV1 {
+        orientation: CountOrientationV1::Positive,
+        endpoints: EndpointConventionV1 {
+            left: EndpointWeightV1::Full,
+            right: EndpointWeightV1::Excluded,
+        },
+    };
+    let asymmetric_target = SignedCountConventionV1 {
+        orientation: CountOrientationV1::Negative,
+        endpoints: asymmetric_source.endpoints,
+    };
+    let swapped = derive_convention_transform_v1(
+        id!(BridgeCorrespondenceMapIdV1, 172),
+        asymmetric_source,
+        asymmetric_target,
+        EndpointSignatureTraceV1 {
+            left: Some(3),
+            right: Some(5),
+        },
+    )
+    .expect("both canonical endpoint signatures are resolved");
+    assert_eq!(swapped.sign(), -1);
+    assert_eq!(swapped.doubled_offset(), -4);
     let overflowing =
         SignedCountTransformV1::new(id!(BridgeCorrespondenceMapIdV1, 171), 1, i64::MAX)
             .expect("transform shape is valid");
     assert_eq!(overflowing.apply(DoubledSignedCountV1(1)), None);
+}
+
+#[test]
+fn duplicate_node_refusals_have_canonical_issue_order() {
+    with_cx(false, |cx| {
+        let base = fixture();
+        let mut malformed = base
+            .nodes()
+            .iter()
+            .find(|node| node.id == id!(BridgeTheoremNodeIdV1, 31))
+            .expect("finite fixture node exists")
+            .clone();
+        malformed.scope = BridgeTheoremScopeV1::ClassicalFiniteHamiltonian { phase_dimension: 3 };
+
+        let mut first_nodes = base.nodes().to_vec();
+        first_nodes.insert(0, malformed.clone());
+        let first = rebuild(
+            &base,
+            BRIDGE_LATTICE_SCHEMA_VERSION_V1,
+            first_nodes,
+            base.implications().to_vec(),
+            base.machine(),
+        );
+        let first = validate_bridge_lattice_v1(first, cx).expect_err("duplicate node refuses");
+
+        let mut second_nodes = base.nodes().to_vec();
+        second_nodes.push(malformed.clone());
+        second_nodes.reverse();
+        let second = rebuild(
+            &base,
+            BRIDGE_LATTICE_SCHEMA_VERSION_V1,
+            second_nodes,
+            base.implications().to_vec(),
+            base.machine(),
+        );
+        let second = validate_bridge_lattice_v1(second, cx).expect_err("permutation refuses");
+
+        assert_eq!(first.issues(), second.issues());
+        assert!(
+            first
+                .issues()
+                .contains(&BridgeValidationIssueV1::DuplicateNode {
+                    node: id!(BridgeTheoremNodeIdV1, 31),
+                })
+        );
+        assert!(
+            first
+                .issues()
+                .contains(&BridgeValidationIssueV1::InvalidScopeDimension {
+                    node: id!(BridgeTheoremNodeIdV1, 31),
+                },)
+        );
+
+        let hypothesis = malformed.hypotheses[0];
+        let mut shorter = malformed.clone();
+        shorter.hypotheses = vec![hypothesis; 33];
+        let mut longer = malformed;
+        longer.hypotheses = vec![hypothesis; 34];
+        let first = rebuild(
+            &base,
+            BRIDGE_LATTICE_SCHEMA_VERSION_V1,
+            vec![longer.clone(), shorter.clone()],
+            Vec::new(),
+            base.machine(),
+        );
+        let second = rebuild(
+            &base,
+            BRIDGE_LATTICE_SCHEMA_VERSION_V1,
+            vec![shorter, longer],
+            Vec::new(),
+            base.machine(),
+        );
+        let first = validate_bridge_lattice_v1(first, cx).expect_err("oversized node refuses");
+        let second = validate_bridge_lattice_v1(second, cx).expect_err("permutation refuses");
+        assert_eq!(first.issues(), second.issues());
+        assert_eq!(
+            first.issues(),
+            &[BridgeValidationIssueV1::TooManyHypotheses {
+                node: id!(BridgeTheoremNodeIdV1, 31),
+                found: 33,
+                limit: 32,
+            }]
+        );
+    });
+}
+
+#[test]
+fn periodic_maslov_scope_requires_even_state_dimension() {
+    with_cx(false, |cx| {
+        let base = fixture();
+        let mut nodes = base.nodes().to_vec();
+        let periodic = nodes
+            .iter_mut()
+            .find(|node| node.id == id!(BridgeTheoremNodeIdV1, 32))
+            .expect("periodic fixture node exists");
+        periodic.scope = match periodic.scope {
+            BridgeTheoremScopeV1::PeriodicMonodromy { monodromy_map, .. } => {
+                BridgeTheoremScopeV1::PeriodicMonodromy {
+                    state_dimension: 3,
+                    monodromy_map,
+                }
+            }
+            _ => unreachable!("fixture node has periodic scope"),
+        };
+        let malformed = rebuild(
+            &base,
+            BRIDGE_LATTICE_SCHEMA_VERSION_V1,
+            nodes,
+            base.implications().to_vec(),
+            base.machine(),
+        );
+        let report =
+            validate_bridge_lattice_v1(malformed, cx).expect_err("odd symplectic scope refuses");
+        assert!(
+            report
+                .issues()
+                .contains(&BridgeValidationIssueV1::InvalidScopeDimension {
+                    node: id!(BridgeTheoremNodeIdV1, 32),
+                },)
+        );
+
+        let mut nodes = base.nodes().to_vec();
+        let periodic = nodes
+            .iter_mut()
+            .find(|node| node.id == id!(BridgeTheoremNodeIdV1, 32))
+            .expect("periodic fixture node exists");
+        periodic.scope = match periodic.scope {
+            BridgeTheoremScopeV1::PeriodicMonodromy { monodromy_map, .. } => {
+                BridgeTheoremScopeV1::PeriodicMonodromy {
+                    state_dimension: 3,
+                    monodromy_map,
+                }
+            }
+            _ => unreachable!("fixture node has periodic scope"),
+        };
+        periodic.conclusion = BridgeConclusionV1::PairwiseEquality {
+            left: BridgeCountKindV1::Krein,
+            right: BridgeCountKindV1::Evans,
+            left_to_common: transform(173),
+            right_to_common: transform(174),
+        };
+        let general_periodic = rebuild(
+            &base,
+            BRIDGE_LATTICE_SCHEMA_VERSION_V1,
+            nodes,
+            base.implications().to_vec(),
+            base.machine(),
+        );
+        validate_bridge_lattice_v1(general_periodic, cx)
+            .expect("odd general periodic scope without Maslov remains representable");
+    });
 }
 
 #[test]
@@ -672,6 +847,184 @@ fn implication_cycles_and_missing_weaker_scopes_refuse() {
 }
 
 #[test]
+fn implication_scope_order_and_projection_branches_fail_closed() {
+    with_cx(false, |cx| {
+        let base = fixture();
+        let mut reversed = base.implications().to_vec();
+        let finite_projection = reversed
+            .iter_mut()
+            .find(|edge| {
+                edge.stronger == id!(BridgeTheoremNodeIdV1, 32)
+                    && edge.weaker == id!(BridgeTheoremNodeIdV1, 31)
+            })
+            .expect("periodic-to-finite fixture edge exists");
+        core::mem::swap(
+            &mut finite_projection.stronger,
+            &mut finite_projection.weaker,
+        );
+        let reversed = rebuild(
+            &base,
+            BRIDGE_LATTICE_SCHEMA_VERSION_V1,
+            base.nodes().to_vec(),
+            reversed,
+            base.machine(),
+        );
+        let report = validate_bridge_lattice_v1(reversed, cx)
+            .expect_err("lower-to-higher extension edge refuses");
+        assert!(report.issues().contains(
+            &BridgeValidationIssueV1::ImplicationScopeOrderMismatch {
+                stronger: id!(BridgeTheoremNodeIdV1, 31),
+                weaker: id!(BridgeTheoremNodeIdV1, 32),
+            },
+        ));
+
+        let machine_only: Vec<_> = base
+            .implications()
+            .iter()
+            .filter(|edge| edge.weaker == id!(BridgeTheoremNodeIdV1, 35))
+            .copied()
+            .collect();
+        let disconnected = rebuild(
+            &base,
+            BRIDGE_LATTICE_SCHEMA_VERSION_V1,
+            base.nodes().to_vec(),
+            machine_only,
+            base.machine(),
+        );
+        let report = validate_bridge_lattice_v1(disconnected, cx)
+            .expect_err("machine edge cannot replace spectral projection branches");
+        for scope in ["periodic-monodromy", "spatial-dynamics-Evans"] {
+            assert!(report.issues().contains(
+                &BridgeValidationIssueV1::MaximalProjectionCoverageMissing {
+                    node: id!(BridgeTheoremNodeIdV1, 34),
+                    scope,
+                },
+            ));
+        }
+
+        let mut broken_periodic_descent = base.implications().to_vec();
+        let periodic_to_finite = broken_periodic_descent
+            .iter_mut()
+            .find(|edge| {
+                edge.stronger == id!(BridgeTheoremNodeIdV1, 32)
+                    && edge.weaker == id!(BridgeTheoremNodeIdV1, 31)
+            })
+            .expect("periodic-to-finite fixture edge exists");
+        periodic_to_finite.state = BridgeImplicationStateV1::Refuted {
+            counterexample: id!(BridgeCounterexampleIdV1, 221),
+        };
+        let broken_periodic = rebuild(
+            &base,
+            BRIDGE_LATTICE_SCHEMA_VERSION_V1,
+            base.nodes().to_vec(),
+            broken_periodic_descent,
+            base.machine(),
+        );
+        let report = validate_bridge_lattice_v1(broken_periodic, cx)
+            .expect_err("a visible branch must still reach the classical scope");
+        assert!(report.issues().contains(
+            &BridgeValidationIssueV1::MaximalProjectionCoverageMissing {
+                node: id!(BridgeTheoremNodeIdV1, 34),
+                scope: "periodic-monodromy",
+            },
+        ));
+        assert!(!report.issues().contains(
+            &BridgeValidationIssueV1::MaximalProjectionCoverageMissing {
+                node: id!(BridgeTheoremNodeIdV1, 34),
+                scope: "spatial-dynamics-Evans",
+            },
+        ));
+
+        let mut serial_branches = base.implications().to_vec();
+        let maximal_to_spatial = serial_branches
+            .iter_mut()
+            .find(|edge| {
+                edge.stronger == id!(BridgeTheoremNodeIdV1, 34)
+                    && edge.weaker == id!(BridgeTheoremNodeIdV1, 33)
+            })
+            .expect("maximal-to-spatial fixture edge exists");
+        maximal_to_spatial.stronger = id!(BridgeTheoremNodeIdV1, 32);
+        let serial = rebuild(
+            &base,
+            BRIDGE_LATTICE_SCHEMA_VERSION_V1,
+            base.nodes().to_vec(),
+            serial_branches,
+            base.machine(),
+        );
+        let report = validate_bridge_lattice_v1(serial, cx)
+            .expect_err("a serial periodic-to-spatial path is not two direct branches");
+        assert!(report.issues().contains(
+            &BridgeValidationIssueV1::MaximalProjectionCoverageMissing {
+                node: id!(BridgeTheoremNodeIdV1, 34),
+                scope: "spatial-dynamics-Evans",
+            },
+        ));
+        assert!(!report.issues().contains(
+            &BridgeValidationIssueV1::MaximalProjectionCoverageMissing {
+                node: id!(BridgeTheoremNodeIdV1, 34),
+                scope: "periodic-monodromy",
+            },
+        ));
+
+        let mut refuted_nodes = base.nodes().to_vec();
+        let spatial = refuted_nodes
+            .iter_mut()
+            .find(|node| node.id == id!(BridgeTheoremNodeIdV1, 33))
+            .expect("spatial fixture node exists");
+        spatial.proof = BridgeProofStateV1::Refuted {
+            counterexample: id!(BridgeCounterexampleIdV1, 219),
+        };
+        let refuted_node = rebuild(
+            &base,
+            BRIDGE_LATTICE_SCHEMA_VERSION_V1,
+            refuted_nodes,
+            base.implications().to_vec(),
+            base.machine(),
+        );
+        let report = validate_bridge_lattice_v1(refuted_node, cx)
+            .expect_err("a refuted theorem node provides no positive branch coverage");
+        assert!(report.issues().contains(
+            &BridgeValidationIssueV1::MaximalProjectionCoverageMissing {
+                node: id!(BridgeTheoremNodeIdV1, 34),
+                scope: "spatial-dynamics-Evans",
+            },
+        ));
+
+        let mut refuted_branches = base.implications().to_vec();
+        for edge in &mut refuted_branches {
+            if edge.stronger == id!(BridgeTheoremNodeIdV1, 34)
+                && matches!(
+                    edge.weaker,
+                    node if node == id!(BridgeTheoremNodeIdV1, 32)
+                        || node == id!(BridgeTheoremNodeIdV1, 33)
+                )
+            {
+                edge.state = BridgeImplicationStateV1::Refuted {
+                    counterexample: id!(BridgeCounterexampleIdV1, 220),
+                };
+            }
+        }
+        let refuted = rebuild(
+            &base,
+            BRIDGE_LATTICE_SCHEMA_VERSION_V1,
+            base.nodes().to_vec(),
+            refuted_branches,
+            base.machine(),
+        );
+        let report = validate_bridge_lattice_v1(refuted, cx)
+            .expect_err("refuted branch edges provide no positive coverage");
+        for scope in ["periodic-monodromy", "spatial-dynamics-Evans"] {
+            assert!(report.issues().contains(
+                &BridgeValidationIssueV1::MaximalProjectionCoverageMissing {
+                    node: id!(BridgeTheoremNodeIdV1, 34),
+                    scope,
+                },
+            ));
+        }
+    });
+}
+
+#[test]
 fn refuted_hypothesis_stays_visible_as_refuted_not_truth() {
     with_cx(false, |cx| {
         let base = fixture();
@@ -680,6 +1033,8 @@ fn refuted_hypothesis_stays_visible_as_refuted_not_truth() {
             .iter_mut()
             .find(|node| node.id == id!(BridgeTheoremNodeIdV1, 33))
             .expect("spatial node exists");
+        let mut replacement = spatial.clone();
+        replacement.id = id!(BridgeTheoremNodeIdV1, 36);
         let hypothesis = spatial
             .hypotheses
             .iter_mut()
@@ -688,11 +1043,32 @@ fn refuted_hypothesis_stays_visible_as_refuted_not_truth() {
         hypothesis.state = BridgeHypothesisStateV1::Refuted {
             counterexample: id!(BridgeCounterexampleIdV1, 190),
         };
+        nodes.push(replacement);
+        let mut implications = base.implications().to_vec();
+        let mut maximal_to_replacement = *implications
+            .iter()
+            .find(|edge| {
+                edge.stronger == id!(BridgeTheoremNodeIdV1, 34)
+                    && edge.weaker == id!(BridgeTheoremNodeIdV1, 33)
+            })
+            .expect("maximal-to-spatial fixture edge exists");
+        maximal_to_replacement.weaker = id!(BridgeTheoremNodeIdV1, 36);
+        maximal_to_replacement.projection = id!(BridgeCorrespondenceMapIdV1, 191);
+        let mut replacement_to_finite = *implications
+            .iter()
+            .find(|edge| {
+                edge.stronger == id!(BridgeTheoremNodeIdV1, 33)
+                    && edge.weaker == id!(BridgeTheoremNodeIdV1, 31)
+            })
+            .expect("spatial-to-finite fixture edge exists");
+        replacement_to_finite.stronger = id!(BridgeTheoremNodeIdV1, 36);
+        replacement_to_finite.projection = id!(BridgeCorrespondenceMapIdV1, 192);
+        implications.extend([maximal_to_replacement, replacement_to_finite]);
         let refuted = rebuild(
             &base,
             BRIDGE_LATTICE_SCHEMA_VERSION_V1,
             nodes,
-            base.implications().to_vec(),
+            implications,
             base.machine(),
         );
         let validated = validate_bridge_lattice_v1(refuted, cx).expect("refutation is valid data");
