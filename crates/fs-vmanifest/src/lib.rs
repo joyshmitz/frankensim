@@ -34,9 +34,11 @@ use std::fmt;
 
 mod i01;
 mod i02;
+mod i04;
 
 pub use i01::i01_draft;
 pub use i02::i02_draft;
+pub use i04::i04_draft;
 
 /// Manifest schema version (canonical bytes are comparable only within it).
 pub const VMANIFEST_SCHEMA_VERSION: u32 = 1;

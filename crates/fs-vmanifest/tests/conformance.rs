@@ -562,3 +562,54 @@ fn i02_draft_freezes_with_the_declared_lattice_and_coverage() {
         frozen.digest()
     );
 }
+
+#[test]
+fn i04_draft_freezes_with_the_declared_lattice_and_coverage() {
+    let frozen = fs_vmanifest::i04_draft()
+        .freeze()
+        .expect("the I04 seed must freeze");
+    assert_eq!(frozen.initiative(), "I04");
+    assert_eq!(frozen.claims().len(), 8);
+    let solid = frozen
+        .claims()
+        .iter()
+        .filter(|c| c.ambition == Ambition::Solid)
+        .count();
+    let frontier = frozen
+        .claims()
+        .iter()
+        .filter(|c| c.ambition == Ambition::Frontier)
+        .count();
+    let moonshot = frozen
+        .claims()
+        .iter()
+        .filter(|c| c.ambition == Ambition::Moonshot)
+        .count();
+    assert_eq!((solid, frontier, moonshot), (4, 2, 2));
+    assert_eq!(frozen.fixtures().len(), 8);
+    let held_out = frozen
+        .fixtures()
+        .iter()
+        .filter(|x| x.partition == Partition::HeldOut)
+        .count();
+    assert_eq!(held_out, 2, "defect and chart-pair held-out partitions");
+    assert_eq!(frozen.obligations().len(), 5);
+    assert_eq!(frozen.waivers().len(), 1);
+    let completeness = frozen
+        .claim("i04-counterfactual-completeness")
+        .expect("moonshot completeness claim");
+    assert_eq!(completeness.polarity, ClaimPolarity::Refutation);
+    // Distinct from both prior initiatives; stable; order-invariant.
+    let i01 = i01_draft().freeze().expect("freeze");
+    let i02 = fs_vmanifest::i02_draft().freeze().expect("freeze");
+    assert_ne!(frozen.digest(), i01.digest());
+    assert_ne!(frozen.digest(), i02.digest());
+    let mut reordered = fs_vmanifest::i04_draft();
+    reordered.claims.reverse();
+    reordered.fixtures.reverse();
+    reordered.obligations.reverse();
+    assert_eq!(
+        reordered.freeze().expect("freeze").digest(),
+        frozen.digest()
+    );
+}
