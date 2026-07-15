@@ -384,6 +384,19 @@ pub struct AdmittedNurbsCurve<'a, S: Scalar, const DIM: usize> {
     inner: &'a NurbsCurve<S, DIM>,
 }
 
+/// Transactional terminal state of cancellation-aware curve admission.
+#[must_use]
+#[derive(Debug, Clone, Copy)]
+pub enum CurveAdmissionRun<'a, S: Scalar, const DIM: usize> {
+    /// The exact immutable source snapshot was fully validated.
+    Complete {
+        /// Lifetime-bound authority for the validated curve generation.
+        admitted: AdmittedNurbsCurve<'a, S, DIM>,
+    },
+    /// Cancellation was observed; no admitted authority was published.
+    Cancelled,
+}
+
 /// Transactional terminal state of cancellation-aware Cartesian evaluation.
 #[must_use]
 #[derive(Debug, Clone, PartialEq)]
@@ -695,6 +708,31 @@ impl<S: Scalar, const DIM: usize> NurbsCurve<S, DIM> {
     pub fn admit(&self) -> Result<AdmittedNurbsCurve<'_, S, DIM>, NurbsError> {
         self.validate_live_structure()?;
         Ok(self.admitted_after_validation())
+    }
+
+    /// Validate this immutable curve with bounded cancellation polling.
+    ///
+    /// Dimension and checked validation-work refusal retain their synchronous
+    /// precedence. The knot and homogeneous-control scans share one gate, and
+    /// a final checkpoint gates publication of the lifetime-bound admitted
+    /// view. This method does not make construction cancellation-aware and
+    /// does not consume the `Cx` budget or finalize its executor scope.
+    ///
+    /// # Errors
+    /// Returns the synchronous admission's dimension, work, knot, control-count,
+    /// weight, finite-arithmetic, and canonical-lane refusals when they win
+    /// before an observed cancellation.
+    pub fn admit_with_cx<'a>(
+        &'a self,
+        cx: &Cx<'_>,
+    ) -> Result<CurveAdmissionRun<'a, S, DIM>, NurbsError> {
+        let mut should_cancel = || cx.checkpoint().is_err();
+        match self.validate_live_structure_with_poll(&mut should_cancel)? {
+            CurveWorkRun::Complete(()) => Ok(CurveAdmissionRun::Complete {
+                admitted: self.admitted_after_validation(),
+            }),
+            CurveWorkRun::Cancelled => Ok(CurveAdmissionRun::Cancelled),
+        }
     }
 
     pub(crate) const fn admitted_after_validation(&self) -> AdmittedNurbsCurve<'_, S, DIM> {
@@ -2078,6 +2116,97 @@ mod tests {
                 }
             );
         });
+    }
+
+    #[test]
+    fn curve_admission_with_cx_is_transactional_and_lifetime_bound() {
+        let curve = line_curve();
+        with_curve_cx(true, |cx| {
+            assert!(matches!(
+                curve.admit_with_cx(cx).expect("valid source"),
+                CurveAdmissionRun::Cancelled
+            ));
+
+            let invalid_dimension = NurbsCurve::<f64, 4> {
+                knots: KnotVector::new(vec![0.0, 0.0, 1.0, 1.0], 1).expect("line knots"),
+                cpw: vec![[0.0, 0.0, 0.0, 1.0]; 2],
+            };
+            assert!(matches!(
+                invalid_dimension.admit_with_cx(cx),
+                Err(NurbsError::Structure { .. })
+            ));
+        });
+        with_curve_cx(false, |cx| {
+            let CurveAdmissionRun::Complete { admitted } = curve
+                .admit_with_cx(cx)
+                .expect("healthy cancellable admission")
+            else {
+                panic!("active context must admit the valid curve");
+            };
+            assert!(core::ptr::eq(admitted.source(), &curve));
+            assert!(matches!(
+                admitted
+                    .eval_with_cx(0.5, cx)
+                    .expect("admitted cancellable evaluation"),
+                CurveEvaluationRun::Complete { .. }
+            ));
+        });
+
+        let mut malformed = line_curve();
+        malformed.cpw.clear();
+        let legacy_error = malformed.admit().expect_err("malformed legacy admission");
+        with_curve_cx(false, |cx| {
+            assert_eq!(
+                malformed
+                    .admit_with_cx(cx)
+                    .expect_err("malformed cancellable admission"),
+                legacy_error
+            );
+        });
+    }
+
+    #[test]
+    fn curve_admission_replays_inside_controls_and_at_publication() {
+        let long_curve = long_linear_curve();
+        let run = || {
+            let mut polls = 0usize;
+            let mut should_cancel = || {
+                polls += 1;
+                polls == 13
+            };
+            let outcome = long_curve
+                .validate_live_structure_with_poll(&mut should_cancel)
+                .expect("valid long curve");
+            (matches!(outcome, CurveWorkRun::Cancelled), polls)
+        };
+        assert_eq!(run(), run());
+        assert_eq!(run(), (true, 13));
+
+        let curve = line_curve();
+        let mut total_polls = 0usize;
+        let mut never_cancel = || {
+            total_polls += 1;
+            false
+        };
+        assert!(matches!(
+            curve
+                .validate_live_structure_with_poll(&mut never_cancel)
+                .expect("healthy admission"),
+            CurveWorkRun::Complete(())
+        ));
+        assert_eq!(total_polls, 7);
+        let mut replay_polls = 0usize;
+        let mut cancel_at_publication = || {
+            replay_polls += 1;
+            replay_polls == 7
+        };
+        assert!(matches!(
+            curve
+                .validate_live_structure_with_poll(&mut cancel_at_publication)
+                .expect("publication cancellation"),
+            CurveWorkRun::Cancelled
+        ));
+        assert_eq!(replay_polls, 7);
     }
 
     #[test]

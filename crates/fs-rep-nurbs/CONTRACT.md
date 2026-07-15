@@ -54,7 +54,9 @@ fs-iga (geometry basis = analysis basis), fs-render NURBS tracing
   checked Cartesian or homogeneous construction seals the knot/control
   representation. `AdmittedNurbsCurve` binds a validated immutable snapshot
   and evaluation consumes its admitted knot view without a second structural
-  scan. Its admitted-only `eval_with_cx` returns transactional
+  scan. Owning `admit_with_cx` returns `CurveAdmissionRun` and gates the
+  lifetime-bound authority after knot and control validation. Its admitted-only
+  `eval_with_cx` returns transactional
   `CurveEvaluationRun` state and never publishes a partial Cartesian point.
   Its admitted-only `to_bezier_form_with_cx` returns transactional
   `CurveBezierRun` state and publishes only a fully validated exact derived
@@ -206,6 +208,11 @@ basis construction, polls homogeneous accumulation every 64 logical scalar
 updates, and gates final Cartesian publication. `CurveEvaluationRun::Cancelled`
 contains no partial point; owning curve admission and caller-owned affine
 budget/drain/finalize semantics remain outside this primitive claim.
+`NurbsCurve::admit_with_cx` preserves dimension and static work-refusal
+precedence, then carries one cancellation gate through both knot validation and
+the homogeneous-control weight, finite, quotient, and inactive-lane scans. A
+final checkpoint gates `CurveAdmissionRun::Complete`; construction, `Cx` budget
+consumption, and executor drain/finalize remain outside the admission claim.
 `AdmittedNurbsCurve::to_bezier_form_with_cx` preserves the existing checked
 work and two-generation retained-byte envelope, then polls exact planning,
 source copies, repeated target scans, every insertion copy/blend, both derived
@@ -221,14 +228,14 @@ arithmetic order. It polls the pair product and homogeneous lane updates after
 at most 64 logical operations and gates final Cartesian publication.
 `SurfaceEvaluationRun::Cancelled` carries no partial accumulator or point and
 drops any allocated basis workspaces. Owning surface admission, aggregate
-affine-budget consumption, and executor drain/finalize remain caller responsibilities;
-allocator calls and individual scalar operations are not wall-time preemptible.
-The owning `admit_with_cx` path applies the same fixed stride across finite,
-ordering, multiplicity, and clamping validation and gates admitted authority at
-publication; `KnotVector::new` construction remains outside that cancellation
-claim. The production `fs-render` ray path preflights sealed metadata and
-cancellation, then binds one admitted surface across domain lookup, seed
-evaluation, and Newton partials.
+affine-budget consumption, and executor drain/finalize remain caller
+responsibilities; allocator calls and individual scalar operations are not
+wall-time preemptible. The owning `KnotVector::admit_with_cx` path applies the
+same fixed stride across finite, ordering, multiplicity, and clamping validation
+and gates admitted authority at publication; `KnotVector::new` construction
+remains outside that cancellation claim. The production `fs-render` ray path
+preflights sealed metadata and cancellation, then binds one admitted surface
+across domain lookup, seed evaluation, and Newton partials.
 Owning trim classification now binds one admitted patch/loop/curve generation
 through exact Bezier conversion, span boxes, and winding. Its checked conversion
 plan charges scan/insertion work and old-plus-new curve storage before the first
