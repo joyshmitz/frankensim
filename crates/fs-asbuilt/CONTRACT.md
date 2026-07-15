@@ -194,6 +194,14 @@ stable phase plus exact completed/planned point visits.
 `InvocationBudget` preserves the underlying typed deadline, cancellation, or
 resource refusal from `fs-exec`; a scientific preflight or domain refusal is
 also latched fail-closed into that invocation.
+`BudgetRefused` (bead sj31i.6) retains the ambient accountant's typed refusal
+verbatim: the plain `register`/`as_built_diff` entry points admit `cx.budget()`
+plus the preflighted work plan through `fs_exec::AdmittedBudget` before any
+work (expired deadlines - `Budget::ZERO` included - deadlines without an
+ambient time source, and over-quota cost plans refuse at admission), enforce
+cancellation/deadline/poll quota at every checkpoint, and charge completed
+work as cost at checkpoint boundaries. Real cancellation keeps the structured
+`Cancelled` shape.
 Deviation allocation uses `try_reserve_exact`; no public path intentionally
 panics.
 `uncertainty::SpatialUncertaintyError` separately names malformed covariance,

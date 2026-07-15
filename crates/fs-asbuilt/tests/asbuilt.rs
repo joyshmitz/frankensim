@@ -21,6 +21,7 @@ fn with_cx<R>(cancelled: bool, mode: ExecMode, budget: Budget, f: impl FnOnce(&C
         gate.request();
     }
     let pool = fs_alloc::ArenaPool::new(fs_alloc::ArenaConfig::default());
+    let clock = fs_exec::VirtualClock::new();
     let result = pool.scope(|arena| {
         let cx = Cx::new(
             &gate,
@@ -33,7 +34,8 @@ fn with_cx<R>(cancelled: bool, mode: ExecMode, budget: Budget, f: impl FnOnce(&C
             },
             budget,
             mode,
-        );
+        )
+        .with_time_source(&clock);
         f(&cx)
     });
     let stats = pool.stats();
@@ -251,7 +253,7 @@ fn typed_invocation_plans_drive_budgeted_registration_and_diff_without_reissuing
         u64::try_from(diff_resources.work().get()).expect("fixture work fits u64")
     );
     assert_eq!(diff_resources.evaluations().get(), 1);
-    assert_eq!(diff_resources.memory(), diff_resources.output());
+    assert_eq!(diff_resources.memory().get(), diff_resources.output().get());
     assert!(diff_resources.polls().get() > 0);
 
     let required = registration_resources
@@ -463,7 +465,10 @@ fn g5_identity_binds_mode_and_every_budget_field_without_changing_numerics() {
         fixture_diff(ExecMode::Fast, Budget::new()),
         fixture_diff(ExecMode::Deterministic, Budget::with_deadline_at_ns(17)),
         fixture_diff(ExecMode::Deterministic, Budget::new().with_poll_quota(31)),
-        fixture_diff(ExecMode::Deterministic, Budget::new().with_cost_quota(47)),
+        fixture_diff(
+            ExecMode::Deterministic,
+            Budget::new().with_cost_quota(1_000_047),
+        ),
         fixture_diff(ExecMode::Deterministic, Budget::new().with_priority(199)),
     ];
 
@@ -482,8 +487,14 @@ fn g5_identity_binds_mode_and_every_budget_field_without_changing_numerics() {
             fixture_diff(ExecMode::Deterministic, Budget::new().with_poll_quota(32)),
         ),
         (
-            fixture_diff(ExecMode::Deterministic, Budget::new().with_cost_quota(47)),
-            fixture_diff(ExecMode::Deterministic, Budget::new().with_cost_quota(48)),
+            fixture_diff(
+                ExecMode::Deterministic,
+                Budget::new().with_cost_quota(1_000_047),
+            ),
+            fixture_diff(
+                ExecMode::Deterministic,
+                Budget::new().with_cost_quota(1_000_048),
+            ),
         ),
         (
             fixture_diff(ExecMode::Deterministic, Budget::new().with_priority(199)),

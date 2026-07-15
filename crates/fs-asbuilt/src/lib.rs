@@ -157,6 +157,10 @@ pub enum RegError {
     },
     /// A typed invocation child refused resource accounting.
     InvocationBudget(fs_exec::InvocationError),
+    /// The ambient admitted budget refused admission or further work
+    /// (deadline, poll, or cost); the typed refusal is retained
+    /// verbatim and no partial result is published (bead sj31i.6).
+    BudgetRefused(fs_exec::BudgetRefusal),
     /// Fewer fiducials than needed for a well-posed fit.
     TooFewFiducials {
         /// Supplied.
@@ -243,6 +247,9 @@ impl core::fmt::Display for RegError {
             Self::InvocationBudget(error) => {
                 write!(formatter, "as-built invocation refused: {error}")
             }
+            Self::BudgetRefused(refusal) => {
+                write!(formatter, "as-built budget refused: {refusal}")
+            }
             Self::TooFewFiducials { have, need } => {
                 write!(formatter, "need at least {need} fiducials, got {have}")
             }
@@ -291,6 +298,7 @@ impl std::error::Error for RegError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::InvocationBudget(error) => Some(error),
+            Self::BudgetRefused(refusal) => Some(refusal),
             _ => None,
         }
     }
@@ -797,8 +805,44 @@ fn scan_checkpoint(
 /// [`RegError::Cancelled`] with exact point-visit progress. The complete work
 /// plan is computed before the initial cancellation checkpoint.
 pub fn register(fiducials: &[Fiducial], cx: &fs_exec::Cx<'_>) -> Result<Registration, RegError> {
-    let mut poll = |_: &'static str, _: u128, _: u128| cx.checkpoint();
-    register_with_poll(fiducials, &mut poll)
+    let plan = RegistrationWorkPlan::preflight(fiducials.len())?;
+    let mut ambient =
+        fs_exec::AdmittedBudget::admit_ambient(cx, u64::try_from(plan.total).unwrap_or(u64::MAX))
+            .map_err(RegError::BudgetRefused)?;
+    let mut charged: u128 = 0;
+    let mut refusal = None;
+    let mut poll = |phase: &'static str, completed: u128, _: u128| {
+        ambient
+            .checkpoint(phase, cx)
+            .and_then(|()| {
+                let delta = completed.saturating_sub(charged);
+                charged = completed;
+                ambient.charge_cost(phase, u64::try_from(delta).unwrap_or(u64::MAX))
+            })
+            .map_err(|budget_refusal| {
+                refusal = Some(budget_refusal);
+                fs_exec::Cancelled
+            })
+    };
+    let result = register_with_poll(fiducials, &mut poll);
+    reconcile_budget_refusal(result, refusal)
+}
+
+/// Map a closure-latched budget refusal back onto the typed error: real
+/// cancellation keeps the structured `Cancelled` shape; every other
+/// refusal is retained verbatim (bead sj31i.6).
+fn reconcile_budget_refusal<T>(
+    result: Result<T, RegError>,
+    refusal: Option<fs_exec::BudgetRefusal>,
+) -> Result<T, RegError> {
+    match (result, refusal) {
+        (Err(RegError::Cancelled { .. }), Some(budget_refusal))
+            if !matches!(budget_refusal, fs_exec::BudgetRefusal::Cancelled { .. }) =>
+        {
+            Err(RegError::BudgetRefused(budget_refusal))
+        }
+        (result, _) => result,
+    }
 }
 
 /// Solve the rigid registration while consuming a caller-owned remaining poll
@@ -1321,8 +1365,32 @@ pub fn as_built_diff(
     cx: &fs_exec::Cx<'_>,
 ) -> Result<AsBuiltDiff, RegError> {
     let execution = ExecutionIdentity::from_cx(cx);
-    let mut poll = |_: &'static str, _: u128, _: u128| cx.checkpoint();
-    as_built_diff_with_poll(
+    let plan = DiffWorkPlan::preflight(
+        design.len(),
+        scanned.len(),
+        design_tolerance,
+        measurement_noise,
+        calibration_candidate,
+    )?;
+    let mut ambient =
+        fs_exec::AdmittedBudget::admit_ambient(cx, u64::try_from(plan.total).unwrap_or(u64::MAX))
+            .map_err(RegError::BudgetRefused)?;
+    let mut charged: u128 = 0;
+    let mut refusal = None;
+    let mut poll = |phase: &'static str, completed: u128, _: u128| {
+        ambient
+            .checkpoint(phase, cx)
+            .and_then(|()| {
+                let delta = completed.saturating_sub(charged);
+                charged = completed;
+                ambient.charge_cost(phase, u64::try_from(delta).unwrap_or(u64::MAX))
+            })
+            .map_err(|budget_refusal| {
+                refusal = Some(budget_refusal);
+                fs_exec::Cancelled
+            })
+    };
+    let result = as_built_diff_with_poll(
         reg,
         design,
         scanned,
@@ -1332,7 +1400,8 @@ pub fn as_built_diff(
         execution,
         CURRENT_POLL_POLICY,
         &mut poll,
-    )
+    );
+    reconcile_budget_refusal(result, refusal)
 }
 
 /// Compute the as-built delta while consuming a caller-owned remaining poll
