@@ -152,8 +152,9 @@ fs-ivl, fs-alloc, fs-obs, fs-sparse.
   `derived-geometry`) admits one rank-neutral identity arrow per exact geometry
   and structurally strict maps between exact `AdmittedDerivedGeometryV1`
   endpoints. Strict maps require
-  equal physical subject, mathematical category, coefficient semantics, frame,
-  and unit system; coordinate/unit transitions are not silently inferred.
+  equal physical subject, immutable model version, mathematical category,
+  coefficient semantics, frame, and unit system; version/coordinate/unit
+  transitions are not silently inferred.
   Evidence transport is explicitly contravariant restriction or covariant
   balance corestriction and binds exact input/output geometry identities plus
   nominal caller-declared input/output evidence-artifact identities and ranks.
@@ -505,10 +506,10 @@ cross-chart references, mixed units/frames, finite-complex and stratification
 defects, resource exhaustion, cancellation, and canonical identity failures
 publish no admitted token.
 RD.1b uses `DerivedMorphismErrorV1` for schema/endpoint/convention defects,
-evidence orientation, missing nominal evidence IDs, declared-rank
-strengthening, equivalence laundering, composition seams, bounded lineage,
-allocation, cancellation, and canonical identity failures. Refusal publishes no
-admitted morphism.
+model-version drift, evidence orientation, missing nominal evidence IDs,
+declared-rank strengthening, equivalence laundering, composition seams, bounded
+lineage, allocation, cancellation, and canonical identity failures. Refusal
+publishes no admitted morphism.
 
 ## Determinism class
 Deterministic: seeded sampling, insertion-ordered charts, canonical JSON
@@ -617,10 +618,10 @@ The `derived_morphism` private G0/G3/G5 suite covers unique neutral identities,
 associative ordered receipt replay, factor/no-claim order, exact middle-object
 refusal, declared evidence-seam and mixed-variance refusal, declared-rank
 strengthening refusal, both variance directions, equivalence laundering,
-convention mismatch, the lineage cap/cap+1 boundary, deterministic replay, and
-already-requested entry cancellation. Public wrapper coverage against fully
-admitted RD.1a fixtures and deterministic mid-flight cancellation injection
-remain explicit batch-verification follow-ups.
+model-version/convention mismatch, the lineage cap/cap+1 boundary, deterministic
+replay, and already-requested entry cancellation. Public wrapper coverage
+against fully admitted RD.1a fixtures and deterministic mid-flight cancellation
+injection remain explicit batch-verification follow-ups.
 `tests/exit_path.rs` supplies RD.X1 G0/G3 examples and a bounded-cancellation
 regression: regular-cell poset sufficiency, cone/cusp groupoid-enriched
 one-category fallback, circular-stratum local systems, finite-versus-full

@@ -17,8 +17,8 @@ use fs_exec::Cx;
 
 use crate::derived::{
     AdmittedDerivedGeometryV1, CoefficientSystemV1, DerivedFrameIdV1, DerivedGeometryIdV1,
-    DerivedNoClaimIdV1, DerivedSubjectIdV1, DerivedUnitSystemIdV1, DerivedWitnessIdV1,
-    GeometricCategoryV1,
+    DerivedModelVersionIdV1, DerivedNoClaimIdV1, DerivedSubjectIdV1, DerivedUnitSystemIdV1,
+    DerivedWitnessIdV1, GeometricCategoryV1,
 };
 
 /// Current schema for structural RD.1b morphism receipts.
@@ -231,6 +231,8 @@ pub enum DerivedMorphismErrorV1 {
     InvalidIdentity,
     /// Strict source and target describe different physical subjects.
     SubjectMismatch,
+    /// Strict source and target name different immutable model versions.
+    ModelVersionMismatch,
     /// Strict source and target use different mathematical categories.
     CategoryMismatch,
     /// Strict source and target use different coefficient semantics.
@@ -353,6 +355,7 @@ impl AdmittedDerivedMorphismV1 {
 struct GeometryEndpointV1 {
     id: DerivedGeometryIdV1,
     subject: DerivedSubjectIdV1,
+    model_version: DerivedModelVersionIdV1,
     category: GeometricCategoryV1,
     coefficients: CoefficientSystemV1,
     frame: DerivedFrameIdV1,
@@ -365,6 +368,7 @@ impl GeometryEndpointV1 {
         Self {
             id: value.id(),
             subject: ir.subject,
+            model_version: ir.model_version,
             category: ir.category,
             coefficients: ir.coefficients,
             frame: ir.frame,
@@ -623,6 +627,9 @@ fn strict_compatibility(
     if source.subject != target.subject {
         return Err(DerivedMorphismErrorV1::SubjectMismatch);
     }
+    if source.model_version != target.model_version {
+        return Err(DerivedMorphismErrorV1::ModelVersionMismatch);
+    }
     if source.category != target.category {
         return Err(DerivedMorphismErrorV1::CategoryMismatch);
     }
@@ -779,7 +786,7 @@ fn admit_between_endpoints(
 /// quasi-isomorphism, physical correspondence, or theorem authority.
 ///
 /// # Errors
-/// Returns a typed refusal for endpoint/category/coefficient/frame/unit,
+/// Returns a typed refusal for endpoint/model/category/coefficient/frame/unit,
 /// evidence-direction/rank, equivalence-boundary, cancellation, allocation, or
 /// canonical-identity defects.
 #[must_use = "a raw morphism request has no structural authority"]
@@ -1078,6 +1085,7 @@ mod tests {
         GeometryEndpointV1 {
             id: geometry_id(seed),
             subject: DerivedSubjectIdV1::from_bytes([1; 32]),
+            model_version: DerivedModelVersionIdV1::from_bytes([4; 32]),
             category: GeometricCategoryV1::Semialgebraic,
             coefficients: CoefficientSystemV1::RationalReal,
             frame: DerivedFrameIdV1::from_bytes([2; 32]),
@@ -1367,10 +1375,28 @@ mod tests {
                 Err(DerivedMorphismErrorV1::EquivalenceLaundering)
             );
 
+            let mut version_changed = y;
+            version_changed.model_version = DerivedModelVersionIdV1::from_bytes([98; 32]);
+            assert_eq!(
+                admit_between_endpoints(
+                    strict_ir(
+                        x,
+                        version_changed,
+                        53,
+                        ColorRank::Validated,
+                        ColorRank::Validated,
+                    ),
+                    x,
+                    version_changed,
+                    cx,
+                ),
+                Err(DerivedMorphismErrorV1::ModelVersionMismatch)
+            );
+
             y.frame = DerivedFrameIdV1::from_bytes([99; 32]);
             assert_eq!(
                 admit_between_endpoints(
-                    strict_ir(x, y, 53, ColorRank::Validated, ColorRank::Validated,),
+                    strict_ir(x, y, 54, ColorRank::Validated, ColorRank::Validated,),
                     x,
                     y,
                     cx,
