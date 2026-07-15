@@ -301,15 +301,29 @@ Consumers: the P2 marquee demo, the HELM e2e suite (gp3.11).
 - `recover_open`, `recover_meter`, `recover_submission`, `recover_pressure`,
   `recover_pause_acknowledgement`, and `recover_resume_activation` rebuild one
   authenticated typed terminal at a time without dirtying a flush cursor.
-  `Governor::new_durable` snapshots the total immutable claim count for its
-  restart-stable governor namespace. The ledger accepts that count only when
-  its primary claims and independently indexed immutable discovery witnesses
-  agree; every filtered recovery probe unions both indexes and authenticates
-  the yielded authority, so single-table semantic corruption cannot lower the
-  fence or hide Pending work. Until every observed authority has been
-  installed by one of these typed recovery APIs, all fresh opens, charges,
-  submissions, pressure actions, pause completions, and activations refuse
-  with `DurableRecoveryIncomplete`; exact recovery and already-installed replay
+  `Governor::new_durable` stores the ledger's private-field authenticated
+  membership snapshot for its restart-stable governor namespace. The ledger
+  obtains that snapshot by scanning the unfiltered union of both immutable
+  claim indexes inside one stable read transaction, authenticating each
+  compact copy before applying the governor filter, requiring cross-copy
+  equality, and rooting the sorted authority bytes together with the physical
+  ledger, governor, and count. Every filtered recovery probe likewise unions
+  both indexes and authenticates the yielded authority, so single-table or
+  concordant semantic corruption cannot lower the fence or hide Pending work.
+  Until every observed authority has been installed by one of these typed
+  recovery APIs, all fresh opens, charges, submissions, pressure actions,
+  pause completions, and activations refuse with `DurableRecoveryIncomplete`.
+  Reaching the expected cardinality is insufficient: fs-session recomputes the
+  recovered `BTreeSet` root and requires exact membership; a wrong same-count
+  set or excess member fails closed as bounded `Persistence` without mutation.
+  Exact membership is hashed once when recovery first reaches the snapshot
+  cardinality and cached as a private verified flag, so later mutation gates
+  are O(1). While recovery is incomplete, each newly installed authority
+  clears the flag until the exact root verifies and excess membership stays
+  fenced. Once verified, duplicate and post-snapshot recovery marks are
+  ignored: the snapshot names predecessor history only, so replaying a fresh
+  claim created by this live governor cannot poison its completed fence. Empty
+  history starts verified, while exact recovery and already-installed replay
   remain available. This governor-wide phase spans every session, scope, kind,
   and generation, so the global admission, meter-commit, and degradation
   counters are reconstructed before new work can reuse them. Open state is
@@ -699,7 +713,11 @@ Pending claim executes no closure and rolls back every local reservation;
 successful and failed submission terminals recover their original receipt;
 altered program reuse conflicts; a restored pre-commit cursor snapshot
 replays the exact batch without adding a terminal, membership, or audit row;
-and a three-event terminal group is never split at the row boundary.
+and a three-event terminal group is never split at the row boundary. In-module
+restart-fence regressions additionally prove empty, exact, duplicate, wrong,
+and excess predecessor membership plus the post-snapshot case where
+`submit_once_durable` replays a newly durable open without poisoning the
+already-verified fence or blocking a later mutation.
 
 `tests/program_risk.rs` covers a quantitative PR-001 trip automatically
 surfacing in the receipt, report artifact, typed terminal, and one owned event;

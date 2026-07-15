@@ -4016,8 +4016,9 @@ struct Inner {
     reserved_pause_ordinals: usize,
     next_flush_reservation: u64,
     retained_bytes: usize,
-    durable_claims_at_open: u64,
+    durable_claim_snapshot: Option<fs_ledger::session_registry::SessionGovernorClaimSnapshot>,
     recovered_durable_claims: BTreeSet<fs_blake3::ContentHash>,
+    durable_recovery_membership_verified: bool,
     program_risk_publications: BTreeSet<fs_blake3::ContentHash>,
 }
 
@@ -4148,9 +4149,10 @@ impl Governor {
     ///
     /// Repeating this call after reopening the same ledger with the same nonce
     /// reconstructs the exact authority namespace. The constructor snapshots
-    /// its complete durable claim count; fresh mutation stays fenced until the
-    /// typed recovery APIs have rebuilt that governor-wide history. A
-    /// replacement or foreign ledger derives a different identity.
+    /// its complete authenticated durable-claim membership; fresh mutation
+    /// stays fenced until the typed recovery APIs have rebuilt that exact
+    /// governor-wide authority set. A replacement or foreign ledger derives a
+    /// different identity.
     ///
     /// # Errors
     /// Corrupt or unavailable physical-ledger identity fails closed.
@@ -4167,14 +4169,15 @@ impl Governor {
         payload.extend_from_slice(&sink.as_bytes());
         payload.extend_from_slice(&nonce.as_bytes());
         let id = fs_blake3::hash_domain(DURABLE_GOVERNOR_ID_DOMAIN, &payload);
-        let durable_claims_at_open =
+        let durable_claim_snapshot =
             ledger
-                .session_mutation_claim_count(id)
+                .session_governor_claim_snapshot(id)
                 .map_err(|error| SessionError::Persistence {
                     what: format!("durable governor recovery-fence snapshot failed: {error}"),
                 })?;
         let inner = Inner {
-            durable_claims_at_open,
+            durable_claim_snapshot: Some(durable_claim_snapshot),
+            durable_recovery_membership_verified: durable_claim_snapshot.claim_count() == 0,
             ..Inner::default()
         };
         Ok(Self {
@@ -4210,17 +4213,33 @@ impl Governor {
     fn wait_at_materialization_barrier_for_test(&self) {}
 
     fn ensure_durable_recovery_complete(&self, inner: &Inner) -> Result<(), SessionError> {
-        if self.durable_sink.is_none() {
+        let Some(snapshot) = inner.durable_claim_snapshot else {
             return Ok(());
-        }
+        };
         let recovered = u64::try_from(inner.recovered_durable_claims.len()).map_err(|_| {
             SessionError::Persistence {
                 what: "recovered durable-claim count overflowed u64".to_string(),
             }
         })?;
-        if recovered < inner.durable_claims_at_open {
+        if recovered < snapshot.claim_count() {
             return Err(SessionError::DurableRecoveryIncomplete {
-                remaining_claims: inner.durable_claims_at_open - recovered,
+                remaining_claims: snapshot.claim_count() - recovered,
+            });
+        }
+        if recovered > snapshot.claim_count() {
+            return Err(SessionError::Persistence {
+                what: format!(
+                    "durable governor recovered {recovered} authorities, exceeding the authenticated snapshot count {}",
+                    snapshot.claim_count()
+                ),
+            });
+        }
+        if !inner.durable_recovery_membership_verified {
+            return Err(SessionError::Persistence {
+                what: format!(
+                    "durable governor recovered authority membership differs from authenticated snapshot root {}",
+                    snapshot.authority_root()
+                ),
             });
         }
         Ok(())
@@ -4228,7 +4247,25 @@ impl Governor {
 
     fn mark_durable_claim_recovered(&self, inner: &mut Inner, authority: fs_blake3::ContentHash) {
         if self.durable_sink.is_some() {
-            inner.recovered_durable_claims.insert(authority);
+            // The snapshot covers only the predecessor history observed by
+            // `new_durable`. Once that exact set has verified, later replay of
+            // post-snapshot claims must not enlarge or invalidate the fence.
+            if inner.durable_recovery_membership_verified {
+                return;
+            }
+            if !inner.recovered_durable_claims.insert(authority) {
+                return;
+            }
+            inner.durable_recovery_membership_verified = false;
+            let Some(snapshot) = inner.durable_claim_snapshot else {
+                return;
+            };
+            if u64::try_from(inner.recovered_durable_claims.len()).ok()
+                == Some(snapshot.claim_count())
+                && snapshot.matches_authorities(&inner.recovered_durable_claims)
+            {
+                inner.durable_recovery_membership_verified = true;
+            }
         }
     }
 
@@ -8206,6 +8243,178 @@ mod tests {
             super::Governor::new().identity(),
             "ephemeral governor namespaces must not alias"
         );
+    }
+
+    #[test]
+    fn durable_recovery_fence_authenticates_exact_authority_membership() {
+        let ledger = fs_ledger::Ledger::open(":memory:").expect("fixture ledger");
+        let nonce = DurableGovernorNonce::from_bytes([0x6b; 32]);
+        let governor =
+            super::Governor::new_durable(&ledger, nonce).expect("empty-history durable governor");
+        let historical_session = SessionId(32);
+        let historical_token = test_token(historical_session.0, "membership-fence");
+        let historical_open = governor
+            .session_open_id(historical_session, "historical-open")
+            .expect("historical authority");
+        let permit = governor
+            .open_session(historical_open, historical_token.clone())
+            .expect("empty authenticated history admits fresh open")
+            .flush_permit();
+        governor
+            .flush_scope_to_ledger(&permit, &ledger)
+            .expect("one historical claim");
+        drop(governor);
+
+        let governor =
+            super::Governor::new_durable(&ledger, nonce).expect("restarted governor snapshot");
+        let wrong_authority = fs_blake3::hash_domain(
+            "org.frankensim.fs-session.wrong-recovered-authority.v1",
+            b"same-count-different-member",
+        );
+        {
+            let mut inner = governor.inner.lock().expect("governor lock");
+            assert_eq!(
+                inner
+                    .durable_claim_snapshot
+                    .expect("durable snapshot")
+                    .claim_count(),
+                1
+            );
+            inner.recovered_durable_claims.insert(wrong_authority);
+        }
+        let fresh_session = SessionId(33);
+        let fresh_open = governor
+            .session_open_id(fresh_session, "fresh-open")
+            .expect("fresh authority");
+        assert!(matches!(
+            governor.open_session(
+                fresh_open,
+                test_token(fresh_session.0, "membership-fence")
+            ),
+            Err(SessionError::Persistence { what })
+                if what.contains("membership differs")
+        ));
+        assert!(
+            governor
+                .inner
+                .lock()
+                .expect("governor lock")
+                .tokens
+                .is_empty(),
+            "wrong same-count membership is fenced before mutation"
+        );
+
+        {
+            let mut inner = governor.inner.lock().expect("governor lock");
+            inner
+                .recovered_durable_claims
+                .insert(fs_blake3::hash_domain(
+                    "org.frankensim.fs-session.excess-recovered-authority.v1",
+                    b"excess-member",
+                ));
+        }
+        assert!(matches!(
+            governor.open_session(
+                fresh_open,
+                test_token(fresh_session.0, "membership-fence")
+            ),
+            Err(SessionError::Persistence { what })
+                if what.contains("exceeding the authenticated snapshot count")
+        ));
+
+        governor
+            .inner
+            .lock()
+            .expect("governor lock")
+            .recovered_durable_claims
+            .clear();
+        governor
+            .recover_open(&ledger, historical_open, historical_token, None)
+            .expect("exact historical authority recovers");
+        assert!(
+            governor
+                .inner
+                .lock()
+                .expect("governor lock")
+                .durable_recovery_membership_verified,
+            "exact membership root is cached once"
+        );
+        governor
+            .recover_open(
+                &ledger,
+                historical_open,
+                test_token(historical_session.0, "membership-fence"),
+                None,
+            )
+            .expect("duplicate exact recovery replays");
+        assert!(
+            governor
+                .inner
+                .lock()
+                .expect("governor lock")
+                .durable_recovery_membership_verified,
+            "duplicate recovery preserves the verified fast path"
+        );
+        governor
+            .open_session(fresh_open, test_token(fresh_session.0, "membership-fence"))
+            .expect("exact recovered membership satisfies the fence");
+    }
+
+    #[test]
+    fn verified_empty_snapshot_ignores_post_snapshot_recovery_replay() {
+        let ledger = fs_ledger::Ledger::open(":memory:").expect("fixture ledger");
+        let nonce = DurableGovernorNonce::from_bytes([0x6c; 32]);
+        let governor =
+            super::Governor::new_durable(&ledger, nonce).expect("verified empty snapshot");
+        let session = SessionId(34);
+        let token = test_token(session.0, "post-snapshot-replay");
+        let open_id = governor
+            .session_open_id(session, "post-snapshot-open")
+            .expect("open authority");
+        let permit = governor
+            .open_session(open_id, token.clone())
+            .expect("empty snapshot admits open")
+            .flush_permit();
+        governor
+            .flush_scope_to_ledger(&permit, &ledger)
+            .expect("post-snapshot open is durable");
+
+        let request_id = governor
+            .submission_request_id(session, "post-snapshot-slot", "post-snapshot-program")
+            .expect("submission authority");
+        assert!(matches!(
+            governor
+                .submit_once_durable(
+                    &ledger,
+                    request_id,
+                    "post-snapshot-program",
+                    Charge::default,
+                )
+                .expect("recover_open replay cannot poison the verified fence"),
+            SubmitOutcome::Executed { .. }
+        ));
+        governor
+            .recover_open(&ledger, open_id, token, None)
+            .expect("explicit post-snapshot open replay");
+        {
+            let inner = governor.inner.lock().expect("governor lock");
+            assert!(inner.durable_recovery_membership_verified);
+            assert!(
+                inner.recovered_durable_claims.is_empty(),
+                "post-snapshot authorities are outside the predecessor fence"
+            );
+        }
+
+        let later_session = SessionId(35);
+        let later_open = governor
+            .session_open_id(later_session, "later-open")
+            .expect("later authority");
+        governor
+            .open_session(
+                later_open,
+                test_token(later_session.0, "post-snapshot-replay"),
+            )
+            .expect("later mutation remains admitted after post-snapshot replay");
     }
 
     #[test]

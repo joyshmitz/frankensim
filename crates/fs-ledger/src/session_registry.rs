@@ -48,6 +48,14 @@ pub const MAX_SESSION_TERMINAL_BATCH_MEMBERSHIPS: usize = 1024;
 /// Maximum claims inspected by one generic generation recovery probe.
 pub const MAX_SESSION_RECOVERY_PROBE_CLAIMS: usize = 8192;
 
+/// Maximum rows in either claim mirror and maximum distinct authorities in one
+/// governor restart snapshot.
+///
+/// The scan covers every governor before filtering, so these are physical
+/// ledger-wide bounds rather than a per-governor claim limit.
+pub const MAX_SESSION_GOVERNOR_CLAIM_SNAPSHOT_AUTHORITIES: usize =
+    MAX_SESSION_RECOVERY_PROBE_CLAIMS;
+
 /// Maximum submission claims inspected by one pause-generation fence.
 pub const MAX_SESSION_PAUSE_FENCE_SUBMISSIONS: usize = 4096;
 
@@ -61,6 +69,8 @@ const SESSION_CLAIM_ROW_FRAMING_BYTES: usize = 256;
 const SESSION_TERMINAL_ROW_FRAMING_BYTES: usize = 96;
 const SESSION_EVENT_ROW_FRAMING_BYTES: usize = 64;
 const SESSION_CLAIM_HASH_DOMAIN: &[u8] = b"org.frankensim.fs-ledger.session-mutation-claim.v1\0";
+const SESSION_GOVERNOR_CLAIM_ROOT_DOMAIN: &[u8] =
+    b"org.frankensim.fs-ledger.session-governor-claim-root.v1\0";
 // The tracked v6 schema shipped without a wired registry writer. These v2
 // domains therefore define the first supported batch/event preimages; rows
 // from an earlier uncommitted scaffold are intentionally not auto-trusted.
@@ -379,6 +389,67 @@ pub struct StoredSessionMutationClaim {
     pub created_at: i64,
 }
 
+/// Authenticated restart-fence snapshot for one durable governor namespace.
+///
+/// The private fields bind one checked physical ledger, the requested
+/// governor, the exact number of its claims, and the domain-separated root of
+/// their strictly sorted authority bytes. Consumers can compare a recovered
+/// authority set, but cannot manufacture or rewrite the expected membership.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionGovernorClaimSnapshot {
+    ledger_instance_id: LedgerInstanceId,
+    governor_hash: ContentHash,
+    claim_count: u64,
+    authority_root: ContentHash,
+}
+
+impl SessionGovernorClaimSnapshot {
+    /// Checked physical ledger whose stable read produced this snapshot.
+    #[must_use]
+    pub const fn ledger_instance_id(self) -> LedgerInstanceId {
+        self.ledger_instance_id
+    }
+
+    /// Durable governor namespace selected after every claim was authenticated.
+    #[must_use]
+    pub const fn governor_hash(self) -> ContentHash {
+        self.governor_hash
+    }
+
+    /// Exact authenticated membership cardinality.
+    #[must_use]
+    pub const fn claim_count(self) -> u64 {
+        self.claim_count
+    }
+
+    /// Domain-separated root of the sorted authority membership.
+    #[must_use]
+    pub const fn authority_root(self) -> ContentHash {
+        self.authority_root
+    }
+
+    /// Whether `authorities` is exactly the snapshotted membership.
+    ///
+    /// `BTreeSet` makes ordering and uniqueness structural rather than caller
+    /// assertions. A wrong, missing, or excess authority therefore cannot
+    /// satisfy the restart fence even when its cardinality happens to match.
+    #[must_use]
+    pub fn matches_authorities(&self, authorities: &BTreeSet<ContentHash>) -> bool {
+        let Ok(claim_count) = u64::try_from(authorities.len()) else {
+            return false;
+        };
+        if claim_count != self.claim_count {
+            return false;
+        }
+        session_governor_claim_root(
+            self.ledger_instance_id,
+            self.governor_hash,
+            claim_count,
+            authorities.iter().copied(),
+        ) == self.authority_root
+    }
+}
+
 /// One bounded, hash- and event-verified terminal receipt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredSessionTerminal {
@@ -487,6 +558,27 @@ struct PreparedBatch {
 struct SimpleGenerationProbe {
     claim: StoredSessionMutationClaim,
     terminalized: bool,
+}
+
+/// Common hash-bearing envelope stored independently in both claim indexes.
+///
+/// The restart snapshot deliberately does not materialize payload bytes. The
+/// bounded primary payload shape is checked in SQL, while its stored hash is
+/// re-bound through the complete claim-hash preimage in each copy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CompactSessionMutationClaim {
+    authority: ContentHash,
+    ledger_instance_id: LedgerInstanceId,
+    governor_hash: ContentHash,
+    session_open_hash: ContentHash,
+    schema_version: i64,
+    kind: String,
+    session: u64,
+    ledger_scope: String,
+    generation: u64,
+    causal_ordinal: Option<u64>,
+    payload_hash: ContentHash,
+    claim_hash: ContentHash,
 }
 
 fn invalid(field: &str, problem: impl Into<String>) -> LedgerError {
@@ -603,6 +695,33 @@ fn update_optional_u64(hasher: &mut Blake3, value: Option<u64>) {
         }
         None => hasher.update(&[0]),
     }
+}
+
+fn session_governor_claim_root_hasher(
+    ledger_instance_id: LedgerInstanceId,
+    governor_hash: ContentHash,
+) -> Blake3 {
+    let mut hasher = Blake3::new();
+    hasher.update(SESSION_GOVERNOR_CLAIM_ROOT_DOMAIN);
+    hasher.update(&ledger_instance_id.as_bytes());
+    hasher.update(governor_hash.as_bytes());
+    hasher
+}
+
+fn session_governor_claim_root(
+    ledger_instance_id: LedgerInstanceId,
+    governor_hash: ContentHash,
+    claim_count: u64,
+    authorities: impl IntoIterator<Item = ContentHash>,
+) -> ContentHash {
+    let mut hasher = session_governor_claim_root_hasher(ledger_instance_id, governor_hash);
+    for authority in authorities {
+        hasher.update(authority.as_bytes());
+    }
+    // The count terminator distinguishes every finite authority sequence and
+    // also binds the empty set without buffering or a second database scan.
+    hasher.update(&claim_count.to_le_bytes());
+    hasher.finalize()
 }
 
 fn update_event_preimage(
@@ -1011,6 +1130,156 @@ fn row_i64_registry(
 ) -> Result<i64, LedgerError> {
     row_i64(row, index, "session registry bounded read")
         .map_err(|_| stored_corrupt(authority, format!("{field} is not an INTEGER")))
+}
+
+fn row_text_registry(
+    row: &fsqlite::Row,
+    index: usize,
+    authority: ContentHash,
+    field: &'static str,
+) -> Result<String, LedgerError> {
+    match row.get(index) {
+        Some(SqliteValue::Text(value)) => Ok(value.as_str().to_string()),
+        _ => Err(stored_corrupt(authority, format!("{field} is not TEXT"))),
+    }
+}
+
+fn decode_compact_session_claim(
+    row: &fsqlite::Row,
+    authority: ContentHash,
+    current_ledger: LedgerInstanceId,
+) -> Result<CompactSessionMutationClaim, LedgerError> {
+    let stored_ledger: [u8; 16] = row_blob(
+        row,
+        0,
+        authority,
+        "compact session_claim.ledger_instance_id",
+    )?;
+    if stored_ledger != current_ledger.as_bytes() {
+        return Err(stored_corrupt(
+            authority,
+            format!(
+                "compact claim belongs to ledger bytes {}, not current ledger {current_ledger}",
+                hex_bytes(&stored_ledger)
+            ),
+        ));
+    }
+    let schema_version = row_i64_registry(
+        row,
+        3,
+        authority,
+        "compact session_claim.registry_schema_version",
+    )?;
+    if schema_version != SESSION_REGISTRY_ROW_SCHEMA_VERSION {
+        return Err(stored_corrupt(
+            authority,
+            format!(
+                "compact claim schema version {schema_version} differs from supported {SESSION_REGISTRY_ROW_SCHEMA_VERSION}"
+            ),
+        ));
+    }
+    let kind = row_text_registry(row, 4, authority, "compact session_claim.kind")?;
+    if require_bounded_ascii("session_claim.kind", &kind, MAX_SESSION_TERMINAL_KIND_BYTES).is_err()
+    {
+        return Err(stored_corrupt(
+            authority,
+            "compact claim kind violates canonical visible-ASCII bounds",
+        ));
+    }
+    let ledger_scope = row_text_registry(row, 6, authority, "compact session_claim.ledger_scope")?;
+    if require_bounded_ascii(
+        "session_claim.ledger_scope",
+        &ledger_scope,
+        MAX_SESSION_TERMINAL_SCOPE_BYTES,
+    )
+    .is_err()
+    {
+        return Err(stored_corrupt(
+            authority,
+            "compact claim ledger scope violates canonical visible-ASCII bounds",
+        ));
+    }
+    let causal_ordinal =
+        row_optional_u64(row, 8, authority, "compact session_claim.causal_ordinal")?;
+    if let Some(ordinal) = causal_ordinal
+        && (ordinal == 0 || ordinal > i64::MAX as u64)
+    {
+        return Err(stored_corrupt(
+            authority,
+            format!("compact claim causal ordinal {ordinal} is outside 1..=i64::MAX"),
+        ));
+    }
+    if kind == PRECLAIM_REQUIRED_SUBMISSION_KIND && causal_ordinal.is_none() {
+        return Err(stored_corrupt(
+            authority,
+            "compact submission claim omits its required causal ordinal",
+        ));
+    }
+    let compact = CompactSessionMutationClaim {
+        authority,
+        ledger_instance_id: current_ledger,
+        governor_hash: ContentHash(row_blob(
+            row,
+            1,
+            authority,
+            "compact session_claim.governor_hash",
+        )?),
+        session_open_hash: ContentHash(row_blob(
+            row,
+            2,
+            authority,
+            "compact session_claim.session_open_hash",
+        )?),
+        schema_version,
+        kind,
+        session: u64::from_be_bytes(row_blob(
+            row,
+            5,
+            authority,
+            "compact session_claim.session",
+        )?),
+        ledger_scope,
+        generation: u64::from_be_bytes(row_blob(
+            row,
+            7,
+            authority,
+            "compact session_claim.generation",
+        )?),
+        causal_ordinal,
+        payload_hash: ContentHash(row_blob(
+            row,
+            9,
+            authority,
+            "compact session_claim.payload_hash",
+        )?),
+        claim_hash: ContentHash(row_blob(
+            row,
+            10,
+            authority,
+            "compact session_claim.claim_hash",
+        )?),
+    };
+    let hash_input = SessionMutationClaim {
+        authority: compact.authority,
+        ledger_instance_id: compact.ledger_instance_id,
+        governor_hash: compact.governor_hash,
+        session_open_hash: compact.session_open_hash,
+        kind: &compact.kind,
+        session: compact.session,
+        ledger_scope: &compact.ledger_scope,
+        generation: compact.generation,
+        causal_ordinal: compact.causal_ordinal,
+        // `compute_claim_hash` consumes the independently stored payload hash;
+        // payload bytes are intentionally not materialized by this scan.
+        payload: &[],
+    };
+    if compute_claim_hash(hash_input, compact.payload_hash) != compact.claim_hash {
+        return Err(stored_corrupt(
+            authority,
+            "compact claim envelope does not match claim_hash",
+        ));
+    }
+    Ok(compact)
 }
 
 fn decode_stored_session_claim(
@@ -2151,55 +2420,376 @@ impl Ledger {
         self.simple_generation_probe_with_statement(&statement, authority)
     }
 
-    /// Count every immutable mutation claim in one durable governor namespace.
+    fn compact_session_claim_copy_at_instance(
+        &self,
+        authority: ContentHash,
+        current_ledger: LedgerInstanceId,
+        primary: bool,
+    ) -> Result<CompactSessionMutationClaim, LedgerError> {
+        let table = if primary {
+            "session_claims"
+        } else {
+            "session_claim_discovery"
+        };
+        self.note_read_query();
+        let multiplicity = self
+            .conn
+            .query_with_params(
+                &format!("SELECT COUNT(*) FROM {table} WHERE authority = ?1"),
+                &[blob_param(authority.as_bytes())],
+            )
+            .map_err(|error| {
+                sql_err(
+                    if primary {
+                        "session governor snapshot primary multiplicity"
+                    } else {
+                        "session governor snapshot discovery multiplicity"
+                    },
+                    &error,
+                )
+            })?;
+        let multiplicity = multiplicity.first().ok_or_else(|| {
+            stored_corrupt(
+                authority,
+                format!("{table} multiplicity query returned no aggregate row"),
+            )
+        })?;
+        let multiplicity = row_i64_registry(
+            multiplicity,
+            0,
+            authority,
+            "compact claim-copy multiplicity",
+        )?;
+        if multiplicity != 1 {
+            return Err(stored_corrupt(
+                authority,
+                format!(
+                    "{} claim copy has {} rows; exactly one is required",
+                    if primary { "primary" } else { "discovery" },
+                    multiplicity
+                ),
+            ));
+        }
+        let primary_guards = if primary {
+            format!(
+                " AND typeof(payload) = 'blob' AND \
+                   length(payload) BETWEEN 0 AND {MAX_SESSION_CLAIM_PAYLOAD_BYTES} AND \
+                   typeof(created_at) = 'integer'"
+            )
+        } else {
+            String::new()
+        };
+        let guarded_sql = format!(
+            "SELECT ledger_instance_id, governor_hash, session_open_hash, \
+                    registry_schema_version, kind, session, ledger_scope, generation, \
+                    causal_ordinal, payload_hash, claim_hash \
+             FROM {table} WHERE authority = ?1 AND \
+               typeof(ledger_instance_id) = 'blob' AND length(ledger_instance_id) = 16 AND \
+               typeof(governor_hash) = 'blob' AND length(governor_hash) = 32 AND \
+               typeof(session_open_hash) = 'blob' AND length(session_open_hash) = 32 AND \
+               typeof(registry_schema_version) = 'integer' AND \
+               registry_schema_version = {SESSION_REGISTRY_ROW_SCHEMA_VERSION} AND \
+               typeof(kind) = 'text' AND \
+               length(CAST(kind AS BLOB)) BETWEEN 1 AND {MAX_SESSION_TERMINAL_KIND_BYTES} AND \
+               length(CAST(kind AS BLOB)) = length(kind) AND kind NOT GLOB '*[^!-~]*' AND \
+               typeof(session) = 'blob' AND length(session) = 8 AND \
+               typeof(ledger_scope) = 'text' AND \
+               length(CAST(ledger_scope AS BLOB)) BETWEEN 1 AND \
+                   {MAX_SESSION_TERMINAL_SCOPE_BYTES} AND \
+               length(CAST(ledger_scope AS BLOB)) = length(ledger_scope) AND \
+               ledger_scope NOT GLOB '*[^!-~]*' AND \
+               typeof(generation) = 'blob' AND length(generation) = 8 AND \
+               (causal_ordinal IS NULL OR \
+                (typeof(causal_ordinal) = 'blob' AND length(causal_ordinal) = 8 AND \
+                 causal_ordinal > X'0000000000000000' AND \
+                 causal_ordinal <= X'7FFFFFFFFFFFFFFF')) AND \
+               typeof(payload_hash) = 'blob' AND length(payload_hash) = 32 AND \
+               typeof(claim_hash) = 'blob' AND length(claim_hash) = 32{primary_guards} \
+             LIMIT 1"
+        );
+        self.note_read_query();
+        let rows = self
+            .conn
+            .query_with_params(&guarded_sql, &[blob_param(authority.as_bytes())])
+            .map_err(|error| {
+                sql_err(
+                    if primary {
+                        "session governor snapshot guarded primary envelope"
+                    } else {
+                        "session governor snapshot guarded discovery envelope"
+                    },
+                    &error,
+                )
+            })?;
+        let row = rows.first().ok_or_else(|| {
+            stored_corrupt(
+                authority,
+                format!(
+                    "{} claim copy violates a type, schema-version, canonical-text, or byte bound",
+                    if primary { "primary" } else { "discovery" }
+                ),
+            )
+        })?;
+        decode_compact_session_claim(row, authority, current_ledger)
+    }
+
+    fn session_governor_claim_snapshot_at_instance(
+        &self,
+        governor_hash: ContentHash,
+        current_ledger: LedgerInstanceId,
+    ) -> Result<SessionGovernorClaimSnapshot, LedgerError> {
+        // Bound each physical mirror before even aggregate shape checks. The
+        // subsequent malformed-key counts therefore inspect at most the same
+        // fixed cap per table; a corrupt/disjoint mirror pair is still bounded
+        // independently by the deduplicated-union counter below.
+        self.note_read_query();
+        let physical_cap_sql = format!(
+            "SELECT \
+                EXISTS(SELECT 1 FROM session_claims LIMIT 1 \
+                       OFFSET {MAX_SESSION_GOVERNOR_CLAIM_SNAPSHOT_AUTHORITIES}), \
+                EXISTS(SELECT 1 FROM session_claim_discovery LIMIT 1 \
+                       OFFSET {MAX_SESSION_GOVERNOR_CLAIM_SNAPSHOT_AUTHORITIES})"
+        );
+        let physical_cap = self
+            .conn
+            .query(&physical_cap_sql)
+            .map_err(|error| sql_err("session governor snapshot physical cap", &error))?;
+        let physical_cap = physical_cap.first().ok_or_else(|| {
+            stored_corrupt(
+                governor_hash,
+                "physical claim-cap probe returned no aggregate row",
+            )
+        })?;
+        let primary_over_cap = row_i64_registry(
+            physical_cap,
+            0,
+            governor_hash,
+            "primary claim-cap overflow flag",
+        )?;
+        let discovery_over_cap = row_i64_registry(
+            physical_cap,
+            1,
+            governor_hash,
+            "discovery claim-cap overflow flag",
+        )?;
+        if primary_over_cap != 0 || discovery_over_cap != 0 {
+            return Err(invalid(
+                "session_governor_claim_snapshot.authority_scan",
+                format!(
+                    "ledger contains more than the {MAX_SESSION_GOVERNOR_CLAIM_SNAPSHOT_AUTHORITIES}-authority restart-snapshot limit"
+                ),
+            ));
+        }
+        self.note_read_query();
+        let invalid_authorities = self
+            .conn
+            .query(
+                "SELECT \
+                    (SELECT COUNT(*) FROM session_claims \
+                     WHERE typeof(authority) != 'blob' OR length(authority) != 32), \
+                    (SELECT COUNT(*) FROM session_claim_discovery \
+                     WHERE typeof(authority) != 'blob' OR length(authority) != 32)",
+            )
+            .map_err(|error| sql_err("session governor snapshot authority preflight", &error))?;
+        let invalid_authorities = invalid_authorities.first().ok_or_else(|| {
+            stored_corrupt(
+                governor_hash,
+                "authority-shape preflight returned no aggregate row",
+            )
+        })?;
+        let invalid_primary = row_i64_registry(
+            invalid_authorities,
+            0,
+            governor_hash,
+            "invalid primary authority count",
+        )?;
+        if invalid_primary != 0 {
+            return Err(stored_corrupt(
+                governor_hash,
+                format!("primary claim index contains {invalid_primary} malformed authorities"),
+            ));
+        }
+        let invalid_discovery = row_i64_registry(
+            invalid_authorities,
+            1,
+            governor_hash,
+            "invalid discovery authority count",
+        )?;
+        if invalid_discovery != 0 {
+            return Err(stored_corrupt(
+                governor_hash,
+                format!("discovery claim index contains {invalid_discovery} malformed authorities"),
+            ));
+        }
+        let mut cursor: Option<ContentHash> = None;
+        let mut inspected_authorities = 0usize;
+        let mut claim_count = 0u64;
+        let mut root = session_governor_claim_root_hasher(current_ledger, governor_hash);
+        loop {
+            let (sql, params) = if let Some(after) = cursor {
+                (
+                    format!(
+                        "SELECT authority FROM ( \
+                             SELECT authority FROM session_claims \
+                             WHERE typeof(authority) = 'blob' AND length(authority) = 32 AND \
+                                   authority > ?1 \
+                             UNION \
+                             SELECT authority FROM session_claim_discovery \
+                             WHERE typeof(authority) = 'blob' AND length(authority) = 32 AND \
+                                   authority > ?1 \
+                         ) AS all_claim_authorities ORDER BY authority LIMIT {}",
+                        MAX_SESSION_FLUSH_TERMINALS + 1
+                    ),
+                    vec![blob_param(after.as_bytes())],
+                )
+            } else {
+                (
+                    format!(
+                        "SELECT authority FROM ( \
+                             SELECT authority FROM session_claims \
+                             WHERE typeof(authority) = 'blob' AND length(authority) = 32 \
+                             UNION \
+                             SELECT authority FROM session_claim_discovery \
+                             WHERE typeof(authority) = 'blob' AND length(authority) = 32 \
+                         ) AS all_claim_authorities ORDER BY authority LIMIT {}",
+                        MAX_SESSION_FLUSH_TERMINALS + 1
+                    ),
+                    Vec::new(),
+                )
+            };
+            self.note_read_query();
+            let rows = self
+                .conn
+                .query_with_params(&sql, &params)
+                .map_err(|error| sql_err("session governor snapshot authority page", &error))?;
+            let has_more = rows.len() > MAX_SESSION_FLUSH_TERMINALS;
+            let mut last = None;
+            for row in rows.iter().take(MAX_SESSION_FLUSH_TERMINALS) {
+                inspected_authorities = inspected_authorities.checked_add(1).ok_or_else(|| {
+                    invalid(
+                        "session_governor_claim_snapshot.authority_scan",
+                        "restart-snapshot authority count overflowed usize",
+                    )
+                })?;
+                if inspected_authorities > MAX_SESSION_GOVERNOR_CLAIM_SNAPSHOT_AUTHORITIES {
+                    return Err(invalid(
+                        "session_governor_claim_snapshot.authority_scan",
+                        format!(
+                            "ledger contains more than the {MAX_SESSION_GOVERNOR_CLAIM_SNAPSHOT_AUTHORITIES}-authority restart-snapshot limit"
+                        ),
+                    ));
+                }
+                let authority = ContentHash(row_blob(
+                    row,
+                    0,
+                    ContentHash([0; 32]),
+                    "session governor snapshot authority",
+                )?);
+                last = Some(authority);
+                // Authenticate every authority before selecting the requested
+                // governor. This prevents concordant rekeying in both indexes
+                // from turning a corrupt row into an invisible negative.
+                let primary =
+                    self.compact_session_claim_copy_at_instance(authority, current_ledger, true)?;
+                let discovery =
+                    self.compact_session_claim_copy_at_instance(authority, current_ledger, false)?;
+                if primary != discovery {
+                    return Err(stored_corrupt(
+                        authority,
+                        "primary and discovery compact claim envelopes differ",
+                    ));
+                }
+                if primary.governor_hash == governor_hash {
+                    claim_count = claim_count.checked_add(1).ok_or_else(|| {
+                        stored_corrupt(governor_hash, "governor claim count overflowed u64")
+                    })?;
+                    root.update(authority.as_bytes());
+                }
+            }
+            if !has_more {
+                break;
+            }
+            cursor = Some(last.ok_or_else(|| {
+                stored_corrupt(
+                    governor_hash,
+                    "authority page advertised a successor without a cursor",
+                )
+            })?);
+        }
+        root.update(&claim_count.to_le_bytes());
+        Ok(SessionGovernorClaimSnapshot {
+            ledger_instance_id: current_ledger,
+            governor_hash,
+            claim_count,
+            authority_root: root.finalize(),
+        })
+    }
+
+    /// Authenticate the complete mutation-claim membership of one governor.
     ///
-    /// This constant-space snapshot is the restart fence used by fs-session:
-    /// a fresh durable governor remains recovery-only until it has rebuilt the
-    /// complete claim count observed at construction. Pending claims are
-    /// included, so an indeterminate execution cannot be skipped to admit new
-    /// work after a crash.
+    /// The scan takes a bounded keyset page from the union of both indexes,
+    /// without filtering on unauthenticated governor columns. Every authority
+    /// must have exactly one primary and one discovery row; each compact
+    /// envelope independently rehashes every claim-hash preimage field before
+    /// the copies are compared and the governor filter is applied. The result
+    /// therefore binds membership, not merely cardinality. Pending claims are
+    /// included. A bounded physical-mirror probe first limits each table to
+    /// [`MAX_SESSION_GOVERNOR_CLAIM_SNAPSHOT_AUTHORITIES`] rows. The
+    /// deduplicated union independently admits at most that many total
+    /// authorities; cap+1 refuses before that authority's compact copies are
+    /// queried, and no partial snapshot escapes.
+    ///
+    /// This trust boundary must own its stable read transaction. A caller with
+    /// an already-open transaction is refused before identity or claim reads;
+    /// that transaction remains open and otherwise unchanged.
     ///
     /// # Errors
-    /// Unavailable ledger identity, malformed aggregate storage, count
-    /// overflow, or engine failure is returned without mutation.
+    /// Identity/schema corruption, malformed or mismatched claim copies,
+    /// count overflow, transaction failure, or engine failure is returned
+    /// without mutation.
+    pub fn session_governor_claim_snapshot(
+        &self,
+        governor_hash: ContentHash,
+    ) -> Result<SessionGovernorClaimSnapshot, LedgerError> {
+        if self.in_transaction() {
+            return Err(invalid(
+                "session_governor_claim_snapshot.transaction",
+                "restart-fence snapshot must own its stable read transaction; commit or roll back first",
+            ));
+        }
+        self.begin()?;
+        let result = (|| {
+            let current_ledger = self.checked_instance_id()?;
+            self.session_governor_claim_snapshot_at_instance(governor_hash, current_ledger)
+        })();
+        match result {
+            Ok(snapshot) => {
+                if let Err(error) = self.commit() {
+                    let _ = self.rollback();
+                    return Err(error);
+                }
+                Ok(snapshot)
+            }
+            Err(error) => {
+                let _ = self.rollback();
+                Err(error)
+            }
+        }
+    }
+
+    /// Count every authenticated mutation claim in one durable governor.
+    ///
+    /// This compatibility accessor delegates to the membership snapshot, so
+    /// callers cannot regain the former count-only trust boundary.
+    ///
+    /// # Errors
+    /// See [`Self::session_governor_claim_snapshot`].
     pub fn session_mutation_claim_count(
         &self,
         governor_hash: ContentHash,
     ) -> Result<u64, LedgerError> {
-        let _ = self.checked_instance_id()?;
-        self.note_read_query();
-        let rows = self
-            .conn
-            .query_with_params(
-                "SELECT \
-                    (SELECT COUNT(*) FROM session_claims WHERE governor_hash = ?1), \
-                    (SELECT COUNT(*) FROM session_claim_discovery WHERE governor_hash = ?1)",
-                &[blob_param(governor_hash.as_bytes())],
-            )
-            .map_err(|error| sql_err("session governor claim count", &error))?;
-        let row = rows.first().ok_or_else(|| {
-            stored_corrupt(
-                governor_hash,
-                "governor claim-count query returned no aggregate row",
-            )
-        })?;
-        let count = row_i64_registry(row, 0, governor_hash, "governor claim count")?;
-        let discovery_count =
-            row_i64_registry(row, 1, governor_hash, "governor claim discovery count")?;
-        if count != discovery_count {
-            return Err(stored_corrupt(
-                governor_hash,
-                format!(
-                    "governor claim/discovery counts differ: claim={count}, discovery={discovery_count}"
-                ),
-            ));
-        }
-        u64::try_from(count).map_err(|_| {
-            stored_corrupt(
-                governor_hash,
-                format!("governor claim count {count} is negative or overflows u64"),
-            )
-        })
+        self.session_governor_claim_snapshot(governor_hash)
+            .map(SessionGovernorClaimSnapshot::claim_count)
     }
 
     /// Return one exact verified Pending claim in a recovery generation.
@@ -4091,6 +4681,125 @@ mod tests {
     }
 
     #[test]
+    fn governor_claim_snapshot_binds_exact_and_empty_membership() {
+        let ledger = Ledger::open(":memory:").expect("snapshot ledger");
+        let governor_hash = hash_bytes(b"registry-corruption-governor");
+        let empty_reads_before = ledger.read_queries();
+        let empty = ledger
+            .session_governor_claim_snapshot(governor_hash)
+            .expect("empty snapshot");
+        assert_eq!(
+            ledger.read_queries() - empty_reads_before,
+            4,
+            "empty snapshot spends identity, two preflights, and one empty page query"
+        );
+        assert_eq!(empty.ledger_instance_id(), ledger.instance_id());
+        assert_eq!(empty.governor_hash(), governor_hash);
+        assert_eq!(empty.claim_count(), 0);
+        assert!(empty.matches_authorities(&BTreeSet::new()));
+
+        let low = ContentHash([0x21; 32]);
+        let high = ContentHash([0x91; 32]);
+        for claim_authority in [high, low] {
+            let claim = fixture_claim(&ledger, claim_authority, b"snapshot-payload");
+            assert!(matches!(
+                ledger
+                    .claim_session_mutation(&claim)
+                    .expect("snapshot fixture claim"),
+                SessionMutationClaimResult::Claimed { .. }
+            ));
+        }
+        let snapshot = ledger
+            .session_governor_claim_snapshot(governor_hash)
+            .expect("authenticated membership snapshot");
+        let exact = BTreeSet::from([low, high]);
+        assert_eq!(snapshot.claim_count(), 2);
+        assert!(snapshot.matches_authorities(&exact));
+        assert_eq!(
+            ledger
+                .session_mutation_claim_count(governor_hash)
+                .expect("compatibility count delegates to snapshot"),
+            2
+        );
+
+        let wrong = BTreeSet::from([low, ContentHash([0xa1; 32])]);
+        assert_eq!(wrong.len(), exact.len());
+        assert!(!snapshot.matches_authorities(&wrong));
+        assert_ne!(
+            session_governor_claim_root(
+                ledger.instance_id(),
+                governor_hash,
+                2,
+                exact.iter().copied(),
+            ),
+            session_governor_claim_root(
+                ledger.instance_id(),
+                governor_hash,
+                2,
+                wrong.iter().copied(),
+            ),
+            "same cardinality cannot erase authority membership"
+        );
+    }
+
+    #[test]
+    fn governor_claim_snapshot_refuses_concordant_rekey_at_lowest_authority() {
+        let ledger = Ledger::open(":memory:").expect("rekey ledger");
+        let original_governor = hash_bytes(b"registry-corruption-governor");
+        let foreign_governor = hash_bytes(b"concordant-foreign-governor");
+        let low = ContentHash([0x11; 32]);
+        let high = ContentHash([0xe1; 32]);
+        for claim_authority in [high, low] {
+            let claim = fixture_claim(&ledger, claim_authority, b"rekey-payload");
+            assert!(matches!(
+                ledger
+                    .claim_session_mutation(&claim)
+                    .expect("rekey fixture claim"),
+                SessionMutationClaimResult::Claimed { .. }
+            ));
+        }
+        ledger
+            .conn
+            .execute("DROP TRIGGER trg_session_claims_immutable_update")
+            .expect("test-only primary trigger bypass");
+        ledger
+            .conn
+            .execute("DROP TRIGGER trg_session_claim_discovery_immutable_update")
+            .expect("test-only discovery trigger bypass");
+        for table in ["session_claims", "session_claim_discovery"] {
+            ledger
+                .conn
+                .prepare(&format!("UPDATE {table} SET governor_hash = ?1"))
+                .expect("prepare concordant governor rekey")
+                .execute_with_params(&[blob_param(foreign_governor.as_bytes())])
+                .expect("inject concordant governor rekey");
+        }
+        assert!(matches!(
+            ledger.session_governor_claim_snapshot(original_governor),
+            Err(LedgerError::Corrupt { hash_hex, detail })
+                if hash_hex == low.to_hex() && detail.contains("claim_hash")
+        ));
+    }
+
+    #[test]
+    fn governor_claim_snapshot_refuses_and_preserves_an_open_transaction() {
+        let ledger = Ledger::open(":memory:").expect("transaction ledger");
+        ledger.begin().expect("caller transaction");
+        let error = ledger
+            .session_governor_claim_snapshot(hash_bytes(b"transaction-governor"))
+            .expect_err("snapshot cannot borrow a caller transaction");
+        assert!(matches!(
+            error,
+            LedgerError::Invalid { field, .. }
+                if field == "session_governor_claim_snapshot.transaction"
+        ));
+        assert!(ledger.in_transaction(), "caller transaction remains open");
+        ledger
+            .rollback()
+            .expect("caller rolls back its transaction");
+    }
+
+    #[test]
     fn future_claim_schema_and_receipt_hash_tampering_fail_closed() {
         let future = Ledger::open(":memory:").expect("future-schema ledger");
         let future_authority = authority(2);
@@ -4387,6 +5096,30 @@ mod tests {
             causal_ordinal: Some(1),
             ..fixture_claim(&ledger, authority(100_000), b"")
         };
+        let snapshot_reads_before = ledger.read_queries();
+        let restart_snapshot = ledger
+            .session_governor_claim_snapshot(envelope.governor_hash)
+            .expect("exact-cap paginated restart snapshot");
+        assert_eq!(
+            restart_snapshot.claim_count(),
+            u64::try_from(MAX_SESSION_GOVERNOR_CLAIM_SNAPSHOT_AUTHORITIES)
+                .expect("snapshot cap fits u64")
+        );
+        let snapshot_pages =
+            MAX_SESSION_GOVERNOR_CLAIM_SNAPSHOT_AUTHORITIES.div_ceil(MAX_SESSION_FLUSH_TERMINALS);
+        let expected_snapshot_reads = 3usize
+            .checked_add(snapshot_pages)
+            .and_then(|reads| {
+                MAX_SESSION_GOVERNOR_CLAIM_SNAPSHOT_AUTHORITIES
+                    .checked_mul(4)
+                    .and_then(|claim_reads| reads.checked_add(claim_reads))
+            })
+            .expect("bounded snapshot read budget");
+        assert_eq!(
+            ledger.read_queries() - snapshot_reads_before,
+            u64::try_from(expected_snapshot_reads).expect("snapshot read budget fits u64"),
+            "identity, physical/shape preflights, bounded pages, and four compact-copy queries per authority exhaust the declared read budget"
+        );
         let reads_before = ledger.read_queries();
         assert_eq!(
             ledger
@@ -4439,6 +5172,22 @@ mod tests {
                     "generation contains more than the {MAX_SESSION_RECOVERY_PROBE_CLAIMS}-claim recovery-probe limit"
                 ),
             })
+        );
+        let overflow_snapshot_reads_before = ledger.read_queries();
+        assert_eq!(
+            ledger.session_governor_claim_snapshot(envelope.governor_hash),
+            Err(LedgerError::Invalid {
+                field: "session_governor_claim_snapshot.authority_scan".to_string(),
+                problem: format!(
+                    "ledger contains more than the {MAX_SESSION_GOVERNOR_CLAIM_SNAPSHOT_AUTHORITIES}-authority restart-snapshot limit"
+                ),
+            }),
+            "cap+1 is refused before its compact envelope queries"
+        );
+        assert_eq!(
+            ledger.read_queries() - overflow_snapshot_reads_before,
+            2,
+            "cap+1 spends only checked identity plus the bounded physical-mirror probe"
         );
     }
 

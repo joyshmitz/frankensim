@@ -162,8 +162,25 @@ and the lower-layer Franken crates declared in `Cargo.toml`, including
   authenticating the primary claim hash; filtered recovery and generation
   fences take a deduplicated union of both indexes before authentication.
   Single-table deletion, key drift, or semantic-column corruption therefore
-  cannot turn a dangerous claim into a trusted negative lookup. Governor
-  restart counts must also agree across both tables. Migration from v7
+  cannot turn a dangerous claim into a trusted negative lookup.
+  `session_governor_claim_snapshot` strengthens the restart boundary from a
+  count to authenticated membership: under one self-owned stable read
+  transaction it keyset-scans the unfiltered union of all authorities, applies
+  SQL type/length/canonical-text guards before materializing each compact
+  envelope, independently recomputes both copies' complete claim-hash preimage
+  from their stored payload hash, requires exact cross-copy equality, and only
+  then selects the requested governor. The private-field snapshot binds the
+  checked physical ledger, governor, count, and a domain-separated root over
+  sorted authority bytes. The compatibility count accessor delegates to this
+  full scan. A bounded `OFFSET 8192` probe first caps each physical mirror
+  before malformed-key aggregates or multiplicity checks; the deduplicated
+  union independently admits at most 8,192 total authorities, pages in
+  1,024-authority chunks, and refuses authority 8,193 before issuing either of
+  its compact-envelope queries. An exact `N`-authority scan consumes the
+  checked-identity query, two preflight queries, `max(1, ceil(N/1024))` page
+  queries, and four compact-copy queries per authority. No partial snapshot
+  escapes on any refusal. An already-open caller transaction is refused
+  without being committed or rolled back. Migration from v7
   backfills inside the version transaction and hash-verifies every surviving
   source claim before publishing v8. V8 also splits the two OR-based immutable
   reinsert guards into one point lookup per unique key, avoiding dependence on
@@ -529,10 +546,13 @@ registry tests use deliberate in-memory trigger/table bypasses to prove future
 schema, hash, event-link, batch-membership, batch-total, and partial-terminal
 corruption fails closed, including both directions of the generation fence.
 They also prove claim-side, discovery-side, and missing-witness corruption
-cannot hide a row from filtered recovery. The migration battery accepts an
-authenticated genuine-v7 claim, heals exact v8 objects under a stale v7 marker,
-and rolls back without advancing when a v7 claim's semantic bytes no longer
-match its hash.
+cannot hide a row from filtered recovery. Inline restart-snapshot regressions
+cover empty and exact membership, same-count/different-member roots,
+concordant two-table governor rekeying, deterministic lowest-authority
+corruption, unchanged refusal of a caller-owned transaction, exact-cap
+pagination, and cap+1 refusal. The migration battery accepts an authenticated
+genuine-v7 claim, heals exact v8 objects under a stale v7 marker, and rolls back
+without advancing when a v7 claim's semantic bytes no longer match its hash.
 Canonical bulk fixtures exercise the exact and limit+1 read boundaries for the
 8,192-claim recovery probe, 4,096-submission pause fence, and 1,024-witness
 terminal lookup without weakening the production constants under test.
@@ -706,6 +726,10 @@ The graph is the minting authority for `fs_evidence::AdmittedColor`:
 
 - Multi-process multi-writer access: unclaimed (FrankenSQLite documents this
   as partial; use one process, one connection per thread).
+- Unbounded restart snapshots are not claimed: a physical ledger with more
+  than 8,192 rows in either session-claim mirror, or more than 8,192 distinct
+  authorities across their union, is refused before governor construction
+  rather than allocating or scanning without a fixed limit.
 - BLAKE3 keyed hashing, key derivation, XOF output beyond 32 bytes: not
   implemented.
 - Cryptographic security claims: the implementation matches official vectors
