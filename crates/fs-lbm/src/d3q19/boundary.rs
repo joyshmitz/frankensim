@@ -1,7 +1,7 @@
 //! Link-wise boundary conditions for the D3Q19 tile layout.
 //!
-//! This module deliberately leaves [`super::Duct`] unchanged: its frozen
-//! bit surface remains the body-force/periodic fixture, while
+//! This module deliberately keeps [`super::Duct`]'s frozen bit surface as the
+//! body-force/periodic fixture, while
 //! [`BoundaryGrid3`] owns the more general boundary semantics.  Solid links
 //! use halfway bounce-back, moving planar walls add the standard momentum
 //! correction, and open planar faces use a regularized non-equilibrium stress
@@ -348,7 +348,7 @@ pub struct BoundaryGrid3 {
     nx: usize,
     ny: usize,
     nz: usize,
-    tau: f64,
+    collision_model: CollisionModel3,
     force: [f64; 3],
     boundaries: BoundarySpec3,
     f: [Vec<Tile>; Q3],
@@ -386,6 +386,27 @@ impl BoundaryGrid3 {
         force: [f64; 3],
         boundaries: BoundarySpec3,
     ) -> BoundaryGrid3 {
+        Self::with_collision_model(nx, ny, nz, CollisionModel3::Bgk { tau }, force, boundaries)
+    }
+
+    /// Unit-density fluid at rest under an explicit collision model.
+    ///
+    /// Every dimension must be a positive multiple of [`TILE`]. The collision
+    /// model and force must be finite and admissible. Moment-space models are
+    /// currently unforced by contract.
+    ///
+    /// # Panics
+    /// Panics when dimensions, allocation geometry, collision parameters,
+    /// force, or boundary parameters are inadmissible.
+    #[must_use]
+    pub fn with_collision_model(
+        nx: usize,
+        ny: usize,
+        nz: usize,
+        collision_model: CollisionModel3,
+        force: [f64; 3],
+        boundaries: BoundarySpec3,
+    ) -> BoundaryGrid3 {
         assert!(
             nx > 0
                 && ny > 0
@@ -395,13 +416,19 @@ impl BoundaryGrid3 {
                 && nz.is_multiple_of(TILE),
             "grid dimensions must be positive multiples of {TILE} (got {nx}x{ny}x{nz})"
         );
-        assert!(
-            tau.is_finite() && tau > 0.5,
-            "relaxation time tau must be finite and greater than 0.5"
-        );
+        collision_model
+            .validate()
+            .expect("D3Q19 collision model must be physically admissible");
         assert!(
             force.iter().all(|component| component.is_finite()),
             "body force must be finite"
+        );
+        assert!(
+            collision_model.supports_body_force()
+                || force
+                    .iter()
+                    .all(|value| matches!(value.classify(), core::num::FpCategory::Zero)),
+            "moment-space D3Q19 collision models currently require zero body force"
         );
         boundaries.validate();
         let has_open_face = Face3::ALL
@@ -428,7 +455,7 @@ impl BoundaryGrid3 {
             nx,
             ny,
             nz,
-            tau,
+            collision_model,
             force,
             boundaries,
             f,
@@ -452,10 +479,16 @@ impl BoundaryGrid3 {
         [self.nx, self.ny, self.nz]
     }
 
-    /// Kinematic viscosity `nu = (tau - 1/2)/3`.
+    /// Kinematic viscosity implied by the selected collision model.
     #[must_use]
     pub fn viscosity(&self) -> f64 {
-        (self.tau - 0.5) / 3.0
+        self.collision_model.kinematic_viscosity()
+    }
+
+    /// Collision model used for every fluid-cell collision.
+    #[must_use]
+    pub const fn collision_model(&self) -> CollisionModel3 {
+        self.collision_model
     }
 
     /// Boundary specification used by the grid.
@@ -750,12 +783,8 @@ impl BoundaryGrid3 {
                     continue;
                 }
                 let populations = core::array::from_fn(|direction| self.f[direction][tile].0[lane]);
-                let post = collide_cell3(
-                    populations,
-                    CollisionModel3::Bgk { tau: self.tau },
-                    self.force,
-                )
-                .expect("BoundaryGrid3 constructor and prior state admit BGK/Guo collision");
+                let post = collide_cell3(populations, self.collision_model, self.force)
+                    .expect("BoundaryGrid3 constructor and prior state admit selected collision");
                 for (field, value) in self.post.iter_mut().zip(post) {
                     field[tile].0[lane] = value;
                 }
@@ -1064,7 +1093,7 @@ impl core::fmt::Debug for BoundaryGrid3 {
             .field("nx", &self.nx)
             .field("ny", &self.ny)
             .field("nz", &self.nz)
-            .field("tau", &self.tau)
+            .field("collision_model", &self.collision_model)
             .field("force", &self.force)
             .field("boundaries", &self.boundaries)
             .field(

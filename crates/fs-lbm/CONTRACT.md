@@ -58,10 +58,12 @@ scaling plan) and deterministic `fs-math` primitives. Pure, deterministic
   masks and canonical `(tile, lane, direction)` enumeration. Separate open
   masks distinguish populations reconstructed after streaming.
 - `BoundaryGrid3` — tile-major D3Q19 grid whose compiled masks drive the
-  runtime pull stencil. `voxelize_sdf` samples a scalar field at cell centers,
-  commits solid occupancy/masks atomically, and then locks topology. Solid and
-  planar walls use link-wise halfway bounce-back. Moving walls add the
-  standard `2 w_i rho (c_i dot u_wall) / c_s^2` incoming-link correction.
+  runtime pull stencil. The legacy `new(..., tau, ...)` constructor remains
+  BGK, while `with_collision_model` selects an explicit checked model for the
+  whole grid. `voxelize_sdf` samples a scalar field at cell centers, commits
+  solid occupancy/masks atomically, and then locks topology. Solid and planar
+  walls use link-wise halfway bounce-back. Moving walls add the standard
+  `2 w_i rho (c_i dot u_wall) / c_s^2` incoming-link correction.
   Velocity/pressure face-interior cells use second-order Hermite regularized
   non-equilibrium-stress reconstruction from the first interior cell.
 - `plan_scaling(reynolds, char_length_lu, u_lattice) -> ScalingPlan { tau,
@@ -127,7 +129,8 @@ parameter helpers panic on nonsensical requests: zero dimensions, non-finite
 forces/relaxation times, non-positive viscosities/rheology indices, non-positive
 Rayleigh height, or non-positive Reynolds/length in the scaling assistant.
 D3Q19 boundary construction additionally rejects non-4-multiple dimensions,
-tile-count overflow, unpaired periodic faces, non-tangential/non-finite or
+tile-count overflow, invalid collision parameters, moment-space collision with
+nonzero force, unpaired periodic faces, non-tangential/non-finite or
 outside-low-Mach wall velocities, non-finite or outside-low-Mach inlet
 velocities, non-positive pressure density, open faces on more than one axis,
 and body force combined with the current regularized open-face closure.
@@ -193,11 +196,13 @@ and fail-closed inputs.
 link masks, aligned deterministic mask ordering, the exact 18 links around one
 voxel, atomic immutable SDF topology and rejection paths, axis-generic
 regularized face density/velocity plus independent inlet/outlet stress
-reconstruction, open/wall and moving/open rim ownership, stationary planar and
-voxel mass conservation, exact one-step moving-lid momentum oracles,
-qualitative primary cavity circulation, pressure-driven Poiseuille shape, and
-a boundary replay-hash candidate. Ignored release fixtures carry the full
-10,000-step leak and 32x32 full-rim 3% pressure-Poiseuille gates.
+reconstruction, grid-level collision selection and equal-rate BGK/central
+agreement, split-rate cumulant conservation, open/wall and moving/open rim
+ownership, stationary planar and voxel mass conservation, exact one-step
+moving-lid momentum oracles, qualitative primary cavity circulation,
+pressure-driven Poiseuille shape, and a boundary replay-hash candidate. Ignored
+release fixtures carry the full 10,000-step leak and 32x32 full-rim 3%
+pressure-Poiseuille gates.
 
 ## No-claim boundaries
 

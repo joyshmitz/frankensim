@@ -234,6 +234,30 @@ impl CollisionModel3 {
             }
         }
     }
+
+    /// Kinematic viscosity implied by the BGK relaxation time or the
+    /// moment-space second-order relaxation rate.
+    ///
+    /// Call [`CollisionModel3::validate`] first when the model did not come
+    /// from a checked constructor.
+    #[must_use]
+    pub const fn kinematic_viscosity(self) -> f64 {
+        match self {
+            Self::Bgk { tau } => (tau - 0.5) / 3.0,
+            Self::CentralMoment {
+                second_order_rate, ..
+            }
+            | Self::ReducedCumulant {
+                second_order_rate, ..
+            } => (1.0 / second_order_rate - 0.5) / 3.0,
+        }
+    }
+
+    /// Whether the current collision contract admits a nonzero body force.
+    #[must_use]
+    pub const fn supports_body_force(self) -> bool {
+        matches!(self, Self::Bgk { .. })
+    }
 }
 
 fn validate_moment_rate(moment_order: u8, rate: f64) -> Result<(), CollisionError3> {

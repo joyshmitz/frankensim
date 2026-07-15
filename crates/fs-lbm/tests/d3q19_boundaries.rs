@@ -3,7 +3,7 @@
 //! moving halfway bounce-back, closed-domain leak, lid-cavity circulation,
 //! pressure-driven duct accuracy, and a boundary-surface golden.
 
-use fs_lbm::d3q19::{D3Q19_BOUNDARY_BIT_SEMANTICS_VERSION, E3, Q3, TILE};
+use fs_lbm::d3q19::{CollisionModel3, D3Q19_BOUNDARY_BIT_SEMANTICS_VERSION, E3, Q3, TILE};
 use fs_lbm::{
     BoundaryGrid3, BoundarySpec3, CS2, Face3, FaceBoundary3, duct_analytic, equilibrium3,
 };
@@ -127,6 +127,87 @@ fn link_masks_cover_planar_and_voxelized_boundaries() {
             links.len()
         ),
     );
+}
+
+/// lbm3bc-001b (G0/G3): the general grid exposes collision selection without
+/// changing the legacy BGK constructor. Equal-rate central moments follow the
+/// BGK macroscopic trajectory to solve roundoff, while a split-rate reduced
+/// cumulant grid remains conservative and refuses unverified forcing.
+#[test]
+fn collision_model_selection_is_backward_compatible_and_conservative() {
+    let tau = 0.81;
+    let rate = 1.0 / tau;
+    let central_model = CollisionModel3::CentralMoment {
+        second_order_rate: rate,
+        higher_order_rate: rate,
+    };
+    let mut bgk = BoundaryGrid3::new(8, 8, 8, tau, [0.0; 3], BoundarySpec3::periodic());
+    let mut central = BoundaryGrid3::with_collision_model(
+        8,
+        8,
+        8,
+        central_model,
+        [0.0; 3],
+        BoundarySpec3::periodic(),
+    );
+    assert_eq!(bgk.collision_model(), CollisionModel3::Bgk { tau });
+    assert_eq!(central.collision_model(), central_model);
+    assert_eq!(bgk.viscosity().to_bits(), ((tau - 0.5) / 3.0).to_bits());
+    assert!((central.viscosity() - bgk.viscosity()).abs() < f64::EPSILON);
+
+    bgk.perturb(0xC011_1DE3, 1e-3);
+    central.perturb(0xC011_1DE3, 1e-3);
+    bgk.run(2);
+    central.run(2);
+    let mut max_macro_delta = 0.0_f64;
+    for z in 0..8 {
+        for y in 0..8 {
+            for x in 0..8 {
+                max_macro_delta =
+                    max_macro_delta.max((bgk.density(x, y, z) - central.density(x, y, z)).abs());
+                let bgk_velocity = bgk.velocity(x, y, z);
+                let central_velocity = central.velocity(x, y, z);
+                for axis in 0..3 {
+                    max_macro_delta =
+                        max_macro_delta.max((bgk_velocity[axis] - central_velocity[axis]).abs());
+                }
+            }
+        }
+    }
+    assert!(
+        max_macro_delta < 5e-12,
+        "equal-rate central/BGK grid trajectories differ by {max_macro_delta:.3e}"
+    );
+
+    let reduced_model = CollisionModel3::ReducedCumulant {
+        second_order_rate: rate,
+        third_order_rate: 1.35,
+        fourth_order_rate: 1.72,
+    };
+    let mut reduced = BoundaryGrid3::with_collision_model(
+        8,
+        8,
+        8,
+        reduced_model,
+        [0.0; 3],
+        BoundarySpec3::periodic(),
+    );
+    reduced.perturb(0xC011_1DE3, 1e-3);
+    let mass_before = reduced.total_mass();
+    reduced.run(4);
+    assert!((reduced.total_mass() - mass_before).abs() < 1e-11);
+
+    let forced_moment_grid = std::panic::catch_unwind(|| {
+        BoundaryGrid3::with_collision_model(
+            8,
+            8,
+            8,
+            central_model,
+            [1e-7, 0.0, 0.0],
+            BoundarySpec3::periodic(),
+        )
+    });
+    assert!(forced_moment_grid.is_err());
 }
 
 /// lbm3bc-002: regularized faces impose their declared macroscopic moments;
