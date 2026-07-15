@@ -261,6 +261,45 @@ fn update_mean(mean: &mut f64, count: &mut u64, value: f64) {
     *count = next;
 }
 
+fn apply_condemnations(
+    round: u32,
+    live: &[usize],
+    log_e: &[f64],
+    condemned: &[usize],
+    alive: &mut [bool],
+    eliminated: &mut Vec<(u32, usize)>,
+    candidate_gates: &[Arc<CancelGate>],
+) {
+    debug_assert_eq!(live.len(), log_e.len());
+    debug_assert!(condemned.iter().all(|&slot| slot < live.len()));
+
+    // e-BH may reject every live hypothesis, but the tournament API requires
+    // a survivor and winner. Withhold the weakest candidate-specific kill,
+    // with original candidate id as the deterministic tie-break rather than
+    // the live-vector slot.
+    let spared_slot = if condemned.len() == live.len() {
+        condemned
+            .iter()
+            .copied()
+            .min_by(|&a, &b| log_e[a].total_cmp(&log_e[b]).then(live[a].cmp(&live[b])))
+    } else {
+        None
+    };
+
+    let mut ids: Vec<usize> = condemned
+        .iter()
+        .copied()
+        .filter(|slot| Some(*slot) != spared_slot)
+        .map(|slot| live[slot])
+        .collect();
+    ids.sort_unstable();
+    for i in ids {
+        alive[i] = false;
+        eliminated.push((round, i));
+        candidate_gates[i].request();
+    }
+}
+
 /// Race a field of candidates with e-BH false-discovery-rate control.
 /// `loss(candidate, observation)` must be a PURE function of its
 /// arguments (deterministic streams — the caller keys them by seed and
@@ -376,14 +415,15 @@ pub fn race_field(
             log_e.push(combine_average(&family));
         }
         let condemned = e_benjamini_hochberg(&log_e, settings.alpha);
-        if !condemned.is_empty() {
-            let ids: Vec<usize> = condemned.iter().map(|&k| live[k]).collect();
-            for &i in &ids {
-                alive[i] = false;
-                eliminated.push((round, i));
-                candidate_gates[i].request();
-            }
-        }
+        apply_condemnations(
+            round,
+            &live,
+            &log_e,
+            &condemned,
+            &mut alive,
+            &mut eliminated,
+            &candidate_gates,
+        );
     }
     let survivors: Vec<usize> = (0..n).filter(|&i| alive[i]).collect();
     // The overflow-safe online means stay finite even when long streams
@@ -501,3 +541,82 @@ pub fn successive_halving(
 
 /// Crate version, re-exported for provenance stamping.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_condemned_spares_lowest_log_e_with_original_index_tie_break() {
+        let kills = KillRegistry::new();
+        let candidate_gates: Vec<_> = (0..8u64)
+            .map(|candidate| kills.register(candidate))
+            .collect();
+        let live = [7usize, 5, 3];
+        let log_e = [9.0f64, 4.0, 4.0];
+        let condemned = [0usize, 1, 2];
+        let mut alive = vec![false; candidate_gates.len()];
+        for &candidate in &live {
+            alive[candidate] = true;
+        }
+        let mut eliminated = Vec::new();
+
+        apply_condemnations(
+            11,
+            &live,
+            &log_e,
+            &condemned,
+            &mut alive,
+            &mut eliminated,
+            &candidate_gates,
+        );
+
+        assert_eq!(
+            (0..alive.len())
+                .filter(|&candidate| alive[candidate])
+                .collect::<Vec<_>>(),
+            vec![3]
+        );
+        assert_eq!(eliminated, vec![(11, 5), (11, 7)]);
+        for (candidate, gate) in candidate_gates.iter().enumerate() {
+            assert_eq!(
+                gate.is_requested(),
+                candidate == 5 || candidate == 7,
+                "candidate {candidate} kill state"
+            );
+        }
+    }
+
+    #[test]
+    fn partial_condemnation_preserves_ordinary_kill_behavior() {
+        let kills = KillRegistry::new();
+        let candidate_gates: Vec<_> = (0..4u64)
+            .map(|candidate| kills.register(candidate))
+            .collect();
+        let live = [0usize, 1, 2, 3];
+        let log_e = [1.0f64, 8.0, 2.0, 7.0];
+        let condemned = [1usize, 3];
+        let mut alive = vec![true; live.len()];
+        let mut eliminated = Vec::new();
+
+        apply_condemnations(
+            6,
+            &live,
+            &log_e,
+            &condemned,
+            &mut alive,
+            &mut eliminated,
+            &candidate_gates,
+        );
+
+        assert_eq!(alive, vec![true, false, true, false]);
+        assert_eq!(eliminated, vec![(6, 1), (6, 3)]);
+        for (candidate, gate) in candidate_gates.iter().enumerate() {
+            assert_eq!(
+                gate.is_requested(),
+                candidate == 1 || candidate == 3,
+                "candidate {candidate} kill state"
+            );
+        }
+    }
+}
