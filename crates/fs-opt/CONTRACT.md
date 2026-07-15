@@ -197,6 +197,11 @@ structure; FLUX/UQ execute it.
    before the objective closure is called; cancellation returns the
    teaching error; PDE/stochastic nodes name their executor when asked
    to evaluate (opt-005/006).
+7. G3 unit rescaling: the live `descend_fn` step is equivariant when a
+   one-dimensional quadratic's start, target, and finite-difference step are
+   coherently rescaled by a nonidentity power of two. The final coordinate
+   scales by `s`, both objective receipts scale by `s²`, and evaluation,
+   step, and budget receipts remain exact (`tests/metamorphic.rs`).
 
 ## Error model
 
@@ -279,8 +284,21 @@ sharp-crack exploits, fails closed on non-finite, and treats an empty
 design as vacuously robust — plus the realistic v0 state (δ-only →
 provisional).
 
+`tests/metamorphic.rs` (bead frankensim-2uce): 256 shrinkable G3 cases (seed
+`0x2ACE_0402`) apply the shared `fs-propcheck` unit-rescaling declaration
+`quadratic-descent-power-of-two-units` to the live `descend_fn` quadratic step
+at `2e-12` absolute-relative numeric tolerance. Every generated transform is a
+nonidentity power of two, and every generated start is separated from its
+target. The comparator checks coordinate and objective equivariance plus exact
+discrete receipts. Existing opt-005/006 fixed pins remain unchanged.
+
 ## No-claim boundaries
 
+- The G3 descent adopter covers coherent power-of-two rescaling of a bounded,
+  one-dimensional quadratic under the toy fixed-step finite-difference
+  consumer. It does not claim arbitrary-unit conditioning, general optimizer
+  convergence, manifold-coordinate invariance, or dimensional correctness for
+  caller-defined objectives.
 - `max_total_work` is a deterministic structural admission envelope
   (retained items plus expression edges), not a wall-clock or cycle-count
   performance model. Per-field byte caps separately bound string hashing

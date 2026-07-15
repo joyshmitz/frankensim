@@ -24,6 +24,7 @@ fs-qty = { path = "../fs-qty" }
 [dev-dependencies]
 asupersync = { path = "../../../asupersync" }
 fs-alloc = { path = "../fs-alloc" }
+fs-propcheck = { path = "../fs-propcheck" }
 
 [lints]
 workspace = true
