@@ -27,6 +27,11 @@ uses a closed-form 2-D rigid fit (no SVD).
   uncertainty. Registration fields
   are private; `Registration::new` is fallible, accessors are read-only, and
   `Registration::apply` refuses non-finite arithmetic overflow.
+- `registration_invocation_resources(point_count)` returns the checked typed
+  work, poll, cost, evaluation, memory, and retained-output grant for one
+  registration. `register_budgeted(fiducials, &mut ChildBudget)` consumes that
+  grant from an affine parent-issued child rather than reconstructing an
+  allowance from the ambient `Cx`.
 - `well_posed(&Registration, certified_deviation) -> bool` — the R8 gate: true
   iff the supplied deviation is finite and positive and the registration
   residual is BELOW the deviation being certified.
@@ -40,11 +45,19 @@ uses a closed-form 2-D rigid fit (no SVD).
   authenticated review. The calibration string is a bounded, structurally
   valid candidate identity, never authority. Result fields are private and
   exposed through read-only accessors, so callers cannot forge or mutate an
-  authenticated-looking `AsBuiltDiff` value.
+  authenticated-looking `AsBuiltDiff` value. `max_deviation_index()` retains
+  the last input-order index attaining the maximum, including deterministic
+  ties, so a composed workflow need not rescan the deviation payload.
+- `as_built_diff_invocation_resources(...)` returns the checked typed grant and
+  conservative retained-payload shape for one diff.
+  `as_built_diff_budgeted(..., &Cx, &mut ChildBudget)` reserves that live-memory
+  envelope before allocation, spends through the same affine child, and
+  publishes retained output only on success.
 - `RegError` covers cancellation with exact phase/progress,
   work-plan overflow, insufficient/collinear/unobservable/interval-unresolved/oversized points, length mismatch,
   empty data, non-finite or negative numeric inputs, malformed calibration
-  identity, arithmetic overflow, and bounded-allocation failure.
+  identity, arithmetic overflow, bounded-allocation failure, and typed
+  invocation-budget refusal.
 
 ## Invariants
 
@@ -92,6 +105,18 @@ uses a closed-form 2-D rigid fit (no SVD).
   initial checkpoint. Point scans poll every 256 points, with additional phase
   and final-publication checkpoints; cancellation never publishes a partial
   registration or diff.
+- Each typed planner maps logical work to a distinct `WorkUnits` field and an
+  equal-valued, representable `CostUnits` field, declares one scientific
+  `EvaluationUnits`, and computes its poll and payload byte shapes before a
+  child can spend. Registration declares no live-memory payload and only its
+  fixed retained result. A diff declares the same conservative byte envelope
+  for live memory and retained output. These dimensions are never converted
+  into one another by the lower-layer API.
+- Budgeted entry points accept only a borrowed, non-cloneable `ChildBudget`.
+  Work, cost, evaluation, every poll, memory, and output are charged to that
+  child; scientific refusals are latched into the parent receipt. Unused
+  capacity returns only when the child is consumed by `finish`, so sibling
+  stages cannot mint fresh authority through this crate.
 - The `asbuilt-diff-v4` identity binds execution mode, every field of the
   ambient `fs_exec::Budget`, work-plan v2 and exact `3n` shape, poll-policy v2
   and its 256-point/256-byte strides, plus all scientific and provenance inputs.
@@ -103,6 +128,9 @@ uses a closed-form 2-D rigid fit (no SVD).
 Structured `RegError` values; hostile numeric/identity inputs return errors.
 `WorkPlanOverflow` refuses an unrepresentable plan, and `Cancelled` retains the
 stable phase plus exact completed/planned point visits.
+`InvocationBudget` preserves the underlying typed deadline, cancellation, or
+resource refusal from `fs-exec`; a scientific preflight or domain refusal is
+also latched fail-closed into that invocation.
 Deviation allocation uses `try_reserve_exact`; no public path intentionally
 panics.
 
@@ -118,6 +146,9 @@ Synchronous and cancellation-aware. Both public long-running entry points take
 an explicit `Cx`; preflight precedes the initial poll, long scans poll at the
 fixed 256-point stride, and a final checkpoint gates publication. Cancellation
 returns `RegError::Cancelled` with exact progress and no partial output.
+The budgeted forms poll the child authority, which checks its absolute clock
+and originating cancellation gate before spending each poll. Typed output is
+not published after a deadline, cancellation, resource, or scientific refusal.
 
 ## Unsafe boundary
 
@@ -134,8 +165,10 @@ estimated diff semantics, proposed regime, empty/length errors, NaN/infinity/
 negative rejection, invalid registration, arithmetic overflow, malformed and
 forged calibration identities, delimiter-collision resistance, bounded
 identity, signed-zero canonicalization, scale-invariant rank admission, and
-deterministic replay; G4 pre-cancel, exact stride-boundary, mid-phase, and
-publication cancellation; and G5 execution/work/poll identity separation.
+deterministic replay; typed resource planning, affine budgeted registration and
+diff execution, retained last-maximum index ties, and receipt integrity; G4
+pre-cancel, exact stride-boundary, mid-phase, and publication cancellation; and
+G5 execution/work/poll identity separation.
 
 ## No-claim boundaries
 
@@ -165,6 +198,11 @@ publication cancellation; and G5 execution/work/poll identity separation.
   deadline enforcement, drain behavior, or a 200-microsecond cancellation
   bound. Registration also makes no retained provenance claim about the `Cx`
   under which it ran.
+- Typed planner byte counts are conservative semantic payload envelopes, not
+  allocator-overhead or process-RSS measurements. `CostUnits` is abstract and
+  is not a wall-time, currency, or energy certificate. A planner describes a
+  grant but does not itself admit an invocation; the parent `fs-exec` issuer
+  owns admission, the absolute deadline, and the terminal receipt.
 - The retained diff identity is a replay/integrity binding, not authenticated
   provenance. In addition to `StreamKey`, it excludes arena identity,
   cancel-gate state, scheduler state, and other internal `Cx` state.

@@ -21,6 +21,10 @@ linear-Gaussian core of weak-constraint assimilation.
   envelope. `mean` and
   `covariance` expose read-only slices; `component_mean` and `variance` are
   bounds-checked.
+- `diagonal_belief_invocation_resources(dimension)` returns the checked typed
+  work, poll, cost, evaluation, conservative live-memory, and retained-output
+  grant for diagonal construction. `Belief::diagonal_budgeted(..., &Cx,
+  &mut ChildBudget)` consumes only that affine parent-issued grant.
 - `Observation` — a private, checked scalar reading
   `value = operator·state + noise`. `Observation::new` rejects empty, all-zero,
   and non-finite operators; non-finite readings; non-positive noise; and
@@ -41,6 +45,14 @@ linear-Gaussian core of weak-constraint assimilation.
 - `assimilate_colored(&Belief, &[Observation], regime_param, lo, hi, &Cx) ->
   AssimilatedPosterior { belief, color, misfit_before, misfit_after }` — a
   read-only, regime-tagged **estimated candidate**. Access is through getters.
+- `colored_assimilation_invocation_resources(...)` returns the checked typed
+  grant and conservative payload envelope for a colored update.
+  `colored_assimilation_invocation_resources_for_shape(...)` derives the same
+  envelope from state dimension, observation shapes, and `ExecMode`, allowing a
+  parent to seal admission before constructing a validated belief.
+  `assimilate_colored_budgeted(..., &Cx, &mut ChildBudget)` reserves that
+  envelope before temporary allocation, accounts the whole update through the
+  same non-cloneable child, and publishes retained output only on success.
 - `assimilate_colored_with_shared_poll_quota(..., &Cx, &mut u32)` is the
   compositional seam for a parent workflow that owns one monotonically
   decreasing poll slice. It rejects a supplied slice above the ambient quota;
@@ -118,6 +130,19 @@ linear-Gaussian core of weak-constraint assimilation.
   enables update without misfit/hash; colored assimilation enables two misfit
   passes, update, and hashing. Successful data-dependent paths may consume less
   than the declared fail-closed bound.
+- Typed planners retain logical work and abstract cost in distinct dimensions
+  with equal numeric values, declare one scientific evaluation, and compute
+  poll and byte envelopes before an affine child can spend. Diagonal memory
+  covers the retained belief plus active-index, row-descriptor, scaled-cell,
+  and pivot-column PSD workspace. Colored assimilation memory covers retained
+  output and regime-row payload; canonical records, record descriptors, order
+  and merge-scratch indices; old/new belief overlap; Joseph vectors/matrices;
+  and PSD revalidation workspace. Output is a separate retained capacity.
+- Budgeted entry points charge work, cost, evaluation, every poll, memory, and
+  output to one borrowed `ChildBudget`. Scientific failures are latched into
+  the parent invocation receipt. Unused capacity returns only when the child
+  is consumed by `finish`; this crate cannot clone, increase, or reissue the
+  parent authority.
 - Candidate dispersion is `+infinity`, the shared explicit no-spread-claim
   sentinel. No API in this crate directly constructs `Color::Validated`.
 
@@ -128,9 +153,11 @@ panics. Empty/ragged/indefinite/unresolved/non-finite beliefs, malformed observa
 invalid identities and regimes, non-positive or non-finite noise, dimension
 mismatches, oversized aggregate count/work requests, degenerate innovations,
 and finite-input arithmetic overflow are refused. `WorkPlanOverflow`,
-`WorkPlanExceeded`, `PollQuotaExceedsAmbient`, and `Cancelled` distinguish
-planning, accounting, compositional-quota, and observed-cancellation failures;
-no partial belief/candidate is returned. Allocation failure remains
+`WorkPlanExceeded`, `PollQuotaExceedsAmbient`, `InvocationBudget`, and
+`Cancelled` distinguish planning, accounting, compositional-quota, typed
+invocation, and observed-cancellation failures; no partial belief/candidate is
+returned. Scientific preflight and domain refusals are latched fail-closed into
+the invocation. Allocation failure remains
 Rust's process-level behavior inside the admitted public resource envelope.
 Preflight checks both retained covariance and temporary interval-certificate
 matrix byte shapes before the initial checkpoint.
@@ -153,6 +180,10 @@ comparison-byte, and hash-byte tiles. Poll-quota exhaustion and
 `Cx::checkpoint` cancellation return exact completed/planned logical work and
 publish no partial result. The shared-quota seam supports a parent-owned
 invocation ledger but cannot authenticate the raw counter it receives.
+The budgeted forms instead poll their child authority, which checks an absolute
+clock and the originating cancellation gate before consuming each poll. They
+do not publish typed output after a deadline, cancellation, resource, or
+scientific refusal.
 
 ## Unsafe boundary
 
@@ -177,8 +208,10 @@ post-update validation; dense-state, observation-count, and multiplicative-work
 resource admission; deterministic replay; pre-cancel/final-publication
 cancellation; exact quota sweeps through validation, ordering, update, PSD,
 hash, and commit; hostile maximum-work cancellation; shared-quota depletion;
-and execution-mode, every budget field, every stream field, work, and poll
-identity binding.
+typed planner shapes, equality of validated-belief and pure shape preflights,
+affine budgeted diagonal/colored execution, and receipt integrity; and
+execution-mode, every budget field, every stream field, work, and poll identity
+binding.
 
 ## No-claim boundaries
 
@@ -221,3 +254,9 @@ identity binding.
   pause/resume state, deadline/cost enforcement, drain latency, or a
   200-microsecond cancellation bound. G5 is same-process replay for a fixed
   implementation/toolchain manifest, not cross-ISA bit stability.
+- Typed planner byte counts are conservative semantic payload envelopes, not
+  allocator-overhead or process-RSS measurements. `CostUnits` is abstract and
+  is not a wall-time, currency, or energy certificate. A planner describes a
+  grant but does not itself admit an invocation; the parent `fs-exec` issuer
+  owns admission, deadline/capability/accuracy identities, and the terminal
+  receipt.

@@ -5,17 +5,21 @@
 use fs_adjoint::transpose::Vjp;
 use fs_diffreal_e2e::{
     AS_BUILT_EVIDENCE_IDENTITY, AS_BUILT_STAGE, DIFFERENTIATION_EVIDENCE_IDENTITY,
-    DIFFERENTIATION_STAGE, DiffRealError, DifferentiationError, NoPromotionReceiptVerifier,
-    PRODUCTION_DIFFERENTIATION_PATH, PromotionAttestation, PromotionReceiptError,
-    PromotionReceiptVerifier, PromotionVerdict, PromotionVerificationDecision,
-    PromotionVerificationRequest, SPACETIME_EVIDENCE_IDENTITY, SPACETIME_STAGE, StageEvent,
-    StageLog, StageReason, StageRequirement, StageStatus, TOLERANCE_EVIDENCE_IDENTITY,
-    TOLERANCE_STAGE, differentiate_path, production_vjp_registry, promotion_policy_fingerprint,
-    run_battery, stage_as_built_loop, stage_differentiation, stage_differentiation_with_registry,
+    DIFFERENTIATION_STAGE, DiffRealError, DiffRealReport, DifferentiationError,
+    NoPromotionReceiptVerifier, PRODUCTION_DIFFERENTIATION_PATH, PromotionAttestation,
+    PromotionReceiptError, PromotionReceiptVerifier, PromotionVerdict,
+    PromotionVerificationDecision, PromotionVerificationRequest, SPACETIME_EVIDENCE_IDENTITY,
+    SPACETIME_STAGE, StageEvent, StageLog, StageReason, StageRequirement, StageStatus,
+    TOLERANCE_EVIDENCE_IDENTITY, TOLERANCE_STAGE, differentiate_path, production_vjp_registry,
+    promotion_policy_fingerprint, run_battery, run_battery_with_clock, stage_as_built_loop,
+    stage_as_built_loop_with_clock, stage_differentiation, stage_differentiation_with_registry,
     stage_spacetime_gated, stage_tolerance_allocation, stage_tolerance_allocation_with_samples,
     verify_sensitivity,
 };
-use fs_exec::{Budget, CancelGate, Cx, ExecMode, StreamKey};
+use fs_exec::{
+    Budget, CancelGate, Cx, ExecMode, InvocationDisposition, InvocationError, StreamKey, Time,
+    VirtualClock,
+};
 use fs_toleralloc::Action;
 use std::sync::Arc;
 
@@ -50,6 +54,12 @@ fn with_identity_cx<R>(
 
 fn active_cx<R>(f: impl FnOnce(&Cx<'_>) -> R) -> R {
     with_cx(&CancelGate::new(), Budget::INFINITE, f)
+}
+
+fn clocked_battery(budget: Budget) -> Result<DiffRealReport, DiffRealError> {
+    let gate = CancelGate::new();
+    let clock = VirtualClock::new();
+    with_cx(&gate, budget, |cx| run_battery_with_clock(cx, &clock))
 }
 
 #[test]
@@ -202,14 +212,15 @@ fn every_cx_identity_field_is_replay_bound() {
     };
     let base_budget = Budget::with_deadline_at_ns(100)
         .with_poll_quota(1_000)
-        .with_cost_quota(2_000)
+        .with_cost_quota(20_000)
         .with_priority(7);
+    let clock = VirtualClock::new();
     let report = with_identity_cx(
         &CancelGate::new(),
         base_budget,
         base_stream,
         ExecMode::Deterministic,
-        run_battery,
+        |cx| run_battery_with_clock(cx, &clock),
     )
     .expect("battery succeeds");
     let execution = report.execution_identity();
@@ -261,7 +272,7 @@ fn every_cx_identity_field_is_replay_bound() {
             ..base_budget
         },
         base_budget.with_poll_quota(base_budget.poll_quota + 1),
-        base_budget.with_cost_quota(2_001),
+        base_budget.with_cost_quota(20_001),
         Budget {
             cost_quota: None,
             ..base_budget
@@ -494,6 +505,314 @@ fn the_as_built_loop_localizes_a_defect_and_reduces_misfit() {
 }
 
 #[test]
+fn g0_as_built_receipt_is_one_completed_affine_transaction() {
+    let discovery = clocked_battery(Budget::INFINITE).expect("discover fixed invocation plan");
+    let required = discovery
+        .receipt(AS_BUILT_STAGE)
+        .and_then(|stage| stage.invocation())
+        .expect("as-built receipt carries invocation evidence")
+        .required();
+    let exact_budget = Budget::INFINITE
+        .with_poll_quota(required.polls().get())
+        .with_cost_quota(required.cost().get());
+    let report = clocked_battery(exact_budget).expect("exact typed envelope admits the battery");
+    let stage_receipt = report
+        .receipt(AS_BUILT_STAGE)
+        .expect("as-built stage receipt exists");
+    let invocation = stage_receipt
+        .invocation()
+        .expect("as-built stage retains the full invocation receipt");
+
+    assert_eq!(invocation.disposition(), InvocationDisposition::Completed);
+    assert!(invocation.failure().is_none());
+    assert!(invocation.verifies_integrity());
+    assert!(report.verifies_integrity());
+    assert!(
+        report.receipts().iter().all(|receipt| {
+            (receipt.stage() == AS_BUILT_STAGE) == receipt.invocation().is_some()
+        })
+    );
+    assert_eq!(invocation.limits().resources(), invocation.required());
+    assert_eq!(
+        invocation.memory_requested_bytes(),
+        invocation.memory_released_bytes(),
+        "every temporary scientific allocation is released before sealing"
+    );
+    assert!(invocation.memory_peak_bytes() <= required.memory().get());
+    assert!(invocation.output_retained_bytes() <= required.output().get());
+
+    let children = invocation.children();
+    let phases: Vec<_> = children.iter().map(|child| child.phase()).collect();
+    assert_eq!(
+        phases.as_slice(),
+        &[
+            "as-built.transaction",
+            "as-built.registration",
+            "as-built.comparison",
+            "as-built.prior",
+            "as-built.assimilation",
+            "as-built.publication",
+        ]
+    );
+    assert_eq!(children[0].parent(), None);
+    assert_eq!(children[0].granted(), required);
+    assert!(
+        children[1..]
+            .iter()
+            .all(|child| child.parent() == Some(children[0].id()))
+    );
+    assert!(
+        children
+            .iter()
+            .all(|child| child.disposition() == InvocationDisposition::Completed)
+    );
+    assert_eq!(
+        children[4].consumed().polls().get(),
+        46,
+        "the fixed assimilation consumes its exact mixed-stride poll count, not its cap"
+    );
+    assert_eq!(
+        children[0].consumed().polls().get(),
+        69,
+        "the transaction receipt retains the exact cumulative poll spend"
+    );
+    assert!(children[1..].iter().all(|child| {
+        child.direct_memory_peak_bytes() == child.memory_peak_bytes()
+            && child.memory_requested_bytes() == child.memory_released_bytes()
+            && child.output_retained_bytes() == child.direct_consumed().output().get()
+    }));
+    assert!(
+        phases.iter().all(|phase| !phase.contains("misfit")),
+        "misfit evidence comes from the single assimilation result, not reissued standalone work"
+    );
+}
+
+#[test]
+fn g3_as_built_fast_mode_derives_its_own_exact_work_plan() {
+    let deterministic = clocked_battery(Budget::INFINITE).expect("deterministic battery");
+    let fast_clock = VirtualClock::new();
+    let fast = with_identity_cx(
+        &CancelGate::new(),
+        Budget::INFINITE,
+        StreamKey {
+            seed: 0x6469_6666_7265_616c,
+            kernel_id: 1,
+            tile: 0,
+            iteration: 0,
+        },
+        ExecMode::Fast,
+        |cx| run_battery_with_clock(cx, &fast_clock),
+    )
+    .expect("fast-mode battery has a mode-aware preflight");
+    let deterministic_invocation = deterministic
+        .receipt(AS_BUILT_STAGE)
+        .and_then(|receipt| receipt.invocation())
+        .expect("deterministic invocation receipt");
+    let fast_invocation = fast
+        .receipt(AS_BUILT_STAGE)
+        .and_then(|receipt| receipt.invocation())
+        .expect("fast invocation receipt");
+
+    assert_eq!(
+        deterministic_invocation.required().work().get() - fast_invocation.required().work().get(),
+        9,
+        "candidate hashing accounts for the nine-byte mode-name difference"
+    );
+    assert_eq!(fast_invocation.children()[4].consumed().polls().get(), 46);
+    assert!(fast.verifies_integrity());
+}
+
+#[test]
+fn g3_as_built_exact_envelope_succeeds_and_one_below_refuses() {
+    let discovery = clocked_battery(Budget::INFINITE).expect("discover fixed invocation plan");
+    let required = discovery
+        .receipt(AS_BUILT_STAGE)
+        .and_then(|stage| stage.invocation())
+        .expect("as-built invocation receipt")
+        .required();
+    assert!(required.polls().get() > 0);
+    assert!(required.cost().get() > 0);
+
+    let exact = Budget::INFINITE
+        .with_poll_quota(required.polls().get())
+        .with_cost_quota(required.cost().get());
+    let exact_report = clocked_battery(exact).expect("exact typed resources succeed");
+    let exact_stage = exact_report
+        .receipt(AS_BUILT_STAGE)
+        .expect("exact run has as-built receipt");
+    let exact_invocation = exact_stage.invocation().expect("invocation is retained");
+    assert_eq!(exact_invocation.limits().resources(), required);
+
+    let poll_available = required.polls().get() - 1;
+    let poll_clock = VirtualClock::new();
+    let poll_refusal = with_cx(
+        &CancelGate::new(),
+        Budget::INFINITE
+            .with_poll_quota(poll_available)
+            .with_cost_quota(required.cost().get()),
+        |cx| stage_as_built_loop_with_clock(cx, &poll_clock),
+    );
+    assert!(matches!(
+        poll_refusal,
+        Err(DiffRealError::Invocation(InvocationError::ResourceExceeded {
+            resource: "polls",
+            requested,
+            available,
+        })) if requested == u128::from(required.polls().get())
+            && available == u128::from(poll_available)
+    ));
+
+    let cost_available = required.cost().get() - 1;
+    let cost_clock = VirtualClock::new();
+    let cost_refusal = with_cx(
+        &CancelGate::new(),
+        Budget::INFINITE
+            .with_poll_quota(required.polls().get())
+            .with_cost_quota(cost_available),
+        |cx| stage_as_built_loop_with_clock(cx, &cost_clock),
+    );
+    assert!(matches!(
+        cost_refusal,
+        Err(DiffRealError::Invocation(InvocationError::ResourceExceeded {
+            resource: "cost",
+            requested,
+            available,
+        })) if requested == u128::from(required.cost().get())
+            && available == u128::from(cost_available)
+    ));
+
+    let roomy = Budget::INFINITE
+        .with_poll_quota(required.polls().get() + 1)
+        .with_cost_quota(required.cost().get());
+    let roomy_report = clocked_battery(roomy).expect("one extra poll remains admissible");
+    let roomy_stage = roomy_report
+        .receipt(AS_BUILT_STAGE)
+        .expect("roomy run has as-built receipt");
+    assert_eq!(
+        exact_report.stage(AS_BUILT_STAGE),
+        roomy_report.stage(AS_BUILT_STAGE),
+        "resource-envelope mutation does not change the scientific diagnostic"
+    );
+    assert_ne!(
+        exact_invocation.root(),
+        roomy_stage
+            .invocation()
+            .expect("invocation retained")
+            .root(),
+        "the immutable envelope is bound into invocation identity"
+    );
+    let roomy_invocation = roomy_stage.invocation().expect("invocation retained");
+    assert_eq!(
+        exact_invocation.limits().accuracy_obligation(),
+        roomy_invocation.limits().accuracy_obligation(),
+        "ambient capacity cannot weaken the fixed accuracy obligation"
+    );
+    assert_eq!(
+        exact_invocation.limits().capability_scope(),
+        roomy_invocation.limits().capability_scope(),
+        "ambient capacity cannot widen the fixed capability scope"
+    );
+    assert_ne!(
+        exact_stage.root(),
+        roomy_stage.root(),
+        "the authenticated stage receipt binds the invocation receipt"
+    );
+    assert!(roomy_report.verifies_integrity());
+}
+
+#[test]
+fn g4_as_built_cancellation_and_deadline_publish_no_stage_or_report() {
+    let discovery = clocked_battery(Budget::INFINITE).expect("discover fixed invocation plan");
+    let required = discovery
+        .receipt(AS_BUILT_STAGE)
+        .and_then(|stage| stage.invocation())
+        .expect("as-built invocation receipt")
+        .required();
+    let exact = Budget::INFINITE
+        .with_poll_quota(required.polls().get())
+        .with_cost_quota(required.cost().get());
+
+    let cancelled = CancelGate::new();
+    cancelled.request();
+    let cancellation_clock = VirtualClock::new();
+    let cancellation = with_cx(&cancelled, exact, |cx| {
+        stage_as_built_loop_with_clock(cx, &cancellation_clock)
+    });
+    match cancellation {
+        Err(DiffRealError::InvocationDidNotComplete {
+            disposition,
+            receipt_root,
+            receipt,
+            cause: Some(cause),
+        }) => {
+            assert_eq!(disposition, InvocationDisposition::Cancelled);
+            assert_eq!(receipt_root, receipt.root());
+            assert_eq!(receipt.disposition(), InvocationDisposition::Cancelled);
+            assert!(receipt.verifies_integrity());
+            assert!(matches!(
+                *cause,
+                DiffRealError::Invocation(InvocationError::Cancelled {
+                    phase: "as-built.setup.begin"
+                })
+            ));
+        }
+        other => panic!("expected drained cancellation receipt, got {other:?}"),
+    }
+
+    let deadline_ns = 17;
+    let deadline_clock = VirtualClock::starting_at(Time::from_nanos(deadline_ns));
+    let deadline_budget = Budget::with_deadline_at_ns(deadline_ns)
+        .with_poll_quota(required.polls().get())
+        .with_cost_quota(required.cost().get());
+    let deadline = with_cx(&CancelGate::new(), deadline_budget, |cx| {
+        run_battery_with_clock(cx, &deadline_clock)
+    });
+    assert!(matches!(
+        deadline,
+        Err(DiffRealError::Invocation(
+            InvocationError::DeadlineExpired {
+                phase: "invocation-admission",
+                deadline_ns: 17,
+                observed_ns: 17,
+            }
+        ))
+    ));
+}
+
+#[test]
+fn g5_as_built_invocation_receipt_replays_bit_for_bit() {
+    let discovery = clocked_battery(Budget::INFINITE).expect("discover fixed invocation plan");
+    let required = discovery
+        .receipt(AS_BUILT_STAGE)
+        .and_then(|stage| stage.invocation())
+        .expect("as-built invocation receipt")
+        .required();
+    let exact = Budget::INFINITE
+        .with_poll_quota(required.polls().get())
+        .with_cost_quota(required.cost().get());
+    let first = clocked_battery(exact).expect("first deterministic run");
+    let replay = clocked_battery(exact).expect("deterministic replay");
+    let first_stage = first
+        .receipt(AS_BUILT_STAGE)
+        .expect("first as-built receipt");
+    let replay_stage = replay
+        .receipt(AS_BUILT_STAGE)
+        .expect("replay as-built receipt");
+
+    assert_eq!(first_stage.invocation(), replay_stage.invocation());
+    assert_eq!(first_stage.root(), replay_stage.root());
+    assert_eq!(first.receipt_root(), replay.receipt_root());
+    assert_eq!(
+        first_stage
+            .invocation()
+            .expect("first invocation")
+            .last_deadline_observation(),
+        None,
+        "a deadline-free replay does not bind nondeterministic wall time"
+    );
+}
+
+#[test]
 fn tolerance_uses_sealed_sensitivities_without_a_probability_claim() {
     let stage = active_cx(stage_tolerance_allocation).expect("tolerance stage evaluates");
     assert_eq!(stage.status, StageStatus::Passed);
@@ -646,6 +965,42 @@ fn assert_zero_cost_refused(stage: &'static str, result: Result<StageLog, DiffRe
     ));
 }
 
+fn assert_invocation_cancelled(result: Result<StageLog, DiffRealError>) {
+    match result {
+        Err(DiffRealError::InvocationDidNotComplete {
+            disposition,
+            receipt_root,
+            receipt,
+            cause: Some(cause),
+        }) => {
+            assert_eq!(disposition, InvocationDisposition::Cancelled);
+            assert_eq!(receipt_root, receipt.root());
+            assert_eq!(receipt.disposition(), InvocationDisposition::Cancelled);
+            assert!(receipt.verifies_integrity());
+            assert!(matches!(
+                *cause,
+                DiffRealError::Invocation(InvocationError::Cancelled { .. })
+            ));
+        }
+        other => panic!("expected drained invocation cancellation, got {other:?}"),
+    }
+}
+
+fn assert_invocation_resource_refused(
+    resource: &'static str,
+    available: u128,
+    result: Result<StageLog, DiffRealError>,
+) {
+    assert!(matches!(
+        result,
+        Err(DiffRealError::Invocation(InvocationError::ResourceExceeded {
+            resource: observed,
+            requested,
+            available: observed_available,
+        })) if observed == resource && requested > available && observed_available == available
+    ));
+}
+
 #[test]
 fn every_stage_polls_cancellation_and_admits_its_fixed_work_budget() {
     let cancelled = CancelGate::new();
@@ -654,10 +1009,7 @@ fn every_stage_polls_cancellation_and_admits_its_fixed_work_budget() {
         DIFFERENTIATION_STAGE,
         with_cx(&cancelled, Budget::INFINITE, stage_differentiation),
     );
-    assert_cancelled(
-        AS_BUILT_STAGE,
-        with_cx(&cancelled, Budget::INFINITE, stage_as_built_loop),
-    );
+    assert_invocation_cancelled(with_cx(&cancelled, Budget::INFINITE, stage_as_built_loop));
     assert_cancelled(
         TOLERANCE_STAGE,
         with_cx(&cancelled, Budget::INFINITE, stage_tolerance_allocation),
@@ -673,7 +1025,7 @@ fn every_stage_polls_cancellation_and_admits_its_fixed_work_budget() {
         DIFFERENTIATION_STAGE,
         with_cx(&active, zero, stage_differentiation),
     );
-    assert_zero_cost_refused(AS_BUILT_STAGE, with_cx(&active, zero, stage_as_built_loop));
+    assert_invocation_resource_refused("cost", 0, with_cx(&active, zero, stage_as_built_loop));
     assert_zero_cost_refused(
         TOLERANCE_STAGE,
         with_cx(&active, zero, stage_tolerance_allocation),

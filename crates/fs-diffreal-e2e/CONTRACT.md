@@ -12,23 +12,31 @@ Layer L6. This integration crate depends on `fs-ad`, `fs-adjoint` (with
 scalar fixture VJPs, an operator-name-bounded registry facade, the
 sensitivity-seal schema, typed stage events, and the battery's fail-closed
 report policy. It also owns canonical fixed-fixture transcripts, versioned
-stage/result receipts, the ordered report root, and the DiffReal-specific
-external-authority seam. Registry cardinality and declaration diagnostics are
-not bounded. The crate does not own a general differentiation or numerical
-primitive.
+stage/result receipts, the as-built stage's fixed invocation plan, the ordered
+report root, and the DiffReal-specific external-authority seam. The invocation
+plan composes the typed affine accounting implemented by `fs-exec`; this crate
+does not mint a second spend authority. Registry cardinality and declaration
+diagnostics are not bounded. The crate does not own a general differentiation
+or numerical primitive.
 
 ## Public types and semantics
 
 - `run_battery(&Cx) -> Result<DiffRealReport, DiffRealError>` runs all four
   stages. Cancellation or ambient-budget refusal returns a typed error and
   publishes no partial report.
+- `run_battery_with_clock(&Cx, &dyn TimeSource)` runs the same sealed path with
+  an injected monotonic clock. It exists for deterministic absolute-deadline
+  testing; the clock is not a caller-controlled scientific input.
 - `DiffRealReport` exposes read-only diagnostics, stage receipts, the ordered
   report root, exact execution identity, `complete()`,
   `all_required_passed()`, `structurally_ready()`, integrity/replay checks, and
   `authenticate(...)`. It exposes no raw promotion predicate.
 - `StageReceipt` is opaque crate-minted DATA. Its root binds the schema version,
   exact fixed-fixture input root, complete private result root, canonical typed
-  log fields, full `Cx` stream/mode/budget identity, and policy versions.
+  log fields, full `Cx` stream/mode/budget identity, and policy versions. The
+  as-built receipt additionally retains and binds the complete, integrity-
+  checked `fs_exec::InvocationReceipt`; every other fixed stage must carry no
+  invocation receipt under the current schema.
 - `PromotionReceiptVerifier` authenticates one immutable, domain-separated
   ordered report root. `NoPromotionReceiptVerifier` is the default deny-all
   authority. Attestation, request, and atomic decision must carry the exact
@@ -64,7 +72,9 @@ primitive.
   linearization falsifier seam; it is not a probability API. Neither injected
   seam can mint a stage receipt or enter a sealed report.
 - All four normal stage entry points take `&Cx` and return
-  `Result<StageLog, DiffRealError>`.
+  `Result<StageLog, DiffRealError>`. `stage_as_built_loop_with_clock` is the
+  deterministic-clock form of the same fixed as-built path; neither diagnostic
+  entry point can mint a `StageReceipt` outside `run_battery[_with_clock]`.
 - `DifferentiationError` and `DiffRealError` preserve typed structural,
   representability, cancellation, and budget refusals.
 
@@ -78,11 +88,23 @@ primitive.
    checked before numerical evaluation, so it cannot be hidden by NaN or
    infinity. Non-finite inputs, forward values, gradients, and rescaled values
    are typed refusals.
-2. **As-built loop** — a synthetic three-point rigid transform registers
-   (residual carried forward), the as-built delta is an Estimated candidate
-   carrying a calibration-label candidate, a seeded defect is LOCALIZED
-   (argmax deviation), and point-sensor assimilation reduces model-data
-   misfit. No scan ingestion, custody, measurement covariance, metrology
+2. **As-built loop** — one preflight admits the complete synthetic transaction
+   before scientific work starts. One non-cloneable root transfers affine
+   child leases to setup, registration, comparison, prior construction,
+   colored assimilation, and publication. Work, polls, cost, evaluations,
+   concurrent memory, and retained output remain distinct typed dimensions;
+   immutable accuracy and capability identities travel in the root envelope.
+   Preflight derives assimilation work from the actual execution mode. Its
+   292-poll/64-KiB/16-KiB child grant remains admission headroom; the accepted
+   fixed receipt must carry the lower planner's exact memory/output usage and
+   the fixture's exact 46-poll mixed-stride spend.
+   The three-point rigid transform registers (residual carried forward), the
+   as-built delta is an Estimated candidate carrying a calibration-label
+   candidate, a seeded defect is LOCALIZED using the retained deterministic
+   argmax, and point-sensor assimilation reduces model-data misfit. The stage
+   uses the `misfit_before`/`misfit_after` values retained by that single
+   assimilation result; it does not issue two redundant standalone misfit
+   evaluations. No scan ingestion, custody, measurement covariance, metrology
    validation, or calibration authority is inferred from the label.
 3. **Tolerance allocation** — both feature sensitivities come from
    `verify_sensitivity`; `ColorRank::Verified` is assigned only after receipt
@@ -123,10 +145,13 @@ Only the returned opaque wrapper has `promotion_ready()`.
 
 Stage roots are domain-separated, canonical, length-framed encodings with
 explicit numeric tags for every enum variant and exact IEEE-754 bits for every
-floating value. They do not use `Display`, `Debug`, JSON, sorting, or wall-clock
-data as identity. The ordered report root binds stage name/root pairs without
-reordering; omission, duplication, or reordering changes or invalidates it.
-Unknown stage/report receipt versions fail before authority verification.
+floating value. They do not use `Display`, `Debug`, JSON, sorting, or an
+unobserved ambient wall clock as identity. A deadline-bearing as-built receipt
+binds the injected monotonic clock observation used to enforce that absolute
+deadline; a deadline-free invocation performs and binds no clock observation.
+The ordered report root binds stage name/root pairs without reordering;
+omission, duplication, or reordering changes or invalidates it. Unknown
+stage/report/invocation receipt versions fail before authority verification.
 
 Additional stages must declare `Optional`. A well-formed optional gated,
 refused, or failed diagnostic does not block the decision over the fixed
@@ -135,8 +160,9 @@ the four required stages.
 
 ## Invariants
 
-- The current full battery is DETERMINISTIC for equal `Cx` provenance and
-  inputs. It may be externally authenticated as an exact run, but is
+- The current full battery is DETERMINISTIC for equal `Cx` provenance, inputs,
+  and injected logical-clock observations. Deadline-free runs do not observe a
+  clock. It may be externally authenticated as an exact run, but is
   intentionally **not complete or promotion-ready** while the required
   spacetime integration stage is gated.
 - Differentiation paths contain 1–16 operators; each name is at most 64 bytes.
@@ -153,10 +179,28 @@ the four required stages.
   receipts, tightens high sensitivity, loosens low sensitivity, and requires at
   least one loosened GD&T row carrying those derived fields. GD&T rows do not
   retain the receipt or its identity.
+- The as-built transaction has exactly one root admission and one ordered child
+  topology. Capacity cannot be cloned or reissued between nested scientific
+  stages. Admission checks the complete fixed plan before work; one-below poll
+  or cost envelopes refuse before a stage log exists. Unused capacity returns
+  exactly once, while consumed work/cost/evaluations and retained output do not.
+- The as-built invocation receipt is acceptable only with `Completed`
+  disposition, no latched failure, valid typed conservation/topology/memory
+  semantics, and a root that recomputes. Every leaf's direct work, polls, cost,
+  evaluations, memory request/release/peak, and retained output must equal the
+  fixed implementation plan; the transaction/root aggregates must equal those
+  leaves plus setup. A cap-only receipt with omitted polls, reservations, or
+  publication is rejected even if its root is recomputed. All admitted
+  temporary memory is released before sealing. The completed receipt is part of
+  the as-built `StageReceipt` root and therefore of the ordered report root.
+- The fixed as-built plan binds its accuracy obligation, capability scope,
+  absolute deadline, and full `Cx` identity. Accuracy or capability obligations
+  cannot be weakened by a nested stage. Work, poll, cost, evaluation, memory,
+  and output quantities are never converted into one another.
 - Crate-produced tolerance-stage sampled-linearization events always carry
   `probability_claimed=false`; caller-authored diagnostics carry no authority.
-- Differentiation fixture identity v2 and tolerance fixture identity v3 are not
-  interchangeable with their earlier schemas.
+- Differentiation fixture identity v2, as-built fixture identity v2, and
+  tolerance fixture identity v3 are not interchangeable with earlier schemas.
 - Every fixed stage receipt binds the logical stream (`seed`, `kernel_id`,
   `tile`, `iteration`), execution mode, deadline presence/value, poll quota,
   cost-quota presence/value, priority, exact fixed inputs, complete private
@@ -176,17 +220,24 @@ Scientific assertion failures are `StageStatus::Failed` with structured reason
 codes and retained typed events. Deliberate unavailability is `Gated`; an
 inability to evaluate admissibly is `Refused`. Fixed-fixture allocation or
 sample-check refusals become a refused stage instead of panicking. Production,
-dual, or FD disagreement becomes a failed stage. Cancellation, insufficient
-ambient stage quota, and lower-layer as-built/assimilation errors remain typed
-`DiffRealError` values and suppress the partial battery report.
+dual, or FD disagreement becomes a failed stage. As-built preflight and runtime
+admission failures remain typed `DiffRealError::Invocation(InvocationError)`.
+After root admission, every non-completed terminal path returns
+`InvocationDidNotComplete` with the complete immutable failure receipt, its
+disposition and redundant root, plus the original typed cause when one exists.
+Cancellation, expired deadline, insufficient typed capacity, and lower-layer
+as-built/assimilation errors suppress the partial stage log and battery report.
 
 ## Determinism class
 
 The fixed crate-authored battery and `production_vjp_registry` are fully
-deterministic for equal inputs and `Cx` provenance: no RNG and no I/O. Stage
-order, exact-bit numeric event fields, status/reason codes, versioned fixture
-identities, complete result roots, stage roots, ordered report roots, sealed
-content identities, and `Display` output are stable. Caller-injected `Vjp`
+deterministic for equal inputs, `Cx` provenance, and injected logical-clock
+observations: no RNG and no I/O. Deadline-free execution does not consult the
+clock, so its invocation receipt replays bit-for-bit without wall-time input.
+Stage order, child issue order and IDs, typed resource consumption, exact-bit
+numeric event fields, status/reason codes, versioned fixture identities,
+complete result roots, stage roots, ordered report roots, sealed content
+identities, and `Display` output are stable. Caller-injected `Vjp`
 implementations and caller-authored events are outside this determinism claim.
 
 ## Cancellation behavior
@@ -194,13 +245,20 @@ implementations and caller-authored events are outside this determinism claim.
 Every stage accepts `&Cx`, checks cancellation before fixed-work admission, and
 has a nonzero `cost_quota` threshold. Differentiation additionally checks at
 bounded forward-operator boundaries, around transpose/oracle work, and before
-publication. The as-built stage passes `Cx` through its bounded lower-layer
-operations. Tolerance checks between sealed sensitivity, allocation, reporting,
-and sampled-linearization phases. Spacetime checks before recording its gate.
+publication. The as-built stage admits one invocation ledger before work, then
+polls the injected absolute deadline before spending each typed poll and before
+observing cancellation. Its lower-layer registration, comparison, belief, and
+assimilation entry points spend the same affine child authority. A deadline hit
+requests cancellation, and every failing path drains child leases and memory
+reservations before terminal handling. Tolerance checks between sealed
+sensitivity, allocation, reporting, and sampled-linearization phases. Spacetime
+checks before recording its gate.
 
-Cancellation or insufficient ambient quota suppresses the partial battery
-report. These fixed threshold checks do not consume quota and are not a
-monotonic, non-reissuable, whole-battery budget ledger.
+Cancellation, expired deadline, insufficient ambient quota, or any affine
+accounting refusal suppresses the partial as-built `StageLog` and battery
+report. A post-admission failure returns its drained receipt as error evidence;
+only a completed, integrity-valid invocation receipt may be attached to the
+as-built stage receipt.
 
 ## Unsafe boundary
 
@@ -214,17 +272,24 @@ on its dependency to exercise the shared tape/VJP path.
 ## Conformance tests
 
 `tests/e2e.rs` covers the shared tape/VJP result, a perturbed-VJP kill test,
-dual-number gradient agreement, the coarse/fine FD study, sealed-receipt replay/integrity,
-valid/invalid unit rescaling, NaN, both infinities, finite-input intermediate
-overflow, a non-finite VJP result, missing-VJP precedence, typed as-built events, allocation direction,
-adverse supplied samples, explicit probability no-claim, the spacetime gate,
-one exact sampled-linearization event display golden, status/log displays,
-deterministic replay, pre- and injected mid-stage cancellation, and zero-cost
-admission for all four stages and the full battery. G3 receipt batteries cover
-independent input/result/event/root mutations, omission, duplication,
-reordering, wrong signatures, unknown/revoked keys, policy disagreement, and
-unknown versions. G5 batteries cover deterministic root replay and independent
-mismatch of every `Cx` stream, mode, deadline, poll, cost, and priority field.
+dual-number gradient agreement, the coarse/fine FD study, sealed-receipt
+replay/integrity, valid/invalid unit rescaling, NaN, both infinities,
+finite-input intermediate overflow, a non-finite VJP result, missing-VJP
+precedence, typed as-built events, allocation direction, adverse supplied
+samples, explicit probability no-claim, the spacetime gate, one exact
+sampled-linearization event display golden, status/log displays, deterministic
+replay, pre- and injected mid-stage cancellation, and zero-cost admission for
+all four stages and the full battery. The as-built invocation battery adds G0
+completed topology/conservation/memory checks, exact-envelope success, G3
+one-below poll and cost refusals, exact 46/69 assimilation/transaction poll
+spend, mode-aware Fast/Deterministic work plans, and receipt-root binding; G4
+cancellation and absolute-deadline suppression; and G5 bit-for-bit replay under
+an injected clock. Its exact phase topology also locks out redundant standalone
+misfit child work. Other G3 receipt batteries cover independent input/result/event/root
+mutations, omission, duplication, reordering, wrong signatures,
+unknown/revoked keys, policy disagreement, and unknown versions. Other G5
+batteries cover independent mismatch of every `Cx` stream, mode, deadline,
+poll, cost, and priority field.
 
 The private-field unit test in `src/lib.rs` mutates one bound sensitivity field
 and proves integrity recomputation rejects it. Report-policy unit tests cover
@@ -260,8 +325,11 @@ misfits, full allocation/GD&T rows and totals, and the robustness verdict.
   probability target only under its normal/first-order model assumptions.
 - GD&T rows carry sensitivity and color, but not the full metrology domain,
   residual uncertainty, custody, or manufacturing-process evidence.
-- Fixed cost thresholds are not consumed, monotonic, or non-reissuable budget
-  accounting. Public raw `Vjp` implementations remain subject to the shared
+- The as-built invocation receipt proves local affine accounting integrity, not
+  optimal resource use, scheduler fairness, physical energy cost, or scientific
+  validity. Its conservative poll, memory, and output capacities are fixed
+  policy envelopes; unused returned capacity is not evidence that the policy is
+  globally tight. Public raw `Vjp` implementations remain subject to the shared
   registry's arity contract; this crate does not turn an arbitrary panicking
   implementation into a typed refusal.
 - Stage 4 is GATED because this battery has no integrated, activated coupled

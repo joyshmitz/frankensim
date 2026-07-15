@@ -115,6 +115,7 @@ struct WorkProgress<'a, 's> {
     initial_poll_quota: u32,
     polls_remaining: u32,
     shared_polls_remaining: Option<&'a mut u32>,
+    invocation_poll: Option<&'a mut dyn fs_exec::InvocationPoll>,
 }
 
 impl<'a, 's> WorkProgress<'a, 's> {
@@ -130,6 +131,7 @@ impl<'a, 's> WorkProgress<'a, 's> {
             initial_poll_quota: cx.budget().poll_quota,
             polls_remaining: cx.budget().poll_quota,
             shared_polls_remaining: None,
+            invocation_poll: None,
         }
     }
 
@@ -149,10 +151,37 @@ impl<'a, 's> WorkProgress<'a, 's> {
             initial_poll_quota: *polls_remaining,
             polls_remaining: *polls_remaining,
             shared_polls_remaining: Some(polls_remaining),
+            invocation_poll: None,
+        }
+    }
+
+    fn new_with_invocation(
+        cx: &'a Cx<'s>,
+        plan: WorkPlan,
+        invocation_poll: &'a mut dyn fs_exec::InvocationPoll,
+    ) -> Self {
+        let polls = invocation_poll.invocation_polls_remaining().get();
+        Self {
+            cx,
+            completed: 0,
+            planned: plan.total,
+            scalar_since_poll: 0,
+            records_since_poll: 0,
+            comparison_bytes_since_poll: 0,
+            hash_bytes_since_poll: 0,
+            initial_poll_quota: polls,
+            polls_remaining: polls,
+            shared_polls_remaining: None,
+            invocation_poll: Some(invocation_poll),
         }
     }
 
     fn checkpoint(&mut self, phase: &'static str) -> Result<(), AssimError> {
+        if let Some(invocation) = self.invocation_poll.as_deref_mut() {
+            let result = invocation.invocation_poll(phase);
+            self.polls_remaining = invocation.invocation_polls_remaining().get();
+            return result.map_err(AssimError::InvocationBudget);
+        }
         if self.polls_remaining == 0 {
             return Err(self.cancelled(phase));
         }
@@ -300,7 +329,7 @@ impl Belief {
     /// # Errors
     /// Returns [`AssimError`] when the vectors have different lengths, are
     /// empty, contain non-finite values, or contain a negative variance.
-    pub fn diagonal(mut means: Vec<f64>, vars: &[f64], cx: &Cx<'_>) -> Result<Self, AssimError> {
+    pub fn diagonal(means: Vec<f64>, vars: &[f64], cx: &Cx<'_>) -> Result<Self, AssimError> {
         if means.len() != vars.len() {
             return Err(AssimError::DiagonalDimensionMismatch {
                 means: means.len(),
@@ -316,6 +345,112 @@ impl Belief {
             checked_square_allocation::<PsdCell>(means.len(), "diagonal PSD certificate")?;
         let plan = belief_validation_work_plan(means.len())?;
         let mut progress = WorkProgress::new(cx, plan);
+        Self::diagonal_planned(means, vars, &mut progress)
+    }
+
+    /// Construct a checked diagonal belief while consuming a caller-owned
+    /// remaining poll quota in place.
+    ///
+    /// This is the compositional form for a parent invocation that owns one
+    /// monotonically decreasing poll ledger across belief construction and
+    /// later assimilation. The raw counter itself is not authenticated; the
+    /// parent must keep it encapsulated and must not replace or increase it.
+    ///
+    /// # Errors
+    /// Returns [`AssimError::PollQuotaExceedsAmbient`] when the supplied slice
+    /// exceeds the ambient context, or the same structured failures as
+    /// [`Self::diagonal`] after admission.
+    pub fn diagonal_with_shared_poll_quota(
+        means: Vec<f64>,
+        vars: &[f64],
+        cx: &Cx<'_>,
+        polls_remaining: &mut u32,
+    ) -> Result<Self, AssimError> {
+        if *polls_remaining > cx.budget().poll_quota {
+            return Err(AssimError::PollQuotaExceedsAmbient {
+                requested: *polls_remaining,
+                ambient: cx.budget().poll_quota,
+            });
+        }
+        if means.len() != vars.len() {
+            return Err(AssimError::DiagonalDimensionMismatch {
+                means: means.len(),
+                variances: vars.len(),
+            });
+        }
+        if means.is_empty() {
+            return Err(AssimError::EmptyBelief);
+        }
+        validate_state_dimension(means.len())?;
+        let _matrix_entries = checked_square_usize(means.len(), "diagonal covariance")?;
+        let _certificate_bytes =
+            checked_square_allocation::<PsdCell>(means.len(), "diagonal PSD certificate")?;
+        let plan = belief_validation_work_plan(means.len())?;
+        let mut progress = WorkProgress::new_with_shared_poll_quota(cx, plan, polls_remaining);
+        Self::diagonal_planned(means, vars, &mut progress)
+    }
+
+    /// Construct a checked diagonal belief through one affine invocation
+    /// child. Work, cost, one evaluation, memory, output, deadline, polls, and
+    /// cancellation all flow through the same non-reissuable authority.
+    ///
+    /// # Errors
+    /// Returns [`AssimError::InvocationBudget`] for typed accounting refusal,
+    /// or the same scientific errors as [`Self::diagonal`].
+    pub fn diagonal_budgeted(
+        means: Vec<f64>,
+        vars: &[f64],
+        cx: &Cx<'_>,
+        budget: &mut fs_exec::ChildBudget<'_, '_>,
+    ) -> Result<Self, AssimError> {
+        if means.len() != vars.len() {
+            let error = AssimError::DiagonalDimensionMismatch {
+                means: means.len(),
+                variances: vars.len(),
+            };
+            latch_invocation_refusal(budget, "diagonal-belief.preflight", &error);
+            return Err(error);
+        }
+        let resources = match diagonal_belief_invocation_resources(means.len()) {
+            Ok(resources) => resources,
+            Err(error) => {
+                latch_invocation_refusal(budget, "diagonal-belief.preflight", &error);
+                return Err(error);
+            }
+        };
+        let plan = match belief_validation_work_plan(means.len()) {
+            Ok(plan) => plan,
+            Err(error) => {
+                latch_invocation_refusal(budget, "diagonal-belief.work-plan", &error);
+                return Err(error);
+            }
+        };
+        budget.charge_work(resources.work())?;
+        budget.charge_cost(resources.cost())?;
+        budget.charge_evaluations(resources.evaluations())?;
+        let mut memory =
+            budget.reserve_memory("assimilation-diagonal-belief", resources.memory())?;
+        let result = {
+            let mut progress = WorkProgress::new_with_invocation(cx, plan, memory.budget());
+            Self::diagonal_planned(means, vars, &mut progress)
+        };
+        let belief = match result {
+            Ok(belief) => belief,
+            Err(error) => {
+                latch_invocation_refusal(memory.budget(), "diagonal-belief.scientific", &error);
+                return Err(error);
+            }
+        };
+        memory.budget().publish_output(resources.output())?;
+        drop(memory);
+        Ok(belief)
+    }
+
+    fn diagonal_planned(
+        mut means: Vec<f64>,
+        vars: &[f64],
+        progress: &mut WorkProgress<'_, '_>,
+    ) -> Result<Self, AssimError> {
         progress.checkpoint("initial")?;
         for (index, value) in means.iter().enumerate() {
             progress.scalar("belief-validation", 1)?;
@@ -335,13 +470,13 @@ impl Belief {
                 return Err(AssimError::NegativeVariance { index });
             }
         }
-        let mut cov = zero_matrix(means.len(), "diagonal-materialization", &mut progress)?;
+        let mut cov = zero_matrix(means.len(), "diagonal-materialization", progress)?;
         for (i, &variance) in vars.iter().enumerate() {
             cov[i][i] = variance;
             progress.scalar("diagonal-materialization", 1)?;
         }
-        validate_belief_parts(&means, &cov, "belief-validation", &mut progress)?;
-        canonicalize_belief_zeros(&mut means, &mut cov, &mut progress)?;
+        validate_belief_parts(&means, &cov, "belief-validation", progress)?;
+        canonicalize_belief_zeros(&mut means, &mut cov, progress)?;
         progress.checkpoint("finalize")?;
         Ok(Self { mean: means, cov })
     }
@@ -603,6 +738,8 @@ pub enum AssimError {
         /// Maximum slice admitted by the ambient execution context.
         ambient: u32,
     },
+    /// A typed invocation child refused resource accounting.
+    InvocationBudget(fs_exec::InvocationError),
     /// The operation observed cancellation or exhausted its poll quota at a
     /// deterministic checkpoint. No partial belief or candidate is published.
     Cancelled {
@@ -764,6 +901,9 @@ impl fmt::Display for AssimError {
                 f,
                 "shared assimilation poll quota {requested} exceeds ambient quota {ambient}"
             ),
+            Self::InvocationBudget(error) => {
+                write!(f, "assimilation invocation refused: {error}")
+            }
             Self::Cancelled {
                 phase,
                 completed,
@@ -854,7 +994,20 @@ impl fmt::Display for AssimError {
     }
 }
 
-impl std::error::Error for AssimError {}
+impl std::error::Error for AssimError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvocationBudget(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl From<fs_exec::InvocationError> for AssimError {
+    fn from(error: fs_exec::InvocationError) -> Self {
+        Self::InvocationBudget(error)
+    }
+}
 
 /// The model-data misfit `Σⱼ (hⱼ·mean − yⱼ)² / rⱼ` — the weighted squared
 /// residual assimilation seeks to reduce.
@@ -1141,6 +1294,97 @@ pub fn assimilate_colored_with_shared_poll_quota(
     )
 }
 
+/// Assimilate an estimated candidate through one affine invocation child.
+///
+/// This is the receipt-authoritative compositional seam. Unlike the legacy raw
+/// shared counter, the borrowed child cannot be cloned or increased, checks an
+/// absolute deadline through its invocation clock, and accounts work, cost,
+/// one colored evaluation, live memory, retained output, polls, and
+/// cancellation in one ledger.
+///
+/// # Errors
+/// Returns [`AssimError::InvocationBudget`] for typed accounting refusal, or
+/// the same scientific failures as [`assimilate_colored`].
+pub fn assimilate_colored_budgeted(
+    prior: &Belief,
+    observations: &[Observation],
+    regime_param: &str,
+    regime_lo: f64,
+    regime_hi: f64,
+    cx: &Cx<'_>,
+    budget: &mut fs_exec::ChildBudget<'_, '_>,
+) -> Result<AssimilatedPosterior, AssimError> {
+    let resources = match colored_assimilation_invocation_resources(
+        prior,
+        observations,
+        regime_param,
+        regime_lo,
+        regime_hi,
+        cx,
+    ) {
+        Ok(resources) => resources,
+        Err(error) => {
+            latch_invocation_refusal(budget, "colored-assimilation.preflight", &error);
+            return Err(error);
+        }
+    };
+    let plan = match assimilation_work_plan(
+        prior,
+        observations,
+        2,
+        true,
+        true,
+        Some((regime_param, regime_lo, regime_hi)),
+        cx.mode().name().len(),
+    ) {
+        Ok(plan) => plan,
+        Err(error) => {
+            latch_invocation_refusal(budget, "colored-assimilation.work-plan", &error);
+            return Err(error);
+        }
+    };
+    budget.charge_work(resources.work())?;
+    budget.charge_cost(resources.cost())?;
+    budget.charge_evaluations(resources.evaluations())?;
+    let mut memory = budget.reserve_memory("assimilation-colored-candidate", resources.memory())?;
+    let result = {
+        let mut progress = WorkProgress::new_with_invocation(cx, plan, memory.budget());
+        assimilate_colored_planned(
+            prior,
+            observations,
+            regime_param,
+            regime_lo,
+            regime_hi,
+            cx,
+            plan,
+            &mut progress,
+        )
+    };
+    let candidate = match result {
+        Ok(candidate) => candidate,
+        Err(error) => {
+            latch_invocation_refusal(memory.budget(), "colored-assimilation.scientific", &error);
+            return Err(error);
+        }
+    };
+    memory.budget().publish_output(resources.output())?;
+    drop(memory);
+    Ok(candidate)
+}
+
+fn latch_invocation_refusal(
+    budget: &mut fs_exec::ChildBudget<'_, '_>,
+    phase: &'static str,
+    error: &AssimError,
+) {
+    let detail = error.to_string();
+    let reason = fs_blake3::hash_domain(
+        "frankensim.fs-assimilate.invocation-domain-refusal.v1",
+        detail.as_bytes(),
+    );
+    budget.refuse(phase, reason);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn assimilate_colored_planned(
     prior: &Belief,
@@ -1404,18 +1648,43 @@ fn assimilation_work_plan(
     regime: Option<(&str, f64, f64)>,
     mode_name_len: usize,
 ) -> Result<WorkPlan, AssimError> {
+    assimilation_work_plan_for_dimension(
+        prior.dim(),
+        observations,
+        misfit_passes,
+        include_update,
+        include_hash,
+        regime,
+        mode_name_len,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn assimilation_work_plan_for_dimension(
+    state_dimension: usize,
+    observations: &[Observation],
+    misfit_passes: u128,
+    include_update: bool,
+    include_hash: bool,
+    regime: Option<(&str, f64, f64)>,
+    mode_name_len: usize,
+) -> Result<WorkPlan, AssimError> {
+    validate_state_dimension(state_dimension)?;
+    if state_dimension == 0 {
+        return Err(AssimError::EmptyBelief);
+    }
     if include_update {
-        validate_assimilation_work(prior.dim(), observations.len())?;
-        let _dense_matrix_bytes = checked_square_usize(prior.dim(), "Joseph matrices")?;
+        validate_assimilation_work(state_dimension, observations.len())?;
+        let _dense_matrix_bytes = checked_square_usize(state_dimension, "Joseph matrices")?;
         let _certificate_bytes =
-            checked_square_allocation::<PsdCell>(prior.dim(), "posterior PSD certificate")?;
+            checked_square_allocation::<PsdCell>(state_dimension, "posterior PSD certificate")?;
     } else {
         // Read-only misfit evaluation is O(observations × state dimension)
         // and allocates no Joseph matrix. Applying the update-only cubic cap
         // here would reject otherwise admitted linear work.
         validate_observation_count(observations.len())?;
     }
-    let n = prior.dim() as u128;
+    let n = state_dimension as u128;
     let count = observations.len() as u128;
     let n2 = checked_work_mul(n, n, "assimilation preflight")?;
     let n3 = checked_work_mul(n2, n, "assimilation preflight")?;
@@ -1439,7 +1708,7 @@ fn assimilation_work_plan(
         let (regime_param, _, _) = regime.ok_or(AssimError::WorkPlanOverflow {
             phase: "candidate regime",
         })?;
-        candidate_identity_work_size(prior, observations, regime_param, mode_name_len)?
+        candidate_identity_work_size(state_dimension, observations, regime_param, mode_name_len)?
     } else {
         0
     };
@@ -1453,6 +1722,255 @@ fn assimilation_work_plan(
         psd_revalidation,
         hashing,
     )
+}
+
+fn typed_invocation_resources(
+    work: u128,
+    polls: u128,
+    memory_bytes: usize,
+    output_bytes: usize,
+) -> Result<fs_exec::InvocationResources, AssimError> {
+    let polls = u32::try_from(polls).map_err(|_| AssimError::WorkPlanOverflow {
+        phase: "invocation poll plan",
+    })?;
+    let cost = u64::try_from(work).map_err(|_| AssimError::WorkPlanOverflow {
+        phase: "invocation cost plan",
+    })?;
+    let memory = u64::try_from(memory_bytes).map_err(|_| AssimError::WorkPlanOverflow {
+        phase: "invocation memory plan",
+    })?;
+    let output = u64::try_from(output_bytes).map_err(|_| AssimError::WorkPlanOverflow {
+        phase: "invocation output plan",
+    })?;
+    Ok(fs_exec::InvocationResources::new(
+        fs_exec::WorkUnits::new(work),
+        fs_exec::PollUnits::new(polls),
+        fs_exec::CostUnits::new(cost),
+        fs_exec::EvaluationUnits::new(1),
+        fs_exec::MemoryBytes::new(memory),
+        fs_exec::OutputBytes::new(output),
+    ))
+}
+
+fn belief_retained_bytes(n: usize) -> Result<usize, AssimError> {
+    let rows =
+        n.checked_mul(core::mem::size_of::<Vec<f64>>())
+            .ok_or(AssimError::WorkPlanOverflow {
+                phase: "belief retained bytes",
+            })?;
+    let scalars = n
+        .checked_add(n.checked_mul(n).ok_or(AssimError::WorkPlanOverflow {
+            phase: "belief retained bytes",
+        })?)
+        .and_then(|count| count.checked_mul(core::mem::size_of::<f64>()))
+        .ok_or(AssimError::WorkPlanOverflow {
+            phase: "belief retained bytes",
+        })?;
+    core::mem::size_of::<Belief>()
+        .checked_add(rows)
+        .and_then(|bytes| bytes.checked_add(scalars))
+        .ok_or(AssimError::WorkPlanOverflow {
+            phase: "belief retained bytes",
+        })
+}
+
+fn linear_allocation_bytes<T>(count: usize, phase: &'static str) -> Result<usize, AssimError> {
+    count
+        .checked_mul(core::mem::size_of::<T>())
+        .ok_or(AssimError::WorkPlanOverflow { phase })
+}
+
+fn matrix_allocation_bytes<T>(dimension: usize, phase: &'static str) -> Result<usize, AssimError> {
+    let row_descriptors = linear_allocation_bytes::<Vec<T>>(dimension, phase)?;
+    let cells = checked_square_allocation::<T>(dimension, phase)?;
+    row_descriptors
+        .checked_add(cells)
+        .ok_or(AssimError::WorkPlanOverflow { phase })
+}
+
+fn checked_memory_sum(parts: &[usize], phase: &'static str) -> Result<usize, AssimError> {
+    parts.iter().try_fold(0_usize, |sum, part| {
+        sum.checked_add(*part)
+            .ok_or(AssimError::WorkPlanOverflow { phase })
+    })
+}
+
+fn psd_workspace_bytes(dimension: usize, phase: &'static str) -> Result<usize, AssimError> {
+    checked_memory_sum(
+        &[
+            linear_allocation_bytes::<usize>(dimension, phase)?,
+            matrix_allocation_bytes::<PsdCell>(dimension, phase)?,
+            linear_allocation_bytes::<PsdCell>(dimension, phase)?,
+        ],
+        phase,
+    )
+}
+
+/// Checked work/poll and conservative memory/output shape for a typed diagonal
+/// belief construction.
+///
+/// # Errors
+/// Returns the same dimension/work-shape errors as [`Belief::diagonal`].
+pub fn diagonal_belief_invocation_resources(
+    dimension: usize,
+) -> Result<fs_exec::InvocationResources, AssimError> {
+    validate_state_dimension(dimension)?;
+    if dimension == 0 {
+        return Err(AssimError::EmptyBelief);
+    }
+    let plan = belief_validation_work_plan(dimension)?;
+    let stride_polls = plan.total / SCALAR_POLL_STRIDE;
+    let polls = 2_u128
+        .checked_add(stride_polls)
+        .ok_or(AssimError::WorkPlanOverflow {
+            phase: "diagonal poll plan",
+        })?;
+    let output = belief_retained_bytes(dimension)?;
+    let certificate = psd_workspace_bytes(dimension, "diagonal memory plan")?;
+    let memory = checked_memory_sum(&[output, certificate], "diagonal memory plan")?;
+    typed_invocation_resources(plan.total, polls, memory, output)
+}
+
+/// Checked work and conservative poll/memory/output envelope for one colored
+/// assimilation transaction.
+///
+/// The poll envelope intentionally uses the smallest current stride (record
+/// materialization, 16 units), so it is a safe preflight cap for every mixed
+/// work category even when a future valid input changes category proportions.
+/// The runtime receipt retains actual polls consumed.
+///
+/// # Errors
+/// Returns the same shape/work errors as [`assimilate_colored`].
+pub fn colored_assimilation_invocation_resources(
+    prior: &Belief,
+    observations: &[Observation],
+    regime_param: &str,
+    regime_lo: f64,
+    regime_hi: f64,
+    cx: &Cx<'_>,
+) -> Result<fs_exec::InvocationResources, AssimError> {
+    colored_assimilation_invocation_resources_for_shape(
+        prior.dim(),
+        observations,
+        regime_param,
+        regime_lo,
+        regime_hi,
+        cx.mode(),
+    )
+}
+
+/// Checked invocation envelope derived solely from colored-assimilation input
+/// shape and execution mode.
+///
+/// This is the pure preflight seam for an orchestrator that must admit the
+/// whole transaction before constructing a validated [`Belief`]. Scientific
+/// values are still checked by [`assimilate_colored_budgeted`]; this function
+/// claims only the same dimension/count/work and payload envelope as
+/// [`colored_assimilation_invocation_resources`].
+///
+/// # Errors
+/// Returns a typed dimension/count/work-shape overflow.
+pub fn colored_assimilation_invocation_resources_for_shape(
+    state_dimension: usize,
+    observations: &[Observation],
+    regime_param: &str,
+    regime_lo: f64,
+    regime_hi: f64,
+    mode: fs_exec::ExecMode,
+) -> Result<fs_exec::InvocationResources, AssimError> {
+    let plan = assimilation_work_plan_for_dimension(
+        state_dimension,
+        observations,
+        2,
+        true,
+        true,
+        Some((regime_param, regime_lo, regime_hi)),
+        mode.name().len(),
+    )?;
+    let polls = 2_u128.checked_add(plan.total / RECORD_POLL_STRIDE).ok_or(
+        AssimError::WorkPlanOverflow {
+            phase: "colored assimilation poll plan",
+        },
+    )?;
+    let belief_output = belief_retained_bytes(state_dimension)?;
+    let regime_row = core::mem::size_of::<(String, (f64, f64))>()
+        .checked_add(regime_param.len())
+        .ok_or(AssimError::WorkPlanOverflow {
+            phase: "colored assimilation output plan",
+        })?;
+    let estimator =
+        CANDIDATE_ID_PREFIX
+            .len()
+            .checked_add(64)
+            .ok_or(AssimError::WorkPlanOverflow {
+                phase: "colored assimilation output plan",
+            })?;
+    let output = checked_memory_sum(
+        &[
+            core::mem::size_of::<AssimilatedPosterior>(),
+            belief_output,
+            regime_row,
+            estimator,
+        ],
+        "colored assimilation output plan",
+    )?;
+    let canonical_bytes = observations.iter().try_fold(0_usize, |sum, observation| {
+        sum.checked_add(canonical_observation_size(observation)?)
+            .ok_or(AssimError::WorkPlanOverflow {
+                phase: "colored assimilation memory plan",
+            })
+    })?;
+    let observation_count = observations.len();
+    let canonical_peak = checked_memory_sum(
+        &[
+            canonical_bytes,
+            linear_allocation_bytes::<CanonicalObservation<'static>>(
+                observation_count,
+                "colored assimilation memory plan",
+            )?,
+            linear_allocation_bytes::<usize>(
+                observation_count,
+                "colored assimilation memory plan",
+            )?
+            .checked_mul(2)
+            .ok_or(AssimError::WorkPlanOverflow {
+                phase: "colored assimilation memory plan",
+            })?,
+        ],
+        "colored assimilation memory plan",
+    )?;
+    let dimension = state_dimension;
+    let vector = linear_allocation_bytes::<f64>(dimension, "colored assimilation memory plan")?;
+    let matrix = matrix_allocation_bytes::<f64>(dimension, "colored assimilation memory plan")?;
+    let joseph_peak = checked_memory_sum(
+        &[
+            belief_output,
+            vector.checked_mul(4).ok_or(AssimError::WorkPlanOverflow {
+                phase: "colored assimilation memory plan",
+            })?,
+            matrix.checked_mul(3).ok_or(AssimError::WorkPlanOverflow {
+                phase: "colored assimilation memory plan",
+            })?,
+        ],
+        "colored assimilation memory plan",
+    )?;
+    let psd_peak = checked_memory_sum(
+        &[
+            belief_output,
+            belief_output,
+            vector.checked_mul(2).ok_or(AssimError::WorkPlanOverflow {
+                phase: "colored assimilation memory plan",
+            })?,
+            psd_workspace_bytes(dimension, "colored assimilation memory plan")?,
+        ],
+        "colored assimilation memory plan",
+    )?;
+    let update_peak = joseph_peak.max(psd_peak);
+    let memory = checked_memory_sum(
+        &[canonical_peak, update_peak, output],
+        "colored assimilation memory plan",
+    )?;
+    typed_invocation_resources(plan.total, polls, memory, output)
 }
 
 fn validate_belief_parts(
@@ -2568,7 +3086,7 @@ fn hash_atom(
 }
 
 fn candidate_identity_work_size(
-    prior: &Belief,
+    state_dimension: usize,
     observations: &[Observation],
     regime_param: &str,
     mode_name_len: usize,
@@ -2588,16 +3106,10 @@ fn candidate_identity_work_size(
         1,
     )?;
     add_identity_atoms(&mut total, b"state-dimension", size_of::<u128>(), 1)?;
-    add_identity_atoms(
-        &mut total,
-        b"prior-mean",
-        size_of::<u64>(),
-        prior.mean.len(),
-    )?;
+    add_identity_atoms(&mut total, b"prior-mean", size_of::<u64>(), state_dimension)?;
     let covariance_entries =
-        prior
-            .dim()
-            .checked_mul(prior.dim())
+        state_dimension
+            .checked_mul(state_dimension)
             .ok_or(AssimError::WorkPlanOverflow {
                 phase: "candidate prior covariance",
             })?;

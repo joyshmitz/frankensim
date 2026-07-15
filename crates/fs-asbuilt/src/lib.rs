@@ -144,6 +144,15 @@ pub enum RegError {
         /// Exact logical work units planned by the constant-time preflight.
         planned_work: u128,
     },
+    /// A caller-owned compositional poll slice exceeded the ambient context.
+    PollQuotaExceedsAmbient {
+        /// Supplied remaining polls.
+        requested: u32,
+        /// Poll quota carried by the ambient context.
+        ambient: u32,
+    },
+    /// A typed invocation child refused resource accounting.
+    InvocationBudget(fs_exec::InvocationError),
     /// Fewer fiducials than needed for a well-posed fit.
     TooFewFiducials {
         /// Supplied.
@@ -223,6 +232,13 @@ impl core::fmt::Display for RegError {
                 formatter,
                 "as-built operation cancelled during {phase} after {completed_work}/{planned_work} logical work units"
             ),
+            Self::PollQuotaExceedsAmbient { requested, ambient } => write!(
+                formatter,
+                "shared as-built poll quota {requested} exceeds ambient quota {ambient}"
+            ),
+            Self::InvocationBudget(error) => {
+                write!(formatter, "as-built invocation refused: {error}")
+            }
             Self::TooFewFiducials { have, need } => {
                 write!(formatter, "need at least {need} fiducials, got {have}")
             }
@@ -267,7 +283,20 @@ impl core::fmt::Display for RegError {
     }
 }
 
-impl std::error::Error for RegError {}
+impl std::error::Error for RegError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvocationBudget(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl From<fs_exec::InvocationError> for RegError {
+    fn from(error: fs_exec::InvocationError) -> Self {
+        Self::InvocationBudget(error)
+    }
+}
 
 fn require_finite(field: &'static str, value: f64) -> Result<(), RegError> {
     if value.is_finite() {
@@ -559,6 +588,122 @@ impl DiffWorkPlan {
     }
 }
 
+fn point_stride_crossings(point_count: usize) -> Result<u32, RegError> {
+    u32::try_from(point_count.saturating_sub(1) / AS_BUILT_POLL_STRIDE_POINTS).map_err(|_| {
+        RegError::WorkPlanOverflow {
+            operation: "as-built poll plan",
+        }
+    })
+}
+
+fn typed_invocation_resources(
+    work: u128,
+    polls: u32,
+    memory_bytes: u64,
+    output_bytes: u64,
+) -> Result<fs_exec::InvocationResources, RegError> {
+    let cost = u64::try_from(work).map_err(|_| RegError::WorkPlanOverflow {
+        operation: "as-built invocation cost",
+    })?;
+    Ok(fs_exec::InvocationResources::new(
+        fs_exec::WorkUnits::new(work),
+        fs_exec::PollUnits::new(polls),
+        fs_exec::CostUnits::new(cost),
+        fs_exec::EvaluationUnits::new(1),
+        fs_exec::MemoryBytes::new(memory_bytes),
+        fs_exec::OutputBytes::new(output_bytes),
+    ))
+}
+
+/// Exact logical-work/poll plan and conservative retained-memory/output shape
+/// for one registration call through the typed invocation seam.
+///
+/// # Errors
+/// Returns the same shape/work admission errors as [`register`].
+pub fn registration_invocation_resources(
+    point_count: usize,
+) -> Result<fs_exec::InvocationResources, RegError> {
+    let plan = RegistrationWorkPlan::preflight(point_count)?;
+    let stride_polls =
+        point_stride_crossings(point_count)?
+            .checked_mul(6)
+            .ok_or(RegError::WorkPlanOverflow {
+                operation: "register poll plan",
+            })?;
+    let polls = 8_u32
+        .checked_add(stride_polls)
+        .ok_or(RegError::WorkPlanOverflow {
+            operation: "register poll plan",
+        })?;
+    let output = u64::try_from(core::mem::size_of::<Registration>()).map_err(|_| {
+        RegError::WorkPlanOverflow {
+            operation: "register output shape",
+        }
+    })?;
+    typed_invocation_resources(plan.total, polls, 0, output)
+}
+
+/// Exact logical-work/poll plan and conservative retained-memory/output shape
+/// for one as-built delta call through the typed invocation seam.
+///
+/// The byte shape counts the result object, deviation payload, three fixed
+/// regime rows and their axis bytes, and the fixed hash-form estimator. It is
+/// a semantic retained-payload envelope, not an allocator-overhead claim.
+///
+/// # Errors
+/// Returns the same shape/work admission errors as [`as_built_diff`].
+pub fn as_built_diff_invocation_resources(
+    design_len: usize,
+    scanned_len: usize,
+    design_tolerance: f64,
+    measurement_noise: f64,
+    calibration_candidate: &str,
+) -> Result<fs_exec::InvocationResources, RegError> {
+    let plan = DiffWorkPlan::preflight(
+        design_len,
+        scanned_len,
+        design_tolerance,
+        measurement_noise,
+        calibration_candidate,
+    )?;
+    let stride_polls =
+        point_stride_crossings(design_len)?
+            .checked_mul(3)
+            .ok_or(RegError::WorkPlanOverflow {
+                operation: "as-built diff poll plan",
+            })?;
+    let polls = 9_u32
+        .checked_add(stride_polls)
+        .ok_or(RegError::WorkPlanOverflow {
+            operation: "as-built diff poll plan",
+        })?;
+    let deviation_bytes =
+        design_len
+            .checked_mul(core::mem::size_of::<f64>())
+            .ok_or(RegError::WorkPlanOverflow {
+                operation: "as-built diff output shape",
+            })?;
+    let regime_rows = 3_usize
+        .checked_mul(core::mem::size_of::<(String, (f64, f64))>())
+        .ok_or(RegError::WorkPlanOverflow {
+            operation: "as-built diff output shape",
+        })?;
+    let retained = core::mem::size_of::<AsBuiltDiff>()
+        .checked_add(deviation_bytes)
+        .and_then(|bytes| bytes.checked_add(regime_rows))
+        .and_then(|bytes| bytes.checked_add("registration_residual".len()))
+        .and_then(|bytes| bytes.checked_add("measurement_noise".len()))
+        .and_then(|bytes| bytes.checked_add("design_tolerance".len()))
+        .and_then(|bytes| bytes.checked_add("asbuilt-diff-v4:".len() + 64))
+        .ok_or(RegError::WorkPlanOverflow {
+            operation: "as-built diff output shape",
+        })?;
+    let retained = u64::try_from(retained).map_err(|_| RegError::WorkPlanOverflow {
+        operation: "as-built diff output shape",
+    })?;
+    typed_invocation_resources(plan.total, polls, retained, retained)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct WorkProgress {
     completed: u128,
@@ -650,6 +795,110 @@ fn scan_checkpoint(
 pub fn register(fiducials: &[Fiducial], cx: &fs_exec::Cx<'_>) -> Result<Registration, RegError> {
     let mut poll = |_: &'static str, _: u128, _: u128| cx.checkpoint();
     register_with_poll(fiducials, &mut poll)
+}
+
+/// Solve the rigid registration while consuming a caller-owned remaining poll
+/// quota in place.
+///
+/// This is the compositional seam for a parent invocation that owns one
+/// monotonically decreasing poll ledger across multiple scientific calls. The
+/// raw counter is deliberately not an authority object: the parent must keep
+/// it encapsulated and must not replace or increase it between calls.
+///
+/// # Errors
+/// Returns [`RegError::PollQuotaExceedsAmbient`] when the supplied slice is
+/// larger than the ambient context, [`RegError::Cancelled`] when the slice is
+/// exhausted or cancellation is requested, and the same scientific refusals
+/// as [`register`].
+pub fn register_with_shared_poll_quota(
+    fiducials: &[Fiducial],
+    cx: &fs_exec::Cx<'_>,
+    polls_remaining: &mut u32,
+) -> Result<Registration, RegError> {
+    admit_shared_poll_quota(cx, *polls_remaining)?;
+    let mut poll = |_: &'static str, _: u128, _: u128| consume_shared_poll(cx, polls_remaining);
+    register_with_poll(fiducials, &mut poll)
+}
+
+/// Solve registration through one affine invocation child.
+///
+/// Logical work, cost, one evaluation, every checkpoint, and retained output
+/// are charged to `budget`; no ambient allowance is reconstructed.
+///
+/// # Errors
+/// Returns [`RegError::InvocationBudget`] for typed resource/deadline/
+/// cancellation refusal, or the same scientific errors as [`register`].
+pub fn register_budgeted(
+    fiducials: &[Fiducial],
+    budget: &mut fs_exec::ChildBudget<'_, '_>,
+) -> Result<Registration, RegError> {
+    let resources = match registration_invocation_resources(fiducials.len()) {
+        Ok(resources) => resources,
+        Err(error) => {
+            latch_invocation_refusal(budget, "registration.preflight", &error);
+            return Err(error);
+        }
+    };
+    budget.charge_work(resources.work())?;
+    budget.charge_cost(resources.cost())?;
+    budget.charge_evaluations(resources.evaluations())?;
+    let mut invocation_failure = None;
+    let result = {
+        let mut poll = |phase: &'static str, _: u128, _: u128| {
+            budget.poll(phase).map_err(|error| {
+                invocation_failure = Some(error);
+                fs_exec::Cancelled
+            })
+        };
+        register_with_poll(fiducials, &mut poll)
+    };
+    if let Some(error) = invocation_failure {
+        return Err(RegError::InvocationBudget(error));
+    }
+    let registration = match result {
+        Ok(registration) => registration,
+        Err(error) => {
+            latch_invocation_refusal(budget, "registration.scientific", &error);
+            return Err(error);
+        }
+    };
+    budget.publish_output(resources.output())?;
+    Ok(registration)
+}
+
+fn latch_invocation_refusal(
+    budget: &mut fs_exec::ChildBudget<'_, '_>,
+    phase: &'static str,
+    error: &RegError,
+) {
+    let detail = error.to_string();
+    let reason = fs_blake3::hash_domain(
+        "frankensim.fs-asbuilt.invocation-domain-refusal.v1",
+        detail.as_bytes(),
+    );
+    budget.refuse(phase, reason);
+}
+
+fn admit_shared_poll_quota(cx: &fs_exec::Cx<'_>, requested: u32) -> Result<(), RegError> {
+    let ambient = cx.budget().poll_quota;
+    if requested > ambient {
+        Err(RegError::PollQuotaExceedsAmbient { requested, ambient })
+    } else {
+        Ok(())
+    }
+}
+
+fn consume_shared_poll(
+    cx: &fs_exec::Cx<'_>,
+    polls_remaining: &mut u32,
+) -> Result<(), fs_exec::Cancelled> {
+    if *polls_remaining == 0 {
+        return Err(fs_exec::Cancelled);
+    }
+    if *polls_remaining != u32::MAX {
+        *polls_remaining -= 1;
+    }
+    cx.checkpoint()
 }
 
 fn register_with_poll(
@@ -979,6 +1228,9 @@ pub struct AsBuiltDiff {
     deviations: Vec<f64>,
     /// The largest deviation.
     max_deviation: f64,
+    /// Last input-order index attaining the largest deviation (the same
+    /// deterministic tie rule as `Iterator::max_by`).
+    max_deviation_index: usize,
     /// Advisory one-dispersion screen for the design tolerance.
     within_tolerance: bool,
     /// Advisory one-dispersion screen for whether the maximum deviation rises
@@ -1001,6 +1253,12 @@ impl AsBuiltDiff {
     #[must_use]
     pub const fn max_deviation(&self) -> f64 {
         self.max_deviation
+    }
+
+    /// Last input-order index attaining [`Self::max_deviation`].
+    #[must_use]
+    pub const fn max_deviation_index(&self) -> usize {
+        self.max_deviation_index
     }
 
     /// Whether the maximum deviation plus one conservatively combined
@@ -1071,6 +1329,120 @@ pub fn as_built_diff(
         CURRENT_POLL_POLICY,
         &mut poll,
     )
+}
+
+/// Compute the as-built delta while consuming a caller-owned remaining poll
+/// quota in place.
+///
+/// The effective slice is shared with sibling scientific calls by the parent
+/// workflow. Supplying a fresh or increased counter starts a distinct
+/// caller-authored slice and is outside this low-level seam's authority claim.
+///
+/// # Errors
+/// Returns [`RegError::PollQuotaExceedsAmbient`] when the supplied slice is
+/// larger than the ambient context, [`RegError::Cancelled`] when it is
+/// exhausted or cancellation is requested, and the same scientific refusals
+/// as [`as_built_diff`].
+#[allow(clippy::too_many_arguments)]
+pub fn as_built_diff_with_shared_poll_quota(
+    reg: &Registration,
+    design: &[Point2],
+    scanned: &[Point2],
+    design_tolerance: f64,
+    measurement_noise: f64,
+    calibration_candidate: &str,
+    cx: &fs_exec::Cx<'_>,
+    polls_remaining: &mut u32,
+) -> Result<AsBuiltDiff, RegError> {
+    admit_shared_poll_quota(cx, *polls_remaining)?;
+    let execution = ExecutionIdentity::from_cx(cx);
+    let mut poll = |_: &'static str, _: u128, _: u128| consume_shared_poll(cx, polls_remaining);
+    as_built_diff_with_poll(
+        reg,
+        design,
+        scanned,
+        design_tolerance,
+        measurement_noise,
+        calibration_candidate,
+        execution,
+        CURRENT_POLL_POLICY,
+        &mut poll,
+    )
+}
+
+/// Compute the as-built delta through one affine invocation child.
+///
+/// The conservative retained-payload envelope is reserved before the first
+/// allocation. On success it transfers from live memory to retained output;
+/// on every error/unwind the RAII memory charge releases and no result is
+/// published.
+///
+/// # Errors
+/// Returns [`RegError::InvocationBudget`] for typed resource/deadline/
+/// cancellation refusal, or the same scientific errors as [`as_built_diff`].
+#[allow(clippy::too_many_arguments)]
+pub fn as_built_diff_budgeted(
+    reg: &Registration,
+    design: &[Point2],
+    scanned: &[Point2],
+    design_tolerance: f64,
+    measurement_noise: f64,
+    calibration_candidate: &str,
+    cx: &fs_exec::Cx<'_>,
+    budget: &mut fs_exec::ChildBudget<'_, '_>,
+) -> Result<AsBuiltDiff, RegError> {
+    let resources = match as_built_diff_invocation_resources(
+        design.len(),
+        scanned.len(),
+        design_tolerance,
+        measurement_noise,
+        calibration_candidate,
+    ) {
+        Ok(resources) => resources,
+        Err(error) => {
+            latch_invocation_refusal(budget, "as-built-diff.preflight", &error);
+            return Err(error);
+        }
+    };
+    budget.charge_work(resources.work())?;
+    budget.charge_cost(resources.cost())?;
+    budget.charge_evaluations(resources.evaluations())?;
+    let mut memory = budget.reserve_memory("as-built-diff-retained", resources.memory())?;
+    let execution = ExecutionIdentity::from_cx(cx);
+    let mut invocation_failure = None;
+    let result = {
+        let child = memory.budget();
+        let mut poll = |phase: &'static str, _: u128, _: u128| {
+            child.poll(phase).map_err(|error| {
+                invocation_failure = Some(error);
+                fs_exec::Cancelled
+            })
+        };
+        as_built_diff_with_poll(
+            reg,
+            design,
+            scanned,
+            design_tolerance,
+            measurement_noise,
+            calibration_candidate,
+            execution,
+            CURRENT_POLL_POLICY,
+            &mut poll,
+        )
+    };
+    if let Some(error) = invocation_failure {
+        return Err(RegError::InvocationBudget(error));
+    }
+    let diff = match result {
+        Ok(diff) => diff,
+        Err(error) => {
+            latch_invocation_refusal(memory.budget(), "as-built-diff.scientific", &error);
+            return Err(error);
+        }
+    };
+    memory.budget().publish_output(resources.output())?;
+    drop(memory);
+    Ok(diff)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1161,6 +1533,7 @@ fn as_built_diff_with_poll(
 
     operation_checkpoint(DIFF_MAXIMUM_PHASE, progress, poll)?;
     let mut max_deviation = 0.0_f64;
+    let mut max_deviation_index = 0_usize;
     for (index, deviation) in deviations.iter().copied().enumerate() {
         scan_checkpoint(
             index,
@@ -1169,7 +1542,10 @@ fn as_built_diff_with_poll(
             progress,
             poll,
         )?;
-        max_deviation = max_deviation.max(deviation);
+        if deviation >= max_deviation {
+            max_deviation = deviation;
+            max_deviation_index = index;
+        }
         progress.complete_point()?;
     }
     progress.require_completed(
@@ -1218,6 +1594,7 @@ fn as_built_diff_with_poll(
     let output = AsBuiltDiff {
         deviations,
         max_deviation,
+        max_deviation_index,
         within_tolerance,
         above_noise_floor,
         proposed_regime,

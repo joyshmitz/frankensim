@@ -5,11 +5,17 @@ use fs_assimilate::{
     AssimError, AssimilatedPosterior, Belief, Color, MAX_DENSE_OBSERVATIONS, MAX_DENSE_STATE_DIM,
     MAX_DENSE_UPDATE_CUBIC_WORK, Observation, PSD_ADMISSION_POLICY_VERSION,
     assimilate as assimilate_with_cx, assimilate_all as assimilate_all_with_cx,
-    assimilate_colored as assimilate_colored_with_cx, assimilate_colored_with_shared_poll_quota,
+    assimilate_colored as assimilate_colored_with_cx, assimilate_colored_budgeted,
+    assimilate_colored_with_shared_poll_quota, colored_assimilation_invocation_resources,
+    colored_assimilation_invocation_resources_for_shape, diagonal_belief_invocation_resources,
     misfit as misfit_with_cx, point_sensor, scan_observation,
 };
+use fs_blake3::hash_domain;
 use fs_evidence::{MAX_COLOR_IDENTITY_BYTES, color_leaf_identity_reason};
-use fs_exec::{Budget, CancelGate, Cx, ExecMode, StreamKey};
+use fs_exec::{
+    Budget, CancelGate, Cx, ExecMode, InvocationAdmitter, InvocationDisposition, InvocationLimits,
+    StreamKey, VirtualClock,
+};
 
 const TEST_STREAM: StreamKey = StreamKey {
     seed: 0x000A_5511_1A7E,
@@ -239,6 +245,128 @@ fn the_assimilated_posterior_is_an_honest_bounded_estimate() {
         }
         other => panic!("expected estimated candidate, got {other:?}"),
     }
+}
+
+#[test]
+fn typed_invocation_plans_drive_budgeted_belief_and_colored_assimilation() {
+    let means = vec![0.0, 0.0];
+    let variances = [10.0, 4.0];
+    let observations = [
+        sensor(0, 2, 5.0, 1.0, "typed-gauge-x"),
+        sensor(1, 2, -2.0, 0.5, "typed-gauge-y"),
+    ];
+    let belief_resources = diagonal_belief_invocation_resources(means.len())
+        .expect("diagonal shape has a typed invocation plan");
+
+    assert_eq!(belief_resources.evaluations().get(), 1);
+    assert_eq!(
+        belief_resources.cost().get(),
+        u64::try_from(belief_resources.work().get()).expect("fixture work fits u64")
+    );
+    assert!(belief_resources.polls().get() >= 2);
+    assert!(belief_resources.memory().get() >= belief_resources.output().get());
+    assert!(belief_resources.output().get() > 0);
+
+    let (posterior, receipt) = with_cx(|cx| {
+        let planning_prior = Belief::diagonal(means.clone(), &variances, cx)
+            .expect("planning prior is scientifically valid");
+        let assimilation_resources = colored_assimilation_invocation_resources(
+            &planning_prior,
+            &observations,
+            "Re",
+            1.0,
+            2.0,
+            cx,
+        )
+        .expect("colored assimilation shape has a typed invocation plan");
+        let shape_resources = colored_assimilation_invocation_resources_for_shape(
+            planning_prior.dim(),
+            &observations,
+            "Re",
+            1.0,
+            2.0,
+            cx.mode(),
+        )
+        .expect("pure shape preflight matches the validated-prior planner");
+        assert_eq!(assimilation_resources, shape_resources);
+        let fast_resources = colored_assimilation_invocation_resources_for_shape(
+            planning_prior.dim(),
+            &observations,
+            "Re",
+            1.0,
+            2.0,
+            ExecMode::Fast,
+        )
+        .expect("fast-mode shape is admitted independently");
+        assert_eq!(
+            assimilation_resources.work().get() - fast_resources.work().get(),
+            u128::try_from("deterministic".len() - "fast".len())
+                .expect("mode-name length difference fits u128"),
+            "mode-name bytes are part of the authenticated candidate work"
+        );
+        assert_eq!(assimilation_resources.memory(), fast_resources.memory());
+        assert_eq!(assimilation_resources.output(), fast_resources.output());
+        assert_eq!(assimilation_resources.evaluations().get(), 1);
+        assert_eq!(
+            assimilation_resources.cost().get(),
+            u64::try_from(assimilation_resources.work().get()).expect("fixture work fits u64")
+        );
+        assert!(assimilation_resources.polls().get() >= 2);
+        assert!(assimilation_resources.memory().get() >= assimilation_resources.output().get());
+
+        let required = belief_resources
+            .checked_add(assimilation_resources)
+            .expect("fixture resource sum is representable");
+        let limits = InvocationLimits::new(
+            required,
+            None,
+            hash_domain("fs-assimilate.test.accuracy", b"typed-budget"),
+            hash_domain("fs-assimilate.test.capability", b"typed-budget"),
+        );
+        let admission = InvocationAdmitter::new()
+            .admit(
+                hash_domain("fs-assimilate.test.invocation", b"typed-budget"),
+                limits,
+                required,
+            )
+            .expect("exact typed plan is admitted once");
+        let clock = VirtualClock::new();
+        let mut root = admission
+            .begin(cx, &clock)
+            .expect("deadline-free admission");
+
+        let prior = {
+            let mut child = root
+                .split_child("diagonal-belief", belief_resources)
+                .expect("belief construction receives only its sealed child grant");
+            let prior = Belief::diagonal_budgeted(means, &variances, cx, &mut child)
+                .expect("budgeted belief construction completes");
+            assert_eq!(
+                child.finish().expect("belief child finalizes"),
+                InvocationDisposition::Completed
+            );
+            prior
+        };
+        let posterior = {
+            let mut child = root
+                .split_child("colored-assimilation", assimilation_resources)
+                .expect("assimilation receives only its sealed child grant");
+            let posterior =
+                assimilate_colored_budgeted(&prior, &observations, "Re", 1.0, 2.0, cx, &mut child)
+                    .expect("budgeted colored assimilation completes");
+            assert_eq!(
+                child.finish().expect("assimilation child finalizes"),
+                InvocationDisposition::Completed
+            );
+            posterior
+        };
+        (posterior, root.finish().expect("root invocation finalizes"))
+    });
+
+    assert!(posterior.misfit_after() < posterior.misfit_before());
+    assert_eq!(receipt.disposition(), InvocationDisposition::Completed);
+    assert!(receipt.verifies_integrity());
+    assert_eq!(receipt.children().len(), 2);
 }
 
 #[test]
@@ -1348,6 +1476,31 @@ fn contract_tracks_live_dependencies_api_schema_cancellation_and_no_claims() {
             "assimilate_colored(&Belief, &[Observation], regime_param, lo, hi, &Cx)",
         ),
         (
+            "Public types and semantics",
+            "pub fn diagonal_belief_invocation_resources(",
+            "diagonal_belief_invocation_resources(dimension)",
+        ),
+        (
+            "Public types and semantics",
+            "pub fn diagonal_budgeted(",
+            "Belief::diagonal_budgeted(..., &Cx, &mut ChildBudget)",
+        ),
+        (
+            "Public types and semantics",
+            "pub fn colored_assimilation_invocation_resources(",
+            "colored_assimilation_invocation_resources(...)",
+        ),
+        (
+            "Public types and semantics",
+            "pub fn colored_assimilation_invocation_resources_for_shape(",
+            "colored_assimilation_invocation_resources_for_shape(...) derives the same envelope",
+        ),
+        (
+            "Public types and semantics",
+            "pub fn assimilate_colored_budgeted(",
+            "assimilate_colored_budgeted(..., &Cx, &mut ChildBudget)",
+        ),
+        (
             "Invariants",
             "const CANDIDATE_ID_PREFIX: &str = \"assimilation-candidate:v4:\";",
             "assimilation-candidate:v4:<64 lowercase hex>",
@@ -1398,6 +1551,8 @@ fn contract_tracks_live_dependencies_api_schema_cancellation_and_no_claims() {
         "not transform covariance",
         "not cross-ISA bit stability",
         "exposes no promotion API",
+        "Typed planner byte counts are conservative semantic payload envelopes",
+        "the parent fs-exec issuer owns admission, deadline/capability/accuracy identities, and the terminal receipt",
     ] {
         assert_contract_fact(
             contract,

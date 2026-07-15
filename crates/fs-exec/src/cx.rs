@@ -564,6 +564,11 @@ impl<'s> Cx<'s> {
         }
     }
 
+    /// Crate-internal authority binding for invocation-scoped accounting.
+    pub(crate) const fn cancel_gate(&self) -> &'s CancelGate {
+        self.gate
+    }
+
     /// Non-consuming form of the poll for `while !cx.is_cancel_requested()`
     /// loop shapes.
     #[must_use]

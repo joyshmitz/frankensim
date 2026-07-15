@@ -6,9 +6,14 @@
 use fs_asbuilt::{
     AS_BUILT_POLL_POLICY_VERSION, AS_BUILT_POLL_STRIDE_BYTES, AS_BUILT_POLL_STRIDE_POINTS,
     AS_BUILT_WORK_PLAN_VERSION, Color, Fiducial, Point2, RegError, Registration, as_built_diff,
-    register, well_posed,
+    as_built_diff_budgeted, as_built_diff_invocation_resources, register, register_budgeted,
+    registration_invocation_resources, well_posed,
 };
-use fs_exec::{Budget, CancelGate, Cx, ExecMode, StreamKey};
+use fs_blake3::hash_domain;
+use fs_exec::{
+    Budget, CancelGate, Cx, ExecMode, InvocationAdmitter, InvocationDisposition, InvocationLimits,
+    StreamKey, VirtualClock,
+};
 
 fn with_cx<R>(cancelled: bool, mode: ExecMode, budget: Budget, f: impl FnOnce(&Cx<'_>) -> R) -> R {
     let gate = CancelGate::new_clock_free();
@@ -219,6 +224,103 @@ fn the_as_built_diff_is_an_estimated_candidate_with_a_proposed_regime() {
         }
         other => panic!("expected estimated candidate, got {other:?}"),
     }
+}
+
+#[test]
+fn typed_invocation_plans_drive_budgeted_registration_and_diff_without_reissuing_authority() {
+    let fiducials: Vec<_> = triangle()
+        .into_iter()
+        .map(|datum| Fiducial::new(datum, datum))
+        .collect();
+    let design = [point(0.0, 0.0), point(1.0, 0.0), point(2.0, 0.0)];
+    let scanned = [point(0.0, 0.25), point(1.0, 0.25), point(2.0, 0.25)];
+    let calibration = "typed-budget-test";
+    let registration_resources = registration_invocation_resources(fiducials.len())
+        .expect("registration shape has a typed invocation plan");
+    let diff_resources =
+        as_built_diff_invocation_resources(design.len(), scanned.len(), 0.5, 0.01, calibration)
+            .expect("diff shape has a typed invocation plan");
+
+    assert_eq!(registration_resources.work().get(), 18);
+    assert_eq!(registration_resources.cost().get(), 18);
+    assert_eq!(registration_resources.evaluations().get(), 1);
+    assert_eq!(registration_resources.memory().get(), 0);
+    assert!(registration_resources.output().get() > 0);
+    assert_eq!(
+        diff_resources.cost().get(),
+        u64::try_from(diff_resources.work().get()).expect("fixture work fits u64")
+    );
+    assert_eq!(diff_resources.evaluations().get(), 1);
+    assert_eq!(diff_resources.memory(), diff_resources.output());
+    assert!(diff_resources.polls().get() > 0);
+
+    let required = registration_resources
+        .checked_add(diff_resources)
+        .expect("fixture resource sum is representable");
+    let (diff, receipt) = with_default_cx(|cx| {
+        let clock = VirtualClock::new();
+        let limits = InvocationLimits::new(
+            required,
+            None,
+            hash_domain("fs-asbuilt.test.accuracy", b"typed-budget"),
+            hash_domain("fs-asbuilt.test.capability", b"typed-budget"),
+        );
+        let admission = InvocationAdmitter::new()
+            .admit(
+                hash_domain("fs-asbuilt.test.invocation", b"typed-budget"),
+                limits,
+                required,
+            )
+            .expect("exact typed plan is admitted once");
+        let mut root = admission
+            .begin(cx, &clock)
+            .expect("deadline-free admission");
+
+        let registration = {
+            let mut child = root
+                .split_child("registration", registration_resources)
+                .expect("registration receives only its sealed child grant");
+            let registration = register_budgeted(&fiducials, &mut child)
+                .expect("budgeted identity registration completes");
+            assert_eq!(
+                child.finish().expect("registration child finalizes"),
+                InvocationDisposition::Completed
+            );
+            registration
+        };
+        let diff = {
+            let mut child = root
+                .split_child("difference", diff_resources)
+                .expect("diff receives only its sealed child grant");
+            let diff = as_built_diff_budgeted(
+                &registration,
+                &design,
+                &scanned,
+                0.5,
+                0.01,
+                calibration,
+                cx,
+                &mut child,
+            )
+            .expect("budgeted diff completes");
+            assert_eq!(
+                child.finish().expect("diff child finalizes"),
+                InvocationDisposition::Completed
+            );
+            diff
+        };
+        (diff, root.finish().expect("root invocation finalizes"))
+    });
+
+    assert_eq!(diff.max_deviation().to_bits(), 0.25_f64.to_bits());
+    assert_eq!(
+        diff.max_deviation_index(),
+        2,
+        "equal maxima retain the last input-order index without a second traversal"
+    );
+    assert_eq!(receipt.disposition(), InvocationDisposition::Completed);
+    assert!(receipt.verifies_integrity());
+    assert_eq!(receipt.children().len(), 2);
 }
 
 #[test]
@@ -745,6 +847,26 @@ fn contract_tracks_live_dependencies_api_schema_cancellation_and_no_claims() {
             "as_built_diff(&Registration, design, scanned, design_tolerance, measurement_noise, calibration_candidate, &fs_exec::Cx<'_>)",
         ),
         (
+            "Public types and semantics",
+            "pub fn registration_invocation_resources(",
+            "registration_invocation_resources(point_count)",
+        ),
+        (
+            "Public types and semantics",
+            "pub fn register_budgeted(",
+            "register_budgeted(fiducials, &mut ChildBudget)",
+        ),
+        (
+            "Public types and semantics",
+            "pub fn as_built_diff_invocation_resources(",
+            "as_built_diff_invocation_resources(...)",
+        ),
+        (
+            "Public types and semantics",
+            "pub const fn max_deviation_index(&self) -> usize",
+            "max_deviation_index() retains the last input-order index attaining the maximum",
+        ),
+        (
             "Invariants",
             "const AS_BUILT_ESTIMATOR_SCHEMA: &[u8] = b\"fs-asbuilt-diff-estimator-v4\";",
             "asbuilt-diff-v4 identity",
@@ -779,6 +901,8 @@ fn contract_tracks_live_dependencies_api_schema_cancellation_and_no_claims() {
         "## No-claim boundaries",
         "not transform covariance or a pointwise spatial uncertainty bound",
         "not an instruction count or a guarantee about wall-clock latency, memory pressure, deadline enforcement",
+        "Typed planner byte counts are conservative semantic payload envelopes",
+        "the parent fs-exec issuer owns admission, the absolute deadline, and the terminal receipt",
     ] {
         assert_contract_fact(
             contract,

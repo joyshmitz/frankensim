@@ -214,6 +214,31 @@ fs-blake3, fs-substrate, fs-obs.
   creating), `kill_registered` (structured missing-gate error), `release`.
   Everything a candidate evaluates — pool runs, races, drives — shares its
   explicitly registered gate.
+- `InvocationResources` and its six unit newtypes (`WorkUnits`, `PollUnits`,
+  `CostUnits`, `EvaluationUnits`, `MemoryBytes`, `OutputBytes`) form a
+  dimension-preserving affine capacity vector. `InvocationAdmitter::admit`
+  consumes one issuer and produces a non-cloneable one-shot admission;
+  `InvocationAdmission::begin` consumes that token and binds the root authority
+  to the source `Cx` cancellation gate, injected monotonic clock, immutable
+  accuracy/capability identities, and—when the `Cx` carries one—the ambient
+  operation-memory lease. Child splits transfer exact capacity into
+  non-cloneable leases; unused capacity returns only when `finish` consumes the
+  child. Scientific refusals latch a typed content identity.
+- `InvocationReceipt` / `ChildReceipt` retain the admitted envelope, required
+  plan, deterministic parent/ordinal/phase topology, direct and subtree spend,
+  returned capacity, live-memory high water and release totals, output,
+  deadline observation, first failure, derived disposition, and canonical
+  roots. `verify_semantics` replays affine conservation and identity derivation,
+  validates deadline evidence, possible resource/refusal evidence, a single
+  ancestor-chain first-fault origin, and direct-versus-descendant memory-peak
+  bounds. Resource overruns are limited to the six typed dimension labels with
+  requested strictly greater than available, and arithmetic-overflow labels
+  are limited to the producer's accounting vocabulary. Control/release errors
+  whose producer paths cannot seal a receipt are rejected as terminal evidence,
+  as are self-consistently rehashed semantic forgeries. `Completed` means the
+  authority closed without a latched error;
+  exact-plan consumers must additionally check the dimensions their policy
+  requires to be spent exactly.
 
 ## Invariants
 1. Completeness: a non-cancelled, non-panicked run executes every tile in
@@ -282,6 +307,19 @@ fs-blake3, fs-substrate, fs-obs.
     worker registered with that tracker released its guard. Finalization is
     exact-replay idempotent and permanently closes later worker admission, so
     an old live worker cannot coexist with a successful report.
+15. An invocation root with an ambient operation lease reserves its complete
+    required memory capacity exactly once before any child can run and holds
+    that charge through root finalization. Nested live-memory reservations are
+    additionally tracked by the invocation ledger but do not remint ambient
+    capacity. A child fault is latched unchanged through every ancestor and the
+    root; terminal disposition is derived from that first fault rather than
+    caller-selected. No child or root receipt exists while a child authority or
+    direct memory reservation remains live. A backing-memory refusal is unique,
+    exceeds the enforced root limit, and matches the receipt's first-refusal
+    tuple exactly; failed child receipts form one ancestor chain, never sibling
+    failure origins.
+    Empty child-phase labels are rejected before identity/ordinal mutation and
+    therefore can never make an unverifiable producer receipt.
 
 ## Tile-pool placement identity (v2)
 
@@ -388,6 +426,11 @@ Prelaunch memory failures remain distinct as `MemoryPlanOverflow` (checked
 dimension/byte arithmetic), `MemoryRefused` (the shared lease, retaining used
 and limit bytes), or `MemoryAllocationRefused` (fallible root backing-store
 reservation after lease admission, with the lease charge rolled back).
+Invocation accounting returns `InvocationError`: dimensioned exhaustion,
+checked overflow, absolute-deadline expiry, cancellation, backing-memory
+refusal, explicit scientific refusal, or a terminal ownership invariant.
+Post-admission callers can finalize a `Refused`/`Cancelled` receipt; admission
+failures occur before root authority exists and therefore have no receipt.
 
 ## Determinism class
 Deterministic (P2): results and stream keys are bit-stable across runs,
@@ -409,6 +452,11 @@ region state machine (request → drain → finalize) unmodified. Cancel latency
 MEASURED per run only for ordinary pool gates (histogram in `RunReport`,
 ledgered via events); clock-free manual gates produce an empty latency sample
 set and explicitly make no latency claim.
+Invocation polls use the fixed order deadline observation -> one poll spend ->
+cancellation observation. Deadline expiry requests the bound `CancelGate` and
+is retained as the first terminal failure. Publication and child/root
+finalization recheck the terminal state; a successful receipt therefore cannot
+cross an observed absolute deadline.
 See no-claims for the 200 µs target's status.
 
 ## Unsafe boundary
@@ -438,6 +486,13 @@ shrink-armed lengths in `0..=4096`, biased around powers of two, compare the
 complete `pairwise_fold` syntax tree against an independently stated
 `next_power_of_two(n) / 2` recursion (seed `0xE008_0001`). Existing fixed and
 G5 reduction pins remain unchanged.
+The invocation in-module suite covers G0 dimensional conservation and nested
+topology, exact admission and deadline edges, ambient-memory non-reissuance,
+runtime overrun refusal in all six dimensions, RAII release and concurrent
+parent/child high water, G4 cancellation and first-fault derivation, G5
+deterministic child/receipt replay, and rejection of
+rehash-valid deadline, impossible resource evidence, sibling-failure, and
+descendant-memory-peak forgeries.
 tests/constellation_smoke.rs pins the
 asupersync Budget vocabulary. In-module unit suites cover ordinary and
 clock-free gate stamping, keys, drain-report old-worker refusal and closed
@@ -488,6 +543,15 @@ seed nonmovement, and fail-closed retained-version admission.
   generic enforcement of its poll/deadline/cost dimensions is NOT claimed:
   kernels must consume the dimensions they understand. Legacy run wrappers
   still supply `Budget::INFINITE`.
+- One `InvocationAdmitter`/admission/root chain is one-shot in memory, but this
+  is not a durable uniqueness governor: a caller can construct a fresh issuer
+  for a distinct top-level run. Cross-process non-reissuance requires a future
+  persisted governor/Design-Ledger admission record. Likewise, dropping an
+  unfinished authority releases RAII memory but does not fabricate an
+  abandoned terminal receipt; receipt-bearing workflows must drain children
+  and explicitly call `finish`. Logical memory bytes are a declared live-set
+  capacity and do not claim allocator metadata, hidden third-party allocation,
+  or resident-set size.
 - `run_declared_leased_budgeted` / `run_scoped` enforce one shared lease over
   the checked, tracked root-metadata formula, all chunks acquired by their
   leased arenas, AND output payload storage (bead wf9.16.1): both leased

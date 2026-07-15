@@ -29,8 +29,10 @@
 
 use fs_ad::dual::{Dual64, gradient as dual_gradient};
 use fs_adjoint::transpose::{Tape, TransposeError, Vjp, VjpRegistry, fd_falsifier};
-use fs_asbuilt::{Fiducial, Point2, as_built_diff, register};
-use fs_assimilate::{AssimError, Belief, assimilate_colored, misfit, point_sensor};
+mod invocation;
+
+use fs_asbuilt::{Fiducial, Point2, as_built_diff_budgeted, register_budgeted};
+use fs_assimilate::{AssimError, Belief, Observation, assimilate_colored_budgeted, point_sensor};
 use fs_blake3::{ContentHash, hash_domain};
 use fs_evidence::Color;
 use fs_exec::{Budget, Cx, ExecMode, StreamKey};
@@ -52,7 +54,7 @@ pub const SPACETIME_STAGE: &str = "spacetime-gated";
 /// Versioned fixture identity expected for the differentiation stage.
 pub const DIFFERENTIATION_EVIDENCE_IDENTITY: &str = "fs-diffreal-e2e/differentiation-fixture/v2";
 /// Versioned fixture identity expected for the as-built/assimilation stage.
-pub const AS_BUILT_EVIDENCE_IDENTITY: &str = "fs-diffreal-e2e/as-built-fixture/v1";
+pub const AS_BUILT_EVIDENCE_IDENTITY: &str = "fs-diffreal-e2e/as-built-fixture/v2";
 /// Versioned fixture identity expected for the tolerance-allocation stage.
 pub const TOLERANCE_EVIDENCE_IDENTITY: &str = "fs-diffreal-e2e/tolerance-allocation-fixture/v3";
 /// Versioned fixture identity expected for the spacetime-integration stage.
@@ -63,20 +65,20 @@ pub const SENSITIVITY_POLICY_VERSION: &str = "fs-diffreal-e2e/sensitivity-policy
 /// Version of the fixed local affine/square/identity VJP registry semantics.
 pub const DIFFERENTIATION_REGISTRY_POLICY: &str = "fs-diffreal-e2e/production-vjp-registry/v1";
 /// Version of the canonical stage-receipt schema and verification policy.
-pub const STAGE_RECEIPT_POLICY_VERSION: u32 = 1;
+pub const STAGE_RECEIPT_POLICY_VERSION: u32 = 2;
 /// Version of the ordered report-root schema and verification policy.
-pub const REPORT_RECEIPT_POLICY_VERSION: u32 = 1;
+pub const REPORT_RECEIPT_POLICY_VERSION: u32 = 2;
 /// Versioned battery readiness policy bound into every report root.
-pub const REPORT_PROMOTION_POLICY: &str = "fs-diffreal-e2e/promotion-policy/v2";
+pub const REPORT_PROMOTION_POLICY: &str = "fs-diffreal-e2e/promotion-policy/v3";
 
 /// The production differentiation fixture's operator path.
 pub const PRODUCTION_DIFFERENTIATION_PATH: [&str; 3] = ["sdf", "spline", "solve"];
 
 const SENSITIVITY_IDENTITY_DOMAIN: &str = "frankensim.fs-diffreal-e2e.sensitivity.v1";
 const FIXTURE_INPUT_IDENTITY_DOMAIN: &str = "frankensim.fs-diffreal-e2e.fixture-inputs.v1";
-const STAGE_RECEIPT_IDENTITY_DOMAIN: &str = "frankensim.fs-diffreal-e2e.stage-receipt.v1";
+const STAGE_RECEIPT_IDENTITY_DOMAIN: &str = "frankensim.fs-diffreal-e2e.stage-receipt.v2";
 const STAGE_RESULT_IDENTITY_DOMAIN: &str = "frankensim.fs-diffreal-e2e.stage-results.v1";
-const REPORT_RECEIPT_IDENTITY_DOMAIN: &str = "frankensim.fs-diffreal-e2e.report-receipt.v1";
+const REPORT_RECEIPT_IDENTITY_DOMAIN: &str = "frankensim.fs-diffreal-e2e.report-receipt.v2";
 const PROMOTION_POLICY_FINGERPRINT_DOMAIN: &str =
     "frankensim.fs-diffreal-e2e.promotion-policy-fingerprint.v1";
 const PROMOTION_VERIFICATION_SUBJECT_DOMAIN: &str =
@@ -87,7 +89,6 @@ const MAX_DIFFERENTIATION_OPS: usize = 16;
 const MAX_OP_NAME_BYTES: usize = 64;
 const DIFFERENTIATION_WORK_UNITS: u64 = 12;
 const DIFFERENTIATION_STAGE_WORK_UNITS: u64 = 24;
-const AS_BUILT_WORK_UNITS: u64 = 64;
 const TOLERANCE_WORK_UNITS: u64 = 32;
 const SPACETIME_WORK_UNITS: u64 = 1;
 
@@ -1223,6 +1224,7 @@ pub struct DiffRealExecutionIdentity {
     stream_key: StreamKey,
     budget: Budget,
     mode: ExecMode,
+    operation_memory_limit_bytes: Option<u64>,
 }
 
 impl DiffRealExecutionIdentity {
@@ -1231,6 +1233,7 @@ impl DiffRealExecutionIdentity {
             stream_key: cx.stream_key(),
             budget: cx.budget(),
             mode: cx.mode(),
+            operation_memory_limit_bytes: cx.lease().and_then(|lease| lease.limit_bytes()),
         }
     }
 
@@ -1250,6 +1253,13 @@ impl DiffRealExecutionIdentity {
     #[must_use]
     pub const fn mode(&self) -> ExecMode {
         self.mode
+    }
+
+    /// Configured operation-memory limit in force for the source context.
+    /// `None` identifies a manually constructed or unbounded context.
+    #[must_use]
+    pub const fn operation_memory_limit_bytes(&self) -> Option<u64> {
+        self.operation_memory_limit_bytes
     }
 
     fn matches_cx(&self, cx: &Cx<'_>) -> bool {
@@ -1306,6 +1316,13 @@ fn encode_execution_identity(output: &mut Vec<u8>, execution: &DiffRealExecution
         "execution.budget.priority",
         &[execution.budget.priority],
     );
+    match execution.operation_memory_limit_bytes {
+        Some(limit) => {
+            push_identity_field(output, "execution.memory-limit-present", &[1]);
+            push_identity_u64(output, "execution.memory-limit-bytes", limit);
+        }
+        None => push_identity_field(output, "execution.memory-limit-present", &[0]),
+    }
 }
 
 fn push_fixture_path(output: &mut Vec<u8>, label: &str, path: &[&str]) {
@@ -1476,7 +1493,16 @@ fn fixture_input_identity(stage: &StageLog) -> ContentHash {
                 "color-algebra-version",
                 u64::from(fs_evidence::COLOR_ALGEBRA_VERSION),
             );
-            push_identity_u64(&mut canonical, "admitted-work-units", AS_BUILT_WORK_UNITS);
+            push_identity_str(
+                &mut canonical,
+                "invocation-budget-policy",
+                invocation::AS_BUILT_INVOCATION_POLICY,
+            );
+            push_identity_u64(
+                &mut canonical,
+                "invocation-receipt-version",
+                u64::from(fs_exec::INVOCATION_RECEIPT_VERSION),
+            );
         }
         TOLERANCE_STAGE => {
             push_fixture_path(
@@ -1713,8 +1739,6 @@ fn as_built_result_identity(
     registration: &fs_asbuilt::Registration,
     difference: &fs_asbuilt::AsBuiltDiff,
     posterior: &fs_assimilate::AssimilatedPosterior,
-    checked_before: f64,
-    checked_after: f64,
 ) -> ContentHash {
     let mut canonical = Vec::new();
     for (label, value) in [
@@ -1741,6 +1765,11 @@ fn as_built_result_identity(
         &mut canonical,
         "difference.max-deviation",
         difference.max_deviation(),
+    );
+    push_identity_u64(
+        &mut canonical,
+        "difference.max-deviation-index",
+        difference.max_deviation_index() as u64,
     );
     push_identity_field(
         &mut canonical,
@@ -1785,8 +1814,6 @@ fn as_built_result_identity(
         "posterior.misfit-after",
         posterior.misfit_after(),
     );
-    push_identity_f64(&mut canonical, "checked.misfit-before", checked_before);
-    push_identity_f64(&mut canonical, "checked.misfit-after", checked_after);
     finish_stage_result(AS_BUILT_STAGE, canonical)
 }
 
@@ -1881,6 +1908,7 @@ struct StageExecution {
     log: StageLog,
     inputs: ContentHash,
     result: ContentHash,
+    invocation: Option<fs_exec::InvocationReceipt>,
 }
 
 impl StageExecution {
@@ -1891,6 +1919,7 @@ impl StageExecution {
             log,
             inputs,
             result,
+            invocation: None,
         }
     }
 }
@@ -1901,6 +1930,7 @@ fn stage_receipt_identity(
     execution: &DiffRealExecutionIdentity,
     fixture_inputs: ContentHash,
     result: ContentHash,
+    invocation: Option<&fs_exec::InvocationReceipt>,
 ) -> ContentHash {
     let mut canonical = Vec::new();
     push_identity_u64(&mut canonical, "receipt-version", u64::from(version));
@@ -1936,6 +1966,37 @@ fn stage_receipt_identity(
         fixture_inputs.as_bytes(),
     );
     push_identity_field(&mut canonical, "stage-result-root", result.as_bytes());
+    push_identity_field(
+        &mut canonical,
+        "invocation-receipt-present",
+        &[u8::from(invocation.is_some())],
+    );
+    if let Some(invocation) = invocation {
+        push_identity_u64(
+            &mut canonical,
+            "invocation-receipt-version",
+            u64::from(invocation.version()),
+        );
+        push_identity_field(
+            &mut canonical,
+            "invocation-id",
+            invocation.invocation_id().as_bytes(),
+        );
+        push_identity_field(
+            &mut canonical,
+            "invocation-receipt-root",
+            invocation.root().as_bytes(),
+        );
+        push_identity_field(
+            &mut canonical,
+            "invocation-disposition",
+            &[match invocation.disposition() {
+                fs_exec::InvocationDisposition::Completed => 0,
+                fs_exec::InvocationDisposition::Cancelled => 1,
+                fs_exec::InvocationDisposition::Refused => 2,
+            }],
+        );
+    }
     push_identity_u64(&mut canonical, "event-count", stage.events.len() as u64);
     for (index, event) in stage.events.iter().enumerate() {
         encode_stage_event(&mut canonical, &format!("event.{index}"), event);
@@ -1952,24 +2013,29 @@ pub struct StageReceipt {
     stage: &'static str,
     fixture_inputs: ContentHash,
     result: ContentHash,
+    invocation: Option<fs_exec::InvocationReceipt>,
     root: ContentHash,
 }
 
 impl StageReceipt {
     fn seal(stage: &StageExecution, execution: &DiffRealExecutionIdentity) -> Self {
         let fixture_inputs = stage.inputs;
+        let invocation = stage.invocation.clone();
+        let root = stage_receipt_identity(
+            STAGE_RECEIPT_POLICY_VERSION,
+            &stage.log,
+            execution,
+            fixture_inputs,
+            stage.result,
+            invocation.as_ref(),
+        );
         Self {
             version: STAGE_RECEIPT_POLICY_VERSION,
             stage: stage.log.stage,
             fixture_inputs,
             result: stage.result,
-            root: stage_receipt_identity(
-                STAGE_RECEIPT_POLICY_VERSION,
-                &stage.log,
-                execution,
-                fixture_inputs,
-                stage.result,
-            ),
+            invocation,
+            root,
         }
     }
 
@@ -1998,6 +2064,13 @@ impl StageReceipt {
         self.result
     }
 
+    /// Full affine invocation receipt for stages that execute a composed
+    /// scientific transaction.
+    #[must_use]
+    pub const fn invocation(&self) -> Option<&fs_exec::InvocationReceipt> {
+        self.invocation.as_ref()
+    }
+
     /// Content address of the inputs, result log, execution identity, budgets,
     /// and policy versions for this stage.
     #[must_use]
@@ -2006,8 +2079,17 @@ impl StageReceipt {
     }
 
     fn verifies(&self, stage: &StageLog, execution: &DiffRealExecutionIdentity) -> bool {
+        let invocation_valid = match (&self.invocation, stage.stage) {
+            (Some(invocation), AS_BUILT_STAGE) => {
+                invocation::AsBuiltInvocationPlan::preflight(execution)
+                    .is_ok_and(|plan| plan.verifies_receipt(invocation, execution))
+            }
+            (None, AS_BUILT_STAGE) | (Some(_), _) => false,
+            (None, _) => true,
+        };
         self.version == STAGE_RECEIPT_POLICY_VERSION
             && self.stage == stage.stage
+            && invocation_valid
             && self.root
                 == stage_receipt_identity(
                     self.version,
@@ -2015,6 +2097,7 @@ impl StageReceipt {
                     execution,
                     self.fixture_inputs,
                     self.result,
+                    self.invocation.as_ref(),
                 )
     }
 }
@@ -2079,6 +2162,16 @@ pub fn promotion_policy_fingerprint() -> ContentHash {
         &mut canonical,
         "as-built-poll-policy-version",
         u64::from(fs_asbuilt::AS_BUILT_POLL_POLICY_VERSION),
+    );
+    push_identity_str(
+        &mut canonical,
+        "as-built-invocation-policy",
+        invocation::AS_BUILT_INVOCATION_POLICY,
+    );
+    push_identity_u64(
+        &mut canonical,
+        "invocation-receipt-version",
+        u64::from(fs_exec::INVOCATION_RECEIPT_VERSION),
     );
     push_identity_u64(
         &mut canonical,
@@ -2844,6 +2937,20 @@ fn stage_semantics_are_valid(stage: &StageLog) -> bool {
 /// Typed refusal that prevents publication of a partial battery report.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiffRealError {
+    /// Invocation preflight, deadline, cancellation, or affine accounting
+    /// refused the composed scientific transaction.
+    Invocation(fs_exec::InvocationError),
+    /// A drained transaction produced a non-acceptance terminal receipt.
+    InvocationDidNotComplete {
+        /// Derived terminal disposition.
+        disposition: fs_exec::InvocationDisposition,
+        /// Canonical terminal accounting root.
+        receipt_root: ContentHash,
+        /// Full terminal accounting evidence retained after drain.
+        receipt: Box<fs_exec::InvocationReceipt>,
+        /// Scientific/runtime cause observed before drain, when one exists.
+        cause: Option<Box<DiffRealError>>,
+    },
     /// Differentiation admission or runtime work could not produce a stage
     /// disposition.
     Differentiation(DifferentiationError),
@@ -2870,6 +2977,22 @@ pub enum DiffRealError {
 impl core::fmt::Display for DiffRealError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::Invocation(error) => write!(formatter, "invocation refused: {error}"),
+            Self::InvocationDidNotComplete {
+                disposition,
+                receipt_root,
+                cause,
+                ..
+            } => {
+                write!(
+                    formatter,
+                    "invocation drained with {disposition:?} disposition (receipt {receipt_root})"
+                )?;
+                if let Some(cause) = cause {
+                    write!(formatter, ": {cause}")?;
+                }
+                Ok(())
+            }
             Self::Differentiation(error) => {
                 write!(formatter, "differentiation stage failed: {error}")
             }
@@ -2896,10 +3019,25 @@ impl core::fmt::Display for DiffRealError {
 impl std::error::Error for DiffRealError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Invocation(error) => Some(error),
             Self::Differentiation(error) => Some(error),
             Self::AsBuilt(error) => Some(error),
             Self::Assimilation(error) => Some(error),
+            Self::InvocationDidNotComplete { cause, .. } => cause
+                .as_deref()
+                .map(|cause| cause as &(dyn std::error::Error + 'static)),
             Self::Cancelled { .. } | Self::WorkBudgetExceeded { .. } => None,
+        }
+    }
+}
+
+impl DiffRealError {
+    /// Terminal invocation evidence for runtime failures that reached drain.
+    #[must_use]
+    pub fn terminal_invocation_receipt(&self) -> Option<&fs_exec::InvocationReceipt> {
+        match self {
+            Self::InvocationDidNotComplete { receipt, .. } => Some(receipt),
+            _ => None,
         }
     }
 }
@@ -2907,6 +3045,12 @@ impl std::error::Error for DiffRealError {
 impl From<fs_asbuilt::RegError> for DiffRealError {
     fn from(error: fs_asbuilt::RegError) -> Self {
         Self::AsBuilt(error)
+    }
+}
+
+impl From<fs_exec::InvocationError> for DiffRealError {
+    fn from(error: fs_exec::InvocationError) -> Self {
+        Self::Invocation(error)
     }
 }
 
@@ -2928,11 +3072,24 @@ impl From<AssimError> for DiffRealError {
 /// Propagates structured cancellation, ambient-budget refusal, or a lower-layer
 /// as-built/assimilation error. No partial battery report is published.
 pub fn run_battery(cx: &Cx<'_>) -> Result<DiffRealReport, DiffRealError> {
+    let clock = fs_exec::WallClock::new();
+    run_battery_with_clock(cx, &clock)
+}
+
+/// Run the full battery with an injected monotonic clock for deterministic
+/// deadline-edge and replay verification.
+///
+/// # Errors
+/// As [`run_battery`].
+pub fn run_battery_with_clock(
+    cx: &Cx<'_>,
+    clock: &dyn fs_exec::TimeSource,
+) -> Result<DiffRealReport, DiffRealError> {
     let execution = DiffRealExecutionIdentity::from_cx(cx);
     Ok(DiffRealReport::seal(
         vec![
             execute_differentiation(cx)?,
-            execute_as_built_loop(cx)?,
+            execute_as_built_loop(cx, clock)?,
             execute_tolerance_allocation(cx)?,
             execute_spacetime_gated(cx)?,
         ],
@@ -3375,6 +3532,7 @@ fn execute_differentiation_with_registry(
         inputs: fixture_input_identity(&log),
         result: differentiation_result_identity(&sensitivity, &missing_probe),
         log,
+        invocation: None,
     })
 }
 
@@ -3414,8 +3572,56 @@ fn execute_differentiation(cx: &Cx<'_>) -> Result<StageExecution, DiffRealError>
 /// # Errors
 /// Propagates fixed-work admission, cancellation, or a structured lower-layer
 /// refusal and publishes no partial stage log.
-fn execute_as_built_loop(cx: &Cx<'_>) -> Result<StageExecution, DiffRealError> {
-    admit_stage_work(cx, AS_BUILT_STAGE, AS_BUILT_WORK_UNITS)?;
+fn run_as_built_phase<T>(
+    parent: &mut fs_exec::ChildBudget<'_, '_>,
+    phase: &'static str,
+    grant: fs_exec::InvocationResources,
+    refusal_reason: &'static str,
+    operation: impl FnOnce(&mut fs_exec::ChildBudget<'_, '_>) -> Result<T, DiffRealError>,
+) -> Result<T, DiffRealError> {
+    let mut child = parent.split_child(phase, grant)?;
+    let outcome = operation(&mut child);
+    if outcome.is_err() {
+        child.refuse(phase, invocation::domain_refusal(phase, refusal_reason));
+    }
+    let disposition = child.finish()?;
+    match outcome {
+        Ok(value) if disposition == fs_exec::InvocationDisposition::Completed => Ok(value),
+        Ok(_) => Err(DiffRealError::Cancelled {
+            stage: AS_BUILT_STAGE,
+        }),
+        Err(error) => Err(error),
+    }
+}
+
+fn as_built_observations() -> Result<Vec<Observation>, DiffRealError> {
+    AS_BUILT_OBSERVATIONS
+        .iter()
+        .map(|&(state_index, value, variance, label)| {
+            point_sensor(
+                state_index,
+                AS_BUILT_PRIOR_MEAN.len(),
+                value,
+                variance,
+                label,
+            )
+            .map_err(DiffRealError::from)
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_lines)]
+fn execute_as_built_science(
+    cx: &Cx<'_>,
+    transaction: &mut fs_exec::ChildBudget<'_, '_>,
+    plan: &invocation::AsBuiltInvocationPlan,
+) -> Result<(StageLog, ContentHash, ContentHash), DiffRealError> {
+    transaction.charge_work(plan.setup.work())?;
+    transaction.charge_cost(plan.setup.cost())?;
+    transaction.charge_evaluations(plan.setup.evaluations())?;
+    transaction.poll("as-built.setup.begin")?;
+    let mut setup_memory =
+        transaction.reserve_memory("as-built-fixed-inputs", plan.setup.memory())?;
     let mut events = Vec::new();
     let mut assertions_passed = true;
 
@@ -3435,7 +3641,14 @@ fn execute_as_built_loop(cx: &Cx<'_>) -> Result<StageExecution, DiffRealError> {
         .iter()
         .map(|&datum| Ok(Fiducial::new(datum, xf(datum)?)))
         .collect::<Result<_, fs_asbuilt::RegError>>()?;
-    let reg = register(&fids, cx)?;
+    setup_memory.budget().poll("as-built.setup.complete")?;
+    let reg = run_as_built_phase(
+        setup_memory.budget(),
+        "as-built.registration",
+        plan.registration,
+        "registration refused its fixed fixture",
+        |budget| register_budgeted(&fids, budget).map_err(DiffRealError::from),
+    )?;
     let reg_ok = reg.residual_rms() < 1e-9;
     events.push(StageEvent::Registration {
         residual_bits: reg.residual_rms().to_bits(),
@@ -3453,22 +3666,27 @@ fn execute_as_built_loop(cx: &Cx<'_>) -> Result<StageExecution, DiffRealError> {
         scanned[AS_BUILT_DEFECT_INDEX].x() + AS_BUILT_DEFECT_X,
         scanned[AS_BUILT_DEFECT_INDEX].y(),
     )?;
-    let diff = as_built_diff(
-        &reg,
-        &design_pts,
-        &scanned,
-        AS_BUILT_DESIGN_TOLERANCE,
-        AS_BUILT_MEASUREMENT_NOISE,
-        AS_BUILT_CALIBRATION_CANDIDATE,
-        cx,
+    let diff = run_as_built_phase(
+        setup_memory.budget(),
+        "as-built.comparison",
+        plan.difference,
+        "as-built comparison refused its fixed fixture",
+        |budget| {
+            as_built_diff_budgeted(
+                &reg,
+                &design_pts,
+                &scanned,
+                AS_BUILT_DESIGN_TOLERANCE,
+                AS_BUILT_MEASUREMENT_NOISE,
+                AS_BUILT_CALIBRATION_CANDIDATE,
+                cx,
+                budget,
+            )
+            .map_err(DiffRealError::from)
+        },
     )?;
-    // localize the defect: the argmax deviation is the seeded point (index 1).
-    let defect_idx = diff
-        .deviations()
-        .iter()
-        .enumerate()
-        .max_by(|a, b| a.1.total_cmp(b.1))
-        .map(|(i, _)| i);
+    // The comparison retains the deterministic argmax; no second traversal.
+    let defect_idx = Some(diff.max_deviation_index());
     let localized = defect_idx == Some(AS_BUILT_DEFECT_INDEX)
         && (diff.max_deviation() - AS_BUILT_DEFECT_X).abs() < 1e-9;
     let estimated = matches!(diff.color(), Color::Estimated { .. });
@@ -3480,35 +3698,60 @@ fn execute_as_built_loop(cx: &Cx<'_>) -> Result<StageExecution, DiffRealError> {
     assertions_passed &= localized && estimated;
 
     // registration-free point-sensor 4D-Var: misfit reduction.
-    let prior = Belief::diagonal(
-        AS_BUILT_PRIOR_MEAN.to_vec(),
-        &AS_BUILT_PRIOR_DIAGONAL_COVARIANCE,
-        cx,
-    )?;
-    let obs: Vec<_> = AS_BUILT_OBSERVATIONS
-        .iter()
-        .map(|&(state_index, value, variance, label)| {
-            point_sensor(
-                state_index,
-                AS_BUILT_PRIOR_MEAN.len(),
-                value,
-                variance,
-                label,
+    let prior = run_as_built_phase(
+        setup_memory.budget(),
+        "as-built.prior",
+        plan.belief,
+        "prior construction refused its fixed fixture",
+        |budget| {
+            Belief::diagonal_budgeted(
+                AS_BUILT_PRIOR_MEAN.to_vec(),
+                &AS_BUILT_PRIOR_DIAGONAL_COVARIANCE,
+                cx,
+                budget,
             )
-        })
-        .collect::<Result<_, _>>()?;
-    let assimilated = assimilate_colored(
-        &prior,
-        &obs,
-        AS_BUILT_ASSIMILATION_PARAMETER,
-        AS_BUILT_ASSIMILATION_BOUNDS.0,
-        AS_BUILT_ASSIMILATION_BOUNDS.1,
-        cx,
+            .map_err(DiffRealError::from)
+        },
     )?;
-    let misfit_reduced = assimilated.misfit_after() < assimilated.misfit_before();
-    let checked_after = misfit(assimilated.belief(), &obs, cx)?;
-    let checked_before = misfit(&prior, &obs, cx)?;
-    let reduced = misfit_reduced && checked_after <= checked_before;
+    let obs = as_built_observations()?;
+    let assimilated = run_as_built_phase(
+        setup_memory.budget(),
+        "as-built.assimilation",
+        plan.assimilation,
+        "colored assimilation refused its fixed fixture",
+        |budget| {
+            let actual = fs_assimilate::colored_assimilation_invocation_resources(
+                &prior,
+                &obs,
+                AS_BUILT_ASSIMILATION_PARAMETER,
+                AS_BUILT_ASSIMILATION_BOUNDS.0,
+                AS_BUILT_ASSIMILATION_BOUNDS.1,
+                cx,
+            )?;
+            if actual != plan.assimilation_shape {
+                return Err(DiffRealError::Invocation(
+                    fs_exec::InvocationError::ExplicitRefusal {
+                        phase: "as-built.assimilation.preflight",
+                        reason: invocation::domain_refusal(
+                            "as-built.assimilation.preflight",
+                            "fixed exact consumables drifted",
+                        ),
+                    },
+                ));
+            }
+            assimilate_colored_budgeted(
+                &prior,
+                &obs,
+                AS_BUILT_ASSIMILATION_PARAMETER,
+                AS_BUILT_ASSIMILATION_BOUNDS.0,
+                AS_BUILT_ASSIMILATION_BOUNDS.1,
+                cx,
+                budget,
+            )
+            .map_err(DiffRealError::from)
+        },
+    )?;
+    let reduced = assimilated.misfit_after() < assimilated.misfit_before();
     events.push(StageEvent::Assimilation {
         before_bits: assimilated.misfit_before().to_bits(),
         after_bits: assimilated.misfit_after().to_bits(),
@@ -3524,17 +3767,90 @@ fn execute_as_built_loop(cx: &Cx<'_>) -> Result<StageExecution, DiffRealError> {
             "registration, defect-localization, evidence-color, or assimilation assertion failed; inspect events",
         ))
     };
-    let log = StageLog::new(
-        AS_BUILT_STAGE,
-        StageRequirement::Required,
-        status,
-        AS_BUILT_EVIDENCE_IDENTITY,
-        events,
-    );
+    run_as_built_phase(
+        setup_memory.budget(),
+        "as-built.publication",
+        plan.publication,
+        "stage log, result identity, or retained output publication failed",
+        |budget| {
+            budget.charge_work(plan.publication.work())?;
+            budget.charge_cost(plan.publication.cost())?;
+            budget.charge_evaluations(plan.publication.evaluations())?;
+            budget.poll("as-built.publication.begin")?;
+            let mut publication_memory =
+                budget.reserve_memory("as-built-stage-publication", plan.publication.memory())?;
+            let log = StageLog::new(
+                AS_BUILT_STAGE,
+                StageRequirement::Required,
+                status,
+                AS_BUILT_EVIDENCE_IDENTITY,
+                events,
+            );
+            let inputs = fixture_input_identity(&log);
+            let result = as_built_result_identity(&reg, &diff, &assimilated);
+            publication_memory
+                .budget()
+                .poll("as-built.publication.finalize")?;
+            publication_memory
+                .budget()
+                .publish_output(plan.publication.output())?;
+            drop(publication_memory);
+            Ok((log, inputs, result))
+        },
+    )
+}
+
+fn execute_as_built_loop(
+    cx: &Cx<'_>,
+    clock: &dyn fs_exec::TimeSource,
+) -> Result<StageExecution, DiffRealError> {
+    let execution = DiffRealExecutionIdentity::from_cx(cx);
+    let plan = invocation::AsBuiltInvocationPlan::preflight(&execution)?;
+    let admission = fs_exec::InvocationAdmitter::new().admit(
+        invocation::invocation_id(&execution),
+        plan.limits(&execution),
+        plan.total,
+    )?;
+    let mut root = admission.begin(cx, clock)?;
+    let mut transaction = root.split_child("as-built.transaction", plan.total)?;
+    let outcome = execute_as_built_science(cx, &mut transaction, &plan);
+    if outcome.is_err() {
+        transaction.refuse(
+            AS_BUILT_STAGE,
+            invocation::domain_refusal(AS_BUILT_STAGE, "scientific transaction failed"),
+        );
+    }
+    let transaction_disposition = transaction.finish()?;
+    let invocation = root.finish()?;
+    let (log, inputs, result) = match outcome {
+        Ok(stage)
+            if transaction_disposition == fs_exec::InvocationDisposition::Completed
+                && plan.verifies_receipt(&invocation, &execution) =>
+        {
+            stage
+        }
+        Ok(_) => {
+            return Err(DiffRealError::InvocationDidNotComplete {
+                disposition: invocation.disposition(),
+                receipt_root: invocation.root(),
+                receipt: Box::new(invocation),
+                cause: None,
+            });
+        }
+        Err(error) => {
+            return Err(DiffRealError::InvocationDidNotComplete {
+                disposition: invocation.disposition(),
+                receipt_root: invocation.root(),
+                receipt: Box::new(invocation),
+                cause: Some(Box::new(error)),
+            });
+        }
+    };
     Ok(StageExecution {
-        inputs: fixture_input_identity(&log),
-        result: as_built_result_identity(&reg, &diff, &assimilated, checked_before, checked_after),
         log,
+        inputs,
+        result,
+        invocation: Some(invocation),
     })
 }
 
@@ -3544,7 +3860,19 @@ fn execute_as_built_loop(cx: &Cx<'_>) -> Result<StageExecution, DiffRealError> {
 /// Propagates fixed-work admission, cancellation, or a structured lower-layer
 /// refusal and publishes no partial stage log.
 pub fn stage_as_built_loop(cx: &Cx<'_>) -> Result<StageLog, DiffRealError> {
-    execute_as_built_loop(cx).map(|stage| stage.log)
+    let clock = fs_exec::WallClock::new();
+    stage_as_built_loop_with_clock(cx, &clock)
+}
+
+/// Run only the as-built stage with an injected monotonic clock.
+///
+/// # Errors
+/// As [`stage_as_built_loop`].
+pub fn stage_as_built_loop_with_clock(
+    cx: &Cx<'_>,
+    clock: &dyn fs_exec::TimeSource,
+) -> Result<StageLog, DiffRealError> {
+    execute_as_built_loop(cx, clock).map(|stage| stage.log)
 }
 
 // -- Stage 3: tolerance allocation ------------------------------------------
@@ -3761,6 +4089,7 @@ fn execute_tolerance_allocation_with_samples(
         inputs: fixture_input_identity(&log),
         result: tolerance_result_identity(&critical, &slack, &alloc, &report, &verdict),
         log,
+        invocation: None,
     })
 }
 
@@ -3838,6 +4167,7 @@ mod report_policy_tests {
             },
             budget: Budget::INFINITE,
             mode: ExecMode::Deterministic,
+            operation_memory_limit_bytes: None,
         }
     }
 
@@ -4107,6 +4437,7 @@ mod report_policy_tests {
                 &report.execution,
                 receipt.fixture_inputs,
                 receipt.result,
+                receipt.invocation.as_ref(),
             );
             report.receipt_root = report_receipt_identity(
                 report.receipt_version,

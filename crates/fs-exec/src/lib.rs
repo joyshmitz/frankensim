@@ -38,6 +38,7 @@
 mod admit;
 mod crew;
 mod cx;
+mod invocation;
 mod kernel;
 mod kill;
 mod latency;
@@ -52,6 +53,13 @@ pub use cx::{
     Budget, CancelGate, Cancelled, Cx, DRAIN_FINALIZE_REPORT_IDENTITY_DOMAIN,
     DRAIN_FINALIZE_REPORT_IDENTITY_VERSION, DrainFinalizeError, DrainFinalizeReport, DrainTracker,
     DrainWorker, ExecMode, RunId, StreamKey, TileFailure,
+};
+pub use invocation::{
+    ChildBudget, ChildReceipt, CostUnits, EvaluationUnits, INVOCATION_RECEIPT_VERSION,
+    InvocationAdmission, InvocationAdmitter, InvocationBudget, InvocationDisposition,
+    InvocationError, InvocationLimits, InvocationMemoryRefusal, InvocationMemoryReservation,
+    InvocationPoll, InvocationReceipt, InvocationResources, MemoryBytes, OutputBytes, PollUnits,
+    ReceiptSemanticError, Time, TimeSource, VirtualClock, WallClock, WorkUnits,
 };
 pub use kernel::{KernelRunner, Reduce, TileKernel, TilePlan};
 pub use kill::{CandidateId, KillRegistry, UnregisteredKill};
