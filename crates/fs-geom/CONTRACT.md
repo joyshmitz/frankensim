@@ -165,8 +165,10 @@ fs-ivl, fs-alloc, fs-obs, fs-sparse.
   chart-map paths compose only across an exact middle chart and retain their
   first/last chart IDs. The sealed token exposes the ordered primitive geometry,
   chart, overlap, and map IDs so downstream artifact resolution does not depend
-  on the caller's raw request sidecar. Mixed generic-strict/chart-map paths
-  refuse in v1 rather than erasing the primitive family.
+  on the caller's raw request sidecar. It also exposes one ordered typed
+  primitive path. Mixed generic-strict/chart-map composition produces a
+  `HeterogeneousPath` without erasing primitive family or endpoints; any two
+  adjacent chart-map primitives still require an exact chart seam.
   Evidence transport is explicitly contravariant restriction or covariant
   balance corestriction and binds exact input/output geometry identities plus
   nominal caller-declared input/output evidence-artifact identities and ranks.
@@ -174,14 +176,17 @@ fs-ivl, fs-alloc, fs-obs, fs-sparse.
   Composition requires an exact middle endpoint and matching nominal evidence
   identity/rank seam, flattens primitive factors and no-equivalence artifacts in
   semantic order, and produces an associative content-addressed receipt with
-  exact endpoint identities and ordered primitive lineage. Immediate composite
-  operand IDs are intentionally not encoded because that would make the receipt
-  depend on parenthesization. Only an identity arrow carries identity
-  equivalence; every strict primitive/composite retains explicit no-equivalence
-  artifacts. The evidence artifact IDs and `ColorRank` values are structural
+  exact endpoint identities and ordered typed primitive lineage. Homogeneous
+  strict and chart composites retain their existing class encoding; a distinct
+  heterogeneous composite tag plus the flattened primitive-factor identities
+  binds mixed-family order. Immediate composite operand IDs are intentionally
+  not encoded because that would make the receipt depend on parenthesization.
+  Only an identity arrow carries identity equivalence; every nonidentity
+  primitive/composite retains explicit no-equivalence artifacts. The evidence
+  artifact IDs and `ColorRank` values are structural
   declarations with zero payload authority: they do not authenticate evidence,
   establish payload preservation or validity-domain inclusion, prove theorem
-  truth, or establish physical equivalence. Chart transitions,
+  truth, or establish physical equivalence. Invertible chart transitions,
   refinements, inclusions, quasi-isomorphism witnesses, stratified/constructible
   maps, spans/correspondences, and L6 Machine-IR crosswalks remain typed RD.1b
   follow-ups rather than being represented as strict maps.
@@ -498,7 +503,9 @@ fs-ivl, fs-alloc, fs-obs, fs-sparse.
    independent of composition parenthesization but sensitive to factor order.
    Primitive chart-map receipts domain-separate their family and bind exact
    source chart, target chart, overlap, and forward-map IDs. Homogeneous chart
-   paths additionally require an exact chart seam; mixed map families refuse.
+   paths additionally require an exact chart seam. Mixed strict/chart paths
+   retain one ordered typed primitive sequence, and adjacent chart primitives
+   preserve the same exact seam obligation inside a heterogeneous path.
 
 ## Error model
 Structured teaching values throughout: `ConvertDiag` (ranked fixes),
@@ -544,6 +551,9 @@ composition makes equal ordered factor sequences replay to the same receipt
 regardless of parenthesization; reversing factors changes identity.
 Declared chart-map primitive class bytes additionally encode the source/target
 chart, nominal overlap, and nominal map IDs under a distinct family tag.
+Heterogeneous composites use a distinct class tag while the ordered primitive
+factor IDs bind every family-specific nominal ID and structural field without
+encoding parenthesized intermediate operands or authenticating artifact payloads.
 
 ## Cancellation behavior
 Chart evaluation and production sampling paths take `&Cx`.
@@ -566,9 +576,9 @@ returns a stage and completed-work count and cannot expose a partial admitted
 object.
 RD.1b admission polls at entry, before canonical identity construction, inside
 the streaming encoder, and immediately before publication. Composition polls at
-entry, at a fixed stride while copying bounded primitive/no-claim lineage,
-inside identity construction, and before publication. Cancellation exposes no
-partial admitted morphism.
+entry, at a fixed stride while copying bounded typed-primitive, factor, and
+no-claim lineage, inside identity construction, and before publication.
+Cancellation exposes no partial admitted morphism.
 RD.X1 statement admission polls before validation, once for every derived
 theorem-lattice node, before identity construction, and inside the streaming
 encoder. Its falsifier set and truncation lattice have hard versioned caps;
@@ -643,7 +653,8 @@ injection remain explicit batch-verification follow-ups.
 It also covers declared chart-map ownership, missing IDs, dimension/frame/unit/
 quantity/scale mutations, typed-ID-bound receipt replay and public primitive
 retention, homogeneous associativity, exact chart seams, identity neutrality,
-and mixed-family refusal.
+mixed-family associativity, typed primitive order, and chart-seam retention
+through heterogeneous paths.
 `tests/exit_path.rs` supplies RD.X1 G0/G3 examples and a bounded-cancellation
 regression: regular-cell poset sufficiency, cone/cusp groupoid-enriched
 one-category fallback, circular-stratum local systems, finite-versus-full
@@ -732,12 +743,13 @@ claim those stronger G4/G5 results.
   atlas compatibility, coordinate equivalence, or physical correspondence.
   Those require a separate scoped-equivalence receipt with independently
   checked inverse laws; `IdentityOnly` is refused for every declared chart map.
-- The v1 union of generic strict paths and declared chart-map paths is not yet a
-  composition-closed admitted category: identity and homogeneous composition
-  are defined, while mixed nonidentity families refuse. A later ordered typed
-  primitive-path representation must close heterogeneous composition without
-  erasing family-specific seam obligations before the full RD.1b category claim
-  is promotable.
+- The v1 sublanguage containing identities, generic strict maps, and declared
+  chart maps closes mixed map-family composition through ordered typed
+  heterogeneous paths whenever its exact geometry, evidence, and adjacent-chart
+  seams pass. This removes the map-family closure gap but does not promote the
+  full RD.1b category claim. Refinements, inclusions, correspondences, scoped
+  equivalences, and crosswalks still need distinct primitives and their own seam
+  laws before that broader claim is promotable.
 - V1 refuses unbounded and infinite-dimensional local models, opaque external
   analytic functions, unknown compactness/regularity, and infinite computation.
   These are admitted-class limits, not claims that the excluded mathematics is

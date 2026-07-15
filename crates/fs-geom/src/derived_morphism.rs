@@ -2,7 +2,7 @@
 //!
 //! This RD.1b spine admits category identities, generic strict maps, and typed
 //! declared chart maps; checks structural evidence restriction/corestriction;
-//! and composes homogeneous paths with ordered content-addressed lineage. It
+//! and composes ordered typed primitive paths with content-addressed lineage. It
 //! deliberately cannot mint a non-identity equivalence: a witness digest is
 //! data, not a proof of an inverse, quasi-isomorphism, refinement theorem, or
 //! physical crosswalk.
@@ -111,7 +111,7 @@ pub enum DerivedMorphismKindV1 {
     },
 }
 
-/// Admitted map family. Composition flattens homogeneous primitive lineage.
+/// Admitted map family. Composition flattens ordered typed primitive lineage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdmittedDerivedMorphismClassV1 {
     /// Exact categorical identity.
@@ -120,6 +120,8 @@ pub enum AdmittedDerivedMorphismClassV1 {
     Strict,
     /// One or more ordered declared chart-map primitives.
     DeclaredChartMapPath,
+    /// An ordered path containing more than one nonidentity primitive family.
+    HeterogeneousPath,
 }
 
 /// Exact chart endpoints retained for a homogeneous declared chart-map path.
@@ -131,7 +133,7 @@ pub struct DerivedChartPathV1 {
     pub target_chart: ConfigurationChartIdV1,
 }
 
-/// One retained primitive in a homogeneous declared chart-map path.
+/// One retained declared chart-map primitive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeclaredChartMapPrimitiveV1 {
     /// Exact admitted geometry owning the source chart.
@@ -146,6 +148,46 @@ pub struct DeclaredChartMapPrimitiveV1 {
     pub overlap: DerivedChartOverlapIdV1,
     /// Nominal forward coordinate-map artifact.
     pub map: DerivedChartMapIdV1,
+}
+
+/// One typed nonidentity primitive retained in semantic path order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdmittedDerivedPrimitiveV1 {
+    /// One generic strict primitive.
+    Strict {
+        /// Exact admitted source geometry.
+        source_geometry: DerivedGeometryIdV1,
+        /// Exact admitted target geometry.
+        target_geometry: DerivedGeometryIdV1,
+        /// Exact map/construction artifact.
+        witness: DerivedWitnessIdV1,
+    },
+    /// One declared chart-map primitive.
+    DeclaredChartMap(DeclaredChartMapPrimitiveV1),
+}
+
+impl AdmittedDerivedPrimitiveV1 {
+    /// Exact admitted source geometry of this primitive.
+    #[must_use]
+    pub const fn source_geometry(self) -> DerivedGeometryIdV1 {
+        match self {
+            Self::Strict {
+                source_geometry, ..
+            } => source_geometry,
+            Self::DeclaredChartMap(primitive) => primitive.source_geometry,
+        }
+    }
+
+    /// Exact admitted target geometry of this primitive.
+    #[must_use]
+    pub const fn target_geometry(self) -> DerivedGeometryIdV1 {
+        match self {
+            Self::Strict {
+                target_geometry, ..
+            } => target_geometry,
+            Self::DeclaredChartMap(primitive) => primitive.target_geometry,
+        }
+    }
 }
 
 /// Direction in which evidence is transported along an object map `X -> Y`.
@@ -343,9 +385,9 @@ pub enum DerivedMorphismErrorV1 {
     CompositionEndpointMismatch,
     /// Nonidentity paths use incompatible evidence variance.
     CompositionVarianceMismatch,
-    /// Primitive path families are not composable in this version.
+    /// A sealed primitive path is missing or internally inconsistent.
     CompositionClassMismatch,
-    /// Homogeneous chart paths do not share the exact middle chart.
+    /// Adjacent chart-map primitives do not share the exact middle chart.
     CompositionChartMismatch,
     /// Evidence artifact identity or declared rank at the seam is inconsistent.
     CompositionEvidenceMismatch,
@@ -387,6 +429,7 @@ pub struct AdmittedDerivedMorphismV1 {
     target: DerivedGeometryIdV1,
     class: AdmittedDerivedMorphismClassV1,
     chart_path: Option<DerivedChartPathV1>,
+    primitive_path: Vec<AdmittedDerivedPrimitiveV1>,
     declared_chart_maps: Vec<DeclaredChartMapPrimitiveV1>,
     evidence: DerivedEvidenceTransportV1,
     no_equivalence_claims: Vec<DerivedNoClaimIdV1>,
@@ -419,7 +462,13 @@ impl AdmittedDerivedMorphismV1 {
         self.chart_path
     }
 
-    /// Ordered typed primitive declarations for a homogeneous chart-map path.
+    /// Ordered typed nonidentity primitives, including their exact endpoints.
+    #[must_use]
+    pub fn primitive_path(&self) -> &[AdmittedDerivedPrimitiveV1] {
+        &self.primitive_path
+    }
+
+    /// Ordered chart-map primitives retained from the full typed path.
     #[must_use]
     pub fn declared_chart_maps(&self) -> &[DeclaredChartMapPrimitiveV1] {
         &self.declared_chart_maps
@@ -496,6 +545,7 @@ enum ReceiptClassV1 {
         map: DerivedChartMapIdV1,
     },
     CompositeDeclaredChartMap,
+    CompositeHeterogeneous,
 }
 
 fn is_zero(bytes: &[u8; 32]) -> bool {
@@ -623,6 +673,7 @@ fn class_bytes(class: ReceiptClassV1) -> ClassBytesV1 {
             ClassBytesV1::DeclaredChartMap(bytes)
         }
         ReceiptClassV1::CompositeDeclaredChartMap => ClassBytesV1::Tag([4]),
+        ReceiptClassV1::CompositeHeterogeneous => ClassBytesV1::Tag([5]),
     }
 }
 
@@ -833,9 +884,11 @@ struct ValidatedMorphismClassV1 {
     receipt: ReceiptClassV1,
     no_claim: Option<DerivedNoClaimIdV1>,
     chart_path: Option<DerivedChartPathV1>,
+    primitive: Option<AdmittedDerivedPrimitiveV1>,
     chart_primitive: Option<DeclaredChartMapPrimitiveV1>,
 }
 
+#[allow(clippy::too_many_lines)] // One exhaustive primitive-family admission dispatch.
 fn validate_morphism_class(
     ir: DerivedMorphismIrV1,
     source: GeometryEndpointV1<'_>,
@@ -851,6 +904,7 @@ fn validate_morphism_class(
                 receipt: ReceiptClassV1::Identity,
                 no_claim: None,
                 chart_path: None,
+                primitive: None,
                 chart_primitive: None,
             })
         }
@@ -877,6 +931,11 @@ fn validate_morphism_class(
                 receipt: ReceiptClassV1::PrimitiveStrict(witness),
                 no_claim: Some(artifact),
                 chart_path: None,
+                primitive: Some(AdmittedDerivedPrimitiveV1::Strict {
+                    source_geometry: source.id,
+                    target_geometry: target.id,
+                    witness,
+                }),
                 chart_primitive: None,
             })
         }
@@ -903,6 +962,14 @@ fn validate_morphism_class(
             }
             shared_nonidentity_compatibility(source, target)?;
             let chart_path = declared_chart_path(source, target, source_chart, target_chart)?;
+            let chart_primitive = DeclaredChartMapPrimitiveV1 {
+                source_geometry: source.id,
+                target_geometry: target.id,
+                source_chart,
+                target_chart,
+                overlap,
+                map,
+            };
             Ok(ValidatedMorphismClassV1 {
                 admitted: AdmittedDerivedMorphismClassV1::DeclaredChartMapPath,
                 receipt: ReceiptClassV1::PrimitiveDeclaredChartMap {
@@ -913,14 +980,10 @@ fn validate_morphism_class(
                 },
                 no_claim: Some(artifact),
                 chart_path: Some(chart_path),
-                chart_primitive: Some(DeclaredChartMapPrimitiveV1 {
-                    source_geometry: source.id,
-                    target_geometry: target.id,
-                    source_chart,
-                    target_chart,
-                    overlap,
-                    map,
-                }),
+                primitive: Some(AdmittedDerivedPrimitiveV1::DeclaredChartMap(
+                    chart_primitive,
+                )),
+                chart_primitive: Some(chart_primitive),
             })
         }
         (DerivedMorphismKindV1::Identity, _) => Err(DerivedMorphismErrorV1::InvalidIdentity),
@@ -961,6 +1024,21 @@ fn retain_chart_primitive(
     Ok(retained)
 }
 
+fn retain_typed_primitive(
+    primitive: Option<AdmittedDerivedPrimitiveV1>,
+) -> Result<Vec<AdmittedDerivedPrimitiveV1>, DerivedMorphismErrorV1> {
+    let mut retained = Vec::new();
+    if let Some(primitive) = primitive {
+        retained
+            .try_reserve_exact(1)
+            .map_err(|_| DerivedMorphismErrorV1::AllocationRefused {
+                field: "typed-primitive-lineage",
+            })?;
+        retained.push(primitive);
+    }
+    Ok(retained)
+}
+
 fn admit_between_endpoints(
     ir: DerivedMorphismIrV1,
     source: GeometryEndpointV1<'_>,
@@ -991,6 +1069,7 @@ fn admit_between_endpoints(
         return Err(DerivedMorphismErrorV1::Cancelled { stage: "admission" });
     }
     let no_equivalence_claims = retain_no_claim(validated.no_claim)?;
+    let primitive_path = retain_typed_primitive(validated.primitive)?;
     let declared_chart_maps = retain_chart_primitive(validated.chart_primitive)?;
     let receipt = morphism_receipt(
         source.id,
@@ -1020,6 +1099,7 @@ fn admit_between_endpoints(
         target: target.id,
         class: validated.admitted,
         chart_path: validated.chart_path,
+        primitive_path,
         declared_chart_maps,
         evidence: ir.evidence,
         no_equivalence_claims,
@@ -1131,6 +1211,12 @@ fn copy_admitted_morphism(
     value: &AdmittedDerivedMorphismV1,
     cx: &Cx<'_>,
 ) -> Result<AdmittedDerivedMorphismV1, DerivedMorphismErrorV1> {
+    let primitive_path = combine_slices(
+        "typed-primitive-lineage-copy",
+        &value.primitive_path,
+        &[],
+        cx,
+    )?;
     let primitive_factors =
         combine_slices("primitive-lineage-copy", &value.primitive_factors, &[], cx)?;
     let no_equivalence_claims = combine_slices(
@@ -1155,12 +1241,52 @@ fn copy_admitted_morphism(
         target: value.target,
         class: value.class,
         chart_path: value.chart_path,
+        primitive_path,
         declared_chart_maps,
         evidence: value.evidence,
         no_equivalence_claims,
         primitive_factors,
         receipt: value.receipt,
     })
+}
+
+fn validate_typed_primitive_seam(
+    first: &AdmittedDerivedMorphismV1,
+    second: &AdmittedDerivedMorphismV1,
+) -> Result<(), DerivedMorphismErrorV1> {
+    let first_start = first
+        .primitive_path
+        .first()
+        .ok_or(DerivedMorphismErrorV1::CompositionClassMismatch)?;
+    let first_end = first
+        .primitive_path
+        .last()
+        .ok_or(DerivedMorphismErrorV1::CompositionClassMismatch)?;
+    let second_start = second
+        .primitive_path
+        .first()
+        .ok_or(DerivedMorphismErrorV1::CompositionClassMismatch)?;
+    let second_end = second
+        .primitive_path
+        .last()
+        .ok_or(DerivedMorphismErrorV1::CompositionClassMismatch)?;
+    if first_start.source_geometry() != first.source
+        || first_end.target_geometry() != first.target
+        || second_start.source_geometry() != second.source
+        || second_end.target_geometry() != second.target
+        || first_end.target_geometry() != second_start.source_geometry()
+    {
+        return Err(DerivedMorphismErrorV1::CompositionClassMismatch);
+    }
+    if let (
+        AdmittedDerivedPrimitiveV1::DeclaredChartMap(first_chart),
+        AdmittedDerivedPrimitiveV1::DeclaredChartMap(second_chart),
+    ) = (first_end, second_start)
+        && first_chart.target_chart != second_chart.source_chart
+    {
+        return Err(DerivedMorphismErrorV1::CompositionChartMismatch);
+    }
+    Ok(())
 }
 
 fn compose_class(
@@ -1174,6 +1300,7 @@ fn compose_class(
     ),
     DerivedMorphismErrorV1,
 > {
+    validate_typed_primitive_seam(first, second)?;
     match (first.class, second.class) {
         (AdmittedDerivedMorphismClassV1::Strict, AdmittedDerivedMorphismClassV1::Strict) => Ok((
             AdmittedDerivedMorphismClassV1::Strict,
@@ -1217,7 +1344,15 @@ fn compose_class(
                 }),
             ))
         }
-        _ => Err(DerivedMorphismErrorV1::CompositionClassMismatch),
+        (AdmittedDerivedMorphismClassV1::Identity, _)
+        | (_, AdmittedDerivedMorphismClassV1::Identity) => {
+            Err(DerivedMorphismErrorV1::CompositionClassMismatch)
+        }
+        _ => Ok((
+            AdmittedDerivedMorphismClassV1::HeterogeneousPath,
+            ReceiptClassV1::CompositeHeterogeneous,
+            None,
+        )),
     }
 }
 
@@ -1298,11 +1433,11 @@ fn compose_evidence(
 
 /// Compose `first: X -> Y` followed by `second: Y -> Z`.
 ///
-/// Homogeneous factors and no-equivalence artifacts are flattened in semantic
-/// order, so parenthesization does not change the receipt. Declared chart-map
-/// paths require an exact middle chart. Identity arrows are unique per geometry
-/// and rank-neutral, so they are exact composition units. Mixed nonidentity map
-/// families refuse until typed heterogeneous composition lands.
+/// Typed primitive factors and no-equivalence artifacts are flattened in
+/// semantic order, so parenthesization does not change the receipt. Adjacent
+/// declared chart maps require an exact middle chart even inside heterogeneous
+/// paths. Identity arrows are unique per geometry and rank-neutral, so they are
+/// exact composition units.
 ///
 /// # Errors
 /// Returns a typed refusal for endpoint, path-family/chart/variance/evidence
@@ -1331,6 +1466,12 @@ pub fn compose_derived_morphisms_v1(
 
     let (class, receipt_class, chart_path) = compose_class(first, second)?;
     let evidence = compose_evidence(first.evidence, second.evidence)?;
+    let primitive_path = combine_slices(
+        "typed-primitive-lineage",
+        &first.primitive_path,
+        &second.primitive_path,
+        cx,
+    )?;
     let primitive_factors = combine_slices(
         "primitive-lineage",
         &first.primitive_factors,
@@ -1368,6 +1509,7 @@ pub fn compose_derived_morphisms_v1(
         target: second.target,
         class,
         chart_path,
+        primitive_path,
         declared_chart_maps,
         evidence,
         no_equivalence_claims,
@@ -1607,6 +1749,47 @@ mod tests {
     }
 
     #[test]
+    fn v1_class_bytes_keep_old_tags_and_domain_separate_heterogeneous_paths() {
+        assert_eq!(
+            <DerivedMorphismIdentitySchemaV1 as CanonicalSchema>::CONTEXT,
+            "typed endpoints, strict map class, evidence variance, no-equivalence boundary, and ordered primitive lineage"
+        );
+        for (class, expected) in [
+            (ReceiptClassV1::Identity, 0),
+            (ReceiptClassV1::CompositeStrict, 2),
+            (ReceiptClassV1::CompositeDeclaredChartMap, 4),
+            (ReceiptClassV1::CompositeHeterogeneous, 5),
+        ] {
+            assert_eq!(class_bytes(class).as_slice(), &[expected]);
+        }
+        let strict = class_bytes(ReceiptClassV1::PrimitiveStrict(
+            DerivedWitnessIdV1::from_bytes([7; 32]),
+        ));
+        assert_eq!(strict.as_slice().len(), 33);
+        assert_eq!(strict.as_slice()[0], 1);
+        assert!(strict.as_slice()[1..].iter().all(|byte| *byte == 7));
+
+        let chart = class_bytes(ReceiptClassV1::PrimitiveDeclaredChartMap {
+            source_chart: chart_id(8),
+            target_chart: chart_id(9),
+            overlap: DerivedChartOverlapIdV1::from_bytes([10; 32]),
+            map: DerivedChartMapIdV1::from_bytes([11; 32]),
+        });
+        assert_eq!(chart.as_slice().len(), 129);
+        assert_eq!(chart.as_slice()[0], 3);
+        assert_eq!(&chart.as_slice()[1..33], chart_id(8).as_bytes());
+        assert_eq!(&chart.as_slice()[33..65], chart_id(9).as_bytes());
+        assert_eq!(
+            &chart.as_slice()[65..97],
+            DerivedChartOverlapIdV1::from_bytes([10; 32]).as_bytes()
+        );
+        assert_eq!(
+            &chart.as_slice()[97..129],
+            DerivedChartMapIdV1::from_bytes([11; 32]).as_bytes()
+        );
+    }
+
+    #[test]
     fn identity_is_neutral_and_composition_is_associative_by_receipt() {
         with_cx(false, |cx| {
             let x = endpoint(10);
@@ -1648,6 +1831,14 @@ mod tests {
             let x = endpoint(30);
             let a = admit_strict(x, x, 31, ColorRank::Validated, ColorRank::Validated, cx);
             let b = admit_strict(x, x, 32, ColorRank::Validated, ColorRank::Validated, cx);
+            assert_eq!(
+                a.primitive_path(),
+                &[AdmittedDerivedPrimitiveV1::Strict {
+                    source_geometry: x.id,
+                    target_geometry: x.id,
+                    witness: DerivedWitnessIdV1::from_bytes([31; 32]),
+                }]
+            );
             let ab = compose_derived_morphisms_v1(&a, &b, cx).expect("a then b");
             let ba = compose_derived_morphisms_v1(&b, &a, cx).expect("b then a");
             assert_ne!(ab.id(), ba.id());
@@ -1806,6 +1997,14 @@ mod tests {
             );
             assert_eq!(left.primitive_factors(), &[f.id(), g.id(), h.id()]);
             assert_eq!(
+                left.primitive_path(),
+                &[
+                    f.primitive_path()[0],
+                    g.primitive_path()[0],
+                    h.primitive_path()[0],
+                ]
+            );
+            assert_eq!(
                 left.declared_chart_maps(),
                 &[
                     f.declared_chart_maps()[0],
@@ -1817,6 +2016,111 @@ mod tests {
             assert_eq!(
                 compose_derived_morphisms_v1(&identity, &f, cx).expect("identity then f"),
                 f
+            );
+        });
+    }
+
+    #[test]
+    fn mixed_primitive_families_form_associative_typed_paths() {
+        with_cx(false, |cx| {
+            let y_charts = [chart(160, 2, 2, 16, 1.0)];
+            let z_charts = [chart(161, 2, 2, 16, 1.0)];
+            let x = endpoint(162);
+            let y = endpoint_with_charts(163, &y_charts);
+            let z = endpoint_with_charts(164, &z_charts);
+            let w = endpoint(165);
+            let f = admit_strict(x, y, 166, ColorRank::Verified, ColorRank::Validated, cx);
+            let g = admit_chart_map(
+                y,
+                z,
+                y_charts[0].id,
+                z_charts[0].id,
+                167,
+                ColorRank::Validated,
+                ColorRank::Validated,
+                cx,
+            );
+            let h = admit_strict(z, w, 170, ColorRank::Validated, ColorRank::Estimated, cx);
+
+            let fg = compose_derived_morphisms_v1(&f, &g, cx).expect("strict then chart");
+            let gh = compose_derived_morphisms_v1(&g, &h, cx).expect("chart then strict");
+            let left = compose_derived_morphisms_v1(&fg, &h, cx).expect("(fg)h");
+            let right = compose_derived_morphisms_v1(&f, &gh, cx).expect("f(gh)");
+            assert_eq!(left, right);
+            assert_eq!(
+                left.class(),
+                AdmittedDerivedMorphismClassV1::HeterogeneousPath
+            );
+            assert_eq!(left.chart_path(), None);
+            assert_eq!(left.primitive_factors(), &[f.id(), g.id(), h.id()]);
+            assert_eq!(
+                left.primitive_path(),
+                &[
+                    f.primitive_path()[0],
+                    g.primitive_path()[0],
+                    h.primitive_path()[0],
+                ]
+            );
+            assert!(matches!(
+                left.primitive_path(),
+                [
+                    AdmittedDerivedPrimitiveV1::Strict { .. },
+                    AdmittedDerivedPrimitiveV1::DeclaredChartMap(_),
+                    AdmittedDerivedPrimitiveV1::Strict { .. }
+                ]
+            ));
+            assert_eq!(left.declared_chart_maps(), g.declared_chart_maps());
+            let left_identity = admit_identity(x, cx);
+            let right_identity = admit_identity(w, cx);
+            assert_eq!(
+                compose_derived_morphisms_v1(&left_identity, &left, cx)
+                    .expect("heterogeneous left identity"),
+                left
+            );
+            assert_eq!(
+                compose_derived_morphisms_v1(&left, &right_identity, cx)
+                    .expect("heterogeneous right identity"),
+                left
+            );
+        });
+    }
+
+    #[test]
+    fn heterogeneous_paths_preserve_adjacent_chart_seam_checks() {
+        with_cx(false, |cx| {
+            let y_charts = [chart(180, 2, 2, 18, 1.0)];
+            let z_charts = [chart(181, 2, 2, 18, 1.0), chart(182, 2, 2, 18, 1.0)];
+            let w_charts = [chart(183, 2, 2, 18, 1.0)];
+            let x = endpoint(184);
+            let y = endpoint_with_charts(185, &y_charts);
+            let z = endpoint_with_charts(186, &z_charts);
+            let w = endpoint_with_charts(187, &w_charts);
+            let strict = admit_strict(x, y, 188, ColorRank::Verified, ColorRank::Validated, cx);
+            let first_chart = admit_chart_map(
+                y,
+                z,
+                y_charts[0].id,
+                z_charts[0].id,
+                189,
+                ColorRank::Validated,
+                ColorRank::Validated,
+                cx,
+            );
+            let mixed =
+                compose_derived_morphisms_v1(&strict, &first_chart, cx).expect("mixed prefix");
+            let wrong_chart = admit_chart_map(
+                z,
+                w,
+                z_charts[1].id,
+                w_charts[0].id,
+                190,
+                ColorRank::Validated,
+                ColorRank::Estimated,
+                cx,
+            );
+            assert_eq!(
+                compose_derived_morphisms_v1(&mixed, &wrong_chart, cx),
+                Err(DerivedMorphismErrorV1::CompositionChartMismatch)
             );
         });
     }
@@ -2130,7 +2434,7 @@ mod tests {
     }
 
     #[test]
-    fn declared_chart_map_composition_refuses_wrong_chart_or_path_class() {
+    fn chart_composition_refuses_wrong_chart_but_accepts_a_strict_boundary() {
         with_cx(false, |cx| {
             let x_charts = [chart(130, 2, 2, 13, 1.0)];
             let y_charts = [chart(131, 2, 2, 13, 1.0), chart(132, 2, 2, 13, 1.0)];
@@ -2164,9 +2468,11 @@ mod tests {
             );
 
             let strict = admit_strict(x, y, 143, ColorRank::Validated, ColorRank::Validated, cx);
+            let mixed = compose_derived_morphisms_v1(&strict, &wrong_middle, cx)
+                .expect("strict boundary carries no chart seam");
             assert_eq!(
-                compose_derived_morphisms_v1(&strict, &wrong_middle, cx),
-                Err(DerivedMorphismErrorV1::CompositionClassMismatch)
+                mixed.class(),
+                AdmittedDerivedMorphismClassV1::HeterogeneousPath
             );
         });
     }
