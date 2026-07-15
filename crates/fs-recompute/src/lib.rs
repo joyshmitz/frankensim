@@ -778,9 +778,10 @@ impl core::fmt::Display for StoreError {
             } => write!(
                 f,
                 "DETERMINISM CONTRACT VIOLATION at node {}: the same \
-                 (op, inputs, params, code, seed) produced artifact {got} where \
-                 {expected} is on record — tolerance-level memoization is UNSOUND \
-                 until the op is fixed (unordered reduction? unstable sort? \
+                 seven-field node record (op, inputs, params, code, seed, achieved \
+                 error, required tolerance; floats compared by bits) produced artifact \
+                 {got} where {expected} is on record — tolerance-level memoization is \
+                 UNSOUND until the op is fixed (unordered reduction? unstable sort? \
                  uninitialized padding?); this is stop-the-line, not a warning",
                 node.to_hex()
             ),

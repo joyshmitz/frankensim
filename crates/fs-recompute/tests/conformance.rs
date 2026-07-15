@@ -438,9 +438,11 @@ fn rcs_001_hashing_stability() {
     );
 }
 
-/// rcs-002 — the determinism trip-wire: identical record + identical
-/// artifact dedupes; identical record + DIFFERENT artifact is a
-/// stop-the-line error naming both hashes.
+/// rcs-002 — the determinism trip-wire's exact boundary: identical
+/// SEVEN-FIELD record + identical artifact dedupes; identical record +
+/// DIFFERENT artifact is a stop-the-line error naming both hashes. A
+/// remeasured output changes the record identity and is stored separately,
+/// so the diagnostic must not overstate this as a five-input-field check.
 #[test]
 fn rcs_002_determinism_tripwire() {
     let mut store = Store::new();
@@ -449,15 +451,29 @@ fn rcs_002_determinism_tripwire() {
     let inserted = matches!(first, PutOutcome::Inserted(_));
     let again = store.put(r.clone(), b"bits-v1").expect("dedup");
     let deduped = matches!(again, PutOutcome::Deduped(_));
-    let trip = store.put(r, b"bits-v2");
-    let tripped = matches!(&trip, Err(StoreError::DeterminismViolation { .. }))
-        && trip.unwrap_err().to_string().contains("stop-the-line");
+    let trip = store.put(r.clone(), b"bits-v2");
+    let trip_message = trip
+        .expect_err("same record with different bytes must trip")
+        .to_string();
+    let tripped = trip_message.contains("stop-the-line")
+        && trip_message.contains("same seven-field node record")
+        && trip_message.contains("achieved error, required tolerance")
+        && !trip_message.contains("same (op, inputs, params, code, seed)");
+
+    let mut remeasured = r;
+    remeasured.achieved_error = 2e-8;
+    let output_changed_identity = matches!(
+        store
+            .put(remeasured, b"bits-v2")
+            .expect("a different measured-output field is a different seven-field node"),
+        PutOutcome::Inserted(_)
+    );
     verdict(
         "rcs-002",
-        inserted && deduped && tripped,
-        "identical (record, artifact) dedupes as a write-time memo hit; the same \
-         record with different bytes trips the DETERMINISM CONTRACT with both \
-         artifact hashes named — stop the line, not a warning",
+        inserted && deduped && tripped && output_changed_identity,
+        "identical (seven-field record, artifact) dedupes as a write-time memo hit; \
+         the same full record with different bytes trips the DETERMINISM CONTRACT, \
+         while a changed measured output is honestly a distinct node identity",
     );
 }
 
