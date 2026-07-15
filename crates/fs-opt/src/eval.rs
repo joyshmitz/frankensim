@@ -7,7 +7,7 @@
 
 use crate::admission::AdmissionCaps;
 use crate::ir::{
-    Expr, Manifold, NodeId, ObjectiveEvalSite, OptError, ProbeDirection, Problem, VarId,
+    Expr, Manifold, NodeId, ObjectiveEvalSite, OptError, ProbeDirection, Problem, Shape, VarId,
 };
 use fs_exec::Cx;
 
@@ -36,6 +36,44 @@ impl Value {
             Value::V(_) => None,
         }
     }
+}
+
+fn runtime_vector_len(values: &[f64]) -> u64 {
+    u64::try_from(values.len()).unwrap_or(u64::MAX)
+}
+
+fn validate_runtime_shape(problem: &Problem, node: NodeId, value: &Value) -> Result<(), OptError> {
+    let expected = problem.shape(node)?;
+    let matches = match (expected, value) {
+        (Shape::Scalar, Value::S(_)) => true,
+        (Shape::Vector(expected_len), Value::V(values)) => {
+            u64::from(expected_len) == runtime_vector_len(values)
+        }
+        _ => false,
+    };
+    if matches {
+        Ok(())
+    } else {
+        Err(OptError::EvalShape {
+            node: node.0,
+            expected,
+            actual_vector_len: match value {
+                Value::S(_) => None,
+                Value::V(values) => Some(runtime_vector_len(values)),
+            },
+        })
+    }
+}
+
+fn checked_component(node: NodeId, index: u32, values: &[f64]) -> Result<f64, OptError> {
+    values
+        .get(usize::try_from(index).unwrap_or(usize::MAX))
+        .copied()
+        .ok_or(OptError::EvalIndexOut {
+            node: node.0,
+            index,
+            len: runtime_vector_len(values),
+        })
 }
 
 /// A complete, validated runtime point for every variable in one
@@ -93,6 +131,7 @@ impl<'problem, 'value> BindingFrame<'problem, 'value> {
     ///
     /// # Errors
     /// [`OptError::UnknownNode`], [`OptError::Unevaluable`],
+    /// [`OptError::EvalShape`], [`OptError::EvalIndexOut`],
     /// [`OptError::EvalNonFinite`], or [`OptError::CapExceeded`].
     pub fn eval(&self, node: NodeId) -> Result<Value, OptError> {
         validate_eval_envelope(self.problem, node)?;
@@ -112,7 +151,8 @@ impl<'problem, 'value> BindingFrame<'problem, 'value> {
 /// [`OptError::Unevaluable`] / [`OptError::UnknownVar`] /
 /// [`OptError::UnknownNode`] / [`OptError::BindingCount`] /
 /// [`OptError::BindingLen`] / [`OptError::BindingNonFinite`] /
-/// [`OptError::BindingDomain`] / [`OptError::EvalNonFinite`] /
+/// [`OptError::BindingDomain`] / [`OptError::EvalShape`] /
+/// [`OptError::EvalIndexOut`] / [`OptError::EvalNonFinite`] /
 /// [`OptError::CapExceeded`].
 pub fn eval(problem: &Problem, node: NodeId, bindings: &[Vec<f64>]) -> Result<Value, OptError> {
     let caps = validate_eval_envelope(problem, node)?;
@@ -337,7 +377,7 @@ fn eval_node(
         Expr::Component { of, index } => {
             let v = ev(*of);
             match v {
-                Value::V(xs) => Value::S(xs[*index as usize]),
+                Value::V(xs) => Value::S(checked_component(node, *index, &xs)?),
                 Value::S(_) => unreachable!("builder enforced vector shape"),
             }
         }
@@ -398,6 +438,7 @@ fn eval_node(
             });
         }
     };
+    validate_runtime_shape(problem, node, &out)?;
     match &out {
         Value::S(value) if !value.is_finite() => {
             return Err(OptError::EvalNonFinite {
@@ -963,4 +1004,71 @@ pub fn descend_ir(
         finite_descent_value(sign * obj.weight * scalar, "weighted IR objective")
     };
     descend_fn_checked(manifold, &f, x0, opts, problem.budget.max_evals, cx)
+}
+
+#[cfg(test)]
+mod runtime_shape_tests {
+    use super::*;
+    use crate::ir::ProblemBuilder;
+    use fs_qty::Dims;
+
+    #[test]
+    fn runtime_values_must_match_sealed_shape_receipts() {
+        let mut builder = ProblemBuilder::new();
+        let variable = builder
+            .var("x", Manifold::Rn { dim: 2 }, Dims::NONE)
+            .expect("variable");
+        let vector = builder.var_ref(variable).expect("vector node");
+        let scalar = builder.component(vector, 0).expect("scalar node");
+        let problem = builder.finish();
+
+        assert_eq!(
+            validate_runtime_shape(&problem, vector, &Value::V(vec![1.0, 2.0])),
+            Ok(())
+        );
+        assert_eq!(
+            validate_runtime_shape(&problem, scalar, &Value::S(1.0)),
+            Ok(())
+        );
+        for (actual_len, actual_len_u64) in [(1usize, 1u64), (3, 3)] {
+            assert_eq!(
+                validate_runtime_shape(&problem, vector, &Value::V(vec![0.0; actual_len])),
+                Err(OptError::EvalShape {
+                    node: vector.0,
+                    expected: Shape::Vector(2),
+                    actual_vector_len: Some(actual_len_u64),
+                })
+            );
+        }
+        assert_eq!(
+            validate_runtime_shape(&problem, vector, &Value::S(0.0)),
+            Err(OptError::EvalShape {
+                node: vector.0,
+                expected: Shape::Vector(2),
+                actual_vector_len: None,
+            })
+        );
+        assert_eq!(
+            validate_runtime_shape(&problem, scalar, &Value::V(vec![0.0])),
+            Err(OptError::EvalShape {
+                node: scalar.0,
+                expected: Shape::Scalar,
+                actual_vector_len: Some(1),
+            })
+        );
+    }
+
+    #[test]
+    fn runtime_component_access_is_checked_and_attributed() {
+        let node = NodeId(17);
+        assert_eq!(checked_component(node, 0, &[4.0]), Ok(4.0));
+        assert_eq!(
+            checked_component(node, 1, &[4.0]),
+            Err(OptError::EvalIndexOut {
+                node: 17,
+                index: 1,
+                len: 1,
+            })
+        );
+    }
 }

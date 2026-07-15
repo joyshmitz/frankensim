@@ -179,9 +179,12 @@ structure; FLUX/UQ execute it.
   default runtime variable/per-point/aggregate-point-storage envelope and
   manifold-validation work charge are preflighted before frame slot allocation,
   including for problems sealed under looser caller-supplied builder caps.
-  Every computed scalar/vector node result is then checked for finiteness
-  with node/component attribution before it enters the memo or becomes a
-  public result. The walk itself is EXPLICIT-STACK (reachability worklist
+  Every computed scalar/vector result must exactly match its sealed `Shape`
+  receipt and is then checked for finiteness with node/component attribution
+  before it enters the memo or becomes public. Component access is checked and
+  reports its node/index/observed source length instead of indexing directly.
+  Exact child receipts make vector zip operators non-truncating by induction.
+  The walk itself is EXPLICIT-STACK (reachability worklist
   + bottom-up arena-order sweep;
   bead frankensim-xf8v7) so no admitted graph — at the depth cap or
   otherwise — can overflow the call stack. `ir::children` is public so
@@ -291,6 +294,7 @@ roots, `ManifoldInvalid` (violated policy named), `NonFinite` (payload
 name + exact bit pattern), `ObjectivePanicked` (one-based evaluation ordinal +
 bounded site),
 `BindingNonFinite`/`BindingDomain`/
+`EvalShape`/`EvalIndexOut` (runtime node + exact observed shape/index),
 `EvalNonFinite` (runtime location + exact bits),
 `RetractionLen`/`RetractionNonFinite`/
 `RetractionDomain` (input, manifold rule, location, and measurement),

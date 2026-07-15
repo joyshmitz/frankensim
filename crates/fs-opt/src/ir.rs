@@ -622,6 +622,24 @@ pub enum OptError {
         /// The offending value's exact IEEE-754 bit pattern.
         bits: u64,
     },
+    /// A runtime node result disagrees with its sealed shape receipt.
+    EvalShape {
+        /// The node whose result is malformed.
+        node: u32,
+        /// Shape retained by the sealed graph.
+        expected: Shape,
+        /// `None` for an observed scalar, or the exact observed vector length.
+        actual_vector_len: Option<u64>,
+    },
+    /// A runtime component node requested storage its source did not produce.
+    EvalIndexOut {
+        /// Component-expression node being evaluated.
+        node: u32,
+        /// Requested source-vector component.
+        index: u32,
+        /// Exact observed source-vector length.
+        len: u64,
+    },
     /// A raw retraction point or step has the wrong storage length.
     RetractionLen {
         /// Which retraction input was malformed.
@@ -872,6 +890,27 @@ impl core::fmt::Display for OptError {
                     ),
                 }
             }
+            OptError::EvalShape {
+                node,
+                expected,
+                actual_vector_len,
+            } => match actual_vector_len {
+                Some(length) => write!(
+                    f,
+                    "node {node} produced a vector of length {length}, but its sealed \
+                     runtime shape is {expected:?}"
+                ),
+                None => write!(
+                    f,
+                    "node {node} produced a scalar, but its sealed runtime shape is \
+                     {expected:?}"
+                ),
+            },
+            OptError::EvalIndexOut { node, index, len } => write!(
+                f,
+                "component node {node} requested source index {index}, but the \
+                 runtime source vector has length {len}"
+            ),
             OptError::CapExceeded { what, count, cap } => write!(
                 f,
                 "admission cap exceeded: {what} = {count} > {cap}; split the problem \
