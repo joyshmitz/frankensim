@@ -3,7 +3,7 @@
 //! diagnosable from output alone (observability standard; fs-obs schema
 //! adoption pending that crate's landing).
 
-use fs_qty::parse::{ParseErrorKind, parse_qty};
+use fs_qty::parse::{ParseBudget, ParseErrorKind, ParseResource, parse_qty, parse_qty_with_budget};
 use fs_qty::semantic::{
     AngleDomain, CompositionBasis, FormRequirement, PhasorAmplitude, PhasorQty, QuantityKind,
     SemanticError, SemanticQty, SemanticType, StrainBasis, StrainComponent, ValueForm,
@@ -145,7 +145,9 @@ fn logged_parser_refusal(case: &str, input: &str, expected: &ParseErrorKind) {
     match outcome {
         Ok(Err(error)) => verdict(
             case,
-            error.input == input
+            error.verifies_source(input)
+                && error.input_bytes == input.len()
+                && error.preview.len() <= ParseBudget::DEFAULT.max_diagnostic_bytes()
                 && &error.kind == expected
                 && error.at <= input.len()
                 && !error.help.is_empty(),
@@ -160,6 +162,46 @@ fn logged_parser_refusal(case: &str, input: &str, expected: &ParseErrorKind) {
             &format!("input={input}; unexpectedly admitted={quantity:?}"),
         ),
         Err(_) => verdict(case, false, &format!("input={input}; parser panicked")),
+    }
+}
+
+/// qty-005b: hostile sources, factors, and tokens are bounded before retained
+/// diagnostics can scale with the rejected input.
+#[test]
+fn qty_005b_parser_budget_and_diagnostic_bounds() {
+    let budget = ParseBudget::new(96, 3, 8, 12);
+    let at_factor_cap = "1rad*rad*rad";
+    assert!(parse_qty_with_budget(at_factor_cap, budget).is_ok());
+
+    let cases = [
+        (format!("1m{}", " ".repeat(95)), ParseResource::InputBytes),
+        ("1rad*rad*rad*rad".to_string(), ParseResource::Factors),
+        ("1abcdefghijk".to_string(), ParseResource::TokenBytes),
+        ("1m^000000000".to_string(), ParseResource::TokenBytes),
+    ];
+    for (input, resource) in cases {
+        let first = parse_qty_with_budget(&input, budget).expect_err("budget must refuse");
+        let second = parse_qty_with_budget(&input, budget).expect_err("repeat must refuse");
+        let pass = first == second
+            && first.preview.len() <= budget.max_diagnostic_bytes()
+            && first.input_bytes == input.len()
+            && matches!(
+                &first.kind,
+                ParseErrorKind::BudgetExceeded {
+                    resource: actual,
+                    ..
+                } if *actual == resource
+            );
+        verdict(
+            "qty-005b/bounded-refusal",
+            pass,
+            &format!(
+                "resource={resource:?} input_bytes={} preview_bytes={} hash_present={}",
+                input.len(),
+                first.preview.len(),
+                first.source_hash.is_some()
+            ),
+        );
     }
 }
 

@@ -443,6 +443,32 @@ fn ir_006_version_pinning_round_trips() {
     );
 }
 
+#[test]
+fn ir_006b_quantity_budget_refusal_is_bounded_and_deterministic() {
+    let source = format!("1{}", "x".repeat(5_000));
+    let first = sexpr::parse(&source).expect_err("oversized quantity token must refuse");
+    let second = sexpr::parse(&source).expect_err("repeat must refuse identically");
+    assert_eq!(first, second);
+    assert_eq!(first.kind.code(), "IrBadQuantity");
+    assert_eq!(first.span.start, 0);
+    assert_eq!(first.span.end, source.len());
+    assert!(
+        first.detail.contains("InputBytes")
+            && first.detail.contains("unavailable-before-byte-admission")
+    );
+    assert!(
+        first.detail.len() < 1_024,
+        "bounded fs-qty diagnostics must not retain the 5 KiB source: {} bytes",
+        first.detail.len()
+    );
+    let normal = sexpr::parse("2mol").expect("ordinary quantity remains admitted");
+    assert!(matches!(normal.kind, NodeKind::Qty { .. }));
+    verdict(
+        "ir-006b",
+        "fs-ir explicitly uses the bounded fs-qty entry point and retains bounded deterministic diagnostics",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Random AST generator (seeded LCG; atoms drawn from the real noun pool)
 // ---------------------------------------------------------------------------

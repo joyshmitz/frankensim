@@ -319,7 +319,7 @@ fn classify_numeric(text: &str, span: Span) -> Result<Node, IrError> {
             });
         }
     }
-    match fs_qty::parse::parse_qty(text) {
+    match fs_qty::parse::parse_qty_with_budget(text, fs_qty::parse::ParseBudget::DEFAULT) {
         Ok(q) => Ok(Node {
             kind: NodeKind::Qty {
                 value: q.value,

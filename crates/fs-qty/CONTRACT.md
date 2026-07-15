@@ -33,12 +33,15 @@ Appendix B). Layer: UTIL; its only production dependency is the Franken-only
   `DimensionMismatch`), checked `powi` (returning `DimensionOverflow`
   before metadata can saturate), `Mul/Div`, and `to_typed::<...>()`
   downcasts.
-- `parse::parse_qty(&str) -> Result<QtyAny, ParseError>` — the FrankenScript
-  literal grammar (`0.12Pa*s`, `0.5L/s`, `65deg`, `0.03m2/s3`, `9.81m/s^2`,
-  `20degC`, `15%`, `2mol`, `12V`, `3Wb`, `4H`, `5Ohm`, `6S`, `7F`, `8T`);
-  strict left-to-right `*`/`·`/`/`; prefixes p n u µ m c d k M G T;
-  whole-symbol match beats prefix+symbol (`min` is minutes, `T` is tesla when
-  it is the complete symbol).
+- `parse::parse_qty_with_budget(&str, ParseBudget) -> Result<QtyAny,
+  ParseError>` — the explicitly bounded FrankenScript literal grammar;
+  `parse_qty` is the compatibility entry point and always applies the public
+  4,096-byte / 256-factor / 64-token-byte / 256-diagnostic-byte default.
+  Grammar examples include `0.12Pa*s`, `0.5L/s`, `65deg`, `0.03m2/s3`,
+  `9.81m/s^2`, `20degC`, `15%`, `2mol`, `12V`, `3Wb`, `4H`, `5Ohm`, `6S`,
+  `7F`, and `8T`; evaluation is strict left-to-right `*`/`·`/`/`; prefixes are
+  p n u µ m c d k M G T; whole-symbol match beats prefix+symbol (`min` is
+  minutes, `T` is tesla when it is the complete symbol).
 - `json::to_json/from_json` — canonical v2
   `{"schema_version":2,"value":V,"dims":[m,kg,s,K,A,mol]}` with bit-exact
   finite-value round-trip. `decode_json` also accepts the exact historical
@@ -70,8 +73,13 @@ Appendix B). Layer: UTIL; its only production dependency is the Franken-only
 - All stored values are coherent SI base units; unit conversion happens ONLY
   at parse/constructor boundaries.
 - Typed and erased algebra agree bit-for-bit (same f64 operations).
-- `parse_qty` never panics on any input (garbage-battery-tested); every
-  failure is a structured `ParseError` with position, kind, and help.
+- `parse_qty` never panics on any input (garbage-battery-tested). Total byte
+  admission precedes trimming, hashing, number scanning, or token allocation;
+  factor and token caps are checked before evaluating or retaining the next
+  factor/token. Every failure has an exact byte offset, kind, help, total source
+  length, and UTF-8-safe bounded excerpt. Errors for byte-admitted inputs carry
+  a domain-separated full-input hash; oversized inputs are deliberately not
+  scanned merely to manufacture a hash after refusal.
 - Angles are dimensionless radians; `deg` converts numerically. `degC` is
   affine and legal only as a lone unit; compounds are rejected with guidance.
 - Accumulated unit exponents beyond ±60 are rejected as unphysical.
@@ -105,10 +113,14 @@ Appendix B). Layer: UTIL; its only production dependency is the Franken-only
 
 ## Error model
 `DimensionMismatch { op, left, right }`, `DimensionOverflow { op, dims, factor }`,
-`ParseError { input, at, kind, help }`, `JsonError { at, message }`,
-`SemanticError`, and `ChemistryError` are structured values with contextual
-operations, kinds, axes, indices, or arithmetic laws as applicable (P10
-errors-as-guidance); no panics across the crate boundary.
+`ParseError { preview, preview_start, input_bytes, source_hash, at, kind, help }`,
+`JsonError { at, message }`, `SemanticError`, and `ChemistryError` are
+structured values with contextual operations, kinds, axes, indices, or
+arithmetic laws as applicable (P10 errors-as-guidance); no panics across the
+crate boundary. `ParseError::verifies_source` checks an admitted source against
+the retained full-input identity. `BudgetExceeded` identifies input bytes,
+token bytes, or factor work with its limit and exact/proven-lower-bound
+observation.
 
 ## Determinism class
 Deterministic: pure functions of inputs; no RNG, no time, no I/O, no
@@ -121,13 +133,20 @@ Chemical content identities use deterministic canonical encodings and
 domain-separated `fs-blake3` hashes.
 
 ## Cancellation behavior
-Scalar operations are O(1), parsing and composition conversion are O(input
-length), and exact conservation verification is O(elements * species *
-reactions). These are metadata-boundary operations rather than tile kernels;
-no Cx is required.
+Scalar operations are O(1). Quantity parsing is O(admitted input bytes) with
+explicit byte/token/factor bounds and bounded diagnostic retention; rejected
+oversized input takes O(diagnostic bytes), not O(input bytes). Composition
+conversion is O(input length), and exact conservation verification is
+O(elements * species * reactions). These are metadata-boundary operations
+rather than tile kernels; no Cx is required.
 
 ## Unsafe boundary
-None. `unsafe_code` denied.
+Production code has none; workspace `unsafe_code` remains denied. The isolated
+`tests/parse_allocation.rs` binary uses a test-only global allocator whose
+unsafe implementation delegates every allocation operation unchanged to
+`System` and adds only non-allocating relaxed-atomic measurement. Its safety
+invariant is documented at the implementation site and it is never linked into
+the library.
 
 ## Feature flags
 None. Nightly liability: `generic_const_exprs` for Mul/Div dimension
@@ -137,17 +156,23 @@ public API unchanged).
 ## Conformance tests
 `tests/conformance.rs`: Appendix C literal battery (qty-001), typed/erased
 bit-agreement (qty-002), v1/v2 JSON and pinned crosswalk receipts (qty-003),
-dimension safety (qty-004), parser totality over garbage (qty-005), plus 1,200
-deterministic fs-propcheck cases for six-component dimension-vector laws with
-shrinking enabled and fixed cases retained. The exhaustive qty-007 Cartesian
+dimension safety (qty-004), parser totality over garbage (qty-005), exact
+byte/factor/token budget boundaries and deterministic bounded diagnostics
+(qty-005b), plus 1,200 deterministic fs-propcheck cases for six-component
+dimension-vector laws with shrinking enabled and fixed cases retained. The
+exhaustive qty-007 Cartesian
 kind/form/phasor matrix emits one JSONL admission/refusal record per case, and
 qty-008 proves parser-to-semantic unit-rescaling invariance. Unit tests include
-the 20k-case seeded garbage battery, new-token collision cases, nonzero-mole
-round trips, strict canonical v1/v2 mutation and arity refusals, every semantic
+the 20k-case seeded garbage battery, default/custom/zero budget boundaries,
+UTF-8 excerpt and exact-offset cases, long unknown-unit/exponent refusals,
+new-token collision cases, nonzero-mole round trips, strict canonical v1/v2
+mutation and arity refusals, every semantic
 distinction and named conversion (including exact-bit subnormal boundaries),
 immutable chemistry identities, axis/order mismatches, exact elemental/charge
 conservation, and checked multiply/add overflow. Compile-fail doctests prove
-the type-level rejections.
+the type-level rejections. The separate `tests/parse_allocation.rs` binary
+wraps `System` with a peak-request probe and proves a one-megabyte byte-refused
+literal never causes a source-sized transient allocation.
 
 ## No-claim boundaries
 - Luminous-intensity (`cd`) dimensions; candela stays out until photometry is
@@ -157,6 +182,11 @@ the type-level rejections.
   distinctions must opt into `semantic::SemanticQty` rather than retag raw
   values by convention.
 - Information/monetary units (refused with a pointer to fs-ir budgets).
+- A full content hash for source rejected by the byte-admission gate. Such an
+  error retains exact source length plus a bounded position-aware excerpt, but
+  hashing the entire already-unadmitted source would violate the work bound;
+  callers needing a pre-admission identity must compute it in their own
+  separately budgeted ingestion layer.
 - Dimensioned roots (sqrt only on `Dimensionless`).
 - Unit RECONSTRUCTION in display (`kg·m^-1·s^-2` exponent form only — no
   derived-unit naming like "Pa"); format→parse round-trip is guaranteed for

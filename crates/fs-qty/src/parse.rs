@@ -27,12 +27,95 @@
 
 use crate::{DIMENSION_COUNT, Dims, QtyAny};
 use core::fmt;
+use fs_blake3::hash_domain;
+
+pub use fs_blake3::ContentHash;
+
+const PARSE_INPUT_IDENTITY_DOMAIN: &str = "frankensim.fs-qty.parse-input.v1";
+
+/// Explicit work and diagnostic-retention budget for one quantity literal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParseBudget {
+    max_input_bytes: usize,
+    max_factors: usize,
+    max_token_bytes: usize,
+    max_diagnostic_bytes: usize,
+}
+
+impl ParseBudget {
+    /// Conservative compatibility budget used by [`parse_qty`].
+    pub const DEFAULT: Self = Self::new(4_096, 256, 64, 256);
+
+    /// Construct a budget. Zero is meaningful and tested for every field.
+    #[must_use]
+    pub const fn new(
+        max_input_bytes: usize,
+        max_factors: usize,
+        max_token_bytes: usize,
+        max_diagnostic_bytes: usize,
+    ) -> Self {
+        Self {
+            max_input_bytes,
+            max_factors,
+            max_token_bytes,
+            max_diagnostic_bytes,
+        }
+    }
+
+    /// Maximum admitted UTF-8 source bytes.
+    #[must_use]
+    pub const fn max_input_bytes(self) -> usize {
+        self.max_input_bytes
+    }
+
+    /// Maximum unit factors in one expression.
+    #[must_use]
+    pub const fn max_factors(self) -> usize {
+        self.max_factors
+    }
+
+    /// Maximum bytes in a number, unit, or exponent token.
+    #[must_use]
+    pub const fn max_token_bytes(self) -> usize {
+        self.max_token_bytes
+    }
+
+    /// Maximum retained UTF-8 excerpt bytes in an error.
+    #[must_use]
+    pub const fn max_diagnostic_bytes(self) -> usize {
+        self.max_diagnostic_bytes
+    }
+}
+
+impl Default for ParseBudget {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// The bounded parser resource whose admission failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParseResource {
+    /// Total source bytes.
+    InputBytes,
+    /// Number, unit, or exponent token bytes.
+    TokenBytes,
+    /// Unit factors evaluated.
+    Factors,
+}
 
 /// Where and why parsing failed, with a suggested fix (errors-as-guidance).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseError {
-    /// The full input.
-    pub input: String,
+    /// UTF-8-safe bounded source excerpt containing the failure location.
+    pub preview: String,
+    /// Byte offset of `preview` within the full input.
+    pub preview_start: usize,
+    /// Full source length without retaining the source.
+    pub input_bytes: usize,
+    /// Full-input identity when the input passed byte admission. Oversized
+    /// input is deliberately not scanned merely to manufacture a hash.
+    pub source_hash: Option<ContentHash>,
     /// Byte offset of the failure.
     pub at: usize,
     /// What went wrong.
@@ -59,19 +142,52 @@ pub enum ParseErrorKind {
     /// A literal or unit conversion produced NaN, infinity, or an
     /// unrepresentable underflow to zero.
     NonFiniteValue,
+    /// An explicit parser work/retention limit was exceeded.
+    BudgetExceeded {
+        /// Bounded resource.
+        resource: ParseResource,
+        /// Configured maximum.
+        limit: usize,
+        /// Exact observation when available, otherwise a proven lower bound.
+        observed_at_least: usize,
+    },
 }
 
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "cannot parse quantity {:?} at byte {}: {:?}; {}",
-            self.input, self.at, self.kind, self.help
+            "cannot parse quantity excerpt {:?} (source bytes {}..{} of {}, hash {}) at byte {}: {:?}; {}",
+            self.preview,
+            self.preview_start,
+            self.preview_start + self.preview.len(),
+            self.input_bytes,
+            self.source_hash.map_or_else(
+                || "unavailable-before-byte-admission".to_string(),
+                |hash| hash.to_string()
+            ),
+            self.at,
+            self.kind,
+            self.help
         )
     }
 }
 
 impl core::error::Error for ParseError {}
+
+impl ParseError {
+    /// Verify that the retained full-input identity belongs to `source`.
+    /// Oversized inputs return `false` because byte admission deliberately
+    /// precedes the hash pass.
+    #[must_use]
+    pub fn verifies_source(&self, source: &str) -> bool {
+        let Some(expected) = self.source_hash else {
+            return false;
+        };
+        self.input_bytes == source.len()
+            && expected == hash_domain(PARSE_INPUT_IDENTITY_DOMAIN, source.as_bytes())
+    }
+}
 
 /// A named unit: symbol → (scale-to-SI, dimension). `degC` handled specially.
 struct Unit {
@@ -255,13 +371,85 @@ const INFORMATION_UNITS: &[&str] = &["B", "iB", "KiB", "MiB", "GiB", "TiB", "bit
 /// arithmetic and cap checks happen before the final narrowing conversion.
 const MAX_ABS_UNIT_EXPONENT: i32 = 60;
 
-fn err(input: &str, at: usize, kind: ParseErrorKind, help: &str) -> ParseError {
+#[derive(Clone, Copy)]
+struct ParseContext<'a> {
+    input: &'a str,
+    budget: ParseBudget,
+    source_hash: ContentHash,
+}
+
+impl<'a> ParseContext<'a> {
+    fn admitted(input: &'a str, budget: ParseBudget) -> Self {
+        Self {
+            input,
+            budget,
+            source_hash: hash_domain(PARSE_INPUT_IDENTITY_DOMAIN, input.as_bytes()),
+        }
+    }
+}
+
+fn diagnostic_excerpt(input: &str, at: usize, max_bytes: usize) -> (usize, String) {
+    let mut at = at.min(input.len());
+    while !input.is_char_boundary(at) {
+        at -= 1;
+    }
+    if max_bytes == 0 {
+        return (at, String::new());
+    }
+    let mut start = at.saturating_sub(max_bytes / 2);
+    while start < at && !input.is_char_boundary(start) {
+        start += 1;
+    }
+    let mut end = start.saturating_add(max_bytes).min(input.len());
+    while end > start && !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    (start, input[start..end].to_string())
+}
+
+fn error_from_source(
+    input: &str,
+    budget: ParseBudget,
+    source_hash: Option<ContentHash>,
+    at: usize,
+    kind: ParseErrorKind,
+    help: &str,
+) -> ParseError {
+    let at = at.min(input.len());
+    let (preview_start, preview) = diagnostic_excerpt(input, at, budget.max_diagnostic_bytes());
     ParseError {
-        input: input.to_string(),
+        preview,
+        preview_start,
+        input_bytes: input.len(),
+        source_hash,
         at,
         kind,
         help: help.to_string(),
     }
+}
+
+fn err(ctx: &ParseContext<'_>, at: usize, kind: ParseErrorKind, help: &str) -> ParseError {
+    error_from_source(ctx.input, ctx.budget, Some(ctx.source_hash), at, kind, help)
+}
+
+fn budget_error(
+    ctx: &ParseContext<'_>,
+    at: usize,
+    resource: ParseResource,
+    limit: usize,
+    observed_at_least: usize,
+    help: &str,
+) -> ParseError {
+    err(
+        ctx,
+        at,
+        ParseErrorKind::BudgetExceeded {
+            resource,
+            limit,
+            observed_at_least,
+        },
+        help,
+    )
 }
 
 fn trim_start_at<'a>(text: &'a str, pos: &mut usize) -> &'a str {
@@ -270,8 +458,8 @@ fn trim_start_at<'a>(text: &'a str, pos: &mut usize) -> &'a str {
     trimmed
 }
 
-fn nonfinite(input: &str, at: usize, help: &str) -> ParseError {
-    err(input, at, ParseErrorKind::NonFiniteValue, help)
+fn nonfinite(ctx: &ParseContext<'_>, at: usize, help: &str) -> ParseError {
+    err(ctx, at, ParseErrorKind::NonFiniteValue, help)
 }
 
 fn significand_is_nonzero(number: &str) -> bool {
@@ -285,7 +473,7 @@ fn significand_is_nonzero(number: &str) -> bool {
 }
 
 /// Resolve one unit token (no exponent) to (scale, dims).
-fn resolve_token(input: &str, at: usize, tok: &str) -> Result<(f64, Dims), ParseError> {
+fn resolve_token(ctx: &ParseContext<'_>, at: usize, tok: &str) -> Result<(f64, Dims), ParseError> {
     // Whole-token named unit wins (so `min` is minutes, not milli-inches).
     if let Some(u) = UNITS.iter().find(|u| u.symbol == tok) {
         return Ok((u.scale, u.dims));
@@ -293,7 +481,7 @@ fn resolve_token(input: &str, at: usize, tok: &str) -> Result<(f64, Dims), Parse
     // Information units get a dedicated refusal.
     if INFORMATION_UNITS.iter().any(|s| tok.ends_with(s)) {
         return Err(err(
-            input,
+            ctx,
             at,
             ParseErrorKind::InformationUnit(tok.to_string()),
             "information units (bytes) are not physical dimensions; memory/time budgets \
@@ -313,7 +501,7 @@ fn resolve_token(input: &str, at: usize, tok: &str) -> Result<(f64, Dims), Parse
         }
     }
     Err(err(
-        input,
+        ctx,
         at,
         ParseErrorKind::UnknownUnit(tok.to_string()),
         "expected an SI unit like m, kg, s, K, A, mol, N, Pa, J, W, V, C, Wb, H, Ohm, S, F, T, \
@@ -323,7 +511,7 @@ fn resolve_token(input: &str, at: usize, tok: &str) -> Result<(f64, Dims), Parse
 }
 
 /// Scan the leading number of a quantity literal; returns its byte length.
-fn scan_number(s: &str) -> usize {
+fn scan_number(ctx: &ParseContext<'_>, s: &str, at: usize) -> Result<usize, ParseError> {
     let bytes = s.as_bytes();
     let mut end = 0;
     let mut seen_digit = false;
@@ -343,39 +531,112 @@ fn scan_number(s: &str) -> usize {
         if c.is_ascii_digit() {
             seen_digit = true;
         }
-        if c == 'e' || c == 'E' {
-            end += 1; // consume the sign/digit that justified accepting 'e'
+        let advance = if c == 'e' || c == 'E' {
+            2 // consume the sign/digit that justified accepting 'e'
+        } else {
+            1
+        };
+        let next = end + advance;
+        if next > ctx.budget.max_token_bytes() {
+            return Err(budget_error(
+                ctx,
+                at,
+                ParseResource::TokenBytes,
+                ctx.budget.max_token_bytes(),
+                next,
+                "numeric token exceeds the parser budget; shorten the literal",
+            ));
         }
-        end += 1;
+        end = next;
     }
-    end
+    Ok(end)
+}
+
+fn scan_unit_token(ctx: &ParseContext<'_>, rest: &str, at: usize) -> Result<usize, ParseError> {
+    let mut token_bytes = 0;
+    for (index, symbol) in rest.char_indices() {
+        if !(symbol.is_alphabetic() || symbol == 'µ' || symbol == '%') {
+            break;
+        }
+        let next = index + symbol.len_utf8();
+        if next > ctx.budget.max_token_bytes() {
+            return Err(budget_error(
+                ctx,
+                at,
+                ParseResource::TokenBytes,
+                ctx.budget.max_token_bytes(),
+                next,
+                "unit token exceeds the parser budget; use a supported short SI symbol",
+            ));
+        }
+        token_bytes = next;
+    }
+    Ok(token_bytes)
 }
 
 /// Parse an optional exponent (`^`? `-`? digits) at the head of `rest`.
 /// Returns `(exponent, bytes_consumed)`; the default exponent is 1. Parsing and
 /// validation stay in a wider integer so `-128` can never reach `i8::MIN`.
-fn parse_exponent(input: &str, pos: usize, rest: &str) -> Result<(i32, usize), ParseError> {
+fn parse_exponent(
+    ctx: &ParseContext<'_>,
+    pos: usize,
+    rest: &str,
+) -> Result<(i32, usize), ParseError> {
     let mut r = rest;
     let mut consumed = 0;
     if let Some(stripped) = r.strip_prefix('^') {
         r = stripped;
         consumed += 1;
+        if consumed > ctx.budget.max_token_bytes() {
+            return Err(budget_error(
+                ctx,
+                pos,
+                ParseResource::TokenBytes,
+                ctx.budget.max_token_bytes(),
+                consumed,
+                "unit exponent token exceeds the parser budget",
+            ));
+        }
     }
     let neg = if let Some(stripped) = r.strip_prefix('-') {
         r = stripped;
         consumed += 1;
+        if consumed > ctx.budget.max_token_bytes() {
+            return Err(budget_error(
+                ctx,
+                pos,
+                ParseResource::TokenBytes,
+                ctx.budget.max_token_bytes(),
+                consumed,
+                "unit exponent token exceeds the parser budget",
+            ));
+        }
         true
     } else {
         false
     };
-    let dig_len = r
-        .char_indices()
-        .find(|(_, c)| !c.is_ascii_digit())
-        .map_or(r.len(), |(i, _)| i);
+    let mut dig_len = 0;
+    for (index, digit) in r.char_indices() {
+        if !digit.is_ascii_digit() {
+            break;
+        }
+        let next = index + digit.len_utf8();
+        if consumed.saturating_add(next) > ctx.budget.max_token_bytes() {
+            return Err(budget_error(
+                ctx,
+                pos,
+                ParseResource::TokenBytes,
+                ctx.budget.max_token_bytes(),
+                consumed.saturating_add(next),
+                "unit exponent token exceeds the parser budget",
+            ));
+        }
+        dig_len = next;
+    }
     if dig_len == 0 {
         if consumed > 0 {
             return Err(err(
-                input,
+                ctx,
                 pos,
                 ParseErrorKind::BadExponent,
                 "dangling ^ or - without digits",
@@ -385,7 +646,7 @@ fn parse_exponent(input: &str, pos: usize, rest: &str) -> Result<(i32, usize), P
     }
     let magnitude: u64 = r[..dig_len].parse().map_err(|_| {
         err(
-            input,
+            ctx,
             pos,
             ParseErrorKind::BadExponent,
             "unit exponent is too large to parse; use an integer from -60 through 60",
@@ -393,7 +654,7 @@ fn parse_exponent(input: &str, pos: usize, rest: &str) -> Result<(i32, usize), P
     })?;
     if magnitude > MAX_ABS_UNIT_EXPONENT as u64 {
         return Err(err(
-            input,
+            ctx,
             pos,
             ParseErrorKind::BadExponent,
             "unit exponent exceeds the supported ±60 cap; reduce the exponent",
@@ -401,7 +662,7 @@ fn parse_exponent(input: &str, pos: usize, rest: &str) -> Result<(i32, usize), P
     }
     let magnitude = i32::try_from(magnitude).map_err(|_| {
         err(
-            input,
+            ctx,
             pos,
             ParseErrorKind::BadExponent,
             "unit exponent is outside the supported wider-integer domain",
@@ -410,7 +671,7 @@ fn parse_exponent(input: &str, pos: usize, rest: &str) -> Result<(i32, usize), P
     let exp = if neg {
         magnitude.checked_neg().ok_or_else(|| {
             err(
-                input,
+                ctx,
                 pos,
                 ParseErrorKind::BadExponent,
                 "negative unit exponent is outside the supported wider-integer domain",
@@ -423,7 +684,7 @@ fn parse_exponent(input: &str, pos: usize, rest: &str) -> Result<(i32, usize), P
 }
 
 fn checked_dims_after_factor(
-    input: &str,
+    ctx: &ParseContext<'_>,
     at: usize,
     dims: [i32; DIMENSION_COUNT],
     factor_dims: Dims,
@@ -436,7 +697,7 @@ fn checked_dims_after_factor(
             .checked_mul(exponent)
             .ok_or_else(|| {
                 err(
-                    input,
+                    ctx,
                     at,
                     ParseErrorKind::BadExponent,
                     "unit-dimension scaling overflowed; reduce the exponent",
@@ -445,7 +706,7 @@ fn checked_dims_after_factor(
         let signed = if divide {
             scaled.checked_neg().ok_or_else(|| {
                 err(
-                    input,
+                    ctx,
                     at,
                     ParseErrorKind::BadExponent,
                     "unit-dimension division overflowed; reduce the exponent",
@@ -456,7 +717,7 @@ fn checked_dims_after_factor(
         };
         let accumulated = dims[index].checked_add(signed).ok_or_else(|| {
             err(
-                input,
+                ctx,
                 at,
                 ParseErrorKind::BadExponent,
                 "accumulated unit dimension overflowed; shorten the unit chain",
@@ -464,7 +725,7 @@ fn checked_dims_after_factor(
         })?;
         if accumulated.unsigned_abs() > MAX_ABS_UNIT_EXPONENT as u32 {
             return Err(err(
-                input,
+                ctx,
                 at,
                 ParseErrorKind::BadExponent,
                 "accumulated unit exponent exceeds the supported ±60 cap; check for a runaway unit chain",
@@ -475,12 +736,16 @@ fn checked_dims_after_factor(
     Ok(next)
 }
 
-fn narrow_dims(input: &str, at: usize, dims: [i32; DIMENSION_COUNT]) -> Result<Dims, ParseError> {
+fn narrow_dims(
+    ctx: &ParseContext<'_>,
+    at: usize,
+    dims: [i32; DIMENSION_COUNT],
+) -> Result<Dims, ParseError> {
     let mut narrowed = [0i8; DIMENSION_COUNT];
     for (target, exponent) in narrowed.iter_mut().zip(dims) {
         *target = i8::try_from(exponent).map_err(|_| {
             err(
-                input,
+                ctx,
                 at,
                 ParseErrorKind::BadExponent,
                 "validated unit exponent could not be represented; reduce the exponent",
@@ -493,16 +758,46 @@ fn narrow_dims(input: &str, at: usize, dims: [i32; DIMENSION_COUNT]) -> Result<D
 /// Parse a quantity literal into a [`QtyAny`].
 ///
 /// # Errors
-/// Returns a [`ParseError`] with position, kind, and a suggested fix.
-#[allow(clippy::too_many_lines)] // Keeping the strict left-to-right grammar and refusal positions together is auditable.
+/// Returns a [`ParseError`] with position, bounded source diagnostics, kind,
+/// and a suggested fix. This compatibility entry point always applies
+/// [`ParseBudget::DEFAULT`].
 pub fn parse_qty(input: &str) -> Result<QtyAny, ParseError> {
+    parse_qty_with_budget(input, ParseBudget::DEFAULT)
+}
+
+/// Parse a quantity literal under an explicit work and diagnostic budget.
+///
+/// Byte admission happens before trimming, hashing, or token scanning. Errors
+/// for admitted input carry its full content hash; an oversized input carries
+/// its exact length and bounded excerpt but is not scanned merely to hash it.
+///
+/// # Errors
+/// Returns a structured [`ParseError`] for syntax, representability, or budget
+/// refusal.
+#[allow(clippy::too_many_lines)] // Keeping the strict left-to-right grammar and refusal positions together is auditable.
+pub fn parse_qty_with_budget(input: &str, budget: ParseBudget) -> Result<QtyAny, ParseError> {
+    if input.len() > budget.max_input_bytes() {
+        return Err(error_from_source(
+            input,
+            budget,
+            None,
+            budget.max_input_bytes(),
+            ParseErrorKind::BudgetExceeded {
+                resource: ParseResource::InputBytes,
+                limit: budget.max_input_bytes(),
+                observed_at_least: input.len(),
+            },
+            "quantity source exceeds the byte budget; shorten or pre-admit the literal",
+        ));
+    }
+    let ctx = ParseContext::admitted(input, budget);
     let s = input.trim();
     let base = input.len() - input.trim_start().len();
 
-    let end = scan_number(s);
+    let end = scan_number(&ctx, s, base)?;
     let num: f64 = s[..end].parse().map_err(|_| {
         err(
-            input,
+            &ctx,
             base,
             ParseErrorKind::MissingNumber,
             "a quantity starts with a number, e.g. 0.12Pa*s",
@@ -510,14 +805,14 @@ pub fn parse_qty(input: &str) -> Result<QtyAny, ParseError> {
     })?;
     if !num.is_finite() {
         return Err(nonfinite(
-            input,
+            &ctx,
             base,
             "quantity literals must start with a finite number; reduce the magnitude",
         ));
     }
     if num == 0.0 && significand_is_nonzero(&s[..end]) {
         return Err(nonfinite(
-            input,
+            &ctx,
             base,
             "the nonzero decimal significand underflowed to zero; use a representable magnitude",
         ));
@@ -532,10 +827,30 @@ pub fn parse_qty(input: &str) -> Result<QtyAny, ParseError> {
 
     // --- special-case lone affine unit degC ---
     if rest == "degC" {
+        if budget.max_factors() == 0 {
+            return Err(budget_error(
+                &ctx,
+                pos,
+                ParseResource::Factors,
+                0,
+                1,
+                "unit expression has too many factors; simplify the dimensions",
+            ));
+        }
+        if rest.len() > budget.max_token_bytes() {
+            return Err(budget_error(
+                &ctx,
+                pos,
+                ParseResource::TokenBytes,
+                budget.max_token_bytes(),
+                rest.len(),
+                "unit token exceeds the parser budget; use a supported short SI symbol",
+            ));
+        }
         let value = num + 273.15;
         if !value.is_finite() {
             return Err(nonfinite(
-                input,
+                &ctx,
                 pos,
                 "converting degrees Celsius to coherent kelvin overflowed; reduce the magnitude",
             ));
@@ -547,16 +862,25 @@ pub fn parse_qty(input: &str) -> Result<QtyAny, ParseError> {
     let mut value = num;
     let mut dims = [0i32; DIMENSION_COUNT];
     let mut divide = false;
+    let mut factors = 0usize;
     loop {
         let factor_at = pos;
+        if factors >= budget.max_factors() {
+            return Err(budget_error(
+                &ctx,
+                factor_at,
+                ParseResource::Factors,
+                budget.max_factors(),
+                factors.saturating_add(1),
+                "unit expression has too many factors; simplify the dimensions",
+            ));
+        }
+        factors += 1;
         // token = leading unit letters/µ/%
-        let tok_len = rest
-            .char_indices()
-            .find(|(_, c)| !(c.is_alphabetic() || *c == 'µ' || *c == '%'))
-            .map_or(rest.len(), |(i, _)| i);
+        let tok_len = scan_unit_token(&ctx, rest, pos)?;
         if tok_len == 0 {
             return Err(err(
-                input,
+                &ctx,
                 pos,
                 ParseErrorKind::TrailingInput,
                 "expected a unit symbol here",
@@ -565,20 +889,20 @@ pub fn parse_qty(input: &str) -> Result<QtyAny, ParseError> {
         let tok = &rest[..tok_len];
         if tok.contains("degC") {
             return Err(err(
-                input,
+                &ctx,
                 pos,
                 ParseErrorKind::AffineUnitInCompound,
                 "degC is affine and only legal alone (e.g. \"20degC\"); temperature \
                  differences and rates are kelvin — write K or K/s",
             ));
         }
-        let (scale, tok_dims) = resolve_token(input, pos, tok)?;
+        let (scale, tok_dims) = resolve_token(&ctx, pos, tok)?;
         rest = &rest[tok_len..];
         pos += tok_len;
 
         // optional exponent: '^'? '-'? digits
         let exponent_at = pos;
-        let (exp, consumed) = parse_exponent(input, exponent_at, rest)?;
+        let (exp, consumed) = parse_exponent(&ctx, exponent_at, rest)?;
         rest = &rest[consumed..];
         pos += consumed;
 
@@ -587,14 +911,14 @@ pub fn parse_qty(input: &str) -> Result<QtyAny, ParseError> {
         } else {
             exponent_at
         };
-        dims = checked_dims_after_factor(input, arithmetic_at, dims, tok_dims, exp, divide)?;
+        dims = checked_dims_after_factor(&ctx, arithmetic_at, dims, tok_dims, exp, divide)?;
 
         // Apply the numerical scale only after the dimension metadata is known
         // to be admissible. No nonfinite intermediate may enter QtyAny or IR.
         let factor_scale = crate::powi_pinned(scale, exp);
         if !factor_scale.is_finite() || factor_scale <= 0.0 {
             return Err(nonfinite(
-                input,
+                &ctx,
                 arithmetic_at,
                 "raising this positive unit scale to its exponent overflowed or underflowed to zero; reduce the exponent or prefix",
             ));
@@ -606,7 +930,7 @@ pub fn parse_qty(input: &str) -> Result<QtyAny, ParseError> {
         };
         if !next_value.is_finite() || (value != 0.0 && next_value == 0.0) {
             return Err(nonfinite(
-                input,
+                &ctx,
                 arithmetic_at,
                 "applying this unit factor produced a nonfinite value or underflowed a nonzero quantity to zero; reduce the literal magnitude, prefix, or exponent",
             ));
@@ -616,7 +940,7 @@ pub fn parse_qty(input: &str) -> Result<QtyAny, ParseError> {
         // separator or end
         rest = trim_start_at(rest, &mut pos);
         match rest.chars().next() {
-            None => return Ok(QtyAny::new(value, narrow_dims(input, pos, dims)?)),
+            None => return Ok(QtyAny::new(value, narrow_dims(&ctx, pos, dims)?)),
             Some(c @ ('*' | '·')) => {
                 divide = false;
                 pos += c.len_utf8();
@@ -629,7 +953,7 @@ pub fn parse_qty(input: &str) -> Result<QtyAny, ParseError> {
             }
             Some(_) => {
                 return Err(err(
-                    input,
+                    &ctx,
                     pos,
                     ParseErrorKind::TrailingInput,
                     "expected *, ·, / or end of input after a unit factor",
@@ -817,7 +1141,7 @@ mod tests {
 
 #[cfg(test)]
 mod hardening {
-    use super::{ParseErrorKind, parse_qty};
+    use super::{ParseBudget, ParseErrorKind, ParseResource, parse_qty, parse_qty_with_budget};
     use crate::Dims;
 
     fn structured_refusal(input: &str, expected_kind: &ParseErrorKind, expected_at: usize) {
@@ -826,7 +1150,14 @@ mod hardening {
         let error = outcome
             .expect("panic outcome checked")
             .expect_err("hostile literal must refuse");
-        assert_eq!(error.input, input, "error lost its source input");
+        assert!(
+            error.verifies_source(input),
+            "error lost its source identity"
+        );
+        assert_eq!(error.input_bytes, input.len());
+        assert!(error.preview.len() <= ParseBudget::DEFAULT.max_diagnostic_bytes());
+        assert!(input.is_char_boundary(error.preview_start));
+        assert!(input.is_char_boundary(error.preview_start + error.preview.len()));
         assert_eq!(&error.kind, expected_kind, "wrong refusal for {input:?}");
         assert_eq!(error.at, expected_at, "wrong byte offset for {input:?}");
         assert!(
@@ -1017,5 +1348,122 @@ mod hardening {
             parse_qty("  1m *   flurbs").expect_err("unknown unit after whitespace must refuse");
         assert!(matches!(error.kind, ParseErrorKind::UnknownUnit(_)));
         assert_eq!(error.at, 9);
+    }
+
+    #[test]
+    fn byte_factor_and_token_budgets_hold_at_exact_boundaries() {
+        let byte_cap = ParseBudget::DEFAULT.max_input_bytes();
+        let at_cap = format!("1m{}", " ".repeat(byte_cap - 2));
+        assert_eq!(at_cap.len(), byte_cap);
+        assert!(parse_qty(&at_cap).is_ok(), "exact byte boundary must admit");
+        let over_cap = format!("{at_cap} ");
+        let error = parse_qty(&over_cap).expect_err("byte boundary + 1 must refuse");
+        assert!(matches!(
+            error.kind,
+            ParseErrorKind::BudgetExceeded {
+                resource: ParseResource::InputBytes,
+                limit,
+                observed_at_least,
+            } if limit == byte_cap && observed_at_least == byte_cap + 1
+        ));
+        assert_eq!(
+            error.source_hash, None,
+            "oversized input must not be hash-scanned"
+        );
+        assert!(error.preview.len() <= ParseBudget::DEFAULT.max_diagnostic_bytes());
+
+        let factor_cap = ParseBudget::DEFAULT.max_factors();
+        let factors_at_cap = format!("1{}", vec!["rad"; factor_cap].join("*"));
+        assert!(
+            parse_qty(&factors_at_cap).is_ok(),
+            "exact factor boundary must admit"
+        );
+        let factors_over_cap = format!("{factors_at_cap}*rad");
+        let error = parse_qty(&factors_over_cap).expect_err("factor boundary + 1 must refuse");
+        assert!(matches!(
+            error.kind,
+            ParseErrorKind::BudgetExceeded {
+                resource: ParseResource::Factors,
+                limit,
+                observed_at_least,
+            } if limit == factor_cap && observed_at_least == factor_cap + 1
+        ));
+
+        let token_cap = ParseBudget::DEFAULT.max_token_bytes();
+        let unknown_at_cap = format!("1{}", "x".repeat(token_cap));
+        let error = parse_qty(&unknown_at_cap).expect_err("bounded unknown token must refuse");
+        assert!(
+            matches!(error.kind, ParseErrorKind::UnknownUnit(ref token) if token.len() == token_cap)
+        );
+        let unknown_over_cap = format!("{unknown_at_cap}x");
+        let error = parse_qty(&unknown_over_cap).expect_err("token boundary + 1 must refuse");
+        assert!(matches!(
+            error.kind,
+            ParseErrorKind::BudgetExceeded {
+                resource: ParseResource::TokenBytes,
+                limit,
+                observed_at_least,
+            } if limit == token_cap && observed_at_least > token_cap
+        ));
+    }
+
+    #[test]
+    fn exponent_and_zero_budgets_are_explicit() {
+        let exponent_budget = ParseBudget::new(64, 1, 3, 32);
+        assert!(parse_qty_with_budget("1m^60", exponent_budget).is_ok());
+        let error = parse_qty_with_budget("1m^060", exponent_budget)
+            .expect_err("exponent token boundary + 1 must refuse");
+        assert!(matches!(
+            error.kind,
+            ParseErrorKind::BudgetExceeded {
+                resource: ParseResource::TokenBytes,
+                limit: 3,
+                observed_at_least: 4,
+            }
+        ));
+
+        let zero = ParseBudget::new(0, 0, 0, 0);
+        let empty = parse_qty_with_budget("", zero).expect_err("empty input is not a quantity");
+        assert_eq!(empty.preview, "");
+        assert!(empty.verifies_source(""));
+        let nonempty = parse_qty_with_budget("1", zero)
+            .expect_err("zero byte budget must reject nonempty input");
+        assert!(matches!(
+            nonempty.kind,
+            ParseErrorKind::BudgetExceeded {
+                resource: ParseResource::InputBytes,
+                limit: 0,
+                observed_at_least: 1,
+            }
+        ));
+        assert_eq!(nonempty.preview, "");
+        assert_eq!(nonempty.source_hash, None);
+    }
+
+    #[test]
+    fn multibyte_previews_keep_exact_offsets_and_utf8_boundaries() {
+        let input = "  1m * λλλλλλλλ";
+        let budget = ParseBudget::new(128, 8, 5, 9);
+        let first_lambda = input.find('λ').expect("fixture contains lambda");
+        let error = parse_qty_with_budget(input, budget)
+            .expect_err("multi-byte token over budget must refuse");
+        assert_eq!(error.at, first_lambda);
+        assert!(matches!(
+            &error.kind,
+            ParseErrorKind::BudgetExceeded {
+                resource: ParseResource::TokenBytes,
+                limit: 5,
+                observed_at_least: 6,
+            }
+        ));
+        assert!(error.verifies_source(input));
+        assert!(error.preview.len() <= 9);
+        assert!(input.is_char_boundary(error.preview_start));
+        assert!(input.is_char_boundary(error.preview_start + error.preview.len()));
+        assert!(
+            error.preview_start <= error.at
+                && error.at <= error.preview_start + error.preview.len()
+        );
+        assert_eq!(error, parse_qty_with_budget(input, budget).unwrap_err());
     }
 }
