@@ -25,6 +25,7 @@ fs-simd = { path = "../fs-simd" }
 
 [dev-dependencies]
 fs-math = { path = "../fs-math" }
+fs-propcheck = { path = "../fs-propcheck" }
 fs-roofline = { path = "../fs-roofline" }
 
 [lints]
