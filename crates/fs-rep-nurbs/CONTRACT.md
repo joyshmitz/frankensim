@@ -90,7 +90,10 @@ fs-iga (geometry basis = analysis basis), fs-render NURBS tracing
   its admitted `span_boxes_with_cx` returns transactional
   `SurfaceSpanBoxesRun` state and publishes only the complete U-major, V-minor
   box table;
-  directional knot insertion remains an owning transformation.
+  its admitted directional insertions reuse the immutable source authority,
+  while `insert_knot_u_with_cx` / `insert_knot_v_with_cx` return transactional
+  `SurfaceInsertionRun` state and publish only a complete validated exact
+  derived surface.
 - `TrimLoop`/`TrimmedPatch` — trim curves in EXACT RATIONAL form
   (closure and continuity validated by rational equality, including exact
   left/right-limit agreement at any full knot break). Loop, curve, and
@@ -292,6 +295,16 @@ and gates admitted authority at publication; `KnotVector::new` construction
 remains outside that cancellation claim. The production `fs-render` ray path
 preflights sealed metadata and cancellation, then binds one admitted surface
 across domain lookup, seed evaluation, and Newton partials.
+Admitted U/V surface insertion preserves open-domain, conservative aggregate
+work, and 64 MiB requested derived-payload refusal precedence, then uses one
+gate for directional span lookup, direct tensor Boehm row/control assembly,
+both knot copies, inserted-knot and complete surface validation, and final
+publication. `SurfaceInsertionRun::Cancelled` carries no partial surface and
+drops all derived storage. The payload model includes both knot arrays, every
+row-vector header, and all homogeneous controls while excluding the borrowed
+source; allocator rounding and individual generic-scalar operations are not
+preemptible. These methods claim no wall-time, exact caller-budget,
+owning-admission, drain/finalize, resumability, or geometric certificate.
 `AdmittedNurbsSurface::partials_with_cx` preserves U-then-V parameter,
 aggregate-envelope, and ordinary-derivative refusal order before carrying one
 gate through both basis rows, the sequential U and V isocurve contractions,
@@ -327,12 +340,16 @@ log-height heap operations. Its stage-faithful knot-insertion, expanded-grid,
 run-scan, and queue-seeding estimate is charged before conversion, including
 when the requested split budget is zero; degree-scaled de Casteljau split work
 and the worst retained queue/scratch frontier are admitted before allocation.
+The conversion preflight reuses the directional insertion engine's own
+per-generation work and 64 MiB derived-output envelope at the largest planned
+generation, so an admitted closest-point request cannot first discover that
+nested refusal after conversion begins.
 Its 256 MiB requested-payload ceiling composes the borrowed source with the
 maximum of exact-conversion allocations, the converted surface plus traversal
 frontier, and that retained search state plus final basis-evaluation workspace.
-The conversion bound covers surface row tables, old/new surface overlap, and
-the simultaneously live one-dimensional knot-insertion buffers; it does not
-claim allocator metadata, rounding, or pre-existing spare source capacity.
+The conversion bound covers surface row tables and the exact overlap of the
+largest old/new direct tensor insertion generations; it does not claim
+allocator metadata, rounding, or pre-existing spare source capacity.
 Owning derivative and refit construction paths are not all
 migrated yet; they make no claim of caller-budgeted preflight or end-to-end
 validate-once execution. The SDF shell rejects malformed point/tolerance input

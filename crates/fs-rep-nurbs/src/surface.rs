@@ -4,13 +4,21 @@
 //! boxes (the convex-hull property in both directions).
 
 use crate::NurbsError;
-use crate::basis::{BASIS_MAX_WORK_UNITS, BasisRun, KnotValidationOutcome, KnotVector, Scalar};
+use crate::basis::{
+    BASIS_MAX_WORK_UNITS, BasisRun, KnotSpanRun, KnotValidationOutcome, KnotVector, Scalar,
+};
 use crate::curve::{CurveDerivativesRun, NurbsCurve};
 use fs_exec::Cx;
 
 const SURFACE_VALIDATION_WORK_PER_CONTROL: u128 = 16;
+// Keep this aligned with KnotVector's private conservative validation price.
+const SURFACE_KNOT_VALIDATION_WORK_PER_ENTRY: u128 = 16;
+// Match the curve refinement envelope's conservative four-lane blend price;
+// copied controls are deliberately charged at the same worst-case rate.
+const SURFACE_INSERTION_WORK_PER_CONTROL: u128 = 32;
 const SURFACE_SPAN_BOX_WORK_PER_CONTROL: u128 = 16;
 const SURFACE_SPAN_BOX_MAX_RETAINED_BYTES: u128 = 64 * 1024 * 1024;
+const SURFACE_INSERTION_MAX_RETAINED_BYTES: u128 = 64 * 1024 * 1024;
 const SURFACE_CANCELLATION_STRIDE: usize = 64;
 
 fn surface_poll_due(
@@ -293,6 +301,51 @@ pub enum SurfacePartialsRun {
     Cancelled,
 }
 
+/// Transactional terminal state of cancellation-aware directional insertion.
+#[must_use]
+#[derive(Debug, PartialEq)]
+pub enum SurfaceInsertionRun<S: Scalar> {
+    /// The complete sealed and validated derived surface.
+    Complete {
+        /// Exact directional refinement of the admitted source surface.
+        surface: NurbsSurface<S>,
+    },
+    /// Cancellation was observed; all partial derived storage was dropped.
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SurfaceInsertionAxis {
+    U,
+    V,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SurfaceInsertionPlan {
+    axis: SurfaceInsertionAxis,
+    new_control_count_u: usize,
+    new_control_count_v: usize,
+    new_knot_count_u: usize,
+    new_knot_count_v: usize,
+    #[cfg(test)]
+    work_units: u128,
+    #[cfg(test)]
+    retained_bytes: u128,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SurfaceInsertionEnvelope {
+    work_units: u128,
+    #[cfg(test)]
+    retained_bytes: u128,
+}
+
+#[derive(Debug)]
+enum SurfaceWorkRun<T> {
+    Complete(T),
+    Cancelled,
+}
+
 /// Transactional terminal state of cancellation-aware surface span boxes.
 #[must_use]
 #[derive(Debug, Clone, PartialEq)]
@@ -304,6 +357,180 @@ pub enum SurfaceSpanBoxesRun<S: Scalar> {
     },
     /// Cancellation was observed; no partial box table was published.
     Cancelled,
+}
+
+fn enforce_surface_insertion_envelope(
+    work_units: u128,
+    retained_bytes: u128,
+) -> Result<(), NurbsError> {
+    if work_units > BASIS_MAX_WORK_UNITS {
+        return Err(NurbsError::Domain {
+            what: format!(
+                "surface knot insertion requests {work_units} work units above defensive ceiling {BASIS_MAX_WORK_UNITS}"
+            ),
+        });
+    }
+    if retained_bytes > SURFACE_INSERTION_MAX_RETAINED_BYTES {
+        return Err(NurbsError::Domain {
+            what: format!(
+                "surface knot insertion retains {retained_bytes} output bytes above defensive ceiling {SURFACE_INSERTION_MAX_RETAINED_BYTES}"
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn surface_knot_validation_work(
+    knot_count: usize,
+    degree: usize,
+    axis: &str,
+) -> Result<u128, NurbsError> {
+    (knot_count as u128)
+        .checked_mul(SURFACE_KNOT_VALIDATION_WORK_PER_ENTRY)
+        .and_then(|work| work.checked_add(degree as u128))
+        .ok_or_else(|| NurbsError::Domain {
+            what: format!("surface inserted {axis}-knot validation work overflows u128"),
+        })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn surface_insertion_envelope_for_result<S: Scalar>(
+    axis: SurfaceInsertionAxis,
+    degree_u: usize,
+    degree_v: usize,
+    new_control_count_u: usize,
+    new_control_count_v: usize,
+    new_knot_count_u: usize,
+    new_knot_count_v: usize,
+) -> Result<SurfaceInsertionEnvelope, NurbsError> {
+    let final_control_count = (new_control_count_u as u128)
+        .checked_mul(new_control_count_v as u128)
+        .ok_or_else(|| NurbsError::Domain {
+            what: "surface inserted control count overflows u128".to_string(),
+        })?;
+    let validation_u = surface_knot_validation_work(new_knot_count_u, degree_u, "u")?;
+    let validation_v = surface_knot_validation_work(new_knot_count_v, degree_v, "v")?;
+    let final_validation_work = validation_u
+        .checked_add(validation_v)
+        .and_then(|work| {
+            final_control_count
+                .checked_mul(SURFACE_VALIDATION_WORK_PER_CONTROL)
+                .and_then(|controls| work.checked_add(controls))
+        })
+        .ok_or_else(|| NurbsError::Domain {
+            what: "surface inserted validation work overflows u128".to_string(),
+        })?;
+    let inserted_knot_validation_work = match axis {
+        SurfaceInsertionAxis::U => validation_u,
+        SurfaceInsertionAxis::V => validation_v,
+    };
+    let span_work = match axis {
+        SurfaceInsertionAxis::U => new_control_count_u.checked_sub(1),
+        SurfaceInsertionAxis::V => new_control_count_v.checked_sub(1),
+    }
+    .ok_or_else(|| NurbsError::Domain {
+        what: "surface inserted direction has no source controls".to_string(),
+    })? as u128;
+    let assembly_work = final_control_count
+        .checked_mul(SURFACE_INSERTION_WORK_PER_CONTROL)
+        .ok_or_else(|| NurbsError::Domain {
+            what: "surface insertion control-assembly work overflows u128".to_string(),
+        })?;
+    let knot_copy_work = (new_knot_count_u as u128)
+        .checked_add(new_knot_count_v as u128)
+        .ok_or_else(|| NurbsError::Domain {
+            what: "surface insertion knot-copy work overflows u128".to_string(),
+        })?;
+    let work_units = span_work
+        .checked_add(assembly_work)
+        .and_then(|work| work.checked_add(knot_copy_work))
+        .and_then(|work| work.checked_add(new_control_count_u as u128))
+        .and_then(|work| work.checked_add(inserted_knot_validation_work))
+        .and_then(|work| work.checked_add(final_validation_work))
+        .and_then(|work| work.checked_add(32))
+        .ok_or_else(|| NurbsError::Domain {
+            what: "surface insertion aggregate work overflows u128".to_string(),
+        })?;
+
+    let knot_bytes = (new_knot_count_u as u128)
+        .checked_add(new_knot_count_v as u128)
+        .and_then(|count| count.checked_mul(core::mem::size_of::<S>() as u128))
+        .ok_or_else(|| NurbsError::Domain {
+            what: "surface insertion knot payload overflows u128".to_string(),
+        })?;
+    let row_table_bytes = (new_control_count_u as u128)
+        .checked_mul(core::mem::size_of::<Vec<[S; 4]>>() as u128)
+        .ok_or_else(|| NurbsError::Domain {
+            what: "surface insertion row-table payload overflows u128".to_string(),
+        })?;
+    let control_bytes = final_control_count
+        .checked_mul(core::mem::size_of::<[S; 4]>() as u128)
+        .ok_or_else(|| NurbsError::Domain {
+            what: "surface insertion control payload overflows u128".to_string(),
+        })?;
+    let retained_bytes = knot_bytes
+        .checked_add(row_table_bytes)
+        .and_then(|bytes| bytes.checked_add(control_bytes))
+        .ok_or_else(|| NurbsError::Domain {
+            what: "surface insertion retained payload overflows u128".to_string(),
+        })?;
+    enforce_surface_insertion_envelope(work_units, retained_bytes)?;
+    Ok(SurfaceInsertionEnvelope {
+        work_units,
+        #[cfg(test)]
+        retained_bytes,
+    })
+}
+
+fn copy_surface_knot_vector_with_poll<S: Scalar>(
+    source: &KnotVector<S>,
+    insertion: Option<(usize, S)>,
+    output_count: usize,
+    stage: &str,
+    should_cancel: &mut impl FnMut() -> bool,
+) -> Result<SurfaceWorkRun<KnotVector<S>>, NurbsError> {
+    if should_cancel() {
+        return Ok(SurfaceWorkRun::Cancelled);
+    }
+    let mut entries = Vec::new();
+    entries
+        .try_reserve_exact(output_count)
+        .map_err(|_| NurbsError::Domain {
+            what: format!("surface {stage} knot allocation was refused"),
+        })?;
+    let mut operations_since_poll = 0usize;
+    if let Some((span, t)) = insertion {
+        for &knot in &source.knots()[..=span] {
+            entries.push(knot);
+            if surface_poll_due(&mut operations_since_poll, should_cancel) {
+                return Ok(SurfaceWorkRun::Cancelled);
+            }
+        }
+        entries.push(t);
+        if surface_poll_due(&mut operations_since_poll, should_cancel) {
+            return Ok(SurfaceWorkRun::Cancelled);
+        }
+        for &knot in &source.knots()[span + 1..] {
+            entries.push(knot);
+            if surface_poll_due(&mut operations_since_poll, should_cancel) {
+                return Ok(SurfaceWorkRun::Cancelled);
+            }
+        }
+    } else {
+        for &knot in source.knots() {
+            entries.push(knot);
+            if surface_poll_due(&mut operations_since_poll, should_cancel) {
+                return Ok(SurfaceWorkRun::Cancelled);
+            }
+        }
+    }
+    if should_cancel() {
+        return Ok(SurfaceWorkRun::Cancelled);
+    }
+    Ok(SurfaceWorkRun::Complete(KnotVector {
+        knots: entries,
+        degree: source.degree(),
+    }))
 }
 
 impl<S: Scalar> NurbsSurface<S> {
@@ -335,6 +562,81 @@ impl<S: Scalar> NurbsSurface<S> {
             });
         }
         Ok(())
+    }
+
+    fn insertion_plan_after_parameter(
+        &self,
+        t: S,
+        axis: SurfaceInsertionAxis,
+    ) -> Result<SurfaceInsertionPlan, NurbsError> {
+        let direction_knots = match axis {
+            SurfaceInsertionAxis::U => self.knots_u.admitted_after_validation(),
+            SurfaceInsertionAxis::V => self.knots_v.admitted_after_validation(),
+        };
+        let (lo, hi) = direction_knots.domain();
+        if t <= lo || hi <= t {
+            return Err(NurbsError::Domain {
+                what: format!("insertion parameter {t:?} must be interior to {lo:?}..{hi:?}"),
+            });
+        }
+        if !t.is_finite() {
+            return Err(NurbsError::Domain {
+                what: format!("parameter {t:?} outside {lo:?}..{hi:?}"),
+            });
+        }
+
+        let old_control_count_u = self.knots_u.control_count();
+        let old_control_count_v = self.knots_v.control_count();
+        let old_knot_count_u = self.knots_u.knots().len();
+        let old_knot_count_v = self.knots_v.knots().len();
+        let (add_u, add_v) = match axis {
+            SurfaceInsertionAxis::U => (1usize, 0usize),
+            SurfaceInsertionAxis::V => (0usize, 1usize),
+        };
+        let new_control_count_u =
+            old_control_count_u
+                .checked_add(add_u)
+                .ok_or_else(|| NurbsError::Domain {
+                    what: "surface inserted u-control count overflows usize".to_string(),
+                })?;
+        let new_control_count_v =
+            old_control_count_v
+                .checked_add(add_v)
+                .ok_or_else(|| NurbsError::Domain {
+                    what: "surface inserted v-control count overflows usize".to_string(),
+                })?;
+        let new_knot_count_u =
+            old_knot_count_u
+                .checked_add(add_u)
+                .ok_or_else(|| NurbsError::Domain {
+                    what: "surface inserted u-knot count overflows usize".to_string(),
+                })?;
+        let new_knot_count_v =
+            old_knot_count_v
+                .checked_add(add_v)
+                .ok_or_else(|| NurbsError::Domain {
+                    what: "surface inserted v-knot count overflows usize".to_string(),
+                })?;
+        let envelope = surface_insertion_envelope_for_result::<S>(
+            axis,
+            self.knots_u.degree(),
+            self.knots_v.degree(),
+            new_control_count_u,
+            new_control_count_v,
+            new_knot_count_u,
+            new_knot_count_v,
+        )?;
+        Ok(SurfaceInsertionPlan {
+            axis,
+            new_control_count_u,
+            new_control_count_v,
+            new_knot_count_u,
+            new_knot_count_v,
+            #[cfg(test)]
+            work_units: envelope.work_units,
+            #[cfg(test)]
+            retained_bytes: envelope.retained_bytes,
+        })
     }
 
     fn validate_live_structure(&self) -> Result<(), NurbsError> {
@@ -633,53 +935,214 @@ impl<S: Scalar> NurbsSurface<S> {
         self.admit()?.eval(u, v)
     }
 
+    fn assemble_inserted_control_net_with_poll(
+        &self,
+        t: S,
+        span: usize,
+        plan: SurfaceInsertionPlan,
+        should_cancel: &mut impl FnMut() -> bool,
+    ) -> Result<SurfaceWorkRun<Vec<Vec<[S; 4]>>>, NurbsError> {
+        if should_cancel() {
+            return Ok(SurfaceWorkRun::Cancelled);
+        }
+        let mut output = Vec::new();
+        output
+            .try_reserve_exact(plan.new_control_count_u)
+            .map_err(|_| NurbsError::Domain {
+                what: "surface insertion row-table allocation was refused".to_string(),
+            })?;
+        let mut operations_since_poll = 0usize;
+
+        match plan.axis {
+            SurfaceInsertionAxis::U => {
+                for _ in 0..plan.new_control_count_u {
+                    if should_cancel() {
+                        return Ok(SurfaceWorkRun::Cancelled);
+                    }
+                    let mut row = Vec::new();
+                    row.try_reserve_exact(plan.new_control_count_v)
+                        .map_err(|_| NurbsError::Domain {
+                            what: "surface u-insertion output-row allocation was refused"
+                                .to_string(),
+                        })?;
+                    output.push(row);
+                }
+                let degree = self.knots_u.degree();
+                for column in 0..self.knots_v.control_count() {
+                    for source_row in 0..=span - degree {
+                        output[source_row].push(self.cpw[source_row][column]);
+                        if surface_poll_due(&mut operations_since_poll, should_cancel) {
+                            return Ok(SurfaceWorkRun::Cancelled);
+                        }
+                    }
+                    for source_row in (span - degree + 1)..=span {
+                        let denominator = self.knots_u.knots()[source_row + degree]
+                            - self.knots_u.knots()[source_row];
+                        let alpha = (t - self.knots_u.knots()[source_row]) / denominator;
+                        let mut blended = [S::zero(); 4];
+                        for ((slot, &left), &right) in blended
+                            .iter_mut()
+                            .zip(&self.cpw[source_row - 1][column])
+                            .zip(&self.cpw[source_row][column])
+                        {
+                            *slot = (S::one() - alpha) * left + alpha * right;
+                            if surface_poll_due(&mut operations_since_poll, should_cancel) {
+                                return Ok(SurfaceWorkRun::Cancelled);
+                            }
+                        }
+                        output[source_row].push(blended);
+                        if surface_poll_due(&mut operations_since_poll, should_cancel) {
+                            return Ok(SurfaceWorkRun::Cancelled);
+                        }
+                    }
+                    for source_row in span..self.knots_u.control_count() {
+                        output[source_row + 1].push(self.cpw[source_row][column]);
+                        if surface_poll_due(&mut operations_since_poll, should_cancel) {
+                            return Ok(SurfaceWorkRun::Cancelled);
+                        }
+                    }
+                }
+            }
+            SurfaceInsertionAxis::V => {
+                let degree = self.knots_v.degree();
+                for source in &self.cpw {
+                    if should_cancel() {
+                        return Ok(SurfaceWorkRun::Cancelled);
+                    }
+                    let mut row = Vec::new();
+                    row.try_reserve_exact(plan.new_control_count_v)
+                        .map_err(|_| NurbsError::Domain {
+                            what: "surface v-insertion output-row allocation was refused"
+                                .to_string(),
+                        })?;
+                    for &control in &source[..=span - degree] {
+                        row.push(control);
+                        if surface_poll_due(&mut operations_since_poll, should_cancel) {
+                            return Ok(SurfaceWorkRun::Cancelled);
+                        }
+                    }
+                    for source_column in (span - degree + 1)..=span {
+                        let denominator = self.knots_v.knots()[source_column + degree]
+                            - self.knots_v.knots()[source_column];
+                        let alpha = (t - self.knots_v.knots()[source_column]) / denominator;
+                        let mut blended = [S::zero(); 4];
+                        for ((slot, &left), &right) in blended
+                            .iter_mut()
+                            .zip(&source[source_column - 1])
+                            .zip(&source[source_column])
+                        {
+                            *slot = (S::one() - alpha) * left + alpha * right;
+                            if surface_poll_due(&mut operations_since_poll, should_cancel) {
+                                return Ok(SurfaceWorkRun::Cancelled);
+                            }
+                        }
+                        row.push(blended);
+                        if surface_poll_due(&mut operations_since_poll, should_cancel) {
+                            return Ok(SurfaceWorkRun::Cancelled);
+                        }
+                    }
+                    for &control in &source[span..] {
+                        row.push(control);
+                        if surface_poll_due(&mut operations_since_poll, should_cancel) {
+                            return Ok(SurfaceWorkRun::Cancelled);
+                        }
+                    }
+                    output.push(row);
+                    if surface_poll_due(&mut operations_since_poll, should_cancel) {
+                        return Ok(SurfaceWorkRun::Cancelled);
+                    }
+                }
+            }
+        }
+        if should_cancel() {
+            return Ok(SurfaceWorkRun::Cancelled);
+        }
+        Ok(SurfaceWorkRun::Complete(output))
+    }
+
+    fn insert_knot_at_span_with_plan_and_poll(
+        &self,
+        t: S,
+        span: usize,
+        plan: SurfaceInsertionPlan,
+        should_cancel: &mut impl FnMut() -> bool,
+    ) -> Result<SurfaceInsertionRun<S>, NurbsError> {
+        let cpw =
+            match self.assemble_inserted_control_net_with_poll(t, span, plan, should_cancel)? {
+                SurfaceWorkRun::Complete(cpw) => cpw,
+                SurfaceWorkRun::Cancelled => return Ok(SurfaceInsertionRun::Cancelled),
+            };
+
+        let (inserted_source, unchanged_source, inserted_count, unchanged_count, stage) =
+            match plan.axis {
+                SurfaceInsertionAxis::U => (
+                    &self.knots_u,
+                    &self.knots_v,
+                    plan.new_knot_count_u,
+                    plan.new_knot_count_v,
+                    "u-insertion",
+                ),
+                SurfaceInsertionAxis::V => (
+                    &self.knots_v,
+                    &self.knots_u,
+                    plan.new_knot_count_v,
+                    plan.new_knot_count_u,
+                    "v-insertion",
+                ),
+            };
+        let inserted = match copy_surface_knot_vector_with_poll(
+            inserted_source,
+            Some((span, t)),
+            inserted_count,
+            stage,
+            should_cancel,
+        )? {
+            SurfaceWorkRun::Complete(knots) => knots,
+            SurfaceWorkRun::Cancelled => return Ok(SurfaceInsertionRun::Cancelled),
+        };
+        KnotVector::<S>::enforce_work(
+            inserted.validation_work()?,
+            "surface inserted knot-vector validation",
+        )?;
+        match inserted.validate_live_with_poll(|| should_cancel())? {
+            KnotValidationOutcome::Complete => {}
+            KnotValidationOutcome::Cancelled => return Ok(SurfaceInsertionRun::Cancelled),
+        }
+        let unchanged = match copy_surface_knot_vector_with_poll(
+            unchanged_source,
+            None,
+            unchanged_count,
+            "unchanged-axis",
+            should_cancel,
+        )? {
+            SurfaceWorkRun::Complete(knots) => knots,
+            SurfaceWorkRun::Cancelled => return Ok(SurfaceInsertionRun::Cancelled),
+        };
+        let (knots_u, knots_v) = match plan.axis {
+            SurfaceInsertionAxis::U => (inserted, unchanged),
+            SurfaceInsertionAxis::V => (unchanged, inserted),
+        };
+        let candidate = NurbsSurface {
+            knots_u,
+            knots_v,
+            cpw,
+        };
+        match candidate.validate_live_structure_with_poll(should_cancel)? {
+            SurfaceValidationOutcome::Complete => {}
+            SurfaceValidationOutcome::Cancelled => return Ok(SurfaceInsertionRun::Cancelled),
+        }
+        if should_cancel() {
+            return Ok(SurfaceInsertionRun::Cancelled);
+        }
+        Ok(SurfaceInsertionRun::Complete { surface: candidate })
+    }
+
     /// EXACT knot insertion in the u direction (Boehm on every column).
     ///
     /// # Errors
     /// [`NurbsError::Domain`] for a non-interior parameter.
     pub fn insert_knot_u(&self, t: S) -> Result<Self, NurbsError> {
-        self.validate_live_structure()?;
-        // Reuse the curve algorithm column-wise via a 1-D homogeneous
-        // "curve" whose control points are rows of the net.
-        let nv = self.knots_v.control_count();
-        let mut new_rows: Option<Vec<Vec<[S; 4]>>> = None;
-        let mut new_knots: Option<KnotVector<S>> = None;
-        for j in 0..nv {
-            let mut column = Vec::new();
-            column
-                .try_reserve_exact(self.cpw.len())
-                .map_err(|_| NurbsError::Domain {
-                    what: "surface u-insertion column allocation was refused".to_string(),
-                })?;
-            column.extend(self.cpw.iter().map(|row| row[j]));
-            let curve = NurbsCurve::<S, 3>::from_homogeneous(self.knots_u.try_clone()?, column)?;
-            let refined = curve.insert_knot(t)?;
-            if new_rows.is_none() {
-                let mut rows = Vec::new();
-                rows.try_reserve_exact(refined.cpw.len())
-                    .map_err(|_| NurbsError::Domain {
-                        what: "surface u-insertion row-table allocation was refused".to_string(),
-                    })?;
-                for _ in 0..refined.cpw.len() {
-                    let mut row = Vec::new();
-                    row.try_reserve_exact(nv).map_err(|_| NurbsError::Domain {
-                        what: "surface u-insertion output-row allocation was refused".to_string(),
-                    })?;
-                    rows.push(row);
-                }
-                new_rows = Some(rows);
-            }
-            let rows = new_rows.as_mut().expect("initialized above");
-            for (i, cp) in refined.cpw.iter().enumerate() {
-                rows[i].push(*cp);
-            }
-            new_knots = Some(refined.knots);
-        }
-        NurbsSurface::from_homogeneous(
-            new_knots.expect("nv >= 1"),
-            self.knots_v.try_clone()?,
-            new_rows.expect("nv >= 1"),
-        )
+        self.admit()?.insert_knot_u(t)
     }
 
     /// EXACT knot insertion in the v direction.
@@ -687,32 +1150,7 @@ impl<S: Scalar> NurbsSurface<S> {
     /// # Errors
     /// [`NurbsError::Domain`] for a non-interior parameter.
     pub fn insert_knot_v(&self, t: S) -> Result<Self, NurbsError> {
-        self.validate_live_structure()?;
-        let mut new_cpw = Vec::new();
-        new_cpw
-            .try_reserve_exact(self.cpw.len())
-            .map_err(|_| NurbsError::Domain {
-                what: "surface v-insertion row-table allocation was refused".to_string(),
-            })?;
-        let mut new_knots = None;
-        for row in &self.cpw {
-            let mut controls = Vec::new();
-            controls
-                .try_reserve_exact(row.len())
-                .map_err(|_| NurbsError::Domain {
-                    what: "surface v-insertion control-row allocation was refused".to_string(),
-                })?;
-            controls.extend_from_slice(row);
-            let curve = NurbsCurve::<S, 3>::from_homogeneous(self.knots_v.try_clone()?, controls)?;
-            let refined = curve.insert_knot(t)?;
-            new_knots = Some(refined.knots);
-            new_cpw.push(refined.cpw);
-        }
-        NurbsSurface::from_homogeneous(
-            self.knots_u.try_clone()?,
-            new_knots.expect("nu >= 1"),
-            new_cpw,
-        )
+        self.admit()?.insert_knot_v(t)
     }
 
     /// Per-(u-span × v-span) Cartesian control boxes: each patch of the
@@ -750,6 +1188,168 @@ impl<'a, S: Scalar> AdmittedNurbsSurface<'a, S> {
     #[must_use]
     pub fn homogeneous_control_net(&self) -> &'a [Vec<[S; 4]>] {
         &self.inner.cpw
+    }
+
+    /// Conservatively price a sequence of directional insertions at the
+    /// largest derived generation, without scanning spans or allocating.
+    ///
+    /// The same per-insertion work and retained-output envelope used by the
+    /// executable insertion path is enforced here so compound callers cannot
+    /// admit a conversion that a nested insertion would later refuse.
+    pub(crate) fn projected_directional_insertion_work(
+        &self,
+        insertions_u: usize,
+        insertions_v: usize,
+    ) -> Result<u128, NurbsError> {
+        let final_control_count_u = self
+            .knots_u()
+            .control_count()
+            .checked_add(insertions_u)
+            .ok_or_else(|| NurbsError::Domain {
+                what: "projected surface u-control count overflows usize".to_string(),
+            })?;
+        let final_control_count_v = self
+            .knots_v()
+            .control_count()
+            .checked_add(insertions_v)
+            .ok_or_else(|| NurbsError::Domain {
+                what: "projected surface v-control count overflows usize".to_string(),
+            })?;
+        let final_knot_count_u = self
+            .knots_u()
+            .knots()
+            .len()
+            .checked_add(insertions_u)
+            .ok_or_else(|| NurbsError::Domain {
+                what: "projected surface u-knot count overflows usize".to_string(),
+            })?;
+        let final_knot_count_v = self
+            .knots_v()
+            .knots()
+            .len()
+            .checked_add(insertions_v)
+            .ok_or_else(|| NurbsError::Domain {
+                what: "projected surface v-knot count overflows usize".to_string(),
+            })?;
+
+        let mut work_units = 0u128;
+        for (axis, insertions) in [
+            (SurfaceInsertionAxis::U, insertions_u),
+            (SurfaceInsertionAxis::V, insertions_v),
+        ] {
+            if insertions == 0 {
+                continue;
+            }
+            let envelope = surface_insertion_envelope_for_result::<S>(
+                axis,
+                self.knots_u().degree(),
+                self.knots_v().degree(),
+                final_control_count_u,
+                final_control_count_v,
+                final_knot_count_u,
+                final_knot_count_v,
+            )?;
+            work_units = (insertions as u128)
+                .checked_mul(envelope.work_units)
+                .and_then(|axis_work| work_units.checked_add(axis_work))
+                .ok_or_else(|| NurbsError::Domain {
+                    what: "projected surface insertion work overflows u128".to_string(),
+                })?;
+        }
+        Ok(work_units)
+    }
+
+    fn insert_knot(&self, t: S, axis: SurfaceInsertionAxis) -> Result<NurbsSurface<S>, NurbsError> {
+        let plan = self.inner.insertion_plan_after_parameter(t, axis)?;
+        let span = match axis {
+            SurfaceInsertionAxis::U => self.knots_u().span(t)?,
+            SurfaceInsertionAxis::V => self.knots_v().span(t)?,
+        };
+        let mut never_cancel = || false;
+        match self
+            .inner
+            .insert_knot_at_span_with_plan_and_poll(t, span, plan, &mut never_cancel)?
+        {
+            SurfaceInsertionRun::Complete { surface } => Ok(surface),
+            SurfaceInsertionRun::Cancelled => Err(NurbsError::Domain {
+                what: "non-cancelling surface knot insertion observed cancellation".to_string(),
+            }),
+        }
+    }
+
+    fn insert_knot_with_cx(
+        &self,
+        t: S,
+        axis: SurfaceInsertionAxis,
+        cx: &Cx<'_>,
+    ) -> Result<SurfaceInsertionRun<S>, NurbsError> {
+        let plan = self.inner.insertion_plan_after_parameter(t, axis)?;
+        let span = match axis {
+            SurfaceInsertionAxis::U => match self.knots_u().span_with_cx(t, cx)? {
+                KnotSpanRun::Complete { span } => span,
+                KnotSpanRun::Cancelled => return Ok(SurfaceInsertionRun::Cancelled),
+            },
+            SurfaceInsertionAxis::V => match self.knots_v().span_with_cx(t, cx)? {
+                KnotSpanRun::Complete { span } => span,
+                KnotSpanRun::Cancelled => return Ok(SurfaceInsertionRun::Cancelled),
+            },
+        };
+        let mut should_cancel = || cx.checkpoint().is_err();
+        self.inner
+            .insert_knot_at_span_with_plan_and_poll(t, span, plan, &mut should_cancel)
+    }
+
+    /// Insert one exact knot in the U direction without rescanning the source.
+    ///
+    /// # Errors
+    /// Returns a structured parameter, work, retained-memory, allocation,
+    /// numeric-domain, or derived-structure refusal.
+    pub fn insert_knot_u(&self, t: S) -> Result<NurbsSurface<S>, NurbsError> {
+        self.insert_knot(t, SurfaceInsertionAxis::U)
+    }
+
+    /// Insert one exact knot in the V direction without rescanning the source.
+    ///
+    /// # Errors
+    /// Returns a structured parameter, work, retained-memory, allocation,
+    /// numeric-domain, or derived-structure refusal.
+    pub fn insert_knot_v(&self, t: S) -> Result<NurbsSurface<S>, NurbsError> {
+        self.insert_knot(t, SurfaceInsertionAxis::V)
+    }
+
+    /// Insert one exact U knot with bounded cancellation polling.
+    ///
+    /// Parameter and checked aggregate work/retained-output refusals precede
+    /// cancellation. The gate then covers the directional span, complete
+    /// tensor Boehm assembly, both knot copies, derived validation, and final
+    /// publication. Cancellation exposes no partial surface. This method does
+    /// not consume the `Cx` budget or finalize its executor scope.
+    ///
+    /// # Errors
+    /// Returns the synchronous insertion's refusal when it wins before an
+    /// observed cancellation.
+    pub fn insert_knot_u_with_cx(
+        &self,
+        t: S,
+        cx: &Cx<'_>,
+    ) -> Result<SurfaceInsertionRun<S>, NurbsError> {
+        self.insert_knot_with_cx(t, SurfaceInsertionAxis::U, cx)
+    }
+
+    /// Insert one exact V knot with bounded cancellation polling.
+    ///
+    /// Refusal order, transactionality, budget ownership, and executor-scope
+    /// boundaries are identical to [`Self::insert_knot_u_with_cx`].
+    ///
+    /// # Errors
+    /// Returns the synchronous insertion's refusal when it wins before an
+    /// observed cancellation.
+    pub fn insert_knot_v_with_cx(
+        &self,
+        t: S,
+        cx: &Cx<'_>,
+    ) -> Result<SurfaceInsertionRun<S>, NurbsError> {
+        self.insert_knot_with_cx(t, SurfaceInsertionAxis::V, cx)
     }
 
     /// Homogeneous evaluation without rescanning surface or knot structure.
@@ -1321,6 +1921,97 @@ mod tests {
         .expect("high-degree plane")
     }
 
+    fn asymmetric_surface() -> NurbsSurface<f64> {
+        let knots_u =
+            KnotVector::new(vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2).expect("quadratic u knots");
+        let knots_v = KnotVector::new(vec![0.0, 0.0, 1.0, 1.0], 1).expect("linear v knots");
+        let points = vec![
+            vec![[0.0, 0.0, 0.0], [0.0, 2.0, 1.0]],
+            vec![[1.0, 0.0, 1.0], [1.0, 2.0, 0.0]],
+            vec![[3.0, 0.0, 0.0], [3.0, 2.0, 2.0]],
+        ];
+        let weights = vec![vec![1.0, 2.0], vec![3.0, 1.0], vec![2.0, 3.0]];
+        NurbsSurface::new(knots_u, knots_v, &points, &weights).expect("asymmetric rational surface")
+    }
+
+    fn exact_asymmetric_surface() -> NurbsSurface<Rat> {
+        let zero = Rat::int(0);
+        let one = Rat::int(1);
+        let two = Rat::int(2);
+        let three = Rat::int(3);
+        let knots_u = KnotVector::new(vec![zero, zero, zero, one, one, one], 2)
+            .expect("exact quadratic u knots");
+        let knots_v = KnotVector::new(vec![zero, zero, one, one], 1).expect("exact linear v knots");
+        let points = vec![
+            vec![[zero, zero, zero], [zero, two, one]],
+            vec![[one, zero, one], [one, two, zero]],
+            vec![[three, zero, zero], [three, two, two]],
+        ];
+        let weights = vec![vec![one, two], vec![three, one], vec![two, three]];
+        NurbsSurface::new(knots_u, knots_v, &points, &weights)
+            .expect("exact asymmetric rational surface")
+    }
+
+    fn curve_oracle_insert_u<S: Scalar>(surface: &NurbsSurface<S>, t: S) -> NurbsSurface<S> {
+        let control_count_v = surface.knots_v.control_count();
+        let mut output: Option<Vec<Vec<[S; 4]>>> = None;
+        let mut inserted_knots = None;
+        for column in 0..control_count_v {
+            let controls: Vec<[S; 4]> = surface.cpw.iter().map(|row| row[column]).collect();
+            let curve = NurbsCurve::<S, 3>::from_homogeneous(
+                surface.knots_u.try_clone().expect("oracle u knots"),
+                controls,
+            )
+            .expect("oracle u isocurve");
+            let refined = curve.insert_knot(t).expect("oracle u insertion");
+            if output.is_none() {
+                output = Some(vec![Vec::new(); refined.cpw.len()]);
+            }
+            for (row, &control) in output
+                .as_mut()
+                .expect("oracle rows initialized")
+                .iter_mut()
+                .zip(&refined.cpw)
+            {
+                row.push(control);
+            }
+            inserted_knots = Some(refined.knots);
+        }
+        NurbsSurface::from_homogeneous(
+            inserted_knots.expect("surface has v controls"),
+            surface
+                .knots_v
+                .try_clone()
+                .expect("oracle unchanged v knots"),
+            output.expect("surface has v controls"),
+        )
+        .expect("oracle u surface")
+    }
+
+    fn curve_oracle_insert_v<S: Scalar>(surface: &NurbsSurface<S>, t: S) -> NurbsSurface<S> {
+        let mut output = Vec::new();
+        let mut inserted_knots = None;
+        for source in &surface.cpw {
+            let curve = NurbsCurve::<S, 3>::from_homogeneous(
+                surface.knots_v.try_clone().expect("oracle v knots"),
+                source.to_vec(),
+            )
+            .expect("oracle v isocurve");
+            let refined = curve.insert_knot(t).expect("oracle v insertion");
+            inserted_knots = Some(refined.knots);
+            output.push(refined.cpw);
+        }
+        NurbsSurface::from_homogeneous(
+            surface
+                .knots_u
+                .try_clone()
+                .expect("oracle unchanged u knots"),
+            inserted_knots.expect("surface has u controls"),
+            output,
+        )
+        .expect("oracle v surface")
+    }
+
     #[test]
     fn surface_admission_with_cx_is_transactional_and_lifetime_bound() {
         let surface = bilinear_surface();
@@ -1411,6 +2102,204 @@ mod tests {
             SurfaceValidationOutcome::Cancelled
         ));
         assert_eq!(replay_polls, 12);
+    }
+
+    #[test]
+    fn admitted_directional_insertion_with_cx_is_transactional_and_exact() {
+        let surface = asymmetric_surface();
+        let admitted = surface.admit().expect("admitted asymmetric surface");
+        let inserted_u = admitted.insert_knot_u(0.5).expect("legacy u insertion");
+        let inserted_v = admitted.insert_knot_v(0.5).expect("legacy v insertion");
+        assert_eq!(inserted_u, curve_oracle_insert_u(&surface, 0.5));
+        assert_eq!(inserted_v, curve_oracle_insert_v(&surface, 0.5));
+        assert_eq!(inserted_u.knots_v, surface.knots_v);
+        assert_eq!(inserted_v.knots_u, surface.knots_u);
+        assert_eq!(inserted_u.cpw.len(), 4);
+        assert!(inserted_u.cpw.iter().all(|row| row.len() == 2));
+        assert_eq!(inserted_v.cpw.len(), 3);
+        assert!(inserted_v.cpw.iter().all(|row| row.len() == 3));
+
+        with_surface_cx(false, |cx| {
+            assert_eq!(
+                admitted
+                    .insert_knot_u_with_cx(0.5, cx)
+                    .expect("active u insertion"),
+                SurfaceInsertionRun::Complete {
+                    surface: inserted_u,
+                }
+            );
+            assert_eq!(
+                admitted
+                    .insert_knot_v_with_cx(0.5, cx)
+                    .expect("active v insertion"),
+                SurfaceInsertionRun::Complete {
+                    surface: inserted_v,
+                }
+            );
+        });
+
+        let exact_surface = exact_asymmetric_surface();
+        let exact_admitted = exact_surface.admit().expect("admitted exact surface");
+        let half = Rat::new(1, 2);
+        let exact_u = exact_admitted
+            .insert_knot_u(half)
+            .expect("legacy exact u insertion");
+        let exact_v = exact_admitted
+            .insert_knot_v(half)
+            .expect("legacy exact v insertion");
+        assert_eq!(exact_u, curve_oracle_insert_u(&exact_surface, half));
+        assert_eq!(exact_v, curve_oracle_insert_v(&exact_surface, half));
+        for (u, v) in [
+            (Rat::new(1, 4), Rat::new(1, 3)),
+            (Rat::new(3, 4), Rat::new(2, 3)),
+        ] {
+            let source_point = exact_admitted.eval(u, v).expect("exact source evaluation");
+            assert_eq!(
+                exact_u.eval(u, v).expect("exact u-refined evaluation"),
+                source_point
+            );
+            assert_eq!(
+                exact_v.eval(u, v).expect("exact v-refined evaluation"),
+                source_point
+            );
+        }
+        with_surface_cx(false, |cx| {
+            assert_eq!(
+                exact_admitted
+                    .insert_knot_u_with_cx(half, cx)
+                    .expect("active exact u insertion"),
+                SurfaceInsertionRun::Complete { surface: exact_u }
+            );
+            assert_eq!(
+                exact_admitted
+                    .insert_knot_v_with_cx(half, cx)
+                    .expect("active exact v insertion"),
+                SurfaceInsertionRun::Complete { surface: exact_v }
+            );
+        });
+    }
+
+    #[test]
+    fn directional_insertion_refusals_precede_cancellation() {
+        let surface = bilinear_surface();
+        let admitted = surface.admit().expect("admitted plane");
+        let u_endpoint = admitted
+            .insert_knot_u(0.0)
+            .expect_err("legacy u endpoint refusal");
+        let v_endpoint = admitted
+            .insert_knot_v(1.0)
+            .expect_err("legacy v endpoint refusal");
+        let u_non_finite = admitted
+            .insert_knot_u(f64::NAN)
+            .expect_err("legacy u non-finite refusal");
+        let v_non_finite = admitted
+            .insert_knot_v(f64::NAN)
+            .expect_err("legacy v non-finite refusal");
+        with_surface_cx(true, |cx| {
+            assert_eq!(
+                admitted
+                    .insert_knot_u_with_cx(0.5, cx)
+                    .expect("valid u request reaches cancellation"),
+                SurfaceInsertionRun::Cancelled
+            );
+            assert_eq!(
+                admitted
+                    .insert_knot_v_with_cx(0.5, cx)
+                    .expect("valid v request reaches cancellation"),
+                SurfaceInsertionRun::Cancelled
+            );
+            assert_eq!(
+                admitted
+                    .insert_knot_u_with_cx(0.0, cx)
+                    .expect_err("u endpoint refusal beats cancellation"),
+                u_endpoint
+            );
+            assert_eq!(
+                admitted
+                    .insert_knot_v_with_cx(1.0, cx)
+                    .expect_err("v endpoint refusal beats cancellation"),
+                v_endpoint
+            );
+            assert_eq!(
+                admitted
+                    .insert_knot_u_with_cx(f64::NAN, cx)
+                    .expect_err("u non-finite refusal beats cancellation"),
+                u_non_finite
+            );
+            assert_eq!(
+                admitted
+                    .insert_knot_v_with_cx(f64::NAN, cx)
+                    .expect_err("v non-finite refusal beats cancellation"),
+                v_non_finite
+            );
+        });
+    }
+
+    #[test]
+    fn directional_insertion_cancels_inside_assembly_and_at_publication() {
+        let high_degree = high_degree_surface();
+        let plan = high_degree
+            .insertion_plan_after_parameter(0.5, SurfaceInsertionAxis::U)
+            .expect("high-degree u plan");
+        let span = high_degree
+            .knots_u
+            .admitted_after_validation()
+            .span(0.5)
+            .expect("high-degree u span");
+        let run = || {
+            let mut polls = 0usize;
+            let mut should_cancel = || {
+                polls += 1;
+                // Entry + one checkpoint per output-row reservation precede
+                // the first 64-operation assembly-stride checkpoint.
+                polls == plan.new_control_count_u + 2
+            };
+            let outcome = high_degree
+                .insert_knot_at_span_with_plan_and_poll(0.5, span, plan, &mut should_cancel)
+                .expect("bounded high-degree insertion");
+            (matches!(outcome, SurfaceInsertionRun::Cancelled), polls)
+        };
+        assert_eq!(run(), run());
+        assert_eq!(run(), (true, plan.new_control_count_u + 2));
+
+        let surface = bilinear_surface();
+        for axis in [SurfaceInsertionAxis::U, SurfaceInsertionAxis::V] {
+            let plan = surface
+                .insertion_plan_after_parameter(0.5, axis)
+                .expect("bilinear insertion plan");
+            let span = match axis {
+                SurfaceInsertionAxis::U => surface
+                    .knots_u
+                    .admitted_after_validation()
+                    .span(0.5)
+                    .expect("u span"),
+                SurfaceInsertionAxis::V => surface
+                    .knots_v
+                    .admitted_after_validation()
+                    .span(0.5)
+                    .expect("v span"),
+            };
+            let mut total_polls = 0usize;
+            let mut never_cancel = || {
+                total_polls += 1;
+                false
+            };
+            let complete = surface
+                .insert_knot_at_span_with_plan_and_poll(0.5, span, plan, &mut never_cancel)
+                .expect("healthy insertion");
+            assert!(matches!(complete, SurfaceInsertionRun::Complete { .. }));
+
+            let mut replay_polls = 0usize;
+            let mut cancel_at_publication = || {
+                replay_polls += 1;
+                replay_polls == total_polls
+            };
+            let cancelled = surface
+                .insert_knot_at_span_with_plan_and_poll(0.5, span, plan, &mut cancel_at_publication)
+                .expect("publication cancellation");
+            assert!(matches!(cancelled, SurfaceInsertionRun::Cancelled));
+            assert_eq!(replay_polls, total_polls);
+        }
     }
 
     #[test]
@@ -1768,6 +2657,58 @@ mod tests {
             SurfaceEvaluationRun::Cancelled
         );
         assert_eq!(replay_polls, 2);
+    }
+
+    #[test]
+    fn directional_insertion_preflight_prices_work_and_complete_output() {
+        let surface = asymmetric_surface();
+        let plan_u = surface
+            .insertion_plan_after_parameter(0.5, SurfaceInsertionAxis::U)
+            .expect("u insertion plan");
+        let plan_v = surface
+            .insertion_plan_after_parameter(0.5, SurfaceInsertionAxis::V)
+            .expect("v insertion plan");
+        assert_eq!(
+            (
+                plan_u.new_control_count_u,
+                plan_u.new_control_count_v,
+                plan_u.new_knot_count_u,
+                plan_u.new_knot_count_v,
+            ),
+            (4, 2, 7, 4)
+        );
+        assert_eq!(
+            (
+                plan_v.new_control_count_u,
+                plan_v.new_control_count_v,
+                plan_v.new_knot_count_u,
+                plan_v.new_knot_count_v,
+            ),
+            (3, 3, 6, 5)
+        );
+        assert!(plan_u.work_units > 0 && plan_u.retained_bytes > 0);
+        assert!(plan_v.work_units > 0 && plan_v.retained_bytes > 0);
+        assert!(
+            enforce_surface_insertion_envelope(
+                BASIS_MAX_WORK_UNITS,
+                SURFACE_INSERTION_MAX_RETAINED_BYTES,
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            enforce_surface_insertion_envelope(
+                BASIS_MAX_WORK_UNITS + 1,
+                SURFACE_INSERTION_MAX_RETAINED_BYTES,
+            ),
+            Err(NurbsError::Domain { ref what }) if what.contains("work")
+        ));
+        assert!(matches!(
+            enforce_surface_insertion_envelope(
+                BASIS_MAX_WORK_UNITS,
+                SURFACE_INSERTION_MAX_RETAINED_BYTES + 1,
+            ),
+            Err(NurbsError::Domain { ref what }) if what.contains("retain")
+        ));
     }
 
     #[test]

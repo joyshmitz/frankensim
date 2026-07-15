@@ -196,9 +196,10 @@ fn surface_storage_bytes(
     )
 }
 
-// During insertion, the borrowed source, old derived surface, output grid,
-// old/refined one-dimensional curves, and prior/current refined knot buffers
-// overlap. Final dimensions conservatively dominate every intermediate grid.
+// During direct tensor insertion, the borrowed source is accounted separately
+// while the current derived surface and its successor overlap. The last
+// insertion has the largest such pair, so its exact requested payload dominates
+// every earlier generation without inventing one-dimensional curve scratch.
 fn surface_conversion_peak_allocated_bytes(
     insertions_u: u128,
     insertions_v: u128,
@@ -217,63 +218,54 @@ fn surface_conversion_peak_allocated_bytes(
         return Ok((converted_bytes, converted_bytes));
     }
 
-    let grid_bytes = checked_sum(
-        &[
-            checked_product(
-                &[final_control_count_u, size_of::<Vec<[f64; 4]>>() as u128],
-                "surface conversion output row table",
-            )?,
-            checked_product(
-                &[
-                    final_control_count_u,
-                    final_control_count_v,
-                    size_of::<[f64; 4]>() as u128,
-                ],
-                "surface conversion output controls",
-            )?,
-        ],
-        "surface conversion output grid",
+    // The conversion inserts U then V once per outer pass. Therefore V is the
+    // final direction when its count is at least U's; otherwise U is final.
+    let final_axis_is_v = insertions_v > 0 && insertions_v >= insertions_u;
+    let (previous_knots_u, previous_knots_v, previous_controls_u, previous_controls_v) =
+        if final_axis_is_v {
+            (
+                final_knot_count_u,
+                final_knot_count_v
+                    .checked_sub(1)
+                    .ok_or_else(|| NurbsError::Domain {
+                        what: "surface previous v-knot count underflows u128".to_string(),
+                    })?,
+                final_control_count_u,
+                final_control_count_v
+                    .checked_sub(1)
+                    .ok_or_else(|| NurbsError::Domain {
+                        what: "surface previous v-control count underflows u128".to_string(),
+                    })?,
+            )
+        } else {
+            (
+                final_knot_count_u
+                    .checked_sub(1)
+                    .ok_or_else(|| NurbsError::Domain {
+                        what: "surface previous u-knot count underflows u128".to_string(),
+                    })?,
+                final_knot_count_v,
+                final_control_count_u
+                    .checked_sub(1)
+                    .ok_or_else(|| NurbsError::Domain {
+                        what: "surface previous u-control count underflows u128".to_string(),
+                    })?,
+                final_control_count_v,
+            )
+        };
+    let previous_bytes = surface_storage_bytes(
+        previous_knots_u,
+        previous_knots_v,
+        previous_controls_u,
+        previous_controls_v,
     )?;
-    let u_scratch = checked_sum(
-        &[
-            grid_bytes,
-            checked_product(
-                &[final_knot_count_u, 3, size_of::<f64>() as u128],
-                "surface u-insertion knot scratch",
-            )?,
-            checked_product(
-                &[final_control_count_u, 2, size_of::<[f64; 4]>() as u128],
-                "surface u-insertion curve scratch",
-            )?,
-        ],
-        "surface u-insertion scratch",
-    )?;
-    let v_scratch = checked_sum(
-        &[
-            grid_bytes,
-            checked_product(
-                &[final_knot_count_v, 3, size_of::<f64>() as u128],
-                "surface v-insertion knot scratch",
-            )?,
-            checked_product(
-                &[final_control_count_v, 2, size_of::<[f64; 4]>() as u128],
-                "surface v-insertion curve scratch",
-            )?,
-        ],
-        "surface v-insertion scratch",
-    )?;
-    let mut insertion_scratch = converted_bytes;
-    if insertions_u > 0 {
-        insertion_scratch = insertion_scratch.max(u_scratch);
-    }
-    if insertions_v > 0 {
-        insertion_scratch = insertion_scratch.max(v_scratch);
-    }
-    let peak_allocated_bytes = converted_bytes
-        .checked_add(insertion_scratch)
-        .ok_or_else(|| NurbsError::Domain {
-            what: "surface conversion peak allocated-byte accounting overflows u128".to_string(),
-        })?;
+    let peak_allocated_bytes =
+        converted_bytes
+            .checked_add(previous_bytes)
+            .ok_or_else(|| NurbsError::Domain {
+                what: "surface conversion peak allocated-byte accounting overflows u128"
+                    .to_string(),
+            })?;
     Ok((converted_bytes, peak_allocated_bytes))
 }
 
@@ -391,6 +383,14 @@ fn surface_base_plan_from_admitted(
         })?;
     let insertions_u = bezier_insertion_count(knots_u)?;
     let insertions_v = bezier_insertion_count(knots_v)?;
+    let insertion_work = surface.projected_directional_insertion_work(
+        usize::try_from(insertions_u).map_err(|_| NurbsError::Domain {
+            what: "surface u Bézier insertion count exceeds usize".to_string(),
+        })?,
+        usize::try_from(insertions_v).map_err(|_| NurbsError::Domain {
+            what: "surface v Bézier insertion count exceeds usize".to_string(),
+        })?,
+    )?;
     let expanded_u = (expected_u as u128)
         .checked_add(insertions_u)
         .ok_or_else(|| NurbsError::Domain {
@@ -436,48 +436,6 @@ fn surface_base_plan_from_admitted(
         ],
         "surface input grid",
     )?;
-    let u_insertion_work = checked_product(
-        &[
-            insertions_u,
-            expanded_v,
-            checked_sum(
-                &[
-                    expanded_u
-                        .checked_mul(2)
-                        .ok_or_else(|| NurbsError::Domain {
-                            what: "surface u insertion-grid work overflows u128".to_string(),
-                        })?,
-                    expanded_knots_u,
-                    order_u.checked_mul(8).ok_or_else(|| NurbsError::Domain {
-                        what: "surface u insertion-order work overflows u128".to_string(),
-                    })?,
-                ],
-                "surface u insertion stage",
-            )?,
-        ],
-        "surface u Bézier insertion",
-    )?;
-    let v_insertion_work = checked_product(
-        &[
-            insertions_v,
-            expanded_u,
-            checked_sum(
-                &[
-                    expanded_v
-                        .checked_mul(2)
-                        .ok_or_else(|| NurbsError::Domain {
-                            what: "surface v insertion-grid work overflows u128".to_string(),
-                        })?,
-                    expanded_knots_v,
-                    order_v.checked_mul(8).ok_or_else(|| NurbsError::Domain {
-                        what: "surface v insertion-order work overflows u128".to_string(),
-                    })?,
-                ],
-                "surface v insertion stage",
-            )?,
-        ],
-        "surface v Bézier insertion",
-    )?;
     let scan_work = checked_product(
         &[
             insertions_u.max(insertions_v) + 1,
@@ -496,8 +454,7 @@ fn surface_base_plan_from_admitted(
             knots_v.knots().len() as u128,
             expanded_grid,
             patch_controls,
-            u_insertion_work,
-            v_insertion_work,
+            insertion_work,
             scan_work,
         ],
         "surface base work",
@@ -1846,6 +1803,40 @@ mod tests {
     }
 
     #[test]
+    fn surface_closest_preflight_composes_nested_insertion_refusal() {
+        // A 500 x 700 source is cheap enough to admit, but its one required U
+        // refinement exceeds the insertion engine's aggregate work ceiling.
+        // Keep every other interior U knot at full degree multiplicity so the
+        // closest-point conversion has exactly that one nested insertion.
+        let mut knots_u = vec![0.0; 3];
+        for index in 1..=248 {
+            let knot = f64::from(index) / 250.0;
+            knots_u.extend([knot, knot]);
+        }
+        let target = 249.0 / 250.0;
+        knots_u.push(target);
+        knots_u.extend([1.0; 3]);
+        let knots_u = KnotVector::new(knots_u, 2).expect("large quadratic u knots");
+
+        let mut knots_v = vec![0.0; 2];
+        knots_v.extend((1..=698).map(|index| f64::from(index) / 699.0));
+        knots_v.extend([1.0; 2]);
+        let knots_v = KnotVector::new(knots_v, 1).expect("large linear v knots");
+        let controls = vec![vec![[0.0, 0.0, 0.0, 1.0]; 700]; 500];
+        let surface = NurbsSurface::from_homogeneous(knots_u, knots_v, controls)
+            .expect("large admitted-refusal surface");
+        let admitted = surface.admit().expect("admitted large surface");
+
+        let direct = admitted
+            .insert_knot_u(target)
+            .expect_err("the nested insertion must refuse its work envelope");
+        let closest = admitted
+            .closest_point([0.0; 3], 1e-6, 0)
+            .expect_err("closest preflight must compose the nested refusal");
+        assert_eq!(closest, direct);
+    }
+
+    #[test]
     fn curve_retained_envelope_composes_all_live_phases() {
         assert!(
             enforce_curve_retained_envelope(CLOSEST_MAX_RETAINED_BYTES, 0, 0, 0).is_ok(),
@@ -1887,17 +1878,13 @@ mod tests {
         let converted_bytes = (5 + 5) * size_of::<f64>() as u128
             + 3 * size_of::<Vec<[f64; 4]>>() as u128
             + 3 * 3 * size_of::<[f64; 4]>() as u128;
-        let grid_bytes =
-            3 * size_of::<Vec<[f64; 4]>>() as u128 + 3 * 3 * size_of::<[f64; 4]>() as u128;
-        let insertion_scratch =
-            grid_bytes + 5 * 3 * size_of::<f64>() as u128 + 3 * 2 * size_of::<[f64; 4]>() as u128;
+        let previous_bytes = (5 + 4) * size_of::<f64>() as u128
+            + 3 * size_of::<Vec<[f64; 4]>>() as u128
+            + 3 * 2 * size_of::<[f64; 4]>() as u128;
         assert_eq!(
             surface_conversion_peak_allocated_bytes(1, 1, 5, 5, 3, 3)
                 .expect("two-direction conversion"),
-            (
-                converted_bytes,
-                converted_bytes + converted_bytes.max(insertion_scratch),
-            )
+            (converted_bytes, converted_bytes + previous_bytes)
         );
 
         assert_eq!(
@@ -1957,7 +1944,7 @@ mod tests {
             surface_conversion_peak_allocated_bytes(1, 1, u128::MAX, 1, 1, 1),
             Err(crate::NurbsError::Domain { .. })
         ));
-        let late_peak_overflow_knot_count = u128::MAX / 32 + 1;
+        let late_peak_overflow_knot_count = u128::MAX / (2 * size_of::<f64>() as u128) + 1;
         assert!(matches!(
             surface_conversion_peak_allocated_bytes(1, 0, late_peak_overflow_knot_count, 0, 0, 0,),
             Err(crate::NurbsError::Domain { .. })
