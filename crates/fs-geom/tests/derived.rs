@@ -567,6 +567,20 @@ fn boundary_contact_corner_keeps_roles_units_and_active_sets_distinct() {
             },
         );
 
+        let mut negative_zero_unit = corner.clone();
+        negative_zero_unit.charts[0].coordinates.scale_to_canonical = -0.0;
+        assert_issue(
+            admit_derived_geometry_v1(negative_zero_unit, DerivedAdmissionBudgetV1::STANDARD, cx),
+            |issue| {
+                matches!(
+                    issue,
+                    DerivedAdmissionIssueV1::InvalidUnitScale {
+                        kind: DerivedObjectKindV1::Chart
+                    }
+                )
+            },
+        );
+
         let mut complex_contact = corner;
         complex_contact.category = GeometricCategoryV1::Algebraic;
         complex_contact.coefficients = CoefficientSystemV1::RationalComplex;
@@ -706,12 +720,63 @@ fn unbounded_infinite_or_malformed_local_models_refuse() {
                 )
             },
         );
+
+        let mut oversized_resolution = regular_linkage();
+        oversized_resolution.complexes[0]
+            .resolution
+            .max_basis_dimension = DERIVED_GEOMETRY_HARD_MAX_DIMENSION_V1 + 1;
+        assert_issue(
+            admit_derived_geometry_v1(oversized_resolution, DerivedAdmissionBudgetV1::STANDARD, cx),
+            |issue| {
+                matches!(
+                    issue,
+                    DerivedAdmissionIssueV1::InvalidComplex {
+                        field: "resolution_bounds"
+                    }
+                )
+            },
+        );
     });
 }
 
 #[test]
 fn cross_chart_boundaries_incidences_and_constitutive_refs_refuse() {
     with_cx(|cx| {
+        let mut chart_locality = regular_linkage();
+        let other_chart = add_second_chart(&mut chart_locality, 147);
+        chart_locality.charts[0].locality = LocalityScopeV1::GermAt {
+            chart: other_chart,
+            point: witness(148),
+        };
+        assert_issue(
+            admit_derived_geometry_v1(chart_locality, DerivedAdmissionBudgetV1::STANDARD, cx),
+            |issue| {
+                matches!(
+                    issue,
+                    DerivedAdmissionIssueV1::CrossChartReference {
+                        kind: DerivedObjectKindV1::Chart,
+                        field: "self_locality_chart"
+                    }
+                )
+            },
+        );
+
+        let mut equality = regular_linkage();
+        let other_chart = add_second_chart(&mut equality, 149);
+        equality.equalities[0].chart = other_chart;
+        assert_issue(
+            admit_derived_geometry_v1(equality, DerivedAdmissionBudgetV1::STANDARD, cx),
+            |issue| {
+                matches!(
+                    issue,
+                    DerivedAdmissionIssueV1::CrossChartReference {
+                        kind: DerivedObjectKindV1::LocalModel,
+                        field: "equality"
+                    }
+                )
+            },
+        );
+
         let mut boundary = contact_corner();
         let other_chart = add_second_chart(&mut boundary, 150);
         boundary.boundaries[0].chart = other_chart;
@@ -720,8 +785,9 @@ fn cross_chart_boundaries_incidences_and_constitutive_refs_refuse() {
             |issue| {
                 matches!(
                     issue,
-                    DerivedAdmissionIssueV1::MixedFrame {
-                        kind: DerivedObjectKindV1::Boundary
+                    DerivedAdmissionIssueV1::CrossChartReference {
+                        kind: DerivedObjectKindV1::Boundary,
+                        field: "parent" | "boundary"
                     }
                 )
             },
@@ -735,8 +801,9 @@ fn cross_chart_boundaries_incidences_and_constitutive_refs_refuse() {
             |issue| {
                 matches!(
                     issue,
-                    DerivedAdmissionIssueV1::InvalidStratification {
-                        field: "incidence_chart"
+                    DerivedAdmissionIssueV1::CrossChartReference {
+                        kind: DerivedObjectKindV1::Incidence,
+                        field: "lower_upper"
                     }
                 )
             },
@@ -750,8 +817,73 @@ fn cross_chart_boundaries_incidences_and_constitutive_refs_refuse() {
             |issue| {
                 matches!(
                     issue,
-                    DerivedAdmissionIssueV1::MixedFrame {
-                        kind: DerivedObjectKindV1::Constitutive
+                    DerivedAdmissionIssueV1::CrossChartReference {
+                        kind: DerivedObjectKindV1::LocalModel,
+                        field: "constitutive_data"
+                    }
+                )
+            },
+        );
+
+        let mut active_inequality = contact_corner();
+        let other_chart = add_second_chart(&mut active_inequality, 156);
+        active_inequality.inequalities[0].chart = other_chart;
+        assert_issue(
+            admit_derived_geometry_v1(active_inequality, DerivedAdmissionBudgetV1::STANDARD, cx),
+            |issue| {
+                matches!(
+                    issue,
+                    DerivedAdmissionIssueV1::CrossChartReference {
+                        kind: DerivedObjectKindV1::LocalModel,
+                        field: "active_inequality"
+                    }
+                )
+            },
+        );
+
+        let mut active_contact = contact_corner();
+        let other_chart = add_second_chart(&mut active_contact, 157);
+        active_contact.contacts[0].chart = other_chart;
+        assert_issue(
+            admit_derived_geometry_v1(active_contact, DerivedAdmissionBudgetV1::STANDARD, cx),
+            |issue| {
+                matches!(
+                    issue,
+                    DerivedAdmissionIssueV1::CrossChartReference {
+                        kind: DerivedObjectKindV1::LocalModel,
+                        field: "active_contact"
+                    }
+                )
+            },
+        );
+
+        let mut tangent_complex = regular_linkage();
+        let other_chart = add_second_chart(&mut tangent_complex, 158);
+        tangent_complex.complexes[0].chart = other_chart;
+        assert_issue(
+            admit_derived_geometry_v1(tangent_complex, DerivedAdmissionBudgetV1::STANDARD, cx),
+            |issue| {
+                matches!(
+                    issue,
+                    DerivedAdmissionIssueV1::CrossChartReference {
+                        kind: DerivedObjectKindV1::LocalModel,
+                        field: "tangent_complex"
+                    }
+                )
+            },
+        );
+
+        let mut stratum_model = regular_linkage();
+        let other_chart = add_second_chart(&mut stratum_model, 159);
+        stratum_model.stratification.strata[0].chart = other_chart;
+        assert_issue(
+            admit_derived_geometry_v1(stratum_model, DerivedAdmissionBudgetV1::STANDARD, cx),
+            |issue| {
+                matches!(
+                    issue,
+                    DerivedAdmissionIssueV1::CrossChartReference {
+                        kind: DerivedObjectKindV1::Stratum,
+                        field: "local_model"
                     }
                 )
             },
@@ -855,6 +987,18 @@ fn local_link_and_incidence_mutations_refuse() {
             },
         );
 
+        let mut overflowing_link = contact_corner();
+        overflowing_link.stratification.local_links[0].dimension = u32::MAX;
+        assert_issue(
+            admit_derived_geometry_v1(overflowing_link, DerivedAdmissionBudgetV1::STANDARD, cx),
+            |issue| {
+                matches!(
+                    issue,
+                    DerivedAdmissionIssueV1::InvalidLocalLink { field: "dimension" }
+                )
+            },
+        );
+
         let mut wrong_incidence = contact_corner();
         wrong_incidence.stratification.incidences[0].codimension = 2;
         assert_issue(
@@ -867,6 +1011,83 @@ fn local_link_and_incidence_mutations_refuse() {
                     }
                 )
             },
+        );
+
+        let mut missing_witness = contact_corner();
+        missing_witness.stratification.incidences[0].witness = witness(0);
+        let report =
+            admit_derived_geometry_v1(missing_witness, DerivedAdmissionBudgetV1::STANDARD, cx)
+                .expect_err("zero incidence witness must refuse");
+        assert_eq!(
+            report.issues(),
+            &[DerivedAdmissionIssueV1::MissingIdentity {
+                kind: DerivedObjectKindV1::Incidence,
+                field: "witness",
+            }]
+        );
+    });
+}
+
+#[test]
+fn duplicate_reference_reports_are_permutation_stable() {
+    with_cx(|cx| {
+        let mut original = contact_corner();
+        let other_chart = add_second_chart(&mut original, 160);
+        let mut duplicate = original.constitutive_data[0].clone();
+        duplicate.chart = other_chart;
+        duplicate.state_dimension = 0;
+        original.constitutive_data.push(duplicate);
+
+        let mut reversed = original.clone();
+        reversed.constitutive_data.reverse();
+
+        let original_report =
+            admit_derived_geometry_v1(original, DerivedAdmissionBudgetV1::STANDARD, cx)
+                .expect_err("ambiguous duplicate reference must refuse");
+        let reversed_report =
+            admit_derived_geometry_v1(reversed, DerivedAdmissionBudgetV1::STANDARD, cx)
+                .expect_err("permuted ambiguous duplicate reference must refuse");
+
+        assert_eq!(original_report, reversed_report);
+        assert_eq!(
+            original_report.issues(),
+            &[DerivedAdmissionIssueV1::DuplicateIdentity {
+                kind: DerivedObjectKindV1::Constitutive
+            }]
+        );
+    });
+}
+
+#[test]
+fn preflight_rank_refusal_is_permutation_stable() {
+    with_cx(|cx| {
+        let mut original = regular_linkage();
+        original.complexes[0].spaces[0].dimension = 3;
+        original.complexes[0].spaces[1].dimension = 3;
+        original.complexes[0].resolution.max_basis_dimension = 3;
+        original.complexes[1].spaces[0].dimension = 2;
+        original.complexes[1].spaces[1].dimension = 2;
+
+        let mut reversed = original.clone();
+        reversed.complexes.reverse();
+        let budget = DerivedAdmissionBudgetV1 {
+            max_total_rank: 4,
+            ..DerivedAdmissionBudgetV1::STANDARD
+        };
+
+        let original_report = admit_derived_geometry_v1(original, budget, cx)
+            .expect_err("rank excess must refuse before sorting");
+        let reversed_report = admit_derived_geometry_v1(reversed, budget, cx)
+            .expect_err("permuted rank excess must refuse identically");
+
+        assert_eq!(original_report, reversed_report);
+        assert_eq!(
+            original_report.issues(),
+            &[DerivedAdmissionIssueV1::ResourceLimit {
+                kind: DerivedObjectKindV1::Complex,
+                requested: 5,
+                limit: 4,
+            }]
         );
     });
 }

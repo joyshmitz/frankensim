@@ -131,13 +131,16 @@ fs-ivl, fs-alloc, fs-obs, fs-sparse.
   local links, and proof-state metadata. Equality, inequality, contact, and
   constitutive IDs are nominally different Rust types and live in different
   collections; matching digest bytes cannot interchange their roles.
-  `admit_derived_geometry_v1(ir, budget, &Cx)` checks collection/rank/identity
-  ceilings before canonical sorting, rejects unbounded or infinite-dimensional
-  locality, opaque/infinite computation, unsupported analytic callbacks,
+  `admit_derived_geometry_v1(ir, budget, &Cx)` checks collection and aggregate
+  rank ceilings before canonical sorting, rejects declared or observed basis
+  dimensions above the absolute finite-dimension ceiling, and rejects unbounded
+  or infinite-dimensional locality, opaque/infinite computation, unsupported
+  analytic callbacks,
   unordered complex inequality/contact semantics, mixed frames/units without
   an explicit successor morphism, malformed complexes/references/incidences,
-  and invalid proof scope. It polls cancellation per finite object and while
-  streaming identity bytes. Success returns an opaque
+  and invalid proof scope. It polls cancellation at a fixed nested-rank stride,
+  between every canonical sort, per finite object, and while streaming identity
+  bytes. Success returns an opaque
   `AdmittedDerivedGeometryV1` with canonically ordered IR and an fs-blake3
   `IdentityReceipt<DerivedGeometryIdV1>`; the receipt is content-addressed
   structural admission, not a theorem or physical-validity certificate.
@@ -423,11 +426,14 @@ fs-ivl, fs-alloc, fs-obs, fs-sparse.
    and admits a finite `SamplingDomain` before evaluating charts. Unbounded
    geometry requires explicit finite scope; bounded disjoint pairs remain
    ordinary no-overlap rather than errors.
-7. RD.1a admission is finite and type preserving: resource limits are checked
-   before sorting, canonical order is independent of input collection order,
-   every reference resolves within its nominal family, active local-model
-   references resolve only to `Active` inequalities/contacts, local links bind
-   real incidence edges with `dim(link) + 1 = codim`, and ordered
+7. RD.1a admission is finite and type preserving: collection counts and
+   aggregate rank are checked before sorting; dimension and canonical-byte
+   ceilings are enforced before publication. Canonical order is independent of
+   input collection order. Duplicate identity families stop at a fixed-order
+   ambiguity barrier before per-record validation; every reference resolves
+   within its nominal family, active local-model references resolve only to
+   `Active` inequalities/contacts, local links bind real incidence edges with
+   `dim(link) + 1 = codim`, and ordered
    inequality/contact semantics never admit complex coefficients. The typed
    BLAKE3 receipt binds all semantic fields and the immutable model version.
    Graded spaces are contiguous (including explicit zero-dimensional degrees),
@@ -447,18 +453,21 @@ shape/index preconditions on caller-built skeletons; their total, budgeted
 `Result` replacements remain required before promotion. The base
 `SheafComplex` incidence and section APIs are now structured refusals for
 malformed/oversized raw parts. RD.1a uses `DerivedAdmissionReportV1`:
-unsupported schema/category/scope/encoding, typed-reference defects, mixed
-units/frames, finite-complex and stratification defects, resource exhaustion,
-cancellation, and canonical identity failures publish no admitted token.
+unsupported schema/category/scope/encoding, typed-reference defects, explicit
+cross-chart references, mixed units/frames, finite-complex and stratification
+defects, resource exhaustion, cancellation, and canonical identity failures
+publish no admitted token.
 
 ## Determinism class
 Deterministic: seeded sampling, insertion-ordered charts, canonical JSON
 renderings; no clocks, no addresses. Float behavior inherits
 fs-math-class scalar arithmetic. RD.1a sorts every set-valued object collection
 by nominal identity, uses an unambiguous length-framed nested encoding and the
-shared schema-typed BLAKE3 canonical encoder, and retains exact f64 unit/contact
-coefficient bits. Reordering input collections does not move identity; changing
-category, coefficients, units, frame, model version, local singular class,
+shared schema-typed BLAKE3 canonical encoder, stops duplicate identity families
+at a deterministic ambiguity barrier, and retains exact f64 unit/contact
+coefficient bits. Negative-zero Coulomb coefficients are refused as
+noncanonical input. Reordering input collections does not move identity;
+changing category, coefficients, units, frame, model version, local singular class,
 stratification, or proof metadata does.
 
 ## Cancellation behavior
@@ -471,10 +480,13 @@ Incidence assembly, mismatch assessment/section solve, Hodge/repair, and merge
 diagnostics do not yet accept `Cx`; base-complex work is statically bounded and
 fallibly allocated, but these APIs are not P7-complete. Chart-local polls remain
 an additional inner-kernel obligation. RD.1a admission takes `&Cx`, checks it
-before sorting, once per chart/constraint/complex/local-model/stratum/incidence/
-link, during nested canonical item encoding, inside the streaming identity
-encoder, and immediately before publication. Cancellation returns a stage and
-completed-object count and cannot expose a partial admitted object.
+before sorting, at a fixed stride while preflighting nested graded spaces, after
+every bounded canonical sort, once per duplicate identity family, once per
+chart/constraint/complex/local-model/stratum/incidence/link, during nested
+canonical item encoding, inside the
+streaming identity encoder, and immediately before publication. Cancellation
+returns a stage and completed-work count and cannot expose a partial admitted
+object.
 RD.X1 statement admission polls before validation, once for every derived
 theorem-lattice node, before identity construction, and inside the streaming
 encoder. Its falsifier set and truncation lattice have hard versioned caps;
@@ -531,8 +543,12 @@ models, relative boundary/contact-corner/local-link typing, active-set refusal,
 mixed-unit and real/complex category mutations, admitted restricted-analytic
 programs versus opaque callback refusal, unbounded/infinite model refusal,
 complex-role and incidence/link mutations, resource caps, proof-scope refusal,
-cross-chart reference refusal, negative-zero contact-coefficient refusal,
-model-version identity movement, and pre-publication cancellation.
+cross-chart reference refusal, permutation-stable ambiguous-duplicate reports,
+permutation-stable fail-fast rank refusal, negative-zero contact and unit-scale
+refusal, declared basis-dimension and local-link overflow refusal, model-version
+identity movement, and pre-publication cancellation. The `derived` module's
+private unit suite injects
+mid-canonicalization cancellation deterministically without timing races.
 `tests/exit_path.rs` supplies RD.X1 G0/G3 examples and a bounded-cancellation
 regression: regular-cell poset sufficiency, cone/cusp groupoid-enriched
 one-category fallback, circular-stratum local systems, finite-versus-full

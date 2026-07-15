@@ -39,6 +39,8 @@ pub const DERIVED_GEOMETRY_HARD_MAX_DIMENSION_V1: u32 = 1 << 20;
 pub const DERIVED_GEOMETRY_HARD_MAX_CANONICAL_BYTES_V1: u64 = 1 << 24;
 /// Absolute single-field byte ceiling.
 pub const DERIVED_GEOMETRY_HARD_MAX_FIELD_BYTES_V1: u64 = 1 << 23;
+/// Maximum number of nested rank entries processed between cancellation polls.
+const DERIVED_GEOMETRY_CANCELLATION_STRIDE_V1: usize = 64;
 
 trait DigestBytes {
     fn digest_bytes(&self) -> &[u8; 32];
@@ -569,7 +571,8 @@ pub struct RelativeBoundaryV1 {
 pub enum ContactLawV1 {
     /// Frictionless unilateral contact.
     Frictionless,
-    /// Coulomb cone with finite nonnegative coefficient.
+    /// Coulomb cone with a finite nonnegative coefficient. Negative zero is a
+    /// noncanonical input and is refused.
     Coulomb {
         /// Friction coefficient.
         friction_coefficient: f64,
@@ -681,7 +684,8 @@ pub struct FiniteResolutionV1 {
     pub min_degree: i16,
     /// Highest retained degree.
     pub max_degree: i16,
-    /// Maximum admitted basis dimension in one degree.
+    /// Maximum admitted basis dimension in one degree. This declaration must
+    /// not exceed [`DERIVED_GEOMETRY_HARD_MAX_DIMENSION_V1`].
     pub max_basis_dimension: u32,
     /// Zero means no series truncation; positive values require remainder.
     pub truncation_order: u32,
@@ -843,7 +847,7 @@ pub struct LocalLinkV1 {
     pub stratum: StratumIdV1,
     /// Higher ambient stratum.
     pub ambient_stratum: StratumIdV1,
-    /// Link dimension, normally codimension - 1.
+    /// Link dimension; admission requires `dimension + 1 == codimension`.
     pub dimension: u32,
     /// Compact-link witness.
     pub compactness_witness: DerivedWitnessIdV1,
@@ -1046,7 +1050,7 @@ pub enum DerivedAdmissionIssueV1 {
     ResourceLimit {
         /// Collection/resource family.
         kind: DerivedObjectKindV1,
-        /// Requested amount.
+        /// Requested amount or the first fail-fast lower bound proving excess.
         requested: u64,
         /// Budget/hard limit.
         limit: u64,
@@ -1126,6 +1130,14 @@ pub enum DerivedAdmissionIssueV1 {
         /// Stable reference field.
         field: &'static str,
     },
+    /// A typed reference resolves, but crosses chart ownership without an
+    /// admitted RD.1b transition map.
+    CrossChartReference {
+        /// Object family owning the reference.
+        kind: DerivedObjectKindV1,
+        /// Stable reference field.
+        field: &'static str,
+    },
     /// A local model calls a candidate/inactive constraint active.
     ActiveSetMismatch {
         /// Inequality or contact family.
@@ -1157,14 +1169,14 @@ pub enum DerivedAdmissionIssueV1 {
     Cancelled {
         /// Stable validation stage.
         stage: &'static str,
-        /// Fully processed objects in that stage.
+        /// Fully processed deterministic work units in that stage.
         completed: usize,
     },
     /// Canonical identity construction failed.
     Identity(CanonicalError),
 }
 
-/// Complete deterministic refusal report.
+/// Deterministic fail-closed refusal report.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DerivedAdmissionReportV1 {
     issues: Vec<DerivedAdmissionIssueV1>,
@@ -1237,11 +1249,13 @@ impl AdmittedDerivedGeometryV1 {
 
 /// Validate, canonicalize, and content-address one finite RD.1a object.
 ///
-/// All resource ceilings are checked before sorting. Preflight, validation, and
-/// canonical item loops poll the supplied execution context; each uninterruptible
-/// sort or nested item loop remains bounded by the admitted collection ceiling.
-/// Canonical identity construction adapts the same context to the streaming
-/// encoder. No partial admitted value escapes on error or cancellation.
+/// Collection counts and aggregate rank are checked before sorting; dimensional
+/// and canonical-byte ceilings are enforced in validation and identity
+/// construction. Preflight, canonicalization, validation, and canonical item
+/// loops poll the supplied execution context; each uninterruptible sort or
+/// nested item loop remains bounded by the admitted collection ceiling. Canonical
+/// identity construction adapts the same context to the streaming encoder. No
+/// partial admitted value escapes on error or cancellation.
 ///
 /// # Errors
 /// Returns [`DerivedAdmissionReportV1`] for any unsupported category/scope,
@@ -1256,7 +1270,7 @@ pub fn admit_derived_geometry_v1(
 ) -> Result<AdmittedDerivedGeometryV1, DerivedAdmissionReportV1> {
     validate_budget(budget)?;
     preflight_collections(&ir, budget, cx)?;
-    canonicalize_ir(&mut ir);
+    canonicalize_ir(&mut ir, cx)?;
 
     let mut issues = Vec::new();
     if ir.schema_version != DERIVED_GEOMETRY_SCHEMA_VERSION_V1 {
@@ -1264,6 +1278,11 @@ pub fn admit_derived_geometry_v1(
             found: ir.schema_version,
             supported: DERIVED_GEOMETRY_SCHEMA_VERSION_V1,
         });
+    }
+    let issues_before_duplicate_check = issues.len();
+    collect_duplicate_identity_issues(&ir, cx, &mut issues)?;
+    if issues.len() != issues_before_duplicate_check {
+        return Err(DerivedAdmissionReportV1::new(issues));
     }
     validate_global_context(&ir, &mut issues);
     validate_charts(&ir, cx, &mut issues)?;
@@ -1333,7 +1352,7 @@ fn enforce_count(
         return Err(DerivedAdmissionReportV1::one(
             DerivedAdmissionIssueV1::ResourceLimit {
                 kind,
-                requested: found as u64,
+                requested: budget.max_objects as u64 + 1,
                 limit: budget.max_objects as u64,
             },
         ));
@@ -1373,6 +1392,7 @@ fn preflight_collections(
     }
 
     let mut total_rank = 0u64;
+    let mut completed_spaces = 0usize;
     for (completed, complex) in ir.complexes.iter().enumerate() {
         checkpoint(cx, "preflight", completed)?;
         enforce_count(DerivedObjectKindV1::Complex, complex.spaces.len(), budget)?;
@@ -1382,6 +1402,9 @@ fn preflight_collections(
             budget,
         )?;
         for space in &complex.spaces {
+            if completed_spaces.is_multiple_of(DERIVED_GEOMETRY_CANCELLATION_STRIDE_V1) {
+                checkpoint(cx, "preflight-rank", completed_spaces)?;
+            }
             total_rank = total_rank
                 .checked_add(u64::from(space.dimension))
                 .ok_or_else(|| {
@@ -1391,6 +1414,16 @@ fn preflight_collections(
                         limit: budget.max_total_rank,
                     })
                 })?;
+            completed_spaces += 1;
+            if total_rank > budget.max_total_rank {
+                return Err(DerivedAdmissionReportV1::one(
+                    DerivedAdmissionIssueV1::ResourceLimit {
+                        kind: DerivedObjectKindV1::Complex,
+                        requested: budget.max_total_rank + 1,
+                        limit: budget.max_total_rank,
+                    },
+                ));
+            }
         }
     }
     for (completed, model) in ir.local_models.iter().enumerate() {
@@ -1417,54 +1450,96 @@ fn preflight_collections(
             budget,
         )?;
     }
-    if total_rank > budget.max_total_rank {
-        return Err(DerivedAdmissionReportV1::one(
-            DerivedAdmissionIssueV1::ResourceLimit {
-                kind: DerivedObjectKindV1::Complex,
-                requested: total_rank,
-                limit: budget.max_total_rank,
-            },
-        ));
-    }
     Ok(())
 }
 
-fn canonicalize_ir(ir: &mut DerivedGeometryIrV1) {
+fn canonicalize_ir(
+    ir: &mut DerivedGeometryIrV1,
+    cx: &Cx<'_>,
+) -> Result<(), DerivedAdmissionReportV1> {
+    canonicalize_ir_with(ir, |completed| checkpoint(cx, "canonicalize", completed))
+}
+
+fn canonicalize_ir_with(
+    ir: &mut DerivedGeometryIrV1,
+    mut poll: impl FnMut(usize) -> Result<(), DerivedAdmissionReportV1>,
+) -> Result<(), DerivedAdmissionReportV1> {
+    let mut completed = 0usize;
+    poll(completed)?;
+
     ir.charts.sort_unstable_by_key(|chart| chart.id);
+    completed += 1;
+    poll(completed)?;
     ir.equalities
         .sort_unstable_by_key(|constraint| constraint.id);
+    completed += 1;
+    poll(completed)?;
     ir.inequalities
         .sort_unstable_by_key(|constraint| constraint.id);
+    completed += 1;
+    poll(completed)?;
     ir.boundaries.sort_unstable_by_key(|boundary| boundary.id);
+    completed += 1;
+    poll(completed)?;
     ir.contacts.sort_unstable_by_key(|contact| contact.id);
+    completed += 1;
+    poll(completed)?;
     ir.constitutive_data.sort_unstable_by_key(|datum| datum.id);
+    completed += 1;
+    poll(completed)?;
     for complex in &mut ir.complexes {
         complex.spaces.sort_unstable_by_key(|space| space.degree);
+        completed += 1;
+        poll(completed)?;
         complex
             .differentials
             .sort_unstable_by_key(|map| (map.from_degree, map.to_degree, map.map));
+        completed += 1;
+        poll(completed)?;
     }
     ir.complexes.sort_unstable_by_key(|complex| complex.id);
+    completed += 1;
+    poll(completed)?;
     for model in &mut ir.local_models {
         model.equalities.sort_unstable();
+        completed += 1;
+        poll(completed)?;
         model.active_inequalities.sort_unstable();
+        completed += 1;
+        poll(completed)?;
         model.active_contacts.sort_unstable();
+        completed += 1;
+        poll(completed)?;
         model.constitutive_data.sort_unstable();
+        completed += 1;
+        poll(completed)?;
     }
     ir.local_models.sort_unstable_by_key(|model| model.id);
+    completed += 1;
+    poll(completed)?;
     for stratum in &mut ir.stratification.strata {
         stratum.active_inequalities.sort_unstable();
+        completed += 1;
+        poll(completed)?;
         stratum.active_contacts.sort_unstable();
+        completed += 1;
+        poll(completed)?;
     }
     ir.stratification
         .strata
         .sort_unstable_by_key(|stratum| stratum.id);
+    completed += 1;
+    poll(completed)?;
     ir.stratification
         .incidences
         .sort_unstable_by_key(|incidence| (incidence.lower, incidence.upper));
+    completed += 1;
+    poll(completed)?;
     ir.stratification
         .local_links
         .sort_unstable_by_key(|link| link.id);
+    completed += 1;
+    poll(completed)
 }
 
 fn validate_global_context(ir: &DerivedGeometryIrV1, issues: &mut Vec<DerivedAdmissionIssueV1>) {
@@ -1534,69 +1609,164 @@ fn has_duplicate<T, K: PartialEq>(items: &[T], key: impl Fn(&T) -> K) -> bool {
         .any(|window| key(&window[0]) == key(&window[1]))
 }
 
+fn collect_duplicate_identity_issues(
+    ir: &DerivedGeometryIrV1,
+    cx: &Cx<'_>,
+    issues: &mut Vec<DerivedAdmissionIssueV1>,
+) -> Result<(), DerivedAdmissionReportV1> {
+    scan_duplicate_family(
+        cx,
+        0,
+        &ir.charts,
+        |chart| chart.id,
+        DerivedObjectKindV1::Chart,
+        issues,
+    )?;
+    scan_duplicate_family(
+        cx,
+        1,
+        &ir.equalities,
+        |constraint| constraint.id,
+        DerivedObjectKindV1::Equality,
+        issues,
+    )?;
+    scan_duplicate_family(
+        cx,
+        2,
+        &ir.inequalities,
+        |constraint| constraint.id,
+        DerivedObjectKindV1::Inequality,
+        issues,
+    )?;
+    scan_duplicate_family(
+        cx,
+        3,
+        &ir.boundaries,
+        |boundary| boundary.id,
+        DerivedObjectKindV1::Boundary,
+        issues,
+    )?;
+    scan_duplicate_family(
+        cx,
+        4,
+        &ir.contacts,
+        |contact| contact.id,
+        DerivedObjectKindV1::Contact,
+        issues,
+    )?;
+    scan_duplicate_family(
+        cx,
+        5,
+        &ir.constitutive_data,
+        |datum| datum.id,
+        DerivedObjectKindV1::Constitutive,
+        issues,
+    )?;
+    scan_duplicate_family(
+        cx,
+        6,
+        &ir.complexes,
+        |complex| complex.id,
+        DerivedObjectKindV1::Complex,
+        issues,
+    )?;
+    scan_duplicate_family(
+        cx,
+        7,
+        &ir.local_models,
+        |model| model.id,
+        DerivedObjectKindV1::LocalModel,
+        issues,
+    )?;
+    scan_duplicate_family(
+        cx,
+        8,
+        &ir.stratification.strata,
+        |stratum| stratum.id,
+        DerivedObjectKindV1::Stratum,
+        issues,
+    )?;
+    scan_duplicate_family(
+        cx,
+        9,
+        &ir.stratification.incidences,
+        |edge| (edge.lower, edge.upper),
+        DerivedObjectKindV1::Incidence,
+        issues,
+    )?;
+    scan_duplicate_family(
+        cx,
+        10,
+        &ir.stratification.local_links,
+        |link| link.id,
+        DerivedObjectKindV1::LocalLink,
+        issues,
+    )
+}
+
+fn scan_duplicate_family<T, K: PartialEq>(
+    cx: &Cx<'_>,
+    completed: usize,
+    items: &[T],
+    key: impl Fn(&T) -> K,
+    kind: DerivedObjectKindV1,
+    issues: &mut Vec<DerivedAdmissionIssueV1>,
+) -> Result<(), DerivedAdmissionReportV1> {
+    checkpoint(cx, "duplicate-identities", completed)?;
+    if has_duplicate(items, key) {
+        issues.push(DerivedAdmissionIssueV1::DuplicateIdentity { kind });
+    }
+    Ok(())
+}
+
+fn unique_by_key<T, K: Copy + Ord>(items: &[T], target: K, key: impl Fn(&T) -> K) -> Option<&T> {
+    let first = items.partition_point(|item| key(item) < target);
+    let value = items.get(first)?;
+    if key(value) != target || items.get(first + 1).is_some_and(|next| key(next) == target) {
+        return None;
+    }
+    Some(value)
+}
+
 fn has_chart(ir: &DerivedGeometryIrV1, id: ConfigurationChartIdV1) -> bool {
-    ir.charts
-        .binary_search_by_key(&id, |chart| chart.id)
-        .is_ok()
+    unique_by_key(&ir.charts, id, |chart| chart.id).is_some()
 }
 
 fn inequality(
     ir: &DerivedGeometryIrV1,
     id: InequalityConstraintIdV1,
 ) -> Option<&InequalityConstraintGermV1> {
-    ir.inequalities
-        .binary_search_by_key(&id, |constraint| constraint.id)
-        .ok()
-        .map(|index| &ir.inequalities[index])
+    unique_by_key(&ir.inequalities, id, |constraint| constraint.id)
 }
 
 fn boundary(ir: &DerivedGeometryIrV1, id: RelativeBoundaryIdV1) -> Option<&RelativeBoundaryV1> {
-    ir.boundaries
-        .binary_search_by_key(&id, |boundary| boundary.id)
-        .ok()
-        .map(|index| &ir.boundaries[index])
+    unique_by_key(&ir.boundaries, id, |boundary| boundary.id)
 }
 
 fn contact(ir: &DerivedGeometryIrV1, id: ContactConstraintIdV1) -> Option<&ContactConstraintV1> {
-    ir.contacts
-        .binary_search_by_key(&id, |contact| contact.id)
-        .ok()
-        .map(|index| &ir.contacts[index])
+    unique_by_key(&ir.contacts, id, |contact| contact.id)
 }
 
 fn constitutive(
     ir: &DerivedGeometryIrV1,
     id: ConstitutiveDatumIdV1,
 ) -> Option<&ConstitutiveDatumV1> {
-    ir.constitutive_data
-        .binary_search_by_key(&id, |datum| datum.id)
-        .ok()
-        .map(|index| &ir.constitutive_data[index])
+    unique_by_key(&ir.constitutive_data, id, |datum| datum.id)
 }
 
 fn complex(ir: &DerivedGeometryIrV1, id: DerivedComplexIdV1) -> Option<&FiniteDerivedComplexV1> {
-    ir.complexes
-        .binary_search_by_key(&id, |complex| complex.id)
-        .ok()
-        .map(|index| &ir.complexes[index])
+    unique_by_key(&ir.complexes, id, |complex| complex.id)
 }
 
 fn local_model(
     ir: &DerivedGeometryIrV1,
     id: DerivedLocalModelIdV1,
 ) -> Option<&DerivedLocalModelV1> {
-    ir.local_models
-        .binary_search_by_key(&id, |model| model.id)
-        .ok()
-        .map(|index| &ir.local_models[index])
+    unique_by_key(&ir.local_models, id, |model| model.id)
 }
 
 fn stratum(ir: &DerivedGeometryIrV1, id: StratumIdV1) -> Option<&StratumSpecV1> {
-    ir.stratification
-        .strata
-        .binary_search_by_key(&id, |stratum| stratum.id)
-        .ok()
-        .map(|index| &ir.stratification.strata[index])
+    unique_by_key(&ir.stratification.strata, id, |stratum| stratum.id)
 }
 
 fn check_unit(
@@ -1627,10 +1797,7 @@ fn check_locality(
 ) {
     match locality {
         LocalityScopeV1::GermAt { chart, point } => {
-            if charts
-                .binary_search_by_key(&chart, |candidate| candidate.id)
-                .is_err()
-            {
+            if unique_by_key(charts, chart, |candidate| candidate.id).is_none() {
                 issues.push(DerivedAdmissionIssueV1::MissingReference {
                     kind,
                     field: "locality_chart",
@@ -1644,10 +1811,7 @@ fn check_locality(
             }
         }
         LocalityScopeV1::CompactNeighborhood { chart, witness } => {
-            if charts
-                .binary_search_by_key(&chart, |candidate| candidate.id)
-                .is_err()
-            {
+            if unique_by_key(charts, chart, |candidate| candidate.id).is_none() {
                 issues.push(DerivedAdmissionIssueV1::MissingReference {
                     kind,
                     field: "locality_chart",
@@ -1838,10 +2002,7 @@ fn check_function(
 }
 
 fn chart_dimension(ir: &DerivedGeometryIrV1, id: ConfigurationChartIdV1) -> Option<u32> {
-    ir.charts
-        .binary_search_by_key(&id, |chart| chart.id)
-        .ok()
-        .map(|index| ir.charts[index].coordinate_dimension)
+    unique_by_key(&ir.charts, id, |chart| chart.id).map(|chart| chart.coordinate_dimension)
 }
 
 fn chart_class_matches(category: GeometricCategoryV1, class: ConfigurationChartClassV1) -> bool {
@@ -1920,10 +2081,12 @@ fn validate_charts(
             | LocalityScopeV1::CompactNeighborhood { chart: owner, .. }
                 if owner != chart.id =>
             {
-                issues.push(DerivedAdmissionIssueV1::MissingReference {
-                    kind: DerivedObjectKindV1::Chart,
-                    field: "self_locality_chart",
-                });
+                if has_chart(ir, owner) {
+                    issues.push(DerivedAdmissionIssueV1::CrossChartReference {
+                        kind: DerivedObjectKindV1::Chart,
+                        field: "self_locality_chart",
+                    });
+                }
             }
             LocalityScopeV1::GermAt { .. }
             | LocalityScopeV1::CompactNeighborhood { .. }
@@ -2115,17 +2278,27 @@ fn validate_constraints(
         }
         let parent = stratum(ir, boundary.parent);
         let boundary_stratum = stratum(ir, boundary.boundary);
-        if boundary.parent == boundary.boundary || parent.is_none() || boundary_stratum.is_none() {
+        if boundary.parent == boundary.boundary {
             issues.push(DerivedAdmissionIssueV1::MissingReference {
                 kind: DerivedObjectKindV1::Boundary,
                 field: "strata",
             });
-        } else if parent.is_some_and(|value| value.chart != boundary.chart)
-            || boundary_stratum.is_some_and(|value| value.chart != boundary.chart)
-        {
-            issues.push(DerivedAdmissionIssueV1::MixedFrame {
-                kind: DerivedObjectKindV1::Boundary,
-            });
+        } else {
+            for (stratum, field) in [(parent, "parent"), (boundary_stratum, "boundary")] {
+                match stratum {
+                    None => issues.push(DerivedAdmissionIssueV1::MissingReference {
+                        kind: DerivedObjectKindV1::Boundary,
+                        field,
+                    }),
+                    Some(value) if value.chart != boundary.chart => {
+                        issues.push(DerivedAdmissionIssueV1::CrossChartReference {
+                            kind: DerivedObjectKindV1::Boundary,
+                            field,
+                        });
+                    }
+                    Some(_) => {}
+                }
+            }
         }
         if let BoundaryOrientationV1::Unoriented { no_claim } = boundary.orientation
             && no_claim.is_zero()
@@ -2158,20 +2331,28 @@ fn validate_constraints(
             });
             continue;
         };
-        if contact.side_a == contact.side_b
-            || boundary(ir, contact.side_a).is_none()
-            || boundary(ir, contact.side_b).is_none()
-        {
+        if contact.side_a == contact.side_b {
             issues.push(DerivedAdmissionIssueV1::MissingReference {
                 kind: DerivedObjectKindV1::Contact,
                 field: "contact_sides",
             });
         }
-        for side in [boundary(ir, contact.side_a), boundary(ir, contact.side_b)] {
-            if side.is_some_and(|value| value.chart != contact.chart) {
-                issues.push(DerivedAdmissionIssueV1::MixedFrame {
+        for (side, field) in [
+            (boundary(ir, contact.side_a), "side_a"),
+            (boundary(ir, contact.side_b), "side_b"),
+        ] {
+            match side {
+                None => issues.push(DerivedAdmissionIssueV1::MissingReference {
                     kind: DerivedObjectKindV1::Contact,
-                });
+                    field,
+                }),
+                Some(value) if value.chart != contact.chart => {
+                    issues.push(DerivedAdmissionIssueV1::CrossChartReference {
+                        kind: DerivedObjectKindV1::Contact,
+                        field,
+                    });
+                }
+                Some(_) => {}
             }
         }
         check_function(
@@ -2330,6 +2511,7 @@ fn validate_complexes(
         if first_degree != Some(complex.resolution.min_degree)
             || last_degree != Some(complex.resolution.max_degree)
             || complex.resolution.min_degree > complex.resolution.max_degree
+            || complex.resolution.max_basis_dimension > DERIVED_GEOMETRY_HARD_MAX_DIMENSION_V1
             || complex.resolution.max_basis_dimension < maximum_dimension
         {
             issues.push(DerivedAdmissionIssueV1::InvalidComplex {
@@ -2360,14 +2542,14 @@ fn validate_complexes(
                 .from_degree
                 .checked_add(1)
                 .is_some_and(|next| next == differential.to_degree);
-            let source_exists = complex
-                .spaces
-                .binary_search_by_key(&differential.from_degree, |space| space.degree)
-                .is_ok();
-            let target_exists = complex
-                .spaces
-                .binary_search_by_key(&differential.to_degree, |space| space.degree)
-                .is_ok();
+            let source_exists = unique_by_key(&complex.spaces, differential.from_degree, |space| {
+                space.degree
+            })
+            .is_some();
+            let target_exists = unique_by_key(&complex.spaces, differential.to_degree, |space| {
+                space.degree
+            })
+            .is_some();
             if !adjacent || !source_exists || !target_exists {
                 issues.push(DerivedAdmissionIssueV1::InvalidComplex {
                     field: "differential_degrees",
@@ -2394,8 +2576,16 @@ fn validate_model_complex(
     issues: &mut Vec<DerivedAdmissionIssueV1>,
 ) {
     match complex(ir, id) {
-        Some(value) if value.role == expected && value.chart == model.chart => {}
-        Some(_) => issues.push(DerivedAdmissionIssueV1::ComplexRoleMismatch { field }),
+        Some(value) if value.chart != model.chart => {
+            issues.push(DerivedAdmissionIssueV1::CrossChartReference {
+                kind: DerivedObjectKindV1::LocalModel,
+                field,
+            });
+        }
+        Some(value) if value.role != expected => {
+            issues.push(DerivedAdmissionIssueV1::ComplexRoleMismatch { field });
+        }
+        Some(_) => {}
         None => issues.push(DerivedAdmissionIssueV1::MissingReference {
             kind: DerivedObjectKindV1::LocalModel,
             field,
@@ -2459,10 +2649,12 @@ fn validate_local_models(
             | LocalityScopeV1::CompactNeighborhood { chart, .. }
                 if chart != model.chart =>
             {
-                issues.push(DerivedAdmissionIssueV1::MissingReference {
-                    kind: DerivedObjectKindV1::LocalModel,
-                    field: "locality_chart",
-                });
+                if has_chart(ir, chart) {
+                    issues.push(DerivedAdmissionIssueV1::CrossChartReference {
+                        kind: DerivedObjectKindV1::LocalModel,
+                        field: "locality_chart",
+                    });
+                }
             }
             LocalityScopeV1::GermAt { .. }
             | LocalityScopeV1::CompactNeighborhood { .. }
@@ -2506,16 +2698,17 @@ fn validate_local_models(
 
         let mut equality_codimension = 0u64;
         for equality_id in &model.equalities {
-            match ir
-                .equalities
-                .binary_search_by_key(equality_id, |constraint| constraint.id)
-                .ok()
-                .map(|index| &ir.equalities[index])
-            {
-                Some(equality) if equality.chart == model.chart => {
+            match unique_by_key(&ir.equalities, *equality_id, |constraint| constraint.id) {
+                Some(equality) if equality.chart != model.chart => {
+                    issues.push(DerivedAdmissionIssueV1::CrossChartReference {
+                        kind: DerivedObjectKindV1::LocalModel,
+                        field: "equality",
+                    });
+                }
+                Some(equality) => {
                     equality_codimension += u64::from(equality.codomain_dimension);
                 }
-                _ => issues.push(DerivedAdmissionIssueV1::MissingReference {
+                None => issues.push(DerivedAdmissionIssueV1::MissingReference {
                     kind: DerivedObjectKindV1::LocalModel,
                     field: "equality",
                 }),
@@ -2523,9 +2716,13 @@ fn validate_local_models(
         }
         for inequality_id in &model.active_inequalities {
             match inequality(ir, *inequality_id) {
-                Some(value)
-                    if value.chart == model.chart
-                        && matches!(value.state, ActiveSetStateV1::Active { .. }) => {}
+                Some(value) if value.chart != model.chart => {
+                    issues.push(DerivedAdmissionIssueV1::CrossChartReference {
+                        kind: DerivedObjectKindV1::LocalModel,
+                        field: "active_inequality",
+                    });
+                }
+                Some(value) if matches!(value.state, ActiveSetStateV1::Active { .. }) => {}
                 Some(_) => issues.push(DerivedAdmissionIssueV1::ActiveSetMismatch {
                     kind: DerivedObjectKindV1::Inequality,
                 }),
@@ -2537,9 +2734,13 @@ fn validate_local_models(
         }
         for contact_id in &model.active_contacts {
             match contact(ir, *contact_id) {
-                Some(value)
-                    if value.chart == model.chart
-                        && matches!(value.state, ActiveSetStateV1::Active { .. }) => {}
+                Some(value) if value.chart != model.chart => {
+                    issues.push(DerivedAdmissionIssueV1::CrossChartReference {
+                        kind: DerivedObjectKindV1::LocalModel,
+                        field: "active_contact",
+                    });
+                }
+                Some(value) if matches!(value.state, ActiveSetStateV1::Active { .. }) => {}
                 Some(_) => issues.push(DerivedAdmissionIssueV1::ActiveSetMismatch {
                     kind: DerivedObjectKindV1::Contact,
                 }),
@@ -2552,8 +2753,9 @@ fn validate_local_models(
         for datum_id in &model.constitutive_data {
             match constitutive(ir, *datum_id) {
                 Some(datum) if datum.chart == model.chart => {}
-                Some(_) => issues.push(DerivedAdmissionIssueV1::MixedFrame {
-                    kind: DerivedObjectKindV1::Constitutive,
+                Some(_) => issues.push(DerivedAdmissionIssueV1::CrossChartReference {
+                    kind: DerivedObjectKindV1::LocalModel,
+                    field: "constitutive_data",
                 }),
                 None => issues.push(DerivedAdmissionIssueV1::MissingReference {
                     kind: DerivedObjectKindV1::LocalModel,
@@ -2642,11 +2844,9 @@ fn incidence(
     lower: StratumIdV1,
     upper: StratumIdV1,
 ) -> Option<&StratumIncidenceV1> {
-    ir.stratification
-        .incidences
-        .binary_search_by_key(&(lower, upper), |edge| (edge.lower, edge.upper))
-        .ok()
-        .map(|index| &ir.stratification.incidences[index])
+    unique_by_key(&ir.stratification.incidences, (lower, upper), |edge| {
+        (edge.lower, edge.upper)
+    })
 }
 
 fn validate_stratification(
@@ -2710,11 +2910,18 @@ fn validate_stratification(
             });
         }
         let model = local_model(ir, stratum.local_model);
-        if model.is_none() || model.is_some_and(|value| value.chart != stratum.chart) {
-            issues.push(DerivedAdmissionIssueV1::MissingReference {
+        match model {
+            None => issues.push(DerivedAdmissionIssueV1::MissingReference {
                 kind: DerivedObjectKindV1::Stratum,
                 field: "local_model",
-            });
+            }),
+            Some(value) if value.chart != stratum.chart => {
+                issues.push(DerivedAdmissionIssueV1::CrossChartReference {
+                    kind: DerivedObjectKindV1::Stratum,
+                    field: "local_model",
+                });
+            }
+            Some(_) => {}
         }
         if model.is_some_and(|value| {
             value.active_inequalities != stratum.active_inequalities
@@ -2724,13 +2931,26 @@ fn validate_stratification(
                 field: "active_set",
             });
         }
-        if stratum.relative_boundary.is_some_and(|boundary_id| {
-            boundary(ir, boundary_id).is_none_or(|value| value.boundary != stratum.id)
-        }) {
-            issues.push(DerivedAdmissionIssueV1::MissingReference {
-                kind: DerivedObjectKindV1::Stratum,
-                field: "relative_boundary",
-            });
+        if let Some(boundary_id) = stratum.relative_boundary {
+            match boundary(ir, boundary_id) {
+                None => issues.push(DerivedAdmissionIssueV1::MissingReference {
+                    kind: DerivedObjectKindV1::Stratum,
+                    field: "relative_boundary",
+                }),
+                Some(value) if value.boundary != stratum.id => {
+                    issues.push(DerivedAdmissionIssueV1::MissingReference {
+                        kind: DerivedObjectKindV1::Stratum,
+                        field: "relative_boundary",
+                    });
+                }
+                Some(value) if value.chart != stratum.chart => {
+                    issues.push(DerivedAdmissionIssueV1::CrossChartReference {
+                        kind: DerivedObjectKindV1::Stratum,
+                        field: "relative_boundary",
+                    });
+                }
+                Some(_) => {}
+            }
         }
         check_regularity(stratum.regularity, DerivedObjectKindV1::Stratum, issues);
         check_compactness(stratum.compactness, DerivedObjectKindV1::Stratum, issues);
@@ -2740,28 +2960,40 @@ fn validate_stratification(
         checkpoint(cx, "incidences", completed)?;
         let lower = stratum(ir, edge.lower);
         let upper = stratum(ir, edge.upper);
-        if lower.is_none() || upper.is_none() || edge.witness.is_zero() {
+        if edge.witness.is_zero() {
+            issues.push(DerivedAdmissionIssueV1::MissingIdentity {
+                kind: DerivedObjectKindV1::Incidence,
+                field: "witness",
+            });
+        }
+        if lower.is_none() {
             issues.push(DerivedAdmissionIssueV1::MissingReference {
                 kind: DerivedObjectKindV1::Incidence,
-                field: "strata_or_witness",
-            });
-            continue;
-        }
-        let lower_dimension = lower.map_or(0, |value| value.dimension);
-        let upper_dimension = upper.map_or(0, |value| value.dimension);
-        if lower.is_some_and(|value| upper.is_some_and(|other| value.chart != other.chart)) {
-            issues.push(DerivedAdmissionIssueV1::InvalidStratification {
-                field: "incidence_chart",
+                field: "lower",
             });
         }
-        if edge.lower == edge.upper
-            || lower_dimension >= upper_dimension
-            || upper_dimension - lower_dimension != edge.codimension
-            || edge.codimension == 0
-        {
-            issues.push(DerivedAdmissionIssueV1::InvalidStratification {
-                field: "incidence_dimension",
+        if upper.is_none() {
+            issues.push(DerivedAdmissionIssueV1::MissingReference {
+                kind: DerivedObjectKindV1::Incidence,
+                field: "upper",
             });
+        }
+        if let (Some(lower), Some(upper)) = (lower, upper) {
+            if lower.chart != upper.chart {
+                issues.push(DerivedAdmissionIssueV1::CrossChartReference {
+                    kind: DerivedObjectKindV1::Incidence,
+                    field: "lower_upper",
+                });
+            }
+            if edge.lower == edge.upper
+                || lower.dimension >= upper.dimension
+                || upper.dimension - lower.dimension != edge.codimension
+                || edge.codimension == 0
+            {
+                issues.push(DerivedAdmissionIssueV1::InvalidStratification {
+                    field: "incidence_dimension",
+                });
+            }
         }
     }
 
@@ -3454,4 +3686,71 @@ fn derived_geometry_receipt(
     .bytes(Field::new(12, "stratification"), &stratification)?
     .bytes(Field::new(13, "proof-state"), &proof_state)?
     .finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_ir() -> DerivedGeometryIrV1 {
+        let zero = [0; 32];
+        DerivedGeometryIrV1 {
+            schema_version: DERIVED_GEOMETRY_SCHEMA_VERSION_V1,
+            subject: DerivedSubjectIdV1::from_bytes(zero),
+            model_version: DerivedModelVersionIdV1::from_bytes(zero),
+            category: GeometricCategoryV1::Semialgebraic,
+            coefficients: CoefficientSystemV1::RationalReal,
+            frame: DerivedFrameIdV1::from_bytes(zero),
+            unit_system: DerivedUnitSystemIdV1::from_bytes(zero),
+            locality: LocalityScopeV1::GlobalUnbounded,
+            compactness: CompactnessV1::Unknown,
+            charts: Vec::new(),
+            equalities: Vec::new(),
+            inequalities: Vec::new(),
+            boundaries: Vec::new(),
+            contacts: Vec::new(),
+            constitutive_data: Vec::new(),
+            complexes: Vec::new(),
+            local_models: Vec::new(),
+            stratification: StratificationV1 {
+                id: StratificationIdV1::from_bytes(zero),
+                class: StratificationClassV1::FiniteIncidence,
+                strata: Vec::new(),
+                incidences: Vec::new(),
+                local_links: Vec::new(),
+            },
+            proof_state: DerivedProofStateV1::StructuralNoClaim {
+                no_claim: DerivedNoClaimIdV1::from_bytes(zero),
+            },
+        }
+    }
+
+    #[test]
+    fn canonicalization_propagates_a_mid_sequence_cancellation() {
+        let mut ir = empty_ir();
+        let mut observed = Vec::new();
+        let report = canonicalize_ir_with(&mut ir, |completed| {
+            observed.push(completed);
+            if completed == 3 {
+                Err(DerivedAdmissionReportV1::one(
+                    DerivedAdmissionIssueV1::Cancelled {
+                        stage: "canonicalize",
+                        completed,
+                    },
+                ))
+            } else {
+                Ok(())
+            }
+        })
+        .expect_err("injected canonicalization cancellation must propagate");
+
+        assert_eq!(observed, vec![0, 1, 2, 3]);
+        assert_eq!(
+            report.issues(),
+            &[DerivedAdmissionIssueV1::Cancelled {
+                stage: "canonicalize",
+                completed: 3,
+            }]
+        );
+    }
 }
