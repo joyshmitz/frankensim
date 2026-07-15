@@ -254,6 +254,18 @@ solver without a passing gradient check cannot merge.
 
 ## Error model
 
+DWR-accept budget contract (bead sj31i.6): `Bracket::cauchy_schwarz`,
+`accept`, and `dwr_integral_qoi` take a caller-supplied deterministic
+`fs_exec::TimeSource` and admit the ambient `cx.budget()` plus the
+preflighted work plan through `fs_exec::AdmittedBudget` before any work
+(one logical work unit = one cost unit): expired deadlines
+(`Budget::ZERO` included) and over-quota cost plans refuse at admission,
+every checkpoint enforces cancellation → deadline → poll quota, and each
+advanced work unit charges cost. Poll/deadline/cost exhaustion is a
+typed `DwrError::BudgetRefused`/`BracketError::BudgetRefused` retaining
+the accountant's refusal verbatim; real cancellation keeps the
+structured `Cancelled` shape with exact completed/planned work.
+
 The hardened public certificate, DWR, and explanation paths return structured
 `GradientCertError`, `DwrError`, and `ExplanationError` refusals for malformed
 inputs, resource caps, invalid indices, unrepresentable perturbations,

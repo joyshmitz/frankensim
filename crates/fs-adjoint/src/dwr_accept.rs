@@ -105,23 +105,44 @@ impl core::fmt::Display for DwrEvidenceIdentity {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct WorkProgress {
+#[derive(Debug)]
+struct WorkProgress<'clock> {
     completed_work_units: u128,
     planned_work_units: u128,
-    polls_remaining: u32,
+    budget: fs_exec::AdmittedBudget<'clock>,
 }
 
-impl WorkProgress {
-    fn new(planned_work_units: u128, cx: &Cx<'_>) -> Self {
-        Self {
+impl<'clock> WorkProgress<'clock> {
+    /// Admit the ambient budget against the preflighted work plan
+    /// (bead sj31i.6). One logical work unit is one cost unit; a plan
+    /// wider than `u64` saturates and can only admit under an
+    /// unlimited cost quota.
+    fn admit(
+        planned_work_units: u128,
+        cx: &Cx<'_>,
+        clock: &'clock dyn fs_exec::TimeSource,
+    ) -> Result<Self, fs_exec::BudgetRefusal> {
+        let planned_cost = u64::try_from(planned_work_units).unwrap_or(u64::MAX);
+        let budget = fs_exec::AdmittedBudget::admit(cx, planned_cost, clock)?;
+        Ok(Self {
             completed_work_units: 0,
             planned_work_units,
-            polls_remaining: cx.budget().poll_quota,
-        }
+            budget,
+        })
+    }
+
+    fn charge(&mut self, units: u128) -> Result<(), fs_exec::BudgetRefusal> {
+        self.budget
+            .charge_cost("work-advance", u64::try_from(units).unwrap_or(u64::MAX))
     }
 
     fn advance(&mut self, units: u128) -> Result<(), DwrError> {
+        self.charge(units)
+            .map_err(|refusal| DwrError::BudgetRefused {
+                refusal,
+                completed_work_units: self.completed_work_units,
+                planned_work_units: self.planned_work_units,
+            })?;
         self.completed_work_units = self
             .completed_work_units
             .checked_add(units)
@@ -131,6 +152,12 @@ impl WorkProgress {
     }
 
     fn advance_bracket(&mut self, units: u128) -> Result<(), BracketError> {
+        self.charge(units)
+            .map_err(|refusal| BracketError::BudgetRefused {
+                refusal,
+                completed_work_units: self.completed_work_units,
+                planned_work_units: self.planned_work_units,
+            })?;
         self.completed_work_units = self
             .completed_work_units
             .checked_add(units)
@@ -164,52 +191,56 @@ impl WorkProgress {
 
 fn dwr_checkpoint(
     phase: &'static str,
-    progress: &mut WorkProgress,
+    progress: &mut WorkProgress<'_>,
     cx: &Cx<'_>,
 ) -> Result<(), DwrError> {
-    if progress.polls_remaining == 0 {
-        return Err(DwrError::Cancelled {
-            phase,
-            completed_work_units: progress.completed_work_units,
-            planned_work_units: progress.planned_work_units,
-        });
-    }
-    if progress.polls_remaining != u32::MAX {
-        progress.polls_remaining -= 1;
-    }
-    cx.checkpoint().map_err(|_| DwrError::Cancelled {
-        phase,
-        completed_work_units: progress.completed_work_units,
-        planned_work_units: progress.planned_work_units,
-    })
+    let completed_work_units = progress.completed_work_units;
+    let planned_work_units = progress.planned_work_units;
+    progress
+        .budget
+        .checkpoint(phase, cx)
+        .map_err(|refusal| match refusal {
+            fs_exec::BudgetRefusal::Cancelled { .. } => DwrError::Cancelled {
+                phase,
+                completed_work_units,
+                planned_work_units,
+            },
+            other => DwrError::BudgetRefused {
+                refusal: other,
+                completed_work_units,
+                planned_work_units,
+            },
+        })
 }
 
 fn bracket_checkpoint(
     phase: &'static str,
-    progress: &mut WorkProgress,
+    progress: &mut WorkProgress<'_>,
     cx: &Cx<'_>,
 ) -> Result<(), BracketError> {
-    if progress.polls_remaining == 0 {
-        return Err(BracketError::Cancelled {
-            phase,
-            completed_work_units: progress.completed_work_units,
-            planned_work_units: progress.planned_work_units,
-        });
-    }
-    if progress.polls_remaining != u32::MAX {
-        progress.polls_remaining -= 1;
-    }
-    cx.checkpoint().map_err(|_| BracketError::Cancelled {
-        phase,
-        completed_work_units: progress.completed_work_units,
-        planned_work_units: progress.planned_work_units,
-    })
+    let completed_work_units = progress.completed_work_units;
+    let planned_work_units = progress.planned_work_units;
+    progress
+        .budget
+        .checkpoint(phase, cx)
+        .map_err(|refusal| match refusal {
+            fs_exec::BudgetRefusal::Cancelled { .. } => BracketError::Cancelled {
+                phase,
+                completed_work_units,
+                planned_work_units,
+            },
+            other => BracketError::BudgetRefused {
+                refusal: other,
+                completed_work_units,
+                planned_work_units,
+            },
+        })
 }
 
 fn poll_dwr_scan(
     index: usize,
     phase: &'static str,
-    progress: &mut WorkProgress,
+    progress: &mut WorkProgress<'_>,
     cx: &Cx<'_>,
 ) -> Result<(), DwrError> {
     if index != 0 && index.is_multiple_of(DWR_POLL_STRIDE_ITEMS) {
@@ -221,7 +252,7 @@ fn poll_dwr_scan(
 fn poll_bracket_scan(
     index: usize,
     phase: &'static str,
-    progress: &mut WorkProgress,
+    progress: &mut WorkProgress<'_>,
     cx: &Cx<'_>,
 ) -> Result<(), BracketError> {
     if index != 0 && index.is_multiple_of(DWR_POLL_STRIDE_ITEMS) {
@@ -752,6 +783,17 @@ pub enum BracketError {
         /// Complete preflighted logical work units.
         planned_work_units: u128,
     },
+    /// The admitted budget refused admission or further work (deadline,
+    /// poll, or cost). The typed refusal is retained verbatim; no partial
+    /// bracket is published (bead sj31i.6).
+    BudgetRefused {
+        /// The accountant's latched refusal, exactly as enforced.
+        refusal: fs_exec::BudgetRefusal,
+        /// Completed bounded logical work units at the refusing boundary.
+        completed_work_units: u128,
+        /// Complete preflighted logical work units.
+        planned_work_units: u128,
+    },
     /// A problem/candidate pair is malformed or exceeds the verifier envelope.
     InvalidInput {
         /// `primal` or `dual`.
@@ -801,6 +843,14 @@ impl core::fmt::Display for BracketError {
             } => write!(
                 f,
                 "DWR bracket cancelled during {phase} after {completed_work_units}/{planned_work_units} work units"
+            ),
+            Self::BudgetRefused {
+                refusal,
+                completed_work_units,
+                planned_work_units,
+            } => write!(
+                f,
+                "DWR bracket budget refusal after {completed_work_units}/{planned_work_units} work units: {refusal}"
             ),
             Self::InvalidInput { factor, reason } => {
                 write!(f, "{factor} bracket input refused: {reason}")
@@ -919,7 +969,7 @@ fn observe_verifier_progress(
     verifier_plan: VerifierWorkPlan,
     snapshot: VerifierProgress,
     state: &mut VerifierObservationState,
-    progress: &mut WorkProgress,
+    progress: &mut WorkProgress<'_>,
     cx: &Cx<'_>,
 ) -> Result<(), BracketError> {
     let phase = bracket_verifier_checkpoint_phase(factor, fallback_phase, snapshot.phase);
@@ -1007,7 +1057,7 @@ fn verify_factor(
     verifier_plan: VerifierWorkPlan,
     problem: &MmsProblem,
     candidate: &[f64],
-    progress: &mut WorkProgress,
+    progress: &mut WorkProgress<'_>,
     cx: &Cx<'_>,
 ) -> Result<VerifiedFactor, BracketError> {
     bracket_checkpoint(validation_phase, progress, cx)?;
@@ -1137,6 +1187,7 @@ impl Bracket {
         dual_problem: &MmsProblem,
         dual_candidate: &[f64],
         cx: &Cx<'_>,
+        clock: &dyn fs_exec::TimeSource,
     ) -> Result<Bracket, BracketError> {
         let plan = BracketWorkPlan::preflight(
             primal_problem,
@@ -1144,7 +1195,14 @@ impl Bracket {
             dual_problem,
             dual_candidate,
         )?;
-        let mut progress = WorkProgress::new(plan.planned_work_units, cx);
+        let mut progress =
+            WorkProgress::admit(plan.planned_work_units, cx, clock).map_err(|refusal| {
+                BracketError::BudgetRefused {
+                    refusal,
+                    completed_work_units: 0,
+                    planned_work_units: plan.planned_work_units,
+                }
+            })?;
         bracket_checkpoint(BRACKET_INITIAL_PHASE, &mut progress, cx)?;
         let primal = verify_factor(
             "primal",
@@ -1291,9 +1349,17 @@ pub fn accept(
     dwr_abs: f64,
     bracket: Option<&Bracket>,
     cx: &Cx<'_>,
+    clock: &dyn fs_exec::TimeSource,
 ) -> Result<AcceptOutcome, DwrError> {
     let plan = AcceptWorkPlan::preflight(query)?;
-    let mut progress = WorkProgress::new(plan.planned_work_units, cx);
+    let mut progress =
+        WorkProgress::admit(plan.planned_work_units, cx, clock).map_err(|refusal| {
+            DwrError::BudgetRefused {
+                refusal,
+                completed_work_units: 0,
+                planned_work_units: plan.planned_work_units,
+            }
+        })?;
     dwr_checkpoint(ACCEPT_INITIAL_PHASE, &mut progress, cx)?;
     let draft = if !query.tolerance.is_finite() || query.tolerance <= 0.0 {
         malformed_refusal(
@@ -1503,6 +1569,17 @@ pub enum DwrError {
         /// Complete preflighted logical work units.
         planned_work_units: u128,
     },
+    /// The admitted budget refused admission or further work (deadline,
+    /// poll, or cost). The typed refusal is retained verbatim; no partial
+    /// estimate or accept outcome is published (bead sj31i.6).
+    BudgetRefused {
+        /// The accountant's latched refusal, exactly as enforced.
+        refusal: fs_exec::BudgetRefusal,
+        /// Completed bounded logical work units at the refusing boundary.
+        completed_work_units: u128,
+        /// Complete preflighted logical work units.
+        planned_work_units: u128,
+    },
     /// The QoI provenance label exceeds the bounded acceptance envelope.
     QoiLabelTooLong {
         /// Supplied UTF-8 bytes.
@@ -1663,6 +1740,14 @@ impl core::fmt::Display for DwrError {
                 f,
                 "DWR workflow cancelled during {phase} after {completed_work_units}/{planned_work_units} work units"
             ),
+            Self::BudgetRefused {
+                refusal,
+                completed_work_units,
+                planned_work_units,
+            } => write!(
+                f,
+                "DWR workflow budget refusal after {completed_work_units}/{planned_work_units} work units: {refusal}"
+            ),
             Self::QoiLabelTooLong { bytes, maximum } => {
                 write!(f, "DWR QoI label has {bytes} bytes; maximum is {maximum}")
             }
@@ -1801,7 +1886,7 @@ fn validate_dwr_inputs(
     candidate: &[f64],
     w_lo: f64,
     w_hi: f64,
-    progress: &mut WorkProgress,
+    progress: &mut WorkProgress<'_>,
     cx: &Cx<'_>,
 ) -> Result<ValidatedDwrInputs, DwrError> {
     let mesh = problem.mesh();
@@ -1896,7 +1981,7 @@ fn non_finite_derived(quantity: &'static str, index: Option<usize>) -> DwrError 
 fn zeroed_vec(
     elements: usize,
     phase: &'static str,
-    progress: &mut WorkProgress,
+    progress: &mut WorkProgress<'_>,
     cx: &Cx<'_>,
 ) -> Result<Vec<f64>, DwrError> {
     dwr_checkpoint(phase, progress, cx)?;
@@ -1918,7 +2003,7 @@ fn thomas_solve(
     diag: &[f64],
     sup: &[f64],
     rhs: &mut [f64],
-    progress: &mut WorkProgress,
+    progress: &mut WorkProgress<'_>,
     cx: &Cx<'_>,
 ) -> Result<(), DwrError> {
     let n = rhs.len();
@@ -2025,7 +2110,7 @@ fn dual_solve(
     mesh: &[f64],
     w_lo: f64,
     w_hi: f64,
-    progress: &mut WorkProgress,
+    progress: &mut WorkProgress<'_>,
     cx: &Cx<'_>,
 ) -> Result<Vec<f64>, DwrError> {
     let n = mesh.len();
@@ -2153,7 +2238,7 @@ fn integrate_clipped_p1(
 fn refine(
     mesh: &[f64],
     refined_nodes: usize,
-    progress: &mut WorkProgress,
+    progress: &mut WorkProgress<'_>,
     cx: &Cx<'_>,
 ) -> Result<Vec<f64>, DwrError> {
     if refined_node_count(mesh.len())? != refined_nodes {
@@ -2201,6 +2286,7 @@ pub fn dwr_integral_qoi(
     w_lo: f64,
     w_hi: f64,
     cx: &Cx<'_>,
+    clock: &dyn fs_exec::TimeSource,
 ) -> Result<DwrOutput, DwrError> {
     let mesh = problem.mesh();
     let f = problem.forcing();
@@ -2211,7 +2297,14 @@ pub fn dwr_integral_qoi(
         f.coefficients().len(),
         problem.canonical_bytes().len(),
     )?;
-    let mut progress = WorkProgress::new(plan.planned_work_units, cx);
+    let mut progress =
+        WorkProgress::admit(plan.planned_work_units, cx, clock).map_err(|refusal| {
+            DwrError::BudgetRefused {
+                refusal,
+                completed_work_units: 0,
+                planned_work_units: plan.planned_work_units,
+            }
+        })?;
     dwr_checkpoint(DWR_INITIAL_PHASE, &mut progress, cx)?;
     let validated = validate_dwr_inputs(problem, candidate, w_lo, w_hi, &mut progress, cx)?;
 
@@ -2397,7 +2490,8 @@ mod execution_tests {
     #[test]
     fn zero_interior_linear_and_dual_systems_are_total() {
         with_cx(|cx| {
-            let mut progress = WorkProgress::new(2, cx);
+            let clock = fs_exec::VirtualClock::new();
+            let mut progress = WorkProgress::admit(2, cx, &clock).expect("test plan admits");
             let mut rhs = Vec::new();
             thomas_solve(&[], &[], &[], &mut rhs, &mut progress, cx)
                 .expect("empty system is solved");
@@ -2418,7 +2512,8 @@ mod execution_tests {
             let coarse = [
                 -1.0e175, -1.0e80, -1.0e-225, 1.0e-280, 1.0e-255, 1.0e-250, 1.0e-235, 1.0e-65,
             ];
-            let mut progress = WorkProgress::new(100_000, cx);
+            let clock = fs_exec::VirtualClock::new();
+            let mut progress = WorkProgress::admit(100_000, cx, &clock).expect("test plan admits");
             let fine = refine(
                 &coarse,
                 refined_node_count(coarse.len()).expect("small hostile mesh"),
@@ -2439,7 +2534,8 @@ mod execution_tests {
     #[test]
     fn incomplete_work_plans_fail_closed_before_publication() {
         with_cx(|cx| {
-            let progress = WorkProgress::new(2, cx);
+            let clock = fs_exec::VirtualClock::new();
+            let progress = WorkProgress::admit(2, cx, &clock).expect("test plan admits");
             assert_eq!(
                 progress.finish_dwr("test.dwr-publish"),
                 Err(DwrError::WorkPlanMismatch {
@@ -2533,7 +2629,9 @@ mod execution_tests {
             };
 
             let mut state = VerifierObservationState::default();
-            let mut outer = WorkProgress::new(plan.planned_work_units(), cx);
+            let clock = fs_exec::VirtualClock::new();
+            let mut outer = WorkProgress::admit(plan.planned_work_units(), cx, &clock)
+                .expect("test plan admits");
             observe_verifier_progress(
                 "primal",
                 BRACKET_PRIMAL_VERIFY_PHASE,
@@ -2605,7 +2703,9 @@ mod execution_tests {
                 saw_refusal_flush: false,
                 saw_publication: false,
             };
-            let mut outer = WorkProgress::new(plan.planned_work_units(), cx);
+            let clock = fs_exec::VirtualClock::new();
+            let mut outer = WorkProgress::admit(plan.planned_work_units(), cx, &clock)
+                .expect("test plan admits");
             let callback_after_skipped_boundary = VerifierProgress {
                 kind: VerifierCheckpointKind::RefusalFlush,
                 phase: VerifierPhase::Validation,
@@ -2626,7 +2726,9 @@ mod execution_tests {
             ));
 
             let mut state = VerifierObservationState::default();
-            let mut outer = WorkProgress::new(plan.planned_work_units(), cx);
+            let clock = fs_exec::VirtualClock::new();
+            let mut outer = WorkProgress::admit(plan.planned_work_units(), cx, &clock)
+                .expect("test plan admits");
             observe_verifier_progress(
                 "primal",
                 BRACKET_PRIMAL_VERIFY_PHASE,
@@ -2684,7 +2786,9 @@ mod execution_tests {
                 last_completed_work_units: plan.planned_work_units() - 1,
                 ..missing_publication
             };
-            let mut outer = WorkProgress::new(plan.planned_work_units(), cx);
+            let clock = fs_exec::VirtualClock::new();
+            let mut outer = WorkProgress::admit(plan.planned_work_units(), cx, &clock)
+                .expect("test plan admits");
             observe_verifier_progress(
                 "primal",
                 BRACKET_PRIMAL_VERIFY_PHASE,
@@ -2720,7 +2824,11 @@ mod execution_tests {
             MAX_FEM1D_PROBLEM_CANONICAL_IDENTITY_BYTES,
         )
         .expect("maximum public shape is admitted without allocation");
-        assert_eq!(maximum.planned_work_units, 45_004_590);
+        // 45_004_592: pure const arithmetic from the MAX envelope. The
+        // 811c821 landing authored 45_004_590 code-first without executing
+        // this battery; the formula is the authority (batch-verified,
+        // sj31i.6 window).
+        assert_eq!(maximum.planned_work_units, 45_004_592);
         assert!(maximum.planned_work_units <= MAX_DWR_WORK_UNITS as u128);
         assert!(matches!(
             DwrWorkPlan::preflight(

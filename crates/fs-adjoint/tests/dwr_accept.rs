@@ -14,7 +14,7 @@ use fs_adjoint::dwr_accept::{
 };
 use fs_evidence::Color;
 use fs_evidence::falsify::{FalsifierRegistry, FalsifierSpec};
-use fs_exec::{Budget, CancelGate, Cx, ExecMode, StreamKey};
+use fs_exec::{Budget, BudgetRefusal, CancelGate, Cx, ExecMode, StreamKey, VirtualClock};
 use fs_verify::estimator::{EstimatorFamily, VerifierReport};
 use fs_verify::fem1d::{
     Fem1dError, MAX_FEM1D_CLASS_NAME_BYTES, MAX_FEM1D_MESH_NODES, MAX_FEM1D_POLY_COEFFICIENTS,
@@ -72,11 +72,13 @@ fn dwr_integral_qoi(
     w_lo: f64,
     w_hi: f64,
 ) -> Result<DwrOutput, DwrError> {
-    with_default_cx(|cx| dwr_integral_qoi_with_cx(problem, candidate, w_lo, w_hi, cx))
+    with_default_cx(|cx| {
+        dwr_integral_qoi_with_cx(problem, candidate, w_lo, w_hi, cx, &VirtualClock::new())
+    })
 }
 
 fn accept(query: &DwrQuery, dwr_abs: f64, bracket: Option<&Bracket>) -> AcceptOutcome {
-    with_default_cx(|cx| accept_with_cx(query, dwr_abs, bracket, cx))
+    with_default_cx(|cx| accept_with_cx(query, dwr_abs, bracket, cx, &VirtualClock::new()))
         .expect("healthy DWR acceptance context")
 }
 
@@ -93,6 +95,7 @@ fn cauchy_schwarz(
             dual_problem,
             dual_candidate,
             cx,
+            &VirtualClock::new(),
         )
     })
 }
@@ -663,7 +666,8 @@ fn dwr_refuses_invalid_windows_and_resource_counts_at_owner_boundaries() {
         qoi: "q".repeat(MAX_DWR_QOI_BYTES + 1),
         tolerance: 1.0,
     };
-    let plus_one = with_default_cx(|cx| accept_with_cx(&plus_one_qoi, 0.0, None, cx));
+    let plus_one =
+        with_default_cx(|cx| accept_with_cx(&plus_one_qoi, 0.0, None, cx, &VirtualClock::new()));
     assert!(matches!(
         plus_one,
         Err(DwrError::QoiLabelTooLong {
@@ -703,18 +707,27 @@ fn dwr_refuses_finite_inputs_with_unrepresentable_or_unresolved_derived_arithmet
         })
     ));
 
+    // fs-verify 665d499 canonicalized fem1d meshes to [+0.0, 1.0]; the
+    // fixture keeps its structure — an antisymmetric middle cell with the
+    // window symmetric about the crossing — on dyadic in-domain nodes.
     let cancellation_problem =
-        admitted_problem("zero-cancellation", vec![0.0], vec![-1.0, 0.0, 1.0, 2.0]);
+        admitted_problem("zero-cancellation", vec![0.0], vec![0.0, 0.25, 0.75, 1.0]);
     let exact_cancellation =
-        dwr_integral_qoi(&cancellation_problem, &[0.0, 1.0, -1.0, 0.0], 0.25, 0.75)
+        dwr_integral_qoi(&cancellation_problem, &[0.0, 1.0, -1.0, 0.0], 0.375, 0.625)
             .expect("an exactly symmetric clipped P1 integral is admitted");
     assert_eq!(exact_cancellation.j_primal().to_bits(), 0.0_f64.to_bits());
+    // The unresolved-zero fixture needs BIT-exact cancellation whose zero
+    // the prover cannot certify: the window offsets from the cell edges
+    // are decimal-equal but float-unequal (0.2505 - 0.25 differs from
+    // 0.75 - 0.7495 at the ULP), so `two_diff` symmetry fails while the
+    // subnormal-scale halves still cancel exactly — the same structure the
+    // pre-canonicalization fixture used on [-1, 2].
     assert!(matches!(
         dwr_integral_qoi(
             &cancellation_problem,
             &[0.0, 1.0e-300, -1.0e-300, 0.0],
-            0.0005,
-            0.9995,
+            0.2505,
+            0.7495,
         ),
         Err(DwrError::UnresolvedZeroIntegral {
             quantity: "primal QoI",
@@ -775,8 +788,11 @@ fn g4_hostile_maximum_dwr_shape_preflights_before_initial_cancellation() {
         ExecMode::Deterministic,
         Budget::INFINITE,
         default_stream(),
-        |cx| dwr_integral_qoi_with_cx(&problem, &candidate, 0.25, 0.75, cx),
+        |cx| dwr_integral_qoi_with_cx(&problem, &candidate, 0.25, 0.75, cx, &VirtualClock::new()),
     );
+    // 45_004_590 here vs the in-file 45_004_592 MAX-envelope preflight:
+    // this fixture's canonical identity sits 2 bytes under the envelope
+    // cap; both values are deterministic const arithmetic.
     assert!(matches!(
         cancelled,
         Err(DwrError::Cancelled {
@@ -801,7 +817,7 @@ fn g4_dwr_and_accept_cancellation_are_bounded_and_retryable() {
         ExecMode::Deterministic,
         Budget::INFINITE,
         default_stream(),
-        |cx| dwr_integral_qoi_with_cx(&problem, &candidate, 0.25, 0.75, cx),
+        |cx| dwr_integral_qoi_with_cx(&problem, &candidate, 0.25, 0.75, cx, &VirtualClock::new()),
     );
     assert!(matches!(
         pre_cancelled,
@@ -821,12 +837,24 @@ fn g4_dwr_and_accept_cancellation_are_bounded_and_retryable() {
         ExecMode::Deterministic,
         Budget::INFINITE.with_poll_quota(3),
         default_stream(),
-        |cx| dwr_integral_qoi_with_cx(&stride_problem, &stride_candidate, 0.25, 0.75, cx),
+        |cx| {
+            dwr_integral_qoi_with_cx(
+                &stride_problem,
+                &stride_candidate,
+                0.25,
+                0.75,
+                cx,
+                &VirtualClock::new(),
+            )
+        },
     );
     assert!(matches!(
         stride_cancelled,
-        Err(DwrError::Cancelled {
-            phase: "dwr.validate-candidate",
+        Err(DwrError::BudgetRefused {
+            refusal: BudgetRefusal::PollsExhausted {
+                phase: "dwr.validate-candidate",
+                quota: 3,
+            },
             completed_work_units: 257,
             planned_work_units,
         }) if planned_work_units > 257
@@ -840,18 +868,20 @@ fn g4_dwr_and_accept_cancellation_are_bounded_and_retryable() {
             ExecMode::Deterministic,
             Budget::INFINITE.with_poll_quota(quota),
             default_stream(),
-            |cx| dwr_integral_qoi_with_cx(&problem, &candidate, 0.25, 0.75, cx),
+            |cx| {
+                dwr_integral_qoi_with_cx(&problem, &candidate, 0.25, 0.75, cx, &VirtualClock::new())
+            },
         );
         match attempt {
-            Err(DwrError::Cancelled {
-                phase,
+            Err(DwrError::BudgetRefused {
+                refusal: BudgetRefusal::PollsExhausted { phase, .. },
                 completed_work_units,
                 planned_work_units,
             }) => {
                 assert!(completed_work_units <= planned_work_units);
                 dwr_phases.insert(phase);
                 let retry = dwr_integral_qoi(&problem, &candidate, 0.25, 0.75)
-                    .expect("cancelled DWR leaves no retained state");
+                    .expect("budget-refused DWR leaves no retained state");
                 assert_same_dwr_semantics(&baseline, &retry);
             }
             Ok(output) => {
@@ -883,7 +913,7 @@ fn g4_dwr_and_accept_cancellation_are_bounded_and_retryable() {
         ExecMode::Deterministic,
         Budget::INFINITE,
         default_stream(),
-        |cx| accept_with_cx(&query, baseline.eta().abs(), None, cx),
+        |cx| accept_with_cx(&query, baseline.eta().abs(), None, cx, &VirtualClock::new()),
     );
     assert!(matches!(
         pre_cancelled_accept,
@@ -903,11 +933,11 @@ fn g4_dwr_and_accept_cancellation_are_bounded_and_retryable() {
             ExecMode::Deterministic,
             Budget::INFINITE.with_poll_quota(quota),
             default_stream(),
-            |cx| accept_with_cx(&query, baseline.eta().abs(), None, cx),
+            |cx| accept_with_cx(&query, baseline.eta().abs(), None, cx, &VirtualClock::new()),
         );
         match attempt {
-            Err(DwrError::Cancelled {
-                phase,
+            Err(DwrError::BudgetRefused {
+                refusal: BudgetRefusal::PollsExhausted { phase, .. },
                 completed_work_units,
                 planned_work_units,
             }) => {
@@ -949,15 +979,24 @@ fn g4_identity_hashing_resets_the_poll_stride_between_variable_streams() {
             ExecMode::Deterministic,
             Budget::INFINITE.with_poll_quota(quota),
             default_stream(),
-            |cx| dwr_integral_qoi_with_cx(&problem, &candidate, 0.25, 0.75, cx),
+            |cx| {
+                dwr_integral_qoi_with_cx(&problem, &candidate, 0.25, 0.75, cx, &VirtualClock::new())
+            },
         );
         match attempt {
-            Err(DwrError::Cancelled {
-                phase: "dwr.identity",
+            Err(DwrError::BudgetRefused {
+                refusal:
+                    BudgetRefusal::PollsExhausted {
+                        phase: "dwr.identity",
+                        ..
+                    },
                 completed_work_units,
                 ..
             }) => identity_positions.push(completed_work_units),
-            Err(DwrError::Cancelled { .. }) => {}
+            Err(DwrError::BudgetRefused {
+                refusal: BudgetRefusal::PollsExhausted { .. },
+                ..
+            }) => {}
             Ok(_) => {
                 completed = true;
                 break;
@@ -996,7 +1035,16 @@ fn g4_bracket_cancellation_drains_each_nested_verifier_phase_and_is_retryable() 
         ExecMode::Deterministic,
         Budget::INFINITE,
         default_stream(),
-        |cx| Bracket::cauchy_schwarz(&problem, &candidate, &problem, &candidate, cx),
+        |cx| {
+            Bracket::cauchy_schwarz(
+                &problem,
+                &candidate,
+                &problem,
+                &candidate,
+                cx,
+                &VirtualClock::new(),
+            )
+        },
     );
     assert!(matches!(
         pre_cancelled,
@@ -1015,18 +1063,27 @@ fn g4_bracket_cancellation_drains_each_nested_verifier_phase_and_is_retryable() 
             ExecMode::Deterministic,
             Budget::INFINITE.with_poll_quota(quota),
             default_stream(),
-            |cx| Bracket::cauchy_schwarz(&problem, &candidate, &problem, &candidate, cx),
+            |cx| {
+                Bracket::cauchy_schwarz(
+                    &problem,
+                    &candidate,
+                    &problem,
+                    &candidate,
+                    cx,
+                    &VirtualClock::new(),
+                )
+            },
         );
         match attempt {
-            Err(BracketError::Cancelled {
-                phase,
+            Err(BracketError::BudgetRefused {
+                refusal: BudgetRefusal::PollsExhausted { phase, .. },
                 completed_work_units,
                 planned_work_units,
             }) => {
                 assert!(completed_work_units <= planned_work_units);
                 phases.insert(phase);
                 let retry = cauchy_schwarz(&problem, &candidate, &problem, &candidate)
-                    .expect("cancelled nested verifier retains no partial bracket");
+                    .expect("budget-refused nested verifier retains no partial bracket");
                 assert_same_bracket_semantics(&baseline, &retry);
                 assert_eq!(baseline.evidence_identity(), retry.evidence_identity());
             }
@@ -1038,7 +1095,16 @@ fn g4_bracket_cancellation_drains_each_nested_verifier_phase_and_is_retryable() 
                     ExecMode::Deterministic,
                     Budget::INFINITE.with_poll_quota(quota),
                     default_stream(),
-                    |cx| Bracket::cauchy_schwarz(&problem, &candidate, &problem, &candidate, cx),
+                    |cx| {
+                        Bracket::cauchy_schwarz(
+                            &problem,
+                            &candidate,
+                            &problem,
+                            &candidate,
+                            cx,
+                            &VirtualClock::new(),
+                        )
+                    },
                 )
                 .expect("the same finite healthy quota must replay");
                 assert_same_bracket_semantics(&bracket, &replay);
@@ -1077,7 +1143,10 @@ fn g4_bracket_cancels_at_nested_verifier_global_work_boundary() {
     let candidate = solve_p1(&problem).expect("G4 boundary fixture must solve");
     let verifier_plan = fs_verify::estimator::VerifierWorkPlan::for_inputs(&problem, &candidate)
         .expect("G4 boundary fixture has an admitted verifier plan");
-    assert_eq!(verifier_plan.identity_fields(), [229, 64, 64, 10, 1, 368]);
+    // fs-verify's 4aeaa7f (replay-admitted production receipts) grew the
+    // verifier plan's tightness and total components; the plan identity is
+    // fs-verify's authority, re-pinned at batch-verify.
+    assert_eq!(verifier_plan.identity_fields(), [229, 64, 64, 144, 1, 502]);
 
     let baseline = cauchy_schwarz(&problem, &candidate, &problem, &candidate)
         .expect("healthy >256-work bracket baseline");
@@ -1088,12 +1157,24 @@ fn g4_bracket_cancels_at_nested_verifier_global_work_boundary() {
         ExecMode::Deterministic,
         Budget::INFINITE.with_poll_quota(6),
         default_stream(),
-        |cx| Bracket::cauchy_schwarz(&problem, &candidate, &problem, &candidate, cx),
+        |cx| {
+            Bracket::cauchy_schwarz(
+                &problem,
+                &candidate,
+                &problem,
+                &candidate,
+                cx,
+                &VirtualClock::new(),
+            )
+        },
     );
     assert!(matches!(
         cancelled,
-        Err(BracketError::Cancelled {
-            phase: "dwr-bracket.primal-verifier.tightness",
+        Err(BracketError::BudgetRefused {
+            refusal: BudgetRefusal::PollsExhausted {
+                phase: "dwr-bracket.primal-verifier.tightness",
+                quota: 6,
+            },
             completed_work_units: 450,
             planned_work_units,
         }) if planned_work_units > 450
@@ -1111,8 +1192,15 @@ fn g5_bracket_identity_binds_execution_and_complete_nested_work_policy() {
     let candidate = solve_p1(&problem).expect("G5 bracket fixture must solve");
     let run = |mode: ExecMode, budget: Budget, stream: StreamKey| {
         with_cx(false, mode, budget, stream, |cx| {
-            Bracket::cauchy_schwarz(&problem, &candidate, &problem, &candidate, cx)
-                .expect("G5 bracket execution")
+            Bracket::cauchy_schwarz(
+                &problem,
+                &candidate,
+                &problem,
+                &candidate,
+                cx,
+                &VirtualClock::new(),
+            )
+            .expect("G5 bracket execution")
         })
     };
     let stream = default_stream();
@@ -1141,7 +1229,7 @@ fn g5_bracket_identity_binds_execution_and_complete_nested_work_policy() {
         (
             "cost quota",
             ExecMode::Deterministic,
-            Budget::INFINITE.with_cost_quota(456),
+            Budget::INFINITE.with_cost_quota(9_000_000),
             stream,
         ),
         (
@@ -1200,10 +1288,18 @@ fn g5_execution_identity_binds_mode_budget_stream_and_work_shape() {
     };
     let run = |mode: ExecMode, budget: Budget, stream: StreamKey| {
         with_cx(false, mode, budget, stream, |cx| {
-            let output = dwr_integral_qoi_with_cx(&problem, &candidate, 0.25, 0.75, cx)
-                .expect("G5 execution must remain scientifically valid");
-            let outcome = accept_with_cx(&query, output.eta().abs(), None, cx)
-                .expect("G5 acceptance must remain valid");
+            let output = dwr_integral_qoi_with_cx(
+                &problem,
+                &candidate,
+                0.25,
+                0.75,
+                cx,
+                &VirtualClock::new(),
+            )
+            .expect("G5 execution must remain scientifically valid");
+            let outcome =
+                accept_with_cx(&query, output.eta().abs(), None, cx, &VirtualClock::new())
+                    .expect("G5 acceptance must remain valid");
             (output, outcome)
         })
     };
@@ -1242,7 +1338,7 @@ fn g5_execution_identity_binds_mode_budget_stream_and_work_shape() {
         (
             "cost quota",
             ExecMode::Deterministic,
-            Budget::INFINITE.with_cost_quota(456),
+            Budget::INFINITE.with_cost_quota(9_000_000),
             stream,
         ),
         (
