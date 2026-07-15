@@ -151,7 +151,7 @@ fn ir_003_parsers_are_total_with_in_bounds_spans() {
                 Err(e) => {
                     rejects += 1;
                     assert!(
-                        e.span.start <= e.span.end && e.span.end <= s.len() + 1,
+                        e.span.start <= e.span.end && e.span.end <= s.len(),
                         "span out of bounds: {:?} for input len {}",
                         e.span,
                         s.len()
@@ -271,6 +271,42 @@ fn ir_005_verb_lowering_is_explicit_and_inspectable() {
         "ir-005",
         "verbs lower to explicit IR; defaults named; malformed fields refuse; idempotent",
     );
+}
+
+#[test]
+fn ir_005b_lowering_validates_forged_ast_before_recursive_descent() {
+    let invalid = Node {
+        kind: NodeKind::List(vec![
+            Node::synthetic(NodeKind::Symbol("opaque".into())),
+            Node {
+                kind: NodeKind::Float(f64::NAN),
+                span: fs_ir::Span::new(10, 13),
+            },
+        ]),
+        span: fs_ir::Span::new(0, 14),
+    };
+    let error = lower(&invalid).expect_err("lowering must reject a forged NaN atom");
+    assert_eq!(error.span, fs_ir::Span::new(10, 13));
+    assert!(error.detail.contains("$[1]"));
+
+    let mut deep = Node::synthetic(NodeKind::Int(1));
+    for _ in 0..258 {
+        deep = Node::synthetic(NodeKind::List(vec![deep]));
+    }
+    let error = lower(&deep).expect_err("lowering must reject an over-depth public AST");
+    assert_eq!(error.kind.code(), "IrTooDeep");
+    assert!(error.detail.contains("$[0]"));
+
+    let mut boundary = sexpr::parse("(optimize-shape :min j :over x)")
+        .expect("boundary verb remains valid syntax");
+    for _ in 0..255 {
+        boundary = Node::synthetic(NodeKind::List(vec![boundary]));
+    }
+    boundary
+        .validate()
+        .expect("input is exactly at the depth cap");
+    let error = lower(&boundary).expect_err("verb expansion must not exceed the depth cap");
+    assert_eq!(error.kind.code(), "IrTooDeep");
 }
 
 #[test]
@@ -480,7 +516,85 @@ fn ir_006_version_pinning_round_trips() {
 }
 
 #[test]
-fn ir_006b_quantity_budget_refusal_is_bounded_and_deterministic() {
+fn ir_006a_version_envelope_errors_identify_the_exact_slot() {
+    for (source, offense, path) in [
+        (
+            format!("(wrong-head :version {IR_VERSION} :program 1)"),
+            "wrong-head",
+            "$[0]",
+        ),
+        (
+            format!("(frankensim-ir :version {IR_VERSION} :version 1)"),
+            ":version",
+            "$[3]",
+        ),
+        (
+            format!("(frankensim-ir :version {IR_VERSION} :payload 1)"),
+            ":payload",
+            "$[3]",
+        ),
+        (
+            format!("(frankensim-ir :version {IR_VERSION} :program 1 trailing)"),
+            "trailing",
+            "$[5]",
+        ),
+    ] {
+        let node = sexpr::parse(&source).expect("malformed envelope remains valid syntax");
+        let error = VersionedProgram::from_envelope(node).expect_err("schema must refuse");
+        assert_eq!(&source[error.span.start..error.span.end], offense);
+        assert!(error.detail.contains(path), "{source}: {}", error.detail);
+    }
+}
+
+#[test]
+fn ir_006b_versioned_artifacts_require_one_canonical_byte_encoding() {
+    let noncanonical_sexpr = [
+        format!(" (frankensim-ir :version {IR_VERSION} :program 1)"),
+        format!("(frankensim-ir :version {IR_VERSION} :program 5MPa)"),
+    ];
+    for source in noncanonical_sexpr {
+        let error = VersionedProgram::parse_sexpr(&source)
+            .expect_err("noncanonical persisted s-expression must refuse");
+        assert_eq!(error.kind.code(), "IrNonCanonical");
+        assert!(error.span.end <= source.len());
+    }
+
+    let noncanonical_json = [
+        format!(
+            " [{{\"sym\":\"frankensim-ir\"}},{{\"kw\":\"version\"}},{{\"i\":{IR_VERSION}}},{{\"kw\":\"program\"}},{{\"f\":1.0}}]"
+        ),
+        format!(
+            "[{{\"sym\":\"frankensim-ir\"}},{{\"kw\":\"version\"}},{{\"i\":{IR_VERSION}}},{{\"kw\":\"program\"}},{{\"f\":1e0}}]"
+        ),
+        format!(
+            r#"[{{"sym":"frankensim-ir"}},{{"kw":"version"}},{{"i":{IR_VERSION}}},{{"kw":"program"}},{{"s":"\u0061"}}]"#
+        ),
+        format!(
+            r#"[{{"sym":"frankensim-ir"}},{{"kw":"version"}},{{"i":{IR_VERSION}}},{{"kw":"program"}},{{"s":"\u000A"}}]"#
+        ),
+    ];
+    for source in noncanonical_json {
+        let error = VersionedProgram::parse_json(&source)
+            .expect_err("noncanonical persisted JSON must refuse");
+        assert_eq!(error.kind.code(), "IrNonCanonical", "{source}: {error}");
+        assert!(error.span.end <= source.len());
+    }
+
+    let mut boundary_program = Node::synthetic(NodeKind::Int(1));
+    for _ in 0..256 {
+        boundary_program = Node::synthetic(NodeKind::List(vec![boundary_program]));
+    }
+    boundary_program
+        .validate()
+        .expect("bare program is exactly at its own depth cap");
+    let error = VersionedProgram::try_current(boundary_program)
+        .expect_err("persisted envelope must account for its wrapper depth");
+    assert_eq!(error.kind.code(), "IrTooDeep");
+    assert!(error.detail.contains("$[4]"));
+}
+
+#[test]
+fn ir_006c_quantity_budget_refusal_is_bounded_and_deterministic() {
     let source = format!("1{}", "x".repeat(5_000));
     let first = sexpr::parse(&source).expect_err("oversized quantity token must refuse");
     let second = sexpr::parse(&source).expect_err("repeat must refuse identically");
@@ -500,13 +614,13 @@ fn ir_006b_quantity_budget_refusal_is_bounded_and_deterministic() {
     let normal = sexpr::parse("2mol").expect("ordinary quantity remains admitted");
     assert!(matches!(normal.kind, NodeKind::Qty { .. }));
     verdict(
-        "ir-006b",
+        "ir-006c",
         "fs-ir explicitly uses the bounded fs-qty entry point and retains bounded deterministic diagnostics",
     );
 }
 
 #[test]
-fn ir_006c_json_numbers_and_strings_are_strict_rfc_8259() {
+fn ir_006d_json_numbers_and_strings_are_strict_rfc_8259() {
     for source in [
         r#"{"f":0}"#,
         r#"{"f":-0}"#,
@@ -567,6 +681,22 @@ fn ir_006c_json_numbers_and_strings_are_strict_rfc_8259() {
         let error = json::parse(source).expect_err("cross-syntax-invalid atom must refuse");
         assert!(error.detail.contains("invalid AST at $"));
     }
+
+    for source in [r#"{"i":1,"i":2}"#, r#"{"i":1,"f":2}"#] {
+        let error = json::parse(source).expect_err("tagged objects have exactly one key");
+        assert_eq!(error.kind.code(), "IrJsonSyntax");
+        assert_eq!(&source[error.span.start..error.span.end], ",");
+    }
+
+    let eof_deep = "[".repeat(257);
+    let error = json::parse(&eof_deep).expect_err("over-depth EOF must refuse in bounds");
+    assert_eq!(error.kind.code(), "IrTooDeep");
+    assert_eq!(error.span.end, eof_deep.len());
+
+    let eof_deep = "(".repeat(257);
+    let error = sexpr::parse(&eof_deep).expect_err("over-depth EOF must refuse in bounds");
+    assert_eq!(error.kind.code(), "IrTooDeep");
+    assert_eq!(error.span.end, eof_deep.len());
 }
 
 // ---------------------------------------------------------------------------

@@ -31,10 +31,20 @@ pub struct Lowered {
 /// Lower every known verb in the tree (recursively; innermost first).
 ///
 /// # Errors
-/// Structured [`IrError`] pointing at a malformed verb usage.
+/// Structured [`IrError`] pointing at an invalid input/output AST or malformed
+/// verb usage.
 pub fn lower(node: &Node) -> Result<Lowered, IrError> {
+    // `lower` is a public AST boundary, not merely a parser continuation.
+    // Validate before recursive descent so caller-forged atoms and trees past
+    // the shared depth cap fail with the same exact path as printers and
+    // admission, rather than passing through or exhausting the stack.
+    node.validate()?;
     let mut trace = Vec::new();
     let node = lower_inner(node, &mut trace)?;
+    // Expansion may add structure beneath a verb that was already at the
+    // admitted depth boundary. Refuse that output instead of returning a
+    // `Lowered` value no checked serializer can persist.
+    node.validate()?;
     Ok(Lowered { node, trace })
 }
 

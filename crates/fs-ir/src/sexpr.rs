@@ -65,7 +65,7 @@ impl Parser<'_> {
     fn parse_node(&mut self, depth: usize) -> Result<Node, IrError> {
         if depth > MAX_DEPTH {
             return Err(IrError {
-                span: Span::new(self.pos, self.pos + 1),
+                span: Span::new(self.pos, (self.pos + 1).min(self.bytes.len())),
                 kind: IrErrorKind::TooDeep,
                 detail: format!("nesting exceeds the {MAX_DEPTH}-level cap"),
                 hint: "flatten the program; adversarial nesting is refused by design".to_string(),

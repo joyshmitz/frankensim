@@ -1,6 +1,6 @@
 # CONTRACT: fs-ir
 
-> Status: ACTIVE (FrankenScript core, IR language v2). Owns the typed AST,
+> Status: ACTIVE (FrankenScript core, IR language v3). Owns the typed AST,
 > both concrete syntaxes, study recognition, and verb lowering. Admission
 > (dimensional/chart/budget/capability checks) is the gp3.5 bead's;
 > the operator catalog is gp3.6's.
@@ -16,9 +16,10 @@ typed AST. Layer: L6 (HELM). Runtime deps: `std` + fs-qty.
 
 - `Node`/`NodeKind`/`Span` — every node carries a byte span. Atoms are the
   real nouns: `Int`, `Float` (finite only), `Qty` (fs-qty SI value + dims +
-  the ORIGINAL literal text — fs-qty normalizes 65deg → rad, so the
-  literal is preserved verbatim for lossless printing; equality is
-  value+dims), `Count` (information/core grants: B/KiB/MiB/GiB/cores —
+  validated source literal text — fs-qty normalizes 65deg → rad, so the
+  source spelling is retained in the parsed AST while canonical identities
+  use one checked SI-base encoder; equality is value+dims), `Count`
+  (information/core grants: B/KiB/MiB/GiB/cores —
   deliberately outside fs-qty's SI domain), `Seed` (0x… u64), `Str`,
   `Symbol`, `Keyword`, `List`.
 - `CountValue` preserves bare integers as exact `u128` and decimal/exponent
@@ -32,8 +33,10 @@ typed AST. Layer: L6 (HELM). Runtime deps: `std` + fs-qty.
 - `VersionedProgram` — the persisted/replayed artifact boundary shared by both
   syntaxes. It canonically wraps a program as
   `(frankensim-ir :version 3 :program <node>)`, binds the language version into
-  serialized identity, and refuses older/newer semantics unless a caller first
-  performs an explicit audited migration. Bare parsers remain syntax-only.
+  serialized identity, requires its persisted s-expression or JSON input to be
+  in the one canonical byte encoding, and refuses older/newer semantics unless
+  a caller first performs an explicit audited migration. Bare parsers remain
+  syntax-only and may be used as the explicit normalization/migration entry.
 - `sexpr::parse/print` — total reader with spans, comments (`;`),
   string escapes, deterministic atom classification (numeric-leading
   tokens MUST fully parse — a number with a garbage suffix is a structured
@@ -42,8 +45,9 @@ typed AST. Layer: L6 (HELM). Runtime deps: `std` + fs-qty.
 - `json::parse/print` — the lossless mapping (single-key tagged objects:
   i/f/q/c/seed/s/sym/kw; arrays = lists). Qty/Count/Seed reuse the s-expr
   literal grammar inside strings so ONE classifier owns numeric semantics
-  for both syntaxes. Unknown tags and tag/literal mismatches refuse with
-  spans.
+  for both syntaxes. Numbers follow RFC 8259 exactly, JSON strings reject raw
+  controls and unpaired UTF-16 surrogates while decoding valid surrogate pairs,
+  and unknown tags/tag-literal mismatches refuse with spans.
 - `Study::from_node` — recognizes Appendix C study forms: name, seed,
   versions/budget/capability clauses, `(let …)` bindings, body;
   `constellation_lock()` extracts the versions pin. Duplicate Five-Explicit
@@ -53,7 +57,9 @@ typed AST. Layer: L6 (HELM). Runtime deps: `std` + fs-qty.
 - `lower::lower` — high-level verbs (`optimize-shape`, `simulate-pour`)
   expand to explicit IR with an inspectable trace naming every injected
   default (progressive disclosure with nothing hidden); idempotent;
-  malformed verb usage refuses with the verb's span.
+  malformed verb usage refuses with the verb's span. The public boundary first
+  validates the complete caller-provided AST, including its depth and exact
+  invalid-atom path, before recursive descent.
 - `IrError` — span + stable kind code + detail + fix hint (refusals
   teach). `IR_VERSION` — the language version this build reads/writes.
 - `query` (addendum Proposal 8 — declarative query language v0): a query is
@@ -232,7 +238,9 @@ typed AST. Layer: L6 (HELM). Runtime deps: `std` + fs-qty.
 Syntax/study/lowering APIs return `IrError` (span, stable
 `IrErrorKind::code()`, detail, hint). Feature-gated planner/anytime APIs return
 `PlanError`, and valid but under-budget queries return structured
-`PlanOutcome` refusals. Neither boundary panics on malformed caller data.
+`PlanOutcome` refusals. `IrNonCanonical` identifies a semantically parseable
+versioned artifact whose bytes are not its canonical persisted identity.
+Neither boundary panics on malformed caller data.
 
 ## Determinism class
 
@@ -260,7 +268,7 @@ None. Safe Rust only.
 - `ladder-planner` [F] (default OFF) — the greedy ladder-walk planner
   (`dep:fs-verify`); disabled until its Gauntlet tier + kill metric are
   green. Gates the `planner`, `plancal`, and `anytime` targets. All
-  other v1 behavior is `[S]` default-path.
+  other current IR behavior is `[S]` default-path.
 
 ## Conformance tests
 
@@ -270,8 +278,10 @@ isomorphism property over 200 generated programs plus the fixtures
 (s-expr, JSON, and cross-syntax cycles); 8000-parse garbage battery with
 in-bounds spans and non-empty hints plus 100k-deep nesting rejections;
 span-accuracy cases (bad seed, bad quantity); verb lowering explicitness,
-trace content, idempotence, and structured refusal; version-pin
-round-trip through both syntaxes.
+trace content, idempotence, forged-AST validation, and structured refusal;
+version-pin round-trip, exact envelope-slot errors, strict canonical persisted
+bytes, RFC 8259/control/surrogate cases, and tagged-object uniqueness through
+both syntaxes.
 
 `tests/query.rs` (suite `fs-ir/query`, addendum Proposal 8): the wedge QoI
 menu is expressible with correct metadata; `value_dims` follows the
@@ -280,8 +290,9 @@ on a distinct check with a teaching fix (zero budget, past deadline, 100%
 confidence, field-absent-from-design, self-contradictory dimensions), plus
 off-dimension exceedance thresholds and integral-tolerance-needs-volume-dims;
 multiple faults are reported together; admission is deterministic (identical
-verdict on replay); and the `(query …)` IR form round-trips (tolerance,
-exceedance+confidence) with a teaching error on a non-query form.
+  verdict on replay); and every QoI/target combination round-trips through both
+  versioned syntaxes with exact nested float bits and identical canonical
+  identities, with a teaching error on a non-query form.
 
 `tests/admission.rs` (suite `fs-ir/admission`): ad-001 Appendix C admits
 cleanly + ms-class latency + determinism; ad-002 five-study violation zoo
@@ -321,8 +332,8 @@ telemetry for a completed speculative transition.
 
 - No operator catalog or per-operator semantic versions — gp3.6; the
   `IR_VERSION` constant covers the language only.
-- JSON `\uXXXX` escapes cover Unicode scalar values only (surrogate
-  pairs are rejected with a structured error).
+- JSON `\uXXXX` escapes decode scalar values and valid high/low surrogate
+  pairs; isolated or malformed surrogates refuse with a structured error.
 - The verb table is v1-small (optimize-shape, simulate-pour); verbs are
   data to extend, not a framework.
 - Qty literals must be written in units fs-qty accepts; information

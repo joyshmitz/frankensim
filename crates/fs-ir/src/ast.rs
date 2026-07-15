@@ -310,8 +310,9 @@ pub enum NodeKind {
     Float(f64),
     /// Dimensioned quantity: SI value + dims (fs-qty), plus the ORIGINAL
     /// literal text. fs-qty normalizes to SI (65deg → 1.134… rad), so the
-    /// literal must be preserved verbatim for lossless printing; semantic
-    /// equality uses (value, dims) only.
+    /// source spelling is retained for provenance and checked against the
+    /// stored semantics. Canonical printers use the single SI-base encoder;
+    /// semantic equality uses (value, dims) only.
     Qty {
         /// Value in SI base units.
         value: f64,

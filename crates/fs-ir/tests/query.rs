@@ -7,7 +7,7 @@
 
 use fs_ir::admission::Severity;
 use fs_ir::query::{FieldRegistry, Qoi, Query, Target};
-use fs_ir::{Node, NodeKind, Span, json, sexpr};
+use fs_ir::{Node, NodeKind, Span, VersionedProgram, json, sexpr};
 use fs_qty::Dims;
 
 // von Mises stress: Pa = kg·m⁻¹·s⁻²  → [M,KG,S,K,A,MOL]
@@ -372,8 +372,66 @@ fn non_query_form_is_a_teaching_error() {
 }
 
 fn assert_query_semantics(expected: &Query, actual: &Query) {
-    assert_eq!(actual.qoi, expected.qoi);
-    assert_eq!(actual.target, expected.target);
+    match (&expected.qoi, &actual.qoi) {
+        (
+            Qoi::Exceedance {
+                field: expected_field,
+                region: expected_region,
+                threshold: expected_threshold,
+                threshold_dims: expected_dims,
+                environment: expected_environment,
+            },
+            Qoi::Exceedance {
+                field: actual_field,
+                region: actual_region,
+                threshold: actual_threshold,
+                threshold_dims: actual_dims,
+                environment: actual_environment,
+            },
+        ) => {
+            assert_eq!(actual_field, expected_field);
+            assert_eq!(actual_region, expected_region);
+            assert_eq!(actual_threshold.to_bits(), expected_threshold.to_bits());
+            assert_eq!(actual_dims, expected_dims);
+            assert_eq!(actual_environment, expected_environment);
+        }
+        _ => assert_eq!(actual.qoi, expected.qoi),
+    }
+    match (&expected.target, &actual.target) {
+        (
+            Target::Tolerance {
+                value: expected_value,
+                dims: expected_dims,
+            },
+            Target::Tolerance {
+                value: actual_value,
+                dims: actual_dims,
+            },
+        ) => {
+            assert_eq!(actual_value.to_bits(), expected_value.to_bits());
+            assert_eq!(actual_dims, expected_dims);
+        }
+        (Target::Confidence(expected), Target::Confidence(actual)) => {
+            assert_eq!(actual.to_bits(), expected.to_bits())
+        }
+        (
+            Target::ToleranceAndConfidence {
+                value: expected_value,
+                dims: expected_dims,
+                confidence: expected_confidence,
+            },
+            Target::ToleranceAndConfidence {
+                value: actual_value,
+                dims: actual_dims,
+                confidence: actual_confidence,
+            },
+        ) => {
+            assert_eq!(actual_value.to_bits(), expected_value.to_bits());
+            assert_eq!(actual_dims, expected_dims);
+            assert_eq!(actual_confidence.to_bits(), expected_confidence.to_bits());
+        }
+        _ => panic!("query target variant changed during round-trip"),
+    }
     assert_eq!(actual.budget_usd.to_bits(), expected.budget_usd.to_bits());
     assert_eq!(actual.deadline_s.to_bits(), expected.deadline_s.to_bits());
 }
@@ -414,17 +472,29 @@ fn every_qoi_and_target_round_trips_through_both_syntaxes() {
         for target in &targets {
             let query = Query::new(qoi.clone(), target.clone(), 50.25, 30.5);
             let node = query.to_node().expect("finite query serializes");
-            let sexpr_bytes = sexpr::print_checked(&node).expect("valid s-expression");
-            let sexpr_back = sexpr::parse(&sexpr_bytes).expect("s-expression reparses");
+            let artifact = VersionedProgram::try_current(node).expect("valid versioned query");
+            let sexpr_bytes = artifact
+                .print_sexpr_checked()
+                .expect("valid versioned s-expression");
+            let json_bytes = artifact
+                .print_json_checked()
+                .expect("valid versioned JSON mapping");
+            let sexpr_back = VersionedProgram::parse_sexpr(&sexpr_bytes)
+                .expect("canonical s-expression reparses");
+            let json_back =
+                VersionedProgram::parse_json(&json_bytes).expect("canonical JSON reparses");
+
+            assert_eq!(sexpr_back.print_sexpr(), sexpr_bytes);
+            assert_eq!(json_back.print_sexpr(), sexpr_bytes);
+            assert_eq!(sexpr_back.print_json(), json_bytes);
+            assert_eq!(json_back.print_json(), json_bytes);
             assert_query_semantics(
                 &query,
-                &Query::from_node(&sexpr_back).expect("s-expression query recognizes"),
+                &Query::from_node(sexpr_back.program()).expect("s-expression query recognizes"),
             );
-            let json_bytes = json::print_checked(&node).expect("valid JSON mapping");
-            let json_back = json::parse(&json_bytes).expect("JSON mapping reparses");
             assert_query_semantics(
                 &query,
-                &Query::from_node(&json_back).expect("JSON query recognizes"),
+                &Query::from_node(json_back.program()).expect("JSON query recognizes"),
             );
         }
     }

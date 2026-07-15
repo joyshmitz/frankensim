@@ -68,31 +68,37 @@ impl VersionedProgram {
     /// Validate a program and bind it to the current language version.
     ///
     /// # Errors
-    /// Rejects the first invalid AST atom with its exact tree path and span.
+    /// Rejects the first invalid AST atom with its exact tree path and span,
+    /// including a program too deep to fit inside the persisted envelope.
     pub fn try_current(program: Node) -> Result<Self, IrError> {
-        program.validate()?;
-        Ok(Self {
+        let artifact = Self {
             version: IR_VERSION,
             program,
-        })
+        };
+        artifact.envelope_node().validate()?;
+        Ok(artifact)
     }
 
     /// Parse and enforce a canonical s-expression envelope.
     ///
     /// # Errors
-    /// Syntax/shape errors and every version other than [`IR_VERSION`] refuse
-    /// with a structured [`IrError`].
+    /// Syntax/shape errors, noncanonical persisted bytes, and every version
+    /// other than [`IR_VERSION`] refuse with a structured [`IrError`].
     pub fn parse_sexpr(src: &str) -> Result<Self, IrError> {
-        Self::from_envelope(sexpr::parse(src)?)
+        let artifact = Self::from_envelope(sexpr::parse(src)?)?;
+        require_canonical_input(src, &artifact.print_sexpr_checked()?, "s-expression")?;
+        Ok(artifact)
     }
 
     /// Parse and enforce a canonical JSON envelope.
     ///
     /// # Errors
-    /// Syntax/shape errors and every version other than [`IR_VERSION`] refuse
-    /// with a structured [`IrError`].
+    /// Syntax/shape errors, noncanonical persisted bytes, and every version
+    /// other than [`IR_VERSION`] refuse with a structured [`IrError`].
     pub fn parse_json(src: &str) -> Result<Self, IrError> {
-        Self::from_envelope(json::parse(src)?)
+        let artifact = Self::from_envelope(json::parse(src)?)?;
+        require_canonical_input(src, &artifact.print_json_checked()?, "JSON")?;
+        Ok(artifact)
     }
 
     /// Validate an already parsed envelope AST.
@@ -103,21 +109,53 @@ impl VersionedProgram {
         node.validate()?;
         let envelope_span = node.span;
         let NodeKind::List(mut items) = node.kind else {
-            return Err(version_envelope_error(envelope_span));
+            return Err(version_envelope_error(
+                envelope_span,
+                "version envelope root $ must be a list",
+            ));
         };
-        if items.len() != 5
-            || !matches!(&items[0].kind, NodeKind::Symbol(head) if head == "frankensim-ir")
-            || !matches!(&items[1].kind, NodeKind::Keyword(key) if key == "version")
-            || !matches!(&items[3].kind, NodeKind::Keyword(key) if key == "program")
-        {
-            return Err(version_envelope_error(envelope_span));
+        let head = items.first().ok_or_else(|| {
+            version_envelope_error(envelope_span, "version envelope is missing head $[0]")
+        })?;
+        if !matches!(&head.kind, NodeKind::Symbol(value) if value == "frankensim-ir") {
+            return Err(version_envelope_error(
+                head.span,
+                "expected symbol frankensim-ir at version envelope $[0]",
+            ));
         }
-        let version_span = items[2].span;
-        let NodeKind::Int(written_version) = &items[2].kind else {
-            return Err(version_envelope_error(version_span));
+        let version_key = items.get(1).ok_or_else(|| {
+            version_envelope_error(
+                Span::new(envelope_span.end, envelope_span.end),
+                "version envelope is missing keyword :version at $[1]",
+            )
+        })?;
+        if !matches!(&version_key.kind, NodeKind::Keyword(key) if key == "version") {
+            let detail = match &version_key.kind {
+                NodeKind::Keyword(key) => format!(
+                    "unknown or out-of-order version envelope keyword :{key} at $[1]; expected :version"
+                ),
+                _ => "expected keyword :version at version envelope $[1]".to_string(),
+            };
+            return Err(version_envelope_error(version_key.span, &detail));
+        }
+        let version_node = items.get(2).ok_or_else(|| {
+            version_envelope_error(
+                Span::new(envelope_span.end, envelope_span.end),
+                "version envelope is missing u32 value at $[2]",
+            )
+        })?;
+        let version_span = version_node.span;
+        let NodeKind::Int(written_version) = &version_node.kind else {
+            return Err(version_envelope_error(
+                version_span,
+                "expected an integer language version at version envelope $[2]",
+            ));
         };
         let Ok(version) = u32::try_from(*written_version) else {
-            return Err(version_envelope_error(version_span));
+            return Err(version_envelope_error(
+                version_span,
+                "language version at version envelope $[2] is outside u32",
+            ));
         };
         if version != IR_VERSION {
             return Err(IrError {
@@ -130,9 +168,39 @@ impl VersionedProgram {
                     .to_string(),
             });
         }
+        let program_key = items.get(3).ok_or_else(|| {
+            version_envelope_error(
+                Span::new(envelope_span.end, envelope_span.end),
+                "version envelope is missing keyword :program at $[3]",
+            )
+        })?;
+        if !matches!(&program_key.kind, NodeKind::Keyword(key) if key == "program") {
+            let detail = match &program_key.kind {
+                NodeKind::Keyword(key) if key == "version" => {
+                    "duplicate version envelope keyword :version at $[3]".to_string()
+                }
+                NodeKind::Keyword(key) => {
+                    format!("unknown version envelope keyword :{key} at $[3]")
+                }
+                _ => "expected keyword :program at version envelope $[3]".to_string(),
+            };
+            return Err(version_envelope_error(program_key.span, &detail));
+        }
+        if items.len() < 5 {
+            return Err(version_envelope_error(
+                Span::new(envelope_span.end, envelope_span.end),
+                "version envelope is missing program value at $[4]",
+            ));
+        }
+        if let Some(trailing) = items.get(5) {
+            return Err(version_envelope_error(
+                trailing.span,
+                "unexpected trailing version envelope value at $[5]",
+            ));
+        }
         Ok(Self {
             version,
-            program: items.swap_remove(4),
+            program: items.pop().expect("exact envelope length checked"),
         })
     }
 
@@ -195,13 +263,42 @@ impl VersionedProgram {
     }
 }
 
-fn version_envelope_error(span: Span) -> IrError {
+fn version_envelope_error(span: Span, detail: &str) -> IrError {
     IrError {
         span,
         kind: IrErrorKind::MalformedClause,
-        detail: "expected (frankensim-ir :version <u32> :program <node>)".to_string(),
+        detail: detail.to_string(),
         hint: "persist and replay programs through VersionedProgram; bare parsers are syntax-only"
             .to_string(),
+    }
+}
+
+fn require_canonical_input(src: &str, canonical: &str, syntax: &str) -> Result<(), IrError> {
+    if src == canonical {
+        return Ok(());
+    }
+    Err(IrError {
+        span: first_text_difference_span(src, canonical),
+        kind: IrErrorKind::NonCanonical,
+        detail: format!("versioned {syntax} artifact is not in its one canonical byte encoding"),
+        hint: "parse untrusted bare syntax, validate/migrate it explicitly, then persist the checked VersionedProgram rendering"
+            .to_string(),
+    })
+}
+
+fn first_text_difference_span(input: &str, canonical: &str) -> Span {
+    let mut input_chars = input.char_indices();
+    let mut canonical_chars = canonical.chars();
+    loop {
+        match (input_chars.next(), canonical_chars.next()) {
+            (Some((_offset, input_char)), Some(canonical_char)) if input_char == canonical_char => {
+            }
+            (Some((offset, input_char)), _) => {
+                return Span::new(offset, offset + input_char.len_utf8());
+            }
+            (None, Some(_)) => return Span::new(input.len(), input.len()),
+            (None, None) => unreachable!("unequal strings must have a first difference"),
+        }
     }
 }
 
@@ -238,6 +335,8 @@ pub enum IrErrorKind {
     JsonTagMismatch,
     /// A versioned artifact uses unsupported language semantics.
     UnsupportedVersion,
+    /// Persisted versioned bytes are semantically valid but not canonical.
+    NonCanonical,
     /// Expected a study form.
     NotAStudy,
     /// A recognized clause with the wrong shape.
@@ -264,6 +363,7 @@ impl IrErrorKind {
             IrErrorKind::JsonUnknownTag => "IrJsonUnknownTag",
             IrErrorKind::JsonTagMismatch => "IrJsonTagMismatch",
             IrErrorKind::UnsupportedVersion => "IrUnsupportedVersion",
+            IrErrorKind::NonCanonical => "IrNonCanonical",
             IrErrorKind::NotAStudy => "IrNotAStudy",
             IrErrorKind::MalformedClause => "IrMalformedClause",
         }
