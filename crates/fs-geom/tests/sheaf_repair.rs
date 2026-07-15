@@ -11,13 +11,13 @@
 #![cfg(feature = "sheaf-repair")]
 
 use asupersync::types::Budget;
-use fs_exec::{CancelGate, Cx, ExecMode, StreamKey};
+use fs_exec::{BudgetRefusal, CancelGate, Cx, ExecMode, StreamKey};
 use fs_geom::router::{ConverterSpec, ErrorModel, MemoryCostOracle, RouteRequest, Router};
 use fs_geom::sheaf::{Interface, SheafComplex};
 use fs_geom::sheaf_repair::{
-    AdmittedSheafSkeleton, COMPONENT_FLOOR, SheafRepairBudget, SheafRepairError, SheafSkeleton,
-    SheafSkeletonError, apply_gauge, hodge_decompose, hodge_decompose_bounded, plan_repair,
-    try_apply_gauge,
+    AdmittedSheafSkeleton, COMPONENT_FLOOR, SheafRepairBudget, SheafRepairError,
+    SheafRepairPlanBudget, SheafSkeleton, SheafSkeletonError, apply_gauge, hodge_decompose,
+    hodge_decompose_bounded, plan_repair, plan_repair_bounded, try_apply_gauge,
 };
 
 fn verdict(case: &str, detail: &str) {
@@ -51,12 +51,62 @@ fn with_cx<R>(f: impl FnOnce(&Cx<'_>) -> R) -> R {
     with_gate_cx(&gate, f)
 }
 
+fn with_budget_cx<R>(budget: Budget, f: impl FnOnce(&Cx<'_>) -> R) -> R {
+    let gate = CancelGate::new();
+    let pool = fs_alloc::ArenaPool::new(fs_alloc::ArenaConfig::default());
+    pool.scope(|arena| {
+        let cx = Cx::new(
+            &gate,
+            arena,
+            StreamKey {
+                seed: 0x5348_4541_4652_4550,
+                kernel_id: 2,
+                tile: 0,
+                iteration: 0,
+            },
+            budget,
+            ExecMode::Deterministic,
+        );
+        f(&cx)
+    })
+}
+
 /// A 3-patch triangle complex (one triple junction).
 fn triangle() -> SheafSkeleton {
     SheafSkeleton {
         n_patches: 3,
         edges: vec![(0, 1), (1, 2), (0, 2)],
         triangles: vec![(0, 1, 2)],
+    }
+}
+
+fn canonical_triangle() -> SheafSkeleton {
+    SheafSkeleton {
+        n_patches: 3,
+        edges: vec![(0, 1), (0, 2), (1, 2)],
+        triangles: vec![(0, 1, 2)],
+    }
+}
+
+fn admitted_triangle() -> AdmittedSheafSkeleton {
+    AdmittedSheafSkeleton::try_new(3, vec![(0, 1), (0, 2), (1, 2)], vec![(0, 1, 2)])
+        .expect("canonical triangle admits")
+}
+
+fn bounded_plan_budget(sweeps: usize) -> SheafRepairPlanBudget {
+    let max_operator_evaluations = if sweeps == 8 { 56 } else { 2_408 };
+    SheafRepairPlanBudget {
+        repair: SheafRepairBudget {
+            sweeps,
+            max_operator_evaluations,
+            max_work_items: if sweeps == 8 { 24_576 } else { 300_000 },
+            max_scalar_slots: 42,
+            poll_stride: 8,
+        },
+        max_plan_bytes: 8_192,
+        max_action_bytes: 4_096,
+        max_proposals: 4,
+        max_harmonic_support: 3,
     }
 }
 
@@ -775,6 +825,7 @@ fn sr_008_bounded_decomposition_accounts_before_work() {
     let budget = SheafRepairBudget {
         sweeps: 8,
         max_operator_evaluations: 56,
+        max_work_items: 8_192,
         max_scalar_slots: 42,
         poll_stride: 1,
     };
@@ -784,7 +835,10 @@ fn sr_008_bounded_decomposition_accounts_before_work() {
         assert_eq!(bounded.budget, budget);
         assert_eq!(bounded.usage.completed_sweeps, 16);
         assert_eq!(bounded.usage.operator_evaluations, 56);
+        assert_eq!(bounded.usage.admitted_work_items, 5_760);
+        assert!(bounded.usage.work_items <= bounded.usage.admitted_work_items);
         assert_eq!(bounded.usage.admitted_scalar_slots, 42);
+        assert_eq!(bounded.usage.ambient_budget.refusal, None);
         assert!(
             bounded
                 .split
@@ -809,6 +863,22 @@ fn sr_008_bounded_decomposition_accounts_before_work() {
             Err(SheafRepairError::WorkBudgetExceeded {
                 required: 56,
                 cap: 55,
+            })
+        );
+        assert_eq!(
+            hodge_decompose_bounded(
+                &skeleton,
+                &mismatch,
+                SheafRepairBudget {
+                    max_work_items: 5_759,
+                    ..budget
+                },
+                cx,
+            ),
+            Err(SheafRepairError::WorkItemBudgetExceeded {
+                stage: "hodge-work-preflight",
+                required: 5_760,
+                cap: 5_759,
             })
         );
         assert_eq!(
@@ -875,6 +945,7 @@ fn sr_009_bounded_decomposition_observes_pre_cancellation() {
     let budget = SheafRepairBudget {
         sweeps: 2,
         max_operator_evaluations: 32,
+        max_work_items: 1_024,
         max_scalar_slots: 32,
         poll_stride: 1,
     };
@@ -887,11 +958,402 @@ fn sr_009_bounded_decomposition_observes_pre_cancellation() {
                 stage: "admission",
                 completed_sweeps: 0,
                 operator_evaluations: 0,
+                work_items: 0,
             })
         );
     });
     verdict(
         "sr-009",
         "pre-cancelled diagnostics refuse before allocation or operator work and retain zero consumption",
+    );
+}
+
+#[test]
+fn sr_010_bounded_plan_retains_complete_budget_and_usage() {
+    let skeleton = admitted_triangle();
+    let mismatch = skeleton
+        .d0(&[0.0, 0.5, -0.25])
+        .expect("finite exact fixture");
+    let budget = bounded_plan_budget(8);
+    with_cx(|cx| {
+        let bounded = plan_repair_bounded(&skeleton, &mismatch, &[1.0; 3], None, budget, cx)
+            .expect("complete admitted plan");
+        assert_eq!(bounded.budget, budget);
+        assert_eq!(bounded.usage.repair.completed_sweeps, 16);
+        assert_eq!(bounded.usage.repair.operator_evaluations, 56);
+        assert_eq!(bounded.usage.repair.admitted_scalar_slots, 42);
+        assert!(bounded.usage.repair.work_items > 0);
+        assert!(
+            bounded.usage.repair.work_items <= bounded.usage.repair.admitted_work_items,
+            "measured scalar/graph/string work must stay inside preflight"
+        );
+        assert_eq!(
+            bounded.usage.repair.ambient_budget.cost_charged,
+            (bounded.usage.repair.work_items + bounded.usage.repair.operator_evaluations) as u64
+        );
+        assert_eq!(bounded.usage.repair.ambient_budget.refusal, None);
+        assert!(bounded.usage.plan_memory_envelope <= budget.max_plan_bytes);
+        assert!(bounded.usage.reserved_plan_bytes <= bounded.usage.plan_memory_envelope);
+        assert!(bounded.usage.action_bytes <= budget.max_action_bytes);
+        assert_eq!(bounded.usage.proposals, bounded.plan.proposals.len());
+        assert_eq!(
+            bounded.usage.harmonic_support,
+            bounded.plan.harmonic_support.len()
+        );
+        assert!(bounded.plan.gauge_step_eligible);
+
+        let required_work = bounded.usage.repair.admitted_work_items;
+        assert_eq!(
+            plan_repair_bounded(
+                &skeleton,
+                &mismatch,
+                &[1.0; 3],
+                None,
+                SheafRepairPlanBudget {
+                    repair: SheafRepairBudget {
+                        max_work_items: required_work - 1,
+                        ..budget.repair
+                    },
+                    ..budget
+                },
+                cx,
+            ),
+            Err(SheafRepairError::WorkItemBudgetExceeded {
+                stage: "plan-work-preflight",
+                required: required_work as u128,
+                cap: required_work - 1,
+            })
+        );
+
+        let required_memory = bounded.usage.plan_memory_envelope;
+        assert_eq!(
+            plan_repair_bounded(
+                &skeleton,
+                &mismatch,
+                &[1.0; 3],
+                None,
+                SheafRepairPlanBudget {
+                    max_plan_bytes: required_memory - 1,
+                    ..budget
+                },
+                cx,
+            ),
+            Err(SheafRepairError::PlanMemoryBudgetExceeded {
+                required: required_memory as u128,
+                cap: required_memory - 1,
+            })
+        );
+
+        assert!(matches!(
+            plan_repair_bounded(
+                &skeleton,
+                &mismatch,
+                &[1.0; 3],
+                None,
+                SheafRepairPlanBudget {
+                    max_proposals: 0,
+                    ..budget
+                },
+                cx,
+            ),
+            Err(SheafRepairError::OutputBudgetExceeded {
+                resource: "proposals",
+                required: 1,
+                cap: 0,
+            })
+        ));
+        assert!(matches!(
+            plan_repair_bounded(
+                &skeleton,
+                &mismatch,
+                &[1.0; 3],
+                None,
+                SheafRepairPlanBudget {
+                    max_action_bytes: 1,
+                    ..budget
+                },
+                cx,
+            ),
+            Err(SheafRepairError::OutputBudgetExceeded {
+                resource: "action-bytes",
+                cap: 1,
+                ..
+            })
+        ));
+        assert_eq!(
+            plan_repair_bounded(
+                &skeleton,
+                &[0.0, f64::NAN, 0.0],
+                &[1.0, -1.0, 1.0],
+                None,
+                budget,
+                cx,
+            ),
+            Err(SheafRepairError::Skeleton(
+                SheafSkeletonError::NonFiniteCochain {
+                    role: "mismatch",
+                    index: 1,
+                }
+            ))
+        );
+        assert_eq!(
+            plan_repair_bounded(&skeleton, &mismatch, &[1.0, -1.0, 1.0], None, budget, cx,),
+            Err(SheafRepairError::InvalidGaugeBudget { index: 1 })
+        );
+    });
+    verdict(
+        "sr-010",
+        "bounded planning retains enforced work, memory, output, and ambient consumption and refuses every undersized envelope before publication",
+    );
+}
+
+#[test]
+fn sr_011_bounded_plan_matches_legacy_arithmetic_and_replays() {
+    let raw = canonical_triangle();
+    let admitted = admitted_triangle();
+    let mismatch = raw.d0(&[0.0, -0.375, 0.625]);
+    let gauge_budgets = [1.0; 3];
+    let mut router = Router::new();
+    router
+        .register(ConverterSpec {
+            name: "sdf->mesh/dc-interval".to_string(),
+            from: "sdf".to_string(),
+            to: "mesh".to_string(),
+            base_cost_s: 2.0,
+            error: ErrorModel::AdditiveAbs(5e-7),
+            certified: true,
+        })
+        .expect("register bounded reroute fixture");
+    let oracle = MemoryCostOracle::new();
+    let request = RouteRequest {
+        from: "sdf".to_string(),
+        to: "mesh".to_string(),
+        scale: 1.0,
+        max_abs_error: 1e-3,
+        max_cost_s: 100.0,
+    };
+    let route = router
+        .plan(&request, &oracle)
+        .expect("route is admitted before bounded repair planning");
+    let legacy = plan_repair(
+        &raw,
+        &mismatch,
+        &gauge_budgets,
+        Some((&router, &oracle, &request)),
+    )
+    .expect("legacy plan over canonical admitted meaning");
+    let budget = bounded_plan_budget(400);
+    with_cx(|cx| {
+        let bounded = plan_repair_bounded(
+            &admitted,
+            &mismatch,
+            &gauge_budgets,
+            Some(&route),
+            budget,
+            cx,
+        )
+        .expect("bounded compatibility plan");
+        assert_eq!(bounded.plan, legacy);
+        assert_eq!(bounded.usage.repair.completed_sweeps, 800);
+        assert_eq!(bounded.usage.repair.operator_evaluations, 2_408);
+
+        let replay = plan_repair_bounded(
+            &admitted,
+            &mismatch,
+            &gauge_budgets,
+            Some(&route),
+            budget,
+            cx,
+        )
+        .expect("deterministic replay");
+        assert_eq!(replay, bounded);
+    });
+    verdict(
+        "sr-011",
+        "the 400-sweep admitted planner preserves legacy arithmetic, proposal text, ranking, and deterministic replay while adding bounded authority",
+    );
+}
+
+#[test]
+fn sr_012_bounded_plan_refuses_pre_cancel_and_final_publication() {
+    let skeleton = admitted_triangle();
+    let mismatch = skeleton
+        .d0(&[0.0, 0.5, -0.25])
+        .expect("finite exact fixture");
+    let plan_budget = bounded_plan_budget(8);
+
+    let gate = CancelGate::new();
+    gate.request();
+    with_gate_cx(&gate, |cx| {
+        assert_eq!(
+            plan_repair_bounded(&skeleton, &mismatch, &[1.0; 3], None, plan_budget, cx),
+            Err(SheafRepairError::Cancelled {
+                stage: "plan-admission",
+                completed_sweeps: 0,
+                operator_evaluations: 0,
+                work_items: 0,
+            })
+        );
+    });
+
+    let generous = Budget {
+        deadline: None,
+        poll_quota: 100_000,
+        cost_quota: None,
+        priority: 0,
+    };
+    let baseline = with_budget_cx(generous, |cx| {
+        plan_repair_bounded(&skeleton, &mismatch, &[1.0; 3], None, plan_budget, cx)
+            .expect("generous poll budget")
+    });
+    let planned_cost = baseline.usage.repair.ambient_budget.planned_cost;
+    let cost_refusal_budget = Budget {
+        cost_quota: Some(planned_cost - 1),
+        ..generous
+    };
+    assert!(matches!(
+        with_budget_cx(cost_refusal_budget, |cx| {
+            plan_repair_bounded(&skeleton, &mismatch, &[1.0; 3], None, plan_budget, cx)
+        }),
+        Err(SheafRepairError::AmbientBudgetRefused {
+            refusal: BudgetRefusal::CostPlanExceedsQuota { planned, quota },
+            completed_sweeps: 0,
+            operator_evaluations: 0,
+            work_items: 0,
+        }) if planned == planned_cost && quota == planned_cost - 1
+    ));
+    let final_poll = baseline.usage.repair.ambient_budget.polls_used;
+    assert!(final_poll > 1, "fixture must cross multiple boundaries");
+    let final_refusal_budget = Budget {
+        poll_quota: final_poll - 1,
+        ..generous
+    };
+    let refusal = with_budget_cx(final_refusal_budget, |cx| {
+        plan_repair_bounded(&skeleton, &mismatch, &[1.0; 3], None, plan_budget, cx)
+    });
+    assert!(matches!(
+        refusal,
+        Err(SheafRepairError::AmbientBudgetRefused {
+            refusal: BudgetRefusal::PollsExhausted {
+                phase: "plan-publication",
+                quota,
+            },
+            completed_sweeps: 16,
+            operator_evaluations: 56,
+            ..
+        }) if quota == final_poll - 1
+    ));
+
+    let retry = with_budget_cx(generous, |cx| {
+        plan_repair_bounded(&skeleton, &mismatch, &[1.0; 3], None, plan_budget, cx)
+            .expect("healthy retry after refused publication")
+    });
+    assert_eq!(retry, baseline);
+    verdict(
+        "sr-012",
+        "pre-cancellation and final-publication exhaustion return no plan, while a healthy retry deterministically reproduces the complete baseline",
+    );
+}
+
+#[test]
+fn sr_013_bounded_plan_accounts_mixed_components_and_route() {
+    let skeleton = AdmittedSheafSkeleton::try_new(
+        7,
+        vec![(0, 1), (0, 2), (1, 2), (3, 4), (3, 6), (4, 5), (5, 6)],
+        vec![(0, 1, 2)],
+    )
+    .expect("filled triangle plus disconnected ring admits");
+    // Triangle entries are exactly d1-transpose(1); ring entries are one
+    // consistently oriented cycle. The fixture therefore exercises retained
+    // coexact and harmonic components without relying on convergence noise.
+    let mismatch = [1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0];
+
+    let mut router = Router::new();
+    router
+        .register(ConverterSpec {
+            name: "sdf->mesh/dc-interval".to_string(),
+            from: "sdf".to_string(),
+            to: "mesh".to_string(),
+            base_cost_s: 2.0,
+            error: ErrorModel::AdditiveAbs(5e-7),
+            certified: true,
+        })
+        .expect("register mixed-plan reroute fixture");
+    let oracle = MemoryCostOracle::new();
+    let request = RouteRequest {
+        from: "sdf".to_string(),
+        to: "mesh".to_string(),
+        scale: 1.0,
+        max_abs_error: 1e-3,
+        max_cost_s: 100.0,
+    };
+    let route = router
+        .plan(&request, &oracle)
+        .expect("route admits before bounded planning");
+    let budget = SheafRepairPlanBudget {
+        repair: SheafRepairBudget {
+            sweeps: 8,
+            max_operator_evaluations: 124,
+            max_work_items: 65_536,
+            max_scalar_slots: 90,
+            poll_stride: 8,
+        },
+        max_plan_bytes: 8_192,
+        max_action_bytes: 4_096,
+        max_proposals: 4,
+        max_harmonic_support: 7,
+    };
+
+    with_cx(|cx| {
+        let bounded =
+            plan_repair_bounded(&skeleton, &mismatch, &[2.0; 7], Some(&route), budget, cx)
+                .expect("mixed bounded plan");
+        assert!(bounded.plan.split.fractions.0 <= COMPONENT_FLOOR);
+        assert!(bounded.plan.split.fractions.1 > COMPONENT_FLOOR);
+        assert!(bounded.plan.split.fractions.2 > COMPONENT_FLOOR);
+        assert_eq!(
+            bounded.plan.harmonic_support,
+            vec![((3, 4), 1.0), ((3, 6), 1.0), ((4, 5), 1.0), ((5, 6), 1.0),]
+        );
+        assert_eq!(bounded.usage.repair.completed_sweeps, 16);
+        assert_eq!(bounded.usage.repair.operator_evaluations, 124);
+        assert_eq!(bounded.usage.repair.admitted_scalar_slots, 90);
+        assert!(bounded.usage.repair.work_items <= bounded.usage.repair.admitted_work_items);
+        assert_eq!(bounded.usage.proposals, 3);
+        assert_eq!(bounded.usage.harmonic_support, 4);
+        assert!(
+            bounded.plan.proposals[0]
+                .action
+                .contains("coexact circulation")
+        );
+        assert!(bounded.plan.proposals[1].action.contains("reroute"));
+        assert!(
+            bounded.plan.proposals[2]
+                .action
+                .contains("retained harmonic remainder")
+        );
+
+        assert_eq!(
+            plan_repair_bounded(
+                &skeleton,
+                &mismatch,
+                &[2.0; 7],
+                Some(&route),
+                SheafRepairPlanBudget {
+                    max_harmonic_support: 3,
+                    ..budget
+                },
+                cx,
+            ),
+            Err(SheafRepairError::OutputBudgetExceeded {
+                resource: "harmonic-support",
+                required: 4,
+                cap: 3,
+            })
+        );
+    });
+    verdict(
+        "sr-013",
+        "comparison-heavy incidence lookup, coexact localization, harmonic support, route formatting, output caps, and stable proposal ranking share one bounded accountant",
     );
 }
