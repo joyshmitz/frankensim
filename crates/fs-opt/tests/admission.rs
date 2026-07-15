@@ -852,3 +852,63 @@ fn adm_013_descent_leaf_gating() {
         assert!(rep.f_final < rep.f0, "still actually descends");
     });
 }
+
+/// adm-016 — the public raw retraction boundary is total over arbitrary
+/// slice lengths. Every live manifold refuses both short and long point
+/// or step storage before zip truncation or direct indexing can occur.
+#[test]
+fn adm_016_retraction_storage_lengths_are_exact() {
+    let cases = [
+        (Manifold::Rn { dim: 2 }, vec![0.0, 0.0], vec![0.0, 0.0]),
+        (
+            Manifold::Sphere { ambient: 3 },
+            vec![1.0, 0.0, 0.0],
+            vec![0.0; 3],
+        ),
+        (Manifold::So3, vec![1.0, 0.0, 0.0, 0.0], vec![0.0; 3]),
+        (
+            Manifold::Stiefel { n: 3, p: 2 },
+            vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            vec![0.0; 6],
+        ),
+    ];
+
+    for (manifold, point, step) in cases {
+        let point_dim = manifold.point_dim().expect("valid fixture manifold");
+        let step_dim = manifold.param_dim().expect("valid fixture manifold");
+
+        let mut long_point = point.clone();
+        long_point.push(0.0);
+        for malformed in [&point[..point.len() - 1], long_point.as_slice()] {
+            assert!(matches!(
+                manifold.retract(malformed, &step),
+                Err(OptError::RetractionLen {
+                    input: "retraction point",
+                    expected,
+                    got,
+                }) if expected == point_dim && got == malformed.len() as u64
+            ));
+        }
+
+        let mut long_step = step.clone();
+        long_step.push(0.0);
+        for malformed in [&step[..step.len() - 1], long_step.as_slice()] {
+            assert!(matches!(
+                manifold.retract(&point, malformed),
+                Err(OptError::RetractionLen {
+                    input: "retraction step",
+                    expected,
+                    got,
+                }) if expected == step_dim && got == malformed.len() as u64
+            ));
+        }
+
+        assert_eq!(
+            manifold
+                .retract(&point, &step)
+                .expect("exact storage retracts")
+                .len(),
+            point.len()
+        );
+    }
+}

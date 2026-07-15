@@ -562,6 +562,15 @@ pub enum OptError {
         /// The offending value's exact IEEE-754 bit pattern.
         bits: u64,
     },
+    /// A raw retraction point or step has the wrong storage length.
+    RetractionLen {
+        /// Which retraction input was malformed.
+        input: &'static str,
+        /// Required storage length for this manifold.
+        expected: u32,
+        /// Storage length supplied by the caller.
+        got: u64,
+    },
     /// A per-item or aggregate admission cap was exceeded.
     CapExceeded {
         /// Which cap.
@@ -686,6 +695,15 @@ impl core::fmt::Display for OptError {
                 "binding for variable {var} has non-finite component {component}: {} \
                  (bits {bits:016X}); runtime points must be finite before evaluation",
                 f64::from_bits(*bits)
+            ),
+            OptError::RetractionLen {
+                input,
+                expected,
+                got,
+            } => write!(
+                f,
+                "{input} has length {got}, but this manifold requires length {expected}; \
+                 retraction refuses malformed storage"
             ),
             OptError::CapExceeded { what, count, cap } => write!(
                 f,

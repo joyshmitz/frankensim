@@ -81,9 +81,13 @@ structure; FLUX/UQ execute it.
   with `point_dim`/`tangent_dim`/`param_dim` and `retract` (Rn
   translation, Sphere normalize, SO(3) quaternion exponential,
   Stiefel Gram-Schmidt/QR) — the metadata the gradient stack
-  consumes; `descend_fn`/`descend_ir` are the TOY consumers proving
-  iterates stay ON their manifolds. Both descent entry points are
-  LEAF-GATED before any arithmetic (bead j3vb5 / review High #6):
+  consumes. The public retraction boundary validates the manifold and
+  requires exact point and parameter storage before any indexing or
+  zip-based arithmetic; malformed slices refuse with a typed input and
+  expected/actual lengths. `descend_fn`/`descend_ir` are the TOY
+  consumers proving iterates stay ON their manifolds. Both descent
+  entry points are LEAF-GATED before any arithmetic (bead j3vb5 /
+  review High #6):
   the manifold validates through the admission policy, the start
   point must match `point_dim` with FINITE components (offending bit
   pattern retained in the refusal), and `DescentOptions` must carry

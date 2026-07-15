@@ -235,15 +235,41 @@ impl Manifold {
     /// Retract: move from `x` along parameter vector `t`, landing ON
     /// the manifold. Rn: translation. Sphere: normalize(x+t). SO(3):
     /// right-multiply by `exp(ω/2)` (unit quaternion). Stiefel:
-    /// Gram-Schmidt of `X+T` (QR retraction).
+    /// Gram-Schmidt of `X+T` (QR retraction). Raw point and parameter
+    /// storage must exactly match this manifold; malformed slices are
+    /// refused before any indexing or zip-based arithmetic.
+    ///
+    /// # Errors
+    /// [`OptError::ManifoldInvalid`] or [`OptError::RetractionLen`].
     #[must_use]
-    pub fn retract(&self, x: &[f64], t: &[f64]) -> Vec<f64> {
+    pub fn retract(&self, x: &[f64], t: &[f64]) -> Result<Vec<f64>, OptError> {
+        self.validate(&AdmissionCaps::default())?;
+        let point_dim = self.point_dim().ok_or_else(|| OptError::ManifoldInvalid {
+            what: format!("{self:?} has no representable point dimension"),
+        })?;
+        if x.len() as u64 != u64::from(point_dim) {
+            return Err(OptError::RetractionLen {
+                input: "retraction point",
+                expected: point_dim,
+                got: x.len() as u64,
+            });
+        }
+        let param_dim = self.param_dim().ok_or_else(|| OptError::ManifoldInvalid {
+            what: format!("{self:?} has no representable retraction parameter dimension"),
+        })?;
+        if t.len() as u64 != u64::from(param_dim) {
+            return Err(OptError::RetractionLen {
+                input: "retraction step",
+                expected: param_dim,
+                got: t.len() as u64,
+            });
+        }
         match *self {
-            Manifold::Rn { .. } => x.iter().zip(t).map(|(a, b)| a + b).collect(),
+            Manifold::Rn { .. } => Ok(x.iter().zip(t).map(|(a, b)| a + b).collect()),
             Manifold::Sphere { .. } => {
                 let y: Vec<f64> = x.iter().zip(t).map(|(a, b)| a + b).collect();
                 let n = y.iter().map(|v| v * v).sum::<f64>().sqrt().max(1e-300);
-                y.iter().map(|v| v / n).collect()
+                Ok(y.iter().map(|v| v / n).collect())
             }
             Manifold::So3 => {
                 let half = [t[0] * 0.5, t[1] * 0.5, t[2] * 0.5];
@@ -265,7 +291,7 @@ impl Manifold {
                 for v in &mut out {
                     *v /= n;
                 }
-                out.to_vec()
+                Ok(out.to_vec())
             }
             Manifold::Stiefel { n, p } => {
                 let (n, p) = (n as usize, p as usize);
@@ -295,7 +321,7 @@ impl Manifold {
                         *v /= nn;
                     }
                 }
-                cols.concat()
+                Ok(cols.concat())
             }
         }
     }
@@ -434,14 +460,16 @@ fn descend_fn_with_initial(
             }
             let mut t = vec![0.0; pd];
             t[i] = opts.fd_h;
-            let fp = f(&manifold.retract(&x, &t));
+            let xp = manifold.retract(&x, &t)?;
+            let fp = f(&xp);
             t[i] = -opts.fd_h;
-            let fm = f(&manifold.retract(&x, &t));
+            let xm = manifold.retract(&x, &t)?;
+            let fm = f(&xm);
             evals += 2;
             *gi = (fp - fm) / (2.0 * opts.fd_h);
         }
         let step: Vec<f64> = g.iter().map(|v| -opts.lr * v).collect();
-        x = manifold.retract(&x, &step);
+        x = manifold.retract(&x, &step)?;
         steps_taken += 1;
     }
     let f_final = if steps_taken == 0 {
