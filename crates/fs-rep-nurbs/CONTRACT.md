@@ -54,7 +54,9 @@ fs-iga (geometry basis = analysis basis), fs-render NURBS tracing
   checked Cartesian or homogeneous construction seals the knot/control
   representation. `AdmittedNurbsCurve` binds a validated immutable snapshot
   and evaluation consumes its admitted knot view without a second structural
-  scan. EXACT Boehm `insert_knot`; EXACT `remove_knot` (reconstruction checked
+  scan. Its admitted-only `eval_with_cx` returns transactional
+  `CurveEvaluationRun` state and never publishes a partial Cartesian point.
+  EXACT Boehm `insert_knot`; EXACT `remove_knot` (reconstruction checked
   with scalar EQUALITY — in `Rat` a proof); Bézier decomposition; EXACT
   `elevate_degree` (per-segment binomial elevation reassembled on a
   full-multiplicity knot vector — valid and evaluation-identical, including
@@ -194,6 +196,11 @@ constant-time parameter/work-refusal precedence, polls before allocation and
 publication plus every 64 logical span/initialization/triangle/finite-check
 operations, and drops all scratch on `BasisRun::Cancelled`. It deliberately
 does not claim caller-budget consumption or executor drain/finalize authority.
+`AdmittedNurbsCurve::eval_with_cx` carries the same cancellation gate through
+basis construction, polls homogeneous accumulation every 64 logical scalar
+updates, and gates final Cartesian publication. `CurveEvaluationRun::Cancelled`
+contains no partial point; owning curve admission and caller-owned affine
+budget/drain/finalize semantics remain outside this primitive claim.
 The owning `admit_with_cx` path applies the same fixed stride across finite,
 ordering, multiplicity, and clamping validation and gates admitted authority at
 publication; `KnotVector::new` construction remains outside that cancellation

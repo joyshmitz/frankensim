@@ -6,7 +6,8 @@
 //! knot vectors are a documented follow-up).
 
 use crate::NurbsError;
-use crate::basis::{AdmittedKnotVector, BASIS_MAX_WORK_UNITS, KnotVector, Scalar};
+use crate::basis::{AdmittedKnotVector, BASIS_MAX_WORK_UNITS, BasisRun, KnotVector, Scalar};
+use fs_exec::Cx;
 
 // Conservative price for finite/weight/projection/canonical-lane validation of
 // one homogeneous control. Structural admission must precede the full scan.
@@ -19,6 +20,19 @@ const CURVE_BEZIER_BLEND_WORK_PER_CONTROL: u128 = 32;
 const CURVE_SPAN_BOX_WORK_PER_CONTROL: u128 = 16;
 const CURVE_SPAN_BOX_MAX_RETAINED_BYTES: u128 = 64 * 1024 * 1024;
 const CURVE_BEZIER_MAX_RETAINED_BYTES: u128 = 64 * 1024 * 1024;
+const CURVE_CANCELLATION_STRIDE: usize = 64;
+
+fn curve_poll_due(
+    operations_since_poll: &mut usize,
+    should_cancel: &mut impl FnMut() -> bool,
+) -> bool {
+    *operations_since_poll += 1;
+    if *operations_since_poll < CURVE_CANCELLATION_STRIDE {
+        return false;
+    }
+    *operations_since_poll = 0;
+    should_cancel()
+}
 
 /// Checked shape/work/retained-memory plan for exact Bezier conversion.
 /// Fields are crate-visible so trim/closest primitives can compose this
@@ -335,6 +349,19 @@ pub struct AdmittedNurbsCurve<'a, S: Scalar, const DIM: usize> {
     inner: &'a NurbsCurve<S, DIM>,
 }
 
+/// Transactional terminal state of cancellation-aware Cartesian evaluation.
+#[must_use]
+#[derive(Debug, Clone, PartialEq)]
+pub enum CurveEvaluationRun<S: Scalar, const DIM: usize> {
+    /// The complete finite Cartesian point.
+    Complete {
+        /// Evaluated point in the curve's declared dimension.
+        point: [S; DIM],
+    },
+    /// Cancellation was observed; no partial point was published.
+    Cancelled,
+}
+
 impl<S: Scalar, const DIM: usize> NurbsCurve<S, DIM> {
     fn validation_work_for(
         knots: &KnotVector<S>,
@@ -620,6 +647,92 @@ impl<'a, S: Scalar, const DIM: usize> AdmittedNurbsCurve<'a, S, DIM> {
             });
         }
         Ok(out)
+    }
+
+    /// Evaluate a Cartesian point with bounded cancellation polling.
+    ///
+    /// This entry point is deliberately admitted-only. It reuses the exact
+    /// immutable curve generation, delegates cancellable basis construction
+    /// to its admitted knot view, polls homogeneous accumulation at fixed
+    /// logical-work strides, and gates final point publication. The caller
+    /// remains responsible for owning admission, `Cx` budget consumption, and
+    /// request -> drain -> finalize semantics around this primitive.
+    ///
+    /// # Errors
+    /// Returns the same dimension, parameter, work, allocation, weight, and
+    /// finite-arithmetic refusals as [`Self::eval`] when they win before an
+    /// observed cancellation.
+    pub fn eval_with_cx(
+        &self,
+        t: S,
+        cx: &Cx<'_>,
+    ) -> Result<CurveEvaluationRun<S, DIM>, NurbsError> {
+        if DIM > 3 {
+            return Err(NurbsError::Structure {
+                what: format!("curve dimension {DIM} exceeds the homogeneous storage limit 3"),
+            });
+        }
+        let (span, basis) = match self.knots().basis_with_cx(t, cx)? {
+            BasisRun::Complete { span, values } => (span, values),
+            BasisRun::Cancelled => return Ok(CurveEvaluationRun::Cancelled),
+        };
+        self.eval_from_basis_with_poll(span, &basis, || cx.checkpoint().is_err())
+    }
+
+    fn eval_from_basis_with_poll(
+        &self,
+        span: usize,
+        basis: &[S],
+        mut should_cancel: impl FnMut() -> bool,
+    ) -> Result<CurveEvaluationRun<S, DIM>, NurbsError> {
+        if should_cancel() {
+            return Ok(CurveEvaluationRun::Cancelled);
+        }
+
+        let p = self.knots().degree();
+        let mut operations_since_poll = 0usize;
+        let mut homogeneous = [S::zero(); 4];
+        for (r, &coefficient) in basis.iter().enumerate() {
+            let control = &self.inner.cpw[span - p + r];
+            for (accumulator, &component) in homogeneous.iter_mut().zip(control) {
+                *accumulator = *accumulator + coefficient * component;
+                if curve_poll_due(&mut operations_since_poll, &mut should_cancel) {
+                    return Ok(CurveEvaluationRun::Cancelled);
+                }
+            }
+        }
+        for &component in &homogeneous {
+            if !component.is_finite() {
+                return Err(NurbsError::Domain {
+                    what: "homogeneous curve evaluation left the finite numeric domain".to_string(),
+                });
+            }
+            if curve_poll_due(&mut operations_since_poll, &mut should_cancel) {
+                return Ok(CurveEvaluationRun::Cancelled);
+            }
+        }
+        if !homogeneous[3].is_admissible_weight() {
+            return Err(NurbsError::Domain {
+                what: "curve evaluation produced an inadmissible rational denominator".to_string(),
+            });
+        }
+
+        let mut point = [S::zero(); DIM];
+        for (slot, &component) in point.iter_mut().zip(&homogeneous) {
+            *slot = component / homogeneous[3];
+            if !slot.is_finite() {
+                return Err(NurbsError::Domain {
+                    what: "Cartesian curve evaluation left the finite numeric domain".to_string(),
+                });
+            }
+            if curve_poll_due(&mut operations_since_poll, &mut should_cancel) {
+                return Ok(CurveEvaluationRun::Cancelled);
+            }
+        }
+        if should_cancel() {
+            return Ok(CurveEvaluationRun::Cancelled);
+        }
+        Ok(CurveEvaluationRun::Complete { point })
     }
 
     /// Insert one knot while reusing this exact source admission.
@@ -1541,6 +1654,117 @@ impl<const DIM: usize> AdmittedNurbsCurve<'_, f64, DIM> {
 mod tests {
     use super::*;
     use crate::rat::Rat;
+    use asupersync::types::Budget;
+    use fs_exec::{CancelGate, ExecMode, StreamKey};
+
+    fn with_curve_cx<R>(cancelled: bool, f: impl FnOnce(&Cx<'_>) -> R) -> R {
+        let gate = CancelGate::new_clock_free();
+        if cancelled {
+            gate.request();
+        }
+        let pool = fs_alloc::ArenaPool::new(fs_alloc::ArenaConfig::default());
+        pool.scope(|arena| {
+            let cx = Cx::new(
+                &gate,
+                arena,
+                StreamKey {
+                    seed: 0xC0A7_E001,
+                    kernel_id: 1,
+                    tile: 0,
+                    iteration: 0,
+                },
+                Budget::INFINITE,
+                ExecMode::Deterministic,
+            );
+            f(&cx)
+        })
+    }
+
+    fn line_curve() -> NurbsCurve<f64, 1> {
+        let knots = KnotVector::new(vec![0.0, 0.0, 1.0, 1.0], 1).expect("line knots");
+        NurbsCurve::new(knots, &[[0.0], [1.0]], &[1.0, 1.0]).expect("line curve")
+    }
+
+    #[test]
+    fn admitted_curve_evaluation_with_cx_is_transactional_and_exact() {
+        let curve = line_curve();
+        let admitted = curve.admit().expect("admitted line");
+        with_curve_cx(true, |cx| {
+            assert!(matches!(
+                admitted.eval_with_cx(0.25, cx).expect("valid request"),
+                CurveEvaluationRun::Cancelled
+            ));
+            assert!(matches!(
+                admitted.eval_with_cx(-1.0, cx),
+                Err(NurbsError::Domain { .. })
+            ));
+        });
+        with_curve_cx(false, |cx| {
+            assert_eq!(
+                admitted.eval_with_cx(0.25, cx).expect("active context"),
+                CurveEvaluationRun::Complete {
+                    point: admitted.eval(0.25).expect("legacy evaluation"),
+                }
+            );
+        });
+    }
+
+    #[test]
+    fn curve_evaluation_replays_inside_accumulation_and_at_publication() {
+        let degree = 16usize;
+        let mut knots = vec![0.0; degree + 1];
+        knots.extend(vec![1.0; degree + 1]);
+        #[allow(clippy::cast_precision_loss)]
+        let controls: Vec<[f64; 1]> = (0..=degree)
+            .map(|index| [index as f64 / degree as f64])
+            .collect();
+        let weights = vec![1.0; degree + 1];
+        let curve = NurbsCurve::new(
+            KnotVector::new(knots, degree).expect("high-degree knots"),
+            &controls,
+            &weights,
+        )
+        .expect("high-degree curve");
+        let admitted = curve.admit().expect("admitted high-degree curve");
+        let (span, basis) = admitted.knots().basis(0.5).expect("basis row");
+        let run = || {
+            let mut polls = 0usize;
+            let outcome = admitted
+                .eval_from_basis_with_poll(span, &basis, || {
+                    polls += 1;
+                    polls == 2
+                })
+                .expect("finite accumulation");
+            (outcome, polls)
+        };
+        assert_eq!(run(), run());
+        assert_eq!(run(), (CurveEvaluationRun::Cancelled, 2));
+
+        let line = line_curve();
+        let admitted_line = line.admit().expect("admitted line");
+        let (line_span, line_basis) = admitted_line.knots().basis(0.5).expect("line basis");
+        let mut total_polls = 0usize;
+        assert!(matches!(
+            admitted_line
+                .eval_from_basis_with_poll(line_span, &line_basis, || {
+                    total_polls += 1;
+                    false
+                })
+                .expect("healthy line evaluation"),
+            CurveEvaluationRun::Complete { .. }
+        ));
+        let mut replay_polls = 0usize;
+        assert_eq!(
+            admitted_line
+                .eval_from_basis_with_poll(line_span, &line_basis, || {
+                    replay_polls += 1;
+                    replay_polls == total_polls
+                })
+                .expect("publication cancellation"),
+            CurveEvaluationRun::Cancelled
+        );
+        assert_eq!(replay_polls, total_polls);
+    }
 
     #[test]
     fn admitted_bezier_conversion_is_exact_and_preflighted() {
