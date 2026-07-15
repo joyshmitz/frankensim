@@ -40,6 +40,7 @@ mod cards;
 pub mod color;
 mod discrepancy;
 pub mod falsify;
+pub mod vv;
 
 pub use admitted::{
     AdmissionDecision, AdmissionReceipt, AdmissionRejection, AdmissionVerifier, AdmittedColor,

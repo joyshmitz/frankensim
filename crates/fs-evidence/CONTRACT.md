@@ -266,6 +266,89 @@ the fixed cases above as regression pins.
   malformed/undeclared attempts leave telemetry unchanged, and two clean rent
   windows decay identically under batched versus incremental review calls.
 
+## Operational V&V artifact schemas (bead frankensim-ext-vv-artifact-schemas-x68z)
+
+The `vv` module is the machine-readable boundary for operational verification,
+validation, calibration, and prediction assessment. Its seven top-level schemas
+are `ContextOfUse`, `ValidationPlan`, `ExperimentArtifact`, `CalibrationSplit`,
+`SolutionVerificationReceipt`, `PredictionAssessment`, and
+`AssumptionsLedger`.
+
+- Every artifact carries a stable artifact identity and the Five Explicits:
+  units, a fixed seed or an explicit not-applicable reason, accuracy/time/memory
+  budgets, component/schema versions, and required capabilities. References
+  bind both the named artifact and its content identity; a display label is
+  never lineage authority.
+- `ContextOfUse` binds the decision, named QoIs, acceptance bands, and the
+  applicability domain. `ValidationPlan` binds each QoI to its experiment,
+  solution-verification, diagnostic, and assessment dependencies. Dependency
+  closure is checked per QoI: a missing or mismatched edge refuses, and evidence
+  for one QoI cannot silently support another QoI.
+- `CalibrationSplit` requires non-empty, pairwise-disjoint calibration,
+  validation, and blind-holdout dataset sets. Blind data is inadmissible before
+  a release record binds the prior commitment and released dataset identity;
+  calibration data can never be relabeled as validation or blind evidence.
+- `ExperimentArtifact` records physical dataset lineage, instrument-calibration
+  receipts, clock-synchronization evidence and tolerance, repeatability and
+  covariance, and an authenticity reference. The schema checks presence,
+  dimensions, finite values, and reference closure; it does not itself
+  authenticate a laboratory, instrument, clock, signer, or dataset.
+- A validation plan must name observability, identifiability, confounding, and
+  inverse-crime diagnostics. A synthetic oracle, high-fidelity code, reduced
+  model, or second implementation is code/solution verification or discrepancy
+  evidence. It cannot mint physical validation or a `Validated` color without
+  an admitted physical experiment.
+- `SolutionVerificationReceipt` reports the QoI-specific mesh, time,
+  nonlinear-solve, and iterative-solve uncertainty components. Its reported
+  numerical envelope may not understate their conservative composition, and a
+  code-comparison receipt is kept distinct from the numerical enclosure.
+- The uncertainty waterfall has exactly the separately named model-form,
+  parameter, numerical, data, aleatory, and epistemic sources. It is either a
+  conservative bound composition or an explicitly probabilistic composition
+  with confidence/dependence semantics and supporting independence evidence;
+  neither mode may omit, duplicate, or silently average sources.
+- `PredictionAssessment` binds validation metrics to both experimental and
+  numerical uncertainty, posterior-predictive checks, the QoI waterfall, and
+  an applicability decision. Its seven evidence axes are categorical: code
+  verification, solution verification, numerical uncertainty, parameter/data
+  uncertainty, model-form validation, prediction-domain relevance, and
+  comparison to experiment. Colors are never converted to percentages or
+  averaged into a numeric confidence score.
+- Applicability is evaluated against the declared domain. Domain exit, a
+  missing axis, or a non-finite state follows the declared `Demote` or `Refuse`
+  policy and is retained in the assessment; silent extrapolation is forbidden.
+  Process-standard conformance receipts are recorded separately and cannot
+  satisfy model-validation or experiment-comparison axes.
+- `AssumptionsLedger` uses `AssumptionId | predicate | scope | evidence |
+  runtime monitor | violation effect | owner | expiry/review gate` and seeds the
+  plan's runtime assumptions: A-001 reduced/rigid-body adequacy; A-002 MQS
+  regime; A-003 mixed-cylinder/section-averaged-duct adequacy; A-004 smooth
+  contact and continuum-scale adequacy; A-005 symmetry preservation; A-006
+  material/process/query validity; A-007 closure/correlation/turbulence/
+  lubrication applicability; and A-008 probability/dependence/population
+  representativeness. Missing monitors or violated predicates demote, escalate,
+  or refuse according to the row; they never disappear from the lineage.
+
+V&V artifacts have a versioned canonical bounded binary encoding. Fields are
+fixed-order and length-framed; maps/sets use canonical ordering; floating-point
+values preserve their exact IEEE-754 bits. Decoding caps total bytes, counts,
+nesting, and string sizes, and refuses unknown tags, invalid UTF-8, duplicate or
+out-of-order keys, non-canonical encodings, and trailing bytes. An accepted
+decode must re-encode byte-identically. The admission receipt binds the schema
+version, artifact content identity, QoI/context identity, and validation-rule
+version; it proves that those structural rules ran, not that referenced
+experimental evidence is authentic or scientifically sufficient.
+
+Stable rule-coded errors identify the failed invariant and artifact path. G0
+tests cover all seven schema round trips, byte/identity determinism, split
+disjointness, numerical/waterfall arithmetic, rule-code stability, and
+applicability demotion/refusal. G3 cases mutate dataset roles, dependency QoIs,
+comparison source kinds, evidence-axis order, domain coordinates, and binary
+framing to demonstrate fail-closed behavior. G5 repeats canonical identity
+construction across insertion orders. These tests prove schema mechanics only:
+they do not prove experimental authenticity, independence, model adequacy,
+physical validation, process-standard conformance, or decision fitness.
+
 ## Admitted scientific color (bead 6pf9, stage S1)
 
 - `Color` is a DECLARATION: publicly constructible, structurally validated,
