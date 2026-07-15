@@ -76,37 +76,94 @@ fn g4_seeded_faults_are_structured_drained_and_replayable() {
     for seed in SEEDS {
         let plan = TileFaultPlan::seeded(seed, TILES, TOUCHES_PER_TILE).expect("valid plan");
         let result = pool.run(&TouchKernel { fault: Some(plan) });
-        match result {
+        let completed = match result {
             Err(RunError::TileFailed {
                 kernel,
                 tile,
-                failure: TileFailure::InjectedFault { plan_seed, touch },
-                ..
+                failure:
+                    TileFailure::InjectedFault {
+                        plan_version,
+                        plan_seed,
+                        tiles,
+                        touches_per_tile,
+                        touch,
+                    },
+                completed,
             }) => {
                 assert_eq!(kernel, "g4/tile-fault-storm");
                 assert_eq!(tile, plan.tile());
+                assert_eq!(plan_version, plan.version());
                 assert_eq!(plan_seed, plan.seed());
+                assert_eq!(tiles, plan.tiles());
+                assert_eq!(touches_per_tile, plan.touches_per_tile());
                 assert_eq!(touch, plan.touch());
+                completed
             }
             other => panic!("seed {seed:#018x}: expected typed tile failure, got {other:?}"),
-        }
+        };
 
         assert!(
             pool.arena_pool().stats().quiescent(),
             "seed {seed:#018x}: fault drain leaked an arena"
         );
-        println!(
-            "{{\"suite\":\"fs-exec/fault-storm\",\"plan_version\":{},\"seed\":\"{:#018x}\",\"tile\":{},\"touch\":{},\"verdict\":\"pass\"}}",
-            TILE_FAULT_PLAN_VERSION,
-            plan.seed(),
-            plan.tile(),
-            plan.touch(),
-        );
+        assert!(completed < TILES, "the refusing tile cannot be completed");
 
         let healthy = pool
             .run(&TouchKernel { fault: None })
             .expect("pool remains reusable after injected fault");
         assert_eq!(healthy, TILES * (TILES - 1) / 2);
         assert!(pool.arena_pool().stats().quiescent());
+
+        println!(
+            "{{\"suite\":\"fs-exec/fault-storm\",\"plan_version\":{},\"seed\":\"{:#018x}\",\"tiles\":{},\"touches_per_tile\":{},\"tile\":{},\"touch\":{},\"completed_before_drain\":{},\"verdict\":\"pass\"}}",
+            plan.version(),
+            plan.seed(),
+            plan.tiles(),
+            plan.touches_per_tile(),
+            plan.tile(),
+            plan.touch(),
+            completed,
+        );
     }
+}
+
+#[test]
+fn g4_early_fault_stops_single_worker_before_its_next_claim() {
+    const EARLY_SEED: u64 = 0xF404_001a;
+    let pool = TilePool::new(PoolConfig::new(1, CcdTopology::APPLE_M_CLASS, 0xF404_DA1A));
+    let plan = TileFaultPlan::seeded(EARLY_SEED, TILES, TOUCHES_PER_TILE).expect("valid plan");
+    assert_eq!(
+        (plan.tile(), plan.touch()),
+        (0, 1),
+        "golden early-fault plan"
+    );
+
+    let completed = match pool.run(&TouchKernel { fault: Some(plan) }) {
+        Err(RunError::TileFailed {
+            tile: 0,
+            failure:
+                TileFailure::InjectedFault {
+                    plan_version: TILE_FAULT_PLAN_VERSION,
+                    plan_seed: EARLY_SEED,
+                    tiles: TILES,
+                    touches_per_tile: TOUCHES_PER_TILE,
+                    touch: 1,
+                },
+            completed,
+            ..
+        }) => completed,
+        other => panic!("expected the golden early fault, got {other:?}"),
+    };
+    assert_eq!(
+        completed, 0,
+        "a one-worker pool must stop before claiming tile 1 after tile 0 refuses"
+    );
+    assert!(pool.arena_pool().stats().quiescent());
+    println!(
+        "{{\"suite\":\"fs-exec/fault-storm\",\"case\":\"early-drain\",\"plan_version\":{},\"seed\":\"{:#018x}\",\"tiles\":{},\"touches_per_tile\":{},\"tile\":0,\"touch\":1,\"completed_before_drain\":0,\"verdict\":\"pass\"}}",
+        plan.version(),
+        plan.seed(),
+        plan.tiles(),
+        plan.touches_per_tile(),
+    );
 }

@@ -442,8 +442,14 @@ pub enum TileFailure {
     Allocation(fs_alloc::AllocError),
     /// A declared G4 plan injected a failure at a numbered kernel touch.
     InjectedFault {
+        /// Version of the seed-to-fault mapping.
+        plan_version: u32,
         /// Seed from which the tile/touch plan was derived.
         plan_seed: u64,
+        /// Number of logical tiles in the selection domain.
+        tiles: u64,
+        /// Number of numbered touches available per logical tile.
+        touches_per_tile: u32,
         /// One-based touch within the selected logical tile.
         touch: u32,
     },
@@ -453,9 +459,16 @@ impl core::fmt::Display for TileFailure {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Allocation(error) => write!(f, "tile arena allocation refused: {error}"),
-            Self::InjectedFault { plan_seed, touch } => write!(
+            Self::InjectedFault {
+                plan_version,
+                plan_seed,
+                tiles,
+                touches_per_tile,
+                touch,
+            } => write!(
                 f,
-                "declared tile fault injected at touch {touch} (plan seed {plan_seed:#018x})"
+                "declared tile fault v{plan_version} injected at touch {touch}/{touches_per_tile} \
+                 (plan seed {plan_seed:#018x}, tile domain {tiles})"
             ),
         }
     }

@@ -39,8 +39,9 @@ fs-blake3, fs-substrate, fs-obs.
 - `TileFaultPlan::seeded(seed, tiles, touches_per_tile)` — the versioned G4
   fault selector (`TILE_FAULT_PLAN_VERSION = 1`). It fail-closes on either
   empty domain and selects exactly one logical tile plus one one-based touch
-  using only the declared seed and dimensions. `failure_at` yields a typed
-  `TileFailure::InjectedFault { plan_seed, touch }`; the tile itself remains in
+  using only the declared seed and dimensions. The plan and resulting typed
+  `TileFailure::InjectedFault` retain the mapping version, seed, tile count,
+  touches-per-tile, and selected touch; the selected tile itself remains in
   `RunError::TileFailed`, so retained evidence has complete replay provenance.
 - `Reduce` — fold identity + `merge`, applied over per-tile slots on the
   FIXED-SHAPE pairwise tree: split at the largest power of two below `n`,
@@ -519,8 +520,11 @@ seed nonmovement, and fail-closed retained-version admission.
 tests/fault_storm.rs runs 16 declared seeds through the version-1 tile-fault
 plan. Every case checks exact tile/seed/touch provenance, sibling drain via the
 typed refusal path, arena quiescence, and successful reuse of the same pool;
-each seed emits one JSON-line receipt. This bounded battery is G4 evidence, not
-an exhaustive scheduler-state exploration.
+each seed emits one JSON-line receipt only after all assertions pass. A golden
+single-worker early fault additionally proves that no later tile is claimed
+after the refusal, while an in-module golden vector locks the v1 seed mapping.
+This bounded battery is G4 evidence, not an exhaustive scheduler-state
+exploration.
 
 ## No-claim boundaries
 - NO 200 µs cancel-latency CLAIM yet: the reference-hardware p99 gate

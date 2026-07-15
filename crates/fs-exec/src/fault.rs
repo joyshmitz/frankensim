@@ -13,7 +13,10 @@ pub const TILE_FAULT_PLAN_VERSION: u32 = 1;
 /// A deterministic request to fail one logical tile at one numbered touch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TileFaultPlan {
+    version: u32,
     seed: u64,
+    tiles: u64,
+    touches_per_tile: u32,
     tile: u64,
     touch: u32,
 }
@@ -35,7 +38,10 @@ impl TileFaultPlan {
         let tile_word = mix(seed ^ 0x4653_2d54_494c_4521);
         let touch_word = mix(seed ^ 0x4653_2d54_4f55_4348);
         Ok(Self {
+            version: TILE_FAULT_PLAN_VERSION,
             seed,
+            tiles,
+            touches_per_tile,
             tile: tile_word % tiles,
             touch: u32::try_from(touch_word % u64::from(touches_per_tile))
                 .expect("bounded touch index fits u32")
@@ -43,10 +49,28 @@ impl TileFaultPlan {
         })
     }
 
+    /// Version of the deterministic seed-to-fault mapping.
+    #[must_use]
+    pub const fn version(self) -> u32 {
+        self.version
+    }
+
     /// Seed carried into the structured failure receipt.
     #[must_use]
     pub const fn seed(self) -> u64 {
         self.seed
+    }
+
+    /// Number of logical tiles in the selection domain.
+    #[must_use]
+    pub const fn tiles(self) -> u64 {
+        self.tiles
+    }
+
+    /// Number of one-based touches available in every logical tile.
+    #[must_use]
+    pub const fn touches_per_tile(self) -> u32 {
+        self.touches_per_tile
     }
 
     /// Logical tile selected by this plan.
@@ -65,7 +89,10 @@ impl TileFaultPlan {
     #[must_use]
     pub fn failure_at(self, tile: u64, touch: u32) -> Option<TileFailure> {
         (tile == self.tile && touch == self.touch).then_some(TileFailure::InjectedFault {
+            plan_version: self.version,
             plan_seed: self.seed,
+            tiles: self.tiles,
+            touches_per_tile: self.touches_per_tile,
             touch,
         })
     }
@@ -108,8 +135,16 @@ mod tests {
     fn plan_is_replayable_and_fail_closed_on_empty_domains() {
         let plan = TileFaultPlan::seeded(0xF404, 17, 3).expect("valid plan");
         assert_eq!(plan, TileFaultPlan::seeded(0xF404, 17, 3).unwrap());
-        assert!(plan.tile() < 17);
-        assert!((1..=3).contains(&plan.touch()));
+        assert_eq!(
+            plan.version(),
+            1,
+            "v1 mapping requires a version bump to move"
+        );
+        assert_eq!(plan.seed(), 0xF404);
+        assert_eq!(plan.tiles(), 17);
+        assert_eq!(plan.touches_per_tile(), 3);
+        assert_eq!(plan.tile(), 11, "golden v1 logical-tile selection");
+        assert_eq!(plan.touch(), 1, "golden v1 touch selection");
         assert_eq!(
             TileFaultPlan::seeded(0xF404, 0, 3),
             Err(FaultPlanError::ZeroTiles)
