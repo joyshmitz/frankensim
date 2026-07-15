@@ -30,7 +30,7 @@
 use crate::NurbsError;
 use crate::basis::KnotVector;
 use crate::closest::norm3;
-use crate::surface::NurbsSurface;
+use crate::surface::{AdmittedNurbsSurface, NurbsSurface};
 use core::mem::size_of;
 use fs_math::det;
 
@@ -272,11 +272,12 @@ fn validate_refit_request(
         .saturating_mul(control_points as u128)
         .saturating_mul(3);
     let projection_evaluations = (sample_points as u128).saturating_mul(42);
-    // Every retained probe calls the public surface evaluator. That path
-    // revalidates the whole mutable control net and knot vectors, builds two
-    // Cox-de Boor triangles, and accumulates the active tensor basis. Charge
-    // those stages rather than pretending one probe is one work unit. The
-    // arbitrary closure's own cost remains outside this legacy static model.
+    // The report binds one admitted immutable surface across all probes. Keep
+    // charging the former owning-evaluator scan on every probe as conservative
+    // headroom: this validate-once migration must not silently loosen the
+    // legacy process ceiling. Tightening that ceiling belongs to the successor
+    // caller-budgeted API. The arbitrary closure's own cost remains outside
+    // this legacy static model.
     let per_probe_work = (control_points as u128)
         .saturating_add(knots_per_axis as u128)
         .saturating_add((basis_triangle as u128).saturating_mul(2))
@@ -540,7 +541,8 @@ fn basis_row(kv: &KnotVector<f64>, n: usize, t: f64) -> Result<Vec<f64>, NurbsEr
 /// difference sits near the clamp, which would make the estimate too tight.
 /// The implementation uses ordinary f64 arithmetic and therefore returns an
 /// estimate, not an outward-rounded enclosure. Returns (L_u, L_v).
-fn lipschitz_estimate(surface: &NurbsSurface<f64>) -> (f64, f64) {
+fn lipschitz_estimate(surface: AdmittedNurbsSurface<'_, f64>) -> (f64, f64) {
+    let surface = surface.source();
     let p_u = surface.knots_u.degree;
     let p_v = surface.knots_v.degree;
     let ku = &surface.knots_u.knots;
@@ -732,6 +734,7 @@ pub fn refit_radial(
     }
     let weights = try_filled_matrix(nu, nv, 1.0f64, "refit unit weights")?;
     let surface = NurbsSurface::new(ku, kv, &net, &weights)?;
+    let report_surface = surface.admit()?;
     // ---- The honest report -------------------------------------------
     let mut rms = 0.0f64;
     let mut max_res = 0.0f64;
@@ -780,7 +783,7 @@ pub fn refit_radial(
                 (a as f64 + 0.5) / probe as f64,
                 (b as f64 + 0.5) / probe as f64,
             );
-            let p = surface.eval(u, v)?;
+            let p = report_surface.eval(u, v)?;
             let point = [p[0], p[1], p[2]];
             if point.iter().any(|coordinate| !coordinate.is_finite()) {
                 return Err(refit_structure_error(format!(
@@ -797,7 +800,7 @@ pub fn refit_radial(
         }
     }
     let coverage = max_res;
-    let (lip_u, lip_v) = lipschitz_estimate(&surface);
+    let (lip_u, lip_v) = lipschitz_estimate(report_surface);
     let lip = lip_u + lip_v;
     #[allow(clippy::cast_precision_loss)]
     let probe_param_radius = 0.5 / probe as f64;
@@ -811,7 +814,7 @@ pub fn refit_radial(
             "refit report arithmetic is non-finite",
         ));
     }
-    let (seam_g1, seam_g1_degenerate_samples) = seam_g1_diagnostic(&surface)?;
+    let (seam_g1, seam_g1_degenerate_samples) = seam_g1_diagnostic_admitted(report_surface)?;
     Ok(Refit {
         surface,
         report: RefitReport {
@@ -829,7 +832,14 @@ pub fn refit_radial(
     })
 }
 
+#[cfg(test)]
 fn seam_g1_diagnostic(surface: &NurbsSurface<f64>) -> Result<(f64, usize), NurbsError> {
+    seam_g1_diagnostic_admitted(surface.admit()?)
+}
+
+fn seam_g1_diagnostic_admitted(
+    surface: AdmittedNurbsSurface<'_, f64>,
+) -> Result<(f64, usize), NurbsError> {
     // Compare u-tangents across the exactly closed seam. Normalize each tangent
     // separately to avoid overflow/underflow in n0*n1, and clamp the rounded dot
     // product to the mathematical cosine range.
@@ -964,7 +974,7 @@ mod tests {
             .collect();
         let weights = vec![vec![1.0, 1.0]; n];
         let surface = NurbsSurface::new(ku, kv, &net, &weights).expect("surface");
-        let (lu, _lv) = lipschitz_estimate(&surface);
+        let (lu, _lv) = lipschitz_estimate(surface.admit().expect("admitted surface"));
         // Analytic formula: p · jump / (1/(n−p)) = p·(n−p)·jump.
         let expected = p as f64 * (n - p) as f64 * jump;
         let closed_form = (n - p) as f64 * jump; // the old factor-p under-estimate
@@ -987,6 +997,10 @@ mod tests {
         let surface =
             NurbsSurface::new(line.clone(), line, &points, &weights).expect("degenerate surface");
         let (g1, degenerate) = seam_g1_diagnostic(&surface).expect("bounded diagnostic");
+        let admitted = surface.admit().expect("admitted surface");
+        let admitted_result =
+            seam_g1_diagnostic_admitted(admitted).expect("admitted bounded diagnostic");
+        assert_eq!(admitted_result, (g1, degenerate));
         assert!(g1.is_infinite(), "undefined tangent direction is no-claim");
         assert_eq!(degenerate, 23, "every retained seam sample is named");
     }

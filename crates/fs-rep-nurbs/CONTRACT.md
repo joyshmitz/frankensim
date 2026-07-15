@@ -141,7 +141,11 @@ fs-iga (geometry basis = analysis basis), fs-render NURBS tracing
   The G¹ seam-angle diagnostic evaluates the open `v` interior at the exact
   two `u` seam endpoints. Its report explicitly marks `v=0,1` as excluded,
   because pole-chart tangent directions may be undefined; those endpoints gain
-  no implied G¹ authority pending the chart-aware pole audit.
+  no implied G¹ authority pending the chart-aware pole audit. After constructing
+  the fitted surface, the report binds one admitted immutable snapshot across
+  every dense probe, hodograph estimate, and seam-partial evaluation; construction
+  validation remains a separate stage, but the report does not repeatedly scan
+  the whole control net and knot vectors.
 
 ## Invariants
 
