@@ -631,6 +631,16 @@ pub enum OptError {
         /// Bindings supplied.
         got: u64,
     },
+    /// A keyed runtime frame supplied one variable more than once.
+    BindingDuplicate {
+        /// The repeated variable id.
+        var: u32,
+    },
+    /// A keyed runtime frame omitted a declared variable.
+    BindingMissing {
+        /// The first omitted variable id in declaration order.
+        var: u32,
+    },
     /// A supplied binding's length does not match its manifold storage.
     BindingLen {
         /// The variable.
@@ -828,6 +838,16 @@ impl core::fmt::Display for OptError {
                 f,
                 "{got} bindings supplied for {vars} declared variable(s); bindings \
                  are indexed by VarId and must exactly match the declaration list"
+            ),
+            OptError::BindingDuplicate { var } => write!(
+                f,
+                "binding for variable {var} was supplied more than once; a keyed \
+                 runtime frame must contain each declared VarId exactly once"
+            ),
+            OptError::BindingMissing { var } => write!(
+                f,
+                "binding for declared variable {var} is missing; a keyed runtime \
+                 frame must contain each declared VarId exactly once"
             ),
             OptError::BindingLen { var, expected, got } => write!(
                 f,

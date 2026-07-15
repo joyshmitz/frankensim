@@ -11,9 +11,10 @@
 //! work — the seal itself is enforced by the compiler.
 
 use fs_opt::{
-    AdmissionCaps, AdmissionViolation, BilevelRef, Manifold, NodeId, OptError, ProblemBuilder,
-    ProblemSemanticId, ProblemTag, Sense, VarId, WireVersion, canonical_v2_migration_target, eval,
-    parse, parse_with_version, problem_hash, serialize, serialize_with_id,
+    AdmissionCaps, AdmissionViolation, BilevelRef, BindingFrame, Manifold, NodeId, OptError,
+    ProblemBuilder, ProblemSemanticId, ProblemTag, Sense, VarId, WireVersion,
+    canonical_v2_migration_target, eval, eval_keyed, parse, parse_with_version, problem_hash,
+    serialize, serialize_with_id,
 };
 use fs_qty::Dims;
 
@@ -1346,4 +1347,156 @@ fn adm_020_binding_manifold_domains_are_enforced() {
         &[vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0]],
     )
     .expect("orthonormal Stiefel binding evaluates");
+}
+
+/// adm-021 — keyed frames are order-independent and exact: every
+/// declared VarId appears once, while unknown, duplicate, and missing
+/// ids refuse before the graph receives runtime values.
+#[test]
+fn adm_021_keyed_binding_frames_are_exact() {
+    let mut builder = ProblemBuilder::new();
+    let x = builder
+        .var("x", Manifold::Rn { dim: 1 }, Dims::NONE)
+        .expect("x");
+    let y = builder
+        .var("y", Manifold::Rn { dim: 1 }, Dims::NONE)
+        .expect("y");
+    let xr = builder.var_ref(x).expect("x ref");
+    let yr = builder.var_ref(y).expect("y ref");
+    let x0 = builder.component(xr, 0).expect("x component");
+    let y0 = builder.component(yr, 0).expect("y component");
+    let difference = builder.sub(x0, y0).expect("difference");
+    let problem = builder.finish();
+    let x_value = [2.0];
+    let y_value = [3.0];
+
+    let frame = BindingFrame::new(&problem, [(x, x_value.as_slice()), (y, y_value.as_slice())])
+        .expect("forward frame");
+    let forward = frame.eval(difference).expect("frame evaluation");
+    let reversed = eval_keyed(
+        &problem,
+        difference,
+        [(y, y_value.as_slice()), (x, x_value.as_slice())],
+    )
+    .expect("reversed frame");
+    assert_eq!(forward, fs_opt::Value::S(-1.0));
+    assert_eq!(reversed, forward, "binding order has no semantics");
+
+    assert!(matches!(
+        BindingFrame::new(&problem, [(x, x_value.as_slice())]),
+        Err(OptError::BindingMissing { var }) if var == y.0
+    ));
+    assert!(matches!(
+        BindingFrame::new(
+            &problem,
+            [(x, x_value.as_slice()), (x, x_value.as_slice())],
+        ),
+        Err(OptError::BindingDuplicate { var }) if var == x.0
+    ));
+    assert!(matches!(
+        BindingFrame::new(&problem, [(VarId(99), x_value.as_slice())]),
+        Err(OptError::UnknownVar { id: 99 })
+    ));
+    let empty: [f64; 0] = [];
+    assert!(matches!(
+        BindingFrame::new(
+            &problem,
+            [(x, empty.as_slice()), (y, y_value.as_slice())],
+        ),
+        Err(OptError::BindingLen {
+            var,
+            expected: 1,
+            got: 0,
+        }) if var == x.0
+    ));
+    let non_finite = [f64::INFINITY];
+    assert!(matches!(
+        BindingFrame::new(
+            &problem,
+            [(x, non_finite.as_slice()), (y, y_value.as_slice())],
+        ),
+        Err(OptError::BindingNonFinite {
+            var,
+            component: 0,
+            bits,
+        }) if var == x.0 && bits == f64::INFINITY.to_bits()
+    ));
+}
+
+/// adm-022 — frame caps are preflighted against the default runtime
+/// envelope even when a custom builder admitted a larger problem.
+/// Refusal therefore precedes slot allocation, missing-binding
+/// diagnostics, and expensive manifold-domain scans.
+#[test]
+fn adm_022_binding_frame_caps_precede_allocation_and_payload_work() {
+    let runtime_caps = AdmissionCaps::default();
+    let mut looser_builder_caps = runtime_caps.clone();
+    looser_builder_caps.max_vars += 1;
+    let mut oversized_builder = ProblemBuilder::with_caps(looser_builder_caps);
+    for id in 0..=runtime_caps.max_vars {
+        let name = format!("v{id}");
+        oversized_builder
+            .var(&name, Manifold::Rn { dim: 1 }, Dims::NONE)
+            .expect("looser builder admits the variable");
+    }
+    let oversized = oversized_builder.finish();
+    assert!(matches!(
+        BindingFrame::new(
+            &oversized,
+            std::iter::empty::<(VarId, &'static [f64])>(),
+        ),
+        Err(OptError::CapExceeded {
+            what: "runtime binding variables",
+            count,
+            cap,
+        }) if count == u64::from(runtime_caps.max_vars) + 1
+            && cap == u64::from(runtime_caps.max_vars)
+    ));
+
+    let mut looser_dimension_caps = runtime_caps.clone();
+    looser_dimension_caps.max_point_dim += 1;
+    let mut oversized_dimension_builder = ProblemBuilder::with_caps(looser_dimension_caps);
+    oversized_dimension_builder
+        .var(
+            "wide",
+            Manifold::Rn {
+                dim: runtime_caps.max_point_dim + 1,
+            },
+            Dims::NONE,
+        )
+        .expect("looser builder admits the wider point");
+    let oversized_dimension = oversized_dimension_builder.finish();
+    assert!(matches!(
+        BindingFrame::new(
+            &oversized_dimension,
+            std::iter::empty::<(VarId, &'static [f64])>(),
+        ),
+        Err(OptError::CapExceeded {
+            what: "runtime binding point dimension",
+            count,
+            cap,
+        }) if count == u64::from(runtime_caps.max_point_dim) + 1
+            && cap == u64::from(runtime_caps.max_point_dim)
+    ));
+
+    let mut expensive_builder = ProblemBuilder::new();
+    expensive_builder
+        .var(
+            "expensive-frame",
+            Manifold::Stiefel { n: 4096, p: 4096 },
+            Dims::NONE,
+        )
+        .expect("point storage fits admission caps");
+    let expensive = expensive_builder.finish();
+    assert!(matches!(
+        BindingFrame::new(
+            &expensive,
+            std::iter::empty::<(VarId, &'static [f64])>(),
+        ),
+        Err(OptError::CapExceeded {
+            what: "runtime binding validation work",
+            cap,
+            ..
+        }) if cap == runtime_caps.max_total_work
+    ));
 }

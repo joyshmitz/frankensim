@@ -39,7 +39,9 @@ mod serial;
 pub use admission::{
     ADMISSION_SCHEMA_VERSION, AdmissionCaps, AdmissionReport, AdmissionViolation, ProblemAdmission,
 };
-pub use eval::{DescentOptions, DescentReport, Value, descend_fn, descend_ir, eval};
+pub use eval::{
+    BindingFrame, DescentOptions, DescentReport, Value, descend_fn, descend_ir, eval, eval_keyed,
+};
 pub use guard::{
     DeltaPerturbationStep, Endpoint, EscalationKind, EscalationStep, GoodhartGuard, GuardFinding,
     GuardReport, GuardStatus, StepOutcome, StepReport, converged_and_guard_cleared,

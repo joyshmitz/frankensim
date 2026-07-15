@@ -6,7 +6,7 @@
 //! consumer; exact adjoints are the gradient-stack bead's.
 
 use crate::admission::AdmissionCaps;
-use crate::ir::{Expr, Manifold, NodeId, OptError, Problem};
+use crate::ir::{Expr, Manifold, NodeId, OptError, Problem, VarId};
 use fs_exec::Cx;
 
 /// Squared-norm/dot tolerance for deciding whether a finite stored
@@ -36,6 +36,68 @@ impl Value {
     }
 }
 
+/// A complete, validated runtime point for every variable in one
+/// sealed [`Problem`]. Construction is keyed by [`VarId`], so caller
+/// entry order carries no semantics; the retained problem reference
+/// prevents applying the frame to a different graph.
+#[derive(Debug)]
+pub struct BindingFrame<'problem, 'value> {
+    problem: &'problem Problem,
+    ordered: Vec<&'value [f64]>,
+}
+
+impl<'problem, 'value> BindingFrame<'problem, 'value> {
+    /// Validate and canonicalize one keyed runtime frame.
+    ///
+    /// # Errors
+    /// [`OptError::UnknownVar`], [`OptError::BindingDuplicate`],
+    /// [`OptError::BindingMissing`], [`OptError::BindingLen`],
+    /// [`OptError::BindingNonFinite`], [`OptError::BindingDomain`], or
+    /// [`OptError::CapExceeded`].
+    pub fn new<I>(problem: &'problem Problem, bindings: I) -> Result<Self, OptError>
+    where
+        I: IntoIterator<Item = (VarId, &'value [f64])>,
+    {
+        Self::new_with_caps(problem, bindings, &AdmissionCaps::default())
+    }
+
+    fn new_with_caps<I>(
+        problem: &'problem Problem,
+        bindings: I,
+        caps: &AdmissionCaps,
+    ) -> Result<Self, OptError>
+    where
+        I: IntoIterator<Item = (VarId, &'value [f64])>,
+    {
+        validate_binding_frame_envelope(problem, caps)?;
+        let mut slots = vec![None; problem.vars.len()];
+        for (var, binding) in bindings {
+            let slot = slots
+                .get_mut(var.0 as usize)
+                .ok_or(OptError::UnknownVar { id: var.0 })?;
+            if slot.replace(binding).is_some() {
+                return Err(OptError::BindingDuplicate { var: var.0 });
+            }
+        }
+        let mut ordered = Vec::with_capacity(slots.len());
+        for (var, binding) in slots.into_iter().enumerate() {
+            ordered.push(binding.ok_or(OptError::BindingMissing { var: var as u32 })?);
+        }
+        validate_ordered_bindings(problem, &ordered, caps)?;
+        Ok(Self { problem, ordered })
+    }
+
+    /// Evaluate an arbitrary node using this already validated frame.
+    ///
+    /// # Errors
+    /// [`OptError::UnknownNode`], [`OptError::Unevaluable`],
+    /// [`OptError::EvalNonFinite`], or [`OptError::CapExceeded`].
+    pub fn eval(&self, node: NodeId) -> Result<Value, OptError> {
+        validate_eval_envelope(self.problem, node)?;
+        eval_validated(self.problem, node, &self.ordered)
+    }
+}
+
 /// Evaluate `node` with variable `bindings` (exactly one point per
 /// declared variable, stored per its manifold and indexed by `VarId`).
 /// Arbitrary subgraph roots remain evaluable, but their runtime frame
@@ -51,6 +113,38 @@ impl Value {
 /// [`OptError::BindingDomain`] / [`OptError::EvalNonFinite`] /
 /// [`OptError::CapExceeded`].
 pub fn eval(problem: &Problem, node: NodeId, bindings: &[Vec<f64>]) -> Result<Value, OptError> {
+    let caps = validate_eval_envelope(problem, node)?;
+    if bindings.len() != problem.vars.len() {
+        return Err(OptError::BindingCount {
+            vars: problem.vars.len() as u32,
+            got: bindings.len() as u64,
+        });
+    }
+    let ordered: Vec<&[f64]> = bindings.iter().map(Vec::as_slice).collect();
+    validate_ordered_bindings(problem, &ordered, &caps)?;
+    eval_validated(problem, node, &ordered)
+}
+
+/// Evaluate `node` with a complete binding frame keyed by [`VarId`].
+/// Entry order is irrelevant. Unknown, duplicate, and missing ids are
+/// refused before any graph arithmetic, and each accepted value
+/// inherits the units and manifold declared by its variable.
+///
+/// # Errors
+/// The graph, payload, and arithmetic errors documented by [`eval`];
+/// keyed structural failures use [`OptError::BindingDuplicate`] and
+/// [`OptError::BindingMissing`] instead of positional
+/// [`OptError::BindingCount`].
+pub fn eval_keyed<'a, I>(problem: &Problem, node: NodeId, bindings: I) -> Result<Value, OptError>
+where
+    I: IntoIterator<Item = (VarId, &'a [f64])>,
+{
+    let caps = validate_eval_envelope(problem, node)?;
+    let frame = BindingFrame::new_with_caps(problem, bindings, &caps)?;
+    eval_validated(problem, node, &frame.ordered)
+}
+
+fn validate_eval_envelope(problem: &Problem, node: NodeId) -> Result<AdmissionCaps, OptError> {
     if node.0 as usize >= problem.exprs.len() {
         return Err(OptError::UnknownNode { id: node.0 });
     }
@@ -63,6 +157,22 @@ pub fn eval(problem: &Problem, node: NodeId, bindings: &[Vec<f64>]) -> Result<Va
             cap: u64::from(caps.max_graph_depth),
         });
     }
+    validate_binding_frame_envelope(problem, &caps)?;
+    Ok(caps)
+}
+
+fn validate_binding_frame_envelope(
+    problem: &Problem,
+    caps: &AdmissionCaps,
+) -> Result<(), OptError> {
+    let variable_count = problem.vars.len() as u64;
+    if variable_count > u64::from(caps.max_vars) {
+        return Err(OptError::CapExceeded {
+            what: "runtime binding variables",
+            count: variable_count,
+            cap: u64::from(caps.max_vars),
+        });
+    }
     let work = problem.total_admission_work();
     if work > caps.max_total_work {
         return Err(OptError::CapExceeded {
@@ -71,12 +181,61 @@ pub fn eval(problem: &Problem, node: NodeId, bindings: &[Vec<f64>]) -> Result<Va
             cap: caps.max_total_work,
         });
     }
-    if bindings.len() != problem.vars.len() {
-        return Err(OptError::BindingCount {
-            vars: problem.vars.len() as u32,
-            got: bindings.len() as u64,
-        });
+    let mut point_storage = 0u64;
+    let mut validation_work = 0u64;
+    for variable in &problem.vars {
+        let point_dim = variable
+            .manifold
+            .point_dim()
+            .ok_or_else(|| OptError::ManifoldInvalid {
+                what: format!(
+                    "{:?} has no representable runtime point dimension",
+                    variable.manifold
+                ),
+            })?;
+        if point_dim > caps.max_point_dim {
+            return Err(OptError::CapExceeded {
+                what: "runtime binding point dimension",
+                count: u64::from(point_dim),
+                cap: u64::from(caps.max_point_dim),
+            });
+        }
+        point_storage = point_storage.saturating_add(u64::from(point_dim));
+        if point_storage > caps.max_total_point_storage {
+            return Err(OptError::CapExceeded {
+                what: "runtime binding point storage",
+                count: point_storage,
+                cap: caps.max_total_point_storage,
+            });
+        }
+        let domain_work = match variable.manifold {
+            Manifold::Rn { .. } => 0,
+            Manifold::Sphere { .. } | Manifold::So3 => u64::from(point_dim),
+            Manifold::Stiefel { n, p } => {
+                let gram_entries = u64::from(p).saturating_mul(u64::from(p).saturating_add(1)) / 2;
+                u64::from(n).saturating_mul(gram_entries)
+            }
+        };
+        validation_work = validation_work
+            .saturating_add(u64::from(point_dim))
+            .saturating_add(domain_work);
+        if validation_work > caps.max_total_work {
+            return Err(OptError::CapExceeded {
+                what: "runtime binding validation work",
+                count: validation_work,
+                cap: caps.max_total_work,
+            });
+        }
     }
+    Ok(())
+}
+
+fn validate_ordered_bindings(
+    problem: &Problem,
+    bindings: &[&[f64]],
+    caps: &AdmissionCaps,
+) -> Result<(), OptError> {
+    let mut total_binding_components = 0u64;
     for (i, (binding, var)) in bindings.iter().zip(&problem.vars).enumerate() {
         let expected = var
             .manifold
@@ -87,6 +246,14 @@ pub fn eval(problem: &Problem, node: NodeId, bindings: &[Vec<f64>]) -> Result<Va
                 var: i as u32,
                 expected,
                 got: binding.len() as u64,
+            });
+        }
+        total_binding_components = total_binding_components.saturating_add(binding.len() as u64);
+        if total_binding_components > caps.max_total_point_storage {
+            return Err(OptError::CapExceeded {
+                what: "runtime binding components",
+                count: total_binding_components,
+                cap: caps.max_total_point_storage,
             });
         }
         for (component_index, component) in binding.iter().enumerate() {
@@ -100,6 +267,10 @@ pub fn eval(problem: &Problem, node: NodeId, bindings: &[Vec<f64>]) -> Result<Va
         }
         var.manifold.validate_binding_domain(binding, i as u32)?;
     }
+    Ok(())
+}
+
+fn eval_validated(problem: &Problem, node: NodeId, bindings: &[&[f64]]) -> Result<Value, OptError> {
     // Arena order guarantees every dependency has a lower id, so a
     // root-bounded memo prefix is sufficient; unrelated later nodes
     // cannot force memo allocation for this evaluation.
@@ -140,7 +311,7 @@ pub fn eval(problem: &Problem, node: NodeId, bindings: &[Vec<f64>]) -> Result<Va
 fn eval_node(
     problem: &Problem,
     node: NodeId,
-    bindings: &[Vec<f64>],
+    bindings: &[&[f64]],
     memo: &[Option<Value>],
 ) -> Result<Value, OptError> {
     let ev = |n: NodeId| -> Value {
@@ -159,7 +330,7 @@ fn eval_node(
             let x = bindings
                 .get(v.0 as usize)
                 .ok_or(OptError::UnknownVar { id: v.0 })?;
-            Value::V(x.clone())
+            Value::V((*x).to_vec())
         }
         Expr::Component { of, index } => {
             let v = ev(*of);

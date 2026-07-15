@@ -164,6 +164,14 @@ structure; FLUX/UQ execute it.
   finite components, and the same Sphere/SO(3)/Stiefel membership rules used
   by retraction; a refusal identifies the exact variable, component or Gram
   location, and diagnostic IEEE-754 bits.
+  `BindingFrame` validates and canonicalizes the same complete frame from
+  keyed entries in any order; `eval_keyed` is its one-shot spelling. Unknown,
+  duplicate, or missing `VarId`s refuse before graph arithmetic. Runtime values
+  inherit their declared variable units; no caller-supplied unit tag can
+  override the sealed IR, and a frame retains its originating problem. The
+  default runtime variable/per-point/aggregate-point-storage envelope and
+  manifold-validation work charge are preflighted before frame slot allocation,
+  including for problems sealed under looser caller-supplied builder caps.
   Every computed scalar/vector node result is then checked for finiteness
   with node/component attribution before it enters the memo or becomes a
   public result. The walk itself is EXPLICIT-STACK (reachability worklist
@@ -277,8 +285,9 @@ name + exact bit pattern), `BindingNonFinite`/`BindingDomain`/
 `EvalNonFinite` (runtime location + exact bits),
 `RetractionLen`/`RetractionNonFinite`/
 `RetractionDomain` (input, manifold rule, location, and measurement),
-`CapExceeded` (cap name + count + limit), `BindingCount`/`BindingLen`
-(declared vs supplied),
+`CapExceeded` (cap name + count + limit),
+`BindingCount`/`BindingDuplicate`/`BindingMissing`/`BindingLen`
+(declared vs supplied, with exact `VarId` attribution),
 `WireIncompatible` (historical version + unrepresentable typed construct),
 `NonsmoothForFamily` (node + kind + class),
 `NoAdjoint` (node + study), `Unevaluable` (node + executor), `Parse`
