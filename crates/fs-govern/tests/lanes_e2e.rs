@@ -332,3 +332,119 @@ fn lanes_e2e_ledger_package_checker_replay() {
         "no double-charge"
     );
 }
+
+/// G4 persistence-boundary fault drill (the bead's outstanding storage
+/// lane): the process "crashes" mid-sequence — the in-memory portfolio
+/// ledger is dropped and the design ledger handle is closed — then the
+/// design ledger REOPENS on the same path. Every decision artifact
+/// persisted before the fault must survive byte-for-byte, re-persisting
+/// a recovered row must dedupe against the surviving artifact (no
+/// double write), and re-executing the FULL request sequence with the
+/// SAME idempotency keys must converge to a final decision log
+/// byte-identical to a never-crashed control run — no divergence, no
+/// duplicate effects, no partial admission across the fault.
+#[test]
+fn lanes_e2e_crash_reopen_recovery() {
+    let dir = std::env::temp_dir().join(format!("lanes-crash-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let ledger_path = dir.join("crash.led");
+    let ledger_path = ledger_path.to_str().expect("utf8");
+
+    let lane_a = charter(
+        "claim A survives restarts",
+        "restart refutation family",
+        "crash-a",
+    );
+    let lane_b = charter(
+        "claim B survives restarts",
+        "restart refutation family b",
+        "crash-b",
+    );
+    let m_a = lane_a.mechanism_id("mech a", 1).expect("id");
+    let m_b = lane_b.mechanism_id("mech b", 1).expect("id");
+    let rival = lane_a.mechanism_id("rival", 1).expect("id");
+    let script: Vec<Step> = vec![
+        Step::Admit(
+            lane_a.clone(),
+            m_a,
+            envelope(10),
+            IdempotencyKey::derive("c-a"),
+        ),
+        Step::Admit(
+            lane_a.clone(),
+            rival,
+            envelope(5),
+            IdempotencyKey::derive("c-rival"),
+        ),
+        Step::Admit(
+            lane_b.clone(),
+            m_b,
+            envelope(10),
+            IdempotencyKey::derive("c-b"),
+        ),
+    ];
+
+    // Control: the never-crashed run.
+    let mut control = PortfolioLedger::new(policy());
+    for step in &script {
+        let _ = apply(&mut control, step);
+    }
+    let control_log = control.decisions_json(usize::MAX);
+
+    // Run 1: crash after the FIRST step's decision is persisted.
+    let mut persisted_before_crash = Vec::new();
+    {
+        let ledger = Ledger::open(ledger_path).expect("design ledger");
+        let mut portfolio = PortfolioLedger::new(policy());
+        let _ = apply(&mut portfolio, &script[0]);
+        let row = portfolio.decisions().last().expect("row").to_json();
+        let receipt = ledger
+            .put_artifact("proof-lane/decision", row.as_bytes(), None)
+            .expect("persist decision");
+        assert!(!receipt.deduped, "first persistence is a fresh write");
+        persisted_before_crash.push((receipt.hash, row));
+        // CRASH: both handles drop here; in-memory portfolio state is
+        // lost, the design-ledger file survives on disk.
+    }
+
+    // Recovery: reopen the SAME path; pre-fault artifacts must survive.
+    let reopened = Ledger::open(ledger_path).expect("reopen after fault");
+    for (hash, row) in &persisted_before_crash {
+        let survived = reopened
+            .get_artifact(hash)
+            .expect("artifact read")
+            .expect("artifact survived the fault");
+        assert_eq!(survived, row.as_bytes(), "durable byte-for-byte survival");
+    }
+
+    // Re-execute the FULL sequence on a fresh portfolio (deterministic
+    // replay makes the pre-fault prefix reproduce identically), then
+    // persist every row: the recovered first row must DEDUPE against
+    // the surviving pre-fault artifact — no double write.
+    let mut recovered = PortfolioLedger::new(policy());
+    for step in &script {
+        let _ = apply(&mut recovered, step);
+    }
+    for (index, decision) in recovered.decisions().iter().enumerate() {
+        let row = decision.to_json();
+        let receipt = reopened
+            .put_artifact("proof-lane/decision", row.as_bytes(), None)
+            .expect("persist recovered decision");
+        if index == 0 {
+            assert!(receipt.deduped, "recovered prefix dedupes, not re-writes");
+            assert_eq!(receipt.hash, persisted_before_crash[0].0);
+        }
+    }
+    assert_eq!(
+        recovered.decisions_json(usize::MAX),
+        control_log,
+        "post-fault recovery converges to the never-crashed control bytes"
+    );
+
+    // Idempotent retries after recovery stay absorbed.
+    let rows = recovered.decisions().len();
+    for step in &script {
+        let _ = apply(&mut recovered, step);
+    }
+    assert_eq!(recovered.decisions().len(), rows, "no duplicate effects");
+}

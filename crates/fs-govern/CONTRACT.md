@@ -303,8 +303,17 @@ identity guard has a test that fails if the guard is removed.
   fs-package claims and re-checked solver-free by fs-checker (with a
   mismatched-root refusal probe), and the whole request sequence
   replayed byte-for-byte on a fresh portfolio ledger plus an idempotent
-  full-retry pass. Storage-fault injection at every persistence
-  boundary remains the bead's outstanding G4 lane.
+  full-retry pass. The G4 persistence-fault drill (same file) crashes
+  the process mid-sequence — in-memory portfolio dropped, design-ledger
+  handle closed — reopens the same path, proves pre-fault decision
+  artifacts survive byte-for-byte, re-persists the recovered prefix as
+  a DEDUPE (no double write), and converges the full re-execution to
+  the never-crashed control bytes with idempotent retries absorbed.
+  In-crate retention exhaustion (the governed store's own fault
+  surface) is pinned by lane-009. NOT claimed: kernel-level I/O fault
+  injection, torn/partial-write simulation, and media corruption —
+  those live with fs-ledger's own crash-recovery battery and
+  deployment policy.
 - Independence classes are DECLARED. Canonicalization defeats cosmetic
   splits and the class backstop defeats partition gaming among honestly
   labeled lanes, but the crate cannot algorithmically prove that two
