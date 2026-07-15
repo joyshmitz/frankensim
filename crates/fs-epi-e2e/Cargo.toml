@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Epistemic type-system end-to-end suite (addendum): a runnable Layer-2 battery that exercises laundering refusal, the no-falsifier-no-ship gate + budget allocator, the Goodhart guard, objective epistemics, and the evidence-package round-trip together — the artifact of record that the type system FAILS SAFE, with structured per-stage logging."
+description = "Epistemic type-system end-to-end suite: a runnable Layer-2 battery for laundering refusal, falsifier-catalog linting and diagnostic budget allocation, Goodhart guards, objective epistemics, and evidence-package round trips, with structured per-stage logging."
 
 [package.metadata.frankensim]
 layer = "L6"

@@ -308,11 +308,13 @@ fn epi_e2e_battery() {
 
     // ---- STAGE 2: the falsifier economy ---------------------------------
     let registry = FalsifierRegistry::standard();
-    let blocked = registry.ship_gate(&["adjoint-gradient", "unpaired-novel-cert"]);
-    assert_eq!(blocked.len(), 1, "no falsifier, no ship");
+    let blocked = registry
+        .catalog_gate(&["adjoint-gradient", "unpaired-novel-cert"])
+        .expect("bounded valid catalog query");
+    assert_eq!(blocked.len(), 1, "catalog lint names the unpaired class");
     log.log(
         "falsifier",
-        "\"event\":\"ship-gate\",\"blocked\":\"unpaired-novel-cert\"",
+        "\"event\":\"catalog-lint\",\"unpaired\":\"unpaired-novel-cert\"",
     );
     let mut history = FalsifierHistory::new();
     // Seeded claims: high-consequence high-doubt, low-low, and COLD START.
@@ -323,7 +325,7 @@ fn epi_e2e_battery() {
             consequence: 10.0,
         },
         ClaimContext {
-            class: "watertightness".to_string(),
+            class: "sampled-interface-agreement".to_string(),
             regime: "Re-2e5".to_string(),
             consequence: 1.0,
         },
@@ -333,7 +335,8 @@ fn epi_e2e_battery() {
             consequence: 5.0,
         },
     ];
-    let budget = fs_evidence::falsify::allocate_budget(100.0, &claims, &history);
+    let budget = fs_evidence::falsify::allocate_budget(100.0, &claims, &history)
+        .expect("bounded finite diagnostic allocation");
     let get = |c: &str| {
         claims
             .iter()
@@ -343,32 +346,46 @@ fn epi_e2e_battery() {
             .expect("allocated")
     };
     assert!(
-        get("brand-new-cert") > get("watertightness"),
+        get("brand-new-cert") > get("sampled-interface-agreement"),
         "cold start carries max doubt: {budget:?}"
     );
     log.log(
         "falsifier",
         &format!(
-            "\"event\":\"budget\",\"conservation\":{:.2},\"watertightness\":{:.2},\
+            "\"event\":\"budget\",\"conservation\":{:.2},\"sampled-interface-agreement\":{:.2},\
              \"cold-start\":{:.2}",
             get("conservation"),
-            get("watertightness"),
+            get("sampled-interface-agreement"),
             get("brand-new-cert")
         ),
     );
-    // A falsifier HIT: the tombstone + estimator bug report auto-create.
-    let (tombstone, bug) = history.record_hit(
-        &fs_evidence::falsify::FalsifierHit {
-            class: "conservation".to_string(),
-            regime: "Re-2e5".to_string(),
-            falsifier: "global-flux-audit".to_string(),
+    // A reported discrepancy creates pending candidate payloads; an external
+    // authority still has to adjudicate and atomically persist them.
+    let attempt = fs_evidence::falsify::FalsifierAttempt {
+        attempt_id: "epi-e2e-conservation-attempt-1".to_string(),
+        class: "conservation".to_string(),
+        regime: "Re-2e5".to_string(),
+        falsifier: "global-flux-audit".to_string(),
+        claim_revision: "epi-e2e-stage-2-r1".to_string(),
+        artifact_id: "epi-e2e-independent-flux-artifact-1".to_string(),
+        seed: 7,
+        compute_s: 42.0,
+        outcome: fs_evidence::falsify::FalsifierOutcome::Discrepancy {
             detail: "flux imbalance 3.2e-2 on the independent quadrature".to_string(),
         },
-        42.0,
-    );
-    assert!(tombstone.json.contains("conservation"));
-    assert!(bug.json.contains("global-flux-audit"));
-    let (hits, spend, _) = history.yield_of("conservation");
+    };
+    let record = history
+        .record_attempt(&registry, &attempt)
+        .expect("well-formed source-referencing diagnostic hit");
+    let tombstone = record.tombstone.expect("pending tombstone candidate");
+    let bug = record
+        .estimator_bug
+        .expect("pending estimator-bug candidate");
+    assert!(tombstone.json().contains("conservation"));
+    assert!(bug.json().contains("global-flux-audit"));
+    let (hits, spend, _) = history
+        .yield_of("conservation")
+        .expect("well-formed class identifier");
     assert_eq!(hits, 1);
     log.log(
         "falsifier",
@@ -379,7 +396,7 @@ fn epi_e2e_battery() {
     );
     verdict(
         "stage-2",
-        "ship gate blocks; cold start dominates budget; hits mint tombstones",
+        "catalog lint reports; cold start dominates budget; hits create pending candidates",
     );
 
     // ---- STAGE 3: the Goodhart guard ------------------------------------

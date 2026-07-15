@@ -9,9 +9,10 @@
 //! 1. **Laundering** — composition cannot upgrade a color (verified∘estimated →
 //!    estimated), and a validated claim out of its regime auto-demotes to
 //!    estimated ([`fs_evidence`]).
-//! 2. **Falsifier economy** — a certificate class with no falsifier is blocked
-//!    by the no-falsifier-no-ship gate, and the consequence×doubt allocator
-//!    spends monotonically (cold-start = max doubt).
+//! 2. **Falsifier economy** — a declaration-catalog lint names an unpaired
+//!    certificate class, and the diagnostic consequence×doubt allocator spends
+//!    monotonically (cold-start = max doubt). This stage is not release
+//!    authority; exact-instance admission belongs to fs-package/fs-checker.
 //! 3. **Goodhart guard** — a discretization-exploit endpoint is REFUSED
 //!    (`Failed`), a genuine smooth optimum is honored (`Cleared`), and an
 //!    unavailable step leaves the endpoint `Provisional`, never false-cleared
@@ -58,6 +59,13 @@ const ROUNDTRIP_POLICY_FINGERPRINT: &str =
     "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
 const ROUNDTRIP_SIGNATURE_POLICY_FINGERPRINT: &str =
     "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2";
+const REQUIRED_STAGES: [&str; 5] = [
+    "laundering",
+    "falsifier",
+    "goodhart-guard",
+    "objective-epistemics",
+    "evidence-roundtrip",
+];
 
 struct RoundtripCertificateVerifier;
 
@@ -102,25 +110,69 @@ impl SignatureVerifier for RoundtripSignatureVerifier {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StageLog {
     /// The stage name.
-    pub stage: &'static str,
+    stage: &'static str,
     /// Did every fail-closed assertion in the stage hold?
-    pub passed: bool,
+    passed: bool,
     /// The structured log events (what each check observed).
-    pub events: Vec<String>,
+    events: Vec<String>,
+}
+
+impl StageLog {
+    /// Canonical stage identity.
+    #[must_use]
+    pub const fn stage(&self) -> &'static str {
+        self.stage
+    }
+
+    /// Whether the stage assertions passed and retained nonblank evidence.
+    #[must_use]
+    pub fn passed(&self) -> bool {
+        self.passed
+            && !self.events.is_empty()
+            && self.events.iter().all(|event| !event.trim().is_empty())
+    }
+
+    /// Structured evidence events retained by this stage.
+    #[must_use]
+    pub fn events(&self) -> &[String] {
+        &self.events
+    }
 }
 
 /// The full end-to-end report.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EpiE2eReport {
     /// The five stage logs, in order.
-    pub stages: Vec<StageLog>,
+    stages: Vec<StageLog>,
 }
 
 impl EpiE2eReport {
+    fn new(stages: Vec<StageLog>) -> Self {
+        Self { stages }
+    }
+
+    /// Ordered, read-only stage logs.
+    #[must_use]
+    pub fn stages(&self) -> &[StageLog] {
+        &self.stages
+    }
+
+    /// Whether the exact fixed five-stage schema and evidence obligations are
+    /// present. Passing flags alone cannot manufacture a complete report.
+    #[must_use]
+    pub fn complete(&self) -> bool {
+        self.stages.len() == REQUIRED_STAGES.len()
+            && self
+                .stages
+                .iter()
+                .zip(REQUIRED_STAGES)
+                .all(|(stage, required)| stage.stage == required && stage.passed())
+    }
+
     /// Did the whole battery pass?
     #[must_use]
     pub fn passed(&self) -> bool {
-        self.stages.iter().all(|s| s.passed)
+        self.complete()
     }
 
     /// A named stage, if present.
@@ -133,15 +185,13 @@ impl EpiE2eReport {
 /// Run the full Layer-2 battery.
 #[must_use]
 pub fn run_battery() -> EpiE2eReport {
-    EpiE2eReport {
-        stages: vec![
-            stage_laundering(),
-            stage_falsifier(),
-            stage_goodhart_guard(),
-            stage_objective_epistemics(),
-            stage_evidence_roundtrip(),
-        ],
-    }
+    EpiE2eReport::new(vec![
+        stage_laundering(),
+        stage_falsifier(),
+        stage_goodhart_guard(),
+        stage_objective_epistemics(),
+        stage_evidence_roundtrip(),
+    ])
 }
 
 fn verified() -> Color {
@@ -210,18 +260,25 @@ pub fn stage_laundering() -> StageLog {
     }
 }
 
-/// Stage 2: no-falsifier-no-ship gate + consequence×doubt allocation.
+/// Stage 2: falsifier-catalog lint + diagnostic consequence×doubt allocation.
 #[must_use]
 pub fn stage_falsifier() -> StageLog {
     let mut events = Vec::new();
     let mut passed = true;
 
-    // a class with no registered falsifier is blocked from shipping.
+    // A class with no declaration is named by the catalog-completeness lint.
     let registry = FalsifierRegistry::standard();
-    let blocked = registry.ship_gate(&["totally-unregistered-class"]);
+    let blocked = match registry.catalog_gate(&["totally-unregistered-class"]) {
+        Ok(blocked) => blocked,
+        Err(error) => {
+            passed = false;
+            events.push(format!("catalog_gate input refused: {error}"));
+            Vec::new()
+        }
+    };
     let gate_ok = !blocked.is_empty();
     events.push(format!(
-        "ship_gate([unregistered]) blocked {blocked:?} (no-falsifier-no-ship)"
+        "catalog_gate([unregistered]) reports {blocked:?} (metadata lint; not release authority)"
     ));
     passed &= gate_ok;
 
@@ -239,7 +296,14 @@ pub fn stage_falsifier() -> StageLog {
             consequence: 1.0,
         },
     ];
-    let budget = allocate_budget(100.0, &claims, &history);
+    let budget = match allocate_budget(100.0, &claims, &history) {
+        Ok(budget) => budget,
+        Err(error) => {
+            passed = false;
+            events.push(format!("allocate_budget input refused: {error}"));
+            Vec::new()
+        }
+    };
     let monotone = budget.len() == 2 && budget[0] > budget[1];
     events.push(format!(
         "allocate_budget: high-consequence {:.2} > low-consequence {:.2}",
@@ -249,7 +313,14 @@ pub fn stage_falsifier() -> StageLog {
     passed &= monotone;
 
     // zero claims -> zero spend (boundary).
-    let empty = allocate_budget(100.0, &[], &history);
+    let empty = match allocate_budget(100.0, &[], &history) {
+        Ok(empty) => empty,
+        Err(error) => {
+            passed = false;
+            events.push(format!("empty allocate_budget input refused: {error}"));
+            Vec::new()
+        }
+    };
     let boundary_ok = empty.is_empty();
     events.push(format!(
         "allocate_budget([]) = {} entries (zero spend)",
@@ -474,5 +545,44 @@ fn rank_name(r: ColorRank) -> &'static str {
         ColorRank::Verified => "verified",
         ColorRank::Validated => "validated",
         ColorRank::Estimated => "estimated",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn report_pass_requires_exact_ordered_schema_and_nonblank_evidence() {
+        let report = run_battery();
+        assert!(report.complete() && report.passed());
+
+        let mut empty = report.clone();
+        empty.stages.clear();
+        assert!(!empty.complete() && !empty.passed());
+
+        let mut missing = report.clone();
+        missing.stages.pop();
+        assert!(!missing.complete() && !missing.passed());
+
+        let mut duplicate = report.clone();
+        duplicate.stages[1] = duplicate.stages[0].clone();
+        assert!(!duplicate.complete() && !duplicate.passed());
+
+        let mut reordered = report.clone();
+        reordered.stages.swap(0, 1);
+        assert!(!reordered.complete() && !reordered.passed());
+
+        let mut unexpected = report.clone();
+        unexpected.stages[2].stage = "unexpected";
+        assert!(!unexpected.complete() && !unexpected.passed());
+
+        let mut blank_event = report.clone();
+        blank_event.stages[3].events[0] = "   ".to_string();
+        assert!(!blank_event.complete() && !blank_event.passed());
+
+        let mut empty_log = report;
+        empty_log.stages[4].events.clear();
+        assert!(!empty_log.complete() && !empty_log.passed());
     }
 }

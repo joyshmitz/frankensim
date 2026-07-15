@@ -14,10 +14,14 @@ new primitive.
 ## Public types and semantics
 
 - `run_battery() -> EpiE2eReport` — runs all five stages.
-- `EpiE2eReport { stages: Vec<StageLog> }` — `passed()` (all stages passed),
-  `stage(name)`.
-- `StageLog { stage, passed, events }` — the structured per-stage log (events
-  are returned as DATA, never printed).
+- `EpiE2eReport` has sealed construction and private storage. `stages()` exposes
+  an ordered read-only view; `complete()` requires the exact five canonical
+  stage identities in order plus well-formed evidence; `passed()` is true only
+  when that complete schema passes; `stage(name)` provides named lookup.
+- `StageLog` has private fields and read-only `stage()`, `passed()`, and
+  `events()` accessors. Its pass accessor also requires at least one nonblank
+  evidence event. Events are returned as DATA, never printed, and callers
+  cannot forge a passing log by struct construction.
 - Per-stage entry points (`stage_laundering`, `stage_falsifier`,
   `stage_goodhart_guard`, `stage_objective_epistemics`,
   `stage_evidence_roundtrip`) for granular runs.
@@ -27,8 +31,9 @@ new primitive.
 1. **Laundering** — `compose(verified, estimated)` yields estimated (min rank,
    no upgrade); a validated claim OUT of its regime auto-demotes to estimated,
    one IN its regime is preserved.
-2. **Falsifier** — `ship_gate` blocks a class with no falsifier; the
-   consequence×doubt allocator spends monotonically and zero claims → zero spend.
+2. **Falsifier** — `catalog_gate` names a class with no falsifier declaration;
+   the bounded diagnostic consequence×doubt allocator spends monotonically and
+   zero claims → zero spend. This catalog lint does not admit a release claim.
 3. **Goodhart guard** — a discretization-exploit endpoint is REFUSED (`Failed`)
    even when the other escalation steps pass; a genuine smooth optimum with the
    full escalation set is honored (`Cleared`); a guard missing steps stays
@@ -70,14 +75,19 @@ None.
 
 ## Conformance tests
 
-`tests/e2e.rs` (Layer-2 conformance, 7 cases): the full battery passes with all
-five stages logged; laundering fails closed; the no-falsifier-no-ship gate
-blocks; the guard refuses exploits but honors genuine optima and stays
+`tests/e2e.rs` (Layer-2 conformance, 7 cases) plus internal schema-adversary
+tests: the full battery passes only with the exact ordered five-stage schema and
+nonblank evidence; empty, missing, duplicated, reordered, unexpected, or
+blank-event reports fail closed; laundering fails closed; the falsifier-catalog lint names
+an unpaired class; the guard refuses exploits but honors genuine optima and stays
 provisional when it cannot check; objective epistemics holds the contract; the
 evidence package round-trips and tamper is caught; the battery is deterministic.
 
 ## No-claim boundaries
 
+- The falsifier stage checks declaration-catalog completeness and allocator
+  arithmetic only. It does not prove a checker implementation is independent,
+  bind a retained run to the exact claim instance, or authorize release.
 - The suite emits its log events as returned DATA; wiring them onto the base
   plan's structured tracing / ledger event sinks is the harness integration.
 - The guard's non-δ escalation steps (rung k+1, cross-representation,

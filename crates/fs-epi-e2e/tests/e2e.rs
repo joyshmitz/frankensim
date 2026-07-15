@@ -12,10 +12,11 @@ fn the_full_layer2_battery_passes() {
     let report = run_battery();
     assert!(report.passed(), "battery failed: {report:#?}");
     // all five stages present, each with logged events.
-    assert_eq!(report.stages.len(), 5);
-    for s in &report.stages {
-        assert!(s.passed, "stage {} failed", s.stage);
-        assert!(!s.events.is_empty(), "stage {} logged nothing", s.stage);
+    assert!(report.complete());
+    assert_eq!(report.stages().len(), 5);
+    for s in report.stages() {
+        assert!(s.passed(), "stage {} failed", s.stage());
+        assert!(!s.events().is_empty(), "stage {} logged nothing", s.stage());
     }
 }
 
@@ -23,53 +24,57 @@ fn the_full_layer2_battery_passes() {
 fn laundering_fails_closed() {
     // composition cannot upgrade a color; out-of-regime demotes; in-regime kept.
     let s = stage_laundering();
-    assert!(s.passed, "{:#?}", s.events);
-    assert!(s.events.iter().any(|e| e.contains("no laundering")));
-    assert!(s.events.iter().any(|e| e.contains("demotion=true")));
+    assert!(s.passed(), "{:#?}", s.events());
+    assert!(s.events().iter().any(|e| e.contains("no laundering")));
+    assert!(s.events().iter().any(|e| e.contains("demotion=true")));
 }
 
 #[test]
-fn the_no_falsifier_no_ship_gate_blocks() {
+fn the_falsifier_catalog_lint_names_unpaired_classes() {
     let s = stage_falsifier();
-    assert!(s.passed, "{:#?}", s.events);
-    assert!(s.events.iter().any(|e| e.contains("no-falsifier-no-ship")));
+    assert!(s.passed(), "{:#?}", s.events());
+    assert!(
+        s.events()
+            .iter()
+            .any(|e| e.contains("not release authority"))
+    );
 }
 
 #[test]
 fn the_goodhart_guard_refuses_exploits_but_honors_genuine_optima() {
     let s = stage_goodhart_guard();
-    assert!(s.passed, "{:#?}", s.events);
+    assert!(s.passed(), "{:#?}", s.events());
     // the exploit is refused (not honored) and the smooth optimum is honored.
     assert!(
-        s.events
+        s.events()
             .iter()
             .any(|e| e.contains("exploit") && e.contains("honored=false"))
     );
     assert!(
-        s.events
+        s.events()
             .iter()
             .any(|e| e.contains("smooth") && e.contains("honored=true"))
     );
-    assert!(s.events.iter().any(|e| e.contains("provisional")));
+    assert!(s.events().iter().any(|e| e.contains("provisional")));
 }
 
 #[test]
 fn objective_epistemics_holds_the_contract_and_weakest_input_rule() {
     let s = stage_objective_epistemics();
-    assert!(s.passed, "{:#?}", s.events);
-    assert!(s.events.iter().any(|e| e.contains("refused = true")));
+    assert!(s.passed(), "{:#?}", s.events());
+    assert!(s.events().iter().any(|e| e.contains("refused = true")));
 }
 
 #[test]
 fn the_evidence_package_round_trips_and_tamper_is_caught() {
     let s = stage_evidence_roundtrip();
-    assert!(s.passed, "{:#?}", s.events);
+    assert!(s.passed(), "{:#?}", s.events());
     assert!(
-        s.events
+        s.events()
             .iter()
             .any(|e| e.contains("tampered package caught = true"))
     );
-    assert!(s.events.iter().any(|e| e.contains("no solver")));
+    assert!(s.events().iter().any(|e| e.contains("no solver")));
 }
 
 #[test]
