@@ -14,7 +14,9 @@
 //! measured estimator evidence, not a certified error bound.
 
 use fs_cutfem::quad::tensor_gauss;
-use fs_cutfem::{CellKey, CutElasticity, CutElasticitySolution, CutFemError, Quadtree};
+use fs_cutfem::{
+    CellKey, CutElasticity, CutElasticitySolution, CutFemError, Quadtree, SharedFacePatch,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The stabilization convention used by [`estimate_elasticity_compliance`].
@@ -57,7 +59,7 @@ impl ElasticityResidualTerms {
     }
 }
 
-/// Compliance DWR result on one uniform vector CutFEM grid.
+/// Compliance DWR result on one uniform or 2:1-graded vector CutFEM grid.
 #[derive(Debug, Clone)]
 pub struct ElasticityDwrEstimate {
     /// Signed cell reconstruction of the estimated goal error.
@@ -238,8 +240,15 @@ pub fn estimate_elasticity_compliance(
     let mut face_indicators = BTreeMap::new();
     if problem.ghost_gamma > 0.0 {
         for &(cell_a, cell_b) in coarse.ghost_faces() {
-            let face_value =
-                coarse_ghost_consistent_energy(problem, &coarse, (cell_a, cell_b), mu)?;
+            let patch = problem
+                .grid
+                .shared_face_patch(cell_a, cell_b)
+                .map_err(|error| {
+                    invalid(format!(
+                        "cannot reconstruct coarse elasticity ghost patch ({cell_a:?}, {cell_b:?}): {error}"
+                    ))
+                })?;
+            let face_value = coarse_ghost_consistent_energy(problem, &coarse, patch, mu)?;
             if face_indicators
                 .insert((cell_a, cell_b), face_value)
                 .is_some()
@@ -388,34 +397,22 @@ fn outer_traction_residual(
 fn coarse_ghost_consistent_energy(
     problem: &CutElasticity<'_>,
     coarse: &CutElasticitySolution,
-    face: (CellKey, CellKey),
+    patch: SharedFacePatch,
     mu: f64,
 ) -> Result<f64, CutFemError> {
-    let (cell_a, cell_b) = face;
-    let (lo_a, hi_a) = problem.grid.rect(cell_a);
-    let (level_a, i_a, j_a) = cell_a;
-    let (level_b, i_b, j_b) = cell_b;
-    let (axis, coordinate, tangent_lo, tangent_hi) = if level_a == level_b
-        && i_a.checked_add(1) == Some(i_b)
-        && j_a == j_b
-    {
-        (0usize, hi_a[0], lo_a[1], hi_a[1])
-    } else if level_a == level_b && i_a == i_b && j_a.checked_add(1) == Some(j_b) {
-        (1usize, hi_a[1], lo_a[0], hi_a[0])
-    } else {
-        return Err(invalid(format!(
-            "canonical coarse ghost cells {cell_a:?} and {cell_b:?} are not equal-level left/right or bottom/top face neighbors"
-        )));
-    };
+    let (cell_a, cell_b) = patch.oriented_cells();
+    let axis = patch.axis().index();
+    let coordinate = patch.coordinate();
+    let (tangent_lo, tangent_hi) = patch.tangent_interval();
     if !tangent_lo.is_finite() || !tangent_hi.is_finite() || tangent_hi <= tangent_lo {
         return Err(invalid(format!(
-            "coarse ghost face ({cell_a:?}, {cell_b:?}) has non-finite or non-positive length"
+            "coarse ghost patch {patch:?} has non-finite or non-positive length"
         )));
     }
-    let normal = if axis == 0 { [1.0, 0.0] } else { [0.0, 1.0] };
+    let normal = patch.axis().normal();
     let gauss = 0.5 / 3.0f64.sqrt();
     let half_length = 0.5 * (tangent_hi - tangent_lo);
-    let h = problem.grid.cell_h(cell_a);
+    let h = patch.h_f();
     let scale = problem.ghost_gamma * mu * h * half_length;
     require_finite(scale, "elasticity DWR coarse ghost scale")?;
     let mut quadrature_sum = 0.0;

@@ -1,6 +1,6 @@
 //! `frankensim-m4rb` vector-compliance DWR acceptance fixtures.
 
-use fs_cutfem::{Circle, CutElasticity, CutFemError, CutSdf, Quadtree};
+use fs_cutfem::{Circle, CutElasticity, CutFemError, CutSdf, HalfPlane, Quadtree};
 use fs_dwr::{ElasticityDwrEstimate, estimate_elasticity_compliance};
 use fs_ivl::Interval;
 use fs_material::IsotropicElastic;
@@ -282,6 +282,46 @@ fn elasticity_estimator_refuses_lattice_cap_before_solving() {
     )
     .expect_err("level-16 grid cannot be enriched safely");
     assert!(matches!(err, CutFemError::InvalidElasticityInput { .. }));
+}
+
+#[test]
+fn graded_elasticity_dwr_reuses_mixed_level_ghost_patches() {
+    let mut grid = Quadtree::with_room(1, 2);
+    grid.split((1, 1, 0));
+    let sdf = HalfPlane {
+        normal: [1.0, 0.0],
+        offset: 0.6,
+    };
+    let material = material();
+    let zero = |_: f64, _: f64| [0.0, 0.0];
+    let body = |_: f64, _: f64| [0.1, -0.07];
+    let cut = problem(&grid, &sdf, &material, None, None, false, 0.5);
+
+    let coarse = cut.solve(&body, &zero).expect("graded coarse solve");
+    assert!(
+        coarse.ghost_faces().iter().any(|(a, b)| a.0 != b.0),
+        "fixture must retain mixed-level coarse ghost evidence"
+    );
+    let estimate = estimate_elasticity_compliance(&cut, &body, &zero).expect("graded DWR estimate");
+    assert_reconstruction(&estimate);
+    assert_eq!(
+        estimate.face_indicators.keys().copied().collect::<Vec<_>>(),
+        coarse.ghost_faces().to_vec(),
+        "DWR must retain exactly the operator's canonical ghost-patch keys"
+    );
+    let mixed_ghost_energy: f64 = estimate
+        .face_indicators
+        .iter()
+        .filter_map(|(&(a, b), &value)| (a.0 != b.0).then_some(value))
+        .sum();
+    assert!(
+        mixed_ghost_energy.is_finite() && mixed_ghost_energy > 0.0,
+        "mixed-level shared patches must carry nondegenerate positive DWR ghost energy: {mixed_ghost_energy:e}"
+    );
+    assert_coarse_ghost_energy_matches_operator(&cut, &body, &zero, &estimate);
+
+    let replay = estimate_elasticity_compliance(&cut, &body, &zero).expect("graded DWR replay");
+    assert_bitwise_equal(&estimate, &replay);
 }
 
 #[test]

@@ -838,17 +838,17 @@ fn independent_ghost_energy(
     let nodal = operator.nodal_values(coefficients);
     let mut energy = 0.0;
     for &(cell_a, cell_b) in operator.ghost_faces() {
+        let patch = grid
+            .shared_face_patch(cell_a, cell_b)
+            .expect("operator ghost pair has one exact shared patch");
+        let (cell_a, cell_b) = patch.oriented_cells();
         let (lo_a, hi_a) = grid.rect(cell_a);
         let (lo_b, hi_b) = grid.rect(cell_b);
-        let h = grid.cell_h(cell_a);
-        let axis = usize::from(cell_a.1 == cell_b.1);
-        let (t0, t1) = if axis == 0 {
-            (lo_a[1], hi_a[1])
-        } else {
-            (lo_a[0], hi_a[0])
-        };
-        let normal = if axis == 0 { [1.0, 0.0] } else { [0.0, 1.0] };
-        let face_coordinate = if axis == 0 { hi_a[0] } else { hi_a[1] };
+        let h = patch.h_f();
+        let axis = patch.axis().index();
+        let (t0, t1) = patch.tangent_interval();
+        let normal = patch.axis().normal();
+        let face_coordinate = patch.coordinate();
         let corners_a = grid.corner_nodes(cell_a);
         let corners_b = grid.corner_nodes(cell_b);
         let gauss = 0.5 / 3.0f64.sqrt();
@@ -877,6 +877,138 @@ fn independent_ghost_energy(
         }
     }
     energy
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn mixed_level_ghost_patches_are_affine_exact_symmetric_and_positive_semidefinite() {
+    let mut grid = Quadtree::with_room(1, 2);
+    grid.split((1, 1, 0));
+    let sdf = HalfPlane {
+        normal: [1.0, 0.0],
+        offset: 0.6,
+    };
+    let mat = material();
+    let zero = |_: f64, _: f64| [0.0, 0.0];
+    let cut = problem(&grid, &sdf, &mat, 0.5);
+    let stabilized = cut
+        .assemble(&zero, &graded_affine)
+        .expect("mixed-level cut/ghost assembly");
+    let unstabilized = CutElasticity {
+        ghost_gamma: 0.0,
+        ..cut
+    }
+    .assemble(&zero, &graded_affine)
+    .expect("matching ghost-free assembly");
+    assert_eq!(stabilized.node_ids(), unstabilized.node_ids());
+    assert_bit_symmetric(&stabilized);
+    assert_bit_symmetric(&unstabilized);
+
+    let active: BTreeSet<_> = stabilized.active_cells().iter().copied().collect();
+    let nodes = active_nodes(&grid, &stabilized);
+    let constraints = grid.hanging_constraints(&active, &nodes);
+    assert!(
+        !constraints.is_empty() && stabilized.node_ids().len() < nodes.len(),
+        "mixed-level ghost fixture must scatter through a nonidentity hanging expansion"
+    );
+    let hanging_nodes: BTreeSet<_> = constraints.iter().map(|(node, _)| *node).collect();
+
+    let mixed_faces: Vec<_> = stabilized
+        .ghost_faces()
+        .iter()
+        .copied()
+        .filter(|(a, b)| a.0 != b.0)
+        .collect();
+    assert!(
+        !mixed_faces.is_empty(),
+        "fixture must assemble at least one coarse/fine ghost patch"
+    );
+    let mut mixed_patch_contains_hanging_node = false;
+    for &(a, b) in &mixed_faces {
+        let patch = grid
+            .shared_face_patch(a, b)
+            .expect("mixed ghost pair has shared geometry");
+        assert_eq!(
+            patch.h_f().to_bits(),
+            grid.cell_h(a).min(grid.cell_h(b)).to_bits()
+        );
+        assert!(patch.length() > 0.0);
+        mixed_patch_contains_hanging_node |= [a, b].into_iter().any(|cell| {
+            grid.corner_nodes(cell)
+                .into_iter()
+                .any(|node| hanging_nodes.contains(&node))
+        });
+    }
+    assert!(
+        mixed_patch_contains_hanging_node,
+        "at least one stabilized mixed patch must contain a genuinely constrained node"
+    );
+
+    let ghost_action = |coefficients: &[f64]| {
+        let with_ghost = stabilized.apply_vec(coefficients);
+        let without_ghost = unstabilized.apply_vec(coefficients);
+        with_ghost
+            .into_iter()
+            .zip(without_ghost)
+            .map(|(on, off)| on - off)
+            .collect::<Vec<_>>()
+    };
+
+    for seed in 0..4usize {
+        let probe: Vec<f64> = (0..stabilized.dof_count())
+            .map(|dof| {
+                let residue = (dof * 37 + seed * 19 + 11) % 101;
+                (f64::from(u32::try_from(residue).expect("small residue")) - 50.0) * 0.001
+            })
+            .collect();
+        let action = ghost_action(&probe);
+        let energy: f64 = probe.iter().zip(&action).map(|(x, gx)| x * gx).sum();
+        let scale: f64 = probe
+            .iter()
+            .zip(&action)
+            .map(|(x, gx)| (x * gx).abs())
+            .sum();
+        assert!(
+            energy >= -256.0 * f64::EPSILON * scale.max(1.0),
+            "mixed-level ghost operator must be PSD: energy={energy:e}, scale={scale:e}"
+        );
+    }
+
+    let mut affine = vec![0.0; stabilized.dof_count()];
+    for (&node, &id) in stabilized.node_ids() {
+        let point = grid.node_pos(node);
+        let value = graded_affine(point[0], point[1]);
+        affine[2 * id] = value[0];
+        affine[2 * id + 1] = value[1];
+    }
+    let affine_action = ghost_action(&affine);
+    let affine_energy: f64 = affine
+        .iter()
+        .zip(&affine_action)
+        .map(|(x, gx)| x * gx)
+        .sum();
+    let affine_scale: f64 = affine
+        .iter()
+        .zip(&affine_action)
+        .map(|(x, gx)| (x * gx).abs())
+        .sum();
+    assert!(
+        affine_energy.abs() <= 512.0 * f64::EPSILON * affine_scale.max(1.0),
+        "globally affine displacement must have zero mixed-level derivative jump: {affine_energy:e}"
+    );
+
+    let (_, mu) = mat.lame();
+    let probe: Vec<f64> = (0..stabilized.dof_count())
+        .map(|dof| f64::from(u32::try_from((dof * 29 + 7) % 67).expect("small residue")) * 0.002)
+        .collect();
+    let action = ghost_action(&probe);
+    let assembled_energy: f64 = probe.iter().zip(&action).map(|(x, gx)| x * gx).sum();
+    let direct_energy = independent_ghost_energy(&grid, &stabilized, &probe, 0.5, mu);
+    assert!(direct_energy > 0.0 && direct_energy.is_finite());
+    assert!(
+        (assembled_energy - direct_energy).abs() <= 2e-11 * direct_energy.abs().max(1.0),
+        "mixed-level reduced ghost energy mismatch: assembled={assembled_energy:e}, direct={direct_energy:e}"
+    );
 }
 
 #[test]

@@ -16,7 +16,7 @@
 
 use crate::CutFemError;
 use crate::fem::{JacobiPrecond, q1};
-use crate::grid::{CellKey, NodeKey, Quadtree};
+use crate::grid::{CellKey, FaceDirection, NodeKey, Quadtree, SharedFacePatch};
 use crate::quad::{CutRules, cut_cell_rules, tensor_gauss};
 use crate::sdf::CutSdf;
 use fs_material::IsotropicElastic;
@@ -320,8 +320,10 @@ impl CutElasticityOperator {
         &self.rules
     }
 
-    /// Canonically ordered equal-level faces carrying ghost stabilization.
-    /// The slice is empty when `ghost_gamma == 0`.
+    /// Canonically ordered leaf pairs whose exact shared patches carry ghost
+    /// stabilization. One coarse face can therefore contribute two pairs,
+    /// one for each fine neighbor. The slice is empty when
+    /// `ghost_gamma == 0`.
     #[must_use]
     pub fn ghost_faces(&self) -> &[(CellKey, CellKey)] {
         &self.ghost_faces
@@ -485,8 +487,8 @@ impl CutElasticitySolution {
         &self.rules
     }
 
-    /// Canonically ordered equal-level faces carrying ghost stabilization.
-    /// The slice is empty when `ghost_gamma == 0`.
+    /// Canonically ordered leaf pairs whose exact shared patches carry ghost
+    /// stabilization. The slice is empty when `ghost_gamma == 0`.
     #[must_use]
     pub fn ghost_faces(&self) -> &[(CellKey, CellKey)] {
         &self.ghost_faces
@@ -887,30 +889,36 @@ impl CutElasticity<'_> {
         let mut ghost_faces = BTreeSet::<FaceKey>::new();
         if self.ghost_gamma > 0.0 {
             for &cell in &cut {
-                for direction in 0..4u8 {
-                    let Some(neighbor) = self.grid.covering_neighbor(cell, direction) else {
-                        continue;
-                    };
-                    if !active_set.contains(&neighbor) {
-                        continue;
-                    }
-                    if neighbor.0 != cell.0 {
-                        return Err(CutFemError::CutBandNotUniform { cell, neighbor });
-                    }
-                    let face = if cell < neighbor {
-                        (cell, neighbor)
-                    } else {
-                        (neighbor, cell)
-                    };
-                    if ghost_faces.insert(face) {
-                        self.assemble_ghost_face(
-                            face,
-                            mu,
-                            &node_ids,
-                            node_expansions.as_ref(),
-                            &clamped,
-                            &mut coo,
-                        )?;
+                for direction in FaceDirection::ALL {
+                    let patches = self.grid.face_neighbors(cell, direction).map_err(|error| {
+                        CutFemError::InvalidElasticityInput {
+                            what: format!(
+                                "cannot derive 2:1 ghost-face topology from cut cell {cell:?}: {error}"
+                            ),
+                        }
+                    })?;
+                    for patch in patches {
+                        let neighbor = patch.other(cell).ok_or_else(|| {
+                            CutFemError::InvalidElasticityInput {
+                                what: format!(
+                                    "shared ghost patch {patch:?} does not contain source cell {cell:?}"
+                                ),
+                            }
+                        })?;
+                        if !active_set.contains(&neighbor) {
+                            continue;
+                        }
+                        let face = patch.canonical_cells();
+                        if ghost_faces.insert(face) {
+                            self.assemble_ghost_face(
+                                patch,
+                                mu,
+                                &node_ids,
+                                node_expansions.as_ref(),
+                                &clamped,
+                                &mut coo,
+                            )?;
+                        }
                     }
                 }
             }
@@ -1061,25 +1069,21 @@ impl CutElasticity<'_> {
 
     fn assemble_ghost_face(
         &self,
-        face: FaceKey,
+        patch: SharedFacePatch,
         mu: f64,
         node_ids: &TerminalIds,
         expansions: Option<&NodeExpansions>,
         clamped: &[bool],
         coo: &mut Coo,
     ) -> Result<(), CutFemError> {
-        let (cell_a, cell_b) = face;
+        let (cell_a, cell_b) = patch.oriented_cells();
         let (lo_a, hi_a) = self.grid.rect(cell_a);
         let (lo_b, hi_b) = self.grid.rect(cell_b);
-        let h = self.grid.cell_h(cell_a);
-        let axis = usize::from(cell_a.1 == cell_b.1);
-        let (t0, t1) = if axis == 0 {
-            (lo_a[1], hi_a[1])
-        } else {
-            (lo_a[0], hi_a[0])
-        };
-        let normal = if axis == 0 { [1.0, 0.0] } else { [0.0, 1.0] };
-        let face_coordinate = if axis == 0 { hi_a[0] } else { hi_a[1] };
+        let h = patch.h_f();
+        let axis = patch.axis().index();
+        let (t0, t1) = patch.tangent_interval();
+        let normal = patch.axis().normal();
+        let face_coordinate = patch.coordinate();
         let corners_a = self.grid.corner_nodes(cell_a);
         let corners_b = self.grid.corner_nodes(cell_b);
         let gauss = 0.5 / 3.0f64.sqrt();
@@ -1104,7 +1108,7 @@ impl CutElasticity<'_> {
         let scale = self.ghost_gamma * mu * h * weight;
         if !scale.is_finite() {
             return Err(CutFemError::InvalidElasticityInput {
-                what: format!("derived ghost penalty is non-finite on face {face:?}"),
+                what: format!("derived ghost penalty is non-finite on patch {patch:?}"),
             });
         }
         if let Some(expansions) = expansions {
@@ -1725,11 +1729,17 @@ mod tests {
             "fixture midpoint must use the real quadtree hanging constraint"
         );
 
-        let face = ((2, 2, 0), (2, 3, 0));
-        assert!(grid.is_leaf(face.0) && grid.is_leaf(face.1));
-        assert_eq!(face.0.0, face.1.0, "ghost face must be equal-level");
+        let face_cells = ((2, 2, 0), (2, 3, 0));
+        assert!(grid.is_leaf(face_cells.0) && grid.is_leaf(face_cells.1));
+        assert_eq!(
+            face_cells.0.0, face_cells.1.0,
+            "ghost face must be equal-level"
+        );
+        let face = grid
+            .shared_face_patch(face_cells.0, face_cells.1)
+            .expect("exact equal-level face patch");
         assert!(
-            grid.corner_nodes(face.0).contains(&midpoint),
+            grid.corner_nodes(face_cells.0).contains(&midpoint),
             "constrained midpoint must participate in the face kernel"
         );
 

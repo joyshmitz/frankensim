@@ -60,7 +60,9 @@ pub use elastic::{
     ELASTICITY_APPLY_VJP_OP, elasticity_apply_vjp_key, register_elasticity_apply_vjp,
 };
 pub use fem::{BuildStats, CellClass, FemParams, ScalarSample, Solution, Space};
-pub use grid::{CellKey, NodeKey, Quadtree};
+pub use grid::{
+    CellKey, FaceAxis, FaceDirection, FaceTopologyError, NodeKey, Quadtree, SharedFacePatch,
+};
 pub use quad::{CutRules, cut_cell_rules};
 pub use sdf::{Circle, CutSdf, HalfPlane};
 
@@ -77,10 +79,11 @@ pub enum CutFemError {
     /// Repair: check the SDF sign convention (negative = inside) and
     /// the grid extent.
     EmptyDomain,
-    /// A cut cell has an active face-neighbor at a DIFFERENT tree
-    /// level while ghost stabilization is enabled. Ghost-penalty faces
-    /// are assembled between equal-level cells only; the interface band
-    /// must be uniformly refined. Ghost-free paths do not raise this error.
+    /// A scalar-diffusion cut cell has an active face-neighbor at a DIFFERENT
+    /// tree level while ghost stabilization is enabled. The scalar frontend's
+    /// ghost faces are assembled between equal-level cells only; the interface
+    /// band must be uniformly refined. Vector elasticity uses exact 2:1 shared
+    /// patches instead. Ghost-free paths do not raise this error.
     /// Repair: call [`Quadtree::refine_toward_interface`] with the
     /// tree's max level before building the space.
     CutBandNotUniform {
