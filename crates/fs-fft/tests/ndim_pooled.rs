@@ -89,11 +89,11 @@ fn observed_pass_reports_bind_geometry_and_do_not_move_bits() {
         bits_equal(&observed, &plain),
         "the observer must not move bits"
     );
-    // dims [4,8,2]: axis 0 is the column kernel (outer 1, stride 16;
-    // group = ceil(16/3) = 6 -> 3 tiles); axis 1 is the block kernel
-    // over 4 outer blocks; axis 2 (stride 1, outer 32) over 32 blocks.
+    // dims [4,8,2] under the 3f6c work floor (4096 elems/tile): every
+    // pass collapses to ONE tile — a 64-element problem is serial-sized
+    // and micro-tiling it is exactly the measured pathology.
     assert_eq!(passes.len(), 3, "one report per non-unit axis");
-    assert_eq!(passes[0].kernel, "fs-fft/ndim-pencil-column-v1");
+    assert_eq!(passes[0].kernel, "fs-fft/ndim-pencil-column-v2");
     assert_eq!(
         (
             passes[0].axis,
@@ -103,8 +103,8 @@ fn observed_pass_reports_bind_geometry_and_do_not_move_bits() {
         ),
         (0, 4, 16, 1)
     );
-    assert_eq!((passes[0].tiles, passes[0].completed), (3, 3));
-    assert_eq!(passes[1].kernel, "fs-fft/ndim-pencil-block-v1");
+    assert_eq!((passes[0].tiles, passes[0].completed), (1, 1));
+    assert_eq!(passes[1].kernel, "fs-fft/ndim-pencil-block-v2");
     assert_eq!(
         (
             passes[1].axis,
@@ -114,8 +114,8 @@ fn observed_pass_reports_bind_geometry_and_do_not_move_bits() {
         ),
         (1, 8, 2, 4)
     );
-    assert_eq!((passes[1].tiles, passes[1].completed), (4, 4));
-    assert_eq!(passes[2].kernel, "fs-fft/ndim-pencil-block-v1");
+    assert_eq!((passes[1].tiles, passes[1].completed), (1, 1));
+    assert_eq!(passes[2].kernel, "fs-fft/ndim-pencil-block-v2");
     assert_eq!(
         (
             passes[2].axis,
@@ -125,8 +125,28 @@ fn observed_pass_reports_bind_geometry_and_do_not_move_bits() {
         ),
         (2, 2, 1, 32)
     );
-    assert_eq!((passes[2].tiles, passes[2].completed), (32, 32));
+    assert_eq!((passes[2].tiles, passes[2].completed), (1, 1));
     assert!(passes.iter().all(|p| p.workers == 3 && !p.inverse));
+
+    // A work-floor-clearing shape splits into real tiles: [64,256] at 3
+    // workers gives the column pass groups of 64 pencils (4 tiles) and
+    // the block pass groups of 16 blocks x 256 elems (4 tiles).
+    let big = FftNd::new(&[64, 256]);
+    let big0 = fixture(big.total());
+    let mut big_serial = big0.clone();
+    big.forward(&mut big_serial);
+    let mut big_pooled = big0.clone();
+    let mut big_passes = Vec::new();
+    big.forward_pooled_observed(&mut big_pooled, &pool, &gate, &mut |report| {
+        big_passes.push(report)
+    })
+    .expect("big observed forward");
+    assert!(bits_equal(&big_pooled, &big_serial), "grouped tiling bits");
+    assert_eq!(big_passes.len(), 2);
+    assert_eq!(big_passes[0].kernel, "fs-fft/ndim-pencil-column-v2");
+    assert_eq!((big_passes[0].tiles, big_passes[0].completed), (4, 4));
+    assert_eq!(big_passes[1].kernel, "fs-fft/ndim-pencil-block-v2");
+    assert_eq!((big_passes[1].tiles, big_passes[1].completed), (4, 4));
 
     // Inverse direction tags its passes; bits match the SERIAL inverse
     // (the roundtrip is approximate, the P2 law is serial == pooled).

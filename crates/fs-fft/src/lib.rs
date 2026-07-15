@@ -887,13 +887,22 @@ impl FftNd {
 // column-group row-locking design for it is recorded on the bead.
 // ---------------------------------------------------------------------------
 
-/// One parallel axis pass: each tile owns one outer block and transforms
-/// the `stride` pencils inside it, in the serial path's exact order.
+/// Minimum elements a parallel tile should own (bead 3f6c): the ts1
+/// per-pass sweep showed micro-tiles dominate small-kernel passes (the
+/// [128,128,64] stride-1 axis ran 16384 tiles of 64 elements and was
+/// the slowest pass at EVERY worker count), so both N-D kernels group
+/// work to this floor. Timing-only: grouping never reorders pencils.
+const MIN_TILE_ELEMS: usize = 4096;
+
+/// One parallel axis pass: each tile owns a GROUP of consecutive outer
+/// blocks (bead 3f6c) and transforms the `stride` pencils inside each,
+/// in the serial path's exact order.
 struct PencilBlockKernel<'a> {
     blocks: &'a [std::sync::Mutex<&'a mut [C64]>],
     plan: &'a Fft,
     n: usize,
     stride: usize,
+    group: usize,
     inverse: bool,
 }
 
@@ -902,8 +911,9 @@ impl fs_exec::TileKernel for PencilBlockKernel<'_> {
 
     fn tiles(&self) -> fs_exec::TilePlan {
         fs_exec::TilePlan::new(
-            "fs-fft/ndim-pencil-block-v1",
-            u64::try_from(self.blocks.len()).expect("block count fits u64"),
+            "fs-fft/ndim-pencil-block-v2",
+            u64::try_from(self.blocks.len().div_ceil(self.group.max(1)))
+                .expect("tile count fits u64"),
         )
     }
 
@@ -913,23 +923,27 @@ impl fs_exec::TileKernel for PencilBlockKernel<'_> {
         cx: &fs_exec::Cx<'_>,
     ) -> core::ops::ControlFlow<fs_exec::Cancelled, ()> {
         let tile = usize::try_from(tile).expect("tile index fits usize");
-        let mut block = self.blocks[tile].lock().expect("pencil block lock");
+        let lo = tile * self.group;
+        let hi = (lo + self.group).min(self.blocks.len());
         let mut line = vec![C64::default(); self.n];
         let mut scratch = vec![C64::default(); self.n];
-        for i in 0..self.stride {
-            if cx.checkpoint().is_err() {
-                return core::ops::ControlFlow::Break(fs_exec::Cancelled);
-            }
-            for (t, slot) in line.iter_mut().enumerate() {
-                *slot = block[i + t * self.stride];
-            }
-            if self.inverse {
-                self.plan.inverse(&mut line, &mut scratch);
-            } else {
-                self.plan.forward(&mut line, &mut scratch);
-            }
-            for (t, &v) in line.iter().enumerate() {
-                block[i + t * self.stride] = v;
+        for slot_block in &self.blocks[lo..hi] {
+            let mut block = slot_block.lock().expect("pencil block lock");
+            for i in 0..self.stride {
+                if cx.checkpoint().is_err() {
+                    return core::ops::ControlFlow::Break(fs_exec::Cancelled);
+                }
+                for (t, slot) in line.iter_mut().enumerate() {
+                    *slot = block[i + t * self.stride];
+                }
+                if self.inverse {
+                    self.plan.inverse(&mut line, &mut scratch);
+                } else {
+                    self.plan.forward(&mut line, &mut scratch);
+                }
+                for (t, &v) in line.iter().enumerate() {
+                    block[i + t * self.stride] = v;
+                }
             }
         }
         core::ops::ControlFlow::Continue(())
@@ -956,7 +970,7 @@ impl fs_exec::TileKernel for PencilColumnKernel<'_> {
 
     fn tiles(&self) -> fs_exec::TilePlan {
         fs_exec::TilePlan::new(
-            "fs-fft/ndim-pencil-column-v1",
+            "fs-fft/ndim-pencil-column-v2",
             u64::try_from(self.stride.div_ceil(self.group)).expect("tile count fits u64"),
         )
     }
@@ -1183,10 +1197,19 @@ impl FftNd {
             }
             if outer == 1 {
                 // Axis-0 column groups (row-locked): full parallelism on
-                // the first axis without changing any element's bits.
+                // the first axis without changing any element's bits. The
+                // work floor (bead 3f6c) stops the group shrinking to
+                // micro-tiles at high worker counts: the ts1 sweep read
+                // 0.26 ms at 32 workers vs 0.88 ms at 128 on [256,256]
+                // purely from 2-pencil tiles.
                 let rows: Vec<std::sync::Mutex<&mut [C64]>> =
                     data.chunks_mut(stride).map(std::sync::Mutex::new).collect();
-                let group = stride.div_ceil(pool.workers().max(1)).clamp(1, 64);
+                let work_floor = MIN_TILE_ELEMS.div_ceil(n.max(1));
+                let group = stride
+                    .div_ceil(pool.workers().max(1))
+                    .clamp(1, 64)
+                    .max(work_floor)
+                    .min(stride.max(1));
                 let kernel = PencilColumnKernel {
                     rows: &rows,
                     plan,
@@ -1216,11 +1239,21 @@ impl FftNd {
                 .chunks_mut(n * stride)
                 .map(std::sync::Mutex::new)
                 .collect();
+            // Group consecutive outer blocks per tile (bead 3f6c): aim
+            // for ~8 tiles per worker for stealing headroom, but never
+            // let a tile fall under the work floor — the dominant cost
+            // on small kernels was 16384 single-block tiles of 64
+            // elements each on the stride-1 axis.
+            let per_block = n * stride;
+            let work_floor = MIN_TILE_ELEMS.div_ceil(per_block.max(1));
+            let spread = blocks.len().div_ceil(pool.workers().max(1) * 8);
+            let group = spread.max(work_floor).clamp(1, blocks.len().max(1));
             let kernel = PencilBlockKernel {
                 blocks: &blocks,
                 plan,
                 n,
                 stride,
+                group,
                 inverse,
             };
             let pass_start = std::time::Instant::now();

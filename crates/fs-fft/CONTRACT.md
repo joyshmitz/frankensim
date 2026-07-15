@@ -46,7 +46,11 @@ is recorded under No-claim boundaries.
   tiled over outer blocks (or axis-0 column groups behind row mutexes), with
   per-pencil arithmetic and order EXACTLY the serial path's, so output is
   bitwise identical to `forward`/`inverse` at every worker count (the P2 law,
-  gated by conformance).
+  gated by conformance). Tiling granularity (bead 3f6c, v2 kernels): both
+  kernels enforce a ~4096-element per-tile work floor — outer blocks are
+  grouped consecutively per tile (~8 tiles/worker target) and the column
+  group cannot shrink below the floor at high worker counts. Grouping is
+  timing-only; it never reorders pencils or changes bits.
 - `FftNd::{forward,inverse}_pooled_observed(..., &mut dyn FnMut(NdPassReport))`
   (bead 3f6c) — the same transforms, additionally reporting each axis pass's
   geometry (`axis`, `kernel`, `n`, `stride`, `outer`, `tiles`, `completed`,
