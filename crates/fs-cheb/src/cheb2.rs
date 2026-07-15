@@ -30,9 +30,9 @@ mod stable_product_tests {
 
     #[test]
     fn rescaling_does_not_magnify_a_rounded_subnormal_intermediate() {
-        let u = 1e-200;
-        let v = 3.7e-124;
-        let inverse_pivot = 1e300;
+        let u = 1e-200_f64;
+        let v = 3.7e-124_f64;
+        let inverse_pivot = 1e300_f64;
         let stable_order = (u * inverse_pivot) * v;
         let underflowed_order = (u * v) * inverse_pivot;
         assert_ne!(stable_order.to_bits(), underflowed_order.to_bits());

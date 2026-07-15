@@ -314,8 +314,22 @@ pub(crate) fn stable_finite_sum<F>(len: usize, term: F, operation: &str) -> f64
 where
     F: Fn(usize) -> f64,
 {
+    checked_stable_finite_sum(len, &term, operation)
+        .unwrap_or_else(|| panic!("{operation} result must be finite"))
+}
+
+/// [`stable_finite_sum`] reporting an unrepresentable result instead of
+/// panicking: `None` means every term was finite but the exact sum has no
+/// finite `f64` representation at the caller's scale. A caller holding a
+/// pending rescale (domain radius, coefficient normalization) can still
+/// produce the finite physical answer by rerouting through its own
+/// normalized path.
+pub(crate) fn checked_stable_finite_sum<F>(len: usize, term: F, operation: &str) -> Option<f64>
+where
+    F: Fn(usize) -> f64,
+{
     if let Some(result) = expansion_sum(len, &term, 1.0, false) {
-        return result;
+        return Some(result);
     }
 
     let mut largest = 0.0f64;
@@ -332,8 +346,7 @@ where
     let normalized = expansion_sum(len, &term, scale, true)
         .expect("power-of-two-normalized expansion must not overflow");
     let result = normalized * scale;
-    assert!(result.is_finite(), "{operation} result must be finite");
-    result
+    result.is_finite().then_some(result)
 }
 
 /// Multiply three finite factors while avoiding a lossy subnormal,
@@ -640,12 +653,17 @@ impl Cheb1 {
             }
             terms.push(term);
         }
-        if direct_terms_are_finite {
-            let reference_sum = stable_finite_sum(
+        // Finite direct terms are not enough: their reference-coordinate sum
+        // can itself overflow (e.g. 4/3·MAX over a tiny domain) while the
+        // physical integral stays representable, so an unrepresentable sum
+        // falls through to the normalized path instead of aborting.
+        if direct_terms_are_finite
+            && let Some(reference_sum) = checked_stable_finite_sum(
                 terms.len(),
                 |index| terms[index],
                 "Chebyshev integral accumulation",
-            );
+            )
+        {
             return scaled_integral_term(reference_sum, 1.0, self.a, self.b);
         }
 
