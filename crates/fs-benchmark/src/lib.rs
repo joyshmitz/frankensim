@@ -2594,8 +2594,9 @@ fn evaluate_merge_formula(
             },
         });
     };
+    let total = *total;
     inputs.push(attempts);
-    let value = exact_count_rate(adverse, *total).map_err(|error| ProposalRefusal::Metric {
+    let value = exact_count_rate(adverse, total).map_err(|error| ProposalRefusal::Metric {
         proposal: proposal.proposal,
         subject_id,
         error,
