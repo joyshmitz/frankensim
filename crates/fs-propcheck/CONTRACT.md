@@ -118,6 +118,12 @@ replay parsing and JSON escaping. The G3 battery pins all five canonical
 relation labels, fail-closed scalar tolerance boundaries, one declaration
 reused by two operators, and a planted violation that jointly shrinks to
 `input=100, transform=7` before checking its structured failure context.
+Owning-crate G3 adopters exercise six production surfaces without removing
+their fixed pins: `fs-la::gemm_f64`, `fs-fft::Fft::forward`,
+`fs-conform::Converter::apply`, both actions of `fs-solver::CsrOp::general`,
+`fs-opt::descend_fn`, and `fs-render::Lambertian::furnace_radiance`. Their
+relation ids, seeds, case counts, tolerances, and no-claim boundaries live in
+the corresponding crate contracts.
 
 ## No-claim boundaries
 No statistical coverage claims for f64 generation (uniform-ish plus deliberate
@@ -133,12 +139,14 @@ cross-process record-locking claim; CI shards should use distinct paths. The
 default process-scoped filename avoids that collision.
 The engine count-checks a caller-defined shrink vector after construction; it
 cannot preempt arbitrary work or allocation inside that trait method.
-The G3 layer is an engine, not evidence that any production operator already
-obeys a canonical relation. Domain adapters for motors, runtime unit systems,
-refinement estimators, adjoint directions, and certified conversion routes must
-land in their owning crates; six-layer adoption remains pending on bead
-frankensim-2uce. A custom relation comparator receives and receipts its declared
-tolerance but remains responsible for applying those semantics honestly;
+The G3 layer alone is not evidence that a production operator obeys a canonical
+relation. Six owning-crate adapters now declare concrete production checks, but
+their claims become executable evidence only when those crate suites pass; the
+engine contract does not substitute for that batch proof. Broader domain
+adapters for motors, runtime unit systems, refinement estimators, adjoint
+directions, and certified conversion routes remain consumer-owned. A custom
+relation comparator receives and receipts its declared tolerance but remains
+responsible for applying those semantics honestly;
 `Tolerance::evaluate_scalar` is the checked built-in path. The engine does not
 infer transform applicability, physical units, certificate composition, or an
 independent oracle from closure types.
