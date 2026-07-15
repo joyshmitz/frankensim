@@ -58,6 +58,8 @@ fs-iga (geometry basis = analysis basis), fs-render NURBS tracing
   lifetime-bound authority after knot and control validation. Its admitted-only
   `eval_with_cx` returns transactional
   `CurveEvaluationRun` state and never publishes a partial Cartesian point.
+  Its f64-only admitted `derivatives_with_cx` returns transactional
+  `CurveDerivativesRun` state and publishes only a complete Cartesian jet.
   Its admitted-only `to_bezier_form_with_cx` returns transactional
   `CurveBezierRun` state and publishes only a fully validated exact derived
   generation.
@@ -210,6 +212,15 @@ basis construction, polls homogeneous accumulation every 64 logical scalar
 updates, and gates final Cartesian publication. `CurveEvaluationRun::Cancelled`
 contains no partial point; owning curve admission and caller-owned affine
 budget/drain/finalize semantics remain outside this primitive claim.
+`AdmittedNurbsCurve::derivatives_with_cx` preserves request, ordinary-continuity,
+checked work, and retained-memory refusal precedence, then polls before every
+allocation and through derivative-net copies and differences, reduced knot and
+basis scans, homogeneous accumulation, the rational quotient recurrence, and
+final jet publication. `CurveDerivativesRun::Cancelled` carries no partial jet
+and drops all scratch. The f64 scalar operations and allocator calls themselves
+are not preemptible, the conservative legacy envelope is not an exact caller
+work-budget ledger, and owning admission, one-sided jets, executor
+drain/finalize, and resumability remain outside the claim.
 `NurbsCurve::admit_with_cx` preserves dimension and static work-refusal
 precedence, then carries one cancellation gate through both knot validation and
 the homogeneous-control weight, finite, quotient, and inactive-lane scans. A

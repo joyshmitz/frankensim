@@ -410,6 +410,19 @@ pub enum CurveEvaluationRun<S: Scalar, const DIM: usize> {
     Cancelled,
 }
 
+/// Transactional terminal state of cancellation-aware f64 derivatives.
+#[must_use]
+#[derive(Debug, Clone, PartialEq)]
+pub enum CurveDerivativesRun<const DIM: usize> {
+    /// The complete Cartesian jet from order zero through the requested order.
+    Complete {
+        /// Cartesian derivatives in ascending order.
+        derivatives: Vec<[f64; DIM]>,
+    },
+    /// Cancellation was observed; no partial derivative jet was published.
+    Cancelled,
+}
+
 /// Transactional terminal state of cancellation-aware exact Bezier conversion.
 #[must_use]
 #[derive(Debug, PartialEq)]
@@ -1552,12 +1565,13 @@ impl<S: Scalar, const DIM: usize> NurbsCurve<S, DIM> {
     }
 }
 
-fn evaluate_homogeneous_derivative_net(
+fn evaluate_homogeneous_derivative_net_with_poll(
     net: &[[f64; 4]],
     knots: &[f64],
     degree: usize,
     t: f64,
-) -> Result<[f64; 4], NurbsError> {
+    should_cancel: &mut impl FnMut() -> bool,
+) -> Result<CurveWorkRun<[f64; 4]>, NurbsError> {
     let expected_knots = net
         .len()
         .checked_add(degree)
@@ -1565,14 +1579,31 @@ fn evaluate_homogeneous_derivative_net(
         .ok_or_else(|| NurbsError::Structure {
             what: "derivative-net knot-count arithmetic overflowed".to_string(),
         })?;
-    if net.is_empty()
-        || knots.len() != expected_knots
-        || knots.iter().any(|knot| !knot.is_finite())
-        || knots.windows(2).any(|pair| pair[1] < pair[0])
-    {
-        return Err(NurbsError::Structure {
-            what: "reduced homogeneous derivative net is malformed".to_string(),
-        });
+    let malformed_net = || NurbsError::Structure {
+        what: "reduced homogeneous derivative net is malformed".to_string(),
+    };
+    if net.is_empty() || knots.len() != expected_knots {
+        return Err(malformed_net());
+    }
+    if should_cancel() {
+        return Ok(CurveWorkRun::Cancelled);
+    }
+    let mut operations_since_poll = 0usize;
+    for &knot in knots {
+        if !knot.is_finite() {
+            return Err(malformed_net());
+        }
+        if curve_poll_due(&mut operations_since_poll, should_cancel) {
+            return Ok(CurveWorkRun::Cancelled);
+        }
+    }
+    for pair in knots.windows(2) {
+        if pair[1] < pair[0] {
+            return Err(malformed_net());
+        }
+        if curve_poll_due(&mut operations_since_poll, should_cancel) {
+            return Ok(CurveWorkRun::Cancelled);
+        }
     }
     let lo = knots[degree];
     let hi = knots[knots.len() - 1 - degree];
@@ -1583,10 +1614,18 @@ fn evaluate_homogeneous_derivative_net(
     }
     let last_control = net.len() - 1;
     let span = if t == hi {
-        let Some(span) = (0..=last_control)
-            .rev()
-            .find(|&candidate| knots[candidate] < knots[candidate + 1])
-        else {
+        let mut upper_span = None;
+        for candidate in (0..=last_control).rev() {
+            let nonempty = knots[candidate] < knots[candidate + 1];
+            if curve_poll_due(&mut operations_since_poll, should_cancel) {
+                return Ok(CurveWorkRun::Cancelled);
+            }
+            if nonempty {
+                upper_span = Some(candidate);
+                break;
+            }
+        }
+        let Some(span) = upper_span else {
             return Err(NurbsError::Structure {
                 what: "reduced derivative net has no nonempty upper span".to_string(),
             });
@@ -1596,6 +1635,9 @@ fn evaluate_homogeneous_derivative_net(
         let mut span = degree;
         while span < last_control && knots[span + 1] <= t {
             span += 1;
+            if curve_poll_due(&mut operations_since_poll, should_cancel) {
+                return Ok(CurveWorkRun::Cancelled);
+            }
         }
         span
     };
@@ -1616,17 +1658,31 @@ fn evaluate_homogeneous_derivative_net(
         (&mut left, "left basis workspace"),
         (&mut right, "right basis workspace"),
     ] {
+        if should_cancel() {
+            return Ok(CurveWorkRun::Cancelled);
+        }
         buffer
             .try_reserve_exact(basis_len)
             .map_err(|_| NurbsError::Domain {
                 what: format!("derivative {stage} allocation was refused"),
             })?;
-        buffer.resize(basis_len, 0.0);
+        for _ in 0..basis_len {
+            buffer.push(0.0);
+            if curve_poll_due(&mut operations_since_poll, should_cancel) {
+                return Ok(CurveWorkRun::Cancelled);
+            }
+        }
     }
     basis[0] = 1.0;
     for j in 1..=degree {
         left[j] = t - knots[span + 1 - j];
+        if curve_poll_due(&mut operations_since_poll, should_cancel) {
+            return Ok(CurveWorkRun::Cancelled);
+        }
         right[j] = knots[span + j] - t;
+        if curve_poll_due(&mut operations_since_poll, should_cancel) {
+            return Ok(CurveWorkRun::Cancelled);
+        }
         let mut saved = 0.0;
         for r in 0..j {
             let denominator = right[r + 1] + left[j - r];
@@ -1641,26 +1697,45 @@ fn evaluate_homogeneous_derivative_net(
             };
             basis[r] = saved + right[r + 1] * term;
             saved = left[j - r] * term;
+            if curve_poll_due(&mut operations_since_poll, should_cancel) {
+                return Ok(CurveWorkRun::Cancelled);
+            }
         }
         basis[j] = saved;
+        if curve_poll_due(&mut operations_since_poll, should_cancel) {
+            return Ok(CurveWorkRun::Cancelled);
+        }
     }
-    if basis.iter().any(|value| !value.is_finite()) {
-        return Err(NurbsError::Domain {
-            what: "reduced derivative basis left the finite numeric domain".to_string(),
-        });
+    for &basis_value in &basis {
+        if !basis_value.is_finite() {
+            return Err(NurbsError::Domain {
+                what: "reduced derivative basis left the finite numeric domain".to_string(),
+            });
+        }
+        if curve_poll_due(&mut operations_since_poll, should_cancel) {
+            return Ok(CurveWorkRun::Cancelled);
+        }
     }
     let mut value = [0.0; 4];
     for (offset, weight) in basis.into_iter().enumerate() {
         for (accumulator, control) in value.iter_mut().zip(net[span - degree + offset].iter()) {
             *accumulator += weight * control;
+            if curve_poll_due(&mut operations_since_poll, should_cancel) {
+                return Ok(CurveWorkRun::Cancelled);
+            }
         }
     }
-    if value.iter().any(|component| !component.is_finite()) {
-        return Err(NurbsError::Domain {
-            what: "reduced derivative evaluation left the finite numeric domain".to_string(),
-        });
+    for &component in &value {
+        if !component.is_finite() {
+            return Err(NurbsError::Domain {
+                what: "reduced derivative evaluation left the finite numeric domain".to_string(),
+            });
+        }
+        if curve_poll_due(&mut operations_since_poll, should_cancel) {
+            return Ok(CurveWorkRun::Cancelled);
+        }
     }
-    Ok(value)
+    Ok(CurveWorkRun::Complete(value))
 }
 
 impl<const DIM: usize> NurbsCurve<f64, DIM> {
@@ -1870,6 +1945,29 @@ impl<const DIM: usize> NurbsCurve<f64, DIM> {
         t: f64,
         order: usize,
     ) -> Result<Vec<[f64; DIM]>, NurbsError> {
+        let mut never_cancel = || false;
+        match Self::derivatives_from_admitted_parts_after_preflight_with_poll(
+            knots,
+            cpw,
+            t,
+            order,
+            &mut never_cancel,
+        )? {
+            CurveDerivativesRun::Complete { derivatives } => Ok(derivatives),
+            CurveDerivativesRun::Cancelled => Err(NurbsError::Domain {
+                what: "non-cancelling curve derivative evaluation observed cancellation"
+                    .to_string(),
+            }),
+        }
+    }
+
+    pub(crate) fn derivatives_from_admitted_parts_after_preflight_with_poll(
+        knots: AdmittedKnotVector<'_, f64>,
+        cpw: &[[f64; 4]],
+        t: f64,
+        order: usize,
+        should_cancel: &mut impl FnMut() -> bool,
+    ) -> Result<CurveDerivativesRun<DIM>, NurbsError> {
         if cpw.len() != knots.control_count() {
             return Err(NurbsError::Structure {
                 what: "admitted derivative control count does not match its knot vector"
@@ -1897,18 +1995,30 @@ impl<const DIM: usize> NurbsCurve<f64, DIM> {
             });
         }
         // Homogeneous derivative control nets by repeated differencing.
+        if should_cancel() {
+            return Ok(CurveDerivativesRun::Cancelled);
+        }
         let mut nets: Vec<Vec<[f64; 4]>> = Vec::new();
         nets.try_reserve_exact(homogeneous_order + 1)
             .map_err(|_| NurbsError::Domain {
                 what: "derivative net-table allocation was refused".to_string(),
             })?;
+        if should_cancel() {
+            return Ok(CurveDerivativesRun::Cancelled);
+        }
         let mut initial_net = Vec::new();
         initial_net
             .try_reserve_exact(cpw.len())
             .map_err(|_| NurbsError::Domain {
                 what: "derivative initial control-net allocation was refused".to_string(),
             })?;
-        initial_net.extend_from_slice(cpw);
+        let mut operations_since_poll = 0usize;
+        for &control in cpw {
+            initial_net.push(control);
+            if curve_poll_due(&mut operations_since_poll, should_cancel) {
+                return Ok(CurveDerivativesRun::Cancelled);
+            }
+        }
         nets.push(initial_net);
         for k in 1..=homogeneous_order {
             let prev = &nets[k - 1];
@@ -1916,38 +2026,54 @@ impl<const DIM: usize> NurbsCurve<f64, DIM> {
             let trim = k - 1;
             let knot_end = knots.knots().len() - trim;
             let reduced_knots = &knots.knots()[trim..knot_end];
+            if should_cancel() {
+                return Ok(CurveDerivativesRun::Cancelled);
+            }
             let mut next = Vec::new();
             next.try_reserve_exact(prev.len() - 1)
                 .map_err(|_| NurbsError::Domain {
                     what: format!("derivative order {k} control-net allocation was refused"),
                 })?;
+            operations_since_poll = 0;
             #[allow(clippy::cast_precision_loss)]
             let degf = degree as f64;
             for i in 0..prev.len() - 1 {
                 let denom = reduced_knots[i + degree + 1] - reduced_knots[i + 1];
+                if curve_poll_due(&mut operations_since_poll, should_cancel) {
+                    return Ok(CurveDerivativesRun::Cancelled);
+                }
                 let mut d = [0.0f64; 4];
                 if denom != 0.0 {
                     for (slot, (a, b)) in d.iter_mut().zip(prev[i + 1].iter().zip(&prev[i])) {
                         *slot = degf * (a - b) / denom;
+                        if curve_poll_due(&mut operations_since_poll, should_cancel) {
+                            return Ok(CurveDerivativesRun::Cancelled);
+                        }
                     }
                 }
                 next.push(d);
             }
-            if next
-                .iter()
-                .flatten()
-                .any(|component| !component.is_finite())
-            {
-                return Err(NurbsError::Domain {
-                    what: format!(
-                        "derivative order {k} control net left the finite numeric domain"
-                    ),
-                });
+            for control in &next {
+                for &component in control {
+                    if !component.is_finite() {
+                        return Err(NurbsError::Domain {
+                            what: format!(
+                                "derivative order {k} control net left the finite numeric domain"
+                            ),
+                        });
+                    }
+                    if curve_poll_due(&mut operations_since_poll, should_cancel) {
+                        return Ok(CurveDerivativesRun::Cancelled);
+                    }
+                }
             }
             nets.push(next);
         }
         // Evaluate each homogeneous derivative, then the quotient rule:
         // C^(k) = (A^(k) − Σ_{i=1..k} C(k−i) · w^(i) · binom(k,i)) / w.
+        if should_cancel() {
+            return Ok(CurveDerivativesRun::Cancelled);
+        }
         let mut hom = Vec::new();
         hom.try_reserve_exact(order + 1)
             .map_err(|_| NurbsError::Domain {
@@ -1955,56 +2081,85 @@ impl<const DIM: usize> NurbsCurve<f64, DIM> {
             })?;
         for (derivative, net) in nets.iter().enumerate() {
             let knot_end = knots.knots().len() - derivative;
-            hom.push(evaluate_homogeneous_derivative_net(
+            let value = match evaluate_homogeneous_derivative_net_with_poll(
                 net,
                 &knots.knots()[derivative..knot_end],
                 p - derivative,
                 t,
-            )?);
+                should_cancel,
+            )? {
+                CurveWorkRun::Complete(value) => value,
+                CurveWorkRun::Cancelled => return Ok(CurveDerivativesRun::Cancelled),
+            };
+            hom.push(value);
         }
         // Polynomial homogeneous derivatives vanish above degree p, but a
         // rational quotient generally has nonzero derivatives of every order.
         // Retain those zero homogeneous jets so the quotient recurrence below
         // computes C^(k) correctly for k > p.
-        hom.resize(order + 1, [0.0; 4]);
-        let binom = |n: usize, k: usize| -> f64 {
-            let mut b = 1.0f64;
-            for j in 0..k {
-                #[allow(clippy::cast_precision_loss)]
-                {
-                    b = b * (n - j) as f64 / (j + 1) as f64;
-                }
+        operations_since_poll = 0;
+        while hom.len() < order + 1 {
+            hom.push([0.0; 4]);
+            if curve_poll_due(&mut operations_since_poll, should_cancel) {
+                return Ok(CurveDerivativesRun::Cancelled);
             }
-            b
-        };
+        }
         let w0 = hom[0][3];
+        if should_cancel() {
+            return Ok(CurveDerivativesRun::Cancelled);
+        }
         let mut out: Vec<[f64; DIM]> = Vec::new();
         out.try_reserve_exact(order + 1)
             .map_err(|_| NurbsError::Domain {
                 what: "derivative Cartesian-jet allocation was refused".to_string(),
             })?;
+        operations_since_poll = 0;
         for k in 0..=order {
             let mut num = [0.0f64; DIM];
             for (slot, &a) in num.iter_mut().zip(hom[k].iter()) {
                 *slot = a;
+                if curve_poll_due(&mut operations_since_poll, should_cancel) {
+                    return Ok(CurveDerivativesRun::Cancelled);
+                }
             }
             for i in 1..=k {
-                let c = binom(k, i) * hom[i][3];
+                let mut binomial = 1.0f64;
+                for j in 0..i {
+                    #[allow(clippy::cast_precision_loss)]
+                    {
+                        binomial = binomial * (k - j) as f64 / (j + 1) as f64;
+                    }
+                    if curve_poll_due(&mut operations_since_poll, should_cancel) {
+                        return Ok(CurveDerivativesRun::Cancelled);
+                    }
+                }
+                let c = binomial * hom[i][3];
                 for (slot, prev) in num.iter_mut().zip(out[k - i].iter()) {
                     *slot -= c * prev;
+                    if curve_poll_due(&mut operations_since_poll, should_cancel) {
+                        return Ok(CurveDerivativesRun::Cancelled);
+                    }
                 }
             }
             let jet = num.map(|v| v / w0);
-            if jet.iter().any(|component| !component.is_finite()) {
-                return Err(NurbsError::Domain {
-                    what: format!(
-                        "derivative order {k} left the finite floating-point numeric domain"
-                    ),
-                });
+            for &component in &jet {
+                if !component.is_finite() {
+                    return Err(NurbsError::Domain {
+                        what: format!(
+                            "derivative order {k} left the finite floating-point numeric domain"
+                        ),
+                    });
+                }
+                if curve_poll_due(&mut operations_since_poll, should_cancel) {
+                    return Ok(CurveDerivativesRun::Cancelled);
+                }
             }
             out.push(jet);
         }
-        Ok(out)
+        if should_cancel() {
+            return Ok(CurveDerivativesRun::Cancelled);
+        }
+        Ok(CurveDerivativesRun::Complete { derivatives: out })
     }
 }
 
@@ -2017,6 +2172,37 @@ impl<const DIM: usize> AdmittedNurbsCurve<'_, f64, DIM> {
     /// defensive legacy order/work/allocation ceilings.
     pub fn derivatives(&self, t: f64, order: usize) -> Result<Vec<[f64; DIM]>, NurbsError> {
         self.inner.derivatives_after_validation(t, order)
+    }
+
+    /// Evaluate the admitted curve's Cartesian jet with bounded cancellation
+    /// polling and transactional publication.
+    ///
+    /// Shape, parameter, continuity, checked work, and retained-memory
+    /// refusals retain their synchronous precedence. Cancellation then spans
+    /// derivative-net construction, reduced basis evaluations, the rational
+    /// quotient recurrence, and final publication. This method does not
+    /// consume the `Cx` budget or finalize its executor scope.
+    ///
+    /// # Errors
+    /// Returns the synchronous derivative evaluator's request, work, memory,
+    /// allocation, and finite-arithmetic refusals when they win before an
+    /// observed cancellation.
+    pub fn derivatives_with_cx(
+        &self,
+        t: f64,
+        order: usize,
+        cx: &Cx<'_>,
+    ) -> Result<CurveDerivativesRun<DIM>, NurbsError> {
+        let knots = self.knots();
+        NurbsCurve::<f64, DIM>::preflight_derivative_request(knots, t, order)?;
+        let mut should_cancel = || cx.checkpoint().is_err();
+        NurbsCurve::<f64, DIM>::derivatives_from_admitted_parts_after_preflight_with_poll(
+            knots,
+            &self.inner.cpw,
+            t,
+            order,
+            &mut should_cancel,
+        )
     }
 }
 
@@ -2116,6 +2302,166 @@ mod tests {
                 }
             );
         });
+    }
+
+    #[test]
+    fn admitted_curve_derivatives_with_cx_are_transactional_and_exact() {
+        let curve = line_curve();
+        let admitted = curve.admit().expect("admitted line");
+        with_curve_cx(true, |cx| {
+            assert!(matches!(
+                admitted
+                    .derivatives_with_cx(0.25, 1, cx)
+                    .expect("valid derivative request"),
+                CurveDerivativesRun::Cancelled
+            ));
+
+            let parameter_error = admitted
+                .derivatives(-1.0, 1)
+                .expect_err("legacy parameter refusal");
+            assert_eq!(
+                admitted
+                    .derivatives_with_cx(-1.0, 1, cx)
+                    .expect_err("parameter refusal must precede cancellation"),
+                parameter_error
+            );
+            let order_error = admitted
+                .derivatives(0.25, 65)
+                .expect_err("legacy order refusal");
+            assert_eq!(
+                admitted
+                    .derivatives_with_cx(0.25, 65, cx)
+                    .expect_err("order refusal must precede cancellation"),
+                order_error
+            );
+        });
+        with_curve_cx(false, |cx| {
+            for order in [0, 1] {
+                assert_eq!(
+                    admitted
+                        .derivatives_with_cx(0.25, order, cx)
+                        .expect("active derivative request"),
+                    CurveDerivativesRun::Complete {
+                        derivatives: admitted
+                            .derivatives(0.25, order)
+                            .expect("legacy derivative request"),
+                    }
+                );
+            }
+        });
+
+        let weighted = NurbsCurve::new(
+            KnotVector::new(vec![0.0, 0.0, 1.0, 1.0], 1).expect("weighted line knots"),
+            &[[0.0], [1.0]],
+            &[1.0, 2.0],
+        )
+        .expect("weighted rational line");
+        let admitted_weighted = weighted.admit().expect("admitted weighted line");
+        with_curve_cx(false, |cx| {
+            assert_eq!(
+                admitted_weighted
+                    .derivatives_with_cx(0.25, 2, cx)
+                    .expect("active rational derivative request"),
+                CurveDerivativesRun::Complete {
+                    derivatives: admitted_weighted
+                        .derivatives(0.25, 2)
+                        .expect("legacy rational derivatives"),
+                }
+            );
+        });
+
+        let c0_knots = KnotVector::new(vec![0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0], 2)
+            .expect("C0 quadratic knots");
+        let c0_curve = NurbsCurve::new(c0_knots, &[[0.0], [0.25], [0.5], [0.75], [1.0]], &[1.0; 5])
+            .expect("C0 curve");
+        let admitted_c0 = c0_curve.admit().expect("admitted C0 curve");
+        let continuity_error = admitted_c0
+            .derivatives(0.5, 1)
+            .expect_err("legacy ordinary derivative refusal");
+        with_curve_cx(true, |cx| {
+            assert_eq!(
+                admitted_c0
+                    .derivatives_with_cx(0.5, 1, cx)
+                    .expect_err("continuity refusal must precede cancellation"),
+                continuity_error
+            );
+        });
+    }
+
+    #[test]
+    fn curve_derivative_cancellation_replays_inside_work_and_at_publication() {
+        let high_degree = high_degree_insertion_curve();
+        let admitted_high_degree = high_degree.admit().expect("admitted high-degree curve");
+        NurbsCurve::<f64, 1>::preflight_derivative_request(admitted_high_degree.knots(), 0.25, 1)
+            .expect("valid high-degree derivative request");
+        let run = || {
+            let mut polls = 0usize;
+            let mut should_cancel = || {
+                polls += 1;
+                polls == 4
+            };
+            let outcome =
+                NurbsCurve::<f64, 1>::derivatives_from_admitted_parts_after_preflight_with_poll(
+                    admitted_high_degree.knots(),
+                    admitted_high_degree.homogeneous_control_points(),
+                    0.25,
+                    1,
+                    &mut should_cancel,
+                )
+                .expect("valid high-degree derivative work");
+            (matches!(outcome, CurveDerivativesRun::Cancelled), polls)
+        };
+        assert_eq!(run(), run());
+        assert_eq!(run(), (true, 4));
+
+        let curve = line_curve();
+        let admitted = curve.admit().expect("admitted line");
+        let mut total_polls = 0usize;
+        let mut never_cancel = || {
+            total_polls += 1;
+            false
+        };
+        assert!(matches!(
+            NurbsCurve::<f64, 1>::derivatives_from_admitted_parts_after_preflight_with_poll(
+                admitted.knots(),
+                admitted.homogeneous_control_points(),
+                0.25,
+                1,
+                &mut never_cancel,
+            )
+            .expect("healthy derivative work"),
+            CurveDerivativesRun::Complete { .. }
+        ));
+        assert_eq!(total_polls, 14);
+        let mut replay_polls = 0usize;
+        let mut cancel_at_publication = || {
+            replay_polls += 1;
+            replay_polls == 14
+        };
+        assert!(matches!(
+            NurbsCurve::<f64, 1>::derivatives_from_admitted_parts_after_preflight_with_poll(
+                admitted.knots(),
+                admitted.homogeneous_control_points(),
+                0.25,
+                1,
+                &mut cancel_at_publication,
+            )
+            .expect("publication cancellation"),
+            CurveDerivativesRun::Cancelled
+        ));
+        assert_eq!(replay_polls, 14);
+
+        let mut pre_cancelled = || true;
+        assert!(matches!(
+            NurbsCurve::<f64, 1>::derivatives_from_admitted_parts_after_preflight_with_poll(
+                admitted.knots(),
+                &[],
+                0.25,
+                1,
+                &mut pre_cancelled,
+            ),
+            Err(NurbsError::Structure { .. })
+        ));
     }
 
     #[test]

@@ -27,7 +27,8 @@ pub use basis::{AdmittedKnotVector, BasisRun, KnotAdmissionRun, KnotVector, Scal
 pub use boolean::{BooleanOp, BooleanPolicy, BooleanRefusal, boolean};
 pub use closest::{DistanceBracketEstimate, closest_point_curve, closest_point_surface};
 pub use curve::{
-    AdmittedNurbsCurve, CurveAdmissionRun, CurveBezierRun, CurveEvaluationRun, NurbsCurve,
+    AdmittedNurbsCurve, CurveAdmissionRun, CurveBezierRun, CurveDerivativesRun, CurveEvaluationRun,
+    NurbsCurve,
 };
 pub use rat::Rat;
 pub use surface::{AdmittedNurbsSurface, NurbsSurface, SurfaceAdmissionRun, SurfaceEvaluationRun};
