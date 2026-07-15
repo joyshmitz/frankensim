@@ -1225,9 +1225,6 @@ mod tests {
         let op = ledger
             .begin_op(None, "{}", &explicits, 1)
             .expect("begin verifier fixture");
-        ledger
-            .finish_op(op, fs_ledger::OpOutcome::Ok, None, 2)
-            .expect("finish verifier fixture");
         let placeholder = fs_blake3::hash_domain(
             "fs-roofline.dependency-verifier-placeholder.v1",
             b"placeholder",
@@ -1295,6 +1292,9 @@ mod tests {
             !crate::dependency_receipt_matches_binding(&substituted_protocol, Some(binding)),
             "a structurally sound historical receipt must not impersonate today's build receipt"
         );
+        ledger
+            .finish_op(op, fs_ledger::OpOutcome::Ok, None, 2)
+            .expect("finish verifier fixture after all lineage is attached");
         ledger
             .corrupt_artifact_for_test(&binding.artifact_hash)
             .expect("tamper receipt bytes");
@@ -2098,9 +2098,15 @@ mod tests {
             .and_then(|(_, rest)| rest.split_once(','))
             .and_then(|(digits, _)| digits.parse().ok())
             .expect("op id in params");
-        ledger
-            .link(op, &new_hash, fs_ledger::EdgeRole::Out)
-            .expect("forged edge");
+        assert!(matches!(
+            ledger.link(op, &new_hash, fs_ledger::EdgeRole::Out),
+            Err(fs_ledger::LedgerError::OpLineageSealed { op: sealed }) if sealed == op
+        ));
+        assert!(
+            !ledger
+                .edge_exists(op, &new_hash, fs_ledger::EdgeRole::Out)
+                .expect("forged edge absence")
+        );
         let forged_params = row.params.replace(&old_hash, &new_hash.to_string());
         assert_ne!(forged_params, row.params);
         ledger
@@ -2372,9 +2378,16 @@ mod tests {
             .and_then(|(_, rest)| rest.split_once(','))
             .and_then(|(digits, _)| digits.parse().ok())
             .expect("op id in params");
-        run.ledger
-            .link(op, &ghost_hash, fs_ledger::EdgeRole::Out)
-            .expect("ghost edge");
+        assert!(matches!(
+            run.ledger
+                .link(op, &ghost_hash, fs_ledger::EdgeRole::Out),
+            Err(fs_ledger::LedgerError::OpLineageSealed { op: sealed }) if sealed == op
+        ));
+        assert!(
+            !run.ledger
+                .edge_exists(op, &ghost_hash, fs_ledger::EdgeRole::Out)
+                .expect("ghost edge absence")
+        );
         let ghost_params = row.params.replace(
             &fs_ledger::hash_bytes(row.measured.as_bytes()).to_string(),
             &ghost_hash.to_string(),

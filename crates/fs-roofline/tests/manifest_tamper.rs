@@ -12,13 +12,12 @@
 //! gp3.15): a writer holding ordinary Ledger APIs must not be able to alter
 //! recorded roofline evidence while keeping the finalized run receipt.
 //!
-//! The named attack: replace one result payload plus its matching artifact
-//! and params (all self-consistent, edge included) while retaining the old
-//! run receipt. Before the manifest, `validate_roofline_row` accepted that
-//! row and staleness classified the altered evidence as Fresh. Now staleness
-//! recomputes the whole receipt from the manifest and the stored rows, so
-//! every tamper shape below must classify as CorruptEvidence — and honest
-//! rerun history must stay Fresh.
+//! The historical named attack replaced one result payload plus its artifact,
+//! edge, and params while retaining the old run receipt. `finish_op` now seals
+//! public-API lineage, so the edge attempt is refused before the manifest
+//! verifier runs. The retained battery keeps the manifest as defense in depth:
+//! a rewritten tune row citing the necessarily unlinked artifact still
+//! classifies as CorruptEvidence, while honest rerun history stays Fresh.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -155,8 +154,8 @@ fn roofline_row(ledger: &Ledger, kernel: &str) -> fs_ledger::TuneRow {
 }
 
 /// Self-consistently replace `row`'s payload with `new_measured`: store the
-/// artifact, add the op edge, and rewrite params to cite the new artifact —
-/// exactly what a malicious Ledger writer can do without touching the op row.
+/// artifact and rewrite params to cite it. The finished op now refuses the
+/// attempted edge, so the forged row remains visibly disconnected lineage.
 fn splice_payload(ledger: &Ledger, row: &fs_ledger::TuneRow, new_measured: &str) {
     let old_hash = fs_ledger::hash_bytes(row.measured.as_bytes()).to_string();
     let new_hash = fs_ledger::hash_bytes(new_measured.as_bytes());
@@ -174,9 +173,15 @@ fn splice_payload(ledger: &Ledger, row: &fs_ledger::TuneRow, new_measured: &str)
         .and_then(|(_, rest)| rest.split_once(','))
         .and_then(|(digits, _)| digits.parse().ok())
         .expect("op id in params");
-    ledger
-        .link(op, &new_hash, EdgeRole::Out)
-        .expect("forged edge");
+    assert!(matches!(
+        ledger.link(op, &new_hash, EdgeRole::Out),
+        Err(fs_ledger::LedgerError::OpLineageSealed { op: sealed }) if sealed == op
+    ));
+    assert!(
+        !ledger
+            .edge_exists(op, &new_hash, EdgeRole::Out)
+            .expect("forged edge absence")
+    );
     let forged_params = row.params.replace(&old_hash, &new_hash.to_string());
     assert_ne!(forged_params, row.params, "artifact hash must be rewritten");
     ledger
@@ -273,9 +278,15 @@ fn rows_added_beyond_the_manifest_are_corrupt_evidence() {
         .and_then(|(_, rest)| rest.split_once(','))
         .and_then(|(digits, _)| digits.parse().ok())
         .expect("op id in params");
-    run.ledger
-        .link(op, &ghost_hash, EdgeRole::Out)
-        .expect("ghost edge");
+    assert!(matches!(
+        run.ledger.link(op, &ghost_hash, EdgeRole::Out),
+        Err(fs_ledger::LedgerError::OpLineageSealed { op: sealed }) if sealed == op
+    ));
+    assert!(
+        !run.ledger
+            .edge_exists(op, &ghost_hash, EdgeRole::Out)
+            .expect("ghost edge absence")
+    );
     let ghost_params = row.params.replace(
         &fs_ledger::hash_bytes(row.measured.as_bytes()).to_string(),
         &ghost_hash.to_string(),

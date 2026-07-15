@@ -80,7 +80,8 @@ fine-grained event stream. Layer: L6 (HELM). Runtime deps: `std` + `fsqlite`.
   bounded at 1 MiB before validation), `op` (metadata-only
   type/length/CASE-gated JSON preflight followed by the same guarded payload
   query), `op_execution_context` (fixed-size typed branch/mode read after the
-  same op-envelope preflight), `link` (FK-checked `in|out` edges),
+  same op-envelope preflight), `link` (FK-checked `in|out` edges accepted only
+  while the target op is bounded, branch-valid, and unfinished),
   `edge_exists` (exact role-qualified verifier query), plus
   `artifact_producer_ops_bounded` and `op_artifact_edges_bounded`. The bounded
   lineage reads accept caller caps through 1,024 rows, issue `LIMIT cap+1`
@@ -89,7 +90,11 @@ fine-grained event stream. Layer: L6 (HELM). Runtime deps: `std` + `fsqlite`.
   expose `truncated` so verifier paths can refuse extra producer/edge fan-out
   without scanning, sorting, or materializing an unbounded DAG. Selected edge
   values are SQL-CASE-sanitized to fixed role/hash envelopes before Rust can
-  materialize them. A zero cap is a bounded existence probe.
+  materialize them. A zero cap is a bounded existence probe. `link` uses one
+  conditional `INSERT ... SELECT`, so it serializes with `finish_op`: an edge
+  either lands before the terminal outcome or changes zero rows and returns
+  `OpLineageSealed`. Missing, corrupt, and already-finished ops remain distinct
+  structured refusals, and the zero-row path never inserts partial lineage.
   `seal_artifact_output` atomically binds an artifact to an already-existing
   sole output producer; the immutable `artifact_output_seals` row and attested
   edge triggers then reject every different producer. Exact same-op sealing is
@@ -356,11 +361,16 @@ refusal, or verifier panic).
    their variable-size values. `lint().malformed_ops` reports the same contract.
 5. Ops are event-sourced facts: `(t_end IS NULL) = (outcome IS NULL)` is a
    table CHECK; an op finishes at most once (`DoubleFinish` otherwise).
-6. Edges only reference existing ops and artifacts (enforced FKs).
-7. A crash-recovered ledger lints clean: transactions make op+edges+metric
+6. `finish_op` is the public lineage-sealing transition. `link` and
+   `finish_op` race through database-serialized write statements: a link wins
+   wholly before finish, or observes zero changed rows after finish and returns
+   `OpLineageSealed`. No public API removes or role-shifts an edge, so after a
+   successful finish the role-qualified edge set is stable.
+7. Edges only reference existing ops and artifacts (enforced FKs).
+8. A crash-recovered ledger lints clean: transactions make op+edges+metric
    groups all-or-nothing (kill -9 battery, `ledger_007`).
-8. Wall-clock timestamps are provenance envelope, never content identity.
-9. Physical ledger identity is a persisted opaque 16-byte UUID. It survives
+9. Wall-clock timestamps are provenance envelope, never content identity.
+10. Physical ledger identity is a persisted opaque 16-byte UUID. It survives
    handle moves, file aliases, and reopenings, but never transfers to a new
    database merely because that database occupies the same path. New
    identities use 122 bits from the operating system's `/dev/urandom` source
@@ -368,7 +378,7 @@ refusal, or verifier panic).
    Schema v5 refuses every UPDATE, DELETE, or non-initial INSERT through
    attested triggers, and the checked accessor detects drift against an
    already-open handle.
-10. A durable session terminal is valid only as the conjunction of its exact
+11. A durable session terminal is valid only as the conjunction of its exact
     immutable claim, receipt hash, dense owned-event sequence, rejoined global
     event bytes, and at least one complete authenticated batch witness. Claim,
     terminal, event ownership, batch marker, and batch membership commit in one
@@ -391,7 +401,10 @@ above the caller's explicit validation/materialization budget before payload
 delivery; it makes no independent content-integrity claim.
 `OpCorrupt` refuses a stored op envelope that violates its type, byte, JSON,
 finish-state, branch, execution-context, or role-qualified edge contract before
-materialization. `Invalid { field: "cap", .. }` refuses a bounded lineage cap
+materialization. `OpLineageSealed` is the typed, non-retryable refusal for any
+edge offered after `finish_op`; unknown ops remain `NotFound`, so callers never
+confuse missing work with immutable terminal provenance. `Invalid { field:
+"cap", .. }` refuses a bounded lineage cap
 above 1,024 before issuing SQL; malformed producer identities surface as
 `Corrupt`. `Invalid { field: "artifact_output_seal", .. }` refuses a missing,
 ambiguous, or conflicting producer at seal time, while `Invalid { field:
@@ -456,8 +469,10 @@ for every variable-size field, raw-SQL oversized IR/version rows, guarded read
 refusal, typed execution-context corruption/missing behavior, deterministic
 role-qualified lineage ordering, exact-cap/cap+1/zero-cap truncation, explicit
 covering-index query plans without temporary sorts, hostile edge-identity
-sanitization, immutable sole-producer and exact-op-edge-set seals, raw trigger
-and orphan detection, a real two-connection seal/link race, v8-to-v9 migration
+sanitization, typed missing/corrupt/finished link refusal with zero row changes,
+caller-transaction rollback, a real two-connection link/finish ordering race,
+immutable sole-producer and exact-op-edge-set seals, raw trigger and orphan
+detection, a real two-connection seal/link race, v8-to-v9 migration
 including stale-marker healing, and `malformed_ops` lint detection.
 The `ledger_003b`/`ledger_003c`/`ledger_003d` identity battery covers handle
 movement, independent memory ledgers, file reopen and aliasing, same-path file
@@ -494,8 +509,10 @@ reconstruction with loud orphan-input failure, at(t) monotone mid-sweep
 consistency, and a kill -9 battery during fork traffic. Unit tests in
 `src/lib.rs`, `src/hash.rs`, and `src/travel.rs` cover the API surface and
 edge cases. `tests/vcs.rs` locks framed, role-qualified, mode-bound commit
-identity and proves checkout cannot expose later ops or later artifact links;
-in-flight commits are refused. The travel migration battery also reconstructs
+identity and proves a terminal op refuses later artifact links while checkout
+remains on its frozen commit; in-flight commits are refused. `tests/travel.rs`
+also proves a refused late link leaves the `explain()` causal tree byte-stable.
+The travel migration battery also reconstructs
 the old v2
 post-DDL/pre-version-marker crash state and proves reopen heals it without
 duplicating columns or losing v1 history.
@@ -677,6 +694,14 @@ The graph is the minting authority for `fs_evidence::AdmittedColor`:
   the API's per-field 1 MiB ceilings. Canonical writes enforce them, `op`
   metadata-preflights and guards reads, and lint reports violations; arbitrary
   raw SQL is detected and refused rather than prevented as a DDL property.
+- The v1 `edges` DDL does not itself freeze an operation's edge set when
+  `outcome` becomes non-NULL. The public API is the sealing authority: `link`
+  atomically selects only a canonical unfinished op, and no public edge
+  update/delete API exists. A client with arbitrary SQL/DDL authority can still
+  bypass that API boundary. Schema-v9 edge-set triggers provide a stronger raw
+  SQL freeze only when a consumer explicitly creates an
+  `op_artifact_edge_seals` row; `finish_op` does not infer or create that
+  consumer-specific seal.
 - The v1 `tune` DDL checks JSON syntax but does not encode the canonical
   identity, machine, JSON byte, row-count, or scan-byte bounds. The public API
   enforces them on writes, metadata-preflights and guards reads, and reports

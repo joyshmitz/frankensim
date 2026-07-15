@@ -9,7 +9,8 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use fs_ledger::{
-    ContentHash, EdgeRole, ExecMode, FiveExplicits, Ledger, MAIN_BRANCH, OpOutcome, SCHEMA_VERSION,
+    ContentHash, EdgeRole, ExecMode, FiveExplicits, Ledger, LedgerError, MAIN_BRANCH, OpOutcome,
+    SCHEMA_VERSION,
 };
 
 static NEXT_DB: AtomicU32 = AtomicU32::new(0);
@@ -378,6 +379,23 @@ fn tt_004_explain_reconstructs_full_lineage() {
     let json = tree.to_json();
     assert!(json.contains(&a.to_hex()) && json.contains("\"exec_mode\":\"fast\""));
     assert!(tree.render_text().contains("<- op"));
+    // G3: an equivalent late-link retry cannot mutate the terminal causal
+    // tree. `finish_op` is the lineage publication boundary.
+    let late = l
+        .put_artifact("late", b"must not enter terminal lineage", None)
+        .unwrap();
+    assert_eq!(
+        l.link(op3, &late.hash, EdgeRole::Out),
+        Err(LedgerError::OpLineageSealed { op: op3 })
+    );
+    assert_eq!(
+        l.explain(&c.hash, 16)
+            .unwrap()
+            .expect("stable explanation")
+            .to_json(),
+        json,
+        "a refused late link must leave explain() byte-stable"
+    );
     // Depth limiting truncates gracefully instead of exploding.
     let shallow = l.explain(&c.hash, 1).unwrap().unwrap();
     assert!(shallow.produced_by[0].inputs[0].truncated);

@@ -407,9 +407,15 @@ fn vc_007_checkout_is_exactly_the_frozen_commit_view() {
     let late_link = ledger
         .put_artifact("result", b"linked-after-commit", None)
         .expect("late artifact");
-    ledger
+    let late_error = ledger
         .link(first_op, &late_link.hash, EdgeRole::Out)
-        .expect("late edge");
+        .expect_err("finished op must refuse a late edge");
+    assert_eq!(late_error, LedgerError::OpLineageSealed { op: first_op });
+    assert!(
+        !ledger
+            .edge_exists(first_op, &late_link.hash, EdgeRole::Out)
+            .expect("late edge absence")
+    );
     run_op(&ledger, 1, "{\"op\":\"future\"}", b"future", 20);
 
     let frozen = vcs
@@ -437,7 +443,7 @@ fn vc_007_checkout_is_exactly_the_frozen_commit_view() {
     let _ = std::fs::remove_dir_all(&dir);
     verdict(
         "vc-007",
-        "checkout excludes later ops and later edges; in-flight commits fail closed",
+        "finished ops refuse later edges; checkout stays frozen; in-flight commits fail closed",
     );
 }
 

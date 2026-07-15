@@ -1860,6 +1860,13 @@ pub enum LedgerError {
         /// The op id.
         op: i64,
     },
+    /// A lineage edge was offered after the operation reached its terminal
+    /// outcome. `finish_op` is the public-API sealing transition: callers must
+    /// attach every input and output before publishing the outcome.
+    OpLineageSealed {
+        /// The terminal operation whose edge set cannot be extended.
+        op: i64,
+    },
     /// An [`ArtifactWriter`] cannot be opened inside an explicit transaction
     /// (it owns its own transaction for crash atomicity).
     WriterInTransaction,
@@ -1923,6 +1930,7 @@ impl LedgerError {
             LedgerError::TuneReadLimit { .. } => "LedgerTuneReadLimit",
             LedgerError::NotFound { .. } => "LedgerNotFound",
             LedgerError::DoubleFinish { .. } => "LedgerDoubleFinish",
+            LedgerError::OpLineageSealed { .. } => "LedgerOpLineageSealed",
             LedgerError::WriterInTransaction => "LedgerWriterInTransaction",
             LedgerError::SchemaMismatch { .. } => "LedgerSchemaMismatch",
             LedgerError::InstanceIdentityCorrupt { .. } => "LedgerInstanceIdentityCorrupt",
@@ -2001,6 +2009,11 @@ impl std::fmt::Display for LedgerError {
                 f,
                 "LedgerDoubleFinish: op {op} already has an outcome; ops are event-sourced \
                  facts and cannot be finished twice"
+            ),
+            LedgerError::OpLineageSealed { op } => write!(
+                f,
+                "LedgerOpLineageSealed: op {op} already has an outcome; finish_op seals its \
+                 input/output lineage, so record every edge before publishing the outcome"
             ),
             LedgerError::WriterInTransaction => write!(
                 f,
@@ -4528,7 +4541,9 @@ impl Ledger {
         )
     }
 
-    /// Record an op's outcome. Each op finishes exactly once.
+    /// Record an op's outcome and seal its public-API lineage. Each op finishes
+    /// exactly once; after this update commits, [`Ledger::link`] can no longer
+    /// attach an input or output edge to the op.
     ///
     /// # Errors
     /// [`LedgerError::DoubleFinish`] on a second finish;
@@ -4748,36 +4763,62 @@ impl Ledger {
         }))
     }
 
-    /// Link an op to an artifact in the lineage DAG. Foreign keys are
-    /// enforced: both rows must exist.
+    fn zero_row_link_refusal(&self, op: i64) -> Result<(), LedgerError> {
+        let Some(_) = self.op_execution_context_inner(op)? else {
+            return Err(LedgerError::NotFound {
+                what: format!("op {op}"),
+            });
+        };
+        let rows = self
+            .conn
+            .query_with_params(
+                "SELECT CASE WHEN t_end IS NULL AND outcome IS NULL THEN 0 ELSE 1 END \
+                 FROM ops WHERE id = ?1 LIMIT 1",
+                &[SqliteValue::Integer(op)],
+            )
+            .map_err(|error| sql_err("classify refused edge insert", &error))?;
+        let row = rows.first().ok_or_else(|| LedgerError::NotFound {
+            what: format!("op {op}"),
+        })?;
+        match row_i64(row, 0, "classify refused edge insert")? {
+            1 => Err(LedgerError::OpLineageSealed { op }),
+            0 => Err(LedgerError::OpCorrupt {
+                op,
+                detail: "the atomic edge insert selected zero rows even though the operation \
+                         remained bounded, branch-valid, and unfinished"
+                    .to_string(),
+            }),
+            _ => Err(LedgerError::OpCorrupt {
+                op,
+                detail: "the fixed-size finish-state classifier returned a non-boolean value"
+                    .to_string(),
+            }),
+        }
+    }
+
+    /// Link an unfinished op to an artifact in the lineage DAG. The guarded
+    /// `INSERT ... SELECT` and [`Ledger::finish_op`] are serialized by the
+    /// database: the link either commits before the finish, or changes zero
+    /// rows and returns [`LedgerError::OpLineageSealed`] after it. Foreign keys
+    /// still require the artifact to exist.
     ///
     /// # Errors
-    /// [`LedgerError::Invalid`] on a dangling reference (names which side).
+    /// [`LedgerError::NotFound`] for an unknown op;
+    /// [`LedgerError::OpLineageSealed`] for a finished op;
+    /// [`LedgerError::OpCorrupt`] for a malformed or branch-orphaned op;
+    /// [`LedgerError::Invalid`] for a missing artifact or a conflicting
+    /// explicit lineage seal.
     pub fn link(&self, op: i64, artifact: &ContentHash, role: EdgeRole) -> Result<(), LedgerError> {
-        if self.op_artifact_edge_seal_inner(op)?.is_some() {
-            return Err(LedgerError::Invalid {
-                field: "edge".to_string(),
-                problem: format!(
-                    "operation {op} has an immutable artifact-edge-set seal; no edge may be added"
-                ),
-            });
-        }
-        if role == EdgeRole::Out {
-            if let Some(sealed) = self.artifact_output_seal_inner(artifact)? {
-                if sealed != op {
-                    return Err(LedgerError::Invalid {
-                        field: "edge".to_string(),
-                        problem: format!(
-                            "artifact {} has an immutable exclusive output-producer seal for operation {sealed}",
-                            artifact.to_hex()
-                        ),
-                    });
-                }
-            }
-        }
+        let bounded_op = op_storage_predicate();
         let insert = self
             .conn
-            .prepare("INSERT INTO edges(op, artifact, role) VALUES (?1, ?2, ?3)")
+            .prepare(&format!(
+                "INSERT INTO edges(op, artifact, role) \
+                 SELECT ops.id, ?2, ?3 FROM ops \
+                 WHERE ops.id = ?1 AND ops.t_end IS NULL AND ops.outcome IS NULL \
+                   AND ({bounded_op}) \
+                   AND EXISTS(SELECT 1 FROM branches WHERE branches.id = ops.branch)"
+            ))
             .map_err(|e| sql_err("edge insert prepare", &e))?
             .execute_with_params(&[
                 SqliteValue::Integer(op),
@@ -4785,11 +4826,18 @@ impl Ledger {
                 text_param(role.as_str()),
             ]);
         match insert {
-            Ok(_) => Ok(()),
+            Ok(1) => Ok(()),
+            Ok(0) => self.zero_row_link_refusal(op),
+            Ok(changed) => Err(LedgerError::OpCorrupt {
+                op,
+                detail: format!(
+                    "one edge insert changed {changed} rows; exactly one row was required"
+                ),
+            }),
             Err(FrankenError::ForeignKeyViolation) => Err(LedgerError::Invalid {
                 field: "edge".to_string(),
                 problem: format!(
-                    "op {op} or artifact {} does not exist; record both before linking",
+                    "artifact {} does not exist; record it before linking to op {op}",
                     artifact.to_hex()
                 ),
             }),
@@ -8324,6 +8372,145 @@ mod tests {
         assert!(!l.edge_exists(op, &real.hash, EdgeRole::In).unwrap());
         assert!(!l.edge_exists(op + 1, &real.hash, EdgeRole::Out).unwrap());
         assert_eq!(l.table_count("edges").unwrap(), 1);
+    }
+
+    #[test]
+    fn g0_finish_op_seals_lineage_with_typed_zero_row_refusals() {
+        let ledger = mem();
+        let retained = ledger.put_artifact("lineage", b"retained", None).unwrap();
+
+        let missing = ledger
+            .link(9_999, &retained.hash, EdgeRole::In)
+            .unwrap_err();
+        assert_eq!(
+            missing,
+            LedgerError::NotFound {
+                what: "op 9999".to_string()
+            }
+        );
+
+        let corrupt = ledger.begin_op(None, "{}", &FX, 1).unwrap();
+        ledger
+            .conn
+            .prepare("UPDATE ops SET seed = ?1 WHERE id = ?2")
+            .unwrap()
+            .execute_with_params(&[
+                SqliteValue::Blob(vec![0xA5; MAX_OP_SEED_BYTES + 1].into()),
+                SqliteValue::Integer(corrupt),
+            ])
+            .unwrap();
+        assert!(matches!(
+            ledger.link(corrupt, &retained.hash, EdgeRole::In),
+            Err(LedgerError::OpCorrupt { op, .. }) if op == corrupt
+        ));
+        assert_eq!(ledger.table_count("edges").unwrap(), 0);
+
+        let terminal = ledger.begin_op(None, "{}", &FX, 2).unwrap();
+        ledger.link(terminal, &retained.hash, EdgeRole::In).unwrap();
+        ledger.finish_op(terminal, OpOutcome::Ok, None, 3).unwrap();
+        let late = ledger.put_artifact("lineage", b"late", None).unwrap();
+        let edge_count = ledger.table_count("edges").unwrap();
+
+        for (artifact, role) in [(&late.hash, EdgeRole::Out), (&retained.hash, EdgeRole::Out)] {
+            let error = ledger.link(terminal, artifact, role).unwrap_err();
+            assert_eq!(error, LedgerError::OpLineageSealed { op: terminal });
+            assert_eq!(error.code(), "LedgerOpLineageSealed");
+        }
+        assert_eq!(ledger.table_count("edges").unwrap(), edge_count);
+        assert!(
+            !ledger
+                .edge_exists(terminal, &late.hash, EdgeRole::Out)
+                .unwrap()
+        );
+        assert!(
+            !ledger
+                .edge_exists(terminal, &retained.hash, EdgeRole::Out)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn g0_finished_link_refusal_preserves_caller_transaction_rollback() {
+        let ledger = mem();
+        let retained = ledger
+            .put_artifact("transaction-lineage", b"retained", None)
+            .unwrap();
+        let late = ledger
+            .put_artifact("transaction-lineage", b"late", None)
+            .unwrap();
+
+        ledger.begin().unwrap();
+        let op = ledger.begin_op(None, "{}", &FX, 1).unwrap();
+        ledger.link(op, &retained.hash, EdgeRole::Out).unwrap();
+        ledger.finish_op(op, OpOutcome::Ok, None, 2).unwrap();
+        assert_eq!(
+            ledger.link(op, &late.hash, EdgeRole::Out),
+            Err(LedgerError::OpLineageSealed { op })
+        );
+        assert!(ledger.in_transaction());
+        ledger.rollback().unwrap();
+
+        assert_eq!(ledger.op(op).unwrap(), None);
+        assert!(
+            !ledger
+                .edge_exists(op, &retained.hash, EdgeRole::Out)
+                .unwrap()
+        );
+        assert!(!ledger.edge_exists(op, &late.hash, EdgeRole::Out).unwrap());
+    }
+
+    #[test]
+    fn g4_concurrent_link_and_finish_have_one_serial_lineage_order() {
+        let path = std::env::temp_dir()
+            .join(format!(
+                "fs-ledger-link-finish-race-{}-{}.ledger",
+                std::process::id(),
+                now_wall_ns()
+            ))
+            .to_string_lossy()
+            .into_owned();
+        let setup = Ledger::open(&path).unwrap();
+        let artifact = setup.put_artifact("race-lineage", b"race", None).unwrap();
+        let op = setup.begin_op(None, "{}", &FX, 1).unwrap();
+        drop(setup);
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let finish_path = path.clone();
+        let finish_barrier = barrier.clone();
+        let finish = std::thread::spawn(move || {
+            let ledger = Ledger::open(&finish_path).unwrap();
+            finish_barrier.wait();
+            ledger.finish_op(op, OpOutcome::Ok, None, 2)
+        });
+        let link_path = path.clone();
+        let link_hash = artifact.hash;
+        let link = std::thread::spawn(move || {
+            let ledger = Ledger::open(&link_path).unwrap();
+            barrier.wait();
+            ledger.link(op, &link_hash, EdgeRole::Out)
+        });
+
+        finish.join().unwrap().unwrap();
+        let linked_before_finish = match link.join().unwrap() {
+            Ok(()) => true,
+            Err(LedgerError::OpLineageSealed { op: sealed }) if sealed == op => false,
+            Err(error) => panic!("unexpected concurrent link result: {error}"),
+        };
+
+        let ledger = Ledger::open(&path).unwrap();
+        let row = ledger.op(op).unwrap().expect("terminal raced op");
+        assert_eq!(row.outcome.as_deref(), Some("ok"));
+        assert_eq!(
+            ledger
+                .edge_exists(op, &artifact.hash, EdgeRole::Out)
+                .unwrap(),
+            linked_before_finish,
+            "the edge exists iff its atomic insert serialized before finish_op"
+        );
+        assert_eq!(
+            ledger.table_count("edges").unwrap(),
+            if linked_before_finish { 1 } else { 0 }
+        );
     }
 
     #[test]
