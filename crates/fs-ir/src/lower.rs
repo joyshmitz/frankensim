@@ -57,14 +57,6 @@ fn lower_inner(node: &Node, trace: &mut Vec<LowerStep>) -> Result<Node, IrError>
     }
 }
 
-/// Fetch the node following keyword `:name` in an argument list.
-fn kw_get<'a>(items: &'a [Node], name: &str) -> Option<&'a Node> {
-    items.windows(2).find_map(|pair| match &pair[0].kind {
-        NodeKind::Keyword(k) if k == name => Some(&pair[1]),
-        _ => None,
-    })
-}
-
 fn sym(s: &str) -> Node {
     Node::synthetic(NodeKind::Symbol(s.to_string()))
 }
@@ -87,10 +79,62 @@ fn lower_optimize_shape(node: &Node, trace: &mut Vec<LowerStep>) -> Result<Node,
         detail: format!("optimize-shape needs {what}"),
         hint: "(optimize-shape :min <objective> :over <levers> [:method M] [:until U])".to_string(),
     };
-    let objective = kw_get(items, "min").ok_or_else(|| missing(":min <objective>"))?;
-    let over = kw_get(items, "over").ok_or_else(|| missing(":over <levers>"))?;
+    let args = &items[1..];
+    if !args.len().is_multiple_of(2) {
+        let trailing = args.last().unwrap_or(node);
+        let detail = match &trailing.kind {
+            NodeKind::Keyword(name) => format!("optimize-shape has dangling :{name} with no value"),
+            _ => "optimize-shape has a trailing argument outside a keyword/value pair".to_string(),
+        };
+        return Err(IrError {
+            span: trailing.span,
+            kind: IrErrorKind::MalformedClause,
+            detail,
+            hint: "use exact :min/:over/:method/:until keyword/value pairs".to_string(),
+        });
+    }
+
+    let mut objective = None;
+    let mut over = None;
+    let mut method = None;
+    let mut until = None;
+    for pair in args.as_chunks::<2>().0 {
+        let NodeKind::Keyword(name) = &pair[0].kind else {
+            return Err(IrError {
+                span: pair[0].span,
+                kind: IrErrorKind::MalformedClause,
+                detail: "optimize-shape argument names must be keywords".to_string(),
+                hint: "use exact :min/:over/:method/:until keyword/value pairs".to_string(),
+            });
+        };
+        let slot = match name.as_str() {
+            "min" => &mut objective,
+            "over" => &mut over,
+            "method" => &mut method,
+            "until" => &mut until,
+            _ => {
+                return Err(IrError {
+                    span: pair[0].span,
+                    kind: IrErrorKind::MalformedClause,
+                    detail: format!("unknown optimize-shape argument :{name}"),
+                    hint: "use only :min, :over, :method, and :until".to_string(),
+                });
+            }
+        };
+        if slot.replace(&pair[1]).is_some() {
+            return Err(IrError {
+                span: pair[0].span,
+                kind: IrErrorKind::MalformedClause,
+                detail: format!("duplicate optimize-shape argument :{name} is ambiguous"),
+                hint: format!("retain exactly one :{name} value"),
+            });
+        }
+    }
+
+    let objective = objective.ok_or_else(|| missing(":min <objective>"))?;
+    let over = over.ok_or_else(|| missing(":over <levers>"))?;
     let mut injected = Vec::new();
-    let method = kw_get(items, "method").cloned().unwrap_or_else(|| {
+    let method = method.cloned().unwrap_or_else(|| {
         injected.push(":method (lbfgs :m 17)".to_string());
         list(vec![
             sym("lbfgs"),
@@ -98,7 +142,7 @@ fn lower_optimize_shape(node: &Node, trace: &mut Vec<LowerStep>) -> Result<Node,
             Node::synthetic(NodeKind::Int(17)),
         ])
     });
-    let until = kw_get(items, "until").cloned().unwrap_or_else(|| {
+    let until = until.cloned().unwrap_or_else(|| {
         injected.push(":until (grad-norm 1e-5)".to_string());
         list(vec![
             sym("grad-norm"),

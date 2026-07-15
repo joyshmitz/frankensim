@@ -234,9 +234,40 @@ fn ir_005_verb_lowering_is_explicit_and_inspectable() {
     let bad = sexpr::parse("(optimize-shape :over x)").unwrap();
     let e = lower(&bad).unwrap_err();
     assert_eq!(e.kind.code(), "IrMalformedClause");
+    for (source, expected) in [
+        (
+            "(optimize-shape :min j :min k :over x)",
+            "duplicate optimize-shape argument :min",
+        ),
+        (
+            "(optimize-shape :min j :over x :gpu true)",
+            "unknown optimize-shape argument :gpu",
+        ),
+        (
+            "(optimize-shape :min j :over x :method)",
+            "dangling :method",
+        ),
+        (
+            "(optimize-shape :min j :over x trailing)",
+            "trailing argument",
+        ),
+        (
+            "(simulate-pour vessel fluid schedule trailing)",
+            "takes 3 arguments",
+        ),
+    ] {
+        let node = sexpr::parse(source).expect("malformed shorthand still parses");
+        let error = lower(&node).expect_err("ambiguous shorthand must not lower");
+        assert_eq!(error.kind.code(), "IrMalformedClause");
+        assert!(
+            error.detail.contains(expected),
+            "{source}: expected {expected:?}, got {:?}",
+            error.detail
+        );
+    }
     verdict(
         "ir-005",
-        "verbs lower to explicit IR; defaults named in trace; idempotent",
+        "verbs lower to explicit IR; defaults named; malformed fields refuse; idempotent",
     );
 }
 

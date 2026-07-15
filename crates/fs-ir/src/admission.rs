@@ -3,15 +3,20 @@
 //! in MILLISECONDS with a structured, spans-attached diagnosis and RANKED
 //! FIXES, not discovered at hour six.
 //!
-//! Six dimensions, each timed: the Five Explicits (structure), dimensional
-//! analysis (fs-qty dims through the expression graph), chart routability
-//! (the Rep Router as an admission predicate), budget feasibility (learned
-//! fs-plan cost models with cost-derived fix estimates), capability
-//! sufficiency (session token globs), and regime gating (fs-regime
-//! reports; `(assert (regime.allows …))` is enforced, and `flux.*` verbs
-//! are checked against the report's model verdicts).
+//! Raw syntax is first bound to an IR version and fully lowered; malformed
+//! shorthand refuses before any authority decision, and the report binds the
+//! exact raw and lowered canonical identities. Six dimensions are then timed
+//! over only the explicit semantics: the Five Explicits (structure),
+//! dimensional analysis (fs-qty dims through the expression graph), chart
+//! routability (the Rep Router as an admission predicate), budget feasibility
+//! (learned fs-plan cost models with cost-derived fix estimates), capability
+//! sufficiency (session token globs), and regime gating (fs-regime reports;
+//! `(assert (regime.allows …))` is enforced, and `flux.*` verbs are checked
+//! against the report's model verdicts).
 
+use crate::VersionedProgram;
 use crate::ast::{CountUnit, Node, NodeKind, Span};
+use crate::lower::lower;
 use crate::study::Study;
 use fs_geom::{CostOracle, RoutePlanError, RouteRequest, Router};
 use fs_plan::{CostEvidenceClass, SealedCostModel};
@@ -124,10 +129,57 @@ pub struct CheckTiming {
     pub micros: u128,
 }
 
+/// Exact semantic identity binding used by one admission decision.
+///
+/// The canonical strings are complete versioned envelopes, not weak hashes:
+/// equality therefore means byte-identical canonical versioned programs.
+/// A lowering refusal retains the raw identity and has no lowered identity;
+/// no partially lowered tree can reach an authority check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoweringReceipt {
+    ir_version: u32,
+    raw_canonical: String,
+    lowered_canonical: Option<String>,
+}
+
+impl LoweringReceipt {
+    fn for_program(program: &VersionedProgram) -> Self {
+        Self {
+            ir_version: program.version(),
+            raw_canonical: program.print_sexpr(),
+            lowered_canonical: None,
+        }
+    }
+
+    fn bind_lowered(&mut self, node: &Node) {
+        self.lowered_canonical = Some(VersionedProgram::current(node.clone()).print_sexpr());
+    }
+
+    /// IR language version governing both identities.
+    #[must_use]
+    pub const fn ir_version(&self) -> u32 {
+        self.ir_version
+    }
+
+    /// Exact canonical versioned identity submitted for admission.
+    #[must_use]
+    pub fn raw_canonical(&self) -> &str {
+        &self.raw_canonical
+    }
+
+    /// Exact canonical versioned identity actually inspected by authority
+    /// checks, or `None` when lowering refused.
+    #[must_use]
+    pub fn lowered_canonical(&self) -> Option<&str> {
+        self.lowered_canonical.as_deref()
+    }
+}
+
 /// The admission verdict.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AdmissionReport {
-    /// Study name ("<unparsed>" when recognition failed).
+    /// Study name, or a phase-specific placeholder when admission refuses
+    /// before study recognition.
     pub study: String,
     /// True iff no Reject findings.
     pub admitted: bool,
@@ -135,6 +187,8 @@ pub struct AdmissionReport {
     pub findings: Vec<Finding>,
     /// Per-check wall timings.
     pub timings: Vec<CheckTiming>,
+    /// Exact binding between submitted and authority-checked semantics.
+    pub lowering: LoweringReceipt,
 }
 
 impl AdmissionReport {
@@ -175,9 +229,56 @@ impl AdmissionReport {
     }
 }
 
-/// Run every admission dimension over a parsed study form.
+/// Bind a parsed source program to the current IR version, lower it, then run
+/// admission over only the explicit lowered semantics.
+///
+/// This compatibility entry point is for newly parsed source. Persisted and
+/// replayed artifacts should call [`admit_versioned`] so unsupported versions
+/// are refused at [`VersionedProgram`] construction rather than inferred.
 #[must_use]
 pub fn admit(node: &Node, cx: &AdmissionContext<'_>) -> AdmissionReport {
+    admit_versioned(&VersionedProgram::current(node.clone()), cx)
+}
+
+/// Lower and admit an explicitly version-bound FrankenScript program.
+///
+/// Lowering is the first decision boundary. A malformed shorthand returns one
+/// `lowering` rejection without running capability, budget, chart, regime, or
+/// other semantic checks over raw or partially lowered syntax.
+#[must_use]
+pub fn admit_versioned(program: &VersionedProgram, cx: &AdmissionContext<'_>) -> AdmissionReport {
+    let mut receipt = LoweringReceipt::for_program(program);
+    let lowered = match lower(program.program()) {
+        Ok(lowered) => lowered,
+        Err(error) => {
+            return AdmissionReport {
+                study: "<lowering-refused>".to_string(),
+                admitted: false,
+                findings: vec![Finding {
+                    check: "lowering",
+                    severity: Severity::Reject,
+                    span: error.span,
+                    what: error.detail,
+                    fixes: vec![RankedFix {
+                        action: error.hint,
+                        predicted_wall_s: None,
+                        qoi_impact: "structural fix; no QoI impact".to_string(),
+                    }],
+                }],
+                timings: Vec::new(),
+                lowering: receipt,
+            };
+        }
+    };
+    receipt.bind_lowered(&lowered.node);
+    admit_lowered(&lowered.node, cx, receipt)
+}
+
+fn admit_lowered(
+    node: &Node,
+    cx: &AdmissionContext<'_>,
+    receipt: LoweringReceipt,
+) -> AdmissionReport {
     let mut findings: Vec<Finding> = Vec::new();
     let mut timings = Vec::new();
     let study = match Study::from_node(node) {
@@ -198,6 +299,7 @@ pub fn admit(node: &Node, cx: &AdmissionContext<'_>) -> AdmissionReport {
                     }],
                 }],
                 timings,
+                lowering: receipt,
             };
         }
     };
@@ -242,6 +344,7 @@ pub fn admit(node: &Node, cx: &AdmissionContext<'_>) -> AdmissionReport {
         admitted: !findings.iter().any(|f| f.severity == Severity::Reject),
         findings,
         timings,
+        lowering: receipt,
     }
 }
 

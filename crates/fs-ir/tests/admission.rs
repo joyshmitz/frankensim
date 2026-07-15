@@ -7,10 +7,11 @@
 //! panics.
 
 use fs_ir::admission::{
-    AdmissionContext, AdmissionReport, ChartRequirement, RegimePolicy, SessionCapability, Severity,
-    admit,
+    AdmissionContext, AdmissionReport, ChartRequirement, RankedFix, RegimePolicy,
+    SessionCapability, Severity, admit, admit_versioned,
 };
 use fs_ir::sexpr;
+use fs_ir::{IR_VERSION, VersionedProgram};
 use fs_plan::{CostModel, CostObservation, SealedCostModel};
 use fs_qty::{Dims, QtyAny};
 use std::collections::BTreeMap;
@@ -53,6 +54,28 @@ const FRAME: &str = r#"(study "frame-seismic-cvar-v9"
     :subject-to ((cvar frag :beta 0.9 :le 0.02) (constructable :catalog "AISC"))
     :method augmented-lagrangian
     :emit (frame frag report ledger)))"#;
+
+const LOWERED_POUR_RAW: &str = r#"(study "lowered-pour"
+  (seed 0x5EED0010) (versions (constellation :lock "2026-07"))
+  (budget (wall 10s))
+  (simulate-pour vessel fluid schedule))"#;
+
+const LOWERED_POUR_EXPLICIT: &str = r#"(study "lowered-pour"
+  (seed 0x5EED0010) (versions (constellation :lock "2026-07"))
+  (budget (wall 10s))
+  (flux.free-surface-lbm vessel fluid schedule))"#;
+
+const LOWERED_OPTIMIZE_RAW: &str = r#"(study "lowered-optimize"
+  (seed 0x5EED0011) (versions (constellation :lock "2026-07"))
+  (budget (wall 10s))
+  (optimize-shape :min objective :over levers))"#;
+
+const LOWERED_OPTIMIZE_EXPLICIT: &str = r#"(study "lowered-optimize"
+  (seed 0x5EED0011) (versions (constellation :lock "2026-07"))
+  (budget (wall 10s))
+  (ascent.optimize (min objective) :over levers
+    :method (lbfgs :m 17) :until (grad-norm 1e-5)
+    :emit (ledger report)))"#;
 
 /// A cost model fitted so `predict(4096).p90` is ~410 s (fits a 2-hour
 /// budget alongside the rest). Keyed to the verb that carries `:dof`.
@@ -105,6 +128,22 @@ fn spout_regime() -> fs_regime::RegimeReport {
     .value
 }
 
+fn creeping_regime() -> fs_regime::RegimeReport {
+    let role = |r, v, d: [i8; 6]| fs_regime::RoleInput {
+        role: r,
+        qty: QtyAny::new(v, Dims(d)),
+    };
+    fs_regime::assess(&[
+        role(fs_regime::Role::Density, 1200.0, [-3, 1, 0, 0, 0, 0]),
+        role(fs_regime::Role::Velocity, 0.3, [1, 0, -1, 0, 0, 0]),
+        role(fs_regime::Role::Length, 0.02, [1, 0, 0, 0, 0, 0]),
+        role(fs_regime::Role::DynViscosity, 8.0, [-1, 1, -1, 0, 0, 0]),
+        role(fs_regime::Role::SoundSpeed, 1450.0, [1, 0, -1, 0, 0, 0]),
+    ])
+    .expect("creeping regime assess")
+    .value
+}
+
 fn full_context(regime: &fs_regime::RegimeReport) -> AdmissionContext<'_> {
     let mut cost_models = BTreeMap::new();
     cost_models.insert("xform.level-set-velocity".to_string(), lbm_cost_model());
@@ -118,9 +157,74 @@ fn full_context(regime: &fs_regime::RegimeReport) -> AdmissionContext<'_> {
     }
 }
 
+fn authority_context<'a>(
+    ops: &[&str],
+    regime: Option<&'a fs_regime::RegimeReport>,
+    regime_policy: RegimePolicy,
+) -> AdmissionContext<'a> {
+    AdmissionContext {
+        router: None,
+        chart_requirements: Vec::new(),
+        cost_models: BTreeMap::new(),
+        capability: Some(SessionCapability {
+            ops: ops.iter().map(|op| (*op).to_string()).collect(),
+            cores: 1,
+            mem_bytes: 1 << 30,
+            wall_s: 3_600.0,
+        }),
+        regime,
+        regime_policy,
+    }
+}
+
 fn admit_src(src: &str, cx: &AdmissionContext<'_>) -> AdmissionReport {
     let node = sexpr::parse(src).expect("fixture parses");
     admit(&node, cx)
+}
+
+fn finding_semantics(
+    report: &AdmissionReport,
+) -> Vec<(&'static str, Severity, String, Vec<RankedFix>)> {
+    report
+        .findings
+        .iter()
+        .map(|finding| {
+            (
+                finding.check,
+                finding.severity,
+                finding.what.clone(),
+                finding.fixes.clone(),
+            )
+        })
+        .collect()
+}
+
+fn admit_equivalent(
+    raw: &str,
+    explicit: &str,
+    cx: &AdmissionContext<'_>,
+) -> (AdmissionReport, AdmissionReport) {
+    let raw_report = admit_src(raw, cx);
+    let explicit_report = admit_src(explicit, cx);
+    assert_eq!(raw_report.lowering.ir_version(), IR_VERSION);
+    assert_ne!(
+        raw_report.lowering.raw_canonical(),
+        explicit_report.lowering.raw_canonical(),
+        "raw identity must retain whether shorthand was submitted"
+    );
+    assert_eq!(
+        raw_report.lowering.lowered_canonical(),
+        explicit_report.lowering.lowered_canonical(),
+        "semantically equivalent syntax must bind the same lowered identity"
+    );
+    assert_eq!(raw_report.study, explicit_report.study);
+    assert_eq!(raw_report.admitted, explicit_report.admitted);
+    assert_eq!(
+        finding_semantics(&raw_report),
+        finding_semantics(&explicit_report),
+        "authority verdicts must depend only on lowered semantics"
+    );
+    (raw_report, explicit_report)
 }
 
 #[test]
@@ -153,6 +257,196 @@ fn ad_001_appendix_c_admits_cleanly_in_milliseconds() {
         "ad-001",
         "spout + frame admit cleanly; six checks timed, ms-class; deterministic diagnosis",
     );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // One end-to-end raw/explicit authority matrix.
+fn ad_001b_admission_is_over_versioned_lowered_semantics() {
+    let allowed_pour = authority_context(&["flux.*"], None, RegimePolicy::Warn);
+    let (raw_allowed, _) = admit_equivalent(LOWERED_POUR_RAW, LOWERED_POUR_EXPLICIT, &allowed_pour);
+    assert!(raw_allowed.admitted, "{}", raw_allowed.diagnosis());
+    assert!(
+        raw_allowed
+            .lowering
+            .raw_canonical()
+            .contains("simulate-pour")
+    );
+    let lowered_identity = raw_allowed
+        .lowering
+        .lowered_canonical()
+        .expect("successful admission binds lowered semantics");
+    assert!(lowered_identity.contains("flux.free-surface-lbm"));
+    assert!(!lowered_identity.contains("simulate-pour"));
+
+    // The source convenience API and explicitly versioned API converge on the
+    // exact same authority input and deterministic receipt.
+    let raw_node = sexpr::parse(LOWERED_POUR_RAW).expect("raw shorthand parses");
+    let versioned = VersionedProgram::current(raw_node.clone());
+    let explicit_version_report = admit_versioned(&versioned, &allowed_pour);
+    assert_eq!(raw_allowed.lowering, explicit_version_report.lowering);
+    assert_eq!(
+        finding_semantics(&raw_allowed),
+        finding_semantics(&explicit_version_report)
+    );
+    assert_eq!(raw_allowed.diagnosis(), explicit_version_report.diagnosis());
+
+    // The capability operator appears only after lowering, but it is still
+    // denied exactly as the caller-written explicit form is denied.
+    let denied_pour = authority_context(&["ascent.*"], None, RegimePolicy::Warn);
+    let (raw_denied, _) = admit_equivalent(LOWERED_POUR_RAW, LOWERED_POUR_EXPLICIT, &denied_pour);
+    assert!(!raw_denied.admitted);
+    assert!(raw_denied.findings.iter().any(|finding| {
+        finding.check == "capability"
+            && finding.what.contains("flux.free-surface-lbm")
+            && finding.what.contains("outside")
+    }));
+
+    let allowed_optimize = authority_context(&["ascent.*"], None, RegimePolicy::Warn);
+    let (raw_optimize, _) = admit_equivalent(
+        LOWERED_OPTIMIZE_RAW,
+        LOWERED_OPTIMIZE_EXPLICIT,
+        &allowed_optimize,
+    );
+    assert!(raw_optimize.admitted, "{}", raw_optimize.diagnosis());
+    let denied_optimize = authority_context(&["flux.*"], None, RegimePolicy::Warn);
+    let (raw_optimize_denied, _) = admit_equivalent(
+        LOWERED_OPTIMIZE_RAW,
+        LOWERED_OPTIMIZE_EXPLICIT,
+        &denied_optimize,
+    );
+    assert!(!raw_optimize_denied.admitted);
+    assert!(raw_optimize_denied.findings.iter().any(|finding| {
+        finding.check == "capability" && finding.what.contains("ascent.optimize")
+    }));
+
+    // Costing sees the injected flux operator too.
+    let mut cost_context = authority_context(&["flux.*"], None, RegimePolicy::Warn);
+    cost_context
+        .cost_models
+        .insert("flux.free-surface-lbm".to_string(), lbm_cost_model());
+    let raw_tight = LOWERED_POUR_RAW.replace("10s", "0.01s");
+    let explicit_tight = LOWERED_POUR_EXPLICIT.replace("10s", "0.01s");
+    let (raw_cost_denied, _) = admit_equivalent(&raw_tight, &explicit_tight, &cost_context);
+    assert!(!raw_cost_denied.admitted);
+    assert!(
+        raw_cost_denied.findings.iter().any(|finding| {
+            finding.check == "budget" && finding.what.contains("BudgetInfeasible")
+        })
+    );
+
+    // Regime authority is likewise evaluated on the lowered flux model.
+    let creeping = creeping_regime();
+    let regime_context = authority_context(&["flux.*"], Some(&creeping), RegimePolicy::Reject);
+    let (raw_regime_denied, _) =
+        admit_equivalent(LOWERED_POUR_RAW, LOWERED_POUR_EXPLICIT, &regime_context);
+    assert!(!raw_regime_denied.admitted);
+    assert!(raw_regime_denied.findings.iter().any(|finding| {
+        finding.check == "regime" && finding.what.contains("flux.free-surface-lbm")
+    }));
+
+    let replay = admit_src(LOWERED_POUR_RAW, &allowed_pour);
+    assert_eq!(raw_allowed.lowering, replay.lowering);
+    assert_eq!(raw_allowed.diagnosis(), replay.diagnosis());
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // One fail-closed lowering/refusal matrix.
+fn ad_001c_lowering_refuses_atomically_before_authority_checks() {
+    let creeping = creeping_regime();
+    let mut hostile_context =
+        authority_context(&["ascent.*"], Some(&creeping), RegimePolicy::Reject);
+    hostile_context
+        .cost_models
+        .insert("flux.free-surface-lbm".to_string(), lbm_cost_model());
+    hostile_context.chart_requirements.push(ChartRequirement {
+        from: "frep".to_string(),
+        to: "mesh".to_string(),
+        scale: 1.0,
+        max_abs_error: 1e-3,
+        max_cost_s: 1.0,
+    });
+    hostile_context
+        .capability
+        .as_mut()
+        .expect("test token")
+        .wall_s = f64::INFINITY;
+
+    let study = |body: &str| {
+        format!(
+            "(study \"malformed-lowering\" \
+             (seed 0x5EED0012) (versions (constellation :lock \"2026-07\")) \
+             (budget (wall 10s)) {body})"
+        )
+    };
+    for (body, expected) in [
+        (
+            "(optimize-shape :min j :min k :over x)",
+            "duplicate optimize-shape argument :min",
+        ),
+        (
+            "(optimize-shape :min j :over x :gpu true)",
+            "unknown optimize-shape argument :gpu",
+        ),
+        (
+            "(optimize-shape :min j :over x :method)",
+            "dangling :method",
+        ),
+        (
+            "(optimize-shape :min j :over x trailing)",
+            "trailing argument",
+        ),
+        (
+            "(simulate-pour vessel fluid schedule trailing)",
+            "takes 3 arguments",
+        ),
+        (
+            "(wrapper (simulate-pour vessel fluid schedule) \
+             (optimize-shape :over x))",
+            "needs :min",
+        ),
+    ] {
+        let source = study(body);
+        let report = admit_src(&source, &hostile_context);
+        assert!(!report.admitted);
+        assert_eq!(report.findings.len(), 1, "{}", report.diagnosis());
+        assert_eq!(report.findings[0].check, "lowering");
+        assert!(
+            report.findings[0].what.contains(expected),
+            "{body}: expected {expected:?}, got {}",
+            report.findings[0].what
+        );
+        assert!(
+            report.timings.is_empty(),
+            "no authority dimension may run after lowering refusal"
+        );
+        assert!(report.lowering.lowered_canonical().is_none());
+        assert!(
+            report
+                .lowering
+                .raw_canonical()
+                .starts_with("(frankensim-ir :version 3 :program")
+        );
+        let replay = admit_src(&source, &hostile_context);
+        assert_eq!(report.lowering, replay.lowering);
+        assert_eq!(report.diagnosis(), replay.diagnosis());
+    }
+
+    // A refusal cannot leave a partial lowering or mutate later decisions.
+    let stable_context = authority_context(&["flux.*"], None, RegimePolicy::Warn);
+    let before = admit_src(LOWERED_POUR_RAW, &stable_context);
+    let partial = admit_src(
+        &study(
+            "(wrapper (simulate-pour vessel fluid schedule) \
+             (optimize-shape :over x))",
+        ),
+        &stable_context,
+    );
+    assert_eq!(partial.findings.len(), 1);
+    assert!(partial.lowering.lowered_canonical().is_none());
+    let after = admit_src(LOWERED_POUR_RAW, &stable_context);
+    assert_eq!(before.lowering, after.lowering);
+    assert_eq!(finding_semantics(&before), finding_semantics(&after));
+    assert_eq!(before.diagnosis(), after.diagnosis());
 }
 
 #[test]
@@ -752,19 +1046,7 @@ fn ad_006_regime_gating_enforced_and_policy_graded() {
     // A creeping-pour regime (mu = 8 Pa·s ⇒ Re ≈ 0.9): free-surface LBM
     // is OUTSIDE its validity box (Re >= 1) — the study's flux verb must
     // be rejected with alternatives, or warned under the Warn policy.
-    let role = |r, v, d: [i8; 6]| fs_regime::RoleInput {
-        role: r,
-        qty: QtyAny::new(v, Dims(d)),
-    };
-    let creeping = fs_regime::assess(&[
-        role(fs_regime::Role::Density, 1200.0, [-3, 1, 0, 0, 0, 0]),
-        role(fs_regime::Role::Velocity, 0.3, [1, 0, -1, 0, 0, 0]),
-        role(fs_regime::Role::Length, 0.02, [1, 0, 0, 0, 0, 0]),
-        role(fs_regime::Role::DynViscosity, 8.0, [-1, 1, -1, 0, 0, 0]),
-        role(fs_regime::Role::SoundSpeed, 1450.0, [1, 0, -1, 0, 0, 0]),
-    ])
-    .expect("assess")
-    .value;
+    let creeping = creeping_regime();
     let mut cx = full_context(&creeping);
     let report = admit_src(SPOUT, &cx);
     assert!(!report.admitted, "LBM at Re<1 must be rejected");
