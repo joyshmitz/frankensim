@@ -65,25 +65,39 @@ cubical homology), so the optimization stack lives here.
   signal.
 
 - `marquee` module (bead b7d0; [F], behind `cutfem-marquee`): the
-  CutFEM-octree topology marquee. `DensityDesign` (nodal densities;
+  CutFEM-quadtree topology marquee, the 2D analogue of the planned octree
+  lane. `DensityDesign` (nodal densities;
   the SOLID region {ρ > ½} IS the CutFEM domain via the bilinear
-  CutSdf with an exact-containment enclosure), `run_marquee` (the
+  CutSdf with an exact-containment enclosure, plus a deterministic
+  non-cryptographic `state_witness` for trace correlation), `run_marquee` (the
   volume-to-point heat fixture: interface-flux redistribution with a
-  BAND-LOCAL volume projection, DWR-gated band refinement, zero
-  rebuilds structurally), `refine_dwr_cut_band` (an estimator-agnostic,
+  BAND-LOCAL volume projection, DWR-gated band refinement, an explicit final
+  re-solve on the returned design, and zero rebuilds structurally),
+  `refine_dwr_cut_band` (an estimator-agnostic,
   one-step cut-band planning policy over `CellKey` indicators, returning
-  the ACTUAL halo/balance split count; invalid levels, non-leaf keys,
-  non-finite indicators/masses, and non-finite SDF enclosures return
-  `InvalidFemInput` before caller-visible mutation), `void_components`
+  a `DwrBandDecision` reason, versioned mass evidence, analysis headroom,
+  target leaf delta, and the ACTUAL halo/balance split count; invalid levels,
+  non-leaf keys, non-finite indicators/masses,
+  and non-finite SDF enclosures return `InvalidFemInput` before
+  caller-visible mutation), `DWR_CUT_BAND_POLICY_VERSION` and
+  `DWR_CUT_BAND_MASS_GATE` (the explicit policy identity and strict 0.15
+  gate), `void_components`
   (topology witness), `min_feature_cells` (the medial-axis-class thickness oracle).
   The `run_marquee` refinement argument is an enable flag: each enabled
   iteration may advance the whole band by at most one level; it is not a
   requested split budget.
   HARD-WON INVARIANTS from development, all conformance-guarded:
   fs-cutfem's ghost penalty demands the cut band AND ITS ONE-CELL HALO
-  at a uniform level (`halo_cut`), re-conformed EVERY iteration
-  because the interface moves; interface membership is a NEIGHBOR SIGN
+  at a uniform level (`halo_cut`), conformed after EVERY design update
+  because the interface moves; the next `Space::build` verifies rather than
+  silently repairs that invariant; interface membership is a NEIGHBOR SIGN
   CHANGE, not a |φ| threshold (φ is a density gap, not a distance);
+  DWR mass is classified against the EXACT solved/estimated design
+  snapshot, then carried by an exact-grid-generation receipt that may
+  authorize one level for the post-update design's band — old indicators
+  are never reclassified against a new geometry; every post-update boundary
+  is then conformed to the already-authorized level, including the final
+  iteration when no later pre-solve repair exists;
   flux probes project THROUGH the interface so void-side nodes read
   real flux; and the volume projection lives ON THE BAND — a global
   shift silently fills voids from the inside.
@@ -104,9 +118,18 @@ Structured panics on solver failures and invalid materials
 (modeling errors). Optimization outcomes are reported traces
 (compliance, volume, final change), never silent.
 The public DWR band-planning helper is fail-closed: it validates its
-complete supplied indicator map and plans recursive halo refinement on a
+level and every entry in the supplied indicator map, then plans recursive
+halo refinement on a
 clone, so a structured input refusal leaves both the caller's grid and
-band level unchanged.
+band level unchanged. The marquee's split-phase path additionally binds the
+advance receipt to the exact ordered leaf set, maximum level, prior band
+level, and policy version; a stale-grid receipt refuses before mutation.
+Obsolete policy-version receipts likewise refuse before mutation.
+Every iteration row names its analysis and post-update target generations,
+with non-cryptographic state witnesses and separately labeled metrics. The
+report re-solves compliance on the final conformed grid, so
+`final_compliance` describes the returned `design`, not the prior analysis
+snapshot.
 The marquee flux probes read the solved field only through the canonical
 fail-closed `fs_cutfem::Space::sample_scalar` (bead ay40): missing or
 non-finite active nodal evidence propagates as
@@ -136,7 +159,7 @@ None. `unsafe_code = "deny"`.
 
 ## Feature flags
 
-- `cutfem-marquee` [F] (default OFF, bead b7d0) — the CutFEM-octree
+- `cutfem-marquee` [F] (default OFF, bead b7d0) — the CutFEM-quadtree
   marquee topology lane (`dep:fs-cutfem`, `dep:fs-dwr`, `dep:fs-ivl`);
   gates the `marquee` integration target.
 
@@ -167,9 +190,24 @@ golden hashes (pipeline, robust, eigenfrequency
 `0xbb7e_5ad3_851a_2bf1`, stress `0xc539_ad97_34d8_1b66`). Plus
 `tests/probe_robust.rs`: the limit-cycle regression. Feature-gated
 `tests/marquee.rs` additionally covers the heat solve/update/refine loop,
-zero rebuilds, cut-band concentration, and deterministic synthetic
+zero rebuilds, cut-band concentration, estimator-time gate evidence,
+monotone one-level headroom, exact `leaf_delta = 3 * splits` accounting,
+and deterministic synthetic
 `CellKey` indicators driving `refine_dwr_cut_band` for exactly one
-planning step, including the disabled no-op path; invalid-level,
+planning step. G3 checks show that indicator negation, exact power-of-two
+scaling, reverse insertion, and within-partition mass-preserving
+redistribution preserve authorization and target topology.
+The iteration log emits policy version, cut/total mass and fraction, band
+levels, exhaustive decision reason, analysis/target design witnesses and
+metrics, target leaf counts, policy splits, post-update motion-conformance
+splits, the fully conformed target-grid leaf count, and their reconstructed
+total. Exact leaf-count chaining proves that each target grid is the next
+analysis grid and that the last target grid is the final re-solve grid;
+non-cryptographic design witnesses correlate each target with the next
+analysis snapshot and the returned design. The returned design receives an
+explicit finite final solve.
+The battery separately pins disabled, zero-mass, strict-threshold,
+and exhausted-headroom no-op reasons; invalid-level,
 non-finite-indicator/accumulated-mass/recursive-enclosure, and non-leaf-key
 cases assert structured refusal with no grid or band-level mutation. The
 literal vector integration uses `estimate_elasticity_compliance` on an
@@ -185,7 +223,7 @@ cycle.
 
 - Scope: compliance/volume, robust three-field, eigenfrequency, and
   stress-aggregate objectives on FIXED kuhn meshes. The medial-axis
-  thickness oracle (geometry-layer audit) and the CutFEM-octree
+  thickness oracle (geometry-layer audit) and the CutFEM-quadtree
   heat marquee (zero remeshing + DWR-gated cut-band adaptivity on its
   recorded volume-to-point fixture) are the feature-gated extension;
   elasticity benchmark envelopes remain outside this contract.
@@ -219,7 +257,22 @@ cycle.
   the marquee-demo crate's exact bilinear identity).
 - Split concentration is bounded by the halo contract at ~2/3, not the
   0.8 a halo-free marker could reach — the ceiling is the solver's
-  ghost-penalty stencil, documented in the test.
+  ghost-penalty stencil. The 0.60 final-snapshot threshold is a recorded
+  fixture golden across its short moving-boundary trajectory; the stronger
+  advancing and non-advancing motion tests derive the target halo refinement
+  independently, require exact leaf-set equality, and build the next scalar
+  space on the conformed result.
 - The heat marquee gates refinement on the fraction of absolute DWR mass
-  carried by zero-straddling cells. It does not multiply indicators by
-  `|grad rho|`, and no such weighting is claimed.
+  carried by zero-straddling cells of the SAME snapshot that produced those
+  indicators. This is a global one-level authorization, not Dörfler/top-k
+  cell marking. Its target is the post-update cut band and halo used by the
+  next solve; no claim is made that old per-cell residuals localize error on
+  the moved geometry. It does not multiply indicators by `|grad rho|`, and
+  no such weighting is claimed. Absolute split counts are fixture outcomes,
+  not policy invariants: the corrected independent coarse-adjoint estimator
+  can legitimately change their value while the versioned gate, structural
+  accounting, and boundary-concentration invariants remain intact.
+- `state_witness` is deterministic forensic correlation metadata only. It is
+  not collision-resistant, not a content address, and not authority for
+  scientific identity; the full `DensityDesign` remains the artifact of
+  record.
