@@ -522,6 +522,7 @@ pub struct Cx<'s> {
     mode: ExecMode,
     refusals: Option<&'s RefusalSink>,
     lease: Option<&'s fs_alloc::OperationMemoryLease>,
+    clock: Option<&'s dyn asupersync::time::TimeSource>,
 }
 
 impl<'s> Cx<'s> {
@@ -542,7 +543,26 @@ impl<'s> Cx<'s> {
             mode,
             refusals: None,
             lease: None,
+            clock: None,
         }
+    }
+
+    /// Attach an ambient deterministic time source (bead sj31i.6).
+    ///
+    /// Budget accountants admitted from this context enforce the
+    /// budget's deadline against this clock. A context whose budget
+    /// carries a deadline but no ambient clock fails budget admission
+    /// closed rather than running un-timed.
+    #[must_use]
+    pub fn with_time_source(mut self, clock: &'s dyn asupersync::time::TimeSource) -> Self {
+        self.clock = Some(clock);
+        self
+    }
+
+    /// The ambient time source, when the executor attached one.
+    #[must_use]
+    pub fn time_source(&self) -> Option<&'s dyn asupersync::time::TimeSource> {
+        self.clock
     }
 
     pub(crate) fn new_with_refusal_sink(
@@ -562,6 +582,7 @@ impl<'s> Cx<'s> {
             mode,
             refusals: Some(refusals),
             lease: Some(lease),
+            clock: None,
         }
     }
 

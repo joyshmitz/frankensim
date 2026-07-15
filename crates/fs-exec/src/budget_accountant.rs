@@ -46,6 +46,13 @@ pub enum BudgetRefusal {
         /// Deterministic clock observation at admission, nanoseconds.
         observed_ns: u64,
     },
+    /// The budget carries a deadline but the context has no ambient
+    /// time source; running un-timed would make the deadline
+    /// unenforceable, so admission fails closed.
+    DeadlineWithoutClock {
+        /// Admitted absolute deadline, nanoseconds.
+        deadline_ns: u64,
+    },
     /// The checked work plan's declared cost exceeds the cost quota.
     CostPlanExceedsQuota {
         /// Cost the plan declared it needs.
@@ -97,6 +104,11 @@ impl core::fmt::Display for BudgetRefusal {
                 formatter,
                 "budget refused at admission: deadline {deadline_ns}ns already \
                  passed at {observed_ns}ns"
+            ),
+            Self::DeadlineWithoutClock { deadline_ns } => write!(
+                formatter,
+                "budget refused at admission: deadline {deadline_ns}ns cannot be \
+                 enforced without an ambient time source"
             ),
             Self::CostPlanExceedsQuota { planned, quota } => write!(
                 formatter,
@@ -161,7 +173,7 @@ pub struct BudgetConsumption {
 /// every deterministic tile boundary thereafter.
 pub struct AdmittedBudget<'clock> {
     admitted: Budget,
-    clock: &'clock dyn TimeSource,
+    clock: Option<&'clock dyn TimeSource>,
     planned_cost: u64,
     polls_used: u32,
     cost_charged: u64,
@@ -193,8 +205,38 @@ impl<'clock> AdmittedBudget<'clock> {
         planned_cost: u64,
         clock: &'clock dyn TimeSource,
     ) -> Result<Self, BudgetRefusal> {
+        Self::admit_with(cx.budget(), planned_cost, Some(clock))
+    }
+
+    /// Admit against the context's ambient time source (bead sj31i.6).
+    ///
+    /// Keeps existing entry-point signatures intact: the executor
+    /// attaches the clock via `Cx::with_time_source`, and workflows
+    /// admit from the context alone.
+    ///
+    /// # Errors
+    /// Everything [`AdmittedBudget::admit`] refuses, plus a budget that
+    /// carries a deadline on a context with no ambient clock (fail
+    /// closed: an unenforceable deadline never admits).
+    pub fn admit_ambient(cx: &Cx<'clock>, planned_cost: u64) -> Result<Self, BudgetRefusal> {
         let admitted = cx.budget();
-        if let Some(deadline) = admitted.deadline {
+        let clock = cx.time_source();
+        if clock.is_none()
+            && let Some(deadline) = admitted.deadline
+        {
+            return Err(BudgetRefusal::DeadlineWithoutClock {
+                deadline_ns: deadline.as_nanos(),
+            });
+        }
+        Self::admit_with(admitted, planned_cost, clock)
+    }
+
+    fn admit_with(
+        admitted: Budget,
+        planned_cost: u64,
+        clock: Option<&'clock dyn TimeSource>,
+    ) -> Result<Self, BudgetRefusal> {
+        if let (Some(deadline), Some(clock)) = (admitted.deadline, clock) {
             let now = clock.now();
             if now >= deadline {
                 return Err(BudgetRefusal::DeadlineExpiredAtAdmission {
@@ -237,8 +279,8 @@ impl<'clock> AdmittedBudget<'clock> {
         if cx.is_cancel_requested() {
             return Err(self.latch(BudgetRefusal::Cancelled { phase }));
         }
-        if let Some(deadline) = self.admitted.deadline {
-            let now = self.clock.now();
+        if let (Some(deadline), Some(clock)) = (self.admitted.deadline, self.clock) {
+            let now = clock.now();
             if now >= deadline {
                 return Err(self.latch(BudgetRefusal::DeadlineExpired {
                     phase,
@@ -316,8 +358,8 @@ impl<'clock> AdmittedBudget<'clock> {
 
     /// The deterministic clock reading right now, for evidence stamps.
     #[must_use]
-    pub fn now(&self) -> Time {
-        self.clock.now()
+    pub fn now(&self) -> Option<Time> {
+        self.clock.map(TimeSource::now)
     }
 
     /// Final consumption and latched refusal, exactly as enforced.
@@ -529,6 +571,50 @@ mod tests {
             );
             assert_eq!(admitted.consumption().cost_charged, 0);
             assert_eq!(admitted.consumption().refusal, Some(first));
+        });
+    }
+
+    #[test]
+    fn ambient_admission_fails_closed_on_deadline_without_clock() {
+        let gate = CancelGate::new();
+        with_cx(budget(Some(10), u32::MAX, None), &gate, |cx| {
+            assert!(matches!(
+                AdmittedBudget::admit_ambient(cx, 0),
+                Err(BudgetRefusal::DeadlineWithoutClock { .. })
+            ));
+        });
+        with_cx(budget(None, 4, Some(7)), &gate, |cx| {
+            let mut admitted = AdmittedBudget::admit_ambient(cx, 7)
+                .expect("deadline-free budgets admit without a clock");
+            admitted.checkpoint("tile", cx).expect("boundary");
+            admitted.charge_cost("tile", 7).expect("charge");
+            assert_eq!(admitted.consumption().cost_charged, 7);
+            assert_eq!(admitted.now(), None);
+        });
+    }
+
+    #[test]
+    fn ambient_clock_enforces_the_deadline() {
+        let gate = CancelGate::new();
+        let pool = fs_alloc::ArenaPool::new(fs_alloc::ArenaConfig::default());
+        pool.scope(|arena| {
+            let clock = VirtualClock::new();
+            let cx = Cx::new(
+                &gate,
+                arena,
+                STREAM,
+                budget(Some(10), 8, None),
+                ExecMode::Deterministic,
+            )
+            .with_time_source(&clock);
+            let mut admitted =
+                AdmittedBudget::admit_ambient(&cx, 0).expect("future deadline admits");
+            admitted.checkpoint("warm", &cx).expect("in time");
+            clock.advance(10_000_000_000);
+            assert!(matches!(
+                admitted.checkpoint("late", &cx),
+                Err(BudgetRefusal::DeadlineExpired { phase: "late", .. })
+            ));
         });
     }
 
