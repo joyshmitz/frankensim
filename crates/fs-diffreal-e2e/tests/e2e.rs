@@ -5,32 +5,45 @@
 use fs_adjoint::transpose::Vjp;
 use fs_diffreal_e2e::{
     AS_BUILT_EVIDENCE_IDENTITY, AS_BUILT_STAGE, DIFFERENTIATION_EVIDENCE_IDENTITY,
-    DIFFERENTIATION_STAGE, DiffRealError, DifferentiationError, PRODUCTION_DIFFERENTIATION_PATH,
-    SPACETIME_EVIDENCE_IDENTITY, SPACETIME_STAGE, StageEvent, StageLog, StageReason,
-    StageRequirement, StageStatus, TOLERANCE_EVIDENCE_IDENTITY, TOLERANCE_STAGE,
-    differentiate_path, production_vjp_registry, run_battery, stage_as_built_loop,
-    stage_differentiation, stage_differentiation_with_registry, stage_spacetime_gated,
-    stage_tolerance_allocation, stage_tolerance_allocation_with_samples, verify_sensitivity,
+    DIFFERENTIATION_STAGE, DiffRealError, DifferentiationError, NoPromotionReceiptVerifier,
+    PRODUCTION_DIFFERENTIATION_PATH, PromotionAttestation, PromotionReceiptError,
+    PromotionReceiptVerifier, PromotionVerdict, PromotionVerificationDecision,
+    PromotionVerificationRequest, SPACETIME_EVIDENCE_IDENTITY, SPACETIME_STAGE, StageEvent,
+    StageLog, StageReason, StageRequirement, StageStatus, TOLERANCE_EVIDENCE_IDENTITY,
+    TOLERANCE_STAGE, differentiate_path, production_vjp_registry, promotion_policy_fingerprint,
+    run_battery, stage_as_built_loop, stage_differentiation, stage_differentiation_with_registry,
+    stage_spacetime_gated, stage_tolerance_allocation, stage_tolerance_allocation_with_samples,
+    verify_sensitivity,
 };
 use fs_exec::{Budget, CancelGate, Cx, ExecMode, StreamKey};
 use fs_toleralloc::Action;
 use std::sync::Arc;
 
 fn with_cx<R>(gate: &CancelGate, budget: Budget, f: impl FnOnce(&Cx<'_>) -> R) -> R {
+    with_identity_cx(
+        gate,
+        budget,
+        StreamKey {
+            seed: 0x6469_6666_7265_616c,
+            kernel_id: 1,
+            tile: 0,
+            iteration: 0,
+        },
+        ExecMode::Deterministic,
+        f,
+    )
+}
+
+fn with_identity_cx<R>(
+    gate: &CancelGate,
+    budget: Budget,
+    stream_key: StreamKey,
+    mode: ExecMode,
+    f: impl FnOnce(&Cx<'_>) -> R,
+) -> R {
     let pool = fs_alloc::ArenaPool::new(fs_alloc::ArenaConfig::default());
     pool.scope(|arena| {
-        let cx = Cx::new(
-            gate,
-            arena,
-            StreamKey {
-                seed: 0x6469_6666_7265_616c,
-                kernel_id: 1,
-                tile: 0,
-                iteration: 0,
-            },
-            budget,
-            ExecMode::Deterministic,
-        );
+        let cx = Cx::new(gate, arena, stream_key, budget, mode);
         f(&cx)
     })
 }
@@ -44,8 +57,9 @@ fn the_full_layer3_battery_reports_its_required_gate_fail_closed() {
     let report = active_cx(run_battery).expect("battery succeeds");
     assert!(!report.complete(), "a required gated stage is incomplete");
     assert!(!report.all_required_passed());
-    assert!(!report.promotion_ready());
-    assert!(!report.passed());
+    assert!(!report.structurally_ready());
+    assert!(report.verifies_integrity());
+    assert_eq!(report.receipts().len(), 4);
     assert_eq!(report.stages().len(), 4);
     for stage in &report.stages()[..3] {
         assert!(stage.passed(), "stage {} failed: {stage}", stage.stage);
@@ -55,6 +69,232 @@ fn the_full_layer3_battery_reports_its_required_gate_fail_closed() {
         .stage(SPACETIME_STAGE)
         .expect("required spacetime record exists");
     assert!(matches!(spacetime.status, StageStatus::Gated(_)));
+}
+
+#[derive(Debug)]
+struct FixturePromotionVerifier;
+
+impl PromotionReceiptVerifier for FixturePromotionVerifier {
+    fn verify(
+        &self,
+        request: &PromotionVerificationRequest<'_>,
+        attestation: &PromotionAttestation,
+    ) -> PromotionVerificationDecision {
+        let verdict = match attestation.key_id() {
+            "trusted-diffreal-fixture"
+                if attestation.signature() == request.subject().as_bytes() =>
+            {
+                PromotionVerdict::Authorized
+            }
+            "trusted-diffreal-fixture" => PromotionVerdict::WrongSignature,
+            "revoked-diffreal-fixture" => PromotionVerdict::RevokedKey,
+            _ => PromotionVerdict::UnknownKey,
+        };
+        PromotionVerificationDecision::new(verdict, request.policy_fingerprint())
+    }
+}
+
+#[derive(Debug)]
+struct WrongPolicyDecisionVerifier;
+
+impl PromotionReceiptVerifier for WrongPolicyDecisionVerifier {
+    fn verify(
+        &self,
+        request: &PromotionVerificationRequest<'_>,
+        _attestation: &PromotionAttestation,
+    ) -> PromotionVerificationDecision {
+        let mut wrong = request.policy_fingerprint();
+        wrong.0[0] ^= 1;
+        PromotionVerificationDecision::new(PromotionVerdict::Authorized, wrong)
+    }
+}
+
+fn attestation_for(key_id: &str, signature: Vec<u8>) -> PromotionAttestation {
+    PromotionAttestation::new(key_id, signature, promotion_policy_fingerprint())
+}
+
+#[test]
+fn report_authentication_is_external_fail_closed_and_not_a_scientific_pass() {
+    active_cx(|cx| {
+        let report = run_battery(cx).expect("battery succeeds");
+        let signature = report.promotion_verification_subject().as_bytes().to_vec();
+        let authenticated = report
+            .authenticate(
+                cx,
+                attestation_for("trusted-diffreal-fixture", signature.clone()),
+                &FixturePromotionVerifier,
+            )
+            .expect("fixture authority authenticates the exact ordered root");
+        assert_eq!(authenticated.receipt_root(), report.receipt_root());
+        assert!(!authenticated.promotion_ready(), "spacetime is still gated");
+
+        let denied = report.authenticate(
+            cx,
+            attestation_for("trusted-diffreal-fixture", signature.clone()),
+            &NoPromotionReceiptVerifier,
+        );
+        assert!(matches!(
+            denied,
+            Err(PromotionReceiptError::Unauthorized {
+                verdict: PromotionVerdict::UnknownKey
+            })
+        ));
+
+        for (key_id, signature, expected) in [
+            (
+                "trusted-diffreal-fixture",
+                b"wrong-signature".to_vec(),
+                PromotionVerdict::WrongSignature,
+            ),
+            (
+                "unknown-diffreal-fixture",
+                signature.clone(),
+                PromotionVerdict::UnknownKey,
+            ),
+            (
+                "revoked-diffreal-fixture",
+                signature.clone(),
+                PromotionVerdict::RevokedKey,
+            ),
+        ] {
+            assert!(matches!(
+                report.authenticate(
+                    cx,
+                    attestation_for(key_id, signature),
+                    &FixturePromotionVerifier,
+                ),
+                Err(PromotionReceiptError::Unauthorized { verdict }) if verdict == expected
+            ));
+        }
+
+        let mut wrong_policy = promotion_policy_fingerprint();
+        wrong_policy.0[0] ^= 1;
+        assert!(matches!(
+            report.authenticate(
+                cx,
+                PromotionAttestation::new(
+                    "trusted-diffreal-fixture",
+                    signature.clone(),
+                    wrong_policy,
+                ),
+                &FixturePromotionVerifier,
+            ),
+            Err(PromotionReceiptError::AttestationPolicyMismatch)
+        ));
+        assert!(matches!(
+            report.authenticate(
+                cx,
+                attestation_for("trusted-diffreal-fixture", signature),
+                &WrongPolicyDecisionVerifier,
+            ),
+            Err(PromotionReceiptError::DecisionPolicyMismatch)
+        ));
+    });
+}
+
+#[test]
+fn every_cx_identity_field_is_replay_bound() {
+    let base_stream = StreamKey {
+        seed: 0x6469_6666_7265_616c,
+        kernel_id: 1,
+        tile: 0,
+        iteration: 0,
+    };
+    let base_budget = Budget::with_deadline_at_ns(100)
+        .with_poll_quota(1_000)
+        .with_cost_quota(2_000)
+        .with_priority(7);
+    let report = with_identity_cx(
+        &CancelGate::new(),
+        base_budget,
+        base_stream,
+        ExecMode::Deterministic,
+        run_battery,
+    )
+    .expect("battery succeeds");
+    let execution = report.execution_identity();
+    let attestation = attestation_for(
+        "trusted-diffreal-fixture",
+        report.promotion_verification_subject().as_bytes().to_vec(),
+    );
+
+    let stream_variants = [
+        StreamKey {
+            seed: base_stream.seed ^ 1,
+            ..base_stream
+        },
+        StreamKey {
+            kernel_id: base_stream.kernel_id ^ 1,
+            ..base_stream
+        },
+        StreamKey {
+            tile: base_stream.tile ^ 1,
+            ..base_stream
+        },
+        StreamKey {
+            iteration: base_stream.iteration ^ 1,
+            ..base_stream
+        },
+    ];
+    for stream in stream_variants {
+        with_identity_cx(
+            &CancelGate::new(),
+            base_budget,
+            stream,
+            execution.mode(),
+            |cx| {
+                assert!(matches!(
+                    report.authenticate(cx, attestation.clone(), &FixturePromotionVerifier),
+                    Err(PromotionReceiptError::ReplayContextMismatch)
+                ));
+            },
+        );
+    }
+
+    let budget_variants = [
+        Budget {
+            deadline: Budget::with_deadline_at_ns(101).deadline,
+            ..base_budget
+        },
+        Budget {
+            deadline: None,
+            ..base_budget
+        },
+        base_budget.with_poll_quota(base_budget.poll_quota + 1),
+        base_budget.with_cost_quota(2_001),
+        Budget {
+            cost_quota: None,
+            ..base_budget
+        },
+        base_budget.with_priority(base_budget.priority.wrapping_add(1)),
+    ];
+    for budget in budget_variants {
+        with_identity_cx(
+            &CancelGate::new(),
+            budget,
+            base_stream,
+            execution.mode(),
+            |cx| {
+                assert!(matches!(
+                    report.authenticate(cx, attestation.clone(), &FixturePromotionVerifier),
+                    Err(PromotionReceiptError::ReplayContextMismatch)
+                ));
+            },
+        );
+    }
+
+    with_identity_cx(
+        &CancelGate::new(),
+        base_budget,
+        base_stream,
+        ExecMode::Fast,
+        |cx| {
+            assert!(matches!(
+                report.authenticate(cx, attestation, &FixturePromotionVerifier),
+                Err(PromotionReceiptError::ReplayContextMismatch)
+            ));
+        },
+    );
 }
 
 #[test]

@@ -11,8 +11,10 @@ Layer L6. This integration crate depends on `fs-ad`, `fs-adjoint` (with
 `fs-exec`, and `fs-toleralloc`. It composes those crates and owns the local
 scalar fixture VJPs, an operator-name-bounded registry facade, the
 sensitivity-seal schema, typed stage events, and the battery's fail-closed
-report policy. Registry cardinality and declaration diagnostics are not
-bounded. The crate does not own a general differentiation or numerical
+report policy. It also owns canonical fixed-fixture transcripts, versioned
+stage/result receipts, the ordered report root, and the DiffReal-specific
+external-authority seam. Registry cardinality and declaration diagnostics are
+not bounded. The crate does not own a general differentiation or numerical
 primitive.
 
 ## Public types and semantics
@@ -20,9 +22,20 @@ primitive.
 - `run_battery(&Cx) -> Result<DiffRealReport, DiffRealError>` runs all four
   stages. Cancellation or ambient-budget refusal returns a typed error and
   publishes no partial report.
-- `DiffRealReport { stages }` — `complete()`, `all_required_passed()`,
-  `promotion_ready()`, fail-closed compatibility alias `passed()`, and
-  `stage(name)`.
+- `DiffRealReport` exposes read-only diagnostics, stage receipts, the ordered
+  report root, exact execution identity, `complete()`,
+  `all_required_passed()`, `structurally_ready()`, integrity/replay checks, and
+  `authenticate(...)`. It exposes no raw promotion predicate.
+- `StageReceipt` is opaque crate-minted DATA. Its root binds the schema version,
+  exact fixed-fixture input root, complete private result root, canonical typed
+  log fields, full `Cx` stream/mode/budget identity, and policy versions.
+- `PromotionReceiptVerifier` authenticates one immutable, domain-separated
+  ordered report root. `NoPromotionReceiptVerifier` is the default deny-all
+  authority. Attestation, request, and atomic decision must carry the exact
+  same policy fingerprint.
+- `AuthenticatedDiffRealReport` is minted only after version, integrity,
+  expected-`Cx`, semantic, attestation-policy, verifier-policy, and authority
+  checks pass. It is the only type exposing `promotion_ready()`.
 - `StageLog { stage, requirement, status, evidence_identity, events }` is a
   diagnostic record. Its `StageEvent` values are typed deterministic DATA;
   floating-point payloads are stored as exact bits and are never printed here.
@@ -48,7 +61,8 @@ primitive.
   input-unit rescaling.
 - `stage_differentiation_with_registry` is the injected-VJP falsifier seam.
 - `stage_tolerance_allocation_with_samples` is the injected-sample
-  linearization falsifier seam; it is not a probability API.
+  linearization falsifier seam; it is not a probability API. Neither injected
+  seam can mint a stage receipt or enter a sealed report.
 - All four normal stage entry points take `&Cx` and return
   `Result<StageLog, DiffRealError>`.
 - `DifferentiationError` and `DiffRealError` preserve typed structural,
@@ -98,10 +112,21 @@ evaluated status. Missing, reordered, or duplicate stages, unexpected required
 stages, blank diagnostics, identity drift, gates, and refusals all fail closed.
 
 `all_required_passed()` separately requires the same valid schema and a
-`Passed` status for every required stage. `promotion_ready()` is the conjunction
-of completeness and all-required-passed. `passed()` is retained as a
-compatibility alias for `promotion_ready()`; it does not restore the old
-boolean semantics.
+`Passed` status for every required stage. `structurally_ready()` is the
+unauthenticated conjunction of completeness and all-required-passed; its name
+is an explicit no-authority boundary. A report becomes promotion-eligible only
+after `authenticate` validates every receipt and semantic transcript against an
+exact replay `Cx`, then one injected authority authenticates the ordered report
+root through a domain-separated subject that also binds the purpose, full
+execution identity, both receipt versions, and exact local policy fingerprint.
+Only the returned opaque wrapper has `promotion_ready()`.
+
+Stage roots are domain-separated, canonical, length-framed encodings with
+explicit numeric tags for every enum variant and exact IEEE-754 bits for every
+floating value. They do not use `Display`, `Debug`, JSON, sorting, or wall-clock
+data as identity. The ordered report root binds stage name/root pairs without
+reordering; omission, duplication, or reordering changes or invalidates it.
+Unknown stage/report receipt versions fail before authority verification.
 
 Additional stages must declare `Optional`. A well-formed optional gated,
 refused, or failed diagnostic does not block the decision over the fixed
@@ -111,8 +136,9 @@ the four required stages.
 ## Invariants
 
 - The current full battery is DETERMINISTIC for equal `Cx` provenance and
-  inputs, but is intentionally **not complete or promotion-ready** while the
-  required spacetime integration stage is gated.
+  inputs. It may be externally authenticated as an exact run, but is
+  intentionally **not complete or promotion-ready** while the required
+  spacetime integration stage is gated.
 - Differentiation paths contain 1–16 operators; each name is at most 64 bytes.
   The first missing VJP wins in forward order and is checked before non-finite
   input rejection.
@@ -131,8 +157,16 @@ the four required stages.
   `probability_claimed=false`; caller-authored diagnostics carry no authority.
 - Differentiation fixture identity v2 and tolerance fixture identity v3 are not
   interchangeable with their earlier schemas.
+- Every fixed stage receipt binds the logical stream (`seed`, `kernel_id`,
+  `tile`, `iteration`), execution mode, deadline presence/value, poll quota,
+  cost-quota presence/value, priority, exact fixed inputs, complete private
+  results, diagnostic semantics, and all named policy versions. Any independent
+  mutation fails integrity or moves the root.
+- One report-level authority decision authenticates the ordered stage-root
+  sequence atomically. A stage hash alone is never described as authenticated.
 - No required `Gated` or `Refused` stage can make `complete()`,
-  `all_required_passed()`, `promotion_ready()`, or `passed()` return true.
+  `all_required_passed()`, `structurally_ready()`, or authenticated
+  `promotion_ready()` return true.
 - A required `Failed` stage is an evaluated result, so it may be complete, but
   it can never be all-required-passed or promotion-ready.
 
@@ -151,9 +185,9 @@ ambient stage quota, and lower-layer as-built/assimilation errors remain typed
 The fixed crate-authored battery and `production_vjp_registry` are fully
 deterministic for equal inputs and `Cx` provenance: no RNG and no I/O. Stage
 order, exact-bit numeric event fields, status/reason codes, versioned fixture
-identities, sealed content identities, and `Display` output are stable.
-Caller-injected `Vjp` implementations and caller-authored events are outside
-this determinism claim.
+identities, complete result roots, stage roots, ordered report roots, sealed
+content identities, and `Display` output are stable. Caller-injected `Vjp`
+implementations and caller-authored events are outside this determinism claim.
 
 ## Cancellation behavior
 
@@ -186,12 +220,19 @@ overflow, a non-finite VJP result, missing-VJP precedence, typed as-built events
 adverse supplied samples, explicit probability no-claim, the spacetime gate,
 one exact sampled-linearization event display golden, status/log displays,
 deterministic replay, pre- and injected mid-stage cancellation, and zero-cost
-admission for all four stages and the full battery.
+admission for all four stages and the full battery. G3 receipt batteries cover
+independent input/result/event/root mutations, omission, duplication,
+reordering, wrong signatures, unknown/revoked keys, policy disagreement, and
+unknown versions. G5 batteries cover deterministic root replay and independent
+mismatch of every `Cx` stream, mode, deadline, poll, cost, and priority field.
 
 The private-field unit test in `src/lib.rs` mutates one bound sensitivity field
 and proves integrity recomputation rejects it. Report-policy unit tests cover
 all-passed, failed, gated, refused, optional, missing, duplicated,
-misidentified, reordered, malformed, and unlogged schema cases.
+misidentified, reordered, malformed, and unlogged schema cases. Private result
+transcripts bind values omitted from diagnostic events: registration transform
+and all deviations, estimator/color/regime, posterior mean/covariance/color and
+misfits, full allocation/GD&T rows and totals, and the robustness verdict.
 
 ## No-claim boundaries
 
@@ -230,3 +271,12 @@ misidentified, reordered, malformed, and unlogged schema cases.
   `SealedSensitivity` hash or external proof. `StageEvent` and `StageLog` are
   returned data, not persisted ledger events, and caller-constructible
   diagnostics carry no promotion authority.
+- `StageReceipt` and `DiffRealReport::receipt_root` are unkeyed
+  content-integrity bindings, not signatures or authority. Authentication
+  begins only when an injected verifier accepts a detached attestation over the
+  exact ordered root and policy fingerprint.
+- Successful authentication proves only that the injected authority approved
+  that exact root under its declared policy. It does not independently prove
+  scientific correctness, trusted-hardware execution, external validation,
+  calibration custody, ledger persistence, release admission, or permission to
+  strengthen any evidence color.

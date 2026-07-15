@@ -33,7 +33,7 @@ use fs_asbuilt::{Fiducial, Point2, as_built_diff, register};
 use fs_assimilate::{AssimError, Belief, assimilate_colored, misfit, point_sensor};
 use fs_blake3::{ContentHash, hash_domain};
 use fs_evidence::Color;
-use fs_exec::Cx;
+use fs_exec::{Budget, Cx, ExecMode, StreamKey};
 use fs_toleralloc::{
     Action, ColorRank, Feature, allocate, gdt_report, robustness_check, variance_budget,
 };
@@ -60,11 +60,29 @@ pub const SPACETIME_EVIDENCE_IDENTITY: &str = "fs-diffreal-e2e/spacetime-integra
 
 /// Version of the production-path sensitivity sealing policy.
 pub const SENSITIVITY_POLICY_VERSION: &str = "fs-diffreal-e2e/sensitivity-policy/v1";
+/// Version of the fixed local affine/square/identity VJP registry semantics.
+pub const DIFFERENTIATION_REGISTRY_POLICY: &str = "fs-diffreal-e2e/production-vjp-registry/v1";
+/// Version of the canonical stage-receipt schema and verification policy.
+pub const STAGE_RECEIPT_POLICY_VERSION: u32 = 1;
+/// Version of the ordered report-root schema and verification policy.
+pub const REPORT_RECEIPT_POLICY_VERSION: u32 = 1;
+/// Versioned battery readiness policy bound into every report root.
+pub const REPORT_PROMOTION_POLICY: &str = "fs-diffreal-e2e/promotion-policy/v2";
 
 /// The production differentiation fixture's operator path.
 pub const PRODUCTION_DIFFERENTIATION_PATH: [&str; 3] = ["sdf", "spline", "solve"];
 
 const SENSITIVITY_IDENTITY_DOMAIN: &str = "frankensim.fs-diffreal-e2e.sensitivity.v1";
+const FIXTURE_INPUT_IDENTITY_DOMAIN: &str = "frankensim.fs-diffreal-e2e.fixture-inputs.v1";
+const STAGE_RECEIPT_IDENTITY_DOMAIN: &str = "frankensim.fs-diffreal-e2e.stage-receipt.v1";
+const STAGE_RESULT_IDENTITY_DOMAIN: &str = "frankensim.fs-diffreal-e2e.stage-results.v1";
+const REPORT_RECEIPT_IDENTITY_DOMAIN: &str = "frankensim.fs-diffreal-e2e.report-receipt.v1";
+const PROMOTION_POLICY_FINGERPRINT_DOMAIN: &str =
+    "frankensim.fs-diffreal-e2e.promotion-policy-fingerprint.v1";
+const PROMOTION_VERIFICATION_SUBJECT_DOMAIN: &str =
+    "frankensim.fs-diffreal-e2e.promotion-verification-subject.v1";
+const PROMOTION_VERIFICATION_PURPOSE: &str = "frankensim.diffreal-promotion.v1";
+const ASSIMILATION_POLL_POLICY: &str = "fixed-stride:v3";
 const MAX_DIFFERENTIATION_OPS: usize = 16;
 const MAX_OP_NAME_BYTES: usize = 64;
 const DIFFERENTIATION_WORK_UNITS: u64 = 12;
@@ -72,6 +90,35 @@ const DIFFERENTIATION_STAGE_WORK_UNITS: u64 = 24;
 const AS_BUILT_WORK_UNITS: u64 = 64;
 const TOLERANCE_WORK_UNITS: u64 = 32;
 const SPACETIME_WORK_UNITS: u64 = 1;
+
+const DIFFERENTIATION_FIXTURE_INPUT: f64 = 1.5;
+const MISSING_VJP_FIXTURE_PATH: [&str; 3] = ["sdf", "remesh", "solve"];
+const AS_BUILT_DESIGN_POINTS: [(f64, f64); 3] = [(0.0, 0.0), (2.0, 0.0), (0.0, 2.0)];
+const AS_BUILT_ROTATION_RADIANS: f64 = 0.3;
+const AS_BUILT_TRANSLATION: (f64, f64) = (4.0, 1.0);
+const AS_BUILT_DEFECT_INDEX: usize = 1;
+const AS_BUILT_DEFECT_X: f64 = 0.3;
+const AS_BUILT_DESIGN_TOLERANCE: f64 = 0.5;
+const AS_BUILT_MEASUREMENT_NOISE: f64 = 0.02;
+const AS_BUILT_CALIBRATION_CANDIDATE: &str = "cmm-cal-2026";
+const AS_BUILT_PRIOR_MEAN: [f64; 2] = [20.0, 20.0];
+const AS_BUILT_PRIOR_DIAGONAL_COVARIANCE: [f64; 2] = [9.0, 9.0];
+const AS_BUILT_OBSERVATIONS: [(usize, f64, f64, &str); 2] = [
+    (0, 24.0, 0.25, "thermocouple-1"),
+    (1, 18.5, 0.25, "thermocouple-2"),
+];
+const AS_BUILT_ASSIMILATION_PARAMETER: &str = "Re";
+const AS_BUILT_ASSIMILATION_BOUNDS: (f64, f64) = (1.0e5, 3.0e5);
+const TOLERANCE_SENSITIVITY_INPUTS: [f64; 2] = [1.0, -0.475];
+const TOLERANCE_EXTREME_QOIS: [f64; 3] = [0.9, -0.8, 0.5];
+const TOLERANCE_PERFORMANCE_TOLERANCE: f64 = 1.0;
+const TOLERANCE_TARGET_PROBABILITY: f64 = 0.99;
+const TOLERANCE_SIGMA_MULTIPLIER: f64 = 3.0;
+const TOLERANCE_NOMINAL_QOI: f64 = 0.0;
+const TOLERANCE_ROBUSTNESS_MARGIN: f64 = 0.2;
+const TOLERANCE_FEATURE_NAMES: [&str; 2] = ["critical", "slack"];
+const TOLERANCE_FEATURE_COST_COEFFICIENT: f64 = 1.0;
+const TOLERANCE_FEATURE_BASELINE: f64 = 0.5;
 
 /// Typed refusal from the production differentiation and independent-oracle
 /// path. Floating-point payloads are retained as exact bits so errors compare
@@ -864,6 +911,1475 @@ impl core::fmt::Display for StageLog {
     }
 }
 
+fn push_identity_field(output: &mut Vec<u8>, label: &str, value: &[u8]) {
+    output.extend_from_slice(&(label.len() as u64).to_le_bytes());
+    output.extend_from_slice(label.as_bytes());
+    output.extend_from_slice(&(value.len() as u64).to_le_bytes());
+    output.extend_from_slice(value);
+}
+
+fn push_identity_str(output: &mut Vec<u8>, label: &str, value: &str) {
+    push_identity_field(output, label, value.as_bytes());
+}
+
+fn push_identity_u64(output: &mut Vec<u8>, label: &str, value: u64) {
+    push_identity_field(output, label, &value.to_le_bytes());
+}
+
+fn push_identity_f64(output: &mut Vec<u8>, label: &str, value: f64) {
+    push_identity_u64(output, label, value.to_bits());
+}
+
+fn identity_usize(value: usize) -> u64 {
+    u64::try_from(value).expect("a Rust allocation length and index fit u64")
+}
+
+fn push_identity_usize(output: &mut Vec<u8>, label: &str, value: usize) {
+    push_identity_u64(output, label, identity_usize(value));
+}
+
+fn push_optional_action(output: &mut Vec<u8>, label: &str, action: Option<Action>) {
+    match action {
+        Some(action) => {
+            push_identity_field(output, &format!("{label}.present"), &[1]);
+            push_action(output, &format!("{label}.value"), action);
+        }
+        None => push_identity_field(output, &format!("{label}.present"), &[0]),
+    }
+}
+
+fn encode_transpose_error(output: &mut Vec<u8>, label: &str, error: &TransposeError) {
+    match error {
+        TransposeError::MissingVjp { op } => {
+            push_identity_field(output, &format!("{label}.tag"), &[0]);
+            push_identity_str(output, &format!("{label}.op"), op);
+        }
+        TransposeError::NonDifferentiableInPath {
+            op,
+            reason,
+            color_consequence,
+        } => {
+            push_identity_field(output, &format!("{label}.tag"), &[1]);
+            push_identity_str(output, &format!("{label}.op"), op);
+            push_identity_str(output, &format!("{label}.reason"), reason);
+            push_identity_str(
+                output,
+                &format!("{label}.color-consequence"),
+                color_consequence,
+            );
+        }
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn encode_differentiation_error(output: &mut Vec<u8>, label: &str, error: &DifferentiationError) {
+    match error {
+        DifferentiationError::Cancelled => {
+            push_identity_field(output, &format!("{label}.tag"), &[0]);
+        }
+        DifferentiationError::WorkBudgetExceeded {
+            required,
+            available,
+        } => {
+            push_identity_field(output, &format!("{label}.tag"), &[1]);
+            push_identity_u64(output, &format!("{label}.required"), *required);
+            push_identity_u64(output, &format!("{label}.available"), *available);
+        }
+        DifferentiationError::EmptyPath => {
+            push_identity_field(output, &format!("{label}.tag"), &[2]);
+        }
+        DifferentiationError::OraclePathMismatch {
+            expected_len,
+            observed_len,
+            first_mismatch,
+        } => {
+            push_identity_field(output, &format!("{label}.tag"), &[3]);
+            push_identity_usize(output, &format!("{label}.expected-len"), *expected_len);
+            push_identity_usize(output, &format!("{label}.observed-len"), *observed_len);
+            push_identity_usize(output, &format!("{label}.first-mismatch"), *first_mismatch);
+        }
+        DifferentiationError::PathTooLong { limit, observed } => {
+            push_identity_field(output, &format!("{label}.tag"), &[4]);
+            push_identity_usize(output, &format!("{label}.limit"), *limit);
+            push_identity_usize(output, &format!("{label}.observed"), *observed);
+        }
+        DifferentiationError::OpNameTooLong {
+            index,
+            limit,
+            observed,
+        } => {
+            push_identity_field(output, &format!("{label}.tag"), &[5]);
+            push_identity_usize(output, &format!("{label}.index"), *index);
+            push_identity_usize(output, &format!("{label}.limit"), *limit);
+            push_identity_usize(output, &format!("{label}.observed"), *observed);
+        }
+        DifferentiationError::EmptyOpName { index } => {
+            push_identity_field(output, &format!("{label}.tag"), &[6]);
+            push_identity_usize(output, &format!("{label}.index"), *index);
+        }
+        DifferentiationError::MissingVjp { op } => {
+            push_identity_field(output, &format!("{label}.tag"), &[7]);
+            push_identity_str(output, &format!("{label}.op"), op);
+        }
+        DifferentiationError::UnsupportedOperator { op } => {
+            push_identity_field(output, &format!("{label}.tag"), &[8]);
+            push_identity_str(output, &format!("{label}.op"), op);
+        }
+        DifferentiationError::NonFiniteInput { bits } => {
+            push_identity_field(output, &format!("{label}.tag"), &[9]);
+            push_identity_u64(output, &format!("{label}.bits"), *bits);
+        }
+        DifferentiationError::NonFinitePrimal { op, bits } => {
+            push_identity_field(output, &format!("{label}.tag"), &[10]);
+            push_identity_str(output, &format!("{label}.op"), op);
+            push_identity_u64(output, &format!("{label}.bits"), *bits);
+        }
+        DifferentiationError::Transpose(error) => {
+            push_identity_field(output, &format!("{label}.tag"), &[11]);
+            encode_transpose_error(output, &format!("{label}.transpose"), error);
+        }
+        DifferentiationError::MissingLeafGradient => {
+            push_identity_field(output, &format!("{label}.tag"), &[12]);
+        }
+        DifferentiationError::InvalidGradientShape { observed } => {
+            push_identity_field(output, &format!("{label}.tag"), &[13]);
+            push_identity_usize(output, &format!("{label}.observed"), *observed);
+        }
+        DifferentiationError::NonFiniteGradient { bits } => {
+            push_identity_field(output, &format!("{label}.tag"), &[14]);
+            push_identity_u64(output, &format!("{label}.bits"), *bits);
+        }
+        DifferentiationError::OracleDisagreement {
+            production_bits,
+            dual_bits,
+            fd_fine_bits,
+            tolerance_bits,
+        } => {
+            push_identity_field(output, &format!("{label}.tag"), &[15]);
+            push_identity_u64(
+                output,
+                &format!("{label}.production-bits"),
+                *production_bits,
+            );
+            push_identity_u64(output, &format!("{label}.dual-bits"), *dual_bits);
+            push_identity_u64(output, &format!("{label}.fd-fine-bits"), *fd_fine_bits);
+            push_identity_u64(output, &format!("{label}.tolerance-bits"), *tolerance_bits);
+        }
+        DifferentiationError::InvalidInputScale { bits } => {
+            push_identity_field(output, &format!("{label}.tag"), &[16]);
+            push_identity_u64(output, &format!("{label}.bits"), *bits);
+        }
+        DifferentiationError::NonFiniteRescaledGradient { bits } => {
+            push_identity_field(output, &format!("{label}.tag"), &[17]);
+            push_identity_u64(output, &format!("{label}.bits"), *bits);
+        }
+        DifferentiationError::SensitivityIntegrityMismatch { identity } => {
+            push_identity_field(output, &format!("{label}.tag"), &[18]);
+            push_identity_field(output, &format!("{label}.identity"), identity.as_bytes());
+        }
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn encode_stage_event(output: &mut Vec<u8>, label: &str, event: &StageEvent) {
+    match event {
+        StageEvent::GradientVerified {
+            receipt,
+            input_bits,
+            value_bits,
+            production_bits,
+            dual_bits,
+            fd_coarse_bits,
+            fd_fine_bits,
+            tolerance_bits,
+        } => {
+            push_identity_field(output, &format!("{label}.tag"), &[0]);
+            push_identity_field(output, &format!("{label}.receipt"), receipt.as_bytes());
+            for (field, value) in [
+                ("input-bits", *input_bits),
+                ("value-bits", *value_bits),
+                ("production-bits", *production_bits),
+                ("dual-bits", *dual_bits),
+                ("fd-coarse-bits", *fd_coarse_bits),
+                ("fd-fine-bits", *fd_fine_bits),
+                ("tolerance-bits", *tolerance_bits),
+            ] {
+                push_identity_u64(output, &format!("{label}.{field}"), value);
+            }
+        }
+        StageEvent::DifferentiationRejected { error } => {
+            push_identity_field(output, &format!("{label}.tag"), &[1]);
+            encode_differentiation_error(output, &format!("{label}.error"), error);
+        }
+        StageEvent::MissingVjpProbe { op, blocked } => {
+            push_identity_field(output, &format!("{label}.tag"), &[2]);
+            push_identity_str(output, &format!("{label}.op"), op);
+            push_identity_field(output, &format!("{label}.blocked"), &[u8::from(*blocked)]);
+        }
+        StageEvent::Registration {
+            residual_bits,
+            within_tolerance,
+        } => {
+            push_identity_field(output, &format!("{label}.tag"), &[3]);
+            push_identity_u64(output, &format!("{label}.residual-bits"), *residual_bits);
+            push_identity_field(
+                output,
+                &format!("{label}.within-tolerance"),
+                &[u8::from(*within_tolerance)],
+            );
+        }
+        StageEvent::AsBuiltDelta {
+            max_deviation_bits,
+            defect_index,
+            estimated,
+        } => {
+            push_identity_field(output, &format!("{label}.tag"), &[4]);
+            push_identity_u64(
+                output,
+                &format!("{label}.max-deviation-bits"),
+                *max_deviation_bits,
+            );
+            match defect_index {
+                Some(index) => {
+                    push_identity_field(output, &format!("{label}.defect-index-present"), &[1]);
+                    push_identity_usize(output, &format!("{label}.defect-index"), *index);
+                }
+                None => push_identity_field(output, &format!("{label}.defect-index-present"), &[0]),
+            }
+            push_identity_field(
+                output,
+                &format!("{label}.estimated"),
+                &[u8::from(*estimated)],
+            );
+        }
+        StageEvent::Assimilation {
+            before_bits,
+            after_bits,
+            reduced,
+        } => {
+            push_identity_field(output, &format!("{label}.tag"), &[5]);
+            push_identity_u64(output, &format!("{label}.before-bits"), *before_bits);
+            push_identity_u64(output, &format!("{label}.after-bits"), *after_bits);
+            push_identity_field(output, &format!("{label}.reduced"), &[u8::from(*reduced)]);
+        }
+        StageEvent::ToleranceActions { critical, slack } => {
+            push_identity_field(output, &format!("{label}.tag"), &[6]);
+            push_optional_action(output, &format!("{label}.critical"), *critical);
+            push_optional_action(output, &format!("{label}.slack"), *slack);
+        }
+        StageEvent::GdtJustification {
+            loosened,
+            all_verified,
+        } => {
+            push_identity_field(output, &format!("{label}.tag"), &[7]);
+            push_identity_usize(output, &format!("{label}.loosened"), *loosened);
+            push_identity_field(
+                output,
+                &format!("{label}.all-verified"),
+                &[u8::from(*all_verified)],
+            );
+        }
+        StageEvent::SampledLinearization {
+            samples,
+            confirmed,
+            linearized_std_bits,
+            probability_claimed,
+        } => {
+            push_identity_field(output, &format!("{label}.tag"), &[8]);
+            push_identity_usize(output, &format!("{label}.samples"), *samples);
+            push_identity_field(
+                output,
+                &format!("{label}.confirmed"),
+                &[u8::from(*confirmed)],
+            );
+            push_identity_u64(
+                output,
+                &format!("{label}.linearized-std-bits"),
+                *linearized_std_bits,
+            );
+            push_identity_field(
+                output,
+                &format!("{label}.probability-claimed"),
+                &[u8::from(*probability_claimed)],
+            );
+        }
+        StageEvent::Gate { code, detail } => {
+            push_identity_field(output, &format!("{label}.tag"), &[9]);
+            push_identity_str(output, &format!("{label}.code"), code);
+            push_identity_str(output, &format!("{label}.detail"), detail);
+        }
+        StageEvent::Refusal { code, detail } => {
+            push_identity_field(output, &format!("{label}.tag"), &[10]);
+            push_identity_str(output, &format!("{label}.code"), code);
+            push_identity_str(output, &format!("{label}.detail"), detail);
+        }
+    }
+}
+
+/// Exact execution provenance bound into every stage receipt and the report
+/// root. Construction is crate-controlled through [`Cx`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiffRealExecutionIdentity {
+    stream_key: StreamKey,
+    budget: Budget,
+    mode: ExecMode,
+}
+
+impl DiffRealExecutionIdentity {
+    fn from_cx(cx: &Cx<'_>) -> Self {
+        Self {
+            stream_key: cx.stream_key(),
+            budget: cx.budget(),
+            mode: cx.mode(),
+        }
+    }
+
+    /// Logical stream identity used by the battery run.
+    #[must_use]
+    pub const fn stream_key(&self) -> StreamKey {
+        self.stream_key
+    }
+
+    /// Ambient budget captured before the battery ran.
+    #[must_use]
+    pub const fn budget(&self) -> Budget {
+        self.budget
+    }
+
+    /// Execution mode captured before the battery ran.
+    #[must_use]
+    pub const fn mode(&self) -> ExecMode {
+        self.mode
+    }
+
+    fn matches_cx(&self, cx: &Cx<'_>) -> bool {
+        *self == Self::from_cx(cx)
+    }
+}
+
+fn encode_execution_identity(output: &mut Vec<u8>, execution: &DiffRealExecutionIdentity) {
+    push_identity_field(
+        output,
+        "execution.mode-tag",
+        &[match execution.mode {
+            ExecMode::Deterministic => 0,
+            ExecMode::Fast => 1,
+        }],
+    );
+    push_identity_u64(output, "execution.stream.seed", execution.stream_key.seed);
+    push_identity_u64(
+        output,
+        "execution.stream.kernel-id",
+        execution.stream_key.kernel_id,
+    );
+    push_identity_u64(output, "execution.stream.tile", execution.stream_key.tile);
+    push_identity_u64(
+        output,
+        "execution.stream.iteration",
+        execution.stream_key.iteration,
+    );
+    match execution.budget.deadline {
+        Some(deadline) => {
+            push_identity_field(output, "execution.budget.deadline-present", &[1]);
+            push_identity_u64(
+                output,
+                "execution.budget.deadline-nanos",
+                deadline.as_nanos(),
+            );
+        }
+        None => push_identity_field(output, "execution.budget.deadline-present", &[0]),
+    }
+    push_identity_field(
+        output,
+        "execution.budget.poll-quota",
+        &execution.budget.poll_quota.to_le_bytes(),
+    );
+    match execution.budget.cost_quota {
+        Some(cost) => {
+            push_identity_field(output, "execution.budget.cost-quota-present", &[1]);
+            push_identity_u64(output, "execution.budget.cost-quota", cost);
+        }
+        None => push_identity_field(output, "execution.budget.cost-quota-present", &[0]),
+    }
+    push_identity_field(
+        output,
+        "execution.budget.priority",
+        &[execution.budget.priority],
+    );
+}
+
+fn push_fixture_path(output: &mut Vec<u8>, label: &str, path: &[&str]) {
+    push_identity_u64(output, &format!("{label}.length"), path.len() as u64);
+    for (index, op) in path.iter().enumerate() {
+        push_identity_str(output, &format!("{label}.{index}"), op);
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn fixture_input_identity(stage: &StageLog) -> ContentHash {
+    let mut canonical = Vec::new();
+    push_identity_u64(
+        &mut canonical,
+        "stage-receipt-policy-version",
+        u64::from(STAGE_RECEIPT_POLICY_VERSION),
+    );
+    push_identity_str(&mut canonical, "stage", stage.stage);
+    push_identity_str(&mut canonical, "evidence-identity", stage.evidence_identity);
+
+    match stage.stage {
+        DIFFERENTIATION_STAGE => {
+            push_fixture_path(
+                &mut canonical,
+                "production-path",
+                &PRODUCTION_DIFFERENTIATION_PATH,
+            );
+            push_identity_f64(
+                &mut canonical,
+                "production-input",
+                DIFFERENTIATION_FIXTURE_INPUT,
+            );
+            push_fixture_path(
+                &mut canonical,
+                "missing-vjp-path",
+                &MISSING_VJP_FIXTURE_PATH,
+            );
+            push_identity_f64(
+                &mut canonical,
+                "missing-vjp-input",
+                DIFFERENTIATION_FIXTURE_INPUT,
+            );
+            push_identity_str(
+                &mut canonical,
+                "registry-policy",
+                DIFFERENTIATION_REGISTRY_POLICY,
+            );
+            push_identity_str(
+                &mut canonical,
+                "sensitivity-policy",
+                SENSITIVITY_POLICY_VERSION,
+            );
+            push_identity_u64(
+                &mut canonical,
+                "admitted-work-units",
+                DIFFERENTIATION_STAGE_WORK_UNITS,
+            );
+        }
+        AS_BUILT_STAGE => {
+            for (index, (x, y)) in AS_BUILT_DESIGN_POINTS.iter().copied().enumerate() {
+                push_identity_f64(&mut canonical, &format!("design.{index}.x"), x);
+                push_identity_f64(&mut canonical, &format!("design.{index}.y"), y);
+            }
+            push_identity_f64(
+                &mut canonical,
+                "registration.rotation-radians",
+                AS_BUILT_ROTATION_RADIANS,
+            );
+            push_identity_f64(
+                &mut canonical,
+                "registration.translation-x",
+                AS_BUILT_TRANSLATION.0,
+            );
+            push_identity_f64(
+                &mut canonical,
+                "registration.translation-y",
+                AS_BUILT_TRANSLATION.1,
+            );
+            push_identity_u64(&mut canonical, "defect.index", AS_BUILT_DEFECT_INDEX as u64);
+            push_identity_f64(&mut canonical, "defect.delta-x", AS_BUILT_DEFECT_X);
+            push_identity_f64(
+                &mut canonical,
+                "design-tolerance",
+                AS_BUILT_DESIGN_TOLERANCE,
+            );
+            push_identity_f64(
+                &mut canonical,
+                "measurement-noise",
+                AS_BUILT_MEASUREMENT_NOISE,
+            );
+            push_identity_str(
+                &mut canonical,
+                "calibration-candidate",
+                AS_BUILT_CALIBRATION_CANDIDATE,
+            );
+            for (index, value) in AS_BUILT_PRIOR_MEAN.iter().copied().enumerate() {
+                push_identity_f64(&mut canonical, &format!("prior.mean.{index}"), value);
+            }
+            for (index, value) in AS_BUILT_PRIOR_DIAGONAL_COVARIANCE
+                .iter()
+                .copied()
+                .enumerate()
+            {
+                push_identity_f64(
+                    &mut canonical,
+                    &format!("prior.diagonal-covariance.{index}"),
+                    value,
+                );
+            }
+            for (index, (state_index, value, variance, label)) in
+                AS_BUILT_OBSERVATIONS.iter().copied().enumerate()
+            {
+                push_identity_u64(
+                    &mut canonical,
+                    &format!("observation.{index}.state-dimension"),
+                    AS_BUILT_PRIOR_MEAN.len() as u64,
+                );
+                push_identity_u64(
+                    &mut canonical,
+                    &format!("observation.{index}.state-index"),
+                    state_index as u64,
+                );
+                push_identity_f64(&mut canonical, &format!("observation.{index}.value"), value);
+                push_identity_f64(
+                    &mut canonical,
+                    &format!("observation.{index}.variance"),
+                    variance,
+                );
+                push_identity_str(&mut canonical, &format!("observation.{index}.label"), label);
+            }
+            push_identity_str(
+                &mut canonical,
+                "assimilation.parameter",
+                AS_BUILT_ASSIMILATION_PARAMETER,
+            );
+            push_identity_f64(
+                &mut canonical,
+                "assimilation.lower",
+                AS_BUILT_ASSIMILATION_BOUNDS.0,
+            );
+            push_identity_f64(
+                &mut canonical,
+                "assimilation.upper",
+                AS_BUILT_ASSIMILATION_BOUNDS.1,
+            );
+            push_identity_u64(
+                &mut canonical,
+                "as-built-work-plan-version",
+                u64::from(fs_asbuilt::AS_BUILT_WORK_PLAN_VERSION),
+            );
+            push_identity_u64(
+                &mut canonical,
+                "as-built-poll-policy-version",
+                u64::from(fs_asbuilt::AS_BUILT_POLL_POLICY_VERSION),
+            );
+            push_identity_u64(
+                &mut canonical,
+                "assimilation-psd-policy-version",
+                u64::from(fs_assimilate::PSD_ADMISSION_POLICY_VERSION),
+            );
+            push_identity_str(
+                &mut canonical,
+                "assimilation-poll-policy",
+                ASSIMILATION_POLL_POLICY,
+            );
+            push_identity_u64(
+                &mut canonical,
+                "color-algebra-version",
+                u64::from(fs_evidence::COLOR_ALGEBRA_VERSION),
+            );
+            push_identity_u64(&mut canonical, "admitted-work-units", AS_BUILT_WORK_UNITS);
+        }
+        TOLERANCE_STAGE => {
+            push_fixture_path(
+                &mut canonical,
+                "production-path",
+                &PRODUCTION_DIFFERENTIATION_PATH,
+            );
+            for (index, input) in TOLERANCE_SENSITIVITY_INPUTS.iter().copied().enumerate() {
+                push_identity_f64(&mut canonical, &format!("sensitivity-input.{index}"), input);
+            }
+            for (index, name) in TOLERANCE_FEATURE_NAMES.iter().copied().enumerate() {
+                push_identity_str(&mut canonical, &format!("feature.{index}.name"), name);
+                push_identity_f64(
+                    &mut canonical,
+                    &format!("feature.{index}.cost-coefficient"),
+                    TOLERANCE_FEATURE_COST_COEFFICIENT,
+                );
+                push_identity_f64(
+                    &mut canonical,
+                    &format!("feature.{index}.baseline-tolerance"),
+                    TOLERANCE_FEATURE_BASELINE,
+                );
+            }
+            for (index, sample) in TOLERANCE_EXTREME_QOIS.iter().copied().enumerate() {
+                push_identity_f64(&mut canonical, &format!("extreme-qoi.{index}"), sample);
+            }
+            for (label, value) in [
+                (
+                    "variance.performance-tolerance",
+                    TOLERANCE_PERFORMANCE_TOLERANCE,
+                ),
+                ("variance.target-probability", TOLERANCE_TARGET_PROBABILITY),
+                ("allocation.sigma-multiplier", TOLERANCE_SIGMA_MULTIPLIER),
+                ("robustness.nominal-qoi", TOLERANCE_NOMINAL_QOI),
+                ("robustness.sigma-multiplier", TOLERANCE_SIGMA_MULTIPLIER),
+                ("robustness.relative-margin", TOLERANCE_ROBUSTNESS_MARGIN),
+            ] {
+                push_identity_f64(&mut canonical, label, value);
+            }
+            push_identity_str(
+                &mut canonical,
+                "sensitivity-policy",
+                SENSITIVITY_POLICY_VERSION,
+            );
+            push_identity_u64(
+                &mut canonical,
+                "color-algebra-version",
+                u64::from(fs_evidence::COLOR_ALGEBRA_VERSION),
+            );
+            push_identity_u64(&mut canonical, "admitted-work-units", TOLERANCE_WORK_UNITS);
+        }
+        SPACETIME_STAGE => {
+            push_identity_str(
+                &mut canonical,
+                "gate-code",
+                "diffreal.spacetime.integration-not-activated",
+            );
+            push_identity_str(
+                &mut canonical,
+                "declared-capability",
+                "fs-time/temporal-complex",
+            );
+            push_identity_str(
+                &mut canonical,
+                "dependency-bead",
+                "frankensim-epic-coupling-bk0o.7",
+            );
+            push_identity_u64(&mut canonical, "admitted-work-units", SPACETIME_WORK_UNITS);
+        }
+        _ => {
+            push_identity_str(
+                &mut canonical,
+                "optional-stage-input-boundary",
+                "diagnostic-only; no required-stage promotion authority",
+            );
+        }
+    }
+
+    hash_domain(FIXTURE_INPUT_IDENTITY_DOMAIN, &canonical)
+}
+
+fn push_validity_domain(output: &mut Vec<u8>, label: &str, regime: &fs_evidence::ValidityDomain) {
+    push_identity_u64(
+        output,
+        &format!("{label}.axis-count"),
+        regime.bounds().len() as u64,
+    );
+    for (index, (axis, (lo, hi))) in regime.bounds().iter().enumerate() {
+        push_identity_str(output, &format!("{label}.{index}.axis"), axis);
+        push_identity_f64(output, &format!("{label}.{index}.lo"), *lo);
+        push_identity_f64(output, &format!("{label}.{index}.hi"), *hi);
+    }
+}
+
+fn push_color(output: &mut Vec<u8>, label: &str, color: &Color) {
+    match color {
+        Color::Verified { lo, hi } => {
+            push_identity_field(output, &format!("{label}.rank-tag"), &[0]);
+            push_identity_f64(output, &format!("{label}.lo"), *lo);
+            push_identity_f64(output, &format!("{label}.hi"), *hi);
+        }
+        Color::Validated { regime, dataset } => {
+            push_identity_field(output, &format!("{label}.rank-tag"), &[1]);
+            push_identity_str(output, &format!("{label}.dataset"), dataset);
+            push_validity_domain(output, &format!("{label}.regime"), regime);
+        }
+        Color::Estimated {
+            estimator,
+            dispersion,
+        } => {
+            push_identity_field(output, &format!("{label}.rank-tag"), &[2]);
+            push_identity_str(output, &format!("{label}.estimator"), estimator);
+            push_identity_f64(output, &format!("{label}.dispersion"), *dispersion);
+        }
+    }
+}
+
+fn push_color_rank(output: &mut Vec<u8>, label: &str, color: ColorRank) {
+    push_identity_field(
+        output,
+        label,
+        &[match color {
+            ColorRank::Estimated => 0,
+            ColorRank::Validated => 1,
+            ColorRank::Verified => 2,
+        }],
+    );
+}
+
+fn push_action(output: &mut Vec<u8>, label: &str, action: Action) {
+    push_identity_field(
+        output,
+        label,
+        &[match action {
+            Action::Tighten => 0,
+            Action::Loosen => 1,
+            Action::Unchanged => 2,
+        }],
+    );
+}
+
+fn push_sensitivity(output: &mut Vec<u8>, label: &str, sensitivity: &SealedSensitivity) {
+    push_identity_u64(
+        output,
+        &format!("{label}.operator-count"),
+        sensitivity.ops.len() as u64,
+    );
+    for (index, op) in sensitivity.ops.iter().enumerate() {
+        push_identity_str(output, &format!("{label}.operator.{index}"), op);
+    }
+    for (field, value) in [
+        ("input", sensitivity.input_bits),
+        ("value", sensitivity.value_bits),
+        ("production-gradient", sensitivity.production_gradient_bits),
+        ("dual-gradient", sensitivity.dual_gradient_bits),
+        ("fd-coarse", sensitivity.fd_coarse_bits),
+        ("fd-fine", sensitivity.fd_fine_bits),
+        ("fd-tolerance", sensitivity.fd_tolerance_bits),
+    ] {
+        push_identity_u64(output, &format!("{label}.{field}-bits"), value);
+    }
+    push_identity_field(
+        output,
+        &format!("{label}.identity"),
+        sensitivity.identity.as_bytes(),
+    );
+}
+
+fn finish_stage_result(stage: &str, canonical: Vec<u8>) -> ContentHash {
+    let mut framed = Vec::new();
+    push_identity_u64(
+        &mut framed,
+        "stage-receipt-policy-version",
+        u64::from(STAGE_RECEIPT_POLICY_VERSION),
+    );
+    push_identity_str(&mut framed, "stage", stage);
+    push_identity_field(&mut framed, "result-payload", &canonical);
+    hash_domain(STAGE_RESULT_IDENTITY_DOMAIN, &framed)
+}
+
+fn diagnostic_result_identity(stage: &StageLog) -> ContentHash {
+    let mut canonical = Vec::new();
+    let status_tag = match &stage.status {
+        StageStatus::Passed => 0,
+        StageStatus::Failed(_) => 1,
+        StageStatus::Gated(_) => 2,
+        StageStatus::Refused(_) => 3,
+    };
+    push_identity_field(&mut canonical, "status-tag", &[status_tag]);
+    if let Some(reason) = stage.status.reason() {
+        push_identity_str(&mut canonical, "reason.code", reason.code);
+        push_identity_str(&mut canonical, "reason.detail", &reason.detail);
+    }
+    push_identity_u64(&mut canonical, "event-count", stage.events.len() as u64);
+    for (index, event) in stage.events.iter().enumerate() {
+        encode_stage_event(&mut canonical, &format!("event.{index}"), event);
+    }
+    finish_stage_result(stage.stage, canonical)
+}
+
+fn differentiation_result_identity(
+    sensitivity: &SealedSensitivity,
+    missing_probe: &Result<PathDerivative, DifferentiationError>,
+) -> ContentHash {
+    let mut canonical = Vec::new();
+    push_sensitivity(&mut canonical, "sealed-sensitivity", sensitivity);
+    match missing_probe {
+        Ok(derivative) => {
+            push_identity_str(
+                &mut canonical,
+                "missing-probe.disposition",
+                "unexpected-pass",
+            );
+            push_identity_u64(
+                &mut canonical,
+                "missing-probe.value-bits",
+                derivative.value_bits,
+            );
+            push_identity_u64(
+                &mut canonical,
+                "missing-probe.gradient-bits",
+                derivative.gradient_bits,
+            );
+        }
+        Err(error) => {
+            push_identity_str(&mut canonical, "missing-probe.disposition", "refused");
+            encode_differentiation_error(&mut canonical, "missing-probe.typed-error", error);
+        }
+    }
+    finish_stage_result(DIFFERENTIATION_STAGE, canonical)
+}
+
+fn as_built_result_identity(
+    registration: &fs_asbuilt::Registration,
+    difference: &fs_asbuilt::AsBuiltDiff,
+    posterior: &fs_assimilate::AssimilatedPosterior,
+    checked_before: f64,
+    checked_after: f64,
+) -> ContentHash {
+    let mut canonical = Vec::new();
+    for (label, value) in [
+        ("registration.rotation-radians", registration.rotation_rad()),
+        ("registration.translation-x", registration.tx()),
+        ("registration.translation-y", registration.ty()),
+        ("registration.residual-rms", registration.residual_rms()),
+    ] {
+        push_identity_f64(&mut canonical, label, value);
+    }
+    push_identity_u64(
+        &mut canonical,
+        "difference.deviation-count",
+        difference.deviations().len() as u64,
+    );
+    for (index, deviation) in difference.deviations().iter().copied().enumerate() {
+        push_identity_f64(
+            &mut canonical,
+            &format!("difference.deviation.{index}"),
+            deviation,
+        );
+    }
+    push_identity_f64(
+        &mut canonical,
+        "difference.max-deviation",
+        difference.max_deviation(),
+    );
+    push_identity_field(
+        &mut canonical,
+        "difference.within-tolerance",
+        &[u8::from(difference.within_tolerance())],
+    );
+    push_identity_field(
+        &mut canonical,
+        "difference.above-noise-floor",
+        &[u8::from(difference.above_noise_floor())],
+    );
+    push_validity_domain(
+        &mut canonical,
+        "difference.proposed-regime",
+        difference.proposed_regime(),
+    );
+    push_color(&mut canonical, "difference.color", difference.color());
+
+    let belief = posterior.belief();
+    push_identity_u64(&mut canonical, "posterior.dimension", belief.dim() as u64);
+    for (index, value) in belief.mean().iter().copied().enumerate() {
+        push_identity_f64(&mut canonical, &format!("posterior.mean.{index}"), value);
+    }
+    for (row, values) in belief.covariance().iter().enumerate() {
+        for (column, value) in values.iter().copied().enumerate() {
+            push_identity_f64(
+                &mut canonical,
+                &format!("posterior.covariance.{row}.{column}"),
+                value,
+            );
+        }
+    }
+    push_color(&mut canonical, "posterior.color", posterior.color());
+    push_validity_domain(&mut canonical, "posterior.regime", posterior.regime());
+    push_identity_f64(
+        &mut canonical,
+        "posterior.misfit-before",
+        posterior.misfit_before(),
+    );
+    push_identity_f64(
+        &mut canonical,
+        "posterior.misfit-after",
+        posterior.misfit_after(),
+    );
+    push_identity_f64(&mut canonical, "checked.misfit-before", checked_before);
+    push_identity_f64(&mut canonical, "checked.misfit-after", checked_after);
+    finish_stage_result(AS_BUILT_STAGE, canonical)
+}
+
+fn tolerance_result_identity(
+    critical: &SealedSensitivity,
+    slack: &SealedSensitivity,
+    allocation: &fs_toleralloc::Allocation,
+    report: &[fs_toleralloc::Suggestion],
+    verdict: &fs_toleralloc::RobustnessVerdict,
+) -> ContentHash {
+    let mut canonical = Vec::new();
+    push_sensitivity(&mut canonical, "critical", critical);
+    push_sensitivity(&mut canonical, "slack", slack);
+    push_identity_u64(
+        &mut canonical,
+        "allocation.item-count",
+        allocation.items.len() as u64,
+    );
+    for (index, item) in allocation.items.iter().enumerate() {
+        push_identity_str(
+            &mut canonical,
+            &format!("allocation.item.{index}.name"),
+            &item.name,
+        );
+        push_identity_f64(
+            &mut canonical,
+            &format!("allocation.item.{index}.tolerance"),
+            item.tolerance,
+        );
+        push_identity_f64(
+            &mut canonical,
+            &format!("allocation.item.{index}.sensitivity"),
+            item.sensitivity,
+        );
+        push_color_rank(
+            &mut canonical,
+            &format!("allocation.item.{index}.color"),
+            item.sensitivity_color,
+        );
+        push_action(
+            &mut canonical,
+            &format!("allocation.item.{index}.action"),
+            item.action,
+        );
+    }
+    push_identity_f64(
+        &mut canonical,
+        "allocation.total-cost",
+        allocation.total_cost,
+    );
+    push_identity_f64(
+        &mut canonical,
+        "allocation.achieved-variance",
+        allocation.achieved_variance,
+    );
+    push_identity_u64(&mut canonical, "gdt-row-count", report.len() as u64);
+    for (index, row) in report.iter().enumerate() {
+        push_identity_str(&mut canonical, &format!("gdt.{index}.name"), &row.name);
+        push_identity_f64(
+            &mut canonical,
+            &format!("gdt.{index}.tolerance"),
+            row.tolerance,
+        );
+        push_action(&mut canonical, &format!("gdt.{index}.action"), row.action);
+        push_identity_f64(
+            &mut canonical,
+            &format!("gdt.{index}.certified-sensitivity"),
+            row.certified_sensitivity,
+        );
+        push_color_rank(&mut canonical, &format!("gdt.{index}.color"), row.color);
+    }
+    push_identity_f64(
+        &mut canonical,
+        "robustness.linearized-std",
+        verdict.linearized_std,
+    );
+    push_identity_f64(
+        &mut canonical,
+        "robustness.sampled-max-deviation",
+        verdict.sampled_max_deviation,
+    );
+    push_identity_field(
+        &mut canonical,
+        "robustness.confirmed",
+        &[u8::from(verdict.confirmed)],
+    );
+    finish_stage_result(TOLERANCE_STAGE, canonical)
+}
+
+#[derive(Debug, Clone)]
+struct StageExecution {
+    log: StageLog,
+    inputs: ContentHash,
+    result: ContentHash,
+}
+
+impl StageExecution {
+    fn diagnostic(log: StageLog) -> Self {
+        let inputs = fixture_input_identity(&log);
+        let result = diagnostic_result_identity(&log);
+        Self {
+            log,
+            inputs,
+            result,
+        }
+    }
+}
+
+fn stage_receipt_identity(
+    version: u32,
+    stage: &StageLog,
+    execution: &DiffRealExecutionIdentity,
+    fixture_inputs: ContentHash,
+    result: ContentHash,
+) -> ContentHash {
+    let mut canonical = Vec::new();
+    push_identity_u64(&mut canonical, "receipt-version", u64::from(version));
+    push_identity_str(&mut canonical, "stage", stage.stage);
+    push_identity_field(
+        &mut canonical,
+        "requirement-tag",
+        &[match stage.requirement {
+            StageRequirement::Required => 0,
+            StageRequirement::Optional => 1,
+        }],
+    );
+    push_identity_field(
+        &mut canonical,
+        "status-tag",
+        &[match &stage.status {
+            StageStatus::Passed => 0,
+            StageStatus::Failed(_) => 1,
+            StageStatus::Gated(_) => 2,
+            StageStatus::Refused(_) => 3,
+        }],
+    );
+    if let Some(reason) = stage.status.reason() {
+        push_identity_str(&mut canonical, "status.reason.code", reason.code);
+        push_identity_str(&mut canonical, "status.reason.detail", &reason.detail);
+    } else {
+        push_identity_str(&mut canonical, "status.reason", "none");
+    }
+    push_identity_str(&mut canonical, "evidence-identity", stage.evidence_identity);
+    push_identity_field(
+        &mut canonical,
+        "fixture-input-root",
+        fixture_inputs.as_bytes(),
+    );
+    push_identity_field(&mut canonical, "stage-result-root", result.as_bytes());
+    push_identity_u64(&mut canonical, "event-count", stage.events.len() as u64);
+    for (index, event) in stage.events.iter().enumerate() {
+        encode_stage_event(&mut canonical, &format!("event.{index}"), event);
+    }
+    encode_execution_identity(&mut canonical, execution);
+    push_identity_str(&mut canonical, "promotion-policy", REPORT_PROMOTION_POLICY);
+    hash_domain(STAGE_RECEIPT_IDENTITY_DOMAIN, &canonical)
+}
+
+/// Opaque, content-addressed receipt for one crate-authored stage execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StageReceipt {
+    version: u32,
+    stage: &'static str,
+    fixture_inputs: ContentHash,
+    result: ContentHash,
+    root: ContentHash,
+}
+
+impl StageReceipt {
+    fn seal(stage: &StageExecution, execution: &DiffRealExecutionIdentity) -> Self {
+        let fixture_inputs = stage.inputs;
+        Self {
+            version: STAGE_RECEIPT_POLICY_VERSION,
+            stage: stage.log.stage,
+            fixture_inputs,
+            result: stage.result,
+            root: stage_receipt_identity(
+                STAGE_RECEIPT_POLICY_VERSION,
+                &stage.log,
+                execution,
+                fixture_inputs,
+                stage.result,
+            ),
+        }
+    }
+
+    /// Receipt schema/policy version.
+    #[must_use]
+    pub const fn version(&self) -> u32 {
+        self.version
+    }
+
+    /// Stable stage name authenticated by this receipt.
+    #[must_use]
+    pub const fn stage(&self) -> &'static str {
+        self.stage
+    }
+
+    /// Content address of the exact fixed-fixture inputs and policy versions.
+    #[must_use]
+    pub const fn fixture_inputs(&self) -> ContentHash {
+        self.fixture_inputs
+    }
+
+    /// Content address of the complete stage result retained by the fixed
+    /// battery implementation, including values summarized out of diagnostics.
+    #[must_use]
+    pub const fn result(&self) -> ContentHash {
+        self.result
+    }
+
+    /// Content address of the inputs, result log, execution identity, budgets,
+    /// and policy versions for this stage.
+    #[must_use]
+    pub const fn root(&self) -> ContentHash {
+        self.root
+    }
+
+    fn verifies(&self, stage: &StageLog, execution: &DiffRealExecutionIdentity) -> bool {
+        self.version == STAGE_RECEIPT_POLICY_VERSION
+            && self.stage == stage.stage
+            && self.root
+                == stage_receipt_identity(
+                    self.version,
+                    stage,
+                    execution,
+                    self.fixture_inputs,
+                    self.result,
+                )
+    }
+}
+
+fn report_receipt_identity(
+    version: u32,
+    execution: &DiffRealExecutionIdentity,
+    receipts: &[StageReceipt],
+) -> ContentHash {
+    let mut canonical = Vec::new();
+    push_identity_u64(&mut canonical, "receipt-version", u64::from(version));
+    push_identity_str(&mut canonical, "promotion-policy", REPORT_PROMOTION_POLICY);
+    encode_execution_identity(&mut canonical, execution);
+    push_identity_u64(&mut canonical, "stage-count", receipts.len() as u64);
+    for (index, receipt) in receipts.iter().enumerate() {
+        push_identity_str(
+            &mut canonical,
+            &format!("stage.{index}.name"),
+            receipt.stage,
+        );
+        push_identity_field(
+            &mut canonical,
+            &format!("stage.{index}.receipt-root"),
+            receipt.root.as_bytes(),
+        );
+    }
+    hash_domain(REPORT_RECEIPT_IDENTITY_DOMAIN, &canonical)
+}
+
+/// Fingerprint of every local rule whose agreement is required before an
+/// external authority may authenticate a report root.
+#[must_use]
+pub fn promotion_policy_fingerprint() -> ContentHash {
+    let mut canonical = Vec::new();
+    push_identity_str(&mut canonical, "promotion-policy", REPORT_PROMOTION_POLICY);
+    push_identity_u64(
+        &mut canonical,
+        "stage-receipt-version",
+        u64::from(STAGE_RECEIPT_POLICY_VERSION),
+    );
+    push_identity_u64(
+        &mut canonical,
+        "report-receipt-version",
+        u64::from(REPORT_RECEIPT_POLICY_VERSION),
+    );
+    push_identity_str(
+        &mut canonical,
+        "sensitivity-policy",
+        SENSITIVITY_POLICY_VERSION,
+    );
+    push_identity_str(
+        &mut canonical,
+        "differentiation-registry-policy",
+        DIFFERENTIATION_REGISTRY_POLICY,
+    );
+    push_identity_u64(
+        &mut canonical,
+        "as-built-work-plan-version",
+        u64::from(fs_asbuilt::AS_BUILT_WORK_PLAN_VERSION),
+    );
+    push_identity_u64(
+        &mut canonical,
+        "as-built-poll-policy-version",
+        u64::from(fs_asbuilt::AS_BUILT_POLL_POLICY_VERSION),
+    );
+    push_identity_u64(
+        &mut canonical,
+        "assimilation-psd-policy-version",
+        u64::from(fs_assimilate::PSD_ADMISSION_POLICY_VERSION),
+    );
+    push_identity_str(
+        &mut canonical,
+        "assimilation-poll-policy",
+        ASSIMILATION_POLL_POLICY,
+    );
+    push_identity_u64(
+        &mut canonical,
+        "color-algebra-version",
+        u64::from(fs_evidence::COLOR_ALGEBRA_VERSION),
+    );
+    for (index, required) in REQUIRED_STAGES.iter().enumerate() {
+        push_identity_str(
+            &mut canonical,
+            &format!("required-stage.{index}.name"),
+            required.name,
+        );
+        push_identity_str(
+            &mut canonical,
+            &format!("required-stage.{index}.evidence-identity"),
+            required.evidence_identity,
+        );
+    }
+    hash_domain(PROMOTION_POLICY_FINGERPRINT_DOMAIN, &canonical)
+}
+
+fn promotion_verification_subject(
+    report_root: ContentHash,
+    execution: &DiffRealExecutionIdentity,
+    report_schema_version: u32,
+    stage_schema_version: u32,
+    policy_fingerprint: ContentHash,
+) -> ContentHash {
+    let mut canonical = Vec::new();
+    push_identity_str(&mut canonical, "purpose", PROMOTION_VERIFICATION_PURPOSE);
+    push_identity_field(&mut canonical, "report-root", report_root.as_bytes());
+    encode_execution_identity(&mut canonical, execution);
+    push_identity_u64(
+        &mut canonical,
+        "report-schema-version",
+        u64::from(report_schema_version),
+    );
+    push_identity_u64(
+        &mut canonical,
+        "stage-schema-version",
+        u64::from(stage_schema_version),
+    );
+    push_identity_field(
+        &mut canonical,
+        "policy-fingerprint",
+        policy_fingerprint.as_bytes(),
+    );
+    hash_domain(PROMOTION_VERIFICATION_SUBJECT_DOMAIN, &canonical)
+}
+
+/// Detached report-root attestation supplied by an external authority.
+/// Construction alone grants no authority; a verifier must accept it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromotionAttestation {
+    key_id: String,
+    signature: Vec<u8>,
+    policy_fingerprint: ContentHash,
+}
+
+impl PromotionAttestation {
+    /// Assemble detached attestation data for an injected authority verifier.
+    #[must_use]
+    pub fn new(
+        key_id: impl Into<String>,
+        signature: impl Into<Vec<u8>>,
+        policy_fingerprint: ContentHash,
+    ) -> Self {
+        Self {
+            key_id: key_id.into(),
+            signature: signature.into(),
+            policy_fingerprint,
+        }
+    }
+
+    /// Authority key identity interpreted by the injected verifier.
+    #[must_use]
+    pub fn key_id(&self) -> &str {
+        &self.key_id
+    }
+
+    /// Detached authentication bytes interpreted by the injected verifier.
+    #[must_use]
+    pub fn signature(&self) -> &[u8] {
+        &self.signature
+    }
+
+    /// Authority policy fingerprint claimed by the attestation.
+    #[must_use]
+    pub const fn policy_fingerprint(&self) -> ContentHash {
+        self.policy_fingerprint
+    }
+}
+
+/// Immutable request presented exactly once to a promotion authority.
+#[derive(Debug, Clone, Copy)]
+pub struct PromotionVerificationRequest<'a> {
+    purpose: &'static str,
+    report_root: ContentHash,
+    execution: &'a DiffRealExecutionIdentity,
+    report_schema_version: u32,
+    stage_schema_version: u32,
+    policy_fingerprint: ContentHash,
+    subject: ContentHash,
+}
+
+impl PromotionVerificationRequest<'_> {
+    /// Domain-separated authority purpose.
+    #[must_use]
+    pub const fn purpose(&self) -> &'static str {
+        self.purpose
+    }
+
+    /// Ordered report root presented for authentication.
+    #[must_use]
+    pub const fn report_root(&self) -> ContentHash {
+        self.report_root
+    }
+
+    /// Exact execution identity bound by the report.
+    #[must_use]
+    pub const fn execution(&self) -> &DiffRealExecutionIdentity {
+        self.execution
+    }
+
+    /// Report receipt schema version.
+    #[must_use]
+    pub const fn report_schema_version(&self) -> u32 {
+        self.report_schema_version
+    }
+
+    /// Stage receipt schema version.
+    #[must_use]
+    pub const fn stage_schema_version(&self) -> u32 {
+        self.stage_schema_version
+    }
+
+    /// Exact local policy fingerprint the verifier must echo in its decision.
+    #[must_use]
+    pub const fn policy_fingerprint(&self) -> ContentHash {
+        self.policy_fingerprint
+    }
+
+    /// Domain-separated subject that an authority must authenticate. It binds
+    /// the purpose, ordered report root, full execution identity, both receipt
+    /// versions, and the exact policy fingerprint.
+    #[must_use]
+    pub const fn subject(&self) -> ContentHash {
+        self.subject
+    }
+}
+
+/// Atomic authority verdict. Non-authorizing causes remain distinguishable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromotionVerdict {
+    /// The detached attestation authenticates this exact request.
+    Authorized,
+    /// Authentication bytes did not verify.
+    WrongSignature,
+    /// The key identity is not known to the authority.
+    UnknownKey,
+    /// The key is known but no longer authorized.
+    RevokedKey,
+    /// The authority evaluated a different policy fingerprint.
+    PolicyMismatch,
+}
+
+/// One indivisible verifier decision and the policy under which it was made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PromotionVerificationDecision {
+    verdict: PromotionVerdict,
+    policy_fingerprint: ContentHash,
+}
+
+impl PromotionVerificationDecision {
+    /// Construct an atomic verifier decision.
+    #[must_use]
+    pub const fn new(verdict: PromotionVerdict, policy_fingerprint: ContentHash) -> Self {
+        Self {
+            verdict,
+            policy_fingerprint,
+        }
+    }
+
+    /// Authority verdict.
+    #[must_use]
+    pub const fn verdict(self) -> PromotionVerdict {
+        self.verdict
+    }
+
+    /// Policy fingerprint used by the authority.
+    #[must_use]
+    pub const fn policy_fingerprint(self) -> ContentHash {
+        self.policy_fingerprint
+    }
+}
+
+/// Injected capability that authenticates one ordered DiffReal report root.
+pub trait PromotionReceiptVerifier {
+    /// Verify the detached attestation against [`PromotionVerificationRequest::subject`],
+    /// never against the raw report root alone.
+    fn verify(
+        &self,
+        request: &PromotionVerificationRequest<'_>,
+        attestation: &PromotionAttestation,
+    ) -> PromotionVerificationDecision;
+}
+
+/// Default deny-all authority: local content hashes never self-promote.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoPromotionReceiptVerifier;
+
+impl PromotionReceiptVerifier for NoPromotionReceiptVerifier {
+    fn verify(
+        &self,
+        request: &PromotionVerificationRequest<'_>,
+        _attestation: &PromotionAttestation,
+    ) -> PromotionVerificationDecision {
+        PromotionVerificationDecision::new(PromotionVerdict::UnknownKey, request.policy_fingerprint)
+    }
+}
+
+/// Fail-closed report authentication error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromotionReceiptError {
+    /// The report uses an unknown ordered-root schema.
+    UnknownReportVersion {
+        /// Version carried by the rejected report.
+        observed: u32,
+    },
+    /// One stage uses an unknown receipt schema.
+    UnknownStageVersion {
+        /// Stable stage name.
+        stage: &'static str,
+        /// Version carried by the rejected stage receipt.
+        observed: u32,
+    },
+    /// A stage/result/root mutation or ordered-root mismatch was detected.
+    IntegrityMismatch,
+    /// The expected replay Cx does not match the receipt-bound provenance.
+    ReplayContextMismatch,
+    /// Required stage structure or semantic result evidence is malformed.
+    InvalidStageSemantics,
+    /// The attestation claims a different authority policy.
+    AttestationPolicyMismatch,
+    /// The verifier decision was made under a different policy.
+    DecisionPolicyMismatch,
+    /// The verifier explicitly refused authority.
+    Unauthorized {
+        /// Atomic refusal returned by the verifier.
+        verdict: PromotionVerdict,
+    },
+}
+
+impl core::fmt::Display for PromotionReceiptError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::UnknownReportVersion { observed } => {
+                write!(
+                    formatter,
+                    "unknown DiffReal report receipt version {observed}"
+                )
+            }
+            Self::UnknownStageVersion { stage, observed } => write!(
+                formatter,
+                "stage '{stage}' uses unknown DiffReal receipt version {observed}"
+            ),
+            Self::IntegrityMismatch => {
+                formatter.write_str("DiffReal stage or ordered report receipt integrity failed")
+            }
+            Self::ReplayContextMismatch => formatter.write_str(
+                "DiffReal report was replayed under a different execution identity or budget",
+            ),
+            Self::InvalidStageSemantics => formatter
+                .write_str("DiffReal required-stage structure or semantic transcript is invalid"),
+            Self::AttestationPolicyMismatch => formatter
+                .write_str("DiffReal promotion attestation names a different policy fingerprint"),
+            Self::DecisionPolicyMismatch => formatter.write_str(
+                "DiffReal promotion verifier decided under a different policy fingerprint",
+            ),
+            Self::Unauthorized { verdict } => {
+                write!(
+                    formatter,
+                    "DiffReal promotion authority refused: {verdict:?}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for PromotionReceiptError {}
+
 /// The full crate-authored Layer-3 battery report.
 ///
 /// Construction is intentionally private: downstream callers may inspect the
@@ -874,20 +2390,184 @@ pub struct DiffRealReport {
     /// Stage logs. The four required stages have a fixed relative order;
     /// additional stages must be explicitly optional.
     stages: Vec<StageLog>,
+    receipts: Vec<StageReceipt>,
+    execution: DiffRealExecutionIdentity,
+    receipt_version: u32,
+    receipt_root: ContentHash,
+}
+
+/// A report whose ordered root was accepted by an injected authority under
+/// the exact local policy fingerprint. This wrapper is the sole promotion
+/// authority surface.
+#[derive(Debug)]
+pub struct AuthenticatedDiffRealReport<'a> {
+    report: &'a DiffRealReport,
+    attestation: PromotionAttestation,
+    decision: PromotionVerificationDecision,
 }
 
 impl DiffRealReport {
+    fn seal(stages: Vec<StageExecution>, execution: DiffRealExecutionIdentity) -> Self {
+        let receipts: Vec<_> = stages
+            .iter()
+            .map(|stage| StageReceipt::seal(stage, &execution))
+            .collect();
+        let receipt_root =
+            report_receipt_identity(REPORT_RECEIPT_POLICY_VERSION, &execution, &receipts);
+        Self {
+            stages: stages.into_iter().map(|stage| stage.log).collect(),
+            receipts,
+            execution,
+            receipt_version: REPORT_RECEIPT_POLICY_VERSION,
+            receipt_root,
+        }
+    }
+
     /// Ordered read-only stage diagnostics produced by this battery run.
     #[must_use]
     pub fn stages(&self) -> &[StageLog] {
         &self.stages
     }
 
+    /// Ordered stage receipts bound into the report root.
+    #[must_use]
+    pub fn receipts(&self) -> &[StageReceipt] {
+        &self.receipts
+    }
+
+    /// Receipt for a named stage.
+    #[must_use]
+    pub fn receipt(&self, name: &str) -> Option<&StageReceipt> {
+        self.receipts.iter().find(|receipt| receipt.stage == name)
+    }
+
+    /// Execution provenance authenticated by every receipt.
+    #[must_use]
+    pub const fn execution_identity(&self) -> DiffRealExecutionIdentity {
+        self.execution
+    }
+
+    /// Ordered report content root.
+    #[must_use]
+    pub const fn receipt_root(&self) -> ContentHash {
+        self.receipt_root
+    }
+
+    /// Domain-separated subject for an external promotion attestation. This is
+    /// not authority by itself; it is the exact byte-identity a verifier must
+    /// authenticate.
+    #[must_use]
+    pub fn promotion_verification_subject(&self) -> ContentHash {
+        promotion_verification_subject(
+            self.receipt_root,
+            &self.execution,
+            self.receipt_version,
+            STAGE_RECEIPT_POLICY_VERSION,
+            promotion_policy_fingerprint(),
+        )
+    }
+
+    /// Recompute every stage receipt and the ordered report root.
+    #[must_use]
+    pub fn verifies_integrity(&self) -> bool {
+        self.receipt_version == REPORT_RECEIPT_POLICY_VERSION
+            && self.receipts.len() == self.stages.len()
+            && self
+                .receipts
+                .iter()
+                .zip(&self.stages)
+                .all(|(receipt, stage)| receipt.verifies(stage, &self.execution))
+            && self.receipt_root
+                == report_receipt_identity(self.receipt_version, &self.execution, &self.receipts)
+    }
+
+    /// Verify receipt integrity and reject replay under a different Cx stream,
+    /// mode, deadline, poll quota, cost quota, or priority.
+    #[must_use]
+    pub fn verifies_for(&self, cx: &Cx<'_>) -> bool {
+        self.execution.matches_cx(cx) && self.verifies_integrity()
+    }
+
+    /// Authenticate this exact ordered report root under an injected external
+    /// authority. Local integrity, replay context, versions, and semantic
+    /// structure are checked before the verifier is invoked.
+    ///
+    /// # Errors
+    /// Returns a precise fail-closed cause for unknown schemas, mutation,
+    /// replay mismatch, semantic contradiction, policy drift, or refusal.
+    pub fn authenticate<'a>(
+        &'a self,
+        expected_cx: &Cx<'_>,
+        attestation: PromotionAttestation,
+        verifier: &dyn PromotionReceiptVerifier,
+    ) -> Result<AuthenticatedDiffRealReport<'a>, PromotionReceiptError> {
+        if self.receipt_version != REPORT_RECEIPT_POLICY_VERSION {
+            return Err(PromotionReceiptError::UnknownReportVersion {
+                observed: self.receipt_version,
+            });
+        }
+        if let Some(receipt) = self
+            .receipts
+            .iter()
+            .find(|receipt| receipt.version != STAGE_RECEIPT_POLICY_VERSION)
+        {
+            return Err(PromotionReceiptError::UnknownStageVersion {
+                stage: receipt.stage,
+                observed: receipt.version,
+            });
+        }
+        if !self.verifies_integrity() {
+            return Err(PromotionReceiptError::IntegrityMismatch);
+        }
+        if !self.execution.matches_cx(expected_cx) {
+            return Err(PromotionReceiptError::ReplayContextMismatch);
+        }
+        if !self.required_schema_is_valid() || !self.stages.iter().all(stage_semantics_are_valid) {
+            return Err(PromotionReceiptError::InvalidStageSemantics);
+        }
+
+        let policy_fingerprint = promotion_policy_fingerprint();
+        if attestation.policy_fingerprint != policy_fingerprint {
+            return Err(PromotionReceiptError::AttestationPolicyMismatch);
+        }
+        let subject = promotion_verification_subject(
+            self.receipt_root,
+            &self.execution,
+            self.receipt_version,
+            STAGE_RECEIPT_POLICY_VERSION,
+            policy_fingerprint,
+        );
+        let request = PromotionVerificationRequest {
+            purpose: PROMOTION_VERIFICATION_PURPOSE,
+            report_root: self.receipt_root,
+            execution: &self.execution,
+            report_schema_version: self.receipt_version,
+            stage_schema_version: STAGE_RECEIPT_POLICY_VERSION,
+            policy_fingerprint,
+            subject,
+        };
+        let decision = verifier.verify(&request, &attestation);
+        if decision.policy_fingerprint != policy_fingerprint {
+            return Err(PromotionReceiptError::DecisionPolicyMismatch);
+        }
+        if decision.verdict != PromotionVerdict::Authorized {
+            return Err(PromotionReceiptError::Unauthorized {
+                verdict: decision.verdict,
+            });
+        }
+        Ok(AuthenticatedDiffRealReport {
+            report: self,
+            attestation,
+            decision,
+        })
+    }
+
     /// Is every required stage present exactly once with the expected evidence
     /// identity and an evaluated (`Passed` or `Failed`) result?
     #[must_use]
     pub fn complete(&self) -> bool {
-        self.required_schema_is_valid()
+        self.verifies_integrity()
+            && self.required_schema_is_valid()
             && REQUIRED_STAGES.iter().all(|required| {
                 self.stage(required.name)
                     .is_some_and(|stage| stage.status.is_evaluated())
@@ -900,26 +2580,18 @@ impl DiffRealReport {
     /// required records all return `false`.
     #[must_use]
     pub fn all_required_passed(&self) -> bool {
-        self.required_schema_is_valid()
+        self.verifies_integrity()
+            && self.required_schema_is_valid()
             && REQUIRED_STAGES
                 .iter()
                 .all(|required| self.stage(required.name).is_some_and(StageLog::passed))
     }
 
-    /// Did this crate-authored fixed battery complete every required fixture
-    /// and pass every required assertion?
-    ///
-    /// This is battery-local readiness only. It is not scientific release
-    /// admission, external validation, or an authenticated promotion receipt.
+    /// Is the untrusted report structurally and semantically ready for an
+    /// authority decision? This is not promotion authority.
     #[must_use]
-    pub fn promotion_ready(&self) -> bool {
+    pub fn structurally_ready(&self) -> bool {
         self.complete() && self.all_required_passed()
-    }
-
-    /// Fail-closed compatibility alias for [`Self::promotion_ready`].
-    #[must_use]
-    pub fn passed(&self) -> bool {
-        self.promotion_ready()
     }
 
     /// A named stage.
@@ -960,6 +2632,39 @@ impl DiffRealReport {
     }
 }
 
+impl AuthenticatedDiffRealReport<'_> {
+    /// The authenticated report root.
+    #[must_use]
+    pub const fn receipt_root(&self) -> ContentHash {
+        self.report.receipt_root
+    }
+
+    /// Detached authority attestation retained with this decision.
+    #[must_use]
+    pub const fn attestation(&self) -> &PromotionAttestation {
+        &self.attestation
+    }
+
+    /// Atomic authority decision retained with this report.
+    #[must_use]
+    pub const fn decision(&self) -> PromotionVerificationDecision {
+        self.decision
+    }
+
+    /// Did an authenticated report also satisfy every required scientific
+    /// stage? Only this opaque wrapper exposes promotion readiness.
+    #[must_use]
+    pub fn promotion_ready(&self) -> bool {
+        self.report.structurally_ready()
+    }
+
+    /// Read-only diagnostic report.
+    #[must_use]
+    pub const fn report(&self) -> &DiffRealReport {
+        self.report
+    }
+}
+
 #[derive(Clone, Copy)]
 struct RequiredStage {
     name: &'static str,
@@ -984,6 +2689,157 @@ const REQUIRED_STAGES: [RequiredStage; 4] = [
         evidence_identity: SPACETIME_EVIDENCE_IDENTITY,
     },
 ];
+
+fn gradient_event_is_valid(event: &StageEvent, expected_input: f64) -> bool {
+    let StageEvent::GradientVerified {
+        receipt,
+        input_bits,
+        value_bits,
+        production_bits,
+        dual_bits,
+        fd_coarse_bits,
+        fd_fine_bits,
+        tolerance_bits,
+    } = event
+    else {
+        return false;
+    };
+    let bits = [
+        *input_bits,
+        *value_bits,
+        *production_bits,
+        *dual_bits,
+        *fd_coarse_bits,
+        *fd_fine_bits,
+        *tolerance_bits,
+    ];
+    if *input_bits != expected_input.to_bits()
+        || bits.iter().any(|bits| !f64::from_bits(*bits).is_finite())
+        || f64::from_bits(*tolerance_bits) < 0.0
+    {
+        return false;
+    }
+    let ops: Vec<String> = PRODUCTION_DIFFERENTIATION_PATH
+        .iter()
+        .map(|op| (*op).to_string())
+        .collect();
+    let tolerance = f64::from_bits(*tolerance_bits);
+    let production = f64::from_bits(*production_bits);
+    let dual = f64::from_bits(*dual_bits);
+    let fd_coarse = f64::from_bits(*fd_coarse_bits);
+    let fd_fine = f64::from_bits(*fd_fine_bits);
+    *receipt == sensitivity_identity(&ops, bits)
+        && (production - dual).abs() <= tolerance
+        && (production - fd_fine).abs() <= tolerance
+        && 3.0 * (fd_coarse - fd_fine).abs() <= tolerance
+}
+
+fn differentiation_passed_semantics(stage: &StageLog) -> bool {
+    stage.events.len() == 2
+        && gradient_event_is_valid(&stage.events[0], DIFFERENTIATION_FIXTURE_INPUT)
+        && matches!(
+            &stage.events[1],
+            StageEvent::MissingVjpProbe { op, blocked: true } if op == "remesh"
+        )
+}
+
+fn as_built_passed_semantics(stage: &StageLog) -> bool {
+    if stage.events.len() != 3 {
+        return false;
+    }
+    matches!(
+        &stage.events[0],
+        StageEvent::Registration {
+            residual_bits,
+            within_tolerance: true,
+        } if f64::from_bits(*residual_bits).is_finite()
+    ) && matches!(
+        &stage.events[1],
+        StageEvent::AsBuiltDelta {
+            max_deviation_bits,
+            defect_index: Some(AS_BUILT_DEFECT_INDEX),
+            estimated: true,
+        } if f64::from_bits(*max_deviation_bits).is_finite()
+    ) && matches!(
+        &stage.events[2],
+        StageEvent::Assimilation {
+            before_bits,
+            after_bits,
+            reduced: true,
+        } if f64::from_bits(*before_bits).is_finite()
+            && f64::from_bits(*after_bits).is_finite()
+            && f64::from_bits(*after_bits) <= f64::from_bits(*before_bits)
+    )
+}
+
+fn tolerance_passed_semantics(stage: &StageLog) -> bool {
+    if stage.events.len() != 5 {
+        return false;
+    }
+    gradient_event_is_valid(&stage.events[0], TOLERANCE_SENSITIVITY_INPUTS[0])
+        && gradient_event_is_valid(&stage.events[1], TOLERANCE_SENSITIVITY_INPUTS[1])
+        && matches!(
+            &stage.events[2],
+            StageEvent::ToleranceActions {
+                critical: Some(Action::Tighten),
+                slack: Some(Action::Loosen),
+            }
+        )
+        && matches!(
+            &stage.events[3],
+            StageEvent::GdtJustification {
+                loosened,
+                all_verified: true,
+            } if *loosened > 0
+        )
+        && matches!(
+            &stage.events[4],
+            StageEvent::SampledLinearization {
+                samples,
+                confirmed: true,
+                linearized_std_bits,
+                probability_claimed: false,
+            } if *samples == TOLERANCE_EXTREME_QOIS.len()
+                && f64::from_bits(*linearized_std_bits).is_finite()
+                && f64::from_bits(*linearized_std_bits) >= 0.0
+        )
+}
+
+fn passed_stage_semantics(stage: &StageLog) -> bool {
+    match stage.stage {
+        DIFFERENTIATION_STAGE => differentiation_passed_semantics(stage),
+        AS_BUILT_STAGE => as_built_passed_semantics(stage),
+        TOLERANCE_STAGE => tolerance_passed_semantics(stage),
+        // There is no activated spacetime success transcript in receipt v1.
+        SPACETIME_STAGE => false,
+        _ => stage.requirement == StageRequirement::Optional,
+    }
+}
+
+fn stage_semantics_are_valid(stage: &StageLog) -> bool {
+    if !stage.is_well_formed() {
+        return false;
+    }
+    match &stage.status {
+        StageStatus::Passed => passed_stage_semantics(stage),
+        StageStatus::Failed(_) => !passed_stage_semantics(stage),
+        StageStatus::Gated(reason) => {
+            stage.stage == SPACETIME_STAGE
+                && reason.code == "diffreal.spacetime.integration-not-activated"
+                && stage.events.iter().any(|event| {
+                    matches!(
+                        event,
+                        StageEvent::Gate { code, .. }
+                            if *code == "diffreal.spacetime.integration-not-activated"
+                    )
+                })
+        }
+        StageStatus::Refused(reason) => stage
+            .events
+            .iter()
+            .any(|event| matches!(event, StageEvent::Refusal { code, .. } if *code == reason.code)),
+    }
+}
 
 /// Typed refusal that prevents publication of a partial battery report.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1072,14 +2928,16 @@ impl From<AssimError> for DiffRealError {
 /// Propagates structured cancellation, ambient-budget refusal, or a lower-layer
 /// as-built/assimilation error. No partial battery report is published.
 pub fn run_battery(cx: &Cx<'_>) -> Result<DiffRealReport, DiffRealError> {
-    Ok(DiffRealReport {
-        stages: vec![
-            stage_differentiation(cx)?,
-            stage_as_built_loop(cx)?,
-            stage_tolerance_allocation(cx)?,
-            stage_spacetime_gated(cx)?,
+    let execution = DiffRealExecutionIdentity::from_cx(cx);
+    Ok(DiffRealReport::seal(
+        vec![
+            execute_differentiation(cx)?,
+            execute_as_built_loop(cx)?,
+            execute_tolerance_allocation(cx)?,
+            execute_spacetime_gated(cx)?,
         ],
-    })
+        execution,
+    ))
 }
 
 // -- Stage 1: differentiation ----------------------------------------------
@@ -1443,34 +3301,42 @@ fn sensitivity_event(receipt: &SealedSensitivity) -> StageEvent {
 ///
 /// # Errors
 /// Cancellation and ambient work-budget refusals suppress the partial report.
-pub fn stage_differentiation_with_registry(
+fn execute_differentiation_with_registry(
     cx: &Cx<'_>,
     registry: &DifferentiationRegistry,
-) -> Result<StageLog, DiffRealError> {
+) -> Result<StageExecution, DiffRealError> {
     admit_stage_work(cx, DIFFERENTIATION_STAGE, DIFFERENTIATION_STAGE_WORK_UNITS)?;
-    let sensitivity = match verify_sensitivity(&PRODUCTION_DIFFERENTIATION_PATH, registry, 1.5, cx)
-    {
+    let sensitivity = match verify_sensitivity(
+        &PRODUCTION_DIFFERENTIATION_PATH,
+        registry,
+        DIFFERENTIATION_FIXTURE_INPUT,
+        cx,
+    ) {
         Ok(sensitivity) => sensitivity,
         Err(error) if error.is_runtime_refusal() => {
             return Err(stage_runtime_refusal(DIFFERENTIATION_STAGE, error));
         }
         Err(error) => {
-            return Ok(StageLog::new(
+            return Ok(StageExecution::diagnostic(StageLog::new(
                 DIFFERENTIATION_STAGE,
                 StageRequirement::Required,
                 StageStatus::Failed(StageReason::new(
                     "diffreal.differentiation.production-rejected",
-                    error.to_string(),
+                    "production differentiation or an independent oracle was rejected; inspect the typed event",
                 )),
                 DIFFERENTIATION_EVIDENCE_IDENTITY,
                 vec![StageEvent::DifferentiationRejected { error }],
-            ));
+            )));
         }
     };
 
     let mut events = vec![sensitivity_event(&sensitivity)];
-    let remesh = ["sdf", "remesh", "solve"];
-    let missing_probe = differentiate_path(&remesh, registry, 1.5, cx);
+    let missing_probe = differentiate_path(
+        &MISSING_VJP_FIXTURE_PATH,
+        registry,
+        DIFFERENTIATION_FIXTURE_INPUT,
+        cx,
+    );
     let blocked = matches!(
         &missing_probe,
         Err(DifferentiationError::MissingVjp { op }) if op == "remesh"
@@ -1479,12 +3345,14 @@ pub fn stage_differentiation_with_registry(
         op: "remesh".to_string(),
         blocked,
     });
-    if let Err(error) = missing_probe {
+    if let Err(error) = &missing_probe {
         if error.is_runtime_refusal() {
-            return Err(stage_runtime_refusal(DIFFERENTIATION_STAGE, error));
+            return Err(stage_runtime_refusal(DIFFERENTIATION_STAGE, error.clone()));
         }
         if !matches!(error, DifferentiationError::MissingVjp { .. }) {
-            events.push(StageEvent::DifferentiationRejected { error });
+            events.push(StageEvent::DifferentiationRejected {
+                error: error.clone(),
+            });
         }
     }
 
@@ -1496,13 +3364,32 @@ pub fn stage_differentiation_with_registry(
             "production gradient sealing or the missing-VJP kill assertion failed; inspect typed events",
         ))
     };
-    Ok(StageLog::new(
+    let log = StageLog::new(
         DIFFERENTIATION_STAGE,
         StageRequirement::Required,
         status,
         DIFFERENTIATION_EVIDENCE_IDENTITY,
         events,
-    ))
+    );
+    Ok(StageExecution {
+        inputs: fixture_input_identity(&log),
+        result: differentiation_result_identity(&sensitivity, &missing_probe),
+        log,
+    })
+}
+
+/// Stage 1 with an injectable registry for independent kill tests.
+///
+/// This diagnostic seam never mints a stage receipt; only the fixed
+/// [`run_battery`] path can add a result to a sealed report.
+///
+/// # Errors
+/// Cancellation and ambient work-budget refusals suppress the partial report.
+pub fn stage_differentiation_with_registry(
+    cx: &Cx<'_>,
+    registry: &DifferentiationRegistry,
+) -> Result<StageLog, DiffRealError> {
+    execute_differentiation_with_registry(cx, registry).map(|stage| stage.log)
 }
 
 /// Stage 1: production tape/VJP gradient, independent dual/FD sealing, and a
@@ -1512,7 +3399,12 @@ pub fn stage_differentiation_with_registry(
 /// Cancellation and ambient work-budget refusals suppress the partial report.
 pub fn stage_differentiation(cx: &Cx<'_>) -> Result<StageLog, DiffRealError> {
     let registry = production_vjp_registry()?;
-    stage_differentiation_with_registry(cx, &registry)
+    execute_differentiation_with_registry(cx, &registry).map(|stage| stage.log)
+}
+
+fn execute_differentiation(cx: &Cx<'_>) -> Result<StageExecution, DiffRealError> {
+    let registry = production_vjp_registry()?;
+    execute_differentiation_with_registry(cx, &registry)
 }
 
 // -- Stage 2: as-built loop -------------------------------------------------
@@ -1522,18 +3414,19 @@ pub fn stage_differentiation(cx: &Cx<'_>) -> Result<StageLog, DiffRealError> {
 /// # Errors
 /// Propagates fixed-work admission, cancellation, or a structured lower-layer
 /// refusal and publishes no partial stage log.
-pub fn stage_as_built_loop(cx: &Cx<'_>) -> Result<StageLog, DiffRealError> {
+fn execute_as_built_loop(cx: &Cx<'_>) -> Result<StageExecution, DiffRealError> {
     admit_stage_work(cx, AS_BUILT_STAGE, AS_BUILT_WORK_UNITS)?;
     let mut events = Vec::new();
     let mut assertions_passed = true;
 
     // a scanned fixture: design datums transformed by a known rigid motion.
     let design = [
-        Point2::new(0.0, 0.0)?,
-        Point2::new(2.0, 0.0)?,
-        Point2::new(0.0, 2.0)?,
+        Point2::new(AS_BUILT_DESIGN_POINTS[0].0, AS_BUILT_DESIGN_POINTS[0].1)?,
+        Point2::new(AS_BUILT_DESIGN_POINTS[1].0, AS_BUILT_DESIGN_POINTS[1].1)?,
+        Point2::new(AS_BUILT_DESIGN_POINTS[2].0, AS_BUILT_DESIGN_POINTS[2].1)?,
     ];
-    let (theta, tx, ty) = (0.3_f64, 4.0, 1.0);
+    let theta = AS_BUILT_ROTATION_RADIANS;
+    let (tx, ty) = AS_BUILT_TRANSLATION;
     let xf = |p: Point2| {
         let (s, c) = theta.sin_cos();
         Point2::new(c * p.x() - s * p.y() + tx, s * p.x() + c * p.y() + ty)
@@ -1556,8 +3449,19 @@ pub fn stage_as_built_loop(cx: &Cx<'_>) -> Result<StageLog, DiffRealError> {
         .iter()
         .map(|&point| reg.apply(point))
         .collect::<Result<_, _>>()?;
-    scanned[1] = Point2::new(scanned[1].x() + 0.3, scanned[1].y())?;
-    let diff = as_built_diff(&reg, &design_pts, &scanned, 0.5, 0.02, "cmm-cal-2026", cx)?;
+    scanned[AS_BUILT_DEFECT_INDEX] = Point2::new(
+        scanned[AS_BUILT_DEFECT_INDEX].x() + AS_BUILT_DEFECT_X,
+        scanned[AS_BUILT_DEFECT_INDEX].y(),
+    )?;
+    let diff = as_built_diff(
+        &reg,
+        &design_pts,
+        &scanned,
+        AS_BUILT_DESIGN_TOLERANCE,
+        AS_BUILT_MEASUREMENT_NOISE,
+        AS_BUILT_CALIBRATION_CANDIDATE,
+        cx,
+    )?;
     // localize the defect: the argmax deviation is the seeded point (index 1).
     let defect_idx = diff
         .deviations()
@@ -1565,7 +3469,8 @@ pub fn stage_as_built_loop(cx: &Cx<'_>) -> Result<StageLog, DiffRealError> {
         .enumerate()
         .max_by(|a, b| a.1.total_cmp(b.1))
         .map(|(i, _)| i);
-    let localized = defect_idx == Some(1) && (diff.max_deviation() - 0.3).abs() < 1e-9;
+    let localized = defect_idx == Some(AS_BUILT_DEFECT_INDEX)
+        && (diff.max_deviation() - AS_BUILT_DEFECT_X).abs() < 1e-9;
     let estimated = matches!(diff.color(), Color::Estimated { .. });
     events.push(StageEvent::AsBuiltDelta {
         max_deviation_bits: diff.max_deviation().to_bits(),
@@ -1575,12 +3480,31 @@ pub fn stage_as_built_loop(cx: &Cx<'_>) -> Result<StageLog, DiffRealError> {
     assertions_passed &= localized && estimated;
 
     // registration-free point-sensor 4D-Var: misfit reduction.
-    let prior = Belief::diagonal(vec![20.0, 20.0], &[9.0, 9.0], cx)?;
-    let obs = vec![
-        point_sensor(0, 2, 24.0, 0.25, "thermocouple-1")?,
-        point_sensor(1, 2, 18.5, 0.25, "thermocouple-2")?,
-    ];
-    let assimilated = assimilate_colored(&prior, &obs, "Re", 1e5, 3e5, cx)?;
+    let prior = Belief::diagonal(
+        AS_BUILT_PRIOR_MEAN.to_vec(),
+        &AS_BUILT_PRIOR_DIAGONAL_COVARIANCE,
+        cx,
+    )?;
+    let obs: Vec<_> = AS_BUILT_OBSERVATIONS
+        .iter()
+        .map(|&(state_index, value, variance, label)| {
+            point_sensor(
+                state_index,
+                AS_BUILT_PRIOR_MEAN.len(),
+                value,
+                variance,
+                label,
+            )
+        })
+        .collect::<Result<_, _>>()?;
+    let assimilated = assimilate_colored(
+        &prior,
+        &obs,
+        AS_BUILT_ASSIMILATION_PARAMETER,
+        AS_BUILT_ASSIMILATION_BOUNDS.0,
+        AS_BUILT_ASSIMILATION_BOUNDS.1,
+        cx,
+    )?;
     let misfit_reduced = assimilated.misfit_after() < assimilated.misfit_before();
     let checked_after = misfit(assimilated.belief(), &obs, cx)?;
     let checked_before = misfit(&prior, &obs, cx)?;
@@ -1600,13 +3524,27 @@ pub fn stage_as_built_loop(cx: &Cx<'_>) -> Result<StageLog, DiffRealError> {
             "registration, defect-localization, evidence-color, or assimilation assertion failed; inspect events",
         ))
     };
-    Ok(StageLog::new(
+    let log = StageLog::new(
         AS_BUILT_STAGE,
         StageRequirement::Required,
         status,
         AS_BUILT_EVIDENCE_IDENTITY,
         events,
-    ))
+    );
+    Ok(StageExecution {
+        inputs: fixture_input_identity(&log),
+        result: as_built_result_identity(&reg, &diff, &assimilated, checked_before, checked_after),
+        log,
+    })
+}
+
+/// Stage 2: register a scan, estimate as-built δ, localize a defect, assimilate.
+///
+/// # Errors
+/// Propagates fixed-work admission, cancellation, or a structured lower-layer
+/// refusal and publishes no partial stage log.
+pub fn stage_as_built_loop(cx: &Cx<'_>) -> Result<StageLog, DiffRealError> {
+    execute_as_built_loop(cx).map(|stage| stage.log)
 }
 
 // -- Stage 3: tolerance allocation ------------------------------------------
@@ -1627,7 +3565,7 @@ fn tolerance_derivative_failure(error: DifferentiationError) -> StageLog {
         StageRequirement::Required,
         StageStatus::Failed(StageReason::new(
             "diffreal.tolerance.sensitivity-rejected",
-            error.to_string(),
+            "a sealed sensitivity was rejected; inspect the typed event",
         )),
         TOLERANCE_EVIDENCE_IDENTITY,
         vec![StageEvent::DifferentiationRejected { error }],
@@ -1640,28 +3578,46 @@ fn tolerance_derivative_failure(error: DifferentiationError) -> StageLog {
 ///
 /// # Errors
 /// Cancellation and ambient work-budget refusals suppress the partial report.
-pub fn stage_tolerance_allocation_with_samples(
+fn execute_tolerance_allocation_with_samples(
     cx: &Cx<'_>,
     extreme_qois: &[f64],
-) -> Result<StageLog, DiffRealError> {
+) -> Result<StageExecution, DiffRealError> {
     admit_stage_work(cx, TOLERANCE_STAGE, TOLERANCE_WORK_UNITS)?;
     let mut events = Vec::new();
     let mut assertions_passed = true;
 
     let registry = production_vjp_registry()?;
-    let critical = match verify_sensitivity(&PRODUCTION_DIFFERENTIATION_PATH, &registry, 1.0, cx) {
+    let critical = match verify_sensitivity(
+        &PRODUCTION_DIFFERENTIATION_PATH,
+        &registry,
+        TOLERANCE_SENSITIVITY_INPUTS[0],
+        cx,
+    ) {
         Ok(receipt) => receipt,
         Err(error) if error.is_runtime_refusal() => {
             return Err(stage_runtime_refusal(TOLERANCE_STAGE, error));
         }
-        Err(error) => return Ok(tolerance_derivative_failure(error)),
+        Err(error) => {
+            return Ok(StageExecution::diagnostic(tolerance_derivative_failure(
+                error,
+            )));
+        }
     };
-    let slack = match verify_sensitivity(&PRODUCTION_DIFFERENTIATION_PATH, &registry, -0.475, cx) {
+    let slack = match verify_sensitivity(
+        &PRODUCTION_DIFFERENTIATION_PATH,
+        &registry,
+        TOLERANCE_SENSITIVITY_INPUTS[1],
+        cx,
+    ) {
         Ok(receipt) => receipt,
         Err(error) if error.is_runtime_refusal() => {
             return Err(stage_runtime_refusal(TOLERANCE_STAGE, error));
         }
-        Err(error) => return Ok(tolerance_derivative_failure(error)),
+        Err(error) => {
+            return Ok(StageExecution::diagnostic(tolerance_derivative_failure(
+                error,
+            )));
+        }
     };
     stage_checkpoint(cx, TOLERANCE_STAGE)?;
     events.push(sensitivity_event(&critical));
@@ -1673,49 +3629,57 @@ pub fn stage_tolerance_allocation_with_samples(
         } else {
             slack.identity()
         };
-        return Ok(tolerance_derivative_failure(
+        return Ok(StageExecution::diagnostic(tolerance_derivative_failure(
             DifferentiationError::SensitivityIntegrityMismatch { identity },
-        ));
+        )));
     }
 
     let feat = |name: &str, receipt: &SealedSensitivity| Feature {
         name: name.into(),
         sensitivity: receipt.gradient().abs(),
         sensitivity_color: ColorRank::Verified,
-        cost_coeff: 1.0,
-        baseline_tolerance: 0.5,
+        cost_coeff: TOLERANCE_FEATURE_COST_COEFFICIENT,
+        baseline_tolerance: TOLERANCE_FEATURE_BASELINE,
     };
-    let budget = match variance_budget(1.0, 0.99) {
+    let budget = match variance_budget(
+        TOLERANCE_PERFORMANCE_TOLERANCE,
+        TOLERANCE_TARGET_PROBABILITY,
+    ) {
         Ok(budget) => budget,
-        Err(error) => {
+        Err(_error) => {
             let code = "diffreal.tolerance.invalid-budget-fixture";
-            let detail = format!("the fixed tolerance-budget fixture was refused: {error:?}");
-            return Ok(tolerance_refusal(code, detail));
+            let detail =
+                "the fixed tolerance-budget fixture was refused by fs-toleralloc".to_string();
+            return Ok(StageExecution::diagnostic(tolerance_refusal(code, detail)));
         }
     };
     stage_checkpoint(cx, TOLERANCE_STAGE)?;
     let alloc = match allocate(
-        &[feat("critical", &critical), feat("slack", &slack)],
+        &[
+            feat(TOLERANCE_FEATURE_NAMES[0], &critical),
+            feat(TOLERANCE_FEATURE_NAMES[1], &slack),
+        ],
         budget,
-        3.0,
+        TOLERANCE_SIGMA_MULTIPLIER,
     ) {
         Ok(allocation) => allocation,
-        Err(error) => {
+        Err(_error) => {
             let code = "diffreal.tolerance.allocation-refused";
-            let detail = format!("the fixed tolerance-allocation fixture was refused: {error:?}");
-            return Ok(tolerance_refusal(code, detail));
+            let detail =
+                "the fixed tolerance-allocation fixture was refused by fs-toleralloc".to_string();
+            return Ok(StageExecution::diagnostic(tolerance_refusal(code, detail)));
         }
     };
     // tighten where sensitivity is large, loosen where small.
     let critical_action = alloc
         .items
         .iter()
-        .find(|item| item.name == "critical")
+        .find(|item| item.name == TOLERANCE_FEATURE_NAMES[0])
         .map(|item| item.action);
     let slack_action = alloc
         .items
         .iter()
-        .find(|item| item.name == "slack")
+        .find(|item| item.name == TOLERANCE_FEATURE_NAMES[1])
         .map(|item| item.action);
     let tighten_high = critical_action == Some(Action::Tighten);
     let loosen_low = slack_action == Some(Action::Loosen);
@@ -1729,10 +3693,10 @@ pub fn stage_tolerance_allocation_with_samples(
     stage_checkpoint(cx, TOLERANCE_STAGE)?;
     let report = match gdt_report(&alloc) {
         Ok(report) => report,
-        Err(error) => {
+        Err(_error) => {
             let code = "diffreal.tolerance.report-refused";
-            let detail = format!("the fixed GD&T report fixture was refused: {error:?}");
-            return Ok(tolerance_refusal(code, detail));
+            let detail = "the fixed GD&T report fixture was refused by fs-toleralloc".to_string();
+            return Ok(StageExecution::diagnostic(tolerance_refusal(code, detail)));
         }
     };
     let loosened = report
@@ -1755,12 +3719,19 @@ pub fn stage_tolerance_allocation_with_samples(
     // This checks only the supplied sample set. It is neither a complete corner
     // enumeration nor a probabilistic conformance certificate.
     stage_checkpoint(cx, TOLERANCE_STAGE)?;
-    let verdict = match robustness_check(&alloc, extreme_qois, 0.0, 3.0, 0.2) {
+    let verdict = match robustness_check(
+        &alloc,
+        extreme_qois,
+        TOLERANCE_NOMINAL_QOI,
+        TOLERANCE_SIGMA_MULTIPLIER,
+        TOLERANCE_ROBUSTNESS_MARGIN,
+    ) {
         Ok(verdict) => verdict,
-        Err(error) => {
+        Err(_error) => {
             let code = "diffreal.tolerance.robustness-refused";
-            let detail = format!("the fixed tolerance-robustness fixture was refused: {error:?}");
-            return Ok(tolerance_refusal(code, detail));
+            let detail =
+                "the fixed tolerance-robustness fixture was refused by fs-toleralloc".to_string();
+            return Ok(StageExecution::diagnostic(tolerance_refusal(code, detail)));
         }
     };
     events.push(StageEvent::SampledLinearization {
@@ -1779,13 +3750,30 @@ pub fn stage_tolerance_allocation_with_samples(
             "allocation direction, sensitivity justification, or sampled-extremes assertion failed; inspect events",
         ))
     };
-    Ok(StageLog::new(
+    let log = StageLog::new(
         TOLERANCE_STAGE,
         StageRequirement::Required,
         status,
         TOLERANCE_EVIDENCE_IDENTITY,
         events,
-    ))
+    );
+    Ok(StageExecution {
+        inputs: fixture_input_identity(&log),
+        result: tolerance_result_identity(&critical, &slack, &alloc, &report, &verdict),
+        log,
+    })
+}
+
+/// Stage 3 with caller-supplied QoI samples at selected tolerance-band
+/// extremes. This is a diagnostic falsifier seam and cannot mint a receipt.
+///
+/// # Errors
+/// Cancellation and ambient work-budget refusals suppress the partial report.
+pub fn stage_tolerance_allocation_with_samples(
+    cx: &Cx<'_>,
+    extreme_qois: &[f64],
+) -> Result<StageLog, DiffRealError> {
+    execute_tolerance_allocation_with_samples(cx, extreme_qois).map(|stage| stage.log)
 }
 
 /// Stage 3: adjoint-driven GD&T using sealed local-fixture sensitivities and a
@@ -1794,7 +3782,11 @@ pub fn stage_tolerance_allocation_with_samples(
 /// # Errors
 /// Cancellation and ambient work-budget refusals suppress the partial report.
 pub fn stage_tolerance_allocation(cx: &Cx<'_>) -> Result<StageLog, DiffRealError> {
-    stage_tolerance_allocation_with_samples(cx, &[0.9, -0.8, 0.5])
+    execute_tolerance_allocation_with_samples(cx, &TOLERANCE_EXTREME_QOIS).map(|stage| stage.log)
+}
+
+fn execute_tolerance_allocation(cx: &Cx<'_>) -> Result<StageExecution, DiffRealError> {
+    execute_tolerance_allocation_with_samples(cx, &TOLERANCE_EXTREME_QOIS)
 }
 
 // -- Stage 4: gated spacetime -----------------------------------------------
@@ -1805,9 +3797,9 @@ pub fn stage_tolerance_allocation(cx: &Cx<'_>) -> Result<StageLog, DiffRealError
 /// # Errors
 /// Cancellation or an ambient work budget below the fixed gate-recording cost
 /// suppresses the partial report.
-pub fn stage_spacetime_gated(cx: &Cx<'_>) -> Result<StageLog, DiffRealError> {
+fn execute_spacetime_gated(cx: &Cx<'_>) -> Result<StageExecution, DiffRealError> {
     admit_stage_work(cx, SPACETIME_STAGE, SPACETIME_WORK_UNITS)?;
-    Ok(StageLog::new(
+    Ok(StageExecution::diagnostic(StageLog::new(
         SPACETIME_STAGE,
         StageRequirement::Required,
         StageStatus::Gated(StageReason::new(
@@ -1820,14 +3812,36 @@ pub fn stage_spacetime_gated(cx: &Cx<'_>) -> Result<StageLog, DiffRealError> {
             detail: "temporal-complex dependency frankensim-epic-coupling-bk0o.7 is shipped, but this battery has no activated coupled spacetime fixture; stage not asserted"
                 .to_string(),
         }],
-    ))
+    )))
+}
+
+/// Stage 4: record the deliberately unavailable spacetime integration gate.
+///
+/// # Errors
+/// Cancellation or an ambient work budget below the fixed gate-recording cost
+/// suppresses the partial report.
+pub fn stage_spacetime_gated(cx: &Cx<'_>) -> Result<StageLog, DiffRealError> {
+    execute_spacetime_gated(cx).map(|stage| stage.log)
 }
 
 #[cfg(test)]
 mod report_policy_tests {
     use super::*;
 
-    fn required_status_report(spacetime_status: StageStatus) -> DiffRealReport {
+    fn test_execution() -> DiffRealExecutionIdentity {
+        DiffRealExecutionIdentity {
+            stream_key: StreamKey {
+                seed: 7,
+                kernel_id: 11,
+                tile: 13,
+                iteration: 17,
+            },
+            budget: Budget::INFINITE,
+            mode: ExecMode::Deterministic,
+        }
+    }
+
+    fn required_status_logs(spacetime_status: StageStatus) -> Vec<StageLog> {
         let passed = |stage, identity| {
             StageLog::new(
                 stage,
@@ -1840,32 +3854,40 @@ mod report_policy_tests {
                 }],
             )
         };
-        DiffRealReport {
-            stages: vec![
-                passed(DIFFERENTIATION_STAGE, DIFFERENTIATION_EVIDENCE_IDENTITY),
-                passed(AS_BUILT_STAGE, AS_BUILT_EVIDENCE_IDENTITY),
-                passed(TOLERANCE_STAGE, TOLERANCE_EVIDENCE_IDENTITY),
-                StageLog::new(
-                    SPACETIME_STAGE,
-                    StageRequirement::Required,
-                    spacetime_status,
-                    SPACETIME_EVIDENCE_IDENTITY,
-                    vec![StageEvent::Gate {
-                        code: "test.spacetime.disposition",
-                        detail: "spacetime fixture disposition recorded".to_string(),
-                    }],
-                ),
-            ],
-        }
+        vec![
+            passed(DIFFERENTIATION_STAGE, DIFFERENTIATION_EVIDENCE_IDENTITY),
+            passed(AS_BUILT_STAGE, AS_BUILT_EVIDENCE_IDENTITY),
+            passed(TOLERANCE_STAGE, TOLERANCE_EVIDENCE_IDENTITY),
+            StageLog::new(
+                SPACETIME_STAGE,
+                StageRequirement::Required,
+                spacetime_status,
+                SPACETIME_EVIDENCE_IDENTITY,
+                vec![StageEvent::Gate {
+                    code: "test.spacetime.disposition",
+                    detail: "spacetime fixture disposition recorded".to_string(),
+                }],
+            ),
+        ]
+    }
+
+    fn seal_logs(logs: Vec<StageLog>) -> DiffRealReport {
+        DiffRealReport::seal(
+            logs.into_iter().map(StageExecution::diagnostic).collect(),
+            test_execution(),
+        )
+    }
+
+    fn required_status_report(spacetime_status: StageStatus) -> DiffRealReport {
+        seal_logs(required_status_logs(spacetime_status))
     }
 
     #[test]
-    fn all_passed_required_stages_are_complete_and_promotion_ready() {
+    fn all_passed_required_stages_are_structurally_ready_but_not_authenticated() {
         let report = required_status_report(StageStatus::Passed);
         assert!(report.complete());
         assert!(report.all_required_passed());
-        assert!(report.promotion_ready());
-        assert!(report.passed());
+        assert!(report.structurally_ready());
     }
 
     #[test]
@@ -1879,8 +3901,7 @@ mod report_policy_tests {
             "failed is an evaluated scientific outcome"
         );
         assert!(!report.all_required_passed());
-        assert!(!report.promotion_ready());
-        assert!(!report.passed());
+        assert!(!report.structurally_ready());
     }
 
     #[test]
@@ -1891,8 +3912,7 @@ mod report_policy_tests {
         )));
         assert!(!report.complete());
         assert!(!report.all_required_passed());
-        assert!(!report.promotion_ready());
-        assert!(!report.passed());
+        assert!(!report.structurally_ready());
     }
 
     #[test]
@@ -1903,14 +3923,13 @@ mod report_policy_tests {
         )));
         assert!(!report.complete());
         assert!(!report.all_required_passed());
-        assert!(!report.promotion_ready());
-        assert!(!report.passed());
+        assert!(!report.structurally_ready());
     }
 
     #[test]
     fn an_explicit_optional_gate_does_not_block_required_stage_promotion() {
-        let mut report = required_status_report(StageStatus::Passed);
-        report.stages.push(StageLog::new(
+        let mut logs = required_status_logs(StageStatus::Passed);
+        logs.push(StageLog::new(
             "diagnostic-only",
             StageRequirement::Optional,
             StageStatus::Gated(StageReason::new(
@@ -1923,9 +3942,188 @@ mod report_policy_tests {
                 detail: "optional diagnostic gate retained".to_string(),
             }],
         ));
+        let report = seal_logs(logs);
         assert!(report.complete());
         assert!(report.all_required_passed());
-        assert!(report.promotion_ready());
+        assert!(report.structurally_ready());
+    }
+
+    #[test]
+    fn receipt_mutation_reorder_omission_and_unknown_versions_fail_closed() {
+        let report = required_status_report(StageStatus::Passed);
+        assert!(report.verifies_integrity());
+
+        let mut result_mutation = report.clone();
+        result_mutation.receipts[0].result.0[0] ^= 1;
+        assert!(!result_mutation.verifies_integrity());
+
+        let mut input_mutation = report.clone();
+        input_mutation.receipts[0].fixture_inputs.0[0] ^= 1;
+        assert!(!input_mutation.verifies_integrity());
+
+        let mut stage_root_mutation = report.clone();
+        stage_root_mutation.receipts[0].root.0[0] ^= 1;
+        assert!(!stage_root_mutation.verifies_integrity());
+
+        let mut report_root_mutation = report.clone();
+        report_root_mutation.receipt_root.0[0] ^= 1;
+        assert!(!report_root_mutation.verifies_integrity());
+
+        let mut reordered = report.clone();
+        reordered.receipts.swap(0, 1);
+        assert!(!reordered.verifies_integrity());
+
+        let mut omitted = report.clone();
+        omitted.receipts.pop();
+        assert!(!omitted.verifies_integrity());
+
+        let mut unknown_stage = report.clone();
+        unknown_stage.receipts[0].version = STAGE_RECEIPT_POLICY_VERSION + 1;
+        assert!(!unknown_stage.verifies_integrity());
+
+        let mut unknown_report = report;
+        unknown_report.receipt_version = REPORT_RECEIPT_POLICY_VERSION + 1;
+        assert!(!unknown_report.verifies_integrity());
+    }
+
+    #[test]
+    fn canonical_stage_and_execution_fields_are_receipt_semantic() {
+        let report = required_status_report(StageStatus::Passed);
+
+        let mut status = report.clone();
+        status.stages[0].status = StageStatus::Failed(StageReason::new(
+            "test.mutated",
+            "status changed after sealing",
+        ));
+        assert!(!status.verifies_integrity());
+
+        let mut reason = required_status_report(StageStatus::Failed(StageReason::new(
+            "test.failed",
+            "original reason",
+        )));
+        let StageStatus::Failed(reason_payload) = &mut reason.stages[3].status else {
+            panic!("synthetic failure has a reason")
+        };
+        reason_payload.detail.push_str(" mutated");
+        assert!(!reason.verifies_integrity());
+
+        let mut evidence_identity = report.clone();
+        evidence_identity.stages[0].evidence_identity = "mutated/v1";
+        assert!(!evidence_identity.verifies_integrity());
+
+        let mut event_payload = report.clone();
+        let StageEvent::Gate { detail, .. } = &mut event_payload.stages[0].events[0] else {
+            panic!("synthetic stage uses one gate-shaped diagnostic")
+        };
+        detail.push_str(" mutated");
+        assert!(!event_payload.verifies_integrity());
+
+        let mut event_order = report.clone();
+        event_order.stages[0].events.push(StageEvent::Gate {
+            code: "test.second",
+            detail: "second event".to_string(),
+        });
+        event_order.stages[0].events.swap(0, 1);
+        assert!(!event_order.verifies_integrity());
+
+        let mut execution = report.clone();
+        execution.execution.stream_key.seed ^= 1;
+        assert!(!execution.verifies_integrity());
+
+        let mut budget = report;
+        budget.execution.budget = budget.execution.budget.with_priority(9);
+        assert!(!budget.verifies_integrity());
+    }
+
+    #[test]
+    fn authentication_rejects_unknown_versions_before_authority_dispatch() {
+        let pool = fs_alloc::ArenaPool::new(fs_alloc::ArenaConfig::default());
+        let gate = fs_exec::CancelGate::new();
+        pool.scope(|arena| {
+            let execution = test_execution();
+            let cx = Cx::new(
+                &gate,
+                arena,
+                execution.stream_key,
+                execution.budget,
+                execution.mode,
+            );
+            let report = run_battery(&cx).expect("fixed battery produces a report");
+            let attestation =
+                PromotionAttestation::new("unused", Vec::new(), promotion_policy_fingerprint());
+
+            let mut unknown_report = report.clone();
+            unknown_report.receipt_version = REPORT_RECEIPT_POLICY_VERSION + 1;
+            assert!(matches!(
+                unknown_report.authenticate(&cx, attestation.clone(), &NoPromotionReceiptVerifier,),
+                Err(PromotionReceiptError::UnknownReportVersion { .. })
+            ));
+
+            let mut unknown_stage = report;
+            unknown_stage.receipts[0].version = STAGE_RECEIPT_POLICY_VERSION + 1;
+            assert!(matches!(
+                unknown_stage.authenticate(&cx, attestation, &NoPromotionReceiptVerifier),
+                Err(PromotionReceiptError::UnknownStageVersion { .. })
+            ));
+        });
+    }
+
+    #[derive(Debug)]
+    struct MustNotDispatch;
+
+    impl PromotionReceiptVerifier for MustNotDispatch {
+        fn verify(
+            &self,
+            _request: &PromotionVerificationRequest<'_>,
+            _attestation: &PromotionAttestation,
+        ) -> PromotionVerificationDecision {
+            panic!("semantic validation must precede authority dispatch")
+        }
+    }
+
+    #[test]
+    fn contradictory_but_rehashed_stage_fails_before_authority_dispatch() {
+        let pool = fs_alloc::ArenaPool::new(fs_alloc::ArenaConfig::default());
+        let gate = fs_exec::CancelGate::new();
+        pool.scope(|arena| {
+            let execution = test_execution();
+            let cx = Cx::new(
+                &gate,
+                arena,
+                execution.stream_key,
+                execution.budget,
+                execution.mode,
+            );
+            let mut report = run_battery(&cx).expect("fixed battery produces a report");
+            let StageEvent::MissingVjpProbe { blocked, .. } = &mut report.stages[0].events[1]
+            else {
+                panic!("differentiation transcript retains the kill probe")
+            };
+            *blocked = false;
+            let receipt = &mut report.receipts[0];
+            receipt.root = stage_receipt_identity(
+                receipt.version,
+                &report.stages[0],
+                &report.execution,
+                receipt.fixture_inputs,
+                receipt.result,
+            );
+            report.receipt_root = report_receipt_identity(
+                report.receipt_version,
+                &report.execution,
+                &report.receipts,
+            );
+            assert!(
+                report.verifies_integrity(),
+                "the forged root is self-consistent"
+            );
+            let attestation =
+                PromotionAttestation::new("unused", Vec::new(), promotion_policy_fingerprint());
+            assert!(matches!(
+                report.authenticate(&cx, attestation, &MustNotDispatch),
+                Err(PromotionReceiptError::InvalidStageSemantics)
+            ));
+        });
     }
 
     #[test]
