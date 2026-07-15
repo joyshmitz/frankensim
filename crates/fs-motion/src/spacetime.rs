@@ -138,7 +138,11 @@ impl<C: Chart> SpacetimeChart<C> {
             defect = defect.max(seg.defect());
             coords = Some(match coords {
                 None => pt,
-                Some(prev) => [prev[0].hull(pt[0]), prev[1].hull(pt[1]), prev[2].hull(pt[2])],
+                Some(prev) => [
+                    prev[0].hull(pt[0]),
+                    prev[1].hull(pt[1]),
+                    prev[2].hull(pt[2]),
+                ],
             });
         }
         let coords = coords.ok_or(MotionError::EmptyTimeDomain)?;
@@ -150,6 +154,10 @@ impl<C: Chart> SpacetimeChart<C> {
             coords[2].midpoint(),
         );
         let sample = self.base.eval(mid, cx);
+        // The chart is an injected provider and may observe/request
+        // cancellation during its final bounded evaluation. Do not publish a
+        // field enclosure from that cancelled operation.
+        cx.checkpoint().map_err(|_| MotionError::Cancelled)?;
         let value_enclosure = match sample.error.kind {
             NumericalKind::Exact | NumericalKind::Enclosure => {
                 Interval::new(sample.error.lo, sample.error.hi)

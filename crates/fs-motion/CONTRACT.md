@@ -195,6 +195,8 @@ are bounded-time and do not poll internally. Clearance minimization checks
 immediately before and after every lower-bound or witness provider call, so a
 pre-cancelled operation never enters the oracle and a cancellation observed
 during provider work cannot publish or trigger the next provider call.
+`SpacetimeChart::eval_over` also checks immediately after its injected base
+chart evaluation, before constructing a certified field enclosure.
 
 ## Unsafe boundary
 
@@ -259,6 +261,8 @@ junction, so rotations through π cannot tear the cover.
 
 `tests/swept_envelope.rs`:
 
+- cancellation requested from inside the final base-chart evaluation cannot
+  publish a `FieldEnclosure`;
 - `po_5` checks the deterministic exhaustive-subdivision accounting and
   falsifies every returned band against the independently derived translation
   capsule distance. The complete interval partition is the proof; closed-form

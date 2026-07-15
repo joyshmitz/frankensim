@@ -3,11 +3,13 @@
 //! The branch-and-bound partition and interval bounds are the proof.  Closed
 //! forms and sampled pointwise motors below are independent falsifiers only.
 
-use fs_evidence::NumericalKind;
+use std::sync::Arc;
+
+use fs_evidence::{NumericalCertificate, NumericalKind};
 use fs_exec::{Budget, CancelGate, Cx, ExecMode, StreamKey};
 use fs_ga::{Motor, Point as GaPoint};
 use fs_geom::fixtures::SphereChart;
-use fs_geom::{Chart, Point3, TraceStepClaim};
+use fs_geom::{Aabb, Chart, ChartSample, Point3, TraceStepClaim};
 use fs_ivl::Interval;
 use fs_math::det;
 use fs_motion::{
@@ -64,6 +66,76 @@ fn capsule_distance(point: Point3) -> f64 {
     let nearest_x = point.x.clamp(0.0, 1.0);
     let dx = point.x - nearest_x;
     det::sqrt(dx * dx + point.y * point.y + point.z * point.z) - 0.25
+}
+
+#[derive(Debug)]
+struct CancelDuringEvalChart {
+    gate: Arc<CancelGate>,
+}
+
+impl Chart for CancelDuringEvalChart {
+    fn eval(&self, _x: Point3, _cx: &Cx<'_>) -> ChartSample {
+        self.gate.request();
+        ChartSample {
+            signed_distance: 0.25,
+            gradient: None,
+            lipschitz: Some(1.0),
+            error: NumericalCertificate::exact(0.25),
+        }
+    }
+
+    fn support(&self) -> Aabb {
+        Aabb::new(Point3::new(-1.0, -1.0, -1.0), Point3::new(1.0, 1.0, 1.0))
+    }
+
+    fn trace_step_claim(&self) -> TraceStepClaim {
+        TraceStepClaim::ExactDistance
+    }
+
+    fn name(&self) -> &'static str {
+        "test/cancel-during-eval"
+    }
+}
+
+#[test]
+fn cancellation_during_base_eval_cannot_publish_field_enclosure() {
+    let gate = Arc::new(CancelGate::new());
+    let pool = fs_alloc::ArenaPool::new(fs_alloc::ArenaConfig::default());
+    pool.scope(|arena| {
+        let cx = Cx::new(
+            gate.as_ref(),
+            arena,
+            StreamKey {
+                seed: 0xC58_CA11,
+                kernel_id: 0x58,
+                tile: 1,
+                iteration: 0,
+            },
+            Budget::INFINITE,
+            ExecMode::Deterministic,
+        );
+        let tube = screw_tube(
+            &ScrewParams {
+                axis: [1.0, 0.0, 0.0],
+                center: [0.0, 0.0, 0.0],
+                omega: 0.0,
+                axial_velocity: 0.0,
+                base_pose: Motor::identity(),
+            },
+            Interval::new(0.0, 1.0),
+            4,
+            1,
+        )
+        .expect("constant test tube");
+        let moving = SpacetimeChart::new(
+            CancelDuringEvalChart {
+                gate: Arc::clone(&gate),
+            },
+            tube,
+        );
+        let result = moving.eval_over(Point3::new(0.0, 0.0, 0.0), Interval::new(0.0, 1.0), &cx);
+        assert!(matches!(result, Err(MotionError::Cancelled)));
+    });
 }
 
 #[test]
