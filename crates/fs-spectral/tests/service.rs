@@ -7,6 +7,7 @@ use fs_spectral::service::{
     CertifiedEigenvalue, DenseSymOp, EigenBackend, EigenQuery, EigenService, ServiceError,
     SymmetricOp, gap_report,
 };
+use std::cell::Cell;
 
 fn with_cx<R>(f: impl FnOnce(&Cx<'_>) -> R) -> R {
     let gate = CancelGate::new();
@@ -39,7 +40,7 @@ fn seeded_sym(spectrum: &[f64]) -> DenseSymOp {
     // Apply a fixed cascade of exact Givens rotations G a Gᵀ so the
     // matrix is dense but the spectrum is EXACTLY the input list
     // (rotations are similarity transforms).
-    let mut rotate = |p: usize, q: usize, c: f64, s: f64, a: &mut Vec<f64>| {
+    let rotate = |p: usize, q: usize, c: f64, s: f64, a: &mut [f64]| {
         for j in 0..n {
             let (apj, aqj) = (a[p * n + j], a[q * n + j]);
             a[p * n + j] = c * apj - s * aqj;
@@ -65,6 +66,47 @@ fn seeded_sym(spectrum: &[f64]) -> DenseSymOp {
         }
     }
     DenseSymOp::new(n, a).expect("seeded operator is square, finite, symmetric")
+}
+
+fn assert_progress_bits_equal(
+    backend: EigenBackend,
+    a: &fs_spectral::service::EigenProgress,
+    b: &fs_spectral::service::EigenProgress,
+) {
+    assert_eq!(a.pairs.len(), b.pairs.len());
+    assert_eq!(a.converged, b.converged);
+    assert_eq!(a.subspace_exhausted, b.subspace_exhausted);
+    assert_eq!(a.ticks, b.ticks);
+    for (left, right) in a.pairs.iter().zip(&b.pairs) {
+        assert_eq!(
+            left.value().to_bits(),
+            right.value().to_bits(),
+            "{backend:?}: split-run eigenvalue bits differ"
+        );
+        assert_eq!(
+            left.residual().to_bits(),
+            right.residual().to_bits(),
+            "{backend:?}: split-run residual bits differ"
+        );
+        assert_eq!(
+            left.interval().0.to_bits(),
+            right.interval().0.to_bits(),
+            "{backend:?}: split-run lower interval bits differ"
+        );
+        assert_eq!(
+            left.interval().1.to_bits(),
+            right.interval().1.to_bits(),
+            "{backend:?}: split-run upper interval bits differ"
+        );
+        assert_eq!(left.vector().len(), right.vector().len());
+        for (x, y) in left.vector().iter().zip(right.vector()) {
+            assert_eq!(
+                x.to_bits(),
+                y.to_bits(),
+                "{backend:?}: split-run eigenvector bits differ"
+            );
+        }
+    }
 }
 
 fn spectrum_a() -> Vec<f64> {
@@ -103,11 +145,11 @@ fn sv_001_accuracy_vs_dense_reference_both_backends_both_ends() {
                     let hit = progress
                         .pairs
                         .iter()
-                        .any(|p| p.interval.0 - 1e-8 <= *t && *t <= p.interval.1 + 1e-8);
+                        .any(|p| p.interval().0 - 1e-8 <= *t && *t <= p.interval().1 + 1e-8);
                     assert!(
                         hit,
                         "{backend:?} largest={largest}: true eigenvalue {t} missed by every \
-                         certified interval"
+                         numerical residual interval"
                     );
                 }
                 println!(
@@ -117,7 +159,7 @@ fn sv_001_accuracy_vs_dense_reference_both_backends_both_ends() {
                     progress
                         .pairs
                         .iter()
-                        .map(|p| p.residual)
+                        .map(CertifiedEigenvalue::residual)
                         .fold(0.0f64, f64::max)
                 );
             }
@@ -197,19 +239,7 @@ fn sv_003_split_run_is_bitwise_equal_to_straight_run() {
             }
             let final_split = resumed.tick(&op, cx).expect("tick");
 
-            assert_eq!(final_straight.pairs.len(), final_split.pairs.len());
-            for (a, b) in final_straight.pairs.iter().zip(final_split.pairs.iter()) {
-                assert_eq!(
-                    a.value.to_bits(),
-                    b.value.to_bits(),
-                    "{backend:?}: split-run eigenvalue bits differ"
-                );
-                assert_eq!(
-                    a.residual.to_bits(),
-                    b.residual.to_bits(),
-                    "{backend:?}: split-run residual bits differ"
-                );
-            }
+            assert_progress_bits_equal(backend, &final_straight, &final_split);
             println!("sv-003 {backend:?}: split == straight over 7 ticks (bitwise)");
         }
     });
@@ -239,7 +269,7 @@ fn sv_004_warm_start_speeds_up_continuation() {
             .iter()
             .rev() // largest first, matching the block's target end
             .take(3)
-            .map(|p| p.vector.clone())
+            .map(|p| p.vector().to_vec())
             .collect();
         let mut warm = EigenService::warm(EigenBackend::Lobpcg, op1.dim(), query, &seeds)
             .expect("warm seed accepted");
@@ -361,7 +391,7 @@ fn sv_005_typed_refusals() {
             EigenBackend::Lanczos,
             op.dim(),
             EigenQuery {
-                k: 3,
+                k: 1,
                 largest: true,
                 tol: 1e-30,
                 steps_per_tick: 1,
@@ -370,10 +400,38 @@ fn sv_005_typed_refusals() {
         .expect("valid");
         let out = tiny_budget.run_to_tolerance(&op, cx, 2);
         assert!(
-            matches!(out, Err(ServiceError::Unconverged { ticks: 2, .. })),
+            matches!(
+                out,
+                Err(ServiceError::Unconverged {
+                    ticks: 2,
+                    worst_residual,
+                }) if worst_residual.is_finite() && worst_residual > 0.0
+            ),
             "budget exhaustion must be a typed, resumable outcome"
         );
         assert!(tiny_budget.tick(&op, cx).is_ok());
+
+        // A budget that ends before k pairs exist is typed INCOMPLETE; it
+        // must never fabricate a zero "worst residual" from an empty fold.
+        let mut incomplete = EigenService::new(
+            EigenBackend::Lanczos,
+            op.dim(),
+            EigenQuery {
+                k: 3,
+                largest: true,
+                tol: 1e-30,
+                steps_per_tick: 1,
+            },
+        )
+        .expect("valid");
+        assert!(matches!(
+            incomplete.run_to_tolerance(&op, cx, 1),
+            Err(ServiceError::Incomplete {
+                ticks: 1,
+                available: 1,
+                requested: 3,
+            })
+        ));
         println!("sv-005: every refusal typed; service resumable after budget exhaustion");
     });
 }
@@ -382,7 +440,7 @@ fn sv_005_typed_refusals() {
 fn sv_006_intervals_contain_reference_eigenvalues() {
     with_cx(|cx| {
         // Falsification: dense reference values must land inside the
-        // certified Weyl intervals of converged pairs.
+        // numerical Weyl-style residual intervals of converged pairs.
         let spectrum = spectrum_a();
         let op = seeded_sym(&spectrum);
         let mut service = EigenService::new(
@@ -402,11 +460,12 @@ fn sv_006_intervals_contain_reference_eigenvalues() {
         for (pair, truth) in progress.pairs.iter().zip(sorted.iter()) {
             println!(
                 "sv-006: interval [{:.12}, {:.12}] vs reference {truth:.12}",
-                pair.interval.0, pair.interval.1
+                pair.interval().0,
+                pair.interval().1
             );
             assert!(
-                pair.interval.0 - 1e-9 <= *truth && *truth <= pair.interval.1 + 1e-9,
-                "reference eigenvalue {truth} escapes the certified interval"
+                pair.interval().0 - 1e-9 <= *truth && *truth <= pair.interval().1 + 1e-9,
+                "reference eigenvalue {truth} escapes the numerical interval"
             );
         }
     });
@@ -415,12 +474,17 @@ fn sv_006_intervals_contain_reference_eigenvalues() {
 #[test]
 fn sv_007_hostile_sizes_refuse_without_overflow() {
     with_cx(|cx| {
-        // fs-la seeded-start constructors: checked arithmetic on
-        // public usize inputs — hostile sizes refuse, never wrap or
-        // panic.
-        use fs_la::eigen::LobpcgState;
+        // fs-la fallible seeded-start constructors: checked arithmetic on
+        // public usize inputs — hostile sizes refuse before allocation.
+        // The trusted `new` wrappers intentionally panic on a refused
+        // precondition and delegate to these same checked paths.
+        use fs_la::eigen::{LanczosState, LobpcgState};
         assert!(LobpcgState::with_block(usize::MAX, 2, &[]).is_none());
         assert!(LobpcgState::with_block(usize::MAX, usize::MAX / 2, &[]).is_none());
+        assert!(LobpcgState::try_new(usize::MAX, 1).is_none());
+        assert!(LobpcgState::try_new(usize::MAX, usize::MAX).is_none());
+        assert!(LanczosState::try_new(usize::MAX).is_none());
+        assert!(!LanczosState::initial_work_is_admitted(usize::MAX, 1, 1));
         assert!(LobpcgState::with_block(12, 0, &[]).is_none());
         assert!(
             LobpcgState::with_block(12, 5, &[0.0; 60]).is_none(),
@@ -441,7 +505,51 @@ fn sv_007_hostile_sizes_refuse_without_overflow() {
             &seeds,
         );
         assert!(out.is_err(), "hostile warm dimensions must refuse");
-        let _ = cx;
+
+        for backend in [EigenBackend::Lanczos, EigenBackend::Lobpcg] {
+            let cold = EigenService::new(
+                backend,
+                usize::MAX,
+                EigenQuery {
+                    k: 1,
+                    largest: true,
+                    tol: 1e-9,
+                    steps_per_tick: 1,
+                },
+            );
+            assert!(
+                matches!(cold, Err(ServiceError::InvalidQuery { .. })),
+                "{backend:?} hostile cold shape must refuse before allocation"
+            );
+        }
+
+        // Finite, independent columns at opposite f64 scales remain
+        // admissible: rank detection must neither overflow nor underflow.
+        let mut scaled = vec![0.0f64; 12];
+        scaled[0] = 1e300;
+        scaled[3] = 1e-300;
+        assert!(LobpcgState::with_block(6, 2, &scaled).is_some());
+
+        // A finite subnormal-scale residual must not square to a false zero.
+        let tiny_op = DenseSymOp::new(2, vec![0.0, 0.0, 0.0, 1e-300])
+            .expect("finite symmetric tiny operator");
+        let mut tiny = EigenService::new(
+            EigenBackend::Lanczos,
+            2,
+            EigenQuery {
+                k: 1,
+                largest: true,
+                tol: 1e-310,
+                steps_per_tick: 1,
+            },
+        )
+        .expect("tiny-scale query is admitted");
+        let tiny_progress = tiny.tick(&tiny_op, cx).expect("tiny-scale tick");
+        assert!(
+            tiny_progress.pairs[0].residual().is_finite()
+                && tiny_progress.pairs[0].residual() > 0.0,
+            "nonzero subnormal-scale residual must remain nonzero"
+        );
         println!("sv-007: hostile sizes refuse without overflow or allocation");
     });
 }
@@ -483,8 +591,8 @@ fn sv_008_identity_operator_exhausts_subspace_typed() {
         // pairs from the exhausted subspace instead of corrupting it.
         let progress = service.tick(&op, cx).expect("post-exhaustion tick is safe");
         assert!(progress.subspace_exhausted);
-        assert!(progress.pairs.iter().all(|p| p.value.is_finite()));
-        assert!((progress.pairs[0].value - 1.0).abs() < 1e-10);
+        assert!(progress.pairs.iter().all(|p| p.value().is_finite()));
+        assert!((progress.pairs[0].value() - 1.0).abs() < 1e-10);
     });
 }
 
@@ -494,13 +602,12 @@ fn sv_009_gap_report_merges_bridging_intervals() {
     // clusters until the bridging interval [-1,5] arrives; sorting by
     // interval LOWER bound and extending BOTH hull endpoints must
     // collapse all three into ONE cluster with no false leading gap.
-    let mk = |value: f64, lo: f64, hi: f64| CertifiedEigenvalue {
-        value,
-        residual: (hi - lo) / 2.0,
-        interval: (lo, hi),
-        vector: Vec::new(),
+    let mk = |lo: f64, hi: f64| {
+        let value = f64::midpoint(lo, hi);
+        CertifiedEigenvalue::from_residual(value, (hi - lo) / 2.0, vec![1.0])
+            .expect("finite ordered draft estimate")
     };
-    let pairs = vec![mk(0.0, 0.0, 0.0), mk(1.0, 1.0, 1.0), mk(2.0, -1.0, 5.0)];
+    let pairs = vec![mk(0.0, 0.0), mk(1.0, 1.0), mk(-1.0, 5.0)];
     let report = gap_report(&pairs);
     println!(
         "sv-009: clusters {:?} leading gap {:e}",
@@ -517,13 +624,21 @@ fn sv_009_gap_report_merges_bridging_intervals() {
         "bridging interval merges all three"
     );
     assert_eq!(report.clusters[0].count, 3);
-    assert_eq!(report.clusters[0].hull, (-1.0, 5.0));
+    assert!(report.clusters[0].hull.0 <= -1.0);
+    assert!(report.clusters[0].hull.1 >= 5.0);
     assert_eq!(report.leading_gap_lower_bound, 0.0);
-    // Non-finite intervals never reach clustering.
-    let with_nan = vec![mk(0.0, f64::NAN, f64::NAN), mk(1.0, 1.0, 1.0)];
-    let filtered = gap_report(&with_nan);
-    assert_eq!(filtered.clusters.len(), 1);
-    assert_eq!(filtered.clusters[0].count, 1);
+    // Malformed endpoints cannot be injected through the sealed type.
+    assert!(CertifiedEigenvalue::from_residual(f64::NAN, 0.0, vec![1.0]).is_err());
+    assert!(CertifiedEigenvalue::from_residual(0.0, -1.0, vec![1.0]).is_err());
+    assert!(CertifiedEigenvalue::from_residual(0.0, 0.0, Vec::new()).is_err());
+    let extremes = vec![
+        CertifiedEigenvalue::from_residual(-f64::MAX, 0.0, vec![1.0]).expect("finite"),
+        CertifiedEigenvalue::from_residual(f64::MAX, 0.0, vec![1.0]).expect("finite"),
+    ];
+    assert_eq!(
+        gap_report(&extremes).leading_gap_lower_bound.to_bits(),
+        f64::MAX.to_bits()
+    );
 }
 
 #[test]
@@ -578,12 +693,121 @@ fn sv_010_sparse_operator_seam_via_fs_sparse() {
                 2.0 - 2.0 * fs_math::det::cos(j as f64 * std::f64::consts::PI / (n as f64 + 1.0));
             println!(
                 "sv-010: sparse pair {} interval [{:.12}, {:.12}] vs analytic {truth:.12}",
-                rank, pair.interval.0, pair.interval.1
+                rank,
+                pair.interval().0,
+                pair.interval().1
             );
             assert!(
-                pair.interval.0 - 1e-8 <= truth && truth <= pair.interval.1 + 1e-8,
-                "analytic eigenvalue {truth} escapes the certified interval"
+                pair.interval().0 - 1e-8 <= truth && truth <= pair.interval().1 + 1e-8,
+                "analytic eigenvalue {truth} escapes the numerical interval"
             );
         }
+    });
+}
+
+#[test]
+fn sv_011_cancel_and_nonfinite_ticks_roll_back_bitwise() {
+    let cancel_gate = CancelGate::new();
+    let clean_gate = CancelGate::new();
+    let pool = fs_alloc::ArenaPool::new(fs_alloc::ArenaConfig::default());
+    pool.scope(|arena| {
+        let key = StreamKey {
+            seed: 0xBF1D,
+            kernel_id: 14,
+            tile: 0,
+            iteration: 0,
+        };
+        let cancel_cx = Cx::new(
+            &cancel_gate,
+            arena,
+            key,
+            Budget::INFINITE,
+            ExecMode::Deterministic,
+        );
+        let clean_cx = Cx::new(
+            &clean_gate,
+            arena,
+            key,
+            Budget::INFINITE,
+            ExecMode::Deterministic,
+        );
+        let op = seeded_sym(&spectrum_a());
+        let query = EigenQuery {
+            k: 2,
+            largest: true,
+            tol: 1e-30,
+            steps_per_tick: 1,
+        };
+
+        struct CancelAfterApply<'a> {
+            inner: &'a DenseSymOp,
+            gate: &'a CancelGate,
+            fired: Cell<bool>,
+        }
+        impl SymmetricOp for CancelAfterApply<'_> {
+            fn dim(&self) -> usize {
+                self.inner.dim()
+            }
+
+            fn apply(&self, x: &[f64], y: &mut [f64]) {
+                self.inner.apply(x, y);
+                if !self.fired.replace(true) {
+                    self.gate.request();
+                }
+            }
+        }
+
+        let cancelling = CancelAfterApply {
+            inner: &op,
+            gate: &cancel_gate,
+            fired: Cell::new(false),
+        };
+        let mut cancelled =
+            EigenService::new(EigenBackend::Lanczos, op.dim(), query).expect("valid");
+        assert!(matches!(
+            cancelled.tick(&cancelling, &cancel_cx),
+            Err(ServiceError::Cancelled)
+        ));
+        assert_eq!(cancelled.ticks(), 0, "cancelled tick must not commit");
+        let resumed = cancelled
+            .tick(&op, &clean_cx)
+            .expect("resume after rollback");
+        let mut fresh = EigenService::new(EigenBackend::Lanczos, op.dim(), query).expect("valid");
+        let expected = fresh.tick(&op, &clean_cx).expect("fresh reference tick");
+        assert_progress_bits_equal(EigenBackend::Lanczos, &resumed, &expected);
+
+        struct NanOnce<'a> {
+            inner: &'a DenseSymOp,
+            fired: Cell<bool>,
+        }
+        impl SymmetricOp for NanOnce<'_> {
+            fn dim(&self) -> usize {
+                self.inner.dim()
+            }
+
+            fn apply(&self, x: &[f64], y: &mut [f64]) {
+                self.inner.apply(x, y);
+                if !self.fired.replace(true) {
+                    y[0] = f64::NAN;
+                }
+            }
+        }
+
+        let poison = NanOnce {
+            inner: &op,
+            fired: Cell::new(false),
+        };
+        let mut rejected =
+            EigenService::new(EigenBackend::Lanczos, op.dim(), query).expect("valid");
+        assert!(matches!(
+            rejected.tick(&poison, &clean_cx),
+            Err(ServiceError::NonFiniteOperator)
+        ));
+        assert_eq!(rejected.ticks(), 0, "rejected tick must not commit");
+        let resumed = rejected
+            .tick(&poison, &clean_cx)
+            .expect("resume after rollback");
+        assert_progress_bits_equal(EigenBackend::Lanczos, &resumed, &expected);
+        println!("sv-011: cancellation/non-finite ticks roll back full replay state");
     });
 }

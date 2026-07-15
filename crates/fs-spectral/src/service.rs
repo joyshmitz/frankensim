@@ -14,19 +14,22 @@
 //! (`spectral_gap`, `GapHealthMonitor`, `propagate`) remains the
 //! interpretation layer above this backend.
 //!
-//! Honesty boundaries: a converged Ritz pair's residual `r` certifies
-//! (Weyl) that SOME eigenvalue lies within `r` of the Ritz value —
-//! per-pair intervals certify existence, not distinctness. Cluster
-//! reports are therefore "multiplicity at the achieved resolution",
-//! never exact multiplicity claims; the certified gap lower bound is
-//! between cluster interval hulls and can be zero when clusters touch.
+//! Honesty boundaries: for an actually symmetric operator, a converged Ritz
+//! pair's residual `r` gives the usual numerical Weyl enclosure that SOME
+//! eigenvalue lies within `r` of the Ritz value. [`SymmetricOp`] is a caller
+//! precondition, not an admitted symmetry witness, and ordinary `f64`
+//! residual arithmetic is not theorem-grade interval evidence. These values
+//! are therefore DRAFT numerical estimates until a higher truth/admission
+//! layer binds the operator proposition and validates the evidence. Per-pair
+//! intervals establish neither distinctness nor exact multiplicity.
 
 use fs_exec::Cx;
 use fs_la::eigen::{EigenPair, LanczosState, LobpcgState, lanczos_run, lobpcg_run};
 use std::cell::Cell;
 
-/// Admission cap on backend steps per tick: one tick is a bounded,
-/// cancellation-polled unit of work, never an unbounded burst.
+/// Admission cap on backend steps per tick. Backend constructors separately
+/// cap aggregate memory and in-house scalar work between polls; a custom
+/// [`SymmetricOp`] remains responsible for bounding one `apply` call.
 pub const MAX_STEPS_PER_TICK: usize = 1024;
 
 /// Typed refusals for the eigensolver service. (No `Eq`: the
@@ -65,6 +68,24 @@ pub enum ServiceError {
         /// Worst residual among the wanted pairs at the last tick.
         worst_residual: f64,
     },
+    /// The tick budget ended before the backend had produced the requested
+    /// number of pairs. This is distinct from convergence failure because no
+    /// meaningful worst-of-k residual exists yet.
+    Incomplete {
+        /// Cumulative service ticks consumed.
+        ticks: usize,
+        /// Pairs currently available.
+        available: usize,
+        /// Pairs requested by the query.
+        requested: usize,
+    },
+    /// The next bounded tick would exceed the admitted aggregate-memory or
+    /// unpolled scalar-work cap. State is unchanged; the caller must choose a
+    /// smaller problem or an explicit restart policy.
+    WorkLimit {
+        /// Rejected backend lane.
+        backend: &'static str,
+    },
     /// Cooperative cancellation observed; the in-flight tick was
     /// rolled back and the service is resumable.
     Cancelled,
@@ -93,6 +114,19 @@ impl std::fmt::Display for ServiceError {
                 f,
                 "eigen service unconverged after {ticks} ticks (worst residual \
                  {worst_residual:e}); state remains resumable"
+            ),
+            ServiceError::Incomplete {
+                ticks,
+                available,
+                requested,
+            } => write!(
+                f,
+                "eigen service incomplete after {ticks} ticks ({available}/{requested} pairs); \
+                 state remains resumable"
+            ),
+            ServiceError::WorkLimit { backend } => write!(
+                f,
+                "{backend} tick exceeds aggregate memory or unpolled-work cap; state unchanged"
             ),
             ServiceError::Cancelled => {
                 write!(
@@ -189,7 +223,7 @@ pub struct EigenQuery {
     pub k: usize,
     /// Which end of the spectrum.
     pub largest: bool,
-    /// Convergence tolerance on TRUE residual norms.
+    /// Convergence tolerance on numerically recomputed residual norms.
     pub tol: f64,
     /// Backend steps per `tick` call (resume + cancellation
     /// granularity; admission-capped by [`MAX_STEPS_PER_TICK`]).
@@ -203,19 +237,94 @@ enum BackendState {
     Lobpcg(LobpcgState),
 }
 
-/// One converged (or in-progress) eigenvalue with its certificate.
+/// One converged (or in-progress) Ritz estimate with a derived numerical
+/// residual interval. Fields are sealed so callers cannot inject a reversed
+/// or unrelated interval. Despite the historical type name, this is not an
+/// admitted scientific-authority token; see the module honesty boundary.
 #[derive(Debug, Clone)]
 pub struct CertifiedEigenvalue {
     /// The Ritz value.
-    pub value: f64,
-    /// TRUE operator residual of the Ritz pair.
-    pub residual: f64,
-    /// Weyl containment: some eigenvalue of the operator lies in
-    /// `[value − residual, value + residual]`. Existence, not
-    /// distinctness.
-    pub interval: (f64, f64),
-    /// The Ritz vector (unit norm) — warm-start fodder.
-    pub vector: Vec<f64>,
+    value: f64,
+    /// Reported operator residual of the Ritz pair. Service-produced values
+    /// are recomputed by the backend; the public draft constructor is not an
+    /// authority verifier.
+    residual: f64,
+    /// Derived numerical interval, never caller-supplied.
+    interval: (f64, f64),
+    /// Candidate Ritz vector — warm-start fodder. Service-produced vectors are
+    /// normalized by the backend; draft construction only checks finiteness.
+    vector: Vec<f64>,
+}
+
+impl CertifiedEigenvalue {
+    /// Build a draft Ritz estimate from a finite value, nonnegative finite
+    /// residual, and finite nonempty vector. Interval endpoints are derived
+    /// here and widened by one representable value when the residual is
+    /// nonzero. This prevents malformed interval injection; it does not turn
+    /// caller-supplied residuals into admitted scientific evidence.
+    pub fn from_residual(
+        value: f64,
+        residual: f64,
+        vector: Vec<f64>,
+    ) -> Result<Self, ServiceError> {
+        if !value.is_finite()
+            || !residual.is_finite()
+            || residual < 0.0
+            || vector.is_empty()
+            || vector.iter().any(|x| !x.is_finite())
+        {
+            return Err(ServiceError::InvalidQuery {
+                what: "Ritz value/residual/vector must be finite and residual nonnegative",
+            });
+        }
+        let raw_lo = value - residual;
+        let raw_hi = value + residual;
+        if !(raw_lo.is_finite() && raw_hi.is_finite() && raw_lo <= raw_hi) {
+            return Err(ServiceError::InvalidQuery {
+                what: "derived Ritz interval must have finite ordered endpoints",
+            });
+        }
+        let interval = if residual > 0.0 {
+            (raw_lo.next_down(), raw_hi.next_up())
+        } else {
+            (value, value)
+        };
+        if !(interval.0.is_finite() && interval.1.is_finite() && interval.0 <= interval.1) {
+            return Err(ServiceError::InvalidQuery {
+                what: "outward-widened Ritz interval must remain finite and ordered",
+            });
+        }
+        Ok(Self {
+            value,
+            residual,
+            interval,
+            vector,
+        })
+    }
+
+    /// Ritz value.
+    #[must_use]
+    pub fn value(&self) -> f64 {
+        self.value
+    }
+
+    /// Reported residual norm.
+    #[must_use]
+    pub fn residual(&self) -> f64 {
+        self.residual
+    }
+
+    /// Derived finite, ordered numerical interval.
+    #[must_use]
+    pub fn interval(&self) -> (f64, f64) {
+        self.interval
+    }
+
+    /// Ritz vector for warm starts.
+    #[must_use]
+    pub fn vector(&self) -> &[f64] {
+        &self.vector
+    }
 }
 
 /// A cluster of eigenvalue intervals that overlap at the achieved
@@ -233,8 +342,8 @@ pub struct EigenCluster {
 pub struct GapReport {
     /// Clusters in ascending hull order.
     pub clusters: Vec<EigenCluster>,
-    /// Certified lower bound of the gap between the first two cluster
-    /// hulls (0 when they touch or only one cluster exists).
+    /// Numerical lower bound between the first two cluster hulls (0 when they
+    /// touch or only one cluster exists). This is not an authority token.
     pub leading_gap_lower_bound: f64,
 }
 
@@ -298,9 +407,24 @@ impl EigenService {
         query: EigenQuery,
     ) -> Result<EigenService, ServiceError> {
         validate_query(n, &query, backend)?;
+        if backend == EigenBackend::Lanczos
+            && !LanczosState::initial_work_is_admitted(n, query.steps_per_tick, query.k)
+        {
+            return Err(ServiceError::InvalidQuery {
+                what: "Lanczos first tick exceeds aggregate memory or unpolled-work cap",
+            });
+        }
         let state = match backend {
-            EigenBackend::Lanczos => BackendState::Lanczos(LanczosState::new(n)),
-            EigenBackend::Lobpcg => BackendState::Lobpcg(LobpcgState::new(n, query.k)),
+            EigenBackend::Lanczos => BackendState::Lanczos(LanczosState::try_new(n).ok_or(
+                ServiceError::InvalidQuery {
+                    what: "Lanczos dimension exceeds the practical work cap",
+                },
+            )?),
+            EigenBackend::Lobpcg => BackendState::Lobpcg(LobpcgState::try_new(n, query.k).ok_or(
+                ServiceError::InvalidQuery {
+                    what: "LOBPCG aggregate workspace exceeds the practical work cap",
+                },
+            )?),
         };
         Ok(EigenService {
             n,
@@ -325,12 +449,20 @@ impl EigenService {
         if seed_vectors.is_empty() || seed_vectors.iter().any(|v| v.len() != n) {
             return Err(ServiceError::InvalidSeed);
         }
+        if backend == EigenBackend::Lanczos
+            && !LanczosState::initial_work_is_admitted(n, query.steps_per_tick, query.k)
+        {
+            return Err(ServiceError::InvalidSeed);
+        }
         let state = match backend {
             EigenBackend::Lanczos => BackendState::Lanczos(
                 LanczosState::with_start(&seed_vectors[0]).ok_or(ServiceError::InvalidSeed)?,
             ),
             EigenBackend::Lobpcg => {
                 if seed_vectors.len() < query.k {
+                    return Err(ServiceError::InvalidSeed);
+                }
+                if !LobpcgState::shape_is_admitted(n, query.k) {
                     return Err(ServiceError::InvalidSeed);
                 }
                 // Checked size arithmetic: hostile n·k must refuse,
@@ -384,12 +516,31 @@ impl EigenService {
                 got: op.dim(),
             });
         }
+        if cx.checkpoint().is_err() {
+            return Err(ServiceError::Cancelled);
+        }
+        if matches!(
+            &self.state,
+            BackendState::Lanczos(state)
+                if !state.work_is_admitted(self.query.steps_per_tick, self.query.k)
+        ) {
+            return Err(ServiceError::WorkLimit { backend: "Lanczos" });
+        }
         let snapshot = self.state.clone();
         let nonfinite = Cell::new(false);
+        let cancelled = Cell::new(false);
         let apply = |x: &[f64], y: &mut [f64]| {
+            if cx.checkpoint().is_err() {
+                cancelled.set(true);
+                y.fill(0.0);
+                return;
+            }
             op.apply(x, y);
             if y.iter().any(|v| !v.is_finite()) {
                 nonfinite.set(true);
+            }
+            if cx.checkpoint().is_err() {
+                cancelled.set(true);
             }
         };
         let mut pairs: Vec<EigenPair> = Vec::new();
@@ -410,48 +561,64 @@ impl EigenService {
                     &|r: &[f64], out: &mut [f64]| out.copy_from_slice(r),
                 ),
             };
+            if cancelled.get() {
+                self.state = snapshot;
+                return Err(ServiceError::Cancelled);
+            }
             if nonfinite.get() {
                 self.state = snapshot;
                 return Err(ServiceError::NonFiniteOperator);
             }
         }
-        self.ticks += 1;
-        if pairs
-            .iter()
-            .any(|p| !p.value.is_finite() || !p.residual.is_finite())
-        {
+        if pairs.iter().any(|p| {
+            !p.value.is_finite()
+                || !p.residual.is_finite()
+                || p.residual < 0.0
+                || p.vector.is_empty()
+                || p.vector.iter().any(|x| !x.is_finite())
+        }) {
             self.state = snapshot;
-            self.ticks -= 1;
             return Err(ServiceError::NonFiniteOperator);
         }
-        let mut certified = Vec::with_capacity(pairs.len());
+        let mut estimates = Vec::with_capacity(pairs.len());
         for p in pairs {
-            let lo = p.value - p.residual;
-            let hi = p.value + p.residual;
-            if !(lo.is_finite() && hi.is_finite()) {
-                self.state = snapshot;
-                self.ticks -= 1;
-                return Err(ServiceError::NonFiniteOperator);
-            }
-            certified.push(CertifiedEigenvalue {
-                value: p.value,
-                residual: p.residual,
-                interval: (lo, hi),
-                vector: p.vector,
-            });
+            let estimate = match CertifiedEigenvalue::from_residual(p.value, p.residual, p.vector) {
+                Ok(estimate) => estimate,
+                Err(_) => {
+                    self.state = snapshot;
+                    return Err(ServiceError::NonFiniteOperator);
+                }
+            };
+            estimates.push(estimate);
         }
-        certified.sort_by(|a, b| a.value.total_cmp(&b.value));
+        estimates.sort_by(|a, b| a.value.total_cmp(&b.value));
+        // A request can arrive during the final backend application or Ritz
+        // extraction. Poll once more immediately before committing the state;
+        // otherwise a one-step tick could acknowledge success after a request.
+        if cx.checkpoint().is_err() {
+            self.state = snapshot;
+            return Err(ServiceError::Cancelled);
+        }
+        self.ticks = match self.ticks.checked_add(1) {
+            Some(ticks) => ticks,
+            None => {
+                self.state = snapshot;
+                return Err(ServiceError::InvalidQuery {
+                    what: "service tick counter overflow",
+                });
+            }
+        };
         // The backends return exactly the wanted extremal pairs, so
         // convergence is: enough of them, and every one within
         // tolerance.
-        let converged = certified.len() >= self.query.k
-            && certified.iter().all(|p| p.residual <= self.query.tol);
+        let converged = estimates.len() >= self.query.k
+            && estimates.iter().all(|p| p.residual <= self.query.tol);
         let subspace_exhausted = match &self.state {
             BackendState::Lanczos(state) => state.exhausted(),
             BackendState::Lobpcg(_) => false,
         };
         Ok(EigenProgress {
-            pairs: certified,
+            pairs: estimates,
             converged,
             subspace_exhausted,
             ticks: self.ticks,
@@ -490,10 +657,22 @@ impl EigenService {
             }
             last = Some(progress);
         }
+        let last = last.expect("positive max_ticks always produces progress or returns early");
+        if last.pairs.len() < self.query.k {
+            return Err(ServiceError::Incomplete {
+                ticks: self.ticks,
+                available: last.pairs.len(),
+                requested: self.query.k,
+            });
+        }
         let worst = last
-            .as_ref()
-            .map(|p| p.pairs.iter().map(|c| c.residual).fold(0.0f64, f64::max))
-            .unwrap_or(f64::INFINITY);
+            .pairs
+            .iter()
+            .take(self.query.k)
+            .map(|c| c.residual)
+            .reduce(f64::max)
+            .expect("validated k and pair-count gate guarantee a residual");
+        debug_assert!(worst.is_finite() && worst >= 0.0);
         Err(ServiceError::Unconverged {
             ticks: self.ticks,
             worst_residual: worst,
@@ -501,19 +680,21 @@ impl EigenService {
     }
 }
 
-/// Cluster pairs by interval overlap and report the leading gap's
-/// certified lower bound. Sorting is by interval LOWER bound (then
+/// Cluster pairs by interval overlap and report the leading numerical gap
+/// lower bound. Sorting is by interval LOWER bound (then
 /// upper, then value — deterministic total order), and merging
 /// extends BOTH hull endpoints, so transitively bridging intervals
 /// (e.g. `[0,0]`, `[1,1]`, `[-1,5]`) collapse into one cluster
 /// instead of reporting a false gap. Non-finite intervals are
 /// refused by `tick` before they can reach a report; any that arrive
-/// here through hand-built pairs are excluded from clustering.
+/// here through malformed internal data are excluded from clustering.
 #[must_use]
 pub fn gap_report(pairs: &[CertifiedEigenvalue]) -> GapReport {
     let mut sorted: Vec<&CertifiedEigenvalue> = pairs
         .iter()
-        .filter(|p| p.interval.0.is_finite() && p.interval.1.is_finite())
+        .filter(|p| {
+            p.interval.0.is_finite() && p.interval.1.is_finite() && p.interval.0 <= p.interval.1
+        })
         .collect();
     sorted.sort_by(|a, b| {
         a.interval
@@ -536,7 +717,16 @@ pub fn gap_report(pairs: &[CertifiedEigenvalue]) -> GapReport {
         }
     }
     let leading_gap_lower_bound = if clusters.len() >= 2 {
-        (clusters[1].hull.0 - clusters[0].hull.1).max(0.0)
+        let raw_gap = clusters[1].hull.0 - clusters[0].hull.1;
+        if raw_gap.is_finite() {
+            raw_gap.max(0.0)
+        } else {
+            // Both hull endpoints are finite and ordered, so positive
+            // overflow means the real gap exceeds f64::MAX. Clamp to the
+            // largest finite conservative lower bound rather than emitting an
+            // infinite numerical artifact.
+            f64::MAX
+        }
     } else {
         0.0
     };
