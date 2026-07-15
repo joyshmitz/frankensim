@@ -479,6 +479,11 @@ pub fn betti(field: &VoxelField, level: f64) -> (u32, u32, u32) {
 pub struct Bar {
     /// Birth value (component appears).
     pub birth: f64,
+    /// Voxel whose activation created this specific component.
+    ///
+    /// This representative is semantic: equal-valued disconnected components
+    /// have distinct birth voxels even when their scalar bar endpoints match.
+    pub birth_index: usize,
     /// Death value (`f64::INFINITY` for essential components).
     pub death: f64,
 }
@@ -507,12 +512,14 @@ pub fn persistence0(field: &VoxelField) -> Vec<Bar> {
     let [nx, ny, nz] = field.dims;
     let mut uf = UnionFind::new(n);
     let mut birth: Vec<f64> = vec![f64::NAN; n]; // birth of the ROOT's component
+    let mut birth_index: Vec<u32> = vec![0; n]; // creating voxel of the ROOT's component
     let mut active = vec![false; n];
     let mut bars = Vec::new();
     for &i in &order {
         let v = field.values[i as usize];
         active[i as usize] = true;
         birth[i as usize] = v;
+        birth_index[i as usize] = i;
         let x = i % nx;
         let y = (i / nx) % ny;
         let z = i / (nx * ny);
@@ -535,16 +542,22 @@ pub fn persistence0(field: &VoxelField) -> Vec<Bar> {
             }
             // Elder rule: the younger birth dies now.
             let (bi, bn) = (birth[ri as usize], birth[rn as usize]);
-            let (survivor_birth, dying_birth) = if bi <= bn { (bi, bn) } else { (bn, bi) };
+            let (survivor_birth, survivor_index, dying_birth, dying_index) = if bi <= bn {
+                (bi, birth_index[ri as usize], bn, birth_index[rn as usize])
+            } else {
+                (bn, birth_index[rn as usize], bi, birth_index[ri as usize])
+            };
             if v > dying_birth {
                 bars.push(Bar {
                     birth: dying_birth,
+                    birth_index: dying_index as usize,
                     death: v,
                 });
             }
             uf.union(ri, rn);
             let root = uf.find(ri);
             birth[root as usize] = survivor_birth;
+            birth_index[root as usize] = survivor_index;
         }
     }
     // Essential components.
@@ -552,6 +565,7 @@ pub fn persistence0(field: &VoxelField) -> Vec<Bar> {
         if uf.find(i) == i && active[i as usize] {
             bars.push(Bar {
                 birth: birth[i as usize],
+                birth_index: birth_index[i as usize] as usize,
                 death: f64::INFINITY,
             });
         }
@@ -561,6 +575,7 @@ pub fn persistence0(field: &VoxelField) -> Vec<Bar> {
             .partial_cmp(&b.birth)
             .expect("finite births")
             .then(a.death.partial_cmp(&b.death).expect("ordered"))
+            .then(a.birth_index.cmp(&b.birth_index))
     });
     bars
 }

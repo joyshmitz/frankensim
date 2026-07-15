@@ -291,24 +291,18 @@ pub fn evaluate(field: &VoxelField, spec: &TopoSpec) -> TopoPenalty {
 }
 
 /// The voxels of the sublevel component a bar was born from: flood
-/// from the minimum-value voxel among those below the bar's death,
+/// from that bar's retained birth voxel among those below the bar's death,
 /// restricted to the occupied phase at `level` — the carve-attribution
-/// set for an excess component.
+/// set for an excess component. Retaining the representative is essential:
+/// scalar `(birth, death)` endpoints cannot distinguish disconnected
+/// equal-minimum components.
 fn component_voxels(field: &VoxelField, level: f64, bar: &Bar) -> Vec<usize> {
     let [nx, ny, nz] = field.dims;
     let n = field.values.len();
-    // Seed: the voxel whose value equals the birth (deterministic:
-    // first index on ties).
-    let mut seed = None;
-    for (i, &v) in field.values.iter().enumerate() {
-        if (v - bar.birth).abs() < 1e-12 {
-            seed = Some(i);
-            break;
-        }
-    }
-    let Some(seed) = seed else {
+    let seed = bar.birth_index;
+    if seed >= n || field.values[seed].to_bits() != bar.birth.to_bits() {
         return Vec::new();
-    };
+    }
     let cap = bar.death.min(level);
     let mut seen = vec![false; n];
     let mut stack = vec![seed];

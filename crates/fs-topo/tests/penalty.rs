@@ -115,6 +115,49 @@ fn tp_001_g0_zero_iff_target_matched() {
 }
 
 #[test]
+fn tp_001b_equal_minimum_islands_keep_distinct_birth_representatives() {
+    let mut field = bracket(16);
+    carve(&mut field, [0, 0, 0], [1, 1, 1], -0.9);
+    carve(&mut field, [15, 15, 15], [16, 16, 16], -0.9);
+
+    let report = evaluate(&field, &spec());
+    assert_eq!(report.betti, (3, 0, 0));
+    let excess: Vec<_> = report
+        .attributions
+        .iter()
+        .filter(|attribution| attribution.channel == "excess-component")
+        .collect();
+    assert_eq!(excess.len(), 2, "both excess islands need attribution");
+
+    let mut attributed: Vec<_> = excess
+        .iter()
+        .flat_map(|attribution| attribution.voxels.iter().copied())
+        .collect();
+    attributed.sort_unstable();
+    attributed.dedup();
+    assert_eq!(
+        attributed,
+        vec![0, field.values.len() - 1],
+        "equal scalar births must not collapse two components onto the first voxel"
+    );
+
+    let mut birth_representatives: Vec<_> = report
+        .bars0
+        .iter()
+        .filter(|bar| bar.birth.to_bits() == (-0.9_f64).to_bits())
+        .map(|bar| bar.birth_index)
+        .collect();
+    birth_representatives.sort_unstable();
+    assert_eq!(birth_representatives, vec![0, field.values.len() - 1]);
+
+    let touched = apply_attribution_step(&mut field, &report, 1.0);
+    assert_eq!(touched, 2);
+    let healed = evaluate(&field, &spec());
+    assert_eq!(healed.betti, (1, 0, 0));
+    assert_eq!(healed.total, 0.0);
+}
+
+#[test]
 fn tp_002_attribution_perturbation_directions() {
     // Moving density WHERE the attribution says reduces the penalty;
     // moving it elsewhere does not.
