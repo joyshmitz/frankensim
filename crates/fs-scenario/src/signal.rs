@@ -6,6 +6,7 @@ use crate::ScenarioError;
 use crate::scenario::Violation;
 use fs_cheb::Cheb1;
 use fs_qty::{Dims, QtyAny};
+use std::fmt;
 
 /// Smooth histories have no finite breakpoint set. Net-flux admission uses
 /// this many equal panels (endpoints included) on each function's declared
@@ -57,9 +58,9 @@ impl ChebProfile {
     /// `ChebProfile` is a public authority-boundary type. Keeping the checks
     /// here makes downstream `Result` APIs fail closed even if another
     /// constructor is added later.
-    pub(crate) fn check_with_checkpoint<E>(
+    pub(crate) fn check_with_checkpoint<E, C: fmt::Display + ?Sized>(
         &self,
-        context: &str,
+        context: &C,
         out: &mut Vec<Violation>,
         checkpoint: &mut impl FnMut(&'static str) -> Result<(), E>,
     ) -> Result<(), E> {
@@ -328,9 +329,9 @@ impl TimeSignal {
         }
     }
 
-    pub(crate) fn check_with_checkpoint<E>(
+    pub(crate) fn check_with_checkpoint<E, C: fmt::Display + ?Sized>(
         &self,
-        context: &str,
+        context: &C,
         out: &mut Vec<Violation>,
         checkpoint: &mut impl FnMut(&'static str) -> Result<(), E>,
     ) -> Result<(), E> {

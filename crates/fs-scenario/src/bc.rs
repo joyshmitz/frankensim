@@ -9,6 +9,7 @@ use crate::ScenarioError;
 use crate::scenario::Violation;
 use crate::signal::{ChebProfile, TimeSignal};
 use fs_qty::{Dims, QtyAny};
+use std::fmt;
 
 /// Which physics a boundary condition speaks to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +92,23 @@ pub struct BoundaryCondition {
     pub frame: u32,
 }
 
+#[derive(Clone, Copy)]
+struct BoundaryDiagnosticContext<'a> {
+    region: &'a str,
+    physics: Physics,
+    kind: BcKind,
+}
+
+impl fmt::Display for BoundaryDiagnosticContext<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "bc on {:?} ({:?}/{:?})",
+            self.region, self.physics, self.kind
+        )
+    }
+}
+
 /// What a (physics, kind) pair demands of its value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Expectation {
@@ -149,10 +167,11 @@ impl BoundaryCondition {
         out: &mut Vec<Violation>,
         checkpoint: &mut impl FnMut(&'static str) -> Result<(), E>,
     ) -> Result<(), E> {
-        let ctx = format!(
-            "bc on {:?} ({:?}/{:?})",
-            self.region, self.physics, self.kind
-        );
+        let ctx = BoundaryDiagnosticContext {
+            region: self.region.as_str(),
+            physics: self.physics,
+            kind: self.kind,
+        };
         if self.region.is_empty() {
             out.push(Violation {
                 code: "bc-region-empty",
@@ -374,5 +393,38 @@ impl BoundaryCondition {
                 what: format!("mass-flow inlet on {:?} has no declared value", self.region),
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod validation_internal_tests {
+    use super::{BcKind, BoundaryCondition, BoundaryDiagnosticContext, Compat, Physics, dims};
+    use crate::bc::BcValue;
+    use fs_qty::QtyAny;
+
+    #[test]
+    fn diagnostic_context_is_borrowed_and_output_stable() {
+        let region = String::from("inlet");
+        let context = BoundaryDiagnosticContext {
+            region: region.as_str(),
+            physics: Physics::IncompressibleFlow,
+            kind: BcKind::MassFlowInlet,
+        };
+        assert_eq!(
+            format!("{context}"),
+            "bc on \"inlet\" (IncompressibleFlow/MassFlowInlet)"
+        );
+
+        let condition = BoundaryCondition {
+            region,
+            physics: Physics::IncompressibleFlow,
+            kind: BcKind::MassFlowInlet,
+            value: Some(BcValue::Uniform(QtyAny::new(1.0, dims::MASS_FLOW))),
+            compatibility: Some(Compat::Incompressible),
+            frame: 0,
+        };
+        let mut findings = Vec::new();
+        condition.check(&mut findings);
+        assert!(findings.is_empty());
     }
 }

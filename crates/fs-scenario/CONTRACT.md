@@ -179,6 +179,9 @@ flagships.
     cannot raise. Numeric frame/parent and BC-frame index lookups are charged
     separately. Exact requested limits admit and one-unit-short limits refuse
     for every budget field.
+    Valid boundary-condition validation carries diagnostic context as a
+    borrowed formatter, so the green path does not allocate or copy region
+    names merely in case a finding is needed.
 
 ## Error model
 
@@ -220,9 +223,13 @@ sorts in place with row index as the total-order tiebreaker using a deterministi
 checkpointed heap sort. The preflight work total counts each index population
 item and a conservative heap comparison/swap envelope, including
 per-combination term entries and every net-flux checkpoint set. The explicit
-per-component cap bounds one opaque string comparison to 4 KiB (8 KiB across
-both components of an unordered contact key), forming the maximum comparison
-tile between checkpoints. The explicit
+per-component cap bounds each opaque string comparison to 4 KiB (8 KiB across
+both components of an unordered contact key). One heap-sift checkpoint covers
+at most two such comparisons; an opaque ordered lookup covers at most
+`usize::BITS + 1` comparisons including final equality. Between surrounding
+record checkpoints the widest path is one two-part contact lookup plus one
+direct component comparison, conservatively 524 KiB on a 64-bit target; two
+single-component combination-term lookups fit below the same envelope. The explicit
 `Cx` lane polls
 before preflight, at every top-level and nested record visited while constructing
 the semantic plan, after planning, after fixed phases, at every frame-index row,
