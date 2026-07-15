@@ -21,8 +21,12 @@
 //!   low-confidence.
 
 use crate::sheaf_repair::{
-    SheafRepairError, SheafSkeleton, SheafSkeletonError, apply_gauge, hodge_decompose,
+    AdmittedSheafSkeleton, RepairAccountant, RepairAdmission, SheafRepairBudget, SheafRepairError,
+    SheafRepairUsage, SheafSkeleton, SheafSkeletonError, admit_repair_budget, apply_gauge,
+    hodge_decompose, hodge_decompose_accounted, planned_cost, validate_bounded_cochain,
+    zeroed_output_bounded,
 };
+use fs_exec::Cx;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// One branch's edits: a mismatch cochain plus non-geometric keyed
@@ -153,6 +157,180 @@ pub enum MergeOutcome {
         confidence: Confidence,
     },
 }
+
+/// Complete resource envelope for one admitted numerical merge.
+///
+/// `repair` governs the shared Hodge operator schedule, scalar work, ambient
+/// cost, and cancellation polling. The remaining fields bound the dense
+/// spectral proxy and every retained merge payload before publication.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SheafMergeBudget {
+    /// Hodge sweeps, operator applications, total work, and poll cadence.
+    pub repair: SheafRepairBudget,
+    /// Maximum deterministic Jacobi sweeps for the spectral-gap proxy.
+    pub spectral_sweeps: usize,
+    /// Maximum conservative simultaneously live scalar-slot envelope for the
+    /// whole merge, including the dense flat Laplacian.
+    pub max_scalar_slots: usize,
+    /// Maximum requested logical bytes across the published outcome's vector
+    /// and provenance payloads. Allocator-internal spare capacity is outside
+    /// this portable counter.
+    pub max_output_bytes: usize,
+    /// Maximum localized interface cells retained in a candidate conflict.
+    pub max_conflict_cells: usize,
+    /// Maximum UTF-8 bytes retained across both caller-supplied parent labels.
+    pub max_provenance_bytes: usize,
+}
+
+/// Enforced and measured consumption for one bounded merge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SheafMergeUsage {
+    /// Shared Hodge/operator/work/ambient accounting. Its admitted scalar and
+    /// work fields cover the whole merge rather than only decomposition.
+    pub execution: SheafRepairUsage,
+    /// Jacobi sweeps completed before the spectral proxy converged or hit its
+    /// deterministic sweep ceiling.
+    pub spectral_sweeps_completed: usize,
+    /// Conservative logical output-byte envelope admitted before work began.
+    pub admitted_output_bytes: usize,
+    /// Requested logical payload bytes charged for the published outcome;
+    /// allocator-internal spare capacity is not measured.
+    pub reserved_output_bytes: usize,
+    /// Localized conflict cells retained in the published outcome.
+    pub conflict_cells: usize,
+    /// Parent-label UTF-8 bytes retained in the published outcome.
+    pub provenance_bytes: usize,
+}
+
+/// A merge verdict published only after all bounded work and the final
+/// cancellation checkpoint complete.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoundedMergeOutcome {
+    /// The legacy-compatible numerical verdict payload.
+    pub outcome: MergeOutcome,
+    /// Exact caller-admitted envelope.
+    pub budget: SheafMergeBudget,
+    /// Enforced and measured resource consumption.
+    pub usage: SheafMergeUsage,
+}
+
+/// Structured refusal from the admitted, cancellation-aware merge path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SheafMergeError {
+    /// Shared incidence, Hodge, work, ambient, or cancellation refusal.
+    Repair(SheafRepairError),
+    /// A merge-specific budget field that must be positive was zero.
+    InvalidBudget {
+        /// Stable field name.
+        field: &'static str,
+    },
+    /// One numerical threshold violated its finite/range contract.
+    InvalidThreshold {
+        /// Stable field name.
+        field: &'static str,
+    },
+    /// Weight cardinality differs from retained edge cardinality.
+    WeightLength {
+        /// Required number of weights.
+        expected: usize,
+        /// Supplied number of weights.
+        actual: usize,
+    },
+    /// One edge weight is non-finite or negative.
+    InvalidWeight {
+        /// First invalid caller-order weight.
+        index: usize,
+    },
+    /// The v1 entry point cannot adjudicate keyed assignments without a base
+    /// assignment map.
+    AssignmentsUnsupported,
+    /// The conservative whole-merge scalar envelope exceeds its cap.
+    MemoryBudgetExceeded {
+        /// Required scalar slots.
+        required: u128,
+        /// Caller-admitted ceiling.
+        cap: usize,
+    },
+    /// A retained merge payload exceeds its cardinality or byte cap.
+    OutputBudgetExceeded {
+        /// Stable resource name.
+        resource: &'static str,
+        /// Required cardinality or bytes.
+        required: u128,
+        /// Caller-admitted ceiling.
+        cap: usize,
+    },
+    /// Checked merge-admission arithmetic exceeded `u128` or `usize`.
+    BudgetArithmeticOverflow {
+        /// Stable preflight stage.
+        stage: &'static str,
+    },
+    /// Finite merge or spectral arithmetic overflowed.
+    NumericalOverflow {
+        /// Stable arithmetic stage.
+        stage: &'static str,
+    },
+}
+
+impl From<SheafRepairError> for SheafMergeError {
+    fn from(source: SheafRepairError) -> Self {
+        Self::Repair(source)
+    }
+}
+
+impl From<SheafSkeletonError> for SheafMergeError {
+    fn from(source: SheafSkeletonError) -> Self {
+        Self::Repair(source.into())
+    }
+}
+
+impl core::fmt::Display for SheafMergeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Repair(source) => write!(f, "{source}"),
+            Self::InvalidBudget { field } => {
+                write!(f, "sheaf merge budget field {field} must be positive")
+            }
+            Self::InvalidThreshold { field } => {
+                write!(f, "sheaf merge threshold {field} is invalid")
+            }
+            Self::WeightLength { expected, actual } => write!(
+                f,
+                "sheaf merge requires {expected} edge weights, got {actual}"
+            ),
+            Self::InvalidWeight { index } => {
+                write!(
+                    f,
+                    "sheaf merge edge weight {index} must be finite and non-negative"
+                )
+            }
+            Self::AssignmentsUnsupported => write!(
+                f,
+                "sheaf merge requires a base assignment map for keyed payloads"
+            ),
+            Self::MemoryBudgetExceeded { required, cap } => write!(
+                f,
+                "sheaf merge scalar envelope requires {required} slots above cap {cap}"
+            ),
+            Self::OutputBudgetExceeded {
+                resource,
+                required,
+                cap,
+            } => write!(
+                f,
+                "sheaf merge output {resource} requires {required} above cap {cap}"
+            ),
+            Self::BudgetArithmeticOverflow { stage } => {
+                write!(f, "sheaf merge budget arithmetic overflowed during {stage}")
+            }
+            Self::NumericalOverflow { stage } => {
+                write!(f, "sheaf merge arithmetic overflowed during {stage}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SheafMergeError {}
 
 /// Invalid or refused input to the seeded candidate-remainder diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -287,6 +465,314 @@ pub fn spectral_gap(skeleton: &SheafSkeleton, weights: Option<&[f64]>) -> f64 {
     } else {
         lambda_2
     }
+}
+
+fn merge_add(left: u128, right: u128, stage: &'static str) -> Result<u128, SheafMergeError> {
+    left.checked_add(right)
+        .ok_or(SheafMergeError::BudgetArithmeticOverflow { stage })
+}
+
+fn merge_mul(left: u128, right: u128, stage: &'static str) -> Result<u128, SheafMergeError> {
+    left.checked_mul(right)
+        .ok_or(SheafMergeError::BudgetArithmeticOverflow { stage })
+}
+
+#[derive(Clone, Copy)]
+struct MergeAdmission {
+    execution: RepairAdmission,
+    output_bytes: usize,
+}
+
+fn checked_merge_scalar_envelope(
+    skeleton: &AdmittedSheafSkeleton,
+    hodge_slots: usize,
+) -> Result<u128, SheafMergeError> {
+    let patches = skeleton.n_patches() as u128;
+    let edges = skeleton.edges().len() as u128;
+    let spectral = merge_mul(patches, patches, "spectral-scalar-envelope")?;
+    let numerical = merge_add(
+        hodge_slots as u128,
+        merge_mul(edges, 2, "merge-live-edge-scalars")?,
+        "merge-numerical-scalar-envelope",
+    )?;
+    Ok(spectral.max(numerical).max(edges))
+}
+
+fn checked_merge_output_envelope(
+    skeleton: &AdmittedSheafSkeleton,
+    budget: SheafMergeBudget,
+) -> Result<u128, SheafMergeError> {
+    let scalar_bytes = core::mem::size_of::<f64>() as u128;
+    let edges = skeleton.edges().len() as u128;
+    let patches = skeleton.n_patches() as u128;
+    let trivial = merge_mul(edges, scalar_bytes, "trivial-output-bytes")?;
+    let resolved = merge_mul(
+        merge_add(edges, patches, "resolved-output-scalars")?,
+        scalar_bytes,
+        "resolved-output-bytes",
+    )?;
+    let conflict_cells = merge_mul(
+        budget.max_conflict_cells as u128,
+        core::mem::size_of::<((usize, usize), f64)>() as u128,
+        "conflict-cell-output-bytes",
+    )?;
+    let conflict = merge_add(
+        merge_add(
+            conflict_cells,
+            budget.max_provenance_bytes as u128,
+            "conflict-provenance-output-bytes",
+        )?,
+        core::mem::size_of::<CandidateRemainderConflict>() as u128,
+        "conflict-container-output-bytes",
+    )?;
+    Ok(trivial.max(resolved).max(conflict))
+}
+
+fn checked_merge_work_envelope(
+    skeleton: &AdmittedSheafSkeleton,
+    hodge_work: usize,
+    budget: SheafMergeBudget,
+    has_weights: bool,
+) -> Result<u128, SheafMergeError> {
+    let patches = skeleton.n_patches() as u128;
+    let edges = skeleton.edges().len() as u128;
+    let weight_pass = if has_weights { 1 } else { 0 };
+    let validation = merge_mul(edges, 3 + weight_pass, "merge-validation-work")?;
+    let equality = merge_mul(edges, 3, "merge-equality-work")?;
+    let matrix = merge_mul(patches, patches, "spectral-matrix-work")?;
+    let pairs = merge_mul(patches, patches.saturating_sub(1), "spectral-pair-work")? / 2;
+    let per_pair = merge_add(
+        2,
+        merge_mul(patches, 2, "spectral-rotation-span")?,
+        "spectral-pair-span",
+    )?;
+    let spectral_sweeps = merge_mul(
+        merge_mul(pairs, per_pair, "spectral-sweep-work")?,
+        budget.spectral_sweeps as u128,
+        "spectral-total-work",
+    )?;
+    let spectral = merge_add(
+        merge_add(matrix, edges, "spectral-assembly-work")?,
+        merge_add(spectral_sweeps, patches, "spectral-selection-work")?,
+        "spectral-work",
+    )?;
+    let union_and_gauge = merge_mul(edges, 4, "merge-union-gauge-work")?;
+    let residual_norms = merge_mul(edges, 3, "merge-residual-norm-work")?;
+    let conflict_scan = edges;
+    let retained_cells = (budget.max_conflict_cells.min(skeleton.edges().len())) as u128;
+    let conflict_sort = merge_mul(
+        retained_cells,
+        retained_cells.saturating_sub(1),
+        "merge-conflict-sort-work",
+    )? / 2;
+    let conflict_output = merge_add(
+        merge_add(conflict_scan, edges, "merge-conflict-retain-work")?,
+        merge_add(
+            conflict_sort,
+            budget.max_provenance_bytes as u128,
+            "merge-conflict-provenance-work",
+        )?,
+        "merge-conflict-output-work",
+    )?;
+    let nontrivial = merge_add(
+        merge_add(
+            merge_add(spectral, union_and_gauge, "merge-numerical-work")?,
+            hodge_work as u128,
+            "merge-hodge-work",
+        )?,
+        merge_add(residual_norms, conflict_output, "merge-post-hodge-work")?,
+        "merge-nontrivial-work",
+    )?;
+    let prefix = merge_add(validation, equality, "merge-prefix-work")?;
+    let trivial_copy = edges;
+    merge_add(prefix, nontrivial.max(trivial_copy), "merge-work-envelope")
+}
+
+fn admit_merge_budget(
+    skeleton: &AdmittedSheafSkeleton,
+    budget: SheafMergeBudget,
+    has_weights: bool,
+) -> Result<MergeAdmission, SheafMergeError> {
+    if budget.spectral_sweeps == 0 {
+        return Err(SheafMergeError::InvalidBudget {
+            field: "spectral_sweeps",
+        });
+    }
+    let hodge = admit_repair_budget(skeleton, budget.repair)?;
+    let scalar_slots = checked_merge_scalar_envelope(skeleton, hodge.scalar_slots)?;
+    if scalar_slots > budget.max_scalar_slots as u128 {
+        return Err(SheafMergeError::MemoryBudgetExceeded {
+            required: scalar_slots,
+            cap: budget.max_scalar_slots,
+        });
+    }
+    let work_items = checked_merge_work_envelope(skeleton, hodge.work_items, budget, has_weights)?;
+    if work_items > budget.repair.max_work_items as u128 {
+        return Err(SheafRepairError::WorkItemBudgetExceeded {
+            stage: "merge-work-preflight",
+            required: work_items,
+            cap: budget.repair.max_work_items,
+        }
+        .into());
+    }
+    let output_bytes = checked_merge_output_envelope(skeleton, budget)?;
+    if output_bytes > budget.max_output_bytes as u128 {
+        return Err(SheafMergeError::OutputBudgetExceeded {
+            resource: "output-bytes",
+            required: output_bytes,
+            cap: budget.max_output_bytes,
+        });
+    }
+    Ok(MergeAdmission {
+        execution: RepairAdmission {
+            scalar_slots: usize::try_from(scalar_slots).map_err(|_| {
+                SheafMergeError::BudgetArithmeticOverflow {
+                    stage: "merge-scalar-publication",
+                }
+            })?,
+            operator_evaluations: hodge.operator_evaluations,
+            work_items: usize::try_from(work_items).map_err(|_| {
+                SheafMergeError::BudgetArithmeticOverflow {
+                    stage: "merge-work-publication",
+                }
+            })?,
+        },
+        output_bytes: usize::try_from(output_bytes).map_err(|_| {
+            SheafMergeError::BudgetArithmeticOverflow {
+                stage: "merge-output-publication",
+            }
+        })?,
+    })
+}
+
+#[allow(clippy::too_many_lines)] // mirrors the legacy cyclic-Jacobi loop under one accountant
+fn bounded_spectral_gap(
+    skeleton: &AdmittedSheafSkeleton,
+    weights: Option<&[f64]>,
+    sweeps: usize,
+    accountant: &mut RepairAccountant<'_, '_>,
+) -> Result<(f64, usize), SheafMergeError> {
+    let n = skeleton.n_patches();
+    let matrix_len = n
+        .checked_mul(n)
+        .ok_or(SheafMergeError::BudgetArithmeticOverflow {
+            stage: "spectral-matrix-length",
+        })?;
+    let mut lap = zeroed_output_bounded(matrix_len, "spectral-matrix-allocation", accountant)?;
+    for (edge, &(u, v)) in skeleton.edges().iter().enumerate() {
+        accountant.consume_item("spectral-assembly")?;
+        let weight = weights.map_or(1.0, |values| values[edge]);
+        let uu = u * n + u;
+        let vv = v * n + v;
+        let uv = u * n + v;
+        let vu = v * n + u;
+        lap[uu] += weight;
+        lap[vv] += weight;
+        lap[uv] -= weight;
+        lap[vu] -= weight;
+        if [lap[uu], lap[vv], lap[uv], lap[vu]]
+            .into_iter()
+            .any(|entry| !entry.is_finite())
+        {
+            return Err(SheafMergeError::NumericalOverflow {
+                stage: "spectral-assembly",
+            });
+        }
+    }
+
+    let mut completed_sweeps = 0usize;
+    for _ in 0..sweeps {
+        let mut off = 0.0f64;
+        for p in 0..n {
+            for q in (p + 1)..n {
+                accountant.consume_item("spectral-off-diagonal")?;
+                let value = lap[p * n + q];
+                // Match legacy Jacobi: a finite entry may square to +∞. The
+                // sum is only a convergence sentinel, so +∞ means "continue
+                // rotating" and is not itself a failed numerical result.
+                off += value * value;
+            }
+        }
+        completed_sweeps =
+            completed_sweeps
+                .checked_add(1)
+                .ok_or(SheafMergeError::BudgetArithmeticOverflow {
+                    stage: "spectral-sweeps-completed",
+                })?;
+        if off < 1e-24 {
+            accountant.checkpoint("spectral-sweep")?;
+            break;
+        }
+        for p in 0..n {
+            for q in (p + 1)..n {
+                accountant.consume_item("spectral-rotation")?;
+                let pq = p * n + q;
+                if lap[pq].abs() < 1e-300 {
+                    continue;
+                }
+                let theta = (lap[q * n + q] - lap[p * n + p]) / (2.0 * lap[pq]);
+                let t = theta.signum() / (theta.abs() + (theta * theta + 1.0).sqrt());
+                let c = 1.0 / (t * t + 1.0).sqrt();
+                let s = t * c;
+                // Preserve the legacy finite-result semantics: `theta²` may
+                // benignly overflow to +∞, yielding t=0, c=1, s=0. Reject
+                // only when the applied rotation itself is non-finite.
+                if [t, c, s].into_iter().any(|value| !value.is_finite()) {
+                    return Err(SheafMergeError::NumericalOverflow {
+                        stage: "spectral-rotation",
+                    });
+                }
+                for k in 0..n {
+                    accountant.consume_item("spectral-column-rotation")?;
+                    let kp = k * n + p;
+                    let kq = k * n + q;
+                    let (akp, akq) = (lap[kp], lap[kq]);
+                    lap[kp] = c * akp - s * akq;
+                    lap[kq] = s * akp + c * akq;
+                    if !(lap[kp].is_finite() && lap[kq].is_finite()) {
+                        return Err(SheafMergeError::NumericalOverflow {
+                            stage: "spectral-column-rotation",
+                        });
+                    }
+                }
+                for k in 0..n {
+                    accountant.consume_item("spectral-row-rotation")?;
+                    let pk = p * n + k;
+                    let qk = q * n + k;
+                    let (apk, aqk) = (lap[pk], lap[qk]);
+                    lap[pk] = c * apk - s * aqk;
+                    lap[qk] = s * apk + c * aqk;
+                    if !(lap[pk].is_finite() && lap[qk].is_finite()) {
+                        return Err(SheafMergeError::NumericalOverflow {
+                            stage: "spectral-row-rotation",
+                        });
+                    }
+                }
+            }
+        }
+        accountant.checkpoint("spectral-sweep")?;
+    }
+
+    let mut smallest = None::<f64>;
+    let mut second = None::<f64>;
+    for index in 0..n {
+        accountant.consume_item("spectral-eigenvalue-selection")?;
+        let value = lap[index * n + index];
+        if !value.is_finite() {
+            return Err(SheafMergeError::NumericalOverflow {
+                stage: "spectral-eigenvalue-selection",
+            });
+        }
+        if smallest.is_none_or(|first| value.total_cmp(&first).is_lt()) {
+            second = smallest;
+            smallest = Some(value);
+        } else if second.is_none_or(|current| value.total_cmp(&current).is_lt()) {
+            second = Some(value);
+        }
+    }
+    let lambda_2 = second.unwrap_or(0.0);
+    let gap = if lambda_2 <= 1e-9 { 0.0 } else { lambda_2 };
+    Ok((gap, completed_sweeps))
 }
 
 /// Detect pairwise keyed-assignment differences. Without a base assignment
@@ -524,6 +1010,461 @@ pub fn three_way_merge(
         fractions: split.fractions,
         confidence,
     }
+}
+
+fn retained_bytes<T>(len: usize, stage: &'static str) -> Result<usize, SheafMergeError> {
+    len.checked_mul(core::mem::size_of::<T>())
+        .ok_or(SheafMergeError::BudgetArithmeticOverflow { stage })
+}
+
+fn output_vec_with_capacity<T>(
+    len: usize,
+    stage: &'static str,
+    accountant: &mut RepairAccountant<'_, '_>,
+) -> Result<Vec<T>, SheafMergeError> {
+    let bytes = retained_bytes::<T>(len, stage)?;
+    accountant.reserve_plan_bytes(stage, bytes)?;
+    let mut output = Vec::new();
+    output
+        .try_reserve_exact(len)
+        .map_err(|_| SheafSkeletonError::ResourceExhausted { stage })?;
+    accountant.checkpoint(stage)?;
+    Ok(output)
+}
+
+fn retain_existing_output<T>(
+    len: usize,
+    stage: &'static str,
+    accountant: &mut RepairAccountant<'_, '_>,
+) -> Result<(), SheafMergeError> {
+    accountant.reserve_plan_bytes(stage, retained_bytes::<T>(len, stage)?)?;
+    Ok(())
+}
+
+fn accounted_same_bits(
+    left: &[f64],
+    right: &[f64],
+    accountant: &mut RepairAccountant<'_, '_>,
+) -> Result<bool, SheafMergeError> {
+    if left.len() != right.len() {
+        return Ok(false);
+    }
+    for (a, b) in left.iter().zip(right) {
+        accountant.consume_item("merge-equality")?;
+        if a.to_bits() != b.to_bits() {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn accounted_output_copy(
+    values: &[f64],
+    stage: &'static str,
+    accountant: &mut RepairAccountant<'_, '_>,
+) -> Result<Vec<f64>, SheafMergeError> {
+    let mut output = output_vec_with_capacity(values.len(), stage, accountant)?;
+    for value in values {
+        accountant.consume_item(stage)?;
+        output.push(*value);
+    }
+    Ok(output)
+}
+
+fn bounded_merge_norm_inf(
+    values: &[f64],
+    stage: &'static str,
+    accountant: &mut RepairAccountant<'_, '_>,
+) -> Result<f64, SheafMergeError> {
+    let mut largest = 0.0f64;
+    for value in values {
+        accountant.consume_item(stage)?;
+        if !value.is_finite() {
+            return Err(SheafMergeError::NumericalOverflow { stage });
+        }
+        largest = largest.max(value.abs());
+    }
+    Ok(largest)
+}
+
+fn bounded_merge_union(
+    base: &[f64],
+    x: &[f64],
+    y: &[f64],
+    accountant: &mut RepairAccountant<'_, '_>,
+) -> Result<Vec<f64>, SheafMergeError> {
+    let mut union = zeroed_output_bounded(x.len(), "merge-union-allocation", accountant)?;
+    for (((value, x_value), y_value), base_value) in union.iter_mut().zip(x).zip(y).zip(base) {
+        accountant.consume_item("merge-union")?;
+        *value = x_value + y_value - base_value;
+        if !value.is_finite() {
+            return Err(SheafMergeError::NumericalOverflow {
+                stage: "merge-union",
+            });
+        }
+    }
+    Ok(union)
+}
+
+fn bounded_merge_apply_gauge(
+    skeleton: &AdmittedSheafSkeleton,
+    mismatch: &[f64],
+    gauge: &[f64],
+    accountant: &mut RepairAccountant<'_, '_>,
+) -> Result<Vec<f64>, SheafMergeError> {
+    if gauge.len() != skeleton.n_patches() {
+        return Err(SheafSkeletonError::CochainLength {
+            role: "gauge",
+            expected: skeleton.n_patches(),
+            actual: gauge.len(),
+        }
+        .into());
+    }
+    let mut merged =
+        zeroed_output_bounded(skeleton.edges().len(), "merge-gauge-allocation", accountant)?;
+    for (edge, &(u, v)) in skeleton.edges().iter().enumerate() {
+        accountant.consume_item("merge-gauge-application")?;
+        let correction = gauge[v] - gauge[u];
+        merged[edge] = mismatch[edge] - correction;
+        if !(correction.is_finite() && merged[edge].is_finite()) {
+            return Err(SheafMergeError::NumericalOverflow {
+                stage: "merge-gauge-application",
+            });
+        }
+    }
+    Ok(merged)
+}
+
+fn accounted_parent(
+    value: &str,
+    stage: &'static str,
+    accountant: &mut RepairAccountant<'_, '_>,
+) -> Result<String, SheafMergeError> {
+    accountant.reserve_plan_bytes(stage, value.len())?;
+    let mut output = String::new();
+    output
+        .try_reserve_exact(value.len())
+        .map_err(|_| SheafSkeletonError::ResourceExhausted { stage })?;
+    accountant.checkpoint(stage)?;
+    for character in value.chars() {
+        for _ in 0..character.len_utf8() {
+            accountant.consume_item(stage)?;
+        }
+        output.push(character);
+    }
+    accountant.checkpoint(stage)?;
+    Ok(output)
+}
+
+fn publish_bounded_merge(
+    outcome: MergeOutcome,
+    budget: SheafMergeBudget,
+    admission: MergeAdmission,
+    spectral_sweeps_completed: usize,
+    conflict_cells: usize,
+    provenance_bytes: usize,
+    accountant: &mut RepairAccountant<'_, '_>,
+) -> Result<BoundedMergeOutcome, SheafMergeError> {
+    accountant.checkpoint("merge-publication")?;
+    let usage = SheafMergeUsage {
+        execution: accountant.usage(
+            admission.execution.scalar_slots,
+            admission.execution.work_items,
+        ),
+        spectral_sweeps_completed,
+        admitted_output_bytes: admission.output_bytes,
+        reserved_output_bytes: accountant.reserved_plan_bytes(),
+        conflict_cells,
+        provenance_bytes,
+    };
+    Ok(BoundedMergeOutcome {
+        outcome,
+        budget,
+        usage,
+    })
+}
+
+/// Run a three-way numerical merge over sealed incidence under one explicit
+/// spectral, Hodge, work, memory, output, deadline, and cancellation envelope.
+///
+/// The returned [`MergeOutcome`] retains the legacy heuristic/no-claim
+/// semantics. A refusal returns no partial verdict or retained output.
+///
+/// # Errors
+/// Returns [`SheafMergeError`] for invalid thresholds, cochains, weights, or
+/// unsupported assignments; insufficient work, memory, output, or ambient
+/// budget; cancellation; allocation refusal; or finite arithmetic overflow.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+pub fn three_way_merge_bounded(
+    skeleton: &AdmittedSheafSkeleton,
+    base: &[f64],
+    x: &BranchState,
+    y: &BranchState,
+    weights: Option<&[f64]>,
+    tol: f64,
+    gap_threshold: f64,
+    budget: SheafMergeBudget,
+    cx: &Cx<'_>,
+) -> Result<BoundedMergeOutcome, SheafMergeError> {
+    let edge_count = skeleton.edges().len();
+    for (role, values) in [
+        ("base", base),
+        ("x-mismatch", x.mismatch.as_slice()),
+        ("y-mismatch", y.mismatch.as_slice()),
+    ] {
+        if values.len() != edge_count {
+            return Err(SheafSkeletonError::CochainLength {
+                role,
+                expected: edge_count,
+                actual: values.len(),
+            }
+            .into());
+        }
+    }
+    if !tol.is_finite() || tol < 0.0 {
+        return Err(SheafMergeError::InvalidThreshold { field: "tol" });
+    }
+    if !gap_threshold.is_finite() || gap_threshold <= 0.0 {
+        return Err(SheafMergeError::InvalidThreshold {
+            field: "gap_threshold",
+        });
+    }
+    let admission = admit_merge_budget(skeleton, budget, weights.is_some())?;
+    let mut accountant = RepairAccountant::new(
+        cx,
+        budget.repair,
+        planned_cost(admission.execution)?,
+        budget.max_output_bytes,
+        0,
+    )?;
+    accountant.checkpoint("merge-admission")?;
+    validate_bounded_cochain(
+        base,
+        edge_count,
+        "base",
+        "merge-base-validation",
+        &mut accountant,
+    )?;
+    validate_bounded_cochain(
+        &x.mismatch,
+        edge_count,
+        "x-mismatch",
+        "merge-x-validation",
+        &mut accountant,
+    )?;
+    validate_bounded_cochain(
+        &y.mismatch,
+        edge_count,
+        "y-mismatch",
+        "merge-y-validation",
+        &mut accountant,
+    )?;
+    if let Some(values) = weights {
+        if values.len() != edge_count {
+            return Err(SheafMergeError::WeightLength {
+                expected: edge_count,
+                actual: values.len(),
+            });
+        }
+        for (index, weight) in values.iter().enumerate() {
+            accountant.consume_item("merge-weight-validation")?;
+            if !weight.is_finite() || *weight < 0.0 {
+                return Err(SheafMergeError::InvalidWeight { index });
+            }
+        }
+    }
+    if !x.assignments.is_empty() || !y.assignments.is_empty() {
+        return Err(SheafMergeError::AssignmentsUnsupported);
+    }
+
+    if accounted_same_bits(&x.mismatch, &y.mismatch, &mut accountant)? {
+        let merged = accounted_output_copy(
+            &x.mismatch,
+            "merge-trivial-identical-output",
+            &mut accountant,
+        )?;
+        return publish_bounded_merge(
+            MergeOutcome::Trivial {
+                reason: "branches identical",
+                merged,
+            },
+            budget,
+            admission,
+            0,
+            0,
+            0,
+            &mut accountant,
+        );
+    }
+    if accounted_same_bits(&x.mismatch, base, &mut accountant)? {
+        let merged = accounted_output_copy(&y.mismatch, "merge-trivial-x-output", &mut accountant)?;
+        return publish_bounded_merge(
+            MergeOutcome::Trivial {
+                reason: "X unchanged from base",
+                merged,
+            },
+            budget,
+            admission,
+            0,
+            0,
+            0,
+            &mut accountant,
+        );
+    }
+    if accounted_same_bits(&y.mismatch, base, &mut accountant)? {
+        let merged = accounted_output_copy(&x.mismatch, "merge-trivial-y-output", &mut accountant)?;
+        return publish_bounded_merge(
+            MergeOutcome::Trivial {
+                reason: "Y unchanged from base",
+                merged,
+            },
+            budget,
+            admission,
+            0,
+            0,
+            0,
+            &mut accountant,
+        );
+    }
+
+    let (gap, spectral_sweeps_completed) =
+        bounded_spectral_gap(skeleton, weights, budget.spectral_sweeps, &mut accountant)?;
+    let confidence = if gap < gap_threshold {
+        Confidence::LowGap {
+            gap,
+            threshold: gap_threshold,
+        }
+    } else {
+        Confidence::Normal { gap }
+    };
+    let union = bounded_merge_union(base, &x.mismatch, &y.mismatch, &mut accountant)?;
+    let split = hodge_decompose_accounted(skeleton, &union, &mut accountant)?;
+    let merged = bounded_merge_apply_gauge(skeleton, &union, &split.potential, &mut accountant)?;
+    let post_norm = bounded_merge_norm_inf(&merged, "merge-post-norm", &mut accountant)?;
+    if post_norm <= tol {
+        retain_existing_output::<f64>(
+            merged.len(),
+            "merge-resolved-cochain-output",
+            &mut accountant,
+        )?;
+        retain_existing_output::<f64>(
+            split.potential.len(),
+            "merge-resolved-gauge-output",
+            &mut accountant,
+        )?;
+        return publish_bounded_merge(
+            MergeOutcome::Resolved {
+                merged,
+                gauge: split.potential,
+                residual_receipt: MergeResidualReceipt { post_norm, tol },
+                confidence,
+            },
+            budget,
+            admission,
+            spectral_sweeps_completed,
+            0,
+            0,
+            &mut accountant,
+        );
+    }
+
+    let harmonic_norm =
+        bounded_merge_norm_inf(&split.harmonic, "merge-harmonic-norm", &mut accountant)?;
+    let coexact_norm =
+        bounded_merge_norm_inf(&split.coexact, "merge-coexact-norm", &mut accountant)?;
+    if harmonic_norm > tol && harmonic_norm >= coexact_norm {
+        let mut required_cells = 0usize;
+        for value in &split.harmonic {
+            accountant.consume_item("merge-conflict-count")?;
+            if value.abs() > tol {
+                required_cells = required_cells.checked_add(1).ok_or(
+                    SheafMergeError::BudgetArithmeticOverflow {
+                        stage: "merge-conflict-count",
+                    },
+                )?;
+            }
+        }
+        if required_cells > budget.max_conflict_cells {
+            return Err(SheafMergeError::OutputBudgetExceeded {
+                resource: "conflict-cells",
+                required: required_cells as u128,
+                cap: budget.max_conflict_cells,
+            });
+        }
+        let provenance_bytes = x.provenance.len().checked_add(y.provenance.len()).ok_or(
+            SheafMergeError::BudgetArithmeticOverflow {
+                stage: "merge-provenance-bytes",
+            },
+        )?;
+        if provenance_bytes > budget.max_provenance_bytes {
+            return Err(SheafMergeError::OutputBudgetExceeded {
+                resource: "provenance-bytes",
+                required: provenance_bytes as u128,
+                cap: budget.max_provenance_bytes,
+            });
+        }
+        let mut cells = output_vec_with_capacity::<((usize, usize), f64)>(
+            required_cells,
+            "merge-conflict-cell-output",
+            &mut accountant,
+        )?;
+        for (&edge, &value) in skeleton.edges().iter().zip(&split.harmonic) {
+            accountant.consume_item("merge-conflict-retain")?;
+            if value.abs() > tol {
+                cells.push((edge, value.abs()));
+            }
+        }
+        for index in 1..cells.len() {
+            let mut cursor = index;
+            while cursor > 0 {
+                accountant.consume_item("merge-conflict-sort")?;
+                if cells[cursor - 1].1.total_cmp(&cells[cursor].1).is_ge() {
+                    break;
+                }
+                cells.swap(cursor - 1, cursor);
+                cursor -= 1;
+            }
+        }
+        let parent_x = accounted_parent(&x.provenance, "merge-parent-x-output", &mut accountant)?;
+        let parent_y = accounted_parent(&y.provenance, "merge-parent-y-output", &mut accountant)?;
+        let mut candidate_remainders = output_vec_with_capacity::<CandidateRemainderConflict>(
+            1,
+            "merge-conflict-container-output",
+            &mut accountant,
+        )?;
+        candidate_remainders.push(CandidateRemainderConflict {
+            cells,
+            parents: (parent_x, parent_y),
+        });
+        return publish_bounded_merge(
+            MergeOutcome::Conflicted {
+                candidate_remainders,
+                type_conflicts: Vec::new(),
+                confidence,
+            },
+            budget,
+            admission,
+            spectral_sweeps_completed,
+            required_cells,
+            provenance_bytes,
+            &mut accountant,
+        );
+    }
+
+    publish_bounded_merge(
+        MergeOutcome::EscalatedUnresolved {
+            post_norm,
+            tol,
+            fractions: split.fractions,
+            confidence,
+        },
+        budget,
+        admission,
+        spectral_sweeps_completed,
+        0,
+        0,
+        &mut accountant,
+    )
 }
 
 /// Run seeded random three-way merges and measure the candidate-remainder

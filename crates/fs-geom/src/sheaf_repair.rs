@@ -937,7 +937,7 @@ impl From<SheafSkeletonError> for SheafRepairError {
     }
 }
 
-struct RepairAccountant<'a, 'cx> {
+pub(super) struct RepairAccountant<'a, 'cx> {
     cx: &'a Cx<'cx>,
     budget: SheafRepairBudget,
     ambient: AdmittedBudget<'cx>,
@@ -951,7 +951,7 @@ struct RepairAccountant<'a, 'cx> {
 }
 
 impl<'a, 'cx> RepairAccountant<'a, 'cx> {
-    fn new(
+    pub(super) fn new(
         cx: &'a Cx<'cx>,
         budget: SheafRepairBudget,
         planned_cost: u64,
@@ -998,7 +998,7 @@ impl<'a, 'cx> RepairAccountant<'a, 'cx> {
         }
     }
 
-    fn checkpoint(&mut self, stage: &'static str) -> Result<(), SheafRepairError> {
+    pub(super) fn checkpoint(&mut self, stage: &'static str) -> Result<(), SheafRepairError> {
         let result = self.ambient.checkpoint(stage, self.cx);
         result.map_err(|refusal| self.map_refusal(stage, refusal))
     }
@@ -1014,7 +1014,7 @@ impl<'a, 'cx> RepairAccountant<'a, 'cx> {
         Ok(())
     }
 
-    fn consume_item(&mut self, stage: &'static str) -> Result<(), SheafRepairError> {
+    pub(super) fn consume_item(&mut self, stage: &'static str) -> Result<(), SheafRepairError> {
         if self.work_items >= self.budget.max_work_items {
             return Err(SheafRepairError::WorkItemBudgetExceeded {
                 stage,
@@ -1059,7 +1059,7 @@ impl<'a, 'cx> RepairAccountant<'a, 'cx> {
         self.checkpoint(stage)
     }
 
-    fn reserve_plan_bytes(
+    pub(super) fn reserve_plan_bytes(
         &mut self,
         stage: &'static str,
         bytes: usize,
@@ -1102,7 +1102,11 @@ impl<'a, 'cx> RepairAccountant<'a, 'cx> {
         Ok(())
     }
 
-    fn usage(&self, admitted_scalar_slots: usize, admitted_work_items: usize) -> SheafRepairUsage {
+    pub(super) fn usage(
+        &self,
+        admitted_scalar_slots: usize,
+        admitted_work_items: usize,
+    ) -> SheafRepairUsage {
         SheafRepairUsage {
             completed_sweeps: self.completed_sweeps,
             operator_evaluations: self.operator_evaluations,
@@ -1111,6 +1115,10 @@ impl<'a, 'cx> RepairAccountant<'a, 'cx> {
             admitted_scalar_slots,
             ambient_budget: self.ambient.consumption(),
         }
+    }
+
+    pub(super) const fn reserved_plan_bytes(&self) -> usize {
+        self.reserved_plan_bytes
     }
 }
 
@@ -1131,7 +1139,7 @@ fn checked_norm2(
     Ok(total)
 }
 
-fn zeroed_output_bounded(
+pub(super) fn zeroed_output_bounded(
     len: usize,
     stage: &'static str,
     accountant: &mut RepairAccountant<'_, '_>,
@@ -1235,13 +1243,13 @@ fn checked_hodge_work_envelope(
 }
 
 #[derive(Clone, Copy)]
-struct RepairAdmission {
-    scalar_slots: usize,
-    operator_evaluations: usize,
-    work_items: usize,
+pub(super) struct RepairAdmission {
+    pub(super) scalar_slots: usize,
+    pub(super) operator_evaluations: usize,
+    pub(super) work_items: usize,
 }
 
-fn admit_repair_budget(
+pub(super) fn admit_repair_budget(
     skeleton: &AdmittedSheafSkeleton,
     budget: SheafRepairBudget,
 ) -> Result<RepairAdmission, SheafRepairError> {
@@ -1294,7 +1302,7 @@ fn admit_repair_budget(
     })
 }
 
-fn planned_cost(admission: RepairAdmission) -> Result<u64, SheafRepairError> {
+pub(super) fn planned_cost(admission: RepairAdmission) -> Result<u64, SheafRepairError> {
     let cost = (admission.work_items as u128)
         .checked_add(admission.operator_evaluations as u128)
         .ok_or(SheafRepairError::BudgetArithmeticOverflow {
@@ -1331,7 +1339,7 @@ fn checked_difference(
     Ok(output)
 }
 
-fn validate_bounded_cochain(
+pub(super) fn validate_bounded_cochain(
     values: &[f64],
     expected: usize,
     role: &'static str,
@@ -1554,7 +1562,7 @@ fn least_squares_bounded(
     Ok(x)
 }
 
-fn hodge_decompose_accounted(
+pub(super) fn hodge_decompose_accounted(
     skeleton: &AdmittedSheafSkeleton,
     mismatch: &[f64],
     accountant: &mut RepairAccountant<'_, '_>,

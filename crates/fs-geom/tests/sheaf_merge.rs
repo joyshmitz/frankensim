@@ -10,18 +10,172 @@
 #![cfg(feature = "sheaf-merge")]
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+use asupersync::time::TimeSource;
+use asupersync::types::{Budget, Time};
+use fs_exec::{BudgetRefusal, CancelGate, Cx, ExecMode, StreamKey};
 use fs_geom::sheaf_merge::{
-    BranchState, CandidateRateError, Confidence, MergeOutcome, candidate_remainder_conflict_rate,
-    spectral_gap, three_way_merge, type_conflicts,
+    BoundedMergeOutcome, BranchState, CandidateRateError, Confidence, MergeOutcome,
+    SheafMergeBudget, SheafMergeError, candidate_remainder_conflict_rate, spectral_gap,
+    three_way_merge, three_way_merge_bounded, type_conflicts,
 };
-use fs_geom::sheaf_repair::{SheafSkeleton, apply_gauge, hodge_decompose};
+use fs_geom::sheaf_repair::{
+    AdmittedSheafSkeleton, SheafRepairBudget, SheafRepairError, SheafSkeleton, apply_gauge,
+    hodge_decompose,
+};
 
 fn verdict(case: &str, detail: &str) {
     println!(
         "{{\"suite\":\"fs-geom/sheaf-merge\",\"case\":\"{case}\",\"verdict\":\"pass\",\
          \"detail\":\"{detail}\"}}"
     );
+}
+
+fn with_gate_cx<R>(gate: &CancelGate, f: impl FnOnce(&Cx<'_>) -> R) -> R {
+    let pool = fs_alloc::ArenaPool::new(fs_alloc::ArenaConfig::default());
+    pool.scope(|arena| {
+        let cx = Cx::new(
+            gate,
+            arena,
+            StreamKey {
+                seed: 0x5348_4541_464d_4552,
+                kernel_id: 1,
+                tile: 0,
+                iteration: 0,
+            },
+            Budget::INFINITE,
+            ExecMode::Deterministic,
+        );
+        f(&cx)
+    })
+}
+
+fn with_cx<R>(f: impl FnOnce(&Cx<'_>) -> R) -> R {
+    let gate = CancelGate::new();
+    with_gate_cx(&gate, f)
+}
+
+fn with_budget_cx<R>(budget: Budget, f: impl FnOnce(&Cx<'_>) -> R) -> R {
+    let gate = CancelGate::new();
+    let pool = fs_alloc::ArenaPool::new(fs_alloc::ArenaConfig::default());
+    pool.scope(|arena| {
+        let cx = Cx::new(
+            &gate,
+            arena,
+            StreamKey {
+                seed: 0x5348_4541_464d_4552,
+                kernel_id: 2,
+                tile: 0,
+                iteration: 0,
+            },
+            budget,
+            ExecMode::Deterministic,
+        );
+        f(&cx)
+    })
+}
+
+struct RequestingClock<'a> {
+    gate: &'a CancelGate,
+    reads: AtomicUsize,
+    request_on: usize,
+}
+
+impl<'a> RequestingClock<'a> {
+    fn new(gate: &'a CancelGate, request_on: usize) -> Self {
+        Self {
+            gate,
+            reads: AtomicUsize::new(0),
+            request_on,
+        }
+    }
+
+    fn reads(&self) -> usize {
+        self.reads.load(Ordering::SeqCst)
+    }
+}
+
+impl TimeSource for RequestingClock<'_> {
+    fn now(&self) -> Time {
+        if self.reads.fetch_add(1, Ordering::SeqCst) + 1 == self.request_on {
+            self.gate.request();
+        }
+        Time::ZERO
+    }
+}
+
+fn with_clock_cx<R>(
+    gate: &CancelGate,
+    budget: Budget,
+    clock: &dyn TimeSource,
+    f: impl FnOnce(&Cx<'_>) -> R,
+) -> R {
+    let pool = fs_alloc::ArenaPool::new(fs_alloc::ArenaConfig::default());
+    pool.scope(|arena| {
+        let cx = Cx::new(
+            gate,
+            arena,
+            StreamKey {
+                seed: 0x5348_4541_464d_4552,
+                kernel_id: 3,
+                tile: 0,
+                iteration: 0,
+            },
+            budget,
+            ExecMode::Deterministic,
+        )
+        .with_time_source(clock);
+        f(&cx)
+    })
+}
+
+fn bounded_budget(sweeps: usize) -> SheafMergeBudget {
+    SheafMergeBudget {
+        repair: SheafRepairBudget {
+            sweeps,
+            max_operator_evaluations: 10_000,
+            max_work_items: 10_000_000,
+            max_scalar_slots: 10_000,
+            poll_stride: 8,
+        },
+        spectral_sweeps: 64,
+        max_scalar_slots: 10_000,
+        max_output_bytes: 16_384,
+        max_conflict_cells: 64,
+        max_provenance_bytes: 512,
+    }
+}
+
+fn canonical_triangle() -> (SheafSkeleton, AdmittedSheafSkeleton) {
+    let raw = SheafSkeleton {
+        n_patches: 3,
+        edges: vec![(0, 1), (0, 2), (1, 2)],
+        triangles: vec![(0, 1, 2)],
+    };
+    let admitted = AdmittedSheafSkeleton::admit(raw.clone()).expect("canonical triangle admits");
+    (raw, admitted)
+}
+
+fn canonical_ring() -> (SheafSkeleton, AdmittedSheafSkeleton) {
+    let raw = SheafSkeleton {
+        n_patches: 4,
+        edges: vec![(0, 1), (0, 3), (1, 2), (2, 3)],
+        triangles: Vec::new(),
+    };
+    let admitted = AdmittedSheafSkeleton::admit(raw.clone()).expect("canonical ring admits");
+    (raw, admitted)
+}
+
+fn canonical_weighted_star() -> (SheafSkeleton, AdmittedSheafSkeleton) {
+    let raw = SheafSkeleton {
+        n_patches: 3,
+        edges: vec![(0, 1), (0, 2)],
+        triangles: Vec::new(),
+    };
+    let admitted =
+        AdmittedSheafSkeleton::admit(raw.clone()).expect("canonical weighted star admits");
+    (raw, admitted)
 }
 
 /// 3-patch triangle (contractible: no harmonic space).
@@ -650,4 +804,791 @@ fn sm_006_candidate_diagnostic_harness() {
         candidate_remainder_conflict_rate(&ring4, 1, 1e200, 0xfeed),
         Err(CandidateRateError::TrialRefused { .. })
     ));
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // One parity matrix across every successful merge verdict.
+fn sm_007_bounded_merge_matches_legacy_outcomes_and_replays() {
+    let budget = bounded_budget(400);
+
+    let (triangle_raw, triangle_admitted) = canonical_triangle();
+    let base_triangle = vec![0.0; 3];
+    let resolved_x = branch(
+        "agent-x@c1",
+        triangle_admitted
+            .d0(&[0.0, 0.02, 0.0])
+            .expect("valid canonical x coboundary"),
+    );
+    let resolved_y = branch(
+        "agent-y@c2",
+        triangle_admitted
+            .d0(&[0.0, 0.0, -0.015])
+            .expect("valid canonical y coboundary"),
+    );
+    let legacy_resolved = three_way_merge(
+        &triangle_raw,
+        &base_triangle,
+        &resolved_x,
+        &resolved_y,
+        None,
+        1e-9,
+        1e-6,
+    );
+    let bounded_resolved: BoundedMergeOutcome = with_cx(|cx| {
+        three_way_merge_bounded(
+            &triangle_admitted,
+            &base_triangle,
+            &resolved_x,
+            &resolved_y,
+            None,
+            1e-9,
+            1e-6,
+            budget,
+            cx,
+        )
+        .expect("bounded resolved fixture")
+    });
+    assert_eq!(bounded_resolved.outcome, legacy_resolved);
+    assert!(matches!(
+        bounded_resolved.outcome,
+        MergeOutcome::Resolved { .. }
+    ));
+    assert!(bounded_resolved.usage.execution.work_items > 0);
+    assert!(bounded_resolved.usage.spectral_sweeps_completed > 0);
+    assert!(bounded_resolved.usage.reserved_output_bytes > 0);
+    let replay = with_cx(|cx| {
+        three_way_merge_bounded(
+            &triangle_admitted,
+            &base_triangle,
+            &resolved_x,
+            &resolved_y,
+            None,
+            1e-9,
+            1e-6,
+            budget,
+            cx,
+        )
+        .expect("deterministic bounded replay")
+    });
+    assert_eq!(replay, bounded_resolved);
+
+    let same = branch(
+        "same",
+        triangle_admitted
+            .d0(&[0.0, 0.01, 0.0])
+            .expect("valid identical coboundary"),
+    );
+    let legacy_trivial = three_way_merge(
+        &triangle_raw,
+        &base_triangle,
+        &same,
+        &same,
+        None,
+        1e-9,
+        1e-6,
+    );
+    let bounded_trivial = with_cx(|cx| {
+        three_way_merge_bounded(
+            &triangle_admitted,
+            &base_triangle,
+            &same,
+            &same,
+            None,
+            1e-9,
+            1e-6,
+            budget,
+            cx,
+        )
+        .expect("bounded trivial fixture")
+    });
+    assert_eq!(bounded_trivial.outcome, legacy_trivial);
+    assert_eq!(bounded_trivial.usage.spectral_sweeps_completed, 0);
+
+    let unchanged = branch("base", base_triangle.clone());
+    for (expected_reason, fast_x, fast_y) in [
+        ("X unchanged from base", &unchanged, &same),
+        ("Y unchanged from base", &same, &unchanged),
+    ] {
+        let legacy = three_way_merge(
+            &triangle_raw,
+            &base_triangle,
+            fast_x,
+            fast_y,
+            None,
+            1e-9,
+            1e-6,
+        );
+        let bounded = with_cx(|cx| {
+            three_way_merge_bounded(
+                &triangle_admitted,
+                &base_triangle,
+                fast_x,
+                fast_y,
+                None,
+                1e-9,
+                1e-6,
+                budget,
+                cx,
+            )
+            .expect("bounded unchanged-branch fixture")
+        });
+        assert_eq!(bounded.outcome, legacy);
+        assert!(matches!(
+            bounded.outcome,
+            MergeOutcome::Trivial { reason, .. } if reason == expected_reason
+        ));
+    }
+
+    let mut unsupported = same.clone();
+    unsupported
+        .assignments
+        .insert("loadcase/cruise".to_string(), "2.5g".to_string());
+    with_cx(|cx| {
+        assert_eq!(
+            three_way_merge_bounded(
+                &triangle_admitted,
+                &base_triangle,
+                &unsupported,
+                &same,
+                None,
+                1e-9,
+                1e-6,
+                budget,
+                cx,
+            ),
+            Err(SheafMergeError::AssignmentsUnsupported)
+        );
+    });
+
+    let circulation = triangle_admitted
+        .d1t(&[0.05])
+        .expect("valid canonical circulation");
+    let escalated_x = branch("x", circulation);
+    let escalated_y = branch(
+        "y",
+        triangle_admitted
+            .d0(&[0.0, 1e-3, 0.0])
+            .expect("valid canonical perturbation"),
+    );
+    let legacy_escalated = three_way_merge(
+        &triangle_raw,
+        &base_triangle,
+        &escalated_x,
+        &escalated_y,
+        None,
+        1e-6,
+        1e-6,
+    );
+    let bounded_escalated = with_cx(|cx| {
+        three_way_merge_bounded(
+            &triangle_admitted,
+            &base_triangle,
+            &escalated_x,
+            &escalated_y,
+            None,
+            1e-6,
+            1e-6,
+            budget,
+            cx,
+        )
+        .expect("bounded escalation fixture")
+    });
+    assert_eq!(bounded_escalated.outcome, legacy_escalated);
+
+    let (ring_raw, ring_admitted) = canonical_ring();
+    let base_ring = vec![0.0; 4];
+    let conflict_x = branch("agent-x@c7", vec![0.03, -0.03, 0.03, 0.03]);
+    let conflict_y = branch("agent-y@c9", vec![0.01, -0.01, 0.01, 0.01]);
+    let legacy_conflict = three_way_merge(
+        &ring_raw,
+        &base_ring,
+        &conflict_x,
+        &conflict_y,
+        None,
+        1e-9,
+        1e-6,
+    );
+    let bounded_conflict = with_cx(|cx| {
+        three_way_merge_bounded(
+            &ring_admitted,
+            &base_ring,
+            &conflict_x,
+            &conflict_y,
+            None,
+            1e-9,
+            1e-6,
+            budget,
+            cx,
+        )
+        .expect("bounded conflict fixture")
+    });
+    assert_eq!(bounded_conflict.outcome, legacy_conflict);
+    assert_eq!(bounded_conflict.usage.conflict_cells, 4);
+    assert_eq!(bounded_conflict.usage.provenance_bytes, 20);
+
+    // This weighted star deliberately makes theta² overflow benignly inside
+    // Jacobi while t=0, c=1, and s=0 stay finite. The bounded path must retain
+    // the legacy finite-result behavior and LowGap classification.
+    let (star_raw, star_admitted) = canonical_weighted_star();
+    let base_star = vec![0.0; 2];
+    let star_x = branch(
+        "star-x",
+        star_admitted
+            .d0(&[0.0, 0.02, 0.0])
+            .expect("valid weighted-star x coboundary"),
+    );
+    let star_y = branch(
+        "star-y",
+        star_admitted
+            .d0(&[0.0, 0.0, -0.015])
+            .expect("valid weighted-star y coboundary"),
+    );
+    let star_weights = [1e-200, 1.0];
+    let legacy_star = three_way_merge(
+        &star_raw,
+        &base_star,
+        &star_x,
+        &star_y,
+        Some(&star_weights),
+        1e-9,
+        1e-6,
+    );
+    let bounded_star = with_cx(|cx| {
+        three_way_merge_bounded(
+            &star_admitted,
+            &base_star,
+            &star_x,
+            &star_y,
+            Some(&star_weights),
+            1e-9,
+            1e-6,
+            budget,
+            cx,
+        )
+        .expect("bounded weighted-star fixture")
+    });
+    assert_eq!(bounded_star.outcome, legacy_star);
+    assert!(matches!(
+        bounded_star.outcome,
+        MergeOutcome::Resolved {
+            confidence: Confidence::LowGap { .. },
+            ..
+        }
+    ));
+
+    // A finite heavy edge makes the off-diagonal square +∞, but that sum is
+    // only Jacobi's continue/break sentinel. Legacy and bounded paths must
+    // still publish the same finite Normal-confidence result.
+    let heavy_raw = SheafSkeleton {
+        n_patches: 2,
+        edges: vec![(0, 1)],
+        triangles: Vec::new(),
+    };
+    let heavy_admitted =
+        AdmittedSheafSkeleton::admit(heavy_raw.clone()).expect("canonical heavy edge admits");
+    let base_heavy = [0.0];
+    let heavy_x = branch(
+        "heavy-x",
+        heavy_admitted
+            .d0(&[0.0, 0.02])
+            .expect("valid heavy-edge x coboundary"),
+    );
+    let heavy_y = branch(
+        "heavy-y",
+        heavy_admitted
+            .d0(&[0.0, -0.015])
+            .expect("valid heavy-edge y coboundary"),
+    );
+    let heavy_weights = [1e200];
+    let legacy_heavy = three_way_merge(
+        &heavy_raw,
+        &base_heavy,
+        &heavy_x,
+        &heavy_y,
+        Some(&heavy_weights),
+        1e-9,
+        1e-6,
+    );
+    let bounded_heavy = with_cx(|cx| {
+        three_way_merge_bounded(
+            &heavy_admitted,
+            &base_heavy,
+            &heavy_x,
+            &heavy_y,
+            Some(&heavy_weights),
+            1e-9,
+            1e-6,
+            budget,
+            cx,
+        )
+        .expect("bounded heavy-edge fixture")
+    });
+    assert_eq!(bounded_heavy.outcome, legacy_heavy);
+    assert!(matches!(
+        bounded_heavy.outcome,
+        MergeOutcome::Resolved {
+            confidence: Confidence::Normal { gap },
+            ..
+        } if gap.is_finite()
+    ));
+
+    verdict(
+        "sm-007",
+        "one-accountant bounded merge exactly replays legacy trivial, resolved, conflicted, escalated, benign weighted-overflow, Normal, and LowGap numerical verdicts over identical canonical coordinates; invalid assignments remain typed errors",
+    );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // Exact-boundary success and cap-minus-one refusal table.
+fn sm_008_bounded_merge_refuses_each_undersized_envelope() {
+    let (_, skeleton) = canonical_triangle();
+    let base = vec![0.0; 3];
+    let x = branch(
+        "x",
+        skeleton
+            .d0(&[0.0, 0.02, 0.0])
+            .expect("valid budget x coboundary"),
+    );
+    let y = branch(
+        "y",
+        skeleton
+            .d0(&[0.0, 0.0, -0.015])
+            .expect("valid budget y coboundary"),
+    );
+    let budget = bounded_budget(8);
+    let baseline = with_cx(|cx| {
+        three_way_merge_bounded(&skeleton, &base, &x, &y, None, 1e-9, 1e-6, budget, cx)
+            .expect("baseline bounded envelope")
+    });
+
+    let required_operators = baseline.usage.execution.operator_evaluations;
+    assert!(required_operators > 0);
+    let required_work = baseline.usage.execution.admitted_work_items;
+    let required_scalars = baseline.usage.execution.admitted_scalar_slots;
+    let required_output = baseline.usage.admitted_output_bytes;
+    let exact_budget = SheafMergeBudget {
+        repair: SheafRepairBudget {
+            max_operator_evaluations: required_operators,
+            max_work_items: required_work,
+            ..budget.repair
+        },
+        max_scalar_slots: required_scalars,
+        max_output_bytes: required_output,
+        ..budget
+    };
+    let exact = with_cx(|cx| {
+        three_way_merge_bounded(&skeleton, &base, &x, &y, None, 1e-9, 1e-6, exact_budget, cx)
+            .expect("every exact admission boundary succeeds")
+    });
+    assert_eq!(exact.outcome, baseline.outcome);
+    assert_eq!(exact.usage.execution.admitted_work_items, required_work);
+    assert_eq!(
+        exact.usage.execution.admitted_scalar_slots,
+        required_scalars
+    );
+    assert_eq!(exact.usage.admitted_output_bytes, required_output);
+
+    with_cx(|cx| {
+        assert!(matches!(
+            three_way_merge_bounded(
+                &skeleton,
+                &base,
+                &x,
+                &y,
+                None,
+                1e-9,
+                1e-6,
+                SheafMergeBudget {
+                    repair: SheafRepairBudget {
+                        max_operator_evaluations: required_operators - 1,
+                        ..budget.repair
+                    },
+                    ..budget
+                },
+                cx,
+            ),
+            Err(SheafMergeError::Repair(
+                SheafRepairError::WorkBudgetExceeded { required, cap }
+            )) if required == required_operators as u128 && cap == required_operators - 1
+        ));
+    });
+
+    with_cx(|cx| {
+        assert!(matches!(
+            three_way_merge_bounded(
+                &skeleton,
+                &base,
+                &x,
+                &y,
+                None,
+                1e-9,
+                1e-6,
+                SheafMergeBudget {
+                    repair: SheafRepairBudget {
+                        max_work_items: required_work - 1,
+                        ..budget.repair
+                    },
+                    ..budget
+                },
+                cx,
+            ),
+            Err(SheafMergeError::Repair(
+                SheafRepairError::WorkItemBudgetExceeded {
+                    stage: "merge-work-preflight",
+                    required,
+                    cap,
+                }
+            )) if required == required_work as u128 && cap == required_work - 1
+        ));
+    });
+
+    with_cx(|cx| {
+        assert_eq!(
+            three_way_merge_bounded(
+                &skeleton,
+                &base,
+                &x,
+                &y,
+                None,
+                1e-9,
+                1e-6,
+                SheafMergeBudget {
+                    max_scalar_slots: required_scalars - 1,
+                    ..budget
+                },
+                cx,
+            ),
+            Err(SheafMergeError::MemoryBudgetExceeded {
+                required: required_scalars as u128,
+                cap: required_scalars - 1,
+            })
+        );
+    });
+
+    with_cx(|cx| {
+        assert_eq!(
+            three_way_merge_bounded(
+                &skeleton,
+                &base,
+                &x,
+                &y,
+                None,
+                1e-9,
+                1e-6,
+                SheafMergeBudget {
+                    max_output_bytes: required_output - 1,
+                    ..budget
+                },
+                cx,
+            ),
+            Err(SheafMergeError::OutputBudgetExceeded {
+                resource: "output-bytes",
+                required: required_output as u128,
+                cap: required_output - 1,
+            })
+        );
+    });
+
+    let huge = AdmittedSheafSkeleton::try_new(4_096, vec![(0, 1)], Vec::new())
+        .expect("maximum admitted patch count with one edge");
+    let huge_budget = SheafMergeBudget {
+        repair: SheafRepairBudget {
+            sweeps: 1,
+            max_operator_evaluations: 100_000,
+            max_work_items: 1_000_000_000,
+            max_scalar_slots: 100_000,
+            poll_stride: 8,
+        },
+        max_scalar_slots: 100_000,
+        ..budget
+    };
+    with_cx(|cx| {
+        assert_eq!(
+            three_way_merge_bounded(
+                &huge,
+                &[0.0],
+                &branch("huge-x", vec![1.0]),
+                &branch("huge-y", vec![2.0]),
+                None,
+                1e-9,
+                1e-6,
+                huge_budget,
+                cx,
+            ),
+            Err(SheafMergeError::MemoryBudgetExceeded {
+                required: 4_096u128 * 4_096,
+                cap: 100_000,
+            })
+        );
+    });
+
+    with_cx(|cx| {
+        assert_eq!(
+            three_way_merge_bounded(
+                &skeleton,
+                &base,
+                &x,
+                &y,
+                None,
+                1e-9,
+                1e-6,
+                SheafMergeBudget {
+                    spectral_sweeps: 0,
+                    ..budget
+                },
+                cx,
+            ),
+            Err(SheafMergeError::InvalidBudget {
+                field: "spectral_sweeps"
+            })
+        );
+        assert_eq!(
+            three_way_merge_bounded(
+                &skeleton,
+                &base,
+                &x,
+                &y,
+                None,
+                1e-9,
+                1e-6,
+                SheafMergeBudget {
+                    repair: SheafRepairBudget {
+                        poll_stride: 0,
+                        ..budget.repair
+                    },
+                    ..budget
+                },
+                cx,
+            ),
+            Err(SheafMergeError::Repair(SheafRepairError::InvalidBudget {
+                field: "poll_stride"
+            }))
+        );
+    });
+
+    verdict(
+        "sm-008",
+        "exact operator, total-work, scalar, and logical-output caps succeed; cap-minus-one, invalid sweep/poll, and maximum-patch dense-spectrum envelopes refuse before allocation or publication",
+    );
+}
+
+#[test]
+fn sm_009_bounded_conflict_caps_are_exact_and_fail_closed() {
+    let (_, skeleton) = canonical_ring();
+    let base = vec![0.0; 4];
+    let x = branch("agent-x@c7", vec![0.03, -0.03, 0.03, 0.03]);
+    let y = branch("agent-y@c9", vec![0.01, -0.01, 0.01, 0.01]);
+    let budget = SheafMergeBudget {
+        max_conflict_cells: 4,
+        max_provenance_bytes: 20,
+        ..bounded_budget(400)
+    };
+    let baseline = with_cx(|cx| {
+        three_way_merge_bounded(&skeleton, &base, &x, &y, None, 1e-9, 1e-6, budget, cx)
+            .expect("exact conflict output caps")
+    });
+    assert_eq!(baseline.usage.conflict_cells, 4);
+    assert_eq!(baseline.usage.provenance_bytes, 20);
+
+    with_cx(|cx| {
+        assert_eq!(
+            three_way_merge_bounded(
+                &skeleton,
+                &base,
+                &x,
+                &y,
+                None,
+                1e-9,
+                1e-6,
+                SheafMergeBudget {
+                    max_conflict_cells: 3,
+                    ..budget
+                },
+                cx,
+            ),
+            Err(SheafMergeError::OutputBudgetExceeded {
+                resource: "conflict-cells",
+                required: 4,
+                cap: 3,
+            })
+        );
+        assert_eq!(
+            three_way_merge_bounded(
+                &skeleton,
+                &base,
+                &x,
+                &y,
+                None,
+                1e-9,
+                1e-6,
+                SheafMergeBudget {
+                    max_provenance_bytes: 19,
+                    ..budget
+                },
+                cx,
+            ),
+            Err(SheafMergeError::OutputBudgetExceeded {
+                resource: "provenance-bytes",
+                required: 20,
+                cap: 19,
+            })
+        );
+    });
+
+    verdict(
+        "sm-009",
+        "candidate conflict cells and UTF-8 parent bytes publish exactly at cap and refuse without truncation at cap minus one",
+    );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // Pre/mid/final cancellation and deterministic retry transaction.
+fn sm_010_bounded_merge_cancellation_and_ambient_refusal_publish_nothing() {
+    let (_, skeleton) = canonical_triangle();
+    let base = vec![0.0; 3];
+    let x = branch(
+        "x",
+        skeleton
+            .d0(&[0.0, 0.02, 0.0])
+            .expect("valid cancellation x coboundary"),
+    );
+    let y = branch(
+        "y",
+        skeleton
+            .d0(&[0.0, 0.0, -0.015])
+            .expect("valid cancellation y coboundary"),
+    );
+    let budget = bounded_budget(8);
+
+    let gate = CancelGate::new();
+    gate.request();
+    with_gate_cx(&gate, |cx| {
+        assert_eq!(
+            three_way_merge_bounded(&skeleton, &base, &x, &y, None, 1e-9, 1e-6, budget, cx,),
+            Err(SheafMergeError::Repair(SheafRepairError::Cancelled {
+                stage: "merge-admission",
+                completed_sweeps: 0,
+                operator_evaluations: 0,
+                work_items: 0,
+            }))
+        );
+    });
+
+    let generous = Budget {
+        deadline: None,
+        poll_quota: 1_000_000,
+        cost_quota: None,
+        priority: 0,
+    };
+    let baseline = with_budget_cx(generous, |cx| {
+        three_way_merge_bounded(&skeleton, &base, &x, &y, None, 1e-9, 1e-6, budget, cx)
+            .expect("generous bounded merge")
+    });
+    let planned_cost = baseline.usage.execution.ambient_budget.planned_cost;
+    let cost_refusal = Budget {
+        cost_quota: Some(planned_cost - 1),
+        ..generous
+    };
+    assert!(matches!(
+        with_budget_cx(cost_refusal, |cx| {
+            three_way_merge_bounded(
+                &skeleton, &base, &x, &y, None, 1e-9, 1e-6, budget, cx,
+            )
+        }),
+        Err(SheafMergeError::Repair(
+            SheafRepairError::AmbientBudgetRefused {
+                refusal: BudgetRefusal::CostPlanExceedsQuota { planned, quota },
+                completed_sweeps: 0,
+                operator_evaluations: 0,
+                work_items: 0,
+            }
+        )) if planned == planned_cost && quota == planned_cost - 1
+    ));
+
+    let final_poll = baseline.usage.execution.ambient_budget.polls_used;
+    assert!(final_poll > 1);
+    let final_refusal = Budget {
+        poll_quota: final_poll - 1,
+        ..generous
+    };
+    assert!(matches!(
+        with_budget_cx(final_refusal, |cx| {
+            three_way_merge_bounded(
+                &skeleton, &base, &x, &y, None, 1e-9, 1e-6, budget, cx,
+            )
+        }),
+        Err(SheafMergeError::Repair(
+            SheafRepairError::AmbientBudgetRefused {
+                refusal: BudgetRefusal::PollsExhausted {
+                    phase: "merge-publication",
+                    quota,
+                },
+                ..
+            }
+        )) if quota == final_poll - 1
+    ));
+    let retry = with_budget_cx(generous, |cx| {
+        three_way_merge_bounded(&skeleton, &base, &x, &y, None, 1e-9, 1e-6, budget, cx)
+            .expect("healthy retry after publication refusal")
+    });
+    assert_eq!(retry, baseline);
+
+    let timed_budget = Budget {
+        deadline: Some(Time::MAX),
+        ..generous
+    };
+    let timed_gate = CancelGate::new();
+    let healthy_clock = RequestingClock::new(&timed_gate, usize::MAX);
+    let timed_baseline = with_clock_cx(&timed_gate, timed_budget, &healthy_clock, |cx| {
+        three_way_merge_bounded(&skeleton, &base, &x, &y, None, 1e-9, 1e-6, budget, cx)
+            .expect("timed cancellation baseline")
+    });
+    let timed_polls = timed_baseline.usage.execution.ambient_budget.polls_used as usize;
+    assert!(timed_polls > 2);
+    assert_eq!(healthy_clock.reads(), timed_polls + 1);
+
+    let mid_gate = CancelGate::new();
+    let mid_request_on = (timed_polls / 2).max(2).min(timed_polls - 1);
+    let mid_clock = RequestingClock::new(&mid_gate, mid_request_on);
+    let mid_refusal = with_clock_cx(&mid_gate, timed_budget, &mid_clock, |cx| {
+        three_way_merge_bounded(&skeleton, &base, &x, &y, None, 1e-9, 1e-6, budget, cx)
+    });
+    assert!(matches!(
+        mid_refusal,
+        Err(SheafMergeError::Repair(SheafRepairError::Cancelled {
+            work_items,
+            ..
+        })) if work_items > 0 && work_items < timed_baseline.usage.execution.work_items
+    ));
+
+    // Admission reads the clock once; requesting on read P occurs during the
+    // penultimate successful checkpoint, so the final publication boundary is
+    // the first point that observes cancellation.
+    let publication_gate = CancelGate::new();
+    let publication_clock = RequestingClock::new(&publication_gate, timed_polls);
+    let publication_refusal =
+        with_clock_cx(&publication_gate, timed_budget, &publication_clock, |cx| {
+            three_way_merge_bounded(&skeleton, &base, &x, &y, None, 1e-9, 1e-6, budget, cx)
+        });
+    assert!(matches!(
+        publication_refusal,
+        Err(SheafMergeError::Repair(SheafRepairError::Cancelled {
+            stage: "merge-publication",
+            ..
+        }))
+    ));
+    assert_eq!(publication_clock.reads(), timed_polls);
+
+    let timed_retry_gate = CancelGate::new();
+    let retry_clock = RequestingClock::new(&timed_retry_gate, usize::MAX);
+    let timed_retry = with_clock_cx(&timed_retry_gate, timed_budget, &retry_clock, |cx| {
+        three_way_merge_bounded(&skeleton, &base, &x, &y, None, 1e-9, 1e-6, budget, cx)
+            .expect("healthy retry after deterministic cancellation")
+    });
+    assert_eq!(timed_retry, timed_baseline);
+
+    verdict(
+        "sm-010",
+        "pre-cancel, deterministic mid-run cancellation, true final-publication cancellation, ambient cost admission, and final poll exhaustion return no outcome; fresh retries reproduce both baselines",
+    );
 }
