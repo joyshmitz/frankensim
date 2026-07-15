@@ -172,12 +172,14 @@ zero rebuilds, cut-band concentration, and deterministic synthetic
 planning step, including the disabled no-op path; invalid-level,
 non-finite-indicator/accumulated-mass/recursive-enclosure, and non-leaf-key
 cases assert structured refusal with no grid or band-level mutation. The
-literal heat-parity integration uses `estimate_elasticity_compliance` on
-an embedded disk whose below-cell-width radius and off-grid center are chosen
-so every active coarse indicator cell is cut by construction, and passes its
-UNMODIFIED real vector indicator map into the same helper; it asserts the
-exact total/cut marking mass, one band-level advance, actual halo splits,
-and records coarse/enriched compliances plus estimator and cut-mass metadata.
+literal vector integration uses `estimate_elasticity_compliance` on an
+off-grid embedded disk large enough to retain coarse interior active leaves,
+and passes its UNMODIFIED real vector indicator map into the same helper for
+two consecutive cycles. Each cycle asserts authentic cut-mass admission,
+positive actual halo/balance splits, a mixed-active-level vector re-solve, and
+bit-identical structure, coefficients, reconstructed nodes, and compliance on
+replay; coarse/enriched compliance and estimator metadata are emitted per
+cycle.
 
 ## No-claim boundaries
 
@@ -204,12 +206,12 @@ and records coarse/enriched compliances plus estimator and cut-mass metadata.
   compliance envelope is THIS fixture's golden band; no MBB/cantilever
   ELASTICITY compliance envelope is claimed here.
 - The shared refinement helper accepts indicators from scalar or vector
-  estimators. Its real-vector integration proves the estimator-to-policy
-  handoff and one graded planning-grid split only. Vector CutFEM currently
-  refuses mixed-level active grids, so there is no claim of a graded
-  elasticity solve, much less a complete solve-estimate-refine-re-solve
-  vector loop. The logged `eta_signed / (J_h2 - J_h)` value is an enriched-
-  delta diagnostic, not an independent-reference effectivity claim.
+  estimators. Its real-vector integration proves exactly two deterministic
+  estimator-to-policy-to-graded-re-solve cycles on the recorded embedded-disk
+  fixture. This is not an elasticity optimization benchmark, a general
+  adaptive stopping policy, or a certified DWR bound. The logged
+  `eta_signed / (J_h2 - J_h)` value remains an enriched-delta diagnostic, not
+  an independent-reference effectivity claim.
 - Per-iteration wall times are DEBUG-build measurements, labeled; the
   interactive-cadence targets are perf-CI's gates.
 - The flux redistribution is a smeared shape-derivative heuristic with

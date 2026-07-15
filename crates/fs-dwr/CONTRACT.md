@@ -41,7 +41,10 @@ that knows the difference.
   Dörfler marking mass; canonical coarse-face indicators reconstruct the
   reported stabilization correction. `cell_terms` exposes the same signed
   bulk, Nitsche, outer-traction, and ghost decomposition per coarse cell while
-  `indicators` remains their complete marking sum.
+  `indicators` remains their complete marking sum. Uniform and balanced
+  2:1-graded coarse spaces are both supported; mixed-level ghost evidence uses
+  fs-cutfem's exact shared-face patches rather than reconstructing separate
+  face geometry in this crate.
 - `ElasticityGhostMethod::CoarseConsistentEnergy`: the elasticity ghost
   term is the coarse consistent-limit correction `+g_h(u_h,u_h)` on the
   actual coarse ghost-face set, split equally between its two cells. It is
@@ -114,6 +117,11 @@ that knows the difference.
     balance/interface refinement headroom with checked arithmetic. A zero-level
     grid refuses as `InvalidFemInput`; it never underflows or silently wraps the
     refinement ceiling. An empty marked set requires no headroom.
+13. Graded vector integration passes the unmodified compliance indicator map
+    into fs-topopt's shared `refine_dwr_cut_band` policy for two consecutive
+    positive split waves. Each wave is followed by a successful mixed-active-
+    level CutFEM vector re-solve, with deterministic structure, coefficients,
+    reconstructed nodes, and compliance on replay.
 
 ## Error model
 
@@ -181,6 +189,11 @@ active-space mismatch, valid one-child coverage, and level-16 refusal before
 `refined_once` can panic. A level-4 disk regression proves that legitimate
 absent mapped fine nodes succeed through the coarse-adjoint two-level weight;
 a level-15 boundary regression retains exactly one legal enrichment level.
+Its graded regression also requires a nondegenerate mixed-level ghost patch,
+exact face/operator energy reconstruction, and bit-identical estimator replay.
+The feature-gated `fs-topopt/tests/marquee.rs` integration owns the two-cycle
+estimate/refine/graded-re-solve composition so this L3 crate does not depend
+upward on the L4 policy owner.
 
 ## No-claim boundaries
 
@@ -207,10 +220,10 @@ a level-15 boundary regression retains exactly one legal enrichment level.
   effectivity is fixture evidence, not a certificate.
 - Physical-work semantics for nonzero embedded displacement data. In that
   case `b^T u` is only the algebraic assembled-load compliance.
-- A graded vector-elasticity re-solve or repeated vector adaptive loop.
-  The current vector CutFEM frontend refuses graded active trees until
-  componentwise hanging constraints land; integration may drive the
-  deterministic split policy but must not claim the post-split solve.
+- A general vector adaptive-loop driver in this crate. The shipped two-cycle
+  proof is deliberately composed in fs-topopt, which owns the band policy;
+  arbitrary goal functionals, stopping rules, and optimization-design updates
+  remain consumer work.
 - Exact treatment of the non-nested active-space variational crime. The
   coarse consistent-energy ghost method is logged on every estimate and its
   adequacy is measured by independent-reference effectivity fixtures.

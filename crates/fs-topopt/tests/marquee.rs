@@ -15,7 +15,7 @@ use fs_dwr::estimate_elasticity_compliance;
 use fs_ivl::Interval;
 use fs_material::IsotropicElastic;
 use fs_topopt::marquee::{DensityDesign, refine_dwr_cut_band, run_marquee};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn verdict(case: &str, detail: &str) {
     println!(
@@ -479,104 +479,159 @@ fn tm_007_invalid_band_policy_inputs_refuse_without_mutation() {
 }
 
 #[test]
-fn tm_008_real_vector_dwr_drives_shared_band_policy_once() {
+#[allow(
+    clippy::too_many_lines,
+    reason = "the acceptance retains two complete estimate/refine/re-solve cycles and their replay evidence"
+)]
+fn tm_008_real_vector_dwr_advances_and_resolves_twice_on_graded_trees() {
     // This is the fs-dwr effectivity battery's manufactured all-embedded disk
-    // family, with radius 0.10 < h=0.125 on the level-three grid. Its off-grid
-    // center makes every active coarse cell a genuine cut cell, so the real
-    // estimator's cut-band mass equals its total marking mass by construction;
-    // no indicators are fabricated or renormalized to pass the shared gate.
-    // The resulting graded tree is a planning artifact only: vector CutFEM is
-    // NOT re-solved on it until componentwise hanging constraints exist.
-    let grid = Quadtree::with_room(3, 4);
+    // family. The radius is large enough to retain coarse interior active
+    // leaves while the DWR policy advances the cut band and halo, so every
+    // post-refinement solve genuinely exercises a mixed-level active space.
+    // The real estimator map is passed through unchanged on both cycles.
+    let mut grid = Quadtree::with_room(3, 5);
     let disk = Circle {
         center: [0.47, 0.53],
-        radius: 0.10,
+        radius: 0.33,
     };
     let material = IsotropicElastic::new(1.0, 0.3, 10.0).expect("compressible material");
     let (lambda, mu) = material.lame();
     let displacement_scale = 0.01;
     let body = |_: f64, _: f64| [-2.0 * displacement_scale * (lambda + 3.0 * mu), 0.0];
     let zero = |_: f64, _: f64| [0.0, 0.0];
-    let problem = vector_dwr_problem(&grid, &disk, &material);
-    let estimate =
-        estimate_elasticity_compliance(&problem, &body, &zero).expect("real vector DWR estimate");
-    assert!(
-        estimate.indicators.keys().all(|&cell| {
-            let (lo, hi) = grid.rect(cell);
-            disk.enclose(lo, hi).contains_zero()
-        }),
-        "the radius-below-h fixture must put every authentic indicator on a cut cell"
-    );
-
-    let mut planning_grid = grid.clone();
     let mut band_level = 3;
-    let decision = refine_dwr_cut_band(
-        &mut planning_grid,
-        &disk,
-        &estimate.indicators,
-        &mut band_level,
-        true,
-    )
-    .expect("real vector indicators satisfy shared policy input contract");
-    assert_eq!(
-        decision.total_mass.to_bits(),
-        estimate.eta_abs.to_bits(),
-        "the helper consumes the estimator's exact marking mass"
-    );
-    assert_eq!(
-        decision.cut_mass.to_bits(),
-        decision.total_mass.to_bits(),
-        "all authentic indicator mass is cut-band mass by fixture construction"
-    );
-    assert!(
-        decision.advanced,
-        "real vector DWR mass advances the cut band"
-    );
-    assert!(
-        decision.splits > 0,
-        "real vector DWR causes actual halo splits"
-    );
-    assert_eq!(decision.previous_level, 3);
-    assert_eq!(decision.band_level, 4);
-    assert_eq!(band_level, 4);
+    let mut total_splits = 0usize;
 
-    let cut_mass_fraction = decision.cut_mass / decision.total_mass;
-    let enriched_delta = estimate.j_enriched - estimate.j_primal;
-    let eta_over_enriched_delta = estimate.eta_signed / enriched_delta;
-    assert!(
-        cut_mass_fraction.is_finite() && cut_mass_fraction > 0.15,
-        "authentic boundary-dominated vector indicators pass the shared gate: \
-         {cut_mass_fraction:.6}"
-    );
-    assert!(
-        enriched_delta.is_finite()
-            && enriched_delta.abs() > 0.0
-            && eta_over_enriched_delta.is_finite(),
-        "enriched-compliance proxy metadata must be finite and non-degenerate"
-    );
+    for cycle in 0..2u32 {
+        let estimate = {
+            let problem = vector_dwr_problem(&grid, &disk, &material);
+            estimate_elasticity_compliance(&problem, &body, &zero)
+                .expect("real vector DWR estimate on current grid")
+        };
+        assert!(
+            estimate.eta_abs.is_finite() && estimate.eta_abs > 0.0,
+            "cycle {cycle} must retain nondegenerate authentic marking mass"
+        );
+        let before_leaf_count = grid.leaf_count();
+        let mut replay_grid = grid.clone();
+        let mut replay_level = band_level;
+        let decision = refine_dwr_cut_band(
+            &mut grid,
+            &disk,
+            &estimate.indicators,
+            &mut band_level,
+            true,
+        )
+        .expect("real vector indicators satisfy shared policy input contract");
+        let replay_decision = refine_dwr_cut_band(
+            &mut replay_grid,
+            &disk,
+            &estimate.indicators,
+            &mut replay_level,
+            true,
+        )
+        .expect("real vector refinement replay");
+        assert_eq!(decision, replay_decision, "cycle {cycle} policy replay");
+        assert_eq!(band_level, replay_level, "cycle {cycle} band replay");
+        assert_eq!(
+            grid.leaves().collect::<Vec<_>>(),
+            replay_grid.leaves().collect::<Vec<_>>(),
+            "cycle {cycle} structural replay"
+        );
+        assert_eq!(
+            decision.total_mass.to_bits(),
+            estimate.eta_abs.to_bits(),
+            "the helper consumes the estimator's exact marking mass"
+        );
+        let cut_mass_fraction = decision.cut_mass / decision.total_mass;
+        assert!(
+            cut_mass_fraction.is_finite() && cut_mass_fraction > 0.15,
+            "cycle {cycle} authentic boundary-dominated indicators must pass the shared gate: {cut_mass_fraction:.6}"
+        );
+        assert!(decision.advanced, "cycle {cycle} must advance the band");
+        assert!(
+            decision.splits > 0,
+            "cycle {cycle} must perform real splits"
+        );
+        assert_eq!(decision.previous_level, 3 + cycle);
+        assert_eq!(decision.band_level, 4 + cycle);
+        assert_eq!(band_level, 4 + cycle);
+        assert_eq!(
+            grid.leaf_count() - before_leaf_count,
+            3 * decision.splits,
+            "each quadtree split replaces one leaf by four"
+        );
+        total_splits += decision.splits;
+
+        let adapted = vector_dwr_problem(&grid, &disk, &material)
+            .solve(&body, &zero)
+            .expect("graded vector re-solve after authentic refinement");
+        let replay = vector_dwr_problem(&replay_grid, &disk, &material)
+            .solve(&body, &zero)
+            .expect("graded vector re-solve replay");
+        let active_levels: BTreeSet<_> = adapted.active_cells().iter().map(|cell| cell.0).collect();
+        assert!(
+            active_levels.len() >= 2,
+            "cycle {cycle} must re-solve on genuinely mixed active leaves: {active_levels:?}"
+        );
+        assert!(
+            adapted.compliance().is_finite()
+                && adapted.rel_residual.is_finite()
+                && adapted.dof_count() > 0,
+            "cycle {cycle} graded solve evidence must be finite and nonempty"
+        );
+        assert_eq!(adapted.active_cells(), replay.active_cells());
+        assert_eq!(adapted.coefficients().len(), replay.coefficients().len());
+        for (left, right) in adapted.coefficients().iter().zip(replay.coefficients()) {
+            assert_eq!(
+                left.to_bits(),
+                right.to_bits(),
+                "cycle {cycle} coefficient replay"
+            );
+        }
+        assert_eq!(adapted.nodal().len(), replay.nodal().len());
+        for ((left_node, left), (right_node, right)) in adapted.nodal().iter().zip(replay.nodal()) {
+            assert_eq!(left_node, right_node);
+            assert_eq!(left[0].to_bits(), right[0].to_bits());
+            assert_eq!(left[1].to_bits(), right[1].to_bits());
+        }
+        assert_eq!(
+            adapted.compliance().to_bits(),
+            replay.compliance().to_bits(),
+            "cycle {cycle} compliance replay"
+        );
+
+        let enriched_delta = estimate.j_enriched - estimate.j_primal;
+        let eta_over_enriched_delta = estimate.eta_signed / enriched_delta;
+        assert!(
+            enriched_delta.is_finite()
+                && enriched_delta.abs() > 0.0
+                && eta_over_enriched_delta.is_finite(),
+            "cycle {cycle} enriched-compliance diagnostic must be finite and non-degenerate"
+        );
+        let active_min_level = *active_levels.first().expect("nonempty active levels");
+        let active_max_level = *active_levels.last().expect("nonempty active levels");
+        println!(
+            "{{\"metric\":\"real-vector-dwr-graded-resolve-cycle\",\"cycle\":{cycle},\"j_h\":{:.10e},\"j_h2\":{:.10e},\"eta_signed\":{:.10e},\"eta_abs\":{:.10e},\"eta_over_enriched_delta\":{eta_over_enriched_delta:.8},\"cut_mass_fraction\":{cut_mass_fraction:.8},\"splits\":{},\"band_level\":{},\"adapted_dofs\":{},\"adapted_compliance\":{:.10e},\"active_min_level\":{active_min_level},\"active_max_level\":{active_max_level}}}",
+            estimate.j_primal,
+            estimate.j_enriched,
+            estimate.eta_signed,
+            estimate.eta_abs,
+            decision.splits,
+            decision.band_level,
+            adapted.dof_count(),
+            adapted.compliance(),
+        );
+    }
+
+    assert!(total_splits > 0);
+    assert_eq!(band_level, 5);
     println!(
-        "{{\"metric\":\"real-vector-dwr-band-policy\",\"j_h\":{:.10e},\
-         \"j_h2\":{:.10e},\"enriched_delta\":{enriched_delta:.10e},\
-         \"eta_signed\":{:.10e},\"eta_abs\":{:.10e},\
-         \"eta_over_enriched_delta\":{eta_over_enriched_delta:.8},\
-         \"cut_mass\":{:.10e},\"cut_mass_fraction\":{cut_mass_fraction:.8},\
-         \"dofs\":{},\"enriched_dofs\":{},\"ghost_method\":\"{}\",\
-         \"advanced\":{},\"splits\":{},\"band_level\":{}}}",
-        estimate.j_primal,
-        estimate.j_enriched,
-        estimate.eta_signed,
-        estimate.eta_abs,
-        decision.cut_mass,
-        estimate.dofs,
-        estimate.enriched_dofs,
-        estimate.ghost_method.as_str(),
-        decision.advanced,
-        decision.splits,
-        decision.band_level,
+        "{{\"metric\":\"real-vector-dwr-graded-resolve\",\"cycles\":2,\"total_splits\":{total_splits},\"final_band_level\":{band_level}}}"
     );
     verdict(
         "tm-008",
-        "an authentic vector-compliance DWR indicator map advances the shared heat-parity \
-         cut-band policy once; the resulting graded planning grid is not re-solved",
+        "two authentic vector-compliance DWR estimates advance the shared cut-band policy; \
+         each positive split wave is followed by a deterministic mixed-level vector re-solve",
     );
 }

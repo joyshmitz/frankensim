@@ -56,9 +56,11 @@ same certified cuts; its constitutive parameters come from
 - `CutElasticity`: vector Q1 small-strain elasticity on uniform or 2:1
   graded active quadtrees. Hanging nodes are reduced componentwise through
   deterministic terminal expansions: bulk and embedded-interface Nitsche
-  terms use `T^T K T` / `T^T f`, equal-level ghost terms use the same
-  componentwise transform, and solution reconstruction restores every active
-  mesh node. Design-box traction is assembled on outer-edge terminal nodes;
+  terms use `T^T K T` / `T^T f`, and ghost terms integrate exact dyadic
+  equal- or mixed-level `SharedFacePatch` overlaps with positive-axis
+  orientation and `h_F = min(h_a, h_b)` before using the same componentwise
+  transform. Solution reconstruction restores every active mesh node.
+  Design-box traction is assembled on outer-edge terminal nodes;
   that transform is necessarily identity for a valid leaf partition and the
   assembler refuses if the topology invariant is broken. A literal
   no-constraint path retains the original uniform-grid numbering, COO/RHS
@@ -195,13 +197,25 @@ same certified cuts; its constitutive parameters come from
     length; a crossing through the supported band refuses; an uncertified zero
     callback still refuses; and an all-inside band aligned to cell edges is
     bit-identical to the legacy callback operator evidence.
+16. GRADED VECTOR ACCURACY (cte-006/007, G0/G1/G3): a fixed half-domain
+    2:1 refinement pattern retains mixed active levels across a three-level
+    manufactured-solution ladder and gates fitted Q1 orders near L2 = 2 and
+    H1 = 1. A separate affine dead-load fixture compares uniform and graded
+    physical fields and algebraic compliance against the same analytic
+    external work, then requires bit-identical graded solve replay.
+17. SHARED GHOST TOPOLOGY: exact dyadic shared-face patches cover every
+    balanced coarse/fine face without gaps or overlaps; reverse queries return
+    the same positive-axis patch, and vector assembly/DWR consume that one
+    geometry source. Mixed-level affine jumps vanish, while non-affine ghost
+    energy remains symmetric and non-negative.
 
 ## Error model
 
 `CutFemError` teaching errors: `EmptyDomain` (level set never enters
-the grid), `CutBandNotUniform` (enabled ghost faces need an equal-level
-interface band; names the offending pair and the repair; ghost-free
-aggregation does not impose this precondition),
+the grid), `CutBandNotUniform` (the scalar frontend's enabled ghost faces need
+an equal-level interface band; names the offending pair and the repair;
+vector elasticity instead integrates exact balanced 2:1 patches and
+ghost-free aggregation does not impose this precondition),
 `InvalidFemInput` (a scalar stabilization parameter is non-finite or
 outside its documented range, or a scalar field/goal evaluation has
 missing, non-finite, inactive, or topology-inconsistent evidence),
@@ -283,6 +297,9 @@ graded vector reduction, including an independent mixed-level Nitsche
 matrix/RHS oracle, body-load reduction, terminal outer-traction conservation,
 solution reconstruction, deterministic replay, and malformed-constraint
 refusals.
+`tests/graded_elasticity.rs`: cte-006 fixed-pattern mixed-level MMS with
+three-level fitted L2/H1 slopes; cte-007 uniform-versus-graded affine physical
+field and compliance equivalence plus bit-identical graded replay.
 `tests/elasticity_adjoint.rs`
 is a declared `adjoint-vjp`-required target: cte-004 exact registered
 transpose, two-operator key isolation, and independent central-FD gate.
@@ -299,14 +316,15 @@ ledger evidence.
 - Moment-fitting quadrature (tessellation-based scheme ships; the
   moment-fitting alternative is future work under the same `CutRules`
   surface).
-- DWR-driven refinement loops: this crate exposes the `refine_where`
-  hook and proves the hanging-node machinery; the dual-weighted
-  estimator itself is dwr-adaptivity's bead.
-- Mixed-level vector ghost faces are not claimed. Componentwise hanging-node
-  reduction permits graded active trees, but enabled ghost stabilization still
-  requires the cut/interface band itself to have equal-level face neighbors;
-  `CutBandNotUniform` remains the structured refusal and child work owns the
-  mixed-level face quadrature/topology redesign.
+- DWR estimation and refinement policy remain consumer responsibilities:
+  fs-dwr supplies compliance indicators and fs-topopt owns
+  `refine_dwr_cut_band`. Their feature-gated integration test composes two
+  authentic estimate/refine/graded-re-solve cycles; this crate does not grow a
+  second orchestration policy.
+- Shared vector ghost patches are limited to balanced 2:1 Q1 quadtrees in 2D.
+  Level jumps greater than one, incomplete/overlapping face coverage, 3D face
+  geometry, and higher-order normal-derivative jumps refuse or remain outside
+  the claimed surface.
 - Vector constitutive scope is two-dimensional plane-strain isotropic
   small-strain elasticity. Plane stress, orthotropy, nonlinear
   material state updates, finite strain, and higher-order vector
