@@ -1,17 +1,20 @@
 # CONTRACT: fs-spectral
 
-Layer L1 spectral semantics and health monitoring. This crate owns two related,
+Layer L1 spectral semantics and health monitoring. This crate owns three related,
 but deliberately separate, capabilities:
 
 1. deterministic sheaf-Laplacian gap health, confidence demotion, conditioning
-   composition, and conditioning-aware route scoring; and
+   composition, and conditioning-aware route scoring;
 2. RB.1a versioned spectral problem admission plus proposition-bound,
-   set-valued result truth.
+   set-valued result truth; and
+3. RB.M1 versioned Maslov--Krein--Evans theorem statements, executable
+   convention transforms, and explicit hypothesis/implication lattices.
 
-The second capability is a semantic and epistemic boundary. It classifies
-problems, verifies that retained evidence names the exact proposition being
-used, checks method-family prerequisites, and validates result claims. It does
-not compute eigenpairs or manufacture scientific evidence.
+The latter two capabilities are semantic and epistemic boundaries. They
+classify problems or theorem statements, verify that retained evidence names
+the exact proposition being used, check explicit prerequisites, and validate
+result or lattice claims. They do not compute eigenpairs, prove theorems, or
+manufacture scientific evidence.
 
 ## Dependencies
 
@@ -20,8 +23,8 @@ Production dependencies are limited to:
 - `fs-blake3` for domain-separated canonical identities and the
   presented -> verified -> admitted authority typestate;
 - `fs-evidence` for the existing gap-health confidence color lattice;
-- `fs-exec` for the cancellation contexts the eigensolver service's
-  bounded ticks poll;
+- `fs-exec` for the cancellation contexts polled by eigensolver-service ticks
+  and bridge-lattice validation;
 - `fs-la` for the deterministic Lanczos/LOBPCG backends the service
   wraps; and
 - `fs-qty` for compile-time Floquet quantities and runtime-dimensioned
@@ -139,6 +142,72 @@ sensitivity to model/frame changes, wrong metric and scaling targets, identity
 frame mismatch, lossy frames and forward maps, stale linearization, omitted
 boundaries, duplicate and oversized QoIs, descriptor constraints,
 periodic-phase mismatch, and source-structure retention.
+
+## Maslov--Krein--Evans bridge statement API (RB.M1)
+
+The `bridge` module is a theorem-statement and review boundary, not a proof
+engine. It keeps `MaslovIndexObjectV1`, `KreinSpectralFlowObjectV1`,
+`EvansWindingObjectV1`, and `MachineInstabilityCountObjectV1` as nonfungible
+types. A label or coincident integer cannot turn one into another. A theorem
+node must instead carry exact domain, versioned operator family, parameter
+path/direction, count transforms, endpoint convention, multiplicity rule, and
+correspondence-map identities.
+
+`BridgeTheoremScopeV1` retains the implication lattice from the classical
+finite Hamiltonian case through periodic monodromy and spatial-dynamics Evans
+extensions to the bold maximal triple equality. Weaker nodes remain explicit
+targets of acyclic, content-addressed projection edges. A separate machine
+corollary requires a distinct physical-instability object and interpretation
+map; spectral instability is never physical instability by enum relabeling.
+
+Each node carries a product set of typed hypotheses. The validator requires
+the hypotheses applicable to every count in its conclusion, including:
+
+- symplectic path, Lagrangian Fredholm-pair, crossing-form, and endpoint
+  obligations for Maslov counts;
+- continuous Pontryagin path, nondegenerate Krein form, and an explicit
+  neutral-signature policy for Krein flow;
+- analytic Fredholm family, analytic domain/contour, essential-spectrum
+  exclusion, and Evans normalization for winding counts;
+- exact parameter direction and multiplicity semantics for every equality;
+- monodromy, spatial-dichotomy, pairwise-correspondence, and physical
+  interpretation obligations at the scopes where they apply.
+
+A hypothesis may be witness-referenced, explicitly unresolved, or refuted.
+Those are statement states, not truth constructors. Likewise,
+`BridgeProofStateV1::ProofArtifactReferenced` records proof, verifier, formal
+system, policy/TCB, and no-claim identities but yields only
+`ReferencedNotVerified`. `ValidatedBridgeLatticeV1::scientific_authority()` is
+always `ScientificCorrectnessNotProven`. This preserves the maximal coherent
+conjecture without laundering an opaque digest into a theorem.
+Referenced node verifiers and formal-system versions must match the lattice's
+declared TCB exactly.
+An unresolved neutral-Krein policy cannot be paired with a witnessed
+neutral-closure hypothesis; it must remain explicitly unresolved or refuted.
+
+Endpoint half-signatures use `DoubledSignedCountV1`, avoiding floating-point
+convention ambiguity. `derive_convention_transform_v1` computes the exact
+orientation sign and endpoint correction, refuses unresolved endpoint
+signatures, and uses checked integer arithmetic. Every theorem node must also
+preregister the falsifiers relevant to its count product: multiple/degenerate
+and tangential crossings, endpoint crossings, neutral Krein type,
+non-Fredholmness, contour and essential-spectrum contact, orientation changes,
+multiplicity changes, and reviewer statement mutation.
+
+`validate_bridge_lattice_v1` checks caller budgets beneath hard schema caps
+before sorting or graph work, polls an execution `Cx` initially and at bounded
+node/edge/topological-sort strides, canonicalizes all set-valued inputs, rejects
+duplicate or cyclic implications, and returns a domain-separated identity plus
+canonical-preimage receipt. Statement version, count objects, conventions,
+hypothesis/proof states, falsifiers, implication maps, TCB, and budget are all
+byte-visible identity inputs.
+
+G0/G3/G5 bridge tests cover canonical replay under node/hypothesis/falsifier
+permutation, orientation and endpoint transformations, unresolved endpoint
+refusal, required hypothesis and falsifier gates, neutral/tangential/essential
+contact preregistration, machine-count separation, implication cycles, missing
+weaker scopes, retained refutations, schema/convention/reviewer mutation,
+resource caps, cancellation, and the fixed no-theorem authority boundary.
 
 ### Authority boundary
 
@@ -493,32 +562,34 @@ canonicalized in identity-bearing numeric fields.
 
 ## Error model
 
-Admission and truth return structured reports containing deterministic,
-deduplicated issue vectors. Resource-limit failures occur before expensive
-canonicalization. Diagnostics use a total stable order and adjacent
-deduplication, so malformed equal-rank inputs neither preserve caller order nor
-trigger quadratic duplicate scanning. Canonical identity failures are retained
-as typed `CanonicalError` values. No validation function panics on untrusted
-input.
+Admission, truth, adapters, and bridge statements return structured reports.
+Resource-limit failures occur before expensive canonicalization or graph work.
+Admission/truth diagnostics use a total stable order and adjacent
+deduplication; bridge diagnostics follow canonical node/hypothesis/falsifier
+and implication order. Canonical identity failures are retained as typed
+`CanonicalError` values. No validation function panics on untrusted input.
 
 The legacy hysteresis constructor still panics for an inverted band, which is a
 programmer configuration error.
 
 ## Determinism class
 
-Admission, problem IDs, proposition IDs, result-set IDs, issue ordering,
-method-support selection, cluster ordering, truth validation, gap health, and
-route scoring are deterministic pure functions of their inputs. Canonical sets
-make caller permutation irrelevant. Same-ISA floating-point identity inputs
-use stable IEEE-754 bits with signed-zero normalization.
+Admission, problem IDs, proposition IDs, result-set IDs, adapter and bridge
+identities, issue ordering, method-support selection, cluster ordering, truth
+validation, gap health, and route scoring are deterministic functions of their
+inputs. Canonical sets make caller permutation irrelevant. Same-ISA
+floating-point identity inputs use stable IEEE-754 bits with signed-zero
+normalization. Bridge count/convention arithmetic is exact checked integer
+arithmetic.
 
 ## Cancellation behavior
 
 RB.1a validators are bounded synchronous metadata operations and do not accept
-an execution `Cx`. Numerical eigensolvers and long-running evidence producers
-must add tile-boundary cancellation under later beads. Canonical identity
-builders use the non-cancelling bounded encoder because all accepted payloads
-are capped before construction. The result-set encoder's one-mebibyte field
+an execution `Cx`. The RB.M1 lattice validator does accept a `Cx` and polls it
+before validation and at bounded node, edge, and topological-sort strides.
+Numerical eigensolvers poll at their own documented step boundaries. Canonical
+identity builders use the non-cancelling bounded encoder only after collection
+caps have bounded their payloads. The result-set encoder's one-mebibyte field
 envelope admits all 4,096 public cluster slots even when every slot uses the
 largest currently legal complex-enclosure, bounded-multiplicity, and
 resolved-separation semantics; the cap test exercises that worst-case shape.
@@ -529,7 +600,8 @@ None. Workspace `unsafe_code = "deny"` applies.
 
 ## Feature flags
 
-None. This is solid-spine admission/truth infrastructure, not a moonshot kernel.
+None. The RB.M1 moonshot is represented only as typed statement/conjecture data;
+no numerical or theorem-authority path is promoted into default execution.
 
 ## Conformance evidence
 
@@ -551,6 +623,12 @@ None. This is solid-spine admission/truth infrastructure, not a moonshot kernel.
   accounting, projective-prefix placement, algebraic/geometric capacity,
   explicit undefined-separation no-claim, impossible cluster states, and
   deterministic malformed-input reports.
+- `tests/bridge.rs`: G0/G3/G5 battery covering canonical statement replay,
+  exact orientation/endpoint transforms, required hypothesis/falsifier gates,
+  neutral/tangential/essential-spectrum cases, machine-count separation,
+  implication cycles and missing scopes, retained refutations,
+  schema/convention/reviewer mutation, budgets, cancellation, and no-theorem
+  authority.
 
 The eigensolver-service battery is `tests/service.rs` (sv-001..010,
 printed measurements): dense-reference accuracy falsification for both
@@ -577,6 +655,14 @@ RB.1a does not implement or claim:
   cancellation, or convergence;
 - sparse production sheaf-Laplacian eigensolving; or
 - completeness merely because a requested scope exists.
+
+RB.M1 additionally does not prove a Maslov--Krein--Evans equality, validate an
+opaque witness/proof/checker scientifically, derive a physical instability
+from a spectral crossing, remove neutral/endpoint/essential-spectrum
+obstructions, or replace formal/native checking and independent adjudication.
+Its validated token proves only bounded schema closure, explicit hypothesis and
+falsifier coverage, acyclic lattice shape, executable convention bookkeeping,
+and deterministic identity.
 
 Those belong to RB.1b/RB.1c/RB.1d and later solver, evidence, routing, and
 ledger beads. Until then, missing evidence remains an explicit refusal or

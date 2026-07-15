@@ -26,6 +26,10 @@
 //! - validates one-way, content-addressed physical-domain crosswalks without
 //!   importing higher-layer physical models or inventing reverse maps —
 //!   [`adapter`];
+//! - validates versioned Maslov--Krein--Evans theorem statements, explicit
+//!   hypothesis/implication lattices, convention transforms, and preregistered
+//!   falsifiers without treating proof references as theorem authority —
+//!   [`bridge`];
 //! - validates orthogonal set-valued result truth (authority, algebraic
 //!   coverage, cluster/internal separation, projective accounting, and
 //!   termination) against the complete admitted problem — [`truth`].
@@ -36,6 +40,7 @@ use fs_evidence::{Color, ColorRank};
 
 pub mod adapter;
 pub mod admission;
+pub mod bridge;
 pub mod service;
 pub mod truth;
 
