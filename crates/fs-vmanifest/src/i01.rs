@@ -33,7 +33,7 @@ pub fn i01_draft() -> ManifestDraft {
             budgets: "smoke tier <= 60 s on one host; core tier <= 30 min; max tier <= 8 h \
                       on a quiet perf host; <= 16 GiB memory per lane; accuracy budgets \
                       are the per-claim tolerance fields",
-            versions: "fs-vmanifest schema v1; manifest version 1; toolchain pinned by \
+            versions: "fs-vmanifest schema v2; toolchain pinned by \
                        rust-toolchain.toml; sibling pins by constellation.lock",
             capabilities: "no network; no FFI; deterministic mode mandatory for every G5 \
                            row; frontier/moonshot lanes stay behind feature flags",

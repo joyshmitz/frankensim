@@ -41,7 +41,7 @@ pub fn i12_draft() -> ManifestDraft {
                       subdivision and Zeno budgets are declared per obligation and \
                       exhaustion is a typed set-valued outcome, never a silent stop; \
                       accuracy budgets are the per-claim tolerance fields",
-            versions: "fs-vmanifest schema v1; manifest version 1; toolchain pinned by \
+            versions: "fs-vmanifest schema v2; toolchain pinned by \
                        rust-toolchain.toml; sibling pins by constellation.lock",
             capabilities: "no network; no FFI; deterministic mode mandatory for every G5 \
                            row; frontier/moonshot lanes stay behind feature flags; the \
