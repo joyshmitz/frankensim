@@ -13,11 +13,44 @@ structure; FLUX/UQ execute it.
 
 - `ProblemBuilder` → `Problem`: hash-consed expression arena (repeated
   subexpressions return the SAME `NodeId` — CSE by construction).
-  Every constructor validates: shapes (`Scalar`/`Vector(n)`), fs-qty
-  DIMENSIONS (add/compare need equal dims; mul/dot add exponents; div
-  subtracts; powi scales with checked refusal rather than clamping; sqrt halves even exponents; transcendentals
-  demand dimensionless), node/variable existence, parameter ranges,
-  and scalar-only objective/constraint roots.
+  `Problem` is SEALED: fields are crate-private; the public surface is
+  read-only accessors (`vars()`, `exprs()`, `objectives()`,
+  `constraints()`, `tags()`, `budget()`) plus CHECKED id-indexed
+  accessors (`expr`, `variable`, `shape`, `node_dims`, `class`,
+  `reachable`) that refuse unknown ids instead of panicking. Every
+  builder constructor validates through the SAME versioned leaf rules
+  the admission validator uses (`derive_expr` + leaf policies):
+  shapes (`Scalar`/`Vector(n)`), fs-qty DIMENSIONS (add/compare need
+  equal dims; mul/div/dot/norm_sq combine exponents with CHECKED
+  refusal — no silent saturation; powi scales with checked refusal;
+  sqrt halves even exponents; transcendentals demand dimensionless),
+  node/variable existence, parameter ranges, FINITE constants (exact
+  bit pattern retained in the refusal), finite NONNEGATIVE objective
+  weights (`-0.0` refused; `Sense` carries direction), manifold
+  policy (`Rn` dim ≥ 1, `Sphere` ambient ≥ 2, `Stiefel` 1 ≤ p ≤ n,
+  CHECKED point/tangent formulas), validated tags (nonzero capped
+  fidelity levels, finite open-interval chance probabilities, typed
+  bilevel references), scalar-only objective/constraint roots, and
+  versioned per-item/aggregate caps (`AdmissionCaps`,
+  `ProblemBuilder::with_caps`). Rejection leaves intern tables, ids,
+  budget, and ordering unchanged.
+- `Problem::admit` / `admit_with_caps` → `ProblemAdmission`: the
+  single versioned re-validation chokepoint (schema
+  `ADMISSION_SCHEMA_VERSION`). Re-derives every node's
+  shape/dims/class from the expression list (cache agreement),
+  proves reference validity and acyclicity from arena ordering,
+  re-checks every leaf policy and cap, and returns a COMPLETE
+  deterministically ordered `AdmissionReport` on refusal — or mints
+  the `ProblemSemanticId` and lists quarantined legacy identities on
+  success. Builder output always admits (same rules, pinned by test).
+- Identity is DOMAIN-SEPARATED with no implicit conversion:
+  `ProblemSemanticId` (BLAKE3 over the domain-tagged canonical v3
+  body; minted by admission; publicly constructible from a full-width
+  hash only as a bilevel REFERENCE), `WireContentId` (BLAKE3 over the
+  domain-tagged exact artifact bytes; minted ONLY by
+  `serialize_with_id`/strict parsing — programmatic construction
+  never manufactures one), and `LegacyProblemHash` (the quarantined
+  FNV-1a 64; correlation and corruption tripwire only, NO authority).
 - Node kinds: arithmetic (`add/sub/mul/div/neg/powi/sqrt/exp/ln/
   tanh`), vector reductions (`dot/norm_sq/component`), kinks
   (`min/max/abs` — C0), `pde_residual` (FLUX study reference with
@@ -38,29 +71,41 @@ structure; FLUX/UQ execute it.
   iterates stay ON their manifolds.
 - Structure: multi-objective (weights), constraint KINDS (`EqZero`,
   `LeZero` — semantics/repair are fs-constraint's), `ProblemTag`
-  (multi-fidelity, chance-constrained, bilevel-by-hash), `EvalBudget`
-  (P4, enforced by consumers).
-- Serialization: `serialize` writes the canonical six-base `fsopt v2`
+  (multi-fidelity, chance-constrained, bilevel via typed
+  `BilevelRef`: `Semantic(ProblemSemanticId)` full-width or
+  `LegacyFnv(LegacyProblemHash)` QUARANTINED — never interchangeable,
+  never widened), `EvalBudget` (P4, enforced by consumers).
+- Serialization: `serialize` writes the canonical six-base `fsopt v3`
   line-based text form and `parse` round-trips it BITWISE (floats travel as
-  bit patterns). `parse_with_version` also accepts strict explicit `fsopt v1`
+  bit patterns); `serialize_with_id` additionally mints the artifact's
+  `WireContentId`. In v3, `tag bilevel <64-hex>` carries a semantic id and
+  `tag bilevel_legacy <16-hex>` keeps a quarantined legacy identity
+  EXPLICIT. v2 input (`tag bilevel <16-hex>`) remains readable with the
+  identity quarantined in the type; the v2 → v3 step is a pure
+  identity-typing re-encoding with no semantic receipt.
+  `parse_with_version` also accepts strict explicit `fsopt v1`
   bytes emitted by either known historical v1 token writer, maps the absent
   amount exponent to `mol = 0`, and returns an immutable
   `DimensionCrosswalkReceipt`. Headerless input is refused because no
   historical writer emitted it and it has no authoritative schema identity.
-  The receipt
-  binds BLAKE3 hashes of the complete old artifact and complete canonical v2
-  artifact under the sole `AppendMoleZero` rule; `parse` refuses v1 because it
+  The receipt binds BLAKE3 hashes of the complete old artifact and the
+  complete canonical V2 target artifact (where the five-to-six dimension
+  semantics land; re-derivable via `canonical_v2_migration_target`) under
+  the sole `AppendMoleZero` rule; `parse` refuses v1 because it
   cannot return that mandatory evidence. `ParsedProblem` keeps its fields
-  private and exposes read-only provenance accessors plus `into_parts`, so an
-  inconsistent source-version/hash/receipt tuple cannot be constructed through
+  private and exposes read-only provenance accessors (`source_version`,
+  typed `source_hash`, `wire_content_id`, `migration`) plus `into_parts`,
+  so an inconsistent provenance tuple cannot be constructed through
   the public API. Every admitted artifact has exactly one terminal `hash`
-  directive;
-  `problem_hash` (in-house FNV-1a 64 over the canonical body) is the
-  study identity. Legacy FNV identity is verified over the historical v1 body
-  without normalization into v2. The reader rebuilds an exact canonical v1
+  directive; `problem_hash` (in-house FNV-1a 64 over the canonical body,
+  returned as the quarantined `LegacyProblemHash` type) is correlation
+  only — semantic identity is admission's `ProblemSemanticId`. Legacy FNV
+  integrity is verified over the historical v1 body
+  without normalization. The reader rebuilds an exact canonical v1
   artifact using both known historical v1 token encodings and requires complete
   byte equality with one of them before it may issue the sole-rule receipt;
-  v2 receives the same complete-byte comparison against `serialize`. CRLF,
+  v2/v3 receive the same complete-byte comparison against their canonical
+  writers. CRLF,
   blank/missing-final-newline forms, noncanonical token spellings, malformed
   escapes, wrong IDs, extra fields, and duplicate/missing budget directives
   therefore refuse even when their recomputed FNV is internally consistent.
@@ -119,18 +164,27 @@ structure; FLUX/UQ execute it.
 ## Error model
 
 `OptError` teaching errors throughout: unknown ids, shape/dimension
-mismatches and dimension overflow (with exponent vectors shown), non-dimensionless
+mismatches and dimension overflow (with exponent vectors shown; both
+scaling `DimOverflow` and combining `DimSumOverflow`), non-dimensionless
 transcendentals, odd-sqrt dims, bad parameters/indices, non-scalar
-roots, `NonsmoothForFamily` (node + kind + class),
+roots, `ManifoldInvalid` (violated policy named), `NonFinite` (payload
+name + exact bit pattern), `CapExceeded` (cap name + count + limit),
+`BindingCount`/`BindingLen` (declared vs supplied),
+`NonsmoothForFamily` (node + kind + class),
 `NoAdjoint` (node + study), `Unevaluable` (node + executor), `Parse`
 (line + what), `Cancelled`, `BudgetExhausted` (spent count receipt).
+Whole-problem re-validation refuses with a COMPLETE, deterministically
+ordered `AdmissionReport` (section by section, ascending index), never
+a first-error-only refusal.
 
 ## Determinism class
 
 Fully deterministic: `BTreeMap` interning, index-ordered ids, bitwise
-float serialization, in-house FNV hashing, no time or randomness.
-Identical build sequences give identical problems, hashes, and bytes
-(opt-002/003 are the trip-wires).
+float serialization, in-house FNV hashing, domain-separated BLAKE3
+identity minting, no time or randomness.
+Identical build sequences give identical problems, semantic ids,
+hashes, and bytes; identical rejections give identical reports
+(opt-002/003 and adm-004/005/006 are the trip-wires).
 
 ## Cancellation behavior
 
@@ -160,6 +214,15 @@ seeded LCG randomness, fs-obs Custom event carrying the fixture
 problem hash and routing refusal. Any reimplementation must pass the
 suite unchanged.
 
+`tests/admission.rs`, cases adm-001..adm-012 (bead sj31i.48) — G0
+leaf-policy tables (manifold boundaries incl. checked `Stiefel`
+overflow, non-finite payloads with bit retention, weight policy incl.
+`-0.0`, tag domains, checked dimension combining), builder-rollback
+identity, builder/admission agreement, mutation-sensitive semantic
+identity, deterministic complete admission reports under explicit
+caps, domain-separated identity round trips, v3 bilevel + legacy
+quarantine, checked id accessors, and binding validation.
+
 `tests/guard.rs` (Proposal D, 15 cases): no-steps→provisional-not-honored;
 all-pass→cleared→honored; a veto→failed with a finding; an unregistered
 step keeps the endpoint provisional (never cleared on a skipped check);
@@ -182,8 +245,24 @@ provisional).
   fs-constraint's; this crate carries kind + name only.
 - FrankenScript `ascent.optimize` lowering binds to this IR when the
   HELM surface lands.
-- Bilevel tags reference inner problems by hash; inner-problem
-  storage/resolution is a later bead.
+- Bilevel tags reference inner problems by TYPED identity; admission
+  does not verify that a referenced inner problem exists, was
+  admitted, or matches its id — inner-problem storage/resolution is a
+  later bead. Legacy FNV references are quarantined provenance, never
+  upgraded, and confer no authority.
+- `ProblemSemanticId` normalization is exactly the canonical v3 body:
+  hash-consing dedupes structurally identical subexpressions, but no
+  deeper equivalence (variable renaming, algebraic identities,
+  objective reordering) is folded — two problems can mean the same
+  mathematics and carry different semantic ids.
+- Direct `Problem` construction/mutation is prevented by sealed
+  (crate-private) fields — the compiler enforces the seal. A
+  trybuild-style compile-fail harness pinning that property as a test
+  artifact is tracked follow-up work, as is a G4 adversarial
+  storm/cancellation lane for admission itself.
+- `ProblemAdmission` proves the checks RAN; it is not an authenticity
+  or provenance anchor (no signature, no ledger binding here — HELM
+  owns that).
 - `Stiefel` descent uses ambient FD directions (overcomplete but
   convergent with the QR retraction); proper tangent bases join with
   the gradient stack.

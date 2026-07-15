@@ -705,7 +705,10 @@ impl Problem {
     ///
     /// # Errors
     /// A complete, deterministically ordered [`AdmissionReport`].
-    pub fn admit_with_caps(&self, caps: &AdmissionCaps) -> Result<ProblemAdmission, AdmissionReport> {
+    pub fn admit_with_caps(
+        &self,
+        caps: &AdmissionCaps,
+    ) -> Result<ProblemAdmission, AdmissionReport> {
         admission::admit_with_caps(self, caps)
     }
 

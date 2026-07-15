@@ -1164,8 +1164,8 @@ fn parse_expr(
 #[cfg(test)]
 mod tests {
     use super::{
-        ContentHash, FiveToSixRule, TokenEncoding, WireVersion, canonical_v2_migration_target,
-        esc, fnv1a, parse, parse_with_version, problem_hash, serialize, serialize_for_wire, unesc,
+        ContentHash, FiveToSixRule, TokenEncoding, WireVersion, canonical_v2_migration_target, esc,
+        fnv1a, parse, parse_with_version, problem_hash, serialize, serialize_for_wire, unesc,
     };
     use crate::ir::{NodeId, ProblemBuilder, Sense};
     use fs_qty::Dims;

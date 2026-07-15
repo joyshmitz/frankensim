@@ -34,7 +34,9 @@ fn product_problem() -> (fs_opt::Problem, Vec<f64>) {
 /// sealed `Problem` no longer exposes a mutable budget field.
 fn product_problem_budgeted(max_evals: u64) -> (fs_opt::Problem, Vec<f64>) {
     let mut b = ProblemBuilder::new();
-    let v = b.var("v", Manifold::Sphere { ambient: 3 }, D0).expect("var v");
+    let v = b
+        .var("v", Manifold::Sphere { ambient: 3 }, D0)
+        .expect("var v");
     let z = b.var("z", Manifold::Rn { dim: 2 }, D0).expect("var z");
     let vref = b.var_ref(v).expect("v node");
     let zref = b.var_ref(z).expect("z node");

@@ -13,11 +13,11 @@
 //! deterministic order (section by section, ascending index), never a
 //! first-error-only refusal.
 
+use crate::ir::Class;
 use crate::ir::{
     BilevelRef, Expr, Manifold, NodeId, OptError, Problem, ProblemTag, Shape, Variable, children,
     own_class,
 };
-use crate::ir::Class;
 use crate::serial::{LegacyProblemHash, ProblemSemanticId};
 use fs_qty::Dims;
 
@@ -566,11 +566,13 @@ pub(crate) fn derive_expr(
             let d = info.1.0;
             let mut scaled = [0i8; 6];
             for (out, &b) in scaled.iter_mut().zip(&d) {
-                let product = i32::from(b).checked_mul(*exp).ok_or(OptError::DimOverflow {
-                    op: "powi",
-                    dims: d,
-                    exponent: *exp,
-                })?;
+                let product = i32::from(b)
+                    .checked_mul(*exp)
+                    .ok_or(OptError::DimOverflow {
+                        op: "powi",
+                        dims: d,
+                        exponent: *exp,
+                    })?;
                 *out = i8::try_from(product).map_err(|_| OptError::DimOverflow {
                     op: "powi",
                     dims: d,
@@ -617,10 +619,7 @@ pub(crate) fn derive_expr(
         Expr::NormSq(a) => {
             let info = get(*a)?;
             match info.0 {
-                Shape::Vector(_) => (
-                    Shape::Scalar,
-                    dims_add_checked(info.1, info.1, "norm_sq")?,
-                ),
+                Shape::Vector(_) => (Shape::Scalar, dims_add_checked(info.1, info.1, "norm_sq")?),
                 s @ Shape::Scalar => {
                     return Err(OptError::ShapeMismatch {
                         op: "norm_sq",
@@ -702,7 +701,11 @@ pub(crate) fn admit_with_caps(
     // Section 1: aggregate caps and metadata-vector alignment.
     let n_nodes = problem.exprs.len() as u64;
     let aggregate: [(&'static str, u64, u64); 5] = [
-        ("variables", problem.vars.len() as u64, u64::from(caps.max_vars)),
+        (
+            "variables",
+            problem.vars.len() as u64,
+            u64::from(caps.max_vars),
+        ),
         ("expression nodes", n_nodes, u64::from(caps.max_nodes)),
         (
             "objectives",
@@ -744,8 +747,7 @@ pub(crate) fn admit_with_caps(
         }
         match validate_manifold(&var.manifold, caps) {
             Ok(()) => {
-                let storage =
-                    u64::from(var.manifold.point_dim().unwrap_or(u32::MAX));
+                let storage = u64::from(var.manifold.point_dim().unwrap_or(u32::MAX));
                 total_point_storage = total_point_storage.saturating_add(storage);
             }
             Err(error) => violations.push(AdmissionViolation::Var { index, error }),

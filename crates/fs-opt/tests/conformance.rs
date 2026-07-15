@@ -101,12 +101,16 @@ fn opt_001_validation_teaches() {
         e.to_string().contains("dimensionless")
     };
     // sqrt of m³ → OddDims.
-    let m3 = b.konst(1.0, Dims([3, 0, 0, 0, 0, 0])).expect("finite konst");
+    let m3 = b
+        .konst(1.0, Dims([3, 0, 0, 0, 0, 0]))
+        .expect("finite konst");
     let odd_err = b.sqrt(m3).expect_err("odd dims").to_string();
     let pow_dims_checked = {
         let mut powers = ProblemBuilder::new();
         let m = powers.konst(2.0, METER).expect("finite konst");
-        let m2 = powers.konst(2.0, Dims([2, 0, 0, 0, 0, 0])).expect("finite konst");
+        let m2 = powers
+            .konst(2.0, Dims([2, 0, 0, 0, 0, 0]))
+            .expect("finite konst");
         let m101 = powers.powi(m, 101).expect("m^101 is representable");
         let overflow = powers.powi(m2, 100).expect_err("m^200 cannot fit i8 dims");
         let problem = powers.finish();
@@ -289,9 +293,13 @@ fn fixture() -> fs_opt::Problem {
     let _ = q;
     let tr = b.var_ref(theta).expect("ref");
     let compliance = b.norm_sq(tr).expect("norm_sq");
-    let limit = b.konst(4.0, Dims([2, 0, 0, 0, 0, 0])).expect("finite konst");
+    let limit = b
+        .konst(4.0, Dims([2, 0, 0, 0, 0, 0]))
+        .expect("finite konst");
     let excess = b.sub(compliance, limit).expect("sub");
-    let zero = b.konst(0.0, Dims([2, 0, 0, 0, 0, 0])).expect("finite konst");
+    let zero = b
+        .konst(0.0, Dims([2, 0, 0, 0, 0, 0]))
+        .expect("finite konst");
     let hinge = b.max_of(excess, zero).expect("max");
     let pde = b
         .pde_residual("stokes-channel", theta, true, Dims::NONE)
@@ -302,7 +310,8 @@ fn fixture() -> fs_opt::Problem {
     b.objective(risk, Sense::Minimize, 0.25).expect("obj2");
     b.constraint(hinge, ConstraintKind::LeZero, "compliance-cap")
         .expect("con");
-    b.tag(ProblemTag::ChanceConstrained { prob: 0.99 }).expect("tag");
+    b.tag(ProblemTag::ChanceConstrained { prob: 0.99 })
+        .expect("tag");
     b.tag(ProblemTag::MultiFidelity { levels: 3 }).expect("tag");
     b.set_budget(10_000);
     b.finish()
@@ -402,7 +411,9 @@ fn opt_002b_legacy_crosswalk_receipt_is_structured_and_logged() {
 #[test]
 fn opt_003_cse_and_substitution() {
     let mut b = ProblemBuilder::new();
-    let x = b.var("x", Manifold::Rn { dim: 2 }, Dims::NONE).expect("var");
+    let x = b
+        .var("x", Manifold::Rn { dim: 2 }, Dims::NONE)
+        .expect("var");
     let xr = b.var_ref(x).expect("ref");
     let n1 = b.norm_sq(xr).expect("n1");
     let n2 = b.norm_sq(xr).expect("n2");
@@ -424,7 +435,9 @@ fn opt_003_cse_and_substitution() {
         let p = vec![rng.unit() * 4.0 - 2.0, rng.unit() * 4.0 - 2.0];
         let problem = {
             let mut bb = ProblemBuilder::new();
-            let v = bb.var("x", Manifold::Rn { dim: 2 }, Dims::NONE).expect("var");
+            let v = bb
+                .var("x", Manifold::Rn { dim: 2 }, Dims::NONE)
+                .expect("var");
             let r = bb.var_ref(v).expect("r");
             let n = bb.norm_sq(r).expect("n");
             let n2b = bb.mul(n, n).expect("n2");
@@ -446,7 +459,9 @@ fn opt_003_cse_and_substitution() {
     }
     // Identity laws, bitwise.
     let mut ib = ProblemBuilder::new();
-    let v = ib.var("v", Manifold::Rn { dim: 1 }, Dims::NONE).expect("var");
+    let v = ib
+        .var("v", Manifold::Rn { dim: 1 }, Dims::NONE)
+        .expect("var");
     let r = ib.var_ref(v).expect("r");
     let c = ib.component(r, 0).expect("c");
     let neg2 = {
@@ -508,7 +523,9 @@ fn opt_004_class_routing() {
     // Adjoint-less PDE → refused for L-BFGS even when smooth.
     let no_adj = {
         let mut b = ProblemBuilder::new();
-        let v = b.var("v", Manifold::Rn { dim: 2 }, Dims::NONE).expect("var");
+        let v = b
+            .var("v", Manifold::Rn { dim: 2 }, Dims::NONE)
+            .expect("var");
         let pde = b
             .pde_residual("heat-steady", v, false, Dims::NONE)
             .expect("pde");
@@ -520,8 +537,8 @@ fn opt_004_class_routing() {
         ) && p2.route(OptimizerFamily::GradientFree).is_ok()
     };
     let trace = p.class_trace();
-    let trace_ok =
-        trace.len() == p.exprs().len() && trace.iter().any(|l| l.contains("max") && l.contains("C0"));
+    let trace_ok = trace.len() == p.exprs().len()
+        && trace.iter().any(|l| l.contains("max") && l.contains("C0"));
     let mut em = fs_obs::Emitter::new("fs-opt/conformance", "opt-004/classes");
     let line = em
         .emit(
@@ -696,7 +713,9 @@ fn opt_006_budget_and_cancellation() {
     with_cx(|cx| {
         let build = |max_evals: u64| {
             let mut b = ProblemBuilder::new();
-            let v = b.var("x", Manifold::Rn { dim: 4 }, Dims::NONE).expect("var");
+            let v = b
+                .var("x", Manifold::Rn { dim: 4 }, Dims::NONE)
+                .expect("var");
             let r = b.var_ref(v).expect("r");
             let n = b.norm_sq(r).expect("n");
             b.objective(n, Sense::Minimize, 1.0).expect("obj");

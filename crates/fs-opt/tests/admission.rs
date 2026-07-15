@@ -12,8 +12,8 @@
 
 use fs_opt::{
     AdmissionCaps, AdmissionViolation, BilevelRef, Manifold, NodeId, OptError, ProblemBuilder,
-    ProblemSemanticId, ProblemTag, Sense, VarId, WireVersion, canonical_v2_migration_target,
-    eval, parse, parse_with_version, problem_hash, serialize, serialize_with_id,
+    ProblemSemanticId, ProblemTag, Sense, VarId, WireVersion, canonical_v2_migration_target, eval,
+    parse, parse_with_version, problem_hash, serialize, serialize_with_id,
 };
 use fs_qty::Dims;
 
@@ -21,7 +21,9 @@ const METER: Dims = Dims([1, 0, 0, 0, 0, 0]);
 
 fn simple_problem(constant: f64) -> fs_opt::Problem {
     let mut b = ProblemBuilder::new();
-    let v = b.var("x", Manifold::Rn { dim: 2 }, Dims::NONE).expect("var");
+    let v = b
+        .var("x", Manifold::Rn { dim: 2 }, Dims::NONE)
+        .expect("var");
     let r = b.var_ref(v).expect("ref");
     let n = b.norm_sq(r).expect("norm_sq");
     let c = b.konst(constant, Dims::NONE).expect("konst");
@@ -52,7 +54,10 @@ fn adm_001_manifold_leaf_policies() {
     // not an overflow wrap.
     assert!(matches!(
         b.var("sx", Manifold::Sphere { ambient: u32::MAX }, Dims::NONE),
-        Err(OptError::CapExceeded { what: "variable point storage", .. })
+        Err(OptError::CapExceeded {
+            what: "variable point storage",
+            ..
+        })
     ));
     assert!(matches!(
         b.var("st0", Manifold::Stiefel { n: 4, p: 0 }, Dims::NONE),
@@ -107,11 +112,15 @@ fn adm_002_nonfinite_and_weight_policies() {
         Err(OptError::BadParam { .. })
     ));
     assert!(
-        matches!(b.objective(c, Sense::Minimize, -0.0), Err(OptError::BadParam { .. })),
+        matches!(
+            b.objective(c, Sense::Minimize, -0.0),
+            Err(OptError::BadParam { .. })
+        ),
         "-0.0 would give one meaning two bit-pattern wire identities"
     );
     b.objective(c, Sense::Minimize, 0.0).expect("+0.0 admits");
-    b.objective(c, Sense::Maximize, 2.5).expect("positive admits");
+    b.objective(c, Sense::Maximize, 2.5)
+        .expect("positive admits");
 }
 
 /// adm-003 — tag policies: nonzero capped fidelity levels, finite open
@@ -128,7 +137,8 @@ fn adm_003_tag_policies() {
         b.tag(ProblemTag::MultiFidelity { levels: cap + 1 }),
         Err(OptError::CapExceeded { .. })
     ));
-    b.tag(ProblemTag::MultiFidelity { levels: 1 }).expect("one level");
+    b.tag(ProblemTag::MultiFidelity { levels: 1 })
+        .expect("one level");
     for bad in [0.0, 1.0, -0.5, f64::NAN, f64::INFINITY] {
         assert!(
             matches!(
@@ -138,7 +148,8 @@ fn adm_003_tag_policies() {
             "chance prob {bad} must refuse"
         );
     }
-    b.tag(ProblemTag::ChanceConstrained { prob: 0.5 }).expect("open interval");
+    b.tag(ProblemTag::ChanceConstrained { prob: 0.5 })
+        .expect("open interval");
     let semantic = ProblemSemanticId::from_hex(
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     )
@@ -173,7 +184,8 @@ fn adm_004_rejection_leaves_builder_unchanged() {
         }
         let m2 = b.konst(4.0, Dims([2, 0, 0, 0, 0, 0])).expect("konst");
         let excess = b.sub(n, m2).expect("sub");
-        b.objective(excess, Sense::Minimize, 1.0).expect("objective");
+        b.objective(excess, Sense::Minimize, 1.0)
+            .expect("objective");
         b.finish()
     };
     let clean = build(false);
@@ -202,7 +214,9 @@ fn adm_005_builder_admission_agreement_and_identity() {
         simple_problem(2.0000000000000004), // one ulp: bit-pattern sensitivity
         {
             let mut b = ProblemBuilder::new();
-            let v = b.var("x", Manifold::Rn { dim: 2 }, Dims::NONE).expect("var");
+            let v = b
+                .var("x", Manifold::Rn { dim: 2 }, Dims::NONE)
+                .expect("var");
             let r = b.var_ref(v).expect("ref");
             let n = b.norm_sq(r).expect("norm_sq");
             let c = b.konst(2.0, Dims::NONE).expect("konst");
@@ -212,7 +226,9 @@ fn adm_005_builder_admission_agreement_and_identity() {
         },
         {
             let mut b = ProblemBuilder::new();
-            let v = b.var("x", Manifold::Rn { dim: 2 }, Dims::NONE).expect("var");
+            let v = b
+                .var("x", Manifold::Rn { dim: 2 }, Dims::NONE)
+                .expect("var");
             let r = b.var_ref(v).expect("ref");
             let n = b.norm_sq(r).expect("norm_sq");
             let c = b.konst(2.0, Dims::NONE).expect("konst");
@@ -222,7 +238,9 @@ fn adm_005_builder_admission_agreement_and_identity() {
         },
         {
             let mut b = ProblemBuilder::new();
-            let v = b.var("y", Manifold::Rn { dim: 2 }, Dims::NONE).expect("var");
+            let v = b
+                .var("y", Manifold::Rn { dim: 2 }, Dims::NONE)
+                .expect("var");
             let r = b.var_ref(v).expect("ref");
             let n = b.norm_sq(r).expect("norm_sq");
             let c = b.konst(2.0, Dims::NONE).expect("konst");
@@ -232,7 +250,9 @@ fn adm_005_builder_admission_agreement_and_identity() {
         },
         {
             let mut b = ProblemBuilder::new();
-            let v = b.var("x", Manifold::Rn { dim: 2 }, Dims::NONE).expect("var");
+            let v = b
+                .var("x", Manifold::Rn { dim: 2 }, Dims::NONE)
+                .expect("var");
             let r = b.var_ref(v).expect("ref");
             let n = b.norm_sq(r).expect("norm_sq");
             let c = b.konst(2.0, Dims::NONE).expect("konst");
@@ -243,7 +263,9 @@ fn adm_005_builder_admission_agreement_and_identity() {
         },
         {
             let mut b = ProblemBuilder::new();
-            let v = b.var("x", Manifold::Rn { dim: 2 }, Dims::NONE).expect("var");
+            let v = b
+                .var("x", Manifold::Rn { dim: 2 }, Dims::NONE)
+                .expect("var");
             let r = b.var_ref(v).expect("ref");
             let n = b.norm_sq(r).expect("norm_sq");
             let c = b.konst(2.0, Dims::NONE).expect("konst");
@@ -271,25 +293,37 @@ fn adm_006_admission_report_is_complete_and_deterministic() {
     let r0 = b.var_ref(VarId(0)).expect("ref");
     let n = b.norm_sq(r0).expect("norm_sq");
     b.objective(n, Sense::Minimize, 1.0).expect("objective");
-    b.constraint(n, fs_opt::ConstraintKind::LeZero, "c").expect("constraint");
+    b.constraint(n, fs_opt::ConstraintKind::LeZero, "c")
+        .expect("constraint");
     let p = b.finish();
 
     let mut caps = AdmissionCaps::default();
     caps.max_vars = 1;
     caps.max_constraints = 0;
     let report1 = p.admit_with_caps(&caps).expect_err("caps must refuse");
-    let report2 = p.admit_with_caps(&caps).expect_err("caps must refuse again");
+    let report2 = p
+        .admit_with_caps(&caps)
+        .expect_err("caps must refuse again");
     assert_eq!(report1, report2, "deterministic report replay");
-    assert!(report1.violations().len() >= 2, "COMPLETE report, not first-error");
+    assert!(
+        report1.violations().len() >= 2,
+        "COMPLETE report, not first-error"
+    );
     assert!(matches!(
         report1.violations()[0],
-        AdmissionViolation::Aggregate { what: "variables", .. }
+        AdmissionViolation::Aggregate {
+            what: "variables",
+            ..
+        }
     ));
     assert!(
-        report1
-            .violations()
-            .iter()
-            .any(|v| matches!(v, AdmissionViolation::Aggregate { what: "constraints", .. })),
+        report1.violations().iter().any(|v| matches!(
+            v,
+            AdmissionViolation::Aggregate {
+                what: "constraints",
+                ..
+            }
+        )),
         "constraint cap violation is also reported"
     );
     let text = report1.to_string();
@@ -315,7 +349,11 @@ fn adm_007_identity_domain_separation() {
     assert_eq!(reparsed.wire_content_id(), wire);
     assert_eq!(reparsed.source_version(), WireVersion::V3);
     assert_eq!(
-        reparsed.problem().admit().expect("reparse admits").semantic_id(),
+        reparsed
+            .problem()
+            .admit()
+            .expect("reparse admits")
+            .semantic_id(),
         semantic,
         "wire round trip preserves semantic identity"
     );
@@ -348,7 +386,12 @@ fn adm_008_v3_bilevel_roundtrip_and_legacy_quarantine() {
     assert!(text.contains(&format!("tag bilevel {}", semantic.to_hex())));
     let back = parse(&text).expect("v3 round trip");
     assert_eq!(back, p);
-    assert!(back.admit().expect("admits").quarantined_legacy_identities().is_empty());
+    assert!(
+        back.admit()
+            .expect("admits")
+            .quarantined_legacy_identities()
+            .is_empty()
+    );
 
     // Historical v2 spelling: quarantined on read, explicit on re-write.
     let mut lb = ProblemBuilder::new();
@@ -381,12 +424,24 @@ fn adm_008_v3_bilevel_roundtrip_and_legacy_quarantine() {
 fn adm_009_checked_id_accessors() {
     let p = simple_problem(1.0);
     let bogus = NodeId(9999);
-    assert!(matches!(p.shape(bogus), Err(OptError::UnknownNode { id: 9999 })));
-    assert!(matches!(p.node_dims(bogus), Err(OptError::UnknownNode { .. })));
+    assert!(matches!(
+        p.shape(bogus),
+        Err(OptError::UnknownNode { id: 9999 })
+    ));
+    assert!(matches!(
+        p.node_dims(bogus),
+        Err(OptError::UnknownNode { .. })
+    ));
     assert!(matches!(p.class(bogus), Err(OptError::UnknownNode { .. })));
     assert!(matches!(p.expr(bogus), Err(OptError::UnknownNode { .. })));
-    assert!(matches!(p.reachable(bogus), Err(OptError::UnknownNode { .. })));
-    assert!(matches!(p.variable(VarId(77)), Err(OptError::UnknownVar { id: 77 })));
+    assert!(matches!(
+        p.reachable(bogus),
+        Err(OptError::UnknownNode { .. })
+    ));
+    assert!(matches!(
+        p.variable(VarId(77)),
+        Err(OptError::UnknownVar { id: 77 })
+    ));
     let root = p.objectives()[0].node;
     assert!(p.reachable(root).expect("valid root").contains(&root));
     assert!(matches!(
@@ -408,7 +463,11 @@ fn adm_010_binding_validation() {
     ));
     assert!(matches!(
         eval(&p, root, &[vec![0.0, 0.0, 0.0]]),
-        Err(OptError::BindingLen { var: 0, expected: 2, got: 3 })
+        Err(OptError::BindingLen {
+            var: 0,
+            expected: 2,
+            got: 3
+        })
     ));
     assert!(matches!(
         eval(&p, root, &[]),
@@ -429,19 +488,34 @@ fn adm_011_caps_bind_incrementally() {
     let mut b = ProblemBuilder::with_caps(caps);
     assert!(matches!(
         b.var("waaaaay-too-long-name", Manifold::Rn { dim: 1 }, Dims::NONE),
-        Err(OptError::CapExceeded { what: "variable name", .. })
+        Err(OptError::CapExceeded {
+            what: "variable name",
+            ..
+        })
     ));
-    let v = b.var("x", Manifold::Rn { dim: 1 }, Dims::NONE).expect("var");
+    let v = b
+        .var("x", Manifold::Rn { dim: 1 }, Dims::NONE)
+        .expect("var");
     assert!(matches!(
         b.var("y", Manifold::Rn { dim: 1 }, Dims::NONE),
-        Err(OptError::CapExceeded { what: "variables", .. })
+        Err(OptError::CapExceeded {
+            what: "variables",
+            ..
+        })
     ));
     let r = b.var_ref(v).expect("node 1 of 2");
     let n = b.norm_sq(r).expect("node 2 of 2");
-    assert_eq!(b.var_ref(v).expect("interned duplicate"), r, "CSE under a full arena");
+    assert_eq!(
+        b.var_ref(v).expect("interned duplicate"),
+        r,
+        "CSE under a full arena"
+    );
     assert!(matches!(
         b.abs(n),
-        Err(OptError::CapExceeded { what: "expression nodes", .. })
+        Err(OptError::CapExceeded {
+            what: "expression nodes",
+            ..
+        })
     ));
 }
 
@@ -459,8 +533,5 @@ fn adm_012_checked_dimension_arithmetic() {
         Err(OptError::DimSumOverflow { op: "div", .. })
     ));
     let fine = b.mul(big, neg).expect("m^0 is representable");
-    assert_eq!(
-        b.finish().node_dims(fine).expect("known node"),
-        Dims::NONE
-    );
+    assert_eq!(b.finish().node_dims(fine).expect("known node"), Dims::NONE);
 }
