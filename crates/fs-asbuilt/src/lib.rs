@@ -30,6 +30,10 @@ use fs_evidence::color_leaf_identity_reason;
 pub use fs_evidence::{Color, ValidityDomain};
 use fs_ivl::Interval;
 
+/// Calibrated registration covariance, spatial propagation, simultaneous
+/// decision bounds, and authenticated evidence admission.
+pub mod uncertainty;
+
 const AS_BUILT_ESTIMATOR_DOMAIN: &str = "org.frankensim.fs-asbuilt.diff-estimator.v4";
 const AS_BUILT_ESTIMATOR_SCHEMA: &[u8] = b"fs-asbuilt-diff-estimator-v4";
 /// Identity-bound work-plan version for resource-driving scans and hashing.

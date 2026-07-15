@@ -9,8 +9,10 @@ as-built candidate.
 Layer L2 (representation/geometry). Depends on `fs-evidence` (`Color` and
 `ValidityDomain`), `fs-exec` (explicit `Cx`, execution mode, and budgets),
 `fs-ivl` (outward-rounded observability enclosures), and the native `fs-blake3`
-content-identity primitive. The scientific calculation is deterministic and
-uses a closed-form 2-D rigid fit (no SVD).
+content-identity primitive. The legacy scientific calculation is deterministic
+and uses a closed-form 2-D rigid fit (no SVD). The additive `uncertainty`
+module refits that transform under an explicit calibrated covariance model and
+keeps its stronger decision semantics separate from the residual-RMS screen.
 
 ## Public types and semantics
 
@@ -58,6 +60,36 @@ uses a closed-form 2-D rigid fit (no SVD).
   empty data, non-finite or negative numeric inputs, malformed calibration
   identity, arithmetic overflow, bounded-allocation failure, and typed
   invocation-budget refusal.
+- `uncertainty::{Covariance2, CrossFiducialModel, HuberPolicy, BiasBound,
+  MetrologyModel}` declares strictly positive-definite, heteroscedastic
+  per-fiducial covariance; within-pair x/y covariance; either independent or
+  symmetric-principal-factor equicorrelated standardized fiducials; a finite
+  radial bound on the total registered-inspection systematic vector error over
+  the complete query domain (or explicit unbounded state); and a bounded
+  deterministic robust policy. A raw fiducial/scanner bias is not accepted as
+  that already-propagated bound. Unknown cross-fiducial dependence refuses.
+- `uncertainty::estimate_calibrated_registration(fiducials, model, &Cx)`
+  globally solves the fixed-weight constrained system in
+  `(tx, ty, cos(theta), sin(theta))`, refitting after every Huber weight update.
+  It returns `CalibratedRegistration` with the full bit-symmetric 3x3
+  first-order covariance, exact `2n-3` degrees of freedom, final robust weights,
+  explicit outlier dispositions/standardized residuals, full-model leverage
+  diagnostics, and a domain-separated model identity. Ambiguous global
+  rotations refuse. Huber covariance is a frozen-weight sandwich and is marked
+  conditional; it cannot issue a finite-sample tolerance decision.
+- `uncertainty::assess_calibrated_as_built(...)` propagates pose uncertainty as
+  `G Cov(tx,ty,theta) G^T`, adds each independent inspection covariance exactly
+  once, and applies a familywise Chebyshev-plus-union radial bound. It returns
+  `DecisionState::{WithinTolerance, ExceedsTolerance, Indeterminate}` with
+  lower/upper maximum-deviation bounds, confidence, family size, and a stable
+  reason. Unknown registration/inspection overlap, unbounded bias, or adaptive
+  weights produces an explicit bound-unavailable `Indeterminate` result.
+- `uncertainty::{EvidenceReceipt, EvidenceVerifier,
+  AuthenticatedAsBuiltEvidence}` separates a full content identity from
+  authority. The opaque wrapper is constructible only after an injected
+  verifier accepts the exact candidate/receipt under the receipt-bound policy;
+  the default verifier denies everything. Authentication proves lineage, not
+  physical validation or the calibration assumptions.
 
 ## Invariants
 
@@ -122,6 +154,37 @@ uses a closed-form 2-D rigid fit (no SVD).
   and its 256-point/256-byte strides, plus all scientific and provenance inputs.
   `StreamKey` is intentionally not part of this identity. Registration has no
   retained execution identity in this crate.
+- Spatial covariance uses the rigid Jacobian ordered as `(tx, ty, theta)` and
+  retains every translation/rotation cross term. Fiducial covariance factors
+  are symmetric principal square roots, so the declared standardized
+  equicorrelation is not an axis-order-dependent Cholesky convention. The
+  equicorrelation domain is strict `-1/(n-1) < rho < 1`; boundaries are never
+  clamped. Robust weighting is supported only for independent fiducials. Each
+  fixed-weight transform is the global unit-circle trust-region minimum after
+  eliminating translation; hard cases with multiple minima refuse. The local
+  sensitivity includes the global solver's trust multiplier, and covariance is
+  symmetrized once and revalidated as positive definite before publication.
+- The calibrated model never converts `Registration::residual_rms` into pose or
+  pointwise uncertainty. Absolute calibrated fiducial covariance determines
+  parameter covariance; scaling it again by residual scatter and then adding
+  residual RMS pointwise would double count the same fit error.
+- For a disjoint inspection family of size `M`, confidence `1-alpha`, total
+  point covariance `S_j`, and finite radial bias `b`, the simultaneous radius
+  is `b + sqrt(trace(S_j) * M / alpha)`. The maximum lower bound is
+  `max_j max(0, observed_j-radius_j)` and the upper bound is
+  `max_j(observed_j+radius_j)`. The union bound assumes no independence among
+  inspection points, but it does require calibrated covariance upper models
+  and disjointness from the registration measurements. Rotation sine/cosine,
+  affine mapping, pose trace, inspection trace, observed norm, radius, and
+  final lower/upper arithmetic use `fs-ivl` outward enclosures so
+  round-to-nearest equality cannot false-accept.
+- Registration-model identity v1 binds the factor/correlation/robust/bias
+  model, calibration identity, every ordered fiducial and covariance, final
+  transform/covariance, standardized residual, weight, outlier disposition,
+  leverage diagnostic, global-solver semantics, and degrees-of-freedom
+  semantics. Spatial-evidence identity v1 additionally binds every inspection
+  pair/covariance, relation, tolerance, confidence, point bound, and tri-state
+  output. Both canonicalize signed zero and are tamper-evident addresses only.
 
 ## Error model
 
@@ -133,12 +196,20 @@ resource refusal from `fs-exec`; a scientific preflight or domain refusal is
 also latched fail-closed into that invocation.
 Deviation allocation uses `try_reserve_exact`; no public path intentionally
 panics.
+`uncertainty::SpatialUncertaintyError` separately names malformed covariance,
+correlation, confidence, geometry, dependence, arithmetic, allocation, and
+cancellation failures. Unknown scientific dependence is never silently
+converted to independence.
 
 ## Determinism class
 
-The fit, gate, and δ are deterministic functions of their semantic inputs.
+The fit, gate, δ, and calibrated spatial model are deterministic functions of
+their semantic inputs.
 G5 tests lock that mode, budget, work-plan, poll-policy version, and stride move
 the retained diff identity without changing the numerical result.
+The calibrated module uses fixed iteration counts, ordered scans, symmetric
+covariance factors, canonical binary64 identity fields, and no scheduling-
+dependent reduction.
 
 ## Cancellation behavior
 
@@ -149,6 +220,10 @@ returns `RegError::Cancelled` with exact progress and no partial output.
 The budgeted forms poll the child authority, which checks its absolute clock
 and originating cancellation gate before spending each poll. Typed output is
 not published after a deadline, cancellation, resource, or scientific refusal.
+The calibrated registration and spatial assessment also take an explicit `Cx`,
+poll at bounded 256-point scan boundaries plus finalization, and publish no
+partial result after cancellation. They do not yet have affine `ChildBudget`
+entry points; this absence is a no-claim, not declared resource enforcement.
 
 ## Unsafe boundary
 
@@ -170,6 +245,18 @@ diff execution, retained last-maximum index ties, and receipt integrity; G4
 pre-cancel, exact stride-boundary, mid-phase, and publication cancellation; and
 G5 execution/work/poll identity separation.
 
+`tests/spatial_uncertainty.rs`: G0 analytic independent/equicorrelated
+cardinal-geometry covariance and leverage, covariance/correlation/rank refusal,
+ambiguous-rotation refusal, direct-construction Huber validation,
+robust-outlier disposition/downweighting with conditional no-claim,
+pose-plus-inspection propagation without residual double counting, far-point
+rotational leverage, outward tolerance equality at zero and nonzero rotation,
+total-bias application, family-size widening, all three decision states,
+overlap/bias no-claims, G3
+heteroscedastic off-diagonal unit/order metamorphisms, G5 semantic identity
+movement/replay, receipt mutation/policy refusal, and pre-cancel publication
+refusal.
+
 ## No-claim boundaries
 
 - v1 is 2-D rigid registration (rotation + translation) with KNOWN
@@ -189,10 +276,25 @@ G5 execution/work/poll identity separation.
 - `well_posed`, `within_tolerance`, and `above_noise_floor` are advisory
   residual/dispersion screens, not pointwise uncertainty bounds, statistical
   significance tests, or tolerance certificates.
-- Calibration authenticity is an explicit no-claim. A future Validated
-  promotion must inject a typed verifier, verify retained calibration artifact
-  bytes/content hash under a declared policy, and bind that verification
-  receipt. No such API exists in the current crate.
+- The calibrated module provides evidence-bearing tri-state bounds, but the
+  legacy boolean API remains for compatibility until downstream consumers
+  migrate. Those booleans are not projections of the calibrated bounds and
+  must not be promoted.
+- Spatial evidence remains first-order and conditional on the supplied
+  calibrated covariance/correlation and a bound on total systematic error over
+  the queried domain. Raw sensor/fiducial bias is not automatically a spatial
+  registration-bias bound. Huber sandwich covariance does not cover
+  data-dependent weight selection, so its decision is deliberately
+  unavailable. No Gaussian, exact nonlinear confidence,
+  unknown-dependence, or high-leverage asymptotic claim is made.
+- `EvidenceVerifier` authenticates retained lineage/policy binding only. It
+  does not independently prove calibration artifact contents, the declared
+  noise law, physical validation, or coverage. A lying injected verifier is an
+  explicit composition-root trust failure; `NoEvidenceVerifier` admits
+  nothing.
+- Registration/inspection sample reuse needs retained cross-covariance and
+  influence terms that v1 does not accept. Unknown or overlapping input is
+  `Indeterminate` with no numeric bound rather than a zero-correlation guess.
 - Point-visit work is a deterministic logical accounting unit, not an
   instruction count or a guarantee about wall-clock latency, memory pressure,
   deadline enforcement, drain behavior, or a 200-microsecond cancellation
