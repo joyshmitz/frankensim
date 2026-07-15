@@ -393,14 +393,20 @@ pub fn separation_over<A: Chart, B: Chart, O: ClearanceOracle<A, B>>(
         }
     }
 
-    let root = inflate_lower(span, oracle.lower_bound_over(a, b, span, cx)?)?;
+    cx.checkpoint().map_err(|_| MotionError::Cancelled)?;
+    let root_evidence = oracle.lower_bound_over(a, b, span, cx)?;
+    cx.checkpoint().map_err(|_| MotionError::Cancelled)?;
+    let root = inflate_lower(span, root_evidence)?;
     let mut cells = vec![root];
     let mut best_witness: Option<AcceptedWitness> = None;
     let mut witness_attempts = 0usize;
     let mut admitted_witnesses = 0usize;
     for time in [span.lo(), span.midpoint(), span.hi()] {
+        cx.checkpoint().map_err(|_| MotionError::Cancelled)?;
         witness_attempts += 1;
-        if let Some(evidence) = oracle.witness_at(a, b, time, cx)? {
+        let evidence = oracle.witness_at(a, b, time, cx)?;
+        cx.checkpoint().map_err(|_| MotionError::Cancelled)?;
+        if let Some(evidence) = evidence {
             admitted_witnesses += 1;
             let candidate = inflate_witness(time, evidence)?;
             if best_witness.is_none_or(|best| {
@@ -487,12 +493,18 @@ pub fn separation_over<A: Chart, B: Chart, O: ClearanceOracle<A, B>>(
             Interval::new(parent.span.lo(), mid),
             Interval::new(mid, parent.span.hi()),
         ] {
-            let child = inflate_lower(child_span, oracle.lower_bound_over(a, b, child_span, cx)?)?;
+            cx.checkpoint().map_err(|_| MotionError::Cancelled)?;
+            let child_evidence = oracle.lower_bound_over(a, b, child_span, cx)?;
+            cx.checkpoint().map_err(|_| MotionError::Cancelled)?;
+            let child = inflate_lower(child_span, child_evidence)?;
             cells.push(child);
             evaluated_cells += 1;
             let time = child_span.midpoint();
+            cx.checkpoint().map_err(|_| MotionError::Cancelled)?;
             witness_attempts += 1;
-            if let Some(evidence) = oracle.witness_at(a, b, time, cx)? {
+            let evidence = oracle.witness_at(a, b, time, cx)?;
+            cx.checkpoint().map_err(|_| MotionError::Cancelled)?;
+            if let Some(evidence) = evidence {
                 admitted_witnesses += 1;
                 let candidate = inflate_witness(time, evidence)?;
                 if best_witness.is_none_or(|best| {

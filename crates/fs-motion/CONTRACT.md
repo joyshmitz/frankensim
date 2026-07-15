@@ -191,7 +191,10 @@ Loops over segments, box corners, clearance time cells, spatial quadrature
 cells, and dense falsification samples poll
 `cx.checkpoint()` at bounded strides and return
 `MotionError::Cancelled` promptly. Single-segment scalar evaluations
-are bounded-time and do not poll internally.
+are bounded-time and do not poll internally. Clearance minimization checks
+immediately before and after every lower-bound or witness provider call, so a
+pre-cancelled operation never enters the oracle and a cancellation observed
+during provider work cannot publish or trigger the next provider call.
 
 ## Unsafe boundary
 
@@ -282,6 +285,8 @@ junction, so rotations through π cannot tear the cover.
   evaluated and all four length-error sources are logged;
 - disabling witness production yields an explicit lower-only `Unknown`
   receipt, never a fabricated enclosure;
+- a pre-cancelled clearance request refuses before entering either oracle
+  method;
 - exact-SDF bands yield a common-interior inradius witness without relabeling
   it as global penetration or pose displacement;
 - certified quadrature encloses a slider-crank cylinder's independently

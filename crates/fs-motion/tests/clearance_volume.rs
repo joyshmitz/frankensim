@@ -11,10 +11,10 @@ use fs_geom::{Aabb, Point3};
 use fs_ivl::Interval;
 use fs_motion::{
     ChamberChartFamily, ChamberDefinition, ChamberVolumeErrors, ChamberVolumeFunction,
-    ClearanceConfig, ClearanceDecision, ClearanceErrors, ClearanceSidedness,
-    IdealWankelVolumeOracle, MotionError, ProofState, ScrewParams, SpacetimeChart,
-    SphereClearanceProxy, SpherePairClearanceOracle, overlap_inradius_witness, screw_tube,
-    separation_over,
+    ClearanceConfig, ClearanceDecision, ClearanceErrors, ClearanceLowerEvidence, ClearanceOracle,
+    ClearanceSidedness, ClearanceWitnessEvidence, IdealWankelVolumeOracle, MotionError, ProofState,
+    ScrewParams, SpacetimeChart, SphereClearanceProxy, SpherePairClearanceOracle,
+    overlap_inradius_witness, screw_tube, separation_over,
 };
 
 fn with_cx<R>(f: impl FnOnce(&Cx<'_>) -> R) -> R {
@@ -27,6 +27,27 @@ fn with_cx<R>(f: impl FnOnce(&Cx<'_>) -> R) -> R {
             StreamKey {
                 seed: 0xC1EA_AA7C_E001,
                 kernel_id: 0xC1EA,
+                tile: 0,
+                iteration: 0,
+            },
+            Budget::INFINITE,
+            ExecMode::Deterministic,
+        );
+        f(&cx)
+    })
+}
+
+fn with_cancelled_cx<R>(f: impl FnOnce(&Cx<'_>) -> R) -> R {
+    let gate = CancelGate::new();
+    gate.request();
+    let pool = fs_alloc::ArenaPool::new(fs_alloc::ArenaConfig::default());
+    pool.scope(|arena| {
+        let cx = Cx::new(
+            &gate,
+            arena,
+            StreamKey {
+                seed: 0xC1EA_AA7C_CA11,
+                kernel_id: 0xCA11,
                 tile: 0,
                 iteration: 0,
             },
@@ -113,6 +134,46 @@ fn sphere_pair(
     )
     .expect("sphere-pair evidence policy");
     (a, b, oracle)
+}
+
+struct PanicClearanceOracle;
+
+impl ClearanceOracle<SphereChart, SphereChart> for PanicClearanceOracle {
+    fn lower_bound_over(
+        &self,
+        _a: &SpacetimeChart<SphereChart>,
+        _b: &SpacetimeChart<SphereChart>,
+        _span: Interval,
+        _cx: &Cx<'_>,
+    ) -> Result<ClearanceLowerEvidence, MotionError> {
+        panic!("a pre-cancelled clearance query must not enter its oracle")
+    }
+
+    fn witness_at(
+        &self,
+        _a: &SpacetimeChart<SphereChart>,
+        _b: &SpacetimeChart<SphereChart>,
+        _time: f64,
+        _cx: &Cx<'_>,
+    ) -> Result<Option<ClearanceWitnessEvidence>, MotionError> {
+        panic!("a pre-cancelled clearance query must not enter its oracle")
+    }
+}
+
+#[test]
+fn pre_cancelled_clearance_refuses_before_oracle_work() {
+    let (cam, follower, _) = sphere_pair(false);
+    with_cancelled_cx(|cx| {
+        let result = separation_over(
+            &cam,
+            &follower,
+            Interval::new(-1.0, 1.0),
+            &PanicClearanceOracle,
+            ClearanceConfig::default(),
+            cx,
+        );
+        assert!(matches!(result, Err(MotionError::Cancelled)));
+    });
 }
 
 #[test]
