@@ -91,8 +91,14 @@ differentiable lift). Pure Rust throughout.
   the tile stage thins field lookups), the collision emission
   estimator with Planck spectral weights, HG/Rayleigh phase sampling
   (Rayleigh via exact Cardano inversion), Beer–Lambert fast path, and
-  a deterministic per-pixel-stream orthographic transmittance
-  renderer.
+  deterministic per-pixel-stream orthographic renderers. The
+  transfer-function path uses a validated piecewise-linear
+  `TransferFunction` from scalar value to nonnegative extinction and
+  linear-RGB source radiance. `render_transfer_emission` derives the
+  mapped global majorant from the borrowed field and admits explicit
+  field-scan, pixel, primary-sample, and per-sample null-collision
+  budgets before rendering. Its bit contract is
+  `TRANSFER_RENDER_SEMANTICS_VERSION = 1`.
 
 ## Invariants
 
@@ -105,7 +111,7 @@ differentiable lift). Pure Rust throughout.
   ramp; `cosine_sample_hemisphere` returns unit vectors in the upper hemisphere.
 - Everything is deterministic (low-discrepancy sequences, no RNG here).
 
-- Volumes (vol-001..006): homogeneous slabs match exp(−σL) within
+- Volumes (vol-001..009): homogeneous slabs match exp(−σL) within
   3σ_stat; heterogeneous means are invariant under a 3× LOOSE
   majorant (48.8k vs 229.3k null collisions ledgered — looseness
   costs work, never bias) and match a deterministic fine-quadrature
@@ -115,7 +121,14 @@ differentiable lift). Pure Rust throughout.
   0.5% at three hero wavelengths; the live LBM dam-break binding
   renders bitwise-replayably through a borrowed buffer with the free
   surface visible (0.917 vs 0.167 transmittance); per-pixel streams
-  make any pixel recomputable standalone to bitwise equality.
+  make any pixel recomputable standalone to bitwise equality. Transfer
+  construction rejects unordered, non-finite, or negative optical
+  knots; interpolation and endpoint clamping are deterministic; a
+  mapped homogeneous slab matches
+  `source_rgb * (1 - exp(-extinction * length))` channel by channel;
+  replay is bitwise; insufficient work budgets, non-finite fields,
+  insufficient majorants, and exhausted tracking limits return typed
+  refusal instead of partial or biased images.
 
 ## Error model
 
@@ -128,10 +141,16 @@ derivatives. The tracer returns `TracerError`, preserving cancellation,
 invalid dimensions/film buffers/progressive ranges, backend refusal,
 uncertified traces, and missing normals. `halton`
 panics only on `dim >= 8` (out of the prime table).
+Transfer construction and direct-volume admission return `DvrError`.
+The high-level renderer reserves its complete private image buffer before
+sampling and drops it on any tracking refusal; no error path returns a partial
+image.
 
 ## Determinism class
 
 Fully deterministic: the sampling is low-discrepancy, keyed by sample index.
+The transfer renderer uses a distinct per-pixel Philox domain, so pixel/tile
+execution order does not alter its samples.
 
 ## Cancellation behavior
 
@@ -157,6 +176,10 @@ ray-rate claims remain evidence-gated successors; default-on does not promote
 those claims.
 
 `volumes` [F] gates the volumetric media stack (fs-rand dependency).
+The v1 transfer renderer claims emission/absorption only. It does not claim
+scattering, preintegrated transfer functions, adaptive ray integration,
+display encoding, tone mapping, or ledger/EXR provenance embedding; those are
+separate composition and evidence lanes.
 
 `differentiable` (bead qfx.5) gates the edge-aware differentiable renderer
 (fs-ad + fs-evidence + fs-math dependencies) and explicitly co-enables the

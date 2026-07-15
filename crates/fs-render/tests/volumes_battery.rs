@@ -6,8 +6,10 @@
 
 use fs_lbm::freesurface::{ContactModel, dam_break};
 use fs_render::volumes::{
-    MajorantGrid, Ray, VolumeGrid, beer_lambert, hg_sample_cos, pixel_stream, planck,
-    rayleigh_sample_cos, render_transmittance, woodcock_emission, woodcock_transmittance,
+    DvrError, DvrSettings, MajorantGrid, Ray, TransferFunction, TransferPoint, VolumeGrid,
+    beer_lambert, hg_sample_cos, pixel_stream, planck, rayleigh_sample_cos,
+    render_transfer_emission, render_transmittance, woodcock_emission, woodcock_transfer_emission,
+    woodcock_transmittance,
 };
 
 fn verdict(name: &str, pass: bool, details: &str) {
@@ -328,5 +330,308 @@ fn vol_006_pixel_isolation() {
         "vol-006-pixel-isolation",
         worst == 0.0,
         &format!("standalone pixel recompute deviation {worst:.2e} (bitwise zero required)"),
+    );
+}
+
+/// vol-007 (G0): transfer construction rejects ambiguous/non-physical knots,
+/// and its endpoint clamp plus piecewise-linear interpolation are exact on a
+/// binary-friendly midpoint.
+#[test]
+fn vol_007_transfer_function_laws() {
+    let transfer = TransferFunction::new(vec![
+        TransferPoint {
+            scalar: -1.0,
+            extinction: 0.25,
+            source_rgb: [0.0, 0.25, 0.5],
+        },
+        TransferPoint {
+            scalar: 1.0,
+            extinction: 1.25,
+            source_rgb: [1.0, 0.75, 0.5],
+        },
+    ])
+    .expect("valid transfer");
+    assert_eq!(transfer.points().len(), 2);
+    assert_eq!(
+        transfer.sample(-2.0).expect("finite"),
+        transfer.sample(-1.0).expect("finite")
+    );
+    assert_eq!(
+        transfer.sample(2.0).expect("finite"),
+        transfer.sample(1.0).expect("finite")
+    );
+    let midpoint = transfer.sample(0.0).expect("finite");
+    assert_eq!(midpoint.extinction, 0.75);
+    assert_eq!(midpoint.source_rgb, [0.5, 0.5, 0.5]);
+
+    assert_eq!(
+        TransferFunction::new(Vec::new()),
+        Err(DvrError::EmptyTransferFunction)
+    );
+    assert_eq!(
+        TransferFunction::new(vec![
+            TransferPoint {
+                scalar: 0.0,
+                extinction: 0.0,
+                source_rgb: [0.0; 3],
+            },
+            TransferPoint {
+                scalar: 0.0,
+                extinction: 1.0,
+                source_rgb: [1.0; 3],
+            },
+        ]),
+        Err(DvrError::NonIncreasingTransferScalar { index: 1 })
+    );
+    assert_eq!(
+        TransferFunction::new(vec![TransferPoint {
+            scalar: 0.0,
+            extinction: -1.0,
+            source_rgb: [0.0; 3],
+        }]),
+        Err(DvrError::InvalidTransferExtinction { index: 0 })
+    );
+    assert_eq!(
+        TransferFunction::new(vec![TransferPoint {
+            scalar: 0.0,
+            extinction: 1.0,
+            source_rgb: [0.0, f64::NAN, 0.0],
+        }]),
+        Err(DvrError::InvalidTransferSource {
+            index: 0,
+            channel: 1,
+        })
+    );
+    assert_eq!(
+        transfer.sample(f64::NAN),
+        Err(DvrError::NonFiniteScalarSample)
+    );
+}
+
+/// vol-008 (G2): a homogeneous transfer-mapped slab matches the analytic
+/// emission/absorption solution independently in all three linear-RGB
+/// channels.  The statistical gate uses the estimator's Bernoulli variance.
+#[test]
+fn vol_008_transfer_emission_slab() {
+    let data = vec![0.5; 8];
+    let grid = VolumeGrid::new([2, 2, 2], &data, [0.0; 3], [0.5; 3]);
+    let transfer = TransferFunction::new(vec![
+        TransferPoint {
+            scalar: 0.0,
+            extinction: 0.2,
+            source_rgb: [0.2, 0.4, 0.6],
+        },
+        TransferPoint {
+            scalar: 1.0,
+            extinction: 2.2,
+            source_rgb: [1.0, 0.8, 0.2],
+        },
+    ])
+    .expect("valid transfer");
+    let samples = 80_000u32;
+    let image = render_transfer_emission(
+        &grid,
+        &transfer,
+        DvrSettings {
+            resolution: [1, 1],
+            samples_per_pixel: samples,
+            seed: 0xD1EC_7008,
+            max_pixels: 1,
+            max_grid_cells: 8,
+            max_samples: u64::from(samples),
+            max_tracking_steps_per_sample: 32,
+        },
+    )
+    .expect("bounded slab render");
+    let optical = transfer.sample(0.5).expect("finite field scalar");
+    let hit_probability = 1.0 - beer_lambert(optical.extinction, 1.0);
+    let relative_se = ((1.0 - hit_probability) / (hit_probability * f64::from(samples))).sqrt();
+    for channel in 0..3 {
+        let expected = optical.source_rgb[channel] * hit_probability;
+        let relative_error = (image[0][channel] / expected - 1.0).abs();
+        verdict(
+            &format!("vol-008-transfer-slab-channel-{channel}"),
+            relative_error < 4.0 * relative_se,
+            &format!(
+                "mean {:.6} vs analytic {expected:.6}; relative error {relative_error:.4}, 4se {:.4}",
+                image[0][channel],
+                4.0 * relative_se
+            ),
+        );
+    }
+}
+
+/// vol-009 (G4/G5): image replay is bitwise, all work budgets refuse before
+/// rendering, malformed borrowed fields fail closed, and the probabilistic
+/// tracker has a deterministic hard-stop outcome instead of an unbounded loop.
+#[test]
+fn vol_009_transfer_replay_and_refusal() {
+    let data: Vec<f64> = (0..24).map(|index| f64::from(index % 6) / 5.0).collect();
+    let grid = VolumeGrid::new([6, 4, 1], &data, [0.0; 3], [1.0, 1.0, 0.5]);
+    let transfer = TransferFunction::new(vec![
+        TransferPoint {
+            scalar: 0.0,
+            extinction: 0.1,
+            source_rgb: [0.05, 0.1, 0.2],
+        },
+        TransferPoint {
+            scalar: 1.0,
+            extinction: 2.0,
+            source_rgb: [1.0, 0.4, 0.1],
+        },
+    ])
+    .expect("valid transfer");
+    let settings = DvrSettings {
+        resolution: [6, 4],
+        samples_per_pixel: 64,
+        seed: 0xD1EC_7009,
+        max_pixels: 24,
+        max_grid_cells: 24,
+        max_samples: 24 * 64,
+        max_tracking_steps_per_sample: 32,
+    };
+    let first = render_transfer_emission(&grid, &transfer, settings).expect("first render");
+    let second = render_transfer_emission(&grid, &transfer, settings).expect("replay render");
+    assert!(
+        first
+            .iter()
+            .flatten()
+            .all(|value| value.is_finite() && *value >= 0.0)
+    );
+    assert!(
+        first
+            .iter()
+            .zip(&second)
+            .all(|(lhs, rhs)| lhs.iter().zip(rhs).all(|(a, b)| a.to_bits() == b.to_bits()))
+    );
+
+    assert_eq!(
+        render_transfer_emission(
+            &grid,
+            &transfer,
+            DvrSettings {
+                resolution: [0, 4],
+                ..settings
+            },
+        ),
+        Err(DvrError::InvalidImageSize)
+    );
+    assert_eq!(
+        render_transfer_emission(
+            &grid,
+            &transfer,
+            DvrSettings {
+                max_pixels: 23,
+                ..settings
+            },
+        ),
+        Err(DvrError::PixelBudgetExceeded {
+            requested: 24,
+            limit: 23,
+        })
+    );
+    assert_eq!(
+        render_transfer_emission(
+            &grid,
+            &transfer,
+            DvrSettings {
+                max_grid_cells: 23,
+                ..settings
+            },
+        ),
+        Err(DvrError::GridCellBudgetExceeded {
+            requested: 24,
+            limit: 23,
+        })
+    );
+    assert_eq!(
+        render_transfer_emission(
+            &grid,
+            &transfer,
+            DvrSettings {
+                max_samples: 24 * 64 - 1,
+                ..settings
+            },
+        ),
+        Err(DvrError::SampleBudgetExceeded {
+            requested: 24 * 64,
+            limit: 24 * 64 - 1,
+        })
+    );
+    assert_eq!(
+        render_transfer_emission(
+            &grid,
+            &transfer,
+            DvrSettings {
+                max_tracking_steps_per_sample: 0,
+                ..settings
+            },
+        ),
+        Err(DvrError::InvalidSamplingBudget)
+    );
+
+    let bad_data = [f64::NAN];
+    let bad_grid = VolumeGrid::new([1, 1, 1], &bad_data, [0.0; 3], [1.0; 3]);
+    assert_eq!(
+        render_transfer_emission(
+            &bad_grid,
+            &transfer,
+            DvrSettings {
+                resolution: [1, 1],
+                samples_per_pixel: 1,
+                max_pixels: 1,
+                max_samples: 1,
+                ..settings
+            },
+        ),
+        Err(DvrError::NonFiniteGridValue { index: 0 })
+    );
+
+    let vacuum = TransferFunction::new(vec![TransferPoint {
+        scalar: 0.0,
+        extinction: 0.0,
+        source_rgb: [0.0; 3],
+    }])
+    .expect("valid vacuum transfer");
+    let one_cell = [0.0];
+    let one_cell_grid = VolumeGrid::new([1, 1, 1], &one_cell, [0.0; 3], [1.0; 3]);
+    let long_ray = Ray {
+        origin: [0.5, 0.5, 0.0],
+        dir: [0.0, 0.0, 1.0],
+        t0: 0.0,
+        t1: 1e300,
+    };
+    let mut bounded_stream = stream(900);
+    assert_eq!(
+        woodcock_transfer_emission(
+            &one_cell_grid,
+            &vacuum,
+            1.0,
+            long_ray,
+            &mut bounded_stream,
+            1,
+            1,
+        ),
+        Err(DvrError::TrackingStepBudgetExceeded)
+    );
+
+    let opaque = TransferFunction::new(vec![TransferPoint {
+        scalar: 0.0,
+        extinction: 2.0,
+        source_rgb: [1.0; 3],
+    }])
+    .expect("valid opaque transfer");
+    let mut violation_stream = stream(901);
+    assert_eq!(
+        woodcock_transfer_emission(
+            &one_cell_grid,
+            &opaque,
+            1.0,
+            long_ray,
+            &mut violation_stream,
+            1,
+            1,
+        ),
+        Err(DvrError::MajorantViolation)
     );
 }
