@@ -186,6 +186,11 @@ identity bytes, raw flux-checkpoint allocation shape, and deterministic work
 before executing. Net-flux validation streams base and optional-case slices
 without materializing a vector for every effective set; its exact raw
 checkpoint capacity is fallibly reserved before append/sort. Its
+checkpoint list sorts in place without hidden scratch allocation, using the
+same deterministic checkpointed heap-sort skeleton as semantic indexes and
+`f64::total_cmp` for a total ordering. The preflight charges its conservative
+comparison/swap envelope before validation starts. A checkpointed in-place
+deduplication pass canonicalizes both signed-zero encodings to `+0.0`. Its
 identity/reference phase uses deterministic O(N log N) indexes. Frame ID/name,
 frame-membership, case, combination, term, ensemble, and
 unordered-contact indexes plus linear cycle traversal scratch are exactly and
@@ -194,20 +199,34 @@ reserved and populated by one grouped pass over the pair index. Every index
 sorts in place with row index as the total-order tiebreaker using a deterministic
 checkpointed heap sort. The preflight work total counts each index population
 item and a conservative heap comparison/swap envelope, including
-per-combination term entries. The explicit `Cx` lane polls
+per-combination term entries and every net-flux checkpoint set. The explicit
+`Cx` lane polls
 before preflight, at every top-level and nested record visited while constructing
 the semantic plan, after planning, after fixed phases, at every frame-index row,
 frame-cycle traversal/finalization step, and frame validation row, at
 BC/case/combination term/ensemble/contact boundaries, before and after each
 net-flux provider evaluation, at every tabulated signal scalar and Chebyshev
 coefficient, throughout index population/sort steps, and after private
-validation before publication. Tabulated signal validity and ordering are
+validation before publication. Net-flux checkpoint sorting polls throughout
+the in-place heap sort rather than only after an opaque library sort; set
+classification, checkpoint counting/materialization, and deduplication likewise
+poll at every provider or checkpoint. Tabulated signal validity and ordering are
 accumulated in one pass while retaining diagnostic order. A request observed at
 any checkpoint publishes no partial findings. Preflight proves a conservative
 finding bound of 12 fixed slots plus 13/frame, 8/BC, 3/case, 2/combination,
 4/term, 16/ensemble, and 4/contact; `max_findings` admits that heap authority and
 the private result vector fallibly reserves it before the first finding. No loop
 is admitted from an unchecked float-to-size conversion.
+
+After that single checkpointed structural scan, net-flux compatibility uses a
+crate-private prevalidated signal evaluator. Public `TimeSignal::eval` and
+`BoundaryCondition::mass_flow_at` remain independently fail-closed, while the
+whole-scenario path retains O(log N) table lookup without rescanning all N
+samples at every one of N validation checkpoints. The prevalidated evaluator
+still checks finite time, table shape, lookup bounds, and finite results. The
+work plan charges each table provider by its binary-search height, each
+Chebyshev provider by coefficient count, and each materialization/deduplication
+and set-scan pass explicitly.
 
 ## Unsafe boundary
 
@@ -284,6 +303,11 @@ None.
 - A focused table-signal regression proves the checkpointed scalar traversal
   is one pass, preserves public diagnostic order, and observes injected
   cancellation before findings escape.
+- A focused evaluator regression proves the prevalidated constant, ramp, table,
+  and Chebyshev paths match public evaluation for valid signals while retaining
+  malformed-table and non-finite-time guards.
+- A focused checkpoint-deduplication regression proves per-element polling and
+  canonical `+0.0` retention when both signed-zero encodings occur.
 
 ## No-claim boundaries
 

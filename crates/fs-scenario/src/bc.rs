@@ -258,6 +258,20 @@ impl BoundaryCondition {
     /// dimensions, is non-finite, cannot be evaluated, or is a spatial profile
     /// for which this layer has no geometry-backed surface integral.
     pub fn mass_flow_at(&self, t: f64) -> Result<Option<f64>, ScenarioError> {
+        self.mass_flow_at_impl(t, false)
+    }
+
+    /// Evaluate after whole-scenario validation has already scanned this
+    /// boundary condition's dynamic signal payload.
+    pub(crate) fn mass_flow_at_prevalidated(&self, t: f64) -> Result<Option<f64>, ScenarioError> {
+        self.mass_flow_at_impl(t, true)
+    }
+
+    fn mass_flow_at_impl(
+        &self,
+        t: f64,
+        signal_prevalidated: bool,
+    ) -> Result<Option<f64>, ScenarioError> {
         if self.kind != BcKind::MassFlowInlet {
             return Ok(None);
         }
@@ -294,7 +308,11 @@ impl BoundaryCondition {
                 Ok(Some(quantity.value))
             }
             Some(BcValue::Signal(signal)) => {
-                let quantity = signal.eval(t)?;
+                let quantity = if signal_prevalidated {
+                    signal.eval_prevalidated(t)?
+                } else {
+                    signal.eval(t)?
+                };
                 if quantity.dims != dims::MASS_FLOW {
                     return Err(ScenarioError::Dimensions {
                         context: format!("mass-flow inlet signal on {:?}", self.region),

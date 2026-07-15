@@ -8,8 +8,10 @@
 use crate::bc::{BcKind, BcValue, BoundaryCondition, Compat, Physics};
 use crate::ensemble::StochasticEnsemble;
 use crate::frame::{FrameMotion, FrameTree};
+use crate::signal::TimeSignal;
 use fs_exec::Cx;
 use fs_qty::{Dims, QtyAny};
+use std::cmp::Ordering;
 use std::fmt;
 
 const ACCEL_DIMS: Dims = Dims([1, 0, -2, 0, 0, 0]);
@@ -358,11 +360,12 @@ struct ValidationIndex<K> {
     entries: Vec<(K, usize)>,
 }
 
-fn sift_validation_heap<T: Ord, E>(
+fn sift_validation_heap_by<T, E>(
     values: &mut [T],
     mut root: usize,
     end: usize,
     phase: &'static str,
+    compare: &mut impl FnMut(&T, &T) -> Ordering,
     checkpoint: &mut impl FnMut(&'static str) -> Result<(), E>,
 ) -> Result<(), E> {
     loop {
@@ -374,12 +377,12 @@ fn sift_validation_heap<T: Ord, E>(
             return Ok(());
         }
         let right = left + 1;
-        let child = if right < end && values[left] < values[right] {
+        let child = if right < end && compare(&values[left], &values[right]).is_lt() {
             right
         } else {
             left
         };
-        if values[root] >= values[child] {
+        if !compare(&values[root], &values[child]).is_lt() {
             return Ok(());
         }
         values.swap(root, child);
@@ -387,21 +390,30 @@ fn sift_validation_heap<T: Ord, E>(
     }
 }
 
+fn sort_validation_by<T, E>(
+    values: &mut [T],
+    phase: &'static str,
+    mut compare: impl FnMut(&T, &T) -> Ordering,
+    checkpoint: &mut impl FnMut(&'static str) -> Result<(), E>,
+) -> Result<(), E> {
+    let len = values.len();
+    for root in (0..len / 2).rev() {
+        sift_validation_heap_by(values, root, len, phase, &mut compare, checkpoint)?;
+    }
+    for end in (1..len).rev() {
+        checkpoint(phase)?;
+        values.swap(0, end);
+        sift_validation_heap_by(values, 0, end, phase, &mut compare, checkpoint)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn sort_validation_index<T: Ord, E>(
     values: &mut [T],
     phase: &'static str,
     checkpoint: &mut impl FnMut(&'static str) -> Result<(), E>,
 ) -> Result<(), E> {
-    let len = values.len();
-    for root in (0..len / 2).rev() {
-        sift_validation_heap(values, root, len, phase, checkpoint)?;
-    }
-    for end in (1..len).rev() {
-        checkpoint(phase)?;
-        values.swap(0, end);
-        sift_validation_heap(values, 0, end, phase, checkpoint)?;
-    }
-    Ok(())
+    sort_validation_by(values, phase, |left, right| left.cmp(right), checkpoint)
 }
 
 impl<K: Ord> ValidationIndex<K> {
@@ -515,6 +527,25 @@ fn ceil_log2(value: usize) -> u128 {
     }
 }
 
+fn heap_sort_work(items: usize, phase: &'static str) -> Result<u128, ValidationError> {
+    let per_item = ceil_log2(items)
+        .checked_mul(2)
+        .and_then(|work| work.checked_add(2))
+        .ok_or(ValidationError::WorkPlanOverflow { phase })?;
+    work_units(items, phase)?
+        .checked_mul(per_item)
+        .ok_or(ValidationError::WorkPlanOverflow { phase })
+}
+
+fn checked_work_scale(
+    work: u128,
+    count: usize,
+    phase: &'static str,
+) -> Result<u128, ValidationError> {
+    work.checked_mul(work_units(count, phase)?)
+        .ok_or(ValidationError::WorkPlanOverflow { phase })
+}
+
 fn bc_dynamic_scalars(bc: &BoundaryCondition) -> Result<usize, ValidationError> {
     match &bc.value {
         Some(BcValue::Signal(signal)) => {
@@ -539,6 +570,30 @@ fn bc_flux_checkpoints(bc: &BoundaryCondition) -> usize {
     }
 }
 
+fn bc_flux_evaluation_work(bc: &BoundaryCondition) -> Result<u128, ValidationError> {
+    if bc.kind != BcKind::MassFlowInlet {
+        return Ok(4);
+    }
+    match &bc.value {
+        Some(BcValue::Signal(TimeSignal::Table { times, .. })) => ceil_log2(times.len())
+            .checked_add(4)
+            .ok_or(ValidationError::WorkPlanOverflow {
+                phase: "table flux evaluation work",
+            }),
+        Some(BcValue::Signal(TimeSignal::Chebfun(profile))) => work_units(
+            profile.cheb.coeffs().len(),
+            "Chebyshev flux evaluation work",
+        )?
+        .checked_add(4)
+        .ok_or(ValidationError::WorkPlanOverflow {
+            phase: "Chebyshev flux evaluation work",
+        }),
+        Some(BcValue::Signal(TimeSignal::Constant(_) | TimeSignal::Ramp { .. }))
+        | Some(BcValue::Uniform(_) | BcValue::Profile(_))
+        | None => Ok(4),
+    }
+}
+
 fn reserve_validation<T>(
     values: &mut Vec<T>,
     requested: usize,
@@ -554,6 +609,23 @@ fn reserve_validation<T>(
 
 fn reserve_validation_times(times: &mut Vec<f64>, requested: usize) -> Result<(), ValidationError> {
     reserve_validation(times, requested, "net-flux checkpoints")
+}
+
+fn dedup_validation_times<E>(
+    times: &mut Vec<f64>,
+    checkpoint: &mut impl FnMut(&'static str) -> Result<(), E>,
+) -> Result<(), E> {
+    let mut write = 0usize;
+    for read in 0..times.len() {
+        checkpoint("net-flux checkpoint deduplication")?;
+        let value = if times[read] == 0.0 { 0.0 } else { times[read] };
+        if write == 0 || value != times[write - 1] {
+            times[write] = value;
+            write += 1;
+        }
+    }
+    times.truncate(write);
+    Ok(())
 }
 
 /// The scenario root value.
@@ -679,6 +751,7 @@ impl Scenario {
         }
 
         let mut base_flux_checkpoint_contribution = 0usize;
+        let mut base_flux_provider_work = 0u128;
         for bc in &self.base_bcs {
             checked_count_add(
                 &mut identity_bytes,
@@ -694,6 +767,11 @@ impl Scenario {
                 &mut base_flux_checkpoint_contribution,
                 bc_flux_checkpoints(bc),
                 "base flux checkpoints",
+            )?;
+            checked_work_add(
+                &mut base_flux_provider_work,
+                bc_flux_evaluation_work(bc)?,
+                "base flux provider work",
             )?;
             checkpoint("preflight base boundary conditions")?;
         }
@@ -795,20 +873,26 @@ impl Scenario {
                 phase: "base flux checkpoint count",
             },
         )?;
-        let mut flux_sort_work = work_units(flux_checkpoints, "base flux sort work")?
-            .checked_mul(ceil_log2(flux_checkpoints))
-            .ok_or(ValidationError::WorkPlanOverflow {
-                phase: "base flux sort work",
-            })?;
-        let mut flux_evaluation_work =
-            checked_work_product(flux_checkpoints, base_bcs, "base flux evaluation work")?;
+        let mut flux_sort_work = heap_sort_work(flux_checkpoints, "base flux sort work")?;
+        let mut flux_evaluation_work = checked_work_scale(
+            base_flux_provider_work,
+            flux_checkpoints,
+            "base flux evaluation work",
+        )?;
+        let mut flux_set_scan_work = checked_work_product(base_bcs, 3, "base flux set scan work")?;
         for case in &self.cases {
             let mut case_contribution = 0usize;
+            let mut case_provider_work = 0u128;
             for bc in &case.bcs {
                 checked_count_add(
                     &mut case_contribution,
                     bc_flux_checkpoints(bc),
                     "case flux checkpoints",
+                )?;
+                checked_work_add(
+                    &mut case_provider_work,
+                    bc_flux_evaluation_work(bc)?,
+                    "case flux provider work",
                 )?;
                 checkpoint("preflight case flux checkpoints")?;
             }
@@ -823,11 +907,7 @@ impl Scenario {
                 set_checkpoints,
                 "total flux checkpoints",
             )?;
-            let sort = work_units(set_checkpoints, "case flux sort work")?
-                .checked_mul(ceil_log2(set_checkpoints))
-                .ok_or(ValidationError::WorkPlanOverflow {
-                    phase: "case flux sort work",
-                })?;
+            let sort = heap_sort_work(set_checkpoints, "case flux sort work")?;
             checked_work_add(&mut flux_sort_work, sort, "total flux sort work")?;
             let set_bcs =
                 base_bcs
@@ -836,8 +916,22 @@ impl Scenario {
                         phase: "effective-set boundary count",
                     })?;
             checked_work_add(
+                &mut flux_set_scan_work,
+                checked_work_product(set_bcs, 3, "case flux set scan work")?,
+                "total flux set scan work",
+            )?;
+            let set_provider_work = base_flux_provider_work
+                .checked_add(case_provider_work)
+                .ok_or(ValidationError::WorkPlanOverflow {
+                    phase: "effective-set flux provider work",
+                })?;
+            checked_work_add(
                 &mut flux_evaluation_work,
-                checked_work_product(set_checkpoints, set_bcs, "case flux evaluation work")?,
+                checked_work_scale(
+                    set_provider_work,
+                    set_checkpoints,
+                    "case flux evaluation work",
+                )?,
                 "total flux evaluation work",
             )?;
             checkpoint("preflight case flux sets")?;
@@ -846,6 +940,11 @@ impl Scenario {
             "flux checkpoints",
             flux_checkpoints,
             budget.max_flux_checkpoints,
+        )?;
+        let flux_checkpoint_work = checked_work_product(
+            flux_checkpoints,
+            2,
+            "flux checkpoint materialization and deduplication work",
         )?;
 
         let mut record_visits = 1usize;
@@ -913,6 +1012,8 @@ impl Scenario {
                 checked_work_product(contacts, 3, "contact classification work")?,
                 "contact classification work",
             ),
+            (flux_set_scan_work, "flux set scan work"),
+            (flux_checkpoint_work, "flux checkpoint work"),
             (flux_sort_work, "flux sort work"),
             (flux_evaluation_work, "flux evaluation work"),
         ] {
@@ -1354,20 +1455,21 @@ impl Scenario {
     ) -> Result<(), ValidationError> {
         checkpoint("net-flux set")?;
         let case_bcs: &[BoundaryCondition] = case.map_or(&[], |case| case.bcs.as_slice());
-        let declares_incompressible = self
-            .base_bcs
-            .iter()
-            .chain(case_bcs.iter())
-            .any(|bc| bc.compatibility == Some(Compat::Incompressible));
+        let mut declares_incompressible = false;
+        let mut has_pressure_outlet = false;
+        for bc in self.base_bcs.iter().chain(case_bcs.iter()) {
+            checkpoint("net-flux set classification")?;
+            declares_incompressible |= bc.compatibility == Some(Compat::Incompressible);
+            has_pressure_outlet |=
+                bc.physics == Physics::IncompressibleFlow && bc.kind == BcKind::PressureOutlet;
+        }
         if !declares_incompressible {
             return Ok(());
         }
-        let has_pressure_outlet = self.base_bcs.iter().chain(case_bcs.iter()).any(|bc| {
-            bc.physics == Physics::IncompressibleFlow && bc.kind == BcKind::PressureOutlet
-        });
         let label = case.map_or_else(|| "base".to_string(), |case| format!("base+{}", case.name));
         let mut requested_times = 1usize;
         for bc in self.base_bcs.iter().chain(case_bcs.iter()) {
+            checkpoint("net-flux checkpoint count")?;
             requested_times = requested_times.checked_add(bc_flux_checkpoints(bc)).ok_or(
                 ValidationError::WorkPlanOverflow {
                     phase: "net-flux checkpoint materialization",
@@ -1376,17 +1478,24 @@ impl Scenario {
         }
         let mut validation_times = Vec::new();
         reserve_validation_times(&mut validation_times, requested_times)?;
+        checkpoint("net-flux checkpoint materialization")?;
         validation_times.push(0.0);
         for bc in self.base_bcs.iter().chain(case_bcs.iter()) {
+            checkpoint("net-flux provider materialization")?;
             if bc.kind == BcKind::MassFlowInlet
                 && let Some(BcValue::Signal(signal)) = &bc.value
             {
-                signal.append_net_flux_validation_times(&mut validation_times);
+                signal.append_net_flux_validation_times(&mut validation_times, checkpoint)?;
             }
         }
         debug_assert_eq!(validation_times.len(), requested_times);
-        validation_times.sort_by(|a, b| a.total_cmp(b));
-        validation_times.dedup_by(|a, b| *a == *b);
+        sort_validation_by(
+            &mut validation_times,
+            "net-flux checkpoint sort",
+            |a, b| a.total_cmp(b),
+            checkpoint,
+        )?;
+        dedup_validation_times(&mut validation_times, checkpoint)?;
         checkpoint("net-flux checkpoints")?;
 
         let mut first_imbalance = None;
@@ -1398,7 +1507,7 @@ impl Scenario {
             let mut evaluation_failed = false;
             for bc in self.base_bcs.iter().chain(case_bcs.iter()) {
                 checkpoint("net-flux evaluation")?;
-                match bc.mass_flow_at(time) {
+                match bc.mass_flow_at_prevalidated(time) {
                     Ok(Some(flux)) => {
                         net += flux;
                         gross += flux.abs();
@@ -1473,7 +1582,7 @@ impl Scenario {
 mod validation_internal_tests {
     use super::{
         Combination, ContactLaw, ContactModel, Environment, LoadCase, Scenario, ValidationBudget,
-        ValidationError, reserve_validation_times, sort_validation_index,
+        ValidationError, dedup_validation_times, reserve_validation_times, sort_validation_index,
     };
     use crate::bc::{BcKind, BcValue, BoundaryCondition, Compat, Physics};
     use crate::ensemble::{SpectrumModel, StochasticEnsemble};
@@ -1586,6 +1695,29 @@ mod validation_internal_tests {
         assert_eq!(result, Err("cancelled"));
     }
 
+    #[test]
+    fn checkpoint_dedup_is_cancellable_and_canonicalizes_signed_zero() {
+        let mut values = vec![-0.0, 0.0, 1.0, 1.0];
+        let mut polls = 0usize;
+        dedup_validation_times(&mut values, &mut |phase| {
+            assert_eq!(phase, "net-flux checkpoint deduplication");
+            polls += 1;
+            Ok::<(), core::convert::Infallible>(())
+        })
+        .expect("infallible checkpoint");
+        assert_eq!(polls, 4);
+        assert_eq!(values, [0.0, 1.0]);
+        assert_eq!(values[0].to_bits(), 0.0f64.to_bits());
+
+        let mut cancelled = vec![0.0, 1.0, 2.0];
+        let mut calls = 0usize;
+        let result = dedup_validation_times(&mut cancelled, &mut |_| {
+            calls += 1;
+            if calls == 2 { Err("cancelled") } else { Ok(()) }
+        });
+        assert_eq!(result, Err("cancelled"));
+    }
+
     fn phase_matrix_flow(region: &str, value: f64) -> BoundaryCondition {
         BoundaryCondition {
             region: region.to_string(),
@@ -1674,6 +1806,12 @@ mod validation_internal_tests {
             "ensembles",
             "contact conflict models",
             "contacts",
+            "net-flux set classification",
+            "net-flux checkpoint count",
+            "net-flux checkpoint materialization",
+            "net-flux provider materialization",
+            "net-flux checkpoint sort",
+            "net-flux checkpoint deduplication",
             "net-flux checkpoints",
             "net-flux evaluation",
             "net-flux set complete",

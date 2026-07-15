@@ -160,17 +160,29 @@ impl TimeSignal {
     /// Chebfun history contributes a bounded uniform grid over its actual
     /// declared domain because it has no finite breakpoint set. Constants add
     /// no checkpoint; callers always add `t = 0` for the shared baseline.
-    pub(crate) fn append_net_flux_validation_times(&self, times: &mut Vec<f64>) {
+    pub(crate) fn append_net_flux_validation_times<E>(
+        &self,
+        times: &mut Vec<f64>,
+        checkpoint: &mut impl FnMut(&'static str) -> Result<(), E>,
+    ) -> Result<(), E> {
         match self {
             TimeSignal::Constant(_) => {}
             TimeSignal::Ramp { t_start, t_end, .. } => {
+                checkpoint("net-flux checkpoint materialization")?;
                 times.push(*t_start);
+                checkpoint("net-flux checkpoint materialization")?;
                 times.push(*t_end);
             }
-            TimeSignal::Table { times: samples, .. } => times.extend(samples.iter().copied()),
+            TimeSignal::Table { times: samples, .. } => {
+                for sample in samples {
+                    checkpoint("net-flux checkpoint materialization")?;
+                    times.push(*sample);
+                }
+            }
             TimeSignal::Chebfun(profile) => {
                 let (start, end) = profile.cheb.domain();
                 for panel in 0..=SMOOTH_NET_FLUX_VALIDATION_PANELS {
+                    checkpoint("net-flux checkpoint materialization")?;
                     let time = if panel == 0 {
                         start
                     } else if panel == SMOOTH_NET_FLUX_VALIDATION_PANELS {
@@ -183,6 +195,7 @@ impl TimeSignal {
                 }
             }
         }
+        Ok(())
     }
 
     /// Evaluate at time `t` (seconds).
@@ -201,6 +214,22 @@ impl TimeSignal {
         if let Some(first) = violations.first() {
             return Err(ScenarioError::Evaluate {
                 what: first.what.clone(),
+            });
+        }
+        self.eval_prevalidated(t)
+    }
+
+    /// Evaluate after the caller has already run semantic validation.
+    ///
+    /// This retains the local shape, bounds, and finite-result guards needed
+    /// for memory safety, but does not rescan dynamically sized signal payloads.
+    /// Whole-scenario validation uses it only after the same signal has passed
+    /// through `check_with_checkpoint`, keeping table lookup O(log N) instead
+    /// of revalidating all N samples at each net-flux checkpoint.
+    pub(crate) fn eval_prevalidated(&self, t: f64) -> Result<QtyAny, ScenarioError> {
+        if !t.is_finite() {
+            return Err(ScenarioError::Evaluate {
+                what: format!("non-finite evaluation time {t}"),
             });
         }
         let value = match self {
@@ -378,8 +407,55 @@ impl TimeSignal {
 
 #[cfg(test)]
 mod validation_internal_tests {
-    use super::{Interp, TimeSignal};
-    use fs_qty::Dims;
+    use super::{ChebProfile, Interp, TimeSignal};
+    use fs_cheb::Cheb1;
+    use fs_qty::{Dims, QtyAny};
+
+    #[test]
+    fn prevalidated_evaluation_matches_public_evaluation_for_valid_signals() {
+        let signals = [
+            TimeSignal::Constant(QtyAny::new(2.0, Dims::NONE)),
+            TimeSignal::Ramp {
+                t_start: -1.0,
+                t_end: 2.0,
+                from: QtyAny::new(-3.0, Dims::NONE),
+                to: QtyAny::new(6.0, Dims::NONE),
+            },
+            TimeSignal::Table {
+                times: vec![-1.0, 0.0, 2.0],
+                values: vec![4.0, 5.0, 9.0],
+                dims: Dims::NONE,
+                interp: Interp::Linear,
+            },
+            TimeSignal::Chebfun(ChebProfile {
+                cheb: Cheb1::from_coeffs(-1.0, 1.0, vec![1.0, 0.5]),
+                dims: Dims::NONE,
+            }),
+        ];
+
+        for signal in signals {
+            for time in [-2.0, -0.5, 0.0, 1.5, 3.0] {
+                let public = signal.eval(time).expect("valid public evaluation");
+                let prevalidated = signal
+                    .eval_prevalidated(time)
+                    .expect("valid prevalidated evaluation");
+                assert_eq!(prevalidated, public, "signal={signal:?}, time={time}");
+            }
+        }
+
+        let malformed = TimeSignal::Table {
+            times: Vec::new(),
+            values: Vec::new(),
+            dims: Dims::NONE,
+            interp: Interp::Hold,
+        };
+        assert!(malformed.eval_prevalidated(0.0).is_err());
+        assert!(
+            TimeSignal::Constant(QtyAny::new(1.0, Dims::NONE))
+                .eval_prevalidated(f64::NAN)
+                .is_err()
+        );
+    }
 
     #[test]
     fn table_scan_is_single_pass_checkpointed_and_order_stable() {
