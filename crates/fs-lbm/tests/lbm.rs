@@ -3,9 +3,31 @@
 //! (steady Poiseuille channel flow matches the analytic parabola), and the
 //! lattice-scaling assistant's stability bookkeeping.
 
+use fs_lbm::core2::VelocityPressureX2;
 use fs_lbm::{
     Cell, Color, Grid, Lbm, MACH_LIMIT, Q, equilibrium, plan_scaling, poiseuille_analytic,
 };
+
+fn d2q9_nonequilibrium_stress(
+    populations: &[f64; Q],
+    rho: f64,
+    velocity: [f64; 2],
+) -> [[f64; 2]; 2] {
+    const EX: [f64; Q] = [0.0, 1.0, 0.0, -1.0, 0.0, 1.0, -1.0, -1.0, 1.0];
+    const EY: [f64; Q] = [0.0, 0.0, 1.0, 0.0, -1.0, 1.0, 1.0, -1.0, -1.0];
+    let equilibrium = equilibrium(rho, velocity[0], velocity[1]);
+    let mut stress = [[0.0; 2]; 2];
+    for q in 0..Q {
+        let nonequilibrium = populations[q] - equilibrium[q];
+        let e = [EX[q], EY[q]];
+        for row in 0..2 {
+            for column in 0..2 {
+                stress[row][column] += e[row] * e[column] * nonequilibrium;
+            }
+        }
+    }
+    stress
+}
 
 #[test]
 fn the_equilibrium_recovers_its_moments() {
@@ -210,6 +232,135 @@ fn d2q9_wall_momentum_refuses_invalid_masks_before_advancing() {
         let _ = grid.step_with_wall_momentum(&mut scratch, &short_mask);
     }));
     assert!(short_refusal.is_err());
+    assert_eq!(grid.f, original);
+    assert!(scratch.is_empty());
+}
+
+#[test]
+fn d2q9_regularized_x_faces_impose_moments_and_preserve_stress() {
+    let boundary = VelocityPressureX2::new([0.02, 0.003], 1.0);
+    assert_eq!(boundary.inlet_velocity(), [0.02, 0.003]);
+    assert_eq!(boundary.outlet_density().to_bits(), 1.0f64.to_bits());
+
+    let mut plain = Grid::uniform(9, 8, 0.8);
+    plain.periodic_x = false;
+    // Seed a density/momentum-conserving xx nonequilibrium on the initial
+    // inlet column so the copied-stress oracle cannot pass on equilibrium
+    // zeros alone.
+    for y in 0..plain.ny {
+        let inlet = plain.idx(0, y);
+        plain.f[inlet][0] -= 0.002;
+        plain.f[inlet][1] += 0.001;
+        plain.f[inlet][3] += 0.001;
+    }
+    let mut measured = plain.clone();
+    let measured_mask = vec![false; measured.nx * measured.ny];
+    let (mut plain_scratch, mut measured_scratch) = (Vec::new(), Vec::new());
+    for _ in 0..4 {
+        plain.step_velocity_pressure_x(&mut plain_scratch, boundary);
+        let receipt = measured.step_velocity_pressure_x_with_wall_momentum(
+            &mut measured_scratch,
+            boundary,
+            &measured_mask,
+        );
+        assert_eq!(receipt.measured_links, 0);
+        assert_eq!(receipt.wall_impulse.map(f64::to_bits), [0, 0]);
+    }
+    for (plain_cell, measured_cell) in plain.f.iter().zip(&measured.f) {
+        assert_eq!(
+            plain_cell.map(f64::to_bits),
+            measured_cell.map(f64::to_bits)
+        );
+    }
+
+    let mut max_stress = 0.0f64;
+    for y in 0..plain.ny {
+        let inlet = plain.idx(0, y);
+        let inlet_source = plain.idx(1, y);
+        let outlet_source = plain.idx(plain.nx - 2, y);
+        let outlet = plain.idx(plain.nx - 1, y);
+        let inlet_moments = plain.moments(inlet);
+        let inlet_source_moments = plain.moments(inlet_source);
+        let outlet_source_moments = plain.moments(outlet_source);
+        let outlet_moments = plain.moments(outlet);
+        assert!((inlet_moments.rho - inlet_source_moments.rho).abs() < 2e-12);
+        assert!(
+            inlet_moments
+                .u
+                .into_iter()
+                .zip(boundary.inlet_velocity())
+                .all(|(actual, target)| (actual - target).abs() < 2e-12)
+        );
+        assert!((outlet_moments.rho - boundary.outlet_density()).abs() < 2e-12);
+        assert!(
+            outlet_moments
+                .u
+                .into_iter()
+                .zip(outlet_source_moments.u)
+                .all(|(actual, source)| (actual - source).abs() < 2e-12)
+        );
+
+        let inlet_stress =
+            d2q9_nonequilibrium_stress(&plain.f[inlet], inlet_moments.rho, inlet_moments.u);
+        let inlet_source_stress = d2q9_nonequilibrium_stress(
+            &plain.f[inlet_source],
+            inlet_source_moments.rho,
+            inlet_source_moments.u,
+        );
+        let outlet_stress =
+            d2q9_nonequilibrium_stress(&plain.f[outlet], outlet_moments.rho, outlet_moments.u);
+        let outlet_source_stress = d2q9_nonequilibrium_stress(
+            &plain.f[outlet_source],
+            outlet_source_moments.rho,
+            outlet_source_moments.u,
+        );
+        for row in 0..2 {
+            for column in 0..2 {
+                max_stress = max_stress.max(inlet_source_stress[row][column].abs());
+                assert!(
+                    (inlet_stress[row][column] - inlet_source_stress[row][column]).abs() < 2e-12
+                );
+                assert!(
+                    (outlet_stress[row][column] - outlet_source_stress[row][column]).abs() < 2e-12
+                );
+            }
+        }
+    }
+    assert!(max_stress > 1e-10, "stress-copy oracle must be non-vacuous");
+}
+
+#[test]
+fn d2q9_regularized_x_faces_refuse_invalid_setup_before_advancing() {
+    assert!(std::panic::catch_unwind(|| VelocityPressureX2::new([0.2, 0.0], 1.0)).is_err());
+    assert!(std::panic::catch_unwind(|| VelocityPressureX2::new([0.02, 0.0], 0.0)).is_err());
+
+    let boundary = VelocityPressureX2::new([0.02, 0.0], 1.0);
+    let mut grid = Grid::uniform(5, 4, 0.8);
+    let original = grid.f.clone();
+    let mut scratch = Vec::new();
+    let periodic_refusal = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        grid.step_velocity_pressure_x(&mut scratch, boundary);
+    }));
+    assert!(periodic_refusal.is_err());
+    assert_eq!(grid.f, original);
+    assert!(scratch.is_empty());
+
+    grid.periodic_x = false;
+    grid.g = [1e-6, 0.0];
+    let force_refusal = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        grid.step_velocity_pressure_x(&mut scratch, boundary);
+    }));
+    assert!(force_refusal.is_err());
+    assert_eq!(grid.f, original);
+    assert!(scratch.is_empty());
+
+    grid.g = [0.0; 2];
+    let blocked_interior = grid.idx(1, 2);
+    grid.flags[blocked_interior] = Cell::Wall;
+    let topology_refusal = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        grid.step_velocity_pressure_x(&mut scratch, boundary);
+    }));
+    assert!(topology_refusal.is_err());
     assert_eq!(grid.f, original);
     assert!(scratch.is_empty());
 }

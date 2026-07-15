@@ -27,7 +27,10 @@ scaling plan) and deterministic `fs-math` primitives. Pure, deterministic
   `core2::MomentumExchange2`, `stream_from_with_wall_momentum`, and
   `step_with_wall_momentum` add an opt-in raw lattice-impulse receipt for an
   explicitly selected subset of stationary wall cells without changing the
-  legacy step path.
+  legacy step path. `core2::VelocityPressureX2` plus the paired Grid step
+  methods provide a low-Mach regularized velocity inlet at x-min and density
+  outlet at x-max with periodic y closure; density/velocity and non-equilibrium
+  stress are extrapolated from the respective first-interior columns.
 - `rheology::Rheology`, `rheology::update_tau`, and
   `rheology::channel_flow` — local apparent-viscosity laws and explicit
   τ updates with floor/cap counts for cells outside the representable
@@ -105,6 +108,10 @@ scaling plan) and deterministic `fs-math` primitives. Pure, deterministic
   order for selected stationary halfway-bounce-back links. Gas and exterior
   bounces are excluded; an isolated wall in equilibrium fluid has zero net
   impulse, and selecting one obstacle cannot silently include another.
+- D2Q9 regularized x faces impose the declared inlet velocity and outlet
+  density to roundoff while copying the complementary moment and independently
+  measured non-equilibrium stress from the first interior column. The measured
+  and unmeasured open-step paths are bit-identical.
 - Rheology laws reject non-finite or non-positive physical parameters, and
   every update reports floor/cap counts when viscosity leaves the representable
   τ window.
@@ -139,6 +146,10 @@ Rayleigh height, or non-positive Reynolds/length in the scaling assistant.
 D2Q9 momentum measurement additionally requires a full-grid boolean mask whose
 selected entries are all `Cell::Wall`; this is checked before a measured step
 can mutate populations.
+D2Q9 regularized x flow requires at least three columns, non-periodic x,
+periodic y, fluid face/first-interior columns, zero gravity/external forcing,
+a positive finite outlet density, and a finite inlet speed squared below 0.03.
+Every condition is checked before collision.
 D3Q19 boundary construction additionally rejects non-4-multiple dimensions,
 tile-count overflow, invalid collision parameters, moment-space collision with
 nonzero force, unpaired periodic faces, non-tangential/non-finite or
@@ -179,7 +190,9 @@ Poiseuille flow matches the analytic parabola (symmetric, centered); the
 scaling assistant derives τ + flags stability + colors the plan; it rejects a
 high-Mach plan and nonsense inputs; determinism; exact one-link wall-impulse
 sign/magnitude, obstacle selection, equilibrium cancellation, replay
-determinism, and pre-step mask refusal for D2Q9 momentum exchange.
+determinism, and pre-step mask refusal for D2Q9 momentum exchange; regularized
+x-face moment/stress reconstruction, measured-path bit equivalence, and
+pre-step topology/forcing refusal.
 
 `tests/extensions.rs` covers the current extension scaffolding: power-law and
 Newtonian-limit channel profiles, Carreau plateaus, Rayleigh-Bénard onset
@@ -241,6 +254,11 @@ pressure-Poiseuille gates.
   reference-area normalization, moving-wall correction, curved-boundary
   interpolation, blockage correction, averaging, or shedding-frequency
   estimation; therefore it is not yet the Re=100 cylinder Cd/St validation.
+- `VelocityPressureX2` is a low-Mach regularized fixture boundary with periodic
+  lateral closure. It is not a characteristic or non-reflecting far-field
+  condition, accepts no body force, and makes no unbounded-domain or blockage
+  claim. The cylinder battery must disclose its domain, resolution, warm-up,
+  averaging window, and lateral-domain sensitivity separately.
 - The face-generic regularized closure was selected instead of six
   face-specialized Zou-He tables because its Hermite stress projection has an
   independent second-moment oracle and preserves arbitrary tangential target

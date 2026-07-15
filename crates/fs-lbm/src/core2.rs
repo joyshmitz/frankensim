@@ -7,6 +7,8 @@
 
 use crate::{CS2, E, OPP, Q, W};
 
+const MAX_REGULARIZED_BOUNDARY_SPEED_SQ: f64 = 0.03;
+
 /// Cell classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cell {
@@ -66,6 +68,58 @@ pub struct MomentumExchange2 {
     pub wall_impulse: [f64; 2],
     /// Number of selected fluid-wall links included in the sum.
     pub measured_links: usize,
+}
+
+/// Low-Mach regularized velocity inlet at `x = 0` and isothermal
+/// pressure/density outlet at `x = nx - 1`.
+///
+/// The inlet copies density and non-equilibrium stress from `x = 1` while
+/// prescribing velocity. The outlet copies velocity and stress from
+/// `x = nx - 2` while prescribing density. This boundary pair is intended for
+/// x-directed crossflow fixtures with periodic y closure.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VelocityPressureX2 {
+    inlet_velocity: [f64; 2],
+    outlet_density: f64,
+}
+
+impl VelocityPressureX2 {
+    /// Construct a checked low-Mach boundary pair.
+    #[must_use]
+    pub fn new(inlet_velocity: [f64; 2], outlet_density: f64) -> Self {
+        assert!(
+            inlet_velocity.iter().all(|component| component.is_finite()),
+            "D2Q9 inlet velocity must be finite"
+        );
+        let speed_sq = inlet_velocity
+            .iter()
+            .map(|component| component * component)
+            .sum::<f64>();
+        assert!(
+            speed_sq < MAX_REGULARIZED_BOUNDARY_SPEED_SQ,
+            "D2Q9 inlet velocity exceeds the low-Mach boundary envelope"
+        );
+        assert!(
+            outlet_density.is_finite() && outlet_density > 0.0,
+            "D2Q9 outlet density must be positive and finite"
+        );
+        Self {
+            inlet_velocity,
+            outlet_density,
+        }
+    }
+
+    /// Prescribed inlet velocity in lattice units.
+    #[must_use]
+    pub const fn inlet_velocity(self) -> [f64; 2] {
+        self.inlet_velocity
+    }
+
+    /// Prescribed outlet density in lattice units.
+    #[must_use]
+    pub const fn outlet_density(self) -> f64 {
+        self.outlet_density
+    }
 }
 
 impl Grid {
@@ -244,6 +298,66 @@ impl Grid {
         }
     }
 
+    fn validate_velocity_pressure_x(&self) {
+        assert!(
+            self.nx >= 3,
+            "D2Q9 x-open flow requires at least three columns"
+        );
+        assert!(
+            !self.periodic_x && self.periodic_y,
+            "D2Q9 x-open flow requires non-periodic x and periodic y"
+        );
+        assert!(
+            self.g.into_iter().all(|component| component == 0.0)
+                && self
+                    .fext
+                    .iter()
+                    .flatten()
+                    .all(|component| *component == 0.0),
+            "D2Q9 regularized open boundaries currently require zero body force"
+        );
+        for y in 0..self.ny {
+            for x in [0, 1, self.nx - 2, self.nx - 1] {
+                assert_eq!(
+                    self.flags[self.idx(x, y)],
+                    Cell::Fluid,
+                    "D2Q9 open faces and first-interior columns must be fluid"
+                );
+            }
+        }
+    }
+
+    fn regularized_source(&self, index: usize) -> (f64, [f64; 2], [[f64; 2]; 2]) {
+        let moments = self.moments(index);
+        let equilibrium = crate::equilibrium(moments.rho, moments.u[0], moments.u[1]);
+        let mut stress = [[0.0; 2]; 2];
+        for q in 0..Q {
+            let nonequilibrium = self.f[index][q] - equilibrium[q];
+            let e = [f64::from(E[q].0), f64::from(E[q].1)];
+            for row in 0..2 {
+                for column in 0..2 {
+                    stress[row][column] += e[row] * e[column] * nonequilibrium;
+                }
+            }
+        }
+        (moments.rho, moments.u, stress)
+    }
+
+    fn apply_velocity_pressure_x(&mut self, boundary: VelocityPressureX2) {
+        for y in 0..self.ny {
+            let inlet = self.idx(0, y);
+            let inlet_source = self.idx(1, y);
+            let outlet_source = self.idx(self.nx - 2, y);
+            let outlet = self.idx(self.nx - 1, y);
+            let (inlet_density, _, inlet_stress) = self.regularized_source(inlet_source);
+            let (_, outlet_velocity, outlet_stress) = self.regularized_source(outlet_source);
+            self.f[inlet] =
+                regularized_populations(inlet_density, boundary.inlet_velocity, inlet_stress);
+            self.f[outlet] =
+                regularized_populations(boundary.outlet_density, outlet_velocity, outlet_stress);
+        }
+    }
+
     fn stream_from_inner(
         &mut self,
         post: &[[f64; Q]],
@@ -329,6 +443,62 @@ impl Grid {
         *scratch = post;
         receipt
     }
+
+    fn step_velocity_pressure_x_inner(
+        &mut self,
+        scratch: &mut Vec<[f64; Q]>,
+        boundary: VelocityPressureX2,
+        measured_walls: Option<&[bool]>,
+    ) -> MomentumExchange2 {
+        self.collide_into(scratch);
+        let post = std::mem::take(scratch);
+        let receipt = self.stream_from_inner(&post, measured_walls);
+        self.apply_velocity_pressure_x(boundary);
+        *scratch = post;
+        receipt
+    }
+
+    /// One collide-stream step followed by regularized x-face reconstruction.
+    pub fn step_velocity_pressure_x(
+        &mut self,
+        scratch: &mut Vec<[f64; Q]>,
+        boundary: VelocityPressureX2,
+    ) {
+        self.validate_velocity_pressure_x();
+        let _ = self.step_velocity_pressure_x_inner(scratch, boundary, None);
+    }
+
+    /// Regularized x-flow step plus a selected-wall momentum receipt.
+    ///
+    /// Grid topology, periodicity, forcing, and the wall mask are validated
+    /// before collision, so a refused request cannot partially advance state.
+    pub fn step_velocity_pressure_x_with_wall_momentum(
+        &mut self,
+        scratch: &mut Vec<[f64; Q]>,
+        boundary: VelocityPressureX2,
+        measured_walls: &[bool],
+    ) -> MomentumExchange2 {
+        self.validate_measured_walls(measured_walls);
+        self.validate_velocity_pressure_x();
+        self.step_velocity_pressure_x_inner(scratch, boundary, Some(measured_walls))
+    }
+}
+
+fn regularized_populations(rho: f64, velocity: [f64; 2], stress: [[f64; 2]; 2]) -> [f64; Q] {
+    let mut populations = crate::equilibrium(rho, velocity[0], velocity[1]);
+    let coefficient = 1.0 / (2.0 * CS2 * CS2);
+    for q in 0..Q {
+        let e = [f64::from(E[q].0), f64::from(E[q].1)];
+        let mut contraction = 0.0;
+        for row in 0..2 {
+            for column in 0..2 {
+                let isotropic = if row == column { CS2 } else { 0.0 };
+                contraction += (e[row] * e[column] - isotropic) * stress[row][column];
+            }
+        }
+        populations[q] += coefficient * W[q] * contraction;
+    }
+    populations
 }
 
 /// Strain-rate magnitude (sqrt(2 S:S)) of one cell from its
