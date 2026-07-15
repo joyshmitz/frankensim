@@ -84,10 +84,10 @@ const METER: Dims = Dims([1, 0, 0, 0, 0, 0]);
 #[allow(clippy::too_many_lines)] // the fuzz storm's reference model is one block
 fn opt_001_validation_teaches() {
     let mut b = ProblemBuilder::new();
-    let x = b.var("x", Manifold::Rn { dim: 3 }, METER);
+    let x = b.var("x", Manifold::Rn { dim: 3 }, METER).expect("var");
     let xr = b.var_ref(x).expect("var ref");
     let len = b.norm_sq(xr).expect("norm_sq");
-    let meter_const = b.konst(2.0, METER);
+    let meter_const = b.konst(2.0, METER).expect("finite konst");
     // m² + m → DimMismatch naming the op.
     let e = b.add(len, meter_const).expect_err("dim mismatch");
     let dim_teaches = matches!(e, OptError::DimMismatch { op: "add", .. })
@@ -101,16 +101,16 @@ fn opt_001_validation_teaches() {
         e.to_string().contains("dimensionless")
     };
     // sqrt of m³ → OddDims.
-    let m3 = b.konst(1.0, Dims([3, 0, 0, 0, 0, 0]));
+    let m3 = b.konst(1.0, Dims([3, 0, 0, 0, 0, 0])).expect("finite konst");
     let odd_err = b.sqrt(m3).expect_err("odd dims").to_string();
     let pow_dims_checked = {
         let mut powers = ProblemBuilder::new();
-        let m = powers.konst(2.0, METER);
-        let m2 = powers.konst(2.0, Dims([2, 0, 0, 0, 0, 0]));
+        let m = powers.konst(2.0, METER).expect("finite konst");
+        let m2 = powers.konst(2.0, Dims([2, 0, 0, 0, 0, 0])).expect("finite konst");
         let m101 = powers.powi(m, 101).expect("m^101 is representable");
         let overflow = powers.powi(m2, 100).expect_err("m^200 cannot fit i8 dims");
         let problem = powers.finish();
-        problem.node_dims(m101) == Dims([101, 0, 0, 0, 0, 0])
+        problem.node_dims(m101).expect("known node") == Dims([101, 0, 0, 0, 0, 0])
             && matches!(overflow, OptError::DimOverflow { exponent: 100, .. })
     };
     // component out of range.
@@ -127,7 +127,7 @@ fn opt_001_validation_teaches() {
     let mut agreed = 0u64;
     let mut disagreed = 0u64;
     let mut fb = ProblemBuilder::new();
-    let v = fb.var("v", Manifold::Rn { dim: 3 }, METER);
+    let v = fb.var("v", Manifold::Rn { dim: 3 }, METER).expect("var");
     let mut model: Vec<(bool, [i8; 6])> = Vec::new(); // (is_vector, dims)
     let mut ids = Vec::new();
     let seed_node = fb.var_ref(v).expect("seed");
@@ -252,7 +252,7 @@ fn opt_001_validation_teaches() {
                     0,
                     (rng.below(3) as i8) - 1,
                 ]);
-                let id = fb.konst(rng.unit(), dims);
+                let id = fb.konst(rng.unit(), dims).expect("finite konst");
                 if (id.0 as usize) == model.len() {
                     model.push((false, dims.0));
                 }
@@ -284,14 +284,14 @@ fn opt_001_validation_teaches() {
 /// Build the shared fixture problem (PDE + stochastic + kink + tags).
 fn fixture() -> fs_opt::Problem {
     let mut b = ProblemBuilder::new();
-    let theta = b.var("theta", Manifold::Rn { dim: 3 }, METER);
-    let q = b.var("attitude", Manifold::So3, Dims::NONE);
+    let theta = b.var("theta", Manifold::Rn { dim: 3 }, METER).expect("var");
+    let q = b.var("attitude", Manifold::So3, Dims::NONE).expect("var");
     let _ = q;
     let tr = b.var_ref(theta).expect("ref");
     let compliance = b.norm_sq(tr).expect("norm_sq");
-    let limit = b.konst(4.0, Dims([2, 0, 0, 0, 0, 0]));
+    let limit = b.konst(4.0, Dims([2, 0, 0, 0, 0, 0])).expect("finite konst");
     let excess = b.sub(compliance, limit).expect("sub");
-    let zero = b.konst(0.0, Dims([2, 0, 0, 0, 0, 0]));
+    let zero = b.konst(0.0, Dims([2, 0, 0, 0, 0, 0])).expect("finite konst");
     let hinge = b.max_of(excess, zero).expect("max");
     let pde = b
         .pde_residual("stokes-channel", theta, true, Dims::NONE)
@@ -302,8 +302,8 @@ fn fixture() -> fs_opt::Problem {
     b.objective(risk, Sense::Minimize, 0.25).expect("obj2");
     b.constraint(hinge, ConstraintKind::LeZero, "compliance-cap")
         .expect("con");
-    b.tag(ProblemTag::ChanceConstrained { prob: 0.99 });
-    b.tag(ProblemTag::MultiFidelity { levels: 3 });
+    b.tag(ProblemTag::ChanceConstrained { prob: 0.99 }).expect("tag");
+    b.tag(ProblemTag::MultiFidelity { levels: 3 }).expect("tag");
     b.set_budget(10_000);
     b.finish()
 }
@@ -321,7 +321,7 @@ fn opt_002_roundtrip_and_hash() {
     // A differing constant changes the hash.
     let p3 = {
         let mut b = ProblemBuilder::new();
-        let v = b.var("theta", Manifold::Rn { dim: 3 }, METER);
+        let v = b.var("theta", Manifold::Rn { dim: 3 }, METER).expect("var");
         let r = b.var_ref(v).expect("ref");
         let n = b.norm_sq(r).expect("n");
         b.objective(n, Sense::Minimize, 1.0).expect("obj");
@@ -402,7 +402,7 @@ fn opt_002b_legacy_crosswalk_receipt_is_structured_and_logged() {
 #[test]
 fn opt_003_cse_and_substitution() {
     let mut b = ProblemBuilder::new();
-    let x = b.var("x", Manifold::Rn { dim: 2 }, Dims::NONE);
+    let x = b.var("x", Manifold::Rn { dim: 2 }, Dims::NONE).expect("var");
     let xr = b.var_ref(x).expect("ref");
     let n1 = b.norm_sq(xr).expect("n1");
     let n2 = b.norm_sq(xr).expect("n2");
@@ -424,7 +424,7 @@ fn opt_003_cse_and_substitution() {
         let p = vec![rng.unit() * 4.0 - 2.0, rng.unit() * 4.0 - 2.0];
         let problem = {
             let mut bb = ProblemBuilder::new();
-            let v = bb.var("x", Manifold::Rn { dim: 2 }, Dims::NONE);
+            let v = bb.var("x", Manifold::Rn { dim: 2 }, Dims::NONE).expect("var");
             let r = bb.var_ref(v).expect("r");
             let n = bb.norm_sq(r).expect("n");
             let n2b = bb.mul(n, n).expect("n2");
@@ -434,7 +434,7 @@ fn opt_003_cse_and_substitution() {
         };
         let via_ir = eval(
             &problem,
-            problem.objectives[0].node,
+            problem.objectives()[0].node,
             std::slice::from_ref(&p),
         )
         .expect("eval")
@@ -446,7 +446,7 @@ fn opt_003_cse_and_substitution() {
     }
     // Identity laws, bitwise.
     let mut ib = ProblemBuilder::new();
-    let v = ib.var("v", Manifold::Rn { dim: 1 }, Dims::NONE);
+    let v = ib.var("v", Manifold::Rn { dim: 1 }, Dims::NONE).expect("var");
     let r = ib.var_ref(v).expect("r");
     let c = ib.component(r, 0).expect("c");
     let neg2 = {
@@ -469,8 +469,8 @@ fn opt_003_cse_and_substitution() {
                 .scalar()
                 .expect("s")
         };
-        ids_ok &= e(prob.objectives[0].node).to_bits() == e(prob.objectives[2].node).to_bits();
-        ids_ok &= e(prob.objectives[1].node).to_bits() == e(prob.objectives[2].node).to_bits();
+        ids_ok &= e(prob.objectives()[0].node).to_bits() == e(prob.objectives()[2].node).to_bits();
+        ids_ok &= e(prob.objectives()[1].node).to_bits() == e(prob.objectives()[2].node).to_bits();
     }
     let composed_dbg = composed; // keep the two-way build exercised
     let _ = composed_dbg;
@@ -492,9 +492,10 @@ fn opt_003_cse_and_substitution() {
 fn opt_004_class_routing() {
     let p = fixture();
     // The fixture's objectives: smooth compliance + C0 risk (cvar).
-    let smooth_obj = p.objectives[0].node;
-    let risky_obj = p.objectives[1].node;
-    let classes_right = p.class(smooth_obj) == Class::Smooth && p.class(risky_obj) == Class::C0;
+    let smooth_obj = p.objectives()[0].node;
+    let risky_obj = p.objectives()[1].node;
+    let classes_right = p.class(smooth_obj).expect("known node") == Class::Smooth
+        && p.class(risky_obj).expect("known node") == Class::C0;
     // Routing: whole problem contains max() hinge + cvar → L-BFGS must
     // refuse and NAME a poisoning node.
     let refusal = p.route(OptimizerFamily::Lbfgs).expect_err("must refuse");
@@ -507,7 +508,7 @@ fn opt_004_class_routing() {
     // Adjoint-less PDE → refused for L-BFGS even when smooth.
     let no_adj = {
         let mut b = ProblemBuilder::new();
-        let v = b.var("v", Manifold::Rn { dim: 2 }, Dims::NONE);
+        let v = b.var("v", Manifold::Rn { dim: 2 }, Dims::NONE).expect("var");
         let pde = b
             .pde_residual("heat-steady", v, false, Dims::NONE)
             .expect("pde");
@@ -520,7 +521,7 @@ fn opt_004_class_routing() {
     };
     let trace = p.class_trace();
     let trace_ok =
-        trace.len() == p.exprs.len() && trace.iter().any(|l| l.contains("max") && l.contains("C0"));
+        trace.len() == p.exprs().len() && trace.iter().any(|l| l.contains("max") && l.contains("C0"));
     let mut em = fs_obs::Emitter::new("fs-opt/conformance", "opt-004/classes");
     let line = em
         .emit(
@@ -529,7 +530,7 @@ fn opt_004_class_routing() {
                 name: "opt-class-routing".to_string(),
                 json: format!(
                     "{{\"nodes\":{},\"hash\":\"{:016X}\",\"refusal\":\"{refusal}\"}}",
-                    p.exprs.len(),
+                    p.exprs().len(),
                     problem_hash(&p)
                 ),
             },
@@ -695,7 +696,7 @@ fn opt_006_budget_and_cancellation() {
     with_cx(|cx| {
         let build = |max_evals: u64| {
             let mut b = ProblemBuilder::new();
-            let v = b.var("x", Manifold::Rn { dim: 4 }, Dims::NONE);
+            let v = b.var("x", Manifold::Rn { dim: 4 }, Dims::NONE).expect("var");
             let r = b.var_ref(v).expect("r");
             let n = b.norm_sq(r).expect("n");
             b.objective(n, Sense::Minimize, 1.0).expect("obj");
@@ -719,7 +720,7 @@ fn opt_006_budget_and_cancellation() {
 
         // PDE/stochastic nodes refuse evaluation with the executor named.
         let fx = fixture();
-        let stochastic_obj = fx.objectives[1].node;
+        let stochastic_obj = fx.objectives()[1].node;
         let refuse = matches!(
             eval(&fx, stochastic_obj, &[vec![0.0; 3], vec![1.0, 0.0, 0.0, 0.0]]),
             Err(OptError::Unevaluable { kind, .. }) if kind.contains("UQ") || kind.contains("FLUX")

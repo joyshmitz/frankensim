@@ -17,9 +17,9 @@ const D0: Dims = Dims([0, 0, 0, 0, 0, 0]);
 
 /// (a·x + b) as a scalar node from a component.
 fn affine(b: &mut ProblemBuilder, x: NodeId, a: f64, off: f64) -> NodeId {
-    let ca = b.konst(a, D0);
+    let ca = b.konst(a, D0).expect("finite konst");
     let m = b.mul(ca, x).expect("scalar mul");
-    let co = b.konst(off, D0);
+    let co = b.konst(off, D0).expect("finite konst");
     b.add(m, co).expect("scalar add")
 }
 
@@ -27,9 +27,15 @@ fn affine(b: &mut ProblemBuilder, x: NodeId, a: f64, off: f64) -> NodeId {
 /// minimize 0.6·v₀ + 0.8·v₁ + (z₀−1)² + (z₁+2)² — linear on the
 /// sphere (optimum v = −(0.6, 0.8, 0)) plus a shifted bowl.
 fn product_problem() -> (fs_opt::Problem, Vec<f64>) {
+    product_problem_budgeted(0)
+}
+
+/// [`product_problem`] with a P4 budget attached at BUILD time — the
+/// sealed `Problem` no longer exposes a mutable budget field.
+fn product_problem_budgeted(max_evals: u64) -> (fs_opt::Problem, Vec<f64>) {
     let mut b = ProblemBuilder::new();
-    let v = b.var("v", Manifold::Sphere { ambient: 3 }, D0);
-    let z = b.var("z", Manifold::Rn { dim: 2 }, D0);
+    let v = b.var("v", Manifold::Sphere { ambient: 3 }, D0).expect("var v");
+    let z = b.var("z", Manifold::Rn { dim: 2 }, D0).expect("var z");
     let vref = b.var_ref(v).expect("v node");
     let zref = b.var_ref(z).expect("z node");
     let v0 = b.component(vref, 0).expect("v0");
@@ -46,6 +52,7 @@ fn product_problem() -> (fs_opt::Problem, Vec<f64>) {
     let bowl = b.add(q0, q1).expect("bowl");
     let total = b.add(lin, bowl).expect("total");
     b.objective(total, Sense::Minimize, 1.0).expect("objective");
+    b.set_budget(max_evals);
     let problem = b.finish();
     let x0 = vec![1.0, 0.0, 0.0, 0.0, 0.0];
     (problem, x0)
@@ -72,8 +79,7 @@ fn runner_product_manifold_packing() {
 
 #[test]
 fn runner_budget_threads_into_stop_algebra() {
-    let (mut problem, x0) = product_problem();
-    problem.budget = fs_opt::EvalBudget { max_evals: 50 };
+    let (problem, x0) = product_problem_budgeted(50);
     let mut study = Study::new(&problem, &x0, 1e-6, 0.2);
     let rep = study.run(&problem, &StopRule::GradNorm(1e-12), 4000);
     verdict(
@@ -119,7 +125,7 @@ fn runner_constraints_route_to_al() {
     // s.t. x + y = 2 (EqZero), x − 1.2 ≤ 0 (LeZero), solved through
     // the packed adapters.
     let mut b = ProblemBuilder::new();
-    let xy = b.var("xy", Manifold::Rn { dim: 2 }, D0);
+    let xy = b.var("xy", Manifold::Rn { dim: 2 }, D0).expect("var xy");
     let xyref = b.var_ref(xy).expect("xy node");
     let x0c = b.component(xyref, 0).expect("x");
     let x1c = b.component(xyref, 1).expect("y");

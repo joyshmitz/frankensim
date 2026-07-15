@@ -45,8 +45,13 @@ impl Packing {
     pub fn new(problem: &Problem) -> Packing {
         let mut blocks = Vec::new();
         let mut start = 0usize;
-        for v in &problem.vars {
-            let len = v.manifold.point_dim() as usize;
+        for v in problem.vars() {
+            let len = usize::try_from(
+                v.manifold
+                    .point_dim()
+                    .expect("sealed problems carry validated manifolds"),
+            )
+            .expect("point storage fits usize");
             blocks.push(Block {
                 manifold: v.manifold,
                 start,
@@ -133,7 +138,7 @@ pub struct StudyReport {
 fn objective(problem: &Problem, packing: &Packing, x: &[f64], evals: &mut usize) -> f64 {
     let bindings = packing.unpack(x);
     let mut total = 0.0f64;
-    for o in &problem.objectives {
+    for o in problem.objectives() {
         let v = eval(problem, o.node, &bindings)
             .expect("objective evaluable (checked at study start)")
             .scalar()
@@ -159,10 +164,10 @@ impl Study {
         let packing = Packing::new(problem);
         assert_eq!(x0.len(), packing.dim, "packed x0 length mismatch");
         let bindings = packing.unpack(x0);
-        for o in &problem.objectives {
+        for o in problem.objectives() {
             let _ = eval(problem, o.node, &bindings).expect("objective root must evaluate");
         }
-        for c in &problem.constraints {
+        for c in problem.constraints() {
             let _ = eval(problem, c.node, &bindings).expect("constraint root must evaluate");
         }
         Study {
@@ -201,9 +206,9 @@ impl Study {
     /// caller's rules (P4: budgets are not optional).
     pub fn run(&mut self, problem: &Problem, rule: &StopRule, max_steps: usize) -> StudyReport {
         let mut rules = vec![rule.clone()];
-        if problem.budget.max_evals > 0 {
+        if problem.budget().max_evals > 0 {
             rules.push(StopRule::Budget(
-                usize::try_from(problem.budget.max_evals).unwrap_or(usize::MAX),
+                usize::try_from(problem.budget().max_evals).unwrap_or(usize::MAX),
             ));
         }
         let combined = StopRule::Any(rules);
@@ -279,7 +284,7 @@ impl Study {
         let eval_kind = move |x: &[f64], kind: ConstraintKind| -> Vec<f64> {
             let bindings = packing.unpack(x);
             problem
-                .constraints
+                .constraints()
                 .iter()
                 .filter(|c| c.kind == kind)
                 .map(|c| {

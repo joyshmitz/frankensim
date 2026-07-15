@@ -166,7 +166,7 @@ fn ival_at(problem: &Problem, node: NodeId, boxes: &[(f64, f64)]) -> Result<IvVa
             IvVal::V(_) => unreachable!("builder enforced scalar shapes"),
         }
     };
-    let out = match &problem.exprs[node.0 as usize] {
+    let out = match &problem.exprs()[node.0 as usize] {
         Expr::Var(_) => IvVal::V(
             boxes
                 .iter()

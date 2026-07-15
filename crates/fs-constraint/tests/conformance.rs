@@ -74,18 +74,18 @@ struct Host {
 /// Build `a0·x0 + a1·x1 − b ≤ 0` constraint nodes.
 fn linear_host(rows: &[(f64, f64, f64)]) -> Host {
     let mut b = ProblemBuilder::new();
-    let v = b.var("x", Manifold::Rn { dim: 2 }, Dims::NONE);
+    let v = b.var("x", Manifold::Rn { dim: 2 }, Dims::NONE).expect("var");
     let vr = b.var_ref(v).expect("ref");
     let x0 = b.component(vr, 0).expect("x0");
     let x1 = b.component(vr, 1).expect("x1");
     let mut nodes = Vec::new();
     for &(a0, a1, rhs) in rows {
-        let c0 = b.konst(a0, Dims::NONE);
-        let c1 = b.konst(a1, Dims::NONE);
+        let c0 = b.konst(a0, Dims::NONE).expect("finite konst");
+        let c1 = b.konst(a1, Dims::NONE).expect("finite konst");
         let t0 = b.mul(c0, x0).expect("t0");
         let t1 = b.mul(c1, x1).expect("t1");
         let s = b.add(t0, t1).expect("s");
-        let rb = b.konst(rhs, Dims::NONE);
+        let rb = b.konst(rhs, Dims::NONE).expect("finite konst");
         nodes.push(b.sub(s, rb).expect("g"));
     }
     // Anchor an objective so the problem is well-formed.
@@ -325,7 +325,7 @@ fn fscon_004_certification_and_robust() {
     let honest = matches!(refused, Err(ConError::NotProvable { ref why }) if why.contains("upper"));
     // G0 containment: random nonlinear graph, random boxes, samples in.
     let mut b = ProblemBuilder::new();
-    let v = b.var("x", Manifold::Rn { dim: 2 }, Dims::NONE);
+    let v = b.var("x", Manifold::Rn { dim: 2 }, Dims::NONE).expect("var");
     let vr = b.var_ref(v).expect("r");
     let n = b.norm_sq(vr).expect("n");
     let x0 = b.component(vr, 0).expect("x0");
@@ -333,7 +333,7 @@ fn fscon_004_certification_and_robust() {
     let m = b.mul(n, n).expect("m");
     let s = b.add(m, t).expect("s");
     let a = b.abs(s).expect("a");
-    let one = b.konst(1.0, Dims::NONE);
+    let one = b.konst(1.0, Dims::NONE).expect("finite konst");
     let g = b.min_of(a, one).expect("g");
     b.objective(g, fs_opt::Sense::Minimize, 1.0).expect("o");
     let nl = b.finish();
@@ -678,7 +678,7 @@ fn a_non_finite_constraint_value_is_never_certified_feasible() {
     // zero-violation certificate -- certifying an undefined constraint as
     // strictly feasible (a false certificate).
     let mut b = ProblemBuilder::new();
-    let v = b.var("x", Manifold::Rn { dim: 1 }, Dims::NONE);
+    let v = b.var("x", Manifold::Rn { dim: 1 }, Dims::NONE).expect("var");
     let vr = b.var_ref(v).expect("ref");
     let x0 = b.component(vr, 0).expect("x0");
     let g = b.sqrt(x0).expect("sqrt"); // g = sqrt(x0): NaN for x0 < 0
