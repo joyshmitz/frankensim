@@ -455,7 +455,7 @@ impl FrameTree {
                 } => {
                     check_axis(axis, &ctx, out);
                     check_center(*center, &ctx, out);
-                    angle.check(&ctx, out);
+                    angle.check_with_checkpoint(&ctx, out, checkpoint)?;
                     if !angle.dims().is_none() {
                         out.push(dims_violation(&ctx, "tilt angle", Dims::NONE, angle.dims()));
                     }

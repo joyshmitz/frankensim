@@ -188,11 +188,13 @@ frame-cycle traversal is linear after indexing. The explicit `Cx` lane polls
 before preflight, after planning, after fixed phases, at every frame-index row,
 frame-cycle traversal/finalization step, and frame validation row, at
 BC/case/combination term/ensemble/contact boundaries, before and after each
-net-flux provider evaluation, and after private validation before publication.
-A request observed at any checkpoint publishes no partial findings. Polling
-inside individual large table scans, plus fallible index/output reservation,
-remain active work under `frankensim-sj31i.24`. No loop is admitted from an
-unchecked float-to-size conversion.
+net-flux provider evaluation, at every tabulated signal scalar and Chebyshev
+coefficient, and after private validation before publication. Tabulated signal
+validity and ordering are accumulated in one pass while retaining diagnostic
+order. A request observed at any checkpoint publishes no partial findings.
+Fallible index/output reservation remains active work under
+`frankensim-sj31i.24`. No loop is admitted from an unchecked float-to-size
+conversion.
 
 ## Unsafe boundary
 
@@ -249,6 +251,9 @@ None.
   path uses the same checkpoint route.
 - A focused frame regression injects cancellation inside the tri-color cycle
   walk and proves frame findings remain private at that boundary.
+- A focused table-signal regression proves the checkpointed scalar traversal
+  is one pass, preserves public diagnostic order, and observes injected
+  cancellation before findings escape.
 
 ## No-claim boundaries
 

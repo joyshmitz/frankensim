@@ -819,7 +819,7 @@ impl Scenario {
         checkpoint("frames")?;
         let frame_ids: BTreeSet<u32> = self.frames.frames.iter().map(|frame| frame.id.0).collect();
         for bc in &self.base_bcs {
-            bc.check(&mut out);
+            bc.check_with_checkpoint(&mut out, checkpoint)?;
             Self::check_bc_frame(bc, &frame_ids, &mut out);
             checkpoint("base boundary conditions")?;
         }
@@ -846,7 +846,7 @@ impl Scenario {
                 first_case_by_name.insert(case.name.as_str(), i);
             }
             for bc in &case.bcs {
-                bc.check(&mut out);
+                bc.check_with_checkpoint(&mut out, checkpoint)?;
                 Self::check_bc_frame(bc, &frame_ids, &mut out);
                 checkpoint("case boundary conditions")?;
             }

@@ -137,6 +137,18 @@ pub fn expectation(physics: Physics, kind: BcKind) -> Expectation {
 impl BoundaryCondition {
     /// Validate this condition against the dimensional contract.
     pub fn check(&self, out: &mut Vec<Violation>) {
+        let mut checkpoint = |_: &'static str| Ok::<(), core::convert::Infallible>(());
+        match self.check_with_checkpoint(out, &mut checkpoint) {
+            Ok(()) => {}
+            Err(never) => match never {},
+        }
+    }
+
+    pub(crate) fn check_with_checkpoint<E>(
+        &self,
+        out: &mut Vec<Violation>,
+        checkpoint: &mut impl FnMut(&'static str) -> Result<(), E>,
+    ) -> Result<(), E> {
         let ctx = format!(
             "bc on {:?} ({:?}/{:?})",
             self.region, self.physics, self.kind
@@ -159,8 +171,12 @@ impl BoundaryCondition {
                         });
                     }
                 }
-                BcValue::Signal(signal) => signal.check(&ctx, out),
-                BcValue::Profile(profile) => profile.check(&ctx, out),
+                BcValue::Signal(signal) => {
+                    signal.check_with_checkpoint(&ctx, out, checkpoint)?;
+                }
+                BcValue::Profile(profile) => {
+                    profile.check_with_checkpoint(&ctx, out, checkpoint)?;
+                }
             }
         }
         match expectation(self.physics, self.kind) {
@@ -230,6 +246,7 @@ impl BoundaryCondition {
                     .to_string(),
             });
         }
+        Ok(())
     }
 
     /// Signed mass-flow contribution of this condition at time `t`

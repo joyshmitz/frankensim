@@ -57,7 +57,12 @@ impl ChebProfile {
     /// `ChebProfile` is a public authority-boundary type. Keeping the checks
     /// here makes downstream `Result` APIs fail closed even if another
     /// constructor is added later.
-    pub(crate) fn check(&self, context: &str, out: &mut Vec<Violation>) {
+    pub(crate) fn check_with_checkpoint<E>(
+        &self,
+        context: &str,
+        out: &mut Vec<Violation>,
+        checkpoint: &mut impl FnMut(&'static str) -> Result<(), E>,
+    ) -> Result<(), E> {
         let (a, b) = self.cheb.domain();
         if !(a.is_finite() && b.is_finite() && a < b) {
             out.push(Violation {
@@ -66,19 +71,19 @@ impl ChebProfile {
                 fix: "build the function object on a finite, nonempty interval".to_string(),
             });
         }
-        if self.cheb.coeffs().is_empty()
-            || self
-                .cheb
-                .coeffs()
-                .iter()
-                .any(|coefficient| !coefficient.is_finite())
-        {
+        let mut coefficients_invalid = self.cheb.coeffs().is_empty();
+        for coefficient in self.cheb.coeffs() {
+            checkpoint("signal Chebyshev coefficients")?;
+            coefficients_invalid |= !coefficient.is_finite();
+        }
+        if coefficients_invalid {
             out.push(Violation {
                 code: "signal-chebfun-coefficients",
                 what: format!("{context}: chebfun coefficients are empty or non-finite"),
                 fix: "supply at least one finite Chebyshev coefficient".to_string(),
             });
         }
+        Ok(())
     }
 }
 
@@ -255,6 +260,19 @@ impl TimeSignal {
 
     /// Structural validation, accumulated as [`Violation`]s.
     pub fn check(&self, context: &str, out: &mut Vec<Violation>) {
+        let mut checkpoint = |_: &'static str| Ok::<(), core::convert::Infallible>(());
+        match self.check_with_checkpoint(context, out, &mut checkpoint) {
+            Ok(()) => {}
+            Err(never) => match never {},
+        }
+    }
+
+    pub(crate) fn check_with_checkpoint<E>(
+        &self,
+        context: &str,
+        out: &mut Vec<Violation>,
+        checkpoint: &mut impl FnMut(&'static str) -> Result<(), E>,
+    ) -> Result<(), E> {
         match self {
             TimeSignal::Constant(q) => {
                 if !q.value.is_finite() {
@@ -312,24 +330,37 @@ impl TimeSignal {
                         fix: "supply one value per sample time (at least one sample)".to_string(),
                     });
                 }
-                if times.iter().any(|time| !time.is_finite()) {
+                let mut time_nonfinite = false;
+                let mut order_invalid = false;
+                let mut previous = None;
+                for &time in times {
+                    checkpoint("signal table times")?;
+                    time_nonfinite |= !time.is_finite();
+                    if let Some(prior) = previous {
+                        order_invalid |= !(prior.is_finite() && time > prior);
+                    }
+                    previous = Some(time);
+                }
+                let mut value_nonfinite = false;
+                for value in values {
+                    checkpoint("signal table values")?;
+                    value_nonfinite |= !value.is_finite();
+                }
+                if time_nonfinite {
                     out.push(Violation {
                         code: "signal-table-time-nonfinite",
                         what: format!("{context}: table contains a non-finite sample time"),
                         fix: "replace every sample time with a finite value".to_string(),
                     });
                 }
-                if values.iter().any(|value| !value.is_finite()) {
+                if value_nonfinite {
                     out.push(Violation {
                         code: "signal-value-nonfinite",
                         what: format!("{context}: table contains a non-finite sample value"),
                         fix: "replace every sample value with a finite value".to_string(),
                     });
                 }
-                if times
-                    .windows(2)
-                    .any(|window| !(window[0].is_finite() && window[1] > window[0]))
-                {
+                if order_invalid {
                     out.push(Violation {
                         code: "signal-table-order",
                         what: format!("{context}: table times are not strictly increasing"),
@@ -338,8 +369,75 @@ impl TimeSignal {
                 }
             }
             TimeSignal::Chebfun(profile) => {
-                profile.check(context, out);
+                profile.check_with_checkpoint(context, out, checkpoint)?;
             }
         }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod validation_internal_tests {
+    use super::{Interp, TimeSignal};
+    use fs_qty::Dims;
+
+    #[test]
+    fn table_scan_is_single_pass_checkpointed_and_order_stable() {
+        let signal = TimeSignal::Table {
+            times: vec![0.0, f64::NAN, -1.0],
+            values: vec![1.0, f64::INFINITY, 3.0],
+            dims: Dims::NONE,
+            interp: Interp::Linear,
+        };
+        let mut public_findings = Vec::new();
+        signal.check("table", &mut public_findings);
+
+        let mut checkpointed_findings = Vec::new();
+        let mut phases = Vec::new();
+        signal
+            .check_with_checkpoint("table", &mut checkpointed_findings, &mut |phase| {
+                phases.push(phase);
+                Ok::<(), core::convert::Infallible>(())
+            })
+            .expect("infallible checkpoint");
+
+        assert_eq!(checkpointed_findings, public_findings);
+        assert_eq!(
+            public_findings
+                .iter()
+                .map(|finding| finding.code)
+                .collect::<Vec<_>>(),
+            [
+                "signal-table-time-nonfinite",
+                "signal-value-nonfinite",
+                "signal-table-order",
+            ]
+        );
+        assert_eq!(
+            phases,
+            [
+                "signal table times",
+                "signal table times",
+                "signal table times",
+                "signal table values",
+                "signal table values",
+                "signal table values",
+            ]
+        );
+
+        let mut cancelled_findings = Vec::new();
+        let mut time_polls = 0usize;
+        let result = signal.check_with_checkpoint("table", &mut cancelled_findings, &mut |phase| {
+            if phase == "signal table times" {
+                time_polls += 1;
+            }
+            if time_polls == 2 {
+                Err("cancelled")
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(result, Err("cancelled"));
+        assert!(cancelled_findings.is_empty());
     }
 }
