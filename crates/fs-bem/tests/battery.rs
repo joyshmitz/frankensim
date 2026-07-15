@@ -15,9 +15,14 @@
 //!   the pressure-derived screening circulation asymptote, Kelvin bookkeeping,
 //!   bounded stable roll-up,
 //!   bitwise determinism.
+//! - bem-006 G2: NACA 0012 pre-stall lift slope against the corrected
+//!   NASA TM-4074 force table, with an explicit ten-degree admission boundary.
 
 use fs_bem::panel3d::{SpherePanels, solve_exterior, surface_velocity};
-use fs_bem::{WakeSim, naca4_symmetric, panel2d};
+use fs_bem::{
+    BemError, NACA0012_PRESTALL_MAX_ALPHA_RAD, WakeSim, naca4_symmetric, panel2d,
+    solve_naca0012_prestall,
+};
 use fs_la::factor::lu;
 use std::fmt::Write as _;
 
@@ -308,6 +313,91 @@ fn bem_005_impulsive_start_free_wake() {
             sim.wake().len()
         ),
     );
+}
+
+// ------------------------------------------------------------------ bem-006
+
+#[allow(clippy::cast_precision_loss)]
+fn least_squares_slope<const N: usize>(x: &[f64; N], y: &[f64; N]) -> f64 {
+    let count = N as f64;
+    let mean_x = x.iter().sum::<f64>() / count;
+    let mean_y = y.iter().sum::<f64>() / count;
+    let covariance = x
+        .iter()
+        .zip(y)
+        .map(|(x, y)| (x - mean_x) * (y - mean_y))
+        .sum::<f64>();
+    let variance = x.iter().map(|x| (x - mean_x).powi(2)).sum::<f64>();
+    covariance / variance
+}
+
+#[test]
+fn bem_006_naca0012_ladson_prestall_envelope() {
+    // Charles L. Ladson, NASA TM-4074 (1988), table I: M=0.15,
+    // Re=5.97e6, free transition. The report states that all tabulated force
+    // coefficients include the standard low-speed tunnel-wall correction
+    // (about two percent). The seven linear-range rows below are copied
+    // verbatim; their least-squares slope is the independent experimental
+    // reference rather than a thin-airfoil formula.
+    // https://ntrs.nasa.gov/api/citations/19880019495/downloads/19880019495.pdf
+    // SHA-256: 8e466706cbdf54b3c778ea2b089c4f52d87686bf7f6b1bd10d224b42c2d06902
+    const LADSON_ALPHA_DEG: [f64; 7] = [-4.05, -2.00, 0.05, 1.98, 4.18, 6.20, 8.22];
+    const LADSON_CL: [f64; 7] = [-0.4280, -0.2150, 0.0040, 0.2080, 0.4520, 0.6630, 0.8800];
+    let ladson_alpha_rad = LADSON_ALPHA_DEG.map(|alpha| alpha.to_radians());
+    let measured_slope = least_squares_slope(&ladson_alpha_rad, &LADSON_CL);
+
+    let model_alpha_rad = [-8.0f64, -4.0, 0.0, 4.0, 8.0].map(f64::to_radians);
+    let model_cl = model_alpha_rad.map(|alpha| {
+        solve_naca0012_prestall(120, alpha)
+            .expect("linear-range NACA 0012 request must be admitted")
+            .cl
+    });
+    let model_slope = least_squares_slope(&model_alpha_rad, &model_cl);
+    let relative_bias = model_slope / measured_slope - 1.0;
+    let odd_symmetry_worst = (model_cl[0] + model_cl[4])
+        .abs()
+        .max((model_cl[1] + model_cl[3]).abs())
+        .max(model_cl[2].abs());
+
+    // TM-4074 reports that inviscid theory overpredicts its measured slope.
+    // This gate therefore admits a one-sided, explicitly screening-grade
+    // discrepancy of at most 20%; it does not reinterpret agreement as a
+    // viscous or stall prediction.
+    let pass = measured_slope.is_finite()
+        && model_slope.is_finite()
+        && (0.0..=0.20).contains(&relative_bias)
+        && odd_symmetry_worst < 1e-10;
+    verdict(
+        "bem-006",
+        pass,
+        &format!(
+            "\"detail\":\"NACA 0012 pre-stall lift slope vs NASA TM-4074 table I; inviscid screening only\",\
+             \"source\":\"NASA-TM-4074-table-I-M0.15-Re5.97e6-free-transition\",\
+             \"measured_dcl_dalpha_per_rad\":{measured_slope:.6},\
+             \"panel_dcl_dalpha_per_rad\":{model_slope:.6},\
+             \"panel_relative_bias\":{relative_bias:.6},\
+             \"admitted_bias\":[0.0,0.20],\"odd_symmetry_worst\":{odd_symmetry_worst:.3e},\
+             \"max_abs_alpha_deg\":10.0,\"stall_claim\":false"
+        ),
+    );
+
+    solve_naca0012_prestall(120, NACA0012_PRESTALL_MAX_ALPHA_RAD)
+        .expect("the documented ten-degree boundary is inclusive");
+    for alpha in [
+        10.000_001f64.to_radians(),
+        -10.000_001f64.to_radians(),
+        f64::NAN,
+    ] {
+        let error = solve_naca0012_prestall(120, alpha)
+            .expect_err("outside-envelope NACA 0012 request must be refused");
+        assert!(matches!(
+            error,
+            BemError::InvalidScalar {
+                name: "NACA 0012 validation angle of attack",
+                ..
+            }
+        ));
+    }
 }
 
 // ------------------------------------------------------------------ totality

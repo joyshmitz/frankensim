@@ -221,7 +221,10 @@ pub mod panel2d;
 pub mod panel3d;
 pub mod wake2d;
 
-pub use panel2d::{Airfoil2d, PanelSolution2d, naca4_symmetric};
+pub use panel2d::{
+    Airfoil2d, NACA0012_PRESTALL_MAX_ALPHA_RAD, PanelSolution2d, naca4_symmetric,
+    solve_naca0012_prestall,
+};
 pub use panel3d::{ExteriorSolution, ExteriorSolveError, SpherePanels, solve_exterior};
 pub use wake2d::{WakeSim, WakeStep};
 

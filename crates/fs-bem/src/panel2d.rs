@@ -13,6 +13,10 @@ use fs_math::det;
 
 /// Largest admitted dense Hess-Smith section.
 pub const MAX_AIRFOIL_PANELS: usize = 2_048;
+/// Largest absolute angle admitted by the NACA 0012 experimental-validation
+/// entry point. This is a model-validity boundary, not a claim that stall begins
+/// at exactly ten degrees.
+pub const NACA0012_PRESTALL_MAX_ALPHA_RAD: f64 = std::f64::consts::PI / 18.0;
 const MIN_AIRFOIL_PANELS: usize = 3;
 const MAX_ABS_NODE_COORDINATE: f64 = 1.0e12;
 const MIN_SECTION_SCALE: f64 = 1.0e-9;
@@ -210,6 +214,34 @@ pub fn naca4_symmetric(t: f64, n: usize) -> Result<Airfoil2d, BemError> {
         nodes.push([x, thick(x)]);
     }
     Airfoil2d::new(nodes)
+}
+
+/// Solve the unit-chord NACA 0012 section inside its committed pre-stall
+/// validation envelope.
+///
+/// This entry point deliberately refuses `|alpha| > 10 degrees`: the underlying
+/// Hess-Smith equations remain mathematically evaluable there, but this
+/// inviscid panel model has no separation or stall physics. Call [`solve`]
+/// directly only when that broader inviscid-screening interpretation is
+/// appropriate.
+///
+/// # Errors
+/// Returns [`BemError`] before section allocation when `alpha` is non-finite or
+/// outside the validation envelope, and otherwise forwards the bounded NACA
+/// construction and panel-solve refusals.
+pub fn solve_naca0012_prestall(
+    panel_count: usize,
+    alpha: f64,
+) -> Result<PanelSolution2d, BemError> {
+    if !alpha.is_finite() || alpha.abs() > NACA0012_PRESTALL_MAX_ALPHA_RAD {
+        return Err(BemError::InvalidScalar {
+            name: "NACA 0012 validation angle of attack",
+            value: alpha,
+            requirement: "finite radians with |alpha| <= 10 degrees",
+        });
+    }
+    let foil = naca4_symmetric(0.12, panel_count)?;
+    solve(&foil, alpha)
 }
 
 fn orientation(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {

@@ -36,7 +36,10 @@ everywhere: this is screening, not a viscous truth source.
   constant-panel integrals carry a battery-pinned lesson: the normal
   component is (θ₂−θ₁)/2π — the reversed order self-cancels a closed
   sheet's field (caught by the single-panel-vs-quadrature and
-  uniform-sheet probes).
+  uniform-sheet probes). `solve_naca0012_prestall` is the narrower G2
+  validation entry point: it constructs the unit-chord NACA 0012 section and
+  refuses non-finite angles or `|alpha| > 10 degrees` before allocation so an
+  inviscid solve cannot be mistaken for a stall prediction.
 - `wake2d`: `WakeSim` — impulsive-start free wake; Kelvin-conserving
   trailing-edge shedding, regularized point-vortex convection, the
   quasi-steady bound circulation relaxing against wake downwash;
@@ -63,6 +66,12 @@ everywhere: this is screening, not a viscous truth source.
    are ledgered, not hidden), Kelvin circulation bookkeeping, bounded
    stable roll-up, and bitwise determinism of the complete wake/history/trace
    state (bem-005).
+6. NACA 0012 (G2): a least-squares lift slope over `|alpha| <= 8 degrees`
+   remains from zero to 20% above the independent NASA TM-4074 table-I slope
+   at Mach 0.15, Reynolds number 5.97 million, and free transition; odd
+   symmetry is retained and the validation API refuses `|alpha| > 10 degrees`
+   (bem-006). The one-sided band records the report's observed inviscid-theory
+   overprediction and is an honesty envelope, not viscous parity.
 
 ## Error model
 
@@ -73,6 +82,10 @@ envelopes. `solve_exterior` never publishes an unconverged iterate as ordinary
 success. Airfoil, sphere-panel, and wake state storage is read-only after
 validated construction. Physical honesty: every battery verdict carries the
 `inviscid-screening` model label; no viscous claims anywhere.
+The NACA 0012 validation boundary is checked before geometry allocation and is
+inclusive at ten degrees. The underlying generic `panel2d::solve` stays
+available for explicitly inviscid mathematical screening outside that evidence
+envelope.
 `BemError::AllocationFailed` covers explicitly reserved BEM geometry, dense,
 wake, and exactly sized trace buffers. The separately documented process-level
 allocator no-claim still applies inside fs-fmm passes, and fs-solver's current
@@ -106,8 +119,11 @@ wrapper matches the dense transpose, and invalid `SpherePanels` vector
 shapes are rejected before FMM math. `tests/battery.rs`:
 bem-001 Gauss identity; bem-002 sphere analytic; bem-003 FMM-vs-dense
 matvec, transpose + GMRES; bem-004 Hess–Smith slope band, Cp sanity,
-Kutta, adjoint gate; bem-005 impulsive-start free wake; invalid-input/work/trace
-refusal; unconverged exterior-solve refusal with retained report.
+Kutta, adjoint gate; bem-005 impulsive-start free wake; bem-006 NACA 0012
+pre-stall lift slope against NASA TM-4074 table I plus the ten-degree refusal;
+invalid-input/work/trace refusal; unconverged exterior-solve refusal with
+retained report. The source report is pinned by URL and SHA-256 in the battery;
+NASA marks it as U.S. Government work with public use permitted.
 
 ## No-claim boundaries
 
@@ -121,6 +137,9 @@ refusal; unconverged exterior-solve refusal with retained report.
   machinery exists; the Trefftz-plane analysis is successor scope).
 - Elastostatic BEM (staged later per the bead, noted not promised).
 - XFOIL-class viscous corrections (never claimed — screening only).
+- Post-stall or separation behavior for NACA 0012. `bem-006` validates only the
+  pre-stall lift-slope envelope; it makes no drag, transition, boundary-layer,
+  maximum-lift, or stall-onset claim.
 - FMM-accelerated 2D wake convection. The shipped path is a direct all-pairs
   screening kernel with an explicit 1,024-vortex / 1,048,576-pair per-step
   admission ceiling.
