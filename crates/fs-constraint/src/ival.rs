@@ -57,6 +57,14 @@ impl Iv {
         }
     }
 
+    fn square(self) -> Iv {
+        let mut square = self.mul(self);
+        if self.lo <= 0.0 && self.hi >= 0.0 {
+            square.lo = square.lo.max(0.0);
+        }
+        square
+    }
+
     fn min_iv(self, o: Iv) -> Iv {
         Iv {
             lo: self.lo.min(o.lo),
@@ -148,6 +156,7 @@ impl core::fmt::Display for IvalError {
 
 impl std::error::Error for IvalError {}
 
+#[derive(Clone)]
 enum IvVal {
     S(Iv),
     V(Vec<Iv>),
@@ -163,14 +172,22 @@ pub fn interval_eval(
     node: NodeId,
     boxes: &[(f64, f64)],
 ) -> Result<Iv, IvalError> {
-    match ival_at(problem, node, boxes)? {
+    // One slot per admitted node makes work proportional to the DAG,
+    // not to the exponentially larger unfolded expression tree.
+    let mut memo = vec![None; problem.exprs().len()];
+    match ival_at(problem, node, boxes, &mut memo)? {
         IvVal::S(iv) => Ok(iv),
         IvVal::V(_) => Err(IvalError::BadBindings),
     }
 }
 
 #[allow(clippy::too_many_lines)] // one inclusion rule per node kind
-fn ival_at(problem: &Problem, node: NodeId, boxes: &[(f64, f64)]) -> Result<IvVal, IvalError> {
+fn ival_at(
+    problem: &Problem,
+    node: NodeId,
+    boxes: &[(f64, f64)],
+    memo: &mut [Option<IvVal>],
+) -> Result<IvVal, IvalError> {
     let s = |v: IvVal| -> Iv {
         match v {
             IvVal::S(x) => x,
@@ -180,9 +197,16 @@ fn ival_at(problem: &Problem, node: NodeId, boxes: &[(f64, f64)]) -> Result<IvVa
     // Checked fetch (batch-verify High #2): a caller-supplied NodeId
     // is untrusted data; out-of-arena ids refuse typed instead of
     // panicking at the index.
+    let index = node.0 as usize;
+    if let Some(cached) = memo
+        .get(index)
+        .ok_or(IvalError::UnknownNode { node: node.0 })?
+    {
+        return Ok(cached.clone());
+    }
     let expr = problem
         .exprs()
-        .get(node.0 as usize)
+        .get(index)
         .ok_or(IvalError::UnknownNode { node: node.0 })?;
     let out = match expr {
         Expr::Var(_) => IvVal::V(
@@ -192,7 +216,7 @@ fn ival_at(problem: &Problem, node: NodeId, boxes: &[(f64, f64)]) -> Result<IvVa
                 .collect::<Vec<Iv>>(),
         ),
         Expr::Component { of, index } => {
-            let v = ival_at(problem, *of, boxes)?;
+            let v = ival_at(problem, *of, boxes, memo)?;
             match v {
                 IvVal::V(xs) => IvVal::S(*xs.get(*index as usize).ok_or(IvalError::BadBindings)?),
                 IvVal::S(_) => unreachable!("builder enforced vector shape"),
@@ -200,7 +224,10 @@ fn ival_at(problem: &Problem, node: NodeId, boxes: &[(f64, f64)]) -> Result<IvVa
         }
         Expr::Const { value, .. } => IvVal::S(Iv::point(*value)),
         Expr::Add(a, b) => {
-            let (x, y) = (ival_at(problem, *a, boxes)?, ival_at(problem, *b, boxes)?);
+            let (x, y) = (
+                ival_at(problem, *a, boxes, memo)?,
+                ival_at(problem, *b, boxes, memo)?,
+            );
             match (x, y) {
                 (IvVal::S(p), IvVal::S(q)) => IvVal::S(p.add(q)),
                 (IvVal::V(p), IvVal::V(q)) => {
@@ -210,7 +237,10 @@ fn ival_at(problem: &Problem, node: NodeId, boxes: &[(f64, f64)]) -> Result<IvVa
             }
         }
         Expr::Sub(a, b) => {
-            let (x, y) = (ival_at(problem, *a, boxes)?, ival_at(problem, *b, boxes)?);
+            let (x, y) = (
+                ival_at(problem, *a, boxes, memo)?,
+                ival_at(problem, *b, boxes, memo)?,
+            );
             match (x, y) {
                 (IvVal::S(p), IvVal::S(q)) => IvVal::S(p.sub(q)),
                 (IvVal::V(p), IvVal::V(q)) => {
@@ -220,7 +250,10 @@ fn ival_at(problem: &Problem, node: NodeId, boxes: &[(f64, f64)]) -> Result<IvVa
             }
         }
         Expr::Mul(a, b) => {
-            let (x, y) = (ival_at(problem, *a, boxes)?, ival_at(problem, *b, boxes)?);
+            let (x, y) = (
+                ival_at(problem, *a, boxes, memo)?,
+                ival_at(problem, *b, boxes, memo)?,
+            );
             match (x, y) {
                 (IvVal::S(p), IvVal::S(q)) => IvVal::S(p.mul(q)),
                 (IvVal::S(p), IvVal::V(q)) | (IvVal::V(q), IvVal::S(p)) => {
@@ -230,8 +263,8 @@ fn ival_at(problem: &Problem, node: NodeId, boxes: &[(f64, f64)]) -> Result<IvVa
             }
         }
         Expr::Div(a, b) => {
-            let p = s(ival_at(problem, *a, boxes)?);
-            let q = s(ival_at(problem, *b, boxes)?);
+            let p = s(ival_at(problem, *a, boxes, memo)?);
+            let q = s(ival_at(problem, *b, boxes, memo)?);
             if q.lo <= 0.0 && q.hi >= 0.0 {
                 return Err(IvalError::DivThroughZero);
             }
@@ -240,7 +273,7 @@ fn ival_at(problem: &Problem, node: NodeId, boxes: &[(f64, f64)]) -> Result<IvVa
                 hi: 1.0 / q.lo,
             }))
         }
-        Expr::Neg(a) => match ival_at(problem, *a, boxes)? {
+        Expr::Neg(a) => match ival_at(problem, *a, boxes, memo)? {
             IvVal::S(p) => IvVal::S(p.neg()),
             IvVal::V(p) => IvVal::V(p.iter().map(|u| u.neg()).collect()),
         },
@@ -248,10 +281,19 @@ fn ival_at(problem: &Problem, node: NodeId, boxes: &[(f64, f64)]) -> Result<IvVa
             if *exp < 0 {
                 return Err(IvalError::NegativePow);
             }
-            let b = s(ival_at(problem, *base, boxes)?);
+            let b = s(ival_at(problem, *base, boxes, memo)?);
             let mut acc = Iv::point(1.0);
-            for _ in 0..*exp {
-                acc = acc.mul(b);
+            let mut factor = b;
+            let mut remaining =
+                u32::try_from(*exp).expect("negative exponents refused before conversion");
+            while remaining > 0 {
+                if remaining & 1 == 1 {
+                    acc = acc.mul(factor);
+                }
+                remaining >>= 1;
+                if remaining > 0 {
+                    factor = factor.square();
+                }
             }
             // Tighten even powers (dependency-aware square).
             if *exp % 2 == 0 && b.lo < 0.0 && b.hi > 0.0 {
@@ -260,23 +302,26 @@ fn ival_at(problem: &Problem, node: NodeId, boxes: &[(f64, f64)]) -> Result<IvVa
             IvVal::S(acc)
         }
         Expr::Sqrt(a) => {
-            let p = s(ival_at(problem, *a, boxes)?);
+            let p = s(ival_at(problem, *a, boxes, memo)?);
             if p.lo < 0.0 {
                 return Err(IvalError::Domain { op: "sqrt" });
             }
             IvVal::S(p.monotone(f64::sqrt))
         }
-        Expr::Exp(a) => IvVal::S(s(ival_at(problem, *a, boxes)?).monotone(f64::exp)),
+        Expr::Exp(a) => IvVal::S(s(ival_at(problem, *a, boxes, memo)?).monotone(f64::exp)),
         Expr::Ln(a) => {
-            let p = s(ival_at(problem, *a, boxes)?);
+            let p = s(ival_at(problem, *a, boxes, memo)?);
             if p.lo <= 0.0 {
                 return Err(IvalError::Domain { op: "ln" });
             }
             IvVal::S(p.monotone(f64::ln))
         }
-        Expr::Tanh(a) => IvVal::S(s(ival_at(problem, *a, boxes)?).monotone(f64::tanh)),
+        Expr::Tanh(a) => IvVal::S(s(ival_at(problem, *a, boxes, memo)?).monotone(f64::tanh)),
         Expr::Dot(a, b) => {
-            let (x, y) = (ival_at(problem, *a, boxes)?, ival_at(problem, *b, boxes)?);
+            let (x, y) = (
+                ival_at(problem, *a, boxes, memo)?,
+                ival_at(problem, *b, boxes, memo)?,
+            );
             match (x, y) {
                 (IvVal::V(p), IvVal::V(q)) => {
                     let mut acc = Iv::point(0.0);
@@ -288,7 +333,7 @@ fn ival_at(problem: &Problem, node: NodeId, boxes: &[(f64, f64)]) -> Result<IvVa
                 _ => unreachable!("builder enforced vectors"),
             }
         }
-        Expr::NormSq(a) => match ival_at(problem, *a, boxes)? {
+        Expr::NormSq(a) => match ival_at(problem, *a, boxes, memo)? {
             IvVal::V(p) => {
                 let mut acc = Iv::point(0.0);
                 for u in &p {
@@ -303,13 +348,13 @@ fn ival_at(problem: &Problem, node: NodeId, boxes: &[(f64, f64)]) -> Result<IvVa
             }
             IvVal::S(_) => unreachable!("builder enforced vector"),
         },
-        Expr::Min(a, b) => {
-            IvVal::S(s(ival_at(problem, *a, boxes)?).min_iv(s(ival_at(problem, *b, boxes)?)))
-        }
-        Expr::Max(a, b) => {
-            IvVal::S(s(ival_at(problem, *a, boxes)?).max_iv(s(ival_at(problem, *b, boxes)?)))
-        }
-        Expr::Abs(a) => IvVal::S(s(ival_at(problem, *a, boxes)?).abs()),
+        Expr::Min(a, b) => IvVal::S(
+            s(ival_at(problem, *a, boxes, memo)?).min_iv(s(ival_at(problem, *b, boxes, memo)?)),
+        ),
+        Expr::Max(a, b) => IvVal::S(
+            s(ival_at(problem, *a, boxes, memo)?).max_iv(s(ival_at(problem, *b, boxes, memo)?)),
+        ),
+        Expr::Abs(a) => IvVal::S(s(ival_at(problem, *a, boxes, memo)?).abs()),
         Expr::PdeResidual { .. }
         | Expr::Expectation { .. }
         | Expr::Cvar { .. }
@@ -317,5 +362,6 @@ fn ival_at(problem: &Problem, node: NodeId, boxes: &[(f64, f64)]) -> Result<IvVa
             return Err(IvalError::Unevaluable { node: node.0 });
         }
     };
+    memo[index] = Some(out.clone());
     Ok(out)
 }

@@ -19,7 +19,9 @@
 //!   a toy Riemannian descent consumes — orientations optimize as
 //!   orientations;
 //! - canonical serialization round-trips bitwise (floats travel as bit
-//!   patterns) and the FNV-64 body hash is the study identity;
+//!   patterns); admitted semantic identity and exact wire identity are
+//!   domain-separated BLAKE3 values, while the legacy FNV-64 body hash
+//!   remains a quarantined correlation/corruption tripwire only;
 //!   parsing REBUILDS through the validating builder, so tampered
 //!   files cannot smuggle ill-typed graphs.
 

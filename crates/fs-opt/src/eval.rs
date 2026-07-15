@@ -5,6 +5,7 @@
 //! finite differences through retractions — a deliberately simple
 //! consumer; exact adjoints are the gradient-stack bead's.
 
+use crate::admission::AdmissionCaps;
 use crate::ir::{Expr, Manifold, NodeId, OptError, Problem};
 use fs_exec::Cx;
 
@@ -286,7 +287,8 @@ pub struct DescentReport {
 /// honors `max_evals` (0 = unlimited).
 ///
 /// # Errors
-/// [`OptError::Cancelled`].
+/// [`OptError::Cancelled`] / [`OptError::ManifoldInvalid`] /
+/// [`OptError::BindingLen`].
 pub fn descend_fn(
     manifold: Manifold,
     f: &dyn Fn(&[f64]) -> f64,
@@ -295,10 +297,33 @@ pub fn descend_fn(
     max_evals: u64,
     cx: &Cx<'_>,
 ) -> Result<DescentReport, OptError> {
+    descend_fn_with_initial(manifold, f, x0, opts, max_evals, cx, None)
+}
+
+fn descend_fn_with_initial(
+    manifold: Manifold,
+    f: &dyn Fn(&[f64]) -> f64,
+    x0: &[f64],
+    opts: DescentOptions,
+    max_evals: u64,
+    cx: &Cx<'_>,
+    initial: Option<f64>,
+) -> Result<DescentReport, OptError> {
+    manifold.validate(&AdmissionCaps::default())?;
+    let point_dim = manifold
+        .point_dim()
+        .expect("validated manifold has a representable point dimension");
+    if x0.len() as u64 != u64::from(point_dim) {
+        return Err(OptError::BindingLen {
+            var: 0,
+            expected: point_dim,
+            got: x0.len() as u64,
+        });
+    }
     let mut x = x0.to_vec();
     let mut evals = 0u64;
     let mut budget_stopped = false;
-    let f0 = f(&x);
+    let f0 = initial.unwrap_or_else(|| f(&x));
     evals += 1;
     let pd = manifold
         .param_dim()
@@ -313,7 +338,11 @@ pub fn descend_fn(
         }
         let mut g = vec![0.0; pd];
         for (i, gi) in g.iter_mut().enumerate() {
-            if max_evals > 0 && evals + 2 > max_evals {
+            // A completed step changes `x`, so reserve one evaluation
+            // for the terminal objective before spending an FD pair.
+            // This also makes a partial-gradient stop fail closed: no
+            // step is taken, but any earlier step can still be valued.
+            if max_evals > 0 && evals.saturating_add(3) > max_evals {
                 budget_stopped = true;
                 break 'outer;
             }
@@ -329,8 +358,12 @@ pub fn descend_fn(
         x = manifold.retract(&x, &step);
         steps_taken += 1;
     }
-    let f_final = f(&x);
-    evals += 1;
+    let f_final = if steps_taken == 0 {
+        f0
+    } else {
+        evals += 1;
+        f(&x)
+    };
     Ok(DescentReport {
         x,
         f0,
@@ -363,16 +396,29 @@ pub fn descend_ir(
         crate::ir::Sense::Minimize => 1.0,
         crate::ir::Sense::Maximize => -1.0,
     };
-    // Surface evaluation errors (PDE/stochastic nodes) BEFORE descending.
-    eval(problem, obj.node, &[x0.to_vec()])?;
     let manifold = problem
         .vars
         .first()
         .ok_or(OptError::IndexOut { index: 0, len: 0 })?
         .manifold;
+    // Surface evaluation errors (PDE/stochastic nodes) once, and reuse
+    // that exact value as descent's initial objective. Counting a
+    // throwaway preflight and then evaluating f0 again would overspend
+    // a one-evaluation budget before the receipt could report it.
+    let initial = eval(problem, obj.node, &[x0.to_vec()])?
+        .scalar()
+        .expect("objective roots are scalar");
     let f = |x: &[f64]| -> f64 {
         let v = eval(problem, obj.node, &[x.to_vec()]).expect("checked evaluable above");
-        sign * v.scalar().expect("objective roots are scalar")
+        sign * obj.weight * v.scalar().expect("objective roots are scalar")
     };
-    descend_fn(manifold, &f, x0, opts, problem.budget.max_evals, cx)
+    descend_fn_with_initial(
+        manifold,
+        &f,
+        x0,
+        opts,
+        problem.budget.max_evals,
+        cx,
+        Some(sign * obj.weight * initial),
+    )
 }

@@ -77,7 +77,9 @@ impl AdmissionCaps {
         max_point_dim: 1 << 24,
         max_total_point_storage: 1 << 32,
         max_graph_depth: 256,
-        max_total_retained_bytes: 1 << 28,
+        // Keeps the conservative canonical-body charge comfortably
+        // inside the 64 MiB exact-wire parser envelope.
+        max_total_retained_bytes: 1 << 25,
         max_wire_bytes: 1 << 26,
     };
 
@@ -94,7 +96,9 @@ impl AdmissionCaps {
         max_point_dim: 1 << 24,
         max_total_point_storage: 1 << 32,
         max_graph_depth: 256,
-        max_total_retained_bytes: 1 << 28,
+        // Keeps the conservative canonical-body charge comfortably
+        // inside the 64 MiB exact-wire parser envelope.
+        max_total_retained_bytes: 1 << 25,
         max_wire_bytes: 1 << 26,
     };
 }

@@ -9,8 +9,8 @@ use asupersync::types::Budget;
 use fs_exec::{CancelGate, Cx, ExecMode, StreamKey};
 use fs_opt::{
     Class, ConstraintKind, DescentOptions, FiveToSixRule, Manifold, OptError, OptimizerFamily,
-    ProblemBuilder, ProblemTag, Sense, WireVersion, descend_fn, descend_ir, eval, parse,
-    parse_with_version, problem_hash, serialize,
+    ProblemBuilder, ProblemTag, Sense, WireVersion, canonical_v2_migration_target, descend_fn,
+    descend_ir, eval, parse, parse_with_version, problem_hash, serialize,
 };
 use fs_qty::Dims;
 
@@ -369,9 +369,12 @@ fn opt_002b_legacy_crosswalk_receipt_is_structured_and_logged() {
         "hash EA73E3CB2B7DE122\n",
     );
     let decoded = parse_with_version(LEGACY).expect("pinned v1 artifact");
-    let canonical = serialize(decoded.problem());
+    let canonical = canonical_v2_migration_target(decoded.problem())
+        .expect("a decoded v1 problem has a representable v2 target");
+    let current_v3 = serialize(decoded.problem());
     let receipt = decoded.migration().expect("v1 migration receipt");
-    let verified = receipt.verifies(LEGACY.as_bytes(), canonical.as_bytes());
+    let verified = receipt.verifies(LEGACY.as_bytes(), canonical.as_bytes())
+        && !receipt.verifies(LEGACY.as_bytes(), current_v3.as_bytes());
     let pass = decoded.source_version() == WireVersion::V1
         && receipt.source_version() == WireVersion::V1
         && receipt.target_version() == WireVersion::V2
@@ -684,6 +687,32 @@ fn opt_005_riemannian_descent() {
             .map(|j| rep3.x[j * 4 + 2].abs() + rep3.x[j * 4 + 3].abs())
             .sum();
         let subspace = tail < 1e-4;
+
+        // Raw descriptors and points are public inputs. Validation must
+        // happen before the user closure is called, so neither malformed
+        // manifold metadata nor a short point can reach an index panic.
+        let calls = std::cell::Cell::new(0usize);
+        let guarded = |_: &[f64]| {
+            calls.set(calls.get() + 1);
+            0.0
+        };
+        let one_step = DescentOptions {
+            steps: 1,
+            ..DescentOptions::default()
+        };
+        let invalid_manifold = matches!(
+            descend_fn(Manifold::Rn { dim: 0 }, &guarded, &[], one_step, 0, cx),
+            Err(OptError::ManifoldInvalid { .. })
+        );
+        let invalid_point = matches!(
+            descend_fn(Manifold::Rn { dim: 2 }, &guarded, &[0.0], one_step, 0, cx),
+            Err(OptError::BindingLen {
+                var: 0,
+                expected: 2,
+                got: 1
+            })
+        );
+        let malformed_fail_closed = invalid_manifold && invalid_point && calls.get() == 0;
         verdict(
             "opt-005",
             err_sphere < 1e-6
@@ -693,12 +722,14 @@ fn opt_005_riemannian_descent() {
                 && ortho
                 && subspace
                 && rep.f_final < rep.f0
-                && rep2.f_final < rep2.f0,
+                && rep2.f_final < rep2.f0
+                && malformed_fail_closed,
             &format!(
                 "manifold metadata drives descent: sphere reaches the analytic \
                  minimizer to {err_sphere:.1e} STAYING unit; SO(3) aligns a vector to \
                  1e-10 with a unit quaternion throughout; Stiefel(4,2) finds the top \
-                 invariant subspace with columns orthonormal to 1e-10"
+                 invariant subspace with columns orthonormal to 1e-10; malformed raw \
+                 manifold/point inputs refuse before calling the objective"
             ),
         );
     });
@@ -727,6 +758,54 @@ fn opt_006_budget_and_cancellation() {
             .expect("budgeted descent");
         let receipt = rep.budget_stopped && rep.evals <= 50 && rep.f_final < rep.f0;
 
+        // Exact terminal-accounting edges for a one-dimensional raw
+        // descent. A gradient step costs initial + FD pair + terminal =
+        // four evaluations. Cap 3 must refuse the incomplete step and
+        // reuse f0; cap 4 must complete at the exact cap.
+        let one_step = DescentOptions {
+            steps: 1,
+            ..DescentOptions::default()
+        };
+        let calls3 = std::cell::Cell::new(0u64);
+        let f3 = |x: &[f64]| {
+            calls3.set(calls3.get() + 1);
+            x[0] * x[0]
+        };
+        let cap3 = descend_fn(Manifold::Rn { dim: 1 }, &f3, &[1.0], one_step, 3, cx)
+            .expect("cap-3 receipt");
+        let calls4 = std::cell::Cell::new(0u64);
+        let f4 = |x: &[f64]| {
+            calls4.set(calls4.get() + 1);
+            x[0] * x[0]
+        };
+        let cap4 = descend_fn(Manifold::Rn { dim: 1 }, &f4, &[1.0], one_step, 4, cx)
+            .expect("cap-4 descent");
+        let cap_edges = cap3.budget_stopped
+            && cap3.steps_taken == 0
+            && cap3.evals == 1
+            && cap3.f_final.to_bits() == cap3.f0.to_bits()
+            && calls3.get() == cap3.evals
+            && !cap4.budget_stopped
+            && cap4.steps_taken == 1
+            && cap4.evals == 4
+            && calls4.get() == cap4.evals;
+
+        // The IR preflight value is the initial evaluation; it is not
+        // discarded and charged a second time. A cap of one therefore
+        // stays exactly at one and returns the unchanged valid point.
+        let cap1_problem = build(1);
+        let cap1 = descend_ir(
+            &cap1_problem,
+            &[1.0, -2.0, 0.5, 3.0],
+            DescentOptions::default(),
+            cx,
+        )
+        .expect("cap-1 receipt");
+        let cap1_exact = cap1.budget_stopped
+            && cap1.steps_taken == 0
+            && cap1.evals == 1
+            && cap1.f_final.to_bits() == cap1.f0.to_bits();
+
         let unlimited = build(0);
         let rep2 = descend_ir(
             &unlimited,
@@ -746,10 +825,11 @@ fn opt_006_budget_and_cancellation() {
         );
         verdict(
             "opt-006",
-            receipt && converged && refuse,
+            receipt && cap_edges && cap1_exact && converged && refuse,
             &format!(
                 "the attached P4 budget stops descent with a receipt at {} evals \
-                 (objective still improved {:.2} -> {:.2}); unlimited descent \
+                 (objective still improved {:.2} -> {:.2}); cap 3 refuses an incomplete \
+                 step at one evaluation, cap 4 lands exactly, and IR cap 1 stays at one; unlimited descent \
                  converges to {:.1e}; PDE/stochastic nodes refuse evaluation naming \
                  their executor",
                 rep.evals, rep.f0, rep.f_final, rep2.f_final

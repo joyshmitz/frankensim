@@ -52,12 +52,15 @@ impl Packing {
                     .expect("sealed problems carry validated manifolds"),
             )
             .expect("point storage fits usize");
+            let end = start
+                .checked_add(len)
+                .expect("sealed problem admission bounds total packed storage for this target");
             blocks.push(Block {
                 manifold: v.manifold,
                 start,
                 len,
             });
-            start += len;
+            start = end;
         }
         Packing { blocks, dim: start }
     }

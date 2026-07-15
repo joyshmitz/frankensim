@@ -408,6 +408,14 @@ pub enum OptError {
         /// What went wrong.
         what: String,
     },
+    /// A problem cannot be represented by a requested historical wire
+    /// version without weakening or changing its typed semantics.
+    WireIncompatible {
+        /// Historical wire version requested.
+        version: &'static str,
+        /// The incompatible construct.
+        what: String,
+    },
     /// A node the IR carries but cannot execute (PDE/stochastic).
     Unevaluable {
         /// The node.
@@ -533,6 +541,9 @@ impl core::fmt::Display for OptError {
                 "node {node} is carried by the IR but not evaluable here: {kind}"
             ),
             OptError::Parse { line, what } => write!(f, "parse error at line {line}: {what}"),
+            OptError::WireIncompatible { version, what } => {
+                write!(f, "problem cannot be encoded as {version}: {what}")
+            }
             OptError::Cancelled => write!(f, "cancelled between descent steps"),
             OptError::BudgetExhausted { spent } => write!(
                 f,
@@ -873,7 +884,8 @@ pub(crate) fn expr_kind_name(e: &Expr) -> &'static str {
 /// G0 common-subexpression identity). Every constructor validates
 /// through the SAME versioned leaf rules the admission validator uses
 /// (`admission::derive_expr` and friends), and every rejection leaves
-/// the intern table, ids, budget, and ordering unchanged.
+/// the intern table, ids, storage/byte accounting, budget, and ordering
+/// unchanged.
 #[derive(Debug)]
 pub struct ProblemBuilder {
     vars: Vec<Variable>,
@@ -881,6 +893,7 @@ pub struct ProblemBuilder {
     shapes: Vec<Shape>,
     dims: Vec<Dims>,
     classes: Vec<Class>,
+    depths: Vec<u32>,
     intern: BTreeMap<String, NodeId>,
     objectives: Vec<Objective>,
     constraints: Vec<Constraint>,
@@ -888,6 +901,7 @@ pub struct ProblemBuilder {
     budget: EvalBudget,
     caps: AdmissionCaps,
     total_point_storage: u64,
+    total_retained_bytes: u64,
 }
 
 impl Default for ProblemBuilder {
@@ -912,6 +926,7 @@ impl ProblemBuilder {
             shapes: Vec::new(),
             dims: Vec::new(),
             classes: Vec::new(),
+            depths: Vec::new(),
             intern: BTreeMap::new(),
             objectives: Vec::new(),
             constraints: Vec::new(),
@@ -919,13 +934,14 @@ impl ProblemBuilder {
             budget: EvalBudget { max_evals: 0 },
             caps,
             total_point_storage: 0,
+            total_retained_bytes: 0,
         }
     }
 
     /// Declare a variable. Validates the manifold descriptor (checked
     /// point/tangent formulas, per-variable dimension cap), the name
-    /// length, and the variable-count and total-storage caps BEFORE
-    /// assigning a `VarId`.
+    /// length, and the variable-count, total-storage, target-address,
+    /// and retained-byte caps BEFORE assigning a `VarId`.
     ///
     /// # Errors
     /// [`OptError::ManifoldInvalid`] / [`OptError::CapExceeded`].
@@ -955,7 +971,20 @@ impl ProblemBuilder {
                 cap: self.caps.max_total_point_storage,
             });
         }
+        if usize::try_from(total).is_err() {
+            return Err(OptError::CapExceeded {
+                what: "target packed point storage",
+                count: total,
+                cap: usize::MAX as u64,
+            });
+        }
+        let total_retained_bytes = admission::checked_retained_total(
+            self.total_retained_bytes,
+            admission::name_retained_bytes(name),
+            &self.caps,
+        )?;
         self.total_point_storage = total;
+        self.total_retained_bytes = total_retained_bytes;
         self.vars.push(Variable {
             name: name.to_string(),
             manifold,
@@ -1005,10 +1034,6 @@ impl ProblemBuilder {
     /// (identical expressions were valid when first admitted); every
     /// rejection happens before any mutation.
     fn push_checked(&mut self, e: Expr) -> Result<NodeId, OptError> {
-        let key = crate::serial::expr_key(&e);
-        if let Some(&id) = self.intern.get(&key) {
-            return Ok(id);
-        }
         let derived = {
             let lookup = |n: NodeId| {
                 let i = n.0 as usize;
@@ -1016,6 +1041,14 @@ impl ProblemBuilder {
             };
             admission::derive_expr(&e, &lookup, &self.vars, &self.caps)?
         };
+        let depth = {
+            let lookup = |n: NodeId| self.depths.get(n.0 as usize).copied();
+            admission::derive_depth(&e, &lookup, &self.caps)?
+        };
+        let key = crate::serial::expr_key(&e);
+        if let Some(&id) = self.intern.get(&key) {
+            return Ok(id);
+        }
         if self.exprs.len() as u64 >= u64::from(self.caps.max_nodes) {
             return Err(OptError::CapExceeded {
                 what: "expression nodes",
@@ -1023,11 +1056,18 @@ impl ProblemBuilder {
                 cap: u64::from(self.caps.max_nodes),
             });
         }
+        let total_retained_bytes = admission::checked_retained_total(
+            self.total_retained_bytes,
+            admission::expr_retained_bytes(&e),
+            &self.caps,
+        )?;
         let (shape, dims, class) = derived;
         self.exprs.push(e);
         self.shapes.push(shape);
         self.dims.push(dims);
         self.classes.push(class);
+        self.depths.push(depth);
+        self.total_retained_bytes = total_retained_bytes;
         let id = NodeId((self.exprs.len() - 1) as u32);
         self.intern.insert(key, id);
         Ok(id)
@@ -1190,6 +1230,7 @@ impl ProblemBuilder {
         adjoint_available: bool,
         dims: Dims,
     ) -> Result<NodeId, OptError> {
+        admission::validate_string("PDE study", study, &self.caps)?;
         self.push_checked(Expr::PdeResidual {
             study: study.to_string(),
             over,
@@ -1203,6 +1244,7 @@ impl ProblemBuilder {
     /// # Errors
     /// Shape teaching errors.
     pub fn expectation(&mut self, of: NodeId, uq_config: &str) -> Result<NodeId, OptError> {
+        admission::validate_string("UQ config", uq_config, &self.caps)?;
         self.push_checked(Expr::Expectation {
             of,
             uq_config: uq_config.to_string(),
@@ -1214,6 +1256,7 @@ impl ProblemBuilder {
     /// # Errors
     /// Shape/[`OptError::BadParam`] teaching errors.
     pub fn cvar(&mut self, of: NodeId, alpha: f64, uq_config: &str) -> Result<NodeId, OptError> {
+        admission::validate_string("UQ config", uq_config, &self.caps)?;
         self.push_checked(Expr::Cvar {
             of,
             alpha,
@@ -1226,6 +1269,7 @@ impl ProblemBuilder {
     /// # Errors
     /// Shape/[`OptError::BadParam`] teaching errors.
     pub fn quantile(&mut self, of: NodeId, q: f64, uq_config: &str) -> Result<NodeId, OptError> {
+        admission::validate_string("UQ config", uq_config, &self.caps)?;
         self.push_checked(Expr::Quantile {
             of,
             q,
@@ -1280,11 +1324,17 @@ impl ProblemBuilder {
                 cap: u64::from(self.caps.max_constraints),
             });
         }
+        let total_retained_bytes = admission::checked_retained_total(
+            self.total_retained_bytes,
+            admission::name_retained_bytes(name),
+            &self.caps,
+        )?;
         self.constraints.push(Constraint {
             node,
             kind,
             name: name.to_string(),
         });
+        self.total_retained_bytes = total_retained_bytes;
         Ok(())
     }
 

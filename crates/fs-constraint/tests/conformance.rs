@@ -785,3 +785,28 @@ fn forged_node_ids_refuse_instead_of_panicking() {
         );
     }
 }
+
+/// Interval work follows the admitted DAG rather than its exponentially
+/// large tree expansion, and integer powers take logarithmic work even at
+/// the public i32 boundary.
+#[test]
+fn interval_eval_bounds_shared_dag_and_powi_work() {
+    let mut b = ProblemBuilder::new();
+    let one = b.konst(1.0, Dims::NONE).expect("one");
+    let mut doubled = one;
+    for _ in 0..40 {
+        doubled = b.add(doubled, doubled).expect("shared DAG level");
+    }
+    let huge_power = b
+        .powi(one, i32::MAX)
+        .expect("positive exponent is admitted");
+    let root = b.add(doubled, huge_power).expect("root");
+    b.objective(root, fs_opt::Sense::Minimize, 1.0)
+        .expect("objective");
+    let problem = b.finish();
+
+    let enclosure = interval_eval(&problem, root, &[]).expect("bounded interval work");
+    let expected = 2.0f64.powi(40) + 1.0;
+    assert_eq!(enclosure.lo.to_bits(), expected.to_bits());
+    assert_eq!(enclosure.hi.to_bits(), expected.to_bits());
+}

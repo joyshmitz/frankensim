@@ -12,6 +12,7 @@
 //! Parsing rebuilds THROUGH the validating builder, so a tampered file
 //! cannot smuggle in an ill-typed graph — revalidation is free.
 
+use crate::admission::AdmissionCaps;
 use crate::ir::{
     BilevelRef, ConstraintKind, Expr, Manifold, NodeId, OptError, Problem, ProblemBuilder,
     ProblemTag, Sense, VarId,
@@ -24,7 +25,7 @@ pub use fs_blake3::ContentHash;
 
 /// Domain-separation string for [`ProblemSemanticId`] minting. Bump the
 /// suffix with the admission schema when the preimage changes meaning.
-const PROBLEM_SEMANTIC_DOMAIN_V1: &str = "fs-opt/ProblemSemanticId/v1";
+const PROBLEM_SEMANTIC_DOMAIN_V2: &str = "fs-opt/ProblemSemanticId/v2";
 
 /// Domain-separation string for [`WireContentId`] minting.
 const WIRE_CONTENT_DOMAIN_V1: &str = "fs-opt/WireContentId/v1";
@@ -43,7 +44,7 @@ pub struct ProblemSemanticId(ContentHash);
 impl ProblemSemanticId {
     pub(crate) fn mint(canonical_v3_body: &str) -> ProblemSemanticId {
         ProblemSemanticId(hash_domain(
-            PROBLEM_SEMANTIC_DOMAIN_V1,
+            PROBLEM_SEMANTIC_DOMAIN_V2,
             canonical_v3_body.as_bytes(),
         ))
     }
@@ -198,11 +199,26 @@ fn escape_for_wire(value: &str, encoding: TokenEncoding) -> String {
 /// value reassembles correctly) and rejects malformed escapes or decoded bytes
 /// that are not valid UTF-8. A legacy migration receipt must never certify a
 /// lossy replacement-character rewrite as an amount-dimension crosswalk.
+#[cfg(test)]
 fn unesc(s: &str) -> Result<String, &'static str> {
+    unesc_limited(s, u64::MAX)
+}
+
+/// Decode one token without ever allocating more than the applicable
+/// per-field cap. The whole-artifact cap alone is not sufficient: a
+/// single hostile token must refuse before a proportional decoded
+/// buffer is retained.
+fn unesc_limited(s: &str, max_bytes: u64) -> Result<String, &'static str> {
     let src = s.as_bytes();
-    let mut bytes = Vec::with_capacity(src.len());
+    let capacity = src
+        .len()
+        .min(usize::try_from(max_bytes).unwrap_or(usize::MAX));
+    let mut bytes = Vec::with_capacity(capacity);
     let mut i = 0;
     while i < src.len() {
+        if bytes.len() as u64 >= max_bytes {
+            return Err("percent-decoded token exceeds its admission byte cap");
+        }
         if src[i] == b'%' {
             if i + 3 > src.len() {
                 return Err("truncated percent escape");
@@ -381,17 +397,17 @@ fn dims_str(d: Dims, version: WireVersion) -> String {
 
 fn parse_dims(s: &str, version: WireVersion) -> Option<Dims> {
     let inner = s.strip_prefix('(')?.strip_suffix(')')?;
-    let parts: Vec<&str> = inner.split(',').collect();
     let expected_len = match version {
         WireVersion::V1 => 5,
         WireVersion::V2 | WireVersion::V3 => 6,
     };
-    if parts.len() != expected_len {
-        return None;
-    }
     let mut d = [0i8; 6];
-    for (slot, p) in d.iter_mut().zip(&parts) {
-        *slot = p.parse().ok()?;
+    let mut parts = inner.split(',');
+    for slot in d.iter_mut().take(expected_len) {
+        *slot = parts.next()?.parse().ok()?;
+    }
+    if parts.next().is_some() {
+        return None;
     }
     Some(Dims(d))
 }
@@ -634,16 +650,46 @@ pub fn serialize_with_id(problem: &Problem) -> (String, WireContentId) {
 /// five-to-six [`DimensionCrosswalkReceipt`] binds. This is the legacy
 /// MIGRATION surface, not the current canonical form ([`serialize`]
 /// emits v3); it exists so receipt holders can re-derive and verify
-/// the pinned v2 bytes.
+/// the pinned v2 bytes. A semantic bilevel reference has no v2
+/// representation and therefore refuses instead of emitting a v2
+/// artifact that its own parser would reject.
+///
+/// # Errors
+/// [`OptError::WireIncompatible`] when the problem contains v3-only
+/// typed semantics.
 #[must_use]
-pub fn canonical_v2_migration_target(problem: &Problem) -> String {
-    serialize_for_wire(problem, WireVersion::V2, TokenEncoding::PercentBytes)
+pub fn canonical_v2_migration_target(problem: &Problem) -> Result<String, OptError> {
+    if problem.tags.iter().any(|tag| {
+        matches!(
+            tag,
+            ProblemTag::Bilevel {
+                inner: BilevelRef::Semantic(_)
+            }
+        )
+    }) {
+        return Err(OptError::WireIncompatible {
+            version: "fsopt v2",
+            what: "a full-width semantic bilevel reference has no legacy FNV spelling".into(),
+        });
+    }
+    Ok(serialize_for_wire(
+        problem,
+        WireVersion::V2,
+        TokenEncoding::PercentBytes,
+    ))
 }
 
 fn perr(line: usize, what: impl Into<String>) -> OptError {
     OptError::Parse {
         line,
         what: what.into(),
+    }
+}
+
+fn at_line(line: usize, error: OptError) -> OptError {
+    match error {
+        parse @ OptError::Parse { .. } => parse,
+        other => perr(line, other.to_string()),
     }
 }
 
@@ -713,7 +759,8 @@ fn terminal_hash_line(lines: &[&str]) -> Result<usize, OptError> {
 /// explicit v1 artifacts.
 ///
 /// # Errors
-/// [`OptError::Parse`] (with line numbers) or any builder error.
+/// [`OptError::Parse`] with the source line; validating-builder
+/// refusals are wrapped at the directive that triggered them.
 pub fn parse(text: &str) -> Result<Problem, OptError> {
     let parsed = parse_with_version(text)?;
     if parsed.migration.is_some() {
@@ -733,10 +780,39 @@ pub fn parse(text: &str) -> Result<Problem, OptError> {
 /// refused.
 ///
 /// # Errors
-/// [`OptError::Parse`] (with line numbers) or any builder error.
+/// [`OptError::Parse`] with the source line; validating-builder
+/// refusals are wrapped at the directive that triggered them.
 #[allow(clippy::too_many_lines)] // one grammar rule per block
 pub fn parse_with_version(text: &str) -> Result<ParsedProblem, OptError> {
-    let mut b = ProblemBuilder::new();
+    let caps = AdmissionCaps::default();
+    let wire_bytes = u64::try_from(text.len()).unwrap_or(u64::MAX);
+    if wire_bytes > caps.max_wire_bytes {
+        return Err(perr(
+            1,
+            format!(
+                "wire artifact has {wire_bytes} bytes, exceeding the admission cap of {}",
+                caps.max_wire_bytes
+            ),
+        ));
+    }
+    let max_lines = u64::from(caps.max_vars)
+        .saturating_add(u64::from(caps.max_nodes))
+        .saturating_add(u64::from(caps.max_objectives))
+        .saturating_add(u64::from(caps.max_constraints))
+        .saturating_add(u64::from(caps.max_tags))
+        .saturating_add(4);
+    let logical_lines = text.strip_suffix('\n').unwrap_or(text).split('\n').count() as u64;
+    if logical_lines > max_lines {
+        return Err(perr(
+            1,
+            format!(
+                "wire artifact has {logical_lines} lines, exceeding the bounded directive envelope of {max_lines}"
+            ),
+        ));
+    }
+    let max_name_bytes = caps.max_name_bytes;
+    let max_string_bytes = caps.max_string_bytes;
+    let mut b = ProblemBuilder::with_caps(caps);
     let mut expected_hash: Option<u64> = None;
     // A version header is mandatory. Defaulting a headerless artifact to v1
     // would invent provenance for bytes no historical writer emitted.
@@ -792,8 +868,11 @@ pub fn parse_with_version(text: &str) -> Result<ParsedProblem, OptError> {
                     .next()
                     .and_then(|t| t.parse().ok())
                     .ok_or_else(|| perr(ln, "var: missing index"))?;
-                let name = unesc(tok.next().ok_or_else(|| perr(ln, "var: missing name"))?)
-                    .map_err(|what| perr(ln, format!("var: bad name: {what}")))?;
+                let name = unesc_limited(
+                    tok.next().ok_or_else(|| perr(ln, "var: missing name"))?,
+                    max_name_bytes,
+                )
+                .map_err(|what| perr(ln, format!("var: bad name: {what}")))?;
                 let manifold = tok
                     .next()
                     .and_then(parse_manifold)
@@ -803,7 +882,9 @@ pub fn parse_with_version(text: &str) -> Result<ParsedProblem, OptError> {
                     .and_then(|value| parse_dims(value, source_version))
                     .ok_or_else(|| perr(ln, "var: bad dims"))?;
                 require_end(&mut tok, ln, "var")?;
-                let assigned = b.var(&name, manifold, dims)?;
+                let assigned = b
+                    .var(&name, manifold, dims)
+                    .map_err(|error| at_line(ln, error))?;
                 if assigned.0 != ix {
                     return Err(perr(
                         ln,
@@ -819,8 +900,11 @@ pub fn parse_with_version(text: &str) -> Result<ParsedProblem, OptError> {
                     .next()
                     .and_then(|t| t.parse().ok())
                     .ok_or_else(|| perr(ln, "expr: missing index"))?;
-                let rest: Vec<&str> = tok.collect();
-                let id = parse_expr(&mut b, &rest, ln, source_version)?;
+                // The largest grammar arm has five tokens. Retain one
+                // extra so arity checking sees trailing input, but never
+                // allocate in proportion to a hostile space storm.
+                let rest: Vec<&str> = tok.take(6).collect();
+                let id = parse_expr(&mut b, &rest, ln, source_version, max_string_bytes)?;
                 if id.0 != ix {
                     return Err(perr(
                         ln,
@@ -847,7 +931,8 @@ pub fn parse_with_version(text: &str) -> Result<ParsedProblem, OptError> {
                     .and_then(parse_f64_hex)
                     .ok_or_else(|| perr(ln, "objective: bad weight"))?;
                 require_end(&mut tok, ln, "objective")?;
-                b.objective(NodeId(node), sense, weight)?;
+                b.objective(NodeId(node), sense, weight)
+                    .map_err(|error| at_line(ln, error))?;
             }
             "constraint" => {
                 let kind = match tok.next() {
@@ -859,13 +944,15 @@ pub fn parse_with_version(text: &str) -> Result<ParsedProblem, OptError> {
                     .next()
                     .and_then(|t| t.parse().ok())
                     .ok_or_else(|| perr(ln, "constraint: bad node"))?;
-                let name = unesc(
+                let name = unesc_limited(
                     tok.next()
                         .ok_or_else(|| perr(ln, "constraint: missing name"))?,
+                    max_name_bytes,
                 )
                 .map_err(|what| perr(ln, format!("constraint: bad name: {what}")))?;
                 require_end(&mut tok, ln, "constraint")?;
-                b.constraint(NodeId(node), kind, &name)?;
+                b.constraint(NodeId(node), kind, &name)
+                    .map_err(|error| at_line(ln, error))?;
             }
             "tag" => {
                 let tag = match tok.next() {
@@ -925,7 +1012,7 @@ pub fn parse_with_version(text: &str) -> Result<ParsedProblem, OptError> {
                     _ => return Err(perr(ln, "unknown tag")),
                 };
                 require_end(&mut tok, ln, "tag")?;
-                b.tag(tag)?;
+                b.tag(tag).map_err(|error| at_line(ln, error))?;
             }
             "budget" => {
                 if saw_budget {
@@ -985,7 +1072,8 @@ pub fn parse_with_version(text: &str) -> Result<ParsedProblem, OptError> {
     // v2 -> v3 step is a pure identity-typing re-encoding and needs no
     // separate semantic receipt.
     let migration = if source_version == WireVersion::V1 {
-        let canonical = canonical_v2_migration_target(&problem);
+        let canonical =
+            canonical_v2_migration_target(&problem).map_err(|error| at_line(1, error))?;
         Some(DimensionCrosswalkReceipt {
             source_version,
             target_version: WireVersion::V2,
@@ -1011,6 +1099,7 @@ fn parse_expr(
     toks: &[&str],
     ln: usize,
     version: WireVersion,
+    max_string_bytes: u64,
 ) -> Result<NodeId, OptError> {
     let require_arity = |expected: usize, kind: &str| -> Result<(), OptError> {
         if toks.len() != expected {
@@ -1037,7 +1126,7 @@ fn parse_expr(
                 .map_err(|_| perr(ln, "expr: bad node operand"))?,
         ))
     };
-    match get(0)? {
+    let parsed = match get(0)? {
         "var" => {
             require_arity(2, "var")?;
             let v: u32 = get(1)?.parse().map_err(|_| perr(ln, "var: bad id"))?;
@@ -1123,8 +1212,8 @@ fn parse_expr(
         }
         "pde_residual" => {
             require_arity(5, "pde_residual")?;
-            let study =
-                unesc(get(1)?).map_err(|what| perr(ln, format!("pde: bad study token: {what}")))?;
+            let study = unesc_limited(get(1)?, max_string_bytes)
+                .map_err(|what| perr(ln, format!("pde: bad study token: {what}")))?;
             let over: u32 = get(2)?.parse().map_err(|_| perr(ln, "pde: bad var"))?;
             let adj = match get(3)? {
                 "0" => false,
@@ -1137,7 +1226,7 @@ fn parse_expr(
         "expectation" => {
             require_arity(3, "expectation")?;
             let of = node(1)?;
-            let cfg = unesc(get(2)?)
+            let cfg = unesc_limited(get(2)?, max_string_bytes)
                 .map_err(|what| perr(ln, format!("expectation: bad config token: {what}")))?;
             b.expectation(of, &cfg)
         }
@@ -1145,7 +1234,7 @@ fn parse_expr(
             require_arity(4, "cvar")?;
             let of = node(1)?;
             let alpha = parse_f64_hex(get(2)?).ok_or_else(|| perr(ln, "cvar: bad alpha"))?;
-            let cfg = unesc(get(3)?)
+            let cfg = unesc_limited(get(3)?, max_string_bytes)
                 .map_err(|what| perr(ln, format!("cvar: bad config token: {what}")))?;
             b.cvar(of, alpha, &cfg)
         }
@@ -1153,21 +1242,23 @@ fn parse_expr(
             require_arity(4, "quantile")?;
             let of = node(1)?;
             let q = parse_f64_hex(get(2)?).ok_or_else(|| perr(ln, "quantile: bad q"))?;
-            let cfg = unesc(get(3)?)
+            let cfg = unesc_limited(get(3)?, max_string_bytes)
                 .map_err(|what| perr(ln, format!("quantile: bad config token: {what}")))?;
             b.quantile(of, q, &cfg)
         }
         other => Err(perr(ln, format!("unknown expr kind `{other}`"))),
-    }
+    };
+    parsed.map_err(|error| at_line(ln, error))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ContentHash, FiveToSixRule, TokenEncoding, WireVersion, canonical_v2_migration_target, esc,
-        fnv1a, parse, parse_with_version, problem_hash, serialize, serialize_for_wire, unesc,
+        ContentHash, FiveToSixRule, ProblemSemanticId, TokenEncoding, WireVersion,
+        canonical_v2_migration_target, esc, fnv1a, parse, parse_with_version, problem_hash,
+        serialize, serialize_for_wire, unesc,
     };
-    use crate::ir::{NodeId, ProblemBuilder, Sense};
+    use crate::ir::{BilevelRef, NodeId, OptError, ProblemBuilder, ProblemTag, Sense};
     use fs_qty::Dims;
 
     fn with_hash(body: &str) -> String {
@@ -1246,7 +1337,8 @@ mod tests {
 
         // The crosswalk receipt binds the exact canonical V2 target
         // bytes (where the five-to-six semantics change lands).
-        let canonical = canonical_v2_migration_target(decoded.problem());
+        let canonical = canonical_v2_migration_target(decoded.problem())
+            .expect("a decoded v1 problem has a representable v2 target");
         assert!(canonical.starts_with("fsopt v2\n"));
         assert!(canonical.contains("(1,2,3,4,5,0)"));
         let receipt = decoded.migration().expect("v1 receipt is mandatory");
@@ -1337,7 +1429,8 @@ mod tests {
             historical,
             "the original-v1 writer preserves the pinned artifact"
         );
-        let canonical = canonical_v2_migration_target(decoded.problem());
+        let canonical = canonical_v2_migration_target(decoded.problem())
+            .expect("a decoded v1 problem has a representable v2 target");
         assert!(canonical.contains("caf%C3%A9"));
         assert!(canonical.contains("tail%0D"));
         let receipt = decoded.migration().expect("historical v1 receipt");
@@ -1508,6 +1601,47 @@ mod tests {
             .expect_err("v2 arity stays exact")
             .to_string();
         assert!(v2_error.contains("line 2") && v2_error.contains("bad dims"));
+    }
+
+    #[test]
+    fn historical_downconversion_and_builder_parse_errors_fail_closed() {
+        let semantic = ProblemSemanticId::from_hex(
+            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+        )
+        .expect("semantic id");
+        let mut builder = ProblemBuilder::new();
+        builder
+            .tag(ProblemTag::Bilevel {
+                inner: BilevelRef::Semantic(semantic),
+            })
+            .expect("v3 semantic tag");
+        let problem = builder.finish();
+        assert!(matches!(
+            canonical_v2_migration_target(&problem),
+            Err(OptError::WireIncompatible {
+                version: "fsopt v2",
+                ..
+            })
+        ));
+
+        let invalid_manifold = with_hash(concat!(
+            "fsopt v3\n",
+            "var 0 x Rn(0) (0,0,0,0,0,0)\n",
+            "budget 0\n",
+        ));
+        assert!(matches!(
+            parse_with_version(&invalid_manifold),
+            Err(OptError::Parse { line: 2, what }) if what.contains("manifold descriptor rejected")
+        ));
+
+        let oversized_name = "x".repeat(4097);
+        let oversized_name = with_hash(&format!(
+            "fsopt v3\nvar 0 {oversized_name} Rn(1) (0,0,0,0,0,0)\nbudget 0\n"
+        ));
+        assert!(matches!(
+            parse_with_version(&oversized_name),
+            Err(OptError::Parse { line: 2, what }) if what.contains("admission byte cap")
+        ));
     }
 
     #[test]

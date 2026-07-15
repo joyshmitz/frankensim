@@ -32,15 +32,22 @@ structure; FLUX/UQ execute it.
   fidelity levels, finite open-interval chance probabilities, typed
   bilevel references), scalar-only objective/constraint roots, and
   versioned per-item/aggregate caps (`AdmissionCaps`,
-  `ProblemBuilder::with_caps`). Rejection leaves intern tables, ids,
+  `ProblemBuilder::with_caps`), including graph depth, conservative
+  retained/canonical bytes, exact input-wire bytes, and target-`usize`
+  packed point storage. External strings are length-checked before
+  cloning; expression validation and depth derivation precede intern-key
+  allocation. Rejection leaves intern tables, ids, byte/storage totals,
   budget, and ordering unchanged.
 - `Problem::admit` / `admit_with_caps` → `ProblemAdmission`: the
   single versioned re-validation chokepoint (schema
   `ADMISSION_SCHEMA_VERSION`). Re-derives every node's
   shape/dims/class from the expression list (cache agreement),
   proves reference validity and acyclicity from arena ordering,
-  re-checks every leaf policy and cap, and returns a COMPLETE
-  deterministically ordered `AdmissionReport` on refusal — or mints
+  re-checks every leaf policy and cap. Cheap aggregate count/alignment
+  failures return their complete deterministic preflight section before
+  proportional graph work; within that count envelope, retained-byte
+  preflight runs before derived graph allocation. The remaining sections
+  then scan deterministically — or mint
   the `ProblemSemanticId` and lists quarantined legacy identities on
   success. Builder output always admits (same rules, pinned by test).
 - Identity is DOMAIN-SEPARATED with no implicit conversion:
@@ -53,7 +60,8 @@ structure; FLUX/UQ execute it.
   FNV-1a 64; correlation and corruption tripwire only, NO authority).
 - Node kinds: arithmetic (`add/sub/mul/div/neg/powi/sqrt/exp/ln/
   tanh`), vector reductions (`dot/norm_sq/component`), kinks
-  (`min/max/abs` — C0), `pde_residual` (FLUX study reference with
+  (`min/max` are scalar-only, `abs` is scalar; all are C0),
+  `pde_residual` (FLUX study reference with
   ADJOINT AVAILABILITY metadata), `expectation`/`cvar`/`quantile`
   (UQ config references; CVaR/quantile are C0).
 - `Class` propagation: bottom-up minimum of children and each node's
@@ -90,7 +98,8 @@ structure; FLUX/UQ execute it.
   historical writer emitted it and it has no authoritative schema identity.
   The receipt binds BLAKE3 hashes of the complete old artifact and the
   complete canonical V2 target artifact (where the five-to-six dimension
-  semantics land; re-derivable via `canonical_v2_migration_target`) under
+  semantics land; re-derivable via the fallible
+  `canonical_v2_migration_target`) under
   the sole `AppendMoleZero` rule; `parse` refuses v1 because it
   cannot return that mandatory evidence. `ParsedProblem` keeps its fields
   private and exposes read-only provenance accessors (`source_version`,
@@ -109,8 +118,13 @@ structure; FLUX/UQ execute it.
   blank/missing-final-newline forms, noncanonical token spellings, malformed
   escapes, wrong IDs, extra fields, and duplicate/missing budget directives
   therefore refuse even when their recomputed FNV is internally consistent.
-  Parsing REBUILDS through the validating builder and verifies the integrity
-  hash — tampered or ill-typed files refuse with line numbers.
+  Semantic bilevel references have no v2 spelling, so that migration
+  writer refuses with `WireIncompatible` rather than emitting a
+  self-invalid downconversion. Parsing preflights exact artifact bytes
+  and directive counts, decodes tokens within per-field caps, REBUILDS
+  through the validating builder, and verifies the integrity hash —
+  tampered, oversized, or ill-typed files refuse as `Parse` with line
+  numbers.
 - `eval`: memoized evaluation of algebraic subgraphs; PDE/stochastic
   nodes refuse with `Unevaluable` NAMING their executor.
 - `GoodhartGuard` (addendum Proposal D): treats an optimizer `Endpoint`
@@ -135,7 +149,7 @@ structure; FLUX/UQ execute it.
 1. Seeded ill-typed constructions refuse with teaching text naming
    ops/nodes, and a 600-op fuzz storm matches an independent validity
    model exactly (opt-001).
-2. build→serialize→parse through canonical `fsopt v2` yields an IDENTICAL
+2. build→serialize→parse through canonical `fsopt v3` yields an IDENTICAL
    problem; hashes are stable across identical builds, differ across edits,
    and guard integrity. Exact explicit five-dimension v1 inputs from both known
    historical writers remain readable through the receipt-bearing API with
@@ -158,8 +172,12 @@ structure; FLUX/UQ execute it.
    unit quaternion throughout, Stiefel stays orthonormal to 1e-10 and
    finds the top invariant subspace (opt-005).
 6. P4/P7: the attached budget stops descent with a RECEIPT (not an
-   error); cancellation returns the teaching error; PDE/stochastic
-   nodes name their executor when asked to evaluate (opt-006).
+   error), never exceeds its cap, reuses the already-counted initial
+   value when no step lands, and reserves a terminal evaluation before
+   spending an FD pair. Raw manifold descriptors and `x0` lengths refuse
+   before the objective closure is called; cancellation returns the
+   teaching error; PDE/stochastic nodes name their executor when asked
+   to evaluate (opt-005/006).
 
 ## Error model
 
@@ -170,12 +188,14 @@ transcendentals, odd-sqrt dims, bad parameters/indices, non-scalar
 roots, `ManifoldInvalid` (violated policy named), `NonFinite` (payload
 name + exact bit pattern), `CapExceeded` (cap name + count + limit),
 `BindingCount`/`BindingLen` (declared vs supplied),
+`WireIncompatible` (historical version + unrepresentable typed construct),
 `NonsmoothForFamily` (node + kind + class),
 `NoAdjoint` (node + study), `Unevaluable` (node + executor), `Parse`
 (line + what), `Cancelled`, `BudgetExhausted` (spent count receipt).
-Whole-problem re-validation refuses with a COMPLETE, deterministically
-ordered `AdmissionReport` (section by section, ascending index), never
-a first-error-only refusal.
+Whole-problem re-validation refuses with a deterministically ordered
+`AdmissionReport`: the cheap count/alignment preflight gathers all of
+its findings before early refusal, retained bytes are checked next, and
+admitted-size section scans are index ordered.
 
 ## Determinism class
 
@@ -191,7 +211,7 @@ hashes, and bytes; identical rejections give identical reports
 `descend_fn`/`descend_ir` poll `cx.checkpoint()` every step and
 return `OptError::Cancelled` between steps. Budget exhaustion is a
 RECEIPT (`budget_stopped` in the report), not an error — the iterate
-remains valid (P4).
+remains valid and `evals` never exceeds the positive cap (P4).
 
 ## Unsafe boundary
 
@@ -214,14 +234,16 @@ seeded LCG randomness, fs-obs Custom event carrying the fixture
 problem hash and routing refusal. Any reimplementation must pass the
 suite unchanged.
 
-`tests/admission.rs`, cases adm-001..adm-012 (bead sj31i.48) — G0
+`tests/admission.rs`, cases adm-001..adm-015 (bead sj31i.48) — G0
 leaf-policy tables (manifold boundaries incl. checked `Stiefel`
 overflow, non-finite payloads with bit retention, weight policy incl.
 `-0.0`, tag domains, checked dimension combining), builder-rollback
 identity, builder/admission agreement, mutation-sensitive semantic
-identity, deterministic complete admission reports under explicit
-caps, domain-separated identity round trips, v3 bilevel + legacy
-quarantine, checked id accessors, and binding validation.
+identity, deterministic bounded admission reports under explicit caps,
+domain-separated identity round trips, v3 bilevel + legacy
+quarantine, checked id accessors, binding validation, saturated component
+diagnostics, scalar-only Min/Max, and fail-closed graph-depth / aggregate
+retained-byte builder rollback.
 
 `tests/guard.rs` (Proposal D, 15 cases): no-steps→provisional-not-honored;
 all-pass→cleared→honored; a veto→failed with a finding; an unregistered

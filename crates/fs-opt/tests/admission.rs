@@ -327,7 +327,10 @@ fn adm_006_admission_report_is_complete_and_deterministic() {
         "constraint cap violation is also reported"
     );
     let text = report1.to_string();
-    assert!(text.contains("schema v1") && text.contains("variables"));
+    assert!(
+        text.contains(&format!("schema v{}", fs_opt::ADMISSION_SCHEMA_VERSION))
+            && text.contains("variables")
+    );
 
     p.admit().expect("default caps admit the same problem");
 }
@@ -402,7 +405,8 @@ fn adm_008_v3_bilevel_roundtrip_and_legacy_quarantine() {
     })
     .expect("legacy tag");
     let lp = lb.finish();
-    let v2 = canonical_v2_migration_target(&lp);
+    let v2 = canonical_v2_migration_target(&lp)
+        .expect("a legacy bilevel reference is representable in v2");
     assert!(v2.contains("tag bilevel DEADBEEF01234567"));
     let decoded = parse_with_version(&v2).expect("exact v2 bytes decode");
     assert_eq!(decoded.source_version(), WireVersion::V2);
@@ -589,4 +593,74 @@ fn adm_014_vector_min_max_refused_at_the_shared_rule() {
     let m = b.min_of(s1, s2).expect("scalar min admits");
     b.objective(m, Sense::Minimize, 1.0).expect("objective");
     b.finish().admit().expect("re-admits");
+}
+
+/// adm-015 — recursive work and retained allocation are bounded before
+/// mutation. A depth overflow and an aggregate-byte overflow leave the
+/// builder in an admissible state, while oversized external identifiers
+/// refuse before they are cloned into an expression.
+#[test]
+fn adm_015_depth_and_retained_bytes_fail_closed() {
+    let mut depth_caps = AdmissionCaps::default();
+    depth_caps.max_graph_depth = 3;
+    let mut depth = ProblemBuilder::with_caps(depth_caps.clone());
+    let n1 = depth.konst(1.0, Dims::NONE).expect("depth 1");
+    let n2 = depth.neg(n1).expect("depth 2");
+    let n3 = depth.neg(n2).expect("depth 3");
+    assert!(matches!(
+        depth.neg(n3),
+        Err(OptError::CapExceeded {
+            what: "graph depth",
+            count: 4,
+            cap: 3
+        })
+    ));
+    depth
+        .objective(n3, Sense::Minimize, 1.0)
+        .expect("rollback left a valid root");
+    depth
+        .finish()
+        .admit_with_caps(&depth_caps)
+        .expect("depth rejection did not mutate the graph");
+
+    let mut retained_caps = AdmissionCaps::default();
+    retained_caps.max_total_retained_bytes = 258;
+    let mut retained = ProblemBuilder::with_caps(retained_caps.clone());
+    let v = retained
+        .var("x", Manifold::Rn { dim: 1 }, Dims::NONE)
+        .expect("name charge is bounded");
+    retained.var_ref(v).expect("exact aggregate byte cap");
+    assert!(matches!(
+        retained.norm_sq(NodeId(0)),
+        Err(OptError::CapExceeded {
+            what: "total retained/canonical bytes",
+            ..
+        })
+    ));
+    let admitted = retained
+        .finish()
+        .admit_with_caps(&retained_caps)
+        .expect("aggregate rejection did not retain the candidate");
+    assert_eq!(admitted.total_retained_bytes(), 258);
+
+    let mut string_caps = AdmissionCaps::default();
+    string_caps.max_string_bytes = 4;
+    let mut strings = ProblemBuilder::with_caps(string_caps);
+    let v = strings
+        .var("x", Manifold::Rn { dim: 1 }, Dims::NONE)
+        .expect("var");
+    assert!(matches!(
+        strings.pde_residual("12345", v, false, Dims::NONE),
+        Err(OptError::CapExceeded {
+            what: "PDE study",
+            count: 5,
+            cap: 4
+        })
+    ));
+    assert_eq!(
+        strings
+            .pde_residual("ok", v, false, Dims::NONE)
+            .expect("rejection happened before mutation"),
+        NodeId(0)
+    );
 }
