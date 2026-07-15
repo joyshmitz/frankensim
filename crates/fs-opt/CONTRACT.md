@@ -76,7 +76,13 @@ structure; FLUX/UQ execute it.
   translation, Sphere normalize, SO(3) quaternion exponential,
   Stiefel Gram-Schmidt/QR) — the metadata the gradient stack
   consumes; `descend_fn`/`descend_ir` are the TOY consumers proving
-  iterates stay ON their manifolds.
+  iterates stay ON their manifolds. Both descent entry points are
+  LEAF-GATED before any arithmetic (bead j3vb5 / review High #6):
+  the manifold validates through the admission policy, the start
+  point must match `point_dim` with FINITE components (offending bit
+  pattern retained in the refusal), and `DescentOptions` must carry
+  finite positive `fd_h` and `lr` (a NaN/zero step would divide
+  through the FD quotient; a negative rate would silently ascend).
 - Structure: multi-objective (weights), constraint KINDS (`EqZero`,
   `LeZero` — semantics/repair are fs-constraint's), `ProblemTag`
   (multi-fidelity, chance-constrained, bilevel via typed

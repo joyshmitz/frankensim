@@ -284,11 +284,14 @@ pub struct DescentReport {
 /// Toy Riemannian gradient descent of a closure over ONE manifold
 /// variable: FD gradient through the retraction, fixed step. Proves
 /// retraction metadata is consumable; polls cancellation each step and
-/// honors `max_evals` (0 = unlimited).
+/// honors `max_evals` (0 = unlimited). The manifold, start point
+/// (length AND finite components), and step policy (`fd_h`/`lr`
+/// finite, positive) are leaf-gated BEFORE any descent arithmetic.
 ///
 /// # Errors
 /// [`OptError::Cancelled`] / [`OptError::ManifoldInvalid`] /
-/// [`OptError::BindingLen`].
+/// [`OptError::BindingLen`] / [`OptError::NonFinite`] /
+/// [`OptError::BadParam`].
 pub fn descend_fn(
     manifold: Manifold,
     f: &dyn Fn(&[f64]) -> f64,
@@ -318,6 +321,30 @@ fn descend_fn_with_initial(
             var: 0,
             expected: point_dim,
             got: x0.len() as u64,
+        });
+    }
+    // Leaf gating (review High #6, bead j3vb5): a non-finite start
+    // point or degenerate step policy must refuse BEFORE any descent
+    // arithmetic — NaN would otherwise propagate through retractions
+    // and finite differences as plausible-looking garbage.
+    for component in x0 {
+        if !component.is_finite() {
+            return Err(OptError::NonFinite {
+                what: "descent initial point component",
+                bits: component.to_bits(),
+            });
+        }
+    }
+    if !(opts.fd_h.is_finite() && opts.fd_h > 0.0) {
+        return Err(OptError::BadParam {
+            what: "descent finite-difference step fd_h (finite, > 0)",
+            value: opts.fd_h,
+        });
+    }
+    if !(opts.lr.is_finite() && opts.lr > 0.0) {
+        return Err(OptError::BadParam {
+            what: "descent learning rate lr (finite, > 0; descent, not ascent)",
+            value: opts.lr,
         });
     }
     let mut x = x0.to_vec();

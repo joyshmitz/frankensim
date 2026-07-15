@@ -664,3 +664,80 @@ fn adm_015_depth_and_retained_bytes_fail_closed() {
         NodeId(0)
     );
 }
+
+/// adm-013 (bead j3vb5, review High #6) — descent leaf gating: a
+/// non-finite start component or degenerate step policy refuses TYPED
+/// through the public API before any descent arithmetic, for both the
+/// closure-driven and IR-driven entry points. (Invalid manifolds and
+/// wrong-length starts are pinned by opt-005 in the conformance
+/// suite.)
+#[test]
+fn adm_013_descent_leaf_gating() {
+    let gate = fs_exec::CancelGate::new();
+    let pool = fs_alloc::ArenaPool::new(fs_alloc::ArenaConfig::default());
+    pool.scope(|arena| {
+        let cx = fs_exec::Cx::new(
+            &gate,
+            arena,
+            fs_exec::StreamKey {
+                seed: 0x13,
+                kernel_id: 1,
+                tile: 0,
+                iteration: 0,
+            },
+            asupersync::types::Budget::INFINITE,
+            fs_exec::ExecMode::Deterministic,
+        );
+        let quadratic = |x: &[f64]| x[0] * x[0];
+        let opts = fs_opt::DescentOptions::default();
+
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let refusal =
+                fs_opt::descend_fn(Manifold::Rn { dim: 1 }, &quadratic, &[bad], opts, 0, &cx)
+                    .expect_err("non-finite start must refuse");
+            match refusal {
+                OptError::NonFinite { what, bits } => {
+                    assert_eq!(what, "descent initial point component");
+                    assert_eq!(bits, bad.to_bits(), "offending bit pattern retained");
+                }
+                other => panic!("expected NonFinite, got {other:?}"),
+            }
+        }
+
+        for bad_fd in [0.0, -1e-6, f64::NAN, f64::INFINITY] {
+            let mut o = fs_opt::DescentOptions::default();
+            o.fd_h = bad_fd;
+            assert!(
+                matches!(
+                    fs_opt::descend_fn(Manifold::Rn { dim: 1 }, &quadratic, &[1.0], o, 0, &cx),
+                    Err(OptError::BadParam { .. })
+                ),
+                "fd_h {bad_fd} must refuse before any FD division"
+            );
+        }
+        for bad_lr in [0.0, -0.5, f64::NAN] {
+            let mut o = fs_opt::DescentOptions::default();
+            o.lr = bad_lr;
+            assert!(
+                matches!(
+                    fs_opt::descend_fn(Manifold::Rn { dim: 1 }, &quadratic, &[1.0], o, 0, &cx),
+                    Err(OptError::BadParam { .. })
+                ),
+                "lr {bad_lr} must refuse (descent, not ascent or a no-op)"
+            );
+        }
+
+        // The IR-driven variant shares the seam: a NaN start refuses
+        // typed instead of descending on garbage.
+        let p = simple_problem(1.0);
+        assert!(matches!(
+            fs_opt::descend_ir(&p, &[f64::NAN, 0.0], opts, &cx),
+            Err(OptError::NonFinite { .. })
+        ));
+
+        // Valid descent is unchanged: the guarded path still converges.
+        let rep = fs_opt::descend_fn(Manifold::Rn { dim: 1 }, &quadratic, &[1.0], opts, 0, &cx)
+            .expect("valid descent unchanged");
+        assert!(rep.f_final < rep.f0, "still actually descends");
+    });
+}
