@@ -13,7 +13,8 @@
 use fs_geom::router::{ConverterSpec, ErrorModel, MemoryCostOracle, RouteRequest, Router};
 use fs_geom::sheaf::{Interface, SheafComplex};
 use fs_geom::sheaf_repair::{
-    COMPONENT_FLOOR, SheafSkeleton, apply_gauge, hodge_decompose, plan_repair,
+    AdmittedSheafSkeleton, COMPONENT_FLOOR, SheafSkeleton, SheafSkeletonError, apply_gauge,
+    hodge_decompose, plan_repair,
 };
 
 fn verdict(case: &str, detail: &str) {
@@ -490,5 +491,102 @@ fn sr_005_router_reroute_proposal_ranks_by_expected_norm() {
         "sr-005",
         "router reroute proposal carries the planned route + modeled cost; ranking is \
          by expected post-repair norm",
+    );
+}
+
+#[test]
+fn sr_006_admitted_skeleton_rejects_the_first_structural_error() {
+    assert_eq!(
+        AdmittedSheafSkeleton::try_new(0, Vec::new(), Vec::new()),
+        Err(SheafSkeletonError::EmptyComplex)
+    );
+    assert_eq!(
+        AdmittedSheafSkeleton::try_new(3, vec![(0, 2), (0, 1)], Vec::new()),
+        Err(SheafSkeletonError::InvalidEdge { index: 1 })
+    );
+    assert_eq!(
+        AdmittedSheafSkeleton::try_new(3, vec![(0, 1), (0, 1)], Vec::new()),
+        Err(SheafSkeletonError::InvalidEdge { index: 1 })
+    );
+    assert_eq!(
+        AdmittedSheafSkeleton::try_new(3, vec![(1, 0)], Vec::new()),
+        Err(SheafSkeletonError::InvalidEdge { index: 0 })
+    );
+    assert_eq!(
+        AdmittedSheafSkeleton::try_new(3, vec![(0, 3)], Vec::new()),
+        Err(SheafSkeletonError::InvalidEdge { index: 0 })
+    );
+    assert_eq!(
+        AdmittedSheafSkeleton::try_new(3, vec![(0, 1), (0, 2)], vec![(0, 1, 2)],),
+        Err(SheafSkeletonError::InvalidTriangle { index: 0 })
+    );
+    verdict(
+        "sr-006",
+        "opaque skeleton admission refuses empty, non-canonical, duplicate, reversed, out-of-range, and incomplete incidence deterministically",
+    );
+}
+
+#[test]
+fn sr_007_admitted_incidence_is_total_and_finite() {
+    let skeleton = AdmittedSheafSkeleton::try_new(3, vec![(0, 1), (0, 2), (1, 2)], vec![(0, 1, 2)])
+        .expect("canonical triangle admits");
+    assert_eq!(skeleton.n_patches(), 3);
+    assert_eq!(skeleton.edges(), &[(0, 1), (0, 2), (1, 2)]);
+    assert_eq!(skeleton.triangles(), &[(0, 1, 2)]);
+
+    assert_eq!(
+        skeleton.d0(&[0.0, 1.0]),
+        Err(SheafSkeletonError::CochainLength {
+            role: "vertex",
+            expected: 3,
+            actual: 2,
+        })
+    );
+    assert_eq!(
+        skeleton.d0(&[0.0, f64::NAN, 1.0]),
+        Err(SheafSkeletonError::NonFiniteCochain {
+            role: "vertex",
+            index: 1,
+        })
+    );
+    assert_eq!(
+        skeleton.d0(&[-f64::MAX, f64::MAX, 0.0]),
+        Err(SheafSkeletonError::NumericalOverflow { stage: "d0" })
+    );
+    assert_eq!(
+        skeleton.d1(&[1.0, 2.0]),
+        Err(SheafSkeletonError::CochainLength {
+            role: "edge",
+            expected: 3,
+            actual: 2,
+        })
+    );
+    assert_eq!(
+        skeleton.d1t(&[]),
+        Err(SheafSkeletonError::CochainLength {
+            role: "triangle",
+            expected: 1,
+            actual: 0,
+        })
+    );
+
+    let vertex = [2.0, -3.0, 5.0];
+    let edge = skeleton.d0(&vertex).expect("finite coboundary");
+    assert_eq!(
+        skeleton.d1(&edge).expect("finite boundary composition"),
+        vec![0.0],
+        "delta-one after delta-zero is exact in the admitted scalar complex"
+    );
+    assert_eq!(
+        skeleton.d0t(&edge).expect("finite transpose"),
+        vec![2.0, -13.0, 11.0]
+    );
+    assert_eq!(
+        skeleton.d1t(&[4.0]).expect("finite triangle transpose"),
+        vec![4.0, -4.0, 4.0]
+    );
+    verdict(
+        "sr-007",
+        "admitted incidence rejects shape, non-finite, and overflow inputs without panic and preserves delta-one composed with delta-zero",
     );
 }

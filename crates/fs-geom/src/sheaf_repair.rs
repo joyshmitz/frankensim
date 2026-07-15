@@ -31,7 +31,9 @@
 //! only under an explicit budget.
 
 use crate::router::{CostOracle, RoutePlanError, RouteRequest, Router};
-use crate::sheaf::SheafComplex;
+use crate::sheaf::{
+    SHEAF_MAX_CHARTS, SHEAF_MAX_PAIR_CANDIDATES, SHEAF_MAX_TRIPLE_CANDIDATES, SheafComplex,
+};
 use std::fmt::Write as _;
 
 /// The complex skeleton the decomposition runs over (extractable from a
@@ -46,12 +48,73 @@ pub struct SheafSkeleton {
     pub triangles: Vec<(usize, usize, usize)>,
 }
 
+/// Structurally admitted repair skeleton.
+///
+/// Unlike [`SheafSkeleton`], this type cannot be assembled with unchecked
+/// public fields. Its canonical incidence is validated once and then retained
+/// immutably, so the fallible incidence operators below do not need to rescan
+/// topology or rely on indexing assertions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdmittedSheafSkeleton {
+    n_patches: usize,
+    edges: Vec<(usize, usize)>,
+    triangles: Vec<(usize, usize, usize)>,
+}
+
 /// Failure to extract a repair skeleton from a public complex.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SheafSkeletonError {
     /// The public complex violates ordering, incidence, range, sample, or
     /// sampling-domain invariants required by the incidence operators.
     MalformedComplex,
+    /// At least one patch is required by the repair algebra.
+    EmptyComplex,
+    /// A canonical skeleton cardinality exceeds its defensive ceiling.
+    WorkLimit {
+        /// Stable validation stage.
+        stage: &'static str,
+        /// Caller-supplied cardinality.
+        requested: usize,
+        /// Defensive ceiling.
+        cap: usize,
+    },
+    /// Edges must be strictly increasing canonical pairs in range.
+    InvalidEdge {
+        /// Position of the first invalid edge.
+        index: usize,
+    },
+    /// Triangles must be strictly increasing canonical triples in range and
+    /// every oriented boundary edge must be retained.
+    InvalidTriangle {
+        /// Position of the first invalid triangle.
+        index: usize,
+    },
+    /// A cochain does not match the admitted incidence space.
+    CochainLength {
+        /// Stable cochain role.
+        role: &'static str,
+        /// Required number of scalars.
+        expected: usize,
+        /// Supplied number of scalars.
+        actual: usize,
+    },
+    /// A cochain scalar is not finite.
+    NonFiniteCochain {
+        /// Stable cochain role.
+        role: &'static str,
+        /// First non-finite scalar.
+        index: usize,
+    },
+    /// Finite inputs overflowed an incidence arithmetic operation.
+    NumericalOverflow {
+        /// Stable arithmetic stage.
+        stage: &'static str,
+    },
+    /// A bounded output allocation could not be reserved.
+    ResourceExhausted {
+        /// Stable allocation stage.
+        stage: &'static str,
+    },
 }
 
 impl core::fmt::Display for SheafSkeletonError {
@@ -61,11 +124,252 @@ impl core::fmt::Display for SheafSkeletonError {
                 f,
                 "cannot extract a skeleton from a malformed sheaf complex"
             ),
+            Self::EmptyComplex => write!(f, "repair skeleton requires at least one patch"),
+            Self::WorkLimit {
+                stage,
+                requested,
+                cap,
+            } => write!(
+                f,
+                "repair skeleton stage {stage} requests {requested} items above cap {cap}"
+            ),
+            Self::InvalidEdge { index } => write!(
+                f,
+                "repair skeleton edge {index} is non-canonical, duplicated, or out of range"
+            ),
+            Self::InvalidTriangle { index } => write!(
+                f,
+                "repair skeleton triangle {index} is non-canonical, duplicated, out of range, or missing a boundary edge"
+            ),
+            Self::CochainLength {
+                role,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "repair {role} cochain requires {expected} scalars, got {actual}"
+            ),
+            Self::NonFiniteCochain { role, index } => {
+                write!(f, "repair {role} cochain scalar {index} is not finite")
+            }
+            Self::NumericalOverflow { stage } => {
+                write!(f, "repair incidence arithmetic overflowed during {stage}")
+            }
+            Self::ResourceExhausted { stage } => {
+                write!(f, "repair incidence could not reserve storage for {stage}")
+            }
         }
     }
 }
 
 impl std::error::Error for SheafSkeletonError {}
+
+fn validate_finite_cochain(
+    values: &[f64],
+    expected: usize,
+    role: &'static str,
+) -> Result<(), SheafSkeletonError> {
+    if values.len() != expected {
+        return Err(SheafSkeletonError::CochainLength {
+            role,
+            expected,
+            actual: values.len(),
+        });
+    }
+    if let Some(index) = values.iter().position(|value| !value.is_finite()) {
+        return Err(SheafSkeletonError::NonFiniteCochain { role, index });
+    }
+    Ok(())
+}
+
+fn zeroed_output(len: usize, stage: &'static str) -> Result<Vec<f64>, SheafSkeletonError> {
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(len)
+        .map_err(|_| SheafSkeletonError::ResourceExhausted { stage })?;
+    values.resize(len, 0.0);
+    Ok(values)
+}
+
+impl AdmittedSheafSkeleton {
+    /// Validate and seal canonical repair incidence supplied by a caller.
+    ///
+    /// Validation order is deterministic: cardinalities, edges in input
+    /// order, then triangles in input order. Edges and triangles must already
+    /// be strictly lexicographically ordered, making duplicate and orientation
+    /// errors unambiguous and every later lookup bounded.
+    pub fn try_new(
+        n_patches: usize,
+        edges: Vec<(usize, usize)>,
+        triangles: Vec<(usize, usize, usize)>,
+    ) -> Result<Self, SheafSkeletonError> {
+        if n_patches == 0 {
+            return Err(SheafSkeletonError::EmptyComplex);
+        }
+        for (stage, requested, cap) in [
+            ("patches", n_patches, SHEAF_MAX_CHARTS),
+            ("edges", edges.len(), SHEAF_MAX_PAIR_CANDIDATES),
+            ("triangles", triangles.len(), SHEAF_MAX_TRIPLE_CANDIDATES),
+        ] {
+            if requested > cap {
+                return Err(SheafSkeletonError::WorkLimit {
+                    stage,
+                    requested,
+                    cap,
+                });
+            }
+        }
+
+        let mut previous_edge = None;
+        for (index, &(u, v)) in edges.iter().enumerate() {
+            if u >= v || v >= n_patches || previous_edge.is_some_and(|previous| previous >= (u, v))
+            {
+                return Err(SheafSkeletonError::InvalidEdge { index });
+            }
+            previous_edge = Some((u, v));
+        }
+
+        let mut previous_triangle = None;
+        for (index, &(a, b, c)) in triangles.iter().enumerate() {
+            if a >= b
+                || b >= c
+                || c >= n_patches
+                || previous_triangle.is_some_and(|previous| previous >= (a, b, c))
+                || edges.binary_search(&(a, b)).is_err()
+                || edges.binary_search(&(a, c)).is_err()
+                || edges.binary_search(&(b, c)).is_err()
+            {
+                return Err(SheafSkeletonError::InvalidTriangle { index });
+            }
+            previous_triangle = Some((a, b, c));
+        }
+
+        Ok(Self {
+            n_patches,
+            edges,
+            triangles,
+        })
+    }
+
+    /// Validate and seal a raw repair skeleton without copying its storage.
+    pub fn admit(raw: SheafSkeleton) -> Result<Self, SheafSkeletonError> {
+        Self::try_new(raw.n_patches, raw.edges, raw.triangles)
+    }
+
+    /// Structurally validate a public complex and retain its canonical edge
+    /// incidence. Candidate clique triples remain omitted because the base
+    /// builder has not verified a common triple overlap.
+    pub fn of(complex: &SheafComplex) -> Result<Self, SheafSkeletonError> {
+        if !complex.structure_is_valid() {
+            return Err(SheafSkeletonError::MalformedComplex);
+        }
+        let mut edges = Vec::new();
+        edges
+            .try_reserve_exact(complex.interfaces.len())
+            .map_err(|_| SheafSkeletonError::ResourceExhausted {
+                stage: "complex-edges",
+            })?;
+        edges.extend(complex.interfaces.iter().map(|interface| interface.patches));
+        Self::try_new(complex.n_patches, edges, Vec::new())
+    }
+
+    /// Number of retained patches.
+    #[must_use]
+    pub const fn n_patches(&self) -> usize {
+        self.n_patches
+    }
+
+    /// Canonically ordered retained interfaces.
+    #[must_use]
+    pub fn edges(&self) -> &[(usize, usize)] {
+        &self.edges
+    }
+
+    /// Canonically ordered retained triangles.
+    #[must_use]
+    pub fn triangles(&self) -> &[(usize, usize, usize)] {
+        &self.triangles
+    }
+
+    /// Apply `delta^0` to a finite vertex cochain.
+    pub fn d0(&self, c: &[f64]) -> Result<Vec<f64>, SheafSkeletonError> {
+        validate_finite_cochain(c, self.n_patches, "vertex")?;
+        let mut out = zeroed_output(self.edges.len(), "d0-output")?;
+        for (value, &(u, v)) in out.iter_mut().zip(&self.edges) {
+            *value = c[v] - c[u];
+            if !value.is_finite() {
+                return Err(SheafSkeletonError::NumericalOverflow { stage: "d0" });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Apply `delta^0` transpose to a finite edge cochain.
+    pub fn d0t(&self, m: &[f64]) -> Result<Vec<f64>, SheafSkeletonError> {
+        validate_finite_cochain(m, self.edges.len(), "edge")?;
+        let mut out = zeroed_output(self.n_patches, "d0t-output")?;
+        for (k, &(u, v)) in self.edges.iter().enumerate() {
+            out[u] -= m[k];
+            out[v] += m[k];
+            if !(out[u].is_finite() && out[v].is_finite()) {
+                return Err(SheafSkeletonError::NumericalOverflow { stage: "d0t" });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Apply `delta^1` to a finite edge cochain.
+    pub fn d1(&self, m: &[f64]) -> Result<Vec<f64>, SheafSkeletonError> {
+        validate_finite_cochain(m, self.edges.len(), "edge")?;
+        let mut out = zeroed_output(self.triangles.len(), "d1-output")?;
+        for (triangle, (value, &(a, b, c))) in out.iter_mut().zip(&self.triangles).enumerate() {
+            let eab = self
+                .edges
+                .binary_search(&(a, b))
+                .map_err(|_| SheafSkeletonError::InvalidTriangle { index: triangle })?;
+            let ebc = self
+                .edges
+                .binary_search(&(b, c))
+                .map_err(|_| SheafSkeletonError::InvalidTriangle { index: triangle })?;
+            let eac = self
+                .edges
+                .binary_search(&(a, c))
+                .map_err(|_| SheafSkeletonError::InvalidTriangle { index: triangle })?;
+            *value = (m[eab] + m[ebc]) - m[eac];
+            if !value.is_finite() {
+                return Err(SheafSkeletonError::NumericalOverflow { stage: "d1" });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Apply `delta^1` transpose to a finite triangle cochain.
+    pub fn d1t(&self, w: &[f64]) -> Result<Vec<f64>, SheafSkeletonError> {
+        validate_finite_cochain(w, self.triangles.len(), "triangle")?;
+        let mut out = zeroed_output(self.edges.len(), "d1t-output")?;
+        for (triangle, &(a, b, c)) in self.triangles.iter().enumerate() {
+            let eab = self
+                .edges
+                .binary_search(&(a, b))
+                .map_err(|_| SheafSkeletonError::InvalidTriangle { index: triangle })?;
+            let ebc = self
+                .edges
+                .binary_search(&(b, c))
+                .map_err(|_| SheafSkeletonError::InvalidTriangle { index: triangle })?;
+            let eac = self
+                .edges
+                .binary_search(&(a, c))
+                .map_err(|_| SheafSkeletonError::InvalidTriangle { index: triangle })?;
+            out[eab] += w[triangle];
+            out[ebc] += w[triangle];
+            out[eac] -= w[triangle];
+            if !(out[eab].is_finite() && out[ebc].is_finite() && out[eac].is_finite()) {
+                return Err(SheafSkeletonError::NumericalOverflow { stage: "d1t" });
+            }
+        }
+        Ok(out)
+    }
+}
 
 impl SheafSkeleton {
     /// Structurally validate and extract caller-supplied adjacency for
