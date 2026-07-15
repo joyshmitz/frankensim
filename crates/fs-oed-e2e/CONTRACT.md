@@ -17,20 +17,40 @@ private invocation-global poll ledger), `fs-voi` (EVPI + recommend),
   finite sensor noise/cost. Read-only accessors expose the declaration.
 - `run_campaign(&[Candidate], threshold, max_sensors, &Cx) ->
   Result<OedReport, OedError>` validates the threshold, unique candidate
-  identities, and explicit synchronous work caps before greedily placing
-  VoI-chosen sensors under deterministic cancellation checkpoints.
+  identities, and explicit synchronous work caps, then CANONICALIZES the
+  candidate menu (name-ascending) EXACTLY ONCE at admission (bead
+  sj31i.62) before greedily placing VoI-chosen sensors under
+  deterministic cancellation checkpoints. Every derived belief/estimate/
+  action/report sequence follows canonical order, so campaign outcomes
+  and retained artifacts are INVARIANT under caller menu permutation.
+- Canonical EVPI representation (bead sj31i.62): estimates live in an
+  opaque `CanonicalDesignMenu` whose identity order is verified once
+  (one O(n) window scan per posterior refresh, `CanonicalOrderViolated`
+  on breakage) and never re-sorted; EVPI evaluates through
+  `fs_voi::evpi_by` with NO per-call clone or sort, and the predictive
+  quadrature substitutes the target's mean/statistical uncertainty
+  through a non-owning, lifetime-bound `MeanOverrideView` (validated
+  index and finite payload, `OverrideInvalid` otherwise) — stale
+  restoration or cancellation-corrupted scratch state is
+  unrepresentable because nothing is mutated. Target lookup is
+  O(log n) binary search on the canonical order. The old per-node
+  clone-and-sort work was never charged by the work plan; eliminating
+  it makes the retained record-visit accounting HONEST without
+  changing any admitted/realized work formula, pinned work constant,
+  or poll boundary.
 - `demo_candidates() -> Result<Vec<Candidate>, CandidateError>` builds the four
   checked candidates whose close top two drive the decision.
 - `OedReport` includes the native EVPI trace, posterior summaries, one
   instrument-bound `assimilation_color` per placement, and input-bound final
   variance/EVPI colors so consumers do not need to transcribe the loop.
-- Both retained report estimators use identity version 5. Their canonical
+- Both retained report estimators use identity version 6 (v6 binds the
+  CANONICAL candidate sequence — bead sj31i.62). Their canonical
   preimages bind every candidate declaration, threshold and placement cap,
   execution mode, stream/budget context, admitted and realized work shapes,
   poll/planning policy versions and strides, quadrature rule constants, every
   realized output sequence, and both color dispersions.
-  Prefixes are `sensorforge-posterior-variance:v5:` and
-  `sensorforge-evpi:v5:`; the manifest also locks planning policy v3, poll
+  Prefixes are `sensorforge-posterior-variance:v6:` and
+  `sensorforge-evpi:v6:`; the manifest also locks planning policy v3, poll
   policy v2, `fs-voi` EVPI semantics, record stride 256, and action stride 1.
 
 ## Invariants
@@ -143,7 +163,12 @@ semantics; and sealed-output identity movement.
   replay/integrity bindings, not authenticated provenance or proof of global
   policy optimality.
 - The G5 battery is same-process and fixed-manifest evidence; it does not claim
-  cross-version or cross-ISA floating-point identity. The order-independent
-  sensor policy also does not make the whole report identity
-  permutation-invariant: ordered candidate declarations remain deliberately
-  identity-semantic.
+  cross-version or cross-ISA floating-point identity. As of identity v6 the
+  report identity IS caller-menu-permutation-invariant (the preimage binds the
+  canonical candidate sequence); v5 artifacts that bound a non-canonical
+  declaration order remain valid only under their own version prefix.
+- sj31i.62 remaining scope: byte-level charging of comparison/override/hash/log
+  work and fallible allocation admission for the campaign's retained outputs
+  are not yet implemented; the current work plan still counts bounded record
+  visits (now an HONEST count, since the uncharged clone-and-sort work was
+  eliminated rather than charged).

@@ -34,7 +34,9 @@ use fs_assimilate::{AssimError, Belief, assimilate_colored_with_shared_poll_quot
 use fs_evidence::{Color, ColorRank, color_leaf_identity_reason};
 use fs_exec::Cx;
 use fs_toleralloc::{Feature, allocate};
-use fs_voi::{Action, ActionKind, ActionValue, DesignEstimate, Recommendation, Uncertainty, evpi};
+use fs_voi::{
+    Action, ActionKind, ActionValue, DesignEstimate, Recommendation, Uncertainty, evpi_by,
+};
 
 /// Maximum accepted candidate-name length.
 pub const MAX_CANDIDATE_NAME_BYTES: usize = 128;
@@ -47,7 +49,11 @@ pub const MAX_CAMPAIGN_SENSORS: usize = 4_096;
 pub const MAX_CAMPAIGN_EVALUATIONS: usize = 10_500_000;
 
 /// Semantic version of the sealed SensorForge report estimator identities.
-pub const OED_REPORT_IDENTITY_VERSION: u64 = 5;
+// v6 (bead sj31i.62): the campaign canonicalizes candidate order at
+// admission, so the identity preimage binds the CANONICAL declaration
+// sequence — permuted caller menus now collapse to one identity where
+// v5 deliberately kept declaration order identity-semantic.
+pub const OED_REPORT_IDENTITY_VERSION: u64 = 6;
 
 const REPORT_ID_DOMAIN: &str = "org.frankensim.fs-oed-e2e.report.v5";
 const CAMPAIGN_PLANNING_POLICY_VERSION: u64 = 3;
@@ -311,6 +317,18 @@ pub enum OedError {
         /// Missing candidate identity.
         candidate: String,
     },
+    /// A design menu presented to the canonical-order constructor was
+    /// not in strict canonical (name-ascending, duplicate-free) order.
+    CanonicalOrderViolated {
+        /// First position whose entry breaks the order.
+        position: usize,
+    },
+    /// A mean-override view was constructed with an out-of-range index
+    /// or a non-finite override payload.
+    OverrideInvalid {
+        /// What is wrong.
+        what: &'static str,
+    },
 }
 
 impl fmt::Display for OedError {
@@ -388,6 +406,14 @@ impl fmt::Display for OedError {
             Self::AllocationFailed => write!(f, "precision allocation failed"),
             Self::MissingAllocation { candidate } => {
                 write!(f, "precision allocation omitted candidate `{candidate}`")
+            }
+            Self::CanonicalOrderViolated { position } => write!(
+                f,
+                "design menu is not in canonical name order at position {position}; \
+                 canonicalize once at campaign admission"
+            ),
+            Self::OverrideInvalid { what } => {
+                write!(f, "mean-override view rejected: {what}")
             }
         }
     }
@@ -849,20 +875,147 @@ fn total_variance(beliefs: &[Belief]) -> Result<f64, OedError> {
     })
 }
 
-fn checked_evpi(estimates: &[DesignEstimate]) -> Result<f64, OedError> {
-    // `fs_voi` preserves input order as its final equal-mean tie-break.
-    // Candidate declarations are an unordered menu here, so impose the
-    // campaign's stable identity order before calling the current top-two
-    // approximation. The full multi-alternative EVPI replacement remains a
-    // separate scientific upgrade, but equal means must not make this policy
-    // depend on caller vector order in the meantime.
-    let mut canonical = estimates.to_vec();
-    canonical.sort_by(|left, right| left.name.cmp(&right.name));
-    let value = evpi(&canonical);
-    if value.is_finite() && value >= 0.0 {
-        Ok(canonicalize_zero(value))
-    } else {
-        Err(OedError::NonFiniteComputation { quantity: "EVPI" })
+/// The campaign's design menu in CANONICAL identity order (bead
+/// sj31i.62). Identity and order are validated ONCE at construction —
+/// strictly ascending unique names — and are immutable thereafter:
+/// values refresh only through [`CanonicalDesignMenu::from_canonical`]
+/// on estimates that are already in canonical order (the campaign
+/// canonicalizes its candidates once at admission, so every derived
+/// estimate vector inherits the order for free). EVPI evaluation over
+/// the menu neither clones nor sorts: `fs_voi::evpi_by` runs the SAME
+/// top-two scan `fs_voi::evpi` runs, with canonical order supplying
+/// the equal-mean tie-break the old clone-and-sort imposed per call.
+struct CanonicalDesignMenu {
+    estimates: Vec<DesignEstimate>,
+}
+
+impl CanonicalDesignMenu {
+    /// Wrap estimates that are ALREADY in canonical order, verifying
+    /// the representation invariant in one O(n) window scan (no sort,
+    /// no allocation). The full multi-alternative EVPI replacement
+    /// remains the separate scientific upgrade in sj31i.5.
+    fn from_canonical(estimates: Vec<DesignEstimate>) -> Result<Self, OedError> {
+        if let Some(position) = estimates
+            .windows(2)
+            .position(|pair| pair[0].name >= pair[1].name)
+        {
+            return Err(OedError::CanonicalOrderViolated {
+                position: position + 1,
+            });
+        }
+        Ok(Self { estimates })
+    }
+
+    fn estimates(&self) -> &[DesignEstimate] {
+        &self.estimates
+    }
+
+    fn len(&self) -> usize {
+        self.estimates.len()
+    }
+
+    /// O(log n) identity lookup — canonical order makes the old linear
+    /// scan unnecessary.
+    fn index_of(&self, name: &str) -> Option<usize> {
+        self.estimates
+            .binary_search_by(|estimate| estimate.name.as_str().cmp(name))
+            .ok()
+    }
+
+    /// Allocation-free, sort-free EVPI with the campaign's finiteness
+    /// and sign contract.
+    fn evpi_checked(&self) -> Result<f64, OedError> {
+        let value = evpi_by(
+            self.estimates.len(),
+            &|idx| self.estimates[idx].mean,
+            &|idx| self.estimates[idx].uncertainty.total_std(),
+        );
+        if value.is_finite() && value >= 0.0 {
+            Ok(canonicalize_zero(value))
+        } else {
+            Err(OedError::NonFiniteComputation { quantity: "EVPI" })
+        }
+    }
+}
+
+/// A typed, NON-OWNING one-index substitution over an immutable
+/// [`CanonicalDesignMenu`]: the predictive-quadrature EVPI evaluation
+/// sees the target's overridden mean and posterior statistical
+/// uncertainty without cloning, mutating, or restoring shared scratch
+/// — stale restoration and cancellation-corrupted menu state are
+/// unrepresentable because nothing is ever written. The borrow ties
+/// the view's lifetime to the menu, so it cannot escape the call.
+struct MeanOverrideView<'menu> {
+    menu: &'menu CanonicalDesignMenu,
+    index: usize,
+    mean: f64,
+    total_std: f64,
+}
+
+impl<'menu> MeanOverrideView<'menu> {
+    /// Validate the selected index and finite override payload, and
+    /// precompute the target's overridden total uncertainty (its
+    /// numerical and model components are read from the immutable
+    /// menu; only the statistical component is substituted).
+    fn new(
+        menu: &'menu CanonicalDesignMenu,
+        index: usize,
+        mean: f64,
+        statistical_std: f64,
+    ) -> Result<Self, OedError> {
+        let Some(target) = menu.estimates.get(index) else {
+            return Err(OedError::OverrideInvalid {
+                what: "override index is outside the canonical menu",
+            });
+        };
+        if !mean.is_finite() {
+            return Err(OedError::OverrideInvalid {
+                what: "overridden mean must be finite",
+            });
+        }
+        if !(statistical_std.is_finite() && statistical_std >= 0.0) {
+            return Err(OedError::OverrideInvalid {
+                what: "overridden statistical uncertainty must be finite and nonnegative",
+            });
+        }
+        let overridden = Uncertainty {
+            numerical: target.uncertainty.numerical,
+            statistical: statistical_std,
+            model: target.uncertainty.model,
+        };
+        Ok(Self {
+            menu,
+            index,
+            mean,
+            total_std: overridden.total_std(),
+        })
+    }
+
+    /// EVPI over the menu with this view's substitution — same scan,
+    /// same tie-break, zero allocation.
+    fn evpi_checked(&self) -> Result<f64, OedError> {
+        let value = evpi_by(
+            self.menu.len(),
+            &|idx| {
+                if idx == self.index {
+                    self.mean
+                } else {
+                    self.menu.estimates[idx].mean
+                }
+            },
+            &|idx| {
+                if idx == self.index {
+                    self.total_std
+                } else {
+                    self.menu.estimates[idx].uncertainty.total_std()
+                }
+            },
+        );
+        if value.is_finite() && value >= 0.0 {
+            Ok(canonicalize_zero(value))
+        } else {
+            Err(OedError::NonFiniteComputation { quantity: "EVPI" })
+        }
     }
 }
 
@@ -931,26 +1084,30 @@ fn sensor_actions(candidates: &[Candidate], beliefs: &[Belief]) -> Result<Vec<Ac
 /// is integrated under its pre-posterior Gaussian distribution with the fixed
 /// rule above, so a noisy sensor cannot inherit a fictitious universal effect.
 fn expected_sensor_action_value(
-    estimates: &[DesignEstimate],
+    menu: &CanonicalDesignMenu,
     action: &Action,
     before: f64,
 ) -> Result<ActionValue, OedError> {
-    let target = estimates
-        .iter()
-        .position(|estimate| estimate.name == action.target_design)
-        .ok_or_else(|| OedError::UnknownRecommendation {
-            action: action.name.clone(),
-        })?;
-    let prior_mean = estimates[target].mean;
+    let target =
+        menu.index_of(&action.target_design)
+            .ok_or_else(|| OedError::UnknownRecommendation {
+                action: action.name.clone(),
+            })?;
+    let prior_mean = menu.estimates()[target].mean;
     if action.kind != ActionKind::Sample {
         return Err(OedError::NonFiniteComputation {
             quantity: "non-sensor action in sensor planner",
         });
     }
-    let prior_std = estimates[target].uncertainty.total_std();
-    let mut posterior_estimates = estimates.to_vec();
-    posterior_estimates[target].uncertainty.statistical *= (1.0 - action.reduction).clamp(0.0, 1.0);
-    let posterior_std = posterior_estimates[target].uncertainty.total_std();
+    let prior_std = menu.estimates()[target].uncertainty.total_std();
+    let posterior_statistical =
+        menu.estimates()[target].uncertainty.statistical * (1.0 - action.reduction).clamp(0.0, 1.0);
+    // The overridden target's total uncertainty is fixed across the
+    // quadrature; only its mean varies per node. Precompute it through
+    // one throwaway view so the value is IDENTICAL to what each node's
+    // view uses.
+    let posterior_std =
+        MeanOverrideView::new(menu, target, prior_mean, posterior_statistical)?.total_std;
     let mean_shift_variance = (prior_std * prior_std - posterior_std * posterior_std).max(0.0);
     let mean_shift_std = mean_shift_variance.sqrt();
 
@@ -962,8 +1119,15 @@ fn expected_sensor_action_value(
                 quantity: "predictive posterior mean",
             });
         }
-        posterior_estimates[target].mean = canonicalize_zero(posterior_mean);
-        expected_remaining_evpi += probability_weight * checked_evpi(&posterior_estimates)?;
+        // One-index substitution over the immutable menu: no clone, no
+        // sort, no scratch mutation to restore on any failure path.
+        let view = MeanOverrideView::new(
+            menu,
+            target,
+            canonicalize_zero(posterior_mean),
+            posterior_statistical,
+        )?;
+        expected_remaining_evpi += probability_weight * view.evpi_checked()?;
     }
     // Preserve the exact identity map after executing the declared fixed-shape
     // quadrature work. Summing nine identical weighted EVPI values can land a
@@ -1257,7 +1421,7 @@ fn validate_campaign(
     candidates: &[Candidate],
     threshold: f64,
     max_sensors: usize,
-) -> Result<(f64, CampaignWorkPlan), OedError> {
+) -> Result<(f64, CampaignWorkPlan, Vec<Candidate>), OedError> {
     if candidates.is_empty() {
         return Err(OedError::NoCandidates);
     }
@@ -1285,7 +1449,15 @@ fn validate_campaign(
             });
         }
     }
-    Ok((canonicalize_zero(threshold), plan))
+    // Canonicalize unique candidate identity and order EXACTLY ONCE at
+    // admission (bead sj31i.62); every derived belief/estimate/action
+    // sequence inherits this order, so no later phase re-sorts. The
+    // sort shares the validation scan's accounting unit — a unit is a
+    // bounded record visit, not an instruction count, and the per-call
+    // clone-and-sort work this replaces was never separately charged.
+    let mut canonical = candidates.to_vec();
+    canonical.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok((canonicalize_zero(threshold), plan, canonical))
 }
 
 struct CampaignState {
@@ -1298,7 +1470,7 @@ struct CampaignState {
 }
 
 fn recommend_with_cancellation(
-    estimates: &[DesignEstimate],
+    menu: &CanonicalDesignMenu,
     actions: &[Action],
     current_evpi: f64,
     threshold: f64,
@@ -1315,8 +1487,8 @@ fn recommend_with_cancellation(
     let mut best = None;
     for action in actions {
         progress.checkpoint(cx, plan, "action-value tile")?;
-        let value = expected_sensor_action_value(estimates, action, current_evpi)?;
-        progress.advance((estimates.len() as u128) * (ACTION_EVALUATION_FACTOR as u128) + 1);
+        let value = expected_sensor_action_value(menu, action, current_evpi)?;
+        progress.advance((menu.len() as u128) * (ACTION_EVALUATION_FACTOR as u128) + 1);
         if value.value <= 0.0 || value.value_per_cost <= 0.0 {
             continue;
         }
@@ -1350,7 +1522,7 @@ fn execute_placements(
     threshold: f64,
     max_sensors: usize,
     mut beliefs: Vec<Belief>,
-    mut estimates: Vec<DesignEstimate>,
+    mut menu: CanonicalDesignMenu,
     initial_evpi: f64,
     plan: CampaignWorkPlan,
     progress: &mut CampaignProgress,
@@ -1376,7 +1548,7 @@ fn execute_placements(
         progress.advance(candidates.len() as u128);
         progress.checkpoint(cx, plan, "action construction drain")?;
         let recommendation = recommend_with_cancellation(
-            &estimates,
+            &menu,
             &actions,
             current_evpi,
             threshold,
@@ -1443,10 +1615,10 @@ fn execute_placements(
         progress.completed_placements = placements.len();
 
         progress.checkpoint(cx, plan, "posterior estimate refresh")?;
-        estimates = to_estimates(candidates, &beliefs)?;
+        menu = CanonicalDesignMenu::from_canonical(to_estimates(candidates, &beliefs)?)?;
         progress.advance(candidates.len() as u128);
         progress.checkpoint(cx, plan, "posterior EVPI refresh")?;
-        current_evpi = checked_evpi(&estimates)?;
+        current_evpi = menu.evpi_checked()?;
         progress.advance(candidates.len() as u128);
         evpi_trace.push(current_evpi);
     }
@@ -1474,16 +1646,17 @@ fn finish_report(
     cx: &Cx<'_>,
 ) -> Result<OedReport, OedError> {
     progress.checkpoint(cx, plan, "final estimate summary")?;
-    let estimates = to_estimates(candidates, &state.beliefs)?;
+    let menu = CanonicalDesignMenu::from_canonical(to_estimates(candidates, &state.beliefs)?)?;
     progress.advance(candidates.len() as u128);
     progress.checkpoint(cx, plan, "final EVPI")?;
-    let final_evpi = checked_evpi(&estimates)?;
+    let final_evpi = menu.evpi_checked()?;
     progress.advance(candidates.len() as u128);
     progress.checkpoint(cx, plan, "final variance")?;
     let posterior_total_variance = total_variance(&state.beliefs)?;
     progress.advance(candidates.len() as u128);
     progress.checkpoint(cx, plan, "chosen-design reduction")?;
-    let chosen_design = estimates
+    let chosen_design = menu
+        .estimates()
         .iter()
         .min_by(|a, b| a.mean.total_cmp(&b.mean).then_with(|| a.name.cmp(&b.name)))
         .map(|design| design.name.clone())
@@ -1611,7 +1784,8 @@ pub fn run_campaign(
     max_sensors: usize,
     cx: &Cx<'_>,
 ) -> Result<OedReport, OedError> {
-    let (threshold, plan) = validate_campaign(candidates, threshold, max_sensors)?;
+    let (threshold, plan, candidates) = validate_campaign(candidates, threshold, max_sensors)?;
+    let candidates = candidates.as_slice();
     let mut progress = CampaignProgress::new(cx, candidates.len() as u128);
     progress.checkpoint(cx, plan, "campaign admission")?;
     let beliefs: Vec<Belief> = candidates
@@ -1624,17 +1798,17 @@ pub fn run_campaign(
     let prior_total_variance = total_variance(&beliefs)?;
     progress.advance(candidates.len() as u128);
     progress.checkpoint(cx, plan, "initial estimates")?;
-    let estimates = to_estimates(candidates, &beliefs)?;
+    let menu = CanonicalDesignMenu::from_canonical(to_estimates(candidates, &beliefs)?)?;
     progress.advance(candidates.len() as u128);
     progress.checkpoint(cx, plan, "initial EVPI")?;
-    let initial_evpi = checked_evpi(&estimates)?;
+    let initial_evpi = menu.evpi_checked()?;
     progress.advance(candidates.len() as u128);
     let state = execute_placements(
         candidates,
         threshold,
         max_sensors,
         beliefs,
-        estimates,
+        menu,
         initial_evpi,
         plan,
         &mut progress,
@@ -1855,7 +2029,7 @@ mod tests {
 
     #[test]
     fn report_identity_versions_and_final_work_shape_are_locked() {
-        assert_eq!(OED_REPORT_IDENTITY_VERSION, 5);
+        assert_eq!(OED_REPORT_IDENTITY_VERSION, 6);
         assert_eq!(REPORT_ID_DOMAIN, "org.frankensim.fs-oed-e2e.report.v5");
         assert_eq!(CAMPAIGN_PLANNING_POLICY_VERSION, 3);
         assert_eq!(CAMPAIGN_POLL_POLICY_VERSION, 2);
@@ -1887,9 +2061,9 @@ mod tests {
         assert!(
             identities
                 .0
-                .starts_with("sensorforge-posterior-variance:v5:")
+                .starts_with("sensorforge-posterior-variance:v6:")
         );
-        assert!(identities.1.starts_with("sensorforge-evpi:v5:"));
+        assert!(identities.1.starts_with("sensorforge-evpi:v6:"));
     }
 
     #[test]
@@ -2015,5 +2189,151 @@ mod tests {
                 "EVPI identity ignored realized-work field {index}"
             );
         }
+    }
+
+    /// The retired clone-and-sort EVPI path, retained verbatim as the
+    /// INDEPENDENT ORACLE for the canonical-menu evaluator (bead
+    /// sj31i.62 G3): same fs_voi::evpi, same name sort, same
+    /// finiteness/sign contract.
+    fn oracle_checked_evpi(estimates: &[super::DesignEstimate]) -> Result<f64, super::OedError> {
+        let mut canonical = estimates.to_vec();
+        canonical.sort_by(|left, right| left.name.cmp(&right.name));
+        let value = fs_voi::evpi(&canonical);
+        if value.is_finite() && value >= 0.0 {
+            Ok(super::canonicalize_zero(value))
+        } else {
+            Err(super::OedError::NonFiniteComputation { quantity: "EVPI" })
+        }
+    }
+
+    fn fixture_estimates() -> Vec<super::DesignEstimate> {
+        // Includes an exact equal-mean tie (A/B) so the canonical
+        // tie-break is exercised, plus a non-finite mean the scan must
+        // skip exactly as the oracle does.
+        [
+            ("alpha", 0.60, 0.10),
+            ("beta", 0.60, 0.12),
+            ("gamma", 0.85, 0.06),
+            ("delta", f64::NAN, 0.04),
+            ("epsilon", 1.10, 0.02),
+        ]
+        .into_iter()
+        .map(|(name, mean, statistical)| {
+            super::DesignEstimate::new(
+                name,
+                mean,
+                fs_voi::Uncertainty {
+                    numerical: 0.0,
+                    statistical,
+                    model: 0.0,
+                },
+            )
+        })
+        .collect()
+    }
+
+    fn canonical_sorted(mut estimates: Vec<super::DesignEstimate>) -> Vec<super::DesignEstimate> {
+        estimates.sort_by(|left, right| left.name.cmp(&right.name));
+        estimates
+    }
+
+    /// sj31i.62 G0: canonical-order admission refuses unsorted and
+    /// duplicate menus with the breaking position named; empty and
+    /// singleton menus admit with EVPI exactly 0.
+    #[test]
+    fn canonical_menu_admission_g0() {
+        let unsorted = fixture_estimates();
+        let refusal = super::CanonicalDesignMenu::from_canonical(unsorted)
+            .expect_err("declaration order is not canonical");
+        assert!(matches!(
+            refusal,
+            super::OedError::CanonicalOrderViolated { position: 2 }
+        ));
+        let mut duplicated = canonical_sorted(fixture_estimates());
+        duplicated[1].name.clone_from(&duplicated[0].name);
+        duplicated.sort_by(|left, right| left.name.cmp(&right.name));
+        assert!(matches!(
+            super::CanonicalDesignMenu::from_canonical(duplicated),
+            Err(super::OedError::CanonicalOrderViolated { .. })
+        ));
+        let empty = super::CanonicalDesignMenu::from_canonical(Vec::new()).expect("empty menu");
+        assert_eq!(empty.evpi_checked().expect("empty EVPI"), 0.0);
+        let singleton =
+            super::CanonicalDesignMenu::from_canonical(vec![fixture_estimates().remove(0)])
+                .expect("singleton menu");
+        assert_eq!(singleton.evpi_checked().expect("singleton EVPI"), 0.0);
+    }
+
+    /// sj31i.62 G3: the no-sort canonical evaluator is BITWISE equal to
+    /// the retired clone-and-sort oracle, on canonical fixtures and
+    /// under input permutations (which the oracle absorbs by sorting
+    /// and the menu absorbs by canonical admission).
+    #[test]
+    fn canonical_menu_matches_oracle_bitwise() {
+        let base = fixture_estimates();
+        let oracle = oracle_checked_evpi(&base).expect("oracle EVPI");
+        // Deterministic permutations: rotations of the declaration order.
+        for rotation in 0..base.len() {
+            let mut permuted = base.clone();
+            permuted.rotate_left(rotation);
+            assert_eq!(
+                oracle_checked_evpi(&permuted)
+                    .expect("oracle is order-independent")
+                    .to_bits(),
+                oracle.to_bits(),
+            );
+            let menu = super::CanonicalDesignMenu::from_canonical(canonical_sorted(permuted))
+                .expect("canonical menu");
+            assert_eq!(
+                menu.evpi_checked().expect("menu EVPI").to_bits(),
+                oracle.to_bits(),
+                "no-sort evaluator must match the oracle bitwise (rotation {rotation})"
+            );
+        }
+    }
+
+    /// sj31i.62 G0+G3: the one-index override view validates its index
+    /// and payload, cannot mutate the menu, and its EVPI is bitwise
+    /// equal to the oracle run on an explicitly rebuilt overridden menu.
+    #[test]
+    fn override_view_matches_rebuilt_menu_bitwise() {
+        let canonical = canonical_sorted(fixture_estimates());
+        let menu = super::CanonicalDesignMenu::from_canonical(canonical.clone()).expect("menu");
+        assert!(matches!(
+            super::MeanOverrideView::new(&menu, canonical.len(), 0.5, 0.1),
+            Err(super::OedError::OverrideInvalid { .. })
+        ));
+        assert!(matches!(
+            super::MeanOverrideView::new(&menu, 0, f64::NAN, 0.1),
+            Err(super::OedError::OverrideInvalid { .. })
+        ));
+        assert!(matches!(
+            super::MeanOverrideView::new(&menu, 0, 0.5, f64::NAN),
+            Err(super::OedError::OverrideInvalid { .. })
+        ));
+        assert!(matches!(
+            super::MeanOverrideView::new(&menu, 0, 0.5, -0.1),
+            Err(super::OedError::OverrideInvalid { .. })
+        ));
+        for index in 0..canonical.len() {
+            for (mean, statistical) in [(0.55, 0.05), (0.60, 0.0), (2.0, 0.3)] {
+                let view = super::MeanOverrideView::new(&menu, index, mean, statistical)
+                    .expect("valid override view");
+                let mut rebuilt = canonical.clone();
+                rebuilt[index].mean = mean;
+                rebuilt[index].uncertainty.statistical = statistical;
+                assert_eq!(
+                    view.evpi_checked().expect("view EVPI").to_bits(),
+                    oracle_checked_evpi(&rebuilt)
+                        .expect("oracle EVPI")
+                        .to_bits(),
+                    "override view must equal an independently rebuilt menu \
+                     (index {index}, mean {mean}, stat {statistical})"
+                );
+            }
+        }
+        // The menu is observably unchanged after every view: identity
+        // order and values are exactly the admitted ones.
+        assert_eq!(menu.estimates(), canonical.as_slice());
     }
 }

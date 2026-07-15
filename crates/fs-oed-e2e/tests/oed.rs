@@ -517,8 +517,8 @@ fn evidence_identities_bind_unmeasured_inputs_and_realized_updates() {
     );
     assert!(color_leaf_identity_reason(estimator(report.variance_color())).is_none());
     assert!(color_leaf_identity_reason(estimator(report.evpi_color())).is_none());
-    assert!(estimator(report.variance_color()).starts_with("sensorforge-posterior-variance:v5:"));
-    assert!(estimator(report.evpi_color()).starts_with("sensorforge-evpi:v5:"));
+    assert!(estimator(report.variance_color()).starts_with("sensorforge-posterior-variance:v6:"));
+    assert!(estimator(report.evpi_color()).starts_with("sensorforge-evpi:v6:"));
 }
 
 #[test]

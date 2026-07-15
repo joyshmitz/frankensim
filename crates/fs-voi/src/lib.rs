@@ -140,40 +140,49 @@ pub struct DecisionPosture {
 }
 
 fn top_two(designs: &[DesignEstimate]) -> Option<(&DesignEstimate, &DesignEstimate)> {
-    if designs.len() < 2 {
+    let (best, runner) = top_two_indices_by(designs.len(), &|idx| designs[idx].mean)?;
+    Some((&designs[best], &designs[runner]))
+}
+
+/// The allocation-free top-two scan over means-by-index — the shared
+/// core `evpi`, `evpi_by`, and `decision_posture` all route through
+/// (one code path, so accessor-driven callers are bitwise-identical to
+/// slice-driven ones). Non-finite means are skipped; ties break toward
+/// the LOWER index, so a caller holding a canonically ordered menu
+/// gets canonical tie-breaking with no clone and no sort.
+fn top_two_indices_by(len: usize, mean_at: &dyn Fn(usize) -> f64) -> Option<(usize, usize)> {
+    if len < 2 {
         return None;
     }
-    let mut best: Option<(usize, &DesignEstimate)> = None;
-    let mut runner: Option<(usize, &DesignEstimate)> = None;
-    for (idx, design) in designs.iter().enumerate() {
-        if !design.mean.is_finite() {
+    let mut best: Option<(usize, f64)> = None;
+    let mut runner: Option<(usize, f64)> = None;
+    for idx in 0..len {
+        let mean = mean_at(idx);
+        if !mean.is_finite() {
             continue;
         }
         match best {
-            None => best = Some((idx, design)),
-            Some(current_best) if estimate_precedes((idx, design), current_best) => {
+            None => best = Some((idx, mean)),
+            Some(current_best) if estimate_precedes((idx, mean), current_best) => {
                 runner = best;
-                best = Some((idx, design));
+                best = Some((idx, mean));
             }
             Some(_) => match runner {
-                None => runner = Some((idx, design)),
-                Some(current_runner) if estimate_precedes((idx, design), current_runner) => {
-                    runner = Some((idx, design));
+                None => runner = Some((idx, mean)),
+                Some(current_runner) if estimate_precedes((idx, mean), current_runner) => {
+                    runner = Some((idx, mean));
                 }
                 Some(_) => {}
             },
         }
     }
-    let (_, best) = best?;
-    let (_, runner) = runner?;
+    let (best, _) = best?;
+    let (runner, _) = runner?;
     Some((best, runner))
 }
 
-fn estimate_precedes(
-    (a_idx, a): (usize, &DesignEstimate),
-    (b_idx, b): (usize, &DesignEstimate),
-) -> bool {
-    match a.mean.total_cmp(&b.mean) {
+fn estimate_precedes((a_idx, a_mean): (usize, f64), (b_idx, b_mean): (usize, f64)) -> bool {
+    match a_mean.total_cmp(&b_mean) {
         std::cmp::Ordering::Less => true,
         std::cmp::Ordering::Equal => a_idx < b_idx,
         std::cmp::Ordering::Greater => false,
@@ -193,9 +202,9 @@ pub fn decision_posture(designs: &[DesignEstimate]) -> Option<DecisionPosture> {
 
 /// Pairwise expected opportunity loss `E[(obj_chosen − obj_other)⁺]` for the
 /// two closest designs — the expected regret of the current top-two decision.
-fn pairwise_evpi(chosen: &DesignEstimate, other: &DesignEstimate) -> f64 {
-    let sigma = (chosen.std().powi(2) + other.std().powi(2)).sqrt();
-    let delta = chosen.mean - other.mean; // ≤ 0 when `chosen` is best
+fn pairwise_evpi_scalar(chosen_mean: f64, chosen_std: f64, other_mean: f64, other_std: f64) -> f64 {
+    let sigma = (chosen_std.powi(2) + other_std.powi(2)).sqrt();
+    let delta = chosen_mean - other_mean; // ≤ 0 when `chosen` is best
     if sigma <= 0.0 {
         return (-delta).max(0.0) * 0.0; // no uncertainty → no opportunity loss
     }
@@ -208,8 +217,24 @@ fn pairwise_evpi(chosen: &DesignEstimate, other: &DesignEstimate) -> f64 {
 /// Near zero means the decision is already robust.
 #[must_use]
 pub fn evpi(designs: &[DesignEstimate]) -> f64 {
-    match top_two(designs) {
-        Some((best, runner)) => pairwise_evpi(best, runner),
+    evpi_by(designs.len(), &|idx| designs[idx].mean, &|idx| {
+        designs[idx].std()
+    })
+}
+
+/// Allocation-free EVPI over indexed accessors — the same scan and
+/// pairwise opportunity-loss computation as [`evpi`] (one shared code
+/// path, so results are bitwise-identical), evaluated without cloning
+/// or sorting a `DesignEstimate` menu. `std_at` is consulted only for
+/// the final top-two pair. Callers own their index order: ties break
+/// toward the LOWER index, exactly as [`evpi`] breaks toward the
+/// earlier slice position.
+#[must_use]
+pub fn evpi_by(len: usize, mean_at: &dyn Fn(usize) -> f64, std_at: &dyn Fn(usize) -> f64) -> f64 {
+    match top_two_indices_by(len, mean_at) {
+        Some((best, runner)) => {
+            pairwise_evpi_scalar(mean_at(best), std_at(best), mean_at(runner), std_at(runner))
+        }
         None => 0.0,
     }
 }

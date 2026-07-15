@@ -18,6 +18,16 @@ with an in-house normal CDF (`erf`). Pure, deterministic.
 - `decision_posture(&[DesignEstimate])` — best, runner-up, flip probability.
 - `evpi(&[DesignEstimate])` — expected opportunity loss of the current top-two
   decision (0 when robust; positive when close).
+- `evpi_by(len, mean_at, std_at)` — the allocation-free accessor-driven
+  form of `evpi` (bead sj31i.62): the SAME top-two scan and pairwise
+  opportunity-loss computation through one shared code path, so results
+  are bitwise-identical to `evpi` over the equivalent slice. Non-finite
+  means are skipped and equal-mean ties break toward the LOWER index;
+  callers own their index order (a canonically ordered menu gets
+  canonical tie-breaking with no clone and no sort). `std_at` is
+  consulted only for the final top-two pair. `EVPI_SEMANTICS_VERSION`
+  is NOT bumped by this addition: the scan and arithmetic are shared
+  with, and bit-identical to, the existing `evpi`.
 - `ActionKind` (Surrogate / Simulate / Refine → numerical; Sample → statistical;
   Test → model) + `Action { name, kind, target_design, reduction, cost }`.
 - `action_value(&[DesignEstimate], &Action) -> ActionValue` — the EVPI reduction
