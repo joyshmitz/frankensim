@@ -46,7 +46,9 @@ lattice-scaling assistant, FLUX conformance, conformal hardening buckets.
   scaling, conditioning risk (decade spread of input scale factors), and
   the nearest canonical benchmark (cylinder Re=100, Stokes sphere,
   lid-driven cavity Re=1000, dam break) with expectation text and
-  info/warning/far grading.
+  info/warning/far grading. `BenchmarkMatch::evidence_ref` links registered
+  expectations to an executable repository battery without introducing a
+  runtime dependency on the solver crate.
 
 ## Invariants
 
@@ -107,8 +109,11 @@ None.
 - **rg-004** scaling improves conditioning ≥100× on a mixed-magnitude
   3-DOF fixture (before/after condition numbers ledgered as JSON).
 - **rg-005** similarity: Re ≈ 98 matches the cylinder Re=100 benchmark
-  with the Cd ≈ 1.33 expectation at "info" grade; reports reproduce
-  bit-identically with identical provenance.
+  with the two-width blockage-sensitivity Cd `[1.25, 1.45]` and 16D
+  lift-FFT St `[0.155, 0.175]` plus 12D sensitivity targets at "info" grade,
+  and points exactly to
+  `crates/fs-lbm/tests/cylinder_re100.rs::lbm_109_cylinder_re100_cd_and_strouhal`;
+  reports reproduce bit-identically with identical provenance.
 - **rg-006** flagship fixtures vs hand calculations: spout Re/We/Ca/Oh/Bo
   (admits creeping, refuses LES), ornithoid Re/Ma/St, frame
   slenderness/ζ.
@@ -129,6 +134,8 @@ condition probe against known diagonals.
 - **The condition probe is a measurement tool** for fixture-scale
   matrices, not a linear-algebra kernel — fs-la owns real factorizations.
 - **Benchmark table is small and curated**; similarity is log-distance
-  over shared groups, not a learned embedding. Additions are data.
+  over shared groups, not a learned embedding. Additions are data. An evidence
+  reference identifies the intended executable gate; it does not itself assert
+  that a proof-pending or ignored release lane has passed.
 - **PDE-level nondimensionalization** (rewriting operators) lives with
   the solvers; this crate recommends and applies SCALES to quantities.

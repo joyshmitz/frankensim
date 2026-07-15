@@ -21,7 +21,7 @@ fn log10(x: f64) -> f64 {
 }
 
 /// A canonical benchmark neighbor ("your Re=98 cylinder is near the
-/// Re=100 benchmark; expected Cd ≈ 1.33").
+/// Re=100 benchmark; run the registered Cd/St evidence battery").
 #[derive(Debug, Clone, PartialEq)]
 pub struct BenchmarkMatch {
     /// Benchmark name.
@@ -30,6 +30,8 @@ pub struct BenchmarkMatch {
     pub distance: f64,
     /// What to expect there.
     pub expectation: &'static str,
+    /// Executable repository evidence for the expectation, when registered.
+    pub evidence_ref: Option<&'static str>,
     /// "info" (close), "warning" (nearby, extrapolating), "far".
     pub grade: &'static str,
 }
@@ -38,28 +40,38 @@ struct Benchmark {
     name: &'static str,
     groups: &'static [(&'static str, f64)],
     expectation: &'static str,
+    evidence_ref: Option<&'static str>,
 }
 
 const BENCHMARKS: &[Benchmark] = &[
     Benchmark {
         name: "cylinder-crossflow-Re100",
         groups: &[("Re", 100.0)],
-        expectation: "expected Cd ~ 1.33, Karman shedding at St ~ 0.16",
+        expectation: concat!(
+            "G2 target: two-width blockage-sensitivity Cd in [1.25, 1.45]; ",
+            "16D lift-FFT St in [0.155, 0.175] with 12D sensitivity"
+        ),
+        evidence_ref: Some(
+            "crates/fs-lbm/tests/cylinder_re100.rs::lbm_109_cylinder_re100_cd_and_strouhal",
+        ),
     },
     Benchmark {
         name: "stokes-sphere-Re0.1",
         groups: &[("Re", 0.1)],
         expectation: "Stokes drag Cd = 24/Re within ~2%",
+        evidence_ref: None,
     },
     Benchmark {
         name: "lid-driven-cavity-Re1000",
         groups: &[("Re", 1000.0)],
         expectation: "primary vortex center at (0.531, 0.565) (Ghia et al.)",
+        evidence_ref: None,
     },
     Benchmark {
         name: "dam-break-Fr1",
         groups: &[("Fr", 1.0)],
         expectation: "surge front celerity ~ 2*sqrt(g*h0) (Ritter)",
+        evidence_ref: None,
     },
 ];
 
@@ -134,6 +146,7 @@ fn nearest_benchmark(groups: &BTreeMap<String, f64>) -> Option<BenchmarkMatch> {
             name: b.name,
             distance: d,
             expectation: b.expectation,
+            evidence_ref: b.evidence_ref,
             grade,
         };
         if best.as_ref().is_none_or(|cur| m.distance < cur.distance) {

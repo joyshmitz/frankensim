@@ -430,7 +430,12 @@ fn rg_005_similarity_engine_finds_the_neighbor() {
     assert!((re - 98.2).abs() < 1.0, "Re fixture ~98 (got {re})");
     let near = report.nearest_benchmark.as_ref().expect("neighbor found");
     assert_eq!(near.name, "cylinder-crossflow-Re100");
-    assert!(near.expectation.contains("Cd ~ 1.33"));
+    assert!(near.expectation.contains("Cd in [1.25, 1.45]"));
+    assert!(near.expectation.contains("St in [0.155, 0.175]"));
+    assert_eq!(
+        near.evidence_ref,
+        Some("crates/fs-lbm/tests/cylinder_re100.rs::lbm_109_cylinder_re100_cd_and_strouhal")
+    );
     assert_eq!(
         near.grade, "info",
         "Re=98 vs 100 is close (distance {})",
@@ -442,7 +447,7 @@ fn rg_005_similarity_engine_finds_the_neighbor() {
     assert_eq!(ev.value, ev2.value);
     verdict(
         "rg-005",
-        "Re=98 matched to the Re=100 cylinder benchmark with Cd expectation; reports \
+        "Re=98 matched to the evidence-linked Re=100 cylinder Cd/St envelope; reports \
          reproducible",
     );
 }
