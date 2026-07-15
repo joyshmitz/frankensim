@@ -862,14 +862,21 @@ fn reserve_decoded<T>(
         })
 }
 
-fn as_floats(sx: &Sx, head: &str) -> Result<Vec<f64>, ScenarioError> {
-    let items = as_list(sx, head)?;
+fn decode_items<T>(
+    items: &[Sx],
+    resource: &str,
+    mut decode: impl FnMut(&Sx) -> Result<T, ScenarioError>,
+) -> Result<Vec<T>, ScenarioError> {
     let mut values = Vec::new();
-    reserve_decoded(&mut values, items.len(), head)?;
+    reserve_decoded(&mut values, items.len(), resource)?;
     for item in items {
-        values.push(as_f64(item)?);
+        values.push(decode(item)?);
     }
     Ok(values)
+}
+
+fn as_floats(sx: &Sx, head: &str) -> Result<Vec<f64>, ScenarioError> {
+    decode_items(as_list(sx, head)?, head, as_f64)
 }
 
 fn as_vec3(sx: &Sx) -> Result<Vec3, ScenarioError> {
@@ -1016,6 +1023,28 @@ fn as_bc(sx: &Sx, wire: DimensionWire) -> Result<BoundaryCondition, ScenarioErro
         value,
         compatibility,
     })
+}
+
+fn as_case(sx: &Sx, wire: DimensionWire) -> Result<LoadCase, ScenarioError> {
+    let items = as_list(sx, "case")?;
+    let name = as_str(items.first().ok_or_else(|| err(0, "case needs a name"))?)?;
+    let bcs = decode_items(&items[1..], "case boundary conditions", |bc| {
+        as_bc(bc, wire)
+    })?;
+    Ok(LoadCase { name, bcs })
+}
+
+fn as_combination(sx: &Sx) -> Result<Combination, ScenarioError> {
+    let items = as_list(sx, "combo")?;
+    let name = as_str(items.first().ok_or_else(|| err(0, "combo needs a name"))?)?;
+    let terms = decode_items(&items[1..], "combination terms", |term| {
+        let term_items = as_list(term, "term")?;
+        if term_items.len() != 2 {
+            return Err(err(0, "term needs case + factor"));
+        }
+        Ok((as_str(&term_items[0])?, as_f64(&term_items[1])?))
+    })?;
+    Ok(Combination { name, terms })
 }
 
 fn as_frame(sx: &Sx, wire: DimensionWire) -> Result<Frame, ScenarioError> {
@@ -1242,54 +1271,30 @@ pub fn parse_ir_with_budget(
         return Err(err(0, "scenario needs name seed + seven sections"));
     }
     let environment = as_environment(&items[2], wire)?;
-    let mut frames = FrameTree::new();
-    for f in as_list(&items[3], "frames")? {
-        frames.add(as_frame(f, wire)?);
-    }
-    let base_bcs = as_list(&items[4], "bcs")?
-        .iter()
-        .map(|bc| as_bc(bc, wire))
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut cases = Vec::new();
-    for c in as_list(&items[5], "cases")? {
-        let case_items = as_list(c, "case")?;
-        let name = as_str(
-            case_items
-                .first()
-                .ok_or_else(|| err(0, "case needs a name"))?,
-        )?;
-        let bcs = case_items[1..]
-            .iter()
-            .map(|bc| as_bc(bc, wire))
-            .collect::<Result<Vec<_>, _>>()?;
-        cases.push(LoadCase { name, bcs });
-    }
-    let mut combinations = Vec::new();
-    for c in as_list(&items[6], "combos")? {
-        let combo_items = as_list(c, "combo")?;
-        let name = as_str(
-            combo_items
-                .first()
-                .ok_or_else(|| err(0, "combo needs a name"))?,
-        )?;
-        let mut terms = Vec::new();
-        for t in &combo_items[1..] {
-            let term_items = as_list(t, "term")?;
-            if term_items.len() != 2 {
-                return Err(err(0, "term needs case + factor"));
-            }
-            terms.push((as_str(&term_items[0])?, as_f64(&term_items[1])?));
-        }
-        combinations.push(Combination { name, terms });
-    }
-    let ensembles = as_list(&items[7], "ensembles")?
-        .iter()
-        .map(|ensemble| as_ensemble(ensemble, wire))
-        .collect::<Result<Vec<_>, _>>()?;
-    let contacts = as_list(&items[8], "contacts")?
-        .iter()
-        .map(as_contact)
-        .collect::<Result<Vec<_>, _>>()?;
+    let frames = FrameTree {
+        frames: decode_items(as_list(&items[3], "frames")?, "frames", |frame| {
+            as_frame(frame, wire)
+        })?,
+    };
+    let base_bcs = decode_items(
+        as_list(&items[4], "bcs")?,
+        "base boundary conditions",
+        |bc| as_bc(bc, wire),
+    )?;
+    let cases = decode_items(as_list(&items[5], "cases")?, "load cases", |case| {
+        as_case(case, wire)
+    })?;
+    let combinations = decode_items(
+        as_list(&items[6], "combos")?,
+        "load combinations",
+        as_combination,
+    )?;
+    let ensembles = decode_items(
+        as_list(&items[7], "ensembles")?,
+        "stochastic ensembles",
+        |ensemble| as_ensemble(ensemble, wire),
+    )?;
+    let contacts = decode_items(as_list(&items[8], "contacts")?, "contact laws", as_contact)?;
     let scenario = Scenario {
         name: as_str(&items[0])?,
         seed: as_u64(&items[1])?,
@@ -1347,15 +1352,15 @@ mod allocation_internal_tests {
     use crate::ScenarioError;
 
     #[test]
-    fn decoded_float_allocation_refusal_is_typed() {
+    fn decoded_collection_allocation_refusal_is_typed() {
         let mut values = Vec::<f64>::new();
-        let error = reserve_decoded(&mut values, usize::MAX, "float-list test")
+        let error = reserve_decoded(&mut values, usize::MAX, "collection test")
             .expect_err("impossible decoded capacity must be refused");
 
         assert!(matches!(
             error,
             ScenarioError::Parse { at: 0, what }
-                if what.contains("IR decoded float-list test allocation")
+                if what.contains("IR decoded collection test allocation")
                     && what.contains("was refused")
         ));
         assert!(values.is_empty());
