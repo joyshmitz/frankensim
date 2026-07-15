@@ -14,10 +14,10 @@
 //! `(assert (regime.allows …))` is enforced, and `flux.*` verbs are checked
 //! against the report's model verdicts).
 
-use crate::VersionedProgram;
 use crate::ast::{CountUnit, Node, NodeKind, Span};
 use crate::lower::lower;
 use crate::study::Study;
+use crate::{IR_VERSION, IrError, VersionedProgram};
 use fs_geom::{CostOracle, RoutePlanError, RouteRequest, Router};
 use fs_plan::{CostEvidenceClass, SealedCostModel};
 use fs_qty::Dims;
@@ -133,26 +133,37 @@ pub struct CheckTiming {
 ///
 /// The canonical strings are complete versioned envelopes, not weak hashes:
 /// equality therefore means byte-identical canonical versioned programs.
-/// A lowering refusal retains the raw identity and has no lowered identity;
-/// no partially lowered tree can reach an authority check.
+/// A malformed raw AST has no canonical raw identity. A refusal after raw
+/// binding retains that identity but has no lowered identity; no invalid or
+/// partially lowered tree can reach an authority check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoweringReceipt {
     ir_version: u32,
-    raw_canonical: String,
+    raw_canonical: Option<String>,
     lowered_canonical: Option<String>,
 }
 
 impl LoweringReceipt {
-    fn for_program(program: &VersionedProgram) -> Self {
+    fn unbound_current() -> Self {
         Self {
-            ir_version: program.version(),
-            raw_canonical: program.print_sexpr(),
+            ir_version: IR_VERSION,
+            raw_canonical: None,
             lowered_canonical: None,
         }
     }
 
-    fn bind_lowered(&mut self, node: &Node) {
-        self.lowered_canonical = Some(VersionedProgram::current(node.clone()).print_sexpr());
+    fn for_program(program: &VersionedProgram) -> Self {
+        Self {
+            ir_version: program.version(),
+            raw_canonical: Some(program.print_sexpr()),
+            lowered_canonical: None,
+        }
+    }
+
+    fn bind_lowered(&mut self, node: &Node) -> Result<(), IrError> {
+        let lowered = VersionedProgram::try_current(node.clone())?;
+        self.lowered_canonical = Some(lowered.print_sexpr());
+        Ok(())
     }
 
     /// IR language version governing both identities.
@@ -162,9 +173,19 @@ impl LoweringReceipt {
     }
 
     /// Exact canonical versioned identity submitted for admission.
+    ///
+    /// Returns the empty string only when a malformed caller-forged AST could
+    /// not be bound to any canonical versioned identity. New code that needs
+    /// to distinguish that refusal should use [`Self::raw_canonical_opt`].
     #[must_use]
     pub fn raw_canonical(&self) -> &str {
-        &self.raw_canonical
+        self.raw_canonical.as_deref().unwrap_or("")
+    }
+
+    /// Exact submitted identity, or `None` when raw binding itself refused.
+    #[must_use]
+    pub fn raw_canonical_opt(&self) -> Option<&str> {
+        self.raw_canonical.as_deref()
     }
 
     /// Exact canonical versioned identity actually inspected by authority
@@ -237,7 +258,11 @@ impl AdmissionReport {
 /// are refused at [`VersionedProgram`] construction rather than inferred.
 #[must_use]
 pub fn admit(node: &Node, cx: &AdmissionContext<'_>) -> AdmissionReport {
-    admit_versioned(&VersionedProgram::current(node.clone()), cx)
+    let program = match VersionedProgram::try_current(node.clone()) {
+        Ok(program) => program,
+        Err(error) => return lowering_refusal(LoweringReceipt::unbound_current(), error),
+    };
+    admit_versioned(&program, cx)
 }
 
 /// Lower and admit an explicitly version-bound FrankenScript program.
@@ -250,28 +275,32 @@ pub fn admit_versioned(program: &VersionedProgram, cx: &AdmissionContext<'_>) ->
     let mut receipt = LoweringReceipt::for_program(program);
     let lowered = match lower(program.program()) {
         Ok(lowered) => lowered,
-        Err(error) => {
-            return AdmissionReport {
-                study: "<lowering-refused>".to_string(),
-                admitted: false,
-                findings: vec![Finding {
-                    check: "lowering",
-                    severity: Severity::Reject,
-                    span: error.span,
-                    what: error.detail,
-                    fixes: vec![RankedFix {
-                        action: error.hint,
-                        predicted_wall_s: None,
-                        qoi_impact: "structural fix; no QoI impact".to_string(),
-                    }],
-                }],
-                timings: Vec::new(),
-                lowering: receipt,
-            };
-        }
+        Err(error) => return lowering_refusal(receipt, error),
     };
-    receipt.bind_lowered(&lowered.node);
+    if let Err(error) = receipt.bind_lowered(&lowered.node) {
+        return lowering_refusal(receipt, error);
+    }
     admit_lowered(&lowered.node, cx, receipt)
+}
+
+fn lowering_refusal(receipt: LoweringReceipt, error: IrError) -> AdmissionReport {
+    AdmissionReport {
+        study: "<lowering-refused>".to_string(),
+        admitted: false,
+        findings: vec![Finding {
+            check: "lowering",
+            severity: Severity::Reject,
+            span: error.span,
+            what: error.detail,
+            fixes: vec![RankedFix {
+                action: error.hint,
+                predicted_wall_s: None,
+                qoi_impact: "structural fix; no QoI impact".to_string(),
+            }],
+        }],
+        timings: Vec::new(),
+        lowering: receipt,
+    }
 }
 
 fn admit_lowered(

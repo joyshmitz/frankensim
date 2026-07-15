@@ -11,7 +11,7 @@ use fs_ir::admission::{
     SessionCapability, Severity, admit, admit_versioned,
 };
 use fs_ir::sexpr;
-use fs_ir::{IR_VERSION, VersionedProgram};
+use fs_ir::{IR_VERSION, Node, NodeKind, Span, VersionedProgram};
 use fs_plan::{CostModel, CostObservation, SealedCostModel};
 use fs_qty::{Dims, QtyAny};
 use std::collections::BTreeMap;
@@ -447,6 +447,96 @@ fn ad_001c_lowering_refuses_atomically_before_authority_checks() {
     assert_eq!(before.lowering, after.lowering);
     assert_eq!(finding_semantics(&before), finding_semantics(&after));
     assert_eq!(before.diagnosis(), after.diagnosis());
+}
+
+#[test]
+fn ad_001d_identity_binding_refuses_invalid_and_envelope_deep_asts() {
+    let cx = authority_context(&["ascent.*"], None, RegimePolicy::Warn);
+
+    // `Node` is a public matching surface, so admission must reject a
+    // caller-forged invalid atom instead of reaching the panicking trusted
+    // `VersionedProgram::current` compatibility constructor.
+    let forged = Node {
+        kind: NodeKind::List(vec![
+            Node::synthetic(NodeKind::Symbol("study".to_string())),
+            Node::synthetic(NodeKind::Str("forged".to_string())),
+            Node {
+                kind: NodeKind::Float(f64::NAN),
+                span: Span::new(16, 19),
+            },
+        ]),
+        span: Span::new(0, 20),
+    };
+    let forged_report = admit(&forged, &cx);
+    assert!(!forged_report.admitted);
+    assert_eq!(forged_report.study, "<lowering-refused>");
+    assert_eq!(forged_report.findings.len(), 1);
+    assert_eq!(forged_report.findings[0].check, "lowering");
+    assert_eq!(forged_report.findings[0].span, Span::new(16, 19));
+    assert!(
+        forged_report.findings[0]
+            .what
+            .contains("floating-point atom is not finite")
+    );
+    assert!(forged_report.timings.is_empty());
+    assert_eq!(forged_report.lowering.ir_version(), IR_VERSION);
+    assert_eq!(forged_report.lowering.raw_canonical_opt(), None);
+    assert_eq!(
+        forged_report.lowering.raw_canonical(),
+        "",
+        "the compatibility accessor uses an unambiguous empty sentinel"
+    );
+    assert_eq!(forged_report.lowering.lowered_canonical(), None);
+    let forged_replay = admit(&forged, &cx);
+    assert_eq!(forged_report.lowering, forged_replay.lowering);
+    assert_eq!(forged_report.diagnosis(), forged_replay.diagnosis());
+
+    // A tree can satisfy the bare AST depth cap yet be one level too deep for
+    // the required version envelope. That boundary also refuses structurally.
+    let mut raw_boundary = Node::synthetic(NodeKind::Int(1));
+    for _ in 0..256 {
+        raw_boundary = Node::synthetic(NodeKind::List(vec![raw_boundary]));
+    }
+    raw_boundary
+        .validate()
+        .expect("bare boundary tree is valid before version binding");
+    let raw_boundary_report = admit(&raw_boundary, &cx);
+    assert!(!raw_boundary_report.admitted);
+    assert!(
+        raw_boundary_report.findings[0]
+            .what
+            .contains("nesting exceeds")
+    );
+    assert_eq!(raw_boundary_report.lowering.raw_canonical_opt(), None);
+    assert_eq!(raw_boundary_report.lowering.lowered_canonical(), None);
+
+    // Conversely, this raw program fits its envelope exactly. Lowering adds
+    // one semantic level around the objective, leaving a standalone-valid AST
+    // that no longer fits a persisted envelope. The lowered identity bind must
+    // reject instead of panicking.
+    let mut expansion_boundary =
+        sexpr::parse("(optimize-shape :min j :over x)").expect("boundary shorthand parses");
+    for _ in 0..254 {
+        expansion_boundary = Node::synthetic(NodeKind::List(vec![expansion_boundary]));
+    }
+    let versioned = VersionedProgram::try_current(expansion_boundary)
+        .expect("raw boundary program fits the version envelope exactly");
+    let expansion_report = admit_versioned(&versioned, &cx);
+    assert!(!expansion_report.admitted);
+    assert_eq!(expansion_report.study, "<lowering-refused>");
+    assert_eq!(expansion_report.findings.len(), 1);
+    assert_eq!(expansion_report.findings[0].check, "lowering");
+    assert!(
+        expansion_report.findings[0]
+            .what
+            .contains("nesting exceeds")
+    );
+    assert!(expansion_report.timings.is_empty());
+    assert!(expansion_report.lowering.raw_canonical_opt().is_some());
+    assert_eq!(expansion_report.lowering.lowered_canonical(), None);
+    let expansion_replay = admit_versioned(&versioned, &cx);
+    assert_eq!(expansion_report.lowering, expansion_replay.lowering);
+    assert_eq!(expansion_report.diagnosis(), expansion_replay.diagnosis());
 }
 
 #[test]

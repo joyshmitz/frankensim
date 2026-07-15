@@ -82,7 +82,14 @@ typed AST. Layer: L6 (HELM). Runtime deps: `std` + fs-qty.
   internal/expert path.
 
 - `admission` (the gp3.5 bead): `admit(node, &AdmissionContext) ->
-  AdmissionReport` runs six timed dimensions — Five Explicits structure,
+  AdmissionReport` first binds raw syntax to the current `VersionedProgram`,
+  fully lowers shorthand, and binds the lowered versioned identity before any
+  authority check. The receipt retains exact canonical raw and lowered
+  envelopes. A caller-forged raw AST that cannot be canonicalized has no raw
+  identity; a lowering/output-envelope refusal retains the raw identity but has
+  no lowered identity. Both paths return one deterministic structured refusal
+  with no authority timings, never a partial receipt or panic. Admission then
+  runs six timed dimensions over only the lowered semantics — Five Explicits structure,
   dimensional analysis (fs-qty dims inferred bottom-up through `+ - * /
   min max` and comparisons; unknown verbs never false-reject), budget
   feasibility (fs-plan SEALED cost models, bead 2pmb: receipt-backed
@@ -223,7 +230,9 @@ typed AST. Layer: L6 (HELM). Runtime deps: `std` + fs-qty.
    `SessionCapability` carries integer memory/core grants without an `f64`
    projection.
 5. Lowering is explicit, inspectable, and idempotent; the trace names
-   every injected default.
+   every injected default. Admission binds the raw and fully lowered canonical
+   versioned identities before authority checks. Invalid raw or expanded ASTs
+   refuse before those checks and cannot mint a missing identity.
 
 - Admission determinism: same study + context → byte-identical
   `diagnosis()`; findings sorted (check, span).
@@ -240,7 +249,10 @@ Syntax/study/lowering APIs return `IrError` (span, stable
 `PlanError`, and valid but under-budget queries return structured
 `PlanOutcome` refusals. `IrNonCanonical` identifies a semantically parseable
 versioned artifact whose bytes are not its canonical persisted identity.
-Neither boundary panics on malformed caller data.
+`admit` and lowered-receipt binding use the fallible `try_current` boundary;
+caller-forged invalid atoms and trees that fit only the bare, not versioned,
+depth envelope become deterministic lowering refusals. Neither boundary panics
+on malformed caller data.
 
 ## Determinism class
 
@@ -295,7 +307,10 @@ multiple faults are reported together; admission is deterministic (identical
   identities, with a teaching error on a non-query form.
 
 `tests/admission.rs` (suite `fs-ir/admission`): ad-001 Appendix C admits
-cleanly + ms-class latency + determinism; ad-002 five-study violation zoo
+cleanly + ms-class latency + determinism; ad-001b/c raw/explicit lowering
+equivalence and atomic malformed-shorthand refusal; ad-001d forged-AST,
+raw-envelope-depth, and lowered-envelope-depth binding refusals without panic;
+ad-002 five-study violation zoo
 (all rejected on the right dimension, fixes attached); ad-002b malformed,
 negative, non-finite, empty, and duplicate resource grants/pillars fail closed,
 and self-contained operator grants constrain the study; ad-003 dimensional
