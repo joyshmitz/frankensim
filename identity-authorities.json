@@ -18,6 +18,7 @@
 {"id":"fs-exec:tilepool-placement"},
 {"id":"fs-exec:tune-row"},
 {"id":"fs-exec:tuning-decision"},
+{"id":"fs-govern:lane-request-digest"},
 {"id":"fs-ir:planner-cache-key"},
 {"id":"fs-la:depgraph-receipt"},
 {"id":"fs-la:gemm-build-fingerprint"},
@@ -29,6 +30,7 @@
 {"id":"fs-ledger:session-flush-batch"},
 {"id":"fs-ledger:session-mutation-claim"},
 {"id":"fs-ledger:session-terminal-events"},
+{"id":"fs-ledger:solver-checkpoint-receipt"},
 {"id":"fs-ledger:source-color-waiver-subject"},
 {"id":"fs-ledger:source-origin-request"},
 {"id":"fs-ledger:vcs-commit-envelope"},
@@ -104,6 +106,7 @@
 {"id":"xtask:constellation-lock","path":"xtask/src/main.rs","symbol":"write_constellation_lock","version":2,"domain":"org.frankensim.xtask.constellation-lock-writer.v2"}
 ],
 "exemptions": [
+{"path":"crates/fs-session/src/governor.rs","symbol":"Governor::flush_scope_to_ledger","reason":"identity-consumer-not-producer","covered_by":"none"},
 {"path":"crates/fs-ir/src/planner.rs","symbol":"MemCache::insert","reason":"identity-consumer-not-producer","covered_by":"none"},
 {"path":"crates/fs-ir/src/planner.rs","symbol":"plan_observed","reason":"identity-consumer-not-producer","covered_by":"none"},
 {"path":"crates/fs-la/build.rs","symbol":"add_executable_identity","reason":"child-digest-helper","covered_by":"fs-la:gemm-build-fingerprint"},

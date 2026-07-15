@@ -56,6 +56,58 @@ pub const IDEMPOTENCY_KEY_DOMAIN: &str = "frankensim.fs-govern.lane-idempotency.
 
 /// Domain for admission-request digests (idempotency conflict checks).
 pub const REQUEST_DIGEST_DOMAIN: &str = "frankensim.fs-govern.lane-request.v1";
+/// Version of the retained lane-request digest identity (bead sj31i.63
+/// governance sweep; the domain string carries the same version).
+pub const LANE_REQUEST_DIGEST_VERSION: u32 = 1;
+
+/// Owner-local request-digest declaration consumed by `xtask check-identities`.
+pub const LANE_REQUEST_DIGEST_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-govern:lane-request-digest",
+    "version_const=LANE_REQUEST_DIGEST_VERSION",
+    "version=1",
+    "domain=frankensim.fs-govern.lane-request.v1",
+    "domain_const=REQUEST_DIGEST_DOMAIN",
+    "encoder=PortfolioLedger::digest_admit",
+    "encoder_helpers=PortfolioLedger::digest_preregister,PortfolioLedger::digest_finalize,push_field,ResourceEnvelope::digest_into",
+    "schema_constants=LANE_REQUEST_DIGEST_VERSION,REQUEST_DIGEST_DOMAIN",
+    "schema_functions=PortfolioLedger::record,PortfolioLedger::replay,PortfolioLedger::admit,PortfolioLedger::preregister_comparison,PortfolioLedger::finalize",
+    "schema_dependencies=fs-blake3:canonical-identity-frame",
+    "digest=fs-blake3",
+    "encoding=typed-binary",
+    "sources=AdmissionDecision",
+    "source_fields=AdmissionDecision.seq:nonsemantic:retention-ordering-only,AdmissionDecision.policy_version:nonsemantic:policy-echo-not-request-identity,AdmissionDecision.policy:nonsemantic:policy-echo-not-request-identity,AdmissionDecision.kind:semantic,AdmissionDecision.lane:semantic,AdmissionDecision.mechanism:semantic,AdmissionDecision.idempotency:nonsemantic:replay-map-key-not-digest-input,AdmissionDecision.request_digest:derived:blake3-root-of-the-kind-discriminated-request-preimage,AdmissionDecision.request:semantic,AdmissionDecision.refusal:nonsemantic:outcome-not-request-identity",
+    "source_bindings=AdmissionDecision.kind>kind-tag,AdmissionDecision.lane>lane-hash,AdmissionDecision.mechanism>mechanism-hash,AdmissionDecision.request>reservation-axes+candidate-hashes+shared-envelope-axes+preregistration-artifact+receipt-identity",
+    "external_semantic_fields=request-digest-domain",
+    "semantic_fields=request-digest-domain,kind-tag,lane-hash,mechanism-hash,reservation-axes,candidate-hashes,shared-envelope-axes,preregistration-artifact,receipt-identity",
+    "excluded_fields=none",
+    "consumers=PortfolioLedger::admit,PortfolioLedger::preregister_comparison,PortfolioLedger::finalize,PortfolioLedger::replay",
+    "mutations=request-digest-domain:crates/fs-govern/src/lanes.rs#lane_request_digest_binds_every_preimage_field,kind-tag:crates/fs-govern/src/lanes.rs#lane_request_digest_binds_every_preimage_field,lane-hash:crates/fs-govern/src/lanes.rs#lane_request_digest_binds_every_preimage_field,mechanism-hash:crates/fs-govern/src/lanes.rs#lane_request_digest_binds_every_preimage_field,reservation-axes:crates/fs-govern/src/lanes.rs#lane_request_digest_binds_every_preimage_field,candidate-hashes:crates/fs-govern/src/lanes.rs#lane_request_digest_binds_every_preimage_field,shared-envelope-axes:crates/fs-govern/src/lanes.rs#lane_request_digest_binds_every_preimage_field,preregistration-artifact:crates/fs-govern/src/lanes.rs#lane_request_digest_binds_every_preimage_field,receipt-identity:crates/fs-govern/src/lanes.rs#lane_request_digest_binds_every_preimage_field",
+    "nonsemantic_mutations=AdmissionDecision.seq:crates/fs-govern/src/lanes.rs#lane_request_digest_ignores_retention_only_fields,AdmissionDecision.policy_version:crates/fs-govern/src/lanes.rs#lane_request_digest_ignores_retention_only_fields,AdmissionDecision.policy:crates/fs-govern/src/lanes.rs#lane_request_digest_ignores_retention_only_fields,AdmissionDecision.idempotency:crates/fs-govern/src/lanes.rs#lane_request_digest_ignores_retention_only_fields,AdmissionDecision.refusal:crates/fs-govern/src/lanes.rs#lane_request_digest_ignores_retention_only_fields",
+    "field_guard=classify_lane_request_digest_fields",
+    "transport_guard=AdmissionDecision::admitted",
+    "version_guard=crates/fs-govern/src/lanes.rs#lane_request_digest_binds_every_preimage_field",
+    "coupling_surface=fs-govern:lane-request-digest",
+];
+
+/// Exhaustive field classifier for the retained lane-request digest
+/// identity: adding a field to the retained decision row breaks this
+/// destructure until the identity declaration moves with it.
+#[allow(dead_code)]
+fn classify_lane_request_digest_fields(decision: &AdmissionDecision) {
+    let AdmissionDecision {
+        seq: _,
+        policy_version: _,
+        policy: _,
+        kind: _,
+        lane: _,
+        mechanism: _,
+        idempotency: _,
+        request_digest: _,
+        request: _,
+        refusal: _,
+    } = decision;
+}
 
 /// Maximum bytes for one canonical charter field.
 pub const MAX_FIELD_BYTES: usize = 4096;
@@ -1903,5 +1955,171 @@ impl PortfolioLedger {
         self.reserved.sub(&record.reservation);
         self.terminal.insert(mechanism, receipt.kind);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod request_digest_tests {
+    use super::*;
+
+    fn charter(independence_class: &str) -> LaneCharter {
+        LaneCharter::new(
+            "lane statement",
+            "admissible domain",
+            &["assumption"],
+            "target authority",
+            "baseline",
+            "falsifier family",
+            independence_class,
+        )
+        .expect("valid charter fixture")
+    }
+
+    fn envelope(work: u64) -> ResourceEnvelope {
+        ResourceEnvelope {
+            work_units: work,
+            memory_bytes: 1 << 20,
+            reviewer_slots: 2,
+            falsification_capacity: 3,
+        }
+    }
+
+    #[test]
+    fn lane_request_digest_binds_every_preimage_field() {
+        let charter_a = charter("class-a");
+        let charter_b = charter("class-b");
+        let lane_a = charter_a.lane_id();
+        let lane_b = charter_b.lane_id();
+        let mech_a = charter_a.mechanism_id("mechanism", 1).expect("mechanism a");
+        let mech_b = charter_a.mechanism_id("mechanism", 2).expect("mechanism b");
+
+        // Admit preimage: lane, mechanism, and every reservation axis move
+        // the digest; identical inputs replay bit-identically.
+        let base = PortfolioLedger::digest_admit(lane_a, mech_a, &envelope(10));
+        assert_eq!(
+            base,
+            PortfolioLedger::digest_admit(lane_a, mech_a, &envelope(10)),
+            "replay identity must be bit-stable"
+        );
+        assert_ne!(
+            base,
+            PortfolioLedger::digest_admit(lane_b, mech_a, &envelope(10)),
+            "lane-hash was omitted"
+        );
+        assert_ne!(
+            base,
+            PortfolioLedger::digest_admit(lane_a, mech_b, &envelope(10)),
+            "mechanism-hash was omitted"
+        );
+        let mut wider = envelope(10);
+        wider.memory_bytes += 1;
+        for (axis, changed) in [
+            ("work", envelope(11)),
+            ("memory", wider),
+            (
+                "reviewer",
+                ResourceEnvelope {
+                    reviewer_slots: 3,
+                    ..envelope(10)
+                },
+            ),
+            (
+                "falsification-capacity",
+                ResourceEnvelope {
+                    falsification_capacity: 4,
+                    ..envelope(10)
+                },
+            ),
+        ] {
+            assert_ne!(
+                base,
+                PortfolioLedger::digest_admit(lane_a, mech_a, &changed),
+                "reservation axis {axis} was omitted"
+            );
+        }
+
+        // Preregister preimage: candidates (item and order), shared
+        // envelope, and the preregistration artifact all move the digest.
+        let artifact = fs_blake3::hash_domain("fs-govern-test", b"artifact");
+        let h2h = |candidates: Vec<MechanismId>, shared: ResourceEnvelope, artifact| {
+            HeadToHeadCharter::new(&charter("class-a"), &candidates, shared, artifact)
+                .expect("valid comparison charter")
+        };
+        let pre_base =
+            PortfolioLedger::digest_preregister(&h2h(vec![mech_a, mech_b], envelope(10), artifact));
+        // Candidate order is CANONICALIZED at charter admission (the
+        // constructor sorts), so the same membership digests identically
+        // regardless of presentation order...
+        assert_eq!(
+            pre_base,
+            PortfolioLedger::digest_preregister(
+                &h2h(vec![mech_b, mech_a], envelope(10), artifact,)
+            ),
+            "candidate order must be canonicalized, not identity-bearing"
+        );
+        // ...while membership itself is identity-bearing.
+        let mech_c = charter("class-a")
+            .mechanism_id("mechanism", 3)
+            .expect("mechanism c");
+        assert_ne!(
+            pre_base,
+            PortfolioLedger::digest_preregister(
+                &h2h(vec![mech_a, mech_c], envelope(10), artifact,)
+            ),
+            "candidate membership was omitted"
+        );
+        assert_ne!(
+            pre_base,
+            PortfolioLedger::digest_preregister(
+                &h2h(vec![mech_a, mech_b], envelope(11), artifact,)
+            ),
+            "shared envelope was omitted"
+        );
+        assert_ne!(
+            pre_base,
+            PortfolioLedger::digest_preregister(&h2h(
+                vec![mech_a, mech_b],
+                envelope(10),
+                fs_blake3::hash_domain("fs-govern-test", b"other-artifact"),
+            )),
+            "preregistration artifact was omitted"
+        );
+
+        // Finalize preimage: the receipt identity moves the digest, and
+        // the kind tag domain-separates the three request kinds even over
+        // maximally-shared inputs.
+        let receipt_a = FinalizationReceipt::new(mech_a, TerminalKind::Withdrawn, None, artifact)
+            .expect("receipt a");
+        let receipt_b = FinalizationReceipt::new(mech_b, TerminalKind::Withdrawn, None, artifact)
+            .expect("receipt b");
+        let fin_a = PortfolioLedger::digest_finalize(&receipt_a);
+        assert_ne!(
+            fin_a,
+            PortfolioLedger::digest_finalize(&receipt_b),
+            "receipt identity was omitted"
+        );
+        assert_ne!(
+            base, pre_base,
+            "kind tag was omitted (admit vs preregister)"
+        );
+        assert_ne!(base, fin_a, "kind tag was omitted (admit vs finalize)");
+    }
+
+    #[test]
+    fn lane_request_digest_ignores_retention_only_fields() {
+        // The digest functions take only the request inputs: retention
+        // metadata (seq, policy echo, idempotency key, refusal outcome)
+        // cannot reach the preimage. Two decisions retained under
+        // different keys and sequence positions carry the SAME request
+        // digest for the same request.
+        let charter = charter("class-a");
+        let lane = charter.lane_id();
+        let mechanism = charter.mechanism_id("mechanism", 1).expect("mechanism");
+        let digest_first = PortfolioLedger::digest_admit(lane, mechanism, &envelope(10));
+        let digest_second = PortfolioLedger::digest_admit(lane, mechanism, &envelope(10));
+        assert_eq!(
+            digest_first, digest_second,
+            "retention-only state (seq/policy/idempotency/refusal) is not a digest input"
+        );
     }
 }
