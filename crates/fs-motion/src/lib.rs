@@ -9,6 +9,7 @@
 //! time-span field enclosures), [`SweptChart`] (certified implicit
 //! infimum bounds), fail-closed [`EnvelopeChart`] characteristic
 //! classification, analytic screw and Wankel-pose constructors, and
+//! two-sided clearance and closed-chamber volume receipts, plus
 //! the [`LowerToMotorTube`] builder contract that lets higher layers
 //! lower their motions here without upward dependencies.
 //!
@@ -20,11 +21,19 @@
 
 pub mod algebra;
 pub mod analytic;
+pub mod clearance;
 pub mod spacetime;
 pub mod swept;
 pub mod tube;
+pub mod volume;
 
 pub use analytic::{ScrewParams, WankelParams, screw_tube, wankel_tube};
+pub use clearance::{
+    ClearanceConfig, ClearanceDecision, ClearanceErrors, ClearanceLowerEvidence, ClearanceOracle,
+    ClearanceRange, ClearanceRangeErrors, ClearanceSidedness, ClearanceWitnessEvidence,
+    OverlapInradiusWitness, SphereClearanceProxy, SpherePairClearanceOracle,
+    overlap_inradius_witness, separation_over,
+};
 pub use spacetime::{FieldEnclosure, MotionSnapshot, SpacetimeChart};
 pub use swept::{
     EnvelopeBranch, EnvelopeBranchClass, EnvelopeChart, EnvelopeConfig, EnvelopeDecision,
@@ -35,6 +44,10 @@ pub use swept::{
 pub use tube::{
     BoxActionEnclosure, CertifiedMotorTube, EnclosureClass, LowerToMotorTube, MotorPath,
     MotorTubeSegment, PathSample, PointActionEnclosure,
+};
+pub use volume::{
+    ChamberChartFamily, ChamberDefinition, ChamberVolumeErrors, ChamberVolumeFunction,
+    ChamberVolumeReceipt, IdealWankelVolumeOracle, chamber_volume_at,
 };
 
 use fs_ivl::TaylorModelError;
@@ -108,6 +121,12 @@ pub enum MotionError {
         /// The rejected condition.
         what: &'static str,
     },
+    /// Caller- or provider-supplied certificate evidence is malformed,
+    /// missing, or insufficient for the requested authority.
+    InvalidEvidence {
+        /// The rejected evidence condition.
+        what: &'static str,
+    },
     /// Independently certified lower/upper bounds contradicted one another.
     InconsistentEnclosure {
         /// Purported lower bound.
@@ -122,6 +141,8 @@ pub enum MotionError {
     },
     /// A finite PGA point action unexpectedly produced an ideal point.
     PointActionFailed,
+    /// Propagated certified geometry-query refusal.
+    Query(fs_query::QueryError),
     /// Cooperative cancellation was observed.
     Cancelled,
 }
@@ -183,6 +204,9 @@ impl std::fmt::Display for MotionError {
             MotionError::InvalidConfiguration { what } => {
                 write!(f, "invalid motion configuration: {what}")
             }
+            MotionError::InvalidEvidence { what } => {
+                write!(f, "invalid motion evidence: {what}")
+            }
             MotionError::InconsistentEnclosure { lower, upper } => write!(
                 f,
                 "certified infimum bounds are inconsistent: lower {lower} exceeds upper {upper}"
@@ -193,6 +217,7 @@ impl std::fmt::Display for MotionError {
             MotionError::PointActionFailed => {
                 write!(f, "finite motor action produced no finite point")
             }
+            MotionError::Query(error) => write!(f, "motion geometry query refused: {error}"),
             MotionError::Cancelled => write!(f, "cancelled at a tile boundary"),
         }
     }
@@ -203,5 +228,11 @@ impl std::error::Error for MotionError {}
 impl From<TaylorModelError> for MotionError {
     fn from(e: TaylorModelError) -> Self {
         MotionError::Taylor(e)
+    }
+}
+
+impl From<fs_query::QueryError> for MotionError {
+    fn from(error: fs_query::QueryError) -> Self {
+        MotionError::Query(error)
     }
 }

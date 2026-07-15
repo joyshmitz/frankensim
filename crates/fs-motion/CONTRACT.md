@@ -10,7 +10,7 @@ pretending to satisfy the timeless `Chart` contract.
 Layer **L2 (MORPH)**. `fs-ga` owns instantaneous SE(3) motor algebra and
 `fs-scenario` owns frame trees; nothing previously bound a motor *path*
 to a chart. `fs-motion` provides that binding. Dependencies: `fs-ga`,
-`fs-geom`, `fs-ivl`, `fs-exec`, `fs-evidence`, `fs-math`. This crate
+`fs-geom`, `fs-ivl`, `fs-exec`, `fs-evidence`, `fs-math`, `fs-query`. This crate
 must NEVER depend on `fs-scenario` or any higher layer; higher layers
 lower their motions into tubes through [`LowerToMotorTube`].
 
@@ -71,6 +71,31 @@ lower their motions into tubes through [`LowerToMotorTube`].
   `base · T(e cos α, e sin α) · R(α/3 + β₀)`; the actual bore exists only as
   a visibility/trim-validated envelope of the seal-circle family. Rotor-flank
   conjugacy is a separate problem.
+- `separation_over` — deterministic branch-and-bound in time over a
+  chart-bound `ClearanceOracle`. Every retained cell has a complete-cover lower
+  bound; a feasible fixed-time configuration supplies the optional upper
+  bound. `ClearanceRange` says `TwoSided` only when both exist and otherwise
+  remains explicitly `LowerOnly`. `ClearanceErrors` separately records chart
+  conversion, spatial discretization, motion-tube/model, and optimization
+  uncertainty in metres; both range endpoints are inflated outward.
+- `SpherePairClearanceOracle` — an analytic production oracle for declared
+  spherical body-frame proxies. Certified motor-tube point-action enclosures
+  bound center distance over time cells; nonzero proxy errors bind those
+  spheres back to the source charts. It can deliberately disable witnesses to
+  exercise the one-sided lane.
+- `OverlapInradiusWitness` — a deepest-common-interior point and certified ball
+  radius from two exact-SDF bands. It is deliberately not named penetration
+  depth, minimum translation distance, EPA depth, or SE(3) separating motion.
+- `ChamberDefinition`, `ChamberChartFamily`, and `ChamberVolumeFunction` — a
+  named, closure-gated `V(theta)` path. The family must construct the complete
+  exact-distance chamber chart bounded by every named surface. Only
+  `ProofState::Proven` closure reaches `fs-query::geometric_moments`; the result
+  records the raw certified spatial quadrature plus chart-conversion,
+  motion-tube, boundary-closure, and model-form volume errors.
+- `IdealWankelVolumeOracle` — a declared ideal nominal G1 comparison formula
+  with explicit generating radius, eccentricity, parallel transfers, depth,
+  minimum volume, and phase. It is not a chart and cannot grant volume
+  authority to an actual bore/flank/seal model.
 - Analytic constructors: `screw_tube` (constant-twist screw about an
   axis line through a center, with translation along the axis) and
   `wankel_tube` (Wankel rotor **pose**: eccentric-center orbit at crank
@@ -121,6 +146,16 @@ have positive dot product — BEFORE any consumer takes a logarithm.
   positive rank margin, in-trim status, and visibility are all `Proven` over
   its retained time enclosure. Endpoint surfaces are classified separately
   and never smuggled through the interior `dF/dt = 0` condition.
+- The minimum clearance lower endpoint is the minimum of the lower bounds on a
+  complete closed time-cell cover. Its upper endpoint, when present, comes
+  from a feasible time and configuration. Splitting replaces exactly one
+  parent by two closed children, and total-f64 ordering plus time endpoints
+  fixes every work/tie decision.
+- A chamber receipt exists only after named boundary closure is `Proven`, the
+  family supplies an exact-distance chart, the integration domain contains its
+  support, and `fs-query` completes a certified whole-region moments pass.
+  Additional volume errors inflate the spatial band once and are logged
+  individually.
 
 ## Error model
 
@@ -132,10 +167,12 @@ All fallible operations return `Result<_, MotionError>`:
 overlap or sign test), `OutOfDomain`, `UnsupportedBaseClaim`
 (`eval_over` on a base chart without `ExactDistance`),
 `UnboundedSupport` (a swept construction cannot certify a finite support),
-`InvalidConfiguration` (non-finite/negative tolerance),
+`InvalidConfiguration` (non-finite/negative tolerance), `InvalidEvidence`
+(malformed, contradictory, or unavailable certificate evidence),
 `InconsistentEnclosure` (independent lower and feasible-upper evidence
 contradicts), `InvalidGeometry` / `PointActionFailed` (declared machine
-geometry or its finite PGA action refuses), and
+geometry or its finite PGA action refuses), `Query(QueryError)` (propagated
+certified moments/query refusal), and
 `Cancelled` (cooperative cancellation observed). Panics are reserved
 for programmer errors (violated internal invariants).
 
@@ -150,7 +187,8 @@ is a fixed traversal of fixed basis products.
 
 ## Cancellation behavior
 
-Loops over segments, box corners, and dense falsification samples poll
+Loops over segments, box corners, clearance time cells, spatial quadrature
+cells, and dense falsification samples poll
 `cx.checkpoint()` at bounded strides and return
 `MotionError::Cancelled` promptly. Single-segment scalar evaluations
 are bounded-time and do not poll internally.
@@ -161,8 +199,8 @@ None. `#![forbid(unsafe_code)]`.
 
 ## Feature flags
 
-None. Everything here is `[S]`-ambition machinery. Clearance volumes and
-validated events remain separate beads/crates.
+None. Everything here is `[S]`-ambition machinery. Validated events remain a
+separate bead.
 
 ## Conformance tests
 
@@ -209,6 +247,23 @@ validated events remain separate beads/crates.
   composed pointwise motor and certified tube action. Finite seal center and
   contact loci remain distinct and no test equates either with the bore.
 
+`tests/clearance_volume.rs`:
+
+- a rotating eccentric spherical cam and stationary follower produce a
+  two-sided minimum-clearance enclosure; the feasible witness is independently
+  evaluated and all four length-error sources are logged;
+- disabling witness production yields an explicit lower-only `Unknown`
+  receipt, never a fabricated enclosure;
+- exact-SDF bands yield a common-interior inradius witness without relabeling
+  it as global penetration or pose displacement;
+- certified quadrature encloses a slider-crank cylinder's independently
+  derived G1 volume at several crank angles, with every additional volume
+  error logged;
+- the ideal nominal Wankel sinusoid is checked through an explicitly
+  equivalent-volume manufactured quadrature fixture. A separately named actual
+  Wankel chamber with unproven bore/flank/seal closure refuses before chart
+  construction. The manufactured fixture makes no Wankel geometry claim.
+
 ## No-claim boundaries
 
 - **Rigid paths only.** No deformable sweeps, no scaling, no shear.
@@ -244,6 +299,16 @@ validated events remain separate beads/crates.
   remains an `EnvelopeChart` problem, and the rotor flank remains a separate
   conjugate-envelope design problem. The rotor is not claimed to be an exact
   constant-width triangle, and no rolling-seal assumption is made.
+- A spherical clearance proxy certifies the source bodies only to the extent of
+  its explicit conversion/spatial/motion error budget. Generic nonconvex
+  minimum translation, EPA/GJK penetration, and pose-space separating motion
+  remain `fs-query` upgrades; local contact response must use local gaps and
+  normals rather than `OverlapInradiusWitness` as a global displacement.
+- Chamber volume is authority for the exact named chart family and seal
+  convention only. The ideal Wankel formula is a G1 oracle, not evidence that a
+  finite-seal bore and conjugate rotor flank close. Ports, clearances,
+  deformation, recesses not included in `minimum_volume_m3`, and as-built
+  geometry require their own named charts and certified quadrature errors.
 - No claim of tightness: enclosures are sound, not minimal; segment
   count and Taylor order are the caller's accuracy budget.
 - Double-cover canonicalization is bit-deterministic for identical
