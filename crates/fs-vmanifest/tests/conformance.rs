@@ -1292,6 +1292,10 @@ fn mapping_only_rewire_invalidates_removed_and_new_consumers_but_not_stable_sibl
     let mut successor = predecessor;
     successor.version = 2;
     successor.obligations[0].claims_covered = &["probe-sibling", "probe-third"];
+    // The rewire strips probe-claim's only coverage; under the
+    // no-unnamed-skips gate the successor must NAME that skip (waiver or
+    // new obligation) or the amendment refuses with UncoveredClaim.
+    successor.waivers.push(probe_waiver("probe-claim"));
     let (_, record) = frozen.amend(successor).expect("mapping-only rewire");
     assert_eq!(
         record.invalidated,

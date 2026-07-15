@@ -486,7 +486,11 @@ fn i15_obligations() -> Vec<ObligationRow> {
             replay_command: "scripts/e2e/leapfrog/i15_rules.sh --replay <artifact-id>",
         },
         ObligationRow {
-            leaf: "i15-applicability",
+            // Leaf named after its evaluation role, NOT the claim it
+            // covers: claim ids and leaf ids share one evidence-id
+            // namespace under schema v2, so reusing the claim id here is a
+            // DuplicateId freeze refusal.
+            leaf: "i15-scope-evaluation",
             claims_covered: &["i15-applicability"],
             unit_cases: UNIT_CASES,
             g0: "generators: pack families with applicability ground truth incl. \
@@ -503,12 +507,14 @@ fn i15_obligations() -> Vec<ObligationRow> {
             g5_matrix: "threads {1,2,7} x mode {deterministic} x same-ISA replay",
             entry_point: "scripts/e2e/leapfrog/i15_applicability.sh",
             tier: CampaignTier::Core,
-            dsr_lane: "dsr quality --tool frankensim (i15-applicability slice)",
+            dsr_lane: "dsr quality --tool frankensim (i15-scope-evaluation slice)",
             obs_events: &["scope.evaluated", "scope.refused", "scope.cancelled"],
             replay_command: "scripts/e2e/leapfrog/i15_applicability.sh --replay <artifact-id>",
         },
         ObligationRow {
-            leaf: "i15-obligation-execution",
+            // Leaf named after its entry point (i15_execution.sh), NOT the
+            // claim it covers — shared evidence-id namespace, as above.
+            leaf: "i15-execution",
             claims_covered: &["i15-obligation-execution"],
             unit_cases: UNIT_CASES,
             g0: "generators: worked-example cases; laws: result agreement within band, \

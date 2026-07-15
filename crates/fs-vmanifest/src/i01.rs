@@ -473,7 +473,11 @@ fn i01_obligations() -> Vec<ObligationRow> {
             replay_command: "scripts/e2e/leapfrog/i01_actions.sh --replay <artifact-id>",
         },
         ObligationRow {
-            leaf: "i01-block-lowering",
+            // Leaf named after its entry point (i01_lowering.sh), NOT the
+            // claim it covers: claim ids and leaf ids share one evidence-id
+            // namespace under schema v2, so reusing the claim id here is a
+            // DuplicateId freeze refusal.
+            leaf: "i01-lowering",
             claims_covered: &["i01-block-lowering"],
             unit_cases: UNIT_CASES,
             g0: "generators: constitutive graphs + singular block patterns; laws: \
