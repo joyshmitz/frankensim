@@ -21,22 +21,26 @@ rule as an atomic, replayable admission ledger.
 - `LaneCharter::new(statement, admissible_domain, assumptions,
   target_authority, baseline, falsifier_family, independence_class)`
   canonicalizes (whitespace collapse; assumptions sorted + deduped; every
-  field non-empty and bounded) and `lane_id()` mints the authenticated
+  field non-empty and bounded before canonicalization allocates) and `lane_id()` mints the validated
   `ProofLaneId` (tagged, length-prefixed fields under BLAKE3 domain
   `frankensim.fs-govern.proof-lane.v1`). There is NO public id constructor
   from a raw hash — an id always corresponds to a validated charter
   (anti-spoofing), and cosmetic re-spellings collapse to one lane (the
-  split-gaming canonicalization). `mechanism_id(name, version)` mints the
-  lane-bound `MechanismId`.
+  split-gaming canonicalization). `mechanism_id(name, version)` mints a
+  `MechanismId` that retains both its originating `ProofLaneId` and its
+  content identity; admission, comparisons, and supersession refuse a
+  mechanism presented under another lane.
 - `PortfolioLedger::new(PortfolioPolicy { global, max_active_mechanisms })`
-  is the admission state machine (`LANE_POLICY_VERSION = 1`). Semantics:
+  is the admission state machine (`LANE_POLICY_VERSION = 2`). Semantics:
   multiple active unproven mechanisms across independently falsifiable
   lanes; a second active mechanism in the SAME lane refuses atomically;
-  lanes DECLARING the same independence class share one bet (backstop —
-  a comparison on another lane cannot evade it); the four-axis global
+  lanes DECLARING the same independence class share one bet (the ledger
+  retains the complete active set, so finalizing one comparison candidate
+  cannot hide a surviving candidate); a comparison on another lane cannot
+  evade that backstop; the four-axis global
   envelope (work / memory / reviewer slots / falsification capacity) and
   the mechanism cap bind across all lanes.
-- `HeadToHeadCharter::new(lane, candidates, shared, preregistration)` is
+- `HeadToHeadCharter::new(&lane_charter, candidates, shared, preregistration)` is
   the ONLY carve-out: a preregistered comparison (declared BEFORE any
   admission in the lane, 2..=8 distinct candidates, non-zero
   preregistration artifact) admits exactly its declared candidates under
@@ -49,14 +53,28 @@ rule as an atomic, replayable admission ledger.
   permanent (no re-admission).
 - Every request carries an `IdempotencyKey`: a byte-identical retry
   replays the recorded decision without double-charging or re-recording; a
-  different request under a used key refuses with the original sequence
-  named. Every method validates completely BEFORE mutating, so refusals
-  leave the ledger observably unchanged (no partial admission);
-  `&mut self` exclusivity is the concurrency contract.
-- The decision log (`decisions()`, bounded `decisions_json(limit)` with an
-  explicit skipped count) records lane/mechanism ids, policy version,
-  idempotency key, request digest, verdict, and a ranked remedy per
-  refusal (`LaneError::remedy`), and is deterministic under replay.
+  different request under a used key records one conflict row naming the
+  original sequence; an exact retry of that conflicting request replays the
+  same refusal without another row. Every method validates completely BEFORE
+  governed state mutates; refusals may append their explicit audit decision but
+  never partially charge lane/resource state. `PortfolioLedger` is deliberately
+  non-`Clone`; exclusive `&mut self` access to that authority value is the
+  in-process concurrency contract.
+- The retained record is fail-closed and hard-bounded by
+  `MAX_RETAINED_DECISIONS` and `MAX_RETAINED_DECISION_BYTES`; the primary and
+  conflict-idempotency maps share the decision cap. Records are never silently
+  evicted because eviction would permit an old retry to execute again. Instead,
+  `RetentionCapacityExceeded` refuses before cloning variable-size request data.
+  One row/key and a conservative byte allowance remain reserved for every
+  active mechanism's future finalization.
+- Every `AdmissionDecision` retains the complete policy and canonical replay
+  preimage: statement/domain/assumptions/authority/baseline/falsifier/class,
+  comparison candidates/artifact/shared envelope or admission reservation,
+  terminal kind/successor/artifact/receipt identity/released envelope, plus
+  lane/mechanism ids, idempotency key, request digest, verdict, and ranked
+  remedy. `decisions_json(limit)` adds explicit skipped and retained-cap
+  metadata; the stored request, rather than an opaque digest alone, is
+  sufficient for deterministic replay.
 
 ## Crate registry (`crates` module)
 
@@ -164,6 +182,12 @@ artifact checking are deployment policy. Calling a public hash an
   numeric domain, and positive sampling floor.
 - Program assessment is input-order independent and cannot become all-clear by
   omission, duplication, malformed units, invalid numeric domains, or NaN.
+- Every mechanism is admitted only under the lane that minted it; every
+  surviving member of a comparison independently keeps its declared
+  independence class occupied.
+- Retained decisions, primary/conflict idempotency bindings, and their
+  variable-size canonical payloads remain within fixed caps. Capacity reserved
+  for active terminal transitions is unavailable to unrelated traffic.
 
 ## Error model
 
@@ -178,6 +202,12 @@ defects are represented by `AssessmentStatus`, not panics. The caller remains
 responsible for bounding the number of supplied aggregate observations; output
 and retained unit text remain bounded by the fixed twelve-row register and unit
 preview limit.
+
+Proof-lane APIs return `LaneError` for empty/oversized preflighted inputs,
+lane/mechanism mismatches, occupied lanes/classes, envelope/cap failures,
+invalid terminal receipts, idempotency conflicts, and exhausted retained-log
+capacity. Capacity exhaustion never evicts replay authority and never mutates
+governed admission state.
 
 ## Determinism class
 
@@ -221,17 +251,20 @@ missing/duplicate/non-finite/unit/domain/sample handling; integer/fraction
 domain checks; input-order-independent assessment JSON; and deterministic
 numeric-threshold register serialization.
 
-`tests/lanes.rs` (bead rjoq.6, cases lane-001..lane-008): G0 identity and
+`tests/lanes.rs` (bead rjoq.6, cases lane-001..lane-009): G0 identity and
 state-machine laws (canonical collapse, per-field mutation sensitivity,
-same-lane refusal with unchanged state, terminal exactly-once release,
-receipt validation incl. zero evidence and self-supersession); G3
+lane-bound mechanism/comparison/successor authority, same-lane refusal with
+unchanged state, terminal exactly-once release, receipt validation incl. zero
+evidence and self-supersession); G3
 split/merge adversaries (independence-class backstop, comparison-evasion
-refusal, undeclared-candidate refusal); G4 crash/retry idempotency
-(replay without double-charge, key-conflict refusal, refusal replay); G0
-global mechanism-cap and per-axis envelope boundaries incl. the bounded
-comparison budget; G5 whole-ledger and JSON decision-log replay with an
-explicit truncation count. Each same-lane, global-cap, terminal-release,
-and identity guard has a test that fails if the guard is removed.
+refusal, undeclared-candidate refusal, surviving-candidate class retention);
+G4 crash/retry idempotency (replay without double-charge, one-row stable
+key-conflict refusal, refusal replay); G0 global mechanism-cap and independent
+work/memory/reviewer/falsification-capacity boundaries for both global and
+comparison envelopes; G5 whole-ledger and acceptance-complete JSON replay with
+explicit truncation/cap metadata; bounded-retention refusal with a terminal
+slot held for active work. Each same-lane, global-cap, terminal-release, and
+identity guard has a test that fails if the guard is removed.
 
 ## No-claim boundaries
 
@@ -262,6 +295,7 @@ and identity guard has a test that fails if the guard is removed.
   labeled lanes, but the crate cannot algorithmically prove that two
   falsifier families are genuinely independent — adversarial mislabeling
   is a governance-review matter, bounded in damage by the global caps.
-- `&mut self` atomicity covers in-process interleavings and retries; a
+- Non-`Clone` `&mut self` atomicity covers one in-process authority value and
+  its retries; a
   multi-process admission service needs an external serialization or the
   ledger-backed successor.

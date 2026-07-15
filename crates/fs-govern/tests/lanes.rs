@@ -11,7 +11,8 @@
 
 use fs_blake3::hash_domain;
 use fs_govern::{
-    FinalizationReceipt, HeadToHeadCharter, IdempotencyKey, LaneCharter, LaneError, MechanismId,
+    DecisionRequest, FinalizationReceipt, HeadToHeadCharter, IdempotencyKey, LaneCharter,
+    LaneError, MAX_H2H_CANDIDATES, MAX_RETAINED_DECISION_BYTES, MAX_RETAINED_DECISIONS,
     PortfolioLedger, PortfolioPolicy, ResourceEnvelope, TerminalKind,
 };
 
@@ -39,6 +40,35 @@ fn envelope(work: u64) -> ResourceEnvelope {
         reviewer_slots: 1,
         falsification_capacity: 1,
     }
+}
+
+fn one_axis(axis: &str, value: u64) -> ResourceEnvelope {
+    let mut envelope = ResourceEnvelope::default();
+    match axis {
+        "work" => envelope.work_units = value,
+        "memory" => envelope.memory_bytes = value,
+        "reviewer" => envelope.reviewer_slots = value,
+        "falsification-capacity" => envelope.falsification_capacity = value,
+        _ => panic!("unknown test axis {axis}"),
+    }
+    envelope
+}
+
+fn one_axis_limit(axis: &str, value: u64) -> ResourceEnvelope {
+    let mut limit = ResourceEnvelope {
+        work_units: u64::MAX,
+        memory_bytes: u64::MAX,
+        reviewer_slots: u64::MAX,
+        falsification_capacity: u64::MAX,
+    };
+    match axis {
+        "work" => limit.work_units = value,
+        "memory" => limit.memory_bytes = value,
+        "reviewer" => limit.reviewer_slots = value,
+        "falsification-capacity" => limit.falsification_capacity = value,
+        _ => panic!("unknown test axis {axis}"),
+    }
+    limit
 }
 
 fn policy() -> PortfolioPolicy {
@@ -168,6 +198,50 @@ fn lane_001_canonical_identity() {
     ));
 }
 
+/// lane-001b (identity authority): a mechanism remains bound to the
+/// canonical lane that minted it at both comparison construction and
+/// admission. A supersession cannot silently cross lanes either.
+#[test]
+fn lane_001b_mechanisms_are_lane_bound() {
+    let lane_a = charter("claim identity A", "identity-a");
+    let lane_b = charter("claim identity B", "identity-b");
+    let a1 = lane_a.mechanism_id("a1", 1).expect("id");
+    let a2 = lane_a.mechanism_id("a2", 1).expect("id");
+    let b1 = lane_b.mechanism_id("b1", 1).expect("id");
+    assert_eq!(a1.lane(), lane_a.lane_id());
+
+    let mut ledger = PortfolioLedger::new(policy());
+    let refusal = ledger
+        .admit(&lane_b, a1, envelope(1), key("wrong-lane"))
+        .expect_err("lane-A mechanism cannot enter lane B");
+    assert!(matches!(
+        refusal,
+        LaneError::MechanismLaneMismatch { expected, actual }
+            if expected == lane_b.lane_id() && actual == lane_a.lane_id()
+    ));
+    assert_eq!(ledger.active_count(), 0);
+
+    assert!(matches!(
+        HeadToHeadCharter::new(&lane_b, &[a1, a2], envelope(2), evidence("wrong-h2h")),
+        Err(LaneError::MechanismLaneMismatch { .. })
+    ));
+    assert!(matches!(
+        FinalizationReceipt::new(
+            a1,
+            TerminalKind::Superseded,
+            Some(b1),
+            evidence("cross-lane-successor")
+        ),
+        Err(LaneError::ReceiptInvalid { .. })
+    ));
+
+    let too_many = [a1; MAX_H2H_CANDIDATES + 1];
+    assert!(matches!(
+        HeadToHeadCharter::new(&lane_a, &too_many, envelope(2), evidence("too-many")),
+        Err(LaneError::ComparisonCandidatesInvalid)
+    ));
+}
+
 /// lane-002 (G0 same-lane guard): distinct lanes admit concurrently; a
 /// second mechanism in the SAME lane refuses atomically and the ledger
 /// is observably unchanged apart from the recorded refusal.
@@ -216,7 +290,7 @@ fn lane_003_preregistered_head_to_head() {
     let c2 = lane.mechanism_id("candidate two", 1).expect("id");
     let intruder = lane.mechanism_id("undeclared intruder", 1).expect("id");
 
-    let h2h = HeadToHeadCharter::new(lane.lane_id(), &[c1, c2], envelope(50), evidence("prereg"))
+    let h2h = HeadToHeadCharter::new(&lane, &[c1, c2], envelope(50), evidence("prereg"))
         .expect("comparison charter");
     ledger
         .preregister_comparison(h2h.clone(), key("h2h"))
@@ -253,11 +327,11 @@ fn lane_003_preregistered_head_to_head() {
 
     // Candidate bounds validate at construction.
     assert!(matches!(
-        HeadToHeadCharter::new(lane.lane_id(), &[c1], envelope(1), evidence("x")),
+        HeadToHeadCharter::new(&lane, &[c1], envelope(1), evidence("x")),
         Err(LaneError::ComparisonCandidatesInvalid)
     ));
     assert!(matches!(
-        HeadToHeadCharter::new(lane.lane_id(), &[c1, c1], envelope(1), evidence("x")),
+        HeadToHeadCharter::new(&lane, &[c1, c1], envelope(1), evidence("x")),
         Err(LaneError::ComparisonCandidatesInvalid)
     ));
 
@@ -269,8 +343,8 @@ fn lane_003_preregistered_head_to_head() {
     fresh
         .admit(&lane2, d1, envelope(5), key("d1"))
         .expect("solo admits");
-    let late = HeadToHeadCharter::new(lane2.lane_id(), &[d1, d2], envelope(50), evidence("late"))
-        .expect("charter");
+    let late =
+        HeadToHeadCharter::new(&lane2, &[d1, d2], envelope(50), evidence("late")).expect("charter");
     assert!(matches!(
         fresh.preregister_comparison(late, key("late")),
         Err(LaneError::ComparisonAfterAdmission { .. })
@@ -281,32 +355,42 @@ fn lane_003_preregistered_head_to_head() {
 /// the reservation that would exceed it, naming the axis.
 #[test]
 fn lane_003b_comparison_envelope_binds() {
-    let mut ledger = PortfolioLedger::new(policy());
-    let lane = charter("claim HB", "class-hb");
-    let c1 = lane.mechanism_id("one", 1).expect("id");
-    let c2 = lane.mechanism_id("two", 1).expect("id");
-    let h2h = HeadToHeadCharter::new(lane.lane_id(), &[c1, c2], envelope(30), evidence("p"))
+    for axis in ["work", "memory", "reviewer", "falsification-capacity"] {
+        let mut ledger = PortfolioLedger::new(policy());
+        let lane = charter(
+            &format!("claim comparison {axis}"),
+            &format!("class-hb-{axis}"),
+        );
+        let c1 = lane.mechanism_id("one", 1).expect("id");
+        let c2 = lane.mechanism_id("two", 1).expect("id");
+        let h2h = HeadToHeadCharter::new(
+            &lane,
+            &[c1, c2],
+            one_axis(axis, 3),
+            evidence(&format!("p-{axis}")),
+        )
         .expect("charter");
-    ledger
-        .preregister_comparison(h2h, key("p"))
-        .expect("prereg");
-    ledger
-        .admit(&lane, c1, envelope(20), key("c1"))
-        .expect("fits");
-    let refusal = ledger
-        .admit(&lane, c2, envelope(20), key("c2"))
-        .expect_err("20 + 20 > 30 shared budget");
-    assert!(
-        matches!(
-            refusal,
-            LaneError::ComparisonEnvelopeExceeded {
-                axis: "work",
-                requested: 20,
-                remaining: 10
-            }
-        ),
-        "axis-precise refusal: {refusal}"
-    );
+        ledger
+            .preregister_comparison(h2h, key(&format!("p-{axis}")))
+            .expect("prereg");
+        ledger
+            .admit(&lane, c1, one_axis(axis, 2), key(&format!("c1-{axis}")))
+            .expect("first candidate fits");
+        let refusal = ledger
+            .admit(&lane, c2, one_axis(axis, 2), key(&format!("c2-{axis}")))
+            .expect_err("2 + 2 exceeds the shared cap 3");
+        assert!(
+            matches!(
+                refusal,
+                LaneError::ComparisonEnvelopeExceeded {
+                    axis: refused_axis,
+                    requested: 2,
+                    remaining: 1
+                } if refused_axis == axis
+            ),
+            "axis-precise comparison refusal for {axis}: {refusal}"
+        );
+    }
 }
 
 /// lane-004 (G0 global caps): the portfolio mechanism cap and each
@@ -314,90 +398,54 @@ fn lane_003b_comparison_envelope_binds() {
 /// portfolio limits.
 #[test]
 fn lane_004_global_envelopes_bind_across_lanes() {
-    let mut ledger = PortfolioLedger::new(PortfolioPolicy {
-        global: ResourceEnvelope {
-            work_units: 25,
-            memory_bytes: u64::MAX,
-            reviewer_slots: 100,
-            falsification_capacity: 100,
-        },
-        max_active_mechanisms: 2,
+    for axis in ["work", "memory", "reviewer", "falsification-capacity"] {
+        let mut ledger = PortfolioLedger::new(PortfolioPolicy {
+            global: one_axis_limit(axis, 10),
+            max_active_mechanisms: 8,
+        });
+        let first = charter(&format!("claim first {axis}"), &format!("first-{axis}"));
+        let second = charter(&format!("claim second {axis}"), &format!("second-{axis}"));
+        let m1 = first.mechanism_id("m", 1).expect("id");
+        let m2 = second.mechanism_id("m", 1).expect("id");
+        ledger
+            .admit(&first, m1, one_axis(axis, 6), key(&format!("first-{axis}")))
+            .expect("first reservation fits");
+        let refusal = ledger
+            .admit(
+                &second,
+                m2,
+                one_axis(axis, 5),
+                key(&format!("second-{axis}")),
+            )
+            .expect_err("6 + 5 exceeds global cap 10");
+        assert!(
+            matches!(
+                refusal,
+                LaneError::EnvelopeExceeded {
+                    axis: refused_axis,
+                    requested: 5,
+                    remaining: 4
+                } if refused_axis == axis
+            ),
+            "axis-precise global refusal for {axis}: {refusal}"
+        );
+    }
+
+    let mut capped = PortfolioLedger::new(PortfolioPolicy {
+        global: one_axis_limit("work", u64::MAX),
+        max_active_mechanisms: 1,
     });
-    let l1 = charter("claim 1", "class-1");
-    let l2 = charter("claim 2", "class-2");
-    let l3 = charter("claim 3", "class-3");
-    let m1 = l1.mechanism_id("m", 1).expect("id");
-    let m2 = l2.mechanism_id("m", 1).expect("id");
-    let m3 = l3.mechanism_id("m", 1).expect("id");
-
-    ledger
-        .admit(
-            &l1,
-            m1,
-            ResourceEnvelope {
-                work_units: 10,
-                ..Default::default()
-            },
-            key("m1"),
-        )
-        .expect("first");
-    ledger
-        .admit(
-            &l2,
-            m2,
-            ResourceEnvelope {
-                work_units: 10,
-                ..Default::default()
-            },
-            key("m2"),
-        )
-        .expect("second");
-    let capped = ledger
-        .admit(
-            &l3,
-            m3,
-            ResourceEnvelope {
-                work_units: 1,
-                ..Default::default()
-            },
-            key("m3"),
-        )
-        .expect_err("mechanism cap 2 binds");
+    let first = charter("cap claim first", "cap-first");
+    let second = charter("cap claim second", "cap-second");
+    let m1 = first.mechanism_id("m", 1).expect("id");
+    let m2 = second.mechanism_id("m", 1).expect("id");
+    capped
+        .admit(&first, m1, ResourceEnvelope::default(), key("cap-first"))
+        .expect("first mechanism");
     assert!(matches!(
-        capped,
-        LaneError::PortfolioCapExceeded { active: 2, cap: 2 }
+        capped.admit(&second, m2, ResourceEnvelope::default(), key("cap-second")),
+        Err(LaneError::PortfolioCapExceeded { active: 1, cap: 1 })
     ));
-
-    // Release one, then the work envelope (25) binds: 10 used + 20 > 25.
-    ledger
-        .finalize(
-            &FinalizationReceipt::new(m2, TerminalKind::Refuted, None, evidence("r"))
-                .expect("receipt"),
-            key("r-m2"),
-        )
-        .expect("refutation releases");
-    let enveloped = ledger
-        .admit(
-            &l3,
-            m3,
-            ResourceEnvelope {
-                work_units: 20,
-                ..Default::default()
-            },
-            key("m3-b"),
-        )
-        .expect_err("work envelope binds");
-    assert!(
-        matches!(
-            enveloped,
-            LaneError::EnvelopeExceeded {
-                axis: "work",
-                requested: 20,
-                remaining: 15
-            }
-        ),
-        "axis-precise: {enveloped}"
-    );
 }
 
 /// lane-005 (G0 terminal release): a slot releases EXACTLY ONCE
@@ -458,6 +506,15 @@ fn lane_005_terminal_release_exactly_once() {
         ),
         Err(LaneError::UnknownMechanism { .. })
     ));
+    assert_eq!(
+        ledger
+            .decisions()
+            .last()
+            .expect("ghost refusal logged")
+            .lane,
+        ghost.lane(),
+        "unknown finalization retains the mechanism's validated lane, not a forged placeholder"
+    );
 
     // Valid supersession releases exactly once.
     let receipt = FinalizationReceipt::new(
@@ -537,9 +594,31 @@ fn lane_006_idempotency() {
         .admit(&lane, other, envelope(10), key("k"))
         .expect_err("key reuse for a new request refuses");
     assert!(matches!(
-        conflict,
+        &conflict,
         LaneError::IdempotencyConflict { original_seq: 0 }
     ));
+    assert_eq!(
+        ledger.decisions().len(),
+        after_first.2 + 1,
+        "conflicting reuse is itself auditable"
+    );
+    assert!(matches!(
+        ledger
+            .decisions()
+            .last()
+            .and_then(|decision| decision.refusal.as_ref()),
+        Some(LaneError::IdempotencyConflict { original_seq: 0 })
+    ));
+    let rows_after_conflict = ledger.decisions().len();
+    let replayed_conflict = ledger
+        .admit(&lane, other, envelope(10), key("k"))
+        .expect_err("exact retry of the conflicting request replays");
+    assert_eq!(replayed_conflict, conflict);
+    assert_eq!(
+        ledger.decisions().len(),
+        rows_after_conflict,
+        "exact conflict replay does not consume another bounded row"
+    );
 
     // Refusals replay too: the recorded refusal returns without a new row.
     let rival = lane.mechanism_id("rival", 1).expect("id");
@@ -588,19 +667,60 @@ fn lane_007_independence_class_backstop() {
     // lane does not bypass the class backstop.
     let c1 = cosmetic_split.mechanism_id("c1", 1).expect("id");
     let c2 = cosmetic_split.mechanism_id("c2", 1).expect("id");
-    let h2h = HeadToHeadCharter::new(
-        cosmetic_split.lane_id(),
-        &[c1, c2],
-        envelope(50),
-        evidence("e"),
-    )
-    .expect("charter");
+    let h2h = HeadToHeadCharter::new(&cosmetic_split, &[c1, c2], envelope(50), evidence("e"))
+        .expect("charter");
     ledger
         .preregister_comparison(h2h, key("h"))
         .expect("preregistration itself is fine");
     assert!(matches!(
         ledger.admit(&cosmetic_split, c1, envelope(5), key("c1")),
         Err(LaneError::IndependenceClassOccupied { .. })
+    ));
+
+    // Regression: every surviving candidate, not just one map
+    // representative, keeps the class occupied.
+    let mut survivors = PortfolioLedger::new(policy());
+    let compared = charter("claim compared", "survivor-fate");
+    let split = charter("claim compared but split", "survivor-fate");
+    let first = compared.mechanism_id("first", 1).expect("id");
+    let second = compared.mechanism_id("second", 1).expect("id");
+    let split_mechanism = split.mechanism_id("split", 1).expect("id");
+    let comparison = HeadToHeadCharter::new(
+        &compared,
+        &[first, second],
+        envelope(30),
+        evidence("survivor-comparison"),
+    )
+    .expect("comparison");
+    survivors
+        .preregister_comparison(comparison, key("survivor-prereg"))
+        .expect("preregister");
+    survivors
+        .admit(&compared, first, envelope(10), key("survivor-first"))
+        .expect("first candidate");
+    survivors
+        .admit(&compared, second, envelope(10), key("survivor-second"))
+        .expect("second candidate");
+    survivors
+        .finalize(
+            &FinalizationReceipt::new(
+                first,
+                TerminalKind::Withdrawn,
+                None,
+                evidence("survivor-first-final"),
+            )
+            .expect("receipt"),
+            key("survivor-first-final"),
+        )
+        .expect("first candidate finalizes");
+    assert!(matches!(
+        survivors.admit(
+            &split,
+            split_mechanism,
+            envelope(1),
+            key("survivor-split")
+        ),
+        Err(LaneError::IndependenceClassOccupied { active }) if active == second
     ));
 }
 
@@ -636,6 +756,29 @@ fn lane_008_deterministic_replay() {
         "JSON log replay-identical"
     );
     assert_eq!(first.decisions().len(), 5);
+    assert_eq!(first.decisions()[0].policy, policy());
+    match &first.decisions()[0].request {
+        DecisionRequest::Admit {
+            charter,
+            reservation,
+        } => {
+            assert_eq!(charter.statement(), "claim A");
+            assert_eq!(
+                charter.admissible_domain(),
+                "linear elasticity, small strain, polyhedral domains"
+            );
+            assert_eq!(charter.assumptions().len(), 2);
+            assert_eq!(*reservation, envelope(10));
+        }
+        other => panic!("expected replayable admit request, got {other:?}"),
+    }
+    match &first.decisions()[3].request {
+        DecisionRequest::Finalize { kind, released, .. } => {
+            assert_eq!(*kind, TerminalKind::Refuted);
+            assert_eq!(*released, Some(envelope(10)));
+        }
+        other => panic!("expected replayable finalize request, got {other:?}"),
+    }
     let bounded = first.decisions_json(2);
     assert!(
         bounded.starts_with("{\"skipped\":3,"),
@@ -645,13 +788,94 @@ fn lane_008_deterministic_replay() {
     let full = first.decisions_json(usize::MAX);
     for needle in [
         "policy_version",
+        "max_active_mechanisms",
+        "max_retained_decisions",
         "lane",
         "mechanism",
+        "mechanism_lane",
         "idempotency",
         "request_digest",
+        "statement",
+        "admissible_domain",
+        "assumptions",
+        "reservation",
+        "falsification_capacity",
+        "terminal_kind",
+        "released",
         "verdict",
         "remedy",
     ] {
         assert!(full.contains(needle), "log field `{needle}` present");
     }
+}
+
+/// lane-009 (bounded retention): fresh traffic refuses before either
+/// retained decisions or idempotency bindings can grow without bound.
+/// One slot/key remains reserved for every active mechanism's terminal
+/// transition, and exact retries still replay when the ledger is full.
+#[test]
+fn lane_009_retention_is_bounded_and_finalization_stays_available() {
+    let mut ledger = PortfolioLedger::new(policy());
+    let active_lane = charter("retention active claim", "retention-active");
+    let wrong_lane = charter("retention wrong claim", "retention-wrong");
+    let mechanism = active_lane.mechanism_id("active", 1).expect("id");
+    ledger
+        .admit(
+            &active_lane,
+            mechanism,
+            envelope(1),
+            key("retention-active"),
+        )
+        .expect("active mechanism");
+
+    let mut hit_cap = false;
+    for index in 0..(MAX_RETAINED_DECISIONS * 2) {
+        match ledger.admit(
+            &wrong_lane,
+            mechanism,
+            ResourceEnvelope::default(),
+            key(&format!("retention-wrong-{index}")),
+        ) {
+            Err(LaneError::MechanismLaneMismatch { .. }) => {}
+            Err(LaneError::RetentionCapacityExceeded {
+                axis: "decision-count",
+                ..
+            }) => {
+                hit_cap = true;
+                break;
+            }
+            other => panic!("unexpected retention result: {other:?}"),
+        }
+    }
+    assert!(hit_cap, "fresh decisions eventually refuse at the hard cap");
+    assert_eq!(
+        ledger.decisions().len() + usize::try_from(ledger.active_count()).expect("small"),
+        MAX_RETAINED_DECISIONS,
+        "one decision slot is reserved for the active mechanism"
+    );
+    assert!(ledger.retained_decision_bytes() <= MAX_RETAINED_DECISION_BYTES);
+
+    let receipt = FinalizationReceipt::new(
+        mechanism,
+        TerminalKind::Withdrawn,
+        None,
+        evidence("retention-final"),
+    )
+    .expect("receipt");
+    ledger
+        .finalize(&receipt, key("retention-final"))
+        .expect("reserved finalization slot remains usable");
+    assert_eq!(ledger.decisions().len(), MAX_RETAINED_DECISIONS);
+    ledger
+        .finalize(&receipt, key("retention-final"))
+        .expect("exact retry replays even at capacity");
+    assert!(matches!(
+        ledger.admit(
+            &wrong_lane,
+            wrong_lane.mechanism_id("new", 1).expect("id"),
+            ResourceEnvelope::default(),
+            key("after-full")
+        ),
+        Err(LaneError::RetentionCapacityExceeded { .. })
+    ));
 }

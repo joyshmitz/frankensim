@@ -38,9 +38,10 @@ pub use crates::{AddendumCrate, CrateAudit, addendum_crates, crate_audit, crates
 pub use doctrine::{GovernanceRule, PRINCIPLES, Principle, RULES, principles, rules};
 pub use fs_blake3::ContentHash;
 pub use lanes::{
-    AdmissionDecision, DecisionKind, FinalizationReceipt, HeadToHeadCharter, IdempotencyKey,
-    LANE_POLICY_VERSION, LaneCharter, LaneError, MechanismId, PortfolioLedger, PortfolioPolicy,
-    ProofLaneId, ResourceEnvelope, TerminalKind,
+    AdmissionDecision, DecisionKind, DecisionRequest, FinalizationReceipt, HeadToHeadCharter,
+    IdempotencyKey, LANE_POLICY_VERSION, LaneCharter, LaneError, MAX_H2H_CANDIDATES,
+    MAX_RETAINED_DECISION_BYTES, MAX_RETAINED_DECISIONS, MechanismId, PortfolioLedger,
+    PortfolioPolicy, ProofLaneId, ResourceEnvelope, TerminalKind,
 };
 pub use proposals::{GovernanceAudit, Proposal, governance_audit, proposals, proposals_json};
 

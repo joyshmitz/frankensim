@@ -5,7 +5,7 @@
 //! EXECUTABLE. A [`LaneCharter`] canonicalizes the semantic fields that
 //! define a proof lane (statement/quantifiers, admissible domain,
 //! assumptions, target authority, baseline, falsifier family,
-//! independence class) and derives an authenticated [`ProofLaneId`] —
+//! independence class) and derives a validated [`ProofLaneId`] —
 //! the id is minted only from a validated charter, so cosmetic
 //! whitespace/ordering "splits" collapse to the same lane and a raw
 //! hash cannot be spoofed in.
@@ -28,17 +28,19 @@
 //!   recorded decision without double-charging, and a DIFFERENT
 //!   request under a used key refuses.
 //!
-//! Every method validates completely BEFORE mutating, so a refusal
-//! leaves the ledger observably unchanged (no partial admission), and
-//! the decision log is a deterministic, bounded, replayable record.
+//! Every method validates completely BEFORE governed state mutates. A
+//! refusal may append one explicit bounded audit row, but cannot partly
+//! charge a lane or resource envelope. The complete canonical request
+//! is retained for deterministic replay; rows and idempotency bindings
+//! are never silently evicted.
 
 use crate::json_escape;
 use fs_blake3::ContentHash;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Version of the lane-admission policy schema: bump when a rule,
 /// canonicalization step, or identity preimage changes meaning.
-pub const LANE_POLICY_VERSION: u32 = 1;
+pub const LANE_POLICY_VERSION: u32 = 2;
 
 /// Domain for canonical proof-lane identities.
 pub const PROOF_LANE_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.proof-lane.v1";
@@ -64,10 +66,40 @@ pub const MAX_ASSUMPTIONS: usize = 256;
 /// Maximum candidates in one preregistered head-to-head comparison.
 pub const MAX_H2H_CANDIDATES: usize = 8;
 
+/// Hard ceiling for retained decisions and idempotency bindings. The
+/// ledger refuses new work before this bound is crossed and reserves one
+/// decision/key slot for the eventual finalization of every active
+/// mechanism.
+pub const MAX_RETAINED_DECISIONS: usize = 256;
+
+/// Hard ceiling for canonical variable-size decision payloads. This is
+/// separate from the decision-count cap because a charter may contain a
+/// bounded set of bounded assumptions.
+pub const MAX_RETAINED_DECISION_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Payload budget held back for each active mechanism's future terminal
+/// receipt. Finalization payloads are fixed-size and remain below this
+/// conservative accounting reservation.
+const FINALIZATION_RECORD_RESERVE_BYTES: u64 = 1_024;
+
 /// Collapse whitespace runs to single spaces and trim — the G3
 /// canonicalization that makes cosmetic re-spellings identity-stable.
 fn canonical_text(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn preflight_text(what: &'static str, raw: &str) -> Result<(), LaneError> {
+    if raw.len() > MAX_FIELD_BYTES {
+        return Err(LaneError::TooLarge {
+            what,
+            len: raw.len(),
+            cap: MAX_FIELD_BYTES,
+        });
+    }
+    if raw.split_whitespace().next().is_none() {
+        return Err(LaneError::EmptyField { what });
+    }
+    Ok(())
 }
 
 fn push_field(out: &mut Vec<u8>, tag: u8, bytes: &[u8]) {
@@ -179,6 +211,29 @@ pub enum LaneError {
         /// Sequence number of the original decision.
         original_seq: u64,
     },
+    /// A mechanism id was presented under a lane other than the lane
+    /// whose charter minted it.
+    MechanismLaneMismatch {
+        /// Lane required by the request or comparison charter.
+        expected: ProofLaneId,
+        /// Lane cryptographically bound into the mechanism id.
+        actual: ProofLaneId,
+    },
+    /// The bounded retained decision/idempotency record has no safe
+    /// capacity for this request while preserving one finalization slot
+    /// for each active mechanism.
+    RetentionCapacityExceeded {
+        /// Governed retention axis.
+        axis: &'static str,
+        /// Amount already retained.
+        used: u64,
+        /// Additional amount needed by this request.
+        requested: u64,
+        /// Capacity reserved for active mechanisms to finalize.
+        reserved_for_finalization: u64,
+        /// Hard cap.
+        cap: u64,
+    },
 }
 
 impl LaneError {
@@ -231,6 +286,12 @@ impl LaneError {
             }
             LaneError::IdempotencyConflict { .. } => {
                 "reuse an idempotency key only for byte-identical retries; mint a fresh key for a new request"
+            }
+            LaneError::MechanismLaneMismatch { .. } => {
+                "mint every mechanism from the same canonical lane charter used for admission or comparison"
+            }
+            LaneError::RetentionCapacityExceeded { .. } => {
+                "archive and durably checkpoint this ledger before opening a successor ledger; retained idempotency decisions are never silently evicted"
             }
         }
     }
@@ -307,13 +368,28 @@ impl core::fmt::Display for LaneError {
                 "idempotency key already bound to a different request (decision seq \
                  {original_seq})"
             ),
+            LaneError::MechanismLaneMismatch { expected, actual } => write!(
+                f,
+                "mechanism belongs to lane {actual}, but this request requires lane {expected}"
+            ),
+            LaneError::RetentionCapacityExceeded {
+                axis,
+                used,
+                requested,
+                reserved_for_finalization,
+                cap,
+            } => write!(
+                f,
+                "retained {axis} capacity exhausted: used {used}, request {requested}, \
+                 finalization reserve {reserved_for_finalization}, cap {cap}"
+            ),
         }
     }
 }
 
 impl std::error::Error for LaneError {}
 
-/// Authenticated identity of one proof lane. Minted ONLY by
+/// Validated content identity of one proof lane. Minted ONLY by
 /// [`LaneCharter::lane_id`] — there is no public constructor from a raw
 /// hash, so an id always corresponds to a validated, canonicalized
 /// charter (anti-spoofing).
@@ -337,19 +413,28 @@ impl core::fmt::Display for ProofLaneId {
 /// Identity of one mechanism inside a lane (lane id + canonical name +
 /// version). Minted only through [`LaneCharter::mechanism_id`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct MechanismId(ContentHash);
+pub struct MechanismId {
+    lane: ProofLaneId,
+    identity: ContentHash,
+}
 
 impl MechanismId {
     /// The underlying content hash (read-only).
     #[must_use]
     pub fn as_hash(&self) -> &ContentHash {
-        &self.0
+        &self.identity
+    }
+
+    /// The canonical proof lane that minted this mechanism.
+    #[must_use]
+    pub fn lane(&self) -> ProofLaneId {
+        self.lane
     }
 }
 
 impl core::fmt::Display for MechanismId {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{}", self.identity)
     }
 }
 
@@ -407,20 +492,6 @@ impl LaneCharter {
         falsifier_family: &str,
         independence_class: &str,
     ) -> Result<LaneCharter, LaneError> {
-        let field = |what: &'static str, raw: &str| -> Result<String, LaneError> {
-            let canonical = canonical_text(raw);
-            if canonical.is_empty() {
-                return Err(LaneError::EmptyField { what });
-            }
-            if canonical.len() > MAX_FIELD_BYTES {
-                return Err(LaneError::TooLarge {
-                    what,
-                    len: canonical.len(),
-                    cap: MAX_FIELD_BYTES,
-                });
-            }
-            Ok(canonical)
-        };
         if assumptions.len() > MAX_ASSUMPTIONS {
             return Err(LaneError::TooLarge {
                 what: "assumptions",
@@ -428,24 +499,37 @@ impl LaneCharter {
                 cap: MAX_ASSUMPTIONS,
             });
         }
+        for (what, raw) in [
+            ("statement", statement),
+            ("admissible domain", admissible_domain),
+            ("target authority", target_authority),
+            ("baseline", baseline),
+            ("falsifier family", falsifier_family),
+            ("independence class", independence_class),
+        ] {
+            preflight_text(what, raw)?;
+        }
+        for assumption in assumptions {
+            preflight_text("assumption", assumption)?;
+        }
         let mut canon_assumptions = assumptions
             .iter()
-            .map(|a| field("assumption", a))
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(|assumption| canonical_text(assumption))
+            .collect::<Vec<_>>();
         canon_assumptions.sort_unstable();
         canon_assumptions.dedup();
         Ok(LaneCharter {
-            statement: field("statement", statement)?,
-            admissible_domain: field("admissible domain", admissible_domain)?,
+            statement: canonical_text(statement),
+            admissible_domain: canonical_text(admissible_domain),
             assumptions: canon_assumptions,
-            target_authority: field("target authority", target_authority)?,
-            baseline: field("baseline", baseline)?,
-            falsifier_family: field("falsifier family", falsifier_family)?,
-            independence_class: field("independence class", independence_class)?,
+            target_authority: canonical_text(target_authority),
+            baseline: canonical_text(baseline),
+            falsifier_family: canonical_text(falsifier_family),
+            independence_class: canonical_text(independence_class),
         })
     }
 
-    /// The authenticated lane identity: domain-separated BLAKE3 over
+    /// The validated lane identity: domain-separated BLAKE3 over
     /// every tagged, length-prefixed canonical field.
     #[must_use]
     pub fn lane_id(&self) -> ProofLaneId {
@@ -482,27 +566,17 @@ impl LaneCharter {
     /// # Errors
     /// [`LaneError::EmptyField`] / [`LaneError::TooLarge`].
     pub fn mechanism_id(&self, name: &str, version: u32) -> Result<MechanismId, LaneError> {
+        preflight_text("mechanism name", name)?;
         let canonical_name = canonical_text(name);
-        if canonical_name.is_empty() {
-            return Err(LaneError::EmptyField {
-                what: "mechanism name",
-            });
-        }
-        if canonical_name.len() > MAX_FIELD_BYTES {
-            return Err(LaneError::TooLarge {
-                what: "mechanism name",
-                len: canonical_name.len(),
-                cap: MAX_FIELD_BYTES,
-            });
-        }
         let mut canonical = Vec::new();
-        push_field(&mut canonical, 1, self.lane_id().as_hash().as_bytes());
+        let lane = self.lane_id();
+        push_field(&mut canonical, 1, lane.as_hash().as_bytes());
         push_field(&mut canonical, 2, canonical_name.as_bytes());
         push_field(&mut canonical, 3, &version.to_le_bytes());
-        Ok(MechanismId(fs_blake3::hash_domain(
-            MECHANISM_IDENTITY_DOMAIN,
-            &canonical,
-        )))
+        Ok(MechanismId {
+            lane,
+            identity: fs_blake3::hash_domain(MECHANISM_IDENTITY_DOMAIN, &canonical),
+        })
     }
 
     /// Canonical statement (read-only, for logs).
@@ -515,6 +589,84 @@ impl LaneCharter {
     #[must_use]
     pub fn assumptions(&self) -> &[String] {
         &self.assumptions
+    }
+
+    /// Canonical admissible domain.
+    #[must_use]
+    pub fn admissible_domain(&self) -> &str {
+        &self.admissible_domain
+    }
+
+    /// Canonical target authority.
+    #[must_use]
+    pub fn target_authority(&self) -> &str {
+        &self.target_authority
+    }
+
+    /// Canonical boring baseline.
+    #[must_use]
+    pub fn baseline(&self) -> &str {
+        &self.baseline
+    }
+
+    /// Canonical falsifier family.
+    #[must_use]
+    pub fn falsifier_family(&self) -> &str {
+        &self.falsifier_family
+    }
+
+    /// Canonical declared independence class.
+    #[must_use]
+    pub fn independence_class(&self) -> &str {
+        &self.independence_class
+    }
+
+    fn retained_bytes(&self) -> u64 {
+        let strings = [
+            self.statement.len(),
+            self.admissible_domain.len(),
+            self.target_authority.len(),
+            self.baseline.len(),
+            self.falsifier_family.len(),
+            self.independence_class.len(),
+        ]
+        .into_iter()
+        .chain(self.assumptions.iter().map(String::len))
+        .fold(0_u64, |sum, len| {
+            sum.saturating_add(u64::try_from(len).unwrap_or(u64::MAX))
+        });
+        strings.saturating_add(
+            u64::try_from(self.assumptions.len())
+                .unwrap_or(u64::MAX)
+                .saturating_mul(u64::try_from(core::mem::size_of::<String>()).unwrap_or(u64::MAX)),
+        )
+    }
+
+    fn write_json(&self, out: &mut String) {
+        use core::fmt::Write as _;
+        write!(
+            out,
+            "{{\"statement\":\"{}\",\"admissible_domain\":\"{}\",\"assumptions\":[",
+            json_escape(&self.statement),
+            json_escape(&self.admissible_domain),
+        )
+        .expect("writing to a String is infallible");
+        for (index, assumption) in self.assumptions.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            write!(out, "\"{}\"", json_escape(assumption))
+                .expect("writing to a String is infallible");
+        }
+        write!(
+            out,
+            "],\"target_authority\":\"{}\",\"baseline\":\"{}\",\"falsifier_family\":\"{}\",\"independence_class\":\"{}\"}}",
+            json_escape(&self.target_authority),
+            json_escape(&self.baseline),
+            json_escape(&self.falsifier_family),
+            json_escape(&self.independence_class),
+        )
+        .expect("writing to a String is infallible");
     }
 }
 
@@ -599,6 +751,19 @@ impl ResourceEnvelope {
         push_field(out, tag, &self.reviewer_slots.to_le_bytes());
         push_field(out, tag, &self.falsification_capacity.to_le_bytes());
     }
+
+    fn write_json(&self, out: &mut String) {
+        use core::fmt::Write as _;
+        write!(
+            out,
+            "{{\"work_units\":{},\"memory_bytes\":{},\"reviewer_slots\":{},\"falsification_capacity\":{}}}",
+            self.work_units,
+            self.memory_bytes,
+            self.reviewer_slots,
+            self.falsification_capacity,
+        )
+        .expect("writing to a String is infallible");
+    }
 }
 
 /// Portfolio-level policy: the global envelope plus the cap on
@@ -611,12 +776,28 @@ pub struct PortfolioPolicy {
     pub max_active_mechanisms: u32,
 }
 
+impl PortfolioPolicy {
+    fn write_json(&self, out: &mut String) {
+        use core::fmt::Write as _;
+        out.push_str("{\"global\":");
+        self.global.write_json(out);
+        write!(
+            out,
+            ",\"max_active_mechanisms\":{},\"max_retained_decisions\":{},\"max_retained_decision_bytes\":{}}}",
+            self.max_active_mechanisms,
+            MAX_RETAINED_DECISIONS,
+            MAX_RETAINED_DECISION_BYTES,
+        )
+        .expect("writing to a String is infallible");
+    }
+}
+
 /// A preregistered, bounded head-to-head comparison: the ONLY way two
 /// active mechanisms may share a lane. Declared BEFORE any admission
 /// in the lane, naming its candidates and a shared budget.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeadToHeadCharter {
-    lane: ProofLaneId,
+    lane: LaneCharter,
     candidates: Vec<MechanismId>,
     shared: ResourceEnvelope,
     preregistration_artifact: ContentHash,
@@ -631,16 +812,29 @@ impl HeadToHeadCharter {
     /// [`LaneError::ComparisonCandidatesInvalid`] /
     /// [`LaneError::ReceiptInvalid`].
     pub fn new(
-        lane: ProofLaneId,
+        lane: &LaneCharter,
         candidates: &[MechanismId],
         shared: ResourceEnvelope,
         preregistration_artifact: ContentHash,
     ) -> Result<HeadToHeadCharter, LaneError> {
+        // Reject oversized slices before copying or sorting them.
+        if candidates.len() < 2 || candidates.len() > MAX_H2H_CANDIDATES {
+            return Err(LaneError::ComparisonCandidatesInvalid);
+        }
+        let lane_id = lane.lane_id();
+        if let Some(candidate) = candidates
+            .iter()
+            .find(|candidate| candidate.lane() != lane_id)
+        {
+            return Err(LaneError::MechanismLaneMismatch {
+                expected: lane_id,
+                actual: candidate.lane(),
+            });
+        }
         let mut sorted = candidates.to_vec();
         sorted.sort_unstable();
         sorted.dedup();
-        if sorted.len() != candidates.len() || sorted.len() < 2 || sorted.len() > MAX_H2H_CANDIDATES
-        {
+        if sorted.len() != candidates.len() {
             return Err(LaneError::ComparisonCandidatesInvalid);
         }
         if preregistration_artifact
@@ -653,7 +847,7 @@ impl HeadToHeadCharter {
             });
         }
         Ok(HeadToHeadCharter {
-            lane,
+            lane: lane.clone(),
             candidates: sorted,
             shared,
             preregistration_artifact,
@@ -663,7 +857,13 @@ impl HeadToHeadCharter {
     /// The lane this comparison governs.
     #[must_use]
     pub fn lane(&self) -> ProofLaneId {
-        self.lane
+        self.lane.lane_id()
+    }
+
+    /// Canonical lane charter retained with the preregistration.
+    #[must_use]
+    pub fn lane_charter(&self) -> &LaneCharter {
+        &self.lane
     }
 
     /// Declared candidates (sorted).
@@ -752,6 +952,11 @@ impl FinalizationReceipt {
                     what: "a mechanism cannot supersede itself",
                 });
             }
+            (TerminalKind::Superseded, Some(successor)) if successor.lane() != mechanism.lane() => {
+                return Err(LaneError::ReceiptInvalid {
+                    what: "a successor must belong to the same proof lane",
+                });
+            }
             (TerminalKind::Superseded, Some(_)) => {}
             (_, Some(_)) => {
                 return Err(LaneError::ReceiptInvalid {
@@ -804,23 +1009,197 @@ impl DecisionKind {
     }
 }
 
+/// Complete canonical request retained with a decision. Successful rows
+/// contain enough data to deterministically reconstruct and replay the
+/// state transition; refused rows retain the exact attempted request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecisionRequest {
+    /// One mechanism admission.
+    Admit {
+        /// Canonical lane charter.
+        charter: LaneCharter,
+        /// Four-axis requested reservation.
+        reservation: ResourceEnvelope,
+    },
+    /// One preregistered comparison.
+    Preregister {
+        /// Canonical lane charter.
+        charter: LaneCharter,
+        /// Sorted, lane-bound candidate ids.
+        candidates: Vec<MechanismId>,
+        /// Shared comparison envelope.
+        shared: ResourceEnvelope,
+        /// Content identity of the preregistered protocol.
+        preregistration_artifact: ContentHash,
+    },
+    /// One terminal transition.
+    Finalize {
+        /// Terminal outcome.
+        kind: TerminalKind,
+        /// Required successor for supersession.
+        superseded_by: Option<MechanismId>,
+        /// Durable-ledger content reference.
+        ledger_artifact: ContentHash,
+        /// Sealed receipt identity.
+        receipt_identity: ContentHash,
+        /// Reservation actually released by an admitted transition.
+        released: Option<ResourceEnvelope>,
+    },
+}
+
+impl DecisionRequest {
+    fn write_json(&self, out: &mut String) {
+        use core::fmt::Write as _;
+        match self {
+            DecisionRequest::Admit {
+                charter,
+                reservation,
+            } => {
+                out.push_str("{\"type\":\"admit\",\"charter\":");
+                charter.write_json(out);
+                out.push_str(",\"reservation\":");
+                reservation.write_json(out);
+                out.push('}');
+            }
+            DecisionRequest::Preregister {
+                charter,
+                candidates,
+                shared,
+                preregistration_artifact,
+            } => {
+                out.push_str("{\"type\":\"preregister\",\"charter\":");
+                charter.write_json(out);
+                out.push_str(",\"candidates\":[");
+                for (index, candidate) in candidates.iter().enumerate() {
+                    if index > 0 {
+                        out.push(',');
+                    }
+                    write!(out, "\"{candidate}\"").expect("writing to a String is infallible");
+                }
+                write!(out, "],\"shared\":").expect("writing to a String is infallible");
+                shared.write_json(out);
+                write!(
+                    out,
+                    ",\"preregistration_artifact\":\"{preregistration_artifact}\"}}"
+                )
+                .expect("writing to a String is infallible");
+            }
+            DecisionRequest::Finalize {
+                kind,
+                superseded_by,
+                ledger_artifact,
+                receipt_identity,
+                released,
+            } => {
+                write!(
+                    out,
+                    "{{\"type\":\"finalize\",\"terminal_kind\":\"{}\",\"superseded_by\":",
+                    kind.name(),
+                )
+                .expect("writing to a String is infallible");
+                match superseded_by {
+                    Some(successor) => {
+                        write!(out, "\"{successor}\"").expect("writing to a String is infallible")
+                    }
+                    None => out.push_str("null"),
+                }
+                write!(
+                    out,
+                    ",\"ledger_artifact\":\"{ledger_artifact}\",\"receipt_identity\":\"{receipt_identity}\",\"released\":"
+                )
+                .expect("writing to a String is infallible");
+                match released {
+                    Some(reservation) => reservation.write_json(out),
+                    None => out.push_str("null"),
+                }
+                out.push('}');
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum DecisionRequestRef<'a> {
+    Admit {
+        charter: &'a LaneCharter,
+        reservation: ResourceEnvelope,
+    },
+    Preregister {
+        charter: &'a HeadToHeadCharter,
+    },
+    Finalize {
+        receipt: &'a FinalizationReceipt,
+        released: Option<ResourceEnvelope>,
+    },
+}
+
+impl DecisionRequestRef<'_> {
+    fn retained_bytes(self) -> u64 {
+        const FIXED: u64 = 512;
+        match self {
+            DecisionRequestRef::Admit { charter, .. } => {
+                FIXED.saturating_add(charter.retained_bytes())
+            }
+            DecisionRequestRef::Preregister { charter } => FIXED
+                .saturating_add(charter.lane.retained_bytes())
+                .saturating_add(
+                    u64::try_from(charter.candidates.len())
+                        .unwrap_or(u64::MAX)
+                        .saturating_mul(
+                            u64::try_from(core::mem::size_of::<MechanismId>()).unwrap_or(u64::MAX),
+                        ),
+                ),
+            DecisionRequestRef::Finalize { .. } => FIXED,
+        }
+    }
+
+    fn to_owned(self) -> DecisionRequest {
+        match self {
+            DecisionRequestRef::Admit {
+                charter,
+                reservation,
+            } => DecisionRequest::Admit {
+                charter: charter.clone(),
+                reservation,
+            },
+            DecisionRequestRef::Preregister { charter } => DecisionRequest::Preregister {
+                charter: charter.lane.clone(),
+                candidates: charter.candidates.clone(),
+                shared: charter.shared,
+                preregistration_artifact: charter.preregistration_artifact,
+            },
+            DecisionRequestRef::Finalize { receipt, released } => DecisionRequest::Finalize {
+                kind: receipt.kind,
+                superseded_by: receipt.superseded_by,
+                ledger_artifact: receipt.ledger_artifact,
+                receipt_identity: receipt.identity,
+                released,
+            },
+        }
+    }
+}
+
 /// One atomic decision in the replayable log.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdmissionDecision {
     /// Sequence number (0-based, dense).
     pub seq: u64,
     /// Policy schema version in force.
     pub policy_version: u32,
+    /// Complete policy in force for this decision.
+    pub policy: PortfolioPolicy,
     /// What kind of request this was.
     pub kind: DecisionKind,
-    /// The lane.
+    /// The validated canonical lane.
     pub lane: ProofLaneId,
-    /// The mechanism (subject).
+    /// The lane-bound mechanism subject.
     pub mechanism: MechanismId,
     /// The idempotency key presented.
     pub idempotency: IdempotencyKey,
-    /// Digest of the complete request (for replay conflict checks).
+    /// Digest of the complete request for replay conflict checks.
     pub request_digest: ContentHash,
+    /// Complete canonical replay preimage.
+    pub request: DecisionRequest,
     /// Refusal, if the request was refused.
     pub refusal: Option<LaneError>,
 }
@@ -839,22 +1218,34 @@ impl AdmissionDecision {
         let mut out = String::new();
         let verdict = match &self.refusal {
             None => "admitted".to_owned(),
-            Some(e) => format!("refused: {e}"),
+            Some(error) => format!("refused: {error}"),
         };
         let remedy = self
             .refusal
             .as_ref()
-            .map_or_else(String::new, |e| e.remedy().to_owned());
+            .map_or_else(String::new, |error| error.remedy().to_owned());
         write!(
             out,
-            "{{\"seq\":{},\"policy_version\":{},\"kind\":\"{}\",\"lane\":\"{}\",\"mechanism\":\"{}\",\"idempotency\":\"{}\",\"request_digest\":\"{}\",\"verdict\":\"{}\",\"remedy\":\"{}\"}}",
-            self.seq,
-            self.policy_version,
+            "{{\"seq\":{},\"policy_version\":{},\"policy\":",
+            self.seq, self.policy_version,
+        )
+        .expect("writing to a String is infallible");
+        self.policy.write_json(&mut out);
+        write!(
+            out,
+            ",\"kind\":\"{}\",\"lane\":\"{}\",\"mechanism\":\"{}\",\"mechanism_lane\":\"{}\",\"idempotency\":\"{}\",\"request_digest\":\"{}\",\"request\":",
             self.kind.name(),
             self.lane,
             self.mechanism,
+            self.mechanism.lane(),
             self.idempotency,
             self.request_digest,
+        )
+        .expect("writing to a String is infallible");
+        self.request.write_json(&mut out);
+        write!(
+            out,
+            ",\"verdict\":\"{}\",\"remedy\":\"{}\"}}",
             json_escape(&verdict),
             json_escape(&remedy),
         )
@@ -871,26 +1262,34 @@ struct ActiveRecord {
     in_comparison: bool,
 }
 
-/// The atomic admission state machine. Exclusive access (`&mut self`)
-/// is the concurrency contract: every method validates COMPLETELY
-/// before mutating, so refused or replayed requests leave state
-/// unchanged and interleaved retries cannot oversubscribe.
-#[derive(Debug, Clone, PartialEq)]
+enum ReplayStatus {
+    Fresh,
+    Recorded(Option<LaneError>),
+    Conflict { original_seq: u64 },
+}
+
+/// The atomic admission state machine. Exclusive access to this
+/// non-Clone authority value is the in-process concurrency contract.
+/// Every request is completely validated and durably representable in
+/// the bounded replay record before governed state mutates.
+#[derive(Debug, PartialEq)]
 pub struct PortfolioLedger {
     policy: PortfolioPolicy,
     active: BTreeMap<MechanismId, ActiveRecord>,
     lane_active: BTreeMap<ProofLaneId, Vec<MechanismId>>,
-    class_active: BTreeMap<ContentHash, MechanismId>,
+    class_active: BTreeMap<ContentHash, BTreeSet<MechanismId>>,
     comparisons: BTreeMap<ProofLaneId, HeadToHeadCharter>,
     comparison_reserved: BTreeMap<ProofLaneId, ResourceEnvelope>,
     terminal: BTreeMap<MechanismId, TerminalKind>,
     reserved: ResourceEnvelope,
     decisions: Vec<AdmissionDecision>,
+    retained_decision_bytes: u64,
     idempotency: BTreeMap<IdempotencyKey, u64>,
+    conflict_idempotency: BTreeMap<(IdempotencyKey, ContentHash), u64>,
 }
 
 impl PortfolioLedger {
-    /// Empty ledger under `policy`.
+    /// Empty ledger under policy.
     #[must_use]
     pub fn new(policy: PortfolioPolicy) -> PortfolioLedger {
         PortfolioLedger {
@@ -903,7 +1302,9 @@ impl PortfolioLedger {
             terminal: BTreeMap::new(),
             reserved: ResourceEnvelope::default(),
             decisions: Vec::new(),
+            retained_decision_bytes: 0,
             idempotency: BTreeMap::new(),
+            conflict_idempotency: BTreeMap::new(),
         }
     }
 
@@ -919,24 +1320,36 @@ impl PortfolioLedger {
         self.reserved
     }
 
-    /// The full deterministic decision log.
+    /// Complete deterministic retained decision log.
     #[must_use]
     pub fn decisions(&self) -> &[AdmissionDecision] {
         &self.decisions
     }
 
-    /// Bounded JSON decision log: at most `limit` most-recent rows plus
-    /// an explicit truncation count (never a silent cap).
+    /// Canonical variable-size bytes charged to the retained log.
+    #[must_use]
+    pub fn retained_decision_bytes(&self) -> u64 {
+        self.retained_decision_bytes
+    }
+
+    /// Bounded JSON decision log: at most limit most-recent rows plus
+    /// explicit truncation and hard-retention metadata.
     #[must_use]
     pub fn decisions_json(&self, limit: usize) -> String {
         use core::fmt::Write as _;
         let skipped = self.decisions.len().saturating_sub(limit);
-        let mut out = format!("{{\"skipped\":{skipped},\"decisions\":[");
-        for (i, d) in self.decisions.iter().skip(skipped).enumerate() {
-            if i > 0 {
+        let mut out = format!(
+            "{{\"skipped\":{skipped},\"retained\":{},\"retained_cap\":{},\"retained_bytes\":{},\"retained_byte_cap\":{},\"decisions\":[",
+            self.decisions.len(),
+            MAX_RETAINED_DECISIONS,
+            self.retained_decision_bytes,
+            MAX_RETAINED_DECISION_BYTES,
+        );
+        for (index, decision) in self.decisions.iter().skip(skipped).enumerate() {
+            if index > 0 {
                 out.push(',');
             }
-            write!(out, "{}", d.to_json()).expect("writing to a String is infallible");
+            write!(out, "{}", decision.to_json()).expect("writing to a String is infallible");
         }
         out.push_str("]}");
         out
@@ -958,9 +1371,9 @@ impl PortfolioLedger {
     fn digest_preregister(charter: &HeadToHeadCharter) -> ContentHash {
         let mut canonical = Vec::new();
         push_field(&mut canonical, 1, b"preregister");
-        push_field(&mut canonical, 2, charter.lane.as_hash().as_bytes());
-        for c in &charter.candidates {
-            push_field(&mut canonical, 3, c.as_hash().as_bytes());
+        push_field(&mut canonical, 2, charter.lane().as_hash().as_bytes());
+        for candidate in &charter.candidates {
+            push_field(&mut canonical, 3, candidate.as_hash().as_bytes());
         }
         charter.shared.digest_into(&mut canonical, 4);
         push_field(
@@ -978,27 +1391,115 @@ impl PortfolioLedger {
         fs_blake3::hash_domain(REQUEST_DIGEST_DOMAIN, &canonical)
     }
 
-    /// Idempotency gate: `Ok(Some(..))` replays the recorded verdict
-    /// for a byte-identical request; `Err` refuses a different request
-    /// under a used key; `Ok(None)` means the key is fresh.
-    fn replay(
-        &self,
-        key: IdempotencyKey,
-        request_digest: ContentHash,
-    ) -> Result<Option<&AdmissionDecision>, LaneError> {
-        match self.idempotency.get(&key) {
-            None => Ok(None),
-            Some(seq) => {
-                let recorded = &self.decisions[usize::try_from(*seq).expect("seq fits usize")];
-                if recorded.request_digest == request_digest {
-                    Ok(Some(recorded))
-                } else {
-                    Err(LaneError::IdempotencyConflict { original_seq: *seq })
+    fn replay(&self, key: IdempotencyKey, request_digest: ContentHash) -> ReplayStatus {
+        let Some(seq) = self.idempotency.get(&key).copied() else {
+            return ReplayStatus::Fresh;
+        };
+        let recorded = usize::try_from(seq)
+            .ok()
+            .and_then(|index| self.decisions.get(index));
+        match recorded {
+            Some(decision) if decision.request_digest == request_digest => {
+                ReplayStatus::Recorded(decision.refusal.clone())
+            }
+            Some(_) => {
+                let conflict = self
+                    .conflict_idempotency
+                    .get(&(key, request_digest))
+                    .and_then(|conflict_seq| usize::try_from(*conflict_seq).ok())
+                    .and_then(|index| self.decisions.get(index));
+                match conflict {
+                    Some(decision) => ReplayStatus::Recorded(decision.refusal.clone()),
+                    None => ReplayStatus::Conflict { original_seq: seq },
                 }
             }
+            None => ReplayStatus::Conflict { original_seq: seq },
         }
     }
 
+    fn capacity_error(
+        axis: &'static str,
+        used: u64,
+        requested: u64,
+        reserved_for_finalization: u64,
+        cap: u64,
+    ) -> LaneError {
+        LaneError::RetentionCapacityExceeded {
+            axis,
+            used,
+            requested,
+            reserved_for_finalization,
+            cap,
+        }
+    }
+
+    fn ensure_record_capacity(
+        &self,
+        request_bytes: u64,
+        bind_idempotency: bool,
+        bind_conflict: bool,
+        active_after: usize,
+    ) -> Result<(), LaneError> {
+        let active_reserve = u64::try_from(active_after).unwrap_or(u64::MAX);
+        let decision_used = u64::try_from(self.decisions.len()).unwrap_or(u64::MAX);
+        let decision_cap = u64::try_from(MAX_RETAINED_DECISIONS).unwrap_or(u64::MAX);
+        let decision_total = decision_used
+            .checked_add(1)
+            .and_then(|value| value.checked_add(active_reserve));
+        if decision_total.is_none_or(|total| total > decision_cap) {
+            return Err(Self::capacity_error(
+                "decision-count",
+                decision_used,
+                1,
+                active_reserve,
+                decision_cap,
+            ));
+        }
+
+        let key_used = u64::try_from(
+            self.idempotency
+                .len()
+                .saturating_add(self.conflict_idempotency.len()),
+        )
+        .unwrap_or(u64::MAX);
+        let key_request = if bind_idempotency || bind_conflict {
+            1
+        } else {
+            0
+        };
+        let key_total = key_used
+            .checked_add(key_request)
+            .and_then(|value| value.checked_add(active_reserve));
+        if key_total.is_none_or(|total| total > decision_cap) {
+            return Err(Self::capacity_error(
+                "idempotency-count",
+                key_used,
+                key_request,
+                active_reserve,
+                decision_cap,
+            ));
+        }
+
+        let byte_reserve = active_reserve
+            .checked_mul(FINALIZATION_RECORD_RESERVE_BYTES)
+            .unwrap_or(u64::MAX);
+        let byte_total = self
+            .retained_decision_bytes
+            .checked_add(request_bytes)
+            .and_then(|value| value.checked_add(byte_reserve));
+        if byte_total.is_none_or(|total| total > MAX_RETAINED_DECISION_BYTES) {
+            return Err(Self::capacity_error(
+                "decision-bytes",
+                self.retained_decision_bytes,
+                request_bytes,
+                byte_reserve,
+                MAX_RETAINED_DECISION_BYTES,
+            ));
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn record(
         &mut self,
         kind: DecisionKind,
@@ -1006,79 +1507,127 @@ impl PortfolioLedger {
         mechanism: MechanismId,
         key: IdempotencyKey,
         request_digest: ContentHash,
+        request: DecisionRequestRef<'_>,
         refusal: Option<LaneError>,
-    ) -> u64 {
-        let seq = u64::try_from(self.decisions.len()).expect("decision count fits u64");
+        bind_idempotency: bool,
+        bind_conflict: bool,
+        active_after: usize,
+    ) -> Result<u64, LaneError> {
+        let request_bytes = request.retained_bytes();
+        self.ensure_record_capacity(request_bytes, bind_idempotency, bind_conflict, active_after)?;
+        // The only variable-size clones occur after both count and byte
+        // admission, so caller-controlled requests cannot allocate past
+        // the retained-log envelope.
+        let request = request.to_owned();
+        let seq = u64::try_from(self.decisions.len()).map_err(|_| {
+            Self::capacity_error(
+                "decision-count",
+                u64::MAX,
+                1,
+                u64::try_from(active_after).unwrap_or(u64::MAX),
+                u64::try_from(MAX_RETAINED_DECISIONS).unwrap_or(u64::MAX),
+            )
+        })?;
         self.decisions.push(AdmissionDecision {
             seq,
             policy_version: LANE_POLICY_VERSION,
+            policy: self.policy,
             kind,
             lane,
             mechanism,
             idempotency: key,
             request_digest,
+            request,
             refusal,
         });
-        self.idempotency.insert(key, seq);
-        seq
+        self.retained_decision_bytes += request_bytes;
+        if bind_idempotency {
+            self.idempotency.insert(key, seq);
+        }
+        if bind_conflict {
+            self.conflict_idempotency.insert((key, request_digest), seq);
+        }
+        Ok(seq)
     }
 
-    /// Preregister a bounded head-to-head comparison for a lane —
-    /// BEFORE any admission in that lane, at most one per lane.
+    /// Preregister a bounded head-to-head comparison for a lane before
+    /// any candidate in that comparison is admitted.
     ///
     /// # Errors
-    /// Structured [`LaneError`]; the refusal is also recorded in the
-    /// decision log under the presented idempotency key.
+    /// Structured LaneError; recorded refusals consume bounded audit
+    /// capacity, while exact retries do not.
     pub fn preregister_comparison(
         &mut self,
         charter: HeadToHeadCharter,
         key: IdempotencyKey,
     ) -> Result<(), LaneError> {
         let digest = Self::digest_preregister(&charter);
-        if let Some(recorded) = self.replay(key, digest)? {
-            return match &recorded.refusal {
-                None => Ok(()),
-                Some(e) => Err(e.clone()),
-            };
-        }
-        let lane = charter.lane;
+        let lane = charter.lane();
         let subject = charter.candidates[0];
+        let request = DecisionRequestRef::Preregister { charter: &charter };
+        match self.replay(key, digest) {
+            ReplayStatus::Recorded(refusal) => {
+                return refusal.map_or(Ok(()), Err);
+            }
+            ReplayStatus::Conflict { original_seq } => {
+                let error = LaneError::IdempotencyConflict { original_seq };
+                self.record(
+                    DecisionKind::Preregister,
+                    lane,
+                    subject,
+                    key,
+                    digest,
+                    request,
+                    Some(error.clone()),
+                    false,
+                    true,
+                    self.active.len(),
+                )?;
+                return Err(error);
+            }
+            ReplayStatus::Fresh => {}
+        }
         let verdict = if self.comparisons.contains_key(&lane) {
             Some(LaneError::ComparisonAlreadyDeclared { lane })
-        } else if self.lane_active.get(&lane).is_some_and(|v| !v.is_empty()) {
+        } else if self
+            .lane_active
+            .get(&lane)
+            .is_some_and(|active| !active.is_empty())
+        {
             Some(LaneError::ComparisonAfterAdmission { lane })
         } else {
             None
         };
-        let refused = verdict.clone();
         self.record(
             DecisionKind::Preregister,
             lane,
             subject,
             key,
             digest,
-            verdict,
-        );
-        match refused {
+            request,
+            verdict.clone(),
+            true,
+            false,
+            self.active.len(),
+        )?;
+        match verdict {
             None => {
                 self.comparison_reserved
                     .insert(lane, ResourceEnvelope::default());
                 self.comparisons.insert(lane, charter);
                 Ok(())
             }
-            Some(e) => Err(e),
+            Some(error) => Err(error),
         }
     }
 
-    /// Atomically admit one mechanism into its lane. Validation order
-    /// is deterministic: idempotency, terminal permanence, duplicate
-    /// activity, lane occupancy (with the preregistered-comparison
-    /// carve-out), independence-class collision, portfolio cap,
-    /// comparison envelope, global envelope. Any refusal leaves the
-    /// ledger unchanged except for the recorded decision.
+    /// Atomically admit one lane-bound mechanism. Validation order is
+    /// deterministic: idempotency, lane binding, terminal permanence,
+    /// duplicate activity, lane/class occupancy, portfolio cap,
+    /// comparison envelope, global envelope, retained-log capacity.
     ///
     /// # Errors
-    /// Structured [`LaneError`] with a ranked remedy.
+    /// Structured LaneError with a ranked remedy.
     pub fn admit(
         &mut self,
         charter: &LaneCharter,
@@ -1088,22 +1637,56 @@ impl PortfolioLedger {
     ) -> Result<(), LaneError> {
         let lane = charter.lane_id();
         let digest = Self::digest_admit(lane, mechanism, &reservation);
-        if let Some(recorded) = self.replay(key, digest)? {
-            return match &recorded.refusal {
-                None => Ok(()),
-                Some(e) => Err(e.clone()),
-            };
+        let request = DecisionRequestRef::Admit {
+            charter,
+            reservation,
+        };
+        match self.replay(key, digest) {
+            ReplayStatus::Recorded(refusal) => {
+                return refusal.map_or(Ok(()), Err);
+            }
+            ReplayStatus::Conflict { original_seq } => {
+                let error = LaneError::IdempotencyConflict { original_seq };
+                self.record(
+                    DecisionKind::Admit,
+                    lane,
+                    mechanism,
+                    key,
+                    digest,
+                    request,
+                    Some(error.clone()),
+                    false,
+                    true,
+                    self.active.len(),
+                )?;
+                return Err(error);
+            }
+            ReplayStatus::Fresh => {}
         }
         let class = charter.independence_class_id();
         let comparison = self.comparisons.get(&lane);
         let in_comparison = comparison.is_some();
         let verdict = self.admit_verdict(lane, class, mechanism, &reservation, comparison);
-        let refused = verdict.clone();
-        self.record(DecisionKind::Admit, lane, mechanism, key, digest, verdict);
-        if let Some(e) = refused {
-            return Err(e);
+        let active_after = if verdict.is_none() {
+            self.active.len().saturating_add(1)
+        } else {
+            self.active.len()
+        };
+        self.record(
+            DecisionKind::Admit,
+            lane,
+            mechanism,
+            key,
+            digest,
+            request,
+            verdict.clone(),
+            true,
+            false,
+            active_after,
+        )?;
+        if let Some(error) = verdict {
+            return Err(error);
         }
-        // Commit — every check passed; mutations are now unconditional.
         self.active.insert(
             mechanism,
             ActiveRecord {
@@ -1114,7 +1697,10 @@ impl PortfolioLedger {
             },
         );
         self.lane_active.entry(lane).or_default().push(mechanism);
-        self.class_active.entry(class).or_insert(mechanism);
+        self.class_active
+            .entry(class)
+            .or_default()
+            .insert(mechanism);
         if in_comparison {
             self.comparison_reserved
                 .entry(lane)
@@ -1133,6 +1719,12 @@ impl PortfolioLedger {
         reservation: &ResourceEnvelope,
         comparison: Option<&HeadToHeadCharter>,
     ) -> Option<LaneError> {
+        if mechanism.lane() != lane {
+            return Some(LaneError::MechanismLaneMismatch {
+                expected: lane,
+                actual: mechanism.lane(),
+            });
+        }
         if let Some(kind) = self.terminal.get(&mechanism) {
             return Some(LaneError::AlreadyTerminal {
                 mechanism,
@@ -1154,23 +1746,22 @@ impl PortfolioLedger {
                         active: *active,
                     });
                 }
-                // The split-gaming backstop: an ACTIVE bet in the same
-                // declared independence class (necessarily another
-                // lane here) blocks this one.
-                if let Some(active) = self.class_active.get(&class) {
+                if let Some(active) = self
+                    .class_active
+                    .get(&class)
+                    .and_then(|active| active.iter().next())
+                {
                     return Some(LaneError::IndependenceClassOccupied { active: *active });
                 }
             }
-            Some(h2h) => {
-                if !h2h.candidates.contains(&mechanism) {
+            Some(head_to_head) => {
+                if !head_to_head.candidates.contains(&mechanism) {
                     return Some(LaneError::NotADeclaredCandidate { lane });
                 }
-                // A comparison licenses multiple bets INSIDE its lane
-                // only — an active same-class bet in a DIFFERENT lane
-                // still blocks (the backstop cannot be evaded by
-                // preregistering a comparison elsewhere).
-                if let Some(active) = self.class_active.get(&class)
-                    && self.active.get(active).is_some_and(|r| r.lane != lane)
+                if let Some(active) = self
+                    .class_active
+                    .get(&class)
+                    .and_then(|active| active.iter().find(|active| active.lane() != lane))
                 {
                     return Some(LaneError::IndependenceClassOccupied { active: *active });
                 }
@@ -1179,8 +1770,11 @@ impl PortfolioLedger {
                     .get(&lane)
                     .copied()
                     .unwrap_or_default();
-                if let Err(e) = h2h.shared.admit(&comparison_used, reservation, true) {
-                    return Some(e);
+                if let Err(error) = head_to_head
+                    .shared
+                    .admit(&comparison_used, reservation, true)
+                {
+                    return Some(error);
                 }
             }
         }
@@ -1190,37 +1784,59 @@ impl PortfolioLedger {
                 cap: self.policy.max_active_mechanisms,
             });
         }
-        if let Err(e) = self.policy.global.admit(&self.reserved, reservation, false) {
-            return Some(e);
+        if let Err(error) = self.policy.global.admit(&self.reserved, reservation, false) {
+            return Some(error);
         }
         None
     }
 
-    /// Finalize a mechanism against a durable ledger receipt: the ONLY
-    /// path that releases a slot, and it releases exactly once. There
-    /// is deliberately no timeout/stall path — Unknown never releases.
+    /// Finalize a mechanism against a durable-ledger receipt. This is
+    /// the only path that releases a slot, and reserved audit capacity
+    /// guarantees that an already-active mechanism can record it.
     ///
     /// # Errors
-    /// Structured [`LaneError`].
+    /// Structured LaneError.
     pub fn finalize(
         &mut self,
         receipt: &FinalizationReceipt,
         key: IdempotencyKey,
     ) -> Result<(), LaneError> {
         let digest = Self::digest_finalize(receipt);
-        if let Some(recorded) = self.replay(key, digest)? {
-            return match &recorded.refusal {
-                None => Ok(()),
-                Some(e) => Err(e.clone()),
-            };
-        }
         let mechanism = receipt.mechanism;
+        let lane = mechanism.lane();
+        let conflict_request = DecisionRequestRef::Finalize {
+            receipt,
+            released: None,
+        };
+        match self.replay(key, digest) {
+            ReplayStatus::Recorded(refusal) => {
+                return refusal.map_or(Ok(()), Err);
+            }
+            ReplayStatus::Conflict { original_seq } => {
+                let error = LaneError::IdempotencyConflict { original_seq };
+                self.record(
+                    DecisionKind::Finalize,
+                    lane,
+                    mechanism,
+                    key,
+                    digest,
+                    conflict_request,
+                    Some(error.clone()),
+                    false,
+                    true,
+                    self.active.len(),
+                )?;
+                return Err(error);
+            }
+            ReplayStatus::Fresh => {}
+        }
         let expected = FinalizationReceipt::new(
             mechanism,
             receipt.kind,
             receipt.superseded_by,
             receipt.ledger_artifact,
         );
+        let active_record = self.active.get(&mechanism).cloned();
         let verdict =
             if expected.as_ref().map(FinalizationReceipt::identity) != Ok(receipt.identity) {
                 Some(LaneError::ReceiptInvalid {
@@ -1231,42 +1847,52 @@ impl PortfolioLedger {
                     mechanism,
                     kind: *kind,
                 })
-            } else if !self.active.contains_key(&mechanism) {
+            } else if active_record.is_none() {
                 Some(LaneError::UnknownMechanism { mechanism })
             } else {
                 None
             };
-        // For a finalize refused before any lane is known (unknown
-        // mechanism), the log row's lane column carries the receipt
-        // identity — a deterministic placeholder that cannot collide
-        // with a real lane id (different hash domain).
-        let lane = self
-            .active
-            .get(&mechanism)
-            .map_or_else(|| ProofLaneId(receipt.identity), |r| r.lane);
-        let refused = verdict.clone();
+        let released = verdict
+            .is_none()
+            .then(|| active_record.as_ref().map(|record| record.reservation))
+            .flatten();
+        let active_after = if verdict.is_none() {
+            self.active.len().saturating_sub(1)
+        } else {
+            self.active.len()
+        };
         self.record(
             DecisionKind::Finalize,
             lane,
             mechanism,
             key,
             digest,
-            verdict,
-        );
-        if let Some(e) = refused {
-            return Err(e);
+            DecisionRequestRef::Finalize { receipt, released },
+            verdict.clone(),
+            true,
+            false,
+            active_after,
+        )?;
+        if let Some(error) = verdict {
+            return Err(error);
         }
-        let record = self
-            .active
-            .remove(&mechanism)
-            .expect("presence checked before commit");
+        let Some(record) = self.active.remove(&mechanism) else {
+            return Err(LaneError::UnknownMechanism { mechanism });
+        };
         if let Some(occupants) = self.lane_active.get_mut(&record.lane) {
-            occupants.retain(|m| *m != mechanism);
+            occupants.retain(|candidate| *candidate != mechanism);
             if occupants.is_empty() {
                 self.lane_active.remove(&record.lane);
             }
         }
-        if self.class_active.get(&record.independence_class) == Some(&mechanism) {
+        let remove_class =
+            if let Some(active) = self.class_active.get_mut(&record.independence_class) {
+                active.remove(&mechanism);
+                active.is_empty()
+            } else {
+                false
+            };
+        if remove_class {
             self.class_active.remove(&record.independence_class);
         }
         if record.in_comparison
