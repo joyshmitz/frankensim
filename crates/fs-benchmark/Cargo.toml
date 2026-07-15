@@ -5,12 +5,13 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "The wedge-vertical benchmark & trace corpus (addendum Proposal 7): a single versioned, deterministic artifact — conjugate-heat-transfer query set, optimizer design tasks, edit traces, MMS battery, merge trials — with measurement helpers so the kill criteria of six+ proposals are instrumented rather than killed-by-default (Governance Rule 2)."
+description = "Fail-closed wedge benchmark corpus with admitted reference colors, typed evaluator schemas, and canonical evidence identities."
 
 [package.metadata.frankensim]
 layer = "UTIL"
 
 [dependencies]
+fs-blake3 = { path = "../fs-blake3" }
 fs-evidence = { path = "../fs-evidence" }
 
 [dev-dependencies]
