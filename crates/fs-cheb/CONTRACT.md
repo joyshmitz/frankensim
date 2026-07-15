@@ -257,12 +257,22 @@ structs.
   no FrankenScipy cross-checks yet.
 - `mul` may overshoot the minimal degree (resample-based); fine for
   correctness, recorded for the perf lane.
-- Budget slice 1 covers the adaptive constructor, the Dirichlet
-  eigensolve, and the sign-grid root scan ONLY. `cheb2`, `colleague`,
-  `fourier`, `orr_sommerfeld`, algebra (`add`/`mul`), calculus, and the
-  classic panicking entry points are NOT yet budgeted/cancellable —
-  tracked as the bead's remaining scope. The classic APIs keep their
-  panicking contracts unchanged for existing callers this slice.
+- Budget coverage after slice 2: EVERY module now has an exact-u128
+  admission preflight (`admit_adaptive_build`, `admit_dirichlet_eigs`,
+  `admit_root_scan`, `admit_colleague_roots`, `admit_cheb2_build`,
+  `admit_fourier_build`, `admit_growth_rates` — the last four typed-
+  refuse the shape violations the classic constructors panic on), and
+  the heaviest paths have Cx-threaded budgeted twins (adaptive build,
+  Dirichlet eigensolve, sign-grid root scan, colleague candidates).
+  `colleague_roots_budgeted` polls at the boundaries AROUND the
+  admission-bounded eigen tile — the tile itself is one
+  non-preemptible unit, and the classic path's numeric-evidence
+  asserts (exponent-span normalization, fixture-scale eigensolver
+  convergence) are retained inside it. Cx-threaded twins for
+  `Cheb2::build`, `FourierSeries::build`, `growth_rates`, algebra
+  (`add`/`mul`), and calculus remain the bead's outstanding scope; the
+  classic APIs keep their panicking contracts unchanged for existing
+  callers.
 - The abstract op counts in receipts are ADMITTED worst-case bounds,
   not measured cycle counts; no performance claim is attached.
 - `EigsRun` values are fixed-sweep estimates. `Complete` means all

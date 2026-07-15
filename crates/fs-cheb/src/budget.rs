@@ -1141,3 +1141,297 @@ impl Cheb1 {
         Ok(roots_t)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Slice 2 (bead sj31i.55): admission preflights for the remaining
+// modules — colleague rootfinding, 2D low-rank construction, Fourier
+// synthesis, and the Orr–Sommerfeld eigensolve — plus a budgeted twin
+// for the heaviest hazard (the O(n³) colleague companion eigensolve).
+// Every formula is exact u128 arithmetic BEFORE allocation; the classic
+// panicking APIs stay unchanged for their existing callers.
+// ---------------------------------------------------------------------------
+
+/// Worst-case preflight for [`crate::colleague::colleague_roots`]: an
+/// `n × n` COMPLEX companion matrix (n = degree before trimming), a QR
+/// eigensolve of ~O(n³) work with workspace copies, and the candidate
+/// filter/sort. Trimming can only shrink the realized problem.
+///
+/// # Errors
+/// [`ChebError`] — shape, overflow, or cap refusals.
+pub fn admit_colleague_roots(
+    coeff_len: usize,
+    budget: &ChebBudget,
+) -> Result<ChebAdmission, ChebError> {
+    if coeff_len < 2 {
+        return Err(ChebError::Shape {
+            what: "a constant polynomial has no roots to define",
+        });
+    }
+    let n = (coeff_len - 1) as u128;
+    cap_check(
+        "colleague matrix dimension",
+        n,
+        budget.max_eigen_dim as u128,
+    )?;
+    // Companion matrix (16-byte complex entries), eigensolver workspace
+    // (conservative 4x), coefficient copy, and the candidate vector.
+    let temp_bytes = n
+        .checked_mul(n)
+        .and_then(|cells| cells.checked_mul(16 * 4))
+        .and_then(|matrix| matrix.checked_add(coeff_len as u128 * 8))
+        .and_then(|total| total.checked_add(n * 16))
+        .ok_or(ChebError::Overflow {
+            what: "colleague matrix bytes",
+        })?;
+    cap_check(
+        "colleague temporary bytes",
+        temp_bytes,
+        u128::from(budget.max_temp_bytes),
+    )?;
+    // QR eigensolve iterations: conservative 30·n³ plus assembly n².
+    let ops = n
+        .checked_mul(n)
+        .and_then(|n2| n2.checked_mul(n))
+        .and_then(|n3| n3.checked_mul(30))
+        .and_then(|eig| eig.checked_add(n * n))
+        .ok_or(ChebError::Overflow {
+            what: "colleague eigensolve work",
+        })?;
+    cap_check("colleague work", ops, u128::from(budget.max_work_ops))?;
+    Ok(ChebAdmission {
+        schema_version: CHEB_BUDGET_SCHEMA_VERSION,
+        samples_admitted: 0,
+        coefficients_admitted: coeff_len,
+        ops_admitted: admitted_u64("colleague eigensolve work", ops)?,
+        temp_bytes_admitted: admitted_u64("colleague matrix bytes", temp_bytes)?,
+    })
+}
+
+/// Worst-case preflight for [`crate::cheb2::Cheb2::build`]: the
+/// deterministic `(ns+1)²` sample grid (`ns = max(2·max(max_degree,16),
+/// 33)`), up to `max_rank` ACA pivot sweeps over that grid, and the
+/// retained low-rank slice coefficients.
+///
+/// # Errors
+/// [`ChebError`] — domain, shape, overflow, or cap refusals.
+pub fn admit_cheb2_build(
+    domain: (f64, f64, f64, f64),
+    tol: f64,
+    max_rank: usize,
+    max_degree: usize,
+    budget: &ChebBudget,
+) -> Result<ChebAdmission, ChebError> {
+    let (a, b, c, d) = domain;
+    domain_check(a, b)?;
+    domain_check(c, d)?;
+    if !(tol.is_finite() && tol >= 0.0) {
+        return Err(ChebError::Shape {
+            what: "Cheb2 tolerance must be finite and non-negative",
+        });
+    }
+    if max_rank == 0 {
+        return Err(ChebError::Shape {
+            what: "Cheb2 max_rank must be positive",
+        });
+    }
+    let degree_cap = max_degree.max(16) as u128;
+    let ns = (degree_cap.checked_mul(2).ok_or(ChebError::Overflow {
+        what: "Cheb2 sample grid size",
+    })?)
+    .max(33);
+    let grid_side = ns.checked_add(1).ok_or(ChebError::Overflow {
+        what: "Cheb2 sample grid side",
+    })?;
+    let grid_cells = grid_side
+        .checked_mul(grid_side)
+        .ok_or(ChebError::Overflow {
+            what: "Cheb2 sample grid cells",
+        })?;
+    cap_check("Cheb2 sample grid", grid_cells, budget.max_samples as u128)?;
+    // Retained factors: max_rank row+column slices of grid_side coeffs.
+    let retained = (max_rank as u128)
+        .checked_mul(2)
+        .and_then(|slices| slices.checked_mul(grid_side))
+        .ok_or(ChebError::Overflow {
+            what: "Cheb2 retained coefficients",
+        })?;
+    cap_check(
+        "Cheb2 retained coefficients",
+        retained,
+        budget.max_coefficients as u128,
+    )?;
+    let temp_bytes = grid_cells
+        .checked_mul(8)
+        .and_then(|grid| grid.checked_add(retained.checked_mul(8)?))
+        .ok_or(ChebError::Overflow {
+            what: "Cheb2 temporary bytes",
+        })?;
+    cap_check(
+        "Cheb2 temporary bytes",
+        temp_bytes,
+        u128::from(budget.max_temp_bytes),
+    )?;
+    // Each ACA sweep scans the residual grid once plus two slice
+    // transforms (~5·side·log2(side) each).
+    let log2 = u128::from(grid_side.ilog2().max(1));
+    let ops = (max_rank as u128)
+        .checked_mul(
+            grid_cells
+                .checked_add(
+                    grid_side
+                        .checked_mul(10 * log2)
+                        .ok_or(ChebError::Overflow {
+                            what: "Cheb2 slice transform work",
+                        })?,
+                )
+                .ok_or(ChebError::Overflow {
+                    what: "Cheb2 sweep work",
+                })?,
+        )
+        .ok_or(ChebError::Overflow {
+            what: "Cheb2 total work",
+        })?;
+    cap_check("Cheb2 work", ops, u128::from(budget.max_work_ops))?;
+    let samples_admitted = usize::try_from(grid_cells).map_err(|_| ChebError::Overflow {
+        what: "Cheb2 sample grid cells",
+    })?;
+    let coefficients_admitted = usize::try_from(retained).map_err(|_| ChebError::Overflow {
+        what: "Cheb2 retained coefficients",
+    })?;
+    Ok(ChebAdmission {
+        schema_version: CHEB_BUDGET_SCHEMA_VERSION,
+        samples_admitted,
+        coefficients_admitted,
+        ops_admitted: admitted_u64("Cheb2 work", ops)?,
+        temp_bytes_admitted: admitted_u64("Cheb2 temporary bytes", temp_bytes)?,
+    })
+}
+
+/// Worst-case preflight for [`crate::fourier::FourierSeries::build`]:
+/// `n` samples (power of two, ≥ 2 — a typed refusal where the classic
+/// API panics), one radix-2 real transform, and the retained complex
+/// spectrum.
+///
+/// # Errors
+/// [`ChebError`] — shape or cap refusals.
+pub fn admit_fourier_build(n: usize, budget: &ChebBudget) -> Result<ChebAdmission, ChebError> {
+    if n < 2 || !n.is_power_of_two() {
+        return Err(ChebError::Shape {
+            what: "Fourier synthesis needs a power-of-two sample count >= 2",
+        });
+    }
+    let samples = n as u128;
+    cap_check("Fourier samples", samples, budget.max_samples as u128)?;
+    let temp_bytes = samples
+        .checked_mul(8)
+        .and_then(|real| real.checked_add(samples.checked_mul(16)?))
+        .ok_or(ChebError::Overflow {
+            what: "Fourier buffer bytes",
+        })?;
+    cap_check(
+        "Fourier temporary bytes",
+        temp_bytes,
+        u128::from(budget.max_temp_bytes),
+    )?;
+    let ops = samples * u128::from(n.ilog2().max(1)) * 5;
+    cap_check(
+        "Fourier transform work",
+        ops,
+        u128::from(budget.max_work_ops),
+    )?;
+    Ok(ChebAdmission {
+        schema_version: CHEB_BUDGET_SCHEMA_VERSION,
+        samples_admitted: n,
+        coefficients_admitted: n / 2 + 1,
+        ops_admitted: admitted_u64("Fourier transform work", ops)?,
+        temp_bytes_admitted: admitted_u64("Fourier buffer bytes", temp_bytes)?,
+    })
+}
+
+/// Worst-case preflight for
+/// [`crate::orr_sommerfeld::growth_rates`]: four dense `(n+1)²` real
+/// differentiation products, two complex operator matrices, one complex
+/// LU with `n+1` solves, and the O(m³) QR eigensolve.
+///
+/// # Errors
+/// [`ChebError`] — shape, overflow, or cap refusals.
+pub fn admit_growth_rates(
+    n: usize,
+    k: usize,
+    budget: &ChebBudget,
+) -> Result<ChebAdmission, ChebError> {
+    if n < 8 {
+        return Err(ChebError::Shape {
+            what: "Orr-Sommerfeld collocation needs n >= 8",
+        });
+    }
+    if k == 0 || k > n {
+        return Err(ChebError::Shape {
+            what: "requested eigenvalue count must be 1..=n",
+        });
+    }
+    let m = (n as u128).checked_add(1).ok_or(ChebError::Overflow {
+        what: "OS collocation dimension",
+    })?;
+    cap_check("OS collocation dimension", m, budget.max_eigen_dim as u128)?;
+    let m2 = m.checked_mul(m).ok_or(ChebError::Overflow {
+        what: "OS matrix cells",
+    })?;
+    // Four real D-powers (8 bytes) + A, B, M, LU complex (16 bytes).
+    let temp_bytes = m2.checked_mul(8 * 4 + 16 * 4).ok_or(ChebError::Overflow {
+        what: "OS matrix bytes",
+    })?;
+    cap_check(
+        "OS temporary bytes",
+        temp_bytes,
+        u128::from(budget.max_temp_bytes),
+    )?;
+    // Three real matmuls + LU/3 + m column solves + 30·m³ QR sweeps.
+    let m3 = m2.checked_mul(m).ok_or(ChebError::Overflow {
+        what: "OS cubic work",
+    })?;
+    let ops = m3.checked_mul(3 + 1 + 1 + 30).ok_or(ChebError::Overflow {
+        what: "OS total work",
+    })?;
+    cap_check("OS eigensolve work", ops, u128::from(budget.max_work_ops))?;
+    Ok(ChebAdmission {
+        schema_version: CHEB_BUDGET_SCHEMA_VERSION,
+        samples_admitted: 0,
+        coefficients_admitted: 0,
+        ops_admitted: admitted_u64("OS eigensolve work", ops)?,
+        temp_bytes_admitted: admitted_u64("OS matrix bytes", temp_bytes)?,
+    })
+}
+
+/// Budgeted, cancellable colleague-matrix root candidates: admission
+/// preflights the companion eigensolve BEFORE any allocation, and the
+/// run drains at the poll boundaries around the (single,
+/// admission-bounded) eigen tile. Candidate semantics are exactly
+/// [`crate::colleague::colleague_roots`] — the classic path runs
+/// unchanged between the polls, so happy-path results are
+/// bitwise-identical. Its numeric-evidence asserts (exponent-span
+/// normalization, eigensolver convergence at fixture scale) are
+/// retained this slice and documented in the contract.
+///
+/// # Errors
+/// [`ChebError`] — shape/overflow/cap refusals before any work, or
+/// [`ChebError::Cancelled`] at a drain boundary.
+pub fn colleague_roots_budgeted(
+    p: &Cheb1,
+    policy: crate::colleague::ColleaguePolicy,
+    budget: &ChebBudget,
+    cx: &Cx<'_>,
+) -> Result<Vec<f64>, ChebError> {
+    let _admission = admit_colleague_roots(p.coeffs().len(), budget)?;
+    if cx.checkpoint().is_err() {
+        return Err(ChebError::Cancelled);
+    }
+    let roots = crate::colleague::colleague_roots(p, policy);
+    if cx.checkpoint().is_err() {
+        // The eigen tile completed but the caller has drained: refuse
+        // publication rather than hand back a result the campaign will
+        // never charge.
+        return Err(ChebError::Cancelled);
+    }
+    Ok(roots)
+}

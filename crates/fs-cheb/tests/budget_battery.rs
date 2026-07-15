@@ -415,3 +415,125 @@ fn cb_006_receipt_determinism() {
         "eigensolve determinism incl. receipts"
     );
 }
+
+/// cb-007 — colleague admission + budgeted twin (slice 2): boundary
+/// tables refuse before allocation; the budgeted path matches the
+/// classic candidates bitwise; a pre-cancelled gate drains without
+/// running the eigensolve.
+#[test]
+fn cb_007_colleague_budgeted() {
+    use fs_cheb::colleague::ColleaguePolicy;
+    // Shape/cap boundaries.
+    assert!(matches!(
+        fs_cheb::admit_colleague_roots(1, &ChebBudget::default()),
+        Err(ChebError::Shape { .. })
+    ));
+    let mut tight = ChebBudget::default();
+    tight.max_eigen_dim = 8;
+    fs_cheb::admit_colleague_roots(9, &tight).expect("n = 8 admits at cap");
+    assert!(matches!(
+        fs_cheb::admit_colleague_roots(10, &tight),
+        Err(ChebError::CapExceeded {
+            what: "colleague matrix dimension",
+            ..
+        })
+    ));
+    assert!(matches!(
+        fs_cheb::admit_colleague_roots(usize::MAX, &ChebBudget::default()),
+        Err(ChebError::CapExceeded { .. }) | Err(ChebError::Overflow { .. })
+    ));
+
+    // Bitwise parity + cancellation drain.
+    let poly = Cheb1::build(&|x: f64| (x - 0.2) * (x + 0.4) * (x - 0.9), -1.0, 1.0, 64);
+    let classic = fs_cheb::colleague::colleague_roots(&poly, ColleaguePolicy::default());
+    let budgeted = with_cx(false, |cx| {
+        fs_cheb::colleague_roots_budgeted(
+            &poly,
+            ColleaguePolicy::default(),
+            &ChebBudget::default(),
+            cx,
+        )
+        .expect("admitted colleague run")
+    });
+    assert_eq!(budgeted.len(), classic.len());
+    for (lhs, rhs) in budgeted.iter().zip(&classic) {
+        assert_eq!(lhs.to_bits(), rhs.to_bits(), "candidate bit parity");
+    }
+    let refused = with_cx(true, |cx| {
+        fs_cheb::colleague_roots_budgeted(
+            &poly,
+            ColleaguePolicy::default(),
+            &ChebBudget::default(),
+            cx,
+        )
+        .expect_err("pre-cancelled gate drains before the eigen tile")
+    });
+    assert!(matches!(refused, ChebError::Cancelled), "{refused}");
+}
+
+/// cb-008 — slice-2 admission tables for the remaining modules:
+/// Cheb2 grids, Fourier synthesis, and the Orr–Sommerfeld eigensolve
+/// all preflight their worst case with typed refusals (including the
+/// panics the classic APIs would throw for shape violations).
+#[test]
+fn cb_008_remaining_module_admissions() {
+    let b = ChebBudget::default();
+    // Cheb2: domain/tol/rank shape refusals + grid caps.
+    assert!(matches!(
+        fs_cheb::admit_cheb2_build((0.0, 1.0, 0.0, 1.0), -1.0, 4, 64, &b),
+        Err(ChebError::Shape { .. })
+    ));
+    assert!(matches!(
+        fs_cheb::admit_cheb2_build((0.0, 1.0, 1.0, 1.0), 1e-12, 4, 64, &b),
+        Err(ChebError::Domain { .. })
+    ));
+    assert!(matches!(
+        fs_cheb::admit_cheb2_build((0.0, 1.0, 0.0, 1.0), 1e-12, 0, 64, &b),
+        Err(ChebError::Shape { .. })
+    ));
+    let ok = fs_cheb::admit_cheb2_build((0.0, 1.0, 0.0, 1.0), 1e-12, 4, 64, &b)
+        .expect("modest 2D build admits");
+    assert_eq!(ok.samples_admitted(), 129 * 129, "ns = 128 grid side 129");
+    assert!(matches!(
+        fs_cheb::admit_cheb2_build((0.0, 1.0, 0.0, 1.0), 1e-12, 4, usize::MAX, &b),
+        Err(ChebError::Overflow { .. }) | Err(ChebError::CapExceeded { .. })
+    ));
+
+    // Fourier: typed power-of-two refusal where the classic API panics.
+    for bad in [0usize, 1, 3, 1000] {
+        assert!(matches!(
+            fs_cheb::admit_fourier_build(bad, &b),
+            Err(ChebError::Shape { .. })
+        ));
+    }
+    let four = fs_cheb::admit_fourier_build(1024, &b).expect("radix-2 admits");
+    assert_eq!(four.samples_admitted(), 1024);
+    let mut small = ChebBudget::default();
+    small.max_samples = 512;
+    assert!(matches!(
+        fs_cheb::admit_fourier_build(1024, &small),
+        Err(ChebError::CapExceeded {
+            what: "Fourier samples",
+            ..
+        })
+    ));
+
+    // Orr–Sommerfeld: n >= 8, k in 1..=n, dimension/work caps.
+    assert!(matches!(
+        fs_cheb::admit_growth_rates(4, 1, &b),
+        Err(ChebError::Shape { .. })
+    ));
+    assert!(matches!(
+        fs_cheb::admit_growth_rates(48, 0, &b),
+        Err(ChebError::Shape { .. })
+    ));
+    assert!(matches!(
+        fs_cheb::admit_growth_rates(48, 49, &b),
+        Err(ChebError::Shape { .. })
+    ));
+    fs_cheb::admit_growth_rates(48, 4, &b).expect("fixture-scale OS admits");
+    assert!(matches!(
+        fs_cheb::admit_growth_rates(usize::MAX, 1, &b),
+        Err(ChebError::Overflow { .. }) | Err(ChebError::CapExceeded { .. })
+    ));
+}
