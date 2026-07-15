@@ -398,7 +398,8 @@ fn dd_005_sheaf_cross_check_and_ccd_locality() {
     // Orientation-aware cycle 0->1->3->2->0 over edges
     // (0,1)+, (1,3)+, (2,3)-, (0,2)-.
     let circulation = vec![1.0, 1.0, -1.0, -1.0];
-    let split = hodge_decompose(&skeleton, &circulation);
+    let split =
+        hodge_decompose(&skeleton, &circulation).expect("valid BDDC sheaf incidence fixture");
     assert!(
         split.fractions.2 > 0.999,
         "the subdomain cycle's harmonic mode exists: {:?}",

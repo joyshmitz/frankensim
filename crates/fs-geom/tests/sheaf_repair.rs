@@ -188,28 +188,28 @@ fn dense_projection(m: &[f64], columns: &[Vec<f64>]) -> Vec<f64> {
 fn sr_001_sequential_fit_matches_dense_fixture() {
     let sk = triangle();
     // A mixed cochain: gauge part + circulation part.
-    let gauge_part = sk.d0(&[0.0, 0.7, -0.3]);
-    let circ_part = sk.d1t(&[0.4]);
+    let gauge_part = sk.d0(&[0.0, 0.7, -0.3]).expect("valid gauge fixture");
+    let circ_part = sk.d1t(&[0.4]).expect("valid circulation fixture");
     let m: Vec<f64> = gauge_part
         .iter()
         .zip(&circ_part)
         .map(|(a, b)| a + b)
         .collect();
-    let split = hodge_decompose(&sk, &m);
+    let split = hodge_decompose(&sk, &m).expect("valid mixed decomposition fixture");
     // Oracle: dense projection onto im δ⁰ (columns = δ⁰ of unit vertex
     // vectors, vertex 0 pinned) and im δ¹ᵀ.
     let d0_cols: Vec<Vec<f64>> = (1..sk.n_patches)
         .map(|i| {
             let mut e = vec![0.0; sk.n_patches];
             e[i] = 1.0;
-            sk.d0(&e)
+            sk.d0(&e).expect("valid dense-reference basis")
         })
         .collect();
     let c_oracle = dense_projection(&m, &d0_cols);
     let exact_oracle = {
         let mut full = vec![0.0; sk.n_patches];
         full[1..].copy_from_slice(&c_oracle);
-        sk.d0(&full)
+        sk.d0(&full).expect("valid dense-reference projection")
     };
     for (got, want) in split.exact.iter().zip(&exact_oracle) {
         assert!(
@@ -224,8 +224,8 @@ fn sr_001_sequential_fit_matches_dense_fixture() {
         split.harmonic
     );
     // Orthogonality residuals: δ⁰ᵀh ≈ 0 and δ¹h ≈ 0.
-    assert!(norm_inf(&sk.d0t(&split.harmonic)) < 1e-8);
-    assert!(norm_inf(&sk.d1(&split.harmonic)) < 1e-8);
+    assert!(norm_inf(&sk.d0t(&split.harmonic).expect("valid harmonic transpose")) < 1e-8);
+    assert!(norm_inf(&sk.d1(&split.harmonic).expect("valid harmonic boundary")) < 1e-8);
     // This fixture also verifies near-orthogonality, so its diagnostic ratios
     // sum to approximately one. The API does not claim that law generically.
     let (fe, fc, fh) = split.fractions;
@@ -244,7 +244,9 @@ fn sr_001_sequential_fit_matches_dense_fixture() {
 fn sr_002_exact_defect_auto_repairs_within_budget() {
     let sk = triangle();
     // Seed a pure gauge defect: patch 2 drifted by +0.012.
-    let mismatch = sk.d0(&[0.0, 0.0, 0.012]);
+    let mismatch = sk
+        .d0(&[0.0, 0.0, 0.012])
+        .expect("valid exact-defect fixture");
     let budgets = [0.02, 0.02, 0.02];
     let plan = plan_repair(&sk, &mismatch, &budgets, None).expect("valid repair plan");
     assert!(
@@ -318,7 +320,10 @@ fn sr_002a_component_gauge_shift_finds_feasible_budget_representative() {
         "a feasible gauge representative exists"
     );
     assert_eq!(plan.gauge, vec![-1.0, 1.0, -2.0, 2.0]);
-    assert_eq!(sk.d0(&plan.gauge), mismatch);
+    assert_eq!(
+        sk.d0(&plan.gauge).expect("valid component coboundary"),
+        mismatch
+    );
     assert_eq!(
         try_apply_gauge(&sk, &mismatch, &plan.gauge).expect("valid component gauge"),
         vec![0.0; 2]
@@ -342,7 +347,10 @@ fn sr_002a_component_gauge_shift_finds_feasible_budget_representative() {
         vec![2.0, 0.0],
         "feasible shift interval [1,3] uses its deterministic maximum-slack midpoint"
     );
-    assert_eq!(one_edge.d0(&slack.gauge), vec![-2.0]);
+    assert_eq!(
+        one_edge.d0(&slack.gauge).expect("valid slack coboundary"),
+        vec![-2.0]
+    );
 
     let centered =
         plan_repair(&one_edge, &[2.0], &[100.0, 100.0], None).expect("valid centered plan");
@@ -351,11 +359,27 @@ fn sr_002a_component_gauge_shift_finds_feasible_budget_representative() {
         vec![-1.0, 1.0],
         "feasible interval [-100,98] uses its maximum-slack midpoint, not zero"
     );
-    assert_eq!(one_edge.d0(&centered.gauge), vec![2.0]);
+    assert_eq!(
+        one_edge
+            .d0(&centered.gauge)
+            .expect("valid centered coboundary"),
+        vec![2.0]
+    );
 }
 
 #[test]
 fn sr_002aa_skeleton_extraction_refuses_unvalidated_public_complex() {
+    let empty = SheafComplex {
+        n_patches: 0,
+        interfaces: Vec::new(),
+        triples: Vec::new(),
+        sampling_clip: None,
+    };
+    assert_eq!(
+        SheafSkeleton::of(&empty),
+        Err(SheafSkeletonError::EmptyComplex)
+    );
+
     let malformed = SheafComplex {
         n_patches: 2,
         interfaces: vec![Interface {
@@ -368,6 +392,154 @@ fn sr_002aa_skeleton_extraction_refuses_unvalidated_public_complex() {
     assert!(
         SheafSkeleton::of(&malformed).is_err(),
         "public malformed indices must not be copied into later incidence panics"
+    );
+}
+
+#[test]
+fn sr_002ab_raw_incidence_and_hodge_refuse_adversarial_inputs() {
+    let skeleton = triangle();
+
+    assert_eq!(
+        skeleton.d0(&[0.0, 1.0]),
+        Err(SheafSkeletonError::CochainLength {
+            role: "vertex",
+            expected: 3,
+            actual: 2,
+        })
+    );
+    assert_eq!(
+        skeleton.d0(&[0.0, f64::NAN, 1.0]),
+        Err(SheafSkeletonError::NonFiniteCochain {
+            role: "vertex",
+            index: 1,
+        })
+    );
+    assert_eq!(
+        skeleton.d0(&[-f64::MAX, f64::MAX, 0.0]),
+        Err(SheafSkeletonError::NumericalOverflow { stage: "d0" })
+    );
+
+    assert_eq!(
+        skeleton.d0t(&[0.0, 0.0]),
+        Err(SheafSkeletonError::CochainLength {
+            role: "edge",
+            expected: 3,
+            actual: 2,
+        })
+    );
+    assert_eq!(
+        skeleton.d0t(&[0.0, f64::INFINITY, 0.0]),
+        Err(SheafSkeletonError::NonFiniteCochain {
+            role: "edge",
+            index: 1,
+        })
+    );
+    assert_eq!(
+        skeleton.d0t(&[f64::MAX, f64::MAX, f64::MAX]),
+        Err(SheafSkeletonError::NumericalOverflow { stage: "d0t" })
+    );
+
+    assert_eq!(
+        skeleton.d1(&[0.0, 0.0]),
+        Err(SheafSkeletonError::CochainLength {
+            role: "edge",
+            expected: 3,
+            actual: 2,
+        })
+    );
+    assert_eq!(
+        skeleton.d1(&[0.0, f64::NEG_INFINITY, 0.0]),
+        Err(SheafSkeletonError::NonFiniteCochain {
+            role: "edge",
+            index: 1,
+        })
+    );
+    assert_eq!(
+        skeleton.d1(&[f64::MAX, f64::MAX, -f64::MAX]),
+        Err(SheafSkeletonError::NumericalOverflow { stage: "d1" })
+    );
+
+    assert_eq!(
+        skeleton.d1t(&[]),
+        Err(SheafSkeletonError::CochainLength {
+            role: "triangle",
+            expected: 1,
+            actual: 0,
+        })
+    );
+    assert_eq!(
+        skeleton.d1t(&[f64::NAN]),
+        Err(SheafSkeletonError::NonFiniteCochain {
+            role: "triangle",
+            index: 0,
+        })
+    );
+    let shared_edge_triangles = SheafSkeleton {
+        n_patches: 4,
+        edges: vec![(0, 1), (1, 2), (0, 2), (1, 3), (0, 3)],
+        triangles: vec![(0, 1, 2), (0, 1, 3)],
+    };
+    assert_eq!(
+        shared_edge_triangles.d1t(&[f64::MAX, f64::MAX]),
+        Err(SheafSkeletonError::NumericalOverflow { stage: "d1t" })
+    );
+
+    let malformed_triangle = SheafSkeleton {
+        n_patches: 3,
+        edges: vec![(0, 1), (1, 2)],
+        triangles: vec![(0, 1, 2)],
+    };
+    assert_eq!(
+        malformed_triangle.d1(&[0.0, 0.0]),
+        Err(SheafSkeletonError::InvalidTriangle { index: 0 })
+    );
+    assert_eq!(
+        hodge_decompose(&malformed_triangle, &[0.0, 0.0]),
+        Err(SheafRepairError::Skeleton(
+            SheafSkeletonError::InvalidTriangle { index: 0 }
+        ))
+    );
+    assert_eq!(
+        hodge_decompose(&skeleton, &[0.0, 0.0]),
+        Err(SheafRepairError::Skeleton(
+            SheafSkeletonError::CochainLength {
+                role: "mismatch",
+                expected: 3,
+                actual: 2,
+            }
+        ))
+    );
+    assert_eq!(
+        hodge_decompose(&skeleton, &[0.0, f64::NAN, 0.0]),
+        Err(SheafRepairError::Skeleton(
+            SheafSkeletonError::NonFiniteCochain {
+                role: "mismatch",
+                index: 1,
+            }
+        ))
+    );
+    assert!(matches!(
+        hodge_decompose(&skeleton, &[f64::MAX; 3]),
+        Err(SheafRepairError::Skeleton(
+            SheafSkeletonError::NumericalOverflow { .. }
+        )) | Err(SheafRepairError::NumericalOverflow { .. })
+    ));
+
+    let vertex = [2.0, -3.0, 5.0];
+    let edge = skeleton.d0(&vertex).expect("valid raw coboundary");
+    assert_eq!(edge, vec![-5.0, 8.0, 3.0]);
+    assert_eq!(
+        skeleton.d1(&edge).expect("valid raw boundary composition"),
+        vec![0.0],
+        "raw incidence preserves caller edge-coordinate order"
+    );
+    assert_eq!(
+        skeleton.d0t(&edge).expect("valid raw transpose"),
+        vec![2.0, -13.0, 11.0]
+    );
+    assert_eq!(
+        skeleton.d1t(&[4.0]).expect("valid raw triangle transpose"),
+        vec![4.0, 4.0, -4.0]
     );
 }
 
@@ -509,12 +681,16 @@ fn sr_002b_malformed_repair_inputs_refuse_without_partial_plan() {
             stage: "apply-gauge",
         })
     );
-    assert!(
-        matches!(
-            apply_gauge(&sk, &mismatch[..2], &[0.0; 3]).as_slice(),
-            [value] if value.is_nan()
-        ),
-        "the compatibility adapter is total and preserves fail-closed downstream behavior"
+    assert_eq!(
+        apply_gauge(&sk, &mismatch[..2], &[0.0; 3]),
+        Err(SheafRepairError::Skeleton(
+            SheafSkeletonError::CochainLength {
+                role: "mismatch",
+                expected: 3,
+                actual: 2,
+            }
+        )),
+        "the compatibility name preserves the typed refusal"
     );
 
     let replay = plan_repair(&sk, &mismatch, &[1.0; 3], None).expect("valid retry plan");
@@ -529,7 +705,7 @@ fn sr_003_coexact_seeding_retains_noncausal_diagnostic() {
     let sk = triangle();
     // Seed a pure circulation (the flipped-orientation signature): the
     // image of δ¹ᵀ.
-    let mismatch = sk.d1t(&[0.05]);
+    let mismatch = sk.d1t(&[0.05]).expect("valid coexact-seeding fixture");
     let plan = plan_repair(&sk, &mismatch, &[1.0; 3], None).expect("valid coexact plan");
     assert!(
         plan.split.fractions.1 > 0.999,
@@ -582,11 +758,17 @@ fn sr_004_harmonic_seeding_retains_closed_nonexact_witness() {
         plan.split.harmonic
     );
     assert!(
-        norm_inf(&sk.d1(&plan.split.harmonic)) < 1e-12,
+        norm_inf(
+            &sk.d1(&plan.split.harmonic)
+                .expect("valid retained harmonic boundary")
+        ) < 1e-12,
         "the retained mismatch cochain must be closed"
     );
     assert!(
-        norm_inf(&sk.d0t(&plan.split.harmonic)) < 1e-12,
+        norm_inf(
+            &sk.d0t(&plan.split.harmonic)
+                .expect("valid retained harmonic transpose")
+        ) < 1e-12,
         "the harmonic witness must be orthogonal to every exact cochain"
     );
     // Exact edge cochains telescope to zero around this oriented cycle.
@@ -640,7 +822,9 @@ fn sr_004_harmonic_seeding_retains_closed_nonexact_witness() {
 #[test]
 fn sr_004a_subfloor_remainder_is_retained_but_not_promoted_to_support() {
     let sk = ring();
-    let exact = sk.d0(&[0.0, 1.0, 0.0, -1.0]);
+    let exact = sk
+        .d0(&[0.0, 1.0, 0.0, -1.0])
+        .expect("valid subfloor exact fixture");
     let eps = 1e-8;
     let cycle = [eps, eps, eps, -eps];
     let mismatch: Vec<f64> = exact.iter().zip(cycle).map(|(a, b)| a + b).collect();
@@ -669,7 +853,9 @@ fn sr_004a_subfloor_remainder_is_retained_but_not_promoted_to_support() {
 #[test]
 fn sr_005_router_reroute_proposal_ranks_by_expected_norm() {
     let sk = triangle();
-    let mismatch = sk.d0(&[0.0, 0.0, 0.012]);
+    let mismatch = sk
+        .d0(&[0.0, 0.0, 0.012])
+        .expect("valid reroute mismatch fixture");
     // A router with one declared conversion available for the worst patch's
     // chart kind. The declaration is not authenticated certificate authority.
     let mut router = Router::new();
@@ -1111,7 +1297,9 @@ fn sr_010_bounded_plan_retains_complete_budget_and_usage() {
 fn sr_011_bounded_plan_matches_legacy_arithmetic_and_replays() {
     let raw = canonical_triangle();
     let admitted = admitted_triangle();
-    let mismatch = raw.d0(&[0.0, -0.375, 0.625]);
+    let mismatch = raw
+        .d0(&[0.0, -0.375, 0.625])
+        .expect("valid legacy-parity fixture");
     let gauge_budgets = [1.0; 3];
     let mut router = Router::new();
     router

@@ -65,8 +65,15 @@ fn sm_001_gauge_fit_auto_reconciles_with_checked_residual() {
     let sk = triangle();
     let base = vec![0.0; 3];
     // X re-gauges patch 1, Y re-gauges patch 2: pure coboundary edits.
-    let x = branch("agent-x@c1", sk.d0(&[0.0, 0.02, 0.0]));
-    let y = branch("agent-y@c2", sk.d0(&[0.0, 0.0, -0.015]));
+    let x = branch(
+        "agent-x@c1",
+        sk.d0(&[0.0, 0.02, 0.0]).expect("valid agent-x coboundary"),
+    );
+    let y = branch(
+        "agent-y@c2",
+        sk.d0(&[0.0, 0.0, -0.015])
+            .expect("valid agent-y coboundary"),
+    );
     let out = three_way_merge(&sk, &base, &x, &y, None, 1e-9, 1e-6);
     match out {
         MergeOutcome::Resolved {
@@ -111,14 +118,20 @@ fn sm_002_retained_ring_witness_escalates_candidate_with_parent_labels() {
         .zip(&base)
         .map(|((x_value, y_value), base_value)| x_value + y_value - base_value)
         .collect();
-    let split = hodge_decompose(&sk, &union);
+    let split = hodge_decompose(&sk, &union).expect("valid ring decomposition");
     assert!(norm_inf(&split.harmonic) > 0.03, "nonzero retained witness");
     assert!(
-        norm_inf(&sk.d1(&split.harmonic)) < 1e-12,
+        norm_inf(
+            &sk.d1(&split.harmonic)
+                .expect("valid ring harmonic boundary")
+        ) < 1e-12,
         "ring witness is closed in the retained skeleton complex"
     );
     assert!(
-        norm_inf(&sk.d0t(&split.harmonic)) < 1e-12,
+        norm_inf(
+            &sk.d0t(&split.harmonic)
+                .expect("valid ring harmonic transpose")
+        ) < 1e-12,
         "ring witness is orthogonal to patch-gauge cochains"
     );
     let cycle_pairing =
@@ -173,21 +186,21 @@ fn sm_003_gauge_edits_resolve_and_cycle_candidates_block_auto_merge() {
     for trial in 0..20 {
         let gx: Vec<f64> = (0..4).map(|_| 0.1 * lcg()).collect();
         let gy: Vec<f64> = (0..4).map(|_| 0.1 * lcg()).collect();
-        let x = branch("x", sk.d0(&gx));
-        let y = branch("y", sk.d0(&gy));
+        let x = branch("x", sk.d0(&gx).expect("valid seeded x coboundary"));
+        let y = branch("y", sk.d0(&gy).expect("valid seeded y coboundary"));
         let out = three_way_merge(&sk, &base, &x, &y, None, 1e-9, 1e-6);
         assert!(
             matches!(out, MergeOutcome::Resolved { .. }),
             "gauge-only trial {trial} must resolve"
         );
         // Now inject a cycle component into X.
-        let mut mx = sk.d0(&gx);
+        let mut mx = sk.d0(&gx).expect("valid tainted x coboundary");
         let eps = 0.02 + 0.05 * lcg().abs();
         for (k, v) in mx.iter_mut().enumerate() {
             *v += if k == 3 { -eps } else { eps };
         }
         let x2 = branch("x", mx);
-        let y2 = branch("y", sk.d0(&gy));
+        let y2 = branch("y", sk.d0(&gy).expect("valid repeated y coboundary"));
         let out2 = three_way_merge(&sk, &base, &x2, &y2, None, 1e-9, 1e-6);
         assert!(
             matches!(
@@ -226,8 +239,14 @@ fn sm_003b_exact_tree_remainder_is_candidate_not_topology() {
         x_potential[patch] = x_potential[patch - 1] + 0.1 / 31.0;
         y_potential[patch] = y_potential[patch - 1] + 0.05 / 31.0;
     }
-    let x = branch("tree-x", sk.d0(&x_potential));
-    let y = branch("tree-y", sk.d0(&y_potential));
+    let x = branch(
+        "tree-x",
+        sk.d0(&x_potential).expect("valid tree-x coboundary"),
+    );
+    let y = branch(
+        "tree-y",
+        sk.d0(&y_potential).expect("valid tree-y coboundary"),
+    );
     let base = vec![0.0; sk.edges.len()];
     let union: Vec<f64> = x
         .mismatch
@@ -241,7 +260,9 @@ fn sm_003b_exact_tree_remainder_is_candidate_not_topology() {
         .map(|(x_value, y_value)| x_value + y_value)
         .collect();
     assert!(
-        norm_inf(&apply_gauge(&sk, &union, &known_gauge)) < 1e-15,
+        norm_inf(
+            &apply_gauge(&sk, &union, &known_gauge).expect("valid explicit tree gauge repair")
+        ) < 1e-15,
         "an explicit local patch-gauge repair exists"
     );
 
@@ -278,13 +299,13 @@ fn sm_004_sev0_escalates_instead_of_false_resolution() {
     // requested tolerance. The Sev-0 guard must escalate.
     let sk = triangle();
     let base = vec![0.0; 3];
-    let circulation = sk.d1t(&[0.05]);
+    let circulation = sk.d1t(&[0.05]).expect("valid Sev-0 circulation fixture");
     let x = branch("x", circulation.clone());
     let y = branch("y", vec![0.0; 3]);
     // Wait: Y unchanged from base triggers the trivial path — perturb Y
     // slightly so the merge genuinely runs.
     let y = BranchState {
-        mismatch: sk.d0(&[0.0, 1e-3, 0.0]),
+        mismatch: sk.d0(&[0.0, 1e-3, 0.0]).expect("valid Sev-0 y coboundary"),
         ..y
     };
     let out = three_way_merge(&sk, &base, &x, &y, None, 1e-6, 1e-6);
@@ -305,7 +326,11 @@ fn sm_004_sev0_escalates_instead_of_false_resolution() {
         other => panic!("Sev-0: must escalate, never report resolved falsely: {other:?}"),
     }
     // And the trivial fast paths themselves.
-    let same = branch("s", sk.d0(&[0.0, 0.01, 0.0]));
+    let same = branch(
+        "s",
+        sk.d0(&[0.0, 0.01, 0.0])
+            .expect("valid trivial-path coboundary"),
+    );
     let t1 = three_way_merge(&sk, &base, &same, &same.clone(), None, 1e-9, 1e-6);
     assert!(matches!(t1, MergeOutcome::Trivial { reason, .. } if reason == "branches identical"));
     let unchanged = branch("u", base.clone());
@@ -321,8 +346,16 @@ fn sm_004_sev0_escalates_instead_of_false_resolution() {
         edges: sk.edges.clone(),
         triangles: sk.triangles.clone(),
     };
-    let x_low = branch("x-low", low_gap.d1t(&[0.05]));
-    let y_low = branch("y-low", low_gap.d0(&[0.0, 1e-3, 0.0, 0.0]));
+    let x_low = branch(
+        "x-low",
+        low_gap.d1t(&[0.05]).expect("valid low-gap circulation"),
+    );
+    let y_low = branch(
+        "y-low",
+        low_gap
+            .d0(&[0.0, 1e-3, 0.0, 0.0])
+            .expect("valid low-gap coboundary"),
+    );
     assert!(matches!(
         three_way_merge(
             &low_gap,
@@ -352,10 +385,18 @@ fn sm_005_assignment_authority_refusal_and_degraded_gap() {
     // Pairwise-different values are a useful candidate diagnostic, but without
     // a base assignment map either branch might be unchanged. The merge must
     // refuse rather than manufacture three-way conflict authority.
-    let mut x = branch("x", sk.d0(&[0.0, 0.01, 0.0]));
+    let mut x = branch(
+        "x",
+        sk.d0(&[0.0, 0.01, 0.0])
+            .expect("valid assignment x coboundary"),
+    );
     x.assignments
         .insert("loadcase/cruise".to_string(), "2.5g".to_string());
-    let mut y = branch("y", sk.d0(&[0.0, 0.0, 0.01]));
+    let mut y = branch(
+        "y",
+        sk.d0(&[0.0, 0.0, 0.01])
+            .expect("valid assignment y coboundary"),
+    );
     y.assignments
         .insert("loadcase/cruise".to_string(), "3.0g".to_string());
     let candidates = type_conflicts(&x, &y);
@@ -379,8 +420,18 @@ fn sm_005_assignment_authority_refusal_and_degraded_gap() {
     let weights = vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1e-4];
     let gap = spectral_gap(&barbell, Some(&weights));
     assert!(gap < 1e-3, "weak-link gap is tiny: {gap}");
-    let xb = branch("x", barbell.d0(&[0.0, 0.01, 0.0, 0.0, 0.0, 0.0]));
-    let yb = branch("y", barbell.d0(&[0.0, 0.0, 0.0, 0.0, -0.01, 0.0]));
+    let xb = branch(
+        "x",
+        barbell
+            .d0(&[0.0, 0.01, 0.0, 0.0, 0.0, 0.0])
+            .expect("valid barbell x coboundary"),
+    );
+    let yb = branch(
+        "y",
+        barbell
+            .d0(&[0.0, 0.0, 0.0, 0.0, -0.01, 0.0])
+            .expect("valid barbell y coboundary"),
+    );
     let base_b = vec![0.0; 7];
     let out_b = three_way_merge(&barbell, &base_b, &xb, &yb, Some(&weights), 1e-9, 1e-3);
     match out_b {
@@ -428,7 +479,9 @@ fn sm_005_assignment_authority_refusal_and_degraded_gap() {
 fn sm_005a_nonconflicting_assignments_refuse_instead_of_disappearing() {
     let sk = triangle();
     let base = vec![0.0; 3];
-    let mismatch = sk.d0(&[0.0, 0.01, 0.0]);
+    let mismatch = sk
+        .d0(&[0.0, 0.01, 0.0])
+        .expect("valid nonconflicting assignment coboundary");
     let mut x = branch("x", mismatch.clone());
     x.assignments
         .insert("material/left".to_string(), "steel".to_string());

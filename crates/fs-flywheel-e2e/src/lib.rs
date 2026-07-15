@@ -755,41 +755,54 @@ pub fn run_loop(config: &LoopConfig, iterations: usize, seed: u64) -> LoopReport
             // Gauge-style concurrent edits (occasionally a circulation
             // taint that genuinely conflicts).
             let taint = logical_draw(seed, DrawDomain::MergeTaint, iter, 0, 0) < 0.1;
-            let x = BranchState {
-                provenance: format!("agent-x@{iter}"),
-                mismatch: if taint {
-                    skeleton.d1t(&[0.05])
-                } else {
-                    skeleton.d0(&[
-                        0.0,
-                        0.01 * logical_draw(seed, DrawDomain::MergeXGauge, iter, 0, 0),
-                        0.0,
-                    ])
-                },
-                assignments: BTreeMap::new(),
-            };
-            let y = BranchState {
-                provenance: format!("agent-y@{iter}"),
-                mismatch: skeleton.d0(&[
+            let x_mismatch = if taint {
+                skeleton.d1t(&[0.05])
+            } else {
+                skeleton.d0(&[
                     0.0,
+                    0.01 * logical_draw(seed, DrawDomain::MergeXGauge, iter, 0, 0),
                     0.0,
-                    0.01 * logical_draw(seed, DrawDomain::MergeYGauge, iter, 0, 0),
-                ]),
-                assignments: BTreeMap::new(),
+                ])
             };
-            match three_way_merge(&skeleton, &base, &x, &y, None, 1e-6, 1e-6) {
-                MergeOutcome::Resolved { .. } | MergeOutcome::Trivial { .. } => {
-                    merges_ok += 1;
-                    // Parallel credit: wall time is the max branch.
-                    total_cost += branch_costs[0].max(branch_costs[1]);
-                    events.push(format!("iter={iter} stage=merge verdict=resolved"));
+            let y_mismatch = skeleton.d0(&[
+                0.0,
+                0.0,
+                0.01 * logical_draw(seed, DrawDomain::MergeYGauge, iter, 0, 0),
+            ]);
+            match (x_mismatch, y_mismatch) {
+                (Ok(x_mismatch), Ok(y_mismatch)) => {
+                    let x = BranchState {
+                        provenance: format!("agent-x@{iter}"),
+                        mismatch: x_mismatch,
+                        assignments: BTreeMap::new(),
+                    };
+                    let y = BranchState {
+                        provenance: format!("agent-y@{iter}"),
+                        mismatch: y_mismatch,
+                        assignments: BTreeMap::new(),
+                    };
+                    match three_way_merge(&skeleton, &base, &x, &y, None, 1e-6, 1e-6) {
+                        MergeOutcome::Resolved { .. } | MergeOutcome::Trivial { .. } => {
+                            merges_ok += 1;
+                            // Parallel credit: wall time is the max branch.
+                            total_cost += branch_costs[0].max(branch_costs[1]);
+                            events.push(format!("iter={iter} stage=merge verdict=resolved"));
+                        }
+                        _ => {
+                            merges_conflict += 1;
+                            // Conflict: serialize + redo the cheaper branch.
+                            total_cost += branch_costs[0]
+                                + branch_costs[1]
+                                + branch_costs[0].min(branch_costs[1]);
+                            events.push(format!("iter={iter} stage=merge verdict=conflict"));
+                        }
+                    }
                 }
                 _ => {
                     merges_conflict += 1;
-                    // Conflict: serialize + redo the cheaper branch.
                     total_cost +=
                         branch_costs[0] + branch_costs[1] + branch_costs[0].min(branch_costs[1]);
-                    events.push(format!("iter={iter} stage=merge verdict=conflict"));
+                    events.push(format!("iter={iter} stage=merge verdict=refused-incidence"));
                 }
             }
         } else {

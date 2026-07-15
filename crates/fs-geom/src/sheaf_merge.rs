@@ -20,7 +20,9 @@
 //!   risk R5): merges in degraded-gap regions are flagged
 //!   low-confidence.
 
-use crate::sheaf_repair::{SheafSkeleton, apply_gauge, hodge_decompose};
+use crate::sheaf_repair::{
+    SheafRepairError, SheafSkeleton, SheafSkeletonError, apply_gauge, hodge_decompose,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// One branch's edits: a mismatch cochain plus non-geometric keyed
@@ -427,7 +429,22 @@ pub fn three_way_merge(
             reason: "merged cochain arithmetic is non-finite",
         };
     }
-    let split = hodge_decompose(skeleton, &union);
+    let split = match hodge_decompose(skeleton, &union) {
+        Ok(split) => split,
+        Err(
+            SheafRepairError::NumericalOverflow { .. }
+            | SheafRepairError::Skeleton(SheafSkeletonError::NumericalOverflow { .. }),
+        ) => {
+            return MergeOutcome::Refused {
+                reason: "decomposition arithmetic is non-finite",
+            };
+        }
+        Err(_) => {
+            return MergeOutcome::Refused {
+                reason: "decomposition refused malformed, non-finite, or exhausted input",
+            };
+        }
+    };
     if split
         .exact
         .iter()
@@ -446,7 +463,22 @@ pub fn three_way_merge(
     // Deterministic fixed-iteration gauge reconciliation. Resolution is
     // authorized only by the nominal residual check below, not by a
     // cohomology classification.
-    let merged = apply_gauge(skeleton, &union, &split.potential);
+    let merged = match apply_gauge(skeleton, &union, &split.potential) {
+        Ok(merged) => merged,
+        Err(
+            SheafRepairError::NumericalOverflow { .. }
+            | SheafRepairError::Skeleton(SheafSkeletonError::NumericalOverflow { .. }),
+        ) => {
+            return MergeOutcome::Refused {
+                reason: "post-gauge arithmetic is non-finite",
+            };
+        }
+        Err(_) => {
+            return MergeOutcome::Refused {
+                reason: "post-gauge construction refused malformed, non-finite, or exhausted input",
+            };
+        }
+    };
     if merged.iter().any(|value| !value.is_finite()) {
         return MergeOutcome::Refused {
             reason: "post-gauge arithmetic is non-finite",
@@ -530,24 +562,33 @@ pub fn candidate_remainder_conflict_rate(
     for _ in 0..trials {
         // Seeded synthetic edits: each branch re-gauges random patch values
         // (coboundary-style work), then receives small interface noise.
-        let mut edit = |scale: f64| -> Vec<f64> {
+        let mut edit = |scale: f64| -> Result<Vec<f64>, CandidateRateError> {
             let offsets: Vec<f64> = (0..n_patches).map(|_| scale * lcg()).collect();
-            let mut m = skeleton.d0(&offsets);
+            let mut m = skeleton
+                .d0(&offsets)
+                .map_err(|_| CandidateRateError::TrialRefused {
+                    reason: "seeded edit incidence refused",
+                })?;
             // A small amount of independent interface noise.
             for v in &mut m {
                 *v += 0.01 * scale * lcg();
+                if !v.is_finite() {
+                    return Err(CandidateRateError::TrialRefused {
+                        reason: "seeded edit arithmetic is non-finite",
+                    });
+                }
             }
-            m
+            Ok(m)
         };
         let base = vec![0.0f64; n_edges];
         let x = BranchState {
             provenance: "trial-x".to_string(),
-            mismatch: edit(edit_scale),
+            mismatch: edit(edit_scale)?,
             assignments: BTreeMap::new(),
         };
         let y = BranchState {
             provenance: "trial-y".to_string(),
-            mismatch: edit(edit_scale),
+            mismatch: edit(edit_scale)?,
             assignments: BTreeMap::new(),
         };
         let out = three_way_merge(skeleton, &base, &x, &y, None, 0.05 * edit_scale, 1e-6);

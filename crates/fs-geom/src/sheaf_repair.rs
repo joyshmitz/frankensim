@@ -32,7 +32,8 @@
 
 use crate::router::{CostOracle, RoutePlan, RoutePlanError, RouteRequest, Router};
 use crate::sheaf::{
-    SHEAF_MAX_CHARTS, SHEAF_MAX_PAIR_CANDIDATES, SHEAF_MAX_TRIPLE_CANDIDATES, SheafComplex,
+    SHEAF_MAX_CHARTS, SHEAF_MAX_PAIR_CANDIDATES, SHEAF_MAX_RETAINED_INTERFACE_SAMPLES,
+    SHEAF_MAX_TRIPLE_CANDIDATES, SheafComplex,
 };
 use fs_exec::{AdmittedBudget, BudgetConsumption, BudgetRefusal, Cx};
 use std::fmt::Write as _;
@@ -70,7 +71,8 @@ pub enum SheafSkeletonError {
     MalformedComplex,
     /// At least one patch is required by the repair algebra.
     EmptyComplex,
-    /// A canonical skeleton cardinality exceeds its defensive ceiling.
+    /// A validation-work or retained skeleton cardinality exceeds its
+    /// defensive ceiling.
     WorkLimit {
         /// Stable validation stage.
         stage: &'static str,
@@ -368,17 +370,8 @@ impl AdmittedSheafSkeleton {
     /// incidence. Candidate clique triples remain omitted because the base
     /// builder has not verified a common triple overlap.
     pub fn of(complex: &SheafComplex) -> Result<Self, SheafSkeletonError> {
-        if !complex.structure_is_valid() {
-            return Err(SheafSkeletonError::MalformedComplex);
-        }
-        let mut edges = Vec::new();
-        edges
-            .try_reserve_exact(complex.interfaces.len())
-            .map_err(|_| SheafSkeletonError::ResourceExhausted {
-                stage: "complex-edges",
-            })?;
-        edges.extend(complex.interfaces.iter().map(|interface| interface.patches));
-        Self::try_new(complex.n_patches, edges, Vec::new())
+        let raw = SheafSkeleton::of(complex)?;
+        Self::try_new(raw.n_patches, raw.edges, raw.triangles)
     }
 
     /// Number of retained patches.
@@ -487,15 +480,63 @@ impl SheafSkeleton {
     /// than verified common triple overlaps, so they are deliberately omitted.
     ///
     /// # Errors
-    /// Returns [`SheafSkeletonError::MalformedComplex`] rather than copying
-    /// unchecked public indices into later panicking incidence operations.
+    /// Returns a deterministic empty, work-limit, structural, or allocation
+    /// refusal before publishing a skeleton.
     pub fn of(complex: &SheafComplex) -> Result<SheafSkeleton, SheafSkeletonError> {
+        if complex.n_patches == 0 {
+            return Err(SheafSkeletonError::EmptyComplex);
+        }
+        for (stage, requested, cap) in [
+            ("patches", complex.n_patches, SHEAF_MAX_CHARTS),
+            (
+                "interfaces",
+                complex.interfaces.len(),
+                SHEAF_MAX_PAIR_CANDIDATES,
+            ),
+            (
+                "triples",
+                complex.triples.len(),
+                SHEAF_MAX_TRIPLE_CANDIDATES,
+            ),
+        ] {
+            if requested > cap {
+                return Err(SheafSkeletonError::WorkLimit {
+                    stage,
+                    requested,
+                    cap,
+                });
+            }
+        }
+        let mut samples = 0usize;
+        for interface in &complex.interfaces {
+            samples = samples.checked_add(interface.samples.len()).ok_or(
+                SheafSkeletonError::WorkLimit {
+                    stage: "interface-samples",
+                    requested: usize::MAX,
+                    cap: SHEAF_MAX_RETAINED_INTERFACE_SAMPLES,
+                },
+            )?;
+            if samples > SHEAF_MAX_RETAINED_INTERFACE_SAMPLES {
+                return Err(SheafSkeletonError::WorkLimit {
+                    stage: "interface-samples",
+                    requested: samples,
+                    cap: SHEAF_MAX_RETAINED_INTERFACE_SAMPLES,
+                });
+            }
+        }
         if !complex.structure_is_valid() {
             return Err(SheafSkeletonError::MalformedComplex);
         }
+        let mut edges = Vec::new();
+        edges
+            .try_reserve_exact(complex.interfaces.len())
+            .map_err(|_| SheafSkeletonError::ResourceExhausted {
+                stage: "raw-complex-edges",
+            })?;
+        edges.extend(complex.interfaces.iter().map(|interface| interface.patches));
         Ok(SheafSkeleton {
             n_patches: complex.n_patches,
-            edges: complex.interfaces.iter().map(|i| i.patches).collect(),
+            edges,
             triangles: Vec::new(),
         })
     }
@@ -506,57 +547,116 @@ impl SheafSkeleton {
     }
 
     /// Apply δ⁰ to a vertex cochain: `(δ⁰c)_e = c_v − c_u`.
-    #[must_use]
-    pub fn d0(&self, c: &[f64]) -> Vec<f64> {
-        assert_eq!(c.len(), self.n_patches, "one vertex value per patch");
-        self.edges.iter().map(|&(u, v)| c[v] - c[u]).collect()
+    ///
+    /// # Errors
+    /// Returns a deterministic structural, cardinality, finiteness,
+    /// allocation, or arithmetic refusal without indexing unchecked input.
+    pub fn d0(&self, c: &[f64]) -> Result<Vec<f64>, SheafSkeletonError> {
+        validate_raw_skeleton_shape(self)?;
+        validate_finite_cochain(c, self.n_patches, "vertex")?;
+        validate_raw_skeleton_cross_structure(self)?;
+        self.d0_validated(c)
     }
 
     /// Apply δ⁰ᵀ to an edge cochain.
-    #[must_use]
-    pub fn d0t(&self, m: &[f64]) -> Vec<f64> {
-        assert_eq!(m.len(), self.edges.len(), "one edge value per interface");
-        let mut out = vec![0.0f64; self.n_patches];
-        for (k, &(u, v)) in self.edges.iter().enumerate() {
-            out[u] -= m[k];
-            out[v] += m[k];
-        }
-        out
+    ///
+    /// # Errors
+    /// Returns a deterministic structural, cardinality, finiteness,
+    /// allocation, or arithmetic refusal without indexing unchecked input.
+    pub fn d0t(&self, m: &[f64]) -> Result<Vec<f64>, SheafSkeletonError> {
+        validate_raw_skeleton_shape(self)?;
+        validate_finite_cochain(m, self.edges.len(), "edge")?;
+        validate_raw_skeleton_cross_structure(self)?;
+        self.d0t_validated(m)
     }
 
     /// Apply δ¹ to an edge cochain: signed sum around each triangle.
-    #[must_use]
-    pub fn d1(&self, m: &[f64]) -> Vec<f64> {
-        assert_eq!(m.len(), self.edges.len(), "one edge value per interface");
-        self.triangles
-            .iter()
-            .map(|&(a, b, c)| {
-                let eab = self.edge_index(a, b).expect("triangle implies edge");
-                let ebc = self.edge_index(b, c).expect("triangle implies edge");
-                let eac = self.edge_index(a, c).expect("triangle implies edge");
-                m[eab] + m[ebc] - m[eac]
-            })
-            .collect()
+    ///
+    /// # Errors
+    /// Returns a deterministic structural, cardinality, finiteness,
+    /// allocation, or arithmetic refusal without indexing unchecked input.
+    pub fn d1(&self, m: &[f64]) -> Result<Vec<f64>, SheafSkeletonError> {
+        validate_raw_skeleton_shape(self)?;
+        validate_finite_cochain(m, self.edges.len(), "edge")?;
+        validate_raw_skeleton_cross_structure(self)?;
+        self.d1_validated(m)
     }
 
     /// Apply δ¹ᵀ to a triangle cochain.
-    #[must_use]
-    pub fn d1t(&self, w: &[f64]) -> Vec<f64> {
-        assert_eq!(
-            w.len(),
-            self.triangles.len(),
-            "one face value per retained triangle"
-        );
-        let mut out = vec![0.0f64; self.edges.len()];
+    ///
+    /// # Errors
+    /// Returns a deterministic structural, cardinality, finiteness,
+    /// allocation, or arithmetic refusal without indexing unchecked input.
+    pub fn d1t(&self, w: &[f64]) -> Result<Vec<f64>, SheafSkeletonError> {
+        validate_raw_skeleton_shape(self)?;
+        validate_finite_cochain(w, self.triangles.len(), "triangle")?;
+        validate_raw_skeleton_cross_structure(self)?;
+        self.d1t_validated(w)
+    }
+
+    fn d0_validated(&self, c: &[f64]) -> Result<Vec<f64>, SheafSkeletonError> {
+        let mut out = zeroed_output(self.edges.len(), "raw-d0-output")?;
+        for (value, &(u, v)) in out.iter_mut().zip(&self.edges) {
+            *value = c[v] - c[u];
+            if !value.is_finite() {
+                return Err(SheafSkeletonError::NumericalOverflow { stage: "d0" });
+            }
+        }
+        Ok(out)
+    }
+
+    fn d0t_validated(&self, m: &[f64]) -> Result<Vec<f64>, SheafSkeletonError> {
+        let mut out = zeroed_output(self.n_patches, "raw-d0t-output")?;
+        for (k, &(u, v)) in self.edges.iter().enumerate() {
+            out[u] -= m[k];
+            out[v] += m[k];
+            if !(out[u].is_finite() && out[v].is_finite()) {
+                return Err(SheafSkeletonError::NumericalOverflow { stage: "d0t" });
+            }
+        }
+        Ok(out)
+    }
+
+    fn d1_validated(&self, m: &[f64]) -> Result<Vec<f64>, SheafSkeletonError> {
+        let mut out = zeroed_output(self.triangles.len(), "raw-d1-output")?;
+        for (triangle, (value, &(a, b, c))) in out.iter_mut().zip(&self.triangles).enumerate() {
+            let eab = self
+                .edge_index(a, b)
+                .ok_or(SheafSkeletonError::InvalidTriangle { index: triangle })?;
+            let ebc = self
+                .edge_index(b, c)
+                .ok_or(SheafSkeletonError::InvalidTriangle { index: triangle })?;
+            let eac = self
+                .edge_index(a, c)
+                .ok_or(SheafSkeletonError::InvalidTriangle { index: triangle })?;
+            *value = (m[eab] + m[ebc]) - m[eac];
+            if !value.is_finite() {
+                return Err(SheafSkeletonError::NumericalOverflow { stage: "d1" });
+            }
+        }
+        Ok(out)
+    }
+
+    fn d1t_validated(&self, w: &[f64]) -> Result<Vec<f64>, SheafSkeletonError> {
+        let mut out = zeroed_output(self.edges.len(), "raw-d1t-output")?;
         for (t, &(a, b, c)) in self.triangles.iter().enumerate() {
-            let eab = self.edge_index(a, b).expect("triangle implies edge");
-            let ebc = self.edge_index(b, c).expect("triangle implies edge");
-            let eac = self.edge_index(a, c).expect("triangle implies edge");
+            let eab = self
+                .edge_index(a, b)
+                .ok_or(SheafSkeletonError::InvalidTriangle { index: t })?;
+            let ebc = self
+                .edge_index(b, c)
+                .ok_or(SheafSkeletonError::InvalidTriangle { index: t })?;
+            let eac = self
+                .edge_index(a, c)
+                .ok_or(SheafSkeletonError::InvalidTriangle { index: t })?;
             out[eab] += w[t];
             out[ebc] += w[t];
             out[eac] -= w[t];
+            if !(out[eab].is_finite() && out[ebc].is_finite() && out[eac].is_finite()) {
+                return Err(SheafSkeletonError::NumericalOverflow { stage: "d1t" });
+            }
         }
-        out
+        Ok(out)
     }
 }
 
@@ -1012,14 +1112,6 @@ impl<'a, 'cx> RepairAccountant<'a, 'cx> {
             ambient_budget: self.ambient.consumption(),
         }
     }
-}
-
-fn dot(a: &[f64], b: &[f64]) -> f64 {
-    a.iter().zip(b).map(|(x, y)| x * y).sum()
-}
-
-fn norm2(a: &[f64]) -> f64 {
-    dot(a, a)
 }
 
 fn checked_norm2(
@@ -1557,43 +1649,153 @@ pub fn hodge_decompose_bounded(
     })
 }
 
-/// Least squares `min ‖m − A x‖²` via Gauss–Seidel on the normal
-/// equations, with `apply`/`apply_t` as the operator (small complexes;
-/// deterministic sweep order; component 0 optionally pinned).
-fn least_squares(
-    m: &[f64],
-    n_unknowns: usize,
-    apply: impl Fn(&[f64]) -> Vec<f64>,
-    apply_t: impl Fn(&[f64]) -> Vec<f64>,
-    pin_first: bool,
-) -> Vec<f64> {
-    let mut x = vec![0.0f64; n_unknowns];
-    let rhs = apply_t(m);
-    // Diagonal of AᵀA via unit vectors (small n — fine and exact).
-    let mut diag = vec![0.0f64; n_unknowns];
-    for (i, d) in diag.iter_mut().enumerate() {
-        let mut e = vec![0.0f64; n_unknowns];
-        e[i] = 1.0;
-        *d = norm2(&apply(&e));
+fn apply_raw_projection(
+    kind: ProjectionKind,
+    skeleton: &SheafSkeleton,
+    values: &[f64],
+) -> Result<Vec<f64>, SheafRepairError> {
+    match kind {
+        ProjectionKind::Exact => skeleton
+            .d0_validated(values)
+            .map_err(SheafRepairError::from),
+        ProjectionKind::Coexact => skeleton
+            .d1t_validated(values)
+            .map_err(SheafRepairError::from),
     }
-    for _ in 0..400 {
-        for i in 0..n_unknowns {
-            if pin_first && i == 0 {
-                continue;
-            }
-            if diag[i] <= 0.0 {
-                continue;
-            }
-            // Residual of the normal equations at coordinate i.
-            let ax = apply(&x);
-            let grad_i = {
-                let atax = apply_t(&ax);
-                atax[i] - rhs[i]
-            };
-            x[i] -= grad_i / diag[i];
+}
+
+fn apply_raw_projection_transpose(
+    kind: ProjectionKind,
+    skeleton: &SheafSkeleton,
+    values: &[f64],
+) -> Result<Vec<f64>, SheafRepairError> {
+    match kind {
+        ProjectionKind::Exact => skeleton
+            .d0t_validated(values)
+            .map_err(SheafRepairError::from),
+        ProjectionKind::Coexact => skeleton
+            .d1_validated(values)
+            .map_err(SheafRepairError::from),
+    }
+}
+
+fn checked_raw_norm2(values: &[f64], stage: &'static str) -> Result<f64, SheafRepairError> {
+    let mut total = 0.0f64;
+    for value in values {
+        let square = value * value;
+        total += square;
+        if !(square.is_finite() && total.is_finite()) {
+            return Err(SheafRepairError::NumericalOverflow { stage });
         }
     }
-    x
+    Ok(total)
+}
+
+/// Least squares `min ‖m − A x‖²` via 400 deterministic Gauss–Seidel
+/// sweeps on the normal equations. The raw compatibility path is capped by
+/// validated skeleton cardinalities and every allocation/arithmetic step is
+/// fallible; new authority paths should use the explicit bounded API.
+fn least_squares_raw(
+    skeleton: &SheafSkeleton,
+    m: &[f64],
+    n_unknowns: usize,
+    kind: ProjectionKind,
+    pin_first: bool,
+    stage: &'static str,
+) -> Result<Vec<f64>, SheafRepairError> {
+    let mut x = zeroed_output(n_unknowns, "raw-least-squares-solution")?;
+    let rhs = apply_raw_projection_transpose(kind, skeleton, m)?;
+    let mut diag = zeroed_output(n_unknowns, "raw-least-squares-diagonal")?;
+    for (index, diagonal) in diag.iter_mut().enumerate() {
+        let mut basis = zeroed_output(n_unknowns, "raw-least-squares-basis")?;
+        basis[index] = 1.0;
+        let image = apply_raw_projection(kind, skeleton, &basis)?;
+        *diagonal = checked_raw_norm2(&image, "raw-least-squares-diagonal")?;
+    }
+    for _ in 0..400 {
+        for index in 0..n_unknowns {
+            if (pin_first && index == 0) || diag[index] <= 0.0 {
+                continue;
+            }
+            let image = apply_raw_projection(kind, skeleton, &x)?;
+            let normal_image = apply_raw_projection_transpose(kind, skeleton, &image)?;
+            let gradient = normal_image[index] - rhs[index];
+            let step = gradient / diag[index];
+            let next = x[index] - step;
+            if !(gradient.is_finite() && step.is_finite() && next.is_finite()) {
+                return Err(SheafRepairError::NumericalOverflow { stage });
+            }
+            x[index] = next;
+        }
+    }
+    Ok(x)
+}
+
+fn hodge_decompose_raw_validated(
+    skeleton: &SheafSkeleton,
+    mismatch: &[f64],
+) -> Result<HodgeSplit, SheafRepairError> {
+    let potential = least_squares_raw(
+        skeleton,
+        mismatch,
+        skeleton.n_patches,
+        ProjectionKind::Exact,
+        true,
+        "raw-exact-projection",
+    )?;
+    let exact = skeleton.d0_validated(&potential)?;
+    let mut first_residual = zeroed_output(mismatch.len(), "raw-exact-residual")?;
+    for ((value, input), projected) in first_residual.iter_mut().zip(mismatch).zip(&exact) {
+        *value = input - projected;
+        if !value.is_finite() {
+            return Err(SheafRepairError::NumericalOverflow {
+                stage: "raw-exact-residual",
+            });
+        }
+    }
+    let coexact = if skeleton.triangles.is_empty() {
+        zeroed_output(mismatch.len(), "raw-empty-coexact")?
+    } else {
+        let triangle_potential = least_squares_raw(
+            skeleton,
+            &first_residual,
+            skeleton.triangles.len(),
+            ProjectionKind::Coexact,
+            false,
+            "raw-coexact-projection",
+        )?;
+        skeleton.d1t_validated(&triangle_potential)?
+    };
+    let mut harmonic = zeroed_output(mismatch.len(), "raw-harmonic-residual")?;
+    for ((value, residual), projected) in harmonic.iter_mut().zip(&first_residual).zip(&coexact) {
+        *value = residual - projected;
+        if !value.is_finite() {
+            return Err(SheafRepairError::NumericalOverflow {
+                stage: "raw-harmonic-residual",
+            });
+        }
+    }
+    let total = checked_raw_norm2(mismatch, "raw-input-norm")?.max(f64::MIN_POSITIVE);
+    let fractions = (
+        checked_raw_norm2(&exact, "raw-exact-norm")? / total,
+        checked_raw_norm2(&coexact, "raw-coexact-norm")? / total,
+        checked_raw_norm2(&harmonic, "raw-harmonic-norm")? / total,
+    );
+    if [fractions.0, fractions.1, fractions.2]
+        .into_iter()
+        .any(|fraction| !fraction.is_finite())
+    {
+        return Err(SheafRepairError::NumericalOverflow {
+            stage: "raw-component-fractions",
+        });
+    }
+    Ok(HodgeSplit {
+        exact,
+        potential,
+        coexact,
+        harmonic,
+        fractions,
+    })
 }
 
 /// Sequentially fit an edge cochain over a skeleton. A retained fixture checks
@@ -1601,45 +1803,18 @@ fn least_squares(
 /// solver returns no convergence or orthogonality certificate. Consumers must
 /// verify residual identities such as `d0t(remainder) ≈ 0` and
 /// `d1(remainder) ≈ 0` before assigning stronger meaning to a result.
-#[must_use]
-pub fn hodge_decompose(skeleton: &SheafSkeleton, m: &[f64]) -> HodgeSplit {
-    assert_eq!(m.len(), skeleton.edges.len(), "cochain size");
-    // Exact: project onto im δ⁰.
-    let c = least_squares(
-        m,
-        skeleton.n_patches,
-        |x| skeleton.d0(x),
-        |y| skeleton.d0t(y),
-        true,
-    );
-    let exact = skeleton.d0(&c);
-    let r1: Vec<f64> = m.iter().zip(&exact).map(|(a, b)| a - b).collect();
-    // Coexact: project the remainder onto im δ¹ᵀ.
-    let coexact = if skeleton.triangles.is_empty() {
-        vec![0.0; m.len()]
-    } else {
-        let w = least_squares(
-            &r1,
-            skeleton.triangles.len(),
-            |x| skeleton.d1t(x),
-            |y| skeleton.d1(y),
-            false,
-        );
-        skeleton.d1t(&w)
-    };
-    let harmonic: Vec<f64> = r1.iter().zip(&coexact).map(|(a, b)| a - b).collect();
-    let total = norm2(m).max(f64::MIN_POSITIVE);
-    HodgeSplit {
-        fractions: (
-            norm2(&exact) / total,
-            norm2(&coexact) / total,
-            norm2(&harmonic) / total,
-        ),
-        exact,
-        potential: c,
-        coexact,
-        harmonic,
-    }
+///
+/// # Errors
+/// Returns a typed structural, cardinality, finiteness, allocation, or
+/// arithmetic refusal. No partial decomposition is published on failure.
+pub fn hodge_decompose(
+    skeleton: &SheafSkeleton,
+    mismatch: &[f64],
+) -> Result<HodgeSplit, SheafRepairError> {
+    validate_raw_skeleton_shape(skeleton)?;
+    validate_finite_cochain(mismatch, skeleton.edges.len(), "mismatch")?;
+    validate_raw_skeleton_cross_structure(skeleton)?;
+    hodge_decompose_raw_validated(skeleton, mismatch)
 }
 
 /// One ranked repair proposal (the agent-facing format).
@@ -2613,7 +2788,7 @@ pub fn plan_repair(
     }
     validate_raw_skeleton_cross_structure(skeleton)?;
 
-    let split = hodge_decompose(skeleton, mismatch);
+    let split = hodge_decompose_raw_validated(skeleton, mismatch)?;
     if split
         .exact
         .iter()
@@ -2646,7 +2821,7 @@ pub fn plan_repair(
         ));
     }
     if split.fractions.1 > COMPONENT_FLOOR {
-        proposals.push(coexact_proposal(skeleton, mismatch));
+        proposals.push(coexact_proposal(skeleton, mismatch)?);
     }
     // First require the whole retained component to be significant relative
     // to the input mismatch. Otherwise scaling a localization threshold by the
@@ -2745,15 +2920,18 @@ fn gauge_proposal(gauge: &[f64], gauge_step_eligible: bool, expected: f64) -> Re
 
 /// The coexact-component proposal: a non-causal diagnostic localized to the
 /// retained triangle with the largest circulation residual.
-fn coexact_proposal(skeleton: &SheafSkeleton, mismatch: &[f64]) -> RepairProposal {
-    let d1m = skeleton.d1(mismatch);
+fn coexact_proposal(
+    skeleton: &SheafSkeleton,
+    mismatch: &[f64],
+) -> Result<RepairProposal, SheafRepairError> {
+    let d1m = skeleton.d1_validated(mismatch)?;
     let worst_tri = skeleton
         .triangles
         .iter()
         .enumerate()
         .max_by(|a, b| d1m[a.0].abs().total_cmp(&d1m[b.0].abs()))
         .map(|(_, t)| *t);
-    RepairProposal {
+    Ok(RepairProposal {
         action: format!(
             "coexact circulation candidate around retained triangle {worst_tri:?}: inspect \
              chart/model/junction/sampling evidence and converter orientation/trace \
@@ -2761,7 +2939,7 @@ fn coexact_proposal(skeleton: &SheafSkeleton, mismatch: &[f64]) -> RepairProposa
         ),
         expected_post_norm: f64::INFINITY,
         cost_s: 0.0,
-    }
+    })
 }
 
 /// Apply one algebraic gauge correction to an edge cochain:
@@ -2797,14 +2975,16 @@ pub fn try_apply_gauge(
     Ok(repaired)
 }
 
-/// Compatibility adapter for the original infallible diagnostic API.
+/// Typed compatibility name for [`try_apply_gauge`]. Refusals are never
+/// collapsed into a sentinel cochain.
 ///
-/// Valid admitted-shape inputs preserve the historical result. Malformed
-/// inputs return a one-element non-finite refusal sentinel rather than
-/// panicking. Existing merge callers already fail closed on non-finite output;
-/// callers that need the exact refusal must use [`try_apply_gauge`]. New repair
-/// and authority paths must use the typed API.
-#[must_use]
-pub fn apply_gauge(skeleton: &SheafSkeleton, mismatch: &[f64], gauge: &[f64]) -> Vec<f64> {
-    try_apply_gauge(skeleton, mismatch, gauge).unwrap_or_else(|_| vec![f64::NAN])
+/// # Errors
+/// Returns the same typed structural, cardinality, finiteness, allocation, or
+/// arithmetic refusal as [`try_apply_gauge`].
+pub fn apply_gauge(
+    skeleton: &SheafSkeleton,
+    mismatch: &[f64],
+    gauge: &[f64],
+) -> Result<Vec<f64>, SheafRepairError> {
+    try_apply_gauge(skeleton, mismatch, gauge)
 }
