@@ -75,8 +75,8 @@ derived-geometry boundary.
   no-authority artifact. Admission refuses zero identities, stale schema or IR
   versions, a raw geometry ID that does not name the supplied sealed object,
   and every redundant selector mismatch. The token is structural lineage only:
-  Machine IR has no admitted semantic model graph yet.
-- `machine` (Machine-IR E0 PR-1, [S]) — six nominally distinct durable entity
+  it does not bind or inspect an admitted Machine-IR graph.
+- `machine` (Machine-IR E0 PR-1/PR-2, [S]) — six nominally distinct durable entity
   types (`BodyId`, `SurfacePatchId`, `ContactFeatureId`, `TerminalId`,
   `PortId`, `StateSlotId`) use `fs-blake3::identity::EntityId` under six
   different static schemas. Their bounded, human-auditable hierarchical keys
@@ -99,6 +99,27 @@ derived-geometry boundary.
   The core prints nothing. This is an outcome summary for structured tracing,
   not a digest of early-refused inputs; replay ledgers must retain those inputs
   separately.
+- `machine::MachineGraphDraft::admit` is the dependency-neutral PR-2 graph
+  boundary. Four additional graph-local durable IDs name subsystems,
+  relations, clocks, and interfaces without widening the closed six-role
+  topology/lineage enum. The draft contains bounded, canonically ordered
+  subsystem/model declarations, typed terminals and effort/flow ports,
+  directed algebraic or stateful relations, logical clocks, material-card
+  bindings, and role-oriented interface bindings. External model, material,
+  interface, and solve-policy references are nominal, versioned, nonzero
+  semantic digests under canonical namespaces; `fs-ir` neither imports nor
+  impersonates their runtime owners.
+- Graph admission accumulates sorted, duplicate-free `MachineGraphFinding`s
+  before publishing any `MachineGraphIdV1`. It rejects dangling or duplicate
+  ownership, unsupported semantic scalar forms, quantity/shape/frame/
+  orientation/clock/causality gaps, effort-flow pairs without a shared shape or
+  whose checked six-base dimensions are not power, missing or multiply
+  produced inputs, unowned or
+  multiply/unwritten state, instantaneous cycles without an explicit
+  solve-policy boundary, incomplete body-material closure, and invalid or
+  conflicting interfaces. `MachineGraphAdmissionDecision` retains submitted
+  collection counts plus the admitted graph or complete refusal and prints
+  nothing.
 - `query` (addendum Proposal 8 — declarative query language v0): a query is
   `(QoI, Target, budget_usd, deadline_s)` where `Qoi` is a fixed MENU —
   `MaxOverRegion`, `Integral` (linear), `Exceedance` (probabilistic, needs a
@@ -277,6 +298,25 @@ derived-geometry boundary.
   refusal identity retains every considered dependent as well as the exact
   invalidated subset, so changing an otherwise unambiguous attachment cannot
   alias the refused attempt.
+- Machine graph identity binds the graph-schema version and every canonical
+  clock, subsystem/model, terminal semantic type and shape, port energy role,
+  relation mode/policy/state, material-card reference, and oriented interface
+  endpoint. Every caller collection is sorted by its durable ID; duplicates
+  refuse rather than last-write-wins. A `Dimensional(Dims)` terminal is an
+  explicit no-kind claim and never aliases a `Semantic(SemanticType)` terminal
+  with the same six exponents.
+- Internal input terminals have exactly one directed producer; explicitly
+  external inputs have none. Each declared state slot has exactly one stateful
+  writer owned by the target subsystem. Algebraic relations with no policy
+  form the structural feedthrough graph; a cycle in that graph refuses, while
+  a stateful edge or named solve-policy boundary cuts it without claiming
+  numerical convergence.
+- A role-oriented interface resolves two distinct ports, requires exactly one
+  producer and one consumer independently for each effort/flow pair plus
+  complementary energy direction, and names both relations in their actual
+  directed causality. Its aligned/opposed declaration
+  governs relation-orientation compatibility; it does not synthesize an
+  implicit relation or silently close an input.
 
 1. Isomorphism: `parse(print(x))` has the same shape as `x`, per syntax
    and across syntaxes (property-tested on generated programs and the
@@ -309,7 +349,9 @@ derived-geometry boundary.
 ## Error model
 
 `MachineIdError` names the applicable role, segment, byte offset, and
-bounded-key rule that refused an entity/dependent key. `LineageRefusal` distinguishes
+bounded-key rule that refused an entity/dependent/graph key. `MachineReferenceError`
+refuses noncanonical external namespaces and zero semantic digests.
+`LineageRefusal` distinguishes
 shape/resource limits, cross-role or duplicate endpoints, missing attachment
 sources, duplicate dependents, canonical-identity failure, and semantic
 ambiguity. Both expose stable rule codes, and `LineageAdmissionDecision` retains
@@ -317,6 +359,10 @@ accepted and refused outcomes for structured tracing without printing from the
 core library. The ambiguity variant owns the deterministic
 invalidation receipt; callers never need to reconstruct the invalidation set
 from prose.
+`MachineGraphRefusal` owns a nonempty, stable-sorted finding list whose closed
+rule vocabulary and typed offending/related subjects are directly suitable for
+structured logs. Canonical identity errors are retained only on the identity
+rule; no admitted receipt escapes any refusal.
 
 Syntax/study/lowering APIs return `IrError` (span, stable
 `IrErrorKind::code()`, detail, hint). Feature-gated planner/anytime APIs return
@@ -334,10 +380,15 @@ cancellation, and canonical identity failure. No partial crosswalk token escapes
 
 ## Determinism class
 
-Machine entity, lineage-record, and invalidation identities are bit-stable for
-the same schema version and semantic inputs. Caller ordering of relations,
+Machine entity, lineage-record, invalidation, and admitted-graph identities are
+bit-stable for the same schema version and semantic inputs. Caller ordering of relations,
 targets, and dependents is not semantic. Event kind, target identity, dependent
 kind/key/source, entity role, or canonical key changes the appropriate ID.
+Machine graph collection order and each subsystem's owned-element order are
+non-semantic. Model/card/policy namespace, schema version, semantic digest,
+clock declaration, terminal kind/form/dimensions/shape/frame/orientation,
+causality, relation endpoint/mode, state slot, port energy role, material
+target, and oriented interface endpoint are semantic and move the graph ID.
 
 Parsing, printing, and lowering are pure functions of their input text.
 Planner replay is deterministic for the same family, query, ladders, cache
@@ -360,10 +411,12 @@ envelope.
 Derived-crosswalk admission polls at entry, during canonical identity
 construction, and immediately before publication. Its work is a fixed 17-field
 envelope; cancellation publishes no partial token.
-Machine entity and lineage construction are synchronous bounded metadata
-operations (128-byte keys; at most 4,096 relations/dependents and 8,192 target
-endpoints). They use the canonical encoder's explicit byte/item envelopes and
-do not claim cancellable long-running work.
+Machine entity, lineage, and graph admission are synchronous bounded metadata
+operations (128-byte keys; lineage at most 4,096 relations/dependents and 8,192
+target endpoints; graph at most 1,024 clocks/subsystems, 4,096 terminals,
+2,048 ports/interfaces, 8,192 relations, 4,096 material bindings, and 16,384
+owned elements). They use explicit collection and canonical byte/item
+envelopes and do not claim cancellable long-running work.
 
 ## Unsafe boundary
 
@@ -378,8 +431,9 @@ None. Safe Rust only.
 - `derived-crosswalk` [M] (default OFF) — nominal L6 Machine-IR selectors
   bound to exact admitted L2 derived geometry. It enables
   `fs-geom/derived-geometry` and the fs-exec cancellation dependency.
-  `fs-blake3` is now a default dependency for the [S] Machine-IR identity
-  kernel. This feature does not promote the absent Machine-IR model graph.
+  `fs-blake3` is now a default dependency for the [S] Machine-IR identity and
+  admitted-graph kernel. This feature does not bind its older selectors to an
+  admitted `MachineGraphIdV1`.
 
 ## Conformance tests
 
@@ -463,6 +517,17 @@ maximum-endpoint record plus maximum-relation/dependent invalidation identity
 envelopes; and identity movement by event, target, dependent class, complete
 event context, and considered inputs.
 
+`tests/machine_graph.rs` (Machine-IR E0 PR-2, G0/G3): structured successful
+and refused decisions; full-collection permutation invariance; graph-local ID
+schema separation; pressure/stress and absolute/difference-temperature
+separation despite equal dimensions; scalar-form, periodic-phase, causality,
+clock, frame, orientation, port-shape/power, interface-relation, source-closure,
+state-ownership/writer, algebraic
+cycle, material, interface, energy-role, and public-resource refusals; stateful
+and explicit-policy cycle breaking; and independent graph-identity movement by
+model version, clock period, terminal semantic kind, solve policy, and external
+material/interface card digests.
+
 ## No-claim boundaries
 
 - No operator catalog or per-operator semantic versions — gp3.6; the
@@ -501,24 +566,30 @@ event context, and considered inputs.
   that ledger a bare AST have no version-binding claim.
 - The `derived-crosswalk` token does not prove that any nominal Machine-IR
   selector identifies a real, admitted, or canonical model. It does not decode
-  or inspect a Machine-IR model graph; execute the subject/version/frame/unit
-  mapping artifacts; prove semantic or physical preservation; provide an
-  inverse or composition law; construct a `VersionedProgram`; convert into a
-  derived morphism/equivalence; or transport/strengthen evidence. PR-1 now
-  supplies strong entity identities, but the feature's older selector bytes do
-  not automatically become those IDs and no Machine-IR model graph exists yet.
+  or inspect an admitted `MachineGraphIdV1`; execute the
+  subject/version/frame/unit mapping artifacts; prove semantic or physical
+  preservation; provide an inverse or composition law; construct a
+  `VersionedProgram`; convert into a
+  derived morphism/equivalence; or transport/strengthen evidence. PR-1 supplies
+  strong entity identities and PR-2 supplies a structural admitted graph, but
+  the feature's older selector bytes do not automatically become those IDs or
+  that graph identity.
   A successor crosswalk must explicitly bind the strong IDs before those
   questions can be admitted. The mandatory no-authority artifact records this
   boundary; it is not a proof by itself.
-- Machine-IR PR-1 is the identity/lineage kernel only. It does not yet define
-  subsystems, materials, interfaces, terminal/port schemas, clocks,
-  controllers, IC/BC/motion/event/reset semantics, hazards, ContextOfUse,
-  accounting/fidelity policy, scenario lowering, lineage persistence, or an
-  authenticated authority to approve a crosswalk. A lineage receipt records a
-  declared map or invalidation; it does not prove geometric/physical
-  preservation, conservation, or semantic equivalence. An admission-decision
-  summary is not a canonical digest of early-refused input and is not by itself
-  a replayable ledger record.
+- Machine-IR PR-2 is a structural graph admission boundary, not an executable
+  multiphysics model. Matching quantity dimensions, frames, orientations,
+  clocks, effort/flow power dimensions, and interface roles does not prove
+  conservation, passivity, constitutive validity, geometric compatibility, or
+  scheduler behavior. Algebraic-cycle detection is not a DAE-index proof, and
+  naming a solve policy does not prove convergence. Opaque model/material/
+  interface/policy references are not authenticated or inspected. PR-3 still
+  owns IC/BC/motion/event/reset and tolerance/correlation semantics; PR-4 owns
+  sensors, hazards, ContextOfUse, accounting, and fidelity policy; PR-5 owns
+  scenario/domain lowering and stable-ID/hash round trips. Lineage persistence
+  and authenticated crosswalk authority are also absent. Admission-decision
+  summaries are not canonical digests of early-refused drafts and are not by
+  themselves replayable ledger records.
 - The query language is v0: a FIXED QoI menu (max/integral/exceedance), not
   a general program surface. `Query::admit` type-checks well-posedness and
   dimensions ONLY — it does NOT plan, cost, or execute a query (the greedy

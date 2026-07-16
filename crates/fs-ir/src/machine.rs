@@ -1,25 +1,38 @@
 //! Durable Machine-IR entity identity and topology-lineage kernel.
 //!
-//! This is PR-1 of the Machine-IR program. It deliberately does not define the
-//! machine graph, joints, port schemas, boundary conditions, controllers, or
-//! scenario lowering yet. It establishes the identity law those later schemas must use:
-//! array positions are never identity, entity roles are nominally distinct,
-//! and a topology change may rebind an attachment only when its source has one
-//! unambiguous target. One-to-many changes with live attachments return a
-//! typed invalidation receipt instead of guessing.
+//! PR-1 establishes the durable entity and topology-lineage law: array
+//! positions are never identity, entity roles are nominally distinct, and a
+//! topology change may rebind an attachment only when its source has one
+//! unambiguous target. PR-2 adds a dependency-neutral, versioned machine graph
+//! whose subsystem, clock, terminal, port, relation, material, and interface
+//! declarations are admitted before a semantic identity is published.
+//!
+//! Runtime coupling, executable material/interface cards, controllers,
+//! initial/boundary conditions, events, resets, hazards, accounting policy,
+//! and scenario lowering remain outside this module's current authority.
 
 use core::fmt;
 use core::hash::{Hash, Hasher};
+use core::num::NonZeroU64;
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use fs_blake3::identity::{
     CanonicalEncoder, CanonicalError, CanonicalLimits, CanonicalSchema, EntityId, Field, FieldSpec,
-    IdentityReceipt, NeverCancel, SemanticId, StrongIdentity, WireType,
+    IdentityReceipt, NeverCancel, ProblemSemanticId, SemanticId, StrongIdentity, WireType,
+};
+use fs_qty::Dims;
+use fs_qty::semantic::{
+    AngleDomain, CompositionBasis, QuantityKind, SemanticType, StrainBasis, StrainComponent,
+    ValueForm,
 };
 
 /// Version of every durable Machine-IR entity-key schema in this module.
 pub const MACHINE_ENTITY_ID_SCHEMA_VERSION_V1: u32 = 1;
 /// Version of the canonical lineage-record and invalidation schemas.
 pub const MACHINE_LINEAGE_SCHEMA_VERSION_V1: u32 = 1;
+/// Version of the admitted Machine-IR graph schema.
+pub const MACHINE_GRAPH_SCHEMA_VERSION_V1: u32 = 1;
 /// Maximum canonical bytes in one human-auditable entity key.
 pub const MAX_MACHINE_ENTITY_KEY_BYTES: usize = 128;
 /// Maximum source relations in one synchronous lineage record.
@@ -30,10 +43,29 @@ pub const MAX_LINEAGE_TARGETS_PER_SOURCE: usize = 4_096;
 pub const MAX_LINEAGE_ENDPOINTS: usize = 8_192;
 /// Maximum dependent attachments considered by one lineage admission.
 pub const MAX_LINEAGE_DEPENDENTS: usize = 4_096;
+/// Maximum clock declarations in one graph draft.
+pub const MAX_MACHINE_GRAPH_CLOCKS: usize = 1_024;
+/// Maximum subsystem declarations in one graph draft.
+pub const MAX_MACHINE_GRAPH_SUBSYSTEMS: usize = 1_024;
+/// Maximum terminal declarations in one graph draft.
+pub const MAX_MACHINE_GRAPH_TERMINALS: usize = 4_096;
+/// Maximum port declarations in one graph draft.
+pub const MAX_MACHINE_GRAPH_PORTS: usize = 2_048;
+/// Maximum relation declarations in one graph draft.
+pub const MAX_MACHINE_GRAPH_RELATIONS: usize = 8_192;
+/// Maximum material bindings in one graph draft.
+pub const MAX_MACHINE_GRAPH_MATERIALS: usize = 4_096;
+/// Maximum interface bindings in one graph draft.
+pub const MAX_MACHINE_GRAPH_INTERFACES: usize = 2_048;
+/// Maximum durable topology/state elements owned across all subsystems.
+pub const MAX_MACHINE_GRAPH_OWNED_ELEMENTS: usize = 16_384;
 
 const MACHINE_IDENTITY_LIMITS: CanonicalLimits = CanonicalLimits::new(4_096, 128, 1, 1, 256);
 const LINEAGE_IDENTITY_LIMITS: CanonicalLimits =
     CanonicalLimits::new(4 * 1_024 * 1_024, 1_024 * 1_024, 5, 16_384, 4_096);
+const MACHINE_GRAPH_IDENTITY_LIMITS: CanonicalLimits =
+    CanonicalLimits::new(16 * 1_024 * 1_024, 4 * 1_024 * 1_024, 8, 64_000, 16_384);
+const POWER_DIMS: Dims = Dims([2, 1, -3, 0, 0, 0]);
 
 /// Nominal role of a durable Machine-IR entity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1399,4 +1431,2259 @@ fn lineage_invalidation_identity(
             dependent_rows.iter().map(Vec::as_slice),
         )?
         .finish()
+}
+
+// ---------------------------------------------------------------------------
+// Machine graph schema and admission (E0 PR-2).
+// ---------------------------------------------------------------------------
+
+macro_rules! durable_graph_id {
+    (
+        $(#[$meta:meta])*
+        $name:ident,
+        $schema:ident,
+        $identity:ident,
+        $role:literal,
+        $domain:literal,
+        $context:literal
+    ) => {
+        #[doc = concat!("Canonical schema marker for `", stringify!($name), "`.")]
+        pub enum $schema {}
+
+        impl CanonicalSchema for $schema {
+            const DOMAIN: &'static str = $domain;
+            const NAME: &'static str = $role;
+            const VERSION: u32 = MACHINE_GRAPH_SCHEMA_VERSION_V1;
+            const CONTEXT: &'static str = $context;
+            const FIELDS: &'static [FieldSpec] =
+                &[FieldSpec::required("canonical-key", WireType::Utf8)];
+        }
+
+        #[doc = concat!("Typed durable graph identity for `", stringify!($name), "`.")]
+        pub type $identity = EntityId<$schema>;
+
+        $(#[$meta])*
+        #[derive(Clone)]
+        pub struct $name {
+            canonical_key: Box<str>,
+            receipt: IdentityReceipt<$identity>,
+        }
+
+        impl $name {
+            /// Admit a canonical, human-auditable graph key.
+            ///
+            /// # Errors
+            /// Refuses noncanonical text or a bounded identity-encoding error.
+            pub fn new(key: impl Into<String>) -> Result<Self, MachineIdError> {
+                let key = key.into();
+                validate_canonical_key($role, &key)?;
+                let receipt = CanonicalEncoder::<$identity, _>::new(
+                    MACHINE_IDENTITY_LIMITS,
+                    NeverCancel,
+                )?
+                .utf8(Field::new(0, "canonical-key"), &key)?
+                .finish()?;
+                Ok(Self {
+                    canonical_key: key.into_boxed_str(),
+                    receipt,
+                })
+            }
+
+            /// Exact canonical key retained for diagnostics and lowering.
+            #[must_use]
+            pub fn canonical_key(&self) -> &str {
+                &self.canonical_key
+            }
+
+            /// Domain- and role-separated durable identity.
+            #[must_use]
+            pub const fn identity(&self) -> $identity {
+                self.receipt.id()
+            }
+
+            /// Complete canonical-preimage receipt for collision adjudication.
+            #[must_use]
+            pub const fn identity_receipt(&self) -> IdentityReceipt<$identity> {
+                self.receipt
+            }
+
+            fn digest_bytes(&self) -> [u8; 32] {
+                *self.identity().as_bytes()
+            }
+        }
+
+        impl PartialEq for $name {
+            fn eq(&self, other: &Self) -> bool {
+                self.identity() == other.identity()
+            }
+        }
+
+        impl Eq for $name {}
+
+        impl PartialOrd for $name {
+            fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+
+        impl Ord for $name {
+            fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+                self.identity().cmp(&other.identity())
+            }
+        }
+
+        impl Hash for $name {
+            fn hash<H: Hasher>(&self, state: &mut H) {
+                self.identity().hash(state);
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(&self.canonical_key)
+            }
+        }
+
+        impl fmt::Debug for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.debug_struct(stringify!($name))
+                    .field("canonical_key", &self.canonical_key)
+                    .field("identity", &self.identity())
+                    .finish()
+            }
+        }
+    };
+}
+
+durable_graph_id!(
+    /// Durable identity of a declarative machine subsystem.
+    SubsystemId,
+    SubsystemIdSchemaV1,
+    SubsystemEntityIdV1,
+    "subsystem-id",
+    "org.frankensim.fs-ir.machine.subsystem-id.v1",
+    "one declarative Machine-IR subsystem independent of graph serialization order"
+);
+durable_graph_id!(
+    /// Durable identity of a machine relation.
+    RelationId,
+    RelationIdSchemaV1,
+    RelationEntityIdV1,
+    "relation-id",
+    "org.frankensim.fs-ir.machine.relation-id.v1",
+    "one typed Machine-IR relation independent of graph serialization order"
+);
+durable_graph_id!(
+    /// Durable identity of a logical machine clock domain.
+    ClockId,
+    ClockIdSchemaV1,
+    ClockEntityIdV1,
+    "clock-id",
+    "org.frankensim.fs-ir.machine.clock-id.v1",
+    "one declared Machine-IR clock domain rather than a runtime scheduler clock"
+);
+durable_graph_id!(
+    /// Durable identity of a machine interface binding.
+    InterfaceId,
+    InterfaceIdSchemaV1,
+    InterfaceEntityIdV1,
+    "interface-id",
+    "org.frankensim.fs-ir.machine.interface-id.v1",
+    "one role-oriented Machine-IR interface binding between two declared ports"
+);
+
+/// Refusal from constructing a dependency-neutral external schema reference.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineReferenceError {
+    /// The reference namespace was not a canonical Machine-IR key.
+    Namespace(MachineIdError),
+    /// An all-zero digest cannot name an external semantic artifact.
+    ZeroDigest {
+        /// Nominal reference role.
+        role: &'static str,
+    },
+}
+
+impl MachineReferenceError {
+    /// Stable diagnostic rule code.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::Namespace(_) => "MachineReferenceNamespace",
+            Self::ZeroDigest { .. } => "MachineReferenceZeroDigest",
+        }
+    }
+}
+
+impl fmt::Display for MachineReferenceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Namespace(error) => write!(f, "invalid external reference namespace: {error}"),
+            Self::ZeroDigest { role } => write!(f, "{role} semantic digest must not be all zero"),
+        }
+    }
+}
+
+impl std::error::Error for MachineReferenceError {}
+
+macro_rules! versioned_machine_ref {
+    ($(#[$meta:meta])* $name:ident, $role:literal) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        pub struct $name {
+            namespace: Box<str>,
+            schema_version: NonZeroU64,
+            semantic_digest: [u8; 32],
+        }
+
+        impl $name {
+            /// Construct an opaque, versioned semantic reference.
+            ///
+            /// `namespace` identifies the external schema family; the digest
+            /// is retained exactly and is not rehashed or authenticated here.
+            ///
+            /// # Errors
+            /// Refuses a noncanonical namespace or an all-zero digest.
+            pub fn new(
+                namespace: impl Into<String>,
+                schema_version: NonZeroU64,
+                semantic_digest: [u8; 32],
+            ) -> Result<Self, MachineReferenceError> {
+                let namespace = namespace.into();
+                validate_canonical_key($role, &namespace)
+                    .map_err(MachineReferenceError::Namespace)?;
+                if semantic_digest == [0; 32] {
+                    return Err(MachineReferenceError::ZeroDigest { role: $role });
+                }
+                Ok(Self {
+                    namespace: namespace.into_boxed_str(),
+                    schema_version,
+                    semantic_digest,
+                })
+            }
+
+            /// External schema namespace.
+            #[must_use]
+            pub fn namespace(&self) -> &str {
+                &self.namespace
+            }
+
+            /// Explicit external schema version.
+            #[must_use]
+            pub const fn schema_version(&self) -> NonZeroU64 {
+                self.schema_version
+            }
+
+            /// Exact semantic digest supplied by the external owner.
+            #[must_use]
+            pub const fn semantic_digest(&self) -> [u8; 32] {
+                self.semantic_digest
+            }
+
+            fn append_canonical(&self, out: &mut Vec<u8>) {
+                push_len_prefixed(out, self.namespace.as_bytes());
+                out.extend_from_slice(&self.schema_version.get().to_le_bytes());
+                out.extend_from_slice(&self.semantic_digest);
+            }
+        }
+    };
+}
+
+versioned_machine_ref!(
+    /// Opaque versioned reference to an executable subsystem model schema.
+    ModelRef,
+    "model-ref"
+);
+versioned_machine_ref!(
+    /// Opaque versioned reference to an immutable material-card schema.
+    MaterialCardRef,
+    "material-card-ref"
+);
+versioned_machine_ref!(
+    /// Opaque versioned reference to an interface-system card schema.
+    InterfaceCardRef,
+    "interface-card-ref"
+);
+versioned_machine_ref!(
+    /// Opaque versioned reference to an algebraic-loop solve-policy schema.
+    SolvePolicyRef,
+    "solve-policy-ref"
+);
+
+/// Logical clock behavior declared by a machine graph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MachineClock {
+    /// Continuous-time semantics; this is not a wall-clock guarantee.
+    Continuous,
+    /// Periodic logical sampling in integer nanoseconds.
+    Periodic {
+        /// Strictly positive logical period.
+        period_ns: NonZeroU64,
+        /// Phase in `[0, period_ns)`.
+        phase_ns: u64,
+    },
+    /// Event-driven logical time; event/reset semantics land in PR-3.
+    EventDriven,
+}
+
+/// One named logical clock declaration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClockSpec {
+    /// Stable clock-domain identity.
+    pub id: ClockId,
+    /// Declared logical behavior.
+    pub clock: MachineClock,
+}
+
+/// Quantity contract carried by a terminal.
+///
+/// `Dimensional` is an explicit no-semantic-kind claim, not a wildcard. It is
+/// compatible only with the exact same dimensional declaration. `Semantic`
+/// additionally distinguishes equal-dimensional meanings such as pressure
+/// versus stress and absolute versus difference temperature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TerminalQuantitySpec {
+    /// Six-base dimension vector with no stronger semantic-kind claim.
+    Dimensional(Dims),
+    /// Sealed semantic quantity kind and scalar value form.
+    Semantic(SemanticType),
+}
+
+impl TerminalQuantitySpec {
+    /// Exact six-base dimension vector required by the terminal.
+    #[must_use]
+    pub const fn dims(self) -> Dims {
+        match self {
+            Self::Dimensional(dims) => dims,
+            Self::Semantic(semantic_type) => semantic_type.expected_dims(),
+        }
+    }
+
+    /// Strong semantic type, when one was declared.
+    #[must_use]
+    pub const fn semantic_type(self) -> Option<SemanticType> {
+        match self {
+            Self::Dimensional(_) => None,
+            Self::Semantic(semantic_type) => Some(semantic_type),
+        }
+    }
+
+    fn is_admitted(self) -> bool {
+        match self {
+            Self::Dimensional(_) => true,
+            Self::Semantic(semantic_type) => semantic_type
+                .kind()
+                .admits_scalar_form(semantic_type.form()),
+        }
+    }
+}
+
+/// Declared terminal value shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TerminalShape {
+    /// One real scalar.
+    Scalar,
+    /// Fixed-width real vector.
+    Vector {
+        /// Number of components.
+        components: NonZeroU64,
+    },
+    /// Fixed rectangular real tensor.
+    Tensor {
+        /// Row count.
+        rows: NonZeroU64,
+        /// Column count.
+        columns: NonZeroU64,
+    },
+    /// Fixed-component trace field on an external geometric support.
+    FieldTrace {
+        /// Number of value components at each trace point.
+        components: NonZeroU64,
+    },
+}
+
+/// Orientation of terminal coordinates relative to their named frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OrientationParity {
+    /// Coordinate orientation preserves the named frame orientation.
+    Preserving,
+    /// Coordinate orientation reverses the named frame orientation.
+    Reversing,
+}
+
+/// Canonical frame and orientation declaration for a terminal.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FrameBinding {
+    canonical_key: Box<str>,
+    orientation: OrientationParity,
+}
+
+impl FrameBinding {
+    /// Construct a frame binding from a canonical frame key.
+    ///
+    /// # Errors
+    /// Refuses a noncanonical key before it can enter graph identity.
+    pub fn new(
+        canonical_key: impl Into<String>,
+        orientation: OrientationParity,
+    ) -> Result<Self, MachineIdError> {
+        let canonical_key = canonical_key.into();
+        validate_canonical_key("frame-binding", &canonical_key)?;
+        Ok(Self {
+            canonical_key: canonical_key.into_boxed_str(),
+            orientation,
+        })
+    }
+
+    /// Canonical frame key.
+    #[must_use]
+    pub fn canonical_key(&self) -> &str {
+        &self.canonical_key
+    }
+
+    /// Explicit orientation parity within the named frame.
+    #[must_use]
+    pub const fn orientation(&self) -> OrientationParity {
+        self.orientation
+    }
+}
+
+/// Causality role of a subsystem terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TerminalCausality {
+    /// Value must be closed by exactly one graph relation.
+    Input,
+    /// Value is produced by the owning subsystem model.
+    Output,
+    /// Value is supplied across the admitted graph boundary.
+    ExternalInput,
+}
+
+/// One typed subsystem terminal declaration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalSpec {
+    /// Stable terminal identity.
+    pub id: TerminalId,
+    /// Owning subsystem.
+    pub owner: SubsystemId,
+    /// Quantity dimensions and optional stronger semantic kind.
+    pub quantity: TerminalQuantitySpec,
+    /// Scalar/vector/tensor/trace shape.
+    pub shape: TerminalShape,
+    /// Input/output boundary role.
+    pub causality: TerminalCausality,
+    /// Logical clock domain.
+    pub clock: ClockId,
+    /// Coordinate frame and orientation.
+    pub frame: FrameBinding,
+}
+
+/// Declarative subsystem and directly owned durable elements.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubsystemSpec {
+    /// Stable subsystem identity.
+    pub id: SubsystemId,
+    /// Opaque versioned external model reference.
+    pub model: ModelRef,
+    /// Directly owned body occurrences.
+    pub bodies: Vec<BodyId>,
+    /// Directly owned named surface supports.
+    pub surface_patches: Vec<SurfacePatchId>,
+    /// Directly owned contact features.
+    pub contact_features: Vec<ContactFeatureId>,
+    /// Directly owned state slots.
+    pub state_slots: Vec<StateSlotId>,
+}
+
+/// Port-side energy orientation relative to the owning subsystem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PortEnergyRole {
+    /// Positive effort-flow product is directed into the subsystem.
+    IntoSubsystem,
+    /// Positive effort-flow product is directed out of the subsystem.
+    OutOfSubsystem,
+}
+
+/// Neutral effort/flow port declaration.
+///
+/// This is graph data only. Executable transport, interpolation, buffering,
+/// and synchronization remain owned by `fs-couple`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortSpec {
+    /// Stable coupling-port identity.
+    pub id: PortId,
+    /// Owning subsystem.
+    pub owner: SubsystemId,
+    /// Terminal carrying the effort variable.
+    pub effort: TerminalId,
+    /// Terminal carrying the flow variable.
+    pub flow: TerminalId,
+    /// Explicit sign convention for power accounting.
+    pub energy_role: PortEnergyRole,
+}
+
+/// Timing/solve boundary of one directed relation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelationMode {
+    /// Instantaneous dependency. A named policy cuts the dependency edge for
+    /// structural algebraic-loop admission; it does not prove convergence.
+    Algebraic {
+        /// Explicit external solve-policy reference, when present.
+        solve_policy: Option<SolvePolicyRef>,
+    },
+    /// Stateful dependency whose declared state slot breaks feedthrough.
+    Stateful {
+        /// State written by this relation and owned by the target subsystem.
+        state_slot: StateSlotId,
+    },
+}
+
+/// One directed typed relation from an output to an input terminal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelationSpec {
+    /// Stable relation identity.
+    pub id: RelationId,
+    /// Source output terminal.
+    pub source: TerminalId,
+    /// Target input terminal.
+    pub target: TerminalId,
+    /// Algebraic or state-breaking dependency semantics.
+    pub mode: RelationMode,
+}
+
+/// Durable target of a material-card binding.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MaterialTarget {
+    /// Complete body occurrence.
+    Body(BodyId),
+    /// Named surface support with a distinct surface material declaration.
+    SurfacePatch(SurfacePatchId),
+}
+
+/// Opaque material-card binding to one owned durable target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaterialBinding {
+    /// Owned body or surface target.
+    pub target: MaterialTarget,
+    /// Versioned immutable-card semantic reference.
+    pub material: MaterialCardRef,
+}
+
+/// Physical orientation of an interface's negative and positive port roles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InterfaceOrientation {
+    /// Endpoint coordinate orientations must match.
+    Aligned,
+    /// Endpoint coordinate orientations must be opposite.
+    Opposed,
+}
+
+/// Role-oriented interface binding between two ports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterfaceBinding {
+    /// Stable interface identity.
+    pub id: InterfaceId,
+    /// Negative-role port; endpoint order is identity-semantic.
+    pub negative: PortId,
+    /// Positive-role port; endpoint order is identity-semantic.
+    pub positive: PortId,
+    /// Versioned external interface-system reference.
+    pub interface: InterfaceCardRef,
+    /// Explicit endpoint orientation law.
+    pub orientation: InterfaceOrientation,
+}
+
+/// Canonical identity schema for one admitted machine graph.
+pub enum MachineGraphIdentitySchemaV1 {}
+
+impl CanonicalSchema for MachineGraphIdentitySchemaV1 {
+    const DOMAIN: &'static str = "org.frankensim.fs-ir.machine.graph.v1";
+    const NAME: &'static str = "admitted-machine-graph";
+    const VERSION: u32 = MACHINE_GRAPH_SCHEMA_VERSION_V1;
+    const CONTEXT: &'static str = "complete canonical subsystem, clock, terminal, port, relation, material, and interface declarations";
+    const FIELDS: &'static [FieldSpec] = &[
+        FieldSpec::required("graph-schema-version", WireType::U64),
+        FieldSpec::required("clocks", WireType::OrderedBytes),
+        FieldSpec::required("subsystems", WireType::OrderedBytes),
+        FieldSpec::required("terminals", WireType::OrderedBytes),
+        FieldSpec::required("ports", WireType::OrderedBytes),
+        FieldSpec::required("relations", WireType::OrderedBytes),
+        FieldSpec::required("materials", WireType::OrderedBytes),
+        FieldSpec::required("interfaces", WireType::OrderedBytes),
+    ];
+}
+
+/// Strong semantic identity of an admitted Machine-IR graph.
+pub type MachineGraphIdV1 = ProblemSemanticId<MachineGraphIdentitySchemaV1>;
+
+/// Closed admission rule vocabulary for deterministic graph diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u16)]
+pub enum MachineGraphRule {
+    /// A public collection or aggregate ownership limit was exceeded.
+    ResourceLimit = 1,
+    /// A clock identity was declared more than once.
+    DuplicateClock = 2,
+    /// A periodic clock phase was not strictly below its period.
+    InvalidClockPhase = 3,
+    /// A subsystem identity was declared more than once.
+    DuplicateSubsystem = 4,
+    /// A durable topology/state element had more than one owner.
+    DuplicateOwnership = 5,
+    /// A terminal identity was declared more than once.
+    DuplicateTerminal = 6,
+    /// A terminal named an undeclared subsystem owner.
+    UnknownTerminalOwner = 7,
+    /// A terminal named an undeclared clock.
+    UnknownTerminalClock = 8,
+    /// A semantic terminal kind used a forbidden scalar form.
+    UnsupportedTerminalForm = 9,
+    /// A port identity was declared more than once.
+    DuplicatePort = 10,
+    /// A port named an undeclared subsystem owner.
+    UnknownPortOwner = 11,
+    /// A port named an undeclared terminal.
+    UnknownPortTerminal = 12,
+    /// A port terminal belonged to a different subsystem.
+    PortOwnerMismatch = 13,
+    /// A port reused one terminal for both energy roles or across ports.
+    PortTerminalConflict = 14,
+    /// Effort and flow terminals used different clock domains.
+    PortClockMismatch = 15,
+    /// Effort and flow terminals used different frames.
+    PortFrameMismatch = 16,
+    /// Effort and flow terminal orientations disagreed.
+    PortOrientationMismatch = 17,
+    /// Effort and flow dimensions did not multiply to physical power.
+    PortPowerDimensionMismatch = 18,
+    /// A relation identity was declared more than once.
+    DuplicateRelation = 19,
+    /// A relation named an undeclared terminal.
+    UnknownRelationTerminal = 20,
+    /// Relation endpoints did not form output-to-input causality.
+    RelationCausalityGap = 21,
+    /// Relation endpoints had different quantity contracts.
+    RelationQuantityGap = 22,
+    /// Relation endpoints had different value shapes.
+    RelationShapeGap = 23,
+    /// Relation endpoints had different clocks.
+    RelationClockGap = 24,
+    /// Relation endpoints had different frames.
+    RelationFrameGap = 25,
+    /// Relation endpoints had different orientation declarations.
+    RelationOrientationGap = 26,
+    /// One input terminal had more than one producer relation.
+    MultipleInputSources = 27,
+    /// One internal input terminal had no producer relation.
+    MissingSourceClosure = 28,
+    /// A stateful relation named an undeclared state slot.
+    UnknownStateSlot = 29,
+    /// The named state slot was owned outside the target subsystem.
+    StateOwnerMismatch = 30,
+    /// More than one relation wrote the same state slot.
+    MultipleStateWriters = 31,
+    /// A declared state slot had no explicit stateful writer.
+    UnaccountedState = 32,
+    /// Instantaneous ungoverned dependencies contained a directed cycle.
+    AlgebraicLoopWithoutSolvePolicy = 33,
+    /// More than one material binding named the same target.
+    DuplicateMaterialBinding = 34,
+    /// A material binding named an unowned target.
+    UnknownMaterialTarget = 35,
+    /// An owned body had no material-card binding.
+    MissingBodyMaterial = 36,
+    /// An interface identity was declared more than once.
+    DuplicateInterface = 37,
+    /// An interface named an undeclared port.
+    UnknownInterfacePort = 38,
+    /// An interface used the same port for both endpoint roles.
+    SameInterfaceEndpoint = 39,
+    /// One port was bound into more than one interface.
+    PortInterfaceConflict = 40,
+    /// Interface endpoint effort/flow quantity contracts disagreed.
+    InterfaceQuantityGap = 41,
+    /// Interface endpoint effort/flow shapes disagreed.
+    InterfaceShapeGap = 42,
+    /// Interface endpoint clocks disagreed.
+    InterfaceClockGap = 43,
+    /// Interface endpoint frames disagreed.
+    InterfaceFrameGap = 44,
+    /// Interface endpoint orientation did not satisfy the declared law.
+    InterfaceOrientationGap = 45,
+    /// Interface endpoint power-direction roles were not complementary.
+    InterfaceEnergyRoleGap = 46,
+    /// Canonical semantic identity construction refused publication.
+    Identity = 47,
+    /// Effort and flow terminals used incompatible value shapes.
+    PortShapeMismatch = 48,
+    /// An interface terminal pair did not contain exactly one output and one input.
+    InterfaceCausalityGap = 49,
+    /// Interface endpoints lacked their exact directed terminal relations.
+    InterfaceRelationGap = 50,
+}
+
+impl MachineGraphRule {
+    /// Stable rule code for structured admission logging.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::ResourceLimit => "MachineGraphResourceLimit",
+            Self::DuplicateClock => "MachineGraphDuplicateClock",
+            Self::InvalidClockPhase => "MachineGraphInvalidClockPhase",
+            Self::DuplicateSubsystem => "MachineGraphDuplicateSubsystem",
+            Self::DuplicateOwnership => "MachineGraphDuplicateOwnership",
+            Self::DuplicateTerminal => "MachineGraphDuplicateTerminal",
+            Self::UnknownTerminalOwner => "MachineGraphUnknownTerminalOwner",
+            Self::UnknownTerminalClock => "MachineGraphUnknownTerminalClock",
+            Self::UnsupportedTerminalForm => "MachineGraphUnsupportedTerminalForm",
+            Self::DuplicatePort => "MachineGraphDuplicatePort",
+            Self::UnknownPortOwner => "MachineGraphUnknownPortOwner",
+            Self::UnknownPortTerminal => "MachineGraphUnknownPortTerminal",
+            Self::PortOwnerMismatch => "MachineGraphPortOwnerMismatch",
+            Self::PortTerminalConflict => "MachineGraphPortTerminalConflict",
+            Self::PortClockMismatch => "MachineGraphPortClockMismatch",
+            Self::PortFrameMismatch => "MachineGraphPortFrameMismatch",
+            Self::PortOrientationMismatch => "MachineGraphPortOrientationMismatch",
+            Self::PortPowerDimensionMismatch => "MachineGraphPortPowerDimensionMismatch",
+            Self::DuplicateRelation => "MachineGraphDuplicateRelation",
+            Self::UnknownRelationTerminal => "MachineGraphUnknownRelationTerminal",
+            Self::RelationCausalityGap => "MachineGraphRelationCausalityGap",
+            Self::RelationQuantityGap => "MachineGraphRelationQuantityGap",
+            Self::RelationShapeGap => "MachineGraphRelationShapeGap",
+            Self::RelationClockGap => "MachineGraphRelationClockGap",
+            Self::RelationFrameGap => "MachineGraphRelationFrameGap",
+            Self::RelationOrientationGap => "MachineGraphRelationOrientationGap",
+            Self::MultipleInputSources => "MachineGraphMultipleInputSources",
+            Self::MissingSourceClosure => "MachineGraphMissingSourceClosure",
+            Self::UnknownStateSlot => "MachineGraphUnknownStateSlot",
+            Self::StateOwnerMismatch => "MachineGraphStateOwnerMismatch",
+            Self::MultipleStateWriters => "MachineGraphMultipleStateWriters",
+            Self::UnaccountedState => "MachineGraphUnaccountedState",
+            Self::AlgebraicLoopWithoutSolvePolicy => "MachineGraphAlgebraicLoopWithoutSolvePolicy",
+            Self::DuplicateMaterialBinding => "MachineGraphDuplicateMaterialBinding",
+            Self::UnknownMaterialTarget => "MachineGraphUnknownMaterialTarget",
+            Self::MissingBodyMaterial => "MachineGraphMissingBodyMaterial",
+            Self::DuplicateInterface => "MachineGraphDuplicateInterface",
+            Self::UnknownInterfacePort => "MachineGraphUnknownInterfacePort",
+            Self::SameInterfaceEndpoint => "MachineGraphSameInterfaceEndpoint",
+            Self::PortInterfaceConflict => "MachineGraphPortInterfaceConflict",
+            Self::InterfaceQuantityGap => "MachineGraphInterfaceQuantityGap",
+            Self::InterfaceShapeGap => "MachineGraphInterfaceShapeGap",
+            Self::InterfaceClockGap => "MachineGraphInterfaceClockGap",
+            Self::InterfaceFrameGap => "MachineGraphInterfaceFrameGap",
+            Self::InterfaceOrientationGap => "MachineGraphInterfaceOrientationGap",
+            Self::InterfaceEnergyRoleGap => "MachineGraphInterfaceEnergyRoleGap",
+            Self::Identity => "MachineGraphIdentity",
+            Self::PortShapeMismatch => "MachineGraphPortShapeMismatch",
+            Self::InterfaceCausalityGap => "MachineGraphInterfaceCausalityGap",
+            Self::InterfaceRelationGap => "MachineGraphInterfaceRelationGap",
+        }
+    }
+}
+
+/// Typed subject named by a graph-admission finding.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MachineGraphSubject {
+    /// Complete submitted graph.
+    Graph,
+    /// Clock declaration.
+    Clock(ClockId),
+    /// Subsystem declaration.
+    Subsystem(SubsystemId),
+    /// Durable topology or state element.
+    MachineElement(MachineElementId),
+    /// Terminal declaration.
+    Terminal(TerminalId),
+    /// Port declaration.
+    Port(PortId),
+    /// Relation declaration.
+    Relation(RelationId),
+    /// Material binding target.
+    MaterialTarget(MaterialTarget),
+    /// Interface binding.
+    Interface(InterfaceId),
+}
+
+/// One deterministic, structured graph-admission finding.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MachineGraphFinding {
+    rule: MachineGraphRule,
+    subject: MachineGraphSubject,
+    related: Option<MachineGraphSubject>,
+}
+
+impl MachineGraphFinding {
+    fn new(
+        rule: MachineGraphRule,
+        subject: MachineGraphSubject,
+        related: Option<MachineGraphSubject>,
+    ) -> Self {
+        Self {
+            rule,
+            subject,
+            related,
+        }
+    }
+
+    /// Closed rule that produced this finding.
+    #[must_use]
+    pub const fn rule(&self) -> MachineGraphRule {
+        self.rule
+    }
+
+    /// Stable rule code for structured traces.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        self.rule.code()
+    }
+
+    /// Exact offending graph subject.
+    #[must_use]
+    pub const fn subject(&self) -> &MachineGraphSubject {
+        &self.subject
+    }
+
+    /// Optional second subject needed to explain the conflict.
+    #[must_use]
+    pub const fn related(&self) -> Option<&MachineGraphSubject> {
+        self.related.as_ref()
+    }
+}
+
+/// Complete, deterministically sorted refusal from graph admission.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineGraphRefusal {
+    findings: Vec<MachineGraphFinding>,
+    identity_error: Option<CanonicalError>,
+}
+
+impl MachineGraphRefusal {
+    /// Sorted, duplicate-free findings. This slice is always nonempty.
+    #[must_use]
+    pub fn findings(&self) -> &[MachineGraphFinding] {
+        &self.findings
+    }
+
+    /// Canonical identity error, only for `MachineGraphIdentity`.
+    #[must_use]
+    pub const fn identity_error(&self) -> Option<&CanonicalError> {
+        self.identity_error.as_ref()
+    }
+
+    /// Stable outcome code; inspect individual findings for specific rules.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        "MachineGraphRefused"
+    }
+}
+
+impl fmt::Display for MachineGraphRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "machine graph refused with {} finding(s); first rule is {}",
+            self.findings.len(),
+            self.findings[0].code()
+        )
+    }
+}
+
+impl std::error::Error for MachineGraphRefusal {}
+
+/// Collection sizes retained for every graph-admission attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MachineGraphSubmittedCounts {
+    /// Submitted clock count.
+    pub clocks: usize,
+    /// Submitted subsystem count.
+    pub subsystems: usize,
+    /// Submitted terminal count.
+    pub terminals: usize,
+    /// Submitted port count.
+    pub ports: usize,
+    /// Submitted relation count.
+    pub relations: usize,
+    /// Submitted material-binding count.
+    pub materials: usize,
+    /// Submitted interface-binding count.
+    pub interfaces: usize,
+    /// Submitted owned-element count across subsystems.
+    pub owned_elements: usize,
+}
+
+/// Mutable-by-construction, authority-free machine graph draft.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineGraphDraft {
+    /// Logical clock declarations.
+    pub clocks: Vec<ClockSpec>,
+    /// Subsystem/model declarations and durable ownership.
+    pub subsystems: Vec<SubsystemSpec>,
+    /// Typed terminal declarations.
+    pub terminals: Vec<TerminalSpec>,
+    /// Neutral effort/flow port declarations.
+    pub ports: Vec<PortSpec>,
+    /// Directed typed relations.
+    pub relations: Vec<RelationSpec>,
+    /// Material-card bindings.
+    pub materials: Vec<MaterialBinding>,
+    /// Role-oriented interface bindings.
+    pub interfaces: Vec<InterfaceBinding>,
+}
+
+impl MachineGraphDraft {
+    /// Attempt graph admission and publish no semantic identity on refusal.
+    ///
+    /// # Errors
+    /// Returns all deterministic findings discovered within the bounded draft.
+    pub fn admit(self) -> Result<AdmittedMachineGraph, MachineGraphRefusal> {
+        self.admit_with_decision().into_result()
+    }
+
+    /// Attempt admission while retaining structured submitted counts.
+    #[must_use]
+    pub fn admit_with_decision(self) -> MachineGraphAdmissionDecision {
+        let submitted = submitted_counts(&self);
+        MachineGraphAdmissionDecision {
+            submitted,
+            result: admit_machine_graph(self),
+        }
+    }
+}
+
+/// Canonically ordered admitted machine graph plus its semantic receipt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdmittedMachineGraph {
+    clocks: Vec<ClockSpec>,
+    subsystems: Vec<SubsystemSpec>,
+    terminals: Vec<TerminalSpec>,
+    ports: Vec<PortSpec>,
+    relations: Vec<RelationSpec>,
+    materials: Vec<MaterialBinding>,
+    interfaces: Vec<InterfaceBinding>,
+    receipt: IdentityReceipt<MachineGraphIdV1>,
+}
+
+impl AdmittedMachineGraph {
+    /// Strong semantic identity of the complete admitted graph.
+    #[must_use]
+    pub const fn identity(&self) -> MachineGraphIdV1 {
+        self.receipt.id()
+    }
+
+    /// Complete canonical identity receipt for collision adjudication.
+    #[must_use]
+    pub const fn identity_receipt(&self) -> IdentityReceipt<MachineGraphIdV1> {
+        self.receipt
+    }
+
+    /// Canonically ordered clocks.
+    #[must_use]
+    pub fn clocks(&self) -> &[ClockSpec] {
+        &self.clocks
+    }
+
+    /// Canonically ordered subsystems.
+    #[must_use]
+    pub fn subsystems(&self) -> &[SubsystemSpec] {
+        &self.subsystems
+    }
+
+    /// Canonically ordered terminals.
+    #[must_use]
+    pub fn terminals(&self) -> &[TerminalSpec] {
+        &self.terminals
+    }
+
+    /// Canonically ordered ports.
+    #[must_use]
+    pub fn ports(&self) -> &[PortSpec] {
+        &self.ports
+    }
+
+    /// Canonically ordered relations.
+    #[must_use]
+    pub fn relations(&self) -> &[RelationSpec] {
+        &self.relations
+    }
+
+    /// Canonically ordered material bindings.
+    #[must_use]
+    pub fn materials(&self) -> &[MaterialBinding] {
+        &self.materials
+    }
+
+    /// Canonically ordered interface bindings.
+    #[must_use]
+    pub fn interfaces(&self) -> &[InterfaceBinding] {
+        &self.interfaces
+    }
+}
+
+/// Bounded deterministic outcome summary for one graph-admission attempt.
+///
+/// This summary is suitable for structured tracing but is not itself a digest
+/// or replay record of an early-refused draft.
+#[must_use]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineGraphAdmissionDecision {
+    submitted: MachineGraphSubmittedCounts,
+    result: Result<AdmittedMachineGraph, MachineGraphRefusal>,
+}
+
+impl MachineGraphAdmissionDecision {
+    /// Exact collection counts observed before canonicalization.
+    #[must_use]
+    pub const fn submitted_counts(&self) -> MachineGraphSubmittedCounts {
+        self.submitted
+    }
+
+    /// Stable top-level decision code.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match &self.result {
+            Ok(_) => "MachineGraphAdmitted",
+            Err(_) => "MachineGraphRefused",
+        }
+    }
+
+    /// Borrow the admitted graph or complete refusal.
+    #[must_use]
+    pub fn result(&self) -> Result<&AdmittedMachineGraph, &MachineGraphRefusal> {
+        self.result.as_ref()
+    }
+
+    /// Consume the decision and recover the conventional result.
+    #[must_use]
+    pub fn into_result(self) -> Result<AdmittedMachineGraph, MachineGraphRefusal> {
+        self.result
+    }
+}
+
+fn submitted_counts(draft: &MachineGraphDraft) -> MachineGraphSubmittedCounts {
+    let owned_elements = draft.subsystems.iter().fold(0usize, |count, subsystem| {
+        count
+            .saturating_add(subsystem.bodies.len())
+            .saturating_add(subsystem.surface_patches.len())
+            .saturating_add(subsystem.contact_features.len())
+            .saturating_add(subsystem.state_slots.len())
+    });
+    MachineGraphSubmittedCounts {
+        clocks: draft.clocks.len(),
+        subsystems: draft.subsystems.len(),
+        terminals: draft.terminals.len(),
+        ports: draft.ports.len(),
+        relations: draft.relations.len(),
+        materials: draft.materials.len(),
+        interfaces: draft.interfaces.len(),
+        owned_elements,
+    }
+}
+
+fn resource_limit_findings(counts: MachineGraphSubmittedCounts) -> Vec<MachineGraphFinding> {
+    let over_limit = counts.clocks > MAX_MACHINE_GRAPH_CLOCKS
+        || counts.subsystems > MAX_MACHINE_GRAPH_SUBSYSTEMS
+        || counts.terminals > MAX_MACHINE_GRAPH_TERMINALS
+        || counts.ports > MAX_MACHINE_GRAPH_PORTS
+        || counts.relations > MAX_MACHINE_GRAPH_RELATIONS
+        || counts.materials > MAX_MACHINE_GRAPH_MATERIALS
+        || counts.interfaces > MAX_MACHINE_GRAPH_INTERFACES
+        || counts.owned_elements > MAX_MACHINE_GRAPH_OWNED_ELEMENTS;
+    if over_limit {
+        vec![MachineGraphFinding::new(
+            MachineGraphRule::ResourceLimit,
+            MachineGraphSubject::Graph,
+            None,
+        )]
+    } else {
+        Vec::new()
+    }
+}
+
+fn graph_refusal(
+    mut findings: Vec<MachineGraphFinding>,
+    identity_error: Option<CanonicalError>,
+) -> MachineGraphRefusal {
+    findings.sort();
+    findings.dedup();
+    debug_assert!(!findings.is_empty());
+    MachineGraphRefusal {
+        findings,
+        identity_error,
+    }
+}
+
+// The admission sequence intentionally mirrors the closed rule vocabulary so
+// every finding remains local, ordered, and auditable in one pass.
+#[allow(clippy::too_many_lines)]
+fn admit_machine_graph(
+    mut draft: MachineGraphDraft,
+) -> Result<AdmittedMachineGraph, MachineGraphRefusal> {
+    let counts = submitted_counts(&draft);
+    let resource_findings = resource_limit_findings(counts);
+    if !resource_findings.is_empty() {
+        return Err(graph_refusal(resource_findings, None));
+    }
+
+    canonicalize_graph_draft(&mut draft);
+    let mut findings = Vec::new();
+
+    for pair in draft.clocks.windows(2) {
+        if pair[0].id == pair[1].id {
+            findings.push(MachineGraphFinding::new(
+                MachineGraphRule::DuplicateClock,
+                MachineGraphSubject::Clock(pair[1].id.clone()),
+                None,
+            ));
+        }
+    }
+    for clock in &draft.clocks {
+        if let MachineClock::Periodic {
+            period_ns,
+            phase_ns,
+        } = clock.clock
+            && phase_ns >= period_ns.get()
+        {
+            findings.push(MachineGraphFinding::new(
+                MachineGraphRule::InvalidClockPhase,
+                MachineGraphSubject::Clock(clock.id.clone()),
+                None,
+            ));
+        }
+    }
+    let clock_ids: BTreeSet<ClockId> = draft.clocks.iter().map(|clock| clock.id.clone()).collect();
+
+    for pair in draft.subsystems.windows(2) {
+        if pair[0].id == pair[1].id {
+            findings.push(MachineGraphFinding::new(
+                MachineGraphRule::DuplicateSubsystem,
+                MachineGraphSubject::Subsystem(pair[1].id.clone()),
+                None,
+            ));
+        }
+    }
+    let subsystem_ids: BTreeSet<SubsystemId> = draft
+        .subsystems
+        .iter()
+        .map(|subsystem| subsystem.id.clone())
+        .collect();
+    let subsystem_indices: BTreeMap<SubsystemId, usize> = draft
+        .subsystems
+        .iter()
+        .enumerate()
+        .map(|(index, subsystem)| (subsystem.id.clone(), index))
+        .collect();
+
+    let mut element_owners = BTreeMap::<MachineElementId, SubsystemId>::new();
+    let mut state_owners = BTreeMap::<StateSlotId, SubsystemId>::new();
+    let mut body_ids = BTreeSet::<BodyId>::new();
+    for subsystem in &draft.subsystems {
+        for body in &subsystem.bodies {
+            body_ids.insert(body.clone());
+            record_element_owner(
+                &mut element_owners,
+                MachineElementId::Body(body.clone()),
+                &subsystem.id,
+                &mut findings,
+            );
+        }
+        for patch in &subsystem.surface_patches {
+            record_element_owner(
+                &mut element_owners,
+                MachineElementId::SurfacePatch(patch.clone()),
+                &subsystem.id,
+                &mut findings,
+            );
+        }
+        for feature in &subsystem.contact_features {
+            record_element_owner(
+                &mut element_owners,
+                MachineElementId::ContactFeature(feature.clone()),
+                &subsystem.id,
+                &mut findings,
+            );
+        }
+        for state_slot in &subsystem.state_slots {
+            record_element_owner(
+                &mut element_owners,
+                MachineElementId::StateSlot(state_slot.clone()),
+                &subsystem.id,
+                &mut findings,
+            );
+            if let Some(first_owner) = state_owners.insert(state_slot.clone(), subsystem.id.clone())
+            {
+                findings.push(MachineGraphFinding::new(
+                    MachineGraphRule::DuplicateOwnership,
+                    MachineGraphSubject::MachineElement(MachineElementId::StateSlot(
+                        state_slot.clone(),
+                    )),
+                    Some(MachineGraphSubject::Subsystem(first_owner)),
+                ));
+            }
+        }
+    }
+
+    for pair in draft.terminals.windows(2) {
+        if pair[0].id == pair[1].id {
+            findings.push(MachineGraphFinding::new(
+                MachineGraphRule::DuplicateTerminal,
+                MachineGraphSubject::Terminal(pair[1].id.clone()),
+                None,
+            ));
+        }
+    }
+    let terminal_indices: BTreeMap<TerminalId, usize> = draft
+        .terminals
+        .iter()
+        .enumerate()
+        .map(|(index, terminal)| (terminal.id.clone(), index))
+        .collect();
+    for terminal in &draft.terminals {
+        record_element_owner(
+            &mut element_owners,
+            MachineElementId::Terminal(terminal.id.clone()),
+            &terminal.owner,
+            &mut findings,
+        );
+        if !subsystem_ids.contains(&terminal.owner) {
+            findings.push(MachineGraphFinding::new(
+                MachineGraphRule::UnknownTerminalOwner,
+                MachineGraphSubject::Terminal(terminal.id.clone()),
+                Some(MachineGraphSubject::Subsystem(terminal.owner.clone())),
+            ));
+        }
+        if !clock_ids.contains(&terminal.clock) {
+            findings.push(MachineGraphFinding::new(
+                MachineGraphRule::UnknownTerminalClock,
+                MachineGraphSubject::Terminal(terminal.id.clone()),
+                Some(MachineGraphSubject::Clock(terminal.clock.clone())),
+            ));
+        }
+        if !terminal.quantity.is_admitted() {
+            findings.push(MachineGraphFinding::new(
+                MachineGraphRule::UnsupportedTerminalForm,
+                MachineGraphSubject::Terminal(terminal.id.clone()),
+                None,
+            ));
+        }
+    }
+
+    for pair in draft.ports.windows(2) {
+        if pair[0].id == pair[1].id {
+            findings.push(MachineGraphFinding::new(
+                MachineGraphRule::DuplicatePort,
+                MachineGraphSubject::Port(pair[1].id.clone()),
+                None,
+            ));
+        }
+    }
+    let port_indices: BTreeMap<PortId, usize> = draft
+        .ports
+        .iter()
+        .enumerate()
+        .map(|(index, port)| (port.id.clone(), index))
+        .collect();
+    let mut terminal_ports = BTreeMap::<TerminalId, PortId>::new();
+    for port in &draft.ports {
+        record_element_owner(
+            &mut element_owners,
+            MachineElementId::Port(port.id.clone()),
+            &port.owner,
+            &mut findings,
+        );
+        if !subsystem_ids.contains(&port.owner) {
+            findings.push(MachineGraphFinding::new(
+                MachineGraphRule::UnknownPortOwner,
+                MachineGraphSubject::Port(port.id.clone()),
+                Some(MachineGraphSubject::Subsystem(port.owner.clone())),
+            ));
+        }
+        if port.effort == port.flow {
+            findings.push(MachineGraphFinding::new(
+                MachineGraphRule::PortTerminalConflict,
+                MachineGraphSubject::Port(port.id.clone()),
+                Some(MachineGraphSubject::Terminal(port.effort.clone())),
+            ));
+        }
+        for terminal_id in [&port.effort, &port.flow] {
+            if let Some(first_port) = terminal_ports.insert(terminal_id.clone(), port.id.clone()) {
+                findings.push(MachineGraphFinding::new(
+                    MachineGraphRule::PortTerminalConflict,
+                    MachineGraphSubject::Port(port.id.clone()),
+                    Some(MachineGraphSubject::Port(first_port)),
+                ));
+            }
+        }
+        let effort = terminal_indices
+            .get(&port.effort)
+            .map(|index| &draft.terminals[*index]);
+        let flow = terminal_indices
+            .get(&port.flow)
+            .map(|index| &draft.terminals[*index]);
+        if effort.is_none() {
+            findings.push(MachineGraphFinding::new(
+                MachineGraphRule::UnknownPortTerminal,
+                MachineGraphSubject::Port(port.id.clone()),
+                Some(MachineGraphSubject::Terminal(port.effort.clone())),
+            ));
+        }
+        if flow.is_none() {
+            findings.push(MachineGraphFinding::new(
+                MachineGraphRule::UnknownPortTerminal,
+                MachineGraphSubject::Port(port.id.clone()),
+                Some(MachineGraphSubject::Terminal(port.flow.clone())),
+            ));
+        }
+        if let (Some(effort), Some(flow)) = (effort, flow) {
+            for terminal in [effort, flow] {
+                if terminal.owner != port.owner {
+                    findings.push(MachineGraphFinding::new(
+                        MachineGraphRule::PortOwnerMismatch,
+                        MachineGraphSubject::Port(port.id.clone()),
+                        Some(MachineGraphSubject::Terminal(terminal.id.clone())),
+                    ));
+                }
+            }
+            if effort.clock != flow.clock {
+                findings.push(MachineGraphFinding::new(
+                    MachineGraphRule::PortClockMismatch,
+                    MachineGraphSubject::Port(port.id.clone()),
+                    None,
+                ));
+            }
+            if effort.frame.canonical_key() != flow.frame.canonical_key() {
+                findings.push(MachineGraphFinding::new(
+                    MachineGraphRule::PortFrameMismatch,
+                    MachineGraphSubject::Port(port.id.clone()),
+                    None,
+                ));
+            }
+            if effort.frame.orientation() != flow.frame.orientation() {
+                findings.push(MachineGraphFinding::new(
+                    MachineGraphRule::PortOrientationMismatch,
+                    MachineGraphSubject::Port(port.id.clone()),
+                    None,
+                ));
+            }
+            if effort.shape != flow.shape {
+                findings.push(MachineGraphFinding::new(
+                    MachineGraphRule::PortShapeMismatch,
+                    MachineGraphSubject::Port(port.id.clone()),
+                    None,
+                ));
+            }
+            if effort.quantity.dims().checked_plus(flow.quantity.dims()) != Some(POWER_DIMS) {
+                findings.push(MachineGraphFinding::new(
+                    MachineGraphRule::PortPowerDimensionMismatch,
+                    MachineGraphSubject::Port(port.id.clone()),
+                    None,
+                ));
+            }
+        }
+    }
+
+    let oriented_interface_relations = declared_interface_relation_orientations(
+        &draft.interfaces,
+        &draft.ports,
+        &port_indices,
+        &draft.terminals,
+        &terminal_indices,
+    );
+
+    for pair in draft.relations.windows(2) {
+        if pair[0].id == pair[1].id {
+            findings.push(MachineGraphFinding::new(
+                MachineGraphRule::DuplicateRelation,
+                MachineGraphSubject::Relation(pair[1].id.clone()),
+                None,
+            ));
+        }
+    }
+    let mut target_source_counts = BTreeMap::<TerminalId, usize>::new();
+    let mut state_writer_counts = BTreeMap::<StateSlotId, usize>::new();
+    let mut algebraic_adjacency = vec![Vec::<(usize, RelationId)>::new(); draft.subsystems.len()];
+    for relation in &draft.relations {
+        let source = terminal_indices
+            .get(&relation.source)
+            .map(|index| &draft.terminals[*index]);
+        let target = terminal_indices
+            .get(&relation.target)
+            .map(|index| &draft.terminals[*index]);
+        if source.is_none() {
+            findings.push(MachineGraphFinding::new(
+                MachineGraphRule::UnknownRelationTerminal,
+                MachineGraphSubject::Relation(relation.id.clone()),
+                Some(MachineGraphSubject::Terminal(relation.source.clone())),
+            ));
+        }
+        if target.is_none() {
+            findings.push(MachineGraphFinding::new(
+                MachineGraphRule::UnknownRelationTerminal,
+                MachineGraphSubject::Relation(relation.id.clone()),
+                Some(MachineGraphSubject::Terminal(relation.target.clone())),
+            ));
+        }
+        if let Some(target) = target {
+            *target_source_counts.entry(target.id.clone()).or_default() += 1;
+        }
+        if let (Some(source), Some(target)) = (source, target) {
+            if source.causality != TerminalCausality::Output
+                || target.causality != TerminalCausality::Input
+            {
+                findings.push(MachineGraphFinding::new(
+                    MachineGraphRule::RelationCausalityGap,
+                    MachineGraphSubject::Relation(relation.id.clone()),
+                    Some(MachineGraphSubject::Terminal(target.id.clone())),
+                ));
+            }
+            if source.quantity != target.quantity {
+                findings.push(MachineGraphFinding::new(
+                    MachineGraphRule::RelationQuantityGap,
+                    MachineGraphSubject::Relation(relation.id.clone()),
+                    Some(MachineGraphSubject::Terminal(target.id.clone())),
+                ));
+            }
+            if source.shape != target.shape {
+                findings.push(MachineGraphFinding::new(
+                    MachineGraphRule::RelationShapeGap,
+                    MachineGraphSubject::Relation(relation.id.clone()),
+                    Some(MachineGraphSubject::Terminal(target.id.clone())),
+                ));
+            }
+            if source.clock != target.clock {
+                findings.push(MachineGraphFinding::new(
+                    MachineGraphRule::RelationClockGap,
+                    MachineGraphSubject::Relation(relation.id.clone()),
+                    Some(MachineGraphSubject::Terminal(target.id.clone())),
+                ));
+            }
+            if source.frame.canonical_key() != target.frame.canonical_key() {
+                findings.push(MachineGraphFinding::new(
+                    MachineGraphRule::RelationFrameGap,
+                    MachineGraphSubject::Relation(relation.id.clone()),
+                    Some(MachineGraphSubject::Terminal(target.id.clone())),
+                ));
+            }
+            let orientations_match = source.frame.orientation() == target.frame.orientation();
+            let orientation_admitted =
+                match oriented_interface_relations.get(&(source.id.clone(), target.id.clone())) {
+                    Some(InterfaceOrientation::Aligned) => orientations_match,
+                    Some(InterfaceOrientation::Opposed) => !orientations_match,
+                    None => orientations_match,
+                };
+            if !orientation_admitted {
+                findings.push(MachineGraphFinding::new(
+                    MachineGraphRule::RelationOrientationGap,
+                    MachineGraphSubject::Relation(relation.id.clone()),
+                    Some(MachineGraphSubject::Terminal(target.id.clone())),
+                ));
+            }
+            match &relation.mode {
+                RelationMode::Stateful { state_slot } => {
+                    *state_writer_counts.entry(state_slot.clone()).or_default() += 1;
+                    match state_owners.get(state_slot) {
+                        None => findings.push(MachineGraphFinding::new(
+                            MachineGraphRule::UnknownStateSlot,
+                            MachineGraphSubject::Relation(relation.id.clone()),
+                            Some(MachineGraphSubject::MachineElement(
+                                MachineElementId::StateSlot(state_slot.clone()),
+                            )),
+                        )),
+                        Some(owner) if *owner != target.owner => {
+                            findings.push(MachineGraphFinding::new(
+                                MachineGraphRule::StateOwnerMismatch,
+                                MachineGraphSubject::Relation(relation.id.clone()),
+                                Some(MachineGraphSubject::Subsystem(owner.clone())),
+                            ));
+                        }
+                        Some(_) => {}
+                    }
+                }
+                RelationMode::Algebraic { solve_policy: None } => {
+                    if let (Some(source_owner), Some(target_owner)) = (
+                        subsystem_indices.get(&source.owner),
+                        subsystem_indices.get(&target.owner),
+                    ) {
+                        algebraic_adjacency[*source_owner]
+                            .push((*target_owner, relation.id.clone()));
+                    }
+                }
+                RelationMode::Algebraic {
+                    solve_policy: Some(_),
+                } => {}
+            }
+        }
+    }
+    for terminal in &draft.terminals {
+        if terminal.causality == TerminalCausality::Input {
+            match target_source_counts.get(&terminal.id).copied().unwrap_or(0) {
+                0 => findings.push(MachineGraphFinding::new(
+                    MachineGraphRule::MissingSourceClosure,
+                    MachineGraphSubject::Terminal(terminal.id.clone()),
+                    None,
+                )),
+                1 => {}
+                _ => findings.push(MachineGraphFinding::new(
+                    MachineGraphRule::MultipleInputSources,
+                    MachineGraphSubject::Terminal(terminal.id.clone()),
+                    None,
+                )),
+            }
+        }
+    }
+    for state_slot in state_owners.keys() {
+        match state_writer_counts.get(state_slot).copied().unwrap_or(0) {
+            0 => findings.push(MachineGraphFinding::new(
+                MachineGraphRule::UnaccountedState,
+                MachineGraphSubject::MachineElement(MachineElementId::StateSlot(
+                    state_slot.clone(),
+                )),
+                None,
+            )),
+            1 => {}
+            _ => findings.push(MachineGraphFinding::new(
+                MachineGraphRule::MultipleStateWriters,
+                MachineGraphSubject::MachineElement(MachineElementId::StateSlot(
+                    state_slot.clone(),
+                )),
+                None,
+            )),
+        }
+    }
+    if let Some(relation) = first_algebraic_cycle_relation(&algebraic_adjacency) {
+        findings.push(MachineGraphFinding::new(
+            MachineGraphRule::AlgebraicLoopWithoutSolvePolicy,
+            MachineGraphSubject::Relation(relation),
+            None,
+        ));
+    }
+
+    let mut material_targets = BTreeSet::<MaterialTarget>::new();
+    for material in &draft.materials {
+        if !material_targets.insert(material.target.clone()) {
+            findings.push(MachineGraphFinding::new(
+                MachineGraphRule::DuplicateMaterialBinding,
+                MachineGraphSubject::MaterialTarget(material.target.clone()),
+                None,
+            ));
+        }
+        let owned = match &material.target {
+            MaterialTarget::Body(body) => {
+                element_owners.contains_key(&MachineElementId::Body(body.clone()))
+            }
+            MaterialTarget::SurfacePatch(patch) => {
+                element_owners.contains_key(&MachineElementId::SurfacePatch(patch.clone()))
+            }
+        };
+        if !owned {
+            findings.push(MachineGraphFinding::new(
+                MachineGraphRule::UnknownMaterialTarget,
+                MachineGraphSubject::MaterialTarget(material.target.clone()),
+                None,
+            ));
+        }
+    }
+    for body in body_ids {
+        let target = MaterialTarget::Body(body);
+        if !material_targets.contains(&target) {
+            findings.push(MachineGraphFinding::new(
+                MachineGraphRule::MissingBodyMaterial,
+                MachineGraphSubject::MaterialTarget(target),
+                None,
+            ));
+        }
+    }
+
+    for pair in draft.interfaces.windows(2) {
+        if pair[0].id == pair[1].id {
+            findings.push(MachineGraphFinding::new(
+                MachineGraphRule::DuplicateInterface,
+                MachineGraphSubject::Interface(pair[1].id.clone()),
+                None,
+            ));
+        }
+    }
+    let relation_pairs: BTreeSet<(TerminalId, TerminalId)> = draft
+        .relations
+        .iter()
+        .map(|relation| (relation.source.clone(), relation.target.clone()))
+        .collect();
+    let mut port_interfaces = BTreeMap::<PortId, InterfaceId>::new();
+    for interface in &draft.interfaces {
+        if interface.negative == interface.positive {
+            findings.push(MachineGraphFinding::new(
+                MachineGraphRule::SameInterfaceEndpoint,
+                MachineGraphSubject::Interface(interface.id.clone()),
+                Some(MachineGraphSubject::Port(interface.negative.clone())),
+            ));
+        }
+        for port_id in [&interface.negative, &interface.positive] {
+            if let Some(first_interface) =
+                port_interfaces.insert(port_id.clone(), interface.id.clone())
+            {
+                findings.push(MachineGraphFinding::new(
+                    MachineGraphRule::PortInterfaceConflict,
+                    MachineGraphSubject::Interface(interface.id.clone()),
+                    Some(MachineGraphSubject::Interface(first_interface)),
+                ));
+            }
+        }
+        let negative = port_indices
+            .get(&interface.negative)
+            .map(|index| &draft.ports[*index]);
+        let positive = port_indices
+            .get(&interface.positive)
+            .map(|index| &draft.ports[*index]);
+        if negative.is_none() {
+            findings.push(MachineGraphFinding::new(
+                MachineGraphRule::UnknownInterfacePort,
+                MachineGraphSubject::Interface(interface.id.clone()),
+                Some(MachineGraphSubject::Port(interface.negative.clone())),
+            ));
+        }
+        if positive.is_none() {
+            findings.push(MachineGraphFinding::new(
+                MachineGraphRule::UnknownInterfacePort,
+                MachineGraphSubject::Interface(interface.id.clone()),
+                Some(MachineGraphSubject::Port(interface.positive.clone())),
+            ));
+        }
+        if let (Some(negative), Some(positive)) = (negative, positive) {
+            check_interface_compatibility(
+                interface,
+                negative,
+                positive,
+                &draft.terminals,
+                &terminal_indices,
+                &relation_pairs,
+                &mut findings,
+            );
+        }
+    }
+
+    if !findings.is_empty() {
+        return Err(graph_refusal(findings, None));
+    }
+
+    let receipt = match machine_graph_identity(&draft) {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            return Err(graph_refusal(
+                vec![MachineGraphFinding::new(
+                    MachineGraphRule::Identity,
+                    MachineGraphSubject::Graph,
+                    None,
+                )],
+                Some(error),
+            ));
+        }
+    };
+    Ok(AdmittedMachineGraph {
+        clocks: draft.clocks,
+        subsystems: draft.subsystems,
+        terminals: draft.terminals,
+        ports: draft.ports,
+        relations: draft.relations,
+        materials: draft.materials,
+        interfaces: draft.interfaces,
+        receipt,
+    })
+}
+
+fn canonicalize_graph_draft(draft: &mut MachineGraphDraft) {
+    draft.clocks.sort_by(|left, right| {
+        left.id
+            .cmp(&right.id)
+            .then_with(|| clock_row(left).cmp(&clock_row(right)))
+    });
+    for subsystem in &mut draft.subsystems {
+        subsystem.bodies.sort();
+        subsystem.surface_patches.sort();
+        subsystem.contact_features.sort();
+        subsystem.state_slots.sort();
+    }
+    draft.subsystems.sort_by(|left, right| {
+        left.id
+            .cmp(&right.id)
+            .then_with(|| subsystem_row(left).cmp(&subsystem_row(right)))
+    });
+    draft.terminals.sort_by(|left, right| {
+        left.id
+            .cmp(&right.id)
+            .then_with(|| terminal_row(left).cmp(&terminal_row(right)))
+    });
+    draft.ports.sort_by(|left, right| {
+        left.id
+            .cmp(&right.id)
+            .then_with(|| port_row(left).cmp(&port_row(right)))
+    });
+    draft.relations.sort_by(|left, right| {
+        left.id
+            .cmp(&right.id)
+            .then_with(|| relation_row(left).cmp(&relation_row(right)))
+    });
+    draft.materials.sort_by(|left, right| {
+        left.target
+            .cmp(&right.target)
+            .then_with(|| left.material.cmp(&right.material))
+    });
+    draft.interfaces.sort_by(|left, right| {
+        left.id
+            .cmp(&right.id)
+            .then_with(|| interface_row(left).cmp(&interface_row(right)))
+    });
+}
+
+fn record_element_owner(
+    owners: &mut BTreeMap<MachineElementId, SubsystemId>,
+    element: MachineElementId,
+    owner: &SubsystemId,
+    findings: &mut Vec<MachineGraphFinding>,
+) {
+    if let Some(first_owner) = owners.insert(element.clone(), owner.clone()) {
+        findings.push(MachineGraphFinding::new(
+            MachineGraphRule::DuplicateOwnership,
+            MachineGraphSubject::MachineElement(element),
+            Some(MachineGraphSubject::Subsystem(first_owner)),
+        ));
+    }
+}
+
+fn first_algebraic_cycle_relation(adjacency: &[Vec<(usize, RelationId)>]) -> Option<RelationId> {
+    fn visit(
+        node: usize,
+        adjacency: &[Vec<(usize, RelationId)>],
+        colors: &mut [u8],
+    ) -> Option<RelationId> {
+        colors[node] = 1;
+        for (next, relation) in &adjacency[node] {
+            match colors[*next] {
+                1 => return Some(relation.clone()),
+                0 => {
+                    if let Some(relation) = visit(*next, adjacency, colors) {
+                        return Some(relation);
+                    }
+                }
+                _ => {}
+            }
+        }
+        colors[node] = 2;
+        None
+    }
+
+    let mut colors = vec![0u8; adjacency.len()];
+    for node in 0..adjacency.len() {
+        if colors[node] == 0
+            && let Some(relation) = visit(node, adjacency, &mut colors)
+        {
+            return Some(relation);
+        }
+    }
+    None
+}
+
+fn declared_interface_relation_orientations(
+    interfaces: &[InterfaceBinding],
+    ports: &[PortSpec],
+    port_indices: &BTreeMap<PortId, usize>,
+    terminals: &[TerminalSpec],
+    terminal_indices: &BTreeMap<TerminalId, usize>,
+) -> BTreeMap<(TerminalId, TerminalId), InterfaceOrientation> {
+    let mut relations = BTreeMap::new();
+    for interface in interfaces {
+        let Some(negative) = port_indices
+            .get(&interface.negative)
+            .map(|index| &ports[*index])
+        else {
+            continue;
+        };
+        let Some(positive) = port_indices
+            .get(&interface.positive)
+            .map(|index| &ports[*index])
+        else {
+            continue;
+        };
+        for (negative_terminal, positive_terminal) in [
+            (&negative.effort, &positive.effort),
+            (&negative.flow, &positive.flow),
+        ] {
+            let Some(negative_terminal) = terminal_indices
+                .get(negative_terminal)
+                .map(|index| &terminals[*index])
+            else {
+                continue;
+            };
+            let Some(positive_terminal) = terminal_indices
+                .get(positive_terminal)
+                .map(|index| &terminals[*index])
+            else {
+                continue;
+            };
+            if let Some(pair) = directed_terminal_pair(negative_terminal, positive_terminal) {
+                relations.insert(pair, interface.orientation);
+            }
+        }
+    }
+    relations
+}
+
+fn directed_terminal_pair(
+    first: &TerminalSpec,
+    second: &TerminalSpec,
+) -> Option<(TerminalId, TerminalId)> {
+    match (first.causality, second.causality) {
+        (TerminalCausality::Output, TerminalCausality::Input) => {
+            Some((first.id.clone(), second.id.clone()))
+        }
+        (TerminalCausality::Input, TerminalCausality::Output) => {
+            Some((second.id.clone(), first.id.clone()))
+        }
+        _ => None,
+    }
+}
+
+// Interface checks deliberately keep all paired declarations in one view so
+// a finding can name the interface instead of leaking an incidental loop order.
+#[allow(clippy::too_many_lines)]
+fn check_interface_compatibility(
+    interface: &InterfaceBinding,
+    negative: &PortSpec,
+    positive: &PortSpec,
+    terminals: &[TerminalSpec],
+    terminal_indices: &BTreeMap<TerminalId, usize>,
+    relation_pairs: &BTreeSet<(TerminalId, TerminalId)>,
+    findings: &mut Vec<MachineGraphFinding>,
+) {
+    let Some(negative_effort) = terminal_indices
+        .get(&negative.effort)
+        .map(|index| &terminals[*index])
+    else {
+        return;
+    };
+    let Some(negative_flow) = terminal_indices
+        .get(&negative.flow)
+        .map(|index| &terminals[*index])
+    else {
+        return;
+    };
+    let Some(positive_effort) = terminal_indices
+        .get(&positive.effort)
+        .map(|index| &terminals[*index])
+    else {
+        return;
+    };
+    let Some(positive_flow) = terminal_indices
+        .get(&positive.flow)
+        .map(|index| &terminals[*index])
+    else {
+        return;
+    };
+
+    let subject = || MachineGraphSubject::Interface(interface.id.clone());
+    if negative_effort.quantity != positive_effort.quantity
+        || negative_flow.quantity != positive_flow.quantity
+    {
+        findings.push(MachineGraphFinding::new(
+            MachineGraphRule::InterfaceQuantityGap,
+            subject(),
+            None,
+        ));
+    }
+    if negative_effort.shape != positive_effort.shape || negative_flow.shape != positive_flow.shape
+    {
+        findings.push(MachineGraphFinding::new(
+            MachineGraphRule::InterfaceShapeGap,
+            subject(),
+            None,
+        ));
+    }
+    if negative_effort.clock != positive_effort.clock || negative_flow.clock != positive_flow.clock
+    {
+        findings.push(MachineGraphFinding::new(
+            MachineGraphRule::InterfaceClockGap,
+            subject(),
+            None,
+        ));
+    }
+    if negative_effort.frame.canonical_key() != positive_effort.frame.canonical_key()
+        || negative_flow.frame.canonical_key() != positive_flow.frame.canonical_key()
+    {
+        findings.push(MachineGraphFinding::new(
+            MachineGraphRule::InterfaceFrameGap,
+            subject(),
+            None,
+        ));
+    }
+    let effort_orientations_match =
+        negative_effort.frame.orientation() == positive_effort.frame.orientation();
+    let flow_orientations_match =
+        negative_flow.frame.orientation() == positive_flow.frame.orientation();
+    let orientation_admitted = match interface.orientation {
+        InterfaceOrientation::Aligned => effort_orientations_match && flow_orientations_match,
+        InterfaceOrientation::Opposed => !effort_orientations_match && !flow_orientations_match,
+    };
+    if !orientation_admitted {
+        findings.push(MachineGraphFinding::new(
+            MachineGraphRule::InterfaceOrientationGap,
+            subject(),
+            None,
+        ));
+    }
+    if negative.energy_role == positive.energy_role {
+        findings.push(MachineGraphFinding::new(
+            MachineGraphRule::InterfaceEnergyRoleGap,
+            subject(),
+            None,
+        ));
+    }
+    let effort_relation = directed_terminal_pair(negative_effort, positive_effort);
+    let flow_relation = directed_terminal_pair(negative_flow, positive_flow);
+    if effort_relation.is_none() || flow_relation.is_none() {
+        findings.push(MachineGraphFinding::new(
+            MachineGraphRule::InterfaceCausalityGap,
+            subject(),
+            None,
+        ));
+    }
+    if effort_relation
+        .as_ref()
+        .is_some_and(|pair| !relation_pairs.contains(pair))
+        || flow_relation
+            .as_ref()
+            .is_some_and(|pair| !relation_pairs.contains(pair))
+    {
+        findings.push(MachineGraphFinding::new(
+            MachineGraphRule::InterfaceRelationGap,
+            subject(),
+            None,
+        ));
+    }
+}
+
+fn machine_graph_identity(
+    draft: &MachineGraphDraft,
+) -> Result<IdentityReceipt<MachineGraphIdV1>, CanonicalError> {
+    let clock_rows: Vec<Vec<u8>> = draft.clocks.iter().map(clock_row).collect();
+    let subsystem_rows: Vec<Vec<u8>> = draft.subsystems.iter().map(subsystem_row).collect();
+    let terminal_rows: Vec<Vec<u8>> = draft.terminals.iter().map(terminal_row).collect();
+    let port_rows: Vec<Vec<u8>> = draft.ports.iter().map(port_row).collect();
+    let relation_rows: Vec<Vec<u8>> = draft.relations.iter().map(relation_row).collect();
+    let material_rows: Vec<Vec<u8>> = draft.materials.iter().map(material_row).collect();
+    let interface_rows: Vec<Vec<u8>> = draft.interfaces.iter().map(interface_row).collect();
+
+    CanonicalEncoder::<MachineGraphIdV1, _>::new(MACHINE_GRAPH_IDENTITY_LIMITS, NeverCancel)?
+        .u64(
+            Field::new(0, "graph-schema-version"),
+            u64::from(MACHINE_GRAPH_SCHEMA_VERSION_V1),
+        )?
+        .ordered_bytes(
+            Field::new(1, "clocks"),
+            clock_rows.len() as u64,
+            clock_rows.iter().map(Vec::as_slice),
+        )?
+        .ordered_bytes(
+            Field::new(2, "subsystems"),
+            subsystem_rows.len() as u64,
+            subsystem_rows.iter().map(Vec::as_slice),
+        )?
+        .ordered_bytes(
+            Field::new(3, "terminals"),
+            terminal_rows.len() as u64,
+            terminal_rows.iter().map(Vec::as_slice),
+        )?
+        .ordered_bytes(
+            Field::new(4, "ports"),
+            port_rows.len() as u64,
+            port_rows.iter().map(Vec::as_slice),
+        )?
+        .ordered_bytes(
+            Field::new(5, "relations"),
+            relation_rows.len() as u64,
+            relation_rows.iter().map(Vec::as_slice),
+        )?
+        .ordered_bytes(
+            Field::new(6, "materials"),
+            material_rows.len() as u64,
+            material_rows.iter().map(Vec::as_slice),
+        )?
+        .ordered_bytes(
+            Field::new(7, "interfaces"),
+            interface_rows.len() as u64,
+            interface_rows.iter().map(Vec::as_slice),
+        )?
+        .finish()
+}
+
+fn push_len_prefixed(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+    out.extend_from_slice(bytes);
+}
+
+fn push_identity(out: &mut Vec<u8>, identity: &[u8; 32]) {
+    out.extend_from_slice(identity);
+}
+
+fn push_identity_collection<T>(
+    out: &mut Vec<u8>,
+    values: &[T],
+    mut identity: impl FnMut(&T) -> [u8; 32],
+) {
+    out.extend_from_slice(&(values.len() as u64).to_le_bytes());
+    for value in values {
+        push_identity(out, &identity(value));
+    }
+}
+
+fn clock_row(spec: &ClockSpec) -> Vec<u8> {
+    let mut out = Vec::with_capacity(56);
+    push_identity(&mut out, &spec.id.digest_bytes());
+    match spec.clock {
+        MachineClock::Continuous => out.push(1),
+        MachineClock::Periodic {
+            period_ns,
+            phase_ns,
+        } => {
+            out.push(2);
+            out.extend_from_slice(&period_ns.get().to_le_bytes());
+            out.extend_from_slice(&phase_ns.to_le_bytes());
+        }
+        MachineClock::EventDriven => out.push(3),
+    }
+    out
+}
+
+fn subsystem_row(spec: &SubsystemSpec) -> Vec<u8> {
+    let mut out = Vec::with_capacity(
+        96 + 32
+            * (spec.bodies.len()
+                + spec.surface_patches.len()
+                + spec.contact_features.len()
+                + spec.state_slots.len()),
+    );
+    push_identity(&mut out, &spec.id.digest_bytes());
+    spec.model.append_canonical(&mut out);
+    push_identity_collection(&mut out, &spec.bodies, BodyId::digest_bytes);
+    push_identity_collection(
+        &mut out,
+        &spec.surface_patches,
+        SurfacePatchId::digest_bytes,
+    );
+    push_identity_collection(
+        &mut out,
+        &spec.contact_features,
+        ContactFeatureId::digest_bytes,
+    );
+    push_identity_collection(&mut out, &spec.state_slots, StateSlotId::digest_bytes);
+    out
+}
+
+fn terminal_row(spec: &TerminalSpec) -> Vec<u8> {
+    let mut out = Vec::with_capacity(192);
+    push_identity(&mut out, &spec.id.digest_bytes());
+    push_identity(&mut out, &spec.owner.digest_bytes());
+    push_terminal_quantity(&mut out, spec.quantity);
+    push_terminal_shape(&mut out, spec.shape);
+    out.push(terminal_causality_tag(spec.causality));
+    push_identity(&mut out, &spec.clock.digest_bytes());
+    push_len_prefixed(&mut out, spec.frame.canonical_key().as_bytes());
+    out.push(orientation_parity_tag(spec.frame.orientation()));
+    out
+}
+
+fn port_row(spec: &PortSpec) -> Vec<u8> {
+    let mut out = Vec::with_capacity(129);
+    push_identity(&mut out, &spec.id.digest_bytes());
+    push_identity(&mut out, &spec.owner.digest_bytes());
+    push_identity(&mut out, &spec.effort.digest_bytes());
+    push_identity(&mut out, &spec.flow.digest_bytes());
+    out.push(port_energy_role_tag(spec.energy_role));
+    out
+}
+
+fn relation_row(spec: &RelationSpec) -> Vec<u8> {
+    let mut out = Vec::with_capacity(192);
+    push_identity(&mut out, &spec.id.digest_bytes());
+    push_identity(&mut out, &spec.source.digest_bytes());
+    push_identity(&mut out, &spec.target.digest_bytes());
+    match &spec.mode {
+        RelationMode::Algebraic { solve_policy: None } => out.push(1),
+        RelationMode::Algebraic {
+            solve_policy: Some(policy),
+        } => {
+            out.push(2);
+            policy.append_canonical(&mut out);
+        }
+        RelationMode::Stateful { state_slot } => {
+            out.push(3);
+            push_identity(&mut out, &state_slot.digest_bytes());
+        }
+    }
+    out
+}
+
+fn material_row(binding: &MaterialBinding) -> Vec<u8> {
+    let mut out = Vec::with_capacity(128);
+    match &binding.target {
+        MaterialTarget::Body(body) => {
+            out.push(1);
+            push_identity(&mut out, &body.digest_bytes());
+        }
+        MaterialTarget::SurfacePatch(patch) => {
+            out.push(2);
+            push_identity(&mut out, &patch.digest_bytes());
+        }
+    }
+    binding.material.append_canonical(&mut out);
+    out
+}
+
+fn interface_row(binding: &InterfaceBinding) -> Vec<u8> {
+    let mut out = Vec::with_capacity(192);
+    push_identity(&mut out, &binding.id.digest_bytes());
+    push_identity(&mut out, &binding.negative.digest_bytes());
+    push_identity(&mut out, &binding.positive.digest_bytes());
+    binding.interface.append_canonical(&mut out);
+    out.push(interface_orientation_tag(binding.orientation));
+    out
+}
+
+fn push_terminal_quantity(out: &mut Vec<u8>, quantity: TerminalQuantitySpec) {
+    match quantity {
+        TerminalQuantitySpec::Dimensional(dims) => {
+            out.push(1);
+            push_dims(out, dims);
+        }
+        TerminalQuantitySpec::Semantic(semantic_type) => {
+            out.push(2);
+            push_quantity_kind(out, semantic_type.kind());
+            out.push(value_form_tag(semantic_type.form()));
+            push_dims(out, semantic_type.expected_dims());
+        }
+    }
+}
+
+fn push_dims(out: &mut Vec<u8>, dims: Dims) {
+    out.extend(dims.0.map(|exponent| exponent as u8));
+}
+
+fn push_quantity_kind(out: &mut Vec<u8>, kind: QuantityKind) {
+    match kind {
+        QuantityKind::AbsoluteTemperature => out.push(1),
+        QuantityKind::TemperatureDifference => out.push(2),
+        QuantityKind::Angle(domain) => {
+            out.push(3);
+            out.push(angle_domain_tag(domain));
+        }
+        QuantityKind::AngularVelocity(domain) => {
+            out.push(4);
+            out.push(angle_domain_tag(domain));
+        }
+        QuantityKind::Torque => out.push(5),
+        QuantityKind::Energy => out.push(6),
+        QuantityKind::Pressure => out.push(7),
+        QuantityKind::Stress => out.push(8),
+        QuantityKind::Strain { basis, component } => {
+            out.push(9);
+            out.push(strain_basis_tag(basis));
+            out.push(strain_component_tag(component));
+        }
+        QuantityKind::Composition(basis) => {
+            out.push(10);
+            out.push(composition_basis_tag(basis));
+        }
+        QuantityKind::Mass => out.push(11),
+        QuantityKind::Amount => out.push(12),
+        QuantityKind::MolarMass => out.push(13),
+        QuantityKind::MassConcentration => out.push(14),
+        QuantityKind::AmountConcentration => out.push(15),
+        QuantityKind::Entropy => out.push(16),
+        QuantityKind::HeatCapacity => out.push(17),
+        QuantityKind::AcousticPressure => out.push(18),
+        QuantityKind::AcousticPower => out.push(19),
+    }
+}
+
+fn push_terminal_shape(out: &mut Vec<u8>, shape: TerminalShape) {
+    match shape {
+        TerminalShape::Scalar => out.push(1),
+        TerminalShape::Vector { components } => {
+            out.push(2);
+            out.extend_from_slice(&components.get().to_le_bytes());
+        }
+        TerminalShape::Tensor { rows, columns } => {
+            out.push(3);
+            out.extend_from_slice(&rows.get().to_le_bytes());
+            out.extend_from_slice(&columns.get().to_le_bytes());
+        }
+        TerminalShape::FieldTrace { components } => {
+            out.push(4);
+            out.extend_from_slice(&components.get().to_le_bytes());
+        }
+    }
+}
+
+const fn angle_domain_tag(domain: AngleDomain) -> u8 {
+    match domain {
+        AngleDomain::Mechanical => 1,
+        AngleDomain::Electrical => 2,
+    }
+}
+
+const fn strain_basis_tag(basis: StrainBasis) -> u8 {
+    match basis {
+        StrainBasis::Tensor => 1,
+        StrainBasis::Engineering => 2,
+    }
+}
+
+const fn strain_component_tag(component: StrainComponent) -> u8 {
+    match component {
+        StrainComponent::Normal => 1,
+        StrainComponent::Shear => 2,
+    }
+}
+
+const fn composition_basis_tag(basis: CompositionBasis) -> u8 {
+    match basis {
+        CompositionBasis::MassFraction => 1,
+        CompositionBasis::MoleFraction => 2,
+        CompositionBasis::VolumeFraction => 3,
+    }
+}
+
+const fn value_form_tag(form: ValueForm) -> u8 {
+    match form {
+        ValueForm::Static => 1,
+        ValueForm::Instantaneous => 2,
+        ValueForm::Peak => 3,
+        ValueForm::Rms => 4,
+    }
+}
+
+const fn terminal_causality_tag(causality: TerminalCausality) -> u8 {
+    match causality {
+        TerminalCausality::Input => 1,
+        TerminalCausality::Output => 2,
+        TerminalCausality::ExternalInput => 3,
+    }
+}
+
+const fn orientation_parity_tag(orientation: OrientationParity) -> u8 {
+    match orientation {
+        OrientationParity::Preserving => 1,
+        OrientationParity::Reversing => 2,
+    }
+}
+
+const fn port_energy_role_tag(role: PortEnergyRole) -> u8 {
+    match role {
+        PortEnergyRole::IntoSubsystem => 1,
+        PortEnergyRole::OutOfSubsystem => 2,
+    }
+}
+
+const fn interface_orientation_tag(orientation: InterfaceOrientation) -> u8 {
+    match orientation {
+        InterfaceOrientation::Aligned => 1,
+        InterfaceOrientation::Opposed => 2,
+    }
 }
