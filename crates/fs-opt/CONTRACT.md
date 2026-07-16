@@ -102,13 +102,27 @@ structure; FLUX/UQ execute it.
   rate would silently ascend). Every initially reachable positive/negative
   coordinate retraction is validated before f0. Checked preflight arithmetic
   computes conservative descent-engine/retraction work-unit and peak-workspace
-  bounds;
+  bounds. `descend_ir` additionally scans only the objective-root arena prefix
+  under the default evaluator caps and composes one-time planning work, the
+  maximum budget-reachable evaluator invocation work, and peak evaluator
+  tables/vector payload into those same bounds;
   overflow or a caller cap below either bound refuses before point scans,
   allocation, or objective work. Evaluation limits reduce the reachable-step
   bound before this calculation. Successful reports retain both bounds and a
   typed `StepLimit`/`ClosureThreshold`/`EvaluationLimit` stop reason;
   `budget_stopped` is retained as the invariant compatibility projection
   `stop == EvaluationLimit`.
+  The IR receipt is defined over the full arena prefix ending at the objective
+  root: `V` variables, `B` binding components, `D` manifold-domain scalar
+  visits, `N = root + 1` prefix nodes, `E` prefix child edges, `Q` summed
+  vector-output components, and `L` summed `Dot`/`NormSq` input components.
+  One-time planning work is `V + N + E`; one evaluation is conservatively
+  `2 + 3V + B + D + 6N + 2E + 2Q + L`. The maximum invocation count is one
+  for zero reachable steps, otherwise `2 + 2 * param_dim * reachable_steps`.
+  Evaluator work is multiplied by that count; peak evaluator workspace is
+  added once because calls are serialized. All terms use checked `u64`
+  arithmetic and prefix accounting deliberately overcharges unreachable nodes
+  before the root while excluding unrelated later nodes.
   The internal objective seam is fallible: non-finite closure results, typed IR
   evaluation failures, and ordinary unwinding raw-objective panics propagate
   without publishing a report. Panic refusals retain a deterministic one-based
@@ -405,9 +419,11 @@ revalidation. Cancellation inside those loops returns no candidate point.
 IR-driven descent additionally polls the same `Cx` throughout every evaluator
 phase listed above, including both f0 and terminal evaluation.
 Initial positive/negative coordinate retraction preflight is cancellation-aware
-and precedes f0. The reported work/workspace bounds cover only fs-opt-owned
-descent and retraction plumbing; they do not meter arbitrary caller closure
-work or allocation.
+and precedes f0. The IR prefix-envelope planner is also cancellation-aware and
+polls at most every 256 variable/node/edge items before f0. Reported bounds
+cover fs-opt-owned descent/retraction plumbing and, for `descend_ir`, logical
+requested evaluator storage plus the conservative maximum invocation work.
+They do not meter arbitrary caller closure work or allocation.
 
 Game admission polls before proportional scans, during bounded information,
 strategy-dependency, and composition traversal, and at identity publication.
@@ -484,12 +500,13 @@ discrete receipts. Existing opt-005/006 fixed pins remain unchanged.
   convergence, manifold-coordinate invariance, or dimensional correctness for
   caller-defined objectives.
 - `max_work_units` and `max_workspace_bytes` are conservative admission bounds
-  for descent-engine/retraction scalar visits and peak `Vec` storage. They are
-  not cycle, wall-time, allocator-availability, or objective-implementation
-  budgets; an opaque raw closure can still perform unbounded external work or
-  allocation. The separately admitted, fallibly allocated IR evaluator used by
-  `descend_ir` is also excluded until its graph/value workspace receipt composes
-  into the descent envelope.
+  for fs-opt-owned logical visits and requested Rust storage. `descend_ir`
+  includes its root-prefix planner, evaluator calls, tables, and retained vector
+  payload; an opaque raw closure can still perform unbounded external work or
+  allocation. These are not cycle, wall-time, allocator-availability, process
+  RSS, or allocator-metadata bounds: `try_reserve_exact` may receive excess
+  capacity from the allocator even though the receipt charges the exact logical
+  request.
 - `max_total_work` is a deterministic structural admission envelope
   (retained items plus expression edges), not a wall-clock or cycle-count
   performance model. Per-field byte caps separately bound string hashing

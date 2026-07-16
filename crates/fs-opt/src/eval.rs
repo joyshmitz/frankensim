@@ -1363,6 +1363,356 @@ fn plan_mul(resource: &'static str, left: u64, right: u64) -> Result<u64, OptErr
         .ok_or(OptError::DescentPlanOverflow { resource })
 }
 
+fn plan_layout_bytes<T>(resource: &'static str) -> Result<u64, OptError> {
+    u64::try_from(core::mem::size_of::<T>()).map_err(|_| OptError::DescentPlanOverflow { resource })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct IrEvalEnvelope {
+    planning_work: u64,
+    work_per_evaluation: u64,
+    workspace_bytes: u64,
+    #[cfg(test)]
+    variables: u64,
+    #[cfg(test)]
+    binding_components: u64,
+    #[cfg(test)]
+    domain_work: u64,
+    #[cfg(test)]
+    prefix_nodes: u64,
+    #[cfg(test)]
+    prefix_edges: u64,
+    #[cfg(test)]
+    vector_components: u64,
+    #[cfg(test)]
+    reduction_components: u64,
+}
+
+#[derive(Clone, Copy)]
+struct IrObjectivePlan<'problem> {
+    problem: &'problem Problem,
+    root: NodeId,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct IrPlanningLimit {
+    base_work: u64,
+    cap: u64,
+}
+
+fn charge_ir_planning_work<F>(
+    work: &mut u64,
+    limit: Option<IrPlanningLimit>,
+    checkpoint: &mut F,
+) -> Result<(), OptError>
+where
+    F: FnMut() -> Result<(), OptError>,
+{
+    let next = plan_add("IR evaluator planning work units", *work, 1)?;
+    if let Some(limit) = limit {
+        let required = plan_add("IR evaluator work units", limit.base_work, next)?;
+        if required > limit.cap {
+            return Err(OptError::DescentCapExceeded {
+                resource: "work units",
+                required,
+                cap: limit.cap,
+            });
+        }
+    }
+    let stride =
+        u64::try_from(EVAL_CHECKPOINT_STRIDE).map_err(|_| OptError::DescentPlanOverflow {
+            resource: "IR evaluator planning work units",
+        })?;
+    if *work % stride == 0 {
+        checkpoint()?;
+    }
+    *work = next;
+    Ok(())
+}
+
+fn ir_domain_work(manifold: Manifold, point_dim: u32) -> Result<u64, OptError> {
+    match manifold {
+        Manifold::Rn { .. } => Ok(0),
+        Manifold::Sphere { .. } | Manifold::So3 => Ok(u64::from(point_dim)),
+        Manifold::Stiefel { n, p } => {
+            let p = u64::from(p);
+            let gram_entries = plan_mul(
+                "IR evaluator work units",
+                p,
+                plan_add("IR evaluator work units", p, 1)?,
+            )? / 2;
+            plan_mul("IR evaluator work units", u64::from(n), gram_entries)
+        }
+    }
+}
+
+#[cfg(test)]
+fn ir_eval_envelope_with_checkpoint<F>(
+    problem: &Problem,
+    root: NodeId,
+    planning_limit: Option<IrPlanningLimit>,
+    checkpoint: &mut F,
+) -> Result<IrEvalEnvelope, OptError>
+where
+    F: FnMut() -> Result<(), OptError>,
+{
+    let caps = validate_eval_header(problem, root)?;
+    validate_binding_frame_header(problem, &caps)?;
+    ir_eval_envelope_with_caps(problem, root, &caps, planning_limit, checkpoint)
+}
+
+#[allow(clippy::too_many_lines)] // each term is an auditable part of one exact receipt
+fn ir_eval_envelope_with_caps<F>(
+    problem: &Problem,
+    root: NodeId,
+    caps: &AdmissionCaps,
+    planning_limit: Option<IrPlanningLimit>,
+    checkpoint: &mut F,
+) -> Result<IrEvalEnvelope, OptError>
+where
+    F: FnMut() -> Result<(), OptError>,
+{
+    let root_index = usize::try_from(root.0).map_err(|_| OptError::DescentPlanOverflow {
+        resource: "IR evaluator prefix nodes",
+    })?;
+    if root_index >= problem.exprs.len() {
+        return Err(OptError::UnknownNode { id: root.0 });
+    }
+    let prefix_len = root_index
+        .checked_add(1)
+        .ok_or(OptError::DescentPlanOverflow {
+            resource: "IR evaluator prefix nodes",
+        })?;
+    let prefix_nodes = u64::try_from(prefix_len).map_err(|_| OptError::DescentPlanOverflow {
+        resource: "IR evaluator prefix nodes",
+    })?;
+    let variables =
+        u64::try_from(problem.vars.len()).map_err(|_| OptError::DescentPlanOverflow {
+            resource: "IR evaluator binding variables",
+        })?;
+
+    let mut planning_work = 0u64;
+    let mut binding_components = 0u64;
+    let mut domain_work = 0u64;
+    for (variable_index, variable) in problem.vars.iter().enumerate() {
+        let point_dim = match variable.manifold.point_dim() {
+            Some(point_dim) => point_dim,
+            None => {
+                return Err(OptError::ManifoldInvalid {
+                    what: try_owned_diagnostic(
+                        "descent/ir-envelope-manifold-diagnostic",
+                        None,
+                        Some(VarId(u32::try_from(variable_index).map_err(|_| {
+                            OptError::DescentPlanOverflow {
+                                resource: "IR evaluator binding variables",
+                            }
+                        })?)),
+                        "sealed IR variable has no representable runtime point dimension",
+                    )?,
+                });
+            }
+        };
+        if point_dim > caps.max_point_dim {
+            return Err(OptError::CapExceeded {
+                what: "runtime binding point dimension",
+                count: u64::from(point_dim),
+                cap: u64::from(caps.max_point_dim),
+            });
+        }
+        binding_components = plan_add(
+            "IR evaluator work units",
+            binding_components,
+            u64::from(point_dim),
+        )?;
+        if binding_components > caps.max_total_point_storage {
+            return Err(OptError::CapExceeded {
+                what: "runtime binding point storage",
+                count: binding_components,
+                cap: caps.max_total_point_storage,
+            });
+        }
+        domain_work = plan_add(
+            "IR evaluator work units",
+            domain_work,
+            ir_domain_work(variable.manifold, point_dim)?,
+        )?;
+        let validation_work = plan_add("IR evaluator work units", binding_components, domain_work)?;
+        if validation_work > caps.max_total_work {
+            return Err(OptError::CapExceeded {
+                what: "runtime binding validation work",
+                count: validation_work,
+                cap: caps.max_total_work,
+            });
+        }
+        charge_ir_planning_work(&mut planning_work, planning_limit, checkpoint)?;
+    }
+
+    let mut prefix_edges = 0u64;
+    let mut vector_components = 0u64;
+    let mut reduction_components = 0u64;
+    for (index, expr) in problem.exprs[..prefix_len].iter().enumerate() {
+        charge_ir_planning_work(&mut planning_work, planning_limit, checkpoint)?;
+        let node = NodeId(
+            u32::try_from(index).map_err(|_| OptError::DescentPlanOverflow {
+                resource: "IR evaluator prefix nodes",
+            })?,
+        );
+        match problem.shape(node)? {
+            Shape::Scalar => {}
+            Shape::Vector(len) => {
+                vector_components =
+                    plan_add("IR evaluator work units", vector_components, u64::from(len))?;
+            }
+        }
+        for _child in crate::ir::children(expr) {
+            charge_ir_planning_work(&mut planning_work, planning_limit, checkpoint)?;
+            prefix_edges = plan_add("IR evaluator work units", prefix_edges, 1)?;
+        }
+        let reduction_input = match expr {
+            Expr::Dot(left, _) | Expr::NormSq(left) => Some(*left),
+            _ => None,
+        };
+        if let Some(input) = reduction_input {
+            match problem.shape(input)? {
+                Shape::Vector(len) => {
+                    reduction_components = plan_add(
+                        "IR evaluator work units",
+                        reduction_components,
+                        u64::from(len),
+                    )?;
+                }
+                actual => {
+                    return Err(OptError::ShapeMismatch {
+                        op: "IR evaluator reduction input",
+                        left: actual,
+                        right: Shape::Vector(1),
+                    });
+                }
+            }
+        }
+    }
+    checkpoint()?;
+
+    // Conservative logical visits for one complete evaluator invocation:
+    // three variable-level scans; binding/domain scalar visits; two table
+    // initializations; reachability and child-edge traversal; the arena-prefix
+    // sweep; node/result validation and memo publication; a second child read
+    // pass during execution; vector construction/output scans; reductions; and
+    // root/final publication. Prefix accounting intentionally overcharges
+    // unreachable nodes before the objective root.
+    let mut work_per_evaluation = 2u64;
+    for term in [
+        plan_mul("IR evaluator work units", variables, 3)?,
+        binding_components,
+        domain_work,
+        plan_mul("IR evaluator work units", prefix_nodes, 6)?,
+        plan_mul("IR evaluator work units", prefix_edges, 2)?,
+        plan_mul("IR evaluator work units", vector_components, 2)?,
+        reduction_components,
+    ] {
+        work_per_evaluation = plan_add("IR evaluator work units", work_per_evaluation, term)?;
+    }
+
+    // Logical requested Rust storage. Allocator metadata and any capacity in
+    // excess of try_reserve_exact's request remain explicit no-claims.
+    let mut workspace_bytes = plan_layout_bytes::<Value>("IR evaluator workspace bytes")?;
+    for term in [
+        plan_mul(
+            "IR evaluator workspace bytes",
+            prefix_nodes,
+            plan_layout_bytes::<Option<Value>>("IR evaluator workspace bytes")?,
+        )?,
+        plan_mul(
+            "IR evaluator workspace bytes",
+            prefix_nodes,
+            plan_layout_bytes::<bool>("IR evaluator workspace bytes")?,
+        )?,
+        plan_mul(
+            "IR evaluator workspace bytes",
+            prefix_nodes,
+            plan_layout_bytes::<NodeId>("IR evaluator workspace bytes")?,
+        )?,
+        plan_mul(
+            "IR evaluator workspace bytes",
+            vector_components,
+            plan_layout_bytes::<f64>("IR evaluator workspace bytes")?,
+        )?,
+        plan_layout_bytes::<Vec<Option<Value>>>("IR evaluator workspace bytes")?,
+        plan_layout_bytes::<Vec<bool>>("IR evaluator workspace bytes")?,
+        plan_layout_bytes::<Vec<NodeId>>("IR evaluator workspace bytes")?,
+    ] {
+        workspace_bytes = plan_add("IR evaluator workspace bytes", workspace_bytes, term)?;
+    }
+
+    Ok(IrEvalEnvelope {
+        planning_work,
+        work_per_evaluation,
+        workspace_bytes,
+        #[cfg(test)]
+        variables,
+        #[cfg(test)]
+        binding_components,
+        #[cfg(test)]
+        domain_work,
+        #[cfg(test)]
+        prefix_nodes,
+        #[cfg(test)]
+        prefix_edges,
+        #[cfg(test)]
+        vector_components,
+        #[cfg(test)]
+        reduction_components,
+    })
+}
+
+fn ir_objective_evaluation_count(param_dim: u32, active_steps: u64) -> Result<u64, OptError> {
+    if active_steps == 0 {
+        return Ok(1);
+    }
+    let probes_per_step = plan_mul("IR objective evaluation count", u64::from(param_dim), 2)?;
+    plan_add(
+        "IR objective evaluation count",
+        plan_mul(
+            "IR objective evaluation count",
+            probes_per_step,
+            active_steps,
+        )?,
+        2,
+    )
+}
+
+fn compose_ir_descent_envelope(
+    descent: DescentEnvelope,
+    ir: IrEvalEnvelope,
+    param_dim: u32,
+    active_steps: u64,
+) -> Result<DescentEnvelope, OptError> {
+    let evaluations = ir_objective_evaluation_count(param_dim, active_steps)?;
+    let evaluator_work = plan_mul(
+        "IR evaluator work units",
+        evaluations,
+        ir.work_per_evaluation,
+    )?;
+    let owned_work = plan_add(
+        "IR evaluator work units",
+        plan_add(
+            "IR evaluator work units",
+            descent.owned_work,
+            ir.planning_work,
+        )?,
+        evaluator_work,
+    )?;
+    let scratch_bytes = plan_add(
+        "IR evaluator workspace bytes",
+        descent.scratch_bytes,
+        ir.workspace_bytes,
+    )?;
+    Ok(DescentEnvelope {
+        owned_work,
+        scratch_bytes,
+    })
+}
+
 fn descent_envelope(
     manifold: Manifold,
     point_dim: u32,
@@ -1475,14 +1825,15 @@ pub struct DescentOptions {
     pub fd_h: f64,
     /// Unitless relative retracted-point displacement at or below which descent stops.
     pub closure_threshold: f64,
-    /// Hard upper bound for descent-engine/retraction scalar work units admitted
-    /// up front (default `2^24`).
-    /// Objective implementation work, including IR evaluation, has its own
-    /// admission boundary and is not included.
+    /// Hard upper bound for fs-opt-owned scalar/logical work admitted up front
+    /// (default `2^24`). [`descend_ir`] includes its one-time prefix planner and
+    /// the maximum budget-reachable evaluator invocations; an opaque
+    /// [`descend_fn`] closure remains caller-owned and excluded.
     pub max_work_units: NonZeroU64,
-    /// Hard upper bound for peak descent-engine and retraction workspace, in
-    /// bytes (default 1 GiB). Objective implementation workspace, including
-    /// IR evaluation, is not included.
+    /// Hard upper bound for peak fs-opt-owned logical requested workspace, in
+    /// bytes (default 1 GiB). [`descend_ir`] adds its evaluator tables/vector
+    /// payload; an opaque [`descend_fn`] closure remains caller-owned and
+    /// excluded.
     pub max_workspace_bytes: NonZeroU64,
 }
 
@@ -1532,11 +1883,13 @@ pub struct DescentReport {
     /// error — the point is still valid). Exactly equivalent to
     /// `stop == DescentStop::EvaluationLimit`.
     pub budget_stopped: bool,
-    /// Conservative descent-engine/retraction work bound admitted before the
-    /// first objective. Objective implementation work is excluded.
+    /// Conservative fs-opt-owned work bound admitted before the first
+    /// objective. IR-driven reports include evaluator planning/execution;
+    /// opaque raw-closure work is excluded.
     pub work_upper_bound: u64,
-    /// Conservative peak descent-engine/retraction workspace bound admitted
-    /// before the first objective. Objective implementation workspace is excluded.
+    /// Conservative peak fs-opt-owned logical requested workspace admitted
+    /// before the first objective. IR-driven reports include evaluator
+    /// workspace; opaque raw-closure workspace is excluded.
     pub workspace_upper_bound_bytes: u64,
 }
 
@@ -1550,9 +1903,9 @@ pub struct DescentReport {
 /// BEFORE f0.
 /// Closure uses the unitless ratio
 /// `max_abs(retract(x, step) - x) / max(max_abs(x), fd_h)`.
-/// The resource envelope excludes objective work/allocation. For
-/// [`descend_ir`], this currently includes the separately admitted, fallibly
-/// allocated IR evaluator.
+/// The raw-closure resource envelope excludes caller objective work/allocation;
+/// [`descend_ir`] composes its owned evaluator plan, maximum invocation work,
+/// and peak logical workspace into the same caps and report fields.
 /// With an unwind-capable panic strategy, an ordinary raw-objective
 /// panic whose hook and payload cleanup both complete normally returns
 /// [`OptError::ObjectivePanicked`] with bounded path attribution. The
@@ -1588,7 +1941,7 @@ pub fn descend_fn(
             })?;
         finite_descent_value(value, "descent objective result")
     };
-    descend_fn_checked(manifold, &checked_f, x0, opts, eval_limit, cx)
+    descend_fn_checked(manifold, &checked_f, x0, opts, eval_limit, None, cx)
 }
 
 fn finite_descent_value(value: f64, what: &'static str) -> Result<f64, OptError> {
@@ -1631,6 +1984,7 @@ fn descend_fn_checked(
     x0: &[f64],
     opts: DescentOptions,
     eval_limit: EvalLimit,
+    ir_plan: Option<IrObjectivePlan<'_>>,
     cx: &Cx<'_>,
 ) -> Result<DescentReport, OptError> {
     manifold.validate(&AdmissionCaps::default())?;
@@ -1703,7 +2057,49 @@ fn descend_fn_checked(
     };
     let atomic_step_evals = u64::from(param_dim).saturating_mul(2).saturating_add(1);
     let reachable_steps = maximum_landed_steps(opts.steps, param_dim, eval_limit);
-    let envelope = descent_envelope(manifold, point_dim, param_dim, opts.steps, eval_limit)?;
+    let base_envelope = descent_envelope(manifold, point_dim, param_dim, opts.steps, eval_limit)?;
+    if base_envelope.owned_work > opts.max_work_units.get() {
+        return Err(OptError::DescentCapExceeded {
+            resource: "work units",
+            required: base_envelope.owned_work,
+            cap: opts.max_work_units.get(),
+        });
+    }
+    if base_envelope.scratch_bytes > opts.max_workspace_bytes.get() {
+        return Err(OptError::DescentCapExceeded {
+            resource: "workspace bytes",
+            required: base_envelope.scratch_bytes,
+            cap: opts.max_workspace_bytes.get(),
+        });
+    }
+    let envelope = if let Some(plan) = ir_plan {
+        let caps = validate_eval_header(plan.problem, plan.root)?;
+        validate_binding_frame_header(plan.problem, &caps)?;
+        if plan.problem.vars.len() != 1 {
+            return Err(OptError::BindingCount {
+                vars: u32::try_from(plan.problem.vars.len()).map_err(|_| {
+                    OptError::DescentPlanOverflow {
+                        resource: "IR evaluator binding variables",
+                    }
+                })?,
+                got: 1,
+            });
+        }
+        let planning_limit = IrPlanningLimit {
+            base_work: base_envelope.owned_work,
+            cap: opts.max_work_units.get(),
+        };
+        let ir = ir_eval_envelope_with_caps(
+            plan.problem,
+            plan.root,
+            &caps,
+            Some(planning_limit),
+            &mut || descent_checkpoint(cx),
+        )?;
+        compose_ir_descent_envelope(base_envelope, ir, param_dim, reachable_steps)?
+    } else {
+        base_envelope
+    };
     if envelope.owned_work > opts.max_work_units.get() {
         return Err(OptError::DescentCapExceeded {
             resource: "work units",
@@ -1878,8 +2274,10 @@ fn descend_fn_checked(
     })
 }
 
-/// Toy descent of a problem's FIRST objective over its FIRST variable
-/// (the IR-driven variant; enforces `problem.budget` per P4). The caller's
+/// Toy descent of a problem's FIRST objective over its sole variable
+/// (the IR-driven variant; enforces `problem.budget` per P4). Multi-variable
+/// problems refuse with [`OptError::BindingCount`] because this API accepts one
+/// point and cannot fabricate a complete runtime frame. The caller's
 /// [`Cx`] is threaded through binding validation and every proportional graph
 /// evaluation phase after the capped cheap node/count/length preflight, with at
 /// most 256 evaluator work items between polls.
@@ -1932,7 +2330,18 @@ where
             .ok_or(OptError::NotScalar { node: obj.node.0 })?;
         finite_descent_value(sign * obj.weight * scalar, "weighted IR objective")
     };
-    descend_fn_checked(manifold, &f, x0, opts, problem.budget.limit, cx)
+    descend_fn_checked(
+        manifold,
+        &f,
+        x0,
+        opts,
+        problem.budget.limit,
+        Some(IrObjectivePlan {
+            problem,
+            root: obj.node,
+        }),
+        cx,
+    )
 }
 
 #[cfg(test)]
@@ -2002,6 +2411,335 @@ mod runtime_shape_tests {
             );
             f(&cx)
         })
+    }
+
+    fn layout_bytes<T>() -> u64 {
+        u64::try_from(core::mem::size_of::<T>()).expect("Rust layout fits the receipt domain")
+    }
+
+    fn ir_prefix_problem(with_suffix: bool) -> (Problem, NodeId) {
+        let mut builder = ProblemBuilder::new();
+        let variable = builder
+            .var("x", Manifold::Rn { dim: 3 }, Dims::NONE)
+            .expect("variable");
+        let point = builder.var_ref(variable).expect("point");
+        let negated = builder.neg(point).expect("negated point");
+        let cancelled = builder.add(point, negated).expect("vector cancellation");
+        let root = builder.norm_sq(cancelled).expect("scalar objective");
+        assert_eq!(builder.var_ref(variable), Ok(point), "var_ref hash-consing");
+        assert_eq!(builder.neg(point), Ok(negated), "negation hash-consing");
+        assert_eq!(
+            builder.add(point, negated),
+            Ok(cancelled),
+            "addition hash-consing"
+        );
+        assert_eq!(
+            builder.norm_sq(cancelled),
+            Ok(root),
+            "reduction hash-consing"
+        );
+        builder
+            .objective(root, crate::ir::Sense::Minimize, 1.0)
+            .expect("objective");
+        if with_suffix {
+            let scale = builder.konst(7.0, Dims::NONE).expect("suffix scalar");
+            builder
+                .mul(scale, point)
+                .expect("unrelated vector-valued suffix");
+        }
+        (builder.finish(), root)
+    }
+
+    fn ir_norm_problem() -> (Problem, NodeId) {
+        let mut builder = ProblemBuilder::new();
+        let variable = builder
+            .var("x", Manifold::Rn { dim: 3 }, Dims::NONE)
+            .expect("variable");
+        let point = builder.var_ref(variable).expect("point");
+        let root = builder.norm_sq(point).expect("squared norm");
+        builder
+            .objective(root, crate::ir::Sense::Minimize, 1.0)
+            .expect("objective");
+        (builder.finish(), root)
+    }
+
+    #[test]
+    fn ir_evaluator_envelope_is_exact_prefix_scoped_and_checkpointed() {
+        let (problem, root) = ir_prefix_problem(false);
+        assert_eq!(root, NodeId(3));
+        let mut polls = 0usize;
+        let envelope = ir_eval_envelope_with_checkpoint(&problem, root, None, &mut || {
+            polls += 1;
+            Ok(())
+        })
+        .expect("bounded evaluator envelope");
+        let workspace_bytes = layout_bytes::<Value>()
+            + 4 * (layout_bytes::<Option<Value>>()
+                + layout_bytes::<bool>()
+                + layout_bytes::<NodeId>())
+            + 9 * layout_bytes::<f64>()
+            + layout_bytes::<Vec<Option<Value>>>()
+            + layout_bytes::<Vec<bool>>()
+            + layout_bytes::<Vec<NodeId>>();
+        assert_eq!(
+            envelope,
+            IrEvalEnvelope {
+                planning_work: 9,
+                work_per_evaluation: 61,
+                workspace_bytes,
+                variables: 1,
+                binding_components: 3,
+                domain_work: 0,
+                prefix_nodes: 4,
+                prefix_edges: 4,
+                vector_components: 9,
+                reduction_components: 3,
+            }
+        );
+        assert_eq!(polls, 2, "work item zero plus terminal publication");
+
+        let (with_suffix, same_root) = ir_prefix_problem(true);
+        let suffix_envelope =
+            ir_eval_envelope_with_checkpoint(&with_suffix, same_root, None, &mut || Ok(()))
+                .expect("suffix-insensitive envelope");
+        assert_eq!(
+            suffix_envelope, envelope,
+            "nodes after the objective root cannot inflate its evaluator receipt"
+        );
+
+        let mut capped_polls = 0usize;
+        let capped = ir_eval_envelope_with_checkpoint(
+            &problem,
+            root,
+            Some(IrPlanningLimit {
+                base_work: 0,
+                cap: 8,
+            }),
+            &mut || {
+                capped_polls += 1;
+                Ok(())
+            },
+        );
+        assert_eq!(
+            capped,
+            Err(OptError::DescentCapExceeded {
+                resource: "work units",
+                required: 9,
+                cap: 8,
+            })
+        );
+        assert_eq!(
+            capped_polls, 1,
+            "the ninth item refuses before work or a terminal checkpoint"
+        );
+    }
+
+    #[test]
+    fn ir_evaluator_domain_and_composition_receipts_are_exact() {
+        assert_eq!(ir_domain_work(Manifold::Rn { dim: 3 }, 3), Ok(0));
+        assert_eq!(ir_domain_work(Manifold::Sphere { ambient: 3 }, 3), Ok(3));
+        assert_eq!(ir_domain_work(Manifold::So3, 4), Ok(4));
+        assert_eq!(ir_domain_work(Manifold::Stiefel { n: 3, p: 2 }, 6), Ok(9));
+        assert_eq!(
+            ir_domain_work(
+                Manifold::Stiefel {
+                    n: u32::MAX,
+                    p: u32::MAX,
+                },
+                u32::MAX,
+            ),
+            Err(OptError::DescentPlanOverflow {
+                resource: "IR evaluator work units",
+            })
+        );
+
+        let (problem, root) = ir_norm_problem();
+        let ir = ir_eval_envelope_with_checkpoint(&problem, root, None, &mut || Ok(()))
+            .expect("small evaluator envelope");
+        assert_eq!(ir.planning_work, 4);
+        assert_eq!(ir.work_per_evaluation, 31);
+        assert_eq!(ir_objective_evaluation_count(3, 0), Ok(1));
+        assert_eq!(ir_objective_evaluation_count(3, 1), Ok(8));
+
+        let zero_base = descent_envelope(Manifold::Rn { dim: 3 }, 3, 3, 0, EvalLimit::Unlimited)
+            .expect("zero-step descent envelope");
+        let zero =
+            compose_ir_descent_envelope(zero_base, ir, 3, 0).expect("zero-step composed envelope");
+        assert_eq!(zero_base.owned_work, 78);
+        assert_eq!(zero.owned_work, 113);
+        assert_eq!(
+            zero.scratch_bytes,
+            zero_base.scratch_bytes + ir.workspace_bytes
+        );
+
+        let one_base = descent_envelope(Manifold::Rn { dim: 3 }, 3, 3, 1, EvalLimit::Unlimited)
+            .expect("one-step descent envelope");
+        let one =
+            compose_ir_descent_envelope(one_base, ir, 3, 1).expect("one-step composed envelope");
+        assert_eq!(one_base.owned_work, 1_083);
+        assert_eq!(one.owned_work, 1_335);
+        assert_eq!(
+            one.scratch_bytes,
+            one_base.scratch_bytes + ir.workspace_bytes
+        );
+
+        let limit_7 = EvalLimit::Limited(NonZeroU64::new(7).expect("positive limit"));
+        let limit_8 = EvalLimit::Limited(NonZeroU64::new(8).expect("positive limit"));
+        assert_eq!(maximum_landed_steps(1, 3, limit_7), 0);
+        assert_eq!(maximum_landed_steps(1, 3, limit_8), 1);
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // exact cap/call receipts stay in one end-to-end tripwire
+    fn ir_descent_combined_caps_and_evaluator_call_receipts_are_exact() {
+        let (problem, _root) = ir_norm_problem();
+        let start = [1.0, -2.0, 0.5];
+        let zero_options = DescentOptions {
+            steps: 0,
+            ..DescentOptions::default()
+        };
+        let zero_gate = fs_exec::CancelGate::new_clock_free();
+        let zero_finalizations = std::cell::Cell::new(0usize);
+        let zero_report = with_test_cx(&zero_gate, |cx| {
+            descend_ir_with_eval_checkpoint(&problem, &start, zero_options, cx, &|phase| {
+                if phase == EvalPhase::Finalize {
+                    zero_finalizations.set(zero_finalizations.get() + 1);
+                }
+                Ok(())
+            })
+            .expect("zero-step IR descent")
+        });
+        assert_eq!(zero_report.work_upper_bound, 113);
+        assert_eq!(zero_report.evals, 1);
+        assert_eq!(zero_report.steps_taken, 0);
+        assert_eq!(zero_finalizations.get(), 1);
+
+        let exact = DescentOptions {
+            max_work_units: NonZeroU64::new(zero_report.work_upper_bound)
+                .expect("positive work receipt"),
+            max_workspace_bytes: NonZeroU64::new(zero_report.workspace_upper_bound_bytes)
+                .expect("positive workspace receipt"),
+            ..zero_options
+        };
+        let exact_gate = fs_exec::CancelGate::new_clock_free();
+        with_test_cx(&exact_gate, |cx| {
+            descend_ir(&problem, &start, exact, cx).expect("exact combined caps admit");
+        });
+
+        for options in [
+            DescentOptions {
+                max_work_units: NonZeroU64::new(zero_report.work_upper_bound - 1)
+                    .expect("one-short work cap"),
+                ..zero_options
+            },
+            DescentOptions {
+                max_workspace_bytes: NonZeroU64::new(zero_report.workspace_upper_bound_bytes - 1)
+                    .expect("one-short workspace cap"),
+                ..zero_options
+            },
+        ] {
+            let gate = fs_exec::CancelGate::new_clock_free();
+            let evaluator_polls = std::cell::Cell::new(0usize);
+            let error = with_test_cx(&gate, |cx| {
+                descend_ir_with_eval_checkpoint(&problem, &start, options, cx, &|_phase| {
+                    evaluator_polls.set(evaluator_polls.get() + 1);
+                    Ok(())
+                })
+                .expect_err("one-short combined cap must refuse")
+            });
+            match error {
+                OptError::DescentCapExceeded {
+                    resource: "work units",
+                    required,
+                    cap,
+                } => {
+                    assert_eq!(required, zero_report.work_upper_bound);
+                    assert_eq!(cap + 1, required);
+                }
+                OptError::DescentCapExceeded {
+                    resource: "workspace bytes",
+                    required,
+                    cap,
+                } => {
+                    assert_eq!(required, zero_report.workspace_upper_bound_bytes);
+                    assert_eq!(cap + 1, required);
+                }
+                other => panic!("unexpected combined-cap refusal: {other:?}"),
+            }
+            assert_eq!(evaluator_polls.get(), 0, "refusal must dominate f0");
+        }
+
+        let one_options = DescentOptions {
+            steps: 1,
+            ..DescentOptions::default()
+        };
+        let one_gate = fs_exec::CancelGate::new_clock_free();
+        let one_finalizations = std::cell::Cell::new(0usize);
+        let one_report = with_test_cx(&one_gate, |cx| {
+            descend_ir_with_eval_checkpoint(&problem, &start, one_options, cx, &|phase| {
+                if phase == EvalPhase::Finalize {
+                    one_finalizations.set(one_finalizations.get() + 1);
+                }
+                Ok(())
+            })
+            .expect("one-step IR descent")
+        });
+        assert_eq!(one_report.work_upper_bound, 1_335);
+        assert_eq!(one_report.evals, 8);
+        assert_eq!(one_report.steps_taken, 1);
+        assert_eq!(one_finalizations.get(), 8);
+    }
+
+    #[test]
+    fn ir_planning_overflow_and_multi_binding_refusal_are_typed() {
+        let mut work = u64::MAX;
+        let mut checkpoints = 0usize;
+        assert_eq!(
+            charge_ir_planning_work(&mut work, None, &mut || {
+                checkpoints += 1;
+                Ok(())
+            }),
+            Err(OptError::DescentPlanOverflow {
+                resource: "IR evaluator planning work units",
+            })
+        );
+        assert_eq!(work, u64::MAX);
+        assert_eq!(checkpoints, 0, "overflow refuses before a checkpoint");
+        assert_eq!(
+            ir_objective_evaluation_count(1, u64::MAX),
+            Err(OptError::DescentPlanOverflow {
+                resource: "IR objective evaluation count",
+            })
+        );
+
+        let mut builder = ProblemBuilder::new();
+        let first = builder
+            .var("x", Manifold::Rn { dim: 1 }, Dims::NONE)
+            .expect("first variable");
+        builder
+            .var("y", Manifold::Rn { dim: 1 }, Dims::NONE)
+            .expect("second variable");
+        let first_point = builder.var_ref(first).expect("first point");
+        let root = builder.norm_sq(first_point).expect("objective root");
+        builder
+            .objective(root, crate::ir::Sense::Minimize, 1.0)
+            .expect("objective");
+        let problem = builder.finish();
+        let gate = fs_exec::CancelGate::new_clock_free();
+        with_test_cx(&gate, |cx| {
+            let invalid_options = DescentOptions {
+                lr: 0.0,
+                ..DescentOptions::default()
+            };
+            assert!(matches!(
+                descend_ir(&problem, &[1.0], invalid_options, cx),
+                Err(OptError::BadParam { .. })
+            ));
+            assert!(matches!(
+                descend_ir(&problem, &[1.0], DescentOptions::default(), cx),
+                Err(OptError::BindingCount { vars: 2, got: 1 })
+            ));
+        });
     }
 
     fn assert_value_bits_eq(left: &Value, right: &Value) {
