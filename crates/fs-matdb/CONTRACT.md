@@ -6,10 +6,15 @@
 > lineage, the ordered interface-system card, and the query path where
 > every answer is `Evidence<PropertySample>` + `PropertyUsageReceipt`
 > with replay-verified receipt completeness. Recorded residuals for
-> follow-up beads: joint-uncertainty correlation refs,
+> follow-up beads: query-time joint-uncertainty correlation refs,
 > tensor/distribution payloads with frame-transform receipts (arrive
 > together), wider explicit fusion policies, and the curated seed
 > dataset (bead 1sxe).
+
+The normalized-pack boundary now carries typed joint covariance/correlation
+blocks and unit/basis normalization receipts. Query-time propagation of those
+joint statistics remains a recorded no-claim until usage receipts select and
+bind them explicitly.
 
 ## Purpose and layer
 
@@ -52,6 +57,37 @@ persistence.
   uncertainty + interpolation + observation refs + provenance.
   Content-addressed (`org.frankensim.fs-matdb.property-claim.v1`) over
   every semantic field with exact float bits.
+- `NormalizedPack` — the bounded, versioned L1 artifact emitted by an
+  offline compiler after raw-source and licensing policy. It carries a
+  canonicalized `ClaimSet`, exact raw-envelope hash, compiler identity,
+  retained redistribution decision, typed `JointStatistics`, and sorted
+  `NormalizationReceipt`s. `to_bytes`/`from_bytes` own the `FSMATPK\0` v1
+  binary wire format; decoding reconstructs every ordinary fs-matdb object,
+  reproduces its semantic id, and then byte-reproduces the full stream.
+  `from_bytes_verified` additionally requires the externally pinned whole-pack
+  identity before any top-level metadata/statistics mutation can be accepted.
+- `JointStatistics` — a named, explicitly ordered component block for one
+  observed dataset. `StatisticMember` addresses a scalar claim or one curve
+  knot's abscissa/ordinate, so multiple knots never collapse into one random
+  variable and one observation may carry multiple disjoint named blocks.
+  Covariance and optional correlation use packed lower-triangle order.
+  Matrices must be finite and positive semidefinite; covariance has a
+  nonnegative diagonal, correlation is bounded to `[-1,1]` with an exact unit
+  diagonal and must bit-reproduce covariance-derived correlation, every
+  member's claim must cite the owning observation, and blocks for one
+  observation must be member-disjoint.
+- `NormalizationReceipt` — a structured `NormalizationTarget` (claim
+  component, uncertainty, validity endpoint, or joint-covariance entry), hash
+  of the exact source literal, six-base dimensions, and affine
+  `si = source * scale + offset` basis transform. Claim/covariance targets are
+  resolved and dimension-checked against retained data. Optional source/target
+  frame names are retained as a pair; scalar/curve packs make no
+  tensor-rotation claim. Uncertainty and covariance transforms must have exact
+  positive-zero offsets because widths, fractions, and covariances cannot be
+  translated. Uncertainty magnitudes and variance diagonals additionally
+  require positive scales. Lower/upper receipts for one validity axis must
+  agree on six-base dimensions even though the shared validity type does not
+  yet carry those dimensions itself.
 - `ClaimSet` — the PR-1 append-only container. `register_observation`
   and `insert_claim` are the ONLY mutations; both are fail-closed and
   idempotent by content identity. `claims_for(name)` returns EVERY
@@ -112,27 +148,45 @@ persistence.
   intersection composition law, is the only validity representation.
 - CONTENT IDENTITY: claim/observation ids are domain-separated BLAKE3
   over length-framed semantic fields with exact IEEE-754 bits.
+- PACK CANONICALITY: observations and claims encode in semantic-id order;
+  joint blocks encode in `(observation id, block id)` order; normalization
+  receipts encode in structured-target order. Duplicate unordered entries
+  refuse. Portable packs require finite values and canonical positive zero.
+- JOINT STATISTICS STAY JOINT: covariance/correlation are never collapsed into
+  nominal values or caveat text. Member order and every lower-triangle entry
+  are identity-bearing normalized bytes.
 
 ## Error model
 
-Total functions; no panics in library paths; every refusal is a typed
-`MatDbError` naming the gate and the offending field (non-finite
-refusals carry exact bits).
+Total functions; no panics in library paths. Ordinary claim/card/query
+refusals use `MatDbError`; normalized artifact refusals use `PackError` with
+stable field/resource/byte-offset or semantic-identity context. Non-finite
+ordinary-data refusals carry exact bits.
 
 ## Determinism class
 
-Fully deterministic: pure data structures, `BTreeMap` iteration order,
-content hashes over canonical byte encodings. No floating-point
-arithmetic is performed on stored values in PR-1 (validation compares
-and hashes only), so there is no rounding class to declare yet;
-interpolation arithmetic arrives with the PR-4 evaluator and will
-declare its class then.
+Fully deterministic: pure data structures, `BTreeMap`/content-id ordering,
+content hashes over canonical byte encodings, and exact IEEE-754 transport.
+Pack covariance admission derives dimensionless correlations from exact stored
+variances for pairwise/source-correlation checks, then gates each covariance
+and correlation matrix with one fixed-order, outward-rounded interval LDLT
+pass. Zero variance requires an exact zero row/column; a pivot is accepted only
+with a positive lower bound or an exact structural-zero proof. Negative,
+overflowed, or rounding-ambiguous pivots refuse rather than tolerating a false
+PSD claim. The gate is deliberately incomplete for ill-conditioned or
+rank-deficient valid matrices: refusal is not evidence of indefiniteness. This
+is an admission check, not a solver or a re-estimation of source statistics.
+Query interpolation retains its separately declared evaluator semantics.
 
 ## Cancellation behavior
 
-Not applicable in PR-1: all operations are bounded, small, and
-synchronous (no solves, no I/O). The PR-4 query path polls at claim
-granularity if selection ever becomes super-linear.
+All operations are synchronous and contain no I/O or solve. Pack decode is
+explicitly bounded by byte, collection, per-block-member, and cumulative cubic
+PSD-work budgets. Reference admission uses ordered lookup rather than nested
+linear scans. Declared outer/member/observation counts are checked against
+minimum remaining payload bytes before proportional semantic allocation. The
+PR-4 query path polls at claim granularity if selection ever becomes
+super-linear.
 
 ## Unsafe boundary
 
@@ -182,6 +236,18 @@ fields, 11 per-field mutations all refuse typed
 `EvaluatorVersionDrift` / the replay's own refusals) and every mutation
 moves the receipt content hash.
 
+`tests/pack.rs`: fixed v1 canonical byte-length/hash golden, exact
+byte/semantic round-trip, and externally pinned whole-pack verification;
+permutation-invariant block/receipt ordering; named
+curve-knot members and multiple disjoint blocks per observation; typed
+covariance/correlation preservation and aggregate PSD-work admission;
+malformed shape, negative diagonal, exact-negative/rounded-zero PSD regression,
+invalid/inconsistent correlation, overlapping joint blocks, unknown/uncited
+reference, negative zero, unlinked/dimension-mismatched/translated statistical
+normalization target, negative statistical scale, contradictory validity-axis
+dimensions, partial frame receipt, untrusted-count preflight,
+truncation, trailing-byte, and semantic-id tamper refusals.
+
 ## No-claim boundaries
 
 - Storing a claim asserts NOTHING about its truth: fs-matdb records who
@@ -199,3 +265,21 @@ moves the receipt content hash.
 - No seed data ships in this crate (bead 1sxe owns the curated
   dataset); no equilibrium computation happens here (fs-thermochem
   consumes phase data; this crate only stores it).
+- The L1 pack codec does not parse handbooks, CSV, NASA tables, license text,
+  or other raw formats and does not decide whether terms permit
+  redistribution; those are L6/offline compiler responsibilities. A nonblank
+  retained decision is provenance, not legal advice.
+- Joint statistics are preserved and validated but are not yet selected or
+  propagated by `PropertyUsageReceipt`; no query result may claim correlated
+  uncertainty until that later authority surface binds the exact block.
+- Frame names in normalization receipts record provenance only. Scalar/curve
+  payloads do not carry tensor components, rotation matrices, or a claim that
+  a frame conversion was physically valid.
+- `ValidityDomain` does not yet retain axis dimensions. A validity-bound
+  normalization target proves that the claim/axis/endpoint exists, but its
+  six-base dimensions remain compiler-supplied provenance until the shared
+  validity schema grows a typed axis registry.
+- A pack may contain already-normalized SI values with no transform receipt;
+  the L1 codec therefore proves every present receipt is linked, not that the
+  receipt set exhausts every numeric field. Source-format policy owns that
+  completeness check in the offline compiler.
