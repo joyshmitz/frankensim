@@ -1081,6 +1081,8 @@ dependencies = [
 name = "fs-feec"
 version = "0.0.1"
 dependencies = [
+ "fs-blake3",
+ "fs-couple",
  "fs-la",
  "fs-math",
  "fs-propcheck",
@@ -1285,11 +1287,14 @@ dependencies = [
 name = "fs-io"
 version = "0.0.1"
 dependencies = [
+ "fs-alloc",
  "fs-evidence",
+ "fs-exec",
  "fs-geom",
  "fs-math",
  "fs-obs",
  "fs-rep-mesh",
+ "fs-rep-sdf",
 ]
 
 [[package]]
@@ -1307,6 +1312,7 @@ dependencies = [
  "fs-qty",
  "fs-regime",
  "fs-scenario",
+ "fs-toleralloc",
  "fs-verify",
 ]
 
@@ -1481,11 +1487,17 @@ dependencies = [
 name = "fs-opdsl"
 version = "0.0.1"
 dependencies = [
+ "asupersync",
  "fs-ad",
+ "fs-alloc",
  "fs-blake3",
  "fs-couple",
+ "fs-evidence",
+ "fs-exec",
  "fs-feec",
+ "fs-iface",
  "fs-la",
+ "fs-matdb",
  "fs-material",
  "fs-math",
  "fs-qty",
