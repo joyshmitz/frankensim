@@ -340,10 +340,14 @@ fn g3_sealed_lineage_refuses_a_third_edge_before_replay() {
             fs_ledger::EdgeRole::In,
         )
         .expect_err("sealed lineage op must reject a third edge");
+    // A finished op refuses in the atomic edge insert itself (t_end/outcome
+    // already set) before the edge-set-seal trigger can fire, so the typed
+    // finished-op refusal is the correct pin here; the trigger-shaped
+    // "artifact-edge-set seal" refusal covers unfinished sealed ops and is
+    // pinned by fs-ledger's inline lineage test.
     assert!(matches!(
         error,
-        fs_ledger::LedgerError::Invalid { field, problem }
-            if field == "edge" && problem.contains("artifact-edge-set seal")
+        fs_ledger::LedgerError::OpLineageSealed { op } if op == first.receipt.lineage_op()
     ));
 
     let replay = governor
