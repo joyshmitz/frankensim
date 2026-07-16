@@ -19,7 +19,7 @@ use crate::lower::lower;
 use crate::study::Study;
 use crate::{IR_VERSION, IrError, VersionedProgram};
 use fs_geom::{CostOracle, RoutePlanError, RouteRequest, Router};
-use fs_plan::{CostEvidenceClass, SealedCostModel};
+use fs_plan::{CostEvidenceClass, FreshnessPolicy, SealedCostModel, StalenessVerdict};
 use fs_qty::Dims;
 use fs_regime::RegimeReport;
 use std::collections::{BTreeMap, BTreeSet};
@@ -104,6 +104,12 @@ pub struct ChartRequirement {
 pub struct AdmissionContext<'a> {
     /// The Rep Router and its cost oracle (chart feasibility).
     pub router: Option<(&'a Router, &'a dyn CostOracle)>,
+    /// Freshness contract for assessing sealed cost evidence at the
+    /// decision point (bead l2k92). `None` keeps mint-time classes
+    /// (no clock is ever read here); `Some` degrades receipt-backed
+    /// models that are aged out, machine-drifted, or future-stamped to
+    /// `StaleRooflineReceipt` before the admission notice is written.
+    pub cost_freshness: Option<CostFreshnessContext>,
     /// Conversion requirements to verify.
     pub chart_requirements: Vec<ChartRequirement>,
     /// Learned wall-cost models keyed by verb head. Sealed (bead 2pmb):
@@ -118,6 +124,20 @@ pub struct AdmissionContext<'a> {
     pub regime: Option<&'a RegimeReport>,
     /// Violation policy for regime gating.
     pub regime_policy: RegimePolicy,
+}
+
+/// Caller-supplied freshness contract for cost-evidence assessment
+/// (bead l2k92): the observation time, the current machine
+/// fingerprint, and the preregistered horizon. Pure data — admission
+/// never reads a clock or host identity itself.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CostFreshnessContext {
+    /// Observation time in ledger nanoseconds.
+    pub now_ns: i64,
+    /// The current machine fingerprint (exact roofline machine key).
+    pub machine: Vec<u8>,
+    /// The preregistered freshness horizon.
+    pub policy: FreshnessPolicy,
 }
 
 /// Per-check timing (the milliseconds-class evidence).
@@ -797,45 +817,99 @@ fn cost_model_rejection(span: Span, what: String, action: String) -> Finding {
     }
 }
 
+/// One admitting-with-notice finding for weakened cost evidence
+/// (beads 2pmb + l2k92): provisional fits and stale receipts both
+/// inform the budget arithmetic, but the admission record names the
+/// class — and for stale evidence the exact staleness verdict — at
+/// the decision point, never silently.
+fn weakened_evidence_notice(
+    verb: &str,
+    kernel: &str,
+    class: CostEvidenceClass,
+    verdict: StalenessVerdict,
+    span: Span,
+) -> Option<Finding> {
+    if class.rank() >= CostEvidenceClass::ExactRooflineReceipt.rank() {
+        return None;
+    }
+    let (label, cause, action) = match verdict {
+        StalenessVerdict::AgedOut { age_ns, horizon_ns } => (
+            "CostModelStale",
+            format!("aged {age_ns} ns against a {horizon_ns} ns freshness horizon"),
+            format!(
+                "re-record {verb} tune evidence through the exact roofline lane; the retained \
+                 receipt is older than the preregistered horizon"
+            ),
+        ),
+        StalenessVerdict::MachineDrift => (
+            "CostModelStale",
+            "recorded under a different machine fingerprint".to_string(),
+            format!("re-record {verb} tune evidence on the current machine"),
+        ),
+        StalenessVerdict::FutureRecording { ahead_ns } => (
+            "CostModelStale",
+            format!("recorded {ahead_ns} ns in the future of the observation time"),
+            format!(
+                "repair the {verb} evidence timeline; a future recording is clock skew or \
+                 forged provenance"
+            ),
+        ),
+        StalenessVerdict::Fresh | StalenessVerdict::NotApplicable => (
+            "CostModelProvisional",
+            "not a validated roofline receipt".to_string(),
+            format!(
+                "record {verb} tune evidence through the exact roofline lane so \
+                 fs-plan::cost_model_from_tune can mint receipt-backed authority"
+            ),
+        ),
+    };
+    Some(Finding {
+        check: "budget",
+        severity: Severity::Warn,
+        span,
+        what: format!(
+            "{label}: the wall-cost model for operation {verb:?} is {} evidence \
+             (scope {kernel:?}): {cause}",
+            class.name(),
+        ),
+        fixes: vec![RankedFix {
+            action,
+            predicted_wall_s: None,
+            qoi_impact: "evidence provenance only; no modeled QoI change".to_string(),
+        }],
+    })
+}
+
 fn cost_registered_calls<'a>(
     calls: &[ModeledCall<'a>],
     models: &BTreeMap<String, SealedCostModel>,
+    freshness: Option<&CostFreshnessContext>,
     out: &mut Vec<Finding>,
 ) -> Option<(f64, Vec<CostedCall<'a>>)> {
     let mut total = 0.0f64;
     let mut costed = Vec::with_capacity(calls.len());
     let mut refused = false;
-    let mut provisional_warned: Vec<&str> = Vec::new();
+    let mut evidence_warned: Vec<&str> = Vec::new();
     for &(verb, size, span) in calls {
         let model = models
             .get(verb)
             .expect("modeled_calls only returns registered models");
-        // Sealed authority (bead 2pmb): a provisional fit may inform
-        // the budget arithmetic, but the admission record must say so
-        // — once per verb, admitting with notice, never silently.
-        if model.evidence_class() == CostEvidenceClass::ProvisionalUnaudited
-            && !provisional_warned.contains(&verb)
+        // Sealed authority (beads 2pmb + l2k92): weakened evidence may
+        // inform the budget arithmetic, but the admission record must
+        // say so — once per verb, admitting with notice, never
+        // silently. With a freshness contract attached, receipt-backed
+        // evidence is ASSESSED (age, machine drift, future stamps)
+        // before the notice decision.
+        let (class, verdict) = match freshness {
+            Some(contract) => model.assess(contract.now_ns, &contract.machine, contract.policy),
+            None => (model.evidence_class(), StalenessVerdict::NotApplicable),
+        };
+        if !evidence_warned.contains(&verb)
+            && let Some(finding) =
+                weakened_evidence_notice(verb, model.scope().kernel(), class, verdict, span)
         {
-            provisional_warned.push(verb);
-            out.push(Finding {
-                check: "budget",
-                severity: Severity::Warn,
-                span,
-                what: format!(
-                    "CostModelProvisional: the wall-cost model for operation {verb:?} is \
-                     {} evidence (scope {:?}), not a validated roofline receipt",
-                    model.evidence_class().name(),
-                    model.scope().kernel(),
-                ),
-                fixes: vec![RankedFix {
-                    action: format!(
-                        "record {verb} tune evidence through the exact roofline lane so \
-                         fs-plan::cost_model_from_tune can mint receipt-backed authority"
-                    ),
-                    predicted_wall_s: None,
-                    qoi_impact: "evidence provenance only; no modeled QoI change".to_string(),
-                }],
-            });
+            evidence_warned.push(verb);
+            out.push(finding);
         }
         match model.predict(size).map(|sealed| sealed.prediction) {
             Ok(prediction) if prediction.p90.is_finite() && prediction.p90 >= 0.0 => {
@@ -899,7 +973,9 @@ fn check_budget(study: &Study<'_>, cx: &AdmissionContext<'_>, out: &mut Vec<Find
     if calls.is_empty() {
         return;
     }
-    let Some((total, mut costed)) = cost_registered_calls(&calls, &cx.cost_models, out) else {
+    let Some((total, mut costed)) =
+        cost_registered_calls(&calls, &cx.cost_models, cx.cost_freshness.as_ref(), out)
+    else {
         return;
     };
     if total <= wall {
@@ -1485,5 +1561,71 @@ fn check_regime(study: &Study<'_>, cx: &AdmissionContext<'_>, out: &mut Vec<Find
             });
         }
         // Unknown to the registry: silence (cards land with their solvers).
+    }
+}
+
+#[cfg(test)]
+mod evidence_notice_tests {
+    use super::*;
+
+    fn notice(class: CostEvidenceClass, verdict: StalenessVerdict) -> Option<Finding> {
+        weakened_evidence_notice("gemm", "gemm-f64", class, verdict, Span::default())
+    }
+
+    #[test]
+    fn fresh_exact_evidence_is_silent() {
+        assert!(
+            notice(
+                CostEvidenceClass::ExactRooflineReceipt,
+                StalenessVerdict::Fresh
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn provisional_evidence_admits_with_the_2pmb_notice() {
+        let finding = notice(
+            CostEvidenceClass::ProvisionalUnaudited,
+            StalenessVerdict::NotApplicable,
+        )
+        .expect("provisional warns");
+        assert_eq!(finding.severity, Severity::Warn);
+        assert!(finding.what.starts_with("CostModelProvisional"));
+        assert!(finding.what.contains("provisional-unaudited"));
+    }
+
+    #[test]
+    fn stale_verdicts_name_their_exact_cause_at_the_decision_point() {
+        let aged = notice(
+            CostEvidenceClass::StaleRooflineReceipt,
+            StalenessVerdict::AgedOut {
+                age_ns: 900,
+                horizon_ns: 500,
+            },
+        )
+        .expect("aged-out warns");
+        assert!(aged.what.starts_with("CostModelStale"));
+        assert!(
+            aged.what
+                .contains("aged 900 ns against a 500 ns freshness horizon")
+        );
+        assert!(aged.what.contains("stale-roofline-receipt"));
+
+        let drift = notice(
+            CostEvidenceClass::StaleRooflineReceipt,
+            StalenessVerdict::MachineDrift,
+        )
+        .expect("drift warns");
+        assert!(drift.what.contains("different machine fingerprint"));
+        assert!(drift.fixes[0].action.contains("current machine"));
+
+        let future = notice(
+            CostEvidenceClass::StaleRooflineReceipt,
+            StalenessVerdict::FutureRecording { ahead_ns: 42 },
+        )
+        .expect("future warns");
+        assert!(future.what.contains("recorded 42 ns in the future"));
+        assert!(future.fixes[0].action.contains("clock skew or"));
     }
 }

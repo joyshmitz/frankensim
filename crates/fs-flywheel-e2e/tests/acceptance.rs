@@ -448,6 +448,7 @@ fn admission_cx() -> admission::AdmissionContext<'static> {
     };
     admission::AdmissionContext {
         router: None,
+        cost_freshness: None,
         chart_requirements: Vec::new(),
         cost_models: BTreeMap::new(),
         capability: Some(token),

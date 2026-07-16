@@ -96,7 +96,15 @@ typed AST. Layer: L6 (HELM). Runtime deps: `std` + fs-qty.
   authority mintable only by the exact roofline loader, and costing any
   verb through a `ProvisionalUnaudited` model adds a once-per-verb
   `Warn` finding naming the evidence class and scope, so an admitted
-  study's record states what its wall-cost evidence was; models range
+  study's record states what its wall-cost evidence was; bead l2k92:
+  when the caller supplies a `CostFreshnessContext` (now, machine
+  fingerprint, `FreshnessPolicy`), each exact model is re-assessed via
+  `SealedCostModel::assess` at the decision point, and an aged-out,
+  machine-drifted, or future-recorded receipt admits with a
+  once-per-verb `CostModelStale` warning naming the exact
+  `StalenessVerdict` cause — downgraded evidence never silently steers
+  admission as if sealed-fresh; without the context, behavior is
+  unchanged (`NotApplicable`); models range
   over exact numeric `:dof`/`:size`/`:modes`
   features, with malformed or duplicate explicit features refused rather than
   priced as unit size; p90

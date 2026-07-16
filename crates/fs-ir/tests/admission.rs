@@ -149,6 +149,7 @@ fn full_context(regime: &fs_regime::RegimeReport) -> AdmissionContext<'_> {
     cost_models.insert("xform.level-set-velocity".to_string(), lbm_cost_model());
     AdmissionContext {
         router: None,
+        cost_freshness: None,
         chart_requirements: Vec::new(),
         cost_models,
         capability: Some(token()),
@@ -164,6 +165,7 @@ fn authority_context<'a>(
 ) -> AdmissionContext<'a> {
     AdmissionContext {
         router: None,
+        cost_freshness: None,
         chart_requirements: Vec::new(),
         cost_models: BTreeMap::new(),
         capability: Some(SessionCapability {
@@ -607,6 +609,7 @@ fn ad_002b_resource_domains_and_explicit_capabilities_fail_closed() {
 
     let no_token = AdmissionContext {
         router: None,
+        cost_freshness: None,
         chart_requirements: Vec::new(),
         cost_models: BTreeMap::new(),
         capability: None,
@@ -703,6 +706,7 @@ fn ad_002b_resource_domains_and_explicit_capabilities_fail_closed() {
     );
     let invalid_token = AdmissionContext {
         router: None,
+        cost_freshness: None,
         chart_requirements: Vec::new(),
         cost_models: BTreeMap::new(),
         capability: Some(SessionCapability {
@@ -729,6 +733,7 @@ fn ad_002b_resource_domains_and_explicit_capabilities_fail_closed() {
 
     let malformed_token = AdmissionContext {
         router: None,
+        cost_freshness: None,
         chart_requirements: Vec::new(),
         cost_models: BTreeMap::new(),
         capability: Some(SessionCapability {
@@ -835,6 +840,7 @@ fn ad_002c_exact_count_authority_boundaries_do_not_alias() {
 
     let context = |mem_bytes, cores| AdmissionContext {
         router: None,
+        cost_freshness: None,
         chart_requirements: Vec::new(),
         cost_models: BTreeMap::new(),
         capability: Some(SessionCapability {
@@ -1236,6 +1242,7 @@ fn ad_007b_empty_list_operand_does_not_panic_dimensional_inference() {
     // surviving `()` in operand position; this pins the minimal reproducers.
     let cx = AdmissionContext {
         router: None,
+        cost_freshness: None,
         chart_requirements: Vec::new(),
         cost_models: BTreeMap::new(),
         capability: None,
