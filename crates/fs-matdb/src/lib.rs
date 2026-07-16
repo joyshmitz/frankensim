@@ -30,6 +30,13 @@ use fs_blake3::{ContentHash, hash_domain};
 use fs_evidence::ValidityDomain;
 use fs_qty::Dims;
 
+mod cards;
+
+pub use cards::{
+    ConstitutiveModelCard, InitialStatePolicy, LawId, LawParameter, MATDB_SCHEMA_VERSION,
+    MaterialCard, MaterialStateId,
+};
+
 /// Hash domain for property-claim canonical identity.
 const CLAIM_HASH_DOMAIN: &str = "org.frankensim.fs-matdb.property-claim.v1";
 /// Hash domain for observation-dataset canonical identity.
@@ -89,6 +96,33 @@ pub enum MatDbError {
         /// The dangling reference.
         observation: ObservationId,
     },
+    /// A constitutive model card has no parameters: an empty block is a
+    /// name, not a model.
+    EmptyParameterBlock {
+        /// The law whose card is empty.
+        law: LawId,
+    },
+    /// A law parameter is non-finite.
+    NonFiniteParameter {
+        /// The law whose parameter refused.
+        law: LawId,
+        /// The parameter name.
+        parameter: String,
+        /// The offending bits (exact, for the receipt).
+        bits: u64,
+    },
+    /// A genesis material card claimed a nonzero revision: lineage
+    /// starts at 0 and only supersession advances it.
+    RevisionNotZero {
+        /// The offered revision.
+        offered: u32,
+    },
+    /// A supersession is structurally impossible (named-state mismatch
+    /// or exhausted revision counter).
+    SupersedesMismatch {
+        /// What is wrong.
+        reason: &'static str,
+    },
 }
 
 impl fmt::Display for MatDbError {
@@ -128,6 +162,27 @@ impl fmt::Display for MatDbError {
                 f,
                 "claim references unknown observation dataset {observation:?}"
             ),
+            MatDbError::EmptyParameterBlock { law } => write!(
+                f,
+                "constitutive card for law '{}' has an empty parameter block",
+                law.0
+            ),
+            MatDbError::NonFiniteParameter {
+                law,
+                parameter,
+                bits,
+            } => write!(
+                f,
+                "law '{}' parameter '{parameter}' is non-finite (bits {bits:#018x})",
+                law.0
+            ),
+            MatDbError::RevisionNotZero { offered } => write!(
+                f,
+                "a genesis material card must be revision 0, not {offered}; use supersede"
+            ),
+            MatDbError::SupersedesMismatch { reason } => {
+                write!(f, "supersession impossible: {reason}")
+            }
         }
     }
 }
@@ -188,7 +243,7 @@ pub struct Provenance {
 }
 
 impl Provenance {
-    fn validate(&self) -> Result<(), MatDbError> {
+    pub(crate) fn validate(&self) -> Result<(), MatDbError> {
         if self.source.trim().is_empty() {
             return Err(MatDbError::MissingSource);
         }
@@ -516,7 +571,7 @@ impl PropertyClaim {
     }
 }
 
-fn dims_bytes(dims: Dims) -> Vec<u8> {
+pub(crate) fn dims_bytes(dims: Dims) -> Vec<u8> {
     dims.0.iter().map(|&e| e.cast_unsigned()).collect()
 }
 
@@ -530,7 +585,7 @@ fn dims_bytes(dims: Dims) -> Vec<u8> {
 /// - unlicensed or source-less provenance refuses;
 /// - conflicting claims for one key ALL coexist under distinct
 ///   [`ClaimId`]s — nothing is overwritten, ever.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ClaimSet {
     observations: BTreeMap<ObservationId, ObservationDataset>,
     claims: BTreeMap<ClaimId, PropertyClaim>,
@@ -648,5 +703,16 @@ impl ClaimSet {
     #[must_use]
     pub fn claim_count(&self) -> usize {
         self.claims.len()
+    }
+
+    /// All claims in content-id order (the canonical order card hashes
+    /// bind).
+    pub fn claims_ordered(&self) -> impl Iterator<Item = (ClaimId, &PropertyClaim)> {
+        self.claims.iter().map(|(id, claim)| (*id, claim))
+    }
+
+    /// All registered observation ids in content-id order.
+    pub fn observation_ids(&self) -> impl Iterator<Item = ObservationId> + '_ {
+        self.observations.keys().copied()
     }
 }

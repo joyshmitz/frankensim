@@ -1,10 +1,11 @@
 # CONTRACT: fs-matdb
 
-> Status: ACTIVE (bead 5hmy, PR-1 of 5). Owns the immutable typed
-> material-data schema and its fail-closed insertion boundary. The query
-> path with `Evidence<PropertySample>` + `PropertyUsageReceipt` is PR-4;
-> MaterialCard/ConstitutiveModelCard are PR-2; InterfaceSystemCard is
-> PR-3.
+> Status: ACTIVE (bead 5hmy, PR-1 + PR-2 of 5 landed). Owns the
+> immutable typed material-data schema, its fail-closed insertion
+> boundary, and the material/constitutive card layer with supersedes
+> lineage. The query path with `Evidence<PropertySample>` +
+> `PropertyUsageReceipt` is PR-4; InterfaceSystemCard is PR-3; the
+> receipt mutation battery is PR-5.
 
 ## Purpose and layer
 
@@ -56,7 +57,28 @@ persistence.
 - `MatDbError` — total, typed refusals: `DimsMismatch`,
   `MissingLicense`, `MissingSource`, `NonFinite` (with exact bits),
   `UnusableValidity`, `InvalidUncertainty`, `MalformedCurve`,
-  `UnknownObservation`.
+  `UnknownObservation`, `EmptyParameterBlock`, `NonFiniteParameter`,
+  `RevisionNotZero`, `SupersedesMismatch`.
+- `LawId` / `ConstitutiveModelCard` (PR-2) — a law's stable (id,
+  version) identity, its canonical dimensioned parameter block
+  (nonempty, finite; BTreeMap = one canonical hash order),
+  `StateSchemaVersion`, `InitialStatePolicy` (`ZeroInternalState` or
+  `RequiresDeclaredState` — the card never implies a state it does not
+  declare), the shared `ValidityDomain`, calibration source hashes, and
+  load-bearing provenance. Content-addressed
+  (`org.frankensim.fs-matdb.constitutive-model-card.v1`). DATA ONLY:
+  the executable law-node protocol is L3 fs-material (bead kagp).
+- `MaterialStateId` / `MaterialCard` (PR-2) — a NAMED MATERIAL STATE
+  (chemistry + phase + temper/process + revision) carrying its claim
+  set, its model cards, the by-key and by-law indexes, and explicit
+  lineage. Constructors are `assemble` (revision 0 only —
+  `RevisionNotZero` otherwise) and `supersede` (revision exactly +1,
+  `supersedes` bound to the predecessor's content hash; the
+  predecessor is untouched and stays retrievable). No mutable access
+  exists after construction. The card hash
+  (`org.frankensim.fs-matdb.material-card.v1`) binds the id, schema
+  version, lineage link, every claim/observation content id, and every
+  model-card hash — so it binds the full transitive content.
 
 ## Invariants
 
@@ -116,6 +138,13 @@ different densities for one key coexist under distinct ids, both
 retrievable, insertion order preserved); content-hash stability
 (re-insertion is idempotent) and sensitivity (any semantic field change
 moves the id); observation registration idempotency.
+
+`tests/cards.rs` (PR-2): genesis assembly with by-key/by-law indexes;
+nonzero-genesis-revision, empty-parameter-block, NaN-parameter, and
+unlicensed-model refusals; supersession chain 0→1→2 with predecessor
+hashes bound and predecessors immutable; model-card hash field
+sensitivity (parameter value/version/state-policy/validity/sources);
+material-card hash binding claims, models, and the named-state id.
 
 ## No-claim boundaries
 
