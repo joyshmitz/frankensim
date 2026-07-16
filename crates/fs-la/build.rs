@@ -8,10 +8,10 @@ mod build_identity_support;
 mod depgraph_receipt_format;
 
 use build_identity_support::{
-    ASUPERSYNC_NON_SRC_INPUTS, GEMM_BUILD_PAYLOAD_SCHEMA, GemmBuildIdentityInput,
+    ASUPERSYNC_NON_SRC_INPUTS, GEMM_BUILD_PAYLOAD_SCHEMA, GemmBuildIdentityInput, GitMetadataShape,
     append_executable_identity, append_external_identity, append_source_fields,
-    full_lowercase_git_oid, gemm_build_fingerprint, git_output_line, push_field,
-    push_optional_field, symbolic_git_ref,
+    classify_git_metadata_shape, full_lowercase_git_oid, gemm_build_fingerprint, git_output_line,
+    push_field, push_optional_field, symbolic_git_ref,
 };
 
 const CARGO_PROFILES: [&str; 4] = ["DEV", "RELEASE", "TEST", "BENCH"];
@@ -293,24 +293,47 @@ fn watch_optional_git_file(path: &Path, context: &str) {
 
 /// Return the checkout's observed Git HEAD when repository metadata was
 /// transported. RCH deliberately synchronizes path-dependency source without
-/// `.git`, so absence is provenance data rather than a build failure. A
-/// present but malformed repository remains a hard error.
+/// usable `.git` metadata and may preserve an empty excluded directory, so
+/// either absent shape is provenance data rather than a build failure. A
+/// populated but malformed repository remains a hard error.
 fn observed_git_head(checkout: &Path) -> Option<String> {
     let dot_git = checkout.join(".git");
-    match std::fs::symlink_metadata(&dot_git) {
+    let shape = match std::fs::symlink_metadata(&dot_git) {
         Ok(metadata) if metadata.file_type().is_file() => {
             println!("cargo:rerun-if-changed={}", dot_git.display());
+            GitMetadataShape::PointerFile
         }
-        Ok(metadata) if metadata.file_type().is_dir() => {}
-        Ok(_) => panic!(
-            "required asupersync checkout has unsupported .git metadata at {}",
-            dot_git.display()
-        ),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Ok(metadata) if metadata.file_type().is_dir() => {
+            let mut entries = std::fs::read_dir(&dot_git).unwrap_or_else(|error| {
+                panic!(
+                    "cannot inspect asupersync Git metadata directory {}: {error}",
+                    dot_git.display()
+                )
+            });
+            match entries.next() {
+                None => GitMetadataShape::EmptyDirectory,
+                Some(Ok(_)) => GitMetadataShape::PopulatedDirectory,
+                Some(Err(error)) => panic!(
+                    "cannot inspect an entry in asupersync Git metadata directory {}: {error}",
+                    dot_git.display()
+                ),
+            }
+        }
+        Ok(_) => GitMetadataShape::Unsupported,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => GitMetadataShape::Missing,
         Err(error) => panic!(
             "cannot inspect asupersync Git metadata {}: {error}",
             dot_git.display()
         ),
+    };
+    let metadata_available = classify_git_metadata_shape(shape).unwrap_or_else(|error| {
+        panic!(
+            "required asupersync checkout has {error} at {}",
+            dot_git.display()
+        )
+    });
+    if !metadata_available {
+        return None;
     }
 
     let head_path = git_path(checkout, "HEAD");

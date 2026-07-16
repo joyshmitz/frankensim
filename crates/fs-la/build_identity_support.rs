@@ -19,6 +19,29 @@ pub const EXECUTABLE_CONTEXT: &str = "frankensim.fs-la.gemm-build-executable.v1"
 /// against a concrete `include_*` site rather than sweeping unrelated assets.
 pub const ASUPERSYNC_NON_SRC_INPUTS: &[&str] = &["assets/dashboard.html"];
 
+/// Filesystem shape observed at the checkout's `.git` path before invoking
+/// Git. An empty directory is a transport artifact produced when RCH excludes
+/// repository metadata while synchronizing the source closure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GitMetadataShape {
+    Missing,
+    PointerFile,
+    EmptyDirectory,
+    PopulatedDirectory,
+    Unsupported,
+}
+
+/// Decide whether Git metadata must be inspected strictly for an observed
+/// `.git` shape. Only a missing path or an empty transport placeholder denotes
+/// absence; every populated repository candidate remains fail-closed.
+pub const fn classify_git_metadata_shape(shape: GitMetadataShape) -> Result<bool, &'static str> {
+    match shape {
+        GitMetadataShape::Missing | GitMetadataShape::EmptyDirectory => Ok(false),
+        GitMetadataShape::PointerFile | GitMetadataShape::PopulatedDirectory => Ok(true),
+        GitMetadataShape::Unsupported => Err("unsupported .git filesystem entry"),
+    }
+}
+
 /// Owner-local declaration consumed by `xtask check-identities`.
 #[allow(dead_code)] // consumed as source text by xtask, not by the build binary
 pub const GEMM_BUILD_FINGERPRINT_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
@@ -30,7 +53,7 @@ pub const GEMM_BUILD_FINGERPRINT_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
     "domain_const=GEMM_BUILD_FINGERPRINT_IDENTITY_DOMAIN",
     "encoder=gemm_build_fingerprint",
     "encoder_helpers=gemm_build_fingerprint_with_domain",
-    "schema_functions=push_field,push_optional_field,append_source_fields,append_external_identity,append_executable_identity,git_output_line,full_lowercase_git_oid,symbolic_git_ref,gemm_build_fingerprint_identity_version_is_supported,crates/fs-la/build.rs#main,crates/fs-la/build.rs#required_env,crates/fs-la/build.rs#optional_env,crates/fs-la/build.rs#read_identity_file,crates/fs-la/build.rs#read_required_file,crates/fs-la/build.rs#resolve_executable,crates/fs-la/build.rs#add_executable_identity,crates/fs-la/build.rs#collect_rust_sources,crates/fs-la/build.rs#collect_regular_files,crates/fs-la/build.rs#add_source_closure,crates/fs-la/build.rs#command_stdout,crates/fs-la/build.rs#git_command,crates/fs-la/build.rs#git_path,crates/fs-la/build.rs#watch_optional_git_file,crates/fs-la/build.rs#observed_git_head,crates/fs-la/build.rs#add_asupersync_identity,crates/fs-la/build.rs#add_depgraph_evidence,crates/fs-blake3/src/lib.rs#ContentHash::as_bytes,crates/fs-blake3/src/lib.rs#ContentHash::to_hex,crates/fs-blake3/src/lib.rs#hash_domain",
+    "schema_functions=push_field,push_optional_field,append_source_fields,append_external_identity,append_executable_identity,classify_git_metadata_shape,git_output_line,full_lowercase_git_oid,symbolic_git_ref,gemm_build_fingerprint_identity_version_is_supported,crates/fs-la/build.rs#main,crates/fs-la/build.rs#required_env,crates/fs-la/build.rs#optional_env,crates/fs-la/build.rs#read_identity_file,crates/fs-la/build.rs#read_required_file,crates/fs-la/build.rs#resolve_executable,crates/fs-la/build.rs#add_executable_identity,crates/fs-la/build.rs#collect_rust_sources,crates/fs-la/build.rs#collect_regular_files,crates/fs-la/build.rs#add_source_closure,crates/fs-la/build.rs#command_stdout,crates/fs-la/build.rs#git_command,crates/fs-la/build.rs#git_path,crates/fs-la/build.rs#watch_optional_git_file,crates/fs-la/build.rs#observed_git_head,crates/fs-la/build.rs#add_asupersync_identity,crates/fs-la/build.rs#add_depgraph_evidence,crates/fs-blake3/src/lib.rs#ContentHash::as_bytes,crates/fs-blake3/src/lib.rs#ContentHash::to_hex,crates/fs-blake3/src/lib.rs#hash_domain",
     "schema_constants=GEMM_BUILD_FINGERPRINT_IDENTITY_VERSION,GEMM_BUILD_FINGERPRINT_IDENTITY_DOMAIN,GEMM_BUILD_PAYLOAD_SCHEMA,EXECUTABLE_CONTEXT,ASUPERSYNC_NON_SRC_INPUTS,crates/fs-la/build.rs#CARGO_PROFILES,crates/fs-la/build.rs#PROFILE_CODEGEN_KEYS",
     "schema_dependencies=fs-la:depgraph-receipt",
     "digest=fs-blake3",

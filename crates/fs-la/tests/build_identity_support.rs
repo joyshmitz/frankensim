@@ -6,8 +6,8 @@ mod support;
 use support::{
     ASUPERSYNC_NON_SRC_INPUTS, EXECUTABLE_CONTEXT, GEMM_BUILD_FINGERPRINT_IDENTITY_DOMAIN,
     GEMM_BUILD_FINGERPRINT_IDENTITY_VERSION, GEMM_BUILD_PAYLOAD_SCHEMA, GemmBuildIdentityInput,
-    append_executable_identity, append_external_identity, append_source_fields,
-    full_lowercase_git_oid, gemm_build_fingerprint,
+    GitMetadataShape, append_executable_identity, append_external_identity, append_source_fields,
+    classify_git_metadata_shape, full_lowercase_git_oid, gemm_build_fingerprint,
     gemm_build_fingerprint_identity_version_is_supported, gemm_build_fingerprint_with_domain,
     git_output_line, push_field, push_optional_field, symbolic_git_ref,
 };
@@ -182,6 +182,27 @@ fn git_observation_parsers_fail_closed() {
     assert!(symbolic_git_ref(b"ref: refs/heads/../../escape\n").is_err());
     assert!(symbolic_git_ref(b"ref: refs\\heads\\main\n").is_err());
     assert!(symbolic_git_ref(b"ref: refs/heads/main\nignored").is_err());
+}
+
+#[test]
+fn git_metadata_shape_admits_only_explicit_transport_absence() {
+    assert_eq!(
+        classify_git_metadata_shape(GitMetadataShape::Missing),
+        Ok(false)
+    );
+    assert_eq!(
+        classify_git_metadata_shape(GitMetadataShape::EmptyDirectory),
+        Ok(false)
+    );
+    assert_eq!(
+        classify_git_metadata_shape(GitMetadataShape::PointerFile),
+        Ok(true)
+    );
+    assert_eq!(
+        classify_git_metadata_shape(GitMetadataShape::PopulatedDirectory),
+        Ok(true)
+    );
+    assert!(classify_git_metadata_shape(GitMetadataShape::Unsupported).is_err());
 }
 
 #[test]

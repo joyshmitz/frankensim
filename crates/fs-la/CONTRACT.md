@@ -66,8 +66,11 @@ Dense linear algebra: GEMM, batched small dense, factorizations, eigensolvers. L
   settings or code generators outside that bounded closure must supply the
   salt; a missing required environment, source, or workspace identity input is
   a build error rather than a generic fallback. RCH may transport the required
-  path-dependency source without `.git`; that absence is recorded instead of
-  substituting the `constellation.lock` pin as an observed checkout state.
+  path-dependency source without `.git` contents while preserving an empty
+  excluded `.git` directory; either missing or empty-directory shape is
+  recorded as absence instead of substituting the `constellation.lock` pin as
+  an observed checkout state. A populated or pointer-form `.git` remains
+  subject to strict Git validation rather than silently degrading to absence.
   Relevant dirty or metadata-free asupersync source is content-addressed
   directly, so its build identity remains exact instead of pretending that a
   Git HEAD describes the working tree. This intentionally makes local and RCH
