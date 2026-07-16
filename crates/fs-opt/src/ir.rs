@@ -598,8 +598,8 @@ pub enum OptError {
     Unevaluable {
         /// The node.
         node: u32,
-        /// What it is and who executes it.
-        kind: String,
+        /// Allocation-free node family and executor guidance.
+        kind: &'static str,
     },
     /// Cancelled mid-run (descent).
     Cancelled,
@@ -677,6 +677,19 @@ pub enum OptError {
         index: u32,
         /// Exact observed source-vector length.
         len: u64,
+    },
+    /// A bounded runtime vector could not reserve its exact storage.
+    RuntimeAllocationRefused {
+        /// Stable evaluator/retraction/descent allocation path.
+        path: &'static str,
+        /// Graph node whose execution requested storage, when applicable.
+        node: Option<u32>,
+        /// Runtime variable whose value requested storage, when applicable.
+        variable: Option<u32>,
+        /// Number of elements requested.
+        elements: u64,
+        /// Size of one element on this target.
+        element_bytes: u64,
     },
     /// A raw retraction point or step has the wrong storage length.
     RetractionLen {
@@ -963,6 +976,38 @@ impl core::fmt::Display for OptError {
                 "component node {node} requested source index {index}, but the \
                  runtime source vector has length {len}"
             ),
+            OptError::RuntimeAllocationRefused {
+                path,
+                node,
+                variable,
+                elements,
+                element_bytes,
+            } => match (node, variable) {
+                (Some(node), Some(variable)) => write!(
+                    f,
+                    "runtime allocation refused at {path} for node {node}, variable \
+                     {variable}: unable to reserve {elements} element(s) of \
+                     {element_bytes} byte(s); no partial result was published"
+                ),
+                (Some(node), None) => write!(
+                    f,
+                    "runtime allocation refused at {path} for node {node}: unable to \
+                     reserve {elements} element(s) of {element_bytes} byte(s); no \
+                     partial result was published"
+                ),
+                (None, Some(variable)) => write!(
+                    f,
+                    "runtime allocation refused at {path} for variable {variable}: \
+                     unable to reserve {elements} element(s) of {element_bytes} \
+                     byte(s); no partial result was published"
+                ),
+                (None, None) => write!(
+                    f,
+                    "runtime allocation refused at {path}: unable to reserve \
+                     {elements} element(s) of {element_bytes} byte(s); no partial \
+                     result was published"
+                ),
+            },
             OptError::DescentCapExceeded {
                 resource,
                 required,

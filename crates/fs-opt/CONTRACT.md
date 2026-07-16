@@ -101,7 +101,8 @@ structure; FLUX/UQ execute it.
   `(0, 1]` (a NaN/zero step would divide through the FD quotient; a negative
   rate would silently ascend). Every initially reachable positive/negative
   coordinate retraction is validated before f0. Checked preflight arithmetic
-  computes conservative fs-opt-owned work-unit and peak-workspace bounds;
+  computes conservative descent-engine/retraction work-unit and peak-workspace
+  bounds;
   overflow or a caller cap below either bound refuses before point scans,
   allocation, or objective work. Evaluation limits reduce the reachable-step
   bound before this calculation. Successful reports retain both bounds and a
@@ -200,13 +201,23 @@ structure; FLUX/UQ execute it.
   receipt and is then checked for finiteness with node/component attribution
   before it enters the memo or becomes public. Component access is checked and
   reports its node/index/observed source length instead of indexing directly.
+  Runtime frame, memo, reachability, worklist, variable-copy, and vector-result
+  buffers reserve their exact storage fallibly; allocator refusal returns
+  `RuntimeAllocationRefused` with a stable path, optional node/variable
+  attribution, and element layout before any partial value becomes public.
+  Evaluation borrows memoized children instead of
+  cloning retained vector values, and IR-driven descent passes its current point
+  through the same borrowed-frame adapter without an intermediate binding copy.
+  Reachability marks nodes when queued, so the pre-reserved worklist cannot
+  exceed the root-bounded memo prefix.
   Exact child receipts make vector zip operators non-truncating by induction.
   The walk itself is EXPLICIT-STACK (reachability worklist
   + bottom-up arena-order sweep;
   bead frankensim-xf8v7) so no admitted graph — at the depth cap or
   otherwise — can overflow the call stack. `ir::children` is public so
   downstream evaluators can drive the same iterative traversal.
-  PDE/stochastic nodes refuse with `Unevaluable` NAMING their executor.
+  PDE/stochastic nodes refuse with an allocation-free `Unevaluable` diagnostic
+  NAMING their executor.
 - `GoodhartGuard` (addendum Proposal D): treats an optimizer `Endpoint`
   (`design`, `objective`, `label`; `from_descent` bridges `DescentReport`)
   as an adversarial example. A FIXED four-step escalation ladder
@@ -323,6 +334,8 @@ bounded site),
 `BindingNonFinite`/`BindingDomain`/
 `EvalShape`/`EvalIndexOut` (runtime node + exact observed shape/index),
 `EvalNonFinite` (runtime location + exact bits),
+`RuntimeAllocationRefused` (stable path + node/variable + requested element
+layout),
 `RetractionLen`/`RetractionNonFinite`/
 `RetractionDomain` (input, manifold rule, location, and measurement),
 `DescentCapExceeded` (resource + conservative required bound + explicit cap),
@@ -453,9 +466,12 @@ discrete receipts. Existing opt-005/006 fixed pins remain unchanged.
   convergence, manifold-coordinate invariance, or dimensional correctness for
   caller-defined objectives.
 - `max_work_units` and `max_workspace_bytes` are conservative admission bounds
-  for fs-opt-owned scalar visits and peak `Vec` storage. They are not cycle,
-  wall-time, allocator-availability, or arbitrary caller-objective budgets;
-  an opaque raw closure can still perform unbounded external work or allocation.
+  for descent-engine/retraction scalar visits and peak `Vec` storage. They are
+  not cycle, wall-time, allocator-availability, or objective-implementation
+  budgets; an opaque raw closure can still perform unbounded external work or
+  allocation. The separately admitted, fallibly allocated IR evaluator used by
+  `descend_ir` is also excluded until its graph/value workspace receipt composes
+  into the descent envelope.
 - `max_total_work` is a deterministic structural admission envelope
   (retained items plus expression edges), not a wall-clock or cycle-count
   performance model. Per-field byte caps separately bound string hashing

@@ -54,6 +54,87 @@ impl Value {
     }
 }
 
+fn allocation_len(len: usize) -> u64 {
+    u64::try_from(len).unwrap_or(u64::MAX)
+}
+
+fn try_vec_capacity<T>(
+    path: &'static str,
+    node: Option<NodeId>,
+    variable: Option<VarId>,
+    len: usize,
+) -> Result<Vec<T>, OptError> {
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(len)
+        .map_err(|_| OptError::RuntimeAllocationRefused {
+            path,
+            node: node.map(|node| node.0),
+            variable: variable.map(|variable| variable.0),
+            elements: allocation_len(len),
+            element_bytes: u64::try_from(core::mem::size_of::<T>()).unwrap_or(u64::MAX),
+        })?;
+    Ok(values)
+}
+
+fn try_clone_vector(
+    path: &'static str,
+    node: Option<NodeId>,
+    variable: Option<VarId>,
+    values: &[f64],
+) -> Result<Vec<f64>, OptError> {
+    let mut output = try_vec_capacity(path, node, variable, values.len())?;
+    output.extend_from_slice(values);
+    Ok(output)
+}
+
+fn try_owned_diagnostic(
+    path: &'static str,
+    node: Option<NodeId>,
+    variable: Option<VarId>,
+    text: &'static str,
+) -> Result<String, OptError> {
+    let mut output = String::new();
+    output
+        .try_reserve_exact(text.len())
+        .map_err(|_| OptError::RuntimeAllocationRefused {
+            path,
+            node: node.map(|node| node.0),
+            variable: variable.map(|variable| variable.0),
+            elements: allocation_len(text.len()),
+            element_bytes: 1,
+        })?;
+    output.push_str(text);
+    Ok(output)
+}
+
+fn try_map_vector(
+    path: &'static str,
+    node: Option<NodeId>,
+    values: &[f64],
+    mut map: impl FnMut(f64) -> f64,
+) -> Result<Vec<f64>, OptError> {
+    let mut output = try_vec_capacity(path, node, None, values.len())?;
+    for value in values {
+        output.push(map(*value));
+    }
+    Ok(output)
+}
+
+fn try_zip_vectors(
+    path: &'static str,
+    node: Option<NodeId>,
+    left: &[f64],
+    right: &[f64],
+    mut map: impl FnMut(f64, f64) -> f64,
+) -> Result<Vec<f64>, OptError> {
+    let mut output = try_vec_capacity(path, node, None, left.len())?;
+    for (left, right) in left.iter().zip(right) {
+        output.push(map(*left, *right));
+    }
+    Ok(output)
+}
+
 fn runtime_vector_len(values: &[f64]) -> u64 {
     u64::try_from(values.len()).unwrap_or(u64::MAX)
 }
@@ -108,8 +189,8 @@ impl<'problem, 'value> BindingFrame<'problem, 'value> {
     /// # Errors
     /// [`OptError::UnknownVar`], [`OptError::BindingDuplicate`],
     /// [`OptError::BindingMissing`], [`OptError::BindingLen`],
-    /// [`OptError::BindingNonFinite`], [`OptError::BindingDomain`], or
-    /// [`OptError::CapExceeded`].
+    /// [`OptError::BindingNonFinite`], [`OptError::BindingDomain`],
+    /// [`OptError::CapExceeded`], or [`OptError::RuntimeAllocationRefused`].
     pub fn new<I>(problem: &'problem Problem, bindings: I) -> Result<Self, OptError>
     where
         I: IntoIterator<Item = (VarId, &'value [f64])>,
@@ -126,7 +207,8 @@ impl<'problem, 'value> BindingFrame<'problem, 'value> {
         I: IntoIterator<Item = (VarId, &'value [f64])>,
     {
         validate_binding_frame_envelope(problem, caps)?;
-        let mut slots = vec![None; problem.vars.len()];
+        let mut slots = try_vec_capacity("binding-frame/slots", None, None, problem.vars.len())?;
+        slots.resize(problem.vars.len(), None);
         for (var, binding) in bindings {
             let slot = slots
                 .get_mut(var.0 as usize)
@@ -135,7 +217,14 @@ impl<'problem, 'value> BindingFrame<'problem, 'value> {
                 return Err(OptError::BindingDuplicate { var: var.0 });
             }
         }
-        let mut ordered = Vec::with_capacity(slots.len());
+        if let Some((var, _)) = slots
+            .iter()
+            .enumerate()
+            .find(|(_, binding)| binding.is_none())
+        {
+            return Err(OptError::BindingMissing { var: var as u32 });
+        }
+        let mut ordered = try_vec_capacity("binding-frame/order", None, None, slots.len())?;
         for (var, binding) in slots.into_iter().enumerate() {
             ordered.push(binding.ok_or(OptError::BindingMissing { var: var as u32 })?);
         }
@@ -148,7 +237,8 @@ impl<'problem, 'value> BindingFrame<'problem, 'value> {
     /// # Errors
     /// [`OptError::UnknownNode`], [`OptError::Unevaluable`],
     /// [`OptError::EvalShape`], [`OptError::EvalIndexOut`],
-    /// [`OptError::EvalNonFinite`], or [`OptError::CapExceeded`].
+    /// [`OptError::EvalNonFinite`], [`OptError::CapExceeded`], or
+    /// [`OptError::RuntimeAllocationRefused`].
     pub fn eval(&self, node: NodeId) -> Result<Value, OptError> {
         validate_eval_envelope(self.problem, node)?;
         eval_validated(self.problem, node, &self.ordered)
@@ -169,7 +259,7 @@ impl<'problem, 'value> BindingFrame<'problem, 'value> {
 /// [`OptError::BindingLen`] / [`OptError::BindingNonFinite`] /
 /// [`OptError::BindingDomain`] / [`OptError::EvalShape`] /
 /// [`OptError::EvalIndexOut`] / [`OptError::EvalNonFinite`] /
-/// [`OptError::CapExceeded`].
+/// [`OptError::CapExceeded`] / [`OptError::RuntimeAllocationRefused`].
 pub fn eval(problem: &Problem, node: NodeId, bindings: &[Vec<f64>]) -> Result<Value, OptError> {
     let caps = validate_eval_envelope(problem, node)?;
     if bindings.len() != problem.vars.len() {
@@ -178,9 +268,11 @@ pub fn eval(problem: &Problem, node: NodeId, bindings: &[Vec<f64>]) -> Result<Va
             got: bindings.len() as u64,
         });
     }
-    let ordered: Vec<&[f64]> = bindings.iter().map(Vec::as_slice).collect();
-    validate_ordered_bindings(problem, &ordered, &caps)?;
-    eval_validated(problem, node, &ordered)
+    let mut ordered = try_vec_capacity("eval/positional-frame", Some(node), None, bindings.len())?;
+    for binding in bindings {
+        ordered.push(binding.as_slice());
+    }
+    eval_ordered_with_caps(problem, node, &ordered, &caps)
 }
 
 /// Evaluate `node` with a complete binding frame keyed by [`VarId`].
@@ -200,6 +292,27 @@ where
     let caps = validate_eval_envelope(problem, node)?;
     let frame = BindingFrame::new_with_caps(problem, bindings, &caps)?;
     eval_validated(problem, node, &frame.ordered)
+}
+
+fn eval_borrowed(problem: &Problem, node: NodeId, bindings: &[&[f64]]) -> Result<Value, OptError> {
+    let caps = validate_eval_envelope(problem, node)?;
+    if bindings.len() != problem.vars.len() {
+        return Err(OptError::BindingCount {
+            vars: problem.vars.len() as u32,
+            got: allocation_len(bindings.len()),
+        });
+    }
+    eval_ordered_with_caps(problem, node, bindings, &caps)
+}
+
+fn eval_ordered_with_caps(
+    problem: &Problem,
+    node: NodeId,
+    bindings: &[&[f64]],
+    caps: &AdmissionCaps,
+) -> Result<Value, OptError> {
+    validate_ordered_bindings(problem, bindings, caps)?;
+    eval_validated(problem, node, bindings)
 }
 
 fn validate_eval_envelope(problem: &Problem, node: NodeId) -> Result<AdmissionCaps, OptError> {
@@ -241,16 +354,17 @@ fn validate_binding_frame_envelope(
     }
     let mut point_storage = 0u64;
     let mut validation_work = 0u64;
-    for variable in &problem.vars {
-        let point_dim = variable
-            .manifold
-            .point_dim()
-            .ok_or_else(|| OptError::ManifoldInvalid {
-                what: format!(
-                    "{:?} has no representable runtime point dimension",
-                    variable.manifold
-                ),
-            })?;
+    for (variable_index, variable) in problem.vars.iter().enumerate() {
+        let Some(point_dim) = variable.manifold.point_dim() else {
+            return Err(OptError::ManifoldInvalid {
+                what: try_owned_diagnostic(
+                    "binding-frame/manifold-diagnostic",
+                    None,
+                    Some(VarId(variable_index as u32)),
+                    "sealed manifold has no representable runtime point dimension",
+                )?,
+            });
+        };
         if point_dim > caps.max_point_dim {
             return Err(OptError::CapExceeded {
                 what: "runtime binding point dimension",
@@ -342,14 +456,22 @@ fn eval_validated(problem: &Problem, node: NodeId, bindings: &[&[f64]]) -> Resul
     // Unevaluable nodes still cannot poison an evaluation, exactly as
     // under the recursive walk.
     let root = node.0 as usize;
-    let mut memo: Vec<Option<Value>> = vec![None; root + 1];
-    let mut reachable = vec![false; root + 1];
-    let mut worklist = vec![node];
+    let prefix_len = root + 1;
+    let mut memo = try_vec_capacity("eval/memo", Some(node), None, prefix_len)?;
+    memo.resize_with(prefix_len, || None);
+    let mut reachable = try_vec_capacity("eval/reachability", Some(node), None, prefix_len)?;
+    reachable.resize(prefix_len, false);
+    let mut worklist = try_vec_capacity("eval/worklist", Some(node), None, prefix_len)?;
+    reachable[root] = true;
+    worklist.push(node);
     while let Some(n) = worklist.pop() {
         let i = n.0 as usize;
-        if !reachable[i] {
-            reachable[i] = true;
-            worklist.extend(crate::ir::children(&problem.exprs[i]));
+        for child in crate::ir::children(&problem.exprs[i]) {
+            let child_index = child.0 as usize;
+            if !reachable[child_index] {
+                reachable[child_index] = true;
+                worklist.push(child);
+            }
         }
     }
     for i in 0..=root {
@@ -372,14 +494,14 @@ fn eval_node(
     bindings: &[&[f64]],
     memo: &[Option<Value>],
 ) -> Result<Value, OptError> {
-    let ev = |n: NodeId| -> Value {
+    let ev = |n: NodeId| -> &Value {
         memo[n.0 as usize]
-            .clone()
+            .as_ref()
             .expect("arena order: children are evaluated before their parents")
     };
-    let scalar = |v: Value| -> f64 {
+    let scalar = |v: &Value| -> f64 {
         match v {
-            Value::S(x) => x,
+            Value::S(x) => *x,
             Value::V(_) => unreachable!("builder enforced scalar shape"),
         }
     };
@@ -388,30 +510,49 @@ fn eval_node(
             let x = bindings
                 .get(v.0 as usize)
                 .ok_or(OptError::UnknownVar { id: v.0 })?;
-            Value::V((*x).to_vec())
+            Value::V(try_clone_vector(
+                "eval/variable-value",
+                Some(node),
+                Some(*v),
+                x,
+            )?)
         }
         Expr::Component { of, index } => {
             let v = ev(*of);
             match v {
-                Value::V(xs) => Value::S(checked_component(node, *index, &xs)?),
+                Value::V(xs) => Value::S(checked_component(node, *index, xs)?),
                 Value::S(_) => unreachable!("builder enforced vector shape"),
             }
         }
         Expr::Const { value, .. } => Value::S(*value),
         Expr::Add(a, b) => match (ev(*a), ev(*b)) {
-            (Value::S(x), Value::S(y)) => Value::S(x + y),
-            (Value::V(x), Value::V(y)) => Value::V(x.iter().zip(&y).map(|(p, q)| p + q).collect()),
+            (Value::S(x), Value::S(y)) => Value::S(*x + *y),
+            (Value::V(x), Value::V(y)) => Value::V(try_zip_vectors(
+                "eval/vector-add",
+                Some(node),
+                x,
+                y,
+                |p, q| p + q,
+            )?),
             _ => unreachable!("builder enforced matching shapes"),
         },
         Expr::Sub(a, b) => match (ev(*a), ev(*b)) {
-            (Value::S(x), Value::S(y)) => Value::S(x - y),
-            (Value::V(x), Value::V(y)) => Value::V(x.iter().zip(&y).map(|(p, q)| p - q).collect()),
+            (Value::S(x), Value::S(y)) => Value::S(*x - *y),
+            (Value::V(x), Value::V(y)) => Value::V(try_zip_vectors(
+                "eval/vector-sub",
+                Some(node),
+                x,
+                y,
+                |p, q| p - q,
+            )?),
             _ => unreachable!("builder enforced matching shapes"),
         },
         Expr::Mul(a, b) => match (ev(*a), ev(*b)) {
-            (Value::S(x), Value::S(y)) => Value::S(x * y),
+            (Value::S(x), Value::S(y)) => Value::S(*x * *y),
             (Value::S(s), Value::V(v)) | (Value::V(v), Value::S(s)) => {
-                Value::V(v.iter().map(|p| p * s).collect())
+                Value::V(try_map_vector("eval/vector-scale", Some(node), v, |p| {
+                    p * *s
+                })?)
             }
             _ => unreachable!("builder rejected vector*vector"),
         },
@@ -420,8 +561,8 @@ fn eval_node(
             Value::S(x / y)
         }
         Expr::Neg(a) => match ev(*a) {
-            Value::S(x) => Value::S(-x),
-            Value::V(v) => Value::V(v.iter().map(|p| -p).collect()),
+            Value::S(x) => Value::S(-*x),
+            Value::V(v) => Value::V(try_map_vector("eval/vector-negate", Some(node), v, |p| -p)?),
         },
         Expr::Powi { base, exp } => Value::S(fs_math::det::powi(scalar(ev(*base)), *exp)),
         Expr::Sqrt(a) => Value::S(fs_math::det::sqrt(scalar(ev(*a)))),
@@ -429,7 +570,7 @@ fn eval_node(
         Expr::Ln(a) => Value::S(fs_math::det::ln(scalar(ev(*a)))),
         Expr::Tanh(a) => Value::S(fs_math::det::tanh(scalar(ev(*a)))),
         Expr::Dot(a, b) => match (ev(*a), ev(*b)) {
-            (Value::V(x), Value::V(y)) => Value::S(x.iter().zip(&y).map(|(p, q)| p * q).sum()),
+            (Value::V(x), Value::V(y)) => Value::S(x.iter().zip(y).map(|(p, q)| p * q).sum()),
             _ => unreachable!("builder enforced vectors"),
         },
         Expr::NormSq(a) => match ev(*a) {
@@ -439,18 +580,16 @@ fn eval_node(
         Expr::Min(a, b) => Value::S(scalar(ev(*a)).min(scalar(ev(*b)))),
         Expr::Max(a, b) => Value::S(scalar(ev(*a)).max(scalar(ev(*b)))),
         Expr::Abs(a) => Value::S(scalar(ev(*a)).abs()),
-        Expr::PdeResidual { study, .. } => {
+        Expr::PdeResidual { .. } => {
             return Err(OptError::Unevaluable {
                 node: node.0,
-                kind: format!("pde_residual `{study}` (FLUX executes physics, not the IR)"),
+                kind: "pde_residual (FLUX executes physics, not the IR)",
             });
         }
-        Expr::Expectation { uq_config, .. }
-        | Expr::Cvar { uq_config, .. }
-        | Expr::Quantile { uq_config, .. } => {
+        Expr::Expectation { .. } | Expr::Cvar { .. } | Expr::Quantile { .. } => {
             return Err(OptError::Unevaluable {
                 node: node.0,
-                kind: format!("stochastic node over `{uq_config}` (UQ runners execute these)"),
+                kind: "stochastic node (UQ runners execute these, not the IR)",
             });
         }
     };
@@ -1017,11 +1156,14 @@ pub struct DescentOptions {
     pub fd_h: f64,
     /// Unitless relative retracted-point displacement at or below which descent stops.
     pub closure_threshold: f64,
-    /// Hard upper bound for fs-opt-owned scalar work units admitted up front
-    /// (default `2^24`).
+    /// Hard upper bound for descent-engine/retraction scalar work units admitted
+    /// up front (default `2^24`).
+    /// Objective implementation work, including IR evaluation, has its own
+    /// admission boundary and is not included.
     pub max_work_units: NonZeroU64,
-    /// Hard upper bound for fs-opt-owned peak workspace, in bytes
-    /// (default 1 GiB).
+    /// Hard upper bound for peak descent-engine and retraction workspace, in
+    /// bytes (default 1 GiB). Objective implementation workspace, including
+    /// IR evaluation, is not included.
     pub max_workspace_bytes: NonZeroU64,
 }
 
@@ -1071,9 +1213,11 @@ pub struct DescentReport {
     /// error — the point is still valid). Exactly equivalent to
     /// `stop == DescentStop::EvaluationLimit`.
     pub budget_stopped: bool,
-    /// Conservative fs-opt-owned work bound admitted before the first objective.
+    /// Conservative descent-engine/retraction work bound admitted before the
+    /// first objective. Objective implementation work is excluded.
     pub work_upper_bound: u64,
-    /// Conservative peak fs-opt-owned workspace bound admitted before the first objective.
+    /// Conservative peak descent-engine/retraction workspace bound admitted
+    /// before the first objective. Objective implementation workspace is excluded.
     pub workspace_upper_bound_bytes: u64,
 }
 
@@ -1083,10 +1227,13 @@ pub struct DescentReport {
 /// work and at bounded intervals inside domain/retraction loops, and honors
 /// an explicit [`EvalLimit`]. The manifold, start point
 /// (length AND finite components), step/closure policy, initial coordinate
-/// retractions, and fs-opt-owned work/workspace envelope are gated BEFORE f0.
+/// retractions, and descent-engine/retraction work/workspace envelope are gated
+/// BEFORE f0.
 /// Closure uses the unitless ratio
 /// `max_abs(retract(x, step) - x) / max(max_abs(x), fd_h)`.
-/// The resource envelope excludes arbitrary caller-objective work/allocation.
+/// The resource envelope excludes objective work/allocation. For
+/// [`descend_ir`], this currently includes the separately admitted, fallibly
+/// allocated IR evaluator.
 /// With an unwind-capable panic strategy, an ordinary raw-objective
 /// panic whose hook and payload cleanup both complete normally returns
 /// [`OptError::ObjectivePanicked`] with bounded path attribution. The
@@ -1404,7 +1551,7 @@ pub fn descend_ir(
     // invocation is f0 and is counted exactly once, including under a
     // one-evaluation budget.
     let f = |x: &[f64], _site: ObjectiveEvalSite| -> Result<f64, OptError> {
-        let scalar = eval(problem, obj.node, &[x.to_vec()])?
+        let scalar = eval_borrowed(problem, obj.node, &[x])?
             .scalar()
             .ok_or(OptError::NotScalar { node: obj.node.0 })?;
         finite_descent_value(sign * obj.weight * scalar, "weighted IR objective")
@@ -1417,6 +1564,69 @@ mod runtime_shape_tests {
     use super::*;
     use crate::ir::ProblemBuilder;
     use fs_qty::Dims;
+
+    #[test]
+    fn runtime_vector_reservations_refuse_capacity_overflow_without_partial_output() {
+        let len = usize::MAX;
+        let error = try_vec_capacity::<u64>("test/capacity-overflow", Some(NodeId(17)), None, len)
+            .expect_err("an address-space-sized u64 vector cannot be reserved");
+        assert_eq!(
+            error,
+            OptError::RuntimeAllocationRefused {
+                path: "test/capacity-overflow",
+                node: Some(17),
+                variable: None,
+                elements: allocation_len(len),
+                element_bytes: u64::try_from(core::mem::size_of::<u64>())
+                    .expect("u64 layout fits the diagnostic domain"),
+            }
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("no partial result was published"),
+            "the refusal must teach the atomic-publication boundary"
+        );
+    }
+
+    #[test]
+    fn fallible_runtime_vector_builders_preserve_arithmetic_bits() {
+        let left = [1.0, -0.0, f64::MIN_POSITIVE];
+        let right = [2.0, 0.0, -f64::MIN_POSITIVE];
+        let node = Some(NodeId(3));
+        let cloned =
+            try_clone_vector("test/clone", node, Some(VarId(2)), &left).expect("bounded clone");
+        let negated = try_map_vector("test/map", node, &left, |value| -value).expect("bounded map");
+        let added =
+            try_zip_vectors("test/zip", node, &left, &right, |a, b| a + b).expect("bounded zip");
+
+        assert_eq!(
+            cloned
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            left.iter().map(|value| value.to_bits()).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            negated
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            left.iter()
+                .map(|value| (-*value).to_bits())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            added
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            left.iter()
+                .zip(&right)
+                .map(|(a, b)| (*a + *b).to_bits())
+                .collect::<Vec<_>>()
+        );
+    }
 
     #[test]
     fn runtime_values_must_match_sealed_shape_receipts() {
