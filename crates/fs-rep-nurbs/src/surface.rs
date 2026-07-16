@@ -2247,6 +2247,46 @@ impl NurbsSurface<f64> {
         self.knots_v.preflight_parameter(v, "surface v-partial")?;
         self.admit()?.partials(u, v)
     }
+
+    /// Validate the owning surface and evaluate its value and first partials
+    /// with one cancellation gate.
+    ///
+    /// Constant-time U then V parameter refusals precede the first checkpoint.
+    /// Cancellation then spans structural admission and the same admitted
+    /// partials pipeline as [`AdmittedNurbsSurface::partials_with_cx`]. No
+    /// partial admitted authority, value, or directional derivative is
+    /// published. This primitive does not consume the `Cx` budget or finalize
+    /// its executor scope.
+    ///
+    /// # Errors
+    /// Returns the synchronous owning partial evaluator's parameter,
+    /// structure, work, memory, allocation, continuity, and finite-arithmetic
+    /// refusals when they win before an observed cancellation.
+    pub fn partials_with_cx(
+        &self,
+        u: f64,
+        v: f64,
+        cx: &Cx<'_>,
+    ) -> Result<SurfacePartialsRun, NurbsError> {
+        let mut should_cancel = || cx.checkpoint().is_err();
+        self.partials_with_poll(u, v, &mut should_cancel)
+    }
+
+    fn partials_with_poll(
+        &self,
+        u: f64,
+        v: f64,
+        should_cancel: &mut impl FnMut() -> bool,
+    ) -> Result<SurfacePartialsRun, NurbsError> {
+        self.knots_u.preflight_parameter(u, "surface u-partial")?;
+        self.knots_v.preflight_parameter(v, "surface v-partial")?;
+        match self.validate_live_structure_with_poll(should_cancel)? {
+            SurfaceValidationOutcome::Complete => self
+                .admitted_after_validation()
+                .partials_with_poll(u, v, should_cancel),
+            SurfaceValidationOutcome::Cancelled => Ok(SurfacePartialsRun::Cancelled),
+        }
+    }
 }
 
 impl AdmittedNurbsSurface<'_, f64> {
@@ -2313,27 +2353,30 @@ impl AdmittedNurbsSurface<'_, f64> {
         v: f64,
         cx: &Cx<'_>,
     ) -> Result<SurfacePartialsRun, NurbsError> {
+        let mut should_cancel = || cx.checkpoint().is_err();
+        self.partials_with_poll(u, v, &mut should_cancel)
+    }
+
+    /// Evaluate admitted first partials while sharing a compound caller's
+    /// cancellation callback.
+    pub(crate) fn partials_with_poll(
+        &self,
+        u: f64,
+        v: f64,
+        should_cancel: &mut impl FnMut() -> bool,
+    ) -> Result<SurfacePartialsRun, NurbsError> {
         self.preflight_partials_request(u, v)?;
         let knots_u = self.knots_u();
         let knots_v = self.knots_v();
-        let (span_u, basis_u) = match knots_u.basis_with_cx(u, cx)? {
+        let (span_u, basis_u) = match knots_u.basis_with_poll(u, should_cancel)? {
             BasisRun::Complete { span, values } => (span, values),
             BasisRun::Cancelled => return Ok(SurfacePartialsRun::Cancelled),
         };
-        let (span_v, basis_v) = match knots_v.basis_with_cx(v, cx)? {
+        let (span_v, basis_v) = match knots_v.basis_with_poll(v, should_cancel)? {
             BasisRun::Complete { span, values } => (span, values),
             BasisRun::Cancelled => return Ok(SurfacePartialsRun::Cancelled),
         };
-        let mut should_cancel = || cx.checkpoint().is_err();
-        self.partials_from_basis_with_poll(
-            u,
-            v,
-            span_u,
-            &basis_u,
-            span_v,
-            &basis_v,
-            &mut should_cancel,
-        )
+        self.partials_from_basis_with_poll(u, v, span_u, &basis_u, span_v, &basis_v, should_cancel)
     }
 
     fn partials_from_basis_with_poll(
@@ -3525,6 +3568,110 @@ mod tests {
                 }
             );
         });
+    }
+
+    #[test]
+    fn owning_surface_partials_with_cx_are_transactional_and_exact() {
+        let surface = bilinear_surface();
+        with_surface_cx(true, |cx| {
+            assert!(matches!(
+                surface
+                    .partials_with_cx(0.25, 0.75, cx)
+                    .expect("valid owning partial request"),
+                SurfacePartialsRun::Cancelled
+            ));
+
+            let u_error = surface
+                .partials(-1.0, 2.0)
+                .expect_err("legacy owning U-parameter refusal");
+            assert_eq!(
+                surface
+                    .partials_with_cx(-1.0, 2.0, cx)
+                    .expect_err("owning U refusal must precede cancellation"),
+                u_error
+            );
+            let v_error = surface
+                .partials(0.5, 2.0)
+                .expect_err("legacy owning V-parameter refusal");
+            assert_eq!(
+                surface
+                    .partials_with_cx(0.5, 2.0, cx)
+                    .expect_err("owning V refusal must precede cancellation"),
+                v_error
+            );
+        });
+        with_surface_cx(false, |cx| {
+            assert_eq!(
+                surface
+                    .partials_with_cx(0.25, 0.75, cx)
+                    .expect("active owning partial request"),
+                SurfacePartialsRun::Complete {
+                    partials: surface
+                        .partials(0.25, 0.75)
+                        .expect("legacy owning partial request"),
+                }
+            );
+        });
+    }
+
+    #[test]
+    fn owning_surface_partial_gate_spans_admission_and_admitted_work() {
+        let high_degree = high_degree_surface();
+        let cancel_inside_admission = || {
+            let mut polls = 0usize;
+            let mut should_cancel = || {
+                polls += 1;
+                polls == 12
+            };
+            let outcome = high_degree
+                .partials_with_poll(0.25, 0.75, &mut should_cancel)
+                .expect("valid high-degree owning partial request");
+            (matches!(outcome, SurfacePartialsRun::Cancelled), polls)
+        };
+        assert_eq!(cancel_inside_admission(), cancel_inside_admission());
+        assert_eq!(cancel_inside_admission(), (true, 12));
+
+        let bilinear = bilinear_surface();
+        let cancel_at_first_admitted_checkpoint = || {
+            let mut polls = 0usize;
+            let mut should_cancel = || {
+                polls += 1;
+                polls == 13
+            };
+            let outcome = bilinear
+                .partials_with_poll(0.25, 0.75, &mut should_cancel)
+                .expect("valid bilinear owning partial request");
+            (matches!(outcome, SurfacePartialsRun::Cancelled), polls)
+        };
+        assert_eq!(
+            cancel_at_first_admitted_checkpoint(),
+            cancel_at_first_admitted_checkpoint()
+        );
+        assert_eq!(cancel_at_first_admitted_checkpoint(), (true, 13));
+
+        let mut total_polls = 0usize;
+        let mut never_cancel = || {
+            total_polls += 1;
+            false
+        };
+        assert!(matches!(
+            bilinear
+                .partials_with_poll(0.25, 0.75, &mut never_cancel)
+                .expect("healthy owning partial replay"),
+            SurfacePartialsRun::Complete { .. }
+        ));
+        let mut replay_polls = 0usize;
+        let mut cancel_at_publication = || {
+            replay_polls += 1;
+            replay_polls == total_polls
+        };
+        assert!(matches!(
+            bilinear
+                .partials_with_poll(0.25, 0.75, &mut cancel_at_publication)
+                .expect("owning partial publication cancellation"),
+            SurfacePartialsRun::Cancelled
+        ));
+        assert_eq!(replay_polls, total_polls);
     }
 
     #[test]

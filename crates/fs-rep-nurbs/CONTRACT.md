@@ -126,9 +126,11 @@ fs-iga (geometry basis = analysis basis), fs-render NURBS tracing
   partial finite homogeneous representation. Its admitted-only `eval_with_cx`
   returns transactional `SurfaceEvaluationRun` state and never publishes a
   partial Cartesian point;
-  its f64-only admitted `partials_with_cx` returns transactional
-  `SurfacePartialsRun` state and publishes value plus both first partials only
-  as one complete result;
+  its f64-only owning `partials_with_cx` carries one gate through structural
+  admission and the admitted partials pipeline. The admitted-only
+  `partials_with_cx` avoids that source rescan. Both return transactional
+  `SurfacePartialsRun` state and publish value plus both first partials only as
+  one complete result;
   its admitted `span_boxes_with_cx` returns transactional
   `SurfaceSpanBoxesRun` state and publishes only the complete U-major, V-minor
   box table;
@@ -522,16 +524,19 @@ row-vector header, and all homogeneous controls while excluding the borrowed
 source; allocator rounding and individual generic-scalar operations are not
 preemptible. These methods claim no wall-time, exact caller-budget,
 owning-admission, drain/finalize, resumability, or geometric certificate.
-`AdmittedNurbsSurface::partials_with_cx` preserves U-then-V parameter,
-aggregate-envelope, and ordinary-derivative refusal order before carrying one
-gate through both basis rows, the sequential U and V isocurve contractions,
-both shared curve-derivative engines, and final tuple publication.
+`NurbsSurface::partials_with_cx` preserves its constant-time U-then-V parameter
+refusals before carrying one gate through bounded structural admission and the
+admitted partials pipeline. `AdmittedNurbsSurface::partials_with_cx` preserves
+U-then-V parameter, aggregate-envelope, and ordinary-derivative refusal order
+before carrying that gate through both basis rows, the sequential U and V
+isocurve contractions, both shared curve-derivative engines, and final tuple
+publication.
 `SurfacePartialsRun::Cancelled` exposes neither the value nor one directional
 jet and drops all temporary nets and derivative scratch. It proves only one f64
-value/first-partial request on an admitted surface: construction, owning
-admission, one-sided jets, regularity, normals/orientation, geometric
-certificates, exact caller-budget consumption, wall time, drain/finalize, and
-resumability remain outside the claim.
+value/first-partial request on one structurally admitted source: construction,
+one-sided jets, regularity, normals/orientation, geometric certificates, exact
+caller-budget consumption, wall time, drain/finalize, and resumability remain
+outside the claim.
 `TrimLoop::admit_with_cx` carries one gate through exact curve/knot admission,
 both endpoint evaluations, full-break continuity traversal, and final
 lifetime-bound authority publication. `TrimLoopAdmissionRun::Cancelled`
