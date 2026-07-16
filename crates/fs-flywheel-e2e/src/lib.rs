@@ -483,22 +483,184 @@ fn completed_branch_cost(config: &LoopConfig, branch_costs: &[f64; 2], completed
     }
 }
 
-fn wedge_descriptor(name: &str, velocity: f64, scale: f64) -> Descriptor {
+/// Versioned semantic π-role schema for the wedge fixture (bead
+/// sj31i.27, v2): every parameter name is a semantic role bound to
+/// EXACT dimensions, so a dimensionally plausible but role-incompatible
+/// substitution refuses at construction instead of silently joining the
+/// π basis. The v1 fixture named kinematic dims "viscosity" while
+/// carrying air's DYNAMIC viscosity value (1.8e-5 Pa·s mislabeled as
+/// m²/s), silently building V·L/ν while omitting density; the v2 basis
+/// carries density and dynamic viscosity so Buckingham derives the true
+/// Reynolds group ρVL/μ. The role RENAME is the version crosswalk: v1
+/// and v2 bases differ structurally, so stale tombstone signatures
+/// cannot alias the corrected physics.
+pub const WEDGE_ROLE_VELOCITY: (&str, Dims) = ("velocity", Dims([1, 0, -1, 0, 0, 0]));
+/// Characteristic length role.
+pub const WEDGE_ROLE_LENGTH: (&str, Dims) = ("length", Dims([1, 0, 0, 0, 0, 0]));
+/// Mass density role (kg·m⁻³).
+pub const WEDGE_ROLE_DENSITY: (&str, Dims) = ("density", Dims([-3, 1, 0, 0, 0, 0]));
+/// DYNAMIC viscosity role μ (Pa·s = kg·m⁻¹·s⁻¹) — never the kinematic ν.
+pub const WEDGE_ROLE_DYNAMIC_VISCOSITY: (&str, Dims) =
+    ("dynamic_viscosity", Dims([-1, 1, -1, 0, 0, 0]));
+/// What the derived ν = μ/ρ must come out as (m²·s⁻¹).
+pub const KINEMATIC_VISCOSITY_DIMS: Dims = Dims([2, 0, -1, 0, 0, 0]);
+
+/// A semantic-role violation: the quantity offered for a named π role
+/// does not carry that role's exact dimensions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WedgeRoleError {
+    /// The violated role name.
+    pub role: &'static str,
+    /// The role's required dimensions.
+    pub expected: Dims,
+    /// The offered dimensions.
+    pub found: Dims,
+}
+
+impl core::fmt::Display for WedgeRoleError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "π role `{}` requires dims {:?}, got {:?} — dimensionally plausible substitutions \
+             with the wrong semantic role are refused",
+            self.role, self.expected, self.found
+        )
+    }
+}
+
+impl core::error::Error for WedgeRoleError {}
+
+fn role_checked(
+    role: (&'static str, Dims),
+    qty: QtyAny,
+) -> Result<(String, QtyAny), WedgeRoleError> {
+    if qty.dims == role.1 {
+        Ok((role.0.to_string(), qty))
+    } else {
+        Err(WedgeRoleError {
+            role: role.0,
+            expected: role.1,
+            found: qty.dims,
+        })
+    }
+}
+
+/// A fluid material for the wedge fixture: density ρ and DYNAMIC
+/// viscosity μ, role-checked at construction. Kinematic viscosity is
+/// DERIVED (ν = μ/ρ) through the checked quantity algebra — the wedge
+/// never labels one kind as the other and never assumes a density.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WedgeMaterial {
+    /// Material provenance label (retained in the descriptor name).
+    pub label: &'static str,
+    /// Mass density ρ.
+    pub density: QtyAny,
+    /// Dynamic viscosity μ.
+    pub dynamic_viscosity: QtyAny,
+}
+
+impl WedgeMaterial {
+    /// Role-checked constructor.
+    ///
+    /// # Errors
+    /// [`WedgeRoleError`] when either property carries the wrong
+    /// dimensions for its role — including the v1 bug's exact shape
+    /// (kinematic m²·s⁻¹ offered as dynamic viscosity).
+    pub fn new(
+        label: &'static str,
+        density: QtyAny,
+        dynamic_viscosity: QtyAny,
+    ) -> Result<WedgeMaterial, WedgeRoleError> {
+        role_checked(WEDGE_ROLE_DENSITY, density)?;
+        role_checked(WEDGE_ROLE_DYNAMIC_VISCOSITY, dynamic_viscosity)?;
+        Ok(WedgeMaterial {
+            label,
+            density,
+            dynamic_viscosity,
+        })
+    }
+
+    /// Air at ~15 °C: ρ = 1.225 kg·m⁻³, μ = 1.8e-5 Pa·s (the v1
+    /// fixture's 1.8e-5 was THIS dynamic viscosity, mislabeled with
+    /// kinematic dims).
+    #[must_use]
+    pub fn air() -> WedgeMaterial {
+        WedgeMaterial::new(
+            "air-15C",
+            QtyAny::new(1.225, WEDGE_ROLE_DENSITY.1),
+            QtyAny::new(1.8e-5, WEDGE_ROLE_DYNAMIC_VISCOSITY.1),
+        )
+        .expect("air constants carry their role dimensions")
+    }
+
+    /// Water at ~20 °C: ρ = 998.2 kg·m⁻³, μ = 1.002e-3 Pa·s.
+    #[must_use]
+    pub fn water() -> WedgeMaterial {
+        WedgeMaterial::new(
+            "water-20C",
+            QtyAny::new(998.2, WEDGE_ROLE_DENSITY.1),
+            QtyAny::new(1.002e-3, WEDGE_ROLE_DYNAMIC_VISCOSITY.1),
+        )
+        .expect("water constants carry their role dimensions")
+    }
+
+    /// Kinematic viscosity ν = μ/ρ via the checked quantity algebra,
+    /// with the derived dimensions verified against the kinematic role.
+    ///
+    /// # Errors
+    /// [`WedgeRoleError`] if the checked division cannot produce exact
+    /// kinematic-viscosity dimensions (unreachable for role-checked
+    /// materials; kept typed as the executable derivation receipt).
+    pub fn kinematic_viscosity(&self) -> Result<QtyAny, WedgeRoleError> {
+        let nu = self
+            .dynamic_viscosity
+            .try_div(self.density)
+            .map_err(|overflow| WedgeRoleError {
+                role: "kinematic_viscosity",
+                expected: KINEMATIC_VISCOSITY_DIMS,
+                found: overflow.dims,
+            })?;
+        if nu.dims == KINEMATIC_VISCOSITY_DIMS {
+            Ok(nu)
+        } else {
+            Err(WedgeRoleError {
+                role: "kinematic_viscosity",
+                expected: KINEMATIC_VISCOSITY_DIMS,
+                found: nu.dims,
+            })
+        }
+    }
+}
+
+/// The wedge hypothesis descriptor over the v2 semantic π basis
+/// {velocity, length, density, dynamic_viscosity}: four role-checked
+/// parameters spanning three base dimensions, so Buckingham yields
+/// exactly one dimensionless group — the true Reynolds number ρVL/μ.
+#[must_use]
+pub fn wedge_descriptor(
+    name: &str,
+    velocity: f64,
+    scale: f64,
+    material: &WedgeMaterial,
+) -> Descriptor {
     let mut params = BTreeMap::new();
-    params.insert(
-        "velocity".to_string(),
-        QtyAny::new(velocity, Dims([1, 0, -1, 0, 0, 0])),
-    );
-    params.insert(
-        "length".to_string(),
-        QtyAny::new(scale, Dims([1, 0, 0, 0, 0, 0])),
-    );
-    params.insert(
-        "viscosity".to_string(),
-        QtyAny::new(1.8e-5, Dims([2, 0, -1, 0, 0, 0])),
-    );
+    for (key, value) in [
+        role_checked(
+            WEDGE_ROLE_VELOCITY,
+            QtyAny::new(velocity, WEDGE_ROLE_VELOCITY.1),
+        )
+        .expect("velocity is constructed on its role dims"),
+        role_checked(WEDGE_ROLE_LENGTH, QtyAny::new(scale, WEDGE_ROLE_LENGTH.1))
+            .expect("length is constructed on its role dims"),
+        role_checked(WEDGE_ROLE_DENSITY, material.density)
+            .expect("material density was role-checked at construction"),
+        role_checked(WEDGE_ROLE_DYNAMIC_VISCOSITY, material.dynamic_viscosity)
+            .expect("material viscosity was role-checked at construction"),
+    ] {
+        params.insert(key, value);
+    }
     Descriptor {
-        name: name.to_string(),
+        name: format!("{name} [{}]", material.label),
         params,
     }
 }
@@ -527,10 +689,11 @@ pub fn run_loop(config: &LoopConfig, iterations: usize, seed: u64) -> LoopReport
     let mut cancelled = false;
 
     let mut tombstones = TombstoneIndex::new();
+    let air = WedgeMaterial::air();
     // Pre-seed the graveyard: three dead designs at known velocities.
     for v in [10.0, 20.0, 40.0] {
         tombstones.record_falsification_kill(
-            wedge_descriptor("cht-wedge bracket", v, 0.1),
+            wedge_descriptor("cht-wedge bracket", v, 0.1, &air),
             "{\"kind\":\"tombstone\"}",
             vec!["estimated".to_string()],
             50.0,
@@ -585,12 +748,13 @@ pub fn run_loop(config: &LoopConfig, iterations: usize, seed: u64) -> LoopReport
             100.0 + 50.0 * velocity_draw
         };
         let candidate = if revisit {
-            wedge_descriptor("cht-wedge bracket", velocity, 0.1)
+            wedge_descriptor("cht-wedge bracket", velocity, 0.1, &air)
         } else {
             wedge_descriptor(
                 &format!("cht-wedge fin-array rev{}", iter % 5),
                 velocity,
                 0.5,
+                &air,
             )
         };
         if config.tombstones {
