@@ -707,9 +707,12 @@ impl Quadtree {
     /// Refine the interface band to `target`: any leaf whose box,
     /// INFLATED by one cell width on every side, has a certified
     /// enclosure straddling zero. The inflation guarantees that cut
-    /// cells AND their face-neighbors reach `target`, which is exactly the
-    /// scalar frontend's uniform-band precondition. Vector elasticity can
-    /// also integrate balanced coarse/fine shared patches directly.
+    /// cells AND their face-neighbors reach `target`. A bounded closure pass
+    /// then splits the coarser side of any remaining cut-cell face mismatch,
+    /// including finer neighbors introduced by unrelated adaptive refinement.
+    /// This re-establishes the scalar frontend's uniform-band precondition;
+    /// vector elasticity can also integrate balanced coarse/fine shared
+    /// patches directly.
     pub fn refine_toward_interface(&mut self, sdf: &dyn CutSdf, target: u32) {
         self.refine_where(target, &|lo: [f64; 2], hi: [f64; 2]| {
             let h = hi[0] - lo[0];
@@ -717,6 +720,34 @@ impl Quadtree {
             let ihi = [(hi[0] + h).min(1.0), (hi[1] + h).min(1.0)];
             sdf.enclose(ilo, ihi).contains_zero()
         });
+        loop {
+            let mut due = BTreeSet::new();
+            for cell in self.leaves.iter().copied() {
+                let (lo, hi) = self.rect(cell);
+                if !sdf.enclose(lo, hi).contains_zero() {
+                    continue;
+                }
+                for direction in 0..4 {
+                    let Some(neighbor) = self.covering_neighbor(cell, direction) else {
+                        continue;
+                    };
+                    if cell.0 < neighbor.0 {
+                        due.insert(cell);
+                    } else if neighbor.0 < cell.0 {
+                        due.insert(neighbor);
+                    }
+                }
+            }
+            if due.is_empty() {
+                break;
+            }
+            for cell in due {
+                if self.is_leaf(cell) {
+                    self.split(cell);
+                }
+            }
+            self.balance();
+        }
     }
 
     /// A copy with every leaf split once — the enriched-space grid the
@@ -806,6 +837,7 @@ impl Quadtree {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Circle, CutFemError, FemParams, Space};
 
     #[test]
     fn balance_holds_two_to_one() {
@@ -838,6 +870,48 @@ mod tests {
             })
             .sum();
         assert!((area - 1.0).abs() < 1e-12, "leaf area sum {area}");
+    }
+
+    #[test]
+    fn interface_refinement_recloses_scalar_band_after_adjacent_split() {
+        let disk = Circle {
+            center: [0.5, 0.5],
+            radius: 0.42,
+        };
+        let mut grid = Quadtree::with_room(4, 5);
+        grid.split((4, 13, 7));
+
+        let cut = (4, 14, 7);
+        let finer_neighbor = (5, 27, 15);
+        let (cut_lo, cut_hi) = grid.rect(cut);
+        assert!(disk.enclose(cut_lo, cut_hi).contains_zero());
+        assert_eq!(grid.covering_neighbor(cut, 0), Some(finer_neighbor));
+        assert!(matches!(
+            Space::build(&grid, &disk, FemParams::default()),
+            Err(CutFemError::CutBandNotUniform { cell, neighbor })
+                if cell == cut && neighbor == finer_neighbor
+        ));
+
+        // The target alone cannot repair this shape: the cut cell is already
+        // at level four, while an off-band adaptive split produced level five.
+        grid.refine_toward_interface(&disk, 4);
+        assert!(!grid.is_leaf(cut), "the coarse cut leaf must be split");
+        for cell in grid.leaves().collect::<Vec<_>>() {
+            let (lo, hi) = grid.rect(cell);
+            if !disk.enclose(lo, hi).contains_zero() {
+                continue;
+            }
+            for direction in 0..4 {
+                if let Some(neighbor) = grid.covering_neighbor(cell, direction) {
+                    assert_eq!(
+                        cell.0, neighbor.0,
+                        "scalar cut band remained graded at {cell:?}/{neighbor:?}"
+                    );
+                }
+            }
+        }
+        Space::build(&grid, &disk, FemParams::default())
+            .expect("reclosed scalar interface band must admit ghost assembly");
     }
 
     #[test]

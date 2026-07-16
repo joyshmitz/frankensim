@@ -24,7 +24,9 @@ same certified cuts; its constitutive parameters come from
   at `max_level` (dyadic, exactly representable). `refine_where` is
   the adaptivity hook (dwr-adaptivity drives it); the specialized
   `refine_toward_interface` establishes the uniform interface band by
-  refining every cell whose SELF-INFLATED box encloses zero;
+  refining every cell whose SELF-INFLATED box encloses zero, then repeatedly
+  splitting the coarser side of any remaining cut-cell face mismatch. This
+  closure also repairs finer neighbors introduced by independent adaptive work;
   `refined_once` is the every-leaf-split copy fs-dwr's enriched
   adjoint solves on (bead tfz.23 addendum).
 - `cut_cell_rules` → `CutRules`: bulk points (weights sum to inside
