@@ -821,6 +821,19 @@ Cancellation drops all partial RHS vectors. Borrowed sample rows/targets, vector
 headers, spare capacity, allocator metadata/rounding, scalar wall time,
 caller-budget consumption, drain/finalize, conditioning, solve, fit, and geometry
 authority remain outside this measured primitive.
+`summarize_refit_residuals_with_cx` preserves sample/target/parameter count
+compatibility, sample-row versus rectangular control-net dimensions,
+count-derived borrowed validation and U-major point-evaluation work, and the
+worst-case retained warning payload before its first checkpoint. One gate spans
+bounded shape and finite-value validation, fallible exact warning reservation,
+deterministic paired-parameter residual/RMS/max accumulation with finite
+arithmetic checks, localized warning construction, and final publication.
+`RefitResidualSummaryRun::Cancelled` exposes no provisional statistic or
+warning. Borrowed sample rows, targets, parameter pairs, and control net; vector
+headers; spare capacity; allocator metadata/rounding; scalar wall time; caller
+budget consumption; drain/finalize; and destructor latency remain outside the
+envelope. The outputs measure only the retained pairs and grant no field,
+zero-set, Hausdorff, topology, continuum-fit, or geometric-distance authority.
 `assemble_refit_normal_with_cx` preserves checked dimensions, finite
 non-negative regularization, count-derived aggregate work, and the 256 MiB
 requested dense-output envelope ahead of its first checkpoint. One gate then

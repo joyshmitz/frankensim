@@ -554,6 +554,28 @@ pub enum RefitRightHandSidesRun {
     Cancelled,
 }
 
+/// Transactional outcome of cancellation-aware paired-parameter residual
+/// summarization.
+///
+/// The returned values describe only the retained sample pairs supplied to the
+/// primitive. They do not certify continuum fit quality or geometric distance.
+#[must_use]
+#[derive(Debug, Clone, PartialEq)]
+pub enum RefitResidualSummaryRun {
+    /// Every borrowed input was validated and the complete summary is safe to
+    /// publish.
+    Complete {
+        /// Root-mean-square residual over the retained paired samples.
+        rms_residual: f64,
+        /// Largest residual over the retained paired samples.
+        max_residual: f64,
+        /// Samples whose residual strictly exceeded the requested threshold.
+        warnings: Vec<LocalizedFitResidualWarning>,
+    },
+    /// Cancellation was observed before publication.
+    Cancelled,
+}
+
 /// Transactional outcome of cancellation-aware open-uniform refit knot
 /// construction.
 #[must_use]
@@ -1876,6 +1898,333 @@ fn assemble_refit_right_hand_sides(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RefitResidualSummaryPlan {
+    row_count: usize,
+    control_count: usize,
+    net_rows: usize,
+    net_cols: usize,
+}
+
+fn preflight_refit_residual_summary_counts(
+    row_count: usize,
+    target_count: usize,
+    uv_count: usize,
+    control_count: usize,
+    net_rows: usize,
+    net_cols: usize,
+    warn_residual: f64,
+) -> Result<RefitResidualSummaryPlan, NurbsError> {
+    if !warn_residual.is_finite() || warn_residual < 0.0 {
+        return Err(refit_structure_error(
+            "refit residual warning threshold must be finite and non-negative",
+        ));
+    }
+    if row_count == 0 {
+        return Err(refit_structure_error(
+            "refit residual summary requires at least one sample row",
+        ));
+    }
+    if row_count != target_count || row_count != uv_count {
+        return Err(refit_structure_error(format!(
+            "refit residual summary has {row_count} sample rows, {target_count} targets, and {uv_count} parameter pairs"
+        )));
+    }
+    if control_count == 0 || net_rows == 0 || net_cols == 0 {
+        return Err(refit_structure_error(
+            "refit residual summary requires a nonempty sample row and control net",
+        ));
+    }
+    let net_control_count = net_rows
+        .checked_mul(net_cols)
+        .ok_or_else(|| refit_structure_error("refit residual control-net size overflows usize"))?;
+    if net_control_count != control_count {
+        return Err(refit_structure_error(format!(
+            "refit residual sample rows have {control_count} controls but the control net has {net_control_count}"
+        )));
+    }
+
+    let entries = checked_refit_work_product(
+        &[row_count as u128, control_count as u128],
+        "residual sample-matrix traversal",
+    )?;
+    let row_validation =
+        checked_refit_work_product(&[row_count as u128, 8], "residual row validation")?;
+    let net_validation = checked_refit_work_product(
+        &[net_control_count as u128, 4],
+        "residual control-net validation",
+    )?;
+    // Each matrix entry performs deterministic index traversal and at most
+    // three multiply-add pairs. The coefficient intentionally overprices that
+    // fixed scalar work.
+    let evaluation = checked_refit_work_product(&[entries, 8], "residual point evaluation")?;
+    let report_work = checked_refit_work_product(&[row_count as u128, 24], "residual report")?;
+    let total_work = checked_refit_work_sum(
+        &[
+            row_validation,
+            entries,
+            net_validation,
+            evaluation,
+            report_work,
+            4,
+        ],
+        "residual summary aggregate",
+    )?;
+    if total_work > REFIT_MAX_WORK_UNITS {
+        return Err(refit_structure_error(format!(
+            "refit residual summary requests {total_work} work units above static cap {REFIT_MAX_WORK_UNITS}"
+        )));
+    }
+
+    let warning_bytes = row_count
+        .checked_mul(size_of::<LocalizedFitResidualWarning>())
+        .ok_or_else(|| refit_structure_error("refit residual warning bytes overflow usize"))?;
+    if warning_bytes > REFIT_MAX_ALLOC_BYTES {
+        return Err(refit_structure_error(format!(
+            "refit residual warnings retain {warning_bytes} requested bytes above static cap {REFIT_MAX_ALLOC_BYTES}"
+        )));
+    }
+
+    Ok(RefitResidualSummaryPlan {
+        row_count,
+        control_count,
+        net_rows,
+        net_cols,
+    })
+}
+
+/// Summarize paired sample-target residuals against a fitted control net.
+///
+/// Count compatibility, aggregate borrowed validation/evaluation work, and the
+/// worst-case warning payload are admitted before the first checkpoint or
+/// scan. One caller gate then spans rectangular and finite borrowed-input
+/// validation, fallible warning reservation, deterministic U-major point
+/// evaluation, finite RMS/max accumulation, warning construction, and final
+/// publication. Polls occur after at most 64 rows, controls, or matrix entries;
+/// cancellation drops all provisional statistics and warnings.
+///
+/// Borrowed matrix, target, parameter, and control-net storage is excluded from
+/// the retained envelope. This measured primitive does not consume the `Cx`
+/// budget or grant field, zero-set, Hausdorff, topology, or continuum-fit
+/// authority.
+///
+/// # Errors
+/// Returns a structured threshold, dimension, checked work/retained-byte,
+/// allocation, borrowed-value, or finite-arithmetic refusal.
+pub fn summarize_refit_residuals_with_cx(
+    rows_b: &[Vec<f64>],
+    targets: &[[f64; 3]],
+    uvs: &[[f64; 2]],
+    net: &[Vec<[f64; 3]>],
+    warn_residual: f64,
+    cx: &Cx<'_>,
+) -> Result<RefitResidualSummaryRun, NurbsError> {
+    let mut should_cancel = || cx.checkpoint().is_err();
+    summarize_refit_residuals_with_poll(
+        rows_b,
+        targets,
+        uvs,
+        net,
+        warn_residual,
+        &mut should_cancel,
+    )
+}
+
+fn summarize_refit_residuals_with_poll(
+    rows_b: &[Vec<f64>],
+    targets: &[[f64; 3]],
+    uvs: &[[f64; 2]],
+    net: &[Vec<[f64; 3]>],
+    warn_residual: f64,
+    should_cancel: &mut impl FnMut() -> bool,
+) -> Result<RefitResidualSummaryRun, NurbsError> {
+    let control_count = rows_b.first().map_or(0, Vec::len);
+    let net_cols = net.first().map_or(0, Vec::len);
+    let plan = preflight_refit_residual_summary_counts(
+        rows_b.len(),
+        targets.len(),
+        uvs.len(),
+        control_count,
+        net.len(),
+        net_cols,
+        warn_residual,
+    )?;
+    if should_cancel() {
+        return Ok(RefitResidualSummaryRun::Cancelled);
+    }
+
+    let mut operations_since_poll = 0usize;
+    for (row_index, ((row, target), uv)) in rows_b.iter().zip(targets).zip(uvs).enumerate() {
+        if row.len() != plan.control_count {
+            return Err(refit_structure_error(format!(
+                "refit residual row {row_index} has length {}, expected {}",
+                row.len(),
+                plan.control_count
+            )));
+        }
+        if target.iter().any(|coordinate| !coordinate.is_finite()) {
+            return Err(refit_structure_error(format!(
+                "refit residual target {row_index} must be finite"
+            )));
+        }
+        if uv.iter().any(|coordinate| !coordinate.is_finite()) {
+            return Err(refit_structure_error(format!(
+                "refit residual parameter pair {row_index} must be finite"
+            )));
+        }
+        if refit_poll_due(&mut operations_since_poll, should_cancel) {
+            return Ok(RefitResidualSummaryRun::Cancelled);
+        }
+    }
+    if should_cancel() {
+        return Ok(RefitResidualSummaryRun::Cancelled);
+    }
+
+    operations_since_poll = 0;
+    for (row_index, row) in net.iter().enumerate() {
+        if row.len() != plan.net_cols {
+            return Err(refit_structure_error(format!(
+                "refit residual control-net row {row_index} has length {}, expected {}",
+                row.len(),
+                plan.net_cols
+            )));
+        }
+        for control in row {
+            if control.iter().any(|coordinate| !coordinate.is_finite()) {
+                return Err(refit_structure_error(format!(
+                    "refit residual control-net row {row_index} must be finite"
+                )));
+            }
+            if refit_poll_due(&mut operations_since_poll, should_cancel) {
+                return Ok(RefitResidualSummaryRun::Cancelled);
+            }
+        }
+    }
+    if should_cancel() {
+        return Ok(RefitResidualSummaryRun::Cancelled);
+    }
+
+    operations_since_poll = 0;
+    for row in rows_b {
+        for value in row {
+            if !value.is_finite() {
+                return Err(refit_structure_error(
+                    "refit residual sample matrix values must be finite",
+                ));
+            }
+            if refit_poll_due(&mut operations_since_poll, should_cancel) {
+                return Ok(RefitResidualSummaryRun::Cancelled);
+            }
+        }
+    }
+    if should_cancel() {
+        return Ok(RefitResidualSummaryRun::Cancelled);
+    }
+
+    let mut warnings = try_vec_with_capacity(plan.row_count, "refit residual warnings")?;
+    if should_cancel() {
+        return Ok(RefitResidualSummaryRun::Cancelled);
+    }
+
+    let mut rms_square_sum = 0.0f64;
+    let mut max_residual = 0.0f64;
+    operations_since_poll = 0;
+    for ((row, target), uv) in rows_b.iter().zip(targets).zip(uvs) {
+        let mut point = [0.0f64; 3];
+        for (control_index, &weight) in row.iter().enumerate() {
+            if weight != 0.0 {
+                let i = control_index / plan.net_cols;
+                let j = control_index % plan.net_cols;
+                for axis in 0..3 {
+                    let contribution = weight * net[i][j][axis];
+                    let accumulated = point[axis] + contribution;
+                    if !contribution.is_finite() || !accumulated.is_finite() {
+                        return Err(refit_structure_error(
+                            "refit residual point evaluation became non-finite",
+                        ));
+                    }
+                    point[axis] = accumulated;
+                }
+            }
+            if refit_poll_due(&mut operations_since_poll, should_cancel) {
+                return Ok(RefitResidualSummaryRun::Cancelled);
+            }
+        }
+
+        let residual = norm3([
+            point[0] - target[0],
+            point[1] - target[1],
+            point[2] - target[2],
+        ]);
+        if !residual.is_finite() {
+            return Err(refit_structure_error(
+                "refit residual arithmetic is non-finite",
+            ));
+        }
+        let squared = residual * residual;
+        let accumulated = rms_square_sum + squared;
+        if !squared.is_finite() || !accumulated.is_finite() {
+            return Err(refit_structure_error(
+                "refit RMS accumulation is non-finite",
+            ));
+        }
+        rms_square_sum = accumulated;
+        max_residual = max_residual.max(residual);
+        if residual > warn_residual {
+            warnings.push(LocalizedFitResidualWarning {
+                uv: *uv,
+                point: *target,
+                residual,
+            });
+        }
+        if refit_poll_due(&mut operations_since_poll, should_cancel) {
+            return Ok(RefitResidualSummaryRun::Cancelled);
+        }
+    }
+    debug_assert_eq!(net.len(), plan.net_rows);
+    debug_assert!(warnings.len() <= plan.row_count);
+    #[allow(clippy::cast_precision_loss)]
+    let rms_residual = det::sqrt(rms_square_sum / plan.row_count as f64);
+    if !rms_residual.is_finite() {
+        return Err(refit_structure_error("refit RMS result is non-finite"));
+    }
+    if should_cancel() {
+        return Ok(RefitResidualSummaryRun::Cancelled);
+    }
+    Ok(RefitResidualSummaryRun::Complete {
+        rms_residual,
+        max_residual,
+        warnings,
+    })
+}
+
+fn summarize_refit_residuals(
+    rows_b: &[Vec<f64>],
+    targets: &[[f64; 3]],
+    uvs: &[[f64; 2]],
+    net: &[Vec<[f64; 3]>],
+    warn_residual: f64,
+) -> Result<(f64, f64, Vec<LocalizedFitResidualWarning>), NurbsError> {
+    let mut never_cancel = || false;
+    match summarize_refit_residuals_with_poll(
+        rows_b,
+        targets,
+        uvs,
+        net,
+        warn_residual,
+        &mut never_cancel,
+    )? {
+        RefitResidualSummaryRun::Complete {
+            rms_residual,
+            max_residual,
+            warnings,
+        } => Ok((rms_residual, max_residual, warnings)),
+        RefitResidualSummaryRun::Cancelled => Err(refit_structure_error(
+            "non-cancellable refit residual summary observed cancellation",
+        )),
+    }
+}
+
 /// Row of basis values over the whole control axis (dense, small).
 fn basis_row(kv: AdmittedKnotVector<'_, f64>, t: f64) -> Result<Vec<f64>, NurbsError> {
     let mut never_cancel = || false;
@@ -2260,42 +2609,8 @@ pub fn refit_radial(
     let surface = NurbsSurface::new(ku, kv, &net, &weights)?;
     let report_surface = surface.admit()?;
     // ---- The honest report -------------------------------------------
-    let mut rms = 0.0f64;
-    let mut max_res = 0.0f64;
-    let mut warnings = try_vec_with_capacity(sample_points, "refit warnings")?;
-    for ((row, t), uv) in rows_b.iter().zip(&targets).zip(&uvs) {
-        let mut p = [0.0f64; 3];
-        for (k, &w) in row.iter().enumerate() {
-            if w != 0.0 {
-                let (i, j) = (k / nv, k % nv);
-                for axis in 0..3 {
-                    p[axis] += w * net[i][j][axis];
-                }
-            }
-        }
-        let r = norm3([p[0] - t[0], p[1] - t[1], p[2] - t[2]]);
-        if !r.is_finite() {
-            return Err(refit_structure_error(
-                "refit residual arithmetic is non-finite",
-            ));
-        }
-        rms += r * r;
-        if !rms.is_finite() {
-            return Err(refit_structure_error(
-                "refit RMS accumulation is non-finite",
-            ));
-        }
-        max_res = max_res.max(r);
-        if r > config.warn_residual {
-            warnings.push(LocalizedFitResidualWarning {
-                uv: *uv,
-                point: *t,
-                residual: r,
-            });
-        }
-    }
-    #[allow(clippy::cast_precision_loss)]
-    let rms_residual = det::sqrt(rms / sample_points as f64);
+    let (rms_residual, max_res, warnings) =
+        summarize_refit_residuals(&rows_b, &targets, &uvs, &net, config.warn_residual)?;
     // Spline → field: dense probe plus an analytic-model Lipschitz estimate;
     // the other reported direction stays the sampled fit-target worst case and
     // does not claim that a generic closure's targets belong to a source set.
@@ -3432,6 +3747,187 @@ mod tests {
             overflowed
                 .to_string()
                 .contains("accumulation became non-finite")
+        );
+    }
+
+    // G0/G5: the cancellable primitive preserves the legacy U-major point
+    // evaluation and strict warning threshold for an exactly known sample set.
+    #[test]
+    fn refit_residual_summary_matches_known_paired_samples() {
+        let rows = vec![
+            vec![1.0, 0.0, 0.0, 0.0],
+            vec![0.0, 0.5, 0.5, 0.0],
+            vec![0.0, 0.0, 0.0, 1.0],
+        ];
+        let targets = [[0.0, 0.0, 0.0], [1.0, 2.0, 0.0], [2.0, 2.0, 2.0]];
+        let uvs = [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]];
+        let net = vec![
+            vec![[0.0, 0.0, 0.0], [0.0, 2.0, 0.0]],
+            vec![[2.0, 0.0, 0.0], [2.0, 2.0, 0.0]],
+        ];
+        let rms_residual = det::sqrt(5.0 / 3.0);
+        let warnings = vec![LocalizedFitResidualWarning {
+            uv: uvs[2],
+            point: targets[2],
+            residual: 2.0,
+        }];
+
+        assert_eq!(
+            summarize_refit_residuals(&rows, &targets, &uvs, &net, 1.0)
+                .expect("synchronous residual summary"),
+            (rms_residual, 2.0, warnings.clone())
+        );
+        with_refit_cx(false, |cx| {
+            assert_eq!(
+                summarize_refit_residuals_with_cx(&rows, &targets, &uvs, &net, 1.0, cx)
+                    .expect("cancellable residual summary"),
+                RefitResidualSummaryRun::Complete {
+                    rms_residual,
+                    max_residual: 2.0,
+                    warnings: warnings.clone(),
+                }
+            );
+        });
+    }
+
+    // G4/G5: validation, warning reservation, point evaluation, accumulation,
+    // and final publication share replayable checkpoints without partial output.
+    #[test]
+    fn refit_residual_summary_polling_is_bounded_and_transactional() {
+        let rows = vec![vec![1.0 / 130.0; 130]; 130];
+        let targets = vec![[0.0; 3]; 130];
+        let uvs = vec![[0.25, 0.75]; 130];
+        let net = vec![vec![[1.0, 2.0, 3.0]; 13]; 10];
+        let run = |cancel_at: Option<usize>| {
+            let polls = Cell::new(0usize);
+            let outcome = summarize_refit_residuals_with_poll(
+                &rows,
+                &targets,
+                &uvs,
+                &net,
+                f64::MAX,
+                &mut || {
+                    polls.set(polls.get() + 1);
+                    cancel_at == Some(polls.get())
+                },
+            )
+            .expect("valid residual summary");
+            (outcome, polls.get())
+        };
+
+        let (complete, healthy_polls) = run(None);
+        assert!(matches!(complete, RefitResidualSummaryRun::Complete { .. }));
+        assert!(healthy_polls > 512);
+        for cancel_at in [1, healthy_polls / 2, healthy_polls] {
+            assert_eq!(
+                run(Some(cancel_at)),
+                (RefitResidualSummaryRun::Cancelled, cancel_at)
+            );
+        }
+        with_refit_cx(true, |cx| {
+            assert_eq!(
+                summarize_refit_residuals_with_cx(&rows, &targets, &uvs, &net, f64::MAX, cx,)
+                    .expect("pre-cancellation is terminal"),
+                RefitResidualSummaryRun::Cancelled
+            );
+        });
+    }
+
+    // G0/G4: count-only refusals precede polling and all borrowed values are
+    // validated before warning storage or point accumulation is published.
+    #[test]
+    fn refit_residual_summary_refusals_are_preflighted_and_finite() {
+        let polls = Cell::new(0usize);
+        let threshold =
+            summarize_refit_residuals_with_poll(&[], &[], &[], &[], f64::NAN, &mut || {
+                polls.set(polls.get() + 1);
+                true
+            })
+            .expect_err("invalid threshold must be refused before polling");
+        assert!(threshold.to_string().contains("threshold must be finite"));
+        assert_eq!(polls.get(), 0);
+
+        let empty = preflight_refit_residual_summary_counts(0, 0, 0, 0, 0, 0, 0.0)
+            .expect_err("empty samples must be refused");
+        assert!(empty.to_string().contains("at least one sample row"));
+
+        let mismatch = preflight_refit_residual_summary_counts(2, 1, 2, 1, 1, 1, 0.0)
+            .expect_err("sample/target mismatch must be refused");
+        assert!(mismatch.to_string().contains("2 sample rows, 1 targets"));
+
+        let size_overflow = preflight_refit_residual_summary_counts(1, 1, 1, 1, usize::MAX, 2, 0.0)
+            .expect_err("unrepresentable control-net size must be refused");
+        assert!(size_overflow.to_string().contains("overflows usize"));
+
+        let work = preflight_refit_residual_summary_counts(
+            1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000, 1_000, 0.0,
+        )
+        .expect_err("unbounded traversal work must be refused");
+        assert!(work.to_string().contains("work units"));
+
+        let retained_rows = REFIT_MAX_ALLOC_BYTES / size_of::<LocalizedFitResidualWarning>() + 1;
+        let retained = preflight_refit_residual_summary_counts(
+            retained_rows,
+            retained_rows,
+            retained_rows,
+            1,
+            1,
+            1,
+            0.0,
+        )
+        .expect_err("unbounded warning payload must be refused");
+        assert!(retained.to_string().contains("warnings retain"));
+
+        let ragged_rows = summarize_refit_residuals_with_poll(
+            &[vec![1.0, 0.0], vec![1.0]],
+            &[[0.0; 3]; 2],
+            &[[0.0; 2]; 2],
+            &[vec![[0.0; 3], [0.0; 3]]],
+            0.0,
+            &mut || false,
+        )
+        .expect_err("ragged sample rows must be refused");
+        assert!(ragged_rows.to_string().contains("row 1 has length 1"));
+
+        let ragged_net = summarize_refit_residuals_with_poll(
+            &[vec![1.0, 0.0]],
+            &[[0.0; 3]],
+            &[[0.0; 2]],
+            &[vec![[0.0; 3]], vec![]],
+            0.0,
+            &mut || false,
+        )
+        .expect_err("ragged control net must be refused");
+        assert!(ragged_net.to_string().contains("control-net row 1"));
+
+        let nonfinite_value = summarize_refit_residuals_with_poll(
+            &[vec![f64::NAN]],
+            &[[0.0; 3]],
+            &[[0.0; 2]],
+            &[vec![[0.0; 3]]],
+            0.0,
+            &mut || false,
+        )
+        .expect_err("non-finite matrix value must be refused");
+        assert!(
+            nonfinite_value
+                .to_string()
+                .contains("sample matrix values must be finite")
+        );
+
+        let overflowed = summarize_refit_residuals_with_poll(
+            &[vec![f64::MAX]],
+            &[[0.0; 3]],
+            &[[0.0; 2]],
+            &[vec![[2.0, 0.0, 0.0]]],
+            0.0,
+            &mut || false,
+        )
+        .expect_err("finite inputs with overflowed evaluation must be refused");
+        assert!(
+            overflowed
+                .to_string()
+                .contains("point evaluation became non-finite")
         );
     }
 
