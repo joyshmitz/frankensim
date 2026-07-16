@@ -106,6 +106,55 @@ pub struct MovingWallMomentumExchange2 {
     pub measured_links: usize,
 }
 
+/// Geometry and velocity for one off-lattice D2Q9 fluid-to-wall link.
+///
+/// `fraction` is the distance from the destination fluid-cell center to the
+/// wall intersection divided by the full lattice-link length. A value of
+/// `0.5` is the ordinary halfway wall. The velocity is evaluated at the wall
+/// intersection rather than at the center of a stair-step wall cell.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CurvedMovingWallLink2 {
+    fraction: f64,
+    wall_velocity: [f64; 2],
+}
+
+impl CurvedMovingWallLink2 {
+    /// Construct a checked off-lattice wall-link description.
+    #[must_use]
+    pub fn new(fraction: f64, wall_velocity: [f64; 2]) -> Self {
+        assert!(
+            fraction.is_finite() && fraction > 0.0 && fraction <= 1.0,
+            "D2Q9 curved-wall link fraction must be finite and in (0, 1]"
+        );
+        assert!(
+            wall_velocity.into_iter().all(f64::is_finite),
+            "D2Q9 curved-wall velocity must be finite"
+        );
+        let speed_sq =
+            wall_velocity[0].mul_add(wall_velocity[0], wall_velocity[1] * wall_velocity[1]);
+        assert!(
+            speed_sq < MAX_REGULARIZED_BOUNDARY_SPEED_SQ,
+            "D2Q9 curved-wall velocity exceeds the low-Mach admission envelope"
+        );
+        Self {
+            fraction,
+            wall_velocity,
+        }
+    }
+
+    /// Fluid-center-to-wall distance as a fraction of the lattice link.
+    #[must_use]
+    pub const fn fraction(self) -> f64 {
+        self.fraction
+    }
+
+    /// Wall velocity at the link intersection in lattice units.
+    #[must_use]
+    pub const fn wall_velocity(self) -> [f64; 2] {
+        self.wall_velocity
+    }
+}
+
 /// Atomic receipt for a D2Q9 fluid/wall cell-topology transition.
 ///
 /// Newly uncovered fluid cells are initialized by an equal-weight average of
@@ -619,6 +668,117 @@ impl Grid {
         }
     }
 
+    fn validate_curved_moving_wall_fields(
+        &self,
+        wall_links: &[[Option<CurvedMovingWallLink2>; Q]],
+        moment_origin: [f64; 2],
+    ) {
+        assert_eq!(
+            wall_links.len(),
+            self.nx * self.ny,
+            "curved-wall link field length must match the grid"
+        );
+        assert!(
+            moment_origin.into_iter().all(f64::is_finite),
+            "curved-wall moment origin must be finite"
+        );
+        for y in 0..self.ny {
+            for x in 0..self.nx {
+                let index = self.idx(x, y);
+                let active = matches!(self.flags[index], Cell::Fluid | Cell::Interface);
+                for q in 0..Q {
+                    let wall_source = active
+                        .then(|| self.source(x, y, q))
+                        .flatten()
+                        .filter(|&source| self.flags[source] == Cell::Wall);
+                    match (wall_source, wall_links[index][q]) {
+                        (Some(_), Some(link)) => {
+                            assert!(
+                                link.fraction.is_finite()
+                                    && link.fraction > 0.0
+                                    && link.fraction <= 1.0,
+                                "curved-wall link fraction at cell {index}, direction {q} must be finite and in (0, 1]"
+                            );
+                            assert!(
+                                link.wall_velocity.into_iter().all(f64::is_finite),
+                                "curved-wall velocity at cell {index}, direction {q} must be finite"
+                            );
+                            let speed_sq = link.wall_velocity[0].mul_add(
+                                link.wall_velocity[0],
+                                link.wall_velocity[1] * link.wall_velocity[1],
+                            );
+                            assert!(
+                                speed_sq < MAX_REGULARIZED_BOUNDARY_SPEED_SQ,
+                                "curved-wall velocity at cell {index}, direction {q} exceeds the low-Mach admission envelope"
+                            );
+                        }
+                        (Some(_), None) => panic!(
+                            "curved-wall geometry omits wall link at cell {index}, direction {q}"
+                        ),
+                        (None, Some(_)) => panic!(
+                            "curved-wall geometry assigns a link without a wall at cell {index}, direction {q}"
+                        ),
+                        (None, None) => {}
+                    }
+                }
+            }
+        }
+    }
+
+    fn validate_curved_moving_wall_post(
+        &self,
+        post: &[[f64; Q]],
+        wall_links: &[[Option<CurvedMovingWallLink2>; Q]],
+    ) {
+        self.validate_stream_input(post);
+        for y in 0..self.ny {
+            for x in 0..self.nx {
+                let index = self.idx(x, y);
+                if !matches!(self.flags[index], Cell::Fluid | Cell::Interface) {
+                    continue;
+                }
+                let mut needs_density = false;
+                for q in 0..Q {
+                    let Some(link) = wall_links[index][q] else {
+                        continue;
+                    };
+                    assert!(
+                        post[index][OPP[q]].is_finite(),
+                        "curved-wall outgoing population at cell {index}, direction {q} must be finite"
+                    );
+                    if link.fraction < 0.5 {
+                        let far = self.source(x, y, OPP[q]).unwrap_or_else(|| {
+                            panic!(
+                                "curved-wall short-link branch at cell {index}, direction {q} requires an in-domain far-fluid donor"
+                            )
+                        });
+                        assert!(
+                            matches!(self.flags[far], Cell::Fluid | Cell::Interface),
+                            "curved-wall short-link branch at cell {index}, direction {q} requires a far-fluid donor"
+                        );
+                        assert!(
+                            post[far][OPP[q]].is_finite(),
+                            "curved-wall far-fluid population at cell {index}, direction {q} must be finite"
+                        );
+                    } else if link.fraction > 0.5 {
+                        assert!(
+                            post[index][q].is_finite(),
+                            "curved-wall long-link population at cell {index}, direction {q} must be finite"
+                        );
+                    }
+                    needs_density |= link.wall_velocity != [0.0; 2];
+                }
+                if needs_density {
+                    let rho_post = post[index].iter().sum::<f64>();
+                    assert!(
+                        rho_post.is_finite() && rho_post > 0.0,
+                        "curved moving-wall bounce-back requires positive finite post-collision density"
+                    );
+                }
+            }
+        }
+    }
+
     fn validate_velocity_pressure_x(&self) {
         assert!(
             self.nx >= 3,
@@ -807,6 +967,114 @@ impl Grid {
         receipt
     }
 
+    fn stream_from_curved_moving_wall_inner(
+        &mut self,
+        post: &[[f64; Q]],
+        measured_walls: &[bool],
+        wall_links: &[[Option<CurvedMovingWallLink2>; Q]],
+        moment_origin: [f64; 2],
+    ) -> MovingWallMomentumExchange2 {
+        let mut receipt = MovingWallMomentumExchange2::default();
+        for y in 0..self.ny {
+            for x in 0..self.nx {
+                let index = self.idx(x, y);
+                if !matches!(self.flags[index], Cell::Fluid | Cell::Interface) {
+                    continue;
+                }
+                let mut rho_post = None;
+                for q in 0..Q {
+                    let pulled = match self.source(x, y, q) {
+                        Some(source) if self.flags[source] == Cell::Wall => {
+                            let link = wall_links[index][q].expect(
+                                "validated curved-wall geometry must cover every wall link",
+                            );
+                            let fraction = link.fraction;
+                            let wall_velocity = link.wall_velocity;
+                            let outgoing = post[index][OPP[q]];
+                            let e = [f64::from(E[q].0), f64::from(E[q].1)];
+                            let moving_correction = if wall_velocity == [0.0; 2] {
+                                0.0
+                            } else {
+                                let rho = *rho_post
+                                    .get_or_insert_with(|| post[index].iter().sum::<f64>());
+                                let e_dot_wall =
+                                    e[0].mul_add(wall_velocity[0], e[1] * wall_velocity[1]);
+                                2.0 * W[q] * rho * e_dot_wall / CS2
+                            };
+                            let incoming = if fraction == 0.5 {
+                                // Preserve the established halfway operation tree exactly.
+                                outgoing + moving_correction
+                            } else if fraction < 0.5 {
+                                let far = self.source(x, y, OPP[q]).expect(
+                                    "validated curved-wall short link must have a far-fluid donor",
+                                );
+                                2.0 * fraction * outgoing
+                                    + (1.0 - 2.0 * fraction) * post[far][OPP[q]]
+                                    + moving_correction
+                            } else {
+                                let denominator = 2.0 * fraction;
+                                (outgoing + moving_correction) / denominator
+                                    + ((denominator - 1.0) / denominator) * post[index][q]
+                            };
+
+                            if measured_walls[source] {
+                                let wall_impulse = if fraction == 0.5 && wall_velocity == [0.0; 2] {
+                                    // Preserve the established stationary-halfway bits.
+                                    [-2.0 * outgoing * e[0], -2.0 * outgoing * e[1]]
+                                } else {
+                                    [
+                                        (-e[0] - wall_velocity[0]) * outgoing
+                                            - (e[0] - wall_velocity[0]) * incoming,
+                                        (-e[1] - wall_velocity[1]) * outgoing
+                                            - (e[1] - wall_velocity[1]) * incoming,
+                                    ]
+                                };
+                                let fluid_population_impulse =
+                                    [e[0] * (incoming + outgoing), e[1] * (incoming + outgoing)];
+                                let fluid_mass_change = incoming - outgoing;
+                                let wall_velocity_mass_impulse = [
+                                    wall_velocity[0] * fluid_mass_change,
+                                    wall_velocity[1] * fluid_mass_change,
+                                ];
+                                let link_offset = [
+                                    (x as f64 - fraction * e[0]) - moment_origin[0],
+                                    (y as f64 - fraction * e[1]) - moment_origin[1],
+                                ];
+
+                                receipt.wall_impulse[0] += wall_impulse[0];
+                                receipt.wall_impulse[1] += wall_impulse[1];
+                                receipt.fluid_population_impulse[0] += fluid_population_impulse[0];
+                                receipt.fluid_population_impulse[1] += fluid_population_impulse[1];
+                                receipt.fluid_mass_change += fluid_mass_change;
+                                receipt.wall_velocity_mass_impulse[0] +=
+                                    wall_velocity_mass_impulse[0];
+                                receipt.wall_velocity_mass_impulse[1] +=
+                                    wall_velocity_mass_impulse[1];
+                                receipt.wall_angular_impulse += link_offset[0] * wall_impulse[1]
+                                    - link_offset[1] * wall_impulse[0];
+                                receipt.fluid_population_angular_impulse += link_offset[0]
+                                    * fluid_population_impulse[1]
+                                    - link_offset[1] * fluid_population_impulse[0];
+                                receipt.wall_velocity_mass_angular_impulse += link_offset[0]
+                                    * wall_velocity_mass_impulse[1]
+                                    - link_offset[1] * wall_velocity_mass_impulse[0];
+                                receipt.wall_work += wall_impulse[0]
+                                    .mul_add(wall_velocity[0], wall_impulse[1] * wall_velocity[1]);
+                                receipt.measured_links += 1;
+                            }
+                            incoming
+                        }
+                        Some(source) if self.flags[source] == Cell::Gas => post[index][OPP[q]],
+                        Some(source) => post[source][q],
+                        None => post[index][OPP[q]],
+                    };
+                    self.f[index][q] = pulled;
+                }
+            }
+        }
+        receipt
+    }
+
     /// Stream `post` into `self.f` (fluid pull; wall and out-of-domain
     /// pulls bounce back).
     pub fn stream_from(&mut self, post: &[[f64; Q]]) {
@@ -847,6 +1115,31 @@ impl Grid {
         self.validate_moving_wall_fields(wall_velocities, moment_origin);
         self.validate_moving_wall_post(post, wall_velocities);
         self.stream_from_moving_wall_inner(post, measured_walls, wall_velocities, moment_origin)
+    }
+
+    /// Stream with linear Bouzidi-Firdaouss-Lallemand off-lattice wall links.
+    ///
+    /// `wall_links[destination][q]` must contain exactly one description for
+    /// every pull link whose source is a wall, and `None` everywhere else.
+    /// Link fractions below one half interpolate the outgoing population from
+    /// the destination and next fluid node; fractions above one half
+    /// interpolate the two local post-collision directions. At exactly one
+    /// half this is bit-compatible with
+    /// [`Grid::stream_from_with_moving_wall_momentum`]. Torque is evaluated at
+    /// the declared off-lattice wall intersection. The linear rule follows
+    /// Bouzidi, Firdaouss, and Lallemand (2001),
+    /// <https://doi.org/10.1063/1.1399290>.
+    pub fn stream_from_with_curved_moving_wall_momentum(
+        &mut self,
+        post: &[[f64; Q]],
+        measured_walls: &[bool],
+        wall_links: &[[Option<CurvedMovingWallLink2>; Q]],
+        moment_origin: [f64; 2],
+    ) -> MovingWallMomentumExchange2 {
+        self.validate_measured_walls(measured_walls);
+        self.validate_curved_moving_wall_fields(wall_links, moment_origin);
+        self.validate_curved_moving_wall_post(post, wall_links);
+        self.stream_from_curved_moving_wall_inner(post, measured_walls, wall_links, moment_origin)
     }
 
     /// One plain step (no free-surface bookkeeping).
@@ -894,6 +1187,33 @@ impl Grid {
             &post,
             measured_walls,
             wall_velocities,
+            moment_origin,
+        );
+        *scratch = post;
+        receipt
+    }
+
+    /// One collide-stream step with checked linear off-lattice moving walls.
+    ///
+    /// The measurement mask, complete link geometry, link velocities, and
+    /// moment origin are admitted before collision. The resulting
+    /// post-collision populations are admitted before grid publication.
+    pub fn step_with_curved_moving_wall_momentum(
+        &mut self,
+        scratch: &mut Vec<[f64; Q]>,
+        measured_walls: &[bool],
+        wall_links: &[[Option<CurvedMovingWallLink2>; Q]],
+        moment_origin: [f64; 2],
+    ) -> MovingWallMomentumExchange2 {
+        self.validate_measured_walls(measured_walls);
+        self.validate_curved_moving_wall_fields(wall_links, moment_origin);
+        self.collide_into(scratch);
+        self.validate_curved_moving_wall_post(scratch, wall_links);
+        let post = std::mem::take(scratch);
+        let receipt = self.stream_from_curved_moving_wall_inner(
+            &post,
+            measured_walls,
+            wall_links,
             moment_origin,
         );
         *scratch = post;

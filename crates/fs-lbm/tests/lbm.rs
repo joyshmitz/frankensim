@@ -3,7 +3,7 @@
 //! (steady Poiseuille channel flow matches the analytic parabola), and the
 //! lattice-scaling assistant's stability bookkeeping.
 
-use fs_lbm::core2::VelocityPressureX2;
+use fs_lbm::core2::{CurvedMovingWallLink2, MovingWallMomentumExchange2, VelocityPressureX2};
 use fs_lbm::{
     CS2, Cell, Color, Grid, Lbm, MACH_LIMIT, Q, equilibrium, plan_scaling, poiseuille_analytic,
 };
@@ -43,6 +43,34 @@ fn d2q9_active_raw_momentum(grid: &Grid) -> [f64; 2] {
         }
     }
     momentum
+}
+
+fn d2q9_curved_wall_links(
+    grid: &Grid,
+    fraction: f64,
+    wall_velocities: &[[f64; 2]],
+) -> Vec<[Option<CurvedMovingWallLink2>; Q]> {
+    let mut links = vec![[None; Q]; grid.nx * grid.ny];
+    for y in 0..grid.ny {
+        for x in 0..grid.nx {
+            let destination = grid.idx(x, y);
+            if !matches!(grid.flags[destination], Cell::Fluid | Cell::Interface) {
+                continue;
+            }
+            for q in 0..Q {
+                let Some(source) = grid.source(x, y, q) else {
+                    continue;
+                };
+                if grid.flags[source] == Cell::Wall {
+                    links[destination][q] = Some(CurvedMovingWallLink2::new(
+                        fraction,
+                        wall_velocities[source],
+                    ));
+                }
+            }
+        }
+    }
+    links
 }
 
 #[test]
@@ -438,6 +466,286 @@ fn d2q9_moving_wall_refuses_bad_fields_before_advancing() {
     }));
     assert!(density_refusal.is_err());
     assert_eq!(grid.f, original);
+}
+
+#[test]
+fn d2q9_curved_moving_wall_pins_both_linear_bfl_branches_and_receipts() {
+    // G0/G3: independently enumerate the short-link and long-link linear BFL
+    // rules on one east-wall link. The receipt uses the actual wall
+    // intersection, not the halfway midpoint.
+    let mut base = Grid::uniform(5, 3, 0.8);
+    base.periodic_x = false;
+    base.periodic_y = false;
+    base.flags.fill(Cell::Gas);
+    let far = base.idx(1, 1);
+    let fluid = base.idx(2, 1);
+    let wall = base.idx(3, 1);
+    base.flags[far] = Cell::Fluid;
+    base.flags[fluid] = Cell::Fluid;
+    base.flags[wall] = Cell::Wall;
+
+    let mut post = vec![[0.0; Q]; base.nx * base.ny];
+    let outgoing = 0.25;
+    let prior_opposite = 0.08;
+    let far_outgoing = 0.125;
+    post[fluid][0] = 0.20;
+    post[fluid][1] = outgoing;
+    post[fluid][3] = prior_opposite;
+    post[far][1] = far_outgoing;
+    let rho_post = post[fluid].iter().sum::<f64>();
+    let wall_velocity = [0.03, 0.02];
+    let mut wall_velocities = vec![[0.0; 2]; base.nx * base.ny];
+    wall_velocities[wall] = wall_velocity;
+    let mut measured = vec![false; base.nx * base.ny];
+    measured[wall] = true;
+    let origin = [0.4, 0.25];
+    let moving_correction = 2.0 * (1.0 / 9.0) * rho_post * -wall_velocity[0] / CS2;
+
+    let short_fraction = 0.25;
+    let short_links = d2q9_curved_wall_links(&base, short_fraction, &wall_velocities);
+    let mut short = base.clone();
+    let short_receipt =
+        short.stream_from_with_curved_moving_wall_momentum(&post, &measured, &short_links, origin);
+    let short_incoming = 2.0 * short_fraction * outgoing
+        + (1.0 - 2.0 * short_fraction) * far_outgoing
+        + moving_correction;
+    assert!((short.f[fluid][3] - short_incoming).abs() < 1e-15);
+
+    let long_fraction = 0.75;
+    let long_links = d2q9_curved_wall_links(&base, long_fraction, &wall_velocities);
+    let mut long = base.clone();
+    let long_receipt =
+        long.stream_from_with_curved_moving_wall_momentum(&post, &measured, &long_links, origin);
+    let denominator = 2.0 * long_fraction;
+    let long_incoming = (outgoing + moving_correction) / denominator
+        + ((denominator - 1.0) / denominator) * prior_opposite;
+    assert!((long.f[fluid][3] - long_incoming).abs() < 1e-15);
+
+    let assert_receipt = |receipt: MovingWallMomentumExchange2, incoming: f64, fraction: f64| {
+        let e = [-1.0, 0.0];
+        let expected_wall = [
+            (-e[0] - wall_velocity[0]) * outgoing - (e[0] - wall_velocity[0]) * incoming,
+            (-e[1] - wall_velocity[1]) * outgoing - (e[1] - wall_velocity[1]) * incoming,
+        ];
+        let expected_fluid = [e[0] * (incoming + outgoing), 0.0];
+        let mass_change = incoming - outgoing;
+        let expected_mass_impulse = [
+            wall_velocity[0] * mass_change,
+            wall_velocity[1] * mass_change,
+        ];
+        let link_offset = [2.0 + fraction - origin[0], 1.0 - origin[1]];
+        let expected_wall_torque =
+            link_offset[0] * expected_wall[1] - link_offset[1] * expected_wall[0];
+        let expected_work =
+            expected_wall[0] * wall_velocity[0] + expected_wall[1] * wall_velocity[1];
+
+        assert_eq!(receipt.measured_links, 1);
+        for axis in 0..2 {
+            assert!((receipt.wall_impulse[axis] - expected_wall[axis]).abs() < 1e-15);
+            assert!((receipt.fluid_population_impulse[axis] - expected_fluid[axis]).abs() < 1e-15);
+            assert!(
+                (receipt.wall_velocity_mass_impulse[axis] - expected_mass_impulse[axis]).abs()
+                    < 1e-15
+            );
+            assert!(
+                (receipt.wall_impulse[axis] + receipt.fluid_population_impulse[axis]
+                    - receipt.wall_velocity_mass_impulse[axis])
+                    .abs()
+                    < 1e-15
+            );
+        }
+        assert!((receipt.fluid_mass_change - mass_change).abs() < 1e-15);
+        assert!((receipt.wall_angular_impulse - expected_wall_torque).abs() < 1e-15);
+        assert!(
+            (receipt.wall_angular_impulse + receipt.fluid_population_angular_impulse
+                - receipt.wall_velocity_mass_angular_impulse)
+                .abs()
+                < 1e-15
+        );
+        assert!((receipt.wall_work - expected_work).abs() < 1e-15);
+    };
+    assert_receipt(short_receipt, short_incoming, short_fraction);
+    assert_receipt(long_receipt, long_incoming, long_fraction);
+}
+
+#[test]
+fn d2q9_curved_halfway_is_exactly_legacy_compatible_and_replays() {
+    // G3/G5: q=1/2 is the exact compatibility seam, including the receipt;
+    // a non-halfway collide-stream trajectory also replays bit-for-bit.
+    let mut legacy = Grid::uniform(5, 5, 0.8);
+    let wall = legacy.idx(2, 2);
+    legacy.flags[wall] = Cell::Wall;
+    let perturbed = legacy.idx(1, 2);
+    legacy.f[perturbed] = equilibrium(1.1, 0.03, -0.01);
+    let post = legacy.f.clone();
+    let mut curved = legacy.clone();
+    let mut measured = vec![false; legacy.nx * legacy.ny];
+    measured[wall] = true;
+    let mut wall_velocities = vec![[0.0; 2]; legacy.nx * legacy.ny];
+    wall_velocities[wall] = [0.01, -0.02];
+    let halfway_links = d2q9_curved_wall_links(&legacy, 0.5, &wall_velocities);
+
+    let legacy_receipt = legacy.stream_from_with_moving_wall_momentum(
+        &post,
+        &measured,
+        &wall_velocities,
+        [1.25, -0.5],
+    );
+    let curved_receipt = curved.stream_from_with_curved_moving_wall_momentum(
+        &post,
+        &measured,
+        &halfway_links,
+        [1.25, -0.5],
+    );
+    assert_eq!(legacy_receipt, curved_receipt);
+    for (legacy_cell, curved_cell) in legacy.f.iter().zip(&curved.f) {
+        assert_eq!(legacy_cell.map(f64::to_bits), curved_cell.map(f64::to_bits));
+    }
+
+    let mut stationary_legacy = Grid::uniform(5, 5, 0.8);
+    let stationary_wall = stationary_legacy.idx(2, 2);
+    stationary_legacy.flags[stationary_wall] = Cell::Wall;
+    let stationary_post = stationary_legacy.f.clone();
+    let mut stationary_curved = stationary_legacy.clone();
+    let stationary_velocities = vec![[0.0; 2]; stationary_legacy.nx * stationary_legacy.ny];
+    let stationary_links = d2q9_curved_wall_links(&stationary_legacy, 0.5, &stationary_velocities);
+    let mut stationary_measured = vec![false; stationary_legacy.nx * stationary_legacy.ny];
+    stationary_measured[stationary_wall] = true;
+    let stationary_legacy_receipt = stationary_legacy.stream_from_with_moving_wall_momentum(
+        &stationary_post,
+        &stationary_measured,
+        &stationary_velocities,
+        [0.0; 2],
+    );
+    let stationary_curved_receipt = stationary_curved.stream_from_with_curved_moving_wall_momentum(
+        &stationary_post,
+        &stationary_measured,
+        &stationary_links,
+        [0.0; 2],
+    );
+    assert_eq!(stationary_legacy_receipt, stationary_curved_receipt);
+    for (legacy_cell, curved_cell) in stationary_legacy.f.iter().zip(&stationary_curved.f) {
+        assert_eq!(legacy_cell.map(f64::to_bits), curved_cell.map(f64::to_bits));
+    }
+
+    let mut first = Grid::uniform(7, 7, 0.8);
+    let replay_wall = first.idx(3, 3);
+    first.flags[replay_wall] = Cell::Wall;
+    let mut second = first.clone();
+    let mut replay_velocities = vec![[0.0; 2]; first.nx * first.ny];
+    replay_velocities[replay_wall] = [0.01, -0.015];
+    let replay_links = d2q9_curved_wall_links(&first, 0.25, &replay_velocities);
+    let mut replay_measured = vec![false; first.nx * first.ny];
+    replay_measured[replay_wall] = true;
+    let (mut first_scratch, mut second_scratch) = (Vec::new(), Vec::new());
+    for _ in 0..6 {
+        let first_receipt = first.step_with_curved_moving_wall_momentum(
+            &mut first_scratch,
+            &replay_measured,
+            &replay_links,
+            [3.0, 3.0],
+        );
+        let second_receipt = second.step_with_curved_moving_wall_momentum(
+            &mut second_scratch,
+            &replay_measured,
+            &replay_links,
+            [3.0, 3.0],
+        );
+        assert_eq!(first_receipt, second_receipt);
+        for (first_cell, second_cell) in first.f.iter().zip(&second.f) {
+            assert_eq!(first_cell.map(f64::to_bits), second_cell.map(f64::to_bits));
+        }
+    }
+}
+
+#[test]
+fn d2q9_curved_wall_admission_is_strict_and_atomic() {
+    let valid = CurvedMovingWallLink2::new(0.25, [0.01, -0.02]);
+    assert_eq!(valid.fraction().to_bits(), 0.25f64.to_bits());
+    assert_eq!(valid.wall_velocity(), [0.01, -0.02]);
+    for bad_fraction in [0.0, -0.1, 1.1, f64::NAN] {
+        assert!(
+            std::panic::catch_unwind(|| {
+                let _ = CurvedMovingWallLink2::new(bad_fraction, [0.0; 2]);
+            })
+            .is_err()
+        );
+    }
+    assert!(
+        std::panic::catch_unwind(|| {
+            let _ = CurvedMovingWallLink2::new(0.5, [0.2, 0.0]);
+        })
+        .is_err()
+    );
+
+    let mut grid = Grid::uniform(3, 1, 0.8);
+    grid.periodic_x = false;
+    grid.periodic_y = false;
+    grid.flags.fill(Cell::Gas);
+    let far = grid.idx(0, 0);
+    let fluid = grid.idx(1, 0);
+    let wall = grid.idx(2, 0);
+    grid.flags[fluid] = Cell::Fluid;
+    grid.flags[wall] = Cell::Wall;
+    let original = grid.f.clone();
+    let mut measured = vec![false; grid.nx * grid.ny];
+    measured[wall] = true;
+    let mut scratch = Vec::new();
+    let missing = vec![[None; Q]; grid.nx * grid.ny];
+    let missing_refusal = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ =
+            grid.step_with_curved_moving_wall_momentum(&mut scratch, &measured, &missing, [0.0; 2]);
+    }));
+    assert!(missing_refusal.is_err());
+    assert_eq!(grid.f, original);
+    assert!(scratch.is_empty());
+
+    let mut spurious = missing.clone();
+    spurious[fluid][3] = Some(CurvedMovingWallLink2::new(0.5, [0.0; 2]));
+    spurious[fluid][0] = Some(CurvedMovingWallLink2::new(0.5, [0.0; 2]));
+    let spurious_refusal = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = grid.step_with_curved_moving_wall_momentum(
+            &mut scratch,
+            &measured,
+            &spurious,
+            [0.0; 2],
+        );
+    }));
+    assert!(spurious_refusal.is_err());
+    assert_eq!(grid.f, original);
+    assert!(scratch.is_empty());
+
+    let mut short = missing.clone();
+    short[fluid][3] = Some(CurvedMovingWallLink2::new(0.25, [0.0; 2]));
+    let mut post = vec![[0.0; Q]; grid.nx * grid.ny];
+    post[fluid][1] = 0.25;
+    let no_far_refusal = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ =
+            grid.stream_from_with_curved_moving_wall_momentum(&post, &measured, &short, [0.0; 2]);
+    }));
+    assert!(no_far_refusal.is_err());
+    assert_eq!(grid.f, original);
+
+    grid.flags[far] = Cell::Fluid;
+    let original_with_far = grid.f.clone();
+    post[far][1] = f64::NAN;
+    let bad_far_refusal = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ =
+            grid.stream_from_with_curved_moving_wall_momentum(&post, &measured, &short, [0.0; 2]);
+    }));
+    assert!(bad_far_refusal.is_err());
+    assert_eq!(grid.f, original_with_far);
+
+    let mut long = short;
+    long[fluid][3] = Some(CurvedMovingWallLink2::new(0.75, [0.0; 2]));
+    post[far][1] = 0.125;
+    post[fluid][3] = f64::NAN;
+    let bad_local_refusal = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ =
+            grid.stream_from_with_curved_moving_wall_momentum(&post, &measured, &long, [0.0; 2]);
+    }));
+    assert!(bad_local_refusal.is_err());
+    assert_eq!(grid.f, original_with_far);
 }
 
 #[test]

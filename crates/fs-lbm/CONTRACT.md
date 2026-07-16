@@ -31,7 +31,12 @@ scaling plan) and deterministic `fs-math` primitives. Pure, deterministic
   moving-wall stream/step methods apply per-wall-cell halfway-bounce velocity
   corrections and return boundary-relative impulse, torque, work, resolved
   population momentum, and moving-mass transfer terms for an explicitly
-  selected wall subset. `core2::WallTopologyTransition2` and
+  selected wall subset. `core2::CurvedMovingWallLink2` plus the paired curved
+  moving-wall stream/step methods consume an exhaustive per-fluid-cell,
+  per-direction wall-link map and apply the linear Bouzidi-Firdaouss-Lallemand
+  off-lattice interpolation. Link-local velocity and the declared wall
+  fraction determine both the incoming population and the exact intersection
+  used for torque. `core2::WallTopologyTransition2` and
   `Grid::transition_wall_topology` atomically replace a fluid/wall cell mask,
   initialize newly uncovered cells from unique surviving one-ring donors, and
   receipt the exact active-population mass/momentum removal and insertion.
@@ -140,6 +145,19 @@ scaling plan) and deterministic `fs-math` primitives. Pure, deterministic
   The force convention is from Wen et al., *Galilean Invariant Fluid-Solid
   Interfacial Dynamics in Lattice Boltzmann Simulations* (2014,
   <https://arxiv.org/abs/1303.0625>).
+- D2Q9 curved moving-wall streaming uses the linear BFL rule with fraction
+  `r = distance(fluid center, wall intersection) / link length`. Writing
+  `delta = 2 w_q rho_post (c_q dot u_wall) / c_s^2`, the short-link branch is
+  `f_in = 2r f_out + (1-2r) f_far + delta` for `r < 1/2`; the long-link branch
+  is `f_in = (f_out + delta)/(2r) + (2r-1) f_opposite/(2r)` for `r > 1/2`.
+  At `r = 1/2` the established moving-halfway operation tree is used exactly.
+  The complete geometry map is deterministic and exhaustive: every actual
+  fluid-wall pull link has one entry and every other slot is empty. Short links
+  require the next lattice node away from the wall to be fluid or interface.
+  Receipt torque uses the declared intersection `x_fluid - r c_q`, while its
+  impulse/mass/work balance retains the existing boundary-relative convention.
+  The interpolation rule follows Bouzidi, Firdaouss, and Lallemand (2001,
+  <https://doi.org/10.1063/1.1399290>).
 - D2Q9 wall-topology replacement is a two-phase publication. Fresh cells use
   an equal-weight average of unique, surviving pre-transition one-ring fluid
   populations, relaxation times, and external forces; newly covered
@@ -190,6 +208,14 @@ moment origin. Every moving wall adjacent to fluid requires positive finite
 post-collision density, and every outgoing wall-link population must be finite.
 Request fields and post-collision state are admitted before streaming mutates
 the grid.
+D2Q9 curved moving-wall calls require a full-grid link map that is exactly
+populated on fluid/interface-to-wall pulls, fractions in `(0, 1]`, finite
+link-intersection velocities below the same low-Mach envelope, and a finite
+moment origin. Short-link interpolation requires an in-domain fluid/interface
+far donor with a finite outgoing population; long-link interpolation requires
+the finite local opposite population. Moving links require positive finite
+local post-collision density. Geometry is admitted before collision, and all
+required post-collision values are admitted before grid publication.
 D2Q9 wall-topology replacement currently requires a fluid/wall-only domain, a
 full-grid target mask that leaves at least one fluid cell, positive finite
 covered/donor population mass, finite donor populations/momentum/external
@@ -255,7 +281,11 @@ determinism, and pre-step mask refusal for D2Q9 momentum exchange; an
 independently enumerable moving-wall link that pins bounce correction,
 boundary-relative force, torque, work, and moving-mass balance; exact
 zero-velocity compatibility with the stationary API; moving-step bit replay;
-and fail-closed moving-field admission. A separate topology-transition fixture
+and fail-closed moving-field admission. Linear curved-wall fixtures independently
+pin both BFL branches, off-lattice torque arms, full receipt balance, exact
+halfway compatibility, replay, checked link construction, exhaustive geometry,
+far-donor requirements, finite-population admission, and atomic refusal. A
+separate topology-transition fixture
 pins unique-donor fresh-cell initialization, exact covered/fresh counts,
 mass/momentum delta closure, replay, idempotence, and atomic no-donor/mixed-domain
 refusal. The file also covers regularized x-face moment/stress reconstruction,
@@ -352,14 +382,18 @@ redistributed.
 - SDF voxelization is midpoint classification followed by stair-step halfway
   bounce-back. It is second-order for the represented flat, lattice-aligned
   halfway wall, not a second-order certificate against the original continuous
-  curved SDF. Interpolated Bouzidi-type curved boundaries remain staged.
+  curved SDF. D3Q19 interpolation remains staged; the separate D2Q9 linear BFL
+  path consumes caller-supplied link fractions and does not derive intersections
+  from an SDF or certify geometric/convergence order.
 - D2Q9 `MomentumExchange2` is a raw stationary-wall lattice impulse over the
   caller's exact cell mask. `MovingWallMomentumExchange2` adds a static-topology
-  halfway-wall velocity correction and boundary-relative force evaluation, but
-  it does not move cell topology or initialize newly uncovered fluid. Neither
+  boundary-relative force evaluation for both halfway and caller-described
+  linear-BFL links, but it does not move cell topology or initialize newly
+  uncovered fluid. Neither
   receipt applies physical-unit conversion, reference-area normalization,
-  curved-boundary interpolation, blockage correction, averaging, or
-  shedding-frequency estimation; therefore this is not yet the Re=100 cylinder
+  blockage correction, averaging, or shedding-frequency estimation; the BFL
+  path additionally has no quadratic/multireflection option or measured curved-
+  geometry convergence deck. Therefore this is not yet the Re=100 cylinder
   Cd/St validation. Boundary-relative exchange improves the force receipt's
   frame behavior; it is not by itself a proof that the full bounce-back solver
   is Galilean invariant.
