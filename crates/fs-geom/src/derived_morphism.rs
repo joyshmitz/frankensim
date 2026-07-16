@@ -22,11 +22,14 @@
 //! Two spans with the same outer endpoints can likewise be bound by one exact
 //! apex morphism and two exact leg-comparison packets, without promoting the
 //! resulting structural packet to a commuting 2-cell or span equivalence.
-//! The parallel-path packet can in turn bind the two middle routes of a proposed pullback
-//! square over two exact spans and projections, while categorical pullback and
-//! composed-correspondence authority remain absent. A further structural packet
+//! The parallel-path packet can in turn bind the two middle routes of a proposed
+//! pullback square over two exact spans and projections, while categorical
+//! pullback and composed-correspondence authority remain absent. A further structural packet
 //! can bind one proposed outer span only after recomposing and matching both
 //! outer legs exactly; it still grants no categorical span-composition authority.
+//! A generic inverse-law packet binds oppositely oriented morphisms, exact
+//! endpoint identities, both structural round-trip composites, and two nominal
+//! comparison children without promoting either morphism to an inverse.
 //! A standalone token binds a fixed-resolution quasi-isomorphism
 //! *candidate* to an exact refinement path and exact local presentations,
 //! without granting theorem authority. Another candidate retains exhaustive
@@ -80,6 +83,8 @@ pub const DERIVED_SPAN_MORPHISM_CANDIDATE_SCHEMA_VERSION_V1: u32 = 1;
 pub const DERIVED_SPAN_PULLBACK_SQUARE_CANDIDATE_SCHEMA_VERSION_V1: u32 = 1;
 /// Current schema for structural composed-span candidates.
 pub const DERIVED_SPAN_COMPOSITION_CANDIDATE_SCHEMA_VERSION_V1: u32 = 1;
+/// Current schema for generic structural inverse-law candidates.
+pub const DERIVED_MORPHISM_INVERSE_LAW_CANDIDATE_SCHEMA_VERSION_V1: u32 = 1;
 /// Current schema for direct chart-transition inverse-law candidate receipts.
 pub const DERIVED_CHART_TRANSITION_INVERSE_LAW_CANDIDATE_SCHEMA_VERSION_V1: u32 = 1;
 /// Current schema for fixed-resolution quasi-isomorphism candidate receipts.
@@ -118,6 +123,10 @@ const DERIVED_SPAN_PULLBACK_SQUARE_CANDIDATE_IDENTITY_LIMITS_V1: CanonicalLimits
 // outer-span child, and two six-field derived outer-route children.
 const DERIVED_SPAN_COMPOSITION_CANDIDATE_IDENTITY_LIMITS_V1: CanonicalLimits =
     CanonicalLimits::new(1 << 17, 1 << 16, 84, 1 << 11, 4096);
+// Eight parent fields, two six-field structural-morphism children, and two
+// complete 19-field parallel-comparison child schema trees.
+const DERIVED_MORPHISM_INVERSE_LAW_CANDIDATE_IDENTITY_LIMITS_V1: CanonicalLimits =
+    CanonicalLimits::new(1 << 17, 1 << 16, 58, 1 << 11, 4096);
 // Ten parent fields plus two six-field structural-morphism child schemas.
 const DERIVED_CHART_TRANSITION_INVERSE_LAW_CANDIDATE_IDENTITY_LIMITS_V1: CanonicalLimits =
     CanonicalLimits::new(1 << 17, 1 << 16, 22, 1 << 11, 4096);
@@ -414,6 +423,37 @@ impl CanonicalSchema for DerivedSpanCompositionCandidateIdentitySchemaV1 {
 pub type DerivedSpanCompositionCandidateIdV1 =
     EvidenceNodeId<DerivedSpanCompositionCandidateIdentitySchemaV1>;
 
+/// Domain-separated identity for one generic structural inverse-law candidate.
+pub enum DerivedMorphismInverseLawCandidateIdentitySchemaV1 {}
+
+impl CanonicalSchema for DerivedMorphismInverseLawCandidateIdentitySchemaV1 {
+    const DOMAIN: &'static str =
+        "org.frankensim.fs-geom.structural-morphism-inverse-law-candidate.v1";
+    const NAME: &'static str = "structural-morphism-inverse-law-candidate";
+    const VERSION: u32 = DERIVED_MORPHISM_INVERSE_LAW_CANDIDATE_SCHEMA_VERSION_V1;
+    const CONTEXT: &'static str = "exact reversed geometry endpoints, ordered forward and reverse morphisms, two exact ordered round-trip comparison children transitively binding derived identities and composites, one nominal inverse-law declaration, and an explicit no-authority boundary";
+    const FIELDS: &'static [FieldSpec] = &[
+        FieldSpec::required("source-geometry", WireType::Bytes),
+        FieldSpec::required("target-geometry", WireType::Bytes),
+        FieldSpec::child_of("forward-morphism", &DERIVED_MORPHISM_CHILD_V1),
+        FieldSpec::child_of("reverse-morphism", &DERIVED_MORPHISM_CHILD_V1),
+        FieldSpec::child_of(
+            "source-round-trip-comparison",
+            &DERIVED_PARALLEL_MORPHISM_COMPARISON_CANDIDATE_CHILD_V1,
+        ),
+        FieldSpec::child_of(
+            "target-round-trip-comparison",
+            &DERIVED_PARALLEL_MORPHISM_COMPARISON_CANDIDATE_CHILD_V1,
+        ),
+        FieldSpec::required("nominal-inverse-law-declaration", WireType::Bytes),
+        FieldSpec::required("no-authority", WireType::Bytes),
+    ];
+}
+
+/// Typed identity of one generic structural inverse-law candidate.
+pub type DerivedMorphismInverseLawCandidateIdV1 =
+    EvidenceNodeId<DerivedMorphismInverseLawCandidateIdentitySchemaV1>;
+
 /// Domain-separated identity for one structural direct chart-transition pair.
 pub enum DerivedChartTransitionInverseLawCandidateIdentitySchemaV1 {}
 
@@ -596,6 +636,27 @@ pub struct DerivedChartRoundTripDeclarationIdV1([u8; 32]);
 
 impl DerivedChartRoundTripDeclarationIdV1 {
     /// Construct a nominal round-trip declaration from exact bytes.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Borrow the exact identity bytes.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+/// Nominal declaration that two structural round trips satisfy inverse laws.
+///
+/// These bytes do not assert equality with either identity, execute either
+/// morphism, or establish an inverse, isomorphism, or equivalence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DerivedMorphismInverseLawDeclarationIdV1([u8; 32]);
+
+impl DerivedMorphismInverseLawDeclarationIdV1 {
+    /// Construct a nominal inverse-law declaration from exact bytes.
     #[must_use]
     pub const fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
@@ -1150,6 +1211,30 @@ pub struct DerivedSpanCompositionCandidateIrV1 {
     /// Nominal declaration of correspondence composition for independent checking.
     pub nominal_composition: DerivedSpanCompositionDeclarationIdV1,
     /// Explicit denial of pullback, composition, coherence, and semantic authority.
+    pub no_authority: DerivedNoClaimIdV1,
+}
+
+/// Versioned generic structural inverse-law request.
+///
+/// Exact endpoint identities are derived from supplied admitted geometries,
+/// and both round-trip composites are recomputed. The comparison children bind
+/// those paths transitively but remain non-authoritative, so this packet does
+/// not promote the forward or reverse morphism to an inverse or equivalence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DerivedMorphismInverseLawCandidateIrV1 {
+    /// Decoded schema version.
+    pub schema_version: u32,
+    /// Exact structural morphism `source -> target`.
+    pub forward: DerivedMorphismIdV1,
+    /// Exact structural morphism `target -> source`.
+    pub reverse: DerivedMorphismIdV1,
+    /// Exact ordered comparison `source_identity ~ forward;reverse`.
+    pub source_round_trip_comparison: DerivedParallelMorphismComparisonCandidateIdV1,
+    /// Exact ordered comparison `target_identity ~ reverse;forward`.
+    pub target_round_trip_comparison: DerivedParallelMorphismComparisonCandidateIdV1,
+    /// Nominal aggregate inverse-law declaration for independent checking.
+    pub nominal_inverse_law: DerivedMorphismInverseLawDeclarationIdV1,
+    /// Explicit denial of path equality, inverse, isomorphism, and equivalence authority.
     pub no_authority: DerivedNoClaimIdV1,
 }
 
@@ -2372,6 +2457,72 @@ impl fmt::Display for DerivedSpanCorrespondenceErrorV1 {
 
 impl core::error::Error for DerivedSpanCorrespondenceErrorV1 {}
 
+/// Structured refusal from generic structural inverse-law admission.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DerivedMorphismInverseLawCandidateErrorV1 {
+    /// Unsupported decoded schema version.
+    UnsupportedSchemaVersion {
+        /// Supplied version.
+        found: u32,
+        /// Sole supported version.
+        supported: u32,
+    },
+    /// A required child, declaration, or no-authority ID is zero.
+    MissingIdentity {
+        /// Stable identity field.
+        field: &'static str,
+    },
+    /// A raw child ID does not name the supplied sealed child.
+    ChildIdentityMismatch {
+        /// Stable direct-child field.
+        field: &'static str,
+    },
+    /// Forward and reverse morphisms do not have exactly reversed endpoints.
+    EndpointMismatch {
+        /// Stable failed endpoint relation.
+        field: &'static str,
+    },
+    /// One exact endpoint identity could not be constructed.
+    IdentityConstructionRefused {
+        /// Stable source/target identity field.
+        field: &'static str,
+        /// Underlying structural morphism refusal.
+        cause: DerivedMorphismErrorV1,
+    },
+    /// One structural round-trip path could not compose.
+    RoundTripCompositionRefused {
+        /// Stable source/target round-trip field.
+        field: &'static str,
+        /// Underlying structural morphism refusal.
+        cause: DerivedMorphismErrorV1,
+    },
+    /// One round-trip comparison has the wrong endpoint object.
+    ComparisonEndpointMismatch {
+        /// Stable source/target comparison endpoint relation.
+        field: &'static str,
+    },
+    /// One comparison does not retain the exact ordered identity and round-trip paths.
+    ComparisonRouteIdentityMismatch {
+        /// Stable source/target comparison path relation.
+        field: &'static str,
+    },
+    /// Cooperative cancellation was observed before publication.
+    Cancelled {
+        /// Stable admission stage.
+        stage: &'static str,
+    },
+    /// Canonical identity construction failed.
+    Identity(CanonicalError),
+}
+
+impl fmt::Display for DerivedMorphismInverseLawCandidateErrorV1 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "morphism inverse-law candidate refused: {self:?}")
+    }
+}
+
+impl core::error::Error for DerivedMorphismInverseLawCandidateErrorV1 {}
+
 /// Structured refusal from direct chart-transition inverse-law candidate admission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DerivedChartTransitionInverseLawCandidateErrorV1 {
@@ -3575,6 +3726,122 @@ impl AdmittedDerivedSpanCompositionCandidateV1 {
     /// Canonical receipt and construction limits.
     #[must_use]
     pub const fn identity_receipt(&self) -> IdentityReceipt<DerivedSpanCompositionCandidateIdV1> {
+        self.receipt
+    }
+}
+
+/// Sealed generic structural inverse-law candidate.
+///
+/// The token retains exact oppositely oriented morphisms, canonically derived
+/// endpoint identities, both recomposed round trips, and exact ordered
+/// comparison children. It proves no path equality and exposes no inverse,
+/// isomorphism, equivalence, execution, evidence-cycle, simplification,
+/// naturality, coherence, or physical-correspondence authority.
+#[derive(Debug, PartialEq, Eq)]
+pub struct AdmittedDerivedMorphismInverseLawCandidateV1 {
+    source: DerivedGeometryIdV1,
+    target: DerivedGeometryIdV1,
+    forward: DerivedMorphismIdV1,
+    reverse: DerivedMorphismIdV1,
+    source_identity: DerivedMorphismIdV1,
+    target_identity: DerivedMorphismIdV1,
+    source_round_trip: DerivedMorphismIdV1,
+    target_round_trip: DerivedMorphismIdV1,
+    source_round_trip_comparison: DerivedParallelMorphismComparisonCandidateIdV1,
+    target_round_trip_comparison: DerivedParallelMorphismComparisonCandidateIdV1,
+    nominal_inverse_law: DerivedMorphismInverseLawDeclarationIdV1,
+    no_authority: DerivedNoClaimIdV1,
+    receipt: IdentityReceipt<DerivedMorphismInverseLawCandidateIdV1>,
+}
+
+impl AdmittedDerivedMorphismInverseLawCandidateV1 {
+    /// Exact source geometry of the forward morphism.
+    #[must_use]
+    pub const fn source(&self) -> DerivedGeometryIdV1 {
+        self.source
+    }
+
+    /// Exact target geometry of the forward morphism.
+    #[must_use]
+    pub const fn target(&self) -> DerivedGeometryIdV1 {
+        self.target
+    }
+
+    /// Exact forward structural morphism.
+    #[must_use]
+    pub const fn forward(&self) -> DerivedMorphismIdV1 {
+        self.forward
+    }
+
+    /// Exact reverse structural morphism.
+    #[must_use]
+    pub const fn reverse(&self) -> DerivedMorphismIdV1 {
+        self.reverse
+    }
+
+    /// Canonically derived identity on the source geometry.
+    #[must_use]
+    pub const fn source_identity(&self) -> DerivedMorphismIdV1 {
+        self.source_identity
+    }
+
+    /// Canonically derived identity on the target geometry.
+    #[must_use]
+    pub const fn target_identity(&self) -> DerivedMorphismIdV1 {
+        self.target_identity
+    }
+
+    /// Exact recomposed route `forward;reverse` on the source geometry.
+    #[must_use]
+    pub const fn source_round_trip(&self) -> DerivedMorphismIdV1 {
+        self.source_round_trip
+    }
+
+    /// Exact recomposed route `reverse;forward` on the target geometry.
+    #[must_use]
+    pub const fn target_round_trip(&self) -> DerivedMorphismIdV1 {
+        self.target_round_trip
+    }
+
+    /// Exact ordered source round-trip comparison child.
+    #[must_use]
+    pub const fn source_round_trip_comparison(
+        &self,
+    ) -> DerivedParallelMorphismComparisonCandidateIdV1 {
+        self.source_round_trip_comparison
+    }
+
+    /// Exact ordered target round-trip comparison child.
+    #[must_use]
+    pub const fn target_round_trip_comparison(
+        &self,
+    ) -> DerivedParallelMorphismComparisonCandidateIdV1 {
+        self.target_round_trip_comparison
+    }
+
+    /// Nominal inverse-law declaration; not authenticated here.
+    #[must_use]
+    pub const fn nominal_inverse_law(&self) -> DerivedMorphismInverseLawDeclarationIdV1 {
+        self.nominal_inverse_law
+    }
+
+    /// Explicit artifact denying inverse and equivalence authority.
+    #[must_use]
+    pub const fn no_authority(&self) -> DerivedNoClaimIdV1 {
+        self.no_authority
+    }
+
+    /// Typed structural inverse-law candidate identity.
+    #[must_use]
+    pub const fn id(&self) -> DerivedMorphismInverseLawCandidateIdV1 {
+        self.receipt.id()
+    }
+
+    /// Canonical receipt and construction limits.
+    #[must_use]
+    pub const fn identity_receipt(
+        &self,
+    ) -> IdentityReceipt<DerivedMorphismInverseLawCandidateIdV1> {
         self.receipt
     }
 }
@@ -7771,6 +8038,273 @@ pub fn admit_derived_span_composition_candidate_v1(
     })
 }
 
+fn morphism_inverse_law_candidate_receipt(
+    ir: &DerivedMorphismInverseLawCandidateIrV1,
+    forward: &AdmittedDerivedMorphismV1,
+    cx: &Cx<'_>,
+) -> Result<
+    IdentityReceipt<DerivedMorphismInverseLawCandidateIdV1>,
+    DerivedMorphismInverseLawCandidateErrorV1,
+> {
+    let map_identity_error = |error| match error {
+        CanonicalError::Cancelled { .. } => DerivedMorphismInverseLawCandidateErrorV1::Cancelled {
+            stage: "morphism-inverse-law-identity",
+        },
+        other => DerivedMorphismInverseLawCandidateErrorV1::Identity(other),
+    };
+    CanonicalEncoder::<DerivedMorphismInverseLawCandidateIdV1, _>::new(
+        DERIVED_MORPHISM_INVERSE_LAW_CANDIDATE_IDENTITY_LIMITS_V1,
+        || cx.checkpoint().is_err(),
+    )
+    .map_err(map_identity_error)?
+    .bytes(
+        Field::new(0, "source-geometry"),
+        forward.source().as_bytes(),
+    )
+    .and_then(|encoder| {
+        encoder.bytes(
+            Field::new(1, "target-geometry"),
+            forward.target().as_bytes(),
+        )
+    })
+    .and_then(|encoder| encoder.child(Field::new(2, "forward-morphism"), ir.forward))
+    .and_then(|encoder| encoder.child(Field::new(3, "reverse-morphism"), ir.reverse))
+    .and_then(|encoder| {
+        encoder.child(
+            Field::new(4, "source-round-trip-comparison"),
+            ir.source_round_trip_comparison,
+        )
+    })
+    .and_then(|encoder| {
+        encoder.child(
+            Field::new(5, "target-round-trip-comparison"),
+            ir.target_round_trip_comparison,
+        )
+    })
+    .and_then(|encoder| {
+        encoder.bytes(
+            Field::new(6, "nominal-inverse-law-declaration"),
+            ir.nominal_inverse_law.as_bytes(),
+        )
+    })
+    .and_then(|encoder| encoder.bytes(Field::new(7, "no-authority"), ir.no_authority.as_bytes()))
+    .and_then(|encoder| encoder.finish())
+    .map_err(map_identity_error)
+}
+
+/// Admit one generic structural inverse-law candidate.
+///
+/// The supplied geometries fix exact source and target objects. Forward and
+/// reverse morphisms must connect them in opposite directions. Admission then
+/// derives both canonical identities, recomposes `forward;reverse` and
+/// `reverse;forward`, and requires exact ordered comparison children of each
+/// identity against its corresponding round trip.
+///
+/// Exact structural wiring does not prove either comparison relation. This
+/// token grants no left/right inverse law, path equality, isomorphism,
+/// equivalence, homotopy equivalence, quasi-isomorphism, execution,
+/// evidence-cycle identity, evidence preservation, naturality, simplification,
+/// coherence, or physical-correspondence authority.
+///
+/// # Errors
+/// Returns a typed refusal for schema, zero identity, raw/sealed child mismatch,
+/// geometry or reversed-endpoint mismatch, identity construction, round-trip
+/// composition, comparison endpoint/order, cancellation, or canonical identity
+/// defects. No partial token escapes.
+#[must_use = "a structural inverse-law packet grants no inverse authority"]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // One bounded transitive-child audit.
+pub fn admit_derived_morphism_inverse_law_candidate_v1(
+    ir: &DerivedMorphismInverseLawCandidateIrV1,
+    source_geometry: &AdmittedDerivedGeometryV1,
+    target_geometry: &AdmittedDerivedGeometryV1,
+    forward: &AdmittedDerivedMorphismV1,
+    reverse: &AdmittedDerivedMorphismV1,
+    source_round_trip_comparison: &AdmittedDerivedParallelMorphismComparisonCandidateV1,
+    target_round_trip_comparison: &AdmittedDerivedParallelMorphismComparisonCandidateV1,
+    cx: &Cx<'_>,
+) -> Result<AdmittedDerivedMorphismInverseLawCandidateV1, DerivedMorphismInverseLawCandidateErrorV1>
+{
+    if cx.checkpoint().is_err() {
+        return Err(DerivedMorphismInverseLawCandidateErrorV1::Cancelled {
+            stage: "morphism-inverse-law-entry",
+        });
+    }
+    if ir.schema_version != DERIVED_MORPHISM_INVERSE_LAW_CANDIDATE_SCHEMA_VERSION_V1 {
+        return Err(
+            DerivedMorphismInverseLawCandidateErrorV1::UnsupportedSchemaVersion {
+                found: ir.schema_version,
+                supported: DERIVED_MORPHISM_INVERSE_LAW_CANDIDATE_SCHEMA_VERSION_V1,
+            },
+        );
+    }
+    for (bytes, field) in [
+        (ir.forward.as_bytes(), "forward-morphism"),
+        (ir.reverse.as_bytes(), "reverse-morphism"),
+        (
+            ir.source_round_trip_comparison.as_bytes(),
+            "source-round-trip-comparison",
+        ),
+        (
+            ir.target_round_trip_comparison.as_bytes(),
+            "target-round-trip-comparison",
+        ),
+        (
+            ir.nominal_inverse_law.as_bytes(),
+            "nominal-inverse-law-declaration",
+        ),
+        (ir.no_authority.as_bytes(), "no-authority"),
+    ] {
+        if is_zero(bytes) {
+            return Err(DerivedMorphismInverseLawCandidateErrorV1::MissingIdentity { field });
+        }
+    }
+    for (matches, field) in [
+        (ir.forward == forward.id(), "forward-morphism"),
+        (ir.reverse == reverse.id(), "reverse-morphism"),
+        (
+            ir.source_round_trip_comparison == source_round_trip_comparison.id(),
+            "source-round-trip-comparison",
+        ),
+        (
+            ir.target_round_trip_comparison == target_round_trip_comparison.id(),
+            "target-round-trip-comparison",
+        ),
+    ] {
+        if !matches {
+            return Err(DerivedMorphismInverseLawCandidateErrorV1::ChildIdentityMismatch { field });
+        }
+    }
+    for (matches, field) in [
+        (
+            forward.source() == source_geometry.id(),
+            "forward-source-geometry",
+        ),
+        (
+            forward.target() == target_geometry.id(),
+            "forward-target-geometry",
+        ),
+        (
+            reverse.source() == target_geometry.id(),
+            "reverse-source-geometry",
+        ),
+        (
+            reverse.target() == source_geometry.id(),
+            "reverse-target-geometry",
+        ),
+    ] {
+        if !matches {
+            return Err(DerivedMorphismInverseLawCandidateErrorV1::EndpointMismatch { field });
+        }
+    }
+
+    let construct_identity =
+        |field: &'static str,
+         geometry: &AdmittedDerivedGeometryV1|
+         -> Result<AdmittedDerivedMorphismV1, DerivedMorphismInverseLawCandidateErrorV1> {
+            identity_derived_morphism_v1(geometry, cx).map_err(|cause| match cause {
+                DerivedMorphismErrorV1::Cancelled { .. } => {
+                    DerivedMorphismInverseLawCandidateErrorV1::Cancelled { stage: field }
+                }
+                other => DerivedMorphismInverseLawCandidateErrorV1::IdentityConstructionRefused {
+                    field,
+                    cause: other,
+                },
+            })
+        };
+    let source_identity = construct_identity("source-identity-construction", source_geometry)?;
+    let target_identity = construct_identity("target-identity-construction", target_geometry)?;
+
+    let compose_round_trip =
+        |field: &'static str,
+         first: &AdmittedDerivedMorphismV1,
+         second: &AdmittedDerivedMorphismV1|
+         -> Result<AdmittedDerivedMorphismV1, DerivedMorphismInverseLawCandidateErrorV1> {
+            compose_derived_morphisms_v1(first, second, cx).map_err(|cause| match cause {
+                DerivedMorphismErrorV1::Cancelled { .. } => {
+                    DerivedMorphismInverseLawCandidateErrorV1::Cancelled { stage: field }
+                }
+                other => DerivedMorphismInverseLawCandidateErrorV1::RoundTripCompositionRefused {
+                    field,
+                    cause: other,
+                },
+            })
+        };
+    let source_round_trip = compose_round_trip("source-round-trip-composition", forward, reverse)?;
+    let target_round_trip = compose_round_trip("target-round-trip-composition", reverse, forward)?;
+
+    for (matches, field) in [
+        (
+            source_round_trip_comparison.source() == source_geometry.id(),
+            "source-comparison-source",
+        ),
+        (
+            source_round_trip_comparison.target() == source_geometry.id(),
+            "source-comparison-target",
+        ),
+        (
+            target_round_trip_comparison.source() == target_geometry.id(),
+            "target-comparison-source",
+        ),
+        (
+            target_round_trip_comparison.target() == target_geometry.id(),
+            "target-comparison-target",
+        ),
+    ] {
+        if !matches {
+            return Err(
+                DerivedMorphismInverseLawCandidateErrorV1::ComparisonEndpointMismatch { field },
+            );
+        }
+    }
+    for (matches, field) in [
+        (
+            source_round_trip_comparison.left() == source_identity.id(),
+            "source-comparison-identity",
+        ),
+        (
+            source_round_trip_comparison.right() == source_round_trip.id(),
+            "source-comparison-round-trip",
+        ),
+        (
+            target_round_trip_comparison.left() == target_identity.id(),
+            "target-comparison-identity",
+        ),
+        (
+            target_round_trip_comparison.right() == target_round_trip.id(),
+            "target-comparison-round-trip",
+        ),
+    ] {
+        if !matches {
+            return Err(
+                DerivedMorphismInverseLawCandidateErrorV1::ComparisonRouteIdentityMismatch {
+                    field,
+                },
+            );
+        }
+    }
+    let receipt = morphism_inverse_law_candidate_receipt(ir, forward, cx)?;
+    if cx.checkpoint().is_err() {
+        return Err(DerivedMorphismInverseLawCandidateErrorV1::Cancelled {
+            stage: "morphism-inverse-law-publication",
+        });
+    }
+    Ok(AdmittedDerivedMorphismInverseLawCandidateV1 {
+        source: forward.source(),
+        target: forward.target(),
+        forward: ir.forward,
+        reverse: ir.reverse,
+        source_identity: source_identity.id(),
+        target_identity: target_identity.id(),
+        source_round_trip: source_round_trip.id(),
+        target_round_trip: target_round_trip.id(),
+        source_round_trip_comparison: ir.source_round_trip_comparison,
+        target_round_trip_comparison: ir.target_round_trip_comparison,
+        nominal_inverse_law: ir.nominal_inverse_law,
+        no_authority: ir.no_authority,
+        receipt,
+    })
+}
+
 fn direct_declared_chart_map(
     field: &'static str,
     morphism: &AdmittedDerivedMorphismV1,
@@ -10008,6 +10542,29 @@ mod tests {
         .expect("valid strict morphism")
     }
 
+    fn admit_strict_between_admitted(
+        source: &AdmittedDerivedGeometryV1,
+        target: &AdmittedDerivedGeometryV1,
+        witness: u8,
+        input_rank: ColorRank,
+        output_rank: ColorRank,
+        cx: &Cx<'_>,
+    ) -> AdmittedDerivedMorphismV1 {
+        admit_derived_morphism_v1(
+            strict_ir(
+                GeometryEndpointV1::from_admitted(source),
+                GeometryEndpointV1::from_admitted(target),
+                witness,
+                input_rank,
+                output_rank,
+            ),
+            source,
+            target,
+            cx,
+        )
+        .expect("valid strict morphism between admitted geometries")
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn admit_chart_map(
         source: GeometryEndpointV1<'_>,
@@ -11517,6 +12074,132 @@ mod tests {
             &fixture.target_right_leg,
             &fixture.left_leg_comparison,
             &fixture.right_leg_comparison,
+            cx,
+        )
+    }
+
+    struct MorphismInverseLawCandidateFixtureV1 {
+        source: AdmittedDerivedGeometryV1,
+        target: AdmittedDerivedGeometryV1,
+        forward: AdmittedDerivedMorphismV1,
+        reverse: AdmittedDerivedMorphismV1,
+        source_identity: AdmittedDerivedMorphismV1,
+        target_identity: AdmittedDerivedMorphismV1,
+        source_round_trip: AdmittedDerivedMorphismV1,
+        target_round_trip: AdmittedDerivedMorphismV1,
+        source_round_trip_comparison: AdmittedDerivedParallelMorphismComparisonCandidateV1,
+        target_round_trip_comparison: AdmittedDerivedParallelMorphismComparisonCandidateV1,
+        ir: DerivedMorphismInverseLawCandidateIrV1,
+    }
+
+    #[allow(clippy::too_many_lines)] // Builds both exact identities, composites, and comparisons.
+    fn morphism_inverse_law_candidate_fixture(cx: &Cx<'_>) -> MorphismInverseLawCandidateFixtureV1 {
+        let source = admit_derived_geometry_v1(
+            fixed_resolution_geometry_ir(70, 80, 90, 1),
+            DerivedAdmissionBudgetV1::STANDARD,
+            cx,
+        )
+        .expect("valid inverse-law source geometry");
+        let target = admit_derived_geometry_v1(
+            fixed_resolution_geometry_ir(73, 83, 93, 2),
+            DerivedAdmissionBudgetV1::STANDARD,
+            cx,
+        )
+        .expect("valid inverse-law target geometry");
+        let forward = admit_strict_between_admitted(
+            &source,
+            &target,
+            35,
+            ColorRank::Validated,
+            ColorRank::Validated,
+            cx,
+        );
+        let reverse = admit_strict_between_admitted(
+            &target,
+            &source,
+            36,
+            ColorRank::Validated,
+            ColorRank::Validated,
+            cx,
+        );
+        let source_identity =
+            identity_derived_morphism_v1(&source, cx).expect("exact source identity");
+        let target_identity =
+            identity_derived_morphism_v1(&target, cx).expect("exact target identity");
+        let source_round_trip =
+            compose_derived_morphisms_v1(&forward, &reverse, cx).expect("valid source round trip");
+        let target_round_trip =
+            compose_derived_morphisms_v1(&reverse, &forward, cx).expect("valid target round trip");
+        let source_comparison_ir = DerivedParallelMorphismComparisonCandidateIrV1 {
+            schema_version: DERIVED_PARALLEL_MORPHISM_COMPARISON_CANDIDATE_SCHEMA_VERSION_V1,
+            left: source_identity.id(),
+            right: source_round_trip.id(),
+            comparison_scope: DerivedMorphismComparisonScopeIdV1::from_bytes([37; 32]),
+            nominal_relation: DerivedParallelMorphismRelationDeclarationIdV1::from_bytes([38; 32]),
+            no_authority: DerivedNoClaimIdV1::from_bytes([39; 32]),
+        };
+        let source_round_trip_comparison = admit_derived_parallel_morphism_comparison_candidate_v1(
+            &source_comparison_ir,
+            &source_identity,
+            &source_round_trip,
+            cx,
+        )
+        .expect("valid nominal source round-trip comparison");
+        let target_comparison_ir = DerivedParallelMorphismComparisonCandidateIrV1 {
+            left: target_identity.id(),
+            right: target_round_trip.id(),
+            comparison_scope: DerivedMorphismComparisonScopeIdV1::from_bytes([40; 32]),
+            nominal_relation: DerivedParallelMorphismRelationDeclarationIdV1::from_bytes([41; 32]),
+            no_authority: DerivedNoClaimIdV1::from_bytes([42; 32]),
+            ..source_comparison_ir
+        };
+        let target_round_trip_comparison = admit_derived_parallel_morphism_comparison_candidate_v1(
+            &target_comparison_ir,
+            &target_identity,
+            &target_round_trip,
+            cx,
+        )
+        .expect("valid nominal target round-trip comparison");
+        let ir = DerivedMorphismInverseLawCandidateIrV1 {
+            schema_version: DERIVED_MORPHISM_INVERSE_LAW_CANDIDATE_SCHEMA_VERSION_V1,
+            forward: forward.id(),
+            reverse: reverse.id(),
+            source_round_trip_comparison: source_round_trip_comparison.id(),
+            target_round_trip_comparison: target_round_trip_comparison.id(),
+            nominal_inverse_law: DerivedMorphismInverseLawDeclarationIdV1::from_bytes([43; 32]),
+            no_authority: DerivedNoClaimIdV1::from_bytes([44; 32]),
+        };
+        MorphismInverseLawCandidateFixtureV1 {
+            source,
+            target,
+            forward,
+            reverse,
+            source_identity,
+            target_identity,
+            source_round_trip,
+            target_round_trip,
+            source_round_trip_comparison,
+            target_round_trip_comparison,
+            ir,
+        }
+    }
+
+    fn admit_morphism_inverse_law_with_ir(
+        fixture: &MorphismInverseLawCandidateFixtureV1,
+        ir: &DerivedMorphismInverseLawCandidateIrV1,
+        cx: &Cx<'_>,
+    ) -> Result<
+        AdmittedDerivedMorphismInverseLawCandidateV1,
+        DerivedMorphismInverseLawCandidateErrorV1,
+    > {
+        admit_derived_morphism_inverse_law_candidate_v1(
+            ir,
+            &fixture.source,
+            &fixture.target,
+            &fixture.forward,
+            &fixture.reverse,
+            &fixture.source_round_trip_comparison,
+            &fixture.target_round_trip_comparison,
             cx,
         )
     }
@@ -14628,6 +15311,542 @@ mod tests {
                 admit_span_morphism_with_ir(&fixture, &fixture.ir, cx),
                 Err(DerivedSpanMorphismCandidateErrorV1::Cancelled {
                     stage: "span-morphism-entry",
+                })
+            );
+        });
+    }
+
+    #[test]
+    fn morphism_inverse_law_candidates_bind_exact_derived_round_trips() {
+        assert_ne!(
+            <DerivedMorphismInverseLawCandidateIdentitySchemaV1 as CanonicalSchema>::DOMAIN,
+            <DerivedMorphismIdentitySchemaV1 as CanonicalSchema>::DOMAIN,
+        );
+        assert_ne!(
+            <DerivedMorphismInverseLawCandidateIdentitySchemaV1 as CanonicalSchema>::DOMAIN,
+            <DerivedChartTransitionInverseLawCandidateIdentitySchemaV1 as CanonicalSchema>::DOMAIN,
+        );
+        assert_eq!(
+            <DerivedMorphismInverseLawCandidateIdentitySchemaV1 as CanonicalSchema>::FIELDS.len(),
+            8,
+        );
+        assert_eq!(
+            DERIVED_MORPHISM_INVERSE_LAW_CANDIDATE_IDENTITY_LIMITS_V1.max_fields(),
+            58,
+        );
+
+        with_cx(false, |cx| {
+            let fixture = morphism_inverse_law_candidate_fixture(cx);
+            let first = admit_morphism_inverse_law_with_ir(&fixture, &fixture.ir, cx)
+                .expect("valid generic structural inverse-law candidate");
+            let replay = admit_morphism_inverse_law_with_ir(&fixture, &fixture.ir, cx)
+                .expect("deterministic inverse-law replay");
+
+            assert_eq!(first, replay);
+            assert_eq!(first.source(), fixture.source.id());
+            assert_eq!(first.target(), fixture.target.id());
+            assert_eq!(first.forward(), fixture.forward.id());
+            assert_eq!(first.reverse(), fixture.reverse.id());
+            assert_eq!(first.source_identity(), fixture.source_identity.id());
+            assert_eq!(first.target_identity(), fixture.target_identity.id());
+            assert_eq!(first.source_round_trip(), fixture.source_round_trip.id());
+            assert_eq!(first.target_round_trip(), fixture.target_round_trip.id());
+            assert_eq!(
+                first.source_round_trip_comparison(),
+                fixture.source_round_trip_comparison.id(),
+            );
+            assert_eq!(
+                first.target_round_trip_comparison(),
+                fixture.target_round_trip_comparison.id(),
+            );
+            assert_eq!(first.nominal_inverse_law(), fixture.ir.nominal_inverse_law);
+            assert_eq!(first.no_authority(), fixture.ir.no_authority);
+            assert_eq!(first.id(), first.identity_receipt().id());
+            assert_ne!(
+                fixture.source_round_trip_comparison.comparison_scope(),
+                fixture.target_round_trip_comparison.comparison_scope(),
+                "the parent makes no false common-scope claim",
+            );
+        });
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // Eight-field receipt plus four recursive child schemas.
+    fn morphism_inverse_law_receipt_binds_every_selector_and_child_order() {
+        with_cx(false, |cx| {
+            let fixture = morphism_inverse_law_candidate_fixture(cx);
+            let baseline =
+                morphism_inverse_law_candidate_receipt(&fixture.ir, &fixture.forward, cx)
+                    .expect("baseline inverse-law receipt")
+                    .id();
+
+            macro_rules! assert_ir_field_moves_identity {
+                ($field:ident, $value:expr) => {{
+                    let mut changed = fixture.ir;
+                    changed.$field = $value;
+                    let changed =
+                        morphism_inverse_law_candidate_receipt(&changed, &fixture.forward, cx)
+                            .expect("changed inverse-law receipt")
+                            .id();
+                    assert_ne!(baseline, changed, stringify!($field));
+                }};
+            }
+
+            assert_ir_field_moves_identity!(
+                forward,
+                DerivedMorphismIdV1::parse_slice(&[45; 32]).expect("nonzero changed forward")
+            );
+            assert_ir_field_moves_identity!(
+                reverse,
+                DerivedMorphismIdV1::parse_slice(&[46; 32]).expect("nonzero changed reverse")
+            );
+            assert_ir_field_moves_identity!(
+                source_round_trip_comparison,
+                DerivedParallelMorphismComparisonCandidateIdV1::parse_slice(&[47; 32])
+                    .expect("nonzero changed source comparison")
+            );
+            assert_ir_field_moves_identity!(
+                target_round_trip_comparison,
+                DerivedParallelMorphismComparisonCandidateIdV1::parse_slice(&[48; 32])
+                    .expect("nonzero changed target comparison")
+            );
+            assert_ir_field_moves_identity!(
+                nominal_inverse_law,
+                DerivedMorphismInverseLawDeclarationIdV1::from_bytes([49; 32])
+            );
+            assert_ir_field_moves_identity!(no_authority, DerivedNoClaimIdV1::from_bytes([50; 32]));
+
+            let changed_source = admit_strict(
+                endpoint(51),
+                GeometryEndpointV1::from_admitted(&fixture.target),
+                52,
+                ColorRank::Validated,
+                ColorRank::Validated,
+                cx,
+            );
+            let changed_source_id =
+                morphism_inverse_law_candidate_receipt(&fixture.ir, &changed_source, cx)
+                    .expect("changed source selector receipt")
+                    .id();
+            assert_ne!(baseline, changed_source_id, "source-geometry");
+
+            let changed_target = admit_strict(
+                GeometryEndpointV1::from_admitted(&fixture.source),
+                endpoint(53),
+                54,
+                ColorRank::Validated,
+                ColorRank::Validated,
+                cx,
+            );
+            let changed_target_id =
+                morphism_inverse_law_candidate_receipt(&fixture.ir, &changed_target, cx)
+                    .expect("changed target selector receipt")
+                    .id();
+            assert_ne!(baseline, changed_target_id, "target-geometry");
+
+            for field in 2..=5 {
+                let spec = &DerivedMorphismInverseLawCandidateIdentitySchemaV1::FIELDS[field];
+                assert_eq!(spec.wire_type(), WireType::Child);
+                assert!(spec.child_spec().is_some());
+            }
+
+            let swapped_paths = DerivedMorphismInverseLawCandidateIrV1 {
+                forward: fixture.reverse.id(),
+                reverse: fixture.forward.id(),
+                ..fixture.ir
+            };
+            let swapped_paths_id =
+                morphism_inverse_law_candidate_receipt(&swapped_paths, &fixture.forward, cx)
+                    .expect("swapped paths remain encodable")
+                    .id();
+            assert_ne!(baseline, swapped_paths_id, "forward/reverse order");
+
+            let swapped_comparisons = DerivedMorphismInverseLawCandidateIrV1 {
+                source_round_trip_comparison: fixture.target_round_trip_comparison.id(),
+                target_round_trip_comparison: fixture.source_round_trip_comparison.id(),
+                ..fixture.ir
+            };
+            let swapped_comparisons_id =
+                morphism_inverse_law_candidate_receipt(&swapped_comparisons, &fixture.forward, cx)
+                    .expect("swapped comparisons remain encodable")
+                    .id();
+            assert_ne!(baseline, swapped_comparisons_id, "comparison order");
+        });
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // Schema, child, endpoint, seam, stale-route, order, and cancellation matrix.
+    fn morphism_inverse_law_refuses_false_or_stale_inverse_data() {
+        let fixture = with_cx(false, morphism_inverse_law_candidate_fixture);
+        with_cx(false, |cx| {
+            let bad_schema = DerivedMorphismInverseLawCandidateIrV1 {
+                schema_version: 2,
+                ..fixture.ir
+            };
+            assert_eq!(
+                admit_morphism_inverse_law_with_ir(&fixture, &bad_schema, cx),
+                Err(
+                    DerivedMorphismInverseLawCandidateErrorV1::UnsupportedSchemaVersion {
+                        found: 2,
+                        supported: DERIVED_MORPHISM_INVERSE_LAW_CANDIDATE_SCHEMA_VERSION_V1,
+                    }
+                )
+            );
+
+            for (field, changed_ir) in [
+                (
+                    "forward-morphism",
+                    DerivedMorphismInverseLawCandidateIrV1 {
+                        forward: DerivedMorphismIdV1::parse_slice(&[0; 32])
+                            .expect("zero forward sentinel remains representable"),
+                        ..fixture.ir
+                    },
+                ),
+                (
+                    "reverse-morphism",
+                    DerivedMorphismInverseLawCandidateIrV1 {
+                        reverse: DerivedMorphismIdV1::parse_slice(&[0; 32])
+                            .expect("zero reverse sentinel remains representable"),
+                        ..fixture.ir
+                    },
+                ),
+                (
+                    "source-round-trip-comparison",
+                    DerivedMorphismInverseLawCandidateIrV1 {
+                        source_round_trip_comparison:
+                            DerivedParallelMorphismComparisonCandidateIdV1::parse_slice(&[0; 32])
+                                .expect("zero source comparison remains representable"),
+                        ..fixture.ir
+                    },
+                ),
+                (
+                    "target-round-trip-comparison",
+                    DerivedMorphismInverseLawCandidateIrV1 {
+                        target_round_trip_comparison:
+                            DerivedParallelMorphismComparisonCandidateIdV1::parse_slice(&[0; 32])
+                                .expect("zero target comparison remains representable"),
+                        ..fixture.ir
+                    },
+                ),
+                (
+                    "nominal-inverse-law-declaration",
+                    DerivedMorphismInverseLawCandidateIrV1 {
+                        nominal_inverse_law: DerivedMorphismInverseLawDeclarationIdV1::from_bytes(
+                            [0; 32],
+                        ),
+                        ..fixture.ir
+                    },
+                ),
+                (
+                    "no-authority",
+                    DerivedMorphismInverseLawCandidateIrV1 {
+                        no_authority: DerivedNoClaimIdV1::from_bytes([0; 32]),
+                        ..fixture.ir
+                    },
+                ),
+            ] {
+                assert!(matches!(
+                    admit_morphism_inverse_law_with_ir(&fixture, &changed_ir, cx),
+                    Err(DerivedMorphismInverseLawCandidateErrorV1::MissingIdentity {
+                        field: found,
+                    }) if found == field
+                ));
+            }
+
+            for (field, changed_ir) in [
+                (
+                    "forward-morphism",
+                    DerivedMorphismInverseLawCandidateIrV1 {
+                        forward: DerivedMorphismIdV1::parse_slice(&[55; 32])
+                            .expect("nonzero wrong forward"),
+                        ..fixture.ir
+                    },
+                ),
+                (
+                    "reverse-morphism",
+                    DerivedMorphismInverseLawCandidateIrV1 {
+                        reverse: DerivedMorphismIdV1::parse_slice(&[56; 32])
+                            .expect("nonzero wrong reverse"),
+                        ..fixture.ir
+                    },
+                ),
+                (
+                    "source-round-trip-comparison",
+                    DerivedMorphismInverseLawCandidateIrV1 {
+                        source_round_trip_comparison:
+                            DerivedParallelMorphismComparisonCandidateIdV1::parse_slice(&[57; 32])
+                                .expect("nonzero wrong source comparison"),
+                        ..fixture.ir
+                    },
+                ),
+                (
+                    "target-round-trip-comparison",
+                    DerivedMorphismInverseLawCandidateIrV1 {
+                        target_round_trip_comparison:
+                            DerivedParallelMorphismComparisonCandidateIdV1::parse_slice(&[58; 32])
+                                .expect("nonzero wrong target comparison"),
+                        ..fixture.ir
+                    },
+                ),
+            ] {
+                assert!(matches!(
+                    admit_morphism_inverse_law_with_ir(&fixture, &changed_ir, cx),
+                    Err(
+                        DerivedMorphismInverseLawCandidateErrorV1::ChildIdentityMismatch {
+                            field: found,
+                        }
+                    ) if found == field
+                ));
+            }
+
+            let reversed_forward = admit_strict_between_admitted(
+                &fixture.target,
+                &fixture.source,
+                59,
+                ColorRank::Validated,
+                ColorRank::Validated,
+                cx,
+            );
+            let reversed_forward_ir = DerivedMorphismInverseLawCandidateIrV1 {
+                forward: reversed_forward.id(),
+                ..fixture.ir
+            };
+            assert!(matches!(
+                admit_derived_morphism_inverse_law_candidate_v1(
+                    &reversed_forward_ir,
+                    &fixture.source,
+                    &fixture.target,
+                    &reversed_forward,
+                    &fixture.reverse,
+                    &fixture.source_round_trip_comparison,
+                    &fixture.target_round_trip_comparison,
+                    cx,
+                ),
+                Err(
+                    DerivedMorphismInverseLawCandidateErrorV1::EndpointMismatch {
+                        field: "forward-source-geometry",
+                    }
+                )
+            ));
+
+            let forward_oriented_reverse = admit_strict_between_admitted(
+                &fixture.source,
+                &fixture.target,
+                60,
+                ColorRank::Validated,
+                ColorRank::Validated,
+                cx,
+            );
+            let forward_oriented_reverse_ir = DerivedMorphismInverseLawCandidateIrV1 {
+                reverse: forward_oriented_reverse.id(),
+                ..fixture.ir
+            };
+            assert!(matches!(
+                admit_derived_morphism_inverse_law_candidate_v1(
+                    &forward_oriented_reverse_ir,
+                    &fixture.source,
+                    &fixture.target,
+                    &fixture.forward,
+                    &forward_oriented_reverse,
+                    &fixture.source_round_trip_comparison,
+                    &fixture.target_round_trip_comparison,
+                    cx,
+                ),
+                Err(
+                    DerivedMorphismInverseLawCandidateErrorV1::EndpointMismatch {
+                        field: "reverse-source-geometry",
+                    }
+                )
+            ));
+
+            let source_seam_bad_reverse = admit_strict_between_admitted(
+                &fixture.target,
+                &fixture.source,
+                61,
+                ColorRank::Estimated,
+                ColorRank::Estimated,
+                cx,
+            );
+            let source_seam_bad_ir = DerivedMorphismInverseLawCandidateIrV1 {
+                reverse: source_seam_bad_reverse.id(),
+                ..fixture.ir
+            };
+            assert_eq!(
+                admit_derived_morphism_inverse_law_candidate_v1(
+                    &source_seam_bad_ir,
+                    &fixture.source,
+                    &fixture.target,
+                    &fixture.forward,
+                    &source_seam_bad_reverse,
+                    &fixture.source_round_trip_comparison,
+                    &fixture.target_round_trip_comparison,
+                    cx,
+                ),
+                Err(
+                    DerivedMorphismInverseLawCandidateErrorV1::RoundTripCompositionRefused {
+                        field: "source-round-trip-composition",
+                        cause: DerivedMorphismErrorV1::CompositionEvidenceMismatch,
+                    }
+                )
+            );
+
+            let target_seam_bad_reverse = admit_strict_between_admitted(
+                &fixture.target,
+                &fixture.source,
+                62,
+                ColorRank::Validated,
+                ColorRank::Estimated,
+                cx,
+            );
+            let target_seam_bad_ir = DerivedMorphismInverseLawCandidateIrV1 {
+                reverse: target_seam_bad_reverse.id(),
+                ..fixture.ir
+            };
+            assert_eq!(
+                admit_derived_morphism_inverse_law_candidate_v1(
+                    &target_seam_bad_ir,
+                    &fixture.source,
+                    &fixture.target,
+                    &fixture.forward,
+                    &target_seam_bad_reverse,
+                    &fixture.source_round_trip_comparison,
+                    &fixture.target_round_trip_comparison,
+                    cx,
+                ),
+                Err(
+                    DerivedMorphismInverseLawCandidateErrorV1::RoundTripCompositionRefused {
+                        field: "target-round-trip-composition",
+                        cause: DerivedMorphismErrorV1::CompositionEvidenceMismatch,
+                    }
+                )
+            );
+
+            let replacement_forward = admit_strict_between_admitted(
+                &fixture.source,
+                &fixture.target,
+                63,
+                ColorRank::Validated,
+                ColorRank::Validated,
+                cx,
+            );
+            let replacement_forward_ir = DerivedMorphismInverseLawCandidateIrV1 {
+                forward: replacement_forward.id(),
+                ..fixture.ir
+            };
+            assert!(matches!(
+                admit_derived_morphism_inverse_law_candidate_v1(
+                    &replacement_forward_ir,
+                    &fixture.source,
+                    &fixture.target,
+                    &replacement_forward,
+                    &fixture.reverse,
+                    &fixture.source_round_trip_comparison,
+                    &fixture.target_round_trip_comparison,
+                    cx,
+                ),
+                Err(
+                    DerivedMorphismInverseLawCandidateErrorV1::ComparisonRouteIdentityMismatch {
+                        field: "source-comparison-round-trip",
+                    }
+                )
+            ));
+
+            let reversed_source_comparison_ir = DerivedParallelMorphismComparisonCandidateIrV1 {
+                schema_version: DERIVED_PARALLEL_MORPHISM_COMPARISON_CANDIDATE_SCHEMA_VERSION_V1,
+                left: fixture.source_round_trip.id(),
+                right: fixture.source_identity.id(),
+                comparison_scope: DerivedMorphismComparisonScopeIdV1::from_bytes([64; 32]),
+                nominal_relation: DerivedParallelMorphismRelationDeclarationIdV1::from_bytes(
+                    [65; 32],
+                ),
+                no_authority: DerivedNoClaimIdV1::from_bytes([66; 32]),
+            };
+            let reversed_source_comparison =
+                admit_derived_parallel_morphism_comparison_candidate_v1(
+                    &reversed_source_comparison_ir,
+                    &fixture.source_round_trip,
+                    &fixture.source_identity,
+                    cx,
+                )
+                .expect("reversed source paths remain nominally comparable");
+            let reversed_source_ir = DerivedMorphismInverseLawCandidateIrV1 {
+                source_round_trip_comparison: reversed_source_comparison.id(),
+                ..fixture.ir
+            };
+            assert!(matches!(
+                admit_derived_morphism_inverse_law_candidate_v1(
+                    &reversed_source_ir,
+                    &fixture.source,
+                    &fixture.target,
+                    &fixture.forward,
+                    &fixture.reverse,
+                    &reversed_source_comparison,
+                    &fixture.target_round_trip_comparison,
+                    cx,
+                ),
+                Err(
+                    DerivedMorphismInverseLawCandidateErrorV1::ComparisonRouteIdentityMismatch {
+                        field: "source-comparison-identity",
+                    }
+                )
+            ));
+
+            let wrong_target_route_comparison = parallel_comparison_with_test_bindings(
+                &fixture.target_round_trip_comparison,
+                fixture.target.id(),
+                fixture.target.id(),
+                fixture.target_identity.id(),
+                fixture.source_round_trip.id(),
+            );
+            assert!(matches!(
+                admit_derived_morphism_inverse_law_candidate_v1(
+                    &fixture.ir,
+                    &fixture.source,
+                    &fixture.target,
+                    &fixture.forward,
+                    &fixture.reverse,
+                    &fixture.source_round_trip_comparison,
+                    &wrong_target_route_comparison,
+                    cx,
+                ),
+                Err(
+                    DerivedMorphismInverseLawCandidateErrorV1::ComparisonRouteIdentityMismatch {
+                        field: "target-comparison-round-trip",
+                    }
+                )
+            ));
+
+            let wrong_source_endpoint_comparison = parallel_comparison_with_test_bindings(
+                &fixture.source_round_trip_comparison,
+                fixture.target.id(),
+                fixture.source.id(),
+                fixture.source_identity.id(),
+                fixture.source_round_trip.id(),
+            );
+            assert!(matches!(
+                admit_derived_morphism_inverse_law_candidate_v1(
+                    &fixture.ir,
+                    &fixture.source,
+                    &fixture.target,
+                    &fixture.forward,
+                    &fixture.reverse,
+                    &wrong_source_endpoint_comparison,
+                    &fixture.target_round_trip_comparison,
+                    cx,
+                ),
+                Err(
+                    DerivedMorphismInverseLawCandidateErrorV1::ComparisonEndpointMismatch {
+                        field: "source-comparison-source",
+                    }
+                )
+            ));
+        });
+
+        with_cx(true, |cx| {
+            assert_eq!(
+                admit_morphism_inverse_law_with_ir(&fixture, &fixture.ir, cx),
+                Err(DerivedMorphismInverseLawCandidateErrorV1::Cancelled {
+                    stage: "morphism-inverse-law-entry",
                 })
             );
         });
