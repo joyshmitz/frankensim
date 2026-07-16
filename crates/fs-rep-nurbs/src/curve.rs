@@ -2624,6 +2624,40 @@ impl<S: Scalar, const DIM: usize> NurbsCurve<S, DIM> {
         self.admit()?.to_bezier_form()
     }
 
+    /// Validate this owning generation and convert it to exact Bezier form
+    /// with one cancellation gate.
+    ///
+    /// Dimension and checked structural-validation work refusals precede the
+    /// first checkpoint. Cancellation then spans structural admission and the
+    /// same admitted conversion pipeline as
+    /// [`AdmittedNurbsCurve::to_bezier_form_with_cx`]. No partial admitted
+    /// authority or derived generation is published. This primitive does not
+    /// consume the `Cx` budget or finalize its executor scope.
+    ///
+    /// # Errors
+    /// Returns the synchronous owning conversion's structure, work,
+    /// retained-memory, allocation, and finite-arithmetic refusals when they
+    /// win before an observed cancellation.
+    pub fn to_bezier_form_with_cx(
+        &self,
+        cx: &Cx<'_>,
+    ) -> Result<CurveBezierRun<S, DIM>, NurbsError> {
+        let mut should_cancel = || cx.checkpoint().is_err();
+        self.to_bezier_form_with_poll(&mut should_cancel)
+    }
+
+    fn to_bezier_form_with_poll(
+        &self,
+        should_cancel: &mut impl FnMut() -> bool,
+    ) -> Result<CurveBezierRun<S, DIM>, NurbsError> {
+        match self.validate_live_structure_with_poll(should_cancel)? {
+            CurveWorkRun::Complete(()) => self
+                .admitted_after_validation()
+                .to_bezier_form_with_poll(should_cancel),
+            CurveWorkRun::Cancelled => Ok(CurveBezierRun::Cancelled),
+        }
+    }
+
     fn to_bezier_form_after_validation(&self) -> Result<Self, NurbsError> {
         let mut never_cancel = || false;
         match self.to_bezier_form_after_validation_with_poll(&mut never_cancel)? {
@@ -5480,8 +5514,15 @@ mod tests {
         )
         .expect("quadratic curve");
         let admitted = curve.admit().expect("admitted curve");
+        let synchronous = curve.to_bezier_form().expect("synchronous conversion");
 
         with_curve_cx(true, |cx| {
+            assert!(matches!(
+                curve
+                    .to_bezier_form_with_cx(cx)
+                    .expect("pre-cancelled owning conversion"),
+                CurveBezierRun::Cancelled
+            ));
             assert!(matches!(
                 admitted
                     .to_bezier_form_with_cx(cx)
@@ -5490,6 +5531,15 @@ mod tests {
             ));
         });
         with_curve_cx(false, |cx| {
+            let CurveBezierRun::Complete {
+                curve: owning_converted,
+            } = curve
+                .to_bezier_form_with_cx(cx)
+                .expect("healthy cancellable owning conversion")
+            else {
+                panic!("active context must complete owning conversion");
+            };
+            assert_eq!(owning_converted, synchronous);
             let CurveBezierRun::Complete { curve: converted } = admitted
                 .to_bezier_form_with_cx(cx)
                 .expect("healthy cancellable conversion")
@@ -5525,6 +5575,41 @@ mod tests {
             .expect("publication cancellation");
         assert!(matches!(cancelled, CurveBezierRun::Cancelled));
         assert_eq!(replay_polls, 8);
+
+        let mut admission_polls = 0usize;
+        let mut observe_admission = || {
+            admission_polls += 1;
+            false
+        };
+        assert!(matches!(
+            publication_curve
+                .validate_live_structure_with_poll(&mut observe_admission)
+                .expect("healthy source admission"),
+            CurveWorkRun::Complete(())
+        ));
+        let mut owning_polls = 0usize;
+        let mut cancel_at_first_conversion_poll = || {
+            owning_polls += 1;
+            owning_polls == admission_polls + 1
+        };
+        assert!(matches!(
+            publication_curve
+                .to_bezier_form_with_poll(&mut cancel_at_first_conversion_poll)
+                .expect("owning conversion cancellation"),
+            CurveBezierRun::Cancelled
+        ));
+        assert_eq!(owning_polls, admission_polls + 1);
+
+        let invalid_dimension = NurbsCurve::<f64, 4> {
+            knots: KnotVector::new(vec![0.0, 0.0, 1.0, 1.0], 1).expect("line knots"),
+            cpw: vec![[0.0, 0.0, 0.0, 1.0]; 2],
+        };
+        with_curve_cx(true, |cx| {
+            assert!(matches!(
+                invalid_dimension.to_bezier_form_with_cx(cx),
+                Err(NurbsError::Structure { .. })
+            ));
+        });
     }
 
     #[test]

@@ -94,9 +94,11 @@ fs-iga (geometry basis = analysis basis), fs-render NURBS tracing
   checkpoint.
   Its admitted `span_boxes_with_cx` returns transactional
   `CurveSpanBoxesRun` state and publishes only the complete ordered box table.
-  Its admitted-only `to_bezier_form_with_cx` returns transactional
-  `CurveBezierRun` state and publishes only a fully validated exact derived
-  generation.
+  Its owning and admitted `to_bezier_form_with_cx` entry points return
+  transactional `CurveBezierRun` state and publish only a fully validated
+  exact derived generation. The owning path carries one gate through source
+  admission and the admitted conversion; the admitted path avoids repeating
+  structural validation.
   Its admitted-only `elevate_degree_with_cx` returns transactional
   `CurveElevationRun` state and publishes only a fully validated exact elevated
   generation.
@@ -428,15 +430,20 @@ the homogeneous-control weight, finite, quotient, and inactive-lane scans. A
 final checkpoint gates `CurveAdmissionRun::Complete`; construction ownership,
 `Cx` budget consumption, and executor drain/finalize remain outside the
 admission claim.
-`AdmittedNurbsCurve::to_bezier_form_with_cx` preserves the existing checked
-work and two-generation retained-byte envelope, then polls exact planning,
-source copies, repeated target scans, every insertion copy/blend, both derived
-knot-validation passes, control validation, and final publication at phase
-boundaries and after at most 64 logical operations. Cancellation drops all
-partial owned generations and returns `CurveBezierRun::Cancelled`. Individual
-allocator calls and scalar operations are not preemptible; the API claims a
-logical-operation bound, not a wall-time bound, and does not claim owning curve
-admission, `Cx` budget consumption, or executor drain/finalize authority.
+`NurbsCurve::to_bezier_form_with_cx` preserves dimension and checked source
+validation-work refusal precedence, then carries one gate through bounded
+structural admission and the admitted conversion. The admitted entry point
+avoids repeating structural validation. Both preserve the existing checked
+conversion-work and two-generation retained-byte envelope, then poll exact
+planning, source copies, repeated target scans, every insertion copy/blend,
+both derived knot-validation passes, control validation, and final publication
+at phase boundaries and after at most 64 logical operations. Cancellation
+drops all partial owned generations and returns `CurveBezierRun::Cancelled`.
+Source admission and conversion retain independent defensive work ceilings;
+neither API consumes a caller work budget. Individual allocator calls and
+scalar operations are not preemptible; the APIs claim a logical-operation
+bound, not a wall-time bound, and do not claim `Cx` budget consumption or
+executor drain/finalize authority.
 `AdmittedNurbsCurve::elevate_degree_with_cx` preserves the synchronous checked
 Bezier-conversion plus elevation work and 64 MiB peak-live derived-payload
 envelope. One gate spans the reused conversion plan, exact conversion, fallible
