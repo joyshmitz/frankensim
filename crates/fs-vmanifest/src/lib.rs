@@ -43,11 +43,14 @@ mod i03;
 mod i04;
 mod i05;
 mod i06;
+mod i07;
 mod i08;
 mod i09;
 mod i10;
 mod i11;
 mod i12;
+mod i13;
+mod i14;
 mod i15;
 mod pd;
 mod rl;
@@ -60,11 +63,53 @@ pub use i03::i03_draft;
 pub use i04::i04_draft;
 pub use i05::i05_draft;
 pub use i06::i06_draft;
+pub use i07::i07_draft;
 pub use i08::i08_draft;
 pub use i09::i09_draft;
 pub use i10::i10_draft;
 pub use i11::i11_draft;
 pub use i12::i12_draft;
+pub use i13::{
+    I13_FRESH_V2_AUTHORITY_DAG_EDGES, I13_FRESH_V2_AUTHORITY_TAGGED_SUM_NODES,
+    I13_PROTOCOL_FIXED_TERMINAL_EVENTS_V2, i13_draft,
+};
+pub use i14::{
+    I14_CANCELLATION_CARD_V2_KAT_HEX, I14_CANONICAL_TERMINAL_RESULT_V1_KAT_HEX,
+    I14_CANONICAL_TERMINAL_RESULT_V2_KAT_HEX, I14_DRAIN_TRIGGER_ENCODING_V2_KAT_HEX,
+    I14_INFRASTRUCTURE_FAILURE_ONSET_ENCODING_V2_KAT_HEX, I14_MAX_CANCELLATION_REQUESTS_V1,
+    I14_MAX_OBSERVER_TILES_V1, I14_MAX_SCOPE_ANCESTRY_V1, I14_MAX_TERMINAL_ARBITRATION_PAIRS_V2,
+    I14_MAX_TERMINAL_BOUNDARIES_V2, I14_MAX_WATCHDOG_OBSERVATIONS_V1,
+    I14_TELEMETRY_ENVELOPE_V1_KAT_HEX, I14_TELEMETRY_ENVELOPE_V2_KAT_HEX,
+    I14_TERMINAL_BOUNDARY_GENESIS_ORDINAL_V2, I14_TERMINAL_PREFIX_V2_KAT_HEX,
+    I14_TERMINAL_STATUS_TABLE_V1_DIGEST_HEX, I14_TERMINAL_STATUS_TABLE_V1_TUPLES,
+    I14_WATCHDOG_RAW_TRACE_V2_KAT_HEX, I14ArtifactCategoryV1, I14CancellationCardInputV2,
+    I14CancellationCardRefusalV2, I14CancellationCardV2, I14CancellationObservationV1,
+    I14CancellationRequestStateV1, I14CancellationRequestV1, I14CancellationTierV2,
+    I14CanonicalCancellationObservationV1, I14CanonicalCancellationRequestV1,
+    I14CanonicalLifecycleProjectionV2, I14CanonicalResultRefusalV1, I14CanonicalResultRefusalV2,
+    I14CanonicalTerminalResultInputV1, I14CanonicalTerminalResultInputV2,
+    I14CanonicalTerminalResultV1, I14CanonicalTerminalResultV2, I14ClaimAdjudication,
+    I14DomainApplicability, I14DrainTriggerV2, I14EvidenceCompleteness, I14EvidenceIntegrity,
+    I14ExecutionDisposition, I14ExternalHeartbeatCoverageV2, I14FirstTerminalSelectionV2,
+    I14InfrastructureFailureOnsetV2, I14InfrastructureFailureSourceV2, I14InputValidity,
+    I14LateEventTailV2, I14LifecycleCauseClassV2, I14LifecycleFailureV2, I14LifecycleRefusalV2,
+    I14OperationalSupport, I14ReceiptValidity, I14RetentionClassV1, I14RetentionRuleV1,
+    I14SpawnFrontierEvidenceV2, I14TelemetryEnvelopeInputV1, I14TelemetryEnvelopeInputV2,
+    I14TelemetryEnvelopeRefusalV1, I14TelemetryEnvelopeRefusalV2, I14TerminalBoundaryDecisionV1,
+    I14TerminalBoundaryRecordV2, I14TerminalBoundaryTraceV2, I14TerminalBoundaryV1,
+    I14TerminalCauseCandidatesV1, I14TerminalCauseRefusalV1, I14TerminalEvaluationV1,
+    I14TerminalFrontierCertificateV2, I14TerminalLifecycleTraceV2, I14TerminalNormalizationV1,
+    I14TerminalStatusV1, I14TerminalTraceOutcomeV2, I14TerminalTraceRefusalV2,
+    I14TilePollCoverageV2, I14TimedLogicalEventV2, I14TotalResourceUnitV2, I14WatchdogCoverageV2,
+    I14WatchdogObservationKindV1, I14WatchdogObservationV1, i14_admit_cancellation_card_v2,
+    i14_canonical_terminal_result_digest_v1, i14_canonical_terminal_result_digest_v2,
+    i14_canonical_terminal_result_v1, i14_canonical_terminal_result_v2, i14_draft,
+    i14_drain_trigger_encoding_v2, i14_evaluate_terminal_status_v1,
+    i14_infrastructure_failure_onset_encoding_v2, i14_retention_rule_v1,
+    i14_select_first_terminal_boundary_v2, i14_select_terminal_boundary_v1,
+    i14_telemetry_envelope_digest_v1, i14_telemetry_envelope_digest_v2,
+    i14_terminal_status_table_digest_v1, i14_watchdog_raw_trace_digest_v2,
+};
 pub use i15::i15_draft;
 pub use pd::pd_draft;
 pub use rl::rl_draft;
