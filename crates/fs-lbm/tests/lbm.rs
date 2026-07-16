@@ -726,7 +726,9 @@ fn d2q9_partial_saturation_preserves_endpoints_and_replays() {
     }
 
     // At full saturation, a stationary equilibrium is a fixed point and the
-    // nonlinear Noble-Torczynski weight reaches exactly one.
+    // nonlinear Noble-Torczynski weight reaches exactly one. The exchange is
+    // measured against ordinary BGK, whose recomputed equilibrium can differ
+    // from the stored populations at roundoff.
     let full_grid = Grid::uniform(3, 2, 1.0);
     let full_cells = vec![PartialSaturationCell2::new(1.0, [0.0; 2]); 6];
     let mut full_post = Vec::new();
@@ -734,7 +736,11 @@ fn d2q9_partial_saturation_preserves_endpoints_and_replays() {
         full_grid.collide_into_with_partial_saturation(&mut full_post, &full_cells, [1.0, 0.5]);
     assert_eq!(full_receipt.coupled_cells, 6);
     assert_eq!(full_receipt.coupling_weight_sum.to_bits(), 6.0f64.to_bits());
-    assert!(full_receipt.fluid_population_mass_change.abs() < 1.0e-15);
+    assert!(
+        full_receipt.fluid_population_mass_change.abs() < 2.0e-14,
+        "full-saturation coupling mass correction exceeded roundoff: {}",
+        full_receipt.fluid_population_mass_change
+    );
     assert!(full_receipt.fluid_population_impulse == [0.0; 2]);
     assert!(full_receipt.solid_impulse == [0.0; 2]);
     for (before, after) in full_grid.f.iter().zip(&full_post) {
