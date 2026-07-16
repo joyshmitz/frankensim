@@ -585,8 +585,24 @@ fn ac_003_package_recheck_solver_free_and_voi_hint() -> Result<(), PlanError> {
     let family = steep_family()?;
     let mut cache = MemCache::default();
     let mut costs = CostTable::new(200.0)?;
-    let report = run_anytime(&family, 1.0, 6e-3, &[400.0], &RUNGS, &mut cache, &mut costs)?;
+    let report = run_anytime(
+        &family,
+        1.0,
+        6e-3,
+        &[30.0, 400.0],
+        &RUNGS,
+        &mut cache,
+        &mut costs,
+    )?;
+    assert!(
+        report.refusal.is_none(),
+        "the final package rung must discharge without a teaching refusal"
+    );
     let last = report.trajectory.last().expect("answer");
+    assert!(
+        last.discharged,
+        "the retained package receipt must be the discharged final answer"
+    );
     let bound = last.bound;
     // The VoI-priced hint (Proposal C riding the answer).
     let margin = move |v: &[f64]| v[0] - 5e-3;
