@@ -5,7 +5,7 @@
 
 use asupersync::types::Budget;
 use fs_exec::{CancelGate, Cx, ExecMode, StreamKey};
-use fs_opt::{DescentOptions, EvalLimit, Manifold, descend_fn};
+use fs_opt::{DescentOptions, DescentStop, EvalLimit, Manifold, descend_fn};
 use fs_propcheck::metamorphic::{
     RelationCase, RelationObservation, Tolerance, check_relation, unit_rescaling,
 };
@@ -22,7 +22,10 @@ struct DescentScaleReceipt {
     f_final: f64,
     evals: u64,
     steps_taken: u32,
+    stop: DescentStop,
     budget_stopped: bool,
+    work_upper_bound: u64,
+    workspace_upper_bound_bytes: u64,
 }
 
 fn with_cx<R>(f: impl FnOnce(&Cx<'_>) -> R) -> R {
@@ -65,6 +68,7 @@ fn g3_descend_fn_is_equivariant_under_power_of_two_unit_rescaling() {
                     steps: STEPS,
                     lr: 0.125,
                     fd_h,
+                    ..DescentOptions::default()
                 },
                 EvalLimit::Unlimited,
                 cx,
@@ -76,7 +80,10 @@ fn g3_descend_fn_is_equivariant_under_power_of_two_unit_rescaling() {
                 f_final: report.f_final,
                 evals: report.evals,
                 steps_taken: report.steps_taken,
+                stop: report.stop,
                 budget_stopped: report.budget_stopped,
+                work_upper_bound: report.work_upper_bound,
+                workspace_upper_bound_bytes: report.workspace_upper_bound_bytes,
             }
         };
         let relation = unit_rescaling(
@@ -103,8 +110,12 @@ fn g3_descend_fn_is_equivariant_under_power_of_two_unit_rescaling() {
                     && transformed.evals == EXPECTED_EVALS
                     && base.steps_taken == STEPS
                     && transformed.steps_taken == STEPS
+                    && base.stop == DescentStop::StepLimit
+                    && transformed.stop == DescentStop::StepLimit
                     && !base.budget_stopped
-                    && !transformed.budget_stopped;
+                    && !transformed.budget_stopped
+                    && base.work_upper_bound == transformed.work_upper_bound
+                    && base.workspace_upper_bound_bytes == transformed.workspace_upper_bound_bytes;
                 let discrete_margin = if discrete_receipts_match { 0.0 } else { -1.0 };
                 RelationObservation::new(
                     x.margin()
@@ -137,6 +148,47 @@ fn g3_descend_fn_is_equivariant_under_power_of_two_unit_rescaling() {
             },
             &operator,
             &relation,
+        );
+    });
+}
+
+#[test]
+fn g3_relative_landed_step_closure_is_power_of_two_rescaling_invariant() {
+    with_cx(|cx| {
+        let run = |scale: f64| {
+            let objective = |x: &[f64]| x[0] * x[0];
+            descend_fn(
+                Manifold::Rn { dim: 1 },
+                &objective,
+                &[scale],
+                DescentOptions {
+                    steps: 5,
+                    lr: 0.125,
+                    fd_h: 1e-6 * scale,
+                    closure_threshold: 0.3,
+                    ..DescentOptions::default()
+                },
+                EvalLimit::Unlimited,
+                cx,
+            )
+            .expect("rescaled closure case")
+        };
+
+        let base = run(1.0);
+        let scaled = run(8.0);
+        for report in [&base, &scaled] {
+            assert_eq!(report.stop, DescentStop::ClosureThreshold);
+            assert_eq!(report.steps_taken, 0);
+            assert_eq!(report.evals, 3);
+            assert!(!report.budget_stopped);
+            assert_eq!(report.f_final.to_bits(), report.f0.to_bits());
+        }
+        assert_eq!(scaled.x[0].to_bits(), (base.x[0] * 8.0).to_bits());
+        assert_eq!(scaled.f0.to_bits(), (base.f0 * 64.0).to_bits());
+        assert_eq!(scaled.work_upper_bound, base.work_upper_bound);
+        assert_eq!(
+            scaled.workspace_upper_bound_bytes,
+            base.workspace_upper_bound_bytes
         );
     });
 }

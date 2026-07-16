@@ -10,6 +10,7 @@ use crate::ir::{
     EvalLimit, Expr, Manifold, NodeId, ObjectiveEvalSite, OptError, ProbeDirection, Problem, Shape,
     VarId,
 };
+use core::num::NonZeroU64;
 use fs_exec::Cx;
 
 /// Squared-norm/dot tolerance for deciding whether a finite stored
@@ -20,6 +21,8 @@ const MANIFOLD_MEMBERSHIP_TOL: f64 = 1e-10;
 const RETRACTION_MIN_NORM_SQ: f64 = 1e-24;
 /// Maximum traversed scalar elements between retraction/domain cancellation polls.
 const RETRACTION_CHECKPOINT_STRIDE: usize = 256;
+const DEFAULT_DESCENT_MAX_WORK_UNITS: u64 = 1 << 24;
+const DEFAULT_DESCENT_MAX_WORKSPACE_BYTES: u64 = 1 << 30;
 
 fn checkpoint_retraction_work<F>(index: usize, checkpoint: &mut F) -> Result<(), OptError>
 where
@@ -867,6 +870,142 @@ impl Manifold {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DescentEnvelope {
+    owned_work: u64,
+    scratch_bytes: u64,
+}
+
+fn maximum_landed_steps(steps: u32, param_dim: u32, eval_limit: EvalLimit) -> u64 {
+    let requested = u64::from(steps);
+    match eval_limit {
+        EvalLimit::Unlimited => requested,
+        EvalLimit::Limited(maximum) => {
+            // N landed steps consume 1 initial + 2*param_dim*N probes +
+            // 1 terminal evaluation. The one terminal slot is reserved before
+            // any probe, so limits below that complete envelope admit no step.
+            let probe_evals = u64::from(param_dim) * 2;
+            maximum
+                .get()
+                .saturating_sub(2)
+                .checked_div(probe_evals)
+                .unwrap_or(0)
+                .min(requested)
+        }
+    }
+}
+
+fn plan_add(resource: &'static str, left: u64, right: u64) -> Result<u64, OptError> {
+    left.checked_add(right)
+        .ok_or(OptError::DescentPlanOverflow { resource })
+}
+
+fn plan_mul(resource: &'static str, left: u64, right: u64) -> Result<u64, OptError> {
+    left.checked_mul(right)
+        .ok_or(OptError::DescentPlanOverflow { resource })
+}
+
+fn descent_envelope(
+    manifold: Manifold,
+    point_dim: u32,
+    param_dim: u32,
+    steps: u32,
+    eval_limit: EvalLimit,
+) -> Result<DescentEnvelope, OptError> {
+    let point = u64::from(point_dim);
+    let param = u64::from(param_dim);
+    let active_steps = maximum_landed_steps(steps, param_dim, eval_limit);
+
+    // One unit conservatively represents one scalar slot initialized or one
+    // scalar value visited by fs-opt's own descent/retraction plumbing. The
+    // Stiefel multiplier covers input/output Gram scans and deterministic QR.
+    // Caller-owned objective work is intentionally outside this envelope.
+    let retraction_factor = match manifold {
+        Manifold::Stiefel { p, .. } => {
+            plan_add("work units", plan_mul("work units", u64::from(p), 8)?, 32)?
+        }
+        Manifold::Rn { .. } | Manifold::Sphere { .. } | Manifold::So3 => 24,
+    };
+    let retraction_work = plan_add(
+        "work units",
+        plan_mul("work units", point, retraction_factor)?,
+        param,
+    )?;
+    let retractions_per_step = plan_add("work units", plan_mul("work units", param, 2)?, 1)?;
+    let probe_initialization = plan_mul("work units", param, param)?;
+    let retraction_visits = plan_mul("work units", retractions_per_step, retraction_work)?;
+    let gradient_plumbing = plan_add(
+        "work units",
+        plan_mul("work units", param, 4)?,
+        plan_mul("work units", point, 2)?, // point scale + landed displacement
+    )?;
+    let per_step = plan_add(
+        "work units",
+        plan_add("work units", probe_initialization, retraction_visits)?,
+        gradient_plumbing,
+    )?;
+    let probe_preflight = if active_steps == 0 {
+        0
+    } else {
+        plan_add(
+            "work units",
+            param,
+            plan_mul(
+                "work units",
+                plan_mul("work units", param, 2)?,
+                retraction_work,
+            )?,
+        )?
+    };
+    let owned_work = plan_add(
+        "work units",
+        plan_add(
+            "work units",
+            plan_add("work units", retraction_work, point)?,
+            probe_preflight,
+        )?,
+        plan_mul("work units", active_steps, per_step)?,
+    )?;
+
+    // Peak retained scalar storage is deliberately conservative: current
+    // iterate, positive/negative probes, retraction scratch/output, gradient,
+    // coordinate probe, and landed step. Include Vec headers, including one
+    // per Stiefel column. Caller inputs and objective-owned storage are not
+    // charged because fs-opt neither allocates nor controls them.
+    let active_scalar_slots = if active_steps == 0 {
+        point
+    } else {
+        plan_add(
+            "workspace bytes",
+            plan_mul("workspace bytes", point, 6)?,
+            plan_mul("workspace bytes", param, 3)?,
+        )?
+    };
+    let column_headers = match manifold {
+        Manifold::Stiefel { p, .. } if active_steps > 0 => u64::from(p),
+        _ => 0,
+    };
+    let vec_headers = plan_add("workspace bytes", 16, column_headers)?;
+    let scratch_bytes = plan_add(
+        "workspace bytes",
+        plan_mul(
+            "workspace bytes",
+            active_scalar_slots,
+            core::mem::size_of::<f64>() as u64,
+        )?,
+        plan_mul(
+            "workspace bytes",
+            vec_headers,
+            core::mem::size_of::<Vec<f64>>() as u64,
+        )?,
+    )?;
+
+    Ok(DescentEnvelope {
+        owned_work,
+        scratch_bytes,
+    })
+}
+
 /// Descent policy.
 #[derive(Debug, Clone, Copy)]
 pub struct DescentOptions {
@@ -876,6 +1015,14 @@ pub struct DescentOptions {
     pub lr: f64,
     /// Finite-difference step.
     pub fd_h: f64,
+    /// Unitless relative retracted-point displacement at or below which descent stops.
+    pub closure_threshold: f64,
+    /// Hard upper bound for fs-opt-owned scalar work units admitted up front
+    /// (default `2^24`).
+    pub max_work_units: NonZeroU64,
+    /// Hard upper bound for fs-opt-owned peak workspace, in bytes
+    /// (default 1 GiB).
+    pub max_workspace_bytes: NonZeroU64,
 }
 
 impl Default for DescentOptions {
@@ -884,8 +1031,25 @@ impl Default for DescentOptions {
             steps: 200,
             lr: 0.2,
             fd_h: 1e-6,
+            closure_threshold: 1e-12,
+            max_work_units: NonZeroU64::new(DEFAULT_DESCENT_MAX_WORK_UNITS)
+                .expect("positive default descent work cap"),
+            max_workspace_bytes: NonZeroU64::new(DEFAULT_DESCENT_MAX_WORKSPACE_BYTES)
+                .expect("positive default descent workspace cap"),
         }
     }
+}
+
+/// Why a successful descent report stopped.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DescentStop {
+    /// The configured iteration limit was reached.
+    StepLimit,
+    /// The relative retracted-candidate displacement met the configured threshold.
+    ClosureThreshold,
+    /// The explicit evaluation limit could not fund the next atomic step.
+    EvaluationLimit,
 }
 
 /// What the descent did.
@@ -901,9 +1065,16 @@ pub struct DescentReport {
     pub evals: u64,
     /// Steps taken.
     pub steps_taken: u32,
+    /// Typed successful terminal state.
+    pub stop: DescentStop,
     /// True when the P4 budget stopped the run (a receipt, not an
-    /// error — the point is still valid).
+    /// error — the point is still valid). Exactly equivalent to
+    /// `stop == DescentStop::EvaluationLimit`.
     pub budget_stopped: bool,
+    /// Conservative fs-opt-owned work bound admitted before the first objective.
+    pub work_upper_bound: u64,
+    /// Conservative peak fs-opt-owned workspace bound admitted before the first objective.
+    pub workspace_upper_bound_bytes: u64,
 }
 
 /// Toy Riemannian gradient descent of a closure over ONE manifold
@@ -911,8 +1082,11 @@ pub struct DescentReport {
 /// retraction metadata is consumable; polls cancellation before objective
 /// work and at bounded intervals inside domain/retraction loops, and honors
 /// an explicit [`EvalLimit`]. The manifold, start point
-/// (length AND finite components), and step policy (`fd_h`/`lr`
-/// finite, positive) are leaf-gated BEFORE any descent arithmetic.
+/// (length AND finite components), step/closure policy, initial coordinate
+/// retractions, and fs-opt-owned work/workspace envelope are gated BEFORE f0.
+/// Closure uses the unitless ratio
+/// `max_abs(retract(x, step) - x) / max(max_abs(x), fd_h)`.
+/// The resource envelope excludes arbitrary caller-objective work/allocation.
 /// With an unwind-capable panic strategy, an ordinary raw-objective
 /// panic whose hook and payload cleanup both complete normally returns
 /// [`OptError::ObjectivePanicked`] with bounded path attribution. The
@@ -924,7 +1098,8 @@ pub struct DescentReport {
 /// # Errors
 /// [`OptError::Cancelled`] / [`OptError::ManifoldInvalid`] /
 /// [`OptError::BindingLen`] / [`OptError::NonFinite`] /
-/// [`OptError::ObjectivePanicked`] / [`OptError::BadParam`].
+/// [`OptError::ObjectivePanicked`] / [`OptError::BadParam`] /
+/// [`OptError::DescentCapExceeded`] / [`OptError::DescentPlanOverflow`].
 pub fn descend_fn(
     manifold: Manifold,
     f: &dyn Fn(&[f64]) -> f64,
@@ -964,6 +1139,26 @@ fn descent_checkpoint(cx: &Cx<'_>) -> Result<(), OptError> {
     cx.checkpoint().map_err(|_| OptError::Cancelled)
 }
 
+fn validate_initial_probe_retractions(
+    manifold: Manifold,
+    x0: &[f64],
+    param_dim: usize,
+    fd_h: f64,
+    cx: &Cx<'_>,
+) -> Result<(), OptError> {
+    let mut probe = vec![0.0; param_dim];
+    for parameter in 0..param_dim {
+        descent_checkpoint(cx)?;
+        probe[parameter] = fd_h;
+        drop(manifold.retract_with_cx(x0, &probe, cx)?);
+        descent_checkpoint(cx)?;
+        probe[parameter] = -fd_h;
+        drop(manifold.retract_with_cx(x0, &probe, cx)?);
+        probe[parameter] = 0.0;
+    }
+    descent_checkpoint(cx)
+}
+
 fn descend_fn_checked(
     manifold: Manifold,
     f: &dyn Fn(&[f64], ObjectiveEvalSite) -> Result<f64, OptError>,
@@ -985,16 +1180,25 @@ fn descend_fn_checked(
             got: x0.len() as u64,
         });
     }
-    if !(opts.fd_h.is_finite() && opts.fd_h > 0.0) {
+    if !(opts.fd_h.is_finite() && opts.fd_h > 0.0 && (2.0 * opts.fd_h).is_finite()) {
         return Err(OptError::BadParam {
-            what: "descent finite-difference step fd_h (finite, > 0)",
+            what: "descent finite-difference step fd_h (finite, > 0, finite doubled denominator)",
             value: opts.fd_h,
         });
     }
-    if !(opts.lr.is_finite() && opts.lr > 0.0) {
+    if !(opts.lr.is_finite() && opts.lr > 0.0 && opts.lr <= 1.0) {
         return Err(OptError::BadParam {
-            what: "descent learning rate lr (finite, > 0; descent, not ascent)",
+            what: "descent learning rate lr (finite, 0 < lr <= 1; descent, not ascent)",
             value: opts.lr,
+        });
+    }
+    if !(opts.closure_threshold.is_finite()
+        && opts.closure_threshold > 0.0
+        && opts.closure_threshold <= 1.0)
+    {
+        return Err(OptError::BadParam {
+            what: "descent closure threshold (finite, 0 < threshold <= 1)",
+            value: opts.closure_threshold,
         });
     }
     let param_dim = manifold
@@ -1006,6 +1210,22 @@ fn descend_fn_checked(
         what: format!("{manifold:?} descent parameter dimension does not fit usize"),
     })?;
     let atomic_step_evals = u64::from(param_dim).saturating_mul(2).saturating_add(1);
+    let reachable_steps = maximum_landed_steps(opts.steps, param_dim, eval_limit);
+    let envelope = descent_envelope(manifold, point_dim, param_dim, opts.steps, eval_limit)?;
+    if envelope.owned_work > opts.max_work_units.get() {
+        return Err(OptError::DescentCapExceeded {
+            resource: "work units",
+            required: envelope.owned_work,
+            cap: opts.max_work_units.get(),
+        });
+    }
+    if envelope.scratch_bytes > opts.max_workspace_bytes.get() {
+        return Err(OptError::DescentCapExceeded {
+            resource: "workspace bytes",
+            required: envelope.scratch_bytes,
+            cap: opts.max_workspace_bytes.get(),
+        });
+    }
     // Preserve deterministic cheap-refusal precedence for malformed manifold,
     // length, and policy metadata. Long point scans begin only after those O(1)
     // gates, and are cancellation-aware from their first component onward.
@@ -1027,10 +1247,13 @@ fn descend_fn_checked(
     }
     descent_checkpoint(cx)?;
     manifold.validate_point_domain_with_checkpoint(x0, &mut || descent_checkpoint(cx))?;
+    if reachable_steps > 0 {
+        validate_initial_probe_retractions(manifold, x0, pd, opts.fd_h, cx)?;
+    }
     descent_checkpoint(cx)?;
     let mut x = x0.to_vec();
     let mut evals = 0u64;
-    let mut budget_stopped = false;
+    let mut stop = DescentStop::StepLimit;
     let f0 = f(&x, ObjectiveEvalSite::Initial)?;
     evals += 1;
     descent_checkpoint(cx)?;
@@ -1046,7 +1269,7 @@ fn descend_fn_checked(
             EvalLimit::Limited(maximum)
                 if evals.saturating_add(atomic_step_evals) > maximum.get()
         ) {
-            budget_stopped = true;
+            stop = DescentStop::EvaluationLimit;
             break 'outer;
         }
         let mut g = vec![0.0; pd];
@@ -1086,10 +1309,44 @@ fn descend_fn_checked(
             )?;
         }
         descent_checkpoint(cx)?;
-        let step: Vec<f64> = g.iter().map(|v| -opts.lr * v).collect();
+        let mut step = Vec::with_capacity(g.len());
+        for (component, gradient) in g.iter().enumerate() {
+            checkpoint_retraction_work(component, &mut || descent_checkpoint(cx))?;
+            let value =
+                finite_descent_value(-opts.lr * gradient, "descent parameter-step component")?;
+            step.push(value);
+        }
         descent_checkpoint(cx)?;
-        x = manifold.retract_with_cx(&x, &step, cx)?;
+        let candidate = manifold.retract_with_cx(&x, &step, cx)?;
         descent_checkpoint(cx)?;
+        if candidate.len() != x.len() {
+            return Err(OptError::RetractionLen {
+                input: "retraction output",
+                expected: point_dim,
+                got: candidate.len() as u64,
+            });
+        }
+        let mut point_max_abs = 0.0f64;
+        let mut landed_step_max_abs = 0.0f64;
+        for (component, (candidate_value, value)) in candidate.iter().zip(&x).enumerate() {
+            checkpoint_retraction_work(component, &mut || descent_checkpoint(cx))?;
+            point_max_abs = point_max_abs.max(value.abs());
+            let displacement = finite_descent_value(
+                *candidate_value - *value,
+                "descent landed-point displacement component",
+            )?;
+            landed_step_max_abs = landed_step_max_abs.max(displacement.abs());
+        }
+        let closure_scale = point_max_abs.max(opts.fd_h);
+        let relative_step = finite_descent_value(
+            landed_step_max_abs / closure_scale,
+            "descent relative-step closure ratio",
+        )?;
+        if relative_step <= opts.closure_threshold {
+            stop = DescentStop::ClosureThreshold;
+            break 'outer;
+        }
+        x = candidate;
         steps_taken += 1;
     }
     let f_final = if steps_taken == 0 {
@@ -1108,7 +1365,10 @@ fn descend_fn_checked(
         f_final,
         evals,
         steps_taken,
-        budget_stopped,
+        stop,
+        budget_stopped: stop == DescentStop::EvaluationLimit,
+        work_upper_bound: envelope.owned_work,
+        workspace_upper_bound_bytes: envelope.scratch_bytes,
     })
 }
 
@@ -1278,6 +1538,31 @@ mod runtime_shape_tests {
                 "{manifold:?} changed typed error attribution"
             );
         }
+    }
+
+    #[test]
+    fn high_p_stiefel_work_envelope_dominates_scalar_visit_lower_bound() {
+        let n = 64u32;
+        let p = 64u32;
+        let point_dim = n * p;
+        let envelope = descent_envelope(
+            Manifold::Stiefel { n, p },
+            point_dim,
+            point_dim,
+            0,
+            EvalLimit::Unlimited,
+        )
+        .expect("small exact envelope");
+
+        // One current Stiefel retraction necessarily visits at least
+        // N*(4.5*p + 10.5) scalar slots across input/output Gram scans,
+        // deterministic QR dot/update/revalidation, and copies. Compare
+        // doubled integers so the tripwire itself has no rounding.
+        let lower_bound_twice = u64::from(point_dim) * (9 * u64::from(p) + 21);
+        assert!(
+            envelope.owned_work * 2 >= lower_bound_twice,
+            "high-p Stiefel plans must never understate scalar visits"
+        );
     }
 
     #[test]

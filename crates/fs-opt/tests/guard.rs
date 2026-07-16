@@ -6,8 +6,8 @@
 //! non-finite fails closed).
 
 use fs_opt::{
-    DeltaPerturbationStep, DescentReport, Endpoint, EscalationKind, EscalationStep, GoodhartGuard,
-    GuardStatus, StepOutcome, converged_and_guard_cleared,
+    DeltaPerturbationStep, DescentReport, DescentStop, Endpoint, EscalationKind, EscalationStep,
+    GoodhartGuard, GuardStatus, StepOutcome, converged_and_guard_cleared,
 };
 
 /// A fixed-outcome step of a chosen kind, for exercising the aggregator.
@@ -173,7 +173,10 @@ fn from_descent_builds_endpoint() {
         f_final: 0.25,
         evals: 42,
         steps_taken: 10,
+        stop: DescentStop::StepLimit,
         budget_stopped: false,
+        work_upper_bound: 1_024,
+        workspace_upper_bound_bytes: 4_096,
     };
     let ep = Endpoint::from_descent("study-node-7", &report);
     assert_eq!(ep.design, vec![1.5, -2.0]);

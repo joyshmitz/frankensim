@@ -95,8 +95,19 @@ structure; FLUX/UQ execute it.
   the manifold validates through the admission policy, the start
   point must match `point_dim` with FINITE components (offending bit
   pattern retained in the refusal), and `DescentOptions` must carry
-  finite positive `fd_h` and `lr` (a NaN/zero step would divide
-  through the FD quotient; a negative rate would silently ascend).
+  a finite positive `fd_h` whose doubled FD denominator remains finite,
+  `0 < lr <= 1`, and a finite unitless relative retracted-point closure
+  threshold in
+  `(0, 1]` (a NaN/zero step would divide through the FD quotient; a negative
+  rate would silently ascend). Every initially reachable positive/negative
+  coordinate retraction is validated before f0. Checked preflight arithmetic
+  computes conservative fs-opt-owned work-unit and peak-workspace bounds;
+  overflow or a caller cap below either bound refuses before point scans,
+  allocation, or objective work. Evaluation limits reduce the reachable-step
+  bound before this calculation. Successful reports retain both bounds and a
+  typed `StepLimit`/`ClosureThreshold`/`EvaluationLimit` stop reason;
+  `budget_stopped` is retained as the invariant compatibility projection
+  `stop == EvaluationLimit`.
   The internal objective seam is fallible: non-finite closure results, typed IR
   evaluation failures, and ordinary unwinding raw-objective panics propagate
   without publishing a report. Panic refusals retain a deterministic one-based
@@ -258,7 +269,11 @@ structure; FLUX/UQ execute it.
 5. The toy Riemannian descent consumes manifold metadata: Sphere
    reaches the analytic minimizer staying unit, SO(3) aligns with a
    unit quaternion throughout, Stiefel stays orthonormal to 1e-10 and
-   finds the top invariant subspace (opt-005).
+   finds the top invariant subspace. Closure compares the actual retracted
+   candidate displacement against `max(max_abs(x), fd_h)`; the G3 case that
+   reaches `ClosureThreshold` in both base and power-of-two-rescaled runs pins
+   identical stop/step/evaluation/resource receipts (opt-005, adm-024, and
+   `tests/metamorphic.rs`).
 6. P4/P7: the attached budget stops descent with a RECEIPT (not an
    error), never exceeds its cap, reuses the already-counted initial
    value when no step lands, and reserves the complete FD gradient plus
@@ -268,7 +283,11 @@ structure; FLUX/UQ execute it.
    their executor when asked
    to evaluate. Typed unlimited/positive limits round-trip through the
    unchanged numeric v1/v2/v3 grammar at `0`, `1`, and `u64::MAX`
-   (opt-005/006 plus focused serializer unit tests).
+   (opt-005/006 plus focused serializer unit tests). Explicit positive
+   work/workspace caps are exact at the admitted bound and refuse one-short;
+   unrepresentable envelope arithmetic refuses rather than saturating, and
+   extreme finite options or initial coordinate probes fail before f0
+   (adm-013/024).
 7. G3 unit rescaling: the live `descend_fn` step is equivariant when a
    one-dimensional quadratic's start, target, and finite-difference step are
    coherently rescaled by a nonidentity power of two. The final coordinate
@@ -306,6 +325,8 @@ bounded site),
 `EvalNonFinite` (runtime location + exact bits),
 `RetractionLen`/`RetractionNonFinite`/
 `RetractionDomain` (input, manifold rule, location, and measurement),
+`DescentCapExceeded` (resource + conservative required bound + explicit cap),
+`DescentPlanOverflow` (resource whose exact envelope left `u64`),
 `CapExceeded` (cap name + count + limit),
 `BindingCount`/`BindingDuplicate`/`BindingMissing`/`BindingLen`
 (declared vs supplied, with exact `VarId` attribution),
@@ -352,6 +373,10 @@ Initial-point membership and every descent retraction also poll before work and
 at most every 256 traversed scalar elements through finiteness scans, norm/Gram
 reductions, deterministic Stiefel QR projection/normalization, and output
 revalidation. Cancellation inside those loops returns no candidate point.
+Initial positive/negative coordinate retraction preflight is cancellation-aware
+and precedes f0. The reported work/workspace bounds cover only fs-opt-owned
+descent and retraction plumbing; they do not meter arbitrary caller closure
+work or allocation.
 
 Game admission polls before proportional scans, during bounded information,
 strategy-dependency, and composition traversal, and at identity publication.
@@ -427,6 +452,10 @@ discrete receipts. Existing opt-005/006 fixed pins remain unchanged.
   consumer. It does not claim arbitrary-unit conditioning, general optimizer
   convergence, manifold-coordinate invariance, or dimensional correctness for
   caller-defined objectives.
+- `max_work_units` and `max_workspace_bytes` are conservative admission bounds
+  for fs-opt-owned scalar visits and peak `Vec` storage. They are not cycle,
+  wall-time, allocator-availability, or arbitrary caller-objective budgets;
+  an opaque raw closure can still perform unbounded external work or allocation.
 - `max_total_work` is a deterministic structural admission envelope
   (retained items plus expression edges), not a wall-clock or cycle-count
   performance model. Per-field byte caps separately bound string hashing

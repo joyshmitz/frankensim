@@ -708,6 +708,20 @@ pub enum OptError {
         /// Exact bits of the diagnostic norm/dot measurement.
         measurement_bits: u64,
     },
+    /// A descent plan exceeds an explicit caller-owned resource cap.
+    DescentCapExceeded {
+        /// Resource envelope that refused the plan.
+        resource: &'static str,
+        /// Conservative required upper bound.
+        required: u64,
+        /// Explicit caller-supplied cap.
+        cap: u64,
+    },
+    /// Exact arithmetic for a descent resource envelope left the `u64` domain.
+    DescentPlanOverflow {
+        /// Resource whose conservative bound could not be represented.
+        resource: &'static str,
+    },
     /// A per-item or aggregate admission cap was exceeded.
     CapExceeded {
         /// Which cap.
@@ -819,7 +833,7 @@ impl core::fmt::Display for OptError {
             OptError::WireIncompatible { version, what } => {
                 write!(f, "problem cannot be encoded as {version}: {what}")
             }
-            OptError::Cancelled => write!(f, "cancelled between descent steps"),
+            OptError::Cancelled => write!(f, "cancelled during descent"),
             OptError::BudgetExhausted { spent } => write!(
                 f,
                 "evaluation budget exhausted after {spent} evaluations (P4 receipt)"
@@ -948,6 +962,20 @@ impl core::fmt::Display for OptError {
                 f,
                 "component node {node} requested source index {index}, but the \
                  runtime source vector has length {len}"
+            ),
+            OptError::DescentCapExceeded {
+                resource,
+                required,
+                cap,
+            } => write!(
+                f,
+                "descent {resource} envelope requires {required}, exceeding the explicit \
+                 cap {cap}; reduce steps/dimension or raise this DescentOptions cap"
+            ),
+            OptError::DescentPlanOverflow { resource } => write!(
+                f,
+                "descent {resource} envelope exceeds the representable u64 domain; \
+                 reduce steps or manifold dimension before execution"
             ),
             OptError::CapExceeded { what, count, cap } => write!(
                 f,

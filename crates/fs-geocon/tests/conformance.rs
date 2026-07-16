@@ -310,6 +310,7 @@ fn gcp_001_min_thickness() {
                 steps: 120,
                 lr: 0.5,
                 fd_h: 1e-5,
+                ..DescentOptions::default()
             },
             EvalLimit::Unlimited,
             cx,
@@ -814,6 +815,7 @@ fn gcp_004_envelopes() {
                 steps: 80,
                 lr: 0.4,
                 fd_h: 1e-5,
+                ..DescentOptions::default()
             },
             EvalLimit::Unlimited,
             cx,
@@ -874,6 +876,7 @@ fn gcp_005_volume_hadamard() {
                 steps: 60,
                 lr: 0.05,
                 fd_h: 1e-4,
+                ..DescentOptions::default()
             },
             EvalLimit::Unlimited,
             cx,

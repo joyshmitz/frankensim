@@ -8,9 +8,10 @@
 use asupersync::types::Budget;
 use fs_exec::{CancelGate, Cx, ExecMode, StreamKey};
 use fs_opt::{
-    Class, ConstraintKind, DescentOptions, EvalLimit, FiveToSixRule, Manifold, OptError,
-    OptimizerFamily, ProblemBuilder, ProblemTag, Sense, WireVersion, canonical_v2_migration_target,
-    descend_fn, descend_ir, eval, parse, parse_with_version, problem_hash, serialize,
+    Class, ConstraintKind, DescentOptions, DescentStop, EvalLimit, FiveToSixRule, Manifold,
+    OptError, OptimizerFamily, ProblemBuilder, ProblemTag, Sense, WireVersion,
+    canonical_v2_migration_target, descend_fn, descend_ir, eval, parse, parse_with_version,
+    problem_hash, serialize,
 };
 use fs_qty::Dims;
 use std::num::NonZeroU64;
@@ -596,6 +597,7 @@ fn opt_005_riemannian_descent() {
                 steps: 400,
                 lr: 0.3,
                 fd_h: 1e-6,
+                ..DescentOptions::default()
             },
             EvalLimit::Unlimited,
             cx,
@@ -640,6 +642,7 @@ fn opt_005_riemannian_descent() {
                 steps: 400,
                 lr: 0.25,
                 fd_h: 1e-6,
+                ..DescentOptions::default()
             },
             EvalLimit::Unlimited,
             cx,
@@ -673,6 +676,7 @@ fn opt_005_riemannian_descent() {
                 steps: 300,
                 lr: 0.15,
                 fd_h: 1e-6,
+                ..DescentOptions::default()
             },
             EvalLimit::Unlimited,
             cx,
@@ -775,7 +779,10 @@ fn opt_006_budget_and_cancellation() {
         let p = build(limited(50));
         let rep = descend_ir(&p, &[1.0, -2.0, 0.5, 3.0], DescentOptions::default(), cx)
             .expect("budgeted descent");
-        let receipt = rep.budget_stopped && rep.evals <= 50 && rep.f_final < rep.f0;
+        let receipt = rep.budget_stopped
+            && rep.stop == DescentStop::EvaluationLimit
+            && rep.evals <= 50
+            && rep.f_final < rep.f0;
 
         // Exact terminal-accounting edges for a one-dimensional raw
         // descent. A gradient step costs initial + FD pair + terminal =
@@ -814,11 +821,13 @@ fn opt_006_budget_and_cancellation() {
         )
         .expect("cap-4 descent");
         let cap_edges = cap3.budget_stopped
+            && cap3.stop == DescentStop::EvaluationLimit
             && cap3.steps_taken == 0
             && cap3.evals == 1
             && cap3.f_final.to_bits() == cap3.f0.to_bits()
             && calls3.get() == cap3.evals
             && !cap4.budget_stopped
+            && cap4.stop == DescentStop::StepLimit
             && cap4.steps_taken == 1
             && cap4.evals == 4
             && calls4.get() == cap4.evals;
@@ -855,10 +864,12 @@ fn opt_006_budget_and_cancellation() {
         )
         .expect("cap-6 atomic descent");
         let atomic_edges = cap5.budget_stopped
+            && cap5.stop == DescentStop::EvaluationLimit
             && cap5.steps_taken == 0
             && cap5.evals == 1
             && calls5.get() == 1
             && !cap6.budget_stopped
+            && cap6.stop == DescentStop::StepLimit
             && cap6.steps_taken == 1
             && cap6.evals == 6
             && calls6.get() == 6;
@@ -875,6 +886,7 @@ fn opt_006_budget_and_cancellation() {
         )
         .expect("cap-1 receipt");
         let cap1_exact = cap1.budget_stopped
+            && cap1.stop == DescentStop::EvaluationLimit
             && cap1.steps_taken == 0
             && cap1.evals == 1
             && cap1.f_final.to_bits() == cap1.f0.to_bits();

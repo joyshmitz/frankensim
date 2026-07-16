@@ -11,9 +11,9 @@
 //! work — the seal itself is enforced by the compiler.
 
 use fs_opt::{
-    AdmissionCaps, AdmissionViolation, BilevelRef, BindingFrame, EvalLimit, Manifold, NodeId,
-    ObjectiveEvalSite, OptError, ProbeDirection, ProblemBuilder, ProblemSemanticId, ProblemTag,
-    Sense, VarId, WireVersion, canonical_v2_migration_target, eval, eval_keyed, parse,
+    AdmissionCaps, AdmissionViolation, BilevelRef, BindingFrame, DescentStop, EvalLimit, Manifold,
+    NodeId, ObjectiveEvalSite, OptError, ProbeDirection, ProblemBuilder, ProblemSemanticId,
+    ProblemTag, Sense, VarId, WireVersion, canonical_v2_migration_target, eval, eval_keyed, parse,
     parse_with_version, problem_hash, serialize, serialize_with_id,
 };
 use fs_qty::Dims;
@@ -845,7 +845,11 @@ fn adm_013_descent_leaf_gating() {
             asupersync::types::Budget::INFINITE,
             fs_exec::ExecMode::Deterministic,
         );
-        let quadratic = |x: &[f64]| x[0] * x[0];
+        let objective_calls = std::cell::Cell::new(0u64);
+        let quadratic = |x: &[f64]| {
+            objective_calls.set(objective_calls.get() + 1);
+            x[0] * x[0]
+        };
         let opts = fs_opt::DescentOptions::default();
 
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
@@ -867,7 +871,7 @@ fn adm_013_descent_leaf_gating() {
             }
         }
 
-        for bad_fd in [0.0, -1e-6, f64::NAN, f64::INFINITY] {
+        for bad_fd in [0.0, -1e-6, f64::NAN, f64::INFINITY, f64::MAX] {
             let mut o = fs_opt::DescentOptions::default();
             o.fd_h = bad_fd;
             assert!(
@@ -885,7 +889,7 @@ fn adm_013_descent_leaf_gating() {
                 "fd_h {bad_fd} must refuse before any FD division"
             );
         }
-        for bad_lr in [0.0, -0.5, f64::NAN] {
+        for bad_lr in [0.0, -0.5, f64::NAN, 1.000_000_000_000_000_2, f64::MAX] {
             let mut o = fs_opt::DescentOptions::default();
             o.lr = bad_lr;
             assert!(
@@ -902,6 +906,27 @@ fn adm_013_descent_leaf_gating() {
                 ),
                 "lr {bad_lr} must refuse (descent, not ascent or a no-op)"
             );
+        }
+        for bad_threshold in [
+            0.0,
+            -1e-12,
+            f64::NAN,
+            f64::INFINITY,
+            1.000_000_000_000_000_2,
+        ] {
+            let mut o = fs_opt::DescentOptions::default();
+            o.closure_threshold = bad_threshold;
+            assert!(matches!(
+                fs_opt::descend_fn(
+                    Manifold::Rn { dim: 1 },
+                    &quadratic,
+                    &[1.0],
+                    o,
+                    EvalLimit::Unlimited,
+                    &cx,
+                ),
+                Err(OptError::BadParam { .. })
+            ));
         }
 
         // The IR entry point must share the same ordering: invalid
@@ -932,6 +957,11 @@ fn adm_013_descent_leaf_gating() {
             fs_opt::descend_ir(&p, &[f64::NAN, 0.0], opts, &cx),
             Err(OptError::NonFinite { .. })
         ));
+        assert_eq!(
+            objective_calls.get(),
+            0,
+            "all malformed starts/options refuse before the raw objective"
+        );
 
         // Valid descent is unchanged: the guarded path still converges.
         let rep = fs_opt::descend_fn(
@@ -944,6 +974,7 @@ fn adm_013_descent_leaf_gating() {
         )
         .expect("valid descent unchanged");
         assert!(rep.f_final < rep.f0, "still actually descends");
+        assert!(objective_calls.get() > 0);
     });
 }
 
@@ -1069,6 +1100,7 @@ fn adm_017_non_finite_runtime_results_refuse() {
             steps: 1,
             lr: 0.1,
             fd_h: 1e-6,
+            ..fs_opt::DescentOptions::default()
         };
         assert!(matches!(
             fs_opt::descend_ir(&problem, &[5e-7], opts, &cx),
@@ -1243,13 +1275,11 @@ fn adm_018_retraction_domain_is_fail_closed() {
                     steps: 1,
                     lr: f64::MAX,
                     fd_h: 1e-6,
+                    ..fs_opt::DescentOptions::default()
                 },
                 &cx,
             ),
-            Err(OptError::RetractionNonFinite {
-                input: "retraction step",
-                ..
-            })
+            Err(OptError::BadParam { .. })
         ));
     });
 }
@@ -1263,6 +1293,7 @@ fn adm_019_descent_cancellation_boundaries() {
         steps: 1,
         lr: 0.1,
         fd_h: 1e-6,
+        ..fs_opt::DescentOptions::default()
     };
 
     let pre_cancelled = fs_exec::CancelGate::new_clock_free();
@@ -1606,6 +1637,7 @@ fn adm_023_raw_objective_panics_are_typed_and_contained() {
         steps: 1,
         fd_h: 1e-6,
         lr: 0.1,
+        ..fs_opt::DescentOptions::default()
     };
     for (panic_at, site, seed) in [
         (1u64, ObjectiveEvalSite::Initial, 0x1A00),
@@ -1664,4 +1696,158 @@ fn adm_023_raw_objective_panics_are_typed_and_contained() {
             "descent must stop at the panicking objective invocation"
         );
     }
+}
+
+/// adm-024 / G0 — descent policy is a complete pre-objective envelope:
+/// closure is explicit and unitless, exact work/workspace caps admit while
+/// one-short caps refuse, manifold-relative extreme probes refuse before f0,
+/// and unrepresentable plans never saturate into authority.
+#[test]
+fn adm_024_descent_policy_caps_closure_and_overflow_are_typed() {
+    let gate = fs_exec::CancelGate::new_clock_free();
+    with_gate_cx(&gate, 0x1B00, |cx| {
+        let calls = std::cell::Cell::new(0u64);
+        let quadratic = |x: &[f64]| {
+            calls.set(calls.get() + 1);
+            x[0] * x[0]
+        };
+        let one_step = fs_opt::DescentOptions {
+            steps: 1,
+            ..fs_opt::DescentOptions::default()
+        };
+        let receipt = fs_opt::descend_fn(
+            Manifold::Rn { dim: 1 },
+            &quadratic,
+            &[1.0],
+            one_step,
+            EvalLimit::Unlimited,
+            cx,
+        )
+        .expect("default policy envelope");
+        assert_eq!(receipt.stop, DescentStop::StepLimit);
+        assert!(!receipt.budget_stopped);
+
+        let exact = fs_opt::DescentOptions {
+            max_work_units: NonZeroU64::new(receipt.work_upper_bound)
+                .expect("positive work receipt"),
+            max_workspace_bytes: NonZeroU64::new(receipt.workspace_upper_bound_bytes)
+                .expect("positive workspace receipt"),
+            ..one_step
+        };
+        fs_opt::descend_fn(
+            Manifold::Rn { dim: 1 },
+            &quadratic,
+            &[1.0],
+            exact,
+            EvalLimit::Unlimited,
+            cx,
+        )
+        .expect("exact resource caps admit");
+
+        calls.set(0);
+        let one_short_work = fs_opt::DescentOptions {
+            max_work_units: NonZeroU64::new(receipt.work_upper_bound - 1)
+                .expect("one-short work cap remains positive"),
+            ..one_step
+        };
+        assert!(matches!(
+            fs_opt::descend_fn(
+                Manifold::Rn { dim: 1 },
+                &quadratic,
+                &[1.0],
+                one_short_work,
+                EvalLimit::Unlimited,
+                cx,
+            ),
+            Err(OptError::DescentCapExceeded {
+                resource: "work units",
+                required,
+                cap,
+            }) if required == receipt.work_upper_bound && cap + 1 == required
+        ));
+        assert_eq!(calls.get(), 0, "work refusal must dominate f0");
+
+        let one_short_workspace = fs_opt::DescentOptions {
+            max_workspace_bytes: NonZeroU64::new(receipt.workspace_upper_bound_bytes - 1)
+                .expect("one-short workspace cap remains positive"),
+            ..one_step
+        };
+        assert!(matches!(
+            fs_opt::descend_fn(
+                Manifold::Rn { dim: 1 },
+                &quadratic,
+                &[1.0],
+                one_short_workspace,
+                EvalLimit::Unlimited,
+                cx,
+            ),
+            Err(OptError::DescentCapExceeded {
+                resource: "workspace bytes",
+                required,
+                cap,
+            }) if required == receipt.workspace_upper_bound_bytes && cap + 1 == required
+        ));
+        assert_eq!(calls.get(), 0, "workspace refusal must dominate f0");
+
+        let extreme_probe = fs_opt::DescentOptions {
+            steps: 1,
+            fd_h: f64::MAX / 4.0,
+            ..fs_opt::DescentOptions::default()
+        };
+        assert!(matches!(
+            fs_opt::descend_fn(
+                Manifold::Rn { dim: 1 },
+                &quadratic,
+                &[f64::MAX],
+                extreme_probe,
+                EvalLimit::Unlimited,
+                cx,
+            ),
+            Err(OptError::RetractionNonFinite {
+                input: "retraction candidate" | "retraction output",
+                ..
+            })
+        ));
+        assert_eq!(calls.get(), 0, "probe preflight must dominate f0");
+
+        let wide_point = vec![0.0; 65_536];
+        let overflowing = fs_opt::DescentOptions {
+            steps: u32::MAX,
+            max_work_units: NonZeroU64::new(u64::MAX).expect("positive maximum"),
+            ..fs_opt::DescentOptions::default()
+        };
+        assert!(matches!(
+            fs_opt::descend_fn(
+                Manifold::Rn { dim: 65_536 },
+                &quadratic,
+                &wide_point,
+                overflowing,
+                EvalLimit::Unlimited,
+                cx,
+            ),
+            Err(OptError::DescentPlanOverflow {
+                resource: "work units",
+            })
+        ));
+        assert_eq!(calls.get(), 0, "overflow refusal must dominate f0");
+
+        let closure = fs_opt::descend_fn(
+            Manifold::Rn { dim: 1 },
+            &quadratic,
+            &[0.0],
+            fs_opt::DescentOptions {
+                steps: 10,
+                closure_threshold: 1e-12,
+                ..fs_opt::DescentOptions::default()
+            },
+            EvalLimit::Unlimited,
+            cx,
+        )
+        .expect("stationary point closes");
+        assert_eq!(closure.stop, DescentStop::ClosureThreshold);
+        assert_eq!(closure.steps_taken, 0);
+        assert_eq!(closure.evals, 3, "f0 plus one complete central probe pair");
+        assert!(!closure.budget_stopped);
+        assert_eq!(closure.f_final.to_bits(), closure.f0.to_bits());
+    });
 }
