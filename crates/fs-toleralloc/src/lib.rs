@@ -20,17 +20,33 @@
 //! justifies it. Deterministic; depends only on `fs-evidence` and the
 //! `fs-math` deterministic scalar kernels.
 //!
+//! The additive correlated-stack lane admits a bounded lower-triangular
+//! correlation factor `L` with binary64-near-unit rows, so `C = L Lᵀ` is
+//! positive semidefinite by construction. [`propagate_correlated_stack`]
+//! evaluates the signed first-order variance `aᵀ C a`, where
+//! `aᵢ = sensitivityᵢ · σᵢ`, and retains the exact external model identity and
+//! caller-supplied positional terms in its receipt.
+//!
 //! DETERMINISM DOCTRINE (bead frankensim-lyms): every transcendental in
 //! this crate routes through `fs_math::det` so the "fully deterministic"
 //! contract holds cross-ISA by construction — platform libm `ln`/`exp`
 //! differ by ≥1 ULP across ISAs and libm versions. `sqrt` stays primitive
 //! (IEEE-754 requires correct rounding for it).
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, num::NonZeroU64};
 
 use fs_math::det;
 
 pub use fs_evidence::ColorRank;
+
+/// Maximum axis count admitted by the version-one correlated-stack lane.
+pub const MAX_CORRELATED_STACK_TERMS_V1: usize = 128;
+
+/// Maximum byte length of a correlation-model namespace.
+pub const MAX_CORRELATION_MODEL_NAMESPACE_BYTES_V1: usize = 256;
+
+/// Maximum UTF-8 byte length of one correlated-stack term name.
+pub const MAX_CORRELATED_STACK_TERM_NAME_BYTES_V1: usize = 256;
 
 /// A geometric feature whose tolerance is being allocated.
 #[derive(Debug, Clone, PartialEq)]
@@ -47,6 +63,372 @@ pub struct Feature {
     pub baseline_tolerance: f64,
 }
 
+/// Why one supplied correlation-factor entry was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CorrelationFactorIssue {
+    /// NaN and infinities are not correlation coefficients.
+    NonFinite,
+    /// Negative zero is not the canonical encoding of an exact zero.
+    NonCanonicalNegativeZero,
+    /// A row-major entry above the lower triangle must be canonical `+0.0`.
+    AboveDiagonalNonZero,
+    /// Canonical lower-triangular factors use nonnegative diagonal entries.
+    NegativeDiagonal,
+    /// A row admitted near unit norm cannot contain magnitude above one.
+    MagnitudeAboveOne,
+}
+
+/// Refusal from admitting one externally identified correlation factor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CorrelationAdmissionError {
+    /// The namespace is not a bounded canonical slash-separated key.
+    InvalidNamespace {
+        /// Bounded UTF-8 prefix of the rejected namespace.
+        namespace: String,
+        /// Stable grammar explanation.
+        reason: &'static str,
+    },
+    /// An all-zero semantic digest cannot identify an external model.
+    ZeroDigest,
+    /// The declared axis count is empty or exceeds the versioned cap.
+    InvalidDimension {
+        /// Supplied axis count.
+        dimension: usize,
+        /// Versioned maximum.
+        max: usize,
+    },
+    /// The row-major factor length is not exactly `dimension²`.
+    FactorLength {
+        /// Declared matrix dimension.
+        dimension: usize,
+        /// Required scalar count.
+        expected: usize,
+        /// Supplied scalar count.
+        actual: usize,
+    },
+    /// One factor entry violates the canonical lower-triangular grammar.
+    InvalidFactorEntry {
+        /// Zero-based row.
+        row: usize,
+        /// Zero-based column.
+        column: usize,
+        /// Stable refusal class.
+        issue: CorrelationFactorIssue,
+    },
+    /// One binary64-computed factor-row norm is not near one within the
+    /// admitted deterministic roundoff envelope.
+    NonUnitRow {
+        /// Zero-based factor row.
+        row: usize,
+        /// Exact IEEE-754 bits of the binary64-computed squared row norm.
+        norm_squared_bits: u64,
+        /// Exact IEEE-754 bits of the admitted absolute defect.
+        tolerance_bits: u64,
+    },
+}
+
+/// A bounded positive-semidefinite correlation model admitted from its factor.
+///
+/// Admission proves the finite lower-triangular factor grammar and PSD
+/// construction. Its binary64 row-norm check is not an exact-real enclosure of
+/// the implied diagonal. The external owner retains population, process,
+/// calibration, and model-form authority. The exact factor is
+/// representation-semantic: an equivalent singular correlation matrix need
+/// not have a unique factor, and this crate neither derives nor authenticates
+/// the caller-supplied semantic digest.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AdmittedCorrelationModel {
+    namespace: Box<str>,
+    schema_version: NonZeroU64,
+    semantic_digest: [u8; 32],
+    dimension: usize,
+    lower_factor: Box<[f64]>,
+    max_row_norm_defect: f64,
+}
+
+impl AdmittedCorrelationModel {
+    /// Admit an externally identified lower-triangular factor `L` for the
+    /// correlation matrix `C = L Lᵀ`.
+    ///
+    /// `lower_factor` is row-major and must contain canonical `+0.0` above the
+    /// diagonal. Every binary64-computed row squared norm must be within a
+    /// deterministic `64 · dimension · ε` admission envelope around one. This
+    /// is a measured structural check, not an exact-real diagonal enclosure.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an unstable identity, empty/oversized dimension, malformed
+    /// factor layout, non-finite/noncanonical entries, or a row outside the
+    /// measured near-unit envelope.
+    pub fn try_new(
+        namespace: impl Into<String>,
+        schema_version: NonZeroU64,
+        semantic_digest: [u8; 32],
+        dimension: usize,
+        lower_factor: Vec<f64>,
+    ) -> Result<Self, CorrelationAdmissionError> {
+        let namespace = namespace.into();
+        validate_correlation_namespace(&namespace)?;
+        if semantic_digest == [0; 32] {
+            return Err(CorrelationAdmissionError::ZeroDigest);
+        }
+        if dimension == 0 || dimension > MAX_CORRELATED_STACK_TERMS_V1 {
+            return Err(CorrelationAdmissionError::InvalidDimension {
+                dimension,
+                max: MAX_CORRELATED_STACK_TERMS_V1,
+            });
+        }
+        let expected = dimension * dimension;
+        if lower_factor.len() != expected {
+            return Err(CorrelationAdmissionError::FactorLength {
+                dimension,
+                expected,
+                actual: lower_factor.len(),
+            });
+        }
+
+        let row_tolerance = 64.0 * f64::EPSILON * dimension as f64;
+        let mut max_row_norm_defect = 0.0_f64;
+        for row in 0..dimension {
+            let mut norm_squared = 0.0_f64;
+            for column in 0..dimension {
+                let value = lower_factor[row * dimension + column];
+                let issue = if !value.is_finite() {
+                    Some(CorrelationFactorIssue::NonFinite)
+                } else if value == 0.0 && value.is_sign_negative() {
+                    Some(CorrelationFactorIssue::NonCanonicalNegativeZero)
+                } else if column > row && value != 0.0 {
+                    Some(CorrelationFactorIssue::AboveDiagonalNonZero)
+                } else if column == row && value < 0.0 {
+                    Some(CorrelationFactorIssue::NegativeDiagonal)
+                } else if value.abs() > 1.0 {
+                    Some(CorrelationFactorIssue::MagnitudeAboveOne)
+                } else {
+                    None
+                };
+                if let Some(issue) = issue {
+                    return Err(CorrelationAdmissionError::InvalidFactorEntry {
+                        row,
+                        column,
+                        issue,
+                    });
+                }
+                if column <= row {
+                    norm_squared += value * value;
+                }
+            }
+            let defect = (norm_squared - 1.0).abs();
+            if defect > row_tolerance {
+                return Err(CorrelationAdmissionError::NonUnitRow {
+                    row,
+                    norm_squared_bits: norm_squared.to_bits(),
+                    tolerance_bits: row_tolerance.to_bits(),
+                });
+            }
+            max_row_norm_defect = max_row_norm_defect.max(defect);
+        }
+
+        Ok(Self {
+            namespace: namespace.into_boxed_str(),
+            schema_version,
+            semantic_digest,
+            dimension,
+            lower_factor: lower_factor.into_boxed_slice(),
+            max_row_norm_defect,
+        })
+    }
+
+    /// External model namespace.
+    #[must_use]
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+
+    /// Explicit external schema version.
+    #[must_use]
+    pub const fn schema_version(&self) -> NonZeroU64 {
+        self.schema_version
+    }
+
+    /// Exact semantic digest supplied by the external owner.
+    #[must_use]
+    pub const fn semantic_digest(&self) -> [u8; 32] {
+        self.semantic_digest
+    }
+
+    /// Number of positional factor axes.
+    ///
+    /// External axis identifiers/order are not carried or authenticated by
+    /// this seed type; callers bind terms positionally in the receipt.
+    #[must_use]
+    pub const fn dimension(&self) -> usize {
+        self.dimension
+    }
+
+    /// Exact admitted row-major lower-triangular factor.
+    #[must_use]
+    pub fn lower_factor(&self) -> &[f64] {
+        &self.lower_factor
+    }
+
+    /// Largest binary64-computed absolute defect in a factor row's squared norm.
+    #[must_use]
+    pub const fn max_row_norm_defect(&self) -> f64 {
+        self.max_row_norm_defect
+    }
+}
+
+/// One signed first-order term in a correlated manufacturing stack.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CorrelatedStackTerm {
+    /// Bounded caller label in positional factor order.
+    pub name: String,
+    /// Signed derivative `∂QoI/∂axis`; zero is permitted and remains explicit.
+    pub signed_sensitivity: f64,
+    /// Evidence color carried by the supplied sensitivity.
+    pub sensitivity_color: ColorRank,
+    /// Strictly positive standard deviation for this manufacturing axis.
+    pub standard_deviation: f64,
+}
+
+/// A correlated-stack derived quantity that could not be represented safely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CorrelatedDerivedQuantity {
+    /// One signed `sensitivity · standard_deviation` term.
+    ScaledSensitivity,
+    /// One nonzero scaled term normalized by the stack scale.
+    NormalizedSensitivity,
+    /// One nonzero factor-times-normalized-term product.
+    CorrelationProjectionProduct,
+    /// One factor-column projection whose numerical zero was ambiguous.
+    CorrelationProjection,
+    /// The standard deviation under independent axes.
+    IndependentStandardDeviation,
+    /// The variance under independent axes.
+    IndependentVariance,
+    /// The standard deviation under the admitted correlation factor.
+    CorrelatedStandardDeviation,
+    /// The variance under the admitted correlation factor.
+    CorrelatedVariance,
+}
+
+/// Refusal from evaluating one admitted correlation model and term stack.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CorrelatedStackError {
+    /// A stack with no axes has no manufacturing semantics.
+    NoTerms,
+    /// The supplied stack exceeds the versioned work/retention cap.
+    TooManyTerms {
+        /// Supplied term count.
+        actual: usize,
+        /// Versioned maximum.
+        max: usize,
+    },
+    /// Model and term axis counts differ.
+    DimensionMismatch {
+        /// Model axis count.
+        model: usize,
+        /// Supplied term count.
+        terms: usize,
+    },
+    /// One term name is empty or unstable.
+    InvalidTermName {
+        /// Position in model order.
+        index: usize,
+        /// Bounded UTF-8 prefix of the rejected spelling.
+        name: String,
+        /// Stable explanation.
+        reason: &'static str,
+    },
+    /// Two term names collide under deterministic lowercase comparison.
+    AmbiguousTermName {
+        /// First position.
+        first_index: usize,
+        /// Colliding position.
+        duplicate_index: usize,
+        /// Canonical comparison key.
+        canonical_name: String,
+    },
+    /// One term scalar is outside its declared domain.
+    InvalidTermField {
+        /// Position in model order.
+        index: usize,
+        /// Term name.
+        name: String,
+        /// Rejected field.
+        field: &'static str,
+        /// Domain violation.
+        issue: ScalarIssue,
+    },
+    /// Finite admitted inputs produced an unrepresentable result.
+    InvalidDerived {
+        /// Failed quantity.
+        quantity: CorrelatedDerivedQuantity,
+        /// Term position when the failure belongs to one axis.
+        term_index: Option<usize>,
+        /// Numeric failure class.
+        issue: ScalarIssue,
+    },
+}
+
+/// Non-forgeable result of one correlated first-order stack evaluation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CorrelatedStackReceipt {
+    model: AdmittedCorrelationModel,
+    terms: Box<[CorrelatedStackTerm]>,
+    independent_standard_deviation: f64,
+    independent_variance: f64,
+    correlated_standard_deviation: f64,
+    correlated_variance: f64,
+    correlation_variance_delta: f64,
+}
+
+impl CorrelatedStackReceipt {
+    /// Exact admitted correlation model used by the evaluation.
+    #[must_use]
+    pub const fn model(&self) -> &AdmittedCorrelationModel {
+        &self.model
+    }
+
+    /// Exact caller-supplied terms in positional factor order.
+    #[must_use]
+    pub fn terms(&self) -> &[CorrelatedStackTerm] {
+        &self.terms
+    }
+
+    /// First-order standard deviation under an independence assumption.
+    #[must_use]
+    pub const fn independent_standard_deviation(&self) -> f64 {
+        self.independent_standard_deviation
+    }
+
+    /// First-order variance under an independence assumption.
+    #[must_use]
+    pub const fn independent_variance(&self) -> f64 {
+        self.independent_variance
+    }
+
+    /// First-order standard deviation under the admitted factor.
+    #[must_use]
+    pub const fn correlated_standard_deviation(&self) -> f64 {
+        self.correlated_standard_deviation
+    }
+
+    /// First-order variance under the admitted factor.
+    #[must_use]
+    pub const fn correlated_variance(&self) -> f64 {
+        self.correlated_variance
+    }
+
+    /// Signed binary64 `correlated_variance - independent_variance`;
+    /// correlation may increase or decrease the propagated variance. A zero
+    /// delta does not certify independence or absence of an exact-real effect.
+    #[must_use]
+    pub const fn correlation_variance_delta(&self) -> f64 {
+        self.correlation_variance_delta
+    }
+}
+
 /// Why a scalar was rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarIssue {
@@ -58,6 +440,12 @@ pub enum ScalarIssue {
     Negative,
     /// The value was outside the open unit interval `(0, 1)`.
     OutsideOpenUnitInterval,
+    /// A semantic exact zero used the noncanonical negative-zero encoding.
+    NonCanonicalNegativeZero,
+    /// A nonzero mathematical result rounded to zero in binary64.
+    Underflow,
+    /// Nonzero inputs produced a numerical zero whose exactness is unknown.
+    AmbiguousZero,
 }
 
 /// A derived quantity that could not be represented safely.
@@ -456,6 +844,356 @@ fn validate_nonnegative_derived(
     } else {
         Ok(())
     }
+}
+
+fn validate_correlation_namespace(namespace: &str) -> Result<(), CorrelationAdmissionError> {
+    let reason = if namespace.is_empty() {
+        Some("namespace must not be empty")
+    } else if namespace.len() > MAX_CORRELATION_MODEL_NAMESPACE_BYTES_V1 {
+        Some("namespace exceeds the versioned byte cap")
+    } else if namespace
+        .as_bytes()
+        .split(|byte| *byte == b'/')
+        .any(|segment| segment.is_empty())
+    {
+        Some("namespace segments must not be empty")
+    } else if namespace
+        .as_bytes()
+        .split(|byte| *byte == b'/')
+        .any(|segment| {
+            !segment[0].is_ascii_lowercase()
+                || segment.last() == Some(&b'-')
+                || segment.windows(2).any(|pair| pair == b"--")
+                || segment.iter().any(|byte| {
+                    !byte.is_ascii_lowercase() && !byte.is_ascii_digit() && *byte != b'-'
+                })
+        })
+    {
+        Some(
+            "namespace segments must start lowercase and use lowercase ASCII letters, digits, or single interior hyphens",
+        )
+    } else {
+        None
+    };
+    if let Some(reason) = reason {
+        Err(CorrelationAdmissionError::InvalidNamespace {
+            namespace: bounded_utf8_prefix(namespace, MAX_CORRELATION_MODEL_NAMESPACE_BYTES_V1),
+            reason,
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn bounded_utf8_prefix(value: &str, max_bytes: usize) -> String {
+    let mut end = value.len().min(max_bytes);
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_string()
+}
+
+fn canonical_stack_term_name(index: usize, name: &str) -> Result<String, CorrelatedStackError> {
+    let reason = if name.is_empty() {
+        Some("name must not be empty")
+    } else if name.len() > MAX_CORRELATED_STACK_TERM_NAME_BYTES_V1 {
+        Some("name exceeds the versioned byte cap")
+    } else if name.trim() != name {
+        Some("name must not have leading or trailing whitespace")
+    } else if name.chars().any(char::is_control) {
+        Some("name must not contain control characters")
+    } else {
+        None
+    };
+    if let Some(reason) = reason {
+        Err(CorrelatedStackError::InvalidTermName {
+            index,
+            name: bounded_utf8_prefix(name, MAX_CORRELATED_STACK_TERM_NAME_BYTES_V1),
+            reason,
+        })
+    } else {
+        let canonical_name = name.to_lowercase();
+        if canonical_name.len() > MAX_CORRELATED_STACK_TERM_NAME_BYTES_V1 {
+            Err(CorrelatedStackError::InvalidTermName {
+                index,
+                name: name.to_string(),
+                reason: "lowercase comparison key exceeds the versioned byte cap",
+            })
+        } else {
+            Ok(canonical_name)
+        }
+    }
+}
+
+fn correlated_invalid_derived(
+    quantity: CorrelatedDerivedQuantity,
+    term_index: Option<usize>,
+    issue: ScalarIssue,
+) -> CorrelatedStackError {
+    CorrelatedStackError::InvalidDerived {
+        quantity,
+        term_index,
+        issue,
+    }
+}
+
+fn normalized_l2(values: &[f64]) -> f64 {
+    let mut scale = 0.0_f64;
+    let mut sum_squares = 1.0_f64;
+    for value in values.iter().copied().map(f64::abs) {
+        if value == 0.0 {
+            continue;
+        }
+        if scale < value {
+            let ratio = scale / value;
+            sum_squares = 1.0 + sum_squares * ratio * ratio;
+            scale = value;
+        } else {
+            let ratio = value / scale;
+            sum_squares += ratio * ratio;
+        }
+    }
+    if scale == 0.0 {
+        0.0
+    } else {
+        scale * sum_squares.sqrt()
+    }
+}
+
+fn rescale_stack_deviation(
+    scale: f64,
+    normalized_standard_deviation: f64,
+    standard_deviation_quantity: CorrelatedDerivedQuantity,
+    variance_quantity: CorrelatedDerivedQuantity,
+) -> Result<(f64, f64), CorrelatedStackError> {
+    if normalized_standard_deviation == 0.0 {
+        return Err(correlated_invalid_derived(
+            standard_deviation_quantity,
+            None,
+            ScalarIssue::Underflow,
+        ));
+    }
+    let standard_deviation = scale * normalized_standard_deviation;
+    if !standard_deviation.is_finite() {
+        return Err(correlated_invalid_derived(
+            standard_deviation_quantity,
+            None,
+            ScalarIssue::NonFinite,
+        ));
+    }
+    if standard_deviation == 0.0 {
+        return Err(correlated_invalid_derived(
+            standard_deviation_quantity,
+            None,
+            ScalarIssue::Underflow,
+        ));
+    }
+    let variance = standard_deviation * standard_deviation;
+    if !variance.is_finite() {
+        return Err(correlated_invalid_derived(
+            variance_quantity,
+            None,
+            ScalarIssue::NonFinite,
+        ));
+    }
+    if variance == 0.0 {
+        return Err(correlated_invalid_derived(
+            variance_quantity,
+            None,
+            ScalarIssue::Underflow,
+        ));
+    }
+    Ok((standard_deviation, variance))
+}
+
+/// Propagate signed first-order tolerance terms through an admitted
+/// positive-semidefinite correlation factor.
+///
+/// For `aᵢ = signed_sensitivityᵢ · standard_deviationᵢ` and `C = L Lᵀ`, this
+/// evaluates `variance = aᵀ C a = ||Lᵀ a||²`. The receipt also retains the
+/// counterfactual independent-axis variance `Σ aᵢ²`, so an invalid independence
+/// assumption is explicit rather than silently substituted.
+///
+/// # Errors
+///
+/// Refuses an empty/oversized or dimension-mismatched stack, unstable or
+/// ambiguous term names, invalid scalars, and non-representable products,
+/// standard deviations, or variances.
+pub fn propagate_correlated_stack(
+    model: &AdmittedCorrelationModel,
+    terms: &[CorrelatedStackTerm],
+) -> Result<CorrelatedStackReceipt, CorrelatedStackError> {
+    if terms.is_empty() {
+        return Err(CorrelatedStackError::NoTerms);
+    }
+    if terms.len() > MAX_CORRELATED_STACK_TERMS_V1 {
+        return Err(CorrelatedStackError::TooManyTerms {
+            actual: terms.len(),
+            max: MAX_CORRELATED_STACK_TERMS_V1,
+        });
+    }
+    if model.dimension != terms.len() {
+        return Err(CorrelatedStackError::DimensionMismatch {
+            model: model.dimension,
+            terms: terms.len(),
+        });
+    }
+
+    let mut canonical_names = BTreeMap::new();
+    let mut scaled_terms = Vec::with_capacity(terms.len());
+    let mut scale = 0.0_f64;
+    for (index, term) in terms.iter().enumerate() {
+        let canonical_name = canonical_stack_term_name(index, &term.name)?;
+        if let Some(&first_index) = canonical_names.get(&canonical_name) {
+            return Err(CorrelatedStackError::AmbiguousTermName {
+                first_index,
+                duplicate_index: index,
+                canonical_name,
+            });
+        }
+        canonical_names.insert(canonical_name, index);
+        if !term.signed_sensitivity.is_finite() {
+            return Err(CorrelatedStackError::InvalidTermField {
+                index,
+                name: term.name.clone(),
+                field: "signed_sensitivity",
+                issue: ScalarIssue::NonFinite,
+            });
+        }
+        if term.signed_sensitivity == 0.0 && term.signed_sensitivity.is_sign_negative() {
+            return Err(CorrelatedStackError::InvalidTermField {
+                index,
+                name: term.name.clone(),
+                field: "signed_sensitivity",
+                issue: ScalarIssue::NonCanonicalNegativeZero,
+            });
+        }
+        let standard_deviation_issue = if !term.standard_deviation.is_finite() {
+            Some(ScalarIssue::NonFinite)
+        } else if term.standard_deviation <= 0.0 {
+            Some(ScalarIssue::NonPositive)
+        } else {
+            None
+        };
+        if let Some(issue) = standard_deviation_issue {
+            return Err(CorrelatedStackError::InvalidTermField {
+                index,
+                name: term.name.clone(),
+                field: "standard_deviation",
+                issue,
+            });
+        }
+        let scaled = term.signed_sensitivity * term.standard_deviation;
+        if !scaled.is_finite() {
+            return Err(correlated_invalid_derived(
+                CorrelatedDerivedQuantity::ScaledSensitivity,
+                Some(index),
+                ScalarIssue::NonFinite,
+            ));
+        }
+        if scaled == 0.0 && term.signed_sensitivity != 0.0 {
+            return Err(correlated_invalid_derived(
+                CorrelatedDerivedQuantity::ScaledSensitivity,
+                Some(index),
+                ScalarIssue::Underflow,
+            ));
+        }
+        scale = scale.max(scaled.abs());
+        scaled_terms.push(scaled);
+    }
+
+    if scale == 0.0 {
+        return Ok(CorrelatedStackReceipt {
+            model: model.clone(),
+            terms: terms.to_vec().into_boxed_slice(),
+            independent_standard_deviation: 0.0,
+            independent_variance: 0.0,
+            correlated_standard_deviation: 0.0,
+            correlated_variance: 0.0,
+            correlation_variance_delta: 0.0,
+        });
+    }
+
+    let mut normalized_terms = Vec::with_capacity(scaled_terms.len());
+    for (index, scaled) in scaled_terms.iter().copied().enumerate() {
+        let normalized = scaled / scale;
+        if scaled != 0.0 && normalized == 0.0 {
+            return Err(correlated_invalid_derived(
+                CorrelatedDerivedQuantity::NormalizedSensitivity,
+                Some(index),
+                ScalarIssue::Underflow,
+            ));
+        }
+        normalized_terms.push(normalized);
+    }
+    let independent_normalized_standard_deviation = normalized_l2(&normalized_terms);
+    let (independent_standard_deviation, independent_variance) = rescale_stack_deviation(
+        scale,
+        independent_normalized_standard_deviation,
+        CorrelatedDerivedQuantity::IndependentStandardDeviation,
+        CorrelatedDerivedQuantity::IndependentVariance,
+    )?;
+
+    let mut normalized_projections = Vec::with_capacity(model.dimension);
+    for column in 0..model.dimension {
+        let mut sum = 0.0_f64;
+        let mut correction = 0.0_f64;
+        let mut had_nonzero_product = false;
+        for (row, normalized) in normalized_terms.iter().copied().enumerate().skip(column) {
+            let factor = model.lower_factor[row * model.dimension + column];
+            let value = factor * normalized;
+            if factor != 0.0 && normalized != 0.0 {
+                if value == 0.0 {
+                    return Err(correlated_invalid_derived(
+                        CorrelatedDerivedQuantity::CorrelationProjectionProduct,
+                        Some(row),
+                        ScalarIssue::Underflow,
+                    ));
+                }
+                had_nonzero_product = true;
+            }
+            let next = sum + value;
+            correction += if sum.abs() >= value.abs() {
+                (sum - next) + value
+            } else {
+                (value - next) + sum
+            };
+            sum = next;
+        }
+        let projection = sum + correction;
+        if !projection.is_finite() {
+            return Err(correlated_invalid_derived(
+                CorrelatedDerivedQuantity::CorrelationProjection,
+                None,
+                ScalarIssue::NonFinite,
+            ));
+        }
+        if projection == 0.0 && had_nonzero_product {
+            return Err(correlated_invalid_derived(
+                CorrelatedDerivedQuantity::CorrelationProjection,
+                None,
+                ScalarIssue::AmbiguousZero,
+            ));
+        }
+        normalized_projections.push(if projection == 0.0 { 0.0 } else { projection });
+    }
+    let correlated_normalized_standard_deviation = normalized_l2(&normalized_projections);
+    let (correlated_standard_deviation, correlated_variance) = rescale_stack_deviation(
+        scale,
+        correlated_normalized_standard_deviation,
+        CorrelatedDerivedQuantity::CorrelatedStandardDeviation,
+        CorrelatedDerivedQuantity::CorrelatedVariance,
+    )?;
+
+    Ok(CorrelatedStackReceipt {
+        model: model.clone(),
+        terms: terms.to_vec().into_boxed_slice(),
+        independent_standard_deviation,
+        independent_variance,
+        correlated_standard_deviation,
+        correlated_variance,
+        correlation_variance_delta: correlated_variance - independent_variance,
+    })
 }
 
 /// The linearization's verdict against sampled tolerance-band extremes.

@@ -3,9 +3,14 @@
 //! the band-extremes robustness check, the GD&T report carrying certified
 //! sensitivities, the P(in-spec) → variance budget, and error paths.
 
+use std::num::NonZeroU64;
+
 use fs_toleralloc::{
-    Action, Allocation, ColorRank, DerivedQuantity, Feature, ScalarIssue, ToleranceError, allocate,
-    gdt_report, robustness_check, variance_budget,
+    Action, AdmittedCorrelationModel, Allocation, ColorRank, CorrelatedDerivedQuantity,
+    CorrelatedStackError, CorrelatedStackTerm, CorrelationAdmissionError, CorrelationFactorIssue,
+    DerivedQuantity, Feature, MAX_CORRELATED_STACK_TERM_NAME_BYTES_V1,
+    MAX_CORRELATED_STACK_TERMS_V1, ScalarIssue, ToleranceError, allocate, gdt_report,
+    propagate_correlated_stack, robustness_check, variance_budget,
 };
 
 fn feature(name: &str, sensitivity: f64, baseline: f64) -> Feature {
@@ -16,6 +21,66 @@ fn feature(name: &str, sensitivity: f64, baseline: f64) -> Feature {
         cost_coeff: 1.0,
         baseline_tolerance: baseline,
     }
+}
+
+fn correlation_model(rho: f64, residual: f64) -> AdmittedCorrelationModel {
+    AdmittedCorrelationModel::try_new(
+        "gear/process-runout",
+        NonZeroU64::new(1).expect("one is nonzero"),
+        [0x5a; 32],
+        2,
+        vec![1.0, 0.0, rho, residual],
+    )
+    .expect("manufactured factor is admissible")
+}
+
+fn stack_term(name: &str, signed_sensitivity: f64, standard_deviation: f64) -> CorrelatedStackTerm {
+    CorrelatedStackTerm {
+        name: name.into(),
+        signed_sensitivity,
+        sensitivity_color: ColorRank::Verified,
+        standard_deviation,
+    }
+}
+
+fn assert_relative_close(actual: f64, expected: f64, tolerance: f64) {
+    let scale = actual.abs().max(expected.abs()).max(1.0);
+    assert!(
+        (actual - expected).abs() <= tolerance * scale,
+        "actual {actual:.17e}, expected {expected:.17e}"
+    );
+}
+
+fn splitmix64(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    let mut value = *state;
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
+
+fn correlated_rademacher_monte_carlo_variance(samples: u32) -> f64 {
+    let mut state = 0x6765_6172_2d73_7461_u64;
+    let mut sum = 0.0_f64;
+    let mut sum_squares = 0.0_f64;
+    for _ in 0..samples {
+        let x = if splitmix64(&mut state) & 1 == 0 {
+            -1.0
+        } else {
+            1.0
+        };
+        let y = if splitmix64(&mut state) % 10 == 0 {
+            -x
+        } else {
+            x
+        };
+        let qoi = x + y;
+        sum += qoi;
+        sum_squares += qoi * qoi;
+    }
+    let count = f64::from(samples);
+    let mean = sum / count;
+    sum_squares / count - mean * mean
 }
 
 #[test]
@@ -498,4 +563,404 @@ fn forged_empty_or_zero_allocation_cannot_confirm_or_publish() {
             issue: ScalarIssue::NonPositive,
         })
     ));
+}
+
+#[test]
+fn correlated_stack_catches_independence_error_against_exhaustive_population() {
+    let model = correlation_model(0.8, 0.6);
+    let terms = [
+        stack_term("carrier-runout", 1.0, 1.0),
+        stack_term("gear-eccentricity", 1.0, 1.0),
+    ];
+    let receipt = propagate_correlated_stack(&model, &terms).expect("correlated stack evaluates");
+
+    // Manufactured finite population: Y equals X in 18 of 20 equiprobable
+    // outcomes and is -X in two, so Corr(X,Y)=0.8 exactly. Exhaustive
+    // enumeration is a stronger oracle than a sampled Monte Carlo estimate.
+    let weighted_outputs = [(2.0_f64, 9_u32), (-2.0, 9), (0.0, 1), (0.0, 1)];
+    let population_variance = weighted_outputs
+        .iter()
+        .map(|(value, weight)| value * value * f64::from(*weight))
+        .sum::<f64>()
+        / 20.0;
+    let monte_carlo_variance = correlated_rademacher_monte_carlo_variance(200_000);
+
+    assert_relative_close(receipt.independent_variance(), 2.0, 1e-15);
+    assert_relative_close(receipt.correlated_variance(), 3.6, 1e-15);
+    assert_relative_close(receipt.correlated_variance(), population_variance, 1e-15);
+    assert!((receipt.correlated_variance() - monte_carlo_variance).abs() < 0.02);
+    assert!((receipt.independent_variance() - monte_carlo_variance).abs() > 1.0);
+    assert_relative_close(receipt.correlation_variance_delta(), 1.6, 1e-15);
+    assert_relative_close(
+        receipt.independent_standard_deviation(),
+        2.0_f64.sqrt(),
+        1e-15,
+    );
+    assert_relative_close(
+        receipt.correlated_standard_deviation(),
+        3.6_f64.sqrt(),
+        1e-15,
+    );
+    assert_eq!(receipt.model().namespace(), "gear/process-runout");
+    assert_eq!(receipt.model().schema_version().get(), 1);
+    assert_eq!(receipt.model().semantic_digest(), [0x5a; 32]);
+    assert_eq!(receipt.model().lower_factor(), [1.0, 0.0, 0.8, 0.6]);
+    assert_eq!(receipt.terms(), terms);
+    assert_eq!(
+        receipt
+            .terms()
+            .iter()
+            .map(|term| term.name.as_str())
+            .collect::<Vec<_>>(),
+        ["carrier-runout", "gear-eccentricity"]
+    );
+    assert_eq!(
+        propagate_correlated_stack(&model, &terms),
+        propagate_correlated_stack(&model, &terms)
+    );
+    let rebound_model = AdmittedCorrelationModel::try_new(
+        "gear/process-runout",
+        NonZeroU64::new(1).expect("one is nonzero"),
+        [0x5b; 32],
+        2,
+        vec![1.0, 0.0, 0.8, 0.6],
+    )
+    .expect("rebound model is structurally admissible");
+    let rebound =
+        propagate_correlated_stack(&rebound_model, &terms).expect("rebound stack evaluates");
+    assert_eq!(rebound.correlated_variance(), receipt.correlated_variance());
+    assert_ne!(rebound, receipt, "model identity is receipt-semantic");
+}
+
+#[test]
+fn g3_signed_sensitivity_and_correlation_can_reduce_or_increase_variance() {
+    let positive = correlation_model(0.8, 0.6);
+    let opposite_terms = [
+        stack_term("carrier-runout", 1.0, 1.0),
+        stack_term("gear-eccentricity", -1.0, 1.0),
+    ];
+    let reduced =
+        propagate_correlated_stack(&positive, &opposite_terms).expect("opposite signs evaluate");
+    assert_relative_close(reduced.independent_variance(), 2.0, 1e-15);
+    assert_relative_close(reduced.correlated_variance(), 0.4, 1e-15);
+    assert_relative_close(reduced.correlation_variance_delta(), -1.6, 1e-15);
+
+    let negative = correlation_model(-0.8, 0.6);
+    let increased =
+        propagate_correlated_stack(&negative, &opposite_terms).expect("negative rho evaluates");
+    assert_relative_close(increased.independent_variance(), 2.0, 1e-15);
+    assert_relative_close(increased.correlated_variance(), 3.6, 1e-15);
+    assert_relative_close(increased.correlation_variance_delta(), 1.6, 1e-15);
+
+    let perfectly_correlated = correlation_model(1.0, 0.0);
+    assert_eq!(
+        propagate_correlated_stack(&perfectly_correlated, &opposite_terms),
+        Err(CorrelatedStackError::InvalidDerived {
+            quantity: CorrelatedDerivedQuantity::CorrelationProjection,
+            term_index: None,
+            issue: ScalarIssue::AmbiguousZero,
+        })
+    );
+}
+
+#[test]
+fn correlation_factor_admission_is_bounded_canonical_and_psd_by_construction() {
+    let version = NonZeroU64::new(1).expect("one is nonzero");
+    assert!(matches!(
+        AdmittedCorrelationModel::try_new("Bad.Namespace", version, [1; 32], 1, vec![1.0]),
+        Err(CorrelationAdmissionError::InvalidNamespace { .. })
+    ));
+    let overlong_namespace = "a".repeat(257);
+    assert!(matches!(
+        AdmittedCorrelationModel::try_new(
+            overlong_namespace,
+            version,
+            [1; 32],
+            1,
+            vec![1.0],
+        ),
+        Err(CorrelationAdmissionError::InvalidNamespace {
+            ref namespace,
+            reason: "namespace exceeds the versioned byte cap",
+        }) if namespace.len() == 256
+    ));
+    assert_eq!(
+        AdmittedCorrelationModel::try_new("gear/runout", version, [0; 32], 1, vec![1.0]),
+        Err(CorrelationAdmissionError::ZeroDigest)
+    );
+    assert_eq!(
+        AdmittedCorrelationModel::try_new("gear/runout", version, [1; 32], 0, Vec::new()),
+        Err(CorrelationAdmissionError::InvalidDimension {
+            dimension: 0,
+            max: MAX_CORRELATED_STACK_TERMS_V1,
+        })
+    );
+    assert_eq!(
+        AdmittedCorrelationModel::try_new(
+            "gear/runout",
+            version,
+            [1; 32],
+            MAX_CORRELATED_STACK_TERMS_V1 + 1,
+            Vec::new(),
+        ),
+        Err(CorrelationAdmissionError::InvalidDimension {
+            dimension: MAX_CORRELATED_STACK_TERMS_V1 + 1,
+            max: MAX_CORRELATED_STACK_TERMS_V1,
+        })
+    );
+    assert_eq!(
+        AdmittedCorrelationModel::try_new("gear/runout", version, [1; 32], 2, vec![1.0; 3]),
+        Err(CorrelationAdmissionError::FactorLength {
+            dimension: 2,
+            expected: 4,
+            actual: 3,
+        })
+    );
+
+    for (factor, row, column, issue) in [
+        (
+            vec![1.0, f64::NAN, 0.0, 1.0],
+            0,
+            1,
+            CorrelationFactorIssue::NonFinite,
+        ),
+        (
+            vec![1.0, -0.0, 0.0, 1.0],
+            0,
+            1,
+            CorrelationFactorIssue::NonCanonicalNegativeZero,
+        ),
+        (
+            vec![1.0, 0.25, 0.0, 1.0],
+            0,
+            1,
+            CorrelationFactorIssue::AboveDiagonalNonZero,
+        ),
+        (
+            vec![1.0, 0.0, 0.0, -1.0],
+            1,
+            1,
+            CorrelationFactorIssue::NegativeDiagonal,
+        ),
+        (
+            vec![1.0, 0.0, 1.01, 0.0],
+            1,
+            0,
+            CorrelationFactorIssue::MagnitudeAboveOne,
+        ),
+    ] {
+        assert_eq!(
+            AdmittedCorrelationModel::try_new("gear/runout", version, [1; 32], 2, factor),
+            Err(CorrelationAdmissionError::InvalidFactorEntry { row, column, issue })
+        );
+    }
+
+    assert!(matches!(
+        AdmittedCorrelationModel::try_new(
+            "gear/runout",
+            version,
+            [1; 32],
+            2,
+            vec![1.0, 0.0, 0.5, 0.5],
+        ),
+        Err(CorrelationAdmissionError::NonUnitRow { row: 1, .. })
+    ));
+}
+
+#[test]
+fn correlated_stack_refuses_axis_and_numeric_ambiguity() {
+    let model = correlation_model(0.8, 0.6);
+    assert_eq!(
+        propagate_correlated_stack(&model, &[]),
+        Err(CorrelatedStackError::NoTerms)
+    );
+    assert_eq!(
+        propagate_correlated_stack(&model, &[stack_term("only-one-axis", 1.0, 1.0)],),
+        Err(CorrelatedStackError::DimensionMismatch { model: 2, terms: 1 })
+    );
+    let too_many = (0..=MAX_CORRELATED_STACK_TERMS_V1)
+        .map(|index| stack_term(&format!("axis-{index}"), 1.0, 1.0))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        propagate_correlated_stack(&model, &too_many),
+        Err(CorrelatedStackError::TooManyTerms {
+            actual: MAX_CORRELATED_STACK_TERMS_V1 + 1,
+            max: MAX_CORRELATED_STACK_TERMS_V1,
+        })
+    );
+    assert!(matches!(
+        propagate_correlated_stack(
+            &model,
+            &[
+                stack_term("Runout", 1.0, 1.0),
+                stack_term("runout", 1.0, 1.0),
+            ],
+        ),
+        Err(CorrelatedStackError::AmbiguousTermName {
+            first_index: 0,
+            duplicate_index: 1,
+            ..
+        })
+    ));
+    assert!(matches!(
+        propagate_correlated_stack(
+            &model,
+            &[
+                stack_term(" bad-axis", 1.0, 1.0),
+                stack_term("other", 1.0, 1.0),
+            ],
+        ),
+        Err(CorrelatedStackError::InvalidTermName { index: 0, .. })
+    ));
+    let overlong_name = "a".repeat(MAX_CORRELATED_STACK_TERM_NAME_BYTES_V1 + 1);
+    assert!(matches!(
+        propagate_correlated_stack(
+            &model,
+            &[
+                stack_term(&overlong_name, 1.0, 1.0),
+                stack_term("other", 1.0, 1.0),
+            ],
+        ),
+        Err(CorrelatedStackError::InvalidTermName {
+            index: 0,
+            ref name,
+            reason: "name exceeds the versioned byte cap",
+        }) if name.len() == MAX_CORRELATED_STACK_TERM_NAME_BYTES_V1
+    ));
+    let expanding_name = "\u{130}".repeat(MAX_CORRELATED_STACK_TERM_NAME_BYTES_V1 / 2);
+    assert_eq!(
+        expanding_name.len(),
+        MAX_CORRELATED_STACK_TERM_NAME_BYTES_V1
+    );
+    assert!(matches!(
+        propagate_correlated_stack(
+            &model,
+            &[
+                stack_term(&expanding_name, 1.0, 1.0),
+                stack_term("other", 1.0, 1.0),
+            ],
+        ),
+        Err(CorrelatedStackError::InvalidTermName {
+            index: 0,
+            reason: "lowercase comparison key exceeds the versioned byte cap",
+            ..
+        })
+    ));
+    assert!(matches!(
+        propagate_correlated_stack(
+            &model,
+            &[
+                stack_term("bad-sensitivity", f64::INFINITY, 1.0),
+                stack_term("other", 1.0, 1.0),
+            ],
+        ),
+        Err(CorrelatedStackError::InvalidTermField {
+            index: 0,
+            field: "signed_sensitivity",
+            issue: ScalarIssue::NonFinite,
+            ..
+        })
+    ));
+    assert!(matches!(
+        propagate_correlated_stack(
+            &model,
+            &[
+                stack_term("negative-zero", -0.0, 1.0),
+                stack_term("other", 1.0, 1.0),
+            ],
+        ),
+        Err(CorrelatedStackError::InvalidTermField {
+            index: 0,
+            field: "signed_sensitivity",
+            issue: ScalarIssue::NonCanonicalNegativeZero,
+            ..
+        })
+    ));
+    for deviation in [0.0, -1.0, f64::NAN] {
+        assert!(matches!(
+            propagate_correlated_stack(
+                &model,
+                &[
+                    stack_term("bad-deviation", 1.0, deviation),
+                    stack_term("other", 1.0, 1.0),
+                ],
+            ),
+            Err(CorrelatedStackError::InvalidTermField {
+                index: 0,
+                field: "standard_deviation",
+                ..
+            })
+        ));
+    }
+    assert_eq!(
+        propagate_correlated_stack(
+            &model,
+            &[
+                stack_term("overflow", f64::MAX, 2.0),
+                stack_term("other", 1.0, 1.0),
+            ],
+        ),
+        Err(CorrelatedStackError::InvalidDerived {
+            quantity: CorrelatedDerivedQuantity::ScaledSensitivity,
+            term_index: Some(0),
+            issue: ScalarIssue::NonFinite,
+        })
+    );
+    assert_eq!(
+        propagate_correlated_stack(
+            &model,
+            &[
+                stack_term("underflow", f64::MIN_POSITIVE, f64::MIN_POSITIVE),
+                stack_term("other", 1.0, 1.0),
+            ],
+        ),
+        Err(CorrelatedStackError::InvalidDerived {
+            quantity: CorrelatedDerivedQuantity::ScaledSensitivity,
+            term_index: Some(0),
+            issue: ScalarIssue::Underflow,
+        })
+    );
+}
+
+#[test]
+fn correlated_stack_refuses_a_false_zero_from_normalization_underflow() {
+    let model = AdmittedCorrelationModel::try_new(
+        "gear/process-runout",
+        NonZeroU64::new(1).expect("one is nonzero"),
+        [0x5a; 32],
+        3,
+        vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+    )
+    .expect("singular manufactured factor is structurally admissible");
+    let terms = [
+        stack_term("first", 4.0, 1.0),
+        stack_term("opposite", -4.0, 1.0),
+        stack_term("subnormal-residual", f64::from_bits(1), 1.0),
+    ];
+
+    assert_eq!(
+        propagate_correlated_stack(&model, &terms),
+        Err(CorrelatedStackError::InvalidDerived {
+            quantity: CorrelatedDerivedQuantity::NormalizedSensitivity,
+            term_index: Some(2),
+            issue: ScalarIssue::Underflow,
+        })
+    );
+}
+
+#[test]
+fn exact_zero_sensitivities_publish_zero_only_with_bound_model_and_axes() {
+    let model = correlation_model(0.8, 0.6);
+    let terms = [
+        stack_term("carrier-runout", 0.0, 1.0),
+        stack_term("gear-eccentricity", 0.0, 2.0),
+    ];
+    let receipt = propagate_correlated_stack(&model, &terms).expect("exact zeros are explicit");
+    assert_eq!(receipt.independent_standard_deviation().to_bits(), 0);
+    assert_eq!(receipt.independent_variance().to_bits(), 0);
+    assert_eq!(receipt.correlated_standard_deviation().to_bits(), 0);
+    assert_eq!(receipt.correlated_variance().to_bits(), 0);
+    assert_eq!(receipt.correlation_variance_delta().to_bits(), 0);
+    assert_eq!(receipt.model(), &model);
+    assert_eq!(receipt.terms(), terms);
 }
