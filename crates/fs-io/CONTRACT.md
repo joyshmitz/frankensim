@@ -5,7 +5,8 @@ Dirty geometry comes in, useful artifacts go out — and no imported
 artifact becomes a trusted value without a certification receipt.
 
 Ambition tags: STL/OBJ/PLY + quarantine + catalogs + 3MF/GLB/VTK [S];
-STEP/IGES/IFC explicitly STAGED (no-claim below).
+bounded STEP Part-21 syntax kernel [S]; CAD/EXPRESS interpretation,
+tessellation, and B-rep interchange explicitly STAGED (no-claim below).
 
 ## Purpose and layer
 
@@ -48,6 +49,22 @@ the P4 frame flagship (AISC catalogs), fs-fab.
   bounded Number, required flags). Violations name the 1-based data
   row, column, offending text, and the expectation; missing header
   columns list what WAS found.
+- **STEP structure** (`step` module): bounded, ASCII-only parsing of the
+  ISO-10303-21 clear-text envelope, mandatory `FILE_DESCRIPTION`,
+  `FILE_NAME`, and `FILE_SCHEMA` header records, simple and complex DATA
+  instances, aggregates, typed parameters, strings, enumerations,
+  numeric tokens, and forward references. Parsing rejects duplicate or
+  dangling instance IDs after the whole DATA section is known. Canonical
+  writing sorts instances by numeric ID, preserves parameter/component
+  order, doubles string apostrophes, and revalidates caller-constructed
+  documents before emitting bytes. `require_declared_schema` supplies an
+  exact, case-insensitive declaration gate without treating a schema label
+  as conformance evidence. The sealed `ParsedStep` keeps its immutable
+  receipt from becoming stale; `StepStructureReceipt` records syntax/crate
+  versions, exact admission limits, non-cryptographic source/canonical-layout
+  FNV fingerprints, schemas, graph counts, and a strictly non-authoritative
+  AP203/AP214 label hint. HELM must replace fingerprints with its
+  collision-resistant artifact identity before authority-bearing use.
 
 ## Invariants
 
@@ -65,12 +82,30 @@ the P4 frame flagship (AISC catalogs), fs-fab.
 4. **Deterministic exports**: identical soups produce identical bytes
    (fixed ZIP timestamps, fixed chunk layout).
 5. **Schema errors teach**: row + column + offender + expectation.
+6. **Part-21 graph integrity**: instance IDs are positive and unique;
+   forward references are permitted but every reference must resolve by
+   end of DATA; mandatory header records occur exactly once and in the
+   supported order.
+7. **Part-21 resource bounds**: input/output bytes, tokens, instances,
+   values, nesting, encoded strings, number tokens, identifiers,
+   complex-instance components, and schema-count each have an explicit
+   nonzero cap. Recursive nesting also has an implementation hard ceiling
+   independent of caller configuration. Cap violations are `ResourceBound`,
+   not partial parses.
+8. **Canonical syntax, not canonical CAD**: Part-21 output has fixed
+   whitespace/keyword casing and numeric-ID instance order. It never
+   reorders parameters or complex components, whose schema meaning is
+   unknown at this layer. Numeric lexical spelling remains identity-bearing:
+   this is layout canonicalization, not schema-aware numeric normalization.
 
 ## Error model
 
 `IoError`: `Malformed { at, what }`, `Unsupported`, `ResourceBound`,
 `Schema { row, column, what }`. `PromotionRefusal` carries blocking
-defects + fixes + the refused receipt.
+defects + fixes + the refused receipt. The STEP syntax kernel uses
+`Malformed` for grammar/graph failures, `Unsupported` for staged encoded
+characters and binary literals, and `ResourceBound` for every declared
+limit.
 
 ## Determinism class
 
@@ -78,8 +113,11 @@ defects + fixes + the refused receipt.
 
 ## Cancellation behavior
 
-Parsers are single-pass and element-capped; export size is input-bounded.
-P7 by boundedness.
+Legacy mesh/catalog parsers are single-pass and element-capped. The STEP
+kernel is deliberately multi-pass (parse, shape/graph validation,
+canonical-layout serialization) and cap-bounded, but it has no `Cx` and
+makes no cancellation-latency claim. Cancellation-aware streaming belongs
+to the later geometry/tessellation lane.
 
 ## Unsafe boundary
 
@@ -102,6 +140,14 @@ CSV + JSON catalogs, quoting, and the teaching-error battery; io-006 3MF ZIP
 structure (EOCD, entry count, model XML), GLB chunk accounting, VTK section
 counts.
 
+`tests/step.rs` (G0/G3): forward-reference and complex-entity parsing,
+canonical permutation-invariant DATA ordering, doubled-apostrophe string
+round trip, AP-family hint/receipt binding, duplicate and dangling
+reference refusal, malformed/truncated envelope/comment/string/value
+refusal, mandatory-header shape checks, strict uppercase keywords, exact
+typed-parameter arity, explicit resource/hard-depth-cap refusal, and
+writer-side revalidation of caller-constructed invalid graphs.
+
 ## PLY element order (bead wqd.25.1)
 
 Element order is the header's to define: faces may legally precede
@@ -114,8 +160,21 @@ import identically in both ASCII and binary (conformance-tested).
 
 ## No-claim boundaries
 
-- **STEP/IGES and IFC are STAGED, not promised** (per the bead text):
-  no subset ships here; the quarantine pipeline is where they will land.
+- **STEP CAD semantics remain STAGED**: the shipping subset is a
+  syntax/instance-graph kernel only. It does not load an EXPRESS schema,
+  authorize AP203/AP214 conformance, interpret products/assemblies/units,
+  tessellate surfaces, produce a `Soup` or SDF chart, localize geometric
+  defects, fit NURBS, write a topological B-rep/solid, or certify a
+  deviation bound. `StepProfileHint` is label recognition only.
+- **Part-21 encoded characters and binary literals are refused** in this
+  first subset. Source bytes must be ASCII; encoded-character directives
+  and binary payloads need their own bounded conformance fixtures before
+  admission.
+- **Keywords/enumerations are strict uppercase Part-21 tokens**. Schema
+  declaration admission may compare ASCII case-insensitively only because
+  it operates on string payloads, not grammar keywords.
+- **IGES and IFC are STAGED, not promised**; their quarantine paths have
+  not shipped.
 - **OBJ vt/vn and materials are dropped** (documented lossy subset);
   PLY color/normal properties are skipped, not preserved.
 - **PLY binary_big_endian is refused** (structured `Unsupported`).

@@ -16,11 +16,17 @@ pub mod export;
 pub mod obj;
 pub mod ply;
 pub mod quarantine;
+pub mod step;
 pub mod stl;
 
 pub use catalog::{Catalog, ColumnKind, ColumnSpec, Schema};
 pub use export::{export_3mf, export_glb, export_vtk};
 pub use quarantine::{ImportDefect, ImportReceipt, PromotionRefusal, Quarantined, promote};
+pub use step::{
+    ParsedStep, STEP_SYNTAX_VERSION, StepDocument, StepEntity, StepHeader, StepInstance,
+    StepLimits, StepProfileHint, StepStructureReceipt, StepValue, parse_step,
+    parse_step_with_limits, write_step, write_step_with_limits,
+};
 
 use core::fmt;
 
