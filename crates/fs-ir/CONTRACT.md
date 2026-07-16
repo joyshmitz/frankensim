@@ -87,7 +87,8 @@ admitted derived-geometry boundary.
   preimage receipt for collision adjudication.
 - `machine::LineageRecord::admit` canonicalizes bounded split, merge, remesh,
   wear, and fracture source-target relations by the durable IDs rather than
-  caller order. Downstream cache/contact/winding/adjoint attachments are
+  caller order. Downstream cache/contact/winding/adjoint/manufacturing-state
+  attachments are
   rebound only across a unique one-to-one source relation. A live attachment
   on a one-to-many source returns `LineageRefusal::Ambiguous` carrying a
   domain-separated `LineageInvalidation`: the complete refused relation set,
@@ -273,6 +274,23 @@ admitted derived-geometry boundary.
   dispersion and a mandatory no-native-authority policy marker. Requests for
   `Validated` or `Verified` rank refuse instead of being demoted or promoted,
   and the admitted type exposes neither `Color` nor `AdmittedColor`.
+- `machine::manufacturing` is the additive E7 as-built process-lineage seed.
+  `MachineManufacturingDraftV1::admit_against` binds one exact admitted Machine
+  graph, one exact external process-tolerance correlation-model coordinate,
+  and at most 4,096 durable-body process steps. Each step binds a stable key,
+  declared casting/forging/machining/additive/heat-treatment/coating/assembly
+  family, predecessor, process specification, input material state, and the
+  resulting microstructure, residual-stress, and property-state artifact
+  coordinates. Admission requires every body to exist in the graph and every
+  body's submitted steps to form exactly one finite linear predecessor chain;
+  duplicate/dangling/cross-body IDs, forks, cycles, disconnected histories,
+  and zero artifact hashes refuse before identity publication. Caller step
+  order is non-semantic; canonical body-chain order is retained.
+- An admitted manufacturing state exposes one `ManufacturingState` lineage
+  dependent per process step. The existing `LineageRecord` law therefore
+  transports the complete process history across a unique one-to-one body
+  morphism and returns a complete `LineageInvalidation` on an ambiguous split
+  or remesh instead of choosing a descendant.
 - `query` (addendum Proposal 8 — declarative query language v0): a query is
   `(QoI, Target, budget_usd, deadline_s)` where `Qoi` is a fixed MENU —
   `MaxOverRegion`, `Integral` (linear), `Exceedance` (probabilistic, needs a
@@ -481,6 +499,13 @@ admitted derived-geometry boundary.
   graph, and caller output order is non-semantic. Its only representable
   evidence rank is `Estimated`; no foreign output inherits native certificate
   authority.
+- A manufacturing-state receipt is inseparable from its graph, manufacturing
+  schema and FrankenScript IR versions, exact correlation-model namespace/
+  version/content hash, canonical per-body process order, process families, and
+  all five artifact coordinates carried by every step. A step may name only a
+  graph-owned `BodyId`; its predecessor must name exactly one earlier step on
+  that same body. Manufacturing dependents obey the same unique-rebind/
+  ambiguous-invalidate law as other durable Machine attachments.
 
 1. Isomorphism: `parse(print(x))` has the same shape as `x`, per syntax
    and across syntaxes (property-tested on generated programs and the
@@ -749,6 +774,17 @@ and output artifact; output-order normalization; bounded reference and output
 sets; duplicate/unknown target refusal; and explicit refusal of foreign
 `Validated` or `Verified` authority.
 
+`tests/machine_manufacturing.rs` (Machine-IR E7 as-built process-lineage seed,
+G0/G3/G5): graph-bound casting-to-machining-to-heat-treatment lineage; caller-
+order-invariant receipts and canonical predecessor order; independent identity
+movement by graph, correlation namespace/version/hash, step ID/body/order/kind,
+and namespace/version/hash for every process/material-state coordinate; unknown-body,
+duplicate, dangling, cross-body, multi-root, forked, cyclic, disconnected, and
+zero-artifact refusal; refusal stability under caller reordering; complete
+manufacturing-history `(key, source, target)` rebinding across one-to-one wear
+versus exact fail-closed invalidation across an ambiguous body split; and the
+4,096-step/128-byte-key identity boundary plus limit-plus-one refusal.
+
 ## No-claim boundaries
 
 - No operator catalog or per-operator semantic versions — gp3.6; the
@@ -810,6 +846,15 @@ sets; duplicate/unknown target refusal; and explicit refusal of foreign
   the full FrankenScript-to-package round trip. Foreign outputs are opaque
   artifact coordinates rather than decoded numeric values. Parser/export,
   isolated execution, and full round-trip batteries remain follow-on work.
+- The manufacturing seed is structural lineage binding only. It does not parse
+  GD&T, datum, fit, texture, process, microstructure, residual-stress, property,
+  or measurement artifact bytes; authenticate their producer; prove that a
+  process ran; validate a correlation population; propagate tolerance axes;
+  establish physical causality, assembly feasibility, joint/preload/weld/
+  adhesive behavior, surface evolution, or material-property correctness; or
+  promote evidence. Version one is body-level linear process history, not the
+  complete datum/GD&T/assembly schema, an `fs-toleralloc` axis crosswalk, a
+  nonlinear or mode-switching reliability model, or a gear/backlash consumer.
 - The current FrankenScript codec covers admitted Machine graph, behavior, and
   assurance syntax, including both assurance base-identity bindings. Assurance
   receipt rows are only exact transport commitments: callers must retain and

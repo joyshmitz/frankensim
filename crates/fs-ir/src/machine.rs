@@ -18,6 +18,8 @@
 //! infer executable meaning from the opaque references admitted by PR-2--4.
 //! The additive [`interop`] boundary binds the ordered engineering workflow
 //! and quarantines FMI/SSP foreign outputs at Estimated evidence strength.
+//! The additive [`manufacturing`] boundary binds durable-body process,
+//! microstructure, residual-stress, property, and correlation-model lineage.
 //!
 //! Runtime coupling, executable material/interface cards, controllers,
 //! safety adjudication, physical validation, balance proofs, adaptive routing,
@@ -28,6 +30,7 @@ pub mod assurance_codec;
 pub mod codec;
 pub mod interop;
 pub mod lowering;
+pub mod manufacturing;
 pub mod semantics;
 
 use core::fmt;
@@ -673,6 +676,8 @@ pub enum DependentKind {
     Winding = 3,
     /// Adjoint/tape dependency.
     Adjoint = 4,
+    /// As-built manufacturing process/material-state history.
+    ManufacturingState = 5,
 }
 
 impl DependentKind {
@@ -690,6 +695,7 @@ impl DependentKind {
             Self::Contact => "contact",
             Self::Winding => "winding",
             Self::Adjoint => "adjoint",
+            Self::ManufacturingState => "manufacturing-state",
         }
     }
 }
