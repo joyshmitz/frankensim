@@ -319,6 +319,7 @@ fn certificate_presence(pkg: &EvidencePackage, report: &PackageReport) -> (bool,
             is_scientific(report, *index)
                 && matches!(
                     &claim.color,
+                    // declared-color-ok: pattern read (multi-line arm/guard/let-else); destructures rank, constructs nothing (6pf9)
                     Color::Verified { lo, hi } if lo.is_finite() && hi.is_finite()
                 )
         })

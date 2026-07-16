@@ -588,6 +588,7 @@ impl Claim {
         Claim::sealed(
             id,
             statement,
+            // declared-color-ok: sealed-claim constructor binds the caller's declared candidate to its certificate origin; admission happens at verify_with (6pf9)
             Color::Verified { lo, hi },
             ClaimOrigin::SourceCertificate {
                 producer: producer.into(),
@@ -631,6 +632,7 @@ impl Claim {
         let mut claim = Claim::sealed(
             id,
             statement,
+            // declared-color-ok: sealed-claim constructor binds the caller's declared candidate to its anchored-dataset origin; admission happens at verify_with (6pf9)
             Color::Validated {
                 regime,
                 dataset: dataset.clone(),
@@ -928,6 +930,7 @@ impl Claim {
     /// `false` because they have no validated dataset to anchor.
     #[must_use]
     pub fn has_declared_matching_validated_anchor_unverified(&self) -> bool {
+        // declared-color-ok: pattern read (multi-line arm/guard/let-else); destructures rank, constructs nothing (6pf9)
         let Color::Validated { dataset, .. } = &self.color else {
             return false;
         };
@@ -956,6 +959,7 @@ impl Claim {
     pub fn declared_requires_release_falsifier_unverified(&self) -> bool {
         matches!(
             &self.color,
+            // declared-color-ok: pattern read (multi-line arm/guard/let-else); destructures rank, constructs nothing (6pf9)
             Color::Verified { .. } | Color::Validated { .. }
         )
     }
@@ -973,6 +977,7 @@ impl Claim {
     pub fn declared_is_release_scientific_evidence_unverified(&self) -> bool {
         matches!(
             &self.color,
+            // declared-color-ok: pattern read (multi-line arm/guard/let-else); destructures rank, constructs nothing (6pf9)
             Color::Verified { lo, hi } if lo.is_finite() && hi.is_finite()
         ) || matches!(&self.color, Color::Validated { .. })
     }
@@ -2211,17 +2216,21 @@ fn verify_color_payload(claim: &Claim) -> Result<(), PackageError> {
 fn colors_bitwise_equal(left: &Color, right: &Color) -> bool {
     match (left, right) {
         (
+            // declared-color-ok: pattern read (multi-line arm/guard/let-else); destructures rank, constructs nothing (6pf9)
             Color::Verified {
                 lo: left_lo,
                 hi: left_hi,
             },
+            // declared-color-ok: pattern read (multi-line arm/guard/let-else); destructures rank, constructs nothing (6pf9)
             Color::Verified { lo, hi },
         ) => left_lo.to_bits() == lo.to_bits() && left_hi.to_bits() == hi.to_bits(),
         (
+            // declared-color-ok: pattern read (multi-line arm/guard/let-else); destructures rank, constructs nothing (6pf9)
             Color::Validated {
                 regime: left_regime,
                 dataset: left_dataset,
             },
+            // declared-color-ok: pattern read (multi-line arm/guard/let-else); destructures rank, constructs nothing (6pf9)
             Color::Validated { regime, dataset },
         ) => {
             left_dataset == dataset
@@ -2256,6 +2265,7 @@ fn verify_origin_binding(claim: &Claim) -> Result<(), PackageError> {
         },
     )?;
     let consistent = match (&claim.origin, &claim.color) {
+        // declared-color-ok: pattern read (multi-line arm/guard/let-else); destructures rank, constructs nothing (6pf9)
         (ClaimOrigin::SourceCertificate { .. }, Color::Verified { .. })
         | (ClaimOrigin::Derived | ClaimOrigin::AuthenticatedWaiver(_), _) => true,
         (
@@ -2263,6 +2273,7 @@ fn verify_origin_binding(claim: &Claim) -> Result<(), PackageError> {
                 dataset_id,
                 content_hash,
             },
+            // declared-color-ok: pattern read (multi-line arm/guard/let-else); destructures rank, constructs nothing (6pf9)
             Color::Validated { dataset, .. },
         ) => {
             dataset_id == dataset
@@ -2904,6 +2915,7 @@ impl EvidencePackage {
                         producer,
                         certificate_hash,
                     },
+                    // declared-color-ok: pattern read (multi-line arm/guard/let-else); destructures rank, constructs nothing (6pf9)
                     Color::Verified { lo, hi },
                 ) => {
                     let Some(verifier) = capabilities.source_certificates else {
@@ -3066,6 +3078,7 @@ impl EvidencePackage {
         capabilities: &VerificationCapabilities<'_>,
         policies: &mut VerificationPolicyFingerprints,
     ) -> Result<(), PackageError> {
+        // declared-color-ok: pattern read (multi-line arm/guard/let-else); destructures rank, constructs nothing (6pf9)
         let Color::Validated { regime, dataset } = &claim.color else {
             return Ok(());
         };
@@ -5045,6 +5058,7 @@ fn parse_color(value: Jv, what: &str) -> Result<Color, ParseError> {
                     why: format!("verified interval inverted: {lo} > {hi}"),
                 });
             }
+            // declared-color-ok: the parser reconstructs the serialized declared candidate byte-exactly; parsing is not admission (6pf9)
             Color::Verified { lo, hi }
         }
         "validated" => {
@@ -5078,6 +5092,7 @@ fn parse_color(value: Jv, what: &str) -> Result<Color, ParseError> {
                 domain = domain.with(param, lo, hi);
             }
             let dataset = as_str(take_field(&mut fields, "dataset", what)?, what)?;
+            // declared-color-ok: the parser reconstructs the serialized declared candidate byte-exactly; parsing is not admission (6pf9)
             Color::Validated {
                 regime: domain,
                 dataset,
