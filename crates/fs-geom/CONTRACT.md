@@ -296,6 +296,16 @@ fs-ivl, fs-alloc, fs-obs, fs-sparse.
   balance corestriction and binds exact input/output geometry identities plus
   nominal caller-declared input/output evidence-artifact identities and ranks.
   Admission rejects a declared output rank above the declared input rank.
+  `DerivedEvidencePolarityTransportCandidateIrV1` separately binds one exact
+  sealed nonidentity morphism child and derives its map endpoints, evidence
+  variance, artifact IDs, and ranks from that child. It retains explicit
+  `Affirmative`, `Refutation`, or `NoClaim` input/output polarity tags and
+  admits only an exactly equal pair. Identity children refuse because they
+  carry no nominal evidence artifacts or ranks. Its 12-field parent receipt
+  recursively validates the six-field morphism child for an exact 18-field
+  limit. The packet prevents unequal polarity tags within one candidate; it
+  does not authenticate the chosen tag or stop a caller from proposing a
+  distinct nominal packet for the same child.
   Composition requires an exact middle endpoint and matching nominal evidence
   identity/rank seam, flattens primitive factors and no-equivalence artifacts in
   semantic order, and produces an associative content-addressed receipt with
@@ -312,9 +322,9 @@ fs-ivl, fs-alloc, fs-obs, fs-sparse.
   establish payload preservation or validity-domain inclusion, prove theorem
   truth, or establish physical equivalence. RD.1b now provides separate
   structural no-authority candidates for direct chart-transition inverse laws,
-  finite stratification refinement and its ordered composition, parallel paths,
-  fixed-foot span morphisms, pullback/composition-shaped spans, generic inverse
-  laws, and span equivalence;
+  finite stratification refinement and its ordered composition, evidence
+  polarity, parallel paths, fixed-foot span morphisms,
+  pullback/composition-shaped spans, generic inverse laws, and span equivalence;
   none is represented as a strict map or authority-bearing equivalence. The L6
   Machine-IR crosswalk likewise lives at the `fs-ir` feature seam rather than in
   this L2 morphism algebra. Authenticated subobject inclusion, geometric and
@@ -748,6 +758,13 @@ fs-ivl, fs-alloc, fs-obs, fs-sparse.
    candidate. All direct IDs and transitive outer-foot/span/apex/morphism seams
    are rechecked; the mandatory no-authority artifact cannot be converted into
    an equivalence boundary.
+21. Evidence-polarity transport candidates bind one exact recursively typed
+   nonidentity morphism child, derive every endpoint/variance/artifact/rank
+   selector from it, and require exact equality of the explicit input/output
+   polarity tags. Identity children and all six unequal pairs refuse. The
+   nominal declaration and mandatory no-authority artifact grant no canonical
+   classification, payload authenticity, preservation theorem, inverse,
+   equivalence, or physical authority.
 
 ## Error model
 Structured teaching values throughout: `ConvertDiag` (ranked fixes),
@@ -776,6 +793,12 @@ artifact IDs (including inclusion declarations), declared-rank strengthening,
 equivalence laundering, typed chart/refinement/evidence seams, bounded lineage,
 allocation, cancellation, and canonical identity failures.
 Refusal publishes no admitted morphism.
+Evidence-polarity packet admission uses
+`DerivedEvidencePolarityTransportCandidateErrorV1` for schema, zero nominal
+identity, raw/sealed morphism-child mismatch, unsupported identity evidence,
+unequal input/output polarity, cancellation, and canonical-identity defects.
+Refusal publishes no polarity packet and cannot mutate or upgrade the supplied
+sealed morphism.
 Standalone stratum-scoped admission and composition use
 `DerivedStratumMorphismErrorV1` for exact geometry/stratification/stratum
 ownership, model-version and convention compatibility, nominal identity and
@@ -850,6 +873,11 @@ RD.1b encodes exact endpoints, map witness/class, structural evidence transport,
 ordered no-equivalence artifacts, and ordered primitive identities. Flattened
 composition makes equal ordered factor sequences replay to the same receipt
 regardless of parenthesization; reversing factors changes identity.
+Evidence-polarity packets use a separate schema/domain and recursively bind the
+unchanged six-field morphism-child schema. Changing either polarity tag,
+nominal declaration, no-authority ID, child identity, or child-derived evidence
+metadata changes the 12-field parent receipt; no existing morphism identity
+material is reinterpreted.
 Declared chart-map primitive class bytes additionally encode the source/target
 chart, nominal overlap, and nominal map IDs under a distinct family tag.
 Heterogeneous composites use a distinct class tag while the ordered primitive
@@ -958,7 +986,7 @@ compositions. Direct chart inverse-law checks exactly two ordered evidence-cycle
 compositions rather than an unbounded loop. Parallel and span-equivalence
 assembly allocate no child collection. Every candidate polls at entry, inside
 its bounded canonical encoder, and before publication; cancellation exposes no
-partial comparison, refinement, inverse-law, pullback/composition, or
+partial comparison, refinement, polarity, inverse-law, pullback/composition, or
 equivalence token.
 Fixed-resolution quasi-isomorphism candidate admission additionally polls while
 scanning the bounded typed refinement path, before and inside identity encoding,
@@ -1040,9 +1068,19 @@ associative ordered receipt replay, factor/no-claim order, exact middle-object
 refusal, declared evidence-seam and mixed-variance refusal, declared-rank
 strengthening refusal, both variance directions, equivalence laundering,
 model-version/convention mismatch, the lineage cap/cap+1 boundary, deterministic
-replay, and already-requested entry cancellation. Public wrapper coverage
-against fully admitted RD.1a fixtures and deterministic mid-flight cancellation
-injection remain explicit batch-verification follow-ups.
+replay, and already-requested entry cancellation. Public-wrapper coverage now
+uses fully admitted RD.1a fixtures for strict admission, identity, composition
+neutrality, replay, ordered raw endpoint refusal, and immutable model-version
+refusal. Deterministic mid-flight cancellation injection remains an explicit
+batch-verification follow-up.
+The evidence-polarity candidate suite covers its separate domain and exact
+12-parent/18-recursive-field contract, both variance lanes, all three equal
+polarity pairs with identity separation, recursive child-domain refusal, raw/
+sealed child drift, zero nominal identities, identity-evidence refusal, all six
+unequal-polarity pairs, replay/accessors, retained-field identity movement, and
+already-requested entry/identity-entry cancellation. Injected cancellation
+inside its canonical encoder and immediately before publication remains part of
+the same deterministic mid-flight follow-up.
 The standalone stratum suite covers domain-separated class encoding, exact
 geometry/stratification/stratum ownership, identity neutrality, associative
 flattening, exact middle-triple refusal, nominal-field identity movement,
@@ -1193,6 +1231,15 @@ claim those stronger G4/G5 results.
   bytes and ranks. RD.1c or a successor admitted-evidence type must bind and
   independently validate payload authority before any evidence-preservation
   claim is promotable.
+- `AdmittedDerivedEvidencePolarityTransportCandidateV1` proves only that one
+  exact sealed nonidentity morphism child retained the derived variance,
+  evidence artifacts, and ranks encoded recursively in the packet and that its
+  two caller-declared polarity tags are equal. It does not authenticate a
+  proposition or payload, make one polarity canonical, prevent another nominal
+  packet for the same child, execute the transport, or prove evidence
+  preservation, functoriality, naturality, theorem truth, inverse, equivalence,
+  or physical balance. It has no conversion to an authority-bearing evidence
+  receipt or `DerivedEquivalenceBoundaryV1`.
 - `DeclaredChartMap` proves neither overlap coverage nor any property of the
   nominal forward-map artifact. It does not supply an inverse, round-trip law,
   atlas compatibility, coordinate equivalence, or physical correspondence.
@@ -1356,10 +1403,11 @@ claim those stronger G4/G5 results.
   whenever its exact geometry, evidence, adjacent-chart, and adjacent-refinement
   seams pass. This removes the implemented-family closure gap but does not
   promote the full RD.1b category claim. Separate structural candidates now
-  retain finite stratification refinements, parallel comparisons, direct chart
-  and generic inverse-law shapes, pullback/composition-shaped spans, span
-  equivalence, scoped local-presentation equivalence, and the L6 Machine-IR
-  crosswalk. Those packets close typed seam-shape gaps only. Authenticated
+  retain finite stratification refinements, evidence polarity, parallel
+  comparisons, direct chart and generic inverse-law shapes,
+  pullback/composition-shaped spans, span equivalence, scoped local-presentation
+  equivalence, and the L6 Machine-IR crosswalk. Those packets close typed seam-
+  shape gaps only. Authenticated
   subobject inclusion, geometric/stratified refinement, map execution,
   categorical pullback/composition/equivalence, quasi-isomorphism, evidence
   preservation, and physical crosswalk authority still require independent
