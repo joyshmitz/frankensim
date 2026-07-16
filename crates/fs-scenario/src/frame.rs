@@ -9,6 +9,8 @@ use crate::ScenarioError;
 use crate::scenario::{ValidationError, Violation, sort_validation_index};
 use crate::signal::TimeSignal;
 use fs_ga::{Motor, Quat, Vec3};
+use fs_ivl::Interval;
+use fs_motion::{CertifiedMotorTube, LowerToMotorTube, MotionError, ScrewParams, screw_tube};
 use fs_qty::{Dims, QtyAny};
 use std::fmt;
 
@@ -51,6 +53,132 @@ pub enum FrameMotion {
         /// The tilt angle schedule (radians ⇒ dimensionless).
         angle: TimeSignal,
     },
+}
+
+/// Stable classification used by structured motion-lowering refusals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameMotionKind {
+    /// A constant rigid offset.
+    Fixed,
+    /// A steady rotation.
+    Rotating,
+    /// A scheduled tilt.
+    Tilt,
+}
+
+impl FrameMotion {
+    /// The structural kind of this motion declaration.
+    #[must_use]
+    pub const fn kind(&self) -> FrameMotionKind {
+        match self {
+            Self::Fixed { .. } => FrameMotionKind::Fixed,
+            Self::Rotating { .. } => FrameMotionKind::Rotating,
+            Self::Tilt { .. } => FrameMotionKind::Tilt,
+        }
+    }
+}
+
+/// Refusal produced before a scenario frame path enters `fs-motion`.
+///
+/// The public `fs-motion` builder trait intentionally reports only motion-layer
+/// failures. Frame identity, topology, and supported-subset checks therefore
+/// happen while constructing [`FrameTreeMotorPath`], where scenario context is
+/// still available.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FrameMotionLoweringError {
+    /// The requested frame or its parent chain is not a valid scenario path.
+    Scenario(ScenarioError),
+    /// The selected frame is not a steady rotating frame.
+    TargetNotRotating {
+        /// Requested frame.
+        frame: FrameId,
+        /// Motion declaration actually found.
+        actual: FrameMotionKind,
+    },
+    /// A dynamic ancestor would make the world path a composition of motions
+    /// that the current constant-screw constructor cannot honestly represent.
+    DynamicAncestor {
+        /// Requested rotating frame.
+        target: FrameId,
+        /// Dynamic ancestor in its parent chain.
+        ancestor: FrameId,
+        /// Unsupported ancestor motion.
+        actual: FrameMotionKind,
+    },
+}
+
+impl fmt::Display for FrameMotionLoweringError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Scenario(error) => write!(formatter, "cannot resolve frame path: {error}"),
+            Self::TargetNotRotating { frame, actual } => write!(
+                formatter,
+                "frame {} has {actual:?} motion; only a Rotating target lowers to the current certified screw path",
+                frame.0
+            ),
+            Self::DynamicAncestor {
+                target,
+                ancestor,
+                actual,
+            } => write!(
+                formatter,
+                "frame {} has dynamic {actual:?} ancestor {}; composed dynamic paths require a certified general-path builder",
+                target.0, ancestor.0
+            ),
+        }
+    }
+}
+
+impl std::error::Error for FrameMotionLoweringError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Scenario(error) => Some(error),
+            Self::TargetNotRotating { .. } | Self::DynamicAncestor { .. } => None,
+        }
+    }
+}
+
+impl From<ScenarioError> for FrameMotionLoweringError {
+    fn from(error: ScenarioError) -> Self {
+        Self::Scenario(error)
+    }
+}
+
+/// An admitted one-way view of one rotating scenario frame as an `fs-motion`
+/// constant-screw path.
+///
+/// Construction proves that the selected target is rotating and every
+/// ancestor is fixed. The wrapper owns the fully lowered parameters so the
+/// subsequent [`LowerToMotorTube`] call cannot observe a mutated frame tree.
+#[derive(Debug, Clone, Copy)]
+pub struct FrameTreeMotorPath {
+    source: FrameId,
+    params: ScrewParams,
+}
+
+impl FrameTreeMotorPath {
+    /// Scenario frame from which this path was lowered.
+    #[must_use]
+    pub const fn source_frame(&self) -> FrameId {
+        self.source
+    }
+
+    /// Exact constant-screw parameters handed to `fs-motion`.
+    #[must_use]
+    pub const fn screw_params(&self) -> ScrewParams {
+        self.params
+    }
+}
+
+impl LowerToMotorTube for FrameTreeMotorPath {
+    fn lower_to_motor_tube(
+        &self,
+        domain: Interval,
+        order: usize,
+        segments: usize,
+    ) -> Result<CertifiedMotorTube, MotionError> {
+        screw_tube(&self.params, domain, order, segments)
+    }
 }
 
 /// One frame in the tree.
@@ -183,6 +311,62 @@ impl FrameTree {
     /// Add a frame.
     pub fn add(&mut self, frame: Frame) {
         self.frames.push(frame);
+    }
+
+    /// Admit one rotating frame as a one-way `fs-motion` builder.
+    ///
+    /// The supported subset is deliberately exact: the target must be
+    /// [`FrameMotion::Rotating`] and every ancestor must be
+    /// [`FrameMotion::Fixed`]. A scheduled or second rotating ancestor is a
+    /// general composed path, not a constant screw, and is refused instead of
+    /// being sampled or silently approximated.
+    ///
+    /// # Errors
+    /// Returns a structured [`FrameMotionLoweringError`] for invalid frame
+    /// topology, an unsupported target, or a dynamic ancestor.
+    pub fn rotating_motor_path(
+        &self,
+        id: FrameId,
+    ) -> Result<FrameTreeMotorPath, FrameMotionLoweringError> {
+        let target = self.find_unique(id)?;
+        let FrameMotion::Rotating { axis, center, rate } = &target.motion else {
+            return Err(FrameMotionLoweringError::TargetNotRotating {
+                frame: id,
+                actual: target.motion.kind(),
+            });
+        };
+
+        // Validate the complete chain and the target's public numeric data
+        // before translating any of it into a lower-layer authority object.
+        self.world_pose(id, 0.0)?;
+
+        let mut ancestor_id = target.parent;
+        while ancestor_id != WORLD {
+            let ancestor = self.find_unique(ancestor_id)?;
+            if !matches!(&ancestor.motion, FrameMotion::Fixed { .. }) {
+                return Err(FrameMotionLoweringError::DynamicAncestor {
+                    target: id,
+                    ancestor: ancestor.id,
+                    actual: ancestor.motion.kind(),
+                });
+            }
+            ancestor_id = ancestor.parent;
+        }
+
+        // `axis` and `center` remain in the rotating frame's parent
+        // coordinates. `base_pose` maps those coordinates into world; moving
+        // them to world here as well would apply the parent transform twice.
+        let base_pose = self.world_pose(target.parent, 0.0)?;
+        Ok(FrameTreeMotorPath {
+            source: id,
+            params: ScrewParams {
+                axis: *axis,
+                center: [center.x, center.y, center.z],
+                omega: rate.value,
+                axial_velocity: 0.0,
+                base_pose,
+            },
+        })
     }
 
     fn find(&self, id: FrameId) -> Option<&Frame> {

@@ -12,7 +12,7 @@ Ambition tags: typed BCs/frames/signals/combos [S]; seeded ensembles
 ## Purpose and layer
 
 Layer **L3** (FLUX support). Runtime deps: `std`, fs-blake3, fs-qty,
-fs-rand, fs-cheb, fs-exec, fs-ga, fs-math. The Design Ledger stores scenarios
+fs-rand, fs-cheb, fs-exec, fs-ga, fs-ivl, fs-motion, fs-math. The Design Ledger stores scenarios
 as canonical IR artifacts; that integration lives ABOVE L3 (fs-ledger is L6) and is
 exercised here through a dev-dependency in conformance tests only.
 Consumers: fs-solid, fs-flux, fs-lbm, fs-uq, fs-regime, the milestone
@@ -28,7 +28,12 @@ flagships.
 - `frame::FrameTree` — frames with `Fixed`, `Rotating`, and `Tilt`
   motions; poses are fs-ga MOTORS composed down the parent chain
   (`world_pose`), cycle/dangling-parent checked. Rotation about an
-  off-origin axis is `T(c)·R·T(−c)`.
+  off-origin axis is `T(c)·R·T(−c)`. `rotating_motor_path(frame)` is the
+  one-way L3-to-L2 admission boundary: it lowers a rotating target with only
+  fixed ancestors into an owned `FrameTreeMotorPath` implementing
+  `fs_motion::LowerToMotorTube`. It refuses a non-rotating target or any
+  dynamic ancestor instead of sampling a general composed path into a
+  constant-screw claim. `fs-motion` does not import scenario types.
 - `bc` — `BoundaryCondition { region, physics, kind, value, compatibility,
   frame }`; `expectation(physics, kind)` is the dimensional contract
   table (velocity for flow Dirichlet, kg/s for mass-flow inlets, Pa for
@@ -199,7 +204,9 @@ whole repair list at once.
 
 **D0**: signal evaluation, frame poses (fs-ga + fs_math::det trig), and
 ensemble realizations (Philox + det trig, fixed draw/summation order) are
-bit-identical across runs and platforms. IR text is canonical.
+bit-identical across runs and platforms. Reconstructing the admitted
+constant-screw lowering with the same frame declaration and tube parameters is
+bit-identical. IR text is canonical.
 
 ## Cancellation behavior
 
@@ -356,6 +363,14 @@ None.
   canonical `+0.0` retention when both signed-zero encodings occur.
 
 ## No-claim boundaries
+
+- **General frame-path lowering is not claimed**: the current one-way adapter
+  covers one rotating target below fixed ancestors. Scheduled tilts, multiple
+  rotating ancestors, and other composed dynamic chains require a certified
+  general-path constructor or certified tube composition in `fs-motion`; they
+  are structured refusals here. The current `LowerToMotorTube` constructor has
+  no `Cx`, so cancellation-correct tube construction is also not claimed by
+  this adapter.
 
 - **Physics vocabulary is v0**: IncompressibleFlow / Thermal /
   Elasticity kinds only. New physics extend `expectation` — adding a
