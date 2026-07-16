@@ -656,7 +656,9 @@ fn sc_002b_mixed_signal_flux_grid_is_deterministic() {
             TimeSignal::Chebfun(ChebProfile {
                 // On [2, 6], this is 1 - x_ref^2: zero at both exact
                 // breakpoints and positive only inside the declared domain.
-                cheb: fs_cheb::Cheb1::from_coeffs(2.0, 6.0, vec![0.5, 0.0, -0.5]),
+                // Cheb1 stores c0 unhalved, so 1 - x_ref^2 is
+                // c0=1, c2=-1/2 under its 1/2*c0 convention.
+                cheb: fs_cheb::Cheb1::from_coeffs(2.0, 6.0, vec![1.0, 0.0, -0.5]),
                 dims: MASS_FLOW,
             }),
         ),
