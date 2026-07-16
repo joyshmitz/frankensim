@@ -880,13 +880,21 @@ fn ss_003c_receipts_bind_charge_failure_and_enforcement() {
 
 #[test]
 fn ss_003d_ledger_flush_is_atomic_incremental_and_retryable() {
-    let gov = Governor::new();
+    // Durable protocol throughout (e61t6 fork (a)): the flush target is
+    // the governor's recovery ledger and submissions carry pre-execution
+    // claims, so flushed terminals satisfy the preclaim doctrine.
+    let path = durable_ledger_path("flush-atomic");
+    let ledger = fs_ledger::Ledger::open(&path).expect("flush ledger");
+    let gov = Governor::new_durable(&ledger, DurableGovernorNonce::from_bytes([0xD4; 32]));
     let permit = gov
         .open_session(token(34, 1e9, 1e9))
         .expect("flush-test session");
+    gov.flush_scope_to_ledger(&permit, &ledger)
+        .expect("open prerequisite terminal");
+    let after_open = ledger.table_count("events").unwrap();
     let key = "flush-once";
     assert!(matches!(
-        gov.submit_once(SessionId(34), key, || Charge {
+        gov.submit_once_durable(&ledger, SessionId(34), key, || Charge {
             core_s: 2.0,
             mem_peak_bytes: 5,
             wall_s: 1.0,
@@ -894,38 +902,38 @@ fn ss_003d_ledger_flush_is_atomic_incremental_and_retryable() {
         .expect("submission"),
         SubmitOutcome::Executed { .. }
     ));
-    let ledger = fs_ledger::Ledger::open(":memory:").expect("flush ledger");
 
     ledger.begin().expect("caller transaction");
     let refused = gov
         .flush_scope_to_ledger(&permit, &ledger)
         .expect_err("flush cannot promise durability inside a caller transaction");
     assert!(matches!(refused, SessionError::Persistence { .. }));
-    assert_eq!(ledger.table_count("events").unwrap(), 0);
+    assert_eq!(ledger.table_count("events").unwrap(), after_open);
     ledger.rollback().expect("caller rollback");
 
     gov.flush_scope_to_ledger(&permit, &ledger)
         .expect("the refused batch remains fully dirty for retry");
+    let after_submission = ledger.table_count("events").unwrap();
     assert_eq!(
-        ledger.table_count("events").unwrap(),
-        2,
-        "open and self-contained terminal submission receipts"
+        after_submission,
+        after_open + 1,
+        "the claim-backed terminal submission receipt appends exactly once"
     );
     gov.flush_scope_to_ledger(&permit, &ledger)
         .expect("unchanged no-op flush");
     assert_eq!(
         ledger.table_count("events").unwrap(),
-        2,
+        after_submission,
         "repeated flush must not duplicate semantic events"
     );
     assert!(matches!(
-        gov.submit_once(SessionId(34), key, || panic!("duplicate ran"))
+        gov.submit_once_durable(&ledger, SessionId(34), key, || panic!("duplicate ran"))
             .expect("terminal duplicate"),
         SubmitOutcome::Duplicate { .. }
     ));
     gov.flush_scope_to_ledger(&permit, &ledger)
         .expect("duplicate observation is not a new event");
-    assert_eq!(ledger.table_count("events").unwrap(), 2);
+    assert_eq!(ledger.table_count("events").unwrap(), after_submission);
 
     gov.charge(
         SessionId(34),
@@ -947,15 +955,15 @@ fn ss_003d_ledger_flush_is_atomic_incremental_and_retryable() {
     );
     gov.flush_scope_to_ledger(&permit, &ledger)
         .expect("sink refusal leaves the changed meter dirty for its owning ledger");
-    assert_eq!(ledger.table_count("events").unwrap(), 3);
+    assert_eq!(ledger.table_count("events").unwrap(), after_submission + 1);
     gov.apply_memory_pressure(SessionId(34), 1)
         .expect("one degradation event");
     gov.flush_scope_to_ledger(&permit, &ledger)
         .expect("new degradation event appends once");
-    assert_eq!(ledger.table_count("events").unwrap(), 4);
+    assert_eq!(ledger.table_count("events").unwrap(), after_submission + 2);
     gov.flush_scope_to_ledger(&permit, &ledger)
         .expect("second no-op flush");
-    assert_eq!(ledger.table_count("events").unwrap(), 4);
+    assert_eq!(ledger.table_count("events").unwrap(), after_submission + 2);
     assert!(ledger.lint().unwrap().is_clean());
 }
 
@@ -1827,38 +1835,34 @@ fn ss_003e_ledger_scope_authority_is_canonical_and_fail_closed() {
 fn ss_003f_scoped_flush_isolated_interleaved_retryable_and_sink_bound() {
     const ALPHA: &str = r#"alpha/"quoted"\branch"#;
     const BETA: &str = "beta";
-    let gov = Governor::new();
+    // Durable protocol (e61t6 fork (a)): a durable governor binds EVERY
+    // scope's sink to its recovery ledger at construction, so the old
+    // two-sink choreography is impossible by design. Scope isolation is
+    // a PER-SCOPE-CURSOR property, not a per-sink one: both scopes
+    // flush to the recovery ledger through their own permits, each
+    // append covering exactly its own scope's events, and the
+    // sink-bound property is proven by foreign-ledger mismatch probes.
+    // Submission receipt/failure coverage lives in ss_003c/d.
+    let alpha_path = durable_ledger_path("scoped-flush-alpha");
+    let alpha_ledger = fs_ledger::Ledger::open(&alpha_path).expect("alpha ledger");
+    let gov = Governor::new_durable(&alpha_ledger, DurableGovernorNonce::from_bytes([0xF5; 32]));
     let alpha_permit = gov
         .open_session(token_in_scope(45, ALPHA))
         .expect("canonical JSON-hostile alpha scope");
     let beta_permit = gov
         .open_session(token_in_scope(46, BETA))
         .expect("canonical beta scope");
+    gov.flush_scope_to_ledger(&alpha_permit, &alpha_ledger)
+        .expect("alpha open prerequisite terminal");
+    let alpha_after_open = alpha_ledger.table_count("events").unwrap();
     assert!(matches!(
-        gov.submit_once(SessionId(45), "alpha-once", || Charge {
+        gov.submit_once_durable(&alpha_ledger, SessionId(45), "alpha-once", || Charge {
             core_s: 2.0,
             mem_peak_bytes: 5,
             wall_s: 1.0,
         })
         .expect("alpha submission"),
         SubmitOutcome::Executed { .. }
-    ));
-    assert!(matches!(
-        gov.submit_once(SessionId(46), "beta-once", || Charge {
-            core_s: 7.0,
-            mem_peak_bytes: 11,
-            wall_s: 4.0,
-        })
-        .expect("beta submission"),
-        SubmitOutcome::Executed { .. }
-    ));
-    assert!(matches!(
-        gov.submit_once(SessionId(46), r#"beta-"failed"\key"#, || Charge {
-            core_s: f64::NAN,
-            ..Charge::default()
-        })
-        .expect("invalid charge becomes one terminal failure receipt"),
-        SubmitOutcome::Failed { .. }
     ));
     gov.apply_memory_pressure(SessionId(45), 1)
         .expect("alpha event one");
@@ -1867,36 +1871,38 @@ fn ss_003f_scoped_flush_isolated_interleaved_retryable_and_sink_bound() {
     gov.apply_memory_pressure(SessionId(45), 1)
         .expect("alpha event two");
 
-    let alpha_ledger = fs_ledger::Ledger::open(":memory:").expect("alpha ledger");
-    let beta_ledger = fs_ledger::Ledger::open(":memory:").expect("beta ledger");
+    let foreign_ledger = fs_ledger::Ledger::open(":memory:").expect("foreign probe ledger");
     alpha_ledger.begin().expect("caller transaction");
     assert!(matches!(
         gov.flush_scope_to_ledger(&alpha_permit, &alpha_ledger),
         Err(SessionError::Persistence { .. })
     ));
-    assert_eq!(alpha_ledger.table_count("events").unwrap(), 0);
+    assert_eq!(
+        alpha_ledger.table_count("events").unwrap(),
+        alpha_after_open
+    );
     alpha_ledger.rollback().expect("caller rollback");
 
     gov.flush_scope_to_ledger(&alpha_permit, &alpha_ledger)
         .expect("alpha retry writes only alpha state");
+    let after_alpha_batch = alpha_ledger.table_count("events").unwrap();
     assert_eq!(
-        alpha_ledger.table_count("events").unwrap(),
-        4,
-        "alpha open + terminal receipt + two degradation events"
+        after_alpha_batch,
+        alpha_after_open + 3,
+        "alpha terminal receipt + two degradation events, nothing of beta"
     );
-    assert_eq!(beta_ledger.table_count("events").unwrap(), 0);
-    gov.flush_scope_to_ledger(&beta_permit, &beta_ledger)
-        .expect("beta independently binds its own sink");
+    gov.flush_scope_to_ledger(&beta_permit, &alpha_ledger)
+        .expect("beta flushes through its own cursor into the shared sink");
+    let after_beta_batch = alpha_ledger.table_count("events").unwrap();
     assert_eq!(
-        beta_ledger.table_count("events").unwrap(),
-        4,
-        "beta open + success/failure receipts + one degradation event"
+        after_beta_batch,
+        after_alpha_batch + 2,
+        "beta open + one degradation event, nothing of alpha re-flushed"
     );
     assert!(
         alpha_ledger.lint().unwrap().is_clean(),
         "the exact quote/backslash-bearing scope must be JSON escaped"
     );
-    assert!(beta_ledger.lint().unwrap().is_clean());
 
     gov.charge(
         SessionId(45),
@@ -1912,27 +1918,35 @@ fn ss_003f_scoped_flush_isolated_interleaved_retryable_and_sink_bound() {
         .expect("alpha event three");
 
     assert!(matches!(
-        gov.flush_scope_to_ledger(&alpha_permit, &beta_ledger),
+        gov.flush_scope_to_ledger(&alpha_permit, &foreign_ledger),
         Err(SessionError::LedgerScopeSinkMismatch { scope, .. }) if scope == ALPHA
     ));
     assert_eq!(
-        beta_ledger.table_count("events").unwrap(),
-        4,
-        "cross-scope sink attempt must append nothing"
+        foreign_ledger.table_count("events").unwrap(),
+        0,
+        "foreign-sink attempt must append nothing"
     );
     gov.flush_scope_to_ledger(&alpha_permit, &alpha_ledger)
         .expect("wrong-sink attempt leaves both alpha cursors dirty");
-    assert_eq!(alpha_ledger.table_count("events").unwrap(), 6);
-    gov.flush_scope_to_ledger(&beta_permit, &beta_ledger)
+    let after_alpha_second = alpha_ledger.table_count("events").unwrap();
+    assert_eq!(
+        after_alpha_second,
+        after_beta_batch + 2,
+        "alpha meter + third degradation append after the wrong-sink refusal"
+    );
+    gov.flush_scope_to_ledger(&beta_permit, &alpha_ledger)
         .expect("alpha activity did not consume beta's degradation cursor");
-    assert_eq!(beta_ledger.table_count("events").unwrap(), 5);
+    let after_beta_second = alpha_ledger.table_count("events").unwrap();
+    assert_eq!(after_beta_second, after_alpha_second + 1);
 
     gov.flush_scope_to_ledger(&alpha_permit, &alpha_ledger)
         .expect("alpha unchanged no-op");
-    gov.flush_scope_to_ledger(&beta_permit, &beta_ledger)
+    gov.flush_scope_to_ledger(&beta_permit, &alpha_ledger)
         .expect("beta unchanged no-op");
-    assert_eq!(alpha_ledger.table_count("events").unwrap(), 6);
-    assert_eq!(beta_ledger.table_count("events").unwrap(), 5);
+    assert_eq!(
+        alpha_ledger.table_count("events").unwrap(),
+        after_beta_second
+    );
 }
 
 #[test]
