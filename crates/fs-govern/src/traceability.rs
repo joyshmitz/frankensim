@@ -6,6 +6,7 @@
 //! Beads or contracts use the same fail-closed validator and renderer.
 
 use core::fmt::Write as _;
+use fs_blake3::ContentHash;
 use std::collections::BTreeSet;
 
 use crate::json_escape;
@@ -18,6 +19,21 @@ pub const TRACEABILITY_SCHEMA: &str = "frankensim-requirement-traceability-v1";
 /// Scientific promotion requires a separate source-bound admission receipt;
 /// this generator intentionally cannot mint one.
 pub const TRACEABILITY_AUTHORITY: &str = "declaration-only";
+
+/// Schema tag for an admitted set of immutable traceability source artifacts.
+pub const TRACEABILITY_SOURCE_SNAPSHOT_SCHEMA: &str = "frankensim-traceability-source-snapshot-v1";
+
+/// Domain for source-snapshot identities.
+pub const TRACEABILITY_SOURCE_SNAPSHOT_IDENTITY_DOMAIN: &str =
+    "frankensim.fs-govern.traceability-source-snapshot.v1";
+
+/// Domain for the canonical declaration payload embedded in a bound ledger.
+pub const TRACEABILITY_DECLARATION_IDENTITY_DOMAIN: &str =
+    "frankensim.fs-govern.traceability-declaration.v1";
+
+/// Domain binding one admitted source snapshot to one declaration payload.
+pub const TRACEABILITY_SOURCE_BINDING_IDENTITY_DOMAIN: &str =
+    "frankensim.fs-govern.traceability-source-binding.v1";
 
 /// Number of executable proof obligations in the extension charter.
 pub const PROOF_OBLIGATION_COUNT: usize = 25;
@@ -36,6 +52,12 @@ pub const MAX_REQUIREMENT_PO_LINKS: usize = PROOF_OBLIGATION_COUNT;
 
 /// Maximum owning Beads on one proof-obligation definition.
 pub const MAX_PROOF_OBLIGATION_OWNERS: usize = 16;
+
+/// Maximum immutable artifacts retained in one source snapshot.
+pub const MAX_TRACEABILITY_SOURCES: usize = 512;
+
+/// Maximum UTF-8 bytes in one source locator.
+pub const MAX_TRACEABILITY_SOURCE_LOCATOR_BYTES: usize = 4 * 1024;
 
 const REQUIRED_REQUIREMENT_IDS: [&str; REQUIREMENT_COUNT] = [
     "B1",
@@ -78,6 +100,386 @@ const VALID_STATUSES: [&str; 6] = [
     "refused",
     "retired",
 ];
+
+/// Class of immutable artifact contributing to a generated traceability view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TraceabilitySourceKind {
+    /// Beads issue/dependency snapshot.
+    Beads,
+    /// Crate or subsystem contract snapshot.
+    Contract,
+    /// Canonical requirement/proof-obligation registry snapshot.
+    Registry,
+}
+
+impl TraceabilitySourceKind {
+    /// Stable artifact label and canonical ordering key.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Beads => "beads",
+            Self::Contract => "contract",
+            Self::Registry => "registry",
+        }
+    }
+
+    const fn identity_tag(self) -> u8 {
+        match self {
+            Self::Beads => 1,
+            Self::Contract => 2,
+            Self::Registry => 3,
+        }
+    }
+}
+
+/// Caller-supplied immutable artifact reference for a source snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TraceabilitySource<'a> {
+    /// Source class.
+    pub kind: TraceabilitySourceKind,
+    /// Stable source locator, such as `.beads/issues.jsonl` or a contract path.
+    pub locator: &'a str,
+    /// Collision-resistant identity of the exact bytes read by the adapter.
+    pub content_identity: ContentHash,
+}
+
+/// Field named by a source-snapshot admission diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TraceabilitySourceField {
+    /// Whole snapshot shape or source-class coverage.
+    Snapshot,
+    /// Stable source locator.
+    Locator,
+    /// Immutable artifact content identity.
+    ContentIdentity,
+}
+
+impl TraceabilitySourceField {
+    /// Stable field name used in structured diagnostics.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Snapshot => "snapshot",
+            Self::Locator => "locator",
+            Self::ContentIdentity => "content_identity",
+        }
+    }
+}
+
+/// One deterministic source-snapshot admission refusal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraceabilitySourceDiagnostic {
+    /// Source locator, or `<snapshot>` for aggregate coverage failures.
+    pub source: String,
+    /// Exact invalid field.
+    pub field: TraceabilitySourceField,
+    /// Actionable refusal reason.
+    pub reason: String,
+}
+
+/// Complete source-snapshot audit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraceabilitySourceAudit {
+    /// Number of supplied artifact references.
+    pub total: usize,
+    /// Every deterministic refusal.
+    pub diagnostics: Vec<TraceabilitySourceDiagnostic>,
+}
+
+impl TraceabilitySourceAudit {
+    /// Whether the snapshot has valid Beads, contract, and registry coverage.
+    #[must_use]
+    pub fn ok(&self) -> bool {
+        self.total > 0 && self.diagnostics.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RetainedTraceabilitySource {
+    kind: TraceabilitySourceKind,
+    locator: String,
+    content_identity: ContentHash,
+}
+
+/// Sealed, canonically ordered source snapshot admitted for ledger binding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraceabilitySourceSnapshot {
+    sources: Vec<RetainedTraceabilitySource>,
+    identity: ContentHash,
+}
+
+impl TraceabilitySourceSnapshot {
+    /// Validate, canonicalize, and seal exact source artifact references.
+    ///
+    /// At least one Beads snapshot, one contract, and one canonical registry
+    /// artifact are mandatory. An all-zero hash is a missing-value sentinel,
+    /// never a content identity.
+    pub fn new(sources: &[TraceabilitySource<'_>]) -> Result<Self, TraceabilitySourceAudit> {
+        let audit = audit_traceability_sources(sources);
+        if !audit.ok() {
+            return Err(audit);
+        }
+
+        let mut retained = Vec::new();
+        if retained.try_reserve_exact(sources.len()).is_err() {
+            return Err(TraceabilitySourceAudit {
+                total: sources.len(),
+                diagnostics: vec![TraceabilitySourceDiagnostic {
+                    source: "<snapshot>".to_string(),
+                    field: TraceabilitySourceField::Snapshot,
+                    reason: format!(
+                        "allocation refused for {} retained source references",
+                        sources.len()
+                    ),
+                }],
+            });
+        }
+        retained.extend(sources.iter().map(|source| RetainedTraceabilitySource {
+            kind: source.kind,
+            locator: source.locator.to_string(),
+            content_identity: source.content_identity,
+        }));
+        retained.sort_unstable_by(|left, right| {
+            left.kind
+                .cmp(&right.kind)
+                .then_with(|| left.locator.cmp(&right.locator))
+                .then_with(|| left.content_identity.cmp(&right.content_identity))
+        });
+        let identity = traceability_source_snapshot_identity(&retained);
+        Ok(Self {
+            sources: retained,
+            identity,
+        })
+    }
+
+    /// Canonical source-snapshot identity.
+    #[must_use]
+    pub const fn identity(&self) -> ContentHash {
+        self.identity
+    }
+
+    /// Number of retained immutable source artifacts.
+    #[must_use]
+    pub fn source_count(&self) -> usize {
+        self.sources.len()
+    }
+
+    fn write_json(&self, out: &mut String) {
+        write!(
+            out,
+            "{{\"schema\":\"{}\",\"identity_blake3\":\"{}\",\"sources\":[",
+            TRACEABILITY_SOURCE_SNAPSHOT_SCHEMA, self.identity,
+        )
+        .expect("writing to a String is infallible");
+        for (index, source) in self.sources.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            write!(
+                out,
+                "{{\"kind\":\"{}\",\"locator\":\"{}\",\"content_identity_blake3\":\"{}\"}}",
+                source.kind.as_str(),
+                json_escape(&source.locator),
+                source.content_identity,
+            )
+            .expect("writing to a String is infallible");
+        }
+        out.push_str("]}");
+    }
+
+    /// Canonical JSON for the admitted source set itself.
+    #[must_use]
+    pub fn to_json(&self) -> String {
+        let mut out = String::new();
+        self.write_json(&mut out);
+        out
+    }
+}
+
+/// A generated declaration ledger bound to exact source artifact identities.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundTraceabilityLedger {
+    json: String,
+    source_snapshot_identity: ContentHash,
+    declaration_identity: ContentHash,
+    binding_identity: ContentHash,
+}
+
+impl BoundTraceabilityLedger {
+    /// Complete canonical JSON artifact.
+    #[must_use]
+    pub fn json(&self) -> &str {
+        &self.json
+    }
+
+    /// Identity of the sorted source set.
+    #[must_use]
+    pub const fn source_snapshot_identity(&self) -> ContentHash {
+        self.source_snapshot_identity
+    }
+
+    /// Identity of the canonical declaration payload before source binding.
+    #[must_use]
+    pub const fn declaration_identity(&self) -> ContentHash {
+        self.declaration_identity
+    }
+
+    /// Identity binding the source snapshot and declaration payload together.
+    #[must_use]
+    pub const fn binding_identity(&self) -> ContentHash {
+        self.binding_identity
+    }
+}
+
+fn source_diagnostic(
+    source: impl Into<String>,
+    field: TraceabilitySourceField,
+    reason: impl Into<String>,
+) -> TraceabilitySourceDiagnostic {
+    TraceabilitySourceDiagnostic {
+        source: source.into(),
+        field,
+        reason: reason.into(),
+    }
+}
+
+/// Audit immutable Beads, contract, and registry references before binding.
+#[must_use]
+#[allow(clippy::too_many_lines)] // keep aggregate coverage and row-local refusals together
+pub fn audit_traceability_sources(sources: &[TraceabilitySource<'_>]) -> TraceabilitySourceAudit {
+    let mut diagnostics = Vec::new();
+    if sources.len() > MAX_TRACEABILITY_SOURCES {
+        diagnostics.push(source_diagnostic(
+            "<snapshot>",
+            TraceabilitySourceField::Snapshot,
+            format!(
+                "source snapshot contains {} artifacts; maximum is {MAX_TRACEABILITY_SOURCES}",
+                sources.len()
+            ),
+        ));
+        return TraceabilitySourceAudit {
+            total: sources.len(),
+            diagnostics,
+        };
+    }
+    if sources.is_empty() {
+        diagnostics.push(source_diagnostic(
+            "<snapshot>",
+            TraceabilitySourceField::Snapshot,
+            "source snapshot is empty",
+        ));
+    }
+
+    let mut seen_locators = BTreeSet::new();
+    let mut seen_identities = BTreeSet::new();
+    let mut has_beads = false;
+    let mut has_contract = false;
+    let mut has_registry = false;
+    for source in sources {
+        let scope = if source.locator.len() > MAX_TRACEABILITY_SOURCE_LOCATOR_BYTES {
+            "<oversized-source-locator>"
+        } else if source.locator.trim().is_empty() {
+            "<missing-source-locator>"
+        } else {
+            source.locator
+        };
+        match source.kind {
+            TraceabilitySourceKind::Beads => has_beads = true,
+            TraceabilitySourceKind::Contract => has_contract = true,
+            TraceabilitySourceKind::Registry => has_registry = true,
+        }
+        if source.locator.len() > MAX_TRACEABILITY_SOURCE_LOCATOR_BYTES {
+            diagnostics.push(source_diagnostic(
+                scope,
+                TraceabilitySourceField::Locator,
+                format!(
+                    "source locator is {} bytes; maximum is {MAX_TRACEABILITY_SOURCE_LOCATOR_BYTES}",
+                    source.locator.len()
+                ),
+            ));
+        } else if source.locator.trim().is_empty() {
+            diagnostics.push(source_diagnostic(
+                scope,
+                TraceabilitySourceField::Locator,
+                "source locator is blank",
+            ));
+        } else if source.locator.chars().any(char::is_control) {
+            diagnostics.push(source_diagnostic(
+                scope,
+                TraceabilitySourceField::Locator,
+                "source locator contains a control character",
+            ));
+        } else if !seen_locators.insert(source.locator) {
+            diagnostics.push(source_diagnostic(
+                scope,
+                TraceabilitySourceField::Locator,
+                format!(
+                    "duplicate source locator {:?}; one artifact cannot be relabeled across source classes",
+                    source.locator,
+                ),
+            ));
+        }
+        if source.content_identity == ContentHash([0; 32]) {
+            diagnostics.push(source_diagnostic(
+                scope,
+                TraceabilitySourceField::ContentIdentity,
+                "source content identity is the all-zero missing-value sentinel",
+            ));
+        } else if !seen_identities.insert(source.content_identity) {
+            diagnostics.push(source_diagnostic(
+                scope,
+                TraceabilitySourceField::ContentIdentity,
+                "duplicate source content identity; one artifact cannot satisfy multiple source references",
+            ));
+        }
+    }
+
+    for (present, kind) in [
+        (has_beads, TraceabilitySourceKind::Beads),
+        (has_contract, TraceabilitySourceKind::Contract),
+        (has_registry, TraceabilitySourceKind::Registry),
+    ] {
+        if !present {
+            diagnostics.push(source_diagnostic(
+                "<snapshot>",
+                TraceabilitySourceField::Snapshot,
+                format!("source snapshot has no {} artifact", kind.as_str()),
+            ));
+        }
+    }
+    diagnostics.sort_by(|left, right| {
+        left.source
+            .cmp(&right.source)
+            .then_with(|| left.field.cmp(&right.field))
+            .then_with(|| left.reason.cmp(&right.reason))
+    });
+    TraceabilitySourceAudit {
+        total: sources.len(),
+        diagnostics,
+    }
+}
+
+fn push_identity_field(out: &mut Vec<u8>, tag: u8, bytes: &[u8]) {
+    out.push(tag);
+    let len = u64::try_from(bytes.len()).expect("bounded identity field length fits in u64");
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(bytes);
+}
+
+fn traceability_source_snapshot_identity(sources: &[RetainedTraceabilitySource]) -> ContentHash {
+    let mut canonical = Vec::new();
+    push_identity_field(
+        &mut canonical,
+        1,
+        TRACEABILITY_SOURCE_SNAPSHOT_SCHEMA.as_bytes(),
+    );
+    for source in sources {
+        push_identity_field(&mut canonical, 2, &[source.kind.identity_tag()]);
+        push_identity_field(&mut canonical, 3, source.locator.as_bytes());
+        push_identity_field(&mut canonical, 4, source.content_identity.as_bytes());
+    }
+    fs_blake3::hash_domain(TRACEABILITY_SOURCE_SNAPSHOT_IDENTITY_DOMAIN, &canonical)
+}
 
 /// One source row for the generated requirement-to-evidence ledger.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -700,6 +1102,58 @@ pub fn generate_traceability_ledger(
     }
     out.push_str("]}");
     Ok(out)
+}
+
+/// Generate a declaration ledger bound to exact Beads/contracts/registry bytes.
+///
+/// The source identities prove which immutable inputs an adapter named and the
+/// declaration identity proves the complete canonical row/index payload. The
+/// binding identity couples those two roots. This remains
+/// `authority: "declaration-only"`: the API cannot prove that an adapter parsed
+/// its named artifacts correctly, that a closed Bead supplies adequate
+/// scientific evidence, or that a contract statement has been discharged.
+pub fn generate_traceability_ledger_from_snapshot(
+    rows: &[RequirementRow<'_>],
+    obligations: &[ProofObligation<'_>],
+    snapshot: &TraceabilitySourceSnapshot,
+) -> Result<BoundTraceabilityLedger, TraceabilityAudit> {
+    let declaration_json = generate_traceability_ledger(rows, obligations)?;
+    let declaration_identity = fs_blake3::hash_domain(
+        TRACEABILITY_DECLARATION_IDENTITY_DOMAIN,
+        declaration_json.as_bytes(),
+    );
+    let mut binding_preimage = Vec::new();
+    push_identity_field(&mut binding_preimage, 1, snapshot.identity.as_bytes());
+    push_identity_field(&mut binding_preimage, 2, declaration_identity.as_bytes());
+    let binding_identity = fs_blake3::hash_domain(
+        TRACEABILITY_SOURCE_BINDING_IDENTITY_DOMAIN,
+        &binding_preimage,
+    );
+
+    let mut snapshot_json = snapshot.to_json();
+    let closing_brace = snapshot_json.pop();
+    debug_assert_eq!(closing_brace, Some('}'));
+    write!(
+        snapshot_json,
+        ",\"declaration_identity_blake3\":\"{}\",\"binding_identity_blake3\":\"{}\"}}",
+        declaration_identity, binding_identity,
+    )
+    .expect("writing to a String is infallible");
+    let marker = "\"source_snapshot\":null";
+    let (prefix, suffix) = declaration_json
+        .split_once(marker)
+        .expect("the canonical declaration renderer always emits the source marker");
+    let mut json = String::new();
+    json.push_str(prefix);
+    write!(json, "\"source_snapshot\":{snapshot_json}").expect("writing to a String is infallible");
+    json.push_str(suffix);
+
+    Ok(BoundTraceabilityLedger {
+        json,
+        source_snapshot_identity: snapshot.identity,
+        declaration_identity,
+        binding_identity,
+    })
 }
 
 const PROOF_OBLIGATIONS: [ProofObligation<'static>; PROOF_OBLIGATION_COUNT] = [

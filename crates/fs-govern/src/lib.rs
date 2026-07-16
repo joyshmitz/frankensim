@@ -49,11 +49,18 @@ pub use lanes::{
 };
 pub use proposals::{GovernanceAudit, Proposal, governance_audit, proposals, proposals_json};
 pub use traceability::{
-    MAX_PROOF_OBLIGATION_OWNERS, MAX_REQUIREMENT_PO_LINKS, MAX_REQUIREMENT_ROWS,
-    MAX_TRACEABILITY_FIELD_BYTES, PROOF_OBLIGATION_COUNT, ProofObligation, REQUIREMENT_COUNT,
-    RequirementRow, TRACEABILITY_AUTHORITY, TRACEABILITY_SCHEMA, TraceabilityAudit,
-    TraceabilityDiagnostic, TraceabilityField, audit_traceability, generate_traceability_ledger,
-    proof_obligations, requirements, traceability_ledger_json,
+    BoundTraceabilityLedger, MAX_PROOF_OBLIGATION_OWNERS, MAX_REQUIREMENT_PO_LINKS,
+    MAX_REQUIREMENT_ROWS, MAX_TRACEABILITY_FIELD_BYTES, MAX_TRACEABILITY_SOURCE_LOCATOR_BYTES,
+    MAX_TRACEABILITY_SOURCES, PROOF_OBLIGATION_COUNT, ProofObligation, REQUIREMENT_COUNT,
+    RequirementRow, TRACEABILITY_AUTHORITY, TRACEABILITY_DECLARATION_IDENTITY_DOMAIN,
+    TRACEABILITY_SCHEMA, TRACEABILITY_SOURCE_BINDING_IDENTITY_DOMAIN,
+    TRACEABILITY_SOURCE_SNAPSHOT_IDENTITY_DOMAIN, TRACEABILITY_SOURCE_SNAPSHOT_SCHEMA,
+    TraceabilityAudit, TraceabilityDiagnostic, TraceabilityField, TraceabilitySource,
+    TraceabilitySourceAudit, TraceabilitySourceDiagnostic, TraceabilitySourceField,
+    TraceabilitySourceKind, TraceabilitySourceSnapshot, audit_traceability,
+    audit_traceability_sources, generate_traceability_ledger,
+    generate_traceability_ledger_from_snapshot, proof_obligations, requirements,
+    traceability_ledger_json,
 };
 
 /// The ten addendum risks (Part V).

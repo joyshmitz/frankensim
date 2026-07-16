@@ -118,12 +118,29 @@ and RQ-* requirement-to-evidence catalog.
   emits `authority: "declaration-only"` and `source_snapshot: null`; this API
   refuses `verified` and `validated` because only a future source-bound
   admission receipt may mint scientific promotion status.
+- `TraceabilitySourceSnapshot::new(sources)` is the pure adapter boundary for
+  live Beads/contracts/registry extraction. It requires at least one immutable
+  artifact from each of those three classes, rejects blank/oversized or
+  duplicate locators and the all-zero missing-content sentinel, canonicalizes
+  source order, and derives a domain-separated BLAKE3 snapshot identity from
+  source kind, locator, and exact content identity. It reads no filesystem and
+  trusts no tracker status implicitly; the caller owns bounded parsing of the
+  named bytes.
+- `generate_traceability_ledger_from_snapshot(rows, obligations, snapshot)`
+  retains `authority: "declaration-only"` while adding three explicit roots:
+  the admitted source-snapshot identity, the canonical unbound declaration
+  identity, and a binding identity over that pair. A source-byte mutation moves
+  the snapshot/binding roots; a row/PO mutation moves the
+  declaration/binding roots. None of these roots proves adapter correctness,
+  scientific adequacy, authorized review, or that Bead closure discharges a
+  proof obligation.
 - Inputs are hard-bounded before rendering: at most 256 requirements, exactly
   the closed 25-PO definition space, 25 PO links per requirement, 16 owners per
-  PO, and 16 KiB per scalar field. This pure UTIL module performs no filesystem
-  or database I/O. Tooling adapters own bounded reads from Beads, contracts,
-  manifests, and immutable artifact persistence; those sources must use this
-  validator instead of hand-maintaining a dashboard.
+  PO, 16 KiB per scalar field, 512 source artifacts, and 4 KiB per source
+  locator. This pure UTIL module performs no filesystem or database I/O.
+  Tooling adapters own bounded reads from Beads, contracts, manifests, and
+  immutable artifact persistence; those sources must use this validator
+  instead of hand-maintaining a dashboard.
 
 ## Doctrine and proposals (`doctrine`, `proposals` modules)
 

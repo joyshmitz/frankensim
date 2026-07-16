@@ -3,11 +3,14 @@
 use std::collections::BTreeSet;
 
 use fs_govern::{
-    MAX_PROOF_OBLIGATION_OWNERS, MAX_REQUIREMENT_PO_LINKS, MAX_REQUIREMENT_ROWS,
-    MAX_TRACEABILITY_FIELD_BYTES, PROOF_OBLIGATION_COUNT, ProofObligation, RequirementRow,
-    TRACEABILITY_AUTHORITY, TRACEABILITY_SCHEMA, TraceabilityAudit, TraceabilityField,
-    audit_traceability, generate_traceability_ledger, proof_obligations, requirements,
-    traceability_ledger_json,
+    ContentHash, MAX_PROOF_OBLIGATION_OWNERS, MAX_REQUIREMENT_PO_LINKS, MAX_REQUIREMENT_ROWS,
+    MAX_TRACEABILITY_FIELD_BYTES, MAX_TRACEABILITY_SOURCE_LOCATOR_BYTES, MAX_TRACEABILITY_SOURCES,
+    PROOF_OBLIGATION_COUNT, ProofObligation, RequirementRow, TRACEABILITY_AUTHORITY,
+    TRACEABILITY_SCHEMA, TRACEABILITY_SOURCE_SNAPSHOT_SCHEMA, TraceabilityAudit, TraceabilityField,
+    TraceabilitySource, TraceabilitySourceField, TraceabilitySourceKind,
+    TraceabilitySourceSnapshot, audit_traceability, audit_traceability_sources,
+    generate_traceability_ledger, generate_traceability_ledger_from_snapshot, proof_obligations,
+    requirements, traceability_ledger_json,
 };
 
 fn assert_field_failure(
@@ -25,6 +28,30 @@ fn assert_field_failure(
         audit.diagnostics
     );
     audit
+}
+
+fn source_identity(byte: u8) -> ContentHash {
+    ContentHash([byte; 32])
+}
+
+fn source_references() -> [TraceabilitySource<'static>; 3] {
+    [
+        TraceabilitySource {
+            kind: TraceabilitySourceKind::Beads,
+            locator: ".beads/issues.jsonl",
+            content_identity: source_identity(1),
+        },
+        TraceabilitySource {
+            kind: TraceabilitySourceKind::Contract,
+            locator: "crates/fs-govern/CONTRACT.md",
+            content_identity: source_identity(2),
+        },
+        TraceabilitySource {
+            kind: TraceabilitySourceKind::Registry,
+            locator: "crates/fs-govern/src/traceability.rs",
+            content_identity: source_identity(3),
+        },
+    ]
 }
 
 #[test]
@@ -779,4 +806,213 @@ fn generated_json_contains_every_column_and_the_complete_po_index() {
     assert_eq!(json.matches("\"summary\":").count(), 25);
     assert!(json.contains("\"id\":\"PO-1\""));
     assert!(json.contains("\"id\":\"PO-25\""));
+}
+
+#[test]
+fn source_snapshot_binding_is_canonical_and_remains_declaration_only() {
+    let sources = source_references();
+    let snapshot = TraceabilitySourceSnapshot::new(&sources).expect("complete source coverage");
+    let mut reversed = sources;
+    reversed.reverse();
+    let reverse_snapshot =
+        TraceabilitySourceSnapshot::new(&reversed).expect("source order is non-semantic");
+    assert_eq!(snapshot, reverse_snapshot);
+    assert_eq!(snapshot.source_count(), 3);
+    assert!(
+        snapshot
+            .to_json()
+            .contains(TRACEABILITY_SOURCE_SNAPSHOT_SCHEMA)
+    );
+
+    let artifact =
+        generate_traceability_ledger_from_snapshot(requirements(), proof_obligations(), &snapshot)
+            .expect("canonical declaration binds to admitted sources");
+    assert_eq!(
+        artifact.source_snapshot_identity(),
+        reverse_snapshot.identity()
+    );
+    assert!(
+        artifact
+            .json()
+            .contains(&format!("\"authority\":\"{TRACEABILITY_AUTHORITY}\""))
+    );
+    assert!(!artifact.json().contains("\"source_snapshot\":null"));
+    assert!(artifact.json().contains("\"kind\":\"beads\""));
+    assert!(artifact.json().contains("\"kind\":\"contract\""));
+    assert!(artifact.json().contains("\"kind\":\"registry\""));
+    assert!(
+        artifact
+            .json()
+            .contains(&artifact.declaration_identity().to_string())
+    );
+    assert!(
+        artifact
+            .json()
+            .contains(&artifact.binding_identity().to_string())
+    );
+    assert!(!artifact.json().contains("\"status\":\"verified\""));
+    assert!(!artifact.json().contains("\"status\":\"validated\""));
+
+    let mut rows = requirements().to_vec();
+    rows.reverse();
+    let mut obligations = proof_obligations().to_vec();
+    obligations.reverse();
+    let permuted =
+        generate_traceability_ledger_from_snapshot(&rows, &obligations, &reverse_snapshot)
+            .expect("all source enumeration orders are non-semantic");
+    assert_eq!(artifact, permuted);
+}
+
+#[test]
+fn source_and_declaration_mutations_move_only_their_owned_roots() {
+    let sources = source_references();
+    let first_snapshot = TraceabilitySourceSnapshot::new(&sources).expect("snapshot");
+    let first = generate_traceability_ledger_from_snapshot(
+        requirements(),
+        proof_obligations(),
+        &first_snapshot,
+    )
+    .expect("bound ledger");
+
+    let mut changed_sources = sources;
+    changed_sources[0].content_identity = source_identity(9);
+    let changed_snapshot =
+        TraceabilitySourceSnapshot::new(&changed_sources).expect("changed snapshot");
+    let changed_source = generate_traceability_ledger_from_snapshot(
+        requirements(),
+        proof_obligations(),
+        &changed_snapshot,
+    )
+    .expect("changed source ledger");
+    assert_ne!(
+        first.source_snapshot_identity(),
+        changed_source.source_snapshot_identity()
+    );
+    assert_eq!(
+        first.declaration_identity(),
+        changed_source.declaration_identity()
+    );
+    assert_ne!(first.binding_identity(), changed_source.binding_identity());
+
+    let mut changed_locators = sources;
+    changed_locators[0].locator = ".beads/exported-issues.jsonl";
+    let changed_locator_snapshot =
+        TraceabilitySourceSnapshot::new(&changed_locators).expect("changed locator snapshot");
+    assert_ne!(
+        first_snapshot.identity(),
+        changed_locator_snapshot.identity()
+    );
+
+    let mut changed_kinds = sources;
+    changed_kinds[0].kind = TraceabilitySourceKind::Contract;
+    changed_kinds[1].kind = TraceabilitySourceKind::Beads;
+    let changed_kind_snapshot =
+        TraceabilitySourceSnapshot::new(&changed_kinds).expect("changed kind snapshot");
+    assert_ne!(first_snapshot.identity(), changed_kind_snapshot.identity());
+
+    let mut changed_rows = requirements().to_vec();
+    changed_rows[0] = RequirementRow {
+        capability_property: "changed declaration-only capability spelling",
+        ..changed_rows[0]
+    };
+    let changed_declaration = generate_traceability_ledger_from_snapshot(
+        &changed_rows,
+        proof_obligations(),
+        &first_snapshot,
+    )
+    .expect("changed declaration remains structurally complete");
+    assert_eq!(
+        first.source_snapshot_identity(),
+        changed_declaration.source_snapshot_identity()
+    );
+    assert_ne!(
+        first.declaration_identity(),
+        changed_declaration.declaration_identity()
+    );
+    assert_ne!(
+        first.binding_identity(),
+        changed_declaration.binding_identity()
+    );
+}
+
+#[test]
+fn source_snapshot_refuses_missing_spoofed_and_duplicate_inputs_deterministically() {
+    let sources = source_references();
+    let missing_contract = [sources[0], sources[2]];
+    let audit = audit_traceability_sources(&missing_contract);
+    assert!(!audit.ok());
+    assert!(audit.diagnostics.iter().any(|diagnostic| {
+        diagnostic.source == "<snapshot>"
+            && diagnostic.field == TraceabilitySourceField::Snapshot
+            && diagnostic.reason.contains("no contract")
+    }));
+
+    let invalid = [
+        TraceabilitySource {
+            locator: " ",
+            ..sources[0]
+        },
+        sources[1],
+        TraceabilitySource {
+            content_identity: ContentHash([0; 32]),
+            ..sources[2]
+        },
+        sources[1],
+    ];
+    let forward = audit_traceability_sources(&invalid);
+    let mut reverse_invalid = invalid;
+    reverse_invalid.reverse();
+    let reverse = audit_traceability_sources(&reverse_invalid);
+    assert_eq!(forward, reverse);
+    assert!(forward.diagnostics.iter().any(|diagnostic| {
+        diagnostic.field == TraceabilitySourceField::Locator && diagnostic.reason.contains("blank")
+    }));
+    assert!(forward.diagnostics.iter().any(|diagnostic| {
+        diagnostic.field == TraceabilitySourceField::Locator
+            && diagnostic.reason.contains("duplicate source locator")
+    }));
+    assert!(forward.diagnostics.iter().any(|diagnostic| {
+        diagnostic.field == TraceabilitySourceField::ContentIdentity
+            && diagnostic.reason.contains("all-zero")
+    }));
+    assert!(TraceabilitySourceSnapshot::new(&invalid).is_err());
+}
+
+#[test]
+fn source_snapshot_enforces_count_and_locator_byte_caps_before_binding() {
+    let source = source_references()[0];
+    let oversized = vec![source; MAX_TRACEABILITY_SOURCES + 1];
+    let audit = audit_traceability_sources(&oversized);
+    assert_eq!(audit.total, MAX_TRACEABILITY_SOURCES + 1);
+    assert_eq!(audit.diagnostics.len(), 1);
+    assert_eq!(
+        audit.diagnostics[0].field,
+        TraceabilitySourceField::Snapshot
+    );
+
+    let exact_locator = "L".repeat(MAX_TRACEABILITY_SOURCE_LOCATOR_BYTES);
+    let above_locator = "L".repeat(MAX_TRACEABILITY_SOURCE_LOCATOR_BYTES + 1);
+    let exact = [
+        TraceabilitySource {
+            locator: &exact_locator,
+            ..source_references()[0]
+        },
+        source_references()[1],
+        source_references()[2],
+    ];
+    assert!(audit_traceability_sources(&exact).ok());
+    let above = [
+        TraceabilitySource {
+            locator: &above_locator,
+            ..source_references()[0]
+        },
+        source_references()[1],
+        source_references()[2],
+    ];
+    let audit = audit_traceability_sources(&above);
+    assert!(audit.diagnostics.iter().any(|diagnostic| {
+        diagnostic.source == "<oversized-source-locator>"
+            && diagnostic.field == TraceabilitySourceField::Locator
+            && diagnostic.reason.contains("maximum")
+    }));
 }
