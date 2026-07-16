@@ -2803,6 +2803,70 @@ impl TerminalRelativePhysicalRelabel {
         .map_err(Into::into)
     }
 
+    /// Transport a distributed physical current through the signed cell action
+    /// while requiring fresh target-side constraint receipt identifiers.
+    ///
+    /// A distributed current is already a physical cochain, so the phase's
+    /// scalar current-coordinate sign is not applied a second time. Freshness
+    /// here is deliberately nominal and fail-closed: neither target receipt
+    /// may reuse either source receipt. This method does not verify the external
+    /// receipt authorities or transport a current-realization map; callers must
+    /// admit those target artifacts separately.
+    #[allow(clippy::too_many_arguments)]
+    pub fn transport_distributed_current(
+        &self,
+        source: &TerminalRelativePair,
+        target: &TerminalRelativePair,
+        current: &DistributedCurrent,
+        target_id: PhysicalObjectId,
+        target_divergence_receipt: StableId,
+        target_terminal_constraint_receipt: StableId,
+    ) -> Result<DistributedCurrent, TerminalRelativePhysicalRelabelError> {
+        self.verify_pair_bindings(source, target)?;
+        self.verify_value_pair("distributed current source", current.cochain.pair)?;
+        let (target_phase, _) = self.required_phase_image(&current.cochain.phase)?;
+        let target_phase = target_phase.clone();
+
+        for (role, receipt) in [
+            ("divergence", &target_divergence_receipt),
+            ("terminal constraint", &target_terminal_constraint_receipt),
+        ] {
+            if receipt == current.divergence_receipt()
+                || receipt == current.terminal_constraint_receipt()
+            {
+                return Err(
+                    TerminalRelativePhysicalRelabelError::ConstraintReceiptNotFresh {
+                        role,
+                        receipt: receipt.as_str().to_owned(),
+                    },
+                );
+            }
+        }
+
+        let values = self.transport_real_coefficients(
+            source,
+            target,
+            &current.cochain.phase,
+            &target_phase,
+            current.cochain.degree,
+            &current.cochain.values,
+        )?;
+        let cochain = RealRelativeCochain::try_new(
+            target,
+            target_phase,
+            current.cochain.degree,
+            current.cochain.units,
+            values,
+        )?;
+        DistributedCurrent::new(
+            target_id,
+            cochain,
+            target_divergence_receipt,
+            target_terminal_constraint_receipt,
+        )
+        .map_err(Into::into)
+    }
+
     /// Admit the exact inverse physical relabeling.
     pub fn inverse(
         &self,
@@ -3028,6 +3092,58 @@ impl TerminalRelativePhysicalRelabel {
                         cell: *source_cell,
                     },
                 )?,
+            };
+        }
+        Ok(transported)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn transport_real_coefficients(
+        &self,
+        source: &TerminalRelativePair,
+        target: &TerminalRelativePair,
+        source_phase: &PhaseId,
+        target_phase: &PhaseId,
+        degree: u8,
+        values: &[f64],
+    ) -> Result<Vec<f64>, TerminalRelativePhysicalRelabelError> {
+        let source_basis = source.phase_relative_basis(source_phase, degree)?;
+        if source_basis.len() != values.len() {
+            return Err(TerminalRelativeError::CoefficientArity {
+                expected: source_basis.len(),
+                actual: values.len(),
+            }
+            .into());
+        }
+        let target_basis = target.phase_relative_basis(target_phase, degree)?;
+        let target_indices: BTreeMap<_, _> = target_basis
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, cell)| (cell, index))
+            .collect();
+        let mut transported = vec![0.0_f64; target_basis.len()];
+        for (source_cell, value) in source_basis.iter().zip(values) {
+            let Some((target_cell, cell_sign)) = self.cell_image(*source_cell) else {
+                return Err(TerminalRelativePhysicalRelabelError::MissingSemanticImage {
+                    role: "cell",
+                    id: format!("{}:{}", source_cell.degree, source_cell.ordinal),
+                });
+            };
+            let Some(target_index) = target_indices.get(&target_cell) else {
+                return Err(
+                    TerminalRelativePhysicalRelabelError::MappedBasisCellMissing {
+                        source_phase: source_phase.as_str().to_owned(),
+                        target_phase: target_phase.as_str().to_owned(),
+                        degree,
+                        source: *source_cell,
+                        target: target_cell,
+                    },
+                );
+            };
+            transported[*target_index] = match cell_sign {
+                IncidenceSign::Positive => *value,
+                IncidenceSign::Negative => -*value,
             };
         }
         Ok(transported)
@@ -5683,6 +5799,13 @@ pub enum TerminalRelativePhysicalRelabelError {
         target_terminal: String,
         /// First incompatible field or parity rule.
         field: &'static str,
+    },
+    /// A target distributed-current constraint receipt reused source evidence.
+    ConstraintReceiptNotFresh {
+        /// Target constraint role being supplied.
+        role: &'static str,
+        /// Reused source receipt identity.
+        receipt: String,
     },
     /// A pair or transported value was not bound to the expected endpoint.
     PairIdentityMismatch {

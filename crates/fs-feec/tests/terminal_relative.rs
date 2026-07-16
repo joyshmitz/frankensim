@@ -16,13 +16,13 @@ use fs_feec::terminal_relative::{
     DistributedCurrent, FiniteCellComplex, GeometricCoil, IncidenceSign, IntegralRelativeChain,
     IntegralRelativeCochain, IntegralWindingRepresentative, MachineBindingStatus,
     OrientationMapSign, PhaseCurrentSign, PhaseId, PhaseRelabelEntry, PhysicalObjectId,
-    PhysicalTerminal, PhysicalTerminalId, PresentedMachinePortRef, RealCurrentAmplitude,
-    RealRelativeCochain, SignedCellRelabelEntry, TerminalOrientation, TerminalPortCoordinate,
-    TerminalPortTrivialization, TerminalRelabelEntry, TerminalRelativeCoefficientDomain,
-    TerminalRelativeError, TerminalRelativePair, TerminalRelativePhysicalRelabel,
-    TerminalRelativePhysicalRelabelError, TerminalRelativeSemanticPermutation,
-    TerminalRelativeSignedRelabel, TerminalRelativeSignedRelabelError, TerminalRole,
-    TrivializationId,
+    PhysicalObjectIdentity, PhysicalTerminal, PhysicalTerminalId, PresentedMachinePortRef,
+    RealCurrentAmplitude, RealRelativeCochain, SignedCellRelabelEntry, TerminalOrientation,
+    TerminalPortCoordinate, TerminalPortTrivialization, TerminalRelabelEntry,
+    TerminalRelativeCoefficientDomain, TerminalRelativeError, TerminalRelativePair,
+    TerminalRelativePhysicalRelabel, TerminalRelativePhysicalRelabelError,
+    TerminalRelativeSemanticPermutation, TerminalRelativeSignedRelabel,
+    TerminalRelativeSignedRelabelError, TerminalRole, TrivializationId,
 };
 use fs_qty::{Current, Dims};
 
@@ -650,6 +650,83 @@ fn two_phase_current_winding_product(
         "phase/b" => [0.0, coefficient],
         phase => panic!("unexpected two-phase fixture phase {phase}"),
     }
+}
+
+fn two_phase_distributed_current(
+    pair: &TerminalRelativePair,
+    phase: &str,
+    value: f64,
+    id: &str,
+    divergence_receipt: &str,
+    terminal_receipt: &str,
+) -> DistributedCurrent {
+    let cochain = RealRelativeCochain::try_new(
+        pair,
+        PhaseId::new(phase).unwrap(),
+        1,
+        Current::DIMS,
+        vec![value],
+    )
+    .expect("two-phase distributed-current cochain");
+    DistributedCurrent::new(
+        PhysicalObjectId::new(id).unwrap(),
+        cochain,
+        stable(divergence_receipt),
+        stable(terminal_receipt),
+    )
+    .expect("two-phase distributed current")
+}
+
+fn transport_two_phase_distributed_current(
+    relabel: &TerminalRelativePhysicalRelabel,
+    pair: &TerminalRelativePair,
+    current: &DistributedCurrent,
+    target_id: &str,
+    target_divergence_receipt: &str,
+    target_terminal_receipt: &str,
+) -> DistributedCurrent {
+    let target_id = PhysicalObjectId::new(target_id).unwrap();
+    let target_divergence_receipt = stable(target_divergence_receipt);
+    let target_terminal_receipt = stable(target_terminal_receipt);
+    let transported = relabel
+        .transport_distributed_current(
+            pair,
+            pair,
+            current,
+            target_id.clone(),
+            target_divergence_receipt.clone(),
+            target_terminal_receipt.clone(),
+        )
+        .expect("transport two-phase distributed current");
+    assert_eq!(
+        transported.object_ref().identity(),
+        &PhysicalObjectIdentity::Declared(target_id)
+    );
+    assert_eq!(transported.divergence_receipt(), &target_divergence_receipt);
+    assert_eq!(
+        transported.terminal_constraint_receipt(),
+        &target_terminal_receipt
+    );
+    transported
+}
+
+fn two_phase_distributed_values(currents: [&DistributedCurrent; 2]) -> [f64; 2] {
+    let mut values = [None, None];
+    for current in currents {
+        assert_eq!(current.cochain().degree(), 1);
+        assert_eq!(current.cochain().units(), Current::DIMS);
+        let slot = match current.cochain().phase().as_str() {
+            "phase/a" => 0,
+            "phase/b" => 1,
+            phase => panic!("unexpected two-phase current phase {phase}"),
+        };
+        assert!(
+            values[slot]
+                .replace(current.cochain().values()[0])
+                .is_none()
+        );
+    }
+    [values[0].unwrap(), values[1].unwrap()]
 }
 
 #[test]
@@ -2592,5 +2669,310 @@ fn i13_2a_023_physical_relabel_admission_refuses_incomplete_or_noncommuting_data
                 actual_target_component: "component/a".to_owned(),
             }
         )
+    );
+}
+
+#[test]
+fn i13_2a_024_distributed_current_transport_has_exact_p_s_c_sign_vectors() {
+    let pair = disconnected_two_phase_pair();
+    let identity = TerminalRelativePhysicalRelabel::identity_on(&pair).expect("physical identity");
+    let phase_swap = TerminalRelativePhysicalRelabel::try_new(
+        &pair,
+        &pair,
+        two_phase_preserve_swap_cell_entries(),
+        two_phase_preserve_swap_semantics(),
+    )
+    .expect("phase swap");
+    let terminal_reversal = TerminalRelativePhysicalRelabel::try_new(
+        &pair,
+        &pair,
+        two_phase_terminal_reverse_cell_entries(),
+        two_phase_terminal_reverse_semantics(),
+    )
+    .expect("terminal/current reversal");
+    let composed = TerminalRelativePhysicalRelabel::try_new(
+        &pair,
+        &pair,
+        two_phase_composed_cell_entries(),
+        two_phase_composed_semantics(),
+    )
+    .expect("composed physical relabel");
+    let current_a = two_phase_distributed_current(
+        &pair,
+        "phase/a",
+        2.5,
+        "object/distributed/source-a",
+        "receipt/distributed/source-a-divergence",
+        "receipt/distributed/source-a-terminal",
+    );
+    let current_b = two_phase_distributed_current(
+        &pair,
+        "phase/b",
+        -4.0,
+        "object/distributed/source-b",
+        "receipt/distributed/source-b-divergence",
+        "receipt/distributed/source-b-terminal",
+    );
+
+    for (name, relabel, expected) in [
+        ("identity", &identity, [2.5, -4.0]),
+        ("swap", &phase_swap, [-4.0, 2.5]),
+        ("reverse", &terminal_reversal, [-2.5, 4.0]),
+        ("composed", &composed, [4.0, -2.5]),
+    ] {
+        let from_a = transport_two_phase_distributed_current(
+            relabel,
+            &pair,
+            &current_a,
+            &format!("object/distributed/{name}-from-a"),
+            &format!("receipt/distributed/{name}-from-a-divergence"),
+            &format!("receipt/distributed/{name}-from-a-terminal"),
+        );
+        let from_b = transport_two_phase_distributed_current(
+            relabel,
+            &pair,
+            &current_b,
+            &format!("object/distributed/{name}-from-b"),
+            &format!("receipt/distributed/{name}-from-b-divergence"),
+            &format!("receipt/distributed/{name}-from-b-terminal"),
+        );
+        assert_eq!(
+            two_phase_distributed_values([&from_a, &from_b]),
+            expected,
+            "ambient [phase/a, phase/b] vector for {name}"
+        );
+    }
+
+    let composed_b_from_a = transport_two_phase_distributed_current(
+        &composed,
+        &pair,
+        &current_a,
+        "object/distributed/map-target-b-from-a",
+        "receipt/distributed/map-target-b-from-a-divergence",
+        "receipt/distributed/map-target-b-from-a-terminal",
+    );
+
+    let amplitude_a = RealCurrentAmplitude::try_new(
+        PhysicalObjectId::new("object/amplitude/source-a-for-distributed-map").unwrap(),
+        &pair,
+        PhaseId::new("phase/a").unwrap(),
+        Current::new(3.0),
+    )
+    .expect("source phase-a amplitude");
+    let source_map = DeclaredPhysicalMap::try_new(
+        ConversionMapId::new("map/current-realization/source-a").unwrap(),
+        DeclaredPhysicalMapKind::CurrentRealization,
+        amplitude_a.object_ref(),
+        current_a.object_ref(),
+        stable("artifact/current-realization/source-a"),
+    )
+    .expect("source current-realization map");
+    let target_amplitude_id =
+        PhysicalObjectId::new("object/amplitude/target-b-for-distributed-map").unwrap();
+    let target_amplitude = composed
+        .transport_current_amplitude(&pair, &pair, &amplitude_a, target_amplitude_id.clone())
+        .expect("transport source amplitude separately");
+    let target_map_id = ConversionMapId::new("map/current-realization/target-b").unwrap();
+    let target_map_artifact = stable("artifact/current-realization/target-b");
+    let target_map = DeclaredPhysicalMap::try_new(
+        target_map_id.clone(),
+        DeclaredPhysicalMapKind::CurrentRealization,
+        target_amplitude.object_ref(),
+        composed_b_from_a.object_ref(),
+        target_map_artifact.clone(),
+    )
+    .expect("fresh target current-realization map");
+    assert_ne!(target_map.id(), source_map.id());
+    assert_ne!(target_map.map_artifact(), source_map.map_artifact());
+    assert_eq!(target_map.id(), &target_map_id);
+    assert_eq!(
+        target_map.kind(),
+        DeclaredPhysicalMapKind::CurrentRealization
+    );
+    assert_eq!(target_map.source(), &target_amplitude.object_ref());
+    assert_eq!(target_map.target(), &composed_b_from_a.object_ref());
+    assert_eq!(target_map.map_artifact(), &target_map_artifact);
+    assert_eq!(target_amplitude.id(), &target_amplitude_id);
+    assert_eq!(target_amplitude.phase().as_str(), "phase/b");
+    assert_eq!(
+        target_amplitude.value().value().to_bits(),
+        (-3.0_f64).to_bits()
+    );
+}
+
+#[test]
+fn i13_2a_025_distributed_current_transport_commutes_with_physical_composition() {
+    let pair = disconnected_two_phase_pair();
+    let phase_swap = TerminalRelativePhysicalRelabel::try_new(
+        &pair,
+        &pair,
+        two_phase_preserve_swap_cell_entries(),
+        two_phase_preserve_swap_semantics(),
+    )
+    .expect("phase swap");
+    let terminal_reversal = TerminalRelativePhysicalRelabel::try_new(
+        &pair,
+        &pair,
+        two_phase_terminal_reverse_cell_entries(),
+        two_phase_terminal_reverse_semantics(),
+    )
+    .expect("terminal/current reversal");
+    let composed = TerminalRelativePhysicalRelabel::try_new(
+        &pair,
+        &pair,
+        two_phase_composed_cell_entries(),
+        two_phase_composed_semantics(),
+    )
+    .expect("direct composed action");
+    let source = two_phase_distributed_current(
+        &pair,
+        "phase/a",
+        2.5,
+        "object/distributed/composition-source-a",
+        "receipt/distributed/composition-source-a-divergence",
+        "receipt/distributed/composition-source-a-terminal",
+    );
+    let intermediate = transport_two_phase_distributed_current(
+        &phase_swap,
+        &pair,
+        &source,
+        "object/distributed/composition-intermediate-b",
+        "receipt/distributed/composition-intermediate-b-divergence",
+        "receipt/distributed/composition-intermediate-b-terminal",
+    );
+    let sequential = transport_two_phase_distributed_current(
+        &terminal_reversal,
+        &pair,
+        &intermediate,
+        "object/distributed/composition-final-b",
+        "receipt/distributed/composition-final-b-divergence",
+        "receipt/distributed/composition-final-b-terminal",
+    );
+    let direct = transport_two_phase_distributed_current(
+        &composed,
+        &pair,
+        &source,
+        "object/distributed/composition-final-b",
+        "receipt/distributed/composition-final-b-divergence",
+        "receipt/distributed/composition-final-b-terminal",
+    );
+
+    assert_ne!(intermediate.object_ref(), sequential.object_ref());
+    assert_ne!(
+        intermediate.divergence_receipt(),
+        sequential.divergence_receipt()
+    );
+    assert_ne!(
+        intermediate.terminal_constraint_receipt(),
+        sequential.terminal_constraint_receipt()
+    );
+    assert_eq!(sequential, direct);
+    assert_eq!(direct.cochain().phase().as_str(), "phase/b");
+    assert_eq!(direct.cochain().values(), &[-2.5]);
+}
+
+#[test]
+fn i13_2a_026_distributed_current_transport_refuses_stale_or_aliased_receipts() {
+    let wrong_pair = pair(83, false);
+    let pair = disconnected_two_phase_pair();
+    let identity = TerminalRelativePhysicalRelabel::identity_on(&pair).expect("physical identity");
+    let source = two_phase_distributed_current(
+        &pair,
+        "phase/a",
+        2.5,
+        "object/distributed/receipt-source-a",
+        "receipt/distributed/receipt-source-a-divergence",
+        "receipt/distributed/receipt-source-a-terminal",
+    );
+
+    for (case, divergence, terminal, expected_role, expected_receipt) in [
+        (
+            "divergence-reuses-source-divergence",
+            "receipt/distributed/receipt-source-a-divergence",
+            "receipt/distributed/fresh-terminal-1",
+            "divergence",
+            "receipt/distributed/receipt-source-a-divergence",
+        ),
+        (
+            "divergence-reuses-source-terminal",
+            "receipt/distributed/receipt-source-a-terminal",
+            "receipt/distributed/fresh-terminal-2",
+            "divergence",
+            "receipt/distributed/receipt-source-a-terminal",
+        ),
+        (
+            "terminal-reuses-source-divergence",
+            "receipt/distributed/fresh-divergence-3",
+            "receipt/distributed/receipt-source-a-divergence",
+            "terminal constraint",
+            "receipt/distributed/receipt-source-a-divergence",
+        ),
+        (
+            "terminal-reuses-source-terminal",
+            "receipt/distributed/fresh-divergence-4",
+            "receipt/distributed/receipt-source-a-terminal",
+            "terminal constraint",
+            "receipt/distributed/receipt-source-a-terminal",
+        ),
+    ] {
+        assert_eq!(
+            identity.transport_distributed_current(
+                &pair,
+                &pair,
+                &source,
+                PhysicalObjectId::new(format!("object/distributed/rejected-{case}")).unwrap(),
+                stable(divergence),
+                stable(terminal),
+            ),
+            Err(
+                TerminalRelativePhysicalRelabelError::ConstraintReceiptNotFresh {
+                    role: expected_role,
+                    receipt: expected_receipt.to_owned(),
+                }
+            ),
+            "freshness case {case}"
+        );
+    }
+
+    let aliased_receipt = "receipt/distributed/fresh-but-aliased-target";
+    assert_eq!(
+        identity.transport_distributed_current(
+            &pair,
+            &pair,
+            &source,
+            PhysicalObjectId::new("object/distributed/rejected-aliased-target-receipts").unwrap(),
+            stable(aliased_receipt),
+            stable(aliased_receipt),
+        ),
+        Err(TerminalRelativePhysicalRelabelError::TerminalRelative(
+            TerminalRelativeError::DuplicateIdentity {
+                role: "distributed-current constraint receipt",
+                id: aliased_receipt.to_owned(),
+            }
+        ))
+    );
+
+    let wrong_pair_current = two_phase_distributed_current(
+        &wrong_pair,
+        "phase/a",
+        2.5,
+        "object/distributed/wrong-pair",
+        "receipt/distributed/wrong-pair-divergence",
+        "receipt/distributed/wrong-pair-terminal",
+    );
+    assert_eq!(
+        identity.transport_distributed_current(
+            &pair,
+            &pair,
+            &wrong_pair_current,
+            PhysicalObjectId::new("object/distributed/rejected-wrong-pair").unwrap(),
+            wrong_pair_current.divergence_receipt().clone(),
+            wrong_pair_current.terminal_constraint_receipt().clone(),
+        ),
+        Err(TerminalRelativePhysicalRelabelError::PairIdentityMismatch {
+            role: "distributed current source",
+            expected: pair.identity(),
+            actual: wrong_pair.identity(),
+        })
     );
 }
