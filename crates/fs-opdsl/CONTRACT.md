@@ -140,7 +140,15 @@ documented in the bead close); cross-ISA golden hash.
   `SYSTEM_IR_VERSION` until fs-qty/fs-couple expose canonical
   encodings; conservation-role bookkeeping stays with fs-couple port
   schemas. All traversals are explicit-stack iterative (depth cap
-  refuses work, not recursion).
+  refuses work, not recursion). `system::transport` is the versioned
+  canonical text transport (magic `fs-opdsl-system-transport-v1`,
+  LF/tab records, strict fail-closed parse): any other IR version is a
+  `VersionMismatch` refusal pending audited migration; import rebuilds
+  a `SystemDef` and RE-RUNS full admission so tampered payloads refuse
+  or mint a different identity — the transport carries no authority.
+  Round-trip canonicality and the pinned migration golden
+  (`sys_014`) hold the identity still; the golden moves only with a
+  deliberate `SYSTEM_IR_VERSION` bump and recorded cause.
 - Pointwise laws are scalar diagonal (dof-local). Tensor-valued
   constitutive nodes (hyperelastic energy through `fs_ad::Real`
   generics) and state-dependent laws (plasticity history) are the

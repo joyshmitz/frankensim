@@ -384,6 +384,18 @@ pub enum SystemTypeError {
         /// The offending bits.
         bits: u64,
     },
+    /// A display name the transport cannot carry fail-closed.
+    InvalidName {
+        /// The offending name.
+        name: String,
+    },
+    /// A transport line the strict parser refuses.
+    TransportMalformed {
+        /// 1-based line number.
+        line: usize,
+        /// What was wrong.
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for SystemTypeError {
@@ -458,6 +470,13 @@ impl std::fmt::Display for SystemTypeError {
             ),
             Self::NonFiniteScale { bits } => {
                 write!(out, "scale constant is not finite (bits {bits:#018x})")
+            }
+            Self::InvalidName { name } => write!(
+                out,
+                "display name {name:?} must be non-empty printable text without tabs or newlines"
+            ),
+            Self::TransportMalformed { line, detail } => {
+                write!(out, "transport line {line}: {detail}")
             }
         }
     }
@@ -599,16 +618,16 @@ impl SystemDef {
                 });
             }
         }
-        if let StateOwnership::Owned { slot } = field.state {
-            if let Some(previous) = self.fields.iter().find(
+        if let StateOwnership::Owned { slot } = field.state
+            && let Some(previous) = self.fields.iter().find(
                 |existing| matches!(existing.state, StateOwnership::Owned { slot: s } if s == slot),
-            ) {
-                return Err(SystemTypeError::DuplicateStateSlot {
-                    slot,
-                    first: previous.name.clone(),
-                    second: field.name.clone(),
-                });
-            }
+            )
+        {
+            return Err(SystemTypeError::DuplicateStateSlot {
+                slot,
+                first: previous.name.clone(),
+                second: field.name.clone(),
+            });
         }
         self.fields.push(field);
         Ok(FieldId(self.fields.len() - 1))
@@ -799,10 +818,6 @@ impl SystemDef {
             }
         }
         // Pass 2: post-order type inference with an explicit value stack.
-        enum Step<'e> {
-            Enter(&'e SystemExpr),
-            Exit(&'e SystemExpr),
-        }
         let mut work = vec![Step::Enter(root)];
         let mut values: Vec<AdmittedExpr> = Vec::new();
         while let Some(step) = work.pop() {
@@ -835,6 +850,7 @@ impl SystemDef {
         })
     }
 
+    #[allow(clippy::too_many_lines)] // One exhaustive match: every SystemExpr node's admission rule in one place.
     fn admit_node(
         &self,
         node: &SystemExpr,
@@ -937,13 +953,13 @@ impl SystemDef {
             } => {
                 let flow = values.pop().expect("pair flow admitted");
                 let effort = values.pop().expect("pair effort admitted");
-                if let (Some(a), Some(b)) = (&effort.convention, &flow.convention) {
-                    if a.clock != b.clock {
-                        return Err(SystemTypeError::ClockMismatch {
-                            left: a.clock.as_str().to_string(),
-                            right: b.clock.as_str().to_string(),
-                        });
-                    }
+                if let (Some(a), Some(b)) = (&effort.convention, &flow.convention)
+                    && a.clock != b.clock
+                {
+                    return Err(SystemTypeError::ClockMismatch {
+                        left: a.clock.as_str().to_string(),
+                        right: b.clock.as_str().to_string(),
+                    });
                 }
                 let product = effort
                     .space
@@ -971,6 +987,11 @@ impl SystemDef {
             }
         }
     }
+}
+
+enum Step<'e> {
+    Enter(&'e SystemExpr),
+    Exit(&'e SystemExpr),
 }
 
 struct FieldConvention {
@@ -1155,4 +1176,726 @@ fn canonical_equation_bytes(equation: &BlockEquation, remap: &[usize]) -> Vec<u8
         }
     }
     bytes
+}
+
+/// Versioned canonical text transport for admitted systems: one
+/// LF-terminated line per record, tab-separated fields, strict
+/// fail-closed parsing. The transport binds [`SYSTEM_IR_VERSION`];
+/// any other version refuses with [`SystemTypeError::VersionMismatch`]
+/// so migrations stay explicit and audited. Import NEVER trusts the
+/// payload: it rebuilds a [`SystemDef`] and re-runs full admission, so
+/// a tampered transport either refuses structurally or mints a
+/// different [`SystemId`] — it cannot alias the original identity.
+pub mod transport {
+    use super::{
+        AdmittedSystem, AtomSignature, BlockEquation, ConventionRef, CoordinateConvention,
+        FieldDecl, FieldId, FieldQuantity, ParameterRole, SYSTEM_IR_VERSION, ScalarConvention,
+        SpatialSupport, StateOwnership, SystemDef, SystemExpr, SystemTypeError,
+    };
+    use crate::expr::Space;
+    use fs_couple::{PortKind, PortOrientation};
+    use fs_qty::Dims;
+    use fs_qty::semantic::{
+        AngleDomain, CompositionBasis, QuantityKind, SemanticType, StrainBasis, StrainComponent,
+        ValueForm,
+    };
+    use std::fmt::Write as _;
+
+    const MAGIC: &str = "fs-opdsl-system-transport-v1";
+
+    enum Frame {
+        Apply {
+            atom: usize,
+        },
+        Scale {
+            bits: u64,
+        },
+        Add {
+            left: Option<SystemExpr>,
+        },
+        Pair {
+            kind: PortKind,
+            measure: Dims,
+            effort: Option<SystemExpr>,
+        },
+    }
+
+    fn validate_name(name: &str) -> Result<(), SystemTypeError> {
+        if name.is_empty() || name.len() > 256 || name.chars().any(|c| c.is_control() || c == '\t')
+        {
+            return Err(SystemTypeError::InvalidName {
+                name: name.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    fn render_space(space: &Space) -> String {
+        let d = space.dims.0;
+        format!(
+            "{},{},{},{},{},{},{},{}",
+            space.degree, space.n, d[0], d[1], d[2], d[3], d[4], d[5]
+        )
+    }
+
+    fn render_dims(dims: Dims) -> String {
+        let d = dims.0;
+        format!("{},{},{},{},{},{}", d[0], d[1], d[2], d[3], d[4], d[5])
+    }
+
+    fn render_kind(kind: QuantityKind) -> String {
+        match kind {
+            QuantityKind::AbsoluteTemperature => "absolute-temperature".to_string(),
+            QuantityKind::TemperatureDifference => "temperature-difference".to_string(),
+            QuantityKind::Angle(domain) => format!("angle:{}", render_angle_domain(domain)),
+            QuantityKind::AngularVelocity(domain) => {
+                format!("angular-velocity:{}", render_angle_domain(domain))
+            }
+            QuantityKind::Torque => "torque".to_string(),
+            QuantityKind::Energy => "energy".to_string(),
+            QuantityKind::Pressure => "pressure".to_string(),
+            QuantityKind::Stress => "stress".to_string(),
+            QuantityKind::Strain { basis, component } => format!(
+                "strain:{}:{}",
+                match basis {
+                    StrainBasis::Tensor => "tensor",
+                    StrainBasis::Engineering => "engineering",
+                },
+                match component {
+                    StrainComponent::Normal => "normal",
+                    StrainComponent::Shear => "shear",
+                }
+            ),
+            QuantityKind::Composition(basis) => format!(
+                "composition:{}",
+                match basis {
+                    CompositionBasis::MassFraction => "mass",
+                    CompositionBasis::MoleFraction => "mole",
+                    CompositionBasis::VolumeFraction => "volume",
+                }
+            ),
+            QuantityKind::Mass => "mass".to_string(),
+            QuantityKind::Amount => "amount".to_string(),
+            QuantityKind::MolarMass => "molar-mass".to_string(),
+            QuantityKind::MassConcentration => "mass-concentration".to_string(),
+            QuantityKind::AmountConcentration => "amount-concentration".to_string(),
+            QuantityKind::Entropy => "entropy".to_string(),
+            QuantityKind::HeatCapacity => "heat-capacity".to_string(),
+            QuantityKind::AcousticPressure => "acoustic-pressure".to_string(),
+            QuantityKind::AcousticPower => "acoustic-power".to_string(),
+        }
+    }
+
+    fn render_angle_domain(domain: AngleDomain) -> &'static str {
+        match domain {
+            AngleDomain::Mechanical => "mechanical",
+            AngleDomain::Electrical => "electrical",
+        }
+    }
+
+    fn render_form(form: ValueForm) -> &'static str {
+        match form {
+            ValueForm::Static => "static",
+            ValueForm::Instantaneous => "instantaneous",
+            ValueForm::Peak => "peak",
+            ValueForm::Rms => "rms",
+        }
+    }
+
+    fn render_port_kind(kind: PortKind) -> &'static str {
+        match kind {
+            PortKind::MechanicalForceVelocity => "mechanical-force-velocity",
+            PortKind::FluidPressureFlux => "fluid-pressure-flux",
+            PortKind::ThermalTemperatureEntropy => "thermal-temperature-entropy",
+            PortKind::RotationalTorqueAngularVelocity => "rotational-torque-angular-velocity",
+            PortKind::ElectricalVoltageCurrent => "electrical-voltage-current",
+            PortKind::MagneticMmfFluxRate => "magnetic-mmf-flux-rate",
+            PortKind::ChemicalPotentialAmountFlow => "chemical-potential-amount-flow",
+        }
+    }
+
+    fn render_expr(root: &SystemExpr, out: &mut String) {
+        // Pre-order token stream; arity is implied by each token.
+        let mut stack = vec![root];
+        let mut first = true;
+        while let Some(node) = stack.pop() {
+            if !first {
+                out.push(' ');
+            }
+            first = false;
+            match node {
+                SystemExpr::FieldRef(field) => {
+                    let _ = write!(out, "f{}", field.0);
+                }
+                SystemExpr::Apply { atom, arg } => {
+                    let _ = write!(out, "a{atom}");
+                    stack.push(arg);
+                }
+                SystemExpr::Scale(value, inner) => {
+                    let _ = write!(out, "x{:016x}", value.to_bits());
+                    stack.push(inner);
+                }
+                SystemExpr::Add(left, right) => {
+                    out.push('+');
+                    stack.push(right);
+                    stack.push(left);
+                }
+                SystemExpr::PortPair {
+                    kind,
+                    effort,
+                    flow,
+                    measure_dims,
+                } => {
+                    let _ = write!(
+                        out,
+                        "p{}:{}",
+                        render_port_kind(*kind),
+                        render_dims(*measure_dims)
+                    );
+                    stack.push(flow);
+                    stack.push(effort);
+                }
+            }
+        }
+    }
+
+    /// Serialize an admitted system as the canonical v1 transport text.
+    ///
+    /// # Errors
+    /// [`SystemTypeError::InvalidName`] when a display name cannot be
+    /// carried fail-closed (control characters or tabs).
+    pub fn to_text(system: &AdmittedSystem) -> Result<String, SystemTypeError> {
+        let mut out = String::new();
+        out.push_str(MAGIC);
+        out.push('\n');
+        let _ = writeln!(out, "version\t{SYSTEM_IR_VERSION}");
+        let _ = writeln!(
+            out,
+            "convention\t{}",
+            match system.scalar_convention() {
+                ScalarConvention::RealOnly => "real-only",
+                ScalarConvention::ComplexHermitian => "complex-hermitian",
+            }
+        );
+        if !system.extension().is_empty() {
+            out.push_str("extension\t");
+            for byte in system.extension() {
+                let _ = write!(out, "{byte:02x}");
+            }
+            out.push('\n');
+        }
+        for atom in system.atoms() {
+            validate_name(&atom.name)?;
+            let _ = writeln!(
+                out,
+                "atom\t{}\t{}\t{}",
+                atom.name,
+                render_space(&atom.in_space),
+                render_space(&atom.out_space)
+            );
+        }
+        for field in system.fields() {
+            validate_name(&field.name)?;
+            let quantity = match &field.quantity {
+                FieldQuantity::Dimensional(dims) => format!("dims:{}", render_dims(*dims)),
+                FieldQuantity::Semantic(semantic) => format!(
+                    "kind:{}:{}",
+                    render_kind(semantic.kind()),
+                    render_form(semantic.form())
+                ),
+            };
+            let state = match field.state {
+                StateOwnership::Owned { slot } => format!("owned:{slot}"),
+                StateOwnership::External => "external".to_string(),
+                StateOwnership::Parameter { role } => format!(
+                    "parameter:{}",
+                    match role {
+                        ParameterRole::Design => "design",
+                        ParameterRole::Material => "material",
+                        ParameterRole::Control => "control",
+                    }
+                ),
+            };
+            let _ = writeln!(
+                out,
+                "field\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                field.name,
+                render_space(&field.space),
+                quantity,
+                field.coordinates.basis.as_str(),
+                field.coordinates.frame.as_str(),
+                match field.coordinates.orientation {
+                    PortOrientation::OutwardFromOwner => "outward",
+                    PortOrientation::AlongFrame => "along",
+                    PortOrientation::AgainstFrame => "against",
+                },
+                field.clock.as_str(),
+                match field.support {
+                    SpatialSupport::Interior => "interior",
+                    SpatialSupport::BoundaryTrace => "boundary-trace",
+                },
+                state
+            );
+        }
+        for equation in system.equations() {
+            validate_name(&equation.name)?;
+            let mut rendered = String::new();
+            render_expr(&equation.rhs, &mut rendered);
+            let _ = writeln!(
+                out,
+                "equation\t{}\t{}\t{}",
+                equation.name, equation.target.0, rendered
+            );
+        }
+        Ok(out)
+    }
+
+    fn malformed(line: usize, detail: impl Into<String>) -> SystemTypeError {
+        SystemTypeError::TransportMalformed {
+            line,
+            detail: detail.into(),
+        }
+    }
+
+    fn parse_i8(token: &str, line: usize) -> Result<i8, SystemTypeError> {
+        token
+            .parse::<i8>()
+            .map_err(|_| malformed(line, format!("{token:?} is not an i8 exponent")))
+    }
+
+    fn parse_dims(token: &str, line: usize) -> Result<Dims, SystemTypeError> {
+        let parts: Vec<&str> = token.split(',').collect();
+        if parts.len() != 6 {
+            return Err(malformed(
+                line,
+                format!("dims {token:?} must have 6 exponents"),
+            ));
+        }
+        let mut dims = [0i8; 6];
+        for (slot, part) in dims.iter_mut().zip(parts) {
+            *slot = parse_i8(part, line)?;
+        }
+        Ok(Dims(dims))
+    }
+
+    fn parse_space(token: &str, line: usize) -> Result<Space, SystemTypeError> {
+        let parts: Vec<&str> = token.split(',').collect();
+        if parts.len() != 8 {
+            return Err(malformed(
+                line,
+                format!("space {token:?} must have 8 members"),
+            ));
+        }
+        let degree = parts[0]
+            .parse::<u8>()
+            .map_err(|_| malformed(line, "space degree must be u8"))?;
+        let n = parts[1]
+            .parse::<usize>()
+            .map_err(|_| malformed(line, "space dof count must be usize"))?;
+        let mut dims = [0i8; 6];
+        for (slot, part) in dims.iter_mut().zip(&parts[2..]) {
+            *slot = parse_i8(part, line)?;
+        }
+        Ok(Space {
+            degree,
+            n,
+            dims: Dims(dims),
+        })
+    }
+
+    fn parse_angle_domain(token: &str, line: usize) -> Result<AngleDomain, SystemTypeError> {
+        match token {
+            "mechanical" => Ok(AngleDomain::Mechanical),
+            "electrical" => Ok(AngleDomain::Electrical),
+            other => Err(malformed(line, format!("unknown angle domain {other:?}"))),
+        }
+    }
+
+    fn parse_quantity(token: &str, line: usize) -> Result<FieldQuantity, SystemTypeError> {
+        if let Some(rest) = token.strip_prefix("dims:") {
+            return Ok(FieldQuantity::Dimensional(parse_dims(rest, line)?));
+        }
+        let Some(rest) = token.strip_prefix("kind:") else {
+            return Err(malformed(
+                line,
+                format!("quantity {token:?} must be dims: or kind:"),
+            ));
+        };
+        let Some((kind_token, form_token)) = rest.rsplit_once(':') else {
+            return Err(malformed(
+                line,
+                format!("kind {rest:?} must end with :<form>"),
+            ));
+        };
+        let kind = match kind_token {
+            "absolute-temperature" => QuantityKind::AbsoluteTemperature,
+            "temperature-difference" => QuantityKind::TemperatureDifference,
+            "torque" => QuantityKind::Torque,
+            "energy" => QuantityKind::Energy,
+            "pressure" => QuantityKind::Pressure,
+            "stress" => QuantityKind::Stress,
+            "mass" => QuantityKind::Mass,
+            "amount" => QuantityKind::Amount,
+            "molar-mass" => QuantityKind::MolarMass,
+            "mass-concentration" => QuantityKind::MassConcentration,
+            "amount-concentration" => QuantityKind::AmountConcentration,
+            "entropy" => QuantityKind::Entropy,
+            "heat-capacity" => QuantityKind::HeatCapacity,
+            "acoustic-pressure" => QuantityKind::AcousticPressure,
+            "acoustic-power" => QuantityKind::AcousticPower,
+            other => {
+                if let Some(domain) = other.strip_prefix("angle:") {
+                    QuantityKind::Angle(parse_angle_domain(domain, line)?)
+                } else if let Some(domain) = other.strip_prefix("angular-velocity:") {
+                    QuantityKind::AngularVelocity(parse_angle_domain(domain, line)?)
+                } else if let Some(rest) = other.strip_prefix("strain:") {
+                    let Some((basis, component)) = rest.split_once(':') else {
+                        return Err(malformed(line, "strain kind needs basis and component"));
+                    };
+                    QuantityKind::Strain {
+                        basis: match basis {
+                            "tensor" => StrainBasis::Tensor,
+                            "engineering" => StrainBasis::Engineering,
+                            unknown => {
+                                return Err(malformed(
+                                    line,
+                                    format!("unknown strain basis {unknown:?}"),
+                                ));
+                            }
+                        },
+                        component: match component {
+                            "normal" => StrainComponent::Normal,
+                            "shear" => StrainComponent::Shear,
+                            unknown => {
+                                return Err(malformed(
+                                    line,
+                                    format!("unknown strain component {unknown:?}"),
+                                ));
+                            }
+                        },
+                    }
+                } else if let Some(basis) = other.strip_prefix("composition:") {
+                    QuantityKind::Composition(match basis {
+                        "mass" => CompositionBasis::MassFraction,
+                        "mole" => CompositionBasis::MoleFraction,
+                        "volume" => CompositionBasis::VolumeFraction,
+                        unknown => {
+                            return Err(malformed(
+                                line,
+                                format!("unknown composition basis {unknown:?}"),
+                            ));
+                        }
+                    })
+                } else {
+                    return Err(malformed(line, format!("unknown quantity kind {other:?}")));
+                }
+            }
+        };
+        let form = match form_token {
+            "static" => ValueForm::Static,
+            "instantaneous" => ValueForm::Instantaneous,
+            "peak" => ValueForm::Peak,
+            "rms" => ValueForm::Rms,
+            unknown => return Err(malformed(line, format!("unknown value form {unknown:?}"))),
+        };
+        Ok(FieldQuantity::Semantic(SemanticType::new(kind, form)))
+    }
+
+    fn parse_port_kind(token: &str, line: usize) -> Result<PortKind, SystemTypeError> {
+        Ok(match token {
+            "mechanical-force-velocity" => PortKind::MechanicalForceVelocity,
+            "fluid-pressure-flux" => PortKind::FluidPressureFlux,
+            "thermal-temperature-entropy" => PortKind::ThermalTemperatureEntropy,
+            "rotational-torque-angular-velocity" => PortKind::RotationalTorqueAngularVelocity,
+            "electrical-voltage-current" => PortKind::ElectricalVoltageCurrent,
+            "magnetic-mmf-flux-rate" => PortKind::MagneticMmfFluxRate,
+            "chemical-potential-amount-flow" => PortKind::ChemicalPotentialAmountFlow,
+            other => return Err(malformed(line, format!("unknown port kind {other:?}"))),
+        })
+    }
+
+    #[allow(clippy::too_many_lines)] // One arity-driven prefix parse: token dispatch and frame reduction are one loop.
+    fn parse_expr(tokens: &[&str], line: usize) -> Result<SystemExpr, SystemTypeError> {
+        // Arity-driven prefix parse with an explicit frame stack.
+        let mut frames: Vec<Frame> = Vec::new();
+        let mut tokens = tokens.iter();
+        let mut pending: Option<SystemExpr> = None;
+        loop {
+            // Feed completed values upward until a frame still wants more.
+            while let Some(value) = pending.take() {
+                match frames.pop() {
+                    None => {
+                        if tokens.next().is_some() {
+                            return Err(malformed(line, "trailing expression tokens"));
+                        }
+                        return Ok(value);
+                    }
+                    Some(Frame::Apply { atom }) => {
+                        pending = Some(SystemExpr::Apply {
+                            atom,
+                            arg: Box::new(value),
+                        });
+                    }
+                    Some(Frame::Scale { bits }) => {
+                        pending = Some(SystemExpr::Scale(f64::from_bits(bits), Box::new(value)));
+                    }
+                    Some(Frame::Add { left: None }) => {
+                        frames.push(Frame::Add { left: Some(value) });
+                    }
+                    Some(Frame::Add { left: Some(left) }) => {
+                        pending = Some(SystemExpr::Add(Box::new(left), Box::new(value)));
+                    }
+                    Some(Frame::Pair {
+                        kind,
+                        measure,
+                        effort: None,
+                    }) => {
+                        frames.push(Frame::Pair {
+                            kind,
+                            measure,
+                            effort: Some(value),
+                        });
+                    }
+                    Some(Frame::Pair {
+                        kind,
+                        measure,
+                        effort: Some(effort),
+                    }) => {
+                        pending = Some(SystemExpr::PortPair {
+                            kind,
+                            effort: Box::new(effort),
+                            flow: Box::new(value),
+                            measure_dims: measure,
+                        });
+                    }
+                }
+            }
+            let Some(token) = tokens.next() else {
+                return Err(malformed(line, "expression ended before all operands"));
+            };
+            if let Some(index) = token.strip_prefix('f') {
+                let index = index
+                    .parse::<usize>()
+                    .map_err(|_| malformed(line, format!("field token {token:?}")))?;
+                pending = Some(SystemExpr::FieldRef(FieldId(index)));
+            } else if let Some(index) = token.strip_prefix('a') {
+                let atom = index
+                    .parse::<usize>()
+                    .map_err(|_| malformed(line, format!("atom token {token:?}")))?;
+                frames.push(Frame::Apply { atom });
+            } else if let Some(hex) = token.strip_prefix('x') {
+                let bits = u64::from_str_radix(hex, 16)
+                    .map_err(|_| malformed(line, format!("scale token {token:?}")))?;
+                frames.push(Frame::Scale { bits });
+            } else if *token == "+" {
+                frames.push(Frame::Add { left: None });
+            } else if let Some(rest) = token.strip_prefix('p') {
+                let Some((kind_token, dims_token)) = rest.rsplit_once(':') else {
+                    return Err(malformed(line, format!("pair token {token:?}")));
+                };
+                frames.push(Frame::Pair {
+                    kind: parse_port_kind(kind_token, line)?,
+                    measure: parse_dims(dims_token, line)?,
+                    effort: None,
+                });
+            } else {
+                return Err(malformed(
+                    line,
+                    format!("unknown expression token {token:?}"),
+                ));
+            }
+            if frames.len() > super::MAX_SYSTEM_EXPR_DEPTH {
+                return Err(SystemTypeError::DepthExceeded {
+                    cap: super::MAX_SYSTEM_EXPR_DEPTH,
+                });
+            }
+        }
+    }
+
+    /// Parse canonical v1 transport text back into a [`SystemDef`].
+    /// Everything re-admits from scratch — a tampered payload either
+    /// refuses here, refuses at admission, or mints a different
+    /// identity.
+    ///
+    /// # Errors
+    /// [`SystemTypeError::VersionMismatch`] for any other IR version;
+    /// [`SystemTypeError::TransportMalformed`] for structural refusals;
+    /// every admission error the rebuilt definition produces.
+    #[allow(clippy::too_many_lines)] // One strict line-dispatch transaction: every record grammar in one place.
+    pub fn from_text(text: &str) -> Result<SystemDef, SystemTypeError> {
+        let mut lines = text.lines().enumerate();
+        let Some((_, magic)) = lines.next() else {
+            return Err(malformed(1, "empty transport"));
+        };
+        if magic != MAGIC {
+            return Err(malformed(1, format!("magic {magic:?} is not {MAGIC:?}")));
+        }
+        let Some((_, version_line)) = lines.next() else {
+            return Err(malformed(2, "missing version line"));
+        };
+        let version = version_line
+            .strip_prefix("version\t")
+            .and_then(|value| value.parse::<u32>().ok())
+            .ok_or_else(|| malformed(2, "version line must be 'version\\t<u32>'"))?;
+        if version != SYSTEM_IR_VERSION {
+            return Err(SystemTypeError::VersionMismatch {
+                found: version,
+                supported: SYSTEM_IR_VERSION,
+            });
+        }
+        let Some((_, convention_line)) = lines.next() else {
+            return Err(malformed(3, "missing convention line"));
+        };
+        let convention = match convention_line.strip_prefix("convention\t") {
+            Some("real-only") => ScalarConvention::RealOnly,
+            Some("complex-hermitian") => ScalarConvention::ComplexHermitian,
+            _ => {
+                return Err(malformed(
+                    3,
+                    "convention must be real-only or complex-hermitian",
+                ));
+            }
+        };
+        let mut system = SystemDef::new().scalar_convention(convention);
+        let mut equations: Vec<(usize, BlockEquation)> = Vec::new();
+        for (index, raw) in lines {
+            let line = index + 1;
+            let mut parts = raw.split('\t');
+            let record = parts.next().unwrap_or_default();
+            let rest: Vec<&str> = parts.collect();
+            match record {
+                "extension" => {
+                    let [hex] = rest.as_slice() else {
+                        return Err(malformed(line, "extension takes exactly one hex payload"));
+                    };
+                    if hex.is_empty() || hex.len() % 2 != 0 {
+                        return Err(malformed(line, "extension hex must be non-empty and even"));
+                    }
+                    let mut bytes = Vec::with_capacity(hex.len() / 2);
+                    for pair in hex.as_bytes().chunks(2) {
+                        let text = std::str::from_utf8(pair)
+                            .map_err(|_| malformed(line, "extension hex must be ASCII"))?;
+                        bytes.push(
+                            u8::from_str_radix(text, 16)
+                                .map_err(|_| malformed(line, "extension must be lowercase hex"))?,
+                        );
+                    }
+                    system = system.with_extension(bytes)?;
+                }
+                "atom" => {
+                    let [name, in_space, out_space] = rest.as_slice() else {
+                        return Err(malformed(line, "atom takes name, in-space, out-space"));
+                    };
+                    validate_name(name)?;
+                    system.register_atom(AtomSignature {
+                        name: (*name).to_string(),
+                        in_space: parse_space(in_space, line)?,
+                        out_space: parse_space(out_space, line)?,
+                    });
+                }
+                "field" => {
+                    let [
+                        name,
+                        space,
+                        quantity,
+                        basis,
+                        frame,
+                        orientation,
+                        clock,
+                        support,
+                        state,
+                    ] = rest.as_slice()
+                    else {
+                        return Err(malformed(line, "field takes 9 members"));
+                    };
+                    validate_name(name)?;
+                    let state = if let Some(slot) = state.strip_prefix("owned:") {
+                        StateOwnership::Owned {
+                            slot: slot
+                                .parse::<u32>()
+                                .map_err(|_| malformed(line, "owned slot must be u32"))?,
+                        }
+                    } else if *state == "external" {
+                        StateOwnership::External
+                    } else if let Some(role) = state.strip_prefix("parameter:") {
+                        StateOwnership::Parameter {
+                            role: match role {
+                                "design" => ParameterRole::Design,
+                                "material" => ParameterRole::Material,
+                                "control" => ParameterRole::Control,
+                                unknown => {
+                                    return Err(malformed(
+                                        line,
+                                        format!("unknown parameter role {unknown:?}"),
+                                    ));
+                                }
+                            },
+                        }
+                    } else {
+                        return Err(malformed(line, format!("unknown state {state:?}")));
+                    };
+                    system.declare_field(FieldDecl {
+                        name: (*name).to_string(),
+                        space: parse_space(space, line)?,
+                        quantity: parse_quantity(quantity, line)?,
+                        coordinates: CoordinateConvention {
+                            basis: ConventionRef::new(*basis)?,
+                            frame: ConventionRef::new(*frame)?,
+                            orientation: match *orientation {
+                                "outward" => PortOrientation::OutwardFromOwner,
+                                "along" => PortOrientation::AlongFrame,
+                                "against" => PortOrientation::AgainstFrame,
+                                unknown => {
+                                    return Err(malformed(
+                                        line,
+                                        format!("unknown orientation {unknown:?}"),
+                                    ));
+                                }
+                            },
+                        },
+                        clock: ConventionRef::new(*clock)?,
+                        support: match *support {
+                            "interior" => SpatialSupport::Interior,
+                            "boundary-trace" => SpatialSupport::BoundaryTrace,
+                            unknown => {
+                                return Err(malformed(
+                                    line,
+                                    format!("unknown support {unknown:?}"),
+                                ));
+                            }
+                        },
+                        state,
+                    })?;
+                }
+                "equation" => {
+                    let [name, target, tokens @ ..] = rest.as_slice() else {
+                        return Err(malformed(line, "equation takes name, target, expression"));
+                    };
+                    validate_name(name)?;
+                    let target = target
+                        .parse::<usize>()
+                        .map_err(|_| malformed(line, "equation target must be an index"))?;
+                    let [expression] = tokens else {
+                        return Err(malformed(line, "equation takes exactly one expression"));
+                    };
+                    let tokens: Vec<&str> = expression.split(' ').collect();
+                    equations.push((
+                        line,
+                        BlockEquation {
+                            name: (*name).to_string(),
+                            target: FieldId(target),
+                            rhs: parse_expr(&tokens, line)?,
+                        },
+                    ));
+                }
+                unknown => {
+                    return Err(malformed(line, format!("unknown record {unknown:?}")));
+                }
+            }
+        }
+        for (_, equation) in equations {
+            system.add_equation(equation)?;
+        }
+        Ok(system)
+    }
 }

@@ -675,3 +675,190 @@ fn sys_010_admission_is_deterministic() {
     let second = two_field_system(("velocity", "force"), false);
     assert_eq!(first, second, "identical systems mint identical identities");
 }
+
+#[test]
+fn sys_011_transport_round_trips_and_preserves_identity() {
+    let mut system = SystemDef::new();
+    let velocity = system
+        .declare_field(field(
+            "velocity",
+            1,
+            64,
+            FieldQuantity::Dimensional(VELOCITY),
+            ("chart-a", "lab", "clk-main"),
+            0,
+        ))
+        .expect("velocity");
+    let temperature = system
+        .declare_field(field(
+            "delta-t",
+            0,
+            32,
+            FieldQuantity::Semantic(SemanticType::new(
+                QuantityKind::TemperatureDifference,
+                ValueForm::Static,
+            )),
+            ("chart-a", "lab", "clk-main"),
+            1,
+        ))
+        .expect("temperature difference");
+    let grad = system.register_atom(AtomSignature {
+        name: "d0".to_string(),
+        in_space: Space {
+            degree: 1,
+            n: 64,
+            dims: VELOCITY,
+        },
+        out_space: Space {
+            degree: 1,
+            n: 64,
+            dims: VELOCITY,
+        },
+    });
+    system
+        .add_equation(BlockEquation {
+            name: "momentum".to_string(),
+            target: velocity,
+            rhs: SystemExpr::Add(
+                Box::new(SystemExpr::Apply {
+                    atom: grad,
+                    arg: Box::new(SystemExpr::FieldRef(velocity)),
+                }),
+                Box::new(SystemExpr::Scale(
+                    0.25,
+                    Box::new(SystemExpr::FieldRef(velocity)),
+                )),
+            ),
+        })
+        .expect("momentum equation");
+    system
+        .add_equation(BlockEquation {
+            name: "heat".to_string(),
+            target: temperature,
+            rhs: SystemExpr::Scale(0.5, Box::new(SystemExpr::FieldRef(temperature))),
+        })
+        .expect("heat equation");
+    let admitted = system
+        .with_extension(b"golden-v1".to_vec())
+        .expect("extension")
+        .admit()
+        .expect("admits");
+
+    let text = fs_opdsl::system::transport::to_text(&admitted).expect("serializes");
+    let reparsed = fs_opdsl::system::transport::from_text(&text)
+        .expect("parses")
+        .admit()
+        .expect("re-admits");
+    assert_eq!(
+        admitted.identity(),
+        reparsed.identity(),
+        "transport round trip must preserve semantic identity"
+    );
+    let text_again = fs_opdsl::system::transport::to_text(&reparsed).expect("serializes again");
+    assert_eq!(text, text_again, "the transport text is canonical");
+}
+
+#[test]
+fn sys_012_transport_refuses_other_versions_and_malformed_lines() {
+    let versioned = "fs-opdsl-system-transport-v1\nversion\t2\nconvention\treal-only\n";
+    let refusal = fs_opdsl::system::transport::from_text(versioned);
+    assert!(
+        matches!(
+            refusal,
+            Err(SystemTypeError::VersionMismatch {
+                found: 2,
+                supported: 1
+            })
+        ),
+        "a future IR version must refuse pending audited migration, got {refusal:?}"
+    );
+
+    let garbled =
+        "fs-opdsl-system-transport-v1\nversion\t1\nconvention\treal-only\nfield\tonly-a-name\n";
+    let refusal = fs_opdsl::system::transport::from_text(garbled);
+    assert!(
+        matches!(
+            refusal,
+            Err(SystemTypeError::TransportMalformed { line: 4, .. })
+        ),
+        "a malformed field record must refuse with its line, got {refusal:?}"
+    );
+
+    let bad_magic = "some-other-transport\nversion\t1\n";
+    assert!(matches!(
+        fs_opdsl::system::transport::from_text(bad_magic),
+        Err(SystemTypeError::TransportMalformed { line: 1, .. })
+    ));
+}
+
+#[test]
+fn sys_013_tampered_transport_cannot_alias_the_original_identity() {
+    let baseline = two_field_system(("velocity", "force"), false);
+    let mut system = SystemDef::new();
+    let v = system
+        .declare_field(field(
+            "velocity",
+            1,
+            64,
+            FieldQuantity::Dimensional(VELOCITY),
+            ("chart-a", "lab", "clk-main"),
+            0,
+        ))
+        .expect("velocity");
+    let f = system
+        .declare_field(field(
+            "force",
+            1,
+            64,
+            FieldQuantity::Dimensional(FORCE),
+            ("chart-a", "lab", "clk-main"),
+            1,
+        ))
+        .expect("force");
+    system
+        .add_equation(BlockEquation {
+            name: "coupling-power".to_string(),
+            target: v,
+            rhs: SystemExpr::Scale(0.5, Box::new(SystemExpr::FieldRef(v))),
+        })
+        .expect("eq");
+    system
+        .add_equation(BlockEquation {
+            name: "force-balance".to_string(),
+            target: f,
+            rhs: SystemExpr::FieldRef(f),
+        })
+        .expect("eq");
+    let admitted = system.admit().expect("admits");
+    let text = fs_opdsl::system::transport::to_text(&admitted).expect("serializes");
+
+    // Tamper: move one field to a different frame reference.
+    let tampered = text.replace("\tlab\t", "\trotor\t");
+    assert_ne!(text, tampered, "fixture must contain the frame reference");
+    let outcome = fs_opdsl::system::transport::from_text(&tampered)
+        .expect("still structurally valid")
+        .admit();
+    // Refusing outright would be equally fail-closed; when it admits,
+    // the identity must have moved.
+    if let Ok(reparsed) = outcome {
+        assert_ne!(
+            reparsed.identity(),
+            baseline,
+            "a tampered convention must never alias the original identity"
+        );
+    }
+}
+
+#[test]
+fn sys_014_migration_golden_identity_is_pinned() {
+    // The golden system: any change to canonical encoding, field payload
+    // layout, remapping, or the identity schema moves this hex and must
+    // arrive as a DELIBERATE version bump with a migration note
+    // (docs/GOLDEN_POLICY.md discipline).
+    let identity = two_field_system(("velocity", "force"), false);
+    let hex = identity.to_string();
+    assert_eq!(
+        hex, "2db84c5e4cab57a2b1bac5c0ebe109062ddf21464ddd6365d4c71353c4865bc8",
+        "system-identity golden moved: bump SYSTEM_IR_VERSION deliberately and record the cause"
+    );
+}
