@@ -328,7 +328,14 @@ structure; FLUX/UQ execute it.
    work/workspace caps are exact at the admitted bound and refuse one-short;
    unrepresentable envelope arithmetic refuses rather than saturating, and
    extreme finite options or initial coordinate probes fail before f0
-   (adm-013/024).
+   (adm-013/024). That receipt's last completely landed iterate is a valid
+   restart point: under the same deterministic side-effect-free objective,
+   manifold, and fixed-step options, supplying the remaining step count and a
+   fresh segment budget reproduces uninterrupted point and objective bits. V0
+   restart is segment-local, not ledger-identical:
+   the boundary objective is both the first segment's final value and the
+   restart's initial value, and evaluation/site ordinals restart
+   (adm-025/G4).
 7. G3 unit rescaling: the live `descend_fn` step is equivariant when a
    one-dimensional quadratic's start, target, and finite-difference step are
    coherently rescaled by a nonidentity power of two. The final coordinate
@@ -424,6 +431,9 @@ polls at most every 256 variable/node/edge items before f0. Reported bounds
 cover fs-opt-owned descent/retraction plumbing and, for `descend_ir`, logical
 requested evaluator storage plus the conservative maximum invocation work.
 They do not meter arbitrary caller closure work or allocation.
+The G4 planner tripwire replays its complete poll cadence and injects
+cancellation at every observed ordinal; no cancelled plan or report is
+published. A pre-cancelled restart likewise performs zero objective calls.
 
 Game admission polls before proportional scans, during bounded information,
 strategy-dependency, and composition traversal, and at identity publication.

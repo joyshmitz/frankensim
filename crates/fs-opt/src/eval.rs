@@ -1860,7 +1860,9 @@ pub enum DescentStop {
     StepLimit,
     /// The relative retracted-candidate displacement met the configured threshold.
     ClosureThreshold,
-    /// The explicit evaluation limit could not fund the next atomic step.
+    /// The explicit evaluation limit could not fund the next atomic step. The
+    /// report retains the last completely landed iterate as a restart point;
+    /// a fresh invocation has a new segment-local evaluation/site ledger.
     EvaluationLimit,
 }
 
@@ -1873,7 +1875,7 @@ pub struct DescentReport {
     pub f0: f64,
     /// Final objective value.
     pub f_final: f64,
-    /// Objective evaluations spent.
+    /// Objective evaluations spent by this invocation/segment.
     pub evals: u64,
     /// Steps taken.
     pub steps_taken: u32,
@@ -2532,6 +2534,48 @@ mod runtime_shape_tests {
             capped_polls, 1,
             "the ninth item refuses before work or a terminal checkpoint"
         );
+    }
+
+    #[test]
+    fn ir_evaluator_planner_replays_and_every_poll_aborts_atomically() {
+        let (problem, root, _binding) = checkpoint_problem();
+        let mut polls = 0usize;
+        let envelope = ir_eval_envelope_with_checkpoint(&problem, root, None, &mut || {
+            polls += 1;
+            Ok(())
+        })
+        .expect("large evaluator plan");
+        let stride = u64::try_from(EVAL_CHECKPOINT_STRIDE).expect("checkpoint stride fits u64");
+        let expected_polls = usize::try_from(envelope.planning_work.div_ceil(stride))
+            .expect("admitted planner poll count fits usize")
+            + 1;
+        assert_eq!(polls, expected_polls, "work-stride polls plus publication");
+
+        let mut replay_polls = 0usize;
+        let replay = ir_eval_envelope_with_checkpoint(&problem, root, None, &mut || {
+            replay_polls += 1;
+            Ok(())
+        })
+        .expect("replayed evaluator plan");
+        assert_eq!(replay, envelope);
+        assert_eq!(replay_polls, polls, "planner cadence must replay exactly");
+
+        for target in 1..=polls {
+            let mut observed = 0usize;
+            let result = ir_eval_envelope_with_checkpoint(&problem, root, None, &mut || {
+                observed += 1;
+                if observed == target {
+                    Err(OptError::Cancelled)
+                } else {
+                    Ok(())
+                }
+            });
+            assert_eq!(result, Err(OptError::Cancelled), "target poll {target}");
+            assert_eq!(
+                observed, target,
+                "planner continued after cancellation at poll {target}"
+            );
+        }
     }
 
     #[test]

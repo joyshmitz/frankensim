@@ -1851,3 +1851,127 @@ fn adm_024_descent_policy_caps_closure_and_overflow_are_typed() {
         assert_eq!(closure.f_final.to_bits(), closure.f0.to_bits());
     });
 }
+
+/// adm-025 / G4 — an evaluation-budget receipt retains the last completely
+/// landed iterate. Restarting from that point with the remaining step count
+/// and a fresh segment budget reproduces uninterrupted state/objective bits.
+/// V0 deliberately makes no cumulative-ledger claim: the boundary value is
+/// evaluated as the first segment's final value and the restart's initial
+/// value, and objective-site ordinals restart with the segment.
+#[test]
+#[allow(clippy::too_many_lines)] // exact segment, replay, ledger, and cancellation receipts stay together
+fn adm_025_budget_stop_restart_replays_state_not_cumulative_ledger() {
+    let options = fs_opt::DescentOptions {
+        steps: 2,
+        lr: 0.125,
+        fd_h: 0.125,
+        closure_threshold: 1e-15,
+        ..fs_opt::DescentOptions::default()
+    };
+    let objective = |x: &[f64]| x[0] * x[0] + x[1] * x[1];
+    let segment_limit = EvalLimit::Limited(NonZeroU64::new(6).expect("positive segment budget"));
+    let uninterrupted_limit =
+        EvalLimit::Limited(NonZeroU64::new(10).expect("positive uninterrupted budget"));
+    let gate = fs_exec::CancelGate::new_clock_free();
+
+    let (first, restarted, uninterrupted) = with_gate_cx(&gate, 0x1C00, |cx| {
+        let first = fs_opt::descend_fn(
+            Manifold::Rn { dim: 2 },
+            &objective,
+            &[1.0, -2.0],
+            options,
+            segment_limit,
+            cx,
+        )
+        .expect("first budget segment");
+        assert_eq!(first.stop, DescentStop::EvaluationLimit);
+        assert!(first.budget_stopped);
+        assert_eq!(first.steps_taken, 1);
+        assert_eq!(first.evals, 6);
+
+        let restart_options = fs_opt::DescentOptions {
+            steps: options.steps - first.steps_taken,
+            ..options
+        };
+        let restarted = fs_opt::descend_fn(
+            Manifold::Rn { dim: 2 },
+            &objective,
+            &first.x,
+            restart_options,
+            segment_limit,
+            cx,
+        )
+        .expect("fresh-budget restart");
+        let uninterrupted = fs_opt::descend_fn(
+            Manifold::Rn { dim: 2 },
+            &objective,
+            &[1.0, -2.0],
+            options,
+            uninterrupted_limit,
+            cx,
+        )
+        .expect("uninterrupted reference");
+        (first, restarted, uninterrupted)
+    });
+
+    assert_eq!(restarted.stop, DescentStop::StepLimit);
+    assert!(!restarted.budget_stopped);
+    assert_eq!(restarted.steps_taken, 1);
+    assert_eq!(restarted.evals, 6);
+    assert_eq!(uninterrupted.stop, DescentStop::StepLimit);
+    assert_eq!(uninterrupted.steps_taken, 2);
+    assert_eq!(uninterrupted.evals, 10);
+    assert_eq!(
+        first.f_final.to_bits(),
+        restarted.f0.to_bits(),
+        "the retained boundary objective must replay bitwise"
+    );
+    assert_eq!(
+        restarted
+            .x
+            .iter()
+            .map(|value| value.to_bits())
+            .collect::<Vec<_>>(),
+        uninterrupted
+            .x
+            .iter()
+            .map(|value| value.to_bits())
+            .collect::<Vec<_>>(),
+        "restart must reproduce the uninterrupted landed state"
+    );
+    assert_eq!(restarted.f_final.to_bits(), uninterrupted.f_final.to_bits());
+    assert_eq!(
+        first.evals + restarted.evals,
+        12,
+        "segment-local ledgers honestly include both boundary valuations"
+    );
+
+    let cancelled_gate = fs_exec::CancelGate::new_clock_free();
+    cancelled_gate.request();
+    let cancelled_calls = std::cell::Cell::new(0u32);
+    with_gate_cx(&cancelled_gate, 0x1C01, |cx| {
+        let counted_objective = |x: &[f64]| {
+            cancelled_calls.set(cancelled_calls.get() + 1);
+            objective(x)
+        };
+        assert!(matches!(
+            fs_opt::descend_fn(
+                Manifold::Rn { dim: 2 },
+                &counted_objective,
+                &first.x,
+                fs_opt::DescentOptions {
+                    steps: 1,
+                    ..options
+                },
+                segment_limit,
+                cx,
+            ),
+            Err(OptError::Cancelled)
+        ));
+    });
+    assert_eq!(
+        cancelled_calls.get(),
+        0,
+        "a cancelled restart cannot publish or evaluate a partial segment"
+    );
+}
