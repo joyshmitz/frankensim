@@ -10,7 +10,8 @@ mod depgraph_receipt_format;
 use build_identity_support::{
     ASUPERSYNC_NON_SRC_INPUTS, GEMM_BUILD_PAYLOAD_SCHEMA, GemmBuildIdentityInput,
     append_executable_identity, append_external_identity, append_source_fields,
-    gemm_build_fingerprint, push_field, push_optional_field,
+    full_lowercase_git_oid, gemm_build_fingerprint, git_output_line, push_field,
+    push_optional_field, symbolic_git_ref,
 };
 
 const CARGO_PROFILES: [&str; 4] = ["DEV", "RELEASE", "TEST", "BENCH"];
@@ -122,9 +123,15 @@ fn collect_rust_sources(dir: &Path, files: &mut Vec<PathBuf>) {
         });
         if file_type.is_dir() {
             collect_rust_sources(&path, files);
-        } else if file_type.is_file() && path.extension().is_some_and(|extension| extension == "rs")
-        {
-            files.push(path);
+        } else if file_type.is_file() {
+            if path.extension().is_some_and(|extension| extension == "rs") {
+                files.push(path);
+            }
+        } else {
+            panic!(
+                "unsupported non-regular entry in GEMM build-identity source tree: {}",
+                path.display()
+            );
         }
     }
 }
@@ -154,6 +161,11 @@ fn collect_regular_files(dir: &Path, files: &mut Vec<PathBuf>) {
             collect_regular_files(&path, files);
         } else if file_type.is_file() {
             files.push(path);
+        } else {
+            panic!(
+                "unsupported non-regular entry in external GEMM build-identity source tree: {}",
+                path.display()
+            );
         }
     }
 }
@@ -220,49 +232,116 @@ fn command_stdout(command: &mut Command, context: &str) -> Vec<u8> {
     output.stdout
 }
 
+fn git_command(checkout: &Path) -> Command {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(checkout);
+    for name in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_NAMESPACE",
+        "GIT_SHALLOW_FILE",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+        "GIT_CONFIG",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+    ] {
+        command.env_remove(name);
+    }
+    command
+}
+
+fn git_path(checkout: &Path, relative: &str) -> PathBuf {
+    let context = format!("git-path discovery for asupersync {relative}");
+    let bytes = command_stdout(
+        git_command(checkout).args([
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            relative,
+        ]),
+        &context,
+    );
+    let text = git_output_line(&bytes)
+        .unwrap_or_else(|error| panic!("{context} returned invalid output: {error}"));
+    let path = PathBuf::from(text);
+    assert!(
+        path.is_absolute(),
+        "{context} did not return an absolute path: {}",
+        path.display()
+    );
+    path
+}
+
+fn watch_optional_git_file(path: &Path, context: &str) {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() => {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+        Ok(_) => panic!(
+            "{context} is not a regular Git metadata file: {}",
+            path.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => panic!("cannot inspect {context} {}: {error}", path.display()),
+    }
+}
+
+/// Return the checkout's observed Git HEAD when repository metadata was
+/// transported. RCH deliberately synchronizes path-dependency source without
+/// `.git`, so absence is provenance data rather than a build failure. A
+/// present but malformed repository remains a hard error.
+fn observed_git_head(checkout: &Path) -> Option<String> {
+    let dot_git = checkout.join(".git");
+    match std::fs::symlink_metadata(&dot_git) {
+        Ok(metadata) if metadata.file_type().is_file() => {
+            println!("cargo:rerun-if-changed={}", dot_git.display());
+        }
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => panic!(
+            "required asupersync checkout has unsupported .git metadata at {}",
+            dot_git.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => panic!(
+            "cannot inspect asupersync Git metadata {}: {error}",
+            dot_git.display()
+        ),
+    }
+
+    let head_path = git_path(checkout, "HEAD");
+    let head_file = read_required_file(&head_path);
+    println!("cargo:rerun-if-changed={}", head_path.display());
+    watch_optional_git_file(&git_path(checkout, "packed-refs"), "asupersync packed refs");
+    if let Some(symbolic_ref) = symbolic_git_ref(&head_file)
+        .unwrap_or_else(|error| panic!("asupersync HEAD metadata is invalid: {error}"))
+    {
+        watch_optional_git_file(
+            &git_path(checkout, symbolic_ref),
+            "asupersync symbolic HEAD ref",
+        );
+    }
+
+    let head = command_stdout(
+        git_command(checkout).args(["rev-parse", "HEAD"]),
+        "git rev-parse for the required asupersync checkout",
+    );
+    let head = full_lowercase_git_oid(&head)
+        .unwrap_or_else(|error| panic!("asupersync Git HEAD is invalid: {error}"));
+    Some(head.to_owned())
+}
+
 fn add_asupersync_identity(
     payload: &mut Vec<u8>,
     workspace_root: &Path,
     constellation_lock: &[u8],
 ) {
     let checkout = workspace_root.join("../asupersync");
-    let git_dir_bytes = command_stdout(
-        Command::new("git")
-            .arg("-C")
-            .arg(&checkout)
-            .args(["rev-parse", "--absolute-git-dir"]),
-        "git-dir discovery for the required asupersync checkout",
-    );
-    let git_dir_text = String::from_utf8_lossy(&git_dir_bytes);
-    let git_dir = PathBuf::from(git_dir_text.trim());
-    let head_path = git_dir.join("HEAD");
-    let head_file = read_required_file(&head_path);
-    println!("cargo:rerun-if-changed={}", head_path.display());
-    println!("cargo:rerun-if-changed={}", git_dir.join("index").display());
-    println!(
-        "cargo:rerun-if-changed={}",
-        git_dir.join("packed-refs").display()
-    );
-    if let Some(symbolic_ref) = head_file.strip_prefix(b"ref: ") {
-        let symbolic_ref = String::from_utf8_lossy(symbolic_ref);
-        println!(
-            "cargo:rerun-if-changed={}",
-            git_dir.join(symbolic_ref.trim()).display()
-        );
-    }
-    let head = command_stdout(
-        Command::new("git")
-            .arg("-C")
-            .arg(&checkout)
-            .args(["rev-parse", "HEAD"]),
-        "git rev-parse for the required asupersync checkout",
-    );
-    let head_text = String::from_utf8_lossy(&head);
-    let head_text = head_text.trim();
-    assert!(
-        head_text.len() == 40 && head_text.bytes().all(|byte| byte.is_ascii_hexdigit()),
-        "asupersync HEAD is not a full Git object id: {head_text:?}"
-    );
+    let git_head = observed_git_head(&checkout);
     let package_roots = [
         "",
         "asupersync-macros",
@@ -309,7 +388,12 @@ fn add_asupersync_identity(
             read_required_file(&path),
         ));
     }
-    append_external_identity(payload, constellation_lock, head_text, source_fields);
+    append_external_identity(
+        payload,
+        constellation_lock,
+        git_head.as_deref(),
+        source_fields,
+    );
 }
 
 struct DepgraphEvidence {

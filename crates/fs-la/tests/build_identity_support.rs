@@ -7,8 +7,9 @@ use support::{
     ASUPERSYNC_NON_SRC_INPUTS, EXECUTABLE_CONTEXT, GEMM_BUILD_FINGERPRINT_IDENTITY_DOMAIN,
     GEMM_BUILD_FINGERPRINT_IDENTITY_VERSION, GEMM_BUILD_PAYLOAD_SCHEMA, GemmBuildIdentityInput,
     append_executable_identity, append_external_identity, append_source_fields,
-    gemm_build_fingerprint, gemm_build_fingerprint_identity_version_is_supported,
-    gemm_build_fingerprint_with_domain, push_field, push_optional_field,
+    full_lowercase_git_oid, gemm_build_fingerprint,
+    gemm_build_fingerprint_identity_version_is_supported, gemm_build_fingerprint_with_domain,
+    git_output_line, push_field, push_optional_field, symbolic_git_ref,
 };
 
 fn fingerprint(payload: &[u8]) -> fs_blake3::ContentHash {
@@ -25,7 +26,7 @@ fn gemm_build_identity_domain_moves_fingerprint() {
     assert_ne!(
         gemm_build_fingerprint(&input),
         gemm_build_fingerprint_with_domain(
-            "frankensim.fs-la.gemm-build-fingerprint.v1.alternate",
+            "frankensim.fs-la.gemm-build-fingerprint.v2.alternate",
             &input,
         )
     );
@@ -36,7 +37,7 @@ fn embedded_payload_schema_moves_gemm_build_fingerprint() {
     let mut current = Vec::new();
     push_field(&mut current, "schema", GEMM_BUILD_PAYLOAD_SCHEMA.as_bytes());
     let mut changed = Vec::new();
-    push_field(&mut changed, "schema", b"fs-la-gemm-codegen-v3");
+    push_field(&mut changed, "schema", b"fs-la-gemm-codegen-v4");
     assert_ne!(fingerprint(&current), fingerprint(&changed));
 }
 
@@ -59,15 +60,16 @@ fn depgraph_evidence_moves_gemm_build_fingerprint() {
 
 #[test]
 fn gemm_build_fingerprint_identity_version_fails_closed() {
-    assert_eq!(GEMM_BUILD_FINGERPRINT_IDENTITY_VERSION, 1);
+    assert_eq!(GEMM_BUILD_FINGERPRINT_IDENTITY_VERSION, 2);
     assert_eq!(
         GEMM_BUILD_FINGERPRINT_IDENTITY_DOMAIN,
-        "frankensim.fs-la.gemm-build-fingerprint.v1"
+        "frankensim.fs-la.gemm-build-fingerprint.v2"
     );
-    assert_eq!(GEMM_BUILD_PAYLOAD_SCHEMA, "fs-la-gemm-codegen-v2");
-    assert!(gemm_build_fingerprint_identity_version_is_supported(1));
+    assert_eq!(GEMM_BUILD_PAYLOAD_SCHEMA, "fs-la-gemm-codegen-v3");
+    assert!(gemm_build_fingerprint_identity_version_is_supported(2));
     assert!(!gemm_build_fingerprint_identity_version_is_supported(0));
-    assert!(!gemm_build_fingerprint_identity_version_is_supported(2));
+    assert!(!gemm_build_fingerprint_identity_version_is_supported(1));
+    assert!(!gemm_build_fingerprint_identity_version_is_supported(3));
 }
 
 #[test]
@@ -150,13 +152,51 @@ fn optional_fields_separate_absent_empty_and_literal_sentinel() {
 }
 
 #[test]
-fn external_identity_binds_lock_head_source_and_include_inputs() {
-    fn payload(lock: &[u8], head: &str, source: &[u8], dashboard: &[u8]) -> Vec<u8> {
+fn git_observation_parsers_fail_closed() {
+    assert_eq!(git_output_line(b"/repo/.git").unwrap(), "/repo/.git");
+    assert_eq!(git_output_line(b"/repo/.git\n").unwrap(), "/repo/.git");
+    assert!(git_output_line(b"").is_err());
+    assert!(git_output_line(b"line\n\n").is_err());
+    assert!(git_output_line(b"line\r\n").is_err());
+    assert!(git_output_line("line\u{0085}".as_bytes()).is_err());
+    assert!(git_output_line(&[0xff]).is_err());
+
+    let sha1 = "1".repeat(40);
+    let sha256 = "a".repeat(64);
+    assert_eq!(full_lowercase_git_oid(sha1.as_bytes()).unwrap(), sha1);
+    assert_eq!(
+        full_lowercase_git_oid(format!("{sha256}\n").as_bytes()).unwrap(),
+        sha256
+    );
+    assert!(full_lowercase_git_oid("A".repeat(40).as_bytes()).is_err());
+    assert!(full_lowercase_git_oid("g".repeat(40).as_bytes()).is_err());
+    assert!(full_lowercase_git_oid("1".repeat(39).as_bytes()).is_err());
+
+    assert_eq!(
+        symbolic_git_ref(b"ref: refs/heads/main\n").unwrap(),
+        Some("refs/heads/main")
+    );
+    assert_eq!(symbolic_git_ref(sha1.as_bytes()).unwrap(), None);
+    assert!(symbolic_git_ref(b"garbage\n").is_err());
+    assert!(symbolic_git_ref("A".repeat(40).as_bytes()).is_err());
+    assert!(symbolic_git_ref(b"ref: refs/heads/../../escape\n").is_err());
+    assert!(symbolic_git_ref(b"ref: refs\\heads\\main\n").is_err());
+    assert!(symbolic_git_ref(b"ref: refs/heads/main\nignored").is_err());
+}
+
+#[test]
+fn external_identity_binds_lock_observed_head_source_and_include_inputs() {
+    fn payload(
+        lock: &[u8],
+        observed_head: Option<&str>,
+        source: &[u8],
+        dashboard: &[u8],
+    ) -> Vec<u8> {
         let mut payload = Vec::new();
         append_external_identity(
             &mut payload,
             lock,
-            head,
+            observed_head,
             vec![
                 (
                     "external/asupersync/src/lib.rs".to_string(),
@@ -174,7 +214,7 @@ fn external_identity_binds_lock_head_source_and_include_inputs() {
     assert_eq!(ASUPERSYNC_NON_SRC_INPUTS, &["assets/dashboard.html"]);
     let baseline = payload(
         b"lock-a",
-        "1111111111111111111111111111111111111111",
+        Some("1111111111111111111111111111111111111111"),
         b"src-a",
         b"dashboard-a",
     );
@@ -182,7 +222,7 @@ fn external_identity_binds_lock_head_source_and_include_inputs() {
         baseline,
         payload(
             b"lock-b",
-            "1111111111111111111111111111111111111111",
+            Some("1111111111111111111111111111111111111111"),
             b"src-a",
             b"dashboard-a"
         )
@@ -191,7 +231,7 @@ fn external_identity_binds_lock_head_source_and_include_inputs() {
         baseline,
         payload(
             b"lock-a",
-            "2222222222222222222222222222222222222222",
+            Some("2222222222222222222222222222222222222222"),
             b"src-a",
             b"dashboard-a"
         )
@@ -200,7 +240,7 @@ fn external_identity_binds_lock_head_source_and_include_inputs() {
         baseline,
         payload(
             b"lock-a",
-            "1111111111111111111111111111111111111111",
+            Some("1111111111111111111111111111111111111111"),
             b"src-b",
             b"dashboard-a"
         )
@@ -209,7 +249,7 @@ fn external_identity_binds_lock_head_source_and_include_inputs() {
         baseline,
         payload(
             b"lock-a",
-            "1111111111111111111111111111111111111111",
+            Some("1111111111111111111111111111111111111111"),
             b"src-a",
             b"dashboard-b"
         ),
@@ -219,10 +259,20 @@ fn external_identity_binds_lock_head_source_and_include_inputs() {
         fingerprint(&baseline),
         fingerprint(&payload(
             b"lock-a",
-            "1111111111111111111111111111111111111111",
+            Some("1111111111111111111111111111111111111111"),
             b"src-a",
             b"dashboard-b"
         )),
         "an included external input must change the outer build fingerprint"
+    );
+    assert_ne!(
+        baseline,
+        payload(b"lock-a", None, b"src-a", b"dashboard-a"),
+        "missing transported Git metadata must be explicit provenance"
+    );
+    assert_ne!(
+        payload(b"lock-a", None, b"src-a", b"dashboard-a"),
+        payload(b"lock-a", Some(""), b"src-a", b"dashboard-a"),
+        "absent Git metadata must not alias a present empty observation"
     );
 }
