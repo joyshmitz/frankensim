@@ -6,8 +6,10 @@
 //! fixed row-major cell order, no RNG.
 
 use crate::{CS2, E, OPP, Q, W};
+use std::f64::consts::{PI, SQRT_2};
 
 const MAX_REGULARIZED_BOUNDARY_SPEED_SQ: f64 = 0.03;
+const UNIT_NORMAL_TOLERANCE: f64 = 128.0 * f64::EPSILON;
 
 /// Cell classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,6 +193,295 @@ pub struct PartialSaturationExchange2 {
     pub coupled_cells: usize,
     /// Sum of the relaxation-dependent Noble-Torczynski coupling weights.
     pub coupling_weight_sum: f64,
+}
+
+/// Checked local geometry and motion for one under-resolved pair of circular
+/// cylinders in a D2Q9 plane.
+///
+/// The correction is per unit out-of-plane depth and acts only along the
+/// caller-supplied common normal. `reduced_radius` is
+/// `(1 / radius_first + 1 / radius_second)^-1`; a planar second surface is
+/// represented by the first cylinder's radius. Geometry discovery, pair
+/// enumeration, and rigid-body integration remain caller responsibilities.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UnderResolvedCylinderPair2 {
+    gap: f64,
+    cutoff_gap: f64,
+    minimum_gap: f64,
+    reduced_radius: f64,
+    dynamic_viscosity: f64,
+    normal_first_to_second: [f64; 2],
+    line_of_action_point: [f64; 2],
+    surface_velocities: [[f64; 2]; 2],
+}
+
+impl UnderResolvedCylinderPair2 {
+    /// Construct a checked pair-local lubrication descriptor.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        gap: f64,
+        cutoff_gap: f64,
+        minimum_gap: f64,
+        reduced_radius: f64,
+        dynamic_viscosity: f64,
+        normal_first_to_second: [f64; 2],
+        line_of_action_point: [f64; 2],
+        surface_velocities: [[f64; 2]; 2],
+    ) -> Self {
+        assert!(
+            gap.is_finite() && gap >= 0.0,
+            "D2Q9 lubrication gap must be finite and nonnegative"
+        );
+        assert!(
+            cutoff_gap.is_finite() && cutoff_gap > 0.0,
+            "D2Q9 lubrication cutoff gap must be positive and finite"
+        );
+        assert!(
+            minimum_gap.is_finite() && minimum_gap > 0.0,
+            "D2Q9 lubrication minimum gap must be positive and finite"
+        );
+        assert!(
+            minimum_gap < cutoff_gap,
+            "D2Q9 lubrication minimum gap must be below the cutoff gap"
+        );
+        assert!(
+            reduced_radius.is_finite() && reduced_radius > 0.0,
+            "D2Q9 lubrication reduced radius must be positive and finite"
+        );
+        assert!(
+            dynamic_viscosity.is_finite() && dynamic_viscosity > 0.0,
+            "D2Q9 lubrication dynamic viscosity must be positive and finite"
+        );
+        assert!(
+            normal_first_to_second.into_iter().all(f64::is_finite),
+            "D2Q9 lubrication normal must be finite"
+        );
+        let normal_norm = normal_first_to_second[0]
+            .mul_add(
+                normal_first_to_second[0],
+                normal_first_to_second[1] * normal_first_to_second[1],
+            )
+            .sqrt();
+        assert!(
+            (normal_norm - 1.0).abs() <= UNIT_NORMAL_TOLERANCE,
+            "D2Q9 lubrication normal must have unit length"
+        );
+        assert!(
+            line_of_action_point.into_iter().all(f64::is_finite),
+            "D2Q9 lubrication line-of-action point must be finite"
+        );
+        for surface_velocity in surface_velocities {
+            assert!(
+                surface_velocity.into_iter().all(f64::is_finite),
+                "D2Q9 lubrication surface velocity must be finite"
+            );
+            let speed_sq = surface_velocity[0].mul_add(
+                surface_velocity[0],
+                surface_velocity[1] * surface_velocity[1],
+            );
+            assert!(
+                speed_sq < MAX_REGULARIZED_BOUNDARY_SPEED_SQ,
+                "D2Q9 lubrication surface velocity exceeds the low-Mach admission envelope"
+            );
+        }
+        Self {
+            gap,
+            cutoff_gap,
+            minimum_gap,
+            reduced_radius,
+            dynamic_viscosity,
+            normal_first_to_second,
+            line_of_action_point,
+            surface_velocities,
+        }
+    }
+
+    /// Surface-to-surface gap in lattice units.
+    #[must_use]
+    pub const fn gap(self) -> f64 {
+        self.gap
+    }
+
+    /// Gap at which the explicit unresolved correction vanishes.
+    #[must_use]
+    pub const fn cutoff_gap(self) -> f64 {
+        self.cutoff_gap
+    }
+
+    /// Positive gap floor used to regularize the singular resistance.
+    #[must_use]
+    pub const fn minimum_gap(self) -> f64 {
+        self.minimum_gap
+    }
+
+    /// Pair reduced radius in lattice units.
+    #[must_use]
+    pub const fn reduced_radius(self) -> f64 {
+        self.reduced_radius
+    }
+
+    /// Dynamic viscosity in raw lattice units.
+    #[must_use]
+    pub const fn dynamic_viscosity(self) -> f64 {
+        self.dynamic_viscosity
+    }
+
+    /// Unit normal directed from the first surface to the second.
+    #[must_use]
+    pub const fn normal_first_to_second(self) -> [f64; 2] {
+        self.normal_first_to_second
+    }
+
+    /// Point on the declared common normal used for both angular impulses.
+    #[must_use]
+    pub const fn line_of_action_point(self) -> [f64; 2] {
+        self.line_of_action_point
+    }
+
+    /// First and second surface velocities at the line-of-action point.
+    #[must_use]
+    pub const fn surface_velocities(self) -> [[f64; 2]; 2] {
+        self.surface_velocities
+    }
+
+    /// Evaluate the pair-local correction about `moment_origin`.
+    #[must_use]
+    #[allow(clippy::too_many_lines)]
+    pub fn correction(self, moment_origin: [f64; 2]) -> UnderResolvedLubricationExchange2 {
+        assert!(
+            moment_origin.into_iter().all(f64::is_finite),
+            "D2Q9 lubrication moment origin must be finite"
+        );
+
+        let effective_gap = self.gap.max(self.minimum_gap);
+        let within_cutoff = self.gap < self.cutoff_gap;
+        let resistance_increment = if within_cutoff {
+            let radius_three_halves = self.reduced_radius * self.reduced_radius.sqrt();
+            let effective_gap_inverse_three_halves = 1.0 / (effective_gap * effective_gap.sqrt());
+            let cutoff_inverse_three_halves = 1.0 / (self.cutoff_gap * self.cutoff_gap.sqrt());
+            3.0 * PI
+                * SQRT_2
+                * self.dynamic_viscosity
+                * radius_three_halves
+                * (effective_gap_inverse_three_halves - cutoff_inverse_three_halves)
+        } else {
+            0.0
+        };
+        assert!(
+            resistance_increment.is_finite() && resistance_increment >= 0.0,
+            "D2Q9 lubrication resistance increment must be finite and nonnegative"
+        );
+
+        let relative_velocity = [
+            self.surface_velocities[1][0] - self.surface_velocities[0][0],
+            self.surface_velocities[1][1] - self.surface_velocities[0][1],
+        ];
+        let normal_gap_velocity = relative_velocity[0].mul_add(
+            self.normal_first_to_second[0],
+            relative_velocity[1] * self.normal_first_to_second[1],
+        );
+        assert!(
+            normal_gap_velocity.is_finite(),
+            "D2Q9 lubrication normal gap velocity must be finite"
+        );
+        let impulse_scale = resistance_increment * normal_gap_velocity;
+        assert!(
+            impulse_scale.is_finite(),
+            "D2Q9 lubrication impulse scale must be finite"
+        );
+        let first_solid_impulse = if impulse_scale == 0.0 {
+            [0.0; 2]
+        } else {
+            [
+                impulse_scale * self.normal_first_to_second[0],
+                impulse_scale * self.normal_first_to_second[1],
+            ]
+        };
+        assert!(
+            first_solid_impulse.into_iter().all(f64::is_finite),
+            "D2Q9 lubrication solid impulse must be finite"
+        );
+        let second_solid_impulse = if first_solid_impulse == [0.0; 2] {
+            [0.0; 2]
+        } else {
+            [-first_solid_impulse[0], -first_solid_impulse[1]]
+        };
+        let offset = [
+            self.line_of_action_point[0] - moment_origin[0],
+            self.line_of_action_point[1] - moment_origin[1],
+        ];
+        assert!(
+            offset.into_iter().all(f64::is_finite),
+            "D2Q9 lubrication line-of-action offset must be finite"
+        );
+        let first_solid_angular_impulse = offset[0].mul_add(
+            first_solid_impulse[1],
+            -(offset[1] * first_solid_impulse[0]),
+        );
+        assert!(
+            first_solid_angular_impulse.is_finite(),
+            "D2Q9 lubrication angular impulse must be finite"
+        );
+        let second_solid_angular_impulse = if first_solid_angular_impulse == 0.0 {
+            0.0
+        } else {
+            -first_solid_angular_impulse
+        };
+        let solid_pair_work = if impulse_scale == 0.0 {
+            0.0
+        } else {
+            -(impulse_scale * normal_gap_velocity)
+        };
+        assert!(
+            solid_pair_work.is_finite() && solid_pair_work <= 0.0,
+            "D2Q9 lubrication pair work must be finite and nonpositive"
+        );
+
+        UnderResolvedLubricationExchange2 {
+            first_solid_impulse,
+            second_solid_impulse,
+            first_solid_angular_impulse,
+            second_solid_angular_impulse,
+            solid_pair_work,
+            normal_gap_velocity,
+            resistance_increment,
+            effective_gap,
+            within_cutoff,
+            gap_floor_applied: self.gap < self.minimum_gap,
+        }
+    }
+}
+
+/// Equal-and-opposite impulse receipt for one local D2Q9 lubrication pair.
+///
+/// All values are raw lattice quantities for one lattice time step and per
+/// unit out-of-plane depth. The receipt contains no resolved-fluid population
+/// term because it is an explicit correction to resistance missing below the
+/// declared cutoff.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[must_use]
+pub struct UnderResolvedLubricationExchange2 {
+    /// Correction impulse delivered to the first solid.
+    pub first_solid_impulse: [f64; 2],
+    /// Exact equal-and-opposite correction impulse delivered to the second.
+    pub second_solid_impulse: [f64; 2],
+    /// First-solid angular impulse about the requested origin.
+    pub first_solid_angular_impulse: f64,
+    /// Exact equal-and-opposite second-solid angular impulse.
+    pub second_solid_angular_impulse: f64,
+    /// Pair work, `-resistance_increment * normal_gap_velocity^2`.
+    pub solid_pair_work: f64,
+    /// Signed gap rate `(u_second - u_first) dot normal_first_to_second`.
+    pub normal_gap_velocity: f64,
+    /// Unresolved normal resistance after subtracting its cutoff value.
+    pub resistance_increment: f64,
+    /// Gap used in the singular resistance after applying the positive floor.
+    pub effective_gap: f64,
+    /// Whether the supplied gap is strictly below the correction cutoff.
+    pub within_cutoff: bool,
+    /// Whether `minimum_gap` replaced the supplied gap.
+    pub gap_floor_applied: bool,
 }
 
 /// Geometry and velocity for one off-lattice D2Q9 fluid-to-wall link.

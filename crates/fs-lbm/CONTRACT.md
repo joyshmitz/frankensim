@@ -46,6 +46,14 @@ scaling plan) and deterministic `fs-math` primitives. Pure, deterministic
   fractions and velocities blend fluid and non-equilibrium-bounce-back solid
   collisions while the receipt retains aggregate equal-and-opposite
   fluid/solid impulse, angular impulse, solid work, and coupling-weight sum.
+  `core2::UnderResolvedCylinderPair2` and
+  `core2::UnderResolvedLubricationExchange2` add a separate pair-local,
+  per-unit-depth normal-resistance correction for smooth circular cylinders
+  below a caller-declared cutoff. The immutable descriptor owns checked gap,
+  reduced radius, viscosity, common normal, line-of-action point, and surface
+  velocities; its receipt returns exact equal-and-opposite solid impulse and
+  angular impulse, dissipative pair work, the effective gap, and the applied
+  resistance increment without mutating the lattice or a rigid-body state.
   `core2::VelocityPressureX2` plus the paired Grid step methods provide a
   low-Mach regularized velocity inlet at x-min and density outlet at x-max with
   periodic y closure; density/velocity and non-equilibrium stress are
@@ -174,6 +182,24 @@ scaling plan) and deterministic `fs-math` primitives. Pure, deterministic
   solid receipt. Cells and directions reduce in fixed row-major order. The
   construction follows Noble and Torczynski (1998,
   <https://doi.org/10.1142/S0129183198001084>).
+- D2Q9 under-resolved cylinder lubrication is an **Estimated** local subgrid
+  closure. With unit normal `n` directed from solid 1 to solid 2, signed gap
+  rate `s = (u_2 - u_1) dot n`, reduced radius
+  `R* = (1/R_1 + 1/R_2)^-1`, supplied gap `h`, positive floor `h_min`, and
+  cutoff `h_c`, it uses `h_eff = max(h, h_min)` and
+  `lambda = 3 pi sqrt(2) mu (R*)^(3/2)` times
+  `(h_eff^(-3/2) - h_c^(-3/2))` when `h < h_c`; otherwise `lambda = 0`.
+  The one-step correction is `J_1 = lambda s n`, `J_2 = -J_1`, with pair
+  work `-lambda s^2 <= 0`. Kromkamp et al. derive the leading equal-cylinder
+  force per unit length (2005, <https://doi.org/10.1017/S0022112005003551>);
+  the unequal-radius expression is the local parabolic-gap Reynolds inference,
+  not a separately validated unequal-cylinder result. Subtracting the
+  resistance evaluated at `h_c` follows Nguyen and Ladd's general cutoff rule
+  (2002, equations 34-35,
+  <https://doi.org/10.1103/PhysRevE.66.046708>); their three-dimensional sphere
+  exponent and calibrated cutoff values are not transferred. Powers of
+  three-halves use `x * sqrt(x)` and pair evaluation has no reduction-order
+  dependence.
 - D2Q9 wall-topology replacement is a two-phase publication. Fresh cells use
   an equal-weight average of unique, surviving pre-transition one-ring fluid
   populations, relaxation times, and external forces; newly covered
@@ -240,6 +266,15 @@ cell needs positive finite density, finite momentum, and `tau > 0.5`, forcing
 must be exactly zero, and the moment origin must be finite. Collision is built
 in a private proposal and the caller's output/scratch is published only after
 every proposed population and the aggregate receipt are finite.
+D2Q9 under-resolved cylinder lubrication descriptors require a finite
+nonnegative gap; positive finite cutoff, floor, reduced radius, and dynamic
+viscosity; `h_min < h_c`; a finite unit normal within `128 * f64::EPSILON`;
+finite surface velocities individually inside the squared-speed `< 0.03`
+low-Mach envelope; and a finite line-of-action point. Evaluation requires a
+finite moment origin and refuses non-finite derived resistance, gap rate,
+impulse, work, offset, or angular impulse. Negative gaps belong to contact and
+are refused; exactly zero gap is admitted only through the explicit positive
+floor. The descriptor and evaluation mutate no state, so refusal is atomic.
 D2Q9 wall-topology replacement currently requires a fluid/wall-only domain, a
 full-grid target mask that leaves at least one fluid cell, positive finite
 covered/donor population mass, finite donor populations/momentum/external
@@ -435,8 +470,21 @@ redistributed.
   overlapping bodies, or attribute the aggregate receipt among bodies. This
   first rung is force-free dense D2Q9 and selects the published
   non-equilibrium-bounce-back variant. It has no stresslet-accuracy,
-  convergence-order, under-resolved-lubrication, free-surface coexistence,
-  rigid-body integration, high-Re stability, or FSI claim.
+  convergence-order, free-surface coexistence, rigid-body integration,
+  high-Re stability, or FSI claim.
+- `UnderResolvedCylinderPair2` is a leading normal squeeze-film correction for
+  smooth convex circular or osculating-cylinder geometry, Newtonian fully
+  wetted creeping-gap flow, and raw lattice quantities per unit out-of-plane
+  depth. Its caller supplies geometry, the gap and cutoff calibration, and
+  enumerates each unordered pair exactly once. It neither estimates the
+  already-resolved lattice resistance nor mutates fluid populations, so using
+  an uncalibrated cutoff or applying the pair twice will double count force.
+  The positive gap floor is a disclosed numerical regularization, not a
+  roughness, contact, or continuum-validity model. There is no tangential or
+  rotational lubrication, many-body hydrodynamics, cavitation, asperity/contact,
+  elastic-hydrodynamic, thermal/non-Newtonian, gap-generation, rigid-body
+  integration, cutoff-calibration, convergence, or validated-bearing claim.
+  Full Reynolds/Elrod-Adams/EHL films remain owned by `fs-tribo`.
 - D2Q9 `transition_wall_topology` consumes an already-discretized next wall
   mask; it does not integrate geometry motion, infer covered cells, or couple a
   rigid-body state. Equal-weight one-ring population averaging is a

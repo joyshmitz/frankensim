@@ -4,7 +4,8 @@
 //! lattice-scaling assistant's stability bookkeeping.
 
 use fs_lbm::core2::{
-    CurvedMovingWallLink2, MovingWallMomentumExchange2, PartialSaturationCell2, VelocityPressureX2,
+    CurvedMovingWallLink2, MovingWallMomentumExchange2, PartialSaturationCell2,
+    UnderResolvedCylinderPair2, VelocityPressureX2,
 };
 use fs_lbm::{
     CS2, Cell, Color, Grid, Lbm, MACH_LIMIT, Q, equilibrium, plan_scaling, poiseuille_analytic,
@@ -197,6 +198,13 @@ fn moving_wall_receipt_balance_error(receipt: &MovingWallMomentumExchange2) -> f
 
 fn normalized_pair_residual(left: f64, right: f64) -> f64 {
     (left - right).abs() / left.abs().max(right.abs())
+}
+
+fn assert_lubrication_close(actual: f64, expected: f64, tolerance: f64, context: &str) {
+    assert!(
+        (actual - expected).abs() <= tolerance,
+        "{context}: actual={actual:.17e}, expected={expected:.17e}, tolerance={tolerance:.3e}"
+    );
 }
 
 #[test]
@@ -864,6 +872,458 @@ fn d2q9_partial_saturation_refuses_bad_requests_atomically() {
     assert!(proposal_refusal.is_err());
     assert_eq!(pathological_post, sentinel);
     assert_eq!(pathological.f, pathological_before);
+}
+
+#[test]
+fn d2q9_under_resolved_lubrication_pins_cylinder_formula_and_balance() {
+    // G0: independently enumerate the two-dimensional circular-cylinder
+    // Reynolds resistance, its cutoff subtraction, pair impulse, torque, and
+    // dissipative work. The normal points from the first solid to the second.
+    let pair = UnderResolvedCylinderPair2::new(
+        0.01,
+        0.04,
+        0.002,
+        0.5,
+        0.02,
+        [0.6, 0.8],
+        [2.0, -1.0],
+        [[0.02, 0.01], [-0.01, -0.005]],
+    );
+    assert_eq!(pair.gap().to_bits(), 0.01f64.to_bits());
+    assert_eq!(pair.cutoff_gap().to_bits(), 0.04f64.to_bits());
+    assert_eq!(pair.minimum_gap().to_bits(), 0.002f64.to_bits());
+    assert_eq!(pair.reduced_radius().to_bits(), 0.5f64.to_bits());
+    assert_eq!(pair.dynamic_viscosity().to_bits(), 0.02f64.to_bits());
+    assert_eq!(pair.normal_first_to_second(), [0.6, 0.8]);
+    assert_eq!(pair.line_of_action_point(), [2.0, -1.0]);
+    assert_eq!(pair.surface_velocities(), [[0.02, 0.01], [-0.01, -0.005]]);
+
+    let origin = [0.25, 0.5];
+    let receipt = pair.correction(origin);
+    let radius_three_halves = 0.5 * 0.5f64.sqrt();
+    let gap_inverse_three_halves = 1.0 / (0.01 * 0.01f64.sqrt());
+    let cutoff_inverse_three_halves = 1.0 / (0.04 * 0.04f64.sqrt());
+    let expected_resistance = 3.0
+        * std::f64::consts::PI
+        * std::f64::consts::SQRT_2
+        * 0.02
+        * radius_three_halves
+        * (gap_inverse_three_halves - cutoff_inverse_three_halves);
+    let expected_gap_velocity = (-0.01_f64 - 0.02).mul_add(0.6, (-0.005_f64 - 0.01) * 0.8);
+    let expected_first = [
+        expected_resistance * expected_gap_velocity * 0.6,
+        expected_resistance * expected_gap_velocity * 0.8,
+    ];
+    let offset = [2.0 - origin[0], -1.0 - origin[1]];
+    let expected_first_torque =
+        offset[0].mul_add(expected_first[1], -(offset[1] * expected_first[0]));
+    let expected_work = -expected_resistance * expected_gap_velocity * expected_gap_velocity;
+
+    assert_lubrication_close(
+        receipt.resistance_increment,
+        expected_resistance,
+        2.0e-14 * expected_resistance,
+        "cylinder resistance",
+    );
+    assert_lubrication_close(
+        receipt.normal_gap_velocity,
+        expected_gap_velocity,
+        2.0e-16,
+        "normal gap velocity",
+    );
+    for (axis, expected) in expected_first.into_iter().enumerate() {
+        assert_lubrication_close(
+            receipt.first_solid_impulse[axis],
+            expected,
+            2.0e-14 * expected_resistance,
+            "first solid impulse",
+        );
+        assert_eq!(
+            receipt.second_solid_impulse[axis].to_bits(),
+            (-receipt.first_solid_impulse[axis]).to_bits()
+        );
+    }
+    assert_lubrication_close(
+        receipt.first_solid_angular_impulse,
+        expected_first_torque,
+        4.0e-14 * expected_resistance,
+        "first solid angular impulse",
+    );
+    assert_eq!(
+        receipt.second_solid_angular_impulse.to_bits(),
+        (-receipt.first_solid_angular_impulse).to_bits()
+    );
+    assert_lubrication_close(
+        receipt.solid_pair_work,
+        expected_work,
+        2.0e-14 * expected_resistance,
+        "pair work",
+    );
+    assert!(receipt.solid_pair_work < 0.0);
+    assert!(receipt.within_cutoff);
+    assert!(!receipt.gap_floor_applied);
+    assert_eq!(receipt.effective_gap.to_bits(), 0.01f64.to_bits());
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn d2q9_under_resolved_lubrication_pins_cutoff_floor_and_refusal() {
+    // G0: the cutoff is continuous by construction, the positive floor is
+    // explicit, normal co-motion/tangential slip do no work, and malformed or
+    // overflowing requests refuse before returning a receipt.
+    let velocities = [[0.01, 0.0], [-0.02, 0.0]];
+    let make_pair = |gap: f64, minimum_gap: f64, viscosity: f64, velocities| {
+        UnderResolvedCylinderPair2::new(
+            gap,
+            0.05,
+            minimum_gap,
+            0.75,
+            viscosity,
+            [1.0, 0.0],
+            [0.5, -0.25],
+            velocities,
+        )
+    };
+
+    let at_cutoff = make_pair(0.05, 0.005, 0.02, velocities).correction([0.0; 2]);
+    let above_cutoff = make_pair(0.06, 0.005, 0.02, velocities).correction([0.0; 2]);
+    for receipt in [at_cutoff, above_cutoff] {
+        assert_eq!(receipt.resistance_increment.to_bits(), 0.0f64.to_bits());
+        assert_eq!(receipt.first_solid_impulse, [0.0; 2]);
+        assert_eq!(receipt.second_solid_impulse, [0.0; 2]);
+        assert_eq!(receipt.solid_pair_work.to_bits(), 0.0f64.to_bits());
+        assert!(!receipt.within_cutoff);
+    }
+
+    let below_floor = make_pair(0.0, 0.005, 0.02, velocities).correction([0.0; 2]);
+    let at_floor = make_pair(0.005, 0.005, 0.02, velocities).correction([0.0; 2]);
+    assert_eq!(
+        below_floor.resistance_increment.to_bits(),
+        at_floor.resistance_increment.to_bits()
+    );
+    assert_eq!(
+        below_floor.first_solid_impulse.map(f64::to_bits),
+        at_floor.first_solid_impulse.map(f64::to_bits)
+    );
+    assert!(below_floor.gap_floor_applied);
+    assert!(!at_floor.gap_floor_applied);
+    assert_eq!(below_floor.effective_gap.to_bits(), 0.005f64.to_bits());
+
+    let co_motion = make_pair(0.01, 0.005, 0.02, [[0.01, -0.02]; 2]).correction([0.0; 2]);
+    let tangential = make_pair(0.01, 0.005, 0.02, [[0.0, 0.01], [0.0, -0.01]]).correction([0.0; 2]);
+    for receipt in [co_motion, tangential] {
+        assert_eq!(receipt.normal_gap_velocity.to_bits(), 0.0f64.to_bits());
+        assert_eq!(receipt.first_solid_impulse, [0.0; 2]);
+        assert_eq!(receipt.second_solid_impulse, [0.0; 2]);
+        assert_eq!(receipt.solid_pair_work.to_bits(), 0.0f64.to_bits());
+        assert!(receipt.resistance_increment > 0.0);
+    }
+
+    let base = make_pair(0.01, 0.005, 0.02, velocities).correction([0.0; 2]);
+    let doubled = make_pair(0.01, 0.005, 0.04, velocities).correction([0.0; 2]);
+    assert_lubrication_close(
+        doubled.resistance_increment,
+        2.0 * base.resistance_increment,
+        2.0e-14 * base.resistance_increment,
+        "viscosity scaling",
+    );
+
+    let invalid_descriptors = [
+        (
+            -0.1,
+            0.05,
+            0.005,
+            0.75,
+            0.02,
+            [1.0, 0.0],
+            [0.0, 0.0],
+            velocities,
+        ),
+        (
+            f64::NAN,
+            0.05,
+            0.005,
+            0.75,
+            0.02,
+            [1.0, 0.0],
+            [0.0, 0.0],
+            velocities,
+        ),
+        (
+            0.01,
+            0.0,
+            0.005,
+            0.75,
+            0.02,
+            [1.0, 0.0],
+            [0.0, 0.0],
+            velocities,
+        ),
+        (
+            0.01,
+            0.05,
+            0.0,
+            0.75,
+            0.02,
+            [1.0, 0.0],
+            [0.0, 0.0],
+            velocities,
+        ),
+        (
+            0.01,
+            0.05,
+            0.05,
+            0.75,
+            0.02,
+            [1.0, 0.0],
+            [0.0, 0.0],
+            velocities,
+        ),
+        (
+            0.01,
+            0.05,
+            0.005,
+            0.0,
+            0.02,
+            [1.0, 0.0],
+            [0.0, 0.0],
+            velocities,
+        ),
+        (
+            0.01,
+            0.05,
+            0.005,
+            0.75,
+            0.0,
+            [1.0, 0.0],
+            [0.0, 0.0],
+            velocities,
+        ),
+        (
+            0.01,
+            0.05,
+            0.005,
+            0.75,
+            0.02,
+            [1.1, 0.0],
+            [0.0, 0.0],
+            velocities,
+        ),
+        (
+            0.01,
+            0.05,
+            0.005,
+            0.75,
+            0.02,
+            [f64::NAN, 0.0],
+            [0.0, 0.0],
+            velocities,
+        ),
+        (
+            0.01,
+            0.05,
+            0.005,
+            0.75,
+            0.02,
+            [1.0, 0.0],
+            [f64::INFINITY, 0.0],
+            velocities,
+        ),
+        (
+            0.01,
+            0.05,
+            0.005,
+            0.75,
+            0.02,
+            [1.0, 0.0],
+            [0.0, 0.0],
+            [[0.2, 0.0], [0.0, 0.0]],
+        ),
+    ];
+    for (gap, cutoff, floor, radius, viscosity, normal, point, velocities) in invalid_descriptors {
+        assert!(
+            std::panic::catch_unwind(|| {
+                let _ = UnderResolvedCylinderPair2::new(
+                    gap, cutoff, floor, radius, viscosity, normal, point, velocities,
+                );
+            })
+            .is_err()
+        );
+    }
+
+    let valid = make_pair(0.01, 0.005, 0.02, velocities);
+    assert!(std::panic::catch_unwind(|| valid.correction([f64::NAN, 0.0])).is_err());
+    let overflow_resistance = UnderResolvedCylinderPair2::new(
+        0.01,
+        0.05,
+        0.005,
+        f64::MAX,
+        0.02,
+        [1.0, 0.0],
+        [0.0, 0.0],
+        velocities,
+    );
+    assert!(std::panic::catch_unwind(|| overflow_resistance.correction([0.0; 2])).is_err());
+    let overflow_offset = UnderResolvedCylinderPair2::new(
+        0.01,
+        0.05,
+        0.005,
+        0.75,
+        0.02,
+        [1.0, 0.0],
+        [f64::MAX, 0.0],
+        velocities,
+    );
+    assert!(std::panic::catch_unwind(|| overflow_offset.correction([-f64::MAX, 0.0])).is_err());
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn d2q9_under_resolved_lubrication_is_frame_pair_and_origin_covariant() {
+    // G3: the closure depends on relative normal motion, is symmetric under
+    // exchanging the pair, rotates with its declared frame, and obeys the
+    // ordinary torque translation law.
+    let normal = [0.6, 0.8];
+    let point = [1.25, -0.5];
+    let velocities = [[0.03, -0.01], [-0.015, 0.02]];
+    let origin = [0.25, 0.75];
+    let make_pair = |normal, point, velocities| {
+        UnderResolvedCylinderPair2::new(0.01, 0.05, 0.001, 0.5, 0.01, normal, point, velocities)
+    };
+    let reference = make_pair(normal, point, velocities).correction(origin);
+
+    let boost = [0.02, -0.01];
+    let boosted_velocities =
+        velocities.map(|velocity| [velocity[0] + boost[0], velocity[1] + boost[1]]);
+    let boosted = make_pair(normal, point, boosted_velocities).correction(origin);
+    assert_lubrication_close(
+        boosted.normal_gap_velocity,
+        reference.normal_gap_velocity,
+        4.0e-16,
+        "common-boost gap velocity",
+    );
+    assert_eq!(
+        boosted.resistance_increment.to_bits(),
+        reference.resistance_increment.to_bits()
+    );
+    for axis in 0..2 {
+        assert_lubrication_close(
+            boosted.first_solid_impulse[axis],
+            reference.first_solid_impulse[axis],
+            2.0e-15,
+            "common-boost impulse",
+        );
+    }
+    assert_lubrication_close(
+        boosted.solid_pair_work,
+        reference.solid_pair_work,
+        2.0e-15,
+        "common-boost work",
+    );
+
+    let swapped = make_pair(
+        [-normal[0], -normal[1]],
+        point,
+        [velocities[1], velocities[0]],
+    )
+    .correction(origin);
+    for axis in 0..2 {
+        assert_lubrication_close(
+            swapped.first_solid_impulse[axis],
+            reference.second_solid_impulse[axis],
+            2.0e-15,
+            "pair-swap first impulse",
+        );
+        assert_lubrication_close(
+            swapped.second_solid_impulse[axis],
+            reference.first_solid_impulse[axis],
+            2.0e-15,
+            "pair-swap second impulse",
+        );
+    }
+
+    let rotate = |value: [f64; 2]| [-value[1], value[0]];
+    let rotated =
+        make_pair(rotate(normal), rotate(point), velocities.map(rotate)).correction(rotate(origin));
+    let rotated_first = rotate(reference.first_solid_impulse);
+    let rotated_second = rotate(reference.second_solid_impulse);
+    for axis in 0..2 {
+        assert_lubrication_close(
+            rotated.first_solid_impulse[axis],
+            rotated_first[axis],
+            2.0e-15,
+            "rotated first impulse",
+        );
+        assert_lubrication_close(
+            rotated.second_solid_impulse[axis],
+            rotated_second[axis],
+            2.0e-15,
+            "rotated second impulse",
+        );
+    }
+    assert_lubrication_close(
+        rotated.first_solid_angular_impulse,
+        reference.first_solid_angular_impulse,
+        4.0e-15,
+        "rotated angular impulse",
+    );
+    assert_lubrication_close(
+        rotated.solid_pair_work,
+        reference.solid_pair_work,
+        2.0e-15,
+        "rotated work",
+    );
+
+    let translation = [2.0, -1.0];
+    let translated_point = [point[0] + translation[0], point[1] + translation[1]];
+    let translated_origin = [origin[0] + translation[0], origin[1] + translation[1]];
+    let translated = make_pair(normal, translated_point, velocities).correction(translated_origin);
+    assert_lubrication_close(
+        translated.first_solid_angular_impulse,
+        reference.first_solid_angular_impulse,
+        4.0e-15,
+        "joint translation angular impulse",
+    );
+
+    let origin_shift = [0.5, -0.25];
+    let shifted_origin = [origin[0] + origin_shift[0], origin[1] + origin_shift[1]];
+    let shifted = make_pair(normal, point, velocities).correction(shifted_origin);
+    let torque_shift = origin_shift[0].mul_add(
+        reference.first_solid_impulse[1],
+        -(origin_shift[1] * reference.first_solid_impulse[0]),
+    );
+    assert_lubrication_close(
+        shifted.first_solid_angular_impulse,
+        reference.first_solid_angular_impulse - torque_shift,
+        4.0e-15,
+        "origin translation law",
+    );
+    assert_eq!(
+        shifted.second_solid_angular_impulse.to_bits(),
+        (-shifted.first_solid_angular_impulse).to_bits()
+    );
+}
+
+#[test]
+fn d2q9_under_resolved_lubrication_replays_bitwise() {
+    // G5: the checked immutable descriptor has no hidden state or reduction
+    // order; repeated evaluations reproduce every receipt field bit-for-bit.
+    let pair = UnderResolvedCylinderPair2::new(
+        0.0125,
+        0.05,
+        0.0025,
+        0.4,
+        0.015,
+        [0.0, 1.0],
+        [1.5, 2.25],
+        [[0.01, 0.02], [-0.005, -0.015]],
+    );
+    let first = pair.correction([0.5, -0.25]);
+    let second = pair.correction([0.5, -0.25]);
+    assert_eq!(first, second);
+    assert!(first.resistance_increment > 0.0);
+    assert!(first.normal_gap_velocity < 0.0);
+    assert!(first.solid_pair_work < 0.0);
 }
 
 #[test]
