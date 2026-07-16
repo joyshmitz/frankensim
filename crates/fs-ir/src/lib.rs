@@ -13,6 +13,8 @@
 //!   ([`lower::lower`]) — progressive disclosure with nothing hidden.
 //! - [`study::Study`] recognizes the Appendix C study forms and extracts
 //!   the Five Explicits' pillars (validity POLICY is the admission bead's).
+//! - [`machine`] provides the default `[S]` durable entity-ID and fail-closed
+//!   topology-lineage kernel; the broader machine graph remains staged work.
 //!
 //! Layer: L6 (HELM). Production dependencies and feature-gated deltas are
 //! declared explicitly in `Cargo.toml`.
@@ -25,6 +27,7 @@ pub mod ast;
 pub mod derived_crosswalk;
 pub mod json;
 pub mod lower;
+pub mod machine;
 #[cfg(feature = "ladder-planner")]
 pub mod planner;
 pub mod query;

@@ -11,8 +11,9 @@ FrankenScript — the system's one true interface (plan §11.1, Decalogue
 P10): a typed, versioned IR with two isomorphic concrete syntaxes
 (canonical s-expressions; lossless JSON mapping), both parsing to the same
 typed AST. Layer: L6 (HELM). Production dependencies are declared in
-`Cargo.toml`; the moonshot `derived-crosswalk` feature adds fs-blake3/fs-exec
-and enables fs-geom's admitted derived-geometry boundary.
+`Cargo.toml`; fs-blake3 supplies the default [S] identity kernel, while the
+moonshot `derived-crosswalk` feature adds fs-exec and enables fs-geom's admitted
+derived-geometry boundary.
 
 ## Public types and semantics
 
@@ -75,6 +76,29 @@ and enables fs-geom's admitted derived-geometry boundary.
   versions, a raw geometry ID that does not name the supplied sealed object,
   and every redundant selector mismatch. The token is structural lineage only:
   Machine IR has no admitted semantic model graph yet.
+- `machine` (Machine-IR E0 PR-1, [S]) — six nominally distinct durable entity
+  types (`BodyId`, `SurfacePatchId`, `ContactFeatureId`, `TerminalId`,
+  `PortId`, `StateSlotId`) use `fs-blake3::identity::EntityId` under six
+  different static schemas. Their bounded, human-auditable hierarchical keys
+  use the exact `[a-z][a-z0-9-]*` segment grammar; numeric-only path segments,
+  implicit normalization, array indices, uppercase aliases, and unbounded text
+  refuse before an ID is published. Each value retains its complete canonical
+  preimage receipt for collision adjudication.
+- `machine::LineageRecord::admit` canonicalizes bounded split, merge, remesh,
+  wear, and fracture source-target relations by the durable IDs rather than
+  caller order. Downstream cache/contact/winding/adjoint attachments are
+  rebound only across a unique one-to-one source relation. A live attachment
+  on a one-to-many source returns `LineageRefusal::Ambiguous` carrying a
+  domain-separated `LineageInvalidation`: the complete refused relation set,
+  every considered dependent, its ambiguous relation subset, every invalidated
+  dependent, and its canonical identity receipt. No success record or guessed
+  target is published on that path.
+- `machine::LineageRecord::admit_with_decision` retains every attempt as a
+  bounded `LineageAdmissionDecision`: attempted event and input counts, a stable
+  decision/rule code, and either the admitted receipt or complete typed refusal.
+  The core prints nothing. This is an outcome summary for structured tracing,
+  not a digest of early-refused inputs; replay ledgers must retain those inputs
+  separately.
 - `query` (addendum Proposal 8 — declarative query language v0): a query is
   `(QoI, Target, budget_usd, deadline_s)` where `Qoi` is a fixed MENU —
   `MaxOverRegion`, `Integral` (linear), `Exceedance` (probabilistic, needs a
@@ -239,6 +263,21 @@ and enables fs-geom's admitted derived-geometry boundary.
 
 ## Invariants
 
+- Machine entity roles are non-confusable at both the Rust type and canonical
+  identity-schema levels: identical key bytes under `BodyId` and
+  `SurfacePatchId` produce different strong identities. Closed
+  `MachineElementId` erasure retains the role tag.
+- Lineage relation targets must preserve their source's nominal entity role.
+  Sources and targets are duplicate-free. Split/fracture, merge, and wear have
+  explicit cardinality laws; remesh permits declared one-to-many topology but
+  cannot silently transport a live attachment across it.
+- Lineage and invalidation identities bind the event kind, complete canonical
+  relation set, dependent class/key/source, and every admitted target. Caller
+  relation/dependent order is normalized once before identity publication. A
+  refusal identity retains every considered dependent as well as the exact
+  invalidated subset, so changing an otherwise unambiguous attachment cannot
+  alias the refused attempt.
+
 1. Isomorphism: `parse(print(x))` has the same shape as `x`, per syntax
    and across syntaxes (property-tested on generated programs and the
    Appendix C fixtures).
@@ -269,6 +308,16 @@ and enables fs-geom's admitted derived-geometry boundary.
 
 ## Error model
 
+`MachineIdError` names the applicable role, segment, byte offset, and
+bounded-key rule that refused an entity/dependent key. `LineageRefusal` distinguishes
+shape/resource limits, cross-role or duplicate endpoints, missing attachment
+sources, duplicate dependents, canonical-identity failure, and semantic
+ambiguity. Both expose stable rule codes, and `LineageAdmissionDecision` retains
+accepted and refused outcomes for structured tracing without printing from the
+core library. The ambiguity variant owns the deterministic
+invalidation receipt; callers never need to reconstruct the invalidation set
+from prose.
+
 Syntax/study/lowering APIs return `IrError` (span, stable
 `IrErrorKind::code()`, detail, hint). Feature-gated planner/anytime APIs return
 `PlanError`, and valid but under-budget queries return structured
@@ -284,6 +333,11 @@ raw-to-sealed geometry mismatch, redundant derived-selector mismatch,
 cancellation, and canonical identity failure. No partial crosswalk token escapes.
 
 ## Determinism class
+
+Machine entity, lineage-record, and invalidation identities are bit-stable for
+the same schema version and semantic inputs. Caller ordering of relations,
+targets, and dependents is not semantic. Event kind, target identity, dependent
+kind/key/source, entity role, or canonical key changes the appropriate ID.
 
 Parsing, printing, and lowering are pure functions of their input text.
 Planner replay is deterministic for the same family, query, ladders, cache
@@ -306,6 +360,10 @@ envelope.
 Derived-crosswalk admission polls at entry, during canonical identity
 construction, and immediately before publication. Its work is a fixed 17-field
 envelope; cancellation publishes no partial token.
+Machine entity and lineage construction are synchronous bounded metadata
+operations (128-byte keys; at most 4,096 relations/dependents and 8,192 target
+endpoints). They use the canonical encoder's explicit byte/item envelopes and
+do not claim cancellable long-running work.
 
 ## Unsafe boundary
 
@@ -319,8 +377,9 @@ None. Safe Rust only.
   other current IR behavior is `[S]` default-path.
 - `derived-crosswalk` [M] (default OFF) — nominal L6 Machine-IR selectors
   bound to exact admitted L2 derived geometry. It enables
-  `fs-geom/derived-geometry` and the fs-blake3/fs-exec identity/cancellation
-  dependencies. It does not promote the absent Machine-IR model graph.
+  `fs-geom/derived-geometry` and the fs-exec cancellation dependency.
+  `fs-blake3` is now a default dependency for the [S] Machine-IR identity
+  kernel. This feature does not promote the absent Machine-IR model graph.
 
 ## Conformance tests
 
@@ -392,6 +451,18 @@ and subject/version/frame/unit mismatch refusal; all-zero refusal for every
 selector/artifact role; and entry, identity-construction, and pre-publication
 cancellation with no token publication.
 
+`tests/machine.rs` (Machine-IR E0 PR-1, G0/G3): repeatable and role-separated
+entity IDs with pairwise schema separation across all six durable roles;
+canonical-key refusal with exact diagnostic positions and boundary admission;
+caller-order-invariant remesh receipts and diagnostics; structured accepted and
+refused decision records; unique dependent rebinding; split recording without
+attachments; fail-closed ambiguity binding complete relations, considered
+dependents, and cache/contact/winding/adjoint invalidations; split, merge,
+fracture, and wear laws; duplicate and public resource-limit refusal; a
+maximum-endpoint record plus maximum-relation/dependent invalidation identity
+envelopes; and identity movement by event, target, dependent class, complete
+event context, and considered inputs.
+
 ## No-claim boundaries
 
 - No operator catalog or per-operator semantic versions — gp3.6; the
@@ -433,10 +504,21 @@ cancellation with no token publication.
   or inspect a Machine-IR model graph; execute the subject/version/frame/unit
   mapping artifacts; prove semantic or physical preservation; provide an
   inverse or composition law; construct a `VersionedProgram`; convert into a
-  derived morphism/equivalence; or transport/strengthen evidence. A future
-  Machine-IR model schema must introduce strong machine-side identities and a
-  successor crosswalk before those questions can be admitted. The mandatory
-  no-authority artifact records this boundary; it is not a proof by itself.
+  derived morphism/equivalence; or transport/strengthen evidence. PR-1 now
+  supplies strong entity identities, but the feature's older selector bytes do
+  not automatically become those IDs and no Machine-IR model graph exists yet.
+  A successor crosswalk must explicitly bind the strong IDs before those
+  questions can be admitted. The mandatory no-authority artifact records this
+  boundary; it is not a proof by itself.
+- Machine-IR PR-1 is the identity/lineage kernel only. It does not yet define
+  subsystems, materials, interfaces, terminal/port schemas, clocks,
+  controllers, IC/BC/motion/event/reset semantics, hazards, ContextOfUse,
+  accounting/fidelity policy, scenario lowering, lineage persistence, or an
+  authenticated authority to approve a crosswalk. A lineage receipt records a
+  declared map or invalidation; it does not prove geometric/physical
+  preservation, conservation, or semantic equivalence. An admission-decision
+  summary is not a canonical digest of early-refused input and is not by itself
+  a replayable ledger record.
 - The query language is v0: a FIXED QoI menu (max/integral/exceedance), not
   a general program surface. `Query::admit` type-checks well-posedness and
   dimensions ONLY — it does NOT plan, cost, or execute a query (the greedy
