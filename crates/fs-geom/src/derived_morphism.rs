@@ -4,6 +4,9 @@
 //! declared chart maps, finite-complex rank refinements, and whole-object
 //! inclusion declarations; checks structural evidence restriction/corestriction;
 //! and composes ordered typed primitive paths with content-addressed lineage. A
+//! separate evidence-polarity packet can retain an explicit affirmative,
+//! refutation, or no-claim classification across one exact sealed transport
+//! without making that caller declaration canonical or authoritative. A
 //! separate stratum-scoped category admits component declarations only between
 //! exact `(geometry, stratification, stratum)` objects and deliberately exposes
 //! no whole-geometry evidence transport. A finite assembly candidate can bind
@@ -68,6 +71,8 @@ use crate::derived::{
 
 /// Current schema for structural RD.1b morphism receipts.
 pub const DERIVED_MORPHISM_SCHEMA_VERSION_V1: u32 = 1;
+/// Current schema for structural evidence-polarity transport candidates.
+pub const DERIVED_EVIDENCE_POLARITY_TRANSPORT_CANDIDATE_SCHEMA_VERSION_V1: u32 = 1;
 /// Current schema for standalone stratum-scoped morphism receipts.
 pub const DERIVED_STRATUM_MORPHISM_SCHEMA_VERSION_V1: u32 = 1;
 /// Current schema for exhaustive finite stratified-map assembly candidates.
@@ -103,6 +108,9 @@ pub const DERIVED_MORPHISM_MAX_FACTORS_V1: usize = 1024;
 const DERIVED_MORPHISM_CANCELLATION_STRIDE_V1: usize = 64;
 const DERIVED_MORPHISM_IDENTITY_LIMITS_V1: CanonicalLimits =
     CanonicalLimits::new(1 << 17, 1 << 16, 8, 1 << 11, 4096);
+// Twelve parent fields plus one complete six-field structural-morphism child.
+const DERIVED_EVIDENCE_POLARITY_TRANSPORT_CANDIDATE_IDENTITY_LIMITS_V1: CanonicalLimits =
+    CanonicalLimits::new(1 << 17, 1 << 16, 18, 1 << 11, 4096);
 const DERIVED_STRATUM_MORPHISM_IDENTITY_LIMITS_V1: CanonicalLimits =
     CanonicalLimits::new(1 << 17, 1 << 16, 9, 1 << 11, 4096);
 const DERIVED_EXHAUSTIVE_STRATIFIED_MAP_CANDIDATE_IDENTITY_LIMITS_V1: CanonicalLimits =
@@ -306,6 +314,34 @@ impl CanonicalSchema for DerivedSpanCorrespondenceIdentitySchemaV1 {
 pub type DerivedSpanCorrespondenceIdV1 = EvidenceNodeId<DerivedSpanCorrespondenceIdentitySchemaV1>;
 
 static DERIVED_MORPHISM_CHILD_V1: ChildSpec = ChildSpec::for_identity::<DerivedMorphismIdV1>();
+
+/// Domain-separated identity for one structural evidence-polarity packet.
+pub enum DerivedEvidencePolarityTransportCandidateIdentitySchemaV1 {}
+
+impl CanonicalSchema for DerivedEvidencePolarityTransportCandidateIdentitySchemaV1 {
+    const DOMAIN: &'static str = "org.frankensim.fs-geom.evidence-polarity-transport-candidate.v1";
+    const NAME: &'static str = "derived-evidence-polarity-transport-candidate";
+    const VERSION: u32 = DERIVED_EVIDENCE_POLARITY_TRANSPORT_CANDIDATE_SCHEMA_VERSION_V1;
+    const CONTEXT: &'static str = "exact structural-morphism child, derived map endpoints and evidence variance/artifacts/ranks, explicit preserved input/output proof polarity, one nominal transport declaration, and an explicit no-authority boundary";
+    const FIELDS: &'static [FieldSpec] = &[
+        FieldSpec::required("source-geometry", WireType::Bytes),
+        FieldSpec::required("target-geometry", WireType::Bytes),
+        FieldSpec::required("evidence-variance", WireType::Bytes),
+        FieldSpec::required("input-evidence", WireType::Bytes),
+        FieldSpec::required("output-evidence", WireType::Bytes),
+        FieldSpec::required("input-rank", WireType::Bytes),
+        FieldSpec::required("output-rank", WireType::Bytes),
+        FieldSpec::required("input-polarity", WireType::Bytes),
+        FieldSpec::required("output-polarity", WireType::Bytes),
+        FieldSpec::child_of("morphism", &DERIVED_MORPHISM_CHILD_V1),
+        FieldSpec::required("nominal-polarity-transport-declaration", WireType::Bytes),
+        FieldSpec::required("no-authority", WireType::Bytes),
+    ];
+}
+
+/// Typed identity of one structural evidence-polarity transport candidate.
+pub type DerivedEvidencePolarityTransportCandidateIdV1 =
+    EvidenceNodeId<DerivedEvidencePolarityTransportCandidateIdentitySchemaV1>;
 
 /// Domain-separated identity for one pair of parallel structural paths.
 pub enum DerivedParallelMorphismComparisonCandidateIdentitySchemaV1 {}
@@ -707,6 +743,27 @@ pub struct DerivedMorphismInverseLawDeclarationIdV1([u8; 32]);
 
 impl DerivedMorphismInverseLawDeclarationIdV1 {
     /// Construct a nominal inverse-law declaration from exact bytes.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Borrow the exact identity bytes.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+/// Nominal declaration that one structural evidence transport preserves proof polarity.
+///
+/// The declaration is retained for independent checking. Its bytes do not
+/// authenticate either evidence payload or prove that transport is sound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DerivedEvidencePolarityTransportDeclarationIdV1([u8; 32]);
+
+impl DerivedEvidencePolarityTransportDeclarationIdV1 {
+    /// Construct a nominal polarity-transport declaration from exact bytes.
     #[must_use]
     pub const fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
@@ -1614,6 +1671,22 @@ impl DerivedEvidenceTransportV1 {
     }
 }
 
+/// Structural polarity of one nominal evidence payload.
+///
+/// Polarity is orthogonal to [`ColorRank`]: rank describes declared authority,
+/// while polarity distinguishes support from refutation. `NoClaim` retains an
+/// explicitly noncommittal payload. RD.1b treats every variant as caller-
+/// declared metadata rather than authenticated proof state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DerivedEvidencePolarityV1 {
+    /// Nominal evidence supporting a proposition or claim.
+    Affirmative,
+    /// Nominal evidence refuting a proposition or claim.
+    Refutation,
+    /// Explicitly unknown, noncommittal, or no-claim evidence.
+    NoClaim,
+}
+
 /// Explicit equivalence boundary carried by a primitive map request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DerivedEquivalenceBoundaryV1 {
@@ -1641,6 +1714,27 @@ pub struct DerivedMorphismIrV1 {
     pub evidence: DerivedEvidenceTransportV1,
     /// Honest equivalence/no-equivalence boundary.
     pub equivalence: DerivedEquivalenceBoundaryV1,
+}
+
+/// Structural candidate that binds proof polarity to one exact evidence transport.
+///
+/// Input and output polarity must be exactly equal. Admission prevents silent
+/// affirmative/refutation/no-claim reclassification but does not authenticate
+/// either evidence payload or prove preservation by the underlying map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DerivedEvidencePolarityTransportCandidateIrV1 {
+    /// Decoded schema version.
+    pub schema_version: u32,
+    /// Exact sealed nonidentity morphism whose evidence transport is classified.
+    pub morphism: DerivedMorphismIdV1,
+    /// Caller-declared polarity of the consumed evidence payload.
+    pub input_polarity: DerivedEvidencePolarityV1,
+    /// Caller-declared polarity of the published evidence payload.
+    pub output_polarity: DerivedEvidencePolarityV1,
+    /// Nominal declaration retained for a later independent checker.
+    pub nominal_transport: DerivedEvidencePolarityTransportDeclarationIdV1,
+    /// Explicit denial of proof, preservation, and equivalence authority.
+    pub no_authority: DerivedNoClaimIdV1,
 }
 
 /// Versioned standalone span request `source <- apex -> target`.
@@ -1954,6 +2048,52 @@ impl fmt::Display for DerivedMorphismErrorV1 {
 }
 
 impl core::error::Error for DerivedMorphismErrorV1 {}
+
+/// Structured refusal from evidence-polarity transport candidate admission.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DerivedEvidencePolarityTransportCandidateErrorV1 {
+    /// Unsupported decoded schema version.
+    UnsupportedSchemaVersion {
+        /// Supplied version.
+        found: u32,
+        /// Sole supported version.
+        supported: u32,
+    },
+    /// A required raw or nominal identity used the all-zero sentinel.
+    MissingIdentity {
+        /// Stable identity field.
+        field: &'static str,
+    },
+    /// The raw morphism ID does not name the supplied sealed child.
+    MorphismIdentityMismatch,
+    /// Identity arrows carry no nominal evidence artifacts or ranks to classify.
+    IdentityEvidenceUnsupported,
+    /// Admission would silently reclassify affirmative, refuting, or no-claim evidence.
+    PolarityMismatch {
+        /// Declared consumed-evidence polarity.
+        input: DerivedEvidencePolarityV1,
+        /// Declared published-evidence polarity.
+        output: DerivedEvidencePolarityV1,
+    },
+    /// Cooperative cancellation was observed before publication.
+    Cancelled {
+        /// Stable admission stage.
+        stage: &'static str,
+    },
+    /// Canonical identity construction failed.
+    Identity(CanonicalError),
+}
+
+impl fmt::Display for DerivedEvidencePolarityTransportCandidateErrorV1 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "derived evidence-polarity transport candidate refused: {self:?}"
+        )
+    }
+}
+
+impl core::error::Error for DerivedEvidencePolarityTransportCandidateErrorV1 {}
 
 /// Structured refusal from standalone stratum-scoped admission/composition.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3064,6 +3204,119 @@ impl AdmittedDerivedMorphismV1 {
     /// Canonical receipt and construction limits.
     #[must_use]
     pub const fn identity_receipt(&self) -> IdentityReceipt<DerivedMorphismIdV1> {
+        self.receipt
+    }
+}
+
+/// Sealed structural packet binding preserved proof polarity to one evidence transport.
+///
+/// This token proves only exact child identity, derived evidence metadata, and
+/// equality of the two caller-declared polarity tags. It grants no evidence-
+/// payload authenticity, proposition identity, transport soundness, naturality,
+/// theorem, inverse, equivalence, or physical authority. The same child may
+/// appear in distinct nominal candidate packets; RD.1b does not choose which
+/// caller-declared polarity, if any, is scientifically correct.
+#[derive(Debug, PartialEq, Eq)]
+pub struct AdmittedDerivedEvidencePolarityTransportCandidateV1 {
+    source: DerivedGeometryIdV1,
+    target: DerivedGeometryIdV1,
+    variance: DerivedEvidenceVarianceV1,
+    input_evidence: DerivedEvidenceArtifactIdV1,
+    output_evidence: DerivedEvidenceArtifactIdV1,
+    input_rank: ColorRank,
+    output_rank: ColorRank,
+    input_polarity: DerivedEvidencePolarityV1,
+    output_polarity: DerivedEvidencePolarityV1,
+    morphism: DerivedMorphismIdV1,
+    nominal_transport: DerivedEvidencePolarityTransportDeclarationIdV1,
+    no_authority: DerivedNoClaimIdV1,
+    receipt: IdentityReceipt<DerivedEvidencePolarityTransportCandidateIdV1>,
+}
+
+impl AdmittedDerivedEvidencePolarityTransportCandidateV1 {
+    /// Exact source geometry of the classified structural map.
+    #[must_use]
+    pub const fn source(&self) -> DerivedGeometryIdV1 {
+        self.source
+    }
+
+    /// Exact target geometry of the classified structural map.
+    #[must_use]
+    pub const fn target(&self) -> DerivedGeometryIdV1 {
+        self.target
+    }
+
+    /// Contravariant restriction or covariant balance-corestriction lane.
+    #[must_use]
+    pub const fn variance(&self) -> DerivedEvidenceVarianceV1 {
+        self.variance
+    }
+
+    /// Exact nominal consumed-evidence artifact retained by the child.
+    #[must_use]
+    pub const fn input_evidence(&self) -> DerivedEvidenceArtifactIdV1 {
+        self.input_evidence
+    }
+
+    /// Exact nominal published-evidence artifact retained by the child.
+    #[must_use]
+    pub const fn output_evidence(&self) -> DerivedEvidenceArtifactIdV1 {
+        self.output_evidence
+    }
+
+    /// Caller-declared consumed authority rank retained by the child.
+    #[must_use]
+    pub const fn input_rank(&self) -> ColorRank {
+        self.input_rank
+    }
+
+    /// Caller-declared published authority rank retained by the child.
+    #[must_use]
+    pub const fn output_rank(&self) -> ColorRank {
+        self.output_rank
+    }
+
+    /// Caller-declared consumed-evidence polarity.
+    #[must_use]
+    pub const fn input_polarity(&self) -> DerivedEvidencePolarityV1 {
+        self.input_polarity
+    }
+
+    /// Caller-declared published-evidence polarity.
+    #[must_use]
+    pub const fn output_polarity(&self) -> DerivedEvidencePolarityV1 {
+        self.output_polarity
+    }
+
+    /// Exact sealed structural-morphism child.
+    #[must_use]
+    pub const fn morphism(&self) -> DerivedMorphismIdV1 {
+        self.morphism
+    }
+
+    /// Nominal polarity-preservation declaration retained for independent checking.
+    #[must_use]
+    pub const fn nominal_transport(&self) -> DerivedEvidencePolarityTransportDeclarationIdV1 {
+        self.nominal_transport
+    }
+
+    /// Explicit denial of proof and transport authority.
+    #[must_use]
+    pub const fn no_authority(&self) -> DerivedNoClaimIdV1 {
+        self.no_authority
+    }
+
+    /// Typed structural candidate identity.
+    #[must_use]
+    pub const fn id(&self) -> DerivedEvidencePolarityTransportCandidateIdV1 {
+        self.receipt.id()
+    }
+
+    /// Canonical receipt and construction limits.
+    #[must_use]
+    pub const fn identity_receipt(
+        &self,
+    ) -> IdentityReceipt<DerivedEvidencePolarityTransportCandidateIdV1> {
         self.receipt
     }
 }
@@ -4650,6 +4903,65 @@ fn rank_tag(rank: ColorRank) -> u8 {
     }
 }
 
+fn evidence_variance_tag(variance: DerivedEvidenceVarianceV1) -> u8 {
+    match variance {
+        DerivedEvidenceVarianceV1::Identity => 0,
+        DerivedEvidenceVarianceV1::RestrictionContravariant => 1,
+        DerivedEvidenceVarianceV1::BalanceCorestrictionCovariant => 2,
+    }
+}
+
+fn evidence_polarity_tag(polarity: DerivedEvidencePolarityV1) -> u8 {
+    match polarity {
+        DerivedEvidencePolarityV1::Affirmative => 0,
+        DerivedEvidencePolarityV1::Refutation => 1,
+        DerivedEvidencePolarityV1::NoClaim => 2,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NonidentityEvidenceBindingV1 {
+    variance: DerivedEvidenceVarianceV1,
+    input_evidence: DerivedEvidenceArtifactIdV1,
+    output_evidence: DerivedEvidenceArtifactIdV1,
+    input_rank: ColorRank,
+    output_rank: ColorRank,
+}
+
+fn nonidentity_evidence_binding(
+    evidence: DerivedEvidenceTransportV1,
+) -> Option<NonidentityEvidenceBindingV1> {
+    match evidence {
+        DerivedEvidenceTransportV1::Identity => None,
+        DerivedEvidenceTransportV1::RestrictionContravariant {
+            input_evidence,
+            output_evidence,
+            input_rank,
+            output_rank,
+            ..
+        } => Some(NonidentityEvidenceBindingV1 {
+            variance: DerivedEvidenceVarianceV1::RestrictionContravariant,
+            input_evidence,
+            output_evidence,
+            input_rank,
+            output_rank,
+        }),
+        DerivedEvidenceTransportV1::BalanceCorestrictionCovariant {
+            input_evidence,
+            output_evidence,
+            input_rank,
+            output_rank,
+            ..
+        } => Some(NonidentityEvidenceBindingV1 {
+            variance: DerivedEvidenceVarianceV1::BalanceCorestrictionCovariant,
+            input_evidence,
+            output_evidence,
+            input_rank,
+            output_rank,
+        }),
+    }
+}
+
 enum EvidenceBytesV1 {
     Identity([u8; 1]),
     Strict([u8; 131]),
@@ -4871,6 +5183,80 @@ fn morphism_receipt(
             factors.iter().map(|factor| &factor.as_bytes()[..]),
         )
     })
+    .and_then(|encoder| encoder.finish())
+    .map_err(map_identity_error)
+}
+
+fn evidence_polarity_transport_candidate_receipt(
+    ir: &DerivedEvidencePolarityTransportCandidateIrV1,
+    morphism: &AdmittedDerivedMorphismV1,
+    cx: &Cx<'_>,
+) -> Result<
+    IdentityReceipt<DerivedEvidencePolarityTransportCandidateIdV1>,
+    DerivedEvidencePolarityTransportCandidateErrorV1,
+> {
+    if cx.checkpoint().is_err() {
+        return Err(
+            DerivedEvidencePolarityTransportCandidateErrorV1::Cancelled {
+                stage: "evidence-polarity-identity-entry",
+            },
+        );
+    }
+    let binding = nonidentity_evidence_binding(morphism.evidence())
+        .ok_or(DerivedEvidencePolarityTransportCandidateErrorV1::IdentityEvidenceUnsupported)?;
+    let variance = [evidence_variance_tag(binding.variance)];
+    let input_rank = [rank_tag(binding.input_rank)];
+    let output_rank = [rank_tag(binding.output_rank)];
+    let input_polarity = [evidence_polarity_tag(ir.input_polarity)];
+    let output_polarity = [evidence_polarity_tag(ir.output_polarity)];
+    let map_identity_error = |error| match error {
+        CanonicalError::Cancelled { .. } => {
+            DerivedEvidencePolarityTransportCandidateErrorV1::Cancelled {
+                stage: "evidence-polarity-identity",
+            }
+        }
+        other => DerivedEvidencePolarityTransportCandidateErrorV1::Identity(other),
+    };
+    CanonicalEncoder::<DerivedEvidencePolarityTransportCandidateIdV1, _>::new(
+        DERIVED_EVIDENCE_POLARITY_TRANSPORT_CANDIDATE_IDENTITY_LIMITS_V1,
+        || cx.checkpoint().is_err(),
+    )
+    .map_err(map_identity_error)?
+    .bytes(
+        Field::new(0, "source-geometry"),
+        morphism.source().as_bytes(),
+    )
+    .and_then(|encoder| {
+        encoder.bytes(
+            Field::new(1, "target-geometry"),
+            morphism.target().as_bytes(),
+        )
+    })
+    .and_then(|encoder| encoder.bytes(Field::new(2, "evidence-variance"), &variance))
+    .and_then(|encoder| {
+        encoder.bytes(
+            Field::new(3, "input-evidence"),
+            binding.input_evidence.as_bytes(),
+        )
+    })
+    .and_then(|encoder| {
+        encoder.bytes(
+            Field::new(4, "output-evidence"),
+            binding.output_evidence.as_bytes(),
+        )
+    })
+    .and_then(|encoder| encoder.bytes(Field::new(5, "input-rank"), &input_rank))
+    .and_then(|encoder| encoder.bytes(Field::new(6, "output-rank"), &output_rank))
+    .and_then(|encoder| encoder.bytes(Field::new(7, "input-polarity"), &input_polarity))
+    .and_then(|encoder| encoder.bytes(Field::new(8, "output-polarity"), &output_polarity))
+    .and_then(|encoder| encoder.child(Field::new(9, "morphism"), ir.morphism))
+    .and_then(|encoder| {
+        encoder.bytes(
+            Field::new(10, "nominal-polarity-transport-declaration"),
+            ir.nominal_transport.as_bytes(),
+        )
+    })
+    .and_then(|encoder| encoder.bytes(Field::new(11, "no-authority"), ir.no_authority.as_bytes()))
     .and_then(|encoder| encoder.finish())
     .map_err(map_identity_error)
 }
@@ -5698,6 +6084,96 @@ pub fn identity_derived_morphism_v1(
         endpoint,
         cx,
     )
+}
+
+/// Admit one structural proof-polarity packet over an exact evidence transport.
+///
+/// The sealed child must be nonidentity because identity arrows retain no
+/// nominal input/output evidence artifacts or ranks. Input and output polarity
+/// must be exactly equal, preventing silent support/refutation/no-claim
+/// reclassification within this packet. A caller may still propose a distinct
+/// packet with another equal tag; the resulting token does not authenticate a
+/// payload, proposition, transport implementation, preservation law, theorem,
+/// inverse, equivalence, or physical interpretation.
+///
+/// # Errors
+/// Returns a typed refusal for schema, zero identity, raw/sealed child mismatch,
+/// identity evidence, polarity mismatch, cancellation, or canonical identity
+/// defects. No partial token escapes.
+#[must_use = "a polarity packet grants no evidence or theorem authority"]
+pub fn admit_derived_evidence_polarity_transport_candidate_v1(
+    ir: &DerivedEvidencePolarityTransportCandidateIrV1,
+    morphism: &AdmittedDerivedMorphismV1,
+    cx: &Cx<'_>,
+) -> Result<
+    AdmittedDerivedEvidencePolarityTransportCandidateV1,
+    DerivedEvidencePolarityTransportCandidateErrorV1,
+> {
+    if cx.checkpoint().is_err() {
+        return Err(
+            DerivedEvidencePolarityTransportCandidateErrorV1::Cancelled {
+                stage: "evidence-polarity-entry",
+            },
+        );
+    }
+    if ir.schema_version != DERIVED_EVIDENCE_POLARITY_TRANSPORT_CANDIDATE_SCHEMA_VERSION_V1 {
+        return Err(
+            DerivedEvidencePolarityTransportCandidateErrorV1::UnsupportedSchemaVersion {
+                found: ir.schema_version,
+                supported: DERIVED_EVIDENCE_POLARITY_TRANSPORT_CANDIDATE_SCHEMA_VERSION_V1,
+            },
+        );
+    }
+    for (bytes, field) in [
+        (ir.morphism.as_bytes(), "morphism"),
+        (
+            ir.nominal_transport.as_bytes(),
+            "nominal-polarity-transport-declaration",
+        ),
+        (ir.no_authority.as_bytes(), "no-authority"),
+    ] {
+        if is_zero(bytes) {
+            return Err(
+                DerivedEvidencePolarityTransportCandidateErrorV1::MissingIdentity { field },
+            );
+        }
+    }
+    if ir.morphism != morphism.id() {
+        return Err(DerivedEvidencePolarityTransportCandidateErrorV1::MorphismIdentityMismatch);
+    }
+    let binding = nonidentity_evidence_binding(morphism.evidence())
+        .ok_or(DerivedEvidencePolarityTransportCandidateErrorV1::IdentityEvidenceUnsupported)?;
+    if ir.input_polarity != ir.output_polarity {
+        return Err(
+            DerivedEvidencePolarityTransportCandidateErrorV1::PolarityMismatch {
+                input: ir.input_polarity,
+                output: ir.output_polarity,
+            },
+        );
+    }
+    let receipt = evidence_polarity_transport_candidate_receipt(ir, morphism, cx)?;
+    if cx.checkpoint().is_err() {
+        return Err(
+            DerivedEvidencePolarityTransportCandidateErrorV1::Cancelled {
+                stage: "evidence-polarity-publication",
+            },
+        );
+    }
+    Ok(AdmittedDerivedEvidencePolarityTransportCandidateV1 {
+        source: morphism.source(),
+        target: morphism.target(),
+        variance: binding.variance,
+        input_evidence: binding.input_evidence,
+        output_evidence: binding.output_evidence,
+        input_rank: binding.input_rank,
+        output_rank: binding.output_rank,
+        input_polarity: ir.input_polarity,
+        output_polarity: ir.output_polarity,
+        morphism: ir.morphism,
+        nominal_transport: ir.nominal_transport,
+        no_authority: ir.no_authority,
+        receipt,
+    })
 }
 
 fn checked_combined_len(
@@ -11040,6 +11516,24 @@ mod tests {
             output_rank,
         };
         ir
+    }
+
+    fn evidence_polarity_candidate_ir(
+        morphism: &AdmittedDerivedMorphismV1,
+        input_polarity: DerivedEvidencePolarityV1,
+        output_polarity: DerivedEvidencePolarityV1,
+        seed: u8,
+    ) -> DerivedEvidencePolarityTransportCandidateIrV1 {
+        DerivedEvidencePolarityTransportCandidateIrV1 {
+            schema_version: DERIVED_EVIDENCE_POLARITY_TRANSPORT_CANDIDATE_SCHEMA_VERSION_V1,
+            morphism: morphism.id(),
+            input_polarity,
+            output_polarity,
+            nominal_transport: DerivedEvidencePolarityTransportDeclarationIdV1::from_bytes(
+                [seed; 32],
+            ),
+            no_authority: DerivedNoClaimIdV1::from_bytes([seed.wrapping_add(1); 32]),
+        }
     }
 
     fn admit_strict(
@@ -19482,6 +19976,388 @@ mod tests {
             assert_eq!(
                 admit_derived_morphism_v1(incompatible_map_ir, &source, &incompatible_target, cx,),
                 Err(DerivedMorphismErrorV1::ModelVersionMismatch),
+            );
+        });
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // Both variance lanes and all three explicit polarities.
+    fn evidence_polarity_candidates_bind_exact_transport_metadata_without_authority() {
+        assert_ne!(
+            <DerivedEvidencePolarityTransportCandidateIdentitySchemaV1 as CanonicalSchema>::DOMAIN,
+            <DerivedMorphismIdentitySchemaV1 as CanonicalSchema>::DOMAIN,
+        );
+        assert_eq!(
+            <DerivedEvidencePolarityTransportCandidateIdentitySchemaV1 as CanonicalSchema>::FIELDS
+                .len(),
+            12,
+        );
+        assert_eq!(
+            DERIVED_EVIDENCE_POLARITY_TRANSPORT_CANDIDATE_IDENTITY_LIMITS_V1.max_fields(),
+            18,
+        );
+        let child_spec = &DerivedEvidencePolarityTransportCandidateIdentitySchemaV1::FIELDS[9];
+        assert_eq!(child_spec.wire_type(), WireType::Child);
+        assert!(child_spec.child_spec().is_some());
+
+        with_cx(false, |cx| {
+            let source = endpoint(143);
+            let target = endpoint(144);
+            let corestriction = admit_strict(
+                source,
+                target,
+                145,
+                ColorRank::Verified,
+                ColorRank::Validated,
+                cx,
+            );
+            let mut polarity_ids = Vec::new();
+            for polarity in [
+                DerivedEvidencePolarityV1::Affirmative,
+                DerivedEvidencePolarityV1::Refutation,
+                DerivedEvidencePolarityV1::NoClaim,
+            ] {
+                let ir = evidence_polarity_candidate_ir(&corestriction, polarity, polarity, 146);
+                let candidate =
+                    admit_derived_evidence_polarity_transport_candidate_v1(&ir, &corestriction, cx)
+                        .expect("valid polarity-preserving corestriction packet");
+                let replay =
+                    admit_derived_evidence_polarity_transport_candidate_v1(&ir, &corestriction, cx)
+                        .expect("deterministic polarity packet replay");
+
+                assert_eq!(candidate, replay);
+                assert_eq!(candidate.source(), source.id);
+                assert_eq!(candidate.target(), target.id);
+                assert_eq!(
+                    candidate.variance(),
+                    DerivedEvidenceVarianceV1::BalanceCorestrictionCovariant,
+                );
+                assert_eq!(candidate.input_evidence(), evidence_id(source.id));
+                assert_eq!(candidate.output_evidence(), evidence_id(target.id));
+                assert_eq!(candidate.input_rank(), ColorRank::Verified);
+                assert_eq!(candidate.output_rank(), ColorRank::Validated);
+                assert_eq!(candidate.input_polarity(), polarity);
+                assert_eq!(candidate.output_polarity(), polarity);
+                assert_eq!(candidate.morphism(), corestriction.id());
+                assert_eq!(candidate.nominal_transport(), ir.nominal_transport);
+                assert_eq!(candidate.no_authority(), ir.no_authority);
+                assert_eq!(candidate.id(), candidate.identity_receipt().id());
+                polarity_ids.push(candidate.id());
+            }
+            assert_ne!(polarity_ids[0], polarity_ids[1]);
+            assert_ne!(polarity_ids[0], polarity_ids[2]);
+            assert_ne!(polarity_ids[1], polarity_ids[2]);
+
+            let restriction = admit_between_endpoints(
+                restriction_ir(
+                    source,
+                    target,
+                    147,
+                    ColorRank::Validated,
+                    ColorRank::Estimated,
+                ),
+                source,
+                target,
+                cx,
+            )
+            .expect("valid structural restriction");
+            let restriction_ir = evidence_polarity_candidate_ir(
+                &restriction,
+                DerivedEvidencePolarityV1::Refutation,
+                DerivedEvidencePolarityV1::Refutation,
+                148,
+            );
+            let restriction_candidate = admit_derived_evidence_polarity_transport_candidate_v1(
+                &restriction_ir,
+                &restriction,
+                cx,
+            )
+            .expect("valid polarity-preserving restriction packet");
+            assert_eq!(
+                restriction_candidate.variance(),
+                DerivedEvidenceVarianceV1::RestrictionContravariant,
+            );
+            assert_eq!(
+                restriction_candidate.input_evidence(),
+                evidence_id(target.id),
+            );
+            assert_eq!(
+                restriction_candidate.output_evidence(),
+                evidence_id(source.id),
+            );
+            assert_eq!(restriction_candidate.input_rank(), ColorRank::Validated);
+            assert_eq!(restriction_candidate.output_rank(), ColorRank::Estimated);
+        });
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // Twelve-field receipt plus recursive child-domain binding.
+    fn evidence_polarity_candidate_identity_binds_ir_child_and_recursive_schema() {
+        with_cx(false, |cx| {
+            let source = endpoint(149);
+            let target = endpoint(150);
+            let morphism = admit_strict(
+                source,
+                target,
+                151,
+                ColorRank::Verified,
+                ColorRank::Validated,
+                cx,
+            );
+            let ir = evidence_polarity_candidate_ir(
+                &morphism,
+                DerivedEvidencePolarityV1::Affirmative,
+                DerivedEvidencePolarityV1::Affirmative,
+                152,
+            );
+            let baseline = evidence_polarity_transport_candidate_receipt(&ir, &morphism, cx)
+                .expect("baseline polarity receipt")
+                .id();
+
+            macro_rules! assert_ir_field_moves_identity {
+                ($field:ident, $value:expr) => {{
+                    let changed = DerivedEvidencePolarityTransportCandidateIrV1 {
+                        $field: $value,
+                        ..ir
+                    };
+                    let changed =
+                        evidence_polarity_transport_candidate_receipt(&changed, &morphism, cx)
+                            .expect("changed polarity receipt")
+                            .id();
+                    assert_ne!(baseline, changed, stringify!($field));
+                }};
+            }
+
+            assert_ir_field_moves_identity!(
+                morphism,
+                DerivedMorphismIdV1::parse_slice(&[153; 32]).expect("nonzero changed morphism")
+            );
+            assert_ir_field_moves_identity!(input_polarity, DerivedEvidencePolarityV1::Refutation);
+            assert_ir_field_moves_identity!(output_polarity, DerivedEvidencePolarityV1::NoClaim);
+            assert_ir_field_moves_identity!(
+                nominal_transport,
+                DerivedEvidencePolarityTransportDeclarationIdV1::from_bytes([154; 32])
+            );
+            assert_ir_field_moves_identity!(
+                no_authority,
+                DerivedNoClaimIdV1::from_bytes([155; 32])
+            );
+
+            let alternate_target = endpoint(156);
+            let alternate = admit_strict(
+                source,
+                alternate_target,
+                157,
+                ColorRank::Validated,
+                ColorRank::Estimated,
+                cx,
+            );
+            let alternate_ir = DerivedEvidencePolarityTransportCandidateIrV1 {
+                morphism: alternate.id(),
+                ..ir
+            };
+            let alternate_receipt =
+                evidence_polarity_transport_candidate_receipt(&alternate_ir, &alternate, cx)
+                    .expect("alternate derived metadata receipt")
+                    .id();
+            assert_ne!(baseline, alternate_receipt);
+
+            let wrong_child_schema =
+                CanonicalEncoder::<DerivedEvidencePolarityTransportCandidateIdV1, _>::new(
+                    DERIVED_EVIDENCE_POLARITY_TRANSPORT_CANDIDATE_IDENTITY_LIMITS_V1,
+                    || cx.checkpoint().is_err(),
+                )
+                .expect("valid polarity encoder")
+                .bytes(Field::new(0, "source-geometry"), source.id.as_bytes())
+                .and_then(|encoder| {
+                    encoder.bytes(Field::new(1, "target-geometry"), target.id.as_bytes())
+                })
+                .and_then(|encoder| encoder.bytes(Field::new(2, "evidence-variance"), &[2]))
+                .and_then(|encoder| {
+                    encoder.bytes(
+                        Field::new(3, "input-evidence"),
+                        evidence_id(source.id).as_bytes(),
+                    )
+                })
+                .and_then(|encoder| {
+                    encoder.bytes(
+                        Field::new(4, "output-evidence"),
+                        evidence_id(target.id).as_bytes(),
+                    )
+                })
+                .and_then(|encoder| encoder.bytes(Field::new(5, "input-rank"), &[2]))
+                .and_then(|encoder| encoder.bytes(Field::new(6, "output-rank"), &[1]))
+                .and_then(|encoder| encoder.bytes(Field::new(7, "input-polarity"), &[0]))
+                .and_then(|encoder| encoder.bytes(Field::new(8, "output-polarity"), &[0]))
+                .and_then(|encoder| {
+                    encoder.child(
+                        Field::new(9, "morphism"),
+                        DerivedSpanCorrespondenceIdV1::parse_slice(&[158; 32])
+                            .expect("nonzero wrong-schema child"),
+                    )
+                });
+            assert!(matches!(
+                wrong_child_schema,
+                Err(CanonicalError::ChildBindingMismatch {
+                    field: "morphism",
+                    what: "child schema domain",
+                })
+            ));
+        });
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // Schema, identity, zero-ID, child, polarity, and cancellation matrix.
+    fn evidence_polarity_candidates_refuse_laundering_identity_and_child_drift() {
+        let (morphism, identity, ir) = with_cx(false, |cx| {
+            let source = endpoint(159);
+            let target = endpoint(160);
+            let morphism = admit_strict(
+                source,
+                target,
+                161,
+                ColorRank::Validated,
+                ColorRank::Estimated,
+                cx,
+            );
+            let identity = admit_identity(source, cx);
+            let ir = evidence_polarity_candidate_ir(
+                &morphism,
+                DerivedEvidencePolarityV1::Affirmative,
+                DerivedEvidencePolarityV1::Affirmative,
+                162,
+            );
+            (morphism, identity, ir)
+        });
+
+        with_cx(false, |cx| {
+            let bad_schema = DerivedEvidencePolarityTransportCandidateIrV1 {
+                schema_version: 2,
+                ..ir
+            };
+            assert_eq!(
+                admit_derived_evidence_polarity_transport_candidate_v1(&bad_schema, &morphism, cx,),
+                Err(
+                    DerivedEvidencePolarityTransportCandidateErrorV1::UnsupportedSchemaVersion {
+                        found: 2,
+                        supported: DERIVED_EVIDENCE_POLARITY_TRANSPORT_CANDIDATE_SCHEMA_VERSION_V1,
+                    }
+                ),
+            );
+
+            for (field, changed) in [
+                (
+                    "morphism",
+                    DerivedEvidencePolarityTransportCandidateIrV1 {
+                        morphism: DerivedMorphismIdV1::parse_slice(&[0; 32])
+                            .expect("zero morphism sentinel remains representable"),
+                        ..ir
+                    },
+                ),
+                (
+                    "nominal-polarity-transport-declaration",
+                    DerivedEvidencePolarityTransportCandidateIrV1 {
+                        nominal_transport:
+                            DerivedEvidencePolarityTransportDeclarationIdV1::from_bytes([0; 32]),
+                        ..ir
+                    },
+                ),
+                (
+                    "no-authority",
+                    DerivedEvidencePolarityTransportCandidateIrV1 {
+                        no_authority: DerivedNoClaimIdV1::from_bytes([0; 32]),
+                        ..ir
+                    },
+                ),
+            ] {
+                assert_eq!(
+                    admit_derived_evidence_polarity_transport_candidate_v1(&changed, &morphism, cx,),
+                    Err(
+                        DerivedEvidencePolarityTransportCandidateErrorV1::MissingIdentity { field }
+                    ),
+                );
+            }
+
+            let wrong_child = DerivedEvidencePolarityTransportCandidateIrV1 {
+                morphism: DerivedMorphismIdV1::parse_slice(&[163; 32])
+                    .expect("nonzero wrong morphism child"),
+                ..ir
+            };
+            assert_eq!(
+                admit_derived_evidence_polarity_transport_candidate_v1(&wrong_child, &morphism, cx,),
+                Err(DerivedEvidencePolarityTransportCandidateErrorV1::MorphismIdentityMismatch),
+            );
+
+            let identity_ir = evidence_polarity_candidate_ir(
+                &identity,
+                DerivedEvidencePolarityV1::NoClaim,
+                DerivedEvidencePolarityV1::NoClaim,
+                164,
+            );
+            assert_eq!(
+                admit_derived_evidence_polarity_transport_candidate_v1(&identity_ir, &identity, cx,),
+                Err(DerivedEvidencePolarityTransportCandidateErrorV1::IdentityEvidenceUnsupported),
+            );
+
+            for (input, output) in [
+                (
+                    DerivedEvidencePolarityV1::Affirmative,
+                    DerivedEvidencePolarityV1::Refutation,
+                ),
+                (
+                    DerivedEvidencePolarityV1::Affirmative,
+                    DerivedEvidencePolarityV1::NoClaim,
+                ),
+                (
+                    DerivedEvidencePolarityV1::Refutation,
+                    DerivedEvidencePolarityV1::Affirmative,
+                ),
+                (
+                    DerivedEvidencePolarityV1::Refutation,
+                    DerivedEvidencePolarityV1::NoClaim,
+                ),
+                (
+                    DerivedEvidencePolarityV1::NoClaim,
+                    DerivedEvidencePolarityV1::Affirmative,
+                ),
+                (
+                    DerivedEvidencePolarityV1::NoClaim,
+                    DerivedEvidencePolarityV1::Refutation,
+                ),
+            ] {
+                let changed = DerivedEvidencePolarityTransportCandidateIrV1 {
+                    input_polarity: input,
+                    output_polarity: output,
+                    ..ir
+                };
+                assert_eq!(
+                    admit_derived_evidence_polarity_transport_candidate_v1(&changed, &morphism, cx,),
+                    Err(
+                        DerivedEvidencePolarityTransportCandidateErrorV1::PolarityMismatch {
+                            input,
+                            output,
+                        }
+                    ),
+                );
+            }
+        });
+
+        with_cx(true, |cx| {
+            assert_eq!(
+                admit_derived_evidence_polarity_transport_candidate_v1(&ir, &morphism, cx),
+                Err(
+                    DerivedEvidencePolarityTransportCandidateErrorV1::Cancelled {
+                        stage: "evidence-polarity-entry",
+                    }
+                ),
+            );
+            assert_eq!(
+                evidence_polarity_transport_candidate_receipt(&ir, &morphism, cx),
+                Err(
+                    DerivedEvidencePolarityTransportCandidateErrorV1::Cancelled {
+                        stage: "evidence-polarity-identity-entry",
+                    }
+                ),
             );
         });
     }
