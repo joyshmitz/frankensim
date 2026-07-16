@@ -8,6 +8,7 @@
 use crate::bc::{BcKind, BcValue, BoundaryCondition, Compat, Physics};
 use crate::ensemble::StochasticEnsemble;
 use crate::frame::{FrameMotion, FrameTree};
+use crate::payload::PayloadValidationStatsError;
 use crate::signal::TimeSignal;
 use fs_exec::Cx;
 use fs_qty::{Dims, QtyAny};
@@ -76,11 +77,13 @@ pub const MAX_VALIDATION_IDENTITY_COMPONENT_BYTES: usize = 4_096;
 /// Explicit deterministic limits for whole-scenario semantic validation.
 ///
 /// Collection fields cap public `Vec` authority before validation allocates
-/// indexes. `max_signal_scalars` counts table times/values and Chebyshev
-/// coefficients. `max_flux_checkpoints` counts raw set-local checkpoints
-/// before deterministic deduplication. `max_work` covers record visits,
-/// ordered-index comparisons, signal scans, checkpoint sorting, and flux
-/// evaluations in machine-independent logical units.
+/// indexes. `max_signal_scalars` retains its historical name but counts both
+/// signal times/values/Chebyshev coefficients and dynamically retained typed-
+/// payload scalar slots (including fixed values, table coordinates, samples,
+/// and distribution parameters). `max_flux_checkpoints` counts raw set-local
+/// checkpoints before deterministic deduplication. `max_work` covers record
+/// visits, ordered-index comparisons, signal/payload scans, checkpoint sorting,
+/// and flux evaluations in machine-independent logical units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ValidationBudget {
     /// Maximum non-world frames.
@@ -99,7 +102,7 @@ pub struct ValidationBudget {
     pub max_ensembles: usize,
     /// Maximum contact-law rows.
     pub max_contacts: usize,
-    /// Maximum dynamically sized signal scalars visited by validation.
+    /// Maximum dynamically retained signal and typed-payload scalar slots.
     pub max_signal_scalars: usize,
     /// Maximum raw net-flux validation checkpoints across effective sets.
     pub max_flux_checkpoints: usize,
@@ -157,7 +160,7 @@ pub struct ValidationPlan {
     pub ensembles: usize,
     /// Contact-law rows.
     pub contacts: usize,
-    /// Dynamically sized signal scalars.
+    /// Dynamically retained signal and typed-payload scalar slots.
     pub signal_scalars: usize,
     /// Raw net-flux checkpoints across effective sets.
     pub flux_checkpoints: usize,
@@ -660,17 +663,46 @@ fn checked_work_scale(
         .ok_or(ValidationError::WorkPlanOverflow { phase })
 }
 
-fn bc_dynamic_scalars(bc: &BoundaryCondition) -> Result<usize, ValidationError> {
+#[derive(Debug, Clone, Copy, Default)]
+struct BcValidationFootprint {
+    dynamic_scalars: usize,
+    identity_bytes: usize,
+    max_identity_component_bytes: usize,
+    identity_components: usize,
+}
+
+fn bc_validation_footprint(
+    bc: &BoundaryCondition,
+    checkpoint: &mut impl FnMut(&'static str) -> Result<(), ValidationError>,
+) -> Result<BcValidationFootprint, ValidationError> {
     match &bc.value {
-        Some(BcValue::Signal(signal)) => {
-            signal
-                .validation_dynamic_scalars()
-                .ok_or(ValidationError::WorkPlanOverflow {
+        Some(BcValue::Signal(signal)) => Ok(BcValidationFootprint {
+            dynamic_scalars: signal.validation_dynamic_scalars().ok_or(
+                ValidationError::WorkPlanOverflow {
                     phase: "signal scalar count",
-                })
-        }
-        Some(BcValue::Profile(profile)) => Ok(profile.cheb.coeffs().len()),
-        Some(BcValue::Uniform(_)) | None => Ok(0),
+                },
+            )?,
+            ..BcValidationFootprint::default()
+        }),
+        Some(BcValue::Profile(profile)) => Ok(BcValidationFootprint {
+            dynamic_scalars: profile.cheb.coeffs().len(),
+            ..BcValidationFootprint::default()
+        }),
+        Some(BcValue::Typed(payload)) => payload
+            .validation_stats_with_checkpoint(checkpoint)
+            .map(|stats| BcValidationFootprint {
+                dynamic_scalars: stats.dynamic_scalars,
+                identity_bytes: stats.identity_bytes,
+                max_identity_component_bytes: stats.max_identity_component_bytes,
+                identity_components: stats.identity_components,
+            })
+            .map_err(|error| match error {
+                PayloadValidationStatsError::Payload(_) => ValidationError::WorkPlanOverflow {
+                    phase: "typed payload footprint",
+                },
+                PayloadValidationStatsError::Checkpoint(error) => error,
+            }),
+        Some(BcValue::Uniform(_)) | None => Ok(BcValidationFootprint::default()),
     }
 }
 
@@ -703,7 +735,7 @@ fn bc_flux_evaluation_work(bc: &BoundaryCondition) -> Result<u128, ValidationErr
             phase: "Chebyshev flux evaluation work",
         }),
         Some(BcValue::Signal(TimeSignal::Constant(_) | TimeSignal::Ramp { .. }))
-        | Some(BcValue::Uniform(_) | BcValue::Profile(_))
+        | Some(BcValue::Uniform(_) | BcValue::Profile(_) | BcValue::Typed(_))
         | None => Ok(4),
     }
 }
@@ -856,6 +888,7 @@ impl Scenario {
         let mut max_ensemble_name_bytes = 0usize;
         let mut max_contact_pair_bytes = 0usize;
         let mut signal_scalars = 0usize;
+        let mut payload_identity_components = 0usize;
         for frame in &self.frames.frames {
             max_frame_name_bytes = max_frame_name_bytes.max(frame.name.len().max(1));
             observe_identity(
@@ -887,9 +920,22 @@ impl Scenario {
                 bc.region.as_str(),
                 "base boundary identity bytes",
             )?;
+            let footprint = bc_validation_footprint(bc, checkpoint)?;
+            checked_count_add(
+                &mut identity_bytes,
+                footprint.identity_bytes,
+                "base typed-payload identity bytes",
+            )?;
+            identity_component_bytes =
+                identity_component_bytes.max(footprint.max_identity_component_bytes);
+            checked_count_add(
+                &mut payload_identity_components,
+                footprint.identity_components,
+                "base typed-payload identity components",
+            )?;
             checked_count_add(
                 &mut signal_scalars,
-                bc_dynamic_scalars(bc)?,
+                footprint.dynamic_scalars,
                 "base boundary signal scalars",
             )?;
             checked_count_add(
@@ -919,9 +965,22 @@ impl Scenario {
                     bc.region.as_str(),
                     "case boundary identity bytes",
                 )?;
+                let footprint = bc_validation_footprint(bc, checkpoint)?;
+                checked_count_add(
+                    &mut identity_bytes,
+                    footprint.identity_bytes,
+                    "case typed-payload identity bytes",
+                )?;
+                identity_component_bytes =
+                    identity_component_bytes.max(footprint.max_identity_component_bytes);
+                checked_count_add(
+                    &mut payload_identity_components,
+                    footprint.identity_components,
+                    "case typed-payload identity components",
+                )?;
                 checked_count_add(
                     &mut signal_scalars,
-                    bc_dynamic_scalars(bc)?,
+                    footprint.dynamic_scalars,
                     "case boundary signal scalars",
                 )?;
                 checkpoint("preflight case boundary conditions")?;
@@ -1248,6 +1307,10 @@ impl Scenario {
             (
                 work_units(signal_scalars, "signal scalar work")?,
                 "signal scalar work",
+            ),
+            (
+                work_units(payload_identity_components, "typed payload identity work")?,
+                "typed payload identity work",
             ),
             (
                 checked_work_product(contacts, 3, "contact classification work")?,
@@ -1849,6 +1912,10 @@ mod validation_internal_tests {
     use crate::bc::{BcKind, BcValue, BoundaryCondition, Compat, Physics};
     use crate::ensemble::{SpectrumModel, StochasticEnsemble};
     use crate::frame::{Frame, FrameId, FrameMotion};
+    use crate::payload::{
+        OrientationParity, Payload, PayloadId, PayloadMeta, QuantityContract, ReferenceSemantics,
+        SampleSource, ScalarPayload,
+    };
     use crate::signal::{ChebProfile, Interp, TimeSignal};
     use fs_cheb::Cheb1;
     use fs_ga::{Quat, Vec3};
@@ -1934,6 +2001,63 @@ mod validation_internal_tests {
                 "preflight case boundary counts"
             ]
         );
+    }
+
+    #[test]
+    fn typed_payload_preflight_polls_scalar_and_identity_accounting() {
+        let dims = Dims([2, 1, -3, 0, -1, 0]);
+        let meta = PayloadMeta::new(
+            QuantityContract::Dimensions(dims),
+            PayloadId::new("basis/electric-potential").expect("payload basis"),
+            FrameId(0),
+            OrientationParity::Even,
+            ReferenceSemantics::Continuous,
+        )
+        .expect("payload metadata");
+        let payload = Payload::Scalar(
+            ScalarPayload::new(meta, SampleSource::fixed(QtyAny::new(12.0, dims)))
+                .expect("scalar payload"),
+        );
+        let mut scenario = Scenario::new("typed-preflight-cancel", 2, Environment::earth_lab());
+        scenario.base_bcs.push(BoundaryCondition {
+            region: "terminal".to_string(),
+            physics: Physics::Electrics,
+            kind: BcKind::ElectricPotential,
+            value: Some(BcValue::Typed(payload)),
+            compatibility: None,
+            frame: 0,
+        });
+
+        for target in [
+            "typed payload scalar accounting",
+            "typed payload identity accounting",
+        ] {
+            let mut injected = false;
+            let result = scenario.validation_plan_with_checkpoint(
+                ValidationBudget::default(),
+                &mut |phase| {
+                    if !injected && phase == target {
+                        injected = true;
+                        Err(ValidationError::Cancelled {
+                            phase,
+                            completed: 0,
+                            planned: 0,
+                        })
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
+            assert!(injected, "payload preflight never reached {target}");
+            assert!(matches!(
+                result,
+                Err(ValidationError::Cancelled {
+                    phase,
+                    completed: 0,
+                    planned: 0,
+                }) if phase == target
+            ));
+        }
     }
 
     #[test]

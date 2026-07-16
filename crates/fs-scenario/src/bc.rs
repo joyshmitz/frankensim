@@ -6,6 +6,7 @@
 //! solve.
 
 use crate::ScenarioError;
+use crate::payload::{Payload, PayloadKind};
 use crate::scenario::Violation;
 use crate::signal::{ChebProfile, TimeSignal};
 use fs_qty::{Dims, QtyAny};
@@ -20,6 +21,12 @@ pub enum Physics {
     Thermal,
     /// Solid elasticity.
     Elasticity,
+    /// Magnetostatic or low-frequency magnetic fields.
+    Magnetics,
+    /// Electrostatic or conduction-current fields.
+    Electrics,
+    /// Multispecies gas exchange and characteristic boundaries.
+    GasExchange,
 }
 
 /// The boundary-condition kind.
@@ -41,6 +48,22 @@ pub enum BcKind {
     WallSlip,
     /// Prescribed traction (Pa).
     Traction,
+    /// Magnetic vector potential (Wb/m), expressed as a vector payload.
+    MagneticVectorPotential,
+    /// Boundary-normal magnetic flux density (T).
+    NormalMagneticFluxDensity,
+    /// Electric potential (V).
+    ElectricPotential,
+    /// Boundary-normal current density (A/m²).
+    NormalCurrentDensity,
+    /// Species amount flux (mol/(m² s)).
+    SpeciesAmountFlux,
+    /// Species mass flux (kg/(m² s)).
+    SpeciesMassFlux,
+    /// Incoming gas characteristic state.
+    GasCharacteristicInlet,
+    /// Outgoing gas characteristic state.
+    GasCharacteristicOutlet,
 }
 
 /// The declared compatibility regime of a flux-carrying condition.
@@ -61,16 +84,21 @@ pub enum BcValue {
     Signal(TimeSignal),
     /// A chebfun spatial profile over the region's parameter.
     Profile(ChebProfile),
+    /// A versioned payload carrying explicit kind, basis, frame, orientation,
+    /// and continuity/reset semantics.
+    Typed(Payload),
 }
 
 impl BcValue {
-    /// The dimensions this value carries.
+    /// Homogeneous dimensions carried by this value, or `None` for a
+    /// heterogeneous characteristic payload.
     #[must_use]
-    pub fn dims(&self) -> Dims {
+    pub fn homogeneous_dims(&self) -> Option<Dims> {
         match self {
-            BcValue::Uniform(q) => q.dims,
-            BcValue::Signal(s) => s.dims(),
-            BcValue::Profile(p) => p.dims,
+            BcValue::Uniform(q) => Some(q.dims),
+            BcValue::Signal(s) => Some(s.dims()),
+            BcValue::Profile(p) => Some(p.dims),
+            BcValue::Typed(payload) => payload.homogeneous_dims(),
         }
     }
 }
@@ -114,6 +142,14 @@ impl fmt::Display for BoundaryDiagnosticContext<'_> {
 pub enum Expectation {
     /// A value with exactly these SI exponents.
     Value(Dims),
+    /// A versioned payload with an exact structural kind and, when present,
+    /// exact homogeneous dimensions.
+    Typed {
+        /// Required payload carrier.
+        kind: PayloadKind,
+        /// Required dimensions; `None` selects a heterogeneous carrier.
+        dims: Option<Dims>,
+    },
     /// No value at all (geometric/no-slip kinds).
     NoValue,
     /// The pair is not part of this physics' vocabulary.
@@ -130,12 +166,18 @@ mod dims {
     pub const HEAT_FLUX: Dims = Dims([0, 1, -3, 0, 0, 0]);
     pub const HTC: Dims = Dims([0, 1, -3, -1, 0, 0]);
     pub const DISPLACEMENT: Dims = Dims([1, 0, 0, 0, 0, 0]);
+    pub const MAGNETIC_VECTOR_POTENTIAL: Dims = Dims([1, 1, -2, 0, -1, 0]);
+    pub const MAGNETIC_FLUX_DENSITY: Dims = Dims([0, 1, -2, 0, -1, 0]);
+    pub const ELECTRIC_POTENTIAL: Dims = Dims([2, 1, -3, 0, -1, 0]);
+    pub const CURRENT_DENSITY: Dims = Dims([-2, 0, 0, 0, 1, 0]);
+    pub const SPECIES_AMOUNT_FLUX: Dims = Dims([-2, 0, -1, 0, 0, 1]);
+    pub const SPECIES_MASS_FLUX: Dims = Dims([-2, 1, -1, 0, 0, 0]);
 }
 
 /// The dimensional contract of every supported (physics, kind) pair.
 #[must_use]
 pub fn expectation(physics: Physics, kind: BcKind) -> Expectation {
-    use Expectation::{NoValue, Unsupported, Value};
+    use Expectation::{NoValue, Typed, Unsupported, Value};
     match (physics, kind) {
         (Physics::IncompressibleFlow, BcKind::Dirichlet) => Value(dims::VELOCITY),
         (Physics::IncompressibleFlow, BcKind::MassFlowInlet) => Value(dims::MASS_FLOW),
@@ -148,6 +190,37 @@ pub fn expectation(physics: Physics, kind: BcKind) -> Expectation {
         (Physics::Thermal, BcKind::Robin) => Value(dims::HTC),
         (Physics::Elasticity, BcKind::Dirichlet) => Value(dims::DISPLACEMENT),
         (Physics::Elasticity, BcKind::Traction) => Value(dims::PRESSURE),
+        (Physics::Magnetics, BcKind::MagneticVectorPotential) => Typed {
+            kind: PayloadKind::Vector,
+            dims: Some(dims::MAGNETIC_VECTOR_POTENTIAL),
+        },
+        (Physics::Magnetics, BcKind::NormalMagneticFluxDensity) => Typed {
+            kind: PayloadKind::Scalar,
+            dims: Some(dims::MAGNETIC_FLUX_DENSITY),
+        },
+        (Physics::Electrics, BcKind::ElectricPotential) => Typed {
+            kind: PayloadKind::Scalar,
+            dims: Some(dims::ELECTRIC_POTENTIAL),
+        },
+        (Physics::Electrics, BcKind::NormalCurrentDensity) => Typed {
+            kind: PayloadKind::Scalar,
+            dims: Some(dims::CURRENT_DENSITY),
+        },
+        (Physics::GasExchange, BcKind::SpeciesAmountFlux) => Typed {
+            kind: PayloadKind::SpeciesBundle,
+            dims: Some(dims::SPECIES_AMOUNT_FLUX),
+        },
+        (Physics::GasExchange, BcKind::SpeciesMassFlux) => Typed {
+            kind: PayloadKind::SpeciesBundle,
+            dims: Some(dims::SPECIES_MASS_FLUX),
+        },
+        (
+            Physics::GasExchange,
+            BcKind::GasCharacteristicInlet | BcKind::GasCharacteristicOutlet,
+        ) => Typed {
+            kind: PayloadKind::CharacteristicState,
+            dims: None,
+        },
         _ => Unsupported,
     }
 }
@@ -196,6 +269,7 @@ impl BoundaryCondition {
                 BcValue::Profile(profile) => {
                     profile.check_with_checkpoint(&ctx, out, checkpoint)?;
                 }
+                BcValue::Typed(_) => {}
             }
         }
         match expectation(self.physics, self.kind) {
@@ -223,13 +297,28 @@ impl BoundaryCondition {
                         expected.0
                     ),
                 }),
+                Some(BcValue::Typed(payload)) => out.push(Violation {
+                    code: if self.kind == BcKind::MassFlowInlet {
+                        "bc-mass-flow-typed"
+                    } else {
+                        "bc-legacy-value-required"
+                    },
+                    what: format!(
+                        "{ctx}: typed {:?} payload cannot stand in for this legacy scalar/signal/profile value",
+                        payload.kind()
+                    ),
+                    fix: format!(
+                        "supply a legacy value with SI exponents {:?}; typed payloads are accepted only by typed expectation rows",
+                        expected.0
+                    ),
+                }),
                 Some(v) => {
-                    if v.dims() != expected {
+                    if v.homogeneous_dims() != Some(expected) {
                         out.push(Violation {
                             code: "bc-dims",
                             what: format!(
                                 "{ctx}: value has dimensions {:?}, contract demands {:?}",
-                                v.dims().0,
+                                v.homogeneous_dims().map(|dims| dims.0),
                                 expected.0
                             ),
                             fix: "express the value in the quantity the contract demands"
@@ -237,6 +326,62 @@ impl BoundaryCondition {
                         });
                     }
                 }
+            },
+            Expectation::Typed {
+                kind,
+                dims: expected_dims,
+            } => match &self.value {
+                None => out.push(Violation {
+                    code: "bc-value-missing",
+                    what: format!("{ctx}: no typed payload supplied"),
+                    fix: format!(
+                        "supply a {kind:?} payload with homogeneous dimensions {expected_dims:?}"
+                    ),
+                }),
+                Some(BcValue::Typed(payload)) => {
+                    if payload.kind() != kind {
+                        out.push(Violation {
+                            code: "bc-payload-kind",
+                            what: format!(
+                                "{ctx}: payload kind {:?} does not match required {kind:?}",
+                                payload.kind()
+                            ),
+                            fix: format!("supply a {kind:?} payload for this boundary kind"),
+                        });
+                    }
+                    if payload.homogeneous_dims() != expected_dims {
+                        out.push(Violation {
+                            code: "bc-payload-dims",
+                            what: format!(
+                                "{ctx}: payload dimensions {:?} do not match required {:?}",
+                                payload.homogeneous_dims().map(|dims| dims.0),
+                                expected_dims.map(|dims| dims.0)
+                            ),
+                            fix: "construct the payload with the exact six-base quantity contract required by the expectation row"
+                                .to_string(),
+                        });
+                    }
+                    if payload.meta().frame().0 != self.frame {
+                        out.push(Violation {
+                            code: "bc-payload-frame",
+                            what: format!(
+                                "{ctx}: payload frame {} does not match boundary frame {}",
+                                payload.meta().frame().0,
+                                self.frame
+                            ),
+                            fix: "construct the payload and boundary condition with the same declared frame id"
+                                .to_string(),
+                        });
+                    }
+                }
+                Some(_) => out.push(Violation {
+                    code: "bc-typed-payload-required",
+                    what: format!(
+                        "{ctx}: this boundary row requires a versioned {kind:?} payload"
+                    ),
+                    fix: "replace the legacy scalar/signal/profile value with BcValue::Typed"
+                        .to_string(),
+                }),
             },
         }
         if self.kind == BcKind::MassFlowInlet && self.compatibility.is_none() {
@@ -387,6 +532,13 @@ impl BoundaryCondition {
                 what: format!(
                     "mass-flow inlet on {:?} uses a spatial profile without a geometry-backed surface integral",
                     self.region
+                ),
+            }),
+            Some(BcValue::Typed(payload)) => Err(ScenarioError::Evaluate {
+                what: format!(
+                    "mass-flow inlet on {:?} uses typed {:?} payload data, not an evaluable declared total in kg/s",
+                    self.region,
+                    payload.kind()
                 ),
             }),
             None => Err(ScenarioError::Evaluate {

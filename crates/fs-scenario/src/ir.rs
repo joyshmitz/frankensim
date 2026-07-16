@@ -1,13 +1,22 @@
 //! Canonical scenario IR: a deterministic s-expression encoding with
 //! LOSSLESS round-trip (floats print in shortest-round-trip form; dims
 //! travel as explicit SI exponent vectors, so no unit-string parsing is
-//! involved). `write_ir` output is byte-stable — the ledger stores it as
-//! a content-addressed artifact; `parse_ir` inverts it exactly.
+//! involved). Versioned typed boundary payloads are embedded as lowercase hex
+//! of their canonical bounded payload envelope; historical scenario v1 refuses
+//! that form rather than inventing a five-base crosswalk. `write_ir` output is
+//! byte-stable — the ledger stores it as a content-addressed artifact. Parsing
+//! inverts it exactly when the caller's explicit resource budget admits the
+//! complete artifact; the convenience [`parse_ir`] retains a conservative
+//! 16 MiB total-input ceiling.
 
 use crate::ScenarioError;
 use crate::bc::{BcKind, BcValue, BoundaryCondition, Compat, Physics};
 use crate::ensemble::{SpectrumModel, StochasticEnsemble};
 use crate::frame::{Frame, FrameId, FrameMotion, FrameTree};
+use crate::payload::{
+    MAX_PAYLOAD_WIRE_BYTES, PAYLOAD_WIRE_VERSION, Payload, PayloadDecodeLimits,
+    canonical_payload_bytes, decode_payload_with_limits,
+};
 use crate::scenario::{
     Combination, ContactLaw, ContactModel, Environment, LoadCase, Scenario, Violation,
 };
@@ -175,6 +184,17 @@ fn w_str(out: &mut String, s: &str) {
     out.push('"');
 }
 
+fn w_payload_hex(out: &mut String, payload: &Payload) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let bytes = canonical_payload_bytes(payload);
+    let _ = write!(out, "(typed :version {PAYLOAD_WIRE_VERSION} \"");
+    for byte in bytes {
+        out.push(char::from(HEX[usize::from(byte >> 4)]));
+        out.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    out.push_str("\")");
+}
+
 fn w_vec3(out: &mut String, v: Vec3) {
     let _ = write!(
         out,
@@ -255,6 +275,9 @@ fn physics_tag(p: Physics) -> &'static str {
         Physics::IncompressibleFlow => "incompressible-flow",
         Physics::Thermal => "thermal",
         Physics::Elasticity => "elasticity",
+        Physics::Magnetics => "magnetics",
+        Physics::Electrics => "electrics",
+        Physics::GasExchange => "gas-exchange",
     }
 }
 
@@ -268,6 +291,14 @@ fn kind_tag(k: BcKind) -> &'static str {
         BcKind::WallNoSlip => "wall-no-slip",
         BcKind::WallSlip => "wall-slip",
         BcKind::Traction => "traction",
+        BcKind::MagneticVectorPotential => "magnetic-vector-potential",
+        BcKind::NormalMagneticFluxDensity => "normal-magnetic-flux-density",
+        BcKind::ElectricPotential => "electric-potential",
+        BcKind::NormalCurrentDensity => "normal-current-density",
+        BcKind::SpeciesAmountFlux => "species-amount-flux",
+        BcKind::SpeciesMassFlux => "species-mass-flux",
+        BcKind::GasCharacteristicInlet => "gas-characteristic-inlet",
+        BcKind::GasCharacteristicOutlet => "gas-characteristic-outlet",
     }
 }
 
@@ -294,6 +325,7 @@ fn w_bc(out: &mut String, bc: &BoundaryCondition) {
             out.push(')');
         }
         Some(BcValue::Profile(p)) => w_profile(out, "profile", p),
+        Some(BcValue::Typed(payload)) => w_payload_hex(out, payload),
     }
     out.push(' ');
     match bc.compatibility {
@@ -520,7 +552,11 @@ pub const DEFAULT_IR_PARSE_BUDGET: IrParseBudget = IrParseBudget {
     max_bytes: 16 * 1024 * 1024,
     max_depth: 128,
     max_nodes: 1_000_000,
-    max_atom_bytes: 1024 * 1024,
+    // A typed payload is one hex string. Keep the per-atom ceiling equal to
+    // the already-bounded total input ceiling so canonical payloads do not hit
+    // an unrelated smaller limit after `write_ir`; callers may still tighten
+    // either dimension explicitly.
+    max_atom_bytes: 16 * 1024 * 1024,
     max_list_items: 100_000,
 };
 
@@ -787,6 +823,64 @@ fn as_str(sx: &Sx) -> Result<String, ScenarioError> {
     Err(err(0, "expected a string"))
 }
 
+fn as_str_ref(sx: &Sx) -> Result<&str, ScenarioError> {
+    if let Sx::Str(value) = sx {
+        Ok(value)
+    } else {
+        Err(err(0, "expected a string"))
+    }
+}
+
+fn lower_hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
+    }
+}
+
+fn decode_payload_hex(text: &str) -> Result<Vec<u8>, ScenarioError> {
+    if text.len() % 2 != 0 {
+        return Err(err(0, "typed payload hex must contain complete byte pairs"));
+    }
+    let byte_count = text.len() / 2;
+    if byte_count > MAX_PAYLOAD_WIRE_BYTES {
+        return Err(err(
+            0,
+            &format!(
+                "typed payload requests {byte_count} bytes; hard V1 limit is {MAX_PAYLOAD_WIRE_BYTES}"
+            ),
+        ));
+    }
+    let mut decoded = Vec::new();
+    decoded
+        .try_reserve_exact(byte_count)
+        .map_err(|allocation_error| {
+            err(
+                0,
+                &format!(
+                    "typed payload allocation for {byte_count} bytes was refused: {allocation_error}"
+                ),
+            )
+        })?;
+    for (index, pair) in text.as_bytes().chunks_exact(2).enumerate() {
+        let high = lower_hex_nibble(pair[0]).ok_or_else(|| {
+            err(
+                index * 2,
+                "typed payload hex must use canonical lowercase digits",
+            )
+        })?;
+        let low = lower_hex_nibble(pair[1]).ok_or_else(|| {
+            err(
+                index * 2 + 1,
+                "typed payload hex must use canonical lowercase digits",
+            )
+        })?;
+        decoded.push((high << 4) | low);
+    }
+    Ok(decoded)
+}
+
 fn as_atom(sx: &Sx) -> Result<&str, ScenarioError> {
     if let Sx::Atom(a) = sx {
         return Ok(a);
@@ -980,6 +1074,9 @@ fn as_physics(a: &str) -> Result<Physics, ScenarioError> {
         "incompressible-flow" => Ok(Physics::IncompressibleFlow),
         "thermal" => Ok(Physics::Thermal),
         "elasticity" => Ok(Physics::Elasticity),
+        "magnetics" => Ok(Physics::Magnetics),
+        "electrics" => Ok(Physics::Electrics),
+        "gas-exchange" => Ok(Physics::GasExchange),
         other => Err(err(0, &format!("unknown physics {other:?}"))),
     }
 }
@@ -1007,8 +1104,44 @@ fn as_kind(a: &str) -> Result<BcKind, ScenarioError> {
         "wall-no-slip" => Ok(BcKind::WallNoSlip),
         "wall-slip" => Ok(BcKind::WallSlip),
         "traction" => Ok(BcKind::Traction),
+        "magnetic-vector-potential" => Ok(BcKind::MagneticVectorPotential),
+        "normal-magnetic-flux-density" => Ok(BcKind::NormalMagneticFluxDensity),
+        "electric-potential" => Ok(BcKind::ElectricPotential),
+        "normal-current-density" => Ok(BcKind::NormalCurrentDensity),
+        "species-amount-flux" => Ok(BcKind::SpeciesAmountFlux),
+        "species-mass-flux" => Ok(BcKind::SpeciesMassFlux),
+        "gas-characteristic-inlet" => Ok(BcKind::GasCharacteristicInlet),
+        "gas-characteristic-outlet" => Ok(BcKind::GasCharacteristicOutlet),
         other => Err(err(0, &format!("unknown bc kind {other:?}"))),
     }
+}
+
+fn as_typed_payload(inner: &[Sx], wire: DimensionWire) -> Result<Payload, ScenarioError> {
+    if wire != DimensionWire::CanonicalSix {
+        return Err(err(0, "typed payloads require scenario IR version 2"));
+    }
+    if inner.len() != 4 || as_atom(&inner[1])? != ":version" {
+        return Err(err(
+            0,
+            "typed payload needs :version, version number, and canonical hex bytes",
+        ));
+    }
+    let version = as_u32(&inner[2])?;
+    if version != u32::from(PAYLOAD_WIRE_VERSION) {
+        return Err(err(
+            0,
+            &format!(
+                "unsupported typed payload version {version}; supported version is {PAYLOAD_WIRE_VERSION}"
+            ),
+        ));
+    }
+    let bytes = decode_payload_hex(as_str_ref(&inner[3])?)?;
+    let limits = PayloadDecodeLimits {
+        max_bytes: bytes.len(),
+        ..PayloadDecodeLimits::DEFAULT
+    };
+    decode_payload_with_limits(&bytes, limits)
+        .map_err(|error| err(0, &format!("typed payload refused: {error}")))
 }
 
 fn as_bc(sx: &Sx, wire: DimensionWire) -> Result<BoundaryCondition, ScenarioError> {
@@ -1034,6 +1167,7 @@ fn as_bc(sx: &Sx, wire: DimensionWire) -> Result<BoundaryCondition, ScenarioErro
                     Some(BcValue::Signal(as_signal(&inner[1], wire)?))
                 }
                 "profile" => Some(BcValue::Profile(as_profile(&inner[1..], wire)?)),
+                "typed" => Some(BcValue::Typed(as_typed_payload(inner, wire)?)),
                 other => return Err(err(0, &format!("unknown bc value {other:?}"))),
             }
         }
@@ -1271,8 +1405,9 @@ fn scenario_wire_header(root_items: &[Sx]) -> Result<(u32, DimensionWire, &[Sx])
 /// Parse scenario IR under [`DEFAULT_IR_PARSE_BUDGET`].
 ///
 /// The decoded value retains its wire version and any dimension crosswalk
-/// receipt. Canonical v2 uses six exponents; explicit v1 and the historical
-/// unversioned form use five and append `mol = 0`.
+/// receipt. Canonical v2 uses six exponents and may embed versioned typed
+/// payloads; explicit v1 and the historical unversioned form use five, append
+/// `mol = 0`, and refuse typed payload forms.
 ///
 /// # Errors
 /// [`ScenarioError::Parse`] for malformed, non-finite, or over-budget input,
@@ -1361,9 +1496,19 @@ pub fn parse_ir_with_budget(
 }
 
 /// Round-trip helper for lints/tests: violations if reparse ≠ original.
+///
+/// The exact already-materialized writer output supplies its own byte and atom
+/// authority for this semantic check; depth, node, and list ceilings remain the
+/// conservative parser defaults. This keeps resource policy distinct from
+/// canonical inversion without granting open-ended syntax-tree growth.
 pub fn check_round_trip(s: &Scenario, out: &mut Vec<Violation>) {
     let text = write_ir(s);
-    match parse_ir(&text) {
+    let budget = IrParseBudget {
+        max_bytes: text.len(),
+        max_atom_bytes: text.len(),
+        ..IrParseBudget::default()
+    };
+    match parse_ir_with_budget(&text, budget) {
         Ok(back) if back.scenario() == s => {}
         Ok(_) => out.push(Violation {
             code: "ir-round-trip-drift",

@@ -11,7 +11,8 @@
 //! deterministic V1 envelope.  The decoder is bounded before every allocation
 //! and reconstructs values through the same validating constructors.  This is
 //! a payload codec only: embedding it in the scenario or FrankenScript IR is a
-//! one-way integration owned by those higher-level modules.
+//! one-way integration owned by those higher-level modules; [`crate::ir`]
+//! embeds these exact bytes in canonical scenario v2 artifacts.
 
 use crate::frame::FrameId;
 use core::fmt;
@@ -1042,6 +1043,26 @@ pub enum PayloadKind {
     PortRef,
 }
 
+/// Scenario-preflight footprint produced by one checkpointed payload walk.
+pub(crate) struct PayloadValidationStats {
+    /// Numeric scalar slots retained by the source representation.
+    pub(crate) dynamic_scalars: usize,
+    /// Aggregate bytes retained by canonical identities.
+    pub(crate) identity_bytes: usize,
+    /// Longest retained identity component.
+    pub(crate) max_identity_component_bytes: usize,
+    /// Number of identity components actually visited by the accounting walk.
+    pub(crate) identity_components: usize,
+}
+
+/// Payload-accounting refusal with caller-owned cancellation propagation.
+pub(crate) enum PayloadValidationStatsError<E> {
+    /// A checked payload count overflowed or exceeded its closed bound.
+    Payload(PayloadError),
+    /// The caller refused continuation at a payload tile boundary.
+    Checkpoint(E),
+}
+
 impl Payload {
     /// Closed structural payload kind.
     #[must_use]
@@ -1087,73 +1108,150 @@ impl Payload {
 
     /// Checked total bytes in every basis/event/component/species/reference id.
     pub fn identity_bytes(&self) -> Result<usize, PayloadError> {
-        payload_identity_stats(self).map(|(total, _)| total)
+        self.identity_stats().map(|(total, _)| total)
     }
 
     /// Longest individual identity component in bytes.
     pub fn max_identity_component_bytes(&self) -> Result<usize, PayloadError> {
-        payload_identity_stats(self).map(|(_, maximum)| maximum)
+        self.identity_stats().map(|(_, maximum)| maximum)
+    }
+
+    /// Checked aggregate and maximum identity byte counts in one traversal.
+    pub fn identity_stats(&self) -> Result<(usize, usize), PayloadError> {
+        payload_identity_stats(self)
+    }
+
+    /// Compute the complete scenario-validation footprint while polling at
+    /// every source sample and retained identity component actually traversed.
+    pub(crate) fn validation_stats_with_checkpoint<E>(
+        &self,
+        checkpoint: &mut impl FnMut(&'static str) -> Result<(), E>,
+    ) -> Result<PayloadValidationStats, PayloadValidationStatsError<E>> {
+        let dynamic_scalars = payload_dynamic_scalar_count_with_checkpoint(self, checkpoint)?;
+        let (identity_bytes, max_identity_component_bytes, identity_components) =
+            payload_identity_stats_with_checkpoint(self, checkpoint)?;
+        Ok(PayloadValidationStats {
+            dynamic_scalars,
+            identity_bytes,
+            max_identity_component_bytes,
+            identity_components,
+        })
     }
 }
 
 fn payload_dynamic_scalar_count(payload: &Payload) -> Result<usize, PayloadError> {
+    let mut checkpoint = |_: &'static str| Ok::<(), core::convert::Infallible>(());
+    match payload_dynamic_scalar_count_with_checkpoint(payload, &mut checkpoint) {
+        Ok(count) => Ok(count),
+        Err(PayloadValidationStatsError::Payload(error)) => Err(error),
+        Err(PayloadValidationStatsError::Checkpoint(never)) => match never {},
+    }
+}
+
+fn payload_dynamic_scalar_count_with_checkpoint<E>(
+    payload: &Payload,
+    checkpoint: &mut impl FnMut(&'static str) -> Result<(), E>,
+) -> Result<usize, PayloadValidationStatsError<E>> {
     let count = match payload {
-        Payload::Scalar(value) => sum_source(&value.source, |_| 1)?,
-        Payload::Vector(value) => sum_source(&value.source, Vec::len)?,
-        Payload::Tensor(value) => sum_source(&value.source, Vec::len)?,
-        Payload::ComplexPhasor(value) => sum_source(&value.source, |_| 2)?,
-        Payload::SpeciesBundle(value) => sum_source(&value.source, Vec::len)?,
-        Payload::CharacteristicState(value) => sum_source(&value.source, Vec::len)?,
+        Payload::Scalar(value) => sum_source_with_checkpoint(&value.source, |_| 1, checkpoint)?,
+        Payload::Vector(value) => sum_source_with_checkpoint(&value.source, Vec::len, checkpoint)?,
+        Payload::Tensor(value) => sum_source_with_checkpoint(&value.source, Vec::len, checkpoint)?,
+        Payload::ComplexPhasor(value) => {
+            sum_source_with_checkpoint(&value.source, |_| 2, checkpoint)?
+        }
+        Payload::SpeciesBundle(value) => {
+            sum_source_with_checkpoint(&value.source, Vec::len, checkpoint)?
+        }
+        Payload::CharacteristicState(value) => {
+            sum_source_with_checkpoint(&value.source, Vec::len, checkpoint)?
+        }
         Payload::FieldTraceRef(_) | Payload::PortRef(_) => 0,
     };
-    enforce_aggregate_limit(count, MAX_PAYLOAD_ITEMS)?;
+    enforce_aggregate_limit(count, MAX_PAYLOAD_ITEMS)
+        .map_err(PayloadValidationStatsError::Payload)?;
     Ok(count)
 }
 
-fn sum_source<T>(
+fn sum_source_with_checkpoint<T, E>(
     source: &SampleSource<T>,
     mut count_value: impl FnMut(&T) -> usize,
-) -> Result<usize, PayloadError> {
+    checkpoint: &mut impl FnMut(&'static str) -> Result<(), E>,
+) -> Result<usize, PayloadValidationStatsError<E>> {
     let mut total = 0_usize;
-    let mut add = |value: &T| -> Result<(), PayloadError> {
-        total = total
-            .checked_add(count_value(value))
-            .ok_or(PayloadError::CountOverflow {
-                context: "payload dynamic scalar count",
-            })?;
-        Ok(())
-    };
     match source {
-        SampleSource::Fixed(value) => add(value)?,
+        SampleSource::Fixed(value) => add_source_count(&mut total, count_value(value), checkpoint)?,
         SampleSource::Table { times, values, .. } => {
             total = total
                 .checked_add(times.len())
-                .ok_or(PayloadError::CountOverflow {
-                    context: "payload dynamic scalar count",
-                })?;
+                .ok_or(PayloadValidationStatsError::Payload(
+                    PayloadError::CountOverflow {
+                        context: "payload dynamic scalar count",
+                    },
+                ))?;
             for value in values {
-                add(value)?;
+                add_source_count(&mut total, count_value(value), checkpoint)?;
             }
         }
         SampleSource::Distribution { parameters, .. } => {
             for value in parameters {
-                add(value)?;
+                add_source_count(&mut total, count_value(value), checkpoint)?;
             }
         }
     }
     Ok(total)
 }
 
+fn add_source_count<E>(
+    total: &mut usize,
+    amount: usize,
+    checkpoint: &mut impl FnMut(&'static str) -> Result<(), E>,
+) -> Result<(), PayloadValidationStatsError<E>> {
+    checkpoint("typed payload scalar accounting")
+        .map_err(PayloadValidationStatsError::Checkpoint)?;
+    *total = (*total)
+        .checked_add(amount)
+        .ok_or(PayloadValidationStatsError::Payload(
+            PayloadError::CountOverflow {
+                context: "payload dynamic scalar count",
+            },
+        ))?;
+    Ok(())
+}
+
 fn payload_identity_stats(payload: &Payload) -> Result<(usize, usize), PayloadError> {
+    let mut checkpoint = |_: &'static str| Ok::<(), core::convert::Infallible>(());
+    match payload_identity_stats_with_checkpoint(payload, &mut checkpoint) {
+        Ok((total, maximum, _)) => Ok((total, maximum)),
+        Err(PayloadValidationStatsError::Payload(error)) => Err(error),
+        Err(PayloadValidationStatsError::Checkpoint(never)) => match never {},
+    }
+}
+
+fn payload_identity_stats_with_checkpoint<E>(
+    payload: &Payload,
+    checkpoint: &mut impl FnMut(&'static str) -> Result<(), E>,
+) -> Result<(usize, usize, usize), PayloadValidationStatsError<E>> {
     let mut total = 0_usize;
     let mut maximum = 0_usize;
-    let mut add = |text: &str| -> Result<(), PayloadError> {
+    let mut components = 0_usize;
+    let mut add = |text: &str| -> Result<(), PayloadValidationStatsError<E>> {
+        checkpoint("typed payload identity accounting")
+            .map_err(PayloadValidationStatsError::Checkpoint)?;
         total = total
             .checked_add(text.len())
-            .ok_or(PayloadError::CountOverflow {
-                context: "payload identity bytes",
-            })?;
+            .ok_or(PayloadValidationStatsError::Payload(
+                PayloadError::CountOverflow {
+                    context: "payload identity bytes",
+                },
+            ))?;
         maximum = maximum.max(text.len());
+        components = components
+            .checked_add(1)
+            .ok_or(PayloadValidationStatsError::Payload(
+                PayloadError::CountOverflow {
+                    context: "payload identity component count",
+                },
+            ))?;
         Ok(())
     };
     add(payload.meta().basis_key.as_str())?;
@@ -1161,27 +1259,35 @@ fn payload_identity_stats(payload: &Payload) -> Result<(usize, usize), PayloadEr
         add(event.as_str())?;
     }
     match payload {
-        Payload::SpeciesBundle(value) => match &value.source {
-            SampleSource::Fixed(sample) => {
-                for entry in sample {
-                    add(entry.species.as_str())?;
-                }
+        Payload::SpeciesBundle(value) => {
+            // The bundle retains a canonical species-axis cache in addition to
+            // the source samples. Admission accounting must charge both owned
+            // copies, just as the aggregate-item bound does.
+            for species in &value.species {
+                add(species.as_str())?;
             }
-            SampleSource::Table { values, .. } => {
-                for sample in values {
+            match &value.source {
+                SampleSource::Fixed(sample) => {
                     for entry in sample {
                         add(entry.species.as_str())?;
                     }
                 }
-            }
-            SampleSource::Distribution { parameters, .. } => {
-                for sample in parameters {
-                    for entry in sample {
-                        add(entry.species.as_str())?;
+                SampleSource::Table { values, .. } => {
+                    for sample in values {
+                        for entry in sample {
+                            add(entry.species.as_str())?;
+                        }
+                    }
+                }
+                SampleSource::Distribution { parameters, .. } => {
+                    for sample in parameters {
+                        for entry in sample {
+                            add(entry.species.as_str())?;
+                        }
                     }
                 }
             }
-        },
+        }
         Payload::CharacteristicState(value) => {
             for component in &value.components {
                 add(component.name.as_str())?;
@@ -1200,7 +1306,7 @@ fn payload_identity_stats(payload: &Payload) -> Result<(usize, usize), PayloadEr
         | Payload::Tensor(_)
         | Payload::ComplexPhasor(_) => {}
     }
-    Ok((total, maximum))
+    Ok((total, maximum, components))
 }
 
 /// Decode-allocation limits.  Counts are aggregate across nested vectors, not

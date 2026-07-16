@@ -53,14 +53,27 @@ flagships.
   retained species-axis cache), and identifier limits before allocation and
   reconstructs only through those constructors. Its conservative default wire
   ceiling is derived from the closed item/id ceilings and remains large enough
-  for every admitted V1 payload.
+  for every admitted V1 payload. Canonical scenario v2 IR embeds those exact
+  bytes as lowercase hex under an independent payload-version tag. Scenario v1
+  refuses the typed form, preserving its immutable five-to-six-base dimension
+  crosswalk instead of guessing how a typed payload should migrate. The
+  default parser's per-atom ceiling equals its already-bounded 16 MiB total
+  input ceiling, so a canonical typed atom cannot trip an unrelated historical
+  1 MiB limit while the complete artifact remains admitted.
 - `bc` — `BoundaryCondition { region, physics, kind, value, compatibility,
-  frame }`; `expectation(physics, kind)` is the dimensional contract
-  table (velocity for flow Dirichlet, kg/s for mass-flow inlets, Pa for
-  pressure/traction, K / W/m² / W/(m²K) for thermal, m for elastic
-  Dirichlet; no-value kinds; everything else structurally Unsupported).
-  Flux-carrying inlets MUST declare `Compat::Incompressible`. A declared
-  total mass flow is uniform or time-varying kg/s; a spatial profile is refused
+  frame }`; `expectation(physics, kind)` is the closed dimensional and carrier
+  contract table. Existing rows retain velocity for flow Dirichlet, kg/s for
+  mass-flow inlets, Pa for pressure/traction, K / W/m² / W/(m²K) for thermal,
+  m for elastic Dirichlet, and no-value wall kinds. Typed-only rows add magnetic
+  vector potential (vector Wb/m), normal magnetic flux density (scalar T),
+  electric potential (scalar V), normal current density (scalar A/m²), species
+  amount/mass flux bundles, and heterogeneous incoming/outgoing gas
+  characteristic states. Every other pair is structurally Unsupported; generic
+  Dirichlet/Neumann aliases do not smuggle these meanings. Payload and boundary
+  frame ids must agree. Flux-carrying total-flow inlets MUST declare
+  `Compat::Incompressible`; typed payloads never stand in for that legacy
+  uniform/time-signal kg/s declaration, and all new typed rows forbid the
+  incompressible compatibility tag. A spatial total-flow profile is refused
   until a geometry-bound layer can retain and certify its surface integral.
 - `ensemble::StochasticEnsemble` — seeded generators: Dryden gust PSD,
   Kanai–Tajimi ground-acceleration PSD (spectral representation with
@@ -193,11 +206,12 @@ flagships.
     ordered indexes rather than repeated prefix or whole-collection scans.
 12. **Semantic preflight before validation**: top-level collection caps precede
     nested traversal; checked plans account for aggregate case BCs, combination
-    terms, dynamic signal scalars, raw flux checkpoints, exact identity bytes,
-    worst-case finding slots, ordered-index comparisons, checkpoint sorting,
-    and flux evaluation work. String comparison work is charged per identity
-    role using its maximum key width: twice the checkpointed heap-sort envelope
-    plus both operands of every subsequent ordered lookup. Combination
+    terms, dynamic signal and typed-payload scalar slots, typed-payload identity
+    bytes, raw flux checkpoints, all other exact identity bytes, worst-case
+    finding slots, ordered-index comparisons, checkpoint sorting, and flux
+    evaluation work. String comparison work is charged per identity role using
+    its maximum key width: twice the checkpointed heap-sort envelope plus both
+    operands of every subsequent ordered lookup. Combination
     references additionally charge the sum of the case/reference maxima for
     their cross-lookup into the case index; contact keys charge both
     canonicalization passes, self-pair comparison, and grouped adjacency.
@@ -237,9 +251,10 @@ noncanonically on the wire; all other finite IEEE-754 bits are retained.
 All parsing is bounded by explicit byte/depth/node/atom/list limits. Spectral
 realization is O(samples × harmonics), admitted against explicit sample/work
 budgets before allocation; collection reservations are fallible. Semantic
-validation preflights all public collection families, dynamic signal payload,
-identity bytes, raw flux-checkpoint allocation shape, and deterministic work
-before executing. Net-flux validation streams base and optional-case slices
+validation preflights all public collection families, dynamic signal and typed
+payload scalar slots, typed-payload and scenario identity bytes, raw flux-
+checkpoint allocation shape, and deterministic work before executing. Net-flux
+validation streams base and optional-case slices
 without materializing a vector for every effective set; its exact raw
 checkpoint capacity is fallibly reserved before append/sort. Its
 checkpoint list sorts in place without hidden scratch allocation, using the
@@ -267,7 +282,8 @@ that comparison envelope. Two single-component combination-term lookups fit
 below the same comparison envelope. The
 explicit `Cx` lane polls
 before preflight, at every top-level and nested record visited while constructing
-the semantic plan, after planning, after fixed phases, at every frame-index row,
+the semantic plan, at every typed-payload source sample and retained identity
+component traversed during that plan, after planning, after fixed phases, at every frame-index row,
 every frame-cycle scratch-initialization, traversal, and finalization step, and
 frame validation row, at
 BC/case/combination term/ensemble/contact boundaries, at every unordered
@@ -385,6 +401,12 @@ None.
   recurrence and proves the private finding buffer is not published.
 - A focused checkpoint-deduplication regression proves per-element polling and
   canonical `+0.0` retention when both signed-zero encodings occur.
+- `tests/typed_bc.rs` locks all eight typed expectation rows, carrier/kind/
+  six-base-dimension/frame refusals, heterogeneous characteristic admission,
+  typed-total-flow refusal, exact compatibility semantics, typed payload
+  scalar/identity/work budget charging in both base and case paths, checkpointed
+  preflight cancellation, and canonical v2 payload-IR round trips (including a
+  typed atom above 1 MiB) with legacy/version/case/trailing-byte refusals.
 
 ## No-claim boundaries
 
@@ -405,9 +427,14 @@ None.
   no `Cx`, so cancellation-correct tube construction is also not claimed by
   this adapter.
 
-- **Physics vocabulary is v0**: IncompressibleFlow / Thermal /
-  Elasticity kinds only. New physics extend `expectation` — adding a
-  (physics, kind) pair is a table row plus tests, not a redesign.
+- **Typed multiphysics rows are declarations, not solver claims**: Magnetics,
+  Electrics, and GasExchange establish exact structural payload kinds,
+  six-base dimensions (or a heterogeneous characteristic contract), frames,
+  and wire semantics only. `fs-qty` does not yet expose sealed electromagnetic
+  semantic kinds, so these rows make no stronger semantic-kind claim. Field
+  equations, orientation transforms, conservation checks, and solver support
+  remain in their owning FLUX crates. New pairs still require an explicit
+  `expectation` table row plus tests; there is no open-ended fallback.
 - **Region names are strings here**: binding to fs-geom `Region` objects
   (existence, patch-measure integration for velocity-inlet flux) happens
   in the consuming solver layer; net-flux checking covers DECLARED
@@ -424,8 +451,14 @@ None.
   admission**: parsing may intentionally return a finite but dimensionally
   invalid `Scenario` so migration/diagnostic tooling can inspect it; call
   `Scenario::validate` before solver admission. Input/node/list limits bound
-  decoder cardinality. Semantic validation has its own explicit work plan and
-  must not reuse syntax limits as an admission receipt. Exact decoded-heap
+  decoder cardinality. The convenience `parse_ir` retains a 16 MiB total-input
+  ceiling; an already-materialized larger canonical artifact needs an explicit
+  `parse_ir_with_budget` authority, while the L6 Machine projection separately
+  refuses scenario artifacts above its own 16 MiB transport bound. The
+  semantic `check_round_trip` helper derives only byte/atom authority from the
+  exact writer output and retains default structural ceilings. Semantic
+  validation has its own explicit work plan and must not reuse syntax limits as
+  an admission receipt. Exact decoded-heap
   accounting plus fallible semantic-finding allocation remain active work under
   `frankensim-sj31i.24`.
 - **Finding capacity is not exact diagnostic-heap admission**: bounded identity

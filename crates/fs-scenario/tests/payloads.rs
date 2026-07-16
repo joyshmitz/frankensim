@@ -582,6 +582,16 @@ fn payload_accessors_are_checked_and_preflight_ready() {
         8,
         "two table coordinates and six vector components are retained"
     );
+    assert_eq!(
+        payloads[4]
+            .identity_stats()
+            .expect("species identities are bounded"),
+        (
+            "basis/world-cartesian".len() + 2 * ("CO2".len() + "H2O".len()),
+            "basis/world-cartesian".len(),
+        ),
+        "the source species ids and retained canonical-axis cache are both owned"
+    );
 
     for payload in payloads {
         assert_eq!(
