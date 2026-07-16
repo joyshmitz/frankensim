@@ -1221,22 +1221,23 @@ fn write_vv_case_binding(binding: &VvCaseBinding) -> Node {
 fn parse_sensor(node: &Node, path: &str) -> Result<SensorSpec, MachineAssuranceCodecError> {
     let args = exact_form(node, "sensor", 11, path)?;
     Ok(SensorSpec {
-        id: parse_id(&args[0], "sensor-id", &format!("{path}[1]"), SensorId::new)
-            .map_err(MachineAssuranceCodecError::from)?,
-        owner: parse_id(
-            &args[1],
-            "subsystem-id",
-            &format!("{path}[2]"),
-            SubsystemId::new,
-        )
+        id: parse_id(&args[0], "sensor-id", &format!("{path}[1]"), |value| {
+            SensorId::new(value)
+        })
+        .map_err(MachineAssuranceCodecError::from)?,
+        owner: parse_id(&args[1], "subsystem-id", &format!("{path}[2]"), |value| {
+            SubsystemId::new(value)
+        })
         .map_err(MachineAssuranceCodecError::from)?,
         target: parse_observation_target(&args[2], &format!("{path}[3]"))?,
         quantity: parse_quantity(&args[3], &format!("{path}[4]"))
             .map_err(MachineAssuranceCodecError::from)?,
         shape: parse_shape(&args[4], &format!("{path}[5]"))
             .map_err(MachineAssuranceCodecError::from)?,
-        clock: parse_id(&args[5], "clock-id", &format!("{path}[6]"), ClockId::new)
-            .map_err(MachineAssuranceCodecError::from)?,
+        clock: parse_id(&args[5], "clock-id", &format!("{path}[6]"), |value| {
+            ClockId::new(value)
+        })
+        .map_err(MachineAssuranceCodecError::from)?,
         frame: parse_frame(&args[6], &format!("{path}[7]"))
             .map_err(MachineAssuranceCodecError::from)?,
         timing: parse_observation_timing(&args[7], &format!("{path}[8]"))?,
@@ -1271,21 +1272,15 @@ fn parse_observation_target(
     }
     match head {
         "terminal" => Ok(ObservationTarget::Terminal(
-            parse_id(
-                &args[0],
-                "terminal-id",
-                &format!("{path}[1]"),
-                TerminalId::new,
-            )
+            parse_id(&args[0], "terminal-id", &format!("{path}[1]"), |value| {
+                TerminalId::new(value)
+            })
             .map_err(MachineAssuranceCodecError::from)?,
         )),
         "state" => Ok(ObservationTarget::State(
-            parse_id(
-                &args[0],
-                "state-slot-id",
-                &format!("{path}[1]"),
-                StateSlotId::new,
-            )
+            parse_id(&args[0], "state-slot-id", &format!("{path}[1]"), |value| {
+                StateSlotId::new(value)
+            })
             .map_err(MachineAssuranceCodecError::from)?,
         )),
         _ => Err(unknown_tag(node, path, "observation target", head)),
@@ -1324,12 +1319,9 @@ fn parse_sensor_exposure(
     let (head, args) = raw_form(node, path)?;
     match head {
         "plant-signal" if args.len() == 1 => Ok(SensorExposure::PlantSignal {
-            output: parse_id(
-                &args[0],
-                "terminal-id",
-                &format!("{path}[1]"),
-                TerminalId::new,
-            )
+            output: parse_id(&args[0], "terminal-id", &format!("{path}[1]"), |value| {
+                TerminalId::new(value)
+            })
             .map_err(MachineAssuranceCodecError::from)?,
         }),
         "experiment-only" if args.is_empty() => Ok(SensorExposure::ExperimentOnly),
@@ -1394,12 +1386,9 @@ fn parse_experiment(node: &Node, path: &str) -> Result<ExperimentSpec, MachineAs
         &format!("{path}[5]"),
     )?;
     Ok(ExperimentSpec {
-        id: parse_id(
-            &args[0],
-            "experiment-id",
-            &format!("{path}[1]"),
-            ExperimentId::new,
-        )
+        id: parse_id(&args[0], "experiment-id", &format!("{path}[1]"), |value| {
+            ExperimentId::new(value)
+        })
         .map_err(MachineAssuranceCodecError::from)?,
         artifact: parse_artifact_ref(&args[1], &format!("{path}[2]"))?,
         context: parse_artifact_ref(&args[2], &format!("{path}[3]"))?,
@@ -1425,8 +1414,10 @@ fn parse_sensor_instrument(
 ) -> Result<SensorInstrumentBinding, MachineAssuranceCodecError> {
     let args = exact_form(node, "instrument", 2, path)?;
     Ok(SensorInstrumentBinding {
-        sensor: parse_id(&args[0], "sensor-id", &format!("{path}[1]"), SensorId::new)
-            .map_err(MachineAssuranceCodecError::from)?,
+        sensor: parse_id(&args[0], "sensor-id", &format!("{path}[1]"), |value| {
+            SensorId::new(value)
+        })
+        .map_err(MachineAssuranceCodecError::from)?,
         instrument: parse_evidence_id(
             &args[1],
             &format!("{path}[2]"),
@@ -1562,25 +1553,21 @@ fn parse_qoi_target(node: &Node, path: &str) -> Result<QoiTarget, MachineAssuran
     }
     match head {
         "sensor" => Ok(QoiTarget::Sensor(
-            parse_id(&args[0], "sensor-id", &format!("{path}[1]"), SensorId::new)
-                .map_err(MachineAssuranceCodecError::from)?,
+            parse_id(&args[0], "sensor-id", &format!("{path}[1]"), |value| {
+                SensorId::new(value)
+            })
+            .map_err(MachineAssuranceCodecError::from)?,
         )),
         "terminal" => Ok(QoiTarget::Terminal(
-            parse_id(
-                &args[0],
-                "terminal-id",
-                &format!("{path}[1]"),
-                TerminalId::new,
-            )
+            parse_id(&args[0], "terminal-id", &format!("{path}[1]"), |value| {
+                TerminalId::new(value)
+            })
             .map_err(MachineAssuranceCodecError::from)?,
         )),
         "state" => Ok(QoiTarget::State(
-            parse_id(
-                &args[0],
-                "state-slot-id",
-                &format!("{path}[1]"),
-                StateSlotId::new,
-            )
+            parse_id(&args[0], "state-slot-id", &format!("{path}[1]"), |value| {
+                StateSlotId::new(value)
+            })
             .map_err(MachineAssuranceCodecError::from)?,
         )),
         _ => Err(unknown_tag(node, path, "QoI target", head)),
@@ -1645,8 +1632,10 @@ fn parse_hazard(node: &Node, path: &str) -> Result<HazardSpec, MachineAssuranceC
         &format!("{path}[7]"),
     )?;
     Ok(HazardSpec {
-        id: parse_id(&args[0], "hazard-id", &format!("{path}[1]"), HazardId::new)
-            .map_err(MachineAssuranceCodecError::from)?,
+        id: parse_id(&args[0], "hazard-id", &format!("{path}[1]"), |value| {
+            HazardId::new(value)
+        })
+        .map_err(MachineAssuranceCodecError::from)?,
         context: parse_artifact_ref(&args[1], &format!("{path}[2]"))?,
         scope: parse_rows(scopes, &args[2], &format!("{path}[3]"), parse_machine_scope)?,
         requirement: parse_assurance_ref!(
@@ -1709,12 +1698,9 @@ fn parse_machine_scope(
     match head {
         "whole-machine" if args.is_empty() => Ok(MachineScope::WholeMachine),
         "subsystem" if args.len() == 1 => Ok(MachineScope::Subsystem(
-            parse_id(
-                &args[0],
-                "subsystem-id",
-                &format!("{path}[1]"),
-                SubsystemId::new,
-            )
+            parse_id(&args[0], "subsystem-id", &format!("{path}[1]"), |value| {
+                SubsystemId::new(value)
+            })
             .map_err(MachineAssuranceCodecError::from)?,
         )),
         "element" if args.len() == 1 => Ok(MachineScope::Element(parse_machine_element_local(
@@ -1722,21 +1708,15 @@ fn parse_machine_scope(
             &format!("{path}[1]"),
         )?)),
         "relation" if args.len() == 1 => Ok(MachineScope::Relation(
-            parse_id(
-                &args[0],
-                "relation-id",
-                &format!("{path}[1]"),
-                RelationId::new,
-            )
+            parse_id(&args[0], "relation-id", &format!("{path}[1]"), |value| {
+                RelationId::new(value)
+            })
             .map_err(MachineAssuranceCodecError::from)?,
         )),
         "interface" if args.len() == 1 => Ok(MachineScope::Interface(
-            parse_id(
-                &args[0],
-                "interface-id",
-                &format!("{path}[1]"),
-                InterfaceId::new,
-            )
+            parse_id(&args[0], "interface-id", &format!("{path}[1]"), |value| {
+                InterfaceId::new(value)
+            })
             .map_err(MachineAssuranceCodecError::from)?,
         )),
         "whole-machine" | "subsystem" | "element" | "relation" | "interface" => Err(unexpected(
@@ -1765,33 +1745,36 @@ fn parse_machine_element_local(
     let id_path = format!("{path}[1]");
     match head {
         "body" => Ok(MachineElementId::Body(
-            parse_id(&args[0], "body-id", &id_path, BodyId::new)
+            parse_id(&args[0], "body-id", &id_path, |value| BodyId::new(value))
                 .map_err(MachineAssuranceCodecError::from)?,
         )),
         "surface-patch" => Ok(MachineElementId::SurfacePatch(
-            parse_id(&args[0], "surface-patch-id", &id_path, SurfacePatchId::new)
-                .map_err(MachineAssuranceCodecError::from)?,
+            parse_id(&args[0], "surface-patch-id", &id_path, |value| {
+                SurfacePatchId::new(value)
+            })
+            .map_err(MachineAssuranceCodecError::from)?,
         )),
         "contact-feature" => Ok(MachineElementId::ContactFeature(
-            parse_id(
-                &args[0],
-                "contact-feature-id",
-                &id_path,
-                ContactFeatureId::new,
-            )
+            parse_id(&args[0], "contact-feature-id", &id_path, |value| {
+                ContactFeatureId::new(value)
+            })
             .map_err(MachineAssuranceCodecError::from)?,
         )),
         "terminal" => Ok(MachineElementId::Terminal(
-            parse_id(&args[0], "terminal-id", &id_path, TerminalId::new)
-                .map_err(MachineAssuranceCodecError::from)?,
+            parse_id(&args[0], "terminal-id", &id_path, |value| {
+                TerminalId::new(value)
+            })
+            .map_err(MachineAssuranceCodecError::from)?,
         )),
         "port" => Ok(MachineElementId::Port(
-            parse_id(&args[0], "port-id", &id_path, PortId::new)
+            parse_id(&args[0], "port-id", &id_path, |value| PortId::new(value))
                 .map_err(MachineAssuranceCodecError::from)?,
         )),
         "state-slot" => Ok(MachineElementId::StateSlot(
-            parse_id(&args[0], "state-slot-id", &id_path, StateSlotId::new)
-                .map_err(MachineAssuranceCodecError::from)?,
+            parse_id(&args[0], "state-slot-id", &id_path, |value| {
+                StateSlotId::new(value)
+            })
+            .map_err(MachineAssuranceCodecError::from)?,
         )),
         _ => Err(unknown_tag(node, path, "machine element", head)),
     }
@@ -1858,14 +1841,16 @@ fn parse_fault(node: &Node, path: &str) -> Result<FaultSpec, MachineAssuranceCod
                 hazard,
                 "hazard-id",
                 &format!("{path}[3][{}]", index + 1),
-                HazardId::new,
+                |value| HazardId::new(value),
             )
             .map_err(MachineAssuranceCodecError::from)?,
         );
     }
     Ok(FaultSpec {
-        id: parse_id(&args[0], "fault-id", &format!("{path}[1]"), FaultId::new)
-            .map_err(MachineAssuranceCodecError::from)?,
+        id: parse_id(&args[0], "fault-id", &format!("{path}[1]"), |value| {
+            FaultId::new(value)
+        })
+        .map_err(MachineAssuranceCodecError::from)?,
         affected: parse_rows(
             affected,
             &args[1],
@@ -1934,12 +1919,14 @@ fn parse_accounting_window(
             &args[0],
             "accounting-window-id",
             &format!("{path}[1]"),
-            AccountingWindowId::new,
+            |value| AccountingWindowId::new(value),
         )
         .map_err(MachineAssuranceCodecError::from)?,
         context: parse_artifact_ref(&args[1], &format!("{path}[2]"))?,
-        clock: parse_id(&args[2], "clock-id", &format!("{path}[3]"), ClockId::new)
-            .map_err(MachineAssuranceCodecError::from)?,
+        clock: parse_id(&args[2], "clock-id", &format!("{path}[3]"), |value| {
+            ClockId::new(value)
+        })
+        .map_err(MachineAssuranceCodecError::from)?,
         balance: parse_balance_kind(&args[3], &format!("{path}[4]"))?,
         quantity: parse_quantity(&args[4], &format!("{path}[5]"))
             .map_err(MachineAssuranceCodecError::from)?,
@@ -2056,34 +2043,27 @@ fn parse_accounting_target(
     }
     match head {
         "relation" => Ok(AccountingTarget::Relation(
-            parse_id(
-                &args[0],
-                "relation-id",
-                &format!("{path}[1]"),
-                RelationId::new,
-            )
+            parse_id(&args[0], "relation-id", &format!("{path}[1]"), |value| {
+                RelationId::new(value)
+            })
             .map_err(MachineAssuranceCodecError::from)?,
         )),
         "port" => Ok(AccountingTarget::Port(
-            parse_id(&args[0], "port-id", &format!("{path}[1]"), PortId::new)
-                .map_err(MachineAssuranceCodecError::from)?,
+            parse_id(&args[0], "port-id", &format!("{path}[1]"), |value| {
+                PortId::new(value)
+            })
+            .map_err(MachineAssuranceCodecError::from)?,
         )),
         "interface" => Ok(AccountingTarget::Interface(
-            parse_id(
-                &args[0],
-                "interface-id",
-                &format!("{path}[1]"),
-                InterfaceId::new,
-            )
+            parse_id(&args[0], "interface-id", &format!("{path}[1]"), |value| {
+                InterfaceId::new(value)
+            })
             .map_err(MachineAssuranceCodecError::from)?,
         )),
         "state" => Ok(AccountingTarget::State(
-            parse_id(
-                &args[0],
-                "state-slot-id",
-                &format!("{path}[1]"),
-                StateSlotId::new,
-            )
+            parse_id(&args[0], "state-slot-id", &format!("{path}[1]"), |value| {
+                StateSlotId::new(value)
+            })
             .map_err(MachineAssuranceCodecError::from)?,
         )),
         _ => Err(unknown_tag(node, path, "accounting target", head)),
@@ -2243,7 +2223,7 @@ fn parse_fidelity(node: &Node, path: &str) -> Result<FidelityPolicy, MachineAssu
                 baseline,
                 "fidelity-rung-id",
                 &format!("{path}[1][{}]", index + 1),
-                FidelityRungId::new,
+                |value| FidelityRungId::new(value),
             )
             .map_err(MachineAssuranceCodecError::from)?,
         );
@@ -2298,15 +2278,12 @@ fn parse_fidelity_rung(
             &args[0],
             "fidelity-rung-id",
             &format!("{path}[1]"),
-            FidelityRungId::new,
+            |value| FidelityRungId::new(value),
         )
         .map_err(MachineAssuranceCodecError::from)?,
-        subsystem: parse_id(
-            &args[1],
-            "subsystem-id",
-            &format!("{path}[2]"),
-            SubsystemId::new,
-        )
+        subsystem: parse_id(&args[1], "subsystem-id", &format!("{path}[2]"), |value| {
+            SubsystemId::new(value)
+        })
         .map_err(MachineAssuranceCodecError::from)?,
         model: parse_assurance_ref!(&args[2], "model-ref", &format!("{path}[3]"), ModelRef)?,
         model_crosswalk: parse_assurance_ref!(
@@ -2352,7 +2329,7 @@ fn parse_escalation(node: &Node, path: &str) -> Result<EscalationSpec, MachineAs
             &args[0],
             "fidelity-rung-id",
             &format!("{path}[1]"),
-            FidelityRungId::new,
+            |value| FidelityRungId::new(value),
         )
         .map_err(MachineAssuranceCodecError::from)?,
         trigger: parse_assurance_ref!(
@@ -2376,7 +2353,7 @@ fn parse_escalation_action(
                 &args[0],
                 "fidelity-rung-id",
                 &format!("{path}[1]"),
-                FidelityRungId::new,
+                |value| FidelityRungId::new(value),
             )
             .map_err(MachineAssuranceCodecError::from)?,
             transfer: parse_assurance_ref!(
