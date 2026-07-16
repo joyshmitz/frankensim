@@ -31,12 +31,18 @@ pub mod kernels;
 pub mod law;
 pub mod mms;
 pub mod plan;
+pub mod system;
 
 pub use atoms::{Atom, AtomId, Transpose};
 pub use expr::{Expr, OperatorDef, Space, TypeError};
 pub use law::{CubicReaction, LawId, PointwiseLaw};
 pub use mms::{MmsReport, mms_poisson_study};
 pub use plan::{LoweredOperator, PlanReport, dwr_indicators};
+pub use system::{
+    AdmittedSystem, AtomSignature, BlockEquation, ConventionRef, CoordinateConvention, FieldDecl,
+    FieldId, FieldQuantity, ParameterRole, SYSTEM_IR_VERSION, ScalarConvention, SpatialSupport,
+    StateOwnership, SystemDef, SystemExpr, SystemId, SystemTypeError,
+};
 
 /// Crate version, re-exported for provenance stamping.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

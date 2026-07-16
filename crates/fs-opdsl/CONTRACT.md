@@ -116,10 +116,31 @@ documented in the bead close); cross-ISA golden hash.
 
 ## No-claim boundaries
 
-- v1 is single-field: multi-field block systems (and therefore real
-  block-preconditioner hints beyond the per-atom symmetry/coupling
-  table) join the solver-stack bead (tfz.10). The report's atoms
-  table IS the single-field hint.
+- The single-field operator surface remains as documented above; the
+  `system` module (bead i94v.1.1.1) adds the multi-field TYPE layer on
+  top of it: `SystemDef`/`AdmittedSystem` declare block fields with
+  explicit form degree, six-base dims or fs-qty semantic quantity kind,
+  basis/frame/orientation references, clock reference, spatial support,
+  and state ownership, and admit cross-field structure (sums, atom
+  applications, power-conjugate port pairings) BEFORE lowering.
+  Ill-typed contractions, mixed frames/clocks, affine-temperature
+  misuse (scale/sum/apply on absolute temperature), non-power-conjugate
+  pairings, dangling references, non-finite scales, and beyond-cap
+  nesting are structured `SystemTypeError` refusals. The admitted
+  system mints a `SystemId` (fs-blake3 canonical identity, domain
+  `org.frankensim.fs-opdsl.system.v1`) hashing canonical structure
+  only: display names are never hash inputs and field/equation tables
+  are canonically re-sorted, so renaming/serialization order preserve
+  identity while any convention change moves it; byte-identical field
+  payloads refuse as ambiguous. NO-CLAIM: the system layer performs no
+  lowering, numerical evaluation, or block-preconditioner hinting (the
+  solver-stack bead tfz.10 consumes it); pullbacks/clock transfers are
+  refusal boundaries, not yet operators; `SemanticType` and `PortKind`
+  canonical bytes ride their stable Debug renderings versioned under
+  `SYSTEM_IR_VERSION` until fs-qty/fs-couple expose canonical
+  encodings; conservation-role bookkeeping stays with fs-couple port
+  schemas. All traversals are explicit-stack iterative (depth cap
+  refuses work, not recursion).
 - Pointwise laws are scalar diagonal (dof-local). Tensor-valued
   constitutive nodes (hyperelastic energy through `fs_ad::Real`
   generics) and state-dependent laws (plasticity history) are the

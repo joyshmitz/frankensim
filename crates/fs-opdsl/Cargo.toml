@@ -16,6 +16,8 @@ fs-la = { path = "../fs-la" }
 fs-material = { path = "../fs-material" }
 fs-math = { path = "../fs-math" }
 fs-qty = { path = "../fs-qty" }
+fs-blake3 = { path = "../fs-blake3" }
+fs-couple = { path = "../fs-couple" }
 fs-rep-mesh = { path = "../fs-rep-mesh" }
 fs-sparse = { path = "../fs-sparse" }
 fs-tilelang = { path = "../fs-tilelang" }
