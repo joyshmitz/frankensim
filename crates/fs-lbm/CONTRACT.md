@@ -31,10 +31,14 @@ scaling plan) and deterministic `fs-math` primitives. Pure, deterministic
   moving-wall stream/step methods apply per-wall-cell halfway-bounce velocity
   corrections and return boundary-relative impulse, torque, work, resolved
   population momentum, and moving-mass transfer terms for an explicitly
-  selected wall subset. `core2::VelocityPressureX2` plus the paired Grid step
-  methods provide a low-Mach regularized velocity inlet at x-min and density
-  outlet at x-max with periodic y closure; density/velocity and non-equilibrium
-  stress are extrapolated from the respective first-interior columns.
+  selected wall subset. `core2::WallTopologyTransition2` and
+  `Grid::transition_wall_topology` atomically replace a fluid/wall cell mask,
+  initialize newly uncovered cells from unique surviving one-ring donors, and
+  receipt the exact active-population mass/momentum removal and insertion.
+  `core2::VelocityPressureX2` plus the paired Grid step methods provide a
+  low-Mach regularized velocity inlet at x-min and density outlet at x-max with
+  periodic y closure; density/velocity and non-equilibrium stress are
+  extrapolated from the respective first-interior columns.
 - `rheology::Rheology`, `rheology::update_tau`, and
   `rheology::channel_flow` — local apparent-viscosity laws and explicit
   τ updates with floor/cap counts for cells outside the representable
@@ -136,6 +140,12 @@ scaling plan) and deterministic `fs-math` primitives. Pure, deterministic
   The force convention is from Wen et al., *Galilean Invariant Fluid-Solid
   Interfacial Dynamics in Lattice Boltzmann Simulations* (2014,
   <https://arxiv.org/abs/1303.0625>).
+- D2Q9 wall-topology replacement is a two-phase publication. Fresh cells use
+  an equal-weight average of unique, surviving pre-transition one-ring fluid
+  populations, relaxation times, and external forces; newly covered
+  populations are cleared. The receipt's fresh-minus-removed mass and momentum
+  equal the active-grid change to roundoff. Donor discovery and all receipt
+  reductions use fixed row-major/direction order.
 - D2Q9 regularized x faces impose the declared inlet velocity and outlet
   density to roundoff while copying the complementary moment and independently
   measured non-equilibrium stress from the first interior column. The measured
@@ -180,6 +190,13 @@ moment origin. Every moving wall adjacent to fluid requires positive finite
 post-collision density, and every outgoing wall-link population must be finite.
 Request fields and post-collision state are admitted before streaming mutates
 the grid.
+D2Q9 wall-topology replacement currently requires a fluid/wall-only domain, a
+full-grid target mask that leaves at least one fluid cell, positive finite
+covered/donor population mass, finite donor populations/momentum/external
+force, and donor relaxation times above 0.5. Every fresh cell needs at least one
+unique surviving one-ring fluid donor. The complete proposal and receipt are
+validated before flags, populations, relaxation times, or forces are
+published.
 D2Q9 regularized x flow requires at least three columns, non-periodic x,
 periodic y, fluid face/first-interior columns, zero gravity/external forcing,
 a positive finite outlet density, and a finite inlet speed squared below 0.03.
@@ -238,9 +255,11 @@ determinism, and pre-step mask refusal for D2Q9 momentum exchange; an
 independently enumerable moving-wall link that pins bounce correction,
 boundary-relative force, torque, work, and moving-mass balance; exact
 zero-velocity compatibility with the stationary API; moving-step bit replay;
-and fail-closed moving-field admission. It also covers regularized x-face
-moment/stress reconstruction, measured-path bit equivalence, and pre-step
-topology/forcing refusal.
+and fail-closed moving-field admission. A separate topology-transition fixture
+pins unique-donor fresh-cell initialization, exact covered/fresh counts,
+mass/momentum delta closure, replay, idempotence, and atomic no-donor/mixed-domain
+refusal. The file also covers regularized x-face moment/stress reconstruction,
+measured-path bit equivalence, and pre-step topology/forcing refusal.
 
 `tests/extensions.rs` covers the current extension scaffolding: power-law and
 Newtonian-limit channel profiles, Carreau plateaus, Rayleigh-Bénard onset
@@ -344,6 +363,14 @@ redistributed.
   Cd/St validation. Boundary-relative exchange improves the force receipt's
   frame behavior; it is not by itself a proof that the full bounce-back solver
   is Galilean invariant.
+- D2Q9 `transition_wall_topology` consumes an already-discretized next wall
+  mask; it does not integrate geometry motion, infer covered cells, or couple a
+  rigid-body state. Equal-weight one-ring population averaging is a
+  deterministic first fresh-cell rung, not a conservative remap or an
+  accuracy-order certificate. The receipt deliberately exposes any net active
+  mass/momentum change; callers must ledger or correct it rather than assuming
+  conservation. Gas/interface transitions and newly covered-body impulse/work
+  coupling remain staged.
 - The separate `lbm-109` release fixture encodes the intended normalization,
   warm-up, detrended FFT, raw/split-window guards, primary-source envelopes,
   and empirical two-width Cd sensitivity treatment. Maskell's closed-tunnel

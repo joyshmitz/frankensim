@@ -106,6 +106,35 @@ pub struct MovingWallMomentumExchange2 {
     pub measured_links: usize,
 }
 
+/// Atomic receipt for a D2Q9 fluid/wall cell-topology transition.
+///
+/// Newly uncovered fluid cells are initialized by an equal-weight average of
+/// unique, surviving one-ring fluid donors from the pre-transition state.
+/// Covered-cell removal and fresh-cell insertion are reported separately so a
+/// caller can ledger the exact active-fluid mass and momentum delta.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[must_use]
+pub struct WallTopologyTransition2 {
+    /// Number of pre-transition fluid cells changed to wall cells.
+    pub covered_fluid_cells: usize,
+    /// Number of pre-transition wall cells initialized as fresh fluid.
+    pub fresh_fluid_cells: usize,
+    /// Total unique donor-cell samples used across all fresh cells.
+    pub fresh_donor_samples: usize,
+    /// Active-fluid population mass removed by newly covered cells.
+    pub removed_mass: f64,
+    /// Active-fluid population mass inserted into fresh cells.
+    pub fresh_mass: f64,
+    /// `fresh_mass - removed_mass` for the complete transition.
+    pub net_mass_change: f64,
+    /// Raw population momentum removed by newly covered cells.
+    pub removed_momentum: [f64; 2],
+    /// Raw population momentum inserted into fresh cells.
+    pub fresh_momentum: [f64; 2],
+    /// `fresh_momentum - removed_momentum` for the complete transition.
+    pub net_momentum_change: [f64; 2],
+}
+
 /// Low-Mach regularized velocity inlet at `x = 0` and isothermal
 /// pressure/density outlet at `x = nx - 1`.
 ///
@@ -156,6 +185,17 @@ impl VelocityPressureX2 {
     pub const fn outlet_density(self) -> f64 {
         self.outlet_density
     }
+}
+
+fn raw_population_moments(populations: &[f64; Q]) -> (f64, [f64; 2]) {
+    let mut mass = 0.0;
+    let mut momentum = [0.0; 2];
+    for (q, &population) in populations.iter().enumerate() {
+        mass += population;
+        momentum[0] += f64::from(E[q].0) * population;
+        momentum[1] += f64::from(E[q].1) * population;
+    }
+    (mass, momentum)
 }
 
 impl Grid {
@@ -218,6 +258,191 @@ impl Grid {
             .filter(|&(_, &fl)| fl != Cell::Gas && fl != Cell::Wall)
             .map(|(c, _)| c.iter().sum::<f64>())
             .sum()
+    }
+
+    /// Atomically replace the D2Q9 wall mask and initialize fresh fluid cells.
+    ///
+    /// This narrow moving-topology rung accepts only a fluid/wall domain.
+    /// Fresh cells average unique surviving one-ring fluid populations,
+    /// relaxation times, and external forces from the pre-transition state;
+    /// freshly covered cells have their populations cleared. Every donor and
+    /// receipt is validated before any grid field is published.
+    pub fn transition_wall_topology(&mut self, next_walls: &[bool]) -> WallTopologyTransition2 {
+        let cell_count = self.nx * self.ny;
+        assert_eq!(
+            next_walls.len(),
+            cell_count,
+            "next wall mask length must match the grid"
+        );
+        assert_eq!(
+            self.flags.len(),
+            cell_count,
+            "cell flags must cover the grid"
+        );
+        assert_eq!(self.f.len(), cell_count, "populations must cover the grid");
+        assert_eq!(
+            self.tau.len(),
+            cell_count,
+            "relaxation times must cover the grid"
+        );
+        assert_eq!(
+            self.fext.len(),
+            cell_count,
+            "external forces must cover the grid"
+        );
+        assert!(
+            self.flags
+                .iter()
+                .all(|flag| matches!(*flag, Cell::Fluid | Cell::Wall)),
+            "wall topology transition currently requires a fluid/wall-only domain"
+        );
+        assert!(
+            next_walls.iter().any(|&is_wall| !is_wall),
+            "wall topology transition must leave at least one fluid cell"
+        );
+
+        let mut next_flags = self.flags.clone();
+        let mut next_populations = self.f.clone();
+        let mut next_tau = self.tau.clone();
+        let mut next_external_force = self.fext.clone();
+        let mut receipt = WallTopologyTransition2::default();
+
+        for y in 0..self.ny {
+            for x in 0..self.nx {
+                let index = self.idx(x, y);
+                match (self.flags[index], next_walls[index]) {
+                    (Cell::Fluid, true) => {
+                        assert!(
+                            self.f[index].into_iter().all(f64::is_finite),
+                            "covered fluid populations must be finite"
+                        );
+                        let (mass, momentum) = raw_population_moments(&self.f[index]);
+                        assert!(
+                            mass.is_finite()
+                                && mass > 0.0
+                                && momentum.into_iter().all(f64::is_finite),
+                            "covered fluid cell must have positive finite mass and finite momentum"
+                        );
+                        receipt.covered_fluid_cells += 1;
+                        receipt.removed_mass += mass;
+                        receipt.removed_momentum[0] += momentum[0];
+                        receipt.removed_momentum[1] += momentum[1];
+                        next_flags[index] = Cell::Wall;
+                        next_populations[index] = [0.0; Q];
+                    }
+                    (Cell::Wall, false) => {
+                        let mut donors = Vec::with_capacity(Q - 1);
+                        for direction in 1..Q {
+                            let Some(donor) = self.source(x, y, direction) else {
+                                continue;
+                            };
+                            if self.flags[donor] == Cell::Fluid
+                                && !next_walls[donor]
+                                && !donors.contains(&donor)
+                            {
+                                donors.push(donor);
+                            }
+                        }
+                        assert!(
+                            !donors.is_empty(),
+                            "fresh fluid cell requires a surviving one-ring fluid donor"
+                        );
+
+                        let mut populations = [0.0; Q];
+                        let mut relaxation_time = 0.0;
+                        let mut external_force = [0.0; 2];
+                        for &donor in &donors {
+                            assert!(
+                                self.f[donor].into_iter().all(f64::is_finite),
+                                "fresh-cell donor populations must be finite"
+                            );
+                            let (donor_mass, donor_momentum) =
+                                raw_population_moments(&self.f[donor]);
+                            assert!(
+                                donor_mass.is_finite()
+                                    && donor_mass > 0.0
+                                    && donor_momentum.into_iter().all(f64::is_finite),
+                                "fresh-cell donor must have positive finite mass and finite momentum"
+                            );
+                            assert!(
+                                self.tau[donor].is_finite() && self.tau[donor] > 0.5,
+                                "fresh-cell donor relaxation time must be finite and greater than 0.5"
+                            );
+                            assert!(
+                                self.fext[donor].into_iter().all(f64::is_finite),
+                                "fresh-cell donor external force must be finite"
+                            );
+                            for q in 0..Q {
+                                populations[q] += self.f[donor][q];
+                            }
+                            relaxation_time += self.tau[donor];
+                            external_force[0] += self.fext[donor][0];
+                            external_force[1] += self.fext[donor][1];
+                        }
+                        let inverse_donor_count = 1.0 / donors.len() as f64;
+                        for population in &mut populations {
+                            *population *= inverse_donor_count;
+                        }
+                        relaxation_time *= inverse_donor_count;
+                        external_force[0] *= inverse_donor_count;
+                        external_force[1] *= inverse_donor_count;
+
+                        let (mass, momentum) = raw_population_moments(&populations);
+                        assert!(
+                            populations.into_iter().all(f64::is_finite)
+                                && mass.is_finite()
+                                && mass > 0.0
+                                && momentum.into_iter().all(f64::is_finite)
+                                && relaxation_time.is_finite()
+                                && relaxation_time > 0.5
+                                && external_force.into_iter().all(f64::is_finite),
+                            "fresh-cell averaged state must remain physically admissible"
+                        );
+                        receipt.fresh_fluid_cells += 1;
+                        receipt.fresh_donor_samples += donors.len();
+                        receipt.fresh_mass += mass;
+                        receipt.fresh_momentum[0] += momentum[0];
+                        receipt.fresh_momentum[1] += momentum[1];
+                        next_flags[index] = Cell::Fluid;
+                        next_populations[index] = populations;
+                        next_tau[index] = relaxation_time;
+                        next_external_force[index] = external_force;
+                    }
+                    (Cell::Fluid, false) | (Cell::Wall, true) => {}
+                    (Cell::Interface | Cell::Gas, _) => unreachable!(
+                        "fluid/wall-only transition was validated before proposal construction"
+                    ),
+                }
+            }
+        }
+
+        receipt.net_mass_change = receipt.fresh_mass - receipt.removed_mass;
+        receipt.net_momentum_change = [
+            receipt.fresh_momentum[0] - receipt.removed_momentum[0],
+            receipt.fresh_momentum[1] - receipt.removed_momentum[1],
+        ];
+        assert!(
+            [
+                receipt.removed_mass,
+                receipt.fresh_mass,
+                receipt.net_mass_change,
+                receipt.removed_momentum[0],
+                receipt.removed_momentum[1],
+                receipt.fresh_momentum[0],
+                receipt.fresh_momentum[1],
+                receipt.net_momentum_change[0],
+                receipt.net_momentum_change[1],
+            ]
+            .into_iter()
+            .all(f64::is_finite),
+            "wall topology transition receipt overflowed"
+        );
+
+        self.flags = next_flags;
+        self.f = next_populations;
+        self.tau = next_tau;
+        self.fext = next_external_force;
+        receipt
     }
 
     /// Collide (per-cell tau, vector Guo forcing) into `post`.

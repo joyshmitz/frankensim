@@ -29,6 +29,22 @@ fn d2q9_nonequilibrium_stress(
     stress
 }
 
+fn d2q9_active_raw_momentum(grid: &Grid) -> [f64; 2] {
+    const EX: [f64; Q] = [0.0, 1.0, 0.0, -1.0, 0.0, 1.0, -1.0, -1.0, 1.0];
+    const EY: [f64; Q] = [0.0, 0.0, 1.0, 0.0, -1.0, 1.0, 1.0, -1.0, -1.0];
+    let mut momentum = [0.0; 2];
+    for (populations, flag) in grid.f.iter().zip(&grid.flags) {
+        if !matches!(*flag, Cell::Fluid | Cell::Interface) {
+            continue;
+        }
+        for q in 0..Q {
+            momentum[0] += EX[q] * populations[q];
+            momentum[1] += EY[q] * populations[q];
+        }
+    }
+    momentum
+}
+
 #[test]
 fn the_equilibrium_recovers_its_moments() {
     let (rho, ux, uy) = (1.0, 0.05, -0.02);
@@ -422,6 +438,120 @@ fn d2q9_moving_wall_refuses_bad_fields_before_advancing() {
     }));
     assert!(density_refusal.is_err());
     assert_eq!(grid.f, original);
+}
+
+#[test]
+fn d2q9_wall_topology_transition_initializes_fresh_cells_and_closes_receipt() {
+    // G0/G3: move one lattice wall cell into an adjacent fluid cell. The
+    // vacated cell has seven unique surviving one-ring donors, all at the same
+    // equilibrium, while the covered cell carries independently known mass
+    // and momentum.
+    let mut first = Grid::uniform(5, 3, 0.8);
+    first.periodic_x = false;
+    first.periodic_y = false;
+    let vacated = first.idx(1, 1);
+    let covered = first.idx(2, 1);
+    first.tau.fill(0.9);
+    first.fext.fill([0.02, -0.01]);
+    first.flags[vacated] = Cell::Wall;
+    first.f[covered] = equilibrium(1.2, 0.04, -0.01);
+    let mut second = first.clone();
+    let before_mass = first.total_mass();
+    let before_momentum = d2q9_active_raw_momentum(&first);
+    let mut next_walls = vec![false; first.nx * first.ny];
+    next_walls[covered] = true;
+
+    let first_receipt = first.transition_wall_topology(&next_walls);
+    let second_receipt = second.transition_wall_topology(&next_walls);
+
+    assert_eq!(first_receipt, second_receipt);
+    assert_eq!(first.flags, second.flags);
+    assert_eq!(first.f, second.f);
+    assert_eq!(first.tau, second.tau);
+    assert_eq!(first.fext, second.fext);
+    assert_eq!(first_receipt.covered_fluid_cells, 1);
+    assert_eq!(first_receipt.fresh_fluid_cells, 1);
+    assert_eq!(first_receipt.fresh_donor_samples, 7);
+    assert_eq!(first.flags[vacated], Cell::Fluid);
+    assert_eq!(first.flags[covered], Cell::Wall);
+    assert!(first.f[covered].iter().all(|population| *population == 0.0));
+    assert!((first_receipt.removed_mass - 1.2).abs() < 1e-12);
+    assert!((first_receipt.fresh_mass - 1.0).abs() < 1e-12);
+    assert!((first_receipt.removed_momentum[0] - 1.2 * 0.04).abs() < 1e-12);
+    assert!((first_receipt.removed_momentum[1] - 1.2 * -0.01).abs() < 1e-12);
+    assert!(first_receipt.fresh_momentum[0].abs() < 1e-15);
+    assert!(first_receipt.fresh_momentum[1].abs() < 1e-15);
+    assert!((first.tau[vacated] - 0.9).abs() < 1e-15);
+    assert!((first.fext[vacated][0] - 0.02).abs() < 1e-15);
+    assert!((first.fext[vacated][1] + 0.01).abs() < 1e-15);
+
+    let after_mass = first.total_mass();
+    let after_momentum = d2q9_active_raw_momentum(&first);
+    assert!((after_mass - before_mass - first_receipt.net_mass_change).abs() < 1e-12);
+    for axis in 0..2 {
+        assert!(
+            (after_momentum[axis]
+                - before_momentum[axis]
+                - first_receipt.net_momentum_change[axis])
+                .abs()
+                < 1e-12
+        );
+        assert!(
+            (first_receipt.fresh_momentum[axis]
+                - first_receipt.removed_momentum[axis]
+                - first_receipt.net_momentum_change[axis])
+                .abs()
+                < 1e-15
+        );
+    }
+
+    // Reapplying the committed mask is a deterministic no-op receipt.
+    let committed = first.clone();
+    let no_op = first.transition_wall_topology(&next_walls);
+    assert_eq!(no_op.covered_fluid_cells, 0);
+    assert_eq!(no_op.fresh_fluid_cells, 0);
+    assert_eq!(no_op.fresh_donor_samples, 0);
+    assert_eq!(no_op.removed_mass.to_bits(), 0.0f64.to_bits());
+    assert_eq!(no_op.fresh_mass.to_bits(), 0.0f64.to_bits());
+    assert_eq!(first.flags, committed.flags);
+    assert_eq!(first.f, committed.f);
+    assert_eq!(first.tau, committed.tau);
+    assert_eq!(first.fext, committed.fext);
+}
+
+#[test]
+fn d2q9_wall_topology_transition_refuses_without_donors_atomically() {
+    let mut grid = Grid::uniform(3, 3, 0.8);
+    grid.flags.fill(Cell::Wall);
+    let original_flags = grid.flags.clone();
+    let original_populations = grid.f.clone();
+    let original_tau = grid.tau.clone();
+    let original_external_force = grid.fext.clone();
+    let mut next_walls = vec![true; grid.nx * grid.ny];
+    let fresh = grid.idx(1, 1);
+    next_walls[fresh] = false;
+
+    let refusal = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = grid.transition_wall_topology(&next_walls);
+    }));
+    assert!(refusal.is_err());
+    assert_eq!(grid.flags, original_flags);
+    assert_eq!(grid.f, original_populations);
+    assert_eq!(grid.tau, original_tau);
+    assert_eq!(grid.fext, original_external_force);
+
+    let mut mixed = Grid::uniform(3, 3, 0.8);
+    mixed.flags[0] = Cell::Gas;
+    let mixed_original = mixed.clone();
+    let no_walls = vec![false; mixed.nx * mixed.ny];
+    let mixed_refusal = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = mixed.transition_wall_topology(&no_walls);
+    }));
+    assert!(mixed_refusal.is_err());
+    assert_eq!(mixed.flags, mixed_original.flags);
+    assert_eq!(mixed.f, mixed_original.f);
+    assert_eq!(mixed.tau, mixed_original.tau);
+    assert_eq!(mixed.fext, mixed_original.fext);
 }
 
 #[test]
