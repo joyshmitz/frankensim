@@ -8,12 +8,16 @@
 //! declarations are admitted before a semantic identity is published. PR-3's
 //! [`semantics`] module admits a separate behavior overlay for state contracts,
 //! conditions, motion, events/resets, tolerances, and dependence declarations
-//! without changing the already-published graph-v1 identity grammar.
+//! without changing the already-published graph-v1 identity grammar. PR-4's
+//! [`assurance`] module then binds sensors and experiment lineage, operational
+//! context and QoIs, hazards/faults, explicit accounting boundaries, and a
+//! terminating fidelity-escalation policy to one exact admitted behavior.
 //!
 //! Runtime coupling, executable material/interface cards, controllers,
-//! hazards, accounting policy, and scenario lowering remain outside this
-//! module's current authority.
+//! safety adjudication, physical validation, balance proofs, adaptive routing,
+//! and scenario lowering remain outside this module's current authority.
 
+pub mod assurance;
 pub mod semantics;
 
 use core::fmt;

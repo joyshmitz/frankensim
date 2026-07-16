@@ -76,7 +76,7 @@ derived-geometry boundary.
   versions, a raw geometry ID that does not name the supplied sealed object,
   and every redundant selector mismatch. The token is structural lineage only:
   it does not bind or inspect an admitted Machine-IR graph.
-- `machine` (Machine-IR E0 PR-1/PR-2/PR-3, [S]) — six nominally distinct durable entity
+- `machine` (Machine-IR E0 PR-1/PR-2/PR-3/PR-4, [S]) — six nominally distinct durable entity
   types (`BodyId`, `SurfacePatchId`, `ContactFeatureId`, `TerminalId`,
   `PortId`, `StateSlotId`) use `fs-blake3::identity::EntityId` under six
   different static schemas. Their bounded, human-auditable hierarchical keys
@@ -154,6 +154,44 @@ derived-geometry boundary.
   `MachineBehaviorIdV1` on refusal. `MachineBehaviorAdmissionDecision` retains
   submitted counts plus the outcome for structured tracing; it is not a replay
   digest of refused input.
+- `machine::assurance::MachineAssuranceDraft::admit_against` is the PR-4
+  operational overlay. It binds the exact graph and behavior identities plus
+  every selected `fs-evidence::vv::SchemaAdmissionReceipt` (schema/ruleset,
+  case hash, receipt hash, Context-of-Use, validation plan, experiment hashes,
+  and exact QoI set). Acceptance criteria remain owned by the admitted V&V
+  case; Machine IR cannot introduce a second, contradictory acceptance row.
+- Sensors bind a durable sensor ID and owner to an exact terminal/state
+  contract. Direct observations share the target clock; modeled resampling
+  names an explicit clock-bridge artifact. A plant sensor exposes a matching
+  owner/output-terminal contract, while an experiment-only sensor says so
+  explicitly. Each experiment maps machine sensors one-to-one to the exact
+  calibrated instrument IDs inside its admitted `ExperimentArtifact`; all
+  case experiments and Context-qualified QoIs are closed.
+- Hazards use durable `HazardId`s, whole-machine/subsystem/element/relation/
+  interface scopes, exact Context-of-Use, requirement, operating-envelope and
+  safety-case references, and nonempty links to the context case's admitted
+  assumptions-ledger rows. Thus predicate/evidence/monitor/violation/owner/
+  review semantics have one authority. Modeled hazards require a covering
+  fault; honestly unmodeled hazards carry an explicit no-claim reference and
+  cannot simultaneously receive a fault edge.
+- Accounting windows name an exact context, clock, interval, signed boundary,
+  extensive balance kind, quantity, contribution targets, role/orientation,
+  audit policy, and unique loss owner for each dissipative contribution. Known
+  energy/enthalpy/momentum/mass/charge/amount/entropy/exergy balances check
+  six-base dimensions; species, element and custom balances bind an external
+  law. A target has one role per window, preventing structural double count.
+- Fidelity policy contains exactly one baseline per graph subsystem, and that
+  baseline uses the graph's exact `ModelRef`. Every bounded rung names its
+  validity domain, cost/error model, graph-model crosswalk, Context-qualified
+  QoIs and falsifiers. Every rung is reachable from its subsystem baseline and
+  has exactly one same-subsystem outgoing trigger: either an explicit
+  state-transfer/model-crosswalk edge or refusal. The resulting graph is
+  acyclic and terminating; no collection order or implicit fallback chooses a
+  model. The fixed-fidelity replay oracle remains identity-semantic.
+- Assurance admission checks public and nested limits before deeper traversal,
+  canonicalizes every outer and nested collection, returns sorted duplicate-
+  free `MachineAssuranceFinding`s, and publishes no `MachineAssuranceIdV1` on
+  any graph, evidence, scope, accounting, or fidelity refusal.
 - `query` (addendum Proposal 8 — declarative query language v0): a query is
   `(QoI, Target, budget_usd, deadline_s)` where `Qoi` is a fixed MENU —
   `MaxOverRegion`, `Integral` (linear), `Exceedance` (probabilistic, needs a
@@ -571,6 +609,15 @@ collection and nested-set permutation invariance; refusal permutation
 invariance; role-separated event/tolerance IDs; and identity movement by base
 graph, guard artifact, and adjacent finite tolerance values.
 
+`tests/machine_assurance.rs` (Machine-IR E0 PR-4, G0/G3): exact admitted-V&V
+case and receipt closure; graph-visible and experiment-only sensors; instrument
+mapping; aggregate Context-qualified QoIs; hazard assumption/fault coverage;
+signed accounting targets, balance dimensions, intervals, and loss ownership;
+exact graph-model baselines; terminating same-subsystem fidelity escalation;
+public and aggregate-V&V resource refusal; rich outer/nested permutation
+invariance; behavior/graph mismatch refusal; and identity movement through an
+admitted V&V receipt, escalation trigger, and fixed replay reference.
+
 ## No-claim boundaries
 
 - No operator catalog or per-operator semantic versions — gp3.6; the
@@ -595,7 +642,20 @@ graph, guard artifact, and adjacent finite tolerance values.
   cross-clock simultaneity/synchronization, or physical/statistical validity.
   Domain execution and one-way lowering into `fs-scenario`, motion, time, and
   UQ artifacts remain PR-5 work. PR-4 sensors/experiments, hazards/faults,
-  ContextOfUse, accounting, and fidelity/escalation policy remain absent.
+  ContextOfUse, accounting, and fidelity/escalation policy are a separate
+  admitted overlay and do not strengthen this PR-3 receipt by implication.
+- Machine-assurance admission is structural. Exact V&V receipt binding does
+  not authenticate a laboratory, calibrate an instrument, or turn synthetic
+  or code-to-code evidence into physical validation. Hazard admission does not
+  establish FMEA/FTA completeness, fault probability, containment,
+  reachability, safety approval, standards conformance, or regulatory
+  certification. Accounting declarations do not prove conservation,
+  passivity, loss correctness, or numerical balance closure. Fidelity
+  declarations do not validate applicability, rank model accuracy, prove
+  crosswalk commutation, guarantee evidence monotonicity, choose an optimal
+  model, or authorize runtime promotion. Opaque references are bound exactly
+  but not executed or authenticated here. Scenario/domain lowering, runtime
+  routing, artifact snapshots, and stable-ID/hash round trips remain PR-5.
 - Router certification is currently a validated declaration on
   `ConverterSpec`, not an authenticated checker/ledger receipt. Admission
   refuses explicitly estimated routes, but full opaque admitted-converter
