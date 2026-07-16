@@ -258,6 +258,26 @@ pub enum GraphError {
         /// The reported rate.
         rate: f64,
     },
+    /// A graph already holds a node under this id.
+    DuplicateNode {
+        /// The colliding id.
+        node: String,
+    },
+    /// An input port already has a driving edge.
+    PortAlreadyDriven {
+        /// The target node.
+        node: String,
+        /// The doubly-driven port.
+        port: String,
+    },
+    /// At execution, an input port has neither a driving edge nor an
+    /// external input.
+    UnfedPort {
+        /// The starving node.
+        node: String,
+        /// The unfed port.
+        port: String,
+    },
     /// A card's identity does not match the registered factory or the
     /// node it built.
     CardMismatch {
@@ -359,6 +379,16 @@ impl fmt::Display for GraphError {
             GraphError::NegativeDissipation { node, rate } => write!(
                 f,
                 "node '{node}': declared-dissipative law reported negative rate {rate}"
+            ),
+            GraphError::DuplicateNode { node } => {
+                write!(f, "graph already holds a node named '{node}'")
+            }
+            GraphError::PortAlreadyDriven { node, port } => {
+                write!(f, "input port {node}.{port} already has a driving edge")
+            }
+            GraphError::UnfedPort { node, port } => write!(
+                f,
+                "input port {node}.{port} has neither a driving edge nor an external input"
             ),
             GraphError::CardMismatch { law, obligation } => {
                 write!(f, "card for law '{law}' mismatches: {obligation}")
@@ -1003,5 +1033,261 @@ impl LawRegistry {
         }
         admit_node(node_id, node.as_ref())?;
         Ok(node)
+    }
+}
+
+/// A typed edge: one node's output port drives another node's input
+/// port. Dimensions must match EXACTLY — the graph never converts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Edge {
+    /// Source node id.
+    pub from: String,
+    /// Source output port name.
+    pub from_port: String,
+    /// Target node id.
+    pub to: String,
+    /// Target input port name.
+    pub to_port: String,
+}
+
+/// One single-pass execution's result.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GraphOutput {
+    /// Every node output, keyed `(node, port)`.
+    pub outputs: BTreeMap<(String, String), f64>,
+    /// The updated aggregate state buffer (same schema as the input).
+    pub next_state: Vec<f64>,
+    /// Total reported dissipation across nodes that reported one.
+    pub total_dissipation: f64,
+}
+
+/// The executable constitutive graph: admitted nodes composed by typed
+/// edges, executed as one deterministic single pass in topological
+/// order. Cycles refuse — implicit coupling belongs to the solver loop
+/// wrapped AROUND the graph, not to a hidden fixed-point inside it.
+#[derive(Default)]
+pub struct ConstitutiveGraph {
+    nodes: BTreeMap<String, Box<dyn LawNode>>,
+    order: Vec<String>,
+    edges: Vec<Edge>,
+}
+
+impl ConstitutiveGraph {
+    /// An empty graph.
+    #[must_use]
+    pub fn new() -> ConstitutiveGraph {
+        ConstitutiveGraph::default()
+    }
+
+    /// Add an admitted node under a graph-unique id.
+    ///
+    /// # Errors
+    /// [`GraphError::DuplicateNode`] on id collision, plus every
+    /// [`admit_node`] refusal.
+    pub fn add_node(&mut self, node_id: &str, node: Box<dyn LawNode>) -> Result<(), GraphError> {
+        if self.nodes.contains_key(node_id) {
+            return Err(GraphError::DuplicateNode {
+                node: node_id.to_string(),
+            });
+        }
+        admit_node(node_id, node.as_ref())?;
+        self.order.push(node_id.to_string());
+        self.nodes.insert(node_id.to_string(), node);
+        Ok(())
+    }
+
+    /// Connect an output port to an input port. Endpoints must exist,
+    /// dimensions must match exactly, and an input port may have at
+    /// most one driver.
+    ///
+    /// # Errors
+    /// [`GraphError::UnknownEndpoint`], [`GraphError::EdgeDimsMismatch`],
+    /// [`GraphError::PortAlreadyDriven`].
+    pub fn connect(&mut self, edge: Edge) -> Result<(), GraphError> {
+        let from_dims = self
+            .nodes
+            .get(&edge.from)
+            .and_then(|n| {
+                n.declaration()
+                    .outputs
+                    .iter()
+                    .find(|p| p.name == edge.from_port)
+            })
+            .map(|p| p.dims)
+            .ok_or_else(|| GraphError::UnknownEndpoint {
+                reference: format!("{}.{}", edge.from, edge.from_port),
+            })?;
+        let to_dims = self
+            .nodes
+            .get(&edge.to)
+            .and_then(|n| {
+                n.declaration()
+                    .inputs
+                    .iter()
+                    .find(|p| p.name == edge.to_port)
+            })
+            .map(|p| p.dims)
+            .ok_or_else(|| GraphError::UnknownEndpoint {
+                reference: format!("{}.{}", edge.to, edge.to_port),
+            })?;
+        if from_dims != to_dims {
+            return Err(GraphError::EdgeDimsMismatch {
+                from: edge.from,
+                from_port: edge.from_port,
+                to: edge.to,
+                to_port: edge.to_port,
+            });
+        }
+        if self
+            .edges
+            .iter()
+            .any(|e| e.to == edge.to && e.to_port == edge.to_port)
+        {
+            return Err(GraphError::PortAlreadyDriven {
+                node: edge.to,
+                port: edge.to_port,
+            });
+        }
+        self.edges.push(edge);
+        Ok(())
+    }
+
+    /// The aggregate state schema over the graph's nodes, in insertion
+    /// order.
+    #[must_use]
+    pub fn state_schema(&self) -> AggregateStateSchema {
+        let pairs: Vec<(&str, &NodeDeclaration)> = self
+            .order
+            .iter()
+            .map(|id| (id.as_str(), self.nodes[id].declaration()))
+            .collect();
+        AggregateStateSchema::assemble(&pairs)
+    }
+
+    /// Topological order over the edge relation; cycles refuse naming a
+    /// participating node. Deterministic: ties break by insertion order.
+    fn topological_order(&self) -> Result<Vec<String>, GraphError> {
+        let mut incoming: BTreeMap<&str, usize> =
+            self.order.iter().map(|id| (id.as_str(), 0usize)).collect();
+        for edge in &self.edges {
+            *incoming
+                .get_mut(edge.to.as_str())
+                .expect("edge endpoints exist") += 1;
+        }
+        let mut ready: Vec<&str> = self
+            .order
+            .iter()
+            .map(String::as_str)
+            .filter(|id| incoming[id] == 0)
+            .collect();
+        let mut sorted = Vec::with_capacity(self.order.len());
+        while let Some(id) = ready.first().copied() {
+            ready.remove(0);
+            sorted.push(id.to_string());
+            for edge in &self.edges {
+                if edge.from == id {
+                    let count = incoming.get_mut(edge.to.as_str()).expect("endpoint");
+                    *count -= 1;
+                    if *count == 0 {
+                        // Keep insertion-order determinism.
+                        let position = self
+                            .order
+                            .iter()
+                            .position(|o| o == &edge.to)
+                            .expect("node exists");
+                        let insert_at = ready
+                            .iter()
+                            .filter(|r| {
+                                self.order.iter().position(|o| o == *r).expect("node") < position
+                            })
+                            .count();
+                        ready.insert(insert_at, edge.to.as_str());
+                    }
+                }
+            }
+        }
+        if sorted.len() != self.order.len() {
+            let stuck = self
+                .order
+                .iter()
+                .find(|id| !sorted.contains(id))
+                .expect("some node is stuck on the cycle");
+            return Err(GraphError::CycleDetected {
+                node: stuck.clone(),
+            });
+        }
+        Ok(sorted)
+    }
+
+    /// Execute one deterministic single pass: every input port must be
+    /// fed by exactly one edge or an external input; declared-dissipative
+    /// nodes are audited for non-negative reported rates; the state
+    /// buffer round-trips through the graph's own schema.
+    ///
+    /// # Errors
+    /// [`GraphError::StateSchemaMismatch`] on a stale buffer;
+    /// [`GraphError::CycleDetected`]; [`GraphError::UnfedPort`];
+    /// [`GraphError::NegativeDissipation`]; plus node evaluation
+    /// refusals.
+    pub fn execute(
+        &self,
+        state_version: u64,
+        state: &[f64],
+        external: &BTreeMap<(String, String), f64>,
+    ) -> Result<GraphOutput, GraphError> {
+        let schema = self.state_schema();
+        let mut node_states = schema.decode(state_version, state)?;
+        let order = self.topological_order()?;
+        let mut produced: BTreeMap<(String, String), f64> = BTreeMap::new();
+        let mut total_dissipation = 0.0;
+        for node_id in &order {
+            let node = &self.nodes[node_id];
+            let declaration = node.declaration();
+            let mut inputs = Vec::with_capacity(declaration.inputs.len());
+            for port in &declaration.inputs {
+                let driven = self
+                    .edges
+                    .iter()
+                    .find(|e| &e.to == node_id && e.to_port == port.name)
+                    .map(|e| produced[&(e.from.clone(), e.from_port.clone())]);
+                let value = driven
+                    .or_else(|| external.get(&(node_id.clone(), port.name.clone())).copied())
+                    .ok_or_else(|| GraphError::UnfedPort {
+                        node: node_id.clone(),
+                        port: port.name.clone(),
+                    })?;
+                inputs.push(value);
+            }
+            let slot = self
+                .order
+                .iter()
+                .position(|o| o == node_id)
+                .expect("node exists");
+            let result = node.evaluate(&node_states[slot], &inputs)?;
+            if let Some(rate) = result.dissipation_rate {
+                if matches!(
+                    declaration.energy,
+                    EnergyBehavior::NonNegativeDissipation | EnergyBehavior::StorageAndDissipation
+                ) && rate < 0.0
+                {
+                    return Err(GraphError::NegativeDissipation {
+                        node: node_id.clone(),
+                        rate,
+                    });
+                }
+                total_dissipation += rate;
+            }
+            for (port, value) in declaration.outputs.iter().zip(&result.outputs) {
+                produced.insert((node_id.clone(), port.name.clone()), *value);
+            }
+            node_states[slot] = result.next_state;
+        }
+        let per_node: Vec<&[f64]> = node_states.iter().map(Vec::as_slice).collect();
+        let (_, next_state) = schema.encode(&per_node)?;
+        Ok(GraphOutput {
+            outputs: produced,
+            next_state,
+            total_dissipation,
+        })
     }
 }

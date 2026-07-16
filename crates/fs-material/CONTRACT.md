@@ -119,3 +119,50 @@ Evidence domain flagging.
 - **Homogenization hooks**: homogenized laws register as ordinary
   `ModelCard`-carrying laws; the unit-cell pipeline itself is the
   lattice bead's scope.
+
+## ConstitutiveGraph and law-node protocol (bead kagp)
+
+Matter is a typed constitutive graph, not a bag of scalars. `graph.rs`
+owns the seven-role decomposition as an executable protocol:
+
+- `NodeRole` — the seven roles; TopologyBalance and BulkStorage are
+  DECLARABLE but execution-refused (fs-feec/fs-rep-mesh own them); bulk
+  transport, reversible coupling, interface, reaction/source, and
+  internal memory are executable.
+- `NodeDeclaration` / `LawNode` — every node declares ports (name +
+  `fs_qty::Dims` + `TimeParity`), state slots + schema version, a
+  calibration `ValidityDomain`, a differentiability class, an
+  `EnergyBehavior` (including the EXPLICIT `Empirical` no-claim), and
+  whether it claims a consistent tangent and/or a free energy ψ.
+  `admit_node` refuses incomplete declarations and probes every claim
+  (tangent shape, ψ presence for storage-claiming nodes), naming node,
+  law, and failed obligation in each typed `GraphError`.
+- Thermodynamic gates (test/audit surface): `check_consistent_tangent`
+  (analytic vs central-FD, per entry); `check_free_energy_consistency`
+  (outputs are the conjugate forces ∂ψ/∂inputs AND the tangent — the
+  Hessian of ψ — is symmetric: Maxwell reciprocity);
+  `check_psd_symmetric_part` (second law for force→flux blocks via
+  Sylvester on the symmetric part); `check_onsager_casimir`
+  (`L[i][j] = εᵢεⱼ L[j][i]` from declared port parities: even–even
+  symmetric, mixed-parity antisymmetric).
+- `LawRegistry` — implementations keyed by the immutable fs-matdb
+  `(LawId, LawVersion)`; instantiation validates the card, checks the
+  built node's identity and state-schema agreement, and admits it.
+  fs-material CONSUMES card metadata, never redefines it.
+- `AggregateStateSchema` — the runtime-state codec when laws coexist:
+  exact round trip; version (layout-sensitive FNV fold), length, and
+  count drift all refuse.
+- `ConstitutiveGraph` — admitted nodes composed by typed edges (dims
+  must match EXACTLY; one driver per input port), executed as ONE
+  deterministic single pass in topological order (insertion-order tie
+  breaks). Cycles refuse: implicit coupling belongs to the solver loop
+  wrapped around the graph, never a hidden fixed point inside it.
+  Execution audits declared-dissipative nodes for non-negative reported
+  rates and totals the dissipation.
+
+GRAPH NO-CLAIMS: single-pass execution is not equilibrium; the
+dissipation audit checks REPORTED rates (a law that misreports is
+caught only by its own gates/fixtures); free-energy and reciprocity
+gates run at caller-chosen points and prove nothing globally;
+objectivity/frame-indifference remains per-law fixture scope, not a
+graph-level proof.

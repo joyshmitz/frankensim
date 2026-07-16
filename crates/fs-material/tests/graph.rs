@@ -528,3 +528,236 @@ fn onsager_casimir_gate_separates_reciprocity_classes() {
          violations refuse\"}}"
     );
 }
+
+/// Increment-3 fixture: a 1-in/1-out pass-through with configurable
+/// dims, scale, and reported dissipation.
+struct PassNode {
+    declaration: NodeDeclaration,
+    factor: f64,
+    dissipation: Option<f64>,
+}
+
+impl PassNode {
+    fn new(law: &str, in_dims: Dims, out_dims: Dims, factor: f64) -> PassNode {
+        PassNode {
+            declaration: NodeDeclaration {
+                law: LawId(law.to_string()),
+                law_version: 1,
+                role: NodeRole::BulkTransport,
+                inputs: vec![Port {
+                    name: "in".to_string(),
+                    dims: in_dims,
+                    parity: TimeParity::Even,
+                }],
+                outputs: vec![Port {
+                    name: "out".to_string(),
+                    dims: out_dims,
+                    parity: TimeParity::Even,
+                }],
+                state_slots: vec!["last".to_string()],
+                state_schema_version: 1,
+                calibration: ValidityDomain::unconstrained(),
+                differentiability: Differentiability::Smooth,
+                energy: EnergyBehavior::NonNegativeDissipation,
+                tangent_claimed: false,
+            },
+            factor,
+            dissipation: None,
+        }
+    }
+}
+
+impl LawNode for PassNode {
+    fn declaration(&self) -> &NodeDeclaration {
+        &self.declaration
+    }
+    fn evaluate(&self, _state: &[f64], inputs: &[f64]) -> Result<NodeOutput, GraphError> {
+        Ok(NodeOutput {
+            outputs: vec![self.factor * inputs[0]],
+            next_state: vec![inputs[0]],
+            dissipation_rate: self.dissipation,
+        })
+    }
+}
+
+#[test]
+fn graph_composes_executes_and_audits() {
+    use fs_material::graph::{ConstitutiveGraph, Edge};
+
+    let mut graph = ConstitutiveGraph::new();
+    graph
+        .add_node("bulk/steel", built_fourier())
+        .expect("fourier admits");
+    graph
+        .add_node(
+            "meter/flux",
+            Box::new(PassNode::new("flux-meter", FLUX_DIMS, FLUX_DIMS, 0.5)),
+        )
+        .expect("meter admits");
+    graph
+        .connect(Edge {
+            from: "bulk/steel".to_string(),
+            from_port: "heat_flux".to_string(),
+            to: "meter/flux".to_string(),
+            to_port: "in".to_string(),
+        })
+        .expect("dims-matched edge connects");
+
+    let schema = graph.state_schema();
+    let (version, state) = schema.encode(&[&[], &[0.0]]).expect("initial state");
+    let mut external = std::collections::BTreeMap::new();
+    external.insert(("bulk/steel".to_string(), "grad_T".to_string()), 5.0);
+    let result = graph.execute(version, &state, &external).expect("executes");
+    assert_eq!(
+        result.outputs[&("bulk/steel".to_string(), "heat_flux".to_string())],
+        -200.0
+    );
+    assert_eq!(
+        result.outputs[&("meter/flux".to_string(), "out".to_string())],
+        -100.0
+    );
+    assert_eq!(result.total_dissipation, 40.0 * 25.0);
+    // The meter's state slot recorded its input; round trip proves it.
+    let decoded = schema
+        .decode(version, &result.next_state)
+        .expect("next state decodes");
+    assert_eq!(decoded[1], vec![-200.0]);
+
+    // Stale schema version refuses before any evaluation.
+    assert!(matches!(
+        graph.execute(version ^ 1, &state, &external),
+        Err(GraphError::StateSchemaMismatch { .. })
+    ));
+    // Unfed port refuses by name.
+    assert!(matches!(
+        graph.execute(version, &state, &std::collections::BTreeMap::new()),
+        Err(GraphError::UnfedPort { node, port })
+            if node == "bulk/steel" && port == "grad_T"
+    ));
+    println!(
+        "{{\"suite\":\"fs-material\",\"case\":\"graph-execute\",\"verdict\":\"pass\",\
+         \"detail\":\"two-node chain executes in topo order, audits dissipation, round-trips \
+         state, refuses stale schema and unfed ports\"}}"
+    );
+}
+
+#[test]
+fn graph_refuses_structural_pathologies() {
+    use fs_material::graph::{ConstitutiveGraph, Edge};
+
+    let mut graph = ConstitutiveGraph::new();
+    graph
+        .add_node("bulk/steel", built_fourier())
+        .expect("first admits");
+    assert!(matches!(
+        graph.add_node("bulk/steel", built_fourier()),
+        Err(GraphError::DuplicateNode { .. })
+    ));
+
+    graph
+        .add_node(
+            "meter/flux",
+            Box::new(PassNode::new("flux-meter", FLUX_DIMS, FLUX_DIMS, 1.0)),
+        )
+        .expect("meter admits");
+    // Dimensionally incompatible edge: flux output into a grad_T-typed
+    // input on a second fourier node.
+    graph
+        .add_node("bulk/second", built_fourier())
+        .expect("second fourier admits");
+    assert!(matches!(
+        graph.connect(Edge {
+            from: "bulk/steel".to_string(),
+            from_port: "heat_flux".to_string(),
+            to: "bulk/second".to_string(),
+            to_port: "grad_T".to_string(),
+        }),
+        Err(GraphError::EdgeDimsMismatch { .. })
+    ));
+    assert!(matches!(
+        graph.connect(Edge {
+            from: "bulk/steel".to_string(),
+            from_port: "no_such_port".to_string(),
+            to: "meter/flux".to_string(),
+            to_port: "in".to_string(),
+        }),
+        Err(GraphError::UnknownEndpoint { .. })
+    ));
+
+    graph
+        .connect(Edge {
+            from: "bulk/steel".to_string(),
+            from_port: "heat_flux".to_string(),
+            to: "meter/flux".to_string(),
+            to_port: "in".to_string(),
+        })
+        .expect("first driver connects");
+    assert!(matches!(
+        graph.connect(Edge {
+            from: "bulk/second".to_string(),
+            from_port: "heat_flux".to_string(),
+            to: "meter/flux".to_string(),
+            to_port: "in".to_string(),
+        }),
+        Err(GraphError::PortAlreadyDriven { .. })
+    ));
+
+    // A two-node cycle refuses at execution planning.
+    let mut cyclic = ConstitutiveGraph::new();
+    cyclic
+        .add_node(
+            "a",
+            Box::new(PassNode::new("pass-a", FLUX_DIMS, FLUX_DIMS, 1.0)),
+        )
+        .expect("a admits");
+    cyclic
+        .add_node(
+            "b",
+            Box::new(PassNode::new("pass-b", FLUX_DIMS, FLUX_DIMS, 1.0)),
+        )
+        .expect("b admits");
+    cyclic
+        .connect(Edge {
+            from: "a".to_string(),
+            from_port: "out".to_string(),
+            to: "b".to_string(),
+            to_port: "in".to_string(),
+        })
+        .expect("a->b");
+    cyclic
+        .connect(Edge {
+            from: "b".to_string(),
+            from_port: "out".to_string(),
+            to: "a".to_string(),
+            to_port: "in".to_string(),
+        })
+        .expect("b->a");
+    let schema = cyclic.state_schema();
+    let (version, state) = schema.encode(&[&[0.0], &[0.0]]).expect("state");
+    assert!(matches!(
+        cyclic.execute(version, &state, &std::collections::BTreeMap::new()),
+        Err(GraphError::CycleDetected { .. })
+    ));
+
+    // A declared-dissipative node reporting a negative rate trips the
+    // audit at execution.
+    let mut lying = ConstitutiveGraph::new();
+    let mut generator = PassNode::new("perpetuum", FLUX_DIMS, FLUX_DIMS, 1.0);
+    generator.dissipation = Some(-1.0);
+    lying
+        .add_node("bulk/perpetuum", Box::new(generator))
+        .expect("admits (the lie is at runtime)");
+    let schema = lying.state_schema();
+    let (version, state) = schema.encode(&[&[0.0]]).expect("state");
+    let mut external = std::collections::BTreeMap::new();
+    external.insert(("bulk/perpetuum".to_string(), "in".to_string()), 1.0);
+    assert!(matches!(
+        lying.execute(version, &state, &external),
+        Err(GraphError::NegativeDissipation { rate, .. }) if rate == -1.0
+    ));
+    println!(
+        "{{\"suite\":\"fs-material\",\"case\":\"graph-refusals\",\"verdict\":\"pass\",\
+         \"detail\":\"duplicate ids, dims-mismatched/unknown/doubly-driven edges, cycles, and \
+         negative dissipation all refuse typed\"}}"
+    );
+}
