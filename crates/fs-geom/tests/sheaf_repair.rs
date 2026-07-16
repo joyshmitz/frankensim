@@ -2002,3 +2002,95 @@ fn sr_018_manufactured_hodge_bases_converge_with_residual_evidence() {
         "manufactured triangle coexact and four-ring remainder bases converge with tolerance-bounded residual, orthogonality, reconstruction, and explicit spectral Unknown evidence",
     );
 }
+
+#[test]
+fn sr_019_numerics_budget_refusal_is_transactional_and_retryable() {
+    let path =
+        AdmittedSheafSkeleton::try_new(3, vec![(0, 1), (1, 2)], Vec::new()).expect("path admits");
+    let repair_budget = numerics_budget(4);
+    let generous = Budget {
+        deadline: None,
+        poll_quota: 100_000,
+        cost_quota: None,
+        priority: 0,
+    };
+    let baseline = with_budget_cx(generous, |cx| {
+        assess_hodge_decomposition_bounded(&path, &[1.0, 1.0], 0.0, repair_budget, cx)
+    });
+    let SheafNumericsOutcome::Indeterminate(baseline_report) = &baseline else {
+        panic!("zero tolerance must retain the completed finite-sweep report: {baseline:?}");
+    };
+    assert_eq!(
+        baseline_report.usage().completed_sweeps,
+        repair_budget.sweeps
+    );
+    let final_poll = baseline_report.usage().ambient_budget.polls_used;
+    assert!(
+        final_poll > 2,
+        "fixture must cross multiple poll boundaries"
+    );
+
+    let (mid_quota, mid_refusal) = (1..final_poll)
+        .find_map(|poll_quota| {
+            let outcome = with_budget_cx(
+                Budget {
+                    poll_quota,
+                    ..generous
+                },
+                |cx| assess_hodge_decomposition_bounded(&path, &[1.0, 1.0], 0.0, repair_budget, cx),
+            );
+            match outcome {
+                SheafNumericsOutcome::Refused(
+                    error @ SheafRepairError::AmbientBudgetRefused {
+                        completed_sweeps, ..
+                    },
+                ) if completed_sweeps > 0 && completed_sweeps < repair_budget.sweeps => {
+                    Some((poll_quota, error))
+                }
+                _ => None,
+            }
+        })
+        .expect("some exact poll quota must stop between complete sweeps");
+    assert!(matches!(
+        mid_refusal,
+        SheafRepairError::AmbientBudgetRefused {
+            refusal: BudgetRefusal::PollsExhausted {
+                phase: "exact-projection",
+                quota,
+            },
+            completed_sweeps,
+            ..
+        } if quota == mid_quota
+            && completed_sweeps > 0
+            && completed_sweeps < repair_budget.sweeps
+    ));
+
+    let publication_quota = final_poll - 1;
+    let publication_refusal = with_budget_cx(
+        Budget {
+            poll_quota: publication_quota,
+            ..generous
+        },
+        |cx| assess_hodge_decomposition_bounded(&path, &[1.0, 1.0], 0.0, repair_budget, cx),
+    );
+    assert!(matches!(
+        publication_refusal,
+        SheafNumericsOutcome::Refused(SheafRepairError::AmbientBudgetRefused {
+            refusal: BudgetRefusal::PollsExhausted {
+                phase: "numerics-publication",
+                quota,
+            },
+            completed_sweeps,
+            ..
+        }) if quota == publication_quota && completed_sweeps == repair_budget.sweeps
+    ));
+
+    let retry = with_budget_cx(generous, |cx| {
+        assess_hodge_decomposition_bounded(&path, &[1.0, 1.0], 0.0, repair_budget, cx)
+    });
+    assert_eq!(retry, baseline);
+    verdict(
+        "sr-019",
+        "mid-schedule and final-publication poll exhaustion mint no candidate authority, while a fresh admitted retry exactly reproduces the completed report",
+    );
+}
