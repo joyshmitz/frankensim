@@ -1829,3 +1829,176 @@ fn sr_017_edgeless_spectrum_has_one_set_valued_zero_cluster() {
         "edgeless and degree-three admitted graphs report exact structural nullity under the versioned Gershgorin scale while all numerical modes remain unresolved",
     );
 }
+
+#[test]
+fn sr_018_manufactured_hodge_bases_converge_with_residual_evidence() {
+    let tolerance = 1e-12;
+
+    let triangle = admitted_triangle();
+    let triangle_mismatch = triangle
+        .d1t(&[2.0])
+        .expect("admitted triangle produces a finite nonzero d1-transpose cochain");
+    let triangle_outcome = with_cx(|cx| {
+        assess_hodge_decomposition_bounded(
+            &triangle,
+            &triangle_mismatch,
+            tolerance,
+            numerics_budget(4),
+            cx,
+        )
+    });
+    let SheafNumericsOutcome::Converged(triangle_decomposition) = triangle_outcome else {
+        panic!("the manufactured triangle coexact basis must converge: {triangle_outcome:?}");
+    };
+    assert!(
+        triangle_decomposition
+            .exact()
+            .iter()
+            .all(|value| *value == 0.0)
+    );
+    assert!(
+        triangle_decomposition
+            .potential()
+            .iter()
+            .all(|value| *value == 0.0)
+    );
+    assert_eq!(triangle_decomposition.coexact(), triangle_mismatch);
+    assert!(
+        triangle_decomposition
+            .harmonic()
+            .iter()
+            .all(|value| *value == 0.0)
+    );
+    let triangle_receipt = triangle_decomposition.receipt();
+    for (name, bounds) in [
+        (
+            "primal normal equation",
+            triangle_receipt.primal_normal_equation.normalized,
+        ),
+        (
+            "dual normal equation",
+            triangle_receipt.dual_normal_equation.normalized,
+        ),
+        (
+            "remainder/exact orthogonality",
+            triangle_receipt.remainder_exact_orthogonality.normalized,
+        ),
+        (
+            "coboundary/triangle orthogonality",
+            triangle_receipt
+                .coboundary_triangle_orthogonality
+                .normalized,
+        ),
+        (
+            "coboundary/remainder orthogonality",
+            triangle_receipt
+                .coboundary_remainder_orthogonality
+                .normalized,
+        ),
+        (
+            "triangle/remainder orthogonality",
+            triangle_receipt.triangle_remainder_orthogonality.normalized,
+        ),
+        ("reconstruction", triangle_receipt.reconstruction.normalized),
+    ] {
+        assert!(
+            bounds.hi() <= tolerance,
+            "triangle {name} must meet the declared tolerance: {bounds:?}"
+        );
+    }
+    let triangle_ratios = triangle_decomposition
+        .clone()
+        .into_partial()
+        .candidate_energy_ratios();
+    assert!(triangle_ratios.0 <= tolerance);
+    assert!((triangle_ratios.1 - 1.0).abs() <= tolerance);
+    assert!(triangle_ratios.2 <= tolerance);
+
+    let ring = AdmittedSheafSkeleton::try_new(4, vec![(0, 1), (0, 3), (1, 2), (2, 3)], Vec::new())
+        .expect("canonical four-ring admits");
+    let ring_mismatch = vec![2.0, -2.0, 2.0, 2.0];
+    let ring_outcome = with_cx(|cx| {
+        assess_hodge_decomposition_bounded(&ring, &ring_mismatch, tolerance, numerics_budget(4), cx)
+    });
+    let SheafNumericsOutcome::Converged(ring_decomposition) = ring_outcome else {
+        panic!("the manufactured four-ring cycle basis must converge: {ring_outcome:?}");
+    };
+    assert!(ring_decomposition.exact().iter().all(|value| *value == 0.0));
+    assert!(
+        ring_decomposition
+            .potential()
+            .iter()
+            .all(|value| *value == 0.0)
+    );
+    assert!(
+        ring_decomposition
+            .coexact()
+            .iter()
+            .all(|value| *value == 0.0)
+    );
+    assert_eq!(ring_decomposition.harmonic(), ring_mismatch);
+    let ring_receipt = ring_decomposition.receipt();
+    for (name, bounds) in [
+        (
+            "primal normal equation",
+            ring_receipt.primal_normal_equation.normalized,
+        ),
+        (
+            "dual normal equation",
+            ring_receipt.dual_normal_equation.normalized,
+        ),
+        (
+            "remainder/exact orthogonality",
+            ring_receipt.remainder_exact_orthogonality.normalized,
+        ),
+        (
+            "coboundary/triangle orthogonality",
+            ring_receipt.coboundary_triangle_orthogonality.normalized,
+        ),
+        (
+            "coboundary/remainder orthogonality",
+            ring_receipt.coboundary_remainder_orthogonality.normalized,
+        ),
+        (
+            "triangle/remainder orthogonality",
+            ring_receipt.triangle_remainder_orthogonality.normalized,
+        ),
+        ("reconstruction", ring_receipt.reconstruction.normalized),
+    ] {
+        assert!(
+            bounds.hi() <= tolerance,
+            "ring {name} must meet the declared tolerance: {bounds:?}"
+        );
+    }
+    assert!(
+        ring_receipt
+            .remainder_exact_witness
+            .iter()
+            .all(|entry| entry.contains(0.0)),
+        "the retained d0-transpose remainder witness must enclose zero"
+    );
+    assert!(
+        ring_receipt
+            .reconstruction_witness
+            .iter()
+            .all(|entry| entry.contains(0.0)),
+        "the retained reconstruction witness must enclose zero"
+    );
+    let SheafSpectrumScope::Unknown(spectrum) = &ring_receipt.spectrum;
+    assert!(spectrum.candidate_clusters.is_empty());
+    assert_eq!(spectrum.requested_range, None);
+    assert_eq!(spectrum.covered_range, None);
+    assert_eq!(spectrum.unresolved_modes, 4);
+    let ring_ratios = ring_decomposition
+        .clone()
+        .into_partial()
+        .candidate_energy_ratios();
+    assert!(ring_ratios.0 <= tolerance);
+    assert!(ring_ratios.1 <= tolerance);
+    assert!((ring_ratios.2 - 1.0).abs() <= tolerance);
+
+    verdict(
+        "sr-018",
+        "manufactured triangle coexact and four-ring remainder bases converge with tolerance-bounded residual, orthogonality, reconstruction, and explicit spectral Unknown evidence",
+    );
+}
