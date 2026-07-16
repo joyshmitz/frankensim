@@ -12,6 +12,7 @@
 pub mod calibrate;
 pub mod elastic;
 pub mod fiber;
+pub mod graph;
 pub mod hyper;
 pub mod plastic;
 pub mod tensor;
