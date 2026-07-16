@@ -87,7 +87,10 @@ impl Manifold {
     /// the checked `u32` domain and the per-variable dimension cap.
     ///
     /// # Errors
-    /// [`OptError::ManifoldInvalid`] naming the violated rule.
+    /// [`OptError::ManifoldInvalid`] naming the violated rule,
+    /// [`OptError::CapExceeded`] when point storage exceeds policy, or
+    /// [`OptError::RuntimeAllocationRefused`] if its owned diagnostic cannot
+    /// reserve exact storage.
     pub fn validate(&self, caps: &AdmissionCaps) -> Result<(), OptError> {
         admission::validate_manifold(self, caps)
     }
@@ -1548,7 +1551,8 @@ impl ProblemBuilder {
     /// retained-byte, and aggregate-work caps BEFORE assigning a `VarId`.
     ///
     /// # Errors
-    /// [`OptError::ManifoldInvalid`] / [`OptError::CapExceeded`].
+    /// [`OptError::ManifoldInvalid`] / [`OptError::CapExceeded`] /
+    /// [`OptError::RuntimeAllocationRefused`].
     pub fn var(&mut self, name: &str, manifold: Manifold, dims: Dims) -> Result<VarId, OptError> {
         admission::validate_name("variable name", name, &self.caps)?;
         admission::validate_manifold(&manifold, &self.caps)?;

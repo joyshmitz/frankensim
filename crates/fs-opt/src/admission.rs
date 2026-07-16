@@ -361,30 +361,44 @@ impl ProblemAdmission {
     }
 }
 
+fn try_manifold_diagnostic(text: &'static str) -> Result<String, OptError> {
+    let mut what = String::new();
+    what.try_reserve_exact(text.len())
+        .map_err(|_| OptError::RuntimeAllocationRefused {
+            path: "admission/manifold-diagnostic",
+            node: None,
+            variable: None,
+            elements: u64::try_from(text.len()).unwrap_or(u64::MAX),
+            element_bytes: 1,
+        })?;
+    what.push_str(text);
+    Ok(what)
+}
+
 /// Validate a manifold descriptor (leaf rule shared with the builder).
 ///
 /// # Errors
-/// [`OptError::ManifoldInvalid`] / [`OptError::CapExceeded`].
+/// [`OptError::ManifoldInvalid`] / [`OptError::CapExceeded`] /
+/// [`OptError::RuntimeAllocationRefused`].
 pub(crate) fn validate_manifold(m: &Manifold, caps: &AdmissionCaps) -> Result<(), OptError> {
     match *m {
         Manifold::Rn { dim } => {
             if dim == 0 {
                 return Err(OptError::ManifoldInvalid {
-                    what: "Rn { dim: 0 } declares a variable with no point storage; a \
-                           zero-dimensional variable cannot bind a point (declare a \
-                           constant instead)"
-                        .to_string(),
+                    what: try_manifold_diagnostic(
+                        "Rn declares a variable with no point storage; a zero-dimensional \
+                         variable cannot bind a point (declare a constant instead)",
+                    )?,
                 });
             }
         }
         Manifold::Sphere { ambient } => {
             if ambient < 2 {
                 return Err(OptError::ManifoldInvalid {
-                    what: format!(
-                        "Sphere {{ ambient: {ambient} }} is degenerate; the unit sphere \
-                         needs ambient >= 2 (its tangent space is ambient - 1 \
-                         dimensional)"
-                    ),
+                    what: try_manifold_diagnostic(
+                        "Sphere ambient is degenerate; the unit sphere needs ambient >= 2 \
+                         (its tangent space is ambient - 1 dimensional)",
+                    )?,
                 });
             }
         }
@@ -392,20 +406,27 @@ pub(crate) fn validate_manifold(m: &Manifold, caps: &AdmissionCaps) -> Result<()
         Manifold::Stiefel { n, p } => {
             if p == 0 || p > n {
                 return Err(OptError::ManifoldInvalid {
-                    what: format!(
-                        "Stiefel {{ n: {n}, p: {p} }} needs 1 <= p <= n (orthonormal \
-                         p-frames in n dimensions)"
-                    ),
+                    what: try_manifold_diagnostic(
+                        "Stiefel dimensions need 1 <= p <= n (orthonormal p-frames in n \
+                         dimensions)",
+                    )?,
                 });
             }
         }
     }
-    let point = m.point_dim().ok_or_else(|| OptError::ManifoldInvalid {
-        what: format!("{m:?} point storage overflows the u32 domain"),
-    })?;
-    m.tangent_dim().ok_or_else(|| OptError::ManifoldInvalid {
-        what: format!("{m:?} tangent dimension is not representable"),
-    })?;
+    let point = match m.point_dim() {
+        Some(point) => point,
+        None => {
+            return Err(OptError::ManifoldInvalid {
+                what: try_manifold_diagnostic("manifold point storage overflows the u32 domain")?,
+            });
+        }
+    };
+    if m.tangent_dim().is_none() {
+        return Err(OptError::ManifoldInvalid {
+            what: try_manifold_diagnostic("manifold tangent dimension is not representable")?,
+        });
+    }
     if point > caps.max_point_dim {
         return Err(OptError::CapExceeded {
             what: "variable point storage",
@@ -797,12 +818,16 @@ pub(crate) fn derive_expr(
             let var = vars
                 .get(v.0 as usize)
                 .ok_or(OptError::UnknownVar { id: v.0 })?;
-            let point = var
-                .manifold
-                .point_dim()
-                .ok_or_else(|| OptError::ManifoldInvalid {
-                    what: format!("{:?} point storage overflows the u32 domain", var.manifold),
-                })?;
+            let point = match var.manifold.point_dim() {
+                Some(point) => point,
+                None => {
+                    return Err(OptError::ManifoldInvalid {
+                        what: try_manifold_diagnostic(
+                            "variable manifold point storage overflows the u32 domain",
+                        )?,
+                    });
+                }
+            };
             (Shape::Vector(point), var.dims)
         }
         Expr::Component { of, index } => {

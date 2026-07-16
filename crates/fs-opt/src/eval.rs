@@ -151,6 +151,41 @@ fn try_owned_diagnostic(
     Ok(output)
 }
 
+fn try_clone_runtime_slice<F>(
+    path: &'static str,
+    values: &[f64],
+    checkpoint: &mut F,
+) -> Result<Vec<f64>, OptError>
+where
+    F: FnMut() -> Result<(), OptError>,
+{
+    let mut output = try_vec_capacity(path, None, None, values.len())?;
+    for (component, value) in values.iter().enumerate() {
+        checkpoint_retraction_work(component, checkpoint)?;
+        output.push(*value);
+    }
+    checkpoint()?;
+    Ok(output)
+}
+
+fn try_filled_runtime_vector<F>(
+    path: &'static str,
+    len: usize,
+    value: f64,
+    checkpoint: &mut F,
+) -> Result<Vec<f64>, OptError>
+where
+    F: FnMut() -> Result<(), OptError>,
+{
+    let mut output = try_vec_capacity(path, None, None, len)?;
+    for component in 0..len {
+        checkpoint_retraction_work(component, checkpoint)?;
+        output.push(value);
+    }
+    checkpoint()?;
+    Ok(output)
+}
+
 fn try_map_vector<F>(
     path: &'static str,
     node: Option<NodeId>,
@@ -1053,7 +1088,8 @@ impl Manifold {
     ///
     /// # Errors
     /// [`OptError::ManifoldInvalid`], [`OptError::RetractionLen`],
-    /// [`OptError::RetractionNonFinite`], or [`OptError::RetractionDomain`].
+    /// [`OptError::RetractionNonFinite`], [`OptError::RetractionDomain`], or
+    /// [`OptError::RuntimeAllocationRefused`].
     #[must_use]
     pub fn retract(&self, x: &[f64], t: &[f64]) -> Result<Vec<f64>, OptError> {
         self.retract_with_checkpoint(x, t, &mut || Ok(()))
@@ -1071,9 +1107,19 @@ impl Manifold {
     {
         checkpoint()?;
         self.validate(&AdmissionCaps::default())?;
-        let point_dim = self.point_dim().ok_or_else(|| OptError::ManifoldInvalid {
-            what: format!("{self:?} has no representable point dimension"),
-        })?;
+        let point_dim = match self.point_dim() {
+            Some(point_dim) => point_dim,
+            None => {
+                return Err(OptError::ManifoldInvalid {
+                    what: try_owned_diagnostic(
+                        "retract/manifold-diagnostic",
+                        None,
+                        None,
+                        "retraction manifold has no representable point dimension",
+                    )?,
+                });
+            }
+        };
         if x.len() as u64 != u64::from(point_dim) {
             return Err(OptError::RetractionLen {
                 input: "retraction point",
@@ -1083,9 +1129,19 @@ impl Manifold {
         }
         Self::validate_retraction_finite_with_checkpoint("retraction point", x, checkpoint)?;
         self.validate_point_domain_with_checkpoint(x, checkpoint)?;
-        let param_dim = self.param_dim().ok_or_else(|| OptError::ManifoldInvalid {
-            what: format!("{self:?} has no representable retraction parameter dimension"),
-        })?;
+        let param_dim = match self.param_dim() {
+            Some(param_dim) => param_dim,
+            None => {
+                return Err(OptError::ManifoldInvalid {
+                    what: try_owned_diagnostic(
+                        "retract/manifold-diagnostic",
+                        None,
+                        None,
+                        "retraction manifold has no representable parameter dimension",
+                    )?,
+                });
+            }
+        };
         if t.len() as u64 != u64::from(param_dim) {
             return Err(OptError::RetractionLen {
                 input: "retraction step",
@@ -1096,7 +1152,7 @@ impl Manifold {
         Self::validate_retraction_finite_with_checkpoint("retraction step", t, checkpoint)?;
         match *self {
             Manifold::Rn { .. } => {
-                let mut output = Vec::with_capacity(x.len());
+                let mut output = try_vec_capacity("retract/rn-output", None, None, x.len())?;
                 for (component, (a, b)) in x.iter().zip(t).enumerate() {
                     checkpoint_retraction_work(component, checkpoint)?;
                     output.push(a + b);
@@ -1104,7 +1160,7 @@ impl Manifold {
                 self.validate_retraction_output_with_checkpoint(output, checkpoint)
             }
             Manifold::Sphere { .. } => {
-                let mut y = Vec::with_capacity(x.len());
+                let mut y = try_vec_capacity("retract/sphere-candidate", None, None, x.len())?;
                 for (component, (a, b)) in x.iter().zip(t).enumerate() {
                     checkpoint_retraction_work(component, checkpoint)?;
                     y.push(a + b);
@@ -1128,7 +1184,7 @@ impl Manifold {
                     ));
                 }
                 let norm = norm_sq.sqrt();
-                let mut output = Vec::with_capacity(y.len());
+                let mut output = try_vec_capacity("retract/sphere-output", None, None, y.len())?;
                 for (component, value) in y.iter().enumerate() {
                     checkpoint_retraction_work(component, checkpoint)?;
                     output.push(value / norm);
@@ -1183,14 +1239,16 @@ impl Manifold {
                     checkpoint_retraction_work(component, checkpoint)?;
                     *v /= norm;
                 }
-                self.validate_retraction_output_with_checkpoint(out.to_vec(), checkpoint)
+                let mut output = try_vec_capacity("retract/so3-output", None, None, out.len())?;
+                output.extend_from_slice(&out);
+                self.validate_retraction_output_with_checkpoint(output, checkpoint)
             }
             Manifold::Stiefel { n, p } => {
                 let (n, p) = (n as usize, p as usize);
-                let mut cols = Vec::with_capacity(p);
+                let mut cols = try_vec_capacity("retract/stiefel-columns", None, None, p)?;
                 for column in 0..p {
                     checkpoint()?;
-                    let mut candidate = Vec::with_capacity(n);
+                    let mut candidate = try_vec_capacity("retract/stiefel-column", None, None, n)?;
                     for row in 0..n {
                         checkpoint_retraction_work(row, checkpoint)?;
                         candidate.push(x[column * n + row] + t[column * n + row]);
@@ -1253,7 +1311,7 @@ impl Manifold {
                         *v /= norm;
                     }
                 }
-                let mut output = Vec::with_capacity(x.len());
+                let mut output = try_vec_capacity("retract/stiefel-output", None, None, x.len())?;
                 for column in &cols {
                     for (row, value) in column.iter().enumerate() {
                         checkpoint_retraction_work(row, checkpoint)?;
@@ -1507,7 +1565,8 @@ pub struct DescentReport {
 /// [`OptError::Cancelled`] / [`OptError::ManifoldInvalid`] /
 /// [`OptError::BindingLen`] / [`OptError::NonFinite`] /
 /// [`OptError::ObjectivePanicked`] / [`OptError::BadParam`] /
-/// [`OptError::DescentCapExceeded`] / [`OptError::DescentPlanOverflow`].
+/// [`OptError::DescentCapExceeded`] / [`OptError::DescentPlanOverflow`] /
+/// [`OptError::RuntimeAllocationRefused`].
 pub fn descend_fn(
     manifold: Manifold,
     f: &dyn Fn(&[f64]) -> f64,
@@ -1550,18 +1609,17 @@ fn descent_checkpoint(cx: &Cx<'_>) -> Result<(), OptError> {
 fn validate_initial_probe_retractions(
     manifold: Manifold,
     x0: &[f64],
-    param_dim: usize,
+    probe: &mut [f64],
     fd_h: f64,
     cx: &Cx<'_>,
 ) -> Result<(), OptError> {
-    let mut probe = vec![0.0; param_dim];
-    for parameter in 0..param_dim {
+    for parameter in 0..probe.len() {
         descent_checkpoint(cx)?;
         probe[parameter] = fd_h;
-        drop(manifold.retract_with_cx(x0, &probe, cx)?);
+        drop(manifold.retract_with_cx(x0, probe, cx)?);
         descent_checkpoint(cx)?;
         probe[parameter] = -fd_h;
-        drop(manifold.retract_with_cx(x0, &probe, cx)?);
+        drop(manifold.retract_with_cx(x0, probe, cx)?);
         probe[parameter] = 0.0;
     }
     descent_checkpoint(cx)
@@ -1576,11 +1634,19 @@ fn descend_fn_checked(
     cx: &Cx<'_>,
 ) -> Result<DescentReport, OptError> {
     manifold.validate(&AdmissionCaps::default())?;
-    let point_dim = manifold
-        .point_dim()
-        .ok_or_else(|| OptError::ManifoldInvalid {
-            what: format!("{manifold:?} has no representable point dimension"),
-        })?;
+    let point_dim = match manifold.point_dim() {
+        Some(point_dim) => point_dim,
+        None => {
+            return Err(OptError::ManifoldInvalid {
+                what: try_owned_diagnostic(
+                    "descent/manifold-diagnostic",
+                    None,
+                    None,
+                    "descent manifold has no representable point dimension",
+                )?,
+            });
+        }
+    };
     if x0.len() as u64 != u64::from(point_dim) {
         return Err(OptError::BindingLen {
             var: 0,
@@ -1609,14 +1675,32 @@ fn descend_fn_checked(
             value: opts.closure_threshold,
         });
     }
-    let param_dim = manifold
-        .param_dim()
-        .ok_or_else(|| OptError::ManifoldInvalid {
-            what: format!("{manifold:?} has no representable descent parameter dimension"),
-        })?;
-    let pd = usize::try_from(param_dim).map_err(|_| OptError::ManifoldInvalid {
-        what: format!("{manifold:?} descent parameter dimension does not fit usize"),
-    })?;
+    let param_dim = match manifold.param_dim() {
+        Some(param_dim) => param_dim,
+        None => {
+            return Err(OptError::ManifoldInvalid {
+                what: try_owned_diagnostic(
+                    "descent/manifold-diagnostic",
+                    None,
+                    None,
+                    "descent manifold has no representable parameter dimension",
+                )?,
+            });
+        }
+    };
+    let pd = match usize::try_from(param_dim) {
+        Ok(pd) => pd,
+        Err(_) => {
+            return Err(OptError::ManifoldInvalid {
+                what: try_owned_diagnostic(
+                    "descent/manifold-diagnostic",
+                    None,
+                    None,
+                    "descent parameter dimension does not fit target usize",
+                )?,
+            });
+        }
+    };
     let atomic_step_evals = u64::from(param_dim).saturating_mul(2).saturating_add(1);
     let reachable_steps = maximum_landed_steps(opts.steps, param_dim, eval_limit);
     let envelope = descent_envelope(manifold, point_dim, param_dim, opts.steps, eval_limit)?;
@@ -1655,11 +1739,26 @@ fn descend_fn_checked(
     }
     descent_checkpoint(cx)?;
     manifold.validate_point_domain_with_checkpoint(x0, &mut || descent_checkpoint(cx))?;
+    let mut tangent = if reachable_steps > 0 {
+        try_filled_runtime_vector("descent/tangent", pd, 0.0, &mut || descent_checkpoint(cx))?
+    } else {
+        Vec::new()
+    };
+    let mut gradient = if reachable_steps > 0 {
+        try_filled_runtime_vector("descent/gradient", pd, 0.0, &mut || descent_checkpoint(cx))?
+    } else {
+        Vec::new()
+    };
+    let mut step = if reachable_steps > 0 {
+        try_vec_capacity("descent/step", None, None, pd)?
+    } else {
+        Vec::new()
+    };
     if reachable_steps > 0 {
-        validate_initial_probe_retractions(manifold, x0, pd, opts.fd_h, cx)?;
+        validate_initial_probe_retractions(manifold, x0, &mut tangent, opts.fd_h, cx)?;
     }
     descent_checkpoint(cx)?;
-    let mut x = x0.to_vec();
+    let mut x = try_clone_runtime_slice("descent/point", x0, &mut || descent_checkpoint(cx))?;
     let mut evals = 0u64;
     let mut stop = DescentStop::StepLimit;
     let f0 = f(&x, ObjectiveEvalSite::Initial)?;
@@ -1680,13 +1779,11 @@ fn descend_fn_checked(
             stop = DescentStop::EvaluationLimit;
             break 'outer;
         }
-        let mut g = vec![0.0; pd];
-        for (i, gi) in g.iter_mut().enumerate() {
+        for (i, gi) in gradient.iter_mut().enumerate() {
             descent_checkpoint(cx)?;
-            let mut t = vec![0.0; pd];
-            t[i] = opts.fd_h;
+            tangent[i] = opts.fd_h;
             descent_checkpoint(cx)?;
-            let xp = manifold.retract_with_cx(&x, &t, cx)?;
+            let xp = manifold.retract_with_cx(&x, &tangent, cx)?;
             descent_checkpoint(cx)?;
             let fp = f(
                 &xp,
@@ -1698,8 +1795,8 @@ fn descend_fn_checked(
             )?;
             evals += 1;
             descent_checkpoint(cx)?;
-            t[i] = -opts.fd_h;
-            let xm = manifold.retract_with_cx(&x, &t, cx)?;
+            tangent[i] = -opts.fd_h;
+            let xm = manifold.retract_with_cx(&x, &tangent, cx)?;
             descent_checkpoint(cx)?;
             let fm = f(
                 &xm,
@@ -1715,10 +1812,11 @@ fn descend_fn_checked(
                 (fp - fm) / (2.0 * opts.fd_h),
                 "finite-difference gradient component",
             )?;
+            tangent[i] = 0.0;
         }
         descent_checkpoint(cx)?;
-        let mut step = Vec::with_capacity(g.len());
-        for (component, gradient) in g.iter().enumerate() {
+        step.clear();
+        for (component, gradient) in gradient.iter().enumerate() {
             checkpoint_retraction_work(component, &mut || descent_checkpoint(cx))?;
             let value =
                 finite_descent_value(-opts.lr * gradient, "descent parameter-step component")?;
@@ -2221,6 +2319,92 @@ mod runtime_shape_tests {
                 .to_string()
                 .contains("no partial result was published"),
             "the refusal must teach the atomic-publication boundary"
+        );
+    }
+
+    #[test]
+    fn runtime_scratch_builders_are_fallible_checkpointed_and_bit_exact() {
+        let mut source = vec![1.0; RETRACTION_CHECKPOINT_STRIDE * 2 + 1];
+        source[0] = -0.0;
+        source[RETRACTION_CHECKPOINT_STRIDE] = f64::MIN_POSITIVE;
+        source[RETRACTION_CHECKPOINT_STRIDE * 2] = -f64::MIN_POSITIVE;
+
+        let mut clone_polls = 0usize;
+        let cloned = try_clone_runtime_slice("test/runtime-clone", &source, &mut || {
+            clone_polls += 1;
+            Ok(())
+        })
+        .expect("bounded runtime clone");
+        assert_eq!(clone_polls, 4, "indices 0/256/512 plus terminal");
+        assert_eq!(
+            cloned
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            source
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        );
+
+        let mut fill_polls = 0usize;
+        let filled =
+            try_filled_runtime_vector("test/runtime-fill", source.len(), -0.0, &mut || {
+                fill_polls += 1;
+                Ok(())
+            })
+            .expect("bounded runtime fill");
+        assert_eq!(fill_polls, 4, "indices 0/256/512 plus terminal");
+        assert!(
+            filled
+                .iter()
+                .all(|value| value.to_bits() == (-0.0f64).to_bits())
+        );
+
+        for target in 1..=clone_polls {
+            let mut calls = 0usize;
+            let result = try_clone_runtime_slice("test/runtime-clone", &source, &mut || {
+                calls += 1;
+                if calls == target {
+                    Err(OptError::Cancelled)
+                } else {
+                    Ok(())
+                }
+            });
+            assert_eq!(result, Err(OptError::Cancelled), "target poll {target}");
+            assert_eq!(calls, target, "copy continued after target poll {target}");
+        }
+
+        for target in 1..=fill_polls {
+            let mut calls = 0usize;
+            let result =
+                try_filled_runtime_vector("test/runtime-fill", source.len(), -0.0, &mut || {
+                    calls += 1;
+                    if calls == target {
+                        Err(OptError::Cancelled)
+                    } else {
+                        Ok(())
+                    }
+                });
+            assert_eq!(result, Err(OptError::Cancelled), "target poll {target}");
+            assert_eq!(calls, target, "fill continued after target poll {target}");
+        }
+
+        let mut checkpoint = || Ok(());
+        assert_eq!(
+            try_filled_runtime_vector(
+                "test/runtime-fill-overflow",
+                usize::MAX,
+                0.0,
+                &mut checkpoint,
+            ),
+            Err(OptError::RuntimeAllocationRefused {
+                path: "test/runtime-fill-overflow",
+                node: None,
+                variable: None,
+                elements: allocation_len(usize::MAX),
+                element_bytes: core::mem::size_of::<f64>() as u64,
+            })
         );
     }
 

@@ -205,6 +205,15 @@ structure; FLUX/UQ execute it.
   buffers reserve their exact storage fallibly; allocator refusal returns
   `RuntimeAllocationRefused` with a stable path, optional node/variable
   attribution, and element layout before any partial value becomes public.
+  Retraction candidates, normalized outputs, Stiefel column tables, and all
+  descent-owned point/tangent/gradient/step buffers use the same exact fallible
+  reservation boundary. Reusable descent scratch is reserved and initialized
+  after input/resource admission but before f0; initialization polls at most
+  every 256 elements. An allocator refusal returns no point or report and raw
+  objective work has not started for descent-engine scratch refusal.
+  Invalid runtime manifold descriptors also build their owned teaching
+  diagnostics behind an exact fallible reservation, so refusal construction
+  cannot bypass the typed allocation boundary.
   Evaluation borrows memoized children instead of
   cloning retained vector values, and IR-driven descent passes its current point
   through the same borrowed-frame adapter without an intermediate binding copy.
