@@ -152,10 +152,12 @@ fs-iga (geometry basis = analysis basis), fs-render NURBS tracing
   `SurfaceSpanBoxesRun` state and publish only the complete U-major, V-minor
   box table. The owning path carries one gate through source admission and the
   admitted builder; the admitted path avoids repeating structural validation;
-  its admitted directional insertions reuse the immutable source authority,
-  while `insert_knot_u_with_cx` / `insert_knot_v_with_cx` return transactional
+  its owning and admitted directional `insert_knot_u_with_cx` /
+  `insert_knot_v_with_cx` entry points return transactional
   `SurfaceInsertionRun` state and publish only a complete validated exact
-  derived surface.
+  derived surface. Owning insertion carries one gate through source admission
+  and admitted transformation; admitted insertion reuses immutable source
+  authority without repeating structural validation.
 - `TrimLoop`/`TrimmedPatch` — trim curves in EXACT RATIONAL form
   (closure and continuity validated by rational equality, including exact
   left/right-limit agreement at any full knot break). Loop, curve, and
@@ -563,16 +565,20 @@ same fixed stride across finite, ordering, multiplicity, and clamping validation
 and gates admitted authority at publication. The production `fs-render` ray path
 preflights sealed metadata and cancellation, then binds one admitted surface
 across domain lookup, seed evaluation, and Newton partials.
-Admitted U/V surface insertion preserves open-domain, conservative aggregate
-work, and 64 MiB requested derived-payload refusal precedence, then uses one
-gate for directional span lookup, direct tensor Boehm row/control assembly,
-both knot copies, inserted-knot and complete surface validation, and final
-publication. `SurfaceInsertionRun::Cancelled` carries no partial surface and
-drops all derived storage. The payload model includes both knot arrays, every
-row-vector header, and all homogeneous controls while excluding the borrowed
-source; allocator rounding and individual generic-scalar operations are not
-preemptible. These methods claim no wall-time, exact caller-budget,
-owning-admission, drain/finalize, resumability, or geometric certificate.
+Owning U/V surface insertion carries one cancellation gate through bounded
+source validation and the admitted exact transformation; admitted entry points
+reuse immutable source authority without repeating structural validation.
+After owning admission, both paths preserve open-domain, conservative aggregate
+work, and 64 MiB requested derived-payload refusal precedence, then cover
+directional span lookup, direct tensor Boehm row/control assembly, both knot
+copies, inserted-knot and complete surface validation, and final publication.
+Source validation and insertion retain independent defensive work ceilings.
+`SurfaceInsertionRun::Cancelled` carries no admitted authority or partial
+surface and drops all derived storage. The payload model includes both knot
+arrays, every row-vector header, and all homogeneous controls while excluding
+the borrowed source; allocator rounding and individual generic-scalar
+operations are not preemptible. These methods claim no wall-time, exact
+caller-budget, drain/finalize, resumability, or geometric certificate.
 `NurbsSurface::partials_with_cx` preserves its constant-time U-then-V parameter
 refusals before carrying one gate through bounded structural admission and the
 admitted partials pipeline. `AdmittedNurbsSurface::partials_with_cx` preserves

@@ -1614,12 +1614,78 @@ impl<S: Scalar> NurbsSurface<S> {
         self.admit()?.insert_knot_u(t)
     }
 
+    /// Validate this owning surface and insert one exact U knot with one
+    /// cancellation gate.
+    ///
+    /// Checked source-validation work refusal precedes the first checkpoint.
+    /// Cancellation then spans structural admission and the admitted
+    /// directional insertion pipeline. No partial admitted authority or
+    /// derived surface is published. This primitive does not consume the `Cx`
+    /// budget or finalize its executor scope.
+    ///
+    /// # Errors
+    /// Returns the synchronous owning insertion's structure, parameter, work,
+    /// retained-memory, allocation, numeric-domain, or derived-structure
+    /// refusal when it wins before an observed cancellation.
+    pub fn insert_knot_u_with_cx(
+        &self,
+        t: S,
+        cx: &Cx<'_>,
+    ) -> Result<SurfaceInsertionRun<S>, NurbsError> {
+        let mut should_cancel = || cx.checkpoint().is_err();
+        self.insert_knot_u_with_poll(t, &mut should_cancel)
+    }
+
+    fn insert_knot_u_with_poll(
+        &self,
+        t: S,
+        should_cancel: &mut impl FnMut() -> bool,
+    ) -> Result<SurfaceInsertionRun<S>, NurbsError> {
+        match self.validate_live_structure_with_poll(should_cancel)? {
+            SurfaceValidationOutcome::Complete => self
+                .admitted_after_validation()
+                .insert_knot_u_with_poll(t, should_cancel),
+            SurfaceValidationOutcome::Cancelled => Ok(SurfaceInsertionRun::Cancelled),
+        }
+    }
+
     /// EXACT knot insertion in the v direction.
     ///
     /// # Errors
     /// [`NurbsError::Domain`] for a non-interior parameter.
     pub fn insert_knot_v(&self, t: S) -> Result<Self, NurbsError> {
         self.admit()?.insert_knot_v(t)
+    }
+
+    /// Validate this owning surface and insert one exact V knot with one
+    /// cancellation gate.
+    ///
+    /// Refusal order, transactionality, budget ownership, and executor-scope
+    /// boundaries are identical to [`Self::insert_knot_u_with_cx`].
+    ///
+    /// # Errors
+    /// Returns the synchronous owning insertion's refusal when it wins before
+    /// an observed cancellation.
+    pub fn insert_knot_v_with_cx(
+        &self,
+        t: S,
+        cx: &Cx<'_>,
+    ) -> Result<SurfaceInsertionRun<S>, NurbsError> {
+        let mut should_cancel = || cx.checkpoint().is_err();
+        self.insert_knot_v_with_poll(t, &mut should_cancel)
+    }
+
+    fn insert_knot_v_with_poll(
+        &self,
+        t: S,
+        should_cancel: &mut impl FnMut() -> bool,
+    ) -> Result<SurfaceInsertionRun<S>, NurbsError> {
+        match self.validate_live_structure_with_poll(should_cancel)? {
+            SurfaceValidationOutcome::Complete => self
+                .admitted_after_validation()
+                .insert_knot_v_with_poll(t, should_cancel),
+            SurfaceValidationOutcome::Cancelled => Ok(SurfaceInsertionRun::Cancelled),
+        }
     }
 
     /// Per-(u-span × v-span) Cartesian control boxes: each patch of the
@@ -3371,6 +3437,22 @@ mod tests {
 
         with_surface_cx(false, |cx| {
             assert_eq!(
+                surface
+                    .insert_knot_u_with_cx(0.5, cx)
+                    .expect("active owning u insertion"),
+                SurfaceInsertionRun::Complete {
+                    surface: inserted_u.try_clone().expect("copy expected u surface"),
+                }
+            );
+            assert_eq!(
+                surface
+                    .insert_knot_v_with_cx(0.5, cx)
+                    .expect("active owning v insertion"),
+                SurfaceInsertionRun::Complete {
+                    surface: inserted_v.try_clone().expect("copy expected v surface"),
+                }
+            );
+            assert_eq!(
                 admitted
                     .insert_knot_u_with_cx(0.5, cx)
                     .expect("active u insertion"),
@@ -3414,6 +3496,22 @@ mod tests {
             );
         }
         with_surface_cx(false, |cx| {
+            assert_eq!(
+                exact_surface
+                    .insert_knot_u_with_cx(half, cx)
+                    .expect("active owning exact u insertion"),
+                SurfaceInsertionRun::Complete {
+                    surface: exact_u.try_clone().expect("copy expected exact u surface"),
+                }
+            );
+            assert_eq!(
+                exact_surface
+                    .insert_knot_v_with_cx(half, cx)
+                    .expect("active owning exact v insertion"),
+                SurfaceInsertionRun::Complete {
+                    surface: exact_v.try_clone().expect("copy expected exact v surface"),
+                }
+            );
             assert_eq!(
                 exact_admitted
                     .insert_knot_u_with_cx(half, cx)
@@ -3459,6 +3557,30 @@ mod tests {
                 SurfaceInsertionRun::Cancelled
             );
             assert_eq!(
+                surface
+                    .insert_knot_u_with_cx(0.5, cx)
+                    .expect("valid owning u request reaches cancellation"),
+                SurfaceInsertionRun::Cancelled
+            );
+            assert_eq!(
+                surface
+                    .insert_knot_v_with_cx(0.5, cx)
+                    .expect("valid owning v request reaches cancellation"),
+                SurfaceInsertionRun::Cancelled
+            );
+            assert_eq!(
+                surface
+                    .insert_knot_u_with_cx(0.0, cx)
+                    .expect("owning admission cancellation precedes u parameter refusal"),
+                SurfaceInsertionRun::Cancelled
+            );
+            assert_eq!(
+                surface
+                    .insert_knot_v_with_cx(1.0, cx)
+                    .expect("owning admission cancellation precedes v parameter refusal"),
+                SurfaceInsertionRun::Cancelled
+            );
+            assert_eq!(
                 admitted
                     .insert_knot_u_with_cx(0.0, cx)
                     .expect_err("u endpoint refusal beats cancellation"),
@@ -3482,6 +3604,64 @@ mod tests {
                     .expect_err("v non-finite refusal beats cancellation"),
                 v_non_finite
             );
+        });
+
+        with_surface_cx(false, |cx| {
+            assert_eq!(
+                surface
+                    .insert_knot_u_with_cx(0.0, cx)
+                    .expect_err("active owning u endpoint refusal"),
+                u_endpoint
+            );
+            assert_eq!(
+                surface
+                    .insert_knot_v_with_cx(1.0, cx)
+                    .expect_err("active owning v endpoint refusal"),
+                v_endpoint
+            );
+        });
+
+        let mut admission_polls = 0usize;
+        let mut observe_admission = || {
+            admission_polls += 1;
+            false
+        };
+        assert!(matches!(
+            surface
+                .validate_live_structure_with_poll(&mut observe_admission)
+                .expect("healthy source admission"),
+            SurfaceValidationOutcome::Complete
+        ));
+        for axis in [SurfaceInsertionAxis::U, SurfaceInsertionAxis::V] {
+            let mut owning_polls = 0usize;
+            let mut cancel_at_first_insertion_poll = || {
+                owning_polls += 1;
+                owning_polls == admission_polls + 1
+            };
+            let outcome = match axis {
+                SurfaceInsertionAxis::U => {
+                    surface.insert_knot_u_with_poll(0.5, &mut cancel_at_first_insertion_poll)
+                }
+                SurfaceInsertionAxis::V => {
+                    surface.insert_knot_v_with_poll(0.5, &mut cancel_at_first_insertion_poll)
+                }
+            }
+            .expect("owning insertion seam cancellation");
+            assert_eq!(outcome, SurfaceInsertionRun::Cancelled);
+            assert_eq!(owning_polls, admission_polls + 1);
+        }
+
+        let mut invalid = bilinear_surface();
+        invalid.knots_u.knots.clear();
+        with_surface_cx(true, |cx| {
+            assert!(matches!(
+                invalid.insert_knot_u_with_cx(0.5, cx),
+                Err(NurbsError::Structure { .. })
+            ));
+            assert!(matches!(
+                invalid.insert_knot_v_with_cx(0.5, cx),
+                Err(NurbsError::Structure { .. })
+            ));
         });
     }
 
