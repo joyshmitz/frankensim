@@ -18,6 +18,7 @@
 //! live in the [`travel`] module (schema v2).
 
 pub mod colors;
+pub mod crosswalk;
 pub mod hash;
 pub mod schema;
 pub mod session_registry;
@@ -34,6 +35,7 @@ pub use colors::{
     WAIVER_SCOPE_COLOR_UPGRADE, WAIVER_SCOPE_SOURCE_COLOR, Waiver, WaiverDependency, WaiverGrant,
     WaiverRejection, WaiverVerifier, verify_color_row_stream,
 };
+pub use crosswalk::{MAX_QTY_CROSSWALK_JSON_BYTES, QtyDimensionCrosswalkWrite};
 pub use hash::{Blake3, ContentHash, hash_bytes};
 pub use schema::{ALL_TABLES, SCHEMA_VERSION, STORAGE_CHUNK_LEN, V1_TABLES};
 pub use travel::{
@@ -2362,6 +2364,13 @@ pub struct LintReport {
     pub orphan_op_branches: u64,
     /// Branches whose parent id does not exist (v2).
     pub orphan_branch_parents: u64,
+    /// Quantity crosswalk rows whose historical source artifact is absent.
+    pub orphan_qty_crosswalk_sources: u64,
+    /// Quantity crosswalk rows whose canonical target artifact is absent.
+    pub orphan_qty_crosswalk_targets: u64,
+    /// Quantity crosswalk rows violating their fixed storage/version/rule
+    /// envelope.
+    pub malformed_qty_crosswalks: u64,
 }
 
 impl LintReport {
@@ -5925,6 +5934,27 @@ impl Ledger {
                 "SELECT COUNT(*) FROM branches c LEFT JOIN branches p ON c.parent = p.id \
                  WHERE c.parent IS NOT NULL AND p.id IS NULL",
                 "lint orphan_branch_parents",
+            )?,
+            orphan_qty_crosswalk_sources: count(
+                "SELECT COUNT(*) FROM qty_dimension_crosswalks q \
+                 LEFT JOIN artifacts a ON q.old_hash = a.hash WHERE a.hash IS NULL",
+                "lint orphan_qty_crosswalk_sources",
+            )?,
+            orphan_qty_crosswalk_targets: count(
+                "SELECT COUNT(*) FROM qty_dimension_crosswalks q \
+                 LEFT JOIN artifacts a ON q.new_hash = a.hash WHERE a.hash IS NULL",
+                "lint orphan_qty_crosswalk_targets",
+            )?,
+            malformed_qty_crosswalks: count(
+                "SELECT COUNT(*) FROM qty_dimension_crosswalks WHERE \
+                 typeof(old_hash) != 'blob' OR length(old_hash) != 32 OR \
+                 typeof(new_hash) != 'blob' OR length(new_hash) != 32 OR \
+                 old_hash = new_hash OR \
+                 typeof(source_version) != 'integer' OR source_version != 1 OR \
+                 typeof(target_version) != 'integer' OR target_version != 2 OR \
+                 typeof(rule) != 'text' OR rule != 'append-mole-zero' OR \
+                 typeof(created_at) != 'integer'",
+                "lint malformed_qty_crosswalks",
             )?,
         })
     }

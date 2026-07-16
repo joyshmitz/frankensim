@@ -27,10 +27,12 @@
 //! plus immutable operation-edge-set seals for exact-lineage consumers.
 //! Schema v10 adds immutable solver-checkpoint receipts that bind one pause
 //! authority to an existing solver-state artifact and executor-originated
-//! drain/finalize report.
+//! drain/finalize report. Schema v11 adds immutable five-to-six quantity
+//! crosswalk rows whose source and target hashes both reference retained
+//! artifacts.
 
 /// The schema version this crate writes and reads.
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 
 /// Storage chunk length for large artifacts (bytes). Artifacts strictly
 /// larger than this are stored as `artifact_chunks` rows of at most this
@@ -39,7 +41,7 @@ pub const STORAGE_CHUNK_LEN: usize = 4 * 1024 * 1024;
 
 /// Migration ladder: `MIGRATIONS[i]` migrates a database at `user_version`
 /// `i` to `i + 1`. Append-only; never edit a shipped batch.
-pub(crate) const MIGRATIONS: &[&[&str]] = &[V1, V2, V3, V4, V5, V6, V7, V8, V9, V10];
+pub(crate) const MIGRATIONS: &[&[&str]] = &[V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11];
 
 /// v1: the six core tables (Appendix D), chunk storage, and the Rev S
 /// extension tables (sparse in v0 but present EARLY so downstream crates can
@@ -836,7 +838,46 @@ pub const V10: &[&str] = &[
      END",
 ];
 
-/// Every table the CURRENT schema owns (v1 set + v2 through v10 additions); the
+/// v11: immutable exact-byte crosswalks from the historical five-base
+/// quantity JSON schema to the canonical six-base schema. Migration infers no
+/// rows: only the typed fs-qty receipt plus both retained artifacts may create
+/// one through the public ledger API.
+pub const V11: &[&str] = &[
+    "CREATE TABLE IF NOT EXISTS qty_dimension_crosswalks(
+        old_hash BLOB NOT NULL PRIMARY KEY CHECK(length(old_hash) = 32)
+            REFERENCES artifacts(hash),
+        new_hash BLOB NOT NULL CHECK(length(new_hash) = 32)
+            REFERENCES artifacts(hash),
+        source_version INTEGER NOT NULL CHECK(source_version = 1),
+        target_version INTEGER NOT NULL CHECK(target_version = 2),
+        rule TEXT NOT NULL CHECK(rule = 'append-mole-zero'),
+        created_at INTEGER NOT NULL,
+        CHECK(old_hash != new_hash)
+    ) STRICT",
+    "CREATE INDEX IF NOT EXISTS idx_qty_dimension_crosswalks_new_hash
+     ON qty_dimension_crosswalks(new_hash)",
+    "CREATE TRIGGER IF NOT EXISTS trg_qty_dimension_crosswalks_immutable_update
+     BEFORE UPDATE ON qty_dimension_crosswalks
+     BEGIN
+       SELECT RAISE(ABORT, 'quantity dimension crosswalk is immutable');
+     END",
+    "CREATE TRIGGER IF NOT EXISTS trg_qty_dimension_crosswalks_immutable_delete
+     BEFORE DELETE ON qty_dimension_crosswalks
+     BEGIN
+       SELECT RAISE(ABORT, 'quantity dimension crosswalk is immutable');
+     END",
+    "CREATE TRIGGER IF NOT EXISTS trg_qty_dimension_crosswalks_immutable_reinsert
+     BEFORE INSERT ON qty_dimension_crosswalks
+     WHEN EXISTS(
+         SELECT 1 FROM qty_dimension_crosswalks
+         WHERE old_hash = NEW.old_hash
+     )
+     BEGIN
+       SELECT RAISE(ABORT, 'quantity dimension crosswalk source is immutable');
+     END",
+];
+
+/// Every table the CURRENT schema owns (v1 set + v2 through v11 additions); the
 /// `table_count`/lint whitelist.
 pub const ALL_TABLES: &[&str] = &[
     "artifacts",
@@ -866,4 +907,5 @@ pub const ALL_TABLES: &[&str] = &[
     "artifact_output_seals",
     "op_artifact_edge_seals",
     "session_checkpoint_receipts",
+    "qty_dimension_crosswalks",
 ];

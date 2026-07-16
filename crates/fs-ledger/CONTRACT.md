@@ -1,6 +1,6 @@
 # CONTRACT: fs-ledger
 
-> Status: ACTIVE (Design Ledger, schema v10). Owns the core schema + Rev S
+> Status: ACTIVE (Design Ledger, schema v11). Owns the core schema + Rev S
 > extension tables, BLAKE3 content addressing, the WAL/snapshot concurrency
 > contract, and — since schema v2 — forkable worlds, `at(t)` views,
 > `explain()`, the replay audit, and unreferenced-artifact GC (`travel`
@@ -197,13 +197,25 @@ and the lower-layer Franken crates declared in `Cargo.toml`, including
   conflict atomically. Fixed-width transport decoding earns only a candidate:
   `verify_solver_checkpoint_receipt` must revalidate identity, physical-ledger
   membership, immutable row equality, artifact integrity, and run provenance.
+- Quantity dimension crosswalks (`crosswalk`, schema v11):
+  `record_qty_dimension_crosswalk` persists only fs-qty's typed
+  legacy-five-to-six `AppendMoleZero` receipt. Both exact JSON artifacts must
+  already exist, each is admitted under a 4 KiB materialization budget, and
+  the ledger independently decodes the historical bytes, reproduces the
+  canonical target, and compares every receipt field before one immutable row
+  commits. An exact retry is idempotent; a different target for the same old
+  hash refuses. `qty_dimension_crosswalk` repeats artifact integrity and
+  fs-qty replay before returning evidence, so row presence alone is never a
+  migration claim. Migration from v10 creates an empty table and infers no
+  historical rows.
 - Rev S extension tables (sparse v0, uniform `(name UNIQUE, body JSON)`
   shape): `put_extension`/`get_extension` over `requirements`, `model_cards`,
   `evidence`, `scenarios`, `constraints`, `capability_probes`, `imports`,
   `unsafe_capsules`.
-- Hygiene: `lint()` (orphan edges/metrics/chunks, artifact, op, and tune storage
-  bounds, storage-shape and length invariants, half-finished ops, dangling
-  branch references) — all-zero on any healthy or crash-recovered ledger.
+- Hygiene: `lint()` (orphan edges/metrics/chunks/crosswalk artifacts; artifact,
+  op, tune, and crosswalk storage bounds; storage-shape and length invariants;
+  half-finished ops; dangling branch references) — all-zero on any healthy or
+  crash-recovered ledger.
 - Time travel (`travel` module, schema v2): `fork`/`branches`/`branch_diff`
   (a fork is a new op-log branch sharing every artifact by hash; visibility
   = own ops + ancestors' up to each fork point), `begin_op_on` (branch +
@@ -218,8 +230,9 @@ and the lower-layer Franken crates declared in `Cargo.toml`, including
   compared; deterministic ops must then
   reproduce output hashes exactly; fast hash divergences are reported without
   failing; row/branch/session/time envelopes are excluded),
-  `gc_unreferenced_artifacts` (artifacts with neither a lineage edge nor a
-  solver-checkpoint receipt; either root makes an artifact immortal).
+  `gc_unreferenced_artifacts` (artifacts with neither a lineage edge, a
+  solver-checkpoint receipt, nor either side of a quantity dimension
+  crosswalk; every supported root makes an artifact immortal).
 
 Schema divergences from plan Appendix D, all deliberate: `JSON` columns are
 STRICT-legal `TEXT` with `json_valid()` CHECKs (Appendix D as written is not
@@ -243,6 +256,10 @@ Schema v9 adds immutable sole-producer and exact-operation-edge-set seals.
 Schema v10 adds the immutable `session_checkpoint_receipts` table, one unique
 pause-authority index, artifact foreign key, and update/delete/reinsert guards;
 migration infers no receipts from historic free-form acknowledgement payloads.
+Schema v11 adds immutable `qty_dimension_crosswalks` rows with source and
+target artifact foreign keys, fixed v1-to-v2 `AppendMoleZero` semantics, a
+target lookup index, and update/delete/reinsert guards. Migration deliberately
+does not infer semantic evidence from old artifact pairs.
 
 - `tombstone` module (addendum Proposal E, bead lmp4.13): the TOMBSTONE
   LEDGER — swarm memory's cheap half. `Descriptor` (name + dimensioned
@@ -434,6 +451,11 @@ refusal, or verifier panic).
     bytes re-hash correctly, a valid generic snapshot envelope, matching run
     provenance, and equal nonzero registered/drained worker counts. Row or
     artifact presence alone never proves pause completion.
+13. A quantity dimension crosswalk is valid only when its immutable row names
+    two retained, integrity-clean artifacts and replaying the exact historical
+    JSON through fs-qty reproduces the same typed receipt and exact canonical
+    six-base bytes. The two byte identities remain distinct even when multiple
+    historical spellings converge on one canonical target.
 
 ## Error model
 
@@ -742,6 +764,12 @@ The graph is the minting authority for `fs_evidence::AdmittedColor`:
   every solver thread was registered with the executor `DrainTracker`, that the
   snapshot contains sufficient application-specific resume state, or that its
   numerical contents are scientifically correct.
+- A quantity crosswalk proves only the exact supported schema transformation:
+  five exponents were preserved and an exact zero mole exponent was appended.
+  It does not claim broader physical equivalence, provenance, or authority for
+  either quantity artifact; it neither mints nor preserves a `SemanticType`
+  or quantity-kind identity and cannot authorize dimensionally equal
+  substitutions.
 - Safe std-only identity generation is implemented through `/dev/urandom` on
   Unix. Fresh identity creation on non-Unix targets is explicitly refused;
   existing v4+ ledgers remain readable when their persisted identity and
