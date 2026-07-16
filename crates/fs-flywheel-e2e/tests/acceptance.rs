@@ -3,10 +3,13 @@
 //! colored, priced, auditable package and crosses the solver-free checker's
 //! typed capability boundary. Scientific promotion consumes an immutable
 //! `fs-verify` receipt and independently replays its exact problem/candidate;
-//! only the package-root signature policy remains a deterministic fixture, not
-//! vendor-independent cryptographic authentication. The retained certificate
-//! covers the exact 1-D manufactured proxy; the physical wedge QoI stays an
-//! explicit Estimated no-claim until its own upstream certifier exists.
+//! scientific promotion additionally requires an opaque producer-attestation
+//! witness over the stable current-process executable and exact receipt scope.
+//! The detached sidecar and package-root signature policies remain
+//! deterministic fixtures, not vendor-independent cryptographic
+//! authentication. The retained certificate covers the exact 1-D manufactured
+//! proxy; the physical wedge QoI stays an explicit Estimated no-claim until its
+//! own upstream certifier exists.
 //!
 //! The path: admission (typed, teaching refusals) → flywheel discharge
 //! (planner + cache) → anytime colored answer (+ the VoI-priced hint)
@@ -14,6 +17,12 @@
 //! G5 whole-path replay → the laundering invariant at every hop.
 #![cfg(feature = "flywheel-e2e")]
 
+use fs_blake3::identity::{
+    Admitted, AuthorityAdmitter, AuthorityRef, AuthorityVerifier, CanonicalEncoder,
+    CanonicalLimits, CanonicalSchema, ContentId, ExternalAnchorRef, Field, FieldSpec,
+    IdentityReceipt, KeyPolicyId, NeverCancel, ObservedIdentity, Presented, PromotionTrustRoot,
+    PromotionWitness, SemanticId, StrongIdentity, Verified, VerifierId, WireType,
+};
 use fs_evidence::{Color, IntervalOp, compose};
 use fs_ir::planner::{
     AnswerCache, CachedAnswer, CostTable, MemCache, PlanError, PlanOutcome, ProblemFamily, plan,
@@ -31,7 +40,16 @@ const QOI_ID: &str = VERIFIER_RECEIPT_QOI;
 const QOI_UNITS: &str = VERIFIER_RECEIPT_UNITS;
 const PHYSICAL_QOI_ID: &str = "cht-wedge-perturbation-growth-min";
 const PHYSICAL_QOI_UNITS: &str = "UNRESOLVED:no-authoritative-unit-schema";
-const RECEIPT_POLICY: &str = "fs-flywheel-e2e/authentic-receipt-resolver/v1";
+const RECEIPT_POLICY: &str = "fs-flywheel-e2e/authentic-receipt-resolver/v2";
+const PRODUCER_EXECUTABLE_IDENTITY_VERSION: u32 = 1;
+const PRODUCER_EXECUTABLE_IDENTITY_DOMAIN: &str =
+    "org.frankensim.fs-flywheel-e2e.producer-executable.v1";
+const PRODUCER_ATTESTATION_CONTEXT: &str = "fs-flywheel-e2e/producer-promotion/v1";
+const MAX_PRODUCER_EXECUTABLE_BYTES: u64 = 1 << 30;
+const EXECUTABLE_HASH_CHUNK_BYTES: usize = 64 * 1024;
+const MAX_PRODUCER_ATTESTATION_SIDECAR_BYTES: usize = 4 * 1024;
+const PRODUCER_IDENTITY_LIMITS: CanonicalLimits =
+    CanonicalLimits::new(64 * 1024, 16 * 1024, 32, 64, 1024);
 
 fn push_bytes(bytes: &mut Vec<u8>, value: &[u8]) {
     let len = u64::try_from(value.len()).expect("bounded acceptance field length fits u64");
@@ -60,6 +78,349 @@ fn hash_f64_slice(domain: &str, values: &[f64]) -> fs_checker::ContentHash {
     }
     fs_ledger::hash_bytes(&bytes)
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProducerExecutableIdentity {
+    schema_version: u32,
+    byte_len: u64,
+    raw_hash: fs_checker::ContentHash,
+}
+
+impl ProducerExecutableIdentity {
+    fn root(self) -> fs_checker::ContentHash {
+        let mut bytes = Vec::new();
+        push_text(&mut bytes, PRODUCER_EXECUTABLE_IDENTITY_DOMAIN);
+        bytes.extend_from_slice(&self.schema_version.to_le_bytes());
+        bytes.extend_from_slice(&self.byte_len.to_le_bytes());
+        push_hash(&mut bytes, self.raw_hash);
+        fs_ledger::hash_bytes(&bytes)
+    }
+}
+
+fn producer_executable_identity_from_reader(
+    reader: &mut impl std::io::Read,
+) -> Result<ProducerExecutableIdentity, String> {
+    producer_executable_identity_from_reader_with_limit(reader, MAX_PRODUCER_EXECUTABLE_BYTES)
+}
+
+fn producer_executable_identity_from_reader_with_limit(
+    reader: &mut impl std::io::Read,
+    max_bytes: u64,
+) -> Result<ProducerExecutableIdentity, String> {
+    let mut hasher = fs_ledger::Blake3::new();
+    let mut total = 0_u64;
+    let mut chunk = Vec::new();
+    chunk
+        .try_reserve_exact(EXECUTABLE_HASH_CHUNK_BYTES)
+        .map_err(|error| format!("cannot reserve executable hash buffer: {error}"))?;
+    chunk.resize(EXECUTABLE_HASH_CHUNK_BYTES, 0_u8);
+    loop {
+        let read = reader
+            .read(&mut chunk)
+            .map_err(|error| format!("cannot read producer-process executable: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        total = total
+            .checked_add(u64::try_from(read).expect("read chunk length fits u64"))
+            .ok_or_else(|| "producer-process executable length exceeds u64".to_string())?;
+        if total > max_bytes {
+            return Err(format!(
+                "producer-process executable exceeds {max_bytes} bytes"
+            ));
+        }
+        hasher.update(&chunk[..read]);
+    }
+    Ok(ProducerExecutableIdentity {
+        schema_version: PRODUCER_EXECUTABLE_IDENTITY_VERSION,
+        byte_len: total,
+        raw_hash: hasher.finalize(),
+    })
+}
+
+fn current_producer_process_executable_identity() -> Result<ProducerExecutableIdentity, String> {
+    let path = std::env::current_exe()
+        .map_err(|error| format!("cannot resolve producer-process executable: {error}"))?;
+    let mut file = std::fs::File::open(&path).map_err(|error| {
+        format!(
+            "cannot open producer-process executable {}: {error}",
+            path.display()
+        )
+    })?;
+    producer_executable_identity_from_reader(&mut file)
+}
+
+struct ProducerAttestationSubjectSchemaV1;
+
+impl CanonicalSchema for ProducerAttestationSubjectSchemaV1 {
+    const DOMAIN: &'static str = "org.frankensim.fs-flywheel-e2e.producer-attestation-subject.v1";
+    const NAME: &'static str = "fs-flywheel-producer-attestation-subject";
+    const VERSION: u32 = 1;
+    const CONTEXT: &'static str = "Producer executable, receipt scope, and build-input binding";
+    const FIELDS: &'static [FieldSpec] = &[
+        FieldSpec::required("purpose", WireType::Utf8),
+        FieldSpec::required("evidence_scope_root", WireType::Bytes),
+        FieldSpec::required("verifier_receipt_root", WireType::Bytes),
+        FieldSpec::required("executable_identity_version", WireType::U64),
+        FieldSpec::required("executable_byte_len", WireType::U64),
+        FieldSpec::required("executable_raw_hash", WireType::Bytes),
+        FieldSpec::required("producer_crate", WireType::Utf8),
+        FieldSpec::required("producer_version", WireType::Utf8),
+        FieldSpec::required("producer_features", WireType::Utf8),
+        FieldSpec::required("producer_source_root", WireType::Bytes),
+        FieldSpec::required("dependency_source_root", WireType::Bytes),
+        FieldSpec::required("workspace_manifest_root", WireType::Bytes),
+        FieldSpec::required("workspace_lock_root", WireType::Bytes),
+        FieldSpec::required("toolchain_root", WireType::Bytes),
+    ];
+}
+
+struct ProducerAttestationVerifierSchemaV1;
+
+impl CanonicalSchema for ProducerAttestationVerifierSchemaV1 {
+    const DOMAIN: &'static str = "org.frankensim.fs-flywheel-e2e.producer-attestation-verifier.v1";
+    const NAME: &'static str = "fs-flywheel-producer-attestation-verifier";
+    const VERSION: u32 = 1;
+    const CONTEXT: &'static str = "Pinned detached-sidecar verifier identity";
+    const FIELDS: &'static [FieldSpec] = &[
+        FieldSpec::required("implementation", WireType::Utf8),
+        FieldSpec::required("sidecar_schema", WireType::U64),
+    ];
+}
+
+struct ProducerAttestationPolicySchemaV1;
+
+impl CanonicalSchema for ProducerAttestationPolicySchemaV1 {
+    const DOMAIN: &'static str = "org.frankensim.fs-flywheel-e2e.producer-attestation-policy.v1";
+    const NAME: &'static str = "fs-flywheel-producer-attestation-policy";
+    const VERSION: u32 = 1;
+    const CONTEXT: &'static str = "Pinned producer-promotion key policy identity";
+    const FIELDS: &'static [FieldSpec] = &[
+        FieldSpec::required("policy", WireType::Utf8),
+        FieldSpec::required("minimum_sidecar_schema", WireType::U64),
+    ];
+}
+
+type ProducerAttestationSubject = SemanticId<ProducerAttestationSubjectSchemaV1>;
+type PresentedProducerAuthority = AuthorityRef<
+    ProducerAttestationSubject,
+    ProducerAttestationVerifierSchemaV1,
+    ProducerAttestationPolicySchemaV1,
+    Presented,
+>;
+type VerifiedProducerAuthority = AuthorityRef<
+    ProducerAttestationSubject,
+    ProducerAttestationVerifierSchemaV1,
+    ProducerAttestationPolicySchemaV1,
+    Verified,
+>;
+type AdmittedProducerAuthority = AuthorityRef<
+    ProducerAttestationSubject,
+    ProducerAttestationVerifierSchemaV1,
+    ProducerAttestationPolicySchemaV1,
+    Admitted,
+>;
+type ProducerPromotionRoot =
+    PromotionTrustRoot<ProducerAttestationVerifierSchemaV1, ProducerAttestationPolicySchemaV1>;
+type ProducerPromotionWitness = PromotionWitness<
+    ProducerAttestationSubject,
+    ProducerAttestationVerifierSchemaV1,
+    ProducerAttestationPolicySchemaV1,
+>;
+
+#[derive(Debug, Clone, Copy)]
+struct ProducerAttestationScope {
+    purpose: &'static str,
+    evidence_root: fs_checker::ContentHash,
+}
+
+fn producer_attestation_verifier_identity(
+    implementation: &str,
+    sidecar_schema: u64,
+) -> IdentityReceipt<VerifierId<ProducerAttestationVerifierSchemaV1>> {
+    CanonicalEncoder::<VerifierId<ProducerAttestationVerifierSchemaV1>, _>::new(
+        PRODUCER_IDENTITY_LIMITS,
+        NeverCancel,
+    )
+    .expect("valid producer-attestation verifier schema")
+    .utf8(Field::new(0, "implementation"), implementation)
+    .expect("verifier implementation field")
+    .u64(Field::new(1, "sidecar_schema"), sidecar_schema)
+    .expect("verifier schema field")
+    .finish()
+    .expect("producer-attestation verifier identity")
+}
+
+fn trusted_producer_attestation_verifier()
+-> IdentityReceipt<VerifierId<ProducerAttestationVerifierSchemaV1>> {
+    producer_attestation_verifier_identity("fs-flywheel-e2e/exact-detached-sidecar-fixture/v1", 1)
+}
+
+fn producer_attestation_policy_identity(
+    policy: &str,
+    minimum_sidecar_schema: u64,
+) -> IdentityReceipt<KeyPolicyId<ProducerAttestationPolicySchemaV1>> {
+    CanonicalEncoder::<KeyPolicyId<ProducerAttestationPolicySchemaV1>, _>::new(
+        PRODUCER_IDENTITY_LIMITS,
+        NeverCancel,
+    )
+    .expect("valid producer-attestation policy schema")
+    .utf8(Field::new(0, "policy"), policy)
+    .expect("policy identity field")
+    .u64(
+        Field::new(1, "minimum_sidecar_schema"),
+        minimum_sidecar_schema,
+    )
+    .expect("policy schema field")
+    .finish()
+    .expect("producer-attestation policy identity")
+}
+
+fn trusted_producer_attestation_policy()
+-> IdentityReceipt<KeyPolicyId<ProducerAttestationPolicySchemaV1>> {
+    producer_attestation_policy_identity("fs-flywheel-e2e/executable-and-receipt-required/v1", 1)
+}
+
+fn configured_producer_promotion_root() -> ProducerPromotionRoot {
+    ProducerPromotionRoot::configure(
+        ObservedIdentity::from_receipt(trusted_producer_attestation_verifier()),
+        ObservedIdentity::from_receipt(trusted_producer_attestation_policy()),
+        PRODUCER_ATTESTATION_CONTEXT,
+    )
+    .expect("non-empty pinned producer-promotion context")
+}
+
+struct PolicyRelativeProducerAuthority {
+    authority: AdmittedProducerAuthority,
+    verifier_observation: fs_blake3::identity::ByteObservation,
+    policy_observation: fs_blake3::identity::ByteObservation,
+}
+
+#[derive(Debug, Clone)]
+struct DetachedFixtureProducerAuthority {
+    subject: IdentityReceipt<ProducerAttestationSubject>,
+    anchor_bytes: Vec<u8>,
+    verifier: IdentityReceipt<VerifierId<ProducerAttestationVerifierSchemaV1>>,
+    policy: IdentityReceipt<KeyPolicyId<ProducerAttestationPolicySchemaV1>>,
+}
+
+fn fixture_attestation_sidecar_bytes(
+    subject: IdentityReceipt<ProducerAttestationSubject>,
+    verifier: IdentityReceipt<VerifierId<ProducerAttestationVerifierSchemaV1>>,
+    policy: IdentityReceipt<KeyPolicyId<ProducerAttestationPolicySchemaV1>>,
+) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    push_text(
+        &mut bytes,
+        "fs-flywheel-e2e/detached-producer-attestation-fixture/v1",
+    );
+    push_bytes(&mut bytes, subject.id().as_bytes());
+    push_bytes(&mut bytes, subject.canonical_preimage().as_bytes());
+    bytes.extend_from_slice(&subject.canonical_bytes().to_le_bytes());
+    push_bytes(&mut bytes, verifier.id().as_bytes());
+    push_bytes(&mut bytes, policy.id().as_bytes());
+    push_text(
+        &mut bytes,
+        "DETERMINISTIC-FIXTURE-NOT-A-PRODUCTION-SIGNATURE",
+    );
+    assert!(
+        bytes.len() <= MAX_PRODUCER_ATTESTATION_SIDECAR_BYTES,
+        "bounded producer-attestation sidecar fixture"
+    );
+    bytes
+}
+
+impl DetachedFixtureProducerAuthority {
+    fn for_subject(subject: IdentityReceipt<ProducerAttestationSubject>) -> Self {
+        let verifier = trusted_producer_attestation_verifier();
+        let policy = trusted_producer_attestation_policy();
+        let anchor_bytes = fixture_attestation_sidecar_bytes(subject, verifier, policy);
+        Self {
+            subject,
+            anchor_bytes,
+            verifier,
+            policy,
+        }
+    }
+
+    fn presented_anchor(&self) -> ExternalAnchorRef {
+        ExternalAnchorRef::presented(ContentId::of_bytes(&self.anchor_bytes))
+    }
+
+    fn exact_sidecar_matches(&self) -> bool {
+        self.anchor_bytes
+            == fixture_attestation_sidecar_bytes(self.subject, self.verifier, self.policy)
+    }
+
+    fn verify_and_admit(
+        &self,
+        expected_subject: IdentityReceipt<ProducerAttestationSubject>,
+    ) -> Result<PolicyRelativeProducerAuthority, &'static str> {
+        if expected_subject != self.subject {
+            return Err("detached producer attestation belongs to another subject");
+        }
+        let authority = AuthorityRef::present(
+            self.subject,
+            self.presented_anchor(),
+            self.verifier.id(),
+            self.policy.id(),
+        )
+        .verify(self)?
+        .admit(self)?;
+        Ok(PolicyRelativeProducerAuthority {
+            authority,
+            verifier_observation: ObservedIdentity::from_receipt(self.verifier).bytes(),
+            policy_observation: ObservedIdentity::from_receipt(self.policy).bytes(),
+        })
+    }
+}
+
+impl
+    AuthorityVerifier<
+        ProducerAttestationSubject,
+        ProducerAttestationVerifierSchemaV1,
+        ProducerAttestationPolicySchemaV1,
+    > for DetachedFixtureProducerAuthority
+{
+    type Error = &'static str;
+
+    fn verify(&self, presented: &PresentedProducerAuthority) -> Result<(), Self::Error> {
+        if presented.receipt() == self.subject
+            && presented.anchor() == self.presented_anchor()
+            && presented.verifier() == self.verifier.id()
+            && presented.key_policy() == self.policy.id()
+            && self.exact_sidecar_matches()
+        {
+            Ok(())
+        } else {
+            Err("detached producer attestation failed exact verification")
+        }
+    }
+}
+
+impl
+    AuthorityAdmitter<
+        ProducerAttestationSubject,
+        ProducerAttestationVerifierSchemaV1,
+        ProducerAttestationPolicySchemaV1,
+    > for DetachedFixtureProducerAuthority
+{
+    type Error = &'static str;
+
+    fn admit(&self, verified: &VerifiedProducerAuthority) -> Result<(), Self::Error> {
+        if verified.receipt() == self.subject
+            && verified.anchor() == self.presented_anchor()
+            && verified.verifier() == self.verifier.id()
+            && verified.key_policy() == self.policy.id()
+            && self.exact_sidecar_matches()
+        {
+            Ok(())
+        } else {
+            Err("producer attestation failed exact fixture policy admission")
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct AuthenticReceiptResolver {
     receipt: PresentedVerifierReceipt,
@@ -69,10 +430,17 @@ struct AuthenticReceiptResolver {
     planner_budget: f64,
     planner_spent: f64,
     rungs: Vec<usize>,
+    producer_executable: ProducerExecutableIdentity,
 }
 
-struct ResolvedVerifierReceipt<'a> {
+struct ReplayedVerifierReceipt<'a> {
     admitted: AdmittedVerifierReceipt<'a>,
+}
+
+struct PromotedVerifierReceipt<'a> {
+    scientific: ReplayedVerifierReceipt<'a>,
+    producer_executable: ProducerExecutableIdentity,
+    promotion: ProducerPromotionWitness,
 }
 
 fn retain_original_receipt(receipt: VerifierReceipt) -> PresentedVerifierReceipt {
@@ -89,9 +457,15 @@ fn retain_original_receipt(receipt: VerifierReceipt) -> PresentedVerifierReceipt
     presented
 }
 
-impl ResolvedVerifierReceipt<'_> {
+impl ReplayedVerifierReceipt<'_> {
     fn receipt(&self) -> &AdmittedVerifierReceipt<'_> {
         &self.admitted
+    }
+}
+
+impl PromotedVerifierReceipt<'_> {
+    fn receipt(&self) -> &AdmittedVerifierReceipt<'_> {
+        self.scientific.receipt()
     }
 
     fn claim(&self) -> Claim {
@@ -105,6 +479,48 @@ impl ResolvedVerifierReceipt<'_> {
             receipt.artifact_root().to_hex(),
         )
     }
+
+    fn producer_executable_root(&self) -> fs_checker::ContentHash {
+        self.producer_executable.root()
+    }
+
+    fn producer_attestation_anchor_root(&self) -> fs_checker::ContentHash {
+        fs_checker::ContentHash(*self.promotion.anchor().content_id().as_bytes())
+    }
+
+    fn producer_attestation_policy_root(&self) -> fs_checker::ContentHash {
+        fs_checker::ContentHash(*self.promotion.key_policy().id().as_bytes())
+    }
+
+    fn producer_attestation_root(&self) -> fs_checker::ContentHash {
+        let audit = self.promotion.audit();
+        let mut bytes = Vec::new();
+        push_text(
+            &mut bytes,
+            "fs-flywheel-e2e/admitted-producer-attestation/v1",
+        );
+        push_bytes(&mut bytes, self.promotion.subject().id().as_bytes());
+        push_bytes(
+            &mut bytes,
+            self.promotion.subject().canonical_preimage().as_bytes(),
+        );
+        bytes.extend_from_slice(&self.promotion.subject().canonical_bytes().to_le_bytes());
+        push_bytes(&mut bytes, self.promotion.anchor().content_id().as_bytes());
+        push_text(&mut bytes, audit.verifier_domain);
+        push_bytes(
+            &mut bytes,
+            audit.verifier_observation.content_id().as_bytes(),
+        );
+        bytes.extend_from_slice(&audit.verifier_observation.length().to_le_bytes());
+        push_text(&mut bytes, audit.key_policy_domain);
+        push_bytes(
+            &mut bytes,
+            audit.key_policy_observation.content_id().as_bytes(),
+        );
+        bytes.extend_from_slice(&audit.key_policy_observation.length().to_le_bytes());
+        push_text(&mut bytes, audit.context);
+        fs_ledger::hash_bytes(&bytes)
+    }
 }
 
 impl AuthenticReceiptResolver {
@@ -115,6 +531,8 @@ impl AuthenticReceiptResolver {
         planner_budget: f64,
         rungs: &[usize],
     ) -> Result<Self, PlanError> {
+        let producer_executable = current_producer_process_executable_identity()
+            .expect("producer executable must be readable before verifier work");
         let mut cache = MemCache::default();
         let mut costs = CostTable::new(200.0)?;
         let outcome = plan(
@@ -140,6 +558,7 @@ impl AuthenticReceiptResolver {
             planner_budget,
             planner_spent: spent,
             rungs: rungs.to_vec(),
+            producer_executable,
         })
     }
 
@@ -150,6 +569,7 @@ impl AuthenticReceiptResolver {
         planner_budget: f64,
         planner_spent: f64,
         rungs: &[usize],
+        producer_executable: ProducerExecutableIdentity,
         receipt: VerifierReceipt,
     ) -> Self {
         Self {
@@ -160,30 +580,11 @@ impl AuthenticReceiptResolver {
             planner_budget,
             planner_spent,
             rungs: rungs.to_vec(),
+            producer_executable,
         }
     }
 
-    fn from_presented_step(
-        family: &ProblemFamily,
-        theta: f64,
-        tolerance: f64,
-        planner_budget: f64,
-        planner_spent: f64,
-        rungs: &[usize],
-        receipt: PresentedVerifierReceipt,
-    ) -> Self {
-        Self {
-            receipt,
-            family: family.clone(),
-            theta,
-            tolerance,
-            planner_budget,
-            planner_spent,
-            rungs: rungs.to_vec(),
-        }
-    }
-
-    fn resolve(&self) -> Result<ResolvedVerifierReceipt<'_>, &'static str> {
+    fn resolve(&self) -> Result<ReplayedVerifierReceipt<'_>, &'static str> {
         let mut cache = MemCache::default();
         let mut costs = CostTable::new(200.0).map_err(|_| "replay cost table refused")?;
         let outcome = plan(
@@ -210,7 +611,77 @@ impl AuthenticReceiptResolver {
             .map_err(|_| "independent problem replay refused")?;
         let admitted = admit_verifier_receipt(&problem, &candidate, self.tolerance, &self.receipt)
             .map_err(|_| "original verifier receipt failed exact production replay")?;
-        Ok(ResolvedVerifierReceipt { admitted })
+        Ok(ReplayedVerifierReceipt { admitted })
+    }
+
+    fn producer_attestation_subject(
+        &self,
+        scope: ProducerAttestationScope,
+        executable: ProducerExecutableIdentity,
+    ) -> Result<IdentityReceipt<ProducerAttestationSubject>, &'static str> {
+        let producer = self.receipt.producer();
+        CanonicalEncoder::<ProducerAttestationSubject, _>::new(
+            PRODUCER_IDENTITY_LIMITS,
+            NeverCancel,
+        )
+        .map_err(|_| "producer-attestation subject schema refused")?
+        .utf8(Field::new(0, "purpose"), scope.purpose)
+        .map_err(|_| "producer-attestation purpose refused")?
+        .bytes(
+            Field::new(1, "evidence_scope_root"),
+            scope.evidence_root.as_bytes(),
+        )
+        .map_err(|_| "producer-attestation evidence scope refused")?
+        .bytes(
+            Field::new(2, "verifier_receipt_root"),
+            self.receipt.artifact_root().content_hash().as_bytes(),
+        )
+        .map_err(|_| "producer-attestation verifier receipt refused")?
+        .u64(
+            Field::new(3, "executable_identity_version"),
+            u64::from(executable.schema_version),
+        )
+        .map_err(|_| "producer-attestation executable schema refused")?
+        .u64(Field::new(4, "executable_byte_len"), executable.byte_len)
+        .map_err(|_| "producer-attestation executable length refused")?
+        .bytes(
+            Field::new(5, "executable_raw_hash"),
+            executable.raw_hash.as_bytes(),
+        )
+        .map_err(|_| "producer-attestation executable hash refused")?
+        .utf8(Field::new(6, "producer_crate"), producer.crate_name())
+        .map_err(|_| "producer-attestation crate refused")?
+        .utf8(Field::new(7, "producer_version"), producer.crate_version())
+        .map_err(|_| "producer-attestation version refused")?
+        .utf8(Field::new(8, "producer_features"), producer.features())
+        .map_err(|_| "producer-attestation features refused")?
+        .bytes(
+            Field::new(9, "producer_source_root"),
+            producer.producer_source_root().as_bytes(),
+        )
+        .map_err(|_| "producer-attestation source root refused")?
+        .bytes(
+            Field::new(10, "dependency_source_root"),
+            producer.dependency_source_root().as_bytes(),
+        )
+        .map_err(|_| "producer-attestation dependency root refused")?
+        .bytes(
+            Field::new(11, "workspace_manifest_root"),
+            producer.workspace_manifest_root().as_bytes(),
+        )
+        .map_err(|_| "producer-attestation workspace manifest refused")?
+        .bytes(
+            Field::new(12, "workspace_lock_root"),
+            producer.workspace_lock_root().as_bytes(),
+        )
+        .map_err(|_| "producer-attestation workspace lock refused")?
+        .bytes(
+            Field::new(13, "toolchain_root"),
+            producer.toolchain_root().as_bytes(),
+        )
+        .map_err(|_| "producer-attestation toolchain refused")?
+        .finish()
+        .map_err(|_| "producer-attestation subject publication refused")
     }
 }
 
@@ -240,14 +711,41 @@ fn outcome_candidate(outcome: PlanOutcome) -> Option<(Vec<f64>, Vec<f64>, f64, V
 }
 
 enum ReceiptPromotion<'a> {
-    Verified(ResolvedVerifierReceipt<'a>),
+    Verified(PromotedVerifierReceipt<'a>),
     Gated {
         color: Color,
         no_claim: &'static str,
     },
 }
 
-fn resolve_for_promotion(resolver: Option<&AuthenticReceiptResolver>) -> ReceiptPromotion<'_> {
+fn producer_attestation_fixture(
+    resolver: &AuthenticReceiptResolver,
+    scope: ProducerAttestationScope,
+) -> DetachedFixtureProducerAuthority {
+    let subject = resolver
+        .producer_attestation_subject(scope, resolver.producer_executable)
+        .expect("bounded fixture producer-attestation subject");
+    DetachedFixtureProducerAuthority::for_subject(subject)
+}
+
+fn producer_attestation_gated<'a>(
+    estimator: &'static str,
+    no_claim: &'static str,
+) -> ReceiptPromotion<'a> {
+    ReceiptPromotion::Gated {
+        color: Color::Estimated {
+            estimator: estimator.to_string(),
+            dispersion: 1.0,
+        },
+        no_claim,
+    }
+}
+
+fn resolve_for_promotion<'a>(
+    resolver: Option<&'a AuthenticReceiptResolver>,
+    scope: ProducerAttestationScope,
+    authority: Option<&DetachedFixtureProducerAuthority>,
+) -> ReceiptPromotion<'a> {
     let Some(resolver) = resolver else {
         return ReceiptPromotion::Gated {
             color: Color::Estimated {
@@ -257,8 +755,64 @@ fn resolve_for_promotion(resolver: Option<&AuthenticReceiptResolver>) -> Receipt
             no_claim: "NO-CLAIM: upstream verifier receipt authority is unavailable",
         };
     };
+    let Some(authority) = authority else {
+        return producer_attestation_gated(
+            "missing-producer-attestation-capability",
+            "NO-CLAIM: producer-attestation fixture/capability is unavailable",
+        );
+    };
+    let Ok(observed_executable) = current_producer_process_executable_identity() else {
+        return producer_attestation_gated(
+            "producer-process-executable-unreadable",
+            "NO-CLAIM: producer-process executable identity could not be recaptured",
+        );
+    };
+    if observed_executable != resolver.producer_executable {
+        return producer_attestation_gated(
+            "producer-process-executable-drift",
+            "NO-CLAIM: producer-process executable changed across verifier publication",
+        );
+    }
     match resolver.resolve() {
-        Ok(resolved) if resolved.receipt().accepted() => ReceiptPromotion::Verified(resolved),
+        Ok(scientific) if scientific.receipt().accepted() => {
+            let Ok(expected_subject) =
+                resolver.producer_attestation_subject(scope, observed_executable)
+            else {
+                return producer_attestation_gated(
+                    "producer-attestation-subject-refused",
+                    "NO-CLAIM: producer attestation subject could not be canonicalized",
+                );
+            };
+            let Ok(policy_relative) = authority.verify_and_admit(expected_subject) else {
+                return producer_attestation_gated(
+                    "producer-attestation-capability-refusal",
+                    "NO-CLAIM: detached producer-attestation fixture/capability was refused",
+                );
+            };
+            let Ok(promotion) = configured_producer_promotion_root().admit_for_promotion(
+                &policy_relative.authority,
+                policy_relative.verifier_observation,
+                policy_relative.policy_observation,
+            ) else {
+                return producer_attestation_gated(
+                    "producer-attestation-trust-root-refusal",
+                    "NO-CLAIM: producer attestation did not match the pinned promotion trust root",
+                );
+            };
+            if promotion.subject() != expected_subject
+                || promotion.context() != PRODUCER_ATTESTATION_CONTEXT
+            {
+                return producer_attestation_gated(
+                    "producer-attestation-witness-mismatch",
+                    "NO-CLAIM: producer promotion witness did not bind the expected subject",
+                );
+            }
+            ReceiptPromotion::Verified(PromotedVerifierReceipt {
+                scientific,
+                producer_executable: observed_executable,
+                promotion,
+            })
+        }
         Ok(resolved) => ReceiptPromotion::Gated {
             color: Color::Estimated {
                 estimator: "verified-bound-above-requested-tolerance".to_string(),
@@ -276,6 +830,29 @@ fn resolve_for_promotion(resolver: Option<&AuthenticReceiptResolver>) -> Receipt
     }
 }
 
+fn assert_producer_attestation_gated(
+    promotion: ReceiptPromotion<'_>,
+    expected_estimator: &str,
+    scenario: &str,
+) {
+    match promotion {
+        ReceiptPromotion::Gated { color, no_claim } => {
+            let Color::Estimated { estimator, .. } = color else {
+                panic!("{scenario} must remain Estimated");
+            };
+            assert_eq!(
+                estimator, expected_estimator,
+                "{scenario} must fail at the intended attestation boundary"
+            );
+            assert!(
+                no_claim.contains("NO-CLAIM"),
+                "{scenario} must retain an explicit no-claim"
+            );
+        }
+        ReceiptPromotion::Verified(_) => panic!("{scenario} must not mint promotion authority"),
+    }
+}
+
 fn physical_qoi_no_claim(detail: &str, dispersion: f64) -> Claim {
     Claim::estimated(
         PHYSICAL_QOI_ID,
@@ -288,29 +865,28 @@ fn physical_qoi_no_claim(detail: &str, dispersion: f64) -> Claim {
     )
 }
 
-struct ReceiptCertificateVerifier<'a> {
-    resolved: ResolvedVerifierReceipt<'a>,
+struct ReceiptCertificateVerifier<'receipt, 'promotion> {
+    promoted: &'promotion PromotedVerifierReceipt<'receipt>,
     provenance: Provenance,
     claim_index: usize,
     expected_claim_subject_hash: fs_checker::ContentHash,
 }
 
-impl<'a> ReceiptCertificateVerifier<'a> {
-    fn from_resolver(
-        resolver: &'a AuthenticReceiptResolver,
+impl<'receipt, 'promotion> ReceiptCertificateVerifier<'receipt, 'promotion> {
+    fn from_promoted(
+        promoted: &'promotion PromotedVerifierReceipt<'receipt>,
         provenance: Provenance,
         claim_index: usize,
-    ) -> Result<Self, &'static str> {
-        let resolved = resolver.resolve()?;
-        let expected_claim_subject_hash = resolved
+    ) -> Self {
+        let expected_claim_subject_hash = promoted
             .claim()
             .declared_source_certificate_subject_hash_unverified();
-        Ok(Self {
-            resolved,
+        Self {
+            promoted,
             provenance,
             claim_index,
             expected_claim_subject_hash,
-        })
+        }
     }
 
     fn policy_fingerprint(&self) -> fs_checker::ContentHash {
@@ -318,8 +894,11 @@ impl<'a> ReceiptCertificateVerifier<'a> {
         push_text(&mut bytes, RECEIPT_POLICY);
         push_hash(
             &mut bytes,
-            self.resolved.receipt().artifact_root().content_hash(),
+            self.promoted.receipt().artifact_root().content_hash(),
         );
+        push_hash(&mut bytes, self.promoted.producer_executable_root());
+        push_hash(&mut bytes, self.promoted.producer_attestation_root());
+        push_hash(&mut bytes, self.promoted.producer_attestation_policy_root());
         push_hash(&mut bytes, self.expected_claim_subject_hash);
         push_text(&mut bytes, &self.provenance.code_version);
         push_text(&mut bytes, &self.provenance.constellation_lock);
@@ -332,13 +911,13 @@ impl<'a> ReceiptCertificateVerifier<'a> {
     }
 }
 
-impl fs_checker::SourceCertificateVerifier for ReceiptCertificateVerifier<'_> {
+impl fs_checker::SourceCertificateVerifier for ReceiptCertificateVerifier<'_, '_> {
     fn verify(
         &self,
         request: &fs_checker::SourceCertificateRequest<'_>,
     ) -> fs_checker::VerificationDecision {
         let fingerprint = self.policy_fingerprint();
-        let receipt = self.resolved.receipt();
+        let receipt = self.promoted.receipt();
         if receipt.accepted()
             && request.package_provenance == &self.provenance
             && request.claim_index == self.claim_index
@@ -583,6 +1162,8 @@ fn ac_003_package_recheck_solver_free_and_voi_hint() -> Result<(), PlanError> {
     // checker's receipt-policy, composition, and content-address paths. The
     // real verifier runs before the checker receives its sealed capability.
     let family = steep_family()?;
+    let producer_executable = current_producer_process_executable_identity()
+        .expect("capture producer executable before ac-003 verifier work");
     let mut cache = MemCache::default();
     let mut costs = CostTable::new(200.0)?;
     let report = run_anytime(
@@ -649,10 +1230,20 @@ fn ac_003_package_recheck_solver_free_and_voi_hint() -> Result<(), PlanError> {
         last.budget,
         last.spent,
         &RUNGS,
+        producer_executable,
         last.verifier_receipt.clone(),
     );
-    let ReceiptPromotion::Verified(resolved) = resolve_for_promotion(Some(&resolver)) else {
-        panic!("the authentic final receipt must resolve before package construction");
+    let attestation_scope = ProducerAttestationScope {
+        purpose: "fs-flywheel-e2e/ac-003-final-receipt/v1",
+        evidence_root: resolver.receipt.artifact_root().content_hash(),
+    };
+    let producer_authority = producer_attestation_fixture(&resolver, attestation_scope);
+    let ReceiptPromotion::Verified(resolved) = resolve_for_promotion(
+        Some(&resolver),
+        attestation_scope,
+        Some(&producer_authority),
+    ) else {
+        panic!("the authentic final receipt and producer attestation must resolve");
     };
     let admitted_receipt = resolved.receipt();
     assert_eq!(
@@ -692,11 +1283,11 @@ fn ac_003_package_recheck_solver_free_and_voi_hint() -> Result<(), PlanError> {
             .with_claim(Claim::estimated("voi-hint", hint_text, "voi-myopic", 1.0)),
         "acceptance-gate",
     );
-    // SOLVER-FREE PACKAGE RE-CHECK: the checker receives only the sealed token
-    // produced by the independent replay above. Its injected capability can
-    // match the exact request without importing or invoking a solver.
-    let source_verifier = ReceiptCertificateVerifier::from_resolver(&resolver, provenance, 0)
-        .expect("receipt resolves before the solver-free package check");
+    // SOLVER-FREE PACKAGE RE-CHECK: the checker receives only the promoted
+    // receipt carrying both independent scientific replay and the opaque
+    // producer witness. Its injected capability can match the exact request
+    // without importing or invoking a solver.
+    let source_verifier = ReceiptCertificateVerifier::from_promoted(&resolved, provenance, 0);
     let signature_verifier = ExactRootSignatureVerifier {
         domain: "acceptance-gate",
     };
@@ -733,7 +1324,7 @@ fn ac_003_package_recheck_solver_free_and_voi_hint() -> Result<(), PlanError> {
         .passed(),
         "a tampered root fails the independent checker code path"
     );
-    match resolve_for_promotion(None) {
+    match resolve_for_promotion(None, attestation_scope, None) {
         ReceiptPromotion::Gated { color, no_claim } => {
             assert!(matches!(color, Color::Estimated { .. }));
             assert!(no_claim.contains("NO-CLAIM") && no_claim.contains("unavailable"));
@@ -742,34 +1333,46 @@ fn ac_003_package_recheck_solver_free_and_voi_hint() -> Result<(), PlanError> {
             panic!("missing upstream authority must never mint a verified claim")
         }
     }
+    match resolve_for_promotion(Some(&resolver), attestation_scope, None) {
+        ReceiptPromotion::Gated { color, no_claim } => {
+            assert!(matches!(color, Color::Estimated { .. }));
+            assert!(no_claim.contains("NO-CLAIM") && no_claim.contains("attestation"));
+        }
+        ReceiptPromotion::Verified(_) => {
+            panic!("a scientific receipt without producer attestation must stay gated")
+        }
+    }
     let pie = check.render_pie();
     println!(
-        "{{\"schema_version\":1,\"suite\":\"fs-flywheel-e2e/acceptance\",\
+        "{{\"schema_version\":2,\"suite\":\"fs-flywheel-e2e/acceptance\",\
          \"case\":\"ac-003\",\"seed\":\"0x5EED0008\",\"units\":\"{QOI_UNITS}\",\
          \"budget_cells_bits\":\"{:016x}\",\"spent_cells_bits\":\"{:016x}\",\
          \"cancellation\":\"completed-drained-finalized-published\",\
          \"artifact_root\":\"{root}\",\"verifier_family\":\"{}\",\
-         \"verifier_receipt\":\"{}\",\"physical_promotion\":\"estimated-no-claim\",\
+         \"verifier_receipt\":\"{}\",\"producer_executable_root\":\"{}\",\
+         \"producer_attestation_root\":\"{}\",\"physical_promotion\":\"estimated-no-claim\",\
          \"hint\":{},\"pie\":\"{}\"}}",
         resolver.planner_budget.to_bits(),
         resolver.planner_spent.to_bits(),
         resolver.receipt.verifier_family(),
         resolver.receipt.artifact_root(),
+        resolved.producer_executable_root(),
+        resolved.producer_attestation_root(),
         hint.to_json(),
         pie.replace('"', "'").replace('\n', " | ")
     );
     verdict(
         "ac-003",
-        "an immutable fs-verify receipt is independently replayed before its exact 1-D proxy \
-         result enters the package; verifier family, flux reconstruction, full receipt address, \
-         and VoI hint remain bound, while the physical wedge QoI and missing authority remain \
-         explicit Estimated no-claims",
+        "an immutable fs-verify receipt is independently replayed and bound to the stable \
+         producer-process executable through a pinned, fixture-backed opaque promotion witness \
+         before its exact 1-D proxy result enters the package; the physical wedge QoI and missing \
+         authority remain explicit Estimated no-claims",
     );
     Ok(())
 }
 
 fn package_accepts_claim(
-    resolver: &AuthenticReceiptResolver,
+    promoted: &PromotedVerifierReceipt<'_>,
     provenance: &Provenance,
     claim: Claim,
 ) -> bool {
@@ -778,8 +1381,7 @@ fn package_accepts_claim(
         "acceptance-gate/ac-003-mutation",
     );
     let source_verifier =
-        ReceiptCertificateVerifier::from_resolver(resolver, provenance.clone(), 0)
-            .expect("mutation baseline receipt resolves before package checking");
+        ReceiptCertificateVerifier::from_promoted(promoted, provenance.clone(), 0);
     let signature_verifier = ExactRootSignatureVerifier {
         domain: "acceptance-gate/ac-003-mutation",
     };
@@ -790,16 +1392,170 @@ fn package_accepts_claim(
 }
 
 #[test]
+fn ac_003_producer_executable_identity_is_content_exact_and_bounded() {
+    struct FragmentedReader<'a> {
+        bytes: &'a [u8],
+        offset: usize,
+        max_chunk: usize,
+    }
+
+    impl std::io::Read for FragmentedReader<'_> {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            let remaining = &self.bytes[self.offset..];
+            let take = remaining.len().min(output.len()).min(self.max_chunk);
+            output[..take].copy_from_slice(&remaining[..take]);
+            self.offset += take;
+            Ok(take)
+        }
+    }
+
+    let payload = b"producer-executable-content-fixture".repeat(4_096);
+    let mut contiguous = std::io::Cursor::new(payload.as_slice());
+    let exact = producer_executable_identity_from_reader(&mut contiguous)
+        .expect("bounded contiguous executable fixture");
+    assert_eq!(exact.schema_version, PRODUCER_EXECUTABLE_IDENTITY_VERSION);
+    assert_eq!(
+        exact.byte_len,
+        u64::try_from(payload.len()).expect("fixture length fits u64")
+    );
+    assert_eq!(exact.raw_hash, fs_ledger::hash_bytes(&payload));
+    let mut fragmented = FragmentedReader {
+        bytes: &payload,
+        offset: 0,
+        max_chunk: 37,
+    };
+    let rechunked = producer_executable_identity_from_reader(&mut fragmented)
+        .expect("bounded fragmented executable fixture");
+    assert_eq!(
+        exact, rechunked,
+        "read partitioning and path-free reader choice are nonsemantic"
+    );
+
+    let mut over_cap = std::io::Cursor::new(payload.as_slice());
+    assert!(
+        producer_executable_identity_from_reader_with_limit(
+            &mut over_cap,
+            u64::try_from(payload.len() - 1).expect("fixture length fits u64"),
+        )
+        .is_err(),
+        "the executable byte cap refuses before identity publication"
+    );
+
+    let mut stale_schema = exact;
+    stale_schema.schema_version += 1;
+    assert_ne!(stale_schema.root(), exact.root());
+    let mut changed_length = exact;
+    changed_length.byte_len += 1;
+    assert_ne!(changed_length.root(), exact.root());
+    let mut changed_content = exact;
+    changed_content.raw_hash = flip(changed_content.raw_hash);
+    assert_ne!(changed_content.root(), exact.root());
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // one hostile receipt/attestation substitution battery
 fn ac_003_production_receipt_and_claim_subject_substitutions_fail_closed() -> Result<(), PlanError>
 {
     let family = steep_family()?;
     let resolver = AuthenticReceiptResolver::capture(&family, 1.0, 6e-3, 400.0, &RUNGS)?;
-    let ReceiptPromotion::Verified(resolved) = resolve_for_promotion(Some(&resolver)) else {
+    let attestation_scope = ProducerAttestationScope {
+        purpose: "fs-flywheel-e2e/ac-003-mutation-receipt/v1",
+        evidence_root: resolver.receipt.artifact_root().content_hash(),
+    };
+    let producer_authority = producer_attestation_fixture(&resolver, attestation_scope);
+    let ReceiptPromotion::Verified(resolved) = resolve_for_promotion(
+        Some(&resolver),
+        attestation_scope,
+        Some(&producer_authority),
+    ) else {
         panic!("baseline production receipt must promote");
     };
+    assert_producer_attestation_gated(
+        resolve_for_promotion(Some(&resolver), attestation_scope, None),
+        "missing-producer-attestation-capability",
+        "missing detached attestation authority",
+    );
+
+    let mut stale_hash = resolver.clone();
+    stale_hash.producer_executable.raw_hash = flip(stale_hash.producer_executable.raw_hash);
+    assert_producer_attestation_gated(
+        resolve_for_promotion(
+            Some(&stale_hash),
+            attestation_scope,
+            Some(&producer_authority),
+        ),
+        "producer-process-executable-drift",
+        "foreign executable content hash",
+    );
+
+    let mut foreign_executable = resolver.producer_executable;
+    foreign_executable.raw_hash = flip(foreign_executable.raw_hash);
+    let foreign_executable_subject = resolver
+        .producer_attestation_subject(attestation_scope, foreign_executable)
+        .expect("bounded foreign-executable attestation subject");
+    let foreign_executable_authority =
+        DetachedFixtureProducerAuthority::for_subject(foreign_executable_subject);
+    assert_producer_attestation_gated(
+        resolve_for_promotion(
+            Some(&resolver),
+            attestation_scope,
+            Some(&foreign_executable_authority),
+        ),
+        "producer-attestation-capability-refusal",
+        "valid sidecar transplanted from a foreign executable",
+    );
+
+    let mut truncated_sidecar = producer_authority.clone();
+    truncated_sidecar
+        .anchor_bytes
+        .pop()
+        .expect("fixture sidecar is non-empty");
+    assert_producer_attestation_gated(
+        resolve_for_promotion(Some(&resolver), attestation_scope, Some(&truncated_sidecar)),
+        "producer-attestation-capability-refusal",
+        "truncated detached attestation sidecar",
+    );
+
+    let foreign_scope = ProducerAttestationScope {
+        purpose: attestation_scope.purpose,
+        evidence_root: flip(attestation_scope.evidence_root),
+    };
+    assert_producer_attestation_gated(
+        resolve_for_promotion(Some(&resolver), foreign_scope, Some(&producer_authority)),
+        "producer-attestation-capability-refusal",
+        "attestation transplanted to another receipt scope",
+    );
+
+    let mut foreign_verifier = producer_authority.clone();
+    foreign_verifier.verifier =
+        producer_attestation_verifier_identity("foreign/permit-all-verifier/v1", 1);
+    foreign_verifier.anchor_bytes = fixture_attestation_sidecar_bytes(
+        foreign_verifier.subject,
+        foreign_verifier.verifier,
+        foreign_verifier.policy,
+    );
+    assert_producer_attestation_gated(
+        resolve_for_promotion(Some(&resolver), attestation_scope, Some(&foreign_verifier)),
+        "producer-attestation-trust-root-refusal",
+        "foreign verifier identity",
+    );
+
+    let mut foreign_policy = producer_authority.clone();
+    foreign_policy.policy = producer_attestation_policy_identity("foreign/policy/v1", 1);
+    foreign_policy.anchor_bytes = fixture_attestation_sidecar_bytes(
+        foreign_policy.subject,
+        foreign_policy.verifier,
+        foreign_policy.policy,
+    );
+    assert_producer_attestation_gated(
+        resolve_for_promotion(Some(&resolver), attestation_scope, Some(&foreign_policy)),
+        "producer-attestation-trust-root-refusal",
+        "foreign producer-promotion key policy",
+    );
+
     let provenance = Provenance::new("acceptance-e2e", "Cargo.lock");
     assert!(package_accepts_claim(
-        &resolver,
+        &resolved,
         &provenance,
         resolved.claim()
     ));
@@ -814,7 +1570,7 @@ fn ac_003_production_receipt_and_claim_subject_substitutions_fail_closed() -> Re
         "00".repeat(32),
     );
     assert!(
-        !package_accepts_claim(&resolver, &provenance, fake_hash),
+        !package_accepts_claim(&resolved, &provenance, fake_hash),
         "a fixed/fake certificate address cannot stand in for the production receipt"
     );
     let relabeled = Claim::from_certificate(
@@ -826,7 +1582,7 @@ fn ac_003_production_receipt_and_claim_subject_substitutions_fail_closed() -> Re
         receipt.artifact_root().to_hex(),
     );
     assert!(
-        !package_accepts_claim(&resolver, &provenance, relabeled),
+        !package_accepts_claim(&resolved, &provenance, relabeled),
         "acceptance cannot relabel the production source identity"
     );
     let altered_endpoint = Claim::from_certificate(
@@ -838,7 +1594,7 @@ fn ac_003_production_receipt_and_claim_subject_substitutions_fail_closed() -> Re
         receipt.artifact_root().to_hex(),
     );
     assert!(
-        !package_accepts_claim(&resolver, &provenance, altered_endpoint),
+        !package_accepts_claim(&resolved, &provenance, altered_endpoint),
         "altering an interval endpoint fails exact checker request binding"
     );
     let cross_qoi = Claim::from_certificate(
@@ -850,32 +1606,18 @@ fn ac_003_production_receipt_and_claim_subject_substitutions_fail_closed() -> Re
         receipt.artifact_root().to_hex(),
     );
     assert!(
-        !package_accepts_claim(&resolver, &provenance, cross_qoi),
+        !package_accepts_claim(&resolved, &provenance, cross_qoi),
         "the same receipt address cannot authenticate a different QoI subject"
     );
 
-    let cross_problem = AuthenticReceiptResolver::from_presented_step(
-        &family,
-        0.75,
-        resolver.tolerance,
-        resolver.planner_budget,
-        resolver.planner_spent,
-        &resolver.rungs,
-        resolver.receipt.clone(),
-    );
+    let mut cross_problem = resolver.clone();
+    cross_problem.theta = 0.75;
     assert!(
         cross_problem.resolve().is_err(),
         "an authentic receipt cannot replay against a substituted problem parameter"
     );
-    let cross_tolerance = AuthenticReceiptResolver::from_presented_step(
-        &family,
-        resolver.theta,
-        7e-3,
-        resolver.planner_budget,
-        resolver.planner_spent,
-        &resolver.rungs,
-        resolver.receipt.clone(),
-    );
+    let mut cross_tolerance = resolver.clone();
+    cross_tolerance.tolerance = 7e-3;
     assert!(
         cross_tolerance.resolve().is_err(),
         "an authentic receipt cannot replay against a substituted tolerance"
@@ -883,8 +1625,7 @@ fn ac_003_production_receipt_and_claim_subject_substitutions_fail_closed() -> Re
 
     // Exercise the claim-subject comparison directly: every visible request
     // field remains exact and only the address-free subject digest changes.
-    let verifier = ReceiptCertificateVerifier::from_resolver(&resolver, provenance.clone(), 0)
-        .expect("baseline production receipt resolves");
+    let verifier = ReceiptCertificateVerifier::from_promoted(&resolved, provenance.clone(), 0);
     let claim = resolved.claim();
     let statement = receipt.statement();
     let producer = receipt.producer().label();
@@ -1202,6 +1943,10 @@ struct WholePathReplayManifest {
     package_root: fs_checker::ContentHash,
     checker_decision_root: fs_checker::ContentHash,
     checker_receipt_root: fs_checker::ContentHash,
+    producer_executable_root: fs_checker::ContentHash,
+    producer_attestation_root: fs_checker::ContentHash,
+    producer_attestation_anchor_root: fs_checker::ContentHash,
+    producer_attestation_policy_root: fs_checker::ContentHash,
     budget_root: fs_checker::ContentHash,
     tolerance_bits: u64,
     planner_budget_bits: u64,
@@ -1216,7 +1961,7 @@ struct WholePathReplayManifest {
 
 impl WholePathReplayManifest {
     fn root(&self) -> fs_checker::ContentHash {
-        let mut bytes = b"fs-flywheel-e2e/whole-path-manifest/v1".to_vec();
+        let mut bytes = b"fs-flywheel-e2e/whole-path-manifest/v2".to_vec();
         bytes.extend_from_slice(&self.schema_version.to_le_bytes());
         for root in [
             self.admission_ir_root,
@@ -1239,6 +1984,10 @@ impl WholePathReplayManifest {
             self.package_root,
             self.checker_decision_root,
             self.checker_receipt_root,
+            self.producer_executable_root,
+            self.producer_attestation_root,
+            self.producer_attestation_anchor_root,
+            self.producer_attestation_policy_root,
             self.budget_root,
         ] {
             push_hash(&mut bytes, root);
@@ -1273,6 +2022,8 @@ fn ac_004_g5_whole_path_replay() -> Result<(), PlanError> {
         assert!(admission.admitted, "whole-path replay begins admitted");
 
         let family = steep_family()?;
+        let producer_executable = current_producer_process_executable_identity()
+            .expect("capture producer executable before ac-004 whole-path work");
         let budgets = [30.0, 400.0];
         let mut cache = RecordingCache::default();
         let mut costs = CostTable::new(200.0)?;
@@ -1300,6 +2051,7 @@ fn ac_004_g5_whole_path_replay() -> Result<(), PlanError> {
                 step.budget,
                 step.spent,
                 &RUNGS,
+                producer_executable,
                 step.verifier_receipt.clone(),
             );
             let resolved = resolver
@@ -1332,6 +2084,7 @@ fn ac_004_g5_whole_path_replay() -> Result<(), PlanError> {
                 push_hash(&mut receipt_sequence, root);
             }
         }
+        let verifier_receipts_root = fs_ledger::hash_bytes(&receipt_sequence);
 
         let final_step = report.trajectory.last().expect("final original receipt");
         let resolver = AuthenticReceiptResolver::from_original_step(
@@ -1341,10 +2094,20 @@ fn ac_004_g5_whole_path_replay() -> Result<(), PlanError> {
             final_step.budget,
             final_step.spent,
             &RUNGS,
+            producer_executable,
             final_step.verifier_receipt.clone(),
         );
-        let ReceiptPromotion::Verified(resolved) = resolve_for_promotion(Some(&resolver)) else {
-            panic!("the final replay receipt must independently resolve");
+        let attestation_scope = ProducerAttestationScope {
+            purpose: "fs-flywheel-e2e/ac-004-receipt-sequence/v1",
+            evidence_root: verifier_receipts_root,
+        };
+        let producer_authority = producer_attestation_fixture(&resolver, attestation_scope);
+        let ReceiptPromotion::Verified(resolved) = resolve_for_promotion(
+            Some(&resolver),
+            attestation_scope,
+            Some(&producer_authority),
+        ) else {
+            panic!("the final replay receipt sequence and producer attestation must resolve");
         };
         let provenance = Provenance::new("acceptance-e2e", "Cargo.lock");
         let pkg = signed_fixture(
@@ -1362,8 +2125,7 @@ fn ac_004_g5_whole_path_replay() -> Result<(), PlanError> {
             "acceptance-gate/ac-004",
         );
         let package_root = pkg.try_merkle_root().expect("bounded fixture root");
-        let source_verifier = ReceiptCertificateVerifier::from_resolver(&resolver, provenance, 0)
-            .expect("whole-path receipt resolves before the solver-free package check");
+        let source_verifier = ReceiptCertificateVerifier::from_promoted(&resolved, provenance, 0);
         let signature_verifier = ExactRootSignatureVerifier {
             domain: "acceptance-gate/ac-004",
         };
@@ -1404,7 +2166,7 @@ fn ac_004_g5_whole_path_replay() -> Result<(), PlanError> {
         }
 
         Ok(WholePathReplayManifest {
-            schema_version: 1,
+            schema_version: 2,
             admission_ir_root: admission_ir_root(&admission),
             capability_decision_root: admission_decision_root(&admission, &cx),
             query_root: fs_ledger::hash_bytes(WEDGE.as_bytes()),
@@ -1413,7 +2175,7 @@ fn ac_004_g5_whole_path_replay() -> Result<(), PlanError> {
                 "physical={PHYSICAL_QOI_UNITS};proxy={QOI_UNITS};physical-promotion=gated"
             ),
             interval_sequence_root: interval_sequence_root(&report.trajectory),
-            verifier_receipts_root: fs_ledger::hash_bytes(&receipt_sequence),
+            verifier_receipts_root,
             ladder_root: ladder_root(&budgets, &RUNGS),
             escalation_root: escalation_root(&report.trajectory),
             cache_snapshot_root: RecordingCache::initial_snapshot_root(),
@@ -1423,6 +2185,10 @@ fn ac_004_g5_whole_path_replay() -> Result<(), PlanError> {
             package_root,
             checker_decision_root: check.decision_hash(),
             checker_receipt_root: checker_receipt.receipt_hash(),
+            producer_executable_root: resolved.producer_executable_root(),
+            producer_attestation_root: resolved.producer_attestation_root(),
+            producer_attestation_anchor_root: resolved.producer_attestation_anchor_root(),
+            producer_attestation_policy_root: resolved.producer_attestation_policy_root(),
             budget_root: fs_ledger::hash_bytes(&budget),
             tolerance_bits: 6e-3_f64.to_bits(),
             planner_budget_bits: resolver.planner_budget.to_bits(),
@@ -1436,7 +2202,7 @@ fn ac_004_g5_whole_path_replay() -> Result<(), PlanError> {
             source_cone_root: whole_path_source_cone_root(producer),
             lock_root: producer.workspace_lock_root(),
             toolchain_root: producer.toolchain_root(),
-            replay_verifier: "fs-flywheel-e2e/whole-path-replay-verifier/v1".to_string(),
+            replay_verifier: "fs-flywheel-e2e/whole-path-replay-verifier/v2".to_string(),
         })
     };
     let manifest_a = run()?;
@@ -1509,6 +2275,22 @@ fn ac_004_g5_whole_path_replay() -> Result<(), PlanError> {
     manifest_mutation!("checker receipt", |m: &mut WholePathReplayManifest| m
         .checker_receipt_root =
         flip(m.checker_receipt_root));
+    manifest_mutation!("producer executable", |m: &mut WholePathReplayManifest| m
+        .producer_executable_root =
+        flip(m.producer_executable_root));
+    manifest_mutation!("producer attestation", |m: &mut WholePathReplayManifest| {
+        m.producer_attestation_root = flip(m.producer_attestation_root)
+    });
+    manifest_mutation!(
+        "producer attestation anchor",
+        |m: &mut WholePathReplayManifest| m.producer_attestation_anchor_root =
+            flip(m.producer_attestation_anchor_root)
+    );
+    manifest_mutation!(
+        "producer attestation policy",
+        |m: &mut WholePathReplayManifest| m.producer_attestation_policy_root =
+            flip(m.producer_attestation_policy_root)
+    );
     manifest_mutation!(
         "budgets and consumption",
         |m: &mut WholePathReplayManifest| m.budget_root = flip(m.budget_root)
@@ -1542,13 +2324,15 @@ fn ac_004_g5_whole_path_replay() -> Result<(), PlanError> {
         .replay_verifier
         .push_str("-substituted"));
     println!(
-        "{{\"schema_version\":1,\"suite\":\"fs-flywheel-e2e/acceptance\",\
+        "{{\"schema_version\":2,\"suite\":\"fs-flywheel-e2e/acceptance\",\
          \"case\":\"ac-004\",\"seed\":\"0x5EED0008\",\"units\":\"{}\",\
          \"budget_root\":\"{}\",\"tolerance_bits\":\"{:016x}\",\
          \"planner_budget_bits\":\"{:016x}\",\"planner_spent_bits\":\"{:016x}\",\
          \"verifier_work\":{:?},\"cancellation\":\"{}\",\
          \"manifest_root\":\"{expected}\",\"verifier_receipts_root\":\"{}\",\
-         \"checker_receipt_root\":\"{}\",\"replay_verifier\":\"{}\",\
+         \"checker_receipt_root\":\"{}\",\"producer_executable_root\":\"{}\",\
+         \"producer_attestation_root\":\"{}\",\"producer_attestation_anchor_root\":\"{}\",\
+         \"producer_attestation_policy_root\":\"{}\",\"replay_verifier\":\"{}\",\
          \"physical_promotion\":\"estimated-no-claim\"}}",
         manifest_a.units,
         manifest_a.budget_root,
@@ -1559,15 +2343,19 @@ fn ac_004_g5_whole_path_replay() -> Result<(), PlanError> {
         manifest_a.cancellation,
         manifest_a.verifier_receipts_root,
         manifest_a.checker_receipt_root,
+        manifest_a.producer_executable_root,
+        manifest_a.producer_attestation_root,
+        manifest_a.producer_attestation_anchor_root,
+        manifest_a.producer_attestation_policy_root,
         manifest_a.replay_verifier,
     );
     verdict(
         "ac-004",
         "the whole path binds admission, capabilities, query/QoI/units, every interval and \
-         authentic verifier receipt, ladder/escalation, cache state/mutations, VoI, package and \
-         checker receipts, budgets/cancellation, and source-cone/lock/toolchain inputs; binary \
-         attestation remains a no-claim, every bound field replays bit-exact, and every mutation \
-         fails closed (G5)",
+         authentic verifier receipt, the full receipt-sequence-scoped fixture producer \
+         executable attestation, ladder/escalation, cache state/mutations, VoI, package/checker \
+         receipts, budgets/cancellation, and source-cone/lock/toolchain inputs; every bound field \
+         replays bit-exact and every mutation fails closed (G5)",
     );
     Ok(())
 }
@@ -1591,8 +2379,17 @@ fn ac_005_laundering_invariant_across_the_path() -> Result<(), PlanError> {
     // sees exactly how much of the answer is estimated.
     let family = steep_family()?;
     let resolver = AuthenticReceiptResolver::capture(&family, 1.0, 6e-3, 400.0, &RUNGS)?;
-    let ReceiptPromotion::Verified(resolved) = resolve_for_promotion(Some(&resolver)) else {
-        panic!("the authentic hard component must resolve");
+    let attestation_scope = ProducerAttestationScope {
+        purpose: "fs-flywheel-e2e/ac-005-hard-component/v1",
+        evidence_root: resolver.receipt.artifact_root().content_hash(),
+    };
+    let producer_authority = producer_attestation_fixture(&resolver, attestation_scope);
+    let ReceiptPromotion::Verified(resolved) = resolve_for_promotion(
+        Some(&resolver),
+        attestation_scope,
+        Some(&producer_authority),
+    ) else {
+        panic!("the authentic and producer-attested hard component must resolve");
     };
     let provenance = Provenance::new("acceptance-e2e", "Cargo.lock");
     let hard_claim = resolved.claim();
@@ -1602,8 +2399,7 @@ fn ac_005_laundering_invariant_across_the_path() -> Result<(), PlanError> {
             .with_claim(Claim::estimated("soft", "estimated part", "dwr-guess", 0.1)),
         "acceptance-gate/ac-005",
     );
-    let source_verifier = ReceiptCertificateVerifier::from_resolver(&resolver, provenance, 0)
-        .expect("hard-component receipt resolves before package checking");
+    let source_verifier = ReceiptCertificateVerifier::from_promoted(&resolved, provenance, 0);
     let signature_verifier = ExactRootSignatureVerifier {
         domain: "acceptance-gate/ac-005",
     };
