@@ -32,6 +32,7 @@ use crate::basis::{AdmittedKnotVector, KnotVector};
 use crate::closest::norm3;
 use crate::surface::{AdmittedNurbsSurface, NurbsSurface};
 use core::mem::size_of;
+use fs_exec::Cx;
 use fs_math::det;
 
 /// The fitting knobs (the ErrBudget-style trade: patch density vs
@@ -426,6 +427,150 @@ fn direction(u: f64, v: f64) -> [f64; 3] {
     ]
 }
 
+/// Transactional outcome of a cancellation-aware radial projection.
+///
+/// Cancellation never exposes the partially narrowed sign bracket or a
+/// provisional radius.
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RadialProjectionRun {
+    /// All 40 fixed bisection steps and the final publication checkpoint
+    /// completed.
+    Complete {
+        /// Scalar `r` in `center + r * direction`.
+        radius: f64,
+    },
+    /// Cancellation was observed before a field evaluation or publication.
+    Cancelled,
+}
+
+fn validate_radial_projection_request(
+    center: [f64; 3],
+    dir: [f64; 3],
+    r_max: f64,
+) -> Result<(), NurbsError> {
+    if center.iter().any(|coordinate| !coordinate.is_finite()) {
+        return Err(refit_structure_error(
+            "radial projection center must be finite",
+        ));
+    }
+    if dir.iter().any(|coordinate| !coordinate.is_finite())
+        || dir.iter().all(|coordinate| *coordinate == 0.0)
+    {
+        return Err(refit_structure_error(
+            "radial projection direction must be finite and nonzero",
+        ));
+    }
+    if !r_max.is_finite() || r_max <= 0.0 {
+        return Err(refit_structure_error(
+            "radial projection extent must be finite and positive",
+        ));
+    }
+    Ok(())
+}
+
+fn radial_field_value_with_poll(
+    field: &dyn Fn([f64; 3]) -> f64,
+    center: [f64; 3],
+    dir: [f64; 3],
+    r: f64,
+    should_cancel: &mut impl FnMut() -> bool,
+) -> Result<Option<f64>, NurbsError> {
+    if should_cancel() {
+        return Ok(None);
+    }
+    let point = [
+        center[0] + r * dir[0],
+        center[1] + r * dir[1],
+        center[2] + r * dir[2],
+    ];
+    if point.iter().any(|coordinate| !coordinate.is_finite()) {
+        return Err(refit_structure_error(
+            "radial field sample point is not representable",
+        ));
+    }
+    let value = field(point);
+    if !value.is_finite() {
+        return Err(refit_structure_error(format!(
+            "implicit field returned non-finite value at {point:?}"
+        )));
+    }
+    Ok(Some(value))
+}
+
+fn radial_bracket_error(dir: [f64; 3]) -> NurbsError {
+    NurbsError::Structure {
+        what: format!(
+            "radial bracket failed along {dir:?}: refit v1 needs a star-shaped \
+             domain around the given center (field(center) < 0 < field(center + r_max·dir))"
+        ),
+    }
+}
+
+fn project_radial_with_poll(
+    field: &dyn Fn([f64; 3]) -> f64,
+    center: [f64; 3],
+    dir: [f64; 3],
+    r_max: f64,
+    should_cancel: &mut impl FnMut() -> bool,
+) -> Result<RadialProjectionRun, NurbsError> {
+    validate_radial_projection_request(center, dir, r_max)?;
+    let (mut lo, mut hi) = (0.0f64, r_max);
+    let Some(at_lo) = radial_field_value_with_poll(field, center, dir, lo, should_cancel)? else {
+        return Ok(RadialProjectionRun::Cancelled);
+    };
+    if at_lo >= 0.0 {
+        return Err(radial_bracket_error(dir));
+    }
+    let Some(at_hi) = radial_field_value_with_poll(field, center, dir, hi, should_cancel)? else {
+        return Ok(RadialProjectionRun::Cancelled);
+    };
+    if at_hi <= 0.0 {
+        return Err(radial_bracket_error(dir));
+    }
+    for _ in 0..40 {
+        let mid = f64::midpoint(lo, hi);
+        let Some(value) = radial_field_value_with_poll(field, center, dir, mid, should_cancel)?
+        else {
+            return Ok(RadialProjectionRun::Cancelled);
+        };
+        if value < 0.0 {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    if should_cancel() {
+        return Ok(RadialProjectionRun::Cancelled);
+    }
+    Ok(RadialProjectionRun::Complete {
+        radius: f64::midpoint(lo, hi),
+    })
+}
+
+/// Bisect the implicit field along `center + r * direction` for a sign
+/// crossing, with cancellation before every field call and final publication.
+///
+/// Constant-time request refusals precede the first checkpoint. The caller's
+/// direction supplies the ray parameterization; this operation does not grant
+/// continuity, root-existence, unit-direction, or geometric-distance
+/// authority to the closure or returned scalar.
+///
+/// # Errors
+///
+/// Returns a structured [`NurbsError`] for malformed inputs, a non-finite field
+/// value or sample point, or a missing strict negative-to-positive bracket.
+pub fn project_radial_with_cx(
+    field: &dyn Fn([f64; 3]) -> f64,
+    center: [f64; 3],
+    direction: [f64; 3],
+    r_max: f64,
+    cx: &Cx<'_>,
+) -> Result<RadialProjectionRun, NurbsError> {
+    let mut should_cancel = || cx.checkpoint().is_err();
+    project_radial_with_poll(field, center, direction, r_max, &mut should_cancel)
+}
+
 /// Bisect the implicit field along `center + r·dir` for a sign crossing.
 fn project_radial(
     field: &dyn Fn([f64; 3]) -> f64,
@@ -433,43 +578,13 @@ fn project_radial(
     dir: [f64; 3],
     r_max: f64,
 ) -> Result<f64, NurbsError> {
-    let at = |r: f64| -> Result<f64, NurbsError> {
-        let point = [
-            center[0] + r * dir[0],
-            center[1] + r * dir[1],
-            center[2] + r * dir[2],
-        ];
-        if point.iter().any(|coordinate| !coordinate.is_finite()) {
-            return Err(refit_structure_error(
-                "radial field sample point is not representable",
-            ));
-        }
-        let value = field(point);
-        if !value.is_finite() {
-            return Err(refit_structure_error(format!(
-                "implicit field returned non-finite value at {point:?}"
-            )));
-        }
-        Ok(value)
-    };
-    let (mut lo, mut hi) = (0.0f64, r_max);
-    if at(lo)? >= 0.0 || at(hi)? <= 0.0 {
-        return Err(NurbsError::Structure {
-            what: format!(
-                "radial bracket failed along {dir:?}: refit v1 needs a star-shaped \
-                 domain around the given center (field(center) < 0 < field(center + r_max·dir))"
-            ),
-        });
+    let mut never_cancel = || false;
+    match project_radial_with_poll(field, center, dir, r_max, &mut never_cancel)? {
+        RadialProjectionRun::Complete { radius } => Ok(radius),
+        RadialProjectionRun::Cancelled => Err(refit_structure_error(
+            "non-cancellable radial projection observed cancellation",
+        )),
     }
-    for _ in 0..40 {
-        let mid = f64::midpoint(lo, hi);
-        if at(mid)? < 0.0 {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    Ok(f64::midpoint(lo, hi))
 }
 
 /// Dense symmetric-positive-definite Cholesky factorization in place. The
@@ -932,7 +1047,208 @@ fn seam_g1_diagnostic_admitted(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use asupersync::types::Budget;
+    use fs_exec::{CancelGate, ExecMode, StreamKey};
     use std::cell::Cell;
+
+    fn with_refit_cx<R>(cancelled: bool, f: impl FnOnce(&Cx<'_>) -> R) -> R {
+        let gate = CancelGate::new_clock_free();
+        if cancelled {
+            gate.request();
+        }
+        let pool = fs_alloc::ArenaPool::new(fs_alloc::ArenaConfig::default());
+        pool.scope(|arena| {
+            let cx = Cx::new(
+                &gate,
+                arena,
+                StreamKey {
+                    seed: 0xAEF1_7001,
+                    kernel_id: 1,
+                    tile: 0,
+                    iteration: 0,
+                },
+                Budget::INFINITE,
+                ExecMode::Deterministic,
+            );
+            f(&cx)
+        })
+    }
+
+    // G0/G5: the live transactional entry point preserves the fixed search.
+    #[test]
+    fn radial_projection_with_cx_matches_the_legacy_fixed_search() {
+        let field = |point: [f64; 3]| point[0] - 1.0;
+        let expected = project_radial(&field, [0.0; 3], [1.0, 0.0, 0.0], 2.0)
+            .expect("legacy radial projection");
+        with_refit_cx(false, |cx| {
+            assert_eq!(
+                project_radial_with_cx(&field, [0.0; 3], [1.0, 0.0, 0.0], 2.0, cx)
+                    .expect("live cancellable projection"),
+                RadialProjectionRun::Complete { radius: expected }
+            );
+        });
+    }
+
+    // G4: cancellation before work is observable and side-effect-free.
+    #[test]
+    fn radial_projection_pre_cancel_does_not_evaluate_the_field() {
+        let calls = Cell::new(0usize);
+        let field = |point: [f64; 3]| {
+            calls.set(calls.get() + 1);
+            point[0] - 1.0
+        };
+        with_refit_cx(true, |cx| {
+            assert_eq!(
+                project_radial_with_cx(&field, [0.0; 3], [1.0, 0.0, 0.0], 2.0, cx)
+                    .expect("pre-cancellation is a terminal state"),
+                RadialProjectionRun::Cancelled
+            );
+        });
+        assert_eq!(calls.get(), 0);
+    }
+
+    // G4: constant-time and sampled refusals keep deterministic precedence.
+    #[test]
+    fn radial_projection_refusals_precede_or_dominate_cancellation() {
+        let calls = Cell::new(0usize);
+        let polls = Cell::new(0usize);
+        let field = |_: [f64; 3]| {
+            calls.set(calls.get() + 1);
+            f64::NAN
+        };
+        let mut cancel_immediately = || {
+            polls.set(polls.get() + 1);
+            true
+        };
+        let malformed = project_radial_with_poll(
+            &field,
+            [f64::NAN, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            2.0,
+            &mut cancel_immediately,
+        )
+        .expect_err("malformed constant-time input must refuse before polling");
+        assert!(malformed.to_string().contains("center must be finite"));
+        assert_eq!(polls.get(), 0);
+        assert_eq!(calls.get(), 0);
+
+        let mut cancel_after_field_call = || {
+            polls.set(polls.get() + 1);
+            calls.get() > 0
+        };
+        let nonfinite = project_radial_with_poll(
+            &field,
+            [0.0; 3],
+            [1.0, 0.0, 0.0],
+            2.0,
+            &mut cancel_after_field_call,
+        )
+        .expect_err("a sampled non-finite field value must not become cancellation");
+        assert!(nonfinite.to_string().contains("non-finite"));
+        assert_eq!(polls.get(), 1);
+        assert_eq!(calls.get(), 1);
+    }
+
+    // G4/G5: the legacy lower-bracket refusal remains a one-sample boundary.
+    #[test]
+    fn radial_projection_lower_bracket_refusal_short_circuits_the_upper_sample() {
+        let calls = Cell::new(0usize);
+        let polls = Cell::new(0usize);
+        let field = |_: [f64; 3]| {
+            calls.set(calls.get() + 1);
+            1.0
+        };
+        let mut cancel_at_second_poll = || {
+            polls.set(polls.get() + 1);
+            polls.get() == 2
+        };
+        let error = project_radial_with_poll(
+            &field,
+            [0.0; 3],
+            [1.0, 0.0, 0.0],
+            2.0,
+            &mut cancel_at_second_poll,
+        )
+        .expect_err("the failed lower bracket must refuse before the upper sample");
+        assert!(error.to_string().contains("radial bracket failed"));
+        assert_eq!(polls.get(), 1);
+        assert_eq!(calls.get(), 1);
+    }
+
+    // G4/G5: a replayed checkpoint ordinal cancels at the same boundary.
+    #[test]
+    fn radial_projection_cancels_at_a_deterministic_bisection_boundary() {
+        const CANCEL_AT_POLL: usize = 10;
+        let calls = Cell::new(0usize);
+        let polls = Cell::new(0usize);
+        let field = |point: [f64; 3]| {
+            calls.set(calls.get() + 1);
+            point[0] - 1.0
+        };
+        let mut cancel_at_poll = || {
+            polls.set(polls.get() + 1);
+            polls.get() == CANCEL_AT_POLL
+        };
+        assert_eq!(
+            project_radial_with_poll(&field, [0.0; 3], [1.0, 0.0, 0.0], 2.0, &mut cancel_at_poll,)
+                .expect("mid-search cancellation"),
+            RadialProjectionRun::Cancelled
+        );
+        assert_eq!(polls.get(), CANCEL_AT_POLL);
+        assert_eq!(calls.get(), CANCEL_AT_POLL - 1);
+    }
+
+    // G4: completed local work is not published after final cancellation.
+    #[test]
+    fn radial_projection_has_a_final_publication_checkpoint() {
+        let healthy_calls = Cell::new(0usize);
+        let healthy_polls = Cell::new(0usize);
+        let healthy_field = |point: [f64; 3]| {
+            healthy_calls.set(healthy_calls.get() + 1);
+            point[0] - 1.0
+        };
+        let mut count_without_cancelling = || {
+            healthy_polls.set(healthy_polls.get() + 1);
+            false
+        };
+        assert!(matches!(
+            project_radial_with_poll(
+                &healthy_field,
+                [0.0; 3],
+                [1.0, 0.0, 0.0],
+                2.0,
+                &mut count_without_cancelling,
+            )
+            .expect("healthy fixed search"),
+            RadialProjectionRun::Complete { .. }
+        ));
+        assert_eq!(healthy_calls.get(), 42);
+        assert_eq!(healthy_polls.get(), 43);
+
+        let replay_calls = Cell::new(0usize);
+        let replay_polls = Cell::new(0usize);
+        let replay_field = |point: [f64; 3]| {
+            replay_calls.set(replay_calls.get() + 1);
+            point[0] - 1.0
+        };
+        let mut cancel_at_publication = || {
+            replay_polls.set(replay_polls.get() + 1);
+            replay_polls.get() == healthy_polls.get()
+        };
+        assert_eq!(
+            project_radial_with_poll(
+                &replay_field,
+                [0.0; 3],
+                [1.0, 0.0, 0.0],
+                2.0,
+                &mut cancel_at_publication,
+            )
+            .expect("publication cancellation"),
+            RadialProjectionRun::Cancelled
+        );
+        assert_eq!(replay_calls.get(), healthy_calls.get());
+        assert_eq!(replay_polls.get(), healthy_polls.get());
+    }
 
     #[test]
     fn refit_admission_refuses_invalid_or_unbounded_work_before_field_evaluation() {

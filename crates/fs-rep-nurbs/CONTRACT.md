@@ -229,7 +229,16 @@ fs-iga (geometry basis = analysis basis), fs-render NURBS tracing
   The report records all three estimates. Features encountered by retained
   projection rays can produce STRUCTURED WARNINGS with parameter and world
   locations; a feature missed by every ray is invisible to this API. The
-  open-uniform U/V knot owners bind their constructor-validated authority once
+  standalone `project_radial_with_cx` primitive returns a transactional
+  `RadialProjectionRun`: constant-time center/direction/extent refusals happen
+  before its first checkpoint, each attempted bracket or bisection sample has a
+  preceding checkpoint (two plus 40 on a complete run), and one final
+  checkpoint gates publication. `Cancelled` carries neither the narrowed
+  bracket nor a provisional radius. This primitive accepts a finite nonzero ray
+  direction; it neither requires nor proves that the direction is unit length,
+  so the returned scalar is the caller's ray parameter rather than certified
+  geometric distance. The open-uniform U/V knot owners bind their
+  constructor-validated authority once
   and reuse admitted views for every dense sample basis row; the conservative
   legacy work charge is intentionally unchanged. The patch-density knobs are
   the ErrBudget trade, ledgered.
@@ -648,10 +657,18 @@ Individual allocations, heap calls, scalar operations, and nested-`Vec`
 destructors remain non-preemptible; cleanup latency, caller-budget consumption,
 wall-time preemption, resumability, and request-drain-finalize ownership remain
 explicit no-claims.
-Owning derivative and refit construction paths are not all
-migrated yet; they make no claim of caller-budgeted preflight or end-to-end
-validate-once execution. The SDF shell rejects malformed point/tolerance input
-before surface planning, admits each immutable surface once per distance query,
+Owning derivative and complete refit construction paths are not all migrated
+yet; they make no claim of caller-budgeted preflight or end-to-end validate-once
+execution. The standalone radial-projection primitive is a narrow exception:
+`project_radial_with_cx` validates its constant-time request before polling,
+polls at the start of each attempted sample for up to 42 field calls (42 on a
+complete run), and gates its complete radius behind a final publication
+checkpoint. It drops
+the local bracket on cancellation, but does not consume caller budget, preempt a
+field closure already in flight, drain/finalize caller work, or make
+`refit_radial` cancellation-aware. The SDF shell rejects malformed
+point/tolerance input before surface planning, admits each immutable surface
+once per distance query,
 reuses that admission through closest and Gauss-Newton polish, and carries the
 winning admission into gradient, orientation, and regular-witness sign work.
 It reuses the same split/frontier model, exports worst-case seed and split heap
@@ -764,9 +781,12 @@ refinement + partials vs central differences.
   constructor validation across all sample-row basis evaluations. Allocator
   metadata, diagnostic strings, arbitrary
   closure cost, and every small transient are not a complete memory or time
-  budget. These caps are process constants, not caller budgets;
-  the dense fit has no `Cx` cancellation points. Typed admitted-field authority,
-  ledgered caller budgets, bounded cancellation latency, and outward-rounded
-  geometric certification remain explicit successor work.
+  budget. These caps are process constants, not caller budgets. The synchronous
+  `refit_radial` dense pipeline still has no workflow-wide `Cx`; only its
+  separately exposed one-ray primitive has per-evaluation checkpoints and a
+  transactional publication gate. Typed admitted-field authority, ledgered
+  caller budgets, bounded cancellation latency for arbitrary field calls and
+  the remaining dense stages, and outward-rounded geometric certification
+  remain explicit successor work.
 - G¹ cross-seam continuity is measured, not enforced; pole rows are
   least-squares-collapsed, not pinned.
