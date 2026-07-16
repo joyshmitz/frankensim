@@ -40,6 +40,12 @@ scaling plan) and deterministic `fs-math` primitives. Pure, deterministic
   `Grid::transition_wall_topology` atomically replace a fluid/wall cell mask,
   initialize newly uncovered cells from unique surviving one-ring donors, and
   receipt the exact active-population mass/momentum removal and insertion.
+  `core2::PartialSaturationCell2`, `core2::PartialSaturationExchange2`, and
+  the paired Grid collision/step methods add a force-free dense-D2Q9
+  Noble-Torczynski partially saturated cell rung. Caller-supplied solid
+  fractions and velocities blend fluid and non-equilibrium-bounce-back solid
+  collisions while the receipt retains aggregate equal-and-opposite
+  fluid/solid impulse, angular impulse, solid work, and coupling-weight sum.
   `core2::VelocityPressureX2` plus the paired Grid step methods provide a
   low-Mach regularized velocity inlet at x-min and density outlet at x-max with
   periodic y closure; density/velocity and non-equilibrium stress are
@@ -158,6 +164,16 @@ scaling plan) and deterministic `fs-math` primitives. Pure, deterministic
   impulse/mass/work balance retains the existing boundary-relative convention.
   The interpolation rule follows Bouzidi, Firdaouss, and Lallemand (2001,
   <https://doi.org/10.1063/1.1399290>).
+- D2Q9 partial saturation uses the Noble-Torczynski non-equilibrium-bounce-back
+  variant with lattice time step one. For solid fraction `epsilon_s`,
+  `B = epsilon_s (tau - 1/2) / ((1 - epsilon_s) + (tau - 1/2))`, and
+  `f_post = f + (1-B) Omega_f + B Omega_s`, where
+  `Omega_s[q] = f[opp(q)] - f[q] + feq[q](rho,u_s) - feq[opp(q)](rho,u)`.
+  The solid-coupling correction conserves population mass to roundoff; its
+  fluid momentum and angular-momentum changes are equal and opposite to the
+  solid receipt. Cells and directions reduce in fixed row-major order. The
+  construction follows Noble and Torczynski (1998,
+  <https://doi.org/10.1142/S0129183198001084>).
 - D2Q9 wall-topology replacement is a two-phase publication. Fresh cells use
   an equal-weight average of unique, surviving pre-transition one-ring fluid
   populations, relaxation times, and external forces; newly covered
@@ -216,6 +232,14 @@ far donor with a finite outgoing population; long-link interpolation requires
 the finite local opposite population. Moving links require positive finite
 local post-collision density. Geometry is admitted before collision, and all
 required post-collision values are admitted before grid publication.
+D2Q9 partial-saturation descriptors require a finite solid fraction in
+`[0,1]`, exactly zero velocity at zero fraction, and finite solid velocity
+inside the same low-Mach envelope. The full-grid field may assign positive
+fraction only to `Cell::Fluid`; all populations must be finite, every active
+cell needs positive finite density, finite momentum, and `tau > 0.5`, forcing
+must be exactly zero, and the moment origin must be finite. Collision is built
+in a private proposal and the caller's output/scratch is published only after
+every proposed population and the aggregate receipt are finite.
 D2Q9 wall-topology replacement currently requires a fluid/wall-only domain, a
 full-grid target mask that leaves at least one fluid cell, positive finite
 covered/donor population mass, finite donor populations/momentum/external
@@ -284,11 +308,15 @@ zero-velocity compatibility with the stationary API; moving-step bit replay;
 and fail-closed moving-field admission. A periodic-x, two-moving-wall Couette
 deck checks the manufactured linear relative-velocity profile, exact replay,
 separate top/bottom impulse and receipt balance, and a measured common-boost
-profile/force residual inside one low-Mach lattice envelope. Linear curved-wall
-fixtures independently pin both BFL branches, off-lattice torque arms, full
-receipt balance, exact halfway compatibility, replay, checked link construction,
-exhaustive geometry, far-donor requirements, finite-population admission, and
-atomic refusal. A separate topology-transition fixture
+profile/force residual inside one low-Mach lattice envelope. A separately
+enumerated partial-saturation cell pins every population of the published
+blend, mass and equal-and-opposite impulse/torque/work receipts, origin
+translation, exact zero-fraction compatibility, the full-fraction stationary
+fixed point, replay, descriptor admission, and atomic refusal. Linear
+curved-wall fixtures independently pin both BFL branches, off-lattice torque
+arms, full receipt balance, exact halfway compatibility, replay, checked link
+construction, exhaustive geometry, far-donor requirements, finite-population
+admission, and atomic refusal. A separate topology-transition fixture
 pins unique-donor fresh-cell initialization, exact covered/fresh counts,
 mass/momentum delta closure, replay, idempotence, and atomic no-donor/mixed-domain
 refusal. The file also covers regularized x-face moment/stress reconstruction,
@@ -402,6 +430,13 @@ redistributed.
   profile and shear-impulse residuals for one flat, periodic-x, steady, low-Mach
   common-boost pair; it does not prove Galilean invariance for curved walls,
   topology changes, transients, finite-Re bodies, or the full coupled solver.
+- `PartialSaturationCell2` consumes a caller-supplied cell volume fraction and
+  one aggregate solid velocity; it does not rasterize geometry, resolve
+  overlapping bodies, or attribute the aggregate receipt among bodies. This
+  first rung is force-free dense D2Q9 and selects the published
+  non-equilibrium-bounce-back variant. It has no stresslet-accuracy,
+  convergence-order, under-resolved-lubrication, free-surface coexistence,
+  rigid-body integration, high-Re stability, or FSI claim.
 - D2Q9 `transition_wall_topology` consumes an already-discretized next wall
   mask; it does not integrate geometry motion, infer covered cells, or couple a
   rigid-body state. Equal-weight one-ring population averaging is a

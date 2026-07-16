@@ -3,7 +3,9 @@
 //! (steady Poiseuille channel flow matches the analytic parabola), and the
 //! lattice-scaling assistant's stability bookkeeping.
 
-use fs_lbm::core2::{CurvedMovingWallLink2, MovingWallMomentumExchange2, VelocityPressureX2};
+use fs_lbm::core2::{
+    CurvedMovingWallLink2, MovingWallMomentumExchange2, PartialSaturationCell2, VelocityPressureX2,
+};
 use fs_lbm::{
     CS2, Cell, Color, Grid, Lbm, MACH_LIMIT, Q, equilibrium, plan_scaling, poiseuille_analytic,
 };
@@ -576,6 +578,284 @@ fn d2q9_moving_couette_measures_common_boost_residual() {
         boosted.normalized_profile_error,
         reference.top.measured_links
     );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn d2q9_partial_saturation_pins_noble_torczynski_collision_and_exchange() {
+    const OPPOSITE: [usize; Q] = [0, 3, 4, 1, 2, 7, 8, 5, 6];
+    const EX: [f64; Q] = [0.0, 1.0, 0.0, -1.0, 0.0, 1.0, -1.0, -1.0, 1.0];
+    const EY: [f64; Q] = [0.0, 0.0, 1.0, 0.0, -1.0, 1.0, 1.0, -1.0, -1.0];
+
+    // G0/G3: independently enumerate every population of one nonsymmetric
+    // cell so neither the fluid nor solid collision can pass by cancellation.
+    let mut grid = Grid::uniform(3, 3, 0.8);
+    let coupled = grid.idx(1, 1);
+    let mut populations = equilibrium(1.1, 0.04, -0.02);
+    populations[1] += 0.006;
+    populations[3] -= 0.002;
+    populations[5] += 0.003;
+    populations[7] -= 0.001;
+    grid.f[coupled] = populations;
+
+    let solid_fraction = 0.4;
+    let solid_velocity = [-0.01, 0.015];
+    let descriptor = PartialSaturationCell2::new(solid_fraction, solid_velocity);
+    assert_eq!(
+        descriptor.solid_fraction().to_bits(),
+        solid_fraction.to_bits()
+    );
+    assert_eq!(
+        descriptor.solid_velocity().map(f64::to_bits),
+        solid_velocity.map(f64::to_bits)
+    );
+    let mut cells = vec![PartialSaturationCell2::default(); grid.nx * grid.ny];
+    cells[coupled] = descriptor;
+
+    let moments = grid.moments(coupled);
+    let fluid_equilibrium = equilibrium(moments.rho, moments.u[0], moments.u[1]);
+    let solid_equilibrium = equilibrium(moments.rho, solid_velocity[0], solid_velocity[1]);
+    let relaxation_margin = grid.tau[coupled] - 0.5;
+    let coupling_weight =
+        solid_fraction * relaxation_margin / ((1.0 - solid_fraction) + relaxation_margin);
+    let origin = [0.25, -0.5];
+    let mut post = vec![[123.0; Q]; 2];
+    let receipt = grid.collide_into_with_partial_saturation(&mut post, &cells, origin);
+
+    let mut ordinary_post = Vec::new();
+    grid.collide_into(&mut ordinary_post);
+    let mut observed_mass_change = 0.0;
+    let mut observed_fluid_impulse = [0.0; 2];
+    for q in 0..Q {
+        let fluid_collision = (fluid_equilibrium[q] - populations[q]) / grid.tau[coupled];
+        let solid_collision = populations[OPPOSITE[q]] - populations[q] + solid_equilibrium[q]
+            - fluid_equilibrium[OPPOSITE[q]];
+        let independently_blended = populations[q]
+            + (1.0 - coupling_weight) * fluid_collision
+            + coupling_weight * solid_collision;
+        assert!(
+            (post[coupled][q] - independently_blended).abs() < 5.0e-15,
+            "population {q} did not match the independently blended PSC formula"
+        );
+
+        let observed_correction = post[coupled][q] - ordinary_post[coupled][q];
+        observed_mass_change += observed_correction;
+        observed_fluid_impulse[0] += EX[q] * observed_correction;
+        observed_fluid_impulse[1] += EY[q] * observed_correction;
+    }
+
+    let analytic_fluid_impulse = [
+        coupling_weight * moments.rho * (solid_velocity[0] - moments.u[0]),
+        coupling_weight * moments.rho * (solid_velocity[1] - moments.u[1]),
+    ];
+    assert!(receipt.fluid_population_mass_change.abs() < 2.0e-14);
+    assert!((observed_mass_change - receipt.fluid_population_mass_change).abs() < 2.0e-15);
+    for axis in 0..2 {
+        assert!(
+            (receipt.fluid_population_impulse[axis] - observed_fluid_impulse[axis]).abs() < 2.0e-15
+        );
+        assert!(
+            (receipt.fluid_population_impulse[axis] - analytic_fluid_impulse[axis]).abs() < 2.0e-14
+        );
+        assert!(
+            (receipt.solid_impulse[axis] + receipt.fluid_population_impulse[axis]).abs() < 2.0e-15
+        );
+    }
+    assert_eq!(receipt.coupled_cells, 1);
+    assert!((receipt.coupling_weight_sum - coupling_weight).abs() < 1.0e-15);
+
+    let offset = [1.0 - origin[0], 1.0 - origin[1]];
+    let expected_solid_torque =
+        offset[0] * receipt.solid_impulse[1] - offset[1] * receipt.solid_impulse[0];
+    let expected_work =
+        receipt.solid_impulse[0] * solid_velocity[0] + receipt.solid_impulse[1] * solid_velocity[1];
+    assert!((receipt.solid_angular_impulse - expected_solid_torque).abs() < 2.0e-15);
+    assert!(
+        (receipt.solid_angular_impulse + receipt.fluid_population_angular_impulse).abs() < 2.0e-15
+    );
+    assert!((receipt.solid_work - expected_work).abs() < 2.0e-15);
+
+    let shifted_origin = [1.25, 0.0];
+    let mut shifted_post = Vec::new();
+    let shifted =
+        grid.collide_into_with_partial_saturation(&mut shifted_post, &cells, shifted_origin);
+    for (unshifted, shifted) in post.iter().zip(&shifted_post) {
+        assert_eq!(unshifted.map(f64::to_bits), shifted.map(f64::to_bits));
+    }
+    let origin_shift = [shifted_origin[0] - origin[0], shifted_origin[1] - origin[1]];
+    let translated_torque = receipt.solid_angular_impulse
+        - origin_shift[0] * receipt.solid_impulse[1]
+        + origin_shift[1] * receipt.solid_impulse[0];
+    assert!((shifted.solid_angular_impulse - translated_torque).abs() < 2.0e-15);
+}
+
+#[test]
+fn d2q9_partial_saturation_preserves_endpoints_and_replays() {
+    // The zero-fraction seam is operation-tree compatible with ordinary BGK.
+    let mut base = Grid::uniform(4, 4, 0.8);
+    let perturbed = base.idx(2, 1);
+    base.f[perturbed] = equilibrium(1.05, 0.03, -0.01);
+    base.f[perturbed][1] += 0.002;
+    base.f[perturbed][3] -= 0.001;
+    let zero_cells = vec![PartialSaturationCell2::default(); base.nx * base.ny];
+    let mut ordinary_post = Vec::new();
+    base.collide_into(&mut ordinary_post);
+    let mut partial_post = vec![[77.0; Q]; 1];
+    let zero_receipt =
+        base.collide_into_with_partial_saturation(&mut partial_post, &zero_cells, [0.0; 2]);
+    assert_eq!(zero_receipt.coupled_cells, 0);
+    assert_eq!(zero_receipt.coupling_weight_sum.to_bits(), 0.0f64.to_bits());
+    for (ordinary, partial) in ordinary_post.iter().zip(&partial_post) {
+        assert_eq!(ordinary.map(f64::to_bits), partial.map(f64::to_bits));
+    }
+
+    let mut ordinary_step = base.clone();
+    let mut partial_step = base.clone();
+    let (mut ordinary_scratch, mut partial_scratch) = (Vec::new(), vec![[91.0; Q]; 2]);
+    ordinary_step.step(&mut ordinary_scratch);
+    let step_receipt =
+        partial_step.step_with_partial_saturation(&mut partial_scratch, &zero_cells, [0.0; 2]);
+    assert_eq!(step_receipt.coupled_cells, 0);
+    for (ordinary, partial) in ordinary_step.f.iter().zip(&partial_step.f) {
+        assert_eq!(ordinary.map(f64::to_bits), partial.map(f64::to_bits));
+    }
+    for (ordinary, partial) in ordinary_scratch.iter().zip(&partial_scratch) {
+        assert_eq!(ordinary.map(f64::to_bits), partial.map(f64::to_bits));
+    }
+
+    // At full saturation, a stationary equilibrium is a fixed point and the
+    // nonlinear Noble-Torczynski weight reaches exactly one.
+    let full_grid = Grid::uniform(3, 2, 1.0);
+    let full_cells = vec![PartialSaturationCell2::new(1.0, [0.0; 2]); 6];
+    let mut full_post = Vec::new();
+    let full_receipt =
+        full_grid.collide_into_with_partial_saturation(&mut full_post, &full_cells, [1.0, 0.5]);
+    assert_eq!(full_receipt.coupled_cells, 6);
+    assert_eq!(full_receipt.coupling_weight_sum.to_bits(), 6.0f64.to_bits());
+    assert!(full_receipt.fluid_population_mass_change.abs() < 1.0e-15);
+    assert!(full_receipt.fluid_population_impulse == [0.0; 2]);
+    assert!(full_receipt.solid_impulse == [0.0; 2]);
+    for (before, after) in full_grid.f.iter().zip(&full_post) {
+        assert_eq!(before.map(f64::to_bits), after.map(f64::to_bits));
+    }
+
+    // G5: nonzero saturation and moving-solid forcing replay bit-for-bit in
+    // fixed row-major cell/direction order.
+    let mut first = Grid::uniform(5, 4, 0.8);
+    let first_cell = first.idx(1, 1);
+    let second_cell = first.idx(3, 2);
+    first.f[first_cell] = equilibrium(1.0, 0.025, -0.01);
+    first.f[second_cell] = equilibrium(0.98, -0.015, 0.005);
+    let mut replay_cells = vec![PartialSaturationCell2::default(); first.nx * first.ny];
+    replay_cells[first_cell] = PartialSaturationCell2::new(0.25, [-0.01, 0.02]);
+    replay_cells[second_cell] = PartialSaturationCell2::new(0.55, [0.015, -0.01]);
+    let mut second = first.clone();
+    let (mut first_scratch, mut second_scratch) = (Vec::new(), Vec::new());
+    let mut observed_nonzero_impulse = false;
+    for _ in 0..12 {
+        let first_receipt =
+            first.step_with_partial_saturation(&mut first_scratch, &replay_cells, [2.0, 1.5]);
+        let second_receipt =
+            second.step_with_partial_saturation(&mut second_scratch, &replay_cells, [2.0, 1.5]);
+        observed_nonzero_impulse |= first_receipt.solid_impulse != [0.0; 2];
+        assert_eq!(first_receipt, second_receipt);
+        for (first_population, second_population) in first.f.iter().zip(&second.f) {
+            assert_eq!(
+                first_population.map(f64::to_bits),
+                second_population.map(f64::to_bits)
+            );
+        }
+    }
+    assert!(observed_nonzero_impulse);
+}
+
+#[test]
+fn d2q9_partial_saturation_refuses_bad_requests_atomically() {
+    let invalid_descriptors = [
+        (f64::NAN, [0.0, 0.0]),
+        (-0.1, [0.0, 0.0]),
+        (1.1, [0.0, 0.0]),
+        (0.0, [0.01, 0.0]),
+        (0.5, [f64::NAN, 0.0]),
+        (0.5, [0.2, 0.0]),
+    ];
+    for (solid_fraction, solid_velocity) in invalid_descriptors {
+        let refusal = std::panic::catch_unwind(|| {
+            let _ = PartialSaturationCell2::new(solid_fraction, solid_velocity);
+        });
+        assert!(refusal.is_err());
+    }
+
+    let mut grid = Grid::uniform(3, 3, 0.8);
+    let original_populations = grid.f.clone();
+    let sentinel = vec![[71.0; Q]; 2];
+    let mut scratch = sentinel.clone();
+    let short = vec![PartialSaturationCell2::default(); grid.nx * grid.ny - 1];
+    let short_refusal = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = grid.step_with_partial_saturation(&mut scratch, &short, [0.0; 2]);
+    }));
+    assert!(short_refusal.is_err());
+    assert_eq!(scratch, sentinel);
+    assert_eq!(grid.f, original_populations);
+
+    let wall = grid.idx(1, 1);
+    grid.flags[wall] = Cell::Wall;
+    let mut wall_cells = vec![PartialSaturationCell2::default(); grid.nx * grid.ny];
+    wall_cells[wall] = PartialSaturationCell2::new(0.25, [0.0; 2]);
+    let mut wall_post = sentinel.clone();
+    let wall_refusal = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = grid.collide_into_with_partial_saturation(&mut wall_post, &wall_cells, [0.0; 2]);
+    }));
+    assert!(wall_refusal.is_err());
+    assert_eq!(wall_post, sentinel);
+
+    grid.flags[wall] = Cell::Fluid;
+    grid.g = [1.0e-5, 0.0];
+    let zero_cells = vec![PartialSaturationCell2::default(); grid.nx * grid.ny];
+    let mut forced_post = sentinel.clone();
+    let force_refusal = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = grid.collide_into_with_partial_saturation(&mut forced_post, &zero_cells, [0.0; 2]);
+    }));
+    assert!(force_refusal.is_err());
+    assert_eq!(forced_post, sentinel);
+
+    grid.g = [0.0; 2];
+    let mut bad_origin_post = sentinel.clone();
+    let origin_refusal = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = grid.collide_into_with_partial_saturation(
+            &mut bad_origin_post,
+            &zero_cells,
+            [f64::NAN, 0.0],
+        );
+    }));
+    assert!(origin_refusal.is_err());
+    assert_eq!(bad_origin_post, sentinel);
+    assert_eq!(grid.f, original_populations);
+
+    // Zero saturation still traverses ordinary BGK collision. A finite state
+    // whose finite momentum produces an overflowing equilibrium must refuse
+    // before publishing the otherwise-unrelated caller scratch buffer.
+    let mut pathological = Grid::uniform(2, 2, 0.8);
+    let pathological_cell = pathological.idx(0, 0);
+    let mut extreme = [0.0; Q];
+    extreme[1] = 1.0e200;
+    extreme[3] = -1.0e200;
+    extreme[8] = 1.0;
+    pathological.f[pathological_cell] = extreme;
+    let pathological_before = pathological.f.clone();
+    let pathological_cells =
+        vec![PartialSaturationCell2::default(); pathological.nx * pathological.ny];
+    let mut pathological_post = sentinel.clone();
+    let proposal_refusal = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = pathological.collide_into_with_partial_saturation(
+            &mut pathological_post,
+            &pathological_cells,
+            [0.0; 2],
+        );
+    }));
+    assert!(proposal_refusal.is_err());
+    assert_eq!(pathological_post, sentinel);
+    assert_eq!(pathological.f, pathological_before);
 }
 
 #[test]
