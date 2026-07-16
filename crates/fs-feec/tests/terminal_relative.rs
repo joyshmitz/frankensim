@@ -16,9 +16,11 @@ use fs_feec::terminal_relative::{
     FiniteCellComplex, GeometricCoil, IncidenceSign, IntegralRelativeChain,
     IntegralRelativeCochain, IntegralWindingRepresentative, MachineBindingStatus,
     OrientationMapSign, PhaseId, PhysicalObjectId, PhysicalTerminal, PhysicalTerminalId,
-    PresentedMachinePortRef, RealCurrentAmplitude, RealRelativeCochain, TerminalOrientation,
-    TerminalPortCoordinate, TerminalPortTrivialization, TerminalRelativeCoefficientDomain,
-    TerminalRelativeError, TerminalRelativePair, TerminalRole, TrivializationId,
+    PresentedMachinePortRef, RealCurrentAmplitude, RealRelativeCochain, SignedCellRelabelEntry,
+    TerminalOrientation, TerminalPortCoordinate, TerminalPortTrivialization,
+    TerminalRelativeCoefficientDomain, TerminalRelativeError, TerminalRelativePair,
+    TerminalRelativeSignedRelabel, TerminalRelativeSignedRelabelError, TerminalRole,
+    TrivializationId,
 };
 use fs_qty::{Current, Dims};
 
@@ -194,6 +196,13 @@ fn pair(tick: u64, reverse_declarations: bool) -> TerminalRelativePair {
 }
 
 fn terminal_cut_loop_pair() -> TerminalRelativePair {
+    terminal_cut_loop_pair_with_terminals(0, 3)
+}
+
+fn terminal_cut_loop_pair_with_terminals(
+    driven_ordinal: u32,
+    return_ordinal: u32,
+) -> TerminalRelativePair {
     let complex = FiniteCellComplex::try_new(
         1,
         vec![4, 4],
@@ -273,7 +282,7 @@ fn terminal_cut_loop_pair() -> TerminalRelativePair {
         vec![
             terminal(
                 &complex,
-                0,
+                driven_ordinal,
                 "loop-positive",
                 TerminalRole::Driven,
                 TerminalOrientation::OutOfConductor,
@@ -282,7 +291,7 @@ fn terminal_cut_loop_pair() -> TerminalRelativePair {
             ),
             terminal(
                 &complex,
-                3,
+                return_ordinal,
                 "loop-return",
                 TerminalRole::ReturnReference,
                 TerminalOrientation::IntoConductor,
@@ -292,6 +301,70 @@ fn terminal_cut_loop_pair() -> TerminalRelativePair {
         ],
     )
     .expect("terminal-cut loop pair")
+}
+
+fn parallel_edge_relabel_entries() -> Vec<SignedCellRelabelEntry> {
+    vec![
+        SignedCellRelabelEntry::new(
+            CellRef::new(0, 0),
+            CellRef::new(0, 0),
+            IncidenceSign::Positive,
+        ),
+        SignedCellRelabelEntry::new(
+            CellRef::new(0, 1),
+            CellRef::new(0, 1),
+            IncidenceSign::Positive,
+        ),
+        SignedCellRelabelEntry::new(
+            CellRef::new(0, 2),
+            CellRef::new(0, 2),
+            IncidenceSign::Positive,
+        ),
+        SignedCellRelabelEntry::new(
+            CellRef::new(0, 3),
+            CellRef::new(0, 3),
+            IncidenceSign::Positive,
+        ),
+        SignedCellRelabelEntry::new(
+            CellRef::new(1, 0),
+            CellRef::new(1, 0),
+            IncidenceSign::Positive,
+        ),
+        SignedCellRelabelEntry::new(
+            CellRef::new(1, 1),
+            CellRef::new(1, 2),
+            IncidenceSign::Positive,
+        ),
+        SignedCellRelabelEntry::new(
+            CellRef::new(1, 2),
+            CellRef::new(1, 1),
+            IncidenceSign::Positive,
+        ),
+        SignedCellRelabelEntry::new(
+            CellRef::new(1, 3),
+            CellRef::new(1, 3),
+            IncidenceSign::Positive,
+        ),
+    ]
+}
+
+fn reflected_cut_loop_entries() -> Vec<SignedCellRelabelEntry> {
+    (0_u32..4)
+        .map(|ordinal| {
+            SignedCellRelabelEntry::new(
+                CellRef::new(0, ordinal),
+                CellRef::new(0, 3 - ordinal),
+                IncidenceSign::Positive,
+            )
+        })
+        .chain((0_u32..4).map(|ordinal| {
+            SignedCellRelabelEntry::new(
+                CellRef::new(1, ordinal),
+                CellRef::new(1, 3 - ordinal),
+                IncidenceSign::Negative,
+            )
+        }))
+        .collect()
 }
 
 #[test]
@@ -1437,4 +1510,252 @@ fn i13_2a_014_shared_lower_closure_cells_remain_phase_tagged() {
     let chain_a = IntegralRelativeChain::try_new(&pair, phase_a, 0, vec![1]).unwrap();
     let chain_b = IntegralRelativeChain::try_new(&pair, phase_b, 0, vec![1]).unwrap();
     assert_ne!(chain_a, chain_b);
+}
+
+#[test]
+fn i13_2a_015_parallel_edge_relabel_is_canonical_invertible_and_composable() {
+    let pair = terminal_cut_loop_pair();
+    let canonical_entries = parallel_edge_relabel_entries();
+    let mut reversed_entries = canonical_entries.clone();
+    reversed_entries.reverse();
+
+    let relabel = TerminalRelativeSignedRelabel::try_new(&pair, &pair, reversed_entries)
+        .expect("parallel-edge permutation is an exact relabeling");
+    let canonical_replay =
+        TerminalRelativeSignedRelabel::try_new(&pair, &pair, canonical_entries.clone())
+            .expect("canonical declaration replays");
+    assert_eq!(relabel.entries(), canonical_entries.as_slice());
+    assert_eq!(relabel.identity(), canonical_replay.identity());
+
+    let phase = PhaseId::new("phase/a").unwrap();
+    let chain = IntegralRelativeChain::try_new(&pair, phase.clone(), 1, vec![2, -1, 3, 4])
+        .expect("fixture chain");
+    let transported_chain = relabel
+        .transport_integral_chain(&pair, &pair, &chain)
+        .expect("transport chain");
+    assert_eq!(transported_chain.coefficients(), &[2, 3, -1, 4]);
+
+    let cochain = IntegralRelativeCochain::try_new(&pair, phase.clone(), 1, vec![11, 13, 17, 19])
+        .expect("fixture cochain");
+    let transported_cochain = relabel
+        .transport_integral_cochain(&pair, &pair, &cochain)
+        .expect("transport cochain");
+    assert_eq!(transported_cochain.coefficients(), &[11, 17, 13, 19]);
+
+    let winding = IntegralWindingRepresentative::try_new(&pair, phase, vec![1, 1, 0, 1])
+        .expect("fixture winding cycle");
+    let transported_winding = relabel
+        .transport_winding_representative(&pair, &pair, &winding)
+        .expect("transport winding representative");
+    assert_eq!(transported_winding.chain().coefficients(), &[1, 0, 1, 1]);
+
+    let inverse = relabel.inverse(&pair, &pair).expect("inverse relabeling");
+    assert_eq!(inverse.identity(), relabel.identity());
+    assert_eq!(
+        inverse
+            .transport_integral_chain(&pair, &pair, &transported_chain)
+            .expect("inverse chain transport"),
+        chain
+    );
+    assert_eq!(
+        inverse
+            .transport_winding_representative(&pair, &pair, &transported_winding)
+            .expect("inverse winding transport")
+            .identity(),
+        winding.identity()
+    );
+
+    let composed = relabel
+        .compose(&relabel, &pair, &pair, &pair)
+        .expect("self-composition is the identity permutation");
+    let identity_entries = canonical_entries
+        .iter()
+        .map(|entry| {
+            SignedCellRelabelEntry::new(entry.source(), entry.source(), IncidenceSign::Positive)
+        })
+        .collect();
+    let identity = TerminalRelativeSignedRelabel::try_new(&pair, &pair, identity_entries)
+        .expect("explicit identity relabeling");
+    assert_eq!(composed.identity(), identity.identity());
+    assert_eq!(
+        composed
+            .transport_integral_chain(&pair, &pair, &chain)
+            .expect("composed chain transport"),
+        chain
+    );
+}
+
+#[test]
+fn i13_2a_016_orientation_reflection_preserves_relative_naturality() {
+    let source = terminal_cut_loop_pair();
+    let target = terminal_cut_loop_pair_with_terminals(3, 0);
+    let reflection =
+        TerminalRelativeSignedRelabel::try_new(&source, &target, reflected_cut_loop_entries())
+            .expect("orientation reflection preserves terminal-relative semantics");
+    let phase = PhaseId::new("phase/a").unwrap();
+
+    let chain = IntegralRelativeChain::try_new(&source, phase.clone(), 1, vec![2, -1, 3, 4])
+        .expect("fixture chain");
+    let source_boundary = source.boundary(&chain).expect("source boundary");
+    assert_eq!(source_boundary.coefficients(), &[0, -2]);
+    let transported_chain = reflection
+        .transport_integral_chain(&source, &target, &chain)
+        .expect("reflect chain");
+    assert_eq!(transported_chain.coefficients(), &[-4, -3, 1, -2]);
+    let transported_boundary = reflection
+        .transport_integral_chain(&source, &target, &source_boundary)
+        .expect("reflect source boundary");
+    assert_eq!(transported_boundary.coefficients(), &[-2, 0]);
+    assert_eq!(
+        target
+            .boundary(&transported_chain)
+            .expect("target boundary"),
+        transported_boundary
+    );
+
+    let cochain = IntegralRelativeCochain::try_new(&source, phase.clone(), 0, vec![2, 5])
+        .expect("fixture cochain");
+    let source_coboundary = source
+        .integral_coboundary(&cochain)
+        .expect("source coboundary");
+    assert_eq!(source_coboundary.coefficients(), &[2, 3, 3, -5]);
+    let transported_cochain = reflection
+        .transport_integral_cochain(&source, &target, &cochain)
+        .expect("reflect cochain");
+    assert_eq!(transported_cochain.coefficients(), &[5, 2]);
+    let transported_coboundary = reflection
+        .transport_integral_cochain(&source, &target, &source_coboundary)
+        .expect("reflect source coboundary");
+    assert_eq!(transported_coboundary.coefficients(), &[5, -3, -3, -2]);
+    assert_eq!(
+        target
+            .integral_coboundary(&transported_cochain)
+            .expect("target coboundary"),
+        transported_coboundary
+    );
+
+    assert_eq!(source.integral_pairing(&source_coboundary, &chain), Ok(-10));
+    assert_eq!(source.integral_pairing(&cochain, &source_boundary), Ok(-10));
+    assert_eq!(
+        target.integral_pairing(&transported_coboundary, &transported_chain),
+        Ok(-10)
+    );
+    assert_eq!(
+        target.integral_pairing(&transported_cochain, &transported_boundary),
+        Ok(-10)
+    );
+
+    let winding = IntegralWindingRepresentative::try_new(&source, phase, vec![1, 1, 0, 1])
+        .expect("fixture winding cycle");
+    let transported_winding = reflection
+        .transport_winding_representative(&source, &target, &winding)
+        .expect("reflect winding representative");
+    assert_eq!(transported_winding.chain().coefficients(), &[-1, 0, -1, -1]);
+
+    let inverse = reflection
+        .inverse(&source, &target)
+        .expect("inverse reflection");
+    assert_eq!(
+        inverse
+            .transport_integral_chain(&target, &source, &transported_chain)
+            .expect("inverse chain transport"),
+        chain
+    );
+    assert_eq!(
+        inverse
+            .transport_winding_representative(&target, &source, &transported_winding)
+            .expect("inverse winding transport")
+            .identity(),
+        winding.identity()
+    );
+}
+
+#[test]
+fn i13_2a_017_signed_relabel_admission_refuses_partial_duplicate_and_non_chain_maps() {
+    let pair = terminal_cut_loop_pair();
+
+    let mut missing = parallel_edge_relabel_entries();
+    missing.pop();
+    assert_eq!(
+        TerminalRelativeSignedRelabel::try_new(&pair, &pair, missing),
+        Err(TerminalRelativeSignedRelabelError::EntryCountMismatch {
+            expected: 8,
+            actual: 7,
+        })
+    );
+
+    let mut duplicate_source = parallel_edge_relabel_entries();
+    duplicate_source[7] = SignedCellRelabelEntry::new(
+        CellRef::new(1, 2),
+        CellRef::new(1, 3),
+        IncidenceSign::Positive,
+    );
+    assert_eq!(
+        TerminalRelativeSignedRelabel::try_new(&pair, &pair, duplicate_source),
+        Err(TerminalRelativeSignedRelabelError::DuplicateSourceCell {
+            cell: CellRef::new(1, 2),
+        })
+    );
+
+    let mut duplicate_target = parallel_edge_relabel_entries();
+    duplicate_target[7] = SignedCellRelabelEntry::new(
+        CellRef::new(1, 3),
+        CellRef::new(1, 2),
+        IncidenceSign::Positive,
+    );
+    assert_eq!(
+        TerminalRelativeSignedRelabel::try_new(&pair, &pair, duplicate_target),
+        Err(TerminalRelativeSignedRelabelError::DuplicateTargetCell {
+            cell: CellRef::new(1, 2),
+        })
+    );
+
+    let reflected_target = terminal_cut_loop_pair_with_terminals(3, 0);
+    let mut wrong_sign = reflected_cut_loop_entries();
+    wrong_sign[4] = SignedCellRelabelEntry::new(
+        CellRef::new(1, 0),
+        CellRef::new(1, 3),
+        IncidenceSign::Positive,
+    );
+    assert!(matches!(
+        TerminalRelativeSignedRelabel::try_new(&pair, &reflected_target, wrong_sign),
+        Err(TerminalRelativeSignedRelabelError::MappedIncidenceMismatch { .. })
+    ));
+}
+
+#[test]
+fn i13_2a_018_reflection_to_same_pair_refuses_terminal_support_mismatch() {
+    let pair = terminal_cut_loop_pair();
+    assert_eq!(
+        TerminalRelativeSignedRelabel::try_new(&pair, &pair, reflected_cut_loop_entries()),
+        Err(TerminalRelativeSignedRelabelError::MappedSupportMismatch {
+            role: "physical terminal support",
+            owner: Some("terminal/loop-positive".to_owned()),
+            cell: CellRef::new(0, 0),
+            expected_mapped: false,
+            actual_target: true,
+        })
+    );
+}
+
+#[test]
+fn i13_2a_019_signed_transport_refuses_exact_coefficient_overflow() {
+    let source = terminal_cut_loop_pair();
+    let target = terminal_cut_loop_pair_with_terminals(3, 0);
+    let reflection =
+        TerminalRelativeSignedRelabel::try_new(&source, &target, reflected_cut_loop_entries())
+            .expect("orientation reflection");
+    let chain = IntegralRelativeChain::try_new(
+        &source,
+        PhaseId::new("phase/a").unwrap(),
+        1,
+        vec![i64::MIN, 0, 0, 0],
+    )
+    .expect("minimum exact coefficient remains an admitted source value");
+    assert_eq!(
+        reflection.transport_integral_chain(&source, &target, &chain),
+        Err(TerminalRelativeSignedRelabelError::CoefficientOverflow {
+            cell: CellRef::new(1, 0),
+        })
+    );
 }

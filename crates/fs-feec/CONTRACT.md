@@ -170,6 +170,9 @@ evidence. The deferred mixed and curl-curl solve batteries remain the gate.
   Integral chains and `IntegralRelativeCochain` values use the phase-owned
   component quotient basis; exact boundary, integral coboundary, and evaluation
   pairing expose the integer Stokes identity without a metric/Hodge coercion.
+  `TerminalRelativeSignedRelabel` admits a representation witness only when a
+  complete signed cell bijection commutes with every exact incidence and maps
+  conductor, relative, insulation, component, and terminal supports exactly.
 
 ## Invariants
 
@@ -209,6 +212,12 @@ evidence. The deferred mixed and curl-curl solve batteries remain the gate.
   Relative boundary and real/integral coboundary use the canonical phase-local
   quotient basis; integral accumulation and chain/cochain evaluation are exact
   and refuse publication overflow.
+- A signed relabel is bound to exact source and target pair identities. Its
+  canonical identity is independent of input row order; inverse/composition and
+  integral chain/cochain/representative transport retain exact cell signs,
+  basis reindexing, boundary/coboundary commutation, and evaluation pairing.
+  This first relabel lane preserves component, phase, terminal, port, and
+  Machine-reference semantic identities rather than silently permuting them.
 - Vector families (vecfam battery): dimension counts r = 1..4 match
   the closed forms (N: 6/20/45/84, RT: 4/15/36/70 per tet) and the
   exact-sequence Euler identity Σ(−1)ᵏ dim Vᵏ = 1 holds on
@@ -384,6 +393,9 @@ trivialization enforcement; a terminal-cut loop graph checks exact integral
   Stokes pairing and three relative cycles, while disconnected and shared-
   closure two-phase graphs check owned top-cell restriction, explicit phase
   tagging, and the refusal of ambiguous component or conversion bindings.
+  Parallel-edge and orientation-reflection relabel fixtures pin signed basis
+  transport, exact naturality, inverse/composition, canonical row ordering, and
+  fail-closed non-chain/support maps.
 
 ## Perf-lane observations (bead cwjn: authority-admitted both-ISA gate open)
 
@@ -518,6 +530,11 @@ trivialization enforcement; a terminal-cut loop graph checks exact integral
   Components may share lower-dimensional closure cells, and those cell
   generators intentionally occur in each owning phase's separately tagged
   basis; this slice does not construct a tagged-copy/direct-sum cell complex.
+- One admitted signed cell relabel does not establish general representation
+  naturality. Phase or terminal permutations, current-orientation compensation,
+  tree/cotree or cut changes, non-unimodular/partial maps, refinement, remesh,
+  topology events, and homology/cohomology induced-map authority require their
+  own explicit schemas and evidence.
 - No field transfer, current-density solve, electromagnetic force, material,
   thermal, manufacturability, geometric embedding, cancellation-latency,
   performance, or authority-receipt claim follows from these types.

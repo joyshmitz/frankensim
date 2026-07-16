@@ -11,8 +11,8 @@ use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 
 use fs_blake3::identity::{
-    CanonicalEncoder, CanonicalError, CanonicalLimits, CanonicalSchema, Field, FieldSpec,
-    IdentityReceipt, NeverCancel, SemanticId, StrongIdentity, WireType,
+    CanonicalEncoder, CanonicalError, CanonicalLimits, CanonicalSchema, ChildSpec, Field,
+    FieldSpec, IdentityReceipt, NeverCancel, SemanticId, StrongIdentity, WireType,
 };
 use fs_couple::{
     ConservationRole, FieldMeasureSide, PortKind, PortOrientation, PortSchema, PortValueShape,
@@ -41,6 +41,8 @@ pub const MAX_TERMINAL_RELATIVE_CANONICAL_BYTES: usize = 2 * 1_024 * 1_024;
 
 const PAIR_IDENTITY_LIMITS: CanonicalLimits =
     CanonicalLimits::new(4 * 1_024 * 1_024, 2 * 1_024 * 1_024, 1, 1, 256);
+const SIGNED_RELABEL_IDENTITY_LIMITS: CanonicalLimits =
+    CanonicalLimits::new(4 * 1_024 * 1_024, 2 * 1_024 * 1_024, 3, 1, 256);
 
 /// Strong semantic identity of one admitted physical terminal-relative pair.
 pub enum TerminalRelativePairSchemaV1 {}
@@ -59,6 +61,28 @@ impl CanonicalSchema for TerminalRelativePairSchemaV1 {
 
 /// Nominal pair identity.  It cannot be confused with a representative ID.
 pub type TerminalRelativePairId = SemanticId<TerminalRelativePairSchemaV1>;
+
+static TERMINAL_RELATIVE_SIGNED_RELABEL_PAIR_CHILD: ChildSpec =
+    ChildSpec::for_identity::<TerminalRelativePairId>();
+
+/// Strong semantic identity of one admitted orientation-aware cell relabeling.
+pub enum TerminalRelativeSignedRelabelSchemaV1 {}
+
+impl CanonicalSchema for TerminalRelativeSignedRelabelSchemaV1 {
+    const DOMAIN: &'static str = "org.frankensim.fs-feec.terminal-relative-signed-relabel.v1";
+    const NAME: &'static str = "terminal-relative-signed-relabel";
+    const VERSION: u32 = TERMINAL_RELATIVE_SCHEMA_VERSION;
+    const CONTEXT: &'static str =
+        "complete signed cell bijection preserving incidence and terminal-relative semantics";
+    const FIELDS: &'static [FieldSpec] = &[
+        FieldSpec::child_of("source-pair", &TERMINAL_RELATIVE_SIGNED_RELABEL_PAIR_CHILD),
+        FieldSpec::child_of("target-pair", &TERMINAL_RELATIVE_SIGNED_RELABEL_PAIR_CHILD),
+        FieldSpec::required("signed-cell-map", WireType::Bytes),
+    ];
+}
+
+/// Nominal identity of one admitted terminal-relative signed relabeling.
+pub type TerminalRelativeSignedRelabelId = SemanticId<TerminalRelativeSignedRelabelSchemaV1>;
 
 /// Strong semantic identity of one declared integral winding representative.
 pub enum IntegralWindingRepresentativeSchemaV1 {}
@@ -160,6 +184,44 @@ impl IncidenceSign {
             Self::Negative => 0,
             Self::Positive => 1,
         }
+    }
+}
+
+/// One oriented source-to-target cell row in a complete signed relabeling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SignedCellRelabelEntry {
+    source: CellRef,
+    target: CellRef,
+    sign: IncidenceSign,
+}
+
+impl SignedCellRelabelEntry {
+    /// Declare that the oriented source cell maps to `sign * target`.
+    #[must_use]
+    pub const fn new(source: CellRef, target: CellRef, sign: IncidenceSign) -> Self {
+        Self {
+            source,
+            target,
+            sign,
+        }
+    }
+
+    /// Source-space cell.
+    #[must_use]
+    pub const fn source(self) -> CellRef {
+        self.source
+    }
+
+    /// Target-space cell.
+    #[must_use]
+    pub const fn target(self) -> CellRef {
+        self.target
+    }
+
+    /// Orientation action on the source basis cell.
+    #[must_use]
+    pub const fn sign(self) -> IncidenceSign {
+        self.sign
     }
 }
 
@@ -1832,6 +1894,706 @@ impl TerminalRelativePair {
     }
 }
 
+/// Admitted complete orientation-aware relabeling between terminal-relative
+/// pairs.
+///
+/// The receipt proves only this explicit cell bijection and the structural
+/// semantics checked by [`Self::try_new`].  It does not discharge the general
+/// representation-naturality no-claim retained by either pair.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalRelativeSignedRelabel {
+    source_pair: TerminalRelativePairId,
+    target_pair: TerminalRelativePairId,
+    entries: Vec<SignedCellRelabelEntry>,
+    identity_receipt: IdentityReceipt<TerminalRelativeSignedRelabelId>,
+}
+
+impl TerminalRelativeSignedRelabel {
+    /// Admit a complete same-degree cell bijection which commutes exactly with
+    /// signed incidence and preserves all terminal-relative semantic labels.
+    ///
+    /// Caller declaration order is discarded before validation and identity
+    /// encoding.  No phase-current or other physical-coordinate compensation
+    /// is inferred from cell-orientation signs.
+    #[allow(clippy::too_many_lines)]
+    pub fn try_new(
+        source: &TerminalRelativePair,
+        target: &TerminalRelativePair,
+        mut entries: Vec<SignedCellRelabelEntry>,
+    ) -> Result<Self, TerminalRelativeSignedRelabelError> {
+        if source.complex.dimension != target.complex.dimension {
+            return Err(
+                TerminalRelativeSignedRelabelError::ComplexDimensionMismatch {
+                    source: source.complex.dimension,
+                    target: target.complex.dimension,
+                },
+            );
+        }
+        for (degree, (source_count, target_count)) in source
+            .complex
+            .cell_counts
+            .iter()
+            .zip(&target.complex.cell_counts)
+            .enumerate()
+        {
+            if source_count != target_count {
+                return Err(TerminalRelativeSignedRelabelError::CellCountMismatch {
+                    degree: u8::try_from(degree)
+                        .expect("admitted cell-complex degree always fits in u8"),
+                    source: *source_count,
+                    target: *target_count,
+                });
+            }
+        }
+
+        let expected_entries = source
+            .complex
+            .cell_counts
+            .iter()
+            .fold(0_usize, |total, count| {
+                total.saturating_add(usize::try_from(*count).unwrap_or(usize::MAX))
+            });
+        if entries.len() != expected_entries {
+            return Err(TerminalRelativeSignedRelabelError::EntryCountMismatch {
+                expected: expected_entries,
+                actual: entries.len(),
+            });
+        }
+
+        entries.sort_unstable_by_key(|entry| entry.source);
+        let mut target_cells = BTreeSet::new();
+        for entry in &entries {
+            if !source.complex.contains(entry.source) {
+                return Err(TerminalRelativeSignedRelabelError::SourceCellOutOfRange {
+                    cell: entry.source,
+                });
+            }
+            if !target.complex.contains(entry.target) {
+                return Err(TerminalRelativeSignedRelabelError::TargetCellOutOfRange {
+                    cell: entry.target,
+                });
+            }
+            if entry.source.degree != entry.target.degree {
+                return Err(TerminalRelativeSignedRelabelError::CellDegreeMismatch {
+                    source: entry.source,
+                    target: entry.target,
+                });
+            }
+            if !target_cells.insert(entry.target) {
+                return Err(TerminalRelativeSignedRelabelError::DuplicateTargetCell {
+                    cell: entry.target,
+                });
+            }
+        }
+        if let Some(duplicate) = entries
+            .windows(2)
+            .find(|pair| pair[0].source == pair[1].source)
+            .map(|pair| pair[0].source)
+        {
+            return Err(TerminalRelativeSignedRelabelError::DuplicateSourceCell {
+                cell: duplicate,
+            });
+        }
+
+        let entry_map: BTreeMap<_, _> = entries
+            .iter()
+            .copied()
+            .map(|entry| (entry.source, entry))
+            .collect();
+        verify_signed_incidence_commutation(source, target, &entry_map)?;
+        verify_mapped_subcomplex(
+            "conductor",
+            None,
+            &source.conductor,
+            &target.conductor,
+            &entry_map,
+        )?;
+        verify_mapped_subcomplex(
+            "relative subcomplex",
+            None,
+            &source.relative,
+            &target.relative,
+            &entry_map,
+        )?;
+        verify_mapped_subcomplex(
+            "insulation",
+            None,
+            &source.insulation,
+            &target.insulation,
+            &entry_map,
+        )?;
+        verify_component_semantics(source, target, &entry_map)?;
+        verify_phase_semantics(source, target)?;
+        verify_terminal_semantics(source, target, &entry_map)?;
+
+        let payload = canonical_signed_relabel_payload(&entries)?;
+        let identity_receipt = CanonicalEncoder::<TerminalRelativeSignedRelabelId, _>::new(
+            SIGNED_RELABEL_IDENTITY_LIMITS,
+            NeverCancel,
+        )?
+        .child(Field::new(0, "source-pair"), source.identity())?
+        .child(Field::new(1, "target-pair"), target.identity())?
+        .bytes(Field::new(2, "signed-cell-map"), &payload)?
+        .finish()?;
+        Ok(Self {
+            source_pair: source.identity(),
+            target_pair: target.identity(),
+            entries,
+            identity_receipt,
+        })
+    }
+
+    /// Strong identity of the exact directed signed relabeling.
+    #[must_use]
+    pub const fn identity(&self) -> TerminalRelativeSignedRelabelId {
+        self.identity_receipt.id()
+    }
+
+    /// Strong identity plus canonical-preimage/schema audit roots.
+    #[must_use]
+    pub const fn identity_receipt(&self) -> IdentityReceipt<TerminalRelativeSignedRelabelId> {
+        self.identity_receipt
+    }
+
+    /// Strong identity of the admitted source pair.
+    #[must_use]
+    pub const fn source_pair_id(&self) -> TerminalRelativePairId {
+        self.source_pair
+    }
+
+    /// Strong identity of the admitted target pair.
+    #[must_use]
+    pub const fn target_pair_id(&self) -> TerminalRelativePairId {
+        self.target_pair
+    }
+
+    /// Canonically source-sorted complete signed cell map.
+    #[must_use]
+    pub fn entries(&self) -> &[SignedCellRelabelEntry] {
+        &self.entries
+    }
+
+    /// Target cell and orientation sign for one source cell.
+    #[must_use]
+    pub fn image(&self, source: CellRef) -> Option<(CellRef, IncidenceSign)> {
+        self.entries
+            .binary_search_by_key(&source, |entry| entry.source)
+            .ok()
+            .map(|index| {
+                let entry = self.entries[index];
+                (entry.target, entry.sign)
+            })
+    }
+
+    /// Push an integral chain through only the admitted signed cell
+    /// reindexing.
+    pub fn transport_integral_chain(
+        &self,
+        source: &TerminalRelativePair,
+        target: &TerminalRelativePair,
+        chain: &IntegralRelativeChain,
+    ) -> Result<IntegralRelativeChain, TerminalRelativeSignedRelabelError> {
+        self.verify_pair_bindings(source, target)?;
+        if chain.pair != self.source_pair {
+            return Err(TerminalRelativeSignedRelabelError::PairIdentityMismatch {
+                role: "integral chain source",
+                expected: self.source_pair,
+                actual: chain.pair,
+            });
+        }
+        let coefficients = self.transport_integral_coefficients(
+            source,
+            target,
+            &chain.phase,
+            chain.degree,
+            &chain.coefficients,
+        )?;
+        IntegralRelativeChain::try_new(target, chain.phase.clone(), chain.degree, coefficients)
+            .map_err(Into::into)
+    }
+
+    /// Push an integral cochain through the same signed basis reindexing.
+    ///
+    /// Signed permutations are orthogonal, so this action preserves raw
+    /// chain/cochain evaluation pairing without introducing any phase-current
+    /// compensation.
+    pub fn transport_integral_cochain(
+        &self,
+        source: &TerminalRelativePair,
+        target: &TerminalRelativePair,
+        cochain: &IntegralRelativeCochain,
+    ) -> Result<IntegralRelativeCochain, TerminalRelativeSignedRelabelError> {
+        self.verify_pair_bindings(source, target)?;
+        if cochain.pair != self.source_pair {
+            return Err(TerminalRelativeSignedRelabelError::PairIdentityMismatch {
+                role: "integral cochain source",
+                expected: self.source_pair,
+                actual: cochain.pair,
+            });
+        }
+        let coefficients = self.transport_integral_coefficients(
+            source,
+            target,
+            &cochain.phase,
+            cochain.degree,
+            &cochain.coefficients,
+        )?;
+        IntegralRelativeCochain::try_new(
+            target,
+            cochain.phase.clone(),
+            cochain.degree,
+            coefficients,
+        )
+        .map_err(Into::into)
+    }
+
+    /// Transport a winding representative with the same cell-only chain map
+    /// and re-admit its exact relative-cycle receipt on the target pair.
+    pub fn transport_winding_representative(
+        &self,
+        source: &TerminalRelativePair,
+        target: &TerminalRelativePair,
+        representative: &IntegralWindingRepresentative,
+    ) -> Result<IntegralWindingRepresentative, TerminalRelativeSignedRelabelError> {
+        let chain = self.transport_integral_chain(source, target, &representative.chain)?;
+        IntegralWindingRepresentative::try_new(target, chain.phase.clone(), chain.coefficients)
+            .map_err(Into::into)
+    }
+
+    /// Admit the exact inverse signed permutation.
+    pub fn inverse(
+        &self,
+        source: &TerminalRelativePair,
+        target: &TerminalRelativePair,
+    ) -> Result<Self, TerminalRelativeSignedRelabelError> {
+        self.verify_pair_bindings(source, target)?;
+        let entries = self
+            .entries
+            .iter()
+            .map(|entry| SignedCellRelabelEntry::new(entry.target, entry.source, entry.sign))
+            .collect();
+        Self::try_new(target, source, entries)
+    }
+
+    /// Compose `next` after `self`, admitting `next ∘ self` as a fresh
+    /// canonical signed relabeling.
+    pub fn compose(
+        &self,
+        next: &Self,
+        source: &TerminalRelativePair,
+        intermediate: &TerminalRelativePair,
+        target: &TerminalRelativePair,
+    ) -> Result<Self, TerminalRelativeSignedRelabelError> {
+        self.verify_pair_bindings(source, intermediate)?;
+        next.verify_pair_bindings(intermediate, target)?;
+        let mut entries = Vec::with_capacity(self.entries.len());
+        for entry in &self.entries {
+            let Some((target_cell, next_sign)) = next.image(entry.target) else {
+                return Err(TerminalRelativeSignedRelabelError::MissingSourceCell {
+                    cell: entry.target,
+                });
+            };
+            entries.push(SignedCellRelabelEntry::new(
+                entry.source,
+                target_cell,
+                multiply_incidence_sign(entry.sign, next_sign),
+            ));
+        }
+        Self::try_new(source, target, entries)
+    }
+
+    fn verify_pair_bindings(
+        &self,
+        source: &TerminalRelativePair,
+        target: &TerminalRelativePair,
+    ) -> Result<(), TerminalRelativeSignedRelabelError> {
+        if source.identity() != self.source_pair {
+            return Err(TerminalRelativeSignedRelabelError::PairIdentityMismatch {
+                role: "source pair",
+                expected: self.source_pair,
+                actual: source.identity(),
+            });
+        }
+        if target.identity() != self.target_pair {
+            return Err(TerminalRelativeSignedRelabelError::PairIdentityMismatch {
+                role: "target pair",
+                expected: self.target_pair,
+                actual: target.identity(),
+            });
+        }
+        Ok(())
+    }
+
+    fn transport_integral_coefficients(
+        &self,
+        source: &TerminalRelativePair,
+        target: &TerminalRelativePair,
+        phase: &PhaseId,
+        degree: u8,
+        coefficients: &[i64],
+    ) -> Result<Vec<i64>, TerminalRelativeSignedRelabelError> {
+        let source_basis = source.phase_relative_basis(phase, degree)?;
+        if source_basis.len() != coefficients.len() {
+            return Err(TerminalRelativeError::CoefficientArity {
+                expected: source_basis.len(),
+                actual: coefficients.len(),
+            }
+            .into());
+        }
+        let target_basis = target.phase_relative_basis(phase, degree)?;
+        let target_indices: BTreeMap<_, _> = target_basis
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, cell)| (cell, index))
+            .collect();
+        let mut transported = vec![0_i64; target_basis.len()];
+        for (source_cell, coefficient) in source_basis.iter().zip(coefficients) {
+            let Some((target_cell, sign)) = self.image(*source_cell) else {
+                return Err(TerminalRelativeSignedRelabelError::MissingSourceCell {
+                    cell: *source_cell,
+                });
+            };
+            let Some(target_index) = target_indices.get(&target_cell) else {
+                return Err(TerminalRelativeSignedRelabelError::MappedBasisCellMissing {
+                    phase: phase.as_str().to_owned(),
+                    degree,
+                    source: *source_cell,
+                    target: target_cell,
+                });
+            };
+            transported[*target_index] = match sign {
+                IncidenceSign::Positive => *coefficient,
+                IncidenceSign::Negative => coefficient.checked_neg().ok_or(
+                    TerminalRelativeSignedRelabelError::CoefficientOverflow { cell: *source_cell },
+                )?,
+            };
+        }
+        Ok(transported)
+    }
+}
+
+const fn multiply_incidence_sign(left: IncidenceSign, right: IncidenceSign) -> IncidenceSign {
+    match (left, right) {
+        (IncidenceSign::Negative, IncidenceSign::Positive)
+        | (IncidenceSign::Positive, IncidenceSign::Negative) => IncidenceSign::Negative,
+        (IncidenceSign::Negative, IncidenceSign::Negative)
+        | (IncidenceSign::Positive, IncidenceSign::Positive) => IncidenceSign::Positive,
+    }
+}
+
+fn incidence_coordinate(incidence: &BoundaryIncidence) -> (CellRef, CellRef) {
+    (incidence.upper, incidence.lower)
+}
+
+fn verify_signed_incidence_commutation(
+    source: &TerminalRelativePair,
+    target: &TerminalRelativePair,
+    entries: &BTreeMap<CellRef, SignedCellRelabelEntry>,
+) -> Result<(), TerminalRelativeSignedRelabelError> {
+    let mut mapped = Vec::with_capacity(source.complex.incidences.len());
+    for incidence in &source.complex.incidences {
+        let lower = entries.get(&incidence.lower).ok_or(
+            TerminalRelativeSignedRelabelError::MissingSourceCell {
+                cell: incidence.lower,
+            },
+        )?;
+        let upper = entries.get(&incidence.upper).ok_or(
+            TerminalRelativeSignedRelabelError::MissingSourceCell {
+                cell: incidence.upper,
+            },
+        )?;
+        let sign = multiply_incidence_sign(
+            multiply_incidence_sign(incidence.sign, lower.sign),
+            upper.sign,
+        );
+        mapped.push(BoundaryIncidence::new(lower.target, upper.target, sign));
+    }
+    mapped.sort_unstable_by_key(|incidence| {
+        (
+            incidence.upper.degree,
+            incidence.upper.ordinal,
+            incidence.lower.ordinal,
+        )
+    });
+
+    let expected = &mapped;
+    let actual = &target.complex.incidences;
+    let mut expected_index = 0;
+    let mut actual_index = 0;
+    while expected_index < expected.len() || actual_index < actual.len() {
+        match (expected.get(expected_index), actual.get(actual_index)) {
+            (Some(expected_entry), Some(actual_entry)) => {
+                let expected_coordinate = incidence_coordinate(expected_entry);
+                let actual_coordinate = incidence_coordinate(actual_entry);
+                match expected_coordinate.cmp(&actual_coordinate) {
+                    core::cmp::Ordering::Less => {
+                        return Err(
+                            TerminalRelativeSignedRelabelError::MappedIncidenceMismatch {
+                                lower: expected_entry.lower,
+                                upper: expected_entry.upper,
+                                expected: Some(expected_entry.sign),
+                                actual: None,
+                            },
+                        );
+                    }
+                    core::cmp::Ordering::Greater => {
+                        return Err(
+                            TerminalRelativeSignedRelabelError::MappedIncidenceMismatch {
+                                lower: actual_entry.lower,
+                                upper: actual_entry.upper,
+                                expected: None,
+                                actual: Some(actual_entry.sign),
+                            },
+                        );
+                    }
+                    core::cmp::Ordering::Equal => {
+                        if expected_entry.sign != actual_entry.sign {
+                            return Err(
+                                TerminalRelativeSignedRelabelError::MappedIncidenceMismatch {
+                                    lower: actual_entry.lower,
+                                    upper: actual_entry.upper,
+                                    expected: Some(expected_entry.sign),
+                                    actual: Some(actual_entry.sign),
+                                },
+                            );
+                        }
+                        expected_index += 1;
+                        actual_index += 1;
+                    }
+                }
+            }
+            (Some(expected_entry), None) => {
+                return Err(
+                    TerminalRelativeSignedRelabelError::MappedIncidenceMismatch {
+                        lower: expected_entry.lower,
+                        upper: expected_entry.upper,
+                        expected: Some(expected_entry.sign),
+                        actual: None,
+                    },
+                );
+            }
+            (None, Some(actual_entry)) => {
+                return Err(
+                    TerminalRelativeSignedRelabelError::MappedIncidenceMismatch {
+                        lower: actual_entry.lower,
+                        upper: actual_entry.upper,
+                        expected: None,
+                        actual: Some(actual_entry.sign),
+                    },
+                );
+            }
+            (None, None) => break,
+        }
+    }
+    Ok(())
+}
+
+fn verify_mapped_subcomplex(
+    role: &'static str,
+    owner: Option<&str>,
+    source: &CellularSubcomplex,
+    target: &CellularSubcomplex,
+    entries: &BTreeMap<CellRef, SignedCellRelabelEntry>,
+) -> Result<(), TerminalRelativeSignedRelabelError> {
+    if source.id != target.id {
+        return Err(
+            TerminalRelativeSignedRelabelError::SubcomplexIdentityMismatch {
+                role,
+                owner: owner.map(str::to_owned),
+                source: source.id.as_str().to_owned(),
+                target: target.id.as_str().to_owned(),
+            },
+        );
+    }
+    let mut mapped = BTreeSet::new();
+    for source_cell in &source.cells {
+        let entry = entries
+            .get(source_cell)
+            .ok_or(TerminalRelativeSignedRelabelError::MissingSourceCell { cell: *source_cell })?;
+        mapped.insert(entry.target);
+    }
+    if mapped != target.cells {
+        let cell = mapped
+            .symmetric_difference(&target.cells)
+            .next()
+            .copied()
+            .expect("unequal finite support sets have a witness");
+        return Err(TerminalRelativeSignedRelabelError::MappedSupportMismatch {
+            role,
+            owner: owner.map(str::to_owned),
+            cell,
+            expected_mapped: mapped.contains(&cell),
+            actual_target: target.cells.contains(&cell),
+        });
+    }
+    Ok(())
+}
+
+fn verify_component_semantics(
+    source: &TerminalRelativePair,
+    target: &TerminalRelativePair,
+    entries: &BTreeMap<CellRef, SignedCellRelabelEntry>,
+) -> Result<(), TerminalRelativeSignedRelabelError> {
+    let source_components: BTreeMap<_, _> = source
+        .components
+        .iter()
+        .map(|component| (component.id.as_str(), component))
+        .collect();
+    let target_components: BTreeMap<_, _> = target
+        .components
+        .iter()
+        .map(|component| (component.id.as_str(), component))
+        .collect();
+    for source_component in &source.components {
+        let id = source_component.id.as_str();
+        let Some(target_component) = target_components.get(id).copied() else {
+            return Err(
+                TerminalRelativeSignedRelabelError::SemanticIdentitySetMismatch {
+                    role: "conductor component",
+                    id: id.to_owned(),
+                    source_present: true,
+                    target_present: false,
+                },
+            );
+        };
+        verify_mapped_subcomplex(
+            "conductor component support",
+            Some(id),
+            &source_component.support,
+            &target_component.support,
+            entries,
+        )?;
+    }
+    if let Some(id) = target_components
+        .keys()
+        .copied()
+        .find(|id| !source_components.contains_key(id))
+    {
+        return Err(
+            TerminalRelativeSignedRelabelError::SemanticIdentitySetMismatch {
+                role: "conductor component",
+                id: id.to_owned(),
+                source_present: false,
+                target_present: true,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn verify_phase_semantics(
+    source: &TerminalRelativePair,
+    target: &TerminalRelativePair,
+) -> Result<(), TerminalRelativeSignedRelabelError> {
+    for (phase, source_component) in &source.phase_components {
+        let target_component = target.phase_components.get(phase);
+        if target_component != Some(source_component) {
+            return Err(
+                TerminalRelativeSignedRelabelError::PhaseComponentBindingMismatch {
+                    phase: phase.as_str().to_owned(),
+                    source_component: Some(source_component.as_str().to_owned()),
+                    target_component: target_component
+                        .map(|component| component.as_str().to_owned()),
+                },
+            );
+        }
+    }
+    if let Some((phase, target_component)) = target
+        .phase_components
+        .iter()
+        .find(|(phase, _)| !source.phase_components.contains_key(*phase))
+    {
+        return Err(
+            TerminalRelativeSignedRelabelError::PhaseComponentBindingMismatch {
+                phase: phase.as_str().to_owned(),
+                source_component: None,
+                target_component: Some(target_component.as_str().to_owned()),
+            },
+        );
+    }
+    Ok(())
+}
+
+fn verify_terminal_semantics(
+    source: &TerminalRelativePair,
+    target: &TerminalRelativePair,
+    entries: &BTreeMap<CellRef, SignedCellRelabelEntry>,
+) -> Result<(), TerminalRelativeSignedRelabelError> {
+    let source_terminals: BTreeMap<_, _> = source
+        .terminals
+        .iter()
+        .map(|terminal| (terminal.id.as_str(), terminal))
+        .collect();
+    let target_terminals: BTreeMap<_, _> = target
+        .terminals
+        .iter()
+        .map(|terminal| (terminal.id.as_str(), terminal))
+        .collect();
+    for source_terminal in &source.terminals {
+        let id = source_terminal.id.as_str();
+        let Some(target_terminal) = target_terminals.get(id).copied() else {
+            return Err(
+                TerminalRelativeSignedRelabelError::SemanticIdentitySetMismatch {
+                    role: "physical terminal",
+                    id: id.to_owned(),
+                    source_present: true,
+                    target_present: false,
+                },
+            );
+        };
+        verify_mapped_subcomplex(
+            "physical terminal support",
+            Some(id),
+            &source_terminal.support,
+            &target_terminal.support,
+            entries,
+        )?;
+        let mismatched_field = if source_terminal.component != target_terminal.component {
+            Some("component")
+        } else if source_terminal.phase != target_terminal.phase {
+            Some("phase")
+        } else if source_terminal.role != target_terminal.role {
+            Some("role")
+        } else if source_terminal.orientation != target_terminal.orientation {
+            Some("orientation")
+        } else if source_terminal.coordinate != target_terminal.coordinate {
+            Some("coordinate")
+        } else if source_terminal.port != target_terminal.port {
+            Some("port schema")
+        } else if source_terminal.machine != target_terminal.machine {
+            Some("presented Machine-IR binding")
+        } else if source_terminal.trivialization != target_terminal.trivialization {
+            Some("port trivialization")
+        } else {
+            None
+        };
+        if let Some(field) = mismatched_field {
+            return Err(
+                TerminalRelativeSignedRelabelError::TerminalMetadataMismatch {
+                    terminal: id.to_owned(),
+                    field,
+                },
+            );
+        }
+    }
+    if let Some(id) = target_terminals
+        .keys()
+        .copied()
+        .find(|id| !source_terminals.contains_key(id))
+    {
+        return Err(
+            TerminalRelativeSignedRelabelError::SemanticIdentitySetMismatch {
+                role: "physical terminal",
+                id: id.to_owned(),
+                source_present: false,
+                target_present: true,
+            },
+        );
+    }
+    Ok(())
+}
+
 /// Integral chain on the canonical terminal-relative quotient basis.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IntegralRelativeChain {
@@ -2594,6 +3356,20 @@ fn canonical_winding_payload(
     Ok(writer.finish())
 }
 
+fn canonical_signed_relabel_payload(
+    entries: &[SignedCellRelabelEntry],
+) -> Result<Vec<u8>, TerminalRelativeSignedRelabelError> {
+    let mut writer = CanonicalWriter::new();
+    writer.u32(TERMINAL_RELATIVE_SCHEMA_VERSION)?;
+    writer.len(entries.len())?;
+    for entry in entries {
+        writer.cell(entry.source)?;
+        writer.cell(entry.target)?;
+        writer.u8(entry.sign.tag())?;
+    }
+    Ok(writer.finish())
+}
+
 struct CanonicalWriter {
     bytes: Vec<u8>,
 }
@@ -3226,3 +4002,178 @@ impl fmt::Display for TerminalRelativeError {
 }
 
 impl core::error::Error for TerminalRelativeError {}
+
+/// Fail-closed diagnostics for admission and use of an explicit signed
+/// terminal-relative relabeling.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TerminalRelativeSignedRelabelError {
+    /// Source and target complexes have different top dimensions.
+    ComplexDimensionMismatch {
+        /// Source top dimension.
+        source: u8,
+        /// Target top dimension.
+        target: u8,
+    },
+    /// Source and target have different cell counts at one degree.
+    CellCountMismatch {
+        /// Differing cell degree.
+        degree: u8,
+        /// Source cell count.
+        source: u32,
+        /// Target cell count.
+        target: u32,
+    },
+    /// A declaration did not contain exactly one row per ambient source cell.
+    EntryCountMismatch {
+        /// Required row count.
+        expected: usize,
+        /// Supplied row count.
+        actual: usize,
+    },
+    /// A declared source cell is outside the source complex.
+    SourceCellOutOfRange {
+        /// Rejected source cell.
+        cell: CellRef,
+    },
+    /// A declared target cell is outside the target complex.
+    TargetCellOutOfRange {
+        /// Rejected target cell.
+        cell: CellRef,
+    },
+    /// One map row changed cellular degree.
+    CellDegreeMismatch {
+        /// Source cell.
+        source: CellRef,
+        /// Target cell.
+        target: CellRef,
+    },
+    /// Two declaration rows used the same source cell.
+    DuplicateSourceCell {
+        /// Repeated source cell.
+        cell: CellRef,
+    },
+    /// Two declaration rows used the same target cell.
+    DuplicateTargetCell {
+        /// Repeated target cell.
+        cell: CellRef,
+    },
+    /// An admitted operation could not find a required source-map row.
+    MissingSourceCell {
+        /// Missing source cell.
+        cell: CellRef,
+    },
+    /// The signed source boundary did not equal the target boundary at one
+    /// mapped matrix coordinate.
+    MappedIncidenceMismatch {
+        /// Target-space lower cell.
+        lower: CellRef,
+        /// Target-space upper cell.
+        upper: CellRef,
+        /// Sign required by the mapped source incidence, or `None` for an
+        /// extra target incidence.
+        expected: Option<IncidenceSign>,
+        /// Actual target sign, or `None` for a missing target incidence.
+        actual: Option<IncidenceSign>,
+    },
+    /// A preserved cellular support changed its semantic subcomplex identity.
+    SubcomplexIdentityMismatch {
+        /// Support role.
+        role: &'static str,
+        /// Owning component or terminal identity, when applicable.
+        owner: Option<String>,
+        /// Source subcomplex identity.
+        source: String,
+        /// Target subcomplex identity.
+        target: String,
+    },
+    /// A source support did not map exactly onto its target support.
+    MappedSupportMismatch {
+        /// Support role.
+        role: &'static str,
+        /// Owning component or terminal identity, when applicable.
+        owner: Option<String>,
+        /// Target-space witness cell.
+        cell: CellRef,
+        /// Whether the mapped source support contains the witness.
+        expected_mapped: bool,
+        /// Whether the declared target support contains the witness.
+        actual_target: bool,
+    },
+    /// Component or terminal semantic identity sets differ.
+    SemanticIdentitySetMismatch {
+        /// Identity role.
+        role: &'static str,
+        /// Differing identity.
+        id: String,
+        /// Whether the source contains it.
+        source_present: bool,
+        /// Whether the target contains it.
+        target_present: bool,
+    },
+    /// A phase identity or its component binding changed.
+    PhaseComponentBindingMismatch {
+        /// Differing phase identity.
+        phase: String,
+        /// Source component, if the phase exists there.
+        source_component: Option<String>,
+        /// Target component, if the phase exists there.
+        target_component: Option<String>,
+    },
+    /// Non-support terminal semantics changed under the relabeling.
+    TerminalMetadataMismatch {
+        /// Terminal identity.
+        terminal: String,
+        /// First differing metadata field.
+        field: &'static str,
+    },
+    /// A pair or transported value was not bound to the expected endpoint.
+    PairIdentityMismatch {
+        /// Endpoint or value role.
+        role: &'static str,
+        /// Expected strong pair identity.
+        expected: TerminalRelativePairId,
+        /// Actual strong pair identity.
+        actual: TerminalRelativePairId,
+    },
+    /// A phase-local source basis cell mapped outside the corresponding target
+    /// basis.
+    MappedBasisCellMissing {
+        /// Preserved phase identity.
+        phase: String,
+        /// Basis degree.
+        degree: u8,
+        /// Source basis cell.
+        source: CellRef,
+        /// Mapped target cell.
+        target: CellRef,
+    },
+    /// Negating an exact integral coefficient overflowed `i64`.
+    CoefficientOverflow {
+        /// Source cell whose coefficient overflowed.
+        cell: CellRef,
+    },
+    /// Existing terminal-relative construction or validation refused.
+    TerminalRelative(TerminalRelativeError),
+    /// Strong canonical identity admission refused.
+    CanonicalIdentity(CanonicalError),
+}
+
+impl From<TerminalRelativeError> for TerminalRelativeSignedRelabelError {
+    fn from(value: TerminalRelativeError) -> Self {
+        Self::TerminalRelative(value)
+    }
+}
+
+impl From<CanonicalError> for TerminalRelativeSignedRelabelError {
+    fn from(value: CanonicalError) -> Self {
+        Self::CanonicalIdentity(value)
+    }
+}
+
+impl fmt::Display for TerminalRelativeSignedRelabelError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "terminal-relative signed relabel refused: {self:?}")
+    }
+}
+
+impl core::error::Error for TerminalRelativeSignedRelabelError {}
