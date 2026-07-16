@@ -19,6 +19,9 @@
 //! A separate parallel-path packet can bind two exact structural morphisms with
 //! common geometry endpoints for later comparison without asserting equality,
 //! commutativity, homotopy, coherence, execution, or equivalence.
+//! That packet can in turn bind the two middle routes of a proposed pullback
+//! square over two exact spans and projections, while categorical pullback and
+//! composed-correspondence authority remain absent.
 //! A standalone token binds a fixed-resolution quasi-isomorphism
 //! *candidate* to an exact refinement path and exact local presentations,
 //! without granting theorem authority. Another candidate retains exhaustive
@@ -66,6 +69,8 @@ pub const DERIVED_STRATIFICATION_REFINEMENT_COMPOSITION_CANDIDATE_SCHEMA_VERSION
 pub const DERIVED_SPAN_CORRESPONDENCE_SCHEMA_VERSION_V1: u32 = 1;
 /// Current schema for parallel structural-morphism comparison candidates.
 pub const DERIVED_PARALLEL_MORPHISM_COMPARISON_CANDIDATE_SCHEMA_VERSION_V1: u32 = 1;
+/// Current schema for structural pullback-square candidates between declared spans.
+pub const DERIVED_SPAN_PULLBACK_SQUARE_CANDIDATE_SCHEMA_VERSION_V1: u32 = 1;
 /// Current schema for direct chart-transition inverse-law candidate receipts.
 pub const DERIVED_CHART_TRANSITION_INVERSE_LAW_CANDIDATE_SCHEMA_VERSION_V1: u32 = 1;
 /// Current schema for fixed-resolution quasi-isomorphism candidate receipts.
@@ -92,6 +97,10 @@ const DERIVED_STRATIFICATION_REFINEMENT_COMPOSITION_CANDIDATE_IDENTITY_LIMITS_V1
 // Seven parent fields plus two six-field structural-morphism child schemas.
 const DERIVED_PARALLEL_MORPHISM_COMPARISON_CANDIDATE_IDENTITY_LIMITS_V1: CanonicalLimits =
     CanonicalLimits::new(1 << 17, 1 << 16, 19, 1 << 11, 4096);
+// Thirteen parent fields, two six-field spans, two six-field projections, and
+// one complete 19-field parallel-comparison child schema tree.
+const DERIVED_SPAN_PULLBACK_SQUARE_CANDIDATE_IDENTITY_LIMITS_V1: CanonicalLimits =
+    CanonicalLimits::new(1 << 17, 1 << 16, 56, 1 << 11, 4096);
 // Ten parent fields plus two six-field structural-morphism child schemas.
 const DERIVED_CHART_TRANSITION_INVERSE_LAW_CANDIDATE_IDENTITY_LIMITS_V1: CanonicalLimits =
     CanonicalLimits::new(1 << 17, 1 << 16, 22, 1 << 11, 4096);
@@ -285,6 +294,43 @@ impl CanonicalSchema for DerivedParallelMorphismComparisonCandidateIdentitySchem
 /// Typed identity of one parallel structural-path comparison candidate.
 pub type DerivedParallelMorphismComparisonCandidateIdV1 =
     EvidenceNodeId<DerivedParallelMorphismComparisonCandidateIdentitySchemaV1>;
+
+static DERIVED_SPAN_CORRESPONDENCE_CHILD_V1: ChildSpec =
+    ChildSpec::for_identity::<DerivedSpanCorrespondenceIdV1>();
+static DERIVED_PARALLEL_MORPHISM_COMPARISON_CANDIDATE_CHILD_V1: ChildSpec =
+    ChildSpec::for_identity::<DerivedParallelMorphismComparisonCandidateIdV1>();
+
+/// Domain-separated identity for one structural pullback-square candidate.
+pub enum DerivedSpanPullbackSquareCandidateIdentitySchemaV1 {}
+
+impl CanonicalSchema for DerivedSpanPullbackSquareCandidateIdentitySchemaV1 {
+    const DOMAIN: &'static str = "org.frankensim.fs-geom.span-pullback-square-candidate.v1";
+    const NAME: &'static str = "declared-span-pullback-square-candidate";
+    const VERSION: u32 = DERIVED_SPAN_PULLBACK_SQUARE_CANDIDATE_SCHEMA_VERSION_V1;
+    const CONTEXT: &'static str = "derived outer and middle geometry selectors, both span apexes, one proposed pullback apex, ordered typed span and projection children, one exact parallel middle-route comparison child, one nominal pullback declaration, and an explicit no-authority boundary";
+    const FIELDS: &'static [FieldSpec] = &[
+        FieldSpec::required("source-geometry", WireType::Bytes),
+        FieldSpec::required("middle-geometry", WireType::Bytes),
+        FieldSpec::required("target-geometry", WireType::Bytes),
+        FieldSpec::required("left-apex-geometry", WireType::Bytes),
+        FieldSpec::required("right-apex-geometry", WireType::Bytes),
+        FieldSpec::required("pullback-apex-geometry", WireType::Bytes),
+        FieldSpec::child_of("left-span", &DERIVED_SPAN_CORRESPONDENCE_CHILD_V1),
+        FieldSpec::child_of("right-span", &DERIVED_SPAN_CORRESPONDENCE_CHILD_V1),
+        FieldSpec::child_of("left-projection", &DERIVED_MORPHISM_CHILD_V1),
+        FieldSpec::child_of("right-projection", &DERIVED_MORPHISM_CHILD_V1),
+        FieldSpec::child_of(
+            "middle-route-comparison",
+            &DERIVED_PARALLEL_MORPHISM_COMPARISON_CANDIDATE_CHILD_V1,
+        ),
+        FieldSpec::required("nominal-pullback-declaration", WireType::Bytes),
+        FieldSpec::required("no-authority", WireType::Bytes),
+    ];
+}
+
+/// Typed identity of one structural span pullback-square candidate.
+pub type DerivedSpanPullbackSquareCandidateIdV1 =
+    EvidenceNodeId<DerivedSpanPullbackSquareCandidateIdentitySchemaV1>;
 
 /// Domain-separated identity for one structural direct chart-transition pair.
 pub enum DerivedChartTransitionInverseLawCandidateIdentitySchemaV1 {}
@@ -669,6 +715,27 @@ impl DerivedParallelMorphismRelationDeclarationIdV1 {
     }
 }
 
+/// Nominal declaration that a proposed apex and projections form a pullback.
+///
+/// The bytes do not prove square commutativity, existence, universality,
+/// uniqueness, nonemptiness, base change, or any categorical pullback law.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DerivedSpanPullbackDeclarationIdV1([u8; 32]);
+
+impl DerivedSpanPullbackDeclarationIdV1 {
+    /// Construct a nominal pullback declaration from exact bytes.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Borrow the exact identity bytes.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
 /// Nominal artifact for one declared local-presentation relation edge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DerivedLocalPresentationRelationIdV1([u8; 32]);
@@ -887,6 +954,31 @@ pub struct DerivedParallelMorphismComparisonCandidateIrV1 {
     /// Nominal relation to be checked independently.
     pub nominal_relation: DerivedParallelMorphismRelationDeclarationIdV1,
     /// Explicit denial of equality, homotopy, coherence, and equivalence authority.
+    pub no_authority: DerivedNoClaimIdV1,
+}
+
+/// Versioned structural pullback-square request for two composable spans.
+///
+/// Geometry selectors and both middle routes are derived from sealed children.
+/// The proposed apex is the exact common source of the two projections. This
+/// request carries no categorical pullback or composed-correspondence authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DerivedSpanPullbackSquareCandidateIrV1 {
+    /// Decoded schema version.
+    pub schema_version: u32,
+    /// Exact typed left span `source <- left_apex -> middle`.
+    pub left_span: DerivedSpanCorrespondenceIdV1,
+    /// Exact typed right span `middle <- right_apex -> target`.
+    pub right_span: DerivedSpanCorrespondenceIdV1,
+    /// Exact typed projection `pullback_apex -> left_apex`.
+    pub left_projection: DerivedMorphismIdV1,
+    /// Exact typed projection `pullback_apex -> right_apex`.
+    pub right_projection: DerivedMorphismIdV1,
+    /// Exact typed comparison of the two derived paths to the middle geometry.
+    pub middle_route_comparison: DerivedParallelMorphismComparisonCandidateIdV1,
+    /// Nominal categorical pullback declaration for later independent checking.
+    pub nominal_pullback: DerivedSpanPullbackDeclarationIdV1,
+    /// Explicit denial of commutativity, pullback, composition, and equivalence authority.
     pub no_authority: DerivedNoClaimIdV1,
 }
 
@@ -1863,6 +1955,77 @@ impl fmt::Display for DerivedParallelMorphismComparisonCandidateErrorV1 {
 
 impl core::error::Error for DerivedParallelMorphismComparisonCandidateErrorV1 {}
 
+/// Structured refusal from structural span pullback-square admission.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DerivedSpanPullbackSquareCandidateErrorV1 {
+    /// Unsupported decoded schema version.
+    UnsupportedSchemaVersion {
+        /// Supplied version.
+        found: u32,
+        /// Sole supported version.
+        supported: u32,
+    },
+    /// A required child, declaration, or no-authority ID is zero.
+    MissingIdentity {
+        /// Stable identity field.
+        field: &'static str,
+    },
+    /// A raw child ID does not name the supplied sealed child.
+    ChildIdentityMismatch {
+        /// Stable child field.
+        field: &'static str,
+    },
+    /// The left span's target is not the right span's source.
+    SpanMiddleMismatch {
+        /// Left span target.
+        left_target: DerivedGeometryIdV1,
+        /// Right span source.
+        right_source: DerivedGeometryIdV1,
+    },
+    /// A supplied sealed middle leg is not the exact leg retained by its span.
+    SpanLegIdentityMismatch {
+        /// Stable left/right middle-leg field.
+        field: &'static str,
+    },
+    /// A projection does not have the required proposed-apex/span-apex orientation.
+    ProjectionEndpointMismatch {
+        /// Stable failed projection relation.
+        field: &'static str,
+    },
+    /// One projection-to-middle structural path could not compose.
+    RouteCompositionRefused {
+        /// Stable left/right middle route.
+        field: &'static str,
+        /// Underlying structural morphism refusal.
+        cause: DerivedMorphismErrorV1,
+    },
+    /// The supplied comparison child has the wrong proposed-apex or middle endpoint.
+    ComparisonEndpointMismatch {
+        /// Stable failed comparison endpoint.
+        field: &'static str,
+    },
+    /// The comparison child does not retain the exact derived middle route.
+    ComparisonRouteIdentityMismatch {
+        /// Stable left/right comparison route.
+        field: &'static str,
+    },
+    /// Cooperative cancellation was observed before publication.
+    Cancelled {
+        /// Stable admission stage.
+        stage: &'static str,
+    },
+    /// Canonical identity construction failed.
+    Identity(CanonicalError),
+}
+
+impl fmt::Display for DerivedSpanPullbackSquareCandidateErrorV1 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "span pullback-square candidate refused: {self:?}")
+    }
+}
+
+impl core::error::Error for DerivedSpanPullbackSquareCandidateErrorV1 {}
+
 /// Structured refusal from standalone declared-span admission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DerivedSpanCorrespondenceErrorV1 {
@@ -2762,6 +2925,139 @@ impl AdmittedDerivedSpanCorrespondenceV1 {
     /// Canonical receipt and construction limits.
     #[must_use]
     pub const fn identity_receipt(&self) -> IdentityReceipt<DerivedSpanCorrespondenceIdV1> {
+        self.receipt
+    }
+}
+
+/// Sealed structural pullback-square candidate for two declared spans.
+///
+/// The token binds exact parent spans, exact proposed-apex projections, and one
+/// exact parallel-path comparison over the two derived routes to the common
+/// middle geometry. It proves no square commutativity, pullback existence or
+/// universality, outer correspondence, associativity, base-change law,
+/// projection formula, evidence preservation, physical meaning, or equivalence.
+#[derive(Debug, PartialEq, Eq)]
+pub struct AdmittedDerivedSpanPullbackSquareCandidateV1 {
+    source: DerivedGeometryIdV1,
+    middle: DerivedGeometryIdV1,
+    target: DerivedGeometryIdV1,
+    left_apex: DerivedGeometryIdV1,
+    right_apex: DerivedGeometryIdV1,
+    pullback_apex: DerivedGeometryIdV1,
+    left_span: DerivedSpanCorrespondenceIdV1,
+    right_span: DerivedSpanCorrespondenceIdV1,
+    left_projection: DerivedMorphismIdV1,
+    right_projection: DerivedMorphismIdV1,
+    middle_route_comparison: DerivedParallelMorphismComparisonCandidateIdV1,
+    left_middle_route: DerivedMorphismIdV1,
+    right_middle_route: DerivedMorphismIdV1,
+    nominal_pullback: DerivedSpanPullbackDeclarationIdV1,
+    no_authority: DerivedNoClaimIdV1,
+    receipt: IdentityReceipt<DerivedSpanPullbackSquareCandidateIdV1>,
+}
+
+impl AdmittedDerivedSpanPullbackSquareCandidateV1 {
+    /// Exact outer source geometry derived from the left span.
+    #[must_use]
+    pub const fn source(&self) -> DerivedGeometryIdV1 {
+        self.source
+    }
+
+    /// Exact common middle geometry.
+    #[must_use]
+    pub const fn middle(&self) -> DerivedGeometryIdV1 {
+        self.middle
+    }
+
+    /// Exact outer target geometry derived from the right span.
+    #[must_use]
+    pub const fn target(&self) -> DerivedGeometryIdV1 {
+        self.target
+    }
+
+    /// Exact apex of the left parent span.
+    #[must_use]
+    pub const fn left_apex(&self) -> DerivedGeometryIdV1 {
+        self.left_apex
+    }
+
+    /// Exact apex of the right parent span.
+    #[must_use]
+    pub const fn right_apex(&self) -> DerivedGeometryIdV1 {
+        self.right_apex
+    }
+
+    /// Exact proposed pullback apex derived from both projection sources.
+    #[must_use]
+    pub const fn pullback_apex(&self) -> DerivedGeometryIdV1 {
+        self.pullback_apex
+    }
+
+    /// Exact typed left parent span.
+    #[must_use]
+    pub const fn left_span(&self) -> DerivedSpanCorrespondenceIdV1 {
+        self.left_span
+    }
+
+    /// Exact typed right parent span.
+    #[must_use]
+    pub const fn right_span(&self) -> DerivedSpanCorrespondenceIdV1 {
+        self.right_span
+    }
+
+    /// Exact typed projection to the left span apex.
+    #[must_use]
+    pub const fn left_projection(&self) -> DerivedMorphismIdV1 {
+        self.left_projection
+    }
+
+    /// Exact typed projection to the right span apex.
+    #[must_use]
+    pub const fn right_projection(&self) -> DerivedMorphismIdV1 {
+        self.right_projection
+    }
+
+    /// Exact typed comparison over both proposed-apex-to-middle routes.
+    #[must_use]
+    pub const fn middle_route_comparison(&self) -> DerivedParallelMorphismComparisonCandidateIdV1 {
+        self.middle_route_comparison
+    }
+
+    /// Derived structural route through the left span apex.
+    #[must_use]
+    pub const fn left_middle_route(&self) -> DerivedMorphismIdV1 {
+        self.left_middle_route
+    }
+
+    /// Derived structural route through the right span apex.
+    #[must_use]
+    pub const fn right_middle_route(&self) -> DerivedMorphismIdV1 {
+        self.right_middle_route
+    }
+
+    /// Nominal pullback declaration; not authenticated here.
+    #[must_use]
+    pub const fn nominal_pullback(&self) -> DerivedSpanPullbackDeclarationIdV1 {
+        self.nominal_pullback
+    }
+
+    /// Explicit artifact denying pullback and correspondence-composition authority.
+    #[must_use]
+    pub const fn no_authority(&self) -> DerivedNoClaimIdV1 {
+        self.no_authority
+    }
+
+    /// Typed structural pullback-square candidate identity.
+    #[must_use]
+    pub const fn id(&self) -> DerivedSpanPullbackSquareCandidateIdV1 {
+        self.receipt.id()
+    }
+
+    /// Canonical receipt and construction limits.
+    #[must_use]
+    pub const fn identity_receipt(
+        &self,
+    ) -> IdentityReceipt<DerivedSpanPullbackSquareCandidateIdV1> {
         self.receipt
     }
 }
@@ -6121,6 +6417,300 @@ pub fn admit_derived_span_correspondence_v1(
         left_leg: ir.left_leg,
         right_leg: ir.right_leg,
         no_claim: ir.no_claim,
+        receipt,
+    })
+}
+
+fn span_pullback_square_candidate_receipt(
+    ir: &DerivedSpanPullbackSquareCandidateIrV1,
+    left_span: &AdmittedDerivedSpanCorrespondenceV1,
+    right_span: &AdmittedDerivedSpanCorrespondenceV1,
+    left_projection: &AdmittedDerivedMorphismV1,
+    cx: &Cx<'_>,
+) -> Result<
+    IdentityReceipt<DerivedSpanPullbackSquareCandidateIdV1>,
+    DerivedSpanPullbackSquareCandidateErrorV1,
+> {
+    let map_identity_error = |error| match error {
+        CanonicalError::Cancelled { .. } => DerivedSpanPullbackSquareCandidateErrorV1::Cancelled {
+            stage: "span-pullback-square-identity",
+        },
+        other => DerivedSpanPullbackSquareCandidateErrorV1::Identity(other),
+    };
+    CanonicalEncoder::<DerivedSpanPullbackSquareCandidateIdV1, _>::new(
+        DERIVED_SPAN_PULLBACK_SQUARE_CANDIDATE_IDENTITY_LIMITS_V1,
+        || cx.checkpoint().is_err(),
+    )
+    .map_err(map_identity_error)?
+    .bytes(
+        Field::new(0, "source-geometry"),
+        left_span.source().as_bytes(),
+    )
+    .and_then(|encoder| {
+        encoder.bytes(
+            Field::new(1, "middle-geometry"),
+            left_span.target().as_bytes(),
+        )
+    })
+    .and_then(|encoder| {
+        encoder.bytes(
+            Field::new(2, "target-geometry"),
+            right_span.target().as_bytes(),
+        )
+    })
+    .and_then(|encoder| {
+        encoder.bytes(
+            Field::new(3, "left-apex-geometry"),
+            left_span.apex().as_bytes(),
+        )
+    })
+    .and_then(|encoder| {
+        encoder.bytes(
+            Field::new(4, "right-apex-geometry"),
+            right_span.apex().as_bytes(),
+        )
+    })
+    .and_then(|encoder| {
+        encoder.bytes(
+            Field::new(5, "pullback-apex-geometry"),
+            left_projection.source().as_bytes(),
+        )
+    })
+    .and_then(|encoder| encoder.child(Field::new(6, "left-span"), ir.left_span))
+    .and_then(|encoder| encoder.child(Field::new(7, "right-span"), ir.right_span))
+    .and_then(|encoder| encoder.child(Field::new(8, "left-projection"), ir.left_projection))
+    .and_then(|encoder| encoder.child(Field::new(9, "right-projection"), ir.right_projection))
+    .and_then(|encoder| {
+        encoder.child(
+            Field::new(10, "middle-route-comparison"),
+            ir.middle_route_comparison,
+        )
+    })
+    .and_then(|encoder| {
+        encoder.bytes(
+            Field::new(11, "nominal-pullback-declaration"),
+            ir.nominal_pullback.as_bytes(),
+        )
+    })
+    .and_then(|encoder| encoder.bytes(Field::new(12, "no-authority"), ir.no_authority.as_bytes()))
+    .and_then(|encoder| encoder.finish())
+    .map_err(map_identity_error)
+}
+
+/// Admit one structural pullback-square candidate for two declared spans.
+///
+/// The parent spans must share an exact middle geometry. Supplied middle legs
+/// must be the exact retained legs from those spans. Both projections must start
+/// at one exact proposed apex and end at the corresponding span apex. Existing
+/// structural morphism composition derives both proposed-apex-to-middle routes,
+/// which must be the exact ordered paths retained by the supplied parallel-path
+/// comparison child.
+///
+/// The comparison child remains nominal: admission does not assert that the two
+/// routes commute. It also does not prove categorical pullback existence,
+/// universality, uniqueness, nonemptiness, outer correspondence composition,
+/// associativity, base change, Beck-Chevalley, projection formulas, evidence
+/// preservation, physical meaning, or equivalence.
+///
+/// # Errors
+/// Returns a typed refusal for schema, zero identity, raw/sealed child mismatch,
+/// span seam or leg mismatch, projection orientation, route composition,
+/// comparison endpoint/route mismatch, cancellation, or canonical identity
+/// defects. No partial token escapes.
+#[must_use = "a structural square candidate grants no pullback authority"]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // One bounded exact-child audit.
+pub fn admit_derived_span_pullback_square_candidate_v1(
+    ir: &DerivedSpanPullbackSquareCandidateIrV1,
+    left_span: &AdmittedDerivedSpanCorrespondenceV1,
+    right_span: &AdmittedDerivedSpanCorrespondenceV1,
+    left_projection: &AdmittedDerivedMorphismV1,
+    right_projection: &AdmittedDerivedMorphismV1,
+    left_middle_leg: &AdmittedDerivedMorphismV1,
+    right_middle_leg: &AdmittedDerivedMorphismV1,
+    middle_route_comparison: &AdmittedDerivedParallelMorphismComparisonCandidateV1,
+    cx: &Cx<'_>,
+) -> Result<AdmittedDerivedSpanPullbackSquareCandidateV1, DerivedSpanPullbackSquareCandidateErrorV1>
+{
+    if cx.checkpoint().is_err() {
+        return Err(DerivedSpanPullbackSquareCandidateErrorV1::Cancelled {
+            stage: "span-pullback-square-entry",
+        });
+    }
+    if ir.schema_version != DERIVED_SPAN_PULLBACK_SQUARE_CANDIDATE_SCHEMA_VERSION_V1 {
+        return Err(
+            DerivedSpanPullbackSquareCandidateErrorV1::UnsupportedSchemaVersion {
+                found: ir.schema_version,
+                supported: DERIVED_SPAN_PULLBACK_SQUARE_CANDIDATE_SCHEMA_VERSION_V1,
+            },
+        );
+    }
+    for (bytes, field) in [
+        (ir.left_span.as_bytes(), "left-span"),
+        (ir.right_span.as_bytes(), "right-span"),
+        (ir.left_projection.as_bytes(), "left-projection"),
+        (ir.right_projection.as_bytes(), "right-projection"),
+        (
+            ir.middle_route_comparison.as_bytes(),
+            "middle-route-comparison",
+        ),
+        (
+            ir.nominal_pullback.as_bytes(),
+            "nominal-pullback-declaration",
+        ),
+        (ir.no_authority.as_bytes(), "no-authority"),
+    ] {
+        if is_zero(bytes) {
+            return Err(DerivedSpanPullbackSquareCandidateErrorV1::MissingIdentity { field });
+        }
+    }
+    for (matches, field) in [
+        (ir.left_span == left_span.id(), "left-span"),
+        (ir.right_span == right_span.id(), "right-span"),
+        (
+            ir.left_projection == left_projection.id(),
+            "left-projection",
+        ),
+        (
+            ir.right_projection == right_projection.id(),
+            "right-projection",
+        ),
+        (
+            ir.middle_route_comparison == middle_route_comparison.id(),
+            "middle-route-comparison",
+        ),
+    ] {
+        if !matches {
+            return Err(DerivedSpanPullbackSquareCandidateErrorV1::ChildIdentityMismatch { field });
+        }
+    }
+    if left_span.target() != right_span.source() {
+        return Err(
+            DerivedSpanPullbackSquareCandidateErrorV1::SpanMiddleMismatch {
+                left_target: left_span.target(),
+                right_source: right_span.source(),
+            },
+        );
+    }
+    for (matches, field) in [
+        (
+            left_span.right_leg() == left_middle_leg.id(),
+            "left-span-middle-leg",
+        ),
+        (
+            right_span.left_leg() == right_middle_leg.id(),
+            "right-span-middle-leg",
+        ),
+    ] {
+        if !matches {
+            return Err(
+                DerivedSpanPullbackSquareCandidateErrorV1::SpanLegIdentityMismatch { field },
+            );
+        }
+    }
+    for (matches, field) in [
+        (
+            left_projection.source() == right_projection.source(),
+            "projection-common-source",
+        ),
+        (
+            left_projection.target() == left_span.apex(),
+            "left-projection-target",
+        ),
+        (
+            right_projection.target() == right_span.apex(),
+            "right-projection-target",
+        ),
+    ] {
+        if !matches {
+            return Err(
+                DerivedSpanPullbackSquareCandidateErrorV1::ProjectionEndpointMismatch { field },
+            );
+        }
+    }
+
+    let compose_route =
+        |field: &'static str,
+         projection: &AdmittedDerivedMorphismV1,
+         middle_leg: &AdmittedDerivedMorphismV1|
+         -> Result<AdmittedDerivedMorphismV1, DerivedSpanPullbackSquareCandidateErrorV1> {
+            compose_derived_morphisms_v1(projection, middle_leg, cx).map_err(|cause| match cause {
+                DerivedMorphismErrorV1::Cancelled { .. } => {
+                    DerivedSpanPullbackSquareCandidateErrorV1::Cancelled { stage: field }
+                }
+                other => DerivedSpanPullbackSquareCandidateErrorV1::RouteCompositionRefused {
+                    field,
+                    cause: other,
+                },
+            })
+        };
+    let left_middle_route = compose_route(
+        "left-middle-route-composition",
+        left_projection,
+        left_middle_leg,
+    )?;
+    let right_middle_route = compose_route(
+        "right-middle-route-composition",
+        right_projection,
+        right_middle_leg,
+    )?;
+
+    for (matches, field) in [
+        (
+            middle_route_comparison.source() == left_projection.source(),
+            "comparison-pullback-apex",
+        ),
+        (
+            middle_route_comparison.target() == left_span.target(),
+            "comparison-middle-geometry",
+        ),
+    ] {
+        if !matches {
+            return Err(
+                DerivedSpanPullbackSquareCandidateErrorV1::ComparisonEndpointMismatch { field },
+            );
+        }
+    }
+    for (matches, field) in [
+        (
+            middle_route_comparison.left() == left_middle_route.id(),
+            "comparison-left-middle-route",
+        ),
+        (
+            middle_route_comparison.right() == right_middle_route.id(),
+            "comparison-right-middle-route",
+        ),
+    ] {
+        if !matches {
+            return Err(
+                DerivedSpanPullbackSquareCandidateErrorV1::ComparisonRouteIdentityMismatch {
+                    field,
+                },
+            );
+        }
+    }
+    let receipt =
+        span_pullback_square_candidate_receipt(ir, left_span, right_span, left_projection, cx)?;
+    if cx.checkpoint().is_err() {
+        return Err(DerivedSpanPullbackSquareCandidateErrorV1::Cancelled {
+            stage: "span-pullback-square-publication",
+        });
+    }
+    Ok(AdmittedDerivedSpanPullbackSquareCandidateV1 {
+        source: left_span.source(),
+        middle: left_span.target(),
+        target: right_span.target(),
+        left_apex: left_span.apex(),
+        right_apex: right_span.apex(),
+        pullback_apex: left_projection.source(),
+        left_span: ir.left_span,
+        right_span: ir.right_span,
+        left_projection: ir.left_projection,
+        right_projection: ir.right_projection,
+        middle_route_comparison: ir.middle_route_comparison,
+        left_middle_route: left_middle_route.id(),
+        right_middle_route: right_middle_route.id(),
+        nominal_pullback: ir.nominal_pullback,
+        no_authority: ir.no_authority,
         receipt,
     })
 }
@@ -9640,6 +10230,205 @@ mod tests {
         ParallelMorphismComparisonCandidateFixtureV1 { left, right, ir }
     }
 
+    struct SpanPullbackSquareCandidateFixtureV1 {
+        left_span: AdmittedDerivedSpanCorrespondenceV1,
+        right_span: AdmittedDerivedSpanCorrespondenceV1,
+        left_projection: AdmittedDerivedMorphismV1,
+        right_projection: AdmittedDerivedMorphismV1,
+        left_middle_leg: AdmittedDerivedMorphismV1,
+        right_middle_leg: AdmittedDerivedMorphismV1,
+        middle_route_comparison: AdmittedDerivedParallelMorphismComparisonCandidateV1,
+        ir: DerivedSpanPullbackSquareCandidateIrV1,
+    }
+
+    fn span_with_test_selectors(
+        span: &AdmittedDerivedSpanCorrespondenceV1,
+        source: DerivedGeometryIdV1,
+        apex: DerivedGeometryIdV1,
+        target: DerivedGeometryIdV1,
+    ) -> AdmittedDerivedSpanCorrespondenceV1 {
+        AdmittedDerivedSpanCorrespondenceV1 {
+            source,
+            apex,
+            target,
+            left_leg: span.left_leg(),
+            right_leg: span.right_leg(),
+            no_claim: span.no_claim(),
+            receipt: span.identity_receipt(),
+        }
+    }
+
+    fn parallel_comparison_with_test_bindings(
+        comparison: &AdmittedDerivedParallelMorphismComparisonCandidateV1,
+        source: DerivedGeometryIdV1,
+        target: DerivedGeometryIdV1,
+        left: DerivedMorphismIdV1,
+        right: DerivedMorphismIdV1,
+    ) -> AdmittedDerivedParallelMorphismComparisonCandidateV1 {
+        AdmittedDerivedParallelMorphismComparisonCandidateV1 {
+            source,
+            target,
+            left,
+            right,
+            comparison_scope: comparison.comparison_scope(),
+            nominal_relation: comparison.nominal_relation(),
+            no_authority: comparison.no_authority(),
+            receipt: comparison.identity_receipt(),
+        }
+    }
+
+    #[allow(clippy::too_many_lines)] // Constructs every sealed child in the structural square.
+    fn span_pullback_square_candidate_fixture(cx: &Cx<'_>) -> SpanPullbackSquareCandidateFixtureV1 {
+        let source = endpoint(200);
+        let left_apex = endpoint(201);
+        let middle = endpoint(202);
+        let right_apex = endpoint(203);
+        let target = endpoint(204);
+        let pullback_apex = endpoint(205);
+
+        let left_outer_leg = admit_strict(
+            left_apex,
+            source,
+            206,
+            ColorRank::Validated,
+            ColorRank::Estimated,
+            cx,
+        );
+        let left_middle_leg = admit_strict(
+            left_apex,
+            middle,
+            207,
+            ColorRank::Validated,
+            ColorRank::Estimated,
+            cx,
+        );
+        let right_middle_leg = admit_strict(
+            right_apex,
+            middle,
+            208,
+            ColorRank::Validated,
+            ColorRank::Estimated,
+            cx,
+        );
+        let right_outer_leg = admit_strict(
+            right_apex,
+            target,
+            209,
+            ColorRank::Validated,
+            ColorRank::Estimated,
+            cx,
+        );
+        let left_span_ir = span_ir(
+            source,
+            left_apex,
+            middle,
+            &left_outer_leg,
+            &left_middle_leg,
+            212,
+        );
+        let left_span = admit_derived_span_correspondence_v1(
+            left_span_ir,
+            &left_outer_leg,
+            &left_middle_leg,
+            cx,
+        )
+        .expect("valid left parent span");
+        let right_span_ir = span_ir(
+            middle,
+            right_apex,
+            target,
+            &right_middle_leg,
+            &right_outer_leg,
+            213,
+        );
+        let right_span = admit_derived_span_correspondence_v1(
+            right_span_ir,
+            &right_middle_leg,
+            &right_outer_leg,
+            cx,
+        )
+        .expect("valid right parent span");
+
+        let left_projection = admit_strict(
+            pullback_apex,
+            left_apex,
+            210,
+            ColorRank::Verified,
+            ColorRank::Validated,
+            cx,
+        );
+        let right_projection = admit_strict(
+            pullback_apex,
+            right_apex,
+            211,
+            ColorRank::Verified,
+            ColorRank::Validated,
+            cx,
+        );
+        let left_middle_route =
+            compose_derived_morphisms_v1(&left_projection, &left_middle_leg, cx)
+                .expect("valid left proposed-apex-to-middle route");
+        let right_middle_route =
+            compose_derived_morphisms_v1(&right_projection, &right_middle_leg, cx)
+                .expect("valid right proposed-apex-to-middle route");
+        let comparison_ir = DerivedParallelMorphismComparisonCandidateIrV1 {
+            schema_version: DERIVED_PARALLEL_MORPHISM_COMPARISON_CANDIDATE_SCHEMA_VERSION_V1,
+            left: left_middle_route.id(),
+            right: right_middle_route.id(),
+            comparison_scope: DerivedMorphismComparisonScopeIdV1::from_bytes([214; 32]),
+            nominal_relation: DerivedParallelMorphismRelationDeclarationIdV1::from_bytes([215; 32]),
+            no_authority: DerivedNoClaimIdV1::from_bytes([216; 32]),
+        };
+        let middle_route_comparison = admit_derived_parallel_morphism_comparison_candidate_v1(
+            &comparison_ir,
+            &left_middle_route,
+            &right_middle_route,
+            cx,
+        )
+        .expect("valid nominal comparison of middle routes");
+        let ir = DerivedSpanPullbackSquareCandidateIrV1 {
+            schema_version: DERIVED_SPAN_PULLBACK_SQUARE_CANDIDATE_SCHEMA_VERSION_V1,
+            left_span: left_span.id(),
+            right_span: right_span.id(),
+            left_projection: left_projection.id(),
+            right_projection: right_projection.id(),
+            middle_route_comparison: middle_route_comparison.id(),
+            nominal_pullback: DerivedSpanPullbackDeclarationIdV1::from_bytes([217; 32]),
+            no_authority: DerivedNoClaimIdV1::from_bytes([218; 32]),
+        };
+        SpanPullbackSquareCandidateFixtureV1 {
+            left_span,
+            right_span,
+            left_projection,
+            right_projection,
+            left_middle_leg,
+            right_middle_leg,
+            middle_route_comparison,
+            ir,
+        }
+    }
+
+    fn admit_span_pullback_square_with_ir(
+        fixture: &SpanPullbackSquareCandidateFixtureV1,
+        ir: &DerivedSpanPullbackSquareCandidateIrV1,
+        cx: &Cx<'_>,
+    ) -> Result<
+        AdmittedDerivedSpanPullbackSquareCandidateV1,
+        DerivedSpanPullbackSquareCandidateErrorV1,
+    > {
+        admit_derived_span_pullback_square_candidate_v1(
+            ir,
+            &fixture.left_span,
+            &fixture.right_span,
+            &fixture.left_projection,
+            &fixture.right_projection,
+            &fixture.left_middle_leg,
+            &fixture.right_middle_leg,
+            &fixture.middle_route_comparison,
+            cx,
+        )
+    }
+
     #[test]
     fn v1_class_bytes_keep_old_tags_and_domain_separate_new_paths() {
         assert_eq!(
@@ -11864,6 +12653,980 @@ mod tests {
                         stage: "parallel-comparison-entry",
                     }
                 )
+            );
+        });
+    }
+
+    #[test]
+    fn span_pullback_square_candidates_bind_exact_structural_routes() {
+        assert_ne!(
+            <DerivedSpanPullbackSquareCandidateIdentitySchemaV1 as CanonicalSchema>::DOMAIN,
+            <DerivedSpanCorrespondenceIdentitySchemaV1 as CanonicalSchema>::DOMAIN,
+        );
+        assert_ne!(
+            <DerivedSpanPullbackSquareCandidateIdentitySchemaV1 as CanonicalSchema>::DOMAIN,
+            <DerivedParallelMorphismComparisonCandidateIdentitySchemaV1 as CanonicalSchema>::DOMAIN,
+        );
+        assert_eq!(
+            <DerivedSpanPullbackSquareCandidateIdentitySchemaV1 as CanonicalSchema>::FIELDS.len(),
+            13,
+        );
+        assert_eq!(
+            DERIVED_SPAN_PULLBACK_SQUARE_CANDIDATE_IDENTITY_LIMITS_V1.max_fields(),
+            56,
+        );
+
+        with_cx(false, |cx| {
+            let fixture = span_pullback_square_candidate_fixture(cx);
+            let first = admit_span_pullback_square_with_ir(&fixture, &fixture.ir, cx)
+                .expect("valid structural pullback-square candidate");
+            let replay = admit_span_pullback_square_with_ir(&fixture, &fixture.ir, cx)
+                .expect("deterministic pullback-square replay");
+
+            assert_eq!(first, replay);
+            assert_eq!(first.source(), endpoint(200).id);
+            assert_eq!(first.left_apex(), endpoint(201).id);
+            assert_eq!(first.middle(), endpoint(202).id);
+            assert_eq!(first.right_apex(), endpoint(203).id);
+            assert_eq!(first.target(), endpoint(204).id);
+            assert_eq!(first.pullback_apex(), endpoint(205).id);
+            assert_eq!(first.left_span(), fixture.left_span.id());
+            assert_eq!(first.right_span(), fixture.right_span.id());
+            assert_eq!(first.left_projection(), fixture.left_projection.id());
+            assert_eq!(first.right_projection(), fixture.right_projection.id());
+            assert_eq!(
+                first.middle_route_comparison(),
+                fixture.middle_route_comparison.id(),
+            );
+            assert_eq!(
+                first.left_middle_route(),
+                fixture.middle_route_comparison.left(),
+            );
+            assert_eq!(
+                first.right_middle_route(),
+                fixture.middle_route_comparison.right(),
+            );
+            assert_eq!(first.nominal_pullback(), fixture.ir.nominal_pullback);
+            assert_eq!(first.no_authority(), fixture.ir.no_authority);
+            assert_eq!(first.id(), first.identity_receipt().id());
+        });
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // Thirteen-field receipt with six derived selectors.
+    fn span_pullback_square_receipt_binds_every_field_and_typed_child() {
+        with_cx(false, |cx| {
+            let fixture = span_pullback_square_candidate_fixture(cx);
+            let baseline = span_pullback_square_candidate_receipt(
+                &fixture.ir,
+                &fixture.left_span,
+                &fixture.right_span,
+                &fixture.left_projection,
+                cx,
+            )
+            .expect("baseline pullback-square receipt")
+            .id();
+
+            macro_rules! assert_ir_field_moves_identity {
+                ($field:ident, $value:expr) => {{
+                    let mut changed = fixture.ir;
+                    changed.$field = $value;
+                    let changed = span_pullback_square_candidate_receipt(
+                        &changed,
+                        &fixture.left_span,
+                        &fixture.right_span,
+                        &fixture.left_projection,
+                        cx,
+                    )
+                    .expect("changed pullback-square receipt")
+                    .id();
+                    assert_ne!(baseline, changed, stringify!($field));
+                }};
+            }
+
+            assert_ir_field_moves_identity!(
+                left_span,
+                DerivedSpanCorrespondenceIdV1::parse_slice(&[219; 32])
+                    .expect("nonzero changed left span")
+            );
+            assert_ir_field_moves_identity!(
+                right_span,
+                DerivedSpanCorrespondenceIdV1::parse_slice(&[220; 32])
+                    .expect("nonzero changed right span")
+            );
+            assert_ir_field_moves_identity!(
+                left_projection,
+                DerivedMorphismIdV1::parse_slice(&[221; 32])
+                    .expect("nonzero changed left projection")
+            );
+            assert_ir_field_moves_identity!(
+                right_projection,
+                DerivedMorphismIdV1::parse_slice(&[222; 32])
+                    .expect("nonzero changed right projection")
+            );
+            assert_ir_field_moves_identity!(
+                middle_route_comparison,
+                DerivedParallelMorphismComparisonCandidateIdV1::parse_slice(&[223; 32])
+                    .expect("nonzero changed middle comparison")
+            );
+            assert_ir_field_moves_identity!(
+                nominal_pullback,
+                DerivedSpanPullbackDeclarationIdV1::from_bytes([224; 32])
+            );
+            assert_ir_field_moves_identity!(
+                no_authority,
+                DerivedNoClaimIdV1::from_bytes([225; 32])
+            );
+
+            macro_rules! assert_selectors_move_identity {
+                ($label:literal, $left_span:expr, $right_span:expr, $left_projection:expr) => {{
+                    let changed = span_pullback_square_candidate_receipt(
+                        &fixture.ir,
+                        &$left_span,
+                        &$right_span,
+                        $left_projection,
+                        cx,
+                    )
+                    .expect("changed derived-selector receipt")
+                    .id();
+                    assert_ne!(baseline, changed, $label);
+                }};
+            }
+
+            assert_selectors_move_identity!(
+                "source-geometry",
+                span_with_test_selectors(
+                    &fixture.left_span,
+                    geometry_id(226),
+                    fixture.left_span.apex(),
+                    fixture.left_span.target(),
+                ),
+                span_with_test_selectors(
+                    &fixture.right_span,
+                    fixture.right_span.source(),
+                    fixture.right_span.apex(),
+                    fixture.right_span.target(),
+                ),
+                &fixture.left_projection
+            );
+            assert_selectors_move_identity!(
+                "middle-geometry",
+                span_with_test_selectors(
+                    &fixture.left_span,
+                    fixture.left_span.source(),
+                    fixture.left_span.apex(),
+                    geometry_id(227),
+                ),
+                span_with_test_selectors(
+                    &fixture.right_span,
+                    fixture.right_span.source(),
+                    fixture.right_span.apex(),
+                    fixture.right_span.target(),
+                ),
+                &fixture.left_projection
+            );
+            assert_selectors_move_identity!(
+                "target-geometry",
+                span_with_test_selectors(
+                    &fixture.left_span,
+                    fixture.left_span.source(),
+                    fixture.left_span.apex(),
+                    fixture.left_span.target(),
+                ),
+                span_with_test_selectors(
+                    &fixture.right_span,
+                    fixture.right_span.source(),
+                    fixture.right_span.apex(),
+                    geometry_id(228),
+                ),
+                &fixture.left_projection
+            );
+            assert_selectors_move_identity!(
+                "left-apex-geometry",
+                span_with_test_selectors(
+                    &fixture.left_span,
+                    fixture.left_span.source(),
+                    geometry_id(229),
+                    fixture.left_span.target(),
+                ),
+                span_with_test_selectors(
+                    &fixture.right_span,
+                    fixture.right_span.source(),
+                    fixture.right_span.apex(),
+                    fixture.right_span.target(),
+                ),
+                &fixture.left_projection
+            );
+            assert_selectors_move_identity!(
+                "right-apex-geometry",
+                span_with_test_selectors(
+                    &fixture.left_span,
+                    fixture.left_span.source(),
+                    fixture.left_span.apex(),
+                    fixture.left_span.target(),
+                ),
+                span_with_test_selectors(
+                    &fixture.right_span,
+                    fixture.right_span.source(),
+                    geometry_id(230),
+                    fixture.right_span.target(),
+                ),
+                &fixture.left_projection
+            );
+            let changed_pullback_projection = admit_strict(
+                endpoint(231),
+                endpoint(201),
+                232,
+                ColorRank::Verified,
+                ColorRank::Validated,
+                cx,
+            );
+            assert_selectors_move_identity!(
+                "pullback-apex-geometry",
+                span_with_test_selectors(
+                    &fixture.left_span,
+                    fixture.left_span.source(),
+                    fixture.left_span.apex(),
+                    fixture.left_span.target(),
+                ),
+                span_with_test_selectors(
+                    &fixture.right_span,
+                    fixture.right_span.source(),
+                    fixture.right_span.apex(),
+                    fixture.right_span.target(),
+                ),
+                &changed_pullback_projection
+            );
+
+            for field in 6..=10 {
+                let spec = &DerivedSpanPullbackSquareCandidateIdentitySchemaV1::FIELDS[field];
+                assert_eq!(spec.wire_type(), WireType::Child);
+                assert!(spec.child_spec().is_some());
+            }
+
+            let prefix_encoder = || {
+                CanonicalEncoder::<DerivedSpanPullbackSquareCandidateIdV1, _>::new(
+                    DERIVED_SPAN_PULLBACK_SQUARE_CANDIDATE_IDENTITY_LIMITS_V1,
+                    || cx.checkpoint().is_err(),
+                )
+                .expect("valid pullback-square encoder")
+                .bytes(
+                    Field::new(0, "source-geometry"),
+                    fixture.left_span.source().as_bytes(),
+                )
+                .and_then(|encoder| {
+                    encoder.bytes(
+                        Field::new(1, "middle-geometry"),
+                        fixture.left_span.target().as_bytes(),
+                    )
+                })
+                .and_then(|encoder| {
+                    encoder.bytes(
+                        Field::new(2, "target-geometry"),
+                        fixture.right_span.target().as_bytes(),
+                    )
+                })
+                .and_then(|encoder| {
+                    encoder.bytes(
+                        Field::new(3, "left-apex-geometry"),
+                        fixture.left_span.apex().as_bytes(),
+                    )
+                })
+                .and_then(|encoder| {
+                    encoder.bytes(
+                        Field::new(4, "right-apex-geometry"),
+                        fixture.right_span.apex().as_bytes(),
+                    )
+                })
+                .and_then(|encoder| {
+                    encoder.bytes(
+                        Field::new(5, "pullback-apex-geometry"),
+                        fixture.left_projection.source().as_bytes(),
+                    )
+                })
+            };
+            let through_spans = || {
+                prefix_encoder()
+                    .and_then(|encoder| {
+                        encoder.child(Field::new(6, "left-span"), fixture.left_span.id())
+                    })
+                    .and_then(|encoder| {
+                        encoder.child(Field::new(7, "right-span"), fixture.right_span.id())
+                    })
+            };
+            let through_projections = || {
+                through_spans()
+                    .and_then(|encoder| {
+                        encoder.child(
+                            Field::new(8, "left-projection"),
+                            fixture.left_projection.id(),
+                        )
+                    })
+                    .and_then(|encoder| {
+                        encoder.child(
+                            Field::new(9, "right-projection"),
+                            fixture.right_projection.id(),
+                        )
+                    })
+            };
+
+            let wrong_left_span_schema = prefix_encoder().and_then(|encoder| {
+                encoder.child(Field::new(6, "left-span"), fixture.left_projection.id())
+            });
+            assert!(matches!(
+                wrong_left_span_schema,
+                Err(CanonicalError::ChildBindingMismatch {
+                    field: "left-span",
+                    what: "child schema domain",
+                })
+            ));
+            let wrong_right_span_schema = prefix_encoder()
+                .and_then(|encoder| {
+                    encoder.child(Field::new(6, "left-span"), fixture.left_span.id())
+                })
+                .and_then(|encoder| {
+                    encoder.child(Field::new(7, "right-span"), fixture.right_projection.id())
+                });
+            assert!(matches!(
+                wrong_right_span_schema,
+                Err(CanonicalError::ChildBindingMismatch {
+                    field: "right-span",
+                    what: "child schema domain",
+                })
+            ));
+            let wrong_left_projection_schema = through_spans().and_then(|encoder| {
+                encoder.child(Field::new(8, "left-projection"), fixture.left_span.id())
+            });
+            assert!(matches!(
+                wrong_left_projection_schema,
+                Err(CanonicalError::ChildBindingMismatch {
+                    field: "left-projection",
+                    what: "child schema domain",
+                })
+            ));
+            let wrong_right_projection_schema = through_spans()
+                .and_then(|encoder| {
+                    encoder.child(
+                        Field::new(8, "left-projection"),
+                        fixture.left_projection.id(),
+                    )
+                })
+                .and_then(|encoder| {
+                    encoder.child(Field::new(9, "right-projection"), fixture.right_span.id())
+                });
+            assert!(matches!(
+                wrong_right_projection_schema,
+                Err(CanonicalError::ChildBindingMismatch {
+                    field: "right-projection",
+                    what: "child schema domain",
+                })
+            ));
+            let wrong_comparison_schema = through_projections().and_then(|encoder| {
+                encoder.child(
+                    Field::new(10, "middle-route-comparison"),
+                    fixture.left_span.id(),
+                )
+            });
+            assert!(matches!(
+                wrong_comparison_schema,
+                Err(CanonicalError::ChildBindingMismatch {
+                    field: "middle-route-comparison",
+                    what: "child schema domain",
+                })
+            ));
+
+            let swapped_spans_ir = DerivedSpanPullbackSquareCandidateIrV1 {
+                left_span: fixture.right_span.id(),
+                right_span: fixture.left_span.id(),
+                ..fixture.ir
+            };
+            let swapped_spans = span_pullback_square_candidate_receipt(
+                &swapped_spans_ir,
+                &fixture.left_span,
+                &fixture.right_span,
+                &fixture.left_projection,
+                cx,
+            )
+            .expect("swapped span children remain structurally encodable")
+            .id();
+            assert_ne!(baseline, swapped_spans, "left/right span order is semantic");
+
+            let swapped_projections_ir = DerivedSpanPullbackSquareCandidateIrV1 {
+                left_projection: fixture.right_projection.id(),
+                right_projection: fixture.left_projection.id(),
+                ..fixture.ir
+            };
+            let swapped_projections = span_pullback_square_candidate_receipt(
+                &swapped_projections_ir,
+                &fixture.left_span,
+                &fixture.right_span,
+                &fixture.left_projection,
+                cx,
+            )
+            .expect("swapped projection children remain structurally encodable")
+            .id();
+            assert_ne!(
+                baseline, swapped_projections,
+                "left/right projection order is semantic"
+            );
+        });
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // Schema, identity, seam, projection, route, and comparison matrix.
+    fn span_pullback_square_refuses_unbound_or_incoherent_structural_data() {
+        let fixture = with_cx(false, span_pullback_square_candidate_fixture);
+        with_cx(false, |cx| {
+            let bad_schema = DerivedSpanPullbackSquareCandidateIrV1 {
+                schema_version: 2,
+                ..fixture.ir
+            };
+            assert_eq!(
+                admit_span_pullback_square_with_ir(&fixture, &bad_schema, cx),
+                Err(
+                    DerivedSpanPullbackSquareCandidateErrorV1::UnsupportedSchemaVersion {
+                        found: 2,
+                        supported: DERIVED_SPAN_PULLBACK_SQUARE_CANDIDATE_SCHEMA_VERSION_V1,
+                    }
+                )
+            );
+
+            for (field, changed_ir) in [
+                (
+                    "left-span",
+                    DerivedSpanPullbackSquareCandidateIrV1 {
+                        left_span: DerivedSpanCorrespondenceIdV1::parse_slice(&[0; 32])
+                            .expect("zero left-span sentinel"),
+                        ..fixture.ir
+                    },
+                ),
+                (
+                    "right-span",
+                    DerivedSpanPullbackSquareCandidateIrV1 {
+                        right_span: DerivedSpanCorrespondenceIdV1::parse_slice(&[0; 32])
+                            .expect("zero right-span sentinel"),
+                        ..fixture.ir
+                    },
+                ),
+                (
+                    "left-projection",
+                    DerivedSpanPullbackSquareCandidateIrV1 {
+                        left_projection: DerivedMorphismIdV1::parse_slice(&[0; 32])
+                            .expect("zero left-projection sentinel"),
+                        ..fixture.ir
+                    },
+                ),
+                (
+                    "right-projection",
+                    DerivedSpanPullbackSquareCandidateIrV1 {
+                        right_projection: DerivedMorphismIdV1::parse_slice(&[0; 32])
+                            .expect("zero right-projection sentinel"),
+                        ..fixture.ir
+                    },
+                ),
+                (
+                    "middle-route-comparison",
+                    DerivedSpanPullbackSquareCandidateIrV1 {
+                        middle_route_comparison:
+                            DerivedParallelMorphismComparisonCandidateIdV1::parse_slice(&[0; 32])
+                                .expect("zero comparison sentinel"),
+                        ..fixture.ir
+                    },
+                ),
+                (
+                    "nominal-pullback-declaration",
+                    DerivedSpanPullbackSquareCandidateIrV1 {
+                        nominal_pullback: DerivedSpanPullbackDeclarationIdV1::from_bytes([0; 32]),
+                        ..fixture.ir
+                    },
+                ),
+                (
+                    "no-authority",
+                    DerivedSpanPullbackSquareCandidateIrV1 {
+                        no_authority: DerivedNoClaimIdV1::from_bytes([0; 32]),
+                        ..fixture.ir
+                    },
+                ),
+            ] {
+                assert!(matches!(
+                    admit_span_pullback_square_with_ir(&fixture, &changed_ir, cx),
+                    Err(DerivedSpanPullbackSquareCandidateErrorV1::MissingIdentity {
+                        field: found,
+                    }) if found == field
+                ));
+            }
+
+            for (field, changed_ir) in [
+                (
+                    "left-span",
+                    DerivedSpanPullbackSquareCandidateIrV1 {
+                        left_span: DerivedSpanCorrespondenceIdV1::parse_slice(&[233; 32])
+                            .expect("nonzero wrong left span"),
+                        ..fixture.ir
+                    },
+                ),
+                (
+                    "right-span",
+                    DerivedSpanPullbackSquareCandidateIrV1 {
+                        right_span: DerivedSpanCorrespondenceIdV1::parse_slice(&[234; 32])
+                            .expect("nonzero wrong right span"),
+                        ..fixture.ir
+                    },
+                ),
+                (
+                    "left-projection",
+                    DerivedSpanPullbackSquareCandidateIrV1 {
+                        left_projection: DerivedMorphismIdV1::parse_slice(&[235; 32])
+                            .expect("nonzero wrong left projection"),
+                        ..fixture.ir
+                    },
+                ),
+                (
+                    "right-projection",
+                    DerivedSpanPullbackSquareCandidateIrV1 {
+                        right_projection: DerivedMorphismIdV1::parse_slice(&[236; 32])
+                            .expect("nonzero wrong right projection"),
+                        ..fixture.ir
+                    },
+                ),
+                (
+                    "middle-route-comparison",
+                    DerivedSpanPullbackSquareCandidateIrV1 {
+                        middle_route_comparison:
+                            DerivedParallelMorphismComparisonCandidateIdV1::parse_slice(&[237; 32])
+                                .expect("nonzero wrong comparison"),
+                        ..fixture.ir
+                    },
+                ),
+            ] {
+                assert!(matches!(
+                    admit_span_pullback_square_with_ir(&fixture, &changed_ir, cx),
+                    Err(DerivedSpanPullbackSquareCandidateErrorV1::ChildIdentityMismatch {
+                        field: found,
+                    }) if found == field
+                ));
+            }
+
+            let wrong_middle_span = span_with_test_selectors(
+                &fixture.right_span,
+                geometry_id(238),
+                fixture.right_span.apex(),
+                fixture.right_span.target(),
+            );
+            assert_eq!(
+                admit_derived_span_pullback_square_candidate_v1(
+                    &fixture.ir,
+                    &fixture.left_span,
+                    &wrong_middle_span,
+                    &fixture.left_projection,
+                    &fixture.right_projection,
+                    &fixture.left_middle_leg,
+                    &fixture.right_middle_leg,
+                    &fixture.middle_route_comparison,
+                    cx,
+                ),
+                Err(
+                    DerivedSpanPullbackSquareCandidateErrorV1::SpanMiddleMismatch {
+                        left_target: fixture.left_span.target(),
+                        right_source: geometry_id(238),
+                    }
+                )
+            );
+
+            assert!(matches!(
+                admit_derived_span_pullback_square_candidate_v1(
+                    &fixture.ir,
+                    &fixture.left_span,
+                    &fixture.right_span,
+                    &fixture.left_projection,
+                    &fixture.right_projection,
+                    &fixture.left_projection,
+                    &fixture.right_middle_leg,
+                    &fixture.middle_route_comparison,
+                    cx,
+                ),
+                Err(
+                    DerivedSpanPullbackSquareCandidateErrorV1::SpanLegIdentityMismatch {
+                        field: "left-span-middle-leg",
+                    }
+                )
+            ));
+
+            assert!(matches!(
+                admit_derived_span_pullback_square_candidate_v1(
+                    &fixture.ir,
+                    &fixture.left_span,
+                    &fixture.right_span,
+                    &fixture.left_projection,
+                    &fixture.right_projection,
+                    &fixture.left_middle_leg,
+                    &fixture.right_projection,
+                    &fixture.middle_route_comparison,
+                    cx,
+                ),
+                Err(
+                    DerivedSpanPullbackSquareCandidateErrorV1::SpanLegIdentityMismatch {
+                        field: "right-span-middle-leg",
+                    }
+                )
+            ));
+
+            let wrong_projection_source = admit_strict(
+                endpoint(239),
+                endpoint(203),
+                240,
+                ColorRank::Verified,
+                ColorRank::Validated,
+                cx,
+            );
+            let wrong_projection_source_ir = DerivedSpanPullbackSquareCandidateIrV1 {
+                right_projection: wrong_projection_source.id(),
+                ..fixture.ir
+            };
+            assert!(matches!(
+                admit_derived_span_pullback_square_candidate_v1(
+                    &wrong_projection_source_ir,
+                    &fixture.left_span,
+                    &fixture.right_span,
+                    &fixture.left_projection,
+                    &wrong_projection_source,
+                    &fixture.left_middle_leg,
+                    &fixture.right_middle_leg,
+                    &fixture.middle_route_comparison,
+                    cx,
+                ),
+                Err(
+                    DerivedSpanPullbackSquareCandidateErrorV1::ProjectionEndpointMismatch {
+                        field: "projection-common-source",
+                    }
+                )
+            ));
+
+            let wrong_left_projection_target = admit_strict(
+                endpoint(205),
+                endpoint(244),
+                245,
+                ColorRank::Verified,
+                ColorRank::Validated,
+                cx,
+            );
+            let wrong_left_projection_target_ir = DerivedSpanPullbackSquareCandidateIrV1 {
+                left_projection: wrong_left_projection_target.id(),
+                ..fixture.ir
+            };
+            assert!(matches!(
+                admit_derived_span_pullback_square_candidate_v1(
+                    &wrong_left_projection_target_ir,
+                    &fixture.left_span,
+                    &fixture.right_span,
+                    &wrong_left_projection_target,
+                    &fixture.right_projection,
+                    &fixture.left_middle_leg,
+                    &fixture.right_middle_leg,
+                    &fixture.middle_route_comparison,
+                    cx,
+                ),
+                Err(
+                    DerivedSpanPullbackSquareCandidateErrorV1::ProjectionEndpointMismatch {
+                        field: "left-projection-target",
+                    }
+                )
+            ));
+
+            let wrong_right_projection_target = admit_strict(
+                endpoint(205),
+                endpoint(246),
+                247,
+                ColorRank::Verified,
+                ColorRank::Validated,
+                cx,
+            );
+            let wrong_right_projection_target_ir = DerivedSpanPullbackSquareCandidateIrV1 {
+                right_projection: wrong_right_projection_target.id(),
+                ..fixture.ir
+            };
+            assert!(matches!(
+                admit_derived_span_pullback_square_candidate_v1(
+                    &wrong_right_projection_target_ir,
+                    &fixture.left_span,
+                    &fixture.right_span,
+                    &fixture.left_projection,
+                    &wrong_right_projection_target,
+                    &fixture.left_middle_leg,
+                    &fixture.right_middle_leg,
+                    &fixture.middle_route_comparison,
+                    cx,
+                ),
+                Err(
+                    DerivedSpanPullbackSquareCandidateErrorV1::ProjectionEndpointMismatch {
+                        field: "right-projection-target",
+                    }
+                )
+            ));
+
+            let wrong_right_projection_source_and_target = admit_strict(
+                endpoint(248),
+                endpoint(249),
+                250,
+                ColorRank::Verified,
+                ColorRank::Validated,
+                cx,
+            );
+            let wrong_right_projection_source_and_target_ir =
+                DerivedSpanPullbackSquareCandidateIrV1 {
+                    right_projection: wrong_right_projection_source_and_target.id(),
+                    ..fixture.ir
+                };
+            assert!(matches!(
+                admit_derived_span_pullback_square_candidate_v1(
+                    &wrong_right_projection_source_and_target_ir,
+                    &fixture.left_span,
+                    &fixture.right_span,
+                    &fixture.left_projection,
+                    &wrong_right_projection_source_and_target,
+                    &fixture.left_middle_leg,
+                    &fixture.right_middle_leg,
+                    &fixture.middle_route_comparison,
+                    cx,
+                ),
+                Err(
+                    DerivedSpanPullbackSquareCandidateErrorV1::ProjectionEndpointMismatch {
+                        field: "projection-common-source",
+                    }
+                )
+            ));
+
+            let uncomposable_projection = admit_strict(
+                endpoint(205),
+                endpoint(201),
+                241,
+                ColorRank::Verified,
+                ColorRank::Estimated,
+                cx,
+            );
+            let uncomposable_projection_ir = DerivedSpanPullbackSquareCandidateIrV1 {
+                left_projection: uncomposable_projection.id(),
+                ..fixture.ir
+            };
+            assert_eq!(
+                admit_derived_span_pullback_square_candidate_v1(
+                    &uncomposable_projection_ir,
+                    &fixture.left_span,
+                    &fixture.right_span,
+                    &uncomposable_projection,
+                    &fixture.right_projection,
+                    &fixture.left_middle_leg,
+                    &fixture.right_middle_leg,
+                    &fixture.middle_route_comparison,
+                    cx,
+                ),
+                Err(
+                    DerivedSpanPullbackSquareCandidateErrorV1::RouteCompositionRefused {
+                        field: "left-middle-route-composition",
+                        cause: DerivedMorphismErrorV1::CompositionEvidenceMismatch,
+                    }
+                )
+            );
+
+            let uncomposable_right_projection = admit_strict(
+                endpoint(205),
+                endpoint(203),
+                242,
+                ColorRank::Verified,
+                ColorRank::Estimated,
+                cx,
+            );
+            let uncomposable_right_projection_ir = DerivedSpanPullbackSquareCandidateIrV1 {
+                right_projection: uncomposable_right_projection.id(),
+                ..fixture.ir
+            };
+            assert_eq!(
+                admit_derived_span_pullback_square_candidate_v1(
+                    &uncomposable_right_projection_ir,
+                    &fixture.left_span,
+                    &fixture.right_span,
+                    &fixture.left_projection,
+                    &uncomposable_right_projection,
+                    &fixture.left_middle_leg,
+                    &fixture.right_middle_leg,
+                    &fixture.middle_route_comparison,
+                    cx,
+                ),
+                Err(
+                    DerivedSpanPullbackSquareCandidateErrorV1::RouteCompositionRefused {
+                        field: "right-middle-route-composition",
+                        cause: DerivedMorphismErrorV1::CompositionEvidenceMismatch,
+                    }
+                )
+            );
+
+            let wrong_comparison_endpoint = parallel_comparison_with_test_bindings(
+                &fixture.middle_route_comparison,
+                geometry_id(242),
+                fixture.middle_route_comparison.target(),
+                fixture.middle_route_comparison.left(),
+                fixture.middle_route_comparison.right(),
+            );
+            assert!(matches!(
+                admit_derived_span_pullback_square_candidate_v1(
+                    &fixture.ir,
+                    &fixture.left_span,
+                    &fixture.right_span,
+                    &fixture.left_projection,
+                    &fixture.right_projection,
+                    &fixture.left_middle_leg,
+                    &fixture.right_middle_leg,
+                    &wrong_comparison_endpoint,
+                    cx,
+                ),
+                Err(
+                    DerivedSpanPullbackSquareCandidateErrorV1::ComparisonEndpointMismatch {
+                        field: "comparison-pullback-apex",
+                    }
+                )
+            ));
+
+            let wrong_comparison_target = parallel_comparison_with_test_bindings(
+                &fixture.middle_route_comparison,
+                fixture.middle_route_comparison.source(),
+                geometry_id(251),
+                fixture.middle_route_comparison.left(),
+                fixture.middle_route_comparison.right(),
+            );
+            assert!(matches!(
+                admit_derived_span_pullback_square_candidate_v1(
+                    &fixture.ir,
+                    &fixture.left_span,
+                    &fixture.right_span,
+                    &fixture.left_projection,
+                    &fixture.right_projection,
+                    &fixture.left_middle_leg,
+                    &fixture.right_middle_leg,
+                    &wrong_comparison_target,
+                    cx,
+                ),
+                Err(
+                    DerivedSpanPullbackSquareCandidateErrorV1::ComparisonEndpointMismatch {
+                        field: "comparison-middle-geometry",
+                    }
+                )
+            ));
+
+            let wrong_comparison_source_and_target = parallel_comparison_with_test_bindings(
+                &fixture.middle_route_comparison,
+                geometry_id(252),
+                geometry_id(253),
+                fixture.middle_route_comparison.left(),
+                fixture.middle_route_comparison.right(),
+            );
+            assert!(matches!(
+                admit_derived_span_pullback_square_candidate_v1(
+                    &fixture.ir,
+                    &fixture.left_span,
+                    &fixture.right_span,
+                    &fixture.left_projection,
+                    &fixture.right_projection,
+                    &fixture.left_middle_leg,
+                    &fixture.right_middle_leg,
+                    &wrong_comparison_source_and_target,
+                    cx,
+                ),
+                Err(
+                    DerivedSpanPullbackSquareCandidateErrorV1::ComparisonEndpointMismatch {
+                        field: "comparison-pullback-apex",
+                    }
+                )
+            ));
+
+            let wrong_comparison_route = parallel_comparison_with_test_bindings(
+                &fixture.middle_route_comparison,
+                fixture.middle_route_comparison.source(),
+                fixture.middle_route_comparison.target(),
+                DerivedMorphismIdV1::parse_slice(&[254; 32])
+                    .expect("nonzero wrong comparison route"),
+                fixture.middle_route_comparison.right(),
+            );
+            assert!(matches!(
+                admit_derived_span_pullback_square_candidate_v1(
+                    &fixture.ir,
+                    &fixture.left_span,
+                    &fixture.right_span,
+                    &fixture.left_projection,
+                    &fixture.right_projection,
+                    &fixture.left_middle_leg,
+                    &fixture.right_middle_leg,
+                    &wrong_comparison_route,
+                    cx,
+                ),
+                Err(
+                    DerivedSpanPullbackSquareCandidateErrorV1::ComparisonRouteIdentityMismatch {
+                        field: "comparison-left-middle-route",
+                    }
+                )
+            ));
+
+            let wrong_right_comparison_route = parallel_comparison_with_test_bindings(
+                &fixture.middle_route_comparison,
+                fixture.middle_route_comparison.source(),
+                fixture.middle_route_comparison.target(),
+                fixture.middle_route_comparison.left(),
+                DerivedMorphismIdV1::parse_slice(&[255; 32])
+                    .expect("nonzero wrong right comparison route"),
+            );
+            assert!(matches!(
+                admit_derived_span_pullback_square_candidate_v1(
+                    &fixture.ir,
+                    &fixture.left_span,
+                    &fixture.right_span,
+                    &fixture.left_projection,
+                    &fixture.right_projection,
+                    &fixture.left_middle_leg,
+                    &fixture.right_middle_leg,
+                    &wrong_right_comparison_route,
+                    cx,
+                ),
+                Err(
+                    DerivedSpanPullbackSquareCandidateErrorV1::ComparisonRouteIdentityMismatch {
+                        field: "comparison-right-middle-route",
+                    }
+                )
+            ));
+
+            let wrong_both_comparison_routes = parallel_comparison_with_test_bindings(
+                &fixture.middle_route_comparison,
+                fixture.middle_route_comparison.source(),
+                fixture.middle_route_comparison.target(),
+                DerivedMorphismIdV1::parse_slice(&[250; 32])
+                    .expect("nonzero wrong left comparison route"),
+                DerivedMorphismIdV1::parse_slice(&[251; 32])
+                    .expect("nonzero wrong right comparison route"),
+            );
+            assert!(matches!(
+                admit_derived_span_pullback_square_candidate_v1(
+                    &fixture.ir,
+                    &fixture.left_span,
+                    &fixture.right_span,
+                    &fixture.left_projection,
+                    &fixture.right_projection,
+                    &fixture.left_middle_leg,
+                    &fixture.right_middle_leg,
+                    &wrong_both_comparison_routes,
+                    cx,
+                ),
+                Err(
+                    DerivedSpanPullbackSquareCandidateErrorV1::ComparisonRouteIdentityMismatch {
+                        field: "comparison-left-middle-route",
+                    }
+                )
+            ));
+        });
+
+        with_cx(true, |cx| {
+            assert_eq!(
+                admit_span_pullback_square_with_ir(&fixture, &fixture.ir, cx),
+                Err(DerivedSpanPullbackSquareCandidateErrorV1::Cancelled {
+                    stage: "span-pullback-square-entry",
+                })
             );
         });
     }
