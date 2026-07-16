@@ -33,6 +33,8 @@ pub mod kernels;
 pub mod law;
 pub mod mms;
 pub mod plan;
+#[cfg(feature = "port-equations")]
+pub mod ports;
 pub mod system;
 
 pub use atoms::{Atom, AtomId, Transpose};
@@ -40,6 +42,13 @@ pub use expr::{Expr, OperatorDef, Space, TypeError};
 pub use law::{CubicReaction, LawId, PointwiseLaw};
 pub use mms::{MmsReport, mms_poisson_study};
 pub use plan::{LoweredOperator, PlanReport, dwr_indicators};
+#[cfg(feature = "port-equations")]
+pub use ports::{
+    AccountingTermKind, CompiledPortEquation, LossOwnershipId, OwnershipDisposition,
+    PORT_EQUATION_RECEIPT_SCHEMA_V1, PortDiscretization, PortEquationBatch, PortEquationError,
+    PortEquationReceipt, PortEquationSense, PortEquationSpec, compile_port_equation,
+    compile_port_equations,
+};
 pub use system::{
     AdmittedSystem, AtomSignature, BlockEquation, ClockTransferSignature, ConventionRef,
     CoordinateConvention, FieldDecl, FieldId, FieldQuantity, ParameterRole, SYSTEM_IR_VERSION,

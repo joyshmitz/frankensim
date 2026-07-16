@@ -89,7 +89,10 @@ points (the workspace L0–L3 discipline). No internal threading.
 
 ## Feature flags
 
-None.
+- `constitutive-graph` — I01.2 opaque constitutive adaptation and batched
+  evaluation; default-off under its [F] promotion contract.
+- `port-equations` — I01.3 neutral `fs-couple::PortSchema` lowering into typed
+  system-IR power equations; default-off under its [F] promotion contract.
 
 ## Unsafe boundary
 
@@ -218,3 +221,45 @@ documented in the bead close); cross-ISA golden hash.
   reproduction pack) has NOT begun — the feature stays default-off; the
   binding-time tangent gate probes the zero point only (per-application
   re-verification belongs to the generated-program gates).
+
+## Port-equation lowering (bead i94v.1.1.3, feature `port-equations`, default-off)
+
+- `compile_port_equation` imports an already-admitted neutral
+  `fs_couple::PortSchema`, re-derives its effort × flow × measure dimensions as
+  watts, and generates a three-field boundary fragment plus one
+  `SystemExpr::PortPair` power equation. The complete schema identity,
+  dimensions, shape/function-space roles, coordinates, clock/tick,
+  conservation roles, discretization, accounting role, ownership disposition,
+  and orientation sense are encoded into the fragment's identity-bearing
+  extension. Reversing orientation inserts an explicit `-1` expression and
+  therefore changes the `SystemId`.
+- Lumped scalar/vector/tensor shapes receive their exact component extent.
+  Field-duality shapes require nonzero caller-supplied effort/flow dof counts,
+  retain the neutral `fs-iface` form degrees, and refuse incomplete component
+  tuples. Compilation has static batch and metadata caps and returns no partial
+  batch on refusal.
+- Accounting terms distinguish reversible, storage, source, and dissipation.
+  Reversible terms forbid an owner; storage requires one concrete owner;
+  sources and dissipative losses require either one concrete owner or an
+  explicit durable unowned rationale. Deterministic batches sort by stable port
+  ID and refuse duplicate port IDs or reuse of one concrete owner by two terms.
+  A concretely owned dissipative term also mints a nominal, domain-separated
+  `LossOwnershipId` from the port/schema/owner tuple; algebraic orientation
+  reversal does not invent a second physical loss owner. `PortEquationReceipt`
+  exposes that identity, the re-derived dimensional proof, exact sign,
+  role/ownership, generated `SystemId`, structural-generated authority, and
+  explicit no-claim language.
+- `tests/ports.rs` supplies G0/G3 scalar and field-duality generation,
+  orientation-reversal, canonical batch-order, ownership-uniqueness,
+  component-shape, empty-input, and metadata-resource-bomb fixtures. The test
+  target is explicitly gated by `required-features = ["port-equations"]`.
+- NO-CLAIM: this slice generates structural equations; it does not execute the
+  scalar/vector/tensor/field contraction, quadrature, trace pullback, numeric
+  port adapter, source/dissipation law, or closed-window audit. Stream bundles,
+  stream-vs-effort/flow energy double-count refusal, junction permutations,
+  storage/source operator lowering, and reversible skew-block preservation are
+  subsequent I01.3 slices. A receipt proves that the supplied schema lowered
+  consistently, not that the schema or its referenced physical evidence is
+  true. The [F] baseline deck, activation threshold, kill criterion, cost
+  percentiles, and independent reproduction pack remain pending, so the
+  feature stays default-off.
