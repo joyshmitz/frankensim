@@ -2,12 +2,12 @@
 //!
 //! This tool boundary owns source-format and redistribution decisions. The
 //! runtime fs-matdb crate only admits the normalized artifact. The material
-//! profile emits [`NormalizedPack`]. The NASA-9 profile emits a separate
-//! [`NormalizedModelPack`] whose pack id is exactly one validated species id;
-//! the generic runtime artifact does not claim to authenticate that source
-//! association or supply the wider thermochemical convention. Standalone
-//! species metadata and kinetics profiles still refuse until their owning
-//! runtime codecs exist.
+//! profile emits [`NormalizedPack`]. The NASA-9 and kinetics profiles emit a
+//! separate [`NormalizedModelPack`] whose pack id is exactly one validated
+//! species or reaction id. The generic runtime artifact does not authenticate
+//! either source association or supply a thermochemical convention, kinetics
+//! executor, reaction mechanism, or conservation proof. Standalone species
+//! metadata still refuses until its owning runtime codec exists.
 //!
 //! The bounded manifest is tab-separated: one pack_id, redistribution,
 //! citation, and license record, followed by source records containing logical
@@ -15,6 +15,10 @@
 //! SOURCE_HEADER and then uses observation, scalar, curve, uncertainty,
 //! validity, frame, and joint records. Every numeric token has a separate
 //! explicit unit field; confidence and correlation use the exact basis 1.
+//! A kinetics-v1 source declares exactly one explicitly first-order reaction
+//! plus `pre_exponential` and `activation_temperature`, representing only the
+//! immutable coefficient schema `k(T) = A exp(-T_a / T)` with `A` in `s^-1`
+//! and `T_a` in kelvin. No evaluator, stoichiometry, or mechanism is inferred.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
@@ -34,11 +38,12 @@ use fs_matdb::{
     PropertyKey, PropertyValue, Provenance, StatisticMember, UncertaintyModel, ValidityBoundSide,
 };
 use fs_qty::Dims;
-use fs_qty::chemistry::SpeciesId;
+use fs_qty::chemistry::{ReactionId, SpeciesId};
 use fs_qty::parse::{ParseBudget, parse_qty_with_budget};
 
 const COMPILER_ID: &str = "frankensim-matdb-pack-compiler-v1";
 const NASA9_COMPILER_ID: &str = "frankensim-matdb-nasa9-model-pack-compiler-v1";
+const KINETICS_COMPILER_ID: &str = "frankensim-matdb-kinetics-model-pack-compiler-v1";
 /// Semantic contract version for normalized material-pack compilation.
 ///
 /// Bump this whenever parsing, admission, normalization, or provenance
@@ -48,12 +53,18 @@ pub const MATDB_PACK_COMPILER_SEMANTICS_VERSION: u32 = 2;
 const MANIFEST_HEADER: &str = "frankensim.matdb-manifest.v1";
 const SOURCE_HEADER: &str = "frankensim.matdb-source.v1";
 const NASA9_SOURCE_HEADER: &str = "frankensim.nasa9-source.v1";
+const KINETICS_SOURCE_HEADER: &str = "frankensim.kinetics-source.v1";
 const MATERIAL_PROFILE: &str = "material-tsv-v1";
 const NASA9_PROFILE: &str = "nasa9-v1";
+const KINETICS_PROFILE: &str = "kinetics-v1";
 const NASA9_LAW_ID: &str = "nasa9-standard-state";
 const NASA9_LAW_VERSION: u32 = 1;
 const NASA9_STATE_SCHEMA_VERSION: u32 = 0;
 const NASA9_COEFFICIENT_NAMES: [&str; 9] = ["a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8"];
+const KINETICS_LAW_ID: &str = "arrhenius-first-order-rate";
+const KINETICS_LAW_VERSION: u32 = 1;
+const KINETICS_STATE_SCHEMA_VERSION: u32 = 0;
+const KINETICS_PARAMETER_NAMES: [&str; 2] = ["activation_temperature", "pre_exponential"];
 const SOURCE_ENVELOPE_DOMAIN: &str = "org.frankensim.xtask.matdb-pack.source-envelope.v1";
 const SOURCE_FILE_DOMAIN: &str = "org.frankensim.xtask.matdb-pack.source-file.v1";
 const SOURCE_RECORD_DOMAIN: &str = "org.frankensim.xtask.matdb-pack.source-record.v1";
@@ -73,6 +84,8 @@ const MAX_NORMALIZATION_RECEIPTS: usize = 100_000;
 const MAX_REPEATED_PROVENANCE_BYTES: usize = 64 * 1_048_576;
 const MAX_NASA9_REGIONS: usize = 16;
 const MAX_NASA9_COEFFICIENTS: usize = MAX_NASA9_REGIONS * NASA9_COEFFICIENT_NAMES.len();
+const MAX_KINETICS_REACTIONS: usize = 1;
+const MAX_KINETICS_PARAMETERS: usize = KINETICS_PARAMETER_NAMES.len();
 const QTY_BUDGET: ParseBudget = ParseBudget::new(4_096, 256, 64, 256);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -266,6 +279,7 @@ impl CompiledPack {
 enum SourceProfile {
     Material,
     Nasa9,
+    Kinetics,
 }
 
 #[derive(Debug)]
@@ -418,6 +432,34 @@ struct RawNasa9Coefficient {
 struct RawNasa9Database {
     regions: BTreeMap<(SpeciesId, String), RawNasa9Region>,
     coefficients: BTreeMap<(SpeciesId, String, String), RawNasa9Coefficient>,
+    decisions: Vec<Decision>,
+    records: usize,
+}
+
+#[derive(Debug)]
+struct RawKineticsReaction {
+    reaction: ReactionId,
+    temperature_lower: String,
+    temperature_upper: String,
+    temperature_unit: String,
+    source_id: String,
+    source_hash: ContentHash,
+    record_hash: ContentHash,
+}
+
+#[derive(Debug)]
+struct RawKineticsParameter {
+    value: String,
+    unit: String,
+    source_id: String,
+    source_hash: ContentHash,
+    record_hash: ContentHash,
+}
+
+#[derive(Debug, Default)]
+struct RawKineticsDatabase {
+    reactions: BTreeMap<ReactionId, RawKineticsReaction>,
+    parameters: BTreeMap<(ReactionId, String), RawKineticsParameter>,
     decisions: Vec<Decision>,
     records: usize,
 }
@@ -789,11 +831,12 @@ fn source_profile(manifest: &Manifest) -> Result<SourceProfile, CompileError> {
     match first.profile.as_str() {
         MATERIAL_PROFILE => Ok(SourceProfile::Material),
         NASA9_PROFILE => Ok(SourceProfile::Nasa9),
+        KINETICS_PROFILE => Ok(SourceProfile::Kinetics),
         _ => Err(CompileError::new(
             "unsupported_source_profile",
             format!("source:{}", first.id),
             format!(
-                "profile {:?} has no runtime-loadable compiler path; supported profiles are {MATERIAL_PROFILE:?} and {NASA9_PROFILE:?}",
+                "profile {:?} has no runtime-loadable compiler path; supported profiles are {MATERIAL_PROFILE:?}, {NASA9_PROFILE:?}, and {KINETICS_PROFILE:?}",
                 first.profile
             ),
         )),
@@ -1352,7 +1395,7 @@ fn parse_source(source: &LoadedSource, raw: &mut RawDatabase) -> Result<(), Comp
                 return Err(CompileError::new(
                     "unsupported_source_record",
                     subject,
-                    "material-tsv-v1 admits only material records; NASA-9 data must use the nasa9-v1 source profile, while standalone species and kinetics codecs remain unavailable",
+                    "material-tsv-v1 admits only material records; NASA-9 data must use nasa9-v1, kinetics data must use kinetics-v1, and standalone species metadata remains unavailable",
                 ));
             }
             Some(other) => {
@@ -1380,6 +1423,16 @@ fn parse_species_id(raw: &str, subject: &str) -> Result<SpeciesId, CompileError>
             "invalid_species_id",
             subject,
             format!("fs-qty refused the canonical species id: {error}"),
+        )
+    })
+}
+
+fn parse_reaction_id(raw: &str, subject: &str) -> Result<ReactionId, CompileError> {
+    ReactionId::new(raw.to_string()).map_err(|error| {
+        CompileError::new(
+            "invalid_reaction_id",
+            subject,
+            format!("fs-qty refused the canonical reaction id: {error}"),
         )
     })
 }
@@ -1539,6 +1592,161 @@ fn parse_nasa9_source(
         format!("source:{}", source.spec.id),
         "source_schema_admitted",
         "bounded nasa9-v1 source parsed without unit or species inference",
+        Some(source.hash),
+    ));
+    Ok(())
+}
+
+fn parse_kinetics_source(
+    source: &LoadedSource,
+    raw: &mut RawKineticsDatabase,
+) -> Result<(), CompileError> {
+    if source.text.as_bytes().contains(&0) {
+        return Err(CompileError::new(
+            "invalid_source_encoding",
+            format!("source:{}", source.spec.id),
+            "NUL bytes are forbidden",
+        ));
+    }
+    let mut lines = source.text.lines();
+    if lines.next() != Some(KINETICS_SOURCE_HEADER) {
+        return Err(CompileError::new(
+            "unsupported_source_schema",
+            format!("source:{}", source.spec.id),
+            format!("first line must be {KINETICS_SOURCE_HEADER:?}"),
+        ));
+    }
+    for (offset, line) in lines.enumerate() {
+        let line_number = offset + 2;
+        let subject = format!("source:{}:line:{line_number}", source.spec.id);
+        if line.len() > MAX_LINE_BYTES {
+            return Err(CompileError::new(
+                "resource_limit",
+                subject,
+                "line exceeds the public byte budget",
+            ));
+        }
+        if line.is_empty() {
+            return Err(CompileError::new(
+                "invalid_source_record",
+                subject,
+                "blank records are forbidden",
+            ));
+        }
+        raw.records = raw.records.checked_add(1).ok_or_else(|| {
+            CompileError::new("resource_limit", "records", "record count overflowed")
+        })?;
+        if raw.records > MAX_RECORDS {
+            return Err(CompileError::new(
+                "resource_limit",
+                "records",
+                format!("at most {MAX_RECORDS} source records are admitted"),
+            ));
+        }
+
+        let fields: Vec<&str> = line.split('\t').collect();
+        let record_hash = hash_domain(SOURCE_RECORD_DOMAIN, line.as_bytes());
+        match fields.first().copied() {
+            Some("reaction") => {
+                require_field_count(&fields, 6, &source.spec.id, line_number)?;
+                let reaction = parse_reaction_id(fields[1], &subject)?;
+                if fields[2] != "first-order" {
+                    return Err(CompileError::new(
+                        "unsupported_kinetics_rate_basis",
+                        subject,
+                        "kinetics-v1 admits only the explicit first-order rate basis",
+                    ));
+                }
+                if !raw.reactions.contains_key(&reaction)
+                    && raw.reactions.len() == MAX_KINETICS_REACTIONS
+                {
+                    return Err(CompileError::new(
+                        "resource_limit",
+                        subject,
+                        "one kinetics-v1 artifact admits exactly one reaction",
+                    ));
+                }
+                let entry = RawKineticsReaction {
+                    reaction: reaction.clone(),
+                    temperature_lower: require_number_token(
+                        fields[3],
+                        "temperature lower bound",
+                        &subject,
+                    )?,
+                    temperature_upper: require_number_token(
+                        fields[4],
+                        "temperature upper bound",
+                        &subject,
+                    )?,
+                    temperature_unit: require_unit(fields[5], "temperature unit", &subject)?,
+                    source_id: source.spec.id.clone(),
+                    source_hash: source.hash,
+                    record_hash,
+                };
+                if raw.reactions.insert(reaction, entry).is_some() {
+                    return Err(CompileError::new(
+                        "duplicate_kinetics_reaction",
+                        subject,
+                        "a kinetics-v1 artifact may declare its reaction exactly once",
+                    ));
+                }
+            }
+            Some("parameter") => {
+                require_field_count(&fields, 5, &source.spec.id, line_number)?;
+                let reaction = parse_reaction_id(fields[1], &subject)?;
+                let name = require_identifier(fields[2], "kinetics parameter name", &subject)?;
+                if !KINETICS_PARAMETER_NAMES.contains(&name.as_str()) {
+                    return Err(CompileError::new(
+                        "unexpected_kinetics_parameter",
+                        subject,
+                        format!(
+                            "parameter {name:?} is not one of the exact activation_temperature and pre_exponential fields"
+                        ),
+                    ));
+                }
+                let key = (reaction, name);
+                if !raw.parameters.contains_key(&key)
+                    && raw.parameters.len() == MAX_KINETICS_PARAMETERS
+                {
+                    return Err(CompileError::new(
+                        "resource_limit",
+                        subject,
+                        format!(
+                            "one kinetics-v1 artifact admits exactly {MAX_KINETICS_PARAMETERS} parameter records"
+                        ),
+                    ));
+                }
+                let parameter = RawKineticsParameter {
+                    value: require_number_token(fields[3], "kinetics parameter value", &subject)?,
+                    unit: require_unit(fields[4], "kinetics parameter unit", &subject)?,
+                    source_id: source.spec.id.clone(),
+                    source_hash: source.hash,
+                    record_hash,
+                };
+                if raw.parameters.insert(key, parameter).is_some() {
+                    return Err(CompileError::new(
+                        "duplicate_kinetics_parameter",
+                        subject,
+                        "a reaction may declare each kinetics parameter exactly once",
+                    ));
+                }
+            }
+            Some(other) => {
+                return Err(CompileError::new(
+                    "unknown_source_record",
+                    subject,
+                    format!(
+                        "unknown kinetics record type {other:?}; expected reaction or parameter"
+                    ),
+                ));
+            }
+            None => unreachable!("split always returns one field"),
+        }
+    }
+    raw.decisions.push(Decision::admit(
+        format!("source:{}", source.spec.id),
+        "source_schema_admitted",
+        "bounded kinetics-v1 source parsed with an explicit first-order basis and no inferred units",
         Some(source.hash),
     ));
     Ok(())
@@ -2339,6 +2547,322 @@ fn compile_nasa9_manifest(
     })
 }
 
+const KINETICS_TEMPERATURE_DIMS: Dims = Dims([0, 0, 0, 1, 0, 0]);
+const KINETICS_FIRST_ORDER_RATE_DIMS: Dims = Dims([0, 0, -1, 0, 0, 0]);
+
+fn kinetics_parameter_dims(name: &str) -> Dims {
+    match name {
+        "activation_temperature" => KINETICS_TEMPERATURE_DIMS,
+        "pre_exponential" => KINETICS_FIRST_ORDER_RATE_DIMS,
+        _ => unreachable!("parser admits only the exact kinetics-v1 parameter names"),
+    }
+}
+
+fn require_kinetics_dims(
+    field: &str,
+    expected: Dims,
+    found: Dims,
+    subject: &str,
+) -> Result<(), CompileError> {
+    if found == expected {
+        Ok(())
+    } else {
+        Err(CompileError::new(
+            "kinetics_dims_mismatch",
+            subject,
+            format!("{field} has dimensions {found:?}, expected {expected:?}"),
+        ))
+    }
+}
+
+fn parse_kinetics_linear_quantity(
+    number: &str,
+    unit: &str,
+    subject: &str,
+) -> Result<ParsedQuantity, CompileError> {
+    let (_, _, offset) = unit_transform(unit, subject)?;
+    if offset != 0.0 {
+        return Err(CompileError::new(
+            "affine_kinetics_parameter_unit",
+            subject,
+            "Arrhenius parameters require linear units; affine units are valid only for temperature-validity endpoints",
+        ));
+    }
+    parse_linear_quantity(number, unit, subject)
+}
+
+#[allow(clippy::too_many_lines)] // The kinetics admission pipeline is intentionally auditable in order.
+fn compile_kinetics_manifest(
+    manifest: Manifest,
+    sources: &[LoadedSource],
+    source_artifact: ContentHash,
+) -> Result<CompileOutput, CompileError> {
+    let mut raw = RawKineticsDatabase::default();
+    for source in sources {
+        if let Err(error) = parse_kinetics_source(source, &mut raw) {
+            return Err(error
+                .with_input_hash(source_artifact)
+                .with_prior_decisions(std::mem::take(&mut raw.decisions)));
+        }
+    }
+    let mut decisions = std::mem::take(&mut raw.decisions);
+    let result = (|| -> Result<CompileOutput, CompileError> {
+        if raw.reactions.is_empty() {
+            return Err(CompileError::new(
+                "missing_kinetics_reaction",
+                "sources",
+                "kinetics-v1 requires exactly one first-order reaction record",
+            ));
+        }
+        for (reaction, parameter) in raw.parameters.keys() {
+            if !raw.reactions.contains_key(reaction) {
+                return Err(CompileError::new(
+                    "unknown_kinetics_reaction",
+                    format!("reaction:{reaction}:parameter:{parameter}"),
+                    "parameter references a reaction that was not declared",
+                ));
+            }
+        }
+        let (reaction_id, reaction) = raw.reactions.iter().next().ok_or_else(|| {
+            CompileError::new(
+                "missing_kinetics_reaction",
+                "sources",
+                "kinetics-v1 requires exactly one reaction",
+            )
+        })?;
+        debug_assert_eq!(reaction_id, &reaction.reaction);
+        if manifest.pack_id != reaction_id.as_str() {
+            return Err(CompileError::new(
+                "reaction_pack_id_mismatch",
+                "manifest:pack_id",
+                format!(
+                    "kinetics-v1 requires pack_id {:?} to equal the sole canonical ReactionId {:?}",
+                    manifest.pack_id,
+                    reaction_id.as_str()
+                ),
+            ));
+        }
+
+        decisions.push(Decision::admit(
+            "manifest:redistribution",
+            "redistribution_permitted",
+            "explicit permitted policy and nonblank retained terms admitted before compilation",
+            Some(source_artifact),
+        ));
+        decisions.push(Decision::admit(
+            "manifest:provenance",
+            "licensed_citation_admitted",
+            "nonblank source citation and license attached to the emitted kinetics card",
+            Some(source_artifact),
+        ));
+        decisions.push(Decision::admit(
+            format!("reaction:{reaction_id}"),
+            "reaction_pack_id_bound",
+            "manifest pack_id exactly matches the fs-qty-validated source ReactionId; this is a source association, not a mechanism or conservation proof",
+            Some(source_artifact),
+        ));
+
+        let reaction_subject = format!("reaction:{reaction_id}");
+        let temperature_lower = parse_quantity(
+            &reaction.temperature_lower,
+            &reaction.temperature_unit,
+            &format!("{reaction_subject}:temperature:lower"),
+        )?;
+        let temperature_upper = parse_quantity(
+            &reaction.temperature_upper,
+            &reaction.temperature_unit,
+            &format!("{reaction_subject}:temperature:upper"),
+        )?;
+        require_kinetics_dims(
+            "temperature lower bound",
+            KINETICS_TEMPERATURE_DIMS,
+            temperature_lower.dims,
+            &reaction_subject,
+        )?;
+        require_kinetics_dims(
+            "temperature upper bound",
+            KINETICS_TEMPERATURE_DIMS,
+            temperature_upper.dims,
+            &reaction_subject,
+        )?;
+        if temperature_lower.value <= 0.0 || temperature_lower.value >= temperature_upper.value {
+            return Err(CompileError::new(
+                "invalid_kinetics_temperature_range",
+                &reaction_subject,
+                "normalized temperature bounds must be positive and strictly increasing",
+            ));
+        }
+
+        let mut parameters = BTreeMap::new();
+        let mut parsed_parameters = Vec::with_capacity(KINETICS_PARAMETER_NAMES.len());
+        let mut card_sources = BTreeSet::from([reaction.source_hash, reaction.record_hash]);
+        for name in KINETICS_PARAMETER_NAMES {
+            let parameter = raw
+                .parameters
+                .get(&(reaction_id.clone(), name.to_string()))
+                .ok_or_else(|| {
+                    CompileError::new(
+                        "missing_kinetics_parameter",
+                        format!("{reaction_subject}:parameter:{name}"),
+                        "kinetics-v1 requires exactly activation_temperature and pre_exponential",
+                    )
+                })?;
+            if parameter.source_id != reaction.source_id
+                || parameter.source_hash != reaction.source_hash
+            {
+                return Err(CompileError::new(
+                    "cross_source_kinetics_reaction",
+                    format!("{reaction_subject}:parameter:{name}"),
+                    "a reaction and both of its parameter records must share one admitted source file",
+                ));
+            }
+            let parsed = parse_kinetics_linear_quantity(
+                &parameter.value,
+                &parameter.unit,
+                &format!("{reaction_subject}:parameter:{name}"),
+            )?;
+            let expected = kinetics_parameter_dims(name);
+            require_kinetics_dims(name, expected, parsed.dims, &reaction_subject)?;
+            match name {
+                "activation_temperature" if parsed.value < 0.0 => {
+                    return Err(CompileError::new(
+                        "invalid_activation_temperature",
+                        &reaction_subject,
+                        "activation temperature must be nonnegative",
+                    ));
+                }
+                "pre_exponential" if parsed.value <= 0.0 => {
+                    return Err(CompileError::new(
+                        "invalid_pre_exponential",
+                        &reaction_subject,
+                        "first-order pre-exponential factor must be positive",
+                    ));
+                }
+                _ => {}
+            }
+            parameters.insert(
+                name.to_string(),
+                LawParameter {
+                    value: parsed.value,
+                    dims: parsed.dims,
+                },
+            );
+            card_sources.insert(parameter.source_hash);
+            card_sources.insert(parameter.record_hash);
+            parsed_parameters.push((name.to_string(), parsed));
+        }
+
+        let card = ConstitutiveModelCard {
+            law: LawId(KINETICS_LAW_ID.to_string()),
+            law_version: KINETICS_LAW_VERSION,
+            parameters,
+            state_schema_version: KINETICS_STATE_SCHEMA_VERSION,
+            initial_state: InitialStatePolicy::ZeroInternalState,
+            validity: ValidityDomain::unconstrained().with(
+                "T",
+                temperature_lower.value,
+                temperature_upper.value,
+            ),
+            sources: card_sources.into_iter().collect(),
+            provenance: Provenance {
+                source: format!(
+                    "{} [source:{}] [reaction:{}] [rate-basis:first-order]",
+                    manifest.citation, reaction.source_id, reaction_id
+                ),
+                license: manifest.license.clone(),
+                artifact: Some(reaction.source_hash),
+            },
+        };
+        card.validate().map_err(|error| {
+            CompileError::new(
+                "kinetics_card_refused",
+                &reaction_subject,
+                format!("fs-matdb refused the compiled model card: {error}"),
+            )
+        })?;
+        let model = card.content_hash();
+        let mut normalizations = Vec::with_capacity(KINETICS_PARAMETER_NAMES.len() + 2);
+        for (parameter, parsed) in parsed_parameters {
+            normalizations.push(model_normalization(
+                ModelNormalizationTarget::Parameter { model, parameter },
+                &parsed,
+            ));
+        }
+        for (side, parsed) in [
+            (ValidityBoundSide::Lower, &temperature_lower),
+            (ValidityBoundSide::Upper, &temperature_upper),
+        ] {
+            normalizations.push(model_normalization(
+                ModelNormalizationTarget::ValidityBound {
+                    model,
+                    axis: "T".to_string(),
+                    side,
+                },
+                parsed,
+            ));
+        }
+        decisions.push(Decision::admit(
+            reaction_subject,
+            "kinetics_reaction_normalized",
+            "explicit first-order basis, complete Arrhenius parameter block, and temperature interval compiled into one immutable model card; no executor or conservation claim is implied",
+            Some(reaction.record_hash),
+        ));
+
+        let pack = NormalizedModelPack::new(
+            manifest.pack_id,
+            KINETICS_COMPILER_ID,
+            source_artifact,
+            manifest.redistribution_terms,
+            vec![card],
+            normalizations,
+        )
+        .map_err(|error| {
+            CompileError::new(
+                "normalized_model_pack_refused",
+                "pack",
+                format!("runtime model-pack admission refused the compiled artifact: {error}"),
+            )
+        })?;
+        let bytes = pack.to_bytes();
+        let pack_hash = pack.content_hash();
+        let decoded =
+            NormalizedModelPack::from_bytes_verified(pack_hash, &bytes).map_err(|error| {
+                CompileError::new(
+                    "self_verification_failed",
+                    "pack",
+                    format!("fresh artifact failed verified runtime decode: {error}"),
+                )
+            })?;
+        if decoded.to_bytes() != bytes {
+            return Err(CompileError::new(
+                "self_verification_failed",
+                "pack",
+                "verified runtime decode did not reproduce canonical model-pack bytes",
+            ));
+        }
+        decisions.push(Decision::admit(
+            "pack",
+            "runtime_model_pack_self_verified",
+            "canonical FSMODPK bytes decoded under their externally pinned content hash",
+            Some(source_artifact),
+        ));
+        for decision in &mut decisions {
+            decision.pack_hash = Some(pack_hash);
+        }
+        sort_decisions(&mut decisions);
+        Ok(CompileOutput {
+            pack: CompiledPack::Model(pack),
+            bytes,
+            decisions: std::mem::take(&mut decisions),
+        })
+    })();
+    result.map_err(|error| {
+        error
+            .with_input_hash(source_artifact)
+            .with_prior_decisions(decisions)
+    })
+}
+
 #[allow(clippy::too_many_lines)] // The ordered admission pipeline is easier to audit in one pass.
 fn compile_manifest(manifest_path: &Path) -> Result<CompileOutput, CompileError> {
     let manifest_bytes = read_bounded_regular(manifest_path, MAX_MANIFEST_BYTES, "manifest")?;
@@ -2358,8 +2882,14 @@ fn compile_manifest(manifest_path: &Path) -> Result<CompileOutput, CompileError>
     let sources = load_sources(manifest_path, &manifest)
         .map_err(|error| error.with_input_hash(manifest_snapshot))?;
     let source_artifact = source_envelope_hash(&manifest, &sources);
-    if profile == SourceProfile::Nasa9 {
-        return compile_nasa9_manifest(manifest, &sources, source_artifact);
+    match profile {
+        SourceProfile::Nasa9 => {
+            return compile_nasa9_manifest(manifest, &sources, source_artifact);
+        }
+        SourceProfile::Kinetics => {
+            return compile_kinetics_manifest(manifest, &sources, source_artifact);
+        }
+        SourceProfile::Material => {}
     }
     let mut raw = RawDatabase::default();
     for source in &sources {
@@ -3638,6 +4168,13 @@ mod tests {
         "coefficient\tN2\thigh\ta8\t2\t1\n",
     );
 
+    const KINETICS_SOURCE: &str = concat!(
+        "frankensim.kinetics-source.v1\n",
+        "reaction\twater-formation\tfirst-order\t300\t2500\tK\n",
+        "parameter\twater-formation\tactivation_temperature\t12000\tK\n",
+        "parameter\twater-formation\tpre_exponential\t2.5e7\ts^-1\n",
+    );
+
     fn fixture_dir() -> PathBuf {
         loop {
             let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
@@ -3677,6 +4214,17 @@ mod tests {
              citation\tfixture NASA-9 species table\n\
              license\tCC-BY-4.0\n\
              source\tprimary\tsource.tsv\t{NASA9_PROFILE}\n"
+        )
+    }
+
+    fn kinetics_manifest(pack_id: &str) -> String {
+        format!(
+            "{MANIFEST_HEADER}\n\
+             pack_id\t{pack_id}\n\
+             redistribution\tpermitted\tCC-BY-4.0 redistribution with attribution\n\
+             citation\tfixture first-order kinetics table\n\
+             license\tCC-BY-4.0\n\
+             source\tprimary\tsource.tsv\t{KINETICS_PROFILE}\n"
         )
     }
 
@@ -3909,6 +4457,123 @@ mod tests {
     }
 
     #[test]
+    fn compiles_first_order_kinetics_into_a_verified_model_pack() {
+        let (manifest_path, _) =
+            write_fixture(&kinetics_manifest("water-formation"), KINETICS_SOURCE);
+        let first = compile_manifest(&manifest_path).expect("kinetics fixture compiles");
+        let second = compile_manifest(&manifest_path).expect("independent repeat compiles");
+
+        assert_eq!(first.bytes, second.bytes);
+        assert_eq!(first.decisions, second.decisions);
+        assert_eq!(first.pack.content_hash(), second.pack.content_hash());
+        let pack = first.pack.model();
+        assert_eq!(pack.pack_id(), "water-formation");
+        assert_eq!(pack.compiler(), KINETICS_COMPILER_ID);
+        assert_eq!(pack.models().len(), 1);
+        assert_eq!(pack.normalizations().len(), 4);
+        let card = &pack.models()[0];
+        assert_eq!(card.law.0, KINETICS_LAW_ID);
+        assert_eq!(card.law_version, KINETICS_LAW_VERSION);
+        assert_eq!(card.parameters.len(), KINETICS_PARAMETER_NAMES.len());
+        assert_eq!(
+            card.parameters["activation_temperature"].dims,
+            KINETICS_TEMPERATURE_DIMS
+        );
+        assert_eq!(
+            card.parameters["pre_exponential"].dims,
+            KINETICS_FIRST_ORDER_RATE_DIMS
+        );
+        assert!(card.validity.bound("T").is_some());
+        assert!(
+            card.provenance
+                .source
+                .contains("[reaction:water-formation]")
+        );
+        assert!(card.provenance.source.contains("[rate-basis:first-order]"));
+        let decoded = NormalizedModelPack::from_bytes_verified(pack.content_hash(), &first.bytes)
+            .expect("compiler output is runtime-loadable");
+        assert_eq!(decoded.to_bytes(), first.bytes);
+        assert!(first.decisions.iter().all(|decision| {
+            decision.verdict == "admit" && decision.pack_hash == Some(pack.content_hash())
+        }));
+    }
+
+    #[test]
+    fn kinetics_profile_refuses_incomplete_ambiguous_or_mismatched_records() {
+        let cases = [
+            (
+                KINETICS_SOURCE.replacen(
+                    "parameter\twater-formation\tpre_exponential\t2.5e7\ts^-1\n",
+                    "",
+                    1,
+                ),
+                "missing_kinetics_parameter",
+            ),
+            (
+                KINETICS_SOURCE.replacen(
+                    "parameter\twater-formation\tpre_exponential\t2.5e7\ts^-1",
+                    "parameter\twater-formation\tpre_exponential\t2.5e7\tK",
+                    1,
+                ),
+                "kinetics_dims_mismatch",
+            ),
+            (
+                KINETICS_SOURCE.replacen(
+                    "parameter\twater-formation\tactivation_temperature\t12000\tK",
+                    "parameter\twater-formation\tactivation_temperature\t12000\tdegC",
+                    1,
+                ),
+                "affine_kinetics_parameter_unit",
+            ),
+            (
+                KINETICS_SOURCE.replacen("\tfirst-order\t", "\tsecond-order\t", 1),
+                "unsupported_kinetics_rate_basis",
+            ),
+            (
+                KINETICS_SOURCE.replacen(
+                    "parameter\twater-formation\tactivation_temperature\t12000\tK",
+                    "parameter\twater-formation\tactivation_temperature\t-1\tK",
+                    1,
+                ),
+                "invalid_activation_temperature",
+            ),
+            (
+                KINETICS_SOURCE.replacen(
+                    "parameter\twater-formation\tpre_exponential\t2.5e7\ts^-1",
+                    "parameter\twater-formation\tpre_exponential\t0\ts^-1",
+                    1,
+                ),
+                "invalid_pre_exponential",
+            ),
+            (
+                KINETICS_SOURCE.replacen(
+                    "reaction\twater-formation\tfirst-order\t300\t2500\tK",
+                    "reaction\twater-formation\tfirst-order\t2500\t300\tK",
+                    1,
+                ),
+                "invalid_kinetics_temperature_range",
+            ),
+            (
+                KINETICS_SOURCE.replacen(
+                    "parameter\twater-formation\tpre_exponential",
+                    "parameter\tother-reaction\tpre_exponential",
+                    1,
+                ),
+                "unknown_kinetics_reaction",
+            ),
+        ];
+        for (source, code) in cases {
+            let (manifest_path, _) = write_fixture(&kinetics_manifest("water-formation"), &source);
+            let error = compile_manifest(&manifest_path).expect_err("malformed kinetics refuses");
+            assert_eq!(error.code, code);
+        }
+
+        let (manifest_path, _) = write_fixture(&kinetics_manifest("other"), KINETICS_SOURCE);
+        let error = compile_manifest(&manifest_path).expect_err("pack id binds reaction");
+        assert_eq!(error.code, "reaction_pack_id_mismatch");
+    }
+
+    #[test]
     fn multi_observation_claims_are_canonicalized_by_content_id() {
         let source = SOURCE
             .replacen(
@@ -4032,15 +4697,13 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_species_and_kinetics_profiles_are_typed_refusals() {
-        for profile in ["species-v1", "kinetics-v1"] {
-            let (manifest_path, _) = write_fixture(&manifest(profile, true), SOURCE);
-            let error = compile_manifest(&manifest_path)
-                .expect_err("standalone species and kinetics codecs do not exist yet");
+    fn unsupported_species_profile_is_a_typed_refusal() {
+        let (manifest_path, _) = write_fixture(&manifest("species-v1", true), SOURCE);
+        let error =
+            compile_manifest(&manifest_path).expect_err("standalone species codec does not exist");
 
-            assert_eq!(error.code, "unsupported_source_profile");
-            assert_eq!(error.subject, "source:primary");
-        }
+        assert_eq!(error.code, "unsupported_source_profile");
+        assert_eq!(error.subject, "source:primary");
     }
 
     #[test]

@@ -6,6 +6,7 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use fs_matdb::{NormalizedModelPack, NormalizedPack, PropertyValue};
+use fs_qty::Dims;
 
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
@@ -115,6 +116,22 @@ const NASA9_SOURCE: &str = concat!(
     "coefficient\tN2\thigh\ta8\t2\t1\n",
 );
 
+const KINETICS_MANIFEST: &str = concat!(
+    "frankensim.matdb-manifest.v1\n",
+    "pack_id\twater-formation\n",
+    "redistribution\tpermitted\tCC-BY-4.0 redistribution with attribution\n",
+    "citation\tfixture first-order kinetics table\n",
+    "license\tCC-BY-4.0\n",
+    "source\tprimary\tkinetics.tsv\tkinetics-v1\n",
+);
+
+const KINETICS_SOURCE: &str = concat!(
+    "frankensim.kinetics-source.v1\n",
+    "reaction\twater-formation\tfirst-order\t300\t2500\tK\n",
+    "parameter\twater-formation\tactivation_temperature\t12000\tK\n",
+    "parameter\twater-formation\tpre_exponential\t2.5e7\ts^-1\n",
+);
+
 fn fixture_dir() -> PathBuf {
     loop {
         let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
@@ -158,6 +175,15 @@ fn write_nasa9_fixture() -> (PathBuf, PathBuf) {
     let manifest = directory.join("manifest.tsv");
     fs::write(&manifest, NASA9_MANIFEST).expect("write NASA-9 manifest fixture");
     fs::write(directory.join("nasa9.tsv"), NASA9_SOURCE).expect("write NASA-9 source fixture");
+    (directory, manifest)
+}
+
+fn write_kinetics_fixture() -> (PathBuf, PathBuf) {
+    let directory = fixture_dir();
+    let manifest = directory.join("manifest.tsv");
+    fs::write(&manifest, KINETICS_MANIFEST).expect("write kinetics manifest fixture");
+    fs::write(directory.join("kinetics.tsv"), KINETICS_SOURCE)
+        .expect("write kinetics source fixture");
     (directory, manifest)
 }
 
@@ -340,28 +366,96 @@ fn g3_cli_compiles_nasa9_regions_into_identical_verified_model_packs() {
 }
 
 #[test]
-fn g3_cli_refuses_standalone_species_and_kinetics_without_runtime_codecs() {
-    for profile in ["species-v1", "kinetics-v1"] {
-        let manifest_text = MANIFEST.replacen("material-tsv-v1", profile, 1);
-        assert_ne!(manifest_text, MANIFEST);
-        let directory = fixture_dir();
-        let manifest = directory.join("manifest.tsv");
-        let output = directory.join(format!("{profile}.fsmatpk"));
-        fs::write(&manifest, manifest_text).expect("write unsupported-profile manifest");
-        fs::write(directory.join("source.tsv"), SOURCE).expect("write source fixture");
+fn g3_cli_compiles_first_order_kinetics_into_an_identical_verified_model_pack() {
+    let (directory, manifest) = write_kinetics_fixture();
+    let first_path = directory.join("kinetics-first.fsmodpk");
+    let second_path = directory.join("kinetics-second.fsmodpk");
 
-        let refused = run_compiler(&manifest, &output);
-        assert!(!refused.status.success(), "{profile} unexpectedly compiled");
-        assert!(!output.exists(), "{profile} refusal published an output");
-        let decisions = String::from_utf8(refused.stdout).expect("decision stream is UTF-8");
-        assert_eq!(decisions.matches("\"verdict\":\"refuse\"").count(), 1);
-        assert!(decisions.contains("\"reason_code\":\"unsupported_source_profile\""));
-        assert!(decisions.contains("\"subject\":\"source:primary\""));
-        assert!(
-            String::from_utf8_lossy(&refused.stderr)
-                .contains("error: matdb pack refused [unsupported_source_profile]")
-        );
-    }
+    let first = run_compiler(&manifest, &first_path);
+    let second = run_compiler(&manifest, &second_path);
+    assert!(
+        first.status.success(),
+        "first kinetics compilation failed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(
+        second.status.success(),
+        "second kinetics compilation failed: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(
+        first.stdout, second.stdout,
+        "kinetics decision stream moved"
+    );
+
+    let first_bytes = fs::read(first_path).expect("read first kinetics pack");
+    let second_bytes = fs::read(second_path).expect("read second kinetics pack");
+    assert_eq!(first_bytes, second_bytes, "kinetics pack bytes moved");
+    let decoded =
+        NormalizedModelPack::from_bytes(&first_bytes).expect("decode kinetics model pack");
+    let pack_hash = decoded.content_hash();
+    let decoded = NormalizedModelPack::from_bytes_verified(pack_hash, &first_bytes)
+        .expect("verified kinetics model pack");
+    assert_eq!(decoded.pack_id(), "water-formation");
+    assert_eq!(
+        decoded.compiler(),
+        "frankensim-matdb-kinetics-model-pack-compiler-v1"
+    );
+    assert_eq!(decoded.models().len(), 1);
+    assert_eq!(decoded.normalizations().len(), 4);
+    let card = &decoded.models()[0];
+    assert_eq!(card.law.0, "arrhenius-first-order-rate");
+    assert_eq!(card.law_version, 1);
+    assert_eq!(
+        card.parameters["activation_temperature"].dims,
+        Dims([0, 0, 0, 1, 0, 0])
+    );
+    assert_eq!(
+        card.parameters["pre_exponential"].dims,
+        Dims([0, 0, -1, 0, 0, 0])
+    );
+    assert!(
+        card.provenance
+            .source
+            .contains("[reaction:water-formation]")
+    );
+    assert!(card.provenance.source.contains("[rate-basis:first-order]"));
+
+    let decisions = String::from_utf8(first.stdout).expect("decision stream is UTF-8");
+    assert!(decisions.contains("\"reason_code\":\"reaction_pack_id_bound\""));
+    assert!(decisions.contains("\"reason_code\":\"kinetics_reaction_normalized\""));
+    assert!(decisions.contains("\"reason_code\":\"runtime_model_pack_self_verified\""));
+    assert!(
+        decisions
+            .lines()
+            .all(|row| row.contains(&format!("\"pack_hash\":\"{pack_hash}\"")))
+    );
+}
+
+#[test]
+fn g3_cli_refuses_standalone_species_without_a_runtime_codec() {
+    let manifest_text = MANIFEST.replacen("material-tsv-v1", "species-v1", 1);
+    assert_ne!(manifest_text, MANIFEST);
+    let directory = fixture_dir();
+    let manifest = directory.join("manifest.tsv");
+    let output = directory.join("species-v1.fsmatpk");
+    fs::write(&manifest, manifest_text).expect("write unsupported-profile manifest");
+    fs::write(directory.join("source.tsv"), SOURCE).expect("write source fixture");
+
+    let refused = run_compiler(&manifest, &output);
+    assert!(
+        !refused.status.success(),
+        "species-v1 unexpectedly compiled"
+    );
+    assert!(!output.exists(), "species-v1 refusal published an output");
+    let decisions = String::from_utf8(refused.stdout).expect("decision stream is UTF-8");
+    assert_eq!(decisions.matches("\"verdict\":\"refuse\"").count(), 1);
+    assert!(decisions.contains("\"reason_code\":\"unsupported_source_profile\""));
+    assert!(decisions.contains("\"subject\":\"source:primary\""));
+    assert!(
+        String::from_utf8_lossy(&refused.stderr)
+            .contains("error: matdb pack refused [unsupported_source_profile]")
+    );
 }
 
 #[test]
