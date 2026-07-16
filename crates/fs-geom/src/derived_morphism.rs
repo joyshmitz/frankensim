@@ -85,6 +85,8 @@ pub const DERIVED_STRATIFICATION_REFINEMENT_CANDIDATE_SCHEMA_VERSION_V1: u32 = 1
 pub const DERIVED_STRATIFICATION_REFINEMENT_COMPOSITION_CANDIDATE_SCHEMA_VERSION_V1: u32 = 1;
 /// Current schema for standalone declared span-correspondence receipts.
 pub const DERIVED_SPAN_CORRESPONDENCE_SCHEMA_VERSION_V1: u32 = 1;
+/// Current schema for structural restriction/corestriction transport across spans.
+pub const DERIVED_SPAN_EVIDENCE_TRANSPORT_CANDIDATE_SCHEMA_VERSION_V1: u32 = 1;
 /// Current schema for parallel structural-morphism comparison candidates.
 pub const DERIVED_PARALLEL_MORPHISM_COMPARISON_CANDIDATE_SCHEMA_VERSION_V1: u32 = 1;
 /// Current schema for structural morphism candidates between declared spans.
@@ -113,6 +115,10 @@ const DERIVED_MORPHISM_IDENTITY_LIMITS_V1: CanonicalLimits =
 // Twelve parent fields plus one complete six-field structural-morphism child.
 const DERIVED_EVIDENCE_POLARITY_TRANSPORT_CANDIDATE_IDENTITY_LIMITS_V1: CanonicalLimits =
     CanonicalLimits::new(1 << 17, 1 << 16, 18, 1 << 11, 4096);
+// Seventeen parent fields, one six-field span child, and two complete
+// 18-field evidence-polarity child schema trees.
+const DERIVED_SPAN_EVIDENCE_TRANSPORT_CANDIDATE_IDENTITY_LIMITS_V1: CanonicalLimits =
+    CanonicalLimits::new(1 << 17, 1 << 16, 59, 1 << 11, 4096);
 const DERIVED_STRATUM_MORPHISM_IDENTITY_LIMITS_V1: CanonicalLimits =
     CanonicalLimits::new(1 << 17, 1 << 16, 9, 1 << 11, 4096);
 const DERIVED_EXHAUSTIVE_STRATIFIED_MAP_CANDIDATE_IDENTITY_LIMITS_V1: CanonicalLimits =
@@ -381,6 +387,9 @@ impl CanonicalSchema for DerivedEvidencePolarityTransportCandidateIdentitySchema
 pub type DerivedEvidencePolarityTransportCandidateIdV1 =
     EvidenceNodeId<DerivedEvidencePolarityTransportCandidateIdentitySchemaV1>;
 
+static DERIVED_EVIDENCE_POLARITY_TRANSPORT_CANDIDATE_CHILD_V1: ChildSpec =
+    ChildSpec::for_identity::<DerivedEvidencePolarityTransportCandidateIdV1>();
+
 /// Domain-separated identity for one pair of parallel structural paths.
 pub enum DerivedParallelMorphismComparisonCandidateIdentitySchemaV1 {}
 
@@ -408,6 +417,45 @@ static DERIVED_SPAN_CORRESPONDENCE_CHILD_V1: ChildSpec =
     ChildSpec::for_identity::<DerivedSpanCorrespondenceIdV1>();
 static DERIVED_PARALLEL_MORPHISM_COMPARISON_CANDIDATE_CHILD_V1: ChildSpec =
     ChildSpec::for_identity::<DerivedParallelMorphismComparisonCandidateIdV1>();
+
+/// Domain-separated identity for one structural evidence route across a span.
+pub enum DerivedSpanEvidenceTransportCandidateIdentitySchemaV1 {}
+
+impl CanonicalSchema for DerivedSpanEvidenceTransportCandidateIdentitySchemaV1 {
+    const DOMAIN: &'static str = "org.frankensim.fs-geom.span-evidence-transport-candidate.v1";
+    const NAME: &'static str = "span-restriction-corestriction-evidence-transport-candidate";
+    const VERSION: u32 = DERIVED_SPAN_EVIDENCE_TRANSPORT_CANDIDATE_SCHEMA_VERSION_V1;
+    const CONTEXT: &'static str = "exact typed span and polarity-transport children, left-leg contravariant restriction into the apex, right-leg covariant balance corestriction out of the apex, exact evidence/rank/polarity seam, one nominal transport declaration, and an explicit no-authority boundary";
+    const FIELDS: &'static [FieldSpec] = &[
+        FieldSpec::required("source-geometry", WireType::Bytes),
+        FieldSpec::required("apex-geometry", WireType::Bytes),
+        FieldSpec::required("target-geometry", WireType::Bytes),
+        FieldSpec::required("input-evidence", WireType::Bytes),
+        FieldSpec::required("apex-evidence", WireType::Bytes),
+        FieldSpec::required("output-evidence", WireType::Bytes),
+        FieldSpec::required("input-rank", WireType::Bytes),
+        FieldSpec::required("apex-rank", WireType::Bytes),
+        FieldSpec::required("output-rank", WireType::Bytes),
+        FieldSpec::required("input-polarity", WireType::Bytes),
+        FieldSpec::required("apex-polarity", WireType::Bytes),
+        FieldSpec::required("output-polarity", WireType::Bytes),
+        FieldSpec::child_of("span", &DERIVED_SPAN_CORRESPONDENCE_CHILD_V1),
+        FieldSpec::child_of(
+            "left-restriction",
+            &DERIVED_EVIDENCE_POLARITY_TRANSPORT_CANDIDATE_CHILD_V1,
+        ),
+        FieldSpec::child_of(
+            "right-corestriction",
+            &DERIVED_EVIDENCE_POLARITY_TRANSPORT_CANDIDATE_CHILD_V1,
+        ),
+        FieldSpec::required("nominal-transport-declaration", WireType::Bytes),
+        FieldSpec::required("no-authority", WireType::Bytes),
+    ];
+}
+
+/// Typed identity of one structural restriction/corestriction route across a span.
+pub type DerivedSpanEvidenceTransportCandidateIdV1 =
+    EvidenceNodeId<DerivedSpanEvidenceTransportCandidateIdentitySchemaV1>;
 
 /// Domain-separated identity for one structural morphism candidate between spans.
 pub enum DerivedSpanMorphismCandidateIdentitySchemaV1 {}
@@ -802,6 +850,28 @@ pub struct DerivedEvidencePolarityTransportDeclarationIdV1([u8; 32]);
 
 impl DerivedEvidencePolarityTransportDeclarationIdV1 {
     /// Construct a nominal polarity-transport declaration from exact bytes.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Borrow the exact identity bytes.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+/// Nominal declaration of restriction-then-corestriction evidence transport.
+///
+/// The declaration is retained for independent checking. Its bytes do not
+/// execute either leg, authenticate evidence, prove pull-push laws, or turn the
+/// underlying span into a map, function, equivalence, or physical correspondence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DerivedSpanEvidenceTransportDeclarationIdV1([u8; 32]);
+
+impl DerivedSpanEvidenceTransportDeclarationIdV1 {
+    /// Construct a nominal span-transport declaration from exact bytes.
     #[must_use]
     pub const fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
@@ -1816,6 +1886,29 @@ pub struct DerivedEvidencePolarityTransportCandidateIrV1 {
     pub no_authority: DerivedNoClaimIdV1,
 }
 
+/// Versioned structural evidence route across one declared span.
+///
+/// The left child must classify contravariant restriction along `apex -> source`;
+/// the right child must classify covariant balance corestriction along
+/// `apex -> target`. Their exact apex evidence, rank, and polarity must match.
+/// This packet retains that typed route without executing either transport or
+/// treating the nonfunctional correspondence as a direct map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DerivedSpanEvidenceTransportCandidateIrV1 {
+    /// Decoded schema version.
+    pub schema_version: u32,
+    /// Exact sealed standalone span child.
+    pub span: DerivedSpanCorrespondenceIdV1,
+    /// Exact sealed polarity packet for left-leg contravariant restriction.
+    pub left_restriction: DerivedEvidencePolarityTransportCandidateIdV1,
+    /// Exact sealed polarity packet for right-leg covariant balance corestriction.
+    pub right_corestriction: DerivedEvidencePolarityTransportCandidateIdV1,
+    /// Nominal aggregate transport declaration for later independent checking.
+    pub nominal_transport: DerivedSpanEvidenceTransportDeclarationIdV1,
+    /// Explicit denial of transport, pull-push, theorem, and equivalence authority.
+    pub no_authority: DerivedNoClaimIdV1,
+}
+
 /// Versioned standalone span request `source <- apex -> target`.
 ///
 /// `left_leg` and `right_leg` name already-admitted morphisms with orientations
@@ -2173,6 +2266,83 @@ impl fmt::Display for DerivedEvidencePolarityTransportCandidateErrorV1 {
 }
 
 impl core::error::Error for DerivedEvidencePolarityTransportCandidateErrorV1 {}
+
+/// Structured refusal from restriction/corestriction transport across a span.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DerivedSpanEvidenceTransportCandidateErrorV1 {
+    /// Unsupported decoded schema version.
+    UnsupportedSchemaVersion {
+        /// Supplied version.
+        found: u32,
+        /// Sole supported version.
+        supported: u32,
+    },
+    /// A required child, declaration, or no-authority ID is zero.
+    MissingIdentity {
+        /// Stable identity field.
+        field: &'static str,
+    },
+    /// A raw child ID does not name the supplied sealed child.
+    ChildIdentityMismatch {
+        /// Stable span/transport child field.
+        field: &'static str,
+    },
+    /// A polarity-transport child does not classify the corresponding span leg.
+    SpanLegMismatch {
+        /// Stable left/right child field.
+        field: &'static str,
+    },
+    /// A classified leg does not retain the span's required orientation.
+    LegEndpointMismatch {
+        /// Stable left/right child field.
+        field: &'static str,
+    },
+    /// A leg uses the wrong evidence variance for this route.
+    VarianceMismatch {
+        /// Stable left/right child field.
+        field: &'static str,
+        /// Variance retained by the supplied child.
+        found: DerivedEvidenceVarianceV1,
+        /// Required variance at this position.
+        required: DerivedEvidenceVarianceV1,
+    },
+    /// The left restriction output artifact is not the right corestriction input.
+    ApexEvidenceMismatch {
+        /// Evidence published at the apex by the left restriction.
+        left_output: DerivedEvidenceArtifactIdV1,
+        /// Evidence consumed at the apex by the right corestriction.
+        right_input: DerivedEvidenceArtifactIdV1,
+    },
+    /// The left restriction output rank is not the right corestriction input rank.
+    ApexRankMismatch {
+        /// Rank published at the apex by the left restriction.
+        left_output: ColorRank,
+        /// Rank consumed at the apex by the right corestriction.
+        right_input: ColorRank,
+    },
+    /// The left restriction output polarity is not the right corestriction input polarity.
+    ApexPolarityMismatch {
+        /// Polarity published at the apex by the left restriction.
+        left_output: DerivedEvidencePolarityV1,
+        /// Polarity consumed at the apex by the right corestriction.
+        right_input: DerivedEvidencePolarityV1,
+    },
+    /// Cooperative cancellation was observed before publication.
+    Cancelled {
+        /// Stable admission stage.
+        stage: &'static str,
+    },
+    /// Canonical identity construction failed.
+    Identity(CanonicalError),
+}
+
+impl fmt::Display for DerivedSpanEvidenceTransportCandidateErrorV1 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "span evidence-transport candidate refused: {self:?}")
+    }
+}
+
+impl core::error::Error for DerivedSpanEvidenceTransportCandidateErrorV1 {}
 
 /// Structured refusal from standalone stratum-scoped admission/composition.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3447,6 +3617,166 @@ impl AdmittedDerivedEvidencePolarityTransportCandidateV1 {
     pub const fn identity_receipt(
         &self,
     ) -> IdentityReceipt<DerivedEvidencePolarityTransportCandidateIdV1> {
+        self.receipt
+    }
+}
+
+/// Sealed structural restriction/corestriction route across one declared span.
+///
+/// This token proves exact typed child identity, required leg orientation and
+/// variance, and exact evidence/rank/polarity continuity at the apex. It does
+/// not execute transport, authenticate evidence, make the span functional, or
+/// grant pull-push, preservation, theorem, equivalence, or physical authority.
+#[derive(Debug, PartialEq, Eq)]
+pub struct AdmittedDerivedSpanEvidenceTransportCandidateV1 {
+    source: DerivedGeometryIdV1,
+    apex: DerivedGeometryIdV1,
+    target: DerivedGeometryIdV1,
+    input_evidence: DerivedEvidenceArtifactIdV1,
+    apex_evidence: DerivedEvidenceArtifactIdV1,
+    output_evidence: DerivedEvidenceArtifactIdV1,
+    input_rank: ColorRank,
+    apex_rank: ColorRank,
+    output_rank: ColorRank,
+    input_polarity: DerivedEvidencePolarityV1,
+    apex_polarity: DerivedEvidencePolarityV1,
+    output_polarity: DerivedEvidencePolarityV1,
+    span: DerivedSpanCorrespondenceIdV1,
+    left_restriction: DerivedEvidencePolarityTransportCandidateIdV1,
+    right_corestriction: DerivedEvidencePolarityTransportCandidateIdV1,
+    left_leg_morphism: DerivedMorphismIdV1,
+    right_leg_morphism: DerivedMorphismIdV1,
+    nominal_transport: DerivedSpanEvidenceTransportDeclarationIdV1,
+    no_authority: DerivedNoClaimIdV1,
+    receipt: IdentityReceipt<DerivedSpanEvidenceTransportCandidateIdV1>,
+}
+
+impl AdmittedDerivedSpanEvidenceTransportCandidateV1 {
+    /// Exact left/source endpoint of the span.
+    #[must_use]
+    pub const fn source(&self) -> DerivedGeometryIdV1 {
+        self.source
+    }
+
+    /// Exact common apex of the span.
+    #[must_use]
+    pub const fn apex(&self) -> DerivedGeometryIdV1 {
+        self.apex
+    }
+
+    /// Exact right/target endpoint of the span.
+    #[must_use]
+    pub const fn target(&self) -> DerivedGeometryIdV1 {
+        self.target
+    }
+
+    /// Nominal evidence consumed at the left/source endpoint.
+    #[must_use]
+    pub const fn input_evidence(&self) -> DerivedEvidenceArtifactIdV1 {
+        self.input_evidence
+    }
+
+    /// Exact shared nominal evidence artifact at the apex seam.
+    #[must_use]
+    pub const fn apex_evidence(&self) -> DerivedEvidenceArtifactIdV1 {
+        self.apex_evidence
+    }
+
+    /// Nominal evidence published at the right/target endpoint.
+    #[must_use]
+    pub const fn output_evidence(&self) -> DerivedEvidenceArtifactIdV1 {
+        self.output_evidence
+    }
+
+    /// Caller-declared rank consumed at the left/source endpoint.
+    #[must_use]
+    pub const fn input_rank(&self) -> ColorRank {
+        self.input_rank
+    }
+
+    /// Exact shared caller-declared rank at the apex seam.
+    #[must_use]
+    pub const fn apex_rank(&self) -> ColorRank {
+        self.apex_rank
+    }
+
+    /// Caller-declared rank published at the right/target endpoint.
+    #[must_use]
+    pub const fn output_rank(&self) -> ColorRank {
+        self.output_rank
+    }
+
+    /// Caller-declared polarity consumed at the left/source endpoint.
+    #[must_use]
+    pub const fn input_polarity(&self) -> DerivedEvidencePolarityV1 {
+        self.input_polarity
+    }
+
+    /// Exact shared caller-declared polarity at the apex seam.
+    #[must_use]
+    pub const fn apex_polarity(&self) -> DerivedEvidencePolarityV1 {
+        self.apex_polarity
+    }
+
+    /// Caller-declared polarity published at the right/target endpoint.
+    #[must_use]
+    pub const fn output_polarity(&self) -> DerivedEvidencePolarityV1 {
+        self.output_polarity
+    }
+
+    /// Exact sealed standalone-span child.
+    #[must_use]
+    pub const fn span(&self) -> DerivedSpanCorrespondenceIdV1 {
+        self.span
+    }
+
+    /// Exact sealed left-leg restriction polarity packet.
+    #[must_use]
+    pub const fn left_restriction(&self) -> DerivedEvidencePolarityTransportCandidateIdV1 {
+        self.left_restriction
+    }
+
+    /// Exact sealed right-leg corestriction polarity packet.
+    #[must_use]
+    pub const fn right_corestriction(&self) -> DerivedEvidencePolarityTransportCandidateIdV1 {
+        self.right_corestriction
+    }
+
+    /// Exact left-leg morphism recursively retained by the restriction packet.
+    #[must_use]
+    pub const fn left_leg_morphism(&self) -> DerivedMorphismIdV1 {
+        self.left_leg_morphism
+    }
+
+    /// Exact right-leg morphism recursively retained by the corestriction packet.
+    #[must_use]
+    pub const fn right_leg_morphism(&self) -> DerivedMorphismIdV1 {
+        self.right_leg_morphism
+    }
+
+    /// Nominal aggregate transport declaration; not authenticated here.
+    #[must_use]
+    pub const fn nominal_transport(&self) -> DerivedSpanEvidenceTransportDeclarationIdV1 {
+        self.nominal_transport
+    }
+
+    /// Explicit artifact denying transport and theorem authority.
+    #[must_use]
+    pub const fn no_authority(&self) -> DerivedNoClaimIdV1 {
+        self.no_authority
+    }
+
+    /// Typed structural span-transport candidate identity.
+    #[must_use]
+    pub const fn id(&self) -> DerivedSpanEvidenceTransportCandidateIdV1 {
+        self.receipt.id()
+    }
+
+    /// Canonical receipt and construction limits.
+    #[must_use]
+    pub const fn identity_receipt(
+        &self,
+    ) -> IdentityReceipt<DerivedSpanEvidenceTransportCandidateIdV1> {
         self.receipt
     }
 }
@@ -6399,6 +6729,268 @@ pub fn admit_derived_evidence_polarity_transport_candidate_v1(
         input_polarity: ir.input_polarity,
         output_polarity: ir.output_polarity,
         morphism: ir.morphism,
+        nominal_transport: ir.nominal_transport,
+        no_authority: ir.no_authority,
+        receipt,
+    })
+}
+
+fn span_evidence_transport_candidate_receipt(
+    ir: &DerivedSpanEvidenceTransportCandidateIrV1,
+    span: &AdmittedDerivedSpanCorrespondenceV1,
+    left_restriction: &AdmittedDerivedEvidencePolarityTransportCandidateV1,
+    right_corestriction: &AdmittedDerivedEvidencePolarityTransportCandidateV1,
+    cx: &Cx<'_>,
+) -> Result<
+    IdentityReceipt<DerivedSpanEvidenceTransportCandidateIdV1>,
+    DerivedSpanEvidenceTransportCandidateErrorV1,
+> {
+    let input_rank = [rank_tag(left_restriction.input_rank())];
+    let apex_rank = [rank_tag(left_restriction.output_rank())];
+    let output_rank = [rank_tag(right_corestriction.output_rank())];
+    let input_polarity = [evidence_polarity_tag(left_restriction.input_polarity())];
+    let apex_polarity = [evidence_polarity_tag(left_restriction.output_polarity())];
+    let output_polarity = [evidence_polarity_tag(right_corestriction.output_polarity())];
+    let map_identity_error = |error| match error {
+        CanonicalError::Cancelled { .. } => {
+            DerivedSpanEvidenceTransportCandidateErrorV1::Cancelled {
+                stage: "span-evidence-transport-identity",
+            }
+        }
+        other => DerivedSpanEvidenceTransportCandidateErrorV1::Identity(other),
+    };
+    CanonicalEncoder::<DerivedSpanEvidenceTransportCandidateIdV1, _>::new(
+        DERIVED_SPAN_EVIDENCE_TRANSPORT_CANDIDATE_IDENTITY_LIMITS_V1,
+        || cx.checkpoint().is_err(),
+    )
+    .map_err(map_identity_error)?
+    .bytes(Field::new(0, "source-geometry"), span.source().as_bytes())
+    .and_then(|encoder| encoder.bytes(Field::new(1, "apex-geometry"), span.apex().as_bytes()))
+    .and_then(|encoder| encoder.bytes(Field::new(2, "target-geometry"), span.target().as_bytes()))
+    .and_then(|encoder| {
+        encoder.bytes(
+            Field::new(3, "input-evidence"),
+            left_restriction.input_evidence().as_bytes(),
+        )
+    })
+    .and_then(|encoder| {
+        encoder.bytes(
+            Field::new(4, "apex-evidence"),
+            left_restriction.output_evidence().as_bytes(),
+        )
+    })
+    .and_then(|encoder| {
+        encoder.bytes(
+            Field::new(5, "output-evidence"),
+            right_corestriction.output_evidence().as_bytes(),
+        )
+    })
+    .and_then(|encoder| encoder.bytes(Field::new(6, "input-rank"), &input_rank))
+    .and_then(|encoder| encoder.bytes(Field::new(7, "apex-rank"), &apex_rank))
+    .and_then(|encoder| encoder.bytes(Field::new(8, "output-rank"), &output_rank))
+    .and_then(|encoder| encoder.bytes(Field::new(9, "input-polarity"), &input_polarity))
+    .and_then(|encoder| encoder.bytes(Field::new(10, "apex-polarity"), &apex_polarity))
+    .and_then(|encoder| encoder.bytes(Field::new(11, "output-polarity"), &output_polarity))
+    .and_then(|encoder| encoder.child(Field::new(12, "span"), ir.span))
+    .and_then(|encoder| encoder.child(Field::new(13, "left-restriction"), ir.left_restriction))
+    .and_then(|encoder| {
+        encoder.child(
+            Field::new(14, "right-corestriction"),
+            ir.right_corestriction,
+        )
+    })
+    .and_then(|encoder| {
+        encoder.bytes(
+            Field::new(15, "nominal-transport-declaration"),
+            ir.nominal_transport.as_bytes(),
+        )
+    })
+    .and_then(|encoder| encoder.bytes(Field::new(16, "no-authority"), ir.no_authority.as_bytes()))
+    .and_then(|encoder| encoder.finish())
+    .map_err(map_identity_error)
+}
+
+/// Admit a structural restriction/corestriction evidence route across a span.
+///
+/// The left polarity child must classify the span's exact `apex -> source` leg
+/// as contravariant restriction, producing evidence at the apex. The right
+/// polarity child must classify the exact `apex -> target` leg as covariant
+/// balance corestriction, consuming the same apex artifact, rank, and polarity.
+/// Both child transports are already non-strengthening; their exact seam makes
+/// the retained outer route non-strengthening as a structural declaration.
+///
+/// Admission does not execute either leg, authenticate any evidence or proof
+/// polarity, turn the span into a function or map, or prove functoriality,
+/// pull-push, base-change, Beck-Chevalley, projection-formula, preservation,
+/// theorem, inverse, equivalence, or physical correspondence.
+///
+/// # Errors
+/// Returns a typed refusal for schema, zero identity, raw/sealed child drift,
+/// span-leg or endpoint drift, wrong variance, unequal apex evidence/rank/
+/// polarity, cancellation, or canonical-identity defects. No partial token escapes.
+#[must_use = "a structural span route grants no evidence-transport authority"]
+#[allow(clippy::too_many_lines)] // Exact child, leg, endpoint, variance, and seam checks.
+pub fn admit_derived_span_evidence_transport_candidate_v1(
+    ir: &DerivedSpanEvidenceTransportCandidateIrV1,
+    span: &AdmittedDerivedSpanCorrespondenceV1,
+    left_restriction: &AdmittedDerivedEvidencePolarityTransportCandidateV1,
+    right_corestriction: &AdmittedDerivedEvidencePolarityTransportCandidateV1,
+    cx: &Cx<'_>,
+) -> Result<
+    AdmittedDerivedSpanEvidenceTransportCandidateV1,
+    DerivedSpanEvidenceTransportCandidateErrorV1,
+> {
+    if cx.checkpoint().is_err() {
+        return Err(DerivedSpanEvidenceTransportCandidateErrorV1::Cancelled {
+            stage: "span-evidence-transport-entry",
+        });
+    }
+    if ir.schema_version != DERIVED_SPAN_EVIDENCE_TRANSPORT_CANDIDATE_SCHEMA_VERSION_V1 {
+        return Err(
+            DerivedSpanEvidenceTransportCandidateErrorV1::UnsupportedSchemaVersion {
+                found: ir.schema_version,
+                supported: DERIVED_SPAN_EVIDENCE_TRANSPORT_CANDIDATE_SCHEMA_VERSION_V1,
+            },
+        );
+    }
+    for (bytes, field) in [
+        (ir.span.as_bytes(), "span"),
+        (ir.left_restriction.as_bytes(), "left-restriction"),
+        (ir.right_corestriction.as_bytes(), "right-corestriction"),
+        (
+            ir.nominal_transport.as_bytes(),
+            "nominal-transport-declaration",
+        ),
+        (ir.no_authority.as_bytes(), "no-authority"),
+    ] {
+        if is_zero(bytes) {
+            return Err(DerivedSpanEvidenceTransportCandidateErrorV1::MissingIdentity { field });
+        }
+    }
+    for (matches, field) in [
+        (ir.span == span.id(), "span"),
+        (
+            ir.left_restriction == left_restriction.id(),
+            "left-restriction",
+        ),
+        (
+            ir.right_corestriction == right_corestriction.id(),
+            "right-corestriction",
+        ),
+    ] {
+        if !matches {
+            return Err(
+                DerivedSpanEvidenceTransportCandidateErrorV1::ChildIdentityMismatch { field },
+            );
+        }
+    }
+    for (matches, field) in [
+        (
+            span.left_leg() == left_restriction.morphism(),
+            "left-restriction",
+        ),
+        (
+            span.right_leg() == right_corestriction.morphism(),
+            "right-corestriction",
+        ),
+    ] {
+        if !matches {
+            return Err(DerivedSpanEvidenceTransportCandidateErrorV1::SpanLegMismatch { field });
+        }
+    }
+    for (matches, field) in [
+        (
+            left_restriction.source() == span.apex() && left_restriction.target() == span.source(),
+            "left-restriction",
+        ),
+        (
+            right_corestriction.source() == span.apex()
+                && right_corestriction.target() == span.target(),
+            "right-corestriction",
+        ),
+    ] {
+        if !matches {
+            return Err(
+                DerivedSpanEvidenceTransportCandidateErrorV1::LegEndpointMismatch { field },
+            );
+        }
+    }
+    for (found, required, field) in [
+        (
+            left_restriction.variance(),
+            DerivedEvidenceVarianceV1::RestrictionContravariant,
+            "left-restriction",
+        ),
+        (
+            right_corestriction.variance(),
+            DerivedEvidenceVarianceV1::BalanceCorestrictionCovariant,
+            "right-corestriction",
+        ),
+    ] {
+        if found != required {
+            return Err(
+                DerivedSpanEvidenceTransportCandidateErrorV1::VarianceMismatch {
+                    field,
+                    found,
+                    required,
+                },
+            );
+        }
+    }
+    if left_restriction.output_evidence() != right_corestriction.input_evidence() {
+        return Err(
+            DerivedSpanEvidenceTransportCandidateErrorV1::ApexEvidenceMismatch {
+                left_output: left_restriction.output_evidence(),
+                right_input: right_corestriction.input_evidence(),
+            },
+        );
+    }
+    if left_restriction.output_rank() != right_corestriction.input_rank() {
+        return Err(
+            DerivedSpanEvidenceTransportCandidateErrorV1::ApexRankMismatch {
+                left_output: left_restriction.output_rank(),
+                right_input: right_corestriction.input_rank(),
+            },
+        );
+    }
+    if left_restriction.output_polarity() != right_corestriction.input_polarity() {
+        return Err(
+            DerivedSpanEvidenceTransportCandidateErrorV1::ApexPolarityMismatch {
+                left_output: left_restriction.output_polarity(),
+                right_input: right_corestriction.input_polarity(),
+            },
+        );
+    }
+    let receipt = span_evidence_transport_candidate_receipt(
+        ir,
+        span,
+        left_restriction,
+        right_corestriction,
+        cx,
+    )?;
+    if cx.checkpoint().is_err() {
+        return Err(DerivedSpanEvidenceTransportCandidateErrorV1::Cancelled {
+            stage: "span-evidence-transport-publication",
+        });
+    }
+    Ok(AdmittedDerivedSpanEvidenceTransportCandidateV1 {
+        source: span.source(),
+        apex: span.apex(),
+        target: span.target(),
+        input_evidence: left_restriction.input_evidence(),
+        apex_evidence: left_restriction.output_evidence(),
+        output_evidence: right_corestriction.output_evidence(),
+        input_rank: left_restriction.input_rank(),
+        apex_rank: left_restriction.output_rank(),
+        output_rank: right_corestriction.output_rank(),
+        input_polarity: left_restriction.input_polarity(),
+        apex_polarity: left_restriction.output_polarity(),
+        output_polarity: right_corestriction.output_polarity(),
+        span: ir.span,
+        left_restriction: ir.left_restriction,
+        right_corestriction: ir.right_corestriction,
+        left_leg_morphism: left_restriction.morphism(),
+        right_leg_morphism: right_corestriction.morphism(),
         nominal_transport: ir.nominal_transport,
         no_authority: ir.no_authority,
         receipt,
@@ -11945,6 +12537,115 @@ mod tests {
                 [seed; 32],
             ),
             no_authority: DerivedNoClaimIdV1::from_bytes([seed.wrapping_add(1); 32]),
+        }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct EvidencePolarityCandidateTestBindingsV1 {
+        source: DerivedGeometryIdV1,
+        target: DerivedGeometryIdV1,
+        variance: DerivedEvidenceVarianceV1,
+        input_evidence: DerivedEvidenceArtifactIdV1,
+        output_evidence: DerivedEvidenceArtifactIdV1,
+        input_rank: ColorRank,
+        output_rank: ColorRank,
+        input_polarity: DerivedEvidencePolarityV1,
+        output_polarity: DerivedEvidencePolarityV1,
+        morphism: DerivedMorphismIdV1,
+    }
+
+    fn evidence_polarity_candidate_test_bindings(
+        candidate: &AdmittedDerivedEvidencePolarityTransportCandidateV1,
+    ) -> EvidencePolarityCandidateTestBindingsV1 {
+        EvidencePolarityCandidateTestBindingsV1 {
+            source: candidate.source(),
+            target: candidate.target(),
+            variance: candidate.variance(),
+            input_evidence: candidate.input_evidence(),
+            output_evidence: candidate.output_evidence(),
+            input_rank: candidate.input_rank(),
+            output_rank: candidate.output_rank(),
+            input_polarity: candidate.input_polarity(),
+            output_polarity: candidate.output_polarity(),
+            morphism: candidate.morphism(),
+        }
+    }
+
+    fn evidence_polarity_candidate_with_test_bindings(
+        candidate: &AdmittedDerivedEvidencePolarityTransportCandidateV1,
+        bindings: EvidencePolarityCandidateTestBindingsV1,
+    ) -> AdmittedDerivedEvidencePolarityTransportCandidateV1 {
+        AdmittedDerivedEvidencePolarityTransportCandidateV1 {
+            source: bindings.source,
+            target: bindings.target,
+            variance: bindings.variance,
+            input_evidence: bindings.input_evidence,
+            output_evidence: bindings.output_evidence,
+            input_rank: bindings.input_rank,
+            output_rank: bindings.output_rank,
+            input_polarity: bindings.input_polarity,
+            output_polarity: bindings.output_polarity,
+            morphism: bindings.morphism,
+            nominal_transport: candidate.nominal_transport(),
+            no_authority: candidate.no_authority(),
+            receipt: candidate.identity_receipt(),
+        }
+    }
+
+    struct SpanEvidenceTransportCandidateFixtureV1 {
+        span: AdmittedDerivedSpanCorrespondenceV1,
+        left_restriction: AdmittedDerivedEvidencePolarityTransportCandidateV1,
+        right_corestriction: AdmittedDerivedEvidencePolarityTransportCandidateV1,
+        ir: DerivedSpanEvidenceTransportCandidateIrV1,
+    }
+
+    fn span_evidence_transport_candidate_fixture(
+        polarity: DerivedEvidencePolarityV1,
+        cx: &Cx<'_>,
+    ) -> SpanEvidenceTransportCandidateFixtureV1 {
+        let source = endpoint(52);
+        let apex = endpoint(53);
+        let target = endpoint(54);
+        let left_leg = admit_between_endpoints(
+            restriction_ir(apex, source, 55, ColorRank::Verified, ColorRank::Validated),
+            apex,
+            source,
+            cx,
+        )
+        .expect("valid left-leg restriction");
+        let right_leg = admit_strict(
+            apex,
+            target,
+            56,
+            ColorRank::Validated,
+            ColorRank::Estimated,
+            cx,
+        );
+        let span_ir = span_ir(source, apex, target, &left_leg, &right_leg, 57);
+        let span = admit_derived_span_correspondence_v1(&span_ir, &left_leg, &right_leg, cx)
+            .expect("valid evidence-route span");
+
+        let left_ir = evidence_polarity_candidate_ir(&left_leg, polarity, polarity, 58);
+        let left_restriction =
+            admit_derived_evidence_polarity_transport_candidate_v1(&left_ir, &left_leg, cx)
+                .expect("valid left restriction polarity packet");
+        let right_ir = evidence_polarity_candidate_ir(&right_leg, polarity, polarity, 60);
+        let right_corestriction =
+            admit_derived_evidence_polarity_transport_candidate_v1(&right_ir, &right_leg, cx)
+                .expect("valid right corestriction polarity packet");
+        let ir = DerivedSpanEvidenceTransportCandidateIrV1 {
+            schema_version: DERIVED_SPAN_EVIDENCE_TRANSPORT_CANDIDATE_SCHEMA_VERSION_V1,
+            span: span.id(),
+            left_restriction: left_restriction.id(),
+            right_corestriction: right_corestriction.id(),
+            nominal_transport: DerivedSpanEvidenceTransportDeclarationIdV1::from_bytes([62; 32]),
+            no_authority: DerivedNoClaimIdV1::from_bytes([63; 32]),
+        };
+        SpanEvidenceTransportCandidateFixtureV1 {
+            span,
+            left_restriction,
+            right_corestriction,
+            ir,
         }
     }
 
@@ -21311,6 +22012,935 @@ mod tests {
                         stage: "evidence-polarity-identity-entry",
                     }
                 ),
+            );
+        });
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // All three explicit proof polarities and every accessor.
+    fn span_evidence_transport_candidates_bind_restriction_corestriction_route() {
+        assert_ne!(
+            <DerivedSpanEvidenceTransportCandidateIdentitySchemaV1 as CanonicalSchema>::DOMAIN,
+            <DerivedSpanCorrespondenceIdentitySchemaV1 as CanonicalSchema>::DOMAIN,
+        );
+        assert_ne!(
+            <DerivedSpanEvidenceTransportCandidateIdentitySchemaV1 as CanonicalSchema>::DOMAIN,
+            <DerivedEvidencePolarityTransportCandidateIdentitySchemaV1 as CanonicalSchema>::DOMAIN,
+        );
+        assert_eq!(
+            <DerivedSpanEvidenceTransportCandidateIdentitySchemaV1 as CanonicalSchema>::FIELDS
+                .len(),
+            17,
+        );
+        assert_eq!(
+            DERIVED_SPAN_EVIDENCE_TRANSPORT_CANDIDATE_IDENTITY_LIMITS_V1.max_fields(),
+            59,
+        );
+        for field in [12, 13, 14] {
+            let spec = &DerivedSpanEvidenceTransportCandidateIdentitySchemaV1::FIELDS[field];
+            assert_eq!(spec.wire_type(), WireType::Child);
+            assert!(spec.child_spec().is_some());
+        }
+
+        with_cx(false, |cx| {
+            let mut ids = Vec::new();
+            for polarity in [
+                DerivedEvidencePolarityV1::Affirmative,
+                DerivedEvidencePolarityV1::Refutation,
+                DerivedEvidencePolarityV1::NoClaim,
+            ] {
+                let fixture = span_evidence_transport_candidate_fixture(polarity, cx);
+                let candidate = admit_derived_span_evidence_transport_candidate_v1(
+                    &fixture.ir,
+                    &fixture.span,
+                    &fixture.left_restriction,
+                    &fixture.right_corestriction,
+                    cx,
+                )
+                .expect("valid restriction/corestriction route");
+                let replay = admit_derived_span_evidence_transport_candidate_v1(
+                    &fixture.ir,
+                    &fixture.span,
+                    &fixture.left_restriction,
+                    &fixture.right_corestriction,
+                    cx,
+                )
+                .expect("deterministic span evidence-route replay");
+
+                assert_eq!(candidate, replay);
+                assert_eq!(candidate.source(), fixture.span.source());
+                assert_eq!(candidate.apex(), fixture.span.apex());
+                assert_eq!(candidate.target(), fixture.span.target());
+                assert_eq!(
+                    candidate.input_evidence(),
+                    fixture.left_restriction.input_evidence(),
+                );
+                assert_eq!(
+                    candidate.apex_evidence(),
+                    fixture.left_restriction.output_evidence(),
+                );
+                assert_eq!(
+                    candidate.apex_evidence(),
+                    fixture.right_corestriction.input_evidence(),
+                );
+                assert_eq!(
+                    candidate.output_evidence(),
+                    fixture.right_corestriction.output_evidence(),
+                );
+                assert_eq!(candidate.input_rank(), ColorRank::Verified);
+                assert_eq!(candidate.apex_rank(), ColorRank::Validated);
+                assert_eq!(candidate.output_rank(), ColorRank::Estimated);
+                assert_eq!(candidate.input_polarity(), polarity);
+                assert_eq!(candidate.apex_polarity(), polarity);
+                assert_eq!(candidate.output_polarity(), polarity);
+                assert_eq!(candidate.span(), fixture.span.id());
+                assert_eq!(candidate.left_restriction(), fixture.left_restriction.id(),);
+                assert_eq!(
+                    candidate.right_corestriction(),
+                    fixture.right_corestriction.id(),
+                );
+                assert_eq!(
+                    candidate.left_leg_morphism(),
+                    fixture.left_restriction.morphism(),
+                );
+                assert_eq!(
+                    candidate.right_leg_morphism(),
+                    fixture.right_corestriction.morphism(),
+                );
+                assert_eq!(candidate.nominal_transport(), fixture.ir.nominal_transport);
+                assert_eq!(candidate.no_authority(), fixture.ir.no_authority);
+                assert_eq!(candidate.id(), candidate.identity_receipt().id());
+                ids.push(candidate.id());
+            }
+            assert_ne!(ids[0], ids[1]);
+            assert_ne!(ids[0], ids[2]);
+            assert_ne!(ids[1], ids[2]);
+        });
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // Seventeen fields, recursive child domains, and order.
+    fn span_evidence_transport_receipt_binds_every_field_and_child_domain() {
+        with_cx(false, |cx| {
+            let fixture = span_evidence_transport_candidate_fixture(
+                DerivedEvidencePolarityV1::Affirmative,
+                cx,
+            );
+            let baseline = span_evidence_transport_candidate_receipt(
+                &fixture.ir,
+                &fixture.span,
+                &fixture.left_restriction,
+                &fixture.right_corestriction,
+                cx,
+            )
+            .expect("baseline span evidence-route receipt")
+            .id();
+
+            macro_rules! assert_ir_field_moves_identity {
+                ($field:ident, $value:expr) => {{
+                    let changed_ir = DerivedSpanEvidenceTransportCandidateIrV1 {
+                        $field: $value,
+                        ..fixture.ir
+                    };
+                    let changed = span_evidence_transport_candidate_receipt(
+                        &changed_ir,
+                        &fixture.span,
+                        &fixture.left_restriction,
+                        &fixture.right_corestriction,
+                        cx,
+                    )
+                    .expect("changed raw span evidence-route receipt")
+                    .id();
+                    assert_ne!(baseline, changed, stringify!($field));
+                }};
+            }
+
+            assert_ir_field_moves_identity!(
+                span,
+                DerivedSpanCorrespondenceIdV1::parse_slice(&[64; 32])
+                    .expect("nonzero changed span child")
+            );
+            assert_ir_field_moves_identity!(
+                left_restriction,
+                DerivedEvidencePolarityTransportCandidateIdV1::parse_slice(&[65; 32])
+                    .expect("nonzero changed left child")
+            );
+            assert_ir_field_moves_identity!(
+                right_corestriction,
+                DerivedEvidencePolarityTransportCandidateIdV1::parse_slice(&[66; 32])
+                    .expect("nonzero changed right child")
+            );
+            assert_ir_field_moves_identity!(
+                nominal_transport,
+                DerivedSpanEvidenceTransportDeclarationIdV1::from_bytes([67; 32])
+            );
+            assert_ir_field_moves_identity!(no_authority, DerivedNoClaimIdV1::from_bytes([68; 32]));
+
+            macro_rules! assert_derived_fields_move_identity {
+                ($label:literal, $span:expr, $left:expr, $right:expr) => {{
+                    let changed = span_evidence_transport_candidate_receipt(
+                        &fixture.ir,
+                        &$span,
+                        &$left,
+                        &$right,
+                        cx,
+                    )
+                    .expect("changed derived span evidence-route receipt")
+                    .id();
+                    assert_ne!(baseline, changed, $label);
+                }};
+            }
+
+            assert_derived_fields_move_identity!(
+                "source-geometry",
+                span_with_test_selectors(
+                    &fixture.span,
+                    geometry_id(69),
+                    fixture.span.apex(),
+                    fixture.span.target(),
+                ),
+                evidence_polarity_candidate_with_test_bindings(
+                    &fixture.left_restriction,
+                    evidence_polarity_candidate_test_bindings(&fixture.left_restriction),
+                ),
+                evidence_polarity_candidate_with_test_bindings(
+                    &fixture.right_corestriction,
+                    evidence_polarity_candidate_test_bindings(&fixture.right_corestriction),
+                )
+            );
+            assert_derived_fields_move_identity!(
+                "apex-geometry",
+                span_with_test_selectors(
+                    &fixture.span,
+                    fixture.span.source(),
+                    geometry_id(70),
+                    fixture.span.target(),
+                ),
+                evidence_polarity_candidate_with_test_bindings(
+                    &fixture.left_restriction,
+                    evidence_polarity_candidate_test_bindings(&fixture.left_restriction),
+                ),
+                evidence_polarity_candidate_with_test_bindings(
+                    &fixture.right_corestriction,
+                    evidence_polarity_candidate_test_bindings(&fixture.right_corestriction),
+                )
+            );
+            assert_derived_fields_move_identity!(
+                "target-geometry",
+                span_with_test_selectors(
+                    &fixture.span,
+                    fixture.span.source(),
+                    fixture.span.apex(),
+                    geometry_id(71),
+                ),
+                evidence_polarity_candidate_with_test_bindings(
+                    &fixture.left_restriction,
+                    evidence_polarity_candidate_test_bindings(&fixture.left_restriction),
+                ),
+                evidence_polarity_candidate_with_test_bindings(
+                    &fixture.right_corestriction,
+                    evidence_polarity_candidate_test_bindings(&fixture.right_corestriction),
+                )
+            );
+
+            let left_bindings =
+                evidence_polarity_candidate_test_bindings(&fixture.left_restriction);
+            let right_bindings =
+                evidence_polarity_candidate_test_bindings(&fixture.right_corestriction);
+            assert_derived_fields_move_identity!(
+                "input-evidence",
+                span_with_test_selectors(
+                    &fixture.span,
+                    fixture.span.source(),
+                    fixture.span.apex(),
+                    fixture.span.target(),
+                ),
+                evidence_polarity_candidate_with_test_bindings(
+                    &fixture.left_restriction,
+                    EvidencePolarityCandidateTestBindingsV1 {
+                        input_evidence: DerivedEvidenceArtifactIdV1::from_bytes([72; 32]),
+                        ..left_bindings
+                    },
+                ),
+                evidence_polarity_candidate_with_test_bindings(
+                    &fixture.right_corestriction,
+                    right_bindings,
+                )
+            );
+            assert_derived_fields_move_identity!(
+                "apex-evidence",
+                span_with_test_selectors(
+                    &fixture.span,
+                    fixture.span.source(),
+                    fixture.span.apex(),
+                    fixture.span.target(),
+                ),
+                evidence_polarity_candidate_with_test_bindings(
+                    &fixture.left_restriction,
+                    EvidencePolarityCandidateTestBindingsV1 {
+                        output_evidence: DerivedEvidenceArtifactIdV1::from_bytes([73; 32]),
+                        ..left_bindings
+                    },
+                ),
+                evidence_polarity_candidate_with_test_bindings(
+                    &fixture.right_corestriction,
+                    right_bindings,
+                )
+            );
+            assert_derived_fields_move_identity!(
+                "output-evidence",
+                span_with_test_selectors(
+                    &fixture.span,
+                    fixture.span.source(),
+                    fixture.span.apex(),
+                    fixture.span.target(),
+                ),
+                evidence_polarity_candidate_with_test_bindings(
+                    &fixture.left_restriction,
+                    left_bindings,
+                ),
+                evidence_polarity_candidate_with_test_bindings(
+                    &fixture.right_corestriction,
+                    EvidencePolarityCandidateTestBindingsV1 {
+                        output_evidence: DerivedEvidenceArtifactIdV1::from_bytes([74; 32]),
+                        ..right_bindings
+                    },
+                )
+            );
+            assert_derived_fields_move_identity!(
+                "input-rank",
+                span_with_test_selectors(
+                    &fixture.span,
+                    fixture.span.source(),
+                    fixture.span.apex(),
+                    fixture.span.target(),
+                ),
+                evidence_polarity_candidate_with_test_bindings(
+                    &fixture.left_restriction,
+                    EvidencePolarityCandidateTestBindingsV1 {
+                        input_rank: ColorRank::Validated,
+                        ..left_bindings
+                    },
+                ),
+                evidence_polarity_candidate_with_test_bindings(
+                    &fixture.right_corestriction,
+                    right_bindings,
+                )
+            );
+            assert_derived_fields_move_identity!(
+                "apex-rank",
+                span_with_test_selectors(
+                    &fixture.span,
+                    fixture.span.source(),
+                    fixture.span.apex(),
+                    fixture.span.target(),
+                ),
+                evidence_polarity_candidate_with_test_bindings(
+                    &fixture.left_restriction,
+                    EvidencePolarityCandidateTestBindingsV1 {
+                        output_rank: ColorRank::Estimated,
+                        ..left_bindings
+                    },
+                ),
+                evidence_polarity_candidate_with_test_bindings(
+                    &fixture.right_corestriction,
+                    right_bindings,
+                )
+            );
+            assert_derived_fields_move_identity!(
+                "output-rank",
+                span_with_test_selectors(
+                    &fixture.span,
+                    fixture.span.source(),
+                    fixture.span.apex(),
+                    fixture.span.target(),
+                ),
+                evidence_polarity_candidate_with_test_bindings(
+                    &fixture.left_restriction,
+                    left_bindings,
+                ),
+                evidence_polarity_candidate_with_test_bindings(
+                    &fixture.right_corestriction,
+                    EvidencePolarityCandidateTestBindingsV1 {
+                        output_rank: ColorRank::Validated,
+                        ..right_bindings
+                    },
+                )
+            );
+            assert_derived_fields_move_identity!(
+                "input-polarity",
+                span_with_test_selectors(
+                    &fixture.span,
+                    fixture.span.source(),
+                    fixture.span.apex(),
+                    fixture.span.target(),
+                ),
+                evidence_polarity_candidate_with_test_bindings(
+                    &fixture.left_restriction,
+                    EvidencePolarityCandidateTestBindingsV1 {
+                        input_polarity: DerivedEvidencePolarityV1::Refutation,
+                        ..left_bindings
+                    },
+                ),
+                evidence_polarity_candidate_with_test_bindings(
+                    &fixture.right_corestriction,
+                    right_bindings,
+                )
+            );
+            assert_derived_fields_move_identity!(
+                "apex-polarity",
+                span_with_test_selectors(
+                    &fixture.span,
+                    fixture.span.source(),
+                    fixture.span.apex(),
+                    fixture.span.target(),
+                ),
+                evidence_polarity_candidate_with_test_bindings(
+                    &fixture.left_restriction,
+                    EvidencePolarityCandidateTestBindingsV1 {
+                        output_polarity: DerivedEvidencePolarityV1::NoClaim,
+                        ..left_bindings
+                    },
+                ),
+                evidence_polarity_candidate_with_test_bindings(
+                    &fixture.right_corestriction,
+                    right_bindings,
+                )
+            );
+            assert_derived_fields_move_identity!(
+                "output-polarity",
+                span_with_test_selectors(
+                    &fixture.span,
+                    fixture.span.source(),
+                    fixture.span.apex(),
+                    fixture.span.target(),
+                ),
+                evidence_polarity_candidate_with_test_bindings(
+                    &fixture.left_restriction,
+                    left_bindings,
+                ),
+                evidence_polarity_candidate_with_test_bindings(
+                    &fixture.right_corestriction,
+                    EvidencePolarityCandidateTestBindingsV1 {
+                        output_polarity: DerivedEvidencePolarityV1::Refutation,
+                        ..right_bindings
+                    },
+                )
+            );
+
+            let input_rank = [rank_tag(fixture.left_restriction.input_rank())];
+            let apex_rank = [rank_tag(fixture.left_restriction.output_rank())];
+            let output_rank = [rank_tag(fixture.right_corestriction.output_rank())];
+            let input_polarity = [evidence_polarity_tag(
+                fixture.left_restriction.input_polarity(),
+            )];
+            let apex_polarity = [evidence_polarity_tag(
+                fixture.left_restriction.output_polarity(),
+            )];
+            let output_polarity = [evidence_polarity_tag(
+                fixture.right_corestriction.output_polarity(),
+            )];
+            let prefix_encoder = || {
+                CanonicalEncoder::<DerivedSpanEvidenceTransportCandidateIdV1, _>::new(
+                    DERIVED_SPAN_EVIDENCE_TRANSPORT_CANDIDATE_IDENTITY_LIMITS_V1,
+                    || cx.checkpoint().is_err(),
+                )
+                .expect("valid span evidence-route encoder")
+                .bytes(
+                    Field::new(0, "source-geometry"),
+                    fixture.span.source().as_bytes(),
+                )
+                .and_then(|encoder| {
+                    encoder.bytes(
+                        Field::new(1, "apex-geometry"),
+                        fixture.span.apex().as_bytes(),
+                    )
+                })
+                .and_then(|encoder| {
+                    encoder.bytes(
+                        Field::new(2, "target-geometry"),
+                        fixture.span.target().as_bytes(),
+                    )
+                })
+                .and_then(|encoder| {
+                    encoder.bytes(
+                        Field::new(3, "input-evidence"),
+                        fixture.left_restriction.input_evidence().as_bytes(),
+                    )
+                })
+                .and_then(|encoder| {
+                    encoder.bytes(
+                        Field::new(4, "apex-evidence"),
+                        fixture.left_restriction.output_evidence().as_bytes(),
+                    )
+                })
+                .and_then(|encoder| {
+                    encoder.bytes(
+                        Field::new(5, "output-evidence"),
+                        fixture.right_corestriction.output_evidence().as_bytes(),
+                    )
+                })
+                .and_then(|encoder| encoder.bytes(Field::new(6, "input-rank"), &input_rank))
+                .and_then(|encoder| encoder.bytes(Field::new(7, "apex-rank"), &apex_rank))
+                .and_then(|encoder| encoder.bytes(Field::new(8, "output-rank"), &output_rank))
+                .and_then(|encoder| encoder.bytes(Field::new(9, "input-polarity"), &input_polarity))
+                .and_then(|encoder| encoder.bytes(Field::new(10, "apex-polarity"), &apex_polarity))
+                .and_then(|encoder| {
+                    encoder.bytes(Field::new(11, "output-polarity"), &output_polarity)
+                })
+            };
+            let wrong_span_schema = prefix_encoder().and_then(|encoder| {
+                encoder.child(
+                    Field::new(12, "span"),
+                    DerivedMorphismIdV1::parse_slice(&[75; 32])
+                        .expect("nonzero wrong-schema span child"),
+                )
+            });
+            assert!(matches!(
+                wrong_span_schema,
+                Err(CanonicalError::ChildBindingMismatch {
+                    field: "span",
+                    what: "child schema domain",
+                })
+            ));
+            let wrong_left_schema = prefix_encoder()
+                .and_then(|encoder| encoder.child(Field::new(12, "span"), fixture.span.id()))
+                .and_then(|encoder| {
+                    encoder.child(
+                        Field::new(13, "left-restriction"),
+                        DerivedSpanCorrespondenceIdV1::parse_slice(&[76; 32])
+                            .expect("nonzero wrong-schema left child"),
+                    )
+                });
+            assert!(matches!(
+                wrong_left_schema,
+                Err(CanonicalError::ChildBindingMismatch {
+                    field: "left-restriction",
+                    what: "child schema domain",
+                })
+            ));
+            let wrong_right_schema = prefix_encoder()
+                .and_then(|encoder| encoder.child(Field::new(12, "span"), fixture.span.id()))
+                .and_then(|encoder| {
+                    encoder.child(
+                        Field::new(13, "left-restriction"),
+                        fixture.left_restriction.id(),
+                    )
+                })
+                .and_then(|encoder| {
+                    encoder.child(
+                        Field::new(14, "right-corestriction"),
+                        DerivedSpanCorrespondenceIdV1::parse_slice(&[77; 32])
+                            .expect("nonzero wrong-schema right child"),
+                    )
+                });
+            assert!(matches!(
+                wrong_right_schema,
+                Err(CanonicalError::ChildBindingMismatch {
+                    field: "right-corestriction",
+                    what: "child schema domain",
+                })
+            ));
+
+            let swapped_ir = DerivedSpanEvidenceTransportCandidateIrV1 {
+                left_restriction: fixture.right_corestriction.id(),
+                right_corestriction: fixture.left_restriction.id(),
+                ..fixture.ir
+            };
+            let swapped = span_evidence_transport_candidate_receipt(
+                &swapped_ir,
+                &fixture.span,
+                &fixture.left_restriction,
+                &fixture.right_corestriction,
+                cx,
+            )
+            .expect("ordered same-schema children remain encodable")
+            .id();
+            assert_ne!(
+                baseline, swapped,
+                "restriction/corestriction order is semantic"
+            );
+        });
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // Schema, child, endpoint, variance, seam, and cancellation matrix.
+    fn span_evidence_transport_refuses_unbound_legs_variance_or_apex_seams() {
+        let fixture = with_cx(false, |cx| {
+            span_evidence_transport_candidate_fixture(DerivedEvidencePolarityV1::Affirmative, cx)
+        });
+        with_cx(false, |cx| {
+            let bad_schema = DerivedSpanEvidenceTransportCandidateIrV1 {
+                schema_version: 2,
+                ..fixture.ir
+            };
+            assert_eq!(
+                admit_derived_span_evidence_transport_candidate_v1(
+                    &bad_schema,
+                    &fixture.span,
+                    &fixture.left_restriction,
+                    &fixture.right_corestriction,
+                    cx,
+                ),
+                Err(
+                    DerivedSpanEvidenceTransportCandidateErrorV1::UnsupportedSchemaVersion {
+                        found: 2,
+                        supported: DERIVED_SPAN_EVIDENCE_TRANSPORT_CANDIDATE_SCHEMA_VERSION_V1,
+                    }
+                )
+            );
+
+            for (field, changed_ir) in [
+                (
+                    "span",
+                    DerivedSpanEvidenceTransportCandidateIrV1 {
+                        span: DerivedSpanCorrespondenceIdV1::parse_slice(&[0; 32])
+                            .expect("zero span sentinel remains representable"),
+                        ..fixture.ir
+                    },
+                ),
+                (
+                    "left-restriction",
+                    DerivedSpanEvidenceTransportCandidateIrV1 {
+                        left_restriction:
+                            DerivedEvidencePolarityTransportCandidateIdV1::parse_slice(&[0; 32])
+                                .expect("zero left-child sentinel remains representable"),
+                        ..fixture.ir
+                    },
+                ),
+                (
+                    "right-corestriction",
+                    DerivedSpanEvidenceTransportCandidateIrV1 {
+                        right_corestriction:
+                            DerivedEvidencePolarityTransportCandidateIdV1::parse_slice(&[0; 32])
+                                .expect("zero right-child sentinel remains representable"),
+                        ..fixture.ir
+                    },
+                ),
+                (
+                    "nominal-transport-declaration",
+                    DerivedSpanEvidenceTransportCandidateIrV1 {
+                        nominal_transport: DerivedSpanEvidenceTransportDeclarationIdV1::from_bytes(
+                            [0; 32],
+                        ),
+                        ..fixture.ir
+                    },
+                ),
+                (
+                    "no-authority",
+                    DerivedSpanEvidenceTransportCandidateIrV1 {
+                        no_authority: DerivedNoClaimIdV1::from_bytes([0; 32]),
+                        ..fixture.ir
+                    },
+                ),
+            ] {
+                assert!(matches!(
+                    admit_derived_span_evidence_transport_candidate_v1(
+                        &changed_ir,
+                        &fixture.span,
+                        &fixture.left_restriction,
+                        &fixture.right_corestriction,
+                        cx,
+                    ),
+                    Err(DerivedSpanEvidenceTransportCandidateErrorV1::MissingIdentity {
+                        field: found,
+                    }) if found == field
+                ));
+            }
+
+            for (field, changed_ir) in [
+                (
+                    "span",
+                    DerivedSpanEvidenceTransportCandidateIrV1 {
+                        span: DerivedSpanCorrespondenceIdV1::parse_slice(&[78; 32])
+                            .expect("nonzero wrong span child"),
+                        ..fixture.ir
+                    },
+                ),
+                (
+                    "left-restriction",
+                    DerivedSpanEvidenceTransportCandidateIrV1 {
+                        left_restriction:
+                            DerivedEvidencePolarityTransportCandidateIdV1::parse_slice(&[79; 32])
+                                .expect("nonzero wrong left child"),
+                        ..fixture.ir
+                    },
+                ),
+                (
+                    "right-corestriction",
+                    DerivedSpanEvidenceTransportCandidateIrV1 {
+                        right_corestriction:
+                            DerivedEvidencePolarityTransportCandidateIdV1::parse_slice(&[80; 32])
+                                .expect("nonzero wrong right child"),
+                        ..fixture.ir
+                    },
+                ),
+            ] {
+                assert!(matches!(
+                    admit_derived_span_evidence_transport_candidate_v1(
+                        &changed_ir,
+                        &fixture.span,
+                        &fixture.left_restriction,
+                        &fixture.right_corestriction,
+                        cx,
+                    ),
+                    Err(DerivedSpanEvidenceTransportCandidateErrorV1::ChildIdentityMismatch {
+                        field: found,
+                    }) if found == field
+                ));
+            }
+
+            for (field, changed_span) in [
+                (
+                    "left-restriction",
+                    span_with_test_legs(
+                        &fixture.span,
+                        DerivedMorphismIdV1::parse_slice(&[81; 32])
+                            .expect("nonzero replacement left leg"),
+                        fixture.span.right_leg(),
+                    ),
+                ),
+                (
+                    "right-corestriction",
+                    span_with_test_legs(
+                        &fixture.span,
+                        fixture.span.left_leg(),
+                        DerivedMorphismIdV1::parse_slice(&[82; 32])
+                            .expect("nonzero replacement right leg"),
+                    ),
+                ),
+            ] {
+                assert!(matches!(
+                    admit_derived_span_evidence_transport_candidate_v1(
+                        &fixture.ir,
+                        &changed_span,
+                        &fixture.left_restriction,
+                        &fixture.right_corestriction,
+                        cx,
+                    ),
+                    Err(DerivedSpanEvidenceTransportCandidateErrorV1::SpanLegMismatch {
+                        field: found,
+                    }) if found == field
+                ));
+            }
+
+            let left_bindings =
+                evidence_polarity_candidate_test_bindings(&fixture.left_restriction);
+            let right_bindings =
+                evidence_polarity_candidate_test_bindings(&fixture.right_corestriction);
+            let wrong_left_endpoint = evidence_polarity_candidate_with_test_bindings(
+                &fixture.left_restriction,
+                EvidencePolarityCandidateTestBindingsV1 {
+                    source: geometry_id(83),
+                    ..left_bindings
+                },
+            );
+            assert_eq!(
+                admit_derived_span_evidence_transport_candidate_v1(
+                    &fixture.ir,
+                    &fixture.span,
+                    &wrong_left_endpoint,
+                    &fixture.right_corestriction,
+                    cx,
+                ),
+                Err(
+                    DerivedSpanEvidenceTransportCandidateErrorV1::LegEndpointMismatch {
+                        field: "left-restriction",
+                    }
+                )
+            );
+            let wrong_left_target = evidence_polarity_candidate_with_test_bindings(
+                &fixture.left_restriction,
+                EvidencePolarityCandidateTestBindingsV1 {
+                    target: geometry_id(85),
+                    ..left_bindings
+                },
+            );
+            assert_eq!(
+                admit_derived_span_evidence_transport_candidate_v1(
+                    &fixture.ir,
+                    &fixture.span,
+                    &wrong_left_target,
+                    &fixture.right_corestriction,
+                    cx,
+                ),
+                Err(
+                    DerivedSpanEvidenceTransportCandidateErrorV1::LegEndpointMismatch {
+                        field: "left-restriction",
+                    }
+                )
+            );
+            let wrong_right_source = evidence_polarity_candidate_with_test_bindings(
+                &fixture.right_corestriction,
+                EvidencePolarityCandidateTestBindingsV1 {
+                    source: geometry_id(86),
+                    ..right_bindings
+                },
+            );
+            assert_eq!(
+                admit_derived_span_evidence_transport_candidate_v1(
+                    &fixture.ir,
+                    &fixture.span,
+                    &fixture.left_restriction,
+                    &wrong_right_source,
+                    cx,
+                ),
+                Err(
+                    DerivedSpanEvidenceTransportCandidateErrorV1::LegEndpointMismatch {
+                        field: "right-corestriction",
+                    }
+                )
+            );
+            let wrong_right_endpoint = evidence_polarity_candidate_with_test_bindings(
+                &fixture.right_corestriction,
+                EvidencePolarityCandidateTestBindingsV1 {
+                    target: geometry_id(84),
+                    ..right_bindings
+                },
+            );
+            assert_eq!(
+                admit_derived_span_evidence_transport_candidate_v1(
+                    &fixture.ir,
+                    &fixture.span,
+                    &fixture.left_restriction,
+                    &wrong_right_endpoint,
+                    cx,
+                ),
+                Err(
+                    DerivedSpanEvidenceTransportCandidateErrorV1::LegEndpointMismatch {
+                        field: "right-corestriction",
+                    }
+                )
+            );
+
+            let wrong_left_variance = evidence_polarity_candidate_with_test_bindings(
+                &fixture.left_restriction,
+                EvidencePolarityCandidateTestBindingsV1 {
+                    variance: DerivedEvidenceVarianceV1::BalanceCorestrictionCovariant,
+                    ..left_bindings
+                },
+            );
+            assert_eq!(
+                admit_derived_span_evidence_transport_candidate_v1(
+                    &fixture.ir,
+                    &fixture.span,
+                    &wrong_left_variance,
+                    &fixture.right_corestriction,
+                    cx,
+                ),
+                Err(
+                    DerivedSpanEvidenceTransportCandidateErrorV1::VarianceMismatch {
+                        field: "left-restriction",
+                        found: DerivedEvidenceVarianceV1::BalanceCorestrictionCovariant,
+                        required: DerivedEvidenceVarianceV1::RestrictionContravariant,
+                    }
+                )
+            );
+            let wrong_right_variance = evidence_polarity_candidate_with_test_bindings(
+                &fixture.right_corestriction,
+                EvidencePolarityCandidateTestBindingsV1 {
+                    variance: DerivedEvidenceVarianceV1::RestrictionContravariant,
+                    ..right_bindings
+                },
+            );
+            assert_eq!(
+                admit_derived_span_evidence_transport_candidate_v1(
+                    &fixture.ir,
+                    &fixture.span,
+                    &fixture.left_restriction,
+                    &wrong_right_variance,
+                    cx,
+                ),
+                Err(
+                    DerivedSpanEvidenceTransportCandidateErrorV1::VarianceMismatch {
+                        field: "right-corestriction",
+                        found: DerivedEvidenceVarianceV1::RestrictionContravariant,
+                        required: DerivedEvidenceVarianceV1::BalanceCorestrictionCovariant,
+                    }
+                )
+            );
+
+            let wrong_apex_evidence = evidence_polarity_candidate_with_test_bindings(
+                &fixture.right_corestriction,
+                EvidencePolarityCandidateTestBindingsV1 {
+                    input_evidence: DerivedEvidenceArtifactIdV1::from_bytes([85; 32]),
+                    ..right_bindings
+                },
+            );
+            assert_eq!(
+                admit_derived_span_evidence_transport_candidate_v1(
+                    &fixture.ir,
+                    &fixture.span,
+                    &fixture.left_restriction,
+                    &wrong_apex_evidence,
+                    cx,
+                ),
+                Err(
+                    DerivedSpanEvidenceTransportCandidateErrorV1::ApexEvidenceMismatch {
+                        left_output: fixture.left_restriction.output_evidence(),
+                        right_input: DerivedEvidenceArtifactIdV1::from_bytes([85; 32]),
+                    }
+                )
+            );
+            let wrong_apex_rank = evidence_polarity_candidate_with_test_bindings(
+                &fixture.right_corestriction,
+                EvidencePolarityCandidateTestBindingsV1 {
+                    input_rank: ColorRank::Estimated,
+                    ..right_bindings
+                },
+            );
+            assert_eq!(
+                admit_derived_span_evidence_transport_candidate_v1(
+                    &fixture.ir,
+                    &fixture.span,
+                    &fixture.left_restriction,
+                    &wrong_apex_rank,
+                    cx,
+                ),
+                Err(
+                    DerivedSpanEvidenceTransportCandidateErrorV1::ApexRankMismatch {
+                        left_output: ColorRank::Validated,
+                        right_input: ColorRank::Estimated,
+                    }
+                )
+            );
+            let wrong_apex_polarity = evidence_polarity_candidate_with_test_bindings(
+                &fixture.right_corestriction,
+                EvidencePolarityCandidateTestBindingsV1 {
+                    input_polarity: DerivedEvidencePolarityV1::Refutation,
+                    output_polarity: DerivedEvidencePolarityV1::Refutation,
+                    ..right_bindings
+                },
+            );
+            assert_eq!(
+                admit_derived_span_evidence_transport_candidate_v1(
+                    &fixture.ir,
+                    &fixture.span,
+                    &fixture.left_restriction,
+                    &wrong_apex_polarity,
+                    cx,
+                ),
+                Err(
+                    DerivedSpanEvidenceTransportCandidateErrorV1::ApexPolarityMismatch {
+                        left_output: DerivedEvidencePolarityV1::Affirmative,
+                        right_input: DerivedEvidencePolarityV1::Refutation,
+                    }
+                )
+            );
+        });
+
+        with_cx(true, |cx| {
+            assert_eq!(
+                admit_derived_span_evidence_transport_candidate_v1(
+                    &fixture.ir,
+                    &fixture.span,
+                    &fixture.left_restriction,
+                    &fixture.right_corestriction,
+                    cx,
+                ),
+                Err(DerivedSpanEvidenceTransportCandidateErrorV1::Cancelled {
+                    stage: "span-evidence-transport-entry",
+                })
             );
         });
     }
