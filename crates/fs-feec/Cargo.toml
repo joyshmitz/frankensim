@@ -10,7 +10,14 @@ description = "FEEC core: cochains on tet complexes, Whitney forms, Hodge stars,
 [package.metadata.frankensim]
 layer = "L3"
 
+[features]
+# I13.2a (ambition [F]): terminal-relative winding topology stays
+# default-off until its independent reproduction and promotion deck exist.
+terminal-relative = ["dep:fs-blake3", "dep:fs-couple"]
+
 [dependencies]
+fs-blake3 = { path = "../fs-blake3", optional = true }
+fs-couple = { path = "../fs-couple", optional = true }
 fs-la = { path = "../fs-la" }
 fs-math = { path = "../fs-math" }
 fs-qty = { path = "../fs-qty" }
@@ -22,6 +29,11 @@ fs-sparse = { path = "../fs-sparse" }
 fs-propcheck = { path = "../fs-propcheck" }
 fs-rand = { path = "../fs-rand" }
 fs-roofline = { path = "../fs-roofline" }
+
+[[test]]
+name = "terminal_relative"
+path = "tests/terminal_relative.rs"
+required-features = ["terminal-relative"]
 
 [lints]
 workspace = true

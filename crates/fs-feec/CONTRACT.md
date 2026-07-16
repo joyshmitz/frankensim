@@ -147,6 +147,27 @@ evidence. The deferred mixed and curl-curl solve batteries remain the gate.
   deterministic 256-bit replay address, explicitly non-cryptographic until
   wrapped by admitted ledger authority.
 
+- `terminal_relative` (I13.2a, feature `terminal-relative`, [F]) is the first
+  constructive physical winding schema. `FiniteCellComplex` admits bounded
+  oriented signed-unit chain-complex incidence with coefficients exactly `-1`
+  or `+1` and proves `boundary^2 = 0` in `i128`. `TerminalRelativePair` binds a conductor,
+  an explicit contained relative subcomplex, insulation, full-dimensional
+  conductor components, codimension-one boundary terminal patches, phase and
+  orientation roles, complete electrical `PortSchema` values, current/flow
+  coordinate selection, and presented Machine-IR graph/port/effort/flow keys.
+  Machine references remain presented data: the L6 adapter, not this L3 crate,
+  owns graph-membership authority. Pair identity is a strong fs-blake3 semantic
+  identity over the complete canonical payload and is declaration-order
+  independent. `IntegralWindingRepresentative` is an exact integral relative
+  one-cycle representative, deliberately not a homology-class witness.
+  `RealCurrentAmplitude`, `DistributedCurrent`, and `GeometricCoil` are
+  separate nominal sectors; the only admitted cross-sector relationships are
+  named winding-realization and current-realization map declarations carrying
+  immutable artifact references. `TerminalRelativeComplexReceipt` retains the
+  typed identity receipt, coefficient and incidence domains, current units,
+  terminal/PortSchema and presented Machine-IR bindings, admitted conversion
+  families, schema version, authority status, and explicit no-claim states.
+
 ## Invariants
 
 - dd = 0 EXACTLY: integer path (i64 `apply`) and f64 CSR path (sums
@@ -170,6 +191,17 @@ evidence. The deferred mixed and curl-curl solve batteries remain the gate.
   degree. Curvature codomains retain the character's lattice-period constraint.
   Boundary and terminal declarations are canonicalized by identity before
   hashing, so insertion order cannot change semantics.
+- Terminal-relative admission requires the relative subcomplex to be contained
+  in the conductor and insulation to be explicitly contained in that relative
+  subcomplex. Components cover the conductor while partitioning its top cells
+  (lower-dimensional closures may be shared), and every terminal patch lies in
+  its component and the relative subcomplex, avoids insulation, selects
+  electrical flow/current, and meets exactly one component top cell. Every
+  phase carries exactly one driven plus one return/reference terminal, both
+  current directions, and a common version/shape/basis/frame/clock/power/
+  conservation/voltage-reference convention. Relative boundary and coboundary
+  use the canonical quotient basis; integral accumulation is exact and refuses
+  publication overflow.
 - Vector families (vecfam battery): dimension counts r = 1..4 match
   the closed forms (N: 6/20/45/84, RT: 4/15/36/70 per tet) and the
   exact-sequence Euler identity Σ(−1)ᵏ dim Vᵏ = 1 holds on
@@ -196,6 +228,10 @@ and operator paths remain panic-on-invalid-programmer-input because upstream
 certificates own their validity. The relative-character schema is an
 agent-facing admission boundary and therefore returns structured
 `CharacterError` refusals instead of panicking.
+The feature-gated terminal-relative boundary returns structured
+`TerminalRelativeError` refusals for malformed incidence, support, topology,
+port, phase, coefficient, identity, budget, and declared-map semantics. It
+never rounds an integral cycle test or silently coerces nominal sectors.
 
 ## Determinism class
 
@@ -218,6 +254,11 @@ digest. That digest is deterministic replay evidence, not collision-resistant
 or authenticated authority. The encoder accounts for the logical byte length
 while refusing to extend its materialized buffer past the configured canonical
 byte limit.
+Terminal-relative pair and representative identities likewise use sorted
+integer/byte canonical frames and strong fs-blake3 schema domains. Floating
+current/cochain values are intentionally outside those identities in this
+slice; finite-value checks are admission evidence, not cross-ISA numerical
+equivalence evidence.
 
 ## Cancellation behavior
 
@@ -228,6 +269,9 @@ Relative-character schema construction is bounded by explicit cell,
 boundary-component, canonical-byte, and coefficient-product budgets and
 performs no unbounded search or solver work; the downstream RA.2b/RA.2c
 constructive checkers own Cx polling, drain, checkpoint, and witness budgets.
+Terminal-relative construction and exact chain maps are synchronous and bounded
+by explicit cell, incidence, component, terminal, and canonical-byte limits.
+This schema slice performs no solver, search, or unbounded iterative work.
 
 ## Unsafe boundary
 
@@ -243,7 +287,8 @@ other crate code inherits the workspace `unsafe_code = "deny"` policy.
 
 ## Feature flags
 
-None.
+- `terminal-relative` — default-off [F] I13.2a schema and exact-incidence lane;
+  enables the optional `fs-blake3` and `fs-couple` dependencies.
 
 ## Conformance tests
 
@@ -321,6 +366,14 @@ dimensionless-cycle holonomy checks; and deterministic identity replay plus
 semantic mutations. This is object-semantics evidence only; the constructive
 exactness, torsion algebra, naturality, and refinement checkers are RA.2b/RA.2c
 scope.
+`tests/terminal_relative.rs` (I13.2a, G0/G3, feature
+`terminal-relative`): exact triangle `boundary^2`, malformed incidence and
+subcomplex refusals, explicit relative containment, terminal/insulation and
+phase/orientation failures, complete PortSchema and presented Machine-IR
+identity mutations, declaration-order replay, nominal separation of integral
+representative/current/distributed-current/geometry sectors, named conversion
+families, real coboundary typing, nonfinite refusal, and flow-coordinate plus
+trivialization enforcement.
 
 ## Perf-lane observations (bead cwjn: authority-admitted both-ISA gate open)
 
@@ -430,3 +483,24 @@ scope.
   quantization, material, topology-change, or performance claim follows from
   these types. The deterministic algebra ID detects replay drift but is neither
   collision-resistant nor an authority receipt.
+
+## No-claim boundaries (terminal-relative winding schema)
+
+- I13.2a admits exact relative-cycle representatives; it does not compute or
+  identify relative homology classes, boundaries modulo chains, torsion,
+  periods, Smith/Hermite normal forms, or subdivision/refinement equivalence.
+  General integer cellular incidence beyond the oriented signed-unit `-1/+1`
+  lane is not admitted. Signed incidence plus `boundary^2 = 0` is not a
+  certificate of simplicial arity, regular-CW attaching maps, manifoldness, or
+  geometric embedding.
+- Component declarations are full-dimensional physical conductor partitions;
+  no connectivity search is executed. Presented Machine-IR digests and keys are
+  not proof of graph membership, port ownership, causalization, or executable
+  coupling. Declared conversion artifacts are not executed or verified here.
+- `Driven` and `ReturnReference` are DC-oriented first-slice roles. No neutral,
+  protective-ground, phasor/RMS, phase-sequence, multi-winding permutation,
+  polarity-inference, or topology-event semantics are claimed. Terminal-free
+  and single-terminal relative pairs are not admitted by this first slice.
+- No field transfer, current-density solve, electromagnetic force, material,
+  thermal, manufacturability, geometric embedding, cancellation-latency,
+  performance, or authority-receipt claim follows from these types.
