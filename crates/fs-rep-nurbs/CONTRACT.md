@@ -767,6 +767,17 @@ checkpoint. It drops the local bracket on cancellation, but does not consume a
 caller budget or preempt a field closure already in flight, drain/finalize
 caller work, or make
 `refit_radial` cancellation-aware.
+`build_open_uniform_refit_knots_with_cx` preserves checked positive degree,
+control/order/count arithmetic, aggregate fill-plus-sealed-validation work, and
+requested knot payload ahead of allocation. One caller gate spans fallible
+reservation, ordered leading clamp/interior/trailing clamp fill, complete
+`KnotVector` validation, and final owner publication, polling after at most 64
+filled or validated entries. `RefitOpenUniformKnotRun::Cancelled` drops partial
+or fully filled but unpublished storage. Vector headers, allocator
+metadata/rounding, spare capacity, and destructor latency are excluded from the
+retained envelope; individual allocations remain non-preemptible. The primitive
+does not consume a caller budget, migrate refit orchestration, own
+drain/finalize, promise wall-time preemption, or grant fit/geometric authority.
 `evaluate_refit_dense_basis_with_cx` consumes an admitted knot generation and
 preserves aggregate basis-plus-dense-expansion work plus the maximum of nested
 basis scratch and active-basis-plus-dense-row requested payload ahead of the

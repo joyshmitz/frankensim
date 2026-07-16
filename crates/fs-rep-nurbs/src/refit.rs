@@ -528,6 +528,20 @@ pub enum RefitDenseBasisRun {
     Cancelled,
 }
 
+/// Transactional outcome of cancellation-aware open-uniform refit knot
+/// construction.
+#[must_use]
+#[derive(Debug, PartialEq)]
+pub enum RefitOpenUniformKnotRun {
+    /// Filling and sealed structural validation completed.
+    Complete {
+        /// Complete checked open-uniform knot owner.
+        knots: KnotVector<f64>,
+    },
+    /// Cancellation was observed before publication.
+    Cancelled,
+}
+
 fn validate_radial_projection_request(
     center: [f64; 3],
     dir: [f64; 3],
@@ -1044,7 +1058,22 @@ fn cholesky_solve_factored(factor: &[Vec<f64>], rhs: Vec<f64>) -> Result<Vec<f64
     }
 }
 
-fn open_uniform_knots(n: usize, degree: usize) -> Result<KnotVector<f64>, NurbsError> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RefitOpenUniformKnotPlan {
+    order: usize,
+    inner: usize,
+    knot_count: usize,
+}
+
+fn preflight_open_uniform_refit_knots(
+    n: usize,
+    degree: usize,
+) -> Result<RefitOpenUniformKnotPlan, NurbsError> {
+    if degree == 0 {
+        return Err(refit_structure_error(
+            "refit open-uniform knot degree must be positive",
+        ));
+    }
     let order = degree
         .checked_add(1)
         .ok_or_else(|| refit_structure_error("refit knot order overflow"))?;
@@ -1059,16 +1088,105 @@ fn open_uniform_knots(n: usize, degree: usize) -> Result<KnotVector<f64>, NurbsE
     let knot_count = n
         .checked_add(order)
         .ok_or_else(|| refit_structure_error("refit knot count overflow"))?;
-    let mut knots = try_vec_with_capacity(knot_count, "refit knot vector")?;
-    for _ in 0..order {
+    let validation_work = KnotVector::<f64>::validation_work_for(knot_count, degree)?;
+    let build_work =
+        checked_refit_work_sum(&[knot_count as u128, 2], "open-uniform knot construction")?;
+    let total_work = checked_refit_work_sum(
+        &[build_work, validation_work],
+        "open-uniform knot aggregate",
+    )?;
+    KnotVector::<f64>::enforce_work(total_work, "refit open-uniform knot construction")?;
+    let retained_bytes = knot_count
+        .checked_mul(size_of::<f64>())
+        .ok_or_else(|| refit_structure_error("refit knot byte estimate overflow"))?;
+    if retained_bytes > REFIT_MAX_ALLOC_BYTES {
+        return Err(refit_structure_error(format!(
+            "refit knot vector retains {retained_bytes} requested bytes above static cap {REFIT_MAX_ALLOC_BYTES}"
+        )));
+    }
+    Ok(RefitOpenUniformKnotPlan {
+        order,
+        inner,
+        knot_count,
+    })
+}
+
+/// Construct one checked open-uniform refit knot vector with bounded
+/// cancellation polling.
+///
+/// Aggregate fill-plus-validation work and retained knot payload are admitted
+/// before allocation. One gate then spans fallible reservation, ordered leading
+/// clamp/interior/trailing-clamp fill, complete sealed knot validation, and
+/// final owner publication. Cancellation drops the partial or fully filled but
+/// unpublished knot storage. The primitive does not consume the `Cx` budget or
+/// make the full refit pipeline cancellation-aware.
+///
+/// # Errors
+/// Returns a structured dimension, checked work/retained-byte, allocation,
+/// finite-arithmetic, or sealed knot-validation refusal.
+pub fn build_open_uniform_refit_knots_with_cx(
+    control_count: usize,
+    degree: usize,
+    cx: &Cx<'_>,
+) -> Result<RefitOpenUniformKnotRun, NurbsError> {
+    let mut should_cancel = || cx.checkpoint().is_err();
+    build_open_uniform_refit_knots_with_poll(control_count, degree, &mut should_cancel)
+}
+
+fn build_open_uniform_refit_knots_with_poll(
+    control_count: usize,
+    degree: usize,
+    should_cancel: &mut impl FnMut() -> bool,
+) -> Result<RefitOpenUniformKnotRun, NurbsError> {
+    let plan = preflight_open_uniform_refit_knots(control_count, degree)?;
+    if should_cancel() {
+        return Ok(RefitOpenUniformKnotRun::Cancelled);
+    }
+    let mut knots = try_vec_with_capacity(plan.knot_count, "refit knot vector")?;
+    if should_cancel() {
+        return Ok(RefitOpenUniformKnotRun::Cancelled);
+    }
+    let mut operations_since_poll = 0usize;
+    for _ in 0..plan.order {
         knots.push(0.0);
+        if refit_poll_due(&mut operations_since_poll, should_cancel) {
+            return Ok(RefitOpenUniformKnotRun::Cancelled);
+        }
     }
     #[allow(clippy::cast_precision_loss)]
-    for k in 1..inner {
-        knots.push(k as f64 / inner as f64);
+    for k in 1..plan.inner {
+        let value = k as f64 / plan.inner as f64;
+        if !value.is_finite() {
+            return Err(refit_structure_error(
+                "refit open-uniform knot arithmetic became non-finite",
+            ));
+        }
+        knots.push(value);
+        if refit_poll_due(&mut operations_since_poll, should_cancel) {
+            return Ok(RefitOpenUniformKnotRun::Cancelled);
+        }
     }
-    knots.extend(std::iter::repeat_n(1.0, order));
-    KnotVector::new(knots, degree)
+    for _ in 0..plan.order {
+        knots.push(1.0);
+        if refit_poll_due(&mut operations_since_poll, should_cancel) {
+            return Ok(RefitOpenUniformKnotRun::Cancelled);
+        }
+    }
+    debug_assert_eq!(knots.len(), plan.knot_count);
+    match KnotVector::new_with_poll(knots, degree, should_cancel)? {
+        Some(knots) => Ok(RefitOpenUniformKnotRun::Complete { knots }),
+        None => Ok(RefitOpenUniformKnotRun::Cancelled),
+    }
+}
+
+fn open_uniform_knots(n: usize, degree: usize) -> Result<KnotVector<f64>, NurbsError> {
+    let mut never_cancel = || false;
+    match build_open_uniform_refit_knots_with_poll(n, degree, &mut never_cancel)? {
+        RefitOpenUniformKnotRun::Complete { knots } => Ok(knots),
+        RefitOpenUniformKnotRun::Cancelled => Err(refit_structure_error(
+            "non-cancellable open-uniform refit knot construction observed cancellation",
+        )),
+    }
 }
 
 fn preflight_refit_dense_basis(control_count: usize, degree: usize) -> Result<(), NurbsError> {
@@ -2277,6 +2395,82 @@ mod tests {
             Err(NurbsError::Structure { ref what })
                 if what == "refit test sum work accounting overflows u128"
         ));
+    }
+
+    // G0/G5: the cancellable primitive preserves the exact open-uniform
+    // construction, including deterministic interior-knot placement.
+    #[test]
+    fn open_uniform_refit_knots_with_cx_match_the_expected_sequence() {
+        let expected = [0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0];
+        with_refit_cx(false, |cx| {
+            let RefitOpenUniformKnotRun::Complete { knots } =
+                build_open_uniform_refit_knots_with_cx(4, 2, cx)
+                    .expect("cancellable open-uniform knots")
+            else {
+                panic!("healthy construction must complete");
+            };
+            assert_eq!(knots.degree(), 2);
+            assert_eq!(knots.knots(), expected);
+        });
+
+        let legacy = open_uniform_knots(4, 2).expect("legacy open-uniform knots");
+        assert_eq!(legacy.degree(), 2);
+        assert_eq!(legacy.knots(), expected);
+    }
+
+    // G4/G5: one callback spans allocation, fixed-stride fill, sealed
+    // validation, and final publication without leaking partial ownership.
+    #[test]
+    fn open_uniform_refit_knot_polling_is_bounded_and_transactional() {
+        let run = |cancel_at: Option<usize>| {
+            let polls = Cell::new(0usize);
+            let outcome = build_open_uniform_refit_knots_with_poll(130, 1, &mut || {
+                polls.set(polls.get() + 1);
+                cancel_at == Some(polls.get())
+            })
+            .expect("valid open-uniform knot construction");
+            (outcome, polls.get())
+        };
+
+        let (complete, healthy_polls) = run(None);
+        assert!(matches!(complete, RefitOpenUniformKnotRun::Complete { .. }));
+        assert!(healthy_polls > 4);
+        for cancel_at in [1, healthy_polls / 2, healthy_polls] {
+            assert_eq!(
+                run(Some(cancel_at)),
+                (RefitOpenUniformKnotRun::Cancelled, cancel_at)
+            );
+        }
+        with_refit_cx(true, |cx| {
+            assert_eq!(
+                build_open_uniform_refit_knots_with_cx(130, 1, cx)
+                    .expect("pre-cancellation is terminal"),
+                RefitOpenUniformKnotRun::Cancelled
+            );
+        });
+    }
+
+    // G0/G4: shape and checked-arithmetic refusals win before the first
+    // cancellation observation and therefore before allocation.
+    #[test]
+    fn open_uniform_refit_knot_refusals_are_preflighted() {
+        for (control_count, degree, expected) in [
+            (4, 0, "degree must be positive"),
+            (usize::MAX, 1, "knot count overflow"),
+        ] {
+            let polls = Cell::new(0usize);
+            let error =
+                build_open_uniform_refit_knots_with_poll(control_count, degree, &mut || {
+                    polls.set(polls.get() + 1);
+                    true
+                })
+                .expect_err("invalid knot request must be refused");
+            assert!(
+                error.to_string().contains(expected),
+                "unexpected refusal for ({control_count}, {degree}): {error}"
+            );
+            assert_eq!(polls.get(), 0);
+        }
     }
 
     #[test]

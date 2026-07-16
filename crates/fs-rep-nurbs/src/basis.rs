@@ -259,7 +259,10 @@ fn preflight_knot_copy<S: Scalar>(knot_count: usize) -> Result<(), NurbsError> {
 }
 
 impl<S: Scalar> KnotVector<S> {
-    fn validation_work_for(knot_count: usize, degree: usize) -> Result<u128, NurbsError> {
+    pub(crate) fn validation_work_for(
+        knot_count: usize,
+        degree: usize,
+    ) -> Result<u128, NurbsError> {
         (knot_count as u128)
             .checked_mul(KNOT_VALIDATION_WORK_PER_ENTRY)
             .and_then(|work| work.checked_add(degree as u128))
@@ -530,7 +533,7 @@ impl<S: Scalar> KnotVector<S> {
         }
     }
 
-    fn new_with_poll(
+    pub(crate) fn new_with_poll(
         knots: Vec<S>,
         degree: usize,
         should_cancel: &mut impl FnMut() -> bool,
