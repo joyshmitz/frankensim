@@ -77,6 +77,8 @@ pub const DERIVED_EVIDENCE_POLARITY_TRANSPORT_CANDIDATE_SCHEMA_VERSION_V1: u32 =
 pub const DERIVED_STRATUM_MORPHISM_SCHEMA_VERSION_V1: u32 = 1;
 /// Current schema for exhaustive finite stratified-map assembly candidates.
 pub const DERIVED_EXHAUSTIVE_STRATIFIED_MAP_CANDIDATE_SCHEMA_VERSION_V1: u32 = 1;
+/// Current schema for ordered two-step exhaustive stratified-map candidates.
+pub const DERIVED_EXHAUSTIVE_STRATIFIED_MAP_COMPOSITION_CANDIDATE_SCHEMA_VERSION_V1: u32 = 1;
 /// Current schema for finite stratification-refinement candidates.
 pub const DERIVED_STRATIFICATION_REFINEMENT_CANDIDATE_SCHEMA_VERSION_V1: u32 = 1;
 /// Current schema for ordered two-step stratification-refinement candidates.
@@ -115,6 +117,9 @@ const DERIVED_STRATUM_MORPHISM_IDENTITY_LIMITS_V1: CanonicalLimits =
     CanonicalLimits::new(1 << 17, 1 << 16, 9, 1 << 11, 4096);
 const DERIVED_EXHAUSTIVE_STRATIFIED_MAP_CANDIDATE_IDENTITY_LIMITS_V1: CanonicalLimits =
     CanonicalLimits::new(1 << 17, 1 << 16, 8, 1 << 11, 4096);
+// Ten parent fields plus two complete eight-field exhaustive-map children.
+const DERIVED_EXHAUSTIVE_STRATIFIED_MAP_COMPOSITION_CANDIDATE_IDENTITY_LIMITS_V1: CanonicalLimits =
+    CanonicalLimits::new(1 << 17, 1 << 16, 26, 1 << 11, 4096);
 // Recursive validation counts this schema's seven fields plus its eight-field child.
 const DERIVED_STRATIFICATION_REFINEMENT_CANDIDATE_IDENTITY_LIMITS_V1: CanonicalLimits =
     CanonicalLimits::new(1 << 17, 1 << 16, 15, 1 << 11, 4096);
@@ -228,6 +233,39 @@ pub type DerivedExhaustiveStratifiedMapCandidateIdV1 =
 
 static DERIVED_EXHAUSTIVE_STRATIFIED_MAP_CANDIDATE_CHILD_V1: ChildSpec =
     ChildSpec::for_identity::<DerivedExhaustiveStratifiedMapCandidateIdV1>();
+
+/// Domain-separated identity for one ordered two-step exhaustive-map candidate.
+pub enum DerivedExhaustiveStratifiedMapCompositionCandidateIdentitySchemaV1 {}
+
+impl CanonicalSchema for DerivedExhaustiveStratifiedMapCompositionCandidateIdentitySchemaV1 {
+    const DOMAIN: &'static str =
+        "org.frankensim.fs-geom.exhaustive-stratified-map-composition-candidate.v1";
+    const NAME: &'static str = "two-step-exhaustive-stratified-map-composition-candidate";
+    const VERSION: u32 = DERIVED_EXHAUSTIVE_STRATIFIED_MAP_COMPOSITION_CANDIDATE_SCHEMA_VERSION_V1;
+    const CONTEXT: &'static str = "derived source/middle/target geometry and stratification selectors, ordered typed exhaustive-map children, exact middle seams, one nominal composition declaration, and an explicit no-authority boundary";
+    const FIELDS: &'static [FieldSpec] = &[
+        FieldSpec::required("source-geometry", WireType::Bytes),
+        FieldSpec::required("source-stratification", WireType::Bytes),
+        FieldSpec::required("middle-geometry", WireType::Bytes),
+        FieldSpec::required("middle-stratification", WireType::Bytes),
+        FieldSpec::required("target-geometry", WireType::Bytes),
+        FieldSpec::required("target-stratification", WireType::Bytes),
+        FieldSpec::child_of(
+            "first-map",
+            &DERIVED_EXHAUSTIVE_STRATIFIED_MAP_CANDIDATE_CHILD_V1,
+        ),
+        FieldSpec::child_of(
+            "second-map",
+            &DERIVED_EXHAUSTIVE_STRATIFIED_MAP_CANDIDATE_CHILD_V1,
+        ),
+        FieldSpec::required("nominal-composition-declaration", WireType::Bytes),
+        FieldSpec::required("no-authority", WireType::Bytes),
+    ];
+}
+
+/// Typed identity of one ordered two-step exhaustive-map candidate.
+pub type DerivedExhaustiveStratifiedMapCompositionCandidateIdV1 =
+    EvidenceNodeId<DerivedExhaustiveStratifiedMapCompositionCandidateIdentitySchemaV1>;
 
 /// Domain-separated identity for one finite stratification-refinement candidate.
 pub enum DerivedStratificationRefinementCandidateIdentitySchemaV1 {}
@@ -884,6 +922,28 @@ impl DerivedGlobalConstructibilityDeclarationIdV1 {
     }
 }
 
+/// Nominal declaration that two retained exhaustive stratified maps compose.
+///
+/// The bytes are input for independent checking. They do not execute or prove
+/// a composed global map, component compatibility, gluing, continuity,
+/// incidence/frontier/link preservation, constructibility, or a theorem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DerivedExhaustiveStratifiedMapCompositionDeclarationIdV1([u8; 32]);
+
+impl DerivedExhaustiveStratifiedMapCompositionDeclarationIdV1 {
+    /// Construct a nominal composition declaration from exact bytes.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Borrow the exact identity bytes.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
 /// Nominal declaration that one exhaustive fine-to-coarse family is a refinement.
 ///
 /// RD.1b retains this identity for independent checking; the bytes do not prove
@@ -1202,6 +1262,25 @@ pub struct DerivedExhaustiveStratifiedMapCandidateIrV1 {
     /// Nominal global constructibility declaration; not authenticated by RD.1b.
     pub nominal_constructibility: DerivedGlobalConstructibilityDeclarationIdV1,
     /// Explicit denial of global map, gluing, and theorem authority.
+    pub no_authority: DerivedNoClaimIdV1,
+}
+
+/// Versioned ordered pair of structurally composable exhaustive-map candidates.
+///
+/// Source, middle, and target selectors are derived from the sealed children,
+/// rather than repeated as caller-controlled input. Exact middle seams are the
+/// only composition law checked here; no component or global map is composed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DerivedExhaustiveStratifiedMapCompositionCandidateIrV1 {
+    /// Decoded schema version.
+    pub schema_version: u32,
+    /// Exact first sealed source-to-middle exhaustive-map candidate.
+    pub first: DerivedExhaustiveStratifiedMapCandidateIdV1,
+    /// Exact second sealed middle-to-target exhaustive-map candidate.
+    pub second: DerivedExhaustiveStratifiedMapCandidateIdV1,
+    /// Nominal assertion that the ordered candidates compose.
+    pub nominal_composition: DerivedExhaustiveStratifiedMapCompositionDeclarationIdV1,
+    /// Explicit denial of composed-map, preservation, theorem, and equivalence authority.
     pub no_authority: DerivedNoClaimIdV1,
 }
 
@@ -2257,6 +2336,57 @@ impl fmt::Display for DerivedExhaustiveStratifiedMapCandidateErrorV1 {
 }
 
 impl core::error::Error for DerivedExhaustiveStratifiedMapCandidateErrorV1 {}
+
+/// Structured refusal from two-step exhaustive-map composition admission.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DerivedExhaustiveStratifiedMapCompositionCandidateErrorV1 {
+    /// Unsupported decoded schema version.
+    UnsupportedSchemaVersion {
+        /// Supplied version.
+        found: u32,
+        /// Sole supported version.
+        supported: u32,
+    },
+    /// A required child, declaration, or no-authority ID is zero.
+    MissingIdentity {
+        /// Stable identity field.
+        field: &'static str,
+    },
+    /// A raw exhaustive-map ID does not name the supplied sealed child.
+    ChildIdentityMismatch {
+        /// Stable first/second child field.
+        field: &'static str,
+    },
+    /// The first target geometry is not the second source geometry.
+    MiddleGeometryMismatch {
+        /// First child's target geometry.
+        first_target: DerivedGeometryIdV1,
+        /// Second child's source geometry.
+        second_source: DerivedGeometryIdV1,
+    },
+    /// The first target stratification is not the second source stratification.
+    MiddleStratificationMismatch {
+        /// First child's target stratification.
+        first_target: StratificationIdV1,
+        /// Second child's source stratification.
+        second_source: StratificationIdV1,
+    },
+    /// Cooperative cancellation was observed before publication.
+    Cancelled {
+        /// Stable admission stage.
+        stage: &'static str,
+    },
+    /// Canonical identity construction failed.
+    Identity(CanonicalError),
+}
+
+impl fmt::Display for DerivedExhaustiveStratifiedMapCompositionCandidateErrorV1 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "exhaustive-map composition candidate refused: {self:?}")
+    }
+}
+
+impl core::error::Error for DerivedExhaustiveStratifiedMapCompositionCandidateErrorV1 {}
 
 /// Structured refusal from finite stratification-refinement admission.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3467,6 +3597,105 @@ impl AdmittedDerivedExhaustiveStratifiedMapCandidateV1 {
     pub const fn identity_receipt(
         &self,
     ) -> IdentityReceipt<DerivedExhaustiveStratifiedMapCandidateIdV1> {
+        self.receipt
+    }
+}
+
+/// Sealed ordered two-step exhaustive stratified-map candidate.
+///
+/// This token proves only that two exact structural candidates share the same
+/// middle geometry and stratification selectors. It does not synthesize or
+/// execute a composed component family or global map, and grants no gluing,
+/// continuity, constructibility, preservation, theorem, or equivalence authority.
+#[derive(Debug, PartialEq, Eq)]
+pub struct AdmittedDerivedExhaustiveStratifiedMapCompositionCandidateV1 {
+    source_geometry: DerivedGeometryIdV1,
+    source_stratification: StratificationIdV1,
+    middle_geometry: DerivedGeometryIdV1,
+    middle_stratification: StratificationIdV1,
+    target_geometry: DerivedGeometryIdV1,
+    target_stratification: StratificationIdV1,
+    first: DerivedExhaustiveStratifiedMapCandidateIdV1,
+    second: DerivedExhaustiveStratifiedMapCandidateIdV1,
+    nominal_composition: DerivedExhaustiveStratifiedMapCompositionDeclarationIdV1,
+    no_authority: DerivedNoClaimIdV1,
+    receipt: IdentityReceipt<DerivedExhaustiveStratifiedMapCompositionCandidateIdV1>,
+}
+
+impl AdmittedDerivedExhaustiveStratifiedMapCompositionCandidateV1 {
+    /// Exact source geometry derived from the first child.
+    #[must_use]
+    pub const fn source_geometry(&self) -> DerivedGeometryIdV1 {
+        self.source_geometry
+    }
+
+    /// Exact source stratification derived from the first child.
+    #[must_use]
+    pub const fn source_stratification(&self) -> StratificationIdV1 {
+        self.source_stratification
+    }
+
+    /// Exact shared middle geometry.
+    #[must_use]
+    pub const fn middle_geometry(&self) -> DerivedGeometryIdV1 {
+        self.middle_geometry
+    }
+
+    /// Exact shared middle stratification.
+    #[must_use]
+    pub const fn middle_stratification(&self) -> StratificationIdV1 {
+        self.middle_stratification
+    }
+
+    /// Exact target geometry derived from the second child.
+    #[must_use]
+    pub const fn target_geometry(&self) -> DerivedGeometryIdV1 {
+        self.target_geometry
+    }
+
+    /// Exact target stratification derived from the second child.
+    #[must_use]
+    pub const fn target_stratification(&self) -> StratificationIdV1 {
+        self.target_stratification
+    }
+
+    /// Exact first source-to-middle exhaustive-map child.
+    #[must_use]
+    pub const fn first(&self) -> DerivedExhaustiveStratifiedMapCandidateIdV1 {
+        self.first
+    }
+
+    /// Exact second middle-to-target exhaustive-map child.
+    #[must_use]
+    pub const fn second(&self) -> DerivedExhaustiveStratifiedMapCandidateIdV1 {
+        self.second
+    }
+
+    /// Nominal composition declaration; not authenticated here.
+    #[must_use]
+    pub const fn nominal_composition(
+        &self,
+    ) -> DerivedExhaustiveStratifiedMapCompositionDeclarationIdV1 {
+        self.nominal_composition
+    }
+
+    /// Explicit artifact denying composed-map and theorem authority.
+    #[must_use]
+    pub const fn no_authority(&self) -> DerivedNoClaimIdV1 {
+        self.no_authority
+    }
+
+    /// Typed two-step composition-candidate identity.
+    #[must_use]
+    pub const fn id(&self) -> DerivedExhaustiveStratifiedMapCompositionCandidateIdV1 {
+        self.receipt.id()
+    }
+
+    /// Canonical receipt and construction limits.
+    #[must_use]
+    pub const fn identity_receipt(
+        &self,
+    ) -> IdentityReceipt<DerivedExhaustiveStratifiedMapCompositionCandidateIdV1> {
         self.receipt
     }
 }
@@ -7233,6 +7462,189 @@ pub fn admit_derived_exhaustive_stratified_map_candidate_v1(
         no_authority: ir.no_authority,
         receipt,
     })
+}
+
+fn exhaustive_stratified_map_composition_candidate_receipt(
+    ir: &DerivedExhaustiveStratifiedMapCompositionCandidateIrV1,
+    first: &AdmittedDerivedExhaustiveStratifiedMapCandidateV1,
+    second: &AdmittedDerivedExhaustiveStratifiedMapCandidateV1,
+    cx: &Cx<'_>,
+) -> Result<
+    IdentityReceipt<DerivedExhaustiveStratifiedMapCompositionCandidateIdV1>,
+    DerivedExhaustiveStratifiedMapCompositionCandidateErrorV1,
+> {
+    let map_identity_error = |error| match error {
+        CanonicalError::Cancelled { .. } => {
+            DerivedExhaustiveStratifiedMapCompositionCandidateErrorV1::Cancelled {
+                stage: "exhaustive-map-composition-identity",
+            }
+        }
+        other => DerivedExhaustiveStratifiedMapCompositionCandidateErrorV1::Identity(other),
+    };
+    CanonicalEncoder::<DerivedExhaustiveStratifiedMapCompositionCandidateIdV1, _>::new(
+        DERIVED_EXHAUSTIVE_STRATIFIED_MAP_COMPOSITION_CANDIDATE_IDENTITY_LIMITS_V1,
+        || cx.checkpoint().is_err(),
+    )
+    .map_err(map_identity_error)?
+    .bytes(
+        Field::new(0, "source-geometry"),
+        first.source_geometry().as_bytes(),
+    )
+    .and_then(|encoder| {
+        encoder.bytes(
+            Field::new(1, "source-stratification"),
+            first.source_stratification().as_bytes(),
+        )
+    })
+    .and_then(|encoder| {
+        encoder.bytes(
+            Field::new(2, "middle-geometry"),
+            first.target_geometry().as_bytes(),
+        )
+    })
+    .and_then(|encoder| {
+        encoder.bytes(
+            Field::new(3, "middle-stratification"),
+            first.target_stratification().as_bytes(),
+        )
+    })
+    .and_then(|encoder| {
+        encoder.bytes(
+            Field::new(4, "target-geometry"),
+            second.target_geometry().as_bytes(),
+        )
+    })
+    .and_then(|encoder| {
+        encoder.bytes(
+            Field::new(5, "target-stratification"),
+            second.target_stratification().as_bytes(),
+        )
+    })
+    .and_then(|encoder| encoder.child(Field::new(6, "first-map"), ir.first))
+    .and_then(|encoder| encoder.child(Field::new(7, "second-map"), ir.second))
+    .and_then(|encoder| {
+        encoder.bytes(
+            Field::new(8, "nominal-composition-declaration"),
+            ir.nominal_composition.as_bytes(),
+        )
+    })
+    .and_then(|encoder| encoder.bytes(Field::new(9, "no-authority"), ir.no_authority.as_bytes()))
+    .and_then(|encoder| encoder.finish())
+    .map_err(map_identity_error)
+}
+
+/// Admit an ordered two-step exhaustive stratified-map composition candidate.
+///
+/// The first sealed child must end at exactly the geometry and stratification
+/// where the second sealed child begins. Source, middle, and target selectors
+/// are derived from those children and bound with their ordered typed IDs. The
+/// nominal composition declaration remains unauthenticated.
+///
+/// This function does not compose or execute components, synthesize a direct
+/// exhaustive or whole-geometry map, authenticate assembly or constructibility,
+/// transport evidence, or prove gluing, continuity, preservation, categorical
+/// laws, a theorem, inverse, equivalence, or physical authority.
+///
+/// # Errors
+/// Returns a typed refusal for schema, zero identity, raw/sealed child mismatch,
+/// unequal middle geometry or stratification, cancellation, or canonical
+/// identity defects. No partial candidate escapes.
+#[must_use = "a two-step structural candidate grants no composed-map authority"]
+pub fn admit_derived_exhaustive_stratified_map_composition_candidate_v1(
+    ir: &DerivedExhaustiveStratifiedMapCompositionCandidateIrV1,
+    first: &AdmittedDerivedExhaustiveStratifiedMapCandidateV1,
+    second: &AdmittedDerivedExhaustiveStratifiedMapCandidateV1,
+    cx: &Cx<'_>,
+) -> Result<
+    AdmittedDerivedExhaustiveStratifiedMapCompositionCandidateV1,
+    DerivedExhaustiveStratifiedMapCompositionCandidateErrorV1,
+> {
+    if cx.checkpoint().is_err() {
+        return Err(
+            DerivedExhaustiveStratifiedMapCompositionCandidateErrorV1::Cancelled {
+                stage: "exhaustive-map-composition-entry",
+            },
+        );
+    }
+    if ir.schema_version
+        != DERIVED_EXHAUSTIVE_STRATIFIED_MAP_COMPOSITION_CANDIDATE_SCHEMA_VERSION_V1
+    {
+        return Err(
+            DerivedExhaustiveStratifiedMapCompositionCandidateErrorV1::UnsupportedSchemaVersion {
+                found: ir.schema_version,
+                supported:
+                    DERIVED_EXHAUSTIVE_STRATIFIED_MAP_COMPOSITION_CANDIDATE_SCHEMA_VERSION_V1,
+            },
+        );
+    }
+    for (bytes, field) in [
+        (ir.first.as_bytes(), "first-map"),
+        (ir.second.as_bytes(), "second-map"),
+        (
+            ir.nominal_composition.as_bytes(),
+            "nominal-composition-declaration",
+        ),
+        (ir.no_authority.as_bytes(), "no-authority"),
+    ] {
+        if is_zero(bytes) {
+            return Err(
+                DerivedExhaustiveStratifiedMapCompositionCandidateErrorV1::MissingIdentity {
+                    field,
+                },
+            );
+        }
+    }
+    for (matches, field) in [
+        (ir.first == first.id(), "first-map"),
+        (ir.second == second.id(), "second-map"),
+    ] {
+        if !matches {
+            return Err(
+                DerivedExhaustiveStratifiedMapCompositionCandidateErrorV1::ChildIdentityMismatch {
+                    field,
+                },
+            );
+        }
+    }
+    if first.target_geometry() != second.source_geometry() {
+        return Err(
+            DerivedExhaustiveStratifiedMapCompositionCandidateErrorV1::MiddleGeometryMismatch {
+                first_target: first.target_geometry(),
+                second_source: second.source_geometry(),
+            },
+        );
+    }
+    if first.target_stratification() != second.source_stratification() {
+        return Err(
+            DerivedExhaustiveStratifiedMapCompositionCandidateErrorV1::MiddleStratificationMismatch {
+                first_target: first.target_stratification(),
+                second_source: second.source_stratification(),
+            },
+        );
+    }
+    let receipt = exhaustive_stratified_map_composition_candidate_receipt(ir, first, second, cx)?;
+    if cx.checkpoint().is_err() {
+        return Err(
+            DerivedExhaustiveStratifiedMapCompositionCandidateErrorV1::Cancelled {
+                stage: "exhaustive-map-composition-publication",
+            },
+        );
+    }
+    Ok(
+        AdmittedDerivedExhaustiveStratifiedMapCompositionCandidateV1 {
+            source_geometry: first.source_geometry(),
+            source_stratification: first.source_stratification(),
+            middle_geometry: first.target_geometry(),
+            middle_stratification: first.target_stratification(),
+            target_geometry: second.target_geometry(),
+            target_stratification: second.target_stratification(),
+            first: ir.first,
+            second: ir.second,
+            nominal_composition: ir.nominal_composition,
+            no_authority: ir.no_authority,
+            receipt,
+        },
+    )
 }
 
 fn stratification_refinement_candidate_receipt(
@@ -12683,6 +13095,44 @@ mod tests {
         }
     }
 
+    struct ExhaustiveStratifiedMapCompositionCandidateFixtureV1 {
+        first: AdmittedDerivedExhaustiveStratifiedMapCandidateV1,
+        second: AdmittedDerivedExhaustiveStratifiedMapCandidateV1,
+        ir: DerivedExhaustiveStratifiedMapCompositionCandidateIrV1,
+    }
+
+    fn exhaustive_stratified_map_composition_candidate_fixture(
+        cx: &Cx<'_>,
+    ) -> ExhaustiveStratifiedMapCompositionCandidateFixtureV1 {
+        let mut source_ir = fixed_resolution_geometry_ir(7, 17, 27, 2);
+        replace_strata(&mut source_ir, 37, &[(47, 0), (48, 1)]);
+        let source = admit_derived_geometry_v1(source_ir, DerivedAdmissionBudgetV1::STANDARD, cx)
+            .expect("valid source geometry");
+
+        let mut middle_ir = fixed_resolution_geometry_ir(8, 18, 28, 2);
+        replace_strata(&mut middle_ir, 38, &[(49, 1), (50, 2)]);
+        let middle = admit_derived_geometry_v1(middle_ir, DerivedAdmissionBudgetV1::STANDARD, cx)
+            .expect("valid middle geometry");
+
+        let mut target_ir = fixed_resolution_geometry_ir(9, 19, 29, 2);
+        replace_strata(&mut target_ir, 39, &[(51, 2)]);
+        let target = admit_derived_geometry_v1(target_ir, DerivedAdmissionBudgetV1::STANDARD, cx)
+            .expect("valid target geometry");
+
+        let first = admit_exhaustive_map_for_targets(&source, &middle, &[0, 1], 80, cx);
+        let second = admit_exhaustive_map_for_targets(&middle, &target, &[0, 0], 120, cx);
+        let ir = DerivedExhaustiveStratifiedMapCompositionCandidateIrV1 {
+            schema_version:
+                DERIVED_EXHAUSTIVE_STRATIFIED_MAP_COMPOSITION_CANDIDATE_SCHEMA_VERSION_V1,
+            first: first.id(),
+            second: second.id(),
+            nominal_composition:
+                DerivedExhaustiveStratifiedMapCompositionDeclarationIdV1::from_bytes([170; 32]),
+            no_authority: DerivedNoClaimIdV1::from_bytes([171; 32]),
+        };
+        ExhaustiveStratifiedMapCompositionCandidateFixtureV1 { first, second, ir }
+    }
+
     fn stratification_refinement_candidate_fixture(
         cx: &Cx<'_>,
     ) -> StratificationRefinementCandidateFixtureV1 {
@@ -14560,6 +15010,509 @@ mod tests {
                     stage: "stratified-assembly-admission-entry"
                 })
             ));
+        });
+    }
+
+    #[test]
+    fn exhaustive_map_composition_candidates_replay_exact_middle_seams() {
+        assert_ne!(
+            <DerivedExhaustiveStratifiedMapCompositionCandidateIdentitySchemaV1 as CanonicalSchema>::DOMAIN,
+            <DerivedExhaustiveStratifiedMapCandidateIdentitySchemaV1 as CanonicalSchema>::DOMAIN,
+        );
+        assert_eq!(
+            <DerivedExhaustiveStratifiedMapCompositionCandidateIdentitySchemaV1 as CanonicalSchema>::FIELDS.len(),
+            10,
+        );
+        assert_eq!(
+            DERIVED_EXHAUSTIVE_STRATIFIED_MAP_COMPOSITION_CANDIDATE_IDENTITY_LIMITS_V1.max_fields(),
+            26,
+        );
+
+        with_cx(false, |cx| {
+            let fixture = exhaustive_stratified_map_composition_candidate_fixture(cx);
+            let first = admit_derived_exhaustive_stratified_map_composition_candidate_v1(
+                &fixture.ir,
+                &fixture.first,
+                &fixture.second,
+                cx,
+            )
+            .expect("valid exhaustive-map composition candidate");
+            let replay = admit_derived_exhaustive_stratified_map_composition_candidate_v1(
+                &fixture.ir,
+                &fixture.first,
+                &fixture.second,
+                cx,
+            )
+            .expect("deterministic exhaustive-map composition replay");
+
+            assert_eq!(first, replay);
+            assert_eq!(first.source_geometry(), fixture.first.source_geometry());
+            assert_eq!(
+                first.source_stratification(),
+                fixture.first.source_stratification(),
+            );
+            assert_eq!(first.middle_geometry(), fixture.first.target_geometry());
+            assert_eq!(first.middle_geometry(), fixture.second.source_geometry(),);
+            assert_eq!(
+                first.middle_stratification(),
+                fixture.first.target_stratification(),
+            );
+            assert_eq!(
+                first.middle_stratification(),
+                fixture.second.source_stratification(),
+            );
+            assert_eq!(first.target_geometry(), fixture.second.target_geometry());
+            assert_eq!(
+                first.target_stratification(),
+                fixture.second.target_stratification(),
+            );
+            assert_eq!(first.first(), fixture.first.id());
+            assert_eq!(first.second(), fixture.second.id());
+            assert_eq!(first.nominal_composition(), fixture.ir.nominal_composition);
+            assert_eq!(first.no_authority(), fixture.ir.no_authority);
+            assert_eq!(first.id(), first.identity_receipt().id());
+        });
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // Ten-field receipt, including six derived selectors.
+    fn exhaustive_map_composition_receipt_binds_ordered_children_and_selectors() {
+        with_cx(false, |cx| {
+            let fixture = exhaustive_stratified_map_composition_candidate_fixture(cx);
+            let baseline = exhaustive_stratified_map_composition_candidate_receipt(
+                &fixture.ir,
+                &fixture.first,
+                &fixture.second,
+                cx,
+            )
+            .expect("baseline exhaustive-map composition receipt")
+            .id();
+
+            macro_rules! assert_ir_field_moves_identity {
+                ($field:ident, $value:expr) => {{
+                    let mut changed = fixture.ir;
+                    changed.$field = $value;
+                    let changed = exhaustive_stratified_map_composition_candidate_receipt(
+                        &changed,
+                        &fixture.first,
+                        &fixture.second,
+                        cx,
+                    )
+                    .expect("changed raw exhaustive-map composition receipt")
+                    .id();
+                    assert_ne!(baseline, changed, stringify!($field));
+                }};
+            }
+
+            assert_ir_field_moves_identity!(
+                first,
+                DerivedExhaustiveStratifiedMapCandidateIdV1::parse_slice(&[172; 32])
+                    .expect("nonzero changed first child")
+            );
+            assert_ir_field_moves_identity!(
+                second,
+                DerivedExhaustiveStratifiedMapCandidateIdV1::parse_slice(&[173; 32])
+                    .expect("nonzero changed second child")
+            );
+            assert_ir_field_moves_identity!(
+                nominal_composition,
+                DerivedExhaustiveStratifiedMapCompositionDeclarationIdV1::from_bytes([174; 32])
+            );
+            assert_ir_field_moves_identity!(
+                no_authority,
+                DerivedNoClaimIdV1::from_bytes([175; 32])
+            );
+
+            macro_rules! assert_derived_selector_moves_identity {
+                ($label:literal, $first:expr, $second:expr) => {{
+                    let changed = exhaustive_stratified_map_composition_candidate_receipt(
+                        &fixture.ir,
+                        &$first,
+                        &$second,
+                        cx,
+                    )
+                    .expect("changed derived-selector receipt")
+                    .id();
+                    assert_ne!(baseline, changed, $label);
+                }};
+            }
+
+            assert_derived_selector_moves_identity!(
+                "source-geometry",
+                exhaustive_map_with_test_selectors(
+                    &fixture.first,
+                    geometry_id(176),
+                    fixture.first.source_stratification(),
+                    fixture.first.target_geometry(),
+                    fixture.first.target_stratification(),
+                ),
+                exhaustive_map_with_test_selectors(
+                    &fixture.second,
+                    fixture.second.source_geometry(),
+                    fixture.second.source_stratification(),
+                    fixture.second.target_geometry(),
+                    fixture.second.target_stratification(),
+                )
+            );
+            assert_derived_selector_moves_identity!(
+                "source-stratification",
+                exhaustive_map_with_test_selectors(
+                    &fixture.first,
+                    fixture.first.source_geometry(),
+                    stratification_id(177),
+                    fixture.first.target_geometry(),
+                    fixture.first.target_stratification(),
+                ),
+                exhaustive_map_with_test_selectors(
+                    &fixture.second,
+                    fixture.second.source_geometry(),
+                    fixture.second.source_stratification(),
+                    fixture.second.target_geometry(),
+                    fixture.second.target_stratification(),
+                )
+            );
+            assert_derived_selector_moves_identity!(
+                "middle-geometry",
+                exhaustive_map_with_test_selectors(
+                    &fixture.first,
+                    fixture.first.source_geometry(),
+                    fixture.first.source_stratification(),
+                    geometry_id(178),
+                    fixture.first.target_stratification(),
+                ),
+                exhaustive_map_with_test_selectors(
+                    &fixture.second,
+                    fixture.second.source_geometry(),
+                    fixture.second.source_stratification(),
+                    fixture.second.target_geometry(),
+                    fixture.second.target_stratification(),
+                )
+            );
+            assert_derived_selector_moves_identity!(
+                "middle-stratification",
+                exhaustive_map_with_test_selectors(
+                    &fixture.first,
+                    fixture.first.source_geometry(),
+                    fixture.first.source_stratification(),
+                    fixture.first.target_geometry(),
+                    stratification_id(179),
+                ),
+                exhaustive_map_with_test_selectors(
+                    &fixture.second,
+                    fixture.second.source_geometry(),
+                    fixture.second.source_stratification(),
+                    fixture.second.target_geometry(),
+                    fixture.second.target_stratification(),
+                )
+            );
+            assert_derived_selector_moves_identity!(
+                "target-geometry",
+                exhaustive_map_with_test_selectors(
+                    &fixture.first,
+                    fixture.first.source_geometry(),
+                    fixture.first.source_stratification(),
+                    fixture.first.target_geometry(),
+                    fixture.first.target_stratification(),
+                ),
+                exhaustive_map_with_test_selectors(
+                    &fixture.second,
+                    fixture.second.source_geometry(),
+                    fixture.second.source_stratification(),
+                    geometry_id(180),
+                    fixture.second.target_stratification(),
+                )
+            );
+            assert_derived_selector_moves_identity!(
+                "target-stratification",
+                exhaustive_map_with_test_selectors(
+                    &fixture.first,
+                    fixture.first.source_geometry(),
+                    fixture.first.source_stratification(),
+                    fixture.first.target_geometry(),
+                    fixture.first.target_stratification(),
+                ),
+                exhaustive_map_with_test_selectors(
+                    &fixture.second,
+                    fixture.second.source_geometry(),
+                    fixture.second.source_stratification(),
+                    fixture.second.target_geometry(),
+                    stratification_id(181),
+                )
+            );
+
+            for field in [6, 7] {
+                let spec =
+                    &DerivedExhaustiveStratifiedMapCompositionCandidateIdentitySchemaV1::FIELDS
+                        [field];
+                assert_eq!(spec.wire_type(), WireType::Child);
+                assert!(spec.child_spec().is_some());
+            }
+
+            let prefix_encoder = || {
+                CanonicalEncoder::<DerivedExhaustiveStratifiedMapCompositionCandidateIdV1, _>::new(
+                    DERIVED_EXHAUSTIVE_STRATIFIED_MAP_COMPOSITION_CANDIDATE_IDENTITY_LIMITS_V1,
+                    || cx.checkpoint().is_err(),
+                )
+                .expect("valid exhaustive-map composition encoder")
+                .bytes(
+                    Field::new(0, "source-geometry"),
+                    fixture.first.source_geometry().as_bytes(),
+                )
+                .and_then(|encoder| {
+                    encoder.bytes(
+                        Field::new(1, "source-stratification"),
+                        fixture.first.source_stratification().as_bytes(),
+                    )
+                })
+                .and_then(|encoder| {
+                    encoder.bytes(
+                        Field::new(2, "middle-geometry"),
+                        fixture.first.target_geometry().as_bytes(),
+                    )
+                })
+                .and_then(|encoder| {
+                    encoder.bytes(
+                        Field::new(3, "middle-stratification"),
+                        fixture.first.target_stratification().as_bytes(),
+                    )
+                })
+                .and_then(|encoder| {
+                    encoder.bytes(
+                        Field::new(4, "target-geometry"),
+                        fixture.second.target_geometry().as_bytes(),
+                    )
+                })
+                .and_then(|encoder| {
+                    encoder.bytes(
+                        Field::new(5, "target-stratification"),
+                        fixture.second.target_stratification().as_bytes(),
+                    )
+                })
+            };
+            let wrong_first_schema = prefix_encoder().and_then(|encoder| {
+                encoder.child(
+                    Field::new(6, "first-map"),
+                    DerivedMorphismIdV1::parse_slice(&[182; 32])
+                        .expect("nonzero wrong-schema first child"),
+                )
+            });
+            assert!(matches!(
+                wrong_first_schema,
+                Err(CanonicalError::ChildBindingMismatch {
+                    field: "first-map",
+                    what: "child schema domain",
+                })
+            ));
+            let wrong_second_schema = prefix_encoder()
+                .and_then(|encoder| encoder.child(Field::new(6, "first-map"), fixture.first.id()))
+                .and_then(|encoder| {
+                    encoder.child(
+                        Field::new(7, "second-map"),
+                        DerivedMorphismIdV1::parse_slice(&[183; 32])
+                            .expect("nonzero wrong-schema second child"),
+                    )
+                });
+            assert!(matches!(
+                wrong_second_schema,
+                Err(CanonicalError::ChildBindingMismatch {
+                    field: "second-map",
+                    what: "child schema domain",
+                })
+            ));
+
+            let swapped_ir = DerivedExhaustiveStratifiedMapCompositionCandidateIrV1 {
+                first: fixture.second.id(),
+                second: fixture.first.id(),
+                ..fixture.ir
+            };
+            let swapped = exhaustive_stratified_map_composition_candidate_receipt(
+                &swapped_ir,
+                &fixture.first,
+                &fixture.second,
+                cx,
+            )
+            .expect("ordered children remain structurally encodable")
+            .id();
+            assert_ne!(baseline, swapped, "ordered children are not commutative");
+        });
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // Schema, zero-ID, child, seam, and cancellation matrix.
+    fn exhaustive_map_composition_refuses_unbound_or_unseamed_children() {
+        let fixture = with_cx(
+            false,
+            exhaustive_stratified_map_composition_candidate_fixture,
+        );
+        with_cx(false, |cx| {
+            let bad_schema = DerivedExhaustiveStratifiedMapCompositionCandidateIrV1 {
+                schema_version: 2,
+                ..fixture.ir
+            };
+            assert_eq!(
+                admit_derived_exhaustive_stratified_map_composition_candidate_v1(
+                    &bad_schema,
+                    &fixture.first,
+                    &fixture.second,
+                    cx,
+                ),
+                Err(DerivedExhaustiveStratifiedMapCompositionCandidateErrorV1::UnsupportedSchemaVersion {
+                    found: 2,
+                    supported: DERIVED_EXHAUSTIVE_STRATIFIED_MAP_COMPOSITION_CANDIDATE_SCHEMA_VERSION_V1,
+                })
+            );
+
+            for (field, changed_ir) in [
+                (
+                    "first-map",
+                    DerivedExhaustiveStratifiedMapCompositionCandidateIrV1 {
+                        first: DerivedExhaustiveStratifiedMapCandidateIdV1::parse_slice(&[0; 32])
+                            .expect("zero first-child sentinel remains representable"),
+                        ..fixture.ir
+                    },
+                ),
+                (
+                    "second-map",
+                    DerivedExhaustiveStratifiedMapCompositionCandidateIrV1 {
+                        second: DerivedExhaustiveStratifiedMapCandidateIdV1::parse_slice(&[0; 32])
+                            .expect("zero second-child sentinel remains representable"),
+                        ..fixture.ir
+                    },
+                ),
+                (
+                    "nominal-composition-declaration",
+                    DerivedExhaustiveStratifiedMapCompositionCandidateIrV1 {
+                        nominal_composition:
+                            DerivedExhaustiveStratifiedMapCompositionDeclarationIdV1::from_bytes(
+                                [0; 32],
+                            ),
+                        ..fixture.ir
+                    },
+                ),
+                (
+                    "no-authority",
+                    DerivedExhaustiveStratifiedMapCompositionCandidateIrV1 {
+                        no_authority: DerivedNoClaimIdV1::from_bytes([0; 32]),
+                        ..fixture.ir
+                    },
+                ),
+            ] {
+                assert!(matches!(
+                    admit_derived_exhaustive_stratified_map_composition_candidate_v1(
+                        &changed_ir,
+                        &fixture.first,
+                        &fixture.second,
+                        cx,
+                    ),
+                    Err(DerivedExhaustiveStratifiedMapCompositionCandidateErrorV1::MissingIdentity {
+                        field: found,
+                    }) if found == field
+                ));
+            }
+
+            for (field, changed_ir) in [
+                (
+                    "first-map",
+                    DerivedExhaustiveStratifiedMapCompositionCandidateIrV1 {
+                        first: DerivedExhaustiveStratifiedMapCandidateIdV1::parse_slice(&[184; 32])
+                            .expect("nonzero wrong first child"),
+                        ..fixture.ir
+                    },
+                ),
+                (
+                    "second-map",
+                    DerivedExhaustiveStratifiedMapCompositionCandidateIrV1 {
+                        second: DerivedExhaustiveStratifiedMapCandidateIdV1::parse_slice(
+                            &[185; 32],
+                        )
+                        .expect("nonzero wrong second child"),
+                        ..fixture.ir
+                    },
+                ),
+            ] {
+                assert!(matches!(
+                    admit_derived_exhaustive_stratified_map_composition_candidate_v1(
+                        &changed_ir,
+                        &fixture.first,
+                        &fixture.second,
+                        cx,
+                    ),
+                    Err(DerivedExhaustiveStratifiedMapCompositionCandidateErrorV1::ChildIdentityMismatch {
+                        field: found,
+                    }) if found == field
+                ));
+            }
+
+            let wrong_middle_geometry = exhaustive_map_with_test_selectors(
+                &fixture.second,
+                geometry_id(186),
+                fixture.second.source_stratification(),
+                fixture.second.target_geometry(),
+                fixture.second.target_stratification(),
+            );
+            assert_eq!(
+                admit_derived_exhaustive_stratified_map_composition_candidate_v1(
+                    &fixture.ir,
+                    &fixture.first,
+                    &wrong_middle_geometry,
+                    cx,
+                ),
+                Err(DerivedExhaustiveStratifiedMapCompositionCandidateErrorV1::MiddleGeometryMismatch {
+                    first_target: fixture.first.target_geometry(),
+                    second_source: geometry_id(186),
+                })
+            );
+
+            let wrong_middle_stratification = exhaustive_map_with_test_selectors(
+                &fixture.second,
+                fixture.second.source_geometry(),
+                stratification_id(187),
+                fixture.second.target_geometry(),
+                fixture.second.target_stratification(),
+            );
+            assert_eq!(
+                admit_derived_exhaustive_stratified_map_composition_candidate_v1(
+                    &fixture.ir,
+                    &fixture.first,
+                    &wrong_middle_stratification,
+                    cx,
+                ),
+                Err(DerivedExhaustiveStratifiedMapCompositionCandidateErrorV1::MiddleStratificationMismatch {
+                    first_target: fixture.first.target_stratification(),
+                    second_source: stratification_id(187),
+                })
+            );
+
+            let reversed_ir = DerivedExhaustiveStratifiedMapCompositionCandidateIrV1 {
+                first: fixture.second.id(),
+                second: fixture.first.id(),
+                ..fixture.ir
+            };
+            assert!(matches!(
+                admit_derived_exhaustive_stratified_map_composition_candidate_v1(
+                    &reversed_ir,
+                    &fixture.second,
+                    &fixture.first,
+                    cx,
+                ),
+                Err(DerivedExhaustiveStratifiedMapCompositionCandidateErrorV1::MiddleGeometryMismatch { .. })
+            ));
+        });
+
+        with_cx(true, |cx| {
+            assert_eq!(
+                admit_derived_exhaustive_stratified_map_composition_candidate_v1(
+                    &fixture.ir,
+                    &fixture.first,
+                    &fixture.second,
+                    cx,
+                ),
+                Err(
+                    DerivedExhaustiveStratifiedMapCompositionCandidateErrorV1::Cancelled {
+                        stage: "exhaustive-map-composition-entry",
+                    }
+                )
+            );
         });
     }
 
