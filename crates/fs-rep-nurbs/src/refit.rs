@@ -576,6 +576,22 @@ pub enum RefitRightHandSidesRun {
     Cancelled,
 }
 
+/// Transactional outcome of solved-coordinate control-net assembly.
+///
+/// The three input vectors are consumed. Cancellation or error drops them and
+/// any partially allocated rows; only a complete rectangular net can escape.
+#[must_use]
+#[derive(Debug, PartialEq)]
+pub enum RefitControlNetAssemblyRun {
+    /// All finite coordinates were copied into the complete U-major net.
+    Complete {
+        /// Rectangular `nu × nv` Cartesian control net.
+        net: Vec<Vec<[f64; 3]>>,
+    },
+    /// Cancellation was observed before owner publication.
+    Cancelled,
+}
+
 /// Transactional outcome of cancellation-aware paired-parameter residual
 /// summarization.
 ///
@@ -1937,6 +1953,190 @@ fn assemble_refit_right_hand_sides(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RefitControlNetAssemblyPlan {
+    nu: usize,
+    nv: usize,
+    control_count: usize,
+}
+
+fn preflight_refit_control_net_assembly_counts(
+    nu: usize,
+    nv: usize,
+    coordinate_lengths: [usize; 3],
+) -> Result<RefitControlNetAssemblyPlan, NurbsError> {
+    if nu == 0 || nv == 0 {
+        return Err(refit_structure_error(
+            "refit control-net axes must be nonzero",
+        ));
+    }
+    let control_count = nu
+        .checked_mul(nv)
+        .ok_or_else(|| refit_structure_error("refit control-net size overflows usize"))?;
+    for (axis, length) in coordinate_lengths.into_iter().enumerate() {
+        if length != control_count {
+            return Err(refit_structure_error(format!(
+                "refit control-net axis {axis} has {length} coordinates, expected {control_count}"
+            )));
+        }
+    }
+
+    let input_validation = checked_refit_work_product(
+        &[control_count as u128, 3],
+        "control-net coordinate validation",
+    )?;
+    let row_work = checked_refit_work_product(&[nu as u128, 2], "control-net row assembly")?;
+    let fill_work = checked_refit_work_product(
+        &[control_count as u128, 8],
+        "control-net coordinate assembly",
+    )?;
+    let total_work = checked_refit_work_sum(
+        &[input_validation, row_work, fill_work, 3],
+        "control-net assembly aggregate",
+    )?;
+    if total_work > REFIT_MAX_WORK_UNITS {
+        return Err(refit_structure_error(format!(
+            "refit control-net assembly requests {total_work} work units above static cap {REFIT_MAX_WORK_UNITS}"
+        )));
+    }
+
+    let input_bytes = control_count
+        .checked_mul(3)
+        .and_then(|count| count.checked_mul(size_of::<f64>()))
+        .ok_or_else(|| refit_structure_error("refit control-net input bytes overflow usize"))?;
+    let row_header_bytes = nu
+        .checked_mul(size_of::<Vec<[f64; 3]>>())
+        .ok_or_else(|| refit_structure_error("refit control-net row bytes overflow usize"))?;
+    let output_bytes = control_count
+        .checked_mul(size_of::<[f64; 3]>())
+        .and_then(|bytes| bytes.checked_add(row_header_bytes))
+        .ok_or_else(|| refit_structure_error("refit control-net output bytes overflow usize"))?;
+    let peak_bytes = input_bytes
+        .checked_add(output_bytes)
+        .ok_or_else(|| refit_structure_error("refit control-net peak bytes overflow usize"))?;
+    if peak_bytes > REFIT_MAX_ALLOC_BYTES {
+        return Err(refit_structure_error(format!(
+            "refit control-net assembly retains {peak_bytes} requested bytes above static cap {REFIT_MAX_ALLOC_BYTES}"
+        )));
+    }
+
+    Ok(RefitControlNetAssemblyPlan {
+        nu,
+        nv,
+        control_count,
+    })
+}
+
+/// Assemble three completed coordinate vectors into one Cartesian control net.
+///
+/// Axis dimensions, coordinate lengths, aggregate validation/fill work, and the
+/// peak overlap of transferred coordinate payload plus requested output rows
+/// are admitted before the first checkpoint. One caller gate then spans finite
+/// coordinate validation, fallible row reservations, deterministic U-major
+/// assembly, and final owner publication. Cancellation or error drops every
+/// transferred vector and partial row.
+///
+/// Vec headers for the three transferred coordinate owners, spare capacity,
+/// allocator metadata/rounding, and destructor latency are outside the retained
+/// envelope. This storage primitive grants no solve, conditioning, fit, seam,
+/// or geometric authority and does not consume the `Cx` budget.
+///
+/// # Errors
+/// Returns a structured dimension, checked work/retained-byte, allocation,
+/// transferred-value, or finite-arithmetic refusal.
+pub fn assemble_refit_control_net_with_cx(
+    nu: usize,
+    nv: usize,
+    coordinates: [Vec<f64>; 3],
+    cx: &Cx<'_>,
+) -> Result<RefitControlNetAssemblyRun, NurbsError> {
+    let mut should_cancel = || cx.checkpoint().is_err();
+    assemble_refit_control_net_with_poll(nu, nv, coordinates, &mut should_cancel)
+}
+
+fn assemble_refit_control_net_with_poll(
+    nu: usize,
+    nv: usize,
+    coordinates: [Vec<f64>; 3],
+    should_cancel: &mut impl FnMut() -> bool,
+) -> Result<RefitControlNetAssemblyRun, NurbsError> {
+    let plan = preflight_refit_control_net_assembly_counts(
+        nu,
+        nv,
+        [
+            coordinates[0].len(),
+            coordinates[1].len(),
+            coordinates[2].len(),
+        ],
+    )?;
+    if should_cancel() {
+        return Ok(RefitControlNetAssemblyRun::Cancelled);
+    }
+
+    let mut operations_since_poll = 0usize;
+    for (axis, values) in coordinates.iter().enumerate() {
+        for value in values {
+            if !value.is_finite() {
+                return Err(refit_structure_error(format!(
+                    "refit control-net axis {axis} coordinates must be finite"
+                )));
+            }
+            if refit_poll_due(&mut operations_since_poll, should_cancel) {
+                return Ok(RefitControlNetAssemblyRun::Cancelled);
+            }
+        }
+    }
+    if should_cancel() {
+        return Ok(RefitControlNetAssemblyRun::Cancelled);
+    }
+
+    let mut net = try_vec_with_capacity(plan.nu, "refit control-net rows")?;
+    if should_cancel() {
+        return Ok(RefitControlNetAssemblyRun::Cancelled);
+    }
+    operations_since_poll = 0;
+    for i in 0..plan.nu {
+        let mut row = try_vec_with_capacity(plan.nv, "refit control-net row")?;
+        if should_cancel() {
+            return Ok(RefitControlNetAssemblyRun::Cancelled);
+        }
+        for j in 0..plan.nv {
+            let control_index = i * plan.nv + j;
+            row.push([
+                coordinates[0][control_index],
+                coordinates[1][control_index],
+                coordinates[2][control_index],
+            ]);
+            if refit_poll_due(&mut operations_since_poll, should_cancel) {
+                return Ok(RefitControlNetAssemblyRun::Cancelled);
+            }
+        }
+        net.push(row);
+        if refit_poll_due(&mut operations_since_poll, should_cancel) {
+            return Ok(RefitControlNetAssemblyRun::Cancelled);
+        }
+    }
+    debug_assert_eq!(plan.control_count, plan.nu * plan.nv);
+    if should_cancel() {
+        return Ok(RefitControlNetAssemblyRun::Cancelled);
+    }
+    Ok(RefitControlNetAssemblyRun::Complete { net })
+}
+
+fn assemble_refit_control_net(
+    nu: usize,
+    nv: usize,
+    coordinates: [Vec<f64>; 3],
+) -> Result<Vec<Vec<[f64; 3]>>, NurbsError> {
+    let mut never_cancel = || false;
+    match assemble_refit_control_net_with_poll(nu, nv, coordinates, &mut never_cancel)? {
+        RefitControlNetAssemblyRun::Complete { net } => Ok(net),
+        RefitControlNetAssemblyRun::Cancelled => Err(refit_structure_error(
+            "non-cancellable refit control-net assembly observed cancellation",
+        )),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RefitResidualSummaryPlan {
     row_count: usize,
     control_count: usize,
@@ -2773,18 +2973,15 @@ pub fn refit_radial(
     }
     // Assemble and factor once, then solve the three coordinate right-hand
     // sides against the same deterministic factor.
-    let mut net = try_filled_matrix(nu, nv, [0.0f64; 3], "refit control net")?;
     let factor = cholesky_factor(assemble_normal(&rows_b, nu, nv, config.lambda)?)?;
-    let right_hand_sides = assemble_refit_right_hand_sides(&rows_b, &targets)?;
-    for (axis, rhs) in right_hand_sides.into_iter().enumerate() {
-        debug_assert_eq!(rhs.len(), control_points);
-        let rhs = cholesky_solve_factored(&factor, rhs)?;
-        for i in 0..nu {
-            for j in 0..nv {
-                net[i][j][axis] = rhs[i * nv + j];
-            }
-        }
-    }
+    let [rhs_x, rhs_y, rhs_z] = assemble_refit_right_hand_sides(&rows_b, &targets)?;
+    let coordinates = [
+        cholesky_solve_factored(&factor, rhs_x)?,
+        cholesky_solve_factored(&factor, rhs_y)?,
+        cholesky_solve_factored(&factor, rhs_z)?,
+    ];
+    drop(factor);
+    let net = assemble_refit_control_net(nu, nv, coordinates)?;
     // EXACT G0 seam closure: tie the u-boundary control rows through the same
     // aggregate-admitted primitive exposed to successor orchestration.
     let net = close_refit_u_seam(net)?;
@@ -4011,6 +4208,130 @@ mod tests {
             overflowed
                 .to_string()
                 .contains("accumulation became non-finite")
+        );
+    }
+
+    // G0/G5: solved X/Y/Z vectors retain exact U-major indexing through both
+    // the synchronous and transactional control-net assembly paths.
+    #[test]
+    fn refit_control_net_with_cx_matches_known_coordinates() {
+        let coordinates = [
+            vec![0.0, 1.0, 2.0, 3.0],
+            vec![10.0, 11.0, 12.0, 13.0],
+            vec![-1.0, -2.0, -3.0, -4.0],
+        ];
+        let expected = vec![
+            vec![[0.0, 10.0, -1.0], [1.0, 11.0, -2.0]],
+            vec![[2.0, 12.0, -3.0], [3.0, 13.0, -4.0]],
+        ];
+        assert_eq!(
+            assemble_refit_control_net(2, 2, coordinates.clone()).expect("synchronous control net"),
+            expected
+        );
+        with_refit_cx(false, |cx| {
+            assert_eq!(
+                assemble_refit_control_net_with_cx(2, 2, coordinates.clone(), cx)
+                    .expect("cancellable control net"),
+                RefitControlNetAssemblyRun::Complete {
+                    net: expected.clone()
+                }
+            );
+        });
+    }
+
+    // G4/G5: transferred-value validation, every fallible row reservation,
+    // U-major fill, and owner publication share replayable checkpoints.
+    #[test]
+    fn refit_control_net_polling_is_bounded_and_transactional() {
+        let (nu, nv) = (130usize, 130usize);
+        let control_count = nu * nv;
+        let run = |cancel_at: Option<usize>| {
+            let polls = Cell::new(0usize);
+            let coordinates = [
+                vec![1.0; control_count],
+                vec![2.0; control_count],
+                vec![3.0; control_count],
+            ];
+            let outcome = assemble_refit_control_net_with_poll(nu, nv, coordinates, &mut || {
+                polls.set(polls.get() + 1);
+                cancel_at == Some(polls.get())
+            })
+            .expect("finite control net");
+            (outcome, polls.get())
+        };
+
+        let (complete, healthy_polls) = run(None);
+        assert!(matches!(
+            complete,
+            RefitControlNetAssemblyRun::Complete { .. }
+        ));
+        assert!(healthy_polls > 512);
+        for cancel_at in [1, healthy_polls / 2, healthy_polls] {
+            assert_eq!(
+                run(Some(cancel_at)),
+                (RefitControlNetAssemblyRun::Cancelled, cancel_at)
+            );
+        }
+        with_refit_cx(true, |cx| {
+            assert_eq!(
+                assemble_refit_control_net_with_cx(
+                    2,
+                    2,
+                    [vec![0.0; 4], vec![0.0; 4], vec![0.0; 4]],
+                    cx,
+                )
+                .expect("pre-cancellation is terminal"),
+                RefitControlNetAssemblyRun::Cancelled
+            );
+        });
+    }
+
+    // G0/G4: count-only refusals precede polling/allocation, peak transferred
+    // plus output payload is bounded, and finite validation precedes copying.
+    #[test]
+    fn refit_control_net_refusals_are_preflighted_and_finite() {
+        let polls = Cell::new(0usize);
+        let empty =
+            assemble_refit_control_net_with_poll(0, 1, [vec![], vec![], vec![]], &mut || {
+                polls.set(polls.get() + 1);
+                true
+            })
+            .expect_err("zero axis must be refused before polling");
+        assert!(empty.to_string().contains("axes must be nonzero"));
+        assert_eq!(polls.get(), 0);
+
+        let mismatch = preflight_refit_control_net_assembly_counts(2, 2, [4, 3, 4])
+            .expect_err("coordinate length mismatch must be refused");
+        assert!(mismatch.to_string().contains("axis 1 has 3 coordinates"));
+
+        let overflow = preflight_refit_control_net_assembly_counts(usize::MAX, 2, [0, 0, 0])
+            .expect_err("unrepresentable control-grid size must be refused");
+        assert!(overflow.to_string().contains("size overflows usize"));
+
+        let work = preflight_refit_control_net_assembly_counts(100_000_000, 1, [100_000_000; 3])
+            .expect_err("unbounded validation/fill work must be refused");
+        assert!(work.to_string().contains("work units"));
+
+        let retained_controls = REFIT_MAX_ALLOC_BYTES / (6 * size_of::<f64>()) + 1;
+        let retained = preflight_refit_control_net_assembly_counts(
+            1,
+            retained_controls,
+            [retained_controls; 3],
+        )
+        .expect_err("transferred plus output payload must be refused");
+        assert!(retained.to_string().contains("assembly retains"));
+
+        let nonfinite = assemble_refit_control_net_with_poll(
+            1,
+            1,
+            [vec![0.0], vec![f64::NAN], vec![0.0]],
+            &mut || false,
+        )
+        .expect_err("non-finite solved coordinate must be refused");
+        assert!(
+            nonfinite
+                .to_string()
+                .contains("axis 1 coordinates must be finite")
         );
     }
 

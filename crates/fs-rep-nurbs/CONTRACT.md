@@ -881,6 +881,17 @@ the transferred right-hand side without modifying the factor. It allocates no
 derived numerical payload and does not prove conditioning, consume the `Cx`
 budget, migrate the pipeline, own drain/finalize, promise wall-time preemption,
 or cover destructor latency.
+`assemble_refit_control_net_with_cx` consumes three completed coordinate
+vectors after checking the rectangular axis product, exact vector lengths,
+aggregate finite-validation/U-major fill work, and the peak overlap of all
+transferred coordinate payload plus requested output rows before its first
+checkpoint. One gate spans finite coordinate validation, fallible outer/row
+reservation, deterministic Cartesian assembly, and final net publication.
+Cancellation or error drops every transferred vector and partial row. The
+three transferred `Vec` headers, spare input capacity, allocator
+metadata/rounding, scalar wall time, and destructor latency remain outside the
+envelope. The primitive consumes no caller budget and grants no solve,
+conditioning, fit, seam, or geometric authority.
 `estimate_refit_surface_lipschitz_with_cx` consumes an already admitted surface
 view, preserves count-derived control-traversal work refusal before its first
 checkpoint, and carries one gate through the complete U/V hodograph-hull scan,
