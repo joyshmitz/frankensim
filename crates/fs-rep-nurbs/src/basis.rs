@@ -169,6 +169,21 @@ pub enum KnotAdmissionRun<'a, S: Scalar> {
     Cancelled,
 }
 
+/// Transactional terminal state of cancellation-aware owning knot-domain
+/// lookup.
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum KnotDomainRun<S: Scalar> {
+    /// Structural validation completed and the exact parameter domain is safe
+    /// to publish.
+    Complete {
+        /// Inclusive lower and upper parameter endpoints.
+        domain: (S, S),
+    },
+    /// Cancellation was observed; no domain endpoints were published.
+    Cancelled,
+}
+
 /// Transactional terminal state of cancellation-aware knot-span lookup.
 #[must_use]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -733,6 +748,40 @@ impl<S: Scalar> KnotVector<S> {
     /// ceiling is exceeded.
     pub fn domain(&self) -> Result<(S, S), NurbsError> {
         self.admit().map(|admitted| admitted.domain())
+    }
+
+    /// Validate this owning knot vector and publish its parameter domain with
+    /// bounded cancellation polling.
+    ///
+    /// Checked validation-work refusal precedes the first checkpoint. One gate
+    /// then spans fixed-stride structural validation and final endpoint-pair
+    /// publication. Cancellation publishes neither partial admitted authority
+    /// nor one endpoint. This primitive does not consume the `Cx` budget or
+    /// finalize its executor scope.
+    ///
+    /// # Errors
+    /// Returns the synchronous domain lookup's work or structural refusal when
+    /// it wins before an observed cancellation.
+    pub fn domain_with_cx(&self, cx: &Cx<'_>) -> Result<KnotDomainRun<S>, NurbsError> {
+        let mut should_cancel = || cx.checkpoint().is_err();
+        self.domain_with_poll(&mut should_cancel)
+    }
+
+    fn domain_with_poll(
+        &self,
+        should_cancel: &mut impl FnMut() -> bool,
+    ) -> Result<KnotDomainRun<S>, NurbsError> {
+        Self::enforce_work(self.validation_work()?, "knot-vector admission")?;
+        match self.validate_live_with_poll(|| should_cancel())? {
+            KnotValidationOutcome::Complete => {}
+            KnotValidationOutcome::Cancelled => return Ok(KnotDomainRun::Cancelled),
+        }
+        if should_cancel() {
+            return Ok(KnotDomainRun::Cancelled);
+        }
+        Ok(KnotDomainRun::Complete {
+            domain: self.admitted_after_validation().domain(),
+        })
     }
 
     /// The knot span index containing `t` (Piegl–Tiller A2.1 semantics;
@@ -1729,6 +1778,83 @@ mod tests {
                 "constant-time shape refusal must precede cancellation"
             );
         });
+    }
+
+    #[test]
+    fn owning_domain_with_cx_is_transactional_and_exact() {
+        let knots = validation_cancellation_fixture();
+        let exact = KnotVector::new(
+            vec![
+                Rat::int(0),
+                Rat::int(0),
+                Rat::new(1, 3),
+                Rat::new(2, 3),
+                Rat::int(1),
+                Rat::int(1),
+            ],
+            1,
+        )
+        .expect("exact multispan knots");
+
+        with_basis_cx(true, |cx| {
+            assert_eq!(
+                knots
+                    .domain_with_cx(cx)
+                    .expect("valid pre-cancelled domain lookup"),
+                KnotDomainRun::Cancelled
+            );
+            assert_eq!(
+                exact
+                    .domain_with_cx(cx)
+                    .expect("valid pre-cancelled exact domain lookup"),
+                KnotDomainRun::Cancelled
+            );
+        });
+        with_basis_cx(false, |cx| {
+            assert_eq!(
+                knots.domain_with_cx(cx).expect("active domain lookup"),
+                KnotDomainRun::Complete {
+                    domain: knots.domain().expect("legacy domain"),
+                }
+            );
+            assert_eq!(
+                exact
+                    .domain_with_cx(cx)
+                    .expect("active exact domain lookup"),
+                KnotDomainRun::Complete {
+                    domain: exact.domain().expect("legacy exact domain"),
+                }
+            );
+        });
+
+        let mut malformed = KnotVector::new(vec![0.0, 0.0, 1.0, 1.0], 1).expect("valid line");
+        malformed.knots.clear();
+        with_basis_cx(true, |cx| {
+            assert!(matches!(
+                malformed.domain_with_cx(cx),
+                Err(NurbsError::Structure { .. })
+            ));
+        });
+
+        let line = KnotVector::new(vec![0.0, 0.0, 1.0, 1.0], 1).expect("line knots");
+        let mut validation_polls = 0usize;
+        assert_eq!(
+            line.validate_live_with_poll(|| {
+                validation_polls += 1;
+                false
+            })
+            .expect("healthy validation"),
+            KnotValidationOutcome::Complete
+        );
+        let mut domain_polls = 0usize;
+        let outcome = line
+            .domain_with_poll(&mut || {
+                domain_polls += 1;
+                domain_polls == validation_polls + 1
+            })
+            .expect("domain publication cancellation");
+        assert_eq!(outcome, KnotDomainRun::Cancelled);
+        assert_eq!(domain_polls, validation_polls + 1);
     }
 
     #[test]

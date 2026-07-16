@@ -24,8 +24,8 @@ pub mod surface;
 pub mod trim;
 
 pub use basis::{
-    AdmittedKnotVector, BasisRun, KnotAdmissionRun, KnotCloneRun, KnotConstructionRun, KnotSpanRun,
-    KnotVector, Scalar,
+    AdmittedKnotVector, BasisRun, KnotAdmissionRun, KnotCloneRun, KnotConstructionRun,
+    KnotDomainRun, KnotSpanRun, KnotVector, Scalar,
 };
 pub use boolean::{BooleanOp, BooleanPolicy, BooleanRefusal, boolean};
 pub use closest::{

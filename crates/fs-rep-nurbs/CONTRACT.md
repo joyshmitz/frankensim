@@ -46,6 +46,9 @@ fs-iga (geometry basis = analysis basis), fs-render NURBS tracing
   `KnotVector::admit_with_cx` returns `KnotAdmissionRun` and publishes the
   lifetime-bound admitted authority only after every validation pass and its
   final checkpoint complete.
+  Owning `domain_with_cx` returns transactional `KnotDomainRun` state and
+  publishes both validated endpoints together after a distinct final domain
+  checkpoint.
   Owning and admitted `span_with_cx` return transactional `KnotSpanRun` state:
   the complete scalar span index or cancellation with no published index.
   Owning and admitted `basis_with_cx` return transactional `BasisRun` state:
@@ -322,7 +325,11 @@ limits. Direct `KnotVector` domain/span/basis admission charges live-knot
 validation, worst-case span search, and Cox–de Boor triangular degree work
 before allocating or iterating. Borrowed admitted knot, curve, and surface
 views make repeated source validation unnecessary for basis, evaluation,
-partials, and span boxes. Owning `span_with_cx` preserves aggregate
+partials, and span boxes. Owning `domain_with_cx` preserves checked
+validation-work refusal before one gate spans fixed-stride structural
+validation and a distinct final endpoint-pair publication checkpoint.
+`KnotDomainRun::Cancelled` publishes neither admitted authority nor one domain
+endpoint. Owning `span_with_cx` preserves aggregate
 validation-plus-span work refusal before one gate spans fixed-stride source
 validation and the admitted search. Cancellation observed during source
 validation can precede the later parameter refusal. After source admission,
