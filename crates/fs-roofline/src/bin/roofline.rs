@@ -552,7 +552,31 @@ fn update_promoted_store(
             next_path.display()
         )
     })?;
-    validate_promotion_path_identity(store_path, staged_identity, "promoted baseline store")?;
+    // rename(2) itself updates the inode's change time, so the pre-rename
+    // staged identity can never stat-match the promoted path. Re-derive the
+    // expected identity through the still-open staging handle (same inode,
+    // post-rename ctime) and require every rename-invariant field to still
+    // match the staged capture before comparing the path against it.
+    let promoted_metadata = next.metadata().map_err(|error| {
+        format!(
+            "cannot re-inspect promoted baseline store {}: {error}",
+            store_path.display()
+        )
+    })?;
+    let promoted_identity = promotion_file_identity(store_path, &promoted_metadata)?;
+    let rename_invariant = |identity: PromotionFileIdentity| PromotionFileIdentity {
+        changed_seconds: 0,
+        changed_nanoseconds: 0,
+        ..identity
+    };
+    if rename_invariant(promoted_identity) != rename_invariant(staged_identity) {
+        return Err(format!(
+            "promoted baseline store {} changed during promotion: staged {staged_identity:?}, \
+             promoted {promoted_identity:?}",
+            store_path.display()
+        ));
+    }
+    validate_promotion_path_identity(store_path, promoted_identity, "promoted baseline store")?;
     drop(next);
     let parent = store_path
         .parent()

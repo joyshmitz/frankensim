@@ -144,15 +144,15 @@ fi
 # ---- S2: the selected Cargo invocation supplies the receipt to fs-la
 # build.rs (receipt-class build of the production binary + ceremony helper).
 if FRANKENSIM_DEPGRAPH_RECEIPT="$(cat "$RECEIPT")" \
-   run_cargo s2-build build -p fs-roofline --bin roofline --example attest_baseline; then
+   run_cargo s2-build build --release -p fs-roofline --bin roofline --example attest_baseline; then
   row "s2-receipt-build" ok "roofline + attest_baseline built with the receipt exported" "$LOG_DIR/s2-build.log"
 else
   row "s2-receipt-build" fail "receipt-class build refused" "$LOG_DIR/s2-build.log"
   echo "cannot continue without the receipt-class binary" >&2
   exit 1
 fi
-ROOFLINE="$TARGET_DIR/debug/roofline"
-ATTEST="$TARGET_DIR/debug/examples/attest_baseline"
+ROOFLINE="$TARGET_DIR/release/roofline"
+ATTEST="$TARGET_DIR/release/examples/attest_baseline"
 
 # ---- S3: operator ceremony (real machine probes; the plausibility floors
 # are a hard gate) and the attested clean run reaching Fresh.
@@ -288,11 +288,15 @@ rm -rf "$OMIT_DIR"
 
 # (c) development salt builds, but can never become citable: the same
 # attested ceremony against a salt-class binary must refuse freshness.
-if [[ "$PROMOTED" == true ]] \
-   && run_cargo s5-salt-build build -p fs-roofline --bin roofline; then
+salt_build() {
+  CARGO_TARGET_DIR="$TARGET_DIR/salt" "$CARGO_BIN" "+$TOOLCHAIN" \
+    build --release -p fs-roofline --bin roofline \
+    >"$LOG_DIR/s5-salt-build.log" 2>&1
+}
+if [[ "$PROMOTED" == true ]] && salt_build; then
   SALT_LEDGER="$LOG_DIR/salt.db"
   SALT_RUN="$LOG_DIR/s5-salt-run.jsonl"
-  if "$TARGET_DIR/debug/roofline" --n "$GEMM_N" --warmup 1 --reps 2 \
+  if "$TARGET_DIR/salt/release/roofline" --n "$GEMM_N" --warmup 1 --reps 2 \
        --ledger "$SALT_LEDGER" --baseline "$LOG_DIR/attested.jsonl" \
        --firmware depgraph-e2e-fw-v1 --authority-policy "$LOG_DIR/authority.tsv" \
        --retained-receipts "$LOG_DIR/receipts.txt" \
@@ -342,7 +346,8 @@ rm -f "$CONTENT_PROBE"
 
 # (g) cargo executable identity drift: deriving under a different cargo
 # changes the receipt's captured executable identity.
-if STABLE_CARGO=$(rustup which cargo --toolchain stable 2>/dev/null) && [[ -x "$STABLE_CARGO" ]]; then
+RUSTUP_BIN="${FSIM_DEPGRAPH_E2E_RUSTUP:-$HOME/.cargo/bin/rustup}"
+if STABLE_CARGO=$("$RUSTUP_BIN" which cargo --toolchain stable 2>/dev/null) && [[ -x "$STABLE_CARGO" ]]; then
   if FRANKENSIM_DEPGRAPH_RECEIPT="$(cat "$RECEIPT")" CARGO="$STABLE_CARGO" \
      run_cargo s5-executable run -q -p xtask -- depgraph-receipt --verify -- \
        --package "$ROOT_PACKAGE"; then
