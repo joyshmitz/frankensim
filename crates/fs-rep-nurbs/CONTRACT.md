@@ -82,16 +82,21 @@ fs-iga (geometry basis = analysis basis), fs-render NURBS tracing
   admission and the admitted derivative pipeline. The admitted-only
   `derivatives_with_cx` avoids that source rescan. Both return transactional
   `CurveDerivativesRun` state and publish only a complete Cartesian jet.
-  Its admitted-only `insert_knot_with_cx` returns transactional
-  `CurveInsertionRun` state and publishes only a complete validated exact
-  refinement generation.
-  Its admitted-only `remove_knot_with_cx` returns transactional
-  `CurveRemovalRun` state and publishes only a complete validated exact
-  coarsening after a cancellable full-representation reinsertion verifier.
-  The open-domain check and count-derived aggregate work plus 64 MiB
-  simultaneously-live derived-storage envelope precede cancellation; one
-  gate then spans occurrence discovery, fallible knot/control allocation,
-  exact reconstruction, derived validation, reinsertion, comparison, and final
+  Its owning and admitted `insert_knot_with_cx` entry points return
+  transactional `CurveInsertionRun` state and publish only a complete validated
+  exact refinement generation. Owning insertion carries one gate through source
+  admission and the admitted transformation; admitted insertion avoids
+  repeating structural validation.
+  Its owning and admitted `remove_knot_with_cx` entry points return
+  transactional `CurveRemovalRun` state and publish only a complete validated
+  exact coarsening after a cancellable full-representation reinsertion
+  verifier. Owning removal likewise spans source admission; admitted removal
+  avoids repeating structural validation.
+  Within admitted removal, and after successful owning admission, the
+  open-domain check and count-derived aggregate work plus 64 MiB
+  simultaneously-live derived-storage envelope precede cancellation; one gate
+  then spans occurrence discovery, fallible knot/control allocation, exact
+  reconstruction, derived validation, reinsertion, comparison, and final
   publication; restored verifier storage is dropped before the final
   checkpoint.
   Its owning and admitted `span_boxes_with_cx` entry points return
@@ -382,30 +387,37 @@ and drops all scratch. The f64 scalar operations and allocator calls themselves
 are not preemptible, the conservative legacy envelope is not an exact caller
 work-budget ledger, and one-sided jets, executor drain/finalize, and
 resumability remain outside the claim.
-`AdmittedNurbsCurve::insert_knot_with_cx` preserves open-domain, checked
-aggregate-work, and 64 MiB derived-output refusal precedence, then carries one
-gate through the admitted span search, output allocations and copies,
-homogeneous blends, both derived structural-validation passes, and final
-generation publication. `CurveInsertionRun::Cancelled` carries no partial
-curve and drops all derived storage. The borrowed source is excluded from the
-output envelope; allocator calls and individual generic-scalar operations are
-not preemptible, and this primitive adds no wall-time, exact caller-budget,
-owning-admission, drain/finalize, resumability, or geometric-certificate claim.
-`AdmittedNurbsCurve::remove_knot_with_cx` preserves the open-domain check and
-count-derived aggregate-work plus 64 MiB simultaneously-live derived-storage
-refusal before observing cancellation. Its fixed-stride gate covers the
-ordered knot-occurrence scan, fallible knot and reconstruction/control
-allocations, the exact forward recurrence and meet check, both candidate
-validation passes, restoring insertion, full representation comparison, and
-final candidate publication. Restored-generation storage is dropped before the
-final publication checkpoint, but the individual destructor is non-preemptible.
-`CurveRemovalRun::Cancelled` contains no partial curve. Interior-knot absence
-is discovered by the cancellable source scan, so an already-observed
-cancellation may win before that data-dependent refusal. The borrowed source
-is excluded from the derived-storage envelope; allocator, destructor, and
-individual generic-scalar operations are not preemptible, and this primitive
-adds no wall-time, exact caller-budget, owning-admission, drain/finalize,
-resumability, or geometric-certificate claim.
+Owning `NurbsCurve::insert_knot_with_cx` carries one gate through bounded source
+validation and the admitted exact insertion; the admitted entry point avoids
+repeating structural validation. The insertion phase preserves open-domain,
+checked aggregate-work, and 64 MiB derived-output refusal precedence, then
+carries the gate through the admitted span search, output allocations and
+copies, homogeneous blends, both derived structural-validation passes, and
+final generation publication. Source validation and insertion retain
+independent defensive work ceilings. `CurveInsertionRun::Cancelled` carries no
+admitted authority or partial curve and drops all derived storage. The borrowed
+source is excluded from the output envelope; allocator calls and individual
+generic-scalar operations are not preemptible, and this primitive adds no
+wall-time, exact caller-budget, drain/finalize, resumability, or
+geometric-certificate claim.
+Owning `NurbsCurve::remove_knot_with_cx` likewise spans bounded source
+validation and the admitted exact-removal verifier; the admitted entry point
+avoids repeating structural validation. The removal phase preserves its
+open-domain check and count-derived aggregate-work plus 64 MiB simultaneously
+live derived-storage refusal before observing phase cancellation. Its
+fixed-stride gate covers the ordered knot-occurrence scan, fallible knot and
+reconstruction/control allocations, the exact forward recurrence and meet
+check, both candidate validation passes, restoring insertion, full
+representation comparison, and final candidate publication. Source validation
+and removal retain independent defensive work ceilings. Restored-generation
+storage is dropped before the final publication checkpoint, but the individual
+destructor is non-preemptible. `CurveRemovalRun::Cancelled` contains no admitted
+authority or partial curve. Interior-knot absence is discovered by the
+cancellable source scan, so an already-observed cancellation may win before
+that data-dependent refusal. The borrowed source is excluded from the
+derived-storage envelope; allocator, destructor, and individual generic-scalar
+operations are not preemptible, and this primitive adds no wall-time, exact
+caller-budget, drain/finalize, resumability, or geometric-certificate claim.
 Owning curve and surface `span_boxes_with_cx` carry one gate through bounded
 structural validation and the admitted builder; admitted entry points avoid
 repeating source validation. The span-box phase preserves its existing checked

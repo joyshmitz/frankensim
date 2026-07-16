@@ -2188,6 +2188,42 @@ impl<S: Scalar, const DIM: usize> NurbsCurve<S, DIM> {
         self.admit()?.insert_knot(t)
     }
 
+    /// Validate this owning generation and insert one knot with a single
+    /// cancellation gate.
+    ///
+    /// Dimension and checked structural-validation work refusals precede the
+    /// first checkpoint. Cancellation then spans structural admission and the
+    /// same admitted exact-insertion pipeline as
+    /// [`AdmittedNurbsCurve::insert_knot_with_cx`]. No partial admitted
+    /// authority or derived generation is published. This primitive does not
+    /// consume the `Cx` budget or finalize its executor scope.
+    ///
+    /// # Errors
+    /// Returns the synchronous owning insertion's structure, parameter,
+    /// aggregate-work, retained-memory, allocation, and finite-arithmetic
+    /// refusals when they win before an observed cancellation.
+    pub fn insert_knot_with_cx(
+        &self,
+        t: S,
+        cx: &Cx<'_>,
+    ) -> Result<CurveInsertionRun<S, DIM>, NurbsError> {
+        let mut should_cancel = || cx.checkpoint().is_err();
+        self.insert_knot_with_poll(t, &mut should_cancel)
+    }
+
+    fn insert_knot_with_poll(
+        &self,
+        t: S,
+        should_cancel: &mut impl FnMut() -> bool,
+    ) -> Result<CurveInsertionRun<S, DIM>, NurbsError> {
+        match self.validate_live_structure_with_poll(should_cancel)? {
+            CurveWorkRun::Complete(()) => self
+                .admitted_after_validation()
+                .insert_knot_with_poll(t, should_cancel),
+            CurveWorkRun::Cancelled => Ok(CurveInsertionRun::Cancelled),
+        }
+    }
+
     fn insertion_plan_after_parameter(&self, t: S) -> Result<CurveInsertionPlan, NurbsError> {
         let admitted_knots = self.knots.admitted_after_validation();
         let (lo, hi) = admitted_knots.domain();
@@ -2336,6 +2372,42 @@ impl<S: Scalar, const DIM: usize> NurbsCurve<S, DIM> {
     /// [`NurbsError::Structure`] when removal is not exact.
     pub fn remove_knot(&self, t: S) -> Result<Self, NurbsError> {
         self.admit()?.remove_knot(t)
+    }
+
+    /// Validate this owning generation and remove one exactly redundant knot
+    /// with a single cancellation gate.
+    ///
+    /// Dimension and checked structural-validation work refusals precede the
+    /// first checkpoint. Cancellation then spans structural admission and the
+    /// same admitted exact-removal and reinsertion-verification pipeline as
+    /// [`AdmittedNurbsCurve::remove_knot_with_cx`]. No partial admitted
+    /// authority or derived generation is published. This primitive does not
+    /// consume the `Cx` budget or finalize its executor scope.
+    ///
+    /// # Errors
+    /// Returns the synchronous owning removal's structure, parameter,
+    /// aggregate-work, retained-memory, allocation, exact-reconstruction, and
+    /// finite-arithmetic refusals when they win before cancellation.
+    pub fn remove_knot_with_cx(
+        &self,
+        t: S,
+        cx: &Cx<'_>,
+    ) -> Result<CurveRemovalRun<S, DIM>, NurbsError> {
+        let mut should_cancel = || cx.checkpoint().is_err();
+        self.remove_knot_with_poll(t, &mut should_cancel)
+    }
+
+    fn remove_knot_with_poll(
+        &self,
+        t: S,
+        should_cancel: &mut impl FnMut() -> bool,
+    ) -> Result<CurveRemovalRun<S, DIM>, NurbsError> {
+        match self.validate_live_structure_with_poll(should_cancel)? {
+            CurveWorkRun::Complete(()) => self
+                .admitted_after_validation()
+                .remove_knot_with_poll(t, should_cancel),
+            CurveWorkRun::Cancelled => Ok(CurveRemovalRun::Cancelled),
+        }
     }
 
     fn removal_plan_after_parameter(&self, t: S) -> Result<CurveRemovalPlan, NurbsError> {
@@ -4745,6 +4817,18 @@ mod tests {
 
         with_curve_cx(true, |cx| {
             assert_eq!(
+                curve
+                    .insert_knot_with_cx(0.5, cx)
+                    .expect("valid owning request reaches cancellation"),
+                CurveInsertionRun::Cancelled
+            );
+            assert_eq!(
+                curve
+                    .insert_knot_with_cx(0.0, cx)
+                    .expect("owning admission cancellation precedes endpoint refusal"),
+                CurveInsertionRun::Cancelled
+            );
+            assert_eq!(
                 admitted
                     .insert_knot_with_cx(0.5, cx)
                     .expect("valid request reaches cancellation"),
@@ -4765,11 +4849,64 @@ mod tests {
         });
         with_curve_cx(false, |cx| {
             assert_eq!(
+                curve
+                    .insert_knot_with_cx(0.5, cx)
+                    .expect("active owning insertion"),
+                CurveInsertionRun::Complete {
+                    curve: legacy.try_clone().expect("legacy insertion copy"),
+                }
+            );
+            assert_eq!(
+                curve
+                    .insert_knot_with_cx(0.0, cx)
+                    .expect_err("active owning endpoint refusal"),
+                endpoint_error
+            );
+            assert_eq!(
                 admitted
                     .insert_knot_with_cx(0.5, cx)
                     .expect("active insertion"),
                 CurveInsertionRun::Complete { curve: legacy }
             );
+        });
+
+        let mut admission_polls = 0usize;
+        let mut observe_admission = || {
+            admission_polls += 1;
+            false
+        };
+        assert!(matches!(
+            curve
+                .validate_live_structure_with_poll(&mut observe_admission)
+                .expect("healthy source admission"),
+            CurveWorkRun::Complete(())
+        ));
+        let mut owning_polls = 0usize;
+        let mut cancel_at_first_insertion_poll = || {
+            owning_polls += 1;
+            owning_polls == admission_polls + 1
+        };
+        assert_eq!(
+            curve
+                .insert_knot_with_poll(0.5, &mut cancel_at_first_insertion_poll)
+                .expect("owning insertion cancellation"),
+            CurveInsertionRun::Cancelled
+        );
+        assert_eq!(owning_polls, admission_polls + 1);
+
+        let invalid_dimension = NurbsCurve::<f64, 4> {
+            knots: KnotVector::new(vec![0.0, 0.0, 1.0, 1.0], 1).expect("line knots"),
+            cpw: vec![[0.0, 0.0, 0.0, 1.0]; 2],
+        };
+        with_curve_cx(true, |cx| {
+            assert!(matches!(
+                invalid_dimension.insert_knot_with_cx(0.5, cx),
+                Err(NurbsError::Structure { .. })
+            ));
+            assert!(matches!(
+                invalid_dimension.remove_knot_with_cx(0.5, cx),
+                Err(NurbsError::Structure { .. })
+            ));
         });
 
         let exact_curve = NurbsCurve::<Rat, 1>::new(
@@ -4785,6 +4922,16 @@ mod tests {
             .insert_knot(half)
             .expect("legacy exact insertion");
         with_curve_cx(false, |cx| {
+            assert_eq!(
+                exact_curve
+                    .insert_knot_with_cx(half, cx)
+                    .expect("active exact owning insertion"),
+                CurveInsertionRun::Complete {
+                    curve: exact_legacy
+                        .try_clone()
+                        .expect("legacy exact insertion copy"),
+                }
+            );
             assert_eq!(
                 exact_admitted
                     .insert_knot_with_cx(half, cx)
@@ -4809,6 +4956,18 @@ mod tests {
             .expect_err("legacy endpoint refusal");
         with_curve_cx(true, |cx| {
             assert_eq!(
+                inserted
+                    .remove_knot_with_cx(0.5, cx)
+                    .expect("valid owning request reaches cancellation"),
+                CurveRemovalRun::Cancelled
+            );
+            assert_eq!(
+                inserted
+                    .remove_knot_with_cx(0.0, cx)
+                    .expect("owning admission cancellation precedes endpoint refusal"),
+                CurveRemovalRun::Cancelled
+            );
+            assert_eq!(
                 admitted
                     .remove_knot_with_cx(0.5, cx)
                     .expect("valid request reaches cancellation"),
@@ -4829,6 +4988,20 @@ mod tests {
         });
         with_curve_cx(false, |cx| {
             assert_eq!(
+                inserted
+                    .remove_knot_with_cx(0.5, cx)
+                    .expect("active owning removal"),
+                CurveRemovalRun::Complete {
+                    curve: line_curve(),
+                }
+            );
+            assert_eq!(
+                inserted
+                    .remove_knot_with_cx(0.0, cx)
+                    .expect_err("active owning endpoint refusal"),
+                endpoint_error
+            );
+            assert_eq!(
                 admitted
                     .remove_knot_with_cx(0.5, cx)
                     .expect("active removal"),
@@ -4841,6 +5014,30 @@ mod tests {
                 Err(NurbsError::Domain { .. })
             ));
         });
+
+        let mut admission_polls = 0usize;
+        let mut observe_admission = || {
+            admission_polls += 1;
+            false
+        };
+        assert!(matches!(
+            inserted
+                .validate_live_structure_with_poll(&mut observe_admission)
+                .expect("healthy source admission"),
+            CurveWorkRun::Complete(())
+        ));
+        let mut owning_polls = 0usize;
+        let mut cancel_at_first_removal_poll = || {
+            owning_polls += 1;
+            owning_polls == admission_polls + 1
+        };
+        assert_eq!(
+            inserted
+                .remove_knot_with_poll(0.5, &mut cancel_at_first_removal_poll)
+                .expect("owning removal cancellation"),
+            CurveRemovalRun::Cancelled
+        );
+        assert_eq!(owning_polls, admission_polls + 1);
 
         let zero = Rat::int(0);
         let one = Rat::int(1);
@@ -4856,6 +5053,16 @@ mod tests {
             .expect("exact midpoint insertion");
         let exact_admitted = exact_inserted.admit().expect("admitted exact refinement");
         with_curve_cx(false, |cx| {
+            assert_eq!(
+                exact_inserted
+                    .remove_knot_with_cx(half, cx)
+                    .expect("active exact owning removal"),
+                CurveRemovalRun::Complete {
+                    curve: exact_original
+                        .try_clone()
+                        .expect("exact original owning copy"),
+                }
+            );
             assert_eq!(
                 exact_admitted
                     .remove_knot_with_cx(half, cx)
