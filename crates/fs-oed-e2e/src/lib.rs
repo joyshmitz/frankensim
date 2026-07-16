@@ -24,8 +24,9 @@
 //!   every instrument-bound assimilation candidate.
 //!
 //! Deterministic (sensor readings hit each candidate's true value; the Kalman
-//! variance update is observation-independent). No dependencies beyond the
-//! composed crates.
+//! variance update is observation-independent). Public inference values carry
+//! `fs-qty` dimensions and optional semantic kinds; lower scalar kernels see
+//! coherent-SI `f64` only after admission.
 
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
@@ -33,6 +34,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use fs_assimilate::{AssimError, Belief, assimilate_colored_with_shared_poll_quota, point_sensor};
 use fs_evidence::{Color, ColorRank, color_leaf_identity_reason};
 use fs_exec::Cx;
+use fs_qty::semantic::{
+    AngleDomain, CompositionBasis, QuantityKind, SemanticQty, SemanticType, StrainBasis,
+    StrainComponent, ValueForm,
+};
+use fs_qty::{Dims, QtyAny};
 use fs_toleralloc::{Feature, allocate};
 use fs_voi::{
     Action, ActionKind, ActionValue, DesignEstimate, Recommendation, Uncertainty,
@@ -50,6 +56,9 @@ pub const MAX_CAMPAIGN_SENSORS: usize = 4_096;
 pub const MAX_CAMPAIGN_EVALUATIONS: usize = 10_500_000;
 
 /// Semantic version of the sealed SensorForge report estimator identities.
+// v8 (bead sj31i.7): the identity preimage additionally binds the exact
+// objective dimension/semantic schema. Numerically identical campaigns under
+// incompatible quantity kinds therefore cannot share evidence identities.
 // v7 (bead sj31i.62): the identity preimage additionally binds the
 // admitted byte plan and the byte-accounting policy version, so two
 // campaigns that agree on science but were admitted under different
@@ -58,15 +67,13 @@ pub const MAX_CAMPAIGN_EVALUATIONS: usize = 10_500_000;
 // admission, so the identity preimage binds the CANONICAL declaration
 // sequence — permuted caller menus now collapse to one identity where
 // v5 deliberately kept declaration order identity-semantic.
-pub const OED_REPORT_IDENTITY_VERSION: u64 = 7;
+pub const OED_REPORT_IDENTITY_VERSION: u64 = 8;
 
-const REPORT_ID_DOMAIN: &str = "org.frankensim.fs-oed-e2e.report.v5";
-// v4 (bead sj31i.5): robustness-bearing EVPI evaluations are the full
-// multi-alternative opportunity loss (one work unit still means one
-// record's participation in one bounded evaluation — the quadrature
-// depth is a fixed constant); action ranking keeps the top-two
-// surrogate with its baseline scan folded into the action-construction
-// unit.
+const REPORT_ID_DOMAIN: &str = "org.frankensim.fs-oed-e2e.report.v6";
+// v4 (bead sj31i.5): robustness-bearing EVPI evaluations and action
+// ranking use the same full multi-alternative opportunity loss (one work
+// unit still means one record's participation in one bounded evaluation;
+// the quadrature depth is a fixed constant).
 const CAMPAIGN_PLANNING_POLICY_VERSION: u64 = 4;
 const CAMPAIGN_POLL_POLICY_VERSION: u64 = 2;
 const CAMPAIGN_RECORD_POLL_STRIDE: usize = 256;
@@ -79,9 +86,11 @@ const CAMPAIGN_ACTION_POLL_STRIDE: usize = 1;
 // bounds evaluated on the actual shape, never measured allocator
 // traffic, so ledgers replay bit-identically across hosts.
 // Byte policy v2 (bead sj31i.5): full-EOL evaluations charge one menu
-// sweep per quadrature node (FULL_EOL_SCAN_SWEEPS); the surrogate
+// sweep per quadrature node (FULL_EOL_SCAN_SWEEPS); the pre-action
 // baseline scan is charged at the action-value seam.
-const CAMPAIGN_BYTE_POLICY_VERSION: u64 = 2;
+// v3 binds and charges the 12-byte objective schema at admission and in each
+// report preimage, and carries that schema token into instrument identities.
+const CAMPAIGN_BYTE_POLICY_VERSION: u64 = 3;
 // One retained candidate/estimate/posterior record's fixed scalar
 // payload (means, variances, uncertainty components), name excluded.
 const RECORD_SCALAR_BYTE_UNITS: u128 = 32;
@@ -93,6 +102,9 @@ const SCAN_READ_BYTE_UNITS: u128 = 16;
 const FULL_EOL_SCAN_SWEEPS: u128 = fs_voi::EOL_QUADRATURE_PANELS as u128 + 3;
 // `measure-` / `sensor-` identity prefixes added to candidate names.
 const ACTION_PREFIX_BYTE_UNITS: u128 = 8;
+const OBJECTIVE_SCHEMA_BYTES: u128 = 12;
+const OBJECTIVE_SCHEMA_HEX_BYTES: u128 = OBJECTIVE_SCHEMA_BYTES * 2;
+const SENSOR_IDENTITY_FIXED_BYTES: u128 = 7 + 2 + OBJECTIVE_SCHEMA_HEX_BYTES;
 
 // Nine-point Gauss-Hermite rule, transformed and normalized for expectations
 // under N(0, 1). The policy is deterministic and substantially more faithful
@@ -115,6 +127,261 @@ fn canonicalize_zero(value: f64) -> f64 {
     if value == 0.0 { 0.0 } else { value }
 }
 
+/// Exact quantity schema for a scalar OED objective.
+///
+/// A dimension-only schema is an explicit no-kind claim, not a wildcard.
+/// Semantic schemas retain the exact quantity kind and scalar form, so
+/// dimensionally equal pressure/stress or absolute/delta-temperature values
+/// remain incompatible at campaign admission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ObjectiveSpec {
+    dims: Dims,
+    semantic_type: Option<SemanticType>,
+}
+
+impl ObjectiveSpec {
+    /// Construct an explicit dimension-only objective schema.
+    #[must_use]
+    pub const fn dimensional(dims: Dims) -> Self {
+        Self {
+            dims,
+            semantic_type: None,
+        }
+    }
+
+    /// Construct the exact schema retained by an already-validated semantic
+    /// quantity. Keep this private: `SemanticType` is also a diagnostic
+    /// descriptor, while public construction must pass through
+    /// `SemanticQty`'s kind/form/value validation.
+    const fn from_validated_semantic(semantic_type: SemanticType) -> Self {
+        Self {
+            dims: semantic_type.expected_dims(),
+            semantic_type: Some(semantic_type),
+        }
+    }
+
+    /// Six-base coherent-SI dimension vector.
+    #[must_use]
+    pub const fn dims(self) -> Dims {
+        self.dims
+    }
+
+    /// Exact semantic kind/form, or `None` for an explicit dimension-only
+    /// declaration.
+    #[must_use]
+    pub const fn semantic_type(self) -> Option<SemanticType> {
+        self.semantic_type
+    }
+
+    /// Dimension vector required by prior, sensor-noise, and posterior
+    /// variances (`Q²`).
+    pub fn variance_dims(self) -> Result<Dims, CandidateError> {
+        QtyAny::new(1.0, self.dims)
+            .powi(2)
+            .map(|quantity| quantity.dims)
+            .map_err(|_| CandidateError::DimensionOverflow {
+                field: "objective variance",
+                dims: self.dims,
+                exponent: 2,
+            })
+    }
+
+    /// Schema of a decision difference such as EVPI or its stop threshold.
+    ///
+    /// Absolute and delta temperatures map to delta temperature. Other
+    /// semantic kinds intentionally become dimension-only: `fs-qty` does not
+    /// currently define a general decision-loss/difference kind, and tagging
+    /// an expected loss as pressure RMS, a composition fraction, or another
+    /// measured-value form would be false semantics. The original objective
+    /// schema remains separately retained and identity-bound.
+    #[must_use]
+    pub fn decision_spec(self) -> Self {
+        let semantic_type = self.semantic_type.and_then(|semantic_type| {
+            matches!(
+                semantic_type.kind(),
+                QuantityKind::AbsoluteTemperature | QuantityKind::TemperatureDifference
+            )
+            .then(|| SemanticType::new(QuantityKind::TemperatureDifference, ValueForm::Static))
+        });
+        Self {
+            dims: self.dims,
+            semantic_type,
+        }
+    }
+
+    /// Admit a finite EVPI/threshold value under this objective's derived
+    /// decision-difference schema.
+    pub fn decision_value(self, value: f64) -> Result<ObjectiveValue, CandidateError> {
+        if !value.is_finite() {
+            return Err(CandidateError::InvalidNumber {
+                field: "decision value",
+                requirement: "finite",
+            });
+        }
+        Ok(ObjectiveValue::from_raw(value, self.decision_spec()))
+    }
+
+    fn canonical_bytes(self) -> [u8; OBJECTIVE_SCHEMA_BYTES as usize] {
+        let mut bytes = [0u8; OBJECTIVE_SCHEMA_BYTES as usize];
+        bytes[0] = 1;
+        for (target, exponent) in bytes[1..7].iter_mut().zip(self.dims.0) {
+            *target = exponent as u8;
+        }
+        let Some(semantic_type) = self.semantic_type else {
+            return bytes;
+        };
+        bytes[7] = 1;
+        let (kind, parameter_a, parameter_b) = quantity_kind_identity(semantic_type.kind());
+        bytes[8] = kind;
+        bytes[9] = parameter_a;
+        bytes[10] = parameter_b;
+        bytes[11] = match semantic_type.form() {
+            ValueForm::Static => 1,
+            ValueForm::Instantaneous => 2,
+            ValueForm::Peak => 3,
+            ValueForm::Rms => 4,
+        };
+        bytes
+    }
+
+    fn identity_hex(self) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let bytes = self.canonical_bytes();
+        let mut encoded = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            encoded.push(HEX[usize::from(byte >> 4)] as char);
+            encoded.push(HEX[usize::from(byte & 0x0f)] as char);
+        }
+        encoded
+    }
+}
+
+fn quantity_kind_identity(kind: QuantityKind) -> (u8, u8, u8) {
+    match kind {
+        QuantityKind::AbsoluteTemperature => (1, 0, 0),
+        QuantityKind::TemperatureDifference => (2, 0, 0),
+        QuantityKind::Angle(domain) => (3, angle_domain_identity(domain), 0),
+        QuantityKind::AngularVelocity(domain) => (4, angle_domain_identity(domain), 0),
+        QuantityKind::Torque => (5, 0, 0),
+        QuantityKind::Energy => (6, 0, 0),
+        QuantityKind::Pressure => (7, 0, 0),
+        QuantityKind::Stress => (8, 0, 0),
+        QuantityKind::Strain { basis, component } => (
+            9,
+            match basis {
+                StrainBasis::Tensor => 1,
+                StrainBasis::Engineering => 2,
+            },
+            match component {
+                StrainComponent::Normal => 1,
+                StrainComponent::Shear => 2,
+            },
+        ),
+        QuantityKind::Composition(basis) => (
+            10,
+            match basis {
+                CompositionBasis::MassFraction => 1,
+                CompositionBasis::MoleFraction => 2,
+                CompositionBasis::VolumeFraction => 3,
+            },
+            0,
+        ),
+        QuantityKind::Mass => (11, 0, 0),
+        QuantityKind::Amount => (12, 0, 0),
+        QuantityKind::MolarMass => (13, 0, 0),
+        QuantityKind::MassConcentration => (14, 0, 0),
+        QuantityKind::AmountConcentration => (15, 0, 0),
+        QuantityKind::Entropy => (16, 0, 0),
+        QuantityKind::HeatCapacity => (17, 0, 0),
+        QuantityKind::AcousticPressure => (18, 0, 0),
+        QuantityKind::AcousticPower => (19, 0, 0),
+    }
+}
+
+const fn angle_domain_identity(domain: AngleDomain) -> u8 {
+    match domain {
+        AngleDomain::Mechanical => 1,
+        AngleDomain::Electrical => 2,
+    }
+}
+
+/// A finite coherent-SI objective scalar carrying its exact inference schema.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ObjectiveValue {
+    quantity: QtyAny,
+    spec: ObjectiveSpec,
+}
+
+impl ObjectiveValue {
+    /// Admit a finite scalar under an explicit dimension-only schema.
+    pub fn dimensional(quantity: QtyAny) -> Result<Self, CandidateError> {
+        if !quantity.value.is_finite() {
+            return Err(CandidateError::InvalidNumber {
+                field: "objective value",
+                requirement: "finite",
+            });
+        }
+        Ok(Self {
+            quantity: QtyAny::new(canonicalize_zero(quantity.value), quantity.dims),
+            spec: ObjectiveSpec::dimensional(quantity.dims),
+        })
+    }
+
+    /// Admit an already-validated semantic quantity without erasing its kind
+    /// or scalar form.
+    #[must_use]
+    pub fn semantic(quantity: SemanticQty) -> Self {
+        Self {
+            quantity: QtyAny::new(
+                canonicalize_zero(quantity.value()),
+                quantity.quantity().dims,
+            ),
+            spec: ObjectiveSpec::from_validated_semantic(quantity.semantic_type()),
+        }
+    }
+
+    /// Admit a finite dimensionless scalar under an explicit no-kind schema.
+    pub fn dimensionless(value: f64) -> Result<Self, CandidateError> {
+        Self::dimensional(QtyAny::dimensionless(value))
+    }
+
+    /// Coherent-SI value and dimension vector.
+    #[must_use]
+    pub const fn quantity(self) -> QtyAny {
+        self.quantity
+    }
+
+    /// Raw coherent-SI scalar. The schema remains available through
+    /// [`ObjectiveValue::spec`].
+    #[must_use]
+    pub const fn value(self) -> f64 {
+        self.quantity.value
+    }
+
+    /// Raw coherent-SI bit pattern for deterministic evidence comparisons.
+    #[must_use]
+    pub const fn to_bits(self) -> u64 {
+        self.quantity.value.to_bits()
+    }
+
+    /// Exact dimension/semantic schema.
+    #[must_use]
+    pub const fn spec(self) -> ObjectiveSpec {
+        self.spec
+    }
+
+    fn from_raw(value: f64, spec: ObjectiveSpec) -> Self {
+        debug_assert!(value.is_finite());
+        debug_assert!(spec.semantic_type.is_none_or(|semantic_type| {
+            SemanticQty::new(QtyAny::new(value, spec.dims), semantic_type).is_ok()
+        }));
+        Self {
+            quantity: QtyAny::new(canonicalize_zero(value), spec.dims),
+            spec,
+        }
+    }
+}
+
 /// A rejected candidate declaration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CandidateError {
@@ -130,6 +397,34 @@ pub enum CandidateError {
         /// Required domain.
         requirement: &'static str,
     },
+    /// Two objective scalars carry incompatible dimension/semantic schemas.
+    ObjectiveSchemaMismatch {
+        /// Offending field.
+        field: &'static str,
+        /// Schema supplied by the caller.
+        actual: ObjectiveSpec,
+        /// Schema required by the declaration.
+        expected: ObjectiveSpec,
+    },
+    /// A variance/noise/cost field carries incompatible dimensions.
+    DimensionMismatch {
+        /// Offending field.
+        field: &'static str,
+        /// Dimension vector supplied by the caller.
+        actual: Dims,
+        /// Dimension vector required by the declaration.
+        expected: Dims,
+    },
+    /// Deriving a required power of the objective dimension overflowed the
+    /// admitted exponent domain.
+    DimensionOverflow {
+        /// Derived field.
+        field: &'static str,
+        /// Source dimensions.
+        dims: Dims,
+        /// Requested integer exponent.
+        exponent: i8,
+    },
 }
 
 impl fmt::Display for CandidateError {
@@ -141,6 +436,30 @@ impl fmt::Display for CandidateError {
             Self::InvalidNumber { field, requirement } => {
                 write!(f, "candidate `{field}` must be {requirement}")
             }
+            Self::ObjectiveSchemaMismatch {
+                field,
+                actual,
+                expected,
+            } => write!(
+                f,
+                "candidate `{field}` objective schema {actual:?} does not match {expected:?}"
+            ),
+            Self::DimensionMismatch {
+                field,
+                actual,
+                expected,
+            } => write!(
+                f,
+                "candidate `{field}` dimensions {actual:?} do not match required {expected:?}"
+            ),
+            Self::DimensionOverflow {
+                field,
+                dims,
+                exponent,
+            } => write!(
+                f,
+                "candidate `{field}` dimensions {dims:?}^{exponent} overflow the supported exponent domain"
+            ),
         }
     }
 }
@@ -151,10 +470,11 @@ impl std::error::Error for CandidateError {}
 #[derive(Debug, Clone, PartialEq)]
 pub struct Candidate {
     name: String,
+    objective_spec: ObjectiveSpec,
     truth: f64,
     prior_mean: f64,
     prior_var: f64,
-    sensor_noise: f64,
+    sensor_noise_variance: f64,
     sensor_cost: f64,
 }
 
@@ -162,15 +482,16 @@ impl Candidate {
     /// Construct a checked candidate.
     ///
     /// # Errors
-    /// Returns [`CandidateError`] for an unusable name, a non-finite numeric
-    /// field, negative prior variance, or non-positive sensor noise/cost.
+    /// Returns [`CandidateError`] for an unusable name, incompatible objective
+    /// schemas, non-`Q²` variance/noise, a non-dimensionless cost, or an invalid
+    /// numeric domain.
     pub fn new(
         name: impl Into<String>,
-        truth: f64,
-        prior_mean: f64,
-        prior_var: f64,
-        sensor_noise: f64,
-        sensor_cost: f64,
+        truth: ObjectiveValue,
+        prior_mean: ObjectiveValue,
+        prior_variance: QtyAny,
+        sensor_noise_variance: QtyAny,
+        sensor_cost: QtyAny,
     ) -> Result<Self, CandidateError> {
         let name = name.into();
         let name_reason = if name.len() > MAX_CANDIDATE_NAME_BYTES {
@@ -181,35 +502,60 @@ impl Candidate {
         if let Some(reason) = name_reason {
             return Err(CandidateError::InvalidName { reason });
         }
-        for (field, value) in [("truth", truth), ("prior_mean", prior_mean)] {
-            if !value.is_finite() {
-                return Err(CandidateError::InvalidNumber {
+        let objective_spec = truth.spec;
+        if prior_mean.spec != objective_spec {
+            return Err(CandidateError::ObjectiveSchemaMismatch {
+                field: "prior_mean",
+                actual: prior_mean.spec,
+                expected: objective_spec,
+            });
+        }
+        let variance_dims = objective_spec.variance_dims()?;
+        for (field, quantity) in [
+            ("prior_variance", prior_variance),
+            ("sensor_noise_variance", sensor_noise_variance),
+        ] {
+            if quantity.dims != variance_dims {
+                return Err(CandidateError::DimensionMismatch {
                     field,
-                    requirement: "finite",
+                    actual: quantity.dims,
+                    expected: variance_dims,
                 });
             }
         }
-        if !prior_var.is_finite() || prior_var < 0.0 {
+        if !prior_variance.value.is_finite() || prior_variance.value < 0.0 {
             return Err(CandidateError::InvalidNumber {
-                field: "prior_var",
+                field: "prior_variance",
                 requirement: "finite and non-negative",
             });
         }
-        for (field, value) in [("sensor_noise", sensor_noise), ("sensor_cost", sensor_cost)] {
-            if !value.is_finite() || value <= 0.0 {
-                return Err(CandidateError::InvalidNumber {
-                    field,
-                    requirement: "finite and positive",
-                });
-            }
+        if !sensor_noise_variance.value.is_finite() || sensor_noise_variance.value <= 0.0 {
+            return Err(CandidateError::InvalidNumber {
+                field: "sensor_noise_variance",
+                requirement: "finite and positive",
+            });
+        }
+        if sensor_cost.dims != Dims::NONE {
+            return Err(CandidateError::DimensionMismatch {
+                field: "sensor_cost",
+                actual: sensor_cost.dims,
+                expected: Dims::NONE,
+            });
+        }
+        if !sensor_cost.value.is_finite() || sensor_cost.value <= 0.0 {
+            return Err(CandidateError::InvalidNumber {
+                field: "sensor_cost",
+                requirement: "finite, positive, and dimensionless",
+            });
         }
         Ok(Self {
             name,
-            truth: canonicalize_zero(truth),
-            prior_mean: canonicalize_zero(prior_mean),
-            prior_var: canonicalize_zero(prior_var),
-            sensor_noise: canonicalize_zero(sensor_noise),
-            sensor_cost: canonicalize_zero(sensor_cost),
+            objective_spec,
+            truth: truth.quantity.value,
+            prior_mean: prior_mean.quantity.value,
+            prior_var: canonicalize_zero(prior_variance.value),
+            sensor_noise_variance: canonicalize_zero(sensor_noise_variance.value),
+            sensor_cost: canonicalize_zero(sensor_cost.value),
         })
     }
 
@@ -221,32 +567,48 @@ impl Candidate {
 
     /// Sensor reading used by this deterministic worked campaign.
     #[must_use]
-    pub fn truth(&self) -> f64 {
-        self.truth
+    pub fn truth(&self) -> ObjectiveValue {
+        ObjectiveValue::from_raw(self.truth, self.objective_spec)
     }
 
     /// Prior objective mean.
     #[must_use]
-    pub fn prior_mean(&self) -> f64 {
-        self.prior_mean
+    pub fn prior_mean(&self) -> ObjectiveValue {
+        ObjectiveValue::from_raw(self.prior_mean, self.objective_spec)
     }
 
     /// Prior objective variance.
     #[must_use]
-    pub fn prior_variance(&self) -> f64 {
-        self.prior_var
+    pub fn prior_variance(&self) -> QtyAny {
+        QtyAny::new(
+            self.prior_var,
+            self.objective_spec
+                .variance_dims()
+                .expect("candidate construction sealed objective variance dimensions"),
+        )
     }
 
     /// Sensor noise variance.
     #[must_use]
-    pub fn sensor_noise(&self) -> f64 {
-        self.sensor_noise
+    pub fn sensor_noise_variance(&self) -> QtyAny {
+        QtyAny::new(
+            self.sensor_noise_variance,
+            self.objective_spec
+                .variance_dims()
+                .expect("candidate construction sealed objective variance dimensions"),
+        )
     }
 
     /// Cost of one measurement.
     #[must_use]
-    pub fn sensor_cost(&self) -> f64 {
-        self.sensor_cost
+    pub const fn sensor_cost(&self) -> QtyAny {
+        QtyAny::dimensionless(self.sensor_cost)
+    }
+
+    /// Exact objective schema carried by means, variances, EVPI, and evidence.
+    #[must_use]
+    pub const fn objective_spec(&self) -> ObjectiveSpec {
+        self.objective_spec
     }
 }
 
@@ -347,6 +709,24 @@ pub enum OedError {
     },
     /// The EVPI stop threshold must be finite and non-negative.
     InvalidThreshold,
+    /// Candidate objective schemas must agree before any scientific work.
+    ObjectiveSchemaMismatch {
+        /// Candidate carrying the incompatible schema.
+        candidate: String,
+        /// Schema supplied by that candidate.
+        actual: ObjectiveSpec,
+        /// Schema established by the canonical campaign declaration.
+        expected: ObjectiveSpec,
+    },
+    /// The stop threshold must carry the objective's decision-difference
+    /// schema (absolute temperature objectives require delta-temperature
+    /// thresholds).
+    ThresholdSchemaMismatch {
+        /// Threshold schema supplied by the caller.
+        actual: ObjectiveSpec,
+        /// Required decision-difference schema.
+        expected: ObjectiveSpec,
+    },
     /// Candidate identities must be unique because actions address them by name.
     DuplicateCandidate {
         /// Repeated identity.
@@ -472,6 +852,18 @@ impl fmt::Display for OedError {
             Self::InvalidThreshold => {
                 write!(f, "EVPI threshold must be finite and non-negative")
             }
+            Self::ObjectiveSchemaMismatch {
+                candidate,
+                actual,
+                expected,
+            } => write!(
+                f,
+                "candidate `{candidate}` objective schema {actual:?} does not match campaign schema {expected:?}"
+            ),
+            Self::ThresholdSchemaMismatch { actual, expected } => write!(
+                f,
+                "EVPI threshold schema {actual:?} does not match decision schema {expected:?}"
+            ),
             Self::DuplicateCandidate { name } => {
                 write!(f, "candidate identity `{name}` is duplicated")
             }
@@ -519,11 +911,38 @@ impl std::error::Error for OedError {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PosteriorSummary {
     /// Candidate identity.
-    pub name: String,
+    name: String,
+    /// Exact schema of the posterior mean.
+    objective_spec: ObjectiveSpec,
     /// Posterior mean.
-    pub mean: f64,
+    mean: f64,
     /// Posterior variance.
-    pub variance: f64,
+    variance: f64,
+}
+
+impl PosteriorSummary {
+    /// Candidate identity.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Posterior mean with its exact objective schema.
+    #[must_use]
+    pub fn mean(&self) -> ObjectiveValue {
+        ObjectiveValue::from_raw(self.mean, self.objective_spec)
+    }
+
+    /// Posterior variance with dimensions `Q²`.
+    #[must_use]
+    pub fn variance(&self) -> QtyAny {
+        QtyAny::new(
+            self.variance,
+            self.objective_spec
+                .variance_dims()
+                .expect("posterior construction sealed variance dimensions"),
+        )
+    }
 }
 
 /// The campaign report.
@@ -533,6 +952,8 @@ pub struct PosteriorSummary {
 /// evidence identities independently.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OedReport {
+    /// Exact schema of candidate truth/prior/posterior means.
+    objective_spec: ObjectiveSpec,
     /// Candidate names in the order sensors were placed.
     placements: Vec<String>,
     /// Number of sensors placed.
@@ -576,6 +997,19 @@ pub struct OedReport {
 }
 
 impl OedReport {
+    /// Exact schema retained by objective means and derived decision values.
+    #[must_use]
+    pub const fn objective_spec(&self) -> ObjectiveSpec {
+        self.objective_spec
+    }
+
+    /// Schema of EVPI and its stop threshold. Absolute-temperature objectives
+    /// expose delta-temperature decision values.
+    #[must_use]
+    pub fn decision_spec(&self) -> ObjectiveSpec {
+        self.objective_spec.decision_spec()
+    }
+
     /// Candidate names in placement order.
     #[must_use]
     pub fn placements(&self) -> &[String] {
@@ -590,14 +1024,24 @@ impl OedReport {
 
     /// Total variance before sensing.
     #[must_use]
-    pub const fn prior_total_variance(&self) -> f64 {
-        self.prior_total_variance
+    pub fn prior_total_variance(&self) -> QtyAny {
+        QtyAny::new(
+            self.prior_total_variance,
+            self.objective_spec
+                .variance_dims()
+                .expect("report construction sealed variance dimensions"),
+        )
     }
 
     /// Total variance after sensing.
     #[must_use]
-    pub const fn posterior_total_variance(&self) -> f64 {
-        self.posterior_total_variance
+    pub fn posterior_total_variance(&self) -> QtyAny {
+        QtyAny::new(
+            self.posterior_total_variance,
+            self.objective_spec
+                .variance_dims()
+                .expect("report construction sealed variance dimensions"),
+        )
     }
 
     /// Fractional reduction in total variance.
@@ -608,14 +1052,14 @@ impl OedReport {
 
     /// EVPI before the first placement.
     #[must_use]
-    pub const fn initial_evpi(&self) -> f64 {
-        self.initial_evpi
+    pub fn initial_evpi(&self) -> ObjectiveValue {
+        ObjectiveValue::from_raw(self.initial_evpi, self.objective_spec.decision_spec())
     }
 
     /// EVPI when the campaign stopped.
     #[must_use]
-    pub const fn final_evpi(&self) -> f64 {
-        self.final_evpi
+    pub fn final_evpi(&self) -> ObjectiveValue {
+        ObjectiveValue::from_raw(self.final_evpi, self.objective_spec.decision_spec())
     }
 
     /// Whether the modeled EVPI met the requested stop threshold.
@@ -638,8 +1082,12 @@ impl OedReport {
 
     /// EVPI before sensing and after each completed placement.
     #[must_use]
-    pub fn evpi_trace(&self) -> &[f64] {
-        &self.evpi_trace
+    pub fn evpi_trace(&self) -> impl ExactSizeIterator<Item = ObjectiveValue> + '_ {
+        let spec = self.objective_spec.decision_spec();
+        self.evpi_trace
+            .iter()
+            .copied()
+            .map(move |value| ObjectiveValue::from_raw(value, spec))
     }
 
     /// Final scalar posterior summaries in candidate order.
@@ -1007,6 +1455,7 @@ impl CampaignBytePlan {
         let posterior_rows = n.checked_mul(24)?.checked_add(sum_name)?;
         let color_rows = placements.checked_mul(256)?;
         1024u128
+            .checked_add(OBJECTIVE_SCHEMA_BYTES)?
             .checked_add(candidate_rows)?
             .checked_add(placement_rows)?
             .checked_add(allocation_rows)?
@@ -1033,11 +1482,17 @@ impl CampaignBytePlan {
         let evaluation_factor = ACTION_EVALUATION_FACTOR as u128;
 
         // Admission: the duplicate-identity scan reads every name once;
-        // the one-time canonical sort compares two names per comparison.
+        // the one-time canonical sort compares two names per comparison;
+        // and every exact schema comparison reads both 12-byte operands.
         let admission_byte_units = (|| {
+            let schema_comparisons = n
+                .checked_add(1)?
+                .checked_mul(2)?
+                .checked_mul(OBJECTIVE_SCHEMA_BYTES)?;
             Self::sort_comparison_bound(n)?
                 .checked_mul(max_name.checked_mul(2)?)?
-                .checked_add(sum_name)
+                .checked_add(sum_name)?
+                .checked_add(schema_comparisons)
         })()
         .ok_or_else(|| overflow.clone())?;
 
@@ -1074,7 +1529,7 @@ impl CampaignBytePlan {
                     .checked_add(24)?,
             )?;
             let chosen_lookup = n.checked_mul(max_name.checked_add(ACTION_PREFIX_BYTE_UNITS)?)?;
-            let observation = ACTION_PREFIX_BYTE_UNITS
+            let observation = SENSOR_IDENTITY_FIXED_BYTES
                 .checked_add(max_name)?
                 .checked_add(RECORD_SCALAR_BYTE_UNITS)?;
             let commit_retention = RECORD_SCALAR_BYTE_UNITS
@@ -1110,7 +1565,11 @@ impl CampaignBytePlan {
             let allocation = n
                 .checked_mul(SCAN_READ_BYTE_UNITS)?
                 .checked_add(n.checked_mul(max_name.checked_add(8)?)?)?;
-            let posteriors = n.checked_mul(max_name.checked_add(16)?)?;
+            let posteriors = n.checked_mul(
+                max_name
+                    .checked_add(16)?
+                    .checked_add(OBJECTIVE_SCHEMA_BYTES)?,
+            )?;
             let identities = Self::identity_preimage_bound(n, placements, sum_name, max_name)?
                 .checked_add(64)?
                 .checked_add(128)?
@@ -1118,6 +1577,7 @@ impl CampaignBytePlan {
             scans
                 .checked_add(allocation)?
                 .checked_add(posteriors)?
+                .checked_add(OBJECTIVE_SCHEMA_BYTES)?
                 .checked_add(identities)
         })()
         .ok_or_else(|| overflow.clone())?;
@@ -1342,10 +1802,8 @@ fn total_variance(beliefs: &[Belief]) -> Result<f64, OedError> {
 /// menu neither clones nor sorts; canonical order supplies the
 /// equal-mean tie-break the old clone-and-sort imposed per call.
 /// Robustness-bearing values (initial/final EVPI, the STOP gate, the
-/// trace) come from the FULL multi-alternative
-/// [`fs_voi::expected_opportunity_loss_by`] (bead sj31i.5); action
-/// ranking keeps the cheap [`fs_voi::top_two_evpi_surrogate_by`]
-/// baseline (its upgrade is bead sj31i.4).
+/// trace) and action ranking come from the same FULL multi-alternative
+/// [`fs_voi::expected_opportunity_loss_by`] algebra (bead sj31i.5).
 #[derive(Debug)]
 struct CanonicalDesignMenu {
     estimates: Vec<DesignEstimate>,
@@ -1527,7 +1985,7 @@ fn sensor_actions(candidates: &[Candidate], beliefs: &[Belief]) -> Result<Vec<Ac
         .zip(beliefs)
         .map(|(candidate, belief)| {
             let prior = belief.variance(0).map_err(OedError::BeliefInvariant)?;
-            let posterior = predicted_posterior_variance(prior, candidate.sensor_noise)?;
+            let posterior = predicted_posterior_variance(prior, candidate.sensor_noise_variance)?;
             let reduction = if prior == 0.0 {
                 0.0
             } else {
@@ -1703,6 +2161,7 @@ struct ReportIdentityOutputs<'a> {
 #[derive(Debug, Clone, Copy)]
 struct ReportIdentitySource<'a> {
     candidates: &'a [Candidate],
+    objective_spec: ObjectiveSpec,
     threshold: f64,
     max_sensors: usize,
     outputs: ReportIdentityOutputs<'a>,
@@ -1736,6 +2195,7 @@ fn report_identity_with_rule(
     cx: &Cx<'_>,
 ) -> Result<String, OedError> {
     let candidates = source.candidates;
+    let objective_spec = source.objective_spec;
     let threshold = source.threshold;
     let max_sensors = source.max_sensors;
     let outputs = source.outputs;
@@ -1743,6 +2203,7 @@ fn report_identity_with_rule(
     let realized = source.realized;
     let mut canonical = Vec::new();
     canonical.extend_from_slice(&OED_REPORT_IDENTITY_VERSION.to_le_bytes());
+    canonical.extend_from_slice(&objective_spec.canonical_bytes());
     push_str(&mut canonical, cx.mode().name());
     let stream = cx.stream_key();
     for value in [stream.seed, stream.kernel_id, stream.tile, stream.iteration] {
@@ -1807,7 +2268,7 @@ fn report_identity_with_rule(
             candidate.truth,
             candidate.prior_mean,
             candidate.prior_var,
-            candidate.sensor_noise,
+            candidate.sensor_noise_variance,
             candidate.sensor_cost,
         ] {
             canonical.extend_from_slice(&value.to_bits().to_le_bytes());
@@ -1900,7 +2361,7 @@ fn report_identity_with_rule(
 
 fn validate_campaign(
     candidates: &[Candidate],
-    threshold: f64,
+    threshold: ObjectiveValue,
     max_sensors: usize,
 ) -> Result<(f64, CampaignWorkPlan, CampaignBytePlan, Vec<Candidate>), OedError> {
     if candidates.is_empty() {
@@ -1919,13 +2380,28 @@ fn validate_campaign(
         });
     }
     let plan = CampaignWorkPlan::checked(candidates.len(), max_sensors)?;
-    if !threshold.is_finite() || threshold < 0.0 {
+    if threshold.quantity.value < 0.0 {
         return Err(OedError::InvalidThreshold);
+    }
+    let objective_spec = candidates[0].objective_spec;
+    let decision_spec = objective_spec.decision_spec();
+    if threshold.spec != decision_spec {
+        return Err(OedError::ThresholdSchemaMismatch {
+            actual: threshold.spec,
+            expected: decision_spec,
+        });
     }
     let mut names = BTreeSet::new();
     let mut sum_name = 0usize;
     let mut max_name = 0usize;
     for candidate in candidates {
+        if candidate.objective_spec != objective_spec {
+            return Err(OedError::ObjectiveSchemaMismatch {
+                candidate: candidate.name.clone(),
+                actual: candidate.objective_spec,
+                expected: objective_spec,
+            });
+        }
         if !names.insert(candidate.name.as_str()) {
             return Err(OedError::DuplicateCandidate {
                 name: candidate.name.clone(),
@@ -1953,7 +2429,7 @@ fn validate_campaign(
     })?;
     canonical.extend_from_slice(candidates);
     canonical.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok((canonicalize_zero(threshold), plan, byte_plan, canonical))
+    Ok((threshold.quantity.value, plan, byte_plan, canonical))
 }
 
 struct CampaignState {
@@ -2088,8 +2564,12 @@ fn execute_placements(
             0,
             1,
             candidates[idx].truth,
-            candidates[idx].sensor_noise,
-            format!("sensor-{}", candidates[idx].name),
+            candidates[idx].sensor_noise_variance,
+            format!(
+                "sensor-{}-q{}",
+                candidates[idx].name,
+                candidates[idx].objective_spec.identity_hex()
+            ),
         )
         .map_err(|source| OedError::Assimilation {
             candidate: candidates[idx].name.clone(),
@@ -2098,7 +2578,7 @@ fn execute_placements(
         progress.advance(1);
         progress.charge_bytes(
             "sensor observation",
-            ACTION_PREFIX_BYTE_UNITS
+            SENSOR_IDENTITY_FIXED_BYTES
                 .saturating_add(candidates[idx].name.len() as u128)
                 .saturating_add(RECORD_SCALAR_BYTE_UNITS),
         )?;
@@ -2225,6 +2705,7 @@ fn finish_report(
     for (candidate, belief) in candidates.iter().zip(&state.beliefs) {
         posteriors.push(PosteriorSummary {
             name: candidate.name.clone(),
+            objective_spec: candidate.objective_spec,
             mean: belief
                 .component_mean(0)
                 .map_err(OedError::BeliefInvariant)?,
@@ -2234,7 +2715,11 @@ fn finish_report(
     progress.advance(candidates.len() as u128);
     progress.retain_bytes(
         "posterior summaries",
-        shape.sum_name.saturating_add(shape.n.saturating_mul(16)),
+        shape.sum_name.saturating_add(
+            shape
+                .n
+                .saturating_mul(16u128.saturating_add(OBJECTIVE_SCHEMA_BYTES)),
+        ),
     )?;
     let variance_reduction = if prior_total_variance == 0.0 {
         0.0
@@ -2264,6 +2749,7 @@ fn finish_report(
     let (variance_identity, evpi_identity) = {
         let source = ReportIdentitySource {
             candidates,
+            objective_spec: candidates[0].objective_spec,
             threshold,
             max_sensors,
             outputs: ReportIdentityOutputs {
@@ -2293,10 +2779,12 @@ fn finish_report(
     };
 
     progress.checkpoint(cx, plan, "report publication")?;
+    progress.retain_bytes("objective schema", OBJECTIVE_SCHEMA_BYTES)?;
     progress.advance(1);
     progress.finish(plan, realized)?;
 
     Ok(OedReport {
+        objective_spec: candidates[0].objective_spec,
         admitted_byte_units: progress.byte_plan.admitted_byte_units,
         consumed_byte_units: progress.charged_byte_units,
         retained_byte_units: progress.retained_byte_units,
@@ -2325,7 +2813,8 @@ fn finish_report(
 }
 
 /// Run the SensorForge campaign under an explicit execution context; stop when
-/// EVPI <= `threshold` or after `max_sensors` placements.
+/// EVPI <= `threshold` or after `max_sensors` placements. The threshold must
+/// carry the objective's decision-difference schema.
 ///
 /// The complete worst-case work bound is checked before scientific work starts,
 /// and the exact realized early-stop shape is checked before publication. The
@@ -2338,7 +2827,7 @@ fn finish_report(
 /// non-finite derived value. A cancellation never returns a partial report.
 pub fn run_campaign(
     candidates: &[Candidate],
-    threshold: f64,
+    threshold: ObjectiveValue,
     max_sensors: usize,
     cx: &Cx<'_>,
 ) -> Result<OedReport, OedError> {
@@ -2413,11 +2902,11 @@ pub fn demo_candidates() -> Result<Vec<Candidate>, CandidateError> {
         |(name, truth, prior_mean, prior_var, sensor_noise, sensor_cost)| {
             Candidate::new(
                 name,
-                truth,
-                prior_mean,
-                prior_var,
-                sensor_noise,
-                sensor_cost,
+                ObjectiveValue::dimensionless(truth)?,
+                ObjectiveValue::dimensionless(prior_mean)?,
+                QtyAny::dimensionless(prior_var),
+                QtyAny::dimensionless(sensor_noise),
+                QtyAny::dimensionless(sensor_cost),
             )
         },
     )
@@ -2429,9 +2918,9 @@ mod tests {
     use super::{
         CAMPAIGN_PLANNING_POLICY_VERSION, CAMPAIGN_POLL_POLICY_VERSION, CampaignBytePlan,
         CampaignProgress, CampaignRealizedWorkPlan, CampaignWorkPlan, Candidate,
-        NORMAL_EXPECTATION_RULE, OED_REPORT_IDENTITY_VERSION, PosteriorSummary, REPORT_ID_DOMAIN,
-        ReportIdentityOutputs, ReportIdentitySource, canonicalize_zero, demo_candidates,
-        predicted_posterior_variance, report_identity_with_rule,
+        NORMAL_EXPECTATION_RULE, OED_REPORT_IDENTITY_VERSION, ObjectiveSpec, PosteriorSummary,
+        REPORT_ID_DOMAIN, ReportIdentityOutputs, ReportIdentitySource, canonicalize_zero,
+        demo_candidates, predicted_posterior_variance, report_identity_with_rule,
     };
     use fs_evidence::Color;
     use fs_exec::{Budget, CancelGate, Cx, ExecMode, StreamKey};
@@ -2471,8 +2960,9 @@ mod tests {
                 .iter()
                 .map(|candidate| PosteriorSummary {
                     name: candidate.name().to_string(),
-                    mean: candidate.prior_mean(),
-                    variance: candidate.prior_variance(),
+                    objective_spec: candidate.objective_spec(),
+                    mean: candidate.prior_mean().quantity().value,
+                    variance: candidate.prior_variance().value,
                 })
                 .collect();
             let plan = CampaignWorkPlan::checked(candidates.len(), 1).expect("fixture work plan");
@@ -2508,6 +2998,7 @@ mod tests {
         fn source(&self) -> ReportIdentitySource<'_> {
             ReportIdentitySource {
                 candidates: &self.candidates,
+                objective_spec: self.candidates[0].objective_spec,
                 threshold: self.threshold,
                 max_sensors: self.max_sensors,
                 outputs: ReportIdentityOutputs {
@@ -2618,14 +3109,14 @@ mod tests {
 
     #[test]
     fn report_identity_versions_and_final_work_shape_are_locked() {
-        // v7 (bead sj31i.62): deliberate bump — the preimage now binds
-        // the admitted byte plan and the byte-accounting policy.
-        assert_eq!(OED_REPORT_IDENTITY_VERSION, 7);
-        assert_eq!(REPORT_ID_DOMAIN, "org.frankensim.fs-oed-e2e.report.v5");
+        // v8 (bead sj31i.7): deliberate bump — the preimage now binds
+        // the exact objective dimension and semantic schema.
+        assert_eq!(OED_REPORT_IDENTITY_VERSION, 8);
+        assert_eq!(REPORT_ID_DOMAIN, "org.frankensim.fs-oed-e2e.report.v6");
         // v4 (bead sj31i.5): full-EOL robustness evaluations.
         assert_eq!(CAMPAIGN_PLANNING_POLICY_VERSION, 4);
         assert_eq!(CAMPAIGN_POLL_POLICY_VERSION, 2);
-        assert_eq!(super::CAMPAIGN_BYTE_POLICY_VERSION, 2);
+        assert_eq!(super::CAMPAIGN_BYTE_POLICY_VERSION, 3);
         // v2 (bead sj31i.5): full multi-alternative opportunity loss.
         assert_eq!(fs_voi::EVPI_SEMANTICS_VERSION, 2);
 
@@ -2655,9 +3146,146 @@ mod tests {
         assert!(
             identities
                 .0
-                .starts_with("sensorforge-posterior-variance:v7:")
+                .starts_with("sensorforge-posterior-variance:v8:")
         );
-        assert!(identities.1.starts_with("sensorforge-evpi:v7:"));
+        assert!(identities.1.starts_with("sensorforge-evpi:v8:"));
+    }
+
+    #[test]
+    fn objective_schema_encoding_binds_all_six_axes_and_semantic_parameters() {
+        use fs_qty::Dims;
+        use fs_qty::semantic::{
+            AngleDomain, CompositionBasis, QuantityKind, SemanticType, StrainBasis,
+            StrainComponent, ValueForm,
+        };
+
+        let base = ObjectiveSpec::dimensional(Dims([1, -2, 3, -4, 5, -6]));
+        assert_eq!(
+            base.canonical_bytes(),
+            [1, 1, 254, 3, 252, 5, 250, 0, 0, 0, 0, 0]
+        );
+        for axis in 0..6 {
+            let mut exponents = base.dims().0;
+            exponents[axis] += 1;
+            assert_ne!(
+                base.canonical_bytes(),
+                ObjectiveSpec::dimensional(Dims(exponents)).canonical_bytes()
+            );
+        }
+
+        let semantic_types = [
+            SemanticType::new(QuantityKind::AbsoluteTemperature, ValueForm::Static),
+            SemanticType::new(QuantityKind::TemperatureDifference, ValueForm::Static),
+            SemanticType::new(
+                QuantityKind::Angle(AngleDomain::Mechanical),
+                ValueForm::Static,
+            ),
+            SemanticType::new(
+                QuantityKind::Angle(AngleDomain::Electrical),
+                ValueForm::Static,
+            ),
+            SemanticType::new(
+                QuantityKind::AngularVelocity(AngleDomain::Mechanical),
+                ValueForm::Static,
+            ),
+            SemanticType::new(
+                QuantityKind::AngularVelocity(AngleDomain::Electrical),
+                ValueForm::Static,
+            ),
+            SemanticType::new(QuantityKind::Torque, ValueForm::Static),
+            SemanticType::new(QuantityKind::Energy, ValueForm::Static),
+            SemanticType::new(QuantityKind::Pressure, ValueForm::Static),
+            SemanticType::new(QuantityKind::Stress, ValueForm::Static),
+            SemanticType::new(
+                QuantityKind::Strain {
+                    basis: StrainBasis::Tensor,
+                    component: StrainComponent::Normal,
+                },
+                ValueForm::Static,
+            ),
+            SemanticType::new(
+                QuantityKind::Strain {
+                    basis: StrainBasis::Tensor,
+                    component: StrainComponent::Shear,
+                },
+                ValueForm::Static,
+            ),
+            SemanticType::new(
+                QuantityKind::Strain {
+                    basis: StrainBasis::Engineering,
+                    component: StrainComponent::Normal,
+                },
+                ValueForm::Static,
+            ),
+            SemanticType::new(
+                QuantityKind::Strain {
+                    basis: StrainBasis::Engineering,
+                    component: StrainComponent::Shear,
+                },
+                ValueForm::Static,
+            ),
+            SemanticType::new(
+                QuantityKind::Composition(CompositionBasis::MassFraction),
+                ValueForm::Static,
+            ),
+            SemanticType::new(
+                QuantityKind::Composition(CompositionBasis::MoleFraction),
+                ValueForm::Static,
+            ),
+            SemanticType::new(
+                QuantityKind::Composition(CompositionBasis::VolumeFraction),
+                ValueForm::Static,
+            ),
+            SemanticType::new(QuantityKind::Mass, ValueForm::Static),
+            SemanticType::new(QuantityKind::Amount, ValueForm::Static),
+            SemanticType::new(QuantityKind::MolarMass, ValueForm::Static),
+            SemanticType::new(QuantityKind::MassConcentration, ValueForm::Static),
+            SemanticType::new(QuantityKind::AmountConcentration, ValueForm::Static),
+            SemanticType::new(QuantityKind::Entropy, ValueForm::Static),
+            SemanticType::new(QuantityKind::HeatCapacity, ValueForm::Static),
+            SemanticType::new(QuantityKind::AcousticPressure, ValueForm::Static),
+            SemanticType::new(QuantityKind::AcousticPower, ValueForm::Static),
+            SemanticType::new(QuantityKind::Pressure, ValueForm::Instantaneous),
+            SemanticType::new(QuantityKind::Pressure, ValueForm::Peak),
+            SemanticType::new(QuantityKind::Pressure, ValueForm::Rms),
+        ];
+        let encodings: std::collections::BTreeSet<_> = semantic_types
+            .into_iter()
+            .map(|semantic_type| {
+                ObjectiveSpec::from_validated_semantic(semantic_type).canonical_bytes()
+            })
+            .collect();
+        assert_eq!(encodings.len(), semantic_types.len());
+        assert!(!encodings.contains(&base.canonical_bytes()));
+    }
+
+    #[test]
+    fn equal_bits_under_pressure_and_stress_schemas_move_identity() {
+        let baseline_fixture = IdentityFixture::new();
+        let baseline = report_identities(&baseline_fixture, &NORMAL_EXPECTATION_RULE);
+        let pressure = ObjectiveSpec::from_validated_semantic(fs_qty::semantic::SemanticType::new(
+            fs_qty::semantic::QuantityKind::Pressure,
+            fs_qty::semantic::ValueForm::Static,
+        ));
+        let stress = ObjectiveSpec::from_validated_semantic(fs_qty::semantic::SemanticType::new(
+            fs_qty::semantic::QuantityKind::Stress,
+            fs_qty::semantic::ValueForm::Static,
+        ));
+        assert_eq!(pressure.dims(), stress.dims());
+        assert_ne!(pressure, stress);
+
+        let mut pressure_fixture = baseline_fixture.clone();
+        for candidate in &mut pressure_fixture.candidates {
+            candidate.objective_spec = pressure;
+        }
+        let mut stress_fixture = baseline_fixture;
+        for candidate in &mut stress_fixture.candidates {
+            candidate.objective_spec = stress;
+        }
+        let pressure_id = report_identities(&pressure_fixture, &NORMAL_EXPECTATION_RULE);
+        let stress_id = report_identities(&stress_fixture, &NORMAL_EXPECTATION_RULE);
+        assert_ne!(baseline, pressure_id);
+        assert_ne!(pressure_id, stress_id);
     }
 
     #[test]

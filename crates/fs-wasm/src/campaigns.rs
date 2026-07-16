@@ -963,7 +963,10 @@ pub fn trusspath(nx: usize, ny: usize, gap_tol: f64) -> Vec<f64> {
 /// budgets, mode, and stream identity propagate without a hidden wrapper.
 /// This browser-facing adapter supplies the fixed clock-free deterministic
 /// context required by the JavaScript ABI. Uses the fixed `demo_candidates()`
-/// (A/B/C/D), with B's prior mean and truth set to `b_prior_mean`.
+/// (A/B/C/D), whose objective and relative acquisition weights are explicitly
+/// dimensionless, with B's prior mean and truth set to `b_prior_mean`. Native
+/// physical-unit campaigns use `ObjectiveValue` directly and are not flattened
+/// through this fixed demo ABI.
 ///
 /// `threshold` — EVPI stop threshold (clamped `1e-6..=1.0`, default 0.01);
 /// `max_sensors` — placement cap (clamped `0..=64`, default 12); `b_prior_mean`
@@ -1021,17 +1024,25 @@ pub fn sensorforge_with_cx(
     };
     let Ok(b) = fs_oed_e2e::Candidate::new(
         default_b.name(),
-        b_prior_mean,
-        b_prior_mean,
+        fs_oed_e2e::ObjectiveValue::dimensionless(b_prior_mean)
+            .expect("finite clamped SensorForge truth"),
+        fs_oed_e2e::ObjectiveValue::dimensionless(b_prior_mean)
+            .expect("finite clamped SensorForge prior mean"),
         default_b.prior_variance(),
-        default_b.sensor_noise(),
+        default_b.sensor_noise_variance(),
         default_b.sensor_cost(),
     ) else {
         return Vec::new();
     };
     cands[1] = b;
     let c = cands.len();
-    let Ok(report) = fs_oed_e2e::run_campaign(&cands, threshold, max_sensors, cx) else {
+    let Ok(report) = fs_oed_e2e::run_campaign(
+        &cands,
+        fs_oed_e2e::ObjectiveValue::dimensionless(threshold)
+            .expect("finite clamped SensorForge threshold"),
+        max_sensors,
+        cx,
+    ) else {
         return Vec::new();
     };
     let Some(placements): Option<Vec<usize>> = report
@@ -1060,23 +1071,23 @@ pub fn sensorforge_with_cx(
     let mut out = Vec::with_capacity(10 + t + s + 2 * c + c);
     out.push(c as f64);
     out.push(s as f64);
-    out.push(fon(report.prior_total_variance()));
-    out.push(fon(report.posterior_total_variance()));
+    out.push(fon(report.prior_total_variance().value));
+    out.push(fon(report.posterior_total_variance().value));
     out.push(fon(report.variance_reduction()));
-    out.push(fon(report.initial_evpi()));
-    out.push(fon(report.final_evpi()));
+    out.push(fon(report.initial_evpi().value()));
+    out.push(fon(report.final_evpi().value()));
     out.push(if report.decision_robust() { 1.0 } else { 0.0 });
     out.push(chosen_idx);
     out.push(t as f64);
-    for &e in report.evpi_trace() {
-        out.push(fon(e));
+    for e in report.evpi_trace() {
+        out.push(fon(e.value()));
     }
     for &i in &placements {
         out.push(i as f64);
     }
     for posterior in report.posteriors() {
-        out.push(fon(posterior.mean));
-        out.push(fon(posterior.variance));
+        out.push(fon(posterior.mean().value()));
+        out.push(fon(posterior.variance().value));
     }
     for cand in &cands {
         out.push(fon(allocation

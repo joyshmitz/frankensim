@@ -7,8 +7,11 @@ use fs_evidence::{Color, color_leaf_identity_reason};
 use fs_exec::{Budget, CancelGate, Cx, ExecMode, StreamKey};
 use fs_oed_e2e::{
     Candidate, CandidateError, MAX_CAMPAIGN_CANDIDATES, MAX_CAMPAIGN_EVALUATIONS,
-    MAX_CAMPAIGN_SENSORS, OedError, OedReport, demo_candidates, run_campaign,
+    MAX_CAMPAIGN_SENSORS, ObjectiveValue, OedError, OedReport, demo_candidates, run_campaign,
 };
+use fs_qty::parse::parse_qty;
+use fs_qty::semantic::{CompositionBasis, QuantityKind, SemanticQty, SemanticType, ValueForm};
+use fs_qty::{Dims, QtyAny};
 
 const TEST_STREAM: StreamKey = StreamKey {
     seed: 0x6f65_642d_6532_6501,
@@ -58,8 +61,45 @@ fn campaign(
         &CancelGate::new(),
         Budget::INFINITE,
         ExecMode::Deterministic,
-        |cx| run_campaign(candidates, threshold, max_sensors, cx),
+        |cx| {
+            run_campaign(
+                candidates,
+                ObjectiveValue::dimensionless(threshold).expect("test threshold must be finite"),
+                max_sensors,
+                cx,
+            )
+        },
     )
+}
+
+fn objective(value: f64) -> ObjectiveValue {
+    ObjectiveValue::dimensionless(value).expect("test objective must be finite")
+}
+
+fn semantic_objective(value: f64, kind: QuantityKind) -> ObjectiveValue {
+    let semantic_type = SemanticType::new(kind, ValueForm::Static);
+    ObjectiveValue::semantic(
+        SemanticQty::new(QtyAny::new(value, kind.expected_dims()), semantic_type)
+            .expect("test semantic objective must be admissible"),
+    )
+}
+
+fn typed_candidate(
+    name: &str,
+    truth: ObjectiveValue,
+    prior_mean: ObjectiveValue,
+    prior_variance: QtyAny,
+    sensor_noise_variance: QtyAny,
+) -> Candidate {
+    Candidate::new(
+        name,
+        truth,
+        prior_mean,
+        prior_variance,
+        sensor_noise_variance,
+        QtyAny::dimensionless(1.0),
+    )
+    .expect("typed test candidate must satisfy the checked constructor")
 }
 
 fn candidate(
@@ -72,11 +112,11 @@ fn candidate(
 ) -> Candidate {
     Candidate::new(
         name,
-        truth,
-        prior_mean,
-        prior_var,
-        sensor_noise,
-        sensor_cost,
+        objective(truth),
+        objective(prior_mean),
+        QtyAny::dimensionless(prior_var),
+        QtyAny::dimensionless(sensor_noise),
+        QtyAny::dimensionless(sensor_cost),
     )
     .expect("test candidate must satisfy the checked constructor")
 }
@@ -98,12 +138,12 @@ fn assert_same_non_identity_report(left: &OedReport, right: &OedReport) {
     // fixtures compare only the retained ledger here.
     assert_eq!(left.retained_byte_units(), right.retained_byte_units());
     assert_eq!(
-        left.prior_total_variance().to_bits(),
-        right.prior_total_variance().to_bits()
+        left.prior_total_variance().value.to_bits(),
+        right.prior_total_variance().value.to_bits()
     );
     assert_eq!(
-        left.posterior_total_variance().to_bits(),
-        right.posterior_total_variance().to_bits()
+        left.posterior_total_variance().value.to_bits(),
+        right.posterior_total_variance().value.to_bits()
     );
     assert_eq!(
         left.variance_reduction().to_bits(),
@@ -124,19 +164,19 @@ fn assert_same_non_identity_report(left: &OedReport, right: &OedReport) {
         assert_eq!(left_tolerance.to_bits(), right_tolerance.to_bits());
     }
     assert_eq!(left.evpi_trace().len(), right.evpi_trace().len());
-    for (left_evpi, right_evpi) in left.evpi_trace().iter().zip(right.evpi_trace()) {
+    for (left_evpi, right_evpi) in left.evpi_trace().zip(right.evpi_trace()) {
         assert_eq!(left_evpi.to_bits(), right_evpi.to_bits());
     }
     assert_eq!(left.posteriors().len(), right.posteriors().len());
     for (left_posterior, right_posterior) in left.posteriors().iter().zip(right.posteriors()) {
-        assert_eq!(left_posterior.name, right_posterior.name);
+        assert_eq!(left_posterior.name(), right_posterior.name());
         assert_eq!(
-            left_posterior.mean.to_bits(),
-            right_posterior.mean.to_bits()
+            left_posterior.mean().to_bits(),
+            right_posterior.mean().to_bits()
         );
         assert_eq!(
-            left_posterior.variance.to_bits(),
-            right_posterior.variance.to_bits()
+            left_posterior.variance().value.to_bits(),
+            right_posterior.variance().value.to_bits()
         );
     }
     assert_eq!(
@@ -212,15 +252,15 @@ fn sensors_target_the_decision_and_the_campaign_knows_when_to_stop() {
     // measurement sharpened the beliefs; EVPI fell.
     assert!(report.variance_reduction() > 0.0);
     assert!(
-        report.final_evpi() < report.initial_evpi(),
+        report.final_evpi().value() < report.initial_evpi().value(),
         "EVPI did not fall"
     );
     // the campaign STOPPED because the decision became robust.
     assert!(report.decision_robust(), "did not reach a robust decision");
     assert!(
-        report.final_evpi() <= 0.01 + 1e-9,
+        report.final_evpi().value() <= 0.01 + 1e-9,
         "final EVPI {}",
-        report.final_evpi()
+        report.final_evpi().value()
     );
     // A is the true best and is chosen.
     assert_eq!(report.chosen_design(), "A");
@@ -243,8 +283,8 @@ fn sensors_target_the_decision_and_the_campaign_knows_when_to_stop() {
         report.placements(),
         report.sensors_placed(),
         report.variance_reduction(),
-        report.initial_evpi(),
-        report.final_evpi(),
+        report.initial_evpi().value(),
+        report.final_evpi().value(),
         report.decision_robust(),
         report.chosen_design(),
     );
@@ -262,7 +302,10 @@ fn a_clear_winner_needs_no_sensors() {
     assert_eq!(report.sensors_placed(), 0);
     assert!(report.decision_robust());
     assert_eq!(report.chosen_design(), "A");
-    assert_eq!(report.evpi_trace(), &[report.initial_evpi()]);
+    assert_eq!(
+        report.evpi_trace().collect::<Vec<_>>(),
+        [report.initial_evpi()]
+    );
 }
 
 #[test]
@@ -327,13 +370,13 @@ fn sensor_planning_uses_declared_noise_and_matches_the_kalman_variance() {
     let low = report
         .posteriors()
         .iter()
-        .find(|posterior| posterior.name == "low-noise")
+        .find(|posterior| posterior.name() == "low-noise")
         .expect("low-noise posterior retained");
     let expected = 1.0 * 0.01 / (1.0 + 0.01);
     assert!(
-        (low.variance - expected).abs() <= 8.0 * f64::EPSILON,
+        (low.variance().value - expected).abs() <= 8.0 * f64::EPSILON,
         "planned and realized scalar Kalman variance must agree: got {}, expected {expected}",
-        low.variance
+        low.variance().value
     );
 
     let reversed: Vec<Candidate> = candidates.into_iter().rev().collect();
@@ -361,48 +404,83 @@ fn sensor_value_has_the_correct_noise_limits() {
     let informative = report
         .posteriors()
         .iter()
-        .find(|posterior| posterior.name == "informative")
+        .find(|posterior| posterior.name() == "informative")
         .expect("informative posterior retained");
     assert!(
-        informative.variance <= 1.000_000_000_001e-12,
+        informative.variance().value <= 1.000_000_000_001e-12,
         "near-noiseless sensing should nearly collapse the declared variance"
     );
 }
 
 #[test]
 fn candidate_construction_is_fail_closed_and_canonicalizes_zero() {
+    let valid = || {
+        (
+            objective(0.0),
+            objective(0.0),
+            QtyAny::dimensionless(0.0),
+            QtyAny::dimensionless(1.0),
+            QtyAny::dimensionless(1.0),
+        )
+    };
+    let (truth, mean, variance, noise, cost) = valid();
     assert_eq!(
-        Candidate::new(" A", 0.0, 0.0, 0.0, 1.0, 1.0),
+        Candidate::new(" A", truth, mean, variance, noise, cost),
         Err(CandidateError::InvalidName {
             reason: "surrounding-whitespace"
         })
     );
+    let (truth, mean, variance, noise, cost) = valid();
     assert!(matches!(
-        Candidate::new("x".repeat(129), 0.0, 0.0, 0.0, 1.0, 1.0),
+        Candidate::new("x".repeat(129), truth, mean, variance, noise, cost),
         Err(CandidateError::InvalidName { reason: "too-long" })
     ));
     for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-        assert!(matches!(
-            Candidate::new("A", invalid, 0.0, 0.0, 1.0, 1.0),
-            Err(CandidateError::InvalidNumber { field: "truth", .. })
-        ));
+        assert_eq!(
+            ObjectiveValue::dimensionless(invalid),
+            Err(CandidateError::InvalidNumber {
+                field: "objective value",
+                requirement: "finite",
+            })
+        );
     }
     assert!(matches!(
-        Candidate::new("A", 0.0, 0.0, -1.0, 1.0, 1.0),
+        Candidate::new(
+            "A",
+            objective(0.0),
+            objective(0.0),
+            QtyAny::dimensionless(-1.0),
+            QtyAny::dimensionless(1.0),
+            QtyAny::dimensionless(1.0),
+        ),
         Err(CandidateError::InvalidNumber {
-            field: "prior_var",
+            field: "prior_variance",
             ..
         })
     ));
     assert!(matches!(
-        Candidate::new("A", 0.0, 0.0, 1.0, 0.0, 1.0),
+        Candidate::new(
+            "A",
+            objective(0.0),
+            objective(0.0),
+            QtyAny::dimensionless(1.0),
+            QtyAny::dimensionless(0.0),
+            QtyAny::dimensionless(1.0),
+        ),
         Err(CandidateError::InvalidNumber {
-            field: "sensor_noise",
+            field: "sensor_noise_variance",
             ..
         })
     ));
     assert!(matches!(
-        Candidate::new("A", 0.0, 0.0, 1.0, 1.0, f64::NAN),
+        Candidate::new(
+            "A",
+            objective(0.0),
+            objective(0.0),
+            QtyAny::dimensionless(1.0),
+            QtyAny::dimensionless(1.0),
+            QtyAny::dimensionless(f64::NAN),
+        ),
         Err(CandidateError::InvalidNumber {
             field: "sensor_cost",
             ..
@@ -412,19 +490,405 @@ fn candidate_construction_is_fail_closed_and_canonicalizes_zero() {
     let zero = candidate("zero", -0.0, -0.0, -0.0, 1.0, 1.0);
     assert_eq!(zero.truth().to_bits(), 0.0_f64.to_bits());
     assert_eq!(zero.prior_mean().to_bits(), 0.0_f64.to_bits());
-    assert_eq!(zero.prior_variance().to_bits(), 0.0_f64.to_bits());
+    assert_eq!(zero.prior_variance().value.to_bits(), 0.0_f64.to_bits());
+}
+
+#[test]
+fn candidate_refuses_wrong_variance_noise_and_cost_dimensions() {
+    let length = Dims([1, 0, 0, 0, 0, 0]);
+    let area = QtyAny::new(1.0, length)
+        .powi(2)
+        .expect("length squared is representable")
+        .dims;
+    let truth = ObjectiveValue::dimensional(QtyAny::new(1.0, length)).expect("finite length");
+    let mean = ObjectiveValue::dimensional(QtyAny::new(1.0, length)).expect("finite length");
+
+    assert!(matches!(
+        Candidate::new(
+            "A",
+            truth,
+            mean,
+            QtyAny::new(0.1, length),
+            QtyAny::new(0.1, area),
+            QtyAny::dimensionless(1.0),
+        ),
+        Err(CandidateError::DimensionMismatch {
+            field: "prior_variance",
+            actual,
+            expected,
+        }) if actual == length && expected == area
+    ));
+    assert!(matches!(
+        Candidate::new(
+            "A",
+            truth,
+            mean,
+            QtyAny::new(0.1, area),
+            QtyAny::new(0.1, length),
+            QtyAny::dimensionless(1.0),
+        ),
+        Err(CandidateError::DimensionMismatch {
+            field: "sensor_noise_variance",
+            actual,
+            expected,
+        }) if actual == length && expected == area
+    ));
+    assert!(matches!(
+        Candidate::new(
+            "A",
+            truth,
+            mean,
+            QtyAny::new(0.1, area),
+            QtyAny::new(0.1, area),
+            QtyAny::new(1.0, length),
+        ),
+        Err(CandidateError::DimensionMismatch {
+            field: "sensor_cost",
+            actual,
+            expected,
+        }) if actual == length && expected == Dims::NONE
+    ));
+}
+
+#[test]
+fn campaign_refuses_semantic_aliases_and_affine_temperature_thresholds() {
+    let pressure = semantic_objective(1.0, QuantityKind::Pressure);
+    let stress = semantic_objective(1.0, QuantityKind::Stress);
+    let dimension_only_pressure = ObjectiveValue::dimensional(pressure.quantity())
+        .expect("finite dimension-only pressure dimensions");
+    assert_eq!(pressure.quantity().dims, stress.quantity().dims);
+    assert_ne!(pressure.spec(), stress.spec());
+    assert_ne!(pressure.spec(), dimension_only_pressure.spec());
+    let variance_dims = pressure
+        .quantity()
+        .powi(2)
+        .expect("pressure squared is representable")
+        .dims;
+    let pressure_candidate = typed_candidate(
+        "A",
+        pressure,
+        pressure,
+        QtyAny::new(0.1, variance_dims),
+        QtyAny::new(0.1, variance_dims),
+    );
+    let pressure_threshold = pressure
+        .spec()
+        .decision_value(0.01)
+        .expect("finite pressure decision threshold");
+    let stress_candidate = typed_candidate(
+        "B",
+        stress,
+        stress,
+        QtyAny::new(0.1, variance_dims),
+        QtyAny::new(0.1, variance_dims),
+    );
+    let mixed = with_cx(
+        &CancelGate::new(),
+        Budget::INFINITE,
+        ExecMode::Deterministic,
+        |cx| {
+            run_campaign(
+                &[pressure_candidate.clone(), stress_candidate],
+                pressure_threshold,
+                0,
+                cx,
+            )
+        },
+    );
+    assert!(matches!(
+        mixed,
+        Err(OedError::ObjectiveSchemaMismatch {
+            candidate,
+            actual,
+            expected,
+        }) if candidate == "B" && actual == stress.spec() && expected == pressure.spec()
+    ));
+    let dimension_only_candidate = typed_candidate(
+        "B",
+        dimension_only_pressure,
+        dimension_only_pressure,
+        QtyAny::new(0.1, variance_dims),
+        QtyAny::new(0.1, variance_dims),
+    );
+    let untyped_alias = with_cx(
+        &CancelGate::new(),
+        Budget::INFINITE,
+        ExecMode::Deterministic,
+        |cx| {
+            run_campaign(
+                &[pressure_candidate.clone(), dimension_only_candidate],
+                pressure_threshold,
+                0,
+                cx,
+            )
+        },
+    );
+    assert!(matches!(
+        untyped_alias,
+        Err(OedError::ObjectiveSchemaMismatch { .. })
+    ));
+    let wrong_threshold = with_cx(
+        &CancelGate::new(),
+        Budget::INFINITE,
+        ExecMode::Deterministic,
+        |cx| {
+            run_campaign(
+                std::slice::from_ref(&pressure_candidate),
+                semantic_objective(0.01, QuantityKind::Stress),
+                0,
+                cx,
+            )
+        },
+    );
+    assert!(matches!(
+        wrong_threshold,
+        Err(OedError::ThresholdSchemaMismatch { .. })
+    ));
+
+    let menu_for = |kind| {
+        let a = semantic_objective(0.60, kind);
+        let b = semantic_objective(0.65, kind);
+        let squared = a
+            .quantity()
+            .powi(2)
+            .expect("semantic objective square")
+            .dims;
+        vec![
+            typed_candidate(
+                "A",
+                a,
+                a,
+                QtyAny::new(0.10, squared),
+                QtyAny::new(0.01, squared),
+            ),
+            typed_candidate(
+                "B",
+                b,
+                b,
+                QtyAny::new(0.12, squared),
+                QtyAny::new(0.01, squared),
+            ),
+        ]
+    };
+    let pressure_menu = menu_for(QuantityKind::Pressure);
+    let stress_menu = menu_for(QuantityKind::Stress);
+    let pressure_report = with_cx(
+        &CancelGate::new(),
+        Budget::INFINITE,
+        ExecMode::Deterministic,
+        |cx| {
+            run_campaign(
+                &pressure_menu,
+                pressure_menu[0]
+                    .objective_spec()
+                    .decision_value(0.0)
+                    .expect("finite pressure decision threshold"),
+                1,
+                cx,
+            )
+        },
+    )
+    .expect("pressure campaign");
+    let stress_report = with_cx(
+        &CancelGate::new(),
+        Budget::INFINITE,
+        ExecMode::Deterministic,
+        |cx| {
+            run_campaign(
+                &stress_menu,
+                stress_menu[0]
+                    .objective_spec()
+                    .decision_value(0.0)
+                    .expect("finite stress decision threshold"),
+                1,
+                cx,
+            )
+        },
+    )
+    .expect("stress campaign");
+    assert_ne!(
+        estimator(pressure_report.variance_color()),
+        estimator(stress_report.variance_color())
+    );
+    assert_eq!(pressure_report.assimilation_colors().len(), 1);
+    assert_eq!(stress_report.assimilation_colors().len(), 1);
+    assert_ne!(
+        estimator(&pressure_report.assimilation_colors()[0]),
+        estimator(&stress_report.assimilation_colors()[0]),
+        "nested assimilation identity must bind the objective schema token"
+    );
+    assert!(
+        pressure_report
+            .initial_evpi()
+            .spec()
+            .semantic_type()
+            .is_none()
+    );
+    assert!(
+        stress_report
+            .initial_evpi()
+            .spec()
+            .semantic_type()
+            .is_none()
+    );
+
+    let absolute = semantic_objective(300.0, QuantityKind::AbsoluteTemperature);
+    let temperature_variance_dims = absolute
+        .quantity()
+        .powi(2)
+        .expect("temperature squared is representable")
+        .dims;
+    let temperature = typed_candidate(
+        "T",
+        absolute,
+        absolute,
+        QtyAny::new(1.0, temperature_variance_dims),
+        QtyAny::new(1.0, temperature_variance_dims),
+    );
+    let absolute_threshold = with_cx(
+        &CancelGate::new(),
+        Budget::INFINITE,
+        ExecMode::Deterministic,
+        |cx| {
+            run_campaign(
+                std::slice::from_ref(&temperature),
+                semantic_objective(0.5, QuantityKind::AbsoluteTemperature),
+                0,
+                cx,
+            )
+        },
+    );
+    assert!(matches!(
+        absolute_threshold,
+        Err(OedError::ThresholdSchemaMismatch { actual, expected })
+            if actual.semantic_type().is_some_and(|ty| ty.kind() == QuantityKind::AbsoluteTemperature)
+                && expected.semantic_type().is_some_and(|ty| ty.kind() == QuantityKind::TemperatureDifference)
+    ));
+    let delta_threshold = with_cx(
+        &CancelGate::new(),
+        Budget::INFINITE,
+        ExecMode::Deterministic,
+        |cx| {
+            run_campaign(
+                std::slice::from_ref(&temperature),
+                temperature
+                    .objective_spec()
+                    .decision_value(0.5)
+                    .expect("finite temperature-difference threshold"),
+                0,
+                cx,
+            )
+        },
+    )
+    .expect("delta-temperature threshold matches an absolute-temperature objective");
+    assert_eq!(
+        delta_threshold
+            .decision_spec()
+            .semantic_type()
+            .expect("semantic decision schema")
+            .kind(),
+        QuantityKind::TemperatureDifference
+    );
+}
+
+#[test]
+fn semantic_measurements_do_not_launder_their_kind_or_form_into_decision_loss() {
+    let composition = semantic_objective(
+        0.4,
+        QuantityKind::Composition(CompositionBasis::MassFraction),
+    );
+    let decision = composition
+        .spec()
+        .decision_value(0.05)
+        .expect("finite composition decision threshold");
+
+    assert_eq!(decision.quantity().dims, composition.quantity().dims);
+    assert!(composition.spec().semantic_type().is_some());
+    assert!(decision.spec().semantic_type().is_none());
+}
+
+#[test]
+fn g3_metre_millimetre_rescaling_preserves_science_identity_and_output_units() {
+    let metre_candidates = vec![
+        typed_candidate(
+            "A",
+            ObjectiveValue::dimensional(parse_qty("1m").expect("metres")).expect("finite"),
+            ObjectiveValue::dimensional(parse_qty("1m").expect("metres")).expect("finite"),
+            parse_qty("0m^2").expect("square metres"),
+            parse_qty("1m^2").expect("square metres"),
+        ),
+        typed_candidate(
+            "B",
+            ObjectiveValue::dimensional(parse_qty("2m").expect("metres")).expect("finite"),
+            ObjectiveValue::dimensional(parse_qty("2m").expect("metres")).expect("finite"),
+            parse_qty("0m^2").expect("square metres"),
+            parse_qty("1m^2").expect("square metres"),
+        ),
+    ];
+    let millimetre_candidates = vec![
+        typed_candidate(
+            "A",
+            ObjectiveValue::dimensional(parse_qty("1000mm").expect("millimetres")).expect("finite"),
+            ObjectiveValue::dimensional(parse_qty("1000mm").expect("millimetres")).expect("finite"),
+            parse_qty("0mm^2").expect("square millimetres"),
+            parse_qty("1000000mm^2").expect("square millimetres"),
+        ),
+        typed_candidate(
+            "B",
+            ObjectiveValue::dimensional(parse_qty("2000mm").expect("millimetres")).expect("finite"),
+            ObjectiveValue::dimensional(parse_qty("2000mm").expect("millimetres")).expect("finite"),
+            parse_qty("0mm^2").expect("square millimetres"),
+            parse_qty("1000000mm^2").expect("square millimetres"),
+        ),
+    ];
+    let run = |candidates: &[Candidate], threshold: &str| {
+        with_cx(
+            &CancelGate::new(),
+            Budget::INFINITE,
+            ExecMode::Deterministic,
+            |cx| {
+                run_campaign(
+                    candidates,
+                    ObjectiveValue::dimensional(parse_qty(threshold).expect("threshold units"))
+                        .expect("finite threshold"),
+                    0,
+                    cx,
+                )
+            },
+        )
+        .expect("unit-rescaled campaign")
+    };
+    let metres = run(&metre_candidates, "0.1m");
+    let millimetres = run(&millimetre_candidates, "100mm");
+    assert_eq!(metres, millimetres);
+
+    let length = Dims([1, 0, 0, 0, 0, 0]);
+    let area = Dims([2, 0, 0, 0, 0, 0]);
+    assert_eq!(metres.objective_spec().dims(), length);
+    assert_eq!(metres.initial_evpi().quantity().dims, length);
+    assert_eq!(metres.final_evpi().quantity().dims, length);
+    assert_eq!(metres.prior_total_variance().dims, area);
+    assert_eq!(metres.posterior_total_variance().dims, area);
+    assert!(
+        metres
+            .posteriors()
+            .iter()
+            .all(|posterior| posterior.mean().quantity().dims == length
+                && posterior.variance().dims == area)
+    );
 }
 
 #[test]
 fn campaign_inputs_are_checked_before_work_starts() {
     assert_eq!(campaign(&[], 0.0, 0), Err(OedError::NoCandidates));
     let one = candidate("A", 0.0, 0.0, 1.0, 1.0, 1.0);
-    for threshold in [f64::NAN, f64::INFINITY, -1.0] {
-        assert_eq!(
-            campaign(std::slice::from_ref(&one), threshold, 0),
-            Err(OedError::InvalidThreshold)
-        );
+    for threshold in [f64::NAN, f64::INFINITY] {
+        assert!(ObjectiveValue::dimensionless(threshold).is_err());
     }
+    assert_eq!(
+        campaign(std::slice::from_ref(&one), -1.0, 0),
+        Err(OedError::InvalidThreshold)
+    );
     assert_eq!(
         campaign(&[one.clone(), one.clone()], 0.0, 0),
         Err(OedError::DuplicateCandidate {
@@ -470,9 +934,12 @@ fn zero_total_prior_variance_has_defined_reduction_and_unbounded_allocation() {
         candidate("B", 1.0, 1.0, 0.0, 0.01, 2.0),
     ];
     let report = campaign(&exact, 0.0, 0).expect("exact campaign succeeds");
-    assert_eq!(report.prior_total_variance().to_bits(), 0.0_f64.to_bits());
     assert_eq!(
-        report.posterior_total_variance().to_bits(),
+        report.prior_total_variance().value.to_bits(),
+        0.0_f64.to_bits()
+    );
+    assert_eq!(
+        report.posterior_total_variance().value.to_bits(),
         0.0_f64.to_bits()
     );
     assert_eq!(report.variance_reduction().to_bits(), 0.0_f64.to_bits());
@@ -516,11 +983,11 @@ fn evidence_identities_bind_unmeasured_inputs_and_realized_updates() {
     let d = &baseline[3];
     changed[3] = candidate(
         d.name(),
-        d.truth() + 0.01,
-        d.prior_mean(),
-        d.prior_variance(),
-        d.sensor_noise(),
-        d.sensor_cost(),
+        d.truth().value() + 0.01,
+        d.prior_mean().value(),
+        d.prior_variance().value,
+        d.sensor_noise_variance().value,
+        d.sensor_cost().value,
     );
     let changed_report = campaign(&changed, 0.01, 12).expect("changed campaign succeeds");
     assert_eq!(report.placements(), changed_report.placements());
@@ -540,8 +1007,8 @@ fn evidence_identities_bind_unmeasured_inputs_and_realized_updates() {
     );
     assert!(color_leaf_identity_reason(estimator(report.variance_color())).is_none());
     assert!(color_leaf_identity_reason(estimator(report.evpi_color())).is_none());
-    assert!(estimator(report.variance_color()).starts_with("sensorforge-posterior-variance:v7:"));
-    assert!(estimator(report.evpi_color()).starts_with("sensorforge-evpi:v7:"));
+    assert!(estimator(report.variance_color()).starts_with("sensorforge-posterior-variance:v8:"));
+    assert!(estimator(report.evpi_color()).starts_with("sensorforge-evpi:v8:"));
 }
 
 #[test]
@@ -564,7 +1031,7 @@ fn a_completed_zero_value_action_round_has_exact_realized_work() {
     ];
     let report = campaign(&candidates, 0.0, 1)
         .expect("a no-positive-action STOP has a complete realized work ledger");
-    assert!(report.initial_evpi() > 0.0);
+    assert!(report.initial_evpi().value() > 0.0);
     assert_eq!(report.sensors_placed(), 0);
     assert!(!report.decision_robust());
     assert_eq!(
@@ -579,7 +1046,7 @@ fn g4_pre_cancel_is_bounded_and_never_publishes_a_partial_report() {
     let gate = CancelGate::new();
     gate.request();
     let cancelled = with_cx(&gate, Budget::INFINITE, ExecMode::Deterministic, |cx| {
-        run_campaign(&candidates, 0.01, 12, cx)
+        run_campaign(&candidates, objective(0.01), 12, cx)
     });
     match cancelled {
         Err(OedError::Cancelled {
@@ -607,7 +1074,7 @@ fn g4_poll_quota_bounds_action_tile_latency_without_partial_publication() {
     let candidates = demo_candidates().expect("compiled demo candidates are valid");
     let budget = Budget::new().with_poll_quota(7);
     let cancelled = with_cx(&CancelGate::new(), budget, ExecMode::Deterministic, |cx| {
-        run_campaign(&candidates, 0.0, 12, cx)
+        run_campaign(&candidates, objective(0.0), 12, cx)
     });
     match cancelled {
         Err(OedError::Cancelled {
@@ -634,7 +1101,7 @@ fn g4_lower_assimilation_cancellation_preserves_both_progress_ledgers() {
     for quota in 1..=128 {
         let budget = Budget::new().with_poll_quota(quota);
         let result = with_cx(&CancelGate::new(), budget, ExecMode::Deterministic, |cx| {
-            run_campaign(&candidates, 0.0, 1, cx)
+            run_campaign(&candidates, objective(0.0), 1, cx)
         });
         if let Err(error @ OedError::AssimilationCancelled { .. }) = result {
             nested = Some(error);
@@ -688,7 +1155,7 @@ fn g4_finalization_quota_sweep_covers_identity_and_publication_boundaries() {
             &CancelGate::new(),
             Budget::new().with_poll_quota(quota),
             ExecMode::Deterministic,
-            |cx| run_campaign(&candidates, 0.0, 1, cx),
+            |cx| run_campaign(&candidates, objective(0.0), 1, cx),
         );
         match result {
             Err(OedError::Cancelled {
@@ -740,7 +1207,7 @@ fn g5_execution_mode_and_complete_budget_are_bound_into_evidence() {
         with_stream_cx(&CancelGate::new(), budget, mode, stream, |cx| {
             // Zero placement isolates the OED manifest from lower-layer
             // assimilation estimator identities.
-            run_campaign(&candidates, 1.0e9, 0, cx)
+            run_campaign(&candidates, objective(1.0e9), 0, cx)
         })
         .expect("zero-placement campaign succeeds")
     };
@@ -842,14 +1309,14 @@ fn g4_hostile_maximum_work_shape_is_admitted_and_the_next_shape_refuses() {
     let gate = CancelGate::new();
     gate.request();
     let at_limit = with_cx(&gate, Budget::INFINITE, ExecMode::Deterministic, |cx| {
-        run_campaign(&accepted, 0.0, MAX_CAMPAIGN_SENSORS, cx)
+        run_campaign(&accepted, objective(0.0), MAX_CAMPAIGN_SENSORS, cx)
     });
     assert!(matches!(at_limit, Err(OedError::Cancelled { .. })));
     let bounded_later = with_cx(
         &CancelGate::new(),
         Budget::INFINITE.with_poll_quota(1),
         ExecMode::Deterministic,
-        |cx| run_campaign(&accepted, 0.0, MAX_CAMPAIGN_SENSORS, cx),
+        |cx| run_campaign(&accepted, objective(0.0), MAX_CAMPAIGN_SENSORS, cx),
     );
     assert!(matches!(
         bounded_later,
@@ -868,7 +1335,7 @@ fn g4_hostile_maximum_work_shape_is_admitted_and_the_next_shape_refuses() {
             &CancelGate::new(),
             Budget::INFINITE,
             ExecMode::Deterministic,
-            |cx| run_campaign(&refused, 0.0, MAX_CAMPAIGN_SENSORS, cx),
+            |cx| { run_campaign(&refused, objective(0.0), MAX_CAMPAIGN_SENSORS, cx,) },
         ),
         Err(OedError::WorkBudgetExceeded {
             candidates: 16,
@@ -889,9 +1356,9 @@ fn byte_ledger_is_admitted_charged_and_retained_exactly() {
     let report = campaign(&candidates, 0.01, 12).expect("demo campaign succeeds");
     assert!(report.retained_byte_units() <= report.consumed_byte_units());
     assert!(report.consumed_byte_units() <= report.admitted_byte_units());
-    assert_eq!(report.admitted_byte_units(), 9_001_239);
-    assert_eq!(report.consumed_byte_units(), 7_504_065);
-    assert_eq!(report.retained_byte_units(), 697);
+    assert_eq!(report.admitted_byte_units(), 9_001_743);
+    assert_eq!(report.consumed_byte_units(), 7_504_519);
+    assert_eq!(report.retained_byte_units(), 757);
     let replay = campaign(&candidates, 0.01, 12).expect("replay succeeds");
     assert_eq!(replay.admitted_byte_units(), report.admitted_byte_units());
     assert_eq!(replay.consumed_byte_units(), report.consumed_byte_units());
@@ -914,7 +1381,7 @@ fn g4_poll_quota_sweep_covers_every_boundary_without_partial_publication() {
     for quota in 0u32..=4_096 {
         let budget = Budget::new().with_poll_quota(quota);
         let outcome = with_cx(&CancelGate::new(), budget, ExecMode::Deterministic, |cx| {
-            run_campaign(&candidates, 0.01, 12, cx)
+            run_campaign(&candidates, objective(0.01), 12, cx)
         });
         match outcome {
             Ok(report) => {
@@ -949,7 +1416,7 @@ fn g4_poll_quota_sweep_covers_every_boundary_without_partial_publication() {
     for margin in [1u32, 7, 64] {
         let budget = Budget::new().with_poll_quota(sufficient + margin);
         let replay = with_cx(&CancelGate::new(), budget, ExecMode::Deterministic, |cx| {
-            run_campaign(&candidates, 0.01, 12, cx)
+            run_campaign(&candidates, objective(0.01), 12, cx)
         })
         .expect("a strictly larger poll quota cannot regress to refusal");
         assert_same_non_identity_report(&replay, &baseline);

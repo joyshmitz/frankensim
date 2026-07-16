@@ -8,15 +8,25 @@ SensorForge — optimal experimental design that knows when to stop. Layer L4
 Composes `fs-assimilate` and `fs-exec` (one explicit cancellation context and
 private invocation-global poll ledger), `fs-voi` (EVPI + recommend),
 `fs-toleralloc` (first-order budget), `fs-evidence` (Estimated lineage), and
-`fs-blake3` (bounded canonical identities). Dependencies point downward.
+`fs-blake3` (bounded canonical identities). `fs-qty` is the sole authority for
+six-base dimensions and semantic quantity kinds at the public OED boundary.
+Dependencies point downward.
 
 ## Public types and semantics
 
-- `Candidate::new(...) -> Result<Candidate, CandidateError>` checks and then
-  seals the name, finite truth/prior, non-negative prior variance, and positive
-  finite sensor noise/cost. Read-only accessors expose the declaration.
-- `run_campaign(&[Candidate], threshold, max_sensors, &Cx) ->
-  Result<OedReport, OedError>` validates the threshold, unique candidate
+- `ObjectiveValue` admits either a finite `QtyAny` under an explicit
+  dimension-only/no-kind schema or an already checked `SemanticQty`. Its
+  `ObjectiveSpec` retains all six exponents plus the exact optional quantity
+  kind and scalar form. Dimension-only is an exact claim, never a wildcard.
+- `Candidate::new(...) -> Result<Candidate, CandidateError>` checks and seals
+  the name; truth/prior mean under one exact objective schema `Q`;
+  non-negative prior variance and positive sensor-noise variance in `Q²`; and
+  a positive, explicitly dimensionless relative acquisition-cost weight.
+  Accessors reconstruct typed quantities instead of exposing bare inference
+  scalars.
+- `run_campaign(&[Candidate], ObjectiveValue, max_sensors, &Cx) ->
+  Result<OedReport, OedError>` validates the typed threshold, exact schema
+  agreement across every candidate, unique candidate
   identities, and explicit synchronous work caps, then CANONICALIZES the
   candidate menu (name-ascending) EXACTLY ONCE at admission (bead
   sj31i.62) before greedily placing VoI-chosen sensors under
@@ -38,20 +48,34 @@ private invocation-global poll ledger), `fs-voi` (EVPI + recommend),
   it makes the retained record-visit accounting HONEST without
   changing any admitted/realized work formula, pinned work constant,
   or poll boundary.
-- `demo_candidates() -> Result<Vec<Candidate>, CandidateError>` builds the four
-  checked candidates whose close top two drive the decision.
-- `OedReport` includes the native EVPI trace, posterior summaries, one
+- `demo_candidates() -> Result<Vec<Candidate>, CandidateError>` builds four
+  checked alternatives for the full-menu decision evaluator.
+- `OedReport` retains the exact objective schema. Total/posterior variances
+  return `QtyAny` in `Q²`; posterior means return `ObjectiveValue` in `Q`;
+  EVPI and its trace return `ObjectiveValue` under the decision-difference
+  schema. For an absolute-temperature objective this decision schema is
+  temperature difference, so an absolute-temperature threshold refuses. Other
+  semantic measurement kinds intentionally produce a dimension-only decision
+  schema because `fs-qty` has no general loss/difference kind; retaining the
+  measurement kind or its Peak/RMS form on EVPI would be a false claim. The
+  original exact objective schema remains separately retained and identity-bound.
+  Fractional variance reduction, relative acquisition weights, and the current
+  first-order allocation tolerance are dimensionless.
+- `OedReport` also includes one
   instrument-bound `assimilation_color` per placement, and input-bound final
   variance/EVPI colors so consumers do not need to transcribe the loop.
-- Both retained report estimators use identity version 6 (v6 binds the
-  CANONICAL candidate sequence — bead sj31i.62). Their canonical
+- Both retained report estimators use identity version 8. Their canonical
   preimages bind every candidate declaration, threshold and placement cap,
+  the exact 12-byte six-base/semantic objective schema,
   execution mode, stream/budget context, admitted and realized work shapes,
   poll/planning policy versions and strides, quadrature rule constants, every
   realized output sequence, and both color dispersions.
-  Prefixes are `sensorforge-posterior-variance:v6:` and
-  `sensorforge-evpi:v6:`; the manifest also locks planning policy v3, poll
-  policy v2, `fs-voi` EVPI semantics, record stride 256, and action stride 1.
+  Prefixes are `sensorforge-posterior-variance:v8:` and
+  `sensorforge-evpi:v8:` under domain `org.frankensim.fs-oed-e2e.report.v6`;
+  the manifest also locks planning policy v4, byte policy v3, poll policy v2,
+  `fs-voi` EVPI semantics, record stride 256, and action stride 1. The same
+  fixed schema token is included in each point-sensor instrument identity, so
+  nested `fs-assimilate` colors cannot collide across semantic aliases.
 
 ## Invariants
 
@@ -73,15 +97,21 @@ private invocation-global poll ledger), `fs-voi` (EVPI + recommend),
   `Estimated`. Both bounded estimator identities commit to the complete ordered
   candidate declarations, threshold, placement cap, realized placement and
   posterior sequences, and canonical assimilation colors.
+- Campaign admission is unit-closed before sorting, allocation, or scientific
+  work: all candidates share exact `Q`; variance/noise fields are `Q²`; and the
+  threshold carries the derived decision schema. Pressure and stress refuse
+  despite identical dimensions, as do semantic and dimension-only aliases.
+  Coherent-SI normalization makes equivalent metre/millimetre declarations
+  bit- and identity-equivalent.
 - Zero total prior variance has fractional reduction `0.0`, not NaN. A
   zero-sensitivity candidate receives `+infinity` allocation, the exact
   unconstrained first-order optimum; positive-sensitivity allocations must be
   positive and finite.
 - Deterministic (the worked-campaign readings hit each truth; Kalman variance is
-  observation-free; planning quadrature is fixed-order). Equal-mean EVPI inputs
-  are canonicalized by candidate identity before the current top-two
-  approximation, so caller menu order cannot alter the sensor policy. This does
-  not upgrade that approximation into full multi-alternative EVPI.
+  observation-free; planning quadrature is fixed-order). Candidate identity
+  canonicalization fixes equal-mean tie-breaking before both the STOP gate and
+  action ranking, which use the same full multi-alternative expected-opportunity-
+  loss evaluator; caller menu order cannot alter the sensor policy.
 - With `n` candidates and admitted placement cap `s`, preflight charges setup
   `5n`, each complete placement `11n^2+5n+2`, maximum finalization
   `18n+6s+5`, and their checked sum. For `p` completed placements, `a` action
@@ -102,7 +132,9 @@ cancellation cannot be laundered as a scientific refusal. Resource admission
 caps candidates, placements, and the quadratic action/design work multiplied
 by the retained expectation-rule cost before campaign allocation or iteration.
 Derived posterior variances, posterior means, expected EVPI, and value-per-cost
-must remain finite.
+must remain finite. `CandidateError::DimensionMismatch` names actual and
+required dimensions; `ObjectiveSchemaMismatch` and `ThresholdSchemaMismatch`
+retain both exact schemas. Exponent overflow while deriving `Q²` refuses typed.
 
 `BudgetRefused` (bead sj31i.6) retains the ambient accountant's typed refusal
 verbatim: `run_campaign` admits `cx.budget()` plus the admitted work plan
@@ -151,6 +183,9 @@ menu permutations; predicted/realized Kalman variance agreement and extreme
 finite noise limits; initial STOP at a
 zero placement cap; full-report determinism; adversarial candidate/campaign
 input rejection; zero-variance behavior; cancellation/poll bounds;
+`Q²` variance/noise and dimensionless-cost refusal; pressure/stress and
+absolute/delta-temperature traps; metre/millimetre rescaling; typed output
+dimensions; report and nested assimilation identity movement by schema;
 unmeasured-input evidence binding; instrument-bound assimilation lineage;
 admitted/realized work locks; hostile-maximum admission; nested and finalization
 quota sweeps; execution/budget/work identity binding; exact quadrature-bit
@@ -167,6 +202,12 @@ semantics; and sealed-output identity movement.
   certificate or independent validation. The worked campaign currently injects
   declared truth as its deterministic reading; a production measurement
   provider and stochastic outcome stream are separate required work.
+- `sensor_cost` is presently a positive dimensionless relative resource
+  weight, not money, energy, time, or a certified utility. `fs-qty` deliberately
+  has no monetary base dimension. The first-order allocation tolerance and its
+  fixed internal budget remain dimensionless proxies; introducing a real
+  acquisition-cost/utility algebra requires its own schema and conversion
+  contract rather than relabeling these scalars.
 - Logical-work and poll counts do not claim instruction counts, wall-clock or
   memory bounds, pause/resume support, deadline/cost enforcement, drain latency,
   or a 200-microsecond cancellation guarantee. Identity roots are
@@ -179,9 +220,10 @@ semantics; and sealed-output identity movement.
   declaration order remain valid only under their own version prefix. As of
   identity v7 the preimage additionally binds the admitted byte plan and the
   byte-accounting policy version; v6 artifacts remain valid only under their
-  own version prefix.
+  own version prefix. Identity v8 additionally binds the exact objective
+  schema; v7 and earlier artifacts make no unit/semantic identity claim.
 - Full-menu decision algebra (bead sj31i.5, planning policy v4, byte policy
-  v2): the STOP gate, initial/final EVPI, and the trace are the FULL
+  v3): the STOP gate, initial/final EVPI, and the trace are the FULL
   multi-alternative `fs_voi::expected_opportunity_loss_by`; action valuation
   uses the SAME evaluator through the override view (one algebra — an
   action's value is exactly the full loss it removes). One logical work unit
@@ -192,7 +234,7 @@ semantics; and sealed-output identity movement.
   placements on the non-contender alternatives whose residual optimality
   probability blocks the certificate, instead of declaring robustness while
   ignoring them.
-- Byte accounting (identity v7, byte policy v2): every bounded seam —
+- Byte accounting (identity v8, byte policy v3): every bounded seam —
   admission scan and one-time canonical sort, belief/estimate/menu builds and
   their window verifications, EVPI scans, action construction, each
   quadrature-view action evaluation (view construction reads plus per-node menu
@@ -209,3 +251,5 @@ semantics; and sealed-output identity movement.
   canonical candidate menu) reserve their admitted capacity fallibly
   (`OutputAllocationRefused`) before scientific work; transient scratch keeps
   ordinary infallible allocation and is covered by the charge ledger instead.
+  Policy v3 additionally charges schema comparison/retention, the expanded
+  point-sensor identity, and both schema-bearing report preimages.
