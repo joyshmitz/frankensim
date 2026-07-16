@@ -528,6 +528,19 @@ pub enum RefitDenseBasisRun {
     Cancelled,
 }
 
+/// Transactional outcome of cancellation-aware tensor sample-basis assembly.
+#[must_use]
+#[derive(Debug, Clone, PartialEq)]
+pub enum RefitSampleBasisRowRun {
+    /// Both dense axis rows and their complete tensor product were assembled.
+    Complete {
+        /// Row-major U-by-V basis values for one refit sample.
+        values: Vec<f64>,
+    },
+    /// Cancellation was observed before publication.
+    Cancelled,
+}
+
 /// Transactional outcome of cancellation-aware open-uniform refit knot
 /// construction.
 #[must_use]
@@ -1372,7 +1385,16 @@ fn close_refit_u_seam(net: Vec<Vec<[f64; 3]>>) -> Result<Vec<Vec<[f64; 3]>>, Nur
     }
 }
 
-fn preflight_refit_dense_basis(control_count: usize, degree: usize) -> Result<(), NurbsError> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RefitDenseBasisPlan {
+    total_work: u128,
+    peak_scalars: usize,
+}
+
+fn preflight_refit_dense_basis(
+    control_count: usize,
+    degree: usize,
+) -> Result<RefitDenseBasisPlan, NurbsError> {
     if control_count == 0 {
         return Err(refit_structure_error(
             "refit dense basis requires at least one control",
@@ -1418,7 +1440,10 @@ fn preflight_refit_dense_basis(control_count: usize, degree: usize) -> Result<()
             "refit dense basis retains {retained_bytes} requested bytes above static cap {REFIT_MAX_ALLOC_BYTES}"
         )));
     }
-    Ok(())
+    Ok(RefitDenseBasisPlan {
+        total_work,
+        peak_scalars,
+    })
 }
 
 /// Evaluate and expand one admitted nonzero basis row into the complete refit
@@ -1477,6 +1502,166 @@ fn evaluate_refit_dense_basis_with_poll(
         return Ok(RefitDenseBasisRun::Cancelled);
     }
     Ok(RefitDenseBasisRun::Complete { values })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RefitSampleBasisRowPlan {
+    control_count: usize,
+}
+
+fn preflight_refit_sample_basis_row_counts(
+    control_count_u: usize,
+    degree_u: usize,
+    control_count_v: usize,
+    degree_v: usize,
+) -> Result<RefitSampleBasisRowPlan, NurbsError> {
+    let control_count = control_count_u
+        .checked_mul(control_count_v)
+        .ok_or_else(|| refit_structure_error("refit sample basis row size overflows usize"))?;
+    let plan_u = preflight_refit_dense_basis(control_count_u, degree_u)?;
+    let plan_v = preflight_refit_dense_basis(control_count_v, degree_v)?;
+    let tensor_work =
+        checked_refit_work_product(&[control_count as u128, 4], "sample basis tensor product")?;
+    let total_work = checked_refit_work_sum(
+        &[plan_u.total_work, plan_v.total_work, tensor_work, 3],
+        "sample basis row aggregate",
+    )?;
+    if total_work > REFIT_MAX_WORK_UNITS {
+        return Err(refit_structure_error(format!(
+            "refit sample basis row requests {total_work} work units above static cap {REFIT_MAX_WORK_UNITS}"
+        )));
+    }
+
+    let v_phase_scalars = control_count_u
+        .checked_add(plan_v.peak_scalars)
+        .ok_or_else(|| refit_structure_error("refit sample V-basis live size overflows usize"))?;
+    let output_phase_scalars = control_count_u
+        .checked_add(control_count_v)
+        .and_then(|scalars| scalars.checked_add(control_count))
+        .ok_or_else(|| refit_structure_error("refit sample row live size overflows usize"))?;
+    let peak_scalars = plan_u
+        .peak_scalars
+        .max(v_phase_scalars)
+        .max(output_phase_scalars);
+    let retained_bytes = peak_scalars
+        .checked_mul(size_of::<f64>())
+        .ok_or_else(|| refit_structure_error("refit sample row byte estimate overflows usize"))?;
+    if retained_bytes > REFIT_MAX_ALLOC_BYTES {
+        return Err(refit_structure_error(format!(
+            "refit sample basis row retains {retained_bytes} requested bytes above static cap {REFIT_MAX_ALLOC_BYTES}"
+        )));
+    }
+    Ok(RefitSampleBasisRowPlan { control_count })
+}
+
+fn preflight_refit_sample_basis_row(
+    knots_u: AdmittedKnotVector<'_, f64>,
+    knots_v: AdmittedKnotVector<'_, f64>,
+    u: f64,
+    v: f64,
+) -> Result<RefitSampleBasisRowPlan, NurbsError> {
+    knots_u
+        .source()
+        .preflight_parameter(u, "refit U sample basis")?;
+    knots_v
+        .source()
+        .preflight_parameter(v, "refit V sample basis")?;
+    preflight_refit_sample_basis_row_counts(
+        knots_u.control_count(),
+        knots_u.degree(),
+        knots_v.control_count(),
+        knots_v.degree(),
+    )
+}
+
+/// Assemble one complete tensor-product sample row from admitted U/V knots.
+///
+/// U-then-V parameter checks, aggregate nested-basis-plus-tensor work, and peak
+/// simultaneously live U-row/V-row/output payload are admitted before the first
+/// nested basis allocation. One gate spans both admitted basis evaluations,
+/// fallible output reservation, deterministic row-major tensor fill, finite
+/// arithmetic checks, and final publication. Cancellation drops every local row
+/// and exposes no partial sample. The primitive does not consume the `Cx` budget
+/// or grant fit, conditioning, or geometric-error authority.
+///
+/// # Errors
+/// Returns the admitted basis parameter/arithmetic/allocation refusals or a
+/// structured aggregate work, retained-byte, tensor-size, or output-allocation
+/// refusal.
+pub fn build_refit_sample_basis_row_with_cx(
+    knots_u: AdmittedKnotVector<'_, f64>,
+    knots_v: AdmittedKnotVector<'_, f64>,
+    u: f64,
+    v: f64,
+    cx: &Cx<'_>,
+) -> Result<RefitSampleBasisRowRun, NurbsError> {
+    let mut should_cancel = || cx.checkpoint().is_err();
+    build_refit_sample_basis_row_with_poll(knots_u, knots_v, u, v, &mut should_cancel)
+}
+
+fn build_refit_sample_basis_row_with_poll(
+    knots_u: AdmittedKnotVector<'_, f64>,
+    knots_v: AdmittedKnotVector<'_, f64>,
+    u: f64,
+    v: f64,
+    should_cancel: &mut impl FnMut() -> bool,
+) -> Result<RefitSampleBasisRowRun, NurbsError> {
+    let plan = preflight_refit_sample_basis_row(knots_u, knots_v, u, v)?;
+    let values_u = match evaluate_refit_dense_basis_with_poll(knots_u, u, should_cancel)? {
+        RefitDenseBasisRun::Complete { values } => values,
+        RefitDenseBasisRun::Cancelled => return Ok(RefitSampleBasisRowRun::Cancelled),
+    };
+    let values_v = match evaluate_refit_dense_basis_with_poll(knots_v, v, should_cancel)? {
+        RefitDenseBasisRun::Complete { values } => values,
+        RefitDenseBasisRun::Cancelled => return Ok(RefitSampleBasisRowRun::Cancelled),
+    };
+    if should_cancel() {
+        return Ok(RefitSampleBasisRowRun::Cancelled);
+    }
+
+    let mut values = try_vec_with_capacity(plan.control_count, "refit sample basis row")?;
+    if should_cancel() {
+        return Ok(RefitSampleBasisRowRun::Cancelled);
+    }
+    let mut operations_since_poll = 0usize;
+    for &value_u in &values_u {
+        for &value_v in &values_v {
+            let value = if value_u == 0.0 || value_v == 0.0 {
+                0.0
+            } else {
+                value_u * value_v
+            };
+            if !value.is_finite() {
+                return Err(refit_structure_error(
+                    "refit sample basis tensor arithmetic became non-finite",
+                ));
+            }
+            values.push(value);
+            if refit_poll_due(&mut operations_since_poll, should_cancel) {
+                return Ok(RefitSampleBasisRowRun::Cancelled);
+            }
+        }
+    }
+    debug_assert_eq!(values.len(), plan.control_count);
+    if should_cancel() {
+        return Ok(RefitSampleBasisRowRun::Cancelled);
+    }
+    Ok(RefitSampleBasisRowRun::Complete { values })
+}
+
+fn refit_sample_basis_row(
+    knots_u: AdmittedKnotVector<'_, f64>,
+    knots_v: AdmittedKnotVector<'_, f64>,
+    u: f64,
+    v: f64,
+) -> Result<Vec<f64>, NurbsError> {
+    let mut never_cancel = || false;
+    match build_refit_sample_basis_row_with_poll(knots_u, knots_v, u, v, &mut never_cancel)? {
+        RefitSampleBasisRowRun::Complete { values } => Ok(values),
+        RefitSampleBasisRowRun::Cancelled => Err(refit_structure_error(
+            "non-cancellable refit sample basis assembly observed cancellation",
+        )),
+    }
 }
 
 /// Row of basis values over the whole control axis (dense, small).
@@ -1836,19 +2021,8 @@ pub fn refit_radial(
                 ));
             }
             targets.push(target);
-            let bu = basis_row(admitted_ku, u)?;
-            let bv = basis_row(admitted_kv, v)?;
-            let mut row = try_filled_vec(control_points, 0.0f64, "refit sample matrix row")?;
-            for (i, &wu) in bu.iter().enumerate() {
-                if wu == 0.0 {
-                    continue;
-                }
-                for (j, &wv) in bv.iter().enumerate() {
-                    if wv != 0.0 {
-                        row[i * nv + j] = wu * wv;
-                    }
-                }
-            }
+            let row = refit_sample_basis_row(admitted_ku, admitted_kv, u, v)?;
+            debug_assert_eq!(row.len(), control_points);
             rows_b.push(row);
             uvs.push([u, v]);
         }
@@ -2829,6 +3003,112 @@ mod tests {
         let error = preflight_refit_dense_basis(usize::MAX, 1)
             .expect_err("unbounded dense basis work must be refused");
         assert!(error.to_string().contains("work units"));
+    }
+
+    // G0/G5: tensor composition preserves the exact U-major row produced by
+    // independently evaluated admitted dense basis rows.
+    #[test]
+    fn refit_sample_basis_row_matches_axis_tensor_product() {
+        let knots_u = open_uniform_knots(4, 2).expect("quadratic U knots");
+        let knots_v = open_uniform_knots(3, 1).expect("linear V knots");
+        let admitted_u = knots_u.admitted_after_validation();
+        let admitted_v = knots_v.admitted_after_validation();
+        let (u, v) = (0.375, 0.25);
+        let values_u = basis_row(admitted_u, u).expect("dense U basis");
+        let values_v = basis_row(admitted_v, v).expect("dense V basis");
+        let mut expected = Vec::with_capacity(values_u.len() * values_v.len());
+        for &value_u in &values_u {
+            for &value_v in &values_v {
+                expected.push(if value_u == 0.0 || value_v == 0.0 {
+                    0.0
+                } else {
+                    value_u * value_v
+                });
+            }
+        }
+
+        assert_eq!(
+            refit_sample_basis_row(admitted_u, admitted_v, u, v).expect("synchronous sample row"),
+            expected
+        );
+        with_refit_cx(false, |cx| {
+            assert_eq!(
+                build_refit_sample_basis_row_with_cx(admitted_u, admitted_v, u, v, cx)
+                    .expect("cancellable sample row"),
+                RefitSampleBasisRowRun::Complete {
+                    values: expected.clone()
+                }
+            );
+        });
+    }
+
+    // G4/G5: one callback crosses both admitted basis phases, output
+    // reservation/fill, and final publication without exposing a partial row.
+    #[test]
+    fn refit_sample_basis_row_polling_is_bounded_and_transactional() {
+        let knots = open_uniform_knots(130, 1).expect("long linear knots");
+        let admitted = knots.admitted_after_validation();
+        let run = |cancel_at: Option<usize>| {
+            let polls = Cell::new(0usize);
+            let outcome =
+                build_refit_sample_basis_row_with_poll(admitted, admitted, 0.25, 0.75, &mut || {
+                    polls.set(polls.get() + 1);
+                    cancel_at == Some(polls.get())
+                })
+                .expect("valid sample basis row");
+            (outcome, polls.get())
+        };
+
+        let (complete, healthy_polls) = run(None);
+        assert!(matches!(complete, RefitSampleBasisRowRun::Complete { .. }));
+        assert!(healthy_polls > 16);
+        for cancel_at in [1, healthy_polls / 2, healthy_polls] {
+            assert_eq!(
+                run(Some(cancel_at)),
+                (RefitSampleBasisRowRun::Cancelled, cancel_at)
+            );
+        }
+        with_refit_cx(true, |cx| {
+            assert_eq!(
+                build_refit_sample_basis_row_with_cx(admitted, admitted, 0.25, 0.75, cx)
+                    .expect("pre-cancellation is terminal"),
+                RefitSampleBasisRowRun::Cancelled
+            );
+        });
+    }
+
+    // G0/G4: U/V parameter and hostile aggregate count/work/payload refusals
+    // precede the first nested basis allocation.
+    #[test]
+    fn refit_sample_basis_row_refusals_are_preflighted() {
+        let knots = open_uniform_knots(4, 2).expect("quadratic knots");
+        let admitted = knots.admitted_after_validation();
+        let polls = Cell::new(0usize);
+        let parameter_error = build_refit_sample_basis_row_with_poll(
+            admitted,
+            admitted,
+            -0.25,
+            f64::NAN,
+            &mut || {
+                polls.set(polls.get() + 1);
+                true
+            },
+        )
+        .expect_err("invalid U parameter must win before cancellation");
+        assert!(parameter_error.to_string().contains("refit U sample basis"));
+        assert_eq!(polls.get(), 0);
+
+        let overflow = preflight_refit_sample_basis_row_counts(usize::MAX, 1, 2, 1)
+            .expect_err("unrepresentable tensor size must be refused");
+        assert!(overflow.to_string().contains("row size overflows"));
+
+        let work = preflight_refit_sample_basis_row_counts(16_000, 1, 16_000, 1)
+            .expect_err("unbounded tensor work must be refused");
+        assert!(work.to_string().contains("work units"));
+
+        let retained = preflight_refit_sample_basis_row_counts(6_000, 1, 6_000, 1)
+            .expect_err("unbounded simultaneously live payload must be refused");
+        assert!(retained.to_string().contains("retains"));
     }
 
     #[test]

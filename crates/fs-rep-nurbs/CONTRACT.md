@@ -801,6 +801,16 @@ retained envelope; individual allocator calls remain non-preemptible. This
 primitive does not consume a caller budget, migrate sampling/refit
 orchestration, own drain/finalize, promise wall-time preemption, or grant fit or
 geometric authority.
+`build_refit_sample_basis_row_with_cx` composes two admitted knot generations
+under deterministic U-then-V request precedence. Aggregate work covers both
+nested dense-basis phases and the complete row-major tensor fill; retained-byte
+admission covers the maximum of U scratch, retained U plus V scratch, and both
+dense axis rows plus the output row before the first nested allocation. One
+caller gate spans both basis evaluations, fallible output reservation, finite
+tensor arithmetic, fixed-stride fill, and final publication. Cancellation drops
+all local rows. Spare capacity, allocator metadata/rounding, scalar wall time,
+caller-budget consumption, drain/finalize, conditioning, and fit/geometric
+authority remain outside this measured primitive.
 `assemble_refit_normal_with_cx` preserves checked dimensions, finite
 non-negative regularization, count-derived aggregate work, and the 256 MiB
 requested dense-output envelope ahead of its first checkpoint. One gate then
