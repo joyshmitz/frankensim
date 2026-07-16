@@ -5,7 +5,7 @@
 //! statistically; frame transforms obey G0 composition laws; unit
 //! coherence holds through non-SI spellings (G3).
 
-use fs_blake3::ContentHash;
+use fs_blake3::{ContentHash, hash_bytes};
 use fs_exec::{Budget, CancelGate, Cx, ExecMode, StreamKey};
 use fs_ga::{Motor, Point, Quat, Vec3};
 use fs_qty::{Dims, QtyAny};
@@ -788,6 +788,31 @@ fn sc_001d_canonical_ir_normalizes_physically_irrelevant_signed_zero() {
         "equal scenarios must have one canonical byte identity"
     );
     let canonical = write_ir(&negative_zero);
+    let negative_zero_wire = canonical.replacen("(qty 0 1 0 -2 0 0 0)", "(qty -0 1 0 -2 0 0 0)", 1);
+    assert_ne!(
+        negative_zero_wire, canonical,
+        "the v2 signed-zero wire mutation must apply"
+    );
+    let decoded_negative_zero =
+        parse_ir(&negative_zero_wire).expect("finite v2 negative zero parses canonically");
+    assert_eq!(
+        decoded_negative_zero.scenario().environment.gravity[0]
+            .value
+            .to_bits(),
+        0.0_f64.to_bits(),
+        "parser admission must normalize signed zero in memory"
+    );
+    assert_eq!(decoded_negative_zero.scenario(), &positive_zero);
+    assert_eq!(
+        write_ir(decoded_negative_zero.scenario()),
+        canonical,
+        "noncanonical v2 signed zero must re-emit as the unique canonical bytes"
+    );
+    assert_eq!(
+        hash_bytes(write_ir(decoded_negative_zero.scenario()).as_bytes()),
+        hash_bytes(canonical.as_bytes()),
+        "semantic equality must imply one canonical content hash"
+    );
     assert_eq!(
         write_ir(
             parse_ir(&canonical)
@@ -797,9 +822,63 @@ fn sc_001d_canonical_ir_normalizes_physically_irrelevant_signed_zero() {
         canonical,
         "canonical writer must be idempotent"
     );
+
+    let legacy_negative_zero =
+        LEGACY_MINIMAL_IR.replacen("(qty 0 1 0 -2 0 0)", "(qty -0 1 0 -2 0 0)", 1);
+    assert_ne!(
+        legacy_negative_zero, LEGACY_MINIMAL_IR,
+        "the legacy signed-zero wire mutation must apply"
+    );
+    let legacy_positive = parse_ir(LEGACY_MINIMAL_IR).expect("legacy positive zero parses");
+    let legacy_negative =
+        parse_ir(&legacy_negative_zero).expect("legacy negative zero parses canonically");
+    assert_eq!(
+        legacy_negative.scenario().environment.gravity[0]
+            .value
+            .to_bits(),
+        0.0_f64.to_bits(),
+        "legacy migration must also normalize signed zero in memory"
+    );
+    assert_eq!(legacy_negative.scenario(), legacy_positive.scenario());
+    let legacy_canonical = write_ir(legacy_positive.scenario());
+    assert_eq!(write_ir(legacy_negative.scenario()), legacy_canonical);
+    let positive_receipt = legacy_positive
+        .migration()
+        .expect("legacy positive zero carries migration evidence");
+    let negative_receipt = legacy_negative
+        .migration()
+        .expect("legacy negative zero carries migration evidence");
+    assert_ne!(
+        positive_receipt.old_hash(),
+        negative_receipt.old_hash(),
+        "distinct supplied authority bytes retain distinct source hashes"
+    );
+    assert_eq!(
+        positive_receipt.new_hash(),
+        negative_receipt.new_hash(),
+        "semantically equal legacy zeros migrate to one canonical identity"
+    );
+    assert!(positive_receipt.verifies(LEGACY_MINIMAL_IR.as_bytes(), legacy_canonical.as_bytes()));
+    assert!(
+        negative_receipt.verifies(legacy_negative_zero.as_bytes(), legacy_canonical.as_bytes())
+    );
+
+    for value in [-1.0, f64::from_bits(0x8000_0000_0000_0001)] {
+        let mut negative_nonzero = positive_zero.clone();
+        negative_nonzero.environment.gravity[0].value = value;
+        let negative_nonzero_ir = write_ir(&negative_nonzero);
+        let reparsed = parse_ir(&negative_nonzero_ir)
+            .expect("negative finite nonzero values remain representable");
+        assert_eq!(
+            reparsed.scenario().environment.gravity[0].value.to_bits(),
+            value.to_bits(),
+            "canonicalization must preserve representative negative nonzero bit patterns"
+        );
+        assert_eq!(write_ir(reparsed.scenario()), negative_nonzero_ir);
+    }
     verdict(
         "sc-001d",
-        "semantic float equality and canonical scenario identity agree for signed zero",
+        "v2 and legacy parser admission normalize signed zero while retaining source receipts and negative normal/subnormal bits",
     );
 }
 

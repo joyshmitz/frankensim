@@ -795,7 +795,7 @@ fn as_f64(sx: &Sx) -> Result<f64, ScenarioError> {
         && let Ok(v) = a.parse::<f64>()
         && v.is_finite()
     {
-        return Ok(v);
+        return Ok(canonical_float(v));
     }
     Err(err(0, "expected a finite number"))
 }
