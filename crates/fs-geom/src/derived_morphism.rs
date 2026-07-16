@@ -13109,12 +13109,12 @@ mod tests {
         let source = admit_derived_geometry_v1(source_ir, DerivedAdmissionBudgetV1::STANDARD, cx)
             .expect("valid source geometry");
 
-        let mut middle_ir = fixed_resolution_geometry_ir(8, 18, 28, 2);
+        let mut middle_ir = fixed_resolution_geometry_ir(10, 20, 40, 2);
         replace_strata(&mut middle_ir, 38, &[(49, 1), (50, 2)]);
         let middle = admit_derived_geometry_v1(middle_ir, DerivedAdmissionBudgetV1::STANDARD, cx)
             .expect("valid middle geometry");
 
-        let mut target_ir = fixed_resolution_geometry_ir(9, 19, 29, 2);
+        let mut target_ir = fixed_resolution_geometry_ir(13, 23, 53, 2);
         replace_strata(&mut target_ir, 39, &[(51, 2)]);
         let target = admit_derived_geometry_v1(target_ir, DerivedAdmissionBudgetV1::STANDARD, cx)
             .expect("valid target geometry");
