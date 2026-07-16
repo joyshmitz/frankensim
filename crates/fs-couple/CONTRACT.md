@@ -2,7 +2,8 @@
 
 Multiphysics composition through a versioned port-thermodynamic vocabulary: a
 lossless interface relation, explicit storage/dissipation/source primitives,
-and caller-supplied scalar balance instrumentation without false passivity.
+a complete stream-flux bundle, and caller-supplied scalar balance
+instrumentation without false passivity.
 
 ## Purpose and layer
 
@@ -38,6 +39,35 @@ function-space roles. No domain solver is a dependency.
 - `PortKind::scalar_seed_schema` constructs one canonical scalar coordinate of
   any kind without inventing identity, frame/basis, or clock data; retained
   goldens use it to migrate the existing mechanical, fluid, and thermal seeds.
+- `STREAM_PORT_VERSION = 1`; `StreamPort` is not a scalar `PortKind` or a fifth
+  thermodynamic relation. It bundles signed mass (`kg/s`), canonically ordered
+  species/element amount (`mol/s`), three momentum-rate (`N`), energy (`W`),
+  and entropy-rate (`W/K`) values under one `StreamChartBinding`. Its fixed
+  roles are Energy, Mass, Amount, LinearMomentum, and Entropy.
+- `StreamChartBinding` separates the constituent-basis artifact and its
+  explicit, canonically ordered species/element axis from the spatial
+  basis/frame/orientation. It also binds the state schema, chemical reference
+  state, logical clock/tick, gravity datum, and the closed
+  `StreamStressWorkConvention`. Stream admission is owner-outward only until a
+  public pullback exists.
+- `StreamEnergyChart` structurally selects exactly one of: the canonical
+  moving-stream enthalpy chart
+  `mdot * (h + |u|^2/2 + g*z) + W_deviatoric`; internal energy plus pressure and
+  deviatoric Cauchy work; or one coordinate from an exact mixture
+  Euler/Legendre family. Internal-energy, enthalpy, Helmholtz, and Gibbs
+  selections all reconstruct canonical enthalpy from the retained conjugate
+  terms before transported energy is formed. The caller-declared stream energy
+  rate must equal the selected chart bit-for-bit.
+- `PressureWorkCrosswalk` recomputes `h = e + p/rho`,
+  `volume_flow = mdot/rho`, and `mdot*(h-e) = p*volume_flow` exactly.
+  `EulerLegendreCrosswalk` recomputes the mixture Euler identity plus enthalpy,
+  Helmholtz, and Gibbs transforms. Both also require an
+  `ExactIdentityProofRef` bound to the complete stream context.
+- `ChemicalEnergyAccounting` admits either energy embedded in the selected
+  state potential or one separately proved species-potential power term. It
+  refuses dual ownership, a foreign chemical reference, and a foreign or
+  wrong-kind partition proof. Explicit species-potential and Euler/Legendre
+  modes require a species-only constituent axis.
 - `ConservativeJunction::iterate_added_mass_fixed` /
   `iterate_added_mass_aitken` are schema-bound migration bridges for the
   retained mechanical scalar fixture; they must remain bitwise equal to the
@@ -93,6 +123,13 @@ function-space roles. No domain solver is a dependency.
   relation cannot exist without an evidence reference; a source cannot exist
   without a named accounting boundary whose coordinate/sign binding exactly
   matches the port.
+- Every admitted stream has a non-empty duplicate-free constituent axis, one
+  shared outward sign convention, finite fixed-dimension rates, fixed bundled
+  conservation roles, and exactly one energy chart. Alternate charts cannot
+  enter without exact scalar identities and context-bound durable evidence;
+  the actual rate axis must equal the proof-bound axis, chemical power is owned
+  exactly once, and pressure/deviatoric work uses the single normative
+  Cauchy-tension-positive integrated outward-power convention.
 - The energy audit reports an interface-balance failure exactly when some
   caller-supplied exchange has absolute imbalance above `tol` or is non-finite.
 - On the added-mass fixture (`μ ≥ 1`): naive staggering (`ω = 1`) diverges while
@@ -107,13 +144,18 @@ overflow, non-power products, kind-specific or shape/pairing mismatch, missing
 kind-required conservation roles, schema-only kinds sent through the raw
 interconnection oracle, localized schema conjugacy mismatch, identity aliasing,
 accounting-boundary coordinate mismatch, scalar/non-scalar misuse, wrong
-added-mass port kind, and non-finite schema-bound values.
+added-mass port kind, and non-finite schema-bound values. Stream errors localize
+non-finite fields/components, empty or duplicate constituent axes, non-outward
+orientation, proof-bound/actual axis mismatch, species-potential accounting on
+an element axis, chart/proof binding or identity mismatches, non-positive
+density, chemical double counting, and declared/chart energy-rate disagreement.
 
 ## Determinism class
 
-Fully deterministic: schema admission canonicalizes roles by enum order;
-interconnection, relation construction, audit, and iterations are pure
-functions of their inputs.
+Fully deterministic: schema admission canonicalizes roles by enum order and
+stream admission canonicalizes constituents by typed ID. Exact crosswalks use a
+pinned operation order and bit equality; interconnection, relation
+construction, audit, and iterations are pure functions of their inputs.
 
 ## Cancellation behavior
 
@@ -129,15 +171,23 @@ None.
 
 ## Conformance tests
 
-`tests/couple.rs` (19 cases): v2 scalar-seed migration goldens for all three
+`tests/couple.rs` (29 cases): v2 scalar-seed migration goldens for all three
 legacy kinds and bitwise whole-result migration of the added-mass fixture;
 rotational/electrical/magnetic/chemical watt-dimensional goldens, required-role
 admission, raw-oracle refusal, and semantic kind mismatch refusal; schema
 fail-closed metadata; localized junction mismatch; non-scalar refusal by the
 scalar evaluator; field-duality measure dimensions, density-side assignment,
 measure-application overflow, and distinct effort/flow spaces; all four
-primitive descriptors and
-identity-alias refusals;
+primitive descriptors and identity-alias refusals;
+complete moving-enthalpy stream admission and canonical constituent ordering;
+one proved explicit-chemical contribution;
+bit-exact enthalpy/internal-energy pressure-work equivalence; one-ULP and
+foreign-context crosswalk/stress-evidence refusal; wrong-identity and
+non-positive-density refusal; all four exact Euler/Legendre coordinates
+reconstructing the same canonical enthalpy and chemical double-count refusal;
+proof-bound axis mismatch and species-mode/element-axis refusal;
+empty/duplicate/non-finite/wrong-orientation stream refusals and
+declared-energy mismatch;
 legacy power-conjugate ports; exact interface power conservation and
 incompatible-port refusal; energy-audit imbalance and non-finite alarms; the
 Aitken Δ² factor; naive staggering diverges where Aitken stays stable; Aitken
@@ -168,10 +218,20 @@ determinism.
   PR-1's conservative junction refuses them rather than assuming an unproved
   effort/flow pullback. A later neutral transfer API must make that transform
   explicit before admission.
-- PR-3 owns `StreamPort`, energy-accounting charts, and exact crosswalk refusal.
-  PR-4 owns closed-window first-law, mass/element/charge, entropy-generation,
-  and optional exergy audits. An `AccountingBoundary` descriptor is not one of
-  those audits.
+- PR-3 admits `StreamPort`, one selected energy-accounting chart, exact numeric
+  crosswalk identities, and context-bound durable proof references. It does
+  not execute the referenced verifier, equation of state, stress operator,
+  constituent-map artifact, or chemical partition proof.
+- PR-3 freezes a stationary or co-moving accounting surface. It does not model
+  boundary velocity, Reynolds-transport terms for a moving/deforming control
+  boundary, or cross-frame kinetic-energy transforms.
+- PR-3 carries mass, species/element amount, momentum, energy, and entropy
+  rates together but does not certify their local closure, derive element or
+  charge balances from stoichiometry, or decompose entropy transport from
+  production. Those are PR-4 window-audit obligations.
+- PR-4 owns closed-window first-law, mass/element/charge,
+  entropy-generation, and optional exergy audits. Neither `StreamPort` nor an
+  `AccountingBoundary` descriptor is one of those audits.
 - The two `fs-iface::SpaceType` entries record neutral effort/flow field roles;
   they do not supply a mortar/Nitsche/harmonic transfer operator, certify that
   the declared pair is dual, or prove inf-sup compatibility for a particular

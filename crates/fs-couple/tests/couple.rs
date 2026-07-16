@@ -2,24 +2,145 @@
 //! ports, the Dirac interconnection's exact power conservation, the energy
 //! audit (passivity measured, not assumed), the Aitken relaxation factor, and
 //! the load-bearing added-mass comparison: naive staggering diverges where
-//! Aitken-relaxed coupling stays stable. The PortSchema v2 PR-1/PR-2 battery
-//! pins scalar migration, four thermodynamic primitives, and extended kinds.
+//! Aitken-relaxed coupling stays stable. The PortSchema v2 PR-1/PR-2 and
+//! StreamPort PR-3 batteries pin migrations, typed relations, and chart
+//! admission without claiming the PR-4 window audits.
 
 use core::num::NonZeroUsize;
 
 use fs_couple::{
-    AccountingBoundary, AitkenRelaxation, BoundaryTreatment, ConservationRole,
-    ConservativeJunction, CoordinateBinding, CoupleError, DissipationEvidence, DissipationLaw,
-    DissipativeRelation, EnergyAudit, FieldMeasureSide, FsiResult, PORT_SCHEMA_VERSION, Port,
-    PortKind, PortOrientation, PortPrimitive, PortSchema, PortTimestamp, PortValueShape,
-    PortVariable, PowerPairing, SourceClass, SourceOrReservoir, StableId, StorageElement,
-    StoragePotential, interconnect, interface_power, iterate_aitken, iterate_fixed_relaxation,
+    AccountingBoundary, AitkenRelaxation, AmountFlowRate, BoundaryTreatment,
+    ChemicalEnergyAccounting, ChemicalEnergyInput, ChemicalEnergyMode, ConjugatePotentialChart,
+    ConjugatePotentialKind, ConservationRole, ConservativeJunction, CoordinateBinding, CoupleError,
+    DeviatoricStressWork, DissipationEvidence, DissipationLaw, DissipativeRelation, EnergyAudit,
+    EntropyFlowRate, EulerLegendreCrosswalk, ExactIdentityProofRef, FieldMeasureSide, FsiResult,
+    InternalEnergyCauchyWorkChart, MovingStreamEnthalpyChart, PORT_SCHEMA_VERSION, Port, PortKind,
+    PortOrientation, PortPrimitive, PortSchema, PortTimestamp, PortValueShape, PortVariable,
+    PowerPairing, PressureWorkCrosswalk, STREAM_PORT_VERSION, SourceClass, SourceOrReservoir,
+    SpecificEnergy, StableId, StorageElement, StoragePotential, StreamChartBinding,
+    StreamConstituentFlow, StreamConstituentId, StreamEnergyChart, StreamIdentity,
+    StreamKinematics, StreamPort, StreamStressWorkConvention, interconnect, interface_power,
+    iterate_aitken, iterate_fixed_relaxation,
 };
 use fs_iface::SpaceType;
-use fs_qty::{Area, Dims, Force, Power, Pressure, Temperature, Velocity, VolumetricFlowRate};
+use fs_qty::chemistry::{ElementId, SpeciesId};
+use fs_qty::{
+    Area, Density, Dims, Force, MassFlowRate, Power, Pressure, Temperature, Velocity,
+    VolumetricFlowRate,
+};
 
 fn stable(value: &str) -> StableId {
     StableId::new(value).unwrap_or_else(|error| panic!("invalid test ID {value:?}: {error:?}"))
+}
+
+fn species_id(id: &str) -> StreamConstituentId {
+    StreamConstituentId::Species(SpeciesId::new(id).unwrap())
+}
+
+fn element_id(id: &str) -> StreamConstituentId {
+    StreamConstituentId::Element(ElementId::new(id).unwrap())
+}
+
+fn try_stream_binding(
+    port_id: &str,
+    orientation: PortOrientation,
+    constituent_axis: impl IntoIterator<Item = StreamConstituentId>,
+) -> Result<StreamChartBinding, CoupleError> {
+    StreamChartBinding::try_new(
+        stable(port_id),
+        stable("state/stream-v1"),
+        stable(&format!("basis/{port_id}")),
+        constituent_axis,
+        stable("reference/chemical-v1"),
+        CoordinateBinding::new(
+            stable("basis/cartesian"),
+            stable("frame/stream-boundary"),
+            orientation,
+        ),
+        PortTimestamp::new(stable("clock/stream-window"), 71),
+        stable("gravity/datum-v1"),
+        StreamStressWorkConvention::CauchyTensionPositiveOutwardPower,
+    )
+}
+
+fn stream_binding(
+    port_id: &str,
+    orientation: PortOrientation,
+    constituent_axis: impl IntoIterator<Item = StreamConstituentId>,
+) -> StreamChartBinding {
+    try_stream_binding(port_id, orientation, constituent_axis).unwrap()
+}
+
+fn identity_proof(
+    binding: &StreamChartBinding,
+    identity: StreamIdentity,
+    label: &str,
+) -> ExactIdentityProofRef {
+    ExactIdentityProofRef::new(
+        identity,
+        stable(&format!("receipt/{label}")),
+        stable("verifier/stream-identities-v1"),
+        stable(&format!("digest/{label}")),
+        binding.clone(),
+    )
+}
+
+fn embedded_chemical(binding: &StreamChartBinding) -> ChemicalEnergyAccounting {
+    ChemicalEnergyAccounting::try_new(
+        binding,
+        ChemicalEnergyInput::IncludedInStatePotential {
+            reference_state: binding.chemical_reference_state().clone(),
+        },
+    )
+    .unwrap()
+}
+
+fn stream_kinematics(velocity: [f64; 3], gz: f64) -> StreamKinematics {
+    StreamKinematics::try_new(velocity.map(Velocity::new), SpecificEnergy::new(gz)).unwrap()
+}
+
+fn deviatoric_work(binding: &StreamChartBinding, power_rate: f64) -> DeviatoricStressWork {
+    DeviatoricStressWork::try_new(
+        binding,
+        Power::new(power_rate),
+        stable("operator/deviatoric-work-v1"),
+        stable("evidence/deviatoric-work-v1"),
+    )
+    .unwrap()
+}
+
+fn species_flow(id: &str, amount_flow: f64) -> StreamConstituentFlow {
+    StreamConstituentFlow::try_new(species_id(id), AmountFlowRate::new(amount_flow)).unwrap()
+}
+
+fn canonical_moving_chart(binding: &StreamChartBinding) -> StreamEnergyChart {
+    StreamEnergyChart::MovingStreamEnthalpy(Box::new(
+        MovingStreamEnthalpyChart::try_new(
+            binding.clone(),
+            SpecificEnergy::new(10.0),
+            stream_kinematics([3.0, 4.0, 0.0], 2.5),
+            deviatoric_work(binding, 3.0),
+            embedded_chemical(binding),
+        )
+        .unwrap(),
+    ))
+}
+
+fn complete_stream(
+    binding: StreamChartBinding,
+    constituent_flows: impl IntoIterator<Item = StreamConstituentFlow>,
+    energy_flow: f64,
+    chart: StreamEnergyChart,
+) -> Result<StreamPort, CoupleError> {
+    StreamPort::try_new(
+        binding,
+        MassFlowRate::new(2.0),
+        constituent_flows,
+        [Force::new(1.0), Force::new(2.0), Force::new(3.0)],
+        Power::new(energy_flow),
+        EntropyFlowRate::new(0.5),
+        chart,
+    )
 }
 
 fn scalar_schema(
@@ -358,6 +479,707 @@ fn field_measure_side_preserves_generalized_kind_dimensions() {
             ..
         })
     ));
+}
+
+#[test]
+fn stream_port_moving_enthalpy_carries_the_complete_bundle() {
+    let binding = stream_binding(
+        "stream/canonical",
+        PortOrientation::OutwardFromOwner,
+        [species_id("O2"), element_id("O")],
+    );
+    let element_flow = StreamConstituentFlow::try_new(
+        StreamConstituentId::Element(ElementId::new("O").unwrap()),
+        AmountFlowRate::new(0.25),
+    )
+    .unwrap();
+    let chart = canonical_moving_chart(&binding);
+    let stream = complete_stream(
+        binding,
+        [element_flow, species_flow("O2", 0.5)],
+        53.0,
+        chart,
+    )
+    .unwrap();
+
+    assert_eq!(stream.version(), STREAM_PORT_VERSION);
+    assert_eq!(stream.mass_flow().value().to_bits(), 2.0_f64.to_bits());
+    assert_eq!(stream.energy_flow().value().to_bits(), 53.0_f64.to_bits());
+    assert_eq!(stream.constituent_flows().len(), 2);
+    assert!(matches!(
+        stream.constituent_flows()[0].id(),
+        StreamConstituentId::Species(id) if id.as_str() == "O2"
+    ));
+    assert_eq!(
+        stream.conservation_roles(),
+        &[
+            ConservationRole::Energy,
+            ConservationRole::Mass,
+            ConservationRole::Amount,
+            ConservationRole::LinearMomentum,
+            ConservationRole::Entropy,
+        ]
+    );
+    assert!(matches!(
+        stream.energy_chart(),
+        StreamEnergyChart::MovingStreamEnthalpy(_)
+    ));
+}
+
+#[test]
+fn moving_enthalpy_admits_one_proved_explicit_chemical_term() {
+    let binding = stream_binding(
+        "stream/explicit-chemistry",
+        PortOrientation::OutwardFromOwner,
+        [species_id("H2")],
+    );
+    assert!(matches!(
+        ChemicalEnergyAccounting::try_new(
+            &binding,
+            ChemicalEnergyInput::ExplicitSpeciesPotentials {
+                reference_state: stable("reference/foreign-chemistry"),
+                power_rate: Power::new(2.0),
+                partition_proof: identity_proof(
+                    &binding,
+                    StreamIdentity::ChemicalEnergyPartition,
+                    "foreign-reference",
+                ),
+            },
+        ),
+        Err(CoupleError::StreamChartBindingMismatch {
+            field: "chemical_reference_state",
+        })
+    ));
+    assert!(matches!(
+        ChemicalEnergyAccounting::try_new(
+            &binding,
+            ChemicalEnergyInput::ExplicitSpeciesPotentials {
+                reference_state: binding.chemical_reference_state().clone(),
+                power_rate: Power::new(2.0),
+                partition_proof: identity_proof(
+                    &binding,
+                    StreamIdentity::PressureWork,
+                    "wrong-chemical-proof-kind",
+                ),
+            },
+        ),
+        Err(CoupleError::WrongStreamIdentityProof {
+            expected: StreamIdentity::ChemicalEnergyPartition,
+            actual: StreamIdentity::PressureWork,
+        })
+    ));
+    let foreign_binding = stream_binding(
+        "stream/foreign-explicit-chemistry",
+        PortOrientation::OutwardFromOwner,
+        [species_id("H2")],
+    );
+    assert!(matches!(
+        ChemicalEnergyAccounting::try_new(
+            &binding,
+            ChemicalEnergyInput::ExplicitSpeciesPotentials {
+                reference_state: binding.chemical_reference_state().clone(),
+                power_rate: Power::new(2.0),
+                partition_proof: identity_proof(
+                    &foreign_binding,
+                    StreamIdentity::ChemicalEnergyPartition,
+                    "foreign-chemical-binding",
+                ),
+            },
+        ),
+        Err(CoupleError::StreamChartBindingMismatch { field: "port_id" })
+    ));
+
+    let chemical = ChemicalEnergyAccounting::try_new(
+        &binding,
+        ChemicalEnergyInput::ExplicitSpeciesPotentials {
+            reference_state: binding.chemical_reference_state().clone(),
+            power_rate: Power::new(2.0),
+            partition_proof: identity_proof(
+                &binding,
+                StreamIdentity::ChemicalEnergyPartition,
+                "explicit-chemical",
+            ),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        chemical.mode(),
+        ChemicalEnergyMode::ExplicitSpeciesPotentials
+    );
+    let chart = StreamEnergyChart::MovingStreamEnthalpy(Box::new(
+        MovingStreamEnthalpyChart::try_new(
+            binding.clone(),
+            SpecificEnergy::new(10.0),
+            stream_kinematics([0.0; 3], 0.0),
+            deviatoric_work(&binding, 0.0),
+            chemical,
+        )
+        .unwrap(),
+    ));
+    let stream = complete_stream(binding, [species_flow("H2", 0.5)], 22.0, chart).unwrap();
+    assert_eq!(stream.energy_flow().value().to_bits(), 22.0_f64.to_bits());
+}
+
+#[test]
+fn internal_energy_chart_exactly_crosswalks_pressure_work() {
+    let binding = stream_binding(
+        "stream/internal",
+        PortOrientation::OutwardFromOwner,
+        [species_id("N2")],
+    );
+    let crosswalk = PressureWorkCrosswalk::try_new(
+        identity_proof(&binding, StreamIdentity::PressureWork, "pressure-work"),
+        MassFlowRate::new(2.0),
+        Density::new(2.0),
+        SpecificEnergy::new(8.0),
+        SpecificEnergy::new(4.0),
+        Pressure::new(8.0),
+        VolumetricFlowRate::new(1.0),
+    )
+    .unwrap();
+    let internal_chart = StreamEnergyChart::InternalEnergyCauchyWork(Box::new(
+        InternalEnergyCauchyWorkChart::try_new(
+            binding.clone(),
+            crosswalk,
+            stream_kinematics([0.0; 3], 0.0),
+            deviatoric_work(&binding, 0.0),
+            embedded_chemical(&binding),
+        )
+        .unwrap(),
+    ));
+    let internal =
+        complete_stream(binding, [species_flow("N2", 1.0)], 16.0, internal_chart).unwrap();
+
+    let enthalpy_binding = stream_binding(
+        "stream/enthalpy-equivalent",
+        PortOrientation::OutwardFromOwner,
+        [species_id("N2")],
+    );
+    let enthalpy_chart = StreamEnergyChart::MovingStreamEnthalpy(Box::new(
+        MovingStreamEnthalpyChart::try_new(
+            enthalpy_binding.clone(),
+            SpecificEnergy::new(8.0),
+            stream_kinematics([0.0; 3], 0.0),
+            deviatoric_work(&enthalpy_binding, 0.0),
+            embedded_chemical(&enthalpy_binding),
+        )
+        .unwrap(),
+    ));
+    let enthalpy = complete_stream(
+        enthalpy_binding,
+        [species_flow("N2", 1.0)],
+        16.0,
+        enthalpy_chart,
+    )
+    .unwrap();
+    assert_eq!(internal.energy_flow(), enthalpy.energy_flow());
+}
+
+#[test]
+fn pressure_work_crosswalk_refuses_inexact_or_foreign_evidence() {
+    let binding = stream_binding(
+        "stream/pressure-refusal",
+        PortOrientation::OutwardFromOwner,
+        [species_id("N2")],
+    );
+    let inexact_enthalpy = SpecificEnergy::new(f64::from_bits(8.0_f64.to_bits() + 1));
+    assert!(matches!(
+        PressureWorkCrosswalk::try_new(
+            identity_proof(&binding, StreamIdentity::PressureWork, "pressure-inexact"),
+            MassFlowRate::new(2.0),
+            Density::new(2.0),
+            inexact_enthalpy,
+            SpecificEnergy::new(4.0),
+            Pressure::new(8.0),
+            VolumetricFlowRate::new(1.0),
+        ),
+        Err(CoupleError::StreamIdentityMismatch {
+            identity: StreamIdentity::PressureWork,
+            check: "specific_enthalpy",
+        })
+    ));
+
+    let foreign_binding = stream_binding(
+        "stream/foreign",
+        PortOrientation::OutwardFromOwner,
+        [species_id("N2")],
+    );
+    let foreign_crosswalk = PressureWorkCrosswalk::try_new(
+        identity_proof(
+            &foreign_binding,
+            StreamIdentity::PressureWork,
+            "pressure-foreign",
+        ),
+        MassFlowRate::new(2.0),
+        Density::new(2.0),
+        SpecificEnergy::new(8.0),
+        SpecificEnergy::new(4.0),
+        Pressure::new(8.0),
+        VolumetricFlowRate::new(1.0),
+    )
+    .unwrap();
+    assert!(matches!(
+        InternalEnergyCauchyWorkChart::try_new(
+            binding.clone(),
+            foreign_crosswalk,
+            stream_kinematics([0.0; 3], 0.0),
+            deviatoric_work(&binding, 0.0),
+            embedded_chemical(&binding),
+        ),
+        Err(CoupleError::StreamChartBindingMismatch { field: "port_id" })
+    ));
+
+    let local_crosswalk = PressureWorkCrosswalk::try_new(
+        identity_proof(&binding, StreamIdentity::PressureWork, "pressure-local"),
+        MassFlowRate::new(2.0),
+        Density::new(2.0),
+        SpecificEnergy::new(8.0),
+        SpecificEnergy::new(4.0),
+        Pressure::new(8.0),
+        VolumetricFlowRate::new(1.0),
+    )
+    .unwrap();
+    assert!(matches!(
+        InternalEnergyCauchyWorkChart::try_new(
+            binding.clone(),
+            local_crosswalk,
+            stream_kinematics([0.0; 3], 0.0),
+            deviatoric_work(&foreign_binding, 0.0),
+            embedded_chemical(&binding),
+        ),
+        Err(CoupleError::StreamChartBindingMismatch { field: "port_id" })
+    ));
+}
+
+#[test]
+fn pressure_work_crosswalk_refuses_wrong_identity_and_nonpositive_density() {
+    let binding = stream_binding(
+        "stream/pressure-proof-refusal",
+        PortOrientation::OutwardFromOwner,
+        [species_id("N2")],
+    );
+    assert_eq!(
+        PressureWorkCrosswalk::try_new(
+            identity_proof(
+                &binding,
+                StreamIdentity::ChemicalEnergyPartition,
+                "pressure-wrong-kind",
+            ),
+            MassFlowRate::new(2.0),
+            Density::new(2.0),
+            SpecificEnergy::new(8.0),
+            SpecificEnergy::new(4.0),
+            Pressure::new(8.0),
+            VolumetricFlowRate::new(1.0),
+        ),
+        Err(CoupleError::WrongStreamIdentityProof {
+            expected: StreamIdentity::PressureWork,
+            actual: StreamIdentity::ChemicalEnergyPartition,
+        })
+    );
+    assert_eq!(
+        PressureWorkCrosswalk::try_new(
+            identity_proof(
+                &binding,
+                StreamIdentity::PressureWork,
+                "pressure-zero-density",
+            ),
+            MassFlowRate::new(2.0),
+            Density::new(0.0),
+            SpecificEnergy::new(8.0),
+            SpecificEnergy::new(4.0),
+            Pressure::new(8.0),
+            VolumetricFlowRate::new(1.0),
+        ),
+        Err(CoupleError::NonPositiveStreamDensity)
+    );
+    assert!(matches!(
+        PressureWorkCrosswalk::try_new(
+            identity_proof(
+                &binding,
+                StreamIdentity::PressureWork,
+                "pressure-rate-overflow",
+            ),
+            MassFlowRate::new(2.0),
+            Density::new(1.0),
+            SpecificEnergy::new(1.0e308),
+            SpecificEnergy::new(0.0),
+            Pressure::new(1.0e308),
+            VolumetricFlowRate::new(2.0),
+        ),
+        Err(CoupleError::NonFiniteStreamValue {
+            field: "pressure_work_rate",
+            index: None,
+        })
+    ));
+}
+
+#[test]
+fn conjugate_chart_requires_exact_euler_legendre_and_single_chemical_owner() {
+    let binding = stream_binding(
+        "stream/conjugate",
+        PortOrientation::OutwardFromOwner,
+        [species_id("CO2")],
+    );
+    let crosswalk = EulerLegendreCrosswalk::try_new(
+        identity_proof(&binding, StreamIdentity::EulerLegendre, "euler-legendre"),
+        SpecificEnergy::new(17.0),
+        SpecificEnergy::new(8.0),
+        SpecificEnergy::new(2.0),
+        SpecificEnergy::new(11.0),
+        SpecificEnergy::new(19.0),
+        SpecificEnergy::new(9.0),
+        SpecificEnergy::new(11.0),
+    )
+    .unwrap();
+    for selected_potential in [
+        ConjugatePotentialKind::InternalEnergy,
+        ConjugatePotentialKind::Enthalpy,
+        ConjugatePotentialKind::Helmholtz,
+        ConjugatePotentialKind::Gibbs,
+    ] {
+        let chart = StreamEnergyChart::ConjugatePotential(Box::new(
+            ConjugatePotentialChart::try_new(
+                binding.clone(),
+                crosswalk.clone(),
+                selected_potential,
+                stream_kinematics([0.0; 3], 0.0),
+                deviatoric_work(&binding, 0.0),
+                embedded_chemical(&binding),
+            )
+            .unwrap(),
+        ));
+        let stream =
+            complete_stream(binding.clone(), [species_flow("CO2", 0.125)], 38.0, chart).unwrap();
+        assert_eq!(stream.energy_flow().value().to_bits(), 38.0_f64.to_bits());
+    }
+
+    let partition = identity_proof(
+        &binding,
+        StreamIdentity::ChemicalEnergyPartition,
+        "chemical-partition",
+    );
+    let explicit = ChemicalEnergyAccounting::try_new(
+        &binding,
+        ChemicalEnergyInput::ExplicitSpeciesPotentials {
+            reference_state: binding.chemical_reference_state().clone(),
+            power_rate: Power::new(2.0),
+            partition_proof: partition.clone(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        ConjugatePotentialChart::try_new(
+            binding.clone(),
+            crosswalk,
+            ConjugatePotentialKind::Gibbs,
+            stream_kinematics([0.0; 3], 0.0),
+            deviatoric_work(&binding, 0.0),
+            explicit,
+        ),
+        Err(CoupleError::DoubleCountedChemicalEnergy)
+    );
+    assert!(matches!(
+        ChemicalEnergyAccounting::try_new(
+            &binding,
+            ChemicalEnergyInput::IncludedAndExplicitSpeciesPotentials {
+                reference_state: binding.chemical_reference_state().clone(),
+                power_rate: Power::new(2.0),
+                partition_proof: partition,
+            },
+        ),
+        Err(CoupleError::DoubleCountedChemicalEnergy)
+    ));
+
+    let wrong_gibbs = SpecificEnergy::new(f64::from_bits(11.0_f64.to_bits() + 1));
+    assert!(matches!(
+        EulerLegendreCrosswalk::try_new(
+            identity_proof(&binding, StreamIdentity::EulerLegendre, "euler-wrong-gibbs"),
+            SpecificEnergy::new(17.0),
+            SpecificEnergy::new(8.0),
+            SpecificEnergy::new(2.0),
+            SpecificEnergy::new(11.0),
+            SpecificEnergy::new(19.0),
+            SpecificEnergy::new(9.0),
+            wrong_gibbs,
+        ),
+        Err(CoupleError::StreamIdentityMismatch {
+            identity: StreamIdentity::EulerLegendre,
+            check: "gibbs_legendre",
+        })
+    ));
+}
+
+#[test]
+fn stream_constituent_and_chemical_basis_binding_fails_closed() {
+    assert_eq!(
+        try_stream_binding("stream/empty-axis", PortOrientation::OutwardFromOwner, [],),
+        Err(CoupleError::EmptyStreamConstituents)
+    );
+    assert!(matches!(
+        try_stream_binding(
+            "stream/duplicate-axis",
+            PortOrientation::OutwardFromOwner,
+            [species_id("H2"), species_id("H2")],
+        ),
+        Err(CoupleError::DuplicateStreamConstituent { .. })
+    ));
+
+    let binding = stream_binding(
+        "stream/axis-refusal",
+        PortOrientation::OutwardFromOwner,
+        [species_id("H2")],
+    );
+    assert_eq!(
+        complete_stream(
+            binding.clone(),
+            [species_flow("O2", 0.5)],
+            53.0,
+            canonical_moving_chart(&binding),
+        ),
+        Err(CoupleError::StreamConstituentAxisMismatch {
+            expected: vec!["species:H2".to_string()],
+            actual: vec!["species:O2".to_string()],
+        })
+    );
+
+    let element_binding = stream_binding(
+        "stream/element-chemistry-refusal",
+        PortOrientation::OutwardFromOwner,
+        [element_id("H")],
+    );
+    assert_eq!(
+        ChemicalEnergyAccounting::try_new(
+            &element_binding,
+            ChemicalEnergyInput::ExplicitSpeciesPotentials {
+                reference_state: element_binding.chemical_reference_state().clone(),
+                power_rate: Power::new(1.0),
+                partition_proof: identity_proof(
+                    &element_binding,
+                    StreamIdentity::ChemicalEnergyPartition,
+                    "element-explicit-chemical",
+                ),
+            },
+        ),
+        Err(CoupleError::StreamChemicalEnergyRequiresSpeciesAxis {
+            constituent: "element:H".to_string(),
+        })
+    );
+
+    let element_euler = EulerLegendreCrosswalk::try_new(
+        identity_proof(
+            &element_binding,
+            StreamIdentity::EulerLegendre,
+            "element-euler",
+        ),
+        SpecificEnergy::new(17.0),
+        SpecificEnergy::new(8.0),
+        SpecificEnergy::new(2.0),
+        SpecificEnergy::new(11.0),
+        SpecificEnergy::new(19.0),
+        SpecificEnergy::new(9.0),
+        SpecificEnergy::new(11.0),
+    )
+    .unwrap();
+    assert_eq!(
+        ConjugatePotentialChart::try_new(
+            element_binding.clone(),
+            element_euler,
+            ConjugatePotentialKind::Enthalpy,
+            stream_kinematics([0.0; 3], 0.0),
+            deviatoric_work(&element_binding, 0.0),
+            embedded_chemical(&element_binding),
+        ),
+        Err(CoupleError::StreamChemicalEnergyRequiresSpeciesAxis {
+            constituent: "element:H".to_string(),
+        })
+    );
+}
+
+#[test]
+fn stream_chart_terms_reject_nonfinite_values() {
+    let binding = stream_binding(
+        "stream/nonfinite-refusal",
+        PortOrientation::OutwardFromOwner,
+        [species_id("H2")],
+    );
+    assert!(matches!(
+        StreamKinematics::try_new(
+            [
+                Velocity::new(0.0),
+                Velocity::new(f64::NAN),
+                Velocity::new(0.0)
+            ],
+            SpecificEnergy::new(0.0),
+        ),
+        Err(CoupleError::NonFiniteStreamValue {
+            field: "velocity",
+            index: Some(1),
+        })
+    ));
+    assert!(matches!(
+        StreamKinematics::try_new(
+            [
+                Velocity::new(1.0e308),
+                Velocity::new(0.0),
+                Velocity::new(0.0)
+            ],
+            SpecificEnergy::new(0.0),
+        ),
+        Err(CoupleError::NonFiniteStreamValue {
+            field: "specific_transport_energy",
+            index: None,
+        })
+    ));
+    assert!(matches!(
+        DeviatoricStressWork::try_new(
+            &binding,
+            Power::new(f64::INFINITY),
+            stable("operator/nonfinite"),
+            stable("evidence/nonfinite"),
+        ),
+        Err(CoupleError::NonFiniteStreamValue {
+            field: "deviatoric_stress_work",
+            index: None,
+        })
+    ));
+    assert!(matches!(
+        MovingStreamEnthalpyChart::try_new(
+            binding.clone(),
+            SpecificEnergy::new(f64::NAN),
+            stream_kinematics([0.0; 3], 0.0),
+            deviatoric_work(&binding, 0.0),
+            embedded_chemical(&binding),
+        ),
+        Err(CoupleError::NonFiniteStreamValue {
+            field: "specific_enthalpy",
+            index: None,
+        })
+    ));
+}
+
+#[test]
+fn stream_bundle_rates_reject_nonfinite_values() {
+    let binding = stream_binding(
+        "stream/nonfinite-bundle-refusal",
+        PortOrientation::OutwardFromOwner,
+        [species_id("H2")],
+    );
+    assert!(matches!(
+        StreamPort::try_new(
+            binding.clone(),
+            MassFlowRate::new(2.0),
+            [species_flow("H2", 0.5)],
+            [Force::new(0.0), Force::new(f64::NAN), Force::new(0.0)],
+            Power::new(53.0),
+            EntropyFlowRate::new(0.5),
+            canonical_moving_chart(&binding),
+        ),
+        Err(CoupleError::NonFiniteStreamValue {
+            field: "momentum_flow",
+            index: Some(1),
+        })
+    ));
+    assert!(matches!(
+        StreamPort::try_new(
+            binding.clone(),
+            MassFlowRate::new(2.0),
+            [species_flow("H2", 0.5)],
+            [Force::new(0.0); 3],
+            Power::new(f64::NAN),
+            EntropyFlowRate::new(0.5),
+            canonical_moving_chart(&binding),
+        ),
+        Err(CoupleError::NonFiniteStreamValue {
+            field: "energy_flow",
+            index: None,
+        })
+    ));
+    assert!(matches!(
+        StreamPort::try_new(
+            binding.clone(),
+            MassFlowRate::new(2.0),
+            [species_flow("H2", 0.5)],
+            [Force::new(0.0); 3],
+            Power::new(53.0),
+            EntropyFlowRate::new(f64::NEG_INFINITY),
+            canonical_moving_chart(&binding),
+        ),
+        Err(CoupleError::NonFiniteStreamValue {
+            field: "entropy_flow",
+            index: None,
+        })
+    ));
+    assert!(matches!(
+        StreamConstituentFlow::try_new(species_id("H2"), AmountFlowRate::new(f64::NAN)),
+        Err(CoupleError::NonFiniteStreamValue {
+            field: "constituent_amount_flow",
+            index: None,
+        })
+    ));
+}
+
+#[test]
+fn stream_bundle_fails_closed_on_missing_duplicate_or_nonfinite_rates() {
+    let binding = stream_binding(
+        "stream/refusal",
+        PortOrientation::OutwardFromOwner,
+        [species_id("H2")],
+    );
+    assert_eq!(
+        complete_stream(binding.clone(), [], 53.0, canonical_moving_chart(&binding),),
+        Err(CoupleError::EmptyStreamConstituents)
+    );
+    assert!(matches!(
+        complete_stream(
+            binding.clone(),
+            [species_flow("H2", 0.5), species_flow("H2", 0.25)],
+            53.0,
+            canonical_moving_chart(&binding),
+        ),
+        Err(CoupleError::DuplicateStreamConstituent { .. })
+    ));
+    assert!(matches!(
+        StreamPort::try_new(
+            binding.clone(),
+            MassFlowRate::new(f64::NAN),
+            [species_flow("H2", 0.5)],
+            [Force::new(0.0); 3],
+            Power::new(53.0),
+            EntropyFlowRate::new(0.5),
+            canonical_moving_chart(&binding),
+        ),
+        Err(CoupleError::NonFiniteStreamValue {
+            field: "mass_flow",
+            index: None,
+        })
+    ));
+    assert!(matches!(
+        complete_stream(
+            binding.clone(),
+            [species_flow("H2", 0.5)],
+            54.0,
+            canonical_moving_chart(&binding),
+        ),
+        Err(CoupleError::StreamEnergyFlowMismatch { .. })
+    ));
+
+    let along = stream_binding(
+        "stream/along",
+        PortOrientation::AlongFrame,
+        [species_id("H2")],
+    );
+    assert_eq!(
+        complete_stream(
+            along.clone(),
+            [species_flow("H2", 0.5)],
+            53.0,
+            canonical_moving_chart(&along),
+        ),
+        Err(CoupleError::StreamPortRequiresOutwardOrientation {
+            actual: PortOrientation::AlongFrame,
+        })
+    );
 }
 
 #[test]

@@ -16,6 +16,12 @@
 //! dissipation, and sources/reservoirs instead of smuggling all four claims
 //! into a lossless topology.
 //!
+//! [`StreamPort`] is the distinct multi-conserved-flux bundle for transported
+//! mass, constituent amount, momentum, energy, and entropy. Its single
+//! [`StreamEnergyChart`] is structural, and alternate thermodynamic charts
+//! require context-bound exact pressure-work or Euler/Legendre crosswalks.
+//! This admission layer does not perform the later closed-window audits.
+//!
 //! For the hard, strongly-coupled cases, [`AitkenRelaxation`] gives dynamic
 //! interface relaxation: on the classic ADDED-MASS-INSTABILITY fixture (a light
 //! structure in a dense fluid) naive staggering diverges, while Aitken-relaxed
@@ -26,10 +32,26 @@
 use core::num::NonZeroUsize;
 
 use fs_iface::SpaceType;
-use fs_qty::{Dims, Force, Power, Pressure, Temperature, Velocity, VolumetricFlowRate};
+use fs_qty::chemistry::{ElementId, SpeciesId};
+use fs_qty::{
+    Density, Dims, Force, MassFlowRate, Power, Pressure, Qty, Temperature, Velocity,
+    VolumetricFlowRate,
+};
 
 /// Current public port-schema version.
 pub const PORT_SCHEMA_VERSION: u16 = 2;
+
+/// Current public stream-port version.
+pub const STREAM_PORT_VERSION: u16 = 1;
+
+/// Moles per second.
+pub type AmountFlowRate = Qty<0, 0, -1, 0, 0, 1>;
+
+/// Watts per kelvin.
+pub type EntropyFlowRate = Qty<2, 1, -3, -1, 0, 0>;
+
+/// Joules per kilogram.
+pub type SpecificEnergy = Qty<2, 0, -2, 0, 0, 0>;
 
 /// The physical type of a power-conjugate port (its effort/flow pair).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -685,6 +707,1244 @@ fn generalized_port_dimensions(
         PowerPairing::ScalarProduct | PowerPairing::EuclideanDot => {
             Ok((effort_dimensions, flow_dimensions))
         }
+    }
+}
+
+/// Canonical constituent axis entry carried by a [`StreamPort`].
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum StreamConstituentId {
+    /// A chemical species amount rate.
+    Species(SpeciesId),
+    /// An elemental amount rate.
+    Element(ElementId),
+}
+
+impl StreamConstituentId {
+    fn diagnostic_label(&self) -> String {
+        match self {
+            Self::Species(id) => format!("species:{id}"),
+            Self::Element(id) => format!("element:{id}"),
+        }
+    }
+}
+
+/// One signed species or element amount rate in a stream bundle.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StreamConstituentFlow {
+    id: StreamConstituentId,
+    amount_flow: AmountFlowRate,
+}
+
+impl StreamConstituentFlow {
+    /// Construct one finite constituent amount rate.
+    ///
+    /// # Errors
+    ///
+    /// [`CoupleError::NonFiniteStreamValue`] when `amount_flow` is not finite.
+    pub fn try_new(
+        id: StreamConstituentId,
+        amount_flow: AmountFlowRate,
+    ) -> Result<Self, CoupleError> {
+        ensure_finite_stream_value("constituent_amount_flow", None, amount_flow.value())?;
+        Ok(Self { id, amount_flow })
+    }
+
+    /// Species or element identifier.
+    #[must_use]
+    pub fn id(&self) -> &StreamConstituentId {
+        &self.id
+    }
+
+    /// Signed amount rate in moles per second.
+    #[must_use]
+    pub fn amount_flow(&self) -> AmountFlowRate {
+        self.amount_flow
+    }
+}
+
+/// Normative pressure/deviatoric split used by stream-energy charts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamStressWorkConvention {
+    /// Cauchy tension is positive with `sigma = -p I + tau`. Integrated
+    /// outward boundary power is `p Q - integral_A((tau n) dot u) dA`.
+    /// Accordingly, [`DeviatoricStressWork`] stores the already integrated,
+    /// signed `-integral_A((tau n) dot u) dA` contribution.
+    CauchyTensionPositiveOutwardPower,
+}
+
+/// Context to which an energy chart and every exact crosswalk are bound.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamChartBinding {
+    port_id: StableId,
+    state_schema: StableId,
+    constituent_basis: StableId,
+    constituent_axis: Vec<StreamConstituentId>,
+    chemical_reference_state: StableId,
+    coordinates: CoordinateBinding,
+    timestamp: PortTimestamp,
+    gravity_datum: StableId,
+    stress_convention: StreamStressWorkConvention,
+}
+
+impl StreamChartBinding {
+    /// Bind a chart to one boundary, state, explicit constituent axis,
+    /// coordinate convention, clock, gravity datum, and stress convention.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an empty axis or a duplicate species/element coordinate.
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_new(
+        port_id: StableId,
+        state_schema: StableId,
+        constituent_basis: StableId,
+        constituent_axis: impl IntoIterator<Item = StreamConstituentId>,
+        chemical_reference_state: StableId,
+        coordinates: CoordinateBinding,
+        timestamp: PortTimestamp,
+        gravity_datum: StableId,
+        stress_convention: StreamStressWorkConvention,
+    ) -> Result<Self, CoupleError> {
+        let mut constituent_axis: Vec<_> = constituent_axis.into_iter().collect();
+        canonicalize_constituent_axis(&mut constituent_axis)?;
+        Ok(Self {
+            port_id,
+            state_schema,
+            constituent_basis,
+            constituent_axis,
+            chemical_reference_state,
+            coordinates,
+            timestamp,
+            gravity_datum,
+            stress_convention,
+        })
+    }
+
+    /// Stable stream-port identifier.
+    #[must_use]
+    pub fn port_id(&self) -> &StableId {
+        &self.port_id
+    }
+
+    /// State schema used by the chart.
+    #[must_use]
+    pub fn state_schema(&self) -> &StableId {
+        &self.state_schema
+    }
+
+    /// Ordered species/element basis artifact.
+    #[must_use]
+    pub fn constituent_basis(&self) -> &StableId {
+        &self.constituent_basis
+    }
+
+    /// Canonically ordered species/element coordinates covered by the basis.
+    #[must_use]
+    pub fn constituent_axis(&self) -> &[StreamConstituentId] {
+        &self.constituent_axis
+    }
+
+    /// Chemical reference state shared by every energy term.
+    #[must_use]
+    pub fn chemical_reference_state(&self) -> &StableId {
+        &self.chemical_reference_state
+    }
+
+    /// Coordinate, frame, and orientation binding.
+    #[must_use]
+    pub fn coordinates(&self) -> &CoordinateBinding {
+        &self.coordinates
+    }
+
+    /// Logical clock and tick.
+    #[must_use]
+    pub fn timestamp(&self) -> &PortTimestamp {
+        &self.timestamp
+    }
+
+    /// Gravity datum used by the `g z` term.
+    #[must_use]
+    pub fn gravity_datum(&self) -> &StableId {
+        &self.gravity_datum
+    }
+
+    /// Cauchy-stress sign/splitting convention.
+    #[must_use]
+    pub fn stress_convention(&self) -> StreamStressWorkConvention {
+        self.stress_convention
+    }
+
+    fn first_mismatch(&self, other: &Self) -> Option<&'static str> {
+        if self.port_id != other.port_id {
+            return Some("port_id");
+        }
+        if self.state_schema != other.state_schema {
+            return Some("state_schema");
+        }
+        if self.constituent_basis != other.constituent_basis {
+            return Some("constituent_basis");
+        }
+        if self.constituent_axis != other.constituent_axis {
+            return Some("constituent_axis");
+        }
+        if self.chemical_reference_state != other.chemical_reference_state {
+            return Some("chemical_reference_state");
+        }
+        if self.coordinates != other.coordinates {
+            return Some("coordinates");
+        }
+        if self.timestamp != other.timestamp {
+            return Some("clock_timestamp");
+        }
+        if self.gravity_datum != other.gravity_datum {
+            return Some("gravity_datum");
+        }
+        if self.stress_convention != other.stress_convention {
+            return Some("stress_convention");
+        }
+        None
+    }
+}
+
+/// Exact thermodynamic identity named by a retained proof reference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamIdentity {
+    /// `h = e + p/rho` and its pressure-work rate form.
+    PressureWork,
+    /// Euler extensivity plus the enthalpy/Helmholtz/Gibbs transforms.
+    EulerLegendre,
+    /// Partition proving that a state potential excludes an explicit chemical
+    /// power contribution.
+    ChemicalEnergyPartition,
+}
+
+/// Durable reference to externally retained exact-identity evidence.
+///
+/// This crate checks identity kind, complete context binding, and the numeric
+/// equality where the chart exposes all terms. It does not execute the named
+/// verifier or validate the referenced artifact contents.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExactIdentityProofRef {
+    identity: StreamIdentity,
+    receipt_id: StableId,
+    verifier_id: StableId,
+    statement_digest: StableId,
+    binding: Box<StreamChartBinding>,
+}
+
+impl ExactIdentityProofRef {
+    /// Name one retained exact-identity proof artifact.
+    #[must_use]
+    pub fn new(
+        identity: StreamIdentity,
+        receipt_id: StableId,
+        verifier_id: StableId,
+        statement_digest: StableId,
+        binding: StreamChartBinding,
+    ) -> Self {
+        Self {
+            identity,
+            receipt_id,
+            verifier_id,
+            statement_digest,
+            binding: Box::new(binding),
+        }
+    }
+
+    /// Identity established by the referenced artifact.
+    #[must_use]
+    pub fn identity(&self) -> StreamIdentity {
+        self.identity
+    }
+
+    /// Context bound by the proof statement.
+    #[must_use]
+    pub fn binding(&self) -> &StreamChartBinding {
+        &self.binding
+    }
+
+    /// Retained proof receipt identifier.
+    #[must_use]
+    pub fn receipt_id(&self) -> &StableId {
+        &self.receipt_id
+    }
+
+    /// Verifier implementation that produced the receipt.
+    #[must_use]
+    pub fn verifier_id(&self) -> &StableId {
+        &self.verifier_id
+    }
+
+    /// Digest of the exact identity statement.
+    #[must_use]
+    pub fn statement_digest(&self) -> &StableId {
+        &self.statement_digest
+    }
+}
+
+/// Unadmitted chemical-energy ownership declaration.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChemicalEnergyInput {
+    /// The selected state potential already contains chemical energy.
+    IncludedInStatePotential {
+        /// Chemical reference state used by that potential.
+        reference_state: StableId,
+    },
+    /// The state potential excludes chemistry and a proved species-potential
+    /// contribution is added exactly once.
+    ExplicitSpeciesPotentials {
+        /// Chemical reference state used by the explicit contribution.
+        reference_state: StableId,
+        /// Signed `sum(mu_i * n_dot_i)` contribution in watts.
+        power_rate: Power,
+        /// Proof that the selected state potential excludes this contribution.
+        partition_proof: ExactIdentityProofRef,
+    },
+    /// Invalid request retained so admission can issue a structured
+    /// double-counting refusal.
+    IncludedAndExplicitSpeciesPotentials {
+        /// Chemical reference state shared by the two conflicting terms.
+        reference_state: StableId,
+        /// Duplicate explicit chemical contribution.
+        power_rate: Power,
+        /// Claimed partition evidence, which cannot legalize double ownership.
+        partition_proof: ExactIdentityProofRef,
+    },
+}
+
+/// Exclusive admitted ownership of chemical energy in one chart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChemicalEnergyMode {
+    /// Chemical energy is embedded in the state potential.
+    IncludedInStatePotential,
+    /// Chemical energy is a separately proved species-potential contribution.
+    ExplicitSpeciesPotentials,
+}
+
+/// Admitted, exactly-once chemical-energy accounting.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChemicalEnergyAccounting {
+    binding: StreamChartBinding,
+    mode: ChemicalEnergyMode,
+    explicit_power_rate: Power,
+    partition_proof: Option<ExactIdentityProofRef>,
+}
+
+impl ChemicalEnergyAccounting {
+    /// Admit one exclusive chemical-energy ownership declaration.
+    ///
+    /// # Errors
+    ///
+    /// Refuses reference/proof binding mismatches, non-finite explicit power,
+    /// or a declaration that embeds and separately adds chemical energy.
+    pub fn try_new(
+        binding: &StreamChartBinding,
+        input: ChemicalEnergyInput,
+    ) -> Result<Self, CoupleError> {
+        match input {
+            ChemicalEnergyInput::IncludedInStatePotential { reference_state } => {
+                require_stable_id_match(
+                    "chemical_reference_state",
+                    &binding.chemical_reference_state,
+                    &reference_state,
+                )?;
+                Ok(Self {
+                    binding: binding.clone(),
+                    mode: ChemicalEnergyMode::IncludedInStatePotential,
+                    explicit_power_rate: Power::new(0.0),
+                    partition_proof: None,
+                })
+            }
+            ChemicalEnergyInput::ExplicitSpeciesPotentials {
+                reference_state,
+                power_rate,
+                partition_proof,
+            } => {
+                require_species_constituent_axis(binding)?;
+                require_stable_id_match(
+                    "chemical_reference_state",
+                    &binding.chemical_reference_state,
+                    &reference_state,
+                )?;
+                require_identity_proof(
+                    binding,
+                    &partition_proof,
+                    StreamIdentity::ChemicalEnergyPartition,
+                )?;
+                ensure_finite_stream_value("explicit_chemical_power", None, power_rate.value())?;
+                Ok(Self {
+                    binding: binding.clone(),
+                    mode: ChemicalEnergyMode::ExplicitSpeciesPotentials,
+                    explicit_power_rate: power_rate,
+                    partition_proof: Some(partition_proof),
+                })
+            }
+            ChemicalEnergyInput::IncludedAndExplicitSpeciesPotentials { .. } => {
+                Err(CoupleError::DoubleCountedChemicalEnergy)
+            }
+        }
+    }
+
+    /// Admitted ownership mode.
+    #[must_use]
+    pub fn mode(&self) -> ChemicalEnergyMode {
+        self.mode
+    }
+
+    /// Complete chart context bound by this ownership decision.
+    #[must_use]
+    pub fn binding(&self) -> &StreamChartBinding {
+        &self.binding
+    }
+
+    /// Separate chemical power contribution, or zero when embedded.
+    #[must_use]
+    pub fn explicit_power_rate(&self) -> Power {
+        self.explicit_power_rate
+    }
+
+    /// Exact partition proof when chemical power is explicit.
+    #[must_use]
+    pub fn partition_proof(&self) -> Option<&ExactIdentityProofRef> {
+        self.partition_proof.as_ref()
+    }
+}
+
+/// Velocity and gravitational terms shared by stream energy charts.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StreamKinematics {
+    velocity: [Velocity; 3],
+    specific_gravitational_energy: SpecificEnergy,
+}
+
+impl StreamKinematics {
+    /// Admit finite velocity components and a finite `g z` term.
+    ///
+    /// # Errors
+    ///
+    /// [`CoupleError::NonFiniteStreamValue`] for any non-finite input.
+    pub fn try_new(
+        velocity: [Velocity; 3],
+        specific_gravitational_energy: SpecificEnergy,
+    ) -> Result<Self, CoupleError> {
+        for (index, component) in velocity.into_iter().enumerate() {
+            ensure_finite_stream_value("velocity", Some(index), component.value())?;
+        }
+        ensure_finite_stream_value(
+            "specific_gravitational_energy",
+            None,
+            specific_gravitational_energy.value(),
+        )?;
+        let kinematics = Self {
+            velocity,
+            specific_gravitational_energy,
+        };
+        ensure_finite_stream_value(
+            "specific_transport_energy",
+            None,
+            kinematics.specific_transport_energy(),
+        )?;
+        Ok(kinematics)
+    }
+
+    fn specific_transport_energy(self) -> f64 {
+        let speed_squared = self
+            .velocity
+            .into_iter()
+            .map(|component| component.value() * component.value())
+            .sum::<f64>();
+        0.5 * speed_squared + self.specific_gravitational_energy.value()
+    }
+}
+
+/// Signed deviatoric-stress work with explicit operator/evidence ownership.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeviatoricStressWork {
+    binding: StreamChartBinding,
+    power_rate: Power,
+    operator_id: StableId,
+    evidence_id: StableId,
+}
+
+impl DeviatoricStressWork {
+    /// Declare one finite deviatoric-stress work rate bound to a stream chart.
+    ///
+    /// # Errors
+    ///
+    /// [`CoupleError::NonFiniteStreamValue`] for a non-finite rate.
+    pub fn try_new(
+        binding: &StreamChartBinding,
+        power_rate: Power,
+        operator_id: StableId,
+        evidence_id: StableId,
+    ) -> Result<Self, CoupleError> {
+        ensure_finite_stream_value("deviatoric_stress_work", None, power_rate.value())?;
+        Ok(Self {
+            binding: binding.clone(),
+            power_rate,
+            operator_id,
+            evidence_id,
+        })
+    }
+
+    /// Complete boundary/frame/stress context covered by the evidence.
+    #[must_use]
+    pub fn binding(&self) -> &StreamChartBinding {
+        &self.binding
+    }
+
+    /// Signed work rate in watts.
+    #[must_use]
+    pub fn power_rate(&self) -> Power {
+        self.power_rate
+    }
+
+    /// Operator that produced the signed stress-work contribution.
+    #[must_use]
+    pub fn operator_id(&self) -> &StableId {
+        &self.operator_id
+    }
+
+    /// Retained evidence for that operator contribution.
+    #[must_use]
+    pub fn evidence_id(&self) -> &StableId {
+        &self.evidence_id
+    }
+}
+
+/// Canonical moving-stream enthalpy chart.
+///
+/// Its signed boundary contribution is
+/// `mass_flow * (h + |velocity|^2 / 2 + g z) + deviatoric_work`, plus an
+/// explicit chemical term only when a partition proof says `h` excludes it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MovingStreamEnthalpyChart {
+    binding: StreamChartBinding,
+    specific_enthalpy: SpecificEnergy,
+    kinematics: StreamKinematics,
+    deviatoric_work: DeviatoricStressWork,
+    chemical_energy: ChemicalEnergyAccounting,
+}
+
+impl MovingStreamEnthalpyChart {
+    /// Admit a canonical enthalpy chart.
+    ///
+    /// # Errors
+    ///
+    /// Refuses non-finite enthalpy or chemical ownership bound to a different
+    /// stream context.
+    pub fn try_new(
+        binding: StreamChartBinding,
+        specific_enthalpy: SpecificEnergy,
+        kinematics: StreamKinematics,
+        deviatoric_work: DeviatoricStressWork,
+        chemical_energy: ChemicalEnergyAccounting,
+    ) -> Result<Self, CoupleError> {
+        ensure_finite_stream_value("specific_enthalpy", None, specific_enthalpy.value())?;
+        require_stream_binding(&binding, deviatoric_work.binding())?;
+        require_stream_binding(&binding, chemical_energy.binding())?;
+        Ok(Self {
+            binding,
+            specific_enthalpy,
+            kinematics,
+            deviatoric_work,
+            chemical_energy,
+        })
+    }
+
+    fn energy_rate(&self, mass_flow: MassFlowRate) -> Power {
+        Power::new(
+            mass_flow.value()
+                * (self.specific_enthalpy.value() + self.kinematics.specific_transport_energy())
+                + self.deviatoric_work.power_rate.value()
+                + self.chemical_energy.explicit_power_rate.value(),
+        )
+    }
+}
+
+/// Exact pressure-work crosswalk between enthalpy and internal-energy charts.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PressureWorkCrosswalk {
+    proof: ExactIdentityProofRef,
+    mass_flow: MassFlowRate,
+    density: Density,
+    specific_enthalpy: SpecificEnergy,
+    specific_internal_energy: SpecificEnergy,
+    pressure: Pressure,
+    volume_flow: VolumetricFlowRate,
+    pressure_work_rate: Power,
+}
+
+impl PressureWorkCrosswalk {
+    /// Recompute and admit the exact identities `h = e + p/rho`,
+    /// `volume_flow = mass_flow/rho`, and
+    /// `mass_flow * (h - e) = p * volume_flow`.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a wrong proof kind, non-finite/non-positive state, or any
+    /// identity that is not bit-exact under the pinned evaluation order.
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_new(
+        proof: ExactIdentityProofRef,
+        mass_flow: MassFlowRate,
+        density: Density,
+        specific_enthalpy: SpecificEnergy,
+        specific_internal_energy: SpecificEnergy,
+        pressure: Pressure,
+        volume_flow: VolumetricFlowRate,
+    ) -> Result<Self, CoupleError> {
+        if proof.identity != StreamIdentity::PressureWork {
+            return Err(CoupleError::WrongStreamIdentityProof {
+                expected: StreamIdentity::PressureWork,
+                actual: proof.identity,
+            });
+        }
+        for (field, value) in [
+            ("crosswalk_mass_flow", mass_flow.value()),
+            ("crosswalk_density", density.value()),
+            ("crosswalk_specific_enthalpy", specific_enthalpy.value()),
+            (
+                "crosswalk_specific_internal_energy",
+                specific_internal_energy.value(),
+            ),
+            ("crosswalk_pressure", pressure.value()),
+            ("crosswalk_volume_flow", volume_flow.value()),
+        ] {
+            ensure_finite_stream_value(field, None, value)?;
+        }
+        if density.value() <= 0.0 {
+            return Err(CoupleError::NonPositiveStreamDensity);
+        }
+
+        require_exact_stream_identity(
+            StreamIdentity::PressureWork,
+            "specific_enthalpy",
+            specific_internal_energy.value() + pressure.value() / density.value(),
+            specific_enthalpy.value(),
+        )?;
+        require_exact_stream_identity(
+            StreamIdentity::PressureWork,
+            "volume_flow",
+            mass_flow.value() / density.value(),
+            volume_flow.value(),
+        )?;
+        let enthalpy_gap_rate =
+            mass_flow.value() * (specific_enthalpy.value() - specific_internal_energy.value());
+        let pressure_work_rate = pressure.value() * volume_flow.value();
+        require_exact_stream_identity(
+            StreamIdentity::PressureWork,
+            "pressure_work_rate",
+            enthalpy_gap_rate,
+            pressure_work_rate,
+        )?;
+
+        Ok(Self {
+            proof,
+            mass_flow,
+            density,
+            specific_enthalpy,
+            specific_internal_energy,
+            pressure,
+            volume_flow,
+            pressure_work_rate: Power::new(pressure_work_rate),
+        })
+    }
+
+    /// Context-bound proof reference.
+    #[must_use]
+    pub fn proof(&self) -> &ExactIdentityProofRef {
+        &self.proof
+    }
+
+    /// Signed mass rate used by the exact rate identity.
+    #[must_use]
+    pub fn mass_flow(&self) -> MassFlowRate {
+        self.mass_flow
+    }
+
+    /// Specific internal energy in joules per kilogram.
+    #[must_use]
+    pub fn specific_internal_energy(&self) -> SpecificEnergy {
+        self.specific_internal_energy
+    }
+
+    /// Exact pressure-work contribution in watts.
+    #[must_use]
+    pub fn pressure_work_rate(&self) -> Power {
+        self.pressure_work_rate
+    }
+
+    /// Exact state terms retained by the crosswalk.
+    #[must_use]
+    pub fn state_terms(&self) -> (Density, SpecificEnergy, Pressure, VolumetricFlowRate) {
+        (
+            self.density,
+            self.specific_enthalpy,
+            self.pressure,
+            self.volume_flow,
+        )
+    }
+}
+
+/// Internal-energy chart with explicit pressure plus deviatoric Cauchy work.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InternalEnergyCauchyWorkChart {
+    binding: StreamChartBinding,
+    pressure_crosswalk: PressureWorkCrosswalk,
+    kinematics: StreamKinematics,
+    deviatoric_work: DeviatoricStressWork,
+    chemical_energy: ChemicalEnergyAccounting,
+}
+
+impl InternalEnergyCauchyWorkChart {
+    /// Admit an internal-energy chart only when its pressure-work and chemical
+    /// ownership evidence bind the exact same stream context.
+    ///
+    /// # Errors
+    ///
+    /// [`CoupleError::StreamChartBindingMismatch`] for any context mismatch.
+    pub fn try_new(
+        binding: StreamChartBinding,
+        pressure_crosswalk: PressureWorkCrosswalk,
+        kinematics: StreamKinematics,
+        deviatoric_work: DeviatoricStressWork,
+        chemical_energy: ChemicalEnergyAccounting,
+    ) -> Result<Self, CoupleError> {
+        require_stream_binding(&binding, pressure_crosswalk.proof.binding())?;
+        require_stream_binding(&binding, deviatoric_work.binding())?;
+        require_stream_binding(&binding, chemical_energy.binding())?;
+        Ok(Self {
+            binding,
+            pressure_crosswalk,
+            kinematics,
+            deviatoric_work,
+            chemical_energy,
+        })
+    }
+
+    fn energy_rate(&self) -> Power {
+        let mass_flow = self.pressure_crosswalk.mass_flow.value();
+        Power::new(
+            mass_flow
+                * (self.pressure_crosswalk.specific_internal_energy.value()
+                    + self.kinematics.specific_transport_energy())
+                + self.pressure_crosswalk.pressure_work_rate.value()
+                + self.deviatoric_work.power_rate.value()
+                + self.chemical_energy.explicit_power_rate.value(),
+        )
+    }
+}
+
+/// Specific thermodynamic potential selected from an exact Euler/Legendre
+/// crosswalk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConjugatePotentialKind {
+    /// Internal energy.
+    InternalEnergy,
+    /// Enthalpy.
+    Enthalpy,
+    /// Helmholtz free energy.
+    Helmholtz,
+    /// Gibbs free energy.
+    Gibbs,
+}
+
+/// Exact mixture Euler identity and its three canonical Legendre transforms.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EulerLegendreCrosswalk {
+    proof: ExactIdentityProofRef,
+    internal_energy: SpecificEnergy,
+    temperature_entropy_term: SpecificEnergy,
+    pressure_volume_term: SpecificEnergy,
+    chemical_potential_term: SpecificEnergy,
+    enthalpy: SpecificEnergy,
+    helmholtz: SpecificEnergy,
+    gibbs: SpecificEnergy,
+}
+
+impl EulerLegendreCrosswalk {
+    /// Recompute the specific-energy identities
+    /// `u = T*s - p*v + sum(mu_i*n_i)`, `h = u + p*v`,
+    /// `f = u - T*s`, and `g = h - T*s` exactly.
+    ///
+    /// # Errors
+    ///
+    /// Refuses the wrong proof kind, non-finite values, or any non-exact
+    /// identity under the pinned evaluation order.
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_new(
+        proof: ExactIdentityProofRef,
+        internal_energy: SpecificEnergy,
+        temperature_entropy_term: SpecificEnergy,
+        pressure_volume_term: SpecificEnergy,
+        chemical_potential_term: SpecificEnergy,
+        enthalpy: SpecificEnergy,
+        helmholtz: SpecificEnergy,
+        gibbs: SpecificEnergy,
+    ) -> Result<Self, CoupleError> {
+        if proof.identity != StreamIdentity::EulerLegendre {
+            return Err(CoupleError::WrongStreamIdentityProof {
+                expected: StreamIdentity::EulerLegendre,
+                actual: proof.identity,
+            });
+        }
+        for (field, value) in [
+            ("euler_internal_energy", internal_energy.value()),
+            (
+                "euler_temperature_entropy_term",
+                temperature_entropy_term.value(),
+            ),
+            ("euler_pressure_volume_term", pressure_volume_term.value()),
+            (
+                "euler_chemical_potential_term",
+                chemical_potential_term.value(),
+            ),
+            ("euler_enthalpy", enthalpy.value()),
+            ("euler_helmholtz", helmholtz.value()),
+            ("euler_gibbs", gibbs.value()),
+        ] {
+            ensure_finite_stream_value(field, None, value)?;
+        }
+        require_exact_stream_identity(
+            StreamIdentity::EulerLegendre,
+            "mixture_euler",
+            (temperature_entropy_term.value() - pressure_volume_term.value())
+                + chemical_potential_term.value(),
+            internal_energy.value(),
+        )?;
+        require_exact_stream_identity(
+            StreamIdentity::EulerLegendre,
+            "enthalpy_legendre",
+            internal_energy.value() + pressure_volume_term.value(),
+            enthalpy.value(),
+        )?;
+        require_exact_stream_identity(
+            StreamIdentity::EulerLegendre,
+            "helmholtz_legendre",
+            internal_energy.value() - temperature_entropy_term.value(),
+            helmholtz.value(),
+        )?;
+        require_exact_stream_identity(
+            StreamIdentity::EulerLegendre,
+            "gibbs_legendre",
+            enthalpy.value() - temperature_entropy_term.value(),
+            gibbs.value(),
+        )?;
+        Ok(Self {
+            proof,
+            internal_energy,
+            temperature_entropy_term,
+            pressure_volume_term,
+            chemical_potential_term,
+            enthalpy,
+            helmholtz,
+            gibbs,
+        })
+    }
+
+    /// Context-bound proof reference.
+    #[must_use]
+    pub fn proof(&self) -> &ExactIdentityProofRef {
+        &self.proof
+    }
+
+    /// Select one exactly crosswalked specific potential.
+    #[must_use]
+    pub fn potential(&self, kind: ConjugatePotentialKind) -> SpecificEnergy {
+        match kind {
+            ConjugatePotentialKind::InternalEnergy => self.internal_energy,
+            ConjugatePotentialKind::Enthalpy => self.enthalpy,
+            ConjugatePotentialKind::Helmholtz => self.helmholtz,
+            ConjugatePotentialKind::Gibbs => self.gibbs,
+        }
+    }
+
+    /// Reconstruct canonical specific enthalpy from the selected coordinate.
+    ///
+    /// A Legendre potential is a chart coordinate, not itself the transported
+    /// moving-stream energy. The retained exact dual-pair terms translate each
+    /// selection back to enthalpy before the stream rate is formed.
+    #[must_use]
+    pub fn enthalpy_from(&self, kind: ConjugatePotentialKind) -> SpecificEnergy {
+        let value = match kind {
+            ConjugatePotentialKind::InternalEnergy => {
+                self.internal_energy.value() + self.pressure_volume_term.value()
+            }
+            ConjugatePotentialKind::Enthalpy => self.enthalpy.value(),
+            ConjugatePotentialKind::Helmholtz => {
+                (self.helmholtz.value() + self.temperature_entropy_term.value())
+                    + self.pressure_volume_term.value()
+            }
+            ConjugatePotentialKind::Gibbs => {
+                self.gibbs.value() + self.temperature_entropy_term.value()
+            }
+        };
+        SpecificEnergy::new(value)
+    }
+
+    /// Euler dual-pair terms retained by the exact crosswalk.
+    #[must_use]
+    pub fn euler_terms(&self) -> (SpecificEnergy, SpecificEnergy, SpecificEnergy) {
+        (
+            self.temperature_entropy_term,
+            self.pressure_volume_term,
+            self.chemical_potential_term,
+        )
+    }
+}
+
+/// Energy chart using one potential from an exact Euler/Legendre family.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConjugatePotentialChart {
+    binding: StreamChartBinding,
+    crosswalk: EulerLegendreCrosswalk,
+    selected_potential: ConjugatePotentialKind,
+    kinematics: StreamKinematics,
+    deviatoric_work: DeviatoricStressWork,
+    chemical_energy: ChemicalEnergyAccounting,
+}
+
+impl ConjugatePotentialChart {
+    /// Admit a conjugate-potential chart bound to one exact Euler/Legendre
+    /// receipt. Its chemical term is already inside the Euler identity.
+    ///
+    /// # Errors
+    ///
+    /// Refuses context mismatch or a separate chemical-power term that would
+    /// double count the Euler chemical-potential contribution.
+    pub fn try_new(
+        binding: StreamChartBinding,
+        crosswalk: EulerLegendreCrosswalk,
+        selected_potential: ConjugatePotentialKind,
+        kinematics: StreamKinematics,
+        deviatoric_work: DeviatoricStressWork,
+        chemical_energy: ChemicalEnergyAccounting,
+    ) -> Result<Self, CoupleError> {
+        require_stream_binding(&binding, crosswalk.proof.binding())?;
+        require_stream_binding(&binding, deviatoric_work.binding())?;
+        require_stream_binding(&binding, chemical_energy.binding())?;
+        require_species_constituent_axis(&binding)?;
+        if chemical_energy.mode != ChemicalEnergyMode::IncludedInStatePotential {
+            return Err(CoupleError::DoubleCountedChemicalEnergy);
+        }
+        require_exact_stream_identity(
+            StreamIdentity::EulerLegendre,
+            "selected_potential_to_enthalpy",
+            crosswalk.enthalpy_from(selected_potential).value(),
+            crosswalk.enthalpy.value(),
+        )?;
+        Ok(Self {
+            binding,
+            crosswalk,
+            selected_potential,
+            kinematics,
+            deviatoric_work,
+            chemical_energy,
+        })
+    }
+
+    fn energy_rate(&self, mass_flow: MassFlowRate) -> Power {
+        Power::new(
+            mass_flow.value()
+                * (self
+                    .crosswalk
+                    .enthalpy_from(self.selected_potential)
+                    .value()
+                    + self.kinematics.specific_transport_energy())
+                + self.deviatoric_work.power_rate.value()
+                + self.chemical_energy.explicit_power_rate.value(),
+        )
+    }
+}
+
+/// Exactly one selected energy-accounting chart for a stream boundary.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StreamEnergyChart {
+    /// Canonical moving-stream enthalpy chart.
+    MovingStreamEnthalpy(Box<MovingStreamEnthalpyChart>),
+    /// Internal energy plus exact pressure and deviatoric Cauchy work.
+    InternalEnergyCauchyWork(Box<InternalEnergyCauchyWorkChart>),
+    /// Exact Euler/Legendre conjugate-potential chart.
+    ConjugatePotential(Box<ConjugatePotentialChart>),
+}
+
+impl StreamEnergyChart {
+    /// Complete context bound by the selected chart.
+    #[must_use]
+    pub fn binding(&self) -> &StreamChartBinding {
+        match self {
+            Self::MovingStreamEnthalpy(chart) => &chart.binding,
+            Self::InternalEnergyCauchyWork(chart) => &chart.binding,
+            Self::ConjugatePotential(chart) => &chart.binding,
+        }
+    }
+
+    fn energy_rate(&self, mass_flow: MassFlowRate) -> Result<Power, CoupleError> {
+        match self {
+            Self::MovingStreamEnthalpy(chart) => Ok(chart.energy_rate(mass_flow)),
+            Self::InternalEnergyCauchyWork(chart) => {
+                require_exact_stream_identity(
+                    StreamIdentity::PressureWork,
+                    "stream_mass_flow_binding",
+                    chart.pressure_crosswalk.mass_flow.value(),
+                    mass_flow.value(),
+                )?;
+                Ok(chart.energy_rate())
+            }
+            Self::ConjugatePotential(chart) => Ok(chart.energy_rate(mass_flow)),
+        }
+    }
+}
+
+/// One admitted stream boundary carrying all coupled conserved rates together.
+///
+/// Unlike a scalar effort/flow [`PortSchema`], a stream is a bundled transport
+/// object: mass, constituent amount, three momentum components, energy, and
+/// entropy share one identity, basis/frame/orientation, clock, and energy chart.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StreamPort {
+    version: u16,
+    binding: StreamChartBinding,
+    mass_flow: MassFlowRate,
+    constituent_flows: Vec<StreamConstituentFlow>,
+    momentum_flow: [Force; 3],
+    energy_flow: Power,
+    entropy_flow: EntropyFlowRate,
+    energy_chart: StreamEnergyChart,
+}
+
+impl StreamPort {
+    /// Admit a complete stream bundle and verify its selected chart reproduces
+    /// the declared energy rate exactly.
+    ///
+    /// # Errors
+    ///
+    /// Refuses missing/duplicate constituents, non-finite rates, non-outward
+    /// orientation, chart context mismatch, or an exact energy-rate mismatch.
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_new(
+        binding: StreamChartBinding,
+        mass_flow: MassFlowRate,
+        constituent_flows: impl IntoIterator<Item = StreamConstituentFlow>,
+        momentum_flow: [Force; 3],
+        energy_flow: Power,
+        entropy_flow: EntropyFlowRate,
+        energy_chart: StreamEnergyChart,
+    ) -> Result<Self, CoupleError> {
+        if binding.coordinates.orientation != PortOrientation::OutwardFromOwner {
+            return Err(CoupleError::StreamPortRequiresOutwardOrientation {
+                actual: binding.coordinates.orientation,
+            });
+        }
+        require_stream_binding(&binding, energy_chart.binding())?;
+        ensure_finite_stream_value("mass_flow", None, mass_flow.value())?;
+        for (index, component) in momentum_flow.into_iter().enumerate() {
+            ensure_finite_stream_value("momentum_flow", Some(index), component.value())?;
+        }
+        ensure_finite_stream_value("energy_flow", None, energy_flow.value())?;
+        ensure_finite_stream_value("entropy_flow", None, entropy_flow.value())?;
+
+        let mut constituent_flows: Vec<_> = constituent_flows.into_iter().collect();
+        if constituent_flows.is_empty() {
+            return Err(CoupleError::EmptyStreamConstituents);
+        }
+        constituent_flows.sort_by(|left, right| left.id.cmp(&right.id));
+        for pair in constituent_flows.windows(2) {
+            if pair[0].id == pair[1].id {
+                return Err(CoupleError::DuplicateStreamConstituent {
+                    id: pair[0].id.diagnostic_label(),
+                });
+            }
+        }
+        let actual_axis: Vec<_> = constituent_flows
+            .iter()
+            .map(|flow| flow.id.clone())
+            .collect();
+        if actual_axis != binding.constituent_axis {
+            return Err(CoupleError::StreamConstituentAxisMismatch {
+                expected: binding
+                    .constituent_axis
+                    .iter()
+                    .map(StreamConstituentId::diagnostic_label)
+                    .collect(),
+                actual: actual_axis
+                    .iter()
+                    .map(StreamConstituentId::diagnostic_label)
+                    .collect(),
+            });
+        }
+
+        let accounted_energy = energy_chart.energy_rate(mass_flow)?;
+        ensure_finite_stream_value("accounted_energy_flow", None, accounted_energy.value())?;
+        if accounted_energy.value().to_bits() != energy_flow.value().to_bits() {
+            return Err(CoupleError::StreamEnergyFlowMismatch {
+                accounted_bits: accounted_energy.value().to_bits(),
+                declared_bits: energy_flow.value().to_bits(),
+            });
+        }
+
+        Ok(Self {
+            version: STREAM_PORT_VERSION,
+            binding,
+            mass_flow,
+            constituent_flows,
+            momentum_flow,
+            energy_flow,
+            entropy_flow,
+            energy_chart,
+        })
+    }
+
+    /// Stream schema version.
+    #[must_use]
+    pub fn version(&self) -> u16 {
+        self.version
+    }
+
+    /// Stable stream identifier and complete context.
+    #[must_use]
+    pub fn binding(&self) -> &StreamChartBinding {
+        &self.binding
+    }
+
+    /// Signed mass rate in kilograms per second.
+    #[must_use]
+    pub fn mass_flow(&self) -> MassFlowRate {
+        self.mass_flow
+    }
+
+    /// Canonically ordered species/element amount rates.
+    #[must_use]
+    pub fn constituent_flows(&self) -> &[StreamConstituentFlow] {
+        &self.constituent_flows
+    }
+
+    /// Signed momentum-rate vector in newtons.
+    #[must_use]
+    pub fn momentum_flow(&self) -> [Force; 3] {
+        self.momentum_flow
+    }
+
+    /// Signed energy rate in watts.
+    #[must_use]
+    pub fn energy_flow(&self) -> Power {
+        self.energy_flow
+    }
+
+    /// Signed entropy rate in watts per kelvin.
+    #[must_use]
+    pub fn entropy_flow(&self) -> EntropyFlowRate {
+        self.entropy_flow
+    }
+
+    /// Structurally unique selected energy chart.
+    #[must_use]
+    pub fn energy_chart(&self) -> &StreamEnergyChart {
+        &self.energy_chart
+    }
+
+    /// Fixed bundled conservation roles in canonical enum order.
+    #[must_use]
+    pub fn conservation_roles(&self) -> &'static [ConservationRole] {
+        &[
+            ConservationRole::Energy,
+            ConservationRole::Mass,
+            ConservationRole::Amount,
+            ConservationRole::LinearMomentum,
+            ConservationRole::Entropy,
+        ]
+    }
+}
+
+fn ensure_finite_stream_value(
+    field: &'static str,
+    index: Option<usize>,
+    value: f64,
+) -> Result<(), CoupleError> {
+    if value.is_finite() {
+        Ok(())
+    } else {
+        Err(CoupleError::NonFiniteStreamValue { field, index })
+    }
+}
+
+fn canonicalize_constituent_axis(
+    constituent_axis: &mut [StreamConstituentId],
+) -> Result<(), CoupleError> {
+    if constituent_axis.is_empty() {
+        return Err(CoupleError::EmptyStreamConstituents);
+    }
+    constituent_axis.sort();
+    for pair in constituent_axis.windows(2) {
+        if pair[0] == pair[1] {
+            return Err(CoupleError::DuplicateStreamConstituent {
+                id: pair[0].diagnostic_label(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn require_species_constituent_axis(binding: &StreamChartBinding) -> Result<(), CoupleError> {
+    binding
+        .constituent_axis
+        .iter()
+        .find(|constituent| !matches!(constituent, StreamConstituentId::Species(_)))
+        .map_or(Ok(()), |constituent| {
+            Err(CoupleError::StreamChemicalEnergyRequiresSpeciesAxis {
+                constituent: constituent.diagnostic_label(),
+            })
+        })
+}
+
+fn require_stream_binding(
+    expected: &StreamChartBinding,
+    actual: &StreamChartBinding,
+) -> Result<(), CoupleError> {
+    expected.first_mismatch(actual).map_or(Ok(()), |field| {
+        Err(CoupleError::StreamChartBindingMismatch { field })
+    })
+}
+
+fn require_identity_proof(
+    binding: &StreamChartBinding,
+    proof: &ExactIdentityProofRef,
+    expected: StreamIdentity,
+) -> Result<(), CoupleError> {
+    if proof.identity != expected {
+        return Err(CoupleError::WrongStreamIdentityProof {
+            expected,
+            actual: proof.identity,
+        });
+    }
+    require_stream_binding(binding, proof.binding())
+}
+
+fn require_stable_id_match(
+    field: &'static str,
+    expected: &StableId,
+    actual: &StableId,
+) -> Result<(), CoupleError> {
+    if expected == actual {
+        Ok(())
+    } else {
+        Err(CoupleError::StreamChartBindingMismatch { field })
+    }
+}
+
+fn require_exact_stream_identity(
+    identity: StreamIdentity,
+    check: &'static str,
+    expected: f64,
+    actual: f64,
+) -> Result<(), CoupleError> {
+    ensure_finite_stream_value(check, None, expected)?;
+    ensure_finite_stream_value(check, None, actual)?;
+    if expected.to_bits() == actual.to_bits() {
+        Ok(())
+    } else {
+        Err(CoupleError::StreamIdentityMismatch { identity, check })
     }
 }
 
@@ -1414,6 +2674,70 @@ pub enum CoupleError {
     LegacyInterconnectRequiresSeedKind {
         /// Rejected physical kind.
         kind: PortKind,
+    },
+    /// One scalar or vector component of a stream bundle was not finite.
+    NonFiniteStreamValue {
+        /// Offending semantic field.
+        field: &'static str,
+        /// Component index for vector-valued fields.
+        index: Option<usize>,
+    },
+    /// A stream bundle omitted its species/element amount axis.
+    EmptyStreamConstituents,
+    /// A stream declared the same constituent more than once.
+    DuplicateStreamConstituent {
+        /// Repeated species or element identifier.
+        id: String,
+    },
+    /// The stream rates did not exactly match the proof-bound constituent axis.
+    StreamConstituentAxisMismatch {
+        /// Canonical species/element axis bound by the chart proofs.
+        expected: Vec<String>,
+        /// Canonical species/element axis carried by the stream rates.
+        actual: Vec<String>,
+    },
+    /// Species-potential accounting was requested on an axis containing an
+    /// element coordinate.
+    StreamChemicalEnergyRequiresSpeciesAxis {
+        /// First non-species coordinate on the canonical axis.
+        constituent: String,
+    },
+    /// Stream flow signs are admitted only in the owner-outward convention.
+    StreamPortRequiresOutwardOrientation {
+        /// Rejected orientation.
+        actual: PortOrientation,
+    },
+    /// A chart, proof, or chemical partition was bound to a different stream
+    /// context.
+    StreamChartBindingMismatch {
+        /// First mismatching context field.
+        field: &'static str,
+    },
+    /// A proof reference named the wrong thermodynamic identity.
+    WrongStreamIdentityProof {
+        /// Identity required by the admission path.
+        expected: StreamIdentity,
+        /// Identity named by the supplied proof.
+        actual: StreamIdentity,
+    },
+    /// A pressure-work or Euler/Legendre equality was not bit-exact.
+    StreamIdentityMismatch {
+        /// Identity being checked.
+        identity: StreamIdentity,
+        /// Localized equality within that identity.
+        check: &'static str,
+    },
+    /// A pressure-work crosswalk used zero or negative density.
+    NonPositiveStreamDensity,
+    /// Chemical energy was owned by both the state potential and a separate
+    /// species-potential contribution.
+    DoubleCountedChemicalEnergy,
+    /// The declared stream energy rate differed from the selected chart.
+    StreamEnergyFlowMismatch {
+        /// Bit pattern recomputed from the admitted chart.
+        accounted_bits: u64,
+        /// Bit pattern declared by the stream bundle.
+        declared_bits: u64,
     },
     /// Two port schemas disagree on a localized conjugacy field.
     IncompatiblePortSchemas {
