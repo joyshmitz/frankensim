@@ -789,7 +789,18 @@ and drops the transferred matrix. The primitive allocates no derived numerical
 payload; transferred storage, allocator metadata, and destructor latency are
 not caller-budgeted. It does not solve a right-hand side, prove conditioning,
 migrate `refit_radial`, consume a `Cx` budget, own drain/finalize, or promise
-wall-time preemption. The SDF shell rejects malformed
+wall-time preemption.
+`solve_refit_normal_with_cx` borrows a completed factor, consumes one
+right-hand side, and preserves constant dimension plus count-derived work
+refusal before its first checkpoint. The shared gate spans square lower-factor
+shape, finite/positive-diagonal and right-hand-side validation, deterministic
+forward/back substitution, finite-arithmetic checks, and final publication,
+with at most 64 logical scalar operations between polls.
+`RefitNormalSolveRun::Cancelled` exposes no partial substitution state and drops
+the transferred right-hand side without modifying the factor. It allocates no
+derived numerical payload and does not prove conditioning, consume the `Cx`
+budget, migrate the pipeline, own drain/finalize, promise wall-time preemption,
+or cover destructor latency. The SDF shell rejects malformed
 point/tolerance input before surface planning, admits each immutable surface
 once per distance query, reuses that admission through closest and Gauss-Newton
 polish, and carries the winning admission into gradient, orientation, and

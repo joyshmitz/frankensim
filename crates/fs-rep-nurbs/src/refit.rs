@@ -478,6 +478,23 @@ pub enum RefitNormalFactorRun {
     Cancelled,
 }
 
+/// Transactional outcome of a cancellation-aware solve against a completed
+/// refit Cholesky factor.
+///
+/// The primitive consumes its right-hand side. Cancellation or error drops the
+/// partial forward/back substitution state; only a complete solution escapes.
+#[must_use]
+#[derive(Debug, Clone, PartialEq)]
+pub enum RefitNormalSolveRun {
+    /// Both triangular substitutions and the publication checkpoint completed.
+    Complete {
+        /// Complete solution vector.
+        solution: Vec<f64>,
+    },
+    /// Cancellation was observed before publication.
+    Cancelled,
+}
+
 fn validate_radial_projection_request(
     center: [f64; 3],
     dir: [f64; 3],
@@ -720,6 +737,33 @@ fn preflight_refit_normal_factor(n: usize) -> Result<(), NurbsError> {
     Ok(())
 }
 
+fn preflight_refit_normal_solve(factor_rows: usize, rhs_len: usize) -> Result<(), NurbsError> {
+    if rhs_len == 0 {
+        return Err(refit_structure_error(
+            "refit normal solve requires a nonempty right-hand side",
+        ));
+    }
+    if factor_rows != rhs_len {
+        return Err(refit_structure_error(format!(
+            "refit normal solve factor has {factor_rows} rows for right-hand side length {rhs_len}"
+        )));
+    }
+    let n_work = rhs_len as u128;
+    let shape_and_rhs_work = checked_refit_work_product(&[n_work, 2], "normal solve inputs")?;
+    let factor_and_solve_work =
+        checked_refit_work_product(&[n_work, n_work, 3], "normal triangular solve")?;
+    let total_work = checked_refit_work_sum(
+        &[shape_and_rhs_work, factor_and_solve_work, 1],
+        "normal solve",
+    )?;
+    if total_work > REFIT_MAX_WORK_UNITS {
+        return Err(refit_structure_error(format!(
+            "refit normal-solve work estimate {total_work} exceeds static cap {REFIT_MAX_WORK_UNITS}"
+        )));
+    }
+    Ok(())
+}
+
 /// Factor a dense symmetric-positive-definite matrix with bounded
 /// cancellation polling.
 ///
@@ -838,35 +882,133 @@ fn cholesky_factor(matrix: Vec<Vec<f64>>) -> Result<Vec<Vec<f64>>, NurbsError> {
     }
 }
 
-/// Solve one right-hand side using a factor produced by
-/// [`cholesky_factor`].
-fn cholesky_solve_factored(a: &[Vec<f64>], b: &mut [f64]) -> Result<(), NurbsError> {
-    let n = b.len();
-    for i in 0..n {
-        let mut sum = b[i];
-        for k in 0..i {
-            sum -= a[i][k] * b[k];
+/// Solve one right-hand side using a completed lower-triangular refit factor
+/// with bounded cancellation polling.
+///
+/// Count-derived dimensions and worst-case work are refused before the first
+/// checkpoint. One gate then spans factor shape/lower-triangle validation,
+/// right-hand-side validation, deterministic forward/back substitution, finite
+/// arithmetic checks, and final publication. The borrowed factor is never
+/// modified; cancellation drops the consumed right-hand side. This primitive
+/// does not consume the `Cx` budget, prove conditioning, or make the full refit
+/// pipeline cancellation-aware.
+///
+/// # Errors
+/// Returns a structured [`NurbsError`] for dimension/shape mismatch,
+/// non-finite factor or right-hand-side values, non-positive diagonal entries,
+/// checked work refusal, or non-finite substitution arithmetic.
+pub fn solve_refit_normal_with_cx(
+    factor: &[Vec<f64>],
+    rhs: Vec<f64>,
+    cx: &Cx<'_>,
+) -> Result<RefitNormalSolveRun, NurbsError> {
+    let mut should_cancel = || cx.checkpoint().is_err();
+    solve_refit_normal_with_poll(factor, rhs, &mut should_cancel)
+}
+
+#[allow(clippy::needless_range_loop)]
+fn solve_refit_normal_with_poll(
+    factor: &[Vec<f64>],
+    mut rhs: Vec<f64>,
+    should_cancel: &mut impl FnMut() -> bool,
+) -> Result<RefitNormalSolveRun, NurbsError> {
+    let n = rhs.len();
+    preflight_refit_normal_solve(factor.len(), n)?;
+    if should_cancel() {
+        return Ok(RefitNormalSolveRun::Cancelled);
+    }
+
+    let mut operations_since_poll = 0usize;
+    for (row_index, row) in factor.iter().enumerate() {
+        if row.len() != n {
+            return Err(refit_structure_error(format!(
+                "refit normal-solve factor row {row_index} has length {}, expected {n}",
+                row.len()
+            )));
         }
-        b[i] = sum / a[i][i];
-        if !b[i].is_finite() {
+        if refit_poll_due(&mut operations_since_poll, should_cancel) {
+            return Ok(RefitNormalSolveRun::Cancelled);
+        }
+    }
+    for i in 0..n {
+        for j in 0..=i {
+            let value = factor[i][j];
+            if !value.is_finite() {
+                return Err(refit_structure_error(format!(
+                    "refit normal-solve factor contains a non-finite lower entry at ({i}, {j})"
+                )));
+            }
+            if i == j && value <= 0.0 {
+                return Err(refit_structure_error(format!(
+                    "refit normal-solve factor has a non-positive diagonal at {i}"
+                )));
+            }
+            if refit_poll_due(&mut operations_since_poll, should_cancel) {
+                return Ok(RefitNormalSolveRun::Cancelled);
+            }
+        }
+    }
+    for (index, value) in rhs.iter().enumerate() {
+        if !value.is_finite() {
+            return Err(refit_structure_error(format!(
+                "refit normal-solve right-hand side contains a non-finite value at {index}"
+            )));
+        }
+        if refit_poll_due(&mut operations_since_poll, should_cancel) {
+            return Ok(RefitNormalSolveRun::Cancelled);
+        }
+    }
+
+    for i in 0..n {
+        let mut sum = rhs[i];
+        for k in 0..i {
+            sum -= factor[i][k] * rhs[k];
+            if refit_poll_due(&mut operations_since_poll, should_cancel) {
+                return Ok(RefitNormalSolveRun::Cancelled);
+            }
+        }
+        rhs[i] = sum / factor[i][i];
+        if !rhs[i].is_finite() {
             return Err(refit_structure_error(
                 "normal-equation forward solve became non-finite",
             ));
         }
+        if refit_poll_due(&mut operations_since_poll, should_cancel) {
+            return Ok(RefitNormalSolveRun::Cancelled);
+        }
     }
     for i in (0..n).rev() {
-        let mut sum = b[i];
+        let mut sum = rhs[i];
         for k in (i + 1)..n {
-            sum -= a[k][i] * b[k];
+            sum -= factor[k][i] * rhs[k];
+            if refit_poll_due(&mut operations_since_poll, should_cancel) {
+                return Ok(RefitNormalSolveRun::Cancelled);
+            }
         }
-        b[i] = sum / a[i][i];
-        if !b[i].is_finite() {
+        rhs[i] = sum / factor[i][i];
+        if !rhs[i].is_finite() {
             return Err(refit_structure_error(
                 "normal-equation back solve became non-finite",
             ));
         }
+        if refit_poll_due(&mut operations_since_poll, should_cancel) {
+            return Ok(RefitNormalSolveRun::Cancelled);
+        }
     }
-    Ok(())
+    if should_cancel() {
+        return Ok(RefitNormalSolveRun::Cancelled);
+    }
+    Ok(RefitNormalSolveRun::Complete { solution: rhs })
+}
+
+fn cholesky_solve_factored(factor: &[Vec<f64>], rhs: Vec<f64>) -> Result<Vec<f64>, NurbsError> {
+    let mut never_cancel = || false;
+    match solve_refit_normal_with_poll(factor, rhs, &mut never_cancel)? {
+        RefitNormalSolveRun::Complete { solution } => Ok(solution),
+        RefitNormalSolveRun::Cancelled => Err(refit_structure_error(
+            "non-cancellable refit normal solve observed cancellation",
+        )),
+    }
 }
 
 fn open_uniform_knots(n: usize, degree: usize) -> Result<KnotVector<f64>, NurbsError> {
@@ -1199,7 +1341,7 @@ pub fn refit_radial(
                 }
             }
         }
-        cholesky_solve_factored(&factor, &mut rhs)?;
+        let rhs = cholesky_solve_factored(&factor, rhs)?;
         for i in 0..nu {
             for j in 0..nv {
                 net[i][j][axis] = rhs[i * nv + j];
@@ -1749,6 +1891,98 @@ mod tests {
             factor_refit_normal_with_poll(vec![vec![1.0, 0.0], vec![1.0, 1.0]], &mut || false)
                 .expect_err("asymmetric input must not be factored as SPD");
         assert!(asymmetric.to_string().contains("asymmetric at (1, 0)"));
+    }
+
+    // G0/G5: the transactional solve preserves the legacy forward/back
+    // substitution order for a factor with an exactly known solution.
+    #[test]
+    fn normal_solve_with_cx_matches_the_known_solution() {
+        let factor = vec![vec![2.0, 2.0], vec![1.0, 2.0]];
+        let rhs = vec![8.0, 12.0];
+        let expected = vec![1.0, 2.0];
+        with_refit_cx(false, |cx| {
+            assert_eq!(
+                solve_refit_normal_with_cx(&factor, rhs.clone(), cx)
+                    .expect("cancellable normal solve"),
+                RefitNormalSolveRun::Complete {
+                    solution: expected.clone(),
+                }
+            );
+        });
+        assert_eq!(
+            cholesky_solve_factored(&factor, rhs).expect("legacy normal solve"),
+            expected
+        );
+    }
+
+    // G4/G5: validation, both substitutions, and solution publication share
+    // replayable checkpoints, and cancellation never exposes a partial RHS.
+    #[test]
+    fn normal_solve_polling_is_bounded_and_transactional() {
+        let mut factor = vec![vec![0.0; 32]; 32];
+        for (index, row) in factor.iter_mut().enumerate() {
+            row[index] = 1.0;
+        }
+        let rhs = vec![1.0; 32];
+        let run = |cancel_at: Option<usize>| {
+            let polls = Cell::new(0usize);
+            let outcome = solve_refit_normal_with_poll(&factor, rhs.clone(), &mut || {
+                polls.set(polls.get() + 1);
+                cancel_at == Some(polls.get())
+            })
+            .expect("valid normal solve");
+            (outcome, polls.get())
+        };
+
+        let (complete, healthy_polls) = run(None);
+        assert!(matches!(complete, RefitNormalSolveRun::Complete { .. }));
+        assert!(healthy_polls > 4);
+        assert_eq!(run(Some(1)), (RefitNormalSolveRun::Cancelled, 1));
+        let middle_poll = healthy_polls / 2;
+        assert_eq!(
+            run(Some(middle_poll)),
+            (RefitNormalSolveRun::Cancelled, middle_poll)
+        );
+        assert_eq!(
+            run(Some(healthy_polls)),
+            (RefitNormalSolveRun::Cancelled, healthy_polls)
+        );
+    }
+
+    // G4: constant/count refusals precede cancellation, while traversed factor
+    // and RHS failures remain typed inside the gate.
+    #[test]
+    fn normal_solve_refusals_are_typed_and_preflighted() {
+        let work_error = preflight_refit_normal_solve(20_000, 20_000)
+            .expect_err("quadratic solve work above the cap must be refused");
+        assert!(work_error.to_string().contains("work estimate"));
+
+        let polls = Cell::new(0usize);
+        let dimension_error = solve_refit_normal_with_poll(&[], vec![1.0], &mut || {
+            polls.set(polls.get() + 1);
+            true
+        })
+        .expect_err("dimension mismatch must precede cancellation");
+        assert!(dimension_error.to_string().contains("0 rows"));
+        assert_eq!(polls.get(), 0);
+
+        let malformed =
+            solve_refit_normal_with_poll(&[vec![1.0], vec![0.0, 1.0]], vec![1.0, 1.0], &mut || {
+                polls.set(polls.get() + 1);
+                false
+            })
+            .expect_err("non-square factor must be refused");
+        assert!(malformed.to_string().contains("length 1, expected 2"));
+        assert_eq!(polls.get(), 1);
+
+        let nonpositive = solve_refit_normal_with_poll(&[vec![0.0]], vec![1.0], &mut || false)
+            .expect_err("non-positive factor diagonal must be refused");
+        assert!(nonpositive.to_string().contains("non-positive diagonal"));
+
+        let nonfinite_rhs =
+            solve_refit_normal_with_poll(&[vec![1.0]], vec![f64::NAN], &mut || false)
+                .expect_err("non-finite RHS must be refused");
+        assert!(nonfinite_rhs.to_string().contains("right-hand side"));
     }
 
     #[test]
