@@ -42,10 +42,13 @@ without gaining solver, geometry, FFI, or license surface.
   In v1, explicit optional encoding is exposed only for `Bytes` through
   `optional_bytes`.
 - `CanonicalEncoder`, `CanonicalLimits`, and `CanonicalError` — streaming,
-  fail-closed construction under explicit frame, field, field-count,
-  collection/chunk, and cancellation-poll budgets. Defaults are a 1 MiB frame,
-  256 KiB field, 256 fields, 16,384 items per collection or chunks per streamed
-  byte field, and a 4,096-byte cancellation poll stride.
+  fail-closed construction under explicit frame, field, per-schema field-count,
+  recursive schema-expansion, collection/chunk, and cancellation-poll budgets.
+  Defaults are a 1 MiB frame, 256 KiB field, 256 fields per descriptor, 16,384
+  items per collection or chunks per streamed byte field, and a 4,096-byte
+  cancellation poll stride. `CanonicalEncoder` admission of a recursive
+  descriptor is additionally capped at
+  `max_fields * (MAX_SCHEMA_CHILD_DEPTH + 1)` field occurrences.
 - `IdentityReceipt` and `IdentityAuditRecord` — the successfully published
   typed identity, exact canonical-frame root, bounded counters/limits, and
   fixed-size audit metadata. Payload bytes are not retained in the record.
@@ -85,16 +88,29 @@ without gaining solver, geometry, FFI, or license surface.
   complete schema identity via `FieldSpec::child_of` /
   `ordered_children_of` + `ChildSpec::for_identity::<J>()` — an unbound
   child field is a compile-time error, and the encoder refuses any
-  identity whose role/domain/name/version/context/field-schema differs
-  from the declaration (empty ordered collections included). Field-
-  schema comparison uses `&'static` pointer identity, so structurally
-  identical but distinct schema types stay non-confusable. The binding
-  is folded RECURSIVELY (depth-capped with a deterministic poison tag)
-  into the schema-descriptor preimage under `FSSCHEM\x02`, so changing
-  the expected child type changes the parent `SchemaId`; every
-  `FSSCHEM\x01` schema id is therefore a DIFFERENT value with an
-  explicit no-authority crosswalk boundary — v1 ids are correlation
-  history, never silently reinterpreted as child-bound.
+  identity whose role/domain/name/version/context/field-schema differs from the
+  declaration (empty ordered collections included). Field-schema comparison is
+  structural and depth-capped; pointer identity is only a fast path/cycle guard
+  because associated constants have no stable address. Distinct marker types
+  with identical roles and complete descriptors are therefore
+  admission-equivalent. `ChildSpec` equality/hash instead retain pointer-tail
+  identity to stay total on recursive values; those traits are not the encoder's
+  admission relation. The binding is folded RECURSIVELY (depth-capped with a
+  deterministic poison tag) into the schema-descriptor preimage under
+  `FSSCHEM\x02`, so changing the expected role or descriptor changes the parent
+  `SchemaId`. `SchemaId::for_schema` can name an over-depth descriptor through
+  that poison tag. `CanonicalEncoder` recursively validates every child
+  descriptor, enforces the
+  per-descriptor field cap plus a derived aggregate expansion ceiling, polls
+  cancellation throughout, and refuses invalid or over-depth bindings before
+  publishing an identity.
+  Directly deriving the same descriptor under `FSSCHEM\x01` and `FSSCHEM\x02`
+  therefore produces DIFFERENT roots. Because `SCHEMA_ID_HASH_DOMAIN`, the
+  nominal types, and shape-only parsers remain `.v1`, the crate cannot
+  distinguish an externally parsed old root from a current root. No cross-era
+  authority or automatic migration is claimed; callers must quarantine old
+  roots and perform an explicit external migration until the public domains and
+  types rotate together.
   Typed children bind their role, complete schema descriptor identity, and all
   32 digest bytes.
 - Finite `f64` values are encoded by exact IEEE-754 bits. Signed zero remains
@@ -204,6 +220,12 @@ establishes neither their independence nor authenticity and cannot detect
 discarded distinctions or prove collision absence. `IdentityAuditRecord` is
 bounded descriptive metadata, not signed or authenticated evidence. Legacy
 FNV provenance remains quarantined with no conversion or equality bridge.
+The internal `FSSCHEM\x01` to `FSSCHEM\x02` marker transition did not rotate
+the public schema-ID or dependent canonical-frame domains. Shape-only parsing
+cannot identify which marker produced an externally supplied digest; no
+cross-era authority, automatic migration, or completed public-version
+crosswalk is claimed until those domains and nominal types are versioned
+together.
 
 General-purpose keyed hashing, a public KDF API, and extended (XOF) output are
 NOT implemented. `hash_domain` uses the standard derive-key modes only for

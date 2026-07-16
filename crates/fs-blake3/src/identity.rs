@@ -100,14 +100,15 @@ pub const CANONICAL_FRAME_VERSION: u32 = 1;
 pub const CANONICAL_IDENTITY_HASH_DOMAIN: &str =
     "org.frankensim.fs-blake3.canonical-identity-frame.v1";
 
-/// BLAKE3 derive-key context for non-recursive schema descriptors.
+/// BLAKE3 derive-key context for recursively child-bound schema descriptors.
 pub const SCHEMA_ID_HASH_DOMAIN: &str = "org.frankensim.fs-blake3.schema-id.v1";
 
 const CANONICAL_MAGIC: &[u8; 8] = b"FSID\0\0\0\x01";
 // v2 (bead sj31i.52.10): field descriptors bind the expected child
-// role/schema recursively, so every v1 schema id is a DIFFERENT value
-// with an explicit no-authority crosswalk boundary (no silent
-// reinterpretation of v1 identities as child-bound).
+// role/schema recursively, so freshly derived v1- and v2-marker roots differ.
+// The public hash domain and typed parser are still v1, however, so this crate
+// cannot distinguish an externally parsed old root from a current one. No
+// cross-era authority or completed domain-version migration is claimed.
 const SCHEMA_MAGIC: &[u8; 8] = b"FSSCHEM\x02";
 const FIELD_MARKER: u8 = 0xf0;
 const END_MARKER: u8 = 0xff;
@@ -122,20 +123,20 @@ pub const SCHEMA_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
     "domain=org.frankensim.fs-blake3.schema-id.v1",
     "domain_const=SCHEMA_ID_HASH_DOMAIN",
     "encoder=SchemaId::for_schema",
-    "encoder_helpers=write_schema_descriptor,hash_len_bytes",
-    "schema_constants=CANONICAL_FRAME_VERSION,SCHEMA_ID_HASH_DOMAIN,SCHEMA_MAGIC",
-    "schema_functions=SchemaId::for_schema,FieldSpec::name,FieldSpec::wire_type,FieldSpec::presence,Presence::tag,WireType::tag,crates/fs-blake3/src/lib.rs#Blake3::finalize,crates/fs-blake3/src/lib.rs#Blake3::update,crates/fs-blake3/src/lib.rs#derive_key_hasher",
+    "encoder_helpers=write_schema_descriptor,write_schema_descriptor_at,hash_len_bytes",
+    "schema_constants=CANONICAL_FRAME_VERSION,SCHEMA_ID_HASH_DOMAIN,SCHEMA_MAGIC,MAX_SCHEMA_CHILD_DEPTH",
+    "schema_functions=SchemaId::for_schema,FieldSpec::name,FieldSpec::wire_type,FieldSpec::presence,FieldSpec::child_spec,ChildSpec::role,ChildSpec::domain,ChildSpec::name,ChildSpec::version,ChildSpec::context,ChildSpec::fields,IdentityRole::tag,Presence::tag,WireType::tag,crates/fs-blake3/src/lib.rs#Blake3::finalize,crates/fs-blake3/src/lib.rs#Blake3::update,crates/fs-blake3/src/lib.rs#derive_key_hasher",
     "schema_dependencies=none",
     "digest=fs-blake3",
     "encoding=typed-binary",
     "sources=SchemaDescriptorSource",
     "source_fields=SchemaDescriptorSource.domain:semantic,SchemaDescriptorSource.name:semantic,SchemaDescriptorSource.version:semantic,SchemaDescriptorSource.context:semantic,SchemaDescriptorSource.fields:semantic",
-    "source_bindings=SchemaDescriptorSource.domain>domain,SchemaDescriptorSource.name>schema-name,SchemaDescriptorSource.version>schema-version,SchemaDescriptorSource.context>context,SchemaDescriptorSource.fields>declared-field-count+field-order+ordered-field-name+wire-type+presence",
-    "external_semantic_fields=schema-descriptor-magic,schema-descriptor-version",
-    "semantic_fields=schema-descriptor-magic,schema-descriptor-version,domain,schema-name,schema-version,context,declared-field-count,field-order,ordered-field-name,wire-type,presence",
+    "source_bindings=SchemaDescriptorSource.domain>domain,SchemaDescriptorSource.name>schema-name,SchemaDescriptorSource.version>schema-version,SchemaDescriptorSource.context>context,SchemaDescriptorSource.fields>declared-field-count+field-order+ordered-field-name+wire-type+presence+child-binding-presence+child-role+child-domain+child-schema-name+child-schema-version+child-context+recursive-child-field-schema",
+    "external_semantic_fields=schema-descriptor-magic,schema-descriptor-version,child-depth-poison-tag",
+    "semantic_fields=schema-descriptor-magic,schema-descriptor-version,domain,schema-name,schema-version,context,declared-field-count,field-order,ordered-field-name,wire-type,presence,child-binding-presence,child-role,child-domain,child-schema-name,child-schema-version,child-context,recursive-child-field-schema,child-depth-poison-tag",
     "excluded_fields=none",
     "consumers=CanonicalEncoder,IdentityReceipt,StrongIdentity,SchemaId",
-    "mutations=schema-descriptor-magic:crates/fs-blake3/tests/identity.rs#schema_descriptor_and_every_header_field_move_identity,schema-descriptor-version:crates/fs-blake3/tests/identity.rs#schema_descriptor_and_every_header_field_move_identity,domain:crates/fs-blake3/tests/identity.rs#schema_descriptor_and_every_header_field_move_identity,schema-name:crates/fs-blake3/tests/identity.rs#schema_descriptor_and_every_header_field_move_identity,schema-version:crates/fs-blake3/tests/identity.rs#schema_descriptor_and_every_header_field_move_identity,context:crates/fs-blake3/tests/identity.rs#schema_descriptor_and_every_header_field_move_identity,declared-field-count:crates/fs-blake3/tests/identity.rs#schema_descriptor_and_every_header_field_move_identity,field-order:crates/fs-blake3/tests/identity.rs#schema_descriptor_and_every_header_field_move_identity,ordered-field-name:crates/fs-blake3/tests/identity.rs#schema_descriptor_and_every_header_field_move_identity,wire-type:crates/fs-blake3/tests/identity.rs#schema_descriptor_and_every_header_field_move_identity,presence:crates/fs-blake3/tests/identity.rs#schema_descriptor_and_every_header_field_move_identity",
+    "mutations=schema-descriptor-magic:crates/fs-blake3/tests/identity.rs#schema_descriptor_and_every_header_field_move_identity,schema-descriptor-version:crates/fs-blake3/tests/identity.rs#schema_descriptor_and_every_header_field_move_identity,domain:crates/fs-blake3/tests/identity.rs#schema_descriptor_and_every_header_field_move_identity,schema-name:crates/fs-blake3/tests/identity.rs#schema_descriptor_and_every_header_field_move_identity,schema-version:crates/fs-blake3/tests/identity.rs#schema_descriptor_and_every_header_field_move_identity,context:crates/fs-blake3/tests/identity.rs#schema_descriptor_and_every_header_field_move_identity,declared-field-count:crates/fs-blake3/tests/identity.rs#schema_descriptor_and_every_header_field_move_identity,field-order:crates/fs-blake3/tests/identity.rs#schema_descriptor_and_every_header_field_move_identity,ordered-field-name:crates/fs-blake3/tests/identity.rs#schema_descriptor_and_every_header_field_move_identity,wire-type:crates/fs-blake3/tests/identity.rs#schema_descriptor_and_every_header_field_move_identity,presence:crates/fs-blake3/tests/identity.rs#schema_descriptor_and_every_header_field_move_identity,child-binding-presence:crates/fs-blake3/tests/identity.rs#schema_descriptor_and_every_header_field_move_identity,child-role:crates/fs-blake3/tests/identity.rs#schema_descriptor_and_every_header_field_move_identity,child-domain:crates/fs-blake3/tests/identity.rs#schema_descriptor_and_every_header_field_move_identity,child-schema-name:crates/fs-blake3/tests/identity.rs#schema_descriptor_and_every_header_field_move_identity,child-schema-version:crates/fs-blake3/tests/identity.rs#schema_descriptor_and_every_header_field_move_identity,child-context:crates/fs-blake3/tests/identity.rs#schema_descriptor_and_every_header_field_move_identity,recursive-child-field-schema:crates/fs-blake3/tests/identity.rs#schema_descriptor_and_every_header_field_move_identity,child-depth-poison-tag:crates/fs-blake3/tests/identity.rs#over_depth_schema_poison_tag_is_identity_bearing",
     "nonsemantic_mutations=none",
     "field_guard=classify_schema_descriptor_fields",
     "transport_guard=SchemaId::for_schema",
@@ -187,7 +188,8 @@ pub trait CanonicalSchema: 'static {
     const VERSION: u32;
     /// Stable purpose/context string; never host, clock, or display text.
     const CONTEXT: &'static str;
-    /// Complete top-level field schema in exact canonical order.
+    /// Complete top-level field schema in exact canonical order. Child entries
+    /// recursively bind the complete structural descriptor of each child.
     const FIELDS: &'static [FieldSpec];
 }
 
@@ -263,16 +265,20 @@ impl WireType {
 /// The parent-declared binding for a child field (bead sj31i.52.10):
 /// the EXACT expected child role and complete schema identity —
 /// domain, name, version, context, and the child's full recursive
-/// field schema. A parent schema admits only this child type; wrong
-/// role/domain/name/version/context/nested schema refuses at encode
-/// time, and the binding is part of the parent schema-id preimage, so
-/// changing the expected child type changes the parent [`SchemaId`].
+/// field schema. A parent schema admits only this role plus complete structural
+/// descriptor; a wrong role/domain/name/version/context/nested schema refuses
+/// at encode time, and the binding is part of the parent schema-id preimage, so
+/// changing the expected role or structural descriptor changes the parent
+/// [`SchemaId`].
 ///
-/// Field-schema comparison uses `&'static` slice POINTER identity: the
-/// binding built by [`ChildSpec::for_identity`] captures the child
-/// schema's own `FIELDS` static, which is exactly what the encoder
-/// sees for a matching type — while a structurally identical but
-/// DISTINCT schema type stays non-confusable.
+/// Field-schema comparison is structural and depth-capped. Pointer identity is
+/// only a fast path and cycle guard because associated constants do not have a
+/// stable address. Declared-schema non-confusability comes from the bound role,
+/// domain, name, version, context, and complete recursive field structure.
+/// Distinct marker types with identical roles and descriptors are intentionally
+/// admission-equivalent. [`ChildSpec`]'s public equality/hash remain
+/// pointer-tail operations so recursive values stay total; the encoder uses
+/// structural admission instead of those traits.
 #[derive(Debug, Clone, Copy)]
 pub struct ChildSpec {
     role: IdentityRole,
@@ -284,7 +290,7 @@ pub struct ChildSpec {
 }
 
 impl ChildSpec {
-    /// The binding for exactly the identity type `J`.
+    /// The binding for `J`'s role and complete structural schema descriptor.
     #[must_use]
     pub const fn for_identity<J: StrongIdentity>() -> Self {
         Self {
@@ -366,12 +372,13 @@ impl ChildSpec {
 /// Associated consts have NO stable address in Rust (each read may
 /// materialize a fresh anonymous value), so pointer identity is only a
 /// fast path and a cycle guard — structural comparison is the truth.
-/// Exhausting the depth cap refuses (returns false) rather than loops.
-fn fields_schema_match(a: &[FieldSpec], b: &[FieldSpec], depth: u32) -> bool {
+/// The current node may compare with zero child edges remaining; attempting
+/// another child edge at that boundary refuses rather than recursing.
+fn fields_schema_match(a: &[FieldSpec], b: &[FieldSpec], remaining_edges: u32) -> bool {
     if core::ptr::eq(a, b) {
         return true;
     }
-    if depth == 0 || a.len() != b.len() {
+    if a.len() != b.len() {
         return false;
     }
     a.iter().zip(b).all(|(left, right)| {
@@ -381,12 +388,13 @@ fn fields_schema_match(a: &[FieldSpec], b: &[FieldSpec], depth: u32) -> bool {
             && match (left.child, right.child) {
                 (None, None) => true,
                 (Some(lc), Some(rc)) => {
-                    lc.role.tag() == rc.role.tag()
+                    remaining_edges > 0
+                        && lc.role.tag() == rc.role.tag()
                         && lc.domain == rc.domain
                         && lc.name == rc.name
                         && lc.version == rc.version
                         && lc.context == rc.context
-                        && fields_schema_match(lc.fields, rc.fields, depth - 1)
+                        && fields_schema_match(lc.fields, rc.fields, remaining_edges - 1)
                 }
                 _ => false,
             }
@@ -792,7 +800,8 @@ strong_identity!(
     IdentityRole::ProblemSemantic
 );
 
-/// Non-recursive identity of the complete static descriptor for schema `D`.
+/// Direct identity of the complete recursively child-bound descriptor for
+/// schema `D`.
 ///
 /// The descriptor is hashed directly under [`SCHEMA_ID_HASH_DOMAIN`], so a
 /// canonical identity frame can safely include this value without defining a
@@ -946,7 +955,7 @@ fn write_schema_descriptor_at<E>(
         update(&[field.wire_type.tag(), field.presence.tag()])?;
         // bead sj31i.52.10: the expected child binding is part of the
         // parent schema identity, recursively — changing the expected
-        // child type changes the parent SchemaId.
+        // child descriptor changes the parent SchemaId.
         match field.child {
             None => update(&[0u8])?,
             Some(_) if depth >= MAX_SCHEMA_CHILD_DEPTH => update(&[2u8])?,
@@ -1018,7 +1027,8 @@ impl CanonicalLimits {
         self.max_field_bytes
     }
 
-    /// Maximum top-level fields.
+    /// Maximum fields in any one schema descriptor. Recursive descriptor
+    /// expansion is separately bounded by this value times the depth cap.
     #[must_use]
     pub const fn max_fields(self) -> u32 {
         self.max_fields
@@ -1050,7 +1060,7 @@ pub enum LimitKind {
     CanonicalBytes,
     /// One field or collection item.
     FieldBytes,
-    /// Top-level field count.
+    /// Fields in one schema descriptor or its bounded recursive expansion.
     Fields,
     /// Collection item count.
     CollectionItems,
@@ -1412,25 +1422,46 @@ where
     }
 
     fn validate_schema<D: CanonicalSchema>(&mut self) -> Result<(), CanonicalError> {
+        let source = SchemaDescriptorSource {
+            domain: D::DOMAIN,
+            name: D::NAME,
+            version: D::VERSION,
+            context: D::CONTEXT,
+            fields: D::FIELDS,
+        };
+        let mut field_entries = 0u64;
+        self.validate_schema_descriptor(&source, 0, &mut field_entries)
+    }
+
+    fn validate_schema_descriptor(
+        &mut self,
+        source: &SchemaDescriptorSource<'_>,
+        depth: u32,
+        field_entries: &mut u64,
+    ) -> Result<(), CanonicalError> {
         self.checkpoint()?;
-        if D::DOMAIN.is_empty() || D::NAME.is_empty() || D::CONTEXT.is_empty() {
+        if source.domain.is_empty() || source.name.is_empty() || source.context.is_empty() {
             return Err(CanonicalError::InvalidSchemaDescriptor(
                 "domain, schema name, and context must be non-empty",
             ));
         }
-        if D::VERSION == 0 {
+        if source.version == 0 {
             return Err(CanonicalError::InvalidSchemaDescriptor(
                 "semantic version zero is reserved",
             ));
         }
-        let field_count =
-            u64::try_from(D::FIELDS.len()).map_err(|_| CanonicalError::LengthOverflow)?;
+        let field_count = as_u64(source.fields.len())?;
         enforce_limit(
             LimitKind::Fields,
             field_count,
             u64::from(self.limits.max_fields),
         )?;
-        for descriptor in [D::DOMAIN, D::NAME, D::CONTEXT] {
+        *field_entries = checked_add(*field_entries, field_count)?;
+        let expansion_limit = u64::from(self.limits.max_fields)
+            .checked_mul(u64::from(MAX_SCHEMA_CHILD_DEPTH) + 1)
+            .ok_or(CanonicalError::LengthOverflow)?;
+        enforce_limit(LimitKind::Fields, *field_entries, expansion_limit)?;
+        for descriptor in [source.domain, source.name, source.context] {
             self.checkpoint()?;
             enforce_limit(
                 LimitKind::FieldBytes,
@@ -1438,7 +1469,7 @@ where
                 self.limits.max_field_bytes,
             )?;
         }
-        for (index, field) in D::FIELDS.iter().copied().enumerate() {
+        for (index, field) in source.fields.iter().copied().enumerate() {
             self.checkpoint()?;
             if field.name.is_empty() {
                 return Err(CanonicalError::InvalidSchemaDescriptor(
@@ -1450,7 +1481,7 @@ where
                 as_u64(field.name.len())?,
                 self.limits.max_field_bytes,
             )?;
-            for previous in &D::FIELDS[..index] {
+            for previous in &source.fields[..index] {
                 if self.compare_canonical_slices(previous.name.as_bytes(), field.name.as_bytes())?
                     == core::cmp::Ordering::Equal
                 {
@@ -1458,6 +1489,37 @@ where
                         "field names must be unique",
                     ));
                 }
+            }
+            match (field.wire_type, field.child) {
+                (WireType::Child | WireType::OrderedChildren, Some(child)) => {
+                    if depth >= MAX_SCHEMA_CHILD_DEPTH {
+                        return Err(CanonicalError::InvalidSchemaDescriptor(
+                            "child schema nesting exceeds the supported depth",
+                        ));
+                    }
+                    self.validate_schema_descriptor(
+                        &SchemaDescriptorSource {
+                            domain: child.domain,
+                            name: child.name,
+                            version: child.version,
+                            context: child.context,
+                            fields: child.fields,
+                        },
+                        depth + 1,
+                        field_entries,
+                    )?;
+                }
+                (WireType::Child | WireType::OrderedChildren, None) => {
+                    return Err(CanonicalError::InvalidSchemaDescriptor(
+                        "child fields must declare an expected child binding",
+                    ));
+                }
+                (_, Some(_)) => {
+                    return Err(CanonicalError::InvalidSchemaDescriptor(
+                        "non-child fields cannot declare a child binding",
+                    ));
+                }
+                (_, None) => {}
             }
         }
         Ok(())

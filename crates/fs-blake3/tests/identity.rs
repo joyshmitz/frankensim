@@ -35,6 +35,15 @@ impl CanonicalSchema for LeafV2 {
     const FIELDS: &'static [FieldSpec] = &[FieldSpec::required("value", WireType::U64)];
 }
 
+enum LeafV1StructuralTwin {}
+impl CanonicalSchema for LeafV1StructuralTwin {
+    const DOMAIN: &'static str = LeafV1::DOMAIN;
+    const NAME: &'static str = LeafV1::NAME;
+    const VERSION: u32 = LeafV1::VERSION;
+    const CONTEXT: &'static str = LeafV1::CONTEXT;
+    const FIELDS: &'static [FieldSpec] = &[FieldSpec::required("value", WireType::U64)];
+}
+
 enum OtherDomain {}
 impl CanonicalSchema for OtherDomain {
     const DOMAIN: &'static str = "org.frankensim.test.identity.other-domain.v1";
@@ -290,6 +299,165 @@ impl CanonicalSchema for DuplicateFieldSchema {
     ];
 }
 
+enum NestedChildSchema {}
+impl CanonicalSchema for NestedChildSchema {
+    const DOMAIN: &'static str = "org.frankensim.test.identity.nested-child.v1";
+    const NAME: &'static str = "identity-test-nested-child";
+    const VERSION: u32 = 1;
+    const CONTEXT: &'static str = "G0 recursively valid child-schema fixture";
+    const FIELDS: &'static [FieldSpec] = &[
+        FieldSpec::child_of("leaf", &LEAF_SEMANTIC_CHILD),
+        FieldSpec::required("tag", WireType::U64),
+    ];
+}
+
+enum NestedChildSchemaDrift {}
+impl CanonicalSchema for NestedChildSchemaDrift {
+    const DOMAIN: &'static str = NestedChildSchema::DOMAIN;
+    const NAME: &'static str = NestedChildSchema::NAME;
+    const VERSION: u32 = NestedChildSchema::VERSION;
+    const CONTEXT: &'static str = NestedChildSchema::CONTEXT;
+    const FIELDS: &'static [FieldSpec] = &[
+        FieldSpec::child_of("leaf", &LEAF_SEMANTIC_CHILD),
+        FieldSpec::required("tag", WireType::I64),
+    ];
+}
+
+static NESTED_CHILD_SPEC: ChildSpec = ChildSpec::for_identity::<SemanticId<NestedChildSchema>>();
+
+enum NestedParentSchema {}
+impl CanonicalSchema for NestedParentSchema {
+    const DOMAIN: &'static str = "org.frankensim.test.identity.nested-parent.v1";
+    const NAME: &'static str = "identity-test-nested-parent";
+    const VERSION: u32 = 1;
+    const CONTEXT: &'static str = "G0 recursive schema-admission fixture";
+    const FIELDS: &'static [FieldSpec] = &[FieldSpec::child_of("child", &NESTED_CHILD_SPEC)];
+}
+
+static EMPTY_DOMAIN_CHILD_SPEC: ChildSpec =
+    ChildSpec::for_identity::<SemanticId<EmptyDomainSchema>>();
+
+enum InvalidNestedChildSchema {}
+impl CanonicalSchema for InvalidNestedChildSchema {
+    const DOMAIN: &'static str = "org.frankensim.test.identity.invalid-nested-child.v1";
+    const NAME: &'static str = "identity-test-invalid-nested-child";
+    const VERSION: u32 = 1;
+    const CONTEXT: &'static str = "G0 invalid recursive schema fixture";
+    const FIELDS: &'static [FieldSpec] =
+        &[FieldSpec::child_of("invalid", &EMPTY_DOMAIN_CHILD_SPEC)];
+}
+
+static INVALID_NESTED_CHILD_SPEC: ChildSpec =
+    ChildSpec::for_identity::<SemanticId<InvalidNestedChildSchema>>();
+
+enum InvalidNestedParentSchema {}
+impl CanonicalSchema for InvalidNestedParentSchema {
+    const DOMAIN: &'static str = "org.frankensim.test.identity.invalid-nested-parent.v1";
+    const NAME: &'static str = "identity-test-invalid-nested-parent";
+    const VERSION: u32 = 1;
+    const CONTEXT: &'static str = "G0 invalid recursive schema parent fixture";
+    const FIELDS: &'static [FieldSpec] =
+        &[FieldSpec::child_of("child", &INVALID_NESTED_CHILD_SPEC)];
+}
+
+enum Depth17LeafSchema {}
+impl CanonicalSchema for Depth17LeafSchema {
+    const DOMAIN: &'static str = "org.frankensim.test.identity.depth-17-leaf.v1";
+    const NAME: &'static str = "identity-test-depth-17-leaf";
+    const VERSION: u32 = 1;
+    const CONTEXT: &'static str = "G0 finite over-depth schema leaf";
+    const FIELDS: &'static [FieldSpec] = &[];
+}
+
+static DEPTH_17_SPEC: ChildSpec = ChildSpec::for_identity::<SemanticId<Depth17LeafSchema>>();
+
+macro_rules! depth_schema {
+    ($schema:ident, $binding:ident, $child:ident) => {
+        enum $schema {}
+        impl CanonicalSchema for $schema {
+            const DOMAIN: &'static str =
+                concat!("org.frankensim.test.identity.", stringify!($schema), ".v1");
+            const NAME: &'static str = stringify!($schema);
+            const VERSION: u32 = 1;
+            const CONTEXT: &'static str = "G0 finite over-depth schema chain";
+            const FIELDS: &'static [FieldSpec] = &[FieldSpec::child_of("child", &$child)];
+        }
+        static $binding: ChildSpec = ChildSpec::for_identity::<SemanticId<$schema>>();
+    };
+}
+
+depth_schema!(Depth16Schema, DEPTH_16_SPEC, DEPTH_17_SPEC);
+depth_schema!(Depth15Schema, DEPTH_15_SPEC, DEPTH_16_SPEC);
+depth_schema!(Depth14Schema, DEPTH_14_SPEC, DEPTH_15_SPEC);
+depth_schema!(Depth13Schema, DEPTH_13_SPEC, DEPTH_14_SPEC);
+depth_schema!(Depth12Schema, DEPTH_12_SPEC, DEPTH_13_SPEC);
+depth_schema!(Depth11Schema, DEPTH_11_SPEC, DEPTH_12_SPEC);
+depth_schema!(Depth10Schema, DEPTH_10_SPEC, DEPTH_11_SPEC);
+depth_schema!(Depth09Schema, DEPTH_09_SPEC, DEPTH_10_SPEC);
+depth_schema!(Depth08Schema, DEPTH_08_SPEC, DEPTH_09_SPEC);
+depth_schema!(Depth07Schema, DEPTH_07_SPEC, DEPTH_08_SPEC);
+depth_schema!(Depth06Schema, DEPTH_06_SPEC, DEPTH_07_SPEC);
+depth_schema!(Depth05Schema, DEPTH_05_SPEC, DEPTH_06_SPEC);
+depth_schema!(Depth04Schema, DEPTH_04_SPEC, DEPTH_05_SPEC);
+depth_schema!(Depth03Schema, DEPTH_03_SPEC, DEPTH_04_SPEC);
+depth_schema!(Depth02Schema, DEPTH_02_SPEC, DEPTH_03_SPEC);
+depth_schema!(Depth01Schema, DEPTH_01_SPEC, DEPTH_02_SPEC);
+
+enum OverDepthParentSchema {}
+impl CanonicalSchema for OverDepthParentSchema {
+    const DOMAIN: &'static str = "org.frankensim.test.identity.over-depth-parent.v1";
+    const NAME: &'static str = "identity-test-over-depth-parent";
+    const VERSION: u32 = 1;
+    const CONTEXT: &'static str = "G0 finite over-depth schema root";
+    const FIELDS: &'static [FieldSpec] = &[FieldSpec::child_of("child", &DEPTH_01_SPEC)];
+}
+
+enum BranchLeafSchema {}
+impl CanonicalSchema for BranchLeafSchema {
+    const DOMAIN: &'static str = "org.frankensim.test.identity.branch-leaf.v1";
+    const NAME: &'static str = "identity-test-branch-leaf";
+    const VERSION: u32 = 1;
+    const CONTEXT: &'static str = "G0 recursive expansion-cap leaf";
+    const FIELDS: &'static [FieldSpec] = &[];
+}
+
+static BRANCH_LEAF_SPEC: ChildSpec = ChildSpec::for_identity::<SemanticId<BranchLeafSchema>>();
+
+macro_rules! branch_schema {
+    ($schema:ident, $binding:ident, $child:ident) => {
+        enum $schema {}
+        impl CanonicalSchema for $schema {
+            const DOMAIN: &'static str =
+                concat!("org.frankensim.test.identity.", stringify!($schema), ".v1");
+            const NAME: &'static str = stringify!($schema);
+            const VERSION: u32 = 1;
+            const CONTEXT: &'static str = "G0 recursive expansion-cap branch";
+            const FIELDS: &'static [FieldSpec] = &[
+                FieldSpec::child_of("left", &$child),
+                FieldSpec::child_of("right", &$child),
+            ];
+        }
+        static $binding: ChildSpec = ChildSpec::for_identity::<SemanticId<$schema>>();
+    };
+}
+
+branch_schema!(Branch01Schema, BRANCH_01_SPEC, BRANCH_LEAF_SPEC);
+branch_schema!(Branch02Schema, BRANCH_02_SPEC, BRANCH_01_SPEC);
+branch_schema!(Branch03Schema, BRANCH_03_SPEC, BRANCH_02_SPEC);
+branch_schema!(Branch04Schema, BRANCH_04_SPEC, BRANCH_03_SPEC);
+
+enum Branch05Schema {}
+impl CanonicalSchema for Branch05Schema {
+    const DOMAIN: &'static str = "org.frankensim.test.identity.branch-05.v1";
+    const NAME: &'static str = "identity-test-branch-05";
+    const VERSION: u32 = 1;
+    const CONTEXT: &'static str = "G0 recursive expansion-cap root";
+    const FIELDS: &'static [FieldSpec] = &[
+        FieldSpec::child_of("left", &BRANCH_04_SPEC),
+        FieldSpec::child_of("right", &BRANCH_04_SPEC),
+    ];
+}
+
 fn leaf(value: u64) -> fs_blake3::identity::IdentityReceipt<SemanticId<LeafV1>> {
     CanonicalEncoder::<SemanticId<LeafV1>, _>::new(LIMITS, NeverCancel)
         .expect("valid static leaf schema")
@@ -447,54 +615,81 @@ fn push_len_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend_from_slice(bytes);
 }
 
-fn push_manual_descriptor(
-    out: &mut Vec<u8>,
-    domain: &str,
-    name: &str,
+const MANUAL_MAX_SCHEMA_CHILD_DEPTH: u32 = 16;
+
+#[derive(Clone, Copy)]
+struct ManualDescriptorSource<'a> {
+    domain: &'a str,
+    name: &'a str,
     version: u32,
-    context: &str,
-    fields: &[FieldSpec],
+    context: &'a str,
+    fields: &'a [FieldSpec],
+}
+
+fn push_manual_descriptor_at(
+    out: &mut Vec<u8>,
+    source: ManualDescriptorSource<'_>,
+    depth: u32,
+    poison_offsets: &mut Vec<usize>,
 ) {
     out.extend_from_slice(b"FSSCHEM\x02");
     out.extend_from_slice(&CANONICAL_FRAME_VERSION.to_le_bytes());
-    push_len_bytes(out, domain.as_bytes());
-    push_len_bytes(out, name.as_bytes());
-    out.extend_from_slice(&version.to_le_bytes());
-    push_len_bytes(out, context.as_bytes());
-    out.extend_from_slice(&(fields.len() as u64).to_le_bytes());
-    for field in fields {
+    push_len_bytes(out, source.domain.as_bytes());
+    push_len_bytes(out, source.name.as_bytes());
+    out.extend_from_slice(&source.version.to_le_bytes());
+    push_len_bytes(out, source.context.as_bytes());
+    out.extend_from_slice(&(source.fields.len() as u64).to_le_bytes());
+    for field in source.fields {
         push_len_bytes(out, field.name().as_bytes());
         out.extend_from_slice(&[field.wire_type().tag(), field.presence().tag()]);
         // bead sj31i.52.10: the v2 descriptor binds child fields
-        // recursively (0 = unbound scalar, 1 + role + descriptor).
+        // recursively (0 = unbound scalar, 1 + role + descriptor,
+        // 2 = a child edge beyond the supported recursive depth).
         match field.child_spec() {
             None => out.push(0),
+            Some(_) if depth >= MANUAL_MAX_SCHEMA_CHILD_DEPTH => {
+                poison_offsets.push(out.len());
+                out.push(2);
+            }
             Some(child) => {
                 out.extend_from_slice(&[1, child.role().tag()]);
-                push_manual_descriptor(
+                push_manual_descriptor_at(
                     out,
-                    child.domain(),
-                    child.name(),
-                    child.version(),
-                    child.context(),
-                    child.fields(),
+                    ManualDescriptorSource {
+                        domain: child.domain(),
+                        name: child.name(),
+                        version: child.version(),
+                        context: child.context(),
+                        fields: child.fields(),
+                    },
+                    depth + 1,
+                    poison_offsets,
                 );
             }
         }
     }
 }
 
-fn manual_schema_descriptor<D: CanonicalSchema>() -> Vec<u8> {
+fn manual_schema_descriptor_with_poison_offsets<D: CanonicalSchema>() -> (Vec<u8>, Vec<usize>) {
     let mut out = Vec::new();
-    push_manual_descriptor(
+    let mut poison_offsets = Vec::new();
+    push_manual_descriptor_at(
         &mut out,
-        D::DOMAIN,
-        D::NAME,
-        D::VERSION,
-        D::CONTEXT,
-        D::FIELDS,
+        ManualDescriptorSource {
+            domain: D::DOMAIN,
+            name: D::NAME,
+            version: D::VERSION,
+            context: D::CONTEXT,
+            fields: D::FIELDS,
+        },
+        0,
+        &mut poison_offsets,
     );
-    out
+    (out, poison_offsets)
+}
+
+fn manual_schema_descriptor<D: CanonicalSchema>() -> Vec<u8> {
+    manual_schema_descriptor_with_poison_offsets::<D>().0
 }
 
 fn manual_leaf_frame(role: IdentityRole, value: u64) -> Vec<u8> {
@@ -589,17 +784,17 @@ fn manual_frame_parity_and_header_mutation_sensitivity() {
 #[test]
 fn schema_descriptor_and_every_header_field_move_identity() {
     let baseline = SchemaId::<LeafV1>::for_schema().to_hex();
-    let descriptor = manual_schema_descriptor::<LeafV1>();
     let all_fields_descriptor = manual_schema_descriptor::<AllFields>();
+    let all_fields_root = hash_domain(SCHEMA_ID_HASH_DOMAIN, &all_fields_descriptor);
     assert_eq!(
         *SchemaId::<AllFields>::for_schema().as_bytes(),
-        *hash_domain(SCHEMA_ID_HASH_DOMAIN, &all_fields_descriptor).as_bytes()
+        *all_fields_root.as_bytes()
     );
-    for index in [0usize, 8] {
-        let mut moved = descriptor.clone();
+    for index in 0..all_fields_descriptor.len() {
+        let mut moved = all_fields_descriptor.clone();
         moved[index] ^= 1;
         assert_ne!(
-            hash_domain(SCHEMA_ID_HASH_DOMAIN, &descriptor),
+            all_fields_root,
             hash_domain(SCHEMA_ID_HASH_DOMAIN, &moved),
             "schema descriptor byte {index} must move its root under the collision assumption"
         );
@@ -626,6 +821,34 @@ fn schema_descriptor_and_every_header_field_move_identity() {
         SchemaId::<HeaderTwoFields>::for_schema().to_hex(),
         SchemaId::<HeaderTwoFieldsReordered>::for_schema().to_hex(),
         "field order is semantic"
+    );
+}
+
+#[test]
+fn over_depth_schema_poison_tag_is_identity_bearing() {
+    let (descriptor, poison_offsets) =
+        manual_schema_descriptor_with_poison_offsets::<OverDepthParentSchema>();
+    assert_eq!(
+        poison_offsets.len(),
+        1,
+        "the finite seventeen-edge fixture has exactly one poisoned child edge"
+    );
+    let poison_offset = poison_offsets[0];
+    assert_eq!(descriptor[poison_offset], 2);
+
+    let baseline = hash_domain(SCHEMA_ID_HASH_DOMAIN, &descriptor);
+    assert_eq!(
+        SchemaId::<OverDepthParentSchema>::for_schema().as_bytes(),
+        baseline.as_bytes(),
+        "the independent depth-aware descriptor must reproduce SchemaId"
+    );
+
+    let mut moved = descriptor;
+    moved[poison_offset] ^= 1;
+    assert_ne!(
+        baseline,
+        hash_domain(SCHEMA_ID_HASH_DOMAIN, &moved),
+        "the child-depth poison tag is schema-identity-bearing"
     );
 }
 
@@ -1272,7 +1495,7 @@ fn child_bindings_are_schema_id_bearing_and_checked_when_empty() {
     let bound_v2 = *SchemaId::<ChildParentAltVersion>::for_schema().as_bytes();
     assert_ne!(
         bound_v1, bound_v2,
-        "changing the expected child type must change the parent schema id"
+        "changing the expected child descriptor version must change the parent schema id"
     );
 
     // An EMPTY ordered-children collection still validates the binding:
@@ -1293,6 +1516,37 @@ fn child_bindings_are_schema_id_bearing_and_checked_when_empty() {
         CanonicalError::ChildBindingMismatch {
             field: "children",
             ..
+        }
+    ));
+}
+
+#[test]
+fn structural_child_bindings_admit_equivalent_markers_and_refuse_nested_drift() {
+    assert_eq!(
+        SchemaId::<LeafV1>::for_schema().as_bytes(),
+        SchemaId::<LeafV1StructuralTwin>::for_schema().as_bytes(),
+        "distinct markers with the same complete descriptor name the same schema"
+    );
+    let equivalent = SemanticId::<LeafV1StructuralTwin>::parse_slice(&[0x31; 32])
+        .expect("typed equivalent-marker digest");
+    CanonicalEncoder::<SemanticId<ChildParent>, _>::new(LIMITS, NeverCancel)
+        .expect("valid parent schema")
+        .child(Field::new(0, "child"), equivalent)
+        .expect("role plus structural descriptor is the admission relation")
+        .finish()
+        .expect("equivalent-marker parent receipt");
+
+    let nested_drift = SemanticId::<NestedChildSchemaDrift>::parse_slice(&[0x32; 32])
+        .expect("typed nested-drift digest");
+    let refusal = CanonicalEncoder::<SemanticId<NestedParentSchema>, _>::new(LIMITS, NeverCancel)
+        .expect("valid recursively bound parent schema")
+        .child(Field::new(0, "child"), nested_drift)
+        .expect_err("a nested wire-type change must not satisfy the child binding");
+    assert!(matches!(
+        refusal,
+        CanonicalError::ChildBindingMismatch {
+            field: "child",
+            what: "child field schema",
         }
     ));
 }
@@ -1525,6 +1779,66 @@ fn invalid_parent_and_child_schema_descriptors_refuse_before_publication() {
         nested,
         Err(CanonicalError::InvalidSchemaDescriptor(_))
     ));
+
+    CanonicalEncoder::<SemanticId<NestedParentSchema>, _>::new(LIMITS, NeverCancel)
+        .expect("valid recursive child descriptors admit");
+    let one_field_per_descriptor = CanonicalLimits::new(
+        LIMITS.max_canonical_bytes(),
+        LIMITS.max_field_bytes(),
+        1,
+        LIMITS.max_collection_items(),
+        LIMITS.cancellation_poll_bytes(),
+    );
+    let nested_field_cap = CanonicalEncoder::<SemanticId<NestedParentSchema>, _>::new(
+        one_field_per_descriptor,
+        NeverCancel,
+    );
+    assert!(matches!(
+        nested_field_cap,
+        Err(CanonicalError::LimitExceeded {
+            kind: LimitKind::Fields,
+            requested: 2,
+            limit: 1,
+        })
+    ));
+
+    let invalid_grandchild =
+        CanonicalEncoder::<SemanticId<InvalidNestedParentSchema>, _>::new(LIMITS, NeverCancel);
+    assert!(matches!(
+        invalid_grandchild,
+        Err(CanonicalError::InvalidSchemaDescriptor(
+            "domain, schema name, and context must be non-empty"
+        ))
+    ));
+
+    CanonicalEncoder::<SemanticId<Depth01Schema>, _>::new(LIMITS, NeverCancel)
+        .expect("the exact sixteen-child-edge descriptor boundary admits");
+    let over_depth =
+        CanonicalEncoder::<SemanticId<OverDepthParentSchema>, _>::new(LIMITS, NeverCancel);
+    assert!(matches!(
+        over_depth,
+        Err(CanonicalError::InvalidSchemaDescriptor(
+            "child schema nesting exceeds the supported depth"
+        ))
+    ));
+
+    let bounded_expansion = CanonicalLimits::new(
+        LIMITS.max_canonical_bytes(),
+        LIMITS.max_field_bytes(),
+        2,
+        LIMITS.max_collection_items(),
+        LIMITS.cancellation_poll_bytes(),
+    );
+    let branch_expansion =
+        CanonicalEncoder::<SemanticId<Branch05Schema>, _>::new(bounded_expansion, NeverCancel);
+    assert!(matches!(
+        branch_expansion,
+        Err(CanonicalError::LimitExceeded {
+            kind: LimitKind::Fields,
+            requested: 36,
+            limit: 34,
+        })
+    ));
 }
 
 #[test]
@@ -1622,6 +1936,11 @@ fn cancellable_all_schema(probe: CountProbe) -> Result<(), CanonicalError> {
     Ok(())
 }
 
+fn cancellable_nested_schema(probe: CountProbe) -> Result<(), CanonicalError> {
+    CanonicalEncoder::<SemanticId<NestedParentSchema>, _>::new(LIMITS, probe)?;
+    Ok(())
+}
+
 fn cancellable_equal_prefix_set(
     probe: CountProbe,
 ) -> Result<fs_blake3::identity::IdentityReceipt<SemanticId<SetLeaf>>, CanonicalError> {
@@ -1673,6 +1992,20 @@ fn cancellation_covers_schema_validation_and_long_set_comparisons() {
     .unwrap();
     for cancel_at in 1..=schema_calls.get() {
         let result = cancellable_all_schema(CountProbe {
+            calls: Rc::new(Cell::new(0)),
+            cancel_at: Some(cancel_at),
+        });
+        assert!(matches!(result, Err(CanonicalError::Cancelled { .. })));
+    }
+
+    let nested_calls = Rc::new(Cell::new(0));
+    cancellable_nested_schema(CountProbe {
+        calls: Rc::clone(&nested_calls),
+        cancel_at: None,
+    })
+    .unwrap();
+    for cancel_at in 1..=nested_calls.get() {
+        let result = cancellable_nested_schema(CountProbe {
             calls: Rc::new(Cell::new(0)),
             cancel_at: Some(cancel_at),
         });
