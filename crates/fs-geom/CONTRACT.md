@@ -215,8 +215,16 @@ fs-ivl, fs-alloc, fs-obs, fs-sparse.
   The token retains nominal whole-family and global-constructibility declaration
   IDs plus a no-authority artifact. It proves finite source-selector coverage,
   not that the components execute or glue into a continuous, constructible, or
-  incidence-preserving whole map. It has no conversion, composition, evidence-
-  transport, inverse, or equivalence API.
+  incidence-preserving whole map. The base token has no conversion, execution,
+  evidence-transport, inverse, or equivalence API.
+  `DerivedExhaustiveStratifiedMapCompositionCandidateIrV1` separately retains
+  two exact exhaustive-map candidates in caller-significant order. Source,
+  middle, and target geometry/stratification selectors are derived from the
+  sealed children, and admission requires exact equality of both middle
+  selectors. This packet does not compose component paths, synthesize a direct
+  exhaustive or whole-geometry map, authenticate assembly/constructibility, or
+  grant gluing, continuity, preservation, categorical-law, theorem, inverse,
+  equivalence, evidence, or physical authority.
   `DerivedStratificationRefinementCandidateIrV1` binds one exact exhaustive
   fine-to-coarse assembly to exact refined/coarse geometry and stratification
   selectors. Admission requires canonical coverage of every refined stratum,
@@ -322,8 +330,9 @@ fs-ivl, fs-alloc, fs-obs, fs-sparse.
   establish payload preservation or validity-domain inclusion, prove theorem
   truth, or establish physical equivalence. RD.1b now provides separate
   structural no-authority candidates for direct chart-transition inverse laws,
-  finite stratification refinement and its ordered composition, evidence
-  polarity, parallel paths, fixed-foot span morphisms,
+  ordered exhaustive-map composition, finite stratification refinement and its
+  ordered composition, evidence polarity, parallel paths, fixed-foot span
+  morphisms,
   pullback/composition-shaped spans, generic inverse laws, and span equivalence;
   none is represented as a strict map or authority-bearing equivalence. The L6
   Machine-IR crosswalk likewise lives at the `fs-ir` feature seam rather than in
@@ -699,7 +708,11 @@ fs-ivl, fs-alloc, fs-obs, fs-sparse.
    stratum in canonical source order, explicit source/target stratum selectors,
    nominal assembly/global-constructibility IDs, and a nonzero no-authority
    artifact. Repeated target strata are allowed; target coverage and every
-   global map theorem remain unclaimed.
+   global map theorem remain unclaimed. Ordered two-step exhaustive-map
+   candidates bind two exact recursively typed children, derive all six
+   source/middle/target selectors, require both exact middle seams, and retain
+   one nominal composition declaration plus a nonzero no-authority artifact.
+   They neither rescan nor synthesize a composed component family or global map.
 11. Standalone declared spans bind exact `source <- apex -> target` geometry
    identities, exact ordered admitted leg-morphism IDs, the common-apex/outer-
    endpoint orientation of both sealed legs, and one nonzero no-authority
@@ -812,6 +825,11 @@ stratum coverage, raw/sealed component identity and endpoint seams, direct-
 component shape, bounded retention, allocation, cancellation, and canonical
 identity failures. Refusal publishes no assembly candidate and grants no global
 map authority.
+Ordered exhaustive-map composition admission uses
+`DerivedExhaustiveStratifiedMapCompositionCandidateErrorV1` for unsupported
+schema, zero child/declaration/no-authority identities, raw/sealed child drift,
+both exact middle seams, cancellation, and canonical-identity defects. Refusal
+publishes no partial candidate, component composition, or direct map.
 Finite-refinement candidate admission uses
 `DerivedStratificationRefinementCandidateErrorV1` for raw/sealed selector and
 child mismatches, two-sided coverage, dimension increase, resource/allocation,
@@ -903,14 +921,21 @@ sealed component IDs (which transitively bind each explicit stratum selector),
 nominal assembly/global-constructibility IDs, and the no-authority artifact.
 Replaying the same full coverage is stable; moving any retained field changes
 identity without authenticating components or nominal payloads.
+Ordered exhaustive-map composition receipts use a further separate schema/domain
+and bind six selectors derived from the sealed children, first then second typed
+child IDs, one nominal composition declaration, and one no-authority artifact.
+The ten-field parent plus both complete eight-field child schemas yields an exact
+recursive field limit of 26. Replay is stable; moving any derived selector,
+child, order, declaration, or no-authority identity changes the receipt.
 Standalone span receipts use a separate schema/domain and encode exact
 source/apex/target geometry IDs, left then right admitted-leg IDs, and the
 no-authority artifact. Replaying the same ordered legs is stable; swapping valid
 distinct equal-endpoint legs changes identity.
 Recent structural-candidate receipts each use a separate schema/domain and
 recursively bind complete typed child descriptors. Their exact parent/recursive
-field counts are: stratification refinement 7/15, ordered refinement composition
-10/40, direct chart-transition inverse law 10/22, parallel-path comparison 7/19,
+field counts are: ordered exhaustive-map composition 10/26, stratification
+refinement 7/15, ordered refinement composition 10/40, direct chart-transition
+inverse law 10/22, parallel-path comparison 7/19,
 span morphism 11/67, pullback square 13/56, span composition 10/84, generic
 inverse law 8/58, and span equivalence 11/215. Each receipt encodes selectors
 derived from or exact-validated against sealed children and admitted endpoints,
@@ -973,6 +998,9 @@ Exhaustive assembly-candidate admission polls at entry, at a fixed stride while
 checking and retaining exact component coverage, before and inside canonical
 identity construction, and immediately before publication. Cancellation exposes
 no partial assembly candidate.
+Ordered exhaustive-map composition polls at entry, inside canonical identity
+encoding, and immediately before publication. It scans and allocates no child
+collection, and cancellation exposes no partial composition candidate.
 Standalone span admission polls at entry, before and inside identity encoding,
 and immediately before publication. Cancellation exposes no partial span token.
 Finite-refinement admission additionally polls at a fixed stride while scanning
@@ -1090,6 +1118,12 @@ replay/accessors, nominal-field identity movement, exact full source coverage,
 canonical order, raw/sealed ID binding, repeated target acceptance, identity-
 component acceptance, composite-path refusal, missing authority fields, the
 component cap, and entry cancellation.
+The ordered exhaustive-map composition suite covers its separate ten-parent/
+26-recursive-field schema, deterministic replay and every accessor, movement of
+all four caller fields and all six child-derived selectors, typed child-domain
+binding, child order, zero and raw/sealed identity refusals, both middle seams,
+reversed order, and entry cancellation without claiming or executing a composed
+map. The fixture uses disjoint complex, resolution, and local-model seed ranges.
 The local-presentation correspondence-candidate suite covers domain-separated
 replay and accessors for all four typed families, caller-order canonicalization,
 many-to-many source/target acceptance, two-sided missing-coverage refusal,
@@ -1352,6 +1386,17 @@ claim those stronger G4/G5 results.
   every component, check the selected global policy and retained falsifiers,
   and mint a new authority receipt rather than upgrading this candidate in
   place.
+- `AdmittedDerivedExhaustiveStratifiedMapCompositionCandidateV1` proves only
+  that two exact sealed exhaustive-map candidates are retained in order and
+  that the first target geometry/stratification exactly equals the second
+  source geometry/stratification. It does not compose or execute components,
+  synthesize a direct exhaustive or whole-geometry map, authenticate either
+  child assembly/constructibility declaration or its own nominal composition,
+  or prove total/function semantics, gluing, continuity, constructibility,
+  incidence/frontier/link/Whitney/Thom preservation, categorical units or
+  associativity, evidence transport, theorem truth, inverse, equivalence, or
+  physical correspondence. RD.1c must independently execute and check any
+  promoted composition and mint a distinct authority receipt.
 - `AdmittedDerivedParallelMorphismComparisonCandidateV1` proves only that two
   exact ordered structural paths share exact endpoints and are retained under
   nominal comparison metadata. It proves no equality, commutativity, homotopy,
@@ -1403,8 +1448,9 @@ claim those stronger G4/G5 results.
   whenever its exact geometry, evidence, adjacent-chart, and adjacent-refinement
   seams pass. This removes the implemented-family closure gap but does not
   promote the full RD.1b category claim. Separate structural candidates now
-  retain finite stratification refinements, evidence polarity, parallel
-  comparisons, direct chart and generic inverse-law shapes,
+  retain ordered exhaustive-map compositions, finite stratification refinements,
+  evidence polarity, parallel comparisons, direct chart and generic inverse-law
+  shapes,
   pullback/composition-shaped spans, span equivalence, scoped local-presentation
   equivalence, and the L6 Machine-IR crosswalk. Those packets close typed seam-
   shape gaps only. Authenticated
