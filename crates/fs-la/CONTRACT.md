@@ -58,27 +58,23 @@ Dense linear algebra: GEMM, batched small dense, factorizations, eigensolvers. L
   flags, workspace manifests, and a sorted content snapshot of
   the fs-la/fs-simd/fs-exec/fs-alloc/fs-substrate/fs-blake3/fs-obs Rust source
   closure, the constellation lock, and the actual asupersync, proc-macro, and
-  Franken evidence/decision/kernel source closure, its unconditional
-  non-source compiler inputs, and an explicitly present-or-absent observed Git
-  HEAD when repository metadata is available,
+  Franken evidence/decision/kernel source closure plus its unconditional
+  non-source compiler inputs,
   plus an optional explicit `FRANKENSIM_GEMM_CODEGEN_ID` salt; rows from another
   generated-code identity cannot be adopted. Build systems that inject codegen
   settings or code generators outside that bounded closure must supply the
   salt; a missing required environment, source, or workspace identity input is
-  a build error rather than a generic fallback. RCH may transport the required
-  path-dependency source without `.git` contents while preserving an empty
-  excluded `.git` directory; either missing or empty-directory shape is
-  recorded as absence instead of substituting the `constellation.lock` pin as
-  an observed checkout state. A populated or pointer-form `.git` remains
-  subject to strict Git validation rather than silently degrading to absence.
-  Relevant dirty or metadata-free asupersync source is content-addressed
-  directly, so its build identity remains exact instead of pretending that a
-  Git HEAD describes the working tree. This intentionally makes local and RCH
-  tune identities differ when only one transport carries Git metadata. This
-  does not claim that source bytes correspond to the declared constellation
-  pin; constellation cleanliness is a separate admission gate. Nor does it
-  claim to hash arbitrary external tools or other path-dependency sources
-  outside the named closure.
+  a build error rather than a generic fallback. Repository Git metadata is not
+  read or encoded: it is provenance, not a code-generation input. Relevant
+  dirty or metadata-free asupersync source is content-addressed directly, so
+  the repository-material component is identical in a clone, verified export,
+  or RCH materialization with the same named source and lock bytes, without
+  pretending that a Git HEAD describes the working tree. Other declared build
+  inputs, such as the compiler executable, may still distinguish those builds.
+  This does not claim that source bytes correspond to the declared
+  constellation pin; constellation cleanliness is a separate admission gate.
+  Nor does it claim to hash arbitrary external tools or other path-dependency
+  sources outside the named closure.
 - Dependency-graph evidence (bead fz2.6, codegen schema v3): source bytes do
   not pin dependency CODEGEN. Receipt v1 accepts exactly one explicit
   production root package plus graph-relevant target and root-feature flags;

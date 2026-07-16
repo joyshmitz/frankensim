@@ -6,10 +6,9 @@ mod support;
 use support::{
     ASUPERSYNC_NON_SRC_INPUTS, EXECUTABLE_CONTEXT, GEMM_BUILD_FINGERPRINT_IDENTITY_DOMAIN,
     GEMM_BUILD_FINGERPRINT_IDENTITY_VERSION, GEMM_BUILD_PAYLOAD_SCHEMA, GemmBuildIdentityInput,
-    GitMetadataShape, append_executable_identity, append_external_identity, append_source_fields,
-    classify_git_metadata_shape, full_lowercase_git_oid, gemm_build_fingerprint,
-    gemm_build_fingerprint_identity_version_is_supported, gemm_build_fingerprint_with_domain,
-    git_output_line, push_field, push_optional_field, symbolic_git_ref,
+    append_executable_identity, append_external_identity, append_source_fields,
+    gemm_build_fingerprint, gemm_build_fingerprint_identity_version_is_supported,
+    gemm_build_fingerprint_with_domain, push_field, push_optional_field,
 };
 
 fn fingerprint(payload: &[u8]) -> fs_blake3::ContentHash {
@@ -152,72 +151,12 @@ fn optional_fields_separate_absent_empty_and_literal_sentinel() {
 }
 
 #[test]
-fn git_observation_parsers_fail_closed() {
-    assert_eq!(git_output_line(b"/repo/.git").unwrap(), "/repo/.git");
-    assert_eq!(git_output_line(b"/repo/.git\n").unwrap(), "/repo/.git");
-    assert!(git_output_line(b"").is_err());
-    assert!(git_output_line(b"line\n\n").is_err());
-    assert!(git_output_line(b"line\r\n").is_err());
-    assert!(git_output_line("line\u{0085}".as_bytes()).is_err());
-    assert!(git_output_line(&[0xff]).is_err());
-
-    let sha1 = "1".repeat(40);
-    let sha256 = "a".repeat(64);
-    assert_eq!(full_lowercase_git_oid(sha1.as_bytes()).unwrap(), sha1);
-    assert_eq!(
-        full_lowercase_git_oid(format!("{sha256}\n").as_bytes()).unwrap(),
-        sha256
-    );
-    assert!(full_lowercase_git_oid("A".repeat(40).as_bytes()).is_err());
-    assert!(full_lowercase_git_oid("g".repeat(40).as_bytes()).is_err());
-    assert!(full_lowercase_git_oid("1".repeat(39).as_bytes()).is_err());
-
-    assert_eq!(
-        symbolic_git_ref(b"ref: refs/heads/main\n").unwrap(),
-        Some("refs/heads/main")
-    );
-    assert_eq!(symbolic_git_ref(sha1.as_bytes()).unwrap(), None);
-    assert!(symbolic_git_ref(b"garbage\n").is_err());
-    assert!(symbolic_git_ref("A".repeat(40).as_bytes()).is_err());
-    assert!(symbolic_git_ref(b"ref: refs/heads/../../escape\n").is_err());
-    assert!(symbolic_git_ref(b"ref: refs\\heads\\main\n").is_err());
-    assert!(symbolic_git_ref(b"ref: refs/heads/main\nignored").is_err());
-}
-
-#[test]
-fn git_metadata_shape_admits_only_explicit_transport_absence() {
-    assert_eq!(
-        classify_git_metadata_shape(GitMetadataShape::Missing),
-        Ok(false)
-    );
-    assert_eq!(
-        classify_git_metadata_shape(GitMetadataShape::EmptyDirectory),
-        Ok(false)
-    );
-    assert_eq!(
-        classify_git_metadata_shape(GitMetadataShape::PointerFile),
-        Ok(true)
-    );
-    assert_eq!(
-        classify_git_metadata_shape(GitMetadataShape::PopulatedDirectory),
-        Ok(true)
-    );
-    assert!(classify_git_metadata_shape(GitMetadataShape::Unsupported).is_err());
-}
-
-#[test]
-fn external_identity_binds_lock_observed_head_source_and_include_inputs() {
-    fn payload(
-        lock: &[u8],
-        observed_head: Option<&str>,
-        source: &[u8],
-        dashboard: &[u8],
-    ) -> Vec<u8> {
+fn external_identity_binds_lock_source_and_include_inputs() {
+    fn payload(lock: &[u8], source: &[u8], dashboard: &[u8]) -> Vec<u8> {
         let mut payload = Vec::new();
         append_external_identity(
             &mut payload,
             lock,
-            observed_head,
             vec![
                 (
                     "external/asupersync/src/lib.rs".to_string(),
@@ -233,67 +172,60 @@ fn external_identity_binds_lock_observed_head_source_and_include_inputs() {
     }
 
     assert_eq!(ASUPERSYNC_NON_SRC_INPUTS, &["assets/dashboard.html"]);
-    let baseline = payload(
-        b"lock-a",
-        Some("1111111111111111111111111111111111111111"),
-        b"src-a",
-        b"dashboard-a",
-    );
+    let baseline = payload(b"lock-a", b"src-a", b"dashboard-a");
+    assert_ne!(baseline, payload(b"lock-b", b"src-a", b"dashboard-a"));
+    assert_ne!(baseline, payload(b"lock-a", b"src-b", b"dashboard-a"));
     assert_ne!(
         baseline,
-        payload(
-            b"lock-b",
-            Some("1111111111111111111111111111111111111111"),
-            b"src-a",
-            b"dashboard-a"
-        )
-    );
-    assert_ne!(
-        baseline,
-        payload(
-            b"lock-a",
-            Some("2222222222222222222222222222222222222222"),
-            b"src-a",
-            b"dashboard-a"
-        )
-    );
-    assert_ne!(
-        baseline,
-        payload(
-            b"lock-a",
-            Some("1111111111111111111111111111111111111111"),
-            b"src-b",
-            b"dashboard-a"
-        )
-    );
-    assert_ne!(
-        baseline,
-        payload(
-            b"lock-a",
-            Some("1111111111111111111111111111111111111111"),
-            b"src-a",
-            b"dashboard-b"
-        ),
+        payload(b"lock-a", b"src-a", b"dashboard-b"),
         "an included non-source compiler input must change the payload"
     );
     assert_ne!(
         fingerprint(&baseline),
-        fingerprint(&payload(
-            b"lock-a",
-            Some("1111111111111111111111111111111111111111"),
-            b"src-a",
-            b"dashboard-b"
-        )),
+        fingerprint(&payload(b"lock-a", b"src-a", b"dashboard-b")),
         "an included external input must change the outer build fingerprint"
     );
-    assert_ne!(
-        baseline,
-        payload(b"lock-a", None, b"src-a", b"dashboard-a"),
-        "missing transported Git metadata must be explicit provenance"
+}
+
+#[test]
+fn external_identity_excludes_repository_git_metadata() {
+    let mut payload = Vec::new();
+    append_external_identity(
+        &mut payload,
+        b"lock-a",
+        vec![(
+            "external/asupersync/src/lib.rs".to_string(),
+            b"src-a".to_vec(),
+        )],
     );
-    assert_ne!(
-        payload(b"lock-a", None, b"src-a", b"dashboard-a"),
-        payload(b"lock-a", Some(""), b"src-a", b"dashboard-a"),
-        "absent Git metadata must not alias a present empty observation"
-    );
+    for former_field in [
+        b"asupersync-git-head".as_slice(),
+        b"asupersync-observed-git-head".as_slice(),
+    ] {
+        assert!(
+            !payload
+                .windows(former_field.len())
+                .any(|window| window == former_field),
+            "repository provenance field {:?} must not re-enter the canonical external payload",
+            String::from_utf8_lossy(former_field)
+        );
+    }
+
+    // This source-level integration guard is deliberate: the Cargo build
+    // script is the production collector, but cannot be invoked as an ordinary
+    // unit function. Keep it independent of ambient repository metadata.
+    let build_script = include_str!("../build.rs");
+    for forbidden in [
+        ".git",
+        "\"git\"",
+        "git rev-parse",
+        "GIT_DIR",
+        "asupersync-git-head",
+        "asupersync-observed-git-head",
+    ] {
+        assert!(
+            !build_script.contains(forbidden),
+            "fs-la build identity must not inspect repository metadata via {forbidden:?}"
+        );
+    }
 }
