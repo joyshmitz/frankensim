@@ -28,7 +28,7 @@
 //! signal; features missed by every ray remain outside this API's visibility.
 
 use crate::NurbsError;
-use crate::basis::{AdmittedKnotVector, KnotVector};
+use crate::basis::{AdmittedKnotVector, BASIS_MAX_WORK_UNITS, BasisRun, KnotVector};
 use crate::closest::norm3;
 use crate::surface::{AdmittedNurbsSurface, NurbsSurface};
 use core::mem::size_of;
@@ -509,6 +509,20 @@ pub enum RefitLipschitzEstimateRun {
         u_estimate: f64,
         /// Estimated V-direction derivative magnitude ceiling.
         v_estimate: f64,
+    },
+    /// Cancellation was observed before publication.
+    Cancelled,
+}
+
+/// Transactional outcome of cancellation-aware dense basis-row expansion for
+/// the refit sample matrix.
+#[must_use]
+#[derive(Debug, Clone, PartialEq)]
+pub enum RefitDenseBasisRun {
+    /// The complete control-axis row is safe to publish.
+    Complete {
+        /// One value per control, with inactive basis entries set to zero.
+        values: Vec<f64>,
     },
     /// Cancellation was observed before publication.
     Cancelled,
@@ -1057,16 +1071,122 @@ fn open_uniform_knots(n: usize, degree: usize) -> Result<KnotVector<f64>, NurbsE
     KnotVector::new(knots, degree)
 }
 
+fn preflight_refit_dense_basis(control_count: usize, degree: usize) -> Result<(), NurbsError> {
+    if control_count == 0 {
+        return Err(refit_structure_error(
+            "refit dense basis requires at least one control",
+        ));
+    }
+    let order = degree
+        .checked_add(1)
+        .ok_or_else(|| refit_structure_error("refit dense basis order overflows usize"))?;
+    if order > control_count {
+        return Err(refit_structure_error(
+            "refit dense basis order exceeds the control count",
+        ));
+    }
+    let triangle_work =
+        checked_refit_work_product(&[degree as u128, order as u128], "dense basis triangle")? / 2;
+    let basis_work = checked_refit_work_sum(
+        &[triangle_work, order as u128, control_count as u128],
+        "dense basis evaluation",
+    )?;
+    let dense_work = checked_refit_work_sum(
+        &[control_count as u128, order as u128, 2],
+        "dense basis expansion",
+    )?;
+    let total_work = checked_refit_work_sum(&[basis_work, dense_work], "dense basis aggregate")?;
+    if total_work > BASIS_MAX_WORK_UNITS {
+        return Err(refit_structure_error(format!(
+            "refit dense basis requests {total_work} work units above defensive ceiling {BASIS_MAX_WORK_UNITS}"
+        )));
+    }
+
+    let basis_scratch_scalars = order
+        .checked_mul(3)
+        .ok_or_else(|| refit_structure_error("refit dense basis scratch size overflows usize"))?;
+    let expansion_scalars = control_count
+        .checked_add(order)
+        .ok_or_else(|| refit_structure_error("refit dense basis live size overflows usize"))?;
+    let peak_scalars = basis_scratch_scalars.max(expansion_scalars);
+    let retained_bytes = peak_scalars
+        .checked_mul(size_of::<f64>())
+        .ok_or_else(|| refit_structure_error("refit dense basis byte estimate overflows usize"))?;
+    if retained_bytes > REFIT_MAX_ALLOC_BYTES {
+        return Err(refit_structure_error(format!(
+            "refit dense basis retains {retained_bytes} requested bytes above static cap {REFIT_MAX_ALLOC_BYTES}"
+        )));
+    }
+    Ok(())
+}
+
+/// Evaluate and expand one admitted nonzero basis row into the complete refit
+/// control axis with bounded cancellation polling.
+///
+/// Aggregate basis-plus-expansion work and simultaneously live scalar payload
+/// are admitted before the nested basis scratch allocates. One gate then spans
+/// admitted span/basis evaluation, fallible dense-output allocation, zero fill,
+/// active-value placement, and final publication. Cancellation exposes neither
+/// a partial nonzero basis nor a partial dense row. The primitive does not
+/// consume the `Cx` budget or make the full refit pipeline cancellation-aware.
+///
+/// # Errors
+/// Returns the admitted basis parameter/arithmetic/allocation refusals or a
+/// structured aggregate work, retained-byte, or dense-allocation refusal.
+pub fn evaluate_refit_dense_basis_with_cx(
+    knots: AdmittedKnotVector<'_, f64>,
+    parameter: f64,
+    cx: &Cx<'_>,
+) -> Result<RefitDenseBasisRun, NurbsError> {
+    let mut should_cancel = || cx.checkpoint().is_err();
+    evaluate_refit_dense_basis_with_poll(knots, parameter, &mut should_cancel)
+}
+
+fn evaluate_refit_dense_basis_with_poll(
+    knots: AdmittedKnotVector<'_, f64>,
+    parameter: f64,
+    should_cancel: &mut impl FnMut() -> bool,
+) -> Result<RefitDenseBasisRun, NurbsError> {
+    let control_count = knots.control_count();
+    let degree = knots.degree();
+    preflight_refit_dense_basis(control_count, degree)?;
+    let (span, active) = match knots.basis_with_poll(parameter, should_cancel)? {
+        BasisRun::Complete { span, values } => (span, values),
+        BasisRun::Cancelled => return Ok(RefitDenseBasisRun::Cancelled),
+    };
+
+    if should_cancel() {
+        return Ok(RefitDenseBasisRun::Cancelled);
+    }
+    let mut values = try_vec_with_capacity(control_count, "refit dense basis row")?;
+    let mut operations_since_poll = 0usize;
+    for _ in 0..control_count {
+        values.push(0.0);
+        if refit_poll_due(&mut operations_since_poll, should_cancel) {
+            return Ok(RefitDenseBasisRun::Cancelled);
+        }
+    }
+    for (offset, &value) in active.iter().enumerate() {
+        values[span - degree + offset] = value;
+        if refit_poll_due(&mut operations_since_poll, should_cancel) {
+            return Ok(RefitDenseBasisRun::Cancelled);
+        }
+    }
+    if should_cancel() {
+        return Ok(RefitDenseBasisRun::Cancelled);
+    }
+    Ok(RefitDenseBasisRun::Complete { values })
+}
+
 /// Row of basis values over the whole control axis (dense, small).
 fn basis_row(kv: AdmittedKnotVector<'_, f64>, t: f64) -> Result<Vec<f64>, NurbsError> {
-    let (span, vals) = kv.basis(t)?;
-    let n = kv.control_count();
-    let mut row = try_filled_vec(n, 0.0f64, "refit dense basis row")?;
-    let p = kv.degree();
-    for (c, &b) in vals.iter().enumerate() {
-        row[span - p + c] = b;
+    let mut never_cancel = || false;
+    match evaluate_refit_dense_basis_with_poll(kv, t, &mut never_cancel)? {
+        RefitDenseBasisRun::Complete { values } => Ok(values),
+        RefitDenseBasisRun::Cancelled => Err(refit_structure_error(
+            "non-cancellable refit dense basis observed cancellation",
+        )),
     }
-    Ok(row)
 }
 
 fn preflight_refit_lipschitz_estimate(rows: usize, cols: usize) -> Result<(), NurbsError> {
@@ -2173,6 +2293,19 @@ mod tests {
                 .expect("admitted dense basis row"),
             expected
         );
+        with_refit_cx(false, |cx| {
+            assert_eq!(
+                evaluate_refit_dense_basis_with_cx(
+                    knots.admitted_after_validation(),
+                    parameter,
+                    cx,
+                )
+                .expect("cancellable dense basis row"),
+                RefitDenseBasisRun::Complete {
+                    values: expected.clone(),
+                }
+            );
+        });
 
         let owning_error = knots
             .basis(-0.25)
@@ -2180,6 +2313,63 @@ mod tests {
         let admitted_error = basis_row(knots.admitted_after_validation(), -0.25)
             .expect_err("admitted out-of-domain refusal");
         assert_eq!(admitted_error, owning_error);
+    }
+
+    // G4/G5: the same callback spans the admitted basis core, dense allocation,
+    // fixed-stride zero fill, active placement, and final publication.
+    #[test]
+    fn refit_dense_basis_polling_is_bounded_and_transactional() {
+        let knots = open_uniform_knots(130, 1).expect("long linear knots");
+        let admitted = knots.admitted_after_validation();
+        let parameter = 0.75;
+        let basis_polls = Cell::new(0usize);
+        assert!(matches!(
+            admitted
+                .basis_with_poll(parameter, &mut || {
+                    basis_polls.set(basis_polls.get() + 1);
+                    false
+                })
+                .expect("admitted basis"),
+            BasisRun::Complete { .. }
+        ));
+
+        let run = |cancel_at: Option<usize>| {
+            let polls = Cell::new(0usize);
+            let outcome = evaluate_refit_dense_basis_with_poll(admitted, parameter, &mut || {
+                polls.set(polls.get() + 1);
+                cancel_at == Some(polls.get())
+            })
+            .expect("valid dense basis expansion");
+            (outcome, polls.get())
+        };
+        let (complete, healthy_polls) = run(None);
+        assert!(matches!(complete, RefitDenseBasisRun::Complete { .. }));
+        let first_dense_poll = basis_polls.get() + 1;
+        assert!(healthy_polls > first_dense_poll);
+        assert_eq!(
+            run(Some(first_dense_poll)),
+            (RefitDenseBasisRun::Cancelled, first_dense_poll)
+        );
+        assert_eq!(
+            run(Some(healthy_polls)),
+            (RefitDenseBasisRun::Cancelled, healthy_polls)
+        );
+        with_refit_cx(true, |cx| {
+            assert_eq!(
+                evaluate_refit_dense_basis_with_cx(admitted, parameter, cx)
+                    .expect("pre-cancellation is terminal"),
+                RefitDenseBasisRun::Cancelled
+            );
+        });
+    }
+
+    // G0/G4: aggregate hostile work is refused before the nested basis core can
+    // allocate any scratch storage.
+    #[test]
+    fn refit_dense_basis_refuses_unbounded_aggregate_work() {
+        let error = preflight_refit_dense_basis(usize::MAX, 1)
+            .expect_err("unbounded dense basis work must be refused");
+        assert!(error.to_string().contains("work units"));
     }
 
     #[test]

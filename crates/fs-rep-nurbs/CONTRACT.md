@@ -767,6 +767,19 @@ checkpoint. It drops the local bracket on cancellation, but does not consume a
 caller budget or preempt a field closure already in flight, drain/finalize
 caller work, or make
 `refit_radial` cancellation-aware.
+`evaluate_refit_dense_basis_with_cx` consumes an admitted knot generation and
+preserves aggregate basis-plus-dense-expansion work plus the maximum of nested
+basis scratch and active-basis-plus-dense-row requested payload ahead of the
+first nested allocation. The caller gate spans admitted span/basis evaluation,
+fallible dense-row allocation, zero fill, active-value placement, and final
+publication, with fixed-stride polling inherited by the basis core and after at
+most 64 dense entries. `RefitDenseBasisRun::Cancelled` exposes neither a
+partial nonzero basis nor a partial full-axis row. Borrowed knots, vector
+headers, allocator metadata/rounding, and spare capacity are excluded from the
+retained envelope; individual allocator calls remain non-preemptible. This
+primitive does not consume a caller budget, migrate sampling/refit
+orchestration, own drain/finalize, promise wall-time preemption, or grant fit or
+geometric authority.
 `assemble_refit_normal_with_cx` preserves checked dimensions, finite
 non-negative regularization, count-derived aggregate work, and the 256 MiB
 requested dense-output envelope ahead of its first checkpoint. One gate then
