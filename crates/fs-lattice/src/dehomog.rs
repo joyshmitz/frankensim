@@ -11,9 +11,12 @@
 //! model exactly (left clamp, uniform downward right-edge traction,
 //! trapezoidal edge quadrature).
 
-use fs_cutfem::{CutSdf, Quadtree};
-use fs_solid::SolidError;
-use fs_solid::cutfront::CutElasticity;
+use fs_cutfem::{CutElasticity, CutFemError, CutSdf, Quadtree};
+use fs_material::IsotropicElastic;
+
+const FULLRES_STRAIN_LIMIT: f64 = 1.0;
+const FULLRES_SOLVER_TOL: f64 = 1e-12;
+const FULLRES_SOLVER_MAX_ITERS: usize = 60_000;
 
 /// The realized micro-geometry: one circular hole per macro cell.
 pub struct HoleArray {
@@ -129,8 +132,8 @@ impl CutSdf for HoleArray {
 /// quadrature of t·u.
 ///
 /// # Errors
-/// Propagates [`SolidError`] from the cut solver.
-pub fn fullres_compliance(holes: &HoleArray, level: u32) -> Result<f64, SolidError> {
+/// Propagates [`CutFemError`] from the canonical cut solver.
+pub fn fullres_compliance(holes: &HoleArray, level: u32) -> Result<f64, CutFemError> {
     let grid = Quadtree::uniform(level);
     let clamp = |x: f64, _y: f64| x < 1e-9;
     let traction = |x: f64, _y: f64| -> [f64; 2] {
@@ -140,17 +143,25 @@ pub fn fullres_compliance(holes: &HoleArray, level: u32) -> Result<f64, SolidErr
             [0.0, 0.0]
         }
     };
+    let material = IsotropicElastic::new(2.6, 0.3, FULLRES_STRAIN_LIMIT).map_err(|error| {
+        CutFemError::InvalidElasticityInput {
+            what: format!("fixed full-resolution lattice material was refused: {error}"),
+        }
+    })?;
+    let (lambda, mu) = material.lame();
+    let legacy_stiffness_scale = (lambda + 2.0 * mu) / mu;
     let solver = CutElasticity {
         grid: &grid,
         sdf: holes,
-        youngs: 2.6,
-        poisson: 0.3,
-        nitsche_beta: 20.0,
-        ghost_gamma: 0.5,
+        material: &material,
+        nitsche_beta: 20.0 * legacy_stiffness_scale,
+        ghost_gamma: 0.5 * legacy_stiffness_scale,
         quad_depth: 2,
         clamp: Some(&clamp),
         boundary_traction: Some(&traction),
         traction_free_interface: true,
+        solver_tol: FULLRES_SOLVER_TOL,
+        solver_max_iters: FULLRES_SOLVER_MAX_ITERS,
     };
     let sol = solver.solve(&|_, _| [0.0, 0.0], &|_, _| [0.0, 0.0])?;
     let n = 1usize << level;

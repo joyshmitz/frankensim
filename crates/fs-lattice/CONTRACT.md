@@ -33,9 +33,10 @@ stiffness curves vs literature) are recorded successors.
   separation-of-scales model card).
 - `dehomog::HoleArray` (a `CutSdf`: material = hole complement, with
   conservative per-hole interval enclosures) + `fullres_compliance`
-  (CutElasticity re-analysis under the macro load convention —
-  uniform right-edge traction, trapezoidal edge quadrature, so
-  compliances compare like-for-like).
+  (direct canonical `fs_cutfem::CutElasticity` re-analysis with a typed
+  `IsotropicElastic` material under the macro load convention — uniform
+  right-edge traction, trapezoidal edge quadrature, so compliances compare
+  like-for-like; structured solver refusals remain `CutFemError`).
 - `graded::graded_compliance_opt` → `GradedDesign`: cantilever
   compliance minimization over per-element cell densities through the
   fitted law; self-adjoint sensitivities, OC-style update with tight
@@ -82,9 +83,10 @@ stiffness curves vs literature) are recorded successors.
 ## Error model
 
 Structured panics on programmer contracts (mesh/cell mismatch,
-singular reduced systems) with teaching messages; optimization
-quality is reported through the design record's ledger fields, never
-asserted silently.
+singular reduced systems) with teaching messages; full-resolution
+de-homogenization propagates canonical `CutFemError` refusals. Optimization
+quality is reported through the design record's ledger fields, never asserted
+silently.
 
 ## Determinism class
 
