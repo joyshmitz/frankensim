@@ -2,12 +2,15 @@
 
 //! Typed L1 thermochemical law data and deterministic standard-state evaluation.
 //!
-//! The first slice deliberately reuses `fs-qty`'s exact chemistry artifacts
-//! instead of creating a second species or conservation system. It adds a
-//! provenance-bound NASA-9 standard-state evaluator for molar `cp`, `h`, and
-//! `s`, then derives `u = h - R T` and `g = h - T s` only under an explicit
-//! ideal-gas standard-state convention. It owns no transport solver, evolving
-//! state, phase-equilibrium solve, kinetics integrator, or L3 protocol.
+//! These first slices deliberately reuse `fs-qty`'s exact chemistry artifacts
+//! instead of creating a second species or conservation system. They add a
+//! provenance-bound NASA-9 standard-state evaluator and a bounded,
+//! frozen-composition ideal-gas mixture evaluator. Derived identities remain
+//! scoped to explicit ideal-gas conventions. This crate owns no transport
+//! solver, evolving state, phase-equilibrium solve, kinetics integrator, or L3
+//! protocol.
+
+pub mod mixture;
 
 use core::fmt;
 use fs_matdb::{ConstitutiveModelCard, InitialStatePolicy, MatDbError};
@@ -17,6 +20,7 @@ pub use fs_qty::chemistry::{
     ChargeVector, ChemistryError, ConservationCertificate, ElementId, ElementalMatrix,
     MassAmountBasis, ReactionId, SpeciesId, StoichiometricMatrix, verify_conservation,
 };
+pub use fs_qty::semantic::{Composition, CompositionBasis, SemanticError};
 
 /// Crate version retained in diagnostic and evaluation provenance.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
