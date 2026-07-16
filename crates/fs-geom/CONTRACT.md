@@ -189,6 +189,16 @@ fs-ivl, fs-alloc, fs-obs, fs-sparse.
   constraint, complex, local-model, or stratum collection syntax. Homogeneous
   inclusion paths compose through the exact middle geometry; mixed paths retain
   each inclusion primitive and its factor-local artifacts.
+  `DerivedStratumMorphismIrV1` belongs to a separate stratum-scoped category,
+  not the whole-geometry directed-map algebra. Each object is the exact triple
+  `(geometry, stratification, stratum)`. A declared component binds exact source
+  and target triples plus nominal component-map and constructibility artifacts;
+  admission resolves both selectors in their exact admitted geometries but does
+  not require equal charts or dimensions. Component paths compose only across
+  an exactly equal middle triple and flatten ordered component/no-authority
+  lineage. There is no conversion to `AdmittedDerivedMorphismV1`, heterogeneous
+  whole-object composition, or geometry-wide evidence transport. One component
+  deliberately says nothing about unlisted strata or a whole stratified map.
   `DerivedSpanCorrespondenceIrV1` is deliberately separate from the directed
   morphism-kind algebra. It declares `source <- apex -> target` by binding exact
   source/apex/target geometry IDs and two already-admitted morphism receipts
@@ -228,11 +238,11 @@ fs-ivl, fs-alloc, fs-obs, fs-sparse.
   establish payload preservation or validity-domain inclusion, prove theorem
   truth, or establish physical equivalence. Invertible chart transitions,
   geometric/stratified refinements, authenticated subobject inclusions,
-  Constructible maps, composable/authenticated correspondences, and L6
-  Machine-IR crosswalks remain typed RD.1b follow-ups rather than being
-  represented as strict maps. Authoritative quasi-isomorphism receipts require
-  RD.1c independent checking of the structural candidate and its retained
-  artifacts.
+  exhaustive constructible/stratified maps, composable or authenticated
+  correspondences, and L6 Machine-IR crosswalks remain typed RD.1b follow-ups
+  rather than being represented as strict maps. Authoritative quasi-isomorphism
+  receipts require RD.1c independent checking of the structural candidate and
+  its retained artifacts.
 
 - `exit_path` module (RD.X1, `[M]`, behind `derived-geometry`) admits a bounded,
   executable statement language for maximal exit/entrance-path approximation
@@ -559,12 +569,19 @@ fs-ivl, fs-alloc, fs-obs, fs-sparse.
    paths require the exact geometry seam already enforced for every arrow;
    composition retains ordered factor declarations but proves no containment
    theorem.
-9. Standalone declared spans bind exact `source <- apex -> target` geometry
+9. Standalone stratum morphisms use a separate schema and exact
+   `(geometry, stratification, stratum)` objects. Identity is available only on
+   one exact triple. A component binds nominal map and constructibility IDs plus
+   a nonzero no-authority artifact. Composition requires equality of the whole
+   middle triple and flattens ordered primitive and no-authority lineage. These
+   tokens cannot enter whole-geometry heterogeneous composition or carry
+   geometry-wide evidence transport.
+10. Standalone declared spans bind exact `source <- apex -> target` geometry
    identities, exact ordered admitted leg-morphism IDs, the common-apex/outer-
    endpoint orientation of both sealed legs, and one nonzero no-authority
    artifact. They do not enter directed-morphism composition or expose a direct
    evidence transport.
-10. Fixed-resolution quasi-isomorphism candidates bind an exact nonempty
+11. Fixed-resolution quasi-isomorphism candidates bind an exact nonempty
    homogeneous refinement path; exact endpoint geometry, local-model, role,
    complex, and resolution selectors; each endpoint's exact fixed-resolution
    scope witness; nominal theorem/checker/check-receipt IDs; and an explicit
@@ -595,10 +612,16 @@ publish no admitted token.
 RD.1b uses `DerivedMorphismErrorV1` for schema/endpoint/convention defects,
 model-version drift, chart and complex ownership/shape defects, structural rank-
 envelope or truncation regression, evidence orientation, missing nominal
-artifact IDs (including inclusion map/containment declarations), declared-rank
-strengthening, equivalence laundering, typed chart/refinement/evidence seams,
-bounded lineage, allocation, cancellation, and canonical identity failures.
+artifact IDs (including inclusion declarations), declared-rank strengthening,
+equivalence laundering, typed chart/refinement/evidence seams, bounded lineage,
+allocation, cancellation, and canonical identity failures.
 Refusal publishes no admitted morphism.
+Standalone stratum-scoped admission and composition use
+`DerivedStratumMorphismErrorV1` for exact geometry/stratification/stratum
+ownership, model-version and convention compatibility, nominal identity and
+authority laundering, exact middle-object seams, bounded lineage, allocation,
+cancellation, and canonical identity failures. Refusal publishes no stratum
+morphism and cannot affect a whole-geometry morphism.
 Standalone span admission uses `DerivedSpanCorrespondenceErrorV1` for schema,
 zero no-authority identity, raw-leg/sealed-leg mismatch, leg orientation,
 cancellation, and canonical-identity defects. Refusal publishes no span token.
@@ -637,6 +660,12 @@ Whole-object inclusion primitives likewise use a distinct tag and bind exact
 nominal map and containment-artifact IDs; their homogeneous composite tag plus
 flattened primitive factors preserves family, order, and parenthesization
 without authenticating either artifact.
+Standalone stratum-morphism receipts use a separate schema/domain. They encode
+the exact source and target geometry/stratification/stratum triples, identity or
+primitive/composite class tag, ordered no-authority artifacts, and flattened
+primitive receipt IDs. Primitive class bytes bind the nominal component-map and
+constructibility IDs. Equal ordered paths replay independently of
+parenthesization; moving any selector or reversing factors changes identity.
 Standalone span receipts use a separate schema/domain and encode exact
 source/apex/target geometry IDs, left then right admitted-leg IDs, and the
 no-authority artifact. Replaying the same ordered legs is stable; swapping valid
@@ -673,6 +702,11 @@ immediately before publication. Composition polls at entry, at a fixed stride
 while copying bounded typed-primitive, factor, and no-claim lineage, inside
 identity construction, and before publication. Cancellation exposes no partial
 admitted morphism.
+Standalone stratum admission polls at entry, at a fixed stride while resolving
+finite stratum selectors, before and inside canonical identity construction,
+and immediately before publication. Composition additionally polls while
+validating and copying bounded scoped primitive/factor/no-authority lineage.
+Cancellation exposes no partial stratum morphism.
 Standalone span admission polls at entry, before and inside identity encoding,
 and immediately before publication. Cancellation exposes no partial span token.
 Fixed-resolution quasi-isomorphism candidate admission additionally polls while
@@ -750,6 +784,10 @@ model-version/convention mismatch, the lineage cap/cap+1 boundary, deterministic
 replay, and already-requested entry cancellation. Public wrapper coverage
 against fully admitted RD.1a fixtures and deterministic mid-flight cancellation
 injection remain explicit batch-verification follow-ups.
+The standalone stratum suite covers domain-separated class encoding, exact
+geometry/stratification/stratum ownership, identity neutrality, associative
+flattening, exact middle-triple refusal, nominal-field identity movement,
+authority-laundering refusal, deterministic replay, and entry cancellation.
 It also covers declared chart-map ownership, missing IDs, dimension/frame/unit/
 quantity/scale mutations, typed-ID-bound receipt replay and public primitive
 retention, homogeneous associativity, exact chart seams, identity neutrality,
@@ -891,6 +929,17 @@ claim those stronger G4/G5 results.
   evidence. Composition retains an ordered path of nominal factor declarations
   but does not prove transitive containment. Nonzero map and containment IDs are
   nominal only, and `IdentityOnly` is refused.
+- `AdmittedDerivedStratumMorphismV1` proves only exact ownership of its endpoint
+  triples and retains nominal map/constructibility artifacts for each component.
+  It proves neither that a component executes nor that its image lies in the
+  target stratum; it supplies no exhaustive source-stratum coverage or globally
+  stratified/constructible map. Continuity, smoothness, properness, incidence or
+  frontier preservation, Whitney/Thom compatibility, local-link preservation,
+  constructible sheaf/cosheaf pullback or pushforward, naturality, base change,
+  evidence authority, inverse, equivalence, theorem truth, and physical
+  correspondence are all outside this token. Composition retains exact adjacent
+  triples and nominal factor declarations only, and no API promotes the path to
+  a whole-geometry morphism.
 - `AdmittedDerivedSpanCorrespondenceV1` proves only that two exact sealed legs
   share the declared apex and land at the declared outer endpoints. It proves no
   totality, single-valuedness, functionality, injectivity, surjectivity,

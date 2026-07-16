@@ -4,13 +4,15 @@
 //! declared chart maps, finite-complex rank refinements, and whole-object
 //! inclusion declarations; checks structural evidence restriction/corestriction;
 //! and composes ordered typed primitive paths with content-addressed lineage. A
-//! separate token seals declared spans from two admitted legs without folding
-//! correspondences into directed-map composition. A second standalone token
-//! binds a fixed-resolution quasi-isomorphism *candidate* to an exact refinement
-//! path and exact local presentations, without granting theorem authority. This
-//! module deliberately cannot mint a non-identity equivalence: a witness digest
-//! is data, not a proof of an inverse, quasi-isomorphism, refinement theorem, or
-//! physical crosswalk.
+//! separate stratum-scoped category admits component declarations only between
+//! exact `(geometry, stratification, stratum)` objects and deliberately exposes
+//! no whole-geometry evidence transport. Another standalone token seals declared
+//! spans from two admitted legs without folding correspondences into directed-map
+//! composition. A final standalone token binds a fixed-resolution
+//! quasi-isomorphism *candidate* to an exact refinement path and exact local
+//! presentations, without granting theorem authority. This module deliberately
+//! cannot mint a non-identity equivalence: a witness digest is data, not a proof
+//! of an inverse, quasi-isomorphism, refinement theorem, or physical crosswalk.
 
 use core::fmt;
 
@@ -27,11 +29,13 @@ use crate::derived::{
     DerivedGeometryIdV1, DerivedLocalModelIdV1, DerivedLocalModelV1, DerivedModelVersionIdV1,
     DerivedNoClaimIdV1, DerivedResolutionIdV1, DerivedSubjectIdV1, DerivedTheoremIdV1,
     DerivedUnitSystemIdV1, DerivedWitnessIdV1, FiniteDerivedComplexV1, GeometricCategoryV1,
-    PresentationScopeV1,
+    PresentationScopeV1, StratificationIdV1, StratumIdV1,
 };
 
 /// Current schema for structural RD.1b morphism receipts.
 pub const DERIVED_MORPHISM_SCHEMA_VERSION_V1: u32 = 1;
+/// Current schema for standalone stratum-scoped morphism receipts.
+pub const DERIVED_STRATUM_MORPHISM_SCHEMA_VERSION_V1: u32 = 1;
 /// Current schema for standalone declared span-correspondence receipts.
 pub const DERIVED_SPAN_CORRESPONDENCE_SCHEMA_VERSION_V1: u32 = 1;
 /// Current schema for fixed-resolution quasi-isomorphism candidate receipts.
@@ -41,6 +45,10 @@ pub const DERIVED_MORPHISM_MAX_FACTORS_V1: usize = 1024;
 const DERIVED_MORPHISM_CANCELLATION_STRIDE_V1: usize = 64;
 const DERIVED_MORPHISM_IDENTITY_LIMITS_V1: CanonicalLimits =
     CanonicalLimits::new(1 << 17, 1 << 16, 8, 1 << 11, 4096);
+const DERIVED_STRATUM_MORPHISM_IDENTITY_LIMITS_V1: CanonicalLimits =
+    CanonicalLimits::new(1 << 17, 1 << 16, 9, 1 << 11, 4096);
+const DERIVED_FIXED_RESOLUTION_QUASI_ISOMORPHISM_CANDIDATE_IDENTITY_LIMITS_V1: CanonicalLimits =
+    CanonicalLimits::new(1 << 17, 1 << 16, 16, 1 << 11, 4096);
 
 /// Domain-separated semantic identity for one admitted structural morphism.
 pub enum DerivedMorphismIdentitySchemaV1 {}
@@ -63,6 +71,30 @@ impl CanonicalSchema for DerivedMorphismIdentitySchemaV1 {
 
 /// Typed identity of one admitted RD.1b structural morphism.
 pub type DerivedMorphismIdV1 = EvidenceNodeId<DerivedMorphismIdentitySchemaV1>;
+
+/// Domain-separated semantic identity for one admitted stratum-scoped morphism.
+pub enum DerivedStratumMorphismIdentitySchemaV1 {}
+
+impl CanonicalSchema for DerivedStratumMorphismIdentitySchemaV1 {
+    const DOMAIN: &'static str = "org.frankensim.fs-geom.derived-stratum-morphism.v1";
+    const NAME: &'static str = "derived-geometry-stratum-scoped-morphism";
+    const VERSION: u32 = DERIVED_STRATUM_MORPHISM_SCHEMA_VERSION_V1;
+    const CONTEXT: &'static str = "exact geometry, stratification, and stratum endpoints, nominal component declarations, no-authority boundary, and ordered primitive lineage";
+    const FIELDS: &'static [FieldSpec] = &[
+        FieldSpec::required("source-geometry", WireType::Bytes),
+        FieldSpec::required("source-stratification", WireType::Bytes),
+        FieldSpec::required("source-stratum", WireType::Bytes),
+        FieldSpec::required("target-geometry", WireType::Bytes),
+        FieldSpec::required("target-stratification", WireType::Bytes),
+        FieldSpec::required("target-stratum", WireType::Bytes),
+        FieldSpec::required("class", WireType::Bytes),
+        FieldSpec::required("no-authority-claims", WireType::OrderedBytes),
+        FieldSpec::required("primitive-lineage", WireType::OrderedBytes),
+    ];
+}
+
+/// Typed identity of one admitted stratum-scoped morphism.
+pub type DerivedStratumMorphismIdV1 = EvidenceNodeId<DerivedStratumMorphismIdentitySchemaV1>;
 
 /// Domain-separated semantic identity for one admitted declared span.
 pub enum DerivedSpanCorrespondenceIdentitySchemaV1 {}
@@ -190,6 +222,122 @@ impl DerivedInclusionMapIdV1 {
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
+}
+
+/// Nominal map artifact for one declared stratum-map component.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DerivedStratumMapIdV1([u8; 32]);
+
+impl DerivedStratumMapIdV1 {
+    /// Construct a nominal stratum-map identity from exact bytes.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Borrow the exact identity bytes.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+/// Nominal constructibility declaration for one stratum-map component.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DerivedConstructibilityDeclarationIdV1([u8; 32]);
+
+impl DerivedConstructibilityDeclarationIdV1 {
+    /// Construct a nominal declaration identity from exact bytes.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Borrow the exact identity bytes.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+/// One exact object in the standalone stratum-scoped category.
+///
+/// The geometry alone is not the object: both the finite stratification and
+/// selected stratum are identity-bearing parts of the endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DerivedStratumObjectV1 {
+    /// Exact admitted geometry that owns the stratification.
+    pub geometry: DerivedGeometryIdV1,
+    /// Exact finite stratification owned by `geometry`.
+    pub stratification: StratificationIdV1,
+    /// Exact stratum owned by `stratification`.
+    pub stratum: StratumIdV1,
+}
+
+/// Caller-supplied primitive in the standalone stratum-scoped category.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DerivedStratumMorphismKindV1 {
+    /// The categorical identity on one exact stratum object.
+    Identity,
+    /// A nominal component-map declaration with no whole-map authority.
+    DeclaredComponent {
+        /// Nominal implementation or mathematical map artifact.
+        map: DerivedStratumMapIdV1,
+        /// Nominal declaration that this component is constructible.
+        constructibility: DerivedConstructibilityDeclarationIdV1,
+    },
+}
+
+/// Explicit authority boundary for one stratum-scoped request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DerivedStratumAuthorityBoundaryV1 {
+    /// Available only for the exact identity on one stratum object.
+    IdentityOnly,
+    /// No execution, constructibility, whole-map, or evidence authority claimed.
+    NoClaim {
+        /// Retained no-authority artifact.
+        artifact: DerivedNoClaimIdV1,
+    },
+}
+
+/// Versioned primitive request in the standalone stratum-scoped category.
+///
+/// This IR has no whole-geometry evidence field and cannot be converted into
+/// `DerivedMorphismIrV1` by this module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DerivedStratumMorphismIrV1 {
+    /// Decoded schema version.
+    pub schema_version: u32,
+    /// Exact source stratum object.
+    pub source: DerivedStratumObjectV1,
+    /// Exact target stratum object.
+    pub target: DerivedStratumObjectV1,
+    /// Identity or nominal component declaration.
+    pub kind: DerivedStratumMorphismKindV1,
+    /// Honest authority boundary.
+    pub authority: DerivedStratumAuthorityBoundaryV1,
+}
+
+/// Admitted family in the standalone stratum-scoped category.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdmittedDerivedStratumMorphismClassV1 {
+    /// Exact identity on one `(geometry, stratification, stratum)` object.
+    Identity,
+    /// One or more ordered declared component primitives.
+    DeclaredPath,
+}
+
+/// One retained nominal stratum-map component.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeclaredStratumMapPrimitiveV1 {
+    /// Exact source object of this component.
+    pub source: DerivedStratumObjectV1,
+    /// Exact target object of this component.
+    pub target: DerivedStratumObjectV1,
+    /// Nominal component-map artifact.
+    pub map: DerivedStratumMapIdV1,
+    /// Nominal constructibility declaration; not authenticated here.
+    pub constructibility: DerivedConstructibilityDeclarationIdV1,
 }
 
 /// Caller-supplied primitive map class.
@@ -670,6 +818,87 @@ impl fmt::Display for DerivedMorphismErrorV1 {
 
 impl core::error::Error for DerivedMorphismErrorV1 {}
 
+/// Structured refusal from standalone stratum-scoped admission/composition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DerivedStratumMorphismErrorV1 {
+    /// Unsupported decoded schema version.
+    UnsupportedSchemaVersion {
+        /// Supplied version.
+        found: u32,
+        /// Sole supported version.
+        supported: u32,
+    },
+    /// A raw stratum object did not name the exact supplied admitted geometry.
+    EndpointMismatch {
+        /// Stable source/target geometry field.
+        field: &'static str,
+    },
+    /// A required nominal identity used the all-zero sentinel.
+    MissingIdentity {
+        /// Stable identity field.
+        field: &'static str,
+    },
+    /// A stratification selector is not the exact one owned by its geometry.
+    MissingStratification {
+        /// Stable source/target stratification field.
+        field: &'static str,
+    },
+    /// A stratum selector is not owned by its exact finite stratification.
+    MissingStratum {
+        /// Stable source/target stratum field.
+        field: &'static str,
+    },
+    /// An identity request changed its exact object or authority boundary.
+    InvalidIdentity,
+    /// Nonidentity endpoints describe different physical subjects.
+    SubjectMismatch,
+    /// Nonidentity endpoints name different immutable model versions.
+    ModelVersionMismatch,
+    /// Nonidentity endpoints use different mathematical categories.
+    CategoryMismatch,
+    /// Nonidentity endpoints use different coefficient semantics.
+    CoefficientMismatch,
+    /// Nonidentity endpoints use different coordinate frames.
+    FrameMismatch,
+    /// Nonidentity endpoints use different unit systems.
+    UnitSystemMismatch,
+    /// A component declaration attempted to claim identity authority.
+    AuthorityLaundering,
+    /// Two arrows do not share the exact middle stratum object.
+    CompositionEndpointMismatch,
+    /// A sealed token has an internally inconsistent identity/path class.
+    CompositionClassMismatch,
+    /// Flattened lineage/no-claim retention exceeded the hard ceiling.
+    ResourceLimit {
+        /// Stable retained collection.
+        field: &'static str,
+        /// Requested entries.
+        requested: usize,
+        /// Hard limit.
+        limit: usize,
+    },
+    /// A fallible lineage/no-claim allocation was refused.
+    AllocationRefused {
+        /// Stable retained collection.
+        field: &'static str,
+    },
+    /// Cooperative cancellation was observed before publication.
+    Cancelled {
+        /// Stable admission/composition stage.
+        stage: &'static str,
+    },
+    /// Canonical identity construction failed.
+    Identity(CanonicalError),
+}
+
+impl fmt::Display for DerivedStratumMorphismErrorV1 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "derived stratum morphism refused: {self:?}")
+    }
+}
+
+impl core::error::Error for DerivedStratumMorphismErrorV1 {}
+
 /// Structured refusal from standalone declared-span admission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DerivedSpanCorrespondenceErrorV1 {
@@ -877,6 +1106,73 @@ impl AdmittedDerivedMorphismV1 {
     /// Canonical receipt and construction limits.
     #[must_use]
     pub const fn identity_receipt(&self) -> IdentityReceipt<DerivedMorphismIdV1> {
+        self.receipt
+    }
+}
+
+/// Sealed morphism in the standalone stratum-scoped category.
+///
+/// Its endpoints are exact `(geometry, stratification, stratum)` objects. The
+/// token is intentionally not an `AdmittedDerivedMorphismV1`, exposes no
+/// geometry-wide evidence transport, and cannot establish a map on any
+/// unlisted stratum.
+#[derive(Debug, PartialEq, Eq)]
+pub struct AdmittedDerivedStratumMorphismV1 {
+    source: DerivedStratumObjectV1,
+    target: DerivedStratumObjectV1,
+    class: AdmittedDerivedStratumMorphismClassV1,
+    primitive_path: Vec<DeclaredStratumMapPrimitiveV1>,
+    no_authority_claims: Vec<DerivedNoClaimIdV1>,
+    primitive_factors: Vec<DerivedStratumMorphismIdV1>,
+    receipt: IdentityReceipt<DerivedStratumMorphismIdV1>,
+}
+
+impl AdmittedDerivedStratumMorphismV1 {
+    /// Exact source stratum object.
+    #[must_use]
+    pub const fn source(&self) -> DerivedStratumObjectV1 {
+        self.source
+    }
+
+    /// Exact target stratum object.
+    #[must_use]
+    pub const fn target(&self) -> DerivedStratumObjectV1 {
+        self.target
+    }
+
+    /// Identity versus nonempty declared component path.
+    #[must_use]
+    pub const fn class(&self) -> AdmittedDerivedStratumMorphismClassV1 {
+        self.class
+    }
+
+    /// Ordered component declarations with exact scoped endpoints.
+    #[must_use]
+    pub fn primitive_path(&self) -> &[DeclaredStratumMapPrimitiveV1] {
+        &self.primitive_path
+    }
+
+    /// Ordered primitive receipt identities after associative flattening.
+    #[must_use]
+    pub fn primitive_factors(&self) -> &[DerivedStratumMorphismIdV1] {
+        &self.primitive_factors
+    }
+
+    /// Ordered artifacts denying whole-map and theorem authority.
+    #[must_use]
+    pub fn no_authority_claims(&self) -> &[DerivedNoClaimIdV1] {
+        &self.no_authority_claims
+    }
+
+    /// Typed stratum-scoped morphism identity.
+    #[must_use]
+    pub const fn id(&self) -> DerivedStratumMorphismIdV1 {
+        self.receipt.id()
+    }
+
+    /// Canonical receipt and construction limits.
+    #[must_use]
+    pub const fn identity_receipt(&self) -> IdentityReceipt<DerivedStratumMorphismIdV1> {
         self.receipt
     }
 }
@@ -1144,6 +1440,16 @@ enum ReceiptClassV1 {
     CompositeDeclaredInclusion,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum StratumReceiptClassV1 {
+    Identity,
+    PrimitiveDeclaredComponent {
+        map: DerivedStratumMapIdV1,
+        constructibility: DerivedConstructibilityDeclarationIdV1,
+    },
+    CompositeDeclaredPath,
+}
+
 fn is_zero(bytes: &[u8; 32]) -> bool {
     bytes.iter().all(|byte| *byte == 0)
 }
@@ -1304,6 +1610,37 @@ fn class_bytes(class: ReceiptClassV1) -> ClassBytesV1 {
     }
 }
 
+enum StratumClassBytesV1 {
+    Tag([u8; 1]),
+    Primitive([u8; 65]),
+}
+
+impl StratumClassBytesV1 {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Tag(bytes) => bytes,
+            Self::Primitive(bytes) => bytes,
+        }
+    }
+}
+
+fn stratum_class_bytes(class: StratumReceiptClassV1) -> StratumClassBytesV1 {
+    match class {
+        StratumReceiptClassV1::Identity => StratumClassBytesV1::Tag([0]),
+        StratumReceiptClassV1::PrimitiveDeclaredComponent {
+            map,
+            constructibility,
+        } => {
+            let mut bytes = [0_u8; 65];
+            bytes[0] = 1;
+            bytes[1..33].copy_from_slice(map.as_bytes());
+            bytes[33..65].copy_from_slice(constructibility.as_bytes());
+            StratumClassBytesV1::Primitive(bytes)
+        }
+        StratumReceiptClassV1::CompositeDeclaredPath => StratumClassBytesV1::Tag([2]),
+    }
+}
+
 fn morphism_receipt(
     source: DerivedGeometryIdV1,
     target: DerivedGeometryIdV1,
@@ -1342,6 +1679,66 @@ fn morphism_receipt(
     .and_then(|encoder| {
         encoder.ordered_bytes(
             Field::new(5, "primitive-lineage"),
+            factors.len() as u64,
+            factors.iter().map(|factor| &factor.as_bytes()[..]),
+        )
+    })
+    .and_then(|encoder| encoder.finish())
+    .map_err(map_identity_error)
+}
+
+fn stratum_morphism_receipt(
+    source: DerivedStratumObjectV1,
+    target: DerivedStratumObjectV1,
+    class: StratumReceiptClassV1,
+    no_claims: &[DerivedNoClaimIdV1],
+    factors: &[DerivedStratumMorphismIdV1],
+    cx: &Cx<'_>,
+) -> Result<IdentityReceipt<DerivedStratumMorphismIdV1>, DerivedStratumMorphismErrorV1> {
+    if cx.checkpoint().is_err() {
+        return Err(DerivedStratumMorphismErrorV1::Cancelled {
+            stage: "stratum-identity-entry",
+        });
+    }
+    let class = stratum_class_bytes(class);
+    let map_identity_error = |error| match error {
+        CanonicalError::Cancelled { .. } => DerivedStratumMorphismErrorV1::Cancelled {
+            stage: "stratum-identity",
+        },
+        other => DerivedStratumMorphismErrorV1::Identity(other),
+    };
+    CanonicalEncoder::<DerivedStratumMorphismIdV1, _>::new(
+        DERIVED_STRATUM_MORPHISM_IDENTITY_LIMITS_V1,
+        || cx.checkpoint().is_err(),
+    )
+    .map_err(map_identity_error)?
+    .bytes(Field::new(0, "source-geometry"), source.geometry.as_bytes())
+    .and_then(|encoder| {
+        encoder.bytes(
+            Field::new(1, "source-stratification"),
+            source.stratification.as_bytes(),
+        )
+    })
+    .and_then(|encoder| encoder.bytes(Field::new(2, "source-stratum"), source.stratum.as_bytes()))
+    .and_then(|encoder| encoder.bytes(Field::new(3, "target-geometry"), target.geometry.as_bytes()))
+    .and_then(|encoder| {
+        encoder.bytes(
+            Field::new(4, "target-stratification"),
+            target.stratification.as_bytes(),
+        )
+    })
+    .and_then(|encoder| encoder.bytes(Field::new(5, "target-stratum"), target.stratum.as_bytes()))
+    .and_then(|encoder| encoder.bytes(Field::new(6, "class"), class.as_slice()))
+    .and_then(|encoder| {
+        encoder.ordered_bytes(
+            Field::new(7, "no-authority-claims"),
+            no_claims.len() as u64,
+            no_claims.iter().map(|claim| &claim.as_bytes()[..]),
+        )
+    })
+    .and_then(|encoder| {
+        encoder.ordered_bytes(
+            Field::new(8, "primitive-lineage"),
             factors.len() as u64,
             factors.iter().map(|factor| &factor.as_bytes()[..]),
         )
@@ -2427,6 +2824,473 @@ pub fn compose_derived_morphisms_v1(
     })
 }
 
+fn validate_stratum_object(
+    object: DerivedStratumObjectV1,
+    geometry: &AdmittedDerivedGeometryV1,
+    geometry_field: &'static str,
+    stratification_field: &'static str,
+    stratum_field: &'static str,
+    cx: &Cx<'_>,
+) -> Result<(), DerivedStratumMorphismErrorV1> {
+    if object.geometry != geometry.id() {
+        return Err(DerivedStratumMorphismErrorV1::EndpointMismatch {
+            field: geometry_field,
+        });
+    }
+    if is_zero(object.stratification.as_bytes()) {
+        return Err(DerivedStratumMorphismErrorV1::MissingIdentity {
+            field: stratification_field,
+        });
+    }
+    if object.stratification != geometry.ir().stratification.id {
+        return Err(DerivedStratumMorphismErrorV1::MissingStratification {
+            field: stratification_field,
+        });
+    }
+    if is_zero(object.stratum.as_bytes()) {
+        return Err(DerivedStratumMorphismErrorV1::MissingIdentity {
+            field: stratum_field,
+        });
+    }
+    let mut owns_stratum = false;
+    for (index, stratum) in geometry.ir().stratification.strata.iter().enumerate() {
+        if index.is_multiple_of(DERIVED_MORPHISM_CANCELLATION_STRIDE_V1) && cx.checkpoint().is_err()
+        {
+            return Err(DerivedStratumMorphismErrorV1::Cancelled {
+                stage: "stratum-selector-resolution",
+            });
+        }
+        if stratum.id == object.stratum {
+            owns_stratum = true;
+            break;
+        }
+    }
+    if !owns_stratum {
+        return Err(DerivedStratumMorphismErrorV1::MissingStratum {
+            field: stratum_field,
+        });
+    }
+    Ok(())
+}
+
+fn validate_stratum_nonidentity_compatibility(
+    source: &AdmittedDerivedGeometryV1,
+    target: &AdmittedDerivedGeometryV1,
+) -> Result<(), DerivedStratumMorphismErrorV1> {
+    if source.ir().subject != target.ir().subject {
+        return Err(DerivedStratumMorphismErrorV1::SubjectMismatch);
+    }
+    if source.ir().model_version != target.ir().model_version {
+        return Err(DerivedStratumMorphismErrorV1::ModelVersionMismatch);
+    }
+    if source.ir().category != target.ir().category {
+        return Err(DerivedStratumMorphismErrorV1::CategoryMismatch);
+    }
+    if source.ir().coefficients != target.ir().coefficients {
+        return Err(DerivedStratumMorphismErrorV1::CoefficientMismatch);
+    }
+    if source.ir().frame != target.ir().frame {
+        return Err(DerivedStratumMorphismErrorV1::FrameMismatch);
+    }
+    if source.ir().unit_system != target.ir().unit_system {
+        return Err(DerivedStratumMorphismErrorV1::UnitSystemMismatch);
+    }
+    Ok(())
+}
+
+fn retain_stratum_value<T>(
+    field: &'static str,
+    value: Option<T>,
+) -> Result<Vec<T>, DerivedStratumMorphismErrorV1> {
+    let mut retained = Vec::new();
+    if let Some(value) = value {
+        retained
+            .try_reserve_exact(1)
+            .map_err(|_| DerivedStratumMorphismErrorV1::AllocationRefused { field })?;
+        retained.push(value);
+    }
+    Ok(retained)
+}
+
+/// Admit one identity or nominal component in the stratum-scoped category.
+///
+/// Both selectors are resolved against their exact supplied admitted geometry.
+/// A component may connect strata with different charts or dimensions, but its
+/// two geometries must retain the same subject, immutable model version,
+/// category, coefficient, frame, and unit semantics. The result is not a
+/// whole-geometry morphism and carries no evidence-transport capability.
+///
+/// # Errors
+/// Returns a typed refusal for schema, endpoint ownership, compatibility,
+/// authority, allocation, cancellation, or canonical-identity defects.
+#[must_use = "a raw stratum-map declaration has no structural authority"]
+#[allow(clippy::too_many_lines)] // One exhaustive identity/component admission dispatch.
+pub fn admit_derived_stratum_morphism_v1(
+    ir: &DerivedStratumMorphismIrV1,
+    source_geometry: &AdmittedDerivedGeometryV1,
+    target_geometry: &AdmittedDerivedGeometryV1,
+    cx: &Cx<'_>,
+) -> Result<AdmittedDerivedStratumMorphismV1, DerivedStratumMorphismErrorV1> {
+    if cx.checkpoint().is_err() {
+        return Err(DerivedStratumMorphismErrorV1::Cancelled {
+            stage: "stratum-admission-entry",
+        });
+    }
+    if ir.schema_version != DERIVED_STRATUM_MORPHISM_SCHEMA_VERSION_V1 {
+        return Err(DerivedStratumMorphismErrorV1::UnsupportedSchemaVersion {
+            found: ir.schema_version,
+            supported: DERIVED_STRATUM_MORPHISM_SCHEMA_VERSION_V1,
+        });
+    }
+    validate_stratum_object(
+        ir.source,
+        source_geometry,
+        "source-geometry",
+        "source-stratification",
+        "source-stratum",
+        cx,
+    )?;
+    validate_stratum_object(
+        ir.target,
+        target_geometry,
+        "target-geometry",
+        "target-stratification",
+        "target-stratum",
+        cx,
+    )?;
+
+    let (class, receipt_class, no_claim, primitive) = match (ir.kind, ir.authority) {
+        (
+            DerivedStratumMorphismKindV1::Identity,
+            DerivedStratumAuthorityBoundaryV1::IdentityOnly,
+        ) => {
+            if ir.source != ir.target {
+                return Err(DerivedStratumMorphismErrorV1::InvalidIdentity);
+            }
+            (
+                AdmittedDerivedStratumMorphismClassV1::Identity,
+                StratumReceiptClassV1::Identity,
+                None,
+                None,
+            )
+        }
+        (
+            DerivedStratumMorphismKindV1::DeclaredComponent {
+                map,
+                constructibility,
+            },
+            DerivedStratumAuthorityBoundaryV1::NoClaim { artifact },
+        ) => {
+            for (bytes, field) in [
+                (map.as_bytes(), "stratum-map"),
+                (constructibility.as_bytes(), "constructibility-declaration"),
+                (artifact.as_bytes(), "no-stratum-map-authority"),
+            ] {
+                if is_zero(bytes) {
+                    return Err(DerivedStratumMorphismErrorV1::MissingIdentity { field });
+                }
+            }
+            validate_stratum_nonidentity_compatibility(source_geometry, target_geometry)?;
+            (
+                AdmittedDerivedStratumMorphismClassV1::DeclaredPath,
+                StratumReceiptClassV1::PrimitiveDeclaredComponent {
+                    map,
+                    constructibility,
+                },
+                Some(artifact),
+                Some(DeclaredStratumMapPrimitiveV1 {
+                    source: ir.source,
+                    target: ir.target,
+                    map,
+                    constructibility,
+                }),
+            )
+        }
+        (DerivedStratumMorphismKindV1::Identity, _) => {
+            return Err(DerivedStratumMorphismErrorV1::InvalidIdentity);
+        }
+        (DerivedStratumMorphismKindV1::DeclaredComponent { .. }, _) => {
+            return Err(DerivedStratumMorphismErrorV1::AuthorityLaundering);
+        }
+    };
+
+    if cx.checkpoint().is_err() {
+        return Err(DerivedStratumMorphismErrorV1::Cancelled {
+            stage: "stratum-admission",
+        });
+    }
+    let no_authority_claims = retain_stratum_value("stratum-no-authority-claims", no_claim)?;
+    let primitive_path = retain_stratum_value("stratum-typed-primitive-lineage", primitive)?;
+    let receipt = stratum_morphism_receipt(
+        ir.source,
+        ir.target,
+        receipt_class,
+        &no_authority_claims,
+        &[],
+        cx,
+    )?;
+    let mut primitive_factors = Vec::new();
+    if class == AdmittedDerivedStratumMorphismClassV1::DeclaredPath {
+        primitive_factors.try_reserve_exact(1).map_err(|_| {
+            DerivedStratumMorphismErrorV1::AllocationRefused {
+                field: "stratum-primitive-lineage",
+            }
+        })?;
+        primitive_factors.push(receipt.id());
+    }
+    if cx.checkpoint().is_err() {
+        return Err(DerivedStratumMorphismErrorV1::Cancelled {
+            stage: "stratum-publication",
+        });
+    }
+    Ok(AdmittedDerivedStratumMorphismV1 {
+        source: ir.source,
+        target: ir.target,
+        class,
+        primitive_path,
+        no_authority_claims,
+        primitive_factors,
+        receipt,
+    })
+}
+
+/// Mint the exact identity on one stratum of an admitted geometry.
+///
+/// # Errors
+/// Returns a typed refusal if the stratum is not owned by the geometry, or if
+/// cancellation, allocation, or canonical identity construction fails.
+#[must_use = "identity construction must complete before composition"]
+pub fn identity_derived_stratum_morphism_v1(
+    geometry: &AdmittedDerivedGeometryV1,
+    stratum: StratumIdV1,
+    cx: &Cx<'_>,
+) -> Result<AdmittedDerivedStratumMorphismV1, DerivedStratumMorphismErrorV1> {
+    let object = DerivedStratumObjectV1 {
+        geometry: geometry.id(),
+        stratification: geometry.ir().stratification.id,
+        stratum,
+    };
+    admit_derived_stratum_morphism_v1(
+        &DerivedStratumMorphismIrV1 {
+            schema_version: DERIVED_STRATUM_MORPHISM_SCHEMA_VERSION_V1,
+            source: object,
+            target: object,
+            kind: DerivedStratumMorphismKindV1::Identity,
+            authority: DerivedStratumAuthorityBoundaryV1::IdentityOnly,
+        },
+        geometry,
+        geometry,
+        cx,
+    )
+}
+
+fn checked_stratum_combined_len(
+    field: &'static str,
+    left: usize,
+    right: usize,
+) -> Result<usize, DerivedStratumMorphismErrorV1> {
+    let requested =
+        left.checked_add(right)
+            .ok_or(DerivedStratumMorphismErrorV1::ResourceLimit {
+                field,
+                requested: usize::MAX,
+                limit: DERIVED_MORPHISM_MAX_FACTORS_V1,
+            })?;
+    if requested > DERIVED_MORPHISM_MAX_FACTORS_V1 {
+        return Err(DerivedStratumMorphismErrorV1::ResourceLimit {
+            field,
+            requested,
+            limit: DERIVED_MORPHISM_MAX_FACTORS_V1,
+        });
+    }
+    Ok(requested)
+}
+
+fn combine_stratum_slices<T: Copy>(
+    field: &'static str,
+    left: &[T],
+    right: &[T],
+    cx: &Cx<'_>,
+) -> Result<Vec<T>, DerivedStratumMorphismErrorV1> {
+    let len = checked_stratum_combined_len(field, left.len(), right.len())?;
+    if cx.checkpoint().is_err() {
+        return Err(DerivedStratumMorphismErrorV1::Cancelled { stage: field });
+    }
+    let mut out = Vec::new();
+    out.try_reserve_exact(len)
+        .map_err(|_| DerivedStratumMorphismErrorV1::AllocationRefused { field })?;
+    for (index, value) in left.iter().chain(right).copied().enumerate() {
+        out.push(value);
+        if (index + 1).is_multiple_of(DERIVED_MORPHISM_CANCELLATION_STRIDE_V1)
+            && cx.checkpoint().is_err()
+        {
+            return Err(DerivedStratumMorphismErrorV1::Cancelled { stage: field });
+        }
+    }
+    if cx.checkpoint().is_err() {
+        return Err(DerivedStratumMorphismErrorV1::Cancelled { stage: field });
+    }
+    Ok(out)
+}
+
+fn validate_admitted_stratum_path(
+    value: &AdmittedDerivedStratumMorphismV1,
+    cx: &Cx<'_>,
+) -> Result<(), DerivedStratumMorphismErrorV1> {
+    match value.class {
+        AdmittedDerivedStratumMorphismClassV1::Identity => {
+            if value.source != value.target
+                || !value.primitive_path.is_empty()
+                || !value.no_authority_claims.is_empty()
+                || !value.primitive_factors.is_empty()
+            {
+                return Err(DerivedStratumMorphismErrorV1::CompositionClassMismatch);
+            }
+        }
+        AdmittedDerivedStratumMorphismClassV1::DeclaredPath => {
+            if value.primitive_path.is_empty()
+                || value.primitive_path.len() != value.primitive_factors.len()
+                || value.primitive_path.len() != value.no_authority_claims.len()
+                || value
+                    .primitive_path
+                    .first()
+                    .map(|primitive| primitive.source)
+                    != Some(value.source)
+                || value
+                    .primitive_path
+                    .last()
+                    .map(|primitive| primitive.target)
+                    != Some(value.target)
+            {
+                return Err(DerivedStratumMorphismErrorV1::CompositionClassMismatch);
+            }
+            for (index, pair) in value.primitive_path.windows(2).enumerate() {
+                if index.is_multiple_of(DERIVED_MORPHISM_CANCELLATION_STRIDE_V1)
+                    && cx.checkpoint().is_err()
+                {
+                    return Err(DerivedStratumMorphismErrorV1::Cancelled {
+                        stage: "stratum-path-validation",
+                    });
+                }
+                if pair[0].target != pair[1].source {
+                    return Err(DerivedStratumMorphismErrorV1::CompositionClassMismatch);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn copy_admitted_stratum_morphism(
+    value: &AdmittedDerivedStratumMorphismV1,
+    cx: &Cx<'_>,
+) -> Result<AdmittedDerivedStratumMorphismV1, DerivedStratumMorphismErrorV1> {
+    validate_admitted_stratum_path(value, cx)?;
+    let primitive_path = combine_stratum_slices(
+        "stratum-typed-primitive-lineage-copy",
+        &value.primitive_path,
+        &[],
+        cx,
+    )?;
+    let no_authority_claims = combine_stratum_slices(
+        "stratum-no-authority-claims-copy",
+        &value.no_authority_claims,
+        &[],
+        cx,
+    )?;
+    let primitive_factors = combine_stratum_slices(
+        "stratum-primitive-lineage-copy",
+        &value.primitive_factors,
+        &[],
+        cx,
+    )?;
+    Ok(AdmittedDerivedStratumMorphismV1 {
+        source: value.source,
+        target: value.target,
+        class: value.class,
+        primitive_path,
+        no_authority_claims,
+        primitive_factors,
+        receipt: value.receipt,
+    })
+}
+
+/// Compose `first: S -> T` followed by `second: T -> U` in the standalone
+/// stratum-scoped category.
+///
+/// The complete middle `(geometry, stratification, stratum)` object must match.
+/// Composition flattens component and no-authority lineage associatively. It
+/// cannot compose with `AdmittedDerivedMorphismV1` and creates no evidence
+/// transport or whole-stratification map.
+///
+/// # Errors
+/// Returns a typed refusal for an inexact seam, inconsistent sealed class,
+/// lineage cap, allocation, cancellation, or canonical identity defect.
+#[must_use = "composition refusal must not be treated as a stratum morphism"]
+pub fn compose_derived_stratum_morphisms_v1(
+    first: &AdmittedDerivedStratumMorphismV1,
+    second: &AdmittedDerivedStratumMorphismV1,
+    cx: &Cx<'_>,
+) -> Result<AdmittedDerivedStratumMorphismV1, DerivedStratumMorphismErrorV1> {
+    if cx.checkpoint().is_err() {
+        return Err(DerivedStratumMorphismErrorV1::Cancelled {
+            stage: "stratum-composition-entry",
+        });
+    }
+    validate_admitted_stratum_path(first, cx)?;
+    validate_admitted_stratum_path(second, cx)?;
+    if first.target != second.source {
+        return Err(DerivedStratumMorphismErrorV1::CompositionEndpointMismatch);
+    }
+    if first.class == AdmittedDerivedStratumMorphismClassV1::Identity {
+        return copy_admitted_stratum_morphism(second, cx);
+    }
+    if second.class == AdmittedDerivedStratumMorphismClassV1::Identity {
+        return copy_admitted_stratum_morphism(first, cx);
+    }
+
+    let primitive_path = combine_stratum_slices(
+        "stratum-typed-primitive-lineage",
+        &first.primitive_path,
+        &second.primitive_path,
+        cx,
+    )?;
+    let no_authority_claims = combine_stratum_slices(
+        "stratum-no-authority-claims",
+        &first.no_authority_claims,
+        &second.no_authority_claims,
+        cx,
+    )?;
+    let primitive_factors = combine_stratum_slices(
+        "stratum-primitive-lineage",
+        &first.primitive_factors,
+        &second.primitive_factors,
+        cx,
+    )?;
+    let receipt = stratum_morphism_receipt(
+        first.source,
+        second.target,
+        StratumReceiptClassV1::CompositeDeclaredPath,
+        &no_authority_claims,
+        &primitive_factors,
+        cx,
+    )?;
+    if cx.checkpoint().is_err() {
+        return Err(DerivedStratumMorphismErrorV1::Cancelled {
+            stage: "stratum-composition-publication",
+        });
+    }
+    Ok(AdmittedDerivedStratumMorphismV1 {
+        source: first.source,
+        target: second.target,
+        class: AdmittedDerivedStratumMorphismClassV1::DeclaredPath,
+        primitive_path,
+        no_authority_claims,
+        primitive_factors,
+        receipt,
+    })
+}
+
 fn span_correspondence_receipt(
     ir: DerivedSpanCorrespondenceIrV1,
     cx: &Cx<'_>,
@@ -2718,7 +3582,7 @@ fn fixed_resolution_quasi_isomorphism_candidate_receipt(
         other => DerivedFixedResolutionQuasiIsomorphismCandidateErrorV1::Identity(other),
     };
     CanonicalEncoder::<DerivedFixedResolutionQuasiIsomorphismCandidateIdV1, _>::new(
-        DERIVED_MORPHISM_IDENTITY_LIMITS_V1,
+        DERIVED_FIXED_RESOLUTION_QUASI_ISOMORPHISM_CANDIDATE_IDENTITY_LIMITS_V1,
         || cx.checkpoint().is_err(),
     )
     .map_err(map_identity_error)?
@@ -3156,6 +4020,14 @@ mod tests {
             charts: &[],
             complexes: &[],
         }
+    }
+
+    fn stratification_id(seed: u8) -> StratificationIdV1 {
+        StratificationIdV1::from_bytes([seed; 32])
+    }
+
+    fn stratum_id(seed: u8) -> StratumIdV1 {
+        StratumIdV1::from_bytes([seed; 32])
     }
 
     fn chart_id(seed: u8) -> ConfigurationChartIdV1 {
@@ -3723,6 +4595,74 @@ mod tests {
         (source, target, path, ir)
     }
 
+    fn admitted_fixed_resolution_geometry(
+        tangent_complex_seed: u8,
+        tangent_resolution_seed: u8,
+        local_model_seed: u8,
+        tangent_rank: u32,
+        cx: &Cx<'_>,
+    ) -> AdmittedDerivedGeometryV1 {
+        admit_derived_geometry_v1(
+            fixed_resolution_geometry_ir(
+                tangent_complex_seed,
+                tangent_resolution_seed,
+                local_model_seed,
+                tangent_rank,
+            ),
+            DerivedAdmissionBudgetV1::STANDARD,
+            cx,
+        )
+        .expect("valid admitted stratum fixture")
+    }
+
+    fn sole_stratum_object(geometry: &AdmittedDerivedGeometryV1) -> DerivedStratumObjectV1 {
+        DerivedStratumObjectV1 {
+            geometry: geometry.id(),
+            stratification: geometry.ir().stratification.id,
+            stratum: geometry.ir().stratification.strata[0].id,
+        }
+    }
+
+    fn stratum_component_ir(
+        source: DerivedStratumObjectV1,
+        target: DerivedStratumObjectV1,
+        seed: u8,
+    ) -> DerivedStratumMorphismIrV1 {
+        DerivedStratumMorphismIrV1 {
+            schema_version: DERIVED_STRATUM_MORPHISM_SCHEMA_VERSION_V1,
+            source,
+            target,
+            kind: DerivedStratumMorphismKindV1::DeclaredComponent {
+                map: DerivedStratumMapIdV1::from_bytes([seed; 32]),
+                constructibility: DerivedConstructibilityDeclarationIdV1::from_bytes(
+                    [seed.wrapping_add(1); 32],
+                ),
+            },
+            authority: DerivedStratumAuthorityBoundaryV1::NoClaim {
+                artifact: DerivedNoClaimIdV1::from_bytes([seed.wrapping_add(2); 32]),
+            },
+        }
+    }
+
+    fn admit_stratum_component(
+        source: &AdmittedDerivedGeometryV1,
+        target: &AdmittedDerivedGeometryV1,
+        seed: u8,
+        cx: &Cx<'_>,
+    ) -> AdmittedDerivedStratumMorphismV1 {
+        admit_derived_stratum_morphism_v1(
+            &stratum_component_ir(
+                sole_stratum_object(source),
+                sole_stratum_object(target),
+                seed,
+            ),
+            source,
+            target,
+            cx,
+        )
+        .expect("valid declared stratum component")
+    }
+
     #[test]
     fn v1_class_bytes_keep_old_tags_and_domain_separate_new_paths() {
         assert_eq!(
@@ -3798,6 +4738,386 @@ mod tests {
         assert_eq!(inclusion.as_slice()[0], 8);
         assert!(inclusion.as_slice()[1..33].iter().all(|byte| *byte == 18));
         assert!(inclusion.as_slice()[33..65].iter().all(|byte| *byte == 19));
+    }
+
+    #[test]
+    fn stratum_morphisms_have_a_separate_domain_and_frozen_class_tags() {
+        assert_ne!(
+            <DerivedStratumMorphismIdentitySchemaV1 as CanonicalSchema>::DOMAIN,
+            <DerivedMorphismIdentitySchemaV1 as CanonicalSchema>::DOMAIN
+        );
+        assert_ne!(
+            <DerivedStratumMorphismIdentitySchemaV1 as CanonicalSchema>::DOMAIN,
+            <DerivedSpanCorrespondenceIdentitySchemaV1 as CanonicalSchema>::DOMAIN
+        );
+        assert_eq!(
+            <DerivedStratumMorphismIdentitySchemaV1 as CanonicalSchema>::FIELDS.len(),
+            9
+        );
+        assert_eq!(DERIVED_STRATUM_MORPHISM_IDENTITY_LIMITS_V1.max_fields(), 9);
+        assert_eq!(
+            <DerivedFixedResolutionQuasiIsomorphismCandidateIdentitySchemaV1 as CanonicalSchema>::FIELDS
+                .len(),
+            16
+        );
+        assert_eq!(
+            DERIVED_FIXED_RESOLUTION_QUASI_ISOMORPHISM_CANDIDATE_IDENTITY_LIMITS_V1.max_fields(),
+            16
+        );
+        assert_eq!(
+            stratum_class_bytes(StratumReceiptClassV1::Identity).as_slice(),
+            &[0]
+        );
+        assert_eq!(
+            stratum_class_bytes(StratumReceiptClassV1::CompositeDeclaredPath).as_slice(),
+            &[2]
+        );
+        let primitive = stratum_class_bytes(StratumReceiptClassV1::PrimitiveDeclaredComponent {
+            map: DerivedStratumMapIdV1::from_bytes([31; 32]),
+            constructibility: DerivedConstructibilityDeclarationIdV1::from_bytes([32; 32]),
+        });
+        assert_eq!(primitive.as_slice().len(), 65);
+        assert_eq!(primitive.as_slice()[0], 1);
+        assert!(primitive.as_slice()[1..33].iter().all(|byte| *byte == 31));
+        assert!(primitive.as_slice()[33..65].iter().all(|byte| *byte == 32));
+    }
+
+    #[test]
+    fn stratum_component_admission_binds_exact_selectors_and_replays() {
+        with_cx(false, |cx| {
+            let source = admitted_fixed_resolution_geometry(70, 80, 90, 1, cx);
+            let target = admitted_fixed_resolution_geometry(73, 83, 93, 2, cx);
+            let source_object = sole_stratum_object(&source);
+            let target_object = sole_stratum_object(&target);
+            let ir = stratum_component_ir(source_object, target_object, 110);
+            let first = admit_derived_stratum_morphism_v1(&ir, &source, &target, cx)
+                .expect("valid stratum component");
+            let replay = admit_derived_stratum_morphism_v1(&ir, &source, &target, cx)
+                .expect("deterministic replay");
+
+            assert_eq!(first, replay);
+            assert_eq!(first.source(), source_object);
+            assert_eq!(first.target(), target_object);
+            assert_eq!(
+                first.class(),
+                AdmittedDerivedStratumMorphismClassV1::DeclaredPath
+            );
+            assert_eq!(first.primitive_factors(), &[first.id()]);
+            assert_eq!(
+                first.no_authority_claims(),
+                &[DerivedNoClaimIdV1::from_bytes([112; 32])]
+            );
+            assert_eq!(
+                first.primitive_path(),
+                &[DeclaredStratumMapPrimitiveV1 {
+                    source: source_object,
+                    target: target_object,
+                    map: DerivedStratumMapIdV1::from_bytes([110; 32]),
+                    constructibility: DerivedConstructibilityDeclarationIdV1::from_bytes([111; 32]),
+                }]
+            );
+
+            let changed = admit_stratum_component(&source, &target, 113, cx);
+            assert_ne!(first.id(), changed.id());
+        });
+    }
+
+    #[test]
+    fn stratum_component_admission_rejects_unowned_selectors_and_authority() {
+        with_cx(false, |cx| {
+            let source = admitted_fixed_resolution_geometry(70, 80, 90, 1, cx);
+            let target = admitted_fixed_resolution_geometry(73, 83, 93, 2, cx);
+            let mut ir = stratum_component_ir(
+                sole_stratum_object(&source),
+                sole_stratum_object(&target),
+                120,
+            );
+
+            ir.source.stratification = stratification_id(121);
+            assert!(matches!(
+                admit_derived_stratum_morphism_v1(&ir, &source, &target, cx),
+                Err(DerivedStratumMorphismErrorV1::MissingStratification {
+                    field: "source-stratification"
+                })
+            ));
+
+            ir.source = sole_stratum_object(&source);
+            ir.target.stratum = stratum_id(122);
+            assert!(matches!(
+                admit_derived_stratum_morphism_v1(&ir, &source, &target, cx),
+                Err(DerivedStratumMorphismErrorV1::MissingStratum {
+                    field: "target-stratum"
+                })
+            ));
+
+            ir.target = sole_stratum_object(&target);
+            ir.source.stratum = StratumIdV1::from_bytes([0; 32]);
+            assert!(matches!(
+                admit_derived_stratum_morphism_v1(&ir, &source, &target, cx),
+                Err(DerivedStratumMorphismErrorV1::MissingIdentity {
+                    field: "source-stratum"
+                })
+            ));
+
+            ir.source = sole_stratum_object(&source);
+            ir.kind = DerivedStratumMorphismKindV1::DeclaredComponent {
+                map: DerivedStratumMapIdV1::from_bytes([0; 32]),
+                constructibility: DerivedConstructibilityDeclarationIdV1::from_bytes([123; 32]),
+            };
+            assert!(matches!(
+                admit_derived_stratum_morphism_v1(&ir, &source, &target, cx),
+                Err(DerivedStratumMorphismErrorV1::MissingIdentity {
+                    field: "stratum-map"
+                })
+            ));
+
+            ir.kind = DerivedStratumMorphismKindV1::DeclaredComponent {
+                map: DerivedStratumMapIdV1::from_bytes([124; 32]),
+                constructibility: DerivedConstructibilityDeclarationIdV1::from_bytes([0; 32]),
+            };
+            assert!(matches!(
+                admit_derived_stratum_morphism_v1(&ir, &source, &target, cx),
+                Err(DerivedStratumMorphismErrorV1::MissingIdentity {
+                    field: "constructibility-declaration"
+                })
+            ));
+
+            ir.kind = DerivedStratumMorphismKindV1::DeclaredComponent {
+                map: DerivedStratumMapIdV1::from_bytes([124; 32]),
+                constructibility: DerivedConstructibilityDeclarationIdV1::from_bytes([125; 32]),
+            };
+            ir.authority = DerivedStratumAuthorityBoundaryV1::NoClaim {
+                artifact: DerivedNoClaimIdV1::from_bytes([0; 32]),
+            };
+            assert!(matches!(
+                admit_derived_stratum_morphism_v1(&ir, &source, &target, cx),
+                Err(DerivedStratumMorphismErrorV1::MissingIdentity {
+                    field: "no-stratum-map-authority"
+                })
+            ));
+
+            ir.authority = DerivedStratumAuthorityBoundaryV1::IdentityOnly;
+            assert_eq!(
+                admit_derived_stratum_morphism_v1(&ir, &source, &target, cx),
+                Err(DerivedStratumMorphismErrorV1::AuthorityLaundering)
+            );
+        });
+    }
+
+    #[test]
+    fn stratum_composition_requires_the_exact_stratum_within_one_geometry() {
+        with_cx(false, |cx| {
+            let x = admitted_fixed_resolution_geometry(70, 80, 90, 1, cx);
+            let mut middle_ir = fixed_resolution_geometry_ir(73, 83, 93, 2);
+            let first_middle_stratum = middle_ir.stratification.strata[0].id;
+            let second_middle_stratum = stratum_id(150);
+            let mut second = middle_ir.stratification.strata[0].clone();
+            second.id = second_middle_stratum;
+            middle_ir.stratification.strata.push(second);
+            let middle =
+                admit_derived_geometry_v1(middle_ir, DerivedAdmissionBudgetV1::STANDARD, cx)
+                    .expect("valid geometry with two strata");
+            let z = admitted_fixed_resolution_geometry(76, 86, 96, 3, cx);
+            let middle_object = |stratum| DerivedStratumObjectV1 {
+                geometry: middle.id(),
+                stratification: middle.ir().stratification.id,
+                stratum,
+            };
+
+            let f = admit_derived_stratum_morphism_v1(
+                &stratum_component_ir(
+                    sole_stratum_object(&x),
+                    middle_object(first_middle_stratum),
+                    151,
+                ),
+                &x,
+                &middle,
+                cx,
+            )
+            .expect("component into first middle stratum");
+            let exact = admit_derived_stratum_morphism_v1(
+                &stratum_component_ir(
+                    middle_object(first_middle_stratum),
+                    sole_stratum_object(&z),
+                    154,
+                ),
+                &middle,
+                &z,
+                cx,
+            )
+            .expect("component from exact middle stratum");
+            let wrong = admit_derived_stratum_morphism_v1(
+                &stratum_component_ir(
+                    middle_object(second_middle_stratum),
+                    sole_stratum_object(&z),
+                    154,
+                ),
+                &middle,
+                &z,
+                cx,
+            )
+            .expect("component from other middle stratum");
+
+            assert!(compose_derived_stratum_morphisms_v1(&f, &exact, cx).is_ok());
+            assert_eq!(
+                compose_derived_stratum_morphisms_v1(&f, &wrong, cx),
+                Err(DerivedStratumMorphismErrorV1::CompositionEndpointMismatch)
+            );
+            assert_ne!(exact.id(), wrong.id());
+        });
+    }
+
+    #[test]
+    fn stratum_components_allow_different_finite_dimensions() {
+        with_cx(false, |cx| {
+            let source = admitted_fixed_resolution_geometry(70, 80, 90, 1, cx);
+            let mut target_ir = fixed_resolution_geometry_ir(73, 83, 93, 2);
+            target_ir.stratification.strata[0].dimension = 2;
+            let target =
+                admit_derived_geometry_v1(target_ir, DerivedAdmissionBudgetV1::STANDARD, cx)
+                    .expect("valid dimension-two target stratum");
+
+            assert_eq!(source.ir().stratification.strata[0].dimension, 1);
+            assert_eq!(target.ir().stratification.strata[0].dimension, 2);
+            assert!(
+                admit_derived_stratum_morphism_v1(
+                    &stratum_component_ir(
+                        sole_stratum_object(&source),
+                        sole_stratum_object(&target),
+                        160,
+                    ),
+                    &source,
+                    &target,
+                    cx,
+                )
+                .is_ok()
+            );
+
+            let mut incompatible_ir = fixed_resolution_geometry_ir(76, 86, 96, 3);
+            incompatible_ir.model_version = DerivedModelVersionIdV1::from_bytes([5; 32]);
+            let incompatible =
+                admit_derived_geometry_v1(incompatible_ir, DerivedAdmissionBudgetV1::STANDARD, cx)
+                    .expect("valid independently versioned target");
+            assert_eq!(
+                admit_derived_stratum_morphism_v1(
+                    &stratum_component_ir(
+                        sole_stratum_object(&source),
+                        sole_stratum_object(&incompatible),
+                        163,
+                    ),
+                    &source,
+                    &incompatible,
+                    cx,
+                ),
+                Err(DerivedStratumMorphismErrorV1::ModelVersionMismatch)
+            );
+        });
+    }
+
+    #[test]
+    fn stratum_identity_is_neutral_and_composition_is_associative() {
+        with_cx(false, |cx| {
+            let x = admitted_fixed_resolution_geometry(70, 80, 90, 1, cx);
+            let y = admitted_fixed_resolution_geometry(73, 83, 93, 2, cx);
+            let z = admitted_fixed_resolution_geometry(76, 86, 96, 3, cx);
+            let w = admitted_fixed_resolution_geometry(79, 89, 99, 4, cx);
+            let f = admit_stratum_component(&x, &y, 130, cx);
+            let g = admit_stratum_component(&y, &z, 133, cx);
+            let h = admit_stratum_component(&z, &w, 136, cx);
+            let identity_x =
+                identity_derived_stratum_morphism_v1(&x, sole_stratum_object(&x).stratum, cx)
+                    .expect("source identity");
+            let identity_w =
+                identity_derived_stratum_morphism_v1(&w, sole_stratum_object(&w).stratum, cx)
+                    .expect("target identity");
+
+            assert_eq!(
+                compose_derived_stratum_morphisms_v1(&identity_x, &f, cx).expect("left identity"),
+                f
+            );
+            assert_eq!(
+                compose_derived_stratum_morphisms_v1(&h, &identity_w, cx).expect("right identity"),
+                h
+            );
+
+            let fg = compose_derived_stratum_morphisms_v1(&f, &g, cx).expect("f then g");
+            let gh = compose_derived_stratum_morphisms_v1(&g, &h, cx).expect("g then h");
+            let left = compose_derived_stratum_morphisms_v1(&fg, &h, cx).expect("(fg) then h");
+            let right = compose_derived_stratum_morphisms_v1(&f, &gh, cx).expect("f then (gh)");
+            assert_eq!(left, right);
+            assert_eq!(left.primitive_path().len(), 3);
+            assert_eq!(left.primitive_factors(), &[f.id(), g.id(), h.id()]);
+            assert_eq!(left.no_authority_claims().len(), 3);
+
+            assert_eq!(
+                compose_derived_stratum_morphisms_v1(&f, &h, cx),
+                Err(DerivedStratumMorphismErrorV1::CompositionEndpointMismatch)
+            );
+
+            let a = admit_stratum_component(&x, &x, 170, cx);
+            let b = admit_stratum_component(&x, &x, 173, cx);
+            let ab = compose_derived_stratum_morphisms_v1(&a, &b, cx).expect("a then b");
+            let ba = compose_derived_stratum_morphisms_v1(&b, &a, cx).expect("b then a");
+            assert_ne!(ab.id(), ba.id());
+            assert_eq!(ab.primitive_factors(), &[a.id(), b.id()]);
+        });
+    }
+
+    #[test]
+    fn stratum_identity_rejects_changed_objects_and_cancelled_work_publishes_nothing() {
+        let (source, target, admitted) = with_cx(false, |cx| {
+            let source = admitted_fixed_resolution_geometry(70, 80, 90, 1, cx);
+            let target = admitted_fixed_resolution_geometry(73, 83, 93, 2, cx);
+            let admitted = admit_stratum_component(&source, &target, 140, cx);
+            (source, target, admitted)
+        });
+        with_cx(false, |cx| {
+            let object = sole_stratum_object(&source);
+            let wrong_boundary = DerivedStratumMorphismIrV1 {
+                schema_version: DERIVED_STRATUM_MORPHISM_SCHEMA_VERSION_V1,
+                source: object,
+                target: object,
+                kind: DerivedStratumMorphismKindV1::Identity,
+                authority: DerivedStratumAuthorityBoundaryV1::NoClaim {
+                    artifact: DerivedNoClaimIdV1::from_bytes([141; 32]),
+                },
+            };
+            assert_eq!(
+                admit_derived_stratum_morphism_v1(&wrong_boundary, &source, &source, cx),
+                Err(DerivedStratumMorphismErrorV1::InvalidIdentity)
+            );
+
+            let ir = DerivedStratumMorphismIrV1 {
+                schema_version: DERIVED_STRATUM_MORPHISM_SCHEMA_VERSION_V1,
+                source: sole_stratum_object(&source),
+                target: sole_stratum_object(&target),
+                kind: DerivedStratumMorphismKindV1::Identity,
+                authority: DerivedStratumAuthorityBoundaryV1::IdentityOnly,
+            };
+            assert_eq!(
+                admit_derived_stratum_morphism_v1(&ir, &source, &target, cx),
+                Err(DerivedStratumMorphismErrorV1::InvalidIdentity)
+            );
+        });
+        with_cx(true, |cx| {
+            let ir = stratum_component_ir(
+                sole_stratum_object(&source),
+                sole_stratum_object(&target),
+                143,
+            );
+            assert!(matches!(
+                admit_derived_stratum_morphism_v1(&ir, &source, &target, cx),
+                Err(DerivedStratumMorphismErrorV1::Cancelled {
+                    stage: "stratum-admission-entry"
+                })
+            ));
+            assert!(matches!(
+                compose_derived_stratum_morphisms_v1(&admitted, &admitted, cx),
+                Err(DerivedStratumMorphismErrorV1::Cancelled {
+                    stage: "stratum-composition-entry"
+                })
+            ));
+        });
     }
 
     #[test]
