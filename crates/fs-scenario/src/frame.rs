@@ -412,18 +412,11 @@ impl FrameTree {
         Ok(reaches_cycle)
     }
 
-    /// Structural validation: nonempty unique names, unique nonzero ids,
-    /// resolvable acyclic parents, unit axes, and angle-schedule dimensions.
+    /// Run admitted structural validation after whole-scenario preflight.
     ///
-    /// Identity lookup is indexed once and cycle detection is a tri-color
-    /// parent walk, avoiding the former repeated linear scans per chain.
-    pub fn check(&self, out: &mut Vec<Violation>) {
-        let mut checkpoint = |_: &'static str| Ok(());
-        if let Err(error) = self.check_with_checkpoint(out, &mut checkpoint) {
-            out.push(error.into_violation());
-        }
-    }
-
+    /// This remains crate-private so callers cannot bypass
+    /// [`crate::Scenario::validate`] or [`crate::Scenario::validate_with_budget`]
+    /// and launch indexed frame validation without an admitted work plan.
     pub(crate) fn check_with_checkpoint(
         &self,
         out: &mut Vec<Violation>,
@@ -636,7 +629,8 @@ mod validation_internal_tests {
             frames: vec![fixed_frame(1, WORLD)],
         };
         let mut findings = Vec::new();
-        tree.check(&mut findings);
+        tree.check_with_checkpoint(&mut findings, &mut |_| Ok(()))
+            .expect("the admitted fixture validates");
         assert!(findings.is_empty());
     }
 
@@ -721,7 +715,8 @@ mod validation_internal_tests {
                 frames: frames.into(),
             };
             let mut findings = Vec::new();
-            tree.check(&mut findings);
+            tree.check_with_checkpoint(&mut findings, &mut |_| Ok(()))
+                .expect("the admitted fixture validates");
             assert_eq!(
                 findings
                     .iter()

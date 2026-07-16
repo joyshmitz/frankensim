@@ -161,7 +161,9 @@ flagships.
 11. **Indexed structural validation**: frame identity indexes are built once;
     the tri-color parent traversal visits each storage row at most once, and
     follows only uniquely resolved parent ids so duplicate declarations cannot
-    make cycle findings depend on declaration order;
+    make cycle findings depend on declaration order. The frame structural
+    checker is crate-private and runs only after whole-scenario budget/work
+    preflight; there is no public unadmitted `FrameTree::check` escape hatch;
     case/frame/combination/ensemble/contact reference checks use deterministic
     ordered indexes rather than repeated prefix or whole-collection scans.
 12. **Semantic preflight before validation**: top-level collection caps precede

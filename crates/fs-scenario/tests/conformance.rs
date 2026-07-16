@@ -2153,8 +2153,13 @@ fn sc_011_frame_graph_matches_small_exhaustive_oracle() {
             tree.add(fixed_validation_frame(id, parents[index]));
         }
 
-        let mut actual = Vec::new();
-        tree.check(&mut actual);
+        let mut scenario = Scenario::new("frame-oracle", 0, Environment::earth_lab());
+        scenario.frames = tree;
+        let actual = with_validation_cx(false, |cx| {
+            scenario
+                .validate_with_budget(ValidationBudget::default(), cx)
+                .expect("the small frame oracle is admitted")
+        });
         let actual_codes = actual
             .iter()
             .map(|violation| violation.code)
