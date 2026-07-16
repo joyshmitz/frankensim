@@ -3498,7 +3498,8 @@ pub(crate) fn record_run_with_protocol(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Staleness {
     /// At least one semantically valid row from this exact executable is no
-    /// more than [`STALENESS_MAX_AGE_NS`] old.
+    /// more than [`STALENESS_MAX_AGE_NS`] old, and every matching retained
+    /// production row authenticates.
     Fresh,
     /// Matching current-build evidence exists, but its newest successful
     /// operation is older than [`STALENESS_MAX_AGE_NS`].

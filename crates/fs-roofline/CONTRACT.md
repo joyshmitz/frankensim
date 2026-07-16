@@ -227,7 +227,12 @@ crates plus `std`.
   external battery actively proves public custom-registry rows cannot acquire
   Freshness and retains the now-vacuous historical attacks as ignored source.
   Pre-manifest/dependency-receipt rows cannot prove current membership and are
-  retired the same way; identical honest reruns stay `Fresh`.
+  retired the same way; identical honest reruns stay `Fresh` while every
+  matching retained operation remains intact. A history-level staleness query
+  remains `CorruptEvidence` when any matching production operation is corrupt;
+  an honest sibling cannot launder that incident. Exact typed revalidation is
+  operation-scoped, so a distinct intact `RecordedProductionRun` can still
+  mint its own `FreshProductionEvidence` without covering the damaged receipt.
   `ProductionRun::record` now returns an opaque `RecordedProductionRun`, not a
   bare operation id. Its exact-operation revalidator authenticates this one
   op and every manifest member before sampling current trust roots; a different

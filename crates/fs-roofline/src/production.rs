@@ -3144,10 +3144,26 @@ mod tests {
             0,
             "corrupt exact evidence fails before consulting live authority"
         );
+        let sibling_fresh = other
+            .recorded
+            .revalidate_at_for_test(
+                &other.ledger,
+                &current,
+                other.recorded_at + 1,
+                other.dependency,
+            )
+            .expect("the sibling exact operation remains independently revalidatable");
+        assert_eq!(sibling_fresh.op_id(), other.recorded.op_id());
+        assert_eq!(sibling_fresh.run_receipt(), other.recorded.run_receipt());
+        assert_eq!(
+            authority.calls.get(),
+            1,
+            "only the exact sibling revalidation consults live authority"
+        );
         assert_eq!(
             manifest_probe(&other, &other.kernels[0].0, &other.kernels[0].1),
-            Staleness::Fresh,
-            "the sibling honest operation remains fresh but cannot cover the damaged receipt"
+            Staleness::CorruptEvidence,
+            "the history-level diagnostic remains fail-closed over corrupt matching history"
         );
         cleanup_db(&db);
     }
