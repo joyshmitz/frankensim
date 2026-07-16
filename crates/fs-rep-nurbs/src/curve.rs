@@ -1580,12 +1580,84 @@ impl<S: Scalar, const DIM: usize> NurbsCurve<S, DIM> {
         self.admit()?.eval_homogeneous(t)
     }
 
+    /// Validate this owning curve and evaluate its homogeneous point with one
+    /// cancellation gate.
+    ///
+    /// Dimension and checked structural-validation work refusals precede the
+    /// first checkpoint. Cancellation then spans structural admission and the
+    /// same admitted evaluation pipeline as
+    /// [`AdmittedNurbsCurve::eval_homogeneous_with_cx`]. No partial admitted
+    /// authority or homogeneous representation is published. This primitive
+    /// does not consume the `Cx` budget or finalize its executor scope.
+    ///
+    /// # Errors
+    /// Returns the synchronous owning evaluator's structure, parameter, work,
+    /// allocation, and finite-arithmetic refusals when they win before an
+    /// observed cancellation.
+    pub fn eval_homogeneous_with_cx(
+        &self,
+        t: S,
+        cx: &Cx<'_>,
+    ) -> Result<CurveHomogeneousEvaluationRun<S>, NurbsError> {
+        let mut should_cancel = || cx.checkpoint().is_err();
+        self.eval_homogeneous_with_poll(t, &mut should_cancel)
+    }
+
+    fn eval_homogeneous_with_poll(
+        &self,
+        t: S,
+        should_cancel: &mut impl FnMut() -> bool,
+    ) -> Result<CurveHomogeneousEvaluationRun<S>, NurbsError> {
+        match self.validate_live_structure_with_poll(should_cancel)? {
+            CurveWorkRun::Complete(()) => self
+                .admitted_after_validation()
+                .eval_homogeneous_with_poll(t, should_cancel),
+            CurveWorkRun::Cancelled => Ok(CurveHomogeneousEvaluationRun::Cancelled),
+        }
+    }
+
     /// Cartesian evaluation.
     ///
     /// # Errors
     /// [`NurbsError::Domain`] outside the domain.
     pub fn eval(&self, t: S) -> Result<[S; DIM], NurbsError> {
         self.admit()?.eval(t)
+    }
+
+    /// Validate this owning curve and evaluate its Cartesian point with one
+    /// cancellation gate.
+    ///
+    /// Dimension and checked structural-validation work refusals precede the
+    /// first checkpoint. Cancellation then spans structural admission and the
+    /// same admitted evaluation pipeline as
+    /// [`AdmittedNurbsCurve::eval_with_cx`]. No partial admitted authority or
+    /// Cartesian point is published. This primitive does not consume the `Cx`
+    /// budget or finalize its executor scope.
+    ///
+    /// # Errors
+    /// Returns the synchronous owning evaluator's structure, parameter, work,
+    /// allocation, weight, and finite-arithmetic refusals when they win before
+    /// an observed cancellation.
+    pub fn eval_with_cx(
+        &self,
+        t: S,
+        cx: &Cx<'_>,
+    ) -> Result<CurveEvaluationRun<S, DIM>, NurbsError> {
+        let mut should_cancel = || cx.checkpoint().is_err();
+        self.eval_with_poll(t, &mut should_cancel)
+    }
+
+    fn eval_with_poll(
+        &self,
+        t: S,
+        should_cancel: &mut impl FnMut() -> bool,
+    ) -> Result<CurveEvaluationRun<S, DIM>, NurbsError> {
+        match self.validate_live_structure_with_poll(should_cancel)? {
+            CurveWorkRun::Complete(()) => self
+                .admitted_after_validation()
+                .eval_with_poll(t, should_cancel),
+            CurveWorkRun::Cancelled => Ok(CurveEvaluationRun::Cancelled),
+        }
     }
 }
 
@@ -4338,6 +4410,10 @@ mod tests {
         let admitted = curve.admit().expect("admitted line");
         with_curve_cx(true, |cx| {
             assert!(matches!(
+                curve.eval_with_cx(0.25, cx).expect("valid owning request"),
+                CurveEvaluationRun::Cancelled
+            ));
+            assert!(matches!(
                 admitted.eval_with_cx(0.25, cx).expect("valid request"),
                 CurveEvaluationRun::Cancelled
             ));
@@ -4348,11 +4424,56 @@ mod tests {
         });
         with_curve_cx(false, |cx| {
             assert_eq!(
+                curve.eval_with_cx(0.25, cx).expect("active owning context"),
+                CurveEvaluationRun::Complete {
+                    point: curve.eval(0.25).expect("legacy owning evaluation"),
+                }
+            );
+            assert_eq!(
                 admitted.eval_with_cx(0.25, cx).expect("active context"),
                 CurveEvaluationRun::Complete {
                     point: admitted.eval(0.25).expect("legacy evaluation"),
                 }
             );
+        });
+
+        let mut admission_polls = 0usize;
+        let mut observe_admission = || {
+            admission_polls += 1;
+            false
+        };
+        assert!(matches!(
+            curve
+                .validate_live_structure_with_poll(&mut observe_admission)
+                .expect("healthy source admission"),
+            CurveWorkRun::Complete(())
+        ));
+        let mut owning_polls = 0usize;
+        let mut cancel_at_first_evaluation_poll = || {
+            owning_polls += 1;
+            owning_polls == admission_polls + 1
+        };
+        assert_eq!(
+            curve
+                .eval_with_poll(0.25, &mut cancel_at_first_evaluation_poll)
+                .expect("owning evaluation cancellation"),
+            CurveEvaluationRun::Cancelled
+        );
+        assert_eq!(owning_polls, admission_polls + 1);
+
+        let invalid_dimension = NurbsCurve::<f64, 4> {
+            knots: KnotVector::new(vec![0.0, 0.0, 1.0, 1.0], 1).expect("line knots"),
+            cpw: vec![[0.0, 0.0, 0.0, 1.0]; 2],
+        };
+        with_curve_cx(true, |cx| {
+            assert!(matches!(
+                invalid_dimension.eval_with_cx(0.25, cx),
+                Err(NurbsError::Structure { .. })
+            ));
+            assert!(matches!(
+                invalid_dimension.eval_homogeneous_with_cx(0.25, cx),
+                Err(NurbsError::Structure { .. })
+            ));
         });
     }
 
@@ -4361,6 +4482,12 @@ mod tests {
         let curve = line_curve();
         let admitted = curve.admit().expect("admitted line");
         with_curve_cx(true, |cx| {
+            assert_eq!(
+                curve
+                    .eval_homogeneous_with_cx(0.25, cx)
+                    .expect("valid owning homogeneous request"),
+                CurveHomogeneousEvaluationRun::Cancelled
+            );
             assert_eq!(
                 admitted
                     .eval_homogeneous_with_cx(0.25, cx)
@@ -4374,6 +4501,16 @@ mod tests {
         });
         with_curve_cx(false, |cx| {
             assert_eq!(
+                curve
+                    .eval_homogeneous_with_cx(0.25, cx)
+                    .expect("active owning homogeneous context"),
+                CurveHomogeneousEvaluationRun::Complete {
+                    homogeneous: curve
+                        .eval_homogeneous(0.25)
+                        .expect("legacy owning homogeneous evaluation"),
+                }
+            );
+            assert_eq!(
                 admitted
                     .eval_homogeneous_with_cx(0.25, cx)
                     .expect("active homogeneous context"),
@@ -4384,6 +4521,30 @@ mod tests {
                 }
             );
         });
+
+        let mut admission_polls = 0usize;
+        let mut observe_admission = || {
+            admission_polls += 1;
+            false
+        };
+        assert!(matches!(
+            curve
+                .validate_live_structure_with_poll(&mut observe_admission)
+                .expect("healthy source admission"),
+            CurveWorkRun::Complete(())
+        ));
+        let mut owning_polls = 0usize;
+        let mut cancel_at_first_evaluation_poll = || {
+            owning_polls += 1;
+            owning_polls == admission_polls + 1
+        };
+        assert_eq!(
+            curve
+                .eval_homogeneous_with_poll(0.25, &mut cancel_at_first_evaluation_poll)
+                .expect("owning homogeneous evaluation cancellation"),
+            CurveHomogeneousEvaluationRun::Cancelled
+        );
+        assert_eq!(owning_polls, admission_polls + 1);
 
         let exact = NurbsCurve::<Rat, 1>::new(
             KnotVector::new(vec![Rat::int(0), Rat::int(0), Rat::int(1), Rat::int(1)], 1)

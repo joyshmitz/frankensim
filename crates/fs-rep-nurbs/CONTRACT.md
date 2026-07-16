@@ -70,12 +70,14 @@ fs-iga (geometry basis = analysis basis), fs-render NURBS tracing
   validated immutable snapshot and evaluation consumes its admitted knot view
   without a second structural scan. Owning `admit_with_cx` returns
   `CurveAdmissionRun` and gates the
-  lifetime-bound authority after knot and control validation. Its admitted-only
-  `eval_homogeneous_with_cx` returns transactional
-  `CurveHomogeneousEvaluationRun` state and never publishes a partial finite
-  homogeneous representation. Its admitted-only `eval_with_cx` returns
-  transactional `CurveEvaluationRun` state and never publishes a partial
-  Cartesian point.
+  lifetime-bound authority after knot and control validation. Its owning and
+  admitted `eval_homogeneous_with_cx` entry points return transactional
+  `CurveHomogeneousEvaluationRun` state and never publish a partial finite
+  homogeneous representation. Its owning and admitted `eval_with_cx` entry
+  points return transactional `CurveEvaluationRun` state and never publish a
+  partial Cartesian point. Owning evaluation carries one gate through source
+  admission and the admitted evaluation; admitted evaluation avoids repeating
+  structural validation.
   Its f64-only owning `derivatives_with_cx` carries one gate through structural
   admission and the admitted derivative pipeline. The admitted-only
   `derivatives_with_cx` avoids that source rescan. Both return transactional
@@ -319,20 +321,24 @@ individual scalar copies, and destruction are non-preemptible. The primitive
 performs no source revalidation and claims no wall-time bound, exact caller-budget
 consumption, executor drain/finalize, or resumability. Trait `Clone` remains
 available but does not acquire these measured-path claims.
-`AdmittedNurbsCurve::eval_homogeneous_with_cx` carries one gate through admitted
-basis construction, polls the four-lane homogeneous accumulation every 64
-logical scalar updates, checks each accumulated component for finiteness, and
-gates final homogeneous publication. `CurveHomogeneousEvaluationRun::Cancelled`
-contains no partial representation. This path does not divide by the weight and
-therefore makes no denominator-admissibility, Cartesian-finiteness, regularity,
-topology, or geometric-certificate claim. Generic scalar operations remain
-non-preemptible; owning curve admission, exact caller-budget consumption,
-executor drain/finalize, and resumability remain outside the primitive claim.
-`AdmittedNurbsCurve::eval_with_cx` consumes the same internal accumulation
-directly, then preserves denominator/projection checks and its existing final
-Cartesian publication gate without adding the homogeneous publication
-checkpoint. `CurveEvaluationRun::Cancelled` contains no partial point; owning
-curve admission and caller-owned affine budget/drain/finalize semantics remain
+Owning `NurbsCurve::eval_homogeneous_with_cx` carries one gate through bounded
+source validation and the admitted homogeneous pipeline; the admitted entry
+point avoids repeating structural validation. Both continue that gate through
+admitted basis construction, poll the four-lane homogeneous accumulation every
+64 logical scalar updates, check each accumulated component for finiteness,
+and gate final homogeneous publication.
+`CurveHomogeneousEvaluationRun::Cancelled` contains no partial representation.
+This path does not divide by the weight and therefore makes no
+denominator-admissibility, Cartesian-finiteness, regularity, topology, or
+geometric-certificate claim. Generic scalar operations remain non-preemptible;
+exact caller-budget consumption, executor drain/finalize, and resumability
+remain outside the primitive claim.
+Owning `NurbsCurve::eval_with_cx` likewise spans source validation and the
+admitted Cartesian pipeline; the admitted entry point consumes the same
+internal accumulation directly. Both preserve denominator/projection checks
+and the existing final Cartesian publication gate without adding the
+homogeneous publication checkpoint. `CurveEvaluationRun::Cancelled` contains
+no partial point; caller-owned affine budget/drain/finalize semantics remain
 outside this primitive claim.
 `NurbsCurve::try_clone_with_cx` preserves count-derived copy-work and 64 MiB
 retained-output refusal precedence, then carries one fixed-stride gate through
