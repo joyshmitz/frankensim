@@ -5,8 +5,9 @@
 
 use fs_ascent::auglag::ConstrainedProblem;
 use fs_ascent::{Packing, StopReason, StopRule, Study, augmented_lagrangian};
-use fs_opt::{ConstraintKind, Manifold, NodeId, ProblemBuilder, Sense};
+use fs_opt::{ConstraintKind, EvalLimit, Manifold, NodeId, ProblemBuilder, Sense};
 use fs_qty::Dims;
+use std::num::NonZeroU64;
 
 fn verdict(name: &str, pass: bool, details: &str) {
     println!("{{\"test\":\"{name}\",\"pass\":{pass},\"details\":\"{details}\"}}");
@@ -27,12 +28,12 @@ fn affine(b: &mut ProblemBuilder, x: NodeId, a: f64, off: f64) -> NodeId {
 /// minimize 0.6·v₀ + 0.8·v₁ + (z₀−1)² + (z₁+2)² — linear on the
 /// sphere (optimum v = −(0.6, 0.8, 0)) plus a shifted bowl.
 fn product_problem() -> (fs_opt::Problem, Vec<f64>) {
-    product_problem_budgeted(0)
+    product_problem_budgeted(EvalLimit::Unlimited)
 }
 
 /// [`product_problem`] with a P4 budget attached at BUILD time — the
 /// sealed `Problem` no longer exposes a mutable budget field.
-fn product_problem_budgeted(max_evals: u64) -> (fs_opt::Problem, Vec<f64>) {
+fn product_problem_budgeted(eval_limit: EvalLimit) -> (fs_opt::Problem, Vec<f64>) {
     let mut b = ProblemBuilder::new();
     let v = b
         .var("v", Manifold::Sphere { ambient: 3 }, D0)
@@ -54,7 +55,7 @@ fn product_problem_budgeted(max_evals: u64) -> (fs_opt::Problem, Vec<f64>) {
     let bowl = b.add(q0, q1).expect("bowl");
     let total = b.add(lin, bowl).expect("total");
     b.objective(total, Sense::Minimize, 1.0).expect("objective");
-    b.set_budget(max_evals);
+    b.set_eval_limit(eval_limit);
     let problem = b.finish();
     let x0 = vec![1.0, 0.0, 0.0, 0.0, 0.0];
     (problem, x0)
@@ -81,7 +82,9 @@ fn runner_product_manifold_packing() {
 
 #[test]
 fn runner_budget_threads_into_stop_algebra() {
-    let (problem, x0) = product_problem_budgeted(50);
+    let (problem, x0) = product_problem_budgeted(EvalLimit::Limited(
+        NonZeroU64::new(50).expect("fixture evaluation limit is nonzero"),
+    ));
     let mut study = Study::new(&problem, &x0, 1e-6, 0.2);
     let rep = study.run(&problem, &StopRule::GradNorm(1e-12), 4000);
     verdict(

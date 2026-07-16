@@ -11,7 +11,7 @@
 //!   reverse mode; documented, deterministic fixed h).
 //! - CONSTRAINTS: `EqZero`/`LeZero` roots route to the constrained
 //!   engines (AL always; IP/SQP by option) through packed adapters.
-//! - BUDGET: `Problem.budget.max_evals` threads into the stop algebra
+//! - BUDGET: `Problem.budget.limit` threads into the stop algebra
 //!   (`StopRule::Budget`) alongside the caller's rules.
 //! - RESUMABLE: [`Study`] is the checkpoint (clone = checkpoint); a
 //!   split run is BITWISE equal to a straight run (house pattern,
@@ -19,7 +19,7 @@
 
 use crate::riemann::{retract, tangent_project};
 use crate::stop::{StopObservation, StopReason, StopRule};
-use fs_opt::{ConstraintKind, Manifold, Problem, Sense, eval};
+use fs_opt::{ConstraintKind, EvalLimit, Manifold, Problem, Sense, eval};
 
 /// One packed variable block.
 #[derive(Debug, Clone)]
@@ -205,13 +205,13 @@ impl Study {
 
     /// Run a segment: projected-gradient steps with retraction until a
     /// stop rule fires, the problem budget runs out, or `max_steps`.
-    /// The problem's own `budget.max_evals` is ALWAYS added to the
+    /// The problem's own `budget.limit` is ALWAYS added to the
     /// caller's rules (P4: budgets are not optional).
     pub fn run(&mut self, problem: &Problem, rule: &StopRule, max_steps: usize) -> StudyReport {
         let mut rules = vec![rule.clone()];
-        if problem.budget().max_evals > 0 {
+        if let EvalLimit::Limited(maximum) = problem.budget().limit {
             rules.push(StopRule::Budget(
-                usize::try_from(problem.budget().max_evals).unwrap_or(usize::MAX),
+                usize::try_from(maximum.get()).unwrap_or(usize::MAX),
             ));
         }
         let combined = StopRule::Any(rules);

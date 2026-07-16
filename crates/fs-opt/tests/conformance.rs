@@ -8,11 +8,16 @@
 use asupersync::types::Budget;
 use fs_exec::{CancelGate, Cx, ExecMode, StreamKey};
 use fs_opt::{
-    Class, ConstraintKind, DescentOptions, FiveToSixRule, Manifold, OptError, OptimizerFamily,
-    ProblemBuilder, ProblemTag, Sense, WireVersion, canonical_v2_migration_target, descend_fn,
-    descend_ir, eval, parse, parse_with_version, problem_hash, serialize,
+    Class, ConstraintKind, DescentOptions, EvalLimit, FiveToSixRule, Manifold, OptError,
+    OptimizerFamily, ProblemBuilder, ProblemTag, Sense, WireVersion, canonical_v2_migration_target,
+    descend_fn, descend_ir, eval, parse, parse_with_version, problem_hash, serialize,
 };
 use fs_qty::Dims;
+use std::num::NonZeroU64;
+
+fn limited(maximum: u64) -> EvalLimit {
+    EvalLimit::Limited(NonZeroU64::new(maximum).expect("fixture evaluation limit is nonzero"))
+}
 
 fn verdict(case: &str, pass: bool, detail: &str) {
     println!(
@@ -313,7 +318,7 @@ fn fixture() -> fs_opt::Problem {
     b.tag(ProblemTag::ChanceConstrained { prob: 0.99 })
         .expect("tag");
     b.tag(ProblemTag::MultiFidelity { levels: 3 }).expect("tag");
-    b.set_budget(10_000);
+    b.set_eval_limit(limited(10_000));
     b.finish()
 }
 
@@ -592,7 +597,7 @@ fn opt_005_riemannian_descent() {
                 lr: 0.3,
                 fd_h: 1e-6,
             },
-            0,
+            EvalLimit::Unlimited,
             cx,
         )
         .expect("sphere descent");
@@ -636,7 +641,7 @@ fn opt_005_riemannian_descent() {
                 lr: 0.25,
                 fd_h: 1e-6,
             },
-            0,
+            EvalLimit::Unlimited,
             cx,
         )
         .expect("so3 descent");
@@ -669,7 +674,7 @@ fn opt_005_riemannian_descent() {
                 lr: 0.15,
                 fd_h: 1e-6,
             },
-            0,
+            EvalLimit::Unlimited,
             cx,
         )
         .expect("stiefel descent");
@@ -701,11 +706,25 @@ fn opt_005_riemannian_descent() {
             ..DescentOptions::default()
         };
         let invalid_manifold = matches!(
-            descend_fn(Manifold::Rn { dim: 0 }, &guarded, &[], one_step, 0, cx),
+            descend_fn(
+                Manifold::Rn { dim: 0 },
+                &guarded,
+                &[],
+                one_step,
+                EvalLimit::Unlimited,
+                cx,
+            ),
             Err(OptError::ManifoldInvalid { .. })
         );
         let invalid_point = matches!(
-            descend_fn(Manifold::Rn { dim: 2 }, &guarded, &[0.0], one_step, 0, cx),
+            descend_fn(
+                Manifold::Rn { dim: 2 },
+                &guarded,
+                &[0.0],
+                one_step,
+                EvalLimit::Unlimited,
+                cx,
+            ),
             Err(OptError::BindingLen {
                 var: 0,
                 expected: 2,
@@ -742,7 +761,7 @@ fn opt_005_riemannian_descent() {
 #[test]
 fn opt_006_budget_and_cancellation() {
     with_cx(|cx| {
-        let build = |max_evals: u64| {
+        let build = |eval_limit: EvalLimit| {
             let mut b = ProblemBuilder::new();
             let v = b
                 .var("x", Manifold::Rn { dim: 4 }, Dims::NONE)
@@ -750,10 +769,10 @@ fn opt_006_budget_and_cancellation() {
             let r = b.var_ref(v).expect("r");
             let n = b.norm_sq(r).expect("n");
             b.objective(n, Sense::Minimize, 1.0).expect("obj");
-            b.set_budget(max_evals);
+            b.set_eval_limit(eval_limit);
             b.finish()
         };
-        let p = build(50);
+        let p = build(limited(50));
         let rep = descend_ir(&p, &[1.0, -2.0, 0.5, 3.0], DescentOptions::default(), cx)
             .expect("budgeted descent");
         let receipt = rep.budget_stopped && rep.evals <= 50 && rep.f_final < rep.f0;
@@ -771,15 +790,29 @@ fn opt_006_budget_and_cancellation() {
             calls3.set(calls3.get() + 1);
             x[0] * x[0]
         };
-        let cap3 = descend_fn(Manifold::Rn { dim: 1 }, &f3, &[1.0], one_step, 3, cx)
-            .expect("cap-3 receipt");
+        let cap3 = descend_fn(
+            Manifold::Rn { dim: 1 },
+            &f3,
+            &[1.0],
+            one_step,
+            limited(3),
+            cx,
+        )
+        .expect("cap-3 receipt");
         let calls4 = std::cell::Cell::new(0u64);
         let f4 = |x: &[f64]| {
             calls4.set(calls4.get() + 1);
             x[0] * x[0]
         };
-        let cap4 = descend_fn(Manifold::Rn { dim: 1 }, &f4, &[1.0], one_step, 4, cx)
-            .expect("cap-4 descent");
+        let cap4 = descend_fn(
+            Manifold::Rn { dim: 1 },
+            &f4,
+            &[1.0],
+            one_step,
+            limited(4),
+            cx,
+        )
+        .expect("cap-4 descent");
         let cap_edges = cap3.budget_stopped
             && cap3.steps_taken == 0
             && cap3.evals == 1
@@ -798,15 +831,29 @@ fn opt_006_budget_and_cancellation() {
             calls5.set(calls5.get() + 1);
             x.iter().map(|value| value * value).sum::<f64>()
         };
-        let cap5 = descend_fn(Manifold::Rn { dim: 2 }, &f5, &[1.0, -1.0], one_step, 5, cx)
-            .expect("cap-5 atomic receipt");
+        let cap5 = descend_fn(
+            Manifold::Rn { dim: 2 },
+            &f5,
+            &[1.0, -1.0],
+            one_step,
+            limited(5),
+            cx,
+        )
+        .expect("cap-5 atomic receipt");
         let calls6 = std::cell::Cell::new(0u64);
         let f6 = |x: &[f64]| {
             calls6.set(calls6.get() + 1);
             x.iter().map(|value| value * value).sum::<f64>()
         };
-        let cap6 = descend_fn(Manifold::Rn { dim: 2 }, &f6, &[1.0, -1.0], one_step, 6, cx)
-            .expect("cap-6 atomic descent");
+        let cap6 = descend_fn(
+            Manifold::Rn { dim: 2 },
+            &f6,
+            &[1.0, -1.0],
+            one_step,
+            limited(6),
+            cx,
+        )
+        .expect("cap-6 atomic descent");
         let atomic_edges = cap5.budget_stopped
             && cap5.steps_taken == 0
             && cap5.evals == 1
@@ -819,7 +866,7 @@ fn opt_006_budget_and_cancellation() {
         // The first IR objective call is f0 inside the leaf-gated,
         // counted descent seam. A cap of one therefore stays exactly
         // at one and returns the unchanged valid point.
-        let cap1_problem = build(1);
+        let cap1_problem = build(limited(1));
         let cap1 = descend_ir(
             &cap1_problem,
             &[1.0, -2.0, 0.5, 3.0],
@@ -832,7 +879,7 @@ fn opt_006_budget_and_cancellation() {
             && cap1.evals == 1
             && cap1.f_final.to_bits() == cap1.f0.to_bits();
 
-        let unlimited = build(0);
+        let unlimited = build(EvalLimit::Unlimited);
         let rep2 = descend_ir(
             &unlimited,
             &[1.0, -2.0, 0.5, 3.0],

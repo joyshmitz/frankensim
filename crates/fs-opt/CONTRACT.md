@@ -116,11 +116,17 @@ structure; FLUX/UQ execute it.
   (multi-fidelity, chance-constrained, bilevel via typed
   `BilevelRef`: `Semantic(ProblemSemanticId)` full-width or
   `LegacyFnv(LegacyProblemHash)` QUARANTINED — never interchangeable,
-  never widened), `EvalBudget` (P4, enforced by consumers).
+  never widened), `EvalBudget` (P4, enforced by consumers). The budget stores
+  `EvalLimit::Unlimited` or `EvalLimit::Limited(NonZeroU64)`; neither the
+  builder nor the raw descent API accepts a scalar zero sentinel.
 - Serialization: `serialize` writes the canonical six-base `fsopt v3`
   line-based text form and `parse` round-trips it BITWISE (floats travel as
   bit patterns); `serialize_with_id` additionally mints the artifact's
-  `WireContentId`. In v3, `tag bilevel <64-hex>` carries a semantic id and
+  `WireContentId`. The v1-v3 wire grammar deliberately retains its numeric
+  `budget 0|N` field for byte and identity stability: only the private wire
+  adapter maps `0` to `Unlimited` and positive values to `Limited`; live
+  callers cannot use that compatibility sentinel. In v3,
+  `tag bilevel <64-hex>` carries a semantic id and
   `tag bilevel_legacy <16-hex>` keeps a quarantined legacy identity
   EXPLICIT. v2 input (`tag bilevel <16-hex>`) remains readable with the
   identity quarantined in the type; the v2 → v3 step is a pure
@@ -260,7 +266,9 @@ structure; FLUX/UQ execute it.
    and `x0` lengths refuse before the objective closure is called;
    cancellation returns the teaching error; PDE/stochastic nodes name
    their executor when asked
-   to evaluate (opt-005/006).
+   to evaluate. Typed unlimited/positive limits round-trip through the
+   unchanged numeric v1/v2/v3 grammar at `0`, `1`, and `u64::MAX`
+   (opt-005/006 plus focused serializer unit tests).
 7. G3 unit rescaling: the live `descend_fn` step is equivariant when a
    one-dimensional quadratic's start, target, and finite-difference step are
    coherently rescaled by a nonidentity power of two. The final coordinate
@@ -338,7 +346,8 @@ terminal evaluation, and report publication. Cancellation returns
 `OptError::Cancelled` without publishing a partial report. Budget
 exhaustion is a RECEIPT (`budget_stopped` in the report), not an error;
 the iterate remains valid, no partial gradient is spent, and `evals`
-never exceeds the positive cap (P4).
+never exceeds a `Limited` positive cap (P4). `Unlimited` installs no
+evaluation-count stop rule; it is an explicit variant, not a numeric sentinel.
 
 Game admission polls before proportional scans, during bounded information,
 strategy-dependency, and composition traversal, and at identity publication.

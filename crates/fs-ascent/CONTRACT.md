@@ -65,7 +65,8 @@ so converged and stalled are distinguishable outcomes.
   product (per-block riemann ops keep the sphere spherical to 1e-12
   along the whole path), central-difference tangent gradients through
   `fs_opt::eval` (the live IR is evaluation-only — documented),
-  `Problem.budget.max_evals` threads into the stop algebra with
+  `Problem.budget.limit` threads into the stop algebra as explicit
+  `Unlimited` or `Limited(NonZeroU64)`, with
   CORRECT attribution (`StopReason::Budget`, not a composite shrug),
   constraints route to AL/IP/SQP through packed FD adapters, and
   studies are RESUMABLE (clone = checkpoint; split runs bitwise equal

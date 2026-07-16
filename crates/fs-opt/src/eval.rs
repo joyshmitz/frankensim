@@ -7,7 +7,8 @@
 
 use crate::admission::AdmissionCaps;
 use crate::ir::{
-    Expr, Manifold, NodeId, ObjectiveEvalSite, OptError, ProbeDirection, Problem, Shape, VarId,
+    EvalLimit, Expr, Manifold, NodeId, ObjectiveEvalSite, OptError, ProbeDirection, Problem, Shape,
+    VarId,
 };
 use fs_exec::Cx;
 
@@ -776,7 +777,7 @@ pub struct DescentReport {
 /// Toy Riemannian gradient descent of a closure over ONE manifold
 /// variable: FD gradient through the retraction, fixed step. Proves
 /// retraction metadata is consumable; polls cancellation each step and
-/// honors `max_evals` (0 = unlimited). The manifold, start point
+/// honors an explicit [`EvalLimit`]. The manifold, start point
 /// (length AND finite components), and step policy (`fd_h`/`lr`
 /// finite, positive) are leaf-gated BEFORE any descent arithmetic.
 /// With an unwind-capable panic strategy, an ordinary raw-objective
@@ -796,7 +797,7 @@ pub fn descend_fn(
     f: &dyn Fn(&[f64]) -> f64,
     x0: &[f64],
     opts: DescentOptions,
-    max_evals: u64,
+    eval_limit: EvalLimit,
     cx: &Cx<'_>,
 ) -> Result<DescentReport, OptError> {
     let evaluation = std::cell::Cell::new(0u64);
@@ -812,7 +813,7 @@ pub fn descend_fn(
             })?;
         finite_descent_value(value, "descent objective result")
     };
-    descend_fn_checked(manifold, &checked_f, x0, opts, max_evals, cx)
+    descend_fn_checked(manifold, &checked_f, x0, opts, eval_limit, cx)
 }
 
 fn finite_descent_value(value: f64, what: &'static str) -> Result<f64, OptError> {
@@ -835,7 +836,7 @@ fn descend_fn_checked(
     f: &dyn Fn(&[f64], ObjectiveEvalSite) -> Result<f64, OptError>,
     x0: &[f64],
     opts: DescentOptions,
-    max_evals: u64,
+    eval_limit: EvalLimit,
     cx: &Cx<'_>,
 ) -> Result<DescentReport, OptError> {
     manifold.validate(&AdmissionCaps::default())?;
@@ -899,7 +900,11 @@ fn descend_fn_checked(
         // gradient (two probes per parameter) plus the terminal value
         // before spending the first probe. A one-short cap therefore
         // leaves both x and the evaluation ledger at the prior receipt.
-        if max_evals > 0 && evals.saturating_add(atomic_step_evals) > max_evals {
+        if matches!(
+            eval_limit,
+            EvalLimit::Limited(maximum)
+                if evals.saturating_add(atomic_step_evals) > maximum.get()
+        ) {
             budget_stopped = true;
             break 'outer;
         }
@@ -1003,7 +1008,7 @@ pub fn descend_ir(
             .ok_or(OptError::NotScalar { node: obj.node.0 })?;
         finite_descent_value(sign * obj.weight * scalar, "weighted IR objective")
     };
-    descend_fn_checked(manifold, &f, x0, opts, problem.budget.max_evals, cx)
+    descend_fn_checked(manifold, &f, x0, opts, problem.budget.limit, cx)
 }
 
 #[cfg(test)]

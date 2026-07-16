@@ -16,7 +16,7 @@ use fs_geocon::{
 };
 use fs_geom::fixtures::{BoxChart, SphereChart};
 use fs_geom::{Aabb, Chart, Point3, SamplingDomainError, TraceStepClaim, Vec3};
-use fs_opt::{DescentOptions, Manifold, descend_fn};
+use fs_opt::{DescentOptions, EvalLimit, Manifold, descend_fn};
 use fs_rep_frep::{BoolOp, BoolStyle, Frep, FrepBuilder};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -311,7 +311,7 @@ fn gcp_001_min_thickness() {
                 lr: 0.5,
                 fd_h: 1e-5,
             },
-            0,
+            EvalLimit::Unlimited,
             cx,
         )
         .expect("descent");
@@ -815,7 +815,7 @@ fn gcp_004_envelopes() {
                 lr: 0.4,
                 fd_h: 1e-5,
             },
-            0,
+            EvalLimit::Unlimited,
             cx,
         )
         .expect("descent");
@@ -875,7 +875,7 @@ fn gcp_005_volume_hadamard() {
                 lr: 0.05,
                 fd_h: 1e-4,
             },
-            0,
+            EvalLimit::Unlimited,
             cx,
         )
         .expect("descent");

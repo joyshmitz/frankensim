@@ -7,6 +7,7 @@
 
 use crate::admission::{self, AdmissionCaps, AdmissionReport, ProblemAdmission};
 use crate::serial::{LegacyProblemHash, ProblemSemanticId};
+use core::num::NonZeroU64;
 use fs_blake3::{ContentHash, hash_bytes};
 use fs_qty::Dims;
 use std::collections::{BTreeMap, btree_map::Entry};
@@ -371,12 +372,49 @@ pub enum ProblemTag {
     },
 }
 
+/// Explicit objective-evaluation envelope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EvalLimit {
+    /// No evaluation-count limit.
+    #[default]
+    Unlimited,
+    /// A strictly positive maximum number of objective evaluations.
+    Limited(NonZeroU64),
+}
+
+impl EvalLimit {
+    /// Finite maximum, or `None` for [`EvalLimit::Unlimited`].
+    #[must_use]
+    pub const fn maximum(self) -> Option<NonZeroU64> {
+        match self {
+            EvalLimit::Unlimited => None,
+            EvalLimit::Limited(maximum) => Some(maximum),
+        }
+    }
+
+    /// Decode the historical v1-v3 numeric budget field. The zero sentinel is
+    /// confined to this wire boundary and is not part of the live API; changing
+    /// its spelling requires a new wire version.
+    pub(crate) fn from_legacy_wire(value: u64) -> Self {
+        NonZeroU64::new(value).map_or(EvalLimit::Unlimited, EvalLimit::Limited)
+    }
+
+    /// Encode the historical v1-v3 numeric budget field without changing its
+    /// canonical bytes or identity domains. A different spelling requires v4.
+    pub(crate) const fn to_legacy_wire(self) -> u64 {
+        match self {
+            EvalLimit::Unlimited => 0,
+            EvalLimit::Limited(maximum) => maximum.get(),
+        }
+    }
+}
+
 /// Evaluation budget (P4: attached to the problem, enforced by
 /// consumers like the toy descent).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct EvalBudget {
-    /// Maximum objective evaluations (0 = unlimited).
-    pub max_evals: u64,
+    /// Explicit unlimited-or-positive evaluation limit.
+    pub limit: EvalLimit,
 }
 
 /// Side of a central finite-difference probe.
@@ -1423,7 +1461,7 @@ impl ProblemBuilder {
             objectives: Vec::new(),
             constraints: Vec::new(),
             tags: Vec::new(),
-            budget: EvalBudget { max_evals: 0 },
+            budget: EvalBudget::default(),
             caps,
             total_point_storage: 0,
             total_retained_bytes: 0,
@@ -1488,10 +1526,9 @@ impl ProblemBuilder {
         Ok(VarId((self.vars.len() - 1) as u32))
     }
 
-    /// Attach the evaluation budget (P4). Any `u64` is valid (0 =
-    /// unlimited), so this stays infallible.
-    pub fn set_budget(&mut self, max_evals: u64) {
-        self.budget.max_evals = max_evals;
+    /// Attach an explicit unlimited or strictly-positive evaluation limit (P4).
+    pub fn set_eval_limit(&mut self, limit: EvalLimit) {
+        self.budget.limit = limit;
     }
 
     /// Attach a structure tag (validated: fidelity levels in `1..=cap`,

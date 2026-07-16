@@ -5,7 +5,7 @@
 
 use asupersync::types::Budget;
 use fs_exec::{CancelGate, Cx, ExecMode, StreamKey};
-use fs_opt::{DescentOptions, Manifold, descend_fn};
+use fs_opt::{DescentOptions, EvalLimit, Manifold, descend_fn};
 use fs_propcheck::metamorphic::{
     RelationCase, RelationObservation, Tolerance, check_relation, unit_rescaling,
 };
@@ -66,7 +66,7 @@ fn g3_descend_fn_is_equivariant_under_power_of_two_unit_rescaling() {
                     lr: 0.125,
                     fd_h,
                 },
-                0,
+                EvalLimit::Unlimited,
                 cx,
             )
             .expect("generated quadratic descent is admitted");

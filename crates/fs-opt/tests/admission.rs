@@ -11,12 +11,13 @@
 //! work — the seal itself is enforced by the compiler.
 
 use fs_opt::{
-    AdmissionCaps, AdmissionViolation, BilevelRef, BindingFrame, Manifold, NodeId,
+    AdmissionCaps, AdmissionViolation, BilevelRef, BindingFrame, EvalLimit, Manifold, NodeId,
     ObjectiveEvalSite, OptError, ProbeDirection, ProblemBuilder, ProblemSemanticId, ProblemTag,
     Sense, VarId, WireVersion, canonical_v2_migration_target, eval, eval_keyed, parse,
     parse_with_version, problem_hash, serialize, serialize_with_id,
 };
 use fs_qty::Dims;
+use std::num::NonZeroU64;
 
 const METER: Dims = Dims([1, 0, 0, 0, 0, 0]);
 
@@ -282,7 +283,9 @@ fn adm_005_builder_admission_agreement_and_identity() {
             let c = b.konst(2.0, Dims::NONE).expect("konst");
             let obj = b.add(n, c).expect("add");
             b.objective(obj, Sense::Minimize, 1.0).expect("objective");
-            b.set_budget(7);
+            b.set_eval_limit(EvalLimit::Limited(
+                NonZeroU64::new(7).expect("fixture limit is nonzero"),
+            ));
             b.finish()
         },
         {
@@ -846,9 +849,15 @@ fn adm_013_descent_leaf_gating() {
         let opts = fs_opt::DescentOptions::default();
 
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            let refusal =
-                fs_opt::descend_fn(Manifold::Rn { dim: 1 }, &quadratic, &[bad], opts, 0, &cx)
-                    .expect_err("non-finite start must refuse");
+            let refusal = fs_opt::descend_fn(
+                Manifold::Rn { dim: 1 },
+                &quadratic,
+                &[bad],
+                opts,
+                EvalLimit::Unlimited,
+                &cx,
+            )
+            .expect_err("non-finite start must refuse");
             match refusal {
                 OptError::NonFinite { what, bits } => {
                     assert_eq!(what, "descent initial point component");
@@ -863,7 +872,14 @@ fn adm_013_descent_leaf_gating() {
             o.fd_h = bad_fd;
             assert!(
                 matches!(
-                    fs_opt::descend_fn(Manifold::Rn { dim: 1 }, &quadratic, &[1.0], o, 0, &cx),
+                    fs_opt::descend_fn(
+                        Manifold::Rn { dim: 1 },
+                        &quadratic,
+                        &[1.0],
+                        o,
+                        EvalLimit::Unlimited,
+                        &cx,
+                    ),
                     Err(OptError::BadParam { .. })
                 ),
                 "fd_h {bad_fd} must refuse before any FD division"
@@ -874,7 +890,14 @@ fn adm_013_descent_leaf_gating() {
             o.lr = bad_lr;
             assert!(
                 matches!(
-                    fs_opt::descend_fn(Manifold::Rn { dim: 1 }, &quadratic, &[1.0], o, 0, &cx),
+                    fs_opt::descend_fn(
+                        Manifold::Rn { dim: 1 },
+                        &quadratic,
+                        &[1.0],
+                        o,
+                        EvalLimit::Unlimited,
+                        &cx,
+                    ),
                     Err(OptError::BadParam { .. })
                 ),
                 "lr {bad_lr} must refuse (descent, not ascent or a no-op)"
@@ -911,8 +934,15 @@ fn adm_013_descent_leaf_gating() {
         ));
 
         // Valid descent is unchanged: the guarded path still converges.
-        let rep = fs_opt::descend_fn(Manifold::Rn { dim: 1 }, &quadratic, &[1.0], opts, 0, &cx)
-            .expect("valid descent unchanged");
+        let rep = fs_opt::descend_fn(
+            Manifold::Rn { dim: 1 },
+            &quadratic,
+            &[1.0],
+            opts,
+            EvalLimit::Unlimited,
+            &cx,
+        )
+        .expect("valid descent unchanged");
         assert!(rep.f_final < rep.f0, "still actually descends");
     });
 }
@@ -1051,7 +1081,14 @@ fn adm_017_non_finite_runtime_results_refuse() {
 
         let raw = |x: &[f64]| if x[0] < 0.0 { f64::NAN } else { x[0] };
         assert!(matches!(
-            fs_opt::descend_fn(Manifold::Rn { dim: 1 }, &raw, &[5e-7], opts, 0, &cx),
+            fs_opt::descend_fn(
+                Manifold::Rn { dim: 1 },
+                &raw,
+                &[5e-7],
+                opts,
+                EvalLimit::Unlimited,
+                &cx,
+            ),
             Err(OptError::NonFinite {
                 what: "descent objective result",
                 bits,
@@ -1181,7 +1218,7 @@ fn adm_018_retraction_domain_is_fail_closed() {
                     steps: 0,
                     ..fs_opt::DescentOptions::default()
                 },
-                0,
+                EvalLimit::Unlimited,
                 &cx,
             ),
             Err(OptError::RetractionDomain { .. })
@@ -1237,7 +1274,14 @@ fn adm_019_descent_cancellation_boundaries() {
             x[0] * x[0]
         };
         assert!(matches!(
-            fs_opt::descend_fn(Manifold::Rn { dim: 1 }, &objective, &[1.0], opts, 0, cx,),
+            fs_opt::descend_fn(
+                Manifold::Rn { dim: 1 },
+                &objective,
+                &[1.0],
+                opts,
+                EvalLimit::Unlimited,
+                cx,
+            ),
             Err(OptError::Cancelled)
         ));
     });
@@ -1255,7 +1299,14 @@ fn adm_019_descent_cancellation_boundaries() {
             x[0] * x[0]
         };
         assert!(matches!(
-            fs_opt::descend_fn(Manifold::Rn { dim: 1 }, &objective, &[1.0], opts, 0, cx,),
+            fs_opt::descend_fn(
+                Manifold::Rn { dim: 1 },
+                &objective,
+                &[1.0],
+                opts,
+                EvalLimit::Unlimited,
+                cx,
+            ),
             Err(OptError::Cancelled)
         ));
     });
@@ -1277,7 +1328,14 @@ fn adm_019_descent_cancellation_boundaries() {
             x[0] * x[0]
         };
         assert!(matches!(
-            fs_opt::descend_fn(Manifold::Rn { dim: 1 }, &objective, &[1.0], opts, 0, cx,),
+            fs_opt::descend_fn(
+                Manifold::Rn { dim: 1 },
+                &objective,
+                &[1.0],
+                opts,
+                EvalLimit::Unlimited,
+                cx,
+            ),
             Err(OptError::Cancelled)
         ));
     });
@@ -1545,8 +1603,15 @@ fn adm_023_raw_objective_panics_are_typed_and_contained() {
                 );
                 x[0] * x[0]
             };
-            fs_opt::descend_fn(Manifold::Rn { dim: 1 }, &objective, &[1.0], options, 0, cx)
-                .expect_err("the injected panic must prevent report publication")
+            fs_opt::descend_fn(
+                Manifold::Rn { dim: 1 },
+                &objective,
+                &[1.0],
+                options,
+                EvalLimit::Unlimited,
+                cx,
+            )
+            .expect_err("the injected panic must prevent report publication")
         });
         assert_eq!(
             error,

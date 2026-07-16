@@ -14,8 +14,8 @@
 
 use crate::admission::AdmissionCaps;
 use crate::ir::{
-    BilevelRef, ConstraintKind, Expr, Manifold, NodeId, OptError, Problem, ProblemBuilder,
-    ProblemTag, Sense, VarId,
+    BilevelRef, ConstraintKind, EvalLimit, Expr, Manifold, NodeId, OptError, Problem,
+    ProblemBuilder, ProblemTag, Sense, VarId,
 };
 use fs_blake3::{hash_bytes, hash_domain};
 use fs_qty::Dims;
@@ -611,7 +611,7 @@ fn body_for_wire(problem: &Problem, version: WireVersion, encoding: TokenEncodin
             }
         }
     }
-    let _ = writeln!(s, "budget {}", problem.budget.max_evals);
+    let _ = writeln!(s, "budget {}", problem.budget.limit.to_legacy_wire());
     s
 }
 
@@ -1046,7 +1046,7 @@ fn parse_with_version_and_caps(
                     .and_then(|t| t.parse().ok())
                     .ok_or_else(|| perr(ln, "budget: bad count"))?;
                 require_end(&mut tok, ln, "budget")?;
-                b.set_budget(n);
+                b.set_eval_limit(EvalLimit::from_legacy_wire(n));
                 saw_budget = true;
             }
             "hash" => {
@@ -1283,12 +1283,122 @@ mod tests {
         unesc_limited,
     };
     use crate::AdmissionCaps;
-    use crate::ir::{BilevelRef, NodeId, OptError, ProblemBuilder, ProblemTag, Sense};
+    use crate::ir::{BilevelRef, EvalLimit, NodeId, OptError, ProblemBuilder, ProblemTag, Sense};
+    use core::num::NonZeroU64;
     use fs_qty::Dims;
 
     fn with_hash(body: &str) -> String {
         assert!(body.ends_with('\n'));
         format!("{body}hash {:016X}\n", fnv1a(body.as_bytes()))
+    }
+
+    #[test]
+    fn explicit_eval_limits_round_trip_through_legacy_numeric_wire() {
+        let cases = [
+            (EvalLimit::Unlimited, 0),
+            (
+                EvalLimit::Limited(NonZeroU64::new(1).expect("one is nonzero")),
+                1,
+            ),
+            (
+                EvalLimit::Limited(NonZeroU64::new(u64::MAX).expect("u64::MAX is nonzero")),
+                u64::MAX,
+            ),
+        ];
+
+        for (limit, legacy_count) in cases {
+            let mut builder = ProblemBuilder::new();
+            let scalar = builder.konst(1.0, Dims::NONE).expect("finite constant");
+            builder
+                .objective(scalar, Sense::Minimize, 1.0)
+                .expect("scalar objective");
+            builder.set_eval_limit(limit);
+            let problem = builder.finish();
+
+            for version in [WireVersion::V1, WireVersion::V2, WireVersion::V3] {
+                let text = serialize_for_wire(&problem, version, TokenEncoding::PercentBytes);
+                assert!(
+                    text.contains(&format!("budget {legacy_count}\n")),
+                    "{version:?} retains the numeric budget spelling"
+                );
+                let decoded = parse_with_version(&text).expect("canonical wire decodes");
+                assert_eq!(decoded.source_version(), version);
+                assert_eq!(decoded.problem().budget().limit, limit);
+                assert_eq!(
+                    serialize_for_wire(decoded.problem(), version, TokenEncoding::PercentBytes),
+                    text,
+                    "{version:?} bytes round-trip exactly"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_eval_limit_artifacts_and_semantic_ids_are_pinned() {
+        let pins = [
+            (
+                WireVersion::V1,
+                EvalLimit::Unlimited,
+                "fsopt v1\nbudget 0\nhash D433CA4FD3AD82A7\n",
+            ),
+            (
+                WireVersion::V1,
+                EvalLimit::Limited(NonZeroU64::new(7).expect("seven is nonzero")),
+                "fsopt v1\nbudget 7\nhash D429884FD3A4BDFC\n",
+            ),
+            (
+                WireVersion::V2,
+                EvalLimit::Unlimited,
+                "fsopt v2\nbudget 0\nhash 88FC7D97EEE42A22\n",
+            ),
+            (
+                WireVersion::V2,
+                EvalLimit::Limited(NonZeroU64::new(7).expect("seven is nonzero")),
+                "fsopt v2\nbudget 7\nhash 88F91797EEE146F9\n",
+            ),
+            (
+                WireVersion::V3,
+                EvalLimit::Unlimited,
+                "fsopt v3\nbudget 0\nhash DF328F7A3353A2B5\n",
+            ),
+            (
+                WireVersion::V3,
+                EvalLimit::Limited(NonZeroU64::new(7).expect("seven is nonzero")),
+                "fsopt v3\nbudget 7\nhash DF1AC57A333F6C96\n",
+            ),
+        ];
+
+        for (version, limit, artifact) in pins {
+            let decoded = parse_with_version(artifact).expect("pinned artifact decodes");
+            assert_eq!(decoded.source_version(), version);
+            assert_eq!(decoded.problem().budget().limit, limit);
+            assert_eq!(
+                serialize_for_wire(decoded.problem(), version, TokenEncoding::PercentBytes),
+                artifact,
+                "{version:?} compatibility bytes are immutable"
+            );
+
+            if version == WireVersion::V3 {
+                let expected_semantic_id = match limit {
+                    EvalLimit::Unlimited => {
+                        "4f67ac8330ec97f2323b2076e9ae54fcf56241b55a45a65d679401bc4fea4c25"
+                    }
+                    EvalLimit::Limited(_) => {
+                        "0481e7f5de92a241c5d4df856040c54b7f053f7be9265c1703690b24c5fb2e3a"
+                    }
+                };
+                assert_eq!(
+                    decoded
+                        .problem()
+                        .admit()
+                        .expect("pinned problem admits")
+                        .semantic_id()
+                        .to_hex(),
+                    expected_semantic_id,
+                    "the in-memory typed limit preserves the pre-migration semantic identity"
+                );
+            }
+        }
     }
 
     #[test]
