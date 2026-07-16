@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use fs_matdb::NormalizedPack;
+use fs_matdb::{NormalizedPack, PropertyValue};
 
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
@@ -34,6 +34,51 @@ const SOURCE: &str = concat!(
     "joint\tcoupon\tdensity-modulus\tdensity:scalar,modulus:y:0\t0.000025,0,0.000009\t1,0,1\t1\n",
 );
 
+const MATERIAL_FAMILIES_MANIFEST: &str = concat!(
+    "frankensim.matdb-manifest.v1\n",
+    "pack_id\tfixture-material-families\n",
+    "redistribution\tpermitted\tCC-BY-4.0 redistribution with attribution\n",
+    "citation\tfixture material-family extracts\n",
+    "license\tCC-BY-4.0\n",
+    "source\thandbook\thandbook.tsv\tmaterial-tsv-v1\n",
+    "source\tbh-curve\tbh.tsv\tmaterial-tsv-v1\n",
+    "source\tsn-curve\tsn.tsv\tmaterial-tsv-v1\n",
+    "source\tlubricant\tlubricant.tsv\tmaterial-tsv-v1\n",
+);
+
+const HANDBOOK_SOURCE: &str = concat!(
+    "frankensim.matdb-source.v1\n",
+    "observation\thandbook-coupon\talloy-X-solution-treated\thandbook-table\tdensity extract\n",
+    "scalar\thandbook-density\thandbook-coupon\tdensity\t7.85\tg/cm3\tconstant\n",
+    "uncertainty\thandbook-density\trelative\t0.5\t%\t0.95\t1\n",
+    "validity\thandbook-density\ttemperature\t0\t100\tdegC\n",
+);
+
+const BH_SOURCE: &str = concat!(
+    "frankensim.matdb-source.v1\n",
+    "observation\tbh-loop\talloy-X-ring\tquasistatic-hysteresis\tdemagnetized branch\n",
+    "curve\tbh-curve\tbh-loop\tmagnetic_flux_density\tmagnetic_field_strength\tA/m\tT\t0:0,100:0.2,1000:1.5\tlinear\n",
+    "uncertainty\tbh-curve\trelative\t1\t%\t0.95\t1\n",
+    "validity\tbh-curve\tmagnetic_field_strength\t0\t1000\tA/m\n",
+    "validity\tbh-curve\ttemperature\t20\t25\tdegC\n",
+);
+
+const SN_SOURCE: &str = concat!(
+    "frankensim.matdb-source.v1\n",
+    "observation\tsn-coupons\talloy-X-polished\tconstant-amplitude-fatigue\tfully reversed\n",
+    "curve\tsn-curve\tsn-coupons\tfatigue_life\tstress_amplitude\tMPa\t1\t100:10000000,250:500000,400:20000\ttabulated\n",
+    "uncertainty\tsn-curve\trelative\t5\t%\t0.90\t1\n",
+    "validity\tsn-curve\tstress_amplitude\t100\t400\tMPa\n",
+);
+
+const LUBRICANT_SOURCE: &str = concat!(
+    "frankensim.matdb-source.v1\n",
+    "observation\tlubricant-batch\tPAO-4-batch-A\trotational-rheometer\tnew fluid\n",
+    "curve\tlubricant-viscosity\tlubricant-batch\tdynamic_viscosity\ttemperature\tdegC\tPa*s\t-20:0.12,40:0.018,100:0.005\tlinear\n",
+    "uncertainty\tlubricant-viscosity\trelative\t3\t%\t0.95\t1\n",
+    "validity\tlubricant-viscosity\ttemperature\t-20\t100\tdegC\n",
+);
+
 fn fixture_dir() -> PathBuf {
     loop {
         let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
@@ -54,6 +99,21 @@ fn write_fixture(source: &str) -> (PathBuf, PathBuf) {
     let manifest = directory.join("manifest.tsv");
     fs::write(&manifest, MANIFEST).expect("write manifest fixture");
     fs::write(directory.join("source.tsv"), source).expect("write source fixture");
+    (directory, manifest)
+}
+
+fn write_material_families_fixture() -> (PathBuf, PathBuf) {
+    let directory = fixture_dir();
+    let manifest = directory.join("manifest.tsv");
+    fs::write(&manifest, MATERIAL_FAMILIES_MANIFEST).expect("write family manifest fixture");
+    for (name, source) in [
+        ("handbook.tsv", HANDBOOK_SOURCE),
+        ("bh.tsv", BH_SOURCE),
+        ("sn.tsv", SN_SOURCE),
+        ("lubricant.tsv", LUBRICANT_SOURCE),
+    ] {
+        fs::write(directory.join(name), source).expect("write family source fixture");
+    }
     (directory, manifest)
 }
 
@@ -114,6 +174,96 @@ fn g3_cli_compiles_two_identical_pinned_packs() {
     );
     assert!(decisions.contains("\"reason_code\":\"published_new_verified_artifact\""));
     assert!(decisions.contains("\"reason_code\":\"joint_statistics_normalized\""));
+}
+
+#[test]
+fn g3_cli_compiles_handbook_bh_sn_and_lubricant_material_claims() {
+    let (directory, manifest) = write_material_families_fixture();
+    let first_path = directory.join("families-first.fsmatpk");
+    let second_path = directory.join("families-second.fsmatpk");
+
+    let first = run_compiler(&manifest, &first_path);
+    let second = run_compiler(&manifest, &second_path);
+    assert!(
+        first.status.success(),
+        "first material-family compilation failed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(
+        second.status.success(),
+        "second material-family compilation failed: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(first.stdout, second.stdout, "decision stream moved");
+
+    let first_bytes = fs::read(first_path).expect("read first family pack");
+    let second_bytes = fs::read(second_path).expect("read second family pack");
+    assert_eq!(first_bytes, second_bytes, "material-family pack moved");
+    let decoded = NormalizedPack::from_bytes_verified(
+        NormalizedPack::from_bytes(&first_bytes)
+            .expect("decode material-family pack")
+            .content_hash(),
+        &first_bytes,
+    )
+    .expect("verified material-family pack");
+    assert_eq!(decoded.claims().claim_count(), 4);
+
+    for (property, source, expects_curve) in [
+        ("density", "handbook", false),
+        ("magnetic_flux_density", "bh-curve", true),
+        ("fatigue_life", "sn-curve", true),
+        ("dynamic_viscosity", "lubricant", true),
+    ] {
+        let claims = decoded.claims().claims_for(property);
+        assert_eq!(claims.len(), 1, "missing unique {property} claim");
+        let claim = claims[0].1;
+        assert_eq!(
+            matches!(&claim.value, PropertyValue::Curve { .. }),
+            expects_curve,
+            "unexpected payload kind for {property}"
+        );
+        assert!(
+            claim
+                .provenance
+                .source
+                .contains(&format!("[source:{source}]")),
+            "{property} lost source-local provenance: {:?}",
+            claim.provenance
+        );
+    }
+
+    let decisions = String::from_utf8(first.stdout).expect("decision stream is UTF-8");
+    for source in ["handbook", "bh-curve", "sn-curve", "lubricant"] {
+        assert!(
+            decisions.contains(&format!("\"subject\":\"source:{source}\"")),
+            "missing admission row for {source}"
+        );
+    }
+}
+
+#[test]
+fn g3_cli_refuses_species_nasa9_and_kinetics_without_runtime_codecs() {
+    for profile in ["species-v1", "nasa9-v1", "kinetics-v1"] {
+        let manifest_text = MANIFEST.replacen("material-tsv-v1", profile, 1);
+        assert_ne!(manifest_text, MANIFEST);
+        let directory = fixture_dir();
+        let manifest = directory.join("manifest.tsv");
+        let output = directory.join(format!("{profile}.fsmatpk"));
+        fs::write(&manifest, manifest_text).expect("write unsupported-profile manifest");
+        fs::write(directory.join("source.tsv"), SOURCE).expect("write source fixture");
+
+        let refused = run_compiler(&manifest, &output);
+        assert!(!refused.status.success(), "{profile} unexpectedly compiled");
+        assert!(!output.exists(), "{profile} refusal published an output");
+        let decisions = String::from_utf8(refused.stdout).expect("decision stream is UTF-8");
+        assert_eq!(decisions.matches("\"verdict\":\"refuse\"").count(), 1);
+        assert!(decisions.contains("\"reason_code\":\"unsupported_source_profile\""));
+        assert!(decisions.contains("\"subject\":\"source:primary\""));
+        assert!(
+            String::from_utf8_lossy(&refused.stderr)
+                .contains("error: matdb pack refused [unsupported_source_profile]")
+        );
+    }
 }
 
 #[test]
