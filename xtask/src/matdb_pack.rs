@@ -3019,12 +3019,20 @@ mod tests {
                 "density" => {
                     assert!((diagonal - 25.0).abs() <= 25.0 * f64::EPSILON);
                     assert_eq!(receipt.dims(), Dims([-6, 2, 0, 0, 0, 0]));
-                    assert!((receipt.scale() - 1.0e6).abs() <= 1.0e6 * f64::EPSILON);
+                    // The covariance transform composes two independently rounded
+                    // fs-qty unit scales, so allow both conversion roundoff steps.
+                    assert!(
+                        (receipt.scale() - 1.0e6).abs() <= 4.0e6 * f64::EPSILON,
+                        "density covariance receipt scale mismatch at row {row}: {receipt:?}"
+                    );
                 }
                 "young_modulus" => {
                     assert!((diagonal - 9.0e12).abs() <= 9.0e12 * f64::EPSILON);
                     assert_eq!(receipt.dims(), Dims([-2, 2, -4, 0, 0, 0]));
-                    assert!((receipt.scale() - 1.0e18).abs() <= 1.0e18 * f64::EPSILON);
+                    assert!(
+                        (receipt.scale() - 1.0e18).abs() <= 4.0e18 * f64::EPSILON,
+                        "modulus covariance receipt scale mismatch at row {row}: {receipt:?}"
+                    );
                 }
                 other => panic!("unexpected covariance member property {other}"),
             }
