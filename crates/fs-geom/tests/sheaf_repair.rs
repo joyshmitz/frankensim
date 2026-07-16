@@ -1698,3 +1698,87 @@ fn sr_015_numerics_keeps_false_convergence_indeterminate_or_refused() {
         "a fixed-sweep false convergence publishes only candidate-named Indeterminate evidence, while invalid tolerance, preflight work caps, and pre-cancellation refuse",
     );
 }
+
+#[test]
+fn sr_016_numerics_tolerance_relabeling_and_scale_metamorphics() {
+    let path =
+        AdmittedSheafSkeleton::try_new(3, vec![(0, 1), (1, 2)], Vec::new()).expect("path admits");
+    let one_sweep = numerics_budget(1);
+    let baseline =
+        with_cx(|cx| assess_hodge_decomposition_bounded(&path, &[1.0, 1.0], 0.0, one_sweep, cx));
+    let SheafNumericsOutcome::Indeterminate(baseline) = baseline else {
+        panic!("zero tolerance must expose the unfinished path fit: {baseline:?}");
+    };
+    let receipt = baseline.receipt();
+    let boundary = [
+        receipt.primal_normal_equation.normalized,
+        receipt.dual_normal_equation.normalized,
+        receipt.remainder_exact_orthogonality.normalized,
+        receipt.coboundary_triangle_orthogonality.normalized,
+        receipt.coboundary_remainder_orthogonality.normalized,
+        receipt.triangle_remainder_orthogonality.normalized,
+        receipt.reconstruction.normalized,
+    ]
+    .into_iter()
+    .map(|bounds| bounds.hi())
+    .fold(0.0, f64::max);
+    assert!(boundary.is_finite() && boundary > 0.0);
+    assert!(matches!(
+        with_cx(|cx| assess_hodge_decomposition_bounded(
+            &path,
+            &[1.0, 1.0],
+            boundary,
+            one_sweep,
+            cx,
+        )),
+        SheafNumericsOutcome::Converged(_)
+    ));
+    assert!(matches!(
+        with_cx(|cx| assess_hodge_decomposition_bounded(
+            &path,
+            &[1.0, 1.0],
+            boundary.next_down(),
+            one_sweep,
+            cx,
+        )),
+        SheafNumericsOutcome::Indeterminate(_)
+    ));
+
+    let unit_scale = 2.0f64.powi(400);
+    let scaled = with_cx(|cx| {
+        assess_hodge_decomposition_bounded(&path, &[unit_scale, unit_scale], 0.0, one_sweep, cx)
+    });
+    let SheafNumericsOutcome::Indeterminate(scaled) = scaled else {
+        panic!("unit scaling cannot promote an unfinished fit: {scaled:?}");
+    };
+    let baseline_primal = baseline.receipt().primal_normal_equation.normalized;
+    let scaled_primal = scaled.receipt().primal_normal_equation.normalized;
+    assert!(
+        baseline_primal.lo() <= scaled_primal.hi() && scaled_primal.lo() <= baseline_primal.hi(),
+        "power-of-two unit scaling must preserve overlapping normalized residual evidence"
+    );
+
+    // Relabel old vertices [0, 1, 2, 3, 4] as [4, 2, 3, 0, 1]. Both
+    // retained edge orientations reverse and canonical edge order swaps, so
+    // the transported cochain is [-4, -2].
+    let relabeled = AdmittedSheafSkeleton::try_new(5, vec![(0, 3), (2, 4)], Vec::new())
+        .expect("relabel admits");
+    let relabeled_outcome = with_cx(|cx| {
+        assess_hodge_decomposition_bounded(&relabeled, &[-4.0, -2.0], 1e-12, numerics_budget(4), cx)
+    });
+    let SheafNumericsOutcome::Converged(relabeled_outcome) = relabeled_outcome else {
+        panic!("transported exact components must remain converged: {relabeled_outcome:?}");
+    };
+    assert_eq!(relabeled_outcome.exact(), &[-4.0, -2.0]);
+    assert_eq!(relabeled_outcome.potential(), &[0.0, 0.0, 0.0, -4.0, -2.0]);
+    match &relabeled_outcome.receipt().spectrum {
+        SheafSpectrumScope::Unknown {
+            component_zero_mode_roots,
+            ..
+        } => assert_eq!(component_zero_mode_roots, &[0, 1, 2]),
+    }
+    verdict(
+        "sr-016",
+        "inclusive tolerance gating, power-of-two unit scaling, and orientation-changing vertex relabeling preserve the bounded numerical authority boundary",
+    );
+}
