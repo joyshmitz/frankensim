@@ -34,6 +34,26 @@ flagships.
   `fs_motion::LowerToMotorTube`. It refuses a non-rotating target or any
   dynamic ancestor instead of sampling a general composed path into a
   constant-screw claim. `fs-motion` does not import scenario types.
+- `payload` — a closed, versioned algebra for scalar, fixed-width vector,
+  rectangular tensor, paired complex-phasor, canonical species-bundle,
+  directed characteristic-state, field-trace-reference, and component-port
+  payloads. Every payload declares a six-base dimension or sealed `fs-qty`
+  semantic kind, canonical basis id, frame, orientation parity, and either
+  continuous or named-reset reference semantics. Numeric carriers admit fixed
+  values, strictly increasing time tables with explicit interpolation and
+  outside-domain policy, or explicitly tagged distribution parameters/support.
+  `Continuous` means the reference origin is not reset; it is not a claim that
+  a `StepLeft` sample path is mathematically continuous. Complex phasors always
+  carry one phasor-capable semantic kind and one Peak/RMS convention across all
+  samples. Reference variants are typed indirections and therefore do not
+  duplicate the referenced value's sample source.
+  Constructors validate finiteness, dimensions, semantic scalar domains,
+  stable shapes/axes, distribution order, and aggregate item bounds. The
+  canonical payload V1 decoder enforces byte, aggregate-item (including the
+  retained species-axis cache), and identifier limits before allocation and
+  reconstructs only through those constructors. Its conservative default wire
+  ceiling is derived from the closed item/id ceilings and remains large enough
+  for every admitted V1 payload.
 - `bc` — `BoundaryCondition { region, physics, kind, value, compatibility,
   frame }`; `expectation(physics, kind)` is the dimensional contract
   table (velocity for flow Dirichlet, kg/s for mass-flow inlets, Pa for
@@ -208,7 +228,9 @@ whole repair list at once.
 ensemble realizations (Philox + det trig, fixed draw/summation order) are
 bit-identical across runs and platforms. Reconstructing the admitted
 constant-screw lowering with the same frame declaration and tube parameters is
-bit-identical. IR text is canonical.
+bit-identical. IR text is canonical. Payload V1 bytes are canonical for every
+admitted value: signed zero is normalized on write and rejected when supplied
+noncanonically on the wire; all other finite IEEE-754 bits are retained.
 
 ## Cancellation behavior
 
@@ -365,6 +387,15 @@ None.
   canonical `+0.0` retention when both signed-zero encodings occur.
 
 ## No-claim boundaries
+
+- **Payload sources are declarations, not evaluators or stochastic proofs**:
+  this crate validates table structure and distribution parameter/support
+  shape, units, finiteness, and canonical ordering. It does not claim a table
+  interpolator, sampler, correlation model, probability law certificate, or
+  field/port existence proof. Reference identifiers are canonical syntax; the
+  owning ledger/component layer must resolve and authorize them. Complex
+  phasor distributions are empirical-only in V1 because independent
+  Normal/Uniform parameters would not honestly encode paired covariance.
 
 - **General frame-path lowering is not claimed**: the current one-way adapter
   covers one rotating target below fixed ancestors. Scheduled tilts, multiple

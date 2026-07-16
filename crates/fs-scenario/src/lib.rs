@@ -15,6 +15,7 @@ pub mod bc;
 pub mod ensemble;
 pub mod frame;
 pub mod ir;
+pub mod payload;
 pub mod scenario;
 pub mod signal;
 
