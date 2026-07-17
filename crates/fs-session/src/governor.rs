@@ -4491,6 +4491,51 @@ impl Governor {
         self.register_session(open_id, token, Some(gate), false)
     }
 
+    /// Register a session from an authenticated [`crate::SessionGrant`]
+    /// (bead aeq7, increment 2): the grant is re-verified against the
+    /// issuing policy AT THE BOUNDARY (forged, expired, revoked, and
+    /// cross-issuer grants refuse before any session state mutates), and
+    /// ONLY the admitted view registers — the caller never supplies a
+    /// token, so un-admitted budgets, operators, or scopes cannot reach
+    /// registration. Session ids remain single-use per governor, which
+    /// is the response-replay refusal: re-presenting the same grant (or
+    /// a re-minted grant for the same session id) fails closed with
+    /// [`SessionError::SessionAlreadyOpen`].
+    ///
+    /// # Errors
+    /// [`SessionError::GrantForged`]/[`SessionError::GrantExpired`]/
+    /// [`SessionError::GrantRevoked`] from freshness verification, then
+    /// the same refusals as [`Governor::open_session`].
+    pub fn open_session_granted(
+        &self,
+        open_id: SessionOpenId,
+        grant: &crate::SessionGrant,
+        policy: &dyn crate::IssuerPolicy,
+        now_ns: i64,
+    ) -> Result<SessionOpenReceipt, SessionError> {
+        grant.verify_fresh(policy, now_ns)?;
+        self.register_session(open_id, grant.admitted_token(), None, false)
+    }
+
+    /// [`Governor::open_session_granted`] WITH the session's
+    /// cancellation capability (the gp3.13 gate semantics of
+    /// [`Governor::open_session_gated`]).
+    ///
+    /// # Errors
+    /// The union of [`Governor::open_session_granted`] and
+    /// [`Governor::open_session_gated`] refusals.
+    pub fn open_session_granted_gated(
+        &self,
+        open_id: SessionOpenId,
+        grant: &crate::SessionGrant,
+        policy: &dyn crate::IssuerPolicy,
+        gate: Arc<CancelGate>,
+        now_ns: i64,
+    ) -> Result<SessionOpenReceipt, SessionError> {
+        grant.verify_fresh(policy, now_ns)?;
+        self.register_session(open_id, grant.admitted_token(), Some(gate), false)
+    }
+
     /// The token for a session.
     ///
     /// # Errors

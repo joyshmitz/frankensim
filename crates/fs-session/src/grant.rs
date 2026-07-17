@@ -14,12 +14,15 @@
 //! acquisition, so execution cannot exceed admitted concurrency or run
 //! an operator the grant never named.
 //!
-//! Increment scope (code-first): the grant/verifier/lease core plus
-//! unit tests. Governor consumption (`open_session` taking a grant,
-//! per-operation lease acquisition on the metering path) is the next
-//! increment, coordinated with the idempotency lane. Until then the
-//! no-claim boundary is explicit: minting a grant does not yet gate
-//! the legacy token path.
+//! Increment 2 (bead aeq7): [`crate::Governor::open_session_granted`]
+//! consumes a grant at the session boundary — freshness re-verified
+//! against the issuing policy, and ONLY the admitted view
+//! ([`SessionGrant::admitted_token`]) registers, so a caller cannot
+//! smuggle un-admitted budgets or operators past the policy. No-claim
+//! boundary that remains: the legacy caller-declared
+//! `Governor::open_session(token)` path still exists pending the
+//! coordinated workspace flip, and per-operation lease acquisition on
+//! the metering path is a follow-up slice.
 
 use crate::SessionError;
 use crate::token::{CapabilityToken, SessionId};
@@ -310,6 +313,24 @@ impl SessionGrant {
             cores: self.cores,
             mem_bytes: self.mem_bytes,
             wall_s: self.wall_s,
+        }
+    }
+
+    /// The ADMITTED authority as a registration token (bead aeq7,
+    /// increment 2). This is the only shape the governor registers on
+    /// the granted open path: it is projected from the grant's private
+    /// fields, so a caller cannot register budgets, operators, or a
+    /// ledger scope differing from what the policy admitted.
+    #[must_use]
+    pub fn admitted_token(&self) -> CapabilityToken {
+        CapabilityToken {
+            session: self.session,
+            ops: self.ops.clone(),
+            core_s: self.core_s,
+            mem_bytes: self.mem_bytes,
+            wall_s: self.wall_s,
+            cores: self.cores,
+            ledger_scope: self.ledger_scope.clone(),
         }
     }
 

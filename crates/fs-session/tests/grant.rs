@@ -196,3 +196,155 @@ fn sg_004_core_leases_enforce_verbs_and_concurrency() {
     drop(second);
     assert_eq!(book.active_cores(SessionId(41)), 0);
 }
+
+// ── Increment 2, slice A: grant-gated session open (bead aeq7) ──────────────
+
+use fs_session::Governor;
+
+/// sg-005: the granted open path registers ONLY the admitted view — the
+/// caller supplies no token, and the registered token equals the grant's
+/// admitted projection field-for-field.
+#[test]
+fn sg_005_granted_open_registers_only_the_admitted_view() {
+    let policy = TestPolicy::new(1_000_000);
+    let grant = mint_grant(&policy, &request(), 10).expect("policy admits");
+    let governor = Governor::new();
+    let open_id = governor
+        .session_open_id(grant.session(), "sg-005-open")
+        .expect("open id");
+    governor
+        .open_session_granted(open_id, &grant, &policy, 20)
+        .expect("granted open");
+    let registered = governor.token(grant.session()).expect("registered token");
+    assert_eq!(registered, grant.admitted_token());
+    assert_eq!(registered.ops, vec!["ascent.optimize", "flux.*"]);
+    assert_eq!(registered.cores, 8);
+}
+
+/// sg-006: stale authority refuses AT the open boundary — expired,
+/// rotated (revoked), and cross-issuer grants never reach registration.
+#[test]
+fn sg_006_stale_or_foreign_grants_refuse_at_the_open_boundary() {
+    let governor = Governor::new();
+
+    // Expired at open time.
+    let policy = TestPolicy::new(100);
+    let grant = mint_grant(&policy, &request(), 10).expect("policy admits");
+    let open_id = governor
+        .session_open_id(grant.session(), "sg-006-expired")
+        .expect("open id");
+    assert!(matches!(
+        governor.open_session_granted(open_id, &grant, &policy, 100),
+        Err(SessionError::GrantExpired { .. })
+    ));
+
+    // Policy rotation between mint and open (the rotation drill).
+    let rotating = TestPolicy::new(1_000_000);
+    let pre_rotation = mint_grant(&rotating, &request(), 10).expect("policy admits");
+    rotating.revoke();
+    let open_id = governor
+        .session_open_id(pre_rotation.session(), "sg-006-rotated")
+        .expect("open id");
+    assert!(matches!(
+        governor.open_session_granted(open_id, &pre_rotation, &rotating, 20),
+        Err(SessionError::GrantRevoked { .. })
+    ));
+
+    // Cross-issuer presentation: a distinct issuer identity cannot vouch
+    // for the grant at the open boundary.
+    let issuer_a = TestPolicy::new(1_000_000);
+    let issuer_b = TestPolicy {
+        identity: IssuerIdentity::new("ops/other-issuer", "policy-v1").expect("valid"),
+        expiry_ns: 1_000_000,
+        generation: std::sync::atomic::AtomicU64::new(1),
+    };
+    let foreign = mint_grant(&issuer_a, &request(), 10).expect("policy admits");
+    let open_id = governor
+        .session_open_id(foreign.session(), "sg-006-foreign")
+        .expect("open id");
+    assert!(matches!(
+        governor.open_session_granted(open_id, &foreign, &issuer_b, 20),
+        Err(SessionError::GrantForged { .. })
+    ));
+
+    // Nothing registered by any refused path.
+    assert!(matches!(
+        governor.token(SessionId(41)),
+        Err(SessionError::UnknownSession { .. })
+    ));
+}
+
+/// sg-007: response replay — re-presenting the same grant (same session)
+/// cannot open twice; session ids are single-use per governor.
+#[test]
+fn sg_007_grant_replay_cannot_open_a_second_session() {
+    let policy = TestPolicy::new(1_000_000);
+    let grant = mint_grant(&policy, &request(), 10).expect("policy admits");
+    let governor = Governor::new();
+    let open_id = governor
+        .session_open_id(grant.session(), "sg-007-first")
+        .expect("open id");
+    governor
+        .open_session_granted(open_id, &grant, &policy, 20)
+        .expect("first open");
+
+    // Same grant, fresh open id: replay refused.
+    let replay_id = governor
+        .session_open_id(grant.session(), "sg-007-replay")
+        .expect("open id");
+    assert!(matches!(
+        governor.open_session_granted(replay_id, &grant, &policy, 30),
+        Err(SessionError::SessionAlreadyOpen { .. })
+    ));
+
+    // Even a RE-MINTED grant for the same session id is refused: replay
+    // protection is the governor's single-use session registry, not
+    // grant-value identity.
+    let reminted = mint_grant(&policy, &request(), 40).expect("policy admits");
+    let reminted_id = governor
+        .session_open_id(reminted.session(), "sg-007-reminted")
+        .expect("open id");
+    assert!(matches!(
+        governor.open_session_granted(reminted_id, &reminted, &policy, 50),
+        Err(SessionError::SessionAlreadyOpen { .. })
+    ));
+}
+
+/// sg-008: wildcard confusion at the composed governor+lease boundary — a
+/// `flux.*` grant covers namespaced verbs only; the bare namespace, sibling
+/// namespaces sharing a prefix, and extended exact verbs all refuse at
+/// lease acquisition on a session the governor actually opened.
+#[test]
+fn sg_008_wildcard_confusion_cannot_escalate_after_granted_open() {
+    let policy = TestPolicy::new(1_000_000);
+    let grant = mint_grant(&policy, &request(), 10).expect("policy admits");
+    let governor = Governor::new();
+    let open_id = governor
+        .session_open_id(grant.session(), "sg-008-open")
+        .expect("open id");
+    governor
+        .open_session_granted(open_id, &grant, &policy, 20)
+        .expect("granted open");
+
+    let book = CoreLeaseBook::new();
+    for confused in ["flux", "fluxx.solve", "ascent.optimizer", "ascent"] {
+        assert!(
+            matches!(
+                book.acquire(&grant, &policy, confused, 1, 30),
+                Err(SessionError::UngrantedVerb { .. })
+            ),
+            "verb {confused:?} must not be covered"
+        );
+    }
+    let _solve = book
+        .acquire(&grant, &policy, "flux.solve", 4, 30)
+        .expect("namespaced verb covered");
+    let _exact = book
+        .acquire(&grant, &policy, "ascent.optimize", 4, 30)
+        .expect("exact verb covered");
+    // And the concurrency ceiling still binds across both leases.
+    assert!(matches!(
+        book.acquire(&grant, &policy, "flux.assemble", 1, 30),
+        Err(SessionError::CoreLeaseExceeded { .. })
+    ));
+}
