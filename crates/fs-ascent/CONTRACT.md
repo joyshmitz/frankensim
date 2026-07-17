@@ -182,6 +182,20 @@ with all KKT residuals ≤ 1e−7; bitwise replay; Pareto golden
 epsilons, tolerances, decision vectors, objective values, and gradient
 dimensions.
 
+`tests/riemannian_study_replay.rs` (bead 7tv.21.23) is the retained G5
+study-scale receipt and seeded-failure self-test for the Riemannian L-BFGS
+family. It reuses the known-convergent seeded sphere/Rayleigh fixture, binds
+the logical RNG coordinates, complete symmetric objective matrix and derived
+start, engine/manifold configuration, every public optimizer-state field,
+complete objective history, and every public report field into a versioned
+canonical identity. An independent same-seed run must reproduce the whole
+receipt byte for byte. A deterministic mutation seed flips one finite mantissa
+bit in the returned decision; both repeated mutations must mint the same moved
+identity, and the test-local merge gate refuses that self-consistent but
+non-reference receipt. This proves one sphere fixture only, not all manifolds,
+persisted checkpoint transport, cancellation recovery, cross-ISA equality, or
+performance.
+
 `tests/wfg_moo_battery.rs` covers WFG-scale front geometry without claiming
 the full deceptive or multimodal transformation stack. Concave, convex, and
 WFG1-class mixed fixtures retain their measured sweep behavior as linted,
