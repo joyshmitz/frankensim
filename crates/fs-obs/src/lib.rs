@@ -25,6 +25,7 @@
 
 pub mod containment;
 pub mod ident;
+pub mod process;
 
 use core::fmt;
 use std::fmt::Write as _;

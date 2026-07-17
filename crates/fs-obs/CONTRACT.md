@@ -33,6 +33,11 @@ suites, and (once fs-ledger lands) the ledger `events` table. Layer: UTIL.
   from any version other than `EVENT_CONTENT_IDENTITY_VERSION`; owner-local
   declarations for both event content and the replay frame feed the generated
   `identity-schemas.json` policy gate.
+- `process::{ProcessCapture, ProcessCapturePolicy, ProcessFrame, ProcessGap}`
+  — deterministic, I/O-free process-stream admission with critical,
+  diagnostic, and telemetry loss classes; bounded frame/gap queues;
+  cancellation-aware backpressure; committed-artifact spill pointers; exact
+  drop/range/policy accounting; and final-receipt reconciliation.
 
 ## Invariants
 - One event = one line; strings escaped so no literal newlines appear.
@@ -55,6 +60,15 @@ suites, and (once fs-ledger lands) the ledger `events` table. Layer: UTIL.
   an unchecked JSON canonicalizer; the identity battery decodes the typed
   byte field and proves it round-trips exactly.
 - Additive schema evolution only: kinds may be added, fields never repurposed.
+- Process capture never drops a critical frame. Queue/inline pressure returns
+  the untouched frame for drain/spill/retry; cancellation or sink failure
+  returns incomplete evidence, unchecked integrity, and demoted promotion.
+  Diagnostic/telemetry loss is consumed only after a quantified gap is
+  retained; a full gap ledger applies backpressure.
+- A `DurableArtifactPointer` can be constructed only through the committed
+  pointer constructor. Inline omission without that token remains explicit
+  loss; process exit (including code zero) without a final typed receipt
+  remains an observation gap.
 - Non-finite floats serialize as tagged strings ("non-finite:NaN"), never
   invalid JSON.
 - Replay identity v1 begins with the exact bytes of
@@ -72,14 +86,18 @@ suites, and (once fs-ledger lands) the ledger `events` table. Layer: UTIL.
 mismatch, or exact-event mismatch) provide structured refusal. `IdentityBuildError`
 distinguishes canonical-byte-cap refusal, unrepresentable framing, length
 overflow, and allocation failure. No panics cross the bounded identity or
-event-validation boundaries; they reject rather than repair.
+event-validation boundaries; they reject rather than repair. Process-capture
+constructors reject zero bounds, malformed identities/hashes, and zero
+ordinals; non-monotone frames are returned untouched.
 
 ## Determinism class
 Deterministic: pure functions; no clocks (callers supply `wall_ns`), no I/O,
 no RNG.
 
 ## Cancellation behavior
-All operations O(event size). No Cx required.
+All operations O(event size). No Cx required. Process runners project external
+cancellation into `CaptureCancellation`; the pure capture state holds no
+lifecycle/control lock while applying backpressure.
 
 ## Unsafe boundary
 None.
@@ -97,6 +115,11 @@ admission and each refusal class; stale identity versions; monotone sequences;
 corruption rejection; failure-record lint; hostile-string escaping;
 non-finite tagging; FNV known answers; and exhaustive replay-frame mutations,
 including direct domain-prefix binding.
+
+The process-capture battery covers critical queue pressure and cancellation,
+sink failure, deterministic telemetry sampling, diagnostic drop coalescing,
+bounded gap-ledger pressure, durable oversized spill, lossy truncation,
+non-UTF-8 payload preservation, per-stream ordering, and final-receipt closure.
 
 ## No-claim boundaries
 - FNV-1a is NOT cryptographic; ledger-grade content addressing (BLAKE3-class)
@@ -124,3 +147,9 @@ including direct domain-prefix binding.
   allocation-infallible conveniences. Public admission paths that can receive
   resource-driving input must use `BoundedIdentityBuilder`; later migrations
   must make their owner APIs fallible rather than wrapping it in `expect`.
+- `process` is the deterministic policy/state layer, not a pipe reader,
+  artifact store, async executor, CLI renderer, or source print-macro scanner.
+  Those owners must project its decisions into canonical events and
+  independently authenticate committed artifacts. `DurableArtifactPointer`
+  records constructor-level admission; it cannot prove an external store
+  truthful by itself.
