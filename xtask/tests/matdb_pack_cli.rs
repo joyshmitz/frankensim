@@ -27,6 +27,7 @@ const METHANE_SEED_MANIFEST: &str = "data/matdb/seed-v1/methane/manifest.tsv";
 const ALUMINUM_6061_T6_SEED_MANIFEST: &str =
     "data/matdb/seed-v1/aluminum-6061-t6-cryogenic/manifest.tsv";
 const OFHC_COPPER_SEED_MANIFEST: &str = "data/matdb/seed-v1/ofhc-copper-rrr100/manifest.tsv";
+const AISI_4140_RC33_SEED_MANIFEST: &str = "data/matdb/seed-v1/aisi-4140-rc33/manifest.tsv";
 const NASA_SEED_LICENSE: &str = "Work-of-the-US-Government-Public-Use-Permitted";
 const NIST_PUBLIC_INFORMATION_LICENSE: &str = "NIST-Public-Information-Attribution-Requested";
 const NASA_METHANE_MOLAR_MASS_G_PER_MOL: f64 = 16.042_46;
@@ -787,6 +788,260 @@ fn g3_cli_compiles_committed_ofhc_copper_exact_point_seed() {
         assert!(
             relative_difference <= 0.02,
             "NIST-derived 293 K OFHC {property} and NASA room-temperature comparison differ by {relative_difference:e}"
+        );
+    }
+
+    let decisions = String::from_utf8(first.stdout).expect("decision stream is UTF-8");
+    assert!(decisions.contains("\"reason_code\":\"uncertainty_policy_admitted\""));
+    assert!(decisions.contains("\"reason_code\":\"runtime_pack_self_verified\""));
+    assert!(
+        decisions
+            .lines()
+            .all(|row| row.contains(&format!("\"pack_hash\":\"{pack_hash}\"")))
+    );
+}
+
+#[test]
+fn g3_cli_compiles_committed_aisi_4140_rc33_exact_condition_seed() {
+    let manifest = workspace_path(AISI_4140_RC33_SEED_MANIFEST);
+    assert!(
+        manifest.is_file(),
+        "committed AISI 4140 Rockwell C33 seed manifest is missing"
+    );
+    let directory = fixture_dir();
+    let first_path = directory.join("aisi-4140-rc33-first.fsmatpk");
+    let second_path = directory.join("aisi-4140-rc33-second.fsmatpk");
+
+    let first = run_compiler(&manifest, &first_path);
+    let second = run_compiler(&manifest, &second_path);
+    assert!(
+        first.status.success(),
+        "first AISI 4140 Rockwell C33 seed compilation failed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(
+        second.status.success(),
+        "second AISI 4140 Rockwell C33 seed compilation failed: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(
+        first.stdout, second.stdout,
+        "AISI 4140 Rockwell C33 decision stream moved"
+    );
+    assert_decision_compiler(&first, MATERIAL_COMPILER_ID);
+
+    let first_bytes = fs::read(first_path).expect("read first AISI 4140 pack");
+    let second_bytes = fs::read(second_path).expect("read second AISI 4140 pack");
+    assert_eq!(first_bytes, second_bytes, "AISI 4140 pack bytes moved");
+    let decoded = NormalizedPack::from_bytes(&first_bytes).expect("decode AISI 4140 pack");
+    let pack_hash = decoded.content_hash();
+    let decoded = NormalizedPack::from_bytes_verified(pack_hash, &first_bytes)
+        .expect("verify AISI 4140 pack identity");
+
+    assert_eq!(decoded.pack_id(), "aisi-4140-qq-s-624-rc33");
+    assert_eq!(decoded.compiler(), MATERIAL_COMPILER_ID);
+    assert!(
+        decoded
+            .redistribution_terms()
+            .contains("public use is permitted")
+    );
+    assert_eq!(decoded.claims().claim_count(), 14);
+    assert!(decoded.joint_statistics().is_empty());
+
+    let pressure_dims = Dims([-1, 1, -2, 0, 0, 0]);
+    let energy_dims = Dims([2, 1, -2, 0, 0, 0]);
+    let dimensionless = Dims([0, 0, 0, 0, 0, 0]);
+    let expected = [
+        (
+            "ultimate_tensile_strength",
+            26.7,
+            1.074 * 1.0e9,
+            pressure_dims,
+            "longitudinal round smooth tensile",
+            "five smooth and five notched tensile specimens",
+        ),
+        (
+            "yield_strength_0p2_offset",
+            26.7,
+            0.985 * 1.0e9,
+            pressure_dims,
+            "longitudinal round smooth tensile",
+            "five smooth and five notched tensile specimens",
+        ),
+        (
+            "tensile_elongation_2in",
+            26.7,
+            19.4 * 0.01,
+            dimensionless,
+            "longitudinal round smooth tensile",
+            "five smooth and five notched tensile specimens",
+        ),
+        (
+            "tensile_reduction_of_area",
+            26.7,
+            62.5 * 0.01,
+            dimensionless,
+            "longitudinal round smooth tensile",
+            "five smooth and five notched tensile specimens",
+        ),
+        (
+            "charpy_v_notch_impact_energy",
+            26.7,
+            95.2,
+            energy_dims,
+            "MIL-STD-151 Charpy V-notched impact",
+            "four impact tests",
+        ),
+        (
+            "double_shear_ultimate_strength",
+            26.7,
+            0.66 * 1.0e9,
+            pressure_dims,
+            "double-shear specimens",
+            "four shear specimens",
+        ),
+        (
+            "double_shear_yield_strength",
+            26.7,
+            0.56 * 1.0e9,
+            pressure_dims,
+            "double-shear specimens",
+            "four shear specimens",
+        ),
+        (
+            "ultimate_tensile_strength",
+            -73.0,
+            1.158 * 1.0e9,
+            pressure_dims,
+            "longitudinal round smooth tensile",
+            "five smooth and five notched tensile specimens",
+        ),
+        (
+            "yield_strength_0p2_offset",
+            -73.0,
+            1.060 * 1.0e9,
+            pressure_dims,
+            "longitudinal round smooth tensile",
+            "five smooth and five notched tensile specimens",
+        ),
+        (
+            "tensile_elongation_2in",
+            -73.0,
+            20.0 * 0.01,
+            dimensionless,
+            "longitudinal round smooth tensile",
+            "five smooth and five notched tensile specimens",
+        ),
+        (
+            "tensile_reduction_of_area",
+            -73.0,
+            61.0 * 0.01,
+            dimensionless,
+            "longitudinal round smooth tensile",
+            "five smooth and five notched tensile specimens",
+        ),
+        (
+            "charpy_v_notch_impact_energy",
+            -73.0,
+            84.6,
+            energy_dims,
+            "MIL-STD-151 Charpy V-notched impact",
+            "four impact tests",
+        ),
+        (
+            "double_shear_ultimate_strength",
+            -73.0,
+            0.73 * 1.0e9,
+            pressure_dims,
+            "double-shear specimens",
+            "four shear specimens",
+        ),
+        (
+            "double_shear_yield_strength",
+            -73.0,
+            0.60 * 1.0e9,
+            pressure_dims,
+            "double-shear specimens",
+            "four shear specimens",
+        ),
+    ];
+
+    for (property, temperature_c, expected_value, expected_dims, method_note, sample_note) in
+        expected
+    {
+        let temperature_k = temperature_c + 273.15;
+        let (_, claim) = decoded
+            .claims()
+            .claims_for(property)
+            .into_iter()
+            .find(|(_, claim)| {
+                claim.validity.bound("temperature") == Some((temperature_k, temperature_k))
+            })
+            .unwrap_or_else(|| {
+                panic!("missing AISI 4140 {property} claim at {temperature_c} degC")
+            });
+        let PropertyValue::Scalar { value, dims } = &claim.value else {
+            panic!("AISI 4140 {property} at {temperature_c} degC was not scalar");
+        };
+        assert_eq!(
+            *dims, expected_dims,
+            "AISI 4140 {property} dimensions moved"
+        );
+        let scale = expected_value.abs().max(1.0);
+        let relative_error = (*value - expected_value).abs() / scale;
+        assert!(
+            relative_error <= 2.0e-15,
+            "AISI 4140 {property} at {temperature_c} degC moved by {relative_error:e} relative"
+        );
+        assert_eq!(claim.uncertainty, UncertaintyModel::Unstated);
+        assert_eq!(
+            claim.interpolation,
+            InterpolationPolicy::ConstantWithinValidity
+        );
+        assert_eq!(claim.observations.len(), 1);
+        assert_eq!(claim.provenance.license, NASA_SEED_LICENSE);
+        assert!(claim.provenance.source.contains("NASA-TM-X-64791"));
+        assert!(claim.provenance.source.contains("[source:primary]"));
+        let observation = decoded
+            .claims()
+            .observation(claim.observations[0])
+            .expect("AISI 4140 claim observation remains linked");
+        assert_eq!(
+            observation.specimen,
+            "AISI-4140-QQ-S-624-heat-137M186-1in-bar-Rockwell-C33"
+        );
+        assert!(observation.method.contains(method_note));
+        assert!(observation.caveats.contains(sample_note));
+        assert!(observation.caveats.contains("oil quenched"));
+        assert!(observation.caveats.contains("tempered 566 degC"));
+    }
+
+    // NASA Table IV prints both ksi and GN/m2. This checks transcription and
+    // unit normalization against the redundant source columns; it is not an
+    // independent-source agreement claim.
+    for (property, temperature_c, source_ksi) in [
+        ("ultimate_tensile_strength", 26.7, 155.8),
+        ("yield_strength_0p2_offset", 26.7, 142.9),
+        ("ultimate_tensile_strength", -73.0, 168.0),
+        ("yield_strength_0p2_offset", -73.0, 153.7),
+    ] {
+        let temperature_k = temperature_c + 273.15;
+        let (_, claim) = decoded
+            .claims()
+            .claims_for(property)
+            .into_iter()
+            .find(|(_, claim)| {
+                claim.validity.bound("temperature") == Some((temperature_k, temperature_k))
+            })
+            .expect("AISI 4140 redundant-unit comparison point");
+        let PropertyValue::Scalar { value, .. } = &claim.value else {
+            panic!("AISI 4140 redundant-unit comparison point was not scalar");
+        };
+        let source_ksi_in_pa = source_ksi * 6_894_757.293_168_361;
+        let relative_rounding_difference = (*value - source_ksi_in_pa).abs() / *value;
+        assert!(
+            relative_rounding_difference <= 5.0e-4,
+            "AISI 4140 {property} at {temperature_c} degC disagrees with the source ksi column by {relative_rounding_difference:e}"
         );
     }
 

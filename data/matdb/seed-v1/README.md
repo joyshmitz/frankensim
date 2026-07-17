@@ -125,6 +125,35 @@ OFHC Copper references:
 - <https://ntrs.nasa.gov/citations/19750021165>
 - <https://ntrs.nasa.gov/api/citations/19750021165/downloads/19750021165.pdf>
 
+## AISI 4140 Rockwell C33 low-temperature tranche
+
+`aisi-4140-rc33/` is a condition-pinned structural-steel tranche from
+NASA-TM-X-64791, not a generic 4140 card. The retained specimen is QQ-S-624
+heat `137M186`, machined from nominal one-inch bar. NASA normalized the stock
+at `899 degC`, hardened it at `851 degC`, oil quenched it, tempered it at
+`566 degC`, and measured Rockwell C33. Those processing and hardness fields
+are part of every observation identity.
+
+At the report's exact `26.7 degC` and `-73 degC` test points, the pack retains
+ultimate tensile strength, 0.2%-offset yield strength, two-inch tensile
+elongation, reduction of area, MIL-STD-151 Charpy V-notch impact energy, and
+ultimate and yield double-shear strengths. The NASA table reports averages
+from five tensile specimen sets, four impact tests at each retained point, and
+four shear specimens. It does not publish dispersion or confidence metadata,
+so every runtime uncertainty is explicitly `Unstated`; sample counts are
+observation caveats, not fabricated error bars.
+
+The G3 pack battery checks NASA's redundant ksi/GPa columns for the retained
+tensile values within their printed rounding precision. This is a source-unit
+transcription check, not an independent-source agreement claim. No second
+source with a sufficiently identical heat, geometry, process schedule,
+hardness, and temperature condition is treated as interchangeable.
+
+AISI 4140 references:
+
+- <https://ntrs.nasa.gov/citations/19740002417>
+- <https://ntrs.nasa.gov/api/citations/19740002417/downloads/19740002417.pdf>
+
 To compile the sources into canonical runtime packs:
 
 ```bash
@@ -139,6 +168,10 @@ cargo run -p xtask -- matdb-pack \
 cargo run -p xtask -- matdb-pack \
   --manifest data/matdb/seed-v1/ofhc-copper-rrr100/manifest.tsv \
   --out /path/to/ofhc-copper-cryogenic.fsmatpk
+
+cargo run -p xtask -- matdb-pack \
+  --manifest data/matdb/seed-v1/aisi-4140-rc33/manifest.tsv \
+  --out /path/to/aisi-4140-qq-s-624-rc33.fsmatpk
 ```
 
 ## No-claim boundary
@@ -167,3 +200,10 @@ define electrical resistivity, density, mechanical strength, temper, grain
 state, purity beyond the source's OFHC class, or a continuous-temperature
 model. Only its conductivity claims bind `RRR = 100`; the source leaves RRR
 unstated for specific heat, and the stored observation preserves that gap.
+
+The AISI 4140 tranche applies only to the exact NASA heat/process/hardness/bar
+condition above and the two retained temperatures. It does not provide a
+continuous-temperature law, elastic modulus or Poisson ratio, a constitutive
+plasticity model, fatigue or fracture curves, general cryogenic qualification,
+or permission to substitute another 4140 heat treatment. The report's Rockwell
+C44 branch remains a separate conflicting condition and is not fused here.
