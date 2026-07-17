@@ -185,6 +185,156 @@ fn owen_scramble(x: u32, seed: u64, dim: u32) -> u32 {
 // Rank-1 lattice rules (CBC construction).
 // ---------------------------------------------------------------------------
 
+/// Unsigned arbitrary-precision integer used only to rank CBC candidates.
+///
+/// The Bernoulli-B₂ kernel is rational at every lattice point. At a fixed
+/// prefix length every candidate has the same denominator, so an exact sum of
+/// numerator products determines the declared objective order. Base-2³² limbs
+/// keep multiplication by the at-most-67-bit kernel numerator straightforward
+/// and make overflow impossible except as an explicit allocation/capacity
+/// failure. This avoids importing a general big-integer runtime dependency.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ExactNat {
+    /// Little-endian base-2³² limbs; zero has no limbs.
+    limbs: Vec<u32>,
+}
+
+impl ExactNat {
+    const LIMB_BITS: u32 = 32;
+
+    fn zero() -> Self {
+        Self { limbs: Vec::new() }
+    }
+
+    fn one() -> Self {
+        Self { limbs: vec![1] }
+    }
+
+    fn normalize(&mut self) {
+        while self.limbs.last() == Some(&0) {
+            let removed = self
+                .limbs
+                .pop()
+                .expect("a zero limb observed by last() is present");
+            debug_assert_eq!(removed, 0);
+        }
+    }
+
+    fn magnitude_cmp(&self, other: &Self) -> core::cmp::Ordering {
+        match self.limbs.len().cmp(&other.limbs.len()) {
+            core::cmp::Ordering::Equal => self.limbs.iter().rev().cmp(other.limbs.iter().rev()),
+            ordering => ordering,
+        }
+    }
+
+    /// Add `multiplicand * factor` exactly using base-2³² schoolbook
+    /// arithmetic. The score accumulator deliberately retains spare zero
+    /// limbs between additions and normalizes once before comparison.
+    fn add_mul_factor(&mut self, multiplicand: &Self, factor: u128) {
+        if factor == 0 || multiplicand.limbs.is_empty() {
+            return;
+        }
+
+        let mut factor_limbs = [0_u32; 4];
+        let mut remaining = factor;
+        let mut factor_len = 0_usize;
+        while remaining != 0 {
+            factor_limbs[factor_len] = u32::try_from(remaining & u128::from(u32::MAX))
+                .expect("a masked base-2^32 limb fits u32");
+            remaining >>= Self::LIMB_BITS;
+            factor_len += 1;
+        }
+
+        let needed = multiplicand
+            .limbs
+            .len()
+            .checked_add(factor_len)
+            .and_then(|length| length.checked_add(1))
+            .expect("exact CBC accumulator limb capacity overflow");
+        if self.limbs.len() < needed {
+            self.limbs.resize(needed, 0);
+        }
+
+        for (source_index, &source_limb) in multiplicand.limbs.iter().enumerate() {
+            let mut carry = 0_u64;
+            for (factor_index, &factor_limb) in factor_limbs[..factor_len].iter().enumerate() {
+                let destination = source_index + factor_index;
+                let wide = u64::from(source_limb)
+                    .checked_mul(u64::from(factor_limb))
+                    .and_then(|value| value.checked_add(u64::from(self.limbs[destination])))
+                    .and_then(|value| value.checked_add(carry))
+                    .expect("base-2^32 multiply-add fits u64");
+                self.limbs[destination] = u32::try_from(wide & u64::from(u32::MAX))
+                    .expect("a masked base-2^32 limb fits u32");
+                carry = wide >> Self::LIMB_BITS;
+            }
+
+            let mut destination = source_index + factor_len;
+            while carry != 0 {
+                if destination == self.limbs.len() {
+                    self.limbs.push(0);
+                }
+                let wide = u64::from(self.limbs[destination])
+                    .checked_add(carry)
+                    .expect("base-2^32 carry propagation fits u64");
+                self.limbs[destination] = u32::try_from(wide & u64::from(u32::MAX))
+                    .expect("a masked base-2^32 limb fits u32");
+                carry = wide >> Self::LIMB_BITS;
+                destination += 1;
+            }
+        }
+    }
+
+    fn mul_assign_factor(&mut self, factor: u128) {
+        let multiplicand = Self {
+            limbs: core::mem::take(&mut self.limbs),
+        };
+        self.add_mul_factor(&multiplicand, factor);
+        self.normalize();
+    }
+
+    #[cfg(test)]
+    fn from_u128(mut value: u128) -> Self {
+        let mut result = Self::zero();
+        while value != 0 {
+            result.limbs.push(
+                u32::try_from(value & u128::from(u32::MAX))
+                    .expect("a masked base-2^32 limb fits u32"),
+            );
+            value >>= Self::LIMB_BITS;
+        }
+        result
+    }
+
+    #[cfg(test)]
+    fn to_u128(&self) -> u128 {
+        assert!(
+            self.limbs.len() <= 4,
+            "test conversion only covers values representable by u128"
+        );
+        self.limbs.iter().rev().fold(0_u128, |value, &limb| {
+            (value << Self::LIMB_BITS) | u128::from(limb)
+        })
+    }
+}
+
+/// Integer numerator of `1 + B₂(residue/n)` over the candidate-independent
+/// denominator `6*n²`.
+fn exact_kernel_numerator(n: u32, residue: u32) -> u128 {
+    let n = u128::from(n);
+    let residue = u128::from(residue);
+    let positive = 7 * n * n + 6 * residue * residue;
+    positive
+        .checked_sub(6 * residue * n)
+        .expect("the Bernoulli-B2 kernel numerator is non-negative")
+}
+
+fn lattice_residue(point: usize, generator: u32, n: u32) -> u32 {
+    let point = u64::try_from(point).expect("a u32-bounded lattice index fits u64");
+    u32::try_from(point * u64::from(generator) % u64::from(n))
+        .expect("a modular residue below n fits u32")
+}
+
 /// A rank-1 lattice rule: points x_k = frac(k · z / n), k = 0..n.
 #[derive(Debug, Clone)]
 pub struct Lattice {
@@ -198,41 +348,65 @@ impl Lattice {
     /// Component-by-component construction in the product-weighted Korobov
     /// space with the Bernoulli-B₂ kernel (weights γ_j = 1): for each
     /// dimension, choose z_j minimizing the worst-case error given the
-    /// previously fixed components. O(n²·dim) — fine at tabled sizes.
+    /// previously fixed components. Candidate ordering is exact: the rational
+    /// kernel's common denominator is removed and arbitrary-precision integer
+    /// numerator sums are compared, with the lower candidate winning exact
+    /// ties. There are O(n²·dim) lattice visits; exact-integer limb work grows
+    /// with prefix length.
     ///
     /// # Panics
     /// If `n < 3` or `dim` is 0.
     #[must_use]
     pub fn cbc(n: u32, dim: usize) -> Lattice {
         assert!(n >= 3 && dim >= 1, "lattice needs n >= 3, dim >= 1");
-        // B₂(x) = x² − x + 1/6; kernel ω(x) = 1 + γ·B₂({x}).
-        let b2 = |x: f64| x * x - x + 1.0 / 6.0;
-        let nf = f64::from(n);
-        // prod[k] = Π_j (1 + B₂({k z_j / n})) over chosen dims.
-        let mut prod = vec![1.0f64; n as usize];
+        let point_count = usize::try_from(n).expect("lattice point count fits usize");
+        // products[k] is the exact numerator product for the chosen prefix at
+        // point k. The omitted denominator (6*n²)^prefix_len is common to
+        // every candidate in one CBC step.
+        let mut products = vec![ExactNat::one(); point_count];
         let mut z = Vec::with_capacity(dim);
-        for _ in 0..dim {
-            let mut best = (f64::INFINITY, 1u32);
-            for cand in 1..n {
-                if gcd(cand, n) != 1 {
+
+        // Every unit modulo n permutes the complete residue set, so every
+        // admissible first component has exactly the same one-dimensional
+        // score. Candidate 1 is therefore the mathematical lowest-candidate
+        // tie winner for every supported n, not a fixture-specific shortcut.
+        let first = 1_u32;
+        for (point, product) in products.iter_mut().enumerate() {
+            let residue = lattice_residue(point, first, n);
+            product.mul_assign_factor(exact_kernel_numerator(n, residue));
+        }
+        z.push(first);
+
+        for _ in 1..dim {
+            let mut best: Option<(ExactNat, u32)> = None;
+            for candidate in 1..n {
+                if gcd(candidate, n) != 1 {
                     continue;
                 }
-                // e²(z, cand) ∝ Σ_k prod[k]·(1 + B₂({k·cand/n}))
-                let mut err = 0.0;
-                for k in 0..n {
-                    let frac =
-                        f64::from((u64::from(k) * u64::from(cand) % u64::from(n)) as u32) / nf;
-                    err += prod[k as usize] * (1.0 + b2(frac));
+                let mut score = ExactNat::zero();
+                for (point, prefix_product) in products.iter().enumerate() {
+                    let residue = lattice_residue(point, candidate, n);
+                    score.add_mul_factor(prefix_product, exact_kernel_numerator(n, residue));
                 }
-                // Deterministic tie-breaking: strictly-less keeps lowest cand.
-                if err < best.0 {
-                    best = (err, cand);
+                score.normalize();
+
+                let replace = match &best {
+                    None => true,
+                    Some((best_score, best_candidate)) => match score.magnitude_cmp(best_score) {
+                        core::cmp::Ordering::Less => true,
+                        core::cmp::Ordering::Equal => candidate < *best_candidate,
+                        core::cmp::Ordering::Greater => false,
+                    },
+                };
+                if replace {
+                    best = Some((score, candidate));
                 }
             }
-            let chosen = best.1;
-            for k in 0..n {
-                let frac = f64::from((u64::from(k) * u64::from(chosen) % u64::from(n)) as u32) / nf;
-                prod[k as usize] *= 1.0 + b2(frac);
+
+            let (_, chosen) = best.expect("candidate 1 is coprime to every n");
+            for (point, product) in products.iter_mut().enumerate() {
+                let residue = lattice_residue(point, chosen, n);
+                product.mul_assign_factor(exact_kernel_numerator(n, residue));
             }
             z.push(chosen);
         }
@@ -282,6 +456,21 @@ pub fn baker(x: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn exact_prefix_score_for_test(n: u32, generators: &[u32]) -> ExactNat {
+        let point_count = usize::try_from(n).expect("lattice point count fits usize");
+        let mut score = ExactNat::zero();
+        for point in 0..point_count {
+            let mut product = ExactNat::one();
+            for &generator in generators {
+                let residue = lattice_residue(point, generator, n);
+                product.mul_assign_factor(exact_kernel_numerator(n, residue));
+            }
+            score.add_mul_factor(&product, 1);
+        }
+        score.normalize();
+        score
+    }
 
     /// EXACT stratification: for every dimension of a valid base-2 Sobol
     /// net, the first 2^m points put EXACTLY one point in each dyadic bin
@@ -471,6 +660,103 @@ mod tests {
         println!(
             "{{\"suite\":\"fs-rand/qmc\",\"case\":\"cbc\",\"verdict\":\"pass\",\"detail\":\"err2 {e_small:.3e}@257 -> {e_big:.3e}@1031\"}}"
         );
+    }
+
+    #[test]
+    fn exact_nat_multiply_add_carries_match_u128() {
+        let max_kernel_factor = 7 * u128::from(u32::MAX) * u128::from(u32::MAX);
+        let cases = [
+            (0_u128, 0_u128, max_kernel_factor),
+            (0, u128::from(u32::MAX), max_kernel_factor),
+            (u128::from(u64::MAX), (1_u128 << 64) + 1, (1_u128 << 32) + 1),
+            (
+                (1_u128 << 100) + 17,
+                (1_u128 << 63) + 29,
+                (1_u128 << 31) + 3,
+            ),
+        ];
+
+        for (accumulator, multiplicand, factor) in cases {
+            let expected = accumulator
+                .checked_add(
+                    multiplicand
+                        .checked_mul(factor)
+                        .expect("fixture product fits u128"),
+                )
+                .expect("fixture multiply-add fits u128");
+            let mut computed = ExactNat::from_u128(accumulator);
+            computed.add_mul_factor(&ExactNat::from_u128(multiplicand), factor);
+            computed.normalize();
+            assert_eq!(computed.to_u128(), expected);
+
+            if accumulator == 0 {
+                let mut assigned = ExactNat::from_u128(multiplicand);
+                assigned.mul_assign_factor(factor);
+                assert_eq!(assigned.to_u128(), expected);
+            }
+        }
+
+        // Independent base-2^32 KAT beyond u128, so the production-sized
+        // multi-limb path cannot self-confirm through the bounded conversion.
+        let mut wide = ExactNat::from_u128(u128::MAX);
+        wide.mul_assign_factor(max_kernel_factor);
+        assert_eq!(
+            wide.limbs,
+            [
+                4_294_967_289,
+                13,
+                4_294_967_289,
+                4_294_967_295,
+                6,
+                4_294_967_282,
+                6
+            ]
+        );
+        wide.add_mul_factor(
+            &ExactNat::from_u128((1_u128 << 127) + 12_345),
+            (1_u128 << 64) + 17,
+        );
+        wide.normalize();
+        assert_eq!(
+            wide.limbs,
+            [209_858, 14, 12_338, 2_147_483_648, 15, 2_147_483_634, 7]
+        );
+    }
+
+    /// G0 finite property sweep: multiplication by a unit modulo n merely
+    /// permutes the complete residue set, so every admissible first component
+    /// has the same exact score and CBC must choose the lowest one.
+    #[test]
+    fn cbc_first_component_units_are_exact_ties_and_choose_one() {
+        for n in 3..=64_u32 {
+            let reference = exact_prefix_score_for_test(n, &[1]);
+            for candidate in 1..n {
+                if gcd(candidate, n) == 1 {
+                    assert_eq!(
+                        exact_prefix_score_for_test(n, &[candidate]),
+                        reference,
+                        "unit {candidate} must only permute residues for n={n}"
+                    );
+                }
+            }
+            assert_eq!(Lattice::cbc(n, 1).z, [1]);
+        }
+    }
+
+    #[test]
+    fn cbc_resolves_later_exact_ties_and_matches_independent_kat() {
+        let candidate_one = exact_prefix_score_for_test(5, &[1, 2, 1, 2, 1]);
+        let candidate_two = exact_prefix_score_for_test(5, &[1, 2, 1, 2, 2]);
+        assert_eq!(
+            candidate_one, candidate_two,
+            "the later tie fixture is exact"
+        );
+        assert_eq!(Lattice::cbc(5, 6).z, [1, 2, 1, 2, 1, 2]);
+
+        // Independently enumerated exact-integer KAT. This size is large
+        // enough to exercise multi-limb prefix scores without duplicating the
+        // n=257 replay receipt in the integration Casebook.
+        assert_eq!(Lattice::cbc(127, 5).z, [1, 29, 24, 56, 35]);
     }
 
     #[test]
