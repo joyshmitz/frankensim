@@ -36,10 +36,10 @@ const PARSE_INPUT_IDENTITY_DOMAIN: &str = "frankensim.fs-qty.parse-input.v1";
 /// Explicit work and diagnostic-retention budget for one quantity literal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParseBudget {
-    max_input_bytes: usize,
-    max_factors: usize,
-    max_token_bytes: usize,
-    max_diagnostic_bytes: usize,
+    input_bytes: usize,
+    factor_count: usize,
+    token_bytes: usize,
+    diagnostic_bytes: usize,
 }
 
 impl ParseBudget {
@@ -55,35 +55,35 @@ impl ParseBudget {
         max_diagnostic_bytes: usize,
     ) -> Self {
         Self {
-            max_input_bytes,
-            max_factors,
-            max_token_bytes,
-            max_diagnostic_bytes,
+            input_bytes: max_input_bytes,
+            factor_count: max_factors,
+            token_bytes: max_token_bytes,
+            diagnostic_bytes: max_diagnostic_bytes,
         }
     }
 
     /// Maximum admitted UTF-8 source bytes.
     #[must_use]
     pub const fn max_input_bytes(self) -> usize {
-        self.max_input_bytes
+        self.input_bytes
     }
 
     /// Maximum unit factors in one expression.
     #[must_use]
     pub const fn max_factors(self) -> usize {
-        self.max_factors
+        self.factor_count
     }
 
     /// Maximum bytes in a number, unit, or exponent token.
     #[must_use]
     pub const fn max_token_bytes(self) -> usize {
-        self.max_token_bytes
+        self.token_bytes
     }
 
     /// Maximum retained UTF-8 excerpt bytes in an error.
     #[must_use]
     pub const fn max_diagnostic_bytes(self) -> usize {
-        self.max_diagnostic_bytes
+        self.diagnostic_bytes
     }
 }
 
@@ -115,7 +115,7 @@ pub struct ParseError {
     pub input_bytes: usize,
     /// Full-input identity when the input passed byte admission. Oversized
     /// input is deliberately not scanned merely to manufacture a hash.
-    pub source_hash: Option<ContentHash>,
+    pub source_hash: Option<Box<ContentHash>>,
     /// Byte offset of the failure.
     pub at: usize,
     /// What went wrong.
@@ -162,9 +162,9 @@ impl fmt::Display for ParseError {
             self.preview_start,
             self.preview_start + self.preview.len(),
             self.input_bytes,
-            self.source_hash.map_or_else(
+            self.source_hash.as_deref().map_or_else(
                 || "unavailable-before-byte-admission".to_string(),
-                |hash| hash.to_string()
+                ToString::to_string,
             ),
             self.at,
             self.kind,
@@ -181,11 +181,11 @@ impl ParseError {
     /// precedes the hash pass.
     #[must_use]
     pub fn verifies_source(&self, source: &str) -> bool {
-        let Some(expected) = self.source_hash else {
+        let Some(expected) = self.source_hash.as_deref() else {
             return false;
         };
         self.input_bytes == source.len()
-            && expected == hash_domain(PARSE_INPUT_IDENTITY_DOMAIN, source.as_bytes())
+            && *expected == hash_domain(PARSE_INPUT_IDENTITY_DOMAIN, source.as_bytes())
     }
 }
 
@@ -421,7 +421,7 @@ fn error_from_source(
         preview,
         preview_start,
         input_bytes: input.len(),
-        source_hash,
+        source_hash: source_hash.map(Box::new),
         at,
         kind,
         help: help.to_string(),
