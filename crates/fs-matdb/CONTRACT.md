@@ -327,7 +327,8 @@ NIST displayed-precision agreement checks.
   `data/matdb/seed-v1` tranches contain raw, offline-compiled gas-species
   associations, six exact-temperature Aluminum 6061-T6 scalar claims, and
   four exact-temperature OFHC Copper scalar claims, plus fourteen
-  exact-temperature AISI 4140 mechanical-property claims.
+  exact-temperature AISI 4140 mechanical-property claims and three
+  small-sample AISI 1045 tensile claims.
   The gas associations do not define air or exhaust mixture compositions,
   humidity, or combustion completeness. The Aluminum claims do not define a
   continuous constitutive curve or a general-purpose design card; their NIST
@@ -340,9 +341,16 @@ NIST displayed-precision agreement checks.
   C10200. The 4140 claims bind NASA's QQ-S-624 heat 137M186, one-inch bar,
   normalize/harden/oil-quench/temper schedule, and Rockwell C33 condition;
   they are not generic values for the grade or its separately reported C44
-  branch. Bead 1sxe still owns the remaining curated material/property and
-  interface-system dataset. No equilibrium computation happens here
-  (fs-thermochem consumes phase data; this crate only stores it).
+  branch. The 1045 claims bind one cold-drawn bar and ASTM E8 specimen series;
+  their Student-t intervals are derived from three printed replicates under an
+  explicit iid-normal assumption. Because that source omits test temperature,
+  each claim requires the fail-closed
+  `source_test_temperature_known = 0` query axis and supplies no temperature
+  validity interval. The flag acknowledges missing metadata; it does not make
+  the values temperature-independent. No hardness or joint covariance is
+  admitted from that source. Bead 1sxe still owns the remaining curated
+  material/property and interface-system dataset. No equilibrium computation
+  happens here (fs-thermochem consumes phase data; this crate only stores it).
 - The L1 pack codec does not parse handbooks, CSV, NASA tables, license text,
   or other raw formats and does not decide whether terms permit
   redistribution; those are L6/offline compiler responsibilities. A nonblank

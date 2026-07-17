@@ -154,6 +154,45 @@ AISI 4140 references:
 - <https://ntrs.nasa.gov/citations/19740002417>
 - <https://ntrs.nasa.gov/api/citations/19740002417/downloads/19740002417.pdf>
 
+## AISI 1045 cold-drawn tensile tranche
+
+`aisi-1045-cold-drawn/` retains one experimental tensile series from Kang and
+Lee's 2024 turning study, not a generic handbook card for AISI 1045. The source
+identifies an approximately `0.45 wt% C` cold-drawn AISI 1045 bar with `37 mm`
+outside diameter and `102 mm` starting length. Three ASTM E8 cylindrical
+specimens used a `50 mm` gauge length, `12.5 mm` test-section diameter,
+extensometry, and `10 mm/min` crosshead speed.
+
+The pack retains the paper's reported means: `550.51 MPa` yield strength,
+`695.31 MPa` ultimate tensile strength, and `14.1%` elongation over the
+`50 mm` gauge length. The source also prints all three replicate values for
+each property. The pack derives symmetric 95% Student-t half-widths for the
+mean from those replicates using `t(0.975, df=2) = 4.302652729911275` under an
+explicit iid-normal assumption: `21.7281028138069 MPa`,
+`29.0129099774989 MPa`, and `0.943972330500626` percentage points,
+respectively. These are small-sample confidence intervals for the reported
+series, not grade tolerances or certified material allowables. Although the
+three properties were measured on paired specimen rows, the pack does not
+invent a joint covariance block.
+
+The paper does not report tensile-test temperature. Every claim therefore
+requires both the exact normalized crosshead-speed point and the explicit
+dimensionless context `source_test_temperature_known = 0`. That second axis is
+a fail-closed acknowledgement of missing source metadata, not a physical
+temperature. No `temperature` validity interval is present, and a caller must
+not interpret these values as temperature-independent. The paper is published
+under Creative Commons Attribution 4.0 International; the manifest retains the
+authors, title, journal, DOI, and license.
+
+The paper's printed Vickers-hardness replicates round to a mean different from
+the mean printed in the same table, so this tranche refuses to select either
+number. No second source with the same bar, cold-drawn state, specimen geometry,
+test rate, and unreported temperature is treated as interchangeable.
+
+AISI 1045 reference:
+
+- <https://www.mdpi.com/2227-9717/12/6/1171>
+
 To compile the sources into canonical runtime packs:
 
 ```bash
@@ -172,6 +211,10 @@ cargo run -p xtask -- matdb-pack \
 cargo run -p xtask -- matdb-pack \
   --manifest data/matdb/seed-v1/aisi-4140-rc33/manifest.tsv \
   --out /path/to/aisi-4140-qq-s-624-rc33.fsmatpk
+
+cargo run -p xtask -- matdb-pack \
+  --manifest data/matdb/seed-v1/aisi-1045-cold-drawn/manifest.tsv \
+  --out /path/to/aisi-1045-cold-drawn-tensile.fsmatpk
 ```
 
 ## No-claim boundary
@@ -207,3 +250,12 @@ continuous-temperature law, elastic modulus or Poisson ratio, a constitutive
 plasticity model, fatigue or fracture curves, general cryogenic qualification,
 or permission to substitute another 4140 heat treatment. The report's Rockwell
 C44 branch remains a separate conflicting condition and is not fused here.
+
+The AISI 1045 tranche applies only to the source's cold-drawn bar and three
+ASTM E8 specimens at the retained test rate. The source omits test temperature,
+supplier, heat number, and any heat-treatment history beyond `cold-drawn`;
+callers must explicitly acknowledge the missing temperature metadata through
+the fail-closed validity flag. The derived intervals assume three iid normal
+replicates and are not population scatter, minimum design values, process
+capability, or permission to substitute a different AISI 1045 condition. The
+tranche makes no hardness claim and admits no joint covariance.

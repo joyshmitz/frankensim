@@ -28,7 +28,10 @@ const ALUMINUM_6061_T6_SEED_MANIFEST: &str =
     "data/matdb/seed-v1/aluminum-6061-t6-cryogenic/manifest.tsv";
 const OFHC_COPPER_SEED_MANIFEST: &str = "data/matdb/seed-v1/ofhc-copper-rrr100/manifest.tsv";
 const AISI_4140_RC33_SEED_MANIFEST: &str = "data/matdb/seed-v1/aisi-4140-rc33/manifest.tsv";
+const AISI_1045_COLD_DRAWN_SEED_MANIFEST: &str =
+    "data/matdb/seed-v1/aisi-1045-cold-drawn/manifest.tsv";
 const NASA_SEED_LICENSE: &str = "Work-of-the-US-Government-Public-Use-Permitted";
+const CC_BY_4_0_LICENSE: &str = "CC-BY-4.0";
 const NIST_PUBLIC_INFORMATION_LICENSE: &str = "NIST-Public-Information-Attribution-Requested";
 const NASA_METHANE_MOLAR_MASS_G_PER_MOL: f64 = 16.042_46;
 const NIST_SRD69_METHANE_MOLAR_MASS_KG_PER_MOL: f64 = 0.016_042_5;
@@ -1043,6 +1046,208 @@ fn g3_cli_compiles_committed_aisi_4140_rc33_exact_condition_seed() {
             relative_rounding_difference <= 5.0e-4,
             "AISI 4140 {property} at {temperature_c} degC disagrees with the source ksi column by {relative_rounding_difference:e}"
         );
+    }
+
+    let decisions = String::from_utf8(first.stdout).expect("decision stream is UTF-8");
+    assert!(decisions.contains("\"reason_code\":\"uncertainty_policy_admitted\""));
+    assert!(decisions.contains("\"reason_code\":\"runtime_pack_self_verified\""));
+    assert!(
+        decisions
+            .lines()
+            .all(|row| row.contains(&format!("\"pack_hash\":\"{pack_hash}\"")))
+    );
+}
+
+#[test]
+fn g3_cli_compiles_committed_aisi_1045_cold_drawn_tensile_seed() {
+    let manifest = workspace_path(AISI_1045_COLD_DRAWN_SEED_MANIFEST);
+    assert!(
+        manifest.is_file(),
+        "committed AISI 1045 cold-drawn seed manifest is missing"
+    );
+    let directory = fixture_dir();
+    let first_path = directory.join("aisi-1045-cold-drawn-first.fsmatpk");
+    let second_path = directory.join("aisi-1045-cold-drawn-second.fsmatpk");
+
+    let first = run_compiler(&manifest, &first_path);
+    let second = run_compiler(&manifest, &second_path);
+    assert!(
+        first.status.success(),
+        "first AISI 1045 cold-drawn seed compilation failed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(
+        second.status.success(),
+        "second AISI 1045 cold-drawn seed compilation failed: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(
+        first.stdout, second.stdout,
+        "AISI 1045 cold-drawn decision stream moved"
+    );
+    assert_decision_compiler(&first, MATERIAL_COMPILER_ID);
+
+    let first_bytes = fs::read(first_path).expect("read first AISI 1045 pack");
+    let second_bytes = fs::read(second_path).expect("read second AISI 1045 pack");
+    assert_eq!(first_bytes, second_bytes, "AISI 1045 pack bytes moved");
+    let decoded = NormalizedPack::from_bytes(&first_bytes).expect("decode AISI 1045 pack");
+    let pack_hash = decoded.content_hash();
+    let decoded = NormalizedPack::from_bytes_verified(pack_hash, &first_bytes)
+        .expect("verify AISI 1045 pack identity");
+
+    assert_eq!(decoded.pack_id(), "aisi-1045-cold-drawn-tensile");
+    assert_eq!(decoded.compiler(), MATERIAL_COMPILER_ID);
+    assert!(
+        decoded
+            .redistribution_terms()
+            .contains("Attribution 4.0 International")
+    );
+    assert_eq!(decoded.claims().claim_count(), 3);
+    assert!(
+        decoded.joint_statistics().is_empty(),
+        "paired source rows do not authorize an inferred covariance block"
+    );
+
+    let pressure_dims = Dims([-1, 1, -2, 0, 0, 0]);
+    let dimensionless = Dims([0, 0, 0, 0, 0, 0]);
+    let expected = [
+        (
+            "yield_strength",
+            550.51,
+            0.005,
+            [540.73, 557.59, 553.20],
+            1.0e6,
+            pressure_dims,
+        ),
+        (
+            "ultimate_tensile_strength",
+            695.31,
+            0.005,
+            [684.58, 707.75, 693.60],
+            1.0e6,
+            pressure_dims,
+        ),
+        (
+            "tensile_elongation_50mm",
+            14.1,
+            0.05,
+            [14.42, 14.20, 13.68],
+            0.01,
+            dimensionless,
+        ),
+    ];
+    let student_t_0p975_df2 = 4.302_652_729_911_275;
+    let crosshead_speed_m_per_s = 10.0 * 1.0e-3 / 60.0;
+
+    for (
+        property,
+        reported_mean,
+        reported_rounding_half_width,
+        samples,
+        source_unit_scale,
+        expected_dims,
+    ) in expected
+    {
+        let claims = decoded.claims().claims_for(property);
+        assert_eq!(
+            claims.len(),
+            1,
+            "expected exactly one AISI 1045 {property} claim"
+        );
+        let (id, claim) = claims[0];
+        let PropertyValue::Scalar { value, dims } = &claim.value else {
+            panic!("AISI 1045 {property} was not scalar");
+        };
+        assert_eq!(
+            *dims, expected_dims,
+            "AISI 1045 {property} dimensions moved"
+        );
+        let expected_value = reported_mean * source_unit_scale;
+        let relative_value_error = (*value - expected_value).abs() / expected_value.abs().max(1.0);
+        assert!(
+            relative_value_error <= 2.0e-15,
+            "AISI 1045 {property} moved by {relative_value_error:e} relative"
+        );
+
+        let sample_mean = samples.iter().copied().sum::<f64>() / 3.0;
+        assert!(
+            (sample_mean - reported_mean).abs() <= reported_rounding_half_width,
+            "AISI 1045 {property} source mean is inconsistent with its printed replicates"
+        );
+        let sample_variance = samples
+            .iter()
+            .map(|sample| (sample - sample_mean).powi(2))
+            .sum::<f64>()
+            / 2.0;
+        let expected_half_width =
+            student_t_0p975_df2 * sample_variance.sqrt() / 3.0_f64.sqrt() * source_unit_scale;
+        let UncertaintyModel::HalfWidth {
+            half_width,
+            confidence,
+        } = &claim.uncertainty
+        else {
+            panic!("AISI 1045 {property} lost its derived Student-t half-width");
+        };
+        let relative_half_width_error =
+            (*half_width - expected_half_width).abs() / expected_half_width;
+        assert!(
+            relative_half_width_error <= 2.0e-14,
+            "AISI 1045 {property} Student-t half-width moved by {relative_half_width_error:e} relative"
+        );
+        assert_eq!(*confidence, 0.95);
+
+        let Some((speed_lo, speed_hi)) = claim.validity.bound("crosshead_speed") else {
+            panic!("AISI 1045 {property} lost its crosshead-speed validity point");
+        };
+        for speed in [speed_lo, speed_hi] {
+            let relative_speed_error =
+                (speed - crosshead_speed_m_per_s).abs() / crosshead_speed_m_per_s;
+            assert!(
+                relative_speed_error <= 2.0e-15,
+                "AISI 1045 {property} crosshead speed moved by {relative_speed_error:e} relative"
+            );
+        }
+        assert_eq!(
+            claim.validity.bound("source_test_temperature_known"),
+            Some((0.0, 0.0)),
+            "AISI 1045 {property} must require explicit acknowledgement of missing temperature"
+        );
+        assert_eq!(claim.validity.bounds().len(), 2);
+        assert_eq!(claim.validity.bound("temperature"), None);
+        assert_eq!(
+            claim.interpolation,
+            InterpolationPolicy::ConstantWithinValidity
+        );
+        assert_eq!(claim.observations.len(), 1);
+        assert_eq!(claim.provenance.license, CC_BY_4_0_LICENSE);
+        assert!(claim.provenance.source.contains("doi:10.3390/pr12061171"));
+        assert!(claim.provenance.source.contains("[source:primary]"));
+
+        let observation = decoded
+            .claims()
+            .observation(claim.observations[0])
+            .expect("AISI 1045 claim observation remains linked");
+        assert_eq!(
+            observation.specimen,
+            "AISI-1045-cold-drawn-bar-37mm-OD-102mm-length-test-temperature-not-reported"
+        );
+        assert!(observation.method.contains("ASTM E8"));
+        assert!(observation.method.contains("50 mm gauge length"));
+        assert!(observation.method.contains("10 mm/min crosshead speed"));
+        assert!(observation.caveats.contains("three specimens"));
+        assert!(observation.caveats.contains("t(0.975, df=2)"));
+        assert!(
+            observation
+                .caveats
+                .contains("source does not report test temperature")
+        );
+        assert!(
+            observation
+                .caveats
+                .contains("no joint covariance is inferred")
+        );
+        assert_eq!(claim.observations[0].0, observation.content_hash());
+        assert_eq!(id.0, claim.content_hash());
     }
 
     let decisions = String::from_utf8(first.stdout).expect("decision stream is UTF-8");
