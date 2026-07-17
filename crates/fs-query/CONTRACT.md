@@ -317,7 +317,10 @@ identical replay, and refusal drills.
 `tests/gap.rs`, cases gg-001..gg-004 — implicit gap oracle: analytic
 containment and true-distance upper bounding on disjoint spheres,
 certified common-ball witnesses on overlap, claim/evidence/point/
-cancellation refusals, and no normal claim without gradients.
+cancellation refusals, and no normal claim without gradients. Every
+aggregate outcome uses a canonical fs-obs `ConformanceCase` with the shared
+`0x6A9` execution seed. Direct assertion failures before those events remain
+ordinary Rust test diagnostics.
 `tests/codim.rs`, cases gd-001..gd-004 — codimensional gating:
 bracket containment with all three verdicts on their exact sides,
 shelled-sphere composition against analytic offset-body geometry with

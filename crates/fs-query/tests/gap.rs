@@ -11,6 +11,8 @@
 //! - gg-003 G0/G4: capability refusal at construction, malformed
 //!   evidence refusal per sample, non-finite points, cancellation.
 //! - gg-004 G0: honestly absent gradients yield no normal claim.
+//! Aggregate outcomes use canonical fs-obs events and carry the shared
+//! deterministic execution seed.
 
 use asupersync::types::Budget;
 use fs_evidence::NumericalCertificate;
@@ -19,12 +21,29 @@ use fs_geom::fixtures::SphereChart;
 use fs_geom::{Aabb, Chart, ChartSample, Point3, TraceStepClaim};
 use fs_query::{ImplicitGapOracle, OffsetChart, QueryError};
 
+const EXECUTION_SEED: u64 = 0x6A9;
+
 fn verdict(case: &str, pass: bool, detail: &str) {
-    println!(
-        "{{\"suite\":\"fs-query/gap\",\"case\":\"{case}\",\"verdict\":\"{}\",\
-         \"detail\":\"{detail}\"}}",
-        if pass { "pass" } else { "fail" }
+    let mut emitter = fs_obs::Emitter::new("fs-query/gap", case);
+    let event = emitter.emit(
+        if pass {
+            fs_obs::Severity::Info
+        } else {
+            fs_obs::Severity::Error
+        },
+        fs_obs::EventKind::ConformanceCase {
+            suite: "fs-query/gap".to_string(),
+            case: case.to_string(),
+            pass,
+            detail: detail.to_string(),
+            seed: EXECUTION_SEED,
+        },
+        None,
     );
+    fs_obs::lint_failure_record(&event).expect("implicit-gap verdict must be replayable");
+    let line = event.to_jsonl();
+    fs_obs::validate_line(&line).expect("implicit-gap verdict must use the fs-obs wire schema");
+    println!("{line}");
     assert!(pass, "case {case}: {detail}");
 }
 
@@ -36,7 +55,7 @@ fn with_cx<R>(f: impl FnOnce(&Cx<'_>) -> R) -> R {
             &gate,
             arena,
             StreamKey {
-                seed: 0x6A9,
+                seed: EXECUTION_SEED,
                 kernel_id: 16,
                 tile: 0,
                 iteration: 0,
@@ -188,7 +207,7 @@ fn gg_003_refusals_fail_closed() {
             &gate,
             arena,
             StreamKey {
-                seed: 0x6A9,
+                seed: EXECUTION_SEED,
                 kernel_id: 17,
                 tile: 0,
                 iteration: 0,
