@@ -516,7 +516,7 @@ the `ch-003` aggregate is emitted only after that gate succeeds. The canonical
 measurement is replay evidence for the existing G1 tolerances, not an upgrade
 of their authority or discretization claim.
 
-`tests/feec_battery.rs` (10 cases, JSON logging): dd = 0 on the
+`tests/feec_battery.rs` (12 tests, 28 canonical JSONL rows): dd = 0 on the
 fixture zoo (single/two-tet, kuhn 1–3) over random integer cochains
 AND via CSR spgemm; Kuhn fixture positively oriented, conforming,
 unit total volume; Betti (1, 0, 0, 0) on all ball fixtures via exact
@@ -530,6 +530,32 @@ orders ≈ 2.0 on the n = 4/8/16 Kuhn ladder; Hodge star positivity +
 dual-volume partition (Σ = |Ω|); Cochain container semantics (dims
 tag through d, container dd = 0, 128-byte alignment); cross-ISA
 golden hash.
+
+The primary battery emits schema-validated `fs-obs` JSONL under suite
+`fs-feec/battery`. Its 28 retained rows use collision-free identities:
+`dd-zero/{fixture}` for the five fixture-zoo rows; `kuhn-fixture/n-{1,2,3}`;
+`betti/{fixture}`; `hodge/k-{0,1,2,3}`; and the singleton cases
+`dd-zero-propcheck`, `commutation`, `whitney-patch`, `stiffness-patch`,
+`mms-order`, `cochain`, and `unit-cube-boundary`.
+The DD rows record input root 5, kernel `0xFEEC`, tile 1, fixture ordinal, and
+three trials while preserving the single continuous stream across the zoo.
+The Whitney patch records input root 9, kernel `0xFEEC`, and tile 2. The
+generated DD case records property seed `0xFEEC_4A48_0001`; every other fixed
+input aggregate uses seed zero.
+
+The three original MMS diagnostics remain info-only `Custom` events named
+`mms-poisson` at `mms-order/measurement/n-{4,8,16}`, after each solve and before
+the later ladder and slope gates. `feec-golden/measurement` remains an info-only
+`Custom` event named `feec-golden`, recording the formatted legacy value plus
+actual and expected hashes before the unchanged equality assertion; no passing
+golden aggregate is synthesized. Measurement payloads are object-shaped,
+encode non-finite raw floating values as `null`, and explicitly record the lack
+of an execution seed. All rows retain their original emission boundaries and
+legacy detail prefixes. In particular, each `hodge/k-{k}` row covers only that
+degree's positivity and shape gates and remains before the terminal dual-volume
+partition assertion. These events add replay evidence without upgrading the
+existing G0/G1, cross-ISA, golden, topology, convergence, or performance claims.
+
 Bead 4nh8 adds a separate 600-case G0 property suite rooted at seed
 `0xFEEC_4A48_0001`: it selects the same deterministic fixture zoo and cycles
 shrinkable integer seeds into exact vertex/edge cochain extents (empty seeds

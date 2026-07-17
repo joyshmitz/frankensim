@@ -16,10 +16,53 @@ use fs_qty::Dims;
 use fs_rand::StreamKey;
 use fs_rep_mesh::TetComplex;
 
-fn log(case: &str, verdict: &str, detail: &str) {
-    println!(
-        "{{\"suite\":\"fs-feec\",\"case\":\"{case}\",\"verdict\":\"{verdict}\",\"detail\":\"{detail}\"}}"
+const SUITE: &str = "fs-feec/battery";
+const FIXED_INPUT_SEED: u64 = 0;
+const DD_INPUT_SEED: u64 = 5;
+const WHITNEY_INPUT_SEED: u64 = 9;
+const STREAM_KERNEL: u32 = 0xFEEC;
+
+fn verdict(case: &str, detail: &str, seed: u64) {
+    let mut emitter = fs_obs::Emitter::new(SUITE, case);
+    let event = emitter.emit(
+        fs_obs::Severity::Info,
+        fs_obs::EventKind::ConformanceCase {
+            suite: SUITE.to_string(),
+            case: case.to_string(),
+            pass: true,
+            detail: detail.to_string(),
+            seed,
+        },
+        None,
     );
+    fs_obs::lint_failure_record(&event).expect("FEEC verdict must be replayable");
+    let line = event.to_jsonl();
+    fs_obs::validate_line(&line).expect("FEEC verdict must use the fs-obs wire schema");
+    println!("{line}");
+}
+
+fn measurement(identity: &str, name: &str, json: String) {
+    let mut emitter = fs_obs::Emitter::new(SUITE, identity);
+    let event = emitter.emit(
+        fs_obs::Severity::Info,
+        fs_obs::EventKind::Custom {
+            name: name.to_string(),
+            json,
+        },
+        None,
+    );
+    fs_obs::lint_failure_record(&event).expect("FEEC measurement must be replayable");
+    let line = event.to_jsonl();
+    fs_obs::validate_line(&line).expect("FEEC measurement must use the fs-obs wire schema");
+    println!("{line}");
+}
+
+fn finite_json(value: f64) -> String {
+    if value.is_finite() {
+        value.to_string()
+    } else {
+        "null".to_string()
+    }
 }
 
 fn zoo() -> Vec<(&'static str, TetComplex, Vec<[f64; 3]>)> {
@@ -50,12 +93,12 @@ fn cycle_integer_cochain(seed_values: &[i64], len: usize) -> Vec<i64> {
 #[test]
 fn dd_is_zero_exactly_on_the_zoo() {
     let mut stream = StreamKey {
-        seed: 5,
-        kernel: 0xFEEC,
+        seed: DD_INPUT_SEED,
+        kernel: STREAM_KERNEL,
         tile: 1,
     }
     .stream();
-    for (name, complex, _) in zoo() {
+    for (fixture_ordinal, (name, complex, _)) in zoo().into_iter().enumerate() {
         let (d0, d1, d2) = (complex.d0(), complex.d1(), complex.d2());
         // Integer path: d(d(x)) == 0 for random integer cochains.
         for _ in 0..3 {
@@ -82,7 +125,14 @@ fn dd_is_zero_exactly_on_the_zoo() {
         let dense21 = dd21.to_dense();
         assert!(dense10.iter().all(|&v| v == 0.0), "{name}: CSR d1 d0 != 0");
         assert!(dense21.iter().all(|&v| v == 0.0), "{name}: CSR d2 d1 != 0");
-        log("dd-zero", "pass", name);
+        verdict(
+            &format!("dd-zero/{name}"),
+            &format!(
+                "{name}; input_seed={DD_INPUT_SEED} kernel=0xFEEC tile=1 \
+                 fixture_ordinal={fixture_ordinal} trials=3"
+            ),
+            DD_INPUT_SEED,
+        );
     }
 }
 
@@ -116,10 +166,10 @@ fn generated_integer_cochains_satisfy_dd_zero_on_the_zoo() {
                 && d2.apply(&d1.apply(&x1)).iter().all(|&value| value == 0)
         },
     );
-    log(
+    verdict(
         "dd-zero-propcheck",
-        "pass",
         "600 generated fixture/cochain cases, shrink-armed",
+        0xFEEC_4A48_0001,
     );
 }
 
@@ -150,10 +200,10 @@ fn kuhn_fixture_is_positively_oriented_and_conforming() {
             face_use.iter().all(|&c| c == 1 || c == 2),
             "kuhn({n}): non-conforming face incidence"
         );
-        log(
-            "kuhn-fixture",
-            "pass",
+        verdict(
+            &format!("kuhn-fixture/n-{n}"),
             &format!("n={n} tets={} vol=1 exact-ish", complex.tets.len()),
+            FIXED_INPUT_SEED,
         );
     }
 }
@@ -163,7 +213,11 @@ fn betti_numbers_of_ball_fixtures() {
     for (name, complex, _) in zoo() {
         let b = betti_numbers(&complex);
         assert_eq!(b, [1, 0, 0, 0], "{name}: Betti {b:?}");
-        log("betti", "pass", &format!("{name} -> {b:?}"));
+        verdict(
+            &format!("betti/{name}"),
+            &format!("{name} -> {b:?}"),
+            FIXED_INPUT_SEED,
+        );
     }
 }
 
@@ -249,10 +303,10 @@ fn deram_maps_commute_with_d() {
             "div({name}) commutation residual {worst_d:.3e}"
         );
     }
-    log(
+    verdict(
         "commutation",
-        "pass",
         "grad/curl/div all commute with d (signs pinned)",
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -293,8 +347,8 @@ fn whitney_masses_reproduce_constants_exactly() {
     assert!((e3 - 6.25).abs() < 1e-12, "M3 constant energy: {e3}");
     // SPD: positive energy on deterministic pseudo-random vectors.
     let mut stream = StreamKey {
-        seed: 9,
-        kernel: 0xFEEC,
+        seed: WHITNEY_INPUT_SEED,
+        kernel: STREAM_KERNEL,
         tile: 2,
     }
     .stream();
@@ -307,10 +361,13 @@ fn whitney_masses_reproduce_constants_exactly() {
             "M{k} not positive definite on random vector"
         );
     }
-    log(
+    verdict(
         "whitney-patch",
-        "pass",
-        "constant fields exact for k=0..3, masses PD",
+        &format!(
+            "constant fields exact for k=0..3, masses PD; input_seed={WHITNEY_INPUT_SEED} \
+             kernel=0xFEEC tile=2"
+        ),
+        WHITNEY_INPUT_SEED,
     );
 }
 
@@ -347,10 +404,10 @@ fn stiffness_composition_kills_affine_fields() {
         }
     }
     assert!(asym < 1e-14, "K0 asymmetry {asym:.3e}");
-    log(
+    verdict(
         "stiffness-patch",
-        "pass",
         &format!("affine residual {worst:.2e}, asym {asym:.2e}"),
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -415,14 +472,26 @@ fn mms_poisson_primal_converges_at_second_order() {
         m0.spmv(&e, &mut me);
         let l2: f64 = e.iter().zip(&me).map(|(a, b)| a * b).sum::<f64>().sqrt();
         errs.push(l2);
-        log("mms-poisson", "info", &format!("n={n} L2={l2:.4e}"));
+        measurement(
+            &format!("mms-order/measurement/n-{n}"),
+            "mms-poisson",
+            format!(
+                "{{\"detail\":\"n={n} L2={l2:.4e}\",\"n\":{n},\"l2_error\":{},\
+                 \"input_seed\":{FIXED_INPUT_SEED},\"execution_seed\":null}}",
+                finite_json(l2)
+            ),
+        );
     }
     let (o1, o2) = ((errs[0] / errs[1]).log2(), (errs[1] / errs[2]).log2());
     assert!(
         (o1 - 2.0).abs() < 0.5 && (o2 - 2.0).abs() < 0.35,
         "MMS orders {o1:.2}, {o2:.2} (errors {errs:?})"
     );
-    log("mms-order", "pass", &format!("orders {o1:.2}, {o2:.2}"));
+    verdict(
+        "mms-order",
+        &format!("orders {o1:.2}, {o2:.2}"),
+        FIXED_INPUT_SEED,
+    );
 }
 
 #[test]
@@ -437,14 +506,14 @@ fn hodge_stars_positive_and_consistent() {
         );
         let gal = galerkin_star(&complex, &geo, k);
         assert_eq!(gal.nrows(), diag.len());
-        log(
-            "hodge",
-            "pass",
+        verdict(
+            &format!("hodge/k-{k}"),
             &format!(
                 "k={k} diag range [{:.3e}, {:.3e}]",
                 diag.iter().copied().fold(f64::INFINITY, f64::min),
                 diag.iter().copied().fold(0.0f64, f64::max)
             ),
+            FIXED_INPUT_SEED,
         );
     }
     // Total dual volume at k=0 equals the domain volume.
@@ -474,7 +543,11 @@ fn cochain_container_semantics() {
     let view = c.view();
     assert_eq!(view.name, "cochain0");
     assert_eq!(view.addr % 128, 0, "cochain buffer misaligned");
-    log("cochain", "pass", "dims tag + view + container dd=0");
+    verdict(
+        "cochain",
+        "dims tag + view + container dd=0",
+        FIXED_INPUT_SEED,
+    );
 }
 
 const GOLDEN_HASH: u64 = 0xa973_ca6b_07c3_9639; // recorded at tfz.5 landing, frozen
@@ -513,7 +586,15 @@ fn feec_golden_hash() {
     for v in geo.vol_signed.iter().take(16) {
         feed(*v);
     }
-    log("feec-golden", "info", &format!("{acc:#018x}"));
+    measurement(
+        "feec-golden/measurement",
+        "feec-golden",
+        format!(
+            "{{\"detail\":\"{acc:#018x}\",\"actual_hash\":\"{acc:#018x}\",\
+             \"expected_hash\":\"{GOLDEN_HASH:#018x}\",\"input_seed\":{FIXED_INPUT_SEED},\
+             \"execution_seed\":null}}"
+        ),
+    );
     assert_eq!(
         acc, GOLDEN_HASH,
         "feec bits changed: {acc:#018x} vs {GOLDEN_HASH:#018x} — bump only with semantic \
@@ -547,9 +628,9 @@ fn on_unit_cube_boundary_detects_reconstructed_far_faces() {
     assert!(on_unit_cube_boundary([1.0, 0.5, 0.5]));
     assert!(!on_unit_cube_boundary([0.5, 0.5, 0.5]));
     assert!(!on_unit_cube_boundary([1.0 / 49.0, 0.5, 0.5])); // one lattice step in
-    log(
+    verdict(
         "unit-cube-boundary",
-        "pass",
         "reconstructed far faces detected; interior unaffected",
+        FIXED_INPUT_SEED,
     );
 }
