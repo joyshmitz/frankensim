@@ -25,11 +25,39 @@ use fs_geom::sheaf_repair::{
     resume_hodge_decomposition_retaining_sweeps_bounded, try_apply_gauge,
 };
 
+const SUITE: &str = "fs-geom/sheaf-repair";
+const FIXED_INPUT_SEED: u64 = 0;
+const EXECUTION_SEED: u64 = 0x5348_4541_4652_4550;
+
 fn verdict(case: &str, detail: &str) {
-    println!(
-        "{{\"suite\":\"fs-geom/sheaf-repair\",\"case\":\"{case}\",\"verdict\":\"pass\",\
-         \"detail\":\"{detail}\"}}"
+    record_verdict(case, true, detail);
+}
+
+fn record_verdict(case: &str, pass: bool, detail: &str) {
+    let detail = format!(
+        "{detail} (fixed fixture input; Cx-backed cases use execution stream root {EXECUTION_SEED:#x}, never input randomness)"
     );
+    let mut emitter = fs_obs::Emitter::new(SUITE, case);
+    let event = emitter.emit(
+        if pass {
+            fs_obs::Severity::Info
+        } else {
+            fs_obs::Severity::Error
+        },
+        fs_obs::EventKind::ConformanceCase {
+            suite: SUITE.to_string(),
+            case: case.to_string(),
+            pass,
+            detail: detail.clone(),
+            seed: FIXED_INPUT_SEED,
+        },
+        None,
+    );
+    fs_obs::lint_failure_record(&event).expect("sheaf-repair verdict must be replayable");
+    let line = event.to_jsonl();
+    fs_obs::validate_line(&line).expect("sheaf-repair verdict must use the fs-obs wire schema");
+    println!("{line}");
+    assert!(pass, "case {case}: {detail}");
 }
 
 fn with_gate_cx<R>(gate: &CancelGate, f: impl FnOnce(&Cx<'_>) -> R) -> R {
@@ -39,7 +67,7 @@ fn with_gate_cx<R>(gate: &CancelGate, f: impl FnOnce(&Cx<'_>) -> R) -> R {
             gate,
             arena,
             StreamKey {
-                seed: 0x5348_4541_4652_4550,
+                seed: EXECUTION_SEED,
                 kernel_id: 1,
                 tile: 0,
                 iteration: 0,
@@ -64,7 +92,7 @@ fn with_budget_cx<R>(budget: Budget, f: impl FnOnce(&Cx<'_>) -> R) -> R {
             &gate,
             arena,
             StreamKey {
-                seed: 0x5348_4541_4652_4550,
+                seed: EXECUTION_SEED,
                 kernel_id: 2,
                 tile: 0,
                 iteration: 0,

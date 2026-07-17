@@ -26,11 +26,61 @@ use fs_geom::sheaf_repair::{
     hodge_decompose,
 };
 
-fn verdict(case: &str, detail: &str) {
-    println!(
-        "{{\"suite\":\"fs-geom/sheaf-merge\",\"case\":\"{case}\",\"verdict\":\"pass\",\
-         \"detail\":\"{detail}\"}}"
+const SUITE: &str = "fs-geom/sheaf-merge";
+const FIXED_INPUT_SEED: u64 = 0;
+const EXECUTION_SEED: u64 = 0x5348_4541_464d_4552;
+const SM_003_INPUT_SEED: u64 = 0xd00d;
+const SM_006_INPUT_SEED: u64 = 0xfeed;
+const SM_011_TRIANGLE_INPUT_SEED: u64 = 0xfeed;
+const SM_011_RING_INPUT_SEED: u64 = 0xdecafbad;
+const SM_012_INPUT_SEED: u64 = 0x5eed_cafe;
+const SM_013_INPUT_SEED: u64 = 0xcafe_f00d;
+
+fn verdict(case: &str, detail: &str, seed: u64) {
+    record_verdict(case, true, detail, seed);
+}
+
+fn record_verdict(case: &str, pass: bool, detail: &str, seed: u64) {
+    let detail = format!(
+        "{detail} (fs-obs aggregate input seed {seed:#x}; Cx-backed lanes use execution stream root {EXECUTION_SEED:#x}, which is distinct)"
     );
+    let mut emitter = fs_obs::Emitter::new(SUITE, case);
+    let event = emitter.emit(
+        if pass {
+            fs_obs::Severity::Info
+        } else {
+            fs_obs::Severity::Error
+        },
+        fs_obs::EventKind::ConformanceCase {
+            suite: SUITE.to_string(),
+            case: case.to_string(),
+            pass,
+            detail: detail.clone(),
+            seed,
+        },
+        None,
+    );
+    fs_obs::lint_failure_record(&event).expect("sheaf-merge verdict must be replayable");
+    let line = event.to_jsonl();
+    fs_obs::validate_line(&line).expect("sheaf-merge verdict must use the fs-obs wire schema");
+    println!("{line}");
+    assert!(pass, "case {case}: {detail}");
+}
+
+fn measurement(case: &str, name: &str, json: String) {
+    let mut emitter = fs_obs::Emitter::new(SUITE, format!("{case}/measurement"));
+    let event = emitter.emit(
+        fs_obs::Severity::Info,
+        fs_obs::EventKind::Custom {
+            name: name.to_string(),
+            json,
+        },
+        None,
+    );
+    fs_obs::lint_failure_record(&event).expect("sheaf-merge measurement must be replayable");
+    let line = event.to_jsonl();
+    fs_obs::validate_line(&line).expect("sheaf-merge measurement must use the fs-obs wire schema");
+    println!("{line}");
 }
 
 fn with_gate_cx<R>(gate: &CancelGate, f: impl FnOnce(&Cx<'_>) -> R) -> R {
@@ -40,7 +90,7 @@ fn with_gate_cx<R>(gate: &CancelGate, f: impl FnOnce(&Cx<'_>) -> R) -> R {
             gate,
             arena,
             StreamKey {
-                seed: 0x5348_4541_464d_4552,
+                seed: EXECUTION_SEED,
                 kernel_id: 1,
                 tile: 0,
                 iteration: 0,
@@ -65,7 +115,7 @@ fn with_budget_cx<R>(budget: Budget, f: impl FnOnce(&Cx<'_>) -> R) -> R {
             &gate,
             arena,
             StreamKey {
-                seed: 0x5348_4541_464d_4552,
+                seed: EXECUTION_SEED,
                 kernel_id: 2,
                 tile: 0,
                 iteration: 0,
@@ -118,7 +168,7 @@ fn with_clock_cx<R>(
             gate,
             arena,
             StreamKey {
-                seed: 0x5348_4541_464d_4552,
+                seed: EXECUTION_SEED,
                 kernel_id: 3,
                 tile: 0,
                 iteration: 0,
@@ -271,6 +321,7 @@ fn sm_001_gauge_fit_auto_reconciles_with_checked_residual() {
         "sm-001",
         "two gauge edits auto-reconcile; the nominal post-norm is checked under tol \
          and the recovered gauge matches both branches",
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -337,6 +388,7 @@ fn sm_002_retained_ring_witness_escalates_candidate_with_parent_labels() {
         "sm-002",
         "the retained ring cochain has a closed non-exact skeleton witness; runtime \
          output remains a candidate conflict with full support and both parents",
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -346,7 +398,7 @@ fn sm_003_gauge_edits_resolve_and_cycle_candidates_block_auto_merge() {
     // injected cycle component blocks automatic merge on the ring.
     let sk = ring();
     let base = vec![0.0; 4];
-    let mut state = 0xd00d_u64;
+    let mut state = SM_003_INPUT_SEED;
     let mut lcg = move || {
         state = state
             .wrapping_mul(6364136223846793005)
@@ -387,6 +439,7 @@ fn sm_003_gauge_edits_resolve_and_cycle_candidates_block_auto_merge() {
         "sm-003",
         "20 seeded trials: converged gauge edits resolve; cycle-tainted remainders \
          stay candidate conflicts rather than topology claims",
+        SM_003_INPUT_SEED,
     );
 }
 
@@ -545,6 +598,7 @@ fn sm_004_sev0_escalates_instead_of_false_resolution() {
         "sm-004",
         "a coexact residue escalates unresolved (never a false resolution); trivial \
          fast paths report edit equality without a residual receipt",
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -642,6 +696,7 @@ fn sm_005_assignment_authority_refusal_and_degraded_gap() {
         "sm-005",
         "base-less assignment payloads refuse despite a pairwise-difference candidate; \
          the weak-link barbell merge resolves but is FLAGGED LowGap (R5)",
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -772,7 +827,7 @@ fn sm_006_candidate_diagnostic_harness() {
     // Candidate-remainder rate over seeded gauge-dominated edits. This is one
     // diagnostic input, not the full Proposal 10 unresolved-merge criterion.
     let ring4 = ring();
-    let rate_ring = candidate_remainder_conflict_rate(&ring4, 60, 0.1, 0xfeed)
+    let rate_ring = candidate_remainder_conflict_rate(&ring4, 60, 0.1, SM_006_INPUT_SEED)
         .expect("well-formed seeded ring diagnostic");
     // Gauge-dominated edits on a cycle-bearing complex may leave a small
     // fixed-iteration candidate remainder. This fixture threshold catches
@@ -783,28 +838,26 @@ fn sm_006_candidate_diagnostic_harness() {
         "gauge-dominated merges must rarely retain candidate conflicts: {rate_ring}"
     );
     let tri = triangle();
-    let rate_tri = candidate_remainder_conflict_rate(&tri, 60, 0.1, 0xfeed)
+    let rate_tri = candidate_remainder_conflict_rate(&tri, 60, 0.1, SM_006_INPUT_SEED)
         .expect("well-formed seeded triangle diagnostic");
     assert!(
         rate_tri.abs() < f64::EPSILON,
         "no retained candidate conflicts in this triangle fixture: {rate_tri}"
     );
-    println!(
-        "{{\"metric\":\"candidate-remainder-conflict-rate\",\"ring\":{rate_ring:.3},\"triangle\":{rate_tri:.3},\
-         \"fixture_threshold\":0.25}}"
-    );
-    verdict(
+    measurement(
         "sm-006",
-        "the candidate-conflict diagnostic runs: triangle rate 0 and ring rate below \
-         this fixture's regression threshold",
+        "candidate-remainder-conflict-rate",
+        format!(
+            r#"{{"metric":"candidate-remainder-conflict-rate","ring":{rate_ring:.3},"triangle":{rate_tri:.3},"fixture_threshold":0.25,"input_seed":{}}}"#,
+            SM_006_INPUT_SEED
+        ),
     );
-
     assert_eq!(
-        candidate_remainder_conflict_rate(&ring4, 0, 0.1, 0xfeed),
+        candidate_remainder_conflict_rate(&ring4, 0, 0.1, SM_006_INPUT_SEED),
         Err(CandidateRateError::ZeroTrials)
     );
     assert_eq!(
-        candidate_remainder_conflict_rate(&ring4, 1, f64::NAN, 0xfeed),
+        candidate_remainder_conflict_rate(&ring4, 1, f64::NAN, SM_006_INPUT_SEED),
         Err(CandidateRateError::InvalidEditScale)
     );
     let malformed = SheafSkeleton {
@@ -813,13 +866,19 @@ fn sm_006_candidate_diagnostic_harness() {
         triangles: Vec::new(),
     };
     assert_eq!(
-        candidate_remainder_conflict_rate(&malformed, 1, 0.1, 0xfeed),
+        candidate_remainder_conflict_rate(&malformed, 1, 0.1, SM_006_INPUT_SEED),
         Err(CandidateRateError::MalformedSkeleton)
     );
     assert!(matches!(
-        candidate_remainder_conflict_rate(&ring4, 1, 1e200, 0xfeed),
+        candidate_remainder_conflict_rate(&ring4, 1, 1e200, SM_006_INPUT_SEED),
         Err(CandidateRateError::TrialRefused { .. })
     ));
+    verdict(
+        "sm-006",
+        "the candidate-conflict diagnostic runs: triangle rate 0 and ring rate below \
+         this fixture's regression threshold",
+        SM_006_INPUT_SEED,
+    );
 }
 
 #[test]
@@ -1151,6 +1210,7 @@ fn sm_007_bounded_merge_matches_legacy_outcomes_and_replays() {
     verdict(
         "sm-007",
         "one-accountant bounded merge exactly replays legacy trivial, resolved, conflicted, escalated, benign weighted-overflow, Normal, and LowGap numerical verdicts over identical canonical coordinates; invalid assignments remain typed errors",
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -1385,6 +1445,7 @@ fn sm_008_bounded_merge_refuses_each_undersized_envelope() {
     verdict(
         "sm-008",
         "exact operator, total-work, scalar, and logical-output caps succeed; cap-minus-one, invalid sweep/poll, and maximum-patch dense-spectrum envelopes refuse before allocation or publication",
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -1454,6 +1515,7 @@ fn sm_009_bounded_conflict_caps_are_exact_and_fail_closed() {
     verdict(
         "sm-009",
         "candidate conflict cells and UTF-8 parent bytes publish exactly at cap and refuse without truncation at cap minus one",
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -1606,6 +1668,7 @@ fn sm_010_bounded_merge_cancellation_and_ambient_refusal_publish_nothing() {
     verdict(
         "sm-010",
         "pre-cancel, deterministic mid-run cancellation, true final-publication cancellation, ambient cost admission, and final poll exhaustion return no outcome; fresh retries reproduce both baselines",
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -1617,8 +1680,8 @@ fn sm_011_bounded_candidate_rate_matches_raw_seeded_parity_and_replays() {
     let (ring_raw, ring_admitted) = canonical_ring();
 
     for (raw, admitted, seed) in [
-        (triangle_raw, triangle_admitted, 0xfeed),
-        (ring_raw, ring_admitted, 0xdecafbad),
+        (triangle_raw, triangle_admitted, SM_011_TRIANGLE_INPUT_SEED),
+        (ring_raw, ring_admitted, SM_011_RING_INPUT_SEED),
     ] {
         let legacy = candidate_remainder_conflict_rate(&raw, TRIALS, SCALE, seed)
             .expect("canonical raw seeded diagnostic");
@@ -1645,7 +1708,8 @@ fn sm_011_bounded_candidate_rate_matches_raw_seeded_parity_and_replays() {
 
     verdict(
         "sm-011",
-        "one-accountant bounded seeded diagnostics match canonical raw rate bits and replay the complete aggregate report",
+        "one-accountant bounded seeded diagnostics match canonical raw rate bits and replay the complete aggregate report for literal input roots 0xfeed and 0xdecafbad",
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -1654,7 +1718,7 @@ fn sm_011_bounded_candidate_rate_matches_raw_seeded_parity_and_replays() {
 fn sm_012_bounded_candidate_rate_aggregate_caps_are_exact() {
     const TRIALS: usize = 3;
     const SCALE: f64 = 0.1;
-    const SEED: u64 = 0x5eed_cafe;
+    const SEED: u64 = SM_012_INPUT_SEED;
     let (_, skeleton) = canonical_triangle();
     let single_budget = candidate_budget(1, 8);
     let single = with_cx(|cx| {
@@ -1868,6 +1932,7 @@ fn sm_012_bounded_candidate_rate_aggregate_caps_are_exact() {
     verdict(
         "sm-012",
         "aggregate operator, work, scalar-peak, total-output, trial, and ambient-cost boundaries succeed exactly and refuse at cap minus one before partial publication",
+        SM_012_INPUT_SEED,
     );
 }
 
@@ -1876,7 +1941,7 @@ fn sm_012_bounded_candidate_rate_aggregate_caps_are_exact() {
 fn sm_013_bounded_candidate_rate_cancellation_is_atomic_and_retryable() {
     const TRIALS: usize = 3;
     const SCALE: f64 = 0.1;
-    const SEED: u64 = 0xcafe_f00d;
+    const SEED: u64 = SM_013_INPUT_SEED;
     let (_, skeleton) = canonical_triangle();
     let budget = candidate_budget(TRIALS, 8);
 
@@ -1956,5 +2021,6 @@ fn sm_013_bounded_candidate_rate_cancellation_is_atomic_and_retryable() {
     verdict(
         "sm-013",
         "one-accountant seeded diagnostics publish no rate on pre, mid, or true final cancellation and a fresh retry reproduces the complete report",
+        SM_013_INPUT_SEED,
     );
 }

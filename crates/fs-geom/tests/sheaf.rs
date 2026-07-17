@@ -21,11 +21,39 @@ use fs_geom::{
 use fs_ivl::Interval;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+const SUITE: &str = "fs-geom/sheaf";
+const FIXED_INPUT_SEED: u64 = 0;
+const EXECUTION_SEED: u64 = 1;
+
 fn verdict_line(case: &str, detail: &str) {
-    println!(
-        "{{\"suite\":\"fs-geom/sheaf\",\"case\":\"{case}\",\"verdict\":\"pass\",\
-         \"detail\":\"{detail}\"}}"
+    record_verdict(case, true, detail);
+}
+
+fn record_verdict(case: &str, pass: bool, detail: &str) {
+    let detail = format!(
+        "{detail} (fixed fixture input; Cx-backed cases use execution stream root {EXECUTION_SEED:#x}, never input randomness)"
     );
+    let mut emitter = fs_obs::Emitter::new(SUITE, case);
+    let event = emitter.emit(
+        if pass {
+            fs_obs::Severity::Info
+        } else {
+            fs_obs::Severity::Error
+        },
+        fs_obs::EventKind::ConformanceCase {
+            suite: SUITE.to_string(),
+            case: case.to_string(),
+            pass,
+            detail: detail.clone(),
+            seed: FIXED_INPUT_SEED,
+        },
+        None,
+    );
+    fs_obs::lint_failure_record(&event).expect("sheaf verdict must be replayable");
+    let line = event.to_jsonl();
+    fs_obs::validate_line(&line).expect("sheaf verdict must use the fs-obs wire schema");
+    println!("{line}");
+    assert!(pass, "case {case}: {detail}");
 }
 
 fn with_cx<R>(f: impl FnOnce(&Cx<'_>) -> R) -> R {
@@ -40,7 +68,7 @@ fn with_gate_cx<R>(gate: &CancelGate, f: impl FnOnce(&Cx<'_>) -> R) -> R {
             gate,
             arena,
             StreamKey {
-                seed: 1,
+                seed: EXECUTION_SEED,
                 kernel_id: 1,
                 tile: 0,
                 iteration: 0,

@@ -1145,6 +1145,58 @@ directed additive/relative exact-bound composition, sealed plan/oracle/spec
 identity, read/write failure, retrospective error maxima, conditional
 refusals, winner policy, cancellation, identity routes, and registry/path/label
 limit+1 refusals.
+The observation-migrated geometry integration suites use the same canonical
+event discipline: select `Info`/`Error` from the aggregate pass state, run
+`lint_failure_record`, serialize with `to_jsonl`, validate the wire line, print
+it, and only then make the terminal aggregate assertion. Direct assertions and
+expectations stay ahead of each aggregate event. Consequently an aborted case
+cannot leave a false passing aggregate. The `seed` field always describes test
+input provenance; an executor `StreamKey` is named separately and is never
+substituted for input randomness.
+
+`tests/diff.rs` requires `semantic-diff` and emits suite
+`fs-geom/diff` identities df-001, df-002, df-003, df-004, and df-005. All five
+use fixed inputs and therefore record input seed zero. Cx-backed cases use the
+separate execution stream `(seed=0x1, kernel_id=1, tile=0, iteration=0)`;
+df-003 is a fixed identity-algebra case with no Cx execution.
+
+`tests/sheaf.rs` is a default-feature integration target and emits suite
+`fs-geom/sheaf` identities sh-001, sh-002, sh-003, sh-004, and sh-005. Every
+aggregate fixture is fixed, records input seed zero, and uses the separate Cx
+execution stream `(seed=0x1, kernel_id=1, tile=0, iteration=0)`.
+
+`tests/sheaf_merge.rs` requires `sheaf-merge` (and therefore
+`sheaf-repair`) and emits suite `fs-geom/sheaf-merge` identities sm-001,
+sm-002, sm-003, sm-004, sm-005, sm-006, sm-007, sm-008, sm-009, sm-010,
+sm-011, sm-012, and sm-013. The exact input-seed map is: sm-003 uses the local
+LCG root `0xd00d`; sm-006 uses candidate-rate root `0xfeed`; sm-012 uses
+`0x5eed_cafe`; sm-013 uses `0xcafe_f00d`; fixed sm-001, sm-002, sm-004,
+sm-005, sm-007, sm-008, sm-009, and sm-010 use zero. Composite sm-011 spans
+the two literal diagnostic roots `0xfeed` and `0xdecafbad`, names both in its
+detail, and uses zero in the single aggregate seed field rather than inventing
+a combined root. The fixed execution stream root is
+`0x5348_4541_464d_4552`, with kernel ID 1 for ordinary/gated contexts, 2 for
+ambient-budget contexts, and 3 for clock-injected contexts; tile and iteration
+are zero throughout. Those execution coordinates are not input provenance.
+After the two successful sm-006 rate assertions, the suite preserves the
+original forensic-prefix boundary with a validated `Custom` event named
+`candidate-remainder-conflict-rate` at distinct scope `sm-006/measurement`.
+Its object-shaped JSON contains exactly `metric`, `ring`, `triangle`,
+`fixture_threshold`, and `input_seed`. The later refusal checks can therefore
+fail without erasing the validated measurement, while the sm-006 aggregate is
+withheld until all of those checks pass. This companion is replayable forensic
+metadata only; schema validity does not promote it into an H1, merge-safety, or
+Proposal 10 kill-criterion receipt.
+
+`tests/sheaf_repair.rs` requires `sheaf-repair` and emits suite
+`fs-geom/sheaf-repair` identities sr-001, sr-002, sr-003, sr-004, sr-005,
+sr-006, sr-007, sr-008, sr-009, sr-010, sr-011, sr-012, sr-013, sr-014,
+sr-015, sr-016, sr-017, sr-018, sr-019, sr-020, sr-021, sr-022, sr-023,
+sr-024, sr-025, and sr-026. All are fixed-input fixtures and record input seed
+zero. Cx-backed cases use execution root `0x5348_4541_4652_4550`, kernel ID 1
+for ordinary/gated contexts or 2 for ambient-budget contexts, and zero tile and
+iteration; legacy algebra cases that do not construct a Cx still retain fixed
+input seed zero without claiming executor provenance.
 `tests/sheaf.rs` additionally locks admitted-vs-raw authority, tolerance-at-use
 mismatch predicates, malformed/oversized raw-algebra refusal, bitwise δδ,
 component-rooted graph-gauge fitting, exact dense-overlap preflight with zero
