@@ -1,16 +1,21 @@
 //! G5 study-scale replay for the production BIPOP-CMA path (7tv.21.22).
 //!
 //! The fixture captures every objective call and binds that trace together
-//! with every public `BipopReport`/`CmaReport` field.  A disclosed seeded
-//! mutation changes one returned coordinate bit. The unsealed edit is refused
-//! as a stale payload, the self-consistently resealed edit is refused against
-//! the retained reference identity, and the resulting red fs-obs evidence is
-//! independently reproducible. This is one finite deterministic study, not an
-//! optimizer-quality or performance claim.
+//! with every public `BipopReport`/`CmaReport` field. A test-local algebraic
+//! oracle independently checks objective semantics, reconstructs every restart
+//! boundary and BIPOP budget decision, verifies the declared restart/sample
+//! streams at their observable boundaries, and links the first stable global
+//! minimum to its exact winning run. A disclosed seeded mutation changes one
+//! returned coordinate bit. The unsealed edit is refused as a stale payload,
+//! the self-consistently resealed edit is refused both against the retained
+//! reference and by semantic admission, and the resulting red fs-obs evidence
+//! is independently reproducible. This is one finite deterministic study, not
+//! an optimizer-quality or performance claim.
 
 use fs_dfo::{BipopReport, bipop_cmaes};
 use fs_obs::ident::{IdentityBuilder, ReplayIdentity};
 use fs_obs::{Emitter, Event, EventKind, Severity};
+use fs_rand::StreamKey;
 use std::fmt::Write as _;
 use std::panic::catch_unwind;
 
@@ -28,14 +33,22 @@ const TOTAL_BUDGET: usize = 6_000;
 // Shifted Rastrigin is non-negative, so this target keeps every restart in
 // the non-converged evidence path without depending on solution quality.
 const F_TARGET: f64 = -1.0;
-const BASE_LAMBDA: usize = 8;
+const PER_RESTART_GENERATIONS: usize = 250;
+const LARGE_RUN_CAP_TRIGGER: u32 = 8;
+const CMA_EIGEN_INTERVAL: usize = 1;
+const CMA_SPREAD_RELATIVE_LIMIT: f64 = 1e-12;
+const CMA_MEANINGFUL_IMPROVEMENT_RELATIVE: f64 = 1e-12;
+const CMA_STAGNATION_GENERATIONS: usize = 120;
+const OBJECTIVE_ORACLE_ROUNDOFF_SCALE: f64 = 64.0;
+const SEMANTIC_ORACLE_VERSION: &str =
+    "bipop-independent-objective-restart-stream-schedule-accounting-v1";
 
 // These are the logical stream coordinates and restart rule used by
 // `fs_dfo::cma`; recording them makes the private implementation choice
 // explicit in the fixture identity.  A change also changes the captured trace.
-const CMA_STREAM_KERNEL: u64 = 0xD1F0;
-const CMA_SAMPLE_TILE: u64 = 0;
-const CMA_RESTART_TILE: u64 = 1;
+const CMA_STREAM_KERNEL: u32 = 0xD1F0;
+const CMA_SAMPLE_TILE: u32 = 0;
+const CMA_RESTART_TILE: u32 = 1;
 const RESTART_SEED_STRIDE: u64 = 0x9E37_79B9;
 
 #[derive(Debug, Clone)]
@@ -46,6 +59,7 @@ struct Evaluation {
 
 #[derive(Debug, Clone)]
 struct StudyRun {
+    input_seed: u64,
     fixture: ReplayIdentity,
     report: BipopReport,
     evaluations: Vec<Evaluation>,
@@ -54,8 +68,16 @@ struct StudyRun {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AdmissionError {
+    FixtureIdentityMismatch { declared: u64, computed: u64 },
     PayloadIdentityMismatch { declared: u64, computed: u64 },
     ReferenceIdentityMismatch { expected: u64, found: u64 },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RestartSlice {
+    start: usize,
+    end: usize,
+    lambda: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,7 +102,7 @@ fn usize_u64(value: usize) -> u64 {
     u64::try_from(value).expect("fixture cardinality fits u64")
 }
 
-fn shifted_rastrigin(x: &[f64]) -> f64 {
+fn shifted_rastrigin_callback(x: &[f64]) -> f64 {
     assert_eq!(
         x.len(),
         DIMENSION,
@@ -95,8 +117,37 @@ fn shifted_rastrigin(x: &[f64]) -> f64 {
         .sum()
 }
 
+fn shifted_rastrigin_oracle(x: &[f64]) -> f64 {
+    assert_eq!(
+        x.len(),
+        DIMENSION,
+        "oracle dimension is part of the fixture contract"
+    );
+    x.iter()
+        .zip(SHIFT)
+        .map(|(&value, shift)| {
+            let z = value - shift;
+            let periodic_penalty = 10.0 * (1.0 - fs_math::det::cos(std::f64::consts::TAU * z));
+            z * z + periodic_penalty
+        })
+        .sum()
+}
+
+fn objective_oracle_tolerance(recorded: f64, oracle: f64) -> f64 {
+    let scale = recorded.abs().max(oracle.abs()).max(1.0);
+    OBJECTIVE_ORACLE_ROUNDOFF_SCALE * f64::EPSILON * (DIMENSION as f64) * scale
+}
+
+fn expected_base_lambda() -> usize {
+    4 + (3.0 * fs_math::det::ln(DIMENSION as f64)).floor() as usize
+}
+
 fn fixture_identity(seed: u64) -> ReplayIdentity {
-    let mut builder = IdentityBuilder::new("fs-dfo-bipop-study-fixture-v1")
+    let mut builder = IdentityBuilder::new("fs-dfo-bipop-study-fixture-v2")
+        .str("suite", SUITE)
+        .str("case", CASE)
+        .str("red-case", RED_CASE)
+        .str("semantic-oracle-version", SEMANTIC_ORACLE_VERSION)
         .str("algorithm", "fs_dfo::bipop_cmaes")
         .str("objective", "shifted-rastrigin")
         .str("units", "dimensionless")
@@ -105,15 +156,41 @@ fn fixture_identity(seed: u64) -> ReplayIdentity {
         .u64("total-evaluation-budget", usize_u64(TOTAL_BUDGET))
         .f64_bits("f-target", F_TARGET)
         .u64("input-seed", seed)
-        .u64("base-lambda", usize_u64(BASE_LAMBDA))
+        .u64("corruption-seed", CORRUPTION_SEED)
+        .u64("base-lambda", usize_u64(expected_base_lambda()))
         .str("base-lambda-rule", "4+floor(3*ln(dimension))")
-        .str("per-restart-budget-rule", "min(lambda*250,remaining)")
+        .u64(
+            "per-restart-generations",
+            usize_u64(PER_RESTART_GENERATIONS),
+        )
+        .str(
+            "per-restart-budget-rule",
+            "min(lambda*per-restart-generations,remaining)",
+        )
         .str("large-restart-rule", "large-budget-used<=small-budget-used")
         .str("large-population-rule", "base-lambda*2^large-runs")
-        .str("stagnation-rule", "tol-x-or-120-generation-tol-f")
-        .u64("cma-stream-kernel", CMA_STREAM_KERNEL)
-        .u64("sample-stream-tile", CMA_SAMPLE_TILE)
-        .u64("restart-stream-tile", CMA_RESTART_TILE)
+        .u64("large-run-cap-trigger", u64::from(LARGE_RUN_CAP_TRIGGER))
+        .u64("cma-eigen-interval", usize_u64(CMA_EIGEN_INTERVAL))
+        .str(
+            "stagnation-rule",
+            "spread<relative-limit*sigma0 OR generations-since-meaningful-improvement>limit",
+        )
+        .f64_bits("cma-spread-relative-limit", CMA_SPREAD_RELATIVE_LIMIT)
+        .f64_bits(
+            "cma-meaningful-improvement-relative",
+            CMA_MEANINGFUL_IMPROVEMENT_RELATIVE,
+        )
+        .u64(
+            "cma-stagnation-generations",
+            usize_u64(CMA_STAGNATION_GENERATIONS),
+        )
+        .f64_bits(
+            "objective-oracle-roundoff-scale",
+            OBJECTIVE_ORACLE_ROUNDOFF_SCALE,
+        )
+        .u64("cma-stream-kernel", u64::from(CMA_STREAM_KERNEL))
+        .u64("sample-stream-tile", u64::from(CMA_SAMPLE_TILE))
+        .u64("restart-stream-tile", u64::from(CMA_RESTART_TILE))
         .u64("restart-seed-stride", RESTART_SEED_STRIDE)
         .u64(
             "fs-rand-stream-semantics-version",
@@ -186,7 +263,7 @@ fn run_study(seed: u64) -> StudyRun {
     let mut evaluations = Vec::with_capacity(TOTAL_BUDGET);
     let report = {
         let mut objective = |x: &[f64]| {
-            let value = shifted_rastrigin(x);
+            let value = shifted_rastrigin_callback(x);
             evaluations.push(Evaluation {
                 x: x.to_vec(),
                 value,
@@ -198,6 +275,7 @@ fn run_study(seed: u64) -> StudyRun {
     let fixture = fixture_identity(seed);
     let result = result_identity(&fixture, &report, &evaluations);
     StudyRun {
+        input_seed: seed,
         fixture,
         report,
         evaluations,
@@ -211,6 +289,174 @@ fn same_point_bits(left: &[f64], right: &[f64]) -> bool {
             .iter()
             .zip(right)
             .all(|(a, b)| a.to_bits() == b.to_bits())
+}
+
+fn expected_restart_starts(input_seed: u64, restart_count: usize) -> Vec<Vec<f64>> {
+    let mut stream = StreamKey {
+        seed: input_seed,
+        kernel: CMA_STREAM_KERNEL,
+        tile: CMA_RESTART_TILE,
+    }
+    .stream();
+    (0..restart_count)
+        .map(|restart| {
+            if restart == 0 {
+                X0.to_vec()
+            } else {
+                X0.iter()
+                    .map(|&value| SIGMA0.mul_add(stream.next_normal(), value))
+                    .collect()
+            }
+        })
+        .collect()
+}
+
+fn first_generation_matches(
+    run: &StudyRun,
+    restart: usize,
+    slice: RestartSlice,
+    start: &[f64],
+) -> bool {
+    let run_evals = slice.end - slice.start;
+    if run_evals < 1 + slice.lambda {
+        return true;
+    }
+    let restart_offset = usize_u64(restart)
+        .checked_mul(RESTART_SEED_STRIDE)
+        .expect("fixture restart seed offset fits u64");
+    let mut stream = StreamKey {
+        seed: run.input_seed.wrapping_add(restart_offset),
+        kernel: CMA_STREAM_KERNEL,
+        tile: CMA_SAMPLE_TILE,
+    }
+    .stream();
+    (0..slice.lambda).all(|candidate| {
+        let expected: Vec<f64> = start
+            .iter()
+            .map(|&mean| SIGMA0.mul_add(stream.next_normal(), mean))
+            .collect();
+        same_point_bits(&expected, &run.evaluations[slice.start + 1 + candidate].x)
+    })
+}
+
+fn reconstruct_restart_slices(run: &StudyRun) -> Result<Vec<RestartSlice>, String> {
+    let expected_starts = expected_restart_starts(run.input_seed, run.report.schedule.len());
+    let mut boundaries = Vec::with_capacity(expected_starts.len());
+    for (restart, expected) in expected_starts.iter().enumerate() {
+        let matches: Vec<usize> = run
+            .evaluations
+            .iter()
+            .enumerate()
+            .filter_map(|(index, evaluation)| {
+                same_point_bits(&evaluation.x, expected).then_some(index)
+            })
+            .collect();
+        if matches.len() != 1 {
+            return Err(format!(
+                "restart[{restart}]-start-occurrences:{}!=1",
+                matches.len()
+            ));
+        }
+        boundaries.push(matches[0]);
+    }
+    if boundaries.first().copied() != Some(0) {
+        return Err(format!(
+            "first-restart-boundary:{:?}!=0",
+            boundaries.first()
+        ));
+    }
+    if boundaries.windows(2).any(|window| window[0] >= window[1]) {
+        return Err(format!(
+            "restart-boundaries-not-strictly-increasing:{boundaries:?}"
+        ));
+    }
+
+    let mut slices = Vec::with_capacity(boundaries.len());
+    let mut large_runs = 0u32;
+    let mut small_budget_used = 0usize;
+    let mut large_budget_used = 0usize;
+    let base_lambda = expected_base_lambda();
+    for (restart, (&start, &lambda)) in boundaries.iter().zip(&run.report.schedule).enumerate() {
+        let end = boundaries
+            .get(restart + 1)
+            .copied()
+            .unwrap_or(run.evaluations.len());
+        let run_large = large_budget_used <= small_budget_used;
+        let expected_lambda = if run_large {
+            let multiplier = 1usize.checked_shl(large_runs).ok_or_else(|| {
+                format!("restart[{restart}]-large-population-shift-overflow:{large_runs}")
+            })?;
+            base_lambda.checked_mul(multiplier).ok_or_else(|| {
+                format!("restart[{restart}]-large-population-multiplication-overflow")
+            })?
+        } else {
+            base_lambda
+        };
+        if lambda != expected_lambda {
+            return Err(format!(
+                "schedule[{restart}]={lambda}!=reconstructed-{expected_lambda}"
+            ));
+        }
+        if start >= end {
+            return Err(format!(
+                "restart[{restart}]-empty-or-reversed-slice:{start}..{end}"
+            ));
+        }
+        let run_evals = end - start;
+        let remaining = TOTAL_BUDGET.checked_sub(start).ok_or_else(|| {
+            format!("restart[{restart}]-start-{start}-exceeds-budget-{TOTAL_BUDGET}")
+        })?;
+        let nominal_budget = lambda
+            .checked_mul(PER_RESTART_GENERATIONS)
+            .ok_or_else(|| format!("restart[{restart}]-nominal-budget-overflow"))?;
+        let admitted_budget = nominal_budget.min(remaining);
+        if run_evals > admitted_budget {
+            return Err(format!(
+                "restart[{restart}]-evals-{run_evals}>admitted-budget-{admitted_budget}"
+            ));
+        }
+        if (run_evals - 1) % lambda != 0 {
+            return Err(format!(
+                "restart[{restart}]-evals-{run_evals}-not-1-plus-whole-generations-of-{lambda}"
+            ));
+        }
+        if admitted_budget >= 1 + lambda && run_evals < 1 + lambda {
+            return Err(format!(
+                "restart[{restart}]-omitted-admissible-first-generation"
+            ));
+        }
+        let slice = RestartSlice { start, end, lambda };
+        if !first_generation_matches(run, restart, slice, &expected_starts[restart]) {
+            return Err(format!(
+                "restart[{restart}]-first-generation-does-not-match-declared-stream"
+            ));
+        }
+        slices.push(slice);
+
+        if run_large {
+            large_budget_used = large_budget_used
+                .checked_add(run_evals)
+                .ok_or_else(|| format!("restart[{restart}]-large-budget-overflow"))?;
+            large_runs += 1;
+        } else {
+            small_budget_used = small_budget_used
+                .checked_add(run_evals)
+                .ok_or_else(|| format!("restart[{restart}]-small-budget-overflow"))?;
+        }
+        let has_next = restart + 1 < boundaries.len();
+        if has_next && (end >= TOTAL_BUDGET || large_runs > LARGE_RUN_CAP_TRIGGER) {
+            return Err(format!(
+                "restart[{restart}]-schedule-continued-after-terminal-condition"
+            ));
+        }
+    }
+    if run.evaluations.len() < TOTAL_BUDGET && large_runs <= LARGE_RUN_CAP_TRIGGER {
+        return Err(format!(
+            "schedule-ended-before-budget-or-large-run-cap:evals={};large-runs={large_runs}",
+            run.evaluations.len()
+        ));
+    }
+    Ok(slices)
 }
 
 #[allow(clippy::too_many_lines)] // Complete trace and public-report accounting is the oracle.
@@ -241,22 +487,10 @@ fn accounting_mismatch(run: &StudyRun) -> Option<String> {
             run.report.total_evals
         ));
     }
-    if run.report.schedule[..2] != [BASE_LAMBDA, BASE_LAMBDA] {
-        return Some(format!(
-            "first-two-populations:{:?}!=[{BASE_LAMBDA},{BASE_LAMBDA}]",
-            &run.report.schedule[..2]
-        ));
-    }
-    for (restart, &lambda) in run.report.schedule.iter().enumerate() {
-        if lambda < BASE_LAMBDA
-            || lambda % BASE_LAMBDA != 0
-            || !(lambda / BASE_LAMBDA).is_power_of_two()
-        {
-            return Some(format!(
-                "schedule[{restart}]={lambda};expected-base-times-power-of-two"
-            ));
-        }
-    }
+    let restart_slices = match reconstruct_restart_slices(run) {
+        Ok(slices) => slices,
+        Err(mismatch) => return Some(mismatch),
+    };
 
     let best = &run.report.best;
     if best.x_best.len() != DIMENSION {
@@ -287,18 +521,6 @@ fn accounting_mismatch(run: &StudyRun) -> Option<String> {
             best.evals, run.report.total_evals
         ));
     }
-    let generation_accounting_matches = run.report.schedule.iter().any(|&lambda| {
-        best.generations
-            .checked_mul(lambda)
-            .and_then(|population_evals| population_evals.checked_add(1))
-            == Some(best.evals)
-    });
-    if !generation_accounting_matches {
-        return Some(format!(
-            "best-run-accounting:evals-{}!=1+generations-{}*any-scheduled-population",
-            best.evals, best.generations
-        ));
-    }
     if best.converged {
         return Some("impossible-target-was-reported-converged".to_string());
     }
@@ -309,7 +531,7 @@ fn accounting_mismatch(run: &StudyRun) -> Option<String> {
         ));
     }
 
-    let mut trace_minimum: Option<f64> = None;
+    let mut first_trace_best: Option<(usize, &Evaluation)> = None;
     for (evaluation_index, evaluation) in run.evaluations.iter().enumerate() {
         if evaluation.x.len() != DIMENSION {
             return Some(format!(
@@ -333,44 +555,70 @@ fn accounting_mismatch(run: &StudyRun) -> Option<String> {
                 evaluation.value.to_bits()
             ));
         }
-        let recomputed = shifted_rastrigin(&evaluation.x).to_bits();
-        if evaluation.value.to_bits() != recomputed {
+        let oracle = shifted_rastrigin_oracle(&evaluation.x);
+        let tolerance = objective_oracle_tolerance(evaluation.value, oracle);
+        if !oracle.is_finite() || (evaluation.value - oracle).abs() > tolerance {
             return Some(format!(
-                "trace[{evaluation_index}]-objective:recorded=0x{:016x};recomputed=0x{recomputed:016x}",
-                evaluation.value.to_bits()
+                "trace[{evaluation_index}]-objective:recorded=0x{:016x};oracle=0x{:016x};tolerance=0x{:016x}",
+                evaluation.value.to_bits(),
+                oracle.to_bits(),
+                tolerance.to_bits()
             ));
         }
-        trace_minimum = Some(match trace_minimum {
-            Some(current) if current <= evaluation.value => current,
-            _ => evaluation.value,
-        });
+        if first_trace_best.is_none_or(|(_, current)| evaluation.value < current.value) {
+            first_trace_best = Some((evaluation_index, evaluation));
+        }
     }
-    let trace_minimum = trace_minimum.expect("positive total-eval accounting makes trace nonempty");
-    if trace_minimum.to_bits() != best.f_best.to_bits() {
+    let (first_trace_best_index, first_trace_best) =
+        first_trace_best.expect("positive total-eval accounting makes trace nonempty");
+    if first_trace_best.value.to_bits() != best.f_best.to_bits() {
         return Some(format!(
             "complete-trace-minimum=0x{:016x};reported-best=0x{:016x}",
-            trace_minimum.to_bits(),
+            first_trace_best.value.to_bits(),
             best.f_best.to_bits()
         ));
     }
-    let recomputed_best = shifted_rastrigin(&best.x_best).to_bits();
-    if recomputed_best != best.f_best.to_bits() {
+    let best_oracle = shifted_rastrigin_oracle(&best.x_best);
+    let best_tolerance = objective_oracle_tolerance(best.f_best, best_oracle);
+    if !best_oracle.is_finite() || (best.f_best - best_oracle).abs() > best_tolerance {
         return Some(format!(
-            "best-point-objective:recomputed=0x{recomputed_best:016x};reported=0x{:016x}",
-            best.f_best.to_bits()
+            "best-point-objective:oracle=0x{:016x};reported=0x{:016x};tolerance=0x{:016x}",
+            best_oracle.to_bits(),
+            best.f_best.to_bits(),
+            best_tolerance.to_bits()
         ));
     }
-    if !run.evaluations.iter().any(|evaluation| {
-        evaluation.value.to_bits() == best.f_best.to_bits()
-            && same_point_bits(&evaluation.x, &best.x_best)
-    }) {
-        return Some("reported-best-is-not-an-evaluated-point".to_string());
+    if !same_point_bits(&first_trace_best.x, &best.x_best) {
+        return Some("reported-best-is-not-the-first-stable-trace-minimum".to_string());
+    }
+    let Some((winning_restart, winning_slice)) =
+        restart_slices.iter().enumerate().find(|(_, slice)| {
+            slice.start <= first_trace_best_index && first_trace_best_index < slice.end
+        })
+    else {
+        return Some(format!(
+            "trace-minimum-index-{first_trace_best_index}-is-outside-restart-slices"
+        ));
+    };
+    let winning_run_evals = winning_slice.end - winning_slice.start;
+    let winning_generations = (winning_run_evals - 1) / winning_slice.lambda;
+    if best.evals != winning_run_evals || best.generations != winning_generations {
+        return Some(format!(
+            "best-run-accounting:reported-evals-{}-generations-{}!=restart-{winning_restart}-evals-{winning_run_evals}-generations-{winning_generations}",
+            best.evals, best.generations
+        ));
     }
     None
 }
 
 #[allow(clippy::too_many_lines)] // Exhaustive field-by-field public-state audit.
 fn first_public_mismatch(left: &StudyRun, right: &StudyRun) -> Option<String> {
+    if left.input_seed != right.input_seed {
+        return Some(format!(
+            "input-seed:0x{:016x}!=0x{:016x}",
+            left.input_seed, right.input_seed
+        ));
+    }
     if left.fixture.canonical_bytes() != right.fixture.canonical_bytes() {
         return Some("fixture-identity".to_string());
     }
@@ -483,6 +731,13 @@ fn first_public_mismatch(left: &StudyRun, right: &StudyRun) -> Option<String> {
 }
 
 fn validate_payload(run: &StudyRun) -> Result<(), AdmissionError> {
+    let expected_fixture = fixture_identity(run.input_seed);
+    if run.fixture.canonical_bytes() != expected_fixture.canonical_bytes() {
+        return Err(AdmissionError::FixtureIdentityMismatch {
+            declared: run.fixture.root(),
+            computed: expected_fixture.root(),
+        });
+    }
     let computed = result_identity(&run.fixture, &run.report, &run.evaluations);
     if computed.canonical_bytes() == run.result.canonical_bytes() {
         Ok(())
@@ -551,7 +806,8 @@ fn emit_green_receipt(run: &StudyRun) {
                 concat!(
                     "{{\"fixture_identity\":\"{}\",\"result_identity\":\"{}\",",
                     "\"algorithm\":\"fs_dfo::bipop_cmaes\",\"objective\":\"shifted-rastrigin\",",
-                    "\"units\":\"dimensionless\",\"input_seed\":{},\"dimension\":{},",
+                    "\"semantic_oracle\":\"{}\",\"units\":\"dimensionless\",",
+                    "\"input_seed\":{},\"corruption_seed\":{},\"dimension\":{},",
                     "\"total_budget\":{},\"total_evals\":{},\"schedule\":{},",
                     "\"best\":{{\"x_len\":{},\"f_bits\":\"0x{:016x}\",",
                     "\"evals\":{},\"generations\":{},\"converged\":{},",
@@ -566,7 +822,9 @@ fn emit_green_receipt(run: &StudyRun) {
                 ),
                 run.fixture.hex(),
                 run.result.hex(),
-                INPUT_SEED,
+                SEMANTIC_ORACLE_VERSION,
+                run.input_seed,
+                CORRUPTION_SEED,
                 DIMENSION,
                 TOTAL_BUDGET,
                 run.report.total_evals,
@@ -597,14 +855,18 @@ fn emit_green_receipt(run: &StudyRun) {
     println!("{line}");
 }
 
-fn emit_green_verdict(run: &StudyRun) -> Event {
-    let detail = format!(
-        "fixture={}; result={}; total_evals={}; restarts={}; trace=bit-exact; public_report=fully-bound",
+fn green_verdict_detail(run: &StudyRun) -> String {
+    format!(
+        "fixture={}; result={}; total_evals={}; restarts={}; trace=bit-exact; public_report=fully-bound; semantic_oracle={SEMANTIC_ORACLE_VERSION}",
         run.fixture.hex(),
         run.result.hex(),
         run.report.total_evals,
         run.report.schedule.len()
-    );
+    )
+}
+
+fn emit_green_verdict(run: &StudyRun) -> Event {
+    let detail = green_verdict_detail(run);
     let mut emitter = Emitter::new(SUITE, format!("{CASE}/verdict"));
     let event = emitter.emit(
         Severity::Info,
@@ -613,7 +875,7 @@ fn emit_green_verdict(run: &StudyRun) -> Event {
             case: CASE.to_string(),
             pass: true,
             detail,
-            seed: INPUT_SEED,
+            seed: run.input_seed,
         },
         None,
     );
@@ -641,7 +903,11 @@ fn failure_event(detail: &str, corruption_seed: u64) -> Event {
 
 fn assert_mergeable(run: &StudyRun, reference: &ReplayIdentity, event: &Event) {
     let EventKind::ConformanceCase {
-        case, pass, detail, ..
+        suite,
+        case,
+        pass,
+        detail,
+        seed,
     } = &event.kind
     else {
         panic!("merge gate accepts only ConformanceCase evidence");
@@ -649,7 +915,66 @@ fn assert_mergeable(run: &StudyRun, reference: &ReplayIdentity, event: &Event) {
     if let Err(error) = admit_against(run, reference) {
         panic!("merge gate refused {case}: {error:?}; {detail}");
     }
+    if let Some(mismatch) = accounting_mismatch(run) {
+        panic!("merge gate refused {case}: semantic mismatch {mismatch}; {detail}");
+    }
+    assert_eq!(
+        event.session.as_str(),
+        SUITE,
+        "merge gate refused an event from the wrong session"
+    );
+    let expected_scope = format!("{CASE}/verdict");
+    assert_eq!(
+        event.scope.as_str(),
+        expected_scope.as_str(),
+        "merge gate refused an event from the wrong scope"
+    );
+    assert_eq!(
+        event.seq, 0,
+        "merge gate requires the canonical verdict slot"
+    );
+    assert_eq!(
+        event.severity,
+        Severity::Info,
+        "merge gate requires an informational green verdict"
+    );
+    assert!(
+        event.wall_ns.is_none(),
+        "merge gate requires deterministic evidence without a wall-clock envelope"
+    );
+    assert_eq!(suite.as_str(), SUITE, "merge gate refused the wrong suite");
+    assert_eq!(case.as_str(), CASE, "merge gate refused the wrong case");
+    assert_eq!(
+        *seed, run.input_seed,
+        "merge gate refused a verdict with the wrong causal input seed"
+    );
+    let expected_detail = green_verdict_detail(run);
+    assert_eq!(
+        detail.as_str(),
+        expected_detail.as_str(),
+        "merge gate refused a verdict that does not name the admitted run"
+    );
     assert!(*pass, "merge gate refused {case}: {detail}");
+}
+
+fn assert_resealed_semantic_refusal(
+    mut mutant: StudyRun,
+    event: &Event,
+    expected_mismatch_fragment: &str,
+) {
+    mutant.result = result_identity(&mutant.fixture, &mutant.report, &mutant.evaluations);
+    validate_payload(&mutant).expect("resealed semantic mutant must be identity-consistent");
+    let panic = catch_unwind(|| {
+        assert_mergeable(&mutant, &mutant.result, event);
+    })
+    .expect_err("resealed semantic mutant must fail admission against its own identity");
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .expect("semantic-refusal panic carries text");
+    assert!(message.contains("semantic mismatch"), "{message}");
+    assert!(message.contains(expected_mismatch_fragment), "{message}");
 }
 
 fn seeded_corruption(canonical: &StudyRun, seed: u64) -> SeededCorruption {
@@ -687,7 +1012,8 @@ fn seeded_corruption(canonical: &StudyRun, seed: u64) -> SeededCorruption {
 
 fn corruption_detail(canonical: &StudyRun, corruption: &SeededCorruption) -> String {
     format!(
-        "input_seed=0x{INPUT_SEED:016x}; corruption_seed=0x{:016x}; fixture={}; coordinate={}; mantissa_bit={}; before=0x{:016x}; after=0x{:016x}; stale_gate={:?}; reference_gate={:?}; first_mismatch={}; canonical={}; corrupted={}",
+        "input_seed=0x{:016x}; corruption_seed=0x{:016x}; fixture={}; coordinate={}; mantissa_bit={}; before=0x{:016x}; after=0x{:016x}; stale_gate={:?}; reference_gate={:?}; first_mismatch={}; canonical={}; corrupted={}",
+        canonical.input_seed,
         corruption.mutation.seed,
         canonical.fixture.hex(),
         corruption.mutation.coordinate,
@@ -808,6 +1134,22 @@ fn exercise_disclosed_corruption(canonical: &StudyRun, replay: &StudyRun) {
     assert!(message.contains(&format!("0x{CORRUPTION_SEED:016x}")));
     assert!(message.contains("best.x[1]"));
     assert!(message.contains("ReferenceIdentityMismatch"));
+
+    let semantic_panic = catch_unwind(|| {
+        assert_mergeable(
+            &first_corruption.run,
+            &first_corruption.run.result,
+            &first_event,
+        );
+    })
+    .expect_err("a resealed mutant must fail semantic admission even against itself");
+    let semantic_message = semantic_panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| semantic_panic.downcast_ref::<&str>().copied())
+        .expect("semantic merge-gate panic carries text");
+    assert!(semantic_message.contains(RED_CASE));
+    assert!(semantic_message.contains("semantic mismatch"));
 }
 
 #[test]
@@ -839,5 +1181,43 @@ fn bipop_full_study_replays_and_seeded_failure_is_refused() {
     emit_green_receipt(&first);
     let green_verdict = emit_green_verdict(&first);
     assert_mergeable(&first, &first.result, &green_verdict);
+
+    let mut wrong_seed_verdict = green_verdict.clone();
+    let EventKind::ConformanceCase { seed, .. } = &mut wrong_seed_verdict.kind else {
+        unreachable!("green verdict constructor always returns ConformanceCase evidence");
+    };
+    *seed ^= 1;
+    let panic = catch_unwind(|| {
+        assert_mergeable(&first, &first.result, &wrong_seed_verdict);
+    })
+    .expect_err("a green verdict with the wrong causal seed must not merge");
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .expect("verdict-binding panic carries text");
+    assert!(message.contains("wrong causal input seed"));
+
+    let mut objective_mutant = first.clone();
+    objective_mutant.evaluations[0].value += 0.25;
+    assert_resealed_semantic_refusal(objective_mutant, &green_verdict, "trace[0]-objective");
+
+    let mut schedule_mutant = first.clone();
+    schedule_mutant.report.schedule[0] = schedule_mutant.report.schedule[0]
+        .checked_mul(2)
+        .expect("fixture schedule mutation fits usize");
+    assert_resealed_semantic_refusal(schedule_mutant, &green_verdict, "schedule[0]");
+
+    let mut causal_seed_mutant = first.clone();
+    causal_seed_mutant.input_seed ^= 1;
+    assert!(matches!(
+        validate_payload(&causal_seed_mutant),
+        Err(AdmissionError::FixtureIdentityMismatch { declared, computed })
+            if declared == first.fixture.root()
+                && computed == fixture_identity(causal_seed_mutant.input_seed).root()
+    ));
+    causal_seed_mutant.fixture = fixture_identity(causal_seed_mutant.input_seed);
+    assert_resealed_semantic_refusal(causal_seed_mutant, &green_verdict, "restart[");
+
     exercise_disclosed_corruption(&first, &replay);
 }
