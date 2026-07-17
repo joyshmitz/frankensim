@@ -11,17 +11,36 @@
 //! - gf-004 G5: identical inputs replay identical candidate vectors.
 //! - gf-005 G0/G4: index/position/inflation/cap/cancellation refusals
 //!   fail closed with the named typed error.
+//! Aggregate outcomes use canonical fs-obs events; evaluated cases carry
+//! the shared execution seed and constructor-only gf-001 uses zero.
 
 use asupersync::types::Budget;
 use fs_exec::{CancelGate, Cx, ExecMode, StreamKey};
 use fs_query::{Feature, FeatureComplex, QueryError, ccd_candidates};
 
-fn verdict(case: &str, pass: bool, detail: &str) {
-    println!(
-        "{{\"suite\":\"fs-query/features\",\"case\":\"{case}\",\"verdict\":\"{}\",\
-         \"detail\":\"{detail}\"}}",
-        if pass { "pass" } else { "fail" }
+const EXECUTION_SEED: u64 = 0xFEA7;
+
+fn verdict(case: &str, pass: bool, detail: &str, seed: u64) {
+    let mut emitter = fs_obs::Emitter::new("fs-query/features", case);
+    let event = emitter.emit(
+        if pass {
+            fs_obs::Severity::Info
+        } else {
+            fs_obs::Severity::Error
+        },
+        fs_obs::EventKind::ConformanceCase {
+            suite: "fs-query/features".to_string(),
+            case: case.to_string(),
+            pass,
+            detail: detail.to_string(),
+            seed,
+        },
+        None,
     );
+    fs_obs::lint_failure_record(&event).expect("feature-candidate verdict must be replayable");
+    let line = event.to_jsonl();
+    fs_obs::validate_line(&line).expect("feature verdict must use the fs-obs wire schema");
+    println!("{line}");
     assert!(pass, "case {case}: {detail}");
 }
 
@@ -33,7 +52,7 @@ fn with_cx<R>(f: impl FnOnce(&Cx<'_>) -> R) -> R {
             &gate,
             arena,
             StreamKey {
-                seed: 0xFEA7,
+                seed: EXECUTION_SEED,
                 kernel_id: 14,
                 tile: 0,
                 iteration: 0,
@@ -143,6 +162,7 @@ fn gf_001_complex_construction_is_canonical() {
         "gf-001",
         same,
         "tetra complex: 4+6+4 features in deterministic canonical order",
+        0,
     );
 }
 
@@ -181,6 +201,7 @@ fn gf_002_bvh_matches_brute_force_and_finds_the_hit() {
             "BVH == brute force ({} pairs at 0.4 window; 0 at 0.02 window)",
             pairs.len()
         ),
+        EXECUTION_SEED,
     );
 }
 
@@ -227,6 +248,7 @@ fn gf_003_translation_invariance_and_monotone_windows() {
             base.len(),
             wide.len()
         ),
+        EXECUTION_SEED,
     );
 }
 
@@ -243,6 +265,7 @@ fn gf_004_replay_is_identical() {
         "gf-004",
         true,
         &format!("{} candidate pairs replay identically", first.len()),
+        EXECUTION_SEED,
     );
 }
 
@@ -297,7 +320,7 @@ fn gf_005_refusals_fail_closed() {
             &gate,
             arena,
             StreamKey {
-                seed: 0xFEA7,
+                seed: EXECUTION_SEED,
                 kernel_id: 15,
                 tile: 0,
                 iteration: 0,
@@ -312,5 +335,6 @@ fn gf_005_refusals_fail_closed() {
         "gf-005",
         true,
         "index/position/inflation/cap/cancellation all refuse typed",
+        EXECUTION_SEED,
     );
 }

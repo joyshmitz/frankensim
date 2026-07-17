@@ -316,7 +316,10 @@ cancellation, plus malformed support/slack refusal.
 candidates: canonical construction, BVH-equals-brute-force oracle
 agreement, guaranteed inclusion of the closest pair inside the motion
 window, translation invariance and window monotonicity metamorphics,
-identical replay, and refusal drills.
+identical replay, and refusal drills. Aggregate outcomes use canonical fs-obs
+`ConformanceCase` events; evaluated gf-002..gf-005 carry the shared `0xFEA7`
+execution seed and constructor-only gf-001 uses zero. Direct assertion
+failures before those events remain ordinary Rust test diagnostics.
 `tests/gap.rs`, cases gg-001..gg-004 — implicit gap oracle: analytic
 containment and true-distance upper bounding on disjoint spheres,
 certified common-ball witnesses on overlap, claim/evidence/point/
