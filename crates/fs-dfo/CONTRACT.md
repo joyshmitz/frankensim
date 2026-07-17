@@ -156,6 +156,23 @@ against jMetal revision `ea7e882f6b8f94b99535921674e62cda7986f20e`.
 As in the older fs-dfo aggregate batteries, impossible public-API structural
 failures such as an empty front remain ordinary Rust diagnostics before aggregate
 emission; gate failures after a front exists retain structured red evidence.
+tests/bipop_study_replay.rs adds one G5 study-scale replay receipt for the
+production `bipop_cmaes` path on a finite four-dimensional shifted-Rastrigin
+fixture. Two independent runs at the recorded seed bind and compare every
+public `BipopReport` field, every nested best-run `CmaReport` field, the complete
+restart-population schedule, and every closure-counted objective input/value bit.
+The fixture identity records units, initial point and shift, budget, target,
+base-population and per-restart rules, logical CMA/restart stream coordinates,
+stream-semantics version, dependency versions, capabilities, and the exact input
+seed. The result identity binds that fixture plus the full public report and
+ordered evaluation trace; the validated fs-obs receipt retains both roots and
+the actual evaluation/restart counts. A disclosed corruption seed selects one
+returned `x_best` coordinate and mantissa bit, produces two identical wire-valid
+red `ConformanceCase` records with stable content identities and first-mismatch
+diagnostics, and is refused by the test-local merge gate. This battery claims
+only exact same-build replay for that recorded fixture: it does not claim
+optimizer quality, other objectives/dimensions/budgets/seeds, refreshed
+cross-ISA equality, cancellation, checkpoint/resume, or performance.
 tests/dro_battery.rs (4 cases): the one-sample kink LP recovers the
 fractional q = [0.5, 0.5] and worst-case value 0.5; tiny-scale kinks
 use scale-relative recovery rather than an absolute lambda cutoff;
