@@ -2211,12 +2211,13 @@ fn g3_cli_compiles_committed_torrent_2018_m19_steinmetz_inputs_without_cross_sta
         for retained_axis in [
             "source_material_nomenclature_is_m19_m290_50a",
             "source_excitation_is_sinusoidal",
+            "source_manufacturer_cogent_electrical_steel",
             "source_is_reported_fit_not_executable_pack_model",
         ] {
             assert_eq!(claim.validity.bound(retained_axis), Some((1.0, 1.0)));
         }
         for missing_axis in [
-            "source_manufacturer_process_anneal_coating_lot_known",
+            "source_product_process_anneal_coating_lot_known",
             "source_magnetic_loss_test_method_and_temperature_known",
             "source_fit_uncertainty_dispersion_known",
             "source_coefficients_portable_without_source_equations",
@@ -2254,12 +2255,13 @@ fn g3_cli_compiles_committed_torrent_2018_m19_steinmetz_inputs_without_cross_sta
     for retained_axis in [
         "source_material_nomenclature_is_m19_m290_50a",
         "source_excitation_is_sinusoidal",
+        "source_manufacturer_cogent_electrical_steel",
         "source_is_reported_fit_not_executable_pack_model",
     ] {
         assert_eq!(thickness.validity.bound(retained_axis), Some((1.0, 1.0)));
     }
     for missing_axis in [
-        "source_manufacturer_process_anneal_coating_lot_known",
+        "source_product_process_anneal_coating_lot_known",
         "source_magnetic_loss_test_method_and_temperature_known",
         "source_fit_uncertainty_dispersion_known",
         "source_coefficients_portable_without_source_equations",
@@ -2290,11 +2292,20 @@ fn g3_cli_compiles_committed_torrent_2018_m19_steinmetz_inputs_without_cross_sta
         .claims()
         .observation(equation_4_observations[0])
         .expect("Torrent Equation 4 observation remains linked");
+    assert_eq!(
+        equation_4_observation.specimen,
+        "torrent-2018-ave-induction-motor-stator-cogent-electrical-steel-aisi-m19-m290-50a-product-and-process-state-unstated"
+    );
     assert!(equation_4_observation.method.contains("Equation 4"));
     assert!(
         equation_4_observation
             .caveats
-            .contains("does not name the steel manufacturer")
+            .contains("identifies Cogent Electrical Steel")
+    );
+    assert!(
+        equation_4_observation
+            .caveats
+            .contains("does not identify a Cogent product designation")
     );
     assert!(
         equation_4_observation
@@ -2305,6 +2316,10 @@ fn g3_cli_compiles_committed_torrent_2018_m19_steinmetz_inputs_without_cross_sta
         .claims()
         .observation(equation_5_observations[0])
         .expect("Torrent Equation 5 observation remains linked");
+    assert_eq!(
+        equation_5_observation.specimen,
+        equation_4_observation.specimen
+    );
     assert!(equation_5_observation.method.contains("Equation 5"));
     assert!(
         equation_5_observation

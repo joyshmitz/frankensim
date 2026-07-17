@@ -724,13 +724,15 @@ numbers are not asserted to be dimensionless physical coefficients: their
 compound units and semantics depend on the printed equations. No executable
 Steinmetz or loss model is synthesized from them.
 
-The article does not name the steel manufacturer, product, heat, chemistry,
-processing, anneal, coating, rolling direction, magnetic sheet-loss test
-method, test temperature, repeats, dispersion, fit covariance, or B-H curve.
-It also reports larger analytical-versus-experimental differences at high flux
-density. These inputs therefore remain separate from both the anonymous
-NASA-TN-D-8184 material deck and the Tempel `24N208` state. They do not close
-the fully pinned M19 card required by bead `1sxe`.
+Reference 13 names Cogent Electrical Steel as the manufacturer-data source, but
+the article does not identify a Cogent product designation or revision,
+production site, heat, chemistry, processing, anneal, coating, rolling
+direction, magnetic sheet-loss test method, test temperature, repeats,
+dispersion, fit covariance, or B-H curve. It also reports larger
+analytical-versus-experimental differences at high flux density. These inputs
+therefore remain separate from both the anonymous NASA-TN-D-8184 material deck
+and the Tempel `24N208` state. They do not close the fully pinned M19 card
+required by bead `1sxe`.
 
 Torrent 2018 M19/M290-50A references:
 
