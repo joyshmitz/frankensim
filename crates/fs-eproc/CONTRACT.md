@@ -95,6 +95,20 @@ e-BH FDR 0.001 ≤ 0.1 at power 1.00 (10 signals / 30 nulls × 300 sims);
 race decided + bit-replayable; arithmetic laws; bounded-input refusal;
 declared-span boundaries and one-ULP refusal; equal-mean skew counterexample.
 
+The five empirical Gauntlet aggregates use canonical fs-obs
+`ConformanceCase` rows under `fs-eproc`, with distinct `ville-validity`,
+`power`, `cs-coverage`, `e-bh`, and `race-replay` scopes. Every row records the
+actual shared fs-rand input root `0xB7E1` (`0xE90C ^ 0x5EED`) in its `seed`
+field. Kernel 1 and the logical input tiles are: 0..3999 for Ville validity;
+1000..1199 and 2000..2199 for power; 50000..51499 plus shrinkage tile 99999
+for CS coverage; `200000 + sim*64 + hypothesis` for e-BH; and tile 777 twice
+for race replay. These are logical RNG coordinates, never worker, thread, Cx,
+or scheduler seeds. Each fresh emitter produces one sequence-zero event and
+runs the failure-record lint plus fs-obs wire validation. The rows remain after
+their existing statistical and replay assertions, so a failed gate aborts
+before emission as an ordinary Rust diagnostic rather than a structured
+failure record.
+
 `tests/hardening.rs`, behind `conformal-hardening`, emits canonical aggregate
 `ConformanceCase` verdicts for ch-001..ch-005 and validated object-shaped
 `Custom` measurement companions for ch-001..ch-004. The literal input roots
@@ -114,6 +128,9 @@ event coverage. Central proof must explicitly enable
 - A caller-supplied finite span is a checked assumption, not a certificate that
   the underlying stochastic process has that support. Runtime breach refuses
   the observation; justifying the bound remains the caller's obligation.
+- The canonical Gauntlet rows retain evidence for the fixed seeded empirical
+  schedules above; they do not turn those observed rates or stopping times into
+  an exhaustive finite-sample proof for untested data-generating processes.
 
 ## No-claim boundaries (hardening)
 

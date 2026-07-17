@@ -505,10 +505,37 @@ mod tests {
     use super::*;
     use fs_rand::StreamKey;
 
+    const GAUNTLET_SUITE: &str = "fs-eproc";
+    const INPUT_RNG_ROOT: u64 = 0xE9_0C ^ 0x5EED;
+    const INPUT_RNG_KERNEL: u32 = 1;
+
+    fn verdict(case: &str, pass: bool, detail: &str, input_rng_root: u64) {
+        let mut emitter = fs_obs::Emitter::new(GAUNTLET_SUITE, case);
+        let event = emitter.emit(
+            if pass {
+                fs_obs::Severity::Info
+            } else {
+                fs_obs::Severity::Error
+            },
+            fs_obs::EventKind::ConformanceCase {
+                suite: GAUNTLET_SUITE.to_string(),
+                case: case.to_string(),
+                pass,
+                detail: detail.to_string(),
+                seed: input_rng_root,
+            },
+            None,
+        );
+        fs_obs::lint_failure_record(&event).expect("e-process verdict must be replayable");
+        let line = event.to_jsonl();
+        fs_obs::validate_line(&line).expect("e-process verdict must use the fs-obs wire schema");
+        println!("{line}");
+    }
+
     fn key(tile: u32) -> StreamKey {
         StreamKey {
-            seed: 0xE9_0C ^ 0x5EED,
-            kernel: 1,
+            seed: INPUT_RNG_ROOT,
+            kernel: INPUT_RNG_KERNEL,
             tile,
         }
     }
@@ -542,8 +569,11 @@ mod tests {
             rate <= alpha + 0.014,
             "adversarial-stopping type-I rate {rate} exceeds alpha {alpha} — validity broken"
         );
-        println!(
-            "{{\"suite\":\"fs-eproc\",\"case\":\"ville-validity\",\"verdict\":\"pass\",\"detail\":\"adversarial type-I {rate:.4} <= {alpha}\"}}"
+        verdict(
+            "ville-validity",
+            true,
+            &format!("adversarial type-I {rate:.4} <= {alpha}"),
+            INPUT_RNG_ROOT,
         );
     }
 
@@ -574,8 +604,11 @@ mod tests {
             stop_times[1] * 4 < stop_times[0],
             "bigger effects must stop much sooner: medians {stop_times:?}"
         );
-        println!(
-            "{{\"suite\":\"fs-eproc\",\"case\":\"power\",\"verdict\":\"pass\",\"detail\":\"median stop times {stop_times:?} for deltas [0.05, 0.15]\"}}"
+        verdict(
+            "power",
+            true,
+            &format!("median stop times {stop_times:?} for deltas [0.05, 0.15]"),
+            INPUT_RNG_ROOT,
         );
     }
 
@@ -617,8 +650,11 @@ mod tests {
         }
         let r_end = cs.interval().expect("data").1;
         assert!(r_end < r30 / 4.0, "radius must shrink: {r30} -> {r_end}");
-        println!(
-            "{{\"suite\":\"fs-eproc\",\"case\":\"cs-coverage\",\"verdict\":\"pass\",\"detail\":\"miss {miss:.4}; radius {r30:.3}->{r_end:.3}\"}}"
+        verdict(
+            "cs-coverage",
+            true,
+            &format!("miss {miss:.4}; radius {r30:.3}->{r_end:.3}"),
+            INPUT_RNG_ROOT,
         );
     }
 
@@ -658,8 +694,11 @@ mod tests {
             power > 0.8,
             "power {power} too low — thresholds miscomputed?"
         );
-        println!(
-            "{{\"suite\":\"fs-eproc\",\"case\":\"e-bh\",\"verdict\":\"pass\",\"detail\":\"FDR {fdr:.3} <= {alpha}, power {power:.2}\"}}"
+        verdict(
+            "e-bh",
+            true,
+            &format!("FDR {fdr:.3} <= {alpha}, power {power:.2}"),
+            INPUT_RNG_ROOT,
         );
     }
 
@@ -687,8 +726,11 @@ mod tests {
             (won2, t2, bits2),
             "tournament must be bit-replayable"
         );
-        println!(
-            "{{\"suite\":\"fs-eproc\",\"case\":\"race-replay\",\"verdict\":\"pass\",\"detail\":\"decided at t={t1}, bitwise replayable\"}}"
+        verdict(
+            "race-replay",
+            true,
+            &format!("decided at t={t1}, bitwise replayable"),
+            INPUT_RNG_ROOT,
         );
     }
 
