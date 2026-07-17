@@ -428,6 +428,30 @@ impl FreeSurface3 {
         extent
     }
 
+    /// Surge-front x position: the maximum global x among fluid/interface
+    /// cells with `z < z_below` — the 3-D analog of the 2-D battery's
+    /// bottom-row `surge_front` probe (restricting to the bottom slab
+    /// keeps splashes out of the front measurement).
+    #[must_use]
+    pub fn surge_front_x(&self, z_below: usize) -> Option<i64> {
+        let mut front: Option<i64> = None;
+        for (&key, tile) in &self.tiles {
+            let (tx, ty, tz) = demorton3(key);
+            let _ = ty;
+            for lane in 0..TILE_CELLS {
+                if matches!(tile.cells[lane], Cell3::Fluid | Cell3::Interface) {
+                    let (lx, _ly, lz) = lane_coords(lane);
+                    let gz = tz as usize * TILE + lz;
+                    if gz < z_below {
+                        let gx = i64::from(tx) * TILE as i64 + lx as i64;
+                        front = Some(front.map_or(gx, |f| f.max(gx)));
+                    }
+                }
+            }
+        }
+        front
+    }
+
     /// Neighbor of (key, lane) in direction `q` (see [`Neighbor`]).
     fn neighbor_state(&self, key: u64, lane: usize, q: usize) -> Neighbor {
         let (tx, ty, tz) = demorton3(key);

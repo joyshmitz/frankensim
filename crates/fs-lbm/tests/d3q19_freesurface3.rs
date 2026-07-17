@@ -255,3 +255,123 @@ fn wetting_contact_and_surface_tension_stay_bounded() {
         fs.worst_step_violation()
     );
 }
+
+/// JSONL verdict record, matching the 2-D extension battery's format.
+fn verdict(name: &str, pass: bool, details: &str) {
+    println!("{{\"test\":\"{name}\",\"pass\":{pass},\"details\":\"{details}\"}}");
+    assert!(pass, "{name}: {details}");
+}
+
+/// Linear interpolation of the in-repo Martin-Moyce reference curve.
+fn martin_moyce_reference(t_star: f64) -> Option<f64> {
+    let raw = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../data/reference/martin-moyce-1952.jsonl"),
+    )
+    .expect("in-repo Martin-Moyce reference data present");
+    let mut pts: Vec<(f64, f64)> = Vec::new();
+    for line in raw.lines() {
+        // Minimal field scrape (no JSON dep in this battery): data rows
+        // look like {"t_star": 0.41, "z": 1.11}.
+        let Some(t_idx) = line.find("\"t_star\":") else {
+            continue;
+        };
+        let Some(z_idx) = line.find("\"z\":") else {
+            continue;
+        };
+        let t: f64 = line[t_idx + 9..]
+            .split(&[',', '}'][..])
+            .next()
+            .expect("t field")
+            .trim()
+            .parse()
+            .expect("t value parses");
+        let z: f64 = line[z_idx + 4..]
+            .split(&[',', '}'][..])
+            .next()
+            .expect("z field")
+            .trim()
+            .parse()
+            .expect("z value parses");
+        pts.push((t, z));
+    }
+    assert!(pts.len() >= 10, "reference data unexpectedly short");
+    if t_star < pts[0].0 || t_star > pts[pts.len() - 1].0 {
+        return None;
+    }
+    let after = pts.iter().position(|&(t, _)| t >= t_star)?;
+    if after == 0 {
+        return Some(pts[0].1);
+    }
+    let (t0, z0) = pts[after - 1];
+    let (t1, z1) = pts[after];
+    Some(z0 + (z1 - z0) * (t_star - t0) / (t1 - t0))
+}
+
+/// lbm3-105: the 3-D Martin-Moyce dam-break battery. HARD GATE = the
+/// exact band the 2-D battery (lbm-105) uses at coarse lattice: the
+/// nondimensional front z = x/a advances monotonically after the initial
+/// transient and stays under the broad upper envelope 2.2*t*+1 for
+/// 0.5 < t* < 2. The in-repo digitized Martin-Moyce reference curve is
+/// compared REPORT-ONLY (max relative deviation in the verdict detail):
+/// a quantitative central band is fine-lattice validation scope, exactly
+/// as the 2-D battery states. Gauntlet tier: G2 (canonical benchmark,
+/// coarse-lattice honesty).
+#[test]
+fn lbm3_105_martin_moyce_front() {
+    let a = 8usize; // column base (cells)
+    let g = 5e-5;
+    let mut fs = FreeSurface3::new(
+        56,
+        8,
+        24,
+        0.55,
+        [0.0, 0.0, -g],
+        0.0,
+        ContactModel3::Neutral,
+        column(8, 8, 16), // base a, height 2a: the n^2 = 2 geometry
+    )
+    .expect("fixture admissible");
+    let m0 = fs.ledger_mass();
+    #[allow(clippy::cast_precision_loss)]
+    let tstar = |t: usize| (t as f64) * (2.0 * g / a as f64).sqrt();
+
+    let mut ok = true;
+    let mut detail = String::new();
+    let mut checked = 0u32;
+    let mut last_z = 1.0f64;
+    let mut worst_ref_dev = 0.0f64;
+    for t in 1..=600 {
+        fs.step()
+            .unwrap_or_else(|e| panic!("step {t} refused: {e}"));
+        let ts = tstar(t);
+        if ts > 0.5 && ts < 2.0 && t % 75 == 0 {
+            #[allow(clippy::cast_precision_loss)]
+            let z = fs.surge_front_x(4).expect("wet bottom slab") as f64 / a as f64;
+            let hi = 2.2f64.mul_add(ts, 1.0);
+            use std::fmt::Write as _;
+            let _ = write!(detail, "t*={ts:.2}: z={z:.2} <= {hi:.2}; ");
+            if z + 1e-12 < last_z || z > hi {
+                ok = false;
+            }
+            if let Some(zref) = martin_moyce_reference(ts) {
+                worst_ref_dev = worst_ref_dev.max(((z - zref) / zref).abs());
+            }
+            last_z = z;
+            checked += 1;
+        }
+    }
+    let drift = ((fs.ledger_mass() - m0) / m0).abs();
+    use std::fmt::Write as _;
+    let _ = write!(
+        detail,
+        "checked={checked}; worst MM ref deviation {worst_ref_dev:.2} (report-only); \
+         ledger drift {drift:.2e} (worst step {:.2e})",
+        fs.worst_step_violation()
+    );
+    verdict(
+        "lbm3-105-martin-moyce-front",
+        ok && checked >= 3 && drift < 1e-9,
+        &detail,
+    );
+}
