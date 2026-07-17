@@ -193,6 +193,11 @@ evidence. The deferred mixed and curl-curl solve batteries remain the gate.
   unaugmented edge maps retain distinct `0 x dim(C_0)` and `dim(C_top) x 0`
   shapes. Terminal orientation, port trivialization, and phase-current signs
   do not alter intrinsic cellular incidence.
+  Its third tranche consumes adjacent pair-bound maps `A_k`, `A_(k+1)` plus a
+  complete verified `U A_k V = D` witness, computes `V^-1 A_(k+1)`, requires
+  the first `rank(A_k)` rows to vanish exactly, and retains only the lower
+  kernel-coordinate image. Those rows are coordinates in the retained Smith
+  witness's kernel basis, not canonical cells or canonical homology generators.
 
 ## Invariants
 
@@ -302,6 +307,10 @@ overflow or incomplete witness is reinterpreted as rank, torsion, or success.
 Pair-boundary extraction additionally distinguishes unknown phase/excess degree
 counterexamples from typed component/incidence budget, invariant-loss,
 allocation, and cancellation Unknowns.
+Kernel-coordinate transport refuses pair/phase/component/degree/basis or Smith-
+source mismatches and any exact nonzero nonkernel coordinate. Extent, binding,
+retained-storage, scalar-work, arithmetic, allocation, invariant-loss, and
+cancellation failures remain typed Unknowns.
 
 ## Determinism class
 
@@ -336,6 +345,9 @@ first tranche deliberately emits no persistent identity or promotion receipt.
 Pair-boundary extraction traverses canonical `CellRef` and admitted-incidence
 order and binds the complete pair identity, so declaration order cannot change
 its bases, signs, matrix bytes, or work count.
+Kernel transport compares bindings in canonical order and evaluates every
+`V^-1 A_(k+1)` coordinate row-major with checked `i128` dot products. Different
+valid Smith witnesses may intentionally produce different lower matrices.
 
 ## Cancellation behavior
 
@@ -357,6 +369,9 @@ refusal; no partially verified value is constructible.
 Pair-boundary extraction separately caps component visits, incidence visits,
 matrix extents/entries, and retained basis-plus-matrix entries. It polls each
 deterministic visit and once after the final incidence before publication.
+Kernel transport caps extents, output and total retained entries, binding
+comparisons, and exact dot terms. It polls every comparison/output scalar,
+around allocation, and immediately before allocation-free publication.
 
 ## Unsafe boundary
 
@@ -494,6 +509,10 @@ basis binding, declaration-order replay, independent boundary/coboundary action,
 both unaugmented rectangular edge maps, every budget limit-minus-one,
 unknown-phase/excess-degree refusals, and cancellation through final
 publication.
+Tranche 3 adds a centered cellular-surface chain with a nontrivial verified
+kernel transform, a bottom-edge shear proving `V^-1` rather than cell labels,
+Smith-source mutation refusal, every resource limit-minus-one, and exhaustive
+cancellation through final binding/scalar counts.
 
 ## Perf-lane observations (bead cwjn: authority-admitted both-ISA gate open)
 
@@ -659,6 +678,10 @@ publication.
   quotient incidence matrix. Independently Smith-reducing adjacent boundary
   matrices is not a homology proof: the incoming image must first be
   transported into the outgoing map's verified kernel coordinates.
+- I13.2b tranche 3 proves that exact incoming incidence lies in one verified
+  outgoing kernel and records its witness-relative coordinates. It does not
+  Smith-reduce that lower matrix or claim homology, torsion, free generators,
+  periods, linking, long exact sequences, naturality, or physical winding.
 - `AbstractAlgebraOnly` is load-bearing. Synthetic CW/Moore/lens-space matrices
   may test the algebra kernel but cannot establish a conductor, terminal,
   material, embedding, winding, flux, force, or machine claim. Physical R3

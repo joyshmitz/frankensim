@@ -5,10 +5,12 @@
 use fs_couple::{CoordinateBinding, PortKind, PortOrientation, PortTimestamp, StableId};
 use fs_feec::integral_topology::{
     ExactAlgebraBudget, ExactIntegerMatrix, IntegralTopologyError, IntegralTopologyFailureClass,
-    MatrixRole, SmithNormalFormWitness, SmithWitnessStage, TerminalRelativeBoundaryBudget,
-    TopologyApplicability, extract_terminal_relative_boundary_matrix,
+    KernelCoordinateBudget, MatrixRole, SmithNormalFormWitness, SmithWitnessStage,
+    TerminalRelativeBoundaryBudget, TerminalRelativeBoundaryMatrix, TopologyApplicability,
+    VerifiedSmithNormalForm, extract_terminal_relative_boundary_matrix,
     extract_terminal_relative_boundary_matrix_with_checkpoint, verify_smith_normal_form,
-    verify_smith_normal_form_with_checkpoint,
+    verify_smith_normal_form_with_checkpoint, verify_terminal_relative_kernel_transport,
+    verify_terminal_relative_kernel_transport_with_checkpoint,
 };
 use fs_feec::terminal_relative::{
     BoundaryIncidence, CellRef, CellularSubcomplex, ConductorComponent, ConductorComponentId,
@@ -226,6 +228,265 @@ fn terminal_cut_loop_pair(reverse_declarations: bool) -> TerminalRelativePair {
     .expect("terminal-cut loop pair")
 }
 
+fn surface_terminal(
+    ambient: &FiniteCellComplex,
+    edge: u32,
+    vertices: [u32; 2],
+    id: &str,
+    role: TerminalRole,
+    orientation: TerminalOrientation,
+    sign: OrientationMapSign,
+) -> PhysicalTerminal {
+    let port = PortKind::ElectricalVoltageCurrent
+        .scalar_seed_schema(
+            stable(&format!("port/{id}")),
+            CoordinateBinding::new(
+                stable("basis/surface-terminal"),
+                stable("frame/surface-terminal"),
+                PortOrientation::OutwardFromOwner,
+            ),
+            PortTimestamp::new(stable("clock/electrical"), 47),
+        )
+        .expect("surface electrical port");
+    PhysicalTerminal::new(
+        PhysicalTerminalId::new(format!("terminal/{id}")).expect("terminal id"),
+        subcomplex(
+            ambient,
+            &format!("support/{id}"),
+            [
+                CellRef::new(0, vertices[0]),
+                CellRef::new(0, vertices[1]),
+                CellRef::new(1, edge),
+            ],
+        ),
+        ConductorComponentId::new("component/surface").expect("component id"),
+        PhaseId::new("phase/surface").expect("phase id"),
+        role,
+        orientation,
+        TerminalPortCoordinate::Flow,
+        port.clone(),
+        PresentedMachinePortRef::try_new(
+            stable("org.frankensim.fs-ir.machine.graph.v1"),
+            1,
+            [0x57; 32],
+            stable("machine-owner/surface"),
+            stable(&format!("port/{id}")),
+            stable(&format!("machine-terminal/{id}-voltage")),
+            stable(&format!("machine-terminal/{id}-current")),
+        )
+        .expect("presented Machine-IR port"),
+        TerminalPortTrivialization::new(
+            TrivializationId::new(format!("trivialization/{id}")).expect("trivialization id"),
+            port.id().clone(),
+            sign,
+            stable("voltage-reference/surface-common"),
+            stable("current-reference/surface-common"),
+        ),
+    )
+    .expect("surface terminal")
+}
+
+#[allow(clippy::too_many_lines)]
+fn centered_surface_pair() -> TerminalRelativePair {
+    let complex = FiniteCellComplex::try_new(
+        2,
+        vec![5, 8, 4],
+        vec![
+            BoundaryIncidence::new(
+                CellRef::new(0, 0),
+                CellRef::new(1, 0),
+                IncidenceSign::Negative,
+            ),
+            BoundaryIncidence::new(
+                CellRef::new(0, 1),
+                CellRef::new(1, 0),
+                IncidenceSign::Positive,
+            ),
+            BoundaryIncidence::new(
+                CellRef::new(0, 1),
+                CellRef::new(1, 1),
+                IncidenceSign::Negative,
+            ),
+            BoundaryIncidence::new(
+                CellRef::new(0, 2),
+                CellRef::new(1, 1),
+                IncidenceSign::Positive,
+            ),
+            BoundaryIncidence::new(
+                CellRef::new(0, 2),
+                CellRef::new(1, 2),
+                IncidenceSign::Negative,
+            ),
+            BoundaryIncidence::new(
+                CellRef::new(0, 3),
+                CellRef::new(1, 2),
+                IncidenceSign::Positive,
+            ),
+            BoundaryIncidence::new(
+                CellRef::new(0, 3),
+                CellRef::new(1, 3),
+                IncidenceSign::Negative,
+            ),
+            BoundaryIncidence::new(
+                CellRef::new(0, 0),
+                CellRef::new(1, 3),
+                IncidenceSign::Positive,
+            ),
+            BoundaryIncidence::new(
+                CellRef::new(0, 4),
+                CellRef::new(1, 4),
+                IncidenceSign::Negative,
+            ),
+            BoundaryIncidence::new(
+                CellRef::new(0, 0),
+                CellRef::new(1, 4),
+                IncidenceSign::Positive,
+            ),
+            BoundaryIncidence::new(
+                CellRef::new(0, 4),
+                CellRef::new(1, 5),
+                IncidenceSign::Negative,
+            ),
+            BoundaryIncidence::new(
+                CellRef::new(0, 1),
+                CellRef::new(1, 5),
+                IncidenceSign::Positive,
+            ),
+            BoundaryIncidence::new(
+                CellRef::new(0, 4),
+                CellRef::new(1, 6),
+                IncidenceSign::Negative,
+            ),
+            BoundaryIncidence::new(
+                CellRef::new(0, 2),
+                CellRef::new(1, 6),
+                IncidenceSign::Positive,
+            ),
+            BoundaryIncidence::new(
+                CellRef::new(0, 4),
+                CellRef::new(1, 7),
+                IncidenceSign::Negative,
+            ),
+            BoundaryIncidence::new(
+                CellRef::new(0, 3),
+                CellRef::new(1, 7),
+                IncidenceSign::Positive,
+            ),
+            BoundaryIncidence::new(
+                CellRef::new(1, 0),
+                CellRef::new(2, 0),
+                IncidenceSign::Positive,
+            ),
+            BoundaryIncidence::new(
+                CellRef::new(1, 4),
+                CellRef::new(2, 0),
+                IncidenceSign::Positive,
+            ),
+            BoundaryIncidence::new(
+                CellRef::new(1, 5),
+                CellRef::new(2, 0),
+                IncidenceSign::Negative,
+            ),
+            BoundaryIncidence::new(
+                CellRef::new(1, 1),
+                CellRef::new(2, 1),
+                IncidenceSign::Positive,
+            ),
+            BoundaryIncidence::new(
+                CellRef::new(1, 5),
+                CellRef::new(2, 1),
+                IncidenceSign::Positive,
+            ),
+            BoundaryIncidence::new(
+                CellRef::new(1, 6),
+                CellRef::new(2, 1),
+                IncidenceSign::Negative,
+            ),
+            BoundaryIncidence::new(
+                CellRef::new(1, 2),
+                CellRef::new(2, 2),
+                IncidenceSign::Positive,
+            ),
+            BoundaryIncidence::new(
+                CellRef::new(1, 6),
+                CellRef::new(2, 2),
+                IncidenceSign::Positive,
+            ),
+            BoundaryIncidence::new(
+                CellRef::new(1, 7),
+                CellRef::new(2, 2),
+                IncidenceSign::Negative,
+            ),
+            BoundaryIncidence::new(
+                CellRef::new(1, 3),
+                CellRef::new(2, 3),
+                IncidenceSign::Positive,
+            ),
+            BoundaryIncidence::new(
+                CellRef::new(1, 7),
+                CellRef::new(2, 3),
+                IncidenceSign::Positive,
+            ),
+            BoundaryIncidence::new(
+                CellRef::new(1, 4),
+                CellRef::new(2, 3),
+                IncidenceSign::Negative,
+            ),
+        ],
+    )
+    .expect("centered cellular surface");
+    let all_cells = (0..5)
+        .map(|ordinal| CellRef::new(0, ordinal))
+        .chain((0..8).map(|ordinal| CellRef::new(1, ordinal)))
+        .chain((0..4).map(|ordinal| CellRef::new(2, ordinal)))
+        .collect::<Vec<_>>();
+    let conductor = subcomplex(&complex, "support/surface-conductor", all_cells.clone());
+    let component = ConductorComponent::new(
+        ConductorComponentId::new("component/surface").expect("component id"),
+        subcomplex(&complex, "support/component-surface", all_cells),
+    )
+    .expect("surface component");
+    TerminalRelativePair::try_new(
+        complex.clone(),
+        conductor,
+        subcomplex(
+            &complex,
+            "support/surface-relative",
+            [
+                CellRef::new(0, 0),
+                CellRef::new(0, 1),
+                CellRef::new(0, 2),
+                CellRef::new(0, 3),
+                CellRef::new(1, 0),
+                CellRef::new(1, 2),
+            ],
+        ),
+        subcomplex(&complex, "support/surface-insulation-empty", []),
+        vec![component],
+        vec![
+            surface_terminal(
+                &complex,
+                0,
+                [0, 1],
+                "surface-driven",
+                TerminalRole::Driven,
+                TerminalOrientation::OutOfConductor,
+                OrientationMapSign::Preserve,
+            ),
+            surface_terminal(
+                &complex,
+                2,
+                [2, 3],
+                "surface-return",
+                TerminalRole::ReturnReference,
+                TerminalOrientation::IntoConductor,
+                OrientationMapSign::Reverse,
+            ),
+        ],
+    )
+    .expect("centered terminal-relative surface")
+}
+
 fn boundary_budget(
     max_rows: usize,
     max_cols: usize,
@@ -242,6 +503,72 @@ fn boundary_budget(
         max_component_visits,
         max_incidence_visits,
     )
+}
+
+fn kernel_budget(
+    max_extent: usize,
+    max_output_entries: usize,
+    max_retained_entries: usize,
+    max_binding_items: usize,
+    max_scalar_operations: u128,
+) -> KernelCoordinateBudget {
+    KernelCoordinateBudget::new(
+        max_extent,
+        max_output_entries,
+        max_retained_entries,
+        max_binding_items,
+        max_scalar_operations,
+    )
+}
+
+fn centered_kernel_inputs() -> (
+    TerminalRelativeBoundaryMatrix,
+    TerminalRelativeBoundaryMatrix,
+    VerifiedSmithNormalForm,
+) {
+    let pair = centered_surface_pair();
+    let phase = PhaseId::new("phase/surface").expect("phase id");
+    let outgoing = extract_terminal_relative_boundary_matrix(
+        &pair,
+        &phase,
+        1,
+        TerminalRelativeBoundaryBudget::default(),
+    )
+    .expect("surface outgoing boundary");
+    let incoming = extract_terminal_relative_boundary_matrix(
+        &pair,
+        &phase,
+        2,
+        TerminalRelativeBoundaryBudget::default(),
+    )
+    .expect("surface incoming boundary");
+    assert_eq!(outgoing.matrix().entries(), &[0, 0, -1, -1, -1, -1]);
+
+    let diagonal = matrix(1, 6, &[1, 0, 0, 0, 0, 0]);
+    let left = identity(1);
+    let right = matrix(
+        6,
+        6,
+        &[
+            0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, -1, 0, 0, -1, -1, -1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
+            1, 0, 0, 0, 0, 0, 0, 1,
+        ],
+    );
+    let right_inverse = matrix(
+        6,
+        6,
+        &[
+            0, 0, -1, -1, -1, -1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
+            1, 0, 0, 0, 0, 0, 0, 1,
+        ],
+    );
+    let smith = verify_smith_normal_form(
+        outgoing.matrix().clone(),
+        SmithNormalFormWitness::new(diagonal, left.clone(), left, right, right_inverse),
+        budget(6, 476),
+    )
+    .expect("surface outgoing Smith witness");
+    (outgoing, incoming, smith)
 }
 
 #[test]
@@ -817,4 +1144,233 @@ fn it_017_pair_boundary_refuses_unknown_phase_and_excess_degree() {
         error,
         IntegralTopologyError::BoundaryDegreeOutOfRange { degree: 3, max: 2 }
     ));
+}
+
+#[test]
+fn it_018_adjacent_boundary_image_is_verified_in_smith_kernel_coordinates() {
+    let (outgoing, incoming, smith) = centered_kernel_inputs();
+    let transport = verify_terminal_relative_kernel_transport(
+        outgoing,
+        incoming,
+        smith,
+        kernel_budget(6, 20, 154, 12, 144),
+    )
+    .expect("exact adjacent-boundary transport");
+
+    assert_eq!(transport.degree(), 1);
+    assert_eq!(transport.phase().as_str(), "phase/surface");
+    assert_eq!(transport.component().as_str(), "component/surface");
+    assert_eq!(transport.chain_extent(), 6);
+    assert_eq!(transport.outgoing_rank(), 1);
+    assert_eq!(transport.kernel_dimension(), 5);
+    assert_eq!(transport.binding_items(), 12);
+    assert_eq!(transport.scalar_operations(), 144);
+    assert_eq!(
+        (
+            transport.kernel_image().rows(),
+            transport.kernel_image().cols()
+        ),
+        (5, 4)
+    );
+    assert_eq!(
+        transport.kernel_image().entries(),
+        &[
+            0, 1, 0, 0, 0, 0, 0, 1, -1, 1, 0, 0, 0, -1, 1, 0, 0, 0, -1, 1
+        ]
+    );
+    assert_eq!(
+        transport.applicability(),
+        TopologyApplicability::TerminalRelativeKernelCoordinatesOnly
+    );
+}
+
+#[test]
+fn it_019_bottom_edge_uses_inverse_smith_transform_not_cell_labels() {
+    let pair = terminal_cut_loop_pair(false);
+    let phase = PhaseId::new("phase/a").expect("phase id");
+    let outgoing = extract_terminal_relative_boundary_matrix(
+        &pair,
+        &phase,
+        0,
+        TerminalRelativeBoundaryBudget::default(),
+    )
+    .expect("bottom outgoing boundary");
+    let incoming = extract_terminal_relative_boundary_matrix(
+        &pair,
+        &phase,
+        1,
+        TerminalRelativeBoundaryBudget::default(),
+    )
+    .expect("incoming boundary");
+    let empty = matrix(0, 0, &[]);
+    let smith = verify_smith_normal_form(
+        outgoing.matrix().clone(),
+        SmithNormalFormWitness::new(
+            matrix(0, 2, &[]),
+            empty.clone(),
+            empty,
+            matrix(2, 2, &[1, 1, 0, 1]),
+            matrix(2, 2, &[1, -1, 0, 1]),
+        ),
+        budget(2, 16),
+    )
+    .expect("bottom zero-map Smith witness");
+    let transport = verify_terminal_relative_kernel_transport(
+        outgoing,
+        incoming,
+        smith,
+        kernel_budget(4, 8, 32, 2, 16),
+    )
+    .expect("bottom incoming transport");
+
+    assert_eq!(transport.outgoing_rank(), 0);
+    assert_eq!(transport.kernel_dimension(), 2);
+    assert_eq!(
+        transport.kernel_image().entries(),
+        &[1, -2, -2, 1, 0, 1, 1, -1]
+    );
+    assert_ne!(
+        transport.kernel_image(),
+        transport.incoming_boundary().matrix(),
+        "kernel rows are witness coordinates, not retained CellRef labels"
+    );
+}
+
+#[test]
+fn it_020_kernel_transport_refuses_source_and_every_budget_mismatch() {
+    let (outgoing, incoming, _) = centered_kernel_inputs();
+    let zero = matrix(1, 6, &[0, 0, 0, 0, 0, 0]);
+    let identity6 = identity(6);
+    let wrong_smith = verify_smith_normal_form(
+        zero.clone(),
+        SmithNormalFormWitness::new(zero, identity(1), identity(1), identity6.clone(), identity6),
+        budget(6, 476),
+    )
+    .expect("valid Smith witness for the wrong source");
+    let error = verify_terminal_relative_kernel_transport(
+        outgoing.clone(),
+        incoming.clone(),
+        wrong_smith,
+        kernel_budget(6, 20, 154, 12, 144),
+    )
+    .expect_err("same-shape source mutation must refuse");
+    assert_eq!(error.failure_class(), IntegralTopologyFailureClass::Refuted);
+    assert!(matches!(
+        error,
+        IntegralTopologyError::OutgoingSmithSourceEntryMismatch {
+            row: 0,
+            col: 2,
+            expected: -1,
+            actual: 0,
+        }
+    ));
+
+    let (_, _, smith) = centered_kernel_inputs();
+    for (budget, expected) in [
+        (kernel_budget(5, 20, 154, 12, 144), "extent"),
+        (kernel_budget(6, 19, 154, 12, 144), "output"),
+        (kernel_budget(6, 20, 153, 12, 144), "retained"),
+        (kernel_budget(6, 20, 154, 11, 144), "binding"),
+        (kernel_budget(6, 20, 154, 12, 143), "scalar"),
+    ] {
+        let error = verify_terminal_relative_kernel_transport(
+            outgoing.clone(),
+            incoming.clone(),
+            smith.clone(),
+            budget,
+        )
+        .expect_err("limit minus one must refuse");
+        match expected {
+            "extent" => assert!(matches!(
+                &error,
+                IntegralTopologyError::KernelCoordinateExtentExceeded {
+                    chain_extent: 6,
+                    max: 5,
+                    ..
+                }
+            )),
+            "output" => assert!(matches!(
+                &error,
+                IntegralTopologyError::MatrixEntryBudgetExceeded {
+                    requested: 20,
+                    max: 19,
+                }
+            )),
+            "retained" => assert!(matches!(
+                &error,
+                IntegralTopologyError::RetainedEntryBudgetExceeded {
+                    requested: 154,
+                    max: 153,
+                }
+            )),
+            "binding" => assert!(matches!(
+                &error,
+                IntegralTopologyError::KernelBindingBudgetExceeded {
+                    requested: 12,
+                    max: 11,
+                }
+            )),
+            "scalar" => assert!(matches!(
+                &error,
+                IntegralTopologyError::ScalarWorkBudgetExceeded {
+                    requested: 144,
+                    max: 143,
+                }
+            )),
+            _ => unreachable!(),
+        }
+        assert_eq!(error.failure_class(), IntegralTopologyFailureClass::Unknown);
+    }
+}
+
+#[test]
+fn it_021_kernel_transport_cancellation_is_transactional_through_publication() {
+    let (outgoing, incoming, smith) = centered_kernel_inputs();
+    let mut poll_count = 0_usize;
+    let transport = verify_terminal_relative_kernel_transport_with_checkpoint(
+        outgoing.clone(),
+        incoming.clone(),
+        smith.clone(),
+        kernel_budget(6, 20, 154, 12, 144),
+        &mut |_| {
+            poll_count += 1;
+            true
+        },
+    )
+    .expect("uninterrupted kernel transport");
+    assert_eq!(transport.binding_items(), 12);
+    assert_eq!(transport.scalar_operations(), 144);
+
+    for stop_at in 0..poll_count {
+        let mut observed = 0_usize;
+        let error = verify_terminal_relative_kernel_transport_with_checkpoint(
+            outgoing.clone(),
+            incoming.clone(),
+            smith.clone(),
+            kernel_budget(6, 20, 154, 12, 144),
+            &mut |_| {
+                let keep_running = observed != stop_at;
+                observed += 1;
+                keep_running
+            },
+        )
+        .expect_err("injected cancellation must refuse");
+        assert_eq!(error.failure_class(), IntegralTopologyFailureClass::Unknown);
+        assert!(matches!(
+            &error,
+            IntegralTopologyError::KernelCoordinateCancelled { .. }
+        ));
+        if stop_at + 1 == poll_count {
+            assert!(matches!(
+                &error,
+                IntegralTopologyError::KernelCoordinateCancelled {
+                    phase: "kernel-coordinate finalize",
+                    completed_binding_items: 12,
+                    planned_binding_items: 12,
+                    completed_scalar_operations: 144,
+                    planned_scalar_operations: 144,
+                }
+            ));
+        }
+    }
 }

@@ -18,9 +18,12 @@
 //! degree while retaining both canonical quotient bases. It includes the
 //! unaugmented zero maps at the two chain-complex edges.
 //!
-//! Neither value is a terminal-relative homology receipt or physical R3
-//! winding authority. The constructive normal-form solver, kernel-coordinate
-//! transport, and free/torsion decomposition follow in later I13.2b tranches.
+//! The third tranche verifies adjacent pair-bound boundaries and computes
+//! `V^-1 * A_(k+1)` for one exact outgoing Smith witness. It refuses a nonzero
+//! nonkernel prefix and retains only the witness-relative kernel-coordinate
+//! image. Neither value is a terminal-relative homology receipt or physical
+//! R3 winding authority. Constructive normal forms and free/torsion quotient
+//! decomposition follow in later I13.2b tranches.
 
 use core::fmt;
 
@@ -48,6 +51,12 @@ pub const DEFAULT_MAX_BOUNDARY_INCIDENCE_VISITS: usize = MAX_TERMINAL_RELATIVE_I
 /// Default retained entries across a pair boundary matrix and its two bases.
 pub const DEFAULT_MAX_BOUNDARY_RETAINED_ENTRIES: usize =
     DEFAULT_MAX_MATRIX_ENTRIES + 2 * DEFAULT_MAX_MATRIX_EXTENT;
+/// Default retained integer/cell entries for adjacent-boundary transport.
+pub const DEFAULT_MAX_KERNEL_RETAINED_ENTRIES: usize =
+    10 * DEFAULT_MAX_MATRIX_ENTRIES + 4 * DEFAULT_MAX_MATRIX_EXTENT;
+/// Default exact binding comparisons for adjacent-boundary transport.
+pub const DEFAULT_MAX_KERNEL_BINDING_ITEMS: usize =
+    DEFAULT_MAX_MATRIX_ENTRIES + DEFAULT_MAX_MATRIX_EXTENT;
 
 /// Explicit resource envelope for exact integer witness admission.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -213,6 +222,81 @@ impl Default for TerminalRelativeBoundaryBudget {
             DEFAULT_MAX_BOUNDARY_RETAINED_ENTRIES,
             DEFAULT_MAX_BOUNDARY_COMPONENT_VISITS,
             DEFAULT_MAX_BOUNDARY_INCIDENCE_VISITS,
+        )
+    }
+}
+
+/// Resource envelope for transporting an incoming boundary into one verified
+/// Smith kernel coordinate system.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KernelCoordinateBudget {
+    max_extent: usize,
+    max_output_entries: usize,
+    max_retained_entries: usize,
+    max_binding_items: usize,
+    max_scalar_operations: u128,
+}
+
+impl KernelCoordinateBudget {
+    /// Construct an adjacent-boundary transport envelope.
+    #[must_use]
+    pub const fn new(
+        max_extent: usize,
+        max_output_entries: usize,
+        max_retained_entries: usize,
+        max_binding_items: usize,
+        max_scalar_operations: u128,
+    ) -> Self {
+        Self {
+            max_extent,
+            max_output_entries,
+            max_retained_entries,
+            max_binding_items,
+            max_scalar_operations,
+        }
+    }
+
+    /// Maximum admitted outgoing row, shared-chain, or incoming-column extent.
+    #[must_use]
+    pub const fn max_extent(self) -> usize {
+        self.max_extent
+    }
+
+    /// Maximum entries retained in the lower kernel-coordinate image.
+    #[must_use]
+    pub const fn max_output_entries(self) -> usize {
+        self.max_output_entries
+    }
+
+    /// Maximum retained integer/cell entries across complete input authority
+    /// and the lower image. Stable-identity bytes are bounded by pair admission
+    /// but are not counted as entries here.
+    #[must_use]
+    pub const fn max_retained_entries(self) -> usize {
+        self.max_retained_entries
+    }
+
+    /// Maximum exact source/basis comparisons before multiplication.
+    #[must_use]
+    pub const fn max_binding_items(self) -> usize {
+        self.max_binding_items
+    }
+
+    /// Maximum checked dot-product terms in `V^-1 * B`.
+    #[must_use]
+    pub const fn max_scalar_operations(self) -> u128 {
+        self.max_scalar_operations
+    }
+}
+
+impl Default for KernelCoordinateBudget {
+    fn default() -> Self {
+        Self::new(
+            DEFAULT_MAX_MATRIX_EXTENT,
+            DEFAULT_MAX_MATRIX_ENTRIES,
+            DEFAULT_MAX_KERNEL_RETAINED_ENTRIES,
+            DEFAULT_MAX_KERNEL_BINDING_ITEMS,
+            DEFAULT_MAX_SCALAR_OPERATIONS,
         )
     }
 }
@@ -680,6 +764,473 @@ fn poll_pair_boundary(
     }
 }
 
+/// Exact incoming-boundary image in one verified outgoing Smith kernel basis.
+///
+/// The retained rows are coordinates in the basis given by the columns
+/// `V[:, rank..]` of the exact Smith witness. They are not `CellRef` rows and
+/// are not canonical across different valid Smith witnesses.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerifiedTerminalRelativeKernelTransport {
+    outgoing: TerminalRelativeBoundaryMatrix,
+    incoming: TerminalRelativeBoundaryMatrix,
+    outgoing_smith: VerifiedSmithNormalForm,
+    kernel_image: ExactIntegerMatrix,
+    binding_items: usize,
+    scalar_operations: u128,
+}
+
+impl VerifiedTerminalRelativeKernelTransport {
+    /// Pair identity shared by both adjacent boundaries.
+    #[must_use]
+    pub const fn pair_id(&self) -> TerminalRelativePairId {
+        self.outgoing.pair
+    }
+
+    /// Shared phase identity.
+    #[must_use]
+    pub const fn phase(&self) -> &PhaseId {
+        &self.outgoing.phase
+    }
+
+    /// Shared phase-owned component.
+    #[must_use]
+    pub const fn component(&self) -> &ConductorComponentId {
+        &self.outgoing.component
+    }
+
+    /// Homological chain degree `k` whose outgoing map is `A_k`.
+    #[must_use]
+    pub const fn degree(&self) -> u8 {
+        self.outgoing.source_degree
+    }
+
+    /// Complete pair-bound outgoing boundary `A_k`.
+    #[must_use]
+    pub const fn outgoing_boundary(&self) -> &TerminalRelativeBoundaryMatrix {
+        &self.outgoing
+    }
+
+    /// Complete pair-bound incoming boundary `A_(k+1)`.
+    #[must_use]
+    pub const fn incoming_boundary(&self) -> &TerminalRelativeBoundaryMatrix {
+        &self.incoming
+    }
+
+    /// Exact Smith authority that defines the retained kernel coordinates.
+    #[must_use]
+    pub const fn outgoing_smith(&self) -> &VerifiedSmithNormalForm {
+        &self.outgoing_smith
+    }
+
+    /// Shared chain-group extent `dim(C_k)`.
+    #[must_use]
+    pub const fn chain_extent(&self) -> usize {
+        self.outgoing.matrix.cols
+    }
+
+    /// Verified rank of `A_k`.
+    #[must_use]
+    pub const fn outgoing_rank(&self) -> usize {
+        self.outgoing_smith.rank
+    }
+
+    /// Rank of the verified outgoing kernel basis.
+    #[must_use]
+    pub const fn kernel_dimension(&self) -> usize {
+        self.kernel_image.rows
+    }
+
+    /// Incoming image in the retained Smith kernel coordinates.
+    #[must_use]
+    pub const fn kernel_image(&self) -> &ExactIntegerMatrix {
+        &self.kernel_image
+    }
+
+    /// Exact source/basis comparisons completed before multiplication.
+    #[must_use]
+    pub const fn binding_items(&self) -> usize {
+        self.binding_items
+    }
+
+    /// Checked dot-product terms completed for `V^-1 * A_(k+1)`.
+    #[must_use]
+    pub const fn scalar_operations(&self) -> u128 {
+        self.scalar_operations
+    }
+
+    /// These are witness-relative kernel coordinates, not homology authority.
+    #[must_use]
+    pub const fn applicability(&self) -> TopologyApplicability {
+        TopologyApplicability::TerminalRelativeKernelCoordinatesOnly
+    }
+}
+
+/// Verify adjacent pair boundaries and transport the incoming image into the
+/// outgoing Smith kernel coordinates without injected cancellation.
+#[allow(clippy::large_types_passed_by_value)]
+pub fn verify_terminal_relative_kernel_transport(
+    outgoing: TerminalRelativeBoundaryMatrix,
+    incoming: TerminalRelativeBoundaryMatrix,
+    outgoing_smith: VerifiedSmithNormalForm,
+    budget: KernelCoordinateBudget,
+) -> Result<VerifiedTerminalRelativeKernelTransport, IntegralTopologyError> {
+    verify_terminal_relative_kernel_transport_with_checkpoint(
+        outgoing,
+        incoming,
+        outgoing_smith,
+        budget,
+        &mut |_| true,
+    )
+}
+
+/// Verify `im(A_(k+1))` lies in `ker(A_k)` and retain its exact coordinates.
+///
+/// With `U * A_k * V = D`, old and Smith source coordinates satisfy
+/// `x = V * y`, so the incoming boundary must be transformed as
+/// `V^-1 * A_(k+1)`. Its first `rank(A_k)` rows must vanish exactly. Only the
+/// lower rows are retained; the full transformed matrix is never allocated.
+#[allow(clippy::too_many_lines)]
+#[allow(clippy::large_types_passed_by_value)]
+pub fn verify_terminal_relative_kernel_transport_with_checkpoint(
+    outgoing: TerminalRelativeBoundaryMatrix,
+    incoming: TerminalRelativeBoundaryMatrix,
+    outgoing_smith: VerifiedSmithNormalForm,
+    budget: KernelCoordinateBudget,
+    checkpoint: &mut impl FnMut(&'static str) -> bool,
+) -> Result<VerifiedTerminalRelativeKernelTransport, IntegralTopologyError> {
+    preflight_adjacent_boundary_bindings(&outgoing, &incoming)?;
+    preflight_boundary_internal_shape(&outgoing, "outgoing boundary")?;
+    preflight_boundary_internal_shape(&incoming, "incoming boundary")?;
+
+    let outgoing_matrix = outgoing.matrix();
+    let incoming_matrix = incoming.matrix();
+    let rows = outgoing_matrix.rows;
+    let chain_extent = outgoing_matrix.cols;
+    let incoming_cols = incoming_matrix.cols;
+    if incoming_matrix.rows != chain_extent {
+        return Err(IntegralTopologyError::KernelCoordinateInvariantLost {
+            field: "adjacent matrix inner extent",
+        });
+    }
+    if outgoing_smith.source.rows != rows || outgoing_smith.source.cols != chain_extent {
+        return Err(IntegralTopologyError::OutgoingSmithSourceShapeMismatch {
+            expected_rows: rows,
+            expected_cols: chain_extent,
+            actual_rows: outgoing_smith.source.rows,
+            actual_cols: outgoing_smith.source.cols,
+        });
+    }
+    if outgoing_smith.rank > chain_extent {
+        return Err(IntegralTopologyError::KernelCoordinateInvariantLost {
+            field: "outgoing Smith rank exceeds chain extent",
+        });
+    }
+    if rows > budget.max_extent
+        || chain_extent > budget.max_extent
+        || incoming_cols > budget.max_extent
+    {
+        return Err(IntegralTopologyError::KernelCoordinateExtentExceeded {
+            outgoing_rows: rows,
+            chain_extent,
+            incoming_cols,
+            max: budget.max_extent,
+        });
+    }
+
+    let kernel_rows = chain_extent - outgoing_smith.rank;
+    let output_entries =
+        kernel_rows
+            .checked_mul(incoming_cols)
+            .ok_or(IntegralTopologyError::WorkPlanOverflow {
+                phase: "kernel-coordinate output entries",
+            })?;
+    if output_entries > budget.max_output_entries {
+        return Err(IntegralTopologyError::MatrixEntryBudgetExceeded {
+            requested: output_entries,
+            max: budget.max_output_entries,
+        });
+    }
+    let binding_items = outgoing
+        .source_basis
+        .len()
+        .checked_add(outgoing_matrix.entries.len())
+        .ok_or(IntegralTopologyError::WorkPlanOverflow {
+            phase: "kernel-coordinate binding items",
+        })?;
+    if binding_items > budget.max_binding_items {
+        return Err(IntegralTopologyError::KernelBindingBudgetExceeded {
+            requested: binding_items,
+            max: budget.max_binding_items,
+        });
+    }
+    let scalar_operations = planned_kernel_scalar_operations(chain_extent, incoming_cols)?;
+    if scalar_operations > budget.max_scalar_operations {
+        return Err(IntegralTopologyError::ScalarWorkBudgetExceeded {
+            requested: scalar_operations,
+            max: budget.max_scalar_operations,
+        });
+    }
+    let retained_entries =
+        retained_kernel_transport_entries(&outgoing, &incoming, &outgoing_smith, output_entries)?;
+    if retained_entries > budget.max_retained_entries {
+        return Err(IntegralTopologyError::RetainedEntryBudgetExceeded {
+            requested: retained_entries,
+            max: budget.max_retained_entries,
+        });
+    }
+
+    let mut completed_binding = 0_usize;
+    let mut completed_scalar = 0_u128;
+    poll_kernel_transport(
+        checkpoint,
+        "kernel-coordinate preflight",
+        completed_binding,
+        binding_items,
+        completed_scalar,
+        scalar_operations,
+    )?;
+    for (index, (outgoing_cell, incoming_cell)) in outgoing
+        .source_basis
+        .iter()
+        .zip(&incoming.target_basis)
+        .enumerate()
+    {
+        poll_kernel_transport(
+            checkpoint,
+            "kernel-coordinate shared basis",
+            completed_binding,
+            binding_items,
+            completed_scalar,
+            scalar_operations,
+        )?;
+        if outgoing_cell != incoming_cell {
+            return Err(IntegralTopologyError::AdjacentBoundaryBasisMismatch {
+                index,
+                outgoing: Some(*outgoing_cell),
+                incoming: Some(*incoming_cell),
+            });
+        }
+        completed_binding += 1;
+    }
+    for (index, (expected, actual)) in outgoing_matrix
+        .entries
+        .iter()
+        .zip(&outgoing_smith.source.entries)
+        .enumerate()
+    {
+        poll_kernel_transport(
+            checkpoint,
+            "kernel-coordinate Smith source binding",
+            completed_binding,
+            binding_items,
+            completed_scalar,
+            scalar_operations,
+        )?;
+        if expected != actual {
+            return Err(IntegralTopologyError::OutgoingSmithSourceEntryMismatch {
+                row: index / chain_extent.max(1),
+                col: index % chain_extent.max(1),
+                expected: *expected,
+                actual: *actual,
+            });
+        }
+        completed_binding += 1;
+    }
+    debug_assert_eq!(completed_binding, binding_items);
+
+    poll_kernel_transport(
+        checkpoint,
+        "kernel-coordinate output allocation",
+        completed_binding,
+        binding_items,
+        completed_scalar,
+        scalar_operations,
+    )?;
+    let mut lower = allocate_zeroed(output_entries, "kernel-coordinate incoming image")?;
+    for row in 0..chain_extent {
+        for col in 0..incoming_cols {
+            poll_kernel_transport(
+                checkpoint,
+                "kernel-coordinate incoming transform",
+                completed_binding,
+                binding_items,
+                completed_scalar,
+                scalar_operations,
+            )?;
+            let coordinate = checked_dot(
+                outgoing_smith.right_inverse(),
+                row,
+                incoming_matrix,
+                col,
+                SmithWitnessStage::KernelCoordinateIncoming,
+                &mut completed_scalar,
+            )?;
+            if row < outgoing_smith.rank {
+                if coordinate != 0 {
+                    return Err(IntegralTopologyError::IncomingImageOutsideKernel {
+                        row,
+                        col,
+                        coordinate,
+                        invariant_factor: outgoing_smith.invariant_factors[row],
+                    });
+                }
+            } else {
+                lower[(row - outgoing_smith.rank) * incoming_cols + col] = coordinate;
+            }
+        }
+    }
+    poll_kernel_transport(
+        checkpoint,
+        "kernel-coordinate finalize",
+        completed_binding,
+        binding_items,
+        completed_scalar,
+        scalar_operations,
+    )?;
+    debug_assert_eq!(completed_scalar, scalar_operations);
+
+    Ok(VerifiedTerminalRelativeKernelTransport {
+        outgoing,
+        incoming,
+        outgoing_smith,
+        kernel_image: ExactIntegerMatrix {
+            rows: kernel_rows,
+            cols: incoming_cols,
+            entries: lower,
+        },
+        binding_items: completed_binding,
+        scalar_operations: completed_scalar,
+    })
+}
+
+fn preflight_adjacent_boundary_bindings(
+    outgoing: &TerminalRelativeBoundaryMatrix,
+    incoming: &TerminalRelativeBoundaryMatrix,
+) -> Result<(), IntegralTopologyError> {
+    for (field, matches) in [
+        ("pair identity", outgoing.pair == incoming.pair),
+        ("phase identity", outgoing.phase == incoming.phase),
+        (
+            "component identity",
+            outgoing.component == incoming.component,
+        ),
+    ] {
+        if !matches {
+            return Err(IntegralTopologyError::AdjacentBoundaryBindingMismatch { field });
+        }
+    }
+    let expected_incoming =
+        outgoing
+            .source_degree
+            .checked_add(1)
+            .ok_or(IntegralTopologyError::WorkPlanOverflow {
+                phase: "adjacent boundary degree",
+            })?;
+    if incoming.source_degree != expected_incoming
+        || incoming.target_degree != Some(outgoing.source_degree)
+    {
+        return Err(IntegralTopologyError::AdjacentBoundaryDegreeMismatch {
+            outgoing: outgoing.source_degree,
+            incoming_source: incoming.source_degree,
+            incoming_target: incoming.target_degree,
+        });
+    }
+    if outgoing.target_degree != outgoing.source_degree.checked_sub(1) {
+        return Err(IntegralTopologyError::KernelCoordinateInvariantLost {
+            field: "outgoing target degree",
+        });
+    }
+    if outgoing.source_basis.len() != incoming.target_basis.len() {
+        let index = outgoing.source_basis.len().min(incoming.target_basis.len());
+        return Err(IntegralTopologyError::AdjacentBoundaryBasisMismatch {
+            index,
+            outgoing: outgoing.source_basis.get(index).copied(),
+            incoming: incoming.target_basis.get(index).copied(),
+        });
+    }
+    Ok(())
+}
+
+fn preflight_boundary_internal_shape(
+    boundary: &TerminalRelativeBoundaryMatrix,
+    field: &'static str,
+) -> Result<(), IntegralTopologyError> {
+    if boundary.matrix.rows != boundary.target_basis.len()
+        || boundary.matrix.cols != boundary.source_basis.len()
+    {
+        return Err(IntegralTopologyError::KernelCoordinateInvariantLost { field });
+    }
+    Ok(())
+}
+
+fn planned_kernel_scalar_operations(
+    chain_extent: usize,
+    incoming_cols: usize,
+) -> Result<u128, IntegralTopologyError> {
+    u128::try_from(chain_extent)
+        .ok()
+        .and_then(|extent| extent.checked_mul(extent))
+        .and_then(|terms| {
+            u128::try_from(incoming_cols)
+                .ok()
+                .and_then(|cols| terms.checked_mul(cols))
+        })
+        .ok_or(IntegralTopologyError::WorkPlanOverflow {
+            phase: "kernel-coordinate scalar operations",
+        })
+}
+
+fn retained_kernel_transport_entries(
+    outgoing: &TerminalRelativeBoundaryMatrix,
+    incoming: &TerminalRelativeBoundaryMatrix,
+    smith: &VerifiedSmithNormalForm,
+    output_entries: usize,
+) -> Result<usize, IntegralTopologyError> {
+    [
+        outgoing.matrix.entries.len(),
+        outgoing.source_basis.len(),
+        outgoing.target_basis.len(),
+        incoming.matrix.entries.len(),
+        incoming.source_basis.len(),
+        incoming.target_basis.len(),
+        smith.source.entries.len(),
+        smith.witness.diagonal.entries.len(),
+        smith.witness.left.entries.len(),
+        smith.witness.left_inverse.entries.len(),
+        smith.witness.right.entries.len(),
+        smith.witness.right_inverse.entries.len(),
+        smith.invariant_factors.len(),
+        output_entries,
+    ]
+    .into_iter()
+    .try_fold(0_usize, |total, entries| total.checked_add(entries))
+    .ok_or(IntegralTopologyError::WorkPlanOverflow {
+        phase: "kernel-coordinate retained entries",
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn poll_kernel_transport(
+    checkpoint: &mut impl FnMut(&'static str) -> bool,
+    phase: &'static str,
+    completed_binding_items: usize,
+    planned_binding_items: usize,
+    completed_scalar_operations: u128,
+    planned_scalar_operations: u128,
+) -> Result<(), IntegralTopologyError> {
+    if checkpoint(phase) {
+        Ok(())
+    } else {
+        Err(IntegralTopologyError::KernelCoordinateCancelled {
+            phase,
+            completed_binding_items,
+            planned_binding_items,
+            completed_scalar_operations,
+            planned_scalar_operations,
+        })
+    }
+}
+
 /// Role of one retained matrix in a Smith witness.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MatrixRole {
@@ -712,6 +1263,9 @@ pub enum SmithWitnessStage {
     LeftTimesSource,
     /// Final `U * A * V = D`.
     DiagonalTransform,
+    /// Incoming boundary transformed into outgoing Smith coordinates,
+    /// `V^-1 * B`.
+    KernelCoordinateIncoming,
 }
 
 /// Untrusted complete Smith-normal-form witness.
@@ -784,6 +1338,9 @@ pub enum TopologyApplicability {
     /// Exact incidence bound to an admitted pair, phase, component, degree,
     /// and canonical quotient bases. No homology or physical R3 conclusion.
     TerminalRelativeIncidenceOnly,
+    /// Exact incoming image in one retained Smith witness's kernel coordinates.
+    /// The coordinates are witness-dependent and are not canonical homology.
+    TerminalRelativeKernelCoordinatesOnly,
 }
 
 /// Authority classification for an unsuccessful exact verification.
@@ -1324,6 +1881,98 @@ pub enum IntegralTopologyError {
         /// Deterministic component/incidence work items planned.
         planned_work_items: u128,
     },
+    /// Adjacent boundaries disagreed on a retained semantic binding.
+    AdjacentBoundaryBindingMismatch {
+        /// First mismatched binding field.
+        field: &'static str,
+    },
+    /// Candidate boundaries were not consecutive maps `A_k`, `A_(k+1)`.
+    AdjacentBoundaryDegreeMismatch {
+        /// Outgoing source degree `k`.
+        outgoing: u8,
+        /// Supplied incoming source degree.
+        incoming_source: u8,
+        /// Supplied incoming target degree.
+        incoming_target: Option<u8>,
+    },
+    /// Shared `C_k` bases differed in cell identity or order.
+    AdjacentBoundaryBasisMismatch {
+        /// First differing index.
+        index: usize,
+        /// Outgoing source-basis cell, if present.
+        outgoing: Option<CellRef>,
+        /// Incoming target-basis cell, if present.
+        incoming: Option<CellRef>,
+    },
+    /// An opaque verified/boundary value violated an internal shape invariant.
+    KernelCoordinateInvariantLost {
+        /// Broken invariant field.
+        field: &'static str,
+    },
+    /// The supplied Smith authority described a different source shape.
+    OutgoingSmithSourceShapeMismatch {
+        /// Required outgoing rows.
+        expected_rows: usize,
+        /// Required shared-chain columns.
+        expected_cols: usize,
+        /// Smith-bound source rows.
+        actual_rows: usize,
+        /// Smith-bound source columns.
+        actual_cols: usize,
+    },
+    /// The supplied Smith authority described different outgoing matrix bytes.
+    OutgoingSmithSourceEntryMismatch {
+        /// First differing row.
+        row: usize,
+        /// First differing column.
+        col: usize,
+        /// Pair-bound outgoing entry.
+        expected: i128,
+        /// Smith-bound source entry.
+        actual: i128,
+    },
+    /// One adjacent-boundary extent exceeded the transport envelope.
+    KernelCoordinateExtentExceeded {
+        /// Outgoing target extent `m`.
+        outgoing_rows: usize,
+        /// Shared chain extent `n`.
+        chain_extent: usize,
+        /// Incoming source extent `p`.
+        incoming_cols: usize,
+        /// Maximum extent for each axis.
+        max: usize,
+    },
+    /// Exact source/basis binding comparisons exceeded their envelope.
+    KernelBindingBudgetExceeded {
+        /// Required comparison items.
+        requested: usize,
+        /// Maximum admitted items.
+        max: usize,
+    },
+    /// `V^-1 * A_(k+1)` had a nonzero nonkernel coordinate.
+    IncomingImageOutsideKernel {
+        /// Smith-coordinate row below `rank(A_k)`.
+        row: usize,
+        /// Incoming basis column.
+        col: usize,
+        /// Exact nonzero coordinate.
+        coordinate: i128,
+        /// Positive Smith invariant factor proving this is nonkernel.
+        invariant_factor: i128,
+    },
+    /// Cancellation was observed before kernel-coordinate publication.
+    KernelCoordinateCancelled {
+        /// Observation phase.
+        phase: &'static str,
+        /// Completed binding comparisons.
+        completed_binding_items: usize,
+        /// Planned binding comparisons.
+        planned_binding_items: usize,
+        /// Completed checked dot-product terms.
+        completed_scalar_operations: u128,
+        /// Planned checked dot-product terms.
+        planned_scalar_operations: u128,
+    },
     /// Matrix extent exceeded its explicit envelope.
     MatrixExtentExceeded {
         /// Supplied rows.
@@ -1486,6 +2135,12 @@ impl IntegralTopologyError {
         match self {
             Self::UnknownTerminalRelativePhase { .. }
             | Self::BoundaryDegreeOutOfRange { .. }
+            | Self::AdjacentBoundaryBindingMismatch { .. }
+            | Self::AdjacentBoundaryDegreeMismatch { .. }
+            | Self::AdjacentBoundaryBasisMismatch { .. }
+            | Self::OutgoingSmithSourceShapeMismatch { .. }
+            | Self::OutgoingSmithSourceEntryMismatch { .. }
+            | Self::IncomingImageOutsideKernel { .. }
             | Self::MatrixEntryCount { .. }
             | Self::WitnessShape { .. }
             | Self::WitnessProductMismatch { .. }
@@ -1497,6 +2152,10 @@ impl IntegralTopologyError {
             | Self::ComponentVisitBudgetExceeded { .. }
             | Self::IncidenceVisitBudgetExceeded { .. }
             | Self::PairBoundaryCancelled { .. }
+            | Self::KernelCoordinateInvariantLost { .. }
+            | Self::KernelCoordinateExtentExceeded { .. }
+            | Self::KernelBindingBudgetExceeded { .. }
+            | Self::KernelCoordinateCancelled { .. }
             | Self::MatrixExtentExceeded { .. }
             | Self::MatrixEntryBudgetExceeded { .. }
             | Self::RetainedMatrixExceedsBudget { .. }
