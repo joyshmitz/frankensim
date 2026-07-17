@@ -226,14 +226,14 @@ const SPOUT: &str = r#"(study "spout-laminar-v3"
   (let lever (xform.level-set-velocity vessel :band 12mm :dof 4096))
   (ascent.optimize J :over lever :method (lbfgs :m 17)))"#;
 
-fn lbm_cost_model() -> SealedCostModel {
+fn lbm_cost_model(operation: &str) -> SealedCostModel {
     let obs: Vec<CostObservation> = (1..=12)
         .map(|k| CostObservation {
             size: f64::from(k) * 512.0,
             cost_s: 0.1 * f64::from(k) * 512.0,
         })
         .collect();
-    SealedCostModel::provisional_unaudited(CostModel::fit(&obs).expect("fits"), "session-test")
+    SealedCostModel::provisional_unaudited(CostModel::fit(&obs).expect("fits"), operation)
 }
 
 #[test]
@@ -2049,7 +2049,10 @@ fn ss_003h_bounded_flush_drains_multiple_atomic_chunks_without_duplicates() {
 fn ss_004_estimate_dry_run_and_ledgered_calibration() {
     let node = fs_ir::sexpr::parse(SPOUT).expect("parses");
     let mut models = BTreeMap::new();
-    models.insert("xform.level-set-velocity".to_string(), lbm_cost_model());
+    models.insert(
+        "xform.level-set-velocity".to_string(),
+        lbm_cost_model("xform.level-set-velocity"),
+    );
     let est = estimate(&node, &models, 16.0).expect("valid dry-run inputs");
     assert!(
         (est.wall_p50_s - 409.6).abs() / 409.6 < 0.05,
@@ -2069,7 +2072,7 @@ fn ss_004_estimate_dry_run_and_ledgered_calibration() {
     );
     let undotted = fs_ir::sexpr::parse("(study \"undotted-model\" (simulate :size 4))")
         .expect("undotted operation parses");
-    models.insert("simulate".to_string(), lbm_cost_model());
+    models.insert("simulate".to_string(), lbm_cost_model("simulate"));
     let undotted_est = estimate(&undotted, &models, 1.0)
         .expect("a registered undotted operation is modeled by registry identity");
     assert!(undotted_est.wall_p50_s > 0.0);
@@ -2110,7 +2113,10 @@ fn ss_004_estimate_dry_run_and_ledgered_calibration() {
 fn ss_004b_estimate_refuses_invalid_resource_domains() {
     let valid = fs_ir::sexpr::parse(SPOUT).expect("valid fixture");
     let mut models = BTreeMap::new();
-    models.insert("xform.level-set-velocity".to_string(), lbm_cost_model());
+    models.insert(
+        "xform.level-set-velocity".to_string(),
+        lbm_cost_model("xform.level-set-velocity"),
+    );
     for cores in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
         assert!(matches!(
             estimate(&valid, &models, cores),
@@ -2245,6 +2251,33 @@ fn ss_004b_estimate_refuses_invalid_resource_domains() {
         calibration.to_json(),
         "{\"kind\":\"estimate-calibration\",\"rows\":[],\"ratio_quantiles\":null,\
          \"zero_predictions\":{\"true_zero\":0,\"unmodeled\":0,\"actual_quantiles_s\":null}}"
+    );
+}
+
+#[test]
+fn ss_004c_estimate_refuses_miskeyed_cost_model_scope() {
+    let node = fs_ir::sexpr::parse(SPOUT).expect("valid fixture");
+    let mut models = BTreeMap::new();
+    models.insert(
+        "xform.level-set-velocity".to_string(),
+        lbm_cost_model("flux.free-surface-lbm"),
+    );
+    let error = estimate(&node, &models, 16.0).expect_err("foreign scope must refuse");
+    let SessionError::Submission { what } = error else {
+        panic!("scope substitution returned the wrong error: {error:?}");
+    };
+    assert!(what.contains("CostModelScopeMismatch"), "{what}");
+    assert!(
+        what.contains("xform.level-set-velocity") && what.contains("flux.free-surface-lbm"),
+        "both requested and intrinsic operation identities are named: {what}"
+    );
+    assert!(
+        what.contains("separately admitted binding"),
+        "the refusal teaches the exact binding rule: {what}"
+    );
+    verdict(
+        "ss-004c",
+        "dry-run pricing refuses caller-key substitution of a foreign sealed scope",
     );
 }
 
@@ -2691,7 +2724,10 @@ fn ss_006_budget_infeasible_surfaces_as_ranked_guidance() {
     let src = SPOUT.replace("(wall 2h)", "(wall 60s)");
     let node = fs_ir::sexpr::parse(&src).expect("parses");
     let mut cost_models = BTreeMap::new();
-    cost_models.insert("xform.level-set-velocity".to_string(), lbm_cost_model());
+    cost_models.insert(
+        "xform.level-set-velocity".to_string(),
+        lbm_cost_model("xform.level-set-velocity"),
+    );
     let cx = fs_ir::admission::AdmissionContext {
         cost_freshness: None,
         router: None,
@@ -3527,7 +3563,10 @@ fn ss_004a_estimate_carries_weakest_cost_evidence() {
         "no modeled calls means no evidence claim at all"
     );
     let mut models = BTreeMap::new();
-    models.insert("xform.level-set-velocity".to_string(), lbm_cost_model());
+    models.insert(
+        "xform.level-set-velocity".to_string(),
+        lbm_cost_model("xform.level-set-velocity"),
+    );
     let est = estimate(&node, &models, 4.0).expect("estimates");
     assert_eq!(
         est.weakest_cost_evidence,

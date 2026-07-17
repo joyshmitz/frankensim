@@ -202,7 +202,11 @@ Consumers: the P2 marquee demo, the HELM e2e suite (gp3.11).
   `fs_plan::SealedCostModel` (bead 2pmb) and the result carries
   `weakest_cost_evidence`: `None` with no modeled calls, otherwise
   weakest-wins across contributors — one provisional model marks the
-  whole estimate, and mixing never upgrades receipt-backed evidence. The result is fallible:
+  whole estimate, and mixing never upgrades receipt-backed evidence. Before
+  evidence folding or pricing, each caller registry key must exactly match the
+  model's intrinsic operation scope; a foreign scope returns
+  `CostModelScopeMismatch`, and string aliases require a separately admitted
+  binding. The result is fallible:
   cores and derived wall/energy values must stay finite and non-negative, and a
   memory Count must scale to an exact positive whole-byte `u64`; zero, negative,
   fractional-byte, wrong-unit, and overflowed asks are structured refusals.
@@ -674,7 +678,8 @@ observations or shared terminal receipt, plus same-thread reentrancy and
 independent keys); ss-004 estimate p10/p50/p90 + energy + declared mem +
 honest coverage, calibration ratio quantiles, ledgered artifact
 round-trip; ss-004b invalid estimator/calibration numeric domains fail closed
-without poisoning JSON; ss-005 ladder order + gate request + toy-SolverState
+without poisoning JSON; ss-004c caller-key substitution of a foreign sealed
+operation scope refuses before pricing; ss-005 ladder order + gate request + toy-SolverState
 snapshot equality + attributed ordinal-ordered events; ss-006 the
 canonical BudgetInfeasible finding surfacing as ranked `Guidance`;
 ss-007 32-way adversarial-grant storm with exact meters and structured

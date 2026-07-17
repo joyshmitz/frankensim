@@ -79,7 +79,7 @@ const LOWERED_OPTIMIZE_EXPLICIT: &str = r#"(study "lowered-optimize"
 
 /// A cost model fitted so `predict(4096).p90` is ~410 s (fits a 2-hour
 /// budget alongside the rest). Keyed to the verb that carries `:dof`.
-fn lbm_cost_model() -> SealedCostModel {
+fn lbm_cost_model(operation: &str) -> SealedCostModel {
     let obs: Vec<CostObservation> = (1..=12)
         .map(|k| {
             let size = f64::from(k) * 512.0;
@@ -91,7 +91,7 @@ fn lbm_cost_model() -> SealedCostModel {
         .collect();
     SealedCostModel::provisional_unaudited(
         CostModel::fit(&obs).expect("cost model fits"),
-        "admission-test",
+        operation,
     )
 }
 
@@ -146,7 +146,10 @@ fn creeping_regime() -> fs_regime::RegimeReport {
 
 fn full_context(regime: &fs_regime::RegimeReport) -> AdmissionContext<'_> {
     let mut cost_models = BTreeMap::new();
-    cost_models.insert("xform.level-set-velocity".to_string(), lbm_cost_model());
+    cost_models.insert(
+        "xform.level-set-velocity".to_string(),
+        lbm_cost_model("xform.level-set-velocity"),
+    );
     AdmissionContext {
         router: None,
         cost_freshness: None,
@@ -323,9 +326,10 @@ fn ad_001b_admission_is_over_versioned_lowered_semantics() {
 
     // Costing sees the injected flux operator too.
     let mut cost_context = authority_context(&["flux.*"], None, RegimePolicy::Warn);
-    cost_context
-        .cost_models
-        .insert("flux.free-surface-lbm".to_string(), lbm_cost_model());
+    cost_context.cost_models.insert(
+        "flux.free-surface-lbm".to_string(),
+        lbm_cost_model("flux.free-surface-lbm"),
+    );
     let raw_tight = LOWERED_POUR_RAW.replace("10s", "0.01s");
     let explicit_tight = LOWERED_POUR_EXPLICIT.replace("10s", "0.01s");
     let (raw_cost_denied, _) = admit_equivalent(&raw_tight, &explicit_tight, &cost_context);
@@ -357,9 +361,10 @@ fn ad_001c_lowering_refuses_atomically_before_authority_checks() {
     let creeping = creeping_regime();
     let mut hostile_context =
         authority_context(&["ascent.*"], Some(&creeping), RegimePolicy::Reject);
-    hostile_context
-        .cost_models
-        .insert("flux.free-surface-lbm".to_string(), lbm_cost_model());
+    hostile_context.cost_models.insert(
+        "flux.free-surface-lbm".to_string(),
+        lbm_cost_model("flux.free-surface-lbm"),
+    );
     hostile_context.chart_requirements.push(ChartRequirement {
         from: "frep".to_string(),
         to: "mesh".to_string(),
@@ -1001,7 +1006,7 @@ fn ad_004_budget_infeasible_with_ranked_cost_derived_fixes() {
     legacy_cx.cost_models.clear();
     legacy_cx
         .cost_models
-        .insert("legacy-solve".to_string(), lbm_cost_model());
+        .insert("legacy-solve".to_string(), lbm_cost_model("legacy-solve"));
     let legacy_src = src.replace("xform.level-set-velocity", "legacy-solve");
     let legacy = admit_src(&legacy_src, &legacy_cx);
     assert!(
@@ -1018,7 +1023,7 @@ fn ad_004_budget_infeasible_with_ranked_cost_derived_fixes() {
     let mut thin_cx = full_context(&regime);
     thin_cx.cost_models.insert(
         "xform.level-set-velocity".to_string(),
-        SealedCostModel::provisional_unaudited(CostModel::new(), "empty-model-test"),
+        SealedCostModel::provisional_unaudited(CostModel::new(), "xform.level-set-velocity"),
     );
     let thin = admit_src(&src, &thin_cx);
     let refusal = thin
@@ -1312,13 +1317,61 @@ fn ad_010_provisional_cost_models_warn_but_admit() {
         provisional[0].what
     );
     assert!(
-        provisional[0].what.contains("provisional:admission-test"),
-        "the finding names the scope label: {}",
+        provisional[0]
+            .what
+            .contains("provisional:xform.level-set-velocity"),
+        "the finding names the operation-bound scope: {}",
         provisional[0].what
     );
     verdict(
         "ad-010",
         "provisional cost evidence admits with a named once-per-verb warning",
+    );
+}
+
+#[test]
+fn ad_010a_miskeyed_cost_model_refuses_without_pricing() {
+    let regime = spout_regime();
+    let mut cx = full_context(&regime);
+    cx.cost_models.insert(
+        "xform.level-set-velocity".to_string(),
+        lbm_cost_model("flux.free-surface-lbm"),
+    );
+    let report = admit_src(&SPOUT.replace("(wall 2h)", "(wall 60s)"), &cx);
+    assert!(
+        !report.admitted,
+        "foreign model scope must reject admission"
+    );
+    let mismatch = report
+        .findings
+        .iter()
+        .find(|finding| finding.what.contains("CostModelScopeMismatch"))
+        .expect("scope substitution emits a stable rejection");
+    assert_eq!(mismatch.severity, Severity::Reject);
+    assert!(
+        mismatch.what.contains("xform.level-set-velocity")
+            && mismatch.what.contains("flux.free-surface-lbm"),
+        "both requested and intrinsic operation identities are named: {mismatch:?}"
+    );
+    assert!(
+        mismatch
+            .fixes
+            .iter()
+            .any(|fix| fix.action.contains("separately admitted binding")),
+        "the refusal teaches the exact binding rule: {mismatch:?}"
+    );
+    assert!(
+        report.findings.iter().all(|finding| {
+            !finding.what.contains("BudgetInfeasible")
+                && !finding.what.contains("CostModelProvisional")
+                && !finding.what.contains("CostModelStale")
+        }),
+        "a foreign model must not influence arithmetic or evidence notices:\n{}",
+        report.diagnosis()
+    );
+    verdict(
+        "ad-010a",
+        "caller registry keys cannot substitute a foreign sealed operation scope",
     );
 }
 

@@ -68,13 +68,17 @@ the anytime-valid audit threshold used by authenticated authority.
   `CostModel` stays freely constructible provisional MATH; the sealed
   type is the AUTHORITY: its `ExactRooflineReceipt` class is mintable
   only by `cost_model_from_tune` after full validation, with the
-  validated scope (kernel, shape class, machine key, run receipt, op id,
-  build identity, recorded-at) retained behind private fields so a
+  validated scope (modeled operation, kernel, shape class, machine key, run
+  receipt, producing ledger op id, build identity, recorded-at) retained
+  behind private fields so a
   caller-fitted model can never impersonate receipt-backed evidence.
-  `provisional_unaudited` wraps caller fits as visibly provisional; every
-  opaque prediction carries the complete `CostModelScope`, including machine
-  key and producing op id, plus either the mint-time or explicitly assessed
-  class; composition never upgrades the class.
+  `provisional_unaudited` binds caller fits to one exact operation identity and
+  marks them visibly provisional. `matches_operation` compares that intrinsic
+  identity byte-for-byte, without aliases, normalization, or case folding;
+  caller registry keys cannot silently re-scope a fit. Every opaque prediction
+  carries the complete `CostModelScope`, including operation, machine key, and
+  producing op id, plus either the mint-time or explicitly assessed class;
+  composition never upgrades the class.
 - `cost_model_from_tune` — rebuilds a SEALED model from one EXACT
   `(kernel, shape_class, machine)` fs-ledger key. It accepts only the current
   fs-roofline receipt-v3 / row-v4 / `roofline-v8` production-v3 schema
@@ -337,9 +341,11 @@ preempt or enforce a time or memory limit on an arbitrary synchronous closure.
   and preregistered `FreshnessPolicy`; `predict_assessed` folds that
   verdict into the returned class, while raw `predict` preserves the
   mint-time class), and `provisional_unaudited` is a labeling mechanism,
-  not a sandbox — a consumer that ignores
-  `CostEvidenceClass` forfeits the distinction (fs-ir admission and
-  fs-session estimate do not). External issuer signatures over sealed
+  not a sandbox — a consumer that ignores `CostEvidenceClass` or the intrinsic
+  operation binding forfeits the distinction (fs-ir admission and fs-session
+  estimate enforce both). Cross-operation aliases require a separately
+  admitted binding; a caller-supplied map key has no such authority. External
+  issuer signatures over sealed
   scopes remain future scope, coordinated with the admitted-scientific-
   color lane (bead 6pf9).
 - VoI work units are oracle-declared accounting, not measured wall time,

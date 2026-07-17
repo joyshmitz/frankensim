@@ -203,6 +203,15 @@ pub fn estimate(
             unmodeled.push(verb.clone());
             continue;
         };
+        if !model.matches_operation(verb) {
+            return Err(crate::SessionError::Submission {
+                what: format!(
+                    "CostModelScopeMismatch: operation {verb:?} cannot use a sealed model bound to operation {:?} (scope {:?}); aliases require a separately admitted binding",
+                    model.scope().operation(),
+                    model.scope().kernel(),
+                ),
+            });
+        }
         // Weakest-wins (beads 2pmb + jle3m): one weaker contributor
         // marks the whole estimate under the total evidence lattice
         // (fresh exact > fresh provisional > stale exact); receipts

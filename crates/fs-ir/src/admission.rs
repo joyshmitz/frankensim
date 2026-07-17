@@ -928,6 +928,21 @@ fn cost_registered_calls<'a>(
         let model = models
             .get(verb)
             .expect("modeled_calls only returns registered models");
+        if !model.matches_operation(verb) {
+            refused = true;
+            out.push(cost_model_rejection(
+                span,
+                format!(
+                    "CostModelScopeMismatch: operation {verb:?} cannot use a sealed model bound to operation {:?} (scope {:?})",
+                    model.scope().operation(),
+                    model.scope().kernel(),
+                ),
+                format!(
+                    "register a cost model intrinsically bound to operation {verb:?}; aliases require a separately admitted binding"
+                ),
+            ));
+            continue;
+        }
         // Sealed authority (beads 2pmb + l2k92): weakened evidence may
         // inform the budget arithmetic, but the admission record must
         // say so — once per verb, admitting with notice, never

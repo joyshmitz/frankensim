@@ -135,6 +135,7 @@ pub enum StalenessVerdict {
 /// `"provisional"` / zero — visibly not a receipt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CostModelScope {
+    operation: String,
     kernel: String,
     shape_class: String,
     machine: Vec<u8>,
@@ -155,6 +156,7 @@ impl CostModelScope {
         recorded_at_ns: i64,
     ) -> CostModelScope {
         CostModelScope {
+            operation: kernel.clone(),
             kernel,
             shape_class,
             machine,
@@ -165,9 +167,10 @@ impl CostModelScope {
         }
     }
 
-    fn provisional(label: &str) -> CostModelScope {
+    fn provisional(operation: &str) -> CostModelScope {
         CostModelScope {
-            kernel: format!("provisional:{label}"),
+            operation: operation.to_string(),
+            kernel: format!("provisional:{operation}"),
             shape_class: "provisional".to_string(),
             machine: Vec::new(),
             run_receipt: "provisional".to_string(),
@@ -177,7 +180,13 @@ impl CostModelScope {
         }
     }
 
-    /// The exact tune kernel (or `provisional:<label>`).
+    /// The exact operation identity this model may price.
+    #[must_use]
+    pub fn operation(&self) -> &str {
+        &self.operation
+    }
+
+    /// The exact tune kernel (or `provisional:<operation>`).
     #[must_use]
     pub fn kernel(&self) -> &str {
         &self.kernel
@@ -240,14 +249,15 @@ impl SealedCostModel {
     }
 
     /// Wrap a caller-fitted model as EXPLICITLY provisional evidence.
-    /// The label lands in the scope's kernel field and the class lands
-    /// in every prediction; nothing downstream can mistake this for
-    /// receipt-backed authority.
+    /// The operation lands in the intrinsic scope and in the visibly
+    /// provisional kernel field. The class lands in every prediction;
+    /// nothing downstream can mistake this for receipt-backed authority
+    /// or re-key the model as a different operation.
     #[must_use]
-    pub fn provisional_unaudited(model: CostModel, label: &str) -> SealedCostModel {
+    pub fn provisional_unaudited(model: CostModel, operation: &str) -> SealedCostModel {
         SealedCostModel {
             model,
-            scope: CostModelScope::provisional(label),
+            scope: CostModelScope::provisional(operation),
             class: CostEvidenceClass::ProvisionalUnaudited,
         }
     }
@@ -268,6 +278,15 @@ impl SealedCostModel {
     #[must_use]
     pub fn evidence_class(&self) -> CostEvidenceClass {
         self.class
+    }
+
+    /// Whether this model is intrinsically bound to `operation`.
+    ///
+    /// Matching is exact and byte-for-byte: caller registry keys are not
+    /// aliases and receive no case folding or normalization authority.
+    #[must_use]
+    pub fn matches_operation(&self, operation: &str) -> bool {
+        self.scope.operation == operation
     }
 
     /// Assess the minted class against the caller's freshness
@@ -544,6 +563,9 @@ mod tests {
             sealed.evidence_class(),
             CostEvidenceClass::ProvisionalUnaudited
         );
+        assert_eq!(sealed.scope().operation(), "unit-test");
+        assert!(sealed.matches_operation("unit-test"));
+        assert!(!sealed.matches_operation("Unit-Test"));
         assert_eq!(sealed.scope().kernel(), "provisional:unit-test");
         assert_eq!(sealed.scope().run_receipt(), "provisional");
         assert_eq!(sealed.scope().op(), 0);
@@ -555,6 +577,7 @@ mod tests {
             "the class travels into every prediction"
         );
         assert_eq!(prediction.scope(), sealed.scope());
+        assert_eq!(prediction.scope().operation(), "unit-test");
         assert_eq!(prediction.scope().kernel(), "provisional:unit-test");
         assert_eq!(prediction.scope().recorded_at_ns(), 0);
         // The math is untouched by the seal: bands match the raw model.
@@ -578,12 +601,16 @@ mod tests {
             sealed.evidence_class(),
             CostEvidenceClass::ExactRooflineReceipt
         );
+        assert_eq!(sealed.scope().operation(), "simd-axpy-f64");
+        assert!(sealed.matches_operation("simd-axpy-f64"));
+        assert!(!sealed.matches_operation("la.simd-axpy-f64"));
         let prediction = sealed.predict(512.0).expect("predicts");
         assert_eq!(
             prediction.evidence_class(),
             CostEvidenceClass::ExactRooflineReceipt
         );
         assert_eq!(prediction.scope(), sealed.scope());
+        assert_eq!(prediction.scope().operation(), "simd-axpy-f64");
         assert_eq!(prediction.scope().kernel(), "simd-axpy-f64");
         assert_eq!(
             prediction.scope().shape_class(),
