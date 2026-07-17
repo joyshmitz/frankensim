@@ -5,7 +5,8 @@
 //! budget (strict variant gated for quiet perf lanes).
 
 use fs_ir::catalog::{
-    ARITH_SAME_DIMS, COMPARE_FORMS, Catalog, CatalogQuery, OperatorEntry, OperatorKind, SUGAR_VERBS,
+    ARITH_SAME_DIMS, COMPARE_FORMS, Catalog, CatalogQuery, OperatorEntry, OperatorKind,
+    SUGAR_VERBS, SigType,
 };
 use fs_ir::lower::lower;
 use fs_ir::sexpr;
@@ -224,6 +225,134 @@ fn cat_006_diff_reports_added_removed_changed() {
     assert_eq!(diff.changed, vec!["integral".to_string()]);
 }
 
+fn names(entries: &[&OperatorEntry]) -> Vec<&'static str> {
+    entries.iter().map(|e| e.name).collect()
+}
+
+#[test]
+fn cat_009_signature_compatibility_search() {
+    let catalog = Catalog::builtin();
+
+    // "What consumes a field?" — exactly the QoI menu.
+    let field_consumers = catalog.query(&CatalogQuery {
+        consumes: Some(vec!["field".to_string()]),
+        ..CatalogQuery::default()
+    });
+    assert_eq!(
+        names(&field_consumers),
+        vec!["exceedance", "integral", "max-over-region"],
+        "field consumers are the QoI operators, in canonical order"
+    );
+
+    // "What consumes a field and produces a probability?" — the bead's
+    // canonical fixture: exactly the probabilistic QoI.
+    let probabilistic = catalog.query(&CatalogQuery {
+        consumes: Some(vec!["field".to_string()]),
+        produces: Some("probability".to_string()),
+        ..CatalogQuery::default()
+    });
+    assert_eq!(names(&probabilistic), vec!["exceedance"]);
+
+    // "What gives me a campaign?" — the two core engines.
+    let campaigns = catalog.query(&CatalogQuery {
+        produces: Some("campaign".to_string()),
+        ..CatalogQuery::default()
+    });
+    assert_eq!(
+        names(&campaigns),
+        vec!["ascent.optimize", "flux.free-surface-lbm"]
+    );
+
+    // "Quantity in, verdict out" — exactly the comparison forms.
+    let verdicts = catalog.query(&CatalogQuery {
+        consumes: Some(vec!["quantity".to_string()]),
+        produces: Some("verdict".to_string()),
+        ..CatalogQuery::default()
+    });
+    assert_eq!(names(&verdicts), vec!["<", "<=", "=", ">", ">="]);
+
+    // Multi-token consumes is conjunctive over the entry's signature.
+    let pours = catalog.query(&CatalogQuery {
+        consumes: Some(vec!["vessel".to_string(), "schedule".to_string()]),
+        ..CatalogQuery::default()
+    });
+    assert_eq!(
+        names(&pours),
+        vec!["flux.free-surface-lbm", "simulate-pour"]
+    );
+
+    // Signature filters compose conjunctively with the other filters.
+    let granted_campaigns = catalog.query(&CatalogQuery {
+        produces: Some("campaign".to_string()),
+        granted_capabilities: Some(vec!["flux.*".to_string()]),
+        ..CatalogQuery::default()
+    });
+    assert_eq!(names(&granted_campaigns), vec!["flux.free-surface-lbm"]);
+
+    // A token outside the vocabulary matches nothing (fail-safe), in
+    // either position.
+    for query in [
+        CatalogQuery {
+            consumes: Some(vec!["warp-core".to_string()]),
+            ..CatalogQuery::default()
+        },
+        CatalogQuery {
+            produces: Some("warp-core".to_string()),
+            ..CatalogQuery::default()
+        },
+    ] {
+        assert!(
+            catalog.query(&query).is_empty(),
+            "out-of-vocabulary tokens must return the empty set"
+        );
+    }
+}
+
+#[test]
+fn cat_010_signature_drift_fails_validation() {
+    let catalog = Catalog::builtin();
+
+    // A sugar verb claiming to produce anything but an IR form is a
+    // structural lie about what expansion does.
+    let mut entries: Vec<OperatorEntry> = catalog.entries().to_vec();
+    for entry in &mut entries {
+        if matches!(entry.kind, OperatorKind::SugarVerb { .. }) {
+            entry.produces = SigType::Probability;
+            break;
+        }
+    }
+    let drifts = Catalog::from_entries_for_test(entries)
+        .validate()
+        .expect_err("a sugar verb not producing ir-form must fail validation");
+    assert!(
+        drifts.iter().any(|d| d.detail.contains("ir-form")),
+        "the drift names the invariant: {drifts:?}"
+    );
+
+    // A probabilistic QoI must produce a probability — the signature
+    // column and the planner metadata may not disagree.
+    let mut entries: Vec<OperatorEntry> = catalog.entries().to_vec();
+    for entry in &mut entries {
+        if matches!(
+            entry.kind,
+            OperatorKind::QoiOperator {
+                probabilistic: true,
+                ..
+            }
+        ) {
+            entry.produces = SigType::QoiValue;
+            break;
+        }
+    }
+    let drifts = Catalog::from_entries_for_test(entries)
+        .validate()
+        .expect_err("probabilistic/produces disagreement must fail validation");
+    assert!(
+        drifts.iter().any(|d| d.detail.contains("probabilistic")),
+        "the drift names the disagreement: {drifts:?}"
+    );
+}
+
 #[test]
 fn cat_007_query_latency_smoke() {
     // Generous default-suite bound (shared hosts are noisy); the
@@ -283,6 +412,11 @@ fn latency_query_set() -> Vec<CatalogQuery> {
         },
         CatalogQuery {
             text: Some("optimize".to_string()),
+            ..CatalogQuery::default()
+        },
+        CatalogQuery {
+            consumes: Some(vec!["field".to_string()]),
+            produces: Some("probability".to_string()),
             ..CatalogQuery::default()
         },
     ]

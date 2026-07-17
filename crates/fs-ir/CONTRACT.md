@@ -575,7 +575,9 @@ admitted derived-geometry boundary.
   registries this module OWNS and admission consumes; QoI entries
   derive from `Qoi::meta()`/`is_probabilistic()` executed at
   generation). Each `OperatorEntry` carries the full plan-mandated
-  columns: surface signature, dims rule, cost-model key (the
+  columns: surface signature, typed `consumes`/`produces` signature
+  columns (`SigType`, a closed stable-token vocabulary — extending it
+  is a schema-version event), dims rule, cost-model key (the
   `AdmissionContext.cost_models` keying), error-model reference, typed
   `DeterminismClass`, capability globs, `CancellationBehavior`,
   executable examples (parsed and — for sugar verbs — LOWERED by the
@@ -583,12 +585,18 @@ admitted derived-geometry boundary.
   against the real trace, so a mismatched annotation fails CI),
   semver, model-card link, ambition tag, and feature flag.
   `Catalog::query(&CatalogQuery)` is conjunctive structured search
-  (name glob, namespace, capability-grant coverage, text);
+  (name glob, namespace, capability-grant coverage,
+  signature-compatibility — "consumes field, produces probability"
+  answers exactly, with out-of-vocabulary tokens matching the empty
+  set fail-safe — and text);
   `to_canonical_jsonl()` is the deterministic diffable export
   (`CATALOG_SCHEMA_VERSION`) and `diff()` answers "what changed since
   the version I know". `validate()` refuses duplicate names, missing
-  sugar targets, exampleless entries, and registry/catalog
-  disagreement in either direction. NO-CLAIM: entries catalog the
+  sugar targets, exampleless entries, registry/catalog disagreement in
+  either direction, and signature drift (a sugar verb must produce
+  `ir-form`; a QoI produces `probability` exactly when its live
+  metadata says probabilistic; every entry consumes at least one typed
+  kind). NO-CLAIM: entries catalog the
   surfaces that exist today (two sugar verbs, two core operators, the
   QoI menu, arithmetic forms); per-operator wall-cost NUMBERS stay in
   sealed cost models, never in catalog prose; the ≤100ms serve budget

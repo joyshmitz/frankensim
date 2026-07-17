@@ -18,7 +18,9 @@ use std::fmt::Write as _;
 
 /// Catalog schema version: bound into the canonical JSON export so
 /// agents can detect representation changes across releases.
-pub const CATALOG_SCHEMA_VERSION: u32 = 1;
+/// v2: typed `consumes`/`produces` signature columns (the
+/// signature-compatibility search vocabulary).
+pub const CATALOG_SCHEMA_VERSION: u32 = 2;
 
 /// Arithmetic forms whose operands must share exact dimensions
 /// (admission's dimensional dimension consumes this list).
@@ -106,6 +108,91 @@ impl Ambition {
     }
 }
 
+/// A typed value kind in an operator's signature: what the operator
+/// CONSUMES and PRODUCES semantically, beyond the surface syntax of
+/// its arguments. This is the signature-compatibility search
+/// vocabulary ("what consumes a field and produces a probability?"),
+/// so tokens are stable and closed — extending the vocabulary is a
+/// schema-version event, not an edit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SigType {
+    /// A named simulation field (temperature, stress, …).
+    Field,
+    /// A named spatial region.
+    Region,
+    /// A dimensioned quantity `(qty v unit)`.
+    Quantity,
+    /// A named uncertainty environment (probabilistic QoIs).
+    Environment,
+    /// Design levers (`:over` targets).
+    Levers,
+    /// A scalar objective form.
+    ObjectiveScalar,
+    /// A vessel/geometry reference.
+    Vessel,
+    /// A fluid/material reference.
+    Fluid,
+    /// A pour/motion schedule.
+    Schedule,
+    /// An explicit lowered IR form (what sugar expansion yields).
+    IrForm,
+    /// A dimensioned QoI value under tolerance semantics.
+    QoiValue,
+    /// A dimensionless probability.
+    Probability,
+    /// A dimensionless comparison verdict.
+    Verdict,
+    /// A registered long-running campaign handle (ledger-bound).
+    Campaign,
+}
+
+impl SigType {
+    /// Stable token for the canonical export and query surface.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Field => "field",
+            Self::Region => "region",
+            Self::Quantity => "quantity",
+            Self::Environment => "environment",
+            Self::Levers => "levers",
+            Self::ObjectiveScalar => "objective-scalar",
+            Self::Vessel => "vessel",
+            Self::Fluid => "fluid",
+            Self::Schedule => "schedule",
+            Self::IrForm => "ir-form",
+            Self::QoiValue => "qoi-value",
+            Self::Probability => "probability",
+            Self::Verdict => "verdict",
+            Self::Campaign => "campaign",
+        }
+    }
+
+    /// Parse a query token. `None` for tokens outside the vocabulary —
+    /// query filters treat those as matching no entry (fail-safe), so a
+    /// typo'd search returns the empty set rather than everything.
+    #[must_use]
+    pub fn from_name(token: &str) -> Option<Self> {
+        match token {
+            "field" => Some(Self::Field),
+            "region" => Some(Self::Region),
+            "quantity" => Some(Self::Quantity),
+            "environment" => Some(Self::Environment),
+            "levers" => Some(Self::Levers),
+            "objective-scalar" => Some(Self::ObjectiveScalar),
+            "vessel" => Some(Self::Vessel),
+            "fluid" => Some(Self::Fluid),
+            "schedule" => Some(Self::Schedule),
+            "ir-form" => Some(Self::IrForm),
+            "qoi-value" => Some(Self::QoiValue),
+            "probability" => Some(Self::Probability),
+            "verdict" => Some(Self::Verdict),
+            "campaign" => Some(Self::Campaign),
+            _ => None,
+        }
+    }
+}
+
 /// What kind of operator an entry describes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OperatorKind {
@@ -161,6 +248,11 @@ pub struct OperatorEntry {
     pub kind: OperatorKind,
     /// Surface signature: arguments in order.
     pub args: &'static [ArgSpec],
+    /// Typed signature: semantic kinds this operator consumes, in
+    /// argument order (the signature-compatibility search columns).
+    pub consumes: &'static [SigType],
+    /// Typed signature: the semantic kind this operator produces.
+    pub produces: SigType,
     /// What the operator produces (surface description token).
     pub output: &'static str,
     /// Dimensional rule token for the dims dimension.
@@ -203,6 +295,14 @@ pub struct CatalogQuery {
     pub namespace: Option<String>,
     /// Only operators admissible under this capability grant set.
     pub granted_capabilities: Option<Vec<String>>,
+    /// Signature compatibility: every listed [`SigType`] token must be
+    /// among the entry's consumed kinds ("what can I feed an X?").
+    /// Tokens outside the vocabulary match no entry.
+    pub consumes: Option<Vec<String>>,
+    /// Signature compatibility: the entry's produced kind must equal
+    /// this [`SigType`] token ("what gives me a Y?"). Tokens outside
+    /// the vocabulary match no entry.
+    pub produces: Option<String>,
     /// Case-insensitive token that must appear in name/output/syntax.
     pub text: Option<String>,
 }
@@ -263,6 +363,8 @@ impl Catalog {
                         syntax: ":until <stop-form>",
                     },
                 ],
+                consumes: &[SigType::ObjectiveScalar, SigType::Levers],
+                produces: SigType::IrForm,
                 output: "explicit (ascent.optimize …) form with every default named in the trace",
                 dims_rule: "objective-scalar",
                 cost_model_key: Some("ascent.optimize"),
@@ -299,6 +401,8 @@ impl Catalog {
                         syntax: "<schedule>",
                     },
                 ],
+                consumes: &[SigType::Vessel, SigType::Fluid, SigType::Schedule],
+                produces: SigType::IrForm,
                 output: "explicit (flux.free-surface-lbm …) form",
                 dims_rule: "engine-defined",
                 cost_model_key: Some("flux.free-surface-lbm"),
@@ -342,6 +446,8 @@ impl Catalog {
                         syntax: ":emit (ledger report)",
                     },
                 ],
+                consumes: &[SigType::ObjectiveScalar, SigType::Levers],
+                produces: SigType::Campaign,
                 output: "optimization campaign registered against the design ledger",
                 dims_rule: "objective-scalar",
                 cost_model_key: Some("ascent.optimize"),
@@ -377,6 +483,8 @@ impl Catalog {
                         syntax: "<schedule>",
                     },
                 ],
+                consumes: &[SigType::Vessel, SigType::Fluid, SigType::Schedule],
+                produces: SigType::Campaign,
                 output: "free-surface LBM campaign",
                 dims_rule: "engine-defined",
                 cost_model_key: Some("flux.free-surface-lbm"),
@@ -432,6 +540,18 @@ impl Catalog {
                         .capabilities
                         .iter()
                         .all(|needed| grants.iter().any(|grant| grant_covers(grant, needed)))
+                {
+                    return false;
+                }
+                if let Some(consumes) = &query.consumes
+                    && !consumes.iter().all(|token| {
+                        SigType::from_name(token).is_some_and(|t| entry.consumes.contains(&t))
+                    })
+                {
+                    return false;
+                }
+                if let Some(produces) = &query.produces
+                    && SigType::from_name(produces) != Some(entry.produces)
                 {
                     return false;
                 }
@@ -509,10 +629,17 @@ impl Catalog {
                 })
                 .collect::<Vec<_>>()
                 .join(",");
+            let consumes = entry
+                .consumes
+                .iter()
+                .map(|t| format!("\"{}\"", t.name()))
+                .collect::<Vec<_>>()
+                .join(",");
             let _ = writeln!(
                 out,
-                "{{\"name\":\"{}\",\"kind\":{kind},\"args\":[{args}],\"output\":\"{}\",\"dims_rule\":\"{}\",\"cost_model_key\":{},\"error_model\":\"{}\",\"determinism\":\"{}\",\"capabilities\":[{}],\"cancellation\":\"{}\",\"examples\":[{}],\"semver\":\"{}\",\"model_card\":{},\"ambition\":\"{}\",\"feature_flag\":{}}}",
+                "{{\"name\":\"{}\",\"kind\":{kind},\"args\":[{args}],\"consumes\":[{consumes}],\"produces\":\"{}\",\"output\":\"{}\",\"dims_rule\":\"{}\",\"cost_model_key\":{},\"error_model\":\"{}\",\"determinism\":\"{}\",\"capabilities\":[{}],\"cancellation\":\"{}\",\"examples\":[{}],\"semver\":\"{}\",\"model_card\":{},\"ambition\":\"{}\",\"feature_flag\":{}}}",
                 entry.name,
+                entry.produces.name(),
                 escape(entry.output),
                 entry.dims_rule,
                 entry
@@ -610,7 +737,35 @@ impl Catalog {
                     detail: "no executable example".to_string(),
                 });
             }
+            if entry.consumes.is_empty() {
+                drifts.push(CatalogDrift {
+                    entry: entry.name.to_string(),
+                    detail: "no consumed signature types".to_string(),
+                });
+            }
+            if let OperatorKind::QoiOperator { probabilistic, .. } = &entry.kind {
+                let produces_probability = entry.produces == SigType::Probability;
+                if *probabilistic != produces_probability {
+                    drifts.push(CatalogDrift {
+                        entry: entry.name.to_string(),
+                        detail: format!(
+                            "probabilistic={probabilistic} but produces {:?} — a QoI produces \
+                             probability exactly when it is probabilistic",
+                            entry.produces.name()
+                        ),
+                    });
+                }
+            }
             if let OperatorKind::SugarVerb { lowers_to, .. } = &entry.kind {
+                if entry.produces != SigType::IrForm {
+                    drifts.push(CatalogDrift {
+                        entry: entry.name.to_string(),
+                        detail: format!(
+                            "sugar verbs produce ir-form (structural expansion), not {:?}",
+                            entry.produces.name()
+                        ),
+                    });
+                }
                 if !self.entries.iter().any(|e| e.name == *lowers_to) {
                     drifts.push(CatalogDrift {
                         entry: entry.name.to_string(),
@@ -709,6 +864,8 @@ fn qoi_entries() -> Vec<OperatorEntry> {
     let samples: [(
         Qoi,
         &'static [ArgSpec],
+        &'static [SigType],
+        SigType,
         &'static str,
         &'static [&'static str],
     ); 3] = [
@@ -729,6 +886,8 @@ fn qoi_entries() -> Vec<OperatorEntry> {
                     syntax: "<region>",
                 },
             ],
+            &[SigType::Field, SigType::Region],
+            SigType::QoiValue,
             "field dimensions",
             &[
                 "(query (max-over-region temperature hot-corner) (tolerance 0.5 kelvin) 100.0 3600.0)",
@@ -751,6 +910,8 @@ fn qoi_entries() -> Vec<OperatorEntry> {
                     syntax: "<region>",
                 },
             ],
+            &[SigType::Field, SigType::Region],
+            SigType::QoiValue,
             "field dimensions x volume",
             &["(query (integral heat-flux outlet) (tolerance 1.0 watt) 250.0 7200.0)"],
         ),
@@ -784,6 +945,13 @@ fn qoi_entries() -> Vec<OperatorEntry> {
                     syntax: "<named environment>",
                 },
             ],
+            &[
+                SigType::Field,
+                SigType::Region,
+                SigType::Quantity,
+                SigType::Environment,
+            ],
+            SigType::Probability,
             "dimensionless probability",
             &[
                 "(query (exceedance stress weld-line (qty 250.0 megapascal) storm-env) (confidence 0.95) 500.0 86400.0)",
@@ -792,7 +960,7 @@ fn qoi_entries() -> Vec<OperatorEntry> {
     ];
     samples
         .into_iter()
-        .map(|(qoi, args, output, examples)| {
+        .map(|(qoi, args, consumes, produces, output, examples)| {
             let meta = qoi.meta();
             OperatorEntry {
                 name: qoi_static_name(&qoi),
@@ -803,6 +971,8 @@ fn qoi_entries() -> Vec<OperatorEntry> {
                     probabilistic: qoi.is_probabilistic(),
                 },
                 args,
+                consumes,
+                produces,
                 output,
                 dims_rule: "qoi-value-dims",
                 cost_model_key: None,
@@ -847,6 +1017,8 @@ fn arithmetic_entries() -> Vec<OperatorEntry> {
                 syntax: "<operand>",
             },
         ],
+        consumes: &[SigType::Quantity, SigType::Quantity],
+        produces: SigType::Quantity,
         output: "operand dimensions",
         dims_rule: "same-dims",
         cost_model_key: None,
@@ -877,6 +1049,8 @@ fn arithmetic_entries() -> Vec<OperatorEntry> {
                 syntax: "<operand>",
             },
         ],
+        consumes: &[SigType::Quantity, SigType::Quantity],
+        produces: SigType::Verdict,
         output: "dimensionless verdict",
         dims_rule: "same-dims-comparison",
         cost_model_key: None,
