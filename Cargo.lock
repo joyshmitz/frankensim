@@ -1137,6 +1137,7 @@ dependencies = [
  "fs-roofline",
  "fs-simd",
  "fs-substrate",
+ "fsci-fft",
 ]
 
 [[package]]
@@ -1466,6 +1467,7 @@ name = "fs-math"
 version = "0.0.1"
 dependencies = [
  "fs-casebook",
+ "fsci-special",
 ]
 
 [[package]]
@@ -2223,6 +2225,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fsci-integrate"
+version = "0.1.0"
+dependencies = [
+ "fsci-opt",
+ "fsci-runtime",
+ "nalgebra",
+]
+
+[[package]]
 name = "fsci-linalg"
 version = "0.1.0"
 dependencies = [
@@ -2260,6 +2271,15 @@ dependencies = [
  "fsci-runtime",
  "nalgebra",
  "thiserror",
+]
+
+[[package]]
+name = "fsci-special"
+version = "0.1.0"
+dependencies = [
+ "fsci-integrate",
+ "fsci-linalg",
+ "fsci-runtime",
 ]
 
 [[package]]
