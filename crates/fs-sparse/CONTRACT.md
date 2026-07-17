@@ -4,12 +4,16 @@
 Sparse matrix formats (CSR, BSR, SELL-C-σ), deterministic COO assembly,
 SpMV/SpMM kernels, and pattern algebra (transpose, symmetrize, Gustavson
 SpGEMM — the building block of AMG's Galerkin triple product). Layer:
-**L1 BEDROCK**. Zero dependencies (pure std arithmetic). Plan §6.2.
+**L1 BEDROCK**. The default numeric core uses only `std`; the off-by-default
+`fnx-interop` and `fnp-interop` features add the documented FrankenNetworkx and
+FrankenNumpy path dependencies. Plan §6.2.
 
-v1 is the correctness core on scalar kernels. The roofline lane (≥85% of
-measured STREAM, per-CCD sharding, prefetch autotuning, fs-tilelang SIMD
-bodies, FrankenNetworkx graph interop) is the recorded follow-up bead,
-gated on fs-tilelang and the autotuner — see No-claim boundaries.
+v1 includes the scalar correctness core plus compact-index CSR, deterministic
+sharded CSR/SELL SpMV, tiled parallel COO assembly, blocked SpMM, sparse-SPA
+SpGEMM, and a runtime-dispatched x86 AVX2+FMA code-generation capsule. The
+ignored release-only roofline harness reports attainment against measured
+STREAM and enforces its 85% gate only when `FS_SPARSE_ROOFLINE_GATE=1`;
+results are machine-specific, not a universal throughput guarantee.
 
 ## Public types and semantics
 - `Coo` — triplet staging; duplicates ACCUMULATE (FEM element-assembly
@@ -113,13 +117,20 @@ applies. NO platform libm feeds any solver state (workspace contract
 rule).
 
 ## Cancellation behavior
-v1 numeric kernels are single-tile and uninterruptible; the executor-tiled
-parallel lanes (follow-up bead) will poll at row-range boundaries per Decalogue
-P7. CSR construction can validate with a caller-supplied checkpoint at every
-row and stored column.
+The serial and `std`-threaded numeric kernels do not accept an asupersync `Cx`
+and are uninterruptible once called. Scoped parallel lanes join/drain their
+workers before returning. After top-level shape checks,
+`Csr::try_from_parts_with_checkpoint` invokes a caller checkpoint once per row
+and once per visited stored column. No bounded-latency cancellation claim is
+made for SpMV, SpMM, SpGEMM, parallel assembly, or preconditioners.
 
 ## Unsafe boundary
-None. `unsafe_code` denied; no capsules.
+One registered capsule exists at `src/fma/mod.rs`, with its calling invariants
+recorded in `src/fma/SAFETY.md` and `unsafe-capsules.json`. On x86-64, safe
+dispatchers verify AVX2+FMA support before calling private `#[target_feature]`
+functions; the unsafe scope is the target-feature calling contract, while the
+kernel bodies remain safe slice arithmetic. Workspace-level `unsafe_code =
+"deny"` remains in force outside that module-local capsule.
 
 ## Feature flags
 - `fnx-interop` (default OFF) — pulls the optional `fnx-classes` + `fnx-runtime`
@@ -145,6 +156,16 @@ to 64 integer COO triplets, including duplicates and stored zeros, are applied
 to an integer vector through CSR, BSR 4×4, and SELL-C-σ `(8, 32)` and compared
 bitwise. The fixed cross-ISA golden `0xbcf5_52b6_c5bf_aed6` is unchanged.
 
+Bead 6ys.18.7 adds the cheap structured PR subset through `fs-casebook`: an
+exact out-of-order COO assembly KAT with duplicate chains, exact CSR/BSR/SELL
+SpMV agreement against an independent literal result, checkpointed canonical
+publication plus typed and malformed-input refusals, pinned input digests, and
+a disclosed one-bit seeded corruption proving structured failure reporting and
+merge-gate refusal. It preserves the aggregate golden and the broader
+property, WSBF, preconditioner, release-performance, and cross-ISA lanes as
+separate evidence; this subset awards no fresh oracle, performance, nightly,
+or dual-ISA claim.
+
 ## FrankenNumpy interop (bead gtql item c, feature `fnp-interop`)
 
 Scout verdict recorded: fnp-ndarray holds only layout metadata; the
@@ -160,8 +181,12 @@ REFUSES non-finite entries with their position (fail closed). Off by
 default; the L1 core pulls no constellation crate unless opted in.
 
 ## No-claim boundaries
-- **No performance claims yet**: scalar reference kernels; the ≥85% STREAM
-  target, CCD sharding, prefetch, and SIMD belong to the perf follow-up.
+- **Performance scope**: `tests/roofline.rs` reports machine-specific STREAM
+  attainment and asserts the ≥85% all-core gate only under
+  `FS_SPARSE_ROOFLINE_GATE=1`; no every-host throughput guarantee is made.
+  Software-prefetch/autotuner integration and fs-tilelang-generated bodies are
+  not present. The shipped x86 acceleration is runtime AVX2+FMA codegen for the
+  existing fixed-order bodies.
 - BSR `to_csr` is only structurally lossless for matrices without stored
   exact-zero values (fill is dropped by value test); the dense expansion is
   always bitwise faithful.
@@ -173,11 +198,12 @@ default; the L1 core pulls no constellation crate unless opted in.
   Cholesky deferred per its own scope cap. AMG coarsest solve is
   ILU-PCG (dense direct coarse solve joins solver-stack integration).
   No 1e8-DOF scaling claims yet (release-mode scaling lane).
-- **Interop scope (bead gtql)**: the `fnx-interop` feature ships the
-  FrankenNetworkx `GraphSnapshot` bridge (round-trip tested). FrankenNumpy
-  array views (item c) are a scoped follow-up — the owned f64 array lives in
-  `fnp-ufunc::UFuncArray`, which transitively pulls `rayon` + `fnp-linalg`, a
-  heavy dependency for an L1 numeric core; the borrow-vs-convert decision and a
-  separate `fnp-interop` feature are deferred until a consumer needs it.
-- No FrankenNumpy/FrankenNetworkx interop views yet (follow-up).
-- Indices are `usize` (compact u32 indices are a recorded perf-bead item).
+- **Interop scope**: `fnx-interop` copies between square CSR adjacency and the
+  owned `GraphSnapshot`; `fnp-interop` converts between CSR and the owned dense
+  `UFuncArray`, requiring O(nrows·ncols) memory when densifying and losing the
+  distinction between explicit and unstored ±0.0. `Csr::row` remains the
+  borrowed sparse neighbor/value view; no zero-copy FrankenNetworkx or
+  FrankenNumpy view type is claimed.
+- Canonical `Csr`, `Bsr`, and `Sell` use `usize` indices. `CsrCompact` narrows
+  column indices to `u32` and refuses dimensions outside that space; compact
+  BSR/SELL indices are not claimed.

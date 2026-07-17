@@ -5,6 +5,7 @@
 //! aarch64-apple and required to match on x86-64 (the same evidence
 //! discipline as fs-math/fs-fft).
 
+use fs_casebook::{CASEBOOK_RECORD_VERSION, CaseOutcome, Suite, ToleranceSpec, fnv1a64};
 use fs_propcheck::Shrink;
 use fs_sparse::{Bsr, Coo, Csr, Sell, ops};
 
@@ -422,4 +423,479 @@ fn wsbf_sparse_spa_spgemm() {
     println!(
         "{{\"suite\":\"fs-sparse\",\"case\":\"wsbf-sparse-spa\",\"verdict\":\"pass\",\"detail\":\"BTree-SPA SpGEMM bitwise == dense-SPA on random and 2e6-column-wide products\"}}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Cheap structured BEDROCK Casebook subset (bead 6ys.18.7)
+// ---------------------------------------------------------------------------
+
+const CASEBOOK_SUITE: &str = "fs-sparse/bedrock-conformance-v1";
+const CASEBOOK_NROWS: usize = 4;
+const CASEBOOK_NCOLS: usize = 4;
+const CASEBOOK_ROW_PTR: [usize; 5] = [0, 2, 4, 6, 8];
+const CASEBOOK_COLUMNS: [usize; 8] = [0, 2, 1, 3, 0, 2, 1, 3];
+const CASEBOOK_VALUES: [f64; 8] = [2.0, -2.0, 3.0, 0.5, -1.0, 3.0, 2.0, -0.25];
+const CASEBOOK_X: [f64; 4] = [1.0, 2.0, -1.0, 4.0];
+const CASEBOOK_Y: [f64; 4] = [4.0, 8.0, -4.0, 3.0];
+const CASEBOOK_TRIPLETS: [(usize, usize, f64); 10] = [
+    (3, 3, -0.25),
+    (0, 2, -1.25),
+    (1, 1, 3.0),
+    (2, 2, 1.0),
+    (0, 0, 2.0),
+    (3, 1, 2.0),
+    (1, 3, 0.5),
+    (0, 2, -0.75),
+    (2, 0, -1.0),
+    (2, 2, 2.0),
+];
+const CASEBOOK_SUCCESS_POLLS: usize = CASEBOOK_NROWS + CASEBOOK_VALUES.len();
+const CASEBOOK_REFUSAL_POLL: usize = 5;
+const CASEBOOK_MALFORMED_POLLS: usize = 3;
+
+fn casebook_push_u64(bytes: &mut Vec<u8>, value: u64) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn casebook_push_len(bytes: &mut Vec<u8>, value: usize) {
+    casebook_push_u64(
+        bytes,
+        u64::try_from(value).expect("conformance fixture lengths fit u64"),
+    );
+}
+
+fn casebook_push_text(bytes: &mut Vec<u8>, value: &str) {
+    casebook_push_len(bytes, value.len());
+    bytes.extend_from_slice(value.as_bytes());
+}
+
+fn casebook_push_usizes(bytes: &mut Vec<u8>, values: &[usize]) {
+    casebook_push_len(bytes, values.len());
+    for &value in values {
+        casebook_push_len(bytes, value);
+    }
+}
+
+fn casebook_push_f64s(bytes: &mut Vec<u8>, values: &[f64]) {
+    casebook_push_len(bytes, values.len());
+    for value in values {
+        casebook_push_u64(bytes, value.to_bits());
+    }
+}
+
+fn casebook_push_u64s(bytes: &mut Vec<u8>, values: &[u64]) {
+    casebook_push_len(bytes, values.len());
+    for &value in values {
+        casebook_push_u64(bytes, value);
+    }
+}
+
+fn casebook_push_nested(bytes: &mut Vec<u8>, label: &str, frame: &[u8]) {
+    casebook_push_text(bytes, label);
+    casebook_push_len(bytes, frame.len());
+    bytes.extend_from_slice(frame);
+}
+
+fn casebook_fixture() -> Csr {
+    let mut coo = Coo::new(CASEBOOK_NROWS, CASEBOOK_NCOLS);
+    for &(row, column, value) in &CASEBOOK_TRIPLETS {
+        coo.push(row, column, value);
+    }
+    coo.assemble()
+}
+
+fn casebook_assembly_inputs() -> Vec<u8> {
+    let mut bytes = b"fs-sparse:coo-canonical-assembly-kat:v1".to_vec();
+    casebook_push_text(&mut bytes, "Coo::push+assemble");
+    casebook_push_text(
+        &mut bytes,
+        "stable-sort(row,column);duplicate-sum=insertion-order:v1",
+    );
+    casebook_push_len(&mut bytes, CASEBOOK_NROWS);
+    casebook_push_len(&mut bytes, CASEBOOK_NCOLS);
+    casebook_push_len(&mut bytes, CASEBOOK_TRIPLETS.len());
+    for &(row, column, value) in &CASEBOOK_TRIPLETS {
+        casebook_push_len(&mut bytes, row);
+        casebook_push_len(&mut bytes, column);
+        casebook_push_u64(&mut bytes, value.to_bits());
+    }
+    casebook_push_text(&mut bytes, "expected-row-pointers");
+    casebook_push_usizes(&mut bytes, &CASEBOOK_ROW_PTR);
+    casebook_push_text(&mut bytes, "expected-column-indices");
+    casebook_push_usizes(&mut bytes, &CASEBOOK_COLUMNS);
+    casebook_push_text(&mut bytes, "expected-value-bits");
+    casebook_push_f64s(&mut bytes, &CASEBOOK_VALUES);
+    bytes
+}
+
+fn casebook_spmv_inputs() -> Vec<u8> {
+    let assembly = casebook_assembly_inputs();
+    let mut bytes = b"fs-sparse:cross-format-spmv-kat:v1".to_vec();
+    casebook_push_text(&mut bytes, "Csr::spmv+Bsr::spmv+Sell::spmv");
+    casebook_push_text(
+        &mut bytes,
+        "ascending-global-column fused-mul-add from positive-zero:v1",
+    );
+    casebook_push_nested(&mut bytes, "nested-canonical-assembly-frame", &assembly);
+    casebook_push_text(&mut bytes, "x");
+    casebook_push_f64s(&mut bytes, &CASEBOOK_X);
+    casebook_push_text(&mut bytes, "expected-y");
+    casebook_push_f64s(&mut bytes, &CASEBOOK_Y);
+    casebook_push_text(&mut bytes, "bsr-block-shape");
+    casebook_push_usizes(&mut bytes, &[2, 2]);
+    casebook_push_text(&mut bytes, "sell-c-sigma");
+    casebook_push_usizes(&mut bytes, &[2, 4]);
+    bytes
+}
+
+fn casebook_checkpoint_inputs() -> Vec<u8> {
+    let assembly = casebook_assembly_inputs();
+    let mut bytes = b"fs-sparse:checkpoint-publication-refusal-policy:v1".to_vec();
+    casebook_push_text(&mut bytes, "Csr::try_from_parts_with_checkpoint");
+    casebook_push_nested(&mut bytes, "nested-canonical-assembly-frame", &assembly);
+    casebook_push_text(&mut bytes, "canonical-row-pointers");
+    casebook_push_usizes(&mut bytes, &CASEBOOK_ROW_PTR);
+    casebook_push_text(&mut bytes, "canonical-column-indices");
+    casebook_push_usizes(&mut bytes, &CASEBOOK_COLUMNS);
+    casebook_push_text(&mut bytes, "canonical-values");
+    casebook_push_f64s(&mut bytes, &CASEBOOK_VALUES);
+    casebook_push_text(&mut bytes, "expected-success-polls");
+    casebook_push_len(&mut bytes, CASEBOOK_SUCCESS_POLLS);
+    casebook_push_text(&mut bytes, "typed-refusal-poll");
+    casebook_push_len(&mut bytes, CASEBOOK_REFUSAL_POLL);
+    casebook_push_text(&mut bytes, "CheckpointStop::RefusedAt(5)");
+    casebook_push_text(&mut bytes, "malformed-shape");
+    casebook_push_usizes(&mut bytes, &[1, 4]);
+    casebook_push_text(&mut bytes, "malformed-row-pointers");
+    casebook_push_usizes(&mut bytes, &[0, 2]);
+    casebook_push_text(&mut bytes, "malformed-duplicate-columns");
+    casebook_push_usizes(&mut bytes, &[0, 0]);
+    casebook_push_text(&mut bytes, "malformed-values");
+    casebook_push_f64s(&mut bytes, &[1.0, 2.0]);
+    casebook_push_text(&mut bytes, "expected-malformed-polls");
+    casebook_push_len(&mut bytes, CASEBOOK_MALFORMED_POLLS);
+    bytes
+}
+
+fn casebook_matrix_mismatch(matrix: &Csr) -> Option<String> {
+    let mut row_ptr = Vec::with_capacity(matrix.nrows() + 1);
+    let mut columns = Vec::with_capacity(matrix.nnz());
+    let mut value_bits = Vec::with_capacity(matrix.nnz());
+    row_ptr.push(0);
+    for row in 0..matrix.nrows() {
+        let (row_columns, row_values) = matrix.row(row);
+        columns.extend_from_slice(row_columns);
+        value_bits.extend(row_values.iter().map(|value| value.to_bits()));
+        row_ptr.push(columns.len());
+    }
+    let reference_bits = CASEBOOK_VALUES.map(f64::to_bits);
+    if matrix.nrows() == CASEBOOK_NROWS
+        && matrix.ncols() == CASEBOOK_NCOLS
+        && row_ptr.as_slice() == CASEBOOK_ROW_PTR.as_slice()
+        && columns.as_slice() == CASEBOOK_COLUMNS.as_slice()
+        && value_bits.as_slice() == reference_bits.as_slice()
+    {
+        None
+    } else {
+        Some(format!(
+            "computed_shape={}x{}; reference_shape={}x{}; computed_row_ptr={row_ptr:?}; reference_row_ptr={CASEBOOK_ROW_PTR:?}; computed_columns={columns:?}; reference_columns={CASEBOOK_COLUMNS:?}; computed_value_bits={value_bits:016x?}; reference_value_bits={reference_bits:016x?}",
+            matrix.nrows(),
+            matrix.ncols(),
+            CASEBOOK_NROWS,
+            CASEBOOK_NCOLS,
+        ))
+    }
+}
+
+fn casebook_assembly_outcome() -> CaseOutcome {
+    let matrix = casebook_fixture();
+    if let Some(mismatch) = casebook_matrix_mismatch(&matrix) {
+        return CaseOutcome::fail(format!(
+            "operation=Coo::assemble; staged_triplets={}; convention=stable-sort(row,column)+insertion-order-duplicate-sum; {mismatch}",
+            CASEBOOK_TRIPLETS.len(),
+        ))
+        .with_evidence("crates/fs-sparse/CONTRACT.md#public-types-and-semantics")
+        .with_evidence("crates/fs-sparse/CONTRACT.md#invariants");
+    }
+
+    CaseOutcome::pass(
+        "shape=4x4; staged=10; canonical_row_ptr=[0,2,4,6,8]; canonical_cols=[0,2,1,3,0,2,1,3]; duplicate_sums={(0,2):-2,(2,2):3}; value_bits=exact",
+    )
+    .with_evidence("crates/fs-sparse/CONTRACT.md#public-types-and-semantics")
+    .with_evidence("crates/fs-sparse/CONTRACT.md#invariants")
+}
+
+fn casebook_spmv_bits() -> [[u64; 4]; 3] {
+    let csr = casebook_fixture();
+    let bsr = Bsr::from_csr(&csr, 2, 2);
+    let sell = Sell::from_csr(&csr, 2, 4);
+    let mut csr_y = [0.0; 4];
+    let mut bsr_y = [0.0; 4];
+    let mut sell_y = [0.0; 4];
+    csr.spmv(&CASEBOOK_X, &mut csr_y);
+    bsr.spmv(&CASEBOOK_X, &mut bsr_y);
+    sell.spmv(&CASEBOOK_X, &mut sell_y);
+    [
+        csr_y.map(f64::to_bits),
+        bsr_y.map(f64::to_bits),
+        sell_y.map(f64::to_bits),
+    ]
+}
+
+fn casebook_spmv_outcome() -> CaseOutcome {
+    let computed = casebook_spmv_bits();
+    let reference = CASEBOOK_Y.map(f64::to_bits);
+    for (format_index, format) in ["csr", "bsr-2x2", "sell-2x4"].into_iter().enumerate() {
+        for (component, (&computed_bits, &reference_bits)) in
+            computed[format_index].iter().zip(&reference).enumerate()
+        {
+            if computed_bits != reference_bits {
+                return CaseOutcome::fail(format!(
+                    "operation=SpMV; format={format}; shape=4x4; x=[1,2,-1,4]; component={component}; computed_bits=0x{computed_bits:016x}; reference_bits=0x{reference_bits:016x}; computed_all={:016x?}; reference_all={reference:016x?}",
+                    computed[format_index],
+                ))
+                .with_evidence("crates/fs-sparse/CONTRACT.md#invariants");
+            }
+        }
+    }
+
+    CaseOutcome::pass(
+        "x=[1,2,-1,4]; y=[4,8,-4,3]; csr=exact; bsr2x2=exact; sell2x4=exact; cross_format_bits=identical",
+    )
+    .with_evidence("crates/fs-sparse/CONTRACT.md#invariants")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckpointStop {
+    RefusedAt(usize),
+}
+
+fn casebook_checkpoint_outcome() -> CaseOutcome {
+    let mut success_polls = 0_usize;
+    let published = Csr::try_from_parts_with_checkpoint(
+        CASEBOOK_NROWS,
+        CASEBOOK_NCOLS,
+        CASEBOOK_ROW_PTR.to_vec(),
+        CASEBOOK_COLUMNS.to_vec(),
+        CASEBOOK_VALUES.to_vec(),
+        || {
+            success_polls += 1;
+            Ok::<_, core::convert::Infallible>(())
+        },
+    );
+    let published = match published {
+        Ok(Some(matrix)) => matrix,
+        Ok(None) => {
+            return CaseOutcome::fail(format!(
+                "operation=Csr::try_from_parts_with_checkpoint; canonical_publication=Ok(None); success_polls={success_polls}; expected_polls={CASEBOOK_SUCCESS_POLLS}"
+            ))
+            .with_evidence("crates/fs-sparse/CONTRACT.md#cancellation-behavior");
+        }
+        Err(never) => match never {},
+    };
+    if success_polls != CASEBOOK_SUCCESS_POLLS {
+        return CaseOutcome::fail(format!(
+            "operation=Csr::try_from_parts_with_checkpoint; canonical_publication=Ok(Some); success_polls={success_polls}; expected_polls={CASEBOOK_SUCCESS_POLLS}"
+        ))
+        .with_evidence("crates/fs-sparse/CONTRACT.md#cancellation-behavior");
+    }
+    if let Some(mismatch) = casebook_matrix_mismatch(&published) {
+        return CaseOutcome::fail(format!(
+            "operation=Csr::try_from_parts_with_checkpoint; canonical_publication=Ok(Some); success_polls={success_polls}; {mismatch}"
+        ))
+        .with_evidence("crates/fs-sparse/CONTRACT.md#invariants")
+        .with_evidence("crates/fs-sparse/CONTRACT.md#cancellation-behavior");
+    }
+
+    let mut refusal_polls = 0_usize;
+    let refused = Csr::try_from_parts_with_checkpoint(
+        CASEBOOK_NROWS,
+        CASEBOOK_NCOLS,
+        CASEBOOK_ROW_PTR.to_vec(),
+        CASEBOOK_COLUMNS.to_vec(),
+        CASEBOOK_VALUES.to_vec(),
+        || {
+            refusal_polls += 1;
+            if refusal_polls == CASEBOOK_REFUSAL_POLL {
+                Err(CheckpointStop::RefusedAt(refusal_polls))
+            } else {
+                Ok(())
+            }
+        },
+    );
+    let refusal_matches = match &refused {
+        Err(CheckpointStop::RefusedAt(poll)) => *poll == CASEBOOK_REFUSAL_POLL,
+        _ => false,
+    };
+    if !refusal_matches || refusal_polls != CASEBOOK_REFUSAL_POLL {
+        return CaseOutcome::fail(format!(
+            "operation=Csr::try_from_parts_with_checkpoint; refusal_result={refused:?}; refusal_polls={refusal_polls}; expected_result=Err(CheckpointStop::RefusedAt({CASEBOOK_REFUSAL_POLL})); expected_refusal_polls={CASEBOOK_REFUSAL_POLL}"
+        ))
+        .with_evidence("crates/fs-sparse/CONTRACT.md#cancellation-behavior");
+    }
+
+    let mut malformed_polls = 0_usize;
+    let malformed =
+        Csr::try_from_parts_with_checkpoint(1, 4, vec![0, 2], vec![0, 0], vec![1.0, 2.0], || {
+            malformed_polls += 1;
+            Ok::<_, core::convert::Infallible>(())
+        });
+    let malformed_was_refused = match malformed {
+        Ok(None) => true,
+        Ok(Some(_)) => false,
+        Err(never) => match never {},
+    };
+    if !malformed_was_refused || malformed_polls != CASEBOOK_MALFORMED_POLLS {
+        return CaseOutcome::fail(format!(
+            "operation=Csr::try_from_parts_with_checkpoint; malformed_duplicate_columns_refused={malformed_was_refused}; malformed_polls={malformed_polls}; expected_polls={CASEBOOK_MALFORMED_POLLS}; row_ptr=[0,2]; columns=[0,0]"
+        ))
+        .with_evidence("crates/fs-sparse/CONTRACT.md#error-model")
+        .with_evidence("crates/fs-sparse/CONTRACT.md#cancellation-behavior");
+    }
+
+    CaseOutcome::pass(format!(
+        "canonical_publication=exact; success_polls={success_polls}; typed_refusal=CheckpointStop::RefusedAt({refusal_polls}); partial_matrix_published=false; malformed_duplicate_columns=Ok(None); malformed_polls={malformed_polls}"
+    ))
+    .with_evidence("crates/fs-sparse/CONTRACT.md#error-model")
+    .with_evidence("crates/fs-sparse/CONTRACT.md#cancellation-behavior")
+}
+
+#[test]
+fn bedrock_casebook_suite_emits_replay_complete_green_records() {
+    let assembly_digest = fnv1a64(&casebook_assembly_inputs());
+    let spmv_digest = fnv1a64(&casebook_spmv_inputs());
+    let checkpoint_digest = fnv1a64(&casebook_checkpoint_inputs());
+    assert_eq!(assembly_digest, 0xe765_3922_29f9_9b04);
+    assert_eq!(spmv_digest, 0x6a94_f1fe_0a7f_9980);
+    assert_eq!(checkpoint_digest, 0xf223_b9d9_b841_b887);
+
+    let report = Suite::new(CASEBOOK_SUITE)
+        .case(
+            "coo-canonical-assembly-kat",
+            assembly_digest,
+            ToleranceSpec::Exact,
+            casebook_assembly_outcome,
+        )
+        .case(
+            "cross-format-spmv-kat",
+            spmv_digest,
+            ToleranceSpec::Exact,
+            casebook_spmv_outcome,
+        )
+        .case(
+            "checkpoint-publication-refusal-policy",
+            checkpoint_digest,
+            ToleranceSpec::Structural,
+            casebook_checkpoint_outcome,
+        )
+        .run();
+
+    report.assert_green();
+    assert_eq!(
+        report
+            .records
+            .iter()
+            .map(|record| record.case.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "coo-canonical-assembly-kat",
+            "cross-format-spmv-kat",
+            "checkpoint-publication-refusal-policy",
+        ]
+    );
+    assert_eq!(
+        report.records[0].json_line(),
+        format!(
+            concat!(
+                "{{\"casebook\":{},\"suite\":\"fs-sparse/bedrock-conformance-v1\",",
+                "\"case\":\"coo-canonical-assembly-kat\",\"inputs_digest\":\"e765392229f99b04\",",
+                "\"tolerance\":\"exact\",\"pass\":true,",
+                "\"details\":\"shape=4x4; staged=10; canonical_row_ptr=[0,2,4,6,8]; canonical_cols=[0,2,1,3,0,2,1,3]; duplicate_sums={{(0,2):-2,(2,2):3}}; value_bits=exact\",",
+                "\"evidence\":[\"crates/fs-sparse/CONTRACT.md#public-types-and-semantics\",",
+                "\"crates/fs-sparse/CONTRACT.md#invariants\"]}}"
+            ),
+            CASEBOOK_RECORD_VERSION,
+        ),
+        "the structured sparse-assembly record schema and field order are contract"
+    );
+}
+
+#[test]
+fn disclosed_seeded_corruption_turns_the_casebook_suite_red() {
+    const CORRUPTION_SEED: u64 = 0xF55A_0001;
+    let component = (CORRUPTION_SEED & 0x3) as usize;
+    let bit = CORRUPTION_SEED.trailing_zeros();
+    assert_eq!(component, 1);
+    assert_eq!(bit, 0);
+    let canonical = CASEBOOK_Y.map(f64::to_bits);
+    let mut corrupted = canonical;
+    corrupted[component] ^= 1_u64 << bit;
+
+    let spmv = casebook_spmv_inputs();
+    let mut inputs = b"fs-sparse:seeded-spmv-oracle-corruption:v1".to_vec();
+    casebook_push_u64(&mut inputs, CORRUPTION_SEED);
+    casebook_push_len(&mut inputs, component);
+    casebook_push_u64(&mut inputs, u64::from(bit));
+    casebook_push_nested(&mut inputs, "nested-cross-format-spmv-frame", &spmv);
+    casebook_push_text(&mut inputs, "canonical-y-bits");
+    casebook_push_u64s(&mut inputs, &canonical);
+    casebook_push_text(&mut inputs, "corrupted-y-bits");
+    casebook_push_u64s(&mut inputs, &corrupted);
+    let inputs_digest = fnv1a64(&inputs);
+    assert_eq!(inputs_digest, 0xdf14_5165_9b99_a1e8);
+
+    let report = Suite::new(CASEBOOK_SUITE)
+        .case(
+            "seeded-spmv-oracle-corruption",
+            inputs_digest,
+            ToleranceSpec::Exact,
+            move || {
+                let computed = casebook_spmv_bits()[0];
+                if computed == corrupted {
+                    CaseOutcome::pass("seeded corruption was not detected")
+                } else {
+                    CaseOutcome::fail(format!(
+                        "seed=0x{CORRUPTION_SEED:016x}; operation=Csr::spmv; shape=4x4; x=[1,2,-1,4]; component={component}; bit={bit}; computed={computed:016x?}; canonical={canonical:016x?}; corrupted={corrupted:016x?}"
+                    ))
+                    .with_evidence("crates/fs-sparse/tests/conformance.rs#seeded-corruption")
+                }
+            },
+        )
+        .run();
+
+    assert!(
+        !report.all_passed(),
+        "the deliberately corrupted oracle must turn red"
+    );
+    let failures = report.failures();
+    let [failure] = failures.as_slice() else {
+        panic!("the seeded corruption must produce exactly one structured failure");
+    };
+    assert_eq!(failure.case, "seeded-spmv-oracle-corruption");
+    assert_eq!(failure.inputs_digest, "df1451659b99a1e8");
+    assert!(
+        failure
+            .details
+            .contains(&format!("seed=0x{CORRUPTION_SEED:016x}"))
+    );
+    assert!(failure.details.contains(&format!("component={component}")));
+    assert!(failure.details.contains(&format!("bit={bit}")));
+    assert!(failure.details.contains("computed=["));
+    assert!(failure.details.contains("canonical=["));
+    assert!(failure.details.contains("corrupted=["));
+    assert!(
+        failure
+            .json_line()
+            .contains("\"tolerance\":\"exact\",\"pass\":false")
+    );
+
+    let panic = std::panic::catch_unwind(|| report.assert_green())
+        .expect_err("the merge-gate assertion must reject the seeded failure");
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .expect("casebook panic carries text");
+    assert!(message.contains("seeded-spmv-oracle-corruption"));
+    assert!(message.contains(&format!("seed=0x{CORRUPTION_SEED:016x}")));
 }
