@@ -1360,6 +1360,7 @@ name = "fs-lbm"
 version = "0.0.1"
 dependencies = [
  "fs-evidence",
+ "fs-exec",
  "fs-fft",
  "fs-matdb",
  "fs-math",
@@ -3964,6 +3965,7 @@ dependencies = [
  "fs-blake3",
  "fs-evidence",
  "fs-matdb",
+ "fs-obs",
  "fs-qty",
 ]
 

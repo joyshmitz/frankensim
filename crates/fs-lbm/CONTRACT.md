@@ -127,6 +127,36 @@ dimension checks. Pure, deterministic (fixed tile/cell/link order).
   estimated). Panics on non-positive Reynolds / length.
 - `poiseuille_analytic(gx, viscosity, ny, y)` — the analytic reference profile.
 
+### Sparse active-tile infrastructure (`d3q19::sparse`, bead sjro)
+
+- `morton3(tx, ty, tz)` / `demorton3(key)` — 3×21-bit Morton (Z-order) tile
+  keys; `morton3` panics past the 21-bit range (a compile-shape bound, not a
+  runtime input).
+- `SparseGrid3::new(nx, ny, nz, tau, force)` — an EMPTY sparse D3Q19 grid
+  over a domain of positive 4-multiples; state exists only for active tiles.
+  `activate_tiles(&[(tx,ty,tz)])` is idempotent, atomic (refuses whole-batch
+  on any out-of-domain tile), preserves existing tile state bit-exactly, and
+  re-sorts the active list into ascending Morton order — iteration, sweep,
+  and reduction order depend only on the active SET, never on activation
+  history.
+- `step_serial()` / `step_pooled(&runner, &gate)` — one sweep step as two
+  passes (collide from the shared per-cell `collide_cell3` kernel, then
+  pull-stream) with a buffer swap between. A link whose source lies in an
+  inactive tile or outside the domain bounces back (inactive space is solid
+  wall in this increment). `step_pooled` runs both passes through any
+  `fs_exec::KernelRunner` and is bitwise-identical to `step_serial` for
+  every worker count: kernel tiles own disjoint Morton-contiguous slot
+  groups sized by a worker-count-independent constant, and all inputs are
+  read-only within a pass.
+- `perturb(seed, amplitude)` — splitmix64 hash-seeded density perturbation
+  (the hash IS the seed schedule); `state_bits()` — canonical-order exact
+  bits for golden hashing; `total_mass()`, `cell_macros(slot, lane)`,
+  `active_tiles()`, `allocated_state_bytes()` (exactly proportional to the
+  active set), `state_bytes_per_tile()`.
+- `SparseError3` — typed refusals: `Dims`, `TileOutOfDomain`, `Collision`
+  (Morton key + lane + the underlying `CollisionError3`), `Cancelled`
+  (pre-step state intact; re-issue is deterministic), `Pool`.
+
 ## Invariants
 
 - The equilibrium recovers its density + momentum moments exactly.
@@ -339,8 +369,11 @@ destinations, so schedule changes cannot create arithmetic reassociation.
 
 ## Cancellation behavior
 
-None here (a step is synchronous); polling at tile boundaries under `Cx` is the
-production kernel's concern.
+Dense-grid steps are synchronous (no polling). `SparseGrid3::step_pooled`
+polls `Cx::checkpoint` once per kernel tile: a tripped gate drains the pass,
+surfaces `SparseError3::Cancelled`, leaves the pre-step state intact (state
+commits only at the end of a completed step), and a re-issued step is
+bitwise-identical to an uncancelled one.
 
 ## Unsafe boundary
 
@@ -461,9 +494,16 @@ redistributed.
 - D3Q19 grids remain BGK + Guo on a dense set of aligned SoA tiles. The
   selectable central-moment and `ReducedCumulant` cell operators are
   deterministic `O(Q^3)` correctness references: they are unforced and have no
-  performance or high-Re stability claim. D3Q27, sparse active-tile
-  storage/sweeps, a production cumulant collision, normalized drag/lift
-  histories, and bandwidth roofline / fs-tilelang kernels remain staged. The
+  performance or high-Re stability claim. D3Q27, a production cumulant
+  collision, normalized drag/lift histories, and bandwidth roofline /
+  fs-tilelang kernels remain staged. The sparse active-tile layer
+  (`d3q19::sparse`) claims determinism and active-set memory proportionality
+  only — NOT throughput (the GLUP/s perf lane is bead 712t): its collision is
+  the scalar per-cell kernel, occupancy is whole-tile (per-cell masks and the
+  free-surface activation/deactivation rules are WS1-E's increment), tile
+  size is pinned at 4³ (the 4³→8³ autotune sweep is follow-on work through
+  the fs-exec tune path), and no sparse golden is frozen yet (the
+  four-quadrant ceremony lands with the worker-sweep golden increment). The
   raw D2Q9 stationary-wall momentum receipt is not a normalized aerodynamic
   coefficient. Geier
   et al.'s primary derivation (doi:10.1016/j.camwa.2015.05.001) explicitly
