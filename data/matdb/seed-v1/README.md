@@ -557,6 +557,44 @@ N0602-001 reference:
 - <https://ntrs.nasa.gov/citations/20080003822>
 - <https://ntrs.nasa.gov/api/citations/20080003822/downloads/20080003822.pdf>
 
+## NGYC N42 sintered NdFeB magnet tranche
+
+`ngyc-n42-sintered-nickel-coated/` retains the N42 sintered NdFeB magnets
+identified by Telfah et al. for their multilayer Halbach array. The source pins
+the supplier to Ningbo Permanent Magnetic Materials Ltd. (NGYC), Yinxian,
+Ningbo; a nickel coating; and cube side lengths of `20`, `10`, `6`, and `3 mm`
+with `+/-0.05 mm` dimensional tolerance. It does not provide a production lot,
+chemistry, sintering schedule, coating stack or thickness, or allocation of
+each reported magnetic value to a particular cube size.
+
+The article reports remanence `1350 mT`, coercivity `923 kA/m`, and maximum
+energy product in two mutually inconsistent forms: `318.3 kJ/m^3` and
+`42 MGOe`. Exact unit normalization with `1 G = 1e-4 T` and
+`1 Oe = 1000/(4*pi) A/m` maps `42 MGOe` to
+`334.2253804929802 kJ/m^3`, not `318.3 kJ/m^3`. The pack therefore retains
+the printed SI value and normalized CGS value as separate claims with separate
+observations. It does not average them, silently correct either representation,
+or reinterpret the discrepancy as uncertainty.
+
+The source does not say whether the three values were measured by the authors
+or copied from supplier nominal data, and it gives no magnetic test method or
+test temperature. Every claim therefore carries `Unstated` uncertainty plus
+fail-closed `source_magnetic_test_temperature_known = 0` and
+`source_magnetic_test_method_known = 0` axes. No intrinsic coercivity, recoil
+permeability, demagnetization curve, temperature coefficient, irreversible
+loss boundary, or maximum operating temperature is admitted. Those omissions
+mean this is a supplier-pinned temperature-state-unknown seed tranche, not the
+temperature-dependent N42 design card still required by bead `1sxe`.
+
+The article is distributed under CC-BY-4.0; the manifest retains its authors,
+title, DOI, and license identifier.
+
+NGYC N42 reference:
+
+- <https://doi.org/10.1038/s41598-023-47689-2>
+- <https://www.nature.com/articles/s41598-023-47689-2>
+- <https://creativecommons.org/licenses/by/4.0/>
+
 To compile the sources into canonical runtime packs:
 
 ```bash
@@ -623,6 +661,10 @@ cargo run -p xtask -- matdb-pack \
 cargo run -p xtask -- matdb-pack \
   --manifest data/matdb/seed-v1/n0602-001-nitrile-jp8-compatibility/manifest.tsv \
   --out /path/to/n0602-001-nitrile-o-ring-jp8-compatibility.fsmatpk
+
+cargo run -p xtask -- matdb-pack \
+  --manifest data/matdb/seed-v1/ngyc-n42-sintered-nickel-coated/manifest.tsv \
+  --out /path/to/ngyc-n42-sintered-ndfeb-nickel-coated-cubes.fsmatpk
 ```
 
 ## No-claim boundary
@@ -765,3 +807,13 @@ source's exact O-ring code and JP-8/FT test matrix. Missing exposure conditions
 must be acknowledged. The two printed swelling slopes remain conflicts, the
 approximate prediction-interval overlap is not promoted to an exact claim, and
 the regression intercept does not certify shrinkage in a particular fuel.
+
+The NGYC N42 tranche is not a generic N42 allowable, full magnet identity,
+demagnetization model, recoil law, thermal derating curve, irreversible-loss
+boundary, or service-temperature qualification. It binds only the supplier,
+sintered grade, nickel coating, cube family, and four conflict-preserving claims
+reported in the CC-BY-4.0 article. The source omits the property test method and
+temperature, production lot, chemistry, exact process, intrinsic coercivity,
+recoil permeability, temperature coefficients, and second-quadrant curves.
+The `318.3 kJ/m^3` and `42 MGOe` energy-product representations remain separate;
+neither authorizes selecting a resolved value for motor design.

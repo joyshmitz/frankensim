@@ -312,7 +312,9 @@ compiles each committed bulk tranche twice and verifies exact identity,
 condition flags, source/license linkage, no-claim exclusions, and bounded
 comparison evidence, including NASA-CR-115153's inhibited water/ethylene-glycol
 coolant specification and the conflict-preserving N0602-001 nitrile O-ring
-compatibility tranche.
+compatibility tranche. The NGYC N42 battery additionally pins supplier, sintered
+grade, and coating identity while proving that incompatible SI/CGS energy-product
+prints survive as distinct claims.
 
 ## No-claim boundaries
 
@@ -350,8 +352,7 @@ compatibility tranche.
   bound oil-separation fraction. The named Pennzane SHF X-2000 bearing-oil pack
   adds three exact-temperature kinematic-viscosity values, one viscosity-index
   scale reading, flash and pour points, and one exact-temperature density. The
-  first
-  pinned gray-iron tranche adds nine reported composition/carbon-equivalent
+  first pinned gray-iron tranche adds nine reported composition/carbon-equivalent
   values, four quantified microstructure fields, and two low-precision
   graph-digitized room-state properties. The NASA-CR-115153 coolant tranche
   adds six formulation-bound endpoints, one source-condition-unspecified
@@ -360,6 +361,9 @@ compatibility tranche.
   tranche adds one TGA semi-volatile claim, two aromatic-content-keyed
   absorbed-fuel claims, three partitioning statistics, two conflicting printed
   swell slopes, one regression intercept, and one coefficient of determination.
+  The first supplier-pinned N42 tranche adds one remanence, one coercivity, and
+  two conflict-preserving maximum-energy-product claims for NGYC sintered,
+  nickel-coated cubes.
   The gas associations do not define air or exhaust mixture compositions,
   humidity, or combustion completeness. The Aluminum claims do not define a
   continuous constitutive curve or a general-purpose design card; their NIST
@@ -432,9 +436,16 @@ compatibility tranche.
   (`0.451` and `0.463`) coexist without fusion; the approximate prediction-
   interval overlap remains observation-only, and the regression intercept is
   not a certified shrinkage value. No generic seal, ozone/aging, permeability,
-  compression-set, compatibility, or service-life authority follows. Bead 1sxe
-  still owns the remaining curated material/property and interface-system
-  dataset.
+  compression-set, compatibility, or service-life authority follows. The NGYC
+  N42 claims bind the supplier-named sintered grade and nickel-coated
+  cube family from one CC-BY-4.0 article. The source does not say whether the
+  values were measured or supplier-nominal and omits test temperature, method,
+  lot, chemistry, detailed process, intrinsic coercivity, recoil permeability,
+  demagnetization curves, and temperature coefficients. Its printed
+  `318.3 kJ/m^3` and `42 MGOe` maximum-energy-product representations normalize
+  to different SI values and therefore remain separate claims; neither is a
+  resolved design allowable. Bead 1sxe still owns the temperature-dependent N42
+  card and the remaining curated material/property and interface-system dataset.
   No equilibrium computation happens here (fs-thermochem consumes phase data;
   this crate only stores it).
 - The L1 pack codec does not parse handbooks, CSV, NASA tables, license text,

@@ -34,6 +34,8 @@ const NASA_CR_115153_WATER_ETHYLENE_GLYCOL_SEED_MANIFEST: &str =
     "data/matdb/seed-v1/nasa-cr-115153-water-ethylene-glycol/manifest.tsv";
 const N0602_001_NITRILE_JP8_SEED_MANIFEST: &str =
     "data/matdb/seed-v1/n0602-001-nitrile-jp8-compatibility/manifest.tsv";
+const NGYC_N42_SINTERED_NICKEL_COATED_SEED_MANIFEST: &str =
+    "data/matdb/seed-v1/ngyc-n42-sintered-nickel-coated/manifest.tsv";
 const AISI_4140_RC33_SEED_MANIFEST: &str = "data/matdb/seed-v1/aisi-4140-rc33/manifest.tsv";
 const AISI_1045_COLD_DRAWN_SEED_MANIFEST: &str =
     "data/matdb/seed-v1/aisi-1045-cold-drawn/manifest.tsv";
@@ -1662,6 +1664,173 @@ fn g3_cli_compiles_committed_n0602_001_nitrile_jp8_compatibility_seed() {
             .is_empty(),
         "the source's approximate 57% overlap must remain observation-only"
     );
+
+    let decisions = String::from_utf8(first.stdout).expect("decision stream is UTF-8");
+    assert!(decisions.contains("\"reason_code\":\"uncertainty_policy_admitted\""));
+    assert!(decisions.contains("\"reason_code\":\"runtime_pack_self_verified\""));
+    assert!(
+        decisions
+            .lines()
+            .all(|row| row.contains(&format!("\"pack_hash\":\"{pack_hash}\"")))
+    );
+}
+
+#[test]
+fn g3_cli_compiles_committed_ngyc_n42_sintered_magnet_seed() {
+    let manifest = workspace_path(NGYC_N42_SINTERED_NICKEL_COATED_SEED_MANIFEST);
+    assert!(
+        manifest.is_file(),
+        "committed NGYC N42 magnet seed manifest is missing"
+    );
+    let directory = fixture_dir();
+    let first_path = directory.join("ngyc-n42-first.fsmatpk");
+    let second_path = directory.join("ngyc-n42-second.fsmatpk");
+
+    let first = run_compiler(&manifest, &first_path);
+    let second = run_compiler(&manifest, &second_path);
+    assert!(
+        first.status.success(),
+        "first NGYC N42 seed compilation failed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(
+        second.status.success(),
+        "second NGYC N42 seed compilation failed: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(
+        first.stdout, second.stdout,
+        "NGYC N42 decision stream moved"
+    );
+    assert_decision_compiler(&first, MATERIAL_COMPILER_ID);
+
+    let first_bytes = fs::read(first_path).expect("read first NGYC N42 pack");
+    let second_bytes = fs::read(second_path).expect("read second NGYC N42 pack");
+    assert_eq!(first_bytes, second_bytes, "NGYC N42 pack bytes moved");
+    let decoded = NormalizedPack::from_bytes(&first_bytes).expect("decode NGYC N42 pack");
+    let pack_hash = decoded.content_hash();
+    let decoded = NormalizedPack::from_bytes_verified(pack_hash, &first_bytes)
+        .expect("verify NGYC N42 pack identity");
+
+    assert_eq!(
+        decoded.pack_id(),
+        "ngyc-n42-sintered-ndfeb-nickel-coated-cubes"
+    );
+    assert_eq!(decoded.compiler(), MATERIAL_COMPILER_ID);
+    assert!(decoded.redistribution_terms().contains("Creative Commons"));
+    assert_eq!(decoded.claims().claim_count(), 4);
+    assert!(decoded.joint_statistics().is_empty());
+
+    let remanence = decoded.claims().claims_for("remanent_flux_density");
+    assert_eq!(remanence.len(), 1);
+    let PropertyValue::Scalar { value, dims } = &remanence[0].1.value else {
+        panic!("NGYC N42 remanence was not scalar");
+    };
+    let expected_remanence = 1350.0_f64 * 1.0e-3;
+    assert!((*value - expected_remanence).abs() / expected_remanence <= 2.0e-15);
+    assert_eq!(*dims, Dims([0, 1, -2, 0, -1, 0]));
+
+    let coercivity = decoded.claims().claims_for("coercive_field_strength");
+    assert_eq!(coercivity.len(), 1);
+    let PropertyValue::Scalar { value, dims } = &coercivity[0].1.value else {
+        panic!("NGYC N42 coercivity was not scalar");
+    };
+    assert_eq!(*value, 923.0_f64 * 1.0e3);
+    assert_eq!(*dims, Dims([-1, 0, 0, 0, 1, 0]));
+
+    let energy_products = decoded
+        .claims()
+        .claims_for("maximum_magnetic_energy_product");
+    assert_eq!(energy_products.len(), 2);
+    assert_ne!(
+        energy_products[0].1.observations[0], energy_products[1].1.observations[0],
+        "conflicting printed energy products must retain distinct observations"
+    );
+    let mut energy_values = energy_products
+        .iter()
+        .map(|(_, claim)| match &claim.value {
+            PropertyValue::Scalar { value, dims } => {
+                assert_eq!(*dims, Dims([-1, 1, -2, 0, 0, 0]));
+                *value
+            }
+            PropertyValue::Curve { .. } => panic!("NGYC N42 energy product was not scalar"),
+        })
+        .collect::<Vec<_>>();
+    energy_values.sort_by(f64::total_cmp);
+    let printed_si = 318.3_f64 * 1.0e3;
+    let normalized_42_mgoe = 42.0_f64 * (100_000.0 / (4.0 * std::f64::consts::PI));
+    assert!((energy_values[0] - printed_si).abs() / printed_si <= 2.0e-15);
+    assert!((energy_values[1] - normalized_42_mgoe).abs() / normalized_42_mgoe <= 2.0e-15);
+    assert!(energy_values[1] > energy_values[0]);
+
+    for property in [
+        "remanent_flux_density",
+        "coercive_field_strength",
+        "maximum_magnetic_energy_product",
+    ] {
+        for (_, claim) in decoded.claims().claims_for(property) {
+            assert_eq!(
+                claim
+                    .validity
+                    .bound("source_magnetic_test_temperature_known"),
+                Some((0.0, 0.0))
+            );
+            assert_eq!(
+                claim.validity.bound("source_magnetic_test_method_known"),
+                Some((0.0, 0.0))
+            );
+            assert_eq!(claim.uncertainty, UncertaintyModel::Unstated);
+            assert_eq!(claim.provenance.license, CC_BY_4_0_LICENSE);
+            assert!(
+                claim
+                    .provenance
+                    .source
+                    .contains("10.1038/s41598-023-47689-2")
+            );
+            assert!(claim.provenance.source.contains("[source:primary]"));
+            let observation = decoded
+                .claims()
+                .observation(claim.observations[0])
+                .expect("NGYC N42 observation remains linked");
+            assert_eq!(
+                observation.specimen,
+                "ngyc-yinxian-ningbo-n42-sintered-ndfeb-nickel-coated-cubes-paper-lot-unspecified"
+            );
+        }
+    }
+
+    let si_observation = decoded
+        .claims()
+        .observation(remanence[0].1.observations[0])
+        .expect("NGYC N42 SI observation remains linked");
+    assert!(si_observation.method.contains("Telfah et al. 2023"));
+    assert!(si_observation.caveats.contains("supplier nominal values"));
+    assert!(si_observation.caveats.contains("not SI-equivalent"));
+    let cgs_observation = energy_products
+        .iter()
+        .find_map(|(_, claim)| {
+            let observation = decoded.claims().observation(claim.observations[0])?;
+            observation
+                .method
+                .contains("Exact unit normalization")
+                .then_some(observation)
+        })
+        .expect("NGYC N42 CGS observation remains linked");
+    assert!(cgs_observation.method.contains("1 Oe=1000/(4*pi) A/m"));
+    assert!(cgs_observation.caveats.contains("source conflict"));
+
+    for refused_property in [
+        "intrinsic_coercive_field_strength",
+        "recoil_relative_permeability",
+        "remanence_temperature_coefficient",
+        "coercivity_temperature_coefficient",
+        "demagnetization_curve",
+    ] {
+        assert!(
+            decoded.claims().claims_for(refused_property).is_empty(),
+            "source-absent NGYC N42 property must remain refused: {refused_property}"
+        );
+    }
 
     let decisions = String::from_utf8(first.stdout).expect("decision stream is UTF-8");
     assert!(decisions.contains("\"reason_code\":\"uncertainty_policy_admitted\""));
