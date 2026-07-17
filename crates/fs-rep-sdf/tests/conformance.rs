@@ -1,8 +1,8 @@
 //! fs-rep-sdf conformance suite (CONTRACT.md: any reimplementation must
 //! pass). Fixture reproduction within declared bounds, C¹ seamlessness,
 //! eikonal evidence, the VDB-vs-oracle property battery, narrow-band
-//! drift, and sphere tracing. JSON-line verdicts; seeded cases carry
-//! seeds.
+//! drift, and sphere tracing. Aggregate verdicts use the canonical
+//! fs-obs schema; randomized cases carry their input seed.
 
 use asupersync::types::Budget;
 use fs_evidence::{NumericalCertificate, NumericalKind};
@@ -15,12 +15,27 @@ use fs_rep_sdf::{ADAPTIVE_MAX_NODES, AdaptiveSdf, NarrowBand, SdfBuildError, Til
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-fn verdict(case: &str, pass: bool, detail: &str) {
-    println!(
-        "{{\"suite\":\"fs-rep-sdf/conformance\",\"case\":\"{case}\",\"verdict\":\"{}\",\
-         \"detail\":\"{detail}\"}}",
-        if pass { "pass" } else { "fail" }
+fn verdict(case: &str, pass: bool, detail: &str, seed: u64) {
+    let mut emitter = fs_obs::Emitter::new("fs-rep-sdf/conformance", case);
+    let event = emitter.emit(
+        if pass {
+            fs_obs::Severity::Info
+        } else {
+            fs_obs::Severity::Error
+        },
+        fs_obs::EventKind::ConformanceCase {
+            suite: "fs-rep-sdf/conformance".to_string(),
+            case: case.to_string(),
+            pass,
+            detail: detail.to_string(),
+            seed,
+        },
+        None,
     );
+    fs_obs::lint_failure_record(&event).expect("SDF verdict must be replayable");
+    let line = event.to_jsonl();
+    fs_obs::validate_line(&line).expect("SDF verdict must use the fs-obs wire schema");
+    println!("{line}");
     assert!(pass, "case {case}: {detail}");
 }
 
@@ -349,6 +364,7 @@ fn rsdf_001_fixtures_reproduced_within_declared_bounds() {
             "sphere/box/torus reproduced within the declared enclosure over 12k seeded points \
              (worst error / bound = {worst_ratio:.3}, seed {SEED:#x})"
         ),
+        SEED,
     );
 }
 
@@ -402,6 +418,7 @@ fn rsdf_002_c1_reconstruction_is_seamless_and_gradients_match_fd() {
         seam_ok && grad_ok,
         "triquadratic reconstruction is continuous across tile boundaries with C1 gradients \
          matching central differences (G0)",
+        0,
     );
 }
 
@@ -437,6 +454,7 @@ fn rsdf_003_eikonal_evidence_is_measured_and_ledgered() {
              is nearly a distance field; the deviation is EVIDENCE, not a certificate)",
             stats.mean_abs_dev, stats.max_abs_dev
         ),
+        0x5DF3,
     );
 }
 
@@ -517,6 +535,7 @@ fn rsdf_004_vdb_matches_the_oracle_and_reports_footprint() {
              (seed {SEED:#x}); dilate/erode behave; footprint ledgered: {}",
             stats.to_json()
         ),
+        SEED,
     );
 }
 
@@ -584,6 +603,7 @@ fn rsdf_005_narrow_band_advects_with_bounded_drift_and_reinit_helps() {
              reinit does not worsen the eikonal residual ({dev_before:.4} -> {dev_after:.4}); \
              band stats ledgered"
         ),
+        0,
     );
 }
 
@@ -661,6 +681,7 @@ fn rsdf_006_sphere_tracing_respects_its_own_bounds_and_adaptive_builds() {
             "sphere tracing hits within bound and misses cleanly; adaptive octree residual \
              ledgered: {adaptive_json}"
         ),
+        0x5DF6,
     );
 }
 
@@ -847,6 +868,7 @@ fn rsdf_007_sampling_domains_are_explicit_bounded_and_preflighted() {
         "rsdf-007",
         true,
         "dense, adaptive, and narrow-band samplers reject unresolved extended support, excessive work, invalid samples, nonrepresentable adaptive splits, and overflowing fit residuals; the max-anchored narrow-band lattice stays finite and never overshoots extreme admitted support; paired clipped APIs sample source-intersection-clip and preserve translation equivariance (G3), while dense and adaptive clipped fields retain only finite nominal reconstruction bounds and honest NoClaim abstract-distance authority",
+        0,
     );
 }
 
@@ -989,5 +1011,6 @@ fn rsdf_008_sampled_sdf_preserves_weakest_source_authority() {
         "rsdf-008",
         true,
         "dense and adaptive sampled SDFs compose source certificate radius with nominal reconstruction, preserve their at-best authority, and make NoClaim absorbing for explicit and malformed source certificates inside and outside support",
+        0,
     );
 }

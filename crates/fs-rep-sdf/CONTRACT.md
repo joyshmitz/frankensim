@@ -177,10 +177,12 @@ None. `unsafe_code` denied workspace-wide.
 None. `[S]` solid-tier throughout.
 
 ## Conformance tests
-tests/conformance.rs, cases rsdf-001..rsdf-008 (JSON-line verdicts;
-seeded cases carry seeds) covering invariants 1–8 with fs-obs-validated
-evidence events (eikonal stats, VDB footprint, band stats, adaptive
-residuals).
+tests/conformance.rs, cases rsdf-001..rsdf-008, covering invariants 1–8.
+Each case's aggregate verdict uses the canonical fs-obs `ConformanceCase`
+schema; randomized cases carry their input seed. Eikonal stats, VDB
+footprint, band stats, and adaptive residuals remain separate fs-obs-validated
+evidence events. Assertions that abort before the aggregate verdict remain
+ordinary Rust test diagnostics rather than structured verdict events.
 
 ## No-claim boundaries
 - Eikonal deviation and adaptive residuals are MEASURED statistics
