@@ -2386,7 +2386,7 @@ fn g3_cli_compiles_committed_y30_afcp_application_demagnetization_without_intrin
                 panic!("missing Y30 application result at {source_temperature_c} degC")
             });
         let PropertyValue::Scalar { value, dims } = &claim.value else {
-            panic!("Y30 application demagnetization claim {id} was not scalar");
+            panic!("Y30 application demagnetization claim {id:?} was not scalar");
         };
         assert_eq!(*dims, Dims([0, 0, 0, 0, 0, 0]));
         assert_eq!(*value, expected_fraction);
