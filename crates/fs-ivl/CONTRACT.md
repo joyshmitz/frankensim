@@ -179,6 +179,15 @@ None. `unsafe_code` denied; no capsules.
 None.
 
 ## Conformance tests
+`tests/eft_interval_bridge_casebook.rs`: two fixed-order, replay-complete
+Casebook records exercise the public BEDROCK seams directly. The first pins
+the component bits produced by `fs_math::eft` and `fs_math::dd::Dd` against
+the corresponding `fs_ivl::expansion` sum/product components. The second pins
+`Interval::point` evaluations of exp, ln, and tanh to the deterministic
+`fs_math` result nudged outward by exactly 3, 3, and 5 ULPs. A disclosed
+seeded endpoint-reference corruption must produce one byte-replayable red
+record and make the Casebook merge assertion refuse it.
+
 `tests/conformance.rs`: random-DAG containment battery + golden hash, plus 600
 deterministic fs-propcheck interval-pair cases proving add/multiply pointwise
 containment with shrinking enabled and the fixed cases retained.
@@ -224,6 +233,10 @@ golden-hash case bit-for-bit.
   tail is Vec-based and deliberately unoptimized (cold path).
 - No quad-double (dd suffices for current oracles; recorded on 6ys.12).
 - No SIMD lanes: scalar everywhere v1 (correctness-over-lanes, per plan).
+- The structured EFT/interval bridge is a fixed, cheap G0 seam check. It does
+  not expose fs-la's private residual accumulator, replace the full fs-ivl
+  battery, supply an independent FrankenScipy oracle, or constitute fresh
+  dual-ISA/full-G5 execution evidence.
 - Affine elementary functions (exp/sin on affine forms via Chebyshev
   linearization) are not implemented — interval fallback applies.
 - `Interval::midpoint` of half-infinite intervals returns 0.0 (documented
