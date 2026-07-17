@@ -232,12 +232,22 @@ create a favorable proposition. Evidence producers must:
    retained full verifier and policy receipts;
 6. have that root re-adjudicate both typed identities and their canonical-byte
    observations to mint an opaque `SpectralPromotionWitnessV1`; and
-7. pair that opaque decision with the exact same policy-relative authority to
-   obtain `AdmittedSpectralWitnessV1`.
+7. pair that opaque decision with the exact same policy-relative authority AND
+   the consumer's pinned root charter to obtain `AdmittedSpectralWitnessV1`.
 
 The final pairing refuses any difference in the complete subject receipt,
 anchor, verifier identity, key-policy identity, or fixed spectral promotion
-context. A one-argument conversion from generic `Admitted` no longer exists.
+context, and additionally refuses (`RootCharter`) any witness minted by a
+promotion root whose exact-configuration charter
+(`fs_blake3::identity::PromotionRootCharter`) differs from the charter the
+consumer pins — its own trust statement, typically
+`spectral_promotion_trust_root(...)?.charter()` over independently retained
+receipts. Without the pin, a permit-everything admission paired with a witness
+from a SELF-CONFIGURED root passes every identity axis (both sides carry the
+same rogue identities); the charter closes that hole (bead sj31i.52.9,
+root-provenance closure). Charter provenance is configuration-relative:
+byte-identical root configurations share a charter by design. A one-argument
+conversion from generic `Admitted` no longer exists.
 The retained promotion audit is bounded to verifier/policy namespaces,
 canonical-byte roots and lengths, and the fixed context. Its versioned witness
 encoding binds those fields in addition to the pre-existing subject, anchor,

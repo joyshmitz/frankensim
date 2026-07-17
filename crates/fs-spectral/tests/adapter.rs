@@ -597,7 +597,7 @@ fn admitted_witness(receipt: IdentityReceipt<SpectralPropositionId>) -> Admitted
             ObservedIdentity::from_receipt(authority.policy).bytes(),
         )
         .unwrap();
-    AdmittedSpectralWitnessV1::from_authority(&admitted, promotion).unwrap()
+    AdmittedSpectralWitnessV1::from_authority(&admitted, promotion, root.charter()).unwrap()
 }
 
 fn structured_problem(seed: u8) -> ValidatedSpectralProblemV1 {
