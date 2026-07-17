@@ -15,8 +15,14 @@ use fs_scenario::{
     RealizationBudget, Scenario, ScenarioError, SpectrumModel, StochasticEnsemble, TimeSignal,
     ValidationBudget, ValidationError,
     ir::{
-        FiveToSixRule, IrParseBudget, LEGACY_SCENARIO_IR_VERSION, SCENARIO_IR_VERSION,
-        SourceCanonicalizationRule, parse_ir, parse_ir_with_budget, write_ir,
+        FiveToSixRule, IrDecodeBudget, IrParseBudget, IrWriteBudget, LEGACY_SCENARIO_IR_VERSION,
+        SCENARIO_IR_VERSION, SourceCanonicalizationRule, parse_ir, parse_ir_with_budget,
+        parse_ir_with_resource_budget, plan_ir_decode, write_ir, write_ir_plan,
+        write_ir_with_budget,
+    },
+    payload::{
+        OrientationParity, Payload, PayloadId, PayloadMeta, QuantityContract, ReferenceSemantics,
+        SampleSource, ScalarPayload,
     },
 };
 use std::time::Instant;
@@ -1738,6 +1744,201 @@ fn sc_007_ir_budgets_and_chebyshev_inputs_fail_closed() {
     verdict(
         "sc-007",
         "byte/depth/node/atom/list budgets enforce exact boundaries; malformed Chebyshev IR returns Parse without unwind",
+    );
+}
+
+#[test]
+fn sc_007a_ir_decode_encode_heap_admission_is_end_to_end() {
+    let mut scenario = rich_scenario();
+    scenario.name = "admission-\"quoted\"-\\path-δ".to_string();
+    let electric_potential = Dims([2, 1, -3, 0, -1, 0]);
+    let metadata = PayloadMeta::new(
+        QuantityContract::Dimensions(electric_potential),
+        PayloadId::new("basis/world").expect("canonical basis id"),
+        FrameId(0),
+        OrientationParity::Even,
+        ReferenceSemantics::Continuous,
+    )
+    .expect("valid typed-payload metadata");
+    let payload = Payload::Scalar(
+        ScalarPayload::new(
+            metadata,
+            SampleSource::fixed(QtyAny::new(12.0, electric_potential)),
+        )
+        .expect("valid electric-potential scalar"),
+    );
+    scenario.base_bcs.push(BoundaryCondition {
+        region: "typed-\"boundary\"-\\authority-測試".to_string(),
+        physics: Physics::Electrics,
+        kind: BcKind::ElectricPotential,
+        value: Some(BcValue::Typed(payload)),
+        compatibility: None,
+        frame: 0,
+    });
+
+    let write_plan = write_ir_plan(&scenario).expect("exact writer plan");
+    assert!(write_plan.output_bytes > 0);
+    assert!(
+        write_plan.payload_bytes > 0,
+        "fixture must exercise payload scratch"
+    );
+    let exact_write = IrWriteBudget {
+        max_output_bytes: write_plan.output_bytes,
+        max_heap_bytes: write_plan.peak_heap_bytes,
+        max_work: write_plan.planned_work,
+    };
+    let canonical = write_ir_with_budget(&scenario, exact_write)
+        .expect("exact output/heap/work caps admit complete emission");
+    assert_eq!(canonical.len(), write_plan.output_bytes);
+    assert_eq!(canonical, write_ir(&scenario));
+    assert_eq!(
+        write_ir_with_budget(&scenario, exact_write).expect("deterministic replay"),
+        canonical
+    );
+    assert!(canonical.contains(r#"admission-\"quoted\"-\\path-δ"#));
+    assert!(canonical.contains(r#"typed-\"boundary\"-\\authority-測試"#));
+
+    for (resource, requested, short) in [
+        (
+            "output_bytes",
+            write_plan.output_bytes as u128,
+            IrWriteBudget {
+                max_output_bytes: write_plan.output_bytes - 1,
+                ..exact_write
+            },
+        ),
+        (
+            "heap_bytes",
+            write_plan.peak_heap_bytes as u128,
+            IrWriteBudget {
+                max_heap_bytes: write_plan.peak_heap_bytes - 1,
+                ..exact_write
+            },
+        ),
+        (
+            "work",
+            write_plan.planned_work,
+            IrWriteBudget {
+                max_work: write_plan.planned_work - 1,
+                ..exact_write
+            },
+        ),
+    ] {
+        let error = write_ir_with_budget(&scenario, short)
+            .expect_err("one-short writer authority must refuse before publication");
+        assert!(matches!(
+            error,
+            ScenarioError::Resource {
+                operation: "encode",
+                phase: "preflight",
+                resource: observed,
+                requested: observed_request,
+                limit,
+                completed: 0,
+                planned,
+            } if observed == resource
+                && observed_request == requested
+                && limit == requested - 1
+                && planned == write_plan.planned_work
+        ));
+    }
+
+    let decode_plan = plan_ir_decode(&canonical).expect("conservative decode plan");
+    let exact_decode = IrDecodeBudget {
+        max_heap_bytes: decode_plan.peak_heap_bytes,
+        max_output_bytes: decode_plan.canonical_output_bytes,
+        max_work: decode_plan.planned_work,
+    };
+    let decoded = parse_ir_with_resource_budget(&canonical, IrParseBudget::default(), exact_decode)
+        .expect("exact decode caps admit syntax, semantic values, and receipt re-emission");
+    assert_eq!(decoded.scenario(), &scenario);
+    assert!(decoded.migration().is_none());
+    assert!(decoded.canonicalization().is_none());
+
+    for (resource, requested, short) in [
+        (
+            "heap_bytes",
+            decode_plan.peak_heap_bytes as u128,
+            IrDecodeBudget {
+                max_heap_bytes: decode_plan.peak_heap_bytes - 1,
+                ..exact_decode
+            },
+        ),
+        (
+            "output_bytes",
+            decode_plan.canonical_output_bytes as u128,
+            IrDecodeBudget {
+                max_output_bytes: decode_plan.canonical_output_bytes - 1,
+                ..exact_decode
+            },
+        ),
+        (
+            "work",
+            decode_plan.planned_work,
+            IrDecodeBudget {
+                max_work: decode_plan.planned_work - 1,
+                ..exact_decode
+            },
+        ),
+    ] {
+        let error = parse_ir_with_resource_budget(&canonical, IrParseBudget::default(), short)
+            .expect_err("one-short decode authority must refuse before syntax allocation");
+        assert!(matches!(
+            error,
+            ScenarioError::Resource {
+                operation: "decode",
+                phase: "preflight",
+                resource: observed,
+                requested: observed_request,
+                limit,
+                completed: 0,
+                planned,
+            } if observed == resource
+                && observed_request == requested
+                && limit == requested - 1
+                && planned == decode_plan.planned_work
+        ));
+    }
+
+    let legacy_plan = plan_ir_decode(LEGACY_MINIMAL_IR).expect("legacy decode plan");
+    let exact_legacy = IrDecodeBudget {
+        max_heap_bytes: legacy_plan.peak_heap_bytes,
+        max_output_bytes: legacy_plan.canonical_output_bytes,
+        max_work: legacy_plan.planned_work,
+    };
+    assert!(
+        parse_ir_with_resource_budget(LEGACY_MINIMAL_IR, IrParseBudget::default(), exact_legacy,)
+            .expect("exact legacy allocation boundary admits migration")
+            .migration()
+            .is_some()
+    );
+    let legacy_error = parse_ir_with_resource_budget(
+        LEGACY_MINIMAL_IR,
+        IrParseBudget::default(),
+        IrDecodeBudget {
+            max_heap_bytes: legacy_plan.peak_heap_bytes - 1,
+            ..exact_legacy
+        },
+    )
+    .expect_err("legacy migration must not publish under a one-short heap cap");
+    assert!(matches!(
+        legacy_error,
+        ScenarioError::Resource {
+            operation: "decode",
+            phase: "preflight",
+            resource: "heap_bytes",
+            requested,
+            limit,
+            completed: 0,
+            planned,
+        } if requested == legacy_plan.peak_heap_bytes as u128
+            && limit + 1 == requested
+            && planned == legacy_plan.planned_work
+    ));
+
+    verdict(
+        "sc-007a",
+        "exact encode/decode heap-output-work plans admit collections, UTF-8 escapes, typed payloads, and legacy migration; one-short caps refuse before publication",
     );
 }
 

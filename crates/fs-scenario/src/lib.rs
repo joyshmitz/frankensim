@@ -87,6 +87,24 @@ pub enum ScenarioError {
         /// Deterministic structural path within the scenario form.
         path: String,
     },
+    /// IR codec resource admission or fallible allocation refused before any
+    /// scenario or canonical byte string was published.
+    Resource {
+        /// Stable codec operation (`decode` or `encode`).
+        operation: &'static str,
+        /// Deterministic phase within the operation.
+        phase: &'static str,
+        /// Stable resource name (`heap_bytes`, `output_bytes`, or `work`).
+        resource: &'static str,
+        /// Requested resource units.
+        requested: u128,
+        /// Admitted resource units.
+        limit: u128,
+        /// Conservatively completed logical work units.
+        completed: u128,
+        /// Preflighted logical work units, or zero before preflight.
+        planned: u128,
+    },
 }
 
 impl fmt::Display for ScenarioError {
@@ -111,6 +129,18 @@ impl fmt::Display for ScenarioError {
                 f,
                 "reserved machine-graph role {role:?} at {path} (bytes {}..{}) cannot be encoded as a boundary-condition kind; declare it as a typed fs-ir machine relation",
                 span.start, span.end
+            ),
+            ScenarioError::Resource {
+                operation,
+                phase,
+                resource,
+                requested,
+                limit,
+                completed,
+                planned,
+            } => write!(
+                f,
+                "scenario IR {operation} refused during {phase}: {resource} request {requested} exceeds or could not satisfy limit {limit} after {completed}/{planned} planned work units"
             ),
         }
     }

@@ -2209,85 +2209,154 @@ fn ensure_strict_order<T>(
     Ok(())
 }
 
-/// Encode one admitted payload as canonical V1 bytes.
-///
-/// Floating-point zero is normalized to positive zero; all other finite values
-/// retain their exact IEEE-754 bit pattern.  Validated private fields make this
-/// operation infallible.
-#[must_use]
-pub fn canonical_payload_bytes(payload: &Payload) -> Vec<u8> {
-    let mut out = Vec::new();
-    out.extend_from_slice(PAYLOAD_MAGIC);
-    put_u16(&mut out, PAYLOAD_WIRE_VERSION);
+trait PayloadByteSink {
+    fn extend(&mut self, bytes: &[u8]) -> Result<(), PayloadError>;
+
+    fn push(&mut self, byte: u8) -> Result<(), PayloadError> {
+        self.extend(core::slice::from_ref(&byte))
+    }
+}
+
+impl PayloadByteSink for Vec<u8> {
+    fn extend(&mut self, bytes: &[u8]) -> Result<(), PayloadError> {
+        self.extend_from_slice(bytes);
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct PayloadByteCounter {
+    len: usize,
+}
+
+impl PayloadByteSink for PayloadByteCounter {
+    fn extend(&mut self, bytes: &[u8]) -> Result<(), PayloadError> {
+        self.len = self
+            .len
+            .checked_add(bytes.len())
+            .ok_or(PayloadError::CountOverflow {
+                context: "canonical payload byte length",
+            })?;
+        Ok(())
+    }
+}
+
+fn encode_payload(out: &mut impl PayloadByteSink, payload: &Payload) -> Result<(), PayloadError> {
+    out.extend(PAYLOAD_MAGIC)?;
+    put_u16(out, PAYLOAD_WIRE_VERSION)?;
     match payload {
         Payload::Scalar(value) => {
-            put_u8(&mut out, 0);
-            write_meta(&mut out, &value.meta);
-            write_source(&mut out, &value.source, write_qty);
+            put_u8(out, 0)?;
+            write_meta(out, &value.meta)?;
+            write_source(out, &value.source, write_qty)?;
         }
         Payload::Vector(value) => {
-            put_u8(&mut out, 1);
-            write_meta(&mut out, &value.meta);
-            write_source(&mut out, &value.source, |out, values| {
+            put_u8(out, 1)?;
+            write_meta(out, &value.meta)?;
+            write_source(out, &value.source, |out, values| {
                 write_qty_slice(out, values)
-            });
+            })?;
         }
         Payload::Tensor(value) => {
-            put_u8(&mut out, 2);
-            write_meta(&mut out, &value.meta);
-            put_len(&mut out, value.rows);
-            put_len(&mut out, value.columns);
-            write_source(&mut out, &value.source, |out, values| {
+            put_u8(out, 2)?;
+            write_meta(out, &value.meta)?;
+            put_len(out, value.rows)?;
+            put_len(out, value.columns)?;
+            write_source(out, &value.source, |out, values| {
                 write_qty_slice(out, values)
-            });
+            })?;
         }
         Payload::ComplexPhasor(value) => {
-            put_u8(&mut out, 3);
-            write_meta(&mut out, &value.meta);
-            write_source(&mut out, &value.source, write_phasor);
+            put_u8(out, 3)?;
+            write_meta(out, &value.meta)?;
+            write_source(out, &value.source, write_phasor)?;
         }
         Payload::SpeciesBundle(value) => {
-            put_u8(&mut out, 4);
-            write_meta(&mut out, &value.meta);
-            write_source(&mut out, &value.source, |out, values| {
+            put_u8(out, 4)?;
+            write_meta(out, &value.meta)?;
+            write_source(out, &value.source, |out, values| {
                 write_species_sample(out, values)
-            });
+            })?;
         }
         Payload::CharacteristicState(value) => {
-            put_u8(&mut out, 5);
-            write_meta(&mut out, &value.meta);
-            put_len(&mut out, value.components.len());
+            put_u8(out, 5)?;
+            write_meta(out, &value.meta)?;
+            put_len(out, value.components.len())?;
             for component in &value.components {
-                write_id(&mut out, &component.name);
+                write_id(out, &component.name)?;
                 put_u8(
-                    &mut out,
+                    out,
                     match component.direction {
                         CharacteristicDirection::Incoming => 0,
                         CharacteristicDirection::Outgoing => 1,
                         CharacteristicDirection::Stationary => 2,
                     },
-                );
-                write_contract(&mut out, component.contract);
+                )?;
+                write_contract(out, component.contract)?;
             }
-            write_source(&mut out, &value.source, |out, values| {
+            write_source(out, &value.source, |out, values| {
                 write_qty_slice(out, values)
-            });
+            })?;
         }
         Payload::FieldTraceRef(value) => {
-            put_u8(&mut out, 6);
-            write_meta(&mut out, &value.meta);
-            write_id(&mut out, &value.artifact);
-            write_id(&mut out, &value.field);
+            put_u8(out, 6)?;
+            write_meta(out, &value.meta)?;
+            write_id(out, &value.artifact)?;
+            write_id(out, &value.field)?;
         }
         Payload::PortRef(value) => {
-            put_u8(&mut out, 7);
-            write_meta(&mut out, &value.meta);
-            write_id(&mut out, &value.component);
-            write_id(&mut out, &value.port);
+            put_u8(out, 7)?;
+            write_meta(out, &value.meta)?;
+            write_id(out, &value.component)?;
+            write_id(out, &value.port)?;
         }
     }
-    debug_assert!(out.len() <= MAX_PAYLOAD_WIRE_BYTES);
-    out
+    Ok(())
+}
+
+/// Exact canonical V1 byte length without materializing the envelope.
+///
+/// This traverses the same encoder grammar as [`try_canonical_payload_bytes`],
+/// so scenario-IR emission can admit its complete output allocation before
+/// requesting heap storage.
+pub fn canonical_payload_byte_len(payload: &Payload) -> Result<usize, PayloadError> {
+    let mut counter = PayloadByteCounter::default();
+    encode_payload(&mut counter, payload)?;
+    if counter.len > MAX_PAYLOAD_WIRE_BYTES {
+        return Err(PayloadError::ByteLimit {
+            limit: MAX_PAYLOAD_WIRE_BYTES,
+            actual: counter.len,
+        });
+    }
+    Ok(counter.len)
+}
+
+/// Encode one admitted payload after fallibly reserving its exact V1 length.
+///
+/// Floating-point zero is normalized to positive zero; all other finite values
+/// retain their exact IEEE-754 bit pattern. No partially encoded buffer is
+/// published when the exact reservation is refused.
+pub fn try_canonical_payload_bytes(payload: &Payload) -> Result<Vec<u8>, PayloadError> {
+    let len = canonical_payload_byte_len(payload)?;
+    let mut out = Vec::new();
+    out.try_reserve_exact(len)
+        .map_err(|_| PayloadError::AllocationRefused {
+            context: "canonical payload bytes",
+            count: len,
+        })?;
+    encode_payload(&mut out, payload)?;
+    debug_assert_eq!(out.len(), len);
+    Ok(out)
+}
+
+/// Encode one admitted payload as canonical V1 bytes.
+///
+/// This compatibility convenience delegates to the fallible exact-reservation
+/// path. Resource-authoritative callers use [`try_canonical_payload_bytes`].
+#[must_use]
+pub fn canonical_payload_bytes(payload: &Payload) -> Vec<u8> {
+    try_canonical_payload_bytes(payload)
+        .expect("validated payload must fit the closed canonical V1 envelope")
 }
 
 /// Decode one canonical payload under [`PayloadDecodeLimits::DEFAULT`].
@@ -2411,97 +2480,106 @@ pub fn decode_payload_with_limits(
     Ok(payload)
 }
 
-fn put_u8(out: &mut Vec<u8>, value: u8) {
-    out.push(value);
+fn put_u8(out: &mut impl PayloadByteSink, value: u8) -> Result<(), PayloadError> {
+    out.push(value)
 }
 
-fn put_u16(out: &mut Vec<u8>, value: u16) {
-    out.extend_from_slice(&value.to_le_bytes());
+fn put_u16(out: &mut impl PayloadByteSink, value: u16) -> Result<(), PayloadError> {
+    out.extend(&value.to_le_bytes())
 }
 
-fn put_u32(out: &mut Vec<u8>, value: u32) {
-    out.extend_from_slice(&value.to_le_bytes());
+fn put_u32(out: &mut impl PayloadByteSink, value: u32) -> Result<(), PayloadError> {
+    out.extend(&value.to_le_bytes())
 }
 
-fn put_u64(out: &mut Vec<u8>, value: u64) {
-    out.extend_from_slice(&value.to_le_bytes());
+fn put_u64(out: &mut impl PayloadByteSink, value: u64) -> Result<(), PayloadError> {
+    out.extend(&value.to_le_bytes())
 }
 
-fn put_len(out: &mut Vec<u8>, value: usize) {
-    debug_assert!(u32::try_from(value).is_ok());
-    put_u32(out, value as u32);
+fn put_len(out: &mut impl PayloadByteSink, value: usize) -> Result<(), PayloadError> {
+    let value = u32::try_from(value).map_err(|_| PayloadError::CountOverflow {
+        context: "canonical payload collection length",
+    })?;
+    put_u32(out, value)
 }
 
 fn canonical_bits(value: f64) -> u64 {
     if value == 0.0 { 0 } else { value.to_bits() }
 }
 
-fn write_qty(out: &mut Vec<u8>, quantity: &QtyAny) {
-    put_u64(out, canonical_bits(quantity.value));
+fn write_qty(out: &mut impl PayloadByteSink, quantity: &QtyAny) -> Result<(), PayloadError> {
+    put_u64(out, canonical_bits(quantity.value))?;
     for exponent in quantity.dims.0 {
-        put_u8(out, exponent as u8);
+        put_u8(out, exponent as u8)?;
     }
+    Ok(())
 }
 
-fn write_dims(out: &mut Vec<u8>, dims: Dims) {
+fn write_dims(out: &mut impl PayloadByteSink, dims: Dims) -> Result<(), PayloadError> {
     for exponent in dims.0 {
-        put_u8(out, exponent as u8);
+        put_u8(out, exponent as u8)?;
     }
+    Ok(())
 }
 
-fn write_id(out: &mut Vec<u8>, id: &PayloadId) {
-    put_len(out, id.0.len());
-    out.extend_from_slice(id.0.as_bytes());
+fn write_id(out: &mut impl PayloadByteSink, id: &PayloadId) -> Result<(), PayloadError> {
+    put_len(out, id.0.len())?;
+    out.extend(id.0.as_bytes())
 }
 
-fn write_species_id(out: &mut Vec<u8>, id: &SpeciesId) {
-    put_len(out, id.as_str().len());
-    out.extend_from_slice(id.as_str().as_bytes());
+fn write_species_id(out: &mut impl PayloadByteSink, id: &SpeciesId) -> Result<(), PayloadError> {
+    put_len(out, id.as_str().len())?;
+    out.extend(id.as_str().as_bytes())
 }
 
-fn write_meta(out: &mut Vec<u8>, meta: &PayloadMeta) {
-    write_contract(out, meta.contract);
-    write_id(out, &meta.basis_key);
-    put_u32(out, meta.frame.0);
+fn write_meta(out: &mut impl PayloadByteSink, meta: &PayloadMeta) -> Result<(), PayloadError> {
+    write_contract(out, meta.contract)?;
+    write_id(out, &meta.basis_key)?;
+    put_u32(out, meta.frame.0)?;
     put_u8(
         out,
         match meta.orientation {
             OrientationParity::Even => 0,
             OrientationParity::Odd => 1,
         },
-    );
+    )?;
     match &meta.reference {
-        ReferenceSemantics::Continuous => put_u8(out, 0),
+        ReferenceSemantics::Continuous => put_u8(out, 0)?,
         ReferenceSemantics::ResetAtEvent(event) => {
-            put_u8(out, 1);
-            write_id(out, event);
+            put_u8(out, 1)?;
+            write_id(out, event)?;
         }
     }
+    Ok(())
 }
 
-fn write_contract(out: &mut Vec<u8>, contract: QuantityContract) {
+fn write_contract(
+    out: &mut impl PayloadByteSink,
+    contract: QuantityContract,
+) -> Result<(), PayloadError> {
     match contract {
         QuantityContract::Dimensions(dims) => {
-            put_u8(out, 0);
-            write_dims(out, dims);
+            put_u8(out, 0)?;
+            write_dims(out, dims)?;
         }
         QuantityContract::Semantic(semantic) => {
-            put_u8(out, 1);
-            write_semantic_type(out, semantic);
+            put_u8(out, 1)?;
+            write_semantic_type(out, semantic)?;
         }
-        QuantityContract::Heterogeneous => put_u8(out, 2),
+        QuantityContract::Heterogeneous => put_u8(out, 2)?,
     }
+    Ok(())
 }
 
-fn write_source<T>(
-    out: &mut Vec<u8>,
+fn write_source<T, S: PayloadByteSink>(
+    out: &mut S,
     source: &SampleSource<T>,
-    mut write_value: impl FnMut(&mut Vec<u8>, &T),
-) {
+    mut write_value: impl FnMut(&mut S, &T) -> Result<(), PayloadError>,
+) -> Result<(), PayloadError> {
     match source {
         SampleSource::Fixed(value) => {
-            put_u8(out, 0);
-            write_value(out, value);
+            put_u8(out, 0)?;
+            write_value(out, value)?;
         }
         SampleSource::Table {
             times,
@@ -2509,14 +2587,14 @@ fn write_source<T>(
             interpolation,
             outside,
         } => {
-            put_u8(out, 1);
+            put_u8(out, 1)?;
             put_u8(
                 out,
                 match interpolation {
                     TableInterpolation::StepLeft => 0,
                     TableInterpolation::Linear => 1,
                 },
-            );
+            )?;
             put_u8(
                 out,
                 match outside {
@@ -2524,17 +2602,17 @@ fn write_source<T>(
                     OutsideDomainPolicy::Clamp => 1,
                     OutsideDomainPolicy::Periodic => 2,
                 },
-            );
-            put_len(out, times.len());
+            )?;
+            put_len(out, times.len())?;
             for time in times {
-                write_qty(out, time);
+                write_qty(out, time)?;
             }
             for value in values {
-                write_value(out, value);
+                write_value(out, value)?;
             }
         }
         SampleSource::Distribution { family, parameters } => {
-            put_u8(out, 2);
+            put_u8(out, 2)?;
             put_u8(
                 out,
                 match family {
@@ -2542,45 +2620,54 @@ fn write_source<T>(
                     DistributionFamily::Uniform => 1,
                     DistributionFamily::Empirical => 2,
                 },
-            );
-            put_len(out, parameters.len());
+            )?;
+            put_len(out, parameters.len())?;
             for parameter in parameters {
-                write_value(out, parameter);
+                write_value(out, parameter)?;
             }
         }
     }
+    Ok(())
 }
 
-fn write_qty_slice(out: &mut Vec<u8>, values: &[QtyAny]) {
-    put_len(out, values.len());
+fn write_qty_slice(out: &mut impl PayloadByteSink, values: &[QtyAny]) -> Result<(), PayloadError> {
+    put_len(out, values.len())?;
     for value in values {
-        write_qty(out, value);
+        write_qty(out, value)?;
     }
+    Ok(())
 }
 
-fn write_phasor(out: &mut Vec<u8>, phasor: &PhasorQty) {
-    write_qty(out, &phasor.real());
-    write_qty(out, &phasor.imaginary());
-    write_quantity_kind(out, phasor.kind());
+fn write_phasor(out: &mut impl PayloadByteSink, phasor: &PhasorQty) -> Result<(), PayloadError> {
+    write_qty(out, &phasor.real())?;
+    write_qty(out, &phasor.imaginary())?;
+    write_quantity_kind(out, phasor.kind())?;
     put_u8(
         out,
         match phasor.amplitude() {
             PhasorAmplitude::Peak => 0,
             PhasorAmplitude::Rms => 1,
         },
-    );
+    )
 }
 
-fn write_species_sample(out: &mut Vec<u8>, values: &[SpeciesValue]) {
-    put_len(out, values.len());
+fn write_species_sample(
+    out: &mut impl PayloadByteSink,
+    values: &[SpeciesValue],
+) -> Result<(), PayloadError> {
+    put_len(out, values.len())?;
     for value in values {
-        write_species_id(out, &value.species);
-        write_qty(out, &value.quantity);
+        write_species_id(out, &value.species)?;
+        write_qty(out, &value.quantity)?;
     }
+    Ok(())
 }
 
-fn write_semantic_type(out: &mut Vec<u8>, semantic: SemanticType) {
-    write_quantity_kind(out, semantic.kind());
+fn write_semantic_type(
+    out: &mut impl PayloadByteSink,
+    semantic: SemanticType,
+) -> Result<(), PayloadError> {
+    write_quantity_kind(out, semantic.kind())?;
     put_u8(
         out,
         match semantic.form() {
@@ -2589,44 +2676,47 @@ fn write_semantic_type(out: &mut Vec<u8>, semantic: SemanticType) {
             ValueForm::Peak => 2,
             ValueForm::Rms => 3,
         },
-    );
+    )
 }
 
-fn write_quantity_kind(out: &mut Vec<u8>, kind: QuantityKind) {
+fn write_quantity_kind(
+    out: &mut impl PayloadByteSink,
+    kind: QuantityKind,
+) -> Result<(), PayloadError> {
     match kind {
-        QuantityKind::AbsoluteTemperature => put_u8(out, 0),
-        QuantityKind::TemperatureDifference => put_u8(out, 1),
+        QuantityKind::AbsoluteTemperature => put_u8(out, 0)?,
+        QuantityKind::TemperatureDifference => put_u8(out, 1)?,
         QuantityKind::Angle(domain) => {
-            put_u8(out, 2);
-            write_angle_domain(out, domain);
+            put_u8(out, 2)?;
+            write_angle_domain(out, domain)?;
         }
         QuantityKind::AngularVelocity(domain) => {
-            put_u8(out, 3);
-            write_angle_domain(out, domain);
+            put_u8(out, 3)?;
+            write_angle_domain(out, domain)?;
         }
-        QuantityKind::Torque => put_u8(out, 4),
-        QuantityKind::Energy => put_u8(out, 5),
-        QuantityKind::Pressure => put_u8(out, 6),
-        QuantityKind::Stress => put_u8(out, 7),
+        QuantityKind::Torque => put_u8(out, 4)?,
+        QuantityKind::Energy => put_u8(out, 5)?,
+        QuantityKind::Pressure => put_u8(out, 6)?,
+        QuantityKind::Stress => put_u8(out, 7)?,
         QuantityKind::Strain { basis, component } => {
-            put_u8(out, 8);
+            put_u8(out, 8)?;
             put_u8(
                 out,
                 match basis {
                     StrainBasis::Tensor => 0,
                     StrainBasis::Engineering => 1,
                 },
-            );
+            )?;
             put_u8(
                 out,
                 match component {
                     StrainComponent::Normal => 0,
                     StrainComponent::Shear => 1,
                 },
-            );
+            )?;
         }
         QuantityKind::Composition(basis) => {
-            put_u8(out, 9);
+            put_u8(out, 9)?;
             put_u8(
                 out,
                 match basis {
@@ -2634,28 +2724,32 @@ fn write_quantity_kind(out: &mut Vec<u8>, kind: QuantityKind) {
                     CompositionBasis::MoleFraction => 1,
                     CompositionBasis::VolumeFraction => 2,
                 },
-            );
+            )?;
         }
-        QuantityKind::Mass => put_u8(out, 10),
-        QuantityKind::Amount => put_u8(out, 11),
-        QuantityKind::MolarMass => put_u8(out, 12),
-        QuantityKind::MassConcentration => put_u8(out, 13),
-        QuantityKind::AmountConcentration => put_u8(out, 14),
-        QuantityKind::Entropy => put_u8(out, 15),
-        QuantityKind::HeatCapacity => put_u8(out, 16),
-        QuantityKind::AcousticPressure => put_u8(out, 17),
-        QuantityKind::AcousticPower => put_u8(out, 18),
+        QuantityKind::Mass => put_u8(out, 10)?,
+        QuantityKind::Amount => put_u8(out, 11)?,
+        QuantityKind::MolarMass => put_u8(out, 12)?,
+        QuantityKind::MassConcentration => put_u8(out, 13)?,
+        QuantityKind::AmountConcentration => put_u8(out, 14)?,
+        QuantityKind::Entropy => put_u8(out, 15)?,
+        QuantityKind::HeatCapacity => put_u8(out, 16)?,
+        QuantityKind::AcousticPressure => put_u8(out, 17)?,
+        QuantityKind::AcousticPower => put_u8(out, 18)?,
     }
+    Ok(())
 }
 
-fn write_angle_domain(out: &mut Vec<u8>, domain: AngleDomain) {
+fn write_angle_domain(
+    out: &mut impl PayloadByteSink,
+    domain: AngleDomain,
+) -> Result<(), PayloadError> {
     put_u8(
         out,
         match domain {
             AngleDomain::Mechanical => 0,
             AngleDomain::Electrical => 1,
         },
-    );
+    )
 }
 
 struct Decoder<'a> {

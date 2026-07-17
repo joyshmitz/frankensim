@@ -15,8 +15,9 @@ use fs_scenario::payload::{
     MAX_PAYLOAD_WIRE_BYTES, OrientationParity, OutsideDomainPolicy, PAYLOAD_WIRE_VERSION, Payload,
     PayloadDecodeLimits, PayloadError, PayloadId, PayloadKind, PayloadMeta, PortRef,
     QuantityContract, ReferenceSemantics, SampleSource, ScalarPayload, SpeciesBundle, SpeciesValue,
-    TableInterpolation, TensorPayload, VectorPayload, canonical_payload_bytes, decode_payload,
-    decode_payload_with_limits,
+    TableInterpolation, TensorPayload, VectorPayload, canonical_payload_byte_len,
+    canonical_payload_bytes, decode_payload, decode_payload_with_limits,
+    try_canonical_payload_bytes,
 };
 
 const TIME: Dims = Dims([0, 0, 1, 0, 0, 0]);
@@ -239,6 +240,16 @@ fn g0_all_payload_variants_round_trip_to_exact_canonical_bytes() {
         let first = canonical_payload_bytes(&payload);
         let second = canonical_payload_bytes(&payload);
         assert_eq!(first, second, "encoder must be byte deterministic");
+        assert_eq!(
+            canonical_payload_byte_len(&payload).expect("exact byte plan"),
+            first.len(),
+            "counter and materializing encoders must traverse one grammar"
+        );
+        assert_eq!(
+            try_canonical_payload_bytes(&payload).expect("fallible exact-reservation encode"),
+            first,
+            "fallible and compatibility encoders must be byte-identical"
+        );
 
         let decoded = decode_payload(&first).expect("canonical bytes decode");
         assert_eq!(decoded, payload);

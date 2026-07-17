@@ -13,8 +13,8 @@ use crate::bc::{BcKind, BcValue, BoundaryCondition, Compat, Physics};
 use crate::ensemble::{SpectrumModel, StochasticEnsemble};
 use crate::frame::{Frame, FrameId, FrameMotion, FrameTree};
 use crate::payload::{
-    MAX_PAYLOAD_WIRE_BYTES, PAYLOAD_WIRE_VERSION, Payload, PayloadDecodeLimits,
-    canonical_payload_bytes, decode_payload_with_limits,
+    MAX_PAYLOAD_WIRE_BYTES, PAYLOAD_WIRE_VERSION, Payload, PayloadDecodeLimits, PayloadError,
+    canonical_payload_byte_len, decode_payload_with_limits, try_canonical_payload_bytes,
 };
 use crate::scenario::{
     Combination, ContactLaw, ContactModel, Environment, LoadCase, Scenario, Violation,
@@ -25,7 +25,7 @@ use fs_blake3::{ContentHash, hash_bytes};
 use fs_cheb::Cheb1;
 use fs_ga::{Quat, Vec3};
 use fs_qty::{Dims, QtyAny};
-use std::fmt::Write as _;
+use std::fmt::{self, Write as _};
 
 /// Canonical scenario-IR version written by this build.
 pub const SCENARIO_IR_VERSION: u32 = 2;
@@ -255,11 +255,304 @@ enum DimensionWire {
 
 // ---------------------------------------------------------------- writer
 
+/// Explicit resource budget for canonical scenario-IR emission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IrWriteBudget {
+    /// Maximum exact canonical output bytes.
+    pub max_output_bytes: usize,
+    /// Maximum peak logical heap bytes (output plus the largest sequential
+    /// typed-payload envelope).
+    pub max_heap_bytes: usize,
+    /// Maximum deterministic byte-oriented work units.
+    pub max_work: u128,
+}
+
+/// Conservative default for [`write_ir_with_budget`].
+pub const DEFAULT_IR_WRITE_BUDGET: IrWriteBudget = IrWriteBudget {
+    max_output_bytes: 64 * 1024 * 1024,
+    max_heap_bytes: 80 * 1024 * 1024,
+    max_work: 128 * 1024 * 1024,
+};
+
+impl Default for IrWriteBudget {
+    fn default() -> Self {
+        DEFAULT_IR_WRITE_BUDGET
+    }
+}
+
+/// Exact preflighted shape of one canonical scenario-IR emission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IrWritePlan {
+    /// Exact final canonical text length.
+    pub output_bytes: usize,
+    /// Sum of canonical typed-payload bytes traversed sequentially.
+    pub payload_bytes: usize,
+    /// Output allocation plus the largest temporary typed-payload envelope.
+    pub peak_heap_bytes: usize,
+    /// Exact byte-oriented work for payload encoding plus hex/text emission.
+    pub planned_work: u128,
+}
+
+fn resource_refusal(
+    operation: &'static str,
+    phase: &'static str,
+    resource: &'static str,
+    requested: u128,
+    limit: u128,
+    completed: u128,
+    planned: u128,
+) -> ScenarioError {
+    ScenarioError::Resource {
+        operation,
+        phase,
+        resource,
+        requested,
+        limit,
+        completed,
+        planned,
+    }
+}
+
+trait IrTextSink: fmt::Write {
+    fn push(&mut self, value: char) {
+        let _ = self.write_char(value);
+    }
+
+    fn push_str(&mut self, value: &str) {
+        let _ = self.write_str(value);
+    }
+
+    fn write_payload_hex(&mut self, payload: &Payload);
+}
+
+fn emit_payload_hex(out: &mut impl IrTextSink, bytes: &[u8]) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let _ = write!(out, "(typed :version {PAYLOAD_WIRE_VERSION} \"");
+    for byte in bytes {
+        out.push(char::from(HEX[usize::from(byte >> 4)]));
+        out.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    out.push_str("\")");
+}
+
+#[derive(Default)]
+struct IrTextCounter {
+    bytes: usize,
+    payload_bytes: usize,
+    largest_payload_bytes: usize,
+    error: Option<ScenarioError>,
+}
+
+impl IrTextCounter {
+    fn add_bytes(&mut self, additional: usize) -> fmt::Result {
+        if self.error.is_some() {
+            return Err(fmt::Error);
+        }
+        match self.bytes.checked_add(additional) {
+            Some(total) => {
+                self.bytes = total;
+                Ok(())
+            }
+            None => {
+                self.error = Some(resource_refusal(
+                    "encode",
+                    "preflight",
+                    "output_bytes",
+                    u128::MAX,
+                    u128::MAX,
+                    0,
+                    0,
+                ));
+                Err(fmt::Error)
+            }
+        }
+    }
+
+    fn finish(self) -> Result<IrWritePlan, ScenarioError> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        let peak_heap_bytes = self
+            .bytes
+            .checked_add(self.largest_payload_bytes)
+            .ok_or_else(|| {
+                resource_refusal(
+                    "encode",
+                    "preflight",
+                    "heap_bytes",
+                    u128::MAX,
+                    u128::MAX,
+                    0,
+                    0,
+                )
+            })?;
+        let payload_work = (self.payload_bytes as u128).checked_mul(2).ok_or_else(|| {
+            resource_refusal("encode", "preflight", "work", u128::MAX, u128::MAX, 0, 0)
+        })?;
+        let planned_work = (self.bytes as u128)
+            .checked_add(payload_work)
+            .ok_or_else(|| {
+                resource_refusal("encode", "preflight", "work", u128::MAX, u128::MAX, 0, 0)
+            })?;
+        Ok(IrWritePlan {
+            output_bytes: self.bytes,
+            payload_bytes: self.payload_bytes,
+            peak_heap_bytes,
+            planned_work,
+        })
+    }
+}
+
+impl fmt::Write for IrTextCounter {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        self.add_bytes(value.len())
+    }
+}
+
+impl IrTextSink for IrTextCounter {
+    fn write_payload_hex(&mut self, payload: &Payload) {
+        if self.error.is_some() {
+            return;
+        }
+        let payload_bytes = match canonical_payload_byte_len(payload) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.error = Some(ScenarioError::Evaluate {
+                    what: format!("canonical typed-payload length refused: {error}"),
+                });
+                return;
+            }
+        };
+        self.payload_bytes = match self.payload_bytes.checked_add(payload_bytes) {
+            Some(total) => total,
+            None => {
+                self.error = Some(resource_refusal(
+                    "encode",
+                    "preflight",
+                    "payload_bytes",
+                    u128::MAX,
+                    u128::MAX,
+                    0,
+                    0,
+                ));
+                return;
+            }
+        };
+        self.largest_payload_bytes = self.largest_payload_bytes.max(payload_bytes);
+        let _ = write!(self, "(typed :version {PAYLOAD_WIRE_VERSION} \"");
+        let hex_bytes = match payload_bytes.checked_mul(2) {
+            Some(bytes) => bytes,
+            None => {
+                self.error = Some(resource_refusal(
+                    "encode",
+                    "preflight",
+                    "output_bytes",
+                    u128::MAX,
+                    u128::MAX,
+                    0,
+                    0,
+                ));
+                return;
+            }
+        };
+        let _ = self.add_bytes(hex_bytes);
+        self.push_str("\")");
+    }
+}
+
+struct AdmittedIrText {
+    text: String,
+    output_bytes: usize,
+    heap_limit: usize,
+    completed: u128,
+    planned: u128,
+    error: Option<ScenarioError>,
+}
+
+impl AdmittedIrText {
+    fn new(plan: IrWritePlan, budget: IrWriteBudget) -> Result<Self, ScenarioError> {
+        let mut text = String::new();
+        text.try_reserve_exact(plan.output_bytes).map_err(|_| {
+            resource_refusal(
+                "encode",
+                "output allocation",
+                "heap_bytes",
+                plan.output_bytes as u128,
+                budget.max_heap_bytes as u128,
+                0,
+                plan.planned_work,
+            )
+        })?;
+        Ok(Self {
+            text,
+            output_bytes: plan.output_bytes,
+            heap_limit: budget.max_heap_bytes,
+            completed: 0,
+            planned: plan.planned_work,
+            error: None,
+        })
+    }
+
+    fn fail(&mut self, error: ScenarioError) {
+        if self.error.is_none() {
+            self.error = Some(error);
+        }
+    }
+}
+
+impl fmt::Write for AdmittedIrText {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        if self.error.is_some() {
+            return Err(fmt::Error);
+        }
+        self.text.push_str(value);
+        self.completed = self.completed.saturating_add(value.len() as u128);
+        Ok(())
+    }
+}
+
+impl IrTextSink for AdmittedIrText {
+    fn write_payload_hex(&mut self, payload: &Payload) {
+        if self.error.is_some() {
+            return;
+        }
+        let bytes = match try_canonical_payload_bytes(payload) {
+            Ok(bytes) => bytes,
+            Err(PayloadError::AllocationRefused { count, .. }) => {
+                let requested = self
+                    .output_bytes
+                    .checked_add(count)
+                    .map_or(u128::MAX, |bytes| bytes as u128);
+                self.fail(resource_refusal(
+                    "encode",
+                    "typed-payload allocation",
+                    "heap_bytes",
+                    requested,
+                    self.heap_limit as u128,
+                    self.completed,
+                    self.planned,
+                ));
+                return;
+            }
+            Err(error) => {
+                self.fail(ScenarioError::Evaluate {
+                    what: format!("canonical typed-payload encoding refused: {error}"),
+                });
+                return;
+            }
+        };
+        self.completed = self
+            .completed
+            .saturating_add((bytes.len() as u128).saturating_mul(2));
+        emit_payload_hex(self, &bytes);
+    }
+}
+
 fn canonical_float(value: f64) -> f64 {
     if value == 0.0 { 0.0 } else { value }
 }
 
-fn w_qty(out: &mut String, q: &QtyAny) {
+fn w_qty(out: &mut impl IrTextSink, q: &QtyAny) {
     let _ = write!(out, "(qty {}", canonical_float(q.value));
     for d in q.dims.0 {
         let _ = write!(out, " {d}");
@@ -267,7 +560,7 @@ fn w_qty(out: &mut String, q: &QtyAny) {
     out.push(')');
 }
 
-fn w_dims(out: &mut String, d: Dims) {
+fn w_dims(out: &mut impl IrTextSink, d: Dims) {
     out.push_str("(dims");
     for e in d.0 {
         let _ = write!(out, " {e}");
@@ -275,7 +568,7 @@ fn w_dims(out: &mut String, d: Dims) {
     out.push(')');
 }
 
-fn w_str(out: &mut String, s: &str) {
+fn w_str(out: &mut impl IrTextSink, s: &str) {
     out.push('"');
     for c in s.chars() {
         if c == '"' || c == '\\' {
@@ -286,18 +579,11 @@ fn w_str(out: &mut String, s: &str) {
     out.push('"');
 }
 
-fn w_payload_hex(out: &mut String, payload: &Payload) {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let bytes = canonical_payload_bytes(payload);
-    let _ = write!(out, "(typed :version {PAYLOAD_WIRE_VERSION} \"");
-    for byte in bytes {
-        out.push(char::from(HEX[usize::from(byte >> 4)]));
-        out.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    out.push_str("\")");
+fn w_payload_hex(out: &mut impl IrTextSink, payload: &Payload) {
+    out.write_payload_hex(payload);
 }
 
-fn w_vec3(out: &mut String, v: Vec3) {
+fn w_vec3(out: &mut impl IrTextSink, v: Vec3) {
     let _ = write!(
         out,
         "(vec {} {} {})",
@@ -307,7 +593,7 @@ fn w_vec3(out: &mut String, v: Vec3) {
     );
 }
 
-fn w_floats(out: &mut String, head: &str, vs: &[f64]) {
+fn w_floats(out: &mut impl IrTextSink, head: &str, vs: &[f64]) {
     let _ = write!(out, "({head}");
     for v in vs {
         let _ = write!(out, " {}", canonical_float(*v));
@@ -315,7 +601,7 @@ fn w_floats(out: &mut String, head: &str, vs: &[f64]) {
     out.push(')');
 }
 
-fn w_signal(out: &mut String, s: &TimeSignal) {
+fn w_signal(out: &mut impl IrTextSink, s: &TimeSignal) {
     match s {
         TimeSignal::Constant(q) => {
             out.push_str("(constant ");
@@ -363,7 +649,7 @@ fn w_signal(out: &mut String, s: &TimeSignal) {
     }
 }
 
-fn w_profile(out: &mut String, head: &str, p: &ChebProfile) {
+fn w_profile(out: &mut impl IrTextSink, head: &str, p: &ChebProfile) {
     let (a, b) = p.cheb.domain();
     let _ = write!(out, "({head} ");
     w_dims(out, p.dims);
@@ -404,7 +690,7 @@ fn kind_tag(k: BcKind) -> &'static str {
     }
 }
 
-fn w_bc(out: &mut String, bc: &BoundaryCondition) {
+fn w_bc(out: &mut impl IrTextSink, bc: &BoundaryCondition) {
     out.push_str("(bc ");
     w_str(out, &bc.region);
     let _ = write!(
@@ -437,7 +723,7 @@ fn w_bc(out: &mut String, bc: &BoundaryCondition) {
     out.push(')');
 }
 
-fn w_frame(out: &mut String, f: &Frame) {
+fn w_frame(out: &mut impl IrTextSink, f: &Frame) {
     let _ = write!(out, "(frame {} ", f.id.0);
     w_str(out, &f.name);
     let _ = write!(out, " {} ", f.parent.0);
@@ -491,7 +777,7 @@ fn w_frame(out: &mut String, f: &Frame) {
     out.push(')');
 }
 
-fn w_ensemble(out: &mut String, e: &StochasticEnsemble) {
+fn w_ensemble(out: &mut impl IrTextSink, e: &StochasticEnsemble) {
     out.push_str("(ensemble ");
     w_str(out, &e.name);
     let _ = write!(out, " {} {} ", e.seed, e.members);
@@ -546,47 +832,44 @@ fn w_ensemble(out: &mut String, e: &StochasticEnsemble) {
     out.push(')');
 }
 
-/// Serialize a scenario to canonical, byte-stable IR text.
-#[must_use]
-pub fn write_ir(s: &Scenario) -> String {
-    let mut out = String::with_capacity(1024);
+fn emit_ir(out: &mut impl IrTextSink, s: &Scenario) {
     let _ = write!(out, "(scenario :version {SCENARIO_IR_VERSION} ");
-    w_str(&mut out, &s.name);
+    w_str(out, &s.name);
     let _ = write!(out, " {} (environment ", s.seed);
     for g in &s.environment.gravity {
-        w_qty(&mut out, g);
+        w_qty(out, g);
         out.push(' ');
     }
-    w_qty(&mut out, &s.environment.ambient_temperature);
+    w_qty(out, &s.environment.ambient_temperature);
     out.push(' ');
-    w_qty(&mut out, &s.environment.ambient_pressure);
+    w_qty(out, &s.environment.ambient_pressure);
     out.push_str(") (frames");
     for f in &s.frames.frames {
         out.push(' ');
-        w_frame(&mut out, f);
+        w_frame(out, f);
     }
     out.push_str(") (bcs");
     for bc in &s.base_bcs {
         out.push(' ');
-        w_bc(&mut out, bc);
+        w_bc(out, bc);
     }
     out.push_str(") (cases");
     for case in &s.cases {
         out.push_str(" (case ");
-        w_str(&mut out, &case.name);
+        w_str(out, &case.name);
         for bc in &case.bcs {
             out.push(' ');
-            w_bc(&mut out, bc);
+            w_bc(out, bc);
         }
         out.push(')');
     }
     out.push_str(") (combos");
     for combo in &s.combinations {
         out.push_str(" (combo ");
-        w_str(&mut out, &combo.name);
+        w_str(out, &combo.name);
         for (case, factor) in &combo.terms {
             out.push_str(" (term ");
-            w_str(&mut out, case);
+            w_str(out, case);
             let _ = write!(out, " {})", canonical_float(*factor));
         }
         out.push(')');
@@ -594,14 +877,14 @@ pub fn write_ir(s: &Scenario) -> String {
     out.push_str(") (ensembles");
     for e in &s.ensembles {
         out.push(' ');
-        w_ensemble(&mut out, e);
+        w_ensemble(out, e);
     }
     out.push_str(") (contacts");
     for c in &s.contacts {
         out.push_str(" (contact ");
-        w_str(&mut out, &c.region_a);
+        w_str(out, &c.region_a);
         out.push(' ');
-        w_str(&mut out, &c.region_b);
+        w_str(out, &c.region_b);
         out.push(' ');
         match c.model {
             ContactModel::Frictionless => out.push_str("frictionless"),
@@ -618,7 +901,87 @@ pub fn write_ir(s: &Scenario) -> String {
         out.push(')');
     }
     out.push_str("))");
-    out
+}
+
+/// Compute the exact allocation/work plan for canonical scenario-IR emission.
+///
+/// The traversal materializes neither the output string nor typed-payload
+/// envelopes. All arithmetic is checked before a plan is returned.
+pub fn write_ir_plan(s: &Scenario) -> Result<IrWritePlan, ScenarioError> {
+    let mut counter = IrTextCounter::default();
+    emit_ir(&mut counter, s);
+    counter.finish()
+}
+
+/// Serialize canonical scenario IR under explicit output, heap, and work caps.
+///
+/// The exact output allocation is reserved before emission. Typed payloads are
+/// encoded one at a time after their largest temporary envelope was included
+/// in the admitted peak; a refused reservation publishes no partial string.
+pub fn write_ir_with_budget(s: &Scenario, budget: IrWriteBudget) -> Result<String, ScenarioError> {
+    let plan = write_ir_plan(s)?;
+    for (resource, requested, limit) in [
+        (
+            "output_bytes",
+            plan.output_bytes as u128,
+            budget.max_output_bytes as u128,
+        ),
+        (
+            "heap_bytes",
+            plan.peak_heap_bytes as u128,
+            budget.max_heap_bytes as u128,
+        ),
+        ("work", plan.planned_work, budget.max_work),
+    ] {
+        if requested > limit {
+            return Err(resource_refusal(
+                "encode",
+                "preflight",
+                resource,
+                requested,
+                limit,
+                0,
+                plan.planned_work,
+            ));
+        }
+    }
+
+    let mut out = AdmittedIrText::new(plan, budget)?;
+    emit_ir(&mut out, s);
+    if let Some(error) = out.error {
+        return Err(error);
+    }
+    if out.text.len() != plan.output_bytes || out.completed != plan.planned_work {
+        return Err(ScenarioError::Evaluate {
+            what: format!(
+                "scenario IR encoder plan drifted: emitted {} bytes and completed {} work units, planned {} bytes and {} work units",
+                out.text.len(),
+                out.completed,
+                plan.output_bytes,
+                plan.planned_work
+            ),
+        });
+    }
+    Ok(out.text)
+}
+
+/// Serialize a scenario to canonical, byte-stable IR text.
+///
+/// Resource-authoritative callers should use [`write_ir_with_budget`]. This
+/// compatibility API derives exact caps from [`write_ir_plan`] and retains the
+/// historical infallible signature.
+#[must_use]
+pub fn write_ir(s: &Scenario) -> String {
+    let plan = write_ir_plan(s).expect("validated scenarios have a finite canonical IR plan");
+    write_ir_with_budget(
+        s,
+        IrWriteBudget {
+            max_output_bytes: plan.output_bytes,
+            max_heap_bytes: plan.peak_heap_bytes,
+            max_work: plan.planned_work,
+        },
+    )
+    .expect("canonical IR exact reservation was refused")
 }
 
 // ---------------------------------------------------------------- parser
@@ -678,6 +1041,201 @@ impl Default for IrParseBudget {
     }
 }
 
+/// End-to-end logical resource budget for scenario-IR decoding.
+///
+/// Logical heap counts requested collection/string capacities, decoded value
+/// slots, canonical output, and the largest sequential typed-payload scratch
+/// envelope. Allocator metadata and implementation-defined capacity rounding
+/// are deliberately outside this portable contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IrDecodeBudget {
+    /// Maximum conservative peak logical heap bytes.
+    pub max_heap_bytes: usize,
+    /// Maximum canonical v2 bytes that receipt generation may emit.
+    pub max_output_bytes: usize,
+    /// Maximum deterministic byte/cardinality-oriented work units.
+    pub max_work: u128,
+}
+
+/// Default end-to-end decode admission paired with [`DEFAULT_IR_PARSE_BUDGET`].
+pub const DEFAULT_IR_DECODE_BUDGET: IrDecodeBudget = IrDecodeBudget {
+    max_heap_bytes: if usize::BITS >= 64 {
+        16 * 1024 * 1024 * 1024
+    } else {
+        usize::MAX
+    },
+    max_output_bytes: 513 * 1024 * 1024,
+    max_work: 1024 * 1024 * 1024,
+};
+
+impl Default for IrDecodeBudget {
+    fn default() -> Self {
+        DEFAULT_IR_DECODE_BUDGET
+    }
+}
+
+/// Conservative preflight plan derived without parsing or allocating.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IrDecodePlan {
+    /// Exact supplied UTF-8 bytes.
+    pub input_bytes: usize,
+    /// Maximum syntax nodes possible in that many source bytes.
+    pub syntax_nodes_upper: usize,
+    /// Upper bound for retained syntax-node/list/token capacities.
+    pub syntax_heap_bytes: usize,
+    /// Upper bound for decoded collections, strings, and typed payload values.
+    pub semantic_heap_bytes: usize,
+    /// Upper bound for canonical v2 text emitted for receipts.
+    pub canonical_output_bytes: usize,
+    /// Syntax + semantic + output + largest payload scratch logical peak.
+    pub peak_heap_bytes: usize,
+    /// Conservative complete decode/re-emission work units.
+    pub planned_work: u128,
+}
+
+fn checked_decode_plan_mul(value: usize, factor: usize) -> Result<usize, ScenarioError> {
+    value.checked_mul(factor).ok_or_else(|| {
+        resource_refusal(
+            "decode",
+            "preflight",
+            "heap_bytes",
+            u128::MAX,
+            u128::MAX,
+            0,
+            0,
+        )
+    })
+}
+
+fn checked_decode_plan_add(left: usize, right: usize) -> Result<usize, ScenarioError> {
+    left.checked_add(right).ok_or_else(|| {
+        resource_refusal(
+            "decode",
+            "preflight",
+            "heap_bytes",
+            u128::MAX,
+            u128::MAX,
+            0,
+            0,
+        )
+    })
+}
+
+fn largest_semantic_slot_bytes() -> usize {
+    [
+        std::mem::size_of::<Sx>(),
+        std::mem::size_of::<Frame>(),
+        std::mem::size_of::<BoundaryCondition>(),
+        std::mem::size_of::<LoadCase>(),
+        std::mem::size_of::<Combination>(),
+        std::mem::size_of::<StochasticEnsemble>(),
+        std::mem::size_of::<ContactLaw>(),
+        std::mem::size_of::<TimeSignal>(),
+        std::mem::size_of::<Payload>(),
+        std::mem::size_of::<(String, f64)>(),
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or(1)
+}
+
+/// Derive a conservative end-to-end decode plan from source cardinality.
+///
+/// Every syntax node consumes at least one source byte. The semantic bound
+/// charges every possible node at the largest decoded slot size, every source
+/// byte once for cloned text, and a further 64 bytes per input byte for the
+/// closed typed-payload algebra. Canonical numeric spelling is bounded at 32
+/// output bytes per input byte plus a fixed version/header allowance.
+pub fn plan_ir_decode(text: &str) -> Result<IrDecodePlan, ScenarioError> {
+    const PAYLOAD_HEAP_BYTES_PER_WIRE_BYTE: usize = 64;
+    const CANONICAL_BYTES_PER_INPUT_BYTE: usize = 32;
+    const CANONICAL_FIXED_BYTES: usize = 256;
+
+    let input_bytes = text.len();
+    let syntax_nodes_upper = input_bytes.max(1);
+    let syntax_slot_bytes = std::mem::size_of::<Sx>().checked_mul(2).ok_or_else(|| {
+        resource_refusal(
+            "decode",
+            "preflight",
+            "heap_bytes",
+            u128::MAX,
+            u128::MAX,
+            0,
+            0,
+        )
+    })?;
+    let syntax_heap_bytes = checked_decode_plan_mul(syntax_nodes_upper, syntax_slot_bytes)
+        .and_then(|bytes| checked_decode_plan_add(bytes, input_bytes))?;
+    let semantic_factor = largest_semantic_slot_bytes()
+        .checked_add(PAYLOAD_HEAP_BYTES_PER_WIRE_BYTE)
+        .and_then(|bytes| bytes.checked_add(1))
+        .ok_or_else(|| {
+            resource_refusal(
+                "decode",
+                "preflight",
+                "heap_bytes",
+                u128::MAX,
+                u128::MAX,
+                0,
+                0,
+            )
+        })?;
+    let semantic_heap_bytes = checked_decode_plan_mul(input_bytes, semantic_factor)?;
+    let canonical_output_bytes =
+        checked_decode_plan_mul(input_bytes, CANONICAL_BYTES_PER_INPUT_BYTE)
+            .and_then(|bytes| checked_decode_plan_add(bytes, CANONICAL_FIXED_BYTES))?;
+    let payload_scratch_bytes = input_bytes / 2;
+    let peak_heap_bytes = checked_decode_plan_add(syntax_heap_bytes, semantic_heap_bytes)
+        .and_then(|bytes| checked_decode_plan_add(bytes, canonical_output_bytes))
+        .and_then(|bytes| checked_decode_plan_add(bytes, payload_scratch_bytes))?;
+    let planned_work = (input_bytes as u128)
+        .checked_mul(4)
+        .and_then(|work| work.checked_add(canonical_output_bytes as u128))
+        .and_then(|work| work.checked_add(payload_scratch_bytes as u128))
+        .ok_or_else(|| {
+            resource_refusal("decode", "preflight", "work", u128::MAX, u128::MAX, 0, 0)
+        })?;
+
+    Ok(IrDecodePlan {
+        input_bytes,
+        syntax_nodes_upper,
+        syntax_heap_bytes,
+        semantic_heap_bytes,
+        canonical_output_bytes,
+        peak_heap_bytes,
+        planned_work,
+    })
+}
+
+fn admit_decode_plan(plan: IrDecodePlan, budget: IrDecodeBudget) -> Result<(), ScenarioError> {
+    for (resource, requested, limit) in [
+        (
+            "heap_bytes",
+            plan.peak_heap_bytes as u128,
+            budget.max_heap_bytes as u128,
+        ),
+        (
+            "output_bytes",
+            plan.canonical_output_bytes as u128,
+            budget.max_output_bytes as u128,
+        ),
+        ("work", plan.planned_work, budget.max_work),
+    ] {
+        if requested > limit {
+            return Err(resource_refusal(
+                "decode",
+                "preflight",
+                resource,
+                requested,
+                limit,
+                0,
+                plan.planned_work,
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn err(at: usize, what: &str) -> ScenarioError {
     ScenarioError::Parse {
         span: IrSourceSpan { start: at, end: at },
@@ -704,7 +1262,10 @@ impl ScenarioError {
             Self::Parse { path, .. } | Self::ReservedBoundaryRole { path, .. } => {
                 path.insert_str(0, prefix);
             }
-            Self::Dimensions { .. } | Self::Frame { .. } | Self::Evaluate { .. } => {}
+            Self::Dimensions { .. }
+            | Self::Frame { .. }
+            | Self::Evaluate { .. }
+            | Self::Resource { .. } => {}
         }
         self
     }
@@ -714,7 +1275,10 @@ impl ScenarioError {
             Self::Parse { path, .. } | Self::ReservedBoundaryRole { path, .. } => {
                 path.insert(0, '$');
             }
-            Self::Dimensions { .. } | Self::Frame { .. } | Self::Evaluate { .. } => {}
+            Self::Dimensions { .. }
+            | Self::Frame { .. }
+            | Self::Evaluate { .. }
+            | Self::Resource { .. } => {}
         }
         self
     }
@@ -822,12 +1386,14 @@ impl<'a> SxParser<'a> {
     }
 
     fn reserve<T>(&self, values: &mut Vec<T>, additional: usize) -> Result<(), ScenarioError> {
-        values.try_reserve(additional).map_err(|allocation_error| {
-            err(
-                self.pos,
-                &format!("IR parser allocation refused: {allocation_error}"),
-            )
-        })
+        values
+            .try_reserve_exact(additional)
+            .map_err(|allocation_error| {
+                err(
+                    self.pos,
+                    &format!("IR parser allocation refused: {allocation_error}"),
+                )
+            })
     }
 
     fn parse_one(&mut self, depth: usize) -> Result<Sx, ScenarioError> {
@@ -1811,8 +2377,90 @@ pub fn parse_ir_with_budget(
     text: &str,
     budget: IrParseBudget,
 ) -> Result<DecodedScenario, ScenarioError> {
-    let root = parse_sx(text, budget)?;
-    (|| {
+    parse_ir_with_resource_budget(text, budget, IrDecodeBudget::default())
+}
+
+fn map_decode_allocation_refusal(
+    error: ScenarioError,
+    phase: &'static str,
+    requested: usize,
+    budget: IrDecodeBudget,
+    plan: IrDecodePlan,
+    completed: u128,
+) -> ScenarioError {
+    let allocation_refused = match &error {
+        ScenarioError::Parse { what, .. } | ScenarioError::Evaluate { what } => {
+            what.contains("allocation") && what.contains("refused")
+        }
+        _ => false,
+    };
+    if allocation_refused {
+        resource_refusal(
+            "decode",
+            phase,
+            "heap_bytes",
+            requested as u128,
+            budget.max_heap_bytes as u128,
+            completed,
+            plan.planned_work,
+        )
+    } else {
+        error
+    }
+}
+
+fn decode_reemission_error(error: ScenarioError) -> ScenarioError {
+    match error {
+        ScenarioError::Resource {
+            resource,
+            requested,
+            limit,
+            completed,
+            planned,
+            ..
+        } => resource_refusal(
+            "decode",
+            "canonical re-emission",
+            resource,
+            requested,
+            limit,
+            completed,
+            planned,
+        ),
+        other => other,
+    }
+}
+
+/// Parse scenario IR under independent syntax and end-to-end resource budgets.
+///
+/// A conservative logical heap/output/work plan is admitted before the syntax
+/// tree is allocated. Semantic values are decoded only after that admission,
+/// and canonical source/migration receipt bytes use the exact-reservation
+/// writer. Any refusal drops local intermediates and publishes no scenario or
+/// receipt.
+///
+/// # Errors
+/// [`ScenarioError::Resource`] identifies the refused operation, phase,
+/// resource, request, cap, and completed/planned work. Structural or semantic
+/// failures retain their existing typed errors and source paths.
+pub fn parse_ir_with_resource_budget(
+    text: &str,
+    syntax_budget: IrParseBudget,
+    resource_budget: IrDecodeBudget,
+) -> Result<DecodedScenario, ScenarioError> {
+    let plan = plan_ir_decode(text)?;
+    admit_decode_plan(plan, resource_budget)?;
+    let root = parse_sx(text, syntax_budget).map_err(|error| {
+        map_decode_allocation_refusal(
+            error,
+            "syntax allocation",
+            plan.syntax_heap_bytes,
+            resource_budget,
+            plan,
+            0,
+        )
+    })?;
+    let decoded = (|| {
         let root_items = as_list(&root, "scenario")?;
         let (source_version, wire, items) = scenario_wire_header(&root, root_items)?;
         if items.len() != 9 {
@@ -1877,7 +2525,29 @@ pub fn parse_ir_with_budget(
             contacts,
             environment,
         };
-        let canonical = write_ir(&scenario);
+        let exact_output_plan = write_ir_plan(&scenario)?;
+        if exact_output_plan.output_bytes > plan.canonical_output_bytes
+            || exact_output_plan.planned_work > plan.planned_work
+        {
+            return Err(ScenarioError::Evaluate {
+                what: format!(
+                    "scenario IR decode plan drifted: exact re-emission requests {} bytes and {} work units, conservative plan admitted {} bytes and {} work units",
+                    exact_output_plan.output_bytes,
+                    exact_output_plan.planned_work,
+                    plan.canonical_output_bytes,
+                    plan.planned_work
+                ),
+            });
+        }
+        let canonical = write_ir_with_budget(
+            &scenario,
+            IrWriteBudget {
+                max_output_bytes: resource_budget.max_output_bytes,
+                max_heap_bytes: resource_budget.max_heap_bytes,
+                max_work: resource_budget.max_work,
+            },
+        )
+        .map_err(decode_reemission_error)?;
         let (dimension_crosswalk, source_canonicalization) =
             if wire == DimensionWire::LegacyFive {
                 (
@@ -1924,6 +2594,17 @@ pub fn parse_ir_with_budget(
         })
     })()
     .map_err(ScenarioError::rooted)
+    .map_err(|error| {
+        map_decode_allocation_refusal(
+            error,
+            "semantic allocation",
+            plan.peak_heap_bytes,
+            resource_budget,
+            plan,
+            plan.input_bytes as u128,
+        )
+    })?;
+    Ok(decoded)
 }
 
 /// Round-trip helper for lints/tests: violations if reparse ≠ original.

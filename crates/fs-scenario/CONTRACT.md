@@ -59,7 +59,10 @@ flagships.
   crosswalk instead of guessing how a typed payload should migrate. The
   default parser's per-atom ceiling equals its already-bounded 16 MiB total
   input ceiling, so a canonical typed atom cannot trip an unrelated historical
-  1 MiB limit while the complete artifact remains admitted.
+  1 MiB limit while the complete artifact remains admitted. The payload
+  encoder exposes an allocation-free exact byte counter and a fallible
+  exact-reservation materializer; the historical infallible convenience
+  delegates to that single codec grammar.
 - `bc` — `BoundaryCondition { region, physics, kind, value, compatibility,
   frame }`; `expectation(physics, kind)` is the closed dimensional and carrier
   contract table. Existing rows retain velocity for flow Dirichlet, kg/s for
@@ -132,16 +135,27 @@ flagships.
   Strings use exactly the writer's quote and backslash escapes; every other
   backslash sequence is rejected so distinct authority bytes cannot alias one
   decoded identity through an undocumented escape rule.
-  `parse_ir` applies `DEFAULT_IR_PARSE_BUDGET`; `parse_ir_with_budget` exposes
+  `parse_ir` applies `DEFAULT_IR_PARSE_BUDGET` and
+  `DEFAULT_IR_DECODE_BUDGET`; `parse_ir_with_budget` exposes
   explicit byte, recursive-depth, total-node, atom/string-byte, and per-list
-  child limits. Every limit is checked before recursive descent or syntactic
+  child limits while retaining the default end-to-end decode authority.
+  `plan_ir_decode` derives a checked conservative syntax/semantic/output/work
+  plan directly from source cardinality, and
+  `parse_ir_with_resource_budget` admits that plan before syntax-tree
+  allocation. Every syntax limit is checked before the corresponding recursive or syntactic
   tree growth; caller-selected depth may tighten but cannot exceed the
   recursive implementation's hard safety ceiling. Non-finite wire numbers and
   invalid Chebyshev constructor inputs are structured parse refusals, never
   panics. Syntax-tree growth, atom buffers, every decoded collection vector,
   and every decoded string-field copy reserve fallibly before population. The
-  byte/node limits also bound decoder collection sizes, but are not a separately
-  metered exact heap-byte budget. Every syntax node retains its exact half-open
+  decoded plan charges retained syntax, semantic slots/text, typed-payload
+  expansion/scratch, canonical receipt output, and deterministic work under
+  separate caps. Resource refusals report operation, phase, requested units,
+  cap, and completed/planned work; no partial scenario or receipt is returned.
+  `write_ir_plan` computes exact canonical text, payload, peak-logical-heap,
+  and work cardinalities without materializing bytes;
+  `write_ir_with_budget` reserves the exact output before emission and encodes
+  payload scratch sequentially under that admitted peak. Every syntax node retains its exact half-open
   source span. Semantic decoding adds a deterministic `$`-rooted structural
   path only while unwinding a refusal, so nested field/index diagnostics do not
   allocate on the green path. Parse and reserved-machine-role refusals expose
@@ -387,6 +401,11 @@ None.
 - **sc-007** adversarial parser budgets hit byte/depth/node/atom/list limits at
   deterministic boundaries; malformed Chebyshev domains/coefficients and
   non-finite wire numbers return `Parse` without unwinding.
+- **sc-007a** exact writer and conservative decoder heap/output/work plans
+  admit the retained collection-rich scenario with UTF-8, quote/backslash
+  escapes, and a typed payload; every one-short cap returns a typed preflight
+  refusal before publication. The same exact/one-short boundary covers legacy
+  v1 migration and its receipt-producing canonical re-emission.
 - **sc-008** direct signal/frame/ensemble result APIs and whole-scenario
   validation refuse non-finite/domain-invalid public structs. Realization
   sample/work budgets are checked at exact boundary and boundary+1, and valid
@@ -485,23 +504,25 @@ None.
 - **The ledger `scenarios` integration is a thin artifact row** (canonical
   IR + seed); a dedicated relational table is deferred to the ledger's
   next schema migration if queries demand it.
-- **IR resource budgets are syntactic, not semantic or byte-exact heap
-  admission**: parsing may intentionally return a finite but dimensionally
+- **IR heap accounting is portable logical admission, not allocator
+  introspection**: parsing may intentionally return a finite but dimensionally
   invalid `Scenario` so migration/diagnostic tooling can inspect it; call
-  `Scenario::validate` before solver admission. Input/node/list limits bound
-  decoder cardinality. The convenience `parse_ir` retains a 16 MiB total-input
-  ceiling; an already-materialized larger canonical artifact needs an explicit
-  `parse_ir_with_budget` authority, while the L6 Machine projection separately
-  refuses scenario artifacts above its own 16 MiB transport bound. The
+  `Scenario::validate` before solver admission. Decode admission conservatively
+  counts requested vector/string capacities, retained typed values, canonical
+  output, and sequential payload scratch; it does not claim allocator metadata,
+  page commitment, fragmentation, or implementation-defined capacity rounding.
+  The convenience `parse_ir` retains a 16 MiB total-input ceiling and the
+  conservative default logical plan; an already-materialized larger canonical
+  artifact needs explicit syntax and resource authorities, while the L6 Machine
+  projection separately refuses scenario artifacts above its own 16 MiB
+  transport bound. The
   semantic `check_round_trip` helper derives only byte/atom authority from the
   exact writer output and retains default structural ceilings. Semantic
   validation has its own explicit work plan and must not reuse syntax limits as
-  an admission receipt. Detecting a current-version source alias performs one
-  canonical `write_ir` re-emission and therefore shares the writer's currently
-  unmetered output allocation; the source receipt is identity evidence, not a
-  heap-admission receipt. Exact decoded-heap
-  accounting plus fallible semantic-finding allocation remain active work under
-  `frankensim-sj31i.24`.
+  a solver-admission receipt. `write_ir` preserves its historical infallible
+  convenience signature by deriving exact caps internally; callers that must
+  handle allocator refusal use `write_ir_with_budget`. Source and migration
+  receipts remain identity evidence, not claims about physical resident memory.
 - **Finding capacity is not exact diagnostic-heap admission**: bounded identity
   previews prevent one long combination name from being copied in full into
   every term finding, but other diagnostic fields and each final `String`
