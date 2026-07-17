@@ -54,8 +54,13 @@ pub use pack::{
     ValidityBoundSide,
 };
 pub use query::{
-    EvaluationDecision, MATDB_EVALUATOR_VERSION, MaterialAnswer, PropertySample,
-    PropertyUsageReceipt, QueryPoint, SelectionPolicy,
+    EvaluationDecision, MATDB_EVALUATOR_VERSION, MAX_PROPERTY_USAGE_AXIS_BYTES,
+    MAX_PROPERTY_USAGE_CLAIM_IDS, MAX_PROPERTY_USAGE_POLICY_BYTES,
+    MAX_PROPERTY_USAGE_PROPERTY_BYTES, MAX_PROPERTY_USAGE_QUERY_AXES,
+    MAX_PROPERTY_USAGE_RECEIPT_BYTES, MAX_PROPERTY_USAGE_SOURCE_HASHES, MaterialAnswer,
+    PROPERTY_USAGE_RECEIPT_IDENTITY_DOMAIN, PROPERTY_USAGE_RECEIPT_IDENTITY_SCHEMA_DECLARATION,
+    PROPERTY_USAGE_RECEIPT_IDENTITY_VERSION, PROPERTY_USAGE_RECEIPT_SCHEMA_VERSION, PropertySample,
+    PropertyUsageReceipt, PropertyUsageReceiptError, QueryPoint, SelectionPolicy,
 };
 pub use species_pack::{
     NormalizedSpeciesPack, SPECIES_MOLAR_MASS_DIMS, SPECIES_PACK_SCHEMA_VERSION,
@@ -216,6 +221,18 @@ pub enum MatDbError {
         /// The foreign tag.
         tag: String,
     },
+    /// A receipt names a portable schema this build cannot replay.
+    ReceiptSchemaVersionDrift {
+        /// The receipt's schema version.
+        receipt: u32,
+        /// This build's schema version.
+        current: u32,
+    },
+    /// A produced or replayed usage receipt violates the closed portable profile.
+    PropertyUsageReceiptNotPortable {
+        /// Exact structural/resource refusal.
+        error: PropertyUsageReceiptError,
+    },
     /// A receipt was minted by a different evaluator version; it cannot
     /// be adjudicated by this one.
     EvaluatorVersionDrift {
@@ -340,6 +357,13 @@ impl fmt::Display for MatDbError {
             }
             MatDbError::UnknownPolicyTag { tag } => {
                 write!(f, "no selection policy owns receipt tag '{tag}'")
+            }
+            MatDbError::ReceiptSchemaVersionDrift { receipt, current } => write!(
+                f,
+                "property-usage receipt schema {receipt} cannot be replayed by schema {current}"
+            ),
+            MatDbError::PropertyUsageReceiptNotPortable { error } => {
+                write!(f, "property-usage receipt is not portable: {error}")
             }
             MatDbError::EvaluatorVersionDrift { receipt, current } => write!(
                 f,

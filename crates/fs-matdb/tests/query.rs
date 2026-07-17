@@ -2,13 +2,16 @@
 //! extrapolation refuses; fusion is explicit; unstated uncertainty
 //! never launders into a certificate.
 
-use fs_blake3::hash_bytes;
+use fs_blake3::{hash_bytes, hash_domain};
 use fs_evidence::NumericalKind;
 use fs_evidence::ValidityDomain;
 use fs_matdb::{
-    ClaimSet, EvaluationDecision, InterpolationPolicy, MATDB_EVALUATOR_VERSION, MatDbError,
-    ObservationDataset, PropertyClaim, PropertyKey, PropertyUsageReceipt, PropertyValue,
-    Provenance, QueryPoint, SelectionPolicy, UncertaintyModel,
+    ClaimSet, EvaluationDecision, InterpolationPolicy, MATDB_EVALUATOR_VERSION,
+    MAX_PROPERTY_USAGE_PROPERTY_BYTES, MAX_PROPERTY_USAGE_QUERY_AXES, MatDbError,
+    ObservationDataset, PROPERTY_USAGE_RECEIPT_IDENTITY_DOMAIN,
+    PROPERTY_USAGE_RECEIPT_IDENTITY_VERSION, PROPERTY_USAGE_RECEIPT_SCHEMA_VERSION, PropertyClaim,
+    PropertyKey, PropertyUsageReceipt, PropertyUsageReceiptError, PropertyValue, Provenance,
+    QueryPoint, SelectionPolicy, UncertaintyModel,
 };
 use fs_qty::Dims;
 
@@ -49,6 +52,44 @@ fn room() -> QueryPoint {
     QueryPoint::new().with("T", 293.15).expect("finite point")
 }
 
+fn portable_receipt_fixture() -> (ClaimSet, PropertyUsageReceipt) {
+    let mut set = ClaimSet::new();
+    let observation = set
+        .register_observation(ObservationDataset {
+            specimen: "AA6061-T6 plate".to_string(),
+            method: "ASTM B311".to_string(),
+            artifact: hash_bytes(b"portable receipt observation"),
+            caveats: "none".to_string(),
+            provenance: provenance("portable receipt lab report"),
+        })
+        .expect("observation registers");
+    let mut claim = density(2699.0, "portable receipt source", stated());
+    claim.observations.push(observation);
+    set.insert_claim(claim).expect("claim inserts");
+    let receipt = set
+        .query("density", &room(), SelectionPolicy::SingleClaimOnly)
+        .expect("fixture query answers")
+        .receipt;
+    (set, receipt)
+}
+
+fn assert_receipt_identity_moves(
+    baseline: &PropertyUsageReceipt,
+    changed: &PropertyUsageReceipt,
+    field: &str,
+) {
+    assert_ne!(
+        baseline.content_hash(),
+        changed.content_hash(),
+        "receipt identity must bind {field}"
+    );
+}
+
+fn push_receipt_wire_string(bytes: &mut Vec<u8>, value: &str) {
+    bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(value.as_bytes());
+}
+
 #[test]
 fn answers_carry_honest_evidence_and_complete_receipts() {
     let mut set = ClaimSet::new();
@@ -80,6 +121,10 @@ fn answers_carry_honest_evidence_and_complete_receipts() {
     );
 
     let receipt = &answer.receipt;
+    assert_eq!(
+        receipt.schema_version,
+        PROPERTY_USAGE_RECEIPT_SCHEMA_VERSION
+    );
     assert_eq!(receipt.property, "density");
     assert_eq!(receipt.query_point, vec![("T".to_string(), 293.15)]);
     assert_eq!(receipt.considered, vec![id]);
@@ -276,6 +321,56 @@ fn curves_interpolate_inside_and_refuse_beyond_data() {
 }
 
 #[test]
+fn receipt_replay_compares_decision_floats_by_exact_bits() {
+    let mut set = ClaimSet::new();
+    set.insert_claim(PropertyClaim {
+        key: PropertyKey::new("signed-zero-probe", CONDUCTIVITY_DIMS),
+        value: PropertyValue::Curve {
+            abscissa: "phase".to_string(),
+            abscissa_dims: Dims([0, 0, 0, 0, 0, 0]),
+            knots: vec![(-0.0, 1.0), (1.0, 2.0)],
+            dims: CONDUCTIVITY_DIMS,
+        },
+        validity: ValidityDomain::unconstrained().with("phase", -1.0, 1.0),
+        uncertainty: stated(),
+        interpolation: InterpolationPolicy::TabulatedOnly,
+        observations: Vec::new(),
+        provenance: provenance("signed-zero fixture"),
+    })
+    .expect("signed-zero curve inserts");
+    let point = QueryPoint::new()
+        .with("phase", -0.0)
+        .expect("signed zero is finite");
+    let authentic = set
+        .query(
+            "signed-zero-probe",
+            &point,
+            SelectionPolicy::SingleClaimOnly,
+        )
+        .expect("exact signed-zero knot answers")
+        .receipt;
+    assert!(matches!(
+        &authentic.decision,
+        EvaluationDecision::ExactTabulated { at } if at.to_bits() == (-0.0_f64).to_bits()
+    ));
+
+    let mut sign_tampered = authentic.clone();
+    sign_tampered.decision = EvaluationDecision::ExactTabulated { at: 0.0 };
+    sign_tampered
+        .try_content_hash()
+        .expect("the tampered shape is still portable");
+    assert_ne!(
+        authentic.content_hash(),
+        sign_tampered.content_hash(),
+        "exact-bit receipt identity must bind the zero sign"
+    );
+    assert!(matches!(
+        set.verify_receipt(&sign_tampered),
+        Err(MatDbError::ReceiptMismatch { field: "decision" })
+    ));
+}
+
+#[test]
 fn unstated_uncertainty_is_marked_and_never_certifies() {
     let mut set = ClaimSet::new();
     set.insert_claim(density(
@@ -383,6 +478,11 @@ fn receipt_completeness_mutation_battery() {
             r.source_hashes.pop();
             r
         }),
+        ("schema_version", {
+            let mut r = good.clone();
+            r.schema_version += 1;
+            r
+        }),
     ];
     for (label, mutated) in &mutations {
         let refused = set.verify_receipt(mutated);
@@ -407,7 +507,12 @@ fn receipt_completeness_mutation_battery() {
     ));
     assert!(matches!(
         set.verify_receipt(&mutations[4].1),
-        Err(MatDbError::ReceiptMismatch { field: "selected" })
+        Err(MatDbError::PropertyUsageReceiptNotPortable {
+            error: PropertyUsageReceiptError::InvalidField {
+                field: "source-hashes",
+                ..
+            }
+        })
     ));
     assert!(matches!(
         set.verify_receipt(&mutations[5].1),
@@ -428,8 +533,492 @@ fn receipt_completeness_mutation_battery() {
             current: 1
         })
     ));
+    assert!(matches!(
+        set.verify_receipt(&mutations[11].1),
+        Err(MatDbError::ReceiptSchemaVersionDrift {
+            receipt,
+            current: PROPERTY_USAGE_RECEIPT_SCHEMA_VERSION,
+        }) if receipt == PROPERTY_USAGE_RECEIPT_SCHEMA_VERSION + 1
+    ));
     println!(
         "{{\"suite\":\"fs-matdb\",\"case\":\"receipt-mutation-battery\",\"verdict\":\"pass\",\
-         \"detail\":\"11 field mutations all refuse typed and all move the receipt identity\"}}"
+         \"detail\":\"12 field mutations all refuse typed and all move the receipt identity\"}}"
     );
+}
+
+#[test]
+fn property_usage_receipt_v2_round_trips_and_replays_exactly() {
+    let (set, receipt) = portable_receipt_fixture();
+    assert_eq!(PROPERTY_USAGE_RECEIPT_IDENTITY_VERSION, 2);
+    assert_eq!(
+        PROPERTY_USAGE_RECEIPT_IDENTITY_DOMAIN,
+        "org.frankensim.fs-matdb.property-usage-receipt.v2"
+    );
+    assert_eq!(
+        receipt.try_content_hash().expect("portable identity"),
+        receipt.content_hash()
+    );
+
+    let bytes = receipt.to_bytes().expect("receipt encodes");
+    let mut manual = Vec::new();
+    manual.extend_from_slice(b"FSMATUR\0");
+    manual.extend_from_slice(&PROPERTY_USAGE_RECEIPT_SCHEMA_VERSION.to_le_bytes());
+    manual.push(1);
+    push_receipt_wire_string(&mut manual, &receipt.property);
+    manual.push(2);
+    manual.extend_from_slice(&(receipt.query_point.len() as u64).to_le_bytes());
+    for (axis, value) in &receipt.query_point {
+        push_receipt_wire_string(&mut manual, axis);
+        manual.extend_from_slice(&value.to_bits().to_le_bytes());
+    }
+    manual.push(3);
+    manual.extend_from_slice(&(receipt.considered.len() as u64).to_le_bytes());
+    for id in &receipt.considered {
+        manual.extend_from_slice(id.0.as_bytes());
+    }
+    manual.push(4);
+    manual.extend_from_slice(&(receipt.in_domain.len() as u64).to_le_bytes());
+    for id in &receipt.in_domain {
+        manual.extend_from_slice(id.0.as_bytes());
+    }
+    manual.push(5);
+    manual.extend_from_slice(receipt.selected.0.as_bytes());
+    manual.push(6);
+    push_receipt_wire_string(&mut manual, receipt.policy);
+    manual.extend_from_slice(&[7, 1, 8, 1, 9]);
+    manual.extend_from_slice(&receipt.evaluator_version.to_le_bytes());
+    manual.push(10);
+    manual.extend_from_slice(&(receipt.source_hashes.len() as u64).to_le_bytes());
+    for hash in &receipt.source_hashes {
+        manual.extend_from_slice(hash.as_bytes());
+    }
+    assert_eq!(
+        &bytes[..bytes.len() - 32],
+        manual,
+        "independent manual preimage locks magic, tags, widths, order, counts, and exact bits"
+    );
+    assert_eq!(
+        &bytes[bytes.len() - 32..],
+        receipt.content_hash().as_bytes(),
+        "transport retains the exact v2 content identity"
+    );
+    let mut identity_preimage = PROPERTY_USAGE_RECEIPT_IDENTITY_VERSION
+        .to_le_bytes()
+        .to_vec();
+    identity_preimage.extend_from_slice(&manual);
+    assert_eq!(
+        receipt.content_hash(),
+        hash_domain(PROPERTY_USAGE_RECEIPT_IDENTITY_DOMAIN, &identity_preimage),
+        "the independent identity preimage binds version plus the exact wire field stream"
+    );
+    let mut alternate_version = identity_preimage.clone();
+    alternate_version[..4]
+        .copy_from_slice(&(PROPERTY_USAGE_RECEIPT_IDENTITY_VERSION + 1).to_le_bytes());
+    assert_ne!(
+        receipt.content_hash(),
+        hash_domain(PROPERTY_USAGE_RECEIPT_IDENTITY_DOMAIN, &alternate_version),
+        "identity-version rotation must move the digest"
+    );
+    assert_ne!(
+        receipt.content_hash(),
+        hash_domain(
+            "org.frankensim.fs-matdb.property-usage-receipt.foreign",
+            &identity_preimage,
+        ),
+        "identity-domain rotation must move the digest"
+    );
+    let decoded = PropertyUsageReceipt::from_bytes(&bytes).expect("receipt decodes");
+    assert_eq!(decoded, receipt);
+    assert_eq!(decoded.to_bytes().expect("fixed point"), bytes);
+    set.verify_receipt(&decoded)
+        .expect("decoded receipt replays against its claim set");
+
+    let pinned = PropertyUsageReceipt::from_bytes_verified(&bytes, receipt.content_hash())
+        .expect("externally pinned identity admits");
+    assert_eq!(pinned, receipt);
+
+    let mut stale = receipt.clone();
+    stale.evaluator_version += 1;
+    let stale = PropertyUsageReceipt::from_bytes(
+        &stale
+            .to_bytes()
+            .expect("structurally valid stale evaluator receipt encodes"),
+    )
+    .expect("stale evaluator receipt remains structurally decodable");
+    assert!(matches!(
+        set.verify_receipt(&stale),
+        Err(MatDbError::EvaluatorVersionDrift {
+            receipt,
+            current: MATDB_EVALUATOR_VERSION,
+        }) if receipt == MATDB_EVALUATOR_VERSION + 1
+    ));
+
+    for decision in [
+        EvaluationDecision::ConstantWithinValidity,
+        EvaluationDecision::ExactScalar,
+        EvaluationDecision::ExactTabulated { at: -0.0 },
+        EvaluationDecision::LinearInside {
+            x_lo: -0.0,
+            x_hi: 1.0,
+        },
+    ] {
+        let mut variant = receipt.clone();
+        variant.decision = decision;
+        let encoded = variant.to_bytes().expect("decision variant encodes");
+        let recovered = PropertyUsageReceipt::from_bytes(&encoded).expect("variant decodes");
+        match (&variant.decision, &recovered.decision) {
+            (
+                EvaluationDecision::ExactTabulated { at: expected },
+                EvaluationDecision::ExactTabulated { at: actual },
+            ) => assert_eq!(actual.to_bits(), expected.to_bits()),
+            (
+                EvaluationDecision::LinearInside {
+                    x_lo: expected_lo,
+                    x_hi: expected_hi,
+                },
+                EvaluationDecision::LinearInside {
+                    x_lo: actual_lo,
+                    x_hi: actual_hi,
+                },
+            ) => {
+                assert_eq!(actual_lo.to_bits(), expected_lo.to_bits());
+                assert_eq!(actual_hi.to_bits(), expected_hi.to_bits());
+            }
+            (expected, actual) => assert_eq!(actual, expected),
+        }
+    }
+}
+
+#[test]
+fn property_usage_receipt_v2_binds_collection_boundaries() {
+    let (_, receipt) = portable_receipt_fixture();
+    let a = fs_matdb::ClaimId(hash_bytes(b"boundary-a"));
+    let b = fs_matdb::ClaimId(hash_bytes(b"boundary-b"));
+
+    let mut left = receipt.clone();
+    left.considered = vec![a, b];
+    left.in_domain = vec![b];
+    left.selected = b;
+    left.source_hashes[0] = b.0;
+
+    let mut right = left.clone();
+    right.considered = vec![a];
+    right.in_domain = vec![b, b];
+
+    let legacy_unframed_ids = |candidate: &PropertyUsageReceipt| {
+        candidate
+            .considered
+            .iter()
+            .chain(&candidate.in_domain)
+            .flat_map(|id| id.0.0)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        legacy_unframed_ids(&left),
+        legacy_unframed_ids(&right),
+        "v1 could not recover this collection boundary"
+    );
+    assert_ne!(
+        left.content_hash(),
+        right.content_hash(),
+        "v2 count framing must bind the boundary"
+    );
+    left.try_content_hash()
+        .expect("the query-shaped side remains portable");
+    assert!(matches!(
+        right.try_content_hash(),
+        Err(PropertyUsageReceiptError::InvalidField {
+            field: "considered" | "in-domain",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn property_usage_receipt_identity_fields_move_independently() {
+    let (_, baseline) = portable_receipt_fixture();
+
+    let mut changed = baseline.clone();
+    changed.schema_version += 1;
+    assert_receipt_identity_moves(&baseline, &changed, "wire schema version");
+
+    let mut changed = baseline.clone();
+    changed.property.push_str("-alternate");
+    assert_receipt_identity_moves(&baseline, &changed, "property bytes and length");
+
+    let mut changed = baseline.clone();
+    changed.query_point[0].0 = "temperature".to_string();
+    assert_receipt_identity_moves(&baseline, &changed, "query axis bytes and length");
+
+    let mut changed = baseline.clone();
+    changed.query_point[0].1 = f64::from_bits(changed.query_point[0].1.to_bits() + 1);
+    assert_receipt_identity_moves(&baseline, &changed, "query coordinate exact bits");
+
+    let mut changed = baseline.clone();
+    changed
+        .query_point
+        .push(("pressure".to_string(), 101_325.0));
+    assert_receipt_identity_moves(&baseline, &changed, "query-point count and order");
+
+    let alternate = fs_matdb::ClaimId(hash_bytes(b"alternate claim identity"));
+    let mut changed = baseline.clone();
+    changed.considered.push(alternate);
+    assert_receipt_identity_moves(&baseline, &changed, "considered count/order/id");
+
+    let mut changed = baseline.clone();
+    changed.considered.push(alternate);
+    changed.in_domain.push(alternate);
+    assert_receipt_identity_moves(&baseline, &changed, "in-domain count/order/id");
+
+    let mut changed = baseline.clone();
+    changed.selected = alternate;
+    changed.considered.push(alternate);
+    changed.in_domain.push(alternate);
+    changed.source_hashes[0] = alternate.0;
+    assert_receipt_identity_moves(&baseline, &changed, "selected claim id");
+
+    let mut changed = baseline.clone();
+    changed.policy = "prefer-observation-backed";
+    assert_receipt_identity_moves(&baseline, &changed, "policy bytes and length");
+
+    let mut changed = baseline.clone();
+    changed.decision = EvaluationDecision::ExactScalar;
+    assert_receipt_identity_moves(&baseline, &changed, "decision tag");
+
+    let mut exact_a = baseline.clone();
+    exact_a.decision = EvaluationDecision::ExactTabulated { at: 1.0 };
+    let mut exact_b = exact_a.clone();
+    exact_b.decision = EvaluationDecision::ExactTabulated {
+        at: f64::from_bits(1.0_f64.to_bits() + 1),
+    };
+    assert_receipt_identity_moves(&exact_a, &exact_b, "exact-tabulated at bits");
+
+    let mut linear_a = baseline.clone();
+    linear_a.decision = EvaluationDecision::LinearInside {
+        x_lo: 1.0,
+        x_hi: 3.0,
+    };
+    let mut linear_b = linear_a.clone();
+    linear_b.decision = EvaluationDecision::LinearInside {
+        x_lo: 2.0,
+        x_hi: 3.0,
+    };
+    assert_receipt_identity_moves(&linear_a, &linear_b, "linear x-lo bits");
+    linear_b.decision = EvaluationDecision::LinearInside {
+        x_lo: 1.0,
+        x_hi: 4.0,
+    };
+    assert_receipt_identity_moves(&linear_a, &linear_b, "linear x-hi bits");
+
+    let mut changed = baseline.clone();
+    changed.observation_backed = false;
+    assert_receipt_identity_moves(&baseline, &changed, "observation-backed flag");
+
+    let mut changed = baseline.clone();
+    changed.evaluator_version += 1;
+    assert_receipt_identity_moves(&baseline, &changed, "evaluator version");
+
+    let mut changed = baseline.clone();
+    changed.source_hashes[1] = hash_bytes(b"alternate observation source");
+    assert_receipt_identity_moves(&baseline, &changed, "source hash");
+
+    let mut changed = baseline.clone();
+    changed
+        .source_hashes
+        .push(hash_bytes(b"additional observation source"));
+    assert_receipt_identity_moves(&baseline, &changed, "source count and order");
+}
+
+#[test]
+fn property_usage_receipt_v2_decoder_fails_closed() {
+    let (_, receipt) = portable_receipt_fixture();
+    let bytes = receipt.to_bytes().expect("fixture encodes");
+
+    for length in 0..bytes.len() {
+        assert!(
+            PropertyUsageReceipt::from_bytes(&bytes[..length]).is_err(),
+            "truncated prefix of {length} bytes must refuse"
+        );
+    }
+
+    let mut wrong_schema = bytes.clone();
+    wrong_schema[8..12].copy_from_slice(&1_u32.to_le_bytes());
+    assert!(matches!(
+        PropertyUsageReceipt::from_bytes(&wrong_schema),
+        Err(PropertyUsageReceiptError::UnsupportedSchemaVersion {
+            found: 1,
+            supported: PROPERTY_USAGE_RECEIPT_SCHEMA_VERSION,
+        })
+    ));
+
+    let mut wrong_magic = bytes.clone();
+    wrong_magic[0] ^= 1;
+    assert!(matches!(
+        PropertyUsageReceipt::from_bytes(&wrong_magic),
+        Err(PropertyUsageReceiptError::Malformed { .. })
+    ));
+
+    let mut wrong_field_tag = bytes.clone();
+    wrong_field_tag[12] = u8::MAX;
+    assert!(matches!(
+        PropertyUsageReceipt::from_bytes(&wrong_field_tag),
+        Err(PropertyUsageReceiptError::Malformed { .. })
+    ));
+
+    let mut excessive_axes = bytes.clone();
+    let query_count_offset = 8 + 4 + 1 + 8 + receipt.property.len() + 1;
+    excessive_axes[query_count_offset..query_count_offset + 8]
+        .copy_from_slice(&((MAX_PROPERTY_USAGE_QUERY_AXES as u64) + 1).to_le_bytes());
+    assert!(matches!(
+        PropertyUsageReceipt::from_bytes(&excessive_axes),
+        Err(PropertyUsageReceiptError::ResourceLimit {
+            resource: "query-axes",
+            ..
+        })
+    ));
+
+    let mut hostile_property_length = bytes.clone();
+    hostile_property_length[13..21].copy_from_slice(&u64::MAX.to_le_bytes());
+    assert!(matches!(
+        PropertyUsageReceipt::from_bytes(&hostile_property_length),
+        Err(PropertyUsageReceiptError::ResourceLimit {
+            resource: "property-bytes",
+            observed: u64::MAX,
+            ..
+        })
+    ));
+
+    let source_count_offset = bytes.len() - 32 - 32 * receipt.source_hashes.len() - 8;
+    let mut hostile_source_count = bytes.clone();
+    hostile_source_count[source_count_offset..source_count_offset + 8]
+        .copy_from_slice(&u64::MAX.to_le_bytes());
+    assert!(matches!(
+        PropertyUsageReceipt::from_bytes(&hostile_source_count),
+        Err(PropertyUsageReceiptError::ResourceLimit {
+            resource: "source-hashes",
+            observed: u64::MAX,
+            ..
+        })
+    ));
+
+    let policy_offset = bytes
+        .windows(receipt.policy.len())
+        .position(|window| window == receipt.policy.as_bytes())
+        .expect("policy bytes are present");
+    let mut unknown_policy = bytes.clone();
+    unknown_policy[policy_offset] = b'x';
+    assert!(matches!(
+        PropertyUsageReceipt::from_bytes(&unknown_policy),
+        Err(PropertyUsageReceiptError::UnknownPolicyTag { .. })
+    ));
+
+    let source_section_len = 1 + 8 + 32 * receipt.source_hashes.len();
+    let observation_tag_offset = bytes.len() - 32 - source_section_len - (1 + 4) - (1 + 1);
+    let decision_variant_offset = observation_tag_offset - 1;
+    let mut unknown_decision = bytes.clone();
+    unknown_decision[decision_variant_offset] = u8::MAX;
+    assert!(matches!(
+        PropertyUsageReceipt::from_bytes(&unknown_decision),
+        Err(PropertyUsageReceiptError::UnknownDecisionTag { tag: u8::MAX, .. })
+    ));
+
+    let mut invalid_boolean = bytes.clone();
+    invalid_boolean[observation_tag_offset + 1] = 2;
+    assert!(matches!(
+        PropertyUsageReceipt::from_bytes(&invalid_boolean),
+        Err(PropertyUsageReceiptError::Malformed { .. })
+    ));
+
+    let mut identity_tamper = bytes.clone();
+    *identity_tamper.last_mut().expect("identity byte") ^= 1;
+    assert!(matches!(
+        PropertyUsageReceipt::from_bytes(&identity_tamper),
+        Err(PropertyUsageReceiptError::IdentityMismatch { .. })
+    ));
+
+    let mut trailing = bytes.clone();
+    trailing.push(0);
+    assert!(matches!(
+        PropertyUsageReceipt::from_bytes(&trailing),
+        Err(PropertyUsageReceiptError::Malformed { .. })
+    ));
+
+    assert!(matches!(
+        PropertyUsageReceipt::from_bytes_verified(&bytes, hash_bytes(b"wrong external identity")),
+        Err(PropertyUsageReceiptError::ExternalIdentityMismatch { .. })
+    ));
+}
+
+#[test]
+fn property_usage_receipt_v2_encoder_enforces_canonical_caps_and_relations() {
+    let (set, receipt) = portable_receipt_fixture();
+
+    let mut maximum_property = receipt.clone();
+    maximum_property.property = "p".repeat(MAX_PROPERTY_USAGE_PROPERTY_BYTES);
+    maximum_property
+        .to_bytes()
+        .expect("the exact public property-byte cap is admitted");
+
+    let mut oversized_property = receipt.clone();
+    oversized_property.property = "p".repeat(MAX_PROPERTY_USAGE_PROPERTY_BYTES + 1);
+    assert!(matches!(
+        oversized_property.to_bytes(),
+        Err(PropertyUsageReceiptError::ResourceLimit {
+            resource: "property-bytes",
+            ..
+        })
+    ));
+
+    let mut unordered_axes = receipt.clone();
+    unordered_axes.query_point = vec![("z".to_string(), 1.0), ("a".to_string(), 2.0)];
+    assert!(matches!(
+        unordered_axes.to_bytes(),
+        Err(PropertyUsageReceiptError::InvalidField {
+            field: "query-point",
+            ..
+        })
+    ));
+
+    let mut duplicate_axes = receipt.clone();
+    duplicate_axes.query_point = vec![("T".to_string(), 0.0), ("T".to_string(), 293.15)];
+    assert!(matches!(
+        duplicate_axes.to_bytes(),
+        Err(PropertyUsageReceiptError::InvalidField {
+            field: "query-point",
+            ..
+        })
+    ));
+    assert!(matches!(
+        set.verify_receipt(&duplicate_axes),
+        Err(MatDbError::PropertyUsageReceiptNotPortable {
+            error: PropertyUsageReceiptError::InvalidField {
+                field: "query-point",
+                ..
+            }
+        })
+    ));
+
+    let mut foreign_policy = receipt.clone();
+    foreign_policy.policy = "trust-me";
+    assert!(matches!(
+        foreign_policy.to_bytes(),
+        Err(PropertyUsageReceiptError::UnknownPolicyTag { .. })
+    ));
+
+    let mut stale_schema = receipt.clone();
+    stale_schema.schema_version -= 1;
+    assert!(matches!(
+        stale_schema.to_bytes(),
+        Err(PropertyUsageReceiptError::UnsupportedSchemaVersion { .. })
+    ));
+
+    let mut detached_source = receipt.clone();
+    detached_source.source_hashes[0] = hash_bytes(b"not the selected claim");
+    assert!(matches!(
+        detached_source.to_bytes(),
+        Err(PropertyUsageReceiptError::InvalidField {
+            field: "source-hashes",
+            ..
+        })
+    ));
 }
