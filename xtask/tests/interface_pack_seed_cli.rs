@@ -17,6 +17,10 @@ const JOURNAL_4340_BRONZE_MANIFEST: &str =
     "data/matdb/seed-v1/nasa-tn-d-2223-4340-high-lead-bronze-journal/manifest.tsv";
 const CARBON_PTFE_CR_ROD_MANIFEST: &str =
     "data/matdb/seed-v1/zhang-2021-carbon-ptfe-cr-piston-rod/manifest.tsv";
+const A2017_LLC_RA005_MANIFEST: &str =
+    "data/matdb/seed-v1/yilmaz-2026-a2017-seiken-llc-ra005-wetting/manifest.tsv";
+const A2017_LLC_RA3_MANIFEST: &str =
+    "data/matdb/seed-v1/yilmaz-2026-a2017-seiken-llc-ra3-wetting/manifest.tsv";
 const NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
 fn workspace_path(relative: &str) -> PathBuf {
@@ -404,4 +408,92 @@ fn g3_cli_compiles_committed_carbon_ptfe_chrome_rod_interface() {
         );
     }
     assert!(decisions.contains("\"reason_code\":\"interface_context_admitted\""));
+}
+
+#[test]
+fn g3_cli_compiles_committed_a2017_seiken_llc_air_wetting_interfaces() {
+    for (manifest, pack_id, texture_frame, roughness, angle) in [
+        (
+            A2017_LLC_RA005_MANIFEST,
+            "yilmaz-2026-a2017-seiken-llc-ra005-air-wetting-interface",
+            "pre-boiling-a2017-ra005um",
+            0.000_000_05,
+            1.094_321_441_000_444_7,
+        ),
+        (
+            A2017_LLC_RA3_MANIFEST,
+            "yilmaz-2026-a2017-seiken-llc-ra3-air-wetting-interface",
+            "pre-boiling-a2017-ra3um-edm",
+            0.000_003,
+            1.795_769_267_376_965_6,
+        ),
+    ] {
+        let (pack, decisions) = compile_twice(manifest);
+
+        assert_eq!(pack.pack_id(), pack_id);
+        assert_eq!(
+            pack.card().surface_a().material.chemistry,
+            "A2017 aluminum alloy; source wt% Si 0.2..0.8 Fe max 0.7 Cu 3.5..4.5 Mn 0.4..1.0 Mg max 0.1 Cr max 0.25 Zn max 0.15 Ti max 0.15 others max 0.2"
+        );
+        assert_eq!(pack.card().surface_a().texture_frame, texture_frame);
+        assert_eq!(
+            pack.card().surface_b().material.chemistry,
+            "Seiken Chemical Industry long-life coolant source sample"
+        );
+        assert_eq!(
+            pack.card().surface_b().texture_frame,
+            "approximately-1-microliter-free-surface"
+        );
+        assert_eq!(
+            pack.card().medium(),
+            "Seiken-Chemical-Industry-long-life-coolant-source-sample"
+        );
+        assert_eq!(pack.card().third_body(), None);
+        assert_eq!(
+            pack.card().environment(),
+            "ambient-air-297.65-K-60pct-RH-pressure-and-composition-unstated"
+        );
+        assert_eq!(
+            pack.card().history(),
+            "pre-boiling-IPA-cleaned-five-static-angle-measurements"
+        );
+        assert_eq!(pack.claims_pack().claims().claim_count(), 1);
+        assert_eq!(scalar(&pack, "static-contact-angle"), angle);
+
+        let claim = pack.card().claims_for("static-contact-angle")[0].1;
+        for (axis, value) in [
+            ("ambient_temperature", 297.65),
+            ("relative_humidity", 0.6),
+            ("surface_roughness_ra", roughness),
+            ("nominal_droplet_volume", 0.000_000_001),
+            ("source_droplet_volume_approximately_1_microliter", 1.0),
+            ("measurements_averaged", 5.0),
+            ("source_theta_over_2_method", 1.0),
+            ("source_measurement_before_boiling", 1.0),
+            ("source_surface_cleaned_with_isopropyl_alcohol", 1.0),
+            ("source_air_pressure_known", 0.0),
+            ("source_air_composition_known", 0.0),
+            ("source_llc_product_code_known", 0.0),
+            ("source_llc_formulation_known", 0.0),
+        ] {
+            assert_eq!(claim.validity.bound(axis), Some((value, value)));
+        }
+        assert_eq!(claim.validity.bounds().len(), 13);
+
+        for refused_property in [
+            "advancing-contact-angle",
+            "receding-contact-angle",
+            "contact-angle-hysteresis",
+            "post-boiling-contact-angle",
+            "surface-energy",
+            "contact-angle-temperature-law",
+            "transferable-wetting-law",
+        ] {
+            assert!(
+                pack.card().claims_for(refused_property).is_empty(),
+                "wetting source crossed the {refused_property} no-claim boundary"
+            );
+        }
+        assert!(decisions.contains("\"reason_code\":\"interface_context_admitted\""));
+    }
 }

@@ -928,6 +928,45 @@ Seal-interface reference:
 - <https://doi.org/10.3390/app11041370>
 - <https://creativecommons.org/licenses/by/4.0/>
 
+## A2017/Seiken long-life-coolant/air wetting tranches
+
+`yilmaz-2026-a2017-seiken-llc-ra005-wetting/` and
+`yilmaz-2026-a2017-seiken-llc-ra3-wetting/` are separate
+solid-liquid-gas system cards for the two texture states printed by Yilmaz et
+al. Surface A is the source-composition A2017 aluminum specimen; surface B is
+the source's Seiken Chemical Industry long-life-coolant free surface; the same
+liquid is the intervening medium and ambient air is the environment. The
+mirror-finish `Ra = 0.05 micrometer` card retains `62.70 deg`
+(`1.0943214410004447 rad`). The EDM `Ra = 3 micrometer` card retains
+`102.89 deg` (`1.7957692673769656 rad`). Separate packs prevent roughness from
+being demoted from interface identity to an optional query field.
+
+Both cards pin the pre-boiling B100W contact-angle-meter measurement, theta/2
+method, approximately `1 microliter` droplet, five-measurement average,
+isopropyl-alcohol/nonwoven cleaning, `24.5 degC`, and `60%` relative humidity.
+Table 2 reports calculated contact-angle measurement uncertainty of
+`+/-0.01 deg` but gives no confidence semantics, and the five measurements and
+their dispersion are absent. The runtime uncertainty therefore remains
+`Unstated`, not a fabricated confidence band.
+
+The source names the coolant manufacturer but omits product code,
+concentration, formulation/additive package, lot, and age; it also omits exact
+A2017 temper/lot, native-oxide state beyond the cleaning procedure, air
+pressure/composition, and cleaning-to-measurement elapsed time. The cards claim
+only pre-boiling static angle. They supply no advancing/receding angle,
+hysteresis, surface energy, post-boiling/corroded-state angle, temperature law,
+or transferable wetting law.
+
+The article is CC BY-NC-ND 4.0. Its manifest retains the noncommercial and
+no-derivatives limits verbatim. These packs contain attributed factual scalar
+rows and reproduce no article figure; commercial or adapted reuse still needs
+independent rights review.
+
+Coolant-wetting references:
+
+- <https://doi.org/10.1080/08916152.2026.2615768>
+- <https://creativecommons.org/licenses/by-nc-nd/4.0/>
+
 To compile the sources into canonical runtime packs:
 
 ```bash
@@ -1042,6 +1081,14 @@ cargo run -p xtask -- matdb-pack \
 cargo run -p xtask -- matdb-pack \
   --manifest data/matdb/seed-v1/zhang-2021-carbon-ptfe-cr-piston-rod/manifest.tsv \
   --out /path/to/zhang-2021-carbon-ptfe-cr-piston-rod.fsintpk
+
+cargo run -p xtask -- matdb-pack \
+  --manifest data/matdb/seed-v1/yilmaz-2026-a2017-seiken-llc-ra005-wetting/manifest.tsv \
+  --out /path/to/yilmaz-2026-a2017-seiken-llc-ra005-wetting.fsintpk
+
+cargo run -p xtask -- matdb-pack \
+  --manifest data/matdb/seed-v1/yilmaz-2026-a2017-seiken-llc-ra3-wetting/manifest.tsv \
+  --out /path/to/yilmaz-2026-a2017-seiken-llc-ra3-wetting.fsintpk
 ```
 
 ## No-claim boundary

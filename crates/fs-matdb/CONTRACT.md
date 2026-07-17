@@ -321,7 +321,7 @@ context, and claim reconstruction; and fail-closed missing-context and
 noncanonical-revision cases.
 
 `xtask/tests/interface_pack_seed_cli.rs`: G3 two-pass compilation of the first
-four source-bound interface seeds into byte-identical, externally pinned packs.
+six source-bound interface seeds into byte-identical, externally pinned packs.
 The battery checks the NASA 52100 dry-air rider/disk identity and `0.45` value,
 the NASA GXL-320A vacuum four-ball identity and distinct `0.11` mean plus
 `0.09..0.23` observed extrema, and NASA-TN-D-2223's SAE 4340/high-lead-bronze
@@ -329,9 +329,13 @@ hexane journal identity plus apparatus-bound `220 psi` maximum-demonstrated
 unit bearing load. It also checks Zhang et al.'s carbon-filled PTFE Sterling
 seal against an electroplated-chromium piston rod in Kunlun 15 aviation
 hydraulic oil, retaining four printed single-seal force endpoints without
-mislabeling the rod as a coated bore. The tests retain exact condition axes,
-`Unstated` uncertainty, surface-role order, complete context, and explicit
-design-allowable, friction-law, wear, leakage, and lifetime no-claim exclusions.
+mislabeling the rod as a coated bore. Two further packs bind Seiken long-life
+coolant free surfaces to distinct `Ra = 0.05 micrometer` and EDM
+`Ra = 3 micrometer` A2017 aluminum states in measured ambient air, retaining
+the printed pre-boiling static angles in radians. The tests retain exact
+condition axes, `Unstated` uncertainty, surface-role order, complete context,
+and explicit design-allowable, friction-law, wetting-hysteresis, wear, leakage,
+and lifetime no-claim exclusions.
 
 `xtask/tests/matdb_pack_cli.rs`: G3 compilation of the committed methane,
 nitrogen, oxygen, argon, carbon-dioxide, water-vapor, and carbon-monoxide seed
@@ -593,6 +597,18 @@ Wankel-housing authority.
   pressure, leakage, quantitative wear, and lifetime remain no-claims. The
   observed coating transfer and seal wear further prevent promotion to a
   transferable friction or durability law.
+  The Yilmaz et al. wetting packs represent the liquid as surface B and the
+  medium, with ambient air as the environment, exactly matching the
+  solid-liquid-gas contract. Each A2017 roughness state receives a separate
+  system identity. The source's `62.70 deg` and `102.89 deg` values are only
+  pre-boiling static contact angles from five approximately 1-microliter
+  theta/2 measurements after the stated IPA cleaning at `24.5 degC` and `60%`
+  RH. No confidence semantics or replicate values accompany the source's
+  `+/-0.01 deg` calculated measurement uncertainty, so runtime uncertainty is
+  `Unstated`. Missing coolant product/formulation/lot, exact alloy temper/lot,
+  native-oxide detail, air pressure/composition, advancing/receding angles,
+  hysteresis, post-boiling angle, and temperature dependence remain no-claims.
+  The retained CC BY-NC-ND terms do not grant commercial or adaptation rights.
   No equilibrium computation happens here (fs-thermochem consumes phase data;
   this crate only stores it).
 - The L1 pack codec does not parse handbooks, CSV, NASA tables, license text,
