@@ -4,14 +4,17 @@
 
 use fs_couple::{CoordinateBinding, PortKind, PortOrientation, PortTimestamp, StableId};
 use fs_feec::integral_topology::{
-    ExactAlgebraBudget, ExactIntegerMatrix, HomologyDecompositionBudget, IntegralTopologyError,
-    IntegralTopologyFailureClass, KernelCoordinateBudget, MatrixRole, SmithConstructionBudget,
-    SmithNormalFormWitness, SmithWitnessStage, TerminalRelativeBoundaryBudget,
-    TerminalRelativeBoundaryMatrix, TopologyApplicability, VerifiedSmithNormalForm,
-    construct_smith_normal_form, construct_smith_normal_form_with_checkpoint,
-    extract_terminal_relative_boundary_matrix,
+    ExactAlgebraBudget, ExactIntegerMatrix, HomologyDecompositionBudget, HomologyGeneratorBudget,
+    HomologyGeneratorKind, IntegralTopologyError, IntegralTopologyFailureClass,
+    KernelCoordinateBudget, MatrixRole, SmithConstructionBudget, SmithNormalFormWitness,
+    SmithWitnessStage, TerminalRelativeBoundaryBudget, TerminalRelativeBoundaryMatrix,
+    TopologyApplicability, VerifiedSmithNormalForm, VerifiedTerminalRelativeHomology,
+    VerifiedTerminalRelativeKernelTransport, construct_smith_normal_form,
+    construct_smith_normal_form_with_checkpoint, extract_terminal_relative_boundary_matrix,
     extract_terminal_relative_boundary_matrix_with_checkpoint, verify_smith_normal_form,
     verify_smith_normal_form_with_checkpoint, verify_terminal_relative_homology,
+    verify_terminal_relative_homology_generators,
+    verify_terminal_relative_homology_generators_with_checkpoint,
     verify_terminal_relative_homology_with_checkpoint, verify_terminal_relative_kernel_transport,
     verify_terminal_relative_kernel_transport_with_checkpoint,
 };
@@ -676,6 +679,18 @@ fn homology_budget(
     HomologyDecompositionBudget::new(max_binding_items, max_retained_entries)
 }
 
+fn generator_budget(
+    max_output_entries: usize,
+    max_retained_entries: usize,
+    max_scalar_operations: u128,
+) -> HomologyGeneratorBudget {
+    HomologyGeneratorBudget::new(
+        max_output_entries,
+        max_retained_entries,
+        max_scalar_operations,
+    )
+}
+
 fn centered_kernel_inputs() -> (
     TerminalRelativeBoundaryMatrix,
     TerminalRelativeBoundaryMatrix,
@@ -727,7 +742,7 @@ fn centered_kernel_inputs() -> (
 }
 
 fn centered_homology_inputs() -> (
-    fs_feec::integral_topology::VerifiedTerminalRelativeKernelTransport,
+    VerifiedTerminalRelativeKernelTransport,
     VerifiedSmithNormalForm,
 ) {
     let (outgoing, incoming, smith) = centered_kernel_inputs();
@@ -746,6 +761,57 @@ fn centered_homology_inputs() -> (
     .expect("centered lower-image Smith form")
     .into_verified();
     (transport, image_smith)
+}
+
+fn abstract_torsion_transport() -> VerifiedTerminalRelativeKernelTransport {
+    let pair = abstract_torsion_pair();
+    let phase = PhaseId::new("phase/torsion").expect("phase id");
+    let outgoing = extract_terminal_relative_boundary_matrix(
+        &pair,
+        &phase,
+        1,
+        TerminalRelativeBoundaryBudget::default(),
+    )
+    .expect("abstract torsion outgoing zero map");
+    let incoming = extract_terminal_relative_boundary_matrix(
+        &pair,
+        &phase,
+        2,
+        TerminalRelativeBoundaryBudget::default(),
+    )
+    .expect("abstract torsion incoming map");
+    assert_eq!((outgoing.matrix().rows(), outgoing.matrix().cols()), (0, 2));
+    assert_eq!(incoming.matrix().entries(), &[1, 1, -1, 1]);
+
+    let outgoing_smith = construct_smith_normal_form(
+        outgoing.matrix().clone(),
+        SmithConstructionBudget::default(),
+        ExactAlgebraBudget::default(),
+    )
+    .expect("outgoing zero-map Smith form")
+    .into_verified();
+    let transport = verify_terminal_relative_kernel_transport(
+        outgoing,
+        incoming,
+        outgoing_smith,
+        kernel_budget(2, 4, 22, 2, 8),
+    )
+    .expect("torsion lower image");
+    assert_eq!(transport.kernel_image().entries(), &[1, 1, -1, 1]);
+    transport
+}
+
+fn abstract_torsion_homology() -> VerifiedTerminalRelativeHomology {
+    let transport = abstract_torsion_transport();
+    let image_smith = construct_smith_normal_form(
+        transport.kernel_image().clone(),
+        SmithConstructionBudget::default(),
+        ExactAlgebraBudget::default(),
+    )
+    .expect("torsion image Smith form")
+    .into_verified();
+    verify_terminal_relative_homology(transport, image_smith, homology_budget(6, 48))
+        .expect("abstract Z/2 quotient")
 }
 
 #[test]
@@ -1894,50 +1960,7 @@ fn it_027_terminal_relative_homology_binds_complete_quotient_authority() {
 
 #[test]
 fn it_028_abstract_torsion_fixture_reports_nontrivial_factor_without_r3_claim() {
-    let pair = abstract_torsion_pair();
-    let phase = PhaseId::new("phase/torsion").expect("phase id");
-    let outgoing = extract_terminal_relative_boundary_matrix(
-        &pair,
-        &phase,
-        1,
-        TerminalRelativeBoundaryBudget::default(),
-    )
-    .expect("abstract torsion outgoing zero map");
-    let incoming = extract_terminal_relative_boundary_matrix(
-        &pair,
-        &phase,
-        2,
-        TerminalRelativeBoundaryBudget::default(),
-    )
-    .expect("abstract torsion incoming map");
-    assert_eq!((outgoing.matrix().rows(), outgoing.matrix().cols()), (0, 2));
-    assert_eq!(incoming.matrix().entries(), &[1, 1, -1, 1]);
-
-    let outgoing_smith = construct_smith_normal_form(
-        outgoing.matrix().clone(),
-        SmithConstructionBudget::default(),
-        ExactAlgebraBudget::default(),
-    )
-    .expect("outgoing zero-map Smith form")
-    .into_verified();
-    let transport = verify_terminal_relative_kernel_transport(
-        outgoing,
-        incoming,
-        outgoing_smith,
-        kernel_budget(2, 4, 22, 2, 8),
-    )
-    .expect("torsion lower image");
-    assert_eq!(transport.kernel_image().entries(), &[1, 1, -1, 1]);
-    let image_smith = construct_smith_normal_form(
-        transport.kernel_image().clone(),
-        SmithConstructionBudget::default(),
-        ExactAlgebraBudget::default(),
-    )
-    .expect("torsion image Smith form")
-    .into_verified();
-    let homology =
-        verify_terminal_relative_homology(transport, image_smith, homology_budget(6, 48))
-            .expect("abstract Z/2 quotient");
+    let homology = abstract_torsion_homology();
 
     assert_eq!(homology.cycle_rank(), 2);
     assert_eq!(homology.boundary_rank(), 2);
@@ -2072,4 +2095,365 @@ fn it_030_homology_cancellation_is_transactional_through_final_publication() {
             ));
         }
     }
+}
+
+#[test]
+fn it_031_free_generator_lifts_into_the_original_pair_bound_chain_basis() {
+    let (transport, image_smith) = centered_homology_inputs();
+    let homology =
+        verify_terminal_relative_homology(transport, image_smith, homology_budget(24, 280))
+            .expect("centered quotient homology");
+    let generators =
+        verify_terminal_relative_homology_generators(homology, generator_budget(6, 286, 36))
+            .expect("centered original-chain generator");
+
+    assert_eq!(
+        generators.original_chain_basis(),
+        &[
+            CellRef::new(1, 1),
+            CellRef::new(1, 3),
+            CellRef::new(1, 4),
+            CellRef::new(1, 5),
+            CellRef::new(1, 6),
+            CellRef::new(1, 7),
+        ]
+    );
+    assert_eq!(
+        (
+            generators.cycle_representatives().rows(),
+            generators.cycle_representatives().cols(),
+        ),
+        (6, 1)
+    );
+    assert_eq!(
+        generators.cycle_representatives().entries(),
+        &[0, 0, -1, 0, 0, 1]
+    );
+    assert_eq!(
+        (
+            generators.torsion_bounding_chains().rows(),
+            generators.torsion_bounding_chains().cols(),
+        ),
+        (4, 0)
+    );
+    assert!(generators.torsion_bounding_chains().entries().is_empty());
+    assert_eq!(generators.generator_count(), 1);
+    assert_eq!(generators.torsion_generator_count(), 0);
+    assert_eq!(generators.free_generator_count(), 1);
+    assert_eq!(
+        generators.generator_kind(0),
+        Some(HomologyGeneratorKind::Free)
+    );
+    assert_eq!(generators.generator_kind(1), None);
+    assert_eq!(generators.work_items(), 7);
+    assert_eq!(generators.scalar_operations(), 36);
+    assert_eq!(generators.retained_entries(), 286);
+    assert_eq!(
+        generators.applicability(),
+        TopologyApplicability::TerminalRelativeHomologyGeneratorsOnly
+    );
+}
+
+#[test]
+fn it_032_torsion_generator_retains_its_exact_bounding_chain() {
+    let generators = verify_terminal_relative_homology_generators(
+        abstract_torsion_homology(),
+        generator_budget(4, 52, 10),
+    )
+    .expect("abstract torsion generator");
+
+    assert_eq!(
+        generators.original_chain_basis(),
+        &[CellRef::new(1, 0), CellRef::new(1, 1)]
+    );
+    assert_eq!(
+        generators.bounding_chain_basis(),
+        &[CellRef::new(2, 0), CellRef::new(2, 1)]
+    );
+    assert_eq!(generators.cycle_representatives().entries(), &[0, 1]);
+    assert_eq!(generators.torsion_bounding_chains().entries(), &[-1, 1]);
+    assert_eq!(generators.generator_count(), 1);
+    assert_eq!(generators.torsion_generator_count(), 1);
+    assert_eq!(generators.free_generator_count(), 0);
+    assert_eq!(
+        generators.generator_kind(0),
+        Some(HomologyGeneratorKind::Torsion { order: 2 })
+    );
+    assert_eq!(generators.work_items(), 6);
+    assert_eq!(generators.scalar_operations(), 10);
+    assert_eq!(generators.retained_entries(), 52);
+
+    let incoming = generators
+        .homology()
+        .transport()
+        .incoming_boundary()
+        .matrix();
+    let filling = generators.torsion_bounding_chains();
+    let representative = generators.cycle_representatives();
+    for row in 0..2 {
+        let boundary = incoming.get(row, 0).expect("incoming fixture entry")
+            * filling.get(0, 0).expect("first filling entry")
+            + incoming.get(row, 1).expect("incoming fixture entry")
+                * filling.get(1, 0).expect("second filling entry");
+        assert_eq!(
+            boundary,
+            2 * representative
+                .get(row, 0)
+                .expect("representative fixture entry")
+        );
+    }
+}
+
+#[test]
+fn it_033_sheared_smith_witness_uses_left_inverse_and_remains_witness_relative() {
+    let transport = abstract_torsion_transport();
+    let image_smith = verify_smith_normal_form(
+        transport.kernel_image().clone(),
+        SmithNormalFormWitness::new(
+            matrix(2, 2, &[1, 0, 0, 2]),
+            matrix(2, 2, &[2, 1, 1, 1]),
+            matrix(2, 2, &[1, -1, -1, 2]),
+            matrix(2, 2, &[1, -3, 0, 1]),
+            matrix(2, 2, &[1, 3, 0, 1]),
+        ),
+        budget(2, 48),
+    )
+    .expect("alternative complete Smith witness");
+    let homology =
+        verify_terminal_relative_homology(transport, image_smith, homology_budget(6, 48))
+            .expect("alternative witness-relative quotient");
+    let first =
+        verify_terminal_relative_homology_generators(homology.clone(), generator_budget(4, 52, 10))
+            .expect("sheared generator lift");
+    let replay =
+        verify_terminal_relative_homology_generators(homology, generator_budget(4, 52, 10))
+            .expect("byte-exact replay");
+
+    assert_eq!(first, replay);
+    assert_eq!(first.cycle_representatives().entries(), &[-1, 2]);
+    assert_eq!(first.torsion_bounding_chains().entries(), &[-3, 1]);
+    assert_ne!(
+        first.cycle_representatives().entries(),
+        &[1, 1],
+        "using U_L instead of U_L^-1 changes this valid witness"
+    );
+}
+
+#[test]
+fn it_034_generator_lift_preflights_every_independent_resource_limit() {
+    let (transport, image_smith) = centered_homology_inputs();
+    let homology =
+        verify_terminal_relative_homology(transport, image_smith, homology_budget(24, 280))
+            .expect("centered quotient homology");
+    for (limits, expected) in [
+        (generator_budget(5, 286, 36), "output"),
+        (generator_budget(6, 285, 36), "retained"),
+        (generator_budget(6, 286, 35), "scalar"),
+    ] {
+        let error = verify_terminal_relative_homology_generators(homology.clone(), limits)
+            .expect_err("limit minus one must refuse generator publication");
+        assert_eq!(error.failure_class(), IntegralTopologyFailureClass::Unknown);
+        match expected {
+            "output" => assert!(matches!(
+                error,
+                IntegralTopologyError::HomologyGeneratorOutputBudgetExceeded {
+                    requested: 6,
+                    max: 5,
+                }
+            )),
+            "retained" => assert!(matches!(
+                error,
+                IntegralTopologyError::RetainedEntryBudgetExceeded {
+                    requested: 286,
+                    max: 285,
+                }
+            )),
+            "scalar" => assert!(matches!(
+                error,
+                IntegralTopologyError::ScalarWorkBudgetExceeded {
+                    requested: 36,
+                    max: 35,
+                }
+            )),
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
+fn it_035_generator_cancellation_is_transactional_through_final_publication() {
+    let homology = abstract_torsion_homology();
+    let mut poll_count = 0_usize;
+    let complete = verify_terminal_relative_homology_generators_with_checkpoint(
+        homology.clone(),
+        generator_budget(4, 52, 10),
+        &mut |_| {
+            poll_count += 1;
+            true
+        },
+    )
+    .expect("uninterrupted generator lift");
+    assert_eq!(complete.work_items(), 6);
+    assert_eq!(complete.scalar_operations(), 10);
+    assert_eq!(poll_count, 9);
+
+    for stop_at in 0..poll_count {
+        let mut observed = 0_usize;
+        let error = verify_terminal_relative_homology_generators_with_checkpoint(
+            homology.clone(),
+            generator_budget(4, 52, 10),
+            &mut |_| {
+                let keep_running = observed != stop_at;
+                observed += 1;
+                keep_running
+            },
+        )
+        .expect_err("every generator cancellation poll must refuse");
+        assert_eq!(error.failure_class(), IntegralTopologyFailureClass::Unknown);
+        assert!(matches!(
+            &error,
+            IntegralTopologyError::HomologyGeneratorCancelled { .. }
+        ));
+        if stop_at + 1 == poll_count {
+            assert!(matches!(
+                error,
+                IntegralTopologyError::HomologyGeneratorCancelled {
+                    phase: "terminal-relative generator finalize",
+                    completed_work_items: 6,
+                    planned_work_items: 6,
+                    completed_scalar_operations: 10,
+                    planned_scalar_operations: 10,
+                }
+            ));
+        }
+    }
+
+    let (transport, image_smith) = centered_homology_inputs();
+    let centered =
+        verify_terminal_relative_homology(transport, image_smith, homology_budget(24, 280))
+            .expect("centered quotient homology");
+    let mut centered_poll_count = 0_usize;
+    verify_terminal_relative_homology_generators_with_checkpoint(
+        centered.clone(),
+        generator_budget(6, 286, 36),
+        &mut |_| {
+            centered_poll_count += 1;
+            true
+        },
+    )
+    .expect("uninterrupted free-generator lift");
+    assert_eq!(centered_poll_count, 10);
+    for stop_at in 0..centered_poll_count {
+        let mut observed = 0_usize;
+        let error = verify_terminal_relative_homology_generators_with_checkpoint(
+            centered.clone(),
+            generator_budget(6, 286, 36),
+            &mut |_| {
+                let keep_running = observed != stop_at;
+                observed += 1;
+                keep_running
+            },
+        )
+        .expect_err("every free-generator cancellation poll must refuse");
+        assert!(matches!(
+            &error,
+            IntegralTopologyError::HomologyGeneratorCancelled { .. }
+        ));
+        if stop_at + 1 == centered_poll_count {
+            assert!(matches!(
+                error,
+                IntegralTopologyError::HomologyGeneratorCancelled {
+                    phase: "terminal-relative generator finalize",
+                    completed_work_items: 7,
+                    planned_work_items: 7,
+                    completed_scalar_operations: 36,
+                    planned_scalar_operations: 36,
+                }
+            ));
+        }
+    }
+}
+
+#[test]
+fn it_036_zero_homology_preserves_empty_generator_and_filling_shapes() {
+    let pair = terminal_cut_loop_pair(false);
+    let phase = PhaseId::new("phase/a").expect("phase id");
+    let outgoing = extract_terminal_relative_boundary_matrix(
+        &pair,
+        &phase,
+        0,
+        TerminalRelativeBoundaryBudget::default(),
+    )
+    .expect("bottom outgoing zero map");
+    let incoming = extract_terminal_relative_boundary_matrix(
+        &pair,
+        &phase,
+        1,
+        TerminalRelativeBoundaryBudget::default(),
+    )
+    .expect("bottom incoming boundary");
+    let outgoing_smith = construct_smith_normal_form(
+        outgoing.matrix().clone(),
+        SmithConstructionBudget::default(),
+        ExactAlgebraBudget::default(),
+    )
+    .expect("bottom outgoing Smith form")
+    .into_verified();
+    let transport = verify_terminal_relative_kernel_transport(
+        outgoing,
+        incoming,
+        outgoing_smith,
+        KernelCoordinateBudget::default(),
+    )
+    .expect("bottom kernel transport");
+    let image_smith = construct_smith_normal_form(
+        transport.kernel_image().clone(),
+        SmithConstructionBudget::default(),
+        ExactAlgebraBudget::default(),
+    )
+    .expect("bottom image Smith form")
+    .into_verified();
+    let homology = verify_terminal_relative_homology(
+        transport,
+        image_smith,
+        HomologyDecompositionBudget::default(),
+    )
+    .expect("connected relative H0 vanishes");
+    assert_eq!(homology.cycle_rank(), 2);
+    assert_eq!(homology.boundary_rank(), 2);
+    assert_eq!(homology.free_rank(), 0);
+    assert!(homology.torsion_invariant_factors().is_empty());
+    let retained_entries = homology.retained_entries();
+
+    let mut poll_count = 0_usize;
+    let generators = verify_terminal_relative_homology_generators_with_checkpoint(
+        homology,
+        HomologyGeneratorBudget::default(),
+        &mut |_| {
+            poll_count += 1;
+            true
+        },
+    )
+    .expect("zero group has a complete empty generator receipt");
+    assert_eq!(
+        (
+            generators.cycle_representatives().rows(),
+            generators.cycle_representatives().cols(),
+        ),
+        (2, 0)
+    );
+    assert_eq!(
+        (
+            generators.torsion_bounding_chains().rows(),
+            generators.torsion_bounding_chains().cols(),
+        ),
+        (4, 0)
+    );
+    assert!(generators.cycle_representatives().entries().is_empty());
+    assert!(generators.torsion_bounding_chains().entries().is_empty());
+    assert_eq!(generators.generator_count(), 0);
+    assert_eq!(generators.work_items(), 0);
+    assert_eq!(generators.scalar_operations(), 0);
+    assert_eq!(generators.retained_entries(), retained_entries);
+    assert_eq!(poll_count, 3);
 }

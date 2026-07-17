@@ -34,6 +34,13 @@
 //! decomposition into free rank and nontrivial torsion invariant factors.
 //! It retains both complete authorities but still makes no generator, period,
 //! naturality, embedding, or physical-R3 winding claim.
+//!
+//! The sixth tranche lifts every nontrivial torsion and free presentation
+//! column back into the original pair-bound `C_k` basis. It also retains the
+//! torsion filling chains and replays the exact cycle and finite-order
+//! boundary equations before publication. These generators remain relative
+//! to the admitted Smith witnesses; no canonical-basis or physical claim is
+//! added.
 
 use core::fmt;
 
@@ -82,6 +89,12 @@ pub const DEFAULT_MAX_HOMOLOGY_BINDING_ITEMS: usize =
 /// lower-image Smith authority.
 pub const DEFAULT_MAX_HOMOLOGY_RETAINED_ENTRIES: usize =
     20 * DEFAULT_MAX_MATRIX_ENTRIES + 8 * DEFAULT_MAX_MATRIX_EXTENT;
+/// Default maximum generator and torsion-filling coefficients retained at
+/// once.
+pub const DEFAULT_MAX_GENERATOR_OUTPUT_ENTRIES: usize = DEFAULT_MAX_MATRIX_ENTRIES;
+/// Default retained entries across homology authority and generator lift.
+pub const DEFAULT_MAX_GENERATOR_RETAINED_ENTRIES: usize =
+    DEFAULT_MAX_HOMOLOGY_RETAINED_ENTRIES + DEFAULT_MAX_GENERATOR_OUTPUT_ENTRIES;
 
 /// Explicit resource envelope for exact integer witness admission.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -433,6 +446,61 @@ impl Default for HomologyDecompositionBudget {
         Self::new(
             DEFAULT_MAX_HOMOLOGY_BINDING_ITEMS,
             DEFAULT_MAX_HOMOLOGY_RETAINED_ENTRIES,
+        )
+    }
+}
+
+/// Resource envelope for lifting quotient-presentation generators into the
+/// original pair-bound chain basis and verifying their obligations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HomologyGeneratorBudget {
+    max_output_entries: usize,
+    max_retained_entries: usize,
+    max_scalar_operations: u128,
+}
+
+impl HomologyGeneratorBudget {
+    /// Construct a generator-lift envelope.
+    #[must_use]
+    pub const fn new(
+        max_output_entries: usize,
+        max_retained_entries: usize,
+        max_scalar_operations: u128,
+    ) -> Self {
+        Self {
+            max_output_entries,
+            max_retained_entries,
+            max_scalar_operations,
+        }
+    }
+
+    /// Maximum entries across the retained original-chain generator and
+    /// torsion-filling matrices.
+    #[must_use]
+    pub const fn max_output_entries(self) -> usize {
+        self.max_output_entries
+    }
+
+    /// Maximum retained entries across the complete homology authority and
+    /// both generator-witness matrices.
+    #[must_use]
+    pub const fn max_retained_entries(self) -> usize {
+        self.max_retained_entries
+    }
+
+    /// Maximum checked lift, cycle, and quotient-order scalar terms.
+    #[must_use]
+    pub const fn max_scalar_operations(self) -> u128 {
+        self.max_scalar_operations
+    }
+}
+
+impl Default for HomologyGeneratorBudget {
+    fn default() -> Self {
+        Self::new(
+            DEFAULT_MAX_GENERATOR_OUTPUT_ENTRIES,
+            DEFAULT_MAX_GENERATOR_RETAINED_ENTRIES,
+            DEFAULT_MAX_SCALAR_OPERATIONS,
         )
     }
 }
@@ -1417,6 +1485,29 @@ pub enum SmithConstructionStage {
     SignNormalization,
 }
 
+/// Exact generator-lift calculation or verification phase.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HomologyGeneratorStage {
+    /// `V[:, rank..] * P^-1` lift into the original `C_k` basis.
+    OriginalChainLift,
+    /// Exact outgoing-boundary cycle check `A_k * G = 0`.
+    CycleVerification,
+    /// Exact finite-presentation relation `d_i G_i = A_(k+1) Q_i`.
+    BoundaryOrderVerification,
+}
+
+/// Algebraic role of one column in the retained quotient-presentation basis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HomologyGeneratorKind {
+    /// Nontrivial finite cyclic summand with exact positive order.
+    Torsion {
+        /// Exact cyclic order.
+        order: i128,
+    },
+    /// Infinite free summand.
+    Free,
+}
+
 /// Untrusted complete Smith-normal-form witness.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SmithNormalFormWitness {
@@ -1494,6 +1585,10 @@ pub enum TopologyApplicability {
     /// quotient chain homology group. No generator, period, naturality,
     /// embedding, or physical-R3 conclusion follows.
     TerminalRelativeChainHomologyOnly,
+    /// Original-chain presentation generators with exact cycle and finite-
+    /// order boundary witnesses. No period, naturality, embedding, or
+    /// physical-R3 conclusion follows.
+    TerminalRelativeHomologyGeneratorsOnly,
 }
 
 /// Authority classification for an unsuccessful exact verification.
@@ -1646,6 +1741,153 @@ pub struct VerifiedTerminalRelativeHomology {
     torsion_start: usize,
     binding_items: usize,
     retained_entries: usize,
+}
+
+/// Exact witness-relative generators for one admitted terminal-relative
+/// cellular homology group.
+///
+/// Generator columns are ordered as nontrivial torsion summands followed by
+/// free summands. Factors equal to one are omitted. Rows of
+/// [`Self::cycle_representatives`] use [`Self::original_chain_basis`], while
+/// rows of [`Self::torsion_bounding_chains`] use
+/// [`Self::bounding_chain_basis`]. The complete homology and Smith authorities
+/// remain attached, so the exact order of each torsion column does not rest on
+/// the retained boundary equation alone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerifiedTerminalRelativeHomologyGenerators {
+    homology: VerifiedTerminalRelativeHomology,
+    cycle_representatives: ExactIntegerMatrix,
+    torsion_bounding_chains: ExactIntegerMatrix,
+    torsion_count: usize,
+    work_items: u128,
+    scalar_operations: u128,
+    retained_entries: usize,
+}
+
+impl VerifiedTerminalRelativeHomologyGenerators {
+    /// Admitted terminal-relative pair identity.
+    #[must_use]
+    pub const fn pair_id(&self) -> TerminalRelativePairId {
+        self.homology.pair_id()
+    }
+
+    /// Admitted phase identity.
+    #[must_use]
+    pub const fn phase(&self) -> &PhaseId {
+        self.homology.phase()
+    }
+
+    /// Admitted phase-owned conductor component.
+    #[must_use]
+    pub const fn component(&self) -> &ConductorComponentId {
+        self.homology.component()
+    }
+
+    /// Homological degree `k` represented by every generator column.
+    #[must_use]
+    pub const fn degree(&self) -> u8 {
+        self.homology.degree()
+    }
+
+    /// Complete quotient-homology authority from which these columns were
+    /// lifted.
+    #[must_use]
+    pub const fn homology(&self) -> &VerifiedTerminalRelativeHomology {
+        &self.homology
+    }
+
+    /// Exact cycle representatives in the original pair-bound `C_k` basis.
+    #[must_use]
+    pub const fn cycle_representatives(&self) -> &ExactIntegerMatrix {
+        &self.cycle_representatives
+    }
+
+    /// Exact incoming-chain witnesses whose boundaries are the corresponding
+    /// torsion orders times the first [`Self::torsion_generator_count`]
+    /// representative columns.
+    #[must_use]
+    pub const fn torsion_bounding_chains(&self) -> &ExactIntegerMatrix {
+        &self.torsion_bounding_chains
+    }
+
+    /// Canonically ordered pair-bound `C_k` cells corresponding to generator
+    /// rows.
+    #[must_use]
+    pub fn original_chain_basis(&self) -> &[CellRef] {
+        self.homology.transport().outgoing_boundary().source_basis()
+    }
+
+    /// Canonically ordered pair-bound `C_(k+1)` cells corresponding to
+    /// torsion-filling rows.
+    #[must_use]
+    pub fn bounding_chain_basis(&self) -> &[CellRef] {
+        self.homology.transport().incoming_boundary().source_basis()
+    }
+
+    /// Number of retained nontrivial torsion and free generators.
+    #[must_use]
+    pub const fn generator_count(&self) -> usize {
+        self.cycle_representatives.cols
+    }
+
+    /// Number of retained nontrivial torsion generators.
+    #[must_use]
+    pub const fn torsion_generator_count(&self) -> usize {
+        self.torsion_count
+    }
+
+    /// Number of retained free generators.
+    #[must_use]
+    pub const fn free_generator_count(&self) -> usize {
+        self.generator_count() - self.torsion_count
+    }
+
+    /// Algebraic role of one retained generator column.
+    #[must_use]
+    pub fn generator_kind(&self, column: usize) -> Option<HomologyGeneratorKind> {
+        if column >= self.generator_count() {
+            return None;
+        }
+        if column < self.torsion_count {
+            return Some(HomologyGeneratorKind::Torsion {
+                order: self.homology.image_smith.invariant_factors
+                    [self.homology.torsion_start + column],
+            });
+        }
+        Some(HomologyGeneratorKind::Free)
+    }
+
+    /// Deterministic output and equation-verification work units completed.
+    #[must_use]
+    pub const fn work_items(&self) -> u128 {
+        self.work_items
+    }
+
+    /// Checked lift, cycle, and torsion-order scalar terms completed.
+    #[must_use]
+    pub const fn scalar_operations(&self) -> u128 {
+        self.scalar_operations
+    }
+
+    /// Retained integer/cell entries across homology authority and both
+    /// generator-witness matrices.
+    #[must_use]
+    pub const fn retained_entries(&self) -> usize {
+        self.retained_entries
+    }
+
+    /// Consume the generator receipt while preserving its complete quotient-
+    /// homology authority.
+    #[must_use]
+    pub fn into_homology(self) -> VerifiedTerminalRelativeHomology {
+        self.homology
+    }
+
+    /// Exact witness-relative cellular generators only.
+    #[must_use]
+    pub const fn applicability(&self) -> TopologyApplicability {
+        TopologyApplicability::TerminalRelativeHomologyGeneratorsOnly
+    }
 }
 
 impl VerifiedTerminalRelativeHomology {
@@ -1897,6 +2139,504 @@ fn poll_homology_decomposition(
             phase,
             completed_binding_items,
             planned_binding_items,
+        })
+    }
+}
+
+/// Lift every nontrivial torsion and free presentation column into the
+/// original pair-bound chain basis without injected cancellation.
+#[allow(clippy::large_types_passed_by_value)]
+pub fn verify_terminal_relative_homology_generators(
+    homology: VerifiedTerminalRelativeHomology,
+    budget: HomologyGeneratorBudget,
+) -> Result<VerifiedTerminalRelativeHomologyGenerators, IntegralTopologyError> {
+    verify_terminal_relative_homology_generators_with_checkpoint(homology, budget, &mut |_| true)
+}
+
+/// Lift and independently replay the chain-level generator equations under
+/// bounded cancellation polling.
+///
+/// For `U_A A_k V_A = D_A` of rank `r`, lower kernel image `L`, and
+/// `U_L L V_L = D_L`, this constructs the selected columns of
+/// `G = V_A[:, r..] U_L^-1`. Unit-factor columns are omitted. It also retains
+/// `H = V_L[:, torsion_start..rank(L)]` and verifies exactly that
+/// `A_k G = 0` and `A_(k+1) H_j = d_j G_j`. Exact torsion order additionally
+/// follows from the retained complete Smith authority; the boundary equation
+/// alone is not treated as sufficient.
+#[allow(clippy::large_types_passed_by_value)]
+#[allow(clippy::too_many_lines)]
+pub fn verify_terminal_relative_homology_generators_with_checkpoint(
+    homology: VerifiedTerminalRelativeHomology,
+    budget: HomologyGeneratorBudget,
+    checkpoint: &mut impl FnMut(&'static str) -> bool,
+) -> Result<VerifiedTerminalRelativeHomologyGenerators, IntegralTopologyError> {
+    let transport = homology.transport();
+    let outgoing = transport.outgoing_boundary().matrix();
+    let incoming = transport.incoming_boundary().matrix();
+    let outgoing_smith = transport.outgoing_smith();
+    let image_smith = homology.image_smith();
+
+    let outgoing_rows = outgoing.rows;
+    let chain_extent = outgoing.cols;
+    let incoming_cols = incoming.cols;
+    let outgoing_rank = outgoing_smith.rank;
+    let cycle_rank = homology.cycle_rank();
+    let boundary_rank = homology.boundary_rank();
+    let torsion_start = homology.torsion_start;
+
+    let internal_shapes_hold = incoming.rows == chain_extent
+        && outgoing_rank <= chain_extent
+        && cycle_rank == chain_extent - outgoing_rank
+        && image_smith.source.rows == cycle_rank
+        && image_smith.source.cols == incoming_cols
+        && image_smith.left_inverse().rows == cycle_rank
+        && image_smith.left_inverse().cols == cycle_rank
+        && image_smith.right_transform().rows == incoming_cols
+        && image_smith.right_transform().cols == incoming_cols
+        && outgoing_smith.right_transform().rows == chain_extent
+        && outgoing_smith.right_transform().cols == chain_extent
+        && boundary_rank == image_smith.invariant_factors.len()
+        && torsion_start <= boundary_rank
+        && boundary_rank <= cycle_rank;
+    if !internal_shapes_hold {
+        return Err(IntegralTopologyError::HomologyGeneratorInvariantLost {
+            field: "retained generator-lift shapes and ranks",
+        });
+    }
+    if image_smith.invariant_factors[..torsion_start]
+        .iter()
+        .any(|factor| *factor != 1)
+        || image_smith.invariant_factors[torsion_start..]
+            .iter()
+            .any(|factor| *factor <= 1)
+    {
+        return Err(IntegralTopologyError::HomologyGeneratorInvariantLost {
+            field: "unit and nontrivial presentation-factor split",
+        });
+    }
+
+    let torsion_count = boundary_rank - torsion_start;
+    let generator_count = cycle_rank - torsion_start;
+    let cycle_entries = chain_extent.checked_mul(generator_count).ok_or(
+        IntegralTopologyError::WorkPlanOverflow {
+            phase: "terminal-relative generator cycle output entries",
+        },
+    )?;
+    let bounding_entries = incoming_cols.checked_mul(torsion_count).ok_or(
+        IntegralTopologyError::WorkPlanOverflow {
+            phase: "terminal-relative generator bounding output entries",
+        },
+    )?;
+    let output_entries = cycle_entries.checked_add(bounding_entries).ok_or(
+        IntegralTopologyError::WorkPlanOverflow {
+            phase: "terminal-relative generator output entries",
+        },
+    )?;
+    if output_entries > budget.max_output_entries {
+        return Err(
+            IntegralTopologyError::HomologyGeneratorOutputBudgetExceeded {
+                requested: output_entries,
+                max: budget.max_output_entries,
+            },
+        );
+    }
+    let retained_entries = homology
+        .retained_entries
+        .checked_add(output_entries)
+        .ok_or(IntegralTopologyError::WorkPlanOverflow {
+            phase: "terminal-relative generator retained entries",
+        })?;
+    if retained_entries > budget.max_retained_entries {
+        return Err(IntegralTopologyError::RetainedEntryBudgetExceeded {
+            requested: retained_entries,
+            max: budget.max_retained_entries,
+        });
+    }
+    let scalar_operations = planned_homology_generator_scalar_operations(
+        outgoing_rows,
+        chain_extent,
+        incoming_cols,
+        cycle_rank,
+        generator_count,
+        torsion_count,
+    )?;
+    if scalar_operations > budget.max_scalar_operations {
+        return Err(IntegralTopologyError::ScalarWorkBudgetExceeded {
+            requested: scalar_operations,
+            max: budget.max_scalar_operations,
+        });
+    }
+    let work_items = planned_homology_generator_work_items(
+        outgoing_rows,
+        chain_extent,
+        incoming_cols,
+        generator_count,
+        torsion_count,
+    )?;
+
+    let mut completed_work = 0_u128;
+    let mut completed_scalar = 0_u128;
+    poll_homology_generators(
+        checkpoint,
+        "terminal-relative generator preflight",
+        completed_work,
+        work_items,
+        completed_scalar,
+        scalar_operations,
+    )?;
+    poll_homology_generators(
+        checkpoint,
+        "terminal-relative generator output allocation",
+        completed_work,
+        work_items,
+        completed_scalar,
+        scalar_operations,
+    )?;
+    let mut cycle_values = allocate_zeroed(cycle_entries, "homology cycle representatives")?;
+    let mut bounding_values =
+        allocate_zeroed(bounding_entries, "homology torsion bounding chains")?;
+
+    let outgoing_right = outgoing_smith.right_transform();
+    let image_left_inverse = image_smith.left_inverse();
+    for row in 0..chain_extent {
+        for generator in 0..generator_count {
+            poll_homology_generators(
+                checkpoint,
+                "terminal-relative generator original-chain lift",
+                completed_work,
+                work_items,
+                completed_scalar,
+                scalar_operations,
+            )?;
+            let presentation_column = torsion_start + generator;
+            let mut sum = 0_i128;
+            for term in 0..cycle_rank {
+                sum = checked_homology_generator_accumulate(
+                    sum,
+                    outgoing_right.entry(row, outgoing_rank + term),
+                    image_left_inverse.entry(term, presentation_column),
+                    HomologyGeneratorStage::OriginalChainLift,
+                    row,
+                    generator,
+                    term,
+                    &mut completed_scalar,
+                )?;
+            }
+            cycle_values[row * generator_count + generator] = sum;
+            completed_work =
+                completed_work
+                    .checked_add(1)
+                    .ok_or(IntegralTopologyError::WorkPlanOverflow {
+                        phase: "completed terminal-relative generator work",
+                    })?;
+        }
+    }
+    let cycle_representatives = ExactIntegerMatrix {
+        rows: chain_extent,
+        cols: generator_count,
+        entries: cycle_values,
+    };
+
+    let image_right = image_smith.right_transform();
+    for row in 0..incoming_cols {
+        for torsion in 0..torsion_count {
+            poll_homology_generators(
+                checkpoint,
+                "terminal-relative generator torsion fillings",
+                completed_work,
+                work_items,
+                completed_scalar,
+                scalar_operations,
+            )?;
+            bounding_values[row * torsion_count + torsion] =
+                image_right.entry(row, torsion_start + torsion);
+            completed_work =
+                completed_work
+                    .checked_add(1)
+                    .ok_or(IntegralTopologyError::WorkPlanOverflow {
+                        phase: "completed terminal-relative generator work",
+                    })?;
+        }
+    }
+    let torsion_bounding_chains = ExactIntegerMatrix {
+        rows: incoming_cols,
+        cols: torsion_count,
+        entries: bounding_values,
+    };
+
+    for row in 0..outgoing_rows {
+        for generator in 0..generator_count {
+            poll_homology_generators(
+                checkpoint,
+                "terminal-relative generator cycle verification",
+                completed_work,
+                work_items,
+                completed_scalar,
+                scalar_operations,
+            )?;
+            let actual = checked_homology_generator_dot(
+                outgoing,
+                row,
+                &cycle_representatives,
+                generator,
+                HomologyGeneratorStage::CycleVerification,
+                &mut completed_scalar,
+            )?;
+            if actual != 0 {
+                return Err(
+                    IntegralTopologyError::HomologyGeneratorVerificationMismatch {
+                        stage: HomologyGeneratorStage::CycleVerification,
+                        row,
+                        col: generator,
+                        expected: 0,
+                        actual,
+                    },
+                );
+            }
+            completed_work =
+                completed_work
+                    .checked_add(1)
+                    .ok_or(IntegralTopologyError::WorkPlanOverflow {
+                        phase: "completed terminal-relative generator work",
+                    })?;
+        }
+    }
+
+    for row in 0..chain_extent {
+        for torsion in 0..torsion_count {
+            poll_homology_generators(
+                checkpoint,
+                "terminal-relative generator boundary-order verification",
+                completed_work,
+                work_items,
+                completed_scalar,
+                scalar_operations,
+            )?;
+            let actual = checked_homology_generator_dot(
+                incoming,
+                row,
+                &torsion_bounding_chains,
+                torsion,
+                HomologyGeneratorStage::BoundaryOrderVerification,
+                &mut completed_scalar,
+            )?;
+            let order = image_smith.invariant_factors[torsion_start + torsion];
+            let expected = order
+                .checked_mul(cycle_representatives.entry(row, torsion))
+                .ok_or(IntegralTopologyError::HomologyGeneratorArithmeticOverflow {
+                    stage: HomologyGeneratorStage::BoundaryOrderVerification,
+                    row,
+                    col: torsion,
+                    term: incoming_cols,
+                })?;
+            completed_scalar =
+                completed_scalar
+                    .checked_add(1)
+                    .ok_or(IntegralTopologyError::WorkPlanOverflow {
+                        phase: "completed terminal-relative generator scalar operations",
+                    })?;
+            if actual != expected {
+                return Err(
+                    IntegralTopologyError::HomologyGeneratorVerificationMismatch {
+                        stage: HomologyGeneratorStage::BoundaryOrderVerification,
+                        row,
+                        col: torsion,
+                        expected,
+                        actual,
+                    },
+                );
+            }
+            completed_work =
+                completed_work
+                    .checked_add(1)
+                    .ok_or(IntegralTopologyError::WorkPlanOverflow {
+                        phase: "completed terminal-relative generator work",
+                    })?;
+        }
+    }
+
+    poll_homology_generators(
+        checkpoint,
+        "terminal-relative generator finalize",
+        completed_work,
+        work_items,
+        completed_scalar,
+        scalar_operations,
+    )?;
+    debug_assert_eq!(completed_work, work_items);
+    debug_assert_eq!(completed_scalar, scalar_operations);
+
+    Ok(VerifiedTerminalRelativeHomologyGenerators {
+        homology,
+        cycle_representatives,
+        torsion_bounding_chains,
+        torsion_count,
+        work_items: completed_work,
+        scalar_operations: completed_scalar,
+        retained_entries,
+    })
+}
+
+fn planned_homology_generator_scalar_operations(
+    outgoing_rows: usize,
+    chain_extent: usize,
+    incoming_cols: usize,
+    cycle_rank: usize,
+    generator_count: usize,
+    torsion_count: usize,
+) -> Result<u128, IntegralTopologyError> {
+    let lift = checked_homology_generator_plan_product(
+        &[chain_extent, cycle_rank, generator_count],
+        "terminal-relative generator lift scalar operations",
+    )?;
+    let cycle = checked_homology_generator_plan_product(
+        &[outgoing_rows, chain_extent, generator_count],
+        "terminal-relative generator cycle scalar operations",
+    )?;
+    let boundary = checked_homology_generator_plan_product(
+        &[chain_extent, incoming_cols, torsion_count],
+        "terminal-relative generator boundary scalar operations",
+    )?;
+    let scaling = checked_homology_generator_plan_product(
+        &[chain_extent, torsion_count],
+        "terminal-relative generator scaling operations",
+    )?;
+    [lift, cycle, boundary, scaling]
+        .into_iter()
+        .try_fold(0_u128, u128::checked_add)
+        .ok_or(IntegralTopologyError::WorkPlanOverflow {
+            phase: "terminal-relative generator scalar operations",
+        })
+}
+
+fn planned_homology_generator_work_items(
+    outgoing_rows: usize,
+    chain_extent: usize,
+    incoming_cols: usize,
+    generator_count: usize,
+    torsion_count: usize,
+) -> Result<u128, IntegralTopologyError> {
+    let cycle_output = checked_homology_generator_plan_product(
+        &[chain_extent, generator_count],
+        "terminal-relative generator cycle output work",
+    )?;
+    let bounding_output = checked_homology_generator_plan_product(
+        &[incoming_cols, torsion_count],
+        "terminal-relative generator bounding output work",
+    )?;
+    let cycle_checks = checked_homology_generator_plan_product(
+        &[outgoing_rows, generator_count],
+        "terminal-relative generator cycle check work",
+    )?;
+    let boundary_checks = checked_homology_generator_plan_product(
+        &[chain_extent, torsion_count],
+        "terminal-relative generator boundary check work",
+    )?;
+    [cycle_output, bounding_output, cycle_checks, boundary_checks]
+        .into_iter()
+        .try_fold(0_u128, u128::checked_add)
+        .ok_or(IntegralTopologyError::WorkPlanOverflow {
+            phase: "terminal-relative generator work items",
+        })
+}
+
+fn checked_homology_generator_plan_product(
+    factors: &[usize],
+    phase: &'static str,
+) -> Result<u128, IntegralTopologyError> {
+    factors
+        .iter()
+        .copied()
+        .try_fold(1_u128, |product, factor| {
+            u128::try_from(factor)
+                .ok()
+                .and_then(|factor| product.checked_mul(factor))
+        })
+        .ok_or(IntegralTopologyError::WorkPlanOverflow { phase })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn checked_homology_generator_accumulate(
+    sum: i128,
+    left: i128,
+    right: i128,
+    stage: HomologyGeneratorStage,
+    row: usize,
+    col: usize,
+    term: usize,
+    completed_scalar: &mut u128,
+) -> Result<i128, IntegralTopologyError> {
+    let product = left.checked_mul(right).ok_or(
+        IntegralTopologyError::HomologyGeneratorArithmeticOverflow {
+            stage,
+            row,
+            col,
+            term,
+        },
+    )?;
+    let next = sum.checked_add(product).ok_or(
+        IntegralTopologyError::HomologyGeneratorArithmeticOverflow {
+            stage,
+            row,
+            col,
+            term,
+        },
+    )?;
+    *completed_scalar =
+        completed_scalar
+            .checked_add(1)
+            .ok_or(IntegralTopologyError::WorkPlanOverflow {
+                phase: "completed terminal-relative generator scalar operations",
+            })?;
+    Ok(next)
+}
+
+fn checked_homology_generator_dot(
+    left: &ExactIntegerMatrix,
+    row: usize,
+    right: &ExactIntegerMatrix,
+    col: usize,
+    stage: HomologyGeneratorStage,
+    completed_scalar: &mut u128,
+) -> Result<i128, IntegralTopologyError> {
+    if left.cols != right.rows {
+        return Err(IntegralTopologyError::HomologyGeneratorInvariantLost {
+            field: "generator verification inner matrix extent",
+        });
+    }
+    let mut sum = 0_i128;
+    for term in 0..left.cols {
+        sum = checked_homology_generator_accumulate(
+            sum,
+            left.entry(row, term),
+            right.entry(term, col),
+            stage,
+            row,
+            col,
+            term,
+            completed_scalar,
+        )?;
+    }
+    Ok(sum)
+}
+
+fn poll_homology_generators(
+    checkpoint: &mut impl FnMut(&'static str) -> bool,
+    phase: &'static str,
+    completed_work_items: u128,
+    planned_work_items: u128,
+    completed_scalar_operations: u128,
+    planned_scalar_operations: u128,
+) -> Result<(), IntegralTopologyError> {
+    if checkpoint(phase) {
+        Ok(())
+    } else {
+        Err(IntegralTopologyError::HomologyGeneratorCancelled {
+            phase,
+            completed_work_items,
+            planned_work_items,
+            completed_scalar_operations,
+            planned_scalar_operations,
         })
     }
 }
@@ -3611,6 +4351,59 @@ pub enum IntegralTopologyError {
         /// Planned source/factor inspections.
         planned_binding_items: usize,
     },
+    /// Generator and torsion-filling output exceeded its aggregate envelope.
+    HomologyGeneratorOutputBudgetExceeded {
+        /// Required retained output coefficients.
+        requested: usize,
+        /// Maximum admitted output coefficients.
+        max: usize,
+    },
+    /// An opaque homology authority violated a generator-lift invariant.
+    HomologyGeneratorInvariantLost {
+        /// Broken invariant field.
+        field: &'static str,
+    },
+    /// Checked generator construction or equation arithmetic overflowed.
+    HomologyGeneratorArithmeticOverflow {
+        /// Generator calculation or verification phase.
+        stage: HomologyGeneratorStage,
+        /// Output or verification row.
+        row: usize,
+        /// Generator column.
+        col: usize,
+        /// Inner-product term, or the incoming column count for torsion
+        /// scaling.
+        term: usize,
+    },
+    /// A constructed generator violated an exact chain-level equation.
+    ///
+    /// Because the input authority is already opaque and verified, this is an
+    /// internal composition failure rather than a refutation of user data.
+    HomologyGeneratorVerificationMismatch {
+        /// Equation that disagreed.
+        stage: HomologyGeneratorStage,
+        /// Equation row.
+        row: usize,
+        /// Generator column.
+        col: usize,
+        /// Exact required value.
+        expected: i128,
+        /// Exact observed value.
+        actual: i128,
+    },
+    /// Cancellation was observed before generator publication.
+    HomologyGeneratorCancelled {
+        /// Observation phase.
+        phase: &'static str,
+        /// Completed deterministic output/check work items.
+        completed_work_items: u128,
+        /// Planned deterministic output/check work items.
+        planned_work_items: u128,
+        /// Completed checked scalar terms.
+        completed_scalar_operations: u128,
+        /// Planned checked scalar terms.
+        planned_scalar_operations: u128,
+    },
     /// Matrix extent exceeded its explicit envelope.
     MatrixExtentExceeded {
         /// Supplied rows.
@@ -3806,6 +4599,11 @@ impl IntegralTopologyError {
             | Self::HomologyBindingBudgetExceeded { .. }
             | Self::HomologyDecompositionInvariantLost { .. }
             | Self::HomologyDecompositionCancelled { .. }
+            | Self::HomologyGeneratorOutputBudgetExceeded { .. }
+            | Self::HomologyGeneratorInvariantLost { .. }
+            | Self::HomologyGeneratorArithmeticOverflow { .. }
+            | Self::HomologyGeneratorVerificationMismatch { .. }
+            | Self::HomologyGeneratorCancelled { .. }
             | Self::MatrixExtentExceeded { .. }
             | Self::MatrixEntryBudgetExceeded { .. }
             | Self::RetainedMatrixExceedsBudget { .. }

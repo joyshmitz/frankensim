@@ -213,6 +213,14 @@ evidence. The deferred mixed and curl-curl solve batteries remain the gate.
   nontrivial torsion summands. This is exact phase-local cellular chain
   homology, not generator, period, naturality, embedding, or physical-R3
   authority.
+  Its sixth tranche lifts the nontrivial torsion and free presentation columns
+  into the original pair-bound `C_k` basis as
+  `V_A[:, rank(A_k)..] U_L^-1[:, unit_factors..]`. It retains the corresponding
+  torsion filling columns from `V_L`, then checks `A_k G = 0` and
+  `A_(k+1) H_j = d_j G_j` exactly for every torsion column before publication.
+  Unit-factor columns are omitted. The complete prior Smith authorities remain
+  attached, making finite orders exact while keeping representative bytes
+  explicitly witness-relative.
 
 ## Invariants
 
@@ -336,6 +344,10 @@ Quotient-homology binding refuses lower-image Smith shape or source-byte drift
 as Refuted. Binding/retention limits, cancellation, and opaque-input invariant
 loss remain Unknown; factors equal to one reduce boundary rank but never appear
 as nontrivial torsion.
+Generator lifting consumes only opaque verified homology. Aggregate output,
+retention, scalar-work, allocation, arithmetic, cancellation, and internal
+shape/equation failures are therefore typed Unknowns, not counterexamples to
+caller-supplied topology. No partially checked representative is published.
 
 ## Determinism class
 
@@ -382,6 +394,11 @@ Homology binding compares lower-image source bytes and verified invariant
 factors in fixed row-major/factor order. It retains no separately normalized
 generator basis, so witness-dependent lower coordinates remain replay authority
 rather than being mislabeled canonical representatives.
+Generator lifting visits torsion then free presentation columns in their
+verified Smith order and evaluates every checked `i128` product row-major.
+Identical retained authorities and budgets replay generator, filling-chain,
+work-count, and scalar-count bytes exactly. Alternate valid Smith witnesses may
+and generally do select different representatives of the same quotient.
 
 ## Cancellation behavior
 
@@ -415,6 +432,12 @@ partial reduction and publishes only a typed Unknown.
 Homology decomposition preflights source/factor comparisons and retained
 authority entries, polls every comparison, and polls again immediately before
 allocation-free publication.
+Generator lifting preflights both output matrices, total retained entries, and
+all exact scalar work before allocation. It polls before allocation, before
+each output coefficient or chain-equation row, and immediately before final
+publication. Between polls it performs at most
+`max(cycle_rank, dim(C_k), dim(C_(k+1)) + 1)` checked scalar terms; cancellation
+discards both private matrices and returns exact completed/planned counters.
 
 ## Unsafe boundary
 
@@ -569,6 +592,14 @@ one, plus an explicitly abstract finite-CW pair whose lower image
 Same-shape mutation, empty-shape substitution, both resource limit-minus-one
 cases, complete authority retention counts, and every publication poll are
 pinned.
+Tranche 6 lifts the centered free representative and abstract `Z/2` torsion
+representative into their original pair-bound chain bases, retains an exact
+torsion filling chain, and pins cycle/order equations, output/retention/work
+counts, every resource limit-minus-one, and every cancellation point. A second
+valid sheared Smith witness distinguishes `U_L^-1` from the incorrect `U_L`
+lift and demonstrates explicitly noncanonical but byte-replayable output. A
+connected relative `H_0 = 0` fixture preserves the distinct `dim(C_0) x 0`
+generator and `dim(C_1) x 0` filling shapes with zero arithmetic work.
 
 ## Perf-lane observations (bead cwjn: authority-admitted both-ISA gate open)
 
@@ -741,11 +772,12 @@ pinned.
   can reduce that lower matrix, and tranche 5 now owns and byte-compares both
   values before publishing only the quotient invariant decomposition.
 - I13.2b tranche 5 computes free rank and torsion invariant factors of the
-  admitted phase-local cellular quotient. It does not publish canonical free
-  or torsion generators, cycle representatives, integer periods, cocycles,
-  linking pairings, long exact sequences, induced maps, relabel/remesh
-  naturality, or physical winding. Those require checked representative
-  construction and separate physical-realizability authority.
+  admitted phase-local cellular quotient. Tranche 6 now publishes checked free
+  and torsion cycle representatives and torsion filling chains in the original
+  pair-bound quotient-chain bases. They are Smith-witness-relative, not
+  canonical across valid witnesses. No integer periods, cocycles, linking
+  pairings, long exact sequences, induced maps, relabel/remesh naturality,
+  embedding, physical realizability, or physical winding follows.
 - `AbstractAlgebraOnly` is load-bearing. Synthetic CW/Moore/lens-space matrices
   may test the algebra kernel but cannot establish a conductor, terminal,
   material, embedding, winding, flux, force, or machine claim. Physical R3
