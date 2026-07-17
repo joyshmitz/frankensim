@@ -1121,11 +1121,22 @@ abstractions remain unflagged `[S]`):
 Each gates its own integration target (required-features declared).
 
 ## Conformance tests
-tests/conformance.rs, cases geo-001..geo-005 (JSON-line verdicts; seeded
-cases carry seeds): the fixture trait-law battery, multi-chart agreement
-within composed bounds + G5 replay, lying-chart detection with localized
-diagnostics, rigorous conversion receipts + teaching refusals, and
-cancellation. In-module suites cover Aabb/vector laws, fixture known values,
+`tests/conformance.rs` aggregate cases geo-001, geo-002, geo-003, geo-004,
+geo-004c, and geo-005 emit canonical `fs_obs::EventKind::ConformanceCase`
+records after their direct checks complete. The records use `Info`/`Error`
+severity, pass failure-record linting and wire validation before printing, and
+print before the aggregate assertion. The input-seed mapping is exact:
+geo-001 uses `0x0901_2026_0706_1AB5`; geo-002 and geo-003 use the agreement
+sampler's explicit `0x9E0_A62E`; geo-004 uses
+`0x0904_2026_0706_C0F0`; fixed geo-004c and pre-sampling-cancelled geo-005 use
+zero. All six run under the fixed Cx execution seed `0x9E0`, recorded
+separately in detail rather than laundered into randomized-input provenance.
+Assertions and expectations before aggregate emission remain ordinary Rust
+test diagnostics and can terminate a case without publishing a verdict. The
+cases cover the fixture trait-law battery, multi-chart agreement within
+composed bounds + G5 replay, lying-chart detection with localized diagnostics,
+rigorous conversion receipts + teaching refusals, and cancellation. In-module
+suites cover Aabb/vector laws, fixture known values,
 agreement determinism, cancellation, zero-evidence/one-chart refusal,
 non-finite configuration and chart output, `NoClaim`, malformed certificates
 and support, and exact disagreement with zero diagnostic retention. The 30-case
@@ -1275,6 +1286,10 @@ thread replay remain RD.X2/batch-verification work; this test target does not
 claim those stronger G4/G5 results.
 
 ## No-claim boundaries
+- Canonical conformance events are replayable test metadata, not stronger
+  geometry evidence. A case that aborts at a direct assertion or expectation
+  before aggregate emission has no aggregate verdict; absence of an event is
+  never evidence of a pass.
 - NO watertightness/manifoldness/self-intersection certificates here —
   those are wqd.7 (validity certificates) and the sheaf bead; agreement
   checking is SAMPLED evidence, not a proof (`Agreed` means "no

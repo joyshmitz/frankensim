@@ -1,8 +1,12 @@
 //! fs-geom conformance suite (CONTRACT.md: any reimplementation must
 //! pass). G0 trait laws on the fixture charts, the agreement checker's
 //! detection acceptance, conversion receipts with empirical containment,
-//! cancellation, and deterministic reports. JSON-line verdicts; seeded
-//! cases carry seeds.
+//! cancellation, and deterministic reports. Completed aggregate cases emit
+//! canonical fs-obs verdicts. Randomized/generated-input cases carry their
+//! literal input seed, while fixed cases use zero; the fixed Cx execution seed
+//! is recorded separately and is not presented as input randomness. Assertions
+//! and expectations reached before an aggregate verdict remain ordinary Rust
+//! test diagnostics.
 
 use asupersync::types::Budget;
 use fs_evidence::ProvenanceHash;
@@ -16,12 +20,33 @@ use fs_geom::{
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-fn verdict(case: &str, pass: bool, detail: &str) {
-    println!(
-        "{{\"suite\":\"fs-geom/conformance\",\"case\":\"{case}\",\"verdict\":\"{}\",\
-         \"detail\":\"{detail}\"}}",
-        if pass { "pass" } else { "fail" }
+const FIXED_INPUT_SEED: u64 = 0;
+const EXECUTION_SEED: u64 = 0x9E0;
+const GEO_001_INPUT_SEED: u64 = 0x0901_2026_0706_1AB5;
+const AGREEMENT_INPUT_SEED: u64 = 0x9E0_A62E;
+const GEO_004_INPUT_SEED: u64 = 0x0904_2026_0706_C0F0;
+
+fn verdict(case: &str, pass: bool, detail: &str, seed: u64) {
+    let mut emitter = fs_obs::Emitter::new("fs-geom/conformance", case);
+    let event = emitter.emit(
+        if pass {
+            fs_obs::Severity::Info
+        } else {
+            fs_obs::Severity::Error
+        },
+        fs_obs::EventKind::ConformanceCase {
+            suite: "fs-geom/conformance".to_string(),
+            case: case.to_string(),
+            pass,
+            detail: detail.to_string(),
+            seed,
+        },
+        None,
     );
+    fs_obs::lint_failure_record(&event).expect("geometry verdict must be replayable");
+    let line = event.to_jsonl();
+    fs_obs::validate_line(&line).expect("geometry verdict must use the fs-obs wire schema");
+    println!("{line}");
     assert!(pass, "case {case}: {detail}");
 }
 
@@ -44,7 +69,7 @@ fn with_cx<R>(gate: &CancelGate, f: impl FnOnce(&Cx<'_>) -> R) -> R {
             gate,
             arena,
             StreamKey {
-                seed: 0x9E0,
+                seed: EXECUTION_SEED,
                 kernel_id: 1,
                 tile: 0,
                 iteration: 0,
@@ -75,9 +100,8 @@ fn charts() -> Vec<Box<dyn Chart>> {
 
 #[test]
 fn geo_001_g0_trait_laws_on_the_fixture_zoo() {
-    const SEED: u64 = 0x0901_2026_0706_1AB5;
     let gate = CancelGate::new();
-    let mut rng = Lcg(SEED);
+    let mut rng = Lcg(GEO_001_INPUT_SEED);
     let mut checked = 0u64;
     with_cx(&gate, |cx| {
         for chart in charts() {
@@ -156,8 +180,10 @@ fn geo_001_g0_trait_laws_on_the_fixture_zoo() {
         "geo-001",
         checked == 12_000,
         &format!(
-            "trait laws hold over {checked} seeded queries on sphere/box/torus (seed {SEED:#x})"
+            "trait laws hold over {checked} seeded queries on sphere/box/torus (input seed \
+             {GEO_001_INPUT_SEED:#x}; fixed Cx execution seed {EXECUTION_SEED:#x})"
         ),
+        GEO_001_INPUT_SEED,
     );
 }
 
@@ -179,6 +205,10 @@ fn geo_002_multi_chart_region_agrees_within_composed_bounds() {
         radius: 1.5,
     };
     let gate = CancelGate::new();
+    let cfg = AgreementConfig {
+        seed: AGREEMENT_INPUT_SEED,
+        ..AgreementConfig::default()
+    };
     let (agreed, json_stable) = with_cx(&gate, |cx| {
         // Certified<T> is opaque (gp3.2.1): taking the value OUT is an
         // explicit downgrade to plain Evidence.
@@ -188,7 +218,6 @@ fn geo_002_multi_chart_region_agrees_within_composed_bounds() {
             .into_evidence();
         let region = Region::from_chart(Arc::new(sphere), ProvenanceHash::of_bytes(b"exact"))
             .with_chart(Arc::new(sampled.value), sampled.provenance);
-        let cfg = AgreementConfig::default();
         let r1 = region.check_agreement(&cfg, cx).expect("not cancelled");
         let r2 = region.check_agreement(&cfg, cx).expect("not cancelled");
         (
@@ -199,8 +228,12 @@ fn geo_002_multi_chart_region_agrees_within_composed_bounds() {
     verdict(
         "geo-002",
         agreed && json_stable,
-        "exact sphere and its sampled conversion agree within composed declared bounds; \
-         seeded reports replay identically (G5)",
+        &format!(
+            "exact sphere and its sampled conversion agree within composed declared bounds; \
+             reports replay identically with agreement input seed {AGREEMENT_INPUT_SEED:#x} \
+             (G5; fixed Cx execution seed {EXECUTION_SEED:#x})"
+        ),
+        AGREEMENT_INPUT_SEED,
     );
 }
 
@@ -211,15 +244,17 @@ fn geo_003_disagreement_is_detected_with_localized_diagnostics() {
         radius: 1.5,
     };
     let gate = CancelGate::new();
+    let cfg = AgreementConfig {
+        seed: AGREEMENT_INPUT_SEED,
+        ..AgreementConfig::default()
+    };
     let report = with_cx(&gate, |cx| {
         let region = Region::from_chart(Arc::new(sphere), ProvenanceHash::of_bytes(b"honest"))
             .with_chart(
                 Arc::new(LyingSphereChart { sphere, bias: 0.03 }),
                 ProvenanceHash::of_bytes(b"liar"),
             );
-        region
-            .check_agreement(&AgreementConfig::default(), cx)
-            .expect("not cancelled")
+        region.check_agreement(&cfg, cx).expect("not cancelled")
     });
     let localized = report.status == AgreementStatus::Disagreed
         && !report.disagreements.is_empty()
@@ -232,17 +267,18 @@ fn geo_003_disagreement_is_detected_with_localized_diagnostics() {
         localized,
         &format!(
             "a 0.03 undeclared bias is caught and localized ({} diagnostics, worst excess \
-             {:.4}); report: {}",
+             {:.4}); agreement input seed {AGREEMENT_INPUT_SEED:#x}; fixed Cx execution seed \
+             {EXECUTION_SEED:#x}; report: {}",
             report.disagreements.len(),
             report.worst_excess.expect("valid comparisons"),
             report.to_json()
         ),
+        AGREEMENT_INPUT_SEED,
     );
 }
 
 #[test]
 fn geo_004_conversion_receipts_are_rigorous_and_refusals_teach() {
-    const SEED: u64 = 0x0904_2026_0706_C0F0;
     let sphere = SphereChart {
         center: Point3::new(0.1, 0.2, -0.1),
         radius: 1.2,
@@ -254,7 +290,7 @@ fn geo_004_conversion_receipts_are_rigorous_and_refusals_teach() {
             .expect("feasible");
         // Empirical containment: |sampled - exact| ≤ receipt bound over
         // seeded points inside the sampled box (G0 law of the receipt).
-        let mut rng = Lcg(SEED);
+        let mut rng = Lcg(GEO_004_INPUT_SEED);
         let box_ = certified.value.support();
         let mut worst = 0.0f64;
         for _ in 0..10_000 {
@@ -283,8 +319,10 @@ fn geo_004_conversion_receipts_are_rigorous_and_refusals_teach() {
         contained && teaches,
         &format!(
             "sampled-sdf receipt bound {receipt_bound:.4} contains the empirical error over \
-             10k seeded points (seed {SEED:#x}); infeasible budgets refuse with ranked fixes"
+             10k seeded points (input seed {GEO_004_INPUT_SEED:#x}; fixed Cx execution seed \
+             {EXECUTION_SEED:#x}); infeasible budgets refuse with ranked fixes"
         ),
+        GEO_004_INPUT_SEED,
     );
 }
 
@@ -313,7 +351,11 @@ fn geo_004c_zero_error_budget_refuses_instead_of_overflowing() {
     verdict(
         "geo-004c",
         ok,
-        "zero error budget refuses before evaluation or integer count arithmetic",
+        &format!(
+            "zero error budget refuses before evaluation or integer count arithmetic (fixed \
+             input; Cx execution seed {EXECUTION_SEED:#x})"
+        ),
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -806,6 +848,10 @@ fn geo_005_geometry_is_cancellable() {
     verdict(
         "geo-005",
         outcome == Err(Cancelled),
-        "agreement checking observes a pre-requested gate and returns Cancelled promptly (P7)",
+        &format!(
+            "agreement checking observes a pre-requested gate and returns Cancelled before \
+             seeded sampling begins (P7; fixed input; Cx execution seed {EXECUTION_SEED:#x})"
+        ),
+        FIXED_INPUT_SEED,
     );
 }
