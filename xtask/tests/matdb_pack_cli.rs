@@ -65,8 +65,12 @@ const PENNZANE_SHF_X_2000_BEARING_OIL_SEED_MANIFEST: &str =
     "data/matdb/seed-v1/pennzane-shf-x-2000-bearing-oil/manifest.tsv";
 const GRAY_CAST_IRON_S2_S_SEED_MANIFEST: &str =
     "data/matdb/seed-v1/gray-cast-iron-s2-s/manifest.tsv";
+const NASA_CR_195445_OMC_PS200_ROTARY_COATING_SEED_MANIFEST: &str =
+    "data/matdb/seed-v1/nasa-cr-195445-omc-ps200-rotary-coating/manifest.tsv";
 const NASA_SEED_LICENSE: &str = "Work-of-the-US-Government-Public-Use-Permitted";
 const PUBLIC_USE_PERMITTED_LICENSE: &str = "Public-Use-Permitted";
+const PUBLIC_USE_AND_PATENT_PUBLICATION_LICENSE: &str =
+    "Public-Use-Permitted-and-US-Patent-Publication";
 const CC_BY_4_0_LICENSE: &str = "CC-BY-4.0";
 const NIST_PUBLIC_INFORMATION_LICENSE: &str = "NIST-Public-Information-Attribution-Requested";
 const USPTO_PATENT_TEXT_LICENSE: &str = "USPTO-Patent-Text-Typically-No-Copyright-Restrictions";
@@ -5020,6 +5024,232 @@ fn g3_cli_refuses_malformed_species_without_publishing() {
     assert!(
         String::from_utf8_lossy(&refused.stderr)
             .contains("error: matdb pack refused [species_molar_mass_dims_mismatch]")
+    );
+}
+
+#[test]
+fn g3_cli_compiles_committed_nasa_cr_195445_omc_ps200_rotary_coating_system() {
+    let manifest = workspace_path(NASA_CR_195445_OMC_PS200_ROTARY_COATING_SEED_MANIFEST);
+    assert!(
+        manifest.is_file(),
+        "committed NASA-CR-195445 OMC PS-200 coating manifest is missing"
+    );
+    let directory = fixture_dir();
+    let first_path = directory.join("nasa-cr-195445-omc-ps200-first.fsmatpk");
+    let second_path = directory.join("nasa-cr-195445-omc-ps200-second.fsmatpk");
+
+    let first = run_compiler(&manifest, &first_path);
+    let second = run_compiler(&manifest, &second_path);
+    assert!(
+        first.status.success(),
+        "first NASA-CR-195445 OMC PS-200 compilation failed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(
+        second.status.success(),
+        "second NASA-CR-195445 OMC PS-200 compilation failed: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(
+        first.stdout, second.stdout,
+        "NASA-CR-195445 OMC PS-200 decision stream moved"
+    );
+    assert_decision_compiler(&first, MATERIAL_COMPILER_ID);
+
+    let first_bytes = fs::read(first_path).expect("read first OMC PS-200 pack");
+    let second_bytes = fs::read(second_path).expect("read second OMC PS-200 pack");
+    assert_eq!(first_bytes, second_bytes, "OMC PS-200 pack bytes moved");
+    let decoded = NormalizedPack::from_bytes(&first_bytes).expect("decode OMC PS-200 pack");
+    let pack_hash = decoded.content_hash();
+    let decoded = NormalizedPack::from_bytes_verified(pack_hash, &first_bytes)
+        .expect("verify OMC PS-200 pack identity");
+
+    assert_eq!(
+        decoded.pack_id(),
+        "nasa-cr-195445-omc-ps200-rotary-coating-system"
+    );
+    assert_eq!(decoded.compiler(), MATERIAL_COMPILER_ID);
+    assert!(
+        decoded
+            .redistribution_terms()
+            .contains("public use permitted")
+    );
+    assert!(decoded.redistribution_terms().contains("US4728448A"));
+    assert_eq!(decoded.claims().claim_count(), 7);
+    assert!(decoded.joint_statistics().is_empty());
+
+    let dimensionless = Dims([0, 0, 0, 0, 0, 0]);
+    let mut composition_sum = 0.0_f64;
+    let mut composition_observation = None;
+    for (property, source_percent) in [
+        (
+            "ps200_bonded_chromium_carbide_feedstock_mass_fraction",
+            80.0_f64,
+        ),
+        ("ps200_silver_feedstock_mass_fraction", 10.0_f64),
+        ("ps200_baf2_caf2_eutectic_feedstock_mass_fraction", 10.0_f64),
+    ] {
+        let claims = decoded.claims().claims_for(property);
+        assert_eq!(claims.len(), 1, "expected one PS-200 {property} claim");
+        let (id, claim) = claims[0];
+        let PropertyValue::Scalar { value, dims } = &claim.value else {
+            panic!("PS-200 {property} was not scalar");
+        };
+        assert_eq!(*dims, dimensionless);
+        let expected_value = source_percent * 0.01;
+        assert_eq!(value.to_bits(), expected_value.to_bits());
+        composition_sum += *value;
+        for required_axis in [
+            "source_feedstock_composition_basis_is_mass_fraction",
+            "source_ps200_plasma_sprayed_in_engine_report",
+        ] {
+            assert_eq!(claim.validity.bound(required_axis), Some((1.0, 1.0)));
+        }
+        for missing_or_refused_axis in [
+            "source_post_spray_phase_fractions_known",
+            "source_powder_lot_known",
+            "source_patent_practice_license_granted",
+        ] {
+            assert_eq!(
+                claim.validity.bound(missing_or_refused_axis),
+                Some((0.0, 0.0))
+            );
+        }
+        assert_eq!(claim.uncertainty, UncertaintyModel::Unstated);
+        assert_eq!(
+            claim.provenance.license,
+            PUBLIC_USE_AND_PATENT_PUBLICATION_LICENSE
+        );
+        assert!(claim.provenance.source.contains("NASA-CR-195445"));
+        assert!(claim.provenance.source.contains("US Patent 4,728,448"));
+        let observation = decoded
+            .claims()
+            .observation(claim.observations[0])
+            .expect("PS-200 composition observation remains linked");
+        assert!(observation.specimen.contains("80wtpct-nickel-bonded-Cr3C2"));
+        assert!(observation.method.contains("US4728448A Table II"));
+        assert!(observation.caveats.contains("pre-spray feedstock"));
+        assert!(observation.caveats.contains("not a patent-practice"));
+        match composition_observation {
+            Some(expected) => assert_eq!(claim.observations[0], expected),
+            None => composition_observation = Some(claim.observations[0]),
+        }
+        assert_eq!(claim.observations[0].0, observation.content_hash());
+        assert_eq!(id.0, claim.content_hash());
+    }
+    assert!((composition_sum - 1.0).abs() <= f64::EPSILON);
+
+    let roughness_claims = decoded.claims().claims_for("surface_roughness_rms");
+    assert_eq!(roughness_claims.len(), 4);
+    let mut observed_conditions = Vec::new();
+    for (id, claim) in roughness_claims {
+        let PropertyValue::Scalar { value, dims } = &claim.value else {
+            panic!("OMC PS-200 RMS finish was not scalar");
+        };
+        assert_eq!(*dims, Dims([1, 0, 0, 0, 0, 0]));
+        let (test_number, _) = claim
+            .validity
+            .bound("source_engine_test_number")
+            .expect("engine test number remains pinned");
+        let (stage_index, _) = claim
+            .validity
+            .bound("source_surface_stage_index")
+            .expect("surface stage remains pinned");
+        let condition = (test_number as u8, stage_index as u8);
+        let expected_from_microinch: f64 = match condition {
+            (3, 0) => 21.0 * 25.4e-9,
+            (3, 1) => 7.0 * 25.4e-9,
+            (6, 0) => 24.0 * 25.4e-9,
+            (6, 1) => 17.0 * 25.4e-9,
+            other => panic!("unexpected OMC PS-200 test/stage condition: {other:?}"),
+        };
+        assert!(
+            (*value - expected_from_microinch).abs() <= 1.0e-21,
+            "OMC PS-200 microinch-to-metre transcription moved for {condition:?}"
+        );
+        observed_conditions.push(condition);
+        for required_axis in [
+            "source_ps200_over_zirconia_or_sx331",
+            "source_substrate_is_aluminum_alloy",
+        ] {
+            assert_eq!(claim.validity.bound(required_axis), Some((1.0, 1.0)));
+        }
+        for missing_axis in [
+            "source_aluminum_alloy_grade_known",
+            "source_coating_thickness_known",
+            "source_surface_finish_method_known",
+        ] {
+            assert_eq!(claim.validity.bound(missing_axis), Some((0.0, 0.0)));
+        }
+        assert_eq!(claim.uncertainty, UncertaintyModel::Unstated);
+        assert_eq!(
+            claim.provenance.license,
+            PUBLIC_USE_AND_PATENT_PUBLICATION_LICENSE
+        );
+        let observation = decoded
+            .claims()
+            .observation(claim.observations[0])
+            .expect("OMC PS-200 finish observation remains linked");
+        match test_number as u8 {
+            3 => {
+                assert_eq!(
+                    claim.validity.bound("source_narrative_run_duration"),
+                    Some((2.5 * 3_600.0, 2.5 * 3_600.0))
+                );
+                assert!(observation.specimen.contains("Test3-air-cooled-OMC"));
+                assert!(observation.caveats.contains("TBC crack"));
+                assert!(observation.caveats.contains("scrap that housing"));
+                assert!(observation.caveats.contains("no zero-wear"));
+            }
+            6 => {
+                assert_eq!(
+                    claim.validity.bound("source_actual_run_duration"),
+                    Some((1.5 * 3_600.0, 1.5 * 3_600.0))
+                );
+                assert_eq!(
+                    claim
+                        .validity
+                        .bound("source_local_ps200_breakthrough_present"),
+                    Some((1.0, 1.0))
+                );
+                assert!(observation.specimen.contains("Test6-air-cooled-OMC"));
+                assert!(observation.caveats.contains("500 degF"));
+                assert!(observation.caveats.contains("local PS-200 breakthrough"));
+                assert!(
+                    observation
+                        .caveats
+                        .contains("does not establish a wear rate")
+                );
+            }
+            other => panic!("unexpected OMC PS-200 engine test number: {other}"),
+        }
+        assert_eq!(claim.observations[0].0, observation.content_hash());
+        assert_eq!(id.0, claim.content_hash());
+    }
+    observed_conditions.sort_unstable();
+    assert_eq!(observed_conditions, [(3, 0), (3, 1), (6, 0), (6, 1)]);
+
+    for refused_property in [
+        "coefficient_of_friction",
+        "wear_rate",
+        "coating_thickness",
+        "thermal_conductivity",
+        "specific_fuel_consumption",
+        "service_life",
+    ] {
+        assert!(
+            decoded.claims().claims_for(refused_property).is_empty(),
+            "source-absent or system-level coating property must remain refused: {refused_property}"
+        );
+    }
+
+    let decisions = String::from_utf8(first.stdout).expect("decision stream is UTF-8");
+    assert!(decisions.contains("\"reason_code\":\"uncertainty_policy_admitted\""));
+    assert!(decisions.contains("\"reason_code\":\"runtime_pack_self_verified\""));
+    assert!(
+        decisions
+            .lines()
+            .all(|row| row.contains(&format!("\"pack_hash\":\"{pack_hash}\"")))
     );
 }
 

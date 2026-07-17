@@ -736,6 +736,44 @@ NASA UAM winding-insulation reference:
 - <https://ntrs.nasa.gov/citations/20240007451>
 - <https://ntrs.nasa.gov/api/citations/20240007451/downloads/Winding%20Lifetime%20Testing%20V4.pdf>
 
+## NASA-CR-195445 OMC rotary PS-200 coating-system tranche
+
+`nasa-cr-195445-omc-ps200-rotary-coating/` is a configuration card for the
+air-cooled OMC rotary-engine experiments in NASA-CR-195445, not a generic
+aluminum, Wankel-housing, zirconia, or wear-coating card. The source explicitly
+connects its PS-200 coating to US Patent 4,728,448. The pack therefore retains
+the patent's preferred PS200 feedstock composition as three separately linked
+mass fractions: `80 wt%` nickel-bonded chromium carbide, `10 wt%` silver, and
+`10 wt%` barium-fluoride/calcium-fluoride eutectic. These are powder-feed
+component fractions, not an assay of the as-sprayed coating.
+
+The engine report applied PS-200 over a plasma-sprayed thermal-barrier
+underlayer that it calls zirconia in the narrative and SX-331 elsewhere. The
+pack preserves both names without asserting that they are chemically
+identical. For Test 3's coated aluminum-alloy side-housing context, it retains
+the reported RMS finish change from `21 microinch` (`0.5334 um`) to
+`7 microinch` (`0.1778 um`) around the narrative's `2.5 h` run. For Test 6's
+aluminum-alloy trochoid context, it retains the change from `24 microinch`
+(`0.6096 um`) to `17 microinch` (`0.4318 um`) around the foreshortened `1.5 h`
+run. Stage indices keep before and after claims distinct; they are not combined
+into a wear rate.
+
+The failure evidence is part of the identity. Test 3 developed a drive-side
+TBC crack attributed to a probable spray defect and that housing was scrapped.
+The Test 6 trochoid had uneven spray and honing, local PS-200 breakthrough,
+leakage paths, and hot spots; the planned two-hour run stopped after `1.5 h`
+when the exhaust-port temperature exceeded `500 degF`, near the report's stated
+aluminum-alloy limit. Aluminum grade/temper/casting route, powder and substrate
+lots, SX-331 chemistry, coating thickness, as-tested profile, spray parameters,
+surface-finish method, metrology settings, repeats, and uncertainty remain
+explicitly unavailable.
+
+Rotary-coating references:
+
+- <https://ntrs.nasa.gov/citations/19950016805>
+- <https://ntrs.nasa.gov/api/citations/19950016805/downloads/19950016805.pdf>
+- <https://patents.google.com/patent/US4728448A/en>
+
 To compile the sources into canonical runtime packs:
 
 ```bash
@@ -830,6 +868,10 @@ cargo run -p xtask -- matdb-pack \
 cargo run -p xtask -- matdb-pack \
   --manifest data/matdb/seed-v1/nasa-uam-cooltherm-ep2000-180c-cure/manifest.tsv \
   --out /path/to/nasa-uam-cooltherm-ep2000-180c-cure.fsmatpk
+
+cargo run -p xtask -- matdb-pack \
+  --manifest data/matdb/seed-v1/nasa-cr-195445-omc-ps200-rotary-coating/manifest.tsv \
+  --out /path/to/nasa-cr-195445-omc-ps200-rotary-coating-system.fsmatpk
 ```
 
 ## No-claim boundary
@@ -1017,3 +1059,15 @@ discharge inception voltage, Arrhenius activation energy, degree of cure, or
 service life. The paper's PDIV measurements and FEA stress/temperature results
 belong to the assembled motorette and its geometry, cooling, excitation, and
 aging history, so they are excluded from these bulk constituent cards.
+
+The NASA-CR-195445 coating tranche is not a transferable PS-200 property card,
+an aluminum-alloy allowable, or a qualified Wankel coating stack. Its
+composition values describe named feedstock components, not post-spray phases.
+Its four roughness values belong only to the reported OMC engine configurations
+and their imperfect surfaces. No friction coefficient, wear rate, adhesion,
+porosity, hardness, thermal conductivity, coating-thickness tolerance,
+temperature envelope, fatigue life, specific-fuel-consumption benefit, or
+service life is admitted. The cracked Test 3 housing and locally breached,
+leaking Test 6 trochoid prevent any universal durability claim. Redistribution
+of source text does not grant patent-practice, trademark, or application-
+qualification rights.

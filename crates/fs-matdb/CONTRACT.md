@@ -325,6 +325,12 @@ polyimide-wire thermal-class pair, the selected 0.08 mm Nomex 410 slot liner,
 and the CoolTherm EP-2000 actual/omitted cure steps as three separate packs. It
 also proves that assembly-level PDIV, modeled stress, dielectric, conductivity,
 and lifetime-law claims are not laundered into the bulk constituents.
+The NASA-CR-195445 rotary-coating battery compiles the source-linked PS-200
+feedstock composition and the OMC Test 3/Test 6 before/after RMS finishes while
+pinning the aluminum-alloy configuration, incomplete process identity, crack,
+local breakthrough, and foreshortened-run caveats. It refuses to infer a wear
+rate, friction law, coating thickness, transferable durability, or generic
+Wankel-housing authority.
 
 ## No-claim boundaries
 
@@ -501,6 +507,17 @@ and lifetime-law claims are not laundered into the bulk constituents.
   geometry and history and therefore remain excluded from the bulk packs, as
   do dielectric strength, thermal conductivity, fatigue, adhesion, moisture,
   activation-energy, and service-life claims.
+  The NASA-CR-195445 rotary-coating claims bind the patent-linked PS-200 powder
+  composition and four RMS finish observations to the report's exact air-cooled
+  OMC Test 3 and Test 6 configurations. Feedstock mass fractions are not
+  as-sprayed phase fractions. The aluminum alloy, SX-331 chemistry, coating
+  thickness/profile, spray parameters, finish metrology, repeats, and
+  uncertainty remain absent. The cracked Test 3 TBC and Test 6's uneven honing,
+  local PS-200 breakthrough, leakage, hot spots, and `1.5 h` early stop are
+  retained no-claim boundaries; no wear rate, friction coefficient, thermal
+  property, transferable durability, generic Wankel identity, or service-life
+  authority follows. Source-text redistribution grants no patent-practice or
+  trademark rights.
   No equilibrium computation happens here (fs-thermochem consumes phase data;
   this crate only stores it).
 - The L1 pack codec does not parse handbooks, CSV, NASA tables, license text,
