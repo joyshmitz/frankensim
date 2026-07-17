@@ -60,7 +60,10 @@ impl std::fmt::Display for Se3Error {
                 write!(f, "motor has no nonzero even component to anchor the sign")
             }
             Se3Error::InvalidParameter => {
-                write!(f, "step size and principal inertias must be positive and finite")
+                write!(
+                    f,
+                    "step size and principal inertias must be positive and finite"
+                )
             }
             Se3Error::SolverDiverged { iters, residual } => write!(
                 f,
@@ -88,7 +91,10 @@ pub struct Twist {
 
 impl Twist {
     fn is_finite(&self) -> bool {
-        self.omega.iter().chain(self.vel.iter()).all(|v| v.is_finite())
+        self.omega
+            .iter()
+            .chain(self.vel.iter())
+            .all(|v| v.is_finite())
     }
 }
 
@@ -354,10 +360,7 @@ pub fn dep_free_step(
         converged: residual <= params.tol,
     };
     if !receipt.converged {
-        return Err(Se3Error::SolverDiverged {
-            iters,
-            residual,
-        });
+        return Err(Se3Error::SolverDiverged { iters, residual });
     }
     let f = quat_exp([h * w_mid[0], h * w_mid[1], h * w_mid[2]]);
     let q_next = quat_mul(q, f);

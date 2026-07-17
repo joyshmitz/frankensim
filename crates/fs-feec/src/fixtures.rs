@@ -113,8 +113,7 @@ pub fn on_unit_cube_boundary(p: [f64; 3]) -> bool {
     // (and, under Dirichlet pinning, yields a near-singular reduced system).
     // Interior vertices sit ≥ 1/n from a face — far outside this tolerance for
     // any realistic mesh — so a small absolute band is unambiguous.
-    p.iter()
-        .any(|&c| c.abs() < 1e-9 || (c - 1.0).abs() < 1e-9)
+    p.iter().any(|&c| c.abs() < 1e-9 || (c - 1.0).abs() < 1e-9)
 }
 /// A masked cube grid: `nx × ny × nz` cells, keeping only cells where
 /// `keep(i, j, k)` — the MULTIPLY-CONNECTED fixture builder (rings,
