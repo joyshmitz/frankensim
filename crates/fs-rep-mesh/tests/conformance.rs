@@ -2,7 +2,11 @@
 //! pass). Half-edge invariants under random edits, point-triangle
 //! distance vs brute force, winding classification on nightmare soup,
 //! dipole-vs-exact error, the repair battery with receipts, δδ = 0, and
-//! watertight rays. JSON-line verdicts; seeded cases carry seeds.
+//! watertight rays. Aggregate verdicts use the canonical fs-obs schema;
+//! randomized cases carry their literal campaign-root input seed, while fixed
+//! cases use zero. The fixed Cx seed is recorded separately as execution
+//! provenance. Assertions and expectations reached before an aggregate verdict
+//! remain ordinary Rust test diagnostics.
 
 use asupersync::types::Budget;
 use fs_evidence::{NumericalCertificate, NumericalKind};
@@ -18,12 +22,30 @@ use fs_rep_mesh::{
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 
-fn verdict(case: &str, pass: bool, detail: &str) {
-    println!(
-        "{{\"suite\":\"fs-rep-mesh/conformance\",\"case\":\"{case}\",\"verdict\":\"{}\",\
-         \"detail\":\"{detail}\"}}",
-        if pass { "pass" } else { "fail" }
+const FIXED_INPUT_SEED: u64 = 0;
+const EXECUTION_SEED: u64 = 0x9E54;
+
+fn verdict(case: &str, pass: bool, detail: &str, seed: u64) {
+    let mut emitter = fs_obs::Emitter::new("fs-rep-mesh/conformance", case);
+    let event = emitter.emit(
+        if pass {
+            fs_obs::Severity::Info
+        } else {
+            fs_obs::Severity::Error
+        },
+        fs_obs::EventKind::ConformanceCase {
+            suite: "fs-rep-mesh/conformance".to_string(),
+            case: case.to_string(),
+            pass,
+            detail: detail.to_string(),
+            seed,
+        },
+        None,
     );
+    fs_obs::lint_failure_record(&event).expect("mesh verdict must be replayable");
+    let line = event.to_jsonl();
+    fs_obs::validate_line(&line).expect("mesh verdict must use the fs-obs wire schema");
+    println!("{line}");
     assert!(pass, "case {case}: {detail}");
 }
 
@@ -59,7 +81,7 @@ fn with_gate_cx<R>(gate: &CancelGate, f: impl FnOnce(&Cx<'_>) -> R) -> R {
             gate,
             arena,
             StreamKey {
-                seed: 0x9E54,
+                seed: EXECUTION_SEED,
                 kernel_id: 1,
                 tile: 0,
                 iteration: 0,
@@ -199,7 +221,12 @@ fn rmesh_001_halfedge_invariants_survive_random_flip_batteries() {
             flips_done += 1;
         }
         if let Some(violation) = mesh.check_invariants() {
-            verdict("rmesh-001", false, &format!("invariant broke: {violation}"));
+            verdict(
+                "rmesh-001",
+                false,
+                &format!("invariant broke: {violation}"),
+                SEED,
+            );
         }
     }
     verdict(
@@ -209,6 +236,7 @@ fn rmesh_001_halfedge_invariants_survive_random_flip_batteries() {
             "half-edge invariants held through {flips_done} random edge flips (seed {SEED:#x}); \
              Euler characteristic still 2"
         ),
+        SEED,
     );
 }
 
@@ -283,8 +311,10 @@ fn rmesh_002_point_triangle_distance_matches_brute_force_and_chart_laws() {
             "exact point-triangle distance under-approximates 1830-sample brute force by at \
              most sampling gap (worst {worst:.4}); chart tracks the analytic sphere and is \
              observed 1-Lipschitz on this fixture without advertising a generic theorem \
-             (seed {SEED:#x})"
+             (campaign seed {SEED:#x}; chart substream = campaign seed xor 0xc047; execution \
+             seed {EXECUTION_SEED:#x})"
         ),
+        SEED,
     );
 }
 
@@ -362,6 +392,7 @@ fn rmesh_002b_degenerate_triangles_yield_finite_correct_distances() {
              match brute force (worst {worst:.4}); the a==b repro is {repro:.6} (want 1.0), \
              not NaN (seed {SEED:#x})"
         ),
+        SEED,
     );
 }
 
@@ -392,7 +423,12 @@ fn rmesh_002c_raw_mesh_chart_never_promotes_clean_soup_authority() {
     verdict(
         "rmesh-002c",
         true,
-        "a raw clean-looking closed soup remains TraceStepClaim::NoClaim with no Lipschitz bound; finite samples are Estimate and non-finite samples are NoClaim",
+        &format!(
+            "a raw clean-looking closed soup remains TraceStepClaim::NoClaim with no Lipschitz \
+             bound; finite samples are Estimate and non-finite samples are NoClaim (fixed input; \
+             execution seed {EXECUTION_SEED:#x})"
+        ),
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -431,6 +467,7 @@ fn rmesh_003_winding_classifies_nightmare_soup() {
             "winding classification on the nightmare soup (dups+degens+flipped patch+hole): \
              {correct}/{total} correct away from defects (seed {SEED:#x})"
         ),
+        SEED,
     );
 }
 
@@ -462,7 +499,9 @@ fn rmesh_004_dipole_approximation_tracks_exact_within_declared_error() {
             fs_obs::Severity::Info,
             fs_obs::EventKind::Custom {
                 name: "rep-mesh-dipole-error".to_string(),
-                json: format!("{{\"worst_abs_error\":{worst:.6},\"beta\":2.0}}"),
+                json: format!(
+                    "{{\"worst_abs_error\":{worst:.6},\"beta\":2.0,\"input_seed\":{SEED}}}"
+                ),
             },
             None,
         )
@@ -476,6 +515,7 @@ fn rmesh_004_dipole_approximation_tracks_exact_within_declared_error() {
             "dipole octree (beta=2) tracks exact winding within {worst:.4} off-surface \
              (seed {SEED:#x}; error ledgered)"
         ),
+        SEED,
     );
 }
 
@@ -525,6 +565,7 @@ fn rmesh_005_repair_battery_heals_the_corpus_with_receipts() {
              restored to {w:.6}; half-edge build succeeds again",
             outcome.receipts.len()
         ),
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -597,6 +638,7 @@ fn rmesh_006_incidence_satisfies_dd_zero_and_rays_are_watertight() {
              axis rays never leak through shared edges (center {through_center} hits, \
              off-center {through_offcenter}); chart raycast hits at analytic t=2"
         ),
+        SEED,
     );
 }
 
@@ -938,6 +980,7 @@ fn rmesh_011_tricomplex2_exact_trace_identity_and_metric_contract() {
              planar and axisymmetric face/edge measures match closed forms \
              (full-turn triangle={measured:.17e}, axis-touching={axis_face:.17e})"
         ),
+        SEED,
     );
 }
 
@@ -1084,7 +1127,10 @@ fn rmesh_007_mesh_to_sdf_converter_is_honest_equivariant_and_incremental() {
             fs_obs::Severity::Info,
             fs_obs::EventKind::Custom {
                 name: "rep-mesh-convert-stats".to_string(),
-                json: format!("{{\"incremental_samples_refreshed\":{samples}}}"),
+                json: format!(
+                    "{{\"incremental_samples_refreshed\":{samples},\"input_seed\":{SEED},\
+                     \"execution_seed\":{EXECUTION_SEED}}}"
+                ),
             },
             None,
         )
@@ -1098,8 +1144,9 @@ fn rmesh_007_mesh_to_sdf_converter_is_honest_equivariant_and_incremental() {
             "mesh->SDF: analytic match within recorded estimate, translation-equivariant (G3), \
              incremental update bit-identical to full rebuild (G5, {samples} samples \
              refreshed), generic-soup payloads and receipts honestly capped at Estimate \
-             (seed {SEED:#x})"
+             (input seed {SEED:#x}; execution seed {EXECUTION_SEED:#x})"
         ),
+        SEED,
     );
 }
 
@@ -1183,7 +1230,7 @@ fn rmesh_008_dual_contouring_reconstructs_certifies_and_detects_bad_triangles() 
             cx,
         )
         .expect("mass");
-        // Seeded bad triangle: yank one vertex far off the surface; the
+        // Fixed bad triangle: yank one vertex far off the surface; the
         // certificate must fail and LOCALIZE.
         let mut broken = qef.clone();
         broken.positions[7] = Point3::new(3.0, 3.0, 3.0);
@@ -1192,6 +1239,11 @@ fn rmesh_008_dual_contouring_reconstructs_certifies_and_detects_bad_triangles() 
             && fails.iter().all(|f| f.proven_bound > f.tolerance));
         (corner_dist(&qef), corner_dist(&mass), detects)
     });
+    let cert_margin_json = if cert_margin.is_finite() {
+        format!("{cert_margin:.5}")
+    } else {
+        "null".to_string()
+    };
     let mut em = fs_obs::Emitter::new("fs-rep-mesh/conformance", "rmesh-008/dc");
     let line = em
         .emit(
@@ -1199,8 +1251,9 @@ fn rmesh_008_dual_contouring_reconstructs_certifies_and_detects_bad_triangles() 
             fs_obs::EventKind::Custom {
                 name: "rep-mesh-dc-stats".to_string(),
                 json: format!(
-                    "{{\"sphere_worst_vertex_err\":{sphere_err:.5},\"cert_margin\":{cert_margin:.5},\
-                     \"qef_corner_err\":{qef_corner_err:.5},\"mass_corner_err\":{mass_corner_err:.5}}}"
+                    "{{\"sphere_worst_vertex_err\":{sphere_err:.5},\"cert_margin\":{cert_margin_json},\
+                     \"qef_corner_err\":{qef_corner_err:.5},\"mass_corner_err\":{mass_corner_err:.5},\
+                     \"execution_seed\":{EXECUTION_SEED}}}"
                 ),
             },
             None,
@@ -1221,9 +1274,10 @@ fn rmesh_008_dual_contouring_reconstructs_certifies_and_detects_bad_triangles() 
             "DC sphere vertices within {sphere_err:.4} of the zero set with the bracket \
              certificate proven (margin {cert_margin:.4}); output manifold, closed, and \
              outward-oriented; translation-equivariant (G3); QEF resolves the box corner \
-             {qef_corner_err:.4} vs mass-point {mass_corner_err:.4}; a seeded bad triangle is \
-             caught and localized"
+             {qef_corner_err:.4} vs mass-point {mass_corner_err:.4}; a fixed bad triangle is \
+             caught and localized (fixed input; execution seed {EXECUTION_SEED:#x})"
         ),
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -1294,7 +1348,12 @@ fn rmesh_009_dual_contour_sampling_domain_is_explicit_and_preflighted() {
     verdict(
         "rmesh-009",
         true,
-        "dual contouring rejects unresolved extended support and invalid/excessive grids before evaluation; the clipped API contours source-intersection-clip and preserves translation equivariance (G3)",
+        &format!(
+            "dual contouring rejects unresolved extended support and invalid/excessive grids \
+             before evaluation; the clipped API contours source-intersection-clip and preserves \
+             translation equivariance (G3; fixed input; execution seed {EXECUTION_SEED:#x})"
+        ),
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -1401,6 +1460,11 @@ fn rmesh_010_bracket_authority_fails_closed_and_polls_directly() {
     verdict(
         "rmesh-010",
         true,
-        "NoClaim, Estimate, and malformed evidence cannot borrow authority from a local Lipschitz sample; direct post-evaluation polling reports cancellation progress",
+        &format!(
+            "NoClaim, Estimate, and malformed evidence cannot borrow authority from a local \
+             Lipschitz sample; direct post-evaluation polling reports cancellation progress \
+             (fixed input; execution seed {EXECUTION_SEED:#x})"
+        ),
+        FIXED_INPUT_SEED,
     );
 }

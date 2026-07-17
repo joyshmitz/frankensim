@@ -156,7 +156,7 @@ fs-exec, fs-evidence, fs-alloc, fs-obs.
 8. Dual-contoured fixtures are manifold, closed, outward-oriented
    (winding +1 at the center — the ring-orientation law), vertex-accurate,
    translation-equivariant, bracket-certified, and the certificate DETECTS
-   a seeded bad triangle with localized margins; QEF resolves the box
+   a fixed adversarial bad triangle with localized margins; QEF resolves the box
    corner at least twice as sharply as the mass-point baseline
    (rmesh-008).
 9. Contouring admission (rmesh-009): default contouring rejects unresolved
@@ -233,9 +233,32 @@ None. `unsafe_code` denied workspace-wide.
 None. `[S]` solid-tier.
 
 ## Conformance tests
-tests/conformance.rs, cases rmesh-001..rmesh-011 (JSON-line verdicts;
-seeded cases carry seeds) covering invariants 1–11 with fs-obs-validated
-evidence events (dipole error, repair receipts).
+`tests/conformance.rs` has 13 aggregate case IDs (`rmesh-001`, `rmesh-002`,
+`rmesh-002b`, `rmesh-002c`, and `rmesh-003` through `rmesh-011`) covering
+invariants 1–11. Every reached aggregate result is an fs-obs
+`ConformanceCase` with Info/Error severity, passes `lint_failure_record`, is
+serialized and wire-validated, and is printed before a failing aggregate
+assertion. Assertions, expectations, and panics reached before that point are
+ordinary Rust test diagnostics: they stop the case before an aggregate verdict
+exists and are not laundered into synthetic evidence.
+
+Randomized verdicts carry their literal campaign-root input seed: rmesh-001
+`0x1001_2026_0706_0001`, rmesh-002 `0x1002_2026_0706_D157`, rmesh-002b
+`0x1002_B026_0706_DE9E`, rmesh-003 `0x1003_2026_0706_50FA`, rmesh-004
+`0x1004_2026_0706_D1B0`, rmesh-006 `0x1006_2026_0706_DD00`, rmesh-007
+`0x1007_2026_0706_C0DE`, and rmesh-011 `0x1011_2026_0714_DD00`. The
+rmesh-002 chart-law substream derives as campaign root xor `0xC047`, while its
+canonical verdict retains the campaign root. Fixed rmesh-002c, rmesh-005,
+rmesh-008, rmesh-009, and rmesh-010 use input seed zero. The fixed Cx stream
+seed `0x9E54` is separate execution provenance, recorded in verdict detail and
+relevant Custom companions rather than presented as input randomness.
+
+The dipole-error, repair-receipt, mesh-conversion, and dual-contouring Custom
+companions remain object-shaped, fs-obs-validated, and printed. Randomized
+companions carry a standalone numeric `input_seed`; Cx-backed companions also
+record the standalone numeric `execution_seed` when applicable. The
+dual-contouring companion encodes an unavailable non-finite certificate margin
+as JSON `null`, never as a non-JSON numeric token.
 
 ## No-claim boundaries
 - Self-intersection FLAGGING is deferred to the validity-certificates
