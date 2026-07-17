@@ -7,7 +7,7 @@ suites, and (once fs-ledger lands) the ledger `events` table. Layer: UTIL.
 ## Public types and semantics
 - `Event { session, scope, seq, severity, kind, wall_ns }` — envelope + typed
   payload; `to_jsonl()` canonical single-line display transport;
-  `content_identity()` is the version-2 typed, exact-bit replay encoding and
+  `content_identity()` is the version-3 typed, exact-bit replay encoding and
   `content_hash()` is its FNV-1a root, EXCLUDING wall-clock.
 - `EventIdentityReceipt { declared identity version, canonical bytes, root }`
   retains the complete event-identity proof. `content_identity_receipt()`
@@ -17,8 +17,9 @@ suites, and (once fs-ledger lands) the ledger `events` table. Layer: UTIL.
   admitted event's current canonical identity.
 - `EventKind` v1 registry: solver_residual, tile_complete, cancellation,
   budget_delta, gradient_check, conformance_case, benchmark_result,
-  storm_assertion, custom (pre-serialized JSON escape hatch whose UTF-8 is
-  identity-bearing opaque bytes, not alleged canonical JSON).
+  storm_assertion, race_record, degradation_event, import_receipt,
+  certificate_verdict, custom (pre-serialized JSON escape hatch whose UTF-8
+  is identity-bearing opaque bytes, not alleged canonical JSON).
 - `Severity` (trace/info/warn/error), `Emitter` (per-scope monotone seq),
   `validate_line` (strict structural validator), `lint_failure_record`
   (failure-records-must-reproduce lint v1), `fnv1a64`, `SCHEMA_VERSION`.
@@ -87,8 +88,8 @@ None.
 None.
 
 ## Conformance tests
-The unit and integration batteries cover all nine kinds' serialize+validate
-round-trip; an ordered count-locked mutation of all 26 payload fields; golden
+The unit and integration batteries cover all 13 kinds' serialize+validate
+round-trip; an ordered count-locked mutation of all 42 payload fields; golden
 line; envelope/content hash split; every top-level semantic event field;
 independent event-identity-version and wire-schema bytes/roots;
 same-display/different-bit NaNs; exact opaque Custom bytes; retained receipt

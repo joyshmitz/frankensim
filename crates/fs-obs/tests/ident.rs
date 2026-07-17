@@ -10,10 +10,26 @@ use fs_obs::ident::{
 };
 
 fn verdict(case: &str, pass: bool, detail: &str) {
-    println!(
-        "{{\"suite\":\"fs-obs/ident\",\"case\":\"{case}\",\"verdict\":\"{}\",\"detail\":\"{detail}\"}}",
-        if pass { "pass" } else { "fail" }
+    let mut emitter = fs_obs::Emitter::new("fs-obs/ident", case);
+    let event = emitter.emit(
+        if pass {
+            fs_obs::Severity::Info
+        } else {
+            fs_obs::Severity::Error
+        },
+        fs_obs::EventKind::ConformanceCase {
+            suite: "fs-obs/ident".to_string(),
+            case: case.to_string(),
+            pass,
+            detail: detail.to_string(),
+            seed: 0,
+        },
+        None,
     );
+    fs_obs::lint_failure_record(&event).expect("identity verdict must be replayable");
+    let line = event.to_jsonl();
+    fs_obs::validate_line(&line).expect("identity verdict must use the fs-obs wire schema");
+    println!("{line}");
     assert!(pass, "case {case}: {detail}");
 }
 
@@ -192,7 +208,7 @@ fn ident_004_type_confusion_and_order_are_semantic() {
         .root();
     let display_nan_a = f64::from_bits(0x7ff8_0000_0000_0001);
     let display_nan_b = f64::from_bits(0x7ff8_0000_0000_0002);
-    assert_eq!(display_nan_a.to_string(), display_nan_b.to_string());
+    let nan_displays_match = display_nan_a.to_string() == display_nan_b.to_string();
     let nan_payload_a = IdentityBuilder::new("x")
         .f64_bits("v", display_nan_a)
         .finish();
@@ -205,6 +221,7 @@ fn ident_004_type_confusion_and_order_are_semantic() {
             && ab != ba
             && z != nz
             && nan1 == nan2
+            && nan_displays_match
             && nan_payload_a.root() != nan_payload_b.root()
             && nan_payload_a.canonical_bytes() != nan_payload_b.canonical_bytes(),
         "type tags, field order, and exact float bits are semantic; same-display NaN payloads remain distinct",
@@ -249,30 +266,39 @@ fn ident_006_unknown_schema_versions_fail_closed() {
     let versioned_display = id
         .hex()
         .starts_with(&format!("{REPLAY_IDENTITY_DOMAIN}-v1:x:"));
-    assert_eq!(
-        id.root(),
-        fs_obs::fnv1a64(id.canonical_bytes()),
-        "the root is derived from the retained canonical bytes"
-    );
-    assert!(
-        id.canonical_bytes()
-            .starts_with(REPLAY_IDENTITY_DOMAIN.as_bytes()),
-        "the canonical frame begins with the declared replay domain bytes"
-    );
+    let root_matches_canonical_bytes = id.root() == fs_obs::fnv1a64(id.canonical_bytes());
+    let domain_prefix_matches = id
+        .canonical_bytes()
+        .starts_with(REPLAY_IDENTITY_DOMAIN.as_bytes());
     let version_offset = REPLAY_IDENTITY_DOMAIN.len();
     let mut future_bytes = id.canonical_bytes().to_vec();
-    future_bytes[version_offset..version_offset + core::mem::size_of::<u32>()]
-        .copy_from_slice(&(IDENT_SCHEMA_VERSION + 1).to_le_bytes());
-    let version_bytes_move_root = fs_obs::fnv1a64(&future_bytes) != id.root();
+    let version_slot_present = if let Some(version_bytes) =
+        future_bytes.get_mut(version_offset..version_offset + core::mem::size_of::<u32>())
+    {
+        version_bytes.copy_from_slice(&(IDENT_SCHEMA_VERSION + 1).to_le_bytes());
+        true
+    } else {
+        false
+    };
+    let version_bytes_move_root =
+        version_slot_present && fs_obs::fnv1a64(&future_bytes) != id.root();
     let mut foreign_domain_bytes = id.canonical_bytes().to_vec();
-    foreign_domain_bytes[0] ^= 1;
-    let domain_bytes_move_root = fs_obs::fnv1a64(&foreign_domain_bytes) != id.root();
+    let domain_slot_present = if let Some(first) = foreign_domain_bytes.first_mut() {
+        *first ^= 1;
+        true
+    } else {
+        false
+    };
+    let domain_bytes_move_root =
+        domain_slot_present && fs_obs::fnv1a64(&foreign_domain_bytes) != id.root();
     verdict(
         "ident-006",
         current_ok
             && future_refused
             && past_refused
             && versioned_display
+            && root_matches_canonical_bytes
+            && domain_prefix_matches
             && version_bytes_move_root
             && domain_bytes_move_root,
         "declared schema versions other than the supported one are refused (fail closed); \
@@ -312,22 +338,26 @@ fn ident_007_bounded_builder_is_byte_exact_and_refuses_at_the_cap() {
         .exclude("wall_ns", "timing is evidence, not identity")
         .finish();
     let exact_limit = legacy.canonical_bytes().len();
-    let bounded = bounded_reference(&parent, exact_limit).expect("exact byte cap is admitted");
-    assert_eq!(bounded, legacy);
-    assert_eq!(bounded.exclusions(), legacy.exclusions());
-    let roomier = bounded_reference(&parent, exact_limit + 64)
-        .expect("a larger admission budget preserves the exact artifact");
-    assert_eq!(roomier, legacy);
-    assert_eq!(roomier.canonical_bytes(), bounded.canonical_bytes());
-    assert_eq!(roomier.root(), bounded.root());
-
-    assert_eq!(
-        bounded_reference(&parent, exact_limit - 1),
-        Err(IdentityBuildError::CanonicalBytesExceeded {
-            requested: exact_limit,
-            limit: exact_limit - 1,
-        })
-    );
+    let bounded = bounded_reference(&parent, exact_limit);
+    let exact_cap_matches = bounded
+        .as_ref()
+        .is_ok_and(|identity| identity == &legacy && identity.exclusions() == legacy.exclusions());
+    let roomier = bounded_reference(&parent, exact_limit.saturating_add(64));
+    let roomier_matches = match (&bounded, &roomier) {
+        (Ok(exact), Ok(extra)) => {
+            extra == &legacy
+                && extra.canonical_bytes() == exact.canonical_bytes()
+                && extra.root() == exact.root()
+        }
+        _ => false,
+    };
+    let limit_minus_one_refuses = exact_limit.checked_sub(1).is_some_and(|limit| {
+        bounded_reference(&parent, limit)
+            == Err(IdentityBuildError::CanonicalBytesExceeded {
+                requested: exact_limit,
+                limit,
+            })
+    });
 
     // Derive the header directly from the declared replay domain so this cap
     // cannot preserve an obsolete split-magic assumption.
@@ -341,26 +371,31 @@ fn ident_007_bounded_builder_is_byte_exact_and_refuses_at_the_cap() {
         + core::mem::size_of::<u64>();
     let payload_limit = framing_without_payload + 4;
     let exact_payload = BoundedIdentityBuilder::new("x", payload_limit)
-        .expect("header fits")
-        .bytes("k", b"1234")
-        .expect("four-byte payload reaches the exact cap")
-        .finish();
-    assert_eq!(exact_payload.canonical_bytes().len(), payload_limit);
-    let payload_error = BoundedIdentityBuilder::new("x", payload_limit)
-        .expect("header fits")
-        .bytes("k", b"12345")
-        .expect_err("limit+1 payload must refuse before mutation");
-    assert_eq!(
-        payload_error,
-        IdentityBuildError::CanonicalBytesExceeded {
+        .and_then(|builder| builder.bytes("k", b"1234"))
+        .map(|builder| builder.finish());
+    let exact_payload_fills_cap = exact_payload
+        .as_ref()
+        .is_ok_and(|identity| identity.canonical_bytes().len() == payload_limit);
+    let payload_refuses_limit_plus_one = BoundedIdentityBuilder::new("x", payload_limit)
+        .and_then(|builder| builder.bytes("k", b"12345"))
+        .map(|builder| builder.finish())
+        == Err(IdentityBuildError::CanonicalBytesExceeded {
             requested: payload_limit + 1,
             limit: payload_limit,
-        }
-    );
+        });
 
     verdict(
         "ident-007",
-        true,
-        "bounded and legacy builders are byte-identical; exact caps admit and limit+1 refuses",
+        exact_cap_matches
+            && roomier_matches
+            && limit_minus_one_refuses
+            && exact_payload_fills_cap
+            && payload_refuses_limit_plus_one,
+        &format!(
+            "bounded builder checks: exact_cap_matches={exact_cap_matches}, \
+             roomier_matches={roomier_matches}, limit_minus_one_refuses={limit_minus_one_refuses}, \
+             exact_payload_fills_cap={exact_payload_fills_cap}, \
+             payload_refuses_limit_plus_one={payload_refuses_limit_plus_one}"
+        ),
     );
 }
