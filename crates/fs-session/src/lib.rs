@@ -18,6 +18,7 @@ pub mod gemm_tune;
 pub mod governor;
 pub mod grant;
 pub mod guidance;
+pub mod long_job;
 pub mod program_risk;
 pub mod token;
 
@@ -52,6 +53,12 @@ pub use grant::{
     PolicyDecision, SessionGrant, mint_grant,
 };
 pub use guidance::Guidance;
+pub use long_job::{
+    DeclaredResumeSchema, LONG_JOB_REQUEST_IDENTITY_DOMAIN,
+    LONG_JOB_REQUEST_IDENTITY_SCHEMA_DECLARATION, LONG_JOB_REQUEST_IDENTITY_VERSION, LongJobBudget,
+    LongJobKind, LongJobRequest, LongJobRequestError, MAX_LONG_JOB_MODEL_FAMILY_BYTES,
+    MAX_LONG_JOB_OPERATOR_BYTES, ResumableModelIdentity,
+};
 pub use program_risk::{
     PROGRAM_RISK_REGISTER_ARTIFACT_KIND, PROGRAM_RISK_REPORT_CODEC_VERSION,
     PROGRAM_RISK_REPORT_EVENT_KIND, PROGRAM_RISK_REPORT_ID_DOMAIN,

@@ -1819,6 +1819,7 @@ dependencies = [
  "fs-ir",
  "fs-la",
  "fs-ledger",
+ "fs-package",
  "fs-plan",
  "fs-qty",
  "fs-regime",

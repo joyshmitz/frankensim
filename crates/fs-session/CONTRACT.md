@@ -13,7 +13,8 @@ Layer **L6** (HELM). Runtime deps: `std`, fs-ir (admission bridge +
 study parsing), fs-exec (CancelGate/SolverState/TilePool), fs-govern
 (PR-001–PR-012 program-risk data/evaluation), fs-la (production GEMM),
 fs-ledger (persistence/content hash), fs-blake3 (domain-separated receipt
-identity), fs-plan (cost models), fs-obs, fs-qty.
+identity), fs-package (exact receipt-schema catalog metadata), fs-plan (cost
+models), fs-obs, fs-qty.
 Consumers: the P2 marquee demo, the HELM e2e suite (gp3.11).
 
 ## Public types and semantics
@@ -195,6 +196,22 @@ Consumers: the P2 marquee demo, the HELM e2e suite (gp3.11).
   token and is not yet gated on grants; external issuer signature
   verification is future scope landing at the `IssuerPolicy` trait
   boundary.
+- `long_job` module (bead h61n): `LongJobRequest` is a pure canonical identity
+  envelope for `HybridMachine` and `TheoremCheck` work. Its v1 identity binds
+  the closed job-kind tag, exact operator, nonzero integer core-time/memory/
+  wall-time/concurrency request, canonical program hash, model family/version,
+  state-schema version, exact model-instance/contract/code hashes, an
+  caller-supplied expected receipt-catalog pin, and the exact resume-family,
+  wire-schema, and descriptor identities. `ResumableModelIdentity` captures a
+  `DeclaredResumeSchema` from a validated `ReceiptSchemaDescriptor`.
+  `LongJobRequest::try_new` verifies canonical catalog bytes against the
+  expected pin, performs exact `ReceiptSchemaCatalog::require_exact` lookup
+  with no version fallback, refuses digest-only rows because they cannot govern
+  replayable state bytes, and requires the descriptor's maximum canonical byte
+  count to fit within the whole-job memory request. Names and budgets are
+  bounded/validated before retention. Catalog-pin authority and provenance are
+  external. This module has no governor mutation surface: it defines request
+  identity and declared resume-schema metadata only.
 - `estimate(study, cost_models, cores)` — the dry run: p10/p50/p90 wall
   from fs-plan quantile models over `:dof`/`:size` features, declared
   memory ask, energy (p50 × cores × 45 W/core), and an HONEST
@@ -605,6 +622,13 @@ Consumers: the P2 marquee demo, the HELM e2e suite (gp3.11).
     The first schema-v9 replay or recovery of a valid schema-v8 report may add
     only its missing immutable output and exact-edge-set seals; changed retry
     cannot replace the original report.
+13. **Long-job resume semantics are exact**: request identity changes when any
+    job, budget, program, model, catalog, or resume-descriptor field changes.
+    A resume tuple absent from or mismatched against the supplied pinned catalog
+    refuses rather than falling back to a nearby version. Digest-only rows and
+    canonical resume payload bounds larger than the whole-job memory request
+    also refuse. Membership of another otherwise-valid row does not establish
+    owner, model, or job-kind compatibility.
 
 ## Error model
 
@@ -635,6 +659,12 @@ All such paths leave caller-visible `C` unchanged. Refusals that teach travel
 as `Guidance` values with ranked fixes.
 A caller-work panic is data, not an unwind across the governor API:
 `SubmitOutcome::Failed` records its receipt and bounded retained evidence.
+`LongJobRequestError` separately reports bounded invalid fields/resources,
+catalog-byte/pin mismatch, exact catalog lookup failures, digest-only resume
+transport, and resume payload bounds that exceed the whole-job memory request.
+Catalog and transport refusals retain the exact catalog, model, state-schema,
+resume-family, wire-schema, and descriptor identities for forensic diagnosis.
+These refusals do not mutate governor or ledger state.
 
 ## Determinism class
 
@@ -751,6 +781,17 @@ mapping, codec offsets, historic register/report decoder, process-local
 singleton reservation, and populated schema-v8-style terminal replay/recovery
 whose first schema-v9 verification adds only the two missing seal rows.
 
+`tests/long_job.rs` is the G0 identity/refusal battery. It independently
+reconstructs the complete tagged little-endian v1 preimage, proves every
+request dimension moves identity, separates hybrid-machine and theorem-check
+jobs, rejects malformed names and zero numeric/hash domains, and refuses
+self-consistent substituted catalog bytes against a retained expected pin,
+catalog-absent families/versions, descriptor mismatch, digest-only transport,
+and resume payload bounds larger than the whole-job memory request. In-module
+tests lock both job-kind tags, mutate the private catalog and resume fields one
+at a time, and prove identity version/domain rotation and transport-version/
+length guards fail closed.
+
 `tests/gemm_tune.rs` (bead yqug drills): cold start sweeps once and
 matches serial bits; ledger warm start seeds a fresh session without
 re-measuring; stale (foreign-fingerprint) and invalid cache rows are
@@ -798,6 +839,15 @@ armed and runs when an x86 host picks it up.
   issuer, entitlement, expiry/revocation policy, dynamic operator binding, or a
   shared concurrent-core lease. This authority boundary is tracked by
   `frankensim-authenticate-session-capability-issuance-aeq7`.
+- **A `LongJobRequest` is not admission or execution authority**: construction
+  does not authenticate a `SessionGrant`, reserve any budget or core lease,
+  inspect a live cancellation gate, run or resume work, decode owner checkpoint
+  bytes, prove bit-identical cancelled-versus-uninterrupted trajectories,
+  establish theorem truth, or establish physical correctness. A catalog row's
+  membership does not prove that its state semantics are compatible with the
+  declared job kind, model, or owner, and the caller-supplied expected catalog
+  pin is not authenticated here. Those claims require the later governor
+  integration, owner-specific replay adapter, and G4 trajectory evidence.
 - **Recovered Pending execution remains indeterminate by design**: the durable
   claim proves only that the one authorized caller may have started arbitrary
   `FnOnce` work. fs-session cannot infer or compensate external side effects,

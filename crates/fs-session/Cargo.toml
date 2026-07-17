@@ -17,6 +17,7 @@ fs-govern = { path = "../fs-govern" }
 fs-ir = { path = "../fs-ir" }
 fs-la = { path = "../fs-la" }
 fs-ledger = { path = "../fs-ledger" }
+fs-package = { path = "../fs-package" }
 fs-plan = { path = "../fs-plan" }
 fs-qty = { path = "../fs-qty" }
 
