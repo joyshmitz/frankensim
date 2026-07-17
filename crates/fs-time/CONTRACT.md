@@ -241,6 +241,25 @@ None. `unsafe_code = "deny"` via workspace lints; no capsules.
 
 ## Conformance tests
 
+`tests/frankenscipy_ode_oracle_casebook.rs` adds a structured endpoint-oracle
+subset for `rk45_adaptive`. Canonical frames bind the complete stationary,
+decay, and oscillator fixtures; every production PI-controller option and work
+cap; every FrankenScipy `solve_ivp` RK45 option; the authoritative constellation
+pin; analytic-reference formulas; versions; and numerical ceilings. Complete
+receipts retain every public `AdaptiveState` and `SolveIvpResult` field, both
+implementations' endpoint bits, independent closed-form endpoint bits, signed
+component errors, max-norm deltas, and remaining margins. Each measurement must
+replay byte-for-byte within one executing build. A disclosed seeded bit mutation
+of the exact stationary oracle reference must produce one stable red record
+that `assert_green` refuses without accepting baseline drift. This finite,
+smooth, forward, nonstiff endpoint subset is G0 comparison evidence only:
+FrankenScipy is a pinned independent implementation, not ground truth, and the
+test-side standard-library analytic functions are not a cross-ISA bit oracle.
+The subset makes no claim for general tolerance calibration, controller-path or
+counter equality, dense output, events, backward integration, stiffness,
+checkpoint equivalence, adjoints, cancellation, performance, Python SciPy, or
+fresh cross-ISA/full-G5 execution.
+
 `tests/time_battery.rs` (16 cases, JSON logging): 10⁶-step harmonic
 energy boundedness vs RK4's secular decay at the same h + e = 0.6
 Kepler orbit (~16 revolutions); discrete Euler–Lagrange residual
