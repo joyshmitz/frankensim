@@ -39,6 +39,7 @@ at `scripts/ci/ascent_conformance_profile.sh`:
 
 ```bash
 scripts/ci/ascent_conformance_profile.sh --list pr
+scripts/ci/ascent_conformance_profile.sh --self-test
 scripts/ci/ascent_conformance_profile.sh pr
 scripts/ci/ascent_conformance_profile.sh --list nightly
 scripts/ci/ascent_conformance_profile.sh nightly
@@ -55,12 +56,20 @@ targets join nightly coverage without hand-maintained selector drift. Both use
 The default aggregate wall budgets are 900 seconds for `pr` and 7200 seconds
 for `nightly`; `FS_ASCENT_PR_BUDGET_SECONDS` and
 `FS_ASCENT_NIGHTLY_BUDGET_SECONDS` may override them for an explicitly declared
-host policy. Elapsed time intentionally includes compilation. Exceeding the
-effective budget makes the profile fail even when all assertions pass. This is
-a scheduling guard, not a benchmark or cross-ISA performance claim. The runner
-is a callable lane rather than an additional unconditional invocation inside
-the workspace-wide quality script, avoiding duplicate Cargo work when the full
-DSR gate already owns package execution.
+host policy. Elapsed time intentionally includes compilation. The runner checks
+one aggregate deadline before every target and while each Cargo child is live.
+At the deadline it sends TERM, then bounded KILL if needed, to only the process
+group and descendant PIDs it launched; it waits until that owned tree is drained
+before returning. The timed-out target and terminal run rows both report
+`status: "budget_exceeded"`, including whether drain completed, and the PR
+profile never launches a later target after the deadline. Exceeding the
+effective budget therefore makes the profile fail even when prior assertions
+passed. `--self-test` deterministically exercises the passing and timed-out
+paths with an internal fake clock and fake process tree; it never invokes
+Cargo. This is a scheduling guard, not a benchmark or cross-ISA performance
+claim. The runner is a callable lane rather than an additional unconditional
+invocation inside the workspace-wide quality script, avoiding duplicate Cargo
+work when the full DSR gate already owns package execution.
 
 ## Runner honesty
 
