@@ -4,8 +4,10 @@
 //! ball-Minkowski exactness, certified separation bounds, the
 //! Estimate-authority thickness marcher on graded fixtures with the medial cross-check and
 //! the design-lever subgradient, and curvature convergence at the
-//! documented order per chart class. JSON-line verdicts; seeded cases
-//! carry seeds.
+//! documented order per chart class. Aggregate outcomes use canonical
+//! fs-obs conformance events. LCG-generated cases carry their literal input
+//! seeds; fixed-input cases use zero. Panics from assertions or expectations
+//! reached before a verdict remain ordinary Rust test diagnostics.
 
 use asupersync::types::Budget;
 use fs_evidence::{NumericalCertificate, NumericalKind};
@@ -20,12 +22,34 @@ use fs_query::{
 };
 use fs_rep_frep::{BoolOp, BoolStyle, FrepBuilder};
 
-fn verdict(case: &str, pass: bool, detail: &str) {
-    println!(
-        "{{\"suite\":\"fs-query/conformance\",\"case\":\"{case}\",\"verdict\":\"{}\",\
-         \"detail\":\"{detail}\"}}",
-        if pass { "pass" } else { "fail" }
+const FIXED_INPUT_SEED: u64 = 0;
+const EXECUTION_SEED: u64 = 0x9E4;
+const GQ_001_INPUT_SEED: u64 = 0x1001_2026_0707_0011;
+const GQ_002_INPUT_SEED: u64 = 0x1001_2026_0707_0012;
+const GQ_003_INPUT_SEED: u64 = 0x1001_2026_0707_0013;
+const GQ_004_INPUT_SEED: u64 = 0x1001_2026_0707_0014;
+
+fn verdict(case: &str, pass: bool, detail: &str, seed: u64) {
+    let mut emitter = fs_obs::Emitter::new("fs-query/conformance", case);
+    let event = emitter.emit(
+        if pass {
+            fs_obs::Severity::Info
+        } else {
+            fs_obs::Severity::Error
+        },
+        fs_obs::EventKind::ConformanceCase {
+            suite: "fs-query/conformance".to_string(),
+            case: case.to_string(),
+            pass,
+            detail: detail.to_string(),
+            seed,
+        },
+        None,
     );
+    fs_obs::lint_failure_record(&event).expect("query verdict must be replayable");
+    let line = event.to_jsonl();
+    fs_obs::validate_line(&line).expect("query verdict must use the fs-obs wire schema");
+    println!("{line}");
     assert!(pass, "case {case}: {detail}");
 }
 
@@ -57,7 +81,7 @@ fn with_cx<R>(f: impl FnOnce(&Cx<'_>) -> R) -> R {
             &gate,
             arena,
             StreamKey {
-                seed: 0x9E4,
+                seed: EXECUTION_SEED,
                 kernel_id: 1,
                 tile: 0,
                 iteration: 0,
@@ -229,7 +253,7 @@ fn gq_001_closest_point_agreement() {
             (&tiled, tiled.bound() * 1.05),
             (&mesh, 3e-2),
         ];
-        let mut rng = Lcg(0x1001_2026_0707_0011);
+        let mut rng = Lcg(GQ_001_INPUT_SEED);
         let mut worst = vec![0.0f64; charts.len()];
         for _ in 0..80 {
             // Shell radii keep queries inside every chart's valid
@@ -276,9 +300,10 @@ fn gq_001_closest_point_agreement() {
                 "closest point agrees with the analytic answer across exact/F-rep/\
                  tiled-SDF/mesh charts (worst errors {:?} within per-chart \
                  certificates) with honest residuals, and is translation-equivariant; \
-                 seed 0x1001_2026_0707_0011",
+                 LCG input seed 0x1001_2026_0707_0011; fixed Cx stream 0x9e4",
                 worst.iter().map(|w| format!("{w:.1e}")).collect::<Vec<_>>()
             ),
+            GQ_001_INPUT_SEED,
         );
     });
 }
@@ -323,7 +348,7 @@ fn gq_001a_closest_point_fails_closed_on_nonfinite_paths() {
             &gate,
             arena,
             StreamKey {
-                seed: 0x9E4,
+                seed: EXECUTION_SEED,
                 kernel_id: 11,
                 tile: 0,
                 iteration: 0,
@@ -356,7 +381,7 @@ fn gq_001a_closest_point_fails_closed_on_nonfinite_paths() {
             &medial_gate,
             arena,
             StreamKey {
-                seed: 0x9E4,
+                seed: EXECUTION_SEED,
                 kernel_id: 6,
                 tile: 0,
                 iteration: 0,
@@ -430,6 +455,7 @@ fn gq_001a_closest_point_fails_closed_on_nonfinite_paths() {
          overflowing Newton/medial arithmetic; malformed public Soup indices refuse before \
          Delaunay, and cancellation requested inside closest-point or medial-pole eval wins \
          before publication",
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -444,7 +470,7 @@ fn gq_002_raycast_safety() {
         };
         let frep = frep_sphere(Point3::new(0.0, 0.0, 0.0), 1.0);
         let charts: Vec<(&dyn Chart, f64)> = vec![(&exact, 1e-6), (&frep, 1e-6)];
-        let mut rng = Lcg(0x1001_2026_0707_0012);
+        let mut rng = Lcg(GQ_002_INPUT_SEED);
         let mut agree = true;
         for _ in 0..100 {
             let z = rng.range(-1.0, 1.0);
@@ -538,7 +564,9 @@ fn gq_002_raycast_safety() {
             "raycasts match the analytic sphere across chart types, tangent rays \
              never tunnel (grazes land on the surface or approach; the 1.05 offset \
              misses cleanly), and the CSG tracer never claims a hit past the dense \
-             oracle over 200 rays; seed 0x1001_2026_0707_0012",
+             oracle over 200 rays; LCG input seed 0x1001_2026_0707_0012; \
+             fixed Cx stream 0x9e4",
+            GQ_002_INPUT_SEED,
         );
     });
 }
@@ -642,6 +670,7 @@ fn gq_002c_raycast_validates_each_sample_and_tmax() {
             "raycast revalidates the local Lipschitz bound and Exact/Enclosure trace \
              evidence at tmax; a zero-straddling endpoint remains unresolved, and finite \
              nonzero subnormal directions normalize without overflow",
+            FIXED_INPUT_SEED,
         );
     });
 }
@@ -707,7 +736,7 @@ fn gq_002d_raycast_rechecks_cancellation_after_chart_calls() {
                 &gate,
                 arena,
                 StreamKey {
-                    seed: 0x9E4,
+                    seed: EXECUTION_SEED,
                     kernel_id: 2,
                     tile: 0,
                     iteration: 0,
@@ -735,6 +764,7 @@ fn gq_002d_raycast_rechecks_cancellation_after_chart_calls() {
             && matches!(after_trace, Err(QueryError::Cancelled)),
         "cancellation requested during eval or trace_value_enclosure is observed before \
          either producer can authorize a hit",
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -796,6 +826,7 @@ fn gq_002e_lipschitz_implicit_residual_cannot_authorize_hit() {
             matches!(result, Err(QueryError::UnresolvedTrace { .. })),
             "a valid loose Lipschitz upper bound supports conservative marching but \
              cannot promote a 1e-12 normalized residual one unit from zero into RayHit",
+            FIXED_INPUT_SEED,
         );
     });
 }
@@ -840,6 +871,7 @@ fn gq_002b_raycast_refuses_no_claim_charts() {
             matches!(r, Err(QueryError::NoTraceClaim)),
             "raycast fails closed (NoTraceClaim) on a Some(lipschitz)+NoClaim chart \
              instead of tunneling; typed charts retain their certified march path",
+            FIXED_INPUT_SEED,
         );
     });
 }
@@ -855,7 +887,7 @@ fn gq_003_offset_minkowski() {
             radius: 1.0,
         };
         let frep = frep_sphere(Point3::new(0.0, 0.0, 0.0), 1.0);
-        let mut rng = Lcg(0x1001_2026_0707_0013);
+        let mut rng = Lcg(GQ_003_INPUT_SEED);
         let mut ok = true;
         for (chart, tol) in [(&exact as &dyn Chart, 1e-12), (&frep as &dyn Chart, 1e-12)] {
             let grown = OffsetChart::new(chart, 0.3).expect("finite dilation");
@@ -939,8 +971,9 @@ fn gq_003_offset_minkowski() {
              chart, valid inner evidence is outward-translated into an Estimate preserving the \
              full band and containing the new nominal, malformed or overflowing evidence and \
              nonfinite radii fail closed, and offset charts \
-             retain closest-point queries; \
-             seed 0x1001_2026_0707_0013",
+             retain closest-point queries; LCG input seed 0x1001_2026_0707_0013; \
+             fixed Cx stream 0x9e4",
+            GQ_003_INPUT_SEED,
         );
     });
 }
@@ -951,7 +984,7 @@ fn gq_003_offset_minkowski() {
 #[test]
 fn gq_004_separation_certified() {
     with_cx(|cx| {
-        let mut rng = Lcg(0x1001_2026_0707_0014);
+        let mut rng = Lcg(GQ_004_INPUT_SEED);
         let mut ok = true;
         let mut worst_gap = 0.0f64;
         for gap in [1.0, 0.5, 0.2, 0.05] {
@@ -985,8 +1018,9 @@ fn gq_004_separation_certified() {
                 "separation brackets hold across gaps 1.0 -> 0.05 (true separation in \
                  [lower_bound, observed], observed within {worst_gap:.1e} above \
                  truth), and the clearance field dominates the separation everywhere; \
-                 seed 0x1001_2026_0707_0014"
+                 LCG input seed 0x1001_2026_0707_0014; fixed Cx stream 0x9e4"
             ),
+            GQ_004_INPUT_SEED,
         );
     });
 }
@@ -1033,6 +1067,7 @@ fn gq_004a_separation_requires_global_exact_distance_authority() {
                 && matches!(nonfinite, Err(QueryError::InvalidTraceSample { .. })),
             "local Lipschitz/enclosure fields do not upgrade NoClaim, and ExactDistance \
              inputs must still supply finite rigorous per-sample trace enclosures",
+            FIXED_INPUT_SEED,
         );
     });
 }
@@ -1092,7 +1127,7 @@ fn gq_004b_separation_rechecks_producer_cancellation() {
                 &gate,
                 arena,
                 StreamKey {
-                    seed: 0x9E4,
+                    seed: EXECUTION_SEED,
                     kernel_id: 4,
                     tile: 0,
                     iteration: 0,
@@ -1116,6 +1151,7 @@ fn gq_004b_separation_rechecks_producer_cancellation() {
             ),
         "separation checkpoints directly after eval and trace_value_enclosure, so \
          producer-requested cancellation wins before bracket authority",
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -1282,6 +1318,7 @@ fn gq_005_thickness_oracle() {
                  core (2r = {mid_pole:.3} vs 0.4), and the design-lever subgradient \
                  is {subgrad:.4} (analytic 2) — differentiable-friendly, demonstrated"
             ),
+            FIXED_INPUT_SEED,
         );
     });
 }
@@ -1374,7 +1411,7 @@ fn gq_005a_thickness_authority_and_validation() {
             &gate,
             arena,
             StreamKey {
-                seed: 0x9E4,
+                seed: EXECUTION_SEED,
                 kernel_id: 5,
                 tile: 0,
                 iteration: 0,
@@ -1403,6 +1440,7 @@ fn gq_005a_thickness_authority_and_validation() {
         "thickness refuses nonfinite gradients, empty aggregates, and positive parametric \
          steps that make no representable geometric progress at a translated one-ulp wall; \
          cancellation requested inside thickness eval wins before publication",
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -1494,6 +1532,7 @@ fn gq_006_curvature_convergence() {
                  within its own scale), and curvature scalars are rotation-invariant",
                 orders[0], orders[1]
             ),
+            FIXED_INPUT_SEED,
         );
     });
 }
@@ -1543,7 +1582,7 @@ fn gq_006a_curvature_fails_closed_on_nonfinite_paths() {
             &gate,
             arena,
             StreamKey {
-                seed: 0x9E4,
+                seed: EXECUTION_SEED,
                 kernel_id: 12,
                 tile: 0,
                 iteration: 0,
@@ -1570,6 +1609,7 @@ fn gq_006a_curvature_fails_closed_on_nonfinite_paths() {
         "curvature refuses malformed samples, overflowing stencil arithmetic, and \
          extreme coordinates where h makes no representable progress; cancellation \
          requested inside eval wins before finite scalars are published",
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -1873,6 +1913,7 @@ fn gq_007_unbounded_sampling_admission() {
              explicit caller scale; malformed, unbounded, and overflowing separation \
              domains refuse before evaluation; clipped separation is marked local; and \
              thickness domain failures propagate instead of becoming skipped samples",
+            FIXED_INPUT_SEED,
         );
     });
 }

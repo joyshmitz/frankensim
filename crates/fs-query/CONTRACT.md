@@ -292,9 +292,17 @@ None.
 ## Conformance tests
 
 `tests/conformance.rs`, cases gq-001..gq-007 (+ typed trace refusal checks)
-— JSON-line verdicts, seeded LCG randomness, fs-obs events for the
-thickness estimator and curvature convergence tables. Any
-reimplementation must pass the suite unchanged.
+— every aggregate verdict is a canonical fs-obs `ConformanceCase` event.
+The randomized gq-001, gq-002, gq-003, and gq-004 campaigns carry their
+literal LCG input seeds (`0x1001_2026_0707_0011` through
+`0x1001_2026_0707_0014`); all fixed-input cases use zero. The suite's fixed
+`Cx` stream seed `0x9e4` is execution provenance, not a substitute for an
+input seed; mixed LCG/`Cx` cases key the aggregate verdict to the LCG input
+and record the fixed stream separately in detail. The typed fs-obs companion
+events for the thickness estimator and curvature convergence tables remain
+independently wire-validated. Assertions and expectations reached before an
+aggregate verdict remain ordinary Rust test diagnostics and emit no verdict.
+Any reimplementation must pass the suite unchanged.
 `tests/moments.rs`, cases gm-001..gm-005 — certified geometric moments:
 box/sphere closed-form containment with bounded widths, COM enclosures,
 the translation-covariance metamorphic (outward-rounded law vs direct
