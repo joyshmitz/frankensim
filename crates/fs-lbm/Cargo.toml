@@ -19,6 +19,8 @@ fs-qty = { path = "../fs-qty" }
 
 [dev-dependencies]
 fs-fft = { path = "../fs-fft" }
+fs-obs = { path = "../fs-obs" }
+fs-roofline = { path = "../fs-roofline" }
 
 [lints]
 workspace = true

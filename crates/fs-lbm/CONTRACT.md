@@ -804,3 +804,25 @@ global task and edge caps remain the allocation authority.
   lowering consumes an optional caller-owned activation wall and exposes
   truthful primitive max-plus inputs for the ignored driver; neither surface
   is itself citable performance evidence.
+
+### Ignored D3Q19 throughput driver
+
+`tests/perf_lane.rs` is the opt-in hardware driver for bead `712t`. It measures
+the existing sparse-grid sweep at the fixed 128³ memory-resident shape for the
+dense-active and smallest whole-tile ten-percent-active sets, each with one
+worker and all reported logical workers. The active set is a canonical Morton
+prefix, the executor seed and complete placement identity are retained, one
+warmup precedes five timed repetitions, and each timed observation is lowered
+with no fabricated activation task. The driver emits the raw fs-roofline
+attainment, every per-repetition critical path, the typed aggregate GLUP/s row,
+and pre/post machine-axis admission receipts through fs-obs.
+
+The driver applies the same bounded baseline-store, firmware, promotion-policy,
+and retained-source-receipt checks as the existing fs-feec/fs-fft lanes. Axis
+reprobe contamination is environment-invalid even when baseline configuration
+is absent. An authority-admitted baseline is still downgraded to report-only:
+no LBM anti-collapse floor has been calibrated and the centralized external
+gate recorder does not yet own an LBM lane. Therefore this driver can collect
+the first honest rows, but cannot mint a citable pass or failure. Both reference
+ISA rows, floor authorization, durable LBM ledger recording, and sealed tile
+tuning remain explicit follow-on acceptance work.
