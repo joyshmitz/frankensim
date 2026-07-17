@@ -30,6 +30,8 @@ const OFHC_COPPER_SEED_MANIFEST: &str = "data/matdb/seed-v1/ofhc-copper-rrr100/m
 const AISI_4140_RC33_SEED_MANIFEST: &str = "data/matdb/seed-v1/aisi-4140-rc33/manifest.tsv";
 const AISI_1045_COLD_DRAWN_SEED_MANIFEST: &str =
     "data/matdb/seed-v1/aisi-1045-cold-drawn/manifest.tsv";
+const AISI_52100_CVM_SEED_MANIFEST: &str =
+    "data/matdb/seed-v1/aisi-52100-cvm-hot-hardness/manifest.tsv";
 const NASA_SEED_LICENSE: &str = "Work-of-the-US-Government-Public-Use-Permitted";
 const CC_BY_4_0_LICENSE: &str = "CC-BY-4.0";
 const NIST_PUBLIC_INFORMATION_LICENSE: &str = "NIST-Public-Information-Attribution-Requested";
@@ -1248,6 +1250,261 @@ fn g3_cli_compiles_committed_aisi_1045_cold_drawn_tensile_seed() {
         );
         assert_eq!(claim.observations[0].0, observation.content_hash());
         assert_eq!(id.0, claim.content_hash());
+    }
+
+    let decisions = String::from_utf8(first.stdout).expect("decision stream is UTF-8");
+    assert!(decisions.contains("\"reason_code\":\"uncertainty_policy_admitted\""));
+    assert!(decisions.contains("\"reason_code\":\"runtime_pack_self_verified\""));
+    assert!(
+        decisions
+            .lines()
+            .all(|row| row.contains(&format!("\"pack_hash\":\"{pack_hash}\"")))
+    );
+}
+
+#[test]
+fn g3_cli_compiles_committed_aisi_52100_cvm_heat_treatment_states() {
+    let manifest = workspace_path(AISI_52100_CVM_SEED_MANIFEST);
+    assert!(
+        manifest.is_file(),
+        "committed AISI 52100 CVM seed manifest is missing"
+    );
+    let directory = fixture_dir();
+    let first_path = directory.join("aisi-52100-cvm-first.fsmatpk");
+    let second_path = directory.join("aisi-52100-cvm-second.fsmatpk");
+
+    let first = run_compiler(&manifest, &first_path);
+    let second = run_compiler(&manifest, &second_path);
+    assert!(
+        first.status.success(),
+        "first AISI 52100 CVM seed compilation failed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(
+        second.status.success(),
+        "second AISI 52100 CVM seed compilation failed: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(
+        first.stdout, second.stdout,
+        "AISI 52100 CVM decision stream moved"
+    );
+    assert_decision_compiler(&first, MATERIAL_COMPILER_ID);
+
+    let first_bytes = fs::read(first_path).expect("read first AISI 52100 pack");
+    let second_bytes = fs::read(second_path).expect("read second AISI 52100 pack");
+    assert_eq!(first_bytes, second_bytes, "AISI 52100 pack bytes moved");
+    let decoded = NormalizedPack::from_bytes(&first_bytes).expect("decode AISI 52100 pack");
+    let pack_hash = decoded.content_hash();
+    let decoded = NormalizedPack::from_bytes_verified(pack_hash, &first_bytes)
+        .expect("verify AISI 52100 pack identity");
+
+    assert_eq!(decoded.pack_id(), "aisi-52100-cvm-nasa-tn-d-6632");
+    assert_eq!(decoded.compiler(), MATERIAL_COMPILER_ID);
+    assert!(
+        decoded
+            .redistribution_terms()
+            .contains("public use is permitted")
+    );
+    assert_eq!(decoded.claims().claim_count(), 15);
+    assert!(decoded.joint_statistics().is_empty());
+
+    let dimensionless = Dims([0, 0, 0, 0, 0, 0]);
+    for (property, source_percent) in [
+        ("carbon_mass_fraction", 0.96),
+        ("silicon_mass_fraction", 0.22),
+        ("manganese_mass_fraction", 0.36),
+        ("sulfur_mass_fraction", 0.012),
+        ("phosphorus_mass_fraction", 0.007),
+        ("chromium_mass_fraction", 1.36),
+    ] {
+        let claims = decoded.claims().claims_for(property);
+        assert_eq!(claims.len(), 1, "expected one AISI 52100 {property} claim");
+        let (id, claim) = claims[0];
+        let PropertyValue::Scalar { value, dims } = &claim.value else {
+            panic!("AISI 52100 {property} was not scalar");
+        };
+        assert_eq!(*dims, dimensionless);
+        let expected_value = source_percent * 0.01;
+        let relative_error = (*value - expected_value).abs() / expected_value;
+        assert!(
+            relative_error <= 2.0e-15,
+            "AISI 52100 {property} moved by {relative_error:e} relative"
+        );
+        assert!(claim.validity.bounds().is_empty());
+        assert_eq!(claim.uncertainty, UncertaintyModel::Unstated);
+        assert_eq!(
+            claim.interpolation,
+            InterpolationPolicy::ConstantWithinValidity
+        );
+        assert_eq!(claim.observations.len(), 1);
+        assert_eq!(claim.provenance.license, NASA_SEED_LICENSE);
+        assert!(claim.provenance.source.contains("NASA-TN-D-6632"));
+        assert!(claim.provenance.source.contains("[source:primary]"));
+        let observation = decoded
+            .claims()
+            .observation(claim.observations[0])
+            .expect("AISI 52100 chemistry observation remains linked");
+        assert_eq!(
+            observation.specimen,
+            "AISI-52100-consumable-vacuum-melted-single-ingot-NASA-TN-D-6632"
+        );
+        assert!(observation.method.contains("Table I actual composition"));
+        assert!(observation.caveats.contains("Balance iron"));
+        assert!(observation.caveats.contains("no heat identifier"));
+        assert_eq!(claim.observations[0].0, observation.content_hash());
+        assert_eq!(id.0, claim.content_hash());
+    }
+
+    let hardness_claims = decoded.claims().claims_for("rockwell_c_scale_reading");
+    let austenite_claims = decoded
+        .claims()
+        .claims_for("retained_austenite_volume_fraction");
+    assert_eq!(hardness_claims.len(), 5);
+    assert_eq!(austenite_claims.len(), 4);
+    let states = [
+        (Some(505.0), "second-temper-505K", 59.7, None),
+        (Some(450.0), "second-temper-450K", 62.3, Some(12.8)),
+        (Some(433.0), "second-temper-433K", 63.4, Some(15.6)),
+        (Some(394.0), "second-temper-394K", 64.6, Some(18.4)),
+        (None, "no-second-temper", 65.1, Some(11.8)),
+    ];
+
+    for (second_temper_k, specimen_state, expected_hardness, expected_austenite_percent) in states {
+        let matches_state = |claim: &fs_matdb::PropertyClaim| match second_temper_k {
+            Some(second_temper_k) => {
+                claim.validity.bound("second_temper_temperature")
+                    == Some((second_temper_k, second_temper_k))
+                    && claim.validity.bound("second_temper_applied").is_none()
+            }
+            None => {
+                claim.validity.bound("second_temper_applied") == Some((0.0, 0.0))
+                    && claim.validity.bound("second_temper_temperature").is_none()
+            }
+        };
+        let (hardness_id, hardness_claim) = hardness_claims
+            .iter()
+            .copied()
+            .find(|(_, claim)| matches_state(claim))
+            .unwrap_or_else(|| panic!("missing AISI 52100 hardness state {specimen_state}"));
+        let PropertyValue::Scalar { value, dims } = &hardness_claim.value else {
+            panic!("AISI 52100 hardness state {specimen_state} was not scalar");
+        };
+        assert_eq!(*dims, dimensionless);
+        assert_eq!(*value, expected_hardness);
+        assert_eq!(
+            hardness_claim.validity.bound("temperature"),
+            Some((294.0, 294.0))
+        );
+        assert_eq!(hardness_claim.validity.bounds().len(), 2);
+        assert_eq!(hardness_claim.uncertainty, UncertaintyModel::Unstated);
+        assert_eq!(
+            hardness_claim.interpolation,
+            InterpolationPolicy::ConstantWithinValidity
+        );
+        assert_eq!(hardness_claim.observations.len(), 1);
+        assert_eq!(hardness_claim.provenance.license, NASA_SEED_LICENSE);
+        let hardness_observation = decoded
+            .claims()
+            .observation(hardness_claim.observations[0])
+            .expect("AISI 52100 hardness observation remains linked");
+        assert!(hardness_observation.specimen.contains(specimen_state));
+        assert!(
+            hardness_observation
+                .specimen
+                .contains("austenitize-1116-to-1144K-30min")
+        );
+        assert!(hardness_observation.specimen.contains("oil-quench-325K"));
+        assert!(
+            hardness_observation
+                .specimen
+                .contains("first-temper-394K-60min")
+        );
+        assert!(hardness_observation.method.contains("150 kg load"));
+        assert!(hardness_observation.method.contains("Rockwell C"));
+        assert!(hardness_observation.method.contains("294 K reading"));
+        assert!(
+            hardness_observation
+                .caveats
+                .contains("Minimum two hardness measurements")
+        );
+        assert!(
+            hardness_observation
+                .caveats
+                .contains("dispersion not reported")
+        );
+        assert!(hardness_observation.caveats.contains("ASTM grain size 12"));
+        assert!(
+            hardness_observation
+                .caveats
+                .contains("predictive equation is not measurement uncertainty")
+        );
+        if second_temper_k == Some(505.0) {
+            assert!(
+                hardness_observation
+                    .caveats
+                    .contains("censored as less than 2 volume percent")
+            );
+        }
+        assert_eq!(
+            hardness_claim.observations[0].0,
+            hardness_observation.content_hash()
+        );
+        assert_eq!(hardness_id.0, hardness_claim.content_hash());
+
+        let matching_austenite = austenite_claims
+            .iter()
+            .copied()
+            .find(|(_, claim)| matches_state(claim));
+        match (matching_austenite, expected_austenite_percent) {
+            (Some((austenite_id, austenite_claim)), Some(expected_percent)) => {
+                let PropertyValue::Scalar { value, dims } = &austenite_claim.value else {
+                    panic!("AISI 52100 retained-austenite state {specimen_state} was not scalar");
+                };
+                assert_eq!(*dims, dimensionless);
+                let expected_value = expected_percent * 0.01;
+                let relative_error = (*value - expected_value).abs() / expected_value;
+                assert!(
+                    relative_error <= 2.0e-15,
+                    "AISI 52100 retained austenite {specimen_state} moved by {relative_error:e} relative"
+                );
+                assert_eq!(
+                    austenite_claim.validity.bound("temperature"),
+                    Some((294.0, 294.0))
+                );
+                assert_eq!(austenite_claim.validity.bounds().len(), 2);
+                assert_eq!(austenite_claim.uncertainty, UncertaintyModel::Unstated);
+                assert_eq!(austenite_claim.observations.len(), 1);
+                let observation = decoded
+                    .claims()
+                    .observation(austenite_claim.observations[0])
+                    .expect("AISI 52100 retained-austenite observation remains linked");
+                assert!(observation.specimen.contains(specimen_state));
+                assert!(observation.method.contains("X-ray diffraction"));
+                assert!(
+                    observation
+                        .caveats
+                        .contains("uncertainty and replicate count not reported")
+                );
+                assert!(
+                    observation
+                        .caveats
+                        .contains("no covariance with hardness is inferred")
+                );
+                assert_ne!(
+                    austenite_claim.observations[0],
+                    hardness_claim.observations[0]
+                );
+                assert_eq!(
+                    austenite_claim.observations[0].0,
+                    observation.content_hash()
+                );
+                assert_eq!(austenite_id.0, austenite_claim.content_hash());
+            }
+            (None, None) => {}
+            (Some(_), None) => panic!("censored AISI 52100 austenite became an exact scalar"),
+            (None, Some(_)) => panic!("missing exact AISI 52100 austenite state {specimen_state}"),
+        }
     }
 
     let decisions = String::from_utf8(first.stdout).expect("decision stream is UTF-8");

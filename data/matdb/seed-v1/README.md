@@ -193,6 +193,42 @@ AISI 1045 reference:
 
 - <https://www.mdpi.com/2227-9717/12/6/1171>
 
+## AISI 52100 CVM bearing-steel tranche
+
+`aisi-52100-cvm-hot-hardness/` pins the bearing steel to the single
+consumable-vacuum-melted ingot studied in NASA-TN-D-6632. Table I reports the
+actual composition as `0.96% C`, `0.22% Si`, `0.36% Mn`, `0.012% S`,
+`0.007% P`, and `1.36% Cr`, balance iron. The analytical method, heat
+identifier, and composition uncertainties are not reported, so those six
+claims carry `Unstated` uncertainty and do not infer missing trace values.
+
+Table II gives a common process spine: austenitize at `1116..1144 K` for
+`30 min`, oil quench at `325 K`, then first-temper at `394 K` for `60 min`.
+Five separately retained states use a `60 min` second temper at `505 K`,
+`450 K`, `433 K`, or `394 K`, or no second temper. Their exact `294 K`
+Rockwell C scale readings are `59.7`, `62.3`, `63.4`, `64.6`, and `65.1`.
+NASA used a standard Rockwell C tester with a `150 kg` load and diamond
+indenter in a low-oxygen furnace, taking at least two readings per material and
+temperature. The table does not publish dispersion, so these measurements
+remain `Unstated`; the report's separate `+/-1` Rockwell-point accuracy claim
+for its predictive equation is not laundered into measurement uncertainty.
+
+X-ray diffraction reports retained-austenite volume fractions of `12.8%`,
+`15.6%`, `18.4%`, and `11.8%` for the `450 K`, `433 K`, `394 K`, and
+no-second-temper states. The `505 K` state is printed only as `<2%`; that
+censored result remains an observation caveat and never becomes an exact
+scalar. Hardness and retained-austenite observations stay method-separated,
+with no invented covariance. NASA reports ASTM grain size 12 for the 52100
+material.
+
+NASA's NTRS record marks the report public and a work of the U.S. Government
+whose public use is permitted. The manifest retains NASA attribution.
+
+AISI 52100 reference:
+
+- <https://ntrs.nasa.gov/citations/19720007811>
+- <https://ntrs.nasa.gov/api/citations/19720007811/downloads/19720007811.pdf>
+
 To compile the sources into canonical runtime packs:
 
 ```bash
@@ -215,6 +251,10 @@ cargo run -p xtask -- matdb-pack \
 cargo run -p xtask -- matdb-pack \
   --manifest data/matdb/seed-v1/aisi-1045-cold-drawn/manifest.tsv \
   --out /path/to/aisi-1045-cold-drawn-tensile.fsmatpk
+
+cargo run -p xtask -- matdb-pack \
+  --manifest data/matdb/seed-v1/aisi-52100-cvm-hot-hardness/manifest.tsv \
+  --out /path/to/aisi-52100-cvm-nasa-tn-d-6632.fsmatpk
 ```
 
 ## No-claim boundary
@@ -259,3 +299,14 @@ the fail-closed validity flag. The derived intervals assume three iid normal
 replicates and are not population scatter, minimum design values, process
 capability, or permission to substitute a different AISI 1045 condition. The
 tranche makes no hardness claim and admits no joint covariance.
+
+The AISI 52100 tranche is not a generic bearing-steel allowable. It applies to
+one CVM ingot, the reported chemistry, the common austenitize/quench/first-
+temper spine, and the five separately keyed second-temper states. Rockwell C is
+stored as a named empirical scale reading with dimensionless storage, not as a
+ratio quantity. The tranche does not provide a hot-hardness curve, long-time
+tempering stability, rolling-contact fatigue life, wear, elastic/plastic
+constitutive behavior, cleanliness-based life adjustment, or permission to
+apply the short-term NASA measurements to another heat. The `<2%` retained-
+austenite result remains censored, and all table values retain `Unstated`
+measurement uncertainty.

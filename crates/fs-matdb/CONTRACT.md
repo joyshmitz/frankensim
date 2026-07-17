@@ -328,7 +328,9 @@ NIST displayed-precision agreement checks.
   associations, six exact-temperature Aluminum 6061-T6 scalar claims, and
   four exact-temperature OFHC Copper scalar claims, plus fourteen
   exact-temperature AISI 4140 mechanical-property claims and three
-  small-sample AISI 1045 tensile claims.
+  small-sample AISI 1045 tensile claims. The first pinned AISI 52100
+  bearing-steel tranche adds six actual-composition claims, five Rockwell C
+  scale readings, and four exact retained-austenite fractions.
   The gas associations do not define air or exhaust mixture compositions,
   humidity, or combustion completeness. The Aluminum claims do not define a
   continuous constitutive curve or a general-purpose design card; their NIST
@@ -348,9 +350,17 @@ NIST displayed-precision agreement checks.
   `source_test_temperature_known = 0` query axis and supplies no temperature
   validity interval. The flag acknowledges missing metadata; it does not make
   the values temperature-independent. No hardness or joint covariance is
-  admitted from that source. Bead 1sxe still owns the remaining curated
-  material/property and interface-system dataset. No equilibrium computation
-  happens here (fs-thermochem consumes phase data; this crate only stores it).
+  admitted from that source. The 52100 claims bind one NASA
+  consumable-vacuum-melted ingot, its reported chemistry, a common
+  austenitize/oil-quench/first-temper spine, and five separately keyed
+  second-temper states. Rockwell C is a named empirical scale reading in
+  dimensionless storage, not a ratio quantity. The `<2%` retained-austenite
+  result stays censored in an observation, the predictive equation's
+  `+/-1`-point accuracy is not reused as table-measurement uncertainty, and no
+  hot-hardness curve or long-time stability is claimed. Bead 1sxe still owns
+  the remaining curated material/property and interface-system dataset. No
+  equilibrium computation happens here (fs-thermochem consumes phase data;
+  this crate only stores it).
 - The L1 pack codec does not parse handbooks, CSV, NASA tables, license text,
   or other raw formats and does not decide whether terms permit
   redistribution; those are L6/offline compiler responsibilities. A nonblank
