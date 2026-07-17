@@ -34,6 +34,10 @@ const AISI_52100_CVM_SEED_MANIFEST: &str =
     "data/matdb/seed-v1/aisi-52100-cvm-hot-hardness/manifest.tsv";
 const AISI_9310_CVM_CARBURIZED_SEED_MANIFEST: &str =
     "data/matdb/seed-v1/aisi-9310-cvm-carburized/manifest.tsv";
+const NAPC_PE_5_L_1274_GEAR_OIL_SEED_MANIFEST: &str =
+    "data/matdb/seed-v1/napc-pe-5-l-1274-gear-oil/manifest.tsv";
+const NAPC_PE_5_L_1307_1553_GEAR_OIL_SEED_MANIFEST: &str =
+    "data/matdb/seed-v1/napc-pe-5-l-1307-1553-gear-oil/manifest.tsv";
 const GRAY_CAST_IRON_S2_S_SEED_MANIFEST: &str =
     "data/matdb/seed-v1/gray-cast-iron-s2-s/manifest.tsv";
 const NASA_SEED_LICENSE: &str = "Work-of-the-US-Government-Public-Use-Permitted";
@@ -1740,6 +1744,251 @@ fn g3_cli_compiles_committed_aisi_9310_cvm_carburized_gear_seed() {
             .lines()
             .all(|row| row.contains(&format!("\"pack_hash\":\"{pack_hash}\"")))
     );
+}
+
+#[test]
+fn g3_cli_compiles_committed_napc_gear_oils_without_fusing_batches() {
+    let temperature_dims = Dims([0, 0, 0, 1, 0, 0]);
+    let dimensionless = Dims([0, 0, 0, 0, 0, 0]);
+    type ExpectedClaim = (&'static str, &'static str, f64, Dims, Option<f64>);
+    let seeds: [(&str, &str, &str, &[ExpectedClaim]); 2] = [
+        (
+            NAPC_PE_5_L_1274_GEAR_OIL_SEED_MANIFEST,
+            "napc-pe-5-l-1274",
+            "napc-pe-5-l-1274-polyol-ester-gear-oil",
+            &[
+                (
+                    "flash_point_temperature",
+                    "PE-5-L-1274",
+                    516.0,
+                    temperature_dims,
+                    None,
+                ),
+                (
+                    "reported_specific_gravity",
+                    "PE-5-L-1274",
+                    0.998,
+                    dimensionless,
+                    Some(298.0),
+                ),
+                (
+                    "total_acid_number_as_koh_mass_per_oil_mass",
+                    "PE-5-L-1274",
+                    0.07e-3,
+                    dimensionless,
+                    None,
+                ),
+            ],
+        ),
+        (
+            NAPC_PE_5_L_1307_1553_GEAR_OIL_SEED_MANIFEST,
+            "napc-pe-5-l-1307-1553",
+            "napc-pe-5-l-1307-1553-mil-l-23699-gear-oil",
+            &[
+                (
+                    "flash_point_temperature",
+                    "PE-5-L-1307-NASA",
+                    539.0,
+                    temperature_dims,
+                    None,
+                ),
+                (
+                    "pour_point_temperature",
+                    "PE-5-L-1307-NASA",
+                    220.0,
+                    temperature_dims,
+                    None,
+                ),
+                (
+                    "flash_point_temperature",
+                    "PE-5-L-1553-NASA",
+                    539.0,
+                    temperature_dims,
+                    None,
+                ),
+                (
+                    "pour_point_temperature",
+                    "PE-5-L-1553-NASA",
+                    213.0,
+                    temperature_dims,
+                    None,
+                ),
+                (
+                    "reported_specific_gravity",
+                    "PE-5-L-1307-and-PE-5-L-1553",
+                    1.0,
+                    dimensionless,
+                    Some(289.0),
+                ),
+                (
+                    "total_acid_number_as_koh_mass_per_oil_mass",
+                    "PE-5-L-1307-and-PE-5-L-1553",
+                    0.03e-3,
+                    dimensionless,
+                    None,
+                ),
+            ],
+        ),
+    ];
+    let directory = fixture_dir();
+
+    for (manifest_relative, stem, expected_pack_id, expected_rows) in seeds {
+        let manifest = workspace_path(manifest_relative);
+        assert!(
+            manifest.is_file(),
+            "committed NASA/NAPC gear-oil seed manifest is missing: {manifest_relative}"
+        );
+        let first_path = directory.join(format!("{stem}-first.fsmatpk"));
+        let second_path = directory.join(format!("{stem}-second.fsmatpk"));
+
+        let first = run_compiler(&manifest, &first_path);
+        let second = run_compiler(&manifest, &second_path);
+        assert!(
+            first.status.success(),
+            "first {stem} seed compilation failed: {}",
+            String::from_utf8_lossy(&first.stderr)
+        );
+        assert!(
+            second.status.success(),
+            "second {stem} seed compilation failed: {}",
+            String::from_utf8_lossy(&second.stderr)
+        );
+        assert_eq!(first.stdout, second.stdout, "{stem} decision stream moved");
+        assert_decision_compiler(&first, MATERIAL_COMPILER_ID);
+
+        let first_bytes = fs::read(first_path).expect("read first NASA/NAPC gear-oil pack");
+        let second_bytes = fs::read(second_path).expect("read second NASA/NAPC gear-oil pack");
+        assert_eq!(first_bytes, second_bytes, "{stem} pack bytes moved");
+        let decoded =
+            NormalizedPack::from_bytes(&first_bytes).expect("decode NASA/NAPC gear-oil pack");
+        let pack_hash = decoded.content_hash();
+        let decoded = NormalizedPack::from_bytes_verified(pack_hash, &first_bytes)
+            .expect("verify NASA/NAPC gear-oil pack identity");
+
+        assert_eq!(decoded.pack_id(), expected_pack_id);
+        assert_eq!(decoded.compiler(), MATERIAL_COMPILER_ID);
+        assert!(
+            decoded
+                .redistribution_terms()
+                .contains("public use is permitted")
+        );
+        assert_eq!(decoded.claims().claim_count(), expected_rows.len());
+        assert!(decoded.joint_statistics().is_empty());
+
+        assert!(
+            decoded
+                .claims()
+                .claims_for("kinematic_viscosity")
+                .is_empty(),
+            "Table IV omits the viscosity unit, so no viscosity claim is admissible"
+        );
+        for &(property, observation_token, expected_value, expected_dims, validity_temperature) in
+            expected_rows
+        {
+            let claims = decoded.claims().claims_for(property);
+            let mut matches = claims.iter().copied().filter(|(_, claim)| {
+                if claim.observations.len() != 1 {
+                    return false;
+                }
+                decoded
+                    .claims()
+                    .observation(claim.observations[0])
+                    .is_some_and(|observation| observation.specimen.contains(observation_token))
+            });
+            let (id, claim) = matches
+                .next()
+                .unwrap_or_else(|| panic!("missing {property} for {observation_token}"));
+            assert!(
+                matches.next().is_none(),
+                "duplicate {property} for {observation_token}"
+            );
+            let PropertyValue::Scalar { value, dims } = &claim.value else {
+                panic!("{property} for {observation_token} was not scalar");
+            };
+            assert_eq!(*dims, expected_dims);
+            let relative_error = (*value - expected_value).abs() / expected_value.abs().max(1.0);
+            assert!(
+                relative_error <= 2.0e-15,
+                "{property} for {observation_token} moved by {relative_error:e} relative"
+            );
+            match validity_temperature {
+                Some(temperature_k) => {
+                    assert_eq!(
+                        claim.validity.bound("temperature"),
+                        Some((temperature_k, temperature_k))
+                    );
+                    assert_eq!(claim.validity.bounds().len(), 1);
+                }
+                None => assert!(claim.validity.bounds().is_empty()),
+            }
+            assert_eq!(claim.uncertainty, UncertaintyModel::Unstated);
+            assert_eq!(
+                claim.interpolation,
+                InterpolationPolicy::ConstantWithinValidity
+            );
+            assert_eq!(claim.provenance.license, NASA_SEED_LICENSE);
+            assert!(claim.provenance.source.contains("NASA-TM-104352"));
+            assert!(claim.provenance.source.contains("[source:primary]"));
+
+            let observation = decoded
+                .claims()
+                .observation(claim.observations[0])
+                .expect("NASA/NAPC gear-oil observation remains linked");
+            assert!(observation.method.contains("Table IV"));
+            assert!(observation.caveats.contains("proprietary"));
+            if observation_token == "PE-5-L-1274" {
+                assert!(observation.caveats.contains("NASA reference lubricant"));
+                assert!(observation.caveats.contains("without stating their unit"));
+                assert!(observation.caveats.contains("less than 200 K"));
+            } else if observation_token.contains("-NASA") {
+                assert!(
+                    observation
+                        .caveats
+                        .contains("two batches of the same lubricant")
+                );
+                assert!(observation.caveats.contains("MIL-L-23699"));
+                assert!(
+                    observation
+                        .caveats
+                        .contains("batch-specific values remain separate")
+                );
+                assert!(observation.caveats.contains("without stating their unit"));
+            } else {
+                assert!(observation.caveats.contains("MIL-L-23699"));
+                assert!(observation.caveats.contains("same MIL-L-23699 lubricant"));
+            }
+            assert_eq!(claim.observations[0].0, observation.content_hash());
+            assert_eq!(id.0, claim.content_hash());
+        }
+
+        if expected_rows.len() == 6 {
+            for property in ["flash_point_temperature", "pour_point_temperature"] {
+                let batch_claims = decoded.claims().claims_for(property);
+                assert_eq!(batch_claims.len(), 2);
+                assert_ne!(
+                    batch_claims[0].1.observations, batch_claims[1].1.observations,
+                    "the two NASA/NAPC batches were fused for {property}"
+                );
+            }
+        } else {
+            assert!(
+                decoded
+                    .claims()
+                    .claims_for("pour_point_temperature")
+                    .is_empty(),
+                "the censored PE-5-L-1274 pour point became an exact scalar"
+            );
+        }
+
+        let decisions = String::from_utf8(first.stdout).expect("decision stream is UTF-8");
+        assert!(decisions.contains("\"reason_code\":\"uncertainty_policy_admitted\""));
+        assert!(decisions.contains("\"reason_code\":\"runtime_pack_self_verified\""));
+        assert!(
+            decisions
+                .lines()
+                .all(|row| row.contains(&format!("\"pack_hash\":\"{pack_hash}\"")))
+        );
+    }
 }
 
 #[test]

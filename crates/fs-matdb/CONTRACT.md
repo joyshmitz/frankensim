@@ -333,7 +333,10 @@ NIST displayed-precision agreement checks.
   scale readings, and four exact retained-austenite fractions. The first
   pinned AISI 9310 gear-steel tranche adds nine nominal-composition claims,
   two conflicting case Rockwell C statements, one core Rockwell C statement,
-  and one carburized case-depth claim. The first
+  and one carburized case-depth claim. Two named NASA/NAPC gear-oil packs add
+  nine explicitly unit-bearing flash-point, pour-point, specific-gravity, and
+  total-acid-number claims while refusing the source's unitless viscosity
+  numbers. The first
   pinned gray-iron tranche adds nine reported composition/carbon-equivalent
   values, four quantified microstructure fields, and two low-precision
   graph-digitized room-state properties.
@@ -368,7 +371,12 @@ NIST displayed-precision agreement checks.
   stress-relief schedule. The source's detailed C58 and summary-level C60 case
   statements remain separate provenance-linked claims with `Unstated`
   uncertainty; no average or preferred value is invented. Lubricant-dependent
-  surface-fatigue lives remain excluded as gear-system properties. The gray-
+  surface-fatigue lives remain excluded as gear-system properties. The
+  NASA/NAPC oil packs retain public code, batch, basestock-class, and
+  specification context, but the source says formulation chemistry is
+  proprietary and omits the viscosity unit. No viscosity claim, formulation
+  identity, or gear-system fatigue/EHD result is laundered into those bulk-oil
+  cards. The gray-
   iron claims bind Wang et al.'s S2-S charge, chemistry, Sr-FeSi inoculation,
   EN-1561 Type II mould, and fully pearlitic/type-A-graphite state. Its Figure 8
   strength and conductivity centers retain only graph-supported precision;

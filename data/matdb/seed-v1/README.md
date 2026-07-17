@@ -266,6 +266,43 @@ AISI 9310 references:
 - <https://ntrs.nasa.gov/api/citations/19910020285/downloads/19910020285.pdf>
 - <https://ntrs.nasa.gov/citations/19750018303>
 
+## NASA/NAPC polyol-ester gear-oil tranches
+
+`napc-pe-5-l-1274-gear-oil/` and
+`napc-pe-5-l-1307-1553-gear-oil/` retain application-specific oil evidence
+from NASA-TM-104352. PE-5-L-1274 is NASA identification A, the program's
+reference polyol-ester synthetic gear oil. PE-5-L-1307 and PE-5-L-1553 are
+NASA identification B: two tested batches of the same polyol-ester lubricant,
+reported as meeting MIL-L-23699. The batch codes remain visible rather than
+being collapsed into a single averaged row.
+
+For PE-5-L-1274, Table IV supplies an exact `516 K` flash point, reported
+specific gravity `0.998` at `298 K`, and total acid number
+`0.07 mg KOH/g oil`. Its pour point is printed only as `<200 K`, so that
+censored value remains an observation caveat rather than an exact scalar. For
+the two B batches, the pack separately retains flash points of `539 K` and
+pour points of `220 K` (PE-5-L-1307) and `213 K` (PE-5-L-1553). Values spanning
+both B columns remain common-formulation claims: reported specific gravity
+`1.000` at `289 K` and total acid number `0.03 mg KOH/g oil`.
+
+The table also prints kinematic-viscosity numbers at `311 K` and `373 K`, but
+does not state their unit. The source observations preserve those numbers and
+temperatures verbatim, while the normalized packs deliberately contain no
+`kinematic_viscosity` claim. Supplying a conventional unit from outside the
+source would violate the Five Explicits. Measurement standards, replicates,
+dispersion, and confidence metadata are likewise absent, so all admitted
+claims carry `Unstated` uncertainty.
+
+NASA says the additive and chemical data are proprietary to the respective
+manufacturers. These packs therefore identify the oils only by the public
+NASA/NAPC codes, basestock class, reported specification relation, and measured
+Table IV properties. They do not claim a redistributable formulation.
+
+NASA/NAPC gear-oil reference:
+
+- <https://ntrs.nasa.gov/citations/19910020285>
+- <https://ntrs.nasa.gov/api/citations/19910020285/downloads/19910020285.pdf>
+
 ## S2-S pearlitic gray-cast-iron tranche
 
 `gray-cast-iron-s2-s/` retains one engine-relevant experimental ingot from
@@ -344,6 +381,14 @@ cargo run -p xtask -- matdb-pack \
   --out /path/to/aisi-9310-cvm-carburized-nasa-tm-104352.fsmatpk
 
 cargo run -p xtask -- matdb-pack \
+  --manifest data/matdb/seed-v1/napc-pe-5-l-1274-gear-oil/manifest.tsv \
+  --out /path/to/napc-pe-5-l-1274-polyol-ester-gear-oil.fsmatpk
+
+cargo run -p xtask -- matdb-pack \
+  --manifest data/matdb/seed-v1/napc-pe-5-l-1307-1553-gear-oil/manifest.tsv \
+  --out /path/to/napc-pe-5-l-1307-1553-mil-l-23699-gear-oil.fsmatpk
+
+cargo run -p xtask -- matdb-pack \
   --manifest data/matdb/seed-v1/gray-cast-iron-s2-s/manifest.tsv \
   --out /path/to/pearlitic-gray-cast-iron-s2-s-sr-fesi.fsmatpk
 ```
@@ -412,6 +457,16 @@ results to another geometry or process. The report's lubricant-dependent
 surface-fatigue lives are system properties and are deliberately excluded from
 the bulk-material pack. Its internally conflicting C58 and C60 case statements
 remain separate `Unstated` claims; neither is promoted as the resolved value.
+
+The NASA/NAPC oil tranches are not complete lubricant formulations or generic
+MIL-L-23699 cards. Proprietary additive and chemical identities remain
+unknown. The packs provide no viscosity claim or curve because Table IV omits
+the viscosity unit; no density, pressure-viscosity law, oxidation stability,
+wear coefficient, friction coefficient, compatibility, aging, or service-life
+model is inferred. The report's EHD film thickness, lambda ratio, and
+surface-pitting lives belong to the tested oil/gear/roughness/load/temperature
+system and are deliberately excluded from these bulk-oil packs. The two B
+batch columns remain distinct where the source reports distinct values.
 
 The S2-S gray-iron tranche applies only to the reported charge, composition,
 Sr-FeSi inoculation, mould, and fully pearlitic/type-A-graphite state. Its
