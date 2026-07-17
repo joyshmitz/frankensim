@@ -822,6 +822,7 @@ fn replay_boundary_tau(
 /// callback transcript. Recorded Hessian products drive the bit-exact state
 /// recurrence because those are the values production consumed; the separate
 /// analytic Hessian oracle below independently checks their values and signs.
+#[allow(clippy::too_many_lines)] // Keep the exact private-state replay auditable as one recurrence.
 fn replay_steihaug_segment(
     gradient: &[f64],
     radius: f64,
@@ -935,6 +936,7 @@ fn replay_steihaug_segment(
 /// closes the otherwise-real ambiguity where the next Hessian point could be
 /// changed from the accepted trial to the old current point (or vice versa)
 /// while still satisfying a merely structural "one of those two" check.
+#[allow(clippy::too_many_lines)] // Keep radius, acceptance, and terminal state in one protocol replay.
 fn replay_trust_region_protocol(
     payload: &ReceiptPayload,
     segments: &[IterationSegment],
