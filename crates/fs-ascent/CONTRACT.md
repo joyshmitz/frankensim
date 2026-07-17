@@ -148,6 +148,16 @@ with all KKT residuals ≤ 1e−7; bitwise replay; Pareto golden
 epsilons, tolerances, decision vectors, objective values, and gradient
 dimensions.
 
+`tests/bbob_budget_ledger.rs` and `tests/gradient_budget_ledger.rs` emit the
+four-metric observation envelope for every optimizer fixture: observed nfev/ERT,
+pinned nfev ceiling, observed success rate, and minimum success rate, all as
+wire-validated `fs-obs::BenchmarkResult` events with machine id zero. Their
+gate metadata comes only from `tests/support/budget_trend.rs`, not duplicated
+tuple literals. `tests/budget_trend_manifest.rs` (bead 7tv.21.12) audits the
+closed fourteen-row `(suite, kernel)` inventory, refuses missing/duplicate or
+metadata-drifted rows, and deterministically renders schema
+`frankensim-ascent-budget-trend-v1` for central trend ingestion.
+
 `tests/runner_battery.rs` (4 cases): Problem-IR product-manifold packing,
 problem-owned budget attribution, clone-checkpoint replay, and packed
 constraint routing. All aggregate outcomes are linted and wire-validated
@@ -202,3 +212,8 @@ uninterrupted reference.
   boundary: fs-ascent checks exact dimensions, finite values, and the
   mandatory `J^T 0 = 0` linearity identity, but independent derivative
   verification is required before stronger correctness claims.
+- The budget-trend manifest is a machine-independent regression-gate
+  declaration over objective-evaluation counts. It is not a wall-clock or
+  throughput claim, does not establish cross-ISA optimizer equivalence, and
+  does not itself persist or compare historical runs. Central CI/ledger tooling
+  owns retention, history selection, alert policy, and machine evidence.

@@ -32,6 +32,11 @@ use fsci_opt::{
     minimize, rosen,
 };
 
+#[path = "support/budget_trend.rs"]
+mod budget_trend;
+
+use budget_trend::{BBOB_COMPONENT, BUDGET_TREND_SCHEMA, gate_and_emit_budget_observation};
+
 fn sphere5(x: &[f64]) -> f64 {
     x.iter().map(|v| v * v).sum()
 }
@@ -48,54 +53,21 @@ struct Row {
     kernel: &'static str,
     /// ERT for stochastic kernels; single-run nfev for deterministic.
     budget: usize,
-    ceiling: usize,
     successes: usize,
     attempts: usize,
-    min_successes: usize,
 }
 
 fn ledger_and_gate(rows: &[Row]) {
-    let mut em = fs_obs::Emitter::new("fs-ascent/bbob-budget", "ledger-v1");
+    let mut em = fs_obs::Emitter::new(BBOB_COMPONENT, BUDGET_TREND_SCHEMA);
     for row in rows {
-        assert!(
-            row.successes >= row.min_successes,
-            "{}: {}/{} successes is below the documented gate of {}",
-            row.kernel,
-            row.successes,
-            row.attempts,
-            row.min_successes
-        );
-        assert!(
-            row.budget > 10,
-            "{}: {} evals is vacuous — sanity floor",
-            row.kernel,
-            row.budget
-        );
-        assert!(
-            row.budget <= row.ceiling,
-            "{}: budget {} exceeds the pinned ceiling {} — optimizer regression",
+        gate_and_emit_budget_observation(
+            &mut em,
+            BBOB_COMPONENT,
             row.kernel,
             row.budget,
-            row.ceiling
+            row.successes,
+            row.attempts,
         );
-        for (metric, value) in [
-            ("ert_nfev", row.budget as f64),
-            ("success_rate", row.successes as f64 / row.attempts as f64),
-        ] {
-            let event = em.emit(
-                fs_obs::Severity::Info,
-                fs_obs::EventKind::BenchmarkResult {
-                    kernel: row.kernel.to_string(),
-                    metric: metric.to_string(),
-                    value,
-                    machine: 0, // machine-independent by construction
-                },
-                None,
-            );
-            let line = event.to_jsonl();
-            fs_obs::validate_line(&line).expect("budget rows stay wire-valid");
-            println!("{line}");
-        }
     }
 }
 
@@ -107,26 +79,16 @@ fn de_family_ert_rows_hold_their_ceilings() {
     // 28500; rastrigin2 1898 (7590/4, seed-1 local trap on record) ->
     // 2500.
     let mut rows = Vec::new();
-    for (kernel, f, n, bound, target, min_successes, ceiling) in [
+    for (kernel, f, n, bound, target) in [
         (
             "de/sphere5",
             &sphere5 as &(dyn Fn(&[f64]) -> f64),
             5usize,
             5.0f64,
             1e-8,
-            5usize,
-            8_700usize,
         ),
-        (
-            "de/rosen5",
-            &(|x: &[f64]| rosen(x)),
-            5,
-            5.0,
-            1e-8,
-            5,
-            28_500,
-        ),
-        ("de/rastrigin2", &rastrigin2, 2, 5.12, 1e-6, 3, 2_500),
+        ("de/rosen5", &(|x: &[f64]| rosen(x)), 5, 5.0, 1e-8),
+        ("de/rastrigin2", &rastrigin2, 2, 5.12, 1e-6),
     ] {
         let bounds = vec![(-bound, bound); n];
         let mut total_nfev = 0usize;
@@ -149,10 +111,8 @@ fn de_family_ert_rows_hold_their_ceilings() {
         rows.push(Row {
             kernel,
             budget: total_nfev / successes.max(1),
-            ceiling,
             successes,
             attempts: 5,
-            min_successes,
         });
     }
     ledger_and_gate(&rows);
@@ -166,37 +126,28 @@ fn dfo_family_budget_rows_hold_their_ceilings() {
     let start5 = [2.0f64, -1.5, 1.0, -0.5, 2.5];
     let start2 = [0.4f64, -0.3]; // rastrigin: global-basin start (DFO is local)
     let mut rows = Vec::new();
-    for (kernel, f, x0, target, ceiling) in [
+    for (kernel, f, x0, target) in [
         (
             "nelder-mead/sphere5",
             &sphere5 as &(dyn Fn(&[f64]) -> f64),
             &start5[..],
             1e-8,
-            1_100usize,
         ),
         (
             "nelder-mead/rosen5",
             &(|x: &[f64]| rosen(x)),
             &start5[..],
             1e-8,
-            2_600,
         ),
         (
             "nelder-mead/rastrigin2-local",
             &rastrigin2,
             &start2[..],
             1e-6,
-            400,
         ),
-        ("powell/sphere5", &sphere5, &start5[..], 1e-8, 700),
+        ("powell/sphere5", &sphere5, &start5[..], 1e-8),
         // Target 1e-6: Powell stalls at f = 3.93e-8 here (see module doc).
-        (
-            "powell/rosen5",
-            &(|x: &[f64]| rosen(x)),
-            &start5[..],
-            1e-6,
-            2_900,
-        ),
+        ("powell/rosen5", &(|x: &[f64]| rosen(x)), &start5[..], 1e-6),
     ] {
         let method = if kernel.starts_with("powell") {
             OptimizeMethod::Powell
@@ -218,10 +169,8 @@ fn dfo_family_budget_rows_hold_their_ceilings() {
         rows.push(Row {
             kernel,
             budget: res.nfev,
-            ceiling,
             successes: usize::from(reached),
             attempts: 1,
-            min_successes: 1,
         });
     }
     ledger_and_gate(&rows);

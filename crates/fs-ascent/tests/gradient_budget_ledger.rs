@@ -17,29 +17,10 @@ use fs_ascent::auglag::ConstrainedProblem;
 use fs_ascent::{LbfgsState, StopRule, augmented_lagrangian, interior_point, sqp};
 use fsci_opt::{rosen, rosen_der};
 
-fn verdict_row(em: &mut fs_obs::Emitter, kernel: &str, nfev: usize, ceiling: usize) {
-    assert!(
-        nfev > 10,
-        "{kernel}: {nfev} evals is vacuous — sanity floor"
-    );
-    assert!(
-        nfev <= ceiling,
-        "{kernel}: nfev {nfev} exceeds the pinned ceiling {ceiling} — optimizer regression"
-    );
-    let event = em.emit(
-        fs_obs::Severity::Info,
-        fs_obs::EventKind::BenchmarkResult {
-            kernel: kernel.to_string(),
-            metric: "nfev_at_convergence".to_string(),
-            value: nfev as f64,
-            machine: 0, // machine-independent by construction
-        },
-        None,
-    );
-    let line = event.to_jsonl();
-    fs_obs::validate_line(&line).expect("budget rows stay wire-valid");
-    println!("{line}");
-}
+#[path = "support/budget_trend.rs"]
+mod budget_trend;
+
+use budget_trend::{BUDGET_TREND_SCHEMA, GRADIENT_COMPONENT, gate_and_emit_budget_observation};
 
 /// Branin (as in fsci_bo_cutest_oracle.rs); f* = 0.39788735772973816.
 fn branin(x: &[f64]) -> (f64, Vec<f64>) {
@@ -91,39 +72,32 @@ fn hartmann3(x: &[f64]) -> (f64, Vec<f64>) {
 
 #[test]
 fn lbfgs_budget_rows_hold_their_ceilings() {
-    let mut em = fs_obs::Emitter::new("fs-ascent/gradient-budget", "ledger-v1");
-    // (kernel, fg, start, known optimum check, ceiling)
-    // Ceilings = measured nfev + ~30%, recorded per row.
+    let mut em = fs_obs::Emitter::new(GRADIENT_COMPONENT, BUDGET_TREND_SCHEMA);
+    // (kernel, fg, start, known optimum check). Canonical ceilings and
+    // success gates live in the generated trend manifest.
     let fixtures: [(
         &str,
         &dyn Fn(&[f64]) -> (f64, Vec<f64>),
         Vec<f64>,
         &dyn Fn(f64) -> bool,
-        usize,
     ); 3] = [
         (
             "lbfgs/rosen4",
             &|x: &[f64]| (rosen(x), rosen_der(x)),
             vec![0.9, 0.9, 0.9, 0.9],
             &|f: f64| f < 1e-12,
-            45,
         ),
-        (
-            "lbfgs/branin",
-            &branin,
-            vec![3.0, 2.0],
-            &|f: f64| (f - 0.397_887_357_729_738_16).abs() < 1e-8,
-            20,
-        ),
+        ("lbfgs/branin", &branin, vec![3.0, 2.0], &|f: f64| {
+            (f - 0.397_887_357_729_738_16).abs() < 1e-8
+        }),
         (
             "lbfgs/hartmann3",
             &hartmann3,
             vec![0.2, 0.5, 0.8],
             &|f: f64| (f - (-3.862_779_78)).abs() < 1e-5,
-            40,
         ),
     ];
-    for (kernel, fg, start, reached, ceiling) in fixtures {
+    for (kernel, fg, start, reached) in fixtures {
         let count = Cell::new(0usize);
         let mut counted = |x: &[f64]| {
             count.set(count.get() + 1);
@@ -133,7 +107,7 @@ fn lbfgs_budget_rows_hold_their_ceilings() {
         st.run(&mut counted, &StopRule::GradNorm(1e-10), 4000);
         let f = fg(&st.x).0;
         assert!(reached(f), "{kernel}: optimum not reached (f = {f:.6e})");
-        verdict_row(&mut em, kernel, count.get(), ceiling);
+        gate_and_emit_budget_observation(&mut em, GRADIENT_COMPONENT, kernel, count.get(), 1, 1);
     }
 }
 
@@ -141,32 +115,30 @@ fn lbfgs_budget_rows_hold_their_ceilings() {
 fn constrained_stack_budget_rows_hold_their_ceilings() {
     // Shared fixture from fsci_oracle.rs: min (x−2)² + (y−1)²
     // s.t. x + y = 2, x ≤ 1.2 — analytic optimum (1.2, 0.8).
-    let mut em = fs_obs::Emitter::new("fs-ascent/gradient-budget", "ledger-v1");
+    let mut em = fs_obs::Emitter::new(GRADIENT_COMPONENT, BUDGET_TREND_SCHEMA);
     let ce = |x: &[f64]| vec![x[0] + x[1] - 2.0];
     let ce_jt = |_: &[f64], w: &[f64]| vec![w[0], w[0]];
     let ci = |x: &[f64]| vec![x[0] - 1.2];
     let ci_jt = |_: &[f64], w: &[f64]| vec![w[0], 0.0];
 
-    // (kernel, runner, ceiling) — ceilings measured + ~30%.
+    // Canonical ceilings and success gates live in the generated trend manifest.
     type Runner<'a> = &'a dyn Fn(&mut ConstrainedProblem<'_>) -> Vec<f64>;
-    let runners: [(&str, Runner<'_>, usize); 3] = [
+    let runners: [(&str, Runner<'_>); 3] = [
         (
             "auglag/shared-constrained",
             &|p: &mut ConstrainedProblem<'_>| augmented_lagrangian(p, &[0.0, 0.0], 1e-9, 60).x,
-            450,
         ),
         (
             "interior-point/shared-constrained",
             &|p: &mut ConstrainedProblem<'_>| interior_point(p, &[0.0, 0.0], 1e-8, 80).x,
-            4_850,
         ),
-        (
-            "sqp/shared-constrained",
-            &|p: &mut ConstrainedProblem<'_>| sqp(p, &[0.0, 0.0], 1e-9, 80).x,
-            18,
-        ),
+        ("sqp/shared-constrained", &|p: &mut ConstrainedProblem<
+            '_,
+        >| {
+            sqp(p, &[0.0, 0.0], 1e-9, 80).x
+        }),
     ];
-    for (kernel, run, ceiling) in runners {
+    for (kernel, run) in runners {
         let count = Cell::new(0usize);
         let mut fg = |x: &[f64]| {
             count.set(count.get() + 1);
@@ -188,6 +160,6 @@ fn constrained_stack_budget_rows_hold_their_ceilings() {
             dev < 1e-5,
             "{kernel}: analytic optimum (1.2, 0.8) missed by {dev:.3e} at {x:?}"
         );
-        verdict_row(&mut em, kernel, count.get(), ceiling);
+        gate_and_emit_budget_observation(&mut em, GRADIENT_COMPONENT, kernel, count.get(), 1, 1);
     }
 }
