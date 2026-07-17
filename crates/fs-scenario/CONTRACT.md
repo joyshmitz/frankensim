@@ -144,13 +144,16 @@ flagships.
    new_hash` evidence.
 2. **Dimensional soundness**: `validate()` rejects any BC/frame/ensemble/
    environment value whose SI exponents disagree with the contract table.
-3. **Net-flux compatibility**: if any condition declares
-   `incompressible`, either declared mass flows balance to 1e−9 relative
-   or a pressure outlet exists — otherwise `flux-imbalance` with the
-   imbalance quantified in the message and an actionable fix. Evaluation
-   failure and non-finite aggregation are explicit violations; neither is
-   silently reinterpreted as zero flow, and a pressure outlet cannot mask a
-   malformed inlet declaration.
+3. **Net-flux compatibility**: if any condition declares `incompressible`,
+   either declared mass flows balance to 1e−9 relative at every instant or a
+   pressure outlet exists. This layer certifies the all-time branch only for
+   uniform and `TimeSignal::Constant` total flows. Ramp, Linear/Hold Table, and
+   Chebfun checkpoints remain deterministic falsifiers: one sampled point may
+   produce a concrete `flux-imbalance`, but a green finite screen refuses as
+   `flux-certification-unavailable` instead of impersonating an all-time
+   floating-point proof. Evaluation failure and non-finite aggregation are
+   explicit violations; neither is silently reinterpreted as zero flow, and a
+   pressure outlet cannot mask a malformed inlet declaration.
 4. **Frame chains terminate**: cycles and dangling parents are violations;
    a parent reference to a duplicated frame id is explicitly ambiguous and is
    never resolved through an arbitrary storage row;
@@ -335,6 +338,11 @@ None.
   imbalance (repaired by adding an outlet), cyclic + dangling frames,
   wrong-dimension BC, undeclared inlet compatibility, unknown combo case,
   kinetic > static friction.
+- **sc-002a, sc-002e–i** deterministic ramp/table/Chebfun screens catch concrete
+  time-varying flux counterexamples, while adversarial green Hold,
+  relative-tolerance, and smooth-grid fixtures refuse without an all-time
+  certificate. A pressure outlet is the explicit alternative; uniform and
+  constant totals retain the exactly checkable path.
 - **sc-003** KT/Dryden/Carreau members bitwise-identical across repeated
   realization; members differ from each other; seed matters; Carreau
   draws stay inside declared bands.

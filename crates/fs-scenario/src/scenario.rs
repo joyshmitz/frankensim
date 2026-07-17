@@ -1744,8 +1744,10 @@ impl Scenario {
     /// Net-flux compatibility (the admission check the bead names): for
     /// every effective BC set (base alone, and base + each case), if any
     /// inlet declares `incompressible`, the declared mass flows must
-    /// balance to tolerance at every deterministic signal checkpoint OR a
-    /// pressure outlet must exist to absorb the imbalance.
+    /// balance to tolerance over time OR a pressure outlet must exist to absorb
+    /// the imbalance. Deterministic time-signal checkpoints may refute balance,
+    /// but a green finite screen refuses because it is not an all-time floating-
+    /// point certificate. Only uniform and constant totals are certified here.
     fn check_net_flux(
         &self,
         out: &mut Vec<Violation>,
@@ -1777,11 +1779,18 @@ impl Scenario {
         };
         let mut declares_incompressible = false;
         let mut has_pressure_outlet = false;
+        let mut has_uncertified_time_dependence = false;
         for bc in self.base_bcs.iter().chain(case_bcs.iter()) {
             checkpoint("net-flux set classification")?;
             declares_incompressible |= bc.compatibility == Some(Compat::Incompressible);
             has_pressure_outlet |=
                 bc.physics == Physics::IncompressibleFlow && bc.kind == BcKind::PressureOutlet;
+            has_uncertified_time_dependence |= bc.kind == BcKind::MassFlowInlet
+                && matches!(
+                    &bc.value,
+                    Some(BcValue::Signal(signal))
+                        if !matches!(signal, TimeSignal::Constant(_))
+                );
         }
         if !declares_incompressible {
             return Ok(());
@@ -1892,6 +1901,21 @@ impl Scenario {
                 ),
                 fix: "balance the declared inlet/outlet mass flows at every instant or add a \
                       pressure outlet to absorb the imbalance"
+                    .to_string(),
+            });
+        } else if has_uncertified_time_dependence {
+            // One sampled imbalance is a valid counterexample and takes
+            // precedence above. A green finite screen, however, cannot certify
+            // every runtime f64 evaluation of a time-varying declaration.
+            out.push(Violation {
+                code: "flux-certification-unavailable",
+                what: format!(
+                    "set {label}: declared incompressible with no pressure outlet, but a \
+                     time-varying mass-flow history has no certified all-time floating-point \
+                     balance proof"
+                ),
+                fix: "add a pressure outlet or replace every time-varying mass-flow history with \
+                      an exactly checkable uniform or constant total"
                     .to_string(),
             });
         }

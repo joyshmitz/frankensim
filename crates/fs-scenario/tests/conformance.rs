@@ -630,7 +630,7 @@ fn sc_002a_ramp_and_table_from_zero_are_checked_after_t_zero() {
 }
 
 #[test]
-fn sc_002b_mixed_signal_flux_grid_is_deterministic() {
+fn sc_002e_smooth_flux_grid_counterexample_is_deterministic() {
     let mut scenario = Scenario::new("mixed-flux-grid", 1, Environment::earth_lab());
     let signals = [
         (
@@ -691,12 +691,189 @@ fn sc_002b_mixed_signal_flux_grid_is_deterministic() {
     );
     assert!(
         flux[0].what.contains("at t=") && !flux[0].what.contains("t=0.000000e0"),
-        "the smooth interior imbalance must be found on its declared-domain grid: {:?}",
+        "one sampled smooth imbalance is a valid counterexample: {:?}",
         flux[0]
     );
+    assert!(
+        first
+            .iter()
+            .all(|violation| violation.code != "flux-certification-unavailable"),
+        "a concrete counterexample must take precedence over no-proof: {first:#?}"
+    );
     verdict(
-        "sc-002b",
-        "ramp/table breakpoints plus the bounded Chebfun domain grid replay deterministically and expose an interior-only mixed-signal imbalance",
+        "sc-002e",
+        "the bounded Chebfun grid replays deterministically and may refute balance with a concrete counterexample without certifying a green grid",
+    );
+}
+
+#[test]
+fn sc_002f_hold_transition_cannot_hide_behind_green_endpoints() {
+    let hold = TimeSignal::Table {
+        times: vec![0.0, 1.0],
+        values: vec![0.0, -1.0],
+        dims: MASS_FLOW,
+        interp: Interp::Hold,
+    };
+    let ramp = TimeSignal::Ramp {
+        t_start: 0.0,
+        t_end: 1.0,
+        from: QtyAny::new(0.0, MASS_FLOW),
+        to: QtyAny::new(1.0, MASS_FLOW),
+    };
+    for time in [0.0, 1.0] {
+        let endpoint_net =
+            hold.eval(time).expect("valid hold").value + ramp.eval(time).expect("valid ramp").value;
+        assert_eq!(endpoint_net, 0.0, "fixture endpoint must be balanced");
+    }
+
+    let mut scenario = Scenario::new("hold-transition-flux", 1, Environment::earth_lab());
+    for (region, signal) in [("hold", hold), ("ramp", ramp)] {
+        scenario.base_bcs.push(BoundaryCondition {
+            region: region.to_string(),
+            physics: Physics::IncompressibleFlow,
+            kind: BcKind::MassFlowInlet,
+            value: Some(BcValue::Signal(signal)),
+            compatibility: Some(Compat::Incompressible),
+            frame: 0,
+        });
+    }
+    let findings = scenario.validate();
+    assert_eq!(
+        findings
+            .iter()
+            .filter(|finding| finding.code == "flux-certification-unavailable")
+            .count(),
+        1,
+        "green Hold endpoints must not certify the unchecked interior: {findings:#?}"
+    );
+    assert!(
+        findings
+            .iter()
+            .all(|finding| finding.code != "flux-imbalance")
+    );
+    verdict(
+        "sc-002f",
+        "balanced Hold/Ramp sample instants refuse because finite checkpoints cannot certify every floating-point time",
+    );
+}
+
+#[test]
+fn sc_002g_relative_flux_interior_cannot_hide_behind_endpoints() {
+    let mut scenario = Scenario::new("linear-zero-crossing-flux", 1, Environment::earth_lab());
+    for (region, from, to) in [("first", 1.0, -1.0), ("second", -1.0 + 1e-9, 1.0 + 1e-9)] {
+        scenario.base_bcs.push(BoundaryCondition {
+            region: region.to_string(),
+            physics: Physics::IncompressibleFlow,
+            kind: BcKind::MassFlowInlet,
+            value: Some(BcValue::Signal(TimeSignal::Ramp {
+                t_start: 0.0,
+                t_end: 1.0,
+                from: QtyAny::new(from, MASS_FLOW),
+                to: QtyAny::new(to, MASS_FLOW),
+            })),
+            compatibility: Some(Compat::Incompressible),
+            frame: 0,
+        });
+    }
+    let findings = scenario.validate();
+    assert_eq!(
+        findings
+            .iter()
+            .filter(|finding| finding.code == "flux-certification-unavailable")
+            .count(),
+        1,
+        "endpoint-relative tolerance must not certify an unchecked gross-flow minimum: {findings:#?}"
+    );
+    assert!(
+        findings
+            .iter()
+            .all(|finding| finding.code != "flux-imbalance")
+    );
+    verdict(
+        "sc-002g",
+        "time-varying relative balance refuses when endpoint screens cannot certify an interior gross-flow minimum",
+    );
+}
+
+#[test]
+fn sc_002h_grid_balanced_chebfun_still_requires_continuous_proof() {
+    let mut scenario = Scenario::new("grid-balanced-smooth-flux", 1, Environment::earth_lab());
+    let signals = [
+        TimeSignal::Chebfun(ChebProfile {
+            cheb: fs_cheb::Cheb1::from_coeffs(0.0, 1.0, vec![2.0]),
+            dims: MASS_FLOW,
+        }),
+        TimeSignal::Constant(QtyAny::new(-1.0, MASS_FLOW)),
+    ];
+    for (index, signal) in signals.into_iter().enumerate() {
+        scenario.base_bcs.push(BoundaryCondition {
+            region: format!("balanced-{index}"),
+            physics: Physics::IncompressibleFlow,
+            kind: BcKind::MassFlowInlet,
+            value: Some(BcValue::Signal(signal)),
+            compatibility: Some(Compat::Incompressible),
+            frame: 0,
+        });
+    }
+    let findings = scenario.validate();
+    assert_eq!(
+        findings
+            .iter()
+            .filter(|finding| finding.code == "flux-certification-unavailable")
+            .count(),
+        1,
+        "grid equality alone must not certify smooth all-time balance: {findings:#?}"
+    );
+    assert!(
+        findings
+            .iter()
+            .all(|finding| finding.code != "flux-imbalance")
+    );
+    scenario.base_bcs.push(BoundaryCondition {
+        region: "pressure-relief".to_string(),
+        physics: Physics::IncompressibleFlow,
+        kind: BcKind::PressureOutlet,
+        value: Some(BcValue::Uniform(QtyAny::new(101_325.0, PRESSURE))),
+        compatibility: None,
+        frame: 0,
+    });
+    let outlet_findings = scenario.validate();
+    assert!(
+        outlet_findings.is_empty(),
+        "the declared pressure outlet satisfies the compatibility alternative: {outlet_findings:#?}"
+    );
+    verdict(
+        "sc-002h",
+        "grid-balanced Chebfun mass flow refuses without an all-time certificate while a pressure outlet satisfies the explicit alternative",
+    );
+}
+
+#[test]
+fn sc_002i_uniform_and_constant_totals_remain_certifiable() {
+    let mut scenario = Scenario::new("certifiable-constant-flux", 1, Environment::earth_lab());
+    let values = [
+        BcValue::Uniform(QtyAny::new(1.0, MASS_FLOW)),
+        BcValue::Signal(TimeSignal::Constant(QtyAny::new(-1.0, MASS_FLOW))),
+    ];
+    for (index, value) in values.into_iter().enumerate() {
+        scenario.base_bcs.push(BoundaryCondition {
+            region: format!("constant-{index}"),
+            physics: Physics::IncompressibleFlow,
+            kind: BcKind::MassFlowInlet,
+            value: Some(value),
+            compatibility: Some(Compat::Incompressible),
+            frame: 0,
+        });
+    }
+
+    let findings = scenario.validate();
+    assert!(
+        findings.is_empty(),
+        "uniform and TimeSignal::Constant totals are exactly checkable: {findings:#?}"
+    );
+    verdict(
+        "sc-002i",
+        "uniform and TimeSignal::Constant mass-flow totals retain the certifiable all-time path",
     );
 }
 
