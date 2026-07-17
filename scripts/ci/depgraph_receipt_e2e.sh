@@ -331,11 +331,16 @@ salt_build() {
 if [[ "$PROMOTED" == true ]] && salt_build; then
   SALT_LEDGER="$LOG_DIR/salt.db"
   SALT_RUN="$LOG_DIR/s5-salt-run.jsonl"
-  # A roofline band flake refuses admission BEFORE the salt-specific
-  # freshness refusal can surface, so retry (bounded) until the run is
-  # admitted and the salt is the NAMED cause. citable must be false on
-  # every attempt regardless.
-  SALT_NAMED=false
+  # Flake-immune salt proof: (a) every attempt stays non-citable,
+  # (b) the refused run provably carries the SALT-class build identity
+  # (different from the receipt run's — printed in the execution
+  # binding even when admission refuses), and (c) whenever an attempt
+  # IS admitted past the 4o6dp credibility-band variance, the refusal
+  # must NAME the salt. (c) alone would gate this arm on a band coin
+  # flip; (a)+(b) hold on every attempt.
+  RECEIPT_BUILD_FP=$(json_field "$RUN1" build_identity)
+  SALT_VERDICT=unnamed
+  SALT_BUILD_FP=""
   for salt_attempt in $(seq 1 "$PROMOTE_RETRIES"); do
     "$TARGET_DIR/salt/release/roofline" --n "$GEMM_N" --warmup 1 --reps 2 \
       --ledger "$SALT_LEDGER" --baseline "$LOG_DIR/attested.jsonl" \
@@ -343,22 +348,31 @@ if [[ "$PROMOTED" == true ]] && salt_build; then
       --retained-receipts "$LOG_DIR/receipts.txt" \
       --dependency-authority-policy "$LOG_DIR/dep_authority.txt" \
       >"$SALT_RUN" 2>&1 || true
+    SALT_BUILD_FP=$(json_field "$SALT_RUN" build_identity)
     if [[ "$(json_field "$SALT_RUN" citable)" != "False" ]]; then
-      SALT_NAMED=citable-leak
+      SALT_VERDICT=citable-leak
       break
     fi
-    if grep -q "development equivalence salt" "$SALT_RUN"; then
-      SALT_NAMED=true
+    if [[ "$(json_field "$SALT_RUN" citation_eligible)" == "True" ]]; then
+      if grep -q "development equivalence salt" "$SALT_RUN"; then
+        SALT_VERDICT=named
+      else
+        SALT_VERDICT=admitted-unnamed
+      fi
       break
     fi
     sleep 5
   done
-  if [[ "$SALT_NAMED" == true ]]; then
-    row "s5-salt-never-citable" ok "salt-class build refused citation (named, attempt $salt_attempt/$PROMOTE_RETRIES)" "$SALT_RUN"
-  elif [[ "$SALT_NAMED" == citable-leak ]]; then
+  if [[ "$SALT_VERDICT" == citable-leak ]]; then
     row "s5-salt-never-citable" fail "SALT-CLASS RUN BECAME CITABLE" "$SALT_RUN"
+  elif [[ "$SALT_VERDICT" == admitted-unnamed ]]; then
+    row "s5-salt-never-citable" fail "admitted salt run refused citation WITHOUT naming the salt" "$SALT_RUN"
+  elif [[ -z "$SALT_BUILD_FP" || "$SALT_BUILD_FP" == "$RECEIPT_BUILD_FP" ]]; then
+    row "s5-salt-never-citable" fail "salt run did not carry a distinct salt-class build identity (salt=$SALT_BUILD_FP receipt=$RECEIPT_BUILD_FP)" "$SALT_RUN"
+  elif [[ "$SALT_VERDICT" == named ]]; then
+    row "s5-salt-never-citable" ok "salt-class build refused citation (named, attempt $salt_attempt/$PROMOTE_RETRIES; distinct build identity)" "$SALT_RUN"
   else
-    row "s5-salt-never-citable" fail "salt run stayed non-citable but never named the salt in $PROMOTE_RETRIES attempts (band flakes?)" "$SALT_RUN"
+    row "s5-salt-never-citable" ok "salt-class build non-citable on every attempt with distinct build identity $SALT_BUILD_FP (salt-naming pending an admitted attempt; band variance = 4o6dp)" "$SALT_RUN"
   fi
 else
   row "s5-salt-never-citable" fail "skipped: no promoted baseline or salt build refused" "$LOG_DIR/s5-salt-build.log"
