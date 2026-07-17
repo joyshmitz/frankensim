@@ -276,17 +276,19 @@ fn sealed_trees_project_to_wire_valid_lossless_jsonl() {
     assert!(
         joined
             .iter()
-            .any(|l| l.contains("\"containment-node\"") && l.contains("\"shard\":\"shard-3\"")),
+            .any(|l| l.contains("\"kind\":\"containment_node\"")
+                && l.contains("\"shard\":\"shard-3\"")),
         "node lines carry the full typed context"
     );
     assert!(
         joined
             .iter()
-            .any(|l| l.contains("\"containment-gap\"") && l.contains("\"missing_parent\":\"gone\"")),
+            .any(|l| l.contains("\"kind\":\"containment_gap\"")
+                && l.contains("\"missing_parent\":\"gone\"")),
         "gap lines name the missing parent"
     );
     verdict(
         "jsonl-projection",
-        "sealed nodes and gaps project to wire-valid containment/v1 lines with full context",
+        "sealed nodes and gaps project to wire-valid typed containment lines with full context",
     );
 }

@@ -15,8 +15,10 @@
 
 use core::fmt;
 
-/// Wire version for the containment JSONL projection (the `containment/v1`
-/// custom-kind payload).
+/// Logical containment-model version. v1 projects through the typed
+/// [`crate::EventKind::ContainmentNode`] / [`crate::EventKind::ContainmentGap`]
+/// kinds (identity-bound per field); bump on any containment-semantics
+/// change.
 pub const CONTAINMENT_WIRE_VERSION: u32 = 1;
 
 fn valid_id_chars(s: &str) -> bool {
@@ -507,75 +509,47 @@ impl SealedAttemptTree {
         &self.gaps
     }
 
-    /// Project the sealed tree into fs-obs JSONL events under the
-    /// registered `custom` escape-hatch kind (`containment/v1`). Promotion
-    /// to a first-class typed [`crate::EventKind`] is a later additive wave
-    /// with its own identity-version bump.
+    /// Project the sealed tree into fs-obs JSONL events under the typed
+    /// [`crate::EventKind::ContainmentNode`] /
+    /// [`crate::EventKind::ContainmentGap`] kinds.
     #[must_use]
     pub fn to_events(&self, session: &str, scope: &str) -> Vec<crate::Event> {
         let mut em = crate::Emitter::new(session, scope);
         let mut events = Vec::with_capacity(self.nodes.len() + self.gaps.len());
-        let esc = |s: &str| {
-            let mut out = String::new();
-            for c in s.chars() {
-                match c {
-                    '"' => out.push_str("\\\""),
-                    '\\' => out.push_str("\\\\"),
-                    c => out.push(c),
-                }
-            }
-            out
-        };
+        let opt = |v: Option<&str>| v.unwrap_or("").to_string();
         for record in &self.nodes {
             let (parent_role, parent) = match &record.parent {
                 LocalParent::AttemptRoot => ("attempt", self.root.as_str()),
                 LocalParent::Node(id) => (id.role(), id.raw()),
             };
             let ctx = &record.context;
-            let opt = |v: Option<&str>| esc(v.unwrap_or(""));
-            let json = format!(
-                "{{\"containment_version\":{CONTAINMENT_WIRE_VERSION},\
-                 \"attempt\":\"{}\",\"role\":\"{}\",\"node\":\"{}\",\
-                 \"parent_role\":\"{}\",\"parent\":\"{}\",\"seq\":{},\
-                 \"dsr_run\":\"{}\",\"campaign_run\":\"{}\",\"shard\":\"{}\",\
-                 \"journey\":\"{}\",\"case\":\"{}\"}}",
-                esc(self.root.as_str()),
-                record.node.role(),
-                esc(record.node.raw()),
-                parent_role,
-                esc(parent),
-                record.seq,
-                opt(ctx.dsr_run.as_ref().map(DsrRunId::as_str)),
-                opt(ctx.campaign_run.as_ref().map(CampaignRunId::as_str)),
-                opt(ctx.shard.as_ref().map(ShardId::as_str)),
-                opt(ctx.journey.as_ref().map(JourneyId::as_str)),
-                opt(ctx.case.as_ref().map(CaseId::as_str)),
-            );
             events.push(em.emit(
                 crate::Severity::Trace,
-                crate::EventKind::Custom {
-                    name: "containment-node".into(),
-                    json,
+                crate::EventKind::ContainmentNode {
+                    attempt: self.root.as_str().to_string(),
+                    role: record.node.role().to_string(),
+                    node: record.node.raw().to_string(),
+                    parent_role: parent_role.to_string(),
+                    parent: parent.to_string(),
+                    seq: record.seq,
+                    dsr_run: opt(ctx.dsr_run.as_ref().map(DsrRunId::as_str)),
+                    campaign_run: opt(ctx.campaign_run.as_ref().map(CampaignRunId::as_str)),
+                    shard: opt(ctx.shard.as_ref().map(ShardId::as_str)),
+                    journey: opt(ctx.journey.as_ref().map(JourneyId::as_str)),
+                    case: opt(ctx.case.as_ref().map(CaseId::as_str)),
                 },
                 None,
             ));
         }
         for gap in &self.gaps {
-            let json = format!(
-                "{{\"containment_version\":{CONTAINMENT_WIRE_VERSION},\
-                 \"attempt\":\"{}\",\"node_role\":\"{}\",\"node\":\"{}\",\
-                 \"missing_parent_role\":\"{}\",\"missing_parent\":\"{}\"}}",
-                esc(self.root.as_str()),
-                gap.node_role,
-                esc(&gap.node),
-                gap.missing_parent_role,
-                esc(&gap.missing_parent),
-            );
             events.push(em.emit(
                 crate::Severity::Warn,
-                crate::EventKind::Custom {
-                    name: "containment-gap".into(),
-                    json,
+                crate::EventKind::ContainmentGap {
+                    attempt: self.root.as_str().to_string(),
+                    node_role: gap.node_role.to_string(),
+                    node: gap.node.clone(),
+                    missing_parent_role: gap.missing_parent_role.to_string(),
+                    missing_parent: gap.missing_parent.clone(),
                 },
                 None,
             ));

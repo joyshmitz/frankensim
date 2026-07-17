@@ -37,18 +37,18 @@ pub const SCHEMA_VERSION: u32 = 1;
 
 /// Exact typed event-content identity semantics. Version 2 replaces the
 /// legacy display-JSON hash, which collapsed distinct NaN payload bits.
-pub const EVENT_CONTENT_IDENTITY_VERSION: u32 = 8;
+pub const EVENT_CONTENT_IDENTITY_VERSION: u32 = 9;
 
 /// Domain-separated artifact kind framed into the typed event identity.
-pub const EVENT_CONTENT_IDENTITY_DOMAIN: &str = "org.frankensim.fs-obs.event-content.v8";
+pub const EVENT_CONTENT_IDENTITY_DOMAIN: &str = "org.frankensim.fs-obs.event-content.v9";
 
 /// Owner-local declaration consumed by `xtask check-identities`.
 pub const EVENT_CONTENT_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
     "frankensim-identity-schema-v1",
     "id=fs-obs:event-content",
     "version_const=EVENT_CONTENT_IDENTITY_VERSION",
-    "version=8",
-    "domain=org.frankensim.fs-obs.event-content.v8",
+    "version=9",
+    "domain=org.frankensim.fs-obs.event-content.v9",
     "domain_const=EVENT_CONTENT_IDENTITY_DOMAIN",
     "encoder=Event::content_identity",
     "encoder_helpers=Event::content_identity_with_versions,Event::content_identity_with_schema,bind_outcome_identity,Severity::name,EventKind::kind_name,ReceiptScope::name,ExecutionDisposition::name,PredicateOutcome::name,EpistemicGrade::name,DomainApplicability::name,OperationalSupport::name,EvidenceCompleteness::name,EvidenceIntegrity::name,PromotionEffect::name,SubmissionLane::name,SubmissionOutcome::name,AttachAction::name,CapabilityDecision::name,LifecycleTransitionKind::name,ArtifactAction::name",
@@ -59,12 +59,12 @@ pub const EVENT_CONTENT_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
     "encoding=typed-binary",
     "sources=Event,EventIdentityReceipt",
     "source_fields=Event.session:semantic,Event.scope:semantic,Event.seq:semantic,Event.severity:semantic,Event.kind:semantic,Event.wall_ns:nonsemantic:wall-clock-envelope-only,EventIdentityReceipt.declared_identity_version:semantic,EventIdentityReceipt.canonical_bytes:semantic,EventIdentityReceipt.root:derived:validated-fnv-root-of-retained-canonical-bytes",
-    "source_bindings=Event.session>session,Event.scope>scope,Event.seq>seq,Event.severity>severity,Event.kind>kind+solver-residual-solver+solver-residual-iter+solver-residual-residual+tile-complete-tile+tile-complete-kernel+cancellation-reason+budget-delta-resource+budget-delta-spent+budget-delta-remaining+gradient-check-op+gradient-check-max-rel-err+gradient-check-pass+conformance-case-suite+conformance-case-case+conformance-case-pass+conformance-case-detail+conformance-case-seed+benchmark-result-kernel+benchmark-result-metric+benchmark-result-value+benchmark-result-machine+storm-assertion-name+storm-assertion-pass+storm-assertion-seed+manifest-selection-manifest+manifest-selection-source-snapshot+stratum-expansion-stratum+stratum-expansion-profile+stratum-expansion-cases+dsr-run-run+dsr-run-outcome-scope+dsr-run-outcome-receipt+dsr-run-outcome-disposition+dsr-run-outcome-predicate+dsr-run-outcome-evidence-methods+dsr-run-outcome-grade+dsr-run-outcome-applicability+dsr-run-outcome-support+dsr-run-outcome-completeness+dsr-run-outcome-integrity+dsr-run-outcome-promotion+dsr-run-outcome-detail+campaign-run-campaign+campaign-run-outcome-scope+campaign-run-outcome-receipt+campaign-run-outcome-disposition+campaign-run-outcome-predicate+campaign-run-outcome-evidence-methods+campaign-run-outcome-grade+campaign-run-outcome-applicability+campaign-run-outcome-support+campaign-run-outcome-completeness+campaign-run-outcome-integrity+campaign-run-outcome-promotion+campaign-run-outcome-detail+submission-decision-job+submission-decision-lane+submission-decision-outcome+submission-decision-detail+work-identity-binding-job+work-identity-binding-attempt+work-identity-binding-operation+lease-cursor-queue+lease-cursor-lease+lease-cursor-holder+lease-cursor-cursor+attach-detach-observer+attach-detach-target+attach-detach-action+journey-phase-journey+journey-phase-phase+journey-phase-ordinal+scope-tile-progress-completed+scope-tile-progress-total+heartbeat-worker+heartbeat-beat+observation-gap-expected-seq+observation-gap-resumed-seq+observation-gap-reason+oracle-comparison-oracle+oracle-comparison-subject+oracle-comparison-metric+oracle-comparison-observed+oracle-comparison-tolerance+oracle-comparison-pass+oracle-comparison-detail+tolerance-derivation-quantity+tolerance-derivation-tolerance+tolerance-derivation-basis+claim-adjudication-claim+claim-adjudication-outcome-scope+claim-adjudication-outcome-receipt+claim-adjudication-outcome-disposition+claim-adjudication-outcome-predicate+claim-adjudication-outcome-evidence-methods+claim-adjudication-outcome-grade+claim-adjudication-outcome-applicability+claim-adjudication-outcome-support+claim-adjudication-outcome-completeness+claim-adjudication-outcome-integrity+claim-adjudication-outcome-promotion+claim-adjudication-outcome-detail+capability-domain-decision-capability+capability-domain-decision-domain+capability-domain-decision-decision+capability-domain-decision-detail+lifecycle-transition-entity+lifecycle-transition-transition+lifecycle-transition-detail+artifact-lifecycle-artifact+artifact-lifecycle-action+artifact-lifecycle-actor+artifact-lifecycle-detail+visualization-transform-view+visualization-transform-transform+visualization-transform-source+diagnostic-repair-subject+diagnostic-repair-action+diagnostic-repair-pass+diagnostic-repair-detail+race-record-resource+race-record-schedule+race-record-pass+race-record-seed+degradation-event-resource+degradation-event-limit+degradation-event-observed+degradation-event-action+import-receipt-format+import-receipt-artifact+import-receipt-accepted+import-receipt-detail+certificate-verdict-certificate+certificate-verdict-pass+certificate-verdict-bound+certificate-verdict-detail+custom-name+custom-json-exact-opaque-utf8,EventIdentityReceipt.declared_identity_version>retained-producer-version,EventIdentityReceipt.canonical_bytes>retained-canonical-bytes",
+    "source_bindings=Event.session>session,Event.scope>scope,Event.seq>seq,Event.severity>severity,Event.kind>kind+solver-residual-solver+solver-residual-iter+solver-residual-residual+tile-complete-tile+tile-complete-kernel+cancellation-reason+budget-delta-resource+budget-delta-spent+budget-delta-remaining+gradient-check-op+gradient-check-max-rel-err+gradient-check-pass+conformance-case-suite+conformance-case-case+conformance-case-pass+conformance-case-detail+conformance-case-seed+benchmark-result-kernel+benchmark-result-metric+benchmark-result-value+benchmark-result-machine+storm-assertion-name+storm-assertion-pass+storm-assertion-seed+manifest-selection-manifest+manifest-selection-source-snapshot+stratum-expansion-stratum+stratum-expansion-profile+stratum-expansion-cases+dsr-run-run+dsr-run-outcome-scope+dsr-run-outcome-receipt+dsr-run-outcome-disposition+dsr-run-outcome-predicate+dsr-run-outcome-evidence-methods+dsr-run-outcome-grade+dsr-run-outcome-applicability+dsr-run-outcome-support+dsr-run-outcome-completeness+dsr-run-outcome-integrity+dsr-run-outcome-promotion+dsr-run-outcome-detail+campaign-run-campaign+campaign-run-outcome-scope+campaign-run-outcome-receipt+campaign-run-outcome-disposition+campaign-run-outcome-predicate+campaign-run-outcome-evidence-methods+campaign-run-outcome-grade+campaign-run-outcome-applicability+campaign-run-outcome-support+campaign-run-outcome-completeness+campaign-run-outcome-integrity+campaign-run-outcome-promotion+campaign-run-outcome-detail+submission-decision-job+submission-decision-lane+submission-decision-outcome+submission-decision-detail+work-identity-binding-job+work-identity-binding-attempt+work-identity-binding-operation+lease-cursor-queue+lease-cursor-lease+lease-cursor-holder+lease-cursor-cursor+attach-detach-observer+attach-detach-target+attach-detach-action+journey-phase-journey+journey-phase-phase+journey-phase-ordinal+scope-tile-progress-completed+scope-tile-progress-total+heartbeat-worker+heartbeat-beat+observation-gap-expected-seq+observation-gap-resumed-seq+observation-gap-reason+oracle-comparison-oracle+oracle-comparison-subject+oracle-comparison-metric+oracle-comparison-observed+oracle-comparison-tolerance+oracle-comparison-pass+oracle-comparison-detail+tolerance-derivation-quantity+tolerance-derivation-tolerance+tolerance-derivation-basis+claim-adjudication-claim+claim-adjudication-outcome-scope+claim-adjudication-outcome-receipt+claim-adjudication-outcome-disposition+claim-adjudication-outcome-predicate+claim-adjudication-outcome-evidence-methods+claim-adjudication-outcome-grade+claim-adjudication-outcome-applicability+claim-adjudication-outcome-support+claim-adjudication-outcome-completeness+claim-adjudication-outcome-integrity+claim-adjudication-outcome-promotion+claim-adjudication-outcome-detail+capability-domain-decision-capability+capability-domain-decision-domain+capability-domain-decision-decision+capability-domain-decision-detail+lifecycle-transition-entity+lifecycle-transition-transition+lifecycle-transition-detail+artifact-lifecycle-artifact+artifact-lifecycle-action+artifact-lifecycle-actor+artifact-lifecycle-detail+visualization-transform-view+visualization-transform-transform+visualization-transform-source+diagnostic-repair-subject+diagnostic-repair-action+diagnostic-repair-pass+diagnostic-repair-detail+containment-node-attempt+containment-node-role+containment-node-node+containment-node-parent-role+containment-node-parent+containment-node-seq+containment-node-dsr-run+containment-node-campaign-run+containment-node-shard+containment-node-journey+containment-node-case+containment-gap-attempt+containment-gap-node-role+containment-gap-node+containment-gap-missing-parent-role+containment-gap-missing-parent+race-record-resource+race-record-schedule+race-record-pass+race-record-seed+degradation-event-resource+degradation-event-limit+degradation-event-observed+degradation-event-action+import-receipt-format+import-receipt-artifact+import-receipt-accepted+import-receipt-detail+certificate-verdict-certificate+certificate-verdict-pass+certificate-verdict-bound+certificate-verdict-detail+custom-name+custom-json-exact-opaque-utf8,EventIdentityReceipt.declared_identity_version>retained-producer-version,EventIdentityReceipt.canonical_bytes>retained-canonical-bytes",
     "external_semantic_fields=artifact-domain,identity-version,wire-schema",
-    "semantic_fields=artifact-domain,identity-version,wire-schema,session,scope,seq,severity,kind,solver-residual-solver,solver-residual-iter,solver-residual-residual,tile-complete-tile,tile-complete-kernel,cancellation-reason,budget-delta-resource,budget-delta-spent,budget-delta-remaining,gradient-check-op,gradient-check-max-rel-err,gradient-check-pass,conformance-case-suite,conformance-case-case,conformance-case-pass,conformance-case-detail,conformance-case-seed,benchmark-result-kernel,benchmark-result-metric,benchmark-result-value,benchmark-result-machine,storm-assertion-name,storm-assertion-pass,storm-assertion-seed,manifest-selection-manifest,manifest-selection-source-snapshot,stratum-expansion-stratum,stratum-expansion-profile,stratum-expansion-cases,dsr-run-run,dsr-run-outcome-scope,dsr-run-outcome-receipt,dsr-run-outcome-disposition,dsr-run-outcome-predicate,dsr-run-outcome-evidence-methods,dsr-run-outcome-grade,dsr-run-outcome-applicability,dsr-run-outcome-support,dsr-run-outcome-completeness,dsr-run-outcome-integrity,dsr-run-outcome-promotion,dsr-run-outcome-detail,campaign-run-campaign,campaign-run-outcome-scope,campaign-run-outcome-receipt,campaign-run-outcome-disposition,campaign-run-outcome-predicate,campaign-run-outcome-evidence-methods,campaign-run-outcome-grade,campaign-run-outcome-applicability,campaign-run-outcome-support,campaign-run-outcome-completeness,campaign-run-outcome-integrity,campaign-run-outcome-promotion,campaign-run-outcome-detail,submission-decision-job,submission-decision-lane,submission-decision-outcome,submission-decision-detail,work-identity-binding-job,work-identity-binding-attempt,work-identity-binding-operation,lease-cursor-queue,lease-cursor-lease,lease-cursor-holder,lease-cursor-cursor,attach-detach-observer,attach-detach-target,attach-detach-action,journey-phase-journey,journey-phase-phase,journey-phase-ordinal,scope-tile-progress-completed,scope-tile-progress-total,heartbeat-worker,heartbeat-beat,observation-gap-expected-seq,observation-gap-resumed-seq,observation-gap-reason,oracle-comparison-oracle,oracle-comparison-subject,oracle-comparison-metric,oracle-comparison-observed,oracle-comparison-tolerance,oracle-comparison-pass,oracle-comparison-detail,tolerance-derivation-quantity,tolerance-derivation-tolerance,tolerance-derivation-basis,claim-adjudication-claim,claim-adjudication-outcome-scope,claim-adjudication-outcome-receipt,claim-adjudication-outcome-disposition,claim-adjudication-outcome-predicate,claim-adjudication-outcome-evidence-methods,claim-adjudication-outcome-grade,claim-adjudication-outcome-applicability,claim-adjudication-outcome-support,claim-adjudication-outcome-completeness,claim-adjudication-outcome-integrity,claim-adjudication-outcome-promotion,claim-adjudication-outcome-detail,capability-domain-decision-capability,capability-domain-decision-domain,capability-domain-decision-decision,capability-domain-decision-detail,lifecycle-transition-entity,lifecycle-transition-transition,lifecycle-transition-detail,artifact-lifecycle-artifact,artifact-lifecycle-action,artifact-lifecycle-actor,artifact-lifecycle-detail,visualization-transform-view,visualization-transform-transform,visualization-transform-source,diagnostic-repair-subject,diagnostic-repair-action,diagnostic-repair-pass,diagnostic-repair-detail,race-record-resource,race-record-schedule,race-record-pass,race-record-seed,degradation-event-resource,degradation-event-limit,degradation-event-observed,degradation-event-action,import-receipt-format,import-receipt-artifact,import-receipt-accepted,import-receipt-detail,certificate-verdict-certificate,certificate-verdict-pass,certificate-verdict-bound,certificate-verdict-detail,custom-name,custom-json-exact-opaque-utf8,retained-producer-version,retained-canonical-bytes",
+    "semantic_fields=artifact-domain,identity-version,wire-schema,session,scope,seq,severity,kind,solver-residual-solver,solver-residual-iter,solver-residual-residual,tile-complete-tile,tile-complete-kernel,cancellation-reason,budget-delta-resource,budget-delta-spent,budget-delta-remaining,gradient-check-op,gradient-check-max-rel-err,gradient-check-pass,conformance-case-suite,conformance-case-case,conformance-case-pass,conformance-case-detail,conformance-case-seed,benchmark-result-kernel,benchmark-result-metric,benchmark-result-value,benchmark-result-machine,storm-assertion-name,storm-assertion-pass,storm-assertion-seed,manifest-selection-manifest,manifest-selection-source-snapshot,stratum-expansion-stratum,stratum-expansion-profile,stratum-expansion-cases,dsr-run-run,dsr-run-outcome-scope,dsr-run-outcome-receipt,dsr-run-outcome-disposition,dsr-run-outcome-predicate,dsr-run-outcome-evidence-methods,dsr-run-outcome-grade,dsr-run-outcome-applicability,dsr-run-outcome-support,dsr-run-outcome-completeness,dsr-run-outcome-integrity,dsr-run-outcome-promotion,dsr-run-outcome-detail,campaign-run-campaign,campaign-run-outcome-scope,campaign-run-outcome-receipt,campaign-run-outcome-disposition,campaign-run-outcome-predicate,campaign-run-outcome-evidence-methods,campaign-run-outcome-grade,campaign-run-outcome-applicability,campaign-run-outcome-support,campaign-run-outcome-completeness,campaign-run-outcome-integrity,campaign-run-outcome-promotion,campaign-run-outcome-detail,submission-decision-job,submission-decision-lane,submission-decision-outcome,submission-decision-detail,work-identity-binding-job,work-identity-binding-attempt,work-identity-binding-operation,lease-cursor-queue,lease-cursor-lease,lease-cursor-holder,lease-cursor-cursor,attach-detach-observer,attach-detach-target,attach-detach-action,journey-phase-journey,journey-phase-phase,journey-phase-ordinal,scope-tile-progress-completed,scope-tile-progress-total,heartbeat-worker,heartbeat-beat,observation-gap-expected-seq,observation-gap-resumed-seq,observation-gap-reason,oracle-comparison-oracle,oracle-comparison-subject,oracle-comparison-metric,oracle-comparison-observed,oracle-comparison-tolerance,oracle-comparison-pass,oracle-comparison-detail,tolerance-derivation-quantity,tolerance-derivation-tolerance,tolerance-derivation-basis,claim-adjudication-claim,claim-adjudication-outcome-scope,claim-adjudication-outcome-receipt,claim-adjudication-outcome-disposition,claim-adjudication-outcome-predicate,claim-adjudication-outcome-evidence-methods,claim-adjudication-outcome-grade,claim-adjudication-outcome-applicability,claim-adjudication-outcome-support,claim-adjudication-outcome-completeness,claim-adjudication-outcome-integrity,claim-adjudication-outcome-promotion,claim-adjudication-outcome-detail,capability-domain-decision-capability,capability-domain-decision-domain,capability-domain-decision-decision,capability-domain-decision-detail,lifecycle-transition-entity,lifecycle-transition-transition,lifecycle-transition-detail,artifact-lifecycle-artifact,artifact-lifecycle-action,artifact-lifecycle-actor,artifact-lifecycle-detail,visualization-transform-view,visualization-transform-transform,visualization-transform-source,diagnostic-repair-subject,diagnostic-repair-action,diagnostic-repair-pass,diagnostic-repair-detail,containment-node-attempt,containment-node-role,containment-node-node,containment-node-parent-role,containment-node-parent,containment-node-seq,containment-node-dsr-run,containment-node-campaign-run,containment-node-shard,containment-node-journey,containment-node-case,containment-gap-attempt,containment-gap-node-role,containment-gap-node,containment-gap-missing-parent-role,containment-gap-missing-parent,race-record-resource,race-record-schedule,race-record-pass,race-record-seed,degradation-event-resource,degradation-event-limit,degradation-event-observed,degradation-event-action,import-receipt-format,import-receipt-artifact,import-receipt-accepted,import-receipt-detail,certificate-verdict-certificate,certificate-verdict-pass,certificate-verdict-bound,certificate-verdict-detail,custom-name,custom-json-exact-opaque-utf8,retained-producer-version,retained-canonical-bytes",
     "excluded_fields=to-jsonl:display-transport-only",
     "consumers=Event::content_hash,EventIdentityReceipt,Event::admit_content_identity,ledger-event-sinks,replay-comparison",
-    "mutations=artifact-domain:crates/fs-obs/src/lib.rs#event_content_identity_domain_version_and_wire_schema_bytes_are_independent,identity-version:crates/fs-obs/src/lib.rs#event_content_identity_domain_version_and_wire_schema_bytes_are_independent,wire-schema:crates/fs-obs/src/lib.rs#event_content_identity_domain_version_and_wire_schema_bytes_are_independent,session:crates/fs-obs/src/lib.rs#event_content_identity_mutation_battery,scope:crates/fs-obs/src/lib.rs#event_content_identity_mutation_battery,seq:crates/fs-obs/src/lib.rs#event_content_identity_mutation_battery,severity:crates/fs-obs/src/lib.rs#event_content_identity_mutation_battery,kind:crates/fs-obs/src/lib.rs#event_content_identity_mutation_battery,solver-residual-solver:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,solver-residual-iter:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,solver-residual-residual:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,tile-complete-tile:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,tile-complete-kernel:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,cancellation-reason:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,budget-delta-resource:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,budget-delta-spent:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,budget-delta-remaining:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,gradient-check-op:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,gradient-check-max-rel-err:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,gradient-check-pass:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,conformance-case-suite:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,conformance-case-case:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,conformance-case-pass:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,conformance-case-detail:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,conformance-case-seed:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,benchmark-result-kernel:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,benchmark-result-metric:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,benchmark-result-value:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,benchmark-result-machine:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,storm-assertion-name:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,storm-assertion-pass:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,storm-assertion-seed:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,manifest-selection-manifest:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,manifest-selection-source-snapshot:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,stratum-expansion-stratum:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,stratum-expansion-profile:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,stratum-expansion-cases:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,dsr-run-run:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,dsr-run-outcome-scope:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,dsr-run-outcome-receipt:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,dsr-run-outcome-disposition:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,dsr-run-outcome-predicate:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,dsr-run-outcome-evidence-methods:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,dsr-run-outcome-grade:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,dsr-run-outcome-applicability:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,dsr-run-outcome-support:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,dsr-run-outcome-completeness:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,dsr-run-outcome-integrity:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,dsr-run-outcome-promotion:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,dsr-run-outcome-detail:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,campaign-run-campaign:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,campaign-run-outcome-scope:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,campaign-run-outcome-receipt:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,campaign-run-outcome-disposition:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,campaign-run-outcome-predicate:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,campaign-run-outcome-evidence-methods:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,campaign-run-outcome-grade:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,campaign-run-outcome-applicability:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,campaign-run-outcome-support:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,campaign-run-outcome-completeness:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,campaign-run-outcome-integrity:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,campaign-run-outcome-promotion:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,campaign-run-outcome-detail:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,submission-decision-job:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,submission-decision-lane:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,submission-decision-outcome:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,submission-decision-detail:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,work-identity-binding-job:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,work-identity-binding-attempt:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,work-identity-binding-operation:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,lease-cursor-queue:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,lease-cursor-lease:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,lease-cursor-holder:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,lease-cursor-cursor:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,attach-detach-observer:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,attach-detach-target:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,attach-detach-action:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,journey-phase-journey:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,journey-phase-phase:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,journey-phase-ordinal:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,scope-tile-progress-completed:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,scope-tile-progress-total:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,heartbeat-worker:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,heartbeat-beat:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,observation-gap-expected-seq:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,observation-gap-resumed-seq:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,observation-gap-reason:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,oracle-comparison-oracle:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,oracle-comparison-subject:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,oracle-comparison-metric:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,oracle-comparison-observed:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,oracle-comparison-tolerance:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,oracle-comparison-pass:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,oracle-comparison-detail:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,tolerance-derivation-quantity:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,tolerance-derivation-tolerance:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,tolerance-derivation-basis:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,claim-adjudication-claim:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,claim-adjudication-outcome-scope:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,claim-adjudication-outcome-receipt:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,claim-adjudication-outcome-disposition:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,claim-adjudication-outcome-predicate:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,claim-adjudication-outcome-evidence-methods:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,claim-adjudication-outcome-grade:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,claim-adjudication-outcome-applicability:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,claim-adjudication-outcome-support:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,claim-adjudication-outcome-completeness:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,claim-adjudication-outcome-integrity:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,claim-adjudication-outcome-promotion:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,claim-adjudication-outcome-detail:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,capability-domain-decision-capability:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,capability-domain-decision-domain:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,capability-domain-decision-decision:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,capability-domain-decision-detail:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,lifecycle-transition-entity:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,lifecycle-transition-transition:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,lifecycle-transition-detail:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,artifact-lifecycle-artifact:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,artifact-lifecycle-action:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,artifact-lifecycle-actor:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,artifact-lifecycle-detail:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,visualization-transform-view:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,visualization-transform-transform:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,visualization-transform-source:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,diagnostic-repair-subject:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,diagnostic-repair-action:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,diagnostic-repair-pass:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,diagnostic-repair-detail:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,race-record-resource:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,race-record-schedule:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,race-record-pass:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,race-record-seed:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,degradation-event-resource:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,degradation-event-limit:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,degradation-event-observed:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,degradation-event-action:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,import-receipt-format:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,import-receipt-artifact:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,import-receipt-accepted:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,import-receipt-detail:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,certificate-verdict-certificate:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,certificate-verdict-pass:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,certificate-verdict-bound:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,certificate-verdict-detail:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,custom-name:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,custom-json-exact-opaque-utf8:crates/fs-obs/src/lib.rs#custom_payload_identity_is_exact_opaque_utf8,retained-producer-version:crates/fs-obs/src/lib.rs#retained_event_identity_receipts_admit_exactly_or_fail_closed,retained-canonical-bytes:crates/fs-obs/src/lib.rs#retained_event_identity_receipts_admit_exactly_or_fail_closed",
+    "mutations=artifact-domain:crates/fs-obs/src/lib.rs#event_content_identity_domain_version_and_wire_schema_bytes_are_independent,identity-version:crates/fs-obs/src/lib.rs#event_content_identity_domain_version_and_wire_schema_bytes_are_independent,wire-schema:crates/fs-obs/src/lib.rs#event_content_identity_domain_version_and_wire_schema_bytes_are_independent,session:crates/fs-obs/src/lib.rs#event_content_identity_mutation_battery,scope:crates/fs-obs/src/lib.rs#event_content_identity_mutation_battery,seq:crates/fs-obs/src/lib.rs#event_content_identity_mutation_battery,severity:crates/fs-obs/src/lib.rs#event_content_identity_mutation_battery,kind:crates/fs-obs/src/lib.rs#event_content_identity_mutation_battery,solver-residual-solver:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,solver-residual-iter:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,solver-residual-residual:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,tile-complete-tile:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,tile-complete-kernel:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,cancellation-reason:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,budget-delta-resource:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,budget-delta-spent:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,budget-delta-remaining:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,gradient-check-op:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,gradient-check-max-rel-err:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,gradient-check-pass:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,conformance-case-suite:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,conformance-case-case:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,conformance-case-pass:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,conformance-case-detail:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,conformance-case-seed:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,benchmark-result-kernel:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,benchmark-result-metric:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,benchmark-result-value:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,benchmark-result-machine:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,storm-assertion-name:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,storm-assertion-pass:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,storm-assertion-seed:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,manifest-selection-manifest:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,manifest-selection-source-snapshot:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,stratum-expansion-stratum:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,stratum-expansion-profile:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,stratum-expansion-cases:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,dsr-run-run:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,dsr-run-outcome-scope:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,dsr-run-outcome-receipt:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,dsr-run-outcome-disposition:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,dsr-run-outcome-predicate:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,dsr-run-outcome-evidence-methods:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,dsr-run-outcome-grade:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,dsr-run-outcome-applicability:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,dsr-run-outcome-support:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,dsr-run-outcome-completeness:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,dsr-run-outcome-integrity:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,dsr-run-outcome-promotion:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,dsr-run-outcome-detail:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,campaign-run-campaign:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,campaign-run-outcome-scope:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,campaign-run-outcome-receipt:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,campaign-run-outcome-disposition:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,campaign-run-outcome-predicate:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,campaign-run-outcome-evidence-methods:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,campaign-run-outcome-grade:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,campaign-run-outcome-applicability:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,campaign-run-outcome-support:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,campaign-run-outcome-completeness:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,campaign-run-outcome-integrity:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,campaign-run-outcome-promotion:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,campaign-run-outcome-detail:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,submission-decision-job:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,submission-decision-lane:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,submission-decision-outcome:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,submission-decision-detail:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,work-identity-binding-job:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,work-identity-binding-attempt:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,work-identity-binding-operation:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,lease-cursor-queue:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,lease-cursor-lease:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,lease-cursor-holder:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,lease-cursor-cursor:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,attach-detach-observer:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,attach-detach-target:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,attach-detach-action:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,journey-phase-journey:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,journey-phase-phase:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,journey-phase-ordinal:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,scope-tile-progress-completed:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,scope-tile-progress-total:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,heartbeat-worker:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,heartbeat-beat:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,observation-gap-expected-seq:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,observation-gap-resumed-seq:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,observation-gap-reason:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,oracle-comparison-oracle:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,oracle-comparison-subject:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,oracle-comparison-metric:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,oracle-comparison-observed:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,oracle-comparison-tolerance:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,oracle-comparison-pass:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,oracle-comparison-detail:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,tolerance-derivation-quantity:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,tolerance-derivation-tolerance:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,tolerance-derivation-basis:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,claim-adjudication-claim:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,claim-adjudication-outcome-scope:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,claim-adjudication-outcome-receipt:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,claim-adjudication-outcome-disposition:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,claim-adjudication-outcome-predicate:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,claim-adjudication-outcome-evidence-methods:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,claim-adjudication-outcome-grade:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,claim-adjudication-outcome-applicability:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,claim-adjudication-outcome-support:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,claim-adjudication-outcome-completeness:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,claim-adjudication-outcome-integrity:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,claim-adjudication-outcome-promotion:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,claim-adjudication-outcome-detail:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,capability-domain-decision-capability:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,capability-domain-decision-domain:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,capability-domain-decision-decision:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,capability-domain-decision-detail:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,lifecycle-transition-entity:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,lifecycle-transition-transition:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,lifecycle-transition-detail:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,artifact-lifecycle-artifact:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,artifact-lifecycle-action:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,artifact-lifecycle-actor:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,artifact-lifecycle-detail:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,visualization-transform-view:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,visualization-transform-transform:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,visualization-transform-source:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,diagnostic-repair-subject:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,diagnostic-repair-action:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,diagnostic-repair-pass:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,diagnostic-repair-detail:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,containment-node-attempt:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,containment-node-role:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,containment-node-node:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,containment-node-parent-role:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,containment-node-parent:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,containment-node-seq:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,containment-node-dsr-run:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,containment-node-campaign-run:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,containment-node-shard:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,containment-node-journey:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,containment-node-case:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,containment-gap-attempt:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,containment-gap-node-role:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,containment-gap-node:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,containment-gap-missing-parent-role:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,containment-gap-missing-parent:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,race-record-resource:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,race-record-schedule:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,race-record-pass:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,race-record-seed:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,degradation-event-resource:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,degradation-event-limit:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,degradation-event-observed:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,degradation-event-action:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,import-receipt-format:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,import-receipt-artifact:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,import-receipt-accepted:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,import-receipt-detail:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,certificate-verdict-certificate:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,certificate-verdict-pass:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,certificate-verdict-bound:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,certificate-verdict-detail:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,custom-name:crates/fs-obs/src/lib.rs#every_event_kind_payload_field_moves_identity,custom-json-exact-opaque-utf8:crates/fs-obs/src/lib.rs#custom_payload_identity_is_exact_opaque_utf8,retained-producer-version:crates/fs-obs/src/lib.rs#retained_event_identity_receipts_admit_exactly_or_fail_closed,retained-canonical-bytes:crates/fs-obs/src/lib.rs#retained_event_identity_receipts_admit_exactly_or_fail_closed",
     "nonsemantic_mutations=Event.wall_ns:crates/fs-obs/src/lib.rs#wall_clock_is_envelope_only,to-jsonl:crates/fs-obs/src/lib.rs#content_identity_preserves_bits_that_display_json_collapses",
     "field_guard=classify_event_identity_fields",
     "transport_guard=Event::admit_content_identity",
@@ -941,6 +941,48 @@ pub enum EventKind {
         /// Detail; REQUIRED non-empty when `pass=false` (lint-enforced).
         detail: String,
     },
+    /// One node of a sealed local execution-containment tree
+    /// (i94v.7.3.2; see [`containment`]). Role strings come from
+    /// [`containment::LocalNodeId::role`]; empty context strings mean the
+    /// edge is absent.
+    ContainmentNode {
+        /// Propagated Attempt root the tree is sealed under.
+        attempt: String,
+        /// Node role ("op", "scope", "tile").
+        role: String,
+        /// Node raw identity.
+        node: String,
+        /// Primary parent role ("attempt", "op", "scope", "tile").
+        parent_role: String,
+        /// Primary parent raw identity.
+        parent: String,
+        /// Deterministic sibling sequence.
+        seq: u64,
+        /// Hosting DSR invocation ("" = none).
+        dsr_run: String,
+        /// Selecting campaign execution ("" = none).
+        campaign_run: String,
+        /// Deterministic shard membership ("" = none).
+        shard: String,
+        /// Logical journey definition ("" = none).
+        journey: String,
+        /// Logical case definition ("" = none).
+        case: String,
+    },
+    /// One explicit lineage gap in a sealed containment tree
+    /// (i94v.7.3.2): the parent never arrived, so closure is incomplete.
+    ContainmentGap {
+        /// Propagated Attempt root the tree is sealed under.
+        attempt: String,
+        /// Role of the node whose lineage is incomplete.
+        node_role: String,
+        /// Raw identity of that node.
+        node: String,
+        /// Role of the parent that never arrived.
+        missing_parent_role: String,
+        /// Raw identity of the parent that never arrived.
+        missing_parent: String,
+    },
     /// A concurrency-race observation from a G4 race/storm harness.
     RaceRecord {
         /// Contended resource or invariant ("arena-slot", "tune-row", ...).
@@ -1033,6 +1075,8 @@ impl EventKind {
             EventKind::ArtifactLifecycle { .. } => "artifact_lifecycle",
             EventKind::VisualizationTransform { .. } => "visualization_transform",
             EventKind::DiagnosticRepair { .. } => "diagnostic_repair",
+            EventKind::ContainmentNode { .. } => "containment_node",
+            EventKind::ContainmentGap { .. } => "containment_gap",
             EventKind::RaceRecord { .. } => "race_record",
             EventKind::DegradationEvent { .. } => "degradation_event",
             EventKind::ImportReceipt { .. } => "import_receipt",
@@ -1445,6 +1489,56 @@ impl Event {
                 let _ = write!(s, ",\"pass\":{pass},");
                 push_str_field(&mut s, "detail", detail);
             }
+            EventKind::ContainmentNode {
+                attempt,
+                role,
+                node,
+                parent_role,
+                parent,
+                seq,
+                dsr_run,
+                campaign_run,
+                shard,
+                journey,
+                case,
+            } => {
+                push_str_field(&mut s, "attempt", attempt);
+                s.push(',');
+                push_str_field(&mut s, "role", role);
+                s.push(',');
+                push_str_field(&mut s, "node", node);
+                s.push(',');
+                push_str_field(&mut s, "parent_role", parent_role);
+                s.push(',');
+                push_str_field(&mut s, "parent", parent);
+                let _ = write!(s, ",\"seq\":{seq},");
+                push_str_field(&mut s, "dsr_run", dsr_run);
+                s.push(',');
+                push_str_field(&mut s, "campaign_run", campaign_run);
+                s.push(',');
+                push_str_field(&mut s, "shard", shard);
+                s.push(',');
+                push_str_field(&mut s, "journey", journey);
+                s.push(',');
+                push_str_field(&mut s, "case", case);
+            }
+            EventKind::ContainmentGap {
+                attempt,
+                node_role,
+                node,
+                missing_parent_role,
+                missing_parent,
+            } => {
+                push_str_field(&mut s, "attempt", attempt);
+                s.push(',');
+                push_str_field(&mut s, "node_role", node_role);
+                s.push(',');
+                push_str_field(&mut s, "node", node);
+                s.push(',');
+                push_str_field(&mut s, "missing_parent_role", missing_parent_role);
+                s.push(',');
+                push_str_field(&mut s, "missing_parent", missing_parent);
+            }
             EventKind::RaceRecord {
                 resource,
                 schedule,
@@ -1758,6 +1852,42 @@ impl Event {
                 .str("action", action)
                 .flag("pass", *pass)
                 .str("detail", detail),
+            EventKind::ContainmentNode {
+                attempt,
+                role,
+                node,
+                parent_role,
+                parent,
+                seq,
+                dsr_run,
+                campaign_run,
+                shard,
+                journey,
+                case,
+            } => builder
+                .str("attempt", attempt)
+                .str("role", role)
+                .str("node", node)
+                .str("parent_role", parent_role)
+                .str("parent", parent)
+                .u64("seq", *seq)
+                .str("dsr_run", dsr_run)
+                .str("campaign_run", campaign_run)
+                .str("shard", shard)
+                .str("journey", journey)
+                .str("case", case),
+            EventKind::ContainmentGap {
+                attempt,
+                node_role,
+                node,
+                missing_parent_role,
+                missing_parent,
+            } => builder
+                .str("attempt", attempt)
+                .str("node_role", node_role)
+                .str("node", node)
+                .str("missing_parent_role", missing_parent_role)
+                .str("missing_parent", missing_parent),
             EventKind::RaceRecord {
                 resource,
                 schedule,
@@ -2040,6 +2170,8 @@ pub const KNOWN_KINDS: &[&str] = &[
     "artifact_lifecycle",
     "visualization_transform",
     "diagnostic_repair",
+    "containment_node",
+    "containment_gap",
     "race_record",
     "degradation_event",
     "import_receipt",
@@ -3698,6 +3830,147 @@ mod tests {
             ],
             &mut observed,
         );
+        {
+            let base = || EventKind::ContainmentNode {
+                attempt: "attempt-9".into(),
+                role: "tile".into(),
+                node: "tile-42".into(),
+                parent_role: "scope".into(),
+                parent: "kernel-lbm".into(),
+                seq: 3,
+                dsr_run: "dsr-7".into(),
+                campaign_run: "camp-1".into(),
+                shard: "shard-3".into(),
+                journey: "thermal-fatigue".into(),
+                case: "case-12".into(),
+            };
+            let field = |mutate: &dyn Fn(&mut EventKind)| {
+                let mut k = base();
+                mutate(&mut k);
+                k
+            };
+            let set = |name: &'static str, value: &'static str| {
+                field(&move |k| {
+                    if let EventKind::ContainmentNode {
+                        attempt,
+                        role,
+                        node,
+                        parent_role,
+                        parent,
+                        dsr_run,
+                        campaign_run,
+                        shard,
+                        journey,
+                        case,
+                        ..
+                    } = k
+                    {
+                        *match name {
+                            "attempt" => attempt,
+                            "role" => role,
+                            "node" => node,
+                            "parent_role" => parent_role,
+                            "parent" => parent,
+                            "dsr_run" => dsr_run,
+                            "campaign_run" => campaign_run,
+                            "shard" => shard,
+                            "journey" => journey,
+                            "case" => case,
+                            _ => unreachable!("unknown containment field {name}"),
+                        } = value.into();
+                    }
+                })
+            };
+            assert_payload_mutations(
+                base(),
+                vec![
+                    ("containment_node.attempt", set("attempt", "attempt-10")),
+                    ("containment_node.role", set("role", "op")),
+                    ("containment_node.node", set("node", "tile-43")),
+                    ("containment_node.parent_role", set("parent_role", "op")),
+                    ("containment_node.parent", set("parent", "solve")),
+                    (
+                        "containment_node.seq",
+                        field(&|k| {
+                            if let EventKind::ContainmentNode { seq, .. } = k {
+                                *seq = 4;
+                            }
+                        }),
+                    ),
+                    ("containment_node.dsr_run", set("dsr_run", "dsr-8")),
+                    (
+                        "containment_node.campaign_run",
+                        set("campaign_run", "camp-2"),
+                    ),
+                    ("containment_node.shard", set("shard", "shard-4")),
+                    ("containment_node.journey", set("journey", "bracket")),
+                    ("containment_node.case", set("case", "case-13")),
+                ],
+                &mut observed,
+            );
+        }
+        assert_payload_mutations(
+            EventKind::ContainmentGap {
+                attempt: "attempt-9".into(),
+                node_role: "tile".into(),
+                node: "tile-1".into(),
+                missing_parent_role: "scope".into(),
+                missing_parent: "gone".into(),
+            },
+            vec![
+                (
+                    "containment_gap.attempt",
+                    EventKind::ContainmentGap {
+                        attempt: "attempt-10".into(),
+                        node_role: "tile".into(),
+                        node: "tile-1".into(),
+                        missing_parent_role: "scope".into(),
+                        missing_parent: "gone".into(),
+                    },
+                ),
+                (
+                    "containment_gap.node_role",
+                    EventKind::ContainmentGap {
+                        attempt: "attempt-9".into(),
+                        node_role: "op".into(),
+                        node: "tile-1".into(),
+                        missing_parent_role: "scope".into(),
+                        missing_parent: "gone".into(),
+                    },
+                ),
+                (
+                    "containment_gap.node",
+                    EventKind::ContainmentGap {
+                        attempt: "attempt-9".into(),
+                        node_role: "tile".into(),
+                        node: "tile-2".into(),
+                        missing_parent_role: "scope".into(),
+                        missing_parent: "gone".into(),
+                    },
+                ),
+                (
+                    "containment_gap.missing_parent_role",
+                    EventKind::ContainmentGap {
+                        attempt: "attempt-9".into(),
+                        node_role: "tile".into(),
+                        node: "tile-1".into(),
+                        missing_parent_role: "op".into(),
+                        missing_parent: "gone".into(),
+                    },
+                ),
+                (
+                    "containment_gap.missing_parent",
+                    EventKind::ContainmentGap {
+                        attempt: "attempt-9".into(),
+                        node_role: "tile".into(),
+                        node: "tile-1".into(),
+                        missing_parent_role: "scope".into(),
+                        missing_parent: "elsewhere".into(),
+                    },
+                ),
+            ],
+            &mut observed,
+        );
         assert_payload_mutations(
             EventKind::RaceRecord {
                 resource: "arena-slot".into(),
@@ -4031,6 +4304,22 @@ mod tests {
             "diagnostic_repair.action",
             "diagnostic_repair.pass",
             "diagnostic_repair.detail",
+            "containment_node.attempt",
+            "containment_node.role",
+            "containment_node.node",
+            "containment_node.parent_role",
+            "containment_node.parent",
+            "containment_node.seq",
+            "containment_node.dsr_run",
+            "containment_node.campaign_run",
+            "containment_node.shard",
+            "containment_node.journey",
+            "containment_node.case",
+            "containment_gap.attempt",
+            "containment_gap.node_role",
+            "containment_gap.node",
+            "containment_gap.missing_parent_role",
+            "containment_gap.missing_parent",
             "race_record.resource",
             "race_record.schedule",
             "race_record.pass",
@@ -4053,7 +4342,7 @@ mod tests {
         assert_eq!(
             observed.as_slice(),
             expected.as_slice(),
-            "all 138 payload fields stay enumerated"
+            "all 154 payload fields stay enumerated"
         );
     }
 
