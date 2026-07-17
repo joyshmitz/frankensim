@@ -1324,10 +1324,7 @@ pub fn three_way_merge_bounded(
     )?;
     accountant.checkpoint("merge-publication")?;
     let usage = SheafMergeUsage {
-        execution: accountant.usage(
-            admission.execution.scalar_slots,
-            admission.execution.work_items,
-        ),
+        execution: accountant.usage(admission.execution),
         spectral_sweeps_completed: accounted.spectral_sweeps_completed,
         admitted_output_bytes: admission.output_bytes,
         reserved_output_bytes: accountant.reserved_plan_bytes(),
@@ -1961,10 +1958,7 @@ pub fn candidate_remainder_conflict_rate_bounded(
     #[allow(clippy::cast_precision_loss)]
     let rate = conflicts as f64 / trials as f64;
     let usage = CandidateRateUsage {
-        execution: accountant.usage(
-            admission.execution.scalar_slots,
-            admission.execution.work_items,
-        ),
+        execution: accountant.usage(admission.execution),
         admitted_operator_evaluations: admission.execution.operator_evaluations,
         spectral_sweeps_completed,
         trials_completed,
