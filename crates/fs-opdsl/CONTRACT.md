@@ -214,12 +214,23 @@ documented in the bead close); cross-ISA golden hash.
   resume cursor whose resumed remainder is bitwise-equivalent to the
   uncancelled run; a defective point refuses the whole batch typed with
   its index named.
-- NO-CLAIM boundaries: no SystemExpr grammar splice yet (bound nodes are
-  not yet referencable from `AdmittedSystem` equations — that increment
-  is identity-sensitive and coordinated with the I01.1 owner); ambition
-  [F] promotion (baseline deck, activation threshold, kill criterion,
-  reproduction pack) has NOT begun — the feature stays default-off; the
-  binding-time tangent gate probes the zero point only (per-application
+- Identity binding via the extension dialect: constitutive signatures
+  (`ConstitutiveSignature` = binding name + provenance + lane +
+  escape marker) encode as a versioned, magic-prefixed, name-sorted,
+  length-framed payload (`FSCONST\x01`) attached through the system
+  IR's identity-BEARING opaque-extension bytes — so material provenance
+  binds into `SystemId` with zero grammar changes and no v1 identity
+  aliasing (the IR's extension mechanism exists for exactly this).
+  Equal binding sets yield equal identities; every single-field
+  provenance mutation moves the identity; the retained extension
+  decodes back to the exact signatures. Foreign dialects, version
+  drift, malformed frames, duplicates, and trailing bytes refuse.
+- NO-CLAIM boundaries: equation-PROGRAM generation consuming these
+  bindings (residual/JVP/VJP program emission over `SystemExpr`) is
+  I01.4a–c scope, not this adaptation layer; ambition [F] promotion
+  (baseline deck, activation threshold, kill criterion, reproduction
+  pack) has NOT begun — the feature stays default-off; the binding-time
+  tangent gate probes the zero point only (per-application
   re-verification belongs to the generated-program gates).
 
 ## Port-equation lowering (bead i94v.1.1.3, feature `port-equations`, default-off)

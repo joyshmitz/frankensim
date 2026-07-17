@@ -599,3 +599,178 @@ fn mid_batch_cancellation_drains_at_the_next_stride_boundary() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Slice 3: constitutive provenance binds into the SYSTEM IDENTITY via
+// the identity-bearing opaque-extension bytes — no grammar changes.
+// ---------------------------------------------------------------------------
+
+use fs_opdsl::constitutive::{
+    ConstitutiveSignature, decode_constitutive_extension, encode_constitutive_extension,
+};
+use fs_opdsl::system::{ScalarConvention, SystemDef};
+
+fn signatures_for_test() -> Vec<ConstitutiveSignature> {
+    let fourier = HonestFourier::new();
+    let bound_fourier = BoundConstitutiveNode::bind(&fourier, None).expect("binds");
+    let memory = NonlinearMemory::new();
+    let bound_memory = BoundConstitutiveNode::bind(&memory, Some(&[0.0])).expect("binds");
+    vec![
+        ConstitutiveSignature::of("conduction", &bound_fourier),
+        ConstitutiveSignature::of("hardening", &bound_memory),
+    ]
+}
+
+fn admitted_system_with_extension(extension: Vec<u8>) -> fs_opdsl::system::AdmittedSystem {
+    SystemDef::new()
+        .scalar_convention(ScalarConvention::RealOnly)
+        .with_extension(extension)
+        .expect("under the cap")
+        .admit()
+        .expect("minimal system admits")
+}
+
+/// The codec round-trips exactly, is insertion-order-free (canonical
+/// name sort), and refuses duplicates, foreign dialects, version
+/// drift, and trailing bytes.
+#[test]
+fn constitutive_extension_codec_round_trips_and_refuses() {
+    let signatures = signatures_for_test();
+    let encoded = encode_constitutive_extension(&signatures).expect("encodes");
+    let decoded = decode_constitutive_extension(&encoded).expect("decodes");
+    // Canonical order: sorted by name regardless of input order.
+    let mut reversed = signatures.clone();
+    reversed.reverse();
+    let encoded_reversed = encode_constitutive_extension(&reversed).expect("encodes");
+    assert_eq!(encoded, encoded_reversed, "insertion order cannot matter");
+    assert_eq!(decoded.len(), 2);
+    assert_eq!(decoded[0].name, "conduction");
+    assert_eq!(decoded[1].name, "hardening");
+    assert_eq!(decoded[1].provenance.state_slots, 1);
+
+    // Duplicate names refuse.
+    let duplicated = vec![signatures[0].clone(), signatures[0].clone()];
+    assert!(encode_constitutive_extension(&duplicated).is_err());
+
+    // Foreign dialect refuses.
+    assert!(decode_constitutive_extension(b"NOTMAGIC rest").is_err());
+    // Version drift refuses.
+    let mut versioned = encoded.clone();
+    versioned[7] = 9;
+    assert!(decode_constitutive_extension(&versioned).is_err());
+    // Trailing bytes refuse.
+    let mut trailing = encoded.clone();
+    trailing.push(0);
+    assert!(decode_constitutive_extension(&trailing).is_err());
+}
+
+/// THE lowering-survival claim: binding the signatures into a system's
+/// opaque extension makes material provenance part of the SYSTEM
+/// IDENTITY — equal binding sets yield equal SystemIds, and any
+/// single-field provenance mutation yields a DIFFERENT SystemId.
+#[test]
+fn constitutive_provenance_binds_into_the_system_identity() {
+    let signatures = signatures_for_test();
+    let encoded = encode_constitutive_extension(&signatures).expect("encodes");
+    let system = admitted_system_with_extension(encoded.clone());
+    let replay = admitted_system_with_extension(encoded);
+    assert_eq!(
+        system.identity(),
+        replay.identity(),
+        "equal binding sets yield equal system identities"
+    );
+
+    // Mutate one provenance field at a time: every mutation must
+    // produce a DIFFERENT system identity.
+    for mutation in 0..4 {
+        let mut mutated = signatures_for_test();
+        match mutation {
+            0 => mutated[0].provenance.law_version += 1,
+            1 => mutated[0].provenance.state_schema_version += 1,
+            2 => mutated[1].lane = TangentLane::DerivativeFree,
+            _ => mutated[1].hand_written = true,
+        }
+        let mutated_bytes = encode_constitutive_extension(&mutated).expect("encodes");
+        let mutated_system = admitted_system_with_extension(mutated_bytes);
+        assert_ne!(
+            system.identity(),
+            mutated_system.identity(),
+            "provenance mutation {mutation} must move the system identity"
+        );
+    }
+
+    // And a system with NO constitutive extension has yet another
+    // identity — the dialect cannot alias the empty extension.
+    let bare = SystemDef::new()
+        .scalar_convention(ScalarConvention::RealOnly)
+        .admit()
+        .expect("bare system admits");
+    assert_ne!(system.identity(), bare.identity());
+
+    // The retained extension decodes back to the exact signatures —
+    // provenance survives lowering INTO AND OUT OF the identity layer.
+    let recovered = decode_constitutive_extension(system.extension()).expect("decodes");
+    assert_eq!(recovered.len(), 2);
+    assert_eq!(recovered[0].provenance.law, "fourier-iso");
+    assert_eq!(recovered[1].provenance.law, "nonlinear-memory");
+}
+
+/// Reversible-skew fixture (Test Plan): a gyroscopic cross-coupled
+/// block whose tangent is exactly antisymmetric passes through the
+/// adapter with its skew part intact — the VJP of a skew block is the
+/// NEGATIVE of its JVP, and the evidence gate accepts the honest skew
+/// tangent.
+#[test]
+fn reversible_skew_block_survives_the_adapter_exactly() {
+    struct Gyroscopic {
+        decl: NodeDeclaration,
+        omega: f64,
+    }
+    impl LawNode for Gyroscopic {
+        fn declaration(&self) -> &NodeDeclaration {
+            &self.decl
+        }
+        fn evaluate(&self, _state: &[f64], inputs: &[f64]) -> Result<NodeOutput, GraphError> {
+            Ok(NodeOutput {
+                outputs: vec![self.omega * inputs[1], -self.omega * inputs[0]],
+                next_state: Vec::new(),
+                dissipation_rate: Some(0.0), // reversible: zero dissipation
+            })
+        }
+        fn tangent(&self, _state: &[f64], _inputs: &[f64]) -> Option<Vec<f64>> {
+            Some(vec![0.0, self.omega, -self.omega, 0.0])
+        }
+    }
+    let mut decl = declaration(
+        "gyroscopic",
+        Differentiability::Smooth,
+        EnergyBehavior::Empirical,
+        true,
+        Vec::new(),
+    );
+    decl.inputs = vec![
+        port("vx", Dims([1, 0, -1, 0, 0, 0])),
+        port("vy", Dims([1, 0, -1, 0, 0, 0])),
+    ];
+    decl.outputs = vec![
+        port("fx", Dims([1, 1, -2, 0, 0, 0])),
+        port("fy", Dims([1, 1, -2, 0, 0, 0])),
+    ];
+    let node = Gyroscopic { decl, omega: 3.0 };
+    let bound = BoundConstitutiveNode::bind(&node, None).expect("honest skew tangent verifies");
+    assert_eq!(bound.lane(), TangentLane::Consistent);
+
+    let inputs = [0.5, -1.25];
+    let tangent = bound.tangent(&inputs).expect("skew tangent");
+    // Exact antisymmetry survives: L = -L^T.
+    assert_eq!(tangent[0].to_bits(), 0.0f64.to_bits());
+    assert_eq!(tangent[3].to_bits(), 0.0f64.to_bits());
+    assert_eq!(tangent[1], -tangent[2]);
+
+    // For a skew block, w^T L = -(L w)^T: the VJP is the negative JVP.
+    let w = [0.7, 0.2];
+    let vjp = bound.vjp(&inputs, &w).expect("vjp");
+    let jvp = [3.0 * w[1], -3.0 * w[0]]; // L w
+    assert!((vjp[0] + jvp[0]).abs() < 1e-15);
+    assert!((vjp[1] + jvp[1]).abs() < 1e-15);
+}

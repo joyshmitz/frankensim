@@ -547,3 +547,262 @@ pub fn evaluate_batch(
         outputs,
     })
 }
+
+// ---------------------------------------------------------------------------
+// Slice 3: binding constitutive provenance into the SYSTEM IDENTITY
+// through the system IR's identity-bearing opaque-extension bytes —
+// zero grammar changes, no v1 identity aliasing.
+// ---------------------------------------------------------------------------
+
+/// Magic prefix for the constitutive extension dialect (domain
+/// separation inside the shared opaque-extension namespace).
+pub const CONSTITUTIVE_EXTENSION_MAGIC: &[u8; 8] = b"FSCONST\x01";
+
+/// One system-level constitutive binding: the compiler-owned receipt
+/// plus the verified lane and escape-hatch marker, exactly what must
+/// bind into the system identity for provenance to survive lowering.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConstitutiveSignature {
+    /// Binding name (unique within the system; canonical sort key).
+    pub name: String,
+    /// The compiler-owned provenance receipt.
+    pub provenance: MaterialProvenance,
+    /// The verified derivative lane.
+    pub lane: TangentLane,
+    /// True when bound through the hand-written escape hatch.
+    pub hand_written: bool,
+}
+
+impl ConstitutiveSignature {
+    /// Build a signature from a bound node.
+    #[must_use]
+    pub fn of(name: &str, bound: &BoundConstitutiveNode<'_>) -> ConstitutiveSignature {
+        ConstitutiveSignature {
+            name: name.to_string(),
+            provenance: bound.provenance().clone(),
+            lane: bound.lane(),
+            hand_written: bound.escape().is_some(),
+        }
+    }
+}
+
+fn push_frame(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+    out.extend_from_slice(bytes);
+}
+
+fn push_dims(out: &mut Vec<u8>, dims: &Dims) {
+    for exponent in dims.0 {
+        out.push(exponent as u8);
+    }
+}
+
+const fn lane_tag(lane: TangentLane) -> u8 {
+    match lane {
+        TangentLane::Consistent => 1,
+        TangentLane::PiecewiseConsistent => 2,
+        TangentLane::DerivativeFree => 3,
+    }
+}
+
+const fn differentiability_tag(tag: DifferentiabilityTag) -> u8 {
+    match tag {
+        DifferentiabilityTag::Smooth => 1,
+        DifferentiabilityTag::PiecewiseSmooth => 2,
+        DifferentiabilityTag::NonSmooth => 3,
+    }
+}
+
+const fn chart_tag(chart: PotentialChart) -> u8 {
+    match chart {
+        PotentialChart::Storage => 1,
+        PotentialChart::Dissipation => 2,
+        PotentialChart::StorageAndDissipation => 3,
+        PotentialChart::EmpiricalNoClaim => 4,
+    }
+}
+
+/// Encode a set of constitutive signatures as the system IR's opaque
+/// extension payload: magic + version, name-sorted signatures, every
+/// field length-framed — DETERMINISTIC bytes, so equal binding sets
+/// produce equal system identities and any provenance mutation
+/// produces a different one.
+///
+/// # Errors
+/// [`AdaptError::Evaluation`] on duplicate binding names or a payload
+/// beyond the system IR's extension cap (checked HERE so the refusal
+/// names the constitutive dialect, before the IR's own cap check).
+pub fn encode_constitutive_extension(
+    signatures: &[ConstitutiveSignature],
+) -> Result<Vec<u8>, AdaptError> {
+    let mut sorted: Vec<&ConstitutiveSignature> = signatures.iter().collect();
+    sorted.sort_by(|a, b| a.name.cmp(&b.name));
+    for pair in sorted.windows(2) {
+        if pair[0].name == pair[1].name {
+            return Err(AdaptError::Evaluation {
+                law: pair[0].provenance.law.clone(),
+                detail: format!("duplicate constitutive binding name `{}`", pair[0].name),
+            });
+        }
+    }
+    let mut out = Vec::new();
+    out.extend_from_slice(CONSTITUTIVE_EXTENSION_MAGIC);
+    out.extend_from_slice(&(sorted.len() as u32).to_le_bytes());
+    for signature in sorted {
+        push_frame(&mut out, signature.name.as_bytes());
+        push_frame(&mut out, signature.provenance.law.as_bytes());
+        out.extend_from_slice(&signature.provenance.law_version.to_le_bytes());
+        out.extend_from_slice(&signature.provenance.state_schema_version.to_le_bytes());
+        out.extend_from_slice(&(signature.provenance.state_slots as u32).to_le_bytes());
+        out.extend_from_slice(&(signature.provenance.input_dims.len() as u32).to_le_bytes());
+        for dims in &signature.provenance.input_dims {
+            push_dims(&mut out, dims);
+        }
+        out.extend_from_slice(&(signature.provenance.output_dims.len() as u32).to_le_bytes());
+        for dims in &signature.provenance.output_dims {
+            push_dims(&mut out, dims);
+        }
+        out.push(differentiability_tag(
+            signature.provenance.differentiability,
+        ));
+        out.push(chart_tag(signature.provenance.potential_chart));
+        out.push(lane_tag(signature.lane));
+        out.push(u8::from(signature.hand_written));
+    }
+    if out.len() > crate::system::MAX_SYSTEM_EXTENSION_BYTES {
+        return Err(AdaptError::Evaluation {
+            law: "constitutive-extension".to_string(),
+            detail: format!(
+                "encoded extension is {} bytes; the system IR caps extensions at {}",
+                out.len(),
+                crate::system::MAX_SYSTEM_EXTENSION_BYTES
+            ),
+        });
+    }
+    Ok(out)
+}
+
+/// Decode a constitutive extension payload, refusing foreign dialects,
+/// unknown versions, malformed frames, unknown tags, and trailing
+/// bytes — a payload that does not decode EXACTLY is not a receipt.
+///
+/// # Errors
+/// [`AdaptError::Evaluation`] naming the violated framing rule.
+pub fn decode_constitutive_extension(
+    bytes: &[u8],
+) -> Result<Vec<ConstitutiveSignature>, AdaptError> {
+    let codec_err = |detail: String| AdaptError::Evaluation {
+        law: "constitutive-extension".to_string(),
+        detail,
+    };
+    if bytes.len() < 8 || &bytes[..7] != &CONSTITUTIVE_EXTENSION_MAGIC[..7] {
+        return Err(codec_err("payload is not the constitutive dialect".into()));
+    }
+    if bytes[7] != CONSTITUTIVE_EXTENSION_MAGIC[7] {
+        return Err(codec_err(format!(
+            "constitutive dialect version {} is not supported (this decoder speaks {})",
+            bytes[7], CONSTITUTIVE_EXTENSION_MAGIC[7]
+        )));
+    }
+    let mut cursor = 8usize;
+    let take = |cursor: &mut usize, n: usize| -> Result<&[u8], AdaptError> {
+        let end = cursor
+            .checked_add(n)
+            .filter(|&e| e <= bytes.len())
+            .ok_or_else(|| codec_err("payload ends mid-frame".into()))?;
+        let slice = &bytes[*cursor..end];
+        *cursor = end;
+        Ok(slice)
+    };
+    let count = u32::from_le_bytes(take(&mut cursor, 4)?.try_into().expect("4 bytes")) as usize;
+    let mut out = Vec::with_capacity(count);
+    for _ in 0..count {
+        let name_len =
+            u32::from_le_bytes(take(&mut cursor, 4)?.try_into().expect("4 bytes")) as usize;
+        let name = String::from_utf8(take(&mut cursor, name_len)?.to_vec())
+            .map_err(|_| codec_err("binding name is not UTF-8".into()))?;
+        let law_len =
+            u32::from_le_bytes(take(&mut cursor, 4)?.try_into().expect("4 bytes")) as usize;
+        let law = String::from_utf8(take(&mut cursor, law_len)?.to_vec())
+            .map_err(|_| codec_err("law id is not UTF-8".into()))?;
+        let law_version = u32::from_le_bytes(take(&mut cursor, 4)?.try_into().expect("4 bytes"));
+        let state_schema_version =
+            u32::from_le_bytes(take(&mut cursor, 4)?.try_into().expect("4 bytes"));
+        let state_slots =
+            u32::from_le_bytes(take(&mut cursor, 4)?.try_into().expect("4 bytes")) as usize;
+        let input_count =
+            u32::from_le_bytes(take(&mut cursor, 4)?.try_into().expect("4 bytes")) as usize;
+        let mut input_dims = Vec::with_capacity(input_count);
+        for _ in 0..input_count {
+            let raw = take(&mut cursor, 6)?;
+            input_dims.push(Dims([
+                raw[0] as i8,
+                raw[1] as i8,
+                raw[2] as i8,
+                raw[3] as i8,
+                raw[4] as i8,
+                raw[5] as i8,
+            ]));
+        }
+        let output_count =
+            u32::from_le_bytes(take(&mut cursor, 4)?.try_into().expect("4 bytes")) as usize;
+        let mut output_dims = Vec::with_capacity(output_count);
+        for _ in 0..output_count {
+            let raw = take(&mut cursor, 6)?;
+            output_dims.push(Dims([
+                raw[0] as i8,
+                raw[1] as i8,
+                raw[2] as i8,
+                raw[3] as i8,
+                raw[4] as i8,
+                raw[5] as i8,
+            ]));
+        }
+        let differentiability = match take(&mut cursor, 1)?[0] {
+            1 => DifferentiabilityTag::Smooth,
+            2 => DifferentiabilityTag::PiecewiseSmooth,
+            3 => DifferentiabilityTag::NonSmooth,
+            other => return Err(codec_err(format!("unknown differentiability tag {other}"))),
+        };
+        let potential_chart = match take(&mut cursor, 1)?[0] {
+            1 => PotentialChart::Storage,
+            2 => PotentialChart::Dissipation,
+            3 => PotentialChart::StorageAndDissipation,
+            4 => PotentialChart::EmpiricalNoClaim,
+            other => return Err(codec_err(format!("unknown potential-chart tag {other}"))),
+        };
+        let lane = match take(&mut cursor, 1)?[0] {
+            1 => TangentLane::Consistent,
+            2 => TangentLane::PiecewiseConsistent,
+            3 => TangentLane::DerivativeFree,
+            other => return Err(codec_err(format!("unknown lane tag {other}"))),
+        };
+        let hand_written = match take(&mut cursor, 1)?[0] {
+            0 => false,
+            1 => true,
+            other => return Err(codec_err(format!("unknown escape-hatch tag {other}"))),
+        };
+        out.push(ConstitutiveSignature {
+            name,
+            provenance: MaterialProvenance {
+                law,
+                law_version,
+                state_schema_version,
+                state_slots,
+                input_dims,
+                output_dims,
+                differentiability,
+                potential_chart,
+            },
+            lane,
+            hand_written,
+        });
+    }
+    if cursor != bytes.len() {
+        return Err(codec_err(format!(
+            "{} unconsumed trailing bytes",
+            bytes.len() - cursor
+        )));
+    }
+    Ok(out)
+}
