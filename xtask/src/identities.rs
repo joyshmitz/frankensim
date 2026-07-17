@@ -41,6 +41,11 @@ const REQUIRED_IDENTITY_IDS: &[&str] = &[
     "fs-checker:semantic-plugin",
     "fs-checker:semantic-registry",
     "fs-checker:semantic-report",
+    "fs-evidence:observation-manifest",
+    "fs-evidence:vv-artifact",
+    "fs-evidence:vv-blind-holdout",
+    "fs-evidence:vv-case",
+    "fs-evidence:vv-schema-admission-receipt",
     "fs-exec:gemm-tune-key",
     "fs-exec:tilepool-placement",
     "fs-exec:tune-row",
@@ -7974,9 +7979,17 @@ fn load_declarations(root: &Path) -> (Vec<IdentityDecl>, Vec<Violation>) {
     let mut declarations = Vec::new();
     let mut violations = Vec::new();
     let mut pending = Vec::new();
-    let exemptions = load_authority_manifest(root)
-        .map(|manifest| manifest.exemptions)
-        .unwrap_or_default();
+    // Fail closed on an unloadable or inconsistent authority manifest
+    // (bead kczf7): covered-exemption parts of schema fingerprints are
+    // unknowable without the manifest, so fingerprints computed here
+    // must never reach golden-row comparison — an operator copying a
+    // "replace it with exact row" printed in that state would pin a
+    // degraded value. The manifest violations themselves are reported
+    // by identity_authority_violations.
+    let (exemptions, manifest_resolved) = match load_authority_manifest(root) {
+        Ok(manifest) => (manifest.exemptions, true),
+        Err(_) => (Vec::new(), false),
+    };
     let (sources, source_violations) = source_files(root);
     violations.extend(source_violations);
     for path in sources {
@@ -8098,7 +8111,7 @@ fn load_declarations(root: &Path) -> (Vec<IdentityDecl>, Vec<Violation>) {
             ));
         }
     }
-    let fingerprints_resolved = if duplicate_ids {
+    let fingerprints_resolved = if duplicate_ids || !manifest_resolved {
         false
     } else {
         let dependency_violations = resolve_schema_fingerprints(&mut declarations);
@@ -8120,6 +8133,16 @@ fn load_declarations(root: &Path) -> (Vec<IdentityDecl>, Vec<Violation>) {
                         validate_external_couplings(root, &manifest, &surfaces);
                     violations.extend(external_violations);
                 }
+            } else if !manifest_resolved {
+                violations.push(identity_violation(
+                    "<repo>",
+                    "golden-coupling replacement-row advice suppressed: the authority \
+                     manifest is inconsistent, so schema fingerprints computed now would \
+                     omit covered-exemption parts; reconcile identity-authorities.json \
+                     with the REQUIRED_IDENTITY_IDS baseline and re-run before trusting \
+                     any printed row (bead kczf7)"
+                        .to_string(),
+                ));
             }
         }
         Err(coupling_violations) => violations.extend(coupling_violations),
@@ -9130,6 +9153,80 @@ fn version_refuses() {{ assert_eq!(MINI_VERSION, 1); }}
                 .detail
                 .contains("schema_fingerprint is empty or malformed; expected v1- followed by exactly 64 lowercase hexadecimal digits (BLAKE3-256)")),
             "malformed golden fingerprints must be reported independently: {violations:?}"
+        );
+    }
+
+    #[test]
+    fn desynced_authority_baseline_suppresses_replacement_rows() {
+        // bead kczf7: fingerprints computed while the authority
+        // manifest is inconsistent omit covered-exemption parts, so
+        // the checker must not print "replace it with exact row"
+        // values an operator could copy into goldens in that state.
+        //
+        // Control: a version-skewed golden row against a CONSISTENT
+        // manifest reports the exact-match violation.
+        let source = owner_source("", "a", "a:crates/mini/src/lib.rs#mutation_a");
+        let root = seed_fixture("desynced-baseline-control", &source, 2);
+        let (_, violations) = load_declarations(&root);
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.detail.contains("must exactly match")),
+            "control fixture must report the stale golden row: {violations:?}"
+        );
+
+        // Same skewed golden, but the manifest now fails the
+        // independent REQUIRED_IDENTITY_IDS baseline gate (the gate
+        // only arms inside a git checkout, so the fixture grows a
+        // .git marker): the baseline violation must surface and the
+        // replacement row must NOT.
+        let root = seed_fixture("desynced-baseline-degraded", &source, 2);
+        std::fs::create_dir_all(root.join(".git")).expect("fixture git marker");
+        let violations = check_identities(&root);
+        assert!(
+            violations.iter().any(|violation| violation
+                .detail
+                .contains("without updating the independent REQUIRED_IDENTITY_IDS gate baseline")),
+            "the baseline desync itself must be reported: {violations:?}"
+        );
+        assert!(
+            !violations
+                .iter()
+                .any(|violation| violation.detail.contains("replace it with exact row")),
+            "no replacement row may be printed from a degraded manifest state: {violations:?}"
+        );
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.detail.contains("advice suppressed")),
+            "the suppression must announce itself: {violations:?}"
+        );
+
+        // The 2gs5h guarantee survives the gate: a malformed pin is
+        // still reported even in the degraded state (golden parsing is
+        // independent of fingerprint resolution).
+        let golden_path = root.join("golden-couplings.json");
+        let mut golden = std::fs::read_to_string(&golden_path).expect("fixture golden registry");
+        let marker = "\"schema_fingerprint\": \"";
+        let value_start = golden.find(marker).expect("fingerprint field") + marker.len();
+        let value_end = value_start
+            + golden[value_start..]
+                .find('"')
+                .expect("fingerprint terminator");
+        golden.replace_range(value_start..value_end, "");
+        std::fs::write(golden_path, golden).expect("empty fingerprint mutation");
+        let violations = check_identities(&root);
+        assert!(
+            violations.iter().any(|violation| violation
+                .detail
+                .contains("schema_fingerprint is empty or malformed")),
+            "malformed pins must not be masked by the degraded manifest: {violations:?}"
+        );
+        assert!(
+            !violations
+                .iter()
+                .any(|violation| violation.detail.contains("replace it with exact row")),
+            "degraded state must never print replacement rows: {violations:?}"
         );
     }
 
