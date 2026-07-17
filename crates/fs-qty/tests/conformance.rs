@@ -202,7 +202,7 @@ fn qty_005b_parser_budget_and_diagnostic_bounds() {
                 "resource={resource:?} input_bytes={} preview_bytes={} hash_present={}",
                 input.len(),
                 first.preview.len(),
-                first.source_hash.is_some()
+                first.source_hash().is_some()
             ),
         );
     }
@@ -842,7 +842,7 @@ fn g0_checked_dimension_authority_refuses_every_i8_boundary() {
     let c = Dims([30, 0, 0, 0, 0, 0]);
     let laundered = a.saturating_plus(b).saturating_minus(c);
     assert_eq!(laundered, Dims([97, 0, 0, 0, 0, 0]));
-    assert_ne!(laundered.0[0] as i32, 100 + 50 - 30);
+    assert_ne!(i32::from(laundered.0[0]), 100 + 50 - 30);
     assert_eq!(a.checked_plus(b), None);
     assert_eq!(a.checked_plus(b).and_then(|s| s.checked_minus(c)), None);
 

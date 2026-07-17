@@ -88,7 +88,7 @@ fn oversized_refusal_never_allocates_a_source_sized_buffer() {
             observed_at_least: 1_000_001,
         }
     ));
-    assert_eq!(error.source_hash, None);
+    assert_eq!(error.source_hash(), None);
     assert!(error.preview.len() <= budget.max_diagnostic_bytes());
     assert!(
         largest_request <= 1_024,

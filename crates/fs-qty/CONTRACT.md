@@ -136,13 +136,17 @@ Appendix B). Layer: UTIL; its only production dependency is the Franken-only
 
 ## Error model
 `DimensionMismatch { op, left, right }`, `DimensionOverflow { op, dims, factor }`,
-`ParseError { preview, preview_start, input_bytes, source_hash, at, kind, help }`,
+`ParseError { preview, preview_start, input_bytes, at, kind, help, .. }`,
 `JsonError { at, message }`, `SemanticError`, `QuantitySpecDecodeError`, and
 `ChemistryError` are
 structured values with contextual operations, kinds, axes, indices, or
 arithmetic laws as applicable (P10 errors-as-guidance); no panics across the
-crate boundary. `ParseError::verifies_source` checks an admitted source against
-the retained full-input identity. `BudgetExceeded` identifies input bytes,
+crate boundary. `ParseError::source_hash()` returns the retained full-input
+identity by value without exposing its compact storage, and
+`ParseError::verifies_source` checks an admitted source against that identity.
+The early-stage API intentionally migrated direct `error.source_hash` field
+access to `error.source_hash()` so Result layout is not part of the public
+contract. `BudgetExceeded` identifies input bytes,
 token bytes, or factor work with its limit and exact/proven-lower-bound
 observation.
 

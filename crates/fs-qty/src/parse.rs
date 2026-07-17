@@ -115,7 +115,7 @@ pub struct ParseError {
     pub input_bytes: usize,
     /// Full-input identity when the input passed byte admission. Oversized
     /// input is deliberately not scanned merely to manufacture a hash.
-    pub source_hash: Option<Box<ContentHash>>,
+    source_hash: Option<Box<ContentHash>>,
     /// Byte offset of the failure.
     pub at: usize,
     /// What went wrong.
@@ -176,6 +176,16 @@ impl fmt::Display for ParseError {
 impl core::error::Error for ParseError {}
 
 impl ParseError {
+    /// Return the full-input identity when byte admission permitted hashing.
+    ///
+    /// The value-oriented accessor deliberately hides the compact internal
+    /// storage used to keep successful parser returns small. Oversized inputs
+    /// return `None` because admission refuses before hashing the full source.
+    #[must_use]
+    pub fn source_hash(&self) -> Option<ContentHash> {
+        self.source_hash.as_deref().copied()
+    }
+
     /// Verify that the retained full-input identity belongs to `source`.
     /// Oversized inputs return `false` because byte admission deliberately
     /// precedes the hash pass.
@@ -1146,7 +1156,9 @@ mod tests {
 
 #[cfg(test)]
 mod hardening {
-    use super::{ParseBudget, ParseErrorKind, ParseResource, parse_qty, parse_qty_with_budget};
+    use super::{
+        ContentHash, ParseBudget, ParseErrorKind, ParseResource, parse_qty, parse_qty_with_budget,
+    };
     use crate::Dims;
 
     fn structured_refusal(input: &str, expected_kind: &ParseErrorKind, expected_at: usize) {
@@ -1170,6 +1182,35 @@ mod hardening {
             "out-of-bounds offset for {input:?}"
         );
         assert!(!error.help.is_empty(), "missing guidance for {input:?}");
+    }
+
+    #[test]
+    fn admitted_error_identity_and_display_remain_value_typed_and_source_exact() {
+        let input = "3flurbs";
+        let error = parse_qty(input).expect_err("unknown unit must refuse");
+        let source_hash: Option<ContentHash> = error.source_hash();
+        let hash = source_hash.expect("admitted input retains its source hash");
+
+        assert!(error.verifies_source(input));
+        assert!(
+            !error.verifies_source("4flurbs"),
+            "same-length but different source bytes must not verify",
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "cannot parse quantity excerpt {:?} (source bytes {}..{} of {}, hash {}) at byte {}: {:?}; {}",
+                error.preview,
+                error.preview_start,
+                error.preview_start + error.preview.len(),
+                error.input_bytes,
+                hash,
+                error.at,
+                error.kind,
+                error.help,
+            ),
+            "Display must expose the content hash value through the stable structured refusal",
+        );
     }
 
     /// The parser sits behind fs-ir admission and will see agent-supplied
@@ -1372,7 +1413,8 @@ mod hardening {
             } if limit == byte_cap && observed_at_least == byte_cap + 1
         ));
         assert_eq!(
-            error.source_hash, None,
+            error.source_hash(),
+            None,
             "oversized input must not be hash-scanned"
         );
         assert!(error.preview.len() <= ParseBudget::DEFAULT.max_diagnostic_bytes());
@@ -1442,7 +1484,7 @@ mod hardening {
             }
         ));
         assert_eq!(nonempty.preview, "");
-        assert_eq!(nonempty.source_hash, None);
+        assert_eq!(nonempty.source_hash(), None);
     }
 
     #[test]
