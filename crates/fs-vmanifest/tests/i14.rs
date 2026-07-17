@@ -26,12 +26,13 @@ use fs_vmanifest::{
     I14LifecycleCauseClassV2, I14LifecycleFailureV2, I14LifecycleRefusalV2, I14OperationalSupport,
     I14ReceiptValidity, I14RetentionClassV1, I14SpawnFrontierEvidenceV2,
     I14TelemetryEnvelopeInputV1, I14TelemetryEnvelopeInputV2, I14TelemetryEnvelopeRefusalV1,
-    I14TerminalBoundaryDecisionV1, I14TerminalBoundaryRecordV2, I14TerminalBoundaryTraceV2,
-    I14TerminalBoundaryV1, I14TerminalCauseRefusalV1, I14TerminalLifecycleTraceV2,
-    I14TerminalStatusV1, I14TerminalTraceOutcomeV2, I14TerminalTraceRefusalV2,
-    I14TilePollCoverageV2, I14TimedLogicalEventV2, I14TotalResourceUnitV2, I14WatchdogCoverageV2,
-    I14WatchdogObservationKindV1, I14WatchdogObservationV1, ManifestDraft, Partition,
-    ToleranceSemantics, i14_admit_cancellation_card_v2, i14_canonical_terminal_result_digest_v1,
+    I14TelemetryEnvelopeRefusalV2, I14TerminalBoundaryDecisionV1, I14TerminalBoundaryRecordV2,
+    I14TerminalBoundaryTraceV2, I14TerminalBoundaryV1, I14TerminalCauseRefusalV1,
+    I14TerminalLifecycleTraceV2, I14TerminalStatusV1, I14TerminalTraceOutcomeV2,
+    I14TerminalTraceRefusalV2, I14TilePollCoverageV2, I14TimedLogicalEventV2,
+    I14TotalResourceUnitV2, I14WatchdogCoverageV2, I14WatchdogObservationKindV1,
+    I14WatchdogObservationV1, ManifestDraft, Partition, ToleranceSemantics,
+    i14_admit_cancellation_card_v2, i14_canonical_terminal_result_digest_v1,
     i14_canonical_terminal_result_digest_v2, i14_canonical_terminal_result_v1,
     i14_canonical_terminal_result_v2, i14_draft, i14_drain_trigger_encoding_v2,
     i14_evaluate_terminal_status_v1, i14_infrastructure_failure_onset_encoding_v2,
@@ -7723,7 +7724,8 @@ fn i14_amendments_invalidate_targeted_consumers_and_global_policy() {
             "i14-production-bearing-population-reliability".to_string(),
         ])
     );
-    let campaign_policy = authored_spec(&predecessor, POLICY);
+    let policy_draft = i14_draft();
+    let campaign_policy = authored_spec(&policy_draft, POLICY);
     assert!(campaign_policy.contains("same-ID fixture alone"));
     assert!(campaign_policy.contains("slot replacement alone"));
     assert!(campaign_policy.contains("typed DischargeReceipt"));

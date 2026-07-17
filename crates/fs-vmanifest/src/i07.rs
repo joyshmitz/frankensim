@@ -1953,7 +1953,7 @@ semantic mismatch. REPLAY binds symbolic relation and interval-domain roots",
             ],
             g4_schedule: "Cancel/fault after occurrence binding, motor/frame normalization, symbolic \
 relation construction, tangent/Pfaffian check, interval domain, loss row and pre-publish. Drain every \
-relation/oracle task; partial sampling can only be PartialEvidence. Resume/fork from canonical graph+\
+relation/oracle task, then finalize; partial sampling can only be PartialEvidence. Resume/fork from canonical graph+\
 domain checkpoints and reproduce relation/refusal/terminal roots",
             g5_matrix: "ISA {aarch64-apple,x86_64} x threads {1,2,7,16} x mechanism \
 shards {1,3,9} x deterministic debug/release. Same fingerprint requires bitwise pair graph, symbolic \
@@ -2136,7 +2136,7 @@ amendment discharges formal-projection gates",
             ],
             g4_schedule: "After formalization only, cancel/fault at AST decode, definition/root bind, \
 translation, elaboration, transitive axiom walk, proof-kernel check, runtime-premise check, finite cochain \
-oracle, and pre-publish. Drain proof/checker subprocess-equivalent tasks without foreign production \
+oracle, and pre-publish. Drain, then finalize, proof/checker subprocess-equivalent tasks without foreign production \
 dependency, retain proof/TCB/FailureBundle roots, and never publish theorem authority from partial \
 elaboration. Checkpoint/resume/fork exact immutable theorem environments; stale/mismatched environments \
 are IntegrityFailed",
@@ -2207,7 +2207,8 @@ theorem, migration, oracle, and TCB roots plus exact completed shard set. VERSIO
             g4_schedule: "After M0 formalization only, preflight the entire 16,777,216-record \
 microgrammar and every 4096x4096 supergrammar campaign budget before start. Cancel/fault at rank \
 boundaries, shard commits, decode/validity/premise/geometry/proof checks, candidate retention, minimizer, \
-Merkle merge, checkpoint and pre-publish barrier. Drain all workers; retain completed shard roots and every \
+Merkle merge, checkpoint and pre-publish barrier. Drain all workers, then finalize: retain completed \
+shard roots and every \
 candidate, but incomplete campaign state has EvidenceCompleteness=PartialEvidence and \
 ClaimState=Unknown and never zero-counterexample \
 success. Resume/fork exact disjoint shards; duplicate/missing/corrupt shards are IntegrityFailed",

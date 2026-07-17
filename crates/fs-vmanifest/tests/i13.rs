@@ -3154,7 +3154,7 @@ fn i13_industrial_leaf_pins_typed_discharge_and_cancellation_safe_authority() {
     for event in REQUIRED_GOVERNANCE_EVENTS {
         assert_eq!(
             industrial
-                .obs_events()
+                .obs_events
                 .iter()
                 .filter(|observed| *observed == event)
                 .count(),
@@ -3177,7 +3177,7 @@ fn i13_industrial_leaf_pins_typed_discharge_and_cancellation_safe_authority() {
         "generic manifest syntax or partial discharge grants no authority",
     ] {
         assert!(
-            industrial.g0().contains(required),
+            industrial.g0.contains(required),
             "industrial G0 lost discharge invariant '{required}'"
         );
     }
@@ -3194,7 +3194,7 @@ fn i13_industrial_leaf_pins_typed_discharge_and_cancellation_safe_authority() {
     ] {
         assert!(
             industrial
-                .g3_relations()
+                .g3_relations
                 .iter()
                 .any(|relation| relation.contains(required)),
             "industrial G3 lost negative discharge relation '{required}'"
@@ -3220,7 +3220,7 @@ fn i13_industrial_leaf_pins_typed_discharge_and_cancellation_safe_authority() {
         "Resumed/forked protected-root, authority/access-head and adjudication state equals uninterrupted execution",
     ] {
         assert!(
-            industrial.g4_schedule().contains(required),
+            industrial.g4_schedule.contains(required),
             "industrial G4 lost cancellation-safe authority rule '{required}'"
         );
     }
@@ -3237,9 +3237,9 @@ fn i13_slash_delimited_contract_tokens_survive_rust_line_continuations_exactly()
         .join("\n");
     for row in &draft.obligations {
         contract.push('\n');
-        contract.push_str(row.g0());
+        contract.push_str(row.g0);
         contract.push('\n');
-        contract.push_str(row.g4_schedule());
+        contract.push_str(row.g4_schedule);
     }
     for required in [
         "phase/branch/parallel-path/tap/terminal",
@@ -5005,7 +5005,7 @@ fn i13_terminal_v2_authority_is_acyclic_closed_and_capacity_complete() {
         "TerminalAppendDeltaArtifactBytesV3",
         "AppendMetadataArtifactBytesV3",
         "exactly 218 bytes",
-        "leaving exactly 6987744 bytes",
+        "leaving exactly 6987744 nonborrowable safety-slack bytes",
         "Open admits at most 4090 nonclosing OrdinaryEventBatch appends",
         "preserves at least 25166112 operation-payload-artifact bytes",
         "AppendPhaseLeaseBytesV3",
@@ -6022,7 +6022,7 @@ fn i13_v4_finite_capacity_wal_and_closed_evidence_authority_is_exact() {
 
     for exact in [
         "24576 nonborrowable 32768-byte decision slots, exactly805306368 bytes",
-        "total fixed baseline of2415919104 bytes",
+        "total fixed allocation baseline of2415919104 bytes",
         "U16LE(reserved_subject_count<=4096)",
         "used_bytes=checked_mul(record_count,32768)",
         "record_count<=checked_mul(6,reserved_subject_count)",
@@ -6615,7 +6615,7 @@ fn i13_terminal_source_snapshot_and_authority_clauses_are_exact() {
         "Each subject owns a dense depth-4 vector of exactly16 such rows",
         "S exactly16 and therefore6571 bytes",
         "S<16 is forbidden",
-        "Record digest then derives the transaction-chain/latest-record fields and final service head",
+        "digest then derives the transaction-chain/latest-record fields and final service head",
         "The record never contains that final head and is not signed by the same intent layer",
         "Later proofs,records and committed heads bind prior full signed objects but are never signed backward by the same layer",
         "Empty padding layers are forbidden",

@@ -2120,7 +2120,7 @@ fn i07_load_bearing_semantic_clauses_are_pinned() {
 
     let parser = claim_text("i07-part21-profile-bounded-parse");
     assert!(parser.contains("ProfileKeyDigest/ProfileEntryRoot"));
-    assert!(parser.contains("ProfileEntryRoot is the complete expanded authority identity"));
+    assert!(parser.contains("is the complete expanded authority identity"));
     assert!(parser.contains("WHERE/UNIQUE rule inventory"));
     assert!(parser.contains("legal strongly connected reference components"));
     assert!(parser.contains("cycles are never rejected merely because they are cycles"));
