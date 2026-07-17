@@ -832,7 +832,9 @@ version = "0.0.1"
 dependencies = [
  "fs-ad",
  "fs-adjoint",
+ "fs-alloc",
  "fs-eproc",
+ "fs-exec",
  "fs-feec",
  "fs-la",
  "fs-math",
@@ -896,6 +898,7 @@ version = "0.0.1"
 dependencies = [
  "fs-ad",
  "fs-ascent",
+ "fs-casebook",
  "fs-dfo",
  "fs-eproc",
  "fs-la",
