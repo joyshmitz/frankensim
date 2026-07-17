@@ -717,3 +717,57 @@ replay-stable seeded determinism CANDIDATE.
   (committed tree, M4 + x86, debug + release), per the 40p2 precedent.
 - Wall layers hold equilibrium state and are excluded from physics
   claims; only the fluid interior is certified.
+
+## D3Q19 sparse-sweep performance evidence model (bead 712t)
+
+`perf` is the normative semantic substrate for the ignored GLUP/s runner. It
+freezes these workload rows before any timing result is inspected:
+
+- one 128³ sparse-grid domain with every 4³ tile active (`dense-active`);
+- one 128³ sparse-grid domain whose whole-tile active set rounds upward to at
+  least ten percent (`sparse-ten-percent`: 3,277 tiles / 209,728 cells);
+- a serial row with exactly one worker and an all-core row retaining the exact
+  normalized worker/placement identity.
+
+The version-1 logical traffic model is source-counted, not a compulsory-miss
+fantasy. One active BGK update performs two population reads and two population
+writes across collide and pull-stream: `19 * 8 * 4 = 608 B/cell`. The sparse
+lower-bound adds `19 * 16 = 304 B/cell` of logical source key/slot lookup and
+`16 / 64 = 0.25 B/cell` of amortized active-tile key/slot identity, for exactly
+`912.25 B/cell`. BTree node/cache-line traffic can only increase real traffic;
+it is not invented as a portable constant. The generic three-axis BGK+Guo path
+counts 142 FLOPs for density/momentum/forced velocity, 271 for equilibrium, and
+611 for force projection plus relaxation, totaling 1,024 FLOPs/update and
+approximately 1.1225 FLOP/B. Any kernel/model change must bump
+`D3Q19_PERF_MODEL_VERSION` and restate this arithmetic.
+
+The plan's 1.0 GLUP/s Apple-M-class and 0.6 GLUP/s Threadripper-class values are
+retained as informational `plan_target_glups` fields. They are never silently
+used as initial gates. A positive/negative gate requires `EvidenceClass::Citable`,
+an exact admission-receipt hash, at least three timed repetitions, stable
+critical-path signatures, and a separately authorized positive `floor_glups`.
+Before the first honest quiet-window calibration, rows are explicitly
+`report_only` with a named refusal and a null floor. Contaminated pre/post axes
+are `environment_invalid`, neither floor pass nor floor miss.
+
+Per-repetition tile/halo timing forms a bounded task DAG.
+`attribute_critical_path` computes the longest path in the max-plus semiring,
+independent of task and predecessor enumeration. Exact path ties choose the
+smaller stable task id; exact dominant-class ties choose the stable class order.
+Receipts retain the source-to-sink path, makespan, per-class critical wall,
+dominant class from `activation|collide|halo|stream`, and its parts-per-million
+share. Citable rows require the same path and dominant class across
+deterministic repetitions; varying wall values remain telemetry, while
+topology/class drift fails closed.
+
+### No-claim boundaries (D3Q19 performance model)
+
+- `perf` performs no timing, machine probe, authority validation, baseline
+  promotion, durable-ledger write, SIMD dispatch, scheduler change, or tuning
+  publication. It validates the record the ignored runner must emit.
+- Logical byte and FLOP accounting defines a portable roofline denominator; it
+  does not claim measured DRAM traffic, cache behavior, instruction count, or
+  target attainment on any host.
+- No floor is authorized by source code alone. Both reference-ISA rows,
+  pre/post admitted axes, quiet-host dispersion, retained external receipts,
+  and the sealed tune-row path remain required measurement evidence.

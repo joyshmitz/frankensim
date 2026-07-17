@@ -18,6 +18,7 @@ pub use fs_evidence::Color;
 pub mod core2;
 pub mod d3q19;
 pub mod freesurface;
+pub mod perf;
 pub mod refine;
 pub mod rheology;
 pub mod thermal;
