@@ -19,6 +19,7 @@ fs-regime = { path = "../fs-regime" }
 fsqlite = { path = "../../../frankensqlite/crates/fsqlite" }
 
 [dev-dependencies]
+fsqlite = { path = "../../../frankensqlite/crates/fsqlite", features = ["async-api"] }
 
 [lints]
 workspace = true

@@ -45,6 +45,10 @@ impl LatencyLane {
     pub fn new(threads: usize) -> Result<Self, LaneError> {
         asupersync::runtime::RuntimeBuilder::new()
             .worker_threads(threads.max(1))
+            // FrankenSQLite's async facade keeps one blocking task resident
+            // as the connection worker and uses another to await each
+            // response. A single slot therefore deadlocks that adapter.
+            .blocking_threads(2, 2)
             .build()
             .map(|runtime| LatencyLane { runtime })
             .map_err(|e| LaneError {

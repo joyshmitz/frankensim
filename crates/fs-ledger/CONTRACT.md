@@ -539,8 +539,15 @@ total order `(shape_class, machine)` and refuse rather than truncate.
 
 No compute kernels; all calls are short transactions. A dropped
 `ArtifactWriter` rolls back its transaction leaving zero residue (tested).
-Once fs-exec lands, ledger writes stay on the latency lane per plan §5.2;
-scope-tree integration is the fs-obs sink bead's scope.
+`tests/ambient_cx.rs` exercises the asynchronous persistence boundary on the
+fs-exec latency lane: a budget-marked runtime child drives FrankenSQLite
+through a detached local database context, and cancellation of that ambient
+child interrupts a deliberately gated database response wait. When green,
+this G4 case is the executable witness for context identity and cancellation
+propagation on that tested async response-wait path. Cancellation is observed
+after SQL dispatch: it does not preempt blocking SQL, and it does not prove an
+already-dispatched mutation was rolled back. The synchronous `Ledger` API does
+not yet claim per-call scope-tree cancellation.
 
 ## Unsafe boundary
 

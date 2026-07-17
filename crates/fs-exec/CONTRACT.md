@@ -111,7 +111,12 @@ fs-blake3, fs-substrate, fs-obs.
   as its error source. `TileFailure::InjectedFault` retains its declared plan
   seed and numbered touch without manufacturing an underlying error source.
 - `LatencyLane` — thin configured handle on the asupersync runtime
-  (`block_on`, `runtime()`); no fs-exec scheduling policy of its own.
+  (`block_on`, `runtime()`); no fs-exec scheduling policy of its own. The
+  lane provisions a fixed two-thread blocking pool: one slot may remain
+  resident in a FrankenSQLite connection worker while the second waits for
+  that worker's response. Blocking application compute remains outside this
+  lane. The pool supports one active `AsyncConnection`; it makes no concurrent
+  multi-connection or general blocking-throughput claim.
 - `victim_order(worker, workers, topo)` / `weighted_ranges(tiles, weights)`
   — pure, deterministic; these functions ARE what workers use, so fixture
   verification verifies runtime behavior.
