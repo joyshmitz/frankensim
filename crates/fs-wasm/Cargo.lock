@@ -1142,6 +1142,8 @@ name = "fs-time"
 version = "0.0.1"
 dependencies = [
  "fs-ad",
+ "fs-blake3",
+ "fs-exec",
  "fs-ga",
  "fs-la",
  "fs-math",
@@ -1153,6 +1155,7 @@ name = "fs-toleralloc"
 version = "0.0.1"
 dependencies = [
  "fs-evidence",
+ "fs-math",
 ]
 
 [[package]]
