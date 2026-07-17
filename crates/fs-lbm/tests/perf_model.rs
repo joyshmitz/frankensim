@@ -1,5 +1,9 @@
 //! D3Q19 performance-model and tropical-attribution conformance (bead 712t).
 
+use fs_exec::RunReport;
+use fs_lbm::d3q19::sparse::{
+    SparsePassObservation, SparseStreamGroupObservation, SparseSweepObservation,
+};
 use fs_lbm::d3q19::{E3, TILE};
 use fs_lbm::perf::{
     BGK_EQUILIBRIUM_FLOPS, BGK_FLOPS_PER_CELL, BGK_FORCE_RELAX_FLOPS, BGK_MACRO_VELOCITY_FLOPS,
@@ -7,7 +11,7 @@ use fs_lbm::perf::{
     D3Q19_LOCAL_LINKS_PER_TILE, D3Q19_PERF_MODEL_VERSION, D3q19PerfRow, D3q19TrafficModel,
     DISTRIBUTION_BYTES, EvidenceClass, KernelClass, LaneShape, OccupancyClass, PerfGateVerdict,
     PerfModelError, RATIO_PPM, ReferenceIsa, SPARSE_TILE_CELLS, SPARSE_TILE_EDGE, TaskSample,
-    ThreadingClass, attribute_critical_path, critical_path_is_stable,
+    ThreadingClass, attribute_critical_path, critical_path_is_stable, sparse_sweep_task_samples,
 };
 
 fn task(id: u32, class: KernelClass, wall_ns: u64, predecessors: &[u32]) -> TaskSample {
@@ -50,6 +54,46 @@ fn report_only_row() -> D3q19PerfRow {
         },
         placement_identity: "tile-edge=4;workers=12;placement=host".to_owned(),
         critical_paths: vec![critical(); 5],
+    }
+}
+
+fn pass(kernel: &'static str, wall_ns: u64) -> SparsePassObservation {
+    SparsePassObservation {
+        executor: RunReport {
+            kernel,
+            mode: "deterministic",
+            completed: 2,
+            total: 2,
+            tiles_by_worker: vec![1, 1],
+            ..RunReport::default()
+        },
+        wall_ns,
+    }
+}
+
+fn observed_sweep() -> SparseSweepObservation {
+    SparseSweepObservation {
+        active_tiles: 15,
+        workers: 2,
+        collide: pass("fs-lbm/d3q19-sparse-collide", 100),
+        stream: pass("fs-lbm/d3q19-sparse-stream", 150),
+        stream_groups: vec![
+            SparseStreamGroupObservation {
+                group: 0,
+                first_tile_slot: 0,
+                tiles: 8,
+                local_stream_wall_ns: 40,
+                halo_wall_ns: 60,
+            },
+            SparseStreamGroupObservation {
+                group: 1,
+                first_tile_slot: 8,
+                tiles: 7,
+                local_stream_wall_ns: 80,
+                halo_wall_ns: 20,
+            },
+        ],
+        publication_wall_ns: 10,
     }
 }
 
@@ -199,6 +243,74 @@ fn max_plus_path_names_the_true_dominant_kernel_class() {
     let json = result.receipt_json();
     assert!(json.contains("\"dominant_class\":\"stream\""));
     assert!(json.contains("\"path\":[10,20,40,50]"));
+}
+
+#[test]
+fn observed_sparse_sweep_lowers_to_an_exact_bounded_max_plus_dag() {
+    let observation = observed_sweep();
+    let tasks = sparse_sweep_task_samples(5, &observation).expect("observation admits");
+    assert_eq!(tasks.len(), 7);
+    assert_eq!(tasks[0], task(1, KernelClass::Activation, 5, &[]));
+    assert_eq!(tasks[1], task(2, KernelClass::Collide, 100, &[1]));
+    assert_eq!(tasks[2], task(3, KernelClass::Stream, 40, &[2]));
+    assert_eq!(tasks[3], task(4, KernelClass::Halo, 60, &[3]));
+    assert_eq!(tasks[4], task(5, KernelClass::Stream, 80, &[2]));
+    assert_eq!(tasks[5], task(6, KernelClass::Halo, 20, &[5]));
+    assert_eq!(tasks[6], task(7, KernelClass::Stream, 60, &[4, 6]));
+
+    let critical = attribute_critical_path(&tasks).expect("lowered DAG admits");
+    assert_eq!(critical.path, [1, 2, 3, 4, 7]);
+    assert_eq!(critical.makespan_ns, 5 + 100 + 150 + 10);
+    assert_eq!(critical.class_wall_ns, [5, 100, 60, 100]);
+    assert_eq!(critical.dominant_class, KernelClass::Collide);
+    assert_eq!(
+        sparse_sweep_task_samples(5, &observation).expect("replay admits"),
+        tasks,
+        "identical observations must replay to identical task identities"
+    );
+}
+
+#[test]
+fn observed_sparse_sweep_refuses_forged_completion_geometry_and_nested_walls() {
+    let mut incomplete = observed_sweep();
+    incomplete.stream.executor.completed = 1;
+    assert!(matches!(
+        sparse_sweep_task_samples(5, &incomplete),
+        Err(PerfModelError::InvalidReceipt(
+            "observed executor completion"
+        ))
+    ));
+
+    let mut reordered = observed_sweep();
+    reordered.stream_groups.swap(0, 1);
+    assert!(matches!(
+        sparse_sweep_task_samples(5, &reordered),
+        Err(PerfModelError::InvalidReceipt(
+            "observed stream group geometry"
+        ))
+    ));
+
+    let mut impossible_wall = observed_sweep();
+    impossible_wall.stream.wall_ns = 99;
+    assert!(matches!(
+        sparse_sweep_task_samples(5, &impossible_wall),
+        Err(PerfModelError::InvalidReceipt(
+            "observed group wall exceeds stream pass"
+        ))
+    ));
+    assert!(matches!(
+        sparse_sweep_task_samples(0, &observed_sweep()),
+        Err(PerfModelError::InvalidReceipt("activation wall"))
+    ));
+
+    let mut worker_overflow = observed_sweep();
+    worker_overflow.collide.executor.tiles_by_worker = vec![u64::MAX, 1];
+    assert!(matches!(
+        sparse_sweep_task_samples(5, &worker_overflow),
+        Err(PerfModelError::ArithmeticOverflow(
+            "observed worker completion"
+        ))
+    ));
 }
 
 #[test]

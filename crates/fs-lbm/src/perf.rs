@@ -15,6 +15,8 @@
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::d3q19::sparse::{SPARSE_SWEEP_GROUP_TILES, SparseSweepObservation};
+
 /// Version of the D3Q19 sparse-sweep traffic and receipt semantics.
 pub const D3Q19_PERF_MODEL_VERSION: &str = "d3q19-sparse-sweep-v2-local-halo";
 /// Parts per million used for exact occupancy/share ratios.
@@ -53,7 +55,7 @@ pub const MAX_CRITICAL_TASKS: usize = 65_536;
 pub const MAX_CRITICAL_EDGES: usize = 262_144;
 /// Maximum timed repetitions retained in one GLUP/s row.
 pub const MAX_PERF_REPETITIONS: usize = 64;
-const MAX_PREDECESSORS_PER_TASK: usize = 64;
+const MAX_PREDECESSORS_PER_TASK: usize = MAX_CRITICAL_TASKS;
 
 /// Stable refusal from workload, receipt, or max-plus validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +80,8 @@ pub enum PerfModelError {
         /// Offered length.
         observed: usize,
     },
+    /// A bounded task/predecessor vector could not reserve its admitted size.
+    AllocationRefused(&'static str),
     /// Task identity appeared more than once.
     DuplicateTask(u32),
     /// One task repeated the same predecessor.
@@ -124,6 +128,9 @@ impl fmt::Display for PerfModelError {
                 f,
                 "D3Q19 perf {resource} cap {limit} exceeded by {observed}"
             ),
+            Self::AllocationRefused(resource) => {
+                write!(f, "D3Q19 perf allocation refused for {resource}")
+            }
             Self::DuplicateTask(task) => write!(f, "duplicate timing task id {task}"),
             Self::DuplicatePredecessor { task, predecessor } => {
                 write!(f, "timing task {task} repeats predecessor {predecessor}")
@@ -691,6 +698,188 @@ pub fn critical_path_is_stable(repetitions: &[CriticalPathAttribution]) -> bool 
         .iter()
         .skip(1)
         .all(|row| row.stable_signature() == first.stable_signature())
+}
+
+/// Lower one successful observed sparse sweep into a bounded deterministic
+/// max-plus task DAG.
+///
+/// The graph preserves the real barriers without double-counting parallel
+/// group walls:
+///
+/// - activation precedes the aggregate collide pass;
+/// - each canonical local-stream group depends on collide;
+/// - each halo group depends on its same-group local pull;
+/// - one final stream/publication task joins every halo group and carries the
+///   observed stream-pass residual plus the publication wall.
+///
+/// Consequently the graph makespan is exactly `activation + collide pass +
+/// stream pass + publication` (subject only to checked integer arithmetic),
+/// while the selected group path still attributes local-stream versus halo
+/// work. The caller owns activation timing because active-set construction is
+/// outside [`SparseSweepObservation`].
+pub fn sparse_sweep_task_samples(
+    activation_wall_ns: u64,
+    observation: &SparseSweepObservation,
+) -> Result<Vec<TaskSample>, PerfModelError> {
+    if activation_wall_ns == 0 {
+        return Err(PerfModelError::InvalidReceipt("activation wall"));
+    }
+    if observation.active_tiles == 0 || observation.workers == 0 {
+        return Err(PerfModelError::InvalidReceipt(
+            "observed active tiles or workers",
+        ));
+    }
+    if observation.collide.wall_ns == 0
+        || observation.stream.wall_ns == 0
+        || observation.publication_wall_ns == 0
+    {
+        return Err(PerfModelError::InvalidReceipt("observed pass wall"));
+    }
+
+    let group_count = observation.active_tiles.div_ceil(SPARSE_SWEEP_GROUP_TILES);
+    if observation.stream_groups.len() != group_count {
+        return Err(PerfModelError::InvalidReceipt(
+            "observed stream group count",
+        ));
+    }
+    let group_count_u64 = u64::try_from(group_count)
+        .map_err(|_| PerfModelError::ArithmeticOverflow("observed group count"))?;
+    for (pass, kernel) in [
+        (&observation.collide, "fs-lbm/d3q19-sparse-collide"),
+        (&observation.stream, "fs-lbm/d3q19-sparse-stream"),
+    ] {
+        let completed_by_workers = pass
+            .executor
+            .tiles_by_worker
+            .iter()
+            .try_fold(0u64, |total, tiles| total.checked_add(*tiles))
+            .ok_or(PerfModelError::ArithmeticOverflow(
+                "observed worker completion",
+            ))?;
+        if pass.executor.kernel != kernel
+            || pass.executor.total != group_count_u64
+            || pass.executor.completed != pass.executor.total
+            || !pass.executor.cancel_latencies_ns.is_empty()
+            || pass.executor.tiles_by_worker.len() != observation.workers
+            || completed_by_workers != pass.executor.completed
+        {
+            return Err(PerfModelError::InvalidReceipt(
+                "observed executor completion",
+            ));
+        }
+    }
+
+    let task_count = group_count
+        .checked_mul(2)
+        .and_then(|count| count.checked_add(3))
+        .ok_or(PerfModelError::ArithmeticOverflow("observed task count"))?;
+    if task_count > MAX_CRITICAL_TASKS {
+        return Err(PerfModelError::ResourceLimit {
+            resource: "critical tasks",
+            limit: MAX_CRITICAL_TASKS,
+            observed: task_count,
+        });
+    }
+    let edge_count = group_count
+        .checked_mul(3)
+        .and_then(|count| count.checked_add(1))
+        .ok_or(PerfModelError::ArithmeticOverflow("observed edge count"))?;
+    if edge_count > MAX_CRITICAL_EDGES {
+        return Err(PerfModelError::ResourceLimit {
+            resource: "critical edges",
+            limit: MAX_CRITICAL_EDGES,
+            observed: edge_count,
+        });
+    }
+
+    let mut tasks = Vec::new();
+    tasks
+        .try_reserve_exact(task_count)
+        .map_err(|_| PerfModelError::AllocationRefused("critical tasks"))?;
+    tasks.push(TaskSample {
+        id: 1,
+        class: KernelClass::Activation,
+        wall_ns: activation_wall_ns,
+        predecessors: Vec::new(),
+    });
+    tasks.push(TaskSample {
+        id: 2,
+        class: KernelClass::Collide,
+        wall_ns: observation.collide.wall_ns,
+        predecessors: vec![1],
+    });
+
+    let mut halo_terminals = Vec::new();
+    halo_terminals
+        .try_reserve_exact(group_count)
+        .map_err(|_| PerfModelError::AllocationRefused("halo terminals"))?;
+    let mut max_group_wall_ns = 0u64;
+    for (index, group) in observation.stream_groups.iter().enumerate() {
+        let expected_first = index.checked_mul(SPARSE_SWEEP_GROUP_TILES).ok_or(
+            PerfModelError::ArithmeticOverflow("observed first tile slot"),
+        )?;
+        let expected_tiles =
+            (observation.active_tiles - expected_first).min(SPARSE_SWEEP_GROUP_TILES);
+        let expected_group = u64::try_from(index)
+            .map_err(|_| PerfModelError::ArithmeticOverflow("observed group identity"))?;
+        if group.group != expected_group
+            || group.first_tile_slot != expected_first
+            || group.tiles != expected_tiles
+            || group.local_stream_wall_ns == 0
+            || group.halo_wall_ns == 0
+        {
+            return Err(PerfModelError::InvalidReceipt(
+                "observed stream group geometry",
+            ));
+        }
+        let local_id = index
+            .checked_mul(2)
+            .and_then(|offset| offset.checked_add(3))
+            .and_then(|id| u32::try_from(id).ok())
+            .ok_or(PerfModelError::ArithmeticOverflow("local stream task id"))?;
+        let halo_id = local_id
+            .checked_add(1)
+            .ok_or(PerfModelError::ArithmeticOverflow("halo task id"))?;
+        tasks.push(TaskSample {
+            id: local_id,
+            class: KernelClass::Stream,
+            wall_ns: group.local_stream_wall_ns,
+            predecessors: vec![2],
+        });
+        tasks.push(TaskSample {
+            id: halo_id,
+            class: KernelClass::Halo,
+            wall_ns: group.halo_wall_ns,
+            predecessors: vec![local_id],
+        });
+        halo_terminals.push(halo_id);
+        let group_wall_ns = group
+            .local_stream_wall_ns
+            .checked_add(group.halo_wall_ns)
+            .ok_or(PerfModelError::ArithmeticOverflow("observed group wall"))?;
+        max_group_wall_ns = max_group_wall_ns.max(group_wall_ns);
+    }
+    let stream_residual_ns = observation
+        .stream
+        .wall_ns
+        .checked_sub(max_group_wall_ns)
+        .ok_or(PerfModelError::InvalidReceipt(
+            "observed group wall exceeds stream pass",
+        ))?;
+    let final_wall_ns = stream_residual_ns
+        .checked_add(observation.publication_wall_ns)
+        .ok_or(PerfModelError::ArithmeticOverflow(
+            "stream residual plus publication",
+        ))?;
+    let final_id = u32::try_from(task_count)
+        .map_err(|_| PerfModelError::ArithmeticOverflow("publication task id"))?;
+    tasks.push(TaskSample {
+        id: final_id,
+        class: KernelClass::Stream,
+        wall_ns: final_wall_ns,
+        predecessors: halo_terminals,
+    });
+    Ok(tasks)
 }
 
 /// Evidence authority of one measured row.
