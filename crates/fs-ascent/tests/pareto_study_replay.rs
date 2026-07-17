@@ -10,8 +10,9 @@
 //! checks each point against its declared schedule entry, and reconstructs the
 //! one-constraint KKT witness independently of the production report.
 //! Deterministic red mutations cover a finite returned-decision bit flip,
-//! point/schedule permutations, and corrupted public report fields; even
-//! self-consistently resealed forms must fail closed.
+//! point/schedule permutations, missing returned-point callback coverage, and
+//! corrupted public report fields; even self-consistently resealed forms must
+//! fail closed.
 //!
 //! This is the two-objective tracing family only. It does not claim
 //! tri-objective behavior, the full WFG transformation stack, cancellation,
@@ -24,14 +25,18 @@ use fs_obs::ident::{IdentityBuilder, ReplayIdentity, check_version};
 use fs_obs::{Emitter, EventKind, Severity};
 
 const SUITE: &str = "fs-ascent/pareto-study-replay";
-const INPUT_SEED: u64 = 0;
 const MUTATION_SEED: u64 = 0x5041_5245_544F_5244;
 const EPSILON_TOLERANCE: f64 = 1e-7;
 const WEIGHTED_GRADIENT_LIMIT: f64 = 1e-9;
 const CLOSED_FORM_LIMIT: f64 = 1e-7;
 const KKT_RESIDUAL_LIMIT: f64 = 1e-5;
+const PARETO_SET_ALIGNMENT_LIMIT: f64 = 1e-4;
+const EPSILON_COVERAGE_MINIMUM_SPREAD: f64 = 0.6;
+const KKT_ROUNDOFF_SCALE: f64 = 128.0;
 const WEIGHTED_DIMENSION: usize = 3;
 const EPSILON_DIMENSION: usize = 2;
+const SEMANTIC_ORACLE_VERSION: &str =
+    "pareto-independent-objective-gradient-callback-schedule-kkt-v1";
 const WEIGHTED_START: [f64; 3] = [0.5, 0.5, 0.5];
 const EPSILON_START: [f64; 2] = [0.0, 0.0];
 
@@ -79,7 +84,6 @@ struct RunRecord {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ReceiptPayload {
-    input_seed: u64,
     weights_bits: Vec<u64>,
     weighted_start_bits: Vec<u64>,
     epsilon_bits: Vec<u64>,
@@ -91,16 +95,31 @@ struct ReceiptPayload {
 
 impl ReceiptPayload {
     fn identity(&self) -> ReplayIdentity {
-        let mut builder = IdentityBuilder::new("fs-ascent-pareto-study-receipt-v1")
+        let mut builder = IdentityBuilder::new("fs-ascent-pareto-study-receipt-v2")
+            .str("suite", SUITE)
             .str("fs-ascent-version", fs_ascent::VERSION)
+            .str("fs-math-version", fs_math::VERSION)
+            .str("fs-obs-version", fs_obs::VERSION)
+            .str("semantic-oracle-version", SEMANTIC_ORACLE_VERSION)
             .str("family", "two-objective-pareto-tracing")
             .str("weighted-engine", "weighted_sum_sweep/L-BFGS")
             .str(
                 "epsilon-engine",
                 "epsilon_constraint_sweep/augmented-lagrangian",
             )
-            .u64("input-seed", self.input_seed)
+            .u64("weighted-dimension", WEIGHTED_DIMENSION as u64)
+            .u64("epsilon-dimension", EPSILON_DIMENSION as u64)
+            .u64("mutation-seed", MUTATION_SEED)
             .f64_bits("epsilon-tolerance", EPSILON_TOLERANCE)
+            .f64_bits("weighted-gradient-limit", WEIGHTED_GRADIENT_LIMIT)
+            .f64_bits("closed-form-limit", CLOSED_FORM_LIMIT)
+            .f64_bits("kkt-residual-limit", KKT_RESIDUAL_LIMIT)
+            .f64_bits("pareto-set-alignment-limit", PARETO_SET_ALIGNMENT_LIMIT)
+            .f64_bits(
+                "epsilon-coverage-minimum-spread",
+                EPSILON_COVERAGE_MINIMUM_SPREAD,
+            )
+            .f64_bits("kkt-roundoff-scale", KKT_ROUNDOFF_SCALE)
             .u64("weights", self.weights_bits.len() as u64);
         for &value_bits in &self.weights_bits {
             builder = builder.u64("weight-bits", value_bits);
@@ -242,6 +261,7 @@ enum SemanticRefusal {
     ObjectiveMismatch,
     CallbackMismatch,
     CallbackCoverageMissing,
+    ReturnedPointNotEvaluated,
     UnexpectedWeightedKkt,
     MissingEpsilonKkt,
     InvalidCertificateResidual,
@@ -278,7 +298,7 @@ fn comparison_slack(values: &[f64]) -> f64 {
         .iter()
         .map(|value| value.abs())
         .fold(1.0f64, f64::max);
-    128.0 * f64::EPSILON * scale
+    KKT_ROUNDOFF_SCALE * f64::EPSILON * scale
 }
 
 fn quadratic_pair(x: &[f64]) -> ObjectivePair {
@@ -371,6 +391,25 @@ fn validate_callback_receipt(calls: &[ObjectiveCall]) -> Result<(), SemanticRefu
     Ok(())
 }
 
+fn returned_point_was_evaluated(
+    calls: &[ObjectiveCall],
+    phase: &'static str,
+    point_bits: &[u64],
+    required_occurrences: usize,
+) -> bool {
+    ["f1", "f2"].into_iter().all(|objective| {
+        calls
+            .iter()
+            .filter(|call| {
+                call.phase == phase
+                    && call.objective == objective
+                    && call.point_bits.as_slice() == point_bits
+            })
+            .count()
+            >= required_occurrences
+    })
+}
+
 fn record_call(
     calls: &RefCell<Vec<ObjectiveCall>>,
     phase: &'static str,
@@ -401,13 +440,21 @@ fn epsilons() -> Vec<f64> {
 fn validate_weighted_points(
     points: &[PointPayload],
     schedule: &[f64],
+    calls: &[ObjectiveCall],
 ) -> Result<(), SemanticRefusal> {
     if points.len() != schedule.len() {
         return Err(SemanticRefusal::ScheduleMismatch);
     }
     let mut worst_closed_form = 0.0f64;
-    for (point, &weight) in points.iter().zip(schedule) {
+    for (index, (point, &weight)) in points.iter().zip(schedule).enumerate() {
         let x = decode_finite(&point.x_bits, WEIGHTED_DIMENSION)?;
+        let required_occurrences = points[..=index]
+            .iter()
+            .filter(|candidate| candidate.x_bits.as_slice() == point.x_bits.as_slice())
+            .count();
+        if !returned_point_was_evaluated(calls, "weighted", &point.x_bits, required_occurrences) {
+            return Err(SemanticRefusal::ReturnedPointNotEvaluated);
+        }
         let oracle = quadratic_pair(&x);
         if !oracle.is_finite() {
             return Err(SemanticRefusal::NonFiniteEvidence);
@@ -486,14 +533,22 @@ fn reconstruct_epsilon_kkt(
 fn validate_epsilon_points(
     points: &[PointPayload],
     schedule: &[f64],
+    calls: &[ObjectiveCall],
 ) -> Result<(), SemanticRefusal> {
     if points.len() != schedule.len() {
         return Err(SemanticRefusal::ScheduleMismatch);
     }
     let mut lowest_f1 = f64::INFINITY;
     let mut highest_f1 = f64::NEG_INFINITY;
-    for (point, &epsilon) in points.iter().zip(schedule) {
+    for (index, (point, &epsilon)) in points.iter().zip(schedule).enumerate() {
         let x = decode_finite(&point.x_bits, EPSILON_DIMENSION)?;
+        let required_occurrences = points[..=index]
+            .iter()
+            .filter(|candidate| candidate.x_bits.as_slice() == point.x_bits.as_slice())
+            .count();
+        if !returned_point_was_evaluated(calls, "epsilon", &point.x_bits, required_occurrences) {
+            return Err(SemanticRefusal::ReturnedPointNotEvaluated);
+        }
         let oracle = fonseca_fleming_pair(&x);
         if !oracle.is_finite() {
             return Err(SemanticRefusal::NonFiniteEvidence);
@@ -504,7 +559,7 @@ fn validate_epsilon_points(
         if oracle.values[0] > epsilon + EPSILON_TOLERANCE {
             return Err(SemanticRefusal::EpsilonInfeasible);
         }
-        if (x[0] - x[1]).abs() >= 1e-4 {
+        if (x[0] - x[1]).abs() >= PARETO_SET_ALIGNMENT_LIMIT {
             return Err(SemanticRefusal::QualityRegression);
         }
 
@@ -574,15 +629,14 @@ fn validate_epsilon_points(
         lowest_f1 = lowest_f1.min(oracle.values[0]);
         highest_f1 = highest_f1.max(oracle.values[0]);
     }
-    if highest_f1 - lowest_f1 <= 0.6 {
+    if highest_f1 - lowest_f1 <= EPSILON_COVERAGE_MINIMUM_SPREAD {
         return Err(SemanticRefusal::QualityRegression);
     }
     Ok(())
 }
 
 fn validate_semantics(payload: &ReceiptPayload) -> Result<(), SemanticRefusal> {
-    if payload.input_seed != INPUT_SEED
-        || payload.weighted_start_bits != bits(&WEIGHTED_START)
+    if payload.weighted_start_bits != bits(&WEIGHTED_START)
         || payload.epsilon_start_bits != bits(&EPSILON_START)
     {
         return Err(SemanticRefusal::FixtureMetadataMismatch);
@@ -595,8 +649,16 @@ fn validate_semantics(payload: &ReceiptPayload) -> Result<(), SemanticRefusal> {
         return Err(SemanticRefusal::ScheduleMismatch);
     }
     validate_callback_receipt(&payload.objective_calls)?;
-    validate_weighted_points(&payload.weighted_points, &weighted_schedule)?;
-    validate_epsilon_points(&payload.epsilon_points, &epsilon_schedule)
+    validate_weighted_points(
+        &payload.weighted_points,
+        &weighted_schedule,
+        &payload.objective_calls,
+    )?;
+    validate_epsilon_points(
+        &payload.epsilon_points,
+        &epsilon_schedule,
+        &payload.objective_calls,
+    )
 }
 
 fn run_once() -> RunRecord {
@@ -671,7 +733,6 @@ fn run_once() -> RunRecord {
 
 fn receipt(run: &RunRecord) -> RetainedReceipt {
     RetainedReceipt::new(ReceiptPayload {
-        input_seed: INPUT_SEED,
         weights_bits: bits(&weights()),
         weighted_start_bits: bits(&WEIGHTED_START),
         epsilon_bits: bits(&epsilons()),
@@ -705,12 +766,12 @@ fn emit_receipt(
     mask: u64,
 ) {
     let json = format!(
-        "{{\"input_seed\":{INPUT_SEED},\"mutation_seed\":{MUTATION_SEED},\
+        "{{\"fixture\":\"deterministic-two-objective-tracing\",\"mutation_seed\":{MUTATION_SEED},\
          \"reference_identity\":\"{}\",\"mutant_identity\":\"{}\",\
          \"mutated_path\":\"epsilon\",\"mutated_point\":{point},\
          \"mutated_coordinate\":{coordinate},\"mantissa_mask\":\"{mask:#018x}\",\
-         \"semantic_oracle\":\"independent-objective-gradient-schedule-kkt\",\
-         \"semantic_red_cases\":[\"point-permutation\",\"paired-schedule-permutation\",\"objective-corruption\",\"negative-kkt\"],\
+         \"semantic_oracle\":\"{SEMANTIC_ORACLE_VERSION}\",\
+         \"semantic_red_cases\":[\"point-permutation\",\"paired-schedule-permutation\",\"callback-coverage\",\"objective-corruption\",\"negative-kkt\"],\
          \"merge_refusal\":\"reference-identity-mismatch\"}}",
         reference.declared_identity.hex(),
         mutant.declared_identity.hex(),
@@ -736,10 +797,10 @@ fn emit_receipt(
             case: "two-objective-tracing".to_string(),
             pass: true,
             detail: format!(
-                "fixed input seed {INPUT_SEED} replayed weighted and epsilon callback/result receipts; the independent objective/gradient, schedule-feasibility, and one-row KKT oracle admitted every reference point; point/schedule, objective-report, and negative-KKT semantic red cases were refused after resealing; mutation seed {MUTATION_SEED:#018x} flipped epsilon point {point} coordinate {coordinate} mask {mask:#018x}, produced stable identity {}, and both merge gates refused it",
+                "the deterministic weighted and epsilon fixtures replayed every callback/result receipt; the independent objective/gradient, returned-point coverage, schedule-feasibility, and one-row KKT oracle admitted every reference point; point/schedule, callback-coverage, objective-report, and negative-KKT semantic red cases were refused after resealing; mutation seed {MUTATION_SEED:#018x} flipped epsilon point {point} coordinate {coordinate} mask {mask:#018x}, produced stable identity {}, and both merge gates refused it",
                 mutant.declared_identity.hex(),
             ),
-            seed: INPUT_SEED,
+            seed: MUTATION_SEED,
         },
         None,
     );
@@ -842,6 +903,19 @@ fn pareto_tracing_replays_and_rejects_seeded_red_mutation() {
         &reference,
         paired_permutation,
         SemanticRefusal::ScheduleMismatch,
+    );
+
+    let mut callback_gap = reference.payload.clone();
+    let uncovered_point = callback_gap.weighted_points[0].x_bits.clone();
+    callback_gap.objective_calls.retain(|call| {
+        call.phase != "weighted"
+            || call.objective != "f2"
+            || call.point_bits.as_slice() != uncovered_point.as_slice()
+    });
+    assert_resealed_semantic_refusal(
+        &reference,
+        callback_gap,
+        SemanticRefusal::ReturnedPointNotEvaluated,
     );
 
     let mut objective_corruption = reference.payload.clone();
