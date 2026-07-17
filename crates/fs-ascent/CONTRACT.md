@@ -196,6 +196,20 @@ non-reference receipt. This proves one sphere fixture only, not all manifolds,
 persisted checkpoint transport, cancellation recovery, cross-ISA equality, or
 performance.
 
+`tests/trust_region_study_replay.rs` (bead 7tv.21.25) is the retained
+study-scale replay and seeded-failure self-test for trust-region Newton–Krylov.
+The production Steihaug driver solves the existing six-dimensional Rosenbrock
+fixture with an exact analytic Hessian-vector callback. Its versioned identity
+binds the fixed input seed, start and engine configuration, every objective
+callback point/value/gradient, every Hessian-vector point/direction/product,
+and every public `TrustRegionReport` field. Replay must be byte-identical,
+callback counts must equal the report accounting, and the trajectory must
+exercise negative-curvature handling. A deterministic mutation seed flips one
+finite returned-decision mantissa bit; stale and self-consistently resealed
+forms are both refused by the test-local merge gate. This proves one
+objective/Hessian pair only, not approximate-Hessian parity, all objectives,
+cancellation, checkpointing, cross-ISA equality, persistence, or performance.
+
 `tests/wfg_moo_battery.rs` covers WFG-scale front geometry without claiming
 the full deceptive or multimodal transformation stack. Concave, convex, and
 WFG1-class mixed fixtures retain their measured sweep behavior as linted,
