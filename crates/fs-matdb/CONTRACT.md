@@ -304,10 +304,10 @@ complete dimension-linked receipt coverage, pack/species identity binding,
 whole-pack tampering, untrusted-length preflight, and trailing-byte refusals.
 
 `xtask/tests/matdb_pack_cli.rs`: G3 compilation of the committed methane,
-nitrogen, oxygen, argon, and carbon-dioxide seed manifests twice into
-byte-identical, identity-verified species packs, including retained NASA
-source/license/standard-state associations and separately bounded NIST
-displayed-precision agreement checks.
+nitrogen, oxygen, argon, carbon-dioxide, water-vapor, and carbon-monoxide seed
+manifests twice into byte-identical, identity-verified species packs, including
+retained NASA source/license/standard-state associations and separately bounded
+NIST displayed-precision agreement checks.
 
 ## No-claim boundaries
 
@@ -325,10 +325,10 @@ displayed-precision agreement checks.
   magnetization/specific-moment curves instead.
 - No complete seed dataset ships in this crate. The repository's first
   `data/matdb/seed-v1` tranches are only raw, offline-compiled gas-species
-  associations; they do not define air or exhaust mixture compositions. Bead
-  1sxe still owns the curated material/property dataset. No equilibrium
-  computation happens here (fs-thermochem consumes phase data; this crate only
-  stores it).
+  associations; they do not define air or exhaust mixture compositions,
+  humidity, or combustion completeness. Bead 1sxe still owns the curated
+  material/property dataset. No equilibrium computation happens here
+  (fs-thermochem consumes phase data; this crate only stores it).
 - The L1 pack codec does not parse handbooks, CSV, NASA tables, license text,
   or other raw formats and does not decide whether terms permit
   redistribution; those are L6/offline compiler responsibilities. A nonblank

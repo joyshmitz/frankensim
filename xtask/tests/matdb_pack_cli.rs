@@ -37,7 +37,7 @@ struct CommittedSpeciesSeed {
     nist_display_rounding_half_width_g_per_mol: f64,
 }
 
-const AIR_EXHAUST_SPECIES_SEEDS: [CommittedSpeciesSeed; 4] = [
+const AIR_EXHAUST_SPECIES_SEEDS: [CommittedSpeciesSeed; 6] = [
     CommittedSpeciesSeed {
         manifest: "data/matdb/seed-v1/nitrogen/manifest.tsv",
         species: "N2",
@@ -64,6 +64,20 @@ const AIR_EXHAUST_SPECIES_SEEDS: [CommittedSpeciesSeed; 4] = [
         species: "CO2",
         nasa_molar_mass_g_per_mol: 44.009_50,
         nist_molar_mass_g_per_mol: 44.009_5,
+        nist_display_rounding_half_width_g_per_mol: 0.000_05,
+    },
+    CommittedSpeciesSeed {
+        manifest: "data/matdb/seed-v1/water-vapor/manifest.tsv",
+        species: "H2O",
+        nasa_molar_mass_g_per_mol: 18.015_28,
+        nist_molar_mass_g_per_mol: 18.015_3,
+        nist_display_rounding_half_width_g_per_mol: 0.000_05,
+    },
+    CommittedSpeciesSeed {
+        manifest: "data/matdb/seed-v1/carbon-monoxide/manifest.tsv",
+        species: "CO",
+        nasa_molar_mass_g_per_mol: 28.010_10,
+        nist_molar_mass_g_per_mol: 28.010_1,
         nist_display_rounding_half_width_g_per_mol: 0.000_05,
     },
 ];
