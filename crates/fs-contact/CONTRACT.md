@@ -109,14 +109,34 @@ bisection over `CertifiedMotorTube::box_action_over` enclosures:
 - Determinism: LIFO bisection with the earlier half examined first;
   reports replay bit-identically (ct-006).
 
+## Swept-vertex-hull refinement (bead tqag, increment 3)
+
+`refine_possible_windows(a_vertices, a_tube, b_vertices, b_tube,
+windows, max_iterations, cx)` re-tests each `PossibleContact` window
+for POLYTOPE bodies: every body-frame vertex trajectory is enclosed by
+`point_action_over`, and the convex hull of all trajectory-box corners
+contains the body's image at every instant (a rigid image of a hull is
+the hull of the vertex images). Certified separation of the two swept
+hulls (`fs_query::convex_separation`; corner selection is the support
+trait's documented exact case) PRUNES the window with a certified gap —
+tight exactly where per-instant axis-aligned boxes are structurally
+loose. ct-009 pins the trap: two 45°-rotated cubes passing on the
+diagonal whose AABBs overlap at EVERY instant (the box route can never
+clear them at any tolerance) prune with the analytic edge-to-edge gap.
+Soundness: pruning requires `separation_proven` over a SUPERSET of each
+swept body, so a window containing true contact can never be pruned
+(ct-010 keeps the bullet's crossing window Retained); retention claims
+nothing, exactly like the box verdict.
+
 ## No-claim boundaries
 
-- Certified CCD verdicts are BOX-ENCLOSURE verdicts: `PossibleContact`
-  windows localize in time but do not adjudicate contact geometry;
-  feature-pair refinement (support-map separation inside the windows,
-  time-of-impact enclosures tighter than the box gap) is later work in
-  this bead's staging plan. Stage 2 consumes simulated-flow tubes
-  through a tube-source-agnostic interface.
+- Certified CCD verdicts remain ENCLOSURE verdicts: `PossibleContact` /
+  `Retained` windows localize in time but never adjudicate contact;
+  time-of-impact enclosures tighter than window bounds, and refinement
+  for non-polytope bodies (spheres, SDFs — needs swept support maps
+  from fs-motion), are later work in this bead's staging plan. Stage 2
+  consumes simulated-flow tubes through a tube-source-agnostic
+  interface.
 - Narrow-phase routes: Stage 1 is Convex×Convex only. SDF-pair local
   gaps (fs-query `ImplicitGapOracle`), nonconvex decomposition,
   interval global optimization, and mixed-route pairings all refuse

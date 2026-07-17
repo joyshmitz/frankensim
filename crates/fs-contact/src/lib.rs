@@ -508,3 +508,174 @@ pub fn certified_ccd(
         max_defect,
     })
 }
+
+// ── Swept-vertex-hull refinement (bead tqag, increment 3) ──────────────────
+
+use fs_geom::Vec3;
+
+/// Hard bound on vertices per polytope body in the refinement route
+/// (each vertex contributes eight trajectory-box corners per window).
+pub const MAX_CCD_VERTICES: usize = 1 << 10;
+
+/// The convex hull of a finite corner set, presented as a support map.
+/// Corner selection is the trait's documented exact case
+/// (`support_slack` = 0): the returned point is always a member corner.
+struct SweptVertexHull {
+    corners: Vec<fs_geom::Point3>,
+}
+
+impl ConvexSupportMap for SweptVertexHull {
+    fn support_point(&self, direction: Vec3) -> fs_geom::Point3 {
+        // First-strict-max selection: deterministic under permutation of
+        // equal dots because corner order is itself deterministic
+        // (vertex order × fixed corner order).
+        let mut best = self.corners[0];
+        let mut best_dot = Vec3::new(best.x, best.y, best.z).dot(direction);
+        for corner in &self.corners[1..] {
+            let dot = Vec3::new(corner.x, corner.y, corner.z).dot(direction);
+            if dot > best_dot {
+                best = *corner;
+                best_dot = dot;
+            }
+        }
+        best
+    }
+
+    fn interior_point(&self) -> fs_geom::Point3 {
+        self.corners[0]
+    }
+
+    fn support_slack(&self) -> f64 {
+        0.0
+    }
+
+    fn contained_ball_radius(&self, _center: fs_geom::Point3) -> Option<f64> {
+        // A corner cloud proves no interior ball; refusal per the trait.
+        None
+    }
+
+    fn name(&self) -> &'static str {
+        "swept-vertex-hull"
+    }
+}
+
+/// Build the swept hull of `vertices` under `tube` over `window`: every
+/// vertex trajectory is enclosed by [`CertifiedMotorTube::point_action_over`]
+/// and the hull of all box corners contains the body's image at every
+/// instant (the image of a convex hull under a rigid motion is the hull
+/// of the vertex images).
+fn swept_vertex_hull(
+    vertices: &[fs_geom::Point3],
+    tube: &CertifiedMotorTube,
+    window: Interval,
+    cx: &Cx<'_>,
+) -> Result<(SweptVertexHull, f64), ContactError> {
+    let mut corners = Vec::with_capacity(vertices.len() * 8);
+    let mut defect = 0.0f64;
+    for v in vertices {
+        if cx.checkpoint().is_err() {
+            return Err(ContactError::Cancelled);
+        }
+        let enc = tube.point_action_over(*v, window, cx)?;
+        defect = defect.max(enc.defect);
+        let [x, y, z] = enc.coords;
+        for &cx_ in &[x.lo(), x.hi()] {
+            for &cy in &[y.lo(), y.hi()] {
+                for &cz in &[z.lo(), z.hi()] {
+                    corners.push(fs_geom::Point3::new(cx_, cy, cz));
+                }
+            }
+        }
+    }
+    Ok((SweptVertexHull { corners }, defect))
+}
+
+/// One refined possible-contact window.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RefinedWindow {
+    /// The swept hulls are PROVEN disjoint over the whole window: the
+    /// box verdict was a false alarm here.
+    Pruned {
+        /// The window.
+        window: Interval,
+        /// Certified lower bound on the pair's distance over it.
+        gap: f64,
+    },
+    /// The tighter test could not clear the window either; it remains
+    /// a possible-contact window.
+    Retained {
+        /// The window.
+        window: Interval,
+    },
+}
+
+/// Refinement output over a set of possible-contact windows.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CcdRefinement {
+    /// One entry per input window, in input order.
+    pub windows: Vec<RefinedWindow>,
+    /// Worst versor-defect bound among every enclosure consulted.
+    pub max_defect: f64,
+}
+
+/// Feature-pair refinement of [`CcdVerdict::PossibleContact`] windows
+/// for POLYTOPE bodies (finite vertex sets in body frame): each window
+/// is re-tested with the certified separation of the two swept vertex
+/// hulls — tight where per-instant axis-aligned boxes are structurally
+/// loose (rotated or diagonally-moving bodies), so windows the box
+/// verdict could NEVER clear are pruned with a certified gap.
+///
+/// Soundness: pruning uses `separation_proven` (a certified positive
+/// lower bound between supersets of the two swept bodies); a window
+/// containing a true contact can therefore never be pruned. Retention
+/// claims nothing, exactly like the box verdict.
+///
+/// # Errors
+/// [`ContactError::TooManyBodies`] reusing the vertex ceiling
+/// ([`MAX_CCD_VERTICES`]); empty vertex sets refuse as
+/// [`ContactError::InvalidSupport`]; motion/query refusals pass
+/// through typed; [`ContactError::Cancelled`] per vertex and window.
+pub fn refine_possible_windows(
+    a_vertices: &[fs_geom::Point3],
+    a_tube: &CertifiedMotorTube,
+    b_vertices: &[fs_geom::Point3],
+    b_tube: &CertifiedMotorTube,
+    windows: &[Interval],
+    max_iterations: u32,
+    cx: &Cx<'_>,
+) -> Result<CcdRefinement, ContactError> {
+    for (index, vertices) in [(0usize, a_vertices), (1usize, b_vertices)] {
+        if vertices.is_empty() {
+            return Err(ContactError::InvalidSupport { body: index });
+        }
+        if vertices.len() > MAX_CCD_VERTICES {
+            return Err(ContactError::TooManyBodies {
+                bodies: vertices.len(),
+                max: MAX_CCD_VERTICES,
+            });
+        }
+    }
+    let mut out = Vec::with_capacity(windows.len());
+    let mut max_defect = 0.0f64;
+    for &window in windows {
+        if cx.checkpoint().is_err() {
+            return Err(ContactError::Cancelled);
+        }
+        let (hull_a, defect_a) = swept_vertex_hull(a_vertices, a_tube, window, cx)?;
+        let (hull_b, defect_b) = swept_vertex_hull(b_vertices, b_tube, window, cx)?;
+        max_defect = max_defect.max(defect_a).max(defect_b);
+        let separation = convex_separation(&hull_a, &hull_b, max_iterations, cx)?;
+        if separation.separation_proven {
+            out.push(RefinedWindow::Pruned {
+                window,
+                gap: separation.lo,
+            });
+        } else {
+            out.push(RefinedWindow::Retained { window });
+        }
+    }
+    Ok(CcdRefinement {
+        windows: out,
+        max_defect,
+    })
+}

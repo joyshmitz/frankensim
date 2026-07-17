@@ -440,3 +440,147 @@ fn ct_008_ccd_budget_exhaustion_lists_partial_state() {
         }
     });
 }
+
+// ── Increment 3: swept-vertex-hull refinement (ct-009, ct-010) ──────────────
+
+use fs_contact::{RefinedWindow, refine_possible_windows};
+
+/// Vertices of a cube with half-extent `h`, rotated 45° about z, offset
+/// by `(dx, dy)` — in body frame.
+fn rotated_cube(h: f64, dx: f64, dy: f64) -> Vec<Point3> {
+    let r = h * std::f64::consts::SQRT_2;
+    vec![
+        Point3::new(dx + r, dy, -h),
+        Point3::new(dx, dy + r, -h),
+        Point3::new(dx - r, dy, -h),
+        Point3::new(dx, dy - r, -h),
+        Point3::new(dx + r, dy, h),
+        Point3::new(dx, dy + r, h),
+        Point3::new(dx - r, dy, h),
+        Point3::new(dx, dy - r, h),
+    ]
+}
+
+/// ct-009 G1: two static 45°-rotated cubes passing corner-to-corner —
+/// their axis-aligned boxes overlap at EVERY instant (the box verdict
+/// can never clear this window at any tolerance), yet the actual bodies
+/// keep an analytic gap. The hull refinement must prune with a certified
+/// gap close to the analytic value.
+#[test]
+fn ct_009_rotated_near_miss_boxes_cannot_clear_but_hulls_prune() {
+    with_cx(|cx| {
+        let domain = Interval::new(0.0, 1.0);
+        let tube = translation_tube([1.0, 0.0, 0.0], 0.0, domain);
+        // Two diamonds (45°-rotated cubes, |x|+|y| <= sqrt(2)) with B's
+        // center at (c, c) on the diagonal, sqrt(2) < c < 2*sqrt(2): the
+        // facing EDGES are parallel with certified gap sqrt(2)*(c-sqrt(2)),
+        // while both AABBs (side 2*sqrt(2)) still overlap in x AND y — the
+        // structural trap the box route can never clear at any tolerance.
+        let c = 2.0;
+        let a_verts = rotated_cube(1.0, 0.0, 0.0);
+        let b_verts = rotated_cube(1.0, c, c);
+
+        // Establish the trap: the BOX route retains the whole window.
+        let a_aabb = Aabb::new(
+            Point3::new(-std::f64::consts::SQRT_2, -std::f64::consts::SQRT_2, -1.0),
+            Point3::new(std::f64::consts::SQRT_2, std::f64::consts::SQRT_2, 1.0),
+        );
+        let b_aabb = Aabb::new(
+            Point3::new(
+                c - std::f64::consts::SQRT_2,
+                c - std::f64::consts::SQRT_2,
+                -1.0,
+            ),
+            Point3::new(
+                c + std::f64::consts::SQRT_2,
+                c + std::f64::consts::SQRT_2,
+                1.0,
+            ),
+        );
+        let a_body = SpacetimeBody::new(a_aabb, &tube).expect("body a");
+        let b_body = SpacetimeBody::new(b_aabb, &tube).expect("body b");
+        let boxed =
+            certified_ccd(&a_body, &b_body, domain, 1e-2, 1 << 12, cx).expect("box ccd completes");
+        let CcdVerdict::PossibleContact { windows } = &boxed.verdict else {
+            verdict(
+                "ct-009-trap",
+                false,
+                "overlapping AABBs must retain the window under the box route",
+            );
+            unreachable!()
+        };
+
+        // The refinement prunes every retained window with a certified gap.
+        let refined = refine_possible_windows(&a_verts, &tube, &b_verts, &tube, windows, 256, cx)
+            .expect("refinement completes");
+        // Analytic gap sqrt(2)*(2-sqrt(2)) ≈ 0.828; allow enclosure slack.
+        let all_pruned = refined
+            .windows
+            .iter()
+            .all(|w| matches!(w, RefinedWindow::Pruned { gap, .. } if *gap > 0.5));
+        verdict(
+            "ct-009",
+            all_pruned,
+            "the hull route must prune the rotated near-miss with a certified gap",
+        );
+    });
+}
+
+/// ct-010 G0 (refinement soundness): the ct-005 bullet's true crossing
+/// window must SURVIVE refinement — a certified-separation prune can
+/// never drop a window containing real contact.
+#[test]
+fn ct_010_refinement_never_drops_a_true_crossing() {
+    with_cx(|cx| {
+        let domain = Interval::new(0.0, 1.0);
+        let plate_tube = translation_tube([1.0, 0.0, 0.0], 0.0, domain);
+        let bullet_tube = translation_tube([1.0, 0.0, 0.0], 100.0, domain);
+        let plate_verts = vec![
+            Point3::new(-0.01, -2.0, -2.0),
+            Point3::new(0.01, -2.0, -2.0),
+            Point3::new(-0.01, 2.0, -2.0),
+            Point3::new(0.01, 2.0, -2.0),
+            Point3::new(-0.01, -2.0, 2.0),
+            Point3::new(0.01, -2.0, 2.0),
+            Point3::new(-0.01, 2.0, 2.0),
+            Point3::new(0.01, 2.0, 2.0),
+        ];
+        let bullet_verts: Vec<Point3> = (0..8)
+            .map(|i| {
+                Point3::new(
+                    -50.0 + if i & 1 == 0 { -0.01 } else { 0.01 },
+                    if i & 2 == 0 { -0.01 } else { 0.01 },
+                    if i & 4 == 0 { -0.01 } else { 0.01 },
+                )
+            })
+            .collect();
+        let mut bullet_support = bullet();
+        bullet_support.min.x -= 50.0;
+        bullet_support.max.x -= 50.0;
+        let plate = SpacetimeBody::new(thin_plate(), &plate_tube).expect("plate body");
+        let shot = SpacetimeBody::new(bullet_support, &bullet_tube).expect("bullet body");
+        let report =
+            certified_ccd(&plate, &shot, domain, 1e-4, 1 << 16, cx).expect("ccd completes");
+        let CcdVerdict::PossibleContact { windows } = &report.verdict else {
+            unreachable!("ct-005 already proves this arm");
+        };
+        let refined = refine_possible_windows(
+            &plate_verts,
+            &plate_tube,
+            &bullet_verts,
+            &bullet_tube,
+            windows,
+            256,
+            cx,
+        )
+        .expect("refinement completes");
+        let crossing_retained = refined.windows.iter().any(|w| {
+            matches!(w, RefinedWindow::Retained { window } if window.lo() <= 0.5 && 0.5 <= window.hi())
+        });
+        verdict(
+            "ct-010",
+            crossing_retained,
+            "the true crossing window must survive refinement as Retained",
+        );
+    });
+}
