@@ -1223,7 +1223,7 @@ fn g0_activation_condition_dependencies_must_be_globally_available() {
     let mut draft = hybrid_draft(&owner, &clock);
     let condition = draft.conditions[0].condition.clone();
     let branch = draft.conditions[0].branches[0].clone();
-    draft.variables[1].activation = branch(&condition, &branch);
+    draft.variables[1].activation = crate::branch(&condition, &branch);
     let refusal = with_cx(|cx| draft.admit_against(&machine, cx))
         .expect_err("a global condition cannot depend on a conditionally unavailable value");
     assert_graph_rule(&refusal, CausalGraphRule::InvalidActivationCondition);
