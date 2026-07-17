@@ -32,6 +32,8 @@ const AISI_1045_COLD_DRAWN_SEED_MANIFEST: &str =
     "data/matdb/seed-v1/aisi-1045-cold-drawn/manifest.tsv";
 const AISI_52100_CVM_SEED_MANIFEST: &str =
     "data/matdb/seed-v1/aisi-52100-cvm-hot-hardness/manifest.tsv";
+const AISI_9310_CVM_CARBURIZED_SEED_MANIFEST: &str =
+    "data/matdb/seed-v1/aisi-9310-cvm-carburized/manifest.tsv";
 const GRAY_CAST_IRON_S2_S_SEED_MANIFEST: &str =
     "data/matdb/seed-v1/gray-cast-iron-s2-s/manifest.tsv";
 const NASA_SEED_LICENSE: &str = "Work-of-the-US-Government-Public-Use-Permitted";
@@ -1509,6 +1511,226 @@ fn g3_cli_compiles_committed_aisi_52100_cvm_heat_treatment_states() {
             (None, Some(_)) => panic!("missing exact AISI 52100 austenite state {specimen_state}"),
         }
     }
+
+    let decisions = String::from_utf8(first.stdout).expect("decision stream is UTF-8");
+    assert!(decisions.contains("\"reason_code\":\"uncertainty_policy_admitted\""));
+    assert!(decisions.contains("\"reason_code\":\"runtime_pack_self_verified\""));
+    assert!(
+        decisions
+            .lines()
+            .all(|row| row.contains(&format!("\"pack_hash\":\"{pack_hash}\"")))
+    );
+}
+
+#[test]
+fn g3_cli_compiles_committed_aisi_9310_cvm_carburized_gear_seed() {
+    let manifest = workspace_path(AISI_9310_CVM_CARBURIZED_SEED_MANIFEST);
+    assert!(
+        manifest.is_file(),
+        "committed AISI 9310 CVM carburized seed manifest is missing"
+    );
+    let directory = fixture_dir();
+    let first_path = directory.join("aisi-9310-cvm-carburized-first.fsmatpk");
+    let second_path = directory.join("aisi-9310-cvm-carburized-second.fsmatpk");
+
+    let first = run_compiler(&manifest, &first_path);
+    let second = run_compiler(&manifest, &second_path);
+    assert!(
+        first.status.success(),
+        "first AISI 9310 CVM carburized seed compilation failed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(
+        second.status.success(),
+        "second AISI 9310 CVM carburized seed compilation failed: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(
+        first.stdout, second.stdout,
+        "AISI 9310 CVM carburized decision stream moved"
+    );
+    assert_decision_compiler(&first, MATERIAL_COMPILER_ID);
+
+    let first_bytes = fs::read(first_path).expect("read first AISI 9310 pack");
+    let second_bytes = fs::read(second_path).expect("read second AISI 9310 pack");
+    assert_eq!(first_bytes, second_bytes, "AISI 9310 pack bytes moved");
+    let decoded = NormalizedPack::from_bytes(&first_bytes).expect("decode AISI 9310 pack");
+    let pack_hash = decoded.content_hash();
+    let decoded = NormalizedPack::from_bytes_verified(pack_hash, &first_bytes)
+        .expect("verify AISI 9310 pack identity");
+
+    assert_eq!(decoded.pack_id(), "aisi-9310-cvm-carburized-nasa-tm-104352");
+    assert_eq!(decoded.compiler(), MATERIAL_COMPILER_ID);
+    assert!(
+        decoded
+            .redistribution_terms()
+            .contains("public use is permitted")
+    );
+    assert_eq!(decoded.claims().claim_count(), 13);
+    assert!(decoded.joint_statistics().is_empty());
+
+    let dimensionless = Dims([0, 0, 0, 0, 0, 0]);
+    for (property, source_percent) in [
+        ("carbon_mass_fraction", 0.10),
+        ("manganese_mass_fraction", 0.63),
+        ("silicon_mass_fraction", 0.27),
+        ("nickel_mass_fraction", 3.22),
+        ("chromium_mass_fraction", 1.21),
+        ("molybdenum_mass_fraction", 0.12),
+        ("copper_mass_fraction", 0.13),
+        ("phosphorus_mass_fraction", 0.005),
+        ("sulfur_mass_fraction", 0.005),
+    ] {
+        let claims = decoded.claims().claims_for(property);
+        assert_eq!(claims.len(), 1, "expected one AISI 9310 {property} claim");
+        let (id, claim) = claims[0];
+        let PropertyValue::Scalar { value, dims } = &claim.value else {
+            panic!("AISI 9310 {property} was not scalar");
+        };
+        assert_eq!(*dims, dimensionless);
+        let expected_value = source_percent * 0.01;
+        let relative_error = (*value - expected_value).abs() / expected_value;
+        assert!(
+            relative_error <= 2.0e-15,
+            "AISI 9310 {property} moved by {relative_error:e} relative"
+        );
+        assert!(claim.validity.bounds().is_empty());
+        assert_eq!(claim.uncertainty, UncertaintyModel::Unstated);
+        assert_eq!(
+            claim.interpolation,
+            InterpolationPolicy::ConstantWithinValidity
+        );
+        assert_eq!(claim.observations.len(), 1);
+        assert_eq!(claim.provenance.license, NASA_SEED_LICENSE);
+        assert!(claim.provenance.source.contains("NASA-TM-104352"));
+        assert!(claim.provenance.source.contains("[source:primary]"));
+        let observation = decoded
+            .claims()
+            .observation(claim.observations[0])
+            .expect("AISI 9310 chemistry observation remains linked");
+        assert_eq!(
+            observation.specimen,
+            "AISI-9310-CVM-single-lot-single-heat-28-tooth-spur-gear-NASA-TM-104352"
+        );
+        assert!(observation.method.contains("Table I nominal composition"));
+        assert!(observation.caveats.contains("Nominal grade chemistry"));
+        assert!(observation.caveats.contains("balance iron"));
+        assert!(observation.caveats.contains("not inferred"));
+        assert_eq!(claim.observations[0].0, observation.content_hash());
+        assert_eq!(id.0, claim.content_hash());
+    }
+
+    let case_claims = decoded.claims().claims_for("case_rockwell_c_scale_reading");
+    assert_eq!(
+        case_claims.len(),
+        2,
+        "the report's conflicting C58 and C60 case statements must both survive"
+    );
+    let mut case_values = Vec::with_capacity(2);
+    for (id, claim) in case_claims {
+        let PropertyValue::Scalar { value, dims } = &claim.value else {
+            panic!("AISI 9310 case hardness was not scalar");
+        };
+        assert_eq!(*dims, dimensionless);
+        assert!(claim.validity.bounds().is_empty());
+        assert_eq!(claim.uncertainty, UncertaintyModel::Unstated);
+        assert_eq!(claim.observations.len(), 1);
+        assert_eq!(claim.provenance.license, NASA_SEED_LICENSE);
+        let observation = decoded
+            .claims()
+            .observation(claim.observations[0])
+            .expect("AISI 9310 case-hardness observation remains linked");
+        match *value {
+            58.0 => {
+                assert!(observation.method.contains("Test Materials detailed"));
+                assert!(observation.caveats.contains("carburize 1172 K for 8 h"));
+                assert!(observation.caveats.contains("austenitize 1117 K for 2.5 h"));
+                assert!(
+                    observation
+                        .caveats
+                        .contains("subzero treat 180 K for 3.5 h")
+                );
+                assert!(observation.caveats.contains("double temper 450 K"));
+                assert!(observation.caveats.contains("stress relieve 450 K for 2 h"));
+                assert!(observation.caveats.contains("conflicts"));
+            }
+            60.0 => {
+                assert!(observation.method.contains("abstract and summary"));
+                assert!(observation.caveats.contains("conflicts"));
+                assert!(observation.caveats.contains("not averaged or selected"));
+            }
+            other => panic!("unexpected AISI 9310 case-hardness value {other}"),
+        }
+        assert_eq!(claim.observations[0].0, observation.content_hash());
+        assert_eq!(id.0, claim.content_hash());
+        case_values.push(*value);
+    }
+    case_values.sort_by(f64::total_cmp);
+    assert_eq!(case_values, [58.0, 60.0]);
+
+    let core_claims = decoded.claims().claims_for("core_rockwell_c_scale_reading");
+    assert_eq!(core_claims.len(), 1);
+    let (core_id, core_claim) = core_claims[0];
+    let PropertyValue::Scalar {
+        value: core_value,
+        dims: core_dims,
+    } = &core_claim.value
+    else {
+        panic!("AISI 9310 core hardness was not scalar");
+    };
+    assert_eq!(*core_dims, dimensionless);
+    assert_eq!(*core_value, 40.0);
+    assert!(core_claim.validity.bounds().is_empty());
+    assert_eq!(core_claim.uncertainty, UncertaintyModel::Unstated);
+    assert_eq!(core_claim.observations.len(), 1);
+
+    let depth_claims = decoded.claims().claims_for("carburized_case_depth");
+    assert_eq!(depth_claims.len(), 1);
+    let (depth_id, depth_claim) = depth_claims[0];
+    let PropertyValue::Scalar {
+        value: depth_value,
+        dims: depth_dims,
+    } = &depth_claim.value
+    else {
+        panic!("AISI 9310 carburized case depth was not scalar");
+    };
+    assert_eq!(*depth_dims, Dims([1, 0, 0, 0, 0, 0]));
+    let expected_depth_m = 0.97e-3;
+    let relative_depth_error = (*depth_value - expected_depth_m).abs() / expected_depth_m;
+    assert!(relative_depth_error <= 2.0e-15);
+    assert!(depth_claim.validity.bounds().is_empty());
+    assert_eq!(depth_claim.uncertainty, UncertaintyModel::Unstated);
+    assert_eq!(depth_claim.observations.len(), 1);
+    assert_eq!(core_claim.observations, depth_claim.observations);
+
+    let detailed_observation = decoded
+        .claims()
+        .observation(core_claim.observations[0])
+        .expect("AISI 9310 detailed gear observation remains linked");
+    assert!(detailed_observation.method.contains("case/core hardness"));
+    assert!(detailed_observation.method.contains("case-depth"));
+    assert!(
+        detailed_observation
+            .caveats
+            .contains("One lot from one CVM heat")
+    );
+    assert!(detailed_observation.caveats.contains("replicate count"));
+    assert_eq!(
+        core_claim.observations[0].0,
+        detailed_observation.content_hash()
+    );
+    assert_eq!(core_id.0, core_claim.content_hash());
+    assert_eq!(depth_id.0, depth_claim.content_hash());
+
+    // G3 plausibility only: NASA SP-410 (NTRS 19750018303) reports a different
+    // VAR AISI 9310 gear lot at nominal C62 case, C45 core, and 1 mm case depth.
+    // These checks bound transcription-scale agreement without fusing the lots.
+    let independent_case_hardness: f64 = 62.0;
+    let independent_core_hardness: f64 = 45.0;
+    let independent_case_depth_m: f64 = 1.0e-3;
+    assert!((58.0 - independent_case_hardness).abs() <= 4.0);
+    assert!((*core_value - independent_core_hardness).abs() <= 5.0);
+    assert!((*depth_value - independent_case_depth_m).abs() / independent_case_depth_m <= 0.031);
 
     let decisions = String::from_utf8(first.stdout).expect("decision stream is UTF-8");
     assert!(decisions.contains("\"reason_code\":\"uncertainty_policy_admitted\""));

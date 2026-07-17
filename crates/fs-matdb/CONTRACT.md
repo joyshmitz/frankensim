@@ -331,6 +331,9 @@ NIST displayed-precision agreement checks.
   small-sample AISI 1045 tensile claims. The first pinned AISI 52100
   bearing-steel tranche adds six actual-composition claims, five Rockwell C
   scale readings, and four exact retained-austenite fractions. The first
+  pinned AISI 9310 gear-steel tranche adds nine nominal-composition claims,
+  two conflicting case Rockwell C statements, one core Rockwell C statement,
+  and one carburized case-depth claim. The first
   pinned gray-iron tranche adds nine reported composition/carbon-equivalent
   values, four quantified microstructure fields, and two low-precision
   graph-digitized room-state properties.
@@ -360,9 +363,14 @@ NIST displayed-precision agreement checks.
   dimensionless storage, not a ratio quantity. The `<2%` retained-austenite
   result stays censored in an observation, the predictive equation's
   `+/-1`-point accuracy is not reused as table-measurement uncertainty, and no
-  hot-hardness curve or long-time stability is claimed. The gray-iron claims
-  bind Wang et al.'s S2-S charge, chemistry, Sr-FeSi inoculation, EN-1561
-  Type II mould, and fully pearlitic/type-A-graphite state. Its Figure 8
+  hot-hardness curve or long-time stability is claimed. The 9310 claims bind
+  one NASA CVM heat and the complete carburize/quench/subzero/temper/grind/
+  stress-relief schedule. The source's detailed C58 and summary-level C60 case
+  statements remain separate provenance-linked claims with `Unstated`
+  uncertainty; no average or preferred value is invented. Lubricant-dependent
+  surface-fatigue lives remain excluded as gear-system properties. The gray-
+  iron claims bind Wang et al.'s S2-S charge, chemistry, Sr-FeSi inoculation,
+  EN-1561 Type II mould, and fully pearlitic/type-A-graphite state. Its Figure 8
   strength and conductivity centers retain only graph-supported precision;
   one-standard-deviation bars without confidence metadata remain observation
   caveats, not runtime half-widths. Exact test temperature is absent and must

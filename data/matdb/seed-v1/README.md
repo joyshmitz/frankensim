@@ -229,6 +229,43 @@ AISI 52100 reference:
 - <https://ntrs.nasa.gov/citations/19720007811>
 - <https://ntrs.nasa.gov/api/citations/19720007811/downloads/19720007811.pdf>
 
+## AISI 9310 CVM carburized gear-steel tranche
+
+`aisi-9310-cvm-carburized/` pins one consumable-electrode-vacuum-melted AISI
+9310 spur-gear lot from NASA-TM-104352. All test gears came from one heat. The
+pack retains Table I's nominal composition by weight: `0.10% C`, `0.63% Mn`,
+`0.27% Si`, `3.22% Ni`, `1.21% Cr`, `0.12% Mo`, `0.13% Cu`, `0.005% P`, and
+`0.005% S`, balance iron. These are nominal grade values, not a reported
+analysis of the tested heat, so the observation says so explicitly and every
+composition uncertainty remains `Unstated`.
+
+Table II supplies the process identity: carburize at `1172 K` for `8 h`, air
+cool, copper plate, reheat at `922 K` for `2.5 h`, air cool, austenitize at
+`1117 K` for `2.5 h`, oil quench, subzero treat at `180 K` for `3.5 h`, double
+temper at `450 K` for `2 h` each, finish grind, and stress relieve at `450 K`
+for `2 h`. The detailed Test Materials text reports a Rockwell C58 case,
+Rockwell C40 core, and `0.97 mm` case depth.
+
+The same report's abstract and summary instead describe the gears as hardened
+to Rockwell C60. The pack preserves C58 and C60 as two separate
+`case_rockwell_c_scale_reading` claims, each linked to the exact source
+statement that supports it. It does not average, silently select, or fabricate
+uncertainty around the discrepancy. Rockwell C values are named empirical
+scale readings in dimensionless storage, not ratio quantities.
+
+As G3 plausibility evidence only, NASA SP-410 reports a different VAR AISI 9310
+gear lot with nominal Rockwell C62 case, Rockwell C45 core, and `1 mm`
+effective case depth. Those nearby values can catch order-of-magnitude
+transcription errors, but the different melt route, lot, and process prevent
+fusion or substitution. NASA's NTRS record marks NASA-TM-104352 public and a
+work of the U.S. Government whose public use is permitted.
+
+AISI 9310 references:
+
+- <https://ntrs.nasa.gov/citations/19910020285>
+- <https://ntrs.nasa.gov/api/citations/19910020285/downloads/19910020285.pdf>
+- <https://ntrs.nasa.gov/citations/19750018303>
+
 ## S2-S pearlitic gray-cast-iron tranche
 
 `gray-cast-iron-s2-s/` retains one engine-relevant experimental ingot from
@@ -303,6 +340,10 @@ cargo run -p xtask -- matdb-pack \
   --out /path/to/aisi-52100-cvm-nasa-tn-d-6632.fsmatpk
 
 cargo run -p xtask -- matdb-pack \
+  --manifest data/matdb/seed-v1/aisi-9310-cvm-carburized/manifest.tsv \
+  --out /path/to/aisi-9310-cvm-carburized-nasa-tm-104352.fsmatpk
+
+cargo run -p xtask -- matdb-pack \
   --manifest data/matdb/seed-v1/gray-cast-iron-s2-s/manifest.tsv \
   --out /path/to/pearlitic-gray-cast-iron-s2-s-sr-fesi.fsmatpk
 ```
@@ -360,6 +401,17 @@ constitutive behavior, cleanliness-based life adjustment, or permission to
 apply the short-term NASA measurements to another heat. The `<2%` retained-
 austenite result remains censored, and all table values retain `Unstated`
 measurement uncertainty.
+
+The AISI 9310 tranche applies only to the single CVM heat, spur-gear lot,
+nominal chemistry, and complete carburize/quench/subzero/temper/grind/stress-
+relief schedule reported by NASA-TM-104352. It does not provide a generic
+grade allowable, actual heat chemistry, hardness dispersion, a case-hardness
+profile, residual stress, microstructure, elastic/plastic constitutive law,
+fracture or fatigue properties, or permission to transfer the gear-system
+results to another geometry or process. The report's lubricant-dependent
+surface-fatigue lives are system properties and are deliberately excluded from
+the bulk-material pack. Its internally conflicting C58 and C60 case statements
+remain separate `Unstated` claims; neither is promoted as the resolved value.
 
 The S2-S gray-iron tranche applies only to the reported charge, composition,
 Sr-FeSi inoculation, mould, and fully pearlitic/type-A-graphite state. Its
