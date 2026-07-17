@@ -188,6 +188,14 @@ the corresponding `fs_ivl::expansion` sum/product components. The second pins
 seeded endpoint-reference corruption must produce one byte-replayable red
 record and make the Casebook merge assertion refuse it.
 
+`tests/structured_conformance_casebook.rs`: the cheap per-crate structured PR
+entrypoint. Three fixed-order records cover interval/affine containment and
+zero-divisor policy, bounded Taylor/root admission and incomplete-work
+receipts, and exact-predicate signs, filtered stages, SoS ties, and
+antisymmetry. A disclosed predicate-reference corruption proves that one
+wrong expected sign produces one replay-identical red record and is rejected
+by the Casebook merge assertion.
+
 `tests/conformance.rs`: random-DAG containment battery + golden hash, plus 600
 deterministic fs-propcheck interval-pair cases proving add/multiply pointwise
 containment with shrinking enabled and the fixed cases retained.
@@ -237,6 +245,10 @@ golden-hash case bit-for-bit.
   not expose fs-la's private residual accumulator, replace the full fs-ivl
   battery, supply an independent FrankenScipy oracle, or constitute fresh
   dual-ISA/full-G5 execution evidence.
+- The per-crate structured entrypoint is a representative PR subset. The broad
+  random-DAG/property batteries, Taylor convergence and certified-root
+  studies, adversarial predicate suites, retained cross-ISA goldens, and any
+  performance or fresh dual-ISA claims remain in their dedicated lanes.
 - Affine elementary functions (exp/sin on affine forms via Chebyshev
   linearization) are not implemented — interval fallback applies.
 - `Interval::midpoint` of half-infinite intervals returns 0.0 (documented
