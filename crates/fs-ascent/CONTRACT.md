@@ -148,6 +148,21 @@ with all KKT residuals ≤ 1e−7; bitwise replay; Pareto golden
 epsilons, tolerances, decision vectors, objective values, and gradient
 dimensions.
 
+`tests/runner_battery.rs` (4 cases): Problem-IR product-manifold packing,
+problem-owned budget attribution, clone-checkpoint replay, and packed
+constraint routing. All aggregate outcomes are linted and wire-validated
+`fs-obs` `ConformanceCase` events with fixed-input seed zero. The G5 replay
+case admits the problem and binds its full-width semantic ID, study
+parameters, initial point, exact final point, complete public objective
+history, step/evaluation accounting, and terminal report into canonical
+identities. An object-shaped companion receipt retains the exact initial,
+final, and objective-history float bits plus the reference, independent
+repeat, and three cut-bound checkpoint-resume identities. Each per-cut row
+retains the checkpoint state, stop reason, step/history counts, and study/report
+evaluation accounting. The case passes only if all three cuts are genuine
+iteration-cap splits and every canonical final state is byte-identical to the
+uninterrupted reference.
+
 ## No-claim boundaries
 
 - Second-order adjoints (adjoint-of-adjoint Hv) are follow-up scope;
@@ -176,6 +191,13 @@ dimensions.
   IR gradients (the live IR is evaluation-only), L-BFGS/TR engines
   behind the runner (projected gradient is the v1 driver), and
   ledgered study artifacts (fs-ledger wiring) — recorded follow-ups.
+- The runner G5 receipt covers one fixed, sequential projected-gradient
+  Problem-IR fixture and in-process clone checkpoints. It does not claim
+  persisted checkpoint serialization, other optimizer-family studies,
+  `Cx` or worker-count replay, cancellation-storm recovery, cross-ISA
+  equality, fs-ledger artifact replay, or performance. Those require
+  their own retained study/host evidence. Expectations that fail before
+  an aggregate event remain ordinary Rust test diagnostics.
 - Constraint Jacobian-transpose callbacks remain a mathematical trust
   boundary: fs-ascent checks exact dimensions, finite values, and the
   mandatory `J^T 0 = 0` linearity identity, but independent derivative

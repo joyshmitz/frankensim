@@ -1,17 +1,159 @@
 //! Bead ijil (d): the Problem-IR study runner — manifold-product
 //! variable packing, budget threading through the stop algebra,
 //! bitwise-resumable studies, and constrained routing through the
-//! packed adapters.
+//! packed adapters. Aggregate verdicts use the canonical fs-obs schema;
+//! the G5 case additionally retains the admitted problem identity and
+//! exact public replay state.
 
 use fs_ascent::auglag::ConstrainedProblem;
-use fs_ascent::{Packing, StopReason, StopRule, Study, augmented_lagrangian};
+use fs_ascent::{Packing, StopReason, StopRule, Study, StudyReport, augmented_lagrangian};
+use fs_obs::ident::{IdentityBuilder, ReplayIdentity};
+use fs_obs::{Emitter, EventKind, Severity};
 use fs_opt::{ConstraintKind, EvalLimit, Manifold, NodeId, ProblemBuilder, Sense};
 use fs_qty::Dims;
+use std::fmt::Write as _;
 use std::num::NonZeroU64;
 
-fn verdict(name: &str, pass: bool, details: &str) {
-    println!("{{\"test\":\"{name}\",\"pass\":{pass},\"details\":\"{details}\"}}");
+const SUITE: &str = "fs-ascent/runner";
+const FIXED_INPUT_SEED: u64 = 0;
+const REPLAY_FD_H: f64 = 1e-6;
+const REPLAY_LR: f64 = 0.2;
+const REPLAY_GRAD_TOL: f64 = 1e-9;
+const REPLAY_STEPS: usize = 300;
+const REPLAY_CUTS: [usize; 3] = [1, 17, 64];
+
+fn emit_verdict(emitter: &mut Emitter, name: &str, pass: bool, details: &str, seed: u64) {
+    let event = emitter.emit(
+        if pass {
+            Severity::Info
+        } else {
+            Severity::Error
+        },
+        EventKind::ConformanceCase {
+            suite: SUITE.to_string(),
+            case: name.to_string(),
+            pass,
+            detail: details.to_string(),
+            seed,
+        },
+        None,
+    );
+    fs_obs::lint_failure_record(&event).expect("runner verdict must be replayable");
+    let line = event.to_jsonl();
+    fs_obs::validate_line(&line).expect("runner verdict must use the fs-obs wire schema");
+    println!("{line}");
     assert!(pass, "{name}: {details}");
+}
+
+fn verdict(name: &str, pass: bool, details: &str) {
+    let mut emitter = Emitter::new(SUITE, name);
+    emit_verdict(&mut emitter, name, pass, details, FIXED_INPUT_SEED);
+}
+
+fn replay_verdict(name: &str, pass: bool, details: &str, receipt_json: String) {
+    let mut emitter = Emitter::new(SUITE, name);
+    let receipt = emitter.emit(
+        Severity::Info,
+        EventKind::Custom {
+            name: "problem-ir-study-replay".to_string(),
+            json: receipt_json,
+        },
+        None,
+    );
+    let line = receipt.to_jsonl();
+    fs_obs::validate_line(&line).expect("study replay receipt must use the fs-obs wire schema");
+    println!("{line}");
+    emit_verdict(&mut emitter, name, pass, details, FIXED_INPUT_SEED);
+}
+
+fn stop_reason_name(reason: &StopReason) -> &'static str {
+    match reason {
+        StopReason::GradNorm => "grad-norm",
+        StopReason::ObjectiveBelow => "objective-below",
+        StopReason::Budget => "budget",
+        StopReason::Stall => "stall",
+        StopReason::Composite => "composite",
+        StopReason::IterationCap => "iteration-cap",
+    }
+}
+
+fn study_state_identity(
+    fixture: &ReplayIdentity,
+    study: &Study,
+    report: &StudyReport,
+) -> ReplayIdentity {
+    let mut builder = IdentityBuilder::new("fs-ascent-problem-ir-study-state-v1")
+        .child("fixture", fixture)
+        .u64(
+            "steps",
+            u64::try_from(study.steps).expect("study steps fit u64"),
+        )
+        .u64(
+            "study-evals",
+            u64::try_from(study.evals).expect("study evals fit u64"),
+        )
+        .u64(
+            "report-evals",
+            u64::try_from(report.evals).expect("report evals fit u64"),
+        )
+        .str("stop-reason", stop_reason_name(&report.reason))
+        .f64_bits("report-objective", report.f)
+        .f64_bits("report-gradient-norm", report.grad_norm)
+        .u64(
+            "point-values",
+            u64::try_from(study.x.len()).expect("study point length fits u64"),
+        )
+        .u64(
+            "history-values",
+            u64::try_from(study.history.len()).expect("study history length fits u64"),
+        );
+    for &value in &study.x {
+        builder = builder.f64_bits("point", value);
+    }
+    for &value in &study.history {
+        builder = builder.f64_bits("objective-history", value);
+    }
+    builder.finish()
+}
+
+fn expected_study_evals(study: &Study) -> usize {
+    1 + 2 * study.x.len() * study.history.len() + study.steps
+}
+
+fn bit_vector_json(values: &[f64]) -> String {
+    let mut json = String::from("[");
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        write!(&mut json, "\"0x{:016x}\"", value.to_bits()).expect("String writes are infallible");
+    }
+    json.push(']');
+    json
+}
+
+fn identity_vector_json(identities: &[ReplayIdentity]) -> String {
+    let mut json = String::from("[");
+    for (index, identity) in identities.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        write!(&mut json, "\"{}\"", identity.hex()).expect("String writes are infallible");
+    }
+    json.push(']');
+    json
+}
+
+fn usize_vector_json(values: &[usize]) -> String {
+    let mut json = String::from("[");
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        write!(&mut json, "{value}").expect("String writes are infallible");
+    }
+    json.push(']');
+    json
 }
 
 const D0: Dims = Dims([0, 0, 0, 0, 0, 0]);
@@ -100,27 +242,155 @@ fn runner_budget_threads_into_stop_algebra() {
 #[test]
 fn runner_resume_is_bitwise() {
     let (problem, x0) = product_problem();
-    let mut straight = Study::new(&problem, &x0, 1e-6, 0.2);
-    straight.run(&problem, &StopRule::GradNorm(1e-9), 300);
-    for cut in [1usize, 17, 111] {
-        let mut a = Study::new(&problem, &x0, 1e-6, 0.2);
-        a.run(&problem, &StopRule::GradNorm(1e-9), cut);
-        let mut b = a.clone(); // clone = checkpoint
-        b.run(&problem, &StopRule::GradNorm(1e-9), 300 - cut);
-        let bitwise =
-            b.x.iter()
-                .zip(&straight.x)
-                .all(|(u, v)| u.to_bits() == v.to_bits());
-        assert!(bitwise, "resume not bitwise at cut {cut}");
-        assert_eq!(
-            b.evals, straight.evals,
-            "eval accounting differs at cut {cut}"
-        );
+    let admission = problem.admit().expect("runner fixture must admit");
+    let problem_semantic_id = admission.semantic_id().to_hex();
+    let mut fixture_builder = IdentityBuilder::new("fs-ascent-problem-ir-study-fixture-v1")
+        .str("problem-semantic-id", &problem_semantic_id)
+        .u64(
+            "admission-schema-version",
+            u64::from(admission.schema_version()),
+        )
+        .str("engine", "Study/projected-gradient-v1")
+        .f64_bits("fd-h", REPLAY_FD_H)
+        .f64_bits("learning-rate", REPLAY_LR)
+        .f64_bits("gradient-stop", REPLAY_GRAD_TOL)
+        .u64(
+            "maximum-steps",
+            u64::try_from(REPLAY_STEPS).expect("replay steps fit u64"),
+        )
+        .u64("input-seed", FIXED_INPUT_SEED)
+        .str("fs-ascent-version", fs_ascent::VERSION);
+    for &value in &x0 {
+        fixture_builder = fixture_builder.f64_bits("initial-point", value);
     }
-    verdict(
+    let fixture_identity = fixture_builder.finish();
+    let rule = StopRule::GradNorm(REPLAY_GRAD_TOL);
+
+    let mut straight = Study::new(&problem, &x0, REPLAY_FD_H, REPLAY_LR);
+    let straight_report = straight.run(&problem, &rule, REPLAY_STEPS);
+    let straight_identity = study_state_identity(&fixture_identity, &straight, &straight_report);
+
+    let mut repeat = Study::new(&problem, &x0, REPLAY_FD_H, REPLAY_LR);
+    let repeat_report = repeat.run(&problem, &rule, REPLAY_STEPS);
+    let repeat_identity = study_state_identity(&fixture_identity, &repeat, &repeat_report);
+    let repeat_exact = straight_identity.canonical_bytes() == repeat_identity.canonical_bytes();
+
+    let sphere_norm = fs_math::det::sqrt(straight.x[..3].iter().map(|v| v * v).sum::<f64>());
+    let expected_evals = expected_study_evals(&straight);
+    let quality_pass = straight_report.reason == StopReason::GradNorm
+        && straight_report.grad_norm <= REPLAY_GRAD_TOL
+        && straight_report.f < -1.0 + 1e-8
+        && straight_report.evals == straight.evals
+        && straight.history.len() == straight.steps + 1
+        && straight.evals == expected_evals
+        && (sphere_norm - 1.0).abs() <= 1e-12;
+    let mut pass = repeat_exact && quality_pass;
+    let mut first_failure = if !quality_pass {
+        Some("straight-quality".to_string())
+    } else if !repeat_exact {
+        Some("independent-repeat".to_string())
+    } else {
+        None
+    };
+    let mut cut_identities = Vec::with_capacity(REPLAY_CUTS.len());
+    let mut checkpoint_receipts = Vec::with_capacity(REPLAY_CUTS.len());
+    for cut in REPLAY_CUTS {
+        let mut first = Study::new(&problem, &x0, REPLAY_FD_H, REPLAY_LR);
+        let first_report = first.run(&problem, &rule, cut);
+        let checkpoint_identity = study_state_identity(&fixture_identity, &first, &first_report);
+        let genuine_split = first_report.reason == StopReason::IterationCap
+            && first.steps == cut
+            && first.history.len() == first.steps
+            && first_report.evals == first.evals
+            && first.evals == expected_study_evals(&first);
+        let mut resumed = first.clone(); // clone = checkpoint
+        let resumed_report = resumed.run(&problem, &rule, REPLAY_STEPS - cut);
+        let resumed_identity = study_state_identity(&fixture_identity, &resumed, &resumed_report);
+        let exact = resumed_identity.canonical_bytes() == straight_identity.canonical_bytes();
+        let checkpoint_resume_identity =
+            IdentityBuilder::new("fs-ascent-problem-ir-study-checkpoint-resume-v1")
+                .child("fixture", &fixture_identity)
+                .u64(
+                    "cut-steps",
+                    u64::try_from(cut).expect("replay cut fits u64"),
+                )
+                .child("checkpoint-state", &checkpoint_identity)
+                .child("resumed-state", &resumed_identity)
+                .finish();
+        if (!genuine_split || !exact) && first_failure.is_none() {
+            first_failure = Some(format!(
+                "cut-{cut}: genuine_split={genuine_split}, exact={exact}"
+            ));
+        }
+        pass &= genuine_split && exact;
+        checkpoint_receipts.push(format!(
+            "{{\"cut\":{cut},\"checkpoint_state\":\"{}\",\
+             \"checkpoint_resume_identity\":\"{}\",\
+             \"reason\":\"{}\",\"steps\":{},\"history_values\":{},\
+             \"study_evals\":{},\"report_evals\":{},\"genuine_split\":{genuine_split}}}",
+            checkpoint_identity.hex(),
+            checkpoint_resume_identity.hex(),
+            stop_reason_name(&first_report.reason),
+            first.steps,
+            first.history.len(),
+            first.evals,
+            first_report.evals,
+        ));
+        cut_identities.push(checkpoint_resume_identity);
+    }
+
+    let first_failure_json = first_failure
+        .as_ref()
+        .map_or_else(|| "null".to_string(), |failure| format!("\"{failure}\""));
+    let receipt_json = format!(
+        "{{\"problem_semantic_id\":\"{problem_semantic_id}\",\
+         \"fixture_identity\":\"{}\",\"input_seed\":{FIXED_INPUT_SEED},\
+         \"cuts\":{},\"reference_state\":\"{}\",\
+         \"repeat_state\":\"{}\",\"cut_states\":{},\
+         \"checkpoints\":[{}],\
+         \"initial_point_bits\":{},\"final_point_bits\":{},\
+         \"objective_history_bits\":{},\"steps\":{},\"study_evals\":{},\
+         \"expected_evals\":{},\"report_evals\":{},\
+         \"report_objective_bits\":\"0x{:016x}\",\
+         \"report_gradient_norm_bits\":\"0x{:016x}\",\"stop_reason\":\"{}\",\
+         \"first_failure\":{first_failure_json},\"pass\":{pass}}}",
+        fixture_identity.hex(),
+        usize_vector_json(&REPLAY_CUTS),
+        straight_identity.hex(),
+        repeat_identity.hex(),
+        identity_vector_json(&cut_identities),
+        checkpoint_receipts.join(","),
+        bit_vector_json(&x0),
+        bit_vector_json(&straight.x),
+        bit_vector_json(&straight.history),
+        straight.steps,
+        straight.evals,
+        expected_evals,
+        straight_report.evals,
+        straight_report.f.to_bits(),
+        straight_report.grad_norm.to_bits(),
+        stop_reason_name(&straight_report.reason),
+    );
+    replay_verdict(
         "ijil-runner-resume",
-        true,
-        "cuts 1/17/111: checkpointed studies bitwise == straight run (evals included)",
+        pass,
+        &format!(
+            "problem={problem_semantic_id}; fixture={}; final={}; repeat={}; cuts={}; \
+             reason={}; steps={}; evals={}; history={}; f={:.17e}; grad_norm={:.17e}; \
+             expected_evals={expected_evals}; sphere_norm={sphere_norm:.17e}; \
+             first_failure={first_failure:?}",
+            fixture_identity.hex(),
+            straight_identity.hex(),
+            repeat_identity.hex(),
+            identity_vector_json(&cut_identities),
+            stop_reason_name(&straight_report.reason),
+            straight.steps,
+            straight.evals,
+            straight.history.len(),
+            straight_report.f,
+            straight_report.grad_norm,
+        ),
+        receipt_json,
     );
 }
 
