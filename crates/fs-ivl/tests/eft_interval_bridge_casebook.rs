@@ -314,11 +314,11 @@ struct Corruption {
 fn interval_outcome(
     reference: [[u64; 2]; 3],
     corruption: Option<Corruption>,
-    input_frame: Vec<u8>,
+    input_frame: &[u8],
 ) -> CaseOutcome {
     let run = measure_intervals();
     let replay = measure_intervals();
-    let inputs_hex = hex_bytes(&input_frame);
+    let inputs_hex = hex_bytes(input_frame);
     let context = corruption.map_or_else(
         || "mode=canonical".to_owned(),
         |corruption| {
@@ -411,7 +411,7 @@ fn eft_and_interval_bridges_emit_replay_complete_green_records() {
             "deterministic-elementary-interval-budgets",
             interval_digest,
             ToleranceSpec::Exact,
-            move || interval_outcome(references, None, interval_frame),
+            move || interval_outcome(references, None, &interval_frame),
         )
         .run();
 
@@ -492,7 +492,7 @@ fn disclosed_seeded_corruption_is_replay_identical_and_turns_the_bridge_red() {
                 "seeded-interval-reference-corruption",
                 inputs_digest,
                 ToleranceSpec::Exact,
-                move || interval_outcome(corrupted, Some(corruption), input_frame),
+                move || interval_outcome(corrupted, Some(corruption), &input_frame),
             )
             .run()
     };
