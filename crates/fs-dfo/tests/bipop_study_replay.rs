@@ -41,7 +41,7 @@ const CMA_MEANINGFUL_IMPROVEMENT_RELATIVE: f64 = 1e-12;
 const CMA_STAGNATION_GENERATIONS: usize = 120;
 const OBJECTIVE_ORACLE_ROUNDOFF_SCALE: f64 = 64.0;
 const SEMANTIC_ORACLE_VERSION: &str =
-    "bipop-independent-objective-restart-stream-schedule-accounting-v1";
+    "bipop-algebraic-objective-restart-stream-schedule-accounting-v2";
 
 // These are the logical stream coordinates and restart rule used by
 // `fs_dfo::cma`; recording them makes the private implementation choice
@@ -150,6 +150,22 @@ fn fixture_identity(seed: u64) -> ReplayIdentity {
         .str("semantic-oracle-version", SEMANTIC_ORACLE_VERSION)
         .str("algorithm", "fs_dfo::bipop_cmaes")
         .str("objective", "shifted-rastrigin")
+        .str(
+            "objective-callback-form",
+            "sum(10+fma(z,z,-10*cos(tau*z)));z=x-shift",
+        )
+        .str(
+            "objective-oracle-form",
+            "sum(z*z+10*(1-cos(tau*z)));z=x-shift",
+        )
+        .str(
+            "objective-oracle-independence",
+            "algebraic-regrouping-only;shared-fs-math-cosine",
+        )
+        .str(
+            "objective-oracle-tolerance-rule",
+            "roundoff-scale*epsilon*dimension*max(abs(recorded),abs(oracle),1)",
+        )
         .str("units", "dimensionless")
         .u64("dimension", usize_u64(DIMENSION))
         .f64_bits("sigma0", SIGMA0)
@@ -169,6 +185,22 @@ fn fixture_identity(seed: u64) -> ReplayIdentity {
         )
         .str("large-restart-rule", "large-budget-used<=small-budget-used")
         .str("large-population-rule", "base-lambda*2^large-runs")
+        .str(
+            "cma-generation-budget-rule",
+            "one-initial-evaluation-then-only-complete-lambda-sized-generations",
+        )
+        .str(
+            "cma-candidate-ranking-rule",
+            "objective-total-cmp-then-lowest-candidate-index",
+        )
+        .str(
+            "cma-best-update-rule",
+            "strictly-lower-objective-only;first-stable-tie",
+        )
+        .str(
+            "bipop-best-update-rule",
+            "strictly-lower-run-objective-only;first-stable-tie",
+        )
         .u64("large-run-cap-trigger", u64::from(LARGE_RUN_CAP_TRIGGER))
         .u64("cma-eigen-interval", usize_u64(CMA_EIGEN_INTERVAL))
         .str(
@@ -179,6 +211,10 @@ fn fixture_identity(seed: u64) -> ReplayIdentity {
         .f64_bits(
             "cma-meaningful-improvement-relative",
             CMA_MEANINGFUL_IMPROVEMENT_RELATIVE,
+        )
+        .str(
+            "cma-meaningful-improvement-rule",
+            "previous-best-minus-candidate>relative*(1+abs(previous-best))",
         )
         .u64(
             "cma-stagnation-generations",
@@ -954,7 +990,113 @@ fn assert_mergeable(run: &StudyRun, reference: &ReplayIdentity, event: &Event) {
         expected_detail.as_str(),
         "merge gate refused a verdict that does not name the admitted run"
     );
-    assert!(*pass, "merge gate refused {case}: {detail}");
+    assert!(
+        *pass,
+        "merge gate requires a passing verdict for {case}: {detail}"
+    );
+}
+
+fn assert_verdict_mutation_refused(
+    run: &StudyRun,
+    reference: &ReplayIdentity,
+    canonical: &Event,
+    expected_message: &str,
+    mutate: impl FnOnce(&mut Event),
+) {
+    let mut mutant = canonical.clone();
+    mutate(&mut mutant);
+    let panic = catch_unwind(|| {
+        assert_mergeable(run, reference, &mutant);
+    })
+    .expect_err("a mutated verdict envelope must fail closed");
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .expect("verdict-refusal panic carries text");
+    assert!(message.contains(expected_message), "{message}");
+}
+
+fn assert_verdict_envelope_mutations_refused(
+    run: &StudyRun,
+    reference: &ReplayIdentity,
+    canonical: &Event,
+) {
+    assert_verdict_mutation_refused(run, reference, canonical, "wrong session", |event| {
+        event.session.push_str("/wrong");
+    });
+    assert_verdict_mutation_refused(run, reference, canonical, "wrong scope", |event| {
+        event.scope.push_str("/wrong");
+    });
+    assert_verdict_mutation_refused(
+        run,
+        reference,
+        canonical,
+        "canonical verdict slot",
+        |event| event.seq = event.seq.wrapping_add(1),
+    );
+    assert_verdict_mutation_refused(
+        run,
+        reference,
+        canonical,
+        "informational green verdict",
+        |event| event.severity = Severity::Warn,
+    );
+    assert_verdict_mutation_refused(
+        run,
+        reference,
+        canonical,
+        "without a wall-clock envelope",
+        |event| event.wall_ns = Some(1),
+    );
+    assert_verdict_mutation_refused(run, reference, canonical, "wrong suite", |event| {
+        let EventKind::ConformanceCase { suite, .. } = &mut event.kind else {
+            unreachable!("canonical verdict is a ConformanceCase");
+        };
+        suite.push_str("/wrong");
+    });
+    assert_verdict_mutation_refused(run, reference, canonical, "wrong case", |event| {
+        let EventKind::ConformanceCase { case, .. } = &mut event.kind else {
+            unreachable!("canonical verdict is a ConformanceCase");
+        };
+        case.push_str("/wrong");
+    });
+    assert_verdict_mutation_refused(run, reference, canonical, "passing verdict", |event| {
+        let EventKind::ConformanceCase { pass, .. } = &mut event.kind else {
+            unreachable!("canonical verdict is a ConformanceCase");
+        };
+        *pass = false;
+    });
+    assert_verdict_mutation_refused(
+        run,
+        reference,
+        canonical,
+        "does not name the admitted run",
+        |event| {
+            let EventKind::ConformanceCase { detail, .. } = &mut event.kind else {
+                unreachable!("canonical verdict is a ConformanceCase");
+            };
+            detail.push_str("; wrong");
+        },
+    );
+    assert_verdict_mutation_refused(
+        run,
+        reference,
+        canonical,
+        "wrong causal input seed",
+        |event| {
+            let EventKind::ConformanceCase { seed, .. } = &mut event.kind else {
+                unreachable!("canonical verdict is a ConformanceCase");
+            };
+            *seed ^= 1;
+        },
+    );
+    assert_verdict_mutation_refused(run, reference, canonical, "only ConformanceCase", |event| {
+        event.kind = EventKind::Custom {
+            name: "wrong-kind".to_string(),
+            json: "{}".to_string(),
+        };
+    });
 }
 
 fn assert_resealed_semantic_refusal(
@@ -1179,24 +1321,9 @@ fn bipop_full_study_replays_and_seeded_failure_is_refused() {
     );
 
     emit_green_receipt(&first);
-    let green_verdict = emit_green_verdict(&first);
-    assert_mergeable(&first, &first.result, &green_verdict);
-
-    let mut wrong_seed_verdict = green_verdict.clone();
-    let EventKind::ConformanceCase { seed, .. } = &mut wrong_seed_verdict.kind else {
-        unreachable!("green verdict constructor always returns ConformanceCase evidence");
-    };
-    *seed ^= 1;
-    let panic = catch_unwind(|| {
-        assert_mergeable(&first, &first.result, &wrong_seed_verdict);
-    })
-    .expect_err("a green verdict with the wrong causal seed must not merge");
-    let message = panic
-        .downcast_ref::<String>()
-        .map(String::as_str)
-        .or_else(|| panic.downcast_ref::<&str>().copied())
-        .expect("verdict-binding panic carries text");
-    assert!(message.contains("wrong causal input seed"));
+    let green_verdict = emit_green_verdict(&replay);
+    assert_mergeable(&replay, &first.result, &green_verdict);
+    assert_verdict_envelope_mutations_refused(&replay, &first.result, &green_verdict);
 
     let mut objective_mutant = first.clone();
     objective_mutant.evaluations[0].value += 0.25;
