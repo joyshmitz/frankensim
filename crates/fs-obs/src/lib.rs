@@ -23,6 +23,7 @@
 //! (bead gp3.14): versioned, typed, length-prefixed — the shared
 //! replacement for ad hoc delimiter-concatenation identities.
 
+pub mod containment;
 pub mod ident;
 
 use core::fmt;
