@@ -20,12 +20,33 @@ fn limited(maximum: u64) -> EvalLimit {
     EvalLimit::Limited(NonZeroU64::new(maximum).expect("fixture evaluation limit is nonzero"))
 }
 
-fn verdict(case: &str, pass: bool, detail: &str) {
-    println!(
-        "{{\"suite\":\"fs-opt/conformance\",\"case\":\"{case}\",\"verdict\":\"{}\",\
-         \"detail\":\"{detail}\"}}",
-        if pass { "pass" } else { "fail" }
+const FIXED_INPUT_SEED: u64 = 0;
+// Scheduler/reduction provenance for the Cx-backed fixed fixtures only.
+const EXECUTION_SEED: u64 = 0x0F7;
+const OPT_001_INPUT_SEED: u64 = 0x1001_2026_0706_0031;
+const OPT_003_INPUT_SEED: u64 = 0x1001_2026_0706_0033;
+
+fn verdict(case: &str, pass: bool, detail: &str, seed: u64) {
+    let mut emitter = fs_obs::Emitter::new("fs-opt/conformance", case);
+    let event = emitter.emit(
+        if pass {
+            fs_obs::Severity::Info
+        } else {
+            fs_obs::Severity::Error
+        },
+        fs_obs::EventKind::ConformanceCase {
+            suite: "fs-opt/conformance".to_string(),
+            case: case.to_string(),
+            pass,
+            detail: detail.to_string(),
+            seed,
+        },
+        None,
     );
+    fs_obs::lint_failure_record(&event).expect("fs-opt verdict must be replayable");
+    let line = event.to_jsonl();
+    fs_obs::validate_line(&line).expect("fs-opt verdict must use the fs-obs wire schema");
+    println!("{line}");
     assert!(pass, "case {case}: {detail}");
 }
 
@@ -67,7 +88,7 @@ fn with_cx<R>(f: impl FnOnce(&Cx<'_>) -> R) -> R {
             &gate,
             arena,
             StreamKey {
-                seed: 0x0F7,
+                seed: EXECUTION_SEED,
                 kernel_id: 1,
                 tile: 0,
                 iteration: 0,
@@ -133,7 +154,7 @@ fn opt_001_validation_teaches() {
 
     // Fuzz storm: random op sequences; acceptance must MATCH an
     // independent shape/dims model maintained by the test.
-    let mut rng = Lcg(0x1001_2026_0706_0031);
+    let mut rng = Lcg(OPT_001_INPUT_SEED);
     let mut agreed = 0u64;
     let mut disagreed = 0u64;
     let mut fb = ProblemBuilder::new();
@@ -286,8 +307,9 @@ fn opt_001_validation_teaches() {
             "seeded ill-typed constructions refuse with teaching text (dims, shapes, \
              dimensionless, odd-sqrt, checked power dims, index, non-scalar root) and a 600-op fuzz storm \
              matches the independent validity model exactly ({agreed} agreements, \
-             {disagreed} disagreements); seed 0x1001_2026_0706_0031"
+             {disagreed} disagreements); seed {OPT_001_INPUT_SEED:#018x}"
         ),
+        OPT_001_INPUT_SEED,
     );
 }
 
@@ -359,6 +381,7 @@ fn opt_002_roundtrip_and_hash() {
         "build->serialize->parse round-trips to an IDENTICAL problem (floats travel \
          as bit patterns); hashes are stable across identical builds, differ across \
          edits, and guard integrity (tampered text refuses with the line named)",
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -387,13 +410,12 @@ fn opt_002b_legacy_crosswalk_receipt_is_structured_and_logged() {
         && receipt.rule() == FiveToSixRule::AppendMoleZero
         && verified;
     let mut emitter = fs_obs::Emitter::new("fs-opt/conformance", "opt-002b/crosswalk");
-    let line = emitter
-        .emit(
+    let event = emitter.emit(
             fs_obs::Severity::Info,
             fs_obs::EventKind::Custom {
                 name: "opt-dimension-crosswalk".to_string(),
                 json: format!(
-                    "{{\"source_version\":\"{:?}\",\"target_version\":\"{:?}\",\"rule\":\"{:?}\",\"source_fnv\":\"{:016X}\",\"old_hash\":\"{}\",\"new_hash\":\"{}\",\"verified\":{verified}}}",
+                    "{{\"source_version\":\"{:?}\",\"target_version\":\"{:?}\",\"rule\":\"{:?}\",\"source_fnv\":\"{:016X}\",\"old_hash\":\"{}\",\"new_hash\":\"{}\",\"verified\":{verified},\"input_seed\":{FIXED_INPUT_SEED}}}",
                     receipt.source_version(),
                     receipt.target_version(),
                     receipt.rule(),
@@ -403,14 +425,16 @@ fn opt_002b_legacy_crosswalk_receipt_is_structured_and_logged() {
                 ),
             },
             None,
-        )
-        .to_jsonl();
+        );
+    fs_obs::lint_failure_record(&event).expect("crosswalk event must be replayable");
+    let line = event.to_jsonl();
     fs_obs::validate_line(&line).expect("crosswalk event validates");
     println!("{line}");
     verdict(
         "opt-002b/crosswalk",
         pass,
         "exact v1 bytes map only by AppendMoleZero and bind both complete artifacts",
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -438,7 +462,7 @@ fn opt_003_cse_and_substitution() {
         let g2 = b.mul(g, g).expect("g2");
         b.add(g2, g).expect("f(g)")
     };
-    let mut rng = Lcg(0x1001_2026_0706_0033);
+    let mut rng = Lcg(OPT_003_INPUT_SEED);
     let mut law = true;
     for _ in 0..200 {
         let p = vec![rng.unit() * 4.0 - 2.0, rng.unit() * 4.0 - 2.0];
@@ -501,10 +525,13 @@ fn opt_003_cse_and_substitution() {
     verdict(
         "opt-003",
         cse && cse2 && law && ids_ok,
-        "hash-consing returns IDENTICAL ids for repeated subexpressions (CSE by \
-         construction); substitution commutes with evaluation BITWISE over 200 \
-         random points; neg(neg(x)) and min(x,x) evaluate bitwise-identical to x; \
-         seed 0x1001_2026_0706_0033",
+        &format!(
+            "hash-consing returns IDENTICAL ids for repeated subexpressions (CSE by \
+             construction); substitution commutes with evaluation BITWISE over 200 \
+             random points; neg(neg(x)) and min(x,x) evaluate bitwise-identical to x; \
+             seed {OPT_003_INPUT_SEED:#018x}"
+        ),
+        OPT_003_INPUT_SEED,
     );
 }
 
@@ -548,21 +575,24 @@ fn opt_004_class_routing() {
     let trace = p.class_trace();
     let trace_ok = trace.len() == p.exprs().len()
         && trace.iter().any(|l| l.contains("max") && l.contains("C0"));
-    let mut em = fs_obs::Emitter::new("fs-opt/conformance", "opt-004/classes");
-    let line = em
-        .emit(
-            fs_obs::Severity::Info,
-            fs_obs::EventKind::Custom {
-                name: "opt-class-routing".to_string(),
-                json: format!(
-                    "{{\"nodes\":{},\"hash\":\"{:016X}\",\"refusal\":\"{refusal}\"}}",
-                    p.exprs().len(),
-                    problem_hash(&p)
-                ),
-            },
-            None,
-        )
-        .to_jsonl();
+    let mut em = fs_obs::Emitter::new("fs-opt/conformance", "opt-004");
+    let event = em.emit(
+        fs_obs::Severity::Info,
+        fs_obs::EventKind::Custom {
+            name: "opt-class-routing".to_string(),
+            json: format!(
+                "{{\"nodes\":{},\"hash\":\"{:016X}\",\"classes_right\":{classes_right},\
+                 \"names_poisoning_node\":{names_node},\"subgradient_admitted\":{sub_ok},\
+                 \"gradient_free_admitted\":{free_ok},\"adjointless_refused\":{no_adj},\
+                 \"trace_complete\":{trace_ok},\"input_seed\":{FIXED_INPUT_SEED}}}",
+                p.exprs().len(),
+                problem_hash(&p)
+            ),
+        },
+        None,
+    );
+    fs_obs::lint_failure_record(&event).expect("class event must be replayable");
+    let line = event.to_jsonl();
     fs_obs::validate_line(&line).expect("class event validates");
     println!("{line}");
     verdict(
@@ -574,6 +604,7 @@ fn opt_004_class_routing() {
              adjoint-less PDE nodes refuse gradient families with the study named, \
              and the class trace covers every node"
         ),
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -752,8 +783,10 @@ fn opt_005_riemannian_descent() {
                  minimizer to {err_sphere:.1e} STAYING unit; SO(3) aligns a vector to \
                  1e-10 with a unit quaternion throughout; Stiefel(4,2) finds the top \
                  invariant subspace with columns orthonormal to 1e-10; malformed raw \
-                 manifold/point inputs refuse before calling the objective"
+                 manifold/point inputs refuse before calling the objective; deterministic \
+                 Cx execution seed {EXECUTION_SEED:#05x}"
             ),
+            FIXED_INPUT_SEED,
         );
     });
 }
@@ -917,9 +950,10 @@ fn opt_006_budget_and_cancellation() {
                  step at one evaluation, cap 4 lands exactly, cap 5 spends no partial two-coordinate \
                  gradient, cap 6 lands exactly, and IR cap 1 stays at one; unlimited descent \
                  converges to {:.1e}; PDE/stochastic nodes refuse evaluation naming \
-                 their executor",
-                rep.evals, rep.f0, rep.f_final, rep2.f_final
+                 their executor; deterministic Cx execution seed {EXECUTION_SEED:#05x}",
+                rep.evals, rep.f0, rep.f_final, rep2.f_final,
             ),
+            FIXED_INPUT_SEED,
         );
     });
 }

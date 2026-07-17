@@ -404,6 +404,12 @@ Identical build sequences give identical problems, semantic ids,
 hashes, and bytes; identical rejections give identical reports
 (opt-002/003 and adm-004/005/006 are the trip-wires).
 
+Conformance input generation is deterministic and separately identified:
+opt-001 uses root seed `0x1001_2026_0706_0031`, opt-003 uses root seed
+`0x1001_2026_0706_0033`, and fixed-input aggregate cases record seed zero.
+The `0x0F7` stream key used by opt-005/006 is only `Cx` execution provenance;
+it is never substituted for an input seed.
+
 RE.Q1 game identities are bit-deterministic: semantic sets are canonically
 ordered, quantifier and sequential-composition order remain significant,
 floating signed zero is normalized, and model, units, information, strategy,
@@ -455,10 +461,26 @@ Off by default; nothing else is gated.
 
 ## Conformance tests
 
-`tests/conformance.rs`, cases opt-001..opt-006 — JSON-line verdicts,
-seeded LCG randomness, fs-obs Custom event carrying the fixture
-problem hash and routing refusal. Any reimplementation must pass the
-suite unchanged.
+`tests/conformance.rs`, aggregate cases opt-001, opt-002,
+opt-002b/crosswalk, and opt-003..opt-006, emit canonical
+`fs_obs::EventKind::ConformanceCase` verdicts. Passing cases use `Info`,
+failures use `Error`; every reached verdict passes the failure-record lint,
+serializes through `to_jsonl`, validates against the fs-obs wire schema, and
+prints before its final assertion. Seeded LCG cases record their root input
+seed and fixed cases record zero.
+
+opt-002b/crosswalk and opt-004 additionally emit one validated, object-shaped
+`Custom` companion under the same suite/case identity as their aggregate
+verdict. The event kind and Custom name distinguish supplemental evidence from
+the aggregate decision; a companion neither creates another conformance case
+nor changes the aggregate result. Each companion carries standalone input-seed
+provenance. Dynamic routing-refusal text belongs in the typed ConformanceCase
+detail, where fs-obs escapes it, rather than in caller-formatted Custom JSON.
+
+Fixture construction and intermediate `expect`/index operations remain outside
+the aggregate boundary. If one aborts before `verdict`, no aggregate event is
+fabricated; absence of a verdict means the case did not complete, never that it
+passed. Any reimplementation must pass the suite unchanged.
 
 The RE.Q1 game battery covers canonical schema replay and semantic-set
 permutation, quantifier-order and open-loop/feedback identity separation,
