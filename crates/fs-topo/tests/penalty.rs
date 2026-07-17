@@ -15,11 +15,63 @@ use fs_topo::penalty::{
     TopoSpec, apply_attribution_step, enclosed_voids, evaluate, heuristic_cc_penalty,
 };
 
-fn verdict(case: &str, detail: &str) {
-    println!(
-        "{{\"suite\":\"fs-topo/penalty\",\"case\":\"{case}\",\"verdict\":\"pass\",\
-         \"detail\":\"{detail}\"}}"
+const SUITE: &str = "fs-topo/penalty";
+const FIXED_INPUT_SEED: u64 = 0;
+const TP_003_INPUT_SEED: u64 = 0x1234;
+
+fn verdict(case: &str, detail: &str, seed: u64) {
+    let mut emitter = fs_obs::Emitter::new(SUITE, case);
+    let event = emitter.emit(
+        fs_obs::Severity::Info,
+        fs_obs::EventKind::ConformanceCase {
+            suite: SUITE.to_string(),
+            case: case.to_string(),
+            pass: true,
+            detail: detail.to_string(),
+            seed,
+        },
+        None,
     );
+    fs_obs::lint_failure_record(&event).expect("topology-penalty verdict must be replayable");
+    let line = event.to_jsonl();
+    fs_obs::validate_line(&line).expect("topology-penalty verdict must use the fs-obs wire schema");
+    println!("{line}");
+}
+
+fn measurement(case: &str, name: &str, json: String) {
+    let identity = format!("{case}/measurement");
+    let mut emitter = fs_obs::Emitter::new(SUITE, &identity);
+    let event = emitter.emit(
+        fs_obs::Severity::Info,
+        fs_obs::EventKind::Custom {
+            name: name.to_string(),
+            json,
+        },
+        None,
+    );
+    fs_obs::lint_failure_record(&event).expect("topology-penalty measurement must be replayable");
+    let line = event.to_jsonl();
+    fs_obs::validate_line(&line)
+        .expect("topology-penalty measurement must use the fs-obs wire schema");
+    println!("{line}");
+}
+
+fn finite_json(value: f64) -> String {
+    if value.is_finite() {
+        value.to_string()
+    } else {
+        "null".to_string()
+    }
+}
+
+fn finite_json_array(values: &[f64]) -> String {
+    let values = values
+        .iter()
+        .copied()
+        .map(finite_json)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("[{values}]")
 }
 
 /// A solid n³ bracket: value −1 inside a centered box, +1 outside
@@ -111,6 +163,7 @@ fn tp_001_g0_zero_iff_target_matched() {
         "penalty is exactly zero on the compliant bracket; a seeded 4x4x4 void and a \
          spurious island each produce positive penalty with correctly-signed, exactly \
          localized attributions",
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -187,6 +240,7 @@ fn tp_002_attribution_perturbation_directions() {
         "tp-002",
         "perturbation test: the attributed fill strictly reduces the void penalty; an \
          off-target perturbation of equal magnitude does not",
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -213,7 +267,7 @@ fn tp_003_threshold_is_the_feature_size_floor() {
     // PH STABILITY (inherited): a small uniform perturbation moves the
     // penalty by at most a comparable amount.
     let mut jittered = deep.clone();
-    let mut lcg = 0x1234u64;
+    let mut lcg = TP_003_INPUT_SEED;
     for v in &mut jittered.values {
         lcg = lcg
             .wrapping_mul(6364136223846793005)
@@ -232,6 +286,7 @@ fn tp_003_threshold_is_the_feature_size_floor() {
         "tp-003",
         "0.2-deep dimple ignored, 0.5-deep void enforced at tau = 0.3 (the feature-size \
          floor); the penalty is stable under small field jitter",
+        TP_003_INPUT_SEED,
     );
 }
 
@@ -258,10 +313,14 @@ fn tp_004_m_gate_beats_the_cc_heuristic() {
         steps += 1;
     }
     let final_pen = evaluate(&field, &s);
-    println!(
-        "{{\"metric\":\"m-gate\",\"persistence_steps\":{steps},\
-         \"persistence_final\":{:.4},\"trace\":{trace:?}}}",
-        final_pen.total
+    measurement(
+        "tp-004",
+        "m-gate",
+        format!(
+            "{{\"persistence_steps\":{steps},\"persistence_final\":{},\"trace\":{}}}",
+            finite_json(final_pen.total),
+            finite_json_array(&trace),
+        ),
     );
     assert!(
         final_pen.total == 0.0 && final_pen.betti == (1, 0, 0),
@@ -286,6 +345,7 @@ fn tp_004_m_gate_beats_the_cc_heuristic() {
         "the [M] gate, measured: attribution-guided persistence descent reaches castable \
          topology in a handful of steps while the CC-labeling heuristic is provably flat \
          under partial progress",
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -325,6 +385,7 @@ fn tp_005_duality_route_and_tunnel_counting() {
         "tp-005",
         "enclosed-void finder cross-checks against betti H2 (duality); a through-channel \
          satisfies a 1-tunnel routing spec and is penalized under a 0-tunnel spec",
+        FIXED_INPUT_SEED,
     );
 }
 

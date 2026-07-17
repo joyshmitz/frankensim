@@ -513,7 +513,7 @@ fn topo_006_determinism_and_scale() {
     let t1 = std::time::Instant::now();
     let bars = persistence0(&big);
     let t_pers = t1.elapsed().as_millis();
-    let mut em = fs_obs::Emitter::new("fs-topo/conformance", "topo-006/scale");
+    let mut em = fs_obs::Emitter::new("fs-topo/conformance", "topo-006/scale/measurement");
     let line = em
         .emit(
             fs_obs::Severity::Info,

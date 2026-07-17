@@ -134,12 +134,17 @@ None. `#![forbid(unsafe_code)]` via workspace lints; no capsules.
 
 ## Conformance tests
 
-`tests/conformance.rs`, cases topo-001..topo-008 — JSON-line
-verdicts, seeded LCG randomness, the fs-obs scale ledger. Any
-reimplementation must pass the suite unchanged.
+`tests/conformance.rs`, cases topo-001..topo-008 — canonical fs-obs
+verdicts, seeded LCG randomness, and a distinct fs-obs scale companion at
+`topo-006/scale/measurement`. Any reimplementation must pass the suite
+unchanged.
 
 With `moonshot-topo-persistence`,
-`tests/penalty.rs::tp_001b_equal_minimum_islands_keep_distinct_birth_representatives`
+`tests/penalty.rs`, cases tp-001..tp-005, emits canonical fs-obs aggregate
+verdicts. Fixed-input fixtures carry seed 0; tp-003 carries its actual jitter
+input seed `0x1234`. The m-gate's graded trace is a finite-safe Custom event at
+the collision-free `tp-004/measurement` identity, distinct from the tp-004
+aggregate. `tp_001b_equal_minimum_islands_keep_distinct_birth_representatives`
 locks the retained-representative, disjoint-attribution, and one-step repair
 semantics for equal-valued disconnected islands.
 
@@ -171,3 +176,6 @@ semantics for equal-valued disconnected islands.
   stability empirically (tested), not by the classical theorem verbatim.
 - Resolution caveats inherit from `cubical`: features thinner than a
   voxel are invisible; τ must be chosen above the voxel scale.
+- The tp-004 m-gate companion is deterministic fixture evidence for the
+  stated attribution-vs-count-only comparison. It is not a wall-clock
+  performance result or a general convergence claim for arbitrary fields.
