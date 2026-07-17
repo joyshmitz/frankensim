@@ -65,6 +65,16 @@ keeps the best per niche; illumination preserves diversity; coverage + QD-score
 are monotone; the CVT archive assigns to the nearest centroid; novelty rewards
 distance; malformed dimensions and fitness are rejected; determinism.
 
+`tests/conformance.rs` registers the load-bearing QD laws with the shared
+`fs-casebook` harness in a fixed order. Its exact records exercise MAP-Elites
+strict niche replacement plus coverage/QD monotonicity, CVT nearest-centroid
+ties plus strict replacement, and novelty known answers. Canonical little-endian
+input frames bind every operation, descriptor, fitness, expected acceptance,
+centroid, query, and expected result to literal FNV-1a digests; each record
+separately declares its exact tolerance. Failure details retain the reversible
+inputs and exact result bits. A disclosed seeded acceptance-oracle corruption
+proves both the typed report and `assert_green` merge gate turn red.
+
 ## No-claim boundaries
 
 - v0 is the ARCHIVE data structure + its metrics + novelty scoring. The full QD
@@ -76,3 +86,7 @@ distance; malformed dimensions and fitness are rejected; determinism.
   Lloyd relaxation over a sampled descriptor space is a follow-on.
 - Novelty is brute-force k-NN; a spatial index for large archives is a
   performance follow-on.
+- Casebook records are deterministic diagnostics, not authenticated ledger
+  receipts or a benchmark-performance claim. A local green suite does not
+  establish dual-ISA study-scale G5; the central conformance lane must compare
+  the same input digests and exact verdict records on both reference ISAs.
