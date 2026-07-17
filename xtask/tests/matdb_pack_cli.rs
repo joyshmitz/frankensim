@@ -25,6 +25,7 @@ const KINETICS_COMPILER_ID: &str = "frankensim-matdb-kinetics-model-pack-compile
 const SPECIES_COMPILER_ID: &str = "frankensim-matdb-species-pack-compiler-v1";
 const METHANE_SEED_MANIFEST: &str = "data/matdb/seed-v1/methane/manifest.tsv";
 const NASA_SEED_LICENSE: &str = "Work-of-the-US-Government-Public-Use-Permitted";
+const NASA_METHANE_MOLAR_MASS_G_PER_MOL: f64 = 16.042_46;
 const NIST_SRD69_METHANE_MOLAR_MASS_KG_PER_MOL: f64 = 0.016_042_5;
 const NIST_SRD69_DISPLAY_ROUNDING_HALF_WIDTH_KG_PER_MOL: f64 = 0.000_000_05;
 
@@ -679,7 +680,7 @@ fn g3_cli_compiles_committed_methane_seed_and_records_independent_agreement() {
     assert_eq!(association.species().as_str(), "CH4");
     assert_eq!(
         association.molar_mass().to_bits(),
-        0.016_042_46f64.to_bits()
+        (NASA_METHANE_MOLAR_MASS_G_PER_MOL * 0.001).to_bits()
     );
     assert_eq!(association.standard_state_phase(), "gas");
     assert_eq!(association.reference_eos(), "ideal-gas");
