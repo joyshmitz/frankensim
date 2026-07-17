@@ -158,6 +158,17 @@ closed fourteen-row `(suite, kernel)` inventory, refuses missing/duplicate or
 metadata-drifted rows, and deterministically renders schema
 `frankensim-ascent-budget-trend-v1` for central trend ingestion.
 
+`tests/cutest_scale_battery.rs` (bead 7tv.21.13) extends the small-dimensional
+CUTEst-class oracle tranche with extended Rosenbrock, extended Powell singular,
+and variably-dimensioned families at 16 and 64 variables. Before an optimizer
+result is admitted, each analytic gradient must match FrankenScipy's independent
+finite-difference gate and the same gate must reject a one-coordinate mutant.
+L-BFGS must then reach the known zero objective within a pinned evaluation
+ceiling and reproduce the complete evaluated-point trace, public state, history,
+accounting, and report bit for bit. Every case is a wire-validated `fs-obs`
+`ConformanceCase` row with fixed-input seed zero and a versioned identity over
+the fixture, engine configuration, initial point, and every evaluated point.
+
 `tests/runner_battery.rs` (4 cases): Problem-IR product-manifold packing,
 problem-owned budget attribution, clone-checkpoint replay, and packed
 constraint routing. All aggregate outcomes are linted and wire-validated
@@ -217,3 +228,12 @@ uninterrupted reference.
   throughput claim, does not establish cross-ISA optimizer equivalence, and
   does not itself persist or compare historical runs. Central CI/ledger tooling
   owns retention, history selection, alert policy, and machine evidence.
+- The CUTEst-scale battery embeds three smooth analytic problem families; it
+  does not parse CUTEst SIF files, link a CUTEst runtime, cover the full CUTEst
+  taxonomy, or establish wall-clock or cross-ISA performance. Its 16/64-variable
+  rows prove finite gradient-gate, evaluation-budget, and same-process replay
+  behavior for the named starts only. Wider dimensions, constrained/nonsmooth
+  families, retained two-ISA execution, and historical trend persistence remain
+  separate evidence obligations. The versioned `fs-obs` trace identity is a
+  deterministic legacy-FNV drift fingerprint, not a cryptographic authenticity
+  or scientific-authority anchor.
