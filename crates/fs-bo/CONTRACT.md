@@ -197,6 +197,21 @@ reference-output identity gate returns a typed mismatch. The red
 Casebook record is byte-stable across regeneration and its
 `assert_green` refusal is caught and retained before the final green
 three-case report.
+`tests/mf_study_replay.rs` (3 Casebook cases plus a seeded red
+self-test): runs production `mf_minimize` on the correlated
+two-fidelity Branin fixture with ten low- and four high-fidelity
+initial observations followed by exactly one affordable cheap-model
+allocation. The canonical receipt binds every `MfConfig` field,
+dependency and RNG-semantics versions, every objective callback point,
+fidelity, and value, and every public `MfReport` field. Independent
+accounting reconstructs the objective values, low/high counts,
+cumulative cost, best-high trace, and final learned correlation from
+the observations that preceded the allocation; a second full run must
+reproduce the complete frame exactly. A disclosed `StreamKey` changes
+one low mantissa bit in one finite reported best-high trace value and
+reseals the payload. Payload validation therefore succeeds while the
+typed reference-output gate, stable red Casebook record, and caught
+`assert_green` merge gate all retain the mismatch.
 
 ## No-claim boundaries
 
@@ -224,10 +239,11 @@ three-case report.
   here.
 - No hyperparameter marginalization (point estimates by LML); no
   input warping.
-- The short-study replay receipt covers one finite Branin
-  configuration and same-process same-ISA execution. It makes no
-  optimizer-quality, all-objective, all-configuration, all-seed,
-  cross-ISA, cancellation/`Cx`, persistence, authenticated-ledger, or
-  performance claim. Its FNV identity and local reference gate are
-  evidence-fixture plumbing, not a cryptographic artifact seal or a
+- The short-study replay receipts cover two finite Branin
+  configurations (sequential EI and two-fidelity cost-aware allocation)
+  and same-process same-ISA execution. They make no optimizer-quality,
+  all-objective, all-configuration, all-seed, cross-ISA,
+  cancellation/`Cx`, persistence, authenticated-ledger, or performance
+  claim. Their FNV identities and local reference gates are
+  evidence-fixture plumbing, not cryptographic artifact seals or a
   production admission service.
