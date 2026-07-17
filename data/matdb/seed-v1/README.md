@@ -229,6 +229,52 @@ AISI 52100 reference:
 - <https://ntrs.nasa.gov/citations/19720007811>
 - <https://ntrs.nasa.gov/api/citations/19720007811/downloads/19720007811.pdf>
 
+## S2-S pearlitic gray-cast-iron tranche
+
+`gray-cast-iron-s2-s/` retains one engine-relevant experimental ingot from
+Wang et al., not a universal gray-iron card. Sample S2-S was melted in a
+`500 kg` medium-frequency induction furnace from `70 wt%` steel scrap and
+`30 wt%` pig iron, superheated to `1530 degC`, transferred to a ladle holding
+`0.4 wt%` Sr-FeSi inoculant (`Ino_2`, itself `2.0 wt% Sr`), and poured into an
+EN-1561 Type II mould. The resulting matrix was fully pearlitic with type-A
+graphite.
+
+Table 1 pins the sample to `3.54% C`, `1.62% Si`, `0.51% Mn`, `0.025% P`,
+`0.028% S`, `0.35% Mo`, `0.58% Cu`, and `0.060% Sn`, with reported carbon
+equivalent `4.05%`. The compiler battery independently checks the paper's
+`CE = C + 0.31 Si + 0.33 P` formula within printed rounding. No analytical
+uncertainty, balance-iron scalar, or unreported trace value is invented.
+
+Table 2 contributes four microstructure means: `9.0%` graphite area,
+`273 um` maximum graphite-flake length, `15.6%` primary-dendrite area, and
+`371 cm^-2` eutectic-colony density. The paper labels their error bars as one
+standard deviation and reports eight cross-section fields, but provides no
+confidence level or field-level observations. The SD values remain explicit
+observation caveats while runtime uncertainty stays `Unstated`.
+
+Figure 8 is the only published numerical presentation of strength and thermal
+conductivity for S2-S. The retained centers are deliberately low precision:
+`326 MPa` ultimate tensile strength and `58.8 W/(m K)` room-state thermal
+conductivity, digitized from the authors' `2141 x 1490` PNG to the nearest
+`1 MPa` and `0.1 W/(m K)`. The displayed one-SD bars are approximately
+`8 MPa` and `0.3 W/(m K)`, but are not confidence intervals and therefore do
+not become runtime half-widths. The tensile series averaged three
+GB/T T228.1-2010 specimens; the thermal path used NETZSCH LFA 457 results and
+Archimedes density. Neither path reports an exact test temperature, so both
+claims require `source_test_temperature_known = 0` rather than implying a
+temperature validity interval.
+
+As broad G3 plausibility evidence only, ORNL/TM-2012/506 Appendix C reports a
+generic gray-cast-iron thermal-conductivity range of `42..62 W/(m K)`. The
+S2-S digitization falls inside that range, but the ORNL row is not
+condition-matched and does not overwrite or fuse with the primary claim. The
+article is CC-BY-4.0 and the manifest retains full attribution.
+
+Gray-cast-iron references:
+
+- <https://www.mdpi.com/1996-1944/11/10/1876>
+- <https://www.osti.gov/servlets/purl/1148409>
+
 To compile the sources into canonical runtime packs:
 
 ```bash
@@ -255,6 +301,10 @@ cargo run -p xtask -- matdb-pack \
 cargo run -p xtask -- matdb-pack \
   --manifest data/matdb/seed-v1/aisi-52100-cvm-hot-hardness/manifest.tsv \
   --out /path/to/aisi-52100-cvm-nasa-tn-d-6632.fsmatpk
+
+cargo run -p xtask -- matdb-pack \
+  --manifest data/matdb/seed-v1/gray-cast-iron-s2-s/manifest.tsv \
+  --out /path/to/pearlitic-gray-cast-iron-s2-s-sr-fesi.fsmatpk
 ```
 
 ## No-claim boundary
@@ -310,3 +360,13 @@ constitutive behavior, cleanliness-based life adjustment, or permission to
 apply the short-term NASA measurements to another heat. The `<2%` retained-
 austenite result remains censored, and all table values retain `Unstated`
 measurement uncertainty.
+
+The S2-S gray-iron tranche applies only to the reported charge, composition,
+Sr-FeSi inoculation, mould, and fully pearlitic/type-A-graphite state. Its
+graph-digitized strength and conductivity are source-presentation estimates,
+not design minima, grade limits, or certified allowables. It supplies no
+elastic/plastic constitutive model, compression or fatigue law, elevated-
+temperature transport curve, thermal-expansion law, casting-section-size
+transfer, wear law, or universal engine-block/housing identity. Exact test
+temperature, statistical confidence, raw replicates, and joint covariance are
+not claimed.

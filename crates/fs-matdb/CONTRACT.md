@@ -330,7 +330,10 @@ NIST displayed-precision agreement checks.
   exact-temperature AISI 4140 mechanical-property claims and three
   small-sample AISI 1045 tensile claims. The first pinned AISI 52100
   bearing-steel tranche adds six actual-composition claims, five Rockwell C
-  scale readings, and four exact retained-austenite fractions.
+  scale readings, and four exact retained-austenite fractions. The first
+  pinned gray-iron tranche adds nine reported composition/carbon-equivalent
+  values, four quantified microstructure fields, and two low-precision
+  graph-digitized room-state properties.
   The gas associations do not define air or exhaust mixture compositions,
   humidity, or combustion completeness. The Aluminum claims do not define a
   continuous constitutive curve or a general-purpose design card; their NIST
@@ -357,9 +360,15 @@ NIST displayed-precision agreement checks.
   dimensionless storage, not a ratio quantity. The `<2%` retained-austenite
   result stays censored in an observation, the predictive equation's
   `+/-1`-point accuracy is not reused as table-measurement uncertainty, and no
-  hot-hardness curve or long-time stability is claimed. Bead 1sxe still owns
-  the remaining curated material/property and interface-system dataset. No
-  equilibrium computation happens here (fs-thermochem consumes phase data;
+  hot-hardness curve or long-time stability is claimed. The gray-iron claims
+  bind Wang et al.'s S2-S charge, chemistry, Sr-FeSi inoculation, EN-1561
+  Type II mould, and fully pearlitic/type-A-graphite state. Its Figure 8
+  strength and conductivity centers retain only graph-supported precision;
+  one-standard-deviation bars without confidence metadata remain observation
+  caveats, not runtime half-widths. Exact test temperature is absent and must
+  be acknowledged with `source_test_temperature_known = 0`. Bead 1sxe still
+  owns the remaining curated material/property and interface-system dataset.
+  No equilibrium computation happens here (fs-thermochem consumes phase data;
   this crate only stores it).
 - The L1 pack codec does not parse handbooks, CSV, NASA tables, license text,
   or other raw formats and does not decide whether terms permit

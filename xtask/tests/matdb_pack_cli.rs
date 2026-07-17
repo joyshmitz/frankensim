@@ -32,6 +32,8 @@ const AISI_1045_COLD_DRAWN_SEED_MANIFEST: &str =
     "data/matdb/seed-v1/aisi-1045-cold-drawn/manifest.tsv";
 const AISI_52100_CVM_SEED_MANIFEST: &str =
     "data/matdb/seed-v1/aisi-52100-cvm-hot-hardness/manifest.tsv";
+const GRAY_CAST_IRON_S2_S_SEED_MANIFEST: &str =
+    "data/matdb/seed-v1/gray-cast-iron-s2-s/manifest.tsv";
 const NASA_SEED_LICENSE: &str = "Work-of-the-US-Government-Public-Use-Permitted";
 const CC_BY_4_0_LICENSE: &str = "CC-BY-4.0";
 const NIST_PUBLIC_INFORMATION_LICENSE: &str = "NIST-Public-Information-Attribution-Requested";
@@ -992,7 +994,7 @@ fn g3_cli_compiles_committed_aisi_4140_rc33_exact_condition_seed() {
             *dims, expected_dims,
             "AISI 4140 {property} dimensions moved"
         );
-        let scale = expected_value.abs().max(1.0);
+        let scale = f64::abs(expected_value).max(1.0);
         let relative_error = (*value - expected_value).abs() / scale;
         assert!(
             relative_error <= 2.0e-15,
@@ -1506,6 +1508,258 @@ fn g3_cli_compiles_committed_aisi_52100_cvm_heat_treatment_states() {
             (None, Some(_)) => panic!("missing exact AISI 52100 austenite state {specimen_state}"),
         }
     }
+
+    let decisions = String::from_utf8(first.stdout).expect("decision stream is UTF-8");
+    assert!(decisions.contains("\"reason_code\":\"uncertainty_policy_admitted\""));
+    assert!(decisions.contains("\"reason_code\":\"runtime_pack_self_verified\""));
+    assert!(
+        decisions
+            .lines()
+            .all(|row| row.contains(&format!("\"pack_hash\":\"{pack_hash}\"")))
+    );
+}
+
+#[test]
+fn g3_cli_compiles_committed_s2_s_gray_cast_iron_seed() {
+    let manifest = workspace_path(GRAY_CAST_IRON_S2_S_SEED_MANIFEST);
+    assert!(
+        manifest.is_file(),
+        "committed S2-S gray-cast-iron seed manifest is missing"
+    );
+    let directory = fixture_dir();
+    let first_path = directory.join("gray-cast-iron-s2-s-first.fsmatpk");
+    let second_path = directory.join("gray-cast-iron-s2-s-second.fsmatpk");
+
+    let first = run_compiler(&manifest, &first_path);
+    let second = run_compiler(&manifest, &second_path);
+    assert!(
+        first.status.success(),
+        "first S2-S gray-cast-iron seed compilation failed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(
+        second.status.success(),
+        "second S2-S gray-cast-iron seed compilation failed: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(
+        first.stdout, second.stdout,
+        "S2-S gray-cast-iron decision stream moved"
+    );
+    assert_decision_compiler(&first, MATERIAL_COMPILER_ID);
+
+    let first_bytes = fs::read(first_path).expect("read first S2-S gray-iron pack");
+    let second_bytes = fs::read(second_path).expect("read second S2-S gray-iron pack");
+    assert_eq!(first_bytes, second_bytes, "S2-S gray-iron pack bytes moved");
+    let decoded = NormalizedPack::from_bytes(&first_bytes).expect("decode S2-S gray-iron pack");
+    let pack_hash = decoded.content_hash();
+    let decoded = NormalizedPack::from_bytes_verified(pack_hash, &first_bytes)
+        .expect("verify S2-S gray-iron pack identity");
+
+    assert_eq!(decoded.pack_id(), "pearlitic-gray-cast-iron-s2-s-sr-fesi");
+    assert_eq!(decoded.compiler(), MATERIAL_COMPILER_ID);
+    assert!(
+        decoded
+            .redistribution_terms()
+            .contains("Attribution 4.0 International")
+    );
+    assert_eq!(decoded.claims().claim_count(), 15);
+    assert!(decoded.joint_statistics().is_empty());
+
+    let dimensionless = Dims([0, 0, 0, 0, 0, 0]);
+    for (property, source_percent) in [
+        ("carbon_mass_fraction", 3.54),
+        ("silicon_mass_fraction", 1.62),
+        ("manganese_mass_fraction", 0.51),
+        ("phosphorus_mass_fraction", 0.025),
+        ("sulfur_mass_fraction", 0.028),
+        ("molybdenum_mass_fraction", 0.35),
+        ("copper_mass_fraction", 0.58),
+        ("tin_mass_fraction", 0.060),
+        ("carbon_equivalent_ce", 4.05),
+    ] {
+        let claims = decoded.claims().claims_for(property);
+        assert_eq!(claims.len(), 1, "expected one S2-S {property} claim");
+        let (id, claim) = claims[0];
+        let PropertyValue::Scalar { value, dims } = &claim.value else {
+            panic!("S2-S {property} was not scalar");
+        };
+        assert_eq!(*dims, dimensionless);
+        let expected_value = source_percent * 0.01;
+        let relative_error = (*value - expected_value).abs() / expected_value;
+        assert!(
+            relative_error <= 2.0e-15,
+            "S2-S {property} moved by {relative_error:e} relative"
+        );
+        assert!(claim.validity.bounds().is_empty());
+        assert_eq!(claim.uncertainty, UncertaintyModel::Unstated);
+        assert_eq!(claim.provenance.license, CC_BY_4_0_LICENSE);
+        assert!(claim.provenance.source.contains("doi:10.3390/ma11101876"));
+        let observation = decoded
+            .claims()
+            .observation(claim.observations[0])
+            .expect("S2-S composition observation remains linked");
+        assert!(
+            observation
+                .specimen
+                .contains("S2-S-pearlitic-gray-cast-iron")
+        );
+        assert!(observation.specimen.contains("0p4wtpct-SrFeSi-Ino2"));
+        assert!(observation.method.contains("Table 1"));
+        assert!(observation.caveats.contains("2.0 wt% Sr"));
+        assert!(observation.caveats.contains("no balance-iron scalar"));
+        assert_eq!(claim.observations[0].0, observation.content_hash());
+        assert_eq!(id.0, claim.content_hash());
+    }
+
+    let carbon_equivalent_from_printed_composition: f64 = 3.54 + 0.31 * 1.62 + 0.33 * 0.025;
+    assert!(
+        (carbon_equivalent_from_printed_composition - 4.05).abs() <= 0.005,
+        "S2-S carbon-equivalent transcription exceeds the source's printed rounding"
+    );
+
+    for (property, expected_value, expected_dims, caveat_fragment) in [
+        (
+            "graphite_area_fraction",
+            9.0 * 0.01,
+            dimensionless,
+            "graphite area 9.0 +/- 0.2 percent",
+        ),
+        (
+            "maximum_graphite_flake_length",
+            273.0 * 1.0e-6,
+            Dims([1, 0, 0, 0, 0, 0]),
+            "maximum graphite length 273 +/- 19 um",
+        ),
+        (
+            "primary_dendrite_area_fraction",
+            15.6 * 0.01,
+            dimensionless,
+            "primary-dendrite area 15.6 +/- 0.9 percent",
+        ),
+        (
+            "eutectic_colony_areal_density",
+            371.0 * 1.0e4,
+            Dims([-2, 0, 0, 0, 0, 0]),
+            "eutectic-colony count 371 +/- 19 per cm2",
+        ),
+    ] {
+        let claims = decoded.claims().claims_for(property);
+        assert_eq!(claims.len(), 1, "expected one S2-S {property} claim");
+        let (_, claim) = claims[0];
+        let PropertyValue::Scalar { value, dims } = &claim.value else {
+            panic!("S2-S {property} was not scalar");
+        };
+        assert_eq!(*dims, expected_dims);
+        let relative_error = (*value - expected_value).abs() / expected_value;
+        assert!(
+            relative_error <= 2.0e-15,
+            "S2-S {property} moved by {relative_error:e} relative"
+        );
+        assert!(claim.validity.bounds().is_empty());
+        assert_eq!(claim.uncertainty, UncertaintyModel::Unstated);
+        assert_eq!(claim.provenance.license, CC_BY_4_0_LICENSE);
+        let observation = decoded
+            .claims()
+            .observation(claim.observations[0])
+            .expect("S2-S microstructure observation remains linked");
+        assert!(observation.method.contains("eight cross-section fields"));
+        assert!(observation.caveats.contains("type-A graphite"));
+        assert!(observation.caveats.contains(caveat_fragment));
+        assert!(observation.caveats.contains("one standard deviation"));
+        assert!(
+            observation
+                .caveats
+                .contains("runtime uncertainty remains Unstated")
+        );
+    }
+
+    let (_, tensile) = decoded
+        .claims()
+        .claims_for("ultimate_tensile_strength")
+        .into_iter()
+        .next()
+        .expect("S2-S ultimate tensile strength claim");
+    let PropertyValue::Scalar {
+        value: tensile_value,
+        dims: tensile_dims,
+    } = &tensile.value
+    else {
+        panic!("S2-S ultimate tensile strength was not scalar");
+    };
+    assert_eq!(*tensile_dims, Dims([-1, 1, -2, 0, 0, 0]));
+    assert_eq!(*tensile_value, 326.0e6);
+    assert_eq!(
+        tensile.validity.bound("source_test_temperature_known"),
+        Some((0.0, 0.0))
+    );
+    assert_eq!(tensile.validity.bounds().len(), 1);
+    assert_eq!(tensile.uncertainty, UncertaintyModel::Unstated);
+    let tensile_observation = decoded
+        .claims()
+        .observation(tensile.observations[0])
+        .expect("S2-S tensile observation remains linked");
+    assert!(tensile_observation.method.contains("GB/T T228.1-2010"));
+    assert!(tensile_observation.method.contains("three tests averaged"));
+    assert!(tensile_observation.caveats.contains("nearest 1 MPa"));
+    assert!(tensile_observation.caveats.contains("approximately 8 MPa"));
+    assert!(
+        tensile_observation
+            .caveats
+            .contains("exact test temperature is not reported")
+    );
+
+    let (_, conductivity) = decoded
+        .claims()
+        .claims_for("thermal_conductivity")
+        .into_iter()
+        .next()
+        .expect("S2-S thermal conductivity claim");
+    let PropertyValue::Scalar {
+        value: conductivity_value,
+        dims: conductivity_dims,
+    } = &conductivity.value
+    else {
+        panic!("S2-S thermal conductivity was not scalar");
+    };
+    assert_eq!(*conductivity_dims, Dims([1, 1, -3, -1, 0, 0]));
+    assert_eq!(*conductivity_value, 58.8);
+    assert_eq!(
+        conductivity.validity.bound("source_test_temperature_known"),
+        Some((0.0, 0.0))
+    );
+    assert_eq!(conductivity.validity.bounds().len(), 1);
+    assert_eq!(conductivity.uncertainty, UncertaintyModel::Unstated);
+    let conductivity_observation = decoded
+        .claims()
+        .observation(conductivity.observations[0])
+        .expect("S2-S thermal observation remains linked");
+    assert!(conductivity_observation.method.contains("NETZSCH LFA 457"));
+    assert!(
+        conductivity_observation
+            .method
+            .contains("Archimedes density")
+    );
+    assert!(
+        conductivity_observation
+            .caveats
+            .contains("nearest 0.1 W/(m K)")
+    );
+    assert!(
+        conductivity_observation
+            .caveats
+            .contains("approximately 0.3 W/(m K)")
+    );
+    assert!(
+        conductivity_observation
+            .caveats
+            .contains("exact room temperature is not reported")
+    );
+
+    // G3 independent-source plausibility evidence only: ORNL/TM-2012/506
+    // Appendix C gives a broad 42..62 W/(m K) range for generic gray cast
+    // iron. It neither identifies S2-S nor overwrites the primary claim.
+    assert!((42.0..=62.0).contains(conductivity_value));
 
     let decisions = String::from_utf8(first.stdout).expect("decision stream is UTF-8");
     assert!(decisions.contains("\"reason_code\":\"uncertainty_policy_admitted\""));
