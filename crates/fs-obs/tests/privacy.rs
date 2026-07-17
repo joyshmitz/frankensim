@@ -1,3 +1,6 @@
+//! Privacy-policy conformance tests for disclosure, correlation, licensing,
+//! export control, retention, and promotion decisions.
+
 use fs_obs::privacy::{
     CorrelationDisclosure, CorrelationPolicy, Disclosure, ExportRealm, ExternalCorrelationMethod,
     ExternalCorrelationToken, FieldPolicy, LabeledField, LicenseRealm, RetentionClass,

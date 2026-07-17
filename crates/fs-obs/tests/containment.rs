@@ -231,9 +231,9 @@ fn worker_handoff_and_cancellation_races_stay_deterministic_and_honest() {
     let root = AttemptId::new("attempt-9").unwrap();
     let solve = op("solve", LocalParent::AttemptRoot, 0);
     let k1 = scope("kernel-lbm", node(&solve), 0);
-    let w1_records = vec![solve.clone(), k1.clone(), tile("tile-1", node(&k1), 0)];
+    let w1_records = [solve.clone(), k1.clone(), tile("tile-1", node(&k1), 0)];
     let k2 = scope("kernel-adjoint", node(&solve), 1);
-    let w2_records = vec![k2.clone(), tile("tile-2", node(&k2), 0)];
+    let w2_records = [k2.clone(), tile("tile-2", node(&k2), 0)];
 
     let interleavings: Vec<Vec<usize>> = vec![
         vec![0, 0, 0, 1, 1], // worker-1 fully first

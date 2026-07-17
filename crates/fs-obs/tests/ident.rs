@@ -372,13 +372,13 @@ fn ident_007_bounded_builder_is_byte_exact_and_refuses_at_the_cap() {
     let payload_limit = framing_without_payload + 4;
     let exact_payload = BoundedIdentityBuilder::new("x", payload_limit)
         .and_then(|builder| builder.bytes("k", b"1234"))
-        .map(|builder| builder.finish());
+        .map(BoundedIdentityBuilder::finish);
     let exact_payload_fills_cap = exact_payload
         .as_ref()
         .is_ok_and(|identity| identity.canonical_bytes().len() == payload_limit);
     let payload_refuses_limit_plus_one = BoundedIdentityBuilder::new("x", payload_limit)
         .and_then(|builder| builder.bytes("k", b"12345"))
-        .map(|builder| builder.finish())
+        .map(BoundedIdentityBuilder::finish)
         == Err(IdentityBuildError::CanonicalBytesExceeded {
             requested: payload_limit + 1,
             limit: payload_limit,

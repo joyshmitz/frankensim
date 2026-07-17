@@ -1,3 +1,6 @@
+//! Process-capture conformance tests for bounded queues, loss accounting,
+//! cancellation, durable closure, and retained failure evidence.
+
 use fs_obs::process::{
     BackpressureReason, CaptureCancellation, CaptureDecision, CriticalFailureReason,
     DurableArtifactPointer, FinalReceiptId, LossReason, ProcessCapture, ProcessCapturePolicy,

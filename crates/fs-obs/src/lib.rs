@@ -2709,6 +2709,9 @@ mod tests {
     }
 
     #[test]
+    // This exhaustive mutation table is deliberately kept in one test so a
+    // newly added event field cannot escape the single identity-coverage audit.
+    #[allow(clippy::too_many_lines)]
     fn every_event_kind_payload_field_moves_identity() {
         let mut observed = Vec::new();
 
@@ -4606,6 +4609,9 @@ mod tests {
     }
 
     #[test]
+    // The end-to-end wire/lint cases share one emitter and outcome vocabulary;
+    // splitting them would obscure which queue transitions are covered.
+    #[allow(clippy::too_many_lines)]
     fn run_queue_identity_kinds_are_wire_valid_and_lint_enforced() {
         let mut em = Emitter::new("study-x", "campaign-1");
         let outcome = ScopedReceiptOutcome {
@@ -4810,6 +4816,8 @@ mod tests {
     }
 
     #[test]
+    // Keep the adjudication variants together as one exhaustive wire contract.
+    #[allow(clippy::too_many_lines)]
     fn adjudication_kinds_are_wire_valid_and_lint_enforced() {
         let mut em = Emitter::new("study-x", "adjudicate-1");
         let outcome = ScopedReceiptOutcome {
@@ -5114,7 +5122,14 @@ mod tests {
     }
 
     #[test]
+    // The assertions independently perturb every framing/version component and
+    // therefore intentionally remain a single identity-separation proof.
+    #[allow(clippy::too_many_lines)]
     fn event_content_identity_domain_version_and_wire_schema_bytes_are_independent() {
+        const FRAME_HEADER_LEN: usize = ident::REPLAY_IDENTITY_DOMAIN.len()
+            + core::mem::size_of::<u32>()
+            + core::mem::size_of::<u64>();
+
         let event = event_with_kind(EventKind::Cancellation {
             reason: "budget".into(),
         });
@@ -5142,9 +5157,6 @@ mod tests {
         // domain begins after the fixed 16-byte frame header rather than at
         // byte zero (length framing is what makes prefix collisions
         // unrepresentable; see ident_003).
-        const FRAME_HEADER_LEN: usize = ident::REPLAY_IDENTITY_DOMAIN.len()
-            + core::mem::size_of::<u32>()
-            + core::mem::size_of::<u64>();
         assert!(
             current
                 .canonical_bytes()
