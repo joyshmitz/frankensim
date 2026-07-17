@@ -114,6 +114,7 @@
 {"path":"crates/fs-ir/src/planner.rs","symbol":"plan_observed","reason":"identity-consumer-not-producer","covered_by":"none"},
 {"path":"crates/fs-la/build.rs","symbol":"add_executable_identity","reason":"child-digest-helper","covered_by":"fs-la:gemm-build-fingerprint"},
 {"path":"crates/fs-ledger/src/lib.rs","symbol":"provisional_key","reason":"ephemeral-staging-key","covered_by":"none"},
+{"path":"crates/fs-matdb/src/model_pack.rs","symbol":"validate_complete_receipt_coverage","reason":"identity-consumer-not-producer","covered_by":"none"},
 {"path":"crates/fs-package/src/lib.rs","symbol":"EvidencePackage::merkle_root_unchecked","reason":"child-digest-helper","covered_by":"fs-package:package-root"},
 {"path":"crates/fs-package/src/lib.rs","symbol":"hash_checker_decision","reason":"child-digest-helper","covered_by":"fs-checker:decision-report"},
 {"path":"crates/fs-package/src/origin.rs","symbol":"NoAnchoredSourceVerifier::verify","reason":"negative-refusal-sentinel","covered_by":"none"},
@@ -134,6 +135,8 @@
 {"path":"scripts/ci/quality_lanes.sh","symbol":"<script>","reason":"child-digest-helper","covered_by":"ci:quality-proof-record"},
 {"path":"scripts/ci/quality_lanes.sh","symbol":"add","reason":"child-digest-helper","covered_by":"ci:quality-proof-record"},
 {"path":"scripts/ci/quality_lanes.sh","symbol":"row","reason":"child-digest-helper","covered_by":"ci:quality-proof-record"},
-{"path":"scripts/ci/x86_cross_check.sh","symbol":"<script>","reason":"child-digest-helper","covered_by":"ci:x86-cross-verdict"}
+{"path":"scripts/ci/x86_cross_check.sh","symbol":"<script>","reason":"child-digest-helper","covered_by":"ci:x86-cross-verdict"},
+{"path":"xtask/src/matdb_pack.rs","symbol":"compile_manifest","reason":"identity-consumer-not-producer","covered_by":"none"},
+{"path":"xtask/src/matdb_pack.rs","symbol":"write_new_verified","reason":"identity-consumer-not-producer","covered_by":"none"}
 ]
 }
