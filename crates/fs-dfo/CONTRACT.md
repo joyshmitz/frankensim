@@ -197,9 +197,37 @@ assertions and expectations remain before ordinary aggregate emission; the ZDT
 loop can still emit its first completed case before a later case fails. Silent
 parity, guard, and `should_panic` tests remain silent.
 
+The core DFO and success-rate batteries complete the same migration under the
+existing `fs-dfo` suite identity. Four ordinary post-assert rows use canonical
+`ConformanceCase` events, failure-record linting, JSONL serialization, schema
+validation, and their original case identities: `benchmarks`, `igo-invariance`,
+`bipop`, and `success-rate`. The `benchmarks` composite carries aggregate seed
+zero and names the CMA-ES input roots 1, 2, and 3. `igo-invariance` carries root
+7, shared by the plain, exponential, and cubic objective runs. `bipop` carries
+root 17. `success-rate` carries aggregate seed zero and names the five optimizer
+input roots 1 through 5; its per-seed loop, majority threshold, and failed-run
+stagnation bound are unchanged.
+
+The frozen `dfo-golden` info row is not promoted to a passing aggregate before
+its hash assertion. It is a validated object-shaped `Custom` measurement with
+name `dfo-golden` under the distinct `dfo-golden/measurement` scope. The payload
+records actual and expected hashes, aggregate input seed zero, CMA-ES input
+roots 99 and 100, the fixed-input Nelder-Mead leg, and a null execution seed.
+Those roots are optimizer inputs, not scheduler/execution provenance; these
+tests do not create an asupersync execution context or `fs_rand::StreamKey`
+substreams. The measurement remains before the original terminal hash assertion
+so mismatches
+retain their diagnostic row without emitting a false passing verdict. The
+deterministic-evolution, translation-equivariance, and Nelder-Mead replay tests
+remain assertion-only and silent.
+
 ## No-claim boundaries
 - No published-ERT-table parity claims yet (in-repo BBOB-class fixtures
   only; the external COCO battery is follow-up).
+- The four `fs-dfo` aggregate rows attest only to their completed in-repo
+  assertions at the recorded input roots. They do not promote the frozen hash
+  measurement to a verdict or claim coverage of other seeds, external benchmark
+  corpora, scheduler determinism, or unmeasured success probabilities.
 - NSGA-III normalization uses the ideal point with FIRST-front
   per-objective maxima as the nadir estimate; the full ASF
   extreme-point construction is the recorded refinement.

@@ -7,6 +7,35 @@
 
 use fs_dfo::{CmaParams, cmaes};
 
+const SUITE: &str = "fs-dfo";
+const FIXED_INPUT_SEED: u64 = 0;
+const FIRST_INPUT_SEED: u64 = 1;
+const LAST_INPUT_SEED: u64 = 5;
+
+fn verdict(case: &str, pass: bool, detail: &str, seed: u64) {
+    let mut emitter = fs_obs::Emitter::new(SUITE, case);
+    let event = emitter.emit(
+        if pass {
+            fs_obs::Severity::Info
+        } else {
+            fs_obs::Severity::Error
+        },
+        fs_obs::EventKind::ConformanceCase {
+            suite: SUITE.to_string(),
+            case: case.to_string(),
+            pass,
+            detail: detail.to_string(),
+            seed,
+        },
+        None,
+    );
+    fs_obs::lint_failure_record(&event).expect("DFO success-rate verdict must be replayable");
+    let line = event.to_jsonl();
+    fs_obs::validate_line(&line).expect("DFO success-rate verdict must use the fs-obs wire schema");
+    println!("{line}");
+    assert!(pass, "case {case}: {detail}");
+}
+
 fn rastrigin(x: &[f64]) -> f64 {
     let a = 10.0f64;
     x.iter()
@@ -17,7 +46,7 @@ fn rastrigin(x: &[f64]) -> f64 {
 #[test]
 fn large_population_success_rate_and_stagnation_stop() {
     let mut successes = 0usize;
-    for seed in 1u64..=5 {
+    for seed in FIRST_INPUT_SEED..=LAST_INPUT_SEED {
         let mut f = |x: &[f64]| rastrigin(x);
         let p = CmaParams {
             lambda: 150,
@@ -42,7 +71,13 @@ fn large_population_success_rate_and_stagnation_stop() {
         successes >= 3,
         "lambda=150 must solve rastrigin(5) in a majority of seeds: {successes}/5"
     );
-    println!(
-        "{{\"suite\":\"fs-dfo\",\"case\":\"success-rate\",\"verdict\":\"pass\",\"detail\":\"{successes}/5 seeds converged at lambda=150\"}}"
+    verdict(
+        "success-rate",
+        true,
+        &format!(
+            "{successes}/5 seeds converged at lambda=150; optimizer input roots \
+             {FIRST_INPUT_SEED}..={LAST_INPUT_SEED}; composite aggregate seed zero"
+        ),
+        FIXED_INPUT_SEED,
     );
 }

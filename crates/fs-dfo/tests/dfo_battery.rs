@@ -5,6 +5,56 @@
 
 use fs_dfo::{CmaParams, bipop_cmaes, cmaes, nelder_mead};
 
+const SUITE: &str = "fs-dfo";
+const FIXED_INPUT_SEED: u64 = 0;
+const SPHERE_INPUT_SEED: u64 = 1;
+const ROSENBROCK_INPUT_SEED: u64 = 2;
+const ELLIPSOID_INPUT_SEED: u64 = 3;
+const IGO_INPUT_SEED: u64 = 7;
+const BIPOP_INPUT_SEED: u64 = 17;
+const GOLDEN_ROSENBROCK_INPUT_SEED: u64 = 99;
+const GOLDEN_ELLIPSOID_INPUT_SEED: u64 = 100;
+
+fn verdict(case: &str, pass: bool, detail: &str, seed: u64) {
+    let mut emitter = fs_obs::Emitter::new(SUITE, case);
+    let event = emitter.emit(
+        if pass {
+            fs_obs::Severity::Info
+        } else {
+            fs_obs::Severity::Error
+        },
+        fs_obs::EventKind::ConformanceCase {
+            suite: SUITE.to_string(),
+            case: case.to_string(),
+            pass,
+            detail: detail.to_string(),
+            seed,
+        },
+        None,
+    );
+    fs_obs::lint_failure_record(&event).expect("DFO verdict must be replayable");
+    let line = event.to_jsonl();
+    fs_obs::validate_line(&line).expect("DFO verdict must use the fs-obs wire schema");
+    println!("{line}");
+    assert!(pass, "case {case}: {detail}");
+}
+
+fn measurement(case: &str, json: String) {
+    let mut emitter = fs_obs::Emitter::new(SUITE, format!("{case}/measurement"));
+    let event = emitter.emit(
+        fs_obs::Severity::Info,
+        fs_obs::EventKind::Custom {
+            name: case.to_string(),
+            json,
+        },
+        None,
+    );
+    fs_obs::lint_failure_record(&event).expect("DFO measurement must be replayable");
+    let line = event.to_jsonl();
+    fs_obs::validate_line(&line).expect("DFO measurement must use the fs-obs wire schema");
+    println!("{line}");
+}
+
 fn sphere(x: &[f64]) -> f64 {
     x.iter().map(|t| t * t).sum()
 }
@@ -46,7 +96,7 @@ fn benchmark_convergence() {
         &mut f,
         &[3.0; 10],
         &CmaParams::standard(10, 2.0, 20_000, 1e-10),
-        1,
+        SPHERE_INPUT_SEED,
     );
     assert!(rep.converged, "sphere must converge: {rep:?}");
     // Rosenbrock(10): the classic valley.
@@ -55,7 +105,7 @@ fn benchmark_convergence() {
         &mut f,
         &[0.0; 10],
         &CmaParams::standard(10, 0.5, 120_000, 1e-8),
-        2,
+        ROSENBROCK_INPUT_SEED,
     );
     assert!(
         rep.converged,
@@ -68,15 +118,22 @@ fn benchmark_convergence() {
         &mut f,
         &[1.0; 10],
         &CmaParams::standard(10, 1.0, 120_000, 1e-8),
-        3,
+        ELLIPSOID_INPUT_SEED,
     );
     assert!(
         rep.converged,
         "ellipsoid must converge: evals {}",
         rep.evals
     );
-    println!(
-        "{{\"suite\":\"fs-dfo\",\"case\":\"benchmarks\",\"verdict\":\"pass\",\"detail\":\"sphere/rosenbrock/ellipsoid(cond 1e6) all to target\"}}"
+    verdict(
+        "benchmarks",
+        true,
+        &format!(
+            "sphere/rosenbrock/ellipsoid(cond 1e6) all to target; optimizer input roots \
+             {SPHERE_INPUT_SEED}, {ROSENBROCK_INPUT_SEED}, and {ELLIPSOID_INPUT_SEED}; \
+             composite aggregate seed zero"
+        ),
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -124,10 +181,10 @@ fn monotone_transform_invariance_is_bitwise() {
     // precondition, and it holds on this budget.
     let p = CmaParams::standard(5, 0.7, 800, -1.0);
     let mut plain = |x: &[f64]| sphere(x);
-    let r_plain = cmaes(&mut plain, &[1.5; 5], &p, 7);
+    let r_plain = cmaes(&mut plain, &[1.5; 5], &p, IGO_INPUT_SEED);
     // exp is strictly monotone; sphere ≥ 0 so cube is monotone there too.
     let mut expf = |x: &[f64]| fs_math::det::exp(sphere(x).min(700.0));
-    let r_exp = cmaes(&mut expf, &[1.5; 5], &p, 7);
+    let r_exp = cmaes(&mut expf, &[1.5; 5], &p, IGO_INPUT_SEED);
     for (a, b) in r_plain.x_best.iter().zip(&r_exp.x_best) {
         assert_eq!(
             a.to_bits(),
@@ -136,7 +193,7 @@ fn monotone_transform_invariance_is_bitwise() {
         );
     }
     let mut cubef = |x: &[f64]| sphere(x).powi(3);
-    let r_cube = cmaes(&mut cubef, &[1.5; 5], &p, 7);
+    let r_cube = cmaes(&mut cubef, &[1.5; 5], &p, IGO_INPUT_SEED);
     for (a, b) in r_plain.x_best.iter().zip(&r_cube.x_best) {
         assert_eq!(
             a.to_bits(),
@@ -144,8 +201,14 @@ fn monotone_transform_invariance_is_bitwise() {
             "cube transform must not change it either"
         );
     }
-    println!(
-        "{{\"suite\":\"fs-dfo\",\"case\":\"igo-invariance\",\"verdict\":\"pass\",\"detail\":\"exp/cube monotone transforms: bitwise-identical trajectories\"}}"
+    verdict(
+        "igo-invariance",
+        true,
+        &format!(
+            "exp/cube monotone transforms: bitwise-identical trajectories; optimizer input \
+             root {IGO_INPUT_SEED}"
+        ),
+        IGO_INPUT_SEED,
     );
 }
 
@@ -177,7 +240,7 @@ fn translation_equivariance() {
 #[test]
 fn bipop_solves_multimodal_and_reports_schedule() {
     let mut f = |x: &[f64]| rastrigin(x);
-    let rep = bipop_cmaes(&mut f, &[3.0; 5], 2.0, 400_000, 1e-8, 17);
+    let rep = bipop_cmaes(&mut f, &[3.0; 5], 2.0, 400_000, 1e-8, BIPOP_INPUT_SEED);
     assert!(
         rep.best.f_best < 1e-6,
         "BIPOP must reach the global basin on rastrigin(5): {}",
@@ -193,9 +256,15 @@ fn bipop_solves_multimodal_and_reports_schedule() {
             rep.schedule
         );
     }
-    println!(
-        "{{\"suite\":\"fs-dfo\",\"case\":\"bipop\",\"verdict\":\"pass\",\"detail\":\"rastrigin(5) f={:.2e}, schedule {:?}, {} evals\"}}",
-        rep.best.f_best, rep.schedule, rep.total_evals
+    verdict(
+        "bipop",
+        true,
+        &format!(
+            "rastrigin(5) f={:.2e}, schedule {:?}, {} evals; optimizer input root \
+             {BIPOP_INPUT_SEED}",
+            rep.best.f_best, rep.schedule, rep.total_evals
+        ),
+        BIPOP_INPUT_SEED,
     );
 }
 
@@ -230,22 +299,29 @@ fn dfo_golden_hash() {
     };
     let p = CmaParams::standard(6, 0.8, 6_000, -1.0);
     let mut f = |x: &[f64]| rosenbrock(x);
-    let rep = cmaes(&mut f, &[0.1; 6], &p, 99);
+    let rep = cmaes(&mut f, &[0.1; 6], &p, GOLDEN_ROSENBROCK_INPUT_SEED);
     feed(rep.f_best);
     feed(rep.sigma);
     for &v in &rep.x_best {
         feed(v);
     }
     let mut g = |x: &[f64]| ellipsoid(x);
-    let rep2 = cmaes(&mut g, &[1.0; 6], &p, 100);
+    let rep2 = cmaes(&mut g, &[1.0; 6], &p, GOLDEN_ELLIPSOID_INPUT_SEED);
     feed(rep2.f_best);
     let mut h = |x: &[f64]| rosenbrock(x);
     let (xnm, fnm, _) = nelder_mead(&mut h, &[0.3, -0.2], 0.2, 2_000, -1.0);
     feed(fnm);
     feed(xnm[0]);
     feed(xnm[1]);
-    println!(
-        "{{\"suite\":\"fs-dfo\",\"case\":\"dfo-golden\",\"verdict\":\"info\",\"detail\":\"{acc:#018x}\"}}"
+    measurement(
+        "dfo-golden",
+        format!(
+            "{{\"actual\":\"{acc:#018x}\",\"expected\":\"{GOLDEN_HASH:#018x}\",\
+             \"aggregate_input_seed\":{FIXED_INPUT_SEED},\
+             \"cma_input_roots\":[{GOLDEN_ROSENBROCK_INPUT_SEED},\
+             {GOLDEN_ELLIPSOID_INPUT_SEED}],\"nelder_mead_input\":\"fixed\",\
+             \"execution_seed\":null}}"
+        ),
     );
     assert_eq!(
         acc, GOLDEN_HASH,
