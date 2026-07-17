@@ -409,7 +409,7 @@ fn opt_002b_legacy_crosswalk_receipt_is_structured_and_logged() {
         && receipt.target_version() == WireVersion::V2
         && receipt.rule() == FiveToSixRule::AppendMoleZero
         && verified;
-    let mut emitter = fs_obs::Emitter::new("fs-opt/conformance", "opt-002b/crosswalk");
+    let mut emitter = fs_obs::Emitter::new("fs-opt/conformance", "opt-002b/crosswalk/measurement");
     let event = emitter.emit(
             fs_obs::Severity::Info,
             fs_obs::EventKind::Custom {
@@ -575,7 +575,7 @@ fn opt_004_class_routing() {
     let trace = p.class_trace();
     let trace_ok = trace.len() == p.exprs().len()
         && trace.iter().any(|l| l.contains("max") && l.contains("C0"));
-    let mut em = fs_obs::Emitter::new("fs-opt/conformance", "opt-004");
+    let mut em = fs_obs::Emitter::new("fs-opt/conformance", "opt-004/measurement");
     let event = em.emit(
         fs_obs::Severity::Info,
         fs_obs::EventKind::Custom {

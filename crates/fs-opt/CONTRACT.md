@@ -470,12 +470,13 @@ prints before its final assertion. Seeded LCG cases record their root input
 seed and fixed cases record zero.
 
 opt-002b/crosswalk and opt-004 additionally emit one validated, object-shaped
-`Custom` companion under the same suite/case identity as their aggregate
-verdict. The event kind and Custom name distinguish supplemental evidence from
-the aggregate decision; a companion neither creates another conformance case
-nor changes the aggregate result. Each companion carries standalone input-seed
-provenance. Dynamic routing-refusal text belongs in the typed ConformanceCase
-detail, where fs-obs escapes it, rather than in caller-formatted Custom JSON.
+`Custom` companion under the distinct `opt-002b/crosswalk/measurement` and
+`opt-004/measurement` scopes. The scope and Custom name distinguish
+supplemental evidence from the aggregate decision without reusing its sequence
+identity; a companion neither creates another conformance case nor changes the
+aggregate result. Each companion carries standalone input-seed provenance.
+Dynamic routing-refusal text belongs in the typed ConformanceCase detail, where
+fs-obs escapes it, rather than in caller-formatted Custom JSON.
 
 Fixture construction and intermediate `expect`/index operations remain outside
 the aggregate boundary. If one aborts before `verdict`, no aggregate event is
