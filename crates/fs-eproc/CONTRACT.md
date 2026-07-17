@@ -135,6 +135,30 @@ result identity and object-shaped `fs-obs` receipt retain all four empirical
 outcomes before five linted, wire-validated
 `ConformanceCase` verdicts are emitted.
 
+`tests/ebh_dependence.rs` is the G0 e-BH certifier-of-certifier tranche in
+`frankensim-epic-ascent-7tv.21.10`. It exhaustively enumerates three exact
+finite laws over 4,096 simultaneous hypotheses. In the global-null law, 64
+perfectly dependent blocks of 64 hypotheses are mutually exclusive across
+1,024 equiprobable phases; an active block has e-value 1,024, so every null's
+mean e-value is exactly one and FWER = FDR = 64/1024 = 1/16. In the mixed
+perfect-dependence law, 4,076 true nulls share one e=17 shock among 17 phases
+beside 20 fixed alternatives, giving exact FDR
+`4076 / (4096 * 17) <= 1/16`. A third exact law gives each of 63 mutually
+exclusive 64-null blocks e=63 once beside 64 alternatives: production e-BH
+rejects no nulls, while a test-local seeded-broken comparator that omits the
+family-size factor from `m/(alpha*k)` rejects the active block and incurs FDP
+1/2 in every phase. The latter implementation is mutation-test code only and
+is never used by production paths.
+
+One fs-rand seed chooses a one-draw cyclic rotation of original hypothesis
+IDs; all probability phases are then enumerated rather than sampled. A
+canonical configuration identity binds the laws, phase order, evidence and
+threshold values, family/block geometry, alpha, rotation coordinates and
+algorithm, stream-semantics version, comparator mutation, and crate versions.
+The result identity and object-shaped `fs-obs` receipt retain exact rejection,
+false-rejection, marginal-validity, and first-shape-failure fields before four
+linted, wire-validated `ConformanceCase` verdicts are emitted.
+
 ## No-claim boundaries
 - Empirical-Bernstein/hedged closed-form CS for bounded means (mixture CS
   covers sub-Gaussian; EB variant is follow-up scope with its consumers).
@@ -145,6 +169,12 @@ outcomes before five linted, wire-validated
   is not an exhaustive proof over null laws, stopping times, dependence
   structures, seeds, horizons, or ISAs. No cross-ISA execution evidence is
   produced by this code-first slice.
+- The e-BH dependence battery exhausts its three declared finite laws, not all
+  possible dependence structures or alternative configurations. It is an
+  executable cross-examination of the production step-up rule and one seeded
+  mutation, not a replacement for the arbitrary-dependence theorem. It makes
+  no nightly-refresh, cross-ISA, scheduler/Cx, wall-clock, or throughput claim;
+  central Cargo/RCH/DSR proof is pending for the code-first landing.
 - Two-sided betting tests; asymptotic variants; sub-exponential extensions.
 - A caller-supplied finite span is a checked assumption, not a certificate that
   the underlying stochastic process has that support. Runtime breach refuses
