@@ -236,3 +236,207 @@ fn ct_004_capability_routing_and_convex_containment() {
         ),
     );
 }
+
+// ── Increment 2: certified CCD battery (ct-005..ct-008) ─────────────────────
+
+use fs_contact::{CcdVerdict, certified_ccd};
+
+fn thin_plate() -> Aabb {
+    // A wall in the yz-plane: 2 cm thick, 4 m tall/wide.
+    Aabb::new(Point3::new(-0.01, -2.0, -2.0), Point3::new(0.01, 2.0, 2.0))
+}
+
+fn bullet() -> Aabb {
+    // A 2 cm cube.
+    Aabb::new(
+        Point3::new(-0.01, -0.01, -0.01),
+        Point3::new(0.01, 0.01, 0.01),
+    )
+}
+
+/// ct-005 Sev-0 G3: a fast bullet fully crosses a thin static plate
+/// INSIDE the window — endpoint sampling provably misses it (both
+/// endpoint enclosures are disjoint from the plate), yet certified CCD
+/// must report a possible-contact window containing the true crossing.
+#[test]
+fn ct_005_thin_fast_crossing_is_never_reported_clear() {
+    with_cx(|cx| {
+        let domain = Interval::new(0.0, 1.0);
+        // Plate static at the origin; bullet starts at x=-50 riding
+        // +x at 100 m/s: true wall crossing at t* = 0.5 (x sweeps
+        // [-0.02, 0.02] against the plate's [-0.01, 0.01] near
+        // t ∈ [0.4997, 0.5003]).
+        let plate_tube = translation_tube([1.0, 0.0, 0.0], 0.0, domain);
+        let mut bullet_support = bullet();
+        bullet_support.min.x -= 50.0;
+        bullet_support.max.x -= 50.0;
+        let bullet_tube = translation_tube([1.0, 0.0, 0.0], 100.0, domain);
+        let plate = SpacetimeBody::new(thin_plate(), &plate_tube).expect("plate body");
+        let shot = SpacetimeBody::new(bullet_support, &bullet_tube).expect("bullet body");
+
+        // The sampling counterexample: at both window endpoints the
+        // enclosures are far apart.
+        for t in [domain.lo(), domain.hi()] {
+            let inst = Interval::point(t);
+            let pb = plate_tube
+                .box_action_over(&thin_plate(), inst, cx)
+                .expect("plate endpoint enclosure");
+            let bb = bullet_tube
+                .box_action_over(
+                    &{
+                        let mut s = bullet();
+                        s.min.x -= 50.0;
+                        s.max.x -= 50.0;
+                        s
+                    },
+                    inst,
+                    cx,
+                )
+                .expect("bullet endpoint enclosure");
+            let disjoint_x = bb.bounds.max.x < pb.bounds.min.x || pb.bounds.max.x < bb.bounds.min.x;
+            verdict(
+                "ct-005-endpoints",
+                disjoint_x,
+                "endpoint sampling must see disjoint bodies (that is the trap)",
+            );
+        }
+
+        let report =
+            certified_ccd(&plate, &shot, domain, 1e-4, 1 << 16, cx).expect("ccd completes");
+        let CcdVerdict::PossibleContact { windows } = &report.verdict else {
+            verdict(
+                "ct-005",
+                false,
+                "a real crossing must never be reported ClearWindow",
+            );
+            unreachable!()
+        };
+        let crossing_covered = windows.iter().any(|w| w.lo() <= 0.5 && 0.5 <= w.hi());
+        verdict(
+            "ct-005",
+            crossing_covered,
+            "some possible-contact window must contain the true crossing t*=0.5",
+        );
+        // The report localizes the event: unresolved time is a sliver of
+        // the window, not a give-up.
+        let total: f64 = windows.iter().map(|w| w.width()).sum();
+        verdict(
+            "ct-005-localized",
+            total < 0.01,
+            "possible windows must localize the crossing to well under 1% of the window",
+        );
+    });
+}
+
+/// ct-006 G0/G5: a margin-separated parallel pass is PROVEN clear with a
+/// positive certified gap, and the report replays bit-identically.
+#[test]
+fn ct_006_grazing_pass_is_proven_clear_and_replays() {
+    with_cx(|cx| {
+        let domain = Interval::new(0.0, 4.0);
+        let tube_a = translation_tube([1.0, 0.0, 0.0], 1.0, domain);
+        let tube_b = translation_tube([1.0, 0.0, 0.0], -1.0, domain);
+        let a_support = unit_box();
+        let mut b_support = unit_box();
+        // Parallel tracks offset by 3 in y: closest approach keeps a
+        // >= 2 m gap forever.
+        b_support.min.y += 3.0;
+        b_support.max.y += 3.0;
+        let a = SpacetimeBody::new(a_support, &tube_a).expect("body a");
+        let b = SpacetimeBody::new(b_support, &tube_b).expect("body b");
+        let first = certified_ccd(&a, &b, domain, 1e-3, 1 << 12, cx).expect("ccd completes");
+        let CcdVerdict::ClearWindow { min_gap } = first.verdict else {
+            verdict(
+                "ct-006",
+                false,
+                "a margin-separated pass must be proven clear",
+            );
+            unreachable!()
+        };
+        verdict(
+            "ct-006",
+            min_gap > 1.0,
+            "the certified gap must reflect the >=2m analytic margin (allowing enclosure slack)",
+        );
+        let replay = certified_ccd(&a, &b, domain, 1e-3, 1 << 12, cx).expect("ccd replays");
+        verdict(
+            "ct-006-replay",
+            replay == first,
+            "identical inputs must replay an identical report",
+        );
+    });
+}
+
+/// ct-007 G3 (the global-root-guard refusal, executable): two bodies
+/// overlapping for the WHOLE window have no separation sign change for
+/// a root guard to find — certified CCD must stay honest and report
+/// possible contact covering essentially the entire window, never
+/// ClearWindow.
+#[test]
+fn ct_007_persistent_contact_is_never_cleared() {
+    with_cx(|cx| {
+        let domain = Interval::new(0.0, 1.0);
+        let tube = translation_tube([1.0, 0.0, 0.0], 0.0, domain);
+        let a = SpacetimeBody::new(unit_box(), &tube).expect("body a");
+        let mut shifted = unit_box();
+        shifted.min.x += 0.25;
+        shifted.max.x += 0.25;
+        let b = SpacetimeBody::new(shifted, &tube).expect("body b");
+        let report = certified_ccd(&a, &b, domain, 1e-2, 1 << 12, cx).expect("ccd completes");
+        let CcdVerdict::PossibleContact { windows } = &report.verdict else {
+            verdict(
+                "ct-007",
+                false,
+                "persistently overlapping bodies must never be proven clear",
+            );
+            unreachable!()
+        };
+        let covered: f64 = windows.iter().map(|w| w.width()).sum();
+        verdict(
+            "ct-007",
+            (covered - domain.width()).abs() < 1e-9 && windows.len() == 1,
+            "persistent contact must surface as one window covering the whole domain",
+        );
+    });
+}
+
+/// ct-008 G0: budget exhaustion returns the exact partial state and is
+/// a refusal — the resolved prefix is never presented as a verdict.
+#[test]
+fn ct_008_ccd_budget_exhaustion_lists_partial_state() {
+    with_cx(|cx| {
+        let domain = Interval::new(0.0, 1.0);
+        let plate_tube = translation_tube([1.0, 0.0, 0.0], 0.0, domain);
+        let mut bullet_support = bullet();
+        bullet_support.min.x -= 50.0;
+        bullet_support.max.x -= 50.0;
+        let bullet_tube = translation_tube([1.0, 0.0, 0.0], 100.0, domain);
+        let plate = SpacetimeBody::new(thin_plate(), &plate_tube).expect("plate body");
+        let shot = SpacetimeBody::new(bullet_support, &bullet_tube).expect("bullet body");
+        match certified_ccd(&plate, &shot, domain, 1e-4, 5, cx) {
+            Err(ContactError::CcdBudgetExhausted {
+                max_windows,
+                examined,
+                pending,
+                ..
+            }) => {
+                verdict(
+                    "ct-008",
+                    max_windows == 5 && examined == 5 && !pending.is_empty(),
+                    "exhaustion must report the exact budget, count, and pending windows",
+                );
+                let ascending = pending.windows(2).all(|p| p[0].hi() <= p[1].lo() + 1e-12);
+                verdict(
+                    "ct-008-order",
+                    ascending,
+                    "pending windows must be reported in ascending time order",
+                );
+            }
+            other => verdict(
+                "ct-008",
+                false,
+                &format!("a starved budget must refuse, got {other:?}"),
+            ),
+        }
+    });
+}

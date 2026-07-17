@@ -75,6 +75,21 @@ pub enum ContactError {
         /// The absent capability, by stable name.
         capability: &'static str,
     },
+    /// The CCD subdivision budget is exhausted. The partial state is
+    /// sound but INCOMPLETE: `pending` windows were never examined and
+    /// `possible` windows were confirmed unresolved — neither is a
+    /// clear verdict, and the caller must widen the budget, loosen the
+    /// tolerance, or split the query window.
+    CcdBudgetExhausted {
+        /// The caller's cap on examined subwindows.
+        max_windows: usize,
+        /// Subwindows actually examined before exhaustion.
+        examined: usize,
+        /// Unexamined subwindows, ascending in time.
+        pending: Vec<Interval>,
+        /// Sub-tolerance windows already confirmed unresolved.
+        possible: Vec<Interval>,
+    },
     /// Cancelled mid-scan.
     Cancelled,
 }
@@ -112,6 +127,19 @@ impl core::fmt::Display for ContactError {
                 f,
                 "pair ({body_a}, {body_b}) needs the {capability:?} capability that neither \
                  side declares; refusing rather than guessing"
+            ),
+            ContactError::CcdBudgetExhausted {
+                max_windows,
+                examined,
+                pending,
+                possible,
+            } => write!(
+                f,
+                "CCD window budget {max_windows} exhausted after {examined} enclosures with \
+                 {} pending and {} unresolved windows; widen the budget, loosen the time \
+                 tolerance, or split the query window — this is not a clear verdict",
+                pending.len(),
+                possible.len()
             ),
             ContactError::Cancelled => write!(f, "cancelled mid-contact-query"),
         }
@@ -176,7 +204,7 @@ impl<'a> SpacetimeBody<'a> {
     /// The bound tube.
     #[must_use]
     pub fn tube(&self) -> &CertifiedMotorTube {
-        &self.tube
+        self.tube
     }
 }
 
@@ -255,15 +283,13 @@ pub fn spacetime_candidates(
         if cx.checkpoint().is_err() {
             return Err(ContactError::Cancelled);
         }
-        let mut row_checked = 0usize;
-        for &j in order.iter().skip(rank + 1) {
+        for (row_checked, &j) in order.iter().skip(rank + 1).enumerate() {
             if boxes[j].min.x > boxes[i].max.x {
                 // Sorted by min.x: every later body starts even
                 // further right; the rest of this row is pruned.
                 pruned_pairs += order.len() - rank - 1 - row_checked;
                 break;
             }
-            row_checked += 1;
             checked_pairs += 1;
             let overlap_yz = boxes[i].min.y <= boxes[j].max.y
                 && boxes[j].min.y <= boxes[i].max.y
@@ -339,4 +365,146 @@ pub fn narrow_phase(
             capability: "convex-support-map",
         }),
     }
+}
+
+// ── Certified continuous collision detection (bead tqag, increment 2) ──────
+
+/// One pair's certified CCD verdict over a query window.
+///
+/// Soundness (the Sev-0 no-tunneling claim): every per-window test uses
+/// [`CertifiedMotorTube::box_action_over`], an enclosure of the body's
+/// image at EVERY instant of the subwindow. A subwindow is declared
+/// clear only when the two enclosures are disjoint along a coordinate
+/// axis — a proof that no contact exists anywhere inside it. Everything
+/// not proven clear is subdivided down to the caller's time tolerance
+/// and reported as a possible-contact window, so the union of reported
+/// windows CONTAINS every true contact instant. Contact itself is never
+/// claimed: box overlap is necessary, not sufficient. This is
+/// deliberately NOT a sign-change root guard on a global separation
+/// function — persistent or grazing contact has no sign change to find,
+/// and the window report stays honest exactly there.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CcdVerdict {
+    /// PROVEN: no contact anywhere in the window.
+    ClearWindow {
+        /// Certified lower bound on the pair's axis-aligned gap over
+        /// the whole window (the smallest separating-axis gap among
+        /// the cleared subwindows).
+        min_gap: f64,
+    },
+    /// Time-ordered, disjoint, tolerance-width windows that together
+    /// contain every instant at which the pair COULD touch.
+    PossibleContact {
+        /// The unresolved windows, merged where adjacent.
+        windows: Vec<Interval>,
+    },
+}
+
+/// Certified CCD output: verdict plus honest work statistics.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CcdReport {
+    /// The verdict.
+    pub verdict: CcdVerdict,
+    /// Subwindows whose enclosures were computed.
+    pub examined_windows: usize,
+    /// Worst versor-defect bound among every enclosure consulted.
+    pub max_defect: f64,
+}
+
+/// Certified pairwise CCD by conservative window bisection.
+///
+/// # Errors
+/// Window/tolerance refusals ([`ContactError::InvalidWindow`]); motion
+/// enclosure refusals; [`ContactError::CcdBudgetExhausted`] when more
+/// than `max_windows` subwindows would be examined (the partial state
+/// is returned, never presented as complete);
+/// [`ContactError::Cancelled`] (checked per subwindow).
+pub fn certified_ccd(
+    a: &SpacetimeBody<'_>,
+    b: &SpacetimeBody<'_>,
+    window: Interval,
+    time_tolerance: f64,
+    max_windows: usize,
+    cx: &Cx<'_>,
+) -> Result<CcdReport, ContactError> {
+    if !(window.lo().is_finite() && window.hi().is_finite() && window.lo() < window.hi()) {
+        return Err(ContactError::InvalidWindow {
+            lo: window.lo(),
+            hi: window.hi(),
+        });
+    }
+    if !(time_tolerance.is_finite() && time_tolerance > 0.0) {
+        return Err(ContactError::InvalidWindow {
+            lo: time_tolerance,
+            hi: time_tolerance,
+        });
+    }
+    // LIFO with the later half pushed first, so subwindows are examined
+    // (and possible windows emitted) in ascending time order.
+    let mut stack = vec![window];
+    let mut possible: Vec<Interval> = Vec::new();
+    let mut examined = 0usize;
+    let mut max_defect = 0.0f64;
+    let mut min_gap = f64::INFINITY;
+    while let Some(w) = stack.pop() {
+        if cx.checkpoint().is_err() {
+            return Err(ContactError::Cancelled);
+        }
+        if examined >= max_windows {
+            stack.push(w);
+            stack.reverse(); // back to ascending time order for the report
+            return Err(ContactError::CcdBudgetExhausted {
+                max_windows,
+                examined,
+                pending: stack,
+                possible,
+            });
+        }
+        examined += 1;
+        let ea = a.tube.box_action_over(&a.support, w, cx)?;
+        let eb = b.tube.box_action_over(&b.support, w, cx)?;
+        max_defect = max_defect.max(ea.defect).max(eb.defect);
+        let (ba, bb) = (&ea.bounds, &eb.bounds);
+        let axis_gaps = [
+            (bb.min.x - ba.max.x).max(ba.min.x - bb.max.x),
+            (bb.min.y - ba.max.y).max(ba.min.y - bb.max.y),
+            (bb.min.z - ba.max.z).max(ba.min.z - bb.max.z),
+        ];
+        let gap = axis_gaps[0].max(axis_gaps[1]).max(axis_gaps[2]);
+        if gap > 0.0 {
+            // Disjoint along some axis for EVERY instant of `w`: proven
+            // clear; the true distance in `w` is at least `gap`.
+            min_gap = min_gap.min(gap);
+            continue;
+        }
+        let mid = w.midpoint();
+        if w.width() <= time_tolerance || !(mid > w.lo() && mid < w.hi()) {
+            // Tolerance reached (or the window can no longer split in
+            // f64): report, never claim.
+            possible.push(w);
+            continue;
+        }
+        stack.push(Interval::new(mid, w.hi()));
+        stack.push(Interval::new(w.lo(), mid));
+    }
+    if possible.is_empty() {
+        return Ok(CcdReport {
+            verdict: CcdVerdict::ClearWindow { min_gap },
+            examined_windows: examined,
+            max_defect,
+        });
+    }
+    // Merge windows that share an endpoint (they arrive time-ordered).
+    let mut merged: Vec<Interval> = Vec::with_capacity(possible.len());
+    for w in possible {
+        match merged.last_mut() {
+            Some(last) if last.hi() >= w.lo() => *last = Interval::new(last.lo(), w.hi()),
+            _ => merged.push(w),
+        }
+    }
+    Ok(CcdReport {
+        verdict: CcdVerdict::PossibleContact { windows: merged },
+        examined_windows: examined,
+        max_defect,
+    })
 }

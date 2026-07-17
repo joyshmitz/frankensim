@@ -81,16 +81,42 @@ exhaustion listing exact unresolved pairs; capability refusal; convex
 narrow-phase distance containment at a frozen time against the
 analytic value.
 
+## Certified CCD (bead tqag, increment 2)
+
+`certified_ccd(a, b, window, time_tolerance, max_windows, cx)` proves
+clearance or localizes possible contact by conservative window
+bisection over `CertifiedMotorTube::box_action_over` enclosures:
+
+- SOUNDNESS (the Sev-0 no-tunneling claim): a subwindow is cleared only
+  when the two whole-subwindow image enclosures are disjoint along a
+  coordinate axis — no instant inside it can produce contact, with no
+  sampling anywhere. Everything not proven clear subdivides to the time
+  tolerance and is reported as a possible-contact window; the union of
+  reported windows contains every true contact instant. ct-005 drives a
+  bullet fully through a thin plate INSIDE the window (both endpoint
+  enclosures disjoint — the exact trap endpoint sampling falls into)
+  and requires a possible window containing the true crossing,
+  localized to under 1% of the window.
+- HONESTY: contact is never CLAIMED (box overlap is necessary, not
+  sufficient); `ClearWindow` carries a certified lower bound on the
+  axis gap; budget exhaustion is a refusal carrying the exact pending +
+  unresolved windows in time order, never a truncated verdict (ct-008).
+- THE ROOT-GUARD REFUSAL, EXECUTABLE (ct-007): bodies overlapping the
+  whole window have no separation sign change for a global-root guard
+  to find; certified CCD reports one possible window covering the whole
+  domain instead of a false clear. This is why the design bisects
+  enclosures rather than guarding roots of `separation(t)`.
+- Determinism: LIFO bisection with the earlier half examined first;
+  reports replay bit-identically (ct-006).
+
 ## No-claim boundaries
 
-- CERTIFIED CCD is NOT yet claimed: no time-of-impact enclosures, no
-  conservative advancement, no feature-pair spacetime inclusion.
-  Increment 2 lands them over prescribed `CertifiedMotorTube`s;
-  Stage 2 consumes simulated-flow tubes through a tube-source-agnostic
-  interface. Per the bead's load-bearing subtlety, CCD will be
-  feature-pair-wise — a global `separation(t)` root guard is refused
-  as unsound during persistent contact, and a fixture will prove that
-  refusal.
+- Certified CCD verdicts are BOX-ENCLOSURE verdicts: `PossibleContact`
+  windows localize in time but do not adjudicate contact geometry;
+  feature-pair refinement (support-map separation inside the windows,
+  time-of-impact enclosures tighter than the box gap) is later work in
+  this bead's staging plan. Stage 2 consumes simulated-flow tubes
+  through a tube-source-agnostic interface.
 - Narrow-phase routes: Stage 1 is Convex×Convex only. SDF-pair local
   gaps (fs-query `ImplicitGapOracle`), nonconvex decomposition,
   interval global optimization, and mixed-route pairings all refuse
@@ -101,6 +127,7 @@ analytic value.
 - Rep Router conversion/motion errors do not yet inflate contact
   bounds (fs-query bead fugfk); claims apply to the presented charts,
   not to abstract regions behind conversions.
-- The broad phase prunes on certified geometry enclosures, but the
-  motion versor defect is REPORTED, not folded into the boxes; the
-  fold lands with the CCD increment.
+- The broad phase and CCD prune on certified geometry enclosures, but
+  the motion versor defect is REPORTED (`BroadPhaseReport::max_defect`,
+  `CcdReport::max_defect`), not folded into the boxes; the fold is
+  still open in this bead's staging plan.
