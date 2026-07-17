@@ -114,6 +114,16 @@ sweeps, special-value policy table, nudge bracketing, cross-ISA golden hash,
 core-only + worst-case-point + constant-integrity regressions
 (tests/core_regression.rs). All verified on BOTH reference ISAs.
 
+`tests/conformance.rs` registers three fixed-order exact Casebook records:
+the production 25,000-point strict-core fingerprint
+`0xeb79cab7a01643e5`; canonical-NaN and exact IEEE next/nudge vectors for zero,
+`±1`, and the minimum normal; and known answers for `two_sum`,
+`quick_two_sum`, and `two_prod`. Every failure retains the complete canonical
+input frame plus exact observed/reference bits. A disclosed `0xF5A70001`
+seeded corruption flips bit 0 of the core oracle and proves both the typed red
+report and `assert_green` refusal paths. These records make central failures
+replay-complete; one local record is not, by itself, a dual-ISA G5 proof.
+
 ## No-claim boundaries
 - cbrt/log1p: not yet implemented (follow-up bead). (tan/atan/atan2/pow/
   erf/erfc/asin/acos/powi landed via wf9.14, t88x, and 4xnt — see above;
