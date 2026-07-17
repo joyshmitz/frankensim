@@ -81,40 +81,90 @@ pub const MAX_VV_MATRIX_DIMENSION: usize = 128;
 /// Stable, machine-readable structural rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum VvRule {
+    /// Artifact identifiers, bounded text, hashes, or other identity fields are invalid.
     SchemaIdentity,
+    /// A bounded collection violates its required cardinality.
     SchemaCardinality,
+    /// A split reference, partition membership, uniqueness, coverage, or disjointness check failed.
     SplitPartitionsDisjoint,
+    /// A blind-holdout declaration, commitment, source binding, or supplied
+    /// release reference is structurally invalid or inconsistent; historical
+    /// sealing is not established here.
     SplitBlindHoldoutSealed,
+    /// The categorical evidence-axis report is incomplete, duplicated, or malformed.
     ColorCategoricalOnly,
+    /// A validation dependency lacks an `ExperimentArtifact` declared physical
+    /// for the exact QoI and admitted observation selection.
     ValidationRequiresPhysicalReferent,
+    /// A declared QoI is missing from a dependent V&V artifact.
     QoiDependencyClosed,
+    /// An artifact includes a QoI outside the dependency closure it is allowed to use.
     QoiDependencyIsolated,
+    /// An uncertainty waterfall omits or duplicates a required uncertainty category.
     WaterfallModeDeclared,
+    /// An uncertainty waterfall is arithmetically inconsistent.
     WaterfallArithmetic,
+    /// An uncertainty waterfall omits required dependence information.
     WaterfallDependenceDeclared,
+    /// Calibration declarations are missing, duplicate, zero-hash, declared
+    /// stale, or fail to cover manifest instruments.
     ExperimentInstrumentCalibration,
+    /// Experimental clocks lack a declared and bounded synchronization topology.
     ExperimentClockSynchronization,
+    /// Repeatability evidence lacks a valid, QoI-bound covariance matrix.
     ExperimentRepeatabilityCovariance,
+    /// Supplied source/custody hashes are zero or inconsistent, or the
+    /// caller-supplied authentication decision is false.
     ExperimentDataAuthenticity,
+    /// The declared observability diagnostic outcome did not pass.
     DiagnosticObservability,
+    /// The declared identifiability diagnostic outcome did not pass.
     DiagnosticIdentifiability,
+    /// The declared confounding diagnostic outcome did not pass.
     DiagnosticConfounding,
+    /// The declared inverse-crime diagnostic outcome did not pass.
     DiagnosticInverseCrime,
+    /// A validation metric or its uncertainty declaration is invalid.
     ValidationMetricUncertainty,
+    /// Required solution-verification evidence is incomplete.
     SolutionVerificationComplete,
+    /// A runtime applicability point or recorded applicability decision is malformed or inconsistent.
     ApplicabilityDecision,
+    /// Reserved for a future distinct policy-enforcement refusal; current
+    /// policy mismatches emit [`Self::ApplicabilityDecision`].
     ApplicabilityPolicy,
+    /// Process conformance was conflated with evidence of predictive validity.
     ProcessConformanceSeparate,
+    /// An assumption ledger row omits a required field.
     AssumptionRowComplete,
+    /// An applicability-domain declaration has invalid bounds, invalid
+    /// categories, or duplicate axes.
     AssumptionDomainEnforced,
+    /// The normative A-001 rigid/reduced-body ledger row is missing, altered,
+    /// or has an invalid in-case evidence reference.
     AssumptionA001,
+    /// The normative A-002 magnetoquasistatic-regime ledger row is missing,
+    /// altered, or has an invalid in-case evidence reference.
     AssumptionA002,
+    /// The normative A-003 spatial-mixing/section-averaging ledger row is
+    /// missing, altered, or has an invalid in-case evidence reference.
     AssumptionA003,
+    /// The normative A-004 smooth-contact/continuum-scale ledger row is missing,
+    /// altered, or has an invalid in-case evidence reference.
     AssumptionA004,
+    /// The normative A-005 symmetry ledger row is missing, altered, or has an
+    /// invalid in-case evidence reference.
     AssumptionA005,
+    /// The normative A-006 material/process/property-query ledger row is
+    /// missing, altered, or has an invalid in-case evidence reference.
     AssumptionA006,
+    /// The normative A-007 closure/correlation/turbulence/lubrication ledger row
+    /// is missing, altered, or has an invalid in-case evidence reference.
     AssumptionA007,
+    /// The normative A-008 probability/dependence/population ledger row is
+    /// missing, altered, or has an invalid in-case evidence reference.
     AssumptionA008,
+    /// A receipt does not bind the exact admitted artifact set and decision context.
     ReceiptBinding,
 }
 
@@ -190,31 +240,37 @@ impl VvViolation {
     }
 
     #[must_use]
+    /// Structural rule associated with this refusal.
     pub const fn rule(&self) -> VvRule {
         self.rule
     }
 
     #[must_use]
+    /// Stable machine slug for [`Self::rule`].
     pub const fn rule_slug(&self) -> &'static str {
         self.rule.slug()
     }
 
     #[must_use]
+    /// Artifact identity implicated by the refusal, when artifact-local.
     pub fn artifact_id(&self) -> Option<&str> {
         self.artifact_id.as_deref()
     }
 
     #[must_use]
+    /// QoI identity implicated by the refusal, when QoI-local.
     pub fn qoi_id(&self) -> Option<&str> {
         self.qoi_id.as_deref()
     }
 
     #[must_use]
+    /// Stable schema-field path at which the refusal arose.
     pub const fn field(&self) -> &'static str {
         self.field
     }
 
     #[must_use]
+    /// Actionable human-readable explanation; not a canonical identity field.
     pub fn detail(&self) -> &str {
         &self.detail
     }
@@ -270,6 +326,7 @@ impl VvErrors {
     }
 
     #[must_use]
+    /// Deterministically sorted and deduplicated refusal records.
     pub fn violations(&self) -> &[VvViolation] {
         &self.violations
     }
@@ -361,10 +418,12 @@ fn validate_text(value: &str, field: &'static str) -> Result<(), VvErrors> {
 
 macro_rules! vv_id {
     ($name:ident, $field:literal) => {
+        #[doc = concat!("Validated, bounded machine identity for `", $field, "`.")]
         #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
         pub struct $name(String);
 
         impl $name {
+            /// Validates and constructs the identity without normalizing its bytes.
             pub fn try_new(value: impl Into<String>) -> Result<Self, VvErrors> {
                 let value = value.into();
                 validate_id(&value, $field)?;
@@ -372,6 +431,7 @@ macro_rules! vv_id {
             }
 
             #[must_use]
+            /// Exact validated UTF-8 identity bytes as text.
             pub fn as_str(&self) -> &str {
                 &self.0
             }
@@ -399,12 +459,19 @@ vv_id!(UnitId, "unit_id");
 /// The seven top-level artifact families.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ArtifactKind {
+    /// Decision context, QoIs, criteria, and applicability domain.
     ContextOfUse,
+    /// Per-QoI experiments, partitions, metrics, and diagnostic requirements.
     ValidationPlan,
+    /// Physical or synthetic observation declarations and supplied metrology identities.
     ExperimentArtifact,
+    /// Declared calibration, validation, and blind-holdout partition.
     CalibrationSplit,
+    /// Numerical solution-verification evidence distinct from physical validation.
     SolutionVerificationReceipt,
+    /// Prediction comparison, uncertainty accounting, and applicability decision.
     PredictionAssessment,
+    /// Explicit assumptions, operating scopes, monitors, and response policies.
     AssumptionsLedger,
 }
 
@@ -427,6 +494,7 @@ impl ArtifactKind {
     }
 
     #[must_use]
+    /// Stable lowercase family slug used in diagnostics and canonical schemas.
     pub const fn slug(self) -> &'static str {
         match self {
             Self::ContextOfUse => "context-of-use",
@@ -464,21 +532,29 @@ pub struct ArtifactRef {
 
 impl ArtifactRef {
     #[must_use]
+    /// Construct a declared family/id/hash reference.
+    ///
+    /// This constructor does not inspect target bytes. A local reference becomes
+    /// content-exact only when whole-case validation recomputes and matches it.
     pub fn new(kind: ArtifactKind, id: ArtifactId, hash: ContentHash) -> Self {
         Self { kind, id, hash }
     }
 
     #[must_use]
+    /// Referenced artifact family.
     pub const fn kind(&self) -> ArtifactKind {
         self.kind
     }
 
     #[must_use]
+    /// Referenced artifact's declared machine identity.
     pub const fn id(&self) -> &ArtifactId {
         &self.id
     }
 
     #[must_use]
+    /// Supplied digest intended to identify the referenced artifact's canonical
+    /// bytes; local whole-case validation recomputes it.
     pub const fn hash(&self) -> ContentHash {
         self.hash
     }
@@ -487,15 +563,25 @@ impl ArtifactRef {
 /// Explicit random-seed declaration required by every top-level artifact.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SeedDeclaration {
+    /// Caller-declared pseudorandom seed intended for the producing computation.
     Fixed(u64),
-    NotApplicable { reason: String },
+    /// Randomness is declared inapplicable, with an auditable explanation.
+    NotApplicable {
+        /// Caller-supplied explanation for declaring randomness inapplicable.
+        reason: String,
+    },
 }
 
 /// Explicit bounded budget or an equally explicit not-applicable reason.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DeclaredBudget<T> {
+    /// Explicit upper bound in the enclosing field's documented units.
     Limit(T),
-    NotApplicable { reason: String },
+    /// This budget dimension does not apply to the operation.
+    NotApplicable {
+        /// Non-blank explanation of why the budget dimension is inapplicable.
+        reason: String,
+    },
 }
 
 /// Agent-native Five-Explicits header shared by all seven artifacts.
@@ -512,7 +598,17 @@ pub struct ArtifactHeader {
 }
 
 impl ArtifactHeader {
+    /// Validate and canonicalize the Five Explicits for one top-level artifact.
+    ///
+    /// Accuracy is dimensionless unless the artifact contract says otherwise;
+    /// time is milliseconds and memory is bytes. This establishes bounded
+    /// canonical declarations only; it does not verify seed use, budget
+    /// observance, version fidelity, capability admission, or replayability.
     #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one transaction keeps mutually dependent header checks from admitting partial state"
+    )]
     pub fn try_new(
         id: ArtifactId,
         units: Vec<UnitId>,
@@ -539,7 +635,9 @@ impl ArtifactHeader {
             validate_text(reason, "header.seed.not_applicable")?;
         }
         let accuracy = match accuracy {
-            DeclaredBudget::Limit(value) if value == 0.0 => DeclaredBudget::Limit(0.0),
+            DeclaredBudget::Limit(value) if value.to_bits() == (-0.0_f64).to_bits() => {
+                DeclaredBudget::Limit(0.0)
+            }
             other => other,
         };
         match &accuracy {
@@ -633,41 +731,53 @@ impl ArtifactHeader {
     }
 
     #[must_use]
+    /// Artifact machine identity carried by this header.
     pub const fn id(&self) -> &ArtifactId {
         &self.id
     }
 
     #[must_use]
+    /// Canonically sorted declared unit identities.
+    ///
+    /// Whole-case validation checks required QoI-unit coverage in selected
+    /// artifacts but does not reject every extra declaration.
     pub fn units(&self) -> &[UnitId] {
         &self.units
     }
 
     #[must_use]
+    /// Explicit seed or justified no-seed declaration.
     pub const fn seed(&self) -> &SeedDeclaration {
         &self.seed
     }
 
     #[must_use]
+    /// Declared accuracy budget under the artifact's unit contract.
     pub const fn accuracy(&self) -> &DeclaredBudget<f64> {
         &self.accuracy
     }
 
     #[must_use]
+    /// Declared wall-time budget in milliseconds.
     pub const fn time_ms(&self) -> &DeclaredBudget<u64> {
         &self.time_ms
     }
 
     #[must_use]
+    /// Declared peak-memory budget in bytes.
     pub const fn memory_bytes(&self) -> &DeclaredBudget<u64> {
         &self.memory_bytes
     }
 
     #[must_use]
+    /// Canonical caller-declared component-version map.
     pub const fn versions(&self) -> &BTreeMap<String, String> {
         &self.versions
     }
 
     #[must_use]
+    /// Canonical caller-declared capability identities; this type performs no
+    /// authority admission.
     pub const fn capabilities(&self) -> &BTreeSet<String> {
         &self.capabilities
     }
@@ -683,6 +793,7 @@ pub struct NumericDomainAxis {
 }
 
 impl NumericDomainAxis {
+    /// Construct an inclusive finite interval for one axis in an explicit unit.
     pub fn try_new(axis: AxisId, unit: UnitId, lo: f64, hi: f64) -> Result<Self, VvErrors> {
         if !lo.is_finite() || !hi.is_finite() || lo > hi {
             return Err(invalid(
@@ -697,16 +808,19 @@ impl NumericDomainAxis {
     }
 
     #[must_use]
+    /// Machine identity of the constrained axis.
     pub const fn axis(&self) -> &AxisId {
         &self.axis
     }
 
     #[must_use]
+    /// Unit in which both inclusive bounds are expressed.
     pub const fn unit(&self) -> &UnitId {
         &self.unit
     }
 
     #[must_use]
+    /// Inclusive lower and upper bounds in [`Self::unit`].
     pub const fn bounds(&self) -> (f64, f64) {
         (self.lo, self.hi)
     }
@@ -720,6 +834,7 @@ pub struct CategoricalDomainAxis {
 }
 
 impl CategoricalDomainAxis {
+    /// Construct one bounded categorical domain with unique machine labels.
     pub fn try_new(axis: AxisId, allowed: Vec<String>) -> Result<Self, VvErrors> {
         if allowed.is_empty() || allowed.len() > MAX_VV_ITEMS {
             return Err(invalid(
@@ -750,11 +865,13 @@ impl CategoricalDomainAxis {
     }
 
     #[must_use]
+    /// Machine identity of the constrained axis.
     pub const fn axis(&self) -> &AxisId {
         &self.axis
     }
 
     #[must_use]
+    /// Canonically ordered set of admissible categorical labels.
     pub const fn allowed(&self) -> &BTreeSet<String> {
         &self.allowed
     }
@@ -769,10 +886,15 @@ pub struct ApplicabilityDomain {
 
 impl ApplicabilityDomain {
     #[must_use]
+    /// Construct the explicit domain with no axis constraints.
     pub fn unconstrained() -> Self {
         Self::default()
     }
 
+    /// Construct a domain in which every axis is declared exactly once.
+    ///
+    /// This validates structural bounds only; it does not assert that the
+    /// resulting domain is scientifically justified for a model.
     pub fn try_new(
         numeric: Vec<NumericDomainAxis>,
         categorical: Vec<CategoricalDomainAxis>,
@@ -821,11 +943,13 @@ impl ApplicabilityDomain {
     }
 
     #[must_use]
+    /// Canonical map of continuous axes and their unit-bearing intervals.
     pub const fn numeric(&self) -> &BTreeMap<AxisId, NumericDomainAxis> {
         &self.numeric
     }
 
     #[must_use]
+    /// Canonical map of categorical axes and their allowed labels.
     pub const fn categorical(&self) -> &BTreeMap<AxisId, CategoricalDomainAxis> {
         &self.categorical
     }
@@ -866,6 +990,12 @@ pub struct ApplicabilityPoint {
 }
 
 impl ApplicabilityPoint {
+    /// Construct a finite runtime point whose supplied axes are unique.
+    ///
+    /// Numeric values are interpreted in the units declared by the matching
+    /// [`ApplicabilityDomain`]; this constructor cannot verify that unit match
+    /// or that every domain axis is present. Domain evaluation reports missing
+    /// axes later.
     pub fn try_new(
         numeric: Vec<(AxisId, f64)>,
         categorical: Vec<(AxisId, String)>,
@@ -914,11 +1044,13 @@ impl ApplicabilityPoint {
     }
 
     #[must_use]
+    /// Runtime numeric coordinates keyed by axis identity.
     pub const fn numeric(&self) -> &BTreeMap<AxisId, f64> {
         &self.numeric
     }
 
     #[must_use]
+    /// Runtime categorical coordinates keyed by axis identity.
     pub const fn categorical(&self) -> &BTreeMap<AxisId, String> {
         &self.categorical
     }
@@ -927,20 +1059,32 @@ impl ApplicabilityPoint {
 /// A concrete reason a point is outside its declared domain.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DomainViolation {
+    /// A required domain axis has no runtime value.
     Missing {
+        /// Identity of the missing axis.
         axis: AxisId,
     },
+    /// A numeric coordinate is non-finite or outside its inclusive interval.
     Numeric {
+        /// Identity of the violated axis.
         axis: AxisId,
+        /// Supplied coordinate, in the axis's declared unit.
         value: f64,
+        /// Inclusive lower bound, in the axis's declared unit.
         lo: f64,
+        /// Inclusive upper bound, in the axis's declared unit.
         hi: f64,
     },
+    /// A categorical coordinate is not among the declared labels.
     Categorical {
+        /// Identity of the violated axis.
         axis: AxisId,
+        /// Supplied categorical label.
         value: String,
     },
+    /// A required modeling assumption does not hold at the runtime point.
     Assumption {
+        /// Identity of the violated assumption row.
         id: AssumptionId,
     },
 }
@@ -987,30 +1131,33 @@ impl DomainViolation {
 /// Required treatment when applicability fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplicabilityPolicy {
+    /// Preserve the result but explicitly lower its claim status.
     Demote,
+    /// Refuse to issue a result outside the admitted domain.
     Refuse,
 }
 
-/// Derived applicability result; there is no silent extrapolation variant.
+/// Recorded applicability result; whole-case validation deterministically
+/// recomputes it and there is no silent extrapolation variant.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ApplicabilityDecision {
+    /// Recorded in-domain outcome; whole-case validation recomputes it.
     InDomain,
-    Demoted { violations: Vec<DomainViolation> },
-    Refused { violations: Vec<DomainViolation> },
+    /// A result may be retained only with an explicit no-in-domain-claim boundary.
+    Demoted {
+        /// Recorded demotion reasons; whole-case validation requires exact
+        /// equality with the deterministic recomputed sequence.
+        violations: Vec<DomainViolation>,
+    },
+    /// No result may be claimed under the declared context of use.
+    Refused {
+        /// Recorded refusal reasons; whole-case validation requires exact
+        /// equality with the deterministic recomputed sequence.
+        violations: Vec<DomainViolation>,
+    },
 }
 
 impl ApplicabilityDecision {
-    fn derive(policy: ApplicabilityPolicy, violations: Vec<DomainViolation>) -> Self {
-        if violations.is_empty() {
-            Self::InDomain
-        } else {
-            match policy {
-                ApplicabilityPolicy::Demote => Self::Demoted { violations },
-                ApplicabilityPolicy::Refuse => Self::Refused { violations },
-            }
-        }
-    }
-
     fn has_same_canonical_bits(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::InDomain, Self::InDomain) => true,
@@ -1027,13 +1174,35 @@ impl ApplicabilityDecision {
     }
 }
 
-/// Acceptance predicate for one QoI.
+/// Declarative acceptance predicate for one QoI.
+///
+/// This module validates and preserves the criterion; it does not evaluate a
+/// prediction or validation result against it. A later decision layer must bind
+/// the declared criterion to exact inputs and retain that evaluation evidence.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AcceptanceCriterion {
-    ClosedRange { lo: f64, hi: f64 },
-    AbsoluteErrorAtMost { limit: f64 },
-    RelativeErrorAtMost { limit: f64 },
-    CategoryEquals { expected: String },
+    /// Declare an inclusive interval in the QoI unit.
+    ClosedRange {
+        /// Inclusive lower bound in the QoI unit.
+        lo: f64,
+        /// Inclusive upper bound in the QoI unit.
+        hi: f64,
+    },
+    /// Declare an upper bound on absolute discrepancy in the QoI unit.
+    AbsoluteErrorAtMost {
+        /// Non-negative discrepancy limit in the QoI unit.
+        limit: f64,
+    },
+    /// Declare an upper bound on dimensionless relative discrepancy.
+    RelativeErrorAtMost {
+        /// Non-negative dimensionless relative-error limit.
+        limit: f64,
+    },
+    /// Declare the exact expected categorical label.
+    CategoryEquals {
+        /// Canonical machine label required for acceptance.
+        expected: String,
+    },
 }
 
 impl AcceptanceCriterion {
@@ -1067,6 +1236,7 @@ pub struct QoiSpec {
 }
 
 impl QoiSpec {
+    /// Construct one named QoI with an explicit unit and acceptance predicate.
     pub fn try_new(
         id: QoiId,
         name: impl Into<String>,
@@ -1085,21 +1255,27 @@ impl QoiSpec {
     }
 
     #[must_use]
+    /// Machine identity used to join this QoI across all V&V artifacts.
     pub const fn id(&self) -> &QoiId {
         &self.id
     }
 
     #[must_use]
+    /// Human-readable QoI name; it is descriptive rather than an identity key.
     pub fn name(&self) -> &str {
         &self.name
     }
 
     #[must_use]
+    /// Unit in which numeric QoI values and unit-bearing criteria are interpreted.
     pub const fn unit(&self) -> &UnitId {
         &self.unit
     }
 
     #[must_use]
+    /// Declarative criterion retained for a later, evidence-bound decision evaluator.
+    ///
+    /// No criterion evaluation is performed by this model module.
     pub const fn acceptance(&self) -> &AcceptanceCriterion {
         &self.acceptance
     }
@@ -1116,6 +1292,10 @@ pub struct ContextOfUse {
 }
 
 impl ContextOfUse {
+    /// Construct the decision contract to which downstream validation claims apply.
+    ///
+    /// Admission checks bounded structure and unique QoI identities. It does not
+    /// by itself establish that the chosen QoIs or applicability domain are adequate.
     pub fn try_new(
         header: ArtifactHeader,
         decision: impl Into<String>,
@@ -1157,31 +1337,37 @@ impl ContextOfUse {
     }
 
     #[must_use]
+    /// Artifact identity from the shared Five-Explicits header.
     pub const fn id(&self) -> &ArtifactId {
         self.header.id()
     }
 
     #[must_use]
+    /// Five-Explicits provenance and resource declaration.
     pub const fn header(&self) -> &ArtifactHeader {
         &self.header
     }
 
     #[must_use]
+    /// Human-readable decision this model evidence is intended to support.
     pub fn decision(&self) -> &str {
         &self.decision
     }
 
     #[must_use]
+    /// Canonical QoI specifications keyed by their cross-artifact identities.
     pub const fn qois(&self) -> &BTreeMap<QoiId, QoiSpec> {
         &self.qois
     }
 
     #[must_use]
+    /// Declared domain inside which the context-of-use claim may apply.
     pub const fn applicability(&self) -> &ApplicabilityDomain {
         &self.applicability
     }
 
     #[must_use]
+    /// Required behavior when a runtime point is outside the declared domain.
     pub const fn applicability_policy(&self) -> ApplicabilityPolicy {
         self.applicability_policy
     }
@@ -1196,6 +1382,11 @@ pub struct DiagnosticRecord {
 }
 
 impl DiagnosticRecord {
+    /// Store one caller-declared diagnostic outcome and supplied evidence hash.
+    ///
+    /// The constructor validates only bounded descriptive text. It accepts a
+    /// zero hash, stores no acceptance rule, and neither authenticates the
+    /// producer nor independently recomputes the diagnostic outcome.
     pub fn try_new(
         passed: bool,
         artifact_hash: ContentHash,
@@ -1211,16 +1402,25 @@ impl DiagnosticRecord {
     }
 
     #[must_use]
+    /// Caller-declared diagnostic outcome.
+    ///
+    /// This value is not independently derived from `artifact_hash`, and this
+    /// schema does not retain or evaluate the diagnostic's acceptance rule.
     pub const fn passed(&self) -> bool {
         self.passed
     }
 
     #[must_use]
+    /// Caller-supplied digest intended to identify retained diagnostic evidence.
+    ///
+    /// Construction does not reject a zero digest or prove that matching bytes
+    /// exist; those are responsibilities of a later evidence-store admission.
     pub const fn artifact_hash(&self) -> ContentHash {
         self.artifact_hash
     }
 
     #[must_use]
+    /// Human-readable rationale retained with the diagnostic decision.
     pub fn detail(&self) -> &str {
         &self.detail
     }
@@ -1237,6 +1437,7 @@ pub struct DiagnosticPlan {
 
 impl DiagnosticPlan {
     #[must_use]
+    /// Assemble the four mandatory diagnostic decisions for one QoI plan.
     pub fn new(
         observability: DiagnosticRecord,
         identifiability: DiagnosticRecord,
@@ -1252,21 +1453,25 @@ impl DiagnosticPlan {
     }
 
     #[must_use]
+    /// Caller-declared observability outcome and its intended evidence digest.
     pub const fn observability(&self) -> &DiagnosticRecord {
         &self.observability
     }
 
     #[must_use]
+    /// Caller-declared identifiability outcome and its intended evidence digest.
     pub const fn identifiability(&self) -> &DiagnosticRecord {
         &self.identifiability
     }
 
     #[must_use]
+    /// Caller-declared confounding outcome and its intended evidence digest.
     pub const fn confounding(&self) -> &DiagnosticRecord {
         &self.confounding
     }
 
     #[must_use]
+    /// Caller-declared inverse-crime outcome and its intended evidence digest.
     pub const fn inverse_crime(&self) -> &DiagnosticRecord {
         &self.inverse_crime
     }
@@ -1313,9 +1518,18 @@ impl DiagnosticPlan {
 /// Metric requested by a validation plan.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ValidationMetricSpec {
+    /// Require uncertainty intervals from prediction and observation to agree.
     IntervalAgreement,
-    NormalizedDiscrepancy { maximum: f64 },
-    PosteriorPredictive { minimum_tail_probability: f64 },
+    /// Bound discrepancy after normalization by the metric's uncertainty scale.
+    NormalizedDiscrepancy {
+        /// Maximum accepted dimensionless normalized discrepancy.
+        maximum: f64,
+    },
+    /// Require a lower bound on posterior-predictive tail probability.
+    PosteriorPredictive {
+        /// Minimum accepted probability, strictly between zero and one.
+        minimum_tail_probability: f64,
+    },
 }
 
 impl ValidationMetricSpec {
@@ -1369,6 +1583,11 @@ pub struct QoiValidationPlan {
 }
 
 impl QoiValidationPlan {
+    /// Construct the declared experiment/split/metric/diagnostic row for one QoI.
+    ///
+    /// References are sorted and family-checked here; their hashes, target
+    /// content, and physical-referent status are checked only by whole-case
+    /// validation.
     pub fn try_new(
         qoi: QoiId,
         experiments: Vec<ArtifactRef>,
@@ -1454,26 +1673,36 @@ impl QoiValidationPlan {
     }
 
     #[must_use]
+    /// QoI identity governed by this plan row.
     pub const fn qoi(&self) -> &QoiId {
         &self.qoi
     }
 
     #[must_use]
+    /// Canonically ordered experiment references.
+    ///
+    /// Construction checks only their artifact family. Whole-case admission
+    /// subsequently requires every validation referent to be physical and to
+    /// cover this exact QoI.
     pub fn experiments(&self) -> &[ArtifactRef] {
         &self.experiments
     }
 
     #[must_use]
+    /// Declared calibration/validation split reference; whole-case validation
+    /// resolves its content hash.
     pub const fn split(&self) -> &ArtifactRef {
         &self.split
     }
 
     #[must_use]
+    /// Unique validation metrics in canonical metric-key order.
     pub fn metrics(&self) -> &[ValidationMetricSpec] {
         &self.metrics
     }
 
     #[must_use]
+    /// Four mandatory caller-declared diagnostic outcomes for this QoI.
     pub const fn diagnostics(&self) -> &DiagnosticPlan {
         &self.diagnostics
     }
@@ -1488,6 +1717,10 @@ pub struct ValidationPlan {
 }
 
 impl ValidationPlan {
+    /// Construct a QoI-complete validation plan for one context of use.
+    ///
+    /// Structural admission guarantees one row per declared plan QoI; case-level
+    /// admission later proves equality with the referenced context's QoI set.
     pub fn try_new(
         header: ArtifactHeader,
         context: ArtifactRef,
@@ -1532,21 +1765,26 @@ impl ValidationPlan {
     }
 
     #[must_use]
+    /// Artifact identity from the shared Five-Explicits header.
     pub const fn id(&self) -> &ArtifactId {
         self.header.id()
     }
 
     #[must_use]
+    /// Five-Explicits provenance and resource declaration.
     pub const fn header(&self) -> &ArtifactHeader {
         &self.header
     }
 
     #[must_use]
+    /// Declared context-of-use reference; whole-case validation resolves its
+    /// content hash.
     pub const fn context(&self) -> &ArtifactRef {
         &self.context
     }
 
     #[must_use]
+    /// Canonical validation-plan rows keyed by QoI identity.
     pub const fn by_qoi(&self) -> &BTreeMap<QoiId, QoiValidationPlan> {
         &self.by_qoi
     }
@@ -1555,20 +1793,33 @@ impl ValidationPlan {
 /// Provenance class of observations. Only `Physical` can validate physics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExperimentOrigin {
+    /// Measurements acquired from a declared physical apparatus and facility.
     Physical {
+        /// Machine identity of the measurement apparatus.
         apparatus_id: ArtifactId,
+        /// Machine identity of the facility hosting the experiment.
         facility_id: ArtifactId,
     },
+    /// Synthetic observations from a caller-declared high-fidelity model.
+    /// This classification does not establish the producer's fidelity.
     SyntheticHighFidelity {
+        /// Identity of the producing model or simulation artifact.
         producer: ArtifactId,
     },
+    /// Synthetic observations from a caller-declared second implementation.
+    /// This classification does not establish implementation independence.
     SecondImplementation {
+        /// Identity of the independent implementation artifact.
         producer: ArtifactId,
     },
 }
 
 impl ExperimentOrigin {
     #[must_use]
+    /// Whether the declared origin is physical.
+    ///
+    /// This is a structural classification, not proof that custody, calibration,
+    /// or scientific adequacy checks passed.
     pub const fn is_physical(&self) -> bool {
         matches!(self, Self::Physical { .. })
     }
@@ -1584,6 +1835,12 @@ pub struct InstrumentCalibration {
 
 impl InstrumentCalibration {
     #[must_use]
+    /// Associate an instrument with a supplied certificate hash and currency flag.
+    ///
+    /// This constructor does not reject a zero hash, prove certificate
+    /// retention, authenticate its issuer, or derive the caller-supplied
+    /// currency decision. Enclosing experiment admission rejects zero and stale
+    /// declarations.
     pub fn new(instrument_id: ArtifactId, certificate_hash: ContentHash, current: bool) -> Self {
         Self {
             instrument_id,
@@ -1593,16 +1850,19 @@ impl InstrumentCalibration {
     }
 
     #[must_use]
+    /// Instrument named by this calibration declaration.
     pub const fn instrument_id(&self) -> &ArtifactId {
         &self.instrument_id
     }
 
     #[must_use]
+    /// Supplied digest intended to identify calibration-certificate bytes.
     pub const fn certificate_hash(&self) -> ContentHash {
         self.certificate_hash
     }
 
     #[must_use]
+    /// Declared certificate-currency decision at artifact creation time.
     pub const fn current(&self) -> bool {
         self.current
     }
@@ -1611,18 +1871,31 @@ impl InstrumentCalibration {
 /// Explicit clock topology for an experiment.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClockSynchronization {
+    /// Every acquisition channel is interpreted against one clock.
     SingleClock {
+        /// Identity of the sole acquisition clock.
         clock_id: ArtifactId,
     },
+    /// Supplied multi-clock synchronization declaration.
     Synchronized {
+        /// Clock identities; [`Self::synchronized`] validates uniqueness and bounds.
         clock_ids: Vec<ArtifactId>,
+        /// Method text; [`Self::synchronized`] validates its bounded form.
         method: String,
+        /// Caller-declared skew; [`Self::synchronized`] requires finite,
+        /// non-negative seconds.
         max_skew_seconds: f64,
+        /// Supplied digest; [`Self::synchronized`] rejects the zero sentinel.
         evidence_hash: ContentHash,
     },
 }
 
 impl ClockSynchronization {
+    /// Construct a canonical multi-clock topology with a finite skew bound.
+    ///
+    /// Structural admission requires a non-zero supplied hash but does not fetch
+    /// evidence, prove its retention, or certify that the synchronization method
+    /// achieved the declared bound.
     pub fn synchronized(
         mut clock_ids: Vec<ArtifactId>,
         method: impl Into<String>,
@@ -1694,6 +1967,13 @@ pub struct CovarianceMatrix {
 }
 
 impl CovarianceMatrix {
+    /// Admit a finite symmetric matrix that passes the deterministic
+    /// floating-point PSD screen.
+    ///
+    /// Entry `(i, j)` has the product unit of QoI axes `i` and `j`; those axes
+    /// acquire meaning only when bound by [`RepeatabilitySummary`]. The
+    /// deterministic floating-point PSD screen is deliberately fail-closed but
+    /// is not a formal exact-arithmetic PSD certificate.
     pub fn try_new(dimension: usize, mut lower_triangle: Vec<f64>) -> Result<Self, VvErrors> {
         let expected = dimension
             .checked_mul(dimension.saturating_add(1))
@@ -1745,11 +2025,13 @@ impl CovarianceMatrix {
     }
 
     #[must_use]
+    /// Number of covariance rows and columns.
     pub const fn dimension(&self) -> usize {
         self.dimension
     }
 
     #[must_use]
+    /// Packed lower triangle in row-major order, including the diagonal.
     pub fn lower_triangle(&self) -> &[f64] {
         &self.lower_triangle
     }
@@ -1821,6 +2103,10 @@ pub struct RepeatabilitySummary {
 }
 
 impl RepeatabilitySummary {
+    /// Construct an unbound repeatability summary for later QoI-axis binding.
+    ///
+    /// At least two replicates are required. The covariance has no scientific
+    /// axis interpretation until an [`ExperimentArtifact`] binds its QoI order.
     pub fn try_new(replicates: u32, covariance: CovarianceMatrix) -> Result<Self, VvErrors> {
         if replicates < 2 {
             return Err(invalid(
@@ -1845,7 +2131,10 @@ impl RepeatabilitySummary {
         qoi_order: Vec<QoiId>,
         covariance: CovarianceMatrix,
     ) -> Result<Self, VvErrors> {
-        Self::try_new(replicates, covariance)?.bind_to_experiment_qois(&qoi_order)
+        let experiment_qois = qoi_order.clone();
+        let mut summary = Self::try_new(replicates, covariance)?;
+        summary.qoi_order = qoi_order;
+        summary.bind_to_experiment_qois(&experiment_qois)
     }
 
     fn bind_to_experiment_qois(mut self, experiment_qois: &[QoiId]) -> Result<Self, VvErrors> {
@@ -1865,7 +2154,7 @@ impl RepeatabilitySummary {
         let declared_order = if self.qoi_order.is_empty() {
             experiment_qois.to_vec()
         } else {
-            self.qoi_order.clone()
+            core::mem::take(&mut self.qoi_order)
         };
         let axis_set = declared_order.iter().cloned().collect::<BTreeSet<_>>();
         if declared_order.len() != self.covariance.dimension
@@ -1907,6 +2196,7 @@ impl RepeatabilitySummary {
     }
 
     #[must_use]
+    /// Number of repeated acquisitions summarized by the covariance.
     pub const fn replicates(&self) -> u32 {
         self.replicates
     }
@@ -1921,12 +2211,13 @@ impl RepeatabilitySummary {
     }
 
     #[must_use]
+    /// Covariance tensor interpreted in [`Self::qoi_order`].
     pub const fn covariance(&self) -> &CovarianceMatrix {
         &self.covariance
     }
 }
 
-/// Exact source bytes and custody evidence for an experimental dataset.
+/// Supplied source-byte and custody identities for an experimental dataset.
 ///
 /// [`ExperimentArtifact::try_new`] rejects zero sentinels and requires every
 /// observation source to bind this exact `source_bytes_hash`.
@@ -1950,6 +2241,10 @@ impl fmt::Debug for DataAuthenticity {
 
 impl DataAuthenticity {
     #[must_use]
+    /// Record supplied dataset/custody hashes and an authentication decision.
+    ///
+    /// These fields record the decision and evidence identities; they do not
+    /// independently authenticate either byte stream or its issuer.
     pub fn new(
         source_bytes_hash: ContentHash,
         custody_receipt_hash: ContentHash,
@@ -1963,16 +2258,19 @@ impl DataAuthenticity {
     }
 
     #[must_use]
+    /// Supplied digest intended to identify the source dataset bytes.
     pub const fn source_bytes_hash(&self) -> ContentHash {
         self.source_bytes_hash
     }
 
     #[must_use]
+    /// Supplied digest intended to identify a chain-of-custody receipt.
     pub const fn custody_receipt_hash(&self) -> ContentHash {
         self.custody_receipt_hash
     }
 
     #[must_use]
+    /// Declared result of the external data-authentication procedure.
     pub const fn authenticated(&self) -> bool {
         self.authenticated
     }
@@ -2218,21 +2516,27 @@ impl ObservationManifestRow {
     }
 
     #[must_use]
+    /// QoI identity assigned to the observation; this accessor does not prove
+    /// that the observation is scientifically adequate for that QoI.
     pub const fn qoi(&self) -> &QoiId {
         &self.qoi
     }
 
     #[must_use]
+    /// Instrument identity whose declared calibration record governs this row.
     pub const fn instrument(&self) -> &ArtifactId {
         &self.instrument
     }
 
     #[must_use]
+    /// Acquisition-channel identity used to distinguish otherwise similar
+    /// instrument observations.
     pub const fn acquisition_channel(&self) -> &ArtifactId {
         &self.acquisition_channel
     }
 
     #[must_use]
+    /// Clock identity used to interpret this row's acquisition timing.
     pub const fn clock(&self) -> &ArtifactId {
         &self.clock
     }
@@ -2262,6 +2566,11 @@ impl fmt::Debug for ObservationManifest {
 }
 
 impl ObservationManifest {
+    /// Admit a bounded, non-empty observation manifest.
+    ///
+    /// Rows are canonicalized by observation identity and raw locators must be
+    /// injective. Admission establishes structural lineage, not measurement
+    /// accuracy or fitness for a context of use.
     pub fn try_new(rows: Vec<(ObservationId, ObservationManifestRow)>) -> Result<Self, VvErrors> {
         if rows.is_empty() || rows.len() > MAX_VV_ITEMS {
             return Err(invalid(
@@ -2330,21 +2639,25 @@ impl ObservationManifest {
     }
 
     #[must_use]
+    /// Canonical observation-id-to-row map.
     pub const fn rows(&self) -> &BTreeMap<ObservationId, ObservationManifestRow> {
         &self.rows
     }
 
     #[must_use]
+    /// Look up the typed row bound to `id`, if present.
     pub fn row(&self, id: &ObservationId) -> Option<&ObservationManifestRow> {
         self.rows.get(id)
     }
 
     #[must_use]
+    /// Return the manifest's observation identities in canonical order.
     pub fn ids(&self) -> BTreeSet<ObservationId> {
         self.rows.keys().cloned().collect()
     }
 
     #[must_use]
+    /// Return the receipt-independent immutable locator hash for `id`.
     pub fn locator_hash_of(&self, id: &ObservationId) -> Option<ContentHash> {
         self.rows.get(id).map(ObservationManifestRow::locator_hash)
     }
@@ -2483,37 +2796,54 @@ pub struct ExperimentArtifact {
 
 impl fmt::Debug for ExperimentArtifact {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let origin = match &self.origin {
+        let Self {
+            header: _,
+            dataset_id: _,
+            origin,
+            qois,
+            observation_ids,
+            observations_hash: _,
+            manifest: _,
+            instruments,
+            clocks,
+            repeatability,
+            authenticity,
+        } = self;
+        let origin = match origin {
             ExperimentOrigin::Physical { .. } => "physical",
             ExperimentOrigin::SyntheticHighFidelity { .. } => "synthetic-high-fidelity",
             ExperimentOrigin::SecondImplementation { .. } => "second-implementation",
         };
-        let clock_count = match &self.clocks {
+        let clock_count = match clocks {
             ClockSynchronization::SingleClock { .. } => 1,
             ClockSynchronization::Synchronized { clock_ids, .. } => clock_ids.len(),
         };
         formatter
             .debug_struct("ExperimentArtifact")
             .field("origin", &origin)
-            .field("qoi_count", &self.qois.len())
-            .field("observation_count", &self.observation_ids.len())
-            .field("instrument_count", &self.instruments.len())
+            .field("qoi_count", &qois.len())
+            .field("observation_count", &observation_ids.len())
+            .field("instrument_count", &instruments.len())
             .field("clock_count", &clock_count)
-            .field("replicates", &self.repeatability.replicates)
-            .field(
-                "covariance_dimension",
-                &self.repeatability.covariance.dimension,
-            )
-            .field("authenticated", &self.authenticity.authenticated)
-            .field("artifact_and_dataset_ids", &"<redacted>")
-            .field("dataset_and_observation_bindings", &"<redacted>")
-            .field("metrology_and_custody_evidence", &"<redacted>")
-            .finish()
+            .field("replicates", &repeatability.replicates)
+            .field("covariance_dimension", &repeatability.covariance.dimension)
+            .field("authenticated", &authenticity.authenticated)
+            .finish_non_exhaustive()
     }
 }
 
 impl ExperimentArtifact {
     #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "cross-field metrology and lineage checks form one admission transaction"
+    )]
+    /// Admit a physical or synthetic experiment and derive its canonical
+    /// observation identities and manifest hash.
+    ///
+    /// This validates boundedness, referential closure, calibration, clock,
+    /// repeatability, and custody structure. It does not certify experimental
+    /// accuracy, independence, or relevance to a later prediction.
     pub fn try_new(
         header: ArtifactHeader,
         dataset_id: ArtifactId,
@@ -2596,7 +2926,7 @@ impl ExperimentArtifact {
         }
         let unique_instruments = instruments
             .iter()
-            .map(|instrument| instrument.instrument_id())
+            .map(InstrumentCalibration::instrument_id)
             .collect::<BTreeSet<_>>();
         if unique_instruments.len() != instruments.len() {
             return Err(invalid(
@@ -2674,7 +3004,7 @@ impl ExperimentArtifact {
                 Some(header.id().as_str()),
                 None,
                 "experiment.manifest.dataset_source_bytes_hash",
-                "every row source must bind the experiment's exact authenticated source bytes",
+                "every row source must bind the experiment's supplied source-byte identity",
             ));
         }
         if !authenticity.authenticated {
@@ -2683,7 +3013,7 @@ impl ExperimentArtifact {
                 Some(header.id().as_str()),
                 None,
                 "experiment.authenticity",
-                "dataset authenticity must be admitted by the configured policy",
+                "the caller-supplied dataset-authentication decision must be true",
             ));
         }
         Ok(Self {
@@ -2702,51 +3032,61 @@ impl ExperimentArtifact {
     }
 
     #[must_use]
+    /// Artifact identity from the experiment header.
     pub const fn id(&self) -> &ArtifactId {
         self.header.id()
     }
 
     #[must_use]
+    /// Full schema/version/provenance header for this experiment artifact.
     pub const fn header(&self) -> &ArtifactHeader {
         &self.header
     }
 
     #[must_use]
+    /// Logical identity of the dataset covered by the supplied authenticity declaration.
     pub const fn dataset_id(&self) -> &ArtifactId {
         &self.dataset_id
     }
 
     #[must_use]
+    /// Declared physical or synthetic provenance class.
     pub const fn origin(&self) -> &ExperimentOrigin {
         &self.origin
     }
 
     #[must_use]
+    /// Canonical set of QoIs observed by this experiment.
     pub const fn qois(&self) -> &BTreeSet<QoiId> {
         &self.qois
     }
 
     #[must_use]
+    /// Canonical set of observation identities derived from the manifest.
     pub const fn observation_ids(&self) -> &BTreeSet<ObservationId> {
         &self.observation_ids
     }
 
     #[must_use]
+    /// Domain-separated identity of all typed manifest rows.
     pub const fn observations_hash(&self) -> ContentHash {
         self.observations_hash
     }
 
     #[must_use]
+    /// Typed, immutable observation-lineage manifest.
     pub const fn manifest(&self) -> &ObservationManifest {
         &self.manifest
     }
 
     #[must_use]
+    /// Canonically ordered calibration records declared current for referenced instruments.
     pub fn instruments(&self) -> &[InstrumentCalibration] {
         &self.instruments
     }
 
     #[must_use]
+    /// Admitted clock topology for the observation rows.
     pub const fn clocks(&self) -> &ClockSynchronization {
         &self.clocks
     }
@@ -2772,11 +3112,15 @@ impl ExperimentArtifact {
     }
 
     #[must_use]
+    /// Repeatability count and covariance in canonical sorted QoI-axis order.
     pub const fn repeatability(&self) -> &RepeatabilitySummary {
         &self.repeatability
     }
 
     #[must_use]
+    /// Source-byte and chain-of-custody authenticity declaration.
+    ///
+    /// Authentication does not by itself establish scientific validity.
     pub const fn authenticity(&self) -> &DataAuthenticity {
         &self.authenticity
     }
@@ -2801,7 +3145,7 @@ fn commitment_for_blind_rows(
     fs_blake3::hash_domain(VV_BLIND_HOLDOUT_IDENTITY_DOMAIN, &bytes)
 }
 
-/// Authority record required before blind holdout rows become validation input.
+/// Supplied release record required before blind holdout rows become validation input.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct BlindReleaseReceipt {
     split: ArtifactRef,
@@ -2822,6 +3166,12 @@ impl fmt::Debug for BlindReleaseReceipt {
 }
 
 impl BlindReleaseReceipt {
+    /// Record a supplied release-receipt digest for a declared split/commitment tuple.
+    ///
+    /// This constructor checks the split family and non-zero sentinels only;
+    /// [`CalibrationSplit::blind_selection`] binds the record to a concrete
+    /// split. It does not fetch or authenticate authority bytes or establish
+    /// the authority's legal or scientific sufficiency.
     pub fn new(
         split: ArtifactRef,
         blind_commitment: ContentHash,
@@ -2851,16 +3201,19 @@ impl BlindReleaseReceipt {
     }
 
     #[must_use]
+    /// Declared calibration-split reference named by the supplied release record.
     pub const fn split(&self) -> &ArtifactRef {
         &self.split
     }
 
     #[must_use]
+    /// Commitment to the preregistration and blind row/source bindings.
     pub const fn blind_commitment(&self) -> ContentHash {
         self.blind_commitment
     }
 
     #[must_use]
+    /// Supplied digest intended to identify an external authority receipt.
     pub const fn authority_receipt_hash(&self) -> ContentHash {
         self.authority_receipt_hash
     }
@@ -2869,8 +3222,14 @@ impl BlindReleaseReceipt {
 /// Evidence-bearing split partition. Calibration is deliberately absent.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum EvidencePartition {
+    /// Predeclared validation rows, excluding calibration and blind rows.
     Validation,
-    BlindHoldout { release: BlindReleaseReceipt },
+    /// Blind rows carrying a structurally matching supplied release record.
+    BlindHoldout {
+        /// Supplied release record declaring a split/commitment tuple.
+        /// Selection minting later verifies exact structural equality.
+        release: BlindReleaseReceipt,
+    },
 }
 
 impl fmt::Debug for EvidencePartition {
@@ -2895,29 +3254,34 @@ pub struct ObservationSelection {
 
 impl fmt::Debug for ObservationSelection {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self {
+            split: _,
+            ids,
+            partition,
+        } = self;
         formatter
             .debug_struct("ObservationSelection")
-            .field("split_id", &"<redacted>")
-            .field("observation_count", &self.ids.len())
-            .field("partition", &self.partition)
-            .field("observation_ids", &"<redacted>")
-            .field("split_content_hash", &"<redacted>")
-            .finish()
+            .field("observation_count", &ids.len())
+            .field("partition", partition)
+            .finish_non_exhaustive()
     }
 }
 
 impl ObservationSelection {
     #[must_use]
+    /// Exact split artifact that minted this selection.
     pub const fn split(&self) -> &ArtifactRef {
         &self.split
     }
 
     #[must_use]
+    /// Canonical observation identities selected from the declared partition.
     pub const fn ids(&self) -> &BTreeSet<ObservationId> {
         &self.ids
     }
 
     #[must_use]
+    /// Partition and, for blind data, supplied release record governing the rows.
     pub const fn partition(&self) -> &EvidencePartition {
         &self.partition
     }
@@ -2970,7 +3334,7 @@ impl ObservationSelection {
     }
 }
 
-/// Pre-registered calibration, validation, and blind-holdout partition.
+/// Declared calibration, validation, and blind-holdout partition.
 #[derive(Clone, PartialEq)]
 pub struct CalibrationSplit {
     header: ArtifactHeader,
@@ -2985,21 +3349,33 @@ pub struct CalibrationSplit {
 
 impl fmt::Debug for CalibrationSplit {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self {
+            header: _,
+            experiment: _,
+            preregistration_hash: _,
+            calibration,
+            validation,
+            blind_holdout,
+            blind_sources: _,
+            blind_commitment: _,
+        } = self;
         formatter
             .debug_struct("CalibrationSplit")
-            .field("calibration_count", &self.calibration.len())
-            .field("validation_count", &self.validation.len())
-            .field("blind_holdout_count", &self.blind_holdout.len())
-            .field("artifact_and_experiment_ids", &"<redacted>")
-            .field("blind_commitment", &"<redacted>")
-            .field("partition_membership", &"<redacted>")
-            .field("blind_source_locators", &"<redacted>")
-            .field("preregistration_and_experiment_hashes", &"<redacted>")
-            .finish()
+            .field("calibration_count", &calibration.len())
+            .field("validation_count", &validation.len())
+            .field("blind_holdout_count", &blind_holdout.len())
+            .finish_non_exhaustive()
     }
 }
 
 impl CalibrationSplit {
+    /// Admit a declared three-way split with a non-zero preregistration digest
+    /// and derive its blind commitment.
+    ///
+    /// Admission proves bounded, unique, pairwise-disjoint memberships and
+    /// injective non-zero blind source bindings. It does not prove that the
+    /// split was historically preregistered, that referenced bytes are retained,
+    /// or that the sampling design is statistically representative.
     pub fn try_new(
         header: ArtifactHeader,
         experiment: ArtifactRef,
@@ -3110,36 +3486,43 @@ impl CalibrationSplit {
     }
 
     #[must_use]
+    /// Artifact identity from the split header.
     pub const fn id(&self) -> &ArtifactId {
         self.header.id()
     }
 
     #[must_use]
+    /// Full schema/version/provenance header for this split.
     pub const fn header(&self) -> &ArtifactHeader {
         &self.header
     }
 
     #[must_use]
+    /// Declared experiment reference; whole-case admission resolves its content hash.
     pub const fn experiment(&self) -> &ArtifactRef {
         &self.experiment
     }
 
     #[must_use]
+    /// Supplied digest intended to identify the declared split protocol.
     pub const fn preregistration_hash(&self) -> ContentHash {
         self.preregistration_hash
     }
 
     #[must_use]
+    /// Calibration-only observation identities, in canonical order.
     pub const fn calibration_ids(&self) -> &BTreeSet<ObservationId> {
         &self.calibration
     }
 
     #[must_use]
+    /// Non-blind validation observation identities, in canonical order.
     pub const fn validation_ids(&self) -> &BTreeSet<ObservationId> {
         &self.validation
     }
 
     #[must_use]
+    /// Number of sealed blind-holdout observations.
     pub fn blind_holdout_len(&self) -> usize {
         self.blind_holdout.len()
     }
@@ -3151,10 +3534,12 @@ impl CalibrationSplit {
     }
 
     #[must_use]
+    /// Derived commitment binding preregistration to every blind row and source.
     pub const fn blind_commitment(&self) -> ContentHash {
         self.blind_commitment
     }
 
+    /// Mint a selection restricted to this split's ordinary validation rows.
     pub fn validation_selection(
         &self,
         split: ArtifactRef,
@@ -3163,6 +3548,10 @@ impl CalibrationSplit {
         self.selection(split, ids, EvidencePartition::Validation)
     }
 
+    /// Mint a selection restricted to released blind-holdout rows.
+    ///
+    /// The release must bind this split's exact canonical content identity and
+    /// blind commitment.
     pub fn blind_selection(
         &self,
         split: ArtifactRef,
@@ -3343,7 +3732,7 @@ fn next_up(value: f64) -> f64 {
     }
 }
 
-/// One numerical uncertainty component and its retained evidence.
+/// One numerical uncertainty component and a supplied evidence identity.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NumericalUncertainty {
     half_width: f64,
@@ -3351,6 +3740,11 @@ pub struct NumericalUncertainty {
 }
 
 impl NumericalUncertainty {
+    /// Admit a non-negative uncertainty half-width with a supplied evidence hash.
+    ///
+    /// `half_width` uses the associated QoI's unit; this type does not assign a
+    /// confidence level, reject a zero hash, prove retention, or independently
+    /// validate the referenced evidence.
     pub fn try_new(half_width: f64, evidence_hash: ContentHash) -> Result<Self, VvErrors> {
         if !half_width.is_finite() || half_width < 0.0 {
             return Err(invalid(
@@ -3368,11 +3762,13 @@ impl NumericalUncertainty {
     }
 
     #[must_use]
+    /// Non-negative uncertainty half-width in the associated QoI's unit.
     pub const fn half_width(&self) -> f64 {
         self.half_width
     }
 
     #[must_use]
+    /// Supplied content identity intended to support this component.
     pub const fn evidence_hash(&self) -> ContentHash {
         self.evidence_hash
     }
@@ -3394,6 +3790,11 @@ pub struct SolutionVerificationReceipt {
 
 impl SolutionVerificationReceipt {
     #[allow(clippy::too_many_arguments)]
+    /// Admit four numerical-uncertainty components for one solve and QoI.
+    ///
+    /// The combined half-width is an outward-rounded sum in `unit`; this
+    /// conservative arithmetic does not establish independence or a
+    /// probabilistic confidence level.
     pub fn try_new(
         header: ArtifactHeader,
         solve_id: ArtifactId,
@@ -3431,69 +3832,85 @@ impl SolutionVerificationReceipt {
     }
 
     #[must_use]
+    /// Artifact identity from the verification receipt header.
     pub const fn id(&self) -> &ArtifactId {
         self.header.id()
     }
 
     #[must_use]
+    /// Full schema/version/provenance header for this receipt.
     pub const fn header(&self) -> &ArtifactHeader {
         &self.header
     }
 
     #[must_use]
+    /// Declared identity of the solve whose numerical errors were assessed.
     pub const fn solve_id(&self) -> &ArtifactId {
         &self.solve_id
     }
 
     #[must_use]
+    /// QoI to which every component and the combined half-width apply.
     pub const fn qoi(&self) -> &QoiId {
         &self.qoi
     }
 
     #[must_use]
+    /// Unit shared by the QoI and all reported half-widths.
     pub const fn unit(&self) -> &UnitId {
         &self.unit
     }
 
     #[must_use]
+    /// Spatial-discretization uncertainty component.
     pub const fn mesh(&self) -> &NumericalUncertainty {
         &self.mesh
     }
 
     #[must_use]
+    /// Time-discretization uncertainty component.
     pub const fn time(&self) -> &NumericalUncertainty {
         &self.time
     }
 
     #[must_use]
+    /// Nonlinear-solver uncertainty component.
     pub const fn nonlinear(&self) -> &NumericalUncertainty {
         &self.nonlinear
     }
 
     #[must_use]
+    /// Iterative linear-solver uncertainty component.
     pub const fn iterative(&self) -> &NumericalUncertainty {
         &self.iterative
     }
 
     #[must_use]
+    /// Outward-rounded sum of all four half-widths, expressed in [`Self::unit`].
     pub const fn combined_half_width(&self) -> f64 {
         self.combined_half_width
     }
 }
 
-/// Exact target of a QoI-specific dependency.
+/// Declared target of a QoI-specific dependency.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum EvidenceTarget {
+    /// Reference to an artifact that whole-case validation resolves exactly.
     VvArtifact(ArtifactRef),
+    /// Supplied reference to evidence owned by another artifact family.
     External {
+        /// Identity of the external artifact family or schema.
         family: ArtifactId,
+        /// Logical identity of the external artifact.
         id: ArtifactId,
+        /// Supplied content identity; this module does not resolve external bytes.
         hash: ContentHash,
     },
 }
 
 impl EvidenceTarget {
     #[must_use]
+    /// Supplied content identity carried by either target representation.
     pub fn hash(&self) -> ContentHash {
         match self {
             Self::VvArtifact(reference) => reference.hash,
@@ -3502,15 +3919,22 @@ impl EvidenceTarget {
     }
 }
 
-/// Semantic role of an exact dependency.
+/// Semantic role of a declared evidence dependency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DependencyRole {
+    /// Evidence intended to show that equations or algorithms match their specification.
     CodeVerification,
+    /// Evidence intended to bound discretization and solver error for a declared solve.
     SolutionVerification,
+    /// Comparison against observations with a physical referent.
     PhysicalValidation,
+    /// Evidence describing or bounding model-form inadequacy.
     ModelDiscrepancy,
+    /// Data or posterior evidence supporting parameter values.
     ParameterData,
+    /// Held-out posterior-predictive diagnostic evidence.
     PosteriorPredictive,
+    /// Evidence intended to show that the required V&V process and controls were followed.
     ProcessConformance,
 }
 
@@ -3525,6 +3949,10 @@ pub struct EvidenceDependency {
 
 impl EvidenceDependency {
     #[must_use]
+    /// Construct a declared non-observation dependency edge for one QoI.
+    ///
+    /// This constructor records provenance only; case-level validation decides
+    /// whether the role and target kind satisfy the assessment's obligations.
     pub fn new(qoi: QoiId, role: DependencyRole, target: EvidenceTarget) -> Self {
         Self {
             qoi,
@@ -3535,6 +3963,7 @@ impl EvidenceDependency {
     }
 
     #[must_use]
+    /// Construct a physical-validation edge carrying its admitted observations.
     pub fn physical_validation(
         qoi: QoiId,
         experiment: ArtifactRef,
@@ -3549,21 +3978,25 @@ impl EvidenceDependency {
     }
 
     #[must_use]
+    /// QoI whose evidentiary closure includes this edge.
     pub const fn qoi(&self) -> &QoiId {
         &self.qoi
     }
 
     #[must_use]
+    /// Scientific or process role played by the target.
     pub const fn role(&self) -> DependencyRole {
         self.role
     }
 
     #[must_use]
+    /// Declared local or external evidence target.
     pub const fn target(&self) -> &EvidenceTarget {
         &self.target
     }
 
     #[must_use]
+    /// Selected physical observations, present only for roles that consume them.
     pub const fn observations(&self) -> Option<&ObservationSelection> {
         self.observations.as_ref()
     }
@@ -3572,15 +4005,22 @@ impl EvidenceDependency {
 /// Six required prediction-uncertainty categories.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PredictionUncertaintyKind {
+    /// Inadequacy caused by the chosen model form.
     ModelForm,
+    /// Uncertainty in calibrated or inferred model parameters.
     Parameter,
+    /// Discretization and solver uncertainty.
     Numerical,
+    /// Measurement, preprocessing, and finite-data uncertainty.
     Data,
+    /// Irreducible variability represented by the prediction model.
     Aleatory,
+    /// Reducible lack of knowledge not covered by the narrower categories.
     Epistemic,
 }
 
 impl PredictionUncertaintyKind {
+    /// Canonical order of the six mandatory uncertainty categories.
     pub const ALL: [Self; 6] = [
         Self::ModelForm,
         Self::Parameter,
@@ -3600,6 +4040,10 @@ pub struct UncertaintyTerm {
 }
 
 impl UncertaintyTerm {
+    /// Admit one finite, non-negative uncertainty magnitude and declared source.
+    ///
+    /// The magnitude inherits the enclosing waterfall's unit and interpretation;
+    /// this constructor does not choose a confidence semantics.
     pub fn try_new(
         kind: PredictionUncertaintyKind,
         magnitude: f64,
@@ -3622,16 +4066,19 @@ impl UncertaintyTerm {
     }
 
     #[must_use]
+    /// Category represented by this term.
     pub const fn kind(&self) -> PredictionUncertaintyKind {
         self.kind
     }
 
     #[must_use]
+    /// Non-negative magnitude in the enclosing waterfall's unit.
     pub fn magnitude(&self) -> f64 {
         f64::from_bits(self.magnitude_bits)
     }
 
     #[must_use]
+    /// Declared local or external evidence target associated with this magnitude.
     pub const fn source(&self) -> &EvidenceTarget {
         &self.source
     }
@@ -3645,6 +4092,14 @@ pub struct CorrelationMatrix {
 }
 
 impl CorrelationMatrix {
+    /// Admit a finite symmetric correlation matrix that passes the deterministic
+    /// floating-point PSD screen.
+    ///
+    /// `values` is dimensionless row-major storage of exactly
+    /// `dimension * dimension` entries. Admission checks numerical matrix
+    /// structure within tolerance; it is not an exact-arithmetic PSD certificate
+    /// and does not establish that the declared correlations were estimated
+    /// without bias.
     pub fn try_new(dimension: usize, values: Vec<f64>) -> Result<Self, VvErrors> {
         if dimension == 0
             || dimension > MAX_VV_MATRIX_DIMENSION
@@ -3712,11 +4167,13 @@ impl CorrelationMatrix {
     }
 
     #[must_use]
+    /// Number of correlated uncertainty terms on each matrix axis.
     pub const fn dimension(&self) -> usize {
         self.dimension
     }
 
     #[must_use]
+    /// Dimensionless correlation coefficients in row-major order.
     pub fn values(&self) -> &[f64] {
         &self.values
     }
@@ -3725,9 +4182,22 @@ impl CorrelationMatrix {
 /// Explicit interpretation of waterfall magnitudes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WaterfallMode {
+    /// Interpret caller-declared magnitudes as conservative half-width bounds
+    /// and outward-sum them.
+    ///
+    /// Construction does not certify the source bounds or coverage semantics.
     GuaranteedBound,
+    /// Treat magnitudes as correlated probabilistic scale terms.
+    ///
+    /// The resulting total is a correlated root-sum-square, not by itself a
+    /// coverage guarantee or confidence-quantile conversion.
     Probabilistic {
+        /// Declared confidence level in the open interval `(0, 1)`.
         confidence: f64,
+        /// Dimensionless dependence matrix whose rows and columns must be
+        /// supplied in [`PredictionUncertaintyKind::ALL`] order, regardless of
+        /// input `terms` order. Construction sorts terms but neither permutes
+        /// nor independently validates the matrix-axis semantics.
         dependence: CorrelationMatrix,
     },
 }
@@ -3743,6 +4213,14 @@ pub struct UncertaintyWaterfall {
 }
 
 impl UncertaintyWaterfall {
+    /// Admit exactly one term from each required uncertainty category and
+    /// derive their total in `unit`.
+    ///
+    /// Guaranteed mode outward-sums caller-declared half-width bounds without
+    /// certifying their source or coverage semantics. Probabilistic mode computes
+    /// a correlated root-sum-square; its declared confidence is provenance, not
+    /// an independently certified coverage statement. Probabilistic matrix axes
+    /// must already follow [`PredictionUncertaintyKind::ALL`] order.
     pub fn try_new(
         qoi: QoiId,
         unit: UnitId,
@@ -3837,26 +4315,31 @@ impl UncertaintyWaterfall {
     }
 
     #[must_use]
+    /// QoI to which all terms and the derived total apply.
     pub const fn qoi(&self) -> &QoiId {
         &self.qoi
     }
 
     #[must_use]
+    /// Unit shared by every magnitude and the derived total.
     pub const fn unit(&self) -> &UnitId {
         &self.unit
     }
 
     #[must_use]
+    /// Declared bound or probabilistic interpretation.
     pub const fn mode(&self) -> &WaterfallMode {
         &self.mode
     }
 
     #[must_use]
+    /// Six uncertainty terms in [`PredictionUncertaintyKind::ALL`] order.
     pub fn terms(&self) -> &[UncertaintyTerm] {
         &self.terms
     }
 
     #[must_use]
+    /// Derived uncertainty magnitude in [`Self::unit`].
     pub const fn total(&self) -> f64 {
         self.total
     }
@@ -3877,6 +4360,11 @@ pub struct ValidationMetric {
 
 impl ValidationMetric {
     #[allow(clippy::too_many_arguments)]
+    /// Admit one observation-versus-prediction comparison.
+    ///
+    /// Values and uncertainty half-widths share the QoI's declared unit. The
+    /// combined half-width is an outward-rounded conservative sum; constructing
+    /// the record does not imply that the model agrees with experiment.
     pub fn try_new(
         name: ArtifactId,
         qoi: QoiId,
@@ -3924,41 +4412,50 @@ impl ValidationMetric {
     }
 
     #[must_use]
+    /// Stable identity of the validation metric definition.
     pub const fn name(&self) -> &ArtifactId {
         &self.name
     }
 
     #[must_use]
+    /// QoI compared by this metric.
     pub const fn qoi(&self) -> &QoiId {
         &self.qoi
     }
 
     #[must_use]
+    /// Split-minted observation selection; whole-case validation checks its
+    /// physical-referent, QoI, and plan closure.
     pub const fn observations(&self) -> &ObservationSelection {
         &self.observations
     }
 
     #[must_use]
+    /// Experimental value in the QoI's declared unit.
     pub const fn observed(&self) -> f64 {
         self.observed
     }
 
     #[must_use]
+    /// Model-predicted value in the QoI's declared unit.
     pub const fn predicted(&self) -> f64 {
         self.predicted
     }
 
     #[must_use]
+    /// Experimental uncertainty half-width in the QoI's declared unit.
     pub const fn experimental_uncertainty(&self) -> f64 {
         self.experimental_uncertainty
     }
 
     #[must_use]
+    /// Numerical uncertainty half-width in the QoI's declared unit.
     pub const fn numerical_uncertainty(&self) -> f64 {
         self.numerical_uncertainty
     }
 
     #[must_use]
+    /// Outward-rounded sum of experimental and numerical half-widths.
     pub const fn combined_uncertainty(&self) -> f64 {
         self.combined_uncertainty
     }
@@ -3976,6 +4473,12 @@ pub struct PosteriorPredictiveCheck {
 }
 
 impl PosteriorPredictiveCheck {
+    /// Admit one held-out posterior-predictive tail-probability check.
+    ///
+    /// Probabilities are dimensionless. Admission checks their domains and
+    /// stores the supplied artifact hash, but does not reject a zero hash,
+    /// prove artifact retention, or establish posterior calibration or
+    /// independence of repeated checks.
     pub fn try_new(
         name: ArtifactId,
         qoi: QoiId,
@@ -4009,36 +4512,48 @@ impl PosteriorPredictiveCheck {
     }
 
     #[must_use]
+    /// Stable identity of this diagnostic definition.
     pub const fn name(&self) -> &ArtifactId {
         &self.name
     }
 
     #[must_use]
+    /// QoI evaluated by the diagnostic.
     pub const fn qoi(&self) -> &QoiId {
         &self.qoi
     }
 
     #[must_use]
+    /// Split-minted observation selection; whole-case validation checks its
+    /// physical-referent, QoI, and plan closure.
     pub const fn observations(&self) -> &ObservationSelection {
         &self.observations
     }
 
     #[must_use]
+    /// Dimensionless realized tail probability in `[0, 1]`.
     pub const fn tail_probability(&self) -> f64 {
         self.tail_probability
     }
 
     #[must_use]
+    /// Caller-supplied threshold in `(0, 1)`; whole-case validation requires
+    /// exact equality with the validation plan's declared threshold.
     pub const fn minimum_tail_probability(&self) -> f64 {
         self.minimum_tail_probability
     }
 
     #[must_use]
+    /// Supplied content identity intended to name the diagnostic artifact.
     pub const fn artifact_hash(&self) -> ContentHash {
         self.artifact_hash
     }
 
     #[must_use]
+    /// Whether the realized tail probability meets the declared threshold.
+    ///
+    /// A `true` result is this check's categorical outcome, not a general proof
+    /// of model validity.
     pub fn passed(&self) -> bool {
         self.tail_probability >= self.minimum_tail_probability
     }
@@ -4047,16 +4562,24 @@ impl PosteriorPredictiveCheck {
 /// Independent report axes; these are categories, never numbers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum EvidenceAxis {
+    /// Evidence intended to bear on implemented-equation and algorithm correctness.
     CodeVerification,
+    /// Evidence intended to bear on discretization and solver convergence.
     SolutionVerification,
+    /// Quantified numerical-error evidence.
     NumericalUncertainty,
+    /// Parameter and measurement-data uncertainty evidence.
     ParameterDataUncertainty,
+    /// Physical evidence bearing on model-form inadequacy.
     ModelFormValidation,
+    /// Evidence intended to bear on prediction-domain relevance.
     PredictionDomainRelevance,
+    /// Direct comparison with observations having a physical referent.
     ComparisonToExperiment,
 }
 
 impl EvidenceAxis {
+    /// Canonical order of all mandatory categorical evidence axes.
     pub const ALL: [Self; 7] = [
         Self::CodeVerification,
         Self::SolutionVerification,
@@ -4071,9 +4594,24 @@ impl EvidenceAxis {
 /// Categorical status of one evidence axis.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EvidenceAxisStatus {
-    Present { artifacts: Vec<ContentHash> },
-    Missing { reason: String },
-    Refused { rule: VvRule, reason: String },
+    /// Evidence is declared present, without assigning it a scalar quality score.
+    Present {
+        /// Supplied identities; [`EvidenceAxes::try_new`] requires a non-empty
+        /// bounded list and canonicalizes duplicates/order when this variant is used.
+        artifacts: Vec<ContentHash>,
+    },
+    /// Required evidence is absent for the recorded reason.
+    Missing {
+        /// Human-readable, bounded explanation of the gap.
+        reason: String,
+    },
+    /// Policy explicitly refuses the axis rather than treating it as present.
+    Refused {
+        /// Machine-actionable rule that caused refusal.
+        rule: VvRule,
+        /// Human-readable, bounded refusal explanation.
+        reason: String,
+    },
 }
 
 /// Complete categorical evidence-axis report with no numeric score API.
@@ -4083,6 +4621,10 @@ pub struct EvidenceAxes {
 }
 
 impl EvidenceAxes {
+    /// Admit exactly one categorical status for every evidence axis.
+    ///
+    /// Presence records provenance only; this type intentionally exposes no
+    /// scalar score and makes no claim that present evidence is sufficient.
     pub fn try_new(rows: Vec<(EvidenceAxis, EvidenceAxisStatus)>) -> Result<Self, VvErrors> {
         if rows.len() != EvidenceAxis::ALL.len() {
             return Err(invalid(
@@ -4128,6 +4670,7 @@ impl EvidenceAxes {
     }
 
     #[must_use]
+    /// Complete canonical map of evidence axes to categorical statuses.
     pub const fn axes(&self) -> &BTreeMap<EvidenceAxis, EvidenceAxisStatus> {
         &self.axes
     }
@@ -4152,6 +4695,12 @@ pub struct PredictionAssessment {
 
 impl PredictionAssessment {
     #[allow(clippy::too_many_arguments)]
+    /// Construct one QoI-isolated declared prediction assessment.
+    ///
+    /// The constructor canonicalizes declared dependencies and diagnostics and
+    /// enforces internal QoI consistency. Case-level validation must still
+    /// establish dependency closure, physical referents, applicability, and
+    /// policy sufficiency; construction alone is not a validation certificate.
     pub fn try_new(
         header: ArtifactHeader,
         context: ArtifactRef,
@@ -4267,66 +4816,80 @@ impl PredictionAssessment {
     }
 
     #[must_use]
+    /// Artifact identity from the assessment header.
     pub const fn id(&self) -> &ArtifactId {
         self.header.id()
     }
 
     #[must_use]
+    /// Full schema/version/provenance header for this assessment.
     pub const fn header(&self) -> &ArtifactHeader {
         &self.header
     }
 
     #[must_use]
+    /// Declared context-of-use reference; whole-case admission resolves it exactly.
     pub const fn context(&self) -> &ArtifactRef {
         &self.context
     }
 
     #[must_use]
+    /// Declared validation-plan reference; whole-case admission resolves it exactly.
     pub const fn validation_plan(&self) -> &ArtifactRef {
         &self.validation_plan
     }
 
     #[must_use]
+    /// Sole QoI assessed by this record.
     pub const fn qoi(&self) -> &QoiId {
         &self.qoi
     }
 
     #[must_use]
+    /// Canonically ordered declared evidence-dependency edges.
     pub fn dependencies(&self) -> &[EvidenceDependency] {
         &self.dependencies
     }
 
     #[must_use]
+    /// Complete uncertainty budget for the assessed QoI.
     pub const fn waterfall(&self) -> &UncertaintyWaterfall {
         &self.waterfall
     }
 
     #[must_use]
+    /// Canonically ordered experiment-comparison metrics.
     pub fn validation_metrics(&self) -> &[ValidationMetric] {
         &self.validation_metrics
     }
 
     #[must_use]
+    /// Canonically ordered held-out posterior-predictive checks.
     pub fn posterior_checks(&self) -> &[PosteriorPredictiveCheck] {
         &self.posterior_checks
     }
 
     #[must_use]
+    /// Recorded applicability point; whole-case validation evaluates it against
+    /// the context domain and assumption checks.
     pub const fn applicability_point(&self) -> &ApplicabilityPoint {
         &self.applicability_point
     }
 
     #[must_use]
+    /// Recorded applicability decision for that point.
     pub const fn applicability(&self) -> &ApplicabilityDecision {
         &self.applicability
     }
 
     #[must_use]
+    /// Complete categorical, non-scored evidence-axis report.
     pub const fn evidence_axes(&self) -> &EvidenceAxes {
         &self.evidence_axes
     }
 
     #[must_use]
+    /// Canonical assumption identities and their recorded check outcomes.
     pub const fn assumption_checks(&self) -> &BTreeMap<AssumptionId, bool> {
         &self.assumption_checks
     }
@@ -4340,6 +4903,10 @@ pub struct AssumptionEvidence {
 }
 
 impl AssumptionEvidence {
+    /// Admit a bounded textual evidence requirement and optional supplied artifact.
+    ///
+    /// Attaching an artifact records provenance; it does not itself prove the
+    /// stated requirement.
     pub fn try_new(
         requirement: impl Into<String>,
         artifact: Option<EvidenceTarget>,
@@ -4353,16 +4920,21 @@ impl AssumptionEvidence {
     }
 
     #[must_use]
+    /// Human-readable evidence requirement that makes the assumption auditable.
     pub fn requirement(&self) -> &str {
         &self.requirement
     }
 
     #[must_use]
+    /// Supplied supporting artifact, if one has been attached.
     pub const fn artifact(&self) -> Option<&EvidenceTarget> {
         self.artifact.as_ref()
     }
 
     #[must_use]
+    /// Return this requirement with a supplied supporting artifact attached.
+    ///
+    /// This is a provenance update, not an adjudication of evidence sufficiency.
     pub fn with_artifact(mut self, artifact: EvidenceTarget) -> Self {
         self.artifact = Some(artifact);
         self
@@ -4377,6 +4949,10 @@ pub struct RuntimeMonitorSpec {
 }
 
 impl RuntimeMonitorSpec {
+    /// Admit a bounded runtime signal name and optional monitor-evidence hash.
+    ///
+    /// The specification names what must be observed; it does not guarantee
+    /// that a monitor is deployed or that the signal is causally informative.
     pub fn try_new(
         signal: impl Into<String>,
         evidence_hash: Option<ContentHash>,
@@ -4390,16 +4966,23 @@ impl RuntimeMonitorSpec {
     }
 
     #[must_use]
+    /// Runtime signal declared or intended to falsify the associated assumption.
+    /// Construction does not establish that the signal is causally informative.
     pub fn signal(&self) -> &str {
         &self.signal
     }
 
     #[must_use]
+    /// Supplied identity intended to name monitor evidence, if available.
     pub const fn evidence_hash(&self) -> Option<ContentHash> {
         self.evidence_hash
     }
 
     #[must_use]
+    /// Attach a supplied content identity for this monitor's evidence.
+    ///
+    /// This records a binding only; it does not fetch or authenticate the
+    /// referenced evidence.
     pub fn with_evidence(mut self, evidence_hash: ContentHash) -> Self {
         self.evidence_hash = Some(evidence_hash);
         self
@@ -4409,9 +4992,21 @@ impl RuntimeMonitorSpec {
 /// Required response when an assumption is false or cannot be monitored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ViolationEffect {
-    Demote { reason: String },
-    EscalateOrRefuse { target_lane: ArtifactId },
-    Refuse { reason: String },
+    /// Retain the result while lowering the strength of its scientific claim.
+    Demote {
+        /// Actionable explanation for the required demotion.
+        reason: String,
+    },
+    /// Escalate to a named fidelity lane, refusing if that lane is unavailable.
+    EscalateOrRefuse {
+        /// Artifact identity of the required higher-fidelity lane.
+        target_lane: ArtifactId,
+    },
+    /// Refuse the result rather than emit an unsupported claim.
+    Refuse {
+        /// Actionable explanation for the refusal.
+        reason: String,
+    },
 }
 
 impl ViolationEffect {
@@ -4428,9 +5023,16 @@ impl ViolationEffect {
 /// Expiry or mandatory review cadence for an assumption row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReviewGate {
-    Phase { gate: ArtifactId },
+    /// Re-evaluate at a named program or fidelity phase boundary.
+    Phase {
+        /// Artifact identity of the phase boundary that triggers review.
+        gate: ArtifactId,
+    },
+    /// Re-evaluate before every solve that relies on the assumption.
     EverySolve,
+    /// Re-evaluate before every property or evidence query.
     EveryQuery,
+    /// Re-evaluate whenever the governed state is updated.
     EveryUpdate,
 }
 
@@ -4449,6 +5051,13 @@ pub struct AssumptionRow {
 
 impl AssumptionRow {
     #[allow(clippy::too_many_arguments)]
+    /// Construct one falsifiable assumption and its mandatory response policy.
+    ///
+    /// Text fields are checked for the schema's non-empty bounded form. The
+    /// constructor does not establish that referenced evidence or owners exist.
+    /// Closed-case validation resolves only evidence references that target an
+    /// in-case [`VvArtifact`]; owner identities, external evidence, and monitor
+    /// artifacts remain unresolved no-claim boundaries in this schema version.
     pub fn try_new(
         id: AssumptionId,
         predicate: impl Into<String>,
@@ -4477,52 +5086,62 @@ impl AssumptionRow {
     }
 
     #[must_use]
+    /// Return the stable program identity of the assumption.
     pub const fn id(&self) -> &AssumptionId {
         &self.id
     }
 
     #[must_use]
+    /// Return the predicate that must remain true for downstream claims.
     pub fn predicate(&self) -> &str {
         &self.predicate
     }
 
     #[must_use]
+    /// Return the declared operating scope in which the predicate applies.
     pub fn scope(&self) -> &str {
         &self.scope
     }
 
     #[must_use]
+    /// Return the evidence requirement and any attached evidence target.
     pub const fn evidence(&self) -> &AssumptionEvidence {
         &self.evidence
     }
 
     #[must_use]
+    /// Return the runtime signal and optional supplied evidence identity.
     pub const fn monitor(&self) -> &RuntimeMonitorSpec {
         &self.monitor
     }
 
     #[must_use]
+    /// Return the response required when the predicate fails or is unmonitorable.
     pub const fn violation_effect(&self) -> &ViolationEffect {
         &self.violation_effect
     }
 
     #[must_use]
+    /// Return the artifact identity responsible for maintaining the assumption.
     pub const fn owner(&self) -> &ArtifactId {
         &self.owner
     }
 
     #[must_use]
+    /// Return the cadence or phase boundary that requires re-evaluation.
     pub const fn review_gate(&self) -> &ReviewGate {
         &self.review_gate
     }
 
     #[must_use]
+    /// Attach an evidence target without asserting that its content is available.
     pub fn with_evidence(mut self, artifact: EvidenceTarget) -> Self {
         self.evidence = self.evidence.with_artifact(artifact);
         self
     }
 
     #[must_use]
+    /// Attach a supplied monitor-evidence identity without authenticating its bytes.
     pub fn with_monitor_evidence(mut self, evidence_hash: ContentHash) -> Self {
         self.monitor = self.monitor.with_evidence(evidence_hash);
         self
@@ -4540,6 +5159,10 @@ impl AssumptionRow {
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the fixed seed schema has eight independently reviewable columns"
+)]
 fn seed_assumption_row(
     id: &str,
     predicate: &str,
@@ -4562,6 +5185,10 @@ fn seed_assumption_row(
     )
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "keeping the eight normative seed rows together makes semantic drift auditable"
+)]
 fn program_seed_rows() -> Result<Vec<AssumptionRow>, VvErrors> {
     Ok(vec![
         seed_assumption_row(
@@ -4701,6 +5328,13 @@ pub struct AssumptionsLedger {
 }
 
 impl AssumptionsLedger {
+    /// Construct a bounded ledger with one row per unique assumption identity.
+    ///
+    /// This enforces cardinality and identity uniqueness. It does not claim the
+    /// rows match the normative program seed. Closed-case validation checks the
+    /// seed semantics and resolves only evidence references to in-case
+    /// [`VvArtifact`] values; it does not prove owner existence, external
+    /// evidence availability, monitor hashes, or evidence-store retention.
     pub fn try_new(header: ArtifactHeader, rows: Vec<AssumptionRow>) -> Result<Self, VvErrors> {
         if rows.is_empty() || rows.len() > MAX_VV_ITEMS {
             return Err(invalid(
@@ -4730,25 +5364,34 @@ impl AssumptionsLedger {
         })
     }
 
+    /// Construct the normative eight-row runtime-physics assumptions ledger.
     pub fn try_program_seed(header: ArtifactHeader) -> Result<Self, VvErrors> {
         Self::try_new(header, program_seed_rows()?)
     }
 
     #[must_use]
+    /// Return the artifact identity from the ledger header.
     pub const fn id(&self) -> &ArtifactId {
         self.header.id()
     }
 
     #[must_use]
+    /// Return the common artifact metadata and explicit budgets.
     pub const fn header(&self) -> &ArtifactHeader {
         &self.header
     }
 
     #[must_use]
+    /// Return assumption rows in deterministic identity order.
     pub const fn rows(&self) -> &BTreeMap<AssumptionId, AssumptionRow> {
         &self.rows
     }
 
+    /// Replace an existing row while preserving the ledger's identity set.
+    ///
+    /// Enclosing-case validation checks normative seed semantics and any
+    /// attached local V&V reference. It does not prove owner existence,
+    /// external evidence availability, monitor deployment, or retention.
     pub fn replace_row(&mut self, row: AssumptionRow) -> Result<(), VvErrors> {
         if !self.rows.contains_key(row.id()) {
             return Err(invalid(
@@ -4802,12 +5445,19 @@ impl AssumptionsLedger {
 /// Any one of the seven top-level artifact schemas.
 #[derive(Clone, PartialEq)]
 pub enum VvArtifact {
+    /// Decision context, quantities of interest, and applicability domain.
     ContextOfUse(ContextOfUse),
+    /// Declared validation strategy for each quantity of interest.
     ValidationPlan(ValidationPlan),
+    /// Physical or synthetic experiment declarations and supplied provenance identities.
     ExperimentArtifact(ExperimentArtifact),
+    /// Declared calibration, validation, and blind-holdout partition.
     CalibrationSplit(CalibrationSplit),
+    /// Numerical convergence and uncertainty declarations for one solved quantity.
     SolutionVerificationReceipt(SolutionVerificationReceipt),
+    /// QoI-specific prediction assessment and uncertainty decomposition.
     PredictionAssessment(PredictionAssessment),
+    /// Runtime assumptions together with their monitors and failure policies.
     AssumptionsLedger(AssumptionsLedger),
 }
 
@@ -5026,12 +5676,20 @@ fn classify_vv_artifact_identity_fields(
     );
 }
 
+#[allow(
+    dead_code,
+    reason = "the identity registry names this owner-local encoder by symbol"
+)]
 fn vv_artifact_identity_hash(
     artifact: &VvArtifact,
 ) -> Result<ContentHash, super::codec::VvCodecError> {
     artifact.content_hash()
 }
 
+#[allow(
+    dead_code,
+    reason = "the identity registry names and audits this transport guard out of band"
+)]
 fn vv_artifact_identity_transport(bytes: &[u8]) -> Result<VvArtifact, super::codec::VvCodecError> {
     VvArtifact::from_canonical_bytes(bytes)
 }
@@ -5069,6 +5727,7 @@ pub const VV_ARTIFACT_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
 
 impl VvArtifact {
     #[must_use]
+    /// Return the canonical family tag for this artifact payload.
     pub const fn kind(&self) -> ArtifactKind {
         match self {
             Self::ContextOfUse(_) => ArtifactKind::ContextOfUse,
@@ -5082,6 +5741,7 @@ impl VvArtifact {
     }
 
     #[must_use]
+    /// Return the shared metadata, budget, version, and capability header.
     pub const fn header(&self) -> &ArtifactHeader {
         match self {
             Self::ContextOfUse(value) => value.header(),
@@ -5095,6 +5755,7 @@ impl VvArtifact {
     }
 
     #[must_use]
+    /// Return the artifact identity carried by the shared header.
     pub const fn id(&self) -> &ArtifactId {
         self.header().id()
     }
@@ -5154,6 +5815,14 @@ impl fmt::Debug for VvCase {
 
 impl VvCase {
     #[allow(clippy::too_many_arguments)]
+    /// Assemble the bounded artifact registries for an unadmitted V&V case.
+    ///
+    /// Duplicate identities and the aggregate artifact bound are checked here.
+    /// Cross-artifact closure, encoded scientific-policy consistency checks,
+    /// and receipt binding are not established until [`Self::validate`] or
+    /// [`Self::admit`] succeeds. Successful structural admission does not
+    /// authenticate external evidence, prove historical preregistration, or
+    /// establish scientific validity beyond the encoded rules.
     pub fn try_new(
         context: ContextOfUse,
         validation_plan: ValidationPlan,
@@ -5221,26 +5890,31 @@ impl VvCase {
     }
 
     #[must_use]
+    /// Return the decision context governed by this case.
     pub const fn context(&self) -> &ContextOfUse {
         &self.context
     }
 
     #[must_use]
+    /// Return the declared validation plan.
     pub const fn validation_plan(&self) -> &ValidationPlan {
         &self.validation_plan
     }
 
     #[must_use]
+    /// Return experiments in deterministic artifact-identity order.
     pub const fn experiments(&self) -> &BTreeMap<ArtifactId, ExperimentArtifact> {
         &self.experiments
     }
 
     #[must_use]
+    /// Return calibration and held-out partitions in artifact-identity order.
     pub const fn splits(&self) -> &BTreeMap<ArtifactId, CalibrationSplit> {
         &self.splits
     }
 
     #[must_use]
+    /// Return numerical solution-verification receipts in identity order.
     pub const fn solution_verification(
         &self,
     ) -> &BTreeMap<ArtifactId, SolutionVerificationReceipt> {
@@ -5248,16 +5922,22 @@ impl VvCase {
     }
 
     #[must_use]
+    /// Return QoI prediction assessments in artifact-identity order.
     pub const fn predictions(&self) -> &BTreeMap<ArtifactId, PredictionAssessment> {
         &self.predictions
     }
 
     #[must_use]
+    /// Return the runtime-physics assumptions ledger.
     pub const fn assumptions(&self) -> &AssumptionsLedger {
         &self.assumptions
     }
 
     #[must_use]
+    /// Clone every top-level artifact in canonical family and identity order.
+    ///
+    /// The returned collection is a structural view; its existence does not
+    /// imply that cross-artifact admission has succeeded.
     pub fn artifacts(&self) -> Vec<VvArtifact> {
         let mut artifacts = Vec::with_capacity(
             3 + self.experiments.len()
@@ -5321,10 +6001,18 @@ fn classify_vv_case_identity_fields(case: &VvCase) {
     );
 }
 
+#[allow(
+    dead_code,
+    reason = "the identity registry names this owner-local encoder by symbol"
+)]
 fn vv_case_identity_hash(case: &VvCase) -> Result<ContentHash, super::codec::VvCodecError> {
     case.content_hash()
 }
 
+#[allow(
+    dead_code,
+    reason = "the identity registry names and audits this transport guard out of band"
+)]
 fn vv_case_identity_transport(bytes: &[u8]) -> Result<VvCase, super::codec::VvCodecError> {
     VvCase::from_canonical_bytes(bytes)
 }
@@ -5416,16 +6104,23 @@ pub struct SchemaAdmissionReceipt {
 
 impl fmt::Debug for SchemaAdmissionReceipt {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self {
+            schema_version,
+            ruleset_version,
+            case_hash: _,
+            context_id: _,
+            qois,
+            artifact_hashes,
+            receipt_hash: _,
+        } = self;
         formatter
             .debug_struct("SchemaAdmissionReceipt")
-            .field("schema_version", &self.schema_version)
-            .field("ruleset_version", &self.ruleset_version)
-            .field("qoi_count", &self.qois.len())
-            .field("artifact_count", &self.artifact_hashes.len())
+            .field("schema_version", schema_version)
+            .field("ruleset_version", ruleset_version)
+            .field("qoi_count", &qois.len())
+            .field("artifact_count", &artifact_hashes.len())
             .field("binding_present", &true)
-            .field("case_and_receipt_hashes", &"<redacted>")
-            .field("context_and_artifact_identities", &"<redacted>")
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -5456,41 +6151,52 @@ impl SchemaAdmissionReceipt {
     }
 
     #[must_use]
+    /// Return the dimensionless canonical V&V wire-schema version admitted.
     pub const fn schema_version(&self) -> u32 {
         self.schema_version
     }
 
     #[must_use]
+    /// Return the dimensionless structural-ruleset version applied at admission.
     pub const fn ruleset_version(&self) -> u32 {
         self.ruleset_version
     }
 
     #[must_use]
+    /// Return the digest of the exact canonical case bytes.
     pub const fn case_hash(&self) -> ContentHash {
         self.case_hash
     }
 
     #[must_use]
+    /// Return the identity of the decision context bound by this receipt.
     pub const fn context_id(&self) -> &ArtifactId {
         &self.context_id
     }
 
     #[must_use]
+    /// Return the complete set of QoI identities present at admission.
     pub const fn qois(&self) -> &BTreeSet<QoiId> {
         &self.qois
     }
 
     #[must_use]
+    /// Return exact content hashes for every artifact admitted with the case.
     pub const fn artifact_hashes(&self) -> &ArtifactHashMap {
         &self.artifact_hashes
     }
 
     #[must_use]
+    /// Return the domain-separated digest binding all receipt fields.
     pub const fn receipt_hash(&self) -> ContentHash {
         self.receipt_hash
     }
 
     #[must_use]
+    /// Recompute and check this receipt's internal versioned content binding.
+    ///
+    /// A `true` result proves only internal self-consistency; use
+    /// [`Self::verify_case`] to revalidate and bind a concrete case.
     pub fn has_valid_binding(&self) -> bool {
         self.schema_version == VV_SCHEMA_VERSION
             && self.ruleset_version == VV_RULESET_VERSION
@@ -5542,7 +6248,7 @@ impl SchemaAdmissionReceipt {
 #[allow(dead_code)]
 fn classify_vv_schema_admission_receipt_identity_fields(
     receipt: &SchemaAdmissionReceipt,
-    artifact_kind: &ArtifactKind,
+    artifact_kind: ArtifactKind,
 ) {
     let SchemaAdmissionReceipt {
         schema_version,
@@ -5628,16 +6334,19 @@ impl fmt::Debug for AdmittedVvCase {
 
 impl AdmittedVvCase {
     #[must_use]
+    /// Return the exact case whose structural admission produced the receipt.
     pub const fn case(&self) -> &VvCase {
         &self.case
     }
 
     #[must_use]
+    /// Return the content-bound receipt minted for the admitted case.
     pub const fn receipt(&self) -> &SchemaAdmissionReceipt {
         &self.receipt
     }
 
     #[must_use]
+    /// Consume the wrapper and return the case together with its receipt.
     pub fn into_parts(self) -> (VvCase, SchemaAdmissionReceipt) {
         (self.case, self.receipt)
     }
@@ -5785,28 +6494,28 @@ fn selection_violations(
             None
         }
     };
-    if let Some(allowed) = allowed {
-        if !selection.ids.is_subset(allowed) {
-            let calibration_reuse = selection
-                .ids
-                .iter()
-                .any(|id| split.calibration.contains(id));
-            violations.push(VvViolation::new(
-                if calibration_reuse {
-                    VvRule::ValidationRequiresPhysicalReferent
-                } else {
-                    VvRule::SplitPartitionsDisjoint
-                },
-                Some(artifact.as_str().to_owned()),
-                Some(qoi.as_str().to_owned()),
-                field,
-                if calibration_reuse {
-                    "calibration observations cannot support validation"
-                } else {
-                    "selection contains observations outside its declared partition"
-                },
-            ));
-        }
+    if let Some(allowed) = allowed
+        && !selection.ids.is_subset(allowed)
+    {
+        let calibration_reuse = selection
+            .ids
+            .iter()
+            .any(|id| split.calibration.contains(id));
+        violations.push(VvViolation::new(
+            if calibration_reuse {
+                VvRule::ValidationRequiresPhysicalReferent
+            } else {
+                VvRule::SplitPartitionsDisjoint
+            },
+            Some(artifact.as_str().to_owned()),
+            Some(qoi.as_str().to_owned()),
+            field,
+            if calibration_reuse {
+                "calibration observations cannot support validation"
+            } else {
+                "selection contains observations outside its declared partition"
+            },
+        ));
     }
     violations
 }
@@ -5860,6 +6569,10 @@ impl VvCase {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one ordered pass keeps context-plan refusal ordering deterministic"
+    )]
     fn validate_context_and_plan(
         &self,
         hashes: &ArtifactHashMap,
@@ -5937,16 +6650,16 @@ impl VvCase {
                     violations.push(violation);
                     continue;
                 }
-                if let Some(experiment) = self.experiments.get(experiment_ref.id()) {
-                    if !experiment.origin.is_physical() || !experiment.qois.contains(row.qoi()) {
-                        violations.push(VvViolation::new(
-                            VvRule::ValidationRequiresPhysicalReferent,
-                            Some(self.validation_plan.id().as_str().to_owned()),
-                            Some(row.qoi().as_str().to_owned()),
-                            "validation_plan.experiments",
-                            "each validation referent must be a physical experiment for this exact QoI",
-                        ));
-                    }
+                if let Some(experiment) = self.experiments.get(experiment_ref.id())
+                    && (!experiment.origin.is_physical() || !experiment.qois.contains(row.qoi()))
+                {
+                    violations.push(VvViolation::new(
+                        VvRule::ValidationRequiresPhysicalReferent,
+                        Some(self.validation_plan.id().as_str().to_owned()),
+                        Some(row.qoi().as_str().to_owned()),
+                        "validation_plan.experiments",
+                        "each validation referent must be a physical experiment for this exact QoI",
+                    ));
                 }
             }
             if let Some(violation) = reference_violation(
@@ -5958,16 +6671,16 @@ impl VvCase {
                 VvRule::SplitPartitionsDisjoint,
             ) {
                 violations.push(violation);
-            } else if let Some(split) = self.splits.get(row.split().id()) {
-                if !row.experiments.contains(split.experiment()) {
-                    violations.push(VvViolation::new(
-                        VvRule::ValidationRequiresPhysicalReferent,
-                        Some(self.validation_plan.id().as_str().to_owned()),
-                        Some(row.qoi().as_str().to_owned()),
-                        "validation_plan.split",
-                        "the validation split must belong to a declared physical experiment",
-                    ));
-                }
+            } else if let Some(split) = self.splits.get(row.split().id())
+                && !row.experiments.contains(split.experiment())
+            {
+                violations.push(VvViolation::new(
+                    VvRule::ValidationRequiresPhysicalReferent,
+                    Some(self.validation_plan.id().as_str().to_owned()),
+                    Some(row.qoi().as_str().to_owned()),
+                    "validation_plan.split",
+                    "the validation split must belong to a declared physical experiment",
+                ));
             }
         }
     }
@@ -5981,7 +6694,7 @@ impl VvCase {
             let instrument_ids = experiment
                 .instruments
                 .iter()
-                .map(|instrument| instrument.instrument_id())
+                .map(InstrumentCalibration::instrument_id)
                 .collect::<BTreeSet<_>>();
             if instrument_ids.len() != experiment.instruments.len()
                 || experiment.instruments.iter().any(|row| !row.current)
@@ -6094,17 +6807,17 @@ impl VvCase {
         violations: &mut Vec<VvViolation>,
     ) {
         for row in self.assumptions.rows.values() {
-            if let Some(EvidenceTarget::VvArtifact(reference)) = row.evidence.artifact() {
-                if let Some(violation) = reference_violation(
+            if let Some(EvidenceTarget::VvArtifact(reference)) = row.evidence.artifact()
+                && let Some(violation) = reference_violation(
                     reference,
                     hashes,
                     self.assumptions.id(),
                     None,
                     "assumptions.evidence",
                     assumption_rule(row.id()),
-                ) {
-                    violations.push(violation);
-                }
+                )
+            {
+                violations.push(violation);
             }
         }
     }
@@ -6140,6 +6853,10 @@ impl VvCase {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one ordered pass preserves deterministic dependency-refusal ordering"
+    )]
     fn validate_prediction(
         &self,
         prediction: &PredictionAssessment,
@@ -6312,7 +7029,7 @@ impl VvCase {
             hashes,
             violations,
         );
-        self.validate_waterfall(
+        Self::validate_waterfall(
             prediction,
             &referenced_solutions,
             &process_targets,
@@ -6396,19 +7113,23 @@ impl VvCase {
                 "physical-validation observations must come from the QoI's preregistered split",
             ));
         }
-        if let Some(split) = self.splits.get(selection.split.id()) {
-            if split.experiment != *reference {
-                violations.push(VvViolation::new(
-                    VvRule::ValidationRequiresPhysicalReferent,
-                    Some(prediction.id().as_str().to_owned()),
-                    Some(qoi.as_str().to_owned()),
-                    "prediction.physical_validation.observations",
-                    "observation split and physical experiment dependency do not match",
-                ));
-            }
+        if let Some(split) = self.splits.get(selection.split.id())
+            && split.experiment != *reference
+        {
+            violations.push(VvViolation::new(
+                VvRule::ValidationRequiresPhysicalReferent,
+                Some(prediction.id().as_str().to_owned()),
+                Some(qoi.as_str().to_owned()),
+                "prediction.physical_validation.observations",
+                "observation split and physical experiment dependency do not match",
+            ));
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one metric pass keeps preregistered outcomes and refusals in canonical order"
+    )]
     fn validate_prediction_metrics(
         &self,
         prediction: &PredictionAssessment,
@@ -6503,7 +7224,10 @@ impl VvCase {
                 ValidationMetricSpec::IntervalAgreement => {
                     for metric in &prediction.validation_metrics {
                         let discrepancy = (metric.observed - metric.predicted).abs();
-                        if !(discrepancy <= metric.combined_uncertainty) {
+                        if matches!(
+                            discrepancy.partial_cmp(&metric.combined_uncertainty),
+                            None | Some(core::cmp::Ordering::Greater)
+                        ) {
                             derived_failure = true;
                             violations.push(VvViolation::new(
                                 VvRule::ValidationMetricUncertainty,
@@ -6596,7 +7320,6 @@ impl VvCase {
     }
 
     fn validate_waterfall(
-        &self,
         prediction: &PredictionAssessment,
         referenced_solutions: &[&SolutionVerificationReceipt],
         process_targets: &BTreeSet<ContentHash>,

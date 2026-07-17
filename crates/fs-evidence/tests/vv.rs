@@ -1,3 +1,5 @@
+//! G0/G3 conformance tests for the versioned verification-and-validation model.
+
 use fs_blake3::ContentHash;
 use fs_evidence::vv::*;
 
@@ -195,9 +197,8 @@ fn external_target(label: &str) -> EvidenceTarget {
 }
 
 fn assert_rule<T>(result: Result<T, VvErrors>, expected: VvRule) {
-    let error = match result {
-        Ok(_) => panic!("expected {} refusal", expected.slug()),
-        Err(error) => error,
+    let Err(error) = result else {
+        panic!("expected {} refusal", expected.slug());
     };
     assert!(
         error
@@ -210,9 +211,8 @@ fn assert_rule<T>(result: Result<T, VvErrors>, expected: VvRule) {
 }
 
 fn assert_only_rule_field<T>(result: Result<T, VvErrors>, rule: VvRule, field: &str) {
-    let error = match result {
-        Ok(_) => panic!("expected {} refusal at {field}", rule.slug()),
-        Err(error) => error,
+    let Err(error) = result else {
+        panic!("expected {} refusal at {field}", rule.slug());
     };
     assert_eq!(
         error.violations().len(),
@@ -397,7 +397,7 @@ fn rebuild_prediction(
 
 fn rebuild_prediction_with_selection(
     base: &PredictionAssessment,
-    observations: ObservationSelection,
+    observations: &ObservationSelection,
 ) -> PredictionAssessment {
     let dependencies = base
         .dependencies()
@@ -558,6 +558,10 @@ fn uncertainty_term(
     UncertaintyTerm::try_new(kind, magnitude, source).expect("valid closed-case uncertainty term")
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one closed-case fixture keeps every cross-artifact identity and dependency visibly co-located"
+)]
 fn closed_case(knobs: CaseKnobs) -> VvCase {
     let qoi = qoi_id("length");
     let unit = unit_id("m");
@@ -768,7 +772,7 @@ fn closed_case(knobs: CaseKnobs) -> VvCase {
         assumptions
             .replace_row(
                 row.with_evidence(external_target(&label))
-                    .with_monitor_evidence(hash(&format!("{}-monitor", label))),
+                    .with_monitor_evidence(hash(&format!("{label}-monitor"))),
             )
             .expect("attach retained assumption evidence");
     }
@@ -1024,7 +1028,7 @@ fn released_blind_selection_roundtrips_and_release_fields_move_artifact_identity
         let selection = split
             .blind_selection(split_ref.clone(), vec![observation_id("blind-1")], release)
             .expect("released blind selection fixture");
-        rebuild_prediction_with_selection(prediction, selection)
+        rebuild_prediction_with_selection(prediction, &selection)
     };
 
     let baseline_prediction = blind_prediction_for_authority("release-authority-a");
@@ -1125,7 +1129,7 @@ fn stale_blind_split_hash_roundtrips_standalone_but_all_case_consumers_refuse() 
     let selection = split
         .blind_selection(split_ref.clone(), vec![observation_id("blind-1")], release)
         .expect("released blind selection fixture");
-    let blind_prediction = rebuild_prediction_with_selection(prediction, selection);
+    let blind_prediction = rebuild_prediction_with_selection(prediction, &selection);
     case_replacing_prediction(&case, blind_prediction.clone())
         .validate()
         .expect("baseline blind prediction is valid in the complete case");
@@ -1174,6 +1178,10 @@ fn stale_blind_split_hash_roundtrips_standalone_but_all_case_consumers_refuse() 
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the redaction audit deliberately enumerates every authority-bearing debug surface and fragment source"
+)]
 fn lineage_debug_surfaces_are_bounded_and_redact_authority_material() {
     fn push_hash_fragments(fragments: &mut Vec<String>, hash: ContentHash) {
         fragments.push(hash.to_string());
@@ -1349,7 +1357,17 @@ fn lineage_debug_surfaces_are_bounded_and_redact_authority_material() {
         ),
         VvArtifact::from(case.assumptions().clone()),
     ] {
-        debug_surfaces.push((artifact.kind().slug(), format!("{artifact:?}")));
+        let kind = artifact.kind().slug();
+        assert_eq!(
+            format!("{artifact:?}"),
+            format!("VvArtifact {{ kind: {kind:?}, payload: \"<redacted>\" }}"),
+            "the sum wrapper exposes only its contract-allowed public family tag",
+        );
+        assert_eq!(
+            format!("{artifact:#?}"),
+            format!("VvArtifact {{\n    kind: {kind:?},\n    payload: \"<redacted>\",\n}}"),
+            "pretty Debug must preserve the same exact redaction boundary",
+        );
     }
     for (surface, debug) in debug_surfaces {
         assert!(
@@ -1559,6 +1577,10 @@ fn experiment_codec_refuses_forged_authenticity_and_typed_row_sources() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one mutation scenario proves metadata binding across constructor, codec, and identity surfaces"
+)]
 fn experiment_manifest_row_metadata_is_codec_and_identity_bearing() {
     let artifact = experiment(
         "typed-row-experiment",
@@ -1804,6 +1826,10 @@ fn observation_manifest_identity_preimage_is_exact_and_independently_reproducibl
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the identity mutation matrix must keep every independently moving field visible in one audit"
+)]
 fn observation_manifest_identity_fields_move_independently() {
     let one_row_hash = |id: &str,
                         source: ObservationSourceRef,
@@ -2215,6 +2241,10 @@ fn vv_artifact_identity_fields_move_independently() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the exhaustive seven-variant identity battery is intentionally reviewed as one matrix"
+)]
 fn vv_artifact_valid_semantic_mutations_cover_all_seven_variants_and_concrete_wrappers() {
     let baseline = closed_case(CaseKnobs::default());
     let context_variant = closed_case(CaseKnobs {
@@ -2427,6 +2457,10 @@ fn vv_case_identity_version_domain_and_stage_separation_are_exact() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the complete-case preimage field-order and mutation proof is one indivisible identity audit"
+)]
 fn vv_case_identity_preimage_fields_move_independently() {
     enum CaseFieldMutation {
         Context(ContextOfUse),
@@ -2473,7 +2507,7 @@ fn vv_case_identity_preimage_fields_move_independently() {
         b"prediction-1".as_slice(),
         b"assumptions".as_slice(),
     ]
-    .map(|needle| position(needle));
+    .map(position);
     assert!(
         ordered_artifact_ids
             .windows(2)
@@ -3095,6 +3129,10 @@ fn clocks_repeatability_and_covariance_fail_closed() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "axis permutation, canonical wire order, and identity equivalence are one coupled covariance proof"
+)]
 fn repeatability_covariance_binds_explicit_qoi_axis_order_on_wire_and_identity() {
     let covariance = |lower_triangle| {
         CovarianceMatrix::try_new(2, lower_triangle).expect("positive-definite two-QoI covariance")
@@ -3240,6 +3278,10 @@ fn repeatability_covariance_binds_explicit_qoi_axis_order_on_wire_and_identity()
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the signed-zero proof compares constructor, transport, and identity behavior in one audit"
+)]
 fn covariance_signed_zero_has_one_canonical_representation() {
     let positive_zero = CovarianceMatrix::try_new(2, vec![1.0, 0.0, 4.0]).expect("PSD covariance");
     let negative_zero = CovarianceMatrix::try_new(2, vec![1.0, -0.0, 4.0]).expect("PSD covariance");
@@ -3424,8 +3466,11 @@ fn validation_metrics_include_experimental_and_numerical_uncertainty() {
         0.4,
     )
     .expect("metric with both uncertainty sources");
-    assert_eq!(metric.experimental_uncertainty(), 0.3);
-    assert_eq!(metric.numerical_uncertainty(), 0.4);
+    assert_eq!(
+        metric.experimental_uncertainty().to_bits(),
+        0.3f64.to_bits()
+    );
+    assert_eq!(metric.numerical_uncertainty().to_bits(), 0.4f64.to_bits());
     assert!(metric.combined_uncertainty() >= 0.7);
     assert!(metric.combined_uncertainty() - 0.7 < 1.0e-12);
 }
@@ -3673,6 +3718,10 @@ fn closed_case_is_a_canonical_fixed_point_with_a_bound_receipt() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "receipt preimage fields, versioning, verification, and mutations form one security-critical identity audit"
+)]
 fn schema_admission_receipt_identity_version_domain_fields_and_verification_are_exact() {
     assert_eq!(VV_SCHEMA_ADMISSION_RECEIPT_IDENTITY_VERSION, 2);
     assert_eq!(
@@ -4426,6 +4475,10 @@ fn observation_manifest_refuses_aliased_source_rows() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the injectivity proof must contrast locator, metadata, and receipt mutations in one scenario"
+)]
 fn observation_manifest_locator_injectivity_is_metadata_and_receipt_independent() {
     let shared_source = observation_source_ref_with(
         "source-bytes",
@@ -4723,6 +4776,10 @@ fn blind_commitment_binds_source_identities() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "blind commitment preimage, ordering, versioning, and mutation checks are one identity audit"
+)]
 fn blind_holdout_identity_version_domain_and_fields_are_exact() {
     assert_eq!(VV_BLIND_HOLDOUT_IDENTITY_VERSION, 2);
     assert_eq!(

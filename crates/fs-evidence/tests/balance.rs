@@ -14,6 +14,7 @@ use fs_evidence::balance::{
 };
 use fs_evidence::color::ColorRank;
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 
 fn id(text: &str) -> BoundedId {
     BoundedId::new(text).expect("test identifier admits")
@@ -515,7 +516,7 @@ fn orientation_reversal_is_a_bitwise_involution() {
         0.0f64.to_bits(),
         "-0.0 never appears"
     );
-    assert_eq!(flux.value.hi(), 3.0);
+    assert_eq!(flux.value.hi().to_bits(), 3.0f64.to_bits());
 
     let round_trip = reversed.reverse_orientation();
     assert_eq!(round_trip, receipt, "double reversal restores the receipt");
@@ -689,6 +690,9 @@ fn corrupt_mutations_never_alias_the_original_identity() {
 
 #[test]
 fn migration_golden_v1_bytes_and_identity_stay_decodable() {
+    const PINNED_CONTENT_ID: &str =
+        "5fe3c97c041e4e8434902bbca3212df85828dd86b8ea5cc709ae296e9e622bef";
+
     let receipt = admit(
         cells(&[3, 5]),
         window(0, 16),
@@ -698,7 +702,10 @@ fn migration_golden_v1_bytes_and_identity_stay_decodable() {
         ],
     );
     let bytes = receipt.canonical_bytes();
-    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in &bytes {
+        write!(&mut hex, "{byte:02x}").expect("writing to a String cannot fail");
+    }
 
     // Schema-v1 golden: the canonical header (magic + version) and the exact
     // content identity of the receipt above. A change here is a WIRE BREAK
@@ -708,8 +715,6 @@ fn migration_golden_v1_bytes_and_identity_stay_decodable() {
         "v1 canonical header drifted: {}",
         &hex[..16.min(hex.len())]
     );
-    const PINNED_CONTENT_ID: &str =
-        "5fe3c97c041e4e8434902bbca3212df85828dd86b8ea5cc709ae296e9e622bef";
     assert_eq!(
         receipt.content_id().to_hex(),
         PINNED_CONTENT_ID,

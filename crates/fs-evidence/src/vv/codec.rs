@@ -4,6 +4,10 @@ use core::fmt;
 
 use fs_blake3::ContentHash;
 
+// This internal codec is the exhaustive transport mirror of the V&V model.
+// Keeping the schema vocabulary imported as a unit makes additions fail in
+// the codec's match/round-trip checks instead of in an unrelated import list.
+#[allow(clippy::wildcard_imports)]
 use super::model::*;
 
 const MAGIC: &[u8; 4] = b"FSVV";
@@ -346,7 +350,7 @@ impl<'a> Decoder<'a> {
     }
 }
 
-fn model_error(offset: usize, context: &str, error: VvErrors) -> VvCodecError {
+fn model_error(offset: usize, context: &str, error: &VvErrors) -> VvCodecError {
     VvCodecError::at(offset, format!("{context} refused by the model: {error}"))
 }
 
@@ -355,7 +359,7 @@ fn decode_model<T>(
     context: &str,
     result: Result<T, VvErrors>,
 ) -> Result<T, VvCodecError> {
-    result.map_err(|error| model_error(decoder.position(), context, error))
+    result.map_err(|error| model_error(decoder.position(), context, &error))
 }
 
 fn bounded_vec<T>(
@@ -400,7 +404,7 @@ fn decode_id<T>(
 ) -> Result<T, VvCodecError> {
     let offset = decoder.position();
     let value = decoder.string()?;
-    constructor(value).map_err(|error| model_error(offset, context, error))
+    constructor(value).map_err(|error| model_error(offset, context, &error))
 }
 
 macro_rules! id_codec {
@@ -1680,7 +1684,7 @@ fn decode_observation_source_ref(
         locator_hash,
         extraction_receipt_hash,
     )
-    .map_err(|error| model_error(offset, "observation source reference", error))
+    .map_err(|error| model_error(offset, "observation source reference", &error))
 }
 
 fn encode_observation_manifest(
@@ -1728,7 +1732,7 @@ fn decode_observation_manifest(
         rows.push((id, row));
     }
     ObservationManifest::try_new(rows)
-        .map_err(|error| model_error(manifest_offset, "experiment manifest", error))
+        .map_err(|error| model_error(manifest_offset, "experiment manifest", &error))
 }
 
 // bead xl3yi: blind partitions deliberately retain the length-framed
@@ -2969,7 +2973,7 @@ impl VvCase {
             ));
         }
         case.validate()
-            .map_err(|error| model_error(0, "V&V case", error))?;
+            .map_err(|error| model_error(0, "V&V case", &error))?;
         Ok(case)
     }
 

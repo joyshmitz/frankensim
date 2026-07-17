@@ -667,6 +667,9 @@ impl ActionProposal {
     /// Decode canonical transport bytes. Fail-closed: bounded,
     /// version-gated, validated, and canonical (re-encoding must reproduce
     /// the input bit-for-bit).
+    // Keep the canonical wire grammar visibly linear. Splitting this decoder
+    // would make field order and the final fixed-point check harder to audit.
+    #[allow(clippy::too_many_lines)]
     pub fn decode(bytes: &[u8]) -> Result<Self, ActionCodecError> {
         if bytes.len() > MAX_ACTION_CANONICAL_BYTES {
             return Err(ActionCodecError::at(0, "transport above size budget"));
@@ -887,10 +890,7 @@ impl Portfolio {
             .map(|(id, p)| (*id, p.dependencies().len()))
             .collect();
         let mut order = Vec::with_capacity(actions.len());
-        loop {
-            let Some(next) = in_degree.iter().find(|(_, d)| **d == 0).map(|(id, _)| *id) else {
-                break;
-            };
+        while let Some(next) = in_degree.iter().find(|(_, d)| **d == 0).map(|(id, _)| *id) {
             in_degree.remove(&next);
             order.push(next);
             for (id, proposal) in &actions {
@@ -952,10 +952,10 @@ impl Portfolio {
                     known = Some(match known {
                         None => (*range, unit.clone()),
                         Some((acc, acc_unit)) => {
-                            if &acc_unit != unit {
-                                (acc, acc_unit)
-                            } else {
+                            if &acc_unit == unit {
                                 (acc.add(range), acc_unit)
+                            } else {
+                                (acc, acc_unit)
                             }
                         }
                     });

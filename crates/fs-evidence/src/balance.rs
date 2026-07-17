@@ -280,13 +280,11 @@ impl QuantityKind {
                     );
                 }
             }
-            Self::Momentum { axis, .. } | Self::AngularMomentum { axis, .. } => {
-                if *axis > 2 {
-                    return refuse(
-                        BalanceRule::SupportDegreeRange,
-                        format!("momentum axis {axis} outside 0..=2"),
-                    );
-                }
+            Self::Momentum { axis, .. } | Self::AngularMomentum { axis, .. } if *axis > 2 => {
+                return refuse(
+                    BalanceRule::SupportDegreeRange,
+                    format!("momentum axis {axis} outside 0..=2"),
+                );
             }
             _ => {}
         }
@@ -977,13 +975,13 @@ impl BalanceDefectReceipt {
             }
             match (rule, role) {
                 (AccountingRule::ProductionNonNegative, AccountRole::Production)
-                | (AccountingRule::DestructionNonNegative, AccountRole::Destruction) => {
-                    if term.value.lo() < 0.0 {
-                        return refuse(
-                            BalanceRule::AccountingRuleViolation,
-                            format!("{:?} admits no negative {:?} term", draft.quantity, role),
-                        );
-                    }
+                | (AccountingRule::DestructionNonNegative, AccountRole::Destruction)
+                    if term.value.lo() < 0.0 =>
+                {
+                    return refuse(
+                        BalanceRule::AccountingRuleViolation,
+                        format!("{:?} admits no negative {:?} term", draft.quantity, role),
+                    );
                 }
                 _ => {}
             }
@@ -1183,9 +1181,7 @@ impl BalanceDefectReceipt {
     ) -> Result<Self, BalanceError> {
         let terms = Self::merge_terms(&self.terms, &other.terms)?;
         let measured = self.measured.compose(&other.measured)?;
-        let mut lineage = Vec::with_capacity(2);
-        lineage.push(self.content_id());
-        lineage.push(other.content_id());
+        let lineage = vec![self.content_id(), other.content_id()];
         if lineage.len() > MAX_BALANCE_LINEAGE_PARENTS {
             return refuse(BalanceRule::CollectionBudget, "lineage above budget");
         }
@@ -1374,6 +1370,9 @@ impl BalanceDefectReceipt {
     /// version-checked, exhaustively validated, and canonical (re-encoding
     /// must reproduce the input bit-for-bit, so trailing bytes, unsorted
     /// collections, and aliased encodings all refuse).
+    // The decoder deliberately mirrors the complete canonical field order in
+    // one place so reviewers can compare it directly with `canonical_bytes`.
+    #[allow(clippy::too_many_lines)]
     pub fn decode(bytes: &[u8]) -> Result<Self, BalanceCodecError> {
         if bytes.len() > MAX_BALANCE_CANONICAL_BYTES {
             return Err(BalanceCodecError::at(0, "transport above size budget"));

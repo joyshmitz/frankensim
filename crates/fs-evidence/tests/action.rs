@@ -13,6 +13,7 @@ use fs_evidence::action::{
 };
 use fs_evidence::color::ColorRank;
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 
 fn id(text: &str) -> BoundedId {
     BoundedId::new(text).expect("test identifier admits")
@@ -444,9 +445,15 @@ fn corrupt_mutations_never_alias_the_original_identity() {
 
 #[test]
 fn migration_golden_v1_header_and_identity_stay_decodable() {
+    const PINNED_CONTENT_ID: &str =
+        "a2bb9c5ce99a6884347edeb60dbbc0d8df68d1e75b90f15f15b96c215c9af044";
+
     let proposal = admit(ActionKind::SolverTolerance, "claim-golden");
     let bytes = proposal.canonical_bytes();
-    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in &bytes {
+        write!(&mut hex, "{byte:02x}").expect("writing to a String cannot fail");
+    }
 
     // Schema-v1 golden: canonical header (magic FSEA + version 1) and the
     // exact content identity of the proposal above. A change here is a WIRE
@@ -457,8 +464,6 @@ fn migration_golden_v1_header_and_identity_stay_decodable() {
         "v1 canonical header drifted: {}",
         &hex[..16.min(hex.len())]
     );
-    const PINNED_CONTENT_ID: &str =
-        "a2bb9c5ce99a6884347edeb60dbbc0d8df68d1e75b90f15f15b96c215c9af044";
     assert_eq!(
         proposal.content_id().to_hex(),
         PINNED_CONTENT_ID,
