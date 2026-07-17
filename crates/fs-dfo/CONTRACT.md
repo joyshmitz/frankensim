@@ -135,6 +135,27 @@ competitive with NSGA-III on DTLZ2(m=3) at matched budget (2.7457 vs
 2.7775 hypervolume in the current deterministic battery) plus bitwise
 replay; NSGA-III golden
 `0xd912_6c49_f1b1_6897`.
+tests/wfg4_battery.rs adds the canonical normalized WFG4 fixture at
+`M=3, k=4, l=20`, following the corrected WFG toolkit's `s_multi(30,10,0.35)`,
+equal-weight `r_sum`, and concave shape construction. It composes that evaluator
+with production NSGA-III at a closure-counted budget of 92 × (400 + 1) = 36,892
+objective evaluations per run. The battery checks the analytic `[0,0,6]`
+front extreme, the output-reconstructed scaled-sphere identity over deterministic
+probes, a wrong-center transformation mutant, exact evaluation accounting, front
+distance, Das-Dennis direction coverage, exact 3D hypervolume, and complete
+ordered-front bitwise replay. A canonical configuration identity binds units,
+seed plus stream kernel/tile, algorithm constants, budgets, gates, versions, and
+capabilities. Separate original/replay front children bind every retained decision
+and objective bit; the result child binds both roots, actual transform samples,
+all metrics and verdicts, and the first differing component/bit when replay fails.
+The validated object receipt and four `ConformanceCase` rows retain those roots,
+while machine-neutral `BenchmarkResult` rows expose hypervolume and mean front
+distance for later trend wiring. The formula source is Huband et al., *A Scalable
+Multi-objective Test Problem Toolkit* (corrected EMO 2005 version), cross-read
+against jMetal revision `ea7e882f6b8f94b99535921674e62cda7986f20e`.
+As in the older fs-dfo aggregate batteries, impossible public-API structural
+failures such as an empty front remain ordinary Rust diagnostics before aggregate
+emission; gate failures after a front exists retain structured red evidence.
 tests/dro_battery.rs (4 cases): the one-sample kink LP recovers the
 fractional q = [0.5, 0.5] and worst-case value 0.5; tiny-scale kinks
 use scale-relative recovery rather than an absolute lambda cutoff;
@@ -231,6 +252,11 @@ remain assertion-only and silent.
 - NSGA-III normalization uses the ideal point with FIRST-front
   per-objective maxima as the nadir estimate; the full ASF
   extreme-point construction is the recorded refinement.
+- The WFG4 battery claims only the normalized tri-objective `k=4, l=20`
+  in-repository fixture and its recorded seed/budget. It does not claim the
+  complete WFG suite, external COCO parity, optimizer performance, refreshed
+  cross-ISA execution, or asupersync cancellation coverage. The source cross-read
+  is not an executable independent WFG/jMetal oracle comparison.
 - `mc_hypervolume` is the m > 4 path; its accuracy knob is the
   sample count (standard error √(p(1−p)/n)) — no silent precision
   claim. `HvArchive` eviction uses EXACT contributions (m ≤ 4);
