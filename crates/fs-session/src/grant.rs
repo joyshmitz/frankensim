@@ -503,6 +503,56 @@ impl CoreLeaseBook {
         }
     }
 
+    /// Acquire ONE submission-scoped concurrency lease of `cores` after
+    /// verifying that EVERY verb the program names is covered by the
+    /// grant (bead aeq7, increment 2: dynamic verb + concurrency
+    /// enforcement at the execution boundary). All-or-nothing: the
+    /// first ungranted verb refuses by name and nothing is leased.
+    ///
+    /// # Errors
+    /// Freshness refusals from [`SessionGrant::verify_fresh`];
+    /// [`SessionError::UngrantedVerb`] naming the first uncovered verb;
+    /// [`SessionError::CoreLeaseExceeded`] on concurrency exhaustion.
+    ///
+    /// # Panics
+    /// Only on a poisoned internal mutex (a prior panic mid-update).
+    pub fn acquire_submission<'a>(
+        &'a self,
+        grant: &SessionGrant,
+        policy: &dyn IssuerPolicy,
+        verbs: &[&str],
+        cores: u64,
+        now_ns: i64,
+    ) -> Result<CoreLease<'a>, SessionError> {
+        grant.verify_fresh(policy, now_ns)?;
+        for verb in verbs {
+            if !grant.grants_op(verb) {
+                return Err(SessionError::UngrantedVerb {
+                    session: grant.session.0,
+                    verb: (*verb).to_string(),
+                });
+            }
+        }
+        let mut active = self.active.lock().expect("core lease book poisoned");
+        let current = active.get(&grant.session.0).copied().unwrap_or(0);
+        match current.checked_add(cores) {
+            Some(next) if next <= grant.cores => {
+                active.insert(grant.session.0, next);
+                Ok(CoreLease {
+                    book: self,
+                    session: grant.session.0,
+                    cores,
+                })
+            }
+            _ => Err(SessionError::CoreLeaseExceeded {
+                session: grant.session.0,
+                granted: grant.cores,
+                active: current,
+                requested: cores,
+            }),
+        }
+    }
+
     /// Currently leased cores for a session.
     ///
     /// # Panics

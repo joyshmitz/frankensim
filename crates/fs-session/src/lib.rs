@@ -120,6 +120,15 @@ pub enum SessionError {
         /// The policy's current generation.
         current_generation: u64,
     },
+    /// A submission presented a grant bound to a different session than
+    /// its request authority (aeq7): cross-session authority is never
+    /// transferable.
+    GrantSessionMismatch {
+        /// The grant's bound session.
+        grant: u64,
+        /// The submission authority's session.
+        request: u64,
+    },
     /// Execution asked for an operator the admitted grant never named
     /// (aeq7).
     UngrantedVerb {
@@ -572,6 +581,11 @@ impl fmt::Display for SessionError {
                 "grant for session {session} was minted under revocation generation \
                  {granted_generation} but the policy is at {current_generation}; \
                  request re-endorsement"
+            ),
+            SessionError::GrantSessionMismatch { grant, request } => write!(
+                f,
+                "grant is bound to session {grant} but the submission authority names \
+                 session {request}; cross-session authority is never transferable"
             ),
             SessionError::UngrantedVerb { session, verb } => write!(
                 f,

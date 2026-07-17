@@ -396,3 +396,120 @@ fn sg_009_sealed_admission_bridges_grant_authority_into_fs_ir() {
     inflated.cores = u64::MAX;
     assert!(!bridge.verify(&inflated, &fresh_grant.admission_receipt()));
 }
+
+/// sg-010: dynamic enforcement at the exactly-once execution boundary —
+/// covered verbs execute under a held lease; ungranted verbs and
+/// concurrency exhaustion refuse BEFORE work runs; cross-session grants
+/// never transfer; leases release after the terminal.
+#[test]
+fn sg_010_leased_submission_enforces_verbs_and_concurrency_dynamically() {
+    use fs_session::{Charge, SubmitOutcome};
+
+    let policy = TestPolicy::new(1_000_000);
+    let grant = mint_grant(&policy, &request(), 10).expect("policy admits");
+    let governor = Governor::new();
+    let open_id = governor
+        .session_open_id(grant.session(), "sg-010-open")
+        .expect("open id");
+    governor
+        .open_session_granted(open_id, &grant, &policy, 20)
+        .expect("granted open");
+    let book = CoreLeaseBook::new();
+
+    // Covered verbs execute exactly once under the lease.
+    let request_id = governor
+        .submission_request_id(grant.session(), "sg-010-agent", "(flux.solve)")
+        .expect("request id");
+    let ran = std::cell::Cell::new(false);
+    let outcome = governor
+        .submit_once_leased(
+            request_id,
+            &grant,
+            &policy,
+            &book,
+            &["flux.solve", "ascent.optimize"],
+            4,
+            30,
+            || {
+                ran.set(true);
+                assert_eq!(
+                    book.active_cores(grant.session()),
+                    4,
+                    "the submission lease must be held while work runs"
+                );
+                Charge {
+                    core_s: 1.0,
+                    mem_peak_bytes: 1,
+                    wall_s: 1.0,
+                }
+            },
+        )
+        .expect("leased submission");
+    assert!(matches!(outcome, SubmitOutcome::Executed { .. }));
+    assert!(ran.get());
+    assert_eq!(book.active_cores(grant.session()), 0, "lease released");
+
+    // Ungranted verb refuses BEFORE work runs and advances no state.
+    let ungranted_id = governor
+        .submission_request_id(grant.session(), "sg-010-ungranted", "(helm.escalate)")
+        .expect("request id");
+    assert!(matches!(
+        governor.submit_once_leased(
+            ungranted_id,
+            &grant,
+            &policy,
+            &book,
+            &["flux.solve", "helm.escalate"],
+            1,
+            30,
+            || unreachable!("ungranted verb must refuse before execution"),
+        ),
+        Err(SessionError::UngrantedVerb { verb, .. }) if verb == "helm.escalate"
+    ));
+
+    // Concurrency exhaustion refuses before work runs.
+    let standing = book
+        .acquire(&grant, &policy, "flux.solve", 8, 30)
+        .expect("standing lease saturates the grant");
+    let saturated_id = governor
+        .submission_request_id(grant.session(), "sg-010-saturated", "(flux.solve)")
+        .expect("request id");
+    assert!(matches!(
+        governor.submit_once_leased(
+            saturated_id,
+            &grant,
+            &policy,
+            &book,
+            &["flux.solve"],
+            1,
+            30,
+            || unreachable!("saturated concurrency must refuse before execution"),
+        ),
+        Err(SessionError::CoreLeaseExceeded { .. })
+    ));
+    drop(standing);
+
+    // Cross-session authority never transfers.
+    let mut other_request = request();
+    other_request.session = SessionId(42);
+    let other_grant = mint_grant(&policy, &other_request, 10).expect("policy admits");
+    let cross_id = governor
+        .submission_request_id(grant.session(), "sg-010-cross", "(flux.solve)")
+        .expect("request id");
+    assert!(matches!(
+        governor.submit_once_leased(
+            cross_id,
+            &other_grant,
+            &policy,
+            &book,
+            &["flux.solve"],
+            1,
+            30,
+            || unreachable!("cross-session grant must refuse before execution"),
+        ),
+        Err(SessionError::GrantSessionMismatch {
+            grant: 42,
+            request: 41
+        })
+    ));
+}

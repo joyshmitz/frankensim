@@ -5142,6 +5142,43 @@ impl Governor {
         self.submit_once_inner(request_id, None, work)
     }
 
+    /// [`Governor::submit_once`] under DYNAMIC grant enforcement (bead
+    /// aeq7, increment 2): before `work` may run, the grant must bind
+    /// the request authority's session, verify fresh against the
+    /// issuing policy, cover EVERY verb the program names, and yield a
+    /// submission-scoped concurrency lease of `cores` from `book`. The
+    /// lease is held for the whole exactly-once execution and releases
+    /// when this call returns — a refused acquisition means `work` is
+    /// never invoked and no idempotency state advances.
+    ///
+    /// # Errors
+    /// [`SessionError::GrantSessionMismatch`] on cross-session
+    /// authority; the [`crate::CoreLeaseBook::acquire_submission`]
+    /// refusals; then everything [`Governor::submit_once`] refuses.
+    #[allow(clippy::too_many_arguments)]
+    pub fn submit_once_leased(
+        &self,
+        request_id: SubmissionRequestId,
+        grant: &crate::SessionGrant,
+        policy: &dyn crate::IssuerPolicy,
+        book: &crate::CoreLeaseBook,
+        verbs: &[&str],
+        cores: u64,
+        now_ns: i64,
+        work: impl FnOnce() -> Charge,
+    ) -> Result<SubmitOutcome, SessionError> {
+        if grant.session() != request_id.session {
+            return Err(SessionError::GrantSessionMismatch {
+                grant: grant.session().0,
+                request: request_id.session.0,
+            });
+        }
+        let lease = book.acquire_submission(grant, policy, verbs, cores, now_ns)?;
+        let outcome = self.submit_once_inner(request_id, None, work);
+        drop(lease);
+        outcome
+    }
+
     /// Exactly-once execution with a durable pre-execution Pending claim.
     ///
     /// Only the call that inserts a fresh claim may invoke `work`. A recovered
@@ -8140,7 +8177,10 @@ mod tests {
             format!("legacy-test-{kind}-{}-{ordinal}", session.0)
         }
 
-        fn open_session_declared(&self, token: CapabilityToken) -> Result<ScopeFlushPermit, SessionError> {
+        fn open_session_declared(
+            &self,
+            token: CapabilityToken,
+        ) -> Result<ScopeFlushPermit, SessionError> {
             let open_id = self
                 .governor
                 .session_open_id(token.session, &self.next_key("open", token.session))?;
@@ -8606,7 +8646,9 @@ mod tests {
             cores: 1,
             ledger_scope,
         };
-        governor.open_session_declared(token).expect("valid bounded token");
+        governor
+            .open_session_declared(token)
+            .expect("valid bounded token");
 
         let inner = governor.inner.lock().expect("governor lock");
         let stored = &inner.tokens[&88];
@@ -8973,7 +9015,10 @@ mod tests {
     fn level_three_reserves_its_mandatory_completion_ordinal() {
         let governor = Governor::new();
         governor
-            .open_session_declared_gated(test_token(10, "pause-ordinal"), Arc::new(CancelGate::new()))
+            .open_session_declared_gated(
+                test_token(10, "pause-ordinal"),
+                Arc::new(CancelGate::new()),
+            )
             .expect("gated fixture session");
         governor
             .open_session_declared(test_token(11, "pause-ordinal"))
@@ -9016,7 +9061,10 @@ mod tests {
     fn identical_pause_acknowledgements_commit_once_and_replay() {
         let governor = Governor::new();
         governor
-            .open_session_declared_gated(test_token(12, "pause-replay"), Arc::new(CancelGate::new()))
+            .open_session_declared_gated(
+                test_token(12, "pause-replay"),
+                Arc::new(CancelGate::new()),
+            )
             .expect("gated fixture session");
         let request_id = governor
             .apply_memory_pressure(SessionId(12), 3)
