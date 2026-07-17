@@ -141,9 +141,11 @@ dimension checks. Pure, deterministic (fixed tile/cell/link order).
   history.
 - `step_serial()` / `step_pooled(&runner, &gate)` — one sweep step as two
   passes (collide from the shared per-cell `collide_cell3` kernel, then
-  pull-stream) with a buffer swap between. A link whose source lies in an
-  inactive tile or outside the domain bounces back (inactive space is solid
-  wall in this increment). `step_pooled` runs both passes through any
+  pull-stream) over three retained buffers. The pull-stream pass writes a
+  private transactional destination; only a completely drained successful
+  pass swaps that destination into the published state. A link whose source
+  lies in an inactive tile or outside the domain bounces back (inactive space
+  is solid wall in this increment). `step_pooled` runs both passes through any
   `fs_exec::KernelRunner` and is bitwise-identical to `step_serial` for
   every worker count: kernel tiles own disjoint Morton-contiguous slot
   groups sized by a worker-count-independent constant, and all inputs are
@@ -151,8 +153,8 @@ dimension checks. Pure, deterministic (fixed tile/cell/link order).
 - `perturb(seed, amplitude)` — splitmix64 hash-seeded density perturbation
   (the hash IS the seed schedule); `state_bits()` — canonical-order exact
   bits for golden hashing; `total_mass()`, `cell_macros(slot, lane)`,
-  `active_tiles()`, `allocated_state_bytes()` (exactly proportional to the
-  active set), `state_bytes_per_tile()`.
+  `active_tiles()`, `allocated_state_bytes()` (exactly three population
+  buffers per active tile), `state_bytes_per_tile()`.
 - `SparseError3` — typed refusals: `Dims`, `TileOutOfDomain`, `Collision`
   (Morton key + lane + the underlying `CollisionError3`), `Cancelled`
   (pre-step state intact; re-issue is deterministic), `Pool`.
@@ -371,9 +373,11 @@ destinations, so schedule changes cannot create arithmetic reassociation.
 
 Dense-grid steps are synchronous (no polling). `SparseGrid3::step_pooled`
 polls `Cx::checkpoint` once per kernel tile: a tripped gate drains the pass,
-surfaces `SparseError3::Cancelled`, leaves the pre-step state intact (state
-commits only at the end of a completed step), and a re-issued step is
-bitwise-identical to an uncancelled one.
+surfaces `SparseError3::Cancelled`, and leaves the pre-step state intact. The
+collide pass writes its retained scratch buffer and the stream pass writes a
+third retained transactional destination; neither becomes published state
+until both passes complete. A re-issued step is bitwise-identical to an
+uncancelled one.
 
 ## Unsafe boundary
 
@@ -456,6 +460,12 @@ first-divergence JSONL receipts, hostile dispatch-selector cases, and one-shot
 table identity. The existing Duct golden remains the end-to-end bit-surface
 gate.
 
+`tests/d3q19_sparse.rs` drives both entry and mid-stream cancellation. Its
+deterministic one-worker runner lets collision finish, requests cancellation
+after the first stream kernel tile, and pins unchanged published bytes, zero
+completed steps, drained structured refusal, and bitwise serial-equivalent
+fresh-gate reissue.
+
 `tests/d3q19_boundaries.rs` (bead 40p2) covers all six hand-enumerated planar
 link masks, aligned deterministic mask ordering, the exact 18 links around one
 voxel, atomic immutable SDF topology and rejection paths, axis-generic
@@ -502,9 +512,13 @@ redistributed.
   the scalar per-cell kernel, occupancy is whole-tile (per-cell masks and the
   free-surface activation/deactivation rules are WS1-E's increment), tile
   size is pinned at 4³ (the 4³→8³ autotune sweep is follow-on work through
-  the fs-exec tune path), and no sparse golden is frozen yet (the
-  four-quadrant ceremony lands with the worker-sweep golden increment). The
-  raw D2Q9 stationary-wall momentum receipt is not a normalized aerodynamic
+  the fs-exec tune path). The frozen serial sparse golden covers only its
+  pinned L-shaped active set and step count; a separate bitwise test covers
+  the worker-count sweep. The retained transactional stream destination raises
+  population storage from two to three buffers per active tile; this is the
+  explicit memory cost of failure-atomic mid-stream cancellation, not a
+  throughput optimization. The raw D2Q9 stationary-wall momentum receipt is
+  not a normalized aerodynamic
   coefficient. Geier
   et al.'s primary derivation (doi:10.1016/j.camwa.2015.05.001) explicitly
   restricts itself to D3Q27 after identifying non-refining D3Q19 anisotropy.

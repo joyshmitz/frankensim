@@ -3,7 +3,12 @@
 //! conservation, the G5 worker-count bitwise gate, G4-style memory
 //! proportionality, typed refusals, and deterministic cancellation.
 
-use fs_exec::{CancelGate, TilePool};
+use std::ops::ControlFlow;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+use fs_exec::{
+    CancelGate, Cancelled, Cx, KernelRunner, RunError, RunReport, TileKernel, TilePlan, TilePool,
+};
 use fs_lbm::d3q19::sparse::{
     MORTON_COORD_BITS, SparseError3, SparseGrid3, demorton3, morton3, state_bytes_per_tile,
 };
@@ -28,6 +33,71 @@ fn l_shaped_tiles(ntx: u32, nty: u32, ntz: u32) -> Vec<(u32, u32, u32)> {
     tiles.sort_unstable();
     tiles.dedup();
     tiles
+}
+
+/// Real-pool runner that lets the collide pass finish, then requests
+/// cancellation immediately after the stream pass completes its first kernel
+/// tile. Later calls run normally so the same pool can prove deterministic
+/// reissue after the drained refusal.
+struct CancelSecondPassAfterFirstTile {
+    pool: TilePool,
+    invocations: AtomicUsize,
+}
+
+impl CancelSecondPassAfterFirstTile {
+    fn new() -> Self {
+        Self {
+            pool: TilePool::for_host(1, 0xD3_19_CA11),
+            invocations: AtomicUsize::new(0),
+        }
+    }
+}
+
+struct CancelAfterFirstTile<'a, K> {
+    inner: &'a K,
+    gate: &'a CancelGate,
+    fired: AtomicBool,
+}
+
+impl<K: TileKernel> TileKernel for CancelAfterFirstTile<'_, K> {
+    type Out = K::Out;
+
+    fn tiles(&self) -> TilePlan {
+        self.inner.tiles()
+    }
+
+    fn run(&self, tile: u64, cx: &Cx<'_>) -> ControlFlow<Cancelled, Self::Out> {
+        let outcome = self.inner.run(tile, cx);
+        if matches!(&outcome, ControlFlow::Continue(_)) && !self.fired.swap(true, Ordering::AcqRel)
+        {
+            self.gate.request();
+        }
+        outcome
+    }
+}
+
+impl KernelRunner for CancelSecondPassAfterFirstTile {
+    fn workers(&self) -> usize {
+        self.pool.workers()
+    }
+
+    fn run_with_gate<K: TileKernel>(
+        &self,
+        kernel: &K,
+        gate: &CancelGate,
+    ) -> (Result<K::Out, RunError>, RunReport) {
+        let invocation = self.invocations.fetch_add(1, Ordering::AcqRel);
+        if invocation == 1 {
+            let cancelling = CancelAfterFirstTile {
+                inner: kernel,
+                gate,
+                fired: AtomicBool::new(false),
+            };
+            self.pool.run_with_gate(&cancelling, gate)
+        } else {
+            self.pool.run_with_gate(kernel, gate)
+        }
+    }
 }
 
 #[test]
@@ -172,6 +242,11 @@ fn pooled_sweep_is_bitwise_identical_across_worker_counts() {
 
 #[test]
 fn memory_is_proportional_to_active_tiles_not_domain() {
+    assert_eq!(
+        state_bytes_per_tile(),
+        3 * 19 * 64 * core::mem::size_of::<f64>(),
+        "one active tile retains published, collided, and transactional buffers"
+    );
     // 1000-tile domain, 10% active: allocation must track the 100 active
     // tiles exactly, with zero dependence on the 40^3 dense extent.
     let mut grid = SparseGrid3::new(40, 40, 40, 0.8, [0.0; 3]).expect("dims admissible");
@@ -212,8 +287,8 @@ fn activation_preserves_existing_tile_state_exactly() {
     let after = grid.state_bits();
     // Locate the surviving tiles' bit runs: slots are Morton-sorted, so
     // (1,1,1) and (2,1,1) occupy known positions in both orderings.
-    let bits_per_tile = state_bytes_per_tile() / 2 / 8;
     let old_keys = [morton3(1, 1, 1), morton3(2, 1, 1)];
+    let bits_per_tile = before.len() / old_keys.len();
     let mut new_keys = vec![
         morton3(0, 0, 0),
         morton3(1, 1, 1),
@@ -299,6 +374,48 @@ fn pre_tripped_gate_cancels_cleanly_and_reissue_is_deterministic() {
 }
 
 #[test]
+fn mid_stream_cancellation_is_atomic_and_reissue_is_deterministic() {
+    let tiles = l_shaped_tiles(8, 8, 8);
+    let mut grid = SparseGrid3::new(32, 32, 32, 0.8, [0.0; 3]).expect("dims admissible");
+    grid.activate_tiles(&tiles).expect("activation in-domain");
+    grid.perturb(0xCA11_AB1E, 0.01);
+    let before = grid.state_bits();
+
+    let runner = CancelSecondPassAfterFirstTile::new();
+    let gate = CancelGate::new();
+    let refusal = grid
+        .step_pooled(&runner, &gate)
+        .expect_err("stream pass must drain after its first kernel tile");
+    assert_eq!(refusal, SparseError3::Cancelled);
+    assert!(
+        gate.is_requested(),
+        "the deterministic injector did not fire"
+    );
+    assert_eq!(runner.invocations.load(Ordering::Acquire), 2);
+    assert_eq!(grid.steps(), 0, "cancelled step must not publish");
+    assert_eq!(
+        grid.state_bits(),
+        before,
+        "a partially completed stream pass leaked into published state"
+    );
+
+    let open = CancelGate::new();
+    grid.step_pooled(&runner, &open)
+        .expect("fresh-gate reissue must complete");
+    let mut reference = SparseGrid3::new(32, 32, 32, 0.8, [0.0; 3]).expect("dims admissible");
+    reference
+        .activate_tiles(&tiles)
+        .expect("activation in-domain");
+    reference.perturb(0xCA11_AB1E, 0.01);
+    reference.step_serial().expect("serial sweep admissible");
+    assert_eq!(
+        grid.state_bits(),
+        reference.state_bits(),
+        "mid-stream cancellation changed deterministic reissue"
+    );
+}
+
+#[test]
 fn out_of_domain_activation_refuses_without_partial_application() {
     let mut grid = SparseGrid3::new(16, 16, 16, 0.8, [0.0; 3]).expect("dims admissible");
     let refusal = grid
@@ -336,13 +453,19 @@ fn deactivation_returns_exact_mass_and_preserves_survivors() {
     }
     let total_before = grid.total_mass();
     let bits_before = grid.state_bits();
-    let bits_per_tile = state_bytes_per_tile() / 2 / 8;
+    let bits_per_tile = bits_before.len() / grid.active_tiles();
+    let state_bytes_before = grid.allocated_state_bytes();
 
     // Retire the middle tile: the ledger must receive exactly its mass.
     let removed = grid
         .deactivate_tiles(&[(2, 1, 1)])
         .expect("deactivation in-domain");
     assert_eq!(grid.active_tiles(), 2);
+    assert_eq!(
+        grid.allocated_state_bytes(),
+        state_bytes_before - state_bytes_per_tile(),
+        "retiring one tile must release exactly three population buffers"
+    );
     let total_after = grid.total_mass();
     // Ledger conservation: removed + remaining == before. NOT bitwise —
     // the three sums group the same ~3.7k cell values differently

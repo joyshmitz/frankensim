@@ -8,8 +8,9 @@
 //! bitwise-across-worker-counts guarantee the pooled FFT path proved:
 //! every output tile is written by exactly one kernel tile from read-only
 //! inputs, kernel tiles partition the Morton-sorted slot vector into
-//! worker-count-independent groups, and buffers swap only between passes —
-//! so scheduling can influence timing but never bytes.
+//! worker-count-independent groups, and the transactional destination becomes
+//! published state only after both passes finish — so scheduling and a drained
+//! cancellation can influence timing but never published bytes.
 //!
 //! Active-tile ordering is the sorted Morton key order, NEVER insertion
 //! order: activation history cannot leak into iteration order, sweep order,
@@ -109,10 +110,11 @@ impl TileBlock {
     }
 }
 
-/// Bytes of population state held per active tile (both sweep buffers).
+/// Bytes of population state held per active tile (published, collided, and
+/// transactional-destination buffers).
 #[must_use]
 pub const fn state_bytes_per_tile() -> usize {
-    2 * Q3 * core::mem::size_of::<Tile>()
+    3 * Q3 * core::mem::size_of::<Tile>()
 }
 
 /// Typed refusal from sparse-grid construction or a sweep.
@@ -185,8 +187,9 @@ impl Reduce for FirstRefusal {
 /// State exists only for active tiles; memory is proportional to the active
 /// set ([`SparseGrid3::allocated_state_bytes`]). Sweeps are two passes —
 /// collide (own-tile only), then pull-stream (own tile + face/edge
-/// neighbors' post-collision state) — with a buffer swap in between, so
-/// every pass writes each output exactly once from read-only inputs.
+/// neighbors' post-collision state) — followed by one failure-atomic
+/// publication swap, so every pass writes each output exactly once from
+/// read-only inputs.
 pub struct SparseGrid3 {
     ntx: usize,
     nty: usize,
@@ -196,10 +199,12 @@ pub struct SparseGrid3 {
     /// Ascending Morton keys of the active tiles; parallel to the state
     /// vectors. THE canonical iteration order.
     keys: Vec<u64>,
-    /// Morton key → slot index into `keys`/`pre`/`post`.
+    /// Morton key → slot index into `keys`/`pre`/`post`/`next`.
     index: BTreeMap<u64, usize>,
     pre: Vec<TileBlock>,
     post: Vec<TileBlock>,
+    /// Stream destination kept private until a complete pass commits.
+    next: Vec<TileBlock>,
     steps: u64,
 }
 
@@ -242,6 +247,7 @@ impl SparseGrid3 {
             index: BTreeMap::new(),
             pre: Vec::new(),
             post: Vec::new(),
+            next: Vec::new(),
             steps: 0,
         })
     }
@@ -271,6 +277,7 @@ impl SparseGrid3 {
         let mut keys = Vec::with_capacity(merged.len());
         let mut pre = Vec::with_capacity(merged.len());
         let mut post = Vec::with_capacity(merged.len());
+        let mut next = Vec::with_capacity(merged.len());
         let mut index = BTreeMap::new();
         for (slot, (key, old)) in merged.into_iter().enumerate() {
             keys.push(key);
@@ -278,10 +285,12 @@ impl SparseGrid3 {
                 Some(old_slot) => {
                     pre.push(self.pre[old_slot].clone());
                     post.push(self.post[old_slot].clone());
+                    next.push(self.next[old_slot].clone());
                 }
                 None => {
                     pre.push(TileBlock::equilibrium(1.0));
                     post.push(TileBlock::equilibrium(1.0));
+                    next.push(TileBlock::equilibrium(1.0));
                 }
             }
             index.insert(key, slot);
@@ -289,6 +298,7 @@ impl SparseGrid3 {
         self.keys = keys;
         self.pre = pre;
         self.post = post;
+        self.next = next;
         self.index = index;
         Ok(())
     }
@@ -331,16 +341,19 @@ impl SparseGrid3 {
         let mut keys = Vec::with_capacity(survivors.len());
         let mut pre = Vec::with_capacity(survivors.len());
         let mut post = Vec::with_capacity(survivors.len());
+        let mut next = Vec::with_capacity(survivors.len());
         let mut index = BTreeMap::new();
         for (new_slot, &old_slot) in survivors.iter().enumerate() {
             keys.push(self.keys[old_slot]);
             pre.push(self.pre[old_slot].clone());
             post.push(self.post[old_slot].clone());
+            next.push(self.next[old_slot].clone());
             index.insert(self.keys[old_slot], new_slot);
         }
         self.keys = keys;
         self.pre = pre;
         self.post = post;
+        self.next = next;
         self.index = index;
         Ok(removed_mass)
     }
@@ -361,7 +374,7 @@ impl SparseGrid3 {
     /// proportional to the active set.
     #[must_use]
     pub fn allocated_state_bytes(&self) -> usize {
-        (self.pre.len() + self.post.len()) * Q3 * core::mem::size_of::<Tile>()
+        (self.pre.len() + self.post.len() + self.next.len()) * Q3 * core::mem::size_of::<Tile>()
     }
 
     /// Whether the tile at Morton key `key` is active.
@@ -441,9 +454,9 @@ impl SparseGrid3 {
         (rho, [mom[0] / rho, mom[1] / rho, mom[2] / rho])
     }
 
-    /// One serial sweep step: collide every active cell, swap, pull-stream,
-    /// commit. The serial path is the bitwise reference the pooled path
-    /// must reproduce.
+    /// One serial sweep step: collide every active cell, pull-stream into a
+    /// private transactional destination, then publish by swapping buffers.
+    /// The serial path is the bitwise reference the pooled path must reproduce.
     ///
     /// # Errors
     /// [`SparseError3::Collision`] fail-closed on the first refusing cell
@@ -458,18 +471,17 @@ impl SparseGrid3 {
                 self.force,
             )?;
         }
-        let stream_src = std::mem::take(&mut self.post);
         for slot in 0..self.keys.len() {
             stream_block(
-                &mut self.pre[slot],
+                &mut self.next[slot],
                 slot,
-                &stream_src,
+                &self.post,
                 &self.keys,
                 &self.index,
                 (self.ntx, self.nty, self.ntz),
             );
         }
-        self.post = stream_src;
+        std::mem::swap(&mut self.pre, &mut self.next);
         self.steps += 1;
         Ok(())
     }
@@ -507,12 +519,11 @@ impl SparseGrid3 {
             run_sweep(pool, gate, &kernel)?;
         }
 
-        let stream_src = std::mem::take(&mut self.post);
         let result = {
             let kernel = StreamKernel {
-                src: &stream_src,
+                src: &self.post,
                 chunks: self
-                    .pre
+                    .next
                     .chunks_mut(SWEEP_GROUP_TILES)
                     .map(Mutex::new)
                     .collect(),
@@ -523,8 +534,8 @@ impl SparseGrid3 {
             };
             run_sweep(pool, gate, &kernel)
         };
-        self.post = stream_src;
         result?;
+        std::mem::swap(&mut self.pre, &mut self.next);
         self.steps += 1;
         Ok(())
     }
@@ -682,7 +693,9 @@ impl TileKernel for CollideKernel<'_> {
 }
 
 /// Stream pass: kernel tile `g` pull-streams slot group `g` from the
-/// read-only post-collision buffer into its exclusively-owned pre chunk.
+/// read-only post-collision buffer into an exclusively-owned transactional
+/// destination chunk. The caller publishes that buffer only after every
+/// kernel tile completes.
 struct StreamKernel<'a> {
     src: &'a [TileBlock],
     chunks: Vec<Mutex<&'a mut [TileBlock]>>,
