@@ -589,8 +589,7 @@ fn check_explicits(
 
 // ---------------------------------------------------------- dimensional
 
-const ARITH_SAME_DIMS: &[&str] = &["+", "-", "min", "max"];
-const COMPARE: &[&str] = &["=", "<", ">", "<=", ">="];
+use crate::catalog::{ARITH_SAME_DIMS, COMPARE_FORMS as COMPARE};
 
 fn infer_dims(
     node: &Node,
@@ -1272,7 +1271,10 @@ fn namespaced_verbs<'a>(node: &'a Node, out: &mut Vec<(&'a str, Span)>) {
 
 #[allow(clippy::too_many_lines)] // One ordered, fail-closed capability admission matrix.
 fn check_capability(study: &Study<'_>, cx: &AdmissionContext<'_>, out: &mut Vec<Finding>) {
-    let token = cx.capability.as_ref().map(SealedSessionCapability::capability);
+    let token = cx
+        .capability
+        .as_ref()
+        .map(SealedSessionCapability::capability);
     if let Some(sealed) = cx.capability.as_ref()
         && sealed.evidence_class() == CapabilityEvidenceClass::CallerDeclared
     {

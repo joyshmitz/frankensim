@@ -569,6 +569,32 @@ admitted derived-geometry boundary.
   addendum's declarative surface; imperative solver access is the
   internal/expert path.
 
+- `catalog` (the gp3.6 bead): the machine-readable operator catalog —
+  `Catalog::builtin()` generates entries FROM the live code surfaces
+  (`SUGAR_VERBS`/`ARITH_SAME_DIMS`/`COMPARE_FORMS` are the shared
+  registries this module OWNS and admission consumes; QoI entries
+  derive from `Qoi::meta()`/`is_probabilistic()` executed at
+  generation). Each `OperatorEntry` carries the full plan-mandated
+  columns: surface signature, dims rule, cost-model key (the
+  `AdmissionContext.cost_models` keying), error-model reference, typed
+  `DeterminismClass`, capability globs, `CancellationBehavior`,
+  executable examples (parsed and — for sugar verbs — LOWERED by the
+  battery, with the declared `lowers_to`/`injected_defaults` asserted
+  against the real trace, so a mismatched annotation fails CI),
+  semver, model-card link, ambition tag, and feature flag.
+  `Catalog::query(&CatalogQuery)` is conjunctive structured search
+  (name glob, namespace, capability-grant coverage, text);
+  `to_canonical_jsonl()` is the deterministic diffable export
+  (`CATALOG_SCHEMA_VERSION`) and `diff()` answers "what changed since
+  the version I know". `validate()` refuses duplicate names, missing
+  sugar targets, exampleless entries, and registry/catalog
+  disagreement in either direction. NO-CLAIM: entries catalog the
+  surfaces that exist today (two sugar verbs, two core operators, the
+  QoI menu, arithmetic forms); per-operator wall-cost NUMBERS stay in
+  sealed cost models, never in catalog prose; the ≤100ms serve budget
+  is certified by the gated `cat_008` lane on quiet hosts, not
+  asserted in default suites.
+
 - `admission` (the gp3.5 bead): `admit(node, &AdmissionContext) ->
   AdmissionReport` first binds raw syntax to the current `VersionedProgram`,
   fully lowers shorthand, and binds the lowered versioned identity before any

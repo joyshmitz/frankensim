@@ -23,6 +23,7 @@ pub mod admission;
 #[cfg(feature = "ladder-planner")]
 pub mod anytime;
 pub mod ast;
+pub mod catalog;
 #[cfg(feature = "derived-crosswalk")]
 pub mod derived_crosswalk;
 pub mod json;
