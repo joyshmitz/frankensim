@@ -1204,10 +1204,27 @@ fn check_color_admission(root: &Path) -> Vec<Violation> {
 // ---------------------------------------------------------------------------
 
 const TERMINOLOGY_CHECK: &str = "branch-terminology";
-const TERMINOLOGY_ALLOWLIST_VERSION: u32 = 1;
+const TERMINOLOGY_ALLOWLIST_VERSION: u32 = 2;
 
 fn legacy_branch_word() -> String {
     ["mas", "ter"].concat()
+}
+
+/// Compound technical terms in which the legacy branch word is NOT a
+/// branch reference and cannot be renamed: SQLite's system-catalog
+/// table (external API), the Maurer-Cartan/BV "<word> equation" of
+/// mathematics (spaced or hyphenated), and DMA/bus device-arbitration
+/// roles (hardware architecture). Allowlist v2; each compound is
+/// stripped before the branch-term scan so any residual bare
+/// occurrence on the same line still trips.
+fn terminology_allowed_compounds(word: &str) -> [String; 5] {
+    [
+        format!("sqlite_{word}"),
+        format!("{word} equation"),
+        format!("{word}-equation"),
+        format!("dma {word}"),
+        format!("bus {word}"),
+    ]
 }
 
 fn terminology_policy_line_is_allowlisted(path: &str, line: &str, word: &str) -> bool {
@@ -1226,10 +1243,15 @@ fn terminology_policy_line_is_allowlisted(path: &str, line: &str, word: &str) ->
 fn scan_terminology_sources(sources: &BTreeMap<String, String>) -> Vec<Violation> {
     let word = legacy_branch_word();
     let needle = word.to_ascii_lowercase();
+    let compounds = terminology_allowed_compounds(&needle);
     let mut violations = Vec::new();
     for (path, source) in sources {
         for (line_index, line) in source.lines().enumerate() {
-            if line.to_ascii_lowercase().contains(&needle)
+            let mut scrubbed = line.to_ascii_lowercase();
+            for compound in &compounds {
+                scrubbed = scrubbed.replace(compound.as_str(), "");
+            }
+            if scrubbed.contains(&needle)
                 && !terminology_policy_line_is_allowlisted(path, line, &word)
             {
                 violations.push(Violation {
@@ -4196,7 +4218,7 @@ mod tests {
             vec!["crates/a/src/lib.rs", "docs/b.md", "scripts/c.sh"]
         );
         assert!(violations.iter().all(|violation| {
-            violation.detail.contains("allowlist v1") && violation.detail.contains(":1:")
+            violation.detail.contains("allowlist v2") && violation.detail.contains(":1:")
         }));
 
         let near_miss = BTreeMap::from([(
@@ -4207,6 +4229,27 @@ mod tests {
             scan_terminology_sources(&near_miss).len(),
             1,
             "the AGENTS path does not broadly exempt non-policy occurrences"
+        );
+
+        let compounds = BTreeMap::from([(
+            "crates/d/src/lib.rs".to_string(),
+            format!(
+                "/// sqlite_{word} rows, the {word} equation, DMA {word}s, and bus {word} roles.\n"
+            ),
+        )]);
+        assert!(
+            scan_terminology_sources(&compounds).is_empty(),
+            "established compound technical terms are not branch references"
+        );
+
+        let compound_plus_bare = BTreeMap::from([(
+            "crates/e/src/lib.rs".to_string(),
+            format!("/// sqlite_{word} on the {word} branch.\n"),
+        )]);
+        assert_eq!(
+            scan_terminology_sources(&compound_plus_bare).len(),
+            1,
+            "a bare branch reference still trips beside an allowed compound"
         );
     }
 
