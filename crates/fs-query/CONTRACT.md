@@ -336,9 +336,12 @@ ordinary Rust test diagnostics.
 safe-step transfer under scale+shift against the analytic deformed
 sphere, rigorous enclosure pass-through with Estimate collapse,
 construction/sample refusals, and no distance-claim laundering into
-exact-distance consumers. The moments battery adds gm-006 (torus and
-hollow-shell closed forms) and gm-007 (an open mesh refuses mass
-properties through capability routing).
+exact-distance consumers. Aggregate outcomes use canonical fs-obs
+`ConformanceCase` events; gh-001..gh-003 carry the shared `0xDEF0` execution
+seed and constructor-only gh-004 uses zero. Direct assertion failures before
+those events remain ordinary Rust test diagnostics. The moments battery adds
+gm-006 (torus and hollow-shell closed forms) and gm-007 (an open mesh refuses
+mass properties through capability routing).
 `tests/inflation.rs` — conversion/router receipt refusal, exact-zero bit
 neutrality, outward widening and witness shrinking, and monotonicity across
 convex, implicit-gap, codimensional, CCD, and moments consumers.

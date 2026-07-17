@@ -11,6 +11,8 @@
 //!   through typed errors or no-claim samples.
 //! - gh-004 G0: the deformed chart cannot launder a distance claim
 //!   into exact-distance consumers.
+//! Aggregate outcomes use canonical fs-obs events; evaluated cases carry
+//! the shared execution seed and the constructor-only case uses zero.
 
 use asupersync::types::Budget;
 use fs_evidence::{NumericalCertificate, NumericalKind};
@@ -19,12 +21,29 @@ use fs_geom::fixtures::SphereChart;
 use fs_geom::{Aabb, Chart, ChartSample, Point3, TraceStepClaim, Vec3};
 use fs_query::{DeformationMap, DeformedChart, ImplicitGapOracle, OffsetChart, QueryError};
 
-fn verdict(case: &str, pass: bool, detail: &str) {
-    println!(
-        "{{\"suite\":\"fs-query/deform\",\"case\":\"{case}\",\"verdict\":\"{}\",\
-         \"detail\":\"{detail}\"}}",
-        if pass { "pass" } else { "fail" }
+const EXECUTION_SEED: u64 = 0xDEF0;
+
+fn verdict(case: &str, pass: bool, detail: &str, seed: u64) {
+    let mut emitter = fs_obs::Emitter::new("fs-query/deform", case);
+    let event = emitter.emit(
+        if pass {
+            fs_obs::Severity::Info
+        } else {
+            fs_obs::Severity::Error
+        },
+        fs_obs::EventKind::ConformanceCase {
+            suite: "fs-query/deform".to_string(),
+            case: case.to_string(),
+            pass,
+            detail: detail.to_string(),
+            seed,
+        },
+        None,
     );
+    fs_obs::lint_failure_record(&event).expect("deformation verdict must be replayable");
+    let line = event.to_jsonl();
+    fs_obs::validate_line(&line).expect("deformation verdict must use the fs-obs wire schema");
+    println!("{line}");
     assert!(pass, "case {case}: {detail}");
 }
 
@@ -36,7 +55,7 @@ fn with_cx<R>(f: impl FnOnce(&Cx<'_>) -> R) -> R {
             &gate,
             arena,
             StreamKey {
-                seed: 0xDEF0,
+                seed: EXECUTION_SEED,
                 kernel_id: 19,
                 tile: 0,
                 iteration: 0,
@@ -199,6 +218,7 @@ fn gh_001_sign_zero_set_and_safe_steps_survive_the_deformation() {
         "gh-001",
         checked == probes.len(),
         &format!("{checked} probes: sign transfer + certified safe steps"),
+        EXECUTION_SEED,
     );
 }
 
@@ -235,7 +255,12 @@ fn gh_002_enclosures_pass_through_or_collapse() {
         NumericalKind::NoClaim,
         "Estimate-class reference evidence collapses to no-claim"
     );
-    verdict("gh-002", true, "pass-through rigorous, collapse honest");
+    verdict(
+        "gh-002",
+        true,
+        "pass-through rigorous, collapse honest",
+        EXECUTION_SEED,
+    );
 }
 
 #[test]
@@ -286,6 +311,7 @@ fn gh_003_refusals_fail_closed() {
         "gh-003",
         true,
         "construction and sample refusals all fail closed",
+        EXECUTION_SEED,
     );
 }
 
@@ -312,5 +338,6 @@ fn gh_004_no_distance_claim_launders_through() {
         "gh-004",
         true,
         "LipschitzImplicit claim holds; exact-distance consumers refuse the wrapper",
+        0,
     );
 }
