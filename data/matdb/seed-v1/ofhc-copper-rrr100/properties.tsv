@@ -1,0 +1,15 @@
+frankensim.matdb-source.v1
+observation	nist-k-rrr100-fit	ofhc-copper-uns-c10100-c10200-rrr100	NIST RRR=100 OFHC-copper thermal-conductivity correlation evaluated into exact-temperature derived scalars	log10(k)=(a+c*T^0.5+e*T+g*T^1.5+i*T^2)/(1+b*T^0.5+d*T+f*T^1.5+h*T^2); a..i=2.2154,-0.47461,-0.88068,0.13871,0.29505,-0.02043,-0.04831,0.001281,0.003207; equation range 4-300 K; NIST reports 1 percent curve-fit error relative to data, without a confidence level or degrees of freedom
+observation	nist-cp-fit	ofhc-copper-uns-c10100-c10200-source-rrr-unspecified	NIST OFHC-copper specific-heat polynomial evaluated into exact-temperature derived scalars	log10(y)=sum(a_i*log10(T)^i); a..i=-1.91844,-0.15973,8.61013,-18.996,21.9661,-12.7328,3.54322,-0.3797,0; data and equation range 4-300 K; NIST reports 5 percent curve-fit error at or above 15 K without a confidence level or degrees of freedom; source does not bind RRR for specific heat
+scalar	thermal-conductivity-77K	nist-k-rrr100-fit	thermal_conductivity	547.199698079367	W/m/K	constant
+uncertainty	thermal-conductivity-77K	unstated	-	-	-	-
+validity	thermal-conductivity-77K	temperature	77	77	K
+scalar	specific-heat-capacity-77K	nist-cp-fit	specific_heat_capacity	195.920875203329	J/kg/K	constant
+uncertainty	specific-heat-capacity-77K	unstated	-	-	-	-
+validity	specific-heat-capacity-77K	temperature	77	77	K
+scalar	thermal-conductivity-293K	nist-k-rrr100-fit	thermal_conductivity	396.908547137121	W/m/K	constant
+uncertainty	thermal-conductivity-293K	unstated	-	-	-	-
+validity	thermal-conductivity-293K	temperature	293	293	K
+scalar	specific-heat-capacity-293K	nist-cp-fit	specific_heat_capacity	389.085653150371	J/kg/K	constant
+uncertainty	specific-heat-capacity-293K	unstated	-	-	-	-
+validity	specific-heat-capacity-293K	temperature	293	293	K

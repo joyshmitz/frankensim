@@ -26,6 +26,7 @@ const SPECIES_COMPILER_ID: &str = "frankensim-matdb-species-pack-compiler-v1";
 const METHANE_SEED_MANIFEST: &str = "data/matdb/seed-v1/methane/manifest.tsv";
 const ALUMINUM_6061_T6_SEED_MANIFEST: &str =
     "data/matdb/seed-v1/aluminum-6061-t6-cryogenic/manifest.tsv";
+const OFHC_COPPER_SEED_MANIFEST: &str = "data/matdb/seed-v1/ofhc-copper-rrr100/manifest.tsv";
 const NASA_SEED_LICENSE: &str = "Work-of-the-US-Government-Public-Use-Permitted";
 const NIST_PUBLIC_INFORMATION_LICENSE: &str = "NIST-Public-Information-Attribution-Requested";
 const NASA_METHANE_MOLAR_MASS_G_PER_MOL: f64 = 16.042_46;
@@ -606,6 +607,186 @@ fn g3_cli_compiles_committed_aluminum_6061_t6_exact_point_seed() {
         assert!(
             relative_difference <= 0.03,
             "NIST-derived {nist_temperature} K conductivity and NASA {nasa_temperature} K comparison differ by {relative_difference:e}"
+        );
+    }
+
+    let decisions = String::from_utf8(first.stdout).expect("decision stream is UTF-8");
+    assert!(decisions.contains("\"reason_code\":\"uncertainty_policy_admitted\""));
+    assert!(decisions.contains("\"reason_code\":\"runtime_pack_self_verified\""));
+    assert!(
+        decisions
+            .lines()
+            .all(|row| row.contains(&format!("\"pack_hash\":\"{pack_hash}\"")))
+    );
+}
+
+#[test]
+fn g3_cli_compiles_committed_ofhc_copper_exact_point_seed() {
+    let manifest = workspace_path(OFHC_COPPER_SEED_MANIFEST);
+    assert!(
+        manifest.is_file(),
+        "committed OFHC Copper seed manifest is missing"
+    );
+    let directory = fixture_dir();
+    let first_path = directory.join("ofhc-copper-first.fsmatpk");
+    let second_path = directory.join("ofhc-copper-second.fsmatpk");
+
+    let first = run_compiler(&manifest, &first_path);
+    let second = run_compiler(&manifest, &second_path);
+    assert!(
+        first.status.success(),
+        "first OFHC Copper seed compilation failed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(
+        second.status.success(),
+        "second OFHC Copper seed compilation failed: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(
+        first.stdout, second.stdout,
+        "OFHC Copper decision stream moved"
+    );
+    assert_decision_compiler(&first, MATERIAL_COMPILER_ID);
+
+    let first_bytes = fs::read(first_path).expect("read first OFHC Copper pack");
+    let second_bytes = fs::read(second_path).expect("read second OFHC Copper pack");
+    assert_eq!(first_bytes, second_bytes, "OFHC Copper pack bytes moved");
+    let decoded = NormalizedPack::from_bytes(&first_bytes).expect("decode OFHC Copper pack");
+    let pack_hash = decoded.content_hash();
+    let decoded = NormalizedPack::from_bytes_verified(pack_hash, &first_bytes)
+        .expect("verify OFHC Copper pack identity");
+
+    assert_eq!(decoded.pack_id(), "ofhc-copper-cryogenic");
+    assert_eq!(decoded.compiler(), MATERIAL_COMPILER_ID);
+    assert!(
+        decoded
+            .redistribution_terms()
+            .contains("public information")
+    );
+    assert_eq!(decoded.claims().claim_count(), 4);
+    assert!(decoded.joint_statistics().is_empty());
+
+    let expected = [
+        (
+            "thermal_conductivity",
+            77.0,
+            547.199_698_079_367,
+            Dims([1, 1, -3, -1, 0, 0]),
+            "1 percent curve-fit error",
+            "a..i=2.2154,-0.47461",
+            "ofhc-copper-uns-c10100-c10200-rrr100",
+        ),
+        (
+            "thermal_conductivity",
+            293.0,
+            396.908_547_137_121,
+            Dims([1, 1, -3, -1, 0, 0]),
+            "1 percent curve-fit error",
+            "a..i=2.2154,-0.47461",
+            "ofhc-copper-uns-c10100-c10200-rrr100",
+        ),
+        (
+            "specific_heat_capacity",
+            77.0,
+            195.920_875_203_329,
+            Dims([2, 0, -2, -1, 0, 0]),
+            "5 percent curve-fit error",
+            "a..i=-1.91844,-0.15973",
+            "ofhc-copper-uns-c10100-c10200-source-rrr-unspecified",
+        ),
+        (
+            "specific_heat_capacity",
+            293.0,
+            389.085_653_150_371,
+            Dims([2, 0, -2, -1, 0, 0]),
+            "5 percent curve-fit error",
+            "a..i=-1.91844,-0.15973",
+            "ofhc-copper-uns-c10100-c10200-source-rrr-unspecified",
+        ),
+    ];
+
+    for (
+        property,
+        temperature,
+        expected_value,
+        expected_dims,
+        fit_error_note,
+        coefficient_note,
+        expected_specimen,
+    ) in expected
+    {
+        let (_, claim) = decoded
+            .claims()
+            .claims_for(property)
+            .into_iter()
+            .find(|(_, claim)| {
+                claim.validity.bound("temperature") == Some((temperature, temperature))
+            })
+            .unwrap_or_else(|| panic!("missing OFHC {property} claim at {temperature} K"));
+        let PropertyValue::Scalar { value, dims } = &claim.value else {
+            panic!("OFHC {property} at {temperature} K was not an exact-point scalar");
+        };
+        assert_eq!(*dims, expected_dims, "OFHC {property} dimensions moved");
+        let relative_error = (*value - expected_value).abs() / expected_value;
+        assert!(
+            relative_error <= 2.0e-15,
+            "OFHC {property} at {temperature} K moved by {relative_error:e} relative"
+        );
+        assert_eq!(claim.uncertainty, UncertaintyModel::Unstated);
+        assert_eq!(
+            claim.interpolation,
+            InterpolationPolicy::ConstantWithinValidity
+        );
+        assert_eq!(claim.observations.len(), 1);
+        assert_eq!(claim.provenance.license, NIST_PUBLIC_INFORMATION_LICENSE);
+        assert!(
+            claim
+                .provenance
+                .source
+                .contains("Material Properties: OFHC Copper")
+        );
+        assert!(claim.provenance.source.contains("[source:nist-ofhc-fit]"));
+        let observation = decoded
+            .claims()
+            .observation(claim.observations[0])
+            .expect("OFHC claim observation remains linked");
+        assert_eq!(observation.specimen, expected_specimen);
+        assert!(observation.method.contains("NIST"));
+        assert!(
+            observation
+                .method
+                .contains("exact-temperature derived scalars")
+        );
+        assert!(observation.caveats.contains(fit_error_note));
+        assert!(observation.caveats.contains(coefficient_note));
+        assert!(
+            observation
+                .caveats
+                .contains("without a confidence level or degrees of freedom")
+        );
+    }
+
+    // G3 independent-source evidence only: NASA-CR-134806 reports typical
+    // room-temperature OFHC Copper values of 390 W/(m K) and 386 J/(kg K).
+    // They remain comparisons and do not replace the NIST-derived claims.
+    for (property, nasa_value) in [
+        ("thermal_conductivity", 390.0),
+        ("specific_heat_capacity", 386.0),
+    ] {
+        let (_, claim) = decoded
+            .claims()
+            .claims_for(property)
+            .into_iter()
+            .find(|(_, claim)| claim.validity.bound("temperature") == Some((293.0, 293.0)))
+            .unwrap_or_else(|| panic!("missing OFHC room-temperature {property}"));
+        let PropertyValue::Scalar { value, .. } = &claim.value else {
+            panic!("OFHC room-temperature comparison point was not scalar");
+        };
+        let relative_difference = (*value - nasa_value).abs() / nasa_value;
+        assert!(
+            relative_difference <= 0.02,
+            "NIST-derived 293 K OFHC {property} and NASA room-temperature comparison differ by {relative_difference:e}"
         );
     }
 

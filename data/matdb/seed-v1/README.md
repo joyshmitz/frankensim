@@ -91,6 +91,40 @@ Material references:
 - <https://ntrs.nasa.gov/api/citations/19660014513/downloads/19660014513.pdf>
 - <https://ntrs.nasa.gov/citations/19690000065>
 
+## OFHC Copper cryogenic exact-point tranche
+
+`ofhc-copper-rrr100/` retains NIST's combined OFHC Copper scope, UNS
+C10100/C10200, without pretending that the two UNS designations are
+interchangeable for properties the source does not cover. Thermal-conductivity
+claims pin `RRR = 100`, a load-bearing condition because NIST publishes
+distinct conductivity correlations for RRR 50, 100, 150, 300, and 500. The
+specific-heat source publishes one combined OFHC correlation without an RRR
+condition, so its observation names that omission explicitly instead of
+silently borrowing the conductivity condition.
+
+The tranche evaluates the published RRR-100 conductivity correlation and
+specific-heat polynomial at exactly `77 K` and `293 K`. As with the Aluminum
+tranche, degenerate validity intervals prevent interpolation claims. NIST
+reports `1%` curve-fit error for the RRR-100 conductivity correlation and `5%`
+for specific heat at these temperatures, but does not give confidence levels
+or degrees of freedom. The pack therefore retains the errors and complete
+coefficient sets as observation caveats while encoding `Unstated` statistical
+uncertainty.
+
+NASA-CR-134806 independently reports typical room-temperature OFHC Copper
+specific heat of `386 J/(kg K)` and thermal conductivity of `390 W/(m K)`.
+Both are within `2%` of the NIST-derived `293 K` values. That coarse G3 check
+is evidence only: it neither overwrites the NIST claims nor erases NASA's
+distinct material/processing context. The NTRS record marks the NASA report
+public and as a work of the U.S. Government whose public use is permitted.
+
+OFHC Copper references:
+
+- <https://trc.nist.gov/cryogenics/materials/OFHC%20Copper/OFHC_Copper_rev1.htm>
+- <https://www.nist.gov/publications/properties-copper-and-copper-alloys-cryogenic-temperatures>
+- <https://ntrs.nasa.gov/citations/19750021165>
+- <https://ntrs.nasa.gov/api/citations/19750021165/downloads/19750021165.pdf>
+
 To compile the sources into canonical runtime packs:
 
 ```bash
@@ -101,6 +135,10 @@ cargo run -p xtask -- matdb-pack \
 cargo run -p xtask -- matdb-pack \
   --manifest data/matdb/seed-v1/aluminum-6061-t6-cryogenic/manifest.tsv \
   --out /path/to/aluminum-6061-t6-cryogenic.fsmatpk
+
+cargo run -p xtask -- matdb-pack \
+  --manifest data/matdb/seed-v1/ofhc-copper-rrr100/manifest.tsv \
+  --out /path/to/ofhc-copper-cryogenic.fsmatpk
 ```
 
 ## No-claim boundary
@@ -123,3 +161,9 @@ confidence interval. The NASA comparison uses nearby temperatures and is only
 a coarse independent agreement check. These missing claims and the remaining
 named materials and interface systems keep bead
 `frankensim-ext-matdb-seed-dataset-1sxe` open.
+
+The OFHC Copper tranche likewise does not select between UNS C10100 and C10200,
+define electrical resistivity, density, mechanical strength, temper, grain
+state, purity beyond the source's OFHC class, or a continuous-temperature
+model. Only its conductivity claims bind `RRR = 100`; the source leaves RRR
+unstated for specific heat, and the stored observation preserves that gap.
