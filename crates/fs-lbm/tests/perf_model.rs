@@ -248,7 +248,7 @@ fn max_plus_path_names_the_true_dominant_kernel_class() {
 #[test]
 fn observed_sparse_sweep_lowers_to_an_exact_bounded_max_plus_dag() {
     let observation = observed_sweep();
-    let tasks = sparse_sweep_task_samples(5, &observation).expect("observation admits");
+    let tasks = sparse_sweep_task_samples(Some(5), &observation).expect("observation admits");
     assert_eq!(tasks.len(), 7);
     assert_eq!(tasks[0], task(1, KernelClass::Activation, 5, &[]));
     assert_eq!(tasks[1], task(2, KernelClass::Collide, 100, &[1]));
@@ -264,10 +264,28 @@ fn observed_sparse_sweep_lowers_to_an_exact_bounded_max_plus_dag() {
     assert_eq!(critical.class_wall_ns, [5, 100, 60, 100]);
     assert_eq!(critical.dominant_class, KernelClass::Collide);
     assert_eq!(
-        sparse_sweep_task_samples(5, &observation).expect("replay admits"),
+        sparse_sweep_task_samples(Some(5), &observation).expect("replay admits"),
         tasks,
         "identical observations must replay to identical task identities"
     );
+}
+
+#[test]
+fn fixed_active_set_sweep_does_not_fabricate_activation_work() {
+    let observation = observed_sweep();
+    let tasks = sparse_sweep_task_samples(None, &observation).expect("fixed set admits");
+    assert_eq!(tasks.len(), 6);
+    assert_eq!(tasks[0], task(1, KernelClass::Collide, 100, &[]));
+    assert_eq!(tasks[1], task(2, KernelClass::Stream, 40, &[1]));
+    assert_eq!(tasks[2], task(3, KernelClass::Halo, 60, &[2]));
+    assert_eq!(tasks[3], task(4, KernelClass::Stream, 80, &[1]));
+    assert_eq!(tasks[4], task(5, KernelClass::Halo, 20, &[4]));
+    assert_eq!(tasks[5], task(6, KernelClass::Stream, 60, &[3, 5]));
+
+    let critical = attribute_critical_path(&tasks).expect("lowered DAG admits");
+    assert_eq!(critical.path, [1, 2, 3, 6]);
+    assert_eq!(critical.makespan_ns, 100 + 150 + 10);
+    assert_eq!(critical.class_wall_ns, [0, 100, 60, 100]);
 }
 
 #[test]
@@ -275,7 +293,7 @@ fn observed_sparse_sweep_refuses_forged_completion_geometry_and_nested_walls() {
     let mut incomplete = observed_sweep();
     incomplete.stream.executor.completed = 1;
     assert!(matches!(
-        sparse_sweep_task_samples(5, &incomplete),
+        sparse_sweep_task_samples(Some(5), &incomplete),
         Err(PerfModelError::InvalidReceipt(
             "observed executor completion"
         ))
@@ -284,7 +302,7 @@ fn observed_sparse_sweep_refuses_forged_completion_geometry_and_nested_walls() {
     let mut reordered = observed_sweep();
     reordered.stream_groups.swap(0, 1);
     assert!(matches!(
-        sparse_sweep_task_samples(5, &reordered),
+        sparse_sweep_task_samples(Some(5), &reordered),
         Err(PerfModelError::InvalidReceipt(
             "observed stream group geometry"
         ))
@@ -293,20 +311,20 @@ fn observed_sparse_sweep_refuses_forged_completion_geometry_and_nested_walls() {
     let mut impossible_wall = observed_sweep();
     impossible_wall.stream.wall_ns = 99;
     assert!(matches!(
-        sparse_sweep_task_samples(5, &impossible_wall),
+        sparse_sweep_task_samples(Some(5), &impossible_wall),
         Err(PerfModelError::InvalidReceipt(
             "observed group wall exceeds stream pass"
         ))
     ));
     assert!(matches!(
-        sparse_sweep_task_samples(0, &observed_sweep()),
+        sparse_sweep_task_samples(Some(0), &observed_sweep()),
         Err(PerfModelError::InvalidReceipt("activation wall"))
     ));
 
     let mut worker_overflow = observed_sweep();
     worker_overflow.collide.executor.tiles_by_worker = vec![u64::MAX, 1];
     assert!(matches!(
-        sparse_sweep_task_samples(5, &worker_overflow),
+        sparse_sweep_task_samples(Some(5), &worker_overflow),
         Err(PerfModelError::ArithmeticOverflow(
             "observed worker completion"
         ))

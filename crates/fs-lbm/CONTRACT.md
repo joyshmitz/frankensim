@@ -778,12 +778,15 @@ destination is published, and cancellation retains the pre-step state exactly.
 `sparse_sweep_task_samples` validates successful executor completion, exact
 worker/group geometry, non-cancelled reports, and nested wall envelopes before
 allocating a bounded DAG. Its stable identities encode
-`activation -> collide -> {local-stream[g] -> halo[g]} -> stream-residual +
-publication`. The final join carries only the measured stream-pass wall not
-already on the selected group path plus publication, so the max-plus makespan
-is exactly activation + collide-pass + stream-pass + publication rather than a
-sum of overlapping worker walls. The join may name every bounded halo terminal;
-the global task and edge caps remain the allocation authority.
+`optional activation -> collide -> {local-stream[g] -> halo[g]} ->
+stream-residual + publication`. Activation is present only when the measured
+repetition actually rebuilt the active set; fixed-active-set throughput lanes
+omit it instead of charging one-time setup to every sweep. The final join
+carries only the measured stream-pass wall not already on the selected group
+path plus publication, so the max-plus makespan is exactly the sum of optional
+activation, collide-pass, stream-pass, and publication rather than a sum of
+overlapping worker walls. The join may name every bounded halo terminal; the
+global task and edge caps remain the allocation authority.
 
 ### No-claim boundaries (D3Q19 performance model)
 
@@ -798,6 +801,6 @@ the global task and edge caps remain the allocation authority.
   and the sealed tune-row path remain required measurement evidence.
 - The observed sweep does not itself time active-set construction,
   authenticate machine axes, emit a GLUP/s row, or write the ledger. Its task
-  lowering consumes caller-owned activation wall and exposes truthful
-  primitive max-plus inputs for the ignored driver; neither surface is itself
-  citable performance evidence.
+  lowering consumes an optional caller-owned activation wall and exposes
+  truthful primitive max-plus inputs for the ignored driver; neither surface
+  is itself citable performance evidence.

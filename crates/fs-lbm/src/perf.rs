@@ -706,22 +706,25 @@ pub fn critical_path_is_stable(repetitions: &[CriticalPathAttribution]) -> bool 
 /// The graph preserves the real barriers without double-counting parallel
 /// group walls:
 ///
-/// - activation precedes the aggregate collide pass;
+/// - an observed active-set rebuild, when present, precedes the aggregate
+///   collide pass;
 /// - each canonical local-stream group depends on collide;
 /// - each halo group depends on its same-group local pull;
 /// - one final stream/publication task joins every halo group and carries the
 ///   observed stream-pass residual plus the publication wall.
 ///
-/// Consequently the graph makespan is exactly `activation + collide pass +
-/// stream pass + publication` (subject only to checked integer arithmetic),
-/// while the selected group path still attributes local-stream versus halo
-/// work. The caller owns activation timing because active-set construction is
-/// outside [`SparseSweepObservation`].
+/// Consequently the graph makespan is exactly `optional activation + collide
+/// pass + stream pass + publication` (subject only to checked integer
+/// arithmetic), while the selected group path still attributes local-stream
+/// versus halo work. The caller supplies `Some(wall_ns)` only when active-set
+/// construction occurred inside the measured repetition. Fixed-active-set
+/// sweep lanes use `None`; charging one-time setup to every repetition would
+/// fabricate work outside [`SparseSweepObservation`].
 pub fn sparse_sweep_task_samples(
-    activation_wall_ns: u64,
+    activation_wall_ns: Option<u64>,
     observation: &SparseSweepObservation,
 ) -> Result<Vec<TaskSample>, PerfModelError> {
-    if activation_wall_ns == 0 {
+    if matches!(activation_wall_ns, Some(0)) {
         return Err(PerfModelError::InvalidReceipt("activation wall"));
     }
     if observation.active_tiles == 0 || observation.workers == 0 {
@@ -771,7 +774,7 @@ pub fn sparse_sweep_task_samples(
 
     let task_count = group_count
         .checked_mul(2)
-        .and_then(|count| count.checked_add(3))
+        .and_then(|count| count.checked_add(2 + usize::from(activation_wall_ns.is_some())))
         .ok_or(PerfModelError::ArithmeticOverflow("observed task count"))?;
     if task_count > MAX_CRITICAL_TASKS {
         return Err(PerfModelError::ResourceLimit {
@@ -782,7 +785,7 @@ pub fn sparse_sweep_task_samples(
     }
     let edge_count = group_count
         .checked_mul(3)
-        .and_then(|count| count.checked_add(1))
+        .and_then(|count| count.checked_add(usize::from(activation_wall_ns.is_some())))
         .ok_or(PerfModelError::ArithmeticOverflow("observed edge count"))?;
     if edge_count > MAX_CRITICAL_EDGES {
         return Err(PerfModelError::ResourceLimit {
@@ -796,17 +799,24 @@ pub fn sparse_sweep_task_samples(
     tasks
         .try_reserve_exact(task_count)
         .map_err(|_| PerfModelError::AllocationRefused("critical tasks"))?;
+    if let Some(wall_ns) = activation_wall_ns {
+        tasks.push(TaskSample {
+            id: 1,
+            class: KernelClass::Activation,
+            wall_ns,
+            predecessors: Vec::new(),
+        });
+    }
+    let collide_id = if activation_wall_ns.is_some() { 2 } else { 1 };
     tasks.push(TaskSample {
-        id: 1,
-        class: KernelClass::Activation,
-        wall_ns: activation_wall_ns,
-        predecessors: Vec::new(),
-    });
-    tasks.push(TaskSample {
-        id: 2,
+        id: collide_id,
         class: KernelClass::Collide,
         wall_ns: observation.collide.wall_ns,
-        predecessors: vec![1],
+        predecessors: if activation_wall_ns.is_some() {
+            vec![1]
+        } else {
+            Vec::new()
+        },
     });
 
     let mut halo_terminals = Vec::new();
@@ -834,7 +844,7 @@ pub fn sparse_sweep_task_samples(
         }
         let local_id = index
             .checked_mul(2)
-            .and_then(|offset| offset.checked_add(3))
+            .and_then(|offset| offset.checked_add(if activation_wall_ns.is_some() { 3 } else { 2 }))
             .and_then(|id| u32::try_from(id).ok())
             .ok_or(PerfModelError::ArithmeticOverflow("local stream task id"))?;
         let halo_id = local_id
@@ -844,7 +854,7 @@ pub fn sparse_sweep_task_samples(
             id: local_id,
             class: KernelClass::Stream,
             wall_ns: group.local_stream_wall_ns,
-            predecessors: vec![2],
+            predecessors: vec![collide_id],
         });
         tasks.push(TaskSample {
             id: halo_id,
