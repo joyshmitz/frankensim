@@ -23,6 +23,7 @@
 
 mod boundary;
 mod coupled;
+pub mod freesurface3;
 mod simd;
 pub mod sparse;
 

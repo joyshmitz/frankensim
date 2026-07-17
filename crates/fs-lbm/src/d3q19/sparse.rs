@@ -454,6 +454,47 @@ impl SparseGrid3 {
         (rho, [mom[0] / rho, mom[1] / rho, mom[2] / rho])
     }
 
+    /// Ascending Morton keys of the active tiles (the canonical slot
+    /// order) — the free-surface layer's topology view.
+    pub(super) fn active_keys(&self) -> &[u64] {
+        &self.keys
+    }
+
+    /// Slot index of an active tile by Morton key.
+    pub(super) fn slot_of(&self, key: u64) -> Option<usize> {
+        self.index.get(&key).copied()
+    }
+
+    /// Domain extent in tiles.
+    pub(super) fn tile_dims(&self) -> (usize, usize, usize) {
+        (self.ntx, self.nty, self.ntz)
+    }
+
+    /// The grid's collision model and body force (the free-surface step
+    /// shares the exact per-cell collision authority).
+    pub(super) fn collision(&self) -> (CollisionModel3, [f64; 3]) {
+        (self.model, self.force)
+    }
+
+    /// Published populations of one cell.
+    pub(super) fn populations(&self, slot: usize, lane: usize) -> [f64; Q3] {
+        core::array::from_fn(|q| self.pre[slot].f[q].0[lane])
+    }
+
+    /// Overwrite the published populations of one cell (free-surface
+    /// streaming commits through this; the sparse sweep never does).
+    pub(super) fn set_populations(&mut self, slot: usize, lane: usize, f: [f64; Q3]) {
+        for q in 0..Q3 {
+            self.pre[slot].f[q].0[lane] = f[q];
+        }
+    }
+
+    /// Resolve a global cell coordinate to `(active slot, lane)`, or
+    /// `None` for out-of-domain / inactive-tile space (wall semantics).
+    pub(super) fn resolve_source(&self, sx: i64, sy: i64, sz: i64) -> Option<(usize, usize)> {
+        source_slot(sx, sy, sz, &self.index, (self.ntx, self.nty, self.ntz))
+    }
+
     /// One serial sweep step: collide every active cell, pull-stream into a
     /// private transactional destination, then publish by swapping buffers.
     /// The serial path is the bitwise reference the pooled path must reproduce.
