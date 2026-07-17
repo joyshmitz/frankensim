@@ -7404,7 +7404,7 @@ fn coupling_surfaces(root: &Path) -> Result<BTreeMap<String, CouplingSurface>, V
                 }
                 if !canonical_schema_fingerprint(schema_fingerprint, version, 32) {
                     return Err(format!(
-                        "{context} schema_fingerprint must be a canonical version-{version} BLAKE3-256 digest"
+                        "{context} schema_fingerprint is empty or malformed; expected v{version}- followed by exactly 64 lowercase hexadecimal digits (BLAKE3-256)"
                     ));
                 }
                 return Ok((
@@ -7451,7 +7451,7 @@ fn coupling_surfaces(root: &Path) -> Result<BTreeMap<String, CouplingSurface>, V
                 .is_some_and(|fingerprint| !canonical_schema_fingerprint(fingerprint, version, 32))
             {
                 return Err(format!(
-                    "{context} schema_fingerprint must be a canonical version-{version} BLAKE3-256 digest"
+                    "{context} schema_fingerprint is empty or malformed; expected v{version}- followed by exactly 64 lowercase hexadecimal digits (BLAKE3-256)"
                 ));
             }
             Ok((
@@ -8098,9 +8098,12 @@ fn load_declarations(root: &Path) -> (Vec<IdentityDecl>, Vec<Violation>) {
         violations.extend(dependency_violations);
         resolved
     };
-    if fingerprints_resolved {
-        match coupling_surfaces(root) {
-            Ok(surfaces) => {
+    // Parse the golden independently of declaration resolution: one unrelated
+    // dependency error must not hide a malformed pin. Exact declaration and
+    // external-owner comparisons still wait for the complete fingerprint set.
+    match coupling_surfaces(root) {
+        Ok(surfaces) => {
+            if fingerprints_resolved {
                 for declaration in &declarations {
                     violations.extend(validate_coupling(declaration, &surfaces));
                 }
@@ -8110,8 +8113,8 @@ fn load_declarations(root: &Path) -> (Vec<IdentityDecl>, Vec<Violation>) {
                     violations.extend(external_violations);
                 }
             }
-            Err(coupling_violations) => violations.extend(coupling_violations),
         }
+        Err(coupling_violations) => violations.extend(coupling_violations),
     }
     (declarations, violations)
 }
@@ -9053,6 +9056,73 @@ fn version_refuses() {{ assert_eq!(MINI_VERSION, 1); }}
         let root = seed_fixture("clean", &source, 1);
         write_current_registry(&root);
         assert!(check_identities(&root).is_empty());
+    }
+
+    #[test]
+    fn schema_fingerprint_format_is_exact_versioned_lower_hex() {
+        let zeros = format!("v1-{}", "0".repeat(64));
+        let mixed_digest = "0123456789abcdef".repeat(4);
+        let multi_digit_version = format!("v12-{mixed_digest}");
+        assert!(canonical_schema_fingerprint(&zeros, 1, 32));
+        assert!(canonical_schema_fingerprint(&multi_digit_version, 12, 32));
+
+        for malformed in [
+            String::new(),
+            "v1-".to_string(),
+            format!("V1-{mixed_digest}"),
+            format!("v01-{mixed_digest}"),
+            format!("v2-{mixed_digest}"),
+            format!("v1_{mixed_digest}"),
+            format!("v1-{}", "0".repeat(63)),
+            format!("v1-{}", "0".repeat(65)),
+            format!("v1-{}A", "0".repeat(63)),
+            format!("v1-{}g", "0".repeat(63)),
+            format!(" v1-{mixed_digest}"),
+            format!("v1-{mixed_digest}\n"),
+            format!("v1-{}\0", "0".repeat(63)),
+        ] {
+            assert!(
+                !canonical_schema_fingerprint(&malformed, 1, 32),
+                "malformed fingerprint was accepted: {malformed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_golden_fingerprint_is_not_masked_by_unresolved_declaration() {
+        let source = owner_source("", "a", "a:crates/mini/src/lib.rs#mutation_a");
+        let root = seed_fixture("malformed-coupling-with-unresolved-declaration", &source, 1);
+        let unresolved = source.replace(
+            "schema_dependencies=none",
+            "schema_dependencies=mini:missing",
+        );
+        std::fs::write(root.join("crates/mini/src/lib.rs"), unresolved)
+            .expect("unresolved fixture source");
+
+        let golden_path = root.join("golden-couplings.json");
+        let mut golden = std::fs::read_to_string(&golden_path).expect("fixture golden registry");
+        let marker = "\"schema_fingerprint\": \"";
+        let value_start = golden.find(marker).expect("fingerprint field") + marker.len();
+        let value_end = value_start
+            + golden[value_start..]
+                .find('"')
+                .expect("fingerprint terminator");
+        golden.replace_range(value_start..value_end, "");
+        std::fs::write(golden_path, golden).expect("empty fingerprint mutation");
+
+        let violations = check_identities(&root);
+        assert!(
+            violations.iter().any(|violation| violation
+                .detail
+                .contains("schema dependency \"mini:missing\" does not exist")),
+            "fixture must preserve the unrelated resolution failure: {violations:?}"
+        );
+        assert!(
+            violations.iter().any(|violation| violation
+                .detail
+                .contains("schema_fingerprint is empty or malformed; expected v1- followed by exactly 64 lowercase hexadecimal digits (BLAKE3-256)")),
+            "malformed golden fingerprints must be reported independently: {violations:?}"
+        );
     }
 
     #[test]
