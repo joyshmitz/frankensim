@@ -638,3 +638,36 @@ redistributed.
   (lbm-106 pins 90-degree equivariance at 3e-14); full fs-scenario moving-
   frame integration and Plateau–Rayleigh breakup SCORING (beyond the
   qualitative fragment gate) are staged with the vessel flagship.
+
+## WS1 3-D feature preservation: thermal + non-Newtonian (bead eg62)
+
+`d3q19::coupled` ports the two VALIDATED 2-D capabilities to the 3-D
+path without forking constitutive code. `PlatesGrid3` is a plain-storage
+D3Q19 plate channel (rigid z-plates via halfway bounce-back, periodic
+x/y) with per-cell relaxation time and per-cell external force, colliding
+through the SHARED `collide_cell3` BGK + Guo kernel; the tiled SoA
+`Duct`/`BoundaryGrid3` fast paths and their frozen bit-semantics goldens
+are untouched. `ThermalLbm3` adds a D3Q7 advection-diffusion temperature
+population (c_s² = ¼) with anti-bounce-back fixed-temperature plates and
+Boussinesq coupling into the Guo term. `update_tau3` adapts τ from the
+local D3Q19 non-equilibrium second moment through the SAME
+`rheology::Rheology` law, `TAU_FLOOR`/`TAU_CAP`, and `RheologyStats`
+ledger as 2-D; the plate-channel profile is certified against the SHARED
+`powerlaw_poiseuille_analytic` (the geometry is 1-D in the wall-normal
+axis). Battery (tests/d3q19_coupled.rs, verdict-JSON): Rayleigh–Bénard
+onset bracket (decay at Ra = 1200, growth at Ra = 2500, Nu > 1), n ∈
+{0.5, 1.0, 1.5} profiles to the 2-D 3% bar, 1e-11 mass ledger, exact
+plate temperatures, linear conduction, ledger honesty, and a
+replay-stable seeded determinism CANDIDATE.
+
+### No-claim boundaries (3-D coupled ports)
+
+- Single-threaded correctness-first reference rung: no SIMD/tile/parallel
+  claim, no performance claim against the tiled fast path.
+- No turbulence model and no claim beyond the fixture-scale onset band
+  and profile bars actually gated in the battery.
+- The seeded determinism hash is a replay-checked CANDIDATE, not a frozen
+  golden: freezing awaits the GOLDEN_POLICY four-quadrant ceremony
+  (committed tree, M4 + x86, debug + release), per the 40p2 precedent.
+- Wall layers hold equilibrium state and are excluded from physics
+  claims; only the fluid interior is certified.
