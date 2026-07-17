@@ -19,7 +19,8 @@ use fs_blake3::identity::{
     AuthorityRef, CanonicalEncoder, CanonicalError, CanonicalLimits, CanonicalSchema, Field,
     FieldSpec, IdentityAuditRecord, IdentityReceipt, KeyPolicyId, NeverCancel, ObservedIdentity,
     PolicyRelativeAdmitted, Presented, ProblemSemanticId, PromotionAuditRecord, PromotionRefusal,
-    PromotionTrustRoot, PromotionWitness, StrongIdentity, Verified, VerifierId, WireType,
+    PromotionRootCharter, PromotionTrustRoot, PromotionWitness, StrongIdentity, Verified,
+    VerifierId, WireType,
 };
 use fs_qty::{Angle, Dims, QtyAny, Time};
 
@@ -288,6 +289,11 @@ pub enum SpectralPromotionBindingErrorV1 {
     KeyPolicy,
     /// The promotion witness was minted for another configured context.
     Context,
+    /// The promotion witness was minted by a root whose exact-configuration
+    /// charter differs from the one this consumer pins (bead sj31i.52.9):
+    /// self-configured or reconfigured roots are refused here even when
+    /// every identity axis matches.
+    RootCharter,
 }
 
 impl fmt::Display for SpectralPromotionBindingErrorV1 {
@@ -298,6 +304,10 @@ impl fmt::Display for SpectralPromotionBindingErrorV1 {
             Self::Verifier => f.write_str("spectral promotion verifier differs"),
             Self::KeyPolicy => f.write_str("spectral promotion key policy differs"),
             Self::Context => f.write_str("spectral promotion context differs"),
+            Self::RootCharter => f.write_str(
+                "spectral promotion witness was minted by a root whose configuration \
+                 charter differs from the pinned domain-owner charter",
+            ),
         }
     }
 }
@@ -337,10 +347,19 @@ impl AdmittedSpectralWitnessV1 {
     ///
     /// Returns [`SpectralPromotionBindingErrorV1`] unless the authority and
     /// promotion decision bind the exact same subject receipt, anchor,
-    /// verifier, key policy, and fixed spectral promotion context.
+    /// verifier, key policy, and fixed spectral promotion context, AND the
+    /// witness was minted by a root whose exact-configuration charter equals
+    /// `expected_root` — the consumer's own trust statement, typically
+    /// `spectral_promotion_trust_root(...)?.charter()` computed from the
+    /// domain owner's independently retained receipts. Without the pin, a
+    /// permit-everything admission paired with a witness from a
+    /// SELF-CONFIGURED root passes every identity check above (both sides
+    /// carry the same rogue identities); the charter is what makes the
+    /// foreign configuration visible (bead sj31i.52.9).
     pub fn from_authority(
         authority: &AdmittedSpectralAuthorityV1,
         promotion: SpectralPromotionWitnessV1,
+        expected_root: PromotionRootCharter,
     ) -> Result<Self, SpectralPromotionBindingErrorV1> {
         if authority.receipt() != promotion.subject() {
             return Err(SpectralPromotionBindingErrorV1::Subject);
@@ -356,6 +375,9 @@ impl AdmittedSpectralWitnessV1 {
         }
         if promotion.context() != SPECTRAL_PROMOTION_CONTEXT_V1 {
             return Err(SpectralPromotionBindingErrorV1::Context);
+        }
+        if promotion.root_charter() != expected_root {
+            return Err(SpectralPromotionBindingErrorV1::RootCharter);
         }
         Ok(Self {
             proposition: authority.receipt().id(),

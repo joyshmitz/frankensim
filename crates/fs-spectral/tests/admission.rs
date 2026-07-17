@@ -9,7 +9,8 @@
 use fs_blake3::identity::{
     AuthorityAdmitter, AuthorityRef, AuthorityVerifier, ByteObservation, CanonicalSchema,
     ContentId, ExternalAnchorRef, IdentityAdjudication, IdentityReceipt, NoClaimState,
-    ObservedIdentity, PromotionRefusal, TrustState, adjudicate,
+    ObservedIdentity, PromotionRefusal, PromotionRootCharter, StrongIdentity as _, TrustState,
+    adjudicate,
 };
 use fs_qty::{Angle, Dims, QtyAny, Time};
 use fs_spectral::admission::*;
@@ -164,7 +165,11 @@ fn present(
 fn policy_relative_and_promotion(
     receipt: IdentityReceipt<SpectralPropositionId>,
     authority: ExactAuthority,
-) -> (AdmittedSpectralAuthorityV1, SpectralPromotionWitnessV1) {
+) -> (
+    AdmittedSpectralAuthorityV1,
+    SpectralPromotionWitnessV1,
+    PromotionRootCharter,
+) {
     let admitted = present(receipt, authority)
         .verify(&authority)
         .unwrap()
@@ -178,16 +183,16 @@ fn policy_relative_and_promotion(
             ObservedIdentity::from_receipt(authority.policy).bytes(),
         )
         .unwrap();
-    (admitted, promotion)
+    (admitted, promotion, root.charter())
 }
 
 fn admit_receipt(
     receipt: IdentityReceipt<SpectralPropositionId>,
     seed: u8,
 ) -> AdmittedSpectralWitnessV1 {
-    let (admitted, promotion) =
+    let (admitted, promotion, charter) =
         policy_relative_and_promotion(receipt, exact_authority(receipt, seed));
-    AdmittedSpectralWitnessV1::from_authority(&admitted, promotion).unwrap()
+    AdmittedSpectralWitnessV1::from_authority(&admitted, promotion, charter).unwrap()
 }
 
 /// An untrusted caller-controlled verifier/admitter pair that accepts every
@@ -689,8 +694,8 @@ fn favorable_witness_pairing_refuses_every_mismatched_promotion_axis() {
     )
     .unwrap();
     let authority = exact_authority(receipt, 42);
-    let (admitted, promotion) = policy_relative_and_promotion(receipt, authority);
-    AdmittedSpectralWitnessV1::from_authority(&admitted, promotion).unwrap();
+    let (admitted, promotion, pinned) = policy_relative_and_promotion(receipt, authority);
+    AdmittedSpectralWitnessV1::from_authority(&admitted, promotion, pinned).unwrap();
 
     let other_receipt = regularity_proposition_receipt(
         axes.subject,
@@ -703,16 +708,16 @@ fn favorable_witness_pairing_refuses_every_mismatched_promotion_axis() {
         WitnessDispositionV1::Witnessed,
     )
     .unwrap();
-    let (_, other_subject) =
+    let (_, other_subject, _) =
         policy_relative_and_promotion(other_receipt, exact_authority(other_receipt, 42));
     assert_eq!(
-        AdmittedSpectralWitnessV1::from_authority(&admitted, other_subject),
+        AdmittedSpectralWitnessV1::from_authority(&admitted, other_subject, pinned),
         Err(SpectralPromotionBindingErrorV1::Subject)
     );
 
-    let (_, other_anchor) = policy_relative_and_promotion(receipt, exact_authority(receipt, 43));
+    let (_, other_anchor, _) = policy_relative_and_promotion(receipt, exact_authority(receipt, 43));
     assert_eq!(
-        AdmittedSpectralWitnessV1::from_authority(&admitted, other_anchor),
+        AdmittedSpectralWitnessV1::from_authority(&admitted, other_anchor, pinned),
         Err(SpectralPromotionBindingErrorV1::Anchor)
     );
 
@@ -720,9 +725,9 @@ fn favorable_witness_pairing_refuses_every_mismatched_promotion_axis() {
         verifier: spectral_verifier_receipt(b"other-exact-verifier").unwrap(),
         ..authority
     };
-    let (_, other_verifier) = policy_relative_and_promotion(receipt, foreign_verifier);
+    let (_, other_verifier, _) = policy_relative_and_promotion(receipt, foreign_verifier);
     assert_eq!(
-        AdmittedSpectralWitnessV1::from_authority(&admitted, other_verifier),
+        AdmittedSpectralWitnessV1::from_authority(&admitted, other_verifier, pinned),
         Err(SpectralPromotionBindingErrorV1::Verifier)
     );
 
@@ -730,9 +735,9 @@ fn favorable_witness_pairing_refuses_every_mismatched_promotion_axis() {
         policy: spectral_authority_policy_receipt(b"other-exact-policy").unwrap(),
         ..authority
     };
-    let (_, other_policy) = policy_relative_and_promotion(receipt, foreign_policy);
+    let (_, other_policy, _) = policy_relative_and_promotion(receipt, foreign_policy);
     assert_eq!(
-        AdmittedSpectralWitnessV1::from_authority(&admitted, other_policy),
+        AdmittedSpectralWitnessV1::from_authority(&admitted, other_policy, pinned),
         Err(SpectralPromotionBindingErrorV1::KeyPolicy)
     );
 
@@ -750,7 +755,7 @@ fn favorable_witness_pairing_refuses_every_mismatched_promotion_axis() {
         )
         .unwrap();
     assert_eq!(
-        AdmittedSpectralWitnessV1::from_authority(&admitted, wrong_context),
+        AdmittedSpectralWitnessV1::from_authority(&admitted, wrong_context, pinned),
         Err(SpectralPromotionBindingErrorV1::Context)
     );
 }
@@ -2523,7 +2528,8 @@ fn problem_identity_is_permutation_stable_and_semantic_axis_sensitive() {
     let reobserved_descriptor = RegularityClaimV1::new(
         RegularityClassV1::RegularDescriptor,
         WitnessDispositionV1::Witnessed,
-        AdmittedSpectralWitnessV1::from_authority(&admitted, reobserved_promotion).unwrap(),
+        AdmittedSpectralWitnessV1::from_authority(&admitted, reobserved_promotion, observation_root.charter())
+            .unwrap(),
     );
     let reobserved = validate_problem(default_spec(
         axes,
@@ -2552,7 +2558,8 @@ fn problem_identity_is_permutation_stable_and_semantic_axis_sensitive() {
     let changed_length_descriptor = RegularityClaimV1::new(
         RegularityClassV1::RegularDescriptor,
         WitnessDispositionV1::Witnessed,
-        AdmittedSpectralWitnessV1::from_authority(&admitted, length_promotion).unwrap(),
+        AdmittedSpectralWitnessV1::from_authority(&admitted, length_promotion, length_root.charter())
+            .unwrap(),
     );
     let changed_length_problem = validate_problem(default_spec(
         axes,
@@ -2582,7 +2589,8 @@ fn problem_identity_is_permutation_stable_and_semantic_axis_sensitive() {
     let changed_policy_descriptor = RegularityClaimV1::new(
         RegularityClassV1::RegularDescriptor,
         WitnessDispositionV1::Witnessed,
-        AdmittedSpectralWitnessV1::from_authority(&admitted, policy_promotion).unwrap(),
+        AdmittedSpectralWitnessV1::from_authority(&admitted, policy_promotion, policy_root.charter())
+            .unwrap(),
     );
     let changed_policy_problem = validate_problem(default_spec(
         axes,
@@ -6223,4 +6231,63 @@ fn internal_separation_receipts_bind_membership_and_both_multiplicity_axes() {
             reason: UndefinedSeparationReasonV1::ProjectiveInfinityInAffineCoordinates,
         }
     ));
+}
+
+/// The rogue-pair hole the charter pin closes (bead sj31i.52.9): a
+/// permit-everything admission PAIRED with a witness from a SELF-CONFIGURED
+/// root carries the same rogue identities on both sides, so every
+/// subject/anchor/verifier/policy/context check passes — only the pinned
+/// root charter exposes the foreign configuration.
+#[test]
+fn self_configured_root_witnesses_fail_the_pinned_charter() {
+    let axes = standard_axes(43, 4);
+    let receipt = regularity_proposition_receipt(
+        axes.subject,
+        axes.scalar,
+        axes.class,
+        axes.scaling,
+        axes.domain,
+        axes.codomain,
+        RegularityClassV1::FiniteDimensional,
+        WitnessDispositionV1::Witnessed,
+    )
+    .unwrap();
+    let trusted_verifier =
+        spectral_verifier_receipt(b"fs-spectral-test-exact-verifier-v1").unwrap();
+    let trusted_policy =
+        spectral_authority_policy_receipt(b"fs-spectral-test-admission-policy-v1").unwrap();
+    let pinned = spectral_promotion_trust_root(trusted_verifier, trusted_policy)
+        .unwrap()
+        .charter();
+
+    // The adversary self-configures a root around its OWN rogue identities
+    // and mints a matching admission + witness pair.
+    let rogue_verifier = spectral_verifier_receipt(b"foreign-permit-all-verifier").unwrap();
+    let rogue_policy = spectral_authority_policy_receipt(b"foreign-permit-all-policy").unwrap();
+    let anchor = ExternalAnchorRef::presented(ContentId::of_bytes(b"self-configured-pair"));
+    let rogue_admitted =
+        AuthorityRef::present(receipt, anchor, rogue_verifier.id(), rogue_policy.id())
+            .verify(&PermitAll)
+            .unwrap()
+            .admit(&PermitAll)
+            .unwrap();
+    let rogue_root = spectral_promotion_trust_root(rogue_verifier, rogue_policy).unwrap();
+    let rogue_witness = rogue_root
+        .admit_for_promotion(
+            &rogue_admitted,
+            ObservedIdentity::from_receipt(rogue_verifier).bytes(),
+            ObservedIdentity::from_receipt(rogue_policy).bytes(),
+        )
+        .expect("a self-configured root promotes its own binding by design");
+
+    // Every identity axis matches between the pair; only the charter differs.
+    assert_eq!(
+        AdmittedSpectralWitnessV1::from_authority(&rogue_admitted, rogue_witness, pinned),
+        Err(SpectralPromotionBindingErrorV1::RootCharter)
+    );
+    // The pair passes when the consumer pins the ROGUE charter — proving the
+    // refusal above is exactly the provenance discrimination, not an
+    // incidental binding mismatch.
+    AdmittedSpectralWitnessV1::from_authority(&rogue_admitted, rogue_witness, rogue_root.charter())
+        .expect("identity axes all match within the rogue pair");
 }
