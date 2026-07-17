@@ -6407,8 +6407,6 @@ const CAUSAL_OUTCOME_CHILD: ChildSpec = ChildSpec::for_identity::<CausalOutcomeI
 
 /// Canonical schema marker for causalization receipts.
 ///
-/// Governance no-claim marker consumed by the identity authority gate:
-/// `frankensim-unratified-candidate-identity:frankensim-leapfrog-2026-program-i94v.1.2.12:admit_causalization_receipt`.
 /// This candidate grammar must be replaced by the recursive SCC-bundle
 /// authority before that tracked blocker becomes terminal.
 pub enum CausalizationReceiptIdentitySchemaV1 {}
@@ -7171,6 +7169,7 @@ fn admit_causalization_receipt(
     counts: CausalReceiptSubmittedCounts,
     cx: &Cx<'_>,
 ) -> Result<AdmittedCausalizationReceipt, CausalReceiptRefusal> {
+    // frankensim-unratified-candidate-identity:frankensim-leapfrog-2026-program-i94v.1.2.12:admit_causalization_receipt
     receipt_checkpoint(cx)?;
     debug_assert!(counts.complete);
     cancellable_sort_by(

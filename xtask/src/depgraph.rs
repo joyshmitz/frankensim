@@ -673,14 +673,20 @@ pub(super) struct JsonParser<'a> {
     input: &'a str,
     cursor: usize,
     nodes: usize,
+    max_string_bytes: usize,
 }
 
 impl<'a> JsonParser<'a> {
     pub(super) fn new(input: &'a str) -> Self {
+        Self::with_string_limit(input, receipt_format::MAX_STRING_BYTES * 4)
+    }
+
+    pub(super) fn with_string_limit(input: &'a str, max_string_bytes: usize) -> Self {
         Self {
             input,
             cursor: 0,
             nodes: 0,
+            max_string_bytes,
         }
     }
 
@@ -790,7 +796,7 @@ impl<'a> JsonParser<'a> {
                     out.push(character);
                 }
             }
-            if out.len() > receipt_format::MAX_STRING_BYTES * 4 {
+            if out.len() > self.max_string_bytes {
                 return Err("Cargo metadata string exceeds processing bound".to_string());
             }
         }
@@ -2043,6 +2049,22 @@ mod tests {
         assert_eq!(read.bytes, b"0123");
         assert_eq!(read.total, 10);
         assert!(read.overflowed);
+    }
+
+    #[test]
+    fn json_parser_string_limit_is_explicit_per_bounded_caller() {
+        let default_limit = receipt_format::MAX_STRING_BYTES * 4;
+        let payload = format!("\"{}\"", "x".repeat(default_limit + 1));
+        assert!(
+            JsonParser::new(&payload).finish().is_err(),
+            "Cargo metadata keeps its narrow parser budget",
+        );
+        assert!(
+            JsonParser::with_string_limit(&payload, default_limit + 1)
+                .finish()
+                .is_ok(),
+            "a separately bounded caller may declare a larger string budget",
+        );
     }
 
     #[test]

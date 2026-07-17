@@ -8,6 +8,9 @@ use std::io::{BufRead, BufReader};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode};
 
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt as _;
+
 const DECLARATION_MARKER: &str = concat!("frankensim-identity-", "schema-v1");
 const REGISTRY_FILE: &str = "identity-schemas.json";
 const REGISTRY_SCHEMA_V1: &str = "frankensim-identity-schemas-v1";
@@ -15,6 +18,8 @@ const REGISTRY_SCHEMA_V2: &str = "frankensim-identity-schemas-v2";
 const AUTHORITY_FILE: &str = "identity-authorities.json";
 const AUTHORITY_SCHEMA: &str = "frankensim-identity-authorities-v1";
 const BEADS_ISSUES_FILE: &str = ".beads/issues.jsonl";
+const MAX_BEADS_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_BEAD_ROW_BYTES: usize = 1024 * 1024;
 const UNRATIFIED_CANDIDATE_REASON_PREFIX: &str = "unratified-candidate-identity@";
 const UNRATIFIED_CANDIDATE_SOURCE_MARKER_PREFIX: &str = "frankensim-unratified-candidate-identity:";
 const GOLDEN_COUPLING_SCHEMA: &str = "frankensim-golden-couplings-v1";
@@ -594,7 +599,12 @@ fn safe_relative(path: &str) -> bool {
             .all(|component| matches!(component, Component::Normal(_)))
 }
 
-fn checked_repo_file(root: &Path, relative: &str, purpose: &str) -> Result<PathBuf, String> {
+fn checked_repo_file_with_limit(
+    root: &Path,
+    relative: &str,
+    purpose: &str,
+    max_bytes: u64,
+) -> Result<PathBuf, String> {
     if !safe_relative(relative) {
         return Err(format!(
             "{purpose} path {relative:?} must be a canonical repo-relative path"
@@ -634,12 +644,16 @@ fn checked_repo_file(root: &Path, relative: &str, purpose: &str) -> Result<PathB
     if !metadata.is_file() {
         return Err(format!("{purpose} path {relative:?} is not a regular file"));
     }
-    if metadata.len() > MAX_SOURCE_BYTES {
+    if metadata.len() > max_bytes {
         return Err(format!(
-            "{purpose} path {relative:?} exceeds the {MAX_SOURCE_BYTES}-byte scan cap"
+            "{purpose} path {relative:?} exceeds the {max_bytes}-byte scan cap"
         ));
     }
     Ok(canonical_target)
+}
+
+fn checked_repo_file(root: &Path, relative: &str, purpose: &str) -> Result<PathBuf, String> {
+    checked_repo_file_with_limit(root, relative, purpose, MAX_SOURCE_BYTES)
 }
 
 fn read_repo_utf8(root: &Path, relative: &str, purpose: &str) -> Result<String, String> {
@@ -3846,64 +3860,189 @@ fn unratified_candidate_tracking_issue(reason: &str) -> Option<&str> {
     .then_some(issue)
 }
 
-fn tracking_bead_is_nonterminal(root: &Path, issue: &str) -> Result<(), String> {
-    const MAX_BEADS_BYTES: u64 = 64 * 1024 * 1024;
-    const MAX_BEAD_ROW_BYTES: usize = 1024 * 1024;
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BeadsFileSnapshot {
+    device: u64,
+    inode: u64,
+    len: u64,
+    modified_seconds: i64,
+    modified_nanoseconds: i64,
+    changed_seconds: i64,
+    changed_nanoseconds: i64,
+}
 
-    let path = root.join(BEADS_ISSUES_FILE);
-    let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
-        format!("tracking issue {issue:?} cannot read {BEADS_ISSUES_FILE}: {error}")
+#[cfg(not(unix))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BeadsFileSnapshot {
+    len: u64,
+    modified: std::time::SystemTime,
+}
+
+#[cfg(unix)]
+fn beads_file_snapshot(metadata: &std::fs::Metadata) -> Result<BeadsFileSnapshot, String> {
+    if !metadata.is_file() {
+        return Err("opened Beads tracker is not a regular file".to_string());
+    }
+    Ok(BeadsFileSnapshot {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        len: metadata.len(),
+        modified_seconds: metadata.mtime(),
+        modified_nanoseconds: metadata.mtime_nsec(),
+        changed_seconds: metadata.ctime(),
+        changed_nanoseconds: metadata.ctime_nsec(),
+    })
+}
+
+#[cfg(not(unix))]
+fn beads_file_snapshot(metadata: &std::fs::Metadata) -> Result<BeadsFileSnapshot, String> {
+    if !metadata.is_file() {
+        return Err("opened Beads tracker is not a regular file".to_string());
+    }
+    let modified = metadata
+        .modified()
+        .map_err(|error| format!("Beads tracker has no coherent modification time: {error}"))?;
+    Ok(BeadsFileSnapshot {
+        len: metadata.len(),
+        modified,
+    })
+}
+
+fn inspect_tracking_bead_row(
+    issue: &str,
+    index: usize,
+    row: &[u8],
+    matched_status: &mut Option<String>,
+) -> Result<(), String> {
+    let line = std::str::from_utf8(row).map_err(|error| {
+        format!("tracking issue {issue:?} found non-UTF-8 {BEADS_ISSUES_FILE} row {index}: {error}")
     })?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
+    let parsed = JsonParser::with_string_limit(line, MAX_BEAD_ROW_BYTES)
+        .finish()
+        .map_err(|detail| {
+            format!(
+                "tracking issue {issue:?} found malformed {BEADS_ISSUES_FILE} row {index}: {detail}"
+            )
+        })?;
+    let context = format!("{BEADS_ISSUES_FILE} row {index}");
+    let object = strict_json_object(&parsed, &context)?;
+    let row_id = strict_json_field(object, "id", &context)
+        .and_then(|value| strict_json_string(value, &format!("{context} id")))?;
+    if row_id != issue {
+        return Ok(());
+    }
+    let status = strict_json_field(object, "status", &context)
+        .and_then(|value| strict_json_string(value, &format!("{context} status")))?;
+    if matched_status.replace(status.to_string()).is_some() {
+        return Err(format!(
+            "tracking issue {issue:?} appears more than once in {BEADS_ISSUES_FILE}"
+        ));
+    }
+    Ok(())
+}
+
+fn tracking_bead_is_nonterminal(root: &Path, issue: &str) -> Result<(), String> {
+    let purpose = format!("tracking issue {issue:?}");
+    let path = checked_repo_file_with_limit(root, BEADS_ISSUES_FILE, &purpose, MAX_BEADS_BYTES)?;
+    let before_open = std::fs::symlink_metadata(&path).map_err(|error| {
+        format!("tracking issue {issue:?} cannot inspect {BEADS_ISSUES_FILE}: {error}")
+    })?;
+    if before_open.file_type().is_symlink() {
         return Err(format!(
             "tracking issue {issue:?} requires {BEADS_ISSUES_FILE} to be a regular non-symlink file"
         ));
     }
-    if metadata.len() > MAX_BEADS_BYTES {
-        return Err(format!(
-            "tracking issue {issue:?} refuses {BEADS_ISSUES_FILE} above {MAX_BEADS_BYTES} bytes"
-        ));
-    }
+    let before_open = beads_file_snapshot(&before_open)
+        .map_err(|detail| format!("tracking issue {issue:?} {detail}"))?;
     let file = std::fs::File::open(&path).map_err(|error| {
         format!("tracking issue {issue:?} cannot open {BEADS_ISSUES_FILE}: {error}")
     })?;
+    let opened = beads_file_snapshot(&file.metadata().map_err(|error| {
+        format!("tracking issue {issue:?} cannot inspect opened {BEADS_ISSUES_FILE}: {error}")
+    })?)
+    .map_err(|detail| format!("tracking issue {issue:?} {detail}"))?;
+    if opened != before_open {
+        return Err(format!(
+            "tracking issue {issue:?} observed {BEADS_ISSUES_FILE} change while opening it"
+        ));
+    }
+    let mut reader = BufReader::new(file);
+    let mut row = Vec::new();
+    let mut row_index = 1_usize;
+    let mut bytes_read = 0_u64;
     let mut matched_status = None;
-    for (index, line) in BufReader::new(file).lines().enumerate() {
-        let line = line.map_err(|error| {
-            format!(
-                "tracking issue {issue:?} cannot read {BEADS_ISSUES_FILE} row {}: {error}",
-                index + 1
-            )
-        })?;
-        if line.len() > MAX_BEAD_ROW_BYTES {
-            return Err(format!(
-                "tracking issue {issue:?} refuses {BEADS_ISSUES_FILE} row {} above {MAX_BEAD_ROW_BYTES} bytes",
-                index + 1
-            ));
+    loop {
+        let (consumed, has_newline) = {
+            let buffer = reader.fill_buf().map_err(|error| {
+                format!(
+                    "tracking issue {issue:?} cannot read {BEADS_ISSUES_FILE} row {row_index}: {error}"
+                )
+            })?;
+            if buffer.is_empty() {
+                break;
+            }
+            let newline = buffer.iter().position(|byte| *byte == b'\n');
+            let payload_len = newline.unwrap_or(buffer.len());
+            let consumed = payload_len + usize::from(newline.is_some());
+            let next_bytes_read = bytes_read.checked_add(consumed as u64).ok_or_else(|| {
+                format!("tracking issue {issue:?} overflowed the {BEADS_ISSUES_FILE} read budget")
+            })?;
+            if next_bytes_read > MAX_BEADS_BYTES {
+                return Err(format!(
+                    "tracking issue {issue:?} refuses to read {BEADS_ISSUES_FILE} above {MAX_BEADS_BYTES} bytes"
+                ));
+            }
+            let next_row_len = row.len().checked_add(payload_len).ok_or_else(|| {
+                format!(
+                    "tracking issue {issue:?} overflowed the {BEADS_ISSUES_FILE} row {row_index} size budget"
+                )
+            })?;
+            if next_row_len > MAX_BEAD_ROW_BYTES {
+                return Err(format!(
+                    "tracking issue {issue:?} refuses {BEADS_ISSUES_FILE} row {row_index} above {MAX_BEAD_ROW_BYTES} bytes"
+                ));
+            }
+            row.extend_from_slice(&buffer[..payload_len]);
+            bytes_read = next_bytes_read;
+            (consumed, newline.is_some())
+        };
+        reader.consume(consumed);
+        if has_newline {
+            if row.last() == Some(&b'\r') {
+                row.pop();
+            }
+            inspect_tracking_bead_row(issue, row_index, &row, &mut matched_status)?;
+            row.clear();
+            row_index += 1;
         }
-        if !line.contains(issue) {
-            continue;
+    }
+    if !row.is_empty() {
+        if row.last() == Some(&b'\r') {
+            row.pop();
         }
-        let parsed = JsonParser::new(&line).finish().map_err(|detail| {
-            format!(
-                "tracking issue {issue:?} found malformed {BEADS_ISSUES_FILE} row {}: {detail}",
-                index + 1
-            )
-        })?;
-        let context = format!("{BEADS_ISSUES_FILE} row {}", index + 1);
-        let object = strict_json_object(&parsed, &context)?;
-        let row_id = strict_json_field(object, "id", &context)
-            .and_then(|value| strict_json_string(value, &format!("{context} id")))?;
-        if row_id != issue {
-            continue;
-        }
-        let status = strict_json_field(object, "status", &context)
-            .and_then(|value| strict_json_string(value, &format!("{context} status")))?;
-        if matched_status.replace(status.to_string()).is_some() {
-            return Err(format!(
-                "tracking issue {issue:?} appears more than once in {BEADS_ISSUES_FILE}"
-            ));
-        }
+        inspect_tracking_bead_row(issue, row_index, &row, &mut matched_status)?;
+    }
+    let after_read = beads_file_snapshot(&reader.get_ref().metadata().map_err(|error| {
+        format!("tracking issue {issue:?} cannot re-inspect {BEADS_ISSUES_FILE}: {error}")
+    })?)
+    .map_err(|detail| format!("tracking issue {issue:?} {detail}"))?;
+    if bytes_read != opened.len || after_read != opened {
+        return Err(format!(
+            "tracking issue {issue:?} observed an incoherent {BEADS_ISSUES_FILE} rewrite while reading it"
+        ));
+    }
+    let after_path =
+        checked_repo_file_with_limit(root, BEADS_ISSUES_FILE, &purpose, MAX_BEADS_BYTES)?;
+    let after_path_snapshot =
+        beads_file_snapshot(&std::fs::symlink_metadata(&after_path).map_err(|error| {
+            format!("tracking issue {issue:?} cannot re-open {BEADS_ISSUES_FILE}: {error}")
+        })?)
+        .map_err(|detail| format!("tracking issue {issue:?} {detail}"))?;
+    if after_path != path || after_path_snapshot != opened {
+        return Err(format!(
+            "tracking issue {issue:?} observed {BEADS_ISSUES_FILE} replacement while reading it"
+        ));
     }
     match matched_status.as_deref() {
         Some("open" | "in_progress") => Ok(()),
@@ -3921,15 +4060,53 @@ fn unratified_candidate_boundary(
     exemption: &IdentityExemption,
     issue: &str,
 ) -> Result<(), String> {
+    if Path::new(&exemption.path)
+        .extension()
+        .is_none_or(|extension| extension != "rs")
+    {
+        return Err(format!(
+            "unratified candidate {}#{} requires a Rust source target",
+            exemption.path, exemption.symbol,
+        ));
+    }
     let source = read_repo_utf8(root, &exemption.path, "unratified candidate source")?;
     let marker = format!(
-        "{UNRATIFIED_CANDIDATE_SOURCE_MARKER_PREFIX}{issue}:{}",
+        "// {UNRATIFIED_CANDIDATE_SOURCE_MARKER_PREFIX}{issue}:{}",
         exemption.symbol
     );
-    if !source.contains(&marker) {
+    let index = RustSourceIndex::new(&source);
+    let Some(fragments) = index.functions.get(&exemption.symbol) else {
         return Err(format!(
-            "unratified candidate {}#{} lacks exact source no-claim marker {marker:?}",
-            exemption.path, exemption.symbol
+            "unratified candidate {}#{} has no indexed Rust function target",
+            exemption.path, exemption.symbol,
+        ));
+    };
+    let [fragment] = fragments.as_slice() else {
+        return Err(format!(
+            "unratified candidate {}#{} resolves to {} Rust function targets; exactly one is required",
+            exemption.path,
+            exemption.symbol,
+            fragments.len(),
+        ));
+    };
+    let source_marker_count = source.lines().filter(|line| line.trim() == marker).count();
+    let function_symbol = exemption.symbol.rsplit("::").next().unwrap_or_default();
+    let declaration = format!("fn {function_symbol}");
+    let Some(body) = first_direct_braced_body(fragment, &declaration) else {
+        return Err(format!(
+            "unratified candidate {}#{} has no direct Rust function body",
+            exemption.path, exemption.symbol,
+        ));
+    };
+    let target_begins_with_marker = body
+        .trim_start()
+        .lines()
+        .next()
+        .is_some_and(|line| line.trim_end() == marker);
+    if source_marker_count != 1 || !target_begins_with_marker {
+        return Err(format!(
+            "unratified candidate {}#{} requires exactly one standalone Rust line-comment no-claim marker {marker:?} as the first token in its unique function body; found {source_marker_count} exact physical lines source-wide and target-first={target_begins_with_marker}",
+            exemption.path, exemption.symbol,
         ));
     }
     tracking_bead_is_nonterminal(root, issue)
@@ -12055,8 +12232,8 @@ fn child(payload: &[u8]) -> Digest {
         std::fs::create_dir_all(path.parent().expect("demo parent")).expect("demo directory");
         let tracking_issue = "frankensim-demo.1";
         let source = r#"
-// frankensim-unratified-candidate-identity:frankensim-demo.1:admit_candidate_receipt
 fn admit_candidate_receipt(cache: &mut Cache, value: Value) {
+    // frankensim-unratified-candidate-identity:frankensim-demo.1:admit_candidate_receipt
     let receipt_identity = value.to_canonical_bytes();
     cache.insert(receipt_identity, value);
 }
@@ -12092,6 +12269,114 @@ fn admit_candidate_receipt(cache: &mut Cache, value: Value) {
             "candidate grammar must not become a required authority by exemption",
         );
 
+        let prefix_collision = source.replace(
+            ":admit_candidate_receipt\n",
+            ":admit_candidate_receipt_extended\n",
+        );
+        std::fs::write(&path, prefix_collision).expect("prefix-collision source marker");
+        let violations = authority_violations_against(&root, &[], &manifest, &candidates);
+        assert!(
+            violations.iter().any(|violation| violation
+                .detail
+                .contains("requires exactly one standalone Rust line-comment no-claim marker")),
+            "a longer symbol must not satisfy the exact marker boundary: {violations:?}",
+        );
+        std::fs::write(&path, source).expect("restore exact source marker");
+
+        let marker =
+            "// frankensim-unratified-candidate-identity:frankensim-demo.1:admit_candidate_receipt";
+        let source_without_marker = source.replace(&format!("    {marker}\n"), "");
+        let raw_literal_decoy =
+            format!("const MARKER_DECOY: &str = r#\"\n{marker}\n\"#;\n{source_without_marker}");
+        std::fs::write(&path, raw_literal_decoy).expect("raw-string marker decoy");
+        let violations = authority_violations_against(&root, &[], &manifest, &candidates);
+        assert!(
+            violations.iter().any(|violation| violation
+                .detail
+                .contains("found 1 exact physical lines source-wide and target-first=false")),
+            "a raw-string line must not masquerade as a Rust comment token: {violations:?}",
+        );
+
+        let block_comment_decoy = format!("/*\n{marker}\n*/\n{source_without_marker}");
+        std::fs::write(&path, block_comment_decoy).expect("block-comment marker decoy");
+        let violations = authority_violations_against(&root, &[], &manifest, &candidates);
+        assert!(
+            violations.iter().any(|violation| violation
+                .detail
+                .contains("found 1 exact physical lines source-wide and target-first=false")),
+            "a line inside a block comment must not masquerade as a line-comment token: {violations:?}",
+        );
+
+        let unrelated_function_decoy =
+            format!("fn unrelated() {{\n    {marker}\n}}\n{source_without_marker}");
+        std::fs::write(&path, unrelated_function_decoy).expect("unrelated-function marker decoy");
+        let violations = authority_violations_against(&root, &[], &manifest, &candidates);
+        assert!(
+            violations.iter().any(|violation| violation
+                .detail
+                .contains("found 1 exact physical lines source-wide and target-first=false")),
+            "a marker in another function must not authorize the candidate target: {violations:?}",
+        );
+        std::fs::write(&path, source).expect("restore target-bound source marker");
+
+        std::fs::write(
+            &beads,
+            format!(
+                concat!(
+                    "{{\"id\":\"{tracking_issue}\",\"status\":\"in_progress\",\"title\":\"Ratify demo identity\"}}\n",
+                    "{{\"id\":\"frankensim-demo\\u002e1\",\"status\":\"closed\",\"title\":\"Escaped duplicate\"}}\n",
+                )
+            ),
+        )
+        .expect("escaped duplicate tracking beads");
+        let violations = authority_violations_against(&root, &[], &manifest, &candidates);
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.detail.contains("appears more than once")),
+            "JSON escapes must not hide a duplicate terminal tracker: {violations:?}",
+        );
+
+        std::fs::write(
+            &beads,
+            concat!(
+                r#"{"id":"frankensim-demo\u002e1","status":"cl\u006fsed","title":"Escaped terminal"}"#,
+                "\n",
+            ),
+        )
+        .expect("escaped terminal tracking bead");
+        let violations = authority_violations_against(&root, &[], &manifest, &candidates);
+        assert!(
+            violations.iter().any(|violation| violation
+                .detail
+                .contains("terminal or non-actionable (\"closed\")")),
+            "a singly encoded terminal tracker must fail after ID and status decoding: {violations:?}",
+        );
+
+        let detailed_open_row = format!(
+            "{{\"id\":\"{tracking_issue}\",\"status\":\"open\",\"description\":\"{}\"}}\n",
+            "x".repeat(64 * 1024),
+        );
+        std::fs::write(&beads, detailed_open_row).expect("detailed open tracking row");
+        let violations = authority_violations_against(&root, &[], &manifest, &candidates);
+        assert!(
+            violations.is_empty(),
+            "a bounded detailed Bead row must not inherit the Cargo parser's smaller string cap: {violations:?}",
+        );
+
+        let oversized_row = format!(
+            "{{\"id\":\"unrelated\",\"status\":\"open\",\"padding\":\"{}\"}}\n",
+            "x".repeat(1024 * 1024),
+        );
+        std::fs::write(&beads, oversized_row).expect("oversized tracking row");
+        let violations = authority_violations_against(&root, &[], &manifest, &candidates);
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.detail.contains("row 1 above 1048576 bytes")),
+            "the streaming reader must reject a row before growing past its cap: {violations:?}",
+        );
+
         std::fs::write(
             &beads,
             format!(
@@ -12122,6 +12407,29 @@ fn admit_candidate_receipt(cache: &mut Cache, value: Value) {
                 .iter()
                 .any(|violation| violation.detail.contains("may not name parent")),
             "an unratified candidate may not borrow authority from a future owner: {violations:?}",
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unratified_candidate_tracker_rejects_symlinked_beads_parent() {
+        use std::os::unix::fs::symlink;
+
+        let root = fixture_root("unratified-candidate-symlink-parent");
+        let actual = root.join("actual-beads");
+        std::fs::create_dir_all(&actual).expect("actual Beads directory");
+        std::fs::write(
+            actual.join("issues.jsonl"),
+            "{\"id\":\"frankensim-demo.1\",\"status\":\"open\"}\n",
+        )
+        .expect("actual Beads tracker");
+        symlink("actual-beads", root.join(".beads")).expect("symlinked Beads parent");
+
+        let error = tracking_bead_is_nonterminal(&root, "frankensim-demo.1")
+            .expect_err("a symlinked Beads parent must fail closed");
+        assert!(
+            error.contains("traverses symlink component"),
+            "unexpected symlink refusal: {error}",
         );
     }
 
