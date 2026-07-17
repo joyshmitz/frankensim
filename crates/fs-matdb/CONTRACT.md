@@ -321,14 +321,17 @@ context, and claim reconstruction; and fail-closed missing-context and
 noncanonical-revision cases.
 
 `xtask/tests/interface_pack_seed_cli.rs`: G3 two-pass compilation of the first
-three source-bound interface seeds into byte-identical, externally pinned packs.
+four source-bound interface seeds into byte-identical, externally pinned packs.
 The battery checks the NASA 52100 dry-air rider/disk identity and `0.45` value,
 the NASA GXL-320A vacuum four-ball identity and distinct `0.11` mean plus
 `0.09..0.23` observed extrema, and NASA-TN-D-2223's SAE 4340/high-lead-bronze
 hexane journal identity plus apparatus-bound `220 psi` maximum-demonstrated
-unit bearing load. The tests retain exact condition axes, `Unstated`
-uncertainty, surface-role order, complete context, and explicit design-
-allowable, friction-law, wear, and lifetime no-claim exclusions.
+unit bearing load. It also checks Zhang et al.'s carbon-filled PTFE Sterling
+seal against an electroplated-chromium piston rod in Kunlun 15 aviation
+hydraulic oil, retaining four printed single-seal force endpoints without
+mislabeling the rod as a coated bore. The tests retain exact condition axes,
+`Unstated` uncertainty, surface-role order, complete context, and explicit
+design-allowable, friction-law, wear, leakage, and lifetime no-claim exclusions.
 
 `xtask/tests/matdb_pack_cli.rs`: G3 compilation of the committed methane,
 nitrogen, oxygen, argon, carbon-dioxide, water-vapor, and carbon-monoxide seed
@@ -578,6 +581,18 @@ Wankel-housing authority.
   rate, lifetime, or transferable journal-bearing law. Missing heat/lot,
   bearing roughness, exact run temperature, fluid purity, repeats, dispersion,
   endpoint torque, and quantitative wear remain no-claims.
+  The Zhang et al. seal card binds an approximately 15%-carbon-fiber-filled
+  PTFE Sterling wear ring and nitrile-rubber support to the source's
+  approximately 50-micrometer electroplated-chromium stainless-steel piston
+  rod, Kunlun 15 aviation hydraulic oil, temperature, pressure, speed,
+  reciprocation count, sensor rate, and two-experiment averaging procedure.
+  Its four claims are only the reported single-seal instroke/outstroke forces
+  at the source's observed minimum and maximum conditions. A piston rod is not
+  a bore: no coated-bore claim follows. Missing replicate values, dispersion,
+  exact material and lubricant grades/lots, roughness, stroke, preload/contact
+  pressure, leakage, quantitative wear, and lifetime remain no-claims. The
+  observed coating transfer and seal wear further prevent promotion to a
+  transferable friction or durability law.
   No equilibrium computation happens here (fs-thermochem consumes phase data;
   this crate only stores it).
 - The L1 pack codec does not parse handbooks, CSV, NASA tables, license text,

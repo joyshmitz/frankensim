@@ -15,6 +15,8 @@ const GREASED_52100_MANIFEST: &str =
     "data/matdb/seed-v1/nasa-52100-gxl320a-vacuum-interface/manifest.tsv";
 const JOURNAL_4340_BRONZE_MANIFEST: &str =
     "data/matdb/seed-v1/nasa-tn-d-2223-4340-high-lead-bronze-journal/manifest.tsv";
+const CARBON_PTFE_CR_ROD_MANIFEST: &str =
+    "data/matdb/seed-v1/zhang-2021-carbon-ptfe-cr-piston-rod/manifest.tsv";
 const NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
 fn workspace_path(relative: &str) -> PathBuf {
@@ -306,6 +308,99 @@ fn g3_cli_compiles_committed_nasa_4340_high_lead_bronze_journal_interface() {
         assert!(
             pack.card().claims_for(refused_property).is_empty(),
             "journal source crossed the {refused_property} no-claim boundary"
+        );
+    }
+    assert!(decisions.contains("\"reason_code\":\"interface_context_admitted\""));
+}
+
+#[test]
+fn g3_cli_compiles_committed_carbon_ptfe_chrome_rod_interface() {
+    let (pack, decisions) = compile_twice(CARBON_PTFE_CR_ROD_MANIFEST);
+
+    assert_eq!(
+        pack.pack_id(),
+        "zhang-2021-carbon-fiber-ptfe-cr-piston-rod-kunlun15-interface"
+    );
+    assert_eq!(
+        pack.card().surface_a().material.chemistry,
+        "PTFE filled with about 15 percent carbon fiber"
+    );
+    assert_eq!(
+        pack.card().surface_b().material.chemistry,
+        "stainless steel with about 50 micrometer electroplated chromium coating"
+    );
+    assert_ne!(
+        pack.card().surface_a().texture_frame,
+        pack.card().surface_b().texture_frame,
+        "ordered seal and coated-rod roles collapsed"
+    );
+    assert_eq!(pack.card().medium(), "Kunlun-15-aviation-hydraulic-oil");
+    assert_eq!(pack.card().third_body(), None);
+    assert_eq!(pack.card().environment(), "laboratory-at-293.15-K");
+    assert_eq!(
+        pack.card().history(),
+        "new-Sterling-seals-300-reciprocations-two-experiment-average"
+    );
+    assert_eq!(pack.claims_pack().claims().claim_count(), 4);
+
+    for (property, expected_force, pressure, speed) in [
+        (
+            "single-seal-instroke-friction-force-at-source-observed-minimum",
+            97.8955,
+            10_000_000.0,
+            0.5,
+        ),
+        (
+            "single-seal-outstroke-friction-force-at-source-observed-minimum",
+            75.0238,
+            10_000_000.0,
+            0.5,
+        ),
+        (
+            "single-seal-instroke-friction-force-at-source-observed-maximum",
+            516.9906,
+            35_000_000.0,
+            0.1,
+        ),
+        (
+            "single-seal-outstroke-friction-force-at-source-observed-maximum",
+            404.4382,
+            35_000_000.0,
+            0.1,
+        ),
+    ] {
+        assert_eq!(scalar(&pack, property), expected_force);
+        let claim = pack.card().claims_for(property)[0].1;
+        for (axis, value) in [
+            ("experimental_temperature", 293.15),
+            ("hydraulic_oil_pressure", pressure),
+            ("reciprocating_speed", speed),
+            ("reciprocation_count", 300.0),
+            ("sensor_sampling_frequency", 2_400.0),
+            ("experiments_averaged", 2.0),
+            ("seals_per_experiment", 2.0),
+            ("source_fill_fraction_approximately_15_percent", 1.0),
+            (
+                "source_chromium_thickness_approximately_50_micrometers",
+                1.0,
+            ),
+        ] {
+            assert_eq!(claim.validity.bound(axis), Some((value, value)));
+        }
+        assert_eq!(claim.validity.bounds().len(), 9);
+    }
+
+    for refused_property in [
+        "coated-bore-friction-force",
+        "kinetic-friction-coefficient",
+        "wear-rate",
+        "seal-life",
+        "leakage-rate",
+        "transferable-friction-law",
+    ] {
+        assert!(
+            pack.card().claims_for(refused_property).is_empty(),
+            "seal source crossed the {refused_property} no-claim boundary"
         );
     }
     assert!(decisions.contains("\"reason_code\":\"interface_context_admitted\""));

@@ -897,6 +897,37 @@ Journal-interface references:
 - <https://ntrs.nasa.gov/citations/19650001032>
 - <https://ntrs.nasa.gov/api/citations/19650001032/downloads/19650001032.pdf>
 
+## Carbon-filled PTFE/chrome-coated piston-rod seal tranche
+
+`zhang-2021-carbon-ptfe-cr-piston-rod/` binds one GMSS Sterling stepped seal
+to the chrome-coated counterface and named lubricant tested by Zhang et al.
+The seal's wear ring is PTFE filled with approximately `15%` carbon fiber,
+mixed at high speed, molded at ambient temperature, sintered, and turned; its
+supporting D-ring is nitrile rubber. The counterface is a stainless-steel
+piston rod carrying approximately `50 micrometers` of electroplated chromium.
+Kunlun 15 aviation hydraulic oil is the retained medium.
+
+The four runtime claims are the paper's printed single-seal instroke and
+outstroke friction forces at its observed extrema: `97.8955 N` and `75.0238 N`
+at `10 MPa`, `0.5 m/s`, and `516.9906 N` and `404.4382 N` at `35 MPa`,
+`0.1 m/s`. All points retain the `20 degC` experiment temperature, `300`
+reciprocations, `2.4 kHz` sensor sampling, two seals per experiment, and the
+reported two-experiment average. The paper does not publish the two replicate
+values or pointwise dispersion, so all four uncertainties remain `Unstated`.
+
+This is a coated piston-rod card, not coated-bore evidence. It supplies no
+coated-bore force, friction coefficient, leakage rate, quantitative wear rate,
+seal life, or transferable friction law. The source observed seal-lip wear and
+Cr/Fe material transfer; the card therefore does not turn the printed endpoint
+forces into durability authority. Exact resin, fiber, rubber, steel, coating,
+surface-finish, and lubricant lots; rod roughness; stroke; preload/contact
+pressure; and full oil formulation remain unavailable.
+
+Seal-interface reference:
+
+- <https://doi.org/10.3390/app11041370>
+- <https://creativecommons.org/licenses/by/4.0/>
+
 To compile the sources into canonical runtime packs:
 
 ```bash
@@ -1007,6 +1038,10 @@ cargo run -p xtask -- matdb-pack \
 cargo run -p xtask -- matdb-pack \
   --manifest data/matdb/seed-v1/nasa-tn-d-2223-4340-high-lead-bronze-journal/manifest.tsv \
   --out /path/to/nasa-tn-d-2223-4340-high-lead-bronze-journal.fsintpk
+
+cargo run -p xtask -- matdb-pack \
+  --manifest data/matdb/seed-v1/zhang-2021-carbon-ptfe-cr-piston-rod/manifest.tsv \
+  --out /path/to/zhang-2021-carbon-ptfe-cr-piston-rod.fsintpk
 ```
 
 ## No-claim boundary
