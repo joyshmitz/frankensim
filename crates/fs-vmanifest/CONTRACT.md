@@ -3393,3 +3393,71 @@ changes, and scope changes, so no case ever disappears silently.
 - The legacy SMOKE/MID/FULL adapters themselves are V.4.6 scope; this
   layer only guarantees they cannot silently alias.
 - Scale is a workload/budget dimension, never a profile id, per the bead.
+
+## V.4.1 Journey DSL and scoped receipt algebra (bead i94v.7.4.1)
+
+`journey` freezes one typed verification intent before execution. A
+`JourneyManifest` binds the stable `JourneyId`, all Five Explicits, a bounded
+relative artifact sandbox, a content-addressed public-surface catalog, exactly
+one Core or Max claim stratum, exactly one manifest-resolved `ProfileId`, the
+selection digest, orthogonal workload scale, and explicit timeout/drain/attempt
+defaults. Composite profiles retain their ordered atomic inputs, precedence
+rule, version, and digest; scale is never interpreted as a profile.
+
+`JourneyPhase` is the normative production graph for discover/preflight,
+author or import, validate/estimate/plan, submit/admit, queue/execute/observe,
+checkpoint/pause/migrate/cancel/resume/fork, and inspect/verify/report/share/
+replay. `JourneyCursor::transition` admits one declared edge or refuses without
+mutating its phase/history.
+
+`OperationReceipt`, `AttemptReceipt`, `JobReceipt`, and `CampaignReceipt` are
+distinct domain-separated records. Each owns an independent `ReceiptOutcome`;
+cross-scope links are immutable content hashes. Job and campaign receipts bind
+an exact `ClaimRecord` (subject revision plus normalized typed-relation graph),
+claim adjudication, evidence methods and grade, domain applicability,
+operational support, separate completeness/integrity axes, promotion effect,
+and retained typed skips. There is deliberately no Partial or Unsupported
+claim-adjudication variant: a weakened/restricted survivor is a new content-
+addressed revision, while lack of applicability/capability stays on the domain
+and support axes. Promotion refuses unless supported evidence is applicable,
+operationally supported, complete, integrity-verified, nonempty, and at least
+corroborated; complete-but-corrupt and partial-but-verified records remain
+representable without becoming promotable.
+
+`ProcessCode` projects only the current `OperationReceipt` predicate: 0
+satisfied, 10 unsatisfied, 11 invalid schema/admission, 12 indeterminate or
+incomplete, 13 unsupported, 14 cancelled and drained, 15 timeout finalized, 16
+infrastructure error, 17 integrity/security failure, and 18 budget exhaustion
+finalized. A successful status query or accepted cancellation request therefore
+projects 0 without laundering the referenced job. A strength-matched refutation
+projects 0 for `adjudicate` and 10 for `prove`. Timeout, budget exhaustion,
+cancellation, infrastructure failure, and integrity failure cannot project as
+green through a favorable terminal-axis mismatch.
+
+### Determinism and error model (Journey DSL)
+
+- Every identity uses fixed-order, length-framed fields and a scope-specific
+  BLAKE3 domain. Sets use canonical `BTreeSet` order; chronological receipt
+  references retain declared order. The same valid typed input therefore has
+  the same digest independent of worker count or presentation.
+- IDs, semantic text, artifact budgets, and receipt reference counts are
+  bounded. Missing Five Explicits, path traversal, zero budgets/versions,
+  duplicate references/skips, malformed claim graphs, illegal phase edges, and
+  favorable promotion/outcome combinations fail closed with stable rule slugs.
+- Human and JSONL operation projections carry the same receipt digest and
+  process code. They are projections, not independent adjudication sources.
+
+### No-claim boundaries (Journey DSL)
+
+- The DSL and receipts execute no simulation, checker, cancellation protocol,
+  artifact publication, authentication, or replay. They specify and retain the
+  semantics those systems must report.
+- A content hash proves byte identity, not evidence truth, custody, oracle
+  independence, checker correctness, scientific validity, or public-release
+  authority.
+- The compact JSONL operation projection is not the full durable wire codec.
+  Full fs-obs event projection, bounded redaction, old-state migration adapters,
+  and no-mock public-command integration are separate follow-on obligations.
+- Phase transitions specify legal intent flow; runtime drain, pause, migration,
+  resume, fork, and replay correctness require their own G4/G5 execution
+  evidence.
