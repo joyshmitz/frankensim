@@ -16,10 +16,16 @@
 //! - RESUMABLE: [`Study`] is the checkpoint (clone = checkpoint); a
 //!   split run is BITWISE equal to a straight run (house pattern,
 //!   gated).
+//! - BOUND + FORKABLE: a checkpoint retains its admitted semantic problem
+//!   identity, so cached objective state cannot cross problem meanings;
+//!   reweight steering is an explicit immutable-parent world fork.
 
 use crate::riemann::{retract, tangent_project};
 use crate::stop::{StopObservation, StopReason, StopRule};
-use fs_opt::{ConstraintKind, EvalLimit, Manifold, Problem, Sense, eval};
+use fs_opt::{
+    AdmissionReport, ConstraintKind, EvalLimit, Manifold, OptError, Problem, ProblemSemanticId,
+    Sense, Variable, eval,
+};
 
 /// One packed variable block.
 #[derive(Debug, Clone)]
@@ -109,6 +115,8 @@ impl Packing {
 #[derive(Debug, Clone)]
 pub struct Study {
     packing: Packing,
+    problem_id: ProblemSemanticId,
+    variables: Vec<Variable>,
     /// Current packed iterate.
     pub x: Vec<f64>,
     /// Objective history (most recent last).
@@ -121,6 +129,134 @@ pub struct Study {
     current_grad_norm: Option<f64>,
     fd_h: f64,
     lr: f64,
+}
+
+/// Typed refusal from constructing, continuing, or steering a [`Study`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum StudyError {
+    /// The supplied problem failed the common `fs-opt` admission gate.
+    ProblemRejected(AdmissionReport),
+    /// The packed point cannot bind the problem's declared variables.
+    PackedPointLength {
+        /// Required packed storage length.
+        expected: usize,
+        /// Supplied packed storage length.
+        actual: usize,
+    },
+    /// An objective root cannot be evaluated at the branch point.
+    ObjectiveUnevaluable {
+        /// Objective-list index.
+        index: usize,
+        /// Evaluation refusal.
+        source: OptError,
+    },
+    /// A constraint root cannot be evaluated at the branch point.
+    ConstraintUnevaluable {
+        /// Constraint-list index.
+        index: usize,
+        /// Evaluation refusal.
+        source: OptError,
+    },
+    /// A checkpoint was presented to a semantically different problem.
+    ProblemMismatch {
+        /// Problem identity stored in the checkpoint.
+        bound: ProblemSemanticId,
+        /// Problem identity supplied for continuation.
+        supplied: ProblemSemanticId,
+    },
+    /// A fork was requested without changing the semantic problem.
+    ForkProblemUnchanged {
+        /// Identity shared by the parent and proposed child.
+        problem_id: ProblemSemanticId,
+    },
+    /// Steering attempted to change the variable schema, not only the study objective.
+    ForkVariableSchemaMismatch {
+        /// First unequal variable index, or the first missing index when counts differ.
+        first_mismatch: usize,
+        /// Number of variables in the parent study schema.
+        parent_variables: usize,
+        /// Number of variables in the proposed child problem.
+        child_variables: usize,
+    },
+}
+
+impl core::fmt::Display for StudyError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            StudyError::ProblemRejected(report) => write!(f, "{report}"),
+            StudyError::PackedPointLength { expected, actual } => write!(
+                f,
+                "packed study point has length {actual}, but the problem requires {expected}"
+            ),
+            StudyError::ObjectiveUnevaluable { index, source } => {
+                write!(
+                    f,
+                    "objective {index} is unevaluable at the study point: {source}"
+                )
+            }
+            StudyError::ConstraintUnevaluable { index, source } => {
+                write!(
+                    f,
+                    "constraint {index} is unevaluable at the study point: {source}"
+                )
+            }
+            StudyError::ProblemMismatch { bound, supplied } => write!(
+                f,
+                "study checkpoint is bound to problem {bound}, not supplied problem {supplied}; use Study::fork_for to steer"
+            ),
+            StudyError::ForkProblemUnchanged { problem_id } => write!(
+                f,
+                "study fork keeps semantic problem {problem_id} unchanged; resume the checkpoint instead of resetting branch-local accounting"
+            ),
+            StudyError::ForkVariableSchemaMismatch {
+                first_mismatch,
+                parent_variables,
+                child_variables,
+            } => write!(
+                f,
+                "study fork changes the variable schema at index {first_mismatch} (parent variables {parent_variables}, child variables {child_variables})"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for StudyError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            StudyError::ProblemRejected(report) => Some(report),
+            StudyError::ObjectiveUnevaluable { source, .. }
+            | StudyError::ConstraintUnevaluable { source, .. } => Some(source),
+            StudyError::PackedPointLength { .. }
+            | StudyError::ProblemMismatch { .. }
+            | StudyError::ForkProblemUnchanged { .. }
+            | StudyError::ForkVariableSchemaMismatch { .. } => None,
+        }
+    }
+}
+
+/// Replay-complete description of a world-fork steering operation.
+///
+/// The child starts at `branch_point_bits` with the same numerical driver
+/// configuration but fresh branch-local history, step, evaluation, and cache
+/// state. The parent is borrowed immutably and remains untouched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StudyForkReceipt {
+    /// Semantic problem identity bound to the parent checkpoint.
+    pub parent_problem_id: ProblemSemanticId,
+    /// Semantic problem identity bound to the child branch.
+    pub child_problem_id: ProblemSemanticId,
+    /// Parent steps already landed when the branch was created.
+    pub parent_steps: usize,
+    /// Parent evaluations already spent when the branch was created.
+    pub parent_evals: usize,
+    /// Parent objective-history length at the branch point.
+    pub parent_history_len: usize,
+    /// Exact packed branch point as IEEE-754 bit patterns.
+    pub branch_point_bits: Vec<u64>,
+    /// Finite-difference step as an IEEE-754 bit pattern.
+    pub fd_h_bits: u64,
+    /// Learning rate as an IEEE-754 bit pattern.
+    pub learning_rate_bits: u64,
 }
 
 /// Outcome of a study segment.
@@ -161,20 +297,49 @@ impl Study {
     /// objective and constraint root up front (fail loud, fail early).
     ///
     /// # Panics
-    /// If `x0` has the wrong packed length or a root is unevaluable.
+    /// If the problem is refused by admission, `x0` has the wrong packed
+    /// length, or a root is unevaluable. Use [`Study::try_new`] for a typed
+    /// refusal.
     #[must_use]
     pub fn new(problem: &Problem, x0: &[f64], fd_h: f64, lr: f64) -> Study {
+        Study::try_new(problem, x0, fd_h, lr)
+            .unwrap_or_else(|error| panic!("study construction refused: {error}"))
+    }
+
+    /// Start a study with typed admission, binding, and evaluation refusals.
+    #[must_use]
+    pub fn try_new(problem: &Problem, x0: &[f64], fd_h: f64, lr: f64) -> Result<Study, StudyError> {
+        let admission = problem.admit().map_err(StudyError::ProblemRejected)?;
+        Study::try_new_admitted(problem, admission.semantic_id(), x0, fd_h, lr)
+    }
+
+    fn try_new_admitted(
+        problem: &Problem,
+        problem_id: ProblemSemanticId,
+        x0: &[f64],
+        fd_h: f64,
+        lr: f64,
+    ) -> Result<Study, StudyError> {
         let packing = Packing::new(problem);
-        assert_eq!(x0.len(), packing.dim, "packed x0 length mismatch");
+        if x0.len() != packing.dim {
+            return Err(StudyError::PackedPointLength {
+                expected: packing.dim,
+                actual: x0.len(),
+            });
+        }
         let bindings = packing.unpack(x0);
-        for o in problem.objectives() {
-            let _ = eval(problem, o.node, &bindings).expect("objective root must evaluate");
+        for (index, objective) in problem.objectives().iter().enumerate() {
+            let _ = eval(problem, objective.node, &bindings)
+                .map_err(|source| StudyError::ObjectiveUnevaluable { index, source })?;
         }
-        for c in problem.constraints() {
-            let _ = eval(problem, c.node, &bindings).expect("constraint root must evaluate");
+        for (index, constraint) in problem.constraints().iter().enumerate() {
+            let _ = eval(problem, constraint.node, &bindings)
+                .map_err(|source| StudyError::ConstraintUnevaluable { index, source })?;
         }
-        Study {
+        Ok(Study {
             packing,
+            problem_id,
+            variables: problem.vars().to_vec(),
             x: x0.to_vec(),
             history: Vec::new(),
             evals: 0,
@@ -183,7 +348,57 @@ impl Study {
             current_grad_norm: None,
             fd_h,
             lr,
+        })
+    }
+
+    /// Semantic identity of the problem this checkpoint may continue.
+    #[must_use]
+    pub const fn problem_id(&self) -> ProblemSemanticId {
+        self.problem_id
+    }
+
+    /// Fork this checkpoint into a fresh branch for a reweighted problem.
+    ///
+    /// Steering may change objectives, constraints, tags, and budgets, but it
+    /// may not reinterpret the checkpoint's packed coordinates: variable names,
+    /// manifolds, dimensions, order, and count must remain exactly equal. The
+    /// child inherits only the current point and numerical driver configuration;
+    /// problem-dependent caches and branch-local counters start empty.
+    #[must_use]
+    pub fn fork_for(&self, problem: &Problem) -> Result<(Study, StudyForkReceipt), StudyError> {
+        let admission = problem.admit().map_err(StudyError::ProblemRejected)?;
+        let child_problem_id = admission.semantic_id();
+        if child_problem_id == self.problem_id {
+            return Err(StudyError::ForkProblemUnchanged {
+                problem_id: child_problem_id,
+            });
         }
+        if self.variables.as_slice() != problem.vars() {
+            let first_mismatch = self
+                .variables
+                .iter()
+                .zip(problem.vars())
+                .position(|(parent, child)| parent != child)
+                .unwrap_or_else(|| self.variables.len().min(problem.vars().len()));
+            return Err(StudyError::ForkVariableSchemaMismatch {
+                first_mismatch,
+                parent_variables: self.variables.len(),
+                child_variables: problem.vars().len(),
+            });
+        }
+        let child =
+            Study::try_new_admitted(problem, child_problem_id, &self.x, self.fd_h, self.lr)?;
+        let receipt = StudyForkReceipt {
+            parent_problem_id: self.problem_id,
+            child_problem_id,
+            parent_steps: self.steps,
+            parent_evals: self.evals,
+            parent_history_len: self.history.len(),
+            branch_point_bits: self.x.iter().map(|value| value.to_bits()).collect(),
+            fd_h_bits: self.fd_h.to_bits(),
+            learning_rate_bits: self.lr.to_bits(),
+        };
+        Ok((child, receipt))
     }
 
     /// Central-difference TANGENT gradient of the total objective.
@@ -203,11 +418,42 @@ impl Study {
         self.packing.project(&self.x, &g)
     }
 
-    /// Run a segment: projected-gradient steps with retraction until a
-    /// stop rule fires, the problem budget runs out, or `max_steps`.
-    /// The problem's own `budget.limit` is ALWAYS added to the
-    /// caller's rules (P4: budgets are not optional).
+    /// Run a segment, failing loud if the supplied problem does not match the
+    /// semantic identity bound to this checkpoint.
+    ///
+    /// # Panics
+    /// If the problem is refused by admission or differs from the checkpoint's
+    /// bound problem. Use [`Study::try_run`] for a typed refusal.
     pub fn run(&mut self, problem: &Problem, rule: &StopRule, max_steps: usize) -> StudyReport {
+        self.try_run(problem, rule, max_steps)
+            .unwrap_or_else(|error| panic!("study continuation refused: {error}"))
+    }
+
+    /// Run a segment with typed problem-admission and semantic-binding refusal.
+    ///
+    /// Projected-gradient steps retract until the stop rule fires, the bound
+    /// problem budget runs out, or `max_steps` is reached. The problem's own
+    /// `budget.limit` is always added to the caller's rules (P4).
+    pub fn try_run(
+        &mut self,
+        problem: &Problem,
+        rule: &StopRule,
+        max_steps: usize,
+    ) -> Result<StudyReport, StudyError> {
+        let supplied = problem
+            .admit()
+            .map_err(StudyError::ProblemRejected)?
+            .semantic_id();
+        if supplied != self.problem_id {
+            return Err(StudyError::ProblemMismatch {
+                bound: self.problem_id,
+                supplied,
+            });
+        }
+        Ok(self.run_bound(problem, rule, max_steps))
+    }
+
+    fn run_bound(&mut self, problem: &Problem, rule: &StopRule, max_steps: usize) -> StudyReport {
         let mut rules = vec![rule.clone()];
         if let EvalLimit::Limited(maximum) = problem.budget().limit {
             rules.push(StopRule::Budget(

@@ -31,7 +31,7 @@ pub use interior::{InteriorReport, interior_point};
 pub use lbfgs::{LbfgsReport, LbfgsState};
 pub use pareto::{ParetoPoint, epsilon_constraint_sweep, weighted_sum_sweep};
 pub use riemann::{RiemannianLbfgs, RiemannianReport, retract, tangent_project};
-pub use runner::{Packing, Study, StudyReport};
+pub use runner::{Packing, Study, StudyError, StudyForkReceipt, StudyReport};
 pub use sqp::{SqpReport, sqp};
 pub use stop::{StopReason, StopRule};
 pub use trust::{TrustRegionReport, trust_region_newton};

@@ -60,7 +60,8 @@ so converged and stalled are distinguishable outcomes.
   (identity-seeded BFGS needs curvature pairs — the gate is the
   measurement, not a wish). Large-scale SQP (sparse KKT, TR
   globalization) is recorded follow-up.
-- `runner::{Study, Packing, StudyReport}` (bead ijil) — the
+- `runner::{Study, Packing, StudyReport, StudyError, StudyForkReceipt}`
+  (beads ijil and 7tv.21.15) — the
   Problem-IR study runner: ALL variables pack across the manifold
   product (per-block riemann ops keep the sphere spherical to 1e-12
   along the whole path), central-difference tangent gradients through
@@ -71,12 +72,23 @@ so converged and stalled are distinguishable outcomes.
   constraints route to AL/IP/SQP through packed FD adapters, and
   studies are RESUMABLE (clone = checkpoint; split runs bitwise equal
   INCLUDING eval accounting — the cached current-objective is what
-  makes segment boundaries invisible).
+  makes segment boundaries invisible). Every checkpoint is bound to the
+  full-width semantic identity of that cache's admitted `Problem`;
+  `try_run` refuses a different identity before mutation. Objective steering
+  uses `fork_for`: an exact variable schema is mandatory, the parent is
+  untouched, and the child keeps the branch point/driver configuration while
+  clearing objective history, step/evaluation counters, and problem-dependent
+  caches. An unchanged semantic problem is refused so a fork cannot reset the
+  same problem's budget accounting. The returned receipt retains both problem
+  IDs, parent accounting, branch-point float bits, and driver bits.
 
 ## Invariants
 
 - Deterministic trajectories from identical inputs (G5-tested);
   resumable states bitwise across split points.
+- Resumption cannot reinterpret cached state under a different semantic
+  problem. Reweighting is an explicit world fork with immutable parent state
+  and fresh branch-local accounting.
 - L-BFGS curvature pairs are admitted only with sᵀy above the
   roundoff floor (SPD memory preserved on nonconvex problems).
 - Riemannian iterates remain ON the manifold to roundoff (the
@@ -184,6 +196,19 @@ evaluation accounting. The case passes only if all three cuts are genuine
 iteration-cap splits and every canonical final state is byte-identical to the
 uninterrupted reference.
 
+`tests/runner_fork_battery.rs` (bead 7tv.21.15) covers gradient-study P9
+world-forking. A two-step equal-weight trunk holds a live cached objective;
+direct continuation under a different semantic problem must return a typed,
+mutation-free mismatch, while an unchanged-problem fork must refuse a hidden
+accounting reset. Opposite 0.95/0.05 objective reweightings then fork from the
+exact same point, start with empty branch-local history/accounting, converge
+toward opposite analytic optima, and reproduce both fork receipts and complete
+public terminal states bit for bit on independent repeats. A renamed variable
+schema is refused before a child exists. The wire-validated `fs-obs` receipt
+binds parent/child problem identities, branch-point/driver bits, parent
+accounting, terminal states, and fixed input seed zero; the aggregate
+`ConformanceCase` is emitted only after all direct assertions pass.
+
 ## No-claim boundaries
 
 - Second-order adjoints (adjoint-of-adjoint Hv) are follow-up scope;
@@ -212,13 +237,15 @@ uninterrupted reference.
   IR gradients (the live IR is evaluation-only), L-BFGS/TR engines
   behind the runner (projected gradient is the v1 driver), and
   ledgered study artifacts (fs-ledger wiring) — recorded follow-ups.
-- The runner G5 receipt covers one fixed, sequential projected-gradient
-  Problem-IR fixture and in-process clone checkpoints. It does not claim
-  persisted checkpoint serialization, other optimizer-family studies,
-  `Cx` or worker-count replay, cancellation-storm recovery, cross-ISA
-  equality, fs-ledger artifact replay, or performance. Those require
-  their own retained study/host evidence. Expectations that fail before
-  an aggregate event remain ordinary Rust test diagnostics.
+- The runner G5 receipts cover one fixed, sequential projected-gradient
+  Problem-IR fixture with in-process clone checkpoints and one finite
+  in-process two-objective reweight-fork fixture. They do not claim persisted
+  checkpoint serialization, generalized lineage replay, other optimizer-family
+  studies, `Cx` or worker-count replay, cancellation-storm recovery, cross-ISA
+  equality, fs-ledger artifact replay, or performance. The fork receipt is
+  ledger-ready data, not evidence that fs-ledger persistence is wired. Those
+  claims require their own retained study/host evidence. Expectations that fail
+  before an aggregate event remain ordinary Rust test diagnostics.
 - Constraint Jacobian-transpose callbacks remain a mathematical trust
   boundary: fs-ascent checks exact dimensions, finite values, and the
   mandatory `J^T 0 = 0` linearity identity, but independent derivative
