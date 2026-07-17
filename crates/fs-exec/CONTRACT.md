@@ -522,8 +522,10 @@ parent/child high water, G4 cancellation and first-fault derivation, G5
 deterministic child/receipt replay, and rejection of
 rehash-valid deadline, impossible resource evidence, sibling-failure, and
 descendant-memory-peak forgeries.
-tests/constellation_smoke.rs pins the
-asupersync Budget vocabulary. In-module unit suites cover ordinary and
+tests/constellation_smoke.rs pins the asupersync Budget vocabulary and emits
+its aggregate result as a canonical fs-obs `ConformanceCase` after the direct
+Rust assertions; assertion failures before that event remain ordinary test
+diagnostics. In-module unit suites cover ordinary and
 clock-free gate stamping, keys, drain-report old-worker refusal and closed
 late admission,
 Reduce laws, partitioning, victim orders, self-cancellation, and pool
