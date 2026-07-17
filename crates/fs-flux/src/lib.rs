@@ -11,6 +11,7 @@
 //! and LES closures are recorded successors with honesty labels —
 //! no turbulence model ships here, and nothing pretends otherwise.
 
+pub mod ale;
 pub mod bdm;
 pub mod ns;
 pub mod trimesh;

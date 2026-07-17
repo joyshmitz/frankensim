@@ -18,6 +18,13 @@ adjoints.
   lower-index adjacent triangle; `tri_edges[t][k] = (edge, ±1)` with
   local edge k OPPOSITE vertex k). Built from `fs_solid::Mesh2`
   triangles (CCW). RT0 helpers retained as utilities.
+- `audit_affine_triangle_gcl2` (`ale`): a fixed-connectivity 2-D ALE
+  geometry audit for triangles whose vertices move linearly through one
+  explicit time step measured in coherent SI seconds. It validates the
+  public `TriMesh` incidence tables, rejects endpoint and mid-step
+  collapse, integrates owner-oriented swept edge areas, and returns
+  per-cell plus global GCL defects without rejecting a finite mismatch
+  or certifying itself.
 - `bdm` module: `cell_basis` builds the per-cell BDM1 basis (all of
   P1², 6 dofs = mean + signed-arclength normal moments per edge,
   BOTH against the global edge normal and orientation — orientation
@@ -71,19 +78,30 @@ adjoints.
    weight functional is annihilated to 1.1e-10 — pressure-robustness
    read backwards: ∫∇χ·u_h = 0 for exactly div-free u_h with zero
    boundary flux (flux-006).
+7. Affine-triangle ALE geometry uses one deterministic edge receipt per
+   global edge. Each admitted interior neighbor traverses its shared edge
+   in reverse, so independently evaluated directed sweeps cancel, while
+   `tri_edges` signs bind the owner sweep to each cell and each cell measures
+   `Δarea - Σ signed_edge_sweep`; a quadratic-in-time signed-area check
+   refuses a collapse between two otherwise valid endpoint meshes
+   (flux-007, G0/G3).
 
 ## Error model
 
 Structured panics on programmer contracts (non-triangle elements,
 degenerate cells, singular saddle factorizations) with teaching
 messages. Solver quality is reported, not asserted: `FluxSolution`
-carries the relative residual and iteration count.
+carries the relative residual and iteration count. The ALE geometry audit
+instead returns `AleGclError2` for malformed topology, non-finite input,
+collapse, arithmetic overflow, and receipt allocation failure. Its finite
+roundoff defect is evidence, not an admission failure.
 
 ## Determinism class
 
 Bit-deterministic across runs on a platform: BTree edge ordering,
 fixed assembly and quadrature order, deterministic dense LU / GMRES.
-Cross-ISA goldens not recorded.
+The affine-triangle audit also has exact same-instance replay evidence.
+Cross-ISA goldens and a full G5 audit are not recorded.
 
 ## Cancellation behavior
 
@@ -105,6 +123,11 @@ Stokes MMS orders + exact divergence; flux-003 pressure-robustness
 identity; flux-004 cavity Picard + Ghia coarse band; flux-005
 Taylor–Green BDF1; flux-006 adjoint gradient + annihilation.
 
+`tests/ale_gcl.rs`: flux-007 fixed mesh, rigid translation, affine
+expansion/shear, two-cell interior cancellation, replay, translation
+covariance, continuous-trajectory minima, and fail-closed endpoint,
+topology, stale-cache, orientation, and finiteness cases.
+
 ## No-claim boundaries
 
 - Turbulence: NO LES/RANS closure ships here and nothing pretends
@@ -123,3 +146,8 @@ Taylor–Green BDF1; flux-006 adjoint gradient + annihilation.
   successor work).
 - Outflow/do-nothing and traction boundary conditions (Dirichlet
   ships).
+- The affine-triangle GCL receipt does not remap fields, assemble or
+  advance ALE Navier–Stokes, generate mesh motion, support curved faces
+  or 3-D cells, couple FSI, or certify the continuum solver. It carries
+  no ledger identity and the synchronous audit has no `Cx`
+  cancellation lane; those remain integration work.
