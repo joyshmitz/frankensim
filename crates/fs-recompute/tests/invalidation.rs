@@ -3,19 +3,68 @@
 //! the fail-closed hardening zoo, the G3 SOUNDNESS battery against a
 //! REAL executable DAG (any unsound skip is Sev-0), the falsifier,
 //! graceful degradation under loose bounds with skip-yield measured,
-//! and slack burning. JSON-line verdicts; seeded cases carry seeds.
+//! and slack burning. Completed cases emit canonical fs-obs aggregate
+//! verdicts; inv-003 carries its literal input root while fixed cases use
+//! zero. The inv-003 campaign and conditional falsifier share one LCG
+//! stream by design. Fixture `NodeRecord::rng_seed` values are manifest
+//! data, not execution randomness, and this suite has no execution seed.
+//! Assertions and expectations reached before a verdict remain ordinary
+//! Rust test diagnostics.
 
 use fs_ledger::{ContentHash, hash_bytes};
 use fs_recompute::invalidate::{Edge, RecomputeReason, Verdict, apply_plan, plan};
 use fs_recompute::{NodeRecord, PutOutcome, Store};
 
-fn verdict(case: &str, pass: bool, detail: &str) {
-    println!(
-        "{{\"suite\":\"fs-recompute/invalidation\",\"case\":\"{case}\",\"verdict\":\"{}\",\
-         \"detail\":\"{detail}\"}}",
-        if pass { "pass" } else { "fail" }
+const SUITE: &str = "fs-recompute/invalidation";
+const FIXED_INPUT_SEED: u64 = 0;
+const INV_003_INPUT_SEED: u64 = 0x1001_2026_0707_0063;
+
+fn verdict(case: &str, pass: bool, detail: &str, seed: u64) {
+    let mut emitter = fs_obs::Emitter::new(SUITE, case);
+    let event = emitter.emit(
+        if pass {
+            fs_obs::Severity::Info
+        } else {
+            fs_obs::Severity::Error
+        },
+        fs_obs::EventKind::ConformanceCase {
+            suite: SUITE.to_string(),
+            case: case.to_string(),
+            pass,
+            detail: detail.to_string(),
+            seed,
+        },
+        None,
     );
+    fs_obs::lint_failure_record(&event).expect("invalidation verdict must be replayable");
+    let line = event.to_jsonl();
+    fs_obs::validate_line(&line).expect("invalidation verdict must use the fs-obs wire schema");
+    println!("{line}");
     assert!(pass, "case {case}: {detail}");
+}
+
+fn companion(case: &str, name: &str, json: String) {
+    let mut emitter = fs_obs::Emitter::new(SUITE, case);
+    let event = emitter.emit(
+        fs_obs::Severity::Info,
+        fs_obs::EventKind::Custom {
+            name: name.to_string(),
+            json,
+        },
+        None,
+    );
+    fs_obs::lint_failure_record(&event).expect("invalidation companion must be replayable");
+    let line = event.to_jsonl();
+    fs_obs::validate_line(&line).expect("invalidation companion must use the fs-obs wire schema");
+    println!("{line}");
+}
+
+fn finite_json(value: f64) -> String {
+    if value.is_finite() {
+        value.to_string()
+    } else {
+        "null".to_string()
+    }
 }
 
 struct Lcg(u64);
@@ -171,6 +220,7 @@ fn inv_001_absorption() {
         "staleness flows THROUGH the skipped node (c absorbs 5e-3, d absorbs the \
          through-flowing 2.5e-3); when d cannot absorb it recomputes AND pulls the \
          stale c in as PulledByDescendant; zero perturbation is an empty frontier",
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -282,6 +332,7 @@ fn inv_002_fail_closed() {
         "the exact tie recomputes (never skip on the boundary), negative slack never \
          skips, invalid sensitivity bounds FAIL CLOSED, duplicate perturbations sum \
          conservatively, and non-topological edges refuse with teaching text",
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -370,7 +421,7 @@ fn build_fixture(x0: f64, x1: f64, tolerances: &[f64; 7]) -> Fixture {
 /// skipped nodes and asserts agreement within the certified bound.
 #[test]
 fn inv_003_soundness_battery() {
-    let mut rng = Lcg(0x1001_2026_0707_0063);
+    let mut rng = Lcg(INV_003_INPUT_SEED);
     let mut skipped_total = 0u32;
     let mut violations = 0u32;
     let mut falsifier_checks = 0u32;
@@ -440,8 +491,9 @@ fn inv_003_soundness_battery() {
             "{violations} unsound outcomes over 40 seeded traces ({skipped_total} skips, every \
              final value within tolerance of full-recompute truth — the Sev-0 \
              gate) and the falsifier's {falsifier_checks} forced recomputes all \
-             agreed within their certified bounds; seed 0x1001_2026_0707_0063"
+             agreed within their certified bounds; seed {INV_003_INPUT_SEED:#018x}"
         ),
+        INV_003_INPUT_SEED,
     );
 }
 
@@ -480,10 +532,15 @@ fn inv_004_graceful_degradation() {
                 }
             )
     });
-    println!(
-        "{{\"suite\":\"fs-recompute/invalidation\",\"case\":\"inv-004-yield\",\
-         \"verdict\":\"info\",\"detail\":\"healthy={healthy_skips:.2} \
-         degraded={degraded_skips:.2}\"}}"
+    companion(
+        "inv-004/skip-yield",
+        "recompute-invalidation-skip-yield",
+        format!(
+            "{{\"healthy_skip_yield\":{},\"degraded_skip_yield\":{},\
+             \"input_seed\":{FIXED_INPUT_SEED}}}",
+            finite_json(healthy_skips),
+            finite_json(degraded_skips),
+        ),
     );
     verdict(
         "inv-004",
@@ -494,6 +551,7 @@ fn inv_004_graceful_degradation() {
              downstream of the pessimistic op recomputes) while remaining correct — \
              the R4 health metric in action"
         ),
+        FIXED_INPUT_SEED,
     );
 }
 
@@ -546,5 +604,6 @@ fn inv_005_claims_and_burning() {
         "skip rows carry the verified-color interval claim; applying the plan BURNS \
          slack (0.012 - 0.01), so the repeat 0.01 perturbation recomputes while a \
          0.001 one still fits the remainder — slack is a real, spendable resource",
+        FIXED_INPUT_SEED,
     );
 }

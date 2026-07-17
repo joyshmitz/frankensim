@@ -111,6 +111,23 @@ falsifier's forced recomputes agree within their certified bounds;
 any violation is Sev-0 (inv-003); graceful degradation with yield
 measured (inv-004); verified-color claims + slack burning (inv-005).
 
+`tests/invalidation.rs`, behind `tolerance-invalidation`, emits one canonical
+fs-obs `ConformanceCase` aggregate verdict after each completed inv-001..inv-005
+case. Each reached verdict is failure-record linted, wire-validated, and printed
+before its final assertion. Assertions and expectations that abort earlier
+remain Rust test-harness diagnostics rather than claiming aggregate-event
+coverage. Inv-003 records its literal LCG input root
+`0x1001_2026_0707_0063`; the campaign inputs and conditional falsifier sampling
+intentionally continue one coupled stream. Inv-001/002/004/005 are fixed and
+use aggregate seed zero. The fixture `NodeRecord::rng_seed` is also zero
+throughout but describes manifest records, not hidden test or execution
+randomness; this suite has no execution/Cx seed. Inv-004 preserves its
+pre-aggregate skip-yield measurement as a linted, wire-validated fs-obs `Custom`
+companion under `inv-004/skip-yield`; finite yields remain JSON numbers and
+non-finite yields are represented as `null`. Central proof must explicitly
+enable `fs-recompute/tolerance-invalidation`; a default-feature pass skips this
+test target.
+
 ## perturb() API + cache policy (bead lmp4.8, same feature gate)
 
 `api::RecomputeApi` is the operator-facing surface: `perturb(node, δ)`
