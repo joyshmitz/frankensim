@@ -18,7 +18,10 @@
 //!   precondition enforced through capability routing, with the chart
 //!   type and missing capability logged.
 //!
-//! JSON-line verdicts log every admitted/refused decision.
+//! Aggregate outcomes use canonical fs-obs conformance events. Every fixture
+//! is fixed-input and therefore carries input seed zero; the deterministic
+//! `Cx` stream remains separate execution provenance. Assertions and
+//! expectations reached before a verdict remain ordinary Rust diagnostics.
 
 use asupersync::types::Budget;
 use fs_evidence::NumericalCertificate;
@@ -28,13 +31,48 @@ use fs_geom::{Aabb, Chart, ChartSample, Point3, TraceStepClaim, Vec3};
 use fs_query::{GeometricMoments, MomentEnclosure, QueryError, geometric_moments};
 use std::f64::consts::PI;
 
-fn verdict(case: &str, pass: bool, detail: &str) {
-    println!(
-        "{{\"suite\":\"fs-query/moments\",\"case\":\"{case}\",\"verdict\":\"{}\",\
-         \"detail\":\"{detail}\"}}",
-        if pass { "pass" } else { "fail" }
+const SUITE: &str = "fs-query/moments";
+const FIXED_INPUT_SEED: u64 = 0;
+const EXECUTION_SEED: u64 = 0x60E5;
+const MOMENTS_KERNEL_ID: u32 = 9;
+const CANCELLATION_KERNEL_ID: u32 = 10;
+
+fn emit_verdict(
+    emitter: &mut fs_obs::Emitter,
+    case: &str,
+    pass: bool,
+    detail: &str,
+    execution_kernel: u32,
+) {
+    let severity = if pass {
+        fs_obs::Severity::Info
+    } else {
+        fs_obs::Severity::Error
+    };
+    let event = emitter.emit(
+        severity,
+        fs_obs::EventKind::ConformanceCase {
+            suite: SUITE.to_string(),
+            case: case.to_string(),
+            pass,
+            detail: format!(
+                "{detail}; execution stream seed=0x{EXECUTION_SEED:x} \
+                 kernel={execution_kernel} tile=0 iteration=0"
+            ),
+            seed: FIXED_INPUT_SEED,
+        },
+        None,
     );
+    fs_obs::lint_failure_record(&event).expect("moments verdict must be replayable");
+    let line = event.to_jsonl();
+    fs_obs::validate_line(&line).expect("moments verdict must use the fs-obs wire schema");
+    println!("{line}");
     assert!(pass, "case {case}: {detail}");
+}
+
+fn verdict(case: &str, pass: bool, detail: &str, execution_kernel: u32) {
+    let mut emitter = fs_obs::Emitter::new(SUITE, case);
+    emit_verdict(&mut emitter, case, pass, detail, execution_kernel);
 }
 
 fn with_cx<R>(f: impl FnOnce(&Cx<'_>) -> R) -> R {
@@ -45,8 +83,8 @@ fn with_cx<R>(f: impl FnOnce(&Cx<'_>) -> R) -> R {
             &gate,
             arena,
             StreamKey {
-                seed: 0x60E5,
-                kernel_id: 9,
+                seed: EXECUTION_SEED,
+                kernel_id: MOMENTS_KERNEL_ID,
                 tile: 0,
                 iteration: 0,
             },
@@ -193,6 +231,7 @@ fn gm_001_box_moments_contain_closed_forms() {
             m.band_cells,
             rows.join(",")
         ),
+        MOMENTS_KERNEL_ID,
     );
 }
 
@@ -268,6 +307,7 @@ fn gm_002_sphere_moments_and_com() {
             m.band_cells,
             rows.join(",")
         ),
+        MOMENTS_KERNEL_ID,
     );
 }
 
@@ -313,6 +353,7 @@ fn gm_003_translation_covariance_metamorphic() {
         "gm-003",
         true,
         "translated law and direct recomputation overlap on every component",
+        MOMENTS_KERNEL_ID,
     );
 }
 
@@ -415,8 +456,9 @@ fn gm_004_capability_and_input_refusals() {
             ),
         ]
     });
+    let mut emitter = fs_obs::Emitter::new(SUITE, "gm-004");
     for (name, pass) in outcomes {
-        verdict("gm-004", pass, name);
+        emit_verdict(&mut emitter, "gm-004", pass, name, MOMENTS_KERNEL_ID);
     }
 }
 
@@ -430,8 +472,8 @@ fn gm_005_cancellation_fails_closed() {
             &gate,
             arena,
             StreamKey {
-                seed: 0x60E5,
-                kernel_id: 10,
+                seed: EXECUTION_SEED,
+                kernel_id: CANCELLATION_KERNEL_ID,
                 tile: 0,
                 iteration: 0,
             },
@@ -444,6 +486,7 @@ fn gm_005_cancellation_fails_closed() {
         "gm-005",
         matches!(refused, Err(QueryError::Cancelled)),
         "a pre-cancelled context refuses before publishing moment enclosures",
+        CANCELLATION_KERNEL_ID,
     );
 }
 
@@ -564,6 +607,7 @@ fn gm_006_torus_and_hollow_shell_closed_forms() {
             "torus V∋{volume:.6} zz∋{m2_axis:.6} xx∋{m2_planar:.6}; \
              shell V∋{shell_volume:.6} xx∋{shell_m2:.6}",
         ),
+        MOMENTS_KERNEL_ID,
     );
 }
 
@@ -593,5 +637,6 @@ fn gm_007_open_mesh_refuses_mass_properties() {
              mass properties refused typed",
             open_mesh.name()
         ),
+        MOMENTS_KERNEL_ID,
     );
 }

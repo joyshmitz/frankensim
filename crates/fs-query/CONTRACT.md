@@ -303,12 +303,30 @@ events for the thickness estimator and curvature convergence tables remain
 independently wire-validated. Assertions and expectations reached before an
 aggregate verdict remain ordinary Rust test diagnostics and emit no verdict.
 Any reimplementation must pass the suite unchanged.
-`tests/moments.rs`, cases gm-001..gm-005 — certified geometric moments:
-box/sphere closed-form containment with bounded widths, COM enclosures,
-the translation-covariance metamorphic (outward-rounded law vs direct
-recomputation must overlap), capability/input/work refusals, and
-cancellation. `geometric_moments` is Enclosure-class: every returned
-bracket contains the true unit-density integral of the chart's region.
+`tests/moments.rs`, cases gm-001..gm-007 — certified geometric moments:
+box/sphere/torus/hollow-shell closed-form containment with bounded widths,
+COM enclosures, the translation-covariance metamorphic (outward-rounded law
+vs direct recomputation must overlap), capability/input/work refusals,
+cancellation, and the open-mesh capability-routing refusal. The canonical
+fs-obs suite/session is `fs-query/moments`. Scopes gm-001, gm-002, gm-003,
+gm-005, gm-006, and gm-007 each emit one `ConformanceCase` at sequence zero.
+Scope gm-004 retains ten ordered refusal rows at sequences 0..9:
+`weaker-claim-refuses`, `estimate-sample-refuses`,
+`zero-spacing-refuses`, `nan-spacing-refuses`,
+`inverted-domain-refuses`, `non-finite-domain-refuses`,
+`support-excluding-domain-refuses`, `per-axis-work-refuses`,
+`total-work-refuses`, and `unproven-volume-refuses-com`. All fixtures are
+fixed-input, so every aggregate `seed` is zero. That input seed is deliberately
+distinct from `Cx` execution provenance: gm-001..gm-004, gm-006, and gm-007
+use stream `(seed=0x60e5, kernel=9, tile=0, iteration=0)`, while gm-005 uses
+`(seed=0x60e5, kernel=10, tile=0, iteration=0)`. Every event detail records
+the applicable stream. The suite requires no feature flag. Assertions and
+expectations reached before an aggregate remain ordinary Rust diagnostics;
+each gm-004 row is linted, wire-validated, and printed before its terminal
+assert, so a refusal failure retains the exact emitted prefix. No Custom
+metric/forensic rows are produced. `geometric_moments` is Enclosure-class:
+every returned bracket contains the true unit-density integral of the chart's
+region.
 `tests/convex.rs`, cases gc-001..gc-005 — certified convex separation:
 analytic sphere/box distance containment, nonsmooth box-box honesty,
 touching/overlap never claiming separation, bit-identical replay, and
@@ -350,9 +368,7 @@ construction/sample refusals, and no distance-claim laundering into
 exact-distance consumers. Aggregate outcomes use canonical fs-obs
 `ConformanceCase` events; gh-001..gh-003 carry the shared `0xDEF0` execution
 seed and constructor-only gh-004 uses zero. Direct assertion failures before
-those events remain ordinary Rust test diagnostics. The moments battery adds
-gm-006 (torus and hollow-shell closed forms) and gm-007 (an open mesh refuses
-mass properties through capability routing).
+those events remain ordinary Rust test diagnostics.
 `tests/inflation.rs` — conversion/router receipt refusal, exact-zero bit
 neutrality, outward widening and witness shrinking, and monotonicity across
 convex, implicit-gap, codimensional, CCD, and moments consumers.
@@ -384,7 +400,10 @@ convex, implicit-gap, codimensional, CCD, and moments consumers.
   integrals; densities, inertia tensors, and material identity live
   downstream (fs-matdb consumers), never here. Rotation covariance and
   spatially-varying weighting are deferred surfaces —
-  [`GeometricMoments::translated`] covers translation only.
+  [`GeometricMoments::translated`] covers translation only. The fixed-fixture
+  battery makes no randomized-coverage claim, and gm-007 checks an honest
+  capability refusal for one open mesh rather than certifying a general
+  watertightness detector.
 - The overlap side of an implicit-gap query is strictly a pointwise common-ball
   witness: `max(φ_A, φ_B)` certified negative proves that ball and nothing
   else. It authorizes convex penetration only after the sealed token is
