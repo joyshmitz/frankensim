@@ -4,13 +4,19 @@
 //! the same analytic equality-plus-active-inequality fixture. Per engine, a
 //! retained receipt binds the exact ordered objective, constraint, and
 //! Jacobian-transpose callback trace together with every public report and KKT
-//! field. Same-input repeats must reproduce the receipt byte for byte. An
-//! engine-keyed deterministic red mutation flips one finite returned-decision
-//! mantissa bit and is refused both before and after self-consistent resealing.
+//! field. An independent analytic oracle reconstructs the objective,
+//! constraint values and gradients, multipliers, raw KKT components, and a
+//! scaled KKT residual at the returned point. Same-input repeats must reproduce
+//! the receipt byte for byte. Engine-keyed deterministic red mutations target
+//! the returned decision, each constraint value/gradient family, multiplier
+//! and KKT claims, and the declared solver configuration; stale and correctly
+//! resealed forms are refused by distinct typed admission errors, and a
+//! resealed semantic mutant cannot authorize itself as its own reference.
 //!
 //! This is one small dense fixture. It does not claim all constrained problems,
 //! large-scale sparse behavior, cancellation, checkpointing, cross-ISA
-//! equality, ledger persistence, or performance.
+//! equality, external-solver parity, cryptographic authenticity, ledger
+//! persistence, or performance.
 
 use core::cell::RefCell;
 
@@ -20,9 +26,34 @@ use fs_obs::ident::{IdentityBuilder, ReplayIdentity, check_version};
 use fs_obs::{Emitter, EventKind, Severity};
 
 const SUITE: &str = "fs-ascent/constrained-study-replay";
-const INPUT_SEED: u64 = 0;
+// `ConformanceCase` requires a seed field. These optimizers are deterministic
+// and accept no seed, so zero is an explicitly null event-schema sentinel, not
+// an optimizer input or a replay-causality claim.
+const EVENT_SEED_NONE: u64 = 0;
 const MUTATION_SEED: u64 = 0x434F_4E53_5452_5244;
-const START: [f64; 2] = [0.0, 0.0];
+const DIMENSION: usize = 2;
+const EQUALITY_COUNT: usize = 1;
+const INEQUALITY_COUNT: usize = 1;
+const START: [f64; DIMENSION] = [0.0, 0.0];
+const ANALYTIC_OPTIMUM: [f64; DIMENSION] = [1.2, 0.8];
+const ANALYTIC_MULTIPLIERS: [f64; 2] = [0.4, 1.2];
+const ANALYTIC_X_TOLERANCE: f64 = 1e-4;
+const ANALYTIC_MULTIPLIER_TOLERANCE: f64 = 1e-3;
+// The production certificate and this oracle evaluate the same finite affine
+// fixture through independent code. Sixty-four epsilons admit only a small
+// reassociation envelope; the much looser solver tolerance remains a separate
+// convergence gate and cannot mask a materially wrong certificate.
+const ORACLE_ABS_TOLERANCE: f64 = 64.0 * f64::EPSILON;
+const ORACLE_REL_TOLERANCE: f64 = 64.0 * f64::EPSILON;
+
+const CONFIG_SCHEMA_VERSION: u64 = 1;
+const OBJECTIVE_ORACLE_VERSION: u64 = 1;
+const CONSTRAINT_ORACLE_VERSION: u64 = 1;
+const CALLBACK_ORACLE_VERSION: u64 = 1;
+const KKT_ORACLE_VERSION: u64 = 1;
+const SCALED_KKT_ORACLE_VERSION: u64 = 1;
+const ACCEPTANCE_GATE_VERSION: u64 = 1;
+const MUTATION_PROTOCOL_VERSION: u64 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Engine {
@@ -62,6 +93,79 @@ impl Engine {
             Self::AugmentedLagrangian => 40,
             Self::InteriorPoint | Self::Sqp => 60,
         }
+    }
+
+    const fn schedule(self) -> &'static str {
+        match self {
+            Self::AugmentedLagrangian => {
+                "cold-zero-multipliers;mu0=10;grow-if-feasibility>0.25*previous;mu-growth=10;mu-cap=1e10;inner-memory=10;inner-grad-gate=0.1*tolerance;inner-lbfgs-cap=300"
+            }
+            Self::InteriorPoint => {
+                "phase1-margin=1e-9;phase1-beta=30;phase1-memory=8;phase1-gates=objective<-2margin-or-grad<1e-12;phase1-cap=300;mu0=1;mu-factor=0.2;rho0=10;rho-factor=2;inner-memory=10;inner-grad=max(0.1mu,0.1tol);inner-cap=400"
+            }
+            Self::Sqp => {
+                "identity-bfgs;initial-active-ci>-1e-8;activate-ci>-1e-10;drop-multiplier<-1e-10;merit-weight=10;backtrack-cap=40;alpha-factor=0.5;accept-merit<m0-1e-12"
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StudyConfig {
+    kkt_tolerance_bits: u64,
+    iteration_cap: usize,
+    analytic_x_tolerance_bits: u64,
+    analytic_multiplier_tolerance_bits: u64,
+    oracle_abs_tolerance_bits: u64,
+    oracle_rel_tolerance_bits: u64,
+    config_schema_version: u64,
+    objective_oracle_version: u64,
+    constraint_oracle_version: u64,
+    callback_oracle_version: u64,
+    kkt_oracle_version: u64,
+    scaled_kkt_oracle_version: u64,
+    acceptance_gate_version: u64,
+    mutation_protocol_version: u64,
+}
+
+impl StudyConfig {
+    fn for_engine(engine: Engine) -> Self {
+        Self {
+            kkt_tolerance_bits: engine.tolerance().to_bits(),
+            iteration_cap: engine.iteration_cap(),
+            analytic_x_tolerance_bits: ANALYTIC_X_TOLERANCE.to_bits(),
+            analytic_multiplier_tolerance_bits: ANALYTIC_MULTIPLIER_TOLERANCE.to_bits(),
+            oracle_abs_tolerance_bits: ORACLE_ABS_TOLERANCE.to_bits(),
+            oracle_rel_tolerance_bits: ORACLE_REL_TOLERANCE.to_bits(),
+            config_schema_version: CONFIG_SCHEMA_VERSION,
+            objective_oracle_version: OBJECTIVE_ORACLE_VERSION,
+            constraint_oracle_version: CONSTRAINT_ORACLE_VERSION,
+            callback_oracle_version: CALLBACK_ORACLE_VERSION,
+            kkt_oracle_version: KKT_ORACLE_VERSION,
+            scaled_kkt_oracle_version: SCALED_KKT_ORACLE_VERSION,
+            acceptance_gate_version: ACCEPTANCE_GATE_VERSION,
+            mutation_protocol_version: MUTATION_PROTOCOL_VERSION,
+        }
+    }
+
+    fn kkt_tolerance(&self) -> f64 {
+        f64::from_bits(self.kkt_tolerance_bits)
+    }
+
+    fn analytic_x_tolerance(&self) -> f64 {
+        f64::from_bits(self.analytic_x_tolerance_bits)
+    }
+
+    fn analytic_multiplier_tolerance(&self) -> f64 {
+        f64::from_bits(self.analytic_multiplier_tolerance_bits)
+    }
+
+    fn oracle_abs_tolerance(&self) -> f64 {
+        f64::from_bits(self.oracle_abs_tolerance_bits)
+    }
+
+    fn oracle_rel_tolerance(&self) -> f64 {
+        f64::from_bits(self.oracle_rel_tolerance_bits)
     }
 }
 
@@ -116,6 +220,19 @@ impl ReportPayload {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct OracleSnapshot {
+    objective_bits: u64,
+    objective_gradient_bits: Vec<u64>,
+    equality_value_bits: Vec<u64>,
+    equality_gradient_bits: Vec<Vec<u64>>,
+    inequality_value_bits: Vec<u64>,
+    inequality_gradient_bits: Vec<Vec<u64>>,
+    stationarity_vector_bits: Vec<u64>,
+    kkt_bits: [u64; 4],
+    scaled_kkt_bits: u64,
+}
+
 #[derive(Debug)]
 struct RunRecord {
     callbacks: Vec<CallbackCall>,
@@ -125,21 +242,132 @@ struct RunRecord {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ReceiptPayload {
     engine: Engine,
-    input_seed: u64,
+    config: StudyConfig,
     start_bits: Vec<u64>,
     callbacks: Vec<CallbackCall>,
     report: ReportPayload,
+    oracle: OracleSnapshot,
 }
 
 impl ReceiptPayload {
+    #[allow(clippy::too_many_lines)] // Every acceptance and oracle field is intentionally bound.
     fn identity(&self) -> ReplayIdentity {
-        let mut builder = IdentityBuilder::new("fs-ascent-constrained-study-receipt-v1")
+        let mut builder = IdentityBuilder::new("fs-ascent-constrained-study-receipt-v2")
             .str("fs-ascent-version", fs_ascent::VERSION)
+            .str("fs-la-version", fs_la::VERSION)
+            .str("fs-math-version", fs_math::VERSION)
+            .str("fs-obs-version", fs_obs::VERSION)
+            .u64(
+                "fs-obs-identity-schema-version",
+                u64::from(fs_obs::ident::IDENT_SCHEMA_VERSION),
+            )
             .str("engine", self.engine.name())
             .u64("engine-tag", self.engine.tag())
-            .u64("input-seed", self.input_seed)
-            .f64_bits("kkt-tolerance", self.engine.tolerance())
-            .u64("iteration-cap", self.engine.iteration_cap() as u64)
+            .str("engine-schedule", self.engine.schedule())
+            .str(
+                "units",
+                "coordinates-objective-constraints-and-multipliers-are-dimensionless",
+            )
+            .str("constraint-convention", "equalities-zero;inequalities-less-than-or-equal-zero")
+            .str(
+                "kkt-component-order",
+                "stationarity;primal-feasibility;dual-feasibility;complementarity",
+            )
+            .str("optimizer-randomness", "none-fixed-input-no-algorithm-seed")
+            .str(
+                "event-seed-semantics",
+                "zero-is-null-ConformanceCase-schema-sentinel-not-optimizer-input",
+            )
+            .u64("dimension", DIMENSION as u64)
+            .u64("equality-count", EQUALITY_COUNT as u64)
+            .u64("inequality-count", INEQUALITY_COUNT as u64)
+            .f64_bits("objective-center-x", 2.0)
+            .f64_bits("objective-center-y", 1.0)
+            .f64_bits("equality-x-coefficient", 1.0)
+            .f64_bits("equality-y-coefficient", 1.0)
+            .f64_bits("equality-rhs", 2.0)
+            .f64_bits("inequality-x-coefficient", 1.0)
+            .f64_bits("inequality-y-coefficient", 0.0)
+            .f64_bits("inequality-upper-bound", 1.2)
+            .f64_bits("analytic-optimum-x", ANALYTIC_OPTIMUM[0])
+            .f64_bits("analytic-optimum-y", ANALYTIC_OPTIMUM[1])
+            .f64_bits("analytic-lambda", ANALYTIC_MULTIPLIERS[0])
+            .f64_bits("analytic-nu", ANALYTIC_MULTIPLIERS[1])
+            .u64(
+                "config-schema-version",
+                self.config.config_schema_version,
+            )
+            .f64_bits("kkt-tolerance", self.config.kkt_tolerance())
+            .u64("iteration-cap", self.config.iteration_cap as u64)
+            .f64_bits(
+                "analytic-x-tolerance",
+                self.config.analytic_x_tolerance(),
+            )
+            .f64_bits(
+                "analytic-multiplier-tolerance",
+                self.config.analytic_multiplier_tolerance(),
+            )
+            .f64_bits(
+                "oracle-absolute-tolerance",
+                self.config.oracle_abs_tolerance(),
+            )
+            .f64_bits(
+                "oracle-relative-tolerance",
+                self.config.oracle_rel_tolerance(),
+            )
+            .u64(
+                "objective-oracle-version",
+                self.config.objective_oracle_version,
+            )
+            .u64(
+                "constraint-oracle-version",
+                self.config.constraint_oracle_version,
+            )
+            .u64(
+                "callback-oracle-version",
+                self.config.callback_oracle_version,
+            )
+            .u64("kkt-oracle-version", self.config.kkt_oracle_version)
+            .u64(
+                "scaled-kkt-oracle-version",
+                self.config.scaled_kkt_oracle_version,
+            )
+            .u64(
+                "acceptance-gate-version",
+                self.config.acceptance_gate_version,
+            )
+            .u64(
+                "mutation-protocol-version",
+                self.config.mutation_protocol_version,
+            )
+            .str(
+                "oracle-comparison-gate",
+                "abs+rel*max(abs(reported),abs(oracle));64-epsilon-coefficients",
+            )
+            .str(
+                "scaled-kkt-definition",
+                "max(stationarity/(1+gradf_inf+abs(lambda)*gradce_inf+abs(nu)*gradci_inf),abs(ce)/(1+max(x_inf,2)),max(ci,0)/(1+max(x_inf,1.2)),dual/(1+abs(nu)),complementarity/(1+abs(nu)*max(abs(ci),1)))-v1",
+            )
+            .str(
+                "convergence-gate",
+                "reported-converged-must-equal-both-reported-raw-kkt-and-independent-raw-kkt-strict-below-tolerance-gates",
+            )
+            .str(
+                "admission-gate-order",
+                "identity-version;payload-identity;retained-reference-identity;independent-semantic-oracle",
+            )
+            .str(
+                "analytic-gate",
+                "componentwise-open-absolute-bands-for-x-lambda-nu-plus-strictly-positive-active-nu",
+            )
+            .str(
+                "callback-gate",
+                "every-callback-input-output-recomputed-and-all-five-kinds-required-at-returned-point",
+            )
+            .str(
+                "accounting-gate",
+                "iterations-in-1-through-cap;positive-reported-evals;objective-callback-minus-report-offset=AL3,IP2..3,SQP1-or-3",
+            )
             .u64("start-values", self.start_bits.len() as u64);
         for &value_bits in &self.start_bits {
             builder = builder.u64("start-value-bits", value_bits);
@@ -185,10 +413,69 @@ impl ReceiptPayload {
         for &value_bits in &self.report.nu_bits {
             builder = builder.u64("report-nu-bits", value_bits);
         }
-        builder
+        builder = builder
             .u64("report-iterations", self.report.iterations as u64)
             .u64("report-evaluations", self.report.evaluations as u64)
             .flag("report-converged", self.report.converged)
+            .u64("oracle-objective-bits", self.oracle.objective_bits)
+            .u64(
+                "oracle-objective-gradient-values",
+                self.oracle.objective_gradient_bits.len() as u64,
+            );
+        for &value_bits in &self.oracle.objective_gradient_bits {
+            builder = builder.u64("oracle-objective-gradient-bits", value_bits);
+        }
+        builder = builder.u64(
+            "oracle-equality-values",
+            self.oracle.equality_value_bits.len() as u64,
+        );
+        for &value_bits in &self.oracle.equality_value_bits {
+            builder = builder.u64("oracle-equality-value-bits", value_bits);
+        }
+        builder = builder.u64(
+            "oracle-equality-gradient-rows",
+            self.oracle.equality_gradient_bits.len() as u64,
+        );
+        for row in &self.oracle.equality_gradient_bits {
+            builder = builder.u64("oracle-equality-gradient-values", row.len() as u64);
+            for &value_bits in row {
+                builder = builder.u64("oracle-equality-gradient-bits", value_bits);
+            }
+        }
+        builder = builder.u64(
+            "oracle-inequality-values",
+            self.oracle.inequality_value_bits.len() as u64,
+        );
+        for &value_bits in &self.oracle.inequality_value_bits {
+            builder = builder.u64("oracle-inequality-value-bits", value_bits);
+        }
+        builder = builder.u64(
+            "oracle-inequality-gradient-rows",
+            self.oracle.inequality_gradient_bits.len() as u64,
+        );
+        for row in &self.oracle.inequality_gradient_bits {
+            builder = builder.u64("oracle-inequality-gradient-values", row.len() as u64);
+            for &value_bits in row {
+                builder = builder.u64("oracle-inequality-gradient-bits", value_bits);
+            }
+        }
+        builder = builder.u64(
+            "oracle-stationarity-vector-values",
+            self.oracle.stationarity_vector_bits.len() as u64,
+        );
+        for &value_bits in &self.oracle.stationarity_vector_bits {
+            builder = builder.u64("oracle-stationarity-vector-bits", value_bits);
+        }
+        builder = builder.u64("oracle-kkt-values", self.oracle.kkt_bits.len() as u64);
+        for &value_bits in &self.oracle.kkt_bits {
+            builder = builder.u64("oracle-kkt-bits", value_bits);
+        }
+        builder
+            .u64("oracle-scaled-kkt-bits", self.oracle.scaled_kkt_bits)
+            .str(
+                "no-claims",
+                "all-constrained-problems;large-scale-sparse;cancellation;checkpointing;cross-ISA;external-solver-parity;cryptographic-authenticity;authenticated-ledger;persistence;performance",
+            )
             .finish()
     }
 }
@@ -215,28 +502,430 @@ impl RetainedReceipt {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MergeRefusal {
-    UnsupportedIdentityVersion,
-    PayloadIdentityMismatch,
-    ReferenceIdentityMismatch,
+    UnsupportedIdentityVersion { declared: u32 },
+    PayloadIdentityMismatch { declared: u64, computed: u64 },
+    ReferenceIdentityMismatch { expected: u64, found: u64 },
+    SemanticOracleMismatch,
 }
 
 fn admit_receipt(
     reference: &ReplayIdentity,
     candidate: &RetainedReceipt,
 ) -> Result<(), MergeRefusal> {
-    check_version(candidate.declared_identity.version())
-        .map_err(|_| MergeRefusal::UnsupportedIdentityVersion)?;
-    if candidate.payload.identity() != candidate.declared_identity {
-        return Err(MergeRefusal::PayloadIdentityMismatch);
+    check_version(candidate.declared_identity.version()).map_err(|_| {
+        MergeRefusal::UnsupportedIdentityVersion {
+            declared: candidate.declared_identity.version(),
+        }
+    })?;
+    let computed = candidate.payload.identity();
+    if computed != candidate.declared_identity {
+        return Err(MergeRefusal::PayloadIdentityMismatch {
+            declared: candidate.declared_identity.root(),
+            computed: computed.root(),
+        });
     }
     if &candidate.declared_identity != reference {
-        return Err(MergeRefusal::ReferenceIdentityMismatch);
+        return Err(MergeRefusal::ReferenceIdentityMismatch {
+            expected: reference.root(),
+            found: candidate.declared_identity.root(),
+        });
+    }
+    if semantic_mismatch(&candidate.payload).is_some() {
+        return Err(MergeRefusal::SemanticOracleMismatch);
     }
     Ok(())
 }
 
 fn bits(values: &[f64]) -> Vec<u64> {
     values.iter().map(|value| value.to_bits()).collect()
+}
+
+fn bit_rows(rows: &[Vec<f64>]) -> Vec<Vec<u64>> {
+    rows.iter().map(|row| bits(row)).collect()
+}
+
+fn decode_finite(label: &str, value_bits: &[u64], expected_len: usize) -> Result<Vec<f64>, String> {
+    if value_bits.len() != expected_len {
+        return Err(format!(
+            "{label}-length:{}!=expected-{expected_len}",
+            value_bits.len()
+        ));
+    }
+    let values: Vec<f64> = value_bits.iter().copied().map(f64::from_bits).collect();
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err(format!("{label}-non-finite:{value_bits:016x?}"));
+    }
+    Ok(values)
+}
+
+fn objective_oracle(x: &[f64]) -> (f64, Vec<f64>) {
+    let dx = x[0] - 2.0;
+    let dy = x[1] - 1.0;
+    (dx * dx + dy * dy, vec![2.0 * dx, 2.0 * dy])
+}
+
+#[allow(clippy::type_complexity)] // Mirrors values plus Jacobian rows for both constraint kinds.
+fn constraint_oracle(x: &[f64]) -> (Vec<f64>, Vec<Vec<f64>>, Vec<f64>, Vec<Vec<f64>>) {
+    (
+        vec![x[0] + x[1] - 2.0],
+        vec![vec![1.0, 1.0]],
+        vec![x[0] - 1.2],
+        vec![vec![1.0, 0.0]],
+    )
+}
+
+fn inf_norm(values: &[f64]) -> f64 {
+    values.iter().map(|value| value.abs()).fold(0.0, f64::max)
+}
+
+#[allow(clippy::too_many_lines)] // The independent KKT derivation is intentionally explicit.
+fn independent_oracle(report: &ReportPayload) -> Result<OracleSnapshot, String> {
+    let x = decode_finite("report-x", &report.x_bits, DIMENSION)?;
+    let lambda = decode_finite("report-lambda", &report.lambda_bits, EQUALITY_COUNT)?;
+    let nu = decode_finite("report-nu", &report.nu_bits, INEQUALITY_COUNT)?;
+    if nu.iter().any(|multiplier| *multiplier < 0.0) {
+        return Err(format!(
+            "negative-inequality-multiplier:{:016x?}",
+            report.nu_bits
+        ));
+    }
+
+    let (objective, objective_gradient) = objective_oracle(&x);
+    let (equality_values, equality_gradients, inequality_values, inequality_gradients) =
+        constraint_oracle(&x);
+    let stationarity = vec![
+        (objective_gradient[0] + lambda[0]) + nu[0],
+        objective_gradient[1] + lambda[0],
+    ];
+    let stationarity_residual = inf_norm(&stationarity);
+    let primal_feasibility = inf_norm(&equality_values).max(
+        inequality_values
+            .iter()
+            .map(|value| value.max(0.0))
+            .fold(0.0, f64::max),
+    );
+    let dual_feasibility = nu
+        .iter()
+        .map(|multiplier| (-multiplier).max(0.0))
+        .fold(0.0, f64::max);
+    let complementarity = inequality_values
+        .iter()
+        .zip(&nu)
+        .map(|(constraint, multiplier)| (constraint * multiplier).abs())
+        .fold(0.0, f64::max);
+
+    // Scale each KKT block by the magnitude of the terms that form it. This
+    // remains dimensionless for this fixture and prevents a large objective or
+    // multiplier from making a small absolute residual look artificially bad.
+    let stationarity_scale = 1.0
+        + inf_norm(&objective_gradient)
+        + lambda[0].abs() * inf_norm(&equality_gradients[0])
+        + nu[0].abs() * inf_norm(&inequality_gradients[0]);
+    let decision_scale = 1.0 + inf_norm(&x).max(2.0);
+    let inequality_scale = 1.0 + inf_norm(&x).max(1.2);
+    let scaled_primal = (equality_values[0].abs() / decision_scale)
+        .max(inequality_values[0].max(0.0) / inequality_scale);
+    let scaled_dual = dual_feasibility / (1.0 + nu[0].abs());
+    let scaled_complementarity =
+        complementarity / (1.0 + nu[0].abs() * inequality_values[0].abs().max(1.0));
+    let scaled_kkt = (stationarity_residual / stationarity_scale)
+        .max(scaled_primal)
+        .max(scaled_dual)
+        .max(scaled_complementarity);
+    let all_oracle_values = [
+        objective,
+        stationarity_residual,
+        primal_feasibility,
+        dual_feasibility,
+        complementarity,
+        scaled_kkt,
+    ];
+    if all_oracle_values.iter().any(|value| !value.is_finite()) {
+        return Err("independent-oracle-produced-non-finite-value".to_string());
+    }
+
+    Ok(OracleSnapshot {
+        objective_bits: objective.to_bits(),
+        objective_gradient_bits: bits(&objective_gradient),
+        equality_value_bits: bits(&equality_values),
+        equality_gradient_bits: bit_rows(&equality_gradients),
+        inequality_value_bits: bits(&inequality_values),
+        inequality_gradient_bits: bit_rows(&inequality_gradients),
+        stationarity_vector_bits: bits(&stationarity),
+        kkt_bits: [
+            stationarity_residual.to_bits(),
+            primal_feasibility.to_bits(),
+            dual_feasibility.to_bits(),
+            complementarity.to_bits(),
+        ],
+        scaled_kkt_bits: scaled_kkt.to_bits(),
+    })
+}
+
+fn oracle_close(reported: f64, oracle: f64, config: &StudyConfig) -> bool {
+    if !reported.is_finite() || !oracle.is_finite() {
+        return false;
+    }
+    let scale = reported.abs().max(oracle.abs());
+    let tolerance = config
+        .oracle_rel_tolerance()
+        .mul_add(scale, config.oracle_abs_tolerance());
+    (reported - oracle).abs() <= tolerance
+}
+
+fn callback_mismatch(index: usize, call: &CallbackCall) -> Option<String> {
+    let point = match decode_finite("callback-point", &call.point_bits, DIMENSION) {
+        Ok(point) => point,
+        Err(error) => return Some(format!("callback[{index}]-{error}")),
+    };
+    let (objective, objective_gradient) = objective_oracle(&point);
+    let (equality_values, equality_gradients, inequality_values, inequality_gradients) =
+        constraint_oracle(&point);
+    let mismatch = match call.kind {
+        "objective-gradient" => {
+            if !call.weight_bits.is_empty()
+                || call.scalar_bits != Some(objective.to_bits())
+                || call.output_bits != bits(&objective_gradient)
+            {
+                Some("objective-value-gradient-or-shape")
+            } else {
+                None
+            }
+        }
+        "equality" => {
+            if !call.weight_bits.is_empty()
+                || call.scalar_bits.is_some()
+                || call.output_bits != bits(&equality_values)
+            {
+                Some("equality-value-or-shape")
+            } else {
+                None
+            }
+        }
+        "equality-jt" => match decode_finite(
+            "callback-equality-weight",
+            &call.weight_bits,
+            EQUALITY_COUNT,
+        ) {
+            Ok(weights)
+                if call.scalar_bits.is_none()
+                    && call.output_bits
+                        == bits(&[
+                            weights[0] * equality_gradients[0][0],
+                            weights[0] * equality_gradients[0][1],
+                        ]) =>
+            {
+                None
+            }
+            _ => Some("equality-gradient-action-or-shape"),
+        },
+        "inequality" => {
+            if !call.weight_bits.is_empty()
+                || call.scalar_bits.is_some()
+                || call.output_bits != bits(&inequality_values)
+            {
+                Some("inequality-value-or-shape")
+            } else {
+                None
+            }
+        }
+        "inequality-jt" => match decode_finite(
+            "callback-inequality-weight",
+            &call.weight_bits,
+            INEQUALITY_COUNT,
+        ) {
+            Ok(weights)
+                if call.scalar_bits.is_none()
+                    && call.output_bits
+                        == bits(&[
+                            weights[0] * inequality_gradients[0][0],
+                            weights[0] * inequality_gradients[0][1],
+                        ]) =>
+            {
+                None
+            }
+            _ => Some("inequality-gradient-action-or-shape"),
+        },
+        _ => Some("unknown-callback-kind"),
+    };
+    mismatch.map(|reason| format!("callback[{index}]-{}-{reason}", call.kind))
+}
+
+#[allow(clippy::too_many_lines)] // Every acceptance claim is independently audited here.
+fn semantic_mismatch(payload: &ReceiptPayload) -> Option<String> {
+    let expected_config = StudyConfig::for_engine(payload.engine);
+    if payload.config != expected_config {
+        return Some(format!(
+            "declared-config-does-not-match-{}-fixture",
+            payload.engine.name()
+        ));
+    }
+    if payload.start_bits != bits(&START) {
+        return Some("declared-start-does-not-match-fixed-fixture".to_string());
+    }
+    if payload.callbacks.is_empty() {
+        return Some("empty-callback-trace".to_string());
+    }
+    for (index, call) in payload.callbacks.iter().enumerate() {
+        if let Some(mismatch) = callback_mismatch(index, call) {
+            return Some(mismatch);
+        }
+    }
+
+    let oracle = match independent_oracle(&payload.report) {
+        Ok(oracle) => oracle,
+        Err(error) => return Some(error),
+    };
+    if payload.oracle != oracle {
+        return Some("retained-independent-oracle-snapshot-mismatch".to_string());
+    }
+    let report_f = f64::from_bits(payload.report.f_bits);
+    if !report_f.is_finite() || payload.report.f_bits != oracle.objective_bits {
+        return Some(format!(
+            "reported-objective=0x{:016x};oracle=0x{:016x}",
+            payload.report.f_bits, oracle.objective_bits
+        ));
+    }
+    for (component, (&reported_bits, &oracle_bits)) in payload
+        .report
+        .kkt_bits
+        .iter()
+        .zip(&oracle.kkt_bits)
+        .enumerate()
+    {
+        let reported = f64::from_bits(reported_bits);
+        let oracle_value = f64::from_bits(oracle_bits);
+        if reported < 0.0 || !oracle_close(reported, oracle_value, &payload.config) {
+            return Some(format!(
+                "reported-kkt[{component}]=0x{reported_bits:016x};oracle=0x{oracle_bits:016x}"
+            ));
+        }
+    }
+
+    let tolerance = payload.config.kkt_tolerance();
+    let reported_kkt_converged = payload
+        .report
+        .kkt_bits
+        .iter()
+        .map(|bits| f64::from_bits(*bits))
+        .all(|residual| residual.is_finite() && residual < tolerance);
+    let oracle_converged = oracle
+        .kkt_bits
+        .iter()
+        .map(|bits| f64::from_bits(*bits))
+        .all(|residual| residual.is_finite() && residual < tolerance);
+    if payload.report.converged != reported_kkt_converged
+        || payload.report.converged != oracle_converged
+        || !oracle_converged
+    {
+        return Some(format!(
+            "convergence-claim:{};reported-kkt-gate:{reported_kkt_converged};independent-kkt-gate:{oracle_converged}",
+            payload.report.converged,
+        ));
+    }
+    let scaled_kkt = f64::from_bits(oracle.scaled_kkt_bits);
+    if !scaled_kkt.is_finite() || scaled_kkt >= tolerance {
+        return Some(format!(
+            "scaled-kkt={scaled_kkt:e}>=tolerance={tolerance:e}"
+        ));
+    }
+
+    let x = match decode_finite("report-x", &payload.report.x_bits, DIMENSION) {
+        Ok(x) => x,
+        Err(error) => return Some(error),
+    };
+    for (coordinate, (&actual, &expected)) in x.iter().zip(&ANALYTIC_OPTIMUM).enumerate() {
+        if (actual - expected).abs() >= payload.config.analytic_x_tolerance() {
+            return Some(format!(
+                "analytic-optimum[{coordinate}]:{actual:e}!~{expected:e}"
+            ));
+        }
+    }
+    let lambda = match decode_finite("report-lambda", &payload.report.lambda_bits, EQUALITY_COUNT) {
+        Ok(lambda) => lambda,
+        Err(error) => return Some(error),
+    };
+    let nu = match decode_finite("report-nu", &payload.report.nu_bits, INEQUALITY_COUNT) {
+        Ok(nu) => nu,
+        Err(error) => return Some(error),
+    };
+    for (label, actual, expected) in [
+        ("lambda", lambda[0], ANALYTIC_MULTIPLIERS[0]),
+        ("nu", nu[0], ANALYTIC_MULTIPLIERS[1]),
+    ] {
+        if (actual - expected).abs() >= payload.config.analytic_multiplier_tolerance() {
+            return Some(format!("analytic-{label}:{actual:e}!~{expected:e}"));
+        }
+    }
+    if nu[0] <= 0.0 {
+        return Some("active-inequality-multiplier-is-not-positive".to_string());
+    }
+    if !(1..=payload.config.iteration_cap).contains(&payload.report.iterations) {
+        return Some(format!(
+            "reported-iterations:{} not in 1..={}",
+            payload.report.iterations, payload.config.iteration_cap
+        ));
+    }
+    if payload.report.evaluations == 0 {
+        return Some("reported-evaluations-is-zero".to_string());
+    }
+    let objective_callbacks = payload
+        .callbacks
+        .iter()
+        .filter(|call| call.kind == "objective-gradient")
+        .count();
+    let Some(uncounted_objective_callbacks) =
+        objective_callbacks.checked_sub(payload.report.evaluations)
+    else {
+        return Some(format!(
+            "objective-callbacks:{objective_callbacks}<reported-evaluations:{}",
+            payload.report.evaluations
+        ));
+    };
+    let accounting_matches = match payload.engine {
+        // AL validates twice before the warm driver, then performs the final
+        // objective read after its counted KKT check.
+        Engine::AugmentedLagrangian => uncounted_objective_callbacks == 3,
+        // IP has one initial validation; convergence may occur in-loop (+final
+        // objective) or at the post-cap final KKT/objective pair.
+        Engine::InteriorPoint => (2..=3).contains(&uncounted_objective_callbacks),
+        // SQP has one initial validation; a post-loop certificate adds the
+        // otherwise uncounted final objective and KKT objective reads.
+        Engine::Sqp => matches!(uncounted_objective_callbacks, 1 | 3),
+    };
+    if !accounting_matches {
+        return Some(format!(
+            "{}-objective-accounting:callbacks-{objective_callbacks};reported-{};uncounted-{uncounted_objective_callbacks}",
+            payload.engine.name(),
+            payload.report.evaluations
+        ));
+    }
+    for required_kind in ["objective-gradient", "equality", "inequality"] {
+        if !payload
+            .callbacks
+            .iter()
+            .any(|call| call.kind == required_kind && call.point_bits == payload.report.x_bits)
+        {
+            return Some(format!(
+                "returned-point-missing-callback-kind:{required_kind}"
+            ));
+        }
+    }
+    for required_kind in ["equality-jt", "inequality-jt"] {
+        if !payload.callbacks.iter().any(|call| {
+            call.kind == required_kind
+                && call.point_bits == payload.report.x_bits
+                && call
+                    .weight_bits
+                    .iter()
+                    .any(|bits| *bits & 0x7fff_ffff_ffff_ffff != 0)
+        }) {
+            return Some(format!(
+                "returned-point-missing-nonzero-gradient-action:{required_kind}"
+            ));
+        }
+    }
+    None
 }
 
 fn push_call(
@@ -256,7 +945,8 @@ fn push_call(
     });
 }
 
-fn run_once(engine: Engine) -> RunRecord {
+#[allow(clippy::too_many_lines)] // One shared instrumented fixture across three report types.
+fn run_once(engine: Engine, config: &StudyConfig) -> RunRecord {
     let calls = RefCell::new(Vec::new());
     let report = {
         let mut objective = |x: &[f64]| {
@@ -299,8 +989,8 @@ fn run_once(engine: Engine) -> RunRecord {
                 let report = augmented_lagrangian(
                     &mut problem,
                     &START,
-                    engine.tolerance(),
-                    engine.iteration_cap(),
+                    config.kkt_tolerance(),
+                    config.iteration_cap,
                 );
                 ReportPayload::from_parts(
                     &report.x,
@@ -317,8 +1007,8 @@ fn run_once(engine: Engine) -> RunRecord {
                 let report = interior_point(
                     &mut problem,
                     &START,
-                    engine.tolerance(),
-                    engine.iteration_cap(),
+                    config.kkt_tolerance(),
+                    config.iteration_cap,
                 );
                 ReportPayload::from_parts(
                     &report.x,
@@ -335,8 +1025,8 @@ fn run_once(engine: Engine) -> RunRecord {
                 let report = sqp(
                     &mut problem,
                     &START,
-                    engine.tolerance(),
-                    engine.iteration_cap(),
+                    config.kkt_tolerance(),
+                    config.iteration_cap,
                 );
                 ReportPayload::from_parts(
                     &report.x,
@@ -357,47 +1047,270 @@ fn run_once(engine: Engine) -> RunRecord {
     }
 }
 
-fn receipt(engine: Engine, run: &RunRecord) -> RetainedReceipt {
+fn receipt(engine: Engine, config: &StudyConfig, run: &RunRecord) -> RetainedReceipt {
+    let oracle = independent_oracle(&run.report)
+        .expect("production report must be well-formed enough for the independent oracle");
     RetainedReceipt::new(ReceiptPayload {
         engine,
-        input_seed: INPUT_SEED,
+        config: config.clone(),
         start_bits: bits(&START),
         callbacks: run.callbacks.clone(),
         report: run.report.clone(),
+        oracle,
     })
 }
 
-fn mutate_returned_decision(receipt: &RetainedReceipt) -> (RetainedReceipt, u64, usize, u64) {
-    let mutation_seed = MUTATION_SEED ^ receipt.payload.engine.tag();
-    let mut mutant = receipt.clone();
-    let coordinate = (mutation_seed as usize) % mutant.payload.report.x_bits.len();
-    let mask = 1_u64 << ((mutation_seed >> 8) % 52);
-    mutant.payload.report.x_bits[coordinate] ^= mask;
-    assert!(
-        f64::from_bits(mutant.payload.report.x_bits[coordinate]).is_finite(),
-        "mantissa-only mutation must remain a finite wire-valid decision"
-    );
-    mutant.reseal();
-    (mutant, mutation_seed, coordinate, mask)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MutationKind {
+    ReturnedDecision,
+    EqualityValue,
+    EqualityGradient,
+    InequalityValue,
+    InequalityGradient,
+    EqualityMultiplier,
+    InequalityMultiplier,
+    KktClaim,
+    ScaledKktClaim,
+    ScheduleConfig,
 }
 
-fn emit_receipt(
-    engine: Engine,
-    reference: &RetainedReceipt,
-    mutant: &RetainedReceipt,
+impl MutationKind {
+    const ALL: [Self; 10] = [
+        Self::ReturnedDecision,
+        Self::EqualityValue,
+        Self::EqualityGradient,
+        Self::InequalityValue,
+        Self::InequalityGradient,
+        Self::EqualityMultiplier,
+        Self::InequalityMultiplier,
+        Self::KktClaim,
+        Self::ScaledKktClaim,
+        Self::ScheduleConfig,
+    ];
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::ReturnedDecision => "returned-decision",
+            Self::EqualityValue => "equality-value",
+            Self::EqualityGradient => "equality-gradient",
+            Self::InequalityValue => "inequality-value",
+            Self::InequalityGradient => "inequality-gradient",
+            Self::EqualityMultiplier => "equality-multiplier",
+            Self::InequalityMultiplier => "inequality-multiplier",
+            Self::KktClaim => "kkt-claim",
+            Self::ScaledKktClaim => "scaled-kkt-claim",
+            Self::ScheduleConfig => "schedule-config",
+        }
+    }
+
+    const fn tag(self) -> u64 {
+        match self {
+            Self::ReturnedDecision => 0x01,
+            Self::EqualityValue => 0x02,
+            Self::EqualityGradient => 0x03,
+            Self::InequalityValue => 0x04,
+            Self::InequalityGradient => 0x05,
+            Self::EqualityMultiplier => 0x06,
+            Self::InequalityMultiplier => 0x07,
+            Self::KktClaim => 0x08,
+            Self::ScaledKktClaim => 0x09,
+            Self::ScheduleConfig => 0x0A,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MutationProof {
+    kind: MutationKind,
     mutation_seed: u64,
-    coordinate: usize,
-    mask: u64,
-) {
+    target: String,
+    before: u64,
+    after: u64,
+    resealed_identity: ReplayIdentity,
+    stale_refusal: MergeRefusal,
+    resealed_refusal: MergeRefusal,
+    self_reference_refusal: MergeRefusal,
+    semantic_mismatch: String,
+}
+
+fn mutate_f64(slot: &mut u64, mutation_seed: u64, magnitude: f64) -> (u64, u64) {
+    let before = *slot;
+    let direction: f64 = if mutation_seed & 1 == 0 { 1.0 } else { -1.0 };
+    let after_value = direction.mul_add(magnitude, f64::from_bits(before));
+    assert!(
+        after_value.is_finite(),
+        "deterministic semantic mutation must remain wire-finite"
+    );
+    let after = after_value.to_bits();
+    assert_ne!(before, after, "semantic mutation must change its target");
+    *slot = after;
+    (before, after)
+}
+
+#[allow(clippy::too_many_lines)] // One explicit independent lane per semantic claim family.
+fn apply_mutation(
+    payload: &mut ReceiptPayload,
+    kind: MutationKind,
+    mutation_seed: u64,
+) -> (String, u64, u64) {
+    match kind {
+        MutationKind::ReturnedDecision => {
+            let coordinate = (mutation_seed as usize) % payload.report.x_bits.len();
+            let (before, after) = mutate_f64(
+                &mut payload.report.x_bits[coordinate],
+                mutation_seed,
+                4.0 * payload.config.analytic_x_tolerance(),
+            );
+            (format!("report.x[{coordinate}]"), before, after)
+        }
+        MutationKind::EqualityValue => {
+            let (before, after) = mutate_f64(
+                &mut payload.oracle.equality_value_bits[0],
+                mutation_seed,
+                0.125,
+            );
+            ("oracle.equality_values[0]".to_string(), before, after)
+        }
+        MutationKind::EqualityGradient => {
+            let coordinate = (mutation_seed as usize) % DIMENSION;
+            let (before, after) = mutate_f64(
+                &mut payload.oracle.equality_gradient_bits[0][coordinate],
+                mutation_seed,
+                0.125,
+            );
+            (
+                format!("oracle.equality_gradients[0][{coordinate}]"),
+                before,
+                after,
+            )
+        }
+        MutationKind::InequalityValue => {
+            let (before, after) = mutate_f64(
+                &mut payload.oracle.inequality_value_bits[0],
+                mutation_seed,
+                0.125,
+            );
+            ("oracle.inequality_values[0]".to_string(), before, after)
+        }
+        MutationKind::InequalityGradient => {
+            let coordinate = (mutation_seed as usize) % DIMENSION;
+            let (before, after) = mutate_f64(
+                &mut payload.oracle.inequality_gradient_bits[0][coordinate],
+                mutation_seed,
+                0.125,
+            );
+            (
+                format!("oracle.inequality_gradients[0][{coordinate}]"),
+                before,
+                after,
+            )
+        }
+        MutationKind::EqualityMultiplier => {
+            let (before, after) =
+                mutate_f64(&mut payload.report.lambda_bits[0], mutation_seed, 0.05);
+            ("report.lambda[0]".to_string(), before, after)
+        }
+        MutationKind::InequalityMultiplier => {
+            let (before, after) = mutate_f64(&mut payload.report.nu_bits[0], mutation_seed, 0.05);
+            ("report.nu[0]".to_string(), before, after)
+        }
+        MutationKind::KktClaim => {
+            let component = (mutation_seed as usize) % payload.report.kkt_bits.len();
+            let (before, after) = mutate_f64(
+                &mut payload.report.kkt_bits[component],
+                mutation_seed,
+                4.0 * payload.config.kkt_tolerance(),
+            );
+            (format!("report.kkt[{component}]"), before, after)
+        }
+        MutationKind::ScaledKktClaim => {
+            let (before, after) = mutate_f64(
+                &mut payload.oracle.scaled_kkt_bits,
+                mutation_seed,
+                4.0 * payload.config.kkt_tolerance(),
+            );
+            ("oracle.scaled_kkt".to_string(), before, after)
+        }
+        MutationKind::ScheduleConfig => {
+            let before = payload.config.iteration_cap as u64;
+            payload.config.iteration_cap = if mutation_seed & 1 == 0 {
+                payload.config.iteration_cap + 1
+            } else {
+                payload.config.iteration_cap - 1
+            };
+            let after = payload.config.iteration_cap as u64;
+            ("config.iteration_cap".to_string(), before, after)
+        }
+    }
+}
+
+fn mutation_proof(reference: &RetainedReceipt, kind: MutationKind) -> MutationProof {
+    let mutation_seed = MUTATION_SEED ^ reference.payload.engine.tag() ^ kind.tag();
+    let mut stale = reference.clone();
+    let (target, before, after) = apply_mutation(&mut stale.payload, kind, mutation_seed);
+    let stale_refusal = admit_receipt(&reference.declared_identity, &stale)
+        .expect_err("unsealed semantic corruption must fail payload identity admission");
+    let mut resealed = stale;
+    resealed.reseal();
+    let resealed_identity = resealed.declared_identity.clone();
+    let resealed_refusal = admit_receipt(&reference.declared_identity, &resealed)
+        .expect_err("resealed semantic corruption must fail retained-reference admission");
+    let semantic_mismatch = semantic_mismatch(&resealed.payload)
+        .expect("each red mutation must independently violate a semantic oracle or gate");
+    let self_reference_refusal = admit_receipt(&resealed.declared_identity, &resealed)
+        .expect_err("a resealed semantic mutant must not authorize itself as its own reference");
+    MutationProof {
+        kind,
+        mutation_seed,
+        target,
+        before,
+        after,
+        resealed_identity,
+        stale_refusal,
+        resealed_refusal,
+        self_reference_refusal,
+        semantic_mismatch,
+    }
+}
+
+fn emit_receipt(engine: Engine, reference: &RetainedReceipt, mutations: &[MutationProof]) {
+    let mutation_json = mutations
+        .iter()
+        .map(|mutation| {
+            format!(
+                concat!(
+                    "{{\"kind\":\"{}\",\"seed\":{},\"target\":\"{}\",",
+                    "\"before\":\"0x{:016x}\",\"after\":\"0x{:016x}\",",
+                    "\"resealed_payload_identity\":\"{}\",",
+                    "\"stale_refusal\":\"{:?}\",\"resealed_refusal\":\"{:?}\",",
+                    "\"self_reference_refusal\":\"{:?}\",",
+                    "\"semantic_mismatch\":\"{}\"}}"
+                ),
+                mutation.kind.name(),
+                mutation.mutation_seed,
+                mutation.target,
+                mutation.before,
+                mutation.after,
+                mutation.resealed_identity.hex(),
+                mutation.stale_refusal,
+                mutation.resealed_refusal,
+                mutation.self_reference_refusal,
+                mutation.semantic_mismatch,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
     let json = format!(
-        "{{\"engine\":\"{}\",\"input_seed\":{INPUT_SEED},\
-         \"mutation_seed\":{mutation_seed},\"reference_identity\":\"{}\",\
-         \"mutant_identity\":\"{}\",\"mutated_coordinate\":{coordinate},\
-         \"mantissa_mask\":\"{mask:#018x}\",\
-         \"merge_refusal\":\"reference-identity-mismatch\"}}",
+        concat!(
+            "{{\"engine\":\"{}\",\"optimizer_seed\":null,",
+            "\"event_seed_semantics\":\"fixed-input-null-sentinel\",",
+            "\"reference_identity\":\"{}\",\"scaled_kkt_bits\":\"0x{:016x}\",",
+            "\"mutations\":[{}]}}"
+        ),
         engine.name(),
         reference.declared_identity.hex(),
-        mutant.declared_identity.hex(),
+        reference.payload.oracle.scaled_kkt_bits,
+        mutation_json,
     );
     let mut emitter = Emitter::new(SUITE, engine.name());
     let receipt_event = emitter.emit(
@@ -411,6 +1324,10 @@ fn emit_receipt(
     let receipt_line = receipt_event.to_jsonl();
     fs_obs::validate_line(&receipt_line)
         .expect("constrained study receipt must use the fs-obs wire schema");
+    let retained = receipt_event.content_identity_receipt();
+    receipt_event
+        .admit_content_identity(&retained)
+        .expect("fresh constrained receipt identity must admit exactly");
     println!("{receipt_line}");
 
     let verdict = emitter.emit(
@@ -420,11 +1337,11 @@ fn emit_receipt(
             case: engine.name().to_string(),
             pass: true,
             detail: format!(
-                "fixed input seed {INPUT_SEED} replayed the complete {} callback/report receipt; mutation seed {mutation_seed:#018x} flipped coordinate {coordinate} mask {mask:#018x}, produced stable identity {}, and both merge gates refused it",
+                "fixed deterministic input (no optimizer seed; event seed zero is a null schema sentinel) replayed the complete {} callback/report/oracle receipt; {} independent mutation lanes each reproduced stable stale PayloadIdentityMismatch, resealed ReferenceIdentityMismatch, and mutant-as-own-reference SemanticOracleMismatch refusals",
                 engine.name(),
-                mutant.declared_identity.hex(),
+                mutations.len(),
             ),
-            seed: INPUT_SEED,
+            seed: EVENT_SEED_NONE,
         },
         None,
     );
@@ -436,94 +1353,97 @@ fn emit_receipt(
     println!("{verdict_line}");
 }
 
-fn assert_quality(engine: Engine, run: &RunRecord) {
-    assert!(run.report.converged, "{} did not converge", engine.name());
-    let x: Vec<f64> = run
-        .report
-        .x_bits
-        .iter()
-        .map(|&value_bits| f64::from_bits(value_bits))
-        .collect();
-    assert!(
-        (x[0] - 1.2).abs() < 1e-4 && (x[1] - 0.8).abs() < 1e-4,
-        "{} missed analytic optimum: {x:?}",
-        engine.name(),
+fn assert_quality(receipt: &RetainedReceipt) {
+    assert_eq!(
+        semantic_mismatch(&receipt.payload),
+        None,
+        "{} failed independent objective/constraint/KKT acceptance",
+        receipt.payload.engine.name(),
     );
-    assert!(
-        run.report
-            .kkt_bits
-            .iter()
-            .map(|&value_bits| f64::from_bits(value_bits))
-            .all(|residual| residual.is_finite() && residual < engine.tolerance()),
-        "{} returned a non-certifying KKT receipt",
-        engine.name(),
-    );
-    assert!(
-        run.report
-            .nu_bits
-            .first()
-            .is_some_and(|&value_bits| f64::from_bits(value_bits) > 0.0),
-        "{} must retain a positive active multiplier",
-        engine.name(),
-    );
-    assert!(run.report.iterations > 0 && run.report.evaluations > 0);
-    for required_kind in [
-        "objective-gradient",
-        "equality",
-        "equality-jt",
-        "inequality",
-        "inequality-jt",
-    ] {
-        assert!(
-            run.callbacks.iter().any(|call| call.kind == required_kind),
-            "{} did not exercise callback {required_kind}",
-            engine.name(),
-        );
-    }
 }
 
 #[test]
 fn constrained_families_replay_and_reject_seeded_red_mutations() {
     for engine in Engine::ALL {
-        let reference_run = run_once(engine);
-        assert_quality(engine, &reference_run);
-        let reference = receipt(engine, &reference_run);
+        let config = StudyConfig::for_engine(engine);
+        let reference_run = run_once(engine, &config);
+        let reference = receipt(engine, &config, &reference_run);
+        assert_quality(&reference);
         admit_receipt(&reference.declared_identity, &reference)
             .expect("the internally consistent reference receipt must admit");
 
-        let replay = receipt(engine, &run_once(engine));
+        let replay = receipt(engine, &config, &run_once(engine, &config));
+        assert_quality(&replay);
         assert_eq!(
             replay,
             reference,
             "{} callback trace and report did not replay",
             engine.name(),
         );
-
-        let (mutant, mutation_seed, coordinate, mask) = mutate_returned_decision(&reference);
-        let (mutant_repeat, repeat_seed, repeat_coordinate, repeat_mask) =
-            mutate_returned_decision(&reference);
         assert_eq!(
-            (mutation_seed, coordinate, mask),
-            (repeat_seed, repeat_coordinate, repeat_mask)
-        );
-        assert_eq!(
-            mutant,
-            mutant_repeat,
-            "{} red mutation and identity were unstable",
+            admit_receipt(&reference.declared_identity, &replay),
+            Ok(()),
+            "{} replay must admit against the retained reference",
             engine.name(),
         );
-        assert_ne!(mutant.declared_identity, reference.declared_identity);
-        let mut stale_identity_mutant = mutant.clone();
-        stale_identity_mutant.declared_identity = reference.declared_identity.clone();
-        assert_eq!(
-            admit_receipt(&reference.declared_identity, &stale_identity_mutant),
-            Err(MergeRefusal::PayloadIdentityMismatch)
-        );
-        assert_eq!(
-            admit_receipt(&reference.declared_identity, &mutant),
-            Err(MergeRefusal::ReferenceIdentityMismatch)
-        );
 
-        emit_receipt(engine, &reference, &mutant, mutation_seed, coordinate, mask);
+        let mut mutations = Vec::with_capacity(MutationKind::ALL.len());
+        for kind in MutationKind::ALL {
+            let mutation = mutation_proof(&reference, kind);
+            let repeated = mutation_proof(&reference, kind);
+            assert_eq!(
+                mutation,
+                repeated,
+                "{} {} stale/resealed mutation proof was not deterministic",
+                engine.name(),
+                kind.name(),
+            );
+            assert_eq!(
+                mutation.mutation_seed,
+                MUTATION_SEED ^ engine.tag() ^ kind.tag(),
+                "mutation seed must be the causal engine-and-lane selector"
+            );
+            assert!(
+                matches!(
+                    mutation.stale_refusal,
+                    MergeRefusal::PayloadIdentityMismatch { declared, computed }
+                        if declared == reference.declared_identity.root()
+                            && computed == mutation.resealed_identity.root()
+                ),
+                "{} {} stale payload reached reference admission",
+                engine.name(),
+                kind.name(),
+            );
+            assert!(
+                matches!(
+                    mutation.resealed_refusal,
+                    MergeRefusal::ReferenceIdentityMismatch { expected, found }
+                        if expected == reference.declared_identity.root()
+                            && found == mutation.resealed_identity.root()
+                ),
+                "{} {} resealed mutant matched the retained reference",
+                engine.name(),
+                kind.name(),
+            );
+            assert_eq!(
+                mutation.self_reference_refusal,
+                MergeRefusal::SemanticOracleMismatch,
+                "{} {} resealed semantic mutant self-authorized",
+                engine.name(),
+                kind.name(),
+            );
+            assert_ne!(
+                mutation.resealed_identity, reference.declared_identity,
+                "semantic mutation must move the canonical receipt identity"
+            );
+            assert_ne!(mutation.before, mutation.after);
+            assert!(
+                !mutation.semantic_mismatch.is_empty(),
+                "red mutation must retain its independent semantic diagnosis"
+            );
+            mutations.push(mutation);
+        }
+
+        emit_receipt(engine, &reference, &mutations);
     }
 }
