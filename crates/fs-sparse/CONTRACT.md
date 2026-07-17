@@ -166,6 +166,24 @@ property, WSBF, preconditioner, release-performance, and cross-ISA lanes as
 separate evidence; this subset awards no fresh oracle, performance, nightly,
 or dual-ISA claim.
 
+`tests/preconditioner_casebook.rs` adds a structured portable subset for the
+preconditioner surface. Canonical frames retain complete CSR storage, right-hand
+sides, known solutions, initial output/iterate bits, Chebyshev and AMG setup
+options, PCG tolerances and caps, refusal policies, crate/record versions, and
+every numerical ceiling. Receipts bind direct-apply and solve bits,
+`PcgReport` fields, the Chebyshev band, AMG hierarchy sizes and operator
+complexity, independently recomputed residuals, solution deltas and framed
+ceilings, and typed or panic refusal observations, and must replay exactly
+within one executing build.
+The green subset covers one exact dyadic ILU(0) KAT, bounded Chebyshev and
+genuine multilevel SA-AMG fixtures, and explicit ILU/Chebyshev admission
+failures. A disclosed seeded exact-solution reference mutation must reproduce
+one stable red record that `assert_green` refuses. This does not replace or
+re-award the retained cross-ISA preconditioner golden. It makes no claim for
+large-grid or grid-independent behavior, arbitrary SPD matrices, performance,
+cancellation, an independent external oracle, or fresh dual-ISA/full-G5
+execution.
+
 `tests/frankenscipy_oracle_casebook.rs` supplies the missing test-only
 FrankenScipy sparse baseline. Identical canonical CSR storage is admitted by
 `fs-sparse::Csr` and `fsci_sparse::CsrMatrix`; a 4×5 dyadic KAT pins both
