@@ -103,3 +103,25 @@ fn the_campaign_is_deterministic() {
     assert!((a.qd_score - b.qd_score).abs() < 1e-12);
     assert_eq!(a.best.gamma.to_bits(), b.best.gamma.to_bits());
 }
+
+#[test]
+fn malformed_conservation_tolerance_cannot_mint_verified_elites() {
+    // Keep the public-path witness cheap while forcing every design through a
+    // full simulation. Before the fail-closed guard, +infinity authorized every
+    // finite conservation ratio and produced false Verified archive entries.
+    let budget = CampaignBudget {
+        full_steps: 2,
+        short_steps: 1,
+        bins: 2,
+        alpha: 0.1,
+        decision_tol: 0.0,
+        conserve_tol: f64::INFINITY,
+        ..CampaignBudget::default()
+    };
+    let report = run_campaign(&budget);
+    assert!(report.full_sims > 0);
+    assert_eq!(report.verified_elites, 0);
+    assert_eq!(report.estimated_elites, report.num_elites);
+    assert_eq!(report.certified_envelope, None);
+    assert_eq!(report.campaign_rank, ColorRank::Estimated);
+}

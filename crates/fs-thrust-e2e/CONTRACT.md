@@ -33,14 +33,19 @@ the physics is a 2-D inviscid smoke tier).
 - PHYSICS: a four-vortex thruster with a leading dipole self-propels in `+x`
   (`drift > 0`); a converged inviscid sim conserves the exact linear impulse
   `I = (Σ Γᵢ yᵢ, −Σ Γᵢ xᵢ)` to a small error.
-- CERTIFICATES: an escalated full sim earns a `Verified` drift band iff it
-  conserved the impulse invariant to `conserve_tol`; a surrogate estimate is
-  always `Estimated`.
+- CERTIFICATES: an escalated full sim earns a `Verified` drift band iff drift,
+  impulse error, impulse scale, and `conserve_tol` are finite; the error, scale,
+  and tolerance satisfy error ≥ 0, scale > 0, and tolerance ≥ 0; the relative
+  error is within the inclusive tolerance; and the resulting interval is finite
+  and ordered. Malformed state fails closed to an infinite-dispersion
+  `Estimated` no-claim. A surrogate estimate is always `Estimated`.
 - CERTIFY-OR-ESCALATE: the short surrogate is used only for designs inside the
   calibration validity hull when the conformal band is within `decision_tol`;
   everything else escalates — so the campaign spends strictly fewer integration
   steps than a naive all-full sweep whenever any design is served by the
-  surrogate, at equal answer quality.
+  surrogate, at equal answer quality. The default eight-residual calibration
+  uses binary-exact `alpha = 0.125`, safely above the `1/(n+1)` minimum required
+  for the retained eighth order statistic; it never relies on rank clamping.
 - NO LAUNDERING: the campaign-level color rank is the weakest elite color
   (`min` over `ColorRank`); the certified envelope is a `Hull` `compose` of the
   Verified bands and can never outrank `Verified`.
@@ -72,11 +77,15 @@ None.
 
 ## Conformance tests
 
-`tests/thrust.rs` (3 cases): a four-vortex thruster self-propels and conserves
+`tests/thrust.rs` (4 cases): a four-vortex thruster self-propels and conserves
 impulse; the campaign illuminates a certified diverse family (coverage/QD-score,
 best drift > 0, both fidelities used, step savings, verified+estimated tally,
 certified envelope, no-laundering rank, content-addressed notebook); the campaign
-is deterministic (identical content hash + metrics across runs).
+is deterministic (identical content hash + metrics across runs); and a public
+`+∞` conservation tolerance cannot mint any Verified elite. The in-source
+certificate battery additionally pins malformed public `SimResult` fields,
+invalid scales/tolerances, interval overflow refusal, and valid inclusive
+boundary behavior, plus admissibility of the default conformal order statistic.
 
 Representative run (default budget): 28 niches, coverage 0.44, best drift ≈ 9.0,
 19 Verified + 9 Estimated elites, 108 full / 84 surrogate sims, ≈32% integration-

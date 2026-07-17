@@ -126,20 +126,35 @@ pub fn simulate_thrust(design: &Design, steps: usize, dt: f64, core: f64) -> Sim
 
 /// Color a FULL-sim drift: `Verified` (a band from the conservation slack) when
 /// the impulse invariant held to `tol_rel` of its scale, else honest `Estimated`.
+/// Every numeric claim input is revalidated here because [`SimResult`] is
+/// publicly constructible and the campaign tolerance is public policy state.
 #[must_use]
 fn full_color(res: &SimResult, impulse_scale: f64, tol_rel: f64) -> Color {
-    let rel = if impulse_scale > 1e-12 {
-        res.impulse_error / impulse_scale
-    } else {
-        res.impulse_error
-    };
-    if rel <= tol_rel {
+    if !res.drift.is_finite()
+        || !res.impulse_error.is_finite()
+        || res.impulse_error < 0.0
+        || !impulse_scale.is_finite()
+        || impulse_scale <= 0.0
+        || !tol_rel.is_finite()
+        || tol_rel < 0.0
+    {
+        return Color::Estimated {
+            estimator: "vpm-full-invalid-certificate-input".to_string(),
+            dispersion: f64::INFINITY,
+        };
+    }
+    let rel = res.impulse_error / impulse_scale;
+    if rel.is_finite() && rel <= tol_rel {
         let band = res.impulse_error.max(1e-9);
-        // declared-color-ok: demo drift candidate from the local impulse-error band; admitted only at a consumer's authority boundary (6pf9)
-        Color::Verified {
-            lo: res.drift - band,
-            hi: res.drift + band,
+        let (lo, hi) = (res.drift - band, res.drift + band);
+        if !lo.is_finite() || !hi.is_finite() || lo > hi {
+            return Color::Estimated {
+                estimator: "vpm-full-invalid-certificate-input".to_string(),
+                dispersion: f64::INFINITY,
+            };
         }
+        // declared-color-ok: demo drift candidate from the local impulse-error band; admitted only at a consumer's authority boundary (6pf9)
+        Color::Verified { lo, hi }
     } else {
         Color::Estimated {
             estimator: "vpm-full-nonconserving".to_string(),
@@ -179,7 +194,11 @@ impl Default for CampaignBudget {
             dt: 0.02,
             core: 0.05,
             bins: 8,
-            alpha: 0.1,
+            // Eight calibration residuals can support at most the 8th order
+            // statistic: alpha must be >= 1/(8+1). Use the binary-exact 1/8
+            // margin, which retains the historical max-residual band without
+            // relying on an under-covering rank clamp.
+            alpha: 0.125,
             // Above the typical short-vs-full residual band, so the surrogate is
             // decision-relevant for in-domain designs; a tighter tol escalates
             // more (the certify-or-escalate knob).
@@ -469,5 +488,144 @@ pub fn run_campaign(budget: &CampaignBudget) -> CampaignReport {
         campaign_rank,
         notebook_markdown: nb.render_markdown(),
         content_hash: nb.content_hash(),
+    }
+}
+
+#[cfg(test)]
+mod certificate_tests {
+    use super::*;
+
+    fn assert_invalid_estimated(result: SimResult, impulse_scale: f64, tol_rel: f64) {
+        match full_color(&result, impulse_scale, tol_rel) {
+            Color::Estimated {
+                estimator,
+                dispersion,
+            } => {
+                assert_eq!(estimator, "vpm-full-invalid-certificate-input");
+                assert_eq!(dispersion, f64::INFINITY);
+            }
+            other => panic!("malformed certificate input must fail closed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn full_color_rejects_malformed_numeric_policy_and_state() {
+        // Exact old-code false-clear: IEEE-754 makes a huge finite ratio less
+        // than +infinity, so the comparison-only guard minted Verified.
+        assert_invalid_estimated(
+            SimResult {
+                drift: 1.0,
+                impulse_error: 1.0e300,
+            },
+            1.0,
+            f64::INFINITY,
+        );
+
+        for result in [
+            SimResult {
+                drift: f64::NAN,
+                impulse_error: 0.0,
+            },
+            SimResult {
+                drift: f64::INFINITY,
+                impulse_error: 0.0,
+            },
+            SimResult {
+                drift: 1.0,
+                impulse_error: f64::NAN,
+            },
+            SimResult {
+                drift: 1.0,
+                impulse_error: f64::INFINITY,
+            },
+            SimResult {
+                drift: 1.0,
+                impulse_error: -1.0,
+            },
+        ] {
+            assert_invalid_estimated(result, 1.0, 0.1);
+        }
+
+        let valid = SimResult {
+            drift: 1.0,
+            impulse_error: 0.0,
+        };
+        for scale in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, -0.0, 0.0] {
+            assert_invalid_estimated(valid, scale, 0.1);
+        }
+        for tolerance in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -f64::EPSILON] {
+            assert_invalid_estimated(valid, 1.0, tolerance);
+        }
+
+        // Finite inputs can still overflow the proposed interval endpoints.
+        assert_invalid_estimated(
+            SimResult {
+                drift: f64::MAX,
+                impulse_error: f64::MAX,
+            },
+            1.0,
+            f64::MAX,
+        );
+    }
+
+    #[test]
+    fn full_color_preserves_valid_inclusive_boundary_semantics() {
+        assert_eq!(
+            full_color(
+                &SimResult {
+                    drift: 2.0,
+                    impulse_error: 0.5,
+                },
+                1.0,
+                0.5,
+            ),
+            Color::Verified { lo: 1.5, hi: 2.5 }
+        );
+        assert!(matches!(
+            full_color(
+                &SimResult {
+                    drift: 2.0,
+                    impulse_error: 1.0,
+                },
+                1.0,
+                0.5,
+            ),
+            Color::Estimated {
+                dispersion: 1.0,
+                ..
+            }
+        ));
+        // A tiny positive scale must still use the relative ratio; the prior
+        // absolute-error fallback made this enormous relative error pass.
+        assert!(matches!(
+            full_color(
+                &SimResult {
+                    drift: 2.0,
+                    impulse_error: 0.5,
+                },
+                1.0e-300,
+                0.5,
+            ),
+            Color::Estimated {
+                dispersion: 0.5,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn default_conformal_policy_retains_the_supported_eighth_statistic() {
+        let budget = CampaignBudget::default();
+        let calibration_count = design_grid()
+            .iter()
+            .filter(|design| is_calibration(design))
+            .count();
+        assert_eq!(calibration_count, 8);
+        assert!(
+            budget.alpha >= 1.0 / (calibration_count as f64 + 1.0),
+            "split-conformal alpha must admit an order statistic"
+        );
+        let rank = ((1.0 - budget.alpha) * (calibration_count as f64 + 1.0)).ceil() as usize;
+        assert_eq!(rank, calibration_count);
     }
 }
