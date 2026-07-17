@@ -375,3 +375,126 @@ fn lbm3_105_martin_moyce_front() {
         &detail,
     );
 }
+
+/// FNV-1a over exact bits — golden preimage helper.
+fn fnv1a_bits(bits: &[u64]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for &word in bits {
+        for byte in word.to_le_bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    hash
+}
+
+/// lbm3-106: the minimal pour at 64^3-fixture scale (bead acceptance).
+/// A tile-granular cylinder tank (interior radius 2.5 tiles, solid
+/// shell radius 3.5, solid floor disc) elevated at z-tiles 8..13 with a
+/// two-tile lip opening at its lowest interior level; gravity pours the
+/// fluid through the lip, it falls ~36 cells, and puddles on the domain
+/// floor. Gates: runs end to end without refusal; pouring actually
+/// happens (outside-tank gain > 2% of initial mass); the poured mass
+/// equals the tank loss to 1e-9 relative through the partition identity
+/// tank_loss = outside_gain + carry_gain (the bead's bar); global
+/// ledger drift < 1e-9 with the worst step logged. Prints the seeded
+/// pour golden CANDIDATE (deterministic fixture, no RNG) — frozen after
+/// the four-quadrant ceremony per GOLDEN_POLICY.md.
+#[test]
+fn lbm3_106_minimal_pour() {
+    // Tank geometry, built CONSTRUCTIVELY so the shell is gap-free by
+    // construction (a float-disc predicate discretized at 16-tile
+    // resolution leaves diagonal corner holes — observed leaking):
+    // interior = the rounded 4x4 tile disc {6..=9}^2, shell = its
+    // 8-neighborhood ring minus interior at each level, floor = the
+    // full footprint disc one level below, lip = two shell tiles
+    // removed at the lowest interior level on the +x side.
+    let interior_t = |tx: u32, ty: u32| (6..=9).contains(&tx) && (6..=9).contains(&ty);
+    let footprint_t = |tx: u32, ty: u32| (5..=10).contains(&tx) && (5..=10).contains(&ty);
+
+    let mut solid: Vec<(u32, u32, u32)> = Vec::new();
+    for tz in 8u32..=13 {
+        for ty in 5u32..=10 {
+            for tx in 5u32..=10 {
+                let shell = if tz == 8 {
+                    footprint_t(tx, ty) // sealed floor disc
+                } else {
+                    footprint_t(tx, ty) && !interior_t(tx, ty)
+                };
+                let lip = tz == 9 && tx == 10 && (ty == 7 || ty == 8);
+                if shell && !lip {
+                    solid.push((tx, ty, tz));
+                }
+            }
+        }
+    }
+
+    // Fluid: interior cells at z-tiles 9..=11 (three tiles of head).
+    let fluid = move |x: usize, y: usize, z: usize| {
+        #[allow(clippy::cast_possible_truncation)]
+        let (tx, ty, tz) = ((x / 4) as u32, (y / 4) as u32, z / 4);
+        (9..=11).contains(&tz) && interior_t(tx, ty)
+    };
+
+    let mut fs = FreeSurface3::with_solid_tiles(
+        64,
+        64,
+        64,
+        0.55,
+        [0.0, 0.0, -7e-4],
+        0.0,
+        ContactModel3::Neutral,
+        &solid,
+        fluid,
+    )
+    .expect("pour fixture admissible");
+
+    // Tank region (cells): the footprint column from the floor disc up.
+    let tank_region = |x: usize, y: usize, z: usize| {
+        #[allow(clippy::cast_possible_truncation)]
+        let (tx, ty, tz) = ((x / 4) as u32, (y / 4) as u32, z / 4);
+        tz >= 8 && footprint_t(tx, ty)
+    };
+
+    let total0 = fs.ledger_mass();
+    let tank0 = fs.region_mass(tank_region);
+    let out0 = fs.region_mass(|x, y, z| !tank_region(x, y, z));
+    let carry0 = fs.carry();
+
+    for step in 0..800 {
+        fs.step()
+            .unwrap_or_else(|e| panic!("pour step {step} refused: {e}"));
+    }
+
+    let tank1 = fs.region_mass(tank_region);
+    let out1 = fs.region_mass(|x, y, z| !tank_region(x, y, z));
+    let carry1 = fs.carry();
+    let total1 = fs.ledger_mass();
+
+    let tank_loss = tank0 - tank1;
+    let poured = (out1 - out0) + (carry1 - carry0);
+    let partition_defect = ((tank_loss - poured) / total0).abs();
+    let global_drift = ((total1 - total0) / total0).abs();
+    let poured_mass = out1 - out0;
+
+    let mut bits = fs.grid().state_bits();
+    bits.push(fs.ledger_mass().to_bits());
+    let candidate = fnv1a_bits(&bits);
+
+    let detail = format!(
+        "tank {tank0:.3}->{tank1:.3}; outside {out0:.3}->{out1:.3}; \
+         poured mass {poured_mass:.2}; partition defect {partition_defect:.2e}; \
+         global drift {global_drift:.2e} (worst step {:.2e}); \
+         conversions {:?}; pour golden candidate {candidate:#018x}",
+        fs.worst_step_violation(),
+        fs.conversions()
+    );
+    // Gates: the bead's 1e-9 poured-equals-loss bar (partition identity
+    // + global drift) and a stream-not-creep floor: at least eight
+    // cells' worth of fluid genuinely outside the tank.
+    verdict(
+        "lbm3-106-minimal-pour",
+        partition_defect < 1e-9 && global_drift < 1e-9 && poured_mass > 8.0,
+        &detail,
+    );
+}

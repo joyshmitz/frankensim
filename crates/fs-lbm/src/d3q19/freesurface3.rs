@@ -149,6 +149,10 @@ impl FsTile {
 pub struct FreeSurface3 {
     grid: SparseGrid3,
     tiles: BTreeMap<u64, FsTile>,
+    /// Permanently solid tiles (tank walls, fixtures): advance-driven
+    /// activation refuses to open these — they are wall FOREVER, unlike
+    /// plain inactive tiles which are merely not-yet-reached gas.
+    solid: std::collections::BTreeSet<u64>,
     /// Surface tension coefficient (0 = off), 2-D port.
     sigma: f64,
     contact: ContactModel3,
@@ -210,7 +214,38 @@ impl FreeSurface3 {
         contact: ContactModel3,
         fluid: impl Fn(usize, usize, usize) -> bool,
     ) -> Result<FreeSurface3, FreeSurfaceError3> {
+        Self::with_solid_tiles(nx, ny, nz, tau, gravity, sigma, contact, &[], fluid)
+    }
+
+    /// [`FreeSurface3::new`] with permanently solid tiles (tank walls and
+    /// fixtures at tile granularity): solid tiles are never activated —
+    /// not at construction, not by fluid advance — so they behave as
+    /// walls for streaming, exchange, and the fill-field ghost alike.
+    ///
+    /// # Errors
+    /// As [`FreeSurface3::new`]; additionally refuses via
+    /// [`FreeSurfaceError3::Grid`] if a solid tile lies out of domain.
+    ///
+    /// # Panics
+    /// If interface insertion fails to separate fluid from gas, or if a
+    /// fluid cell is declared inside a solid tile (contradictory fixture).
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_solid_tiles(
+        nx: usize,
+        ny: usize,
+        nz: usize,
+        tau: f64,
+        gravity: [f64; 3],
+        sigma: f64,
+        contact: ContactModel3,
+        solid_tiles: &[(u32, u32, u32)],
+        fluid: impl Fn(usize, usize, usize) -> bool,
+    ) -> Result<FreeSurface3, FreeSurfaceError3> {
         let mut grid = SparseGrid3::new(nx, ny, nz, tau, gravity)?;
+        let solid: std::collections::BTreeSet<u64> = solid_tiles
+            .iter()
+            .map(|&(tx, ty, tz)| morton3(tx, ty, tz))
+            .collect();
         let (ntx, nty, ntz) = grid.tile_dims();
 
         // Fluid tiles + in-domain neighbor margin.
@@ -224,7 +259,12 @@ impl FreeSurface3 {
                     });
                     if has_fluid {
                         #[allow(clippy::cast_possible_truncation)]
-                        fluid_tiles.push((tx as u32, ty as u32, tz as u32));
+                        let coords = (tx as u32, ty as u32, tz as u32);
+                        assert!(
+                            !solid.contains(&morton3(coords.0, coords.1, coords.2)),
+                            "fixture declares fluid inside solid tile {coords:?}"
+                        );
+                        fluid_tiles.push(coords);
                     }
                 }
             }
@@ -247,7 +287,10 @@ impl FreeSurface3 {
                             && (az as usize) < ntz
                         {
                             #[allow(clippy::cast_possible_truncation)]
-                            active.push((ax as u32, ay as u32, az as u32));
+                            let coords = (ax as u32, ay as u32, az as u32);
+                            if !solid.contains(&morton3(coords.0, coords.1, coords.2)) {
+                                active.push(coords);
+                            }
                         }
                     }
                 }
@@ -278,6 +321,7 @@ impl FreeSurface3 {
         let mut fs = FreeSurface3 {
             grid,
             tiles,
+            solid,
             sigma,
             contact,
             carry: 0.0,
@@ -376,6 +420,43 @@ impl FreeSurface3 {
             }
         }
         total
+    }
+
+    /// Ledger mass restricted to cells whose GLOBAL coordinates satisfy
+    /// `region` (fluid Σf + interface m; the global carry is NOT included
+    /// — read it via [`FreeSurface3::carry`] when partitioning the full
+    /// ledger, since redistribution mass belongs to no one region).
+    #[must_use]
+    pub fn region_mass(&self, region: impl Fn(usize, usize, usize) -> bool) -> f64 {
+        let mut total = 0.0;
+        for (&key, tile) in &self.tiles {
+            let slot = self.grid.slot_of(key).expect("active");
+            let (tx, ty, tz) = demorton3(key);
+            for lane in 0..TILE_CELLS {
+                let (lx, ly, lz) = lane_coords(lane);
+                if !region(
+                    tx as usize * TILE + lx,
+                    ty as usize * TILE + ly,
+                    tz as usize * TILE + lz,
+                ) {
+                    continue;
+                }
+                match tile.cells[lane] {
+                    Cell3::Fluid => {
+                        total += self.grid.populations(slot, lane).iter().sum::<f64>();
+                    }
+                    Cell3::Interface => total += tile.mass[lane],
+                    Cell3::Gas => {}
+                }
+            }
+        }
+        total
+    }
+
+    /// The conversion-conservation carry (global, unregioned).
+    #[must_use]
+    pub fn carry(&self) -> f64 {
+        self.carry
     }
 
     /// Cumulative conversion statistics.
@@ -892,7 +973,7 @@ impl FreeSurface3 {
         #[allow(clippy::cast_possible_truncation)]
         let (tx, ty, tz) = (tx as u32, ty as u32, tz as u32);
         let key = morton3(tx, ty, tz);
-        if self.tiles.contains_key(&key) {
+        if self.tiles.contains_key(&key) || self.solid.contains(&key) {
             return Ok(());
         }
         self.grid.activate_tiles(&[(tx, ty, tz)])?;
