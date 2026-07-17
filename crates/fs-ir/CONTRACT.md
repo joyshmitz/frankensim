@@ -111,6 +111,177 @@ admitted derived-geometry boundary.
   interface, and solve-policy references are nominal, versioned, nonzero
   semantic digests under canonical namespaces; `fs-ir` neither imports nor
   impersonates their runtime owners.
+- `machine::causalization` (I02.1 equation-variable hypergraph and receipt
+  schema, [S]) is an additive post-Machine admission boundary. A
+  `CausalGraphDraft` binds one exact `AdmittedMachineGraph`, an optional exact
+  `AdmittedMachineBehavior` when state coordinates are present, an SI-base
+  unit convention, complete or explicitly partial extraction scope, and an
+  extractor/budget/capability/seed/determinism context. Equations, variables,
+  activation conditions, and incidences are bounded and canonicalized rather
+  than assigned collection-position IDs. `EquationId`, `VariableId`, and
+  `IncidenceId` retain complete canonical identity receipts behind shared
+  ownership so repeated endpoint references do not discard collision-
+  adjudication metadata. Equality, ordering, and hashing use the semantic root
+  plus the independent canonical-preimage/schema/metric adjudication tuple;
+  nominal-digest duplicates are still terminal ambiguity. Adjudication-aware
+  equality propagates through admitted graph, receipt, theorem-claim, decision,
+  and migration wrappers, so evidence-only encoder
+  limits cannot reappear as user-visible semantic inequality at an outer API.
+  Pre-canonicalization resource telemetry is itself a cancellation-polled pass:
+  top-level vector lengths remain exact, nested aggregates carry an explicit
+  `complete` bit, and cancellation or the first early cap refusal returns a
+  partial, visibly
+  incomplete count record without beginning graph admission.
+  Top-level caps refuse immediately after that first cancellation checkpoint;
+  nested counting short-circuits at the first aggregate/per-row cap instead of
+  traversing the remainder of a hostile payload.
+- Standalone incidence identity limits realize the full public activation
+  sub-envelope rather than imposing a hidden smaller byte cap. The graph-
+  artifact field limit is independently derived to contain every max-key
+  audited-bridge artifact row at the public incidence-count cap. Because an
+  `IncidenceSpec` is intentionally inspectable and mutable before admission,
+  admission rederives its normalized identity with cancellation-polled row
+  materialization and a cancellation-aware encoder. The normalized graph
+  preserves recursive schema typing with Machine/incidence child fields and
+  separately composes fixed-size full-receipt adjudication tuples for the
+  Machine graph, every equation/variable endpoint, and every incidence. The
+  provenance artifact does the same for structure, behavior, lineage, and
+  incidence rows. Complete receipts remain attached to their public handles;
+  parent identities never duplicate a potentially huge child canonical
+  preimage, but they also do not collapse composition to a child digest alone.
+- Canonical graph and receipt ordering uses a deterministic stable index-map
+  sort with cancellation checkpoints through index initialization, cumulative
+  bottom-up merge work, inverse-permutation construction, fixed-point scans,
+  and payload movement. Long fallible lexicographic row comparisons poll
+  internally as well. Identity row materialization is likewise polled at
+  bounded aggregate strides. Maximum-size node support/activation rows,
+  condition rows, derived-lineage rows, incidence rows, receipt domains, and
+  conditional-outcome rows precompute their payload capacity so a late legal
+  reallocation cannot evade a poll boundary. Within those canonical ordering
+  and identity stages, cancellation therefore returns a typed refusal before
+  structure, artifact, outcome, or evidence identity publication rather than
+  being deferred across one maximum-size legal row or collection.
+- Causal graph identity has two deliberate axes. `CausalStructureIdV1` is the
+  normalized, producer-independent equation-variable structure bound to the
+  exact Machine graph. `CausalGraphArtifactIdV1` is the provenance-bearing
+  artifact identity: it additionally binds the behavior overlay, extraction
+  context, generated/derived/audited source lineage, condition-source audits,
+  PortSchema crosswalk audits, and clock-bridge audits. Presentation labels
+  affect neither identity. Audits are source-bound (`source == audited_source`
+  or projection/bridge equivalent), preventing an audit for artifact A from
+  being attached to artifact B.
+- Every structural incidence names an exact equation, base variable,
+  derivative order, solve participation, coefficient dimensions, term signal,
+  optional transform/operator, clock relation, and activation domain. Unit
+  closure is checked as
+  `variable dims - derivative_order * time dims + coefficient dims = residual dims`;
+  the complete residual quantity/shape/clock/frame contract must also agree.
+  Cross-clock incidences require an endpoint-exact audited bridge. Equation
+  role and solve participation remain distinct: matching equations may read
+  known inputs, while known-closure/condition-only equations cannot silently
+  contribute unknown matching vertices. A condition-only guard occurrence may
+  read a variable solved elsewhere without turning that guard edge into a
+  matching edge. A retained state with an active unknown derivative is matched
+  through that derivative vertex; isolated/base algebraic and port unknowns
+  retain their order-zero vertex. A `ModeDependent` base declaration must be
+  covered in every active finite-domain cell by at least one concrete
+  `Unknown` or `KnownInput` incidence on a matching equation. Auxiliary
+  `ConditionOnly` reads may coexist but cannot discharge that solve-status
+  totality obligation.
+- Activation is canonical finite-domain DNF: each cube is a conjunction with
+  at most one branch per condition and a domain is a sorted disjunction of
+  bounded duplicate-free cubes. Condition tables bind the complete finite
+  branch set and dependency set. Because v1 conditions are global axes with no
+  conditional reachability domain of their own, every dependency must be
+  `Always` available. A guard-backed condition binds an exact
+  `Guard`/`ConditionOnly` equation plus its
+  simultaneous/root-solve obligation, requires that guard and its incidences
+  to be `Always` available, and requires the guard incidence dependency set to
+  equal the declared condition dependencies. An audited external predicate may
+  read only always-available known/condition-only dependencies and binds its
+  exact source and audit.
+  Incidence activation must logically imply both endpoint domains. Admission
+  decides this with a deterministic finite-domain symbolic counterexample
+  search, not a merely syntactic cube-cover test; the same engine proves total
+  `ModeDependent` participation and disjoint switching. It polls cancellation
+  and charges domain rows, branches, partial assignments, cubes, selections,
+  and branch-table searches against one explicit proof-work budget. Its
+  in-place depth-first assignment and backtrack stack retain memory linear in
+  the declared condition count instead of cloning an exponential frontier.
+  DNF identity currently preserves redundant but non-duplicate cubes, so
+  general Boolean-minimal/BDD-canonical identity remains a future theorem and
+  canonicalization ratchet rather than an implied claim.
+- `CausalizationReceiptDraft` records three separately encoded axes: determination
+  (well/under/over/mixed/unknown), generic block-structural rank
+  (full-relative-to-min-side/deficient/not-applicable/unknown), and
+  conditionality (unconditional/conditional/unknown). Determination and rank
+  are not allowed to contradict the same bipartition: Full pairs with
+  Well/Under/Over, Deficient pairs with Mixed, and NotApplicable pairs with
+  Under/Over; an Unknown axis honestly declines its side of this implication.
+  The same law is enforced both when constructing a uniform-mode theorem and
+  defensively during receipt admission. Matching pairs bind the
+  exact admitted `IncidenceId`, equation, and derivative-variable endpoint;
+  unmatched sets must be the exact complements. Empty bipartitions use
+  `NotApplicable` and cannot mint vacuous Well/Full claims. Min-side saturation
+  proves maximum directly. Any non-saturating maximum claim requires an opaque-
+  field, constructor-validated `MaximumMatchingBinding` tied to the exact
+  graph, inhabited domain, canonical matching set, complete set-identity
+  receipt, certificate, and checker-referenced evidence.
+- Receipt identity also has two axes. `CausalOutcomeIdV1` is a normalized
+  producer-independent result identity over structure/domain/axes/matching/
+  complements/conditional semantics. `CausalizationReceiptIdV1` is the full
+  evidence artifact and additionally binds the graph artifact, analyzer Five
+  Explicits, typed theorem commitments, unknown-axis reasons/checkpoints,
+  evidence state, and normalized outcome child. Structure, artifact, and
+  normalized-outcome composition retains both typed child fields and sibling
+  full-receipt adjudication tuples. This permits conformant analyzers to compare
+  outcomes without erasing their distinct provenance or silently dropping
+  collision evidence at a parent boundary.
+- A mode-cell receipt requires exactly one branch for every graph condition and
+  projects active rows before constructing matching vertices. Hybrid summaries
+  carry no union-graph matching. `ConditionalCausalOutcome` can be constructed
+  only from an admitted mode-cell receipt, so its graph, assignment, axes, and
+  typed receipt identity cannot be substituted independently. Explicit
+  conditional coverage binds the exact graph and the complete Cartesian set
+  of every declared condition/branch cell, not merely a nonempty unique subset;
+  children must have concrete determination/rank axes, and products beyond the
+  public child/selection envelope refuse before theorem publication. A future
+  reachability theorem may soundly shrink that product, but v1 does not infer
+  unreachable cells. A uniform theorem instead binds exact concrete summary
+  axes. Both paths require checker-referenced evidence. Heterogeneous child axes
+  force the corresponding top axis to `Unknown` with `NonUniformAcrossModes`.
+  Cancelled or budget-exhausted unknown axes require a deterministic resume
+  checkpoint; other reasons forbid one. Receipt resource telemetry uses the
+  same cancellation-aware completeness
+  convention as graph telemetry and applies outer caps before walking or
+  cloning nested child assignments. Coverage and maximum-matching binding
+  constructors likewise cap child sets, match sets, and mode assignments before
+  cancellation-polled cloning or canonical sorting. Their private theorem-set
+  commitments retain and revalidate complete identity receipts, not only
+  semantic roots. Public child projection likewise copies a bounded mode
+  assignment under an explicit `Cx`.
+- Invalid-draft diagnostics are themselves resource-bounded. Graph and receipt
+  admission retain at most `MAX_CAUSAL_GRAPH_FINDINGS` and
+  `MAX_CAUSAL_RECEIPT_FINDINGS` detailed rows respectively; crossing either
+  public budget returns one deterministic `ResourceLimit` sentinel and no
+  identity instead of allocating attacker-controlled millions of findings.
+- `CausalSchemaMigrationDraft` retains explicit schema lineage without moving
+  the native target identity. Historical receipts and migration drafts have
+  private fields; historical family/version/identity/preimage/schema/frame/
+  field/collection metadata are constructor-gated with nonzero-digest and
+  canonical-metadata completeness checks, and the target is a private typed
+  native receipt enum. Admission therefore derives rather than trusts target
+  family, schema version, identity, preimage, and receipt metrics, and only
+  admits strictly older same-family predecessors. It does not authenticate the
+  truth of caller-supplied legacy metrics.
+- Graph and receipt admission require an explicit `fs_exec::Cx`, poll at
+  bounded validation/identity boundaries, publish no identity after observed
+  cancellation, expose structured decision counts/codes, and keep all library
+  output silent. Resource caps cover outer collections plus aggregate supports,
+  condition dependencies/branches, DNF selections/cubes, derived parents,
+  labels, matching vertices, conditional children, and conditional selections.
+  Duplicate nominal identities are a terminal ambiguity and refuse before an
+  ID-keyed map can select a caller-order-dependent payload.
 - `machine::codec` and `machine::assurance_codec` are the additive
   FrankenScript-to-Machine graph/behavior/assurance-v1 boundaries. One
   current-version `VersionedProgram` body decodes through a closed positional
@@ -759,6 +930,48 @@ and explicit-policy cycle breaking; and independent graph-identity movement by
 model version, clock period, terminal semantic kind, solve policy, and external
 material/interface card digests.
 
+`tests/machine_causalization.rs` (I02.1, G0/G3/G4/G5): minimal graph/receipt
+admission with complete node, structure, artifact, normalized-outcome, and
+evidence-receipt metadata; exact state-contract/behavior-overlay binding,
+missing/foreign behavior refusal, and normalized-structure versus behavior-
+provenance separation; outer-collection permutation and presentation-label
+invariance; normalized structure versus extractor provenance; exact incidence/
+derivative matching and complement closure; non-vacuous empty-graph axes;
+graph/domain/witness/checker-bound maximum-matching commitments; exact finite-
+domain `ModeDependent` coverage; admitted mode-cell projection; typed hybrid
+children and exact coverage roots; asymmetric 2x3 Cartesian completeness under
+shuffled caller order; missing/duplicate/foreign/non-concrete child refusal;
+explicit Cartesian-envelope refusal; heterogeneous child-axis honesty;
+unrelated-checker substitution refusal; duplicate-identity ambiguity; orphan/
+matching guard refusal; foreign ownership, derivative-order, unit, and clock refusals;
+single-row resource bombs before canonical sorting; oversized outer graph
+collections before nested telemetry; exact finite-domain DNF consensus plus a
+missing-branch counterexample; exclusion of auxiliary condition-only reads
+from mode-dependent solve totality; refusal of conditionally unavailable guard/
+predicate dependencies; exact structure/graph-artifact/causalization migration
+metadata plus zero-digest, incomplete-history, family, and version refusals;
+compatible and contradictory uniform-theorem axis tables; oversized
+conditional-child and maximum-binding mode-domain refusal before nested
+scans/clones/sorts; uninhabitable/wrong-condition/wrong-branch theorem-domain
+refusal; nested condition-table/cube/selection permutation invariance; maximum
+activation sub-envelope construction plus exact one-over aggregate, cube-count,
+and per-cube-selection refusal; and pre-cancelled public incidence, child,
+binding, count, graph, and receipt construction before identity publication.
+Private G0/G4 unit laws additionally compare the cancellable stable sort with
+the standard stable ordering across empty, singleton, poll-stride, reverse,
+and duplicate-key cases, then inject deterministic errors at entry, index
+initialization, cumulative merge, inverse-map, fixed-point, partial payload-
+movement, and completion phases while checking payload conservation. A
+long-equal-prefix fallible comparator test separately interrupts inside a row
+comparison before payload publication. Graph/receipt refusal assertions
+print the typed deterministic finding set so a batch-verification log retains
+exact rule and subject context rather than only a Boolean test result;
+constructor-boundary assertions retain their exact typed error variants.
+Private G0 laws also prove receipt-adjudication Eq/Ord/Hash consistency and
+admission revalidation when encoder limits differ only as evidence, while the
+inclusive graph/receipt finding-budget boundaries collapse one-over inputs to
+a single `ResourceLimit` row.
+
 `tests/machine_semantics.rs` (Machine-IR E0 PR-3, G0/G3): fully populated
 behavior-overlay admission; complete state/initial/boundary/body-motion closure;
 quantity, shape, clock, frame, causality, event-history, guard-dependency,
@@ -824,6 +1037,60 @@ boundary without widening it.
 
 ## No-claim boundaries
 
+- I02.1 defines and internally closes the equation-variable graph and receipt
+  grammars; it does not extract equations from `fs-opdsl`/`fs-couple`, compute
+  a matching, Dulmage-Mendelsohn or BLT decomposition, perform Pantelides/
+  dummy-derivative index reduction, choose tears, solve a system, or execute an
+  end-to-end mechanism. Those source-owned adapters and algorithms are I02.2+
+  consumers of this boundary. In particular, a caller-authored admitted draft
+  is not evidence that extraction was complete merely because it names a
+  coverage reference.
+- Structural rank here is generic block incidence/cardinality, not scalar DOF
+  rank, numerical matrix rank, nonsingularity, conditioning, existence,
+  uniqueness, stability, convergence, DAE index, physical cause-and-effect, or
+  executable scheduling authority. A matching certificate or hybrid coverage
+  binding is tied to exact graph/domain/witness/checker coordinates, but this
+  crate does not authenticate the checker binary, execute it, or prove its
+  theorem. These are current authority boundaries, not assertions that stronger
+  admitted maximum-matching, DM/index, EM-topology, or physical-causality
+  theorems are impossible; the typed bindings are intentionally shaped for
+  those ambitious ratchets.
+- The budgeted activation engine exactly decides implication/coverage only for
+  this schema's finite declared branch domains and refuses when its explicit
+  symbolic-work budget is exhausted. It is not an SMT solver for continuous
+  guard predicates and does not authenticate an opaque predicate or root-solve
+  obligation. Redundant but non-duplicate DNF cube sets can still have distinct
+  structural identities; Boolean-minimal/BDD-canonical identity is not claimed.
+- Post-admission causalization cannot rediscover or authorize inter-subsystem
+  algebraic loops that `MachineGraphDraft` already refused for lacking an
+  explicit solve policy. It analyzes internal/generated equations and loops
+  already governed by the admitted Machine graph. A future provisional pre-
+  Machine structural stage must be explicit rather than bypassing that gate.
+- State derivative matching treats the retained base state as integration
+  memory when an active unknown derivative occurrence exists; initial-
+  condition completeness remains the exact Machine behavior overlay's job.
+  `StateUpdate` does not yet encode a general discrete pre/post/next/delay/stage
+  temporal-occurrence algebra, and derivative order alone must not be read as
+  one. General temporal occurrence is a successor schema, not an implicit v1
+  meaning.
+- Partial extraction still binds the complete admitted Machine graph plus an
+  exact partial-boundary reference. It does not publish a freestanding Machine
+  projection/seam certificate or guarantee incremental identity locality when
+  unrelated portions of the parent Machine graph change.
+- Causal graph composition retains the complete Machine and behavior identity
+  receipts it receives. The upstream `AdmittedMachineBehavior` v1 receipt,
+  however, still binds/exposes its base Machine graph by typed ID rather than a
+  full base-graph receipt. Collision-adjudicable closure of that pre-existing
+  behavior-to-graph edge therefore remains a successor-schema ratchet in
+  `machine::semantics`; ordinary non-colliding graph mismatches already refuse.
+  Likewise, the upstream Machine-graph identity composes several durable entity
+  IDs by digest, so retaining its complete graph receipt here cannot
+  retroactively adjudicate a collision already collapsed inside Machine v1.
+  Full recursive receipt composition for those upstream identities is a
+  separate hardening ratchet, not an I02.1 theorem.
+- Canonical schema migration proves exact lineage binding and prevents public
+  field forgery; it does not prove semantic equivalence between predecessor and
+  target schemas or authorize automatic re-interpretation of legacy bytes.
 - No operator catalog or per-operator semantic versions — gp3.6; the
   `IR_VERSION` constant covers the language only.
 - JSON `\uXXXX` escapes decode scalar values and valid high/low surrogate

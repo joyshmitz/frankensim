@@ -8,7 +8,10 @@
 //! declarations are admitted before a semantic identity is published. PR-3's
 //! [`semantics`] module admits a separate behavior overlay for state contracts,
 //! conditions, motion, events/resets, tolerances, and dependence declarations
-//! without changing the already-published graph-v1 identity grammar. PR-4's
+//! without changing the already-published graph-v1 identity grammar. I02.1's
+//! additive [`causalization`] boundary admits a typed equation-variable
+//! hypergraph plus graph-bound causalization outcome/evidence receipts without
+//! claiming an extraction or matching algorithm. PR-4's
 //! [`assurance`] module then binds sensors and experiment lineage, operational
 //! context and QoIs, hazards/faults, explicit accounting boundaries, and a
 //! terminating fidelity-escalation policy to one exact admitted behavior.
@@ -29,6 +32,7 @@
 
 pub mod assurance;
 pub mod assurance_codec;
+pub mod causalization;
 pub mod codec;
 pub mod interop;
 pub mod lowering;
