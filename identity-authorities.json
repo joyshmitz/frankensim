@@ -123,6 +123,7 @@
 ],
 "exemptions": [
 {"path":"crates/fs-evidence/src/balance.rs","symbol":"BalanceDefectReceipt::decode","reason":"identity-consumer-not-producer","covered_by":"none"},
+{"path":"crates/fs-govern/src/traceability_fs.rs","symbol":"load_traceability_source_snapshot","reason":"identity-consumer-not-producer","covered_by":"none"},
 {"path":"crates/fs-session/src/governor.rs","symbol":"Governor::flush_scope_to_ledger","reason":"identity-consumer-not-producer","covered_by":"none"},
 {"path":"crates/fs-ir/src/machine/causalization.rs","symbol":"admit_causalization_receipt","reason":"unratified-candidate-identity@frankensim-leapfrog-2026-program-i94v.1.2.12","covered_by":"none"},
 {"path":"crates/fs-ir/src/machine/interop.rs","symbol":"ForeignExecutionDraftV1::admit_against","reason":"identity-consumer-not-producer","covered_by":"none"},
