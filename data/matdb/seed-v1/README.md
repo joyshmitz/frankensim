@@ -667,6 +667,40 @@ FACE G CDTRF-G references:
 - <https://www.mdpi.com/1420-3049/28/11/4273>
 - <https://creativecommons.org/licenses/by/4.0/>
 
+## WO 2018/125520 Formulation 8 5W-30 reference-oil tranche
+
+`wo2018-125520-formulation-8-5w30/` retains the exact source identity of
+Lewis, Fitch, and Han's Table IX comparator Formulation 8. Unlike a card named
+only by viscosity grade, this one records all four as-added, source-era
+commercial components on the table's stated mass basis: `60 wt%` SpectraSyn 4,
+`10 wt%` Synesstic 5, `18 wt%` SpectraSyn Elite 150, and `12 wt%` Infineum
+P6003. The fractions sum exactly to `100 wt%`, and the pack ID pins the patent
+family, table, formulation number, and grade.
+
+The same Table IX row reports kinematic viscosities of `61.49 mm^2/s` at
+`40 degC` and `10.62 mm^2/s` at `100 degC`, viscosity-index scale reading
+`164`, pour point `-66 degC`, CCS `4886 mPa*s` at `-30 degC`, MRV
+`10782 mPa*s` at `-35 degC`, HTHS `3.395 mPa*s` at `150 degC`, and Noack
+mass loss `9.2%` at `250 degC`. Dashes for CCS at `-25 degC` and MRV at
+`-30 degC` remain absences; they are not converted to zeros.
+
+This is a digital reference for that disclosed formulation, not a statement
+that current products with the same trademarks are fungible. The source gives
+no component lots, manufacturing dates, detailed package chemistry, final
+blend protocol, sample storage history, test-method editions, repeats,
+dispersion, or confidence metadata. Every runtime uncertainty therefore stays
+`Unstated`, and the missing axes remain machine-readable. The patent source is
+also not a license to practice patent claims or use trademarks. USPTO's Terms
+of Use says patent text and drawings are typically not subject to copyright
+restrictions; the manifest retains the inventors, title, family publication
+identifiers, and that narrow redistribution decision.
+
+WO 2018/125520 Formulation 8 references:
+
+- <https://patents.google.com/patent/WO2018125520A1/en>
+- <https://patents.google.com/patent/US20180179462A1/en>
+- <https://www.uspto.gov/terms-use-uspto-websites#patent-information>
+
 To compile the sources into canonical runtime packs:
 
 ```bash
@@ -745,6 +779,10 @@ cargo run -p xtask -- matdb-pack \
 cargo run -p xtask -- matdb-pack \
   --manifest data/matdb/seed-v1/face-g-cdtrf-g-2023-v1/manifest.tsv \
   --out /path/to/face-g-cdtrf-g-2023-v1.fsmatpk
+
+cargo run -p xtask -- matdb-pack \
+  --manifest data/matdb/seed-v1/wo2018-125520-formulation-8-5w30/manifest.tsv \
+  --out /path/to/wo2018-125520-formulation-8-5w30.fsmatpk
 ```
 
 ## No-claim boundary

@@ -40,6 +40,8 @@ const NACA_TN_2680_ISOOCTANE_FLAME_SPEED_SEED_MANIFEST: &str =
     "data/matdb/seed-v1/naca-tn-2680-isooctane-flame-speed/manifest.tsv";
 const FACE_G_CDTRF_G_2023_V1_SEED_MANIFEST: &str =
     "data/matdb/seed-v1/face-g-cdtrf-g-2023-v1/manifest.tsv";
+const WO2018_125520_FORMULATION_8_5W30_SEED_MANIFEST: &str =
+    "data/matdb/seed-v1/wo2018-125520-formulation-8-5w30/manifest.tsv";
 const AISI_4140_RC33_SEED_MANIFEST: &str = "data/matdb/seed-v1/aisi-4140-rc33/manifest.tsv";
 const AISI_1045_COLD_DRAWN_SEED_MANIFEST: &str =
     "data/matdb/seed-v1/aisi-1045-cold-drawn/manifest.tsv";
@@ -61,6 +63,7 @@ const NASA_SEED_LICENSE: &str = "Work-of-the-US-Government-Public-Use-Permitted"
 const PUBLIC_USE_PERMITTED_LICENSE: &str = "Public-Use-Permitted";
 const CC_BY_4_0_LICENSE: &str = "CC-BY-4.0";
 const NIST_PUBLIC_INFORMATION_LICENSE: &str = "NIST-Public-Information-Attribution-Requested";
+const USPTO_PATENT_TEXT_LICENSE: &str = "USPTO-Patent-Text-Typically-No-Copyright-Restrictions";
 const NASA_METHANE_MOLAR_MASS_G_PER_MOL: f64 = 16.042_46;
 const NIST_SRD69_METHANE_MOLAR_MASS_KG_PER_MOL: f64 = 0.016_042_5;
 const NIST_SRD69_DISPLAY_ROUNDING_HALF_WIDTH_KG_PER_MOL: f64 = 0.000_000_05;
@@ -2263,6 +2266,293 @@ fn g3_cli_compiles_committed_face_g_cdtrf_g_2023_v1_surrogate_seed() {
             "source-absent or model-only CDTRF-G property must remain refused: {refused_property}"
         );
     }
+
+    let decisions = String::from_utf8(first.stdout).expect("decision stream is UTF-8");
+    assert!(decisions.contains("\"reason_code\":\"uncertainty_policy_admitted\""));
+    assert!(decisions.contains("\"reason_code\":\"runtime_pack_self_verified\""));
+    assert!(
+        decisions
+            .lines()
+            .all(|row| row.contains(&format!("\"pack_hash\":\"{pack_hash}\"")))
+    );
+}
+
+#[test]
+fn g3_cli_compiles_committed_wo2018_formulation_8_5w30_seed() {
+    let manifest = workspace_path(WO2018_125520_FORMULATION_8_5W30_SEED_MANIFEST);
+    assert!(
+        manifest.is_file(),
+        "committed WO 2018/125520 Formulation 8 5W30 seed manifest is missing"
+    );
+    let directory = fixture_dir();
+    let first_path = directory.join("wo2018-125520-formulation-8-5w30-first.fsmatpk");
+    let second_path = directory.join("wo2018-125520-formulation-8-5w30-second.fsmatpk");
+
+    let first = run_compiler(&manifest, &first_path);
+    let second = run_compiler(&manifest, &second_path);
+    assert!(
+        first.status.success(),
+        "first WO 2018/125520 Formulation 8 compilation failed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(
+        second.status.success(),
+        "second WO 2018/125520 Formulation 8 compilation failed: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(
+        first.stdout, second.stdout,
+        "WO 2018/125520 Formulation 8 decision stream moved"
+    );
+    assert_decision_compiler(&first, MATERIAL_COMPILER_ID);
+
+    let first_bytes = fs::read(first_path).expect("read first WO 2018 Formulation 8 pack");
+    let second_bytes = fs::read(second_path).expect("read second WO 2018 Formulation 8 pack");
+    assert_eq!(
+        first_bytes, second_bytes,
+        "WO 2018/125520 Formulation 8 pack bytes moved"
+    );
+    let decoded =
+        NormalizedPack::from_bytes(&first_bytes).expect("decode WO 2018/125520 Formulation 8 pack");
+    let pack_hash = decoded.content_hash();
+    let decoded = NormalizedPack::from_bytes_verified(pack_hash, &first_bytes)
+        .expect("verify WO 2018/125520 Formulation 8 pack identity");
+
+    assert_eq!(decoded.pack_id(), "wo2018-125520-formulation-8-5w30");
+    assert_eq!(decoded.compiler(), MATERIAL_COMPILER_ID);
+    assert!(
+        decoded
+            .redistribution_terms()
+            .contains("not a patent-practice or trademark license")
+    );
+    assert_eq!(decoded.claims().claim_count(), 12);
+    assert!(decoded.joint_statistics().is_empty());
+
+    let expected_components = [
+        ("spectrasyn_4_component_mass_fraction", 60.0),
+        ("synesstic_5_component_mass_fraction", 10.0),
+        ("spectrasyn_elite_150_component_mass_fraction", 18.0),
+        ("infineum_p6003_component_mass_fraction", 12.0),
+    ];
+    let mut fraction_sum = 0.0;
+    let mut composition_observation = None;
+    for (property, source_percent) in expected_components {
+        let claims = decoded.claims().claims_for(property);
+        assert_eq!(claims.len(), 1, "missing unique Formulation 8 {property}");
+        let (id, claim) = claims[0];
+        let PropertyValue::Scalar { value, dims } = &claim.value else {
+            panic!("Formulation 8 {property} was not scalar");
+        };
+        let expected_fraction = source_percent * 0.01;
+        assert!((*value - expected_fraction).abs() <= 2.0e-15);
+        assert_eq!(*dims, Dims([0, 0, 0, 0, 0, 0]));
+        fraction_sum += *value;
+        assert_eq!(
+            claim
+                .validity
+                .bound("source_composition_basis_is_mass_fraction"),
+            Some((1.0, 1.0))
+        );
+        assert_eq!(
+            claim.validity.bound("source_formulation_number"),
+            Some((8.0, 8.0))
+        );
+        assert_eq!(
+            claim
+                .validity
+                .bound("source_component_commercial_identifier_known"),
+            Some((1.0, 1.0))
+        );
+        for missing_axis in [
+            "source_component_lot_known",
+            "source_component_detailed_chemistry_known",
+            "source_final_blend_protocol_known",
+            "source_patent_practice_license_granted",
+        ] {
+            assert_eq!(
+                claim.validity.bound(missing_axis),
+                Some((0.0, 0.0)),
+                "Formulation 8 {property} must retain missing axis {missing_axis}"
+            );
+        }
+        assert_eq!(claim.uncertainty, UncertaintyModel::Unstated);
+        assert_eq!(claim.provenance.license, USPTO_PATENT_TEXT_LICENSE);
+        assert!(claim.provenance.source.contains("WO 2018/125520 A1"));
+        assert!(claim.provenance.source.contains("US 2018/0179462 A1"));
+        assert!(claim.provenance.source.contains("[source:primary]"));
+        assert_eq!(id.0, claim.content_hash());
+        match composition_observation {
+            Some(observation) => assert_eq!(claim.observations[0], observation),
+            None => composition_observation = Some(claim.observations[0]),
+        }
+    }
+    assert!((fraction_sum - 1.0_f64).abs() <= 2.0e-15);
+
+    let composition = decoded
+        .claims()
+        .observation(composition_observation.expect("composition observation exists"))
+        .expect("Formulation 8 composition observation remains linked");
+    assert_eq!(
+        composition.specimen,
+        "wo2018-125520-table-ix-formulation-8-source-products-lots-unspecified"
+    );
+    assert!(composition.method.contains("Table IX Formulation 8"));
+    assert!(composition.caveats.contains("sum to exactly 100.00 wt%"));
+    assert!(composition.caveats.contains("not present-day fungible"));
+    assert!(composition.caveats.contains("without implying endorsement"));
+
+    let kinematic_viscosity_dims = Dims([2, 0, -1, 0, 0, 0]);
+    let viscosity_claims = decoded.claims().claims_for("kinematic_viscosity");
+    assert_eq!(viscosity_claims.len(), 2);
+    for (source_temperature_c, source_mm2_per_s) in [(40.0, 61.49), (100.0, 10.62)] {
+        let temperature_k = source_temperature_c + 273.15;
+        let mut matches = viscosity_claims.iter().copied().filter(|(_, claim)| {
+            claim.validity.bound("temperature") == Some((temperature_k, temperature_k))
+        });
+        let (_, claim) = matches.next().unwrap_or_else(|| {
+            panic!("missing Formulation 8 viscosity at {source_temperature_c} degC")
+        });
+        assert!(matches.next().is_none());
+        let PropertyValue::Scalar { value, dims } = &claim.value else {
+            panic!("Formulation 8 viscosity was not scalar");
+        };
+        assert_eq!(*dims, kinematic_viscosity_dims);
+        let expected_m2_per_s = source_mm2_per_s * 1.0e-6;
+        assert!((*value - expected_m2_per_s).abs() / expected_m2_per_s <= 2.0e-15);
+    }
+
+    let dynamic_viscosity_dims = Dims([-1, 1, -1, 0, 0, 0]);
+    let dimensionless = Dims([0, 0, 0, 0, 0, 0]);
+    let temperature_dims = Dims([0, 0, 0, 1, 0, 0]);
+    let expected_unique = [
+        ("viscosity_index_scale_reading", 164.0, dimensionless, None),
+        (
+            "pour_point_temperature",
+            -66.0 + 273.15,
+            temperature_dims,
+            None,
+        ),
+        (
+            "cold_cranking_simulator_dynamic_viscosity",
+            4_886.0 * 1.0e-3,
+            dynamic_viscosity_dims,
+            Some(-30.0 + 273.15),
+        ),
+        (
+            "mini_rotary_viscometer_dynamic_viscosity",
+            10_782.0 * 1.0e-3,
+            dynamic_viscosity_dims,
+            Some(-35.0 + 273.15),
+        ),
+        (
+            "high_temperature_high_shear_dynamic_viscosity",
+            3.395 * 1.0e-3,
+            dynamic_viscosity_dims,
+            Some(150.0 + 273.15),
+        ),
+        (
+            "noack_mass_loss_fraction",
+            9.2 * 0.01,
+            dimensionless,
+            Some(250.0 + 273.15),
+        ),
+    ];
+    let mut performance_observation = None;
+    for (property, expected_value, expected_dims, validity_temperature) in expected_unique {
+        let claims = decoded.claims().claims_for(property);
+        assert_eq!(claims.len(), 1, "missing unique Formulation 8 {property}");
+        let (id, claim) = claims[0];
+        let PropertyValue::Scalar { value, dims } = &claim.value else {
+            panic!("Formulation 8 {property} was not scalar");
+        };
+        assert_eq!(*dims, expected_dims);
+        let scale = expected_value.abs().max(1.0e-12);
+        assert!((*value - expected_value).abs() / scale <= 2.0e-15);
+        match validity_temperature {
+            Some(temperature_k) => assert_eq!(
+                claim.validity.bound("temperature"),
+                Some((temperature_k, temperature_k))
+            ),
+            None => assert_eq!(claim.validity.bound("temperature"), None),
+        }
+        assert_eq!(
+            claim.validity.bound("source_formulation_number"),
+            Some((8.0, 8.0))
+        );
+        assert_eq!(
+            claim.validity.bound("source_viscosity_grade_is_5w30"),
+            Some((1.0, 1.0))
+        );
+        assert_eq!(
+            claim
+                .validity
+                .bound("source_patent_practice_license_granted"),
+            Some((0.0, 0.0))
+        );
+        assert_eq!(
+            claim.validity.bound("source_test_method_edition_known"),
+            Some((0.0, 0.0))
+        );
+        assert_eq!(
+            claim.validity.bound("source_repeat_count_known"),
+            Some((0.0, 0.0))
+        );
+        assert_eq!(claim.uncertainty, UncertaintyModel::Unstated);
+        assert_eq!(claim.provenance.license, USPTO_PATENT_TEXT_LICENSE);
+        assert_eq!(id.0, claim.content_hash());
+        match performance_observation {
+            Some(observation) => assert_eq!(claim.observations[0], observation),
+            None => performance_observation = Some(claim.observations[0]),
+        }
+    }
+    assert_eq!(
+        decoded.claims().claims_for("noack_mass_loss_fraction")[0]
+            .1
+            .validity
+            .bound("source_test_duration_known"),
+        Some((0.0, 0.0))
+    );
+
+    for (_, claim) in viscosity_claims {
+        assert_eq!(
+            claim.validity.bound("source_formulation_number"),
+            Some((8.0, 8.0))
+        );
+        assert_eq!(
+            claim.validity.bound("source_viscosity_grade_is_5w30"),
+            Some((1.0, 1.0))
+        );
+        assert_eq!(
+            claim
+                .validity
+                .bound("source_patent_practice_license_granted"),
+            Some((0.0, 0.0))
+        );
+        assert_eq!(claim.uncertainty, UncertaintyModel::Unstated);
+        assert_eq!(claim.provenance.license, USPTO_PATENT_TEXT_LICENSE);
+        match performance_observation {
+            Some(observation) => assert_eq!(claim.observations[0], observation),
+            None => performance_observation = Some(claim.observations[0]),
+        }
+    }
+
+    let performance = decoded
+        .claims()
+        .observation(performance_observation.expect("performance observation exists"))
+        .expect("Formulation 8 performance observation remains linked");
+    assert!(performance.method.contains("5W30 property-row"));
+    assert!(performance.caveats.contains("absences, not zero-valued"));
+    assert!(performance.caveats.contains("do not generalize"));
+
+    assert!(decoded.claims().claims_for("dynamic_viscosity").is_empty());
+    assert!(decoded.claims().claims_for("density").is_empty());
+    assert!(decoded.claims().claims_for("total_base_number").is_empty());
+    assert!(
+        decoded
+            .claims()
+            .claims_for("flash_point_temperature")
+            .is_empty()
+    );
 
     let decisions = String::from_utf8(first.stdout).expect("decision stream is UTF-8");
     assert!(decisions.contains("\"reason_code\":\"uncertainty_policy_admitted\""));

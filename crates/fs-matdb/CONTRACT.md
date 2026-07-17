@@ -473,7 +473,16 @@ calculated-RON prints for the same named formulation.
   distillation, heat capacity, latent heat, flame speed, ignition delay, storage,
   compatibility, or emissions authority follows. Bead 1sxe still owns the
   temperature-dependent N42 card and the remaining curated material/property
-  and interface-system dataset.
+  and interface-system dataset. The WO 2018/125520 Formulation 8 claims bind
+  one patent-table comparator with four named source-era commercial products,
+  exact as-added mass fractions, and eight printed 5W-30 property results. They
+  are not authority for the SAE grade generally, current trademarked products,
+  component interchangeability, detailed additive chemistry, a continuous
+  viscosity law, aging, tribology, wear, oxidation, deposits, emissions,
+  engine life, or service intervals. Component lots, manufacturing dates,
+  final blending protocol, method editions, repeats, dispersion, and confidence
+  metadata remain absent. Permission to redistribute patent text is explicitly
+  not a patent-practice or trademark license.
   No equilibrium computation happens here (fs-thermochem consumes phase data;
   this crate only stores it).
 - The L1 pack codec does not parse handbooks, CSV, NASA tables, license text,
