@@ -194,6 +194,22 @@ same-build evidence: the mutation seed is not an optimizer seed, the maximum is
 a soft loop-entry budget rather than a strict callback cap, and the receipt adds
 no optimizer-quality, broad-input, refreshed cross-ISA, cancellation,
 checkpoint, authenticated-ledger, or performance claim.
+tests/moead_study_replay.rs adds a full-study receipt for production `moead` on
+a short four-variable ZDT1 fixture with eight ordered Das-Dennis weights and
+four generations. The fixture identity binds the dimension and bounds, every
+`MoeadParams` field, every weight bit, dependency and stream-semantics versions,
+and the optimizer's logical stream coordinates. The result identity binds all
+forty ordered objective-callback decision/objective bits and every ordered
+returned-front `Individual` decision/objective bit. Its independent accounting
+gate regenerates the complete initializer from the recorded stream, recomputes
+ZDT1 exactly, checks callback count, dimensions and box membership, and requires
+each returned individual to be an evaluated, mutually non-dominated point.
+Independent production runs must reproduce the complete canonical frame. A
+disclosed evidence-generator `StreamKey`, separate from the optimizer's recorded
+study seed, selects one returned objective and low mantissa bit; the test proves
+the stale payload is rejected, reseals it, proves that sole bit delta, emits
+identical wire-valid red fs-obs evidence, and catches the local merge gate
+refusing the typed retained-reference mismatch.
 tests/dro_battery.rs (4 cases): the one-sample kink LP recovers the
 fractional q = [0.5, 0.5] and worst-case value 0.5; tiny-scale kinks
 use scale-relative recovery rather than an absolute lambda cutoff;
@@ -294,6 +310,13 @@ remain assertion-only and silent.
   reflection/expansion/contraction/shrink transition drains. The fixture makes
   no strict-budget, quality, all-objective/dimension/configuration, refreshed
   cross-ISA, `Cx`, checkpoint, authenticated-ledger, or performance claim.
+- The standalone MOEA/D study receipt covers one same-build four-dimensional
+  ZDT1 fixture at one recorded configuration and seed. It exposes only objective
+  callbacks and the returned rank-zero subset, not the final population, ideal
+  history, neighborhoods, or replacement decisions. It makes no convergence,
+  front-quality, hypervolume, coverage, diversity, optimizer-superiority,
+  all-objective/dimension/configuration/seed, refreshed cross-ISA, `Cx`, checkpoint,
+  parallelism, authenticated-ledger, external-oracle, or performance claim.
 - NSGA-III normalization uses the ideal point with FIRST-front
   per-objective maxima as the nadir estimate; the full ASF
   extreme-point construction is the recorded refinement.
