@@ -337,7 +337,7 @@ fn mmt_001_crosswalk_binds_exact_receipts_identity_and_body_lineage() {
     );
 
     let correlated_model = correlation_model(90, 2, vec![1.0, 0.0, 0.5, 0.75_f64.sqrt()]);
-    let correlated_stack = stack(&correlated_model, &terms);
+    let correlated_stack = crate::stack(&correlated_model, &terms);
     let factor_changed = manufacturing
         .bind_correlated_tolerance_axes(&behavior, &correlated_stack, link.clone())
         .expect("same digest with different exact factor remains structurally bindable");
@@ -351,7 +351,7 @@ fn mmt_001_crosswalk_binds_exact_receipts_identity_and_body_lineage() {
             2 => changed_terms[0].standard_deviation = 0.5,
             _ => unreachable!(),
         }
-        let changed_stack = stack(&model, &changed_terms);
+        let changed_stack = crate::stack(&model, &changed_terms);
         let changed = manufacturing
             .bind_correlated_tolerance_axes(&behavior, &changed_stack, link.clone())
             .expect("term mutation remains structurally admissible");
@@ -375,13 +375,13 @@ fn mmt_001_crosswalk_binds_exact_receipts_identity_and_body_lineage() {
         .admit_against(&graph)
         .expect("changed marginal admits");
     let changed_behavior_terms = terms_for_behavior(&changed_behavior);
-    let changed_behavior_stack = stack(&model, &changed_behavior_terms);
+    let changed_behavior_stack = crate::stack(&model, &changed_behavior_terms);
     let behavior_changed = manufacturing
         .bind_correlated_tolerance_axes(&changed_behavior, &changed_behavior_stack, link.clone())
         .expect("changed behavior remains crosswalkable");
     assert_ne!(admitted.identity(), behavior_changed.identity());
 
-    let changed_manufacturing = manufacturing(&graph, 21);
+    let changed_manufacturing = crate::manufacturing(&graph, 21);
     let manufacturing_changed = changed_manufacturing
         .bind_correlated_tolerance_axes(&behavior, &stack, link)
         .expect("changed process receipt remains crosswalkable");
@@ -483,7 +483,7 @@ fn mmt_002_semantic_gaps_refuse_before_identity_publication() {
     let terms = terms_for_behavior(&behavior);
     let stack = stack(&model, &terms);
 
-    let other_manufacturing = manufacturing(&graph(2), 20);
+    let other_manufacturing = crate::manufacturing(&graph(2), 20);
     assert!(matches!(
         other_manufacturing.bind_correlated_tolerance_axes(&behavior, &stack, coordinate_link(210)),
         Err(MachineToleranceAxisCrosswalkErrorV1::GraphMismatch { .. })
@@ -516,7 +516,7 @@ fn mmt_002_semantic_gaps_refuse_before_identity_publication() {
             standard_deviation: 0.5,
         },
     ];
-    let stack3 = stack(&model3, &terms3);
+    let stack3 = crate::stack(&model3, &terms3);
     assert!(matches!(
         manufacturing.bind_correlated_tolerance_axes(&behavior, &stack3, coordinate_link(210)),
         Err(
@@ -538,14 +538,14 @@ fn mmt_002_semantic_gaps_refuse_before_identity_publication() {
         .admit_against(&graph)
         .expect("mixed random condition/tolerance behavior admits structurally");
     let mixed_terms = terms_for_behavior(&mixed);
-    let mixed_stack = stack(&model3, &mixed_terms);
+    let mixed_stack = crate::stack(&model3, &mixed_terms);
     assert!(matches!(
         manufacturing.bind_correlated_tolerance_axes(&mixed, &mixed_stack, coordinate_link(210)),
         Err(MachineToleranceAxisCrosswalkErrorV1::ConditionAxisUnsupported { .. })
     ));
 
     let wrong_model = correlation_model(91, 2, identity_factor(2));
-    let wrong_model_stack = stack(&wrong_model, &terms);
+    let wrong_model_stack = crate::stack(&wrong_model, &terms);
     assert!(matches!(
         manufacturing.bind_correlated_tolerance_axes(
             &behavior,
@@ -561,7 +561,7 @@ fn mmt_002_semantic_gaps_refuse_before_identity_publication() {
         .admit_against(&graph)
         .expect("body vector tolerance is structurally admitted by behavior v1");
     let non_scalar_terms = terms_for_behavior(&non_scalar);
-    let non_scalar_stack = stack(&model, &non_scalar_terms);
+    let non_scalar_stack = crate::stack(&model, &non_scalar_terms);
     assert!(matches!(
         manufacturing.bind_correlated_tolerance_axes(
             &non_scalar,
@@ -578,7 +578,7 @@ fn mmt_002_semantic_gaps_refuse_before_identity_publication() {
         .admit_against(&graph)
         .expect("subsystem tolerance is valid behavior but not body manufacturing v1");
     let subsystem_terms = terms_for_behavior(&subsystem);
-    let subsystem_stack = stack(&model, &subsystem_terms);
+    let subsystem_stack = crate::stack(&model, &subsystem_terms);
     assert!(matches!(
         manufacturing.bind_correlated_tolerance_axes(
             &subsystem,
@@ -596,7 +596,7 @@ fn mmt_002_semantic_gaps_refuse_before_identity_publication() {
         .admit_against(&graph)
         .expect("fixture tolerance is valid behavior");
     let unmanufactured_terms = terms_for_behavior(&unmanufactured);
-    let unmanufactured_stack = stack(&model, &unmanufactured_terms);
+    let unmanufactured_stack = crate::stack(&model, &unmanufactured_terms);
     assert!(matches!(
         manufacturing.bind_correlated_tolerance_axes(
             &unmanufactured,
@@ -608,7 +608,7 @@ fn mmt_002_semantic_gaps_refuse_before_identity_publication() {
 
     let mut wrong_names = terms.clone();
     wrong_names[0].name = "tolerance/wrong-position".to_owned();
-    let wrong_name_stack = stack(&model, &wrong_names);
+    let wrong_name_stack = crate::stack(&model, &wrong_names);
     assert!(matches!(
         manufacturing.bind_correlated_tolerance_axes(
             &behavior,
