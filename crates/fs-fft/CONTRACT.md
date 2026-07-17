@@ -157,6 +157,14 @@ exact mismatch bits or the structured run error. A disclosed `0xF5FF0001`
 seeded corruption flips bit 0 of the stage oracle and proves both the typed red
 report and `assert_green` refusal paths. These records make central failures
 replay-complete; one local record is not, by itself, a fresh dual-ISA G5 proof.
+`tests/frankenscipy_fft_oracle_casebook.rs` adds the test-only external
+FrankenScipy transform seam. It binds fs-fft's forward complex and real
+power-of-two transforms to fsci-fft's independent naive DFT under explicit
+strict, backward-normalized, single-worker options. Analytic impulse evidence,
+fixed seeded finite fixtures, same-run replay, canonical input frames,
+observed output-bit digests, and a disclosed exact-reference corruption are
+separate structured records. `fsci-fft` is a development dependency only;
+this tranche is central package-proof pending.
 The declared G3 adopter `forward-signal-scale-equivariance`
 (`tests/metamorphic.rs`, seed `0x2ACE_0002`, 384 cases) applies non-identity
 power-of-two rescalings to exactly eight generated complex samples and checks
@@ -216,4 +224,10 @@ authority-policy receipt move.
 - N-D real transforms (r2c/c2r with only the first axis half-length) are not
   shipped; N-D is complex-in/complex-out. Callers pack real fields as `C64`.
 - No general-n (mixed-radix / Bluestein) support; power-of-two only.
+- The FrankenScipy Casebook is agreement evidence for its disclosed bounded
+  fixtures, not a forward-error certificate. It does not establish Python
+  SciPy execution, arbitrary-size, inverse/c2r, N-D, or DCT equivalence,
+  performance parity, or fresh cross-ISA bit identity. FrankenScipy's naive
+  oracle uses platform trigonometry, so its observed output digests are
+  same-run diagnostics rather than cross-ISA goldens.
 - `C64` is not a public complex-arithmetic library; only what the FFT needs.
