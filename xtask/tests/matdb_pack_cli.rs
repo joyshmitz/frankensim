@@ -1,3 +1,5 @@
+//! G2/G3 CLI conformance for material, species, and model pack compilation.
+
 #![deny(unsafe_code)]
 
 use std::fs;

@@ -26,7 +26,7 @@ const A2017_LLC_RA005_MANIFEST: &str =
     "data/matdb/seed-v1/yilmaz-2026-a2017-seiken-llc-ra005-wetting/manifest.tsv";
 const A2017_LLC_RA3_MANIFEST: &str =
     "data/matdb/seed-v1/yilmaz-2026-a2017-seiken-llc-ra3-wetting/manifest.tsv";
-const NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
 fn workspace_path(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

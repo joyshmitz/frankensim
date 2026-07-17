@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use fs_matdb::NormalizedInterfacePack;
 
 const INTERFACE_COMPILER_ID: &str = "frankensim-matdb-interface-pack-compiler-v1";
-const NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
 const MANIFEST: &str = concat!(
     "frankensim.matdb-manifest.v1\n",
