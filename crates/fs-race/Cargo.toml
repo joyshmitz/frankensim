@@ -16,6 +16,8 @@ fs-exec = { path = "../fs-exec" }
 
 [dev-dependencies]
 fs-eproc = { path = "../fs-eproc" }
+fs-obs = { path = "../fs-obs" }
+fs-rand = { path = "../fs-rand" }
 
 [lints]
 workspace = true

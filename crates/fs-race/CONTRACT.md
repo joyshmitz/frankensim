@@ -74,6 +74,18 @@ payoff claim is measured, never assumed.
    documented structural-invalid behavior (race-009).
 9. Winner means use overflow-safe online updates, so finite values near
    `f64::MAX` retain their mathematical ordering (race-012).
+10. The retained exact-support calibration receipt upgrades race-003/007 with
+    two 512-replay Bernoulli campaigns through the production `race_field`:
+    an exchangeable global null counts any elimination, while a unique-best
+    law counts only elimination of explicitly identified candidate zero. Each
+    gate accepts at most 54 events. Under the i.i.d. boundary model with event
+    probability 1/16, the exact binomial upper-tail formula for 55 or more
+    events has the conservative decimal upper bound
+    0.000078342973178362265874595602263698505767237360887. The receipt binds every
+    outcome, evaluation count, setting, version, best-candidate identity,
+    Philox key rule, and a second bitwise replay into `fs-obs` identities. This
+    is retained fixed-corpus calibration evidence, not a third independent
+    statistical argument.
 
 ## Elimination-evidence validity (bead 7tv.7.1, the derivation)
 
@@ -159,6 +171,14 @@ mixture-vs-invalid-max e-value certifier; race-009 no-verdict non-finite
 refusal; race-010 clipping counterexample and span guard; race-011 scale
 covariance and malformed-setting refusal; race-012 overflow-safe means.
 
+`tests/false_elimination_receipt.rs`: retained exact-support production-race
+upgrade to race-003/007. It records 512 logical replays per law, independently
+reconstructs scheduled evaluation accounting from elimination rounds and final
+survivors, repeats the full campaigns for bitwise replay, emits one structured
+receipt, four conformance rows, and four measurement rows through `fs-obs`, and
+keeps both empirical calibration gates integer-exact. The duplicate pass is
+replay evidence and is not pooled into the statistical sample.
+
 ## No-claim boundaries
 
 - Reclaim-LATENCY histograms (the ≤ 200 µs systems gate) need the
@@ -178,3 +198,10 @@ covariance and malformed-setting refusal; race-012 overflow-safe means.
 - No transactional rollback of already-dispatched kill requests after a later
   support failure. Production orchestration must ledger the returned error and
   discard the aggregate tournament claim.
+- The retained Bernoulli receipt covers one fixed Philox corpus. It does not
+  prove Philox randomness or independence, and it makes no exhaustive claim
+  over seeds, loss laws, dependence structures, candidate counts, alphas, or
+  horizons. The unique-best event is candidate-zero elimination, not winner
+  error; neither campaign claims power, regret, savings, performance,
+  cross-ISA execution, `Cx` behavior, or cancellation latency. General FWER is
+  not claimed outside the global null.
