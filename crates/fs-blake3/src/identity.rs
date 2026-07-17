@@ -153,9 +153,9 @@ pub const CANONICAL_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
     "domain=org.frankensim.fs-blake3.canonical-identity-frame.v1",
     "domain_const=CANONICAL_IDENTITY_HASH_DOMAIN",
     "encoder=CanonicalEncoder::finish",
-    "encoder_helpers=CanonicalEncoder::new_internal,CanonicalEncoder::begin_field,CanonicalEncoder::append,CanonicalEncoder::bytes_stream,CanonicalEncoder::ordered_bytes,CanonicalEncoder::canonical_set,CanonicalEncoder::child,CanonicalEncoder::ordered_children",
+    "encoder_helpers=CanonicalEncoder::new_internal,CanonicalEncoder::begin_field,CanonicalEncoder::append,CanonicalEncoder::bytes_stream,CanonicalEncoder::begin_ordered_bytes,CanonicalEncoder::begin_ordered_row,CanonicalEncoder::finish_ordered_bytes,CanonicalEncoder::ordered_bytes,CanonicalEncoder::ordered_bytes_stream,CanonicalRowSink::write,CanonicalEncoder::canonical_set,CanonicalEncoder::child,CanonicalEncoder::ordered_children",
     "schema_constants=CANONICAL_FRAME_VERSION,CANONICAL_IDENTITY_HASH_DOMAIN,CANONICAL_MAGIC,FIELD_MARKER,END_MARKER,FLOAT_POLICY_FINITE_EXACT_BITS",
-    "schema_functions=CanonicalEncoder::finish,CanonicalEncoder::new_internal,CanonicalEncoder::begin_field,CanonicalEncoder::append,CanonicalEncoder::utf8,CanonicalEncoder::bytes,CanonicalEncoder::u64,CanonicalEncoder::i64,CanonicalEncoder::flag,CanonicalEncoder::finite_f64,CanonicalEncoder::optional_bytes,CanonicalEncoder::variant,CanonicalEncoder::bytes_stream,CanonicalEncoder::ordered_bytes,CanonicalEncoder::canonical_set,CanonicalEncoder::child,CanonicalEncoder::ordered_children,SchemaId::for_schema,Presence::tag,WireType::tag,IdentityRole::tag,crates/fs-blake3/src/lib.rs#Blake3::new,crates/fs-blake3/src/lib.rs#Blake3::finalize,crates/fs-blake3/src/lib.rs#Blake3::update,crates/fs-blake3/src/lib.rs#ContentHash::as_bytes,crates/fs-blake3/src/lib.rs#derive_key_hasher",
+    "schema_functions=CanonicalEncoder::finish,CanonicalEncoder::new_internal,CanonicalEncoder::begin_field,CanonicalEncoder::append,CanonicalEncoder::utf8,CanonicalEncoder::bytes,CanonicalEncoder::u64,CanonicalEncoder::i64,CanonicalEncoder::flag,CanonicalEncoder::finite_f64,CanonicalEncoder::optional_bytes,CanonicalEncoder::variant,CanonicalEncoder::bytes_stream,CanonicalEncoder::begin_ordered_bytes,CanonicalEncoder::begin_ordered_row,CanonicalEncoder::finish_ordered_bytes,CanonicalEncoder::ordered_bytes,CanonicalEncoder::ordered_bytes_stream,CanonicalRowSink::write,CanonicalEncoder::canonical_set,CanonicalEncoder::child,CanonicalEncoder::ordered_children,SchemaId::for_schema,Presence::tag,WireType::tag,IdentityRole::tag,crates/fs-blake3/src/lib.rs#Blake3::new,crates/fs-blake3/src/lib.rs#Blake3::finalize,crates/fs-blake3/src/lib.rs#Blake3::update,crates/fs-blake3/src/lib.rs#ContentHash::as_bytes,crates/fs-blake3/src/lib.rs#derive_key_hasher",
     "schema_dependencies=fs-blake3:schema-id",
     "digest=fs-blake3",
     "encoding=typed-binary",
@@ -164,10 +164,10 @@ pub const CANONICAL_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
     "source_bindings=CanonicalIdentityHeaderSource.role>role-tag,CanonicalIdentityHeaderSource.domain>domain,CanonicalIdentityHeaderSource.schema_name>schema-name,CanonicalIdentityHeaderSource.schema_id>schema-id,CanonicalIdentityHeaderSource.version>semantic-version,CanonicalIdentityHeaderSource.context>context,CanonicalIdentityHeaderSource.fields>declared-field-count+ordered-field-schema",
     "external_semantic_fields=canonical-magic,canonical-frame-version,float-policy,canonical-field-stream",
     "semantic_fields=canonical-magic,canonical-frame-version,role-tag,domain,schema-name,schema-id,semantic-version,context,float-policy,declared-field-count,ordered-field-schema,canonical-field-stream",
-    "excluded_fields=display-json-debug-text:display-transport-only,admission-budgets:admission-budget-only,cancellation-schedule:execution-schedule-only",
-    "consumers=CanonicalEncoder,IdentityReceipt,StrongIdentity,AuthorityRef,IdentityAuditRecord",
+    "excluded_fields=display-json-debug-text:display-transport-only,admission-budgets:admission-budget-only,cancellation-schedule:execution-schedule-only,row-chunk-schedule:execution-schedule-only",
+    "consumers=CanonicalEncoder,CanonicalRowSink,IdentityReceipt,StrongIdentity,AuthorityRef,IdentityAuditRecord",
     "mutations=canonical-magic:crates/fs-blake3/tests/identity.rs#manual_frame_parity_and_header_mutation_sensitivity,canonical-frame-version:crates/fs-blake3/tests/identity.rs#manual_frame_parity_and_header_mutation_sensitivity,role-tag:crates/fs-blake3/tests/identity.rs#roles_domains_versions_and_raw_content_are_separate,domain:crates/fs-blake3/tests/identity.rs#manual_frame_parity_and_header_mutation_sensitivity,schema-name:crates/fs-blake3/tests/identity.rs#manual_frame_parity_and_header_mutation_sensitivity,schema-id:crates/fs-blake3/tests/identity.rs#manual_frame_parity_and_header_mutation_sensitivity,semantic-version:crates/fs-blake3/tests/identity.rs#manual_frame_parity_and_header_mutation_sensitivity,context:crates/fs-blake3/tests/identity.rs#manual_frame_parity_and_header_mutation_sensitivity,float-policy:crates/fs-blake3/tests/identity.rs#manual_frame_parity_and_header_mutation_sensitivity,declared-field-count:crates/fs-blake3/tests/identity.rs#manual_frame_parity_and_header_mutation_sensitivity,ordered-field-schema:crates/fs-blake3/tests/identity.rs#manual_frame_parity_and_header_mutation_sensitivity,canonical-field-stream:crates/fs-blake3/tests/identity.rs#every_semantic_field_is_mutation_sensitive",
-    "nonsemantic_mutations=display-json-debug-text:crates/fs-blake3/tests/identity.rs#display_and_debug_are_not_hash_inputs,admission-budgets:crates/fs-blake3/tests/identity.rs#budgets_do_not_move_an_admitted_identity,cancellation-schedule:crates/fs-blake3/tests/identity.rs#stream_partition_and_non_cancelling_probes_are_invariant",
+    "nonsemantic_mutations=display-json-debug-text:crates/fs-blake3/tests/identity.rs#display_and_debug_are_not_hash_inputs,admission-budgets:crates/fs-blake3/tests/identity.rs#budgets_do_not_move_an_admitted_identity,cancellation-schedule:crates/fs-blake3/tests/identity.rs#stream_partition_and_non_cancelling_probes_are_invariant,row-chunk-schedule:crates/fs-blake3/tests/identity.rs#ordered_row_stream_chunk_partition_and_schedule_are_nonsemantic",
     "field_guard=classify_canonical_identity_header_fields",
     "transport_guard=CanonicalEncoder::new_internal",
     "version_guard=crates/fs-blake3/tests/identity.rs#schema_versions_are_nominal_and_digest_distinct",
@@ -1217,6 +1217,241 @@ impl fmt::Display for CanonicalError {
 
 impl core::error::Error for CanonicalError {}
 
+/// Stage at which fallible ordered-row streaming refused construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OrderedBytesStreamPhase {
+    /// Field shape, collection count, or fixed framing was not admitted.
+    FieldAdmission,
+    /// Cancellation was observed before asking for the next row declaration.
+    RowBoundary,
+    /// The fallible row-length source failed or ended at the wrong count.
+    RowDeclaration,
+    /// A declared row length or its framing exceeded a resource envelope.
+    RowAdmission,
+    /// A row-sink write failed, including chunk limits and cancellation.
+    RowChunk,
+    /// Caller row production failed before completing the declared row.
+    RowProducer,
+    /// A row was short or cancellation was observed at its completion boundary.
+    RowCompletion,
+    /// Exact row-count validation or field completion failed.
+    CollectionCompletion,
+}
+
+/// Transactional disposition of every ordered-row streaming failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OrderedBytesStreamDisposition {
+    /// The encoder was consumed and neither identity root was published.
+    EncoderConsumedNoPublication,
+}
+
+/// Structured context retained for an ordered-row streaming refusal.
+///
+/// Canonical limit details and cancellation byte counts remain in the
+/// accompanying [`CanonicalError`]. This context identifies where that error
+/// occurred and how much of the fallible collection had completed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OrderedBytesStreamDiagnostic {
+    schema_domain: &'static str,
+    schema_name: &'static str,
+    field_ordinal: u32,
+    field_name: &'static str,
+    phase: OrderedBytesStreamPhase,
+    row_index: Option<u64>,
+    declared_rows: u64,
+    completed_rows: u64,
+    declared_row_bytes: Option<u64>,
+    written_row_bytes: u64,
+    canonical_bytes: u64,
+    prior_collection_items: u64,
+    stream_chunks: u64,
+    disposition: OrderedBytesStreamDisposition,
+}
+
+impl OrderedBytesStreamDiagnostic {
+    /// Static schema domain of the consumed encoder.
+    #[must_use]
+    pub const fn schema_domain(self) -> &'static str {
+        self.schema_domain
+    }
+
+    /// Static schema name of the consumed encoder.
+    #[must_use]
+    pub const fn schema_name(self) -> &'static str {
+        self.schema_name
+    }
+
+    /// Zero-based schema field ordinal supplied by the caller.
+    #[must_use]
+    pub const fn field_ordinal(self) -> u32 {
+        self.field_ordinal
+    }
+
+    /// Static field name supplied by the caller.
+    #[must_use]
+    pub const fn field_name(self) -> &'static str {
+        self.field_name
+    }
+
+    /// Refusal stage, including the cancellation boundary when applicable.
+    #[must_use]
+    pub const fn phase(self) -> OrderedBytesStreamPhase {
+        self.phase
+    }
+
+    /// Zero-based row being declared or produced, when a row was active.
+    #[must_use]
+    pub const fn row_index(self) -> Option<u64> {
+        self.row_index
+    }
+
+    /// Caller-declared collection cardinality.
+    #[must_use]
+    pub const fn declared_rows(self) -> u64 {
+        self.declared_rows
+    }
+
+    /// Rows whose declared bytes and completion checkpoint both succeeded.
+    #[must_use]
+    pub const fn completed_rows(self) -> u64 {
+        self.completed_rows
+    }
+
+    /// Declared byte length of the active row, when available.
+    #[must_use]
+    pub const fn declared_row_bytes(self) -> Option<u64> {
+        self.declared_row_bytes
+    }
+
+    /// Active-row payload bytes absorbed before refusal.
+    #[must_use]
+    pub const fn written_row_bytes(self) -> u64 {
+        self.written_row_bytes
+    }
+
+    /// Complete canonical-frame bytes absorbed before refusal.
+    #[must_use]
+    pub const fn canonical_bytes(self) -> u64 {
+        self.canonical_bytes
+    }
+
+    /// Collection items completed by earlier encoder fields.
+    #[must_use]
+    pub const fn prior_collection_items(self) -> u64 {
+        self.prior_collection_items
+    }
+
+    /// Chunk-budget units admitted through the first refusal, including empty
+    /// writes. Calls rejected by an opening cancellation check or an existing
+    /// sticky poison do not advance this counter.
+    #[must_use]
+    pub const fn stream_chunks(self) -> u64 {
+        self.stream_chunks
+    }
+
+    /// Fail-closed publication disposition.
+    #[must_use]
+    pub const fn disposition(self) -> OrderedBytesStreamDisposition {
+        self.disposition
+    }
+}
+
+/// Fallible ordered-row construction error with exact producer preservation.
+///
+/// Canonical failures and caller producer failures remain distinct. Every
+/// variant owns a diagnostic proving that the encoder was consumed without
+/// publishing a partial identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OrderedBytesStreamError<E> {
+    /// The encoder refused framing, limits, accounting, or cancellation.
+    Canonical {
+        /// Canonical refusal source.
+        source: CanonicalError,
+        /// Exact ordered-row progress at refusal.
+        diagnostic: OrderedBytesStreamDiagnostic,
+    },
+    /// A caller-supplied row declaration or row producer failed.
+    Producer {
+        /// Exact caller error, preserved without translation.
+        source: E,
+        /// Exact ordered-row progress at refusal.
+        diagnostic: OrderedBytesStreamDiagnostic,
+    },
+}
+
+impl<E> OrderedBytesStreamError<E> {
+    /// Structured refusal context shared by both error classes.
+    #[must_use]
+    pub const fn diagnostic(&self) -> OrderedBytesStreamDiagnostic {
+        match self {
+            Self::Canonical { diagnostic, .. } | Self::Producer { diagnostic, .. } => *diagnostic,
+        }
+    }
+
+    /// Canonical source when the encoder itself refused construction.
+    #[must_use]
+    pub const fn canonical_source(&self) -> Option<CanonicalError> {
+        match self {
+            Self::Canonical { source, .. } => Some(*source),
+            Self::Producer { .. } => None,
+        }
+    }
+
+    /// Borrow the exact caller error when production failed.
+    #[must_use]
+    pub const fn producer_source(&self) -> Option<&E> {
+        match self {
+            Self::Canonical { .. } => None,
+            Self::Producer { source, .. } => Some(source),
+        }
+    }
+}
+
+impl<E> fmt::Display for OrderedBytesStreamError<E>
+where
+    E: fmt::Display,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let diagnostic = self.diagnostic();
+        match self {
+            Self::Canonical { source, .. } => write!(
+                f,
+                "ordered-byte stream refused in {:?} at {}::{} field {} `{}` row {:?}: {}",
+                diagnostic.phase,
+                diagnostic.schema_domain,
+                diagnostic.schema_name,
+                diagnostic.field_ordinal,
+                diagnostic.field_name,
+                diagnostic.row_index,
+                source
+            ),
+            Self::Producer { source, .. } => write!(
+                f,
+                "ordered-byte producer failed in {:?} at {}::{} field {} `{}` row {:?}: {}",
+                diagnostic.phase,
+                diagnostic.schema_domain,
+                diagnostic.schema_name,
+                diagnostic.field_ordinal,
+                diagnostic.field_name,
+                diagnostic.row_index,
+                source
+            ),
+        }
+    }
+}
+
+impl<E> core::error::Error for OrderedBytesStreamError<E>
+where
+    E: core::error::Error + 'static,
+{
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Canonical { source, .. } => Some(source),
+            Self::Producer { source, .. } => Some(source),
+        }
+    }
+}
+
 /// Caller-supplied cancellation checkpoint.
 ///
 /// This leaf crate cannot depend on `fs-exec` because `fs-exec` already
@@ -1286,6 +1521,149 @@ pub struct CanonicalEncoder<I, C> {
     canonical_bytes: u64,
     next_field: u32,
     collection_items: u64,
+}
+
+/// Encoder-owned writer for one declared ordered-byte row.
+///
+/// The sink borrows the transactional encoder for exactly one producer
+/// callback. It has no public constructor or recovery method, and the
+/// higher-ranked callback accepted by
+/// [`CanonicalEncoder::ordered_bytes_stream`] prevents the sink borrow from
+/// escaping its row. Chunks are absorbed immediately and are never retained.
+pub struct CanonicalRowSink<'row, I, C> {
+    encoder: &'row mut CanonicalEncoder<I, C>,
+    row_index: u64,
+    declared_bytes: u64,
+    written_bytes: &'row mut u64,
+    stream_chunks: &'row mut u64,
+    poisoned: &'row mut Option<CanonicalError>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OrderedBytesStreamProgress {
+    phase: OrderedBytesStreamPhase,
+    row_index: Option<u64>,
+    declared_rows: u64,
+    completed_rows: u64,
+    declared_row_bytes: Option<u64>,
+    written_row_bytes: u64,
+    prior_collection_items: u64,
+    stream_chunks: u64,
+}
+
+impl<I, C> fmt::Debug for CanonicalRowSink<'_, I, C> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CanonicalRowSink")
+            .field("row_index", &self.row_index)
+            .field("declared_bytes", &self.declared_bytes)
+            .field("written_bytes", &self.written_bytes)
+            .field("stream_chunks", &self.stream_chunks)
+            .field("poisoned", &self.poisoned.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<I, C> CanonicalRowSink<'_, I, C>
+where
+    C: CancellationProbe,
+{
+    /// Zero-based row index within the declared collection.
+    #[must_use]
+    pub const fn row_index(&self) -> u64 {
+        self.row_index
+    }
+
+    /// Payload bytes declared before this sink was created.
+    #[must_use]
+    pub const fn declared_bytes(&self) -> u64 {
+        self.declared_bytes
+    }
+
+    /// Payload bytes absorbed for this row so far.
+    #[must_use]
+    pub const fn written_bytes(&self) -> u64 {
+        *self.written_bytes
+    }
+
+    /// Bytes still required for exact row completion.
+    #[must_use]
+    pub const fn remaining_bytes(&self) -> u64 {
+        self.declared_bytes - *self.written_bytes
+    }
+
+    /// Absorb one non-semantic row chunk into both transactional hash states.
+    ///
+    /// Every call, including an empty chunk, polls cancellation and consumes
+    /// one stream-chunk budget unit if that checkpoint succeeds. An overrun is
+    /// refused before any byte of the offending chunk is absorbed. The first
+    /// canonical failure is sticky: ignoring this result cannot make the outer
+    /// operation succeed, and later calls become counter-preserving no-ops.
+    pub fn write(&mut self, chunk: &[u8]) -> Result<(), CanonicalError> {
+        if let Some(source) = *self.poisoned {
+            return Err(source);
+        }
+        if let Err(source) = self.encoder.checkpoint() {
+            *self.poisoned = Some(source);
+            return Err(source);
+        }
+
+        let next_chunks = match checked_add(*self.stream_chunks, 1) {
+            Ok(next) => next,
+            Err(source) => {
+                *self.poisoned = Some(source);
+                return Err(source);
+            }
+        };
+        *self.stream_chunks = next_chunks;
+        if let Err(source) = enforce_limit(
+            LimitKind::StreamChunks,
+            next_chunks,
+            self.encoder.limits.max_collection_items,
+        ) {
+            *self.poisoned = Some(source);
+            return Err(source);
+        }
+
+        let chunk_len = match as_u64(chunk.len()) {
+            Ok(length) => length,
+            Err(source) => {
+                *self.poisoned = Some(source);
+                return Err(source);
+            }
+        };
+        let next_written = match checked_add(*self.written_bytes, chunk_len) {
+            Ok(next) => next,
+            Err(source) => {
+                *self.poisoned = Some(source);
+                return Err(source);
+            }
+        };
+        if next_written > self.declared_bytes {
+            let source = CanonicalError::DeclaredLengthMismatch {
+                declared: self.declared_bytes,
+                observed: next_written,
+            };
+            *self.poisoned = Some(source);
+            return Err(source);
+        }
+
+        let before = self.encoder.canonical_bytes;
+        let result = self.encoder.append(chunk);
+        let absorbed = self.encoder.canonical_bytes - before;
+        *self.written_bytes = match checked_add(*self.written_bytes, absorbed) {
+            Ok(written) => written,
+            Err(source) => {
+                *self.poisoned = Some(source);
+                return Err(source);
+            }
+        };
+        if let Err(source) = result {
+            *self.poisoned = Some(source);
+            return Err(source);
+        }
+        debug_assert_eq!(absorbed, chunk_len);
+        Ok(())
+    }
 }
 
 impl<I, C> fmt::Debug for CanonicalEncoder<I, C> {
@@ -1778,6 +2156,92 @@ where
     I: StrongIdentity,
     C: CancellationProbe,
 {
+    fn ordered_bytes_stream_diagnostic(
+        &self,
+        field: Field,
+        progress: OrderedBytesStreamProgress,
+    ) -> OrderedBytesStreamDiagnostic {
+        OrderedBytesStreamDiagnostic {
+            schema_domain: I::Schema::DOMAIN,
+            schema_name: I::Schema::NAME,
+            field_ordinal: field.ordinal,
+            field_name: field.name,
+            phase: progress.phase,
+            row_index: progress.row_index,
+            declared_rows: progress.declared_rows,
+            completed_rows: progress.completed_rows,
+            declared_row_bytes: progress.declared_row_bytes,
+            written_row_bytes: progress.written_row_bytes,
+            canonical_bytes: self.canonical_bytes,
+            prior_collection_items: progress.prior_collection_items,
+            stream_chunks: progress.stream_chunks,
+            disposition: OrderedBytesStreamDisposition::EncoderConsumedNoPublication,
+        }
+    }
+
+    fn ordered_bytes_stream_canonical<E>(
+        &self,
+        field: Field,
+        progress: OrderedBytesStreamProgress,
+        source: CanonicalError,
+    ) -> OrderedBytesStreamError<E> {
+        OrderedBytesStreamError::Canonical {
+            source,
+            diagnostic: self.ordered_bytes_stream_diagnostic(field, progress),
+        }
+    }
+
+    fn ordered_bytes_stream_producer<E>(
+        &self,
+        field: Field,
+        progress: OrderedBytesStreamProgress,
+        source: E,
+    ) -> OrderedBytesStreamError<E> {
+        OrderedBytesStreamError::Producer {
+            source,
+            diagnostic: self.ordered_bytes_stream_diagnostic(field, progress),
+        }
+    }
+
+    fn begin_ordered_bytes(
+        &mut self,
+        field: Field,
+        declared_count: u64,
+    ) -> Result<u64, CanonicalError> {
+        let spec =
+            self.validate_field::<I::Schema>(field, WireType::OrderedBytes, Presence::Required)?;
+        enforce_limit(
+            LimitKind::CollectionItems,
+            declared_count,
+            self.limits.max_collection_items,
+        )?;
+        let count_bytes = u64::from(u64::BITS / 8);
+        self.ensure_field_bytes(count_bytes)?;
+        self.ensure_additional(checked_add(Self::field_prefix_len(spec)?, count_bytes)?)?;
+        self.begin_field::<I::Schema>(field, WireType::OrderedBytes, Presence::Required)?;
+        self.append(&declared_count.to_le_bytes())?;
+        Ok(count_bytes)
+    }
+
+    fn begin_ordered_row(
+        &mut self,
+        field_payload: u64,
+        declared_len: u64,
+    ) -> Result<u64, CanonicalError> {
+        self.ensure_field_bytes(declared_len)?;
+        let framed_len = checked_add(u64::from(u64::BITS / 8), declared_len)?;
+        let next_field_payload = checked_add(field_payload, framed_len)?;
+        self.ensure_field_bytes(next_field_payload)?;
+        self.ensure_additional(framed_len)?;
+        self.append(&declared_len.to_le_bytes())?;
+        Ok(next_field_payload)
+    }
+
+    fn finish_ordered_bytes(&mut self, observed: u64) -> Result<(), CanonicalError> {
+        self.add_collection_items(observed)?;
+        self.complete_field()
+    }
+
     /// Encode one required exact UTF-8 field. No Unicode normalization,
     /// locale transform, JSON rendering, or display formatting is applied.
     pub fn utf8(mut self, field: Field, value: &str) -> Result<Self, CanonicalError> {
@@ -1954,21 +2418,8 @@ where
     where
         T: IntoIterator<Item = &'a [u8]>,
     {
-        let spec =
-            self.validate_field::<I::Schema>(field, WireType::OrderedBytes, Presence::Required)?;
-        enforce_limit(
-            LimitKind::CollectionItems,
-            declared_count,
-            self.limits.max_collection_items,
-        )?;
-        self.ensure_additional(checked_add(
-            Self::field_prefix_len(spec)?,
-            u64::from(u64::BITS / 8),
-        )?)?;
-        self.begin_field::<I::Schema>(field, WireType::OrderedBytes, Presence::Required)?;
-        self.append(&declared_count.to_le_bytes())?;
+        let mut field_payload = self.begin_ordered_bytes(field, declared_count)?;
         let mut observed = 0u64;
-        let mut field_payload = u64::from(u64::BITS / 8);
         for value in values {
             observed = checked_add(observed, 1)?;
             if observed > declared_count {
@@ -1978,14 +2429,8 @@ where
                 });
             }
             let value_len = as_u64(value.len())?;
-            self.ensure_field_bytes(value_len)?;
-            field_payload = checked_add(
-                field_payload,
-                checked_add(u64::from(u64::BITS / 8), value_len)?,
-            )?;
-            self.ensure_field_bytes(field_payload)?;
-            self.ensure_additional(checked_add(u64::from(u64::BITS / 8), value_len)?)?;
-            self.append_len_bytes(value)?;
+            field_payload = self.begin_ordered_row(field_payload, value_len)?;
+            self.append(value)?;
         }
         if observed != declared_count {
             return Err(CanonicalError::DeclaredLengthMismatch {
@@ -1993,8 +2438,176 @@ where
                 observed,
             });
         }
-        self.add_collection_items(observed)?;
-        self.complete_field()?;
+        self.finish_ordered_bytes(observed)?;
+        Ok(self)
+    }
+
+    /// Encode fallibly produced ordered rows without retaining any row.
+    ///
+    /// `row_lengths` declares each row's exact byte length immediately before
+    /// the corresponding `produce_row` callback is invoked. The callback may
+    /// feed any number of borrowed chunks to its encoder-owned sink; neither
+    /// chunks nor chunk boundaries enter the canonical frame. The length
+    /// source must yield exactly `declared_count` successful declarations.
+    ///
+    /// This method consumes the encoder on every failure. A producer error is
+    /// preserved as [`OrderedBytesStreamError::Producer`]; a sink error is
+    /// sticky even if the callback ignores it. `row_lengths` and `produce_row`
+    /// are deliberately separate, so callers must be able to obtain lengths
+    /// independently by row index without materializing row payloads. A
+    /// producer with its own error type may map a `sink.write` error into that
+    /// type for `?`; the sticky canonical source still takes precedence when
+    /// this method returns.
+    #[allow(
+        clippy::result_large_err,
+        clippy::too_many_lines,
+        reason = "allocation-free structured diagnostics and one explicit fail-closed state machine"
+    )]
+    pub fn ordered_bytes_stream<E, T, P>(
+        mut self,
+        field: Field,
+        declared_count: u64,
+        row_lengths: T,
+        mut produce_row: P,
+    ) -> Result<Self, OrderedBytesStreamError<E>>
+    where
+        T: IntoIterator<Item = Result<u64, E>>,
+        P: for<'row> FnMut(u64, CanonicalRowSink<'row, I, C>) -> Result<(), E>,
+    {
+        let mut progress = OrderedBytesStreamProgress {
+            phase: OrderedBytesStreamPhase::FieldAdmission,
+            row_index: None,
+            declared_rows: declared_count,
+            completed_rows: 0,
+            declared_row_bytes: None,
+            written_row_bytes: 0,
+            prior_collection_items: self.collection_items,
+            stream_chunks: 0,
+        };
+        let mut field_payload = match self.begin_ordered_bytes(field, declared_count) {
+            Ok(payload) => payload,
+            Err(source) => {
+                return Err(self.ordered_bytes_stream_canonical(field, progress, source));
+            }
+        };
+        let mut lengths = row_lengths.into_iter();
+        let mut stream_chunks = 0u64;
+
+        for row_index in 0..declared_count {
+            progress.phase = OrderedBytesStreamPhase::RowBoundary;
+            progress.row_index = Some(row_index);
+            progress.declared_row_bytes = None;
+            progress.written_row_bytes = 0;
+            progress.stream_chunks = stream_chunks;
+            if let Err(source) = self.checkpoint() {
+                return Err(self.ordered_bytes_stream_canonical(field, progress, source));
+            }
+
+            progress.phase = OrderedBytesStreamPhase::RowDeclaration;
+            let declared_len = match lengths.next() {
+                Some(Ok(length)) => length,
+                Some(Err(source)) => {
+                    return Err(self.ordered_bytes_stream_producer(field, progress, source));
+                }
+                None => {
+                    let source = CanonicalError::DeclaredLengthMismatch {
+                        declared: declared_count,
+                        observed: progress.completed_rows,
+                    };
+                    return Err(self.ordered_bytes_stream_canonical(field, progress, source));
+                }
+            };
+            progress.declared_row_bytes = Some(declared_len);
+            progress.phase = OrderedBytesStreamPhase::RowAdmission;
+            field_payload = match self.begin_ordered_row(field_payload, declared_len) {
+                Ok(payload) => payload,
+                Err(source) => {
+                    return Err(self.ordered_bytes_stream_canonical(field, progress, source));
+                }
+            };
+
+            let mut written_row_bytes = 0u64;
+            let mut poisoned = None;
+            let producer_result = {
+                let sink = CanonicalRowSink {
+                    encoder: &mut self,
+                    row_index,
+                    declared_bytes: declared_len,
+                    written_bytes: &mut written_row_bytes,
+                    stream_chunks: &mut stream_chunks,
+                    poisoned: &mut poisoned,
+                };
+                produce_row(row_index, sink)
+            };
+            progress.written_row_bytes = written_row_bytes;
+            progress.stream_chunks = stream_chunks;
+            if let Some(source) = poisoned {
+                progress.phase = OrderedBytesStreamPhase::RowChunk;
+                return Err(self.ordered_bytes_stream_canonical(field, progress, source));
+            }
+            if let Err(source) = producer_result {
+                progress.phase = OrderedBytesStreamPhase::RowProducer;
+                return Err(self.ordered_bytes_stream_producer(field, progress, source));
+            }
+            if written_row_bytes != declared_len {
+                progress.phase = OrderedBytesStreamPhase::RowCompletion;
+                let source = CanonicalError::DeclaredLengthMismatch {
+                    declared: declared_len,
+                    observed: written_row_bytes,
+                };
+                return Err(self.ordered_bytes_stream_canonical(field, progress, source));
+            }
+            progress.phase = OrderedBytesStreamPhase::RowCompletion;
+            if let Err(source) = self.checkpoint() {
+                return Err(self.ordered_bytes_stream_canonical(field, progress, source));
+            }
+            progress.completed_rows = match checked_add(progress.completed_rows, 1) {
+                Ok(completed) => completed,
+                Err(source) => {
+                    return Err(self.ordered_bytes_stream_canonical(field, progress, source));
+                }
+            };
+        }
+
+        progress.phase = OrderedBytesStreamPhase::CollectionCompletion;
+        progress.row_index = None;
+        progress.declared_row_bytes = None;
+        progress.written_row_bytes = 0;
+        progress.stream_chunks = stream_chunks;
+        if let Err(source) = self.checkpoint() {
+            return Err(self.ordered_bytes_stream_canonical(field, progress, source));
+        }
+        match lengths.next() {
+            None => {}
+            Some(Err(source)) => {
+                progress.phase = OrderedBytesStreamPhase::RowDeclaration;
+                progress.row_index = Some(declared_count);
+                return Err(self.ordered_bytes_stream_producer(field, progress, source));
+            }
+            Some(Ok(extra_len)) => {
+                progress.row_index = Some(declared_count);
+                progress.declared_row_bytes = Some(extra_len);
+                let observed = match checked_add(declared_count, 1) {
+                    Ok(observed) => observed,
+                    Err(source) => {
+                        return Err(self.ordered_bytes_stream_canonical(field, progress, source));
+                    }
+                };
+                let source = CanonicalError::DeclaredLengthMismatch {
+                    declared: declared_count,
+                    observed,
+                };
+                return Err(self.ordered_bytes_stream_canonical(field, progress, source));
+            }
+        }
+        progress.row_index = None;
+        progress.declared_row_bytes = None;
+        if let Err(source) = self.checkpoint() {
+            return Err(self.ordered_bytes_stream_canonical(field, progress, source));
+        }
+        if let Err(source) = self.finish_ordered_bytes(progress.completed_rows) {
+            return Err(self.ordered_bytes_stream_canonical(field, progress, source));
+        }
         Ok(self)
     }
 

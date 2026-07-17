@@ -9,7 +9,8 @@ use fs_blake3::identity::{
     CANONICAL_IDENTITY_HASH_DOMAIN, CanonicalEncoder, CanonicalError, CanonicalLimits,
     CanonicalSchema, CheckerId, ChildSpec, ContentId, EntityId, EvidenceNodeId, ExternalAnchorRef,
     Field, FieldSpec, IdentityAdjudication, IdentityRole, KeyPolicyId, LimitKind, ModelId,
-    NeverCancel, NoClaimState, ObservedIdentity, Presence, ProblemSemanticId,
+    NeverCancel, NoClaimState, ObservedIdentity, OrderedBytesStreamDisposition,
+    OrderedBytesStreamError, OrderedBytesStreamPhase, Presence, ProblemSemanticId,
     SCHEMA_ID_HASH_DOMAIN, SchemaId, SemanticId, SourceByteId, SourceId, StrongIdentity,
     TrustState, VerifierId, WireContentId, WireType, adjudicate, legacy::LegacyProvenanceV1,
 };
@@ -192,6 +193,15 @@ impl CanonicalSchema for SequenceLeaf {
     const VERSION: u32 = 1;
     const CONTEXT: &'static str = "G0 ordered sequence fixture";
     const FIELDS: &'static [FieldSpec] = &[FieldSpec::required("items", WireType::OrderedBytes)];
+}
+
+enum TinySequenceLeaf {}
+impl CanonicalSchema for TinySequenceLeaf {
+    const DOMAIN: &'static str = "d";
+    const NAME: &'static str = "n";
+    const VERSION: u32 = 1;
+    const CONTEXT: &'static str = "c";
+    const FIELDS: &'static [FieldSpec] = &[FieldSpec::required("i", WireType::OrderedBytes)];
 }
 
 enum SetLeaf {}
@@ -711,6 +721,33 @@ fn manual_leaf_frame(role: IdentityRole, value: u64) -> Vec<u8> {
     push_len_bytes(&mut out, b"value");
     out.extend_from_slice(&[WireType::U64.tag(), Presence::Required.tag()]);
     out.extend_from_slice(&value.to_le_bytes());
+    out.push(0xff);
+    out.extend_from_slice(&1u32.to_le_bytes());
+    out
+}
+
+fn manual_sequence_frame(rows: &[&[u8]]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"FSID\0\0\0\x01");
+    out.extend_from_slice(&CANONICAL_FRAME_VERSION.to_le_bytes());
+    out.extend_from_slice(&[IdentityRole::Semantic.tag(), 1]);
+    push_len_bytes(&mut out, SequenceLeaf::DOMAIN.as_bytes());
+    push_len_bytes(&mut out, SequenceLeaf::NAME.as_bytes());
+    out.extend_from_slice(SchemaId::<SequenceLeaf>::for_schema().as_bytes());
+    out.extend_from_slice(&SequenceLeaf::VERSION.to_le_bytes());
+    push_len_bytes(&mut out, SequenceLeaf::CONTEXT.as_bytes());
+    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    push_len_bytes(&mut out, b"items");
+    out.extend_from_slice(&[WireType::OrderedBytes.tag(), Presence::Required.tag()]);
+    out.push(0xf0);
+    out.extend_from_slice(&0u32.to_le_bytes());
+    push_len_bytes(&mut out, b"items");
+    out.extend_from_slice(&[WireType::OrderedBytes.tag(), Presence::Required.tag()]);
+    out.extend_from_slice(&(rows.len() as u64).to_le_bytes());
+    for row in rows {
+        push_len_bytes(&mut out, row);
+    }
     out.push(0xff);
     out.extend_from_slice(&1u32.to_le_bytes());
     out
@@ -1551,6 +1588,58 @@ fn structural_child_bindings_admit_equivalent_markers_and_refuse_nested_drift() 
     ));
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowFixtureError {
+    LengthSource(&'static str),
+    Producer(&'static str),
+}
+
+fn streamed_sequence(
+    rows: &[&[u8]],
+    limits: CanonicalLimits,
+    schedule: u8,
+) -> fs_blake3::identity::IdentityReceipt<SemanticId<SequenceLeaf>> {
+    let lengths = rows
+        .iter()
+        .map(|row| Ok::<u64, RowFixtureError>(row.len() as u64));
+    CanonicalEncoder::<SemanticId<SequenceLeaf>, _>::new(limits, NeverCancel)
+        .unwrap()
+        .ordered_bytes_stream(
+            Field::new(0, "items"),
+            rows.len() as u64,
+            lengths,
+            |row_index, mut sink| {
+                let row = rows[row_index as usize];
+                match schedule {
+                    0 => sink
+                        .write(row)
+                        .expect("whole-row fixture must fit its declaration"),
+                    1 => {
+                        for byte in row {
+                            sink.write(core::slice::from_ref(byte))
+                                .expect("byte chunks must fit their declaration");
+                        }
+                    }
+                    2 => {
+                        sink.write(b"")
+                            .expect("empty chunks are legal and non-semantic");
+                        for chunk in row.chunks(3) {
+                            sink.write(chunk)
+                                .expect("uneven chunks must fit their declaration");
+                        }
+                        sink.write(b"")
+                            .expect("trailing empty chunks are non-semantic");
+                    }
+                    _ => panic!("unknown fixture schedule"),
+                }
+                Ok(())
+            },
+        )
+        .unwrap()
+        .finish()
+        .unwrap()
+}
+
 #[test]
 fn stream_partition_and_non_cancelling_probes_are_invariant() {
     let data: Vec<u8> = (0..4097).map(|index| (index % 251) as u8).collect();
@@ -1572,6 +1661,94 @@ fn stream_partition_and_non_cancelling_probes_are_invariant() {
     assert_eq!(one.canonical_bytes(), split.canonical_bytes());
 }
 
+#[test]
+fn ordered_row_stream_matches_eager_and_independent_frame() {
+    let rows: [&[u8]; 5] = [b"", b"a", b"b\0c", &[0xff, 0x80], b"longer-row"];
+    let eager = CanonicalEncoder::<SemanticId<SequenceLeaf>, _>::new(LIMITS, NeverCancel)
+        .unwrap()
+        .ordered_bytes(Field::new(0, "items"), rows.len() as u64, rows)
+        .unwrap()
+        .finish()
+        .unwrap();
+    let streamed = streamed_sequence(&rows, LIMITS, 2);
+    assert_eq!(streamed, eager);
+    assert_eq!(streamed.collection_items(), rows.len() as u64);
+
+    let frame = manual_sequence_frame(&rows);
+    assert_eq!(streamed.canonical_bytes(), frame.len() as u64);
+    assert_eq!(streamed.canonical_preimage(), ContentId::of_bytes(&frame));
+    assert_eq!(
+        streamed.id().as_bytes(),
+        hash_domain(CANONICAL_IDENTITY_HASH_DOMAIN, &frame).as_bytes()
+    );
+
+    let no_rows: [&[u8]; 0] = [];
+    let empty = streamed_sequence(&no_rows, LIMITS, 0);
+    let empty_frame = manual_sequence_frame(&no_rows);
+    assert_eq!(
+        empty.canonical_preimage(),
+        ContentId::of_bytes(&empty_frame)
+    );
+    assert_eq!(empty.collection_items(), 0);
+
+    let one_empty: [&[u8]; 1] = [b""];
+    let singleton = streamed_sequence(&one_empty, LIMITS, 2);
+    assert_ne!(empty.id(), singleton.id());
+    assert_eq!(singleton.collection_items(), 1);
+
+    let cancel_flag = Cell::new(false);
+    let borrowed_probe =
+        CanonicalEncoder::<SemanticId<SequenceLeaf>, _>::new(LIMITS, || cancel_flag.get())
+            .unwrap()
+            .ordered_bytes_stream(
+                Field::new(0, "items"),
+                rows.len() as u64,
+                rows.iter()
+                    .map(|row| Ok::<u64, RowFixtureError>(row.len() as u64)),
+                |row_index, mut sink| {
+                    sink.write(rows[row_index as usize])
+                        .map_err(|_| RowFixtureError::Producer("mapped-canonical-source"))?;
+                    Ok(())
+                },
+            )
+            .unwrap()
+            .finish()
+            .unwrap();
+    assert_eq!(borrowed_probe, eager);
+}
+
+#[test]
+fn ordered_row_stream_chunk_partition_and_schedule_are_nonsemantic() {
+    let rows: [&[u8]; 3] = [b"abcdef", b"", b"ghijklmnop"];
+    let whole = streamed_sequence(&rows, LIMITS, 0);
+    let bytes = streamed_sequence(&rows, LIMITS, 1);
+    let uneven = streamed_sequence(&rows, LIMITS, 2);
+    assert_eq!(whole.id(), bytes.id());
+    assert_eq!(whole.id(), uneven.id());
+    assert_eq!(whole.canonical_preimage(), bytes.canonical_preimage());
+    assert_eq!(whole.canonical_preimage(), uneven.canonical_preimage());
+    assert_eq!(whole.canonical_bytes(), uneven.canonical_bytes());
+    assert_eq!(whole.collection_items(), 3);
+    assert_eq!(uneven.collection_items(), 3);
+
+    for stride in [1, 7, 4096] {
+        let limits = CanonicalLimits::new(64 * 1024, 16 * 1024, 64, 1024, stride);
+        let scheduled = streamed_sequence(&rows, limits, 2);
+        assert_eq!(scheduled.id(), whole.id());
+        assert_eq!(scheduled.canonical_preimage(), whole.canonical_preimage());
+        assert_eq!(scheduled.canonical_bytes(), whole.canonical_bytes());
+    }
+
+    let moved_boundaries: [&[u8]; 2] = [b"abc", b"def"];
+    let one_row: [&[u8]; 1] = [b"abcdef"];
+    let reordered: [&[u8]; 3] = [b"ghijklmnop", b"", b"abcdef"];
+    assert_ne!(
+        streamed_sequence(&moved_boundaries, LIMITS, 0).id(),
+        streamed_sequence(&one_row, LIMITS, 0).id()
+    );
+    assert_ne!(whole.id(), streamed_sequence(&reordered, LIMITS, 0).id());
+}
+
 struct PanicChunks;
 impl IntoIterator for PanicChunks {
     type Item = &'static [u8];
@@ -1579,6 +1756,16 @@ impl IntoIterator for PanicChunks {
 
     fn into_iter(self) -> Self::IntoIter {
         panic!("hostile declared length/count must refuse before reading the iterator")
+    }
+}
+
+struct PanicLengths;
+impl IntoIterator for PanicLengths {
+    type Item = Result<u64, RowFixtureError>;
+    type IntoIter = std::iter::Empty<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        panic!("hostile declared count must refuse before reading row lengths")
     }
 }
 
@@ -1742,6 +1929,452 @@ fn hostile_lengths_counts_and_stream_mismatch_refuse_before_publication() {
             observed: 1
         })
     ));
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exact underwrite, overwrite, and row-count refusal matrix"
+)]
+fn ordered_row_stream_refuses_incomplete_excess_and_wrong_counts() {
+    let underwrite = CanonicalEncoder::<SemanticId<SequenceLeaf>, _>::new(LIMITS, NeverCancel)
+        .unwrap()
+        .ordered_bytes_stream(
+            Field::new(0, "items"),
+            1,
+            [Ok::<u64, RowFixtureError>(3)],
+            |_, mut sink| {
+                sink.write(b"ab").unwrap();
+                Ok(())
+            },
+        );
+    let Err(OrderedBytesStreamError::Canonical { source, diagnostic }) = underwrite else {
+        panic!("short row must consume and refuse the encoder")
+    };
+    assert_eq!(
+        source,
+        CanonicalError::DeclaredLengthMismatch {
+            declared: 3,
+            observed: 2,
+        }
+    );
+    assert_eq!(diagnostic.schema_domain(), SequenceLeaf::DOMAIN);
+    assert_eq!(diagnostic.schema_name(), SequenceLeaf::NAME);
+    assert_eq!(diagnostic.field_ordinal(), 0);
+    assert_eq!(diagnostic.field_name(), "items");
+    assert_eq!(diagnostic.phase(), OrderedBytesStreamPhase::RowCompletion);
+    assert_eq!(diagnostic.row_index(), Some(0));
+    assert_eq!(diagnostic.declared_rows(), 1);
+    assert_eq!(diagnostic.completed_rows(), 0);
+    assert_eq!(diagnostic.declared_row_bytes(), Some(3));
+    assert_eq!(diagnostic.written_row_bytes(), 2);
+    assert_eq!(diagnostic.prior_collection_items(), 0);
+    assert_eq!(diagnostic.stream_chunks(), 1);
+    assert_eq!(
+        diagnostic.disposition(),
+        OrderedBytesStreamDisposition::EncoderConsumedNoPublication
+    );
+
+    let overwrite = CanonicalEncoder::<SemanticId<SequenceLeaf>, _>::new(LIMITS, NeverCancel)
+        .unwrap()
+        .ordered_bytes_stream(
+            Field::new(0, "items"),
+            1,
+            [Ok::<u64, RowFixtureError>(3)],
+            |_, mut sink| {
+                sink.write(b"ab").unwrap();
+                let first = sink.write(b"cd").unwrap_err();
+                assert_eq!(
+                    first,
+                    CanonicalError::DeclaredLengthMismatch {
+                        declared: 3,
+                        observed: 4,
+                    }
+                );
+                assert_eq!(sink.write(b"ignored"), Err(first));
+                Err(RowFixtureError::Producer("must-not-mask-poison"))
+            },
+        );
+    let Err(OrderedBytesStreamError::Canonical { source, diagnostic }) = overwrite else {
+        panic!("ignored overwrite error must remain sticky")
+    };
+    assert_eq!(
+        source,
+        CanonicalError::DeclaredLengthMismatch {
+            declared: 3,
+            observed: 4,
+        }
+    );
+    assert_eq!(diagnostic.phase(), OrderedBytesStreamPhase::RowChunk);
+    assert_eq!(diagnostic.written_row_bytes(), 2);
+    assert_eq!(diagnostic.stream_chunks(), 2);
+
+    let calls = Cell::new(0u64);
+    let too_few = CanonicalEncoder::<SemanticId<SequenceLeaf>, _>::new(LIMITS, NeverCancel)
+        .unwrap()
+        .ordered_bytes_stream(
+            Field::new(0, "items"),
+            2,
+            [Ok::<u64, RowFixtureError>(1)],
+            |_, mut sink| {
+                calls.set(calls.get() + 1);
+                sink.write(b"a").unwrap();
+                Ok(())
+            },
+        );
+    assert!(matches!(
+        too_few,
+        Err(OrderedBytesStreamError::Canonical {
+            source: CanonicalError::DeclaredLengthMismatch {
+                declared: 2,
+                observed: 1,
+            },
+            ..
+        })
+    ));
+    assert_eq!(calls.get(), 1);
+
+    calls.set(0);
+    let too_many = CanonicalEncoder::<SemanticId<SequenceLeaf>, _>::new(LIMITS, NeverCancel)
+        .unwrap()
+        .ordered_bytes_stream(
+            Field::new(0, "items"),
+            1,
+            [
+                Ok::<u64, RowFixtureError>(1),
+                Ok::<u64, RowFixtureError>(999),
+            ],
+            |_, mut sink| {
+                calls.set(calls.get() + 1);
+                sink.write(b"a").unwrap();
+                Ok(())
+            },
+        );
+    assert!(matches!(
+        too_many,
+        Err(OrderedBytesStreamError::Canonical {
+            source: CanonicalError::DeclaredLengthMismatch {
+                declared: 1,
+                observed: 2,
+            },
+            ..
+        })
+    ));
+    assert_eq!(calls.get(), 1, "an excess declaration has no row callback");
+}
+
+#[test]
+fn ordered_row_stream_preserves_length_and_payload_producer_errors() {
+    let calls = Cell::new(0u64);
+    let zero_row_source_failure =
+        CanonicalEncoder::<SemanticId<SequenceLeaf>, _>::new(LIMITS, NeverCancel)
+            .unwrap()
+            .ordered_bytes_stream(
+                Field::new(0, "items"),
+                0,
+                [Err(RowFixtureError::LengthSource("zero-row-source"))],
+                |_, _| -> Result<(), RowFixtureError> {
+                    panic!("zero declared rows have no payload producer")
+                },
+            );
+    assert!(matches!(
+        zero_row_source_failure,
+        Err(OrderedBytesStreamError::Producer {
+            source: RowFixtureError::LengthSource("zero-row-source"),
+            ..
+        })
+    ));
+
+    let length_failure = CanonicalEncoder::<SemanticId<SequenceLeaf>, _>::new(LIMITS, NeverCancel)
+        .unwrap()
+        .ordered_bytes_stream(
+            Field::new(0, "items"),
+            2,
+            [
+                Ok::<u64, RowFixtureError>(1),
+                Err(RowFixtureError::LengthSource("sentinel-length")),
+            ],
+            |_, mut sink| {
+                calls.set(calls.get() + 1);
+                sink.write(b"a").unwrap();
+                Ok(())
+            },
+        );
+    let Err(OrderedBytesStreamError::Producer { source, diagnostic }) = length_failure else {
+        panic!("fallible row-length source must be preserved")
+    };
+    assert_eq!(source, RowFixtureError::LengthSource("sentinel-length"));
+    assert_eq!(diagnostic.phase(), OrderedBytesStreamPhase::RowDeclaration);
+    assert_eq!(diagnostic.row_index(), Some(1));
+    assert_eq!(diagnostic.completed_rows(), 1);
+    assert_eq!(calls.get(), 1);
+
+    let before_payload = CanonicalEncoder::<SemanticId<SequenceLeaf>, _>::new(LIMITS, NeverCancel)
+        .unwrap()
+        .ordered_bytes_stream(
+            Field::new(0, "items"),
+            1,
+            [Ok::<u64, RowFixtureError>(3)],
+            |_, _| Err(RowFixtureError::Producer("before-payload")),
+        );
+    let Err(OrderedBytesStreamError::Producer { source, diagnostic }) = before_payload else {
+        panic!("a producer may fail before its first payload chunk")
+    };
+    assert_eq!(source, RowFixtureError::Producer("before-payload"));
+    assert_eq!(diagnostic.phase(), OrderedBytesStreamPhase::RowProducer);
+    assert_eq!(diagnostic.written_row_bytes(), 0);
+
+    let partial_failure = CanonicalEncoder::<SemanticId<SequenceLeaf>, _>::new(LIMITS, NeverCancel)
+        .unwrap()
+        .ordered_bytes_stream(
+            Field::new(0, "items"),
+            1,
+            [Ok::<u64, RowFixtureError>(3)],
+            |_, mut sink| {
+                sink.write(b"a").unwrap();
+                Err(RowFixtureError::Producer("sentinel-payload"))
+            },
+        );
+    let Err(OrderedBytesStreamError::Producer { source, diagnostic }) = partial_failure else {
+        panic!("producer error must outrank a derived underwrite")
+    };
+    assert_eq!(source, RowFixtureError::Producer("sentinel-payload"));
+    assert_eq!(diagnostic.phase(), OrderedBytesStreamPhase::RowProducer);
+    assert_eq!(diagnostic.declared_row_bytes(), Some(3));
+    assert_eq!(diagnostic.written_row_bytes(), 1);
+    assert!(diagnostic.canonical_bytes() > 1);
+    assert_eq!(
+        diagnostic.disposition(),
+        OrderedBytesStreamDisposition::EncoderConsumedNoPublication
+    );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // One transactional limit/refusal matrix.
+fn ordered_row_stream_limits_refuse_before_hostile_producers() {
+    let below_count_prefix = CanonicalLimits::new(1024, 7, 4, 4, 4);
+    let eager_empty =
+        CanonicalEncoder::<SemanticId<TinySequenceLeaf>, _>::new(below_count_prefix, NeverCancel)
+            .unwrap()
+            .ordered_bytes(Field::new(0, "i"), 0, std::iter::empty::<&'static [u8]>());
+    assert!(matches!(
+        eager_empty,
+        Err(CanonicalError::LimitExceeded {
+            kind: LimitKind::FieldBytes,
+            requested: 8,
+            limit: 7,
+        })
+    ));
+    let streamed_empty =
+        CanonicalEncoder::<SemanticId<TinySequenceLeaf>, _>::new(below_count_prefix, NeverCancel)
+            .unwrap()
+            .ordered_bytes_stream(
+                Field::new(0, "i"),
+                0,
+                PanicLengths,
+                |_, _| -> Result<(), RowFixtureError> {
+                    panic!("count-prefix refusal must precede row production")
+                },
+            );
+    assert!(matches!(
+        streamed_empty,
+        Err(OrderedBytesStreamError::Canonical {
+            source: CanonicalError::LimitExceeded {
+                kind: LimitKind::FieldBytes,
+                requested: 8,
+                limit: 7,
+            },
+            ..
+        })
+    ));
+
+    let tiny = CanonicalLimits::new(64 * 1024, 64, 4, 2, 4);
+    let count_refusal = CanonicalEncoder::<SemanticId<SequenceLeaf>, _>::new(tiny, NeverCancel)
+        .unwrap()
+        .ordered_bytes_stream(
+            Field::new(0, "items"),
+            3,
+            PanicLengths,
+            |_, _| -> Result<(), RowFixtureError> {
+                panic!("count refusal must precede row production")
+            },
+        );
+    assert!(matches!(
+        count_refusal,
+        Err(OrderedBytesStreamError::Canonical {
+            source: CanonicalError::LimitExceeded {
+                kind: LimitKind::CollectionItems,
+                requested: 3,
+                limit: 2,
+            },
+            ..
+        })
+    ));
+
+    let at_exact_row_and_chunk_cap =
+        CanonicalEncoder::<SemanticId<SequenceLeaf>, _>::new(tiny, NeverCancel)
+            .unwrap()
+            .ordered_bytes_stream(
+                Field::new(0, "items"),
+                2,
+                [Ok::<u64, RowFixtureError>(0), Ok::<u64, RowFixtureError>(0)],
+                |_, mut sink| {
+                    sink.write(b"").unwrap();
+                    Ok(())
+                },
+            )
+            .unwrap()
+            .finish()
+            .unwrap();
+    assert_eq!(at_exact_row_and_chunk_cap.collection_items(), 2);
+
+    let producer_called = Cell::new(false);
+    let item_refusal = CanonicalEncoder::<SemanticId<SequenceLeaf>, _>::new(tiny, NeverCancel)
+        .unwrap()
+        .ordered_bytes_stream(
+            Field::new(0, "items"),
+            1,
+            [Ok::<u64, RowFixtureError>(65)],
+            |_, _| {
+                producer_called.set(true);
+                Ok(())
+            },
+        );
+    assert!(matches!(
+        item_refusal,
+        Err(OrderedBytesStreamError::Canonical {
+            source: CanonicalError::LimitExceeded {
+                kind: LimitKind::FieldBytes,
+                requested: 65,
+                limit: 64,
+            },
+            ..
+        })
+    ));
+    assert!(!producer_called.get());
+
+    let aggregate_refusal = CanonicalEncoder::<SemanticId<SequenceLeaf>, _>::new(tiny, NeverCancel)
+        .unwrap()
+        .ordered_bytes_stream(
+            Field::new(0, "items"),
+            1,
+            [Ok::<u64, RowFixtureError>(50)],
+            |_, _| {
+                producer_called.set(true);
+                Ok(())
+            },
+        );
+    assert!(matches!(
+        aggregate_refusal,
+        Err(OrderedBytesStreamError::Canonical {
+            source: CanonicalError::LimitExceeded {
+                kind: LimitKind::FieldBytes,
+                requested: 66,
+                limit: 64,
+            },
+            ..
+        })
+    ));
+    assert!(!producer_called.get());
+
+    let arithmetic_limits = CanonicalLimits::new(u64::MAX, u64::MAX, 4, 2, 4);
+    let arithmetic_refusal =
+        CanonicalEncoder::<SemanticId<SequenceLeaf>, _>::new(arithmetic_limits, NeverCancel)
+            .unwrap()
+            .ordered_bytes_stream(
+                Field::new(0, "items"),
+                1,
+                [Ok::<u64, RowFixtureError>(u64::MAX)],
+                |_, _| {
+                    producer_called.set(true);
+                    Ok(())
+                },
+            );
+    assert!(matches!(
+        arithmetic_refusal,
+        Err(OrderedBytesStreamError::Canonical {
+            source: CanonicalError::LengthOverflow,
+            ..
+        })
+    ));
+    assert!(!producer_called.get());
+
+    let chunk_refusal = CanonicalEncoder::<SemanticId<SequenceLeaf>, _>::new(tiny, NeverCancel)
+        .unwrap()
+        .ordered_bytes_stream(
+            Field::new(0, "items"),
+            1,
+            [Ok::<u64, RowFixtureError>(0)],
+            |_, mut sink| {
+                sink.write(b"").unwrap();
+                sink.write(b"").unwrap();
+                let source = sink.write(b"").unwrap_err();
+                assert!(matches!(
+                    source,
+                    CanonicalError::LimitExceeded {
+                        kind: LimitKind::StreamChunks,
+                        requested: 3,
+                        limit: 2,
+                    }
+                ));
+                Ok(())
+            },
+        );
+    let Err(OrderedBytesStreamError::Canonical { source, diagnostic }) = chunk_refusal else {
+        panic!("ignored chunk-limit error must poison the encoder")
+    };
+    assert!(matches!(
+        source,
+        CanonicalError::LimitExceeded {
+            kind: LimitKind::StreamChunks,
+            requested: 3,
+            limit: 2,
+        }
+    ));
+    assert_eq!(diagnostic.stream_chunks(), 3);
+    assert_eq!(diagnostic.written_row_bytes(), 0);
+
+    let payload = [7u8; 40];
+    let baseline_rows: [&[u8]; 1] = [&payload];
+    let baseline = streamed_sequence(&baseline_rows, LIMITS, 0);
+    let prefinish_bytes = baseline.canonical_bytes() - 5;
+    let exact = CanonicalLimits::new(prefinish_bytes, 128, 4, 2, 4);
+    let exact_field = CanonicalEncoder::<SemanticId<SequenceLeaf>, _>::new(exact, NeverCancel)
+        .unwrap()
+        .ordered_bytes_stream(
+            Field::new(0, "items"),
+            1,
+            [Ok::<u64, RowFixtureError>(payload.len() as u64)],
+            |_, mut sink| {
+                sink.write(&payload).unwrap();
+                Ok(())
+            },
+        );
+    assert!(exact_field.is_ok());
+
+    let below = CanonicalLimits::new(prefinish_bytes - 1, 128, 4, 2, 4);
+    let frame_refusal = CanonicalEncoder::<SemanticId<SequenceLeaf>, _>::new(below, NeverCancel)
+        .unwrap()
+        .ordered_bytes_stream(
+            Field::new(0, "items"),
+            1,
+            [Ok::<u64, RowFixtureError>(payload.len() as u64)],
+            |_, _| {
+                producer_called.set(true);
+                Ok(())
+            },
+        );
+    assert!(matches!(
+        frame_refusal,
+        Err(OrderedBytesStreamError::Canonical {
+            source: CanonicalError::LimitExceeded {
+                kind: LimitKind::CanonicalBytes,
+                ..
+            },
+            ..
+        })
+    ));
+    assert!(!producer_called.get());
 }
 
 #[test]
@@ -1956,6 +2589,34 @@ fn cancellable_equal_prefix_set(
         .finish()
 }
 
+fn cancellable_ordered_rows(
+    probe: CountProbe,
+) -> Result<fs_blake3::identity::IdentityReceipt<SemanticId<SequenceLeaf>>, CanonicalError> {
+    let rows: [&[u8]; 3] = [b"abcdefghijk", b"", b"lmnopqrstuvwxyz"];
+    let lengths = rows
+        .iter()
+        .map(|row| Ok::<u64, CanonicalError>(row.len() as u64));
+    let encoder = CanonicalEncoder::<SemanticId<SequenceLeaf>, _>::new(LIMITS, probe)?;
+    let encoder = encoder
+        .ordered_bytes_stream(
+            Field::new(0, "items"),
+            rows.len() as u64,
+            lengths,
+            |row_index, mut sink| -> Result<(), CanonicalError> {
+                sink.write(b"")?;
+                for chunk in rows[row_index as usize].chunks(3) {
+                    sink.write(chunk)?;
+                }
+                Ok(())
+            },
+        )
+        .map_err(|error| match error {
+            OrderedBytesStreamError::Canonical { source, .. }
+            | OrderedBytesStreamError::Producer { source, .. } => source,
+        })?;
+    encoder.finish()
+}
+
 #[test]
 fn cancellation_at_every_checkpoint_publishes_no_partial_identity() {
     let calls = Rc::new(Cell::new(0));
@@ -2025,6 +2686,33 @@ fn cancellation_covers_schema_validation_and_long_set_comparisons() {
         });
         assert!(matches!(result, Err(CanonicalError::Cancelled { .. })));
     }
+}
+
+#[test]
+fn cancellation_at_every_ordered_row_checkpoint_publishes_nothing() {
+    let calls = Rc::new(Cell::new(0));
+    let baseline = cancellable_ordered_rows(CountProbe {
+        calls: Rc::clone(&calls),
+        cancel_at: None,
+    })
+    .unwrap();
+    let total_calls = calls.get();
+    assert!(total_calls > 10);
+
+    for cancel_at in 1..=total_calls {
+        let result = cancellable_ordered_rows(CountProbe {
+            calls: Rc::new(Cell::new(0)),
+            cancel_at: Some(cancel_at),
+        });
+        assert!(matches!(result, Err(CanonicalError::Cancelled { .. })));
+    }
+
+    let retry = cancellable_ordered_rows(CountProbe {
+        calls: Rc::new(Cell::new(0)),
+        cancel_at: None,
+    })
+    .unwrap();
+    assert_eq!(retry, baseline);
 }
 
 #[test]

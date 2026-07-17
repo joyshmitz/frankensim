@@ -49,6 +49,16 @@ without gaining solver, geometry, FFI, or license surface.
   cancellation poll stride. `CanonicalEncoder` admission of a recursive
   descriptor is additionally capped at
   `max_fields * (MAX_SCHEMA_CHILD_DEPTH + 1)` field occurrences.
+- `CanonicalRowSink`, `OrderedBytesStreamError`,
+  `OrderedBytesStreamDiagnostic`, `OrderedBytesStreamPhase`, and
+  `OrderedBytesStreamDisposition` — allocation-free, fallible production of
+  `OrderedBytes` rows. A separate fallible length source declares each row
+  before its higher-ranked, encoder-owned sink absorbs borrowed chunks.
+  Diagnostics retain schema/field/row progress, canonical and row byte
+  counters, prior collection items, chunk-budget units admitted through the
+  first refusal, refusal phase, and the consumed-without-publication
+  disposition. Exact caller errors remain typed and distinct from
+  `CanonicalError`.
 - `IdentityReceipt` and `IdentityAuditRecord` — the successfully published
   typed identity, exact canonical-frame root, bounded counters/limits, and
   fixed-size audit metadata. Payload bytes are not retained in the record.
@@ -83,6 +93,19 @@ without gaining solver, geometry, FFI, or license surface.
 - Ordered collections preserve caller order. Canonical sets must be strictly
   byte-lexicographic and duplicate-free. Each set item's byte and aggregate
   field budgets are admitted before potentially long ordering comparisons.
+  `ordered_bytes_stream` emits the same v1 grammar as `ordered_bytes`: one row
+  count followed by exactly one little-endian length and the concatenated
+  chunks for each row. Row and chunk scheduling metadata never enters the
+  frame. The declared count, successful row-declaration count, and
+  completed-row count agree exactly; receipt `collection_items` increases by
+  exactly that count. Each row's individual and aggregate field bytes and
+  complete-frame addition are admitted before its length prefix or producer
+  callback. An underwrite, pre-absorption
+  overwrite, fallible length-source or producer error, arithmetic overflow,
+  resource refusal, or cancellation consumes the encoder. The first sink
+  failure is sticky even when producer code ignores the immediate `write`
+  result. A higher-ranked row callback and private sink fields prevent safe
+  code from retaining the mutable encoder borrow beyond that row.
   Child fields are PARENT-BOUND (bead sj31i.52.10): a `FieldSpec` for
   `Child`/`OrderedChildren` must declare its expected child role and
   complete schema identity via `FieldSpec::child_of` /
@@ -153,8 +176,12 @@ malformed input with `None`. Canonical construction returns `CanonicalError`
 for invalid limits or schemas, arithmetic overflow, resource limits, field
 mismatch or incompleteness, declared-length mismatch, nonfinite floats,
 invalid set order or duplicates, and cancellation. No partial identity is
-published on any of these paths. Crate-controlled inputs do not panic;
-caller-provided iterators and cancellation callbacks may themselves panic.
+published on any of these paths. `ordered_bytes_stream` instead returns
+`OrderedBytesStreamError<E>` so exact length-source and row-producer errors
+remain distinct from canonical failures; both variants carry structured
+fail-closed diagnostics and return no encoder. Crate-controlled inputs do not
+panic; caller-provided iterators, row producers, and cancellation callbacks may
+themselves panic.
 Plain hashing inputs longer than 2^54 chunks are outside the supported
 envelope (vastly beyond any in-tree artifact size).
 
@@ -166,6 +193,9 @@ floating-point arithmetic: finite values are represented by exact bits.
 Successful stream partitioning, larger admissible limits, and non-cancelling
 probe schedules do not move identity. Receipt metadata may differ when
 admissible limits differ. Time, host state, locale, and I/O are not hash inputs.
+For ordered-row streaming, changing chunk boundaries, empty-write placement,
+or a successful callback schedule is nonsemantic. Changing row boundaries,
+row order, declared lengths, or concatenated row bytes is semantic.
 
 ## Cancellation behavior
 
@@ -174,9 +204,13 @@ non-cancellable. Canonical construction takes an explicit `CancellationProbe`;
 `NeverCancel` is the deliberate opt-out. Encoding polls during initialization,
 schema validation and descriptor emission, header sizing and absorption,
 streamed chunks, long comparisons, payload absorption, and immediately before
-publication. `cancellation_poll_bytes` must be positive. Cancellation returns
-`Cancelled { absorbed_bytes }`, consumes the encoder, and publishes neither
-root. No latency claim applies while caller iterator or probe code is blocked.
+publication. Ordered-row streaming additionally polls before each fallible
+length declaration, on every sink write (including empty writes), after every
+complete row, after exact source exhaustion, and through long chunk absorption.
+`cancellation_poll_bytes` must be positive. Cancellation returns `Cancelled {
+absorbed_bytes }`, consumes the encoder, and publishes neither root. No latency
+claim applies while caller length-source, row-producer, iterator, or probe code
+is blocked between crate-controlled checkpoints.
 
 ## Unsafe boundary
 
@@ -202,8 +236,13 @@ hostile bounds and invalid schemas; collision refusal; authority transitions
 and refusals; bounded audit records; typed parsing; legacy quarantine; and
 compatibility behavior. Cancellation regression cases include
 `cancellation_at_every_checkpoint_publishes_no_partial_identity` and
-`cancellation_covers_schema_validation_and_long_set_comparisons`. These tests
-alone do not establish the complete G4 tier.
+`cancellation_covers_schema_validation_and_long_set_comparisons`. Ordered-row
+G0/G3/G4/G5 cases compare whole receipts and an independent manual frame;
+exercise empty, chunked, reordered, and differently bounded schedules; retain
+typed producer failures; refuse wrong counts, under/overwrites, hostile limits,
+ignored sink failures, and arithmetic overflow; and cancel at every observed
+row/chunk/publication checkpoint. These tests alone do not establish the
+complete G4 tier.
 
 ## No-claim boundaries
 
@@ -213,6 +252,12 @@ origin, authenticity, external authority, or scientific correctness. Parsing
 validates shape only. Even `Admitted` retains
 `ScientificCorrectnessNotProven`: injected authority capabilities are policy
 decisions, not built-in cryptographic verification.
+`ordered_bytes_stream` bounds only encoder-owned counters and hash state. It
+does not bound memory retained by a caller's length source, indexing scheme, or
+row producer, and it requires lengths to be independently obtainable by row
+index without first retaining every row payload. Consumer-side sorting,
+workspace leases, graph indexes, and producer progress/resume semantics remain
+outside this leaf's claim.
 
 No Unicode, unit, JSON, locale, or domain-specific normalization is supplied.
 Collision adjudication compares caller-supplied retained observations; it
