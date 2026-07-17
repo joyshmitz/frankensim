@@ -139,7 +139,10 @@ fractional q = [0.5, 0.5] and worst-case value 0.5; tiny-scale kinks
 use scale-relative recovery rather than an absolute lambda cutoff;
 large radius saturates at max loss; public guards reject
 empty/non-finite losses, zero sample counts, invalid radii/costs, and
-rows without a zero-cost stay-put support. tests/dro_oracle_battery.rs
+rows without a zero-cost stay-put support. Each deterministic case emits
+its passing aggregate outcome as a canonical fs-obs `ConformanceCase` with
+seed zero after its direct assertions; earlier failures remain ordinary Rust
+test diagnostics. tests/dro_oracle_battery.rs
 (4 cases): closed-form endpoints and monotonicity in rho, exact
 tiny-LP strong-duality oracle, robust-decision shift demo, and frozen
 DRO golden hash `0xd21c_d092_b4a5_ba98`. tests/steer.rs has two logged

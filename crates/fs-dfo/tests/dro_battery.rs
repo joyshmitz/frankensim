@@ -1,13 +1,27 @@
 //! Wasserstein-DRO inner-sup battery: exact kink recovery, large-radius
-//! saturation, and fail-fast public contracts.
+//! saturation, and fail-fast public contracts. Aggregate outcomes use
+//! canonical fs-obs events; these deterministic cases have no random seed.
 
 use fs_dfo::wasserstein_worst_case;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-fn log(case: &str, verdict: &str, detail: &str) {
-    println!(
-        "{{\"suite\":\"fs-dfo-dro\",\"case\":\"{case}\",\"verdict\":\"{verdict}\",\"detail\":\"{detail}\"}}"
+fn verdict(case: &str, detail: &str) {
+    let mut emitter = fs_obs::Emitter::new("fs-dfo-dro", case);
+    let event = emitter.emit(
+        fs_obs::Severity::Info,
+        fs_obs::EventKind::ConformanceCase {
+            suite: "fs-dfo-dro".to_string(),
+            case: case.to_string(),
+            pass: true,
+            detail: detail.to_string(),
+            seed: 0,
+        },
+        None,
     );
+    fs_obs::lint_failure_record(&event).expect("DRO verdict must be replayable");
+    let line = event.to_jsonl();
+    fs_obs::validate_line(&line).expect("DRO verdict must use the fs-obs wire schema");
+    println!("{line}");
 }
 
 #[test]
@@ -31,9 +45,8 @@ fn kink_recovers_fractional_distribution() {
         (q_expectation - report.worst_case).abs() < 1e-8,
         "reported q must realize the reported worst-case value"
     );
-    log(
+    verdict(
         "kink-fractional-q",
-        "pass",
         &format!("lambda {:.6}, q {:?}", report.lambda, report.q),
     );
 }
@@ -61,9 +74,8 @@ fn tiny_scale_kink_uses_scale_relative_recovery() {
         (q_expectation - report.worst_case).abs() < 1e-30,
         "reported q must realize the reported tiny-scale worst-case value"
     );
-    log(
+    verdict(
         "tiny-scale-kink",
-        "pass",
         &format!("lambda {:.6e}, q {:?}", report.lambda, report.q),
     );
 }
@@ -85,7 +97,7 @@ fn large_radius_saturates_at_max_loss() {
         "all mass can move to the max-loss support: {:?}",
         report.q
     );
-    log("large-radius", "pass", "worst case saturates at max loss");
+    verdict("large-radius", "worst case saturates at max loss");
 }
 
 #[test]
@@ -132,9 +144,8 @@ fn public_contract_guards_fail_fast() {
         .is_err(),
         "each row needs a zero-cost stay-put support"
     );
-    log(
+    verdict(
         "contract-guards",
-        "pass",
         "invalid losses, sample counts, radii, costs, and stay-put rows fail fast",
     );
 }
