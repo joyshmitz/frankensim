@@ -38,6 +38,8 @@ const NASA_TN_D_8184_M19_MATERIAL_DECK_SEED_MANIFEST: &str =
     "data/matdb/seed-v1/nasa-tn-d-8184-m19-material-deck/manifest.tsv";
 const NASA_CR_4538_TEMPEL_24N208_M19_SEED_MANIFEST: &str =
     "data/matdb/seed-v1/nasa-cr-4538-tempel-24n208-m19/manifest.tsv";
+const TORRENT_2018_M19_STEINMETZ_INPUTS_SEED_MANIFEST: &str =
+    "data/matdb/seed-v1/torrent-2018-m19-steinmetz-inputs/manifest.tsv";
 const NGYC_N42_SINTERED_NICKEL_COATED_SEED_MANIFEST: &str =
     "data/matdb/seed-v1/ngyc-n42-sintered-nickel-coated/manifest.tsv";
 const JINSHAN_N42_PRISTINE_TEMPERATURE_SEED_MANIFEST: &str =
@@ -2109,6 +2111,223 @@ fn g3_cli_compiles_committed_tempel_24n208_m19_rating_without_fusing_material_de
         assert!(
             decoded.claims().claims_for(refused_property).is_empty(),
             "Tempel point rating crossed the {refused_property} no-claim boundary"
+        );
+    }
+
+    let decisions = String::from_utf8(first.stdout).expect("decision stream is UTF-8");
+    assert!(decisions.contains("\"reason_code\":\"uncertainty_policy_admitted\""));
+    assert!(decisions.contains("\"reason_code\":\"runtime_pack_self_verified\""));
+    assert!(
+        decisions
+            .lines()
+            .all(|row| row.contains(&format!("\"pack_hash\":\"{pack_hash}\"")))
+    );
+}
+
+#[test]
+fn g3_cli_compiles_committed_torrent_2018_m19_steinmetz_inputs_without_cross_state_fusion() {
+    let manifest = workspace_path(TORRENT_2018_M19_STEINMETZ_INPUTS_SEED_MANIFEST);
+    assert!(
+        manifest.is_file(),
+        "committed Torrent 2018 M19 Steinmetz-input manifest is missing"
+    );
+    let directory = fixture_dir();
+    let first_path = directory.join("torrent-2018-m19-steinmetz-inputs-first.fsmatpk");
+    let second_path = directory.join("torrent-2018-m19-steinmetz-inputs-second.fsmatpk");
+
+    let first = run_compiler(&manifest, &first_path);
+    let second = run_compiler(&manifest, &second_path);
+    assert!(
+        first.status.success(),
+        "first Torrent 2018 M19 Steinmetz-input compilation failed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(
+        second.status.success(),
+        "second Torrent 2018 M19 Steinmetz-input compilation failed: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(
+        first.stdout, second.stdout,
+        "Torrent 2018 M19 Steinmetz-input decision stream moved"
+    );
+    assert_decision_compiler(&first, MATERIAL_COMPILER_ID);
+
+    let first_bytes =
+        fs::read(first_path).expect("read first Torrent 2018 M19 Steinmetz-input pack");
+    let second_bytes =
+        fs::read(second_path).expect("read second Torrent 2018 M19 Steinmetz-input pack");
+    assert_eq!(
+        first_bytes, second_bytes,
+        "Torrent 2018 M19 Steinmetz-input pack bytes moved"
+    );
+    let decoded = NormalizedPack::from_bytes(&first_bytes)
+        .expect("decode Torrent 2018 M19 Steinmetz-input pack");
+    let pack_hash = decoded.content_hash();
+    let decoded = NormalizedPack::from_bytes_verified(pack_hash, &first_bytes)
+        .expect("verify Torrent 2018 M19 Steinmetz-input pack identity");
+
+    assert_eq!(decoded.pack_id(), "torrent-2018-m19-steinmetz-inputs");
+    assert_eq!(decoded.compiler(), MATERIAL_COMPILER_ID);
+    assert!(decoded.redistribution_terms().contains("Creative Commons"));
+    assert_eq!(decoded.claims().claim_count(), 10);
+    assert!(decoded.joint_statistics().is_empty());
+
+    let dimensionless_expectations: [(&str, f64); 9] = [
+        ("equation_4_reported_k_h_numeric", 4.8),
+        ("equation_4_frequency_exponent_a", 1.2),
+        ("equation_4_flux_density_exponent_n", 2.0),
+        ("equation_4_reported_output_scale_numeric", 0.01),
+        ("equation_5_reported_k_f_numeric", 60.0),
+        ("equation_5_frequency_exponent_x", 2.05),
+        ("equation_5_thickness_exponent_y", 2.0),
+        ("equation_5_flux_density_exponent_z", 2.05),
+        ("equation_5_reported_output_scale_numeric", 100.0),
+    ];
+    let mut equation_4_observations = Vec::new();
+    let mut equation_5_observations = Vec::new();
+    for (property, expected_value) in dimensionless_expectations {
+        let claims = decoded.claims().claims_for(property);
+        assert_eq!(claims.len(), 1, "missing Torrent M19 input {property}");
+        let claim = claims[0].1;
+        let PropertyValue::Scalar { value, dims } = &claim.value else {
+            panic!("Torrent M19 input {property} was not scalar");
+        };
+        assert_eq!(*dims, Dims::NONE);
+        let scale = expected_value.abs().max(1.0e-12_f64);
+        assert!((*value - expected_value).abs() / scale <= 2.0e-15);
+        assert_eq!(claim.uncertainty, UncertaintyModel::Unstated);
+        assert_eq!(claim.provenance.license, CC_BY_4_0_LICENSE);
+        assert!(claim.provenance.source.contains("10.3390/en11061549"));
+        assert!(claim.provenance.source.contains("[source:primary]"));
+        assert_eq!(
+            claim.validity.bound("source_fit_frequency"),
+            Some((50.0, 1000.0))
+        );
+        assert_eq!(
+            claim.validity.bound("source_fit_flux_density"),
+            Some((0.1, 1.5))
+        );
+        for retained_axis in [
+            "source_material_nomenclature_is_m19_m290_50a",
+            "source_excitation_is_sinusoidal",
+            "source_is_reported_fit_not_executable_pack_model",
+        ] {
+            assert_eq!(claim.validity.bound(retained_axis), Some((1.0, 1.0)));
+        }
+        for missing_axis in [
+            "source_manufacturer_process_anneal_coating_lot_known",
+            "source_magnetic_loss_test_method_and_temperature_known",
+            "source_fit_uncertainty_dispersion_known",
+            "source_coefficients_portable_without_source_equations",
+            "source_bh_curve_reported",
+        ] {
+            assert_eq!(claim.validity.bound(missing_axis), Some((0.0, 0.0)));
+        }
+        if property.starts_with("equation_4_") {
+            equation_4_observations.push(claim.observations[0]);
+        } else {
+            equation_5_observations.push(claim.observations[0]);
+        }
+    }
+
+    let thickness = decoded.claims().claims_for("equation_5_sheet_thickness_e");
+    assert_eq!(thickness.len(), 1);
+    let thickness = thickness[0].1;
+    let PropertyValue::Scalar { value, dims } = &thickness.value else {
+        panic!("Torrent M19 Equation 5 sheet thickness was not scalar");
+    };
+    assert_eq!(*value, 0.0005_f64);
+    assert_eq!(*dims, Dims([1, 0, 0, 0, 0, 0]));
+    assert_eq!(thickness.uncertainty, UncertaintyModel::Unstated);
+    assert_eq!(thickness.provenance.license, CC_BY_4_0_LICENSE);
+    assert!(thickness.provenance.source.contains("10.3390/en11061549"));
+    assert!(thickness.provenance.source.contains("[source:primary]"));
+    assert_eq!(
+        thickness.validity.bound("source_fit_frequency"),
+        Some((50.0, 1000.0))
+    );
+    assert_eq!(
+        thickness.validity.bound("source_fit_flux_density"),
+        Some((0.1, 1.5))
+    );
+    for retained_axis in [
+        "source_material_nomenclature_is_m19_m290_50a",
+        "source_excitation_is_sinusoidal",
+        "source_is_reported_fit_not_executable_pack_model",
+    ] {
+        assert_eq!(thickness.validity.bound(retained_axis), Some((1.0, 1.0)));
+    }
+    for missing_axis in [
+        "source_manufacturer_process_anneal_coating_lot_known",
+        "source_magnetic_loss_test_method_and_temperature_known",
+        "source_fit_uncertainty_dispersion_known",
+        "source_coefficients_portable_without_source_equations",
+        "source_bh_curve_reported",
+    ] {
+        assert_eq!(thickness.validity.bound(missing_axis), Some((0.0, 0.0)));
+    }
+    equation_5_observations.push(thickness.observations[0]);
+
+    assert!(
+        equation_4_observations
+            .windows(2)
+            .all(|pair| pair[0] == pair[1]),
+        "Torrent Equation 4 inputs must share one source observation"
+    );
+    assert!(
+        equation_5_observations
+            .windows(2)
+            .all(|pair| pair[0] == pair[1]),
+        "Torrent Equation 5 inputs must share one source observation"
+    );
+    assert_ne!(
+        equation_4_observations[0], equation_5_observations[0],
+        "the two reported source equations must retain distinct observations"
+    );
+
+    let equation_4_observation = decoded
+        .claims()
+        .observation(equation_4_observations[0])
+        .expect("Torrent Equation 4 observation remains linked");
+    assert!(equation_4_observation.method.contains("Equation 4"));
+    assert!(
+        equation_4_observation
+            .caveats
+            .contains("does not name the steel manufacturer")
+    );
+    assert!(
+        equation_4_observation
+            .caveats
+            .contains("not a portable executable model")
+    );
+    let equation_5_observation = decoded
+        .claims()
+        .observation(equation_5_observations[0])
+        .expect("Torrent Equation 5 observation remains linked");
+    assert!(equation_5_observation.method.contains("Equation 5"));
+    assert!(
+        equation_5_observation
+            .caveats
+            .contains("not a portable executable model")
+    );
+    assert!(
+        equation_5_observation
+            .caveats
+            .contains("separate NASA and Tempel M-19 states")
+    );
+
+    for refused_property in [
+        "specific_core_loss",
+        "specific_hysteresis_loss",
+        "magnetization_curve",
+        "magnetic_flux_density",
+        "bh_curve",
+        "steinmetz_model",
+    ] {
+        assert!(
+            decoded.claims().claims_for(refused_property).is_empty(),
+            "reported Torrent fit input crossed the {refused_property} no-claim boundary"
         );
     }
 

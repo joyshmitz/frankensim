@@ -707,6 +707,36 @@ NASA-CR-4538 Tempel 24N208 references:
 - <https://ntrs.nasa.gov/citations/19940009424>
 - <https://ntrs.nasa.gov/api/citations/19940009424/downloads/19940009424.pdf>
 
+## Torrent 2018 M19/M290-50A reported loss-fit inputs
+
+`torrent-2018-m19-steinmetz-inputs/` retains the numeric inputs printed for two
+M-19 loss equations in Torrent, Perat, and Jiménez's motor study. Section 3.2
+maps AISI M-19 to EN 10106 M290-50A and states that the manufacturer loss data
+span `50..1000 Hz` and `0.1..1.5 T` under sinusoidal excitation. The Equation 5
+state uses a `0.5 mm` sheet.
+
+Equation 4 prints `k_h = 4.8`, frequency exponent `a = 1.2`, induction
+exponent `n = 2`, and an output scale of `10^-2`. Equation 5 prints `k_f = 60`,
+frequency exponent `x = 2.05`, sheet-thickness exponent `y = 2`, induction
+exponent `z = 2.05`, and an output scale of `10^2`. The pack stores these as
+literal source-equation numeric fields. In particular, the `k_h` and `k_f`
+numbers are not asserted to be dimensionless physical coefficients: their
+compound units and semantics depend on the printed equations. No executable
+Steinmetz or loss model is synthesized from them.
+
+The article does not name the steel manufacturer, product, heat, chemistry,
+processing, anneal, coating, rolling direction, magnetic sheet-loss test
+method, test temperature, repeats, dispersion, fit covariance, or B-H curve.
+It also reports larger analytical-versus-experimental differences at high flux
+density. These inputs therefore remain separate from both the anonymous
+NASA-TN-D-8184 material deck and the Tempel `24N208` state. They do not close
+the fully pinned M19 card required by bead `1sxe`.
+
+Torrent 2018 M19/M290-50A references:
+
+- <https://doi.org/10.3390/en11061549>
+- <https://creativecommons.org/licenses/by/4.0/>
+
 ## NGYC N42 sintered NdFeB magnet tranche
 
 `ngyc-n42-sintered-nickel-coated/` retains the N42 sintered NdFeB magnets
@@ -1340,6 +1370,10 @@ cargo run -p xtask -- matdb-pack \
 cargo run -p xtask -- matdb-pack \
   --manifest data/matdb/seed-v1/n0602-001-nitrile-jp8-compatibility/manifest.tsv \
   --out /path/to/n0602-001-nitrile-o-ring-jp8-compatibility.fsmatpk
+
+cargo run -p xtask -- matdb-pack \
+  --manifest data/matdb/seed-v1/torrent-2018-m19-steinmetz-inputs/manifest.tsv \
+  --out /path/to/torrent-2018-m19-steinmetz-inputs.fsmatpk
 
 cargo run -p xtask -- matdb-pack \
   --manifest data/matdb/seed-v1/ngyc-n42-sintered-nickel-coated/manifest.tsv \

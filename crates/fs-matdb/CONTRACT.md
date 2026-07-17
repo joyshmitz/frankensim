@@ -361,7 +361,11 @@ Steinmetz identity remain fail-closed. The separate NASA-CR-4538 battery pins
 Tempel Steel Company product `24N208`, its non-oriented annealed nominal
 `3%`-silicon M19 description, `0.025 in` thickness, and one manufacturer loss
 rating while refusing to invent rating semantics, a test method, a waveform,
-or a complete core-loss model. The NGYC N42 battery additionally pins
+or a complete core-loss model. A third Torrent 2018 battery preserves the two
+printed M-19/M290-50A loss-equation input sets, their `0.5 mm` sheet,
+sinusoidal excitation, and `50..1000 Hz` by `0.1..1.5 T` fit domain without
+promoting source-equation-dependent coefficient numerals into an executable
+model. The NGYC N42 battery additionally pins
 supplier, sintered grade, and coating identity while proving that incompatible
 SI/CGS energy-product prints survive as distinct claims. The Y30 catalog-input
 battery verifies the four source-used Table II midpoints and Equation 2 model
@@ -437,7 +441,11 @@ Wankel-housing authority.
   and full Steinmetz identity remain explicit rather than being inferred from
   the grade name. A separate NASA-CR-4538 tranche adds the Tempel Steel Company
   `24N208` identity, non-oriented/annealed description, nominal `3%` silicon,
-  `0.025 in` thickness, and one fixed-condition manufacturer loss rating.
+  `0.025 in` thickness, and one fixed-condition manufacturer loss rating. A
+  third Torrent 2018 tranche adds ten literal numeric inputs from the source's
+  separate M-19/M290-50A hysteresis- and eddy-loss equations, including the
+  `0.5 mm` sheet thickness and printed output scales, while retaining the
+  reported `50..1000 Hz` and `0.1..1.5 T` fit domain.
   The first supplier-pinned N42 tranche adds one remanence, one coercivity, and
   two conflict-preserving maximum-energy-product claims for NGYC sintered,
   nickel-coated cubes. A separate Jinshan N42 tranche adds exact `25 degC` and
@@ -550,9 +558,15 @@ Wankel-housing authority.
   `specific_hysteresis_loss_rating` property. Manufacturer sheet/revision,
   lot, heat chemistry, anneal schedule, surface insulation, test method,
   waveform, test temperature, bound semantics, repeats, dispersion, B-H curve,
-  and Steinmetz model remain absent. The NGYC N42 claims bind the
-  supplier-named sintered grade and nickel-coated cube family from one
-  CC-BY-4.0 article. The source does not say
+  and Steinmetz model remain absent. The Torrent 2018 state is also kept
+  separate: it identifies M-19/M290-50A nomenclature, sinusoidal excitation,
+  one sheet thickness, and a bounded manufacturer-data fit domain, but not the
+  manufacturer, product, heat, chemistry, process, anneal, coating, test method,
+  temperature, fit uncertainty, coefficient compound units, or B-H curve. Its
+  ten numeric fields are source-equation inputs, not a portable executable
+  Steinmetz model or authority for either NASA-derived state. The NGYC N42
+  claims bind the supplier-named sintered grade and nickel-coated cube family
+  from one CC-BY-4.0 article. The source does not say
   whether the values were measured or supplier-nominal and omits test
   temperature, method, lot, chemistry, detailed process, intrinsic coercivity,
   recoil permeability, demagnetization curves, and temperature coefficients.
