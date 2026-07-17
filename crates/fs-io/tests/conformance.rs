@@ -4,17 +4,55 @@
 //! export→import round trips agree within format precision; fuzzing
 //! finds no panics; catalogs validate with helpful errors; container
 //! exports (3MF/GLB/VTK) are structurally valid.
+//! Aggregate outcomes use canonical fs-obs conformance records; assertions
+//! reached before those outcomes remain ordinary Rust test diagnostics.
 
 use fs_geom::Point3;
 use fs_io::quarantine::import_mesh;
 use fs_io::{ColumnKind, ColumnSpec, Schema, export_3mf, export_glb, export_vtk, promote};
 use fs_rep_mesh::Soup;
 
-fn verdict(case: &str, detail: &str) {
-    println!(
-        "{{\"suite\":\"fs-io/conformance\",\"case\":\"{case}\",\"verdict\":\"pass\",\
-         \"detail\":\"{detail}\"}}"
+const DETERMINISTIC_SEED: u64 = 0;
+const IO_003_INPUT_SEED: u64 = 0x10_0003;
+
+fn verdict(case: &str, pass: bool, detail: &str, seed: u64) {
+    let mut emitter = fs_obs::Emitter::new("fs-io/conformance", case);
+    let event = emitter.emit(
+        if pass {
+            fs_obs::Severity::Info
+        } else {
+            fs_obs::Severity::Error
+        },
+        fs_obs::EventKind::ConformanceCase {
+            suite: "fs-io/conformance".to_string(),
+            case: case.to_string(),
+            pass,
+            detail: detail.to_string(),
+            seed,
+        },
+        None,
     );
+    fs_obs::lint_failure_record(&event).expect("I/O verdict must be replayable");
+    let line = event.to_jsonl();
+    fs_obs::validate_line(&line).expect("I/O verdict must use the fs-obs wire schema");
+    println!("{line}");
+    assert!(pass, "case {case}: {detail}");
+}
+
+fn measurement(case: &str, name: &str, json: String) {
+    let mut emitter = fs_obs::Emitter::new("fs-io/conformance", case);
+    let line = emitter
+        .emit(
+            fs_obs::Severity::Info,
+            fs_obs::EventKind::Custom {
+                name: name.to_string(),
+                json,
+            },
+            None,
+        )
+        .to_jsonl();
+    fs_obs::validate_line(&line).expect("I/O measurement must use the fs-obs wire schema");
+    println!("{line}");
 }
 
 fn lcg(seed: &mut u64) -> u64 {
@@ -110,7 +148,9 @@ fn io_001_round_trips_within_format_precision() {
     assert_eq!(tri.triangles.len(), 1);
     verdict(
         "io-001",
+        true,
         "STL(f32)/OBJ(exact)/PLY(exact) round trips; deterministic bytes",
+        DETERMINISTIC_SEED,
     );
 }
 
@@ -151,7 +191,7 @@ fn io_002_quarantine_repair_promote_on_the_defect_zoo() {
         receipt.contains("duplicate-face"),
         "receipt records the census"
     );
-    println!("{receipt}");
+    measurement("io-002/promotion-receipt", "io-promotion-receipt", receipt);
     // Unrepairable: a hole larger than the fill budget BLOCKS promotion.
     let mut gaping = octa();
     gaping.triangles.truncate(3); // massive open boundary
@@ -174,14 +214,16 @@ fn io_002_quarantine_repair_promote_on_the_defect_zoo() {
     assert!(refusal.receipt_json.contains("\"trust\":\"refused\""));
     verdict(
         "io-002",
+        true,
         "defect zoo censused, repaired, promoted with receipts; oversized hole refused \
          with actionable fixes",
+        DETERMINISTIC_SEED,
     );
 }
 
 #[test]
 fn io_003_fuzz_never_panics() {
-    let mut seed = 0x10_0003u64;
+    let mut seed = IO_003_INPUT_SEED;
     let stl = fs_io::stl::write_stl(&octa());
     let ply = fs_io::ply::write_ply(&octa());
     let obj = fs_io::obj::write_obj(&octa());
@@ -216,13 +258,16 @@ fn io_003_fuzz_never_panics() {
             let _ = import_mesh(&junk, format);
         }
     }
-    println!(
-        "{{\"suite\":\"fs-io/conformance\",\"metric\":\"fuzz\",\"mutants\":13500,\
-         \"still_parse\":{parsed}}}"
+    measurement(
+        "io-003/fuzz",
+        "io-parser-fuzz",
+        format!("{{\"seed\":{IO_003_INPUT_SEED},\"mutants\":13500,\"still_parse\":{parsed}}}"),
     );
     verdict(
         "io-003",
+        true,
         "13.5k mutants + truncations + junk: structured results, no panics",
+        IO_003_INPUT_SEED,
     );
 }
 
@@ -248,7 +293,9 @@ fn io_004_ply_face_lists_reject_non_integer_values() {
     }
     verdict(
         "io-004",
+        true,
         "PLY face list counts and indices reject negative/fractional values",
+        DETERMINISTIC_SEED,
     );
 }
 
@@ -315,7 +362,9 @@ fn io_005_catalog_schema_validation_teaches() {
     );
     verdict(
         "io-005",
+        true,
         "CSV+JSON catalogs validate; errors name row/column/offender",
+        DETERMINISTIC_SEED,
     );
 }
 
@@ -364,7 +413,9 @@ fn io_006_container_exports_are_structurally_valid() {
     );
     verdict(
         "io-006",
+        true,
         "3MF zip structure, GLB chunk accounting, VTK sections all check out",
+        DETERMINISTIC_SEED,
     );
 }
 

@@ -236,8 +236,9 @@ None.
 
 ## Conformance tests
 
-`tests/conformance.rs` (JSON verdicts, suite `fs-io/conformance`):
-io-001 STL/OBJ/PLY round trips (exact where the format allows) +
+`tests/conformance.rs` (canonical fs-obs `ConformanceCase` aggregate outcomes,
+suite `fs-io/conformance`): io-001 STL/OBJ/PLY round trips (exact where the
+format allows) +
 deterministic bytes + ASCII STL fixture; io-002 the defect zoo
 (duplicate/degenerate/hole/unreferenced) censused, repaired, promoted
 with receipts — and an over-budget hole REFUSED with actionable fixes
@@ -245,7 +246,15 @@ and a refused receipt; io-003 13.5k mutants + truncations + junk with
 zero panics; io-004 PLY face-list integer validation; io-005 AISC-flavored
 CSV + JSON catalogs, quoting, and the teaching-error battery; io-006 3MF ZIP
 structure (EOCD, entry count, model XML), GLB chunk accounting, VTK section
-counts.
+counts. Reaching an aggregate outcome means its preceding checks passed;
+pre-verdict assertions and parser `expect` failures remain ordinary Rust test
+diagnostics and therefore do not emit a failed aggregate record. `io-003`
+records its exact input seed (`0x10_0003`) for mutation-stream replay; the other
+five outcomes use deterministic seed zero. The suite has no concurrent
+aggregate case, so these records make no scheduler-replay claim. Existing
+promotion-receipt and fuzz-measurement data use validated fs-obs `Custom`
+companions, not canonical aggregate outcomes; the fuzz companion also retains
+the mutation-stream seed.
 
 `tests/step.rs` (G0/G3): forward-reference and complex-entity parsing,
 canonical permutation-invariant DATA ordering, doubled-apostrophe string
