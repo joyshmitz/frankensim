@@ -184,7 +184,13 @@ Dense linear algebra: GEMM, batched small dense, factorizations, eigensolvers. L
   estimate coverage; RSVD leading singular values to 1e-6; Nyström PSD
   reconstruction to 1e-6; sketch-and-precondition LS matches direct QR
   to 1e-8 with fast CG convergence; Hutch++ MSE decisively below
-  Hutchinson at matched probe budgets (measured, not cited).
+  Hutchinson at matched probe budgets (measured, not cited). The structured
+  BEDROCK replay Casebook additionally records a digest over every returned
+  field from `range_finder`, `rsvd`, `hutchinson`, and `hutch_pp` on one
+  disclosed positive-definite fixture. It requires exact same-seed replay and
+  per-API distinct-seed separation, replay-stable input generation under nine
+  logical partition plans, and a disclosed seeded reference corruption that
+  turns the suite red.
 - `VERSION` for provenance stamping.
 
 - `batched::{BatchMat, BatchVec}` — batches of n dense k×k matrices /
@@ -474,6 +480,14 @@ diagonal) fixtures; 128-byte plane alignment; cross-ISA golden hash.
   `Stream::at` words is test-defined; it does not exercise or claim sequential
   `Stream::next_f64` advancement, checkpoint transport, or distribution
   quality.
+- The randomized-NLA replay Casebook is same-build, same-ISA G5 evidence for
+  one finite matrix, two seeds, and the named returned fields. It does not
+  strengthen the probabilistic error indicators into certified bounds, prove
+  approximation accuracy or distribution quality, exercise worker-count or
+  cancellation behavior, establish performance, or replace the retained
+  cross-ISA golden evidence above. Its seeded red proves that Casebook's merge
+  gate rejects one disclosed synthetic RSVD-reference mutation; it is not a
+  general production-memory or artifact-corruption detector.
 - `gemm_scalar_checked` is a correctness/reference and integration surface,
   not the optimized packed microkernel. It claims no dual SIMD packing,
   roofline attainment, parallel scheduling, cancellation latency, or
