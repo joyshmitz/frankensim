@@ -36,6 +36,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 pub mod admitted;
+pub mod balance;
 mod cards;
 pub mod color;
 mod discrepancy;

@@ -491,3 +491,38 @@ physical validation, process-standard conformance, or decision fitness.
   windows and have no restoration policy. Per-falsifier
   receipts, independence threat graphs, cadence enforcement, and restoration
   policy remain successor work (xpck.6).
+
+## Conservation-defect accounting (bead frankensim-leapfrog-2026-program-i94v.1.3.1, I04.1)
+
+`balance` defines the typed accounting language for balance defects:
+`BalanceDefectReceipt` pins quantity kind (with per-kind admissible
+accounting rule and canonical unit), extensive-versus-rate semantics,
+sign/orientation, chain/cochain/region spatial support on one named complex,
+instant/window time support on one named logical clock, producer identity,
+an exact `ChartRef` (id, version, content digest), owned per-account terms
+with `ColorRank` evidence, an expected-closure interval, a five-state
+`DefectState` (exact zero / bounded / unknown / unowned remainder /
+inapplicable — distinct, never collapsed), split numerical/material/model
+uncertainty, and content-addressed lineage. Receipts compose over provably
+disjoint spatial partitions and adjacent extensive windows only; every
+incompatibility (chart, clock, sign, scale, quantity, semantics, support,
+window adjacency, duplicate ownership, accounting-rule violation) refuses
+with a stable named `BalanceRule` slug. Canonical transport is bounded,
+version-gated, and canonical (decode re-encodes bit-for-bit or refuses);
+identity is the domain-separated BLAKE3 hash of the canonical bytes.
+
+### No-claim boundaries (conservation-defect accounting)
+
+- The module accounts for defect values it is HANDED; it does not detect,
+  localize, or attribute physical events (those are I04.2+ scopes).
+- No unit-scale conversion: `scale_pow10` is identity metadata and scale
+  mismatches refuse; cross-scale rebasing is a consumer decision.
+- Split uncertainties add linearly (perfect-correlation conservative bound);
+  no independence, distribution, or coverage-probability claim.
+- Interval sums widen one ulp outward per composition; enclosures are
+  conservative, not tight.
+- Mass accounting is non-relativistic; species ledgers are open (reactions
+  may produce/consume); entropy/exergy sign restrictions apply only to
+  chart accounts with the matching declared role.
+- `ColorRank` is carried and composed weakest-wins, but no payload-level
+  color algebra (regimes, datasets, estimators) is evaluated here.
