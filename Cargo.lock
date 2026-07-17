@@ -1461,6 +1461,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs-mms"
+version = "0.0.1"
+dependencies = [
+ "fs-math",
+]
+
+[[package]]
 name = "fs-motion"
 version = "0.0.1"
 dependencies = [

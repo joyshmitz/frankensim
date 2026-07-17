@@ -94,6 +94,7 @@ members = [
     "crates/fs-symmetry",
     "crates/fs-conform",
     "crates/fs-detaudit",
+    "crates/fs-mms",
     "crates/fs-wedge",
     "crates/fs-robust",
     "crates/fs-benchmark",
