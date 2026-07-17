@@ -36,6 +36,7 @@ pub use fs_blake3::ContentHash;
 pub mod color_admission;
 pub mod coverage;
 pub mod origin;
+pub mod receipt_catalog;
 
 pub use color_admission::{
     PackageColorAdmissionRefusal, PackageColorAdmissionVerifier,
@@ -55,6 +56,16 @@ pub use origin::{
     SourceCertificateVerifier, VerificationCapabilities, VerificationDecision, WaiverGrant,
     WaiverVerification, WaiverVerifier, admit_retained_signature_subject_hash,
     signature_subject_hash,
+};
+pub use receipt_catalog::{
+    MAX_RECEIPT_FAMILY_ID_BYTES, MAX_RECEIPT_IDENTITY_DOMAIN_BYTES,
+    MAX_RECEIPT_SCHEMA_CATALOG_BYTES, MAX_RECEIPT_SCHEMA_ENTRIES, MAX_RECEIPT_TRANSPORT_BYTES,
+    RECEIPT_SCHEMA_CATALOG_IDENTITY_DOMAIN, RECEIPT_SCHEMA_CATALOG_IDENTITY_SCHEMA_DECLARATION,
+    RECEIPT_SCHEMA_CATALOG_IDENTITY_VERSION, RECEIPT_SCHEMA_CATALOG_VERSION,
+    RECEIPT_SCHEMA_DESCRIPTOR_IDENTITY_DOMAIN,
+    RECEIPT_SCHEMA_DESCRIPTOR_IDENTITY_SCHEMA_DECLARATION,
+    RECEIPT_SCHEMA_DESCRIPTOR_IDENTITY_VERSION, ReceiptSchemaCatalog, ReceiptSchemaCatalogError,
+    ReceiptSchemaDescriptor, ReceiptTransportProfile,
 };
 
 /// Semantic version of the portable semantic-witness content identity.

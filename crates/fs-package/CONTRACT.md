@@ -118,11 +118,22 @@ Injected verifier implementations are caller-owned synchronous capabilities.
   `IntoIterator` or slice `Deref`. Bare row booleans/statuses are explicitly
   non-authoritative when detached; authority requires validating the sealed
   report hash and receipt.
+- `ReceiptSchemaDescriptor` and `ReceiptTransportProfile` declare one exact
+  owner receipt family, wire schema, identity version/domain, digest-only or
+  bounded-canonical-byte transport, and owner-supplied codec fingerprint.
+  `ReceiptSchemaCatalog` canonicalizes those declarations into a
+  content-addressed, bounded binary set and resolves only an exact
+  `(family, wire schema, descriptor hash)` tuple. It has no dependency on
+  receipt-owner crates and performs no payload decoding or semantic replay.
 - `PackageError` — structured refusals for incomplete provenance, invalid or
   duplicate claim ids, blank/placeholder claim statements, malformed color
   payloads, unsupported formats, receipt mismatches/parents, malformed
   falsifier/anchor records, refuted claims, transport limits, rejected policies,
   and policy-identity drift. It implements `Display` and `Error`.
+- `ReceiptSchemaCatalogError` — structured refusals for malformed identities,
+  resource limits, duplicate or aliased rows, noncanonical wire order, unknown
+  families/transports/versions, and retained or externally pinned identity
+  mismatches. It implements `Display` and `Error`.
 
 ## Invariants
 
@@ -214,6 +225,17 @@ Injected verifier implementations are caller-owned synchronous capabilities.
   format version, claim count, provenance, and ordered claims. Derive-key modes
   separate package leaves/nodes from plain artifact hashes and each other; a
   detached signature does not change the root.
+- RECEIPT-SCHEMA METADATA: family ids and owner identity domains are bounded,
+  lowercase ASCII machine identities with no empty or placeholder components.
+  Versions and owner fingerprints are nonzero. A catalog contains at most
+  4,096 rows, sorts them by family UTF-8 bytes and wire version, refuses a
+  duplicate key, and refuses reuse of an owner identity domain or codec
+  fingerprint by another key. Descriptor identity binds every declared field;
+  catalog identity binds its wire version, row count/order, complete descriptor
+  fields, and descriptor hashes. Binary admission checks caps before
+  allocation, checks closed field/transport tags, re-derives both identity
+  levels, and requires decode/re-encode byte equality. Lookup never falls back
+  to a nearby version or descriptor.
 - Coverage is capability-aware. The plain coverage functions use deny-all
   verification and suppress every concept when a gated origin is
   unauthenticated; `_with` variants accept explicit capabilities. Color rank,
@@ -243,6 +265,12 @@ byte/node budget, including inside one large claim. Semantic decoded-byte and
 witness-count budgets are enforced separately and incrementally. Limit violations are
 structured refusals.
 
+Receipt-schema metadata uses the separate `ReceiptSchemaCatalogError` boundary.
+Untrusted catalog bytes are capped at 4 MiB before parsing; row counts, string
+lengths, and canonical-byte declarations are checked before allocation or
+owner dispatch. Errors retain the refused resource, field, version, identity,
+or byte offset without attempting compatibility recovery.
+
 ## Determinism class
 
 The fallible Merkle root, JSON profile, strict parsing, structural verification, and deny-all
@@ -251,6 +279,9 @@ float certificate payloads via `to_bits`). `verify_with` additionally depends
 on caller-supplied capability decisions; reproducible deployments must provide
 deterministic verifiers over pinned artifact stores, stable policy
 fingerprints, and an explicit date.
+Receipt-schema descriptor and catalog construction, identity, canonical binary
+encoding, decoding, and exact lookup are deterministic pure functions of their
+explicit rows. Caller insertion order is intentionally nonsemantic.
 
 ## Cancellation behavior
 
@@ -285,6 +316,37 @@ portable-witness construction, request binding, strict JSON, tamper detection,
 shape and aggregate caps; semantic-context signature substitution; stale-v7
 refusal; and origin transport/identity limits. The compile-fail battery proves that an
 authenticated signature payload cannot be constructed downstream.
+
+`tests/receipt_catalog.rs` is the G0 catalog battery: it independently
+reconstructs both identity preimages, mutates every descriptor field, proves
+caller-order invariance and exact-only lookup, exercises fixed-point transport,
+and refuses truncation, hostile counts/lengths, unknown tags, noncanonical row
+order, self-inconsistent identities, externally pinned substitution, invalid
+machine identities, duplicate/aliased owners, and inclusive/exclusive resource
+boundaries.
+
+## Receipt-schema catalog v1 (bead h61n)
+
+This standalone catalog version is independent of `EvidencePackage` format 8.
+It supplies a dependency-neutral rendezvous point for receipt owners and future
+ledger/package adapters without importing those owners into `fs-package` or
+changing existing package roots. The catalog owns two closed identities:
+
+| Identity | Canonical encoder and exact context | Semantic source | Intentional exclusions | Schema dependencies |
+| --- | --- | --- | --- | --- |
+| `receipt-schema-descriptor` | `ReceiptSchemaDescriptor::content_hash`; `org.frankensim.fs-package.receipt-schema-descriptor.v1` | family id, owner wire/identity versions, owner identity domain, transport tag/limit, owner codec fingerprint | owner payload bytes and decoded meaning | none |
+| `receipt-schema-catalog` | `ReceiptSchemaCatalog::content_hash`; `org.frankensim.fs-package.receipt-schema-catalog.v1` | catalog wire version, canonical row count/order, complete descriptor rows and their hashes | owner payload bytes, package membership, ledger location | `receipt-schema-descriptor` |
+
+Canonical catalog transport is tagged binary under magic `FSPRCAT\0`, carries
+an in-band catalog identity, and is structurally admitted only when every
+descriptor hash, the catalog hash, and exact byte reproduction agree. Preventing
+a self-consistent whole-catalog substitution additionally requires
+`from_bytes_verified` with an independently trusted package/ledger pin. A
+retained digest is exactly 32 bytes paired out of band with the corresponding
+identity version.
+Owner crates still own their codecs, payload validation, receipt identity, and
+replay semantics; an L6 adapter must depend on both sides and require an exact
+catalog row before dispatch.
 
 ## Schema v8: portable semantic witnesses and semantic release context
 
@@ -436,6 +498,11 @@ spelling available in the general JSON grammar.
   source, anchor, falsifier, derivation, signature, and waiver verifiers; those capabilities may
   retrieve and re-check addressed artifacts, or refuse. `fs-package` supplies
   typed exact requests, policy-bound receipts, and deny-all defaults.
+- Receipt-schema catalog membership establishes only the integrity of exact
+  owner-supplied codec metadata. It does not prove that an owner decoder exists,
+  that retained payload bytes match the row, that replay succeeds, or that any
+  scientific/recovery claim is true. Those checks belong to a higher adapter
+  with the exact owner capability; unknown or mismatched rows remain refusals.
 - The certificate payloads live in `fs-evidence::Color`; this crate bundles
   and content-addresses them, it does not produce them.
 - A validated dataset hash proves content identity, not experimental quality or
