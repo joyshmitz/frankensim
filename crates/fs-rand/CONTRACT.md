@@ -99,6 +99,17 @@ None.
 None.
 
 ## Conformance tests
+`tests/conformance.rs` is the shared `fs-casebook` adoption slice for BEDROCK:
+it emits registration-ordered, fixed-schema JSON lines for the three exact
+load-bearing laws (the 3-vector Random123 KAT, random-access/sequential
+equivalence, and canonical checkpoint/resume tail equivalence). Each record
+pins canonical input bytes through the casebook FNV-1a digest, the exact
+tolerance, deterministic measurement detail, and an evidence pointer. The
+disclosed corruption seed `0xF5_AA_0001` flips one derived bit of a KAT
+reference and proves both the typed report and `assert_green` merge gate turn
+red with the seed, word, bit, computed block, and corrupted reference retained
+in the failure record.
+
 Random123 KATs (3 vectors), avalanche battery, random-access≡sequential,
 16-tile×3-order shuffle invariance, adjacent-identity decorrelation,
 chi-square/moment gates (uniform/normal/exponential), Lemire bias +
@@ -133,6 +144,10 @@ plus a 4,096-sample `|correlation| < 0.10` smoke band; seed
   digest or authenticated envelope when corruption or hostile modification is
   in scope; a changed but well-formed seed/kernel/tile/index is a different
   valid replay identity.
+- The `fs-casebook` records are deterministic conformance diagnostics, not
+  authenticated ledger rows. One local green record does not itself establish
+  the cross-ISA G5 claim; the central lane must compare the same input digests
+  and exact verdict records on both reference ISA families.
 - Sobol dims > 10 (full Joe-Kuo table import = recorded follow-up).
 - Owen scrambling performance (correct lazy-tree v1 is 32 Philox calls per
   point-dim; hash-based fast path = recorded follow-up).
