@@ -87,40 +87,62 @@ bash scripts/ci/casebook_conformance_profile.sh nightly-full
 ```
 
 The `pr` profile is an explicit reviewed set of cheap, family-representative
-Casebook targets. `nightly-full` is the complete source-discovered inventory of
-ordinary Cargo integration targets whose source contains an `fs_casebook`
-import or qualified token. Discovery starts from
-`cargo metadata --locked --no-deps` and then inspects each reported test
-target's actual source path; target filenames are not a classification
-mechanism, so `conformance.rs` and replay targets are not silently missed. Full
-coverage auto-adopts every additional discovered target, while a reviewed
-minimum inventory prevents accidental target removal or scanner regression
-from silently shrinking the lane. The PR set must remain inside that reviewed
-baseline and live discovery; duplicate, missing, stale, malformed, empty, or
-source-escaping entries fail closed. A Casebook target containing an
-`#[ignore]` marker also refuses discovery: hardware/performance, weekly,
-diagnostic, and deep-cap ignored lanes retain their separately declared
-cadence and are never swept into `nightly-full` by a blanket `--ignored`.
+Casebook targets. `nightly-full` is complete under its declared discovery
+policy: every ordinary Cargo integration-target entrypoint whose Rust tokens
+contain an `fs_casebook` import, `extern crate`, or qualified path. Discovery
+starts from `cargo metadata --locked --no-deps` and then inspects each reported
+test target's canonical source path; target filenames are not a classification
+mechanism, so `conformance.rs` and replay targets are not silently missed. The
+lexical scanner strips nested comments, cooked/raw/byte strings, and character
+literals before classification, so examples or documentation do not create
+false coverage. Full coverage auto-adopts every additional discovered target,
+while a reviewed minimum inventory prevents accidental target removal or
+scanner regression from silently shrinking the lane. The PR set must remain
+inside that reviewed baseline and live discovery; duplicate, missing, stale,
+malformed, empty, noncanonical-feature, or source-escaping entries fail closed.
+Direct and `cfg_attr`-conditional `#[ignore]` markers also refuse discovery:
+hardware/performance, weekly, diagnostic, and deep-cap ignored lanes retain
+their separately declared cadence and are never swept into `nightly-full` by a
+blanket `--ignored`.
 
-`--check` and `--list` perform locked metadata and source inspection only; they
-do not build or execute tests. `--self-test` invokes no Cargo command and feeds
-synthetic inventories through the production validator to prove missing,
-stale, and duplicate classification failures, then proves that an expired
-aggregate deadline refuses launch with a structured `budget_exceeded` receipt.
+That completeness boundary is intentionally exact. The scanner classifies the
+Cargo-reported entrypoint, not arbitrary transitive `mod` files, generated macro
+output, or a dependency renamed so that no `fs_casebook` token remains. Such a
+layout must keep a token in the entrypoint or extend this discovery contract and
+its scanner fixtures. This makes an unsupported construction visible rather
+than silently claiming semantic whole-program dependency analysis.
+
+`--check` and `--list` invoke only locked Cargo metadata plus source inspection;
+they do not build or execute tests. `--self-test` invokes no Cargo command and
+creates no temporary files. It exercises the production lexical scanner,
+passing and malformed inventories, missing/stale/duplicate classifications,
+required-feature selector preservation, pre-launch deadline refusal, spawn and
+ordinary failures, stdout/receipt isolation, a leader that leaves a live
+descendant, a TERM-resistant timeout requiring KILL, and interruption cleanup.
 The default aggregate wall budgets are 900 seconds for `pr` and 7200 seconds
-for `nightly-full`; overrides are retained through
+for `nightly-full`; bounded overrides are retained through
 `FS_CASEBOOK_PR_BUDGET_SECONDS` and `FS_CASEBOOK_FULL_BUDGET_SECONDS`.
 
 Profile execution runs each selector separately with `--locked`, continues
 after ordinary target failures, and stops before launching more work once the
-shared deadline is exhausted. A live target receives only its runner-owned
-process group: TERM, a bounded grace period, KILL if needed, and a bounded
-drain. Per-target JSON receipts distinguish ordinary failure from
-`budget_exceeded`, name whether launch occurred, and report `not_needed`,
-`complete`, `incomplete`, or `not_applicable` drain state. This is a scheduling
-and discovery contract, not benchmark, cross-ISA, retained-proof, or CI-wiring
-evidence. Until external DSR configuration explicitly selects these commands,
-their existence does not claim that DSR is already using the PR/full split.
+shared monotonic deadline is exhausted. The shell forwards HUP/INT/TERM to its
+active wrapper. Each target starts in a new session; its leader remains
+unreaped while the wrapper verifies live members by PGID and SID, so PID reuse
+cannot redirect cleanup. TERM, a bounded grace period, KILL if needed, and a
+bounded drain apply only to that owned group. Child stdout/stderr go to stderr;
+stdout is JSONL receipts only. Per-target receipts distinguish ordinary,
+spawn, timeout, lingering-descendant, and interrupt outcomes, while the terminal
+receipt accounts for emitted and unreported target rows.
+
+Containment does not claim control over adversarial code that deliberately
+creates a different session/process group. Receipts state that boundary and
+also report provenance as `unsealed`: this helper does not itself bind the
+exact HEAD, dirty worktree bytes, lockfile digest, constellation, toolchain,
+environment, or ISA. A retained proof must wrap it in the DSR provenance lane.
+This remains a scheduling and discovery contract, not benchmark, cross-ISA,
+retained-proof, or CI-wiring evidence. Until external DSR configuration
+explicitly selects these commands, their existence does not claim that DSR is
+already using the PR/full split.
 
 ## Runner honesty
 
