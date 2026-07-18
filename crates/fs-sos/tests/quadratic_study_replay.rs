@@ -3,12 +3,12 @@
 //!
 //! The fixture binds every bit returned by `certify_quadratic(1, -2, 3)` and
 //! every derived public verdict for the exact identity
-//! `x^2 - 2x + 3 = (x - 1)^2 + 2`. A retained schema-v1 root and independent
-//! in-process run must both reproduce the full canonical frame. A disclosed seed
-//! selects one square coefficient and one mantissa bit; the mutation is refused
-//! while stale, refused against the retained reference after resealing, rejected
-//! by the production certificate semantics, emitted as stable fs-obs evidence,
-//! and caught by the merge gate.
+//! `x^2 - 2x + 3 = (x - 1)^2 + 2`. A retained schema-v1 root and separately
+//! executed in-process run must both reproduce the full canonical frame. A
+//! disclosed seed selects one square coefficient and one mantissa bit; the
+//! mutation is refused while stale, refused against the retained reference after
+//! resealing, rejected by the production certificate semantics, emitted as
+//! stable fs-obs evidence, and caught by the merge gate.
 //!
 //! This proves only one exact dyadic quadratic and one mutation lane. It does
 //! not claim arbitrary-quadratic exactness, tolerance-based global soundness,
@@ -178,6 +178,30 @@ fn polynomial_bits() -> Vec<u64> {
 
 fn polynomial() -> Poly {
     Poly::new(vec![C, B, A])
+}
+
+/// Expand one fixture-scale integer linear square without using `fs-sos`
+/// polynomial arithmetic. `i128` makes every operation exact for this fixture,
+/// so a shared defect in `Poly::mul`, `square`, or `Poly::add` cannot make the
+/// production result and the analytic oracle agree spuriously.
+fn independent_integer_square_plus_constant(q: [i128; 2], constant: i128) -> [i128; 3] {
+    let mut coefficients = [0_i128; 3];
+    for (left_degree, &left) in q.iter().enumerate() {
+        for (right_degree, &right) in q.iter().enumerate() {
+            coefficients[left_degree + right_degree] += left * right;
+        }
+    }
+    coefficients[0] += constant;
+    coefficients
+}
+
+fn independent_integer_eval(coefficients: &[i128], x: i128) -> i128 {
+    coefficients
+        .iter()
+        .rev()
+        .fold(0_i128, |accumulator, coefficient| {
+            accumulator * x + coefficient
+        })
 }
 
 fn fixture_identity() -> ReplayIdentity {
@@ -645,7 +669,12 @@ fn assert_mergeable(run: &StudyRun, reference: &ReplayIdentity) {
 
 fn corruption_detail(reference: &StudyRun, corruption: &SeededCorruption) -> String {
     format!(
-        "fixture={}; reference={}; mutant={}; seed=0x{:016x}; selector={}; target={}; bit={}; before=0x{:016x}; after=0x{:016x}; stale_gate={:?}; reference_gate={:?}; semantic_gate={:?}; production_verify={}; production_global={:?}; production_radius={:?}; first_mismatch={}",
+        "suite={SUITE}; case={CASE}; red_case={RED_CASE}; function=fs_sos::certify_quadratic; a=0x{:016x}; b=0x{:016x}; c=0x{:016x}; verify_tolerance=0x{:016x}; certified_radius=0x{:016x}; fixture={}; reference={}; mutant={}; seed=0x{:016x}; selector={}; target={}; bit={}; before=0x{:016x}; after=0x{:016x}; stale_gate={:?}; reference_gate={:?}; semantic_gate={:?}; production_verify={}; production_global={:?}; production_radius={:?}; first_mismatch={}; fs_sos_version={FS_SOS_VERSION}; fs_ivl_version={}; fs_math_version={}; fs_obs_version={}; identity_schema={IDENT_SCHEMA_VERSION}; wire_schema={}; event_content_identity_schema={}; execution=single-threaded-direct-test-no-Cx",
+        A.to_bits(),
+        B.to_bits(),
+        C.to_bits(),
+        VERIFY_TOLERANCE.to_bits(),
+        CERTIFIED_RADIUS.to_bits(),
         reference.fixture.hex(),
         reference.result.hex(),
         corruption.run.result.hex(),
@@ -662,6 +691,11 @@ fn corruption_detail(reference: &StudyRun, corruption: &SeededCorruption) -> Str
         corruption.production_global_bound,
         corruption.production_radius_bound,
         corruption.first_mismatch,
+        fs_ivl::VERSION,
+        fs_math::VERSION,
+        fs_obs::VERSION,
+        fs_obs::SCHEMA_VERSION,
+        fs_obs::EVENT_CONTENT_IDENTITY_VERSION,
     )
 }
 
@@ -851,6 +885,26 @@ fn exercise_seeded_corruption(original: &StudyRun, replay: &StudyRun) {
     assert!(message.contains(&format!("0x{MUTATION_SEED:016x}")));
     assert!(message.contains(MUTATION_TARGET));
     assert!(message.contains("ReferenceIdentityMismatch"));
+
+    // Rotating the retained reference to the mutant must not bypass the
+    // independent semantic half of the merge gate. This makes removal or
+    // accidental short-circuiting of `validate_semantics` observable even
+    // when the mutated payload has been consistently resealed.
+    assert_eq!(
+        merge_refusal(&first.run, &first.run.result),
+        Err(MergeRefusal::Semantics(first.semantic_error))
+    );
+    let semantic_panic = catch_unwind(|| assert_mergeable(&first.run, &first.run.result))
+        .expect_err("merge gate must refuse a semantically invalid self-reference");
+    let semantic_message = semantic_panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| semantic_panic.downcast_ref::<&str>().copied())
+        .expect("semantic merge-gate panic carries text");
+    assert!(semantic_message.contains(RED_CASE));
+    assert!(semantic_message.contains(&format!("0x{MUTATION_SEED:016x}")));
+    assert!(semantic_message.contains(MUTATION_TARGET));
+    assert!(semantic_message.contains("Semantics"));
 }
 
 #[test]
@@ -897,11 +951,29 @@ fn quadratic_certificate_replays_and_seeded_false_certificate_is_refused() {
         "complete result identity must replay byte-for-byte"
     );
 
-    let q = Poly::new(vec![-1.0, 1.0]);
+    let exact_q = [-1_i128, 1_i128];
+    let exact_polynomial = independent_integer_square_plus_constant(exact_q, 2);
     assert_eq!(
-        square(&q).add(&Poly::constant(EXPECTED_LOWER_BOUND)),
-        polynomial(),
-        "independent exact oracle: p=(x-1)^2+2"
+        exact_polynomial,
+        [3_i128, -2_i128, 1_i128],
+        "independent integer oracle: p=(x-1)^2+2"
+    );
+    assert_eq!(
+        original.record.polynomial,
+        exact_polynomial
+            .map(|coefficient| (coefficient as f64).to_bits())
+            .to_vec(),
+        "the production polynomial must match the independent integer expansion"
+    );
+    assert_eq!(
+        independent_integer_eval(&exact_q, 1),
+        0,
+        "the square vanishes at x=1"
+    );
+    assert_eq!(
+        independent_integer_eval(&exact_polynomial, 1),
+        2,
+        "the independently expanded polynomial attains the lower bound"
     );
     assert_eq!(
         polynomial().eval(1.0).to_bits(),
