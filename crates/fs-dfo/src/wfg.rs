@@ -1129,6 +1129,18 @@ mod tests {
         );
     }
 
+    fn assert_tiny_relative_close(actual: f64, expected: f64) {
+        assert!(
+            actual.is_finite() && expected.is_finite() && expected != 0.0,
+            "tiny relative oracle requires finite values and a nonzero reference: actual={actual:.17e}, expected={expected:.17e}"
+        );
+        let relative_error = ((actual - expected) / expected).abs();
+        assert!(
+            relative_error <= 1.0e-12,
+            "actual={actual:.17e}, expected={expected:.17e}, relative_error={relative_error:.17e}"
+        );
+    }
+
     fn assert_slice_close(actual: &[f64], expected: &[f64]) {
         assert_eq!(actual.len(), expected.len());
         for (&actual, &expected) in actual.iter().zip(expected) {
@@ -1486,9 +1498,21 @@ mod tests {
             0.972_654_947_412_285_5,
         );
         assert_close(b_param(0.25, 0.5, B_PARAM_A, B_PARAM_B, B_PARAM_C), 0.25);
-        assert_close(
+        assert_tiny_relative_close(
             b_param(0.25, 1.0, B_PARAM_A, B_PARAM_B, B_PARAM_C),
             7.888_609_052_210_118e-31,
+        );
+        assert_eq!(
+            b_param(0.0, 1.0, B_PARAM_A, B_PARAM_B, B_PARAM_C).to_bits(),
+            0.0_f64.to_bits(),
+        );
+        assert_close(
+            b_param(0.99, 1.0, B_PARAM_A, B_PARAM_B, B_PARAM_C),
+            0.605_006_067_137_536_4,
+        );
+        assert_eq!(
+            b_param(1.0, 1.0, B_PARAM_A, B_PARAM_B, B_PARAM_C).to_bits(),
+            1.0_f64.to_bits(),
         );
         assert_close(r_nonsep(&[0.37], 1), 0.37);
         assert_close(r_nonsep(&[0.1, 0.4, 0.9], 3), 0.766_666_666_666_666_7);
