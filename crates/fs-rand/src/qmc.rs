@@ -21,10 +21,28 @@
 //! per-dimension stratification tests catch any surviving corruption.
 //! The full 21201-dimension table is a recorded data-import follow-up.
 
-use crate::{Stream, StreamKey};
+use crate::{
+    Stream, StreamKey,
+    cbc::{CbcAdmissionError, CbcBudget, CbcProblem},
+    cbc_exec::{CbcControl, CbcExecError, CbcExecutor, CbcRunStatus, CbcTileShape},
+};
 
 /// Maximum embedded dimension of the v1 table.
 pub const MAX_SOBOL_DIM: usize = 10;
+
+/// Finite compatibility envelope used by [`Lattice::cbc`].
+///
+/// The one-billion-unit work ceiling covers the crate's documented
+/// `n = 1031`, six-dimensional convergence fixture with explicit headroom.
+/// The 64 MiB state ceiling is a requested-capacity envelope under
+/// [`crate::cbc`]'s schema, not an allocator-usable-size or process-RSS claim.
+/// Because these policy values are fixed, a schema/layout change cannot
+/// silently increase the compatibility wrapper's authority. Callers that need
+/// a different envelope must use [`Lattice::try_cbc`].
+pub const DEFAULT_CBC_BUDGET: CbcBudget = CbcBudget::new(1_000_000_000, 64 * 1024 * 1024);
+
+const CBC_FACADE_CANDIDATE_BLOCK: u32 = 64;
+const CBC_FACADE_POINT_BLOCK: u32 = 64;
 
 /// Joe–Kuo D6 head: (s = degree, a = coefficient bits, m = initial values).
 /// Dimension 1 is the van der Corput sequence (handled specially).
@@ -431,73 +449,112 @@ pub struct Lattice {
     pub z: Vec<u32>,
 }
 
+/// Typed refusal from the synchronous admitted CBC lattice facade.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CbcLatticeError {
+    /// Problem validation, checked estimation, target capacity, or explicit
+    /// work/memory admission refused before executor construction.
+    Admission(CbcAdmissionError),
+    /// The executor rejected a stale authority or breached its admitted
+    /// schedule/storage invariant.
+    Execution(CbcExecError),
+    /// A continue-only run unexpectedly stopped before completing.
+    UnexpectedRunStatus(CbcRunStatus),
+    /// The executor reported completion without yielding a lattice.
+    MissingCompletedLattice,
+}
+
+impl core::fmt::Display for CbcLatticeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Admission(error) => write!(f, "CBC admission refused: {error}"),
+            Self::Execution(error) => write!(f, "CBC execution refused: {error:?}"),
+            Self::UnexpectedRunStatus(status) => {
+                write!(f, "CBC continue-only execution stopped early: {status:?}")
+            }
+            Self::MissingCompletedLattice => {
+                f.write_str("CBC executor completed without a lattice result")
+            }
+        }
+    }
+}
+
+impl std::error::Error for CbcLatticeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Admission(error) => Some(error),
+            Self::Execution(_) | Self::UnexpectedRunStatus(_) | Self::MissingCompletedLattice => {
+                None
+            }
+        }
+    }
+}
+
+impl From<CbcAdmissionError> for CbcLatticeError {
+    fn from(error: CbcAdmissionError) -> Self {
+        Self::Admission(error)
+    }
+}
+
+impl From<CbcExecError> for CbcLatticeError {
+    fn from(error: CbcExecError) -> Self {
+        Self::Execution(error)
+    }
+}
+
 impl Lattice {
-    /// Component-by-component construction in the product-weighted Korobov
-    /// space with the Bernoulli-B₂ kernel (weights γ_j = 1): for each
-    /// dimension, choose z_j minimizing the worst-case error given the
-    /// previously fixed components. Candidate ordering is exact: the rational
-    /// kernel's common denominator is removed and arbitrary-precision integer
-    /// numerator sums are compared, with the lower candidate winning exact
-    /// ties. There are O(n²·dim) lattice visits; exact-integer limb work grows
-    /// with prefix length.
+    /// Fallible component-by-component construction under an explicit work
+    /// and requested-capacity state envelope.
+    ///
+    /// This is the synchronous facade over the same sealed admission schedule
+    /// and exact tiled executor exposed by [`crate::cbc`] and
+    /// [`crate::cbc_exec`]. It does not contain a second CBC implementation.
+    /// Candidate ordering is exact: the rational Bernoulli-B₂ kernel's common
+    /// denominator is removed and arbitrary-precision integer numerator sums
+    /// are compared, with the lower candidate winning exact ties.
+    ///
+    /// The facade uses fixed 64-candidate × 64-point tiles, never requests
+    /// cancellation, and supplies the admitted construction-work total as its
+    /// one run allowance. Callers that need observable cancellation, sliced
+    /// allowances, or resumable prefixes must use [`CbcExecutor`] directly.
+    ///
+    /// # Errors
+    /// [`CbcLatticeError::Admission`] for structural, arithmetic, target, or
+    /// budget refusal; [`CbcLatticeError::Execution`] for an executor
+    /// authority/invariant refusal. The other variants fail closed if the
+    /// continue-only completion contract is ever broken. Allocation failure
+    /// is not yet converted into a typed error; fallible exact storage is the
+    /// subsequent CBC storage tranche.
+    #[must_use]
+    pub fn try_cbc(n: u32, dim: usize, budget: CbcBudget) -> Result<Self, CbcLatticeError> {
+        let problem = CbcProblem::new(n, dim)?;
+        let admission = problem.admit(budget)?;
+        let allowance = admission.estimate().work_units();
+        let mut executor = CbcExecutor::new(admission)?;
+        let tile = CbcTileShape::new(CBC_FACADE_CANDIDATE_BLOCK, CBC_FACADE_POINT_BLOCK)?;
+        let mut keep_going = || CbcControl::Continue;
+        let status = executor.run(&mut keep_going, tile, allowance)?;
+        if status != CbcRunStatus::Completed {
+            return Err(CbcLatticeError::UnexpectedRunStatus(status));
+        }
+        executor
+            .into_lattice()
+            .ok_or(CbcLatticeError::MissingCompletedLattice)
+    }
+
+    /// Compatibility wrapper around [`Self::try_cbc`] under
+    /// [`DEFAULT_CBC_BUDGET`].
     ///
     /// # Panics
-    /// If `n < 3` or `dim` is 0.
+    /// Panics when problem validation, checked estimation, target capacity,
+    /// the finite default work/memory envelope, or an executor invariant
+    /// refuses construction. Budget-sensitive callers should use
+    /// [`Self::try_cbc`] and handle [`CbcLatticeError`] instead.
     #[must_use]
-    pub fn cbc(n: u32, dim: usize) -> Lattice {
-        assert!(n >= 3 && dim >= 1, "lattice needs n >= 3, dim >= 1");
-        let point_count = usize::try_from(n).expect("lattice point count fits usize");
-        // products[k] is the exact numerator product for the chosen prefix at
-        // point k. The omitted denominator (6*n²)^prefix_len is common to
-        // every candidate in one CBC step.
-        let mut products = vec![ExactNat::one(); point_count];
-        let mut z = Vec::with_capacity(dim);
-
-        // Every unit modulo n permutes the complete residue set, so every
-        // admissible first component has exactly the same one-dimensional
-        // score. Candidate 1 is therefore the mathematical lowest-candidate
-        // tie winner for every supported n, not a fixture-specific shortcut.
-        let first = 1_u32;
-        for (point, product) in products.iter_mut().enumerate() {
-            let residue = lattice_residue(point, first, n);
-            product.mul_assign_factor(exact_kernel_numerator(n, residue));
-        }
-        z.push(first);
-
-        for _ in 1..dim {
-            let mut best: Option<(ExactNat, u32)> = None;
-            for candidate in 1..n {
-                if gcd(candidate, n) != 1 {
-                    continue;
-                }
-                let mut score = ExactNat::zero();
-                for (point, prefix_product) in products.iter().enumerate() {
-                    let residue = lattice_residue(point, candidate, n);
-                    score.add_mul_factor(prefix_product, exact_kernel_numerator(n, residue));
-                }
-                score.normalize();
-
-                let replace = match &best {
-                    None => true,
-                    Some((best_score, best_candidate)) => match score.magnitude_cmp(best_score) {
-                        core::cmp::Ordering::Less => true,
-                        core::cmp::Ordering::Equal => candidate < *best_candidate,
-                        core::cmp::Ordering::Greater => false,
-                    },
-                };
-                if replace {
-                    best = Some((score, candidate));
-                }
-            }
-
-            let (_, chosen) = best.expect("candidate 1 is coprime to every n");
-            for (point, product) in products.iter_mut().enumerate() {
-                let residue = lattice_residue(point, chosen, n);
-                product.mul_assign_factor(exact_kernel_numerator(n, residue));
-            }
-            z.push(chosen);
-        }
-        Lattice { n, z }
+    pub fn cbc(n: u32, dim: usize) -> Self {
+        Self::try_cbc(n, dim, DEFAULT_CBC_BUDGET)
+            .unwrap_or_else(|error| panic!("bounded default CBC construction refused: {error}"))
     }
 
     /// The k-th point.

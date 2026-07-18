@@ -36,10 +36,11 @@ distributions (plan §6.7; P2's seed pillar). Layer: L1.
   layouts, and models requested product/score/certificate payload plus phase
   overlap. Construction and certified receipts are distinct capabilities.
 - `cbc_exec::{CbcExecutor, CbcTileShape, CbcPoll, CbcControl, CbcBoundary,
-  CbcRunStatus, CbcExecError}` — schema-v2 tiled execution of the SAME exact
-  construction over an admission receipt: byte-identical arithmetic in the
-  same logical order as `Lattice::cbc` (proven per-case in the battery, incl.
-  the pinned n=257 KAT), so tile shape and pause/resume splits never change
+  CbcRunStatus, CbcExecError}` — schema-v2 tiled execution of the exact
+  construction over an admission receipt. It is the construction authority
+  consumed by both `Lattice::try_cbc` and `Lattice::cbc`; the pinned n=257 KAT
+  and independent exact-score fixtures guard the generator semantics. Tile
+  shape and pause/resume splits never change
   the chosen vector or the debit total. Work debits follow the admission
   schedule at admitted widths (conservative and monotone;
   `ScheduleOverrun` detects an invariant breach but is not yet a replayable
@@ -52,8 +53,15 @@ distributions (plan §6.7; P2's seed pillar). Layer: L1.
   and budget before allocation; exact arithmetic refuses before mutation when
   its logical limb length would exceed the requested ceiling. NO-CLAIM: no serialized
   cross-process pause/migrate/fork state, no parallel candidate scoring
-  yet (later 6ys.20 tranches); `Lattice::cbc` itself remains the
-  synchronous convenience authority.
+  yet (later 6ys.20 tranches).
+- `qmc::{Lattice::try_cbc, Lattice::cbc, CbcLatticeError,
+  DEFAULT_CBC_BUDGET}` — the fallible synchronous facade admits caller-supplied
+  work and requested-capacity state ceilings through schema v4, then drains the
+  same exact executor with fixed 64×64 tiles and the admitted construction-work
+  allowance. The compatibility wrapper uses a fixed finite default of
+  1,000,000,000 work units and 64 MiB; it panics on refusal instead of bypassing
+  admission. Schema/layout changes do not silently widen those policy values.
+  Allocation failure is not yet converted into `CbcLatticeError`.
 - `cbc_cert::{CbcPrefixCertificate, CbcCertError, verify_consistency,
   audit_minimality, verify_consistency_admitted, audit_minimality_admitted}` —
   schema-v2 per-prefix selection evidence produced by
@@ -240,9 +248,11 @@ pending an actual 32-bit test lane.
   net-preserving — all tested). Verified: exact per-dim stratification
   (m 1..=8) and 2D elementary intervals; scrambled-Sobol RMSE 3.17e-6 vs MC
   1.53e-3 at n=4096/dim=5 on Genz product-peak (~480x).
-- `Lattice::cbc(n, dim)` — rank-1 CBC in the gamma=1 Korobov space (B2
-  kernel), `korobov_error_sq` diagnostic (verified decay 4.46e-4@257 ->
-  5.26e-5@1031, beats naive vectors), `baker` periodization.
+- `Lattice::try_cbc(n, dim, budget)` / `Lattice::cbc(n, dim)` — admitted
+  rank-1 CBC in the gamma=1 Korobov space (B2 kernel), with the latter using
+  the finite default envelope above; `korobov_error_sq` diagnostic (verified
+  decay 4.46e-4@257 -> 5.26e-5@1031, beats naive vectors), `baker`
+  periodization.
 
 ## No-claim boundaries
 - The canonical checkpoint frame is deterministic type/domain separation, not
@@ -280,8 +290,9 @@ pending an actual 32-bit test lane.
   product lengths stay below the requested ceiling and report allocator
   capacity separately. Every resident product and the moved old allocation
   retained during replacement are modeled at the same final requested product
-  capacity from executor construction onward. `Lattice::cbc` is not yet
-  receipt-gated or metered.
+  capacity from executor construction onward. Both synchronous lattice
+  facades are receipt-gated and metered by the construction schedule; only
+  the fallible facade lets the caller choose the envelope.
   Admitted certificate checker entry points gate one invocation's problem and
   vector shapes against the same current certified authority, but do not debit
   that receipt, prove checker/executor work-unit equality, or aggregate repeated
