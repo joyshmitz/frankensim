@@ -52,7 +52,8 @@ telemetry/legacy correlation.
 - `ModelBracket` — N plausible models; evidence = midrange value, an
   enclosure spanning every member, spread as the model band, and a
   bracket-spread sensitivity entry (the vessel flagship's contact-line
-  mitigation).
+  mitigation). Admitted member rows are stored in exact model-name order, so
+  insertion order is presentation-only.
 - `to_ledger_row_json` on evidence and cards — the `evidence` /
   `model_cards` table rows (canonical order, no clocks, no addresses).
 - `identity` module (sj31i.52.2 tranche 1) —
@@ -132,6 +133,19 @@ telemetry/legacy correlation.
   the band does not bind its corpus, domain, pair count, query, metric, or
   derivation. No `DiscrepancyModel` identity is claimed because the current
   fitted state does not retain the exact training corpus or model provenance.
+- `identity` module (sj31i.52.2 model-bracket tranche) —
+  `ModelBracketIdV1` is a strong `SemanticId` for one exact, helper-admitted
+  model-name/QoI mapping. `ModelBracket` canonicalizes insertion order by exact
+  name; the opaque `IdentifiedModelBracketV1` consumes and retains that bracket
+  while binding length-framed names and exact finite QoI bits in the same
+  strict order. At least two distinct members are required; the member count is
+  hard-capped at 1,024, the ordered field at 1 MiB, and caller frame/field/chunk
+  limits and cancellation remain authoritative. The public bracket builder
+  reserves each bounded name and member slot fallibly and reports allocation
+  refusal before partially inserting a member. This structural projection does
+  not bind `ModelCard` contents, executions, units, a quantity kind, derived
+  bracket evidence, source bytes, legacy provenance, or scientific authority.
+  A low-level ID/receipt alias proves schema-shaped framing only.
 - `identity` module (sj31i.52.2 tranche 3) —
   `CertifiedF64EvidenceIdV1` is a strong `SemanticId` for the helper-defined
   semantic projection of one opaque `Certified<f64>`. The helper consumes and
@@ -414,14 +428,23 @@ telemetry/legacy correlation.
     late cancellation publish no opaque result. Raw alias receipts can carry
     arbitrary schema-shaped fields and therefore do not prove helper
     recomputation or retained-child correspondence.
+21. Opaque helper-built model-bracket identities (sj31i.52.2, G0/G3/G4)
+    retain an exact canonical member mapping and agree with an independently
+    framed ordered encoding. Construction-order permutations agree exactly;
+    every member-name, member-count, or accepted QoI-bit mutation moves the
+    root, including signed zero. Fewer than two members, invalid names,
+    non-finite QoIs, non-canonical internal order, name/member allocation
+    refusal, exact field/count/chunk/frame overflow, zero cancellation stride,
+    and entry, traversal, or late cancellation publish no opaque result. Raw
+    aliases do not prove retained bracket correspondence.
 
 ## Error model
 Structured teaching errors throughout: `CertifyError`, `RegistryError`,
 `OutOfDomain`, `FitError`, `FalsifyError`, and typed identity refusals including
 `ModelEvidenceIdentityError`, `ModelCardIdentityError`,
 `NumericalCertificateIdentityError`, `StatisticalCertificateIdentityError`,
-`FidelityPairIdentityError`, `DiscrepancyBandIdentityError`, and
-`CertifiedF64DecisionAssessmentIdentityError` — all
+`FidelityPairIdentityError`, `DiscrepancyBandIdentityError`,
+`ModelBracketIdentityError`, and `CertifiedF64DecisionAssessmentIdentityError` — all
 `core::error::Error` with actionable Display text. Constructors are total
 (enclosure bounds normalize by swapping); no panics cross the boundary.
 
@@ -434,12 +457,13 @@ divergence.
 
 ## Cancellation behavior
 Core certificate/color algebra is bounded small synchronous work. Typed color,
-validity-domain, standalone-certificate, fidelity/discrepancy, model-evidence,
-certified-f64, decision-assessment, and model-card identity helpers accept an
-explicit cancellation probe. Standalone certificate, discrepancy-band, and
-decision-assessment helpers poll at entry before bounded recomputation and
-throughout fixed-size canonical framing. Fidelity-pair helpers additionally
-poll while preflighting parameters and streaming exact name/value rows.
+validity-domain, standalone-certificate, fidelity/discrepancy, model-bracket,
+model-evidence, certified-f64, decision-assessment, and model-card identity
+helpers accept an explicit cancellation probe. Standalone certificate,
+discrepancy-band, and decision-assessment helpers poll at entry before bounded
+recomputation and throughout fixed-size canonical framing. Fidelity-pair and
+model-bracket helpers additionally poll while preflighting and streaming exact
+name/value rows.
 Color payload copies poll at the
 configured byte stride; validity and sensitivity rows poll at stream
 boundaries; set/row preflights poll while traversing caller data. Model-card
@@ -854,6 +878,17 @@ physical validation, process-standard conformance, or decision fitness.
   Neither identity promotes Estimated evidence to Validated/Verified or binds
   the other transitively. A durable `DiscrepancyModel` identity remains deferred
   until exact corpus/model provenance and fit-algorithm identity can be bound.
+- `IdentifiedModelBracketV1` proves only exact local structural framing of one
+  retained canonical model-name/QoI mapping. Names are structural identifiers,
+  not typed `ModelCardIdV1` children: the root binds no model declaration,
+  version, calibration, implementation, solver, configuration, execution,
+  capability, or behavioral equivalence. It also binds no QoI units or quantity
+  kind, source/run identity, seeds, budgets, custody, provenance, representative
+  value, enclosure, spread algorithm/version, derived `Evidence`, scientific
+  correctness, origin, signature, ledger admission, or external trust.
+  Matching IDs therefore prove neither that models ran nor that bracket
+  evidence was honestly derived. `ModelBracket::evidence(ProvenanceHash)`
+  remains a separate legacy-correlation path and is not transitively upgraded.
 - `IdentifiedCertifiedF64EvidenceV1` proves only the helper-defined strong
   semantic projection of an already-local `Certified<f64>` and keeps that
   record attached. It does not add units, a quantity kind, source or model-card

@@ -25,8 +25,8 @@ use std::collections::BTreeMap;
 const MAX_TRAINING_PAIRS: usize = 65_536;
 const MAX_TRAINING_PARAMETERS: usize = 1_024;
 const MAX_TRAINING_COORDINATES: usize = 1_048_576;
-const MIN_BRACKET_MEMBERS: usize = 2;
-const MAX_BRACKET_MEMBERS: usize = 1_024;
+pub(crate) const MIN_BRACKET_MEMBERS: usize = 2;
+pub(crate) const MAX_BRACKET_MEMBERS: usize = 1_024;
 
 /// One paired two-fidelity evaluation at a parameter point.
 #[derive(Debug, Clone, PartialEq)]
@@ -125,6 +125,16 @@ pub enum FitError {
         /// Maximum admitted member count.
         maximum: usize,
     },
+    /// The exact member name could not reserve its bounded storage.
+    BracketMemberNameAllocationFailed {
+        /// Exact UTF-8 byte capacity requested.
+        requested_bytes: usize,
+    },
+    /// The canonical member list could not reserve one more slot.
+    BracketMemberListAllocationFailed {
+        /// Exact resulting member capacity requested.
+        requested_members: usize,
+    },
     /// A member name cannot become a model-card identity.
     InvalidBracketMemberIdentity {
         /// Shared leaf-identity rejection reason.
@@ -196,6 +206,14 @@ impl fmt::Display for FitError {
             FitError::TooManyBracketMembers { maximum } => write!(
                 f,
                 "model bracket refused: member count exceeds the bounded maximum {maximum}"
+            ),
+            FitError::BracketMemberNameAllocationFailed { requested_bytes } => write!(
+                f,
+                "model bracket refused: could not reserve {requested_bytes} bytes for the member name"
+            ),
+            FitError::BracketMemberListAllocationFailed { requested_members } => write!(
+                f,
+                "model bracket refused: could not reserve storage for {requested_members} members"
             ),
             FitError::InvalidBracketMemberIdentity { reason } => write!(
                 f,
@@ -468,10 +486,16 @@ impl DiscrepancyModel {
 
 /// Model bracketing: N plausible models of weakly-understood physics, one
 /// QoI each; the evidence is the SPREAD, not a pretended point value.
+///
+/// Admitted members are stored in exact model-name order so construction order
+/// is presentation-only and every equivalent bracket has one structural form.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelBracket {
     members: Vec<(String, f64)>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BracketReservationError;
 
 impl ModelBracket {
     /// Start a bracket.
@@ -482,7 +506,17 @@ impl ModelBracket {
         }
     }
 
-    fn push_member(&mut self, name: &str, qoi: f64) -> Result<(), FitError> {
+    fn push_member_with_reservations<RN, RM>(
+        &mut self,
+        name: &str,
+        qoi: f64,
+        reserve_name: RN,
+        reserve_members: RM,
+    ) -> Result<(), FitError>
+    where
+        RN: FnOnce(&mut String, usize) -> Result<(), BracketReservationError>,
+        RM: FnOnce(&mut Vec<(String, f64)>, usize) -> Result<(), BracketReservationError>,
+    {
         if self.members.len() >= MAX_BRACKET_MEMBERS {
             return Err(FitError::TooManyBracketMembers {
                 maximum: MAX_BRACKET_MEMBERS,
@@ -491,25 +525,61 @@ impl ModelBracket {
         if let Some(reason) = color_leaf_identity_reason(name) {
             return Err(FitError::InvalidBracketMemberIdentity { reason });
         }
+        let mut owned_name = String::new();
+        reserve_name(&mut owned_name, name.len()).map_err(|BracketReservationError| {
+            FitError::BracketMemberNameAllocationFailed {
+                requested_bytes: name.len(),
+            }
+        })?;
+        owned_name.push_str(name);
         if !qoi.is_finite() {
-            return Err(FitError::NonFiniteBracketQoi {
-                name: name.to_string(),
-            });
+            return Err(FitError::NonFiniteBracketQoi { name: owned_name });
         }
-        if self.members.iter().any(|(member, _)| member == name) {
-            return Err(FitError::DuplicateBracketMember {
-                name: name.to_string(),
-            });
-        }
-        self.members.push((name.to_string(), qoi));
+        let position = match self
+            .members
+            .binary_search_by(|(member, _)| member.as_str().cmp(owned_name.as_str()))
+        {
+            Ok(_) => {
+                return Err(FitError::DuplicateBracketMember { name: owned_name });
+            }
+            Err(position) => position,
+        };
+        let requested_members = self.members.len() + 1;
+        reserve_members(&mut self.members, 1).map_err(|BracketReservationError| {
+            FitError::BracketMemberListAllocationFailed { requested_members }
+        })?;
+        self.members.insert(position, (owned_name, qoi));
         Ok(())
+    }
+
+    fn push_member(&mut self, name: &str, qoi: f64) -> Result<(), FitError> {
+        self.push_member_with_reservations(
+            name,
+            qoi,
+            |value, additional| {
+                value
+                    .try_reserve_exact(additional)
+                    .map_err(|_| BracketReservationError)
+            },
+            |values, additional| {
+                values
+                    .try_reserve_exact(additional)
+                    .map_err(|_| BracketReservationError)
+            },
+        )
+    }
+
+    /// Exact canonical member-name/QoI rows for the strong-identity helper.
+    pub(crate) fn identity_members(&self) -> &[(String, f64)] {
+        &self.members
     }
 
     /// Add a member model's QoI and report admission failure immediately.
     ///
     /// # Errors
     /// [`FitError`] when the member identity or QoI is invalid, duplicated, or
-    /// exceeds the bounded bracket-member budget.
+    /// exceeds the bounded bracket-member budget, or when bounded name/member
+    /// storage cannot be reserved.
     pub fn try_with_member(mut self, name: impl AsRef<str>, qoi: f64) -> Result<Self, FitError> {
         self.push_member(name.as_ref(), qoi)?;
         Ok(self)
@@ -541,8 +611,7 @@ impl ModelBracket {
         let (lo, hi) = qois.fold((first, first), |(lo, hi), qoi| (lo.min(qoi), hi.max(qoi)));
         let mid = f64::midpoint(lo, hi);
         let spread_rel = (hi - lo) / mid.abs().max(f64::MIN_POSITIVE);
-        let mut names: Vec<String> = self.members.iter().map(|(n, _)| n.clone()).collect();
-        names.sort_unstable();
+        let names: Vec<String> = self.members.iter().map(|(n, _)| n.clone()).collect();
         let mut sensitivity = SensitivitySummary::default();
         sensitivity
             .d_qoi
@@ -851,6 +920,51 @@ mod tests {
                 maximum: MAX_BRACKET_MEMBERS
             })
         ));
+    }
+
+    #[test]
+    fn bracket_allocation_refusals_are_typed_and_atomic() {
+        let original = ModelBracket::new()
+            .try_with_member("model-a", 1.0)
+            .expect("baseline member");
+
+        let mut name_failure = original.clone();
+        let error = name_failure
+            .push_member_with_reservations(
+                "model-b",
+                2.0,
+                |_, _| Err(BracketReservationError),
+                |_, _| panic!("member-list reservation must not follow name refusal"),
+            )
+            .expect_err("injected name reservation failure");
+        assert_eq!(
+            error,
+            FitError::BracketMemberNameAllocationFailed {
+                requested_bytes: "model-b".len(),
+            }
+        );
+        assert_eq!(name_failure, original);
+
+        let mut list_failure = original.clone();
+        let error = list_failure
+            .push_member_with_reservations(
+                "model-b",
+                2.0,
+                |value, additional| {
+                    value
+                        .try_reserve_exact(additional)
+                        .map_err(|_| BracketReservationError)
+                },
+                |_, _| Err(BracketReservationError),
+            )
+            .expect_err("injected member-list reservation failure");
+        assert_eq!(
+            error,
+            FitError::BracketMemberListAllocationFailed {
+                requested_members: 2,
+            }
+        );
+        assert_eq!(list_failure, original);
     }
 
     #[test]

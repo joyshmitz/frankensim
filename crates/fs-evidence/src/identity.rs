@@ -27,9 +27,10 @@ use fs_blake3::identity::{
 
 use crate::{
     Ambition, COLOR_ALGEBRA_VERSION, Certified, Color, ColorPayloadError, DecisionStatus,
-    DiscrepancyBand, EscalationAdvice, FidelityPair, IntervalOp, ModelCard, ModelEvidence,
-    NumericalKind, ProvenanceHash, StatisticalCertificate, UncertaintyBreakdown, UncertaintySource,
-    ValidityDomain, color_identity_reason, compose, validate_color_payload,
+    DiscrepancyBand, EscalationAdvice, FidelityPair, IntervalOp, ModelBracket, ModelCard,
+    ModelEvidence, NumericalKind, ProvenanceHash, StatisticalCertificate, UncertaintyBreakdown,
+    UncertaintySource, ValidityDomain, color_identity_reason, color_leaf_identity_reason, compose,
+    validate_color_payload,
 };
 
 /// Identity schema version for exact retained color-evidence sources.
@@ -48,6 +49,8 @@ pub const STATISTICAL_CERTIFICATE_IDENTITY_VERSION_V1: u32 = 1;
 pub const FIDELITY_PAIR_IDENTITY_VERSION_V1: u32 = 1;
 /// Identity schema version for one standalone discrepancy-band declaration.
 pub const DISCREPANCY_BAND_IDENTITY_VERSION_V1: u32 = 1;
+/// Identity schema version for one exact admitted model-bracket declaration.
+pub const MODEL_BRACKET_IDENTITY_VERSION_V1: u32 = 1;
 /// Identity schema version for one certified-f64 decision assessment.
 pub const CERTIFIED_F64_DECISION_ASSESSMENT_IDENTITY_VERSION_V1: u32 = 1;
 /// Semantic version of the bound breakdown, tie-break, status, and advice law.
@@ -74,12 +77,24 @@ pub const MAX_MODEL_CARD_CALIBRATION_SOURCE_BYTES_V1: u64 = 1 << 20;
 pub const MAX_FIDELITY_PAIR_PARAMETERS_FIELD_BYTES_V1: u64 = 1 << 20;
 /// Hard parameter-count ceiling matching discrepancy-fit v1 admission.
 pub const MAX_FIDELITY_PAIR_PARAMETERS_V1: u64 = 1_024;
+/// Hard payload ceiling for one exact model-bracket member field.
+pub const MAX_MODEL_BRACKET_MEMBERS_FIELD_BYTES_V1: u64 = 1 << 20;
+/// Minimum member count needed to express model-choice spread.
+pub const MIN_MODEL_BRACKET_MEMBERS_V1: u64 = 2;
+/// Hard member-count ceiling matching model-bracket v1 admission.
+pub const MAX_MODEL_BRACKET_MEMBERS_V1: u64 = 1_024;
+const _: () =
+    assert!(MIN_MODEL_BRACKET_MEMBERS_V1 as usize == crate::discrepancy::MIN_BRACKET_MEMBERS);
+const _: () =
+    assert!(MAX_MODEL_BRACKET_MEMBERS_V1 as usize == crate::discrepancy::MAX_BRACKET_MEMBERS);
 /// Non-semantic scatter/gather writes emitted for each streamed axis row.
 const VALIDITY_DOMAIN_STREAM_CHUNKS_PER_AXIS_V1: u64 = 4;
 /// Non-semantic scatter/gather writes emitted for each sensitivity row.
 const CERTIFIED_F64_SENSITIVITY_STREAM_CHUNKS_PER_ROW_V1: u64 = 3;
 /// Non-semantic scatter/gather writes emitted for each fidelity parameter row.
 const FIDELITY_PAIR_STREAM_CHUNKS_PER_PARAMETER_V1: u64 = 3;
+/// Non-semantic scatter/gather writes emitted for each model-bracket row.
+const MODEL_BRACKET_STREAM_CHUNKS_PER_MEMBER_V1: u64 = 3;
 
 /// Canonical identity schema for one retained source that may root a color
 /// evidence graph. The resulting identity is content-bound but untrusted.
@@ -682,6 +697,71 @@ impl IdentifiedDiscrepancyBandV1 {
     #[must_use]
     pub const fn into_band(self) -> DiscrepancyBand {
         self.band
+    }
+}
+
+/// Canonical semantic schema for one exact admitted model-bracket mapping.
+pub enum ModelBracketIdentitySchemaV1 {}
+
+impl CanonicalSchema for ModelBracketIdentitySchemaV1 {
+    const DOMAIN: &'static str = "org.frankensim.fs-evidence.model-bracket.v1";
+    const NAME: &'static str = "model-bracket";
+    const VERSION: u32 = MODEL_BRACKET_IDENTITY_VERSION_V1;
+    const CONTEXT: &'static str = "model-name-ordered exact admitted member name and finite QoI IEEE-754 rows; no model-card contents, model execution, units, quantity kind, bracket evidence, source, provenance, scientific authority, origin, or trust";
+    const FIELDS: &'static [FieldSpec] = &[FieldSpec::required("members", WireType::OrderedBytes)];
+}
+
+/// Low-level schema-shaped identity for one model-bracket member mapping.
+///
+/// Only [`IdentifiedModelBracketV1`] proves correspondence with a retained
+/// bracket whose canonical members passed local structural admission.
+pub type ModelBracketIdV1 = SemanticId<ModelBracketIdentitySchemaV1>;
+
+/// Low-level producer receipt for one model-bracket member mapping.
+pub type ModelBracketReceiptV1 = IdentityReceipt<ModelBracketIdV1>;
+
+/// An admitted model bracket kept attached to its unanchored semantic identity.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IdentifiedModelBracketV1 {
+    bracket: ModelBracket,
+    receipt: ModelBracketReceiptV1,
+}
+
+impl IdentifiedModelBracketV1 {
+    /// Read-only canonical bracket committed by this identity.
+    #[must_use]
+    pub const fn bracket(&self) -> &ModelBracket {
+        &self.bracket
+    }
+
+    /// Typed structural identity.
+    #[must_use]
+    pub const fn id(&self) -> ModelBracketIdV1 {
+        self.receipt.id()
+    }
+
+    /// Complete unanchored producer receipt.
+    #[must_use]
+    pub const fn receipt(&self) -> ModelBracketReceiptV1 {
+        self.receipt
+    }
+
+    /// Fixed-size typed digest bytes.
+    #[must_use]
+    pub fn id_bytes(&self) -> [u8; 32] {
+        *self.id().as_bytes()
+    }
+
+    /// Identity state of a producer receipt. This is always unanchored.
+    #[must_use]
+    pub fn trust_state(&self) -> EvidenceIdentityTrustState {
+        self.receipt.audit_record().trust()
+    }
+
+    /// Surrender the identity attachment and recover the canonical bracket.
+    #[must_use]
+    pub fn into_bracket(self) -> ModelBracket {
+        self.bracket
     }
 }
 
@@ -1468,6 +1548,86 @@ impl std::error::Error for DiscrepancyBandIdentityError {
 }
 
 impl From<CanonicalError> for DiscrepancyBandIdentityError {
+    fn from(error: CanonicalError) -> Self {
+        Self::Canonical(error)
+    }
+}
+
+/// Fail-closed refusal from model-bracket semantic identity construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelBracketIdentityError {
+    /// A bracket needs at least two distinct models to describe model choice.
+    TooFewMembers {
+        /// Admitted member count.
+        count: u64,
+        /// Minimum meaningful bracket size.
+        minimum: u64,
+    },
+    /// One member name cannot enter the model-leaf identity grammar.
+    InvalidMemberName {
+        /// Zero-based position in canonical model-name order.
+        member_index: u64,
+        /// Shared identity-grammar rejection reason.
+        reason: &'static str,
+    },
+    /// Internal bracket rows were not in strict model-name order.
+    NonCanonicalMemberOrder {
+        /// First row that was not greater than its predecessor.
+        member_index: u64,
+    },
+    /// One member QoI is NaN or infinite.
+    NonFiniteMemberQoi {
+        /// Zero-based position in canonical model-name order.
+        member_index: u64,
+        /// Exact refused IEEE-754 bits.
+        bits: u64,
+    },
+    /// Canonical framing, resource admission, or cancellation refused.
+    Canonical(CanonicalError),
+}
+
+impl fmt::Display for ModelBracketIdentityError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooFewMembers { count, minimum } => write!(
+                formatter,
+                "model-bracket identity refused {count} member(s): at least {minimum} are required"
+            ),
+            Self::InvalidMemberName {
+                member_index,
+                reason,
+            } => write!(
+                formatter,
+                "model-bracket identity refused member {member_index}: invalid model name ({reason})"
+            ),
+            Self::NonCanonicalMemberOrder { member_index } => write!(
+                formatter,
+                "model-bracket identity refused member {member_index}: names must be strictly increasing"
+            ),
+            Self::NonFiniteMemberQoi { member_index, bits } => write!(
+                formatter,
+                "model-bracket identity refused member {member_index} QoI bits 0x{bits:016x}: QoI must be finite"
+            ),
+            Self::Canonical(error) => {
+                write!(formatter, "model-bracket identity refused: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ModelBracketIdentityError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Canonical(error) => Some(error),
+            Self::TooFewMembers { .. }
+            | Self::InvalidMemberName { .. }
+            | Self::NonCanonicalMemberOrder { .. }
+            | Self::NonFiniteMemberQoi { .. } => None,
+        }
+    }
+}
+
+impl From<CanonicalError> for ModelBracketIdentityError {
     fn from(error: CanonicalError) -> Self {
         Self::Canonical(error)
     }
@@ -2379,6 +2539,160 @@ where
         )?
         .finish()?;
     Ok(IdentifiedDiscrepancyBandV1 { band, receipt })
+}
+
+fn preflight_model_bracket_members_v1<C>(
+    bracket: &ModelBracket,
+    limits: EvidenceIdentityLimits,
+    cancellation: &mut C,
+) -> Result<u64, ModelBracketIdentityError>
+where
+    C: EvidenceIdentityCancellationProbe,
+{
+    let members = bracket.identity_members();
+    let member_count = bounded_len(members.len())?;
+    if member_count < MIN_MODEL_BRACKET_MEMBERS_V1 {
+        return Err(ModelBracketIdentityError::TooFewMembers {
+            count: member_count,
+            minimum: MIN_MODEL_BRACKET_MEMBERS_V1,
+        });
+    }
+    let member_limit = limits
+        .max_collection_items()
+        .min(MAX_MODEL_BRACKET_MEMBERS_V1);
+    if member_count > member_limit {
+        return Err(CanonicalError::LimitExceeded {
+            kind: LimitKind::CollectionItems,
+            requested: member_count,
+            limit: member_limit,
+        }
+        .into());
+    }
+
+    let field_limit = limits
+        .max_field_bytes()
+        .min(MAX_MODEL_BRACKET_MEMBERS_FIELD_BYTES_V1);
+    let mut field_payload_bytes = u64::from(u64::BITS / 8);
+    if field_payload_bytes > field_limit {
+        return Err(CanonicalError::LimitExceeded {
+            kind: LimitKind::FieldBytes,
+            requested: field_payload_bytes,
+            limit: field_limit,
+        }
+        .into());
+    }
+    let mut previous_name: Option<&str> = None;
+    for (member_index, (name, qoi)) in members.iter().enumerate() {
+        poll_identity_cancellation(cancellation)?;
+        let member_index = bounded_len(member_index)?;
+        if let Some(reason) = color_leaf_identity_reason(name) {
+            return Err(ModelBracketIdentityError::InvalidMemberName {
+                member_index,
+                reason,
+            });
+        }
+        if previous_name.is_some_and(|previous| previous >= name.as_str()) {
+            return Err(ModelBracketIdentityError::NonCanonicalMemberOrder { member_index });
+        }
+        if !qoi.is_finite() {
+            return Err(ModelBracketIdentityError::NonFiniteMemberQoi {
+                member_index,
+                bits: qoi.to_bits(),
+            });
+        }
+        let row_bytes = 16_u64
+            .checked_add(bounded_len(name.len())?)
+            .ok_or(CanonicalError::LengthOverflow)?;
+        let framed_row_bytes = u64::from(u64::BITS / 8)
+            .checked_add(row_bytes)
+            .ok_or(CanonicalError::LengthOverflow)?;
+        field_payload_bytes = field_payload_bytes
+            .checked_add(framed_row_bytes)
+            .ok_or(CanonicalError::LengthOverflow)?;
+        if field_payload_bytes > field_limit {
+            return Err(CanonicalError::LimitExceeded {
+                kind: LimitKind::FieldBytes,
+                requested: field_payload_bytes,
+                limit: field_limit,
+            }
+            .into());
+        }
+        previous_name = Some(name);
+    }
+    let required_stream_chunks = member_count
+        .checked_mul(MODEL_BRACKET_STREAM_CHUNKS_PER_MEMBER_V1)
+        .ok_or(CanonicalError::LengthOverflow)?;
+    if required_stream_chunks > limits.max_collection_items() {
+        return Err(CanonicalError::LimitExceeded {
+            kind: LimitKind::StreamChunks,
+            requested: required_stream_chunks,
+            limit: limits.max_collection_items(),
+        }
+        .into());
+    }
+    Ok(member_count)
+}
+
+/// Identify the exact admitted member mapping of one model bracket.
+///
+/// [`ModelBracket`] canonicalizes construction order by exact model name. This
+/// helper consumes and retains that bracket and binds every canonical member
+/// name and finite QoI bit without deriving bracket evidence or accepting a
+/// legacy provenance token. Accepted signed zero remains bit-distinct.
+///
+/// # Errors
+/// Refuses fewer than two members, an oversized member mapping, invalid names,
+/// non-canonical order, non-finite QoIs, invalid limits, resource overflow, or
+/// cancellation. No partial identity is published.
+pub fn identify_model_bracket_v1<C>(
+    bracket: ModelBracket,
+    limits: EvidenceIdentityLimits,
+    mut cancellation: C,
+) -> Result<IdentifiedModelBracketV1, ModelBracketIdentityError>
+where
+    C: EvidenceIdentityCancellationProbe,
+{
+    if limits.cancellation_poll_bytes() == 0 {
+        return Err(
+            CanonicalError::InvalidLimits("cancellation_poll_bytes must be positive").into(),
+        );
+    }
+    poll_identity_cancellation(&mut cancellation)?;
+    let member_count = preflight_model_bracket_members_v1(&bracket, limits, &mut cancellation)?;
+    let receipt = {
+        let row_lengths = bracket.identity_members().iter().map(|(name, _)| {
+            16_u64
+                .checked_add(bounded_len(name.len())?)
+                .ok_or(CanonicalError::LengthOverflow)
+        });
+        let mut rows = bracket.identity_members().iter();
+        CanonicalEncoder::<ModelBracketIdV1, _>::new(limits, cancellation)?
+            .ordered_bytes_stream(
+                Field::new(0, "members"),
+                member_count,
+                row_lengths,
+                |row_index, mut sink| -> Result<(), CanonicalError> {
+                    let Some((name, qoi)) = rows.next() else {
+                        return Err(CanonicalError::DeclaredLengthMismatch {
+                            declared: member_count,
+                            observed: row_index,
+                        });
+                    };
+                    sink.write(&bounded_len(name.len())?.to_le_bytes())?;
+                    sink.write(name.as_bytes())?;
+                    sink.write(&qoi.to_bits().to_le_bytes())?;
+                    Ok(())
+                },
+            )
+            .map_err(|error| match error {
+                OrderedBytesStreamError::Canonical { source, .. }
+                | OrderedBytesStreamError::Producer { source, .. } => {
+                    ModelBracketIdentityError::Canonical(source)
+                }
+            })?
+            .finish()?
+    };
+    Ok(IdentifiedModelBracketV1 { bracket, receipt })
 }
 
 fn preflight_bounded_field_bytes_v1(

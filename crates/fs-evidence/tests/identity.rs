@@ -19,19 +19,21 @@ use fs_evidence::{
     DiscrepancyBand, DiscrepancyBandIdV1, DiscrepancyBandIdentityError, DiscrepancyBandReceiptV1,
     EscalationAdvice, Evidence, FidelityPair, FidelityPairIdV1, FidelityPairIdentityError,
     FidelityPairReceiptV1, IdentifiedCertifiedF64DecisionAssessmentV1,
-    IdentifiedCertifiedF64EvidenceV1, IdentifiedModelCardV1, IdentifiedModelEvidenceV1,
-    IdentifiedValidityDomainV1, ModelCard, ModelCardCalibrationSourceIdV1,
-    ModelCardCalibrationSourceReceiptV1, ModelCardIdV1, ModelCardIdentityError, ModelCardReceiptV1,
-    ModelEvidence, ModelEvidenceIdV1, ModelEvidenceIdentityError, ModelEvidenceReceiptV1,
-    NumericalCertificate, NumericalCertificateIdV1, NumericalCertificateIdentityError,
-    NumericalCertificateReceiptV1, NumericalKind, ProvenanceHash, SensitivitySummary,
-    StatisticalCertificate, StatisticalCertificateIdV1, StatisticalCertificateIdentityError,
+    IdentifiedCertifiedF64EvidenceV1, IdentifiedModelBracketV1, IdentifiedModelCardV1,
+    IdentifiedModelEvidenceV1, IdentifiedValidityDomainV1, MAX_MODEL_BRACKET_MEMBERS_V1,
+    ModelBracket, ModelBracketIdV1, ModelBracketIdentityError, ModelBracketReceiptV1, ModelCard,
+    ModelCardCalibrationSourceIdV1, ModelCardCalibrationSourceReceiptV1, ModelCardIdV1,
+    ModelCardIdentityError, ModelCardReceiptV1, ModelEvidence, ModelEvidenceIdV1,
+    ModelEvidenceIdentityError, ModelEvidenceReceiptV1, NumericalCertificate,
+    NumericalCertificateIdV1, NumericalCertificateIdentityError, NumericalCertificateReceiptV1,
+    NumericalKind, ProvenanceHash, SensitivitySummary, StatisticalCertificate,
+    StatisticalCertificateIdV1, StatisticalCertificateIdentityError,
     StatisticalCertificateReceiptV1, UncertaintySource, ValidityDomain, ValidityDomainIdV1,
     ValidityDomainIdentityError, compose_color_evidence_nodes_v1,
     identify_certified_f64_decision_assessment_v1, identify_certified_f64_evidence_v1,
     identify_color_evidence_source_node_v1, identify_color_evidence_source_v1,
-    identify_discrepancy_band_v1, identify_fidelity_pair_v1, identify_model_card_v1,
-    identify_model_evidence_v1, identify_numerical_certificate_v1,
+    identify_discrepancy_band_v1, identify_fidelity_pair_v1, identify_model_bracket_v1,
+    identify_model_card_v1, identify_model_evidence_v1, identify_numerical_certificate_v1,
     identify_statistical_certificate_v1, identify_validity_domain_v1,
 };
 
@@ -205,6 +207,48 @@ fn manual_discrepancy_band_receipt(band: DiscrepancyBand) -> DiscrepancyBandRece
         .expect("maximum discrepancy")
         .finish()
         .expect("manual discrepancy-band identity")
+}
+
+fn model_bracket(members: &[(&str, f64)]) -> ModelBracket {
+    members
+        .iter()
+        .try_fold(ModelBracket::new(), |bracket, &(name, qoi)| {
+            bracket.try_with_member(name, qoi)
+        })
+        .expect("valid model-bracket fixture")
+}
+
+fn identified_model_bracket(bracket: ModelBracket) -> IdentifiedModelBracketV1 {
+    identify_model_bracket_v1(bracket, LIMITS, || false).expect("valid model-bracket identity")
+}
+
+fn manual_model_bracket_receipt(members: &[(&str, f64)]) -> ModelBracketReceiptV1 {
+    let mut members = members.to_vec();
+    members.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+    let rows: Vec<Vec<u8>> = members
+        .iter()
+        .map(|(name, qoi)| {
+            let mut row = Vec::new();
+            row.extend_from_slice(
+                &u64::try_from(name.len())
+                    .expect("model-name length")
+                    .to_le_bytes(),
+            );
+            row.extend_from_slice(name.as_bytes());
+            row.extend_from_slice(&qoi.to_bits().to_le_bytes());
+            row
+        })
+        .collect();
+    CanonicalEncoder::<ModelBracketIdV1, _>::new(LIMITS, || false)
+        .expect("model-bracket schema")
+        .ordered_bytes(
+            Field::new(0, "members"),
+            u64::try_from(rows.len()).expect("model-bracket member count"),
+            rows.iter().map(Vec::as_slice),
+        )
+        .expect("model-bracket members")
+        .finish()
+        .expect("manual model-bracket identity")
 }
 
 fn model_evidence_fixture() -> ModelEvidence {
@@ -1760,6 +1804,295 @@ fn fidelity_pair_and_discrepancy_band_identities_enforce_resources_and_cancellat
             },
         ),
         Err(DiscrepancyBandIdentityError::Canonical(
+            CanonicalError::Cancelled { absorbed_bytes }
+        )) if absorbed_bytes > 0
+    ));
+}
+
+#[test]
+fn model_bracket_identity_normalizes_construction_order_and_binds_every_member() {
+    let members = [("model-z", 3.0), ("model-a", 1.0), ("model-m", 2.0)];
+    let first_bracket = model_bracket(&members);
+    let reordered_bracket = model_bracket(&[("model-m", 2.0), ("model-z", 3.0), ("model-a", 1.0)]);
+    assert_eq!(first_bracket, reordered_bracket);
+
+    let manual = manual_model_bracket_receipt(&members);
+    let first = identified_model_bracket(first_bracket.clone());
+    let replay = identified_model_bracket(first_bracket);
+    let reordered = identified_model_bracket(reordered_bracket);
+    assert_eq!(first.id(), replay.id());
+    assert_eq!(first.id(), reordered.id());
+    assert_eq!(first.id(), manual.id());
+    assert_eq!(
+        first.receipt().canonical_preimage(),
+        manual.canonical_preimage()
+    );
+    assert_eq!(first.id_bytes(), first.receipt().audit_record().id());
+    assert_eq!(first.trust_state(), TrustState::Unanchored);
+    assert_eq!(
+        first.receipt().audit_record().no_claim(),
+        NoClaimState::ExternalTrustRequired
+    );
+    let evidence = first
+        .bracket()
+        .evidence(ProvenanceHash(0x1234))
+        .expect("identified bracket remains usable");
+    assert_eq!(
+        evidence.model.cards,
+        vec![
+            "model-a".to_string(),
+            "model-m".to_string(),
+            "model-z".to_string()
+        ]
+    );
+    let different_legacy_provenance = first
+        .bracket()
+        .evidence(ProvenanceHash(0x5678))
+        .expect("same bracket with different legacy correlation");
+    assert_ne!(evidence.provenance, different_legacy_provenance.provenance);
+    assert_ne!(evidence, different_legacy_provenance);
+
+    let card_v1 = ModelCard::new(
+        "model-a",
+        "1.0.0",
+        Ambition::Solid,
+        vec!["assumption-a".to_string()],
+        ValidityDomain::unconstrained(),
+        Vec::new(),
+        0.1,
+    );
+    let card_v2 = ModelCard::new(
+        "model-a",
+        "2.0.0",
+        Ambition::Moonshot,
+        vec!["different-assumption".to_string()],
+        ValidityDomain::unconstrained().with("x", 0.0, 1.0),
+        vec!["different-failure".to_string()],
+        0.9,
+    );
+    assert_ne!(card_v1, card_v2);
+    let card_v1_bracket = identified_model_bracket(model_bracket(&[
+        (card_v1.name.as_str(), 1.0),
+        ("model-b", 2.0),
+    ]));
+    let card_v2_bracket = identified_model_bracket(model_bracket(&[
+        (card_v2.name.as_str(), 1.0),
+        ("model-b", 2.0),
+    ]));
+    assert_eq!(card_v1_bracket.id(), card_v2_bracket.id());
+
+    let renamed = identified_model_bracket(model_bracket(&[
+        ("model-z", 3.0),
+        ("model-b", 1.0),
+        ("model-m", 2.0),
+    ]));
+    let changed_qoi = identified_model_bracket(model_bracket(&[
+        ("model-z", 3.0),
+        ("model-a", 1.0_f64.next_up()),
+        ("model-m", 2.0),
+    ]));
+    let added = identified_model_bracket(model_bracket(&[
+        ("model-z", 3.0),
+        ("model-a", 1.0),
+        ("model-m", 2.0),
+        ("model-x", 4.0),
+    ]));
+    assert_ne!(first.id(), renamed.id());
+    assert_ne!(first.id(), changed_qoi.id());
+    assert_ne!(first.id(), added.id());
+
+    let positive_zero =
+        identified_model_bracket(model_bracket(&[("model-a", 0.0), ("model-b", 1.0)]));
+    let negative_zero =
+        identified_model_bracket(model_bracket(&[("model-a", -0.0), ("model-b", 1.0)]));
+    assert_ne!(positive_zero.id(), negative_zero.id());
+
+    assert_eq!(replay.into_bracket(), model_bracket(&members));
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one model-bracket matrix shares exact resource and cancellation accounting"
+)]
+fn model_bracket_identity_enforces_admission_resources_and_cancellation() {
+    assert_eq!(
+        identify_model_bracket_v1(ModelBracket::new(), LIMITS, || false),
+        Err(ModelBracketIdentityError::TooFewMembers {
+            count: 0,
+            minimum: 2,
+        })
+    );
+    assert_eq!(
+        identify_model_bracket_v1(model_bracket(&[("model-a", 1.0)]), LIMITS, || false),
+        Err(ModelBracketIdentityError::TooFewMembers {
+            count: 1,
+            minimum: 2,
+        })
+    );
+
+    let bracket = model_bracket(&[("model-a", 1.0), ("model-b", 2.0)]);
+    let baseline = identified_model_bracket(bracket.clone());
+    let frame = baseline.receipt().canonical_bytes();
+    identify_model_bracket_v1(
+        bracket.clone(),
+        CanonicalLimits::new(frame, 8_192, 1, 6, 64),
+        || false,
+    )
+    .expect("exact model-bracket frame, field, and chunk limits");
+    assert!(matches!(
+        identify_model_bracket_v1(
+            bracket.clone(),
+            CanonicalLimits::new(frame - 1, 8_192, 1, 6, 64),
+            || false,
+        ),
+        Err(ModelBracketIdentityError::Canonical(
+            CanonicalError::LimitExceeded {
+                kind: fs_blake3::identity::LimitKind::CanonicalBytes,
+                requested,
+                limit,
+            }
+        )) if requested > limit && limit == frame - 1
+    ));
+    assert!(matches!(
+        identify_model_bracket_v1(
+            bracket.clone(),
+            CanonicalLimits::new(16_384, 8_192, 0, 6, 64),
+            || false,
+        ),
+        Err(ModelBracketIdentityError::Canonical(
+            CanonicalError::LimitExceeded {
+                kind: fs_blake3::identity::LimitKind::Fields,
+                requested: 1,
+                limit: 0,
+            }
+        ))
+    ));
+    assert!(matches!(
+        identify_model_bracket_v1(
+            model_bracket(&[("model-a", 1.0), ("model-b", 2.0), ("model-c", 3.0)]),
+            CanonicalLimits::new(16_384, 8_192, 1, 2, 64),
+            || false,
+        ),
+        Err(ModelBracketIdentityError::Canonical(
+            CanonicalError::LimitExceeded {
+                kind: fs_blake3::identity::LimitKind::CollectionItems,
+                requested: 3,
+                limit: 2,
+            }
+        ))
+    ));
+
+    let maximum = usize::try_from(MAX_MODEL_BRACKET_MEMBERS_V1)
+        .expect("model-bracket hard maximum fits usize");
+    let maximal_bracket = (0..maximum)
+        .try_fold(ModelBracket::new(), |bracket, index| {
+            bracket.try_with_member(format!("model-{index:04}"), index as f64)
+        })
+        .expect("exact hard-maximum model bracket");
+    identify_model_bracket_v1(
+        maximal_bracket,
+        CanonicalLimits::new(1 << 20, 1 << 20, 1, MAX_MODEL_BRACKET_MEMBERS_V1 * 3, 256),
+        || false,
+    )
+    .expect("exact 1,024-member hard boundary");
+    assert!(matches!(
+        identify_model_bracket_v1(
+            bracket.clone(),
+            CanonicalLimits::new(16_384, 8_192, 1, 5, 64),
+            || false,
+        ),
+        Err(ModelBracketIdentityError::Canonical(
+            CanonicalError::LimitExceeded {
+                kind: fs_blake3::identity::LimitKind::StreamChunks,
+                requested: 6,
+                limit: 5,
+            }
+        ))
+    ));
+
+    let long_a = "a".repeat(256);
+    let long_b = "b".repeat(256);
+    let long_bracket = model_bracket(&[(long_a.as_str(), 1.0), (long_b.as_str(), 2.0)]);
+    identify_model_bracket_v1(
+        long_bracket.clone(),
+        CanonicalLimits::new(16_384, 568, 1, 6, 64),
+        || false,
+    )
+    .expect("exact 568-byte model-bracket member field");
+    assert!(matches!(
+        identify_model_bracket_v1(
+            long_bracket,
+            CanonicalLimits::new(16_384, 567, 1, 6, 64),
+            || false,
+        ),
+        Err(ModelBracketIdentityError::Canonical(
+            CanonicalError::LimitExceeded {
+                kind: fs_blake3::identity::LimitKind::FieldBytes,
+                requested: 568,
+                limit: 567,
+            }
+        ))
+    ));
+
+    assert_eq!(
+        identify_model_bracket_v1(
+            bracket.clone(),
+            CanonicalLimits::new(16_384, 8_192, 1, 6, 0),
+            || false,
+        ),
+        Err(ModelBracketIdentityError::Canonical(
+            CanonicalError::InvalidLimits("cancellation_poll_bytes must be positive")
+        ))
+    );
+    assert!(matches!(
+        identify_model_bracket_v1(bracket.clone(), LIMITS, || true),
+        Err(ModelBracketIdentityError::Canonical(
+            CanonicalError::Cancelled { absorbed_bytes: 0 }
+        ))
+    ));
+
+    #[derive(Debug)]
+    struct CancelAfter {
+        successful_polls: usize,
+    }
+    impl CancellationProbe for CancelAfter {
+        fn is_cancelled(&mut self) -> bool {
+            if self.successful_polls == 0 {
+                true
+            } else {
+                self.successful_polls -= 1;
+                false
+            }
+        }
+    }
+    assert!(matches!(
+        identify_model_bracket_v1(
+            bracket.clone(),
+            LIMITS,
+            CancelAfter {
+                successful_polls: 1,
+            },
+        ),
+        Err(ModelBracketIdentityError::Canonical(
+            CanonicalError::Cancelled { absorbed_bytes: 0 }
+        ))
+    ));
+    let polls = std::cell::Cell::new(0_usize);
+    identify_model_bracket_v1(bracket.clone(), LIMITS, || {
+        polls.set(polls.get() + 1);
+        false
+    })
+    .expect("baseline model-bracket poll count");
+    assert!(matches!(
+        identify_model_bracket_v1(
+            bracket,
+            LIMITS,
+            CancelAfter {
+                successful_polls: polls.get() - 1,
+            },
+        ),
+        Err(ModelBracketIdentityError::Canonical(
             CanonicalError::Cancelled { absorbed_bytes }
         )) if absorbed_bytes > 0
     ));
