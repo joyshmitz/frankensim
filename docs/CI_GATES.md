@@ -95,7 +95,10 @@ test target's canonical source path; target filenames are not a classification
 mechanism, so `conformance.rs` and replay targets are not silently missed. The
 lexical scanner strips nested comments, cooked/raw/byte strings, and character
 literals before classification, so examples or documentation do not create
-false coverage. Full coverage auto-adopts every additional discovered target,
+false coverage. Its balanced attribute scanner distinguishes `ignore` in a
+`cfg_attr` predicate from an `ignore` attribute that the `cfg_attr` can emit,
+including nested conditional attributes. Full coverage auto-adopts every
+additional discovered target,
 while a reviewed minimum inventory prevents accidental target removal or
 scanner regression from silently shrinking the lane. The PR set must remain
 inside that reviewed baseline and live discovery; duplicate, missing, stale,
@@ -118,27 +121,37 @@ creates no temporary files. It exercises the production lexical scanner,
 passing and malformed inventories, missing/stale/duplicate classifications,
 required-feature selector preservation, pre-launch deadline refusal, spawn and
 ordinary failures, stdout/receipt isolation, a leader that leaves a live
-descendant, a TERM-resistant timeout requiring KILL, and interruption cleanup.
+descendant, a TERM-resistant timeout that proves both TERM and KILL were sent,
+wrapper interruption cleanup, and a separate causal shell-trap forwarding path.
 The default aggregate wall budgets are 900 seconds for `pr` and 7200 seconds
 for `nightly-full`; bounded overrides are retained through
 `FS_CASEBOOK_PR_BUDGET_SECONDS` and `FS_CASEBOOK_FULL_BUDGET_SECONDS`.
 
 Profile execution runs each selector separately with `--locked`, continues
 after ordinary target failures, and stops before launching more work once the
-shared monotonic deadline is exhausted. The shell forwards HUP/INT/TERM to its
-active wrapper. Each target starts in a new session; its leader remains
+shared monotonic deadline is exhausted. The shell forwards HUP/INT/TERM through
+the active Bash job rather than a reusable numeric PID. Each target starts in a
+new session; its leader remains
 unreaped while the wrapper verifies live members by PGID and SID, so PID reuse
 cannot redirect cleanup. TERM, a bounded grace period, KILL if needed, and a
 bounded drain apply only to that owned group. Child stdout/stderr go to stderr;
 stdout is JSONL receipts only. Per-target receipts distinguish ordinary,
-spawn, timeout, lingering-descendant, and interrupt outcomes, while the terminal
-receipt accounts for emitted and unreported target rows.
+spawn, timeout, lingering-descendant, and interrupt outcomes. The terminal row
+reports attempted targets, expected target receipts, and unattempted targets;
+the retained-proof consumer must count the actual intervening target rows and
+fail if that count differs rather than trusting an impossible shell-side claim.
 
 Containment does not claim control over adversarial code that deliberately
 creates a different session/process group. Receipts state that boundary and
 also report provenance as `unsealed`: this helper does not itself bind the
 exact HEAD, dirty worktree bytes, lockfile digest, constellation, toolchain,
 environment, or ISA. A retained proof must wrap it in the DSR provenance lane.
+Uncatchable supervisor loss (`SIGKILL`), shell/host loss, and storage/output
+failure are likewise outside the bounded-drain claim; a missing target or
+terminal JSONL row is a failed proof, never evidence that cleanup completed.
+The same rule covers the narrow process-exec-to-Python-handler startup aperture:
+normal HUP/INT/TERM forwarding is tested after the wrapper is active, while a
+wrapper lost before it can emit a receipt makes the run malformed and failed.
 This remains a scheduling and discovery contract, not benchmark, cross-ISA,
 retained-proof, or CI-wiring evidence. Until external DSR configuration
 explicitly selects these commands, their existence does not claim that DSR is

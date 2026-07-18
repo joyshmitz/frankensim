@@ -93,7 +93,8 @@ environment:
 
 --check and --list run only `cargo metadata --locked --no-deps` plus source
 inspection; they do not build or execute tests. --self-test uses synthetic
-inventories and a fake expired deadline and never invokes Cargo.
+inventories and no-Cargo child processes to exercise discovery, budgets,
+cleanup, signal forwarding, and receipt isolation; it never invokes Cargo.
 EOF
 }
 
@@ -271,25 +272,102 @@ def code_only(data):
 casebook_token = re.compile(
     rb"(?:"
     rb"\b(?:pub(?:\s*\([^)]*\))?\s+)?use\s+(?:::)?\s*fs_casebook\b|"
-    rb"\buse\b[^;]{0,4096}\bfs_casebook\b|"
+    rb"\buse\b[^;]*\bfs_casebook\b|"
     rb"\bextern\s+crate\s+fs_casebook\b|"
     rb"\bfs_casebook\s*::"
     rb")",
     re.DOTALL,
 )
-direct_ignore = re.compile(rb"#\s*\[\s*ignore(?:\s|=|\])")
-conditional_ignore = re.compile(
-    rb"#\s*\[\s*cfg_attr\s*\([^\]]{0,4096}\bignore\b[^\]]{0,4096}\]",
-    re.DOTALL,
-)
+
+
+def matching_delimiter(data, opening_at):
+    pairs = {40: 41, 91: 93, 123: 125}
+    opening = data[opening_at]
+    if opening not in pairs:
+        raise ScanError(f"expected opening delimiter at byte {opening_at}")
+    stack = [pairs[opening]]
+    cursor = opening_at + 1
+    while cursor < len(data):
+        byte = data[cursor]
+        if byte in pairs:
+            stack.append(pairs[byte])
+        elif byte in (41, 93, 125):
+            if byte != stack[-1]:
+                raise ScanError(f"mismatched delimiter at byte {cursor}")
+            stack.pop()
+            if not stack:
+                return cursor
+        cursor += 1
+    raise ScanError(f"unterminated delimiter at byte {opening_at}")
+
+
+def split_top_level_commas(data):
+    parts = []
+    start = 0
+    cursor = 0
+    while cursor < len(data):
+        if data[cursor] in (40, 91, 123):
+            cursor = matching_delimiter(data, cursor) + 1
+            continue
+        if data[cursor] == 44:
+            parts.append(data[start:cursor])
+            start = cursor + 1
+        cursor += 1
+    parts.append(data[start:])
+    return parts
+
+
+def attribute_path_and_tail(body):
+    stripped = body.lstrip()
+    match = re.match(rb"([A-Za-z_][A-Za-z0-9_]*)", stripped)
+    if match is None:
+        return None, b""
+    return match.group(1), stripped[match.end():].lstrip()
+
+
+def attribute_expands_to_ignore(body):
+    path, tail = attribute_path_and_tail(body)
+    if path == b"ignore":
+        return not tail or tail[:1] in (b"=", b"(")
+    if path != b"cfg_attr" or not tail.startswith(b"("):
+        return False
+    closing_at = matching_delimiter(tail, 0)
+    if tail[closing_at + 1:].strip():
+        return False
+    arguments = split_top_level_commas(tail[1:closing_at])
+    # cfg_attr's first argument is the cfg predicate. Only subsequent arguments
+    # are attributes; a predicate named `ignore` must not create a false hit.
+    return any(attribute_expands_to_ignore(argument) for argument in arguments[1:])
+
+
+def contains_ignore_attribute(code):
+    cursor = 0
+    while cursor < len(code):
+        marker = code.find(b"#", cursor)
+        if marker < 0:
+            return False
+        opening_at = marker + 1
+        while opening_at < len(code) and code[opening_at] in b" \t\r\n":
+            opening_at += 1
+        if opening_at < len(code) and code[opening_at] == 33:
+            opening_at += 1
+            while opening_at < len(code) and code[opening_at] in b" \t\r\n":
+                opening_at += 1
+        if opening_at >= len(code) or code[opening_at] != 91:
+            cursor = marker + 1
+            continue
+        closing_at = matching_delimiter(code, opening_at)
+        if attribute_expands_to_ignore(code[opening_at + 1:closing_at]):
+            return True
+        cursor = closing_at + 1
+    return False
 
 
 def classify(data):
     code = code_only(data)
     return (
         casebook_token.search(code) is not None,
-        direct_ignore.search(code) is not None
-        or conditional_ignore.search(code) is not None,
+        contains_ignore_attribute(code),
     )
 
 
@@ -313,6 +391,12 @@ if mode == "self-test":
     ignored = [
         b"use fs_casebook::Casebook; #[ignore] #[test] fn slow() {}",
         b"use fs_casebook::Casebook; #[cfg_attr(feature = \"slow\", ignore)] fn slow() {}",
+        b"use fs_casebook::Casebook; #[cfg_attr(any(foo, bar), ignore = \"why\")] fn slow() {}",
+        b"use fs_casebook::Casebook; #[cfg_attr(foo, cfg_attr(bar, ignore))] fn slow() {}",
+    ]
+    not_ignored = [
+        b"use fs_casebook::Casebook; #[cfg_attr(ignore, test)] fn ordinary() {}",
+        b"use fs_casebook::Casebook; #[cfg_attr(any(ignore, slow), allow(dead_code))] fn ordinary() {}",
     ]
     failures = []
     for index, data in enumerate(positive):
@@ -324,6 +408,9 @@ if mode == "self-test":
     for index, data in enumerate(ignored):
         if classify(data) != (True, True):
             failures.append(f"ignored[{index}]")
+    for index, data in enumerate(not_ignored):
+        if classify(data) != (True, False):
+            failures.append(f"not_ignored[{index}]")
     try:
         classify(b"use fs_casebook::Casebook; /*")
     except ScanError:
@@ -333,7 +420,7 @@ if mode == "self-test":
     receipt = {
         "schema": "frankensim-casebook-source-scanner-self-test-v1",
         "status": "fail" if failures else "pass",
-        "cases": len(positive) + len(negative) + len(ignored) + 1,
+        "cases": len(positive) + len(negative) + len(ignored) + len(not_ignored) + 1,
         "failures": failures,
     }
     print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))
@@ -609,15 +696,18 @@ print(max(0, (time.monotonic_ns() - started_ns) // 1_000_000_000))
 PY
 }
 
-ACTIVE_WRAPPER_PID=""
+ACTIVE_WRAPPER_JOB=0
 REQUESTED_SIGNAL=""
 
 # shellcheck disable=SC2329 # Invoked indirectly by the signal traps below.
 forward_active_signal() {
   local signal_name="$1"
   REQUESTED_SIGNAL="${signal_name}"
-  if [[ -n "${ACTIVE_WRAPPER_PID}" ]]; then
-    kill -s "${signal_name}" "${ACTIVE_WRAPPER_PID}" 2>/dev/null || true
+  if (( ACTIVE_WRAPPER_JOB != 0 )); then
+    # Address the Bash job, not its numeric PID. Once wait has reaped the job,
+    # `%+` ceases to resolve, so this cannot signal an unrelated PID that the OS
+    # reused between wait returning and the active marker being cleared.
+    kill -s "${signal_name}" %+ 2>/dev/null || true
   fi
 }
 
@@ -658,6 +748,8 @@ process = None
 requested_signal = None
 inspection_errors = []
 observed_descendants = set()
+term_signal_sent = False
+kill_signal_sent = False
 
 def emit_receipt(**fields):
     receipt = {
@@ -708,6 +800,8 @@ if time.monotonic_ns() >= deadline_monotonic_ns:
         process_group_identity_pinned_until_drain=False,
         live_descendants_observed=0,
         inspection_errors=[],
+        term_signal_sent=False,
+        kill_signal_sent=False,
     )
     raise SystemExit(123)
 
@@ -727,6 +821,8 @@ try:
             process_group_identity_pinned_until_drain=False,
             live_descendants_observed=0,
             inspection_errors=[],
+            term_signal_sent=False,
+            kill_signal_sent=False,
         )
         raise SystemExit(128 + requested_signal)
     process = subprocess.Popen(
@@ -749,6 +845,8 @@ except OSError as error:
         process_group_identity_pinned_until_drain=False,
         live_descendants_observed=0,
         inspection_errors=[],
+        term_signal_sent=False,
+        kill_signal_sent=False,
         spawn_error=f"{type(error).__name__}: {error}",
     )
     raise SystemExit(126)
@@ -836,7 +934,7 @@ def signal_owned_group(signum):
     try:
         os.killpg(process.pid, signum)
     except ProcessLookupError:
-        return True
+        return False
     except PermissionError as error:
         inspection_errors.append(f"group signal denied: {type(error).__name__}: {error}")
         return False
@@ -851,17 +949,19 @@ def reap_if_exited(leader_exit_code):
         inspection_errors.append("leader was observable as exited but could not be reaped")
 
 def drain_owned_group():
+    global term_signal_sent
+    global kill_signal_sent
     leader_exit_code = leader_status_without_reaping()
     live = snapshot_live_descendants()
     if leader_exit_code is not None and live == set():
         reap_if_exited(leader_exit_code)
         return "not_needed", leader_exit_code
 
-    signal_owned_group(signal.SIGTERM)
+    term_signal_sent = signal_owned_group(signal.SIGTERM) or term_signal_sent
     term_deadline_ns = time.monotonic_ns() + int(term_grace * 1_000_000_000)
     complete, observed_exit_code = wait_for_drain(term_deadline_ns)
     if not complete:
-        signal_owned_group(signal.SIGKILL)
+        kill_signal_sent = signal_owned_group(signal.SIGKILL) or kill_signal_sent
         kill_deadline_ns = time.monotonic_ns() + int(kill_grace * 1_000_000_000)
         complete, observed_exit_code = wait_for_drain(kill_deadline_ns)
     reap_if_exited(observed_exit_code)
@@ -913,7 +1013,9 @@ except RunnerInterrupted as interruption:
     status = "interrupted"
     budget_status = "within"
     drain_trigger = f"signal_{signal_name}"
-    wrapper_exit_code = exit_code
+    # Preserve the conventional signal status only after bounded cleanup
+    # succeeds. A failed drain is a containment failure, not a clean interrupt.
+    wrapper_exit_code = exit_code if drain_status in ("complete", "not_needed") else 127
 
 emit_receipt(
     status=status,
@@ -928,13 +1030,15 @@ emit_receipt(
     process_group_identity_pinned_until_drain=True,
     live_descendants_observed=len(observed_descendants),
     inspection_errors=sorted(set(inspection_errors)),
+    term_signal_sent=term_signal_sent,
+    kill_signal_sent=kill_signal_sent,
 )
 raise SystemExit(wrapper_exit_code)
 PY
   wrapper_pid=$!
-  ACTIVE_WRAPPER_PID="${wrapper_pid}"
+  ACTIVE_WRAPPER_JOB=1
   if [[ -n "${REQUESTED_SIGNAL}" ]]; then
-    kill -s "${REQUESTED_SIGNAL}" "${wrapper_pid}" 2>/dev/null || true
+    kill -s "${REQUESTED_SIGNAL}" %+ 2>/dev/null || true
   fi
   while :; do
     if wait "${wrapper_pid}"; then
@@ -943,12 +1047,17 @@ PY
     else
       status=$?
     fi
-    if kill -0 "${wrapper_pid}" 2>/dev/null; then
+    # A trapped shell signal interrupts wait before the child is reaped. Only
+    # retry in that case and only while Bash still reports this exact child as a
+    # running job. Never probe the numeric PID after a nonzero child exit: it may
+    # already have been reaped and reused.
+    if [[ -n "${REQUESTED_SIGNAL}" ]] \
+        && [[ $'\n'"$(jobs -pr)"$'\n' == *$'\n'"${wrapper_pid}"$'\n'* ]]; then
       continue
     fi
     break
   done
-  ACTIVE_WRAPPER_PID=""
+  ACTIVE_WRAPPER_JOB=0
   return "${status}"
 }
 
@@ -969,7 +1078,7 @@ run_profile() {
   local status overall_status=0 budget_status="within" run_status="pass"
   local interrupted_status=0
   local terminal_exit_code=0
-  local total=0 attempted=0 passed=0 failed=0 budget_exceeded=0 unreported=0
+  local total=0 attempted=0 passed=0 failed=0 budget_exceeded=0 unattempted=0
   local -a command=()
   targets="$(profile_targets "${profile}")"
   while IFS= read -r identity; do
@@ -1045,7 +1154,7 @@ run_profile() {
     overall_status=1
   fi
   elapsed_seconds="$(monotonic_elapsed_seconds "${started_ns}")"
-  unreported=$((total - attempted))
+  unattempted=$((total - attempted))
   if (( interrupted_status != 0 )); then
     run_status="interrupted"
   elif [[ "${budget_status}" == "exceeded" ]]; then
@@ -1058,10 +1167,10 @@ run_profile() {
   elif (( overall_status != 0 )); then
     terminal_exit_code=1
   fi
-  printf '{"schema":"frankensim-casebook-profile-run-v1","event":"finish","profile":"%s","status":"%s","terminal_exit_code":%s,"budget_status":"%s","budget_seconds":%s,"elapsed_seconds":%s,"total_targets":%s,"target_receipts":%s,"passed_targets":%s,"failed_targets":%s,"budget_exceeded_targets":%s,"unreported_targets":%s,"deadline_clock":"monotonic","child_output_channel":"stderr","receipt_channel":"stdout-jsonl","provenance_status":"unsealed","provenance_scope":"selector-and-runtime-outcome-only"}\n' \
+  printf '{"schema":"frankensim-casebook-profile-run-v1","event":"finish","profile":"%s","status":"%s","terminal_exit_code":%s,"budget_status":"%s","budget_seconds":%s,"elapsed_seconds":%s,"total_targets":%s,"attempted_targets":%s,"expected_target_receipts":%s,"passed_targets":%s,"failed_targets":%s,"budget_exceeded_targets":%s,"unattempted_targets":%s,"deadline_clock":"monotonic","child_output_channel":"stderr","receipt_channel":"stdout-jsonl","provenance_status":"unsealed","provenance_scope":"selector-and-runtime-outcome-only"}\n' \
     "${profile}" "${run_status}" "${terminal_exit_code}" "${budget_status}" "${budget}" \
-    "${elapsed_seconds}" "${total}" "${attempted}" "${passed}" "${failed}" \
-    "${budget_exceeded}" "${unreported}"
+    "${elapsed_seconds}" "${total}" "${attempted}" "${attempted}" "${passed}" \
+    "${failed}" "${budget_exceeded}" "${unattempted}"
   if (( interrupted_status != 0 )); then
     return "${interrupted_status}"
   fi
@@ -1254,6 +1363,8 @@ run_self_tests() {
   self_test_require_contains "${output}" \
     '"drain_trigger":"leader_exit_with_live_group"' descendant-drain
   self_test_require_contains "${output}" '"drain_status":"complete"' descendant-drain
+  self_test_require_contains "${output}" '"term_signal_sent":true' descendant-drain
+  self_test_require_contains "${output}" '"kill_signal_sent":true' descendant-drain
 
   deadline="$(self_test_deadline_ns 1000)"
   if output="$(run_target_until_deadline_with_grace \
@@ -1272,6 +1383,8 @@ run_self_tests() {
   self_test_require_single_json_line "${output}" timeout-drain
   self_test_require_contains "${output}" '"status":"budget_exceeded"' timeout-drain
   self_test_require_contains "${output}" '"drain_status":"complete"' timeout-drain
+  self_test_require_contains "${output}" '"term_signal_sent":true' timeout-drain
+  self_test_require_contains "${output}" '"kill_signal_sent":true' timeout-drain
 
   deadline="$(self_test_deadline_ns 5000)"
   if output="$(run_target_until_deadline_with_grace \
@@ -1302,7 +1415,30 @@ run_self_tests() {
       "${output}" >&2
     return 1
   fi
-  printf '%s\n' '{"schema":"frankensim-casebook-profile-self-test-v2","status":"pass","cases":18,"scanner_fixture_cases":15,"cargo_invocations":0,"temporary_files":0}'
+
+  # Exercise the shell trap itself, not only the wrapper's Python signal
+  # handler. The synthetic child finds the wrapper's parent shell and signals
+  # that shell; the trap must address the active Bash job, the wrapper must
+  # drain its owned child group, and the shell must survive with status 143.
+  REQUESTED_SIGNAL=""
+  deadline="$(self_test_deadline_ns 5000)"
+  if run_target_until_deadline_with_grace \
+      "${deadline}" pr fs-a:casebook 0.10 0.50 \
+      "${PYTHON_BIN}" -c \
+      'import os,signal,subprocess,time; wrapper=os.getppid(); shell=int(subprocess.check_output(["/bin/ps","-o","ppid=","-p",str(wrapper)]).strip()); os.kill(shell, signal.SIGTERM); time.sleep(30)' \
+      >/dev/null 2>/dev/null; then
+    status=0
+  else
+    status=$?
+  fi
+  if (( status != 143 )) || [[ "${REQUESTED_SIGNAL}" != "TERM" ]]; then
+    printf 'self-test shell signal forwarding returned %s with request %q\n' \
+      "${status}" "${REQUESTED_SIGNAL}" >&2
+    return 1
+  fi
+  REQUESTED_SIGNAL=""
+
+  printf '%s\n' '{"schema":"frankensim-casebook-profile-self-test-v2","status":"pass","cases":19,"scanner_fixture_cases":19,"cargo_invocations":0,"temporary_files":0}'
 }
 
 if (( $# == 1 )) && [[ "$1" == "--self-test" ]]; then
