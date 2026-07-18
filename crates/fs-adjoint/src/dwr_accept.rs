@@ -48,11 +48,11 @@ const DWR_POLL_STRIDE_IDENTITY: u64 = DWR_POLL_STRIDE_ITEMS as u64;
 /// Galerkin solve of these 1-D P1 systems sits at roundoff, orders below).
 pub const DWR_EQUILIBRIUM_RESIDUAL_TOLERANCE: f64 = 1.0e-9;
 
-pub const DWR_EVIDENCE_IDENTITY_VERSION: u32 = 5;
+pub const DWR_EVIDENCE_IDENTITY_VERSION: u32 = 6;
 const MAX_DWR_REFINED_NODES: usize = MAX_DWR_MESH_NODES * 2 - 1;
 
 /// Exact retained domain string for the DWR output identity root.
-pub const DWR_OUTPUT_IDENTITY_DOMAIN: &str = "fs-adjoint-dwr-output-identity-v5";
+pub const DWR_OUTPUT_IDENTITY_DOMAIN: &str = "fs-adjoint-dwr-output-identity-v6";
 const DWR_OUTPUT_IDENTITY_SCHEMA: &[u8] = DWR_OUTPUT_IDENTITY_DOMAIN.as_bytes();
 
 /// Owner-local output-identity declaration consumed by `xtask check-identities`
@@ -61,8 +61,8 @@ pub const DWR_OUTPUT_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
     "frankensim-identity-schema-v1",
     "id=fs-adjoint:dwr-output",
     "version_const=DWR_EVIDENCE_IDENTITY_VERSION",
-    "version=5",
-    "domain=fs-adjoint-dwr-output-identity-v5",
+    "version=6",
+    "domain=fs-adjoint-dwr-output-identity-v6",
     "domain_const=DWR_OUTPUT_IDENTITY_DOMAIN",
     "encoder=hash_execution_header",
     "encoder_helpers=DwrWorkPlan::identity_fields",
@@ -72,13 +72,13 @@ pub const DWR_OUTPUT_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
     "digest=fs-blake3",
     "encoding=typed-binary",
     "sources=DwrOutput",
-    "source_fields=DwrOutput.j_primal:semantic,DwrOutput.eta:semantic,DwrOutput.indicators:semantic,DwrOutput.evidence_identity:derived:blake3-root-of-the-retained-preimage",
+    "source_fields=DwrOutput.j_primal:semantic,DwrOutput.eta:semantic,DwrOutput.indicators:semantic,DwrOutput.equilibrium_residual_max:semantic,DwrOutput.evidence_identity:derived:blake3-root-of-the-retained-preimage",
     "source_bindings=DwrOutput.j_primal>j-primal-bits,DwrOutput.eta>eta-bits,DwrOutput.indicators>indicator-bits",
     "external_semantic_fields=artifact-schema-tag,evidence-identity-version,exec-mode,stream-seed,stream-kernel,stream-tile,stream-iteration,budget-deadline,budget-poll-quota,budget-cost-quota,budget-priority,work-plan-version,work-plan-fields,poll-policy-version,poll-stride-identity,problem-identity-version,problem-identity-root,problem-canonical-bytes,candidate-digest,window-lo-bits,window-hi-bits",
-    "semantic_fields=artifact-schema-tag,evidence-identity-version,exec-mode,stream-seed,stream-kernel,stream-tile,stream-iteration,budget-deadline,budget-poll-quota,budget-cost-quota,budget-priority,work-plan-version,work-plan-fields,poll-policy-version,poll-stride-identity,problem-identity-version,problem-identity-root,problem-canonical-bytes,candidate-digest,window-lo-bits,window-hi-bits,j-primal-bits,eta-bits,indicator-bits",
+    "semantic_fields=artifact-schema-tag,evidence-identity-version,exec-mode,stream-seed,stream-kernel,stream-tile,stream-iteration,budget-deadline,budget-poll-quota,budget-cost-quota,budget-priority,work-plan-version,work-plan-fields,poll-policy-version,poll-stride-identity,problem-identity-version,problem-identity-root,problem-canonical-bytes,candidate-digest,window-lo-bits,window-hi-bits,j-primal-bits,eta-bits,equilibrium-residual-max-bits,indicator-bits",
     "excluded_fields=none",
     "consumers=dwr_integral_qoi,DwrOutput::evidence_identity",
-    "mutations=artifact-schema-tag:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,evidence-identity-version:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,exec-mode:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,stream-seed:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,stream-kernel:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,stream-tile:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,stream-iteration:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,budget-deadline:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,budget-poll-quota:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,budget-cost-quota:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,budget-priority:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,work-plan-version:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,work-plan-fields:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,poll-policy-version:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,poll-stride-identity:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,problem-identity-version:crates/fs-adjoint/src/dwr_accept.rs#output_identity_binds_each_body_field,problem-identity-root:crates/fs-adjoint/src/dwr_accept.rs#output_identity_binds_each_body_field,problem-canonical-bytes:crates/fs-adjoint/src/dwr_accept.rs#output_identity_binds_each_body_field,candidate-digest:crates/fs-adjoint/src/dwr_accept.rs#output_identity_binds_each_body_field,window-lo-bits:crates/fs-adjoint/src/dwr_accept.rs#output_identity_binds_each_body_field,window-hi-bits:crates/fs-adjoint/src/dwr_accept.rs#output_identity_binds_each_body_field,j-primal-bits:crates/fs-adjoint/src/dwr_accept.rs#output_identity_binds_each_body_field,eta-bits:crates/fs-adjoint/src/dwr_accept.rs#output_identity_binds_each_body_field,indicator-bits:crates/fs-adjoint/src/dwr_accept.rs#output_identity_binds_each_body_field",
+    "mutations=artifact-schema-tag:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,evidence-identity-version:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,exec-mode:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,stream-seed:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,stream-kernel:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,stream-tile:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,stream-iteration:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,budget-deadline:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,budget-poll-quota:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,budget-cost-quota:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,budget-priority:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,work-plan-version:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,work-plan-fields:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,poll-policy-version:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,poll-stride-identity:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,problem-identity-version:crates/fs-adjoint/src/dwr_accept.rs#output_identity_binds_each_body_field,problem-identity-root:crates/fs-adjoint/src/dwr_accept.rs#output_identity_binds_each_body_field,problem-canonical-bytes:crates/fs-adjoint/src/dwr_accept.rs#output_identity_binds_each_body_field,candidate-digest:crates/fs-adjoint/src/dwr_accept.rs#output_identity_binds_each_body_field,window-lo-bits:crates/fs-adjoint/src/dwr_accept.rs#output_identity_binds_each_body_field,window-hi-bits:crates/fs-adjoint/src/dwr_accept.rs#output_identity_binds_each_body_field,j-primal-bits:crates/fs-adjoint/src/dwr_accept.rs#output_identity_binds_each_body_field,eta-bits:crates/fs-adjoint/src/dwr_accept.rs#output_identity_binds_each_body_field,equilibrium-residual-max-bits:crates/fs-adjoint/src/dwr_accept.rs#output_identity_binds_each_body_field,indicator-bits:crates/fs-adjoint/src/dwr_accept.rs#output_identity_binds_each_body_field",
     "nonsemantic_mutations=none",
     "field_guard=classify_dwr_output_identity_fields",
     "transport_guard=DwrOutput::evidence_identity",
@@ -92,8 +92,8 @@ pub const DWR_BRACKET_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
     "frankensim-identity-schema-v1",
     "id=fs-adjoint:dwr-bracket",
     "version_const=DWR_EVIDENCE_IDENTITY_VERSION",
-    "version=5",
-    "domain=fs-adjoint-dwr-bracket-identity-v5",
+    "version=6",
+    "domain=fs-adjoint-dwr-bracket-identity-v6",
     "domain_const=DWR_BRACKET_IDENTITY_DOMAIN",
     "encoder=hash_bracket_execution_header",
     "encoder_helpers=hash_execution_header,BracketWorkPlan::identity_fields",
@@ -123,8 +123,8 @@ pub const DWR_ACCEPT_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
     "frankensim-identity-schema-v1",
     "id=fs-adjoint:dwr-accept",
     "version_const=DWR_EVIDENCE_IDENTITY_VERSION",
-    "version=5",
-    "domain=fs-adjoint-dwr-accept-identity-v5",
+    "version=6",
+    "domain=fs-adjoint-dwr-accept-identity-v6",
     "domain_const=DWR_ACCEPT_IDENTITY_DOMAIN",
     "encoder=hash_execution_header",
     "encoder_helpers=AcceptWorkPlan::identity_fields",
@@ -136,11 +136,11 @@ pub const DWR_ACCEPT_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
     "sources=AcceptOutcome,DwrQuery",
     "source_fields=AcceptOutcome.accepted:semantic,AcceptOutcome.color:semantic,AcceptOutcome.refused:semantic,AcceptOutcome.audit:semantic,AcceptOutcome.evidence_identity:derived:blake3-root-of-the-retained-preimage,DwrQuery.qoi:semantic,DwrQuery.tolerance:semantic",
     "source_bindings=AcceptOutcome.accepted>accepted-flag,AcceptOutcome.color>color-canonical-bytes,AcceptOutcome.refused>refused-flag,AcceptOutcome.audit>audit-utf8,DwrQuery.qoi>qoi-utf8,DwrQuery.tolerance>tolerance-bits",
-    "external_semantic_fields=artifact-schema-tag,evidence-identity-version,exec-mode,stream-seed,stream-kernel,stream-tile,stream-iteration,budget-deadline,budget-poll-quota,budget-cost-quota,budget-priority,work-plan-version,work-plan-fields,poll-policy-version,poll-stride-identity,bracket-presence,bracket-evidence-identity,dwr-abs-bits",
-    "semantic_fields=artifact-schema-tag,evidence-identity-version,exec-mode,stream-seed,stream-kernel,stream-tile,stream-iteration,budget-deadline,budget-poll-quota,budget-cost-quota,budget-priority,work-plan-version,work-plan-fields,poll-policy-version,poll-stride-identity,bracket-presence,bracket-evidence-identity,qoi-utf8,tolerance-bits,dwr-abs-bits,accepted-flag,refused-flag,color-canonical-bytes,audit-utf8",
+    "external_semantic_fields=artifact-schema-tag,evidence-identity-version,exec-mode,stream-seed,stream-kernel,stream-tile,stream-iteration,budget-deadline,budget-poll-quota,budget-cost-quota,budget-priority,work-plan-version,work-plan-fields,poll-policy-version,poll-stride-identity,bracket-presence,bracket-evidence-identity,dwr-abs-bits,estimate-evidence-identity,estimate-equilibrium-residual-bits",
+    "semantic_fields=artifact-schema-tag,evidence-identity-version,exec-mode,stream-seed,stream-kernel,stream-tile,stream-iteration,budget-deadline,budget-poll-quota,budget-cost-quota,budget-priority,work-plan-version,work-plan-fields,poll-policy-version,poll-stride-identity,bracket-presence,bracket-evidence-identity,qoi-utf8,tolerance-bits,dwr-abs-bits,estimate-evidence-identity,estimate-equilibrium-residual-bits,accepted-flag,refused-flag,color-canonical-bytes,audit-utf8",
     "excluded_fields=none",
     "consumers=accept,AcceptOutcome::evidence_identity",
-    "mutations=artifact-schema-tag:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,evidence-identity-version:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,exec-mode:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,stream-seed:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,stream-kernel:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,stream-tile:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,stream-iteration:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,budget-deadline:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,budget-poll-quota:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,budget-cost-quota:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,budget-priority:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,work-plan-version:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,work-plan-fields:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,poll-policy-version:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,poll-stride-identity:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,bracket-presence:crates/fs-adjoint/src/dwr_accept.rs#accept_identity_binds_each_body_field,bracket-evidence-identity:crates/fs-adjoint/src/dwr_accept.rs#accept_identity_binds_each_body_field,qoi-utf8:crates/fs-adjoint/src/dwr_accept.rs#accept_identity_binds_each_body_field,tolerance-bits:crates/fs-adjoint/src/dwr_accept.rs#accept_identity_binds_each_body_field,dwr-abs-bits:crates/fs-adjoint/src/dwr_accept.rs#accept_identity_binds_each_body_field,accepted-flag:crates/fs-adjoint/src/dwr_accept.rs#accept_identity_binds_each_body_field,refused-flag:crates/fs-adjoint/src/dwr_accept.rs#accept_identity_binds_each_body_field,color-canonical-bytes:crates/fs-adjoint/src/dwr_accept.rs#accept_identity_binds_each_body_field,audit-utf8:crates/fs-adjoint/src/dwr_accept.rs#accept_identity_binds_each_body_field",
+    "mutations=artifact-schema-tag:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,evidence-identity-version:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,exec-mode:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,stream-seed:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,stream-kernel:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,stream-tile:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,stream-iteration:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,budget-deadline:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,budget-poll-quota:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,budget-cost-quota:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,budget-priority:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,work-plan-version:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,work-plan-fields:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,poll-policy-version:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,poll-stride-identity:crates/fs-adjoint/src/dwr_accept.rs#execution_header_binds_versions_mode_stream_budget_and_poll_policy,bracket-presence:crates/fs-adjoint/src/dwr_accept.rs#accept_identity_binds_each_body_field,bracket-evidence-identity:crates/fs-adjoint/src/dwr_accept.rs#accept_identity_binds_each_body_field,qoi-utf8:crates/fs-adjoint/src/dwr_accept.rs#accept_identity_binds_each_body_field,tolerance-bits:crates/fs-adjoint/src/dwr_accept.rs#accept_identity_binds_each_body_field,dwr-abs-bits:crates/fs-adjoint/src/dwr_accept.rs#accept_identity_binds_each_body_field,estimate-evidence-identity:crates/fs-adjoint/src/dwr_accept.rs#accept_identity_binds_each_body_field,estimate-equilibrium-residual-bits:crates/fs-adjoint/src/dwr_accept.rs#accept_identity_binds_each_body_field,accepted-flag:crates/fs-adjoint/src/dwr_accept.rs#accept_identity_binds_each_body_field,refused-flag:crates/fs-adjoint/src/dwr_accept.rs#accept_identity_binds_each_body_field,color-canonical-bytes:crates/fs-adjoint/src/dwr_accept.rs#accept_identity_binds_each_body_field,audit-utf8:crates/fs-adjoint/src/dwr_accept.rs#accept_identity_binds_each_body_field",
     "nonsemantic_mutations=none",
     "field_guard=classify_dwr_accept_identity_fields",
     "transport_guard=AcceptOutcome::evidence_identity",
@@ -158,6 +158,7 @@ fn classify_dwr_output_identity_fields(output: &DwrOutput) {
         j_primal: _,
         eta: _,
         indicators: _,
+        equilibrium_residual_max: _,
         evidence_identity: _,
     } = output;
 }
@@ -190,10 +191,10 @@ fn classify_dwr_accept_identity_fields(outcome: &AcceptOutcome, query: &DwrQuery
     } = query;
 }
 /// Exact retained domain string for the DWR bracket identity root.
-pub const DWR_BRACKET_IDENTITY_DOMAIN: &str = "fs-adjoint-dwr-bracket-identity-v5";
+pub const DWR_BRACKET_IDENTITY_DOMAIN: &str = "fs-adjoint-dwr-bracket-identity-v6";
 const DWR_BRACKET_IDENTITY_SCHEMA: &[u8] = DWR_BRACKET_IDENTITY_DOMAIN.as_bytes();
 /// Exact retained domain string for the DWR accept identity root.
-pub const DWR_ACCEPT_IDENTITY_DOMAIN: &str = "fs-adjoint-dwr-accept-identity-v5";
+pub const DWR_ACCEPT_IDENTITY_DOMAIN: &str = "fs-adjoint-dwr-accept-identity-v6";
 const DWR_ACCEPT_IDENTITY_SCHEMA: &[u8] = DWR_ACCEPT_IDENTITY_DOMAIN.as_bytes();
 
 const DWR_INITIAL_PHASE: &str = "dwr.initial";
@@ -1495,11 +1496,23 @@ fn malformed_refusal(estimator: &str, audit: String) -> AcceptDraft {
 ///   promote or veto because the v0 query does not bind its dual relation.
 pub fn accept(
     query: &DwrQuery,
-    dwr_abs: f64,
+    estimate: &DwrOutput,
     bracket: Option<&Bracket>,
     cx: &Cx<'_>,
     clock: &dyn fs_exec::TimeSource,
 ) -> Result<AcceptOutcome, DwrError> {
+    // The certificate gate (bead sj31i.1): acceptance consumes only a
+    // constructor-sealed estimate — there is no naked-scalar path — and a
+    // candidate whose retained equilibrium receipt shows it never solved
+    // the primal system cannot mint an accepted receipt.
+    if estimate.equilibrium_residual_max().abs() > DWR_EQUILIBRIUM_RESIDUAL_TOLERANCE {
+        return Err(DwrError::NonSolutionCandidate {
+            node: 0,
+            residual: estimate.equilibrium_residual_max(),
+            tolerance: DWR_EQUILIBRIUM_RESIDUAL_TOLERANCE,
+        });
+    }
+    let dwr_abs = estimate.eta().abs();
     let plan = AcceptWorkPlan::preflight(query)?;
     let mut progress =
         WorkProgress::admit(plan.planned_work_units, cx, clock).map_err(|refusal| {
@@ -1601,6 +1614,8 @@ pub fn accept(
     }
     hasher.update(&query.tolerance.to_bits().to_le_bytes());
     hasher.update(&dwr_abs.to_bits().to_le_bytes());
+    hasher.update(estimate.evidence_identity().as_bytes());
+    hasher.update(&estimate.equilibrium_residual_max().to_bits().to_le_bytes());
     match bracket {
         Some(value) => {
             hasher.update(&[1]);
@@ -1675,6 +1690,10 @@ pub struct DwrOutput {
     eta: f64,
     /// Per-coarse-element |indicator| (refinement guidance).
     indicators: Vec<f64>,
+    /// Largest interior Galerkin-residual magnitude of the candidate — the
+    /// retained primal-equilibrium receipt the acceptance gate consumes
+    /// (bead sj31i.1): roundoff-scale for a genuine solve.
+    equilibrium_residual_max: f64,
     /// Retained identity of the estimator inputs, outputs, and execution policy.
     evidence_identity: DwrEvidenceIdentity,
 }
@@ -1696,6 +1715,13 @@ impl DwrOutput {
     #[must_use]
     pub fn indicators(&self) -> &[f64] {
         &self.indicators
+    }
+
+    /// Largest interior Galerkin-residual magnitude — the retained
+    /// primal-equilibrium receipt (bead sj31i.1).
+    #[must_use]
+    pub const fn equilibrium_residual_max(&self) -> f64 {
+        self.equilibrium_residual_max
     }
 
     /// Retained execution/evidence identity for this exact DWR estimate.
@@ -2612,6 +2638,10 @@ pub fn dwr_integral_qoi(
     // belongs at acceptance time — a certificate must not be minted from an
     // unproved candidate — and lands with the sealed-accept slice, gated on
     // the retained residual against DWR_EQUILIBRIUM_RESIDUAL_TOLERANCE.
+    let mut equilibrium_residual_max = 0.0f64;
+    for residual in equilibrium_residual.iter().take(mesh.len() - 1).skip(1) {
+        equilibrium_residual_max = equilibrium_residual_max.max(residual.abs());
+    }
     // Add the coarse-space algebraic contribution r(I_h z_f) = Σ r_i·z(x_i)
     // (z at coarse node i is fine node 2i). For an admitted solve this is a
     // roundoff-scale correction; it makes η the FULL dual-weighted residual
@@ -2665,6 +2695,7 @@ pub fn dwr_integral_qoi(
     hasher.update(&w_hi.to_bits().to_le_bytes());
     hasher.update(&j_primal.to_bits().to_le_bytes());
     hasher.update(&eta.to_bits().to_le_bytes());
+    hasher.update(&equilibrium_residual_max.to_bits().to_le_bytes());
     // Reset the documented 256-item cancellation bound between the
     // variable-length canonical problem bytes and the independent indicator
     // stream. Without this boundary, a final problem chunk and the first 256
@@ -2679,6 +2710,7 @@ pub fn dwr_integral_qoi(
         j_primal,
         eta,
         indicators,
+        equilibrium_residual_max,
         evidence_identity: DwrEvidenceIdentity(hasher.finalize()),
     };
     progress.advance(plan.finalization_work_units)?;
@@ -2794,11 +2826,12 @@ mod execution_tests {
             let baseline = root(&fields, CURRENT_VERIFIER_POLICY_IDENTITY);
             assert_eq!(
                 baseline.to_hex(),
-                // Re-pinned 2026-07-17 (bead sj31i.1 verification): moved by
+                // Re-pinned 2026-07-17 twice (bead sj31i.1): first for
                 // 4e405dd8 (fs-verify VERIFIER_WORK_PLAN_VERSION 1 -> 2,
-                // code-first) — the bump was committed without a run, so the
-                // stale pin was unobservable until this battery executed.
-                "5245d73504b029b8fe50e73bc269e477a2d1fcac3702e1c77ca96fc86de50997",
+                // code-first, stale pin unobservable until run), then for the
+                // sj31i.1 sealed-accept bump DWR_EVIDENCE_IDENTITY_VERSION
+                // 5 -> 6, which this header hashes by design.
+                "f4e634fa3e69ffe5f8246cffce580e59a371839698d7f5cea72fad02d4f85ae1",
                 "fixed bracket work-policy preimage changed"
             );
             for index in (4..=9).chain(14..=19) {

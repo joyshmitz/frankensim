@@ -77,9 +77,17 @@ fn dwr_integral_qoi(
     })
 }
 
-fn accept(query: &DwrQuery, dwr_abs: f64, bracket: Option<&Bracket>) -> AcceptOutcome {
-    with_default_cx(|cx| accept_with_cx(query, dwr_abs, bracket, cx, &VirtualClock::new()))
+fn accept(query: &DwrQuery, estimate: &DwrOutput, bracket: Option<&Bracket>) -> AcceptOutcome {
+    with_default_cx(|cx| accept_with_cx(query, estimate, bracket, cx, &VirtualClock::new()))
         .expect("healthy DWR acceptance context")
+}
+
+/// A small genuinely solved estimate for acceptance tests whose concern is
+/// not the estimate itself (sealed-accept has no scalar path — sj31i.1).
+fn solved_estimate() -> DwrOutput {
+    let problem = quartic_problem(4);
+    let u_h = solve_p1(&problem).expect("standard acceptance fixture must solve");
+    dwr_integral_qoi(&problem, &u_h, 0.25, 0.75).expect("standard acceptance estimate")
 }
 
 fn cauchy_schwarz(
@@ -173,7 +181,7 @@ fn dw_001_g1_effectivity_and_estimated_accept() {
         qoi: "integral[0.25,0.75]".to_string(),
         tolerance: 1e-3,
     };
-    let outcome = accept(&query, out.eta().abs(), None);
+    let outcome = accept(&query, &out, None);
     assert!(outcome.accepted());
     assert!(!outcome.refused());
     assert!(
@@ -187,7 +195,7 @@ fn dw_001_g1_effectivity_and_estimated_accept() {
             qoi: "integral".to_string(),
             tolerance: 1e-12,
         },
-        out.eta().abs(),
+        &out,
         None,
     );
     assert!(!strict.accepted(), "no silent discharge");
@@ -259,7 +267,7 @@ fn dw_002_reverified_energy_product_does_not_promote_without_a_typed_dual_relati
         qoi: "integral[0.25,0.75]".to_string(),
         tolerance: bracket.bound() * 1.5,
     };
-    let outcome = accept(&query, out.eta().abs(), Some(&bracket));
+    let outcome = accept(&query, &out, Some(&bracket));
     assert!(outcome.accepted());
     assert!(
         matches!(outcome.color(), Color::Estimated { .. }),
@@ -298,7 +306,7 @@ fn forged_public_verifier_report_is_not_bracket_authority() {
             qoi: "forgery-probe".to_string(),
             tolerance: 1.0,
         },
-        0.0,
+        &solved_estimate(),
         None,
     );
     assert!(matches!(outcome.color(), Color::Estimated { .. }));
@@ -316,7 +324,7 @@ fn dw_003_laundering_fails_the_type_check() {
             qoi: "integral".to_string(),
             tolerance: 1e-3,
         },
-        out.eta().abs(),
+        &out,
         None,
     );
     // The unbracketed accept is estimated; writing it into the ledger
@@ -424,9 +432,12 @@ fn dw_005_falsifier_spot_check_and_pairing() {
 
 #[test]
 fn unrelated_over_tolerance_energy_product_cannot_veto_the_dwr_decision() {
+    let estimate = solved_estimate();
+    // Discharging tolerance derived from the sealed estimate itself: the
+    // concern here is bracket-veto behavior, not the estimate magnitude.
     let query = DwrQuery {
         qoi: "test-qoi".to_string(),
-        tolerance: 1e-3,
+        tolerance: estimate.eta().abs().max(1e-12) * 2.0,
     };
     let primal = quartic_problem(4);
     let primal_h = solve_p1(&primal).expect("primal fixture must solve");
@@ -438,7 +449,7 @@ fn unrelated_over_tolerance_energy_product_cannot_veto_the_dwr_decision() {
     let unrelated_h = solve_p1(&unrelated_dual).expect("unrelated dual fixture must solve");
     let bracket = cauchy_schwarz(&primal, &primal_h, &unrelated_dual, &unrelated_h)
         .expect("both unrelated energy factors still reverify");
-    let outcome = accept(&query, 5e-4, Some(&bracket));
+    let outcome = accept(&query, &estimate, Some(&bracket));
     assert!(
         outcome.accepted(),
         "an unrelated dual product cannot veto an Estimated DWR decision: {}",
@@ -463,16 +474,10 @@ fn malformed_accept_inputs_fail_closed_without_minting_invalid_colors() {
         qoi: "hostile display label (not a machine id)".to_string(),
         tolerance: 1e-3,
     };
-    for estimate in [f64::NAN, f64::NEG_INFINITY, -1.0] {
-        let outcome = accept(&base, estimate, None);
-        assert!(!outcome.accepted());
-        assert!(outcome.refused());
-        validate_color_payload(outcome.color()).expect("refusal color remains structurally valid");
-        assert!(matches!(
-            outcome.color(),
-            Color::Estimated { dispersion, .. } if dispersion.is_infinite()
-        ));
-    }
+    // Scalar injection (NaN/-inf/-1.0 estimates) is now UNREPRESENTABLE:
+    // acceptance consumes only a constructor-sealed DwrOutput whose eta is
+    // finite by construction (bead sj31i.1) — the malformed legs below
+    // exercise the surviving refusal surface (tolerance) instead.
 
     for tolerance in [f64::NAN, f64::INFINITY, 0.0, -1.0] {
         let outcome = accept(
@@ -480,7 +485,7 @@ fn malformed_accept_inputs_fail_closed_without_minting_invalid_colors() {
                 tolerance,
                 ..base.clone()
             },
-            1e-4,
+            &solved_estimate(),
             None,
         );
         assert!(!outcome.accepted());
@@ -502,7 +507,14 @@ fn malformed_accept_inputs_fail_closed_without_minting_invalid_colors() {
     );
     let bracket =
         cauchy_schwarz(&problem, &candidate, &problem, &candidate).expect("valid diagnostic");
-    let independent = accept(&base, f64::NAN, Some(&bracket));
+    let independent = accept(
+        &DwrQuery {
+            tolerance: f64::NAN,
+            ..base.clone()
+        },
+        &solved_estimate(),
+        Some(&bracket),
+    );
     assert!(
         !independent.accepted(),
         "an unbound energy product cannot discharge malformed DWR"
@@ -660,14 +672,21 @@ fn dwr_refuses_invalid_windows_and_resource_counts_at_owner_boundaries() {
         qoi: "q".repeat(MAX_DWR_QOI_BYTES),
         tolerance: 1.0,
     };
-    let maximum_qoi_outcome = accept(&maximum_qoi, 0.0, None);
+    let maximum_qoi_outcome = accept(&maximum_qoi, &solved_estimate(), None);
     assert!(maximum_qoi_outcome.accepted());
     let plus_one_qoi = DwrQuery {
         qoi: "q".repeat(MAX_DWR_QOI_BYTES + 1),
         tolerance: 1.0,
     };
-    let plus_one =
-        with_default_cx(|cx| accept_with_cx(&plus_one_qoi, 0.0, None, cx, &VirtualClock::new()));
+    let plus_one = with_default_cx(|cx| {
+        accept_with_cx(
+            &plus_one_qoi,
+            &solved_estimate(),
+            None,
+            cx,
+            &VirtualClock::new(),
+        )
+    });
     assert!(matches!(
         plus_one,
         Err(DwrError::QoiLabelTooLong {
@@ -907,13 +926,13 @@ fn g4_dwr_and_accept_cancellation_are_bounded_and_retryable() {
         qoi: "accept-finalization-".repeat(20),
         tolerance: 1.0,
     };
-    let baseline_accept = accept(&query, baseline.eta().abs(), None);
+    let baseline_accept = accept(&query, &baseline, None);
     let pre_cancelled_accept = with_cx(
         true,
         ExecMode::Deterministic,
         Budget::INFINITE,
         default_stream(),
-        |cx| accept_with_cx(&query, baseline.eta().abs(), None, cx, &VirtualClock::new()),
+        |cx| accept_with_cx(&query, &baseline, None, cx, &VirtualClock::new()),
     );
     assert!(matches!(
         pre_cancelled_accept,
@@ -933,7 +952,7 @@ fn g4_dwr_and_accept_cancellation_are_bounded_and_retryable() {
             ExecMode::Deterministic,
             Budget::INFINITE.with_poll_quota(quota),
             default_stream(),
-            |cx| accept_with_cx(&query, baseline.eta().abs(), None, cx, &VirtualClock::new()),
+            |cx| accept_with_cx(&query, &baseline, None, cx, &VirtualClock::new()),
         );
         match attempt {
             Err(DwrError::BudgetRefused {
@@ -943,7 +962,7 @@ fn g4_dwr_and_accept_cancellation_are_bounded_and_retryable() {
             }) => {
                 assert!(completed_work_units <= planned_work_units);
                 accept_phases.insert(phase);
-                let retry = accept(&query, baseline.eta().abs(), None);
+                let retry = accept(&query, &baseline, None);
                 assert_same_accept_semantics(&baseline_accept, &retry);
             }
             Ok(outcome) => {
@@ -1297,9 +1316,8 @@ fn g5_execution_identity_binds_mode_budget_stream_and_work_shape() {
                 &VirtualClock::new(),
             )
             .expect("G5 execution must remain scientifically valid");
-            let outcome =
-                accept_with_cx(&query, output.eta().abs(), None, cx, &VirtualClock::new())
-                    .expect("G5 acceptance must remain valid");
+            let outcome = accept_with_cx(&query, &output, None, cx, &VirtualClock::new())
+                .expect("G5 acceptance must remain valid");
             (output, outcome)
         })
     };
@@ -1436,7 +1454,7 @@ fn g5_execution_identity_binds_mode_budget_stream_and_work_shape() {
             qoi: "g5-integrax".to_string(),
             tolerance: query.tolerance,
         },
-        baseline_output.eta().abs(),
+        &baseline_output,
         None,
     );
     assert_same_accept_semantics(&baseline_accept, &same_length_qoi);
@@ -1450,7 +1468,7 @@ fn g5_execution_identity_binds_mode_budget_stream_and_work_shape() {
             qoi: query.qoi.clone(),
             tolerance: 2.0,
         },
-        baseline_output.eta().abs(),
+        &baseline_output,
         None,
     );
     assert_ne!(
@@ -1458,7 +1476,10 @@ fn g5_execution_identity_binds_mode_budget_stream_and_work_shape() {
         changed_tolerance.evidence_identity(),
         "tolerance is semantic"
     );
-    let changed_estimate = accept(&query, baseline_output.eta().abs() + f64::EPSILON, None);
+    // A shifted scalar is unforgeable under the sealed accept (sj31i.1):
+    // a genuinely different estimate (different window) must move the
+    // acceptance identity instead.
+    let changed_estimate = accept(&query, &solved_estimate(), None);
     assert_ne!(
         baseline_accept.evidence_identity(),
         changed_estimate.evidence_identity(),
@@ -1470,7 +1491,7 @@ fn g5_execution_identity_binds_mode_budget_stream_and_work_shape() {
             qoi: "q".to_string(),
             tolerance: query.tolerance,
         },
-        baseline_output.eta().abs(),
+        &baseline_output,
         None,
     );
     let long = accept(
@@ -1478,13 +1499,13 @@ fn g5_execution_identity_binds_mode_budget_stream_and_work_shape() {
             qoi: "same-science-longer-provenance-label".to_string(),
             tolerance: query.tolerance,
         },
-        baseline_output.eta().abs(),
+        &baseline_output,
         None,
     );
     assert_same_accept_semantics(&short, &long);
     assert_ne!(short.evidence_identity(), long.evidence_identity());
     assert_eq!(DWR_WORK_PLAN_VERSION, 2);
     assert_eq!(DWR_POLL_POLICY_VERSION, 3);
-    assert_eq!(DWR_EVIDENCE_IDENTITY_VERSION, 5);
+    assert_eq!(DWR_EVIDENCE_IDENTITY_VERSION, 6);
     assert_eq!(DWR_POLL_STRIDE_ITEMS, 256);
 }
