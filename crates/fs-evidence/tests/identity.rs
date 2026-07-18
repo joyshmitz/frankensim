@@ -4993,11 +4993,13 @@ fn sourced_certified_f64_identity_enforces_resources_and_cancellation() {
         || false,
     )
     .expect("schema descriptors and caller field fit their shared exact limit");
+    // Empty source bytes are valid and cannot shadow the one-less schema limit
+    // during caller-field preflight, so this refusal isolates the descriptor.
     assert!(matches!(
         identify_certified_f64_source_v1(
             "d".to_string(),
             1,
-            vec![0x11; exact_field_len],
+            Vec::new(),
             CanonicalLimits::new(16_384, one_less_field_bytes, 32, 64, 8),
             || false,
         ),
